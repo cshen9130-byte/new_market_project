@@ -1,5 +1,7 @@
 import { query } from "@/lib/db"
 import type { GuoxinDBAnalysisResult } from "@/lib/server/guoxin-db-analysis"
+import { buildOrderTimeline, buildSpreadCharts } from "@/lib/server/settlement-spread-charts"
+import { buildHedgeStructureCharts } from "@/lib/server/settlement-hedge-structure"
 
 interface AccountRow {
   trade_date: string
@@ -253,6 +255,10 @@ export async function runYinheDBAnalysis(): Promise<GuoxinDBAnalysisResult> {
 
   const uniqueProducts = [...new Set(tradeRows.map((r) => r.product).filter(Boolean))].sort()
 
+  const orderTimeline = buildOrderTimeline(tradeRows)
+  const spreadCharts = await buildSpreadCharts(tradeRows, startDate, endDate)
+  const hedgeStructureCharts = buildHedgeStructureCharts(tradeRows, 2)
+
   return {
     dateRange: { start: startDate, end: endDate },
     equityStats,
@@ -262,5 +268,8 @@ export async function runYinheDBAnalysis(): Promise<GuoxinDBAnalysisResult> {
     tradeClusters,
     closeClusters,
     uniqueProducts,
+    orderTimeline,
+    spreadCharts,
+    hedgeStructureCharts,
   }
 }

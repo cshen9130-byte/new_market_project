@@ -418,7 +418,7 @@ export async function refreshFofOverviewListCache(
   // Force 最新涨跌幅 (+ tip NAV/date) to match each product's detail 平台数据 row.
   // For full rebuild, patch staging before swap so live never shows a half-built set.
   logProgress("syncing 最新涨跌幅 from detail 平台数据…", t0)
-  const synced = await syncFofCacheLatestReturnFromDetail(
+  const synced = await syncFofOverviewLatestFromDetail(
     products.map((p) => ({
       product_name: p.product_name,
       beian_hao: p.beian_hao,
@@ -439,13 +439,133 @@ export async function refreshFofOverviewListCache(
   return products.length
 }
 
+type FofTipFromSeries = {
+  nav_date: string
+  unit_nav: number
+  return_pct: number | null
+}
+
+/** Tip fields matching product-page 平台数据 (复权净值 day-over-day). */
+function tipFieldsFromDetailSeries(
+  series: Array<{
+    price_date?: string
+    nav?: string
+    cumulative_nav?: string
+    price_change?: string
+  }>,
+): FofTipFromSeries | null {
+  if (series.length === 0) return null
+  const latest = series[series.length - 1]
+  const prev = series.length >= 2 ? series[series.length - 2] : null
+  const navDate = latest.price_date?.slice(0, 10) ?? null
+  const unitNav = parseFloat(String(latest.nav ?? ""))
+  if (!navDate || !Number.isFinite(unitNav) || unitNav <= 0) return null
+
+  // Prefer 复权净值 day-over-day (same as product page default 涨跌幅).
+  let returnPct: number | null = null
+  if (prev) {
+    const currAdj = parseFloat(String(latest.cumulative_nav ?? ""))
+    const prevAdj = parseFloat(String(prev.cumulative_nav ?? ""))
+    if (
+      Number.isFinite(currAdj)
+      && Number.isFinite(prevAdj)
+      && prevAdj > 0
+      && currAdj > 0
+    ) {
+      returnPct = currAdj / prevAdj - 1
+    }
+  }
+  if (returnPct == null) {
+    const changeRaw = latest.price_change
+    if (changeRaw != null && changeRaw !== "") {
+      const fromUnit = parseFloat(String(changeRaw)) / 100
+      if (Number.isFinite(fromUnit)) returnPct = fromUnit
+    }
+  }
+  if (returnPct != null && !Number.isFinite(returnPct)) return null
+  return { nav_date: navDate, unit_nav: unitNav, return_pct: returnPct }
+}
+
+async function writeFofCacheTipRow(
+  targetTable: string,
+  row: {
+    product_name: string
+    beian_hao: string | null
+    nav_date: string
+    unit_nav: number
+    return_pct: number | null
+  },
+): Promise<boolean> {
+  // Prefer product_name match (FOF tip must advance even when cached 备案号
+  // differs slightly from the detail/email code, e.g. BSJ74B vs BSJ748 OCR).
+  // Also allow a pure 备案号 match when the display name drifts.
+  const result = await query<{ n: string }>(
+    `WITH updated AS (
+       UPDATE ${targetTable}
+       SET unit_nav = $1,
+           nav_date = $2::date,
+           return_pct = $3,
+           refreshed_at = NOW()
+       WHERE product_name = $4
+          OR (
+            $5::text IS NOT NULL
+            AND NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NOT NULL
+            AND UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($5::text))
+          )
+       RETURNING 1
+     )
+     SELECT COUNT(*)::text AS n FROM updated`,
+    [
+      clampPgNumeric(row.unit_nav, 16, 6),
+      row.nav_date,
+      clampPgNumeric(row.return_pct, 16, 8),
+      row.product_name,
+      row.beian_hao,
+    ],
+  )
+  return parseInt(result[0]?.n ?? "0", 10) > 0
+}
+
+/**
+ * Write-through: when product detail NAV is refreshed, also advance FOF底层
+ * 最新净值日期 / 最新单位净值 / 最新涨跌幅 so the list does not lag the product page.
+ * No-op when the fund is not in ops_fof_overview_list_cache.
+ */
+export async function patchFofOverviewListCacheTipFromSeries(opts: {
+  product_name: string
+  beian_hao?: string | null
+  series: Array<{
+    price_date?: string
+    nav?: string
+    cumulative_nav?: string
+    price_change?: string
+  }>
+}): Promise<boolean> {
+  const tip = tipFieldsFromDetailSeries(opts.series)
+  if (!tip) return false
+  try {
+    await ensureFofOverviewListCacheTable()
+    return await writeFofCacheTipRow(LIVE_CACHE_TABLE, {
+      product_name: opts.product_name,
+      beian_hao: (opts.beian_hao ?? "").trim() || null,
+      ...tip,
+    })
+  } catch (err) {
+    console.warn(
+      `[fof-overview-cache] tip patch failed for ${opts.product_name}:`,
+      err,
+    )
+    return false
+  }
+}
+
 /**
  * Overwrite list-cache tip NAV / 最新涨跌幅 from the same series the fund detail
  * page shows. 最新涨跌幅 must match the product-page 平台数据 column under default
  * 净值类型=复权净值 (cumulative_nav ratio) — NOT LegacyNavRow.price_change, which is
  * unit-NAV based and diverges on TA/分红 dates (BSJ74B: −5.76% unit vs −3.92% 复权).
  */
-async function syncFofCacheLatestReturnFromDetail(
+export async function syncFofOverviewLatestFromDetail(
   products: Array<{
     product_name: string
     beian_hao: string | null
@@ -457,6 +577,7 @@ async function syncFofCacheLatestReturnFromDetail(
     throw new Error(`invalid cache table: ${targetTable}`)
   }
   const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
+  const { persistDetailNavSeries } = await import("@/lib/server/fund-detail-nav-cache-pg")
   let updated = 0
   const chunkSize = 8
   for (let i = 0; i < products.length; i += chunkSize) {
@@ -475,40 +596,23 @@ async function syncFofCacheLatestReturnFromDetail(
             listHeader: null,
           })
           if (series.length === 0) return null
-          const latest = series[series.length - 1]
-          const prev = series.length >= 2 ? series[series.length - 2] : null
-          const navDate = latest.price_date?.slice(0, 10) ?? null
-          const unitNav = parseFloat(String(latest.nav ?? ""))
-          if (!navDate || !Number.isFinite(unitNav) || unitNav <= 0) return null
 
-          // Prefer 复权净值 day-over-day (same as product page default 涨跌幅).
-          let returnPct: number | null = null
-          if (prev) {
-            const currAdj = parseFloat(String(latest.cumulative_nav ?? ""))
-            const prevAdj = parseFloat(String(prev.cumulative_nav ?? ""))
-            if (
-              Number.isFinite(currAdj)
-              && Number.isFinite(prevAdj)
-              && prevAdj > 0
-              && currAdj > 0
-            ) {
-              returnPct = currAdj / prevAdj - 1
-            }
-          }
-          if (returnPct == null) {
-            const changeRaw = latest.price_change
-            if (changeRaw != null && changeRaw !== "") {
-              const fromUnit = parseFloat(String(changeRaw)) / 100
-              if (Number.isFinite(fromUnit)) returnPct = fromUnit
-            }
-          }
-          if (returnPct != null && !Number.isFinite(returnPct)) return null
+          // Piggyback: persist the exact detail series for instant product pages.
+          // skipFofListTip: this path writes the tip itself (staging or live).
+          void persistDetailNavSeries({
+            beian_hao: beian || null,
+            product_name: p.product_name,
+            short_name: p.short_name,
+            nav_series: series,
+            skipFofListTip: true,
+          })
+
+          const tip = tipFieldsFromDetailSeries(series)
+          if (!tip) return null
           return {
             product_name: p.product_name,
             beian_hao: beian || null,
-            nav_date: navDate,
-            unit_nav: unitNav,
-            return_pct: returnPct,
+            ...tip,
           }
         } catch (err) {
           console.error(
@@ -521,27 +625,8 @@ async function syncFofCacheLatestReturnFromDetail(
     )
     for (const row of results) {
       if (!row) continue
-      await query(
-        `UPDATE ${targetTable}
-         SET unit_nav = $1,
-             nav_date = $2::date,
-             return_pct = $3,
-             refreshed_at = NOW()
-         WHERE product_name = $4
-           AND (
-             NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NULL
-             OR $5::text IS NULL
-             OR UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($5::text))
-           )`,
-        [
-          clampPgNumeric(row.unit_nav, 16, 6),
-          row.nav_date,
-          clampPgNumeric(row.return_pct, 16, 8),
-          row.product_name,
-          row.beian_hao,
-        ],
-      )
-      updated++
+      const ok = await writeFofCacheTipRow(targetTable, row)
+      if (ok) updated++
     }
   }
   return updated

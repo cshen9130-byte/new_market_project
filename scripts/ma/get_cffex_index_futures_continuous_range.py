@@ -41,17 +41,20 @@ def _load_env_from_files():
 
 
 def fetch_range(ts_code: str, start_date: str, end_date: str):
-    pro = ts.pro_api(os.environ.get("TUSHARE_TOKEN"))
-    fields = (
-        "ts_code,trade_date,open,high,low,close,settle,vol,amount,oi,oi_chg"
-    )
-    df = pro.fut_daily(
-        ts_code=ts_code,
-        exchange="CFFEX",
-        start_date=start_date,
-        end_date=end_date,
-        fields=fields,
-    )
+    try:
+        pro = ts.pro_api(os.environ.get("TUSHARE_TOKEN"))
+        fields = (
+            "ts_code,trade_date,open,high,low,close,settle,vol,amount,oi,oi_chg"
+        )
+        df = pro.fut_daily(
+            ts_code=ts_code,
+            exchange="CFFEX",
+            start_date=start_date,
+            end_date=end_date,
+            fields=fields,
+        )
+    except Exception as e:
+        raise RuntimeError(f"fut_daily failed for {ts_code}: {e}") from e
     if df is None or df.empty:
         return []
     df = df.sort_values("trade_date", ascending=True)
@@ -93,12 +96,16 @@ def main():
     bases = ["IH", "IF", "IC", "IM"]
 
     data = {}
-    for base in bases:
-        leg_data = {}
-        for leg in legs:
-            ts_code = f"{base}{leg}.CFX"
-            leg_data[leg] = fetch_range(ts_code, start_date, end_date)
-        data[base] = leg_data
+    try:
+        for base in bases:
+            leg_data = {}
+            for leg in legs:
+                ts_code = f"{base}{leg}.CFX"
+                leg_data[leg] = fetch_range(ts_code, start_date, end_date)
+            data[base] = leg_data
+    except Exception as e:
+        print(json.dumps({"error": str(e), "start_date": start_date, "end_date": end_date}, ensure_ascii=False))
+        sys.exit(1)
 
     print(json.dumps({"start_date": start_date, "end_date": end_date, "data": data}, ensure_ascii=False))
 

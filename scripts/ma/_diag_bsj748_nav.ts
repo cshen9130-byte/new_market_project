@@ -17,7 +17,7 @@ async function main() {
     "@/lib/server/managed-fof-underlying-pg"
   )
 
-  const beian = "BSJ748"
+  const beian = "BSJ74B"
   const name = "百奕小天鹅2号B类"
 
   const cache = await query<{

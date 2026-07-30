@@ -6,13 +6,22 @@ export const dynamic = "force-dynamic"
 
 export async function GET() {
   try {
+    // Prefer the latest date that actually has prices. Empty shells from failed
+    // Tushare pulls would otherwise win MAX(trade_date) and blank the cards.
     const rows = await query(`
       SELECT symbol, trade_date,
              ts_code, close, settle, settle_return,
              near_ts_code, near_close, near_settle, near_settle_return,
              far_ts_code, far_close, far_settle, far_settle_return, far_cont_ts_code
       FROM derived_futures_snapshot
-      WHERE trade_date = (SELECT MAX(trade_date) FROM derived_futures_snapshot)
+      WHERE trade_date = (
+        SELECT MAX(trade_date) FROM derived_futures_snapshot
+        WHERE settle IS NOT NULL
+           OR near_settle IS NOT NULL
+           OR far_settle IS NOT NULL
+           OR close IS NOT NULL
+           OR near_close IS NOT NULL
+      )
     `)
     if (!rows.length) return NextResponse.json({ error: "No data" }, { status: 404 })
 

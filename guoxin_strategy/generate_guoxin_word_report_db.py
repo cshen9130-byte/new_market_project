@@ -36,6 +36,7 @@ _os.environ.setdefault("TQDM_DISABLE", "1")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties, fontManager
 import numpy as np
 import pandas as pd
 from docx import Document
@@ -43,6 +44,9 @@ from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
+
+# Resolved CJK FontProperties for chart titles/labels (set by configure_matplotlib).
+_CN_FONT: FontProperties | None = None
 
 try:
     import psycopg2
@@ -136,15 +140,68 @@ def ensure_output_dirs() -> None:
     CHART_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def configure_matplotlib() -> None:
-    plt.rcParams["font.sans-serif"] = [
-        "Microsoft YaHei",
-        "SimHei",
-        "Noto Sans CJK SC",
-        "Arial Unicode MS",
-        "DejaVu Sans",
+def _cn_font_candidates() -> list[str]:
+    """Prefer single-face TTF/OTF over TTC — matplotlib often tofu-renders CJK from TTC."""
+    home = Path.home()
+    return [
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\simsun.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        str(home / ".local/share/fonts/NotoSansSC-Regular.otf"),
+        str(home / ".fonts/NotoSansSC-Regular.otf"),
     ]
+
+
+def configure_matplotlib() -> None:
+    """Register a real CJK font file so chart Chinese is not rendered as □□□."""
+    global _CN_FONT
     plt.rcParams["axes.unicode_minus"] = False
+
+    chosen_path: str | None = None
+    for path in _cn_font_candidates():
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            fontManager.addfont(path)
+            chosen_path = path
+            break
+        except Exception:
+            continue
+
+    if chosen_path is None:
+        for name in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"):
+            try:
+                path = fontManager.findfont(FontProperties(family=name), fallback_to_default=False)
+                if path and "dejavu" not in path.lower():
+                    chosen_path = path
+                    break
+            except Exception:
+                continue
+
+    if chosen_path is None:
+        print("[WARN] No CJK font found; chart Chinese labels may render as boxes.", flush=True)
+        _CN_FONT = None
+        return
+
+    try:
+        _CN_FONT = FontProperties(fname=chosen_path)
+        family = _CN_FONT.get_name()
+    except Exception:
+        _CN_FONT = None
+        family = "SimHei"
+
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = [family, "DejaVu Sans"]
+    print(f"[FONT] Charts using: {family} ({chosen_path})", flush=True)
+
+
+def _cn_fp() -> dict:
+    return {"fontproperties": _CN_FONT} if _CN_FONT is not None else {}
 
 
 # ---------------------------------------------------------------------------
@@ -529,41 +586,269 @@ def save_chart(fig: plt.Figure, name: str) -> Path:
     return path
 
 
+def _norm_bs(value) -> str | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    if s in {"买", "B", "b"} or "买" in s:
+        return "买"
+    if s in {"卖", "S", "s"} or "卖" in s:
+        return "卖"
+    return None
+
+
+def _norm_oc(value) -> str | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    if s.startswith("开") or s in {"开", "O", "o"}:
+        return "开"
+    if s.startswith("平") or s in {"平", "C", "c"}:
+        return "平"
+    return None
+
+
+_ORDER_STYLES = {
+    ("买", "开"): {"marker": "^", "c": "#15803d", "label": "买开", "zorder": 6},
+    ("卖", "开"): {"marker": "v", "c": "#b91c1c", "label": "卖开", "zorder": 6},
+    ("买", "平"): {
+        "marker": "o",
+        "facecolors": "#86efac",
+        "edgecolors": "#15803d",
+        "label": "买平",
+        "zorder": 5,
+    },
+    ("卖", "平"): {
+        "marker": "o",
+        "facecolors": "#fecaca",
+        "edgecolors": "#b91c1c",
+        "label": "卖平",
+        "zorder": 5,
+    },
+}
+
+
+def prepare_order_points(trades: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate trades to daily (bs, oc) points for chart overlays."""
+    if trades is None or trades.empty:
+        return pd.DataFrame(columns=["trade_date", "bs", "oc", "lots", "signed_lots", "symbol"])
+
+    frame = trades.copy()
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.normalize()
+    frame["bs"] = frame["bs"].map(_norm_bs)
+    frame["oc"] = frame["oc"].map(_norm_oc)
+    frame["lots"] = pd.to_numeric(frame["lots"], errors="coerce").fillna(0.0)
+    frame = frame.dropna(subset=["bs", "oc"])
+    frame = frame[frame["lots"] > 0]
+    if frame.empty:
+        return pd.DataFrame(columns=["trade_date", "bs", "oc", "lots", "signed_lots", "symbol"])
+
+    if "instrument" in frame.columns:
+        frame["symbol"] = frame["instrument"].astype(str).map(_to_canonical)
+    else:
+        frame["symbol"] = ""
+
+    agg = (
+        frame.groupby(["trade_date", "bs", "oc"], as_index=False)
+        .agg(lots=("lots", "sum"))
+    )
+    agg["signed_lots"] = np.where(agg["bs"] == "买", agg["lots"], -agg["lots"])
+    return agg
+
+
+def _scatter_order_style(ax, x, y, style: dict, sizes, *, legend_label: str | None = None) -> None:
+    kwargs = {k: v for k, v in style.items() if k != "label"}
+    if legend_label is not None:
+        kwargs["label"] = legend_label
+    else:
+        kwargs["label"] = style.get("label")
+    ax.scatter(x, y, s=sizes, alpha=0.88, linewidths=0.8, **kwargs)
+
+
+def _order_marker_sizes(lots: pd.Series) -> np.ndarray:
+    return np.clip(pd.to_numeric(lots, errors="coerce").fillna(0).to_numpy(dtype=float) * 4.0, 28, 220)
+
+
+def overlay_orders_on_equity(ax, account: pd.DataFrame, order_points: pd.DataFrame, fp: dict) -> None:
+    if order_points.empty or account.empty:
+        return
+    equity = (
+        account.sort_values("trade_date")
+        .assign(trade_date=lambda d: pd.to_datetime(d["trade_date"]).dt.normalize())
+        .drop_duplicates("trade_date", keep="last")
+        .set_index("trade_date")["client_equity"]
+    )
+    # Small vertical offsets so stacked order types on the same day remain visible.
+    offsets = {("买", "开"): 0.012, ("卖", "开"): -0.012, ("买", "平"): 0.004, ("卖", "平"): -0.004}
+    seen: set[str] = set()
+    for (bs, oc), style in _ORDER_STYLES.items():
+        sub = order_points[(order_points["bs"] == bs) & (order_points["oc"] == oc)]
+        if sub.empty:
+            continue
+        dates = sub["trade_date"]
+        y = dates.map(equity)
+        valid = y.notna()
+        if not valid.any():
+            continue
+        dates = dates[valid]
+        y = y[valid].astype(float)
+        y = y * (1.0 + offsets[(bs, oc)])
+        label = style["label"] if style["label"] not in seen else None
+        if label:
+            seen.add(label)
+        _scatter_order_style(
+            ax,
+            dates,
+            y,
+            style,
+            _order_marker_sizes(sub.loc[valid, "lots"]),
+            legend_label=label,
+        )
+    if seen:
+        ax.legend(loc="best", fontsize=8, framealpha=0.9, prop=_CN_FONT)
+
+
+def build_order_timeline_chart(order_points: pd.DataFrame, fp: dict) -> Path | None:
+    if order_points.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    seen: set[str] = set()
+    for (bs, oc), style in _ORDER_STYLES.items():
+        sub = order_points[(order_points["bs"] == bs) & (order_points["oc"] == oc)]
+        if sub.empty:
+            continue
+        label = style["label"] if style["label"] not in seen else None
+        if label:
+            seen.add(label)
+        _scatter_order_style(
+            ax,
+            sub["trade_date"],
+            sub["signed_lots"],
+            style,
+            _order_marker_sizes(sub["lots"]),
+            legend_label=label,
+        )
+    ax.axhline(0, color="#9ca3af", linewidth=0.9)
+    ax.set_title("订单买卖开平时序（买为正 / 卖为负）", **fp)
+    ax.set_ylabel("成交手数", **fp)
+    ax.grid(alpha=0.25)
+    if seen:
+        ax.legend(loc="best", fontsize=8, framealpha=0.9, prop=_CN_FONT)
+    return save_chart(fig, "order_timeline.png")
+
+
+def overlay_orders_on_spread(
+    ax,
+    spread: pd.Series,
+    trades: pd.DataFrame,
+    leg_a: str,
+    leg_b: str,
+) -> int:
+    """Overlay leg trades on spread axis. Returns raw fill count on the two legs."""
+    if trades is None or trades.empty or spread.empty:
+        return 0
+    frame = trades.copy()
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.normalize()
+    frame["bs"] = frame["bs"].map(_norm_bs)
+    frame["oc"] = frame["oc"].map(_norm_oc)
+    frame["lots"] = pd.to_numeric(frame["lots"], errors="coerce").fillna(0.0)
+    frame["symbol"] = frame["instrument"].astype(str).map(_to_canonical)
+    frame = frame.dropna(subset=["bs", "oc"])
+    frame = frame[frame["symbol"].isin({leg_a, leg_b}) & (frame["lots"] > 0)]
+    if frame.empty:
+        return 0
+
+    agg = (
+        frame.groupby(["trade_date", "symbol", "bs", "oc"], as_index=False)
+        .agg(lots=("lots", "sum"), fills=("lots", "count"))
+    )
+    seen: set[str] = set()
+    # Stagger same-day markers slightly so multi-leg fills remain visible.
+    day_bucket: dict = {}
+    for (bs, oc), style in _ORDER_STYLES.items():
+        sub = agg[(agg["bs"] == bs) & (agg["oc"] == oc)].copy()
+        if sub.empty:
+            continue
+        ys = []
+        xs = []
+        sizes = []
+        for _, row in sub.iterrows():
+            dt = row["trade_date"]
+            base = spread.get(dt)
+            if pd.isna(base):
+                continue
+            bucket = day_bucket.get(dt, 0)
+            day_bucket[dt] = bucket + 1
+            xs.append(dt)
+            ys.append(float(base) + (bucket % 5) * max(abs(float(base)) * 0.002, 1.0))
+            sizes.append(float(row["lots"]))
+        if not xs:
+            continue
+        label = style["label"] if style["label"] not in seen else None
+        if label:
+            seen.add(label)
+        _scatter_order_style(
+            ax,
+            xs,
+            ys,
+            style,
+            _order_marker_sizes(pd.Series(sizes)),
+            legend_label=label,
+        )
+    if seen:
+        ax.legend(loc="best", fontsize=8, framealpha=0.9, prop=_CN_FONT)
+    return int(len(frame))
+
+
 def build_charts(
     account: pd.DataFrame,
     turnover_stats: pd.DataFrame,
     product_netting: pd.DataFrame,
     spread_stats: pd.DataFrame,
     market_hist: pd.DataFrame,
+    trades: pd.DataFrame | None = None,
 ) -> dict[str, Path]:
     chart_paths: dict[str, Path] = {}
+    order_points = prepare_order_points(trades if trades is not None else pd.DataFrame())
 
+    fp = _cn_fp()
     ordered_account = account.sort_values("trade_date")
     fig, ax1 = plt.subplots(figsize=(10, 5))
-    ax1.plot(ordered_account["trade_date"], ordered_account["client_equity"], marker="o", linewidth=2, color="#0f5c5e")
-    ax1.set_title("账户权益与风险度变化")
-    ax1.set_ylabel("客户权益")
+    ax1.plot(ordered_account["trade_date"], ordered_account["client_equity"], linewidth=2, color="#0f5c5e", label="客户权益")
+    overlay_orders_on_equity(ax1, ordered_account, order_points, fp)
+    ax1.set_title("账户权益与风险度变化（含订单点）", **fp)
+    ax1.set_ylabel("客户权益", **fp)
     ax1.grid(alpha=0.25)
     ax2 = ax1.twinx()
-    ax2.plot(ordered_account["trade_date"], ordered_account["risk_degree"], marker="s", linestyle="--", color="#c84c09")
-    ax2.set_ylabel("风险度(%)")
+    ax2.plot(ordered_account["trade_date"], ordered_account["risk_degree"], linestyle="--", color="#c84c09", label="风险度")
+    ax2.set_ylabel("风险度(%)", **fp)
     chart_paths["equity"] = save_chart(fig, "equity_risk.png")
+
+    order_chart = build_order_timeline_chart(order_points, fp)
+    if order_chart is not None:
+        chart_paths["orders"] = order_chart
 
     fig, ax = plt.subplots(figsize=(9, 5))
     colors = ["#204e4a", "#2f6f6d", "#4e9689", "#9fbf7b", "#d5a021"]
     ax.bar(turnover_stats["product"], turnover_stats["share_pct"], color=colors[: len(turnover_stats)])
-    ax.set_title("各品种成交额占比")
-    ax.set_ylabel("占比(%)")
+    ax.set_title("各品种成交额占比", **fp)
+    ax.set_ylabel("占比(%)", **fp)
+    if _CN_FONT is not None:
+        for label in ax.get_xticklabels():
+            label.set_fontproperties(_CN_FONT)
     ax.grid(axis="y", alpha=0.2)
     chart_paths["turnover"] = save_chart(fig, "turnover_share.png")
 
     margin_by_date = product_netting.groupby("settlement_date", as_index=False)["margin"].sum()
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(margin_by_date["settlement_date"], margin_by_date["margin"], color="#46637f")
-    ax.set_title("每日保证金占用")
-    ax.set_ylabel("保证金")
+    ax.set_title("每日保证金占用", **fp)
+    ax.set_ylabel("保证金", **fp)
     ax.grid(axis="y", alpha=0.2)
     chart_paths["margin"] = save_chart(fig, "margin_usage.png")
+
+    if market_hist.empty or "settle" not in market_hist.columns:
+        return chart_paths
 
     pivot = market_hist.pivot_table(index="date", columns="symbol", values="settle", aggfunc="last").sort_index()
     key_spreads = ["碳酸锂 LC2607-LC2609", "鸡蛋 JD2607-JD2606", "铝 AL2605-AL2606"]
@@ -575,13 +860,16 @@ def build_charts(
         z20 = (spread - spread.rolling(20, min_periods=5).mean()) / spread.rolling(20, min_periods=5).std()
         fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
         axes[0].plot(spread.index, spread, color="#0f5c5e", linewidth=2)
-        axes[0].set_title(f"{spread_name} 价差与20日Z分数")
-        axes[0].set_ylabel("价差")
+        leg_fills = overlay_orders_on_spread(
+            axes[0], spread, trades if trades is not None else pd.DataFrame(), leg_a, leg_b
+        )
+        axes[0].set_title(f"{spread_name} 价差与订单点（两腿 {leg_fills} 笔→汇总点）", **fp)
+        axes[0].set_ylabel("价差", **fp)
         axes[0].grid(alpha=0.2)
         axes[1].plot(z20.index, z20, color="#c84c09", linewidth=1.8)
         axes[1].axhline(-1.5, color="#666666", linestyle="--", linewidth=1)
         axes[1].axhline(0, color="#666666", linestyle=":", linewidth=1)
-        axes[1].set_ylabel("Z20")
+        axes[1].set_ylabel("Z20", **fp)
         axes[1].grid(alpha=0.2)
         event = PAIR_EVENT_MAP[spread_name]
         entry_dt = pd.Timestamp(event["entry"])
@@ -612,7 +900,7 @@ def compose_analysis(
     spread_stats = summarize_spreads(market_hist)
     trade_clusters = build_trade_clusters(trade_mkt)
     close_clusters = build_close_clusters(closed)
-    chart_paths = build_charts(account, turnover_stats, product_netting, spread_stats, market_hist)
+    chart_paths = build_charts(account, turnover_stats, product_netting, spread_stats, market_hist, trades)
     return AnalysisResult(
         account=account,
         trades=trades,
@@ -725,6 +1013,16 @@ def write_report(result: AnalysisResult) -> None:
     )
     document.add_picture(str(result.chart_paths["equity"]), width=Inches(6.7))
     document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    if "orders" in result.chart_paths:
+        document.add_paragraph()
+        document.add_picture(str(result.chart_paths["orders"]), width=Inches(6.7))
+        document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        add_bullets(
+            document,
+            [
+                "订单点图例：▲买开、▼卖开、○买平、○卖平；点大小按当日汇总手数缩放，便于观察开平仓批次与买卖方向是否成对出现。",
+            ],
+        )
     document.add_picture(str(result.chart_paths["margin"]), width=Inches(6.7))
     document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 

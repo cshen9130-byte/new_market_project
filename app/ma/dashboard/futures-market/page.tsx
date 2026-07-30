@@ -1904,10 +1904,10 @@ export default function FuturesMarketPage() {
                 <CardDescription>当月/次月/当季/下季 结算 - 现货收盘</CardDescription>
               </div>
               <div className="flex items-center gap-3">
-                <div className="text-sm">
-                  <label className="mr-2 text-muted-foreground">品种</label>
+                <div className="flex items-center gap-2 text-sm">
+                  <label className="text-muted-foreground">品种</label>
                   <select
-                    className="border rounded px-2 py-1 text-sm"
+                    className="h-8 rounded-md border border-input bg-background px-2.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     value={selectedCode}
                     onChange={(e) => setSelectedCode(e.target.value as any)}
                   >
@@ -1917,7 +1917,6 @@ export default function FuturesMarketPage() {
                     <option value="IM">IM</option>
                   </select>
                 </div>
-
               </div>
             </div>
           </CardHeader>
@@ -1929,18 +1928,12 @@ export default function FuturesMarketPage() {
             ) : basisContDiffTs && basisContDiffTs.data ? (
               (() => {
                 const legs = [
-                  { key: "L", name: "当月" },
-                  { key: "L1", name: "次月" },
-                  { key: "L2", name: "当季" },
-                  { key: "L3", name: "下季" },
+                  { key: "L", name: "当月", color: "#3b82f6" },
+                  { key: "L1", name: "次月", color: "#0d9488" },
+                  { key: "L2", name: "当季", color: "#d97706" },
+                  { key: "L3", name: "下季", color: "#e11d48" },
                 ] as const
-                const colorMap: Record<string, string> = {
-                  L: "#2563eb",
-                  L1: "#16a34a",
-                  L2: "#f59e0b",
-                  L3: "#dc2626",
-                }
-                const series = legs.map((leg) => {
+                const series = legs.map((leg, idx) => {
                   const arr = (basisContDiffTs.data?.[selectedCode]?.[leg.key] || [])
                     .filter((d: any) => typeof d?.basis_diff === "number")
                     .map((d: any) => [d.date, d.basis_diff as number])
@@ -1948,26 +1941,154 @@ export default function FuturesMarketPage() {
                     name: leg.name,
                     type: "line" as const,
                     data: arr,
-                    smooth: true,
+                    smooth: 0.2,
                     showSymbol: false,
-                    lineStyle: { width: 2, color: colorMap[leg.key] },
+                    symbol: "none",
+                    sampling: "lttb" as const,
+                    large: true,
+                    lineStyle: {
+                      width: idx === 0 ? 2.4 : 1.6,
+                      color: leg.color,
+                      opacity: idx === 0 ? 1 : 0.88,
+                    },
+                    itemStyle: { color: leg.color },
+                    emphasis: { focus: "series" as const, lineStyle: { width: 2.8 } },
+                    ...(idx === 0
+                      ? {
+                          markLine: {
+                            silent: true,
+                            symbol: "none",
+                            label: { show: false },
+                            lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
+                            data: [{ yAxis: 0 }],
+                          },
+                        }
+                      : {}),
                   }
                 })
                 const option = {
-                  tooltip: { trigger: "axis", valueFormatter: (v: number) => `${v.toFixed(2)}` },
-                  xAxis: { type: "time", axisLabel: { hideOverlap: true, margin: 10 } },
-                  yAxis: { type: "value" },
-                  legend: { data: legs.map((l) => l.name), top: 8, left: "center" },
-                  grid: { left: "10%", right: "4%", top: 70, bottom: 90, containLabel: true },
+                  animationDuration: 450,
+                  animationEasing: "cubicOut" as const,
+                  color: legs.map((l) => l.color),
+                  tooltip: {
+                    trigger: "axis" as const,
+                    backgroundColor: "rgba(15,23,42,0.92)",
+                    borderWidth: 0,
+                    padding: [10, 12],
+                    textStyle: { color: "#f8fafc", fontSize: 12 },
+                    axisPointer: {
+                      type: "cross" as const,
+                      crossStyle: { color: "#94a3b8" },
+                      lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
+                    },
+                    formatter: (params: any) => {
+                      const rows = Array.isArray(params) ? params : [params]
+                      if (!rows.length) return ""
+                      const raw = rows[0]?.axisValueLabel ?? rows[0]?.axisValue ?? rows[0]?.value?.[0]
+                      const dateStr = typeof raw === "string"
+                        ? raw.slice(0, 10)
+                        : raw instanceof Date
+                          ? raw.toISOString().slice(0, 10)
+                          : String(raw ?? "")
+                      const body = rows
+                        .map((p: any) => {
+                          const v = Array.isArray(p.value) ? p.value[1] : p.value
+                          const num = typeof v === "number" ? v.toFixed(2) : "-"
+                          return `${p.marker}<span style="color:#cbd5e1">${p.seriesName}</span>&nbsp;&nbsp;<b style="float:right;margin-left:16px">${num}</b>`
+                        })
+                        .join("<br/>")
+                      return `<div style="margin-bottom:6px;color:#94a3b8;font-size:11px">${dateStr}</div>${body}`
+                    },
+                  },
+                  legend: {
+                    data: legs.map((l) => l.name),
+                    top: 4,
+                    left: "center",
+                    icon: "roundRect",
+                    itemWidth: 14,
+                    itemHeight: 8,
+                    itemGap: 18,
+                    textStyle: { color: "#64748b", fontSize: 12 },
+                  },
+                  grid: { left: 16, right: 20, top: 48, bottom: 72, containLabel: true },
+                  xAxis: {
+                    type: "time" as const,
+                    boundaryGap: false,
+                    axisLine: { lineStyle: { color: "#e2e8f0" } },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#94a3b8",
+                      fontSize: 11,
+                      hideOverlap: true,
+                      margin: 12,
+                      formatter: (v: number) => {
+                        const d = new Date(v)
+                        const m = d.getMonth() + 1
+                        return m === 1 ? `${d.getFullYear()}` : `${m}月`
+                      },
+                    },
+                    splitLine: { show: false },
+                  },
+                  yAxis: {
+                    type: "value" as const,
+                    scale: true,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#94a3b8",
+                      fontSize: 11,
+                      formatter: (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)),
+                    },
+                    splitLine: {
+                      show: true,
+                      lineStyle: { color: "#f1f5f9", type: "solid" as const, width: 1 },
+                    },
+                    splitNumber: 5,
+                  },
                   dataZoom: [
-                    { type: "slider", xAxisIndex: 0, height: 32, bottom: 12 },
-                    { type: "inside", xAxisIndex: 0 },
+                    {
+                      type: "inside" as const,
+                      xAxisIndex: 0,
+                      filterMode: "none" as const,
+                      zoomOnMouseWheel: true,
+                      moveOnMouseMove: true,
+                    },
+                    {
+                      type: "slider" as const,
+                      xAxisIndex: 0,
+                      height: 22,
+                      bottom: 12,
+                      start: 70,
+                      end: 100,
+                      brushSelect: false,
+                      borderColor: "transparent",
+                      backgroundColor: "#f8fafc",
+                      fillerColor: "rgba(59,130,246,0.12)",
+                      handleIcon:
+                        "path://M-1,0 L1,0 L1,12 L-1,12 Z",
+                      handleSize: "110%",
+                      handleStyle: {
+                        color: "#94a3b8",
+                        borderColor: "#94a3b8",
+                        borderWidth: 0,
+                      },
+                      moveHandleSize: 0,
+                      dataBackground: {
+                        lineStyle: { color: "#cbd5e1", width: 1 },
+                        areaStyle: { color: "#e2e8f0" },
+                      },
+                      selectedDataBackground: {
+                        lineStyle: { color: "#3b82f6", width: 1 },
+                        areaStyle: { color: "rgba(59,130,246,0.18)" },
+                      },
+                      textStyle: { color: "#94a3b8", fontSize: 10 },
+                    },
                   ],
                   series,
                 }
                 return (
-                  <div className="pb-6">
-                    <ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate />
+                  <div className="pb-2">
+                    <ReactECharts key={selectedCode} option={option} style={{ height: 480 }} notMerge lazyUpdate />
                   </div>
                 )
               })()
@@ -2003,7 +2124,7 @@ export default function FuturesMarketPage() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle>{showFar ? "远月期指" : "近月期指"}</CardTitle>
-                <CardDescription>{showFar ? "最新交易日主力合约收盘与结算涨跌幅" : "最新交易日当月连续收盘与结算涨跌幅"}</CardDescription>
+                <CardDescription>{showFar ? "最新交易日次月连续收盘与结算涨跌幅" : "最新交易日当月连续收盘与结算涨跌幅"}</CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -2031,9 +2152,16 @@ export default function FuturesMarketPage() {
                       const d = futLatest?.[code]
                       const dateStr = fmtDate(d?.trade_date)
                       const priceVal = showFar
-                        ? (typeof d?.settle === "number" ? d!.settle : (typeof d?.close === "number" ? d!.close : null))
-                        : (typeof d?.near_settle === "number" ? d!.near_settle : (typeof d?.near_close === "number" ? d!.near_close : null))
-                      const pctVal = showFar ? d?.settle_return : d?.near_settle_return
+                        ? (typeof d?.far_settle === "number" ? d!.far_settle
+                          : typeof d?.settle === "number" ? d!.settle
+                          : typeof d?.close === "number" ? d!.close
+                          : null)
+                        : (typeof d?.near_settle === "number" ? d!.near_settle
+                          : typeof d?.near_close === "number" ? d!.near_close
+                          : null)
+                      const pctVal = showFar
+                        ? (typeof d?.far_settle_return === "number" ? d!.far_settle_return : d?.settle_return)
+                        : d?.near_settle_return
                       const pctStr = fmtPct(pctVal)
                       return (
                         <Card key={code} className="border">
@@ -2132,24 +2260,108 @@ export default function FuturesMarketPage() {
             ) : (showFar ? basisDiffTs : basisNearDiffTs)?.data ? (
               (() => {
                 const tsData = showFar ? basisDiffTs : basisNearDiffTs
-                const codes = ["IH", "IF", "IC", "IM"]
-                const colorMap: Record<string, string> = { IH: "#2563eb", IF: "#16a34a", IC: "#f59e0b", IM: "#dc2626" }
-                const series = codes.map((c) => {
-                  const arr = (tsData!.data?.[c] || [])
+                const codes = [
+                  { name: "IH", color: "#3b82f6" },
+                  { name: "IF", color: "#0d9488" },
+                  { name: "IC", color: "#d97706" },
+                  { name: "IM", color: "#e11d48" },
+                ] as const
+                const series = codes.map((c, idx) => {
+                  const arr = (tsData!.data?.[c.name] || [])
                     .filter((d) => typeof d?.basis_diff === "number")
                     .map((d) => [d.date, d.basis_diff as number])
-                  return { name: c, type: "line" as const, data: arr, smooth: true, showSymbol: false, lineStyle: { width: 2, color: colorMap[c] } }
+                  return {
+                    name: c.name,
+                    type: "line" as const,
+                    data: arr,
+                    smooth: 0.2,
+                    showSymbol: false,
+                    symbol: "none",
+                    sampling: "lttb" as const,
+                    large: true,
+                    lineStyle: { width: 1.8, color: c.color },
+                    itemStyle: { color: c.color },
+                    emphasis: { focus: "series" as const, lineStyle: { width: 2.6 } },
+                    ...(idx === 0
+                      ? {
+                          markLine: {
+                            silent: true,
+                            symbol: "none",
+                            label: { show: false },
+                            lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
+                            data: [{ yAxis: 0 }],
+                          },
+                        }
+                      : {}),
+                  }
                 })
                 const option = {
-                  tooltip: { trigger: "axis", valueFormatter: (v: number) => `${v.toFixed(2)}` },
-                  xAxis: { type: "time", axisLabel: { hideOverlap: true, margin: 10 } },
-                  yAxis: { type: "value" },
-                  legend: { data: codes, top: 8, left: "center" },
-                  grid: { left: "10%", right: "4%", top: 70, bottom: 90, containLabel: true },
-                  dataZoom: [{ type: "slider", xAxisIndex: 0, height: 32, bottom: 12 }, { type: "inside", xAxisIndex: 0 }],
+                  animationDuration: 450,
+                  color: codes.map((c) => c.color),
+                  tooltip: {
+                    trigger: "axis" as const,
+                    backgroundColor: "rgba(15,23,42,0.92)",
+                    borderWidth: 0,
+                    padding: [10, 12],
+                    textStyle: { color: "#f8fafc", fontSize: 12 },
+                    axisPointer: {
+                      type: "cross" as const,
+                      crossStyle: { color: "#94a3b8" },
+                      lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
+                    },
+                    valueFormatter: (v: number) => (typeof v === "number" ? v.toFixed(2) : "-"),
+                  },
+                  legend: {
+                    data: codes.map((c) => c.name),
+                    top: 4,
+                    left: "center",
+                    icon: "roundRect",
+                    itemWidth: 14,
+                    itemHeight: 8,
+                    itemGap: 18,
+                    textStyle: { color: "#64748b", fontSize: 12 },
+                  },
+                  grid: { left: 16, right: 20, top: 48, bottom: 72, containLabel: true },
+                  xAxis: {
+                    type: "time" as const,
+                    boundaryGap: false,
+                    axisLine: { lineStyle: { color: "#e2e8f0" } },
+                    axisTick: { show: false },
+                    axisLabel: { color: "#94a3b8", fontSize: 11, hideOverlap: true, margin: 12 },
+                    splitLine: { show: false },
+                  },
+                  yAxis: {
+                    type: "value" as const,
+                    scale: true,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: { color: "#94a3b8", fontSize: 11 },
+                    splitLine: { lineStyle: { color: "#f1f5f9", width: 1 } },
+                  },
+                  dataZoom: [
+                    { type: "inside" as const, xAxisIndex: 0, filterMode: "none" as const },
+                    {
+                      type: "slider" as const,
+                      xAxisIndex: 0,
+                      height: 22,
+                      bottom: 12,
+                      start: 70,
+                      end: 100,
+                      brushSelect: false,
+                      borderColor: "transparent",
+                      backgroundColor: "#f8fafc",
+                      fillerColor: "rgba(59,130,246,0.12)",
+                      handleStyle: { color: "#94a3b8", borderWidth: 0 },
+                      dataBackground: {
+                        lineStyle: { color: "#cbd5e1", width: 1 },
+                        areaStyle: { color: "#e2e8f0" },
+                      },
+                      textStyle: { color: "#94a3b8", fontSize: 10 },
+                    },
+                  ],
                   series,
                 }
-                return <div className="pb-6"><ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate /></div>
+                return <div className="pb-2"><ReactECharts option={option} style={{ height: 480 }} notMerge lazyUpdate /></div>
               })()
             ) : (
               <div className="text-sm text-muted-foreground">暂无数据</div>
@@ -2164,7 +2376,11 @@ export default function FuturesMarketPage() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle>{showFar ? "远月年化基差率时序" : "近月年化基差率时序"}</CardTitle>
-                <CardDescription>{showFar ? "自2023-01-01至今，主连结算与现货" : "自2023-01-01至今，当月连续结算与现货"}</CardDescription>
+                <CardDescription>
+                  {showFar
+                    ? "自2023-01-01至今，次月连续结算与现货（按次月到期日年化）"
+                    : "自2023-01-01至今，当月连续结算与现货（按当月到期日年化）"}
+                </CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -2176,24 +2392,118 @@ export default function FuturesMarketPage() {
             ) : (showFar ? basisTs : basisNearTs)?.data ? (
               (() => {
                 const tsData = showFar ? basisTs : basisNearTs
-                const codes = ["IH", "IF", "IC", "IM"]
-                const colorMap: Record<string, string> = { IH: "#2563eb", IF: "#16a34a", IC: "#f59e0b", IM: "#dc2626" }
-                const series = codes.map((c) => {
+                const codes = ["IH", "IF", "IC", "IM"] as const
+                const colorMap: Record<string, string> = {
+                  IH: "#3b82f6",
+                  IF: "#0d9488",
+                  IC: "#d97706",
+                  IM: "#e11d48",
+                }
+                const series = codes.map((c, idx) => {
                   const arr = (tsData!.data?.[c] || [])
                     .filter((d) => typeof d?.annualized_basis_pct === "number")
                     .map((d) => [d.date, d.annualized_basis_pct as number])
-                  return { name: c, type: "line" as const, data: arr, smooth: true, showSymbol: false, lineStyle: { width: 2, color: colorMap[c] } }
+                  return {
+                    name: c,
+                    type: "line" as const,
+                    data: arr,
+                    smooth: 0.2,
+                    showSymbol: false,
+                    symbol: "none",
+                    sampling: "lttb" as const,
+                    large: true,
+                    lineStyle: { width: idx === 0 ? 2.2 : 1.6, color: colorMap[c], opacity: 0.92 },
+                    itemStyle: { color: colorMap[c] },
+                    emphasis: { focus: "series" as const, lineStyle: { width: 2.6 } },
+                    ...(idx === 0
+                      ? {
+                          markLine: {
+                            silent: true,
+                            symbol: "none",
+                            label: { show: false },
+                            lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
+                            data: [{ yAxis: 0 }],
+                          },
+                        }
+                      : {}),
+                  }
                 })
                 const option = {
-                  tooltip: { trigger: "axis", valueFormatter: (v: number) => `${v.toFixed(2)}%` },
-                  xAxis: { type: "time", axisLabel: { hideOverlap: true, margin: 10 } },
-                  yAxis: { type: "value", axisLabel: { formatter: (v: number) => `${v}%` } },
-                  legend: { data: codes, top: 8, left: "center" },
-                  grid: { left: "10%", right: "4%", top: 70, bottom: 90, containLabel: true },
-                  dataZoom: [{ type: "slider", xAxisIndex: 0, height: 32, bottom: 12 }, { type: "inside", xAxisIndex: 0 }],
+                  animationDuration: 450,
+                  color: codes.map((c) => colorMap[c]),
+                  tooltip: {
+                    trigger: "axis" as const,
+                    backgroundColor: "rgba(15,23,42,0.92)",
+                    borderWidth: 0,
+                    padding: [10, 12],
+                    textStyle: { color: "#f8fafc", fontSize: 12 },
+                    axisPointer: {
+                      type: "cross" as const,
+                      crossStyle: { color: "#94a3b8" },
+                      lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
+                    },
+                    valueFormatter: (v: number) => (typeof v === "number" ? `${v.toFixed(2)}%` : "-"),
+                  },
+                  legend: {
+                    data: [...codes],
+                    top: 4,
+                    left: "center",
+                    icon: "roundRect",
+                    itemWidth: 14,
+                    itemHeight: 8,
+                    itemGap: 18,
+                    textStyle: { color: "#64748b", fontSize: 12 },
+                  },
+                  grid: { left: 16, right: 20, top: 48, bottom: 72, containLabel: true },
+                  xAxis: {
+                    type: "time" as const,
+                    boundaryGap: false,
+                    axisLine: { lineStyle: { color: "#e2e8f0" } },
+                    axisTick: { show: false },
+                    axisLabel: { color: "#94a3b8", fontSize: 11, hideOverlap: true, margin: 12 },
+                    splitLine: { show: false },
+                  },
+                  yAxis: {
+                    type: "value" as const,
+                    scale: true,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#94a3b8",
+                      fontSize: 11,
+                      formatter: (v: number) => `${v}%`,
+                    },
+                    splitLine: { lineStyle: { color: "#f1f5f9", width: 1 } },
+                    splitNumber: 5,
+                  },
+                  dataZoom: [
+                    { type: "inside" as const, xAxisIndex: 0, filterMode: "none" as const },
+                    {
+                      type: "slider" as const,
+                      xAxisIndex: 0,
+                      height: 22,
+                      bottom: 12,
+                      start: 70,
+                      end: 100,
+                      brushSelect: false,
+                      borderColor: "transparent",
+                      backgroundColor: "#f8fafc",
+                      fillerColor: "rgba(59,130,246,0.12)",
+                      handleStyle: { color: "#94a3b8", borderWidth: 0 },
+                      dataBackground: {
+                        lineStyle: { color: "#cbd5e1", width: 1 },
+                        areaStyle: { color: "#e2e8f0" },
+                      },
+                      textStyle: { color: "#94a3b8", fontSize: 10 },
+                    },
+                  ],
                   series,
                 }
-                return <div className="pb-6"><ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate /></div>
+                return (
+                  <div className="pb-2">
+                    <ReactECharts option={option} style={{ height: 480 }} notMerge lazyUpdate />
+                  </div>
+                )
               })()
             ) : (
               <div className="text-sm text-muted-foreground">暂无数据</div>

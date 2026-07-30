@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import ReactECharts from "echarts-for-react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import { underlyingChartLabel, underlyingCnLabel } from "@/lib/option-iv-labels"
 import { cn } from "@/lib/utils"
+import { ChartCardHeader } from "./chart-help"
 import { DeeperAnalysisPanels } from "./deeper-analysis-panels"
 
 const CHART_FONT = "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
@@ -1085,10 +1086,12 @@ export default function FinancialOptionsSection() {
       {/* IV Summary Table + cross-product percentile chart */}
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle>隐含波动率概览</CardTitle>
-            <CardDescription>按小盘 / 中盘 / 大盘分组，各品种当前 IV 与历史分位</CardDescription>
-          </CardHeader>
+          <ChartCardHeader
+            className="pb-3"
+            chartId="iv-summary"
+            title="隐含波动率概览"
+            description="按小盘 / 中盘 / 大盘分组，各品种当前 IV 与历史分位"
+          />
           <CardContent className="pt-0">
             <div ref={summaryTableRef} className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -1142,10 +1145,12 @@ export default function FinancialOptionsSection() {
         </Card>
 
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle>全市场 IV 分位对比</CardTitle>
-            <CardDescription>按小盘 / 中盘 / 大盘分组，比较全历史分位（虚线：20 / 50 / 80）</CardDescription>
-          </CardHeader>
+          <ChartCardHeader
+            className="pb-3"
+            chartId="iv-percentile-compare"
+            title="全市场 IV 分位对比"
+            description="按小盘 / 中盘 / 大盘分组，比较全历史分位（虚线：20 / 50 / 80）"
+          />
           <CardContent className="pt-0">
             {summaryPctOption ? (
               <ReactECharts
@@ -1260,14 +1265,13 @@ export default function FinancialOptionsSection() {
             <h2 className="text-lg font-semibold mb-4">历史波动率分析</h2>
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {chartProductLabel ? `${chartProductLabel} QVIX 时序` : "QVIX 时序"}
-                  </CardTitle>
-                  <CardDescription>
-                    {chartAsOfDescription(latestSeriesTradeDate(charts?.history), "ATM 隐含波动率指数（约 2 年）")}
-                  </CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="qvix-history"
+                  title={chartProductLabel ? `${chartProductLabel} QVIX 时序` : "QVIX 时序"}
+                  description={chartAsOfDescription(latestSeriesTradeDate(charts?.history), "ATM 隐含波动率指数（约 2 年）")}
+                />
                 <CardContent>
                   {historyOption ? (
                     <ReactECharts
@@ -1282,17 +1286,16 @@ export default function FinancialOptionsSection() {
                 </CardContent>
               </Card>
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {chartProductLabel ? `${chartProductLabel} IV 分位分析` : "IV 分位分析"}
-                  </CardTitle>
-                  <CardDescription>
-                    {chartAsOfDescription(
-                      latestSeriesTradeDate(charts?.percentile?.series),
-                      "全历史与 1 年滚动分位",
-                    )}
-                  </CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="iv-percentile"
+                  title={chartProductLabel ? `${chartProductLabel} IV 分位分析` : "IV 分位分析"}
+                  description={chartAsOfDescription(
+                    latestSeriesTradeDate(charts?.percentile?.series),
+                    "全历史与 1 年滚动分位",
+                  )}
+                />
                 <CardContent>
                   {percentileOption ? (
                     <ReactECharts
@@ -1314,14 +1317,13 @@ export default function FinancialOptionsSection() {
             <h2 className="text-lg font-semibold mb-4">截面波动率结构</h2>
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {chartProductLabel ? `${chartProductLabel} IV 期限结构` : "IV 期限结构"}
-                  </CardTitle>
-                  <CardDescription>
-                    {chartAsOfDescription(crossSectionDate, "各到期月 ATM 隐含波动率")}
-                  </CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="iv-term"
+                  title={chartProductLabel ? `${chartProductLabel} IV 期限结构` : "IV 期限结构"}
+                  description={chartAsOfDescription(crossSectionDate, "各到期月 ATM 隐含波动率")}
+                />
                 <CardContent>
                   {termOption ? (
                     <ReactECharts option={termOption} style={{ height: 300 }} notMerge lazyUpdate />
@@ -1331,19 +1333,18 @@ export default function FinancialOptionsSection() {
                 </CardContent>
               </Card>
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {chartProductLabel ? `${chartProductLabel} 波动率微笑` : "波动率微笑"}
-                  </CardTitle>
-                  <CardDescription>
-                    {chartAsOfDescription(
-                      crossSectionDate,
-                      charts?.smile
-                        ? `${charts.smile.expiry_code} · ${charts.smile.days_to_expiry}D · OTM`
-                        : "近月 OTM IV vs 行权价",
-                    )}
-                  </CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="iv-smile"
+                  title={chartProductLabel ? `${chartProductLabel} 波动率微笑` : "波动率微笑"}
+                  description={chartAsOfDescription(
+                    crossSectionDate,
+                    charts?.smile
+                      ? `${charts.smile.expiry_code} · ${charts.smile.days_to_expiry}D · OTM`
+                      : "近月 OTM IV vs 行权价",
+                  )}
+                />
                 <CardContent>
                   {smileOption ? (
                     <ReactECharts option={smileOption} style={{ height: 300 }} notMerge lazyUpdate />
@@ -1360,19 +1361,18 @@ export default function FinancialOptionsSection() {
             <h2 className="text-lg font-semibold mb-4">期权链与波动率曲面</h2>
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {chartProductLabel ? `${chartProductLabel} 期权链微笑` : "期权链微笑"}
-                  </CardTitle>
-                  <CardDescription>
-                    {chartAsOfDescription(
-                      crossSectionDate,
-                      charts?.smile_chain
-                        ? `${charts.smile_chain.expiry_code} · ${charts.smile_chain.days_to_expiry}D · IV + 持仓量`
-                        : "近月链 IV 与 OI 分布",
-                    )}
-                  </CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="iv-smile-chain"
+                  title={chartProductLabel ? `${chartProductLabel} 期权链微笑` : "期权链微笑"}
+                  description={chartAsOfDescription(
+                    crossSectionDate,
+                    charts?.smile_chain
+                      ? `${charts.smile_chain.expiry_code} · ${charts.smile_chain.days_to_expiry}D · IV + 持仓量`
+                      : "近月链 IV 与 OI 分布",
+                  )}
+                />
                 <CardContent>
                   {chainOption ? (
                     <ReactECharts option={chainOption} style={{ height: 320 }} notMerge lazyUpdate />
@@ -1383,14 +1383,13 @@ export default function FinancialOptionsSection() {
               </Card>
 
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {chartProductLabel ? `${chartProductLabel} IV 波动率曲面（3D）` : "IV 波动率曲面（3D）"}
-                  </CardTitle>
-                  <CardDescription>
-                    {chartAsOfDescription(crossSectionDate, "行权价 × 到期天数 × 隐含波动率")}
-                  </CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="iv-surface"
+                  title={chartProductLabel ? `${chartProductLabel} IV 波动率曲面（3D）` : "IV 波动率曲面（3D）"}
+                  description={chartAsOfDescription(crossSectionDate, "行权价 × 到期天数 × 隐含波动率")}
+                />
                 <CardContent>
                   {charts?.surface ? (
                     <IvSurface3DChart data={charts.surface} height={380} />

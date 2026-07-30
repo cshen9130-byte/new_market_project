@@ -2,9 +2,10 @@
 
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { underlyingCnLabel } from "@/lib/option-iv-labels"
 import { cn } from "@/lib/utils"
+import { ChartCardHeader } from "./chart-help"
 
 const CHART_FONT = "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
 
@@ -945,10 +946,13 @@ export function DeeperAnalysisPanels({
         </div>
         <div className="grid gap-6 lg:grid-cols-2">
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{title} IV vs 实现波动率</CardTitle>
-              <CardDescription>ATM / 系列 IV 对比 20D·60D 实现波动，右轴为溢价</CardDescription>
-            </CardHeader>
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="iv-rv"
+              title={`${title} IV vs 实现波动率`}
+              description="ATM / 系列 IV 对比 20D·60D 实现波动，右轴为溢价"
+            />
             <CardContent>
               {ivRvOption ? (
                 <ReactECharts option={ivRvOption} style={{ height: 320 }} notMerge />
@@ -958,14 +962,13 @@ export function DeeperAnalysisPanels({
             </CardContent>
           </Card>
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">
-                {peerGroup.compareTitle?.(bucket) ?? `${bucket} 同组 IV 对比`}
-              </CardTitle>
-              <CardDescription>
-                {peerGroup.compareDescription ?? "同组品种 ATM / 系列 IV 走势"}
-              </CardDescription>
-            </CardHeader>
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="peer-iv"
+              title={peerGroup.compareTitle?.(bucket) ?? `${bucket} 同组 IV 对比`}
+              description={peerGroup.compareDescription ?? "同组品种 ATM / 系列 IV 走势"}
+            />
             <CardContent>
               {bucketOption ? (
                 <ReactECharts option={bucketOption} style={{ height: 320 }} notMerge />
@@ -1006,10 +1009,13 @@ export function DeeperAnalysisPanels({
         </div>
         <div className="grid gap-6 lg:grid-cols-2">
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{title} 当日偏度结构</CardTitle>
-              <CardDescription>±5% moneyness 翼部 IV 与 RR / Butterfly</CardDescription>
-            </CardHeader>
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="skew-snapshot"
+              title={`${title} 当日偏度结构`}
+              description="±5% moneyness 翼部 IV 与 RR / Butterfly"
+            />
             <CardContent>
               {skewBarsOption ? (
                 <ReactECharts option={skewBarsOption} style={{ height: 280 }} notMerge />
@@ -1019,18 +1025,21 @@ export function DeeperAnalysisPanels({
             </CardContent>
           </Card>
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{title} 偏度时序</CardTitle>
-              <CardDescription>
-                {skewHistOption
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="skew-history"
+              title={`${title} 偏度时序`}
+              description={
+                skewHistOption
                   ? (charts?.skew?.series?.length ?? 0) <= 1
                     ? `当日快照 ${String(charts?.skew?.series?.[0]?.trade_date ?? "")} · 历史将随每日 ETL 变长`
                     : (charts?.skew?.series?.length ?? 0) < 5
                       ? "日度沉淀刚开始，点会随每日 ETL 变长"
                       : "历史 Risk Reversal / Butterfly（ETL 日度沉淀）"
-                  : "暂无偏度历史"}
-              </CardDescription>
-            </CardHeader>
+                  : "暂无偏度历史"
+              }
+            />
             <CardContent>
               {skewHistOption ? (
                 <ReactECharts option={skewHistOption} style={{ height: 280 }} notMerge />
@@ -1040,14 +1049,17 @@ export function DeeperAnalysisPanels({
             </CardContent>
           </Card>
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{title} Put/Call OI</CardTitle>
-              <CardDescription>
-                {pcr?.expiry_code
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="pcr-oi"
+              title={`${title} Put/Call OI`}
+              description={
+                pcr?.expiry_code
                   ? `${pcr.expiry_code} · ${pcr.days_to_expiry ?? "—"}D 链上持仓`
-                  : "近月链 Call / Put 持仓量"}
-              </CardDescription>
-            </CardHeader>
+                  : "近月链 Call / Put 持仓量"
+              }
+            />
             <CardContent>
               {pcrStrikeOption ? (
                 <ReactECharts option={pcrStrikeOption} style={{ height: 280 }} notMerge />
@@ -1057,18 +1069,21 @@ export function DeeperAnalysisPanels({
             </CardContent>
           </Card>
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{title} PCR 时序</CardTitle>
-              <CardDescription>
-                {pcrHistOption
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="pcr-history"
+              title={`${title} PCR 时序`}
+              description={
+                pcrHistOption
                   ? (charts?.pcr?.series?.length ?? 0) <= 1
                     ? `当日快照 ${String(charts?.pcr?.series?.[0]?.trade_date ?? "")} · 历史将随每日 ETL 变长`
                     : (charts?.pcr?.series?.length ?? 0) < 5
                       ? "日度沉淀刚开始，点会随每日 ETL 变长"
                       : "Put/Call OI 比率历史"
-                  : "暂无 PCR 历史"}
-              </CardDescription>
-            </CardHeader>
+                  : "暂无 PCR 历史"
+              }
+            />
             <CardContent>
               {pcrHistOption ? (
                 <ReactECharts option={pcrHistOption} style={{ height: 280 }} notMerge />
@@ -1113,18 +1128,21 @@ export function DeeperAnalysisPanels({
         </div>
         <div className="grid gap-6 lg:grid-cols-2">
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{title} 期限斜率时序</CardTitle>
-              <CardDescription>
-                {termSlopeHistOption
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="term-slope"
+              title={`${title} 期限斜率时序`}
+              description={
+                termSlopeHistOption
                   ? (charts?.term_slope?.series?.length ?? 0) <= 1
                     ? `当日快照 ${String(charts?.term_slope?.series?.[0]?.trade_date ?? "")} · 历史将随每日 ETL 变长`
                     : (charts?.term_slope?.series?.length ?? 0) < 5
                       ? "日度沉淀刚开始，点会随每日 ETL 变长"
                       : "远月 − 近月 ATM IV 历史"
-                  : "暂无斜率历史"}
-              </CardDescription>
-            </CardHeader>
+                  : "暂无斜率历史"
+              }
+            />
             <CardContent>
               {termSlopeHistOption ? (
                 <ReactECharts option={termSlopeHistOption} style={{ height: 300 }} notMerge />
@@ -1134,10 +1152,13 @@ export function DeeperAnalysisPanels({
             </CardContent>
           </Card>
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{title} 实现波动率锥</CardTitle>
-              <CardDescription>各窗口 RV 历史分位带 vs 当前 RV / IV</CardDescription>
-            </CardHeader>
+            <ChartCardHeader
+              className="pb-2"
+              titleClassName="text-base"
+              chartId="vol-cone"
+              title={`${title} 实现波动率锥`}
+              description="各窗口 RV 历史分位带 vs 当前 RV / IV"
+            />
             <CardContent>
               {volConeOption ? (
                 <ReactECharts option={volConeOption} style={{ height: 300 }} notMerge />
@@ -1158,10 +1179,13 @@ export function DeeperAnalysisPanels({
           </p>
         </div>
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">IV 分位热力图</CardTitle>
-            <CardDescription>按小盘 / 中盘 / 大盘分组展示</CardDescription>
-          </CardHeader>
+          <ChartCardHeader
+            className="pb-2"
+            titleClassName="text-base"
+            chartId="iv-heat"
+            title="IV 分位热力图"
+            description="按小盘 / 中盘 / 大盘分组展示"
+          />
           <CardContent>
             {heatOption ? (
               <ReactECharts

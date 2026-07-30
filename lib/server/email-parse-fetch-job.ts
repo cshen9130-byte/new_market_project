@@ -286,6 +286,8 @@ export function startEmailParseFetchJob(options?: {
             const { upsertTrackingFundListCacheEntry } = await import(
               "@/lib/server/tracking-funds-list-cache-pg"
             )
+            // upsertTrackingFundListCacheEntry also refreshes ops_private_fund_detail_nav_cache
+            // for each touched fund (instant product-page series).
             for (const fund of result.touchedFunds) {
               if (abort.signal.aborted) {
                 throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
@@ -309,6 +311,35 @@ export function startEmailParseFetchJob(options?: {
             result.errors.push(
               `刷新触及产品缓存失败: ${e instanceof Error ? e.message : String(e)}`,
             )
+          }
+
+          // Advance FOF底层 tip (最新净值/涨跌幅) for touched funds immediately —
+          // do not wait for the full metrics rebuild below.
+          if (result.touchedFunds.length > 0) {
+            if (abort.signal.aborted) {
+              throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+            }
+            job.message = "正在同步FOF底层最新涨跌幅…"
+            try {
+              const { syncFofOverviewLatestFromDetail } = await import(
+                "@/lib/server/fof-overview-list-cache-pg"
+              )
+              const tipSynced = await syncFofOverviewLatestFromDetail(
+                result.touchedFunds.map((fund) => ({
+                  product_name: fund.fundName || fund.productCode,
+                  beian_hao: fund.productCode || null,
+                  short_name: fund.fundName || null,
+                })),
+              )
+              console.log(
+                `[email-parse-fetch-job] FOF tip sync updated ${tipSynced}/${result.touchedFunds.length} touched funds`,
+              )
+            } catch (e) {
+              if (isAbortError(e)) throw e
+              result.errors.push(
+                `同步FOF底层最新涨跌幅失败: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            }
           }
 
           if (abort.signal.aborted) {

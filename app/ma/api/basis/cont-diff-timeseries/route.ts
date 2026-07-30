@@ -30,7 +30,7 @@ export async function GET() {
         futures_settle: n(r.futures_settle),
       })
     }
-    const dates = rows.map((r) => fmtYmd(r.trade_date))
+    const dates = rows.map((r) => fmtYmd(r.trade_date)).filter(Boolean).sort()
     const start_date = dates[0]
     const end_date = dates[dates.length - 1]
     return NextResponse.json({ start_date, end_date, data })

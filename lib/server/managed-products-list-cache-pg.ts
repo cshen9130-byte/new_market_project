@@ -450,6 +450,29 @@ export async function refreshManagedProductsListCache(
     await createListCacheStagingIndexes(STAGING_INDEX_SQLS)
     logProgress("swapping staging → live cache…")
     await atomicSwapListCacheTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
+
+    // Full rebuild only: warm detail NAV series for instant product pages.
+    // Incremental path relies on email-touched refresh + write-through.
+    logProgress("refreshing detail NAV series cache…")
+    try {
+      const { refreshDetailNavCacheForFunds } = await import(
+        "@/lib/server/fund-detail-nav-cache-pg"
+      )
+      const detail = await refreshDetailNavCacheForFunds(
+        products.map((p) => ({
+          beian_hao: p.beian_hao,
+          product_name: p.product_name,
+          short_name: p.short_name,
+        })),
+        { label: "managed-detail-nav-cache" },
+      )
+      logProgress(
+        `detail NAV cache updated ${detail.updated}/${products.length}` +
+          (detail.failed ? ` (failed ${detail.failed})` : ""),
+      )
+    } catch (err) {
+      console.error("[managed-products-list-cache] detail NAV cache refresh failed:", err)
+    }
   }
 
   logProgress(`done — ${products.length} rows`)

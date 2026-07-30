@@ -79,12 +79,13 @@ export function extractNavTableFromBuffer(
         const hinted = extractSubjectUnitNavHint(subject)
         if (hinted != null) unitNav = hinted
       }
+      const rowCode = (row.productCode ?? "").trim().toUpperCase() || null
       return {
         nav: unitNav,
         navDate: row.date,
         cumulativeNav: row.cumulativeNav,
         adjustedNav: row.adjustedNav,
-        productCode,
+        productCode: productCode || rowCode,
         fundName,
         source: "attachment_nav_table" as const,
       }

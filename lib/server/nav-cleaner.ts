@@ -10,6 +10,8 @@ export type NavCleanerRow = {
   unitNav: number
   cumulativeNav: number
   adjustedNav: number | null
+  /** Optional 产品代码 from workbook column when present. */
+  productCode?: string | null
   sourceDate: string
   sourceUnitNav: string
   sourceCumulativeNav: string
@@ -40,6 +42,10 @@ export type NavCleanerAnalysis = {
 type DateOrder = "ymd" | "mdy" | "dmy"
 
 const TEMPLATE_PATH = path.join(process.cwd(), "NAV_template", "上传净值模版.xlsx")
+
+const PRODUCT_CODE_HEADER_PATTERNS = [
+  /^产品代码$|^基金代码$|^备案编号$|productcode|fundcode|beian/i,
+]
 
 const DATE_HEADER_PATTERNS = [
   /日期|净值日期|估值日期|业务日期|date|tradedate|navdate|valuationdate|asof/i,
@@ -278,12 +284,55 @@ function inferDateOrder(values: unknown[]): { order: DateOrder; label: string } 
   return { order: "mdy", label: "MM/DD/YYYY" }
 }
 
+/**
+ * WPS / some exporters write a stale `<dimension ref="A1:I3"/>` while sheetData
+ * still contains thousands of rows. SheetJS trusts `!ref`, so expand it from
+ * actual cell keys before sheet_to_json.
+ */
+export function expandWorksheetUsedRange(worksheet: XLSX.WorkSheet): void {
+  const cellKeys = Object.keys(worksheet).filter((key) => !key.startsWith("!"))
+  if (cellKeys.length === 0) return
+
+  let minR = Infinity
+  let minC = Infinity
+  let maxR = -1
+  let maxC = -1
+  for (const key of cellKeys) {
+    const addr = XLSX.utils.decode_cell(key)
+    if (addr.r < minR) minR = addr.r
+    if (addr.c < minC) minC = addr.c
+    if (addr.r > maxR) maxR = addr.r
+    if (addr.c > maxC) maxC = addr.c
+  }
+  if (maxR < 0 || maxC < 0 || !Number.isFinite(minR) || !Number.isFinite(minC)) return
+
+  const expanded = XLSX.utils.encode_range({
+    s: { r: minR, c: minC },
+    e: { r: maxR, c: maxC },
+  })
+  const current = worksheet["!ref"]
+  if (!current) {
+    worksheet["!ref"] = expanded
+    return
+  }
+  try {
+    const cur = XLSX.utils.decode_range(current)
+    const exp = XLSX.utils.decode_range(expanded)
+    const curCells = (cur.e.r - cur.s.r + 1) * (cur.e.c - cur.s.c + 1)
+    const expCells = (exp.e.r - exp.s.r + 1) * (exp.e.c - exp.s.c + 1)
+    if (expCells > curCells) worksheet["!ref"] = expanded
+  } catch {
+    worksheet["!ref"] = expanded
+  }
+}
+
 function chooseWorksheet(workbook: XLSX.WorkBook) {
   let bestSheetName = workbook.SheetNames[0]
   let bestRowCount = -1
 
   for (const sheetName of workbook.SheetNames) {
     const worksheet = workbook.Sheets[sheetName]
+    expandWorksheetUsedRange(worksheet)
     const rows = XLSX.utils.sheet_to_json<(string | number | Date)[]>(worksheet, {
       header: 1,
       raw: true,
@@ -439,12 +488,22 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
 
   const inferredDateFormat = inferDateOrder(dateSamples)
 
+  let productCodeIndex: number | null = null
+  for (let index = 0; index < headers.length; index += 1) {
+    const normalized = normalizeHeader(headers[index] ?? "")
+    if (matchHeaderScore(normalized, PRODUCT_CODE_HEADER_PATTERNS) > 0) {
+      productCodeIndex = index
+      break
+    }
+  }
+
   return {
     headers,
     dateIndex,
     unitIndex,
     cumulativeIndex,
     adjustedIndex,
+    productCodeIndex,
     inferredDateFormat,
   }
 }
@@ -521,6 +580,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
   const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true })
   const sheetName = chooseWorksheet(workbook)
   const worksheet = workbook.Sheets[sheetName]
+  expandWorksheetUsedRange(worksheet)
   const rawRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
     header: 1,
     raw: true,
@@ -533,7 +593,15 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
   }
 
   const headerRowIndex = detectHeaderRow(rawRows)
-  const { headers, dateIndex, unitIndex, cumulativeIndex, adjustedIndex, inferredDateFormat } = detectColumns(rawRows, headerRowIndex)
+  const {
+    headers,
+    dateIndex,
+    unitIndex,
+    cumulativeIndex,
+    adjustedIndex,
+    productCodeIndex,
+    inferredDateFormat,
+  } = detectColumns(rawRows, headerRowIndex)
   const warnings: string[] = []
 
   if (dateIndex == null) {
@@ -555,6 +623,10 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
     const unitNav = unitIndex != null ? parseNumberValue(row[unitIndex]) : null
     const cumulativeNav = cumulativeIndex != null ? parseNumberValue(row[cumulativeIndex]) : null
     const adjustedNav = adjustedIndex != null ? parseNumberValue(row[adjustedIndex]) : null
+    const rowProductCode =
+      productCodeIndex != null
+        ? stringifyCell(row[productCodeIndex]).trim().toUpperCase() || null
+        : null
 
     if (!parsedDate) {
       if (stringifyCell(row[dateIndex]) || unitNav != null || cumulativeNav != null || adjustedNav != null) {
@@ -576,6 +648,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
       unitNav: Number(resolvedUnitNav.toFixed(8)),
       cumulativeNav: Number(resolvedCumulativeNav.toFixed(8)),
       adjustedNav: Number(resolvedAdjustedNav.toFixed(8)),
+      productCode: rowProductCode,
       sourceDate: stringifyCell(row[dateIndex]),
       sourceUnitNav: unitIndex != null ? stringifyCell(row[unitIndex]) : "",
       sourceCumulativeNav: cumulativeIndex != null ? stringifyCell(row[cumulativeIndex]) : "",

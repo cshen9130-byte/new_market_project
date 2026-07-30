@@ -1,8 +1,9 @@
 "use client"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import dynamic from "next/dynamic"
+import { ChartCardHeader } from "./chart-help"
 
 const FinancialOptionsSection = dynamic(
   () => import("./financial-options-section"),
@@ -50,10 +51,11 @@ function OverviewPlaceholder() {
     <>
       <div className="grid gap-6 md:grid-cols-2">
         <Card>
-          <CardHeader>
-            <CardTitle>波动率指数</CardTitle>
-            <CardDescription>金融与商品期权波动率总览</CardDescription>
-          </CardHeader>
+          <ChartCardHeader
+            chartId="overview-vix"
+            title="波动率指数"
+            description="金融与商品期权波动率总览"
+          />
           <CardContent>
             <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
               跨市场波动率对比即将接入 · 可先查看「金融期权」「商品期权」分项
@@ -61,10 +63,11 @@ function OverviewPlaceholder() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader>
-            <CardTitle>买卖权比率</CardTitle>
-            <CardDescription>市场情绪指标</CardDescription>
-          </CardHeader>
+          <ChartCardHeader
+            chartId="overview-pcr"
+            title="买卖权比率"
+            description="市场情绪指标"
+          />
           <CardContent>
             <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
               情绪指标数据即将接入
@@ -74,10 +77,11 @@ function OverviewPlaceholder() {
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>按行权价的期权成交量</CardTitle>
-          <CardDescription>看涨与看跌成交量分布</CardDescription>
-        </CardHeader>
+        <ChartCardHeader
+          chartId="overview-volume"
+          title="按行权价的期权成交量"
+          description="看涨与看跌成交量分布"
+        />
         <CardContent>
           <div className="h-[350px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
             成交分布数据即将接入
@@ -86,10 +90,11 @@ function OverviewPlaceholder() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>期权希腊值</CardTitle>
-          <CardDescription>组合希腊值概览</CardDescription>
-        </CardHeader>
+        <ChartCardHeader
+          chartId="overview-greeks"
+          title="期权希腊值"
+          description="组合希腊值概览"
+        />
         <CardContent>
           <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
             希腊值汇总数据即将接入

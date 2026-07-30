@@ -25,11 +25,15 @@ _os.environ.setdefault("TQDM_DISABLE", "1")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties, fontManager
+import numpy as np
 import pandas as pd
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
+
+_CN_FONT: FontProperties | None = None
 
 try:
     import psycopg2
@@ -136,26 +140,232 @@ def fmt_pct(v) -> str:
         return str(v)
 
 
-def make_charts(account: pd.DataFrame, turnover: pd.DataFrame) -> dict[str, Path]:
-    CHART_DIR.mkdir(parents=True, exist_ok=True)
-    paths: dict[str, Path] = {}
+def _cn_font_candidates() -> list[str]:
+    """Prefer single-face TTF/OTF over TTC — matplotlib often tofu-renders CJK from TTC."""
+    home = Path.home()
+    return [
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\simsun.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        str(home / ".local/share/fonts/NotoSansSC-Regular.otf"),
+        str(home / ".fonts/NotoSansSC-Regular.otf"),
+    ]
 
+
+def configure_matplotlib() -> None:
+    """Register a real CJK font file so chart Chinese is not rendered as □□□."""
+    global _CN_FONT
+    plt.rcParams["axes.unicode_minus"] = False
+
+    chosen_path: str | None = None
+    for path in _cn_font_candidates():
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            fontManager.addfont(path)
+            chosen_path = path
+            break
+        except Exception:
+            continue
+
+    if chosen_path is None:
+        for name in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"):
+            try:
+                path = fontManager.findfont(FontProperties(family=name), fallback_to_default=False)
+                if path and "dejavu" not in path.lower():
+                    chosen_path = path
+                    break
+            except Exception:
+                continue
+
+    if chosen_path is None:
+        print("[WARN] No CJK font found; chart Chinese labels may render as boxes.", flush=True)
+        _CN_FONT = None
+        return
+
+    try:
+        _CN_FONT = FontProperties(fname=chosen_path)
+        family = _CN_FONT.get_name()
+    except Exception:
+        _CN_FONT = None
+        family = "SimHei"
+
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = [family, "DejaVu Sans"]
+    print(f"[FONT] Charts using: {family} ({chosen_path})", flush=True)
+
+
+def _cn_fp() -> dict:
+    return {"fontproperties": _CN_FONT} if _CN_FONT is not None else {}
+
+
+def _risk_degree_pct(series: pd.Series) -> pd.Series:
+    """Yinhe stores risk_degree as a 0–1 ratio; plot as percent when needed."""
+    s = pd.to_numeric(series, errors="coerce")
+    if s.dropna().empty:
+        return s
+    return s * 100.0 if float(s.max()) <= 1.5 else s
+
+
+def _norm_bs(value) -> str | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    if s in {"买", "B", "b"} or "买" in s:
+        return "买"
+    if s in {"卖", "S", "s"} or "卖" in s:
+        return "卖"
+    return None
+
+
+def _norm_oc(value) -> str | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    if s.startswith("开") or s in {"开", "O", "o"}:
+        return "开"
+    if s.startswith("平") or s in {"平", "C", "c"}:
+        return "平"
+    return None
+
+
+_ORDER_STYLES = {
+    ("买", "开"): {"marker": "^", "c": "#15803d", "label": "买开", "zorder": 6},
+    ("卖", "开"): {"marker": "v", "c": "#b91c1c", "label": "卖开", "zorder": 6},
+    ("买", "平"): {
+        "marker": "o",
+        "facecolors": "#86efac",
+        "edgecolors": "#15803d",
+        "label": "买平",
+        "zorder": 5,
+    },
+    ("卖", "平"): {
+        "marker": "o",
+        "facecolors": "#fecaca",
+        "edgecolors": "#b91c1c",
+        "label": "卖平",
+        "zorder": 5,
+    },
+}
+
+
+def prepare_order_points(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades is None or trades.empty:
+        return pd.DataFrame(columns=["trade_date", "bs", "oc", "lots", "signed_lots"])
+    frame = trades.copy()
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.normalize()
+    frame["bs"] = frame["bs"].map(_norm_bs)
+    frame["oc"] = frame["oc"].map(_norm_oc)
+    frame["lots"] = pd.to_numeric(frame["lots"], errors="coerce").fillna(0.0)
+    frame = frame.dropna(subset=["bs", "oc"])
+    frame = frame[frame["lots"] > 0]
+    if frame.empty:
+        return pd.DataFrame(columns=["trade_date", "bs", "oc", "lots", "signed_lots"])
+    agg = frame.groupby(["trade_date", "bs", "oc"], as_index=False).agg(lots=("lots", "sum"))
+    agg["signed_lots"] = np.where(agg["bs"] == "买", agg["lots"], -agg["lots"])
+    return agg
+
+
+def _order_marker_sizes(lots: pd.Series):
+    return np.clip(pd.to_numeric(lots, errors="coerce").fillna(0).to_numpy(dtype=float) * 4.0, 28, 220)
+
+
+def _scatter_orders(ax, x, y, style: dict, sizes, legend_label: str | None):
+    kwargs = {k: v for k, v in style.items() if k != "label"}
+    if legend_label is not None:
+        kwargs["label"] = legend_label
+    ax.scatter(x, y, s=sizes, alpha=0.88, linewidths=0.8, **kwargs)
+
+
+def overlay_orders_on_equity(ax, account: pd.DataFrame, order_points: pd.DataFrame) -> None:
+    if order_points.empty or account.empty:
+        return
+    equity = (
+        account.sort_values("trade_date")
+        .assign(trade_date=lambda d: pd.to_datetime(d["trade_date"]).dt.normalize())
+        .drop_duplicates("trade_date", keep="last")
+        .set_index("trade_date")["client_equity"]
+    )
+    offsets = {("买", "开"): 0.012, ("卖", "开"): -0.012, ("买", "平"): 0.004, ("卖", "平"): -0.004}
+    seen: set[str] = set()
+    for key, style in _ORDER_STYLES.items():
+        sub = order_points[(order_points["bs"] == key[0]) & (order_points["oc"] == key[1])]
+        if sub.empty:
+            continue
+        y = sub["trade_date"].map(equity)
+        valid = y.notna()
+        if not valid.any():
+            continue
+        y = y[valid].astype(float) * (1.0 + offsets[key])
+        label = style["label"] if style["label"] not in seen else None
+        if label:
+            seen.add(label)
+        _scatter_orders(ax, sub.loc[valid, "trade_date"], y, style, _order_marker_sizes(sub.loc[valid, "lots"]), label)
+    if seen:
+        ax.legend(loc="best", fontsize=8, framealpha=0.9, prop=_CN_FONT)
+
+
+def make_charts(account: pd.DataFrame, turnover: pd.DataFrame, trades: pd.DataFrame | None = None) -> dict[str, Path]:
+    CHART_DIR.mkdir(parents=True, exist_ok=True)
+    configure_matplotlib()
+    fp = _cn_fp()
+    paths: dict[str, Path] = {}
+    order_points = prepare_order_points(trades if trades is not None else pd.DataFrame())
+
+    risk_pct = _risk_degree_pct(account["risk_degree"])
     fig, ax1 = plt.subplots(figsize=(10, 4.2))
     ax1.plot(account["trade_date"], account["client_equity"], color="#1d4ed8", linewidth=1.8, label="客户权益")
-    ax1.set_ylabel("客户权益")
+    overlay_orders_on_equity(ax1, account, order_points)
+    ax1.set_title("账户权益与风险度（含订单点）", **fp)
+    ax1.set_ylabel("客户权益", **fp)
     ax1.grid(True, alpha=0.25)
     ax2 = ax1.twinx()
-    ax2.plot(account["trade_date"], account["risk_degree"], color="#dc2626", linestyle="--", linewidth=1.2, label="风险度")
-    ax2.set_ylabel("风险度")
+    ax2.plot(account["trade_date"], risk_pct, color="#dc2626", linestyle="--", linewidth=1.2, label="风险度")
+    ax2.set_ylabel("风险度(%)", **fp)
     fig.tight_layout()
     p = CHART_DIR / "equity_risk.png"
     fig.savefig(p, dpi=140)
     plt.close(fig)
     paths["equity"] = p
 
+    if not order_points.empty:
+        fig, ax = plt.subplots(figsize=(10, 4.2))
+        seen: set[str] = set()
+        for key, style in _ORDER_STYLES.items():
+            sub = order_points[(order_points["bs"] == key[0]) & (order_points["oc"] == key[1])]
+            if sub.empty:
+                continue
+            label = style["label"] if style["label"] not in seen else None
+            if label:
+                seen.add(label)
+            _scatter_orders(
+                ax,
+                sub["trade_date"],
+                sub["signed_lots"],
+                style,
+                _order_marker_sizes(sub["lots"]),
+                label,
+            )
+        ax.axhline(0, color="#9ca3af", linewidth=0.9)
+        ax.set_title("订单买卖开平时序（买为正 / 卖为负）", **fp)
+        ax.set_ylabel("成交手数", **fp)
+        ax.grid(True, alpha=0.25)
+        if seen:
+            ax.legend(loc="best", fontsize=8, framealpha=0.9, prop=_CN_FONT)
+        fig.tight_layout()
+        p = CHART_DIR / "order_timeline.png"
+        fig.savefig(p, dpi=140)
+        plt.close(fig)
+        paths["orders"] = p
+
     fig, ax = plt.subplots(figsize=(10, 3.6))
     ax.bar(account["trade_date"].astype(str), account["margin_occupied"], color="#64748b")
-    ax.set_ylabel("保证金占用")
+    ax.set_ylabel("保证金占用", **fp)
     ax.tick_params(axis="x", labelrotation=45, labelsize=7)
     fig.tight_layout()
     p = CHART_DIR / "margin.png"
@@ -167,7 +377,10 @@ def make_charts(account: pd.DataFrame, turnover: pd.DataFrame) -> dict[str, Path
         top = turnover.head(12)
         fig, ax = plt.subplots(figsize=(9, 4))
         ax.barh(top["product"][::-1], top["turnover"][::-1], color="#0f766e")
-        ax.set_xlabel("成交额")
+        ax.set_xlabel("成交额", **fp)
+        if _CN_FONT is not None:
+            for label in ax.get_yticklabels():
+                label.set_fontproperties(_CN_FONT)
         fig.tight_layout()
         p = CHART_DIR / "turnover.png"
         fig.savefig(p, dpi=140)
@@ -202,7 +415,7 @@ def write_report(account: pd.DataFrame, trades: pd.DataFrame, positions: pd.Data
         total = float(turnover["turnover"].sum()) or 1.0
         turnover["share_pct"] = turnover["turnover"] / total * 100
 
-    charts = make_charts(account, turnover)
+    charts = make_charts(account, turnover, trades)
 
     # Netting sample: latest day
     latest_pos = positions[positions["settlement_date"] == positions["settlement_date"].max()] if not positions.empty else positions
@@ -263,6 +476,15 @@ def write_report(account: pd.DataFrame, trades: pd.DataFrame, positions: pd.Data
     if "equity" in charts:
         doc.add_picture(str(charts["equity"]), width=Inches(6.5))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    if "orders" in charts:
+        doc.add_picture(str(charts["orders"]), width=Inches(6.5))
+        doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        add_bullets(
+            doc,
+            [
+                "订单点图例：▲买开、▼卖开、○买平、○卖平；点大小按当日汇总手数缩放，便于观察开平仓批次与买卖方向是否成对出现。",
+            ],
+        )
     if "margin" in charts:
         doc.add_picture(str(charts["margin"]), width=Inches(6.5))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER

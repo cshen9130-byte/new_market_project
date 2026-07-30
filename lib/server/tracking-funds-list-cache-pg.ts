@@ -346,6 +346,24 @@ export async function upsertTrackingFundListCacheEntry(
     ],
   )
   cacheAsOfMemo = null
+
+  // Keep product-page series in sync for the touched tracking fund.
+  try {
+    const { refreshDetailNavCacheForFund } = await import(
+      "@/lib/server/fund-detail-nav-cache-pg"
+    )
+    await refreshDetailNavCacheForFund({
+      beian_hao: row.beian_hao,
+      product_name: row.product_name,
+      short_name: row.short_name,
+    })
+  } catch (err) {
+    console.warn(
+      "[tracking-funds-list-cache] detail NAV cache refresh failed",
+      row.beian_hao,
+      err,
+    )
+  }
 }
 
 /** Rebuild precomputed list cache for all tracked funds (as of CURRENT_DATE). */
@@ -486,6 +504,27 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
   // (which otherwise costs ~0.5s per null row on every list load).
   logProgress("backfilling null-NAV rows from wider history…")
   const patched = await patchTrackingFundsCacheNullNav(asOfDate)
+  logProgress("refreshing detail NAV series cache…")
+  try {
+    const { refreshDetailNavCacheForFunds } = await import(
+      "@/lib/server/fund-detail-nav-cache-pg"
+    )
+    const detail = await refreshDetailNavCacheForFunds(
+      funds.map((f) => ({
+        beian_hao: f.beian_hao,
+        product_name: f.product_name,
+        short_name: f.short_name,
+      })),
+      { label: "tracking-detail-nav-cache" },
+    )
+    logProgress(
+      `detail NAV cache updated ${detail.updated}/${funds.length}` +
+        (detail.failed ? ` (failed ${detail.failed})` : ""),
+    )
+  } catch (err) {
+    console.error("[tracking-funds-list-cache] detail NAV cache refresh failed:", err)
+  }
+
   logProgress(`done — ${funds.length} rows (backfilled ${patched} null-NAV rows)`)
   return funds.length
 }

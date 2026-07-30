@@ -1,4 +1,14 @@
 import { query } from "@/lib/db"
+import {
+  buildOrderTimeline,
+  buildSpreadCharts,
+  type GuoxinOrderTimelinePoint,
+  type GuoxinSpreadChart,
+} from "@/lib/server/settlement-spread-charts"
+import {
+  buildHedgeStructureCharts,
+  type HedgeStructureChart,
+} from "@/lib/server/settlement-hedge-structure"
 
 // ---------------------------------------------------------------------------
 // Row types (match PostgreSQL column names exactly)
@@ -141,6 +151,9 @@ export interface GuoxinDBAnalysisResult {
   tradeClusters: GuoxinTradeCluster[]
   closeClusters: GuoxinCloseCluster[]
   uniqueProducts: string[]
+  orderTimeline: GuoxinOrderTimelinePoint[]
+  spreadCharts: GuoxinSpreadChart[]
+  hedgeStructureCharts: HedgeStructureChart[]
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +376,11 @@ export async function runGuoxinDBAnalysis(): Promise<GuoxinDBAnalysisResult> {
   // ---- 8. Unique products ----
   const uniqueProducts = [...new Set(tradeRows.map((r) => r.product).filter(Boolean))].sort()
 
+  // ---- 9. Order timeline + spread/Z20 charts with order markers ----
+  const orderTimeline = buildOrderTimeline(tradeRows)
+  const spreadCharts = await buildSpreadCharts(tradeRows, startDate, endDate)
+  const hedgeStructureCharts = buildHedgeStructureCharts(tradeRows, 2)
+
   return {
     dateRange: { start: startDate, end: endDate },
     equityStats,
@@ -372,5 +390,8 @@ export async function runGuoxinDBAnalysis(): Promise<GuoxinDBAnalysisResult> {
     tradeClusters,
     closeClusters,
     uniqueProducts,
+    orderTimeline,
+    spreadCharts,
+    hedgeStructureCharts,
   }
 }

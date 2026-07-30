@@ -1,0 +1,10 @@
+{
+  "beian_hao": "SET723",
+  "product_names": [
+    "墨雪顺遂二号",
+    "墨雪顺遂二号私募证券投资基金"
+  ],
+  "series_start_date": "2019-03-25",
+  "preserve_high_nav_scale": true,
+  "note": "产品净值 Excel from manager has ~11 cumulative scale. WPS writes stale dimension A1:I3 so SheetJS previously dropped history; Guoxin daily mail had unit=1 cum=11.742 stub. preserve_high_nav_scale avoids return-index trim against mixed sources."
+}

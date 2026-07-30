@@ -22,7 +22,7 @@ import {
   type LegacyNavRow,
   type LegacyNavRowWithPri,
 } from "@/lib/server/email-nav-query"
-import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { lookupManagedProductOverride, alternateBeianCodesFor, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import {
   shareClassProductCodesMatch,
@@ -546,6 +546,7 @@ function expandBeiansWithParentCodes(codes: string[]): string[] {
 /**
  * Expand to the S-prefixed / bare / A·B·C share-class family so list batch can load
  * BHK26A rows when resolving parent SBHK26 (detail already does via name + share-class fallback).
+ * Also includes known custody/legacy code aliases (e.g. SBT723 ↔ SET723).
  */
 export function expandBeiansWithShareClassFamily(codes: string[]): string[] {
   const out = new Set<string>()
@@ -553,6 +554,12 @@ export function expandBeiansWithShareClassFamily(codes: string[]): string[] {
     const code = raw.trim().toUpperCase()
     if (!code) continue
     out.add(code)
+    const remapped = remapManagedProductBeianCode(code)
+    if (remapped) out.add(remapped)
+    for (const alt of alternateBeianCodesFor(code)) out.add(alt)
+    if (remapped) {
+      for (const alt of alternateBeianCodesFor(remapped)) out.add(alt)
+    }
     const stripped = stripShareClassFromProductCode(code)
     if (!stripped) continue
     const baseNoS = stripped.startsWith("S") ? stripped.slice(1) : stripped
@@ -721,11 +728,13 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
       })
     }
     for (const point of navPointsFromEmailSeries(corrected, { beian_hao: code })) {
-      pushNavPoint(out, code, point)
+      const canonical = remapManagedProductBeianCode(code) ?? code
+      pushNavPoint(out, canonical, point)
+      if (canonical !== code) pushNavPoint(out, code, point)
     }
   }
   for (const [code, points] of out) {
-    out.set(code, sanitizeNavPointSeries(points, { beian_hao: code }))
+    out.set(code, sanitizeNavPointSeries(points, { beian_hao: remapManagedProductBeianCode(code) ?? code }))
   }
   // Parent funds (SBHK26) often stop receiving custody 估值表 while A-class virtual
   // emails (BHK26A) continue — mirror detail share-class date fallback onto parent keys.

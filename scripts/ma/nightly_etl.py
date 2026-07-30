@@ -284,7 +284,7 @@ def third_friday(year: int, month: int) -> date:
 
 
 def next_expiry(from_date: date) -> date:
-    """Return the third Friday of the current or next month after from_date."""
+    """Return the third Friday of the current or next month after from_date (当月/L)."""
     y, m = from_date.year, from_date.month
     cand = third_friday(y, m)
     if cand <= from_date:
@@ -295,6 +295,17 @@ def next_expiry(from_date: date) -> date:
             m += 1
         cand = third_friday(y, m)
     return cand
+
+
+def far_expiry(from_date: date) -> date:
+    """Expiry of the next-month continuous (次月/L1): third Friday after near expiry's month."""
+    near = next_expiry(from_date)
+    y, m = near.year, near.month
+    if m == 12:
+        y, m = y + 1, 1
+    else:
+        m += 1
+    return third_friday(y, m)
 
 
 def parse_expiry_from_ts_code(ts_code: str) -> date | None:
@@ -1939,17 +1950,24 @@ def step_futures_latest(conn, trade_date: date, *, force: bool = False) -> int:
     if not force:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(DISTINCT symbol) FROM raw_futures_daily WHERE trade_date = %s",
-                (trade_date,),
+                """
+                SELECT COUNT(DISTINCT symbol) FROM raw_futures_daily
+                WHERE trade_date = %s AND settle IS NOT NULL
+                  AND ts_code LIKE %s
+                """,
+                (trade_date, "%L.CFX"),
             )
             raw_cnt = cur.fetchone()[0]
             cur.execute(
-                "SELECT COUNT(DISTINCT symbol) FROM derived_futures_snapshot WHERE trade_date = %s",
+                """
+                SELECT COUNT(DISTINCT symbol) FROM derived_futures_snapshot
+                WHERE trade_date = %s AND near_settle IS NOT NULL
+                """,
                 (trade_date,),
             )
             snap_cnt = cur.fetchone()[0]
-            # Skip only when both raw and snapshot are complete for 4 symbols.
-            # This avoids a stale snapshot when a previous run failed mid-step.
+            # Skip only when continuous L settles and near_settle snapshot are present.
+            # Empty null snapshots (Tushare permission failures) must not block retries.
             if raw_cnt >= 4 and snap_cnt >= 4:
                 log.info("Futures for %s already complete in raw+snapshot, skipping.", trade_date)
                 return 0
@@ -2005,35 +2023,44 @@ def step_futures_latest(conn, trade_date: date, *, force: bool = False) -> int:
 
     raw_cnt = _upsert_futures(conn, raw_records)
 
-    with conn.cursor() as cur:
-        execute_values(
-            cur,
-            """
-            INSERT INTO derived_futures_snapshot
-                (symbol, trade_date,
-                 ts_code, close, settle, settle_return,
-                 near_ts_code, near_close, near_settle, near_settle_return,
-                 far_ts_code, far_close, far_settle, far_settle_return, far_cont_ts_code)
-            VALUES %s
-            ON CONFLICT (symbol, trade_date) DO UPDATE
-                SET ts_code = EXCLUDED.ts_code,
-                    close = EXCLUDED.close,
-                    settle = EXCLUDED.settle,
-                    settle_return = EXCLUDED.settle_return,
-                    near_ts_code = EXCLUDED.near_ts_code,
-                    near_close = EXCLUDED.near_close,
-                    near_settle = EXCLUDED.near_settle,
-                    near_settle_return = EXCLUDED.near_settle_return,
-                    far_ts_code = EXCLUDED.far_ts_code,
-                    far_close = EXCLUDED.far_close,
-                    far_settle = EXCLUDED.far_settle,
-                    far_settle_return = EXCLUDED.far_settle_return,
-                    far_cont_ts_code = EXCLUDED.far_cont_ts_code,
-                    computed_at = NOW()
-            """,
-            snap_records,
-        )
-    conn.commit()
+    # Never persist empty shells — they become MAX(trade_date) and blank the UI cards.
+    snap_records = [
+        r for r in snap_records
+        if any(v is not None for v in (r[3], r[4], r[7], r[8], r[12]))  # close/settle/near_*/far_settle
+    ]
+    if snap_records:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO derived_futures_snapshot
+                    (symbol, trade_date,
+                     ts_code, close, settle, settle_return,
+                     near_ts_code, near_close, near_settle, near_settle_return,
+                     far_ts_code, far_close, far_settle, far_settle_return, far_cont_ts_code)
+                VALUES %s
+                ON CONFLICT (symbol, trade_date) DO UPDATE
+                    SET ts_code = COALESCE(EXCLUDED.ts_code, derived_futures_snapshot.ts_code),
+                        close = COALESCE(EXCLUDED.close, derived_futures_snapshot.close),
+                        settle = COALESCE(EXCLUDED.settle, derived_futures_snapshot.settle),
+                        settle_return = COALESCE(EXCLUDED.settle_return, derived_futures_snapshot.settle_return),
+                        near_ts_code = COALESCE(EXCLUDED.near_ts_code, derived_futures_snapshot.near_ts_code),
+                        near_close = COALESCE(EXCLUDED.near_close, derived_futures_snapshot.near_close),
+                        near_settle = COALESCE(EXCLUDED.near_settle, derived_futures_snapshot.near_settle),
+                        near_settle_return = COALESCE(EXCLUDED.near_settle_return, derived_futures_snapshot.near_settle_return),
+                        far_ts_code = COALESCE(EXCLUDED.far_ts_code, derived_futures_snapshot.far_ts_code),
+                        far_close = COALESCE(EXCLUDED.far_close, derived_futures_snapshot.far_close),
+                        far_settle = COALESCE(EXCLUDED.far_settle, derived_futures_snapshot.far_settle),
+                        far_settle_return = COALESCE(EXCLUDED.far_settle_return, derived_futures_snapshot.far_settle_return),
+                        far_cont_ts_code = COALESCE(EXCLUDED.far_cont_ts_code, derived_futures_snapshot.far_cont_ts_code),
+                        computed_at = NOW()
+                """,
+                snap_records,
+            )
+        conn.commit()
+    else:
+        log.warning("Futures latest returned no usable snapshot rows; repairing from continuous legs.")
+        raw_cnt += step_repair_futures_snapshot_from_continuous(conn, force=True)
 
     # Repair NULL near_settle_return / far_settle_return using previous-day
     # settle from the DB.  Tushare sometimes omits pre_settle for continuous
@@ -2136,47 +2163,263 @@ def step_repair_settle_returns(conn) -> int:
     return updated
 
 
+def _records_from_continuous_payload(out_cont: dict, source: str) -> list:
+    """Flatten continuous-leg JSON into raw_futures_daily upsert tuples."""
+    records = []
+    seen = set()
+    for sym, legs in (out_cont.get("data") or {}).items():
+        for leg, series in legs.items():
+            for r in (series or []):
+                td = to_date(str(r.get("trade_date", "")))
+                if not td:
+                    continue
+                settle = safe_float(r.get("settle"))
+                close = safe_float(r.get("close"))
+                if settle is None or settle == 0:
+                    settle = close
+                if settle is None and close is None:
+                    continue
+                ts_code = f"{sym}{leg}.CFX"
+                key = (ts_code, td)
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append((
+                    ts_code, sym, td,
+                    close,
+                    settle,
+                    safe_float(r.get("pre_close")),
+                    safe_float(r.get("pre_settle")),
+                    safe_float(r.get("settle_return")),
+                    source,
+                ))
+    return records
+
+
 def step_futures_range_backfill(conn, start_ymd: str, end_ymd: str) -> int:
-    """Bulk-load historical continuous legs L, L1, L2, L3 from Tushare."""
+    """Bulk-load historical continuous legs L, L1, L2, L3 (Tushare, AkShare fallback)."""
     log.info("Futures range backfill %s → %s (L/L1/L2/L3) …", start_ymd, end_ymd)
     total = 0
 
-    # ---- L/L1/L2/L3 from the combined continuous script
     out_cont = run_script(
         "get_cffex_index_futures_continuous_range.py",
         extra_args=[start_ymd, end_ymd],
         timeout=600,
     )
+    records = []
+    source = "tushare"
     if out_cont and not out_cont.get("error"):
-        records = []
-        seen = set()
-        for sym, legs in (out_cont.get("data") or {}).items():
-            for leg, series in legs.items():
-                for r in (series or []):
-                    td = to_date(str(r.get("trade_date", "")))
-                    if not td:
-                        continue
-                    ts_code = f"{sym}{leg}.CFX"
-                    key = (ts_code, td)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    records.append((
-                        ts_code, sym, td,
-                        safe_float(r.get("close")),
-                        safe_float(r.get("settle")),
-                        safe_float(r.get("pre_close")),
-                        safe_float(r.get("pre_settle")),
-                        safe_float(r.get("settle_return")),
-                        "tushare",
-                    ))
-        if records:
-            total += _upsert_futures(conn, records)
-            log.info("  Continuous legs (L/L1/L2/L3): %d rows.", len(records))
+        records = _records_from_continuous_payload(out_cont, "tushare")
+
+    if not records:
+        log.warning("  Tushare continuous range empty/failed; trying AkShare month synthesis …")
+        out_ak = run_script(
+            "get_cffex_index_futures_continuous_akshare.py",
+            extra_args=[start_ymd, end_ymd],
+            timeout=900,
+        )
+        if out_ak and not out_ak.get("error"):
+            records = _records_from_continuous_payload(out_ak, "akshare")
+            source = "akshare"
+        else:
+            log.warning("  AkShare continuous synthesis also returned no data: %s", out_ak)
+
+    if records:
+        total += _upsert_futures(conn, records)
+        log.info("  Continuous legs (L/L1/L2/L3) via %s: %d rows.", source, len(records))
     else:
-        log.warning("  get_cffex_index_futures_continuous_range.py returned no data.")
+        log.warning("  No continuous leg rows upserted for %s → %s.", start_ymd, end_ymd)
 
     log.info("Futures backfill total: %d rows.", total)
+    return total
+
+
+def step_futures_continuous_gapfill(conn, trade_date: date, *, force: bool = False) -> int:
+    """
+    Keep IFL/IFL1/IFL2/IFL3 (and IH/IC/IM) continuous series current.
+
+    Nightly futures_latest only writes a single day and depends on Tushare
+    fut_daily permissions.  When those lapse, the four-leg basis chart freezes
+    even though spot data keeps updating.  This step gap-fills from the oldest
+    lagging leg through trade_date via Tushare, with AkShare synthesis fallback.
+    """
+    codes = [
+        f"{sym}{leg}.CFX"
+        for sym in ("IH", "IF", "IC", "IM")
+        for leg in ("L", "L1", "L2", "L3")
+    ]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MIN(mx) FROM (
+                SELECT COALESCE(MAX(trade_date), DATE '2023-01-01') AS mx
+                FROM raw_futures_daily
+                WHERE ts_code = ANY(%s)
+                GROUP BY ts_code
+            ) t
+            """,
+            (codes,),
+        )
+        row = cur.fetchone()
+        min_max = row[0] if row and row[0] else date(2023, 1, 1)
+
+        # Also detect sparse recent history: if L has fewer than ~15 rows in the
+        # last 45 calendar days, rewind the window to re-fetch holes.
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM raw_futures_daily
+            WHERE ts_code = 'IFL.CFX'
+              AND trade_date >= %s
+              AND settle IS NOT NULL
+            """,
+            (trade_date - timedelta(days=45),),
+        )
+        recent_l = cur.fetchone()[0] or 0
+
+    if recent_l < 15:
+        start = trade_date - timedelta(days=90)
+        log.info(
+            "Continuous gapfill: sparse IFL history (%d rows / 45d); rewinding to %s",
+            recent_l, start,
+        )
+    else:
+        start = min_max - timedelta(days=5)
+
+    if not force and start >= trade_date and recent_l >= 15:
+        log.info("Continuous legs already current through %s, skipping gapfill.", trade_date)
+        return 0
+
+    if start > trade_date:
+        start = trade_date - timedelta(days=30)
+
+    return step_futures_range_backfill(conn, ymd(start), ymd(trade_date))
+
+
+def step_repair_futures_snapshot_from_continuous(conn, *, force: bool = False) -> int:
+    """
+    Rebuild derived_futures_snapshot from continuous L / L1 rows in raw_futures_daily.
+
+    When Tushare fut_daily permissions lapse, futures_latest writes empty snapshot
+    shells (all NULL).  The futures cards then show "-" because /futures/latest
+    picks MAX(trade_date).  This step fills settle / near_* / far_* from the
+    AkShare-synthesized continuous legs so the UI stays populated.
+    """
+    log.info("Repairing futures snapshot from continuous L/L1 …")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH near AS (
+                SELECT
+                    symbol,
+                    trade_date,
+                    ts_code,
+                    close,
+                    COALESCE(settle, close) AS settle,
+                    LAG(COALESCE(settle, close)) OVER (
+                        PARTITION BY symbol ORDER BY trade_date
+                    ) AS prev_settle
+                FROM raw_futures_daily
+                WHERE ts_code IN ('IHL.CFX', 'IFL.CFX', 'ICL.CFX', 'IML.CFX')
+            ),
+            far AS (
+                SELECT
+                    symbol,
+                    trade_date,
+                    ts_code,
+                    close,
+                    COALESCE(settle, close) AS settle,
+                    LAG(COALESCE(settle, close)) OVER (
+                        PARTITION BY symbol ORDER BY trade_date
+                    ) AS prev_settle
+                FROM raw_futures_daily
+                WHERE ts_code IN ('IHL1.CFX', 'IFL1.CFX', 'ICL1.CFX', 'IML1.CFX')
+            ),
+            src AS (
+                SELECT
+                    COALESCE(f.symbol, n.symbol) AS symbol,
+                    COALESCE(f.trade_date, n.trade_date) AS trade_date,
+                    f.ts_code AS ts_code,
+                    f.close AS close,
+                    f.settle AS settle,
+                    CASE
+                        WHEN f.settle IS NOT NULL AND f.prev_settle IS NOT NULL AND f.prev_settle > 0
+                        THEN ROUND(100.0 * (f.settle / f.prev_settle - 1.0), 6)
+                        ELSE NULL
+                    END AS settle_return,
+                    n.ts_code AS near_ts_code,
+                    n.close AS near_close,
+                    n.settle AS near_settle,
+                    CASE
+                        WHEN n.settle IS NOT NULL AND n.prev_settle IS NOT NULL AND n.prev_settle > 0
+                        THEN ROUND(100.0 * (n.settle / n.prev_settle - 1.0), 6)
+                        ELSE NULL
+                    END AS near_settle_return,
+                    NULL::text AS far_ts_code,
+                    NULL::numeric AS far_close,
+                    f.settle AS far_settle,
+                    CASE
+                        WHEN f.settle IS NOT NULL AND f.prev_settle IS NOT NULL AND f.prev_settle > 0
+                        THEN ROUND(100.0 * (f.settle / f.prev_settle - 1.0), 6)
+                        ELSE NULL
+                    END AS far_settle_return,
+                    f.ts_code AS far_cont_ts_code
+                FROM far f
+                FULL OUTER JOIN near n
+                  ON n.symbol = f.symbol AND n.trade_date = f.trade_date
+                WHERE COALESCE(f.settle, n.settle) IS NOT NULL
+            )
+            INSERT INTO derived_futures_snapshot
+                (symbol, trade_date,
+                 ts_code, close, settle, settle_return,
+                 near_ts_code, near_close, near_settle, near_settle_return,
+                 far_ts_code, far_close, far_settle, far_settle_return, far_cont_ts_code)
+            SELECT
+                symbol, trade_date,
+                ts_code, close, settle, settle_return,
+                near_ts_code, near_close, near_settle, near_settle_return,
+                far_ts_code, far_close, far_settle, far_settle_return, far_cont_ts_code
+            FROM src
+            WHERE %s
+               OR NOT EXISTS (
+                    SELECT 1 FROM derived_futures_snapshot d
+                    WHERE d.symbol = src.symbol
+                      AND d.trade_date = src.trade_date
+                      AND (d.settle IS NOT NULL OR d.near_settle IS NOT NULL OR d.far_settle IS NOT NULL)
+               )
+            ON CONFLICT (symbol, trade_date) DO UPDATE
+                SET ts_code = COALESCE(EXCLUDED.ts_code, derived_futures_snapshot.ts_code),
+                    close = COALESCE(EXCLUDED.close, derived_futures_snapshot.close),
+                    settle = COALESCE(EXCLUDED.settle, derived_futures_snapshot.settle),
+                    settle_return = COALESCE(EXCLUDED.settle_return, derived_futures_snapshot.settle_return),
+                    near_ts_code = COALESCE(EXCLUDED.near_ts_code, derived_futures_snapshot.near_ts_code),
+                    near_close = COALESCE(EXCLUDED.near_close, derived_futures_snapshot.near_close),
+                    near_settle = COALESCE(EXCLUDED.near_settle, derived_futures_snapshot.near_settle),
+                    near_settle_return = COALESCE(EXCLUDED.near_settle_return, derived_futures_snapshot.near_settle_return),
+                    far_ts_code = COALESCE(EXCLUDED.far_ts_code, derived_futures_snapshot.far_ts_code),
+                    far_close = COALESCE(EXCLUDED.far_close, derived_futures_snapshot.far_close),
+                    far_settle = COALESCE(EXCLUDED.far_settle, derived_futures_snapshot.far_settle),
+                    far_settle_return = COALESCE(EXCLUDED.far_settle_return, derived_futures_snapshot.far_settle_return),
+                    far_cont_ts_code = COALESCE(EXCLUDED.far_cont_ts_code, derived_futures_snapshot.far_cont_ts_code),
+                    computed_at = NOW()
+            """,
+            (force,),
+        )
+        total = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+        # Drop empty shell rows that would otherwise win MAX(trade_date).
+        cur.execute(
+            """
+            DELETE FROM derived_futures_snapshot
+            WHERE settle IS NULL
+              AND near_settle IS NULL
+              AND far_settle IS NULL
+              AND close IS NULL
+              AND near_close IS NULL
+            """
+        )
+        deleted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    conn.commit()
+    log.info("Snapshot repair: upserted %d rows, deleted %d empty shells.", total, deleted)
     return total
 
 
@@ -2951,6 +3194,60 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
 # STEP 5 — Derived: basis_daily  (annualized basis for far/near L1/L)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def step_repair_basis_annualization(conn, *, force: bool = False) -> int:
+    """
+    Recompute days_to_maturity / annualized_basis_pct for existing basis rows.
+
+    Far (L1) previously reused near-month expiry, so days_to_maturity collapsed
+    to 1 around monthly rolls and the annualized series spiked to ±1000%.
+    """
+    log.info("Repairing basis annualization (near vs far expiry) …")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, trade_date, basis_type, futures_settle, spot_close
+            FROM derived_basis_daily
+            WHERE futures_settle IS NOT NULL AND spot_close IS NOT NULL AND spot_close <> 0
+            """
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        log.info("No basis rows to repair.")
+        return 0
+
+    updates = []
+    for sym, td, basis_type, settle, spot in rows:
+        td_py = td if isinstance(td, date) else td.date()
+        settle_f = float(settle)
+        spot_f = float(spot)
+        expiry = far_expiry(td_py) if basis_type == "far" else next_expiry(td_py)
+        days = max(1, (expiry - td_py).days)
+        ann = (settle_f - spot_f) / spot_f / days * 365 * 100
+        updates.append((days, expiry, ann, sym, td, basis_type))
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            UPDATE derived_basis_daily AS d
+               SET days_to_maturity = v.days::int,
+                   expiry_date = v.expiry::date,
+                   annualized_basis_pct = v.ann::numeric,
+                   computed_at = NOW()
+              FROM (VALUES %s) AS v(days, expiry, ann, symbol, trade_date, basis_type)
+             WHERE d.symbol = v.symbol
+               AND d.trade_date = v.trade_date::date
+               AND d.basis_type = v.basis_type
+            """,
+            updates,
+            template="(%s, %s::date, %s, %s, %s::date, %s)",
+        )
+    conn.commit()
+    log.info("Basis annualization repaired for %d rows.", len(updates))
+    return len(updates)
+
+
 def step_compute_basis_daily(conn, *, force: bool = False) -> int:
     """
     For every (symbol, trade_date) where we have continuous-leg data (L and L1)
@@ -3034,13 +3331,18 @@ def step_compute_basis_daily(conn, *, force: bool = False) -> int:
                 )
                 fut_rows = {r[0]: float(r[1]) for r in cur.fetchall() if r[1] is not None}
 
-            expiry = next_expiry(td_py)
-            days_to_exp = max(1, (expiry - td_py).days)
+            near_exp = next_expiry(td_py)
+            far_exp = far_expiry(td_py)
 
             for basis_type, ts_code in (("far", far_code), ("near", near_code)):
                 settle = fut_rows.get(ts_code)
                 if settle is None:
                     continue
+                # Far (L1) must use next-month expiry — using near expiry makes
+                # days_to_maturity collapse to 1 near monthly rolls and spikes
+                # annualized basis to hundreds/thousands of percent.
+                expiry = far_exp if basis_type == "far" else near_exp
+                days_to_exp = max(1, (expiry - td_py).days)
                 ann_pct = (settle - spot_close) / spot_close / days_to_exp * 365 * 100
                 basis_diff = settle - spot_close
                 all_records.append((
@@ -3090,91 +3392,66 @@ def step_compute_basis_cont_daily(conn, *, force: bool = False) -> int:
     With force=True, recomputes all dates regardless of existing rows.
     """
     log.info("Computing derived_basis_cont_daily …")
-    symbols = ["IH", "IF", "IC", "IM"]
-    legs    = ["L", "L1", "L2", "L3"]
-    total   = 0
 
-    for sym in symbols:
-        for leg in legs:
-            ts_code = f"{sym}{leg}.CFX"
-
-            with conn.cursor() as cur:
-                if force:
-                    cur.execute(
-                        """
-                        SELECT DISTINCT f.trade_date
-                        FROM raw_futures_daily f
-                        JOIN raw_spot_daily s ON s.symbol = %s AND s.trade_date = f.trade_date
-                        WHERE f.ts_code = %s
-                        ORDER BY f.trade_date
-                        """,
-                        (sym, ts_code),
-                    )
-                else:
-                    cur.execute(
-                        """
-                        SELECT DISTINCT f.trade_date
-                        FROM raw_futures_daily f
-                        JOIN raw_spot_daily s ON s.symbol = %s AND s.trade_date = f.trade_date
-                        WHERE f.ts_code = %s
-                          AND NOT EXISTS (
-                              SELECT 1 FROM derived_basis_cont_daily d
-                              WHERE d.symbol = %s AND d.trade_date = f.trade_date AND d.leg = %s
-                          )
-                        ORDER BY f.trade_date
-                        """,
-                        (sym, ts_code, sym, leg),
-                    )
-                pending = [r[0] for r in cur.fetchall()]
-
-            if not pending:
-                continue
-
-            records = []
-            for td in pending:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT settle FROM raw_futures_daily WHERE ts_code = %s AND trade_date = %s",
-                        (ts_code, td),
-                    )
-                    fut = cur.fetchone()
-                    cur.execute(
-                        """
-                        SELECT close FROM raw_spot_daily
-                        WHERE symbol = %s AND trade_date = %s
-                        ORDER BY (CASE WHEN source = 'emquant' THEN 0 ELSE 1 END)
-                        LIMIT 1
-                        """,
-                        (sym, td),
-                    )
-                    spot = cur.fetchone()
-
-                if not fut or not spot or fut[0] is None:
-                    continue
-                settle     = float(fut[0])
-                spot_close = float(spot[0])
-                records.append((sym, td, leg, ts_code, spot_close, settle, settle - spot_close))
-
-            if records:
-                with conn.cursor() as cur:
-                    execute_values(
-                        cur,
-                        """
-                        INSERT INTO derived_basis_cont_daily
-                            (symbol, trade_date, leg, futures_ts_code, spot_close, futures_settle, basis_diff)
-                        VALUES %s
-                        ON CONFLICT (symbol, trade_date, leg) DO UPDATE
-                            SET futures_ts_code = EXCLUDED.futures_ts_code,
-                                spot_close      = EXCLUDED.spot_close,
-                                futures_settle  = EXCLUDED.futures_settle,
-                                basis_diff      = EXCLUDED.basis_diff,
-                                computed_at     = NOW()
-                        """,
-                        records,
-                    )
-                conn.commit()
-                total += len(records)
-
+    with conn.cursor() as cur:
+        # Prefer EmQuant spot when both sources exist for the same day.
+        sql = """
+            WITH legs(symbol, leg, ts_code) AS (
+                VALUES
+                  ('IH','L','IHL.CFX'), ('IH','L1','IHL1.CFX'), ('IH','L2','IHL2.CFX'), ('IH','L3','IHL3.CFX'),
+                  ('IF','L','IFL.CFX'), ('IF','L1','IFL1.CFX'), ('IF','L2','IFL2.CFX'), ('IF','L3','IFL3.CFX'),
+                  ('IC','L','ICL.CFX'), ('IC','L1','ICL1.CFX'), ('IC','L2','ICL2.CFX'), ('IC','L3','ICL3.CFX'),
+                  ('IM','L','IML.CFX'), ('IM','L1','IML1.CFX'), ('IM','L2','IML2.CFX'), ('IM','L3','IML3.CFX')
+            ),
+            spot AS (
+                SELECT DISTINCT ON (symbol, trade_date)
+                       symbol, trade_date, close AS spot_close
+                FROM raw_spot_daily
+                WHERE symbol IN ('IH','IF','IC','IM')
+                ORDER BY symbol, trade_date,
+                         CASE WHEN source = 'emquant' THEN 0 ELSE 1 END
+            ),
+            src AS (
+                SELECT
+                    l.symbol,
+                    f.trade_date,
+                    l.leg,
+                    l.ts_code AS futures_ts_code,
+                    s.spot_close,
+                    COALESCE(f.settle, f.close) AS futures_settle,
+                    COALESCE(f.settle, f.close) - s.spot_close AS basis_diff
+                FROM legs l
+                JOIN raw_futures_daily f
+                  ON f.ts_code = l.ts_code
+                JOIN spot s
+                  ON s.symbol = l.symbol AND s.trade_date = f.trade_date
+                WHERE COALESCE(f.settle, f.close) IS NOT NULL
+            """
+        if not force:
+            sql += """
+                  AND NOT EXISTS (
+                      SELECT 1 FROM derived_basis_cont_daily d
+                      WHERE d.symbol = l.symbol
+                        AND d.trade_date = f.trade_date
+                        AND d.leg = l.leg
+                  )
+            """
+        sql += """
+            )
+            INSERT INTO derived_basis_cont_daily
+                (symbol, trade_date, leg, futures_ts_code, spot_close, futures_settle, basis_diff)
+            SELECT symbol, trade_date, leg, futures_ts_code, spot_close, futures_settle, basis_diff
+            FROM src
+            ON CONFLICT (symbol, trade_date, leg) DO UPDATE
+                SET futures_ts_code = EXCLUDED.futures_ts_code,
+                    spot_close      = EXCLUDED.spot_close,
+                    futures_settle  = EXCLUDED.futures_settle,
+                    basis_diff      = EXCLUDED.basis_diff,
+                    computed_at     = NOW()
+            """
+        cur.execute(sql)
+        total = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    conn.commit()
     log.info("Basis cont daily: computed %d rows.", total)
     return total
 
@@ -4087,12 +4364,15 @@ ORDERED_STEPS = [
     "futures_rollover_dates",       # rollover dates from OI-dominant-contract tracking
     "spot_closes",
     "futures_latest",
+    "futures_continuous_gapfill",   # keep IFL/L1/L2/L3 current (AkShare fallback if Tushare lapses)
+    "repair_futures_snapshot",      # fill snapshot cards from continuous L/L1 when Tushare shells are empty
     "commodity_amounts",
     "ashare_daily",
     "ashare_stock_names",
     "ashare_index",
     "ashare_crowding",
     "derive_basis",
+    "repair_basis_annualization",  # fix far L1 days-to-expiry / annualized spikes
     "derive_basis_cont",
     "repair_settle_returns",
     "etf_prices",                    # nightly: gap-fill PCA ETF prices → trade_date
@@ -4223,12 +4503,15 @@ def main():
         "futures_rollover_dates":     lambda: step_futures_rollover_dates(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
+        "futures_continuous_gapfill": lambda: step_futures_continuous_gapfill(conn, td, force=force),
+        "repair_futures_snapshot": lambda: step_repair_futures_snapshot_from_continuous(conn, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
         "ashare_daily":        lambda: step_ashare_daily(conn, force=force),
         "ashare_stock_names":  lambda: step_ashare_stock_names(conn, force=force),
         "ashare_index":        lambda: step_ashare_index(conn, force=force),
         "ashare_crowding":     lambda: step_compute_ashare_crowding(conn, force=force),
         "derive_basis":          lambda: step_compute_basis_daily(conn, force=force),
+        "repair_basis_annualization": lambda: step_repair_basis_annualization(conn, force=force),
         "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
         "etf_prices":            lambda: step_etf_prices(conn, td, force=force),

@@ -15,23 +15,20 @@ import {
   resolveRouteFundIdFast,
   type ListCacheFundHeader,
 } from "@/lib/server/fund-detail-fast-path"
+import {
+  getDetailNavCache,
+  isDetailNavCacheFresh,
+  persistDetailNavSeries,
+} from "@/lib/server/fund-detail-nav-cache-pg"
+import {
+  getDetailResponseMemoryCache,
+  rememberDetailResponseMemoryCache,
+} from "@/lib/server/fund-detail-response-memory-cache"
 
 export const dynamic = "force-dynamic"
 
 // Minimum elapsed days of NAV history before annualizing "since inception" return/Sharpe.
 const MIN_DAYS_FOR_ANNUALIZATION = 30
-
-/** Short TTL so repeat opens / remounts of the same fund hit memory instead of DB. */
-const DETAIL_TTL_MS = 45_000
-const DETAIL_CACHE_MAX = 200
-const detailResponseCache = new Map<string, { at: number; body: unknown }>()
-
-function rememberDetail(key: string, body: unknown) {
-  detailResponseCache.set(key, { at: Date.now(), body })
-  if (detailResponseCache.size <= DETAIL_CACHE_MAX) return
-  const oldest = detailResponseCache.keys().next().value
-  if (oldest != null) detailResponseCache.delete(oldest)
-}
 
 type InfoRow = {
   beian_hao: string
@@ -215,9 +212,9 @@ export async function GET(
     ])
 
     const cacheKey = beian_hao || rawId
-    const cachedDetail = detailResponseCache.get(cacheKey)
-    if (cachedDetail && Date.now() - cachedDetail.at < DETAIL_TTL_MS) {
-      return NextResponse.json(sanitizeDetailBody(cachedDetail.body as Parameters<typeof sanitizeDetailBody>[0]))
+    const cachedDetail = getDetailResponseMemoryCache(cacheKey)
+    if (cachedDetail) {
+      return NextResponse.json(sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0]))
     }
 
     const infoRows = await query<InfoRow>(
@@ -352,6 +349,12 @@ export async function GET(
     const bflTrack = bflTrackRows[0]
     const trackAdvisor = bflTrack?.advisor?.trim() || null
 
+    // Prefer persistent detail NAV cache (same series as loadDetailNavSeriesFast).
+    // Freshness: tip date must not lag the list-cache tip.
+    const pgCached = await getDetailNavCache(routeBeianHao, productName)
+    const pgCacheHit =
+      pgCached != null && isDetailNavCacheFresh(pgCached, listHeader)
+
     const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved] = await Promise.all([
       strategy_l3
         ? Promise.resolve([] as { l3: string | null }[])
@@ -365,20 +368,32 @@ export async function GET(
             `SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
             [routeBeianHao],
           ).catch(() => [] as { l3: string | null }[]),
-      loadDetailNavSeriesFast({
-        beian_hao: routeBeianHao,
-        product_name: productName,
-        short_name: shortName,
-        rawId,
-        emailNameAliases,
-        listHeader,
-      }),
+      pgCacheHit && pgCached
+        ? Promise.resolve(pgCached.nav_series)
+        : loadDetailNavSeriesFast({
+            beian_hao: routeBeianHao,
+            product_name: productName,
+            short_name: shortName,
+            rawId,
+            emailNameAliases,
+            listHeader,
+          }),
       lookupAmacFundMetadata(routeBeianHao, {
         managerHint: trackAdvisor || info.manager?.trim() || null,
         registerCode: bflTrack?.register_code ?? null,
       }),
     ])
     const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
+
+    if (!pgCacheHit && navSeriesRaw.length > 0) {
+      // Write-through so the next open is instant (same merge result).
+      void persistDetailNavSeries({
+        beian_hao: routeBeianHao,
+        product_name: productName,
+        short_name: shortName || null,
+        nav_series: navSeriesRaw,
+      })
+    }
 
     if (!strategy_l3) {
       strategy_l3 = strategyL3Rows[0]?.l3 ?? type6StrategyRows[0]?.l3 ?? null
@@ -492,8 +507,10 @@ export async function GET(
     }
 
     const safeBody = sanitizeDetailBody(body)
-    rememberDetail(cacheKey, safeBody)
-    if (routeBeianHao !== cacheKey) rememberDetail(routeBeianHao, safeBody)
+    rememberDetailResponseMemoryCache(cacheKey, safeBody)
+    if (routeBeianHao !== cacheKey) {
+      rememberDetailResponseMemoryCache(routeBeianHao, safeBody)
+    }
 
     return NextResponse.json(safeBody)
   } catch (err) {

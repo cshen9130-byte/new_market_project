@@ -31,13 +31,15 @@ export const MANAGED_PRODUCT_CUSTODIAN_OVERRIDES: Readonly<Record<string, string
   衡颐承和FOF1号: "国泰海通证券股份有限公司",
 }
 
-/** Alternate 备案号 stored in legacy tables — map to canonical override code. */
+/** Alternate 备案号 stored in legacy tables / custody Excel — map to canonical code. */
 const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   S52247: "SSG947",
   SBP097: "SBPU97",
   SBFC69: "SBPC69",
   SBHX45: "SBTX45",
   SBVC25: "SCN504",
+  // Custody 产品净值 Excel uses SBT723; AMAC 备案号 is SET723 (墨雪顺遂二号).
+  SBT723: "SET723",
 }
 
 /** Parent managed-product name must not swallow A/B/C share-class variants. */
@@ -104,6 +106,15 @@ export function remapManagedProductBeianCode(code: string): string | null {
   const aliased = MANAGED_PRODUCT_BEIAN_ALIASES[normalized]
   if (aliased) return aliased
   return null
+}
+
+/** Custody / legacy codes that should resolve to this canonical 备案号. */
+export function alternateBeianCodesFor(canonical: string): string[] {
+  const target = (canonical ?? "").trim().toUpperCase()
+  if (!target) return []
+  return Object.entries(MANAGED_PRODUCT_BEIAN_ALIASES)
+    .filter(([, code]) => code.toUpperCase() === target)
+    .map(([alias]) => alias)
 }
 
 export function lookupManagedProductOverride(

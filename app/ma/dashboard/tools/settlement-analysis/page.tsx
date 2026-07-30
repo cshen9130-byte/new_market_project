@@ -172,6 +172,80 @@ type GuoxinCloseCluster = {
   items: GuoxinCloseClusterItem[]
 }
 
+type GuoxinOrderTimelinePoint = {
+  date: string
+  bs: "买" | "卖"
+  oc: "开" | "平"
+  lots: number
+  signedLots: number
+  fills?: number
+}
+
+type GuoxinSpreadOrderPoint = {
+  date: string
+  instrument?: string
+  bs: "买" | "卖"
+  oc: "开" | "平"
+  lots: number
+  fills?: number
+  spreadValue: number | null
+  relatedHedges?: Array<{
+    instrument: string
+    bs: "买" | "卖"
+    oc: "开" | "平"
+    lots: number
+    fills: number
+  }>
+}
+
+type GuoxinSpreadChart = {
+  id: string
+  name: string
+  legA: string
+  legB: string
+  dates: string[]
+  spread: (number | null)[]
+  z20: (number | null)[]
+  orderPoints: GuoxinSpreadOrderPoint[]
+  legFills?: number
+  crossMonthHedgeDays?: number
+  pairedLegOpenDays?: number
+  entryDate: string | null
+  exitDate: string | null
+}
+
+type HedgeStructureChart = {
+  product: string
+  family: string
+  instruments: string[]
+  dates: string[]
+  cumulativeNet: Record<string, number[]>
+  openHeat: Array<[number, number, number]>
+  closeHeat: Array<[number, number, number]>
+  activeDays: Array<{
+    date: string
+    buyOpen: number
+    sellOpen: number
+    buyClose: number
+    sellClose: number
+    structure: "paired" | "cross-month" | "one-leg" | "close-only" | "none"
+    hint: string
+    legs: Array<{
+      instrument: string
+      buyOpen: number
+      sellOpen: number
+      buyClose: number
+      sellClose: number
+    }>
+  }>
+  stats: {
+    pairedOpenDays: number
+    crossMonthOpenDays: number
+    oneLegOpenDays: number
+    closeDays: number
+  }
+}
+
 type GuoxinDBAnalysisResponse = {
   dateRange: { start: string; end: string }
   equityStats: GuoxinEquityStats
@@ -181,6 +255,9 @@ type GuoxinDBAnalysisResponse = {
   tradeClusters: GuoxinTradeCluster[]
   closeClusters: GuoxinCloseCluster[]
   uniqueProducts: string[]
+  orderTimeline?: GuoxinOrderTimelinePoint[]
+  spreadCharts?: GuoxinSpreadChart[]
+  hedgeStructureCharts?: HedgeStructureChart[]
 }
 
 const ACCEPTED_EXTENSIONS = [".xlsx", ".xls", ".xlsm", ".xlsb"]
@@ -363,14 +440,85 @@ function buildPieOption(items: SettlementAnalysisChartItem[], seriesName: string
 
 // ---- DB analysis chart builders ----
 
-function buildEquityOption(history: GuoxinEquityPoint[]) {
+const ORDER_SERIES_META = [
+  { key: "买开" as const, bs: "买" as const, oc: "开" as const, color: "#15803d", symbol: "triangle" },
+  { key: "卖开" as const, bs: "卖" as const, oc: "开" as const, color: "#b91c1c", symbol: "triangle" },
+  { key: "买平" as const, bs: "买" as const, oc: "平" as const, color: "#86efac", symbol: "circle", border: "#15803d" },
+  { key: "卖平" as const, bs: "卖" as const, oc: "平" as const, color: "#fecaca", symbol: "circle", border: "#b91c1c" },
+]
+
+function orderSymbolSize(lots: number) {
+  return Math.max(10, Math.min(34, 8 + Math.sqrt(Math.max(lots, 1)) * 3.2))
+}
+
+function buildEquityOption(history: GuoxinEquityPoint[], orderTimeline: GuoxinOrderTimelinePoint[] = []) {
   const dates = history.map((h) => h.date)
   const equities = history.map((h) => h.clientEquity)
   const risks = history.map((h) => +(h.riskDegree * 100).toFixed(2))
+  const equityByDate = new Map(history.map((h) => [h.date, h.clientEquity]))
+  const offsets: Record<string, number> = { 买开: 0.012, 卖开: -0.012, 买平: 0.004, 卖平: -0.004 }
+
+  const orderSeries = ORDER_SERIES_META.map((meta) => {
+    const points = orderTimeline
+      .filter((p) => p.bs === meta.bs && p.oc === meta.oc)
+      .map((p) => {
+        const eq = equityByDate.get(p.date)
+        if (eq == null) return null
+        return {
+          value: [p.date, eq * (1 + (offsets[meta.key] ?? 0))],
+          lots: p.lots,
+        }
+      })
+      .filter(Boolean) as { value: [string, number]; lots: number }[]
+    return {
+      name: meta.key,
+      type: "scatter",
+      yAxisIndex: 0,
+      data: points.map((p) => ({
+        value: p.value,
+        symbolSize: orderSymbolSize(p.lots),
+        lots: p.lots,
+      })),
+      symbol: meta.symbol,
+      symbolRotate: meta.key === "卖开" ? 180 : 0,
+      itemStyle: {
+        color: meta.color,
+        borderColor: meta.border ?? meta.color,
+        borderWidth: meta.border ? 1.2 : 0,
+      },
+      z: 6,
+    }
+  })
+
   return {
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-    legend: { top: 0 },
-    grid: { left: 70, right: 70, top: 40, bottom: 52 },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      formatter: (params: Array<{ seriesName: string; value: number | [string, number]; marker: string; data?: { lots?: number } }>) => {
+        if (!Array.isArray(params) || params.length === 0) return ""
+        const date =
+          typeof params[0].value === "object" && Array.isArray(params[0].value)
+            ? params[0].value[0]
+            : dates[(params[0] as { dataIndex?: number }).dataIndex ?? 0]
+        const lines = [`${date}`]
+        for (const p of params) {
+          const raw = Array.isArray(p.value) ? p.value[1] : p.value
+          const lots = p.data?.lots
+          lines.push(
+            `${p.marker}${p.seriesName}: ${
+              typeof raw === "number"
+                ? p.seriesName.includes("风险")
+                  ? `${raw}%`
+                  : formatCompact(raw)
+                : raw
+            }${lots != null ? `（${lots}手）` : ""}`,
+          )
+        }
+        return lines.join("<br/>")
+      },
+    },
+    legend: { top: 0, type: "scroll" },
+    grid: { left: 70, right: 70, top: 48, bottom: 52 },
     xAxis: {
       type: "category",
       data: dates,
@@ -401,6 +549,7 @@ function buildEquityOption(history: GuoxinEquityPoint[]) {
         lineStyle: { width: 2 },
         areaStyle: { opacity: 0.06 },
         symbol: "none",
+        z: 2,
       },
       {
         name: "风险度",
@@ -411,6 +560,266 @@ function buildEquityOption(history: GuoxinEquityPoint[]) {
         itemStyle: { color: "#dc2626" },
         lineStyle: { width: 1.5, type: "dashed" },
         symbol: "none",
+        z: 2,
+      },
+      ...orderSeries,
+    ],
+  }
+}
+
+function buildOrderTimelineOption(points: GuoxinOrderTimelinePoint[]) {
+  if (!points.length) return null
+  const dates = [...new Set(points.map((p) => p.date))].sort()
+  const series = ORDER_SERIES_META.map((meta) => {
+    const rows = points.filter((p) => p.bs === meta.bs && p.oc === meta.oc)
+    return {
+      name: meta.key,
+      type: "scatter" as const,
+      data: rows.map((p) => [p.date, p.signedLots, p.lots, p.fills ?? 1]),
+      symbol: meta.symbol,
+      symbolRotate: meta.key === "卖开" ? 180 : 0,
+      symbolSize: (val: number[]) => orderSymbolSize(val?.[2] ?? Math.abs(val?.[1] ?? 1)),
+      itemStyle: {
+        color: meta.color,
+        borderColor: meta.border ?? meta.color,
+        borderWidth: meta.border ? 1.2 : 0,
+        opacity: 0.9,
+      },
+      z: 5,
+    }
+  }).filter((s) => s.data.length > 0)
+
+  if (!series.length) return null
+
+  return {
+    title: {
+      text: "订单买卖开平时序（买为正 / 卖为负）",
+      left: "center",
+      top: 4,
+      textStyle: { fontSize: 14, fontWeight: 600, color: "#111827" },
+    },
+    tooltip: {
+      trigger: "item",
+      formatter: (p: { seriesName: string; value: number[]; marker: string }) => {
+        const date = p.value?.[0]
+        const lots = p.value?.[2] ?? Math.abs(p.value?.[1] ?? 0)
+        const fills = p.value?.[3] ?? 1
+        return `${date}<br/>${p.marker}${p.seriesName}: ${lots} 手 / ${fills} 笔（当日汇总）`
+      },
+    },
+    legend: {
+      top: 28,
+      right: 12,
+      orient: "vertical",
+      data: series.map((s) => s.name),
+    },
+    grid: { left: 70, right: 110, top: 56, bottom: 52 },
+    xAxis: {
+      type: "category",
+      data: dates,
+      boundaryGap: true,
+      axisLabel: { rotate: 30, formatter: (v: string) => v.slice(5) },
+      axisTick: { alignWithLabel: true },
+    },
+    yAxis: {
+      type: "value",
+      name: "成交手数",
+      nameTextStyle: { padding: [0, 0, 0, 8] },
+      splitLine: { lineStyle: { color: "rgba(148,163,184,0.22)" } },
+      axisLine: { show: true },
+    },
+    series: [
+      ...series,
+      {
+        name: "_zero",
+        type: "line",
+        data: dates.map(() => 0),
+        symbol: "none",
+        lineStyle: { color: "#9ca3af", width: 1.1 },
+        silent: true,
+        tooltip: { show: false },
+        legendHoverLink: false,
+      },
+    ],
+  }
+}
+
+/** Fallback when API payload predates orderTimeline field. */
+function deriveOrderTimeline(analysis: GuoxinDBAnalysisResponse): GuoxinOrderTimelinePoint[] {
+  if (analysis.orderTimeline?.length) return analysis.orderTimeline
+  const agg = new Map<string, number>()
+  const bump = (date: string, bsRaw: string, oc: "开" | "平", lots: number) => {
+    const bs = bsRaw.includes("卖") ? "卖" : bsRaw.includes("买") ? "买" : null
+    if (!bs || lots <= 0) return
+    const key = `${date.slice(0, 10)}\0${bs}\0${oc}`
+    agg.set(key, (agg.get(key) ?? 0) + lots)
+  }
+  for (const cluster of analysis.tradeClusters) {
+    for (const item of cluster.items) bump(cluster.tradeDate, item.bs, "开", item.lots)
+  }
+  for (const cluster of analysis.closeClusters) {
+    for (const item of cluster.items) bump(cluster.settlementDate, item.bs, "平", item.lots)
+  }
+  return Array.from(agg.entries())
+    .map(([key, lots]) => {
+      const [date, bs, oc] = key.split("\0") as [string, "买" | "卖", "开" | "平"]
+      return { date, bs, oc, lots, signedLots: bs === "买" ? lots : -lots, fills: 1 }
+    })
+    .sort((a, b) => a.date.localeCompare(b.date) || a.bs.localeCompare(b.bs) || a.oc.localeCompare(b.oc))
+}
+
+function buildSpreadZ20Option(chart: GuoxinSpreadChart) {
+  const markLines = []
+  if (chart.entryDate) {
+    markLines.push({
+      xAxis: chart.entryDate,
+      lineStyle: { color: "#1d7a52", type: "dashed", width: 1.2 },
+      label: { formatter: "开仓", position: "insideEndTop" },
+    })
+  }
+  if (chart.exitDate) {
+    markLines.push({
+      xAxis: chart.exitDate,
+      lineStyle: { color: "#ad2e24", type: "dashed", width: 1.2 },
+      label: { formatter: "平仓", position: "insideEndTop" },
+    })
+  }
+
+  const orderSeries = ORDER_SERIES_META.map((meta) => {
+    const rows = chart.orderPoints.filter(
+      (p) => p.bs === meta.bs && p.oc === meta.oc && p.spreadValue != null,
+    )
+    return {
+      name: meta.key,
+      type: "scatter",
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      data: rows.map((p) => ({
+        value: [p.date, p.spreadValue as number],
+        symbolSize: orderSymbolSize(p.lots),
+        lots: p.lots,
+        fills: p.fills ?? 1,
+        instrument: p.instrument ?? "",
+        relatedHedges: p.relatedHedges ?? [],
+      })),
+      symbol: meta.symbol,
+      symbolRotate: meta.key === "卖开" ? 180 : 0,
+      itemStyle: {
+        color: meta.color,
+        borderColor: meta.border ?? meta.color,
+        borderWidth: meta.border ? 1.2 : 0,
+      },
+      z: 6,
+    }
+  })
+
+  return {
+    axisPointer: { link: [{ xAxisIndex: "all" }] },
+    tooltip: {
+      trigger: "item",
+      formatter: (p: {
+        seriesName: string
+        value: number | [string, number]
+        marker: string
+        data?: {
+          lots?: number
+          fills?: number
+          instrument?: string
+          relatedHedges?: Array<{ instrument: string; bs: string; oc: string; lots: number; fills: number }>
+        }
+      }) => {
+        if (p.seriesName === "价差" || p.seriesName === "Z20" || p.seriesName === "_zero") {
+          const raw = Array.isArray(p.value) ? p.value[1] : p.value
+          return `${p.marker}${p.seriesName}: ${typeof raw === "number" ? raw.toFixed(2) : raw}`
+        }
+        const date = Array.isArray(p.value) ? p.value[0] : ""
+        const y = Array.isArray(p.value) ? p.value[1] : p.value
+        const inst = p.data?.instrument ? ` ${p.data.instrument}` : ""
+        const lots = p.data?.lots ?? 0
+        const fills = p.data?.fills ?? 1
+        const related = p.data?.relatedHedges ?? []
+        const relatedText =
+          related.length > 0
+            ? `<br/>同日其他月份对冲: ${related
+                .map((r) => `${r.instrument}${r.bs}${r.oc}${r.lots}手`)
+                .join("、")}`
+            : `<br/>同日未见其他月份对冲（本价差图内可能确为单腿）`
+        return `${date}${inst}<br/>${p.marker}${p.seriesName}: ${lots} 手 / ${fills} 笔<br/>价差位置: ${
+          typeof y === "number" ? y.toFixed(2) : y
+        }${relatedText}`
+      },
+    },
+    legend: { top: 0, type: "scroll" },
+    grid: [
+      { left: 70, right: 24, top: 48, height: "38%" },
+      { left: 70, right: 24, top: "62%", height: "28%" },
+    ],
+    xAxis: [
+      {
+        type: "category",
+        data: chart.dates,
+        gridIndex: 0,
+        axisLabel: { show: false },
+      },
+      {
+        type: "category",
+        data: chart.dates,
+        gridIndex: 1,
+        axisLabel: { rotate: 30, formatter: (v: string) => v.slice(5) },
+      },
+    ],
+    yAxis: [
+      {
+        type: "value",
+        name: "价差",
+        gridIndex: 0,
+        scale: true,
+        splitLine: { lineStyle: { color: "rgba(148,163,184,0.18)" } },
+      },
+      {
+        type: "value",
+        name: "Z20",
+        gridIndex: 1,
+        scale: true,
+        splitLine: { lineStyle: { color: "rgba(148,163,184,0.18)" } },
+      },
+    ],
+    series: [
+      {
+        name: "价差",
+        type: "line",
+        data: chart.spread,
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        showSymbol: false,
+        itemStyle: { color: "#0f5c5e" },
+        lineStyle: { width: 2 },
+        tooltip: { trigger: "axis" },
+        markLine:
+          markLines.length > 0
+            ? { symbol: "none", data: markLines, animation: false }
+            : undefined,
+      },
+      ...orderSeries,
+      {
+        name: "Z20",
+        type: "line",
+        data: chart.z20,
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        showSymbol: false,
+        itemStyle: { color: "#c84c09" },
+        lineStyle: { width: 1.8 },
+        tooltip: { trigger: "axis" },
+        markLine: {
+          symbol: "none",
+          data: [
+            { yAxis: -1.5, lineStyle: { color: "#666", type: "dashed", width: 1 } },
+            { yAxis: 0, lineStyle: { color: "#666", type: "dotted", width: 1 } },
+            ...markLines,
+          ],
+          animation: false,
+        },
       },
     ],
   }
@@ -456,6 +865,77 @@ function buildTurnoverOption(items: GuoxinTurnoverItem[]) {
   }
 }
 
+function buildHedgeCumulativeOption(chart: HedgeStructureChart) {
+  const palette = ["#0f766e", "#b45309", "#1d4ed8", "#be123c", "#7c3aed", "#0891b2", "#4d7c0f", "#c2410c"]
+  return {
+    tooltip: { trigger: "axis" },
+    legend: { top: 0, type: "scroll" },
+    grid: { left: 70, right: 24, top: 40, bottom: 52 },
+    xAxis: {
+      type: "category",
+      data: chart.dates,
+      axisLabel: { rotate: 30, formatter: (v: string) => v.slice(5) },
+    },
+    yAxis: {
+      type: "value",
+      name: "累计净手数",
+      splitLine: { lineStyle: { color: "rgba(148,163,184,0.18)" } },
+    },
+    series: chart.instruments.map((inst, i) => ({
+      name: inst,
+      type: "line",
+      data: chart.cumulativeNet[inst] ?? [],
+      showSymbol: false,
+      lineStyle: { width: 2 },
+      itemStyle: { color: palette[i % palette.length] },
+    })),
+  }
+}
+
+function buildHedgeOpenHeatOption(chart: HedgeStructureChart) {
+  const values = chart.openHeat.map((c) => c[2])
+  const maxAbs = Math.max(20, ...values.map((v) => Math.abs(v)))
+  return {
+    tooltip: {
+      formatter: (p: { value: [number, number, number] }) => {
+        const [di, ii, v] = p.value
+        const side = v > 0 ? "净买开" : v < 0 ? "净卖开" : "无"
+        return `${chart.dates[di]} ${chart.instruments[ii]}<br/>${side}: ${v} 手`
+      },
+    },
+    grid: { left: 80, right: 40, top: 20, bottom: 52 },
+    xAxis: {
+      type: "category",
+      data: chart.dates,
+      axisLabel: { rotate: 30, formatter: (v: string) => v.slice(5) },
+    },
+    yAxis: {
+      type: "category",
+      data: chart.instruments,
+      axisLabel: { fontSize: 11 },
+    },
+    visualMap: {
+      min: -maxAbs,
+      max: maxAbs,
+      calculable: true,
+      orient: "vertical",
+      right: 0,
+      top: "middle",
+      inRange: { color: ["#b91c1c", "#fee2e2", "#f8fafc", "#dcfce7", "#15803d"] },
+      text: ["买开+", "卖开-"],
+      textStyle: { fontSize: 10 },
+    },
+    series: [
+      {
+        type: "heatmap",
+        data: chart.openHeat,
+        label: { show: false },
+        emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "rgba(0,0,0,0.25)" } },
+      },
+    ],
+  }
+}
+
 function buildMarginOption(history: GuoxinEquityPoint[]) {
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
@@ -486,6 +966,9 @@ function StrategyReportPanels({
   equityChartOption,
   turnoverChartOption,
   marginChartOption,
+  orderTimelineOption,
+  spreadChartOptions,
+  hedgeStructurePanels,
   expandedClusters,
   toggleCluster,
 }: {
@@ -493,6 +976,23 @@ function StrategyReportPanels({
   equityChartOption: ReturnType<typeof buildEquityOption> | null
   turnoverChartOption: ReturnType<typeof buildTurnoverOption> | null
   marginChartOption: ReturnType<typeof buildMarginOption> | null
+  orderTimelineOption: ReturnType<typeof buildOrderTimelineOption>
+  spreadChartOptions: Array<{
+    id: string
+    name: string
+    option: ReturnType<typeof buildSpreadZ20Option>
+    legFills: number
+    markerCount: number
+    pairedLegOpenDays: number
+    crossMonthHedgeDays: number
+  }>
+  hedgeStructurePanels: Array<{
+    product: string
+    cumulativeOption: ReturnType<typeof buildHedgeCumulativeOption>
+    heatOption: ReturnType<typeof buildHedgeOpenHeatOption>
+    stats: HedgeStructureChart["stats"]
+    activeDays: HedgeStructureChart["activeDays"]
+  }>
   expandedClusters: Set<string>
   toggleCluster: (key: string) => void
 }) {
@@ -534,7 +1034,9 @@ function StrategyReportPanels({
         <Card>
           <CardHeader>
             <CardTitle>账户权益与风险度</CardTitle>
-            <CardDescription>蓝线为客户权益（左轴），红虚线为风险度（右轴）。</CardDescription>
+            <CardDescription>
+              蓝线为客户权益（左轴），红虚线为风险度（右轴）；▲买开 / ▼卖开 / ○买平 / ○卖平。
+            </CardDescription>
           </CardHeader>
           <CardContent>
             {equityChartOption ? (
@@ -560,6 +1062,25 @@ function StrategyReportPanels({
         </Card>
       </div>
 
+      {orderTimelineOption ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>订单买卖开平时序</CardTitle>
+            <CardDescription>
+              与 Word 报告同款：▲买开、▼卖开、○买平、○卖平；买为正、卖为负，点大小按当日汇总手数缩放。
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts
+              option={orderTimelineOption}
+              style={{ height: 420, width: "100%" }}
+              notMerge
+              lazyUpdate
+            />
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>逐日保证金占用</CardTitle>
@@ -573,6 +1094,98 @@ function StrategyReportPanels({
           )}
         </CardContent>
       </Card>
+
+      {hedgeStructurePanels.length > 0 ? (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-lg font-semibold tracking-tight">多合约对冲结构</h3>
+            <p className="text-sm text-muted-foreground">
+              比双腿价差图更适合看曲线/蝶式：上图为各合约累计净手数（买开/买平+，卖开/卖平-），下图为每日开仓热力（绿=净买开，红=净卖开）。
+            </p>
+          </div>
+          {hedgeStructurePanels.map((panel) => (
+            <Card key={panel.product}>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">{panel.product} 对冲结构</CardTitle>
+                <CardDescription>
+                  日历对开 {panel.stats.pairedOpenDays} 日 · 跨月/曲线 {panel.stats.crossMonthOpenDays} 日 ·
+                  单腿开仓 {panel.stats.oneLegOpenDays} 日 · 仅平仓 {panel.stats.closeDays} 日
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <ReactECharts option={panel.cumulativeOption} style={{ height: 320, width: "100%" }} notMerge lazyUpdate />
+                <ReactECharts option={panel.heatOption} style={{ height: 280, width: "100%" }} notMerge lazyUpdate />
+                <div className="max-h-56 overflow-auto rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>日期</TableHead>
+                        <TableHead>结构</TableHead>
+                        <TableHead>说明</TableHead>
+                        <TableHead className="text-right">买开</TableHead>
+                        <TableHead className="text-right">卖开</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {panel.activeDays
+                        .filter((d) => d.structure !== "none")
+                        .slice(-40)
+                        .map((d) => (
+                          <TableRow key={d.date}>
+                            <TableCell className="whitespace-nowrap font-mono text-xs">{d.date}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline">
+                                {d.structure === "paired"
+                                  ? "日历对开"
+                                  : d.structure === "cross-month"
+                                    ? "跨月/曲线"
+                                    : d.structure === "one-leg"
+                                      ? "单腿"
+                                      : d.structure === "close-only"
+                                        ? "仅平仓"
+                                        : d.structure}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{d.hint}</TableCell>
+                            <TableCell className="text-right tabular-nums">{d.buyOpen}</TableCell>
+                            <TableCell className="text-right tabular-nums">{d.sellOpen}</TableCell>
+                          </TableRow>
+                        ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {spreadChartOptions.length > 0 ? (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-lg font-semibold tracking-tight">关键价差与订单点</h3>
+            <p className="text-sm text-muted-foreground">
+              上图仅标注本价差两腿成交。碳酸锂常见「空中间月、多两边月」曲线交易，所以图上单腿点往往在同日有其他月份对冲——悬停可见。
+            </p>
+          </div>
+          <div className="grid gap-4 xl:grid-cols-1">
+            {spreadChartOptions.map((item) => (
+              <Card key={item.id}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">{item.name} 价差与订单点</CardTitle>
+                  <CardDescription>
+                    两腿 {item.legFills} 笔 → {item.markerCount} 个汇总点；严格双腿对开 {item.pairedLegOpenDays} 日，
+                    跨月对冲开仓 {item.crossMonthHedgeDays} 日。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ReactECharts option={item.option} style={{ height: 460, width: "100%" }} notMerge lazyUpdate />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader>
@@ -1053,7 +1666,10 @@ export default function SettlementAnalysisPage() {
   }
 
   const equityChartOption = useMemo(
-    () => (dbAnalysis?.equityHistory.length ? buildEquityOption(dbAnalysis.equityHistory) : null),
+    () =>
+      dbAnalysis?.equityHistory.length
+        ? buildEquityOption(dbAnalysis.equityHistory, deriveOrderTimeline(dbAnalysis))
+        : null,
     [dbAnalysis],
   )
 
@@ -1067,8 +1683,30 @@ export default function SettlementAnalysisPage() {
     [dbAnalysis],
   )
 
+  const orderTimelineOption = useMemo(
+    () => (dbAnalysis ? buildOrderTimelineOption(deriveOrderTimeline(dbAnalysis)) : null),
+    [dbAnalysis],
+  )
+
+  const spreadChartOptions = useMemo(
+    () =>
+      (dbAnalysis?.spreadCharts ?? []).map((chart) => ({
+        id: chart.id,
+        name: chart.name,
+        option: buildSpreadZ20Option(chart),
+        legFills: chart.legFills ?? chart.orderPoints.reduce((s, p) => s + (p.fills ?? 1), 0),
+        markerCount: chart.orderPoints.length,
+        pairedLegOpenDays: chart.pairedLegOpenDays ?? 0,
+        crossMonthHedgeDays: chart.crossMonthHedgeDays ?? 0,
+      })),
+    [dbAnalysis],
+  )
+
   const yinheEquityChartOption = useMemo(
-    () => (yinheAnalysis?.equityHistory.length ? buildEquityOption(yinheAnalysis.equityHistory) : null),
+    () =>
+      yinheAnalysis?.equityHistory.length
+        ? buildEquityOption(yinheAnalysis.equityHistory, deriveOrderTimeline(yinheAnalysis))
+        : null,
     [yinheAnalysis],
   )
 
@@ -1079,6 +1717,49 @@ export default function SettlementAnalysisPage() {
 
   const yinheMarginChartOption = useMemo(
     () => (yinheAnalysis?.equityHistory.length ? buildMarginOption(yinheAnalysis.equityHistory) : null),
+    [yinheAnalysis],
+  )
+
+  const yinheOrderTimelineOption = useMemo(
+    () => (yinheAnalysis ? buildOrderTimelineOption(deriveOrderTimeline(yinheAnalysis)) : null),
+    [yinheAnalysis],
+  )
+
+  const yinheSpreadChartOptions = useMemo(
+    () =>
+      (yinheAnalysis?.spreadCharts ?? []).map((chart) => ({
+        id: chart.id,
+        name: chart.name,
+        option: buildSpreadZ20Option(chart),
+        legFills: chart.legFills ?? chart.orderPoints.reduce((s, p) => s + (p.fills ?? 1), 0),
+        markerCount: chart.orderPoints.length,
+        pairedLegOpenDays: chart.pairedLegOpenDays ?? 0,
+        crossMonthHedgeDays: chart.crossMonthHedgeDays ?? 0,
+      })),
+    [yinheAnalysis],
+  )
+
+  const hedgeStructurePanels = useMemo(
+    () =>
+      (dbAnalysis?.hedgeStructureCharts ?? []).map((chart) => ({
+        product: chart.product,
+        cumulativeOption: buildHedgeCumulativeOption(chart),
+        heatOption: buildHedgeOpenHeatOption(chart),
+        stats: chart.stats,
+        activeDays: chart.activeDays,
+      })),
+    [dbAnalysis],
+  )
+
+  const yinheHedgeStructurePanels = useMemo(
+    () =>
+      (yinheAnalysis?.hedgeStructureCharts ?? []).map((chart) => ({
+        product: chart.product,
+        cumulativeOption: buildHedgeCumulativeOption(chart),
+        heatOption: buildHedgeOpenHeatOption(chart),
+        stats: chart.stats,
+        activeDays: chart.activeDays,
+      })),
     [yinheAnalysis],
   )
 
@@ -1457,6 +2138,9 @@ export default function SettlementAnalysisPage() {
           equityChartOption={equityChartOption}
           turnoverChartOption={turnoverChartOption}
           marginChartOption={marginChartOption}
+          orderTimelineOption={orderTimelineOption}
+          spreadChartOptions={spreadChartOptions}
+          hedgeStructurePanels={hedgeStructurePanels}
           expandedClusters={expandedClusters}
           toggleCluster={toggleCluster}
         />
@@ -1612,6 +2296,9 @@ export default function SettlementAnalysisPage() {
           equityChartOption={yinheEquityChartOption}
           turnoverChartOption={yinheTurnoverChartOption}
           marginChartOption={yinheMarginChartOption}
+          orderTimelineOption={yinheOrderTimelineOption}
+          spreadChartOptions={yinheSpreadChartOptions}
+          hedgeStructurePanels={yinheHedgeStructurePanels}
           expandedClusters={yinheExpandedClusters}
           toggleCluster={toggleYinheCluster}
         />

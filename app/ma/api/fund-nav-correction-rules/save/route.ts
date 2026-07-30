@@ -24,7 +24,16 @@ export async function POST(req: Request) {
     if (body.delete) {
       deleteFundNavCorrectionRule(beian)
       try {
-        await upsertTrackingFundListCacheEntry(beian, body.rule?.product_names?.[0] ?? beian)
+        const productName = body.rule?.product_names?.[0] ?? beian
+        await upsertTrackingFundListCacheEntry(beian, productName)
+        const { invalidateDetailNavCache, refreshDetailNavCacheForFund } = await import(
+          "@/lib/server/fund-detail-nav-cache-pg"
+        )
+        await invalidateDetailNavCache([beian])
+        await refreshDetailNavCacheForFund({
+          beian_hao: beian,
+          product_name: productName,
+        })
       } catch {
         // cache refresh is best-effort
       }
@@ -40,7 +49,17 @@ export async function POST(req: Request) {
     })
 
     try {
-      await upsertTrackingFundListCacheEntry(beian, body.rule?.product_names?.[0] ?? beian)
+      const productName = body.rule?.product_names?.[0] ?? beian
+      await upsertTrackingFundListCacheEntry(beian, productName)
+      const { invalidateDetailNavCache, refreshDetailNavCacheForFund } = await import(
+        "@/lib/server/fund-detail-nav-cache-pg"
+      )
+      await invalidateDetailNavCache([beian])
+      await refreshDetailNavCacheForFund({
+        beian_hao: beian,
+        product_name: productName,
+        emailNameAliases: body.rule?.product_names,
+      })
     } catch {
       // cache refresh is best-effort
     }

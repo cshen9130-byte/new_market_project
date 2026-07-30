@@ -4,10 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import os
+
 import akshare as ak
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties, fontManager
 import numpy as np
 import pandas as pd
 from docx import Document
@@ -16,6 +19,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
+_CN_FONT: FontProperties | None = None
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "report_output"
@@ -92,15 +96,66 @@ def ensure_output_dirs() -> None:
     CHART_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def configure_matplotlib() -> None:
-    plt.rcParams["font.sans-serif"] = [
-        "Microsoft YaHei",
-        "SimHei",
-        "Noto Sans CJK SC",
-        "Arial Unicode MS",
-        "DejaVu Sans",
+def _cn_font_candidates() -> list[str]:
+    home = Path.home()
+    return [
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\simsun.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        str(home / ".local/share/fonts/NotoSansSC-Regular.otf"),
+        str(home / ".fonts/NotoSansSC-Regular.otf"),
     ]
+
+
+def configure_matplotlib() -> None:
+    global _CN_FONT
     plt.rcParams["axes.unicode_minus"] = False
+
+    chosen_path: str | None = None
+    for path in _cn_font_candidates():
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            fontManager.addfont(path)
+            chosen_path = path
+            break
+        except Exception:
+            continue
+
+    if chosen_path is None:
+        for name in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"):
+            try:
+                path = fontManager.findfont(FontProperties(family=name), fallback_to_default=False)
+                if path and "dejavu" not in path.lower():
+                    chosen_path = path
+                    break
+            except Exception:
+                continue
+
+    if chosen_path is None:
+        print("[WARN] No CJK font found; chart Chinese labels may render as boxes.", flush=True)
+        _CN_FONT = None
+        return
+
+    try:
+        _CN_FONT = FontProperties(fname=chosen_path)
+        family = _CN_FONT.get_name()
+    except Exception:
+        _CN_FONT = None
+        family = "SimHei"
+
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = [family, "DejaVu Sans"]
+    print(f"[FONT] Charts using: {family} ({chosen_path})", flush=True)
+
+
+def _cn_fp() -> dict:
+    return {"fontproperties": _CN_FONT} if _CN_FONT is not None else {}
 
 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -356,33 +411,40 @@ def save_chart(fig: plt.Figure, name: str) -> Path:
 
 def build_charts(account: pd.DataFrame, turnover_stats: pd.DataFrame, product_netting: pd.DataFrame, spread_stats: pd.DataFrame, market_hist: pd.DataFrame) -> dict[str, Path]:
     chart_paths: dict[str, Path] = {}
+    fp = _cn_fp()
 
     ordered_account = account.sort_values("trade_date")
     fig, ax1 = plt.subplots(figsize=(10, 5))
     ax1.plot(ordered_account["trade_date"], ordered_account["client_equity"], marker="o", linewidth=2, color="#0f5c5e")
-    ax1.set_title("账户权益与风险度变化")
-    ax1.set_ylabel("客户权益")
+    ax1.set_title("账户权益与风险度变化", **fp)
+    ax1.set_ylabel("客户权益", **fp)
     ax1.grid(alpha=0.25)
     ax2 = ax1.twinx()
     ax2.plot(ordered_account["trade_date"], ordered_account["risk_degree"], marker="s", linestyle="--", color="#c84c09")
-    ax2.set_ylabel("风险度(%)")
+    ax2.set_ylabel("风险度(%)", **fp)
     chart_paths["equity"] = save_chart(fig, "equity_risk.png")
 
     fig, ax = plt.subplots(figsize=(9, 5))
     colors = ["#204e4a", "#2f6f6d", "#4e9689", "#9fbf7b", "#d5a021"]
     ax.bar(turnover_stats["product"], turnover_stats["share_pct"], color=colors[: len(turnover_stats)])
-    ax.set_title("各品种成交额占比")
-    ax.set_ylabel("占比(%)")
+    ax.set_title("各品种成交额占比", **fp)
+    ax.set_ylabel("占比(%)", **fp)
+    if _CN_FONT is not None:
+        for label in ax.get_xticklabels():
+            label.set_fontproperties(_CN_FONT)
     ax.grid(axis="y", alpha=0.2)
     chart_paths["turnover"] = save_chart(fig, "turnover_share.png")
 
     margin_by_date = product_netting.groupby("settlement_date", as_index=False)["margin"].sum()
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(margin_by_date["settlement_date"], margin_by_date["margin"], color="#46637f")
-    ax.set_title("每日保证金占用")
-    ax.set_ylabel("保证金")
+    ax.set_title("每日保证金占用", **fp)
+    ax.set_ylabel("保证金", **fp)
     ax.grid(axis="y", alpha=0.2)
     chart_paths["margin"] = save_chart(fig, "margin_usage.png")
+
+    if market_hist.empty or "settle" not in market_hist.columns:
+        return chart_paths
 
     pivot = market_hist.pivot_table(index="date", columns="symbol", values="settle", aggfunc="last").sort_index()
     key_spreads = ["碳酸锂 LC2607-LC2609", "鸡蛋 JD2607-JD2606", "铝 AL2605-AL2606"]
@@ -394,13 +456,13 @@ def build_charts(account: pd.DataFrame, turnover_stats: pd.DataFrame, product_ne
         z20 = (spread - spread.rolling(20, min_periods=5).mean()) / spread.rolling(20, min_periods=5).std()
         fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
         axes[0].plot(spread.index, spread, color="#0f5c5e", linewidth=2)
-        axes[0].set_title(f"{spread_name} 价差与20日Z分数")
-        axes[0].set_ylabel("价差")
+        axes[0].set_title(f"{spread_name} 价差与20日Z分数", **fp)
+        axes[0].set_ylabel("价差", **fp)
         axes[0].grid(alpha=0.2)
         axes[1].plot(z20.index, z20, color="#c84c09", linewidth=1.8)
         axes[1].axhline(-1.5, color="#666666", linestyle="--", linewidth=1)
         axes[1].axhline(0, color="#666666", linestyle=":", linewidth=1)
-        axes[1].set_ylabel("Z20")
+        axes[1].set_ylabel("Z20", **fp)
         axes[1].grid(alpha=0.2)
         event = PAIR_EVENT_MAP[spread_name]
         entry_dt = pd.Timestamp(event["entry"])

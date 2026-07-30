@@ -1,7 +1,8 @@
 import path from "path"
 import { existsSync } from "fs"
-import { readFile } from "fs/promises"
+import { mkdtemp, readFile, rm } from "fs/promises"
 import { execFile } from "child_process"
+import { tmpdir } from "os"
 import { promisify } from "util"
 import { createConnection } from "net"
 import { NextResponse } from "next/server"
@@ -85,13 +86,24 @@ export async function GET() {
   }
 
   const pythonExe = await findPython(scriptDir)
+  const workDir = await mkdtemp(path.join(tmpdir(), "yinhe-word-report-"))
+  const mplConfigDir = path.join(workDir, "mplconfig")
+  const reportFileName = "银河期货交易策略分析报告.docx"
+  const workOutputPath = path.join(workDir, reportFileName)
+
   try {
-    const { stdout, stderr } = await execFileAsync(pythonExe, ["-u", scriptPath], {
+    const pyArgs =
+      path.basename(pythonExe).toLowerCase() === "py.exe" || path.basename(pythonExe).toLowerCase() === "py"
+        ? ["-3", "-u", scriptPath]
+        : ["-u", scriptPath]
+    const { stdout, stderr } = await execFileAsync(pythonExe, pyArgs, {
       cwd: scriptDir,
       env: {
         ...process.env,
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
+        YINHE_REPORT_OUTPUT_DIR: workDir,
+        MPLCONFIGDIR: mplConfigDir,
       },
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
@@ -104,20 +116,31 @@ export async function GET() {
     const errStderr = (err as { stderr?: string }).stderr ?? ""
     const errStdout = (err as { stdout?: string }).stdout ?? ""
     const detail = [errStderr, errStdout].filter(Boolean).join("\n---stdout---\n") || msg
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
     return NextResponse.json({ error: "报告生成失败", detail }, { status: 500 })
   }
 
-  if (!existsSync(outputPath)) {
+  const resolvedOutput = existsSync(workOutputPath)
+    ? workOutputPath
+    : existsSync(outputPath)
+      ? outputPath
+      : null
+  if (!resolvedOutput) {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
     return NextResponse.json({ error: "脚本执行完毕但未找到输出文件" }, { status: 500 })
   }
 
-  const fileBuffer = await readFile(outputPath)
-  return new Response(fileBuffer, {
-    headers: {
-      "Content-Type":
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "Content-Disposition":
-        "attachment; filename*=UTF-8''%E9%93%B6%E6%B2%B3%E6%9C%9F%E8%B4%A7%E4%BA%A4%E6%98%93%E7%AD%96%E7%95%A5%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A.docx",
-    },
-  })
+  try {
+    const fileBuffer = await readFile(resolvedOutput)
+    return new Response(fileBuffer, {
+      headers: {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition":
+          "attachment; filename*=UTF-8''%E9%93%B6%E6%B2%B3%E6%9C%9F%E8%B4%A7%E4%BA%A4%E6%98%93%E7%AD%96%E7%95%A5%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A.docx",
+      },
+    })
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
+  }
 }

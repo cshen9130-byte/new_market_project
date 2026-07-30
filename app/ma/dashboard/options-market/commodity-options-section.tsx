@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import {
@@ -14,6 +14,7 @@ import {
   type CommoditySector,
 } from "@/lib/commodity-option-meta"
 import { cn } from "@/lib/utils"
+import { ChartCardHeader } from "./chart-help"
 import { DeeperAnalysisPanels, type PeerGroupConfig } from "./deeper-analysis-panels"
 
 const CHART_FONT = "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
@@ -688,10 +689,12 @@ export default function CommodityOptionsSection() {
 
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle>隐含波动率概览</CardTitle>
-            <CardDescription>按农产品 / 黑色 / 有色 / 能化分组，各品种当前 IV 与历史分位</CardDescription>
-          </CardHeader>
+          <ChartCardHeader
+            className="pb-3"
+            chartId="iv-summary"
+            title="隐含波动率概览"
+            description="按农产品 / 黑色 / 有色 / 能化分组，各品种当前 IV 与历史分位"
+          />
           <CardContent className="pt-0">
             <div ref={summaryTableRef} className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -753,10 +756,12 @@ export default function CommodityOptionsSection() {
         </Card>
 
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle>全市场 IV 分位对比</CardTitle>
-            <CardDescription>按板块分组比较全历史分位（虚线：20 / 50 / 80）</CardDescription>
-          </CardHeader>
+          <ChartCardHeader
+            className="pb-3"
+            chartId="iv-percentile-compare"
+            title="全市场 IV 分位对比"
+            description="按板块分组比较全历史分位（虚线：20 / 50 / 80）"
+          />
           <CardContent className="pt-0">
             {summaryPctOption ? (
               <ReactECharts
@@ -869,12 +874,13 @@ export default function CommodityOptionsSection() {
             <h2 className="text-lg font-semibold mb-4">历史波动率分析</h2>
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {productLabel ? `${productLabel} 系列 IV 时序` : "系列 IV 时序"}
-                  </CardTitle>
-                  <CardDescription>交易所公布的近月系列隐含波动率</CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="series-iv-history"
+                  title={productLabel ? `${productLabel} 系列 IV 时序` : "系列 IV 时序"}
+                  description="交易所公布的近月系列隐含波动率"
+                />
                 <CardContent>
                   {historyOption ? (
                     <ReactECharts option={historyOption} style={{ height: 300 }} notMerge />
@@ -884,12 +890,13 @@ export default function CommodityOptionsSection() {
                 </CardContent>
               </Card>
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">
-                    {productLabel ? `${productLabel} IV 分位分析` : "IV 分位分析"}
-                  </CardTitle>
-                  <CardDescription>全历史与 1 年滚动分位</CardDescription>
-                </CardHeader>
+                <ChartCardHeader
+                  className="pb-2"
+                  titleClassName="text-base"
+                  chartId="iv-percentile"
+                  title={productLabel ? `${productLabel} IV 分位分析` : "IV 分位分析"}
+                  description="全历史与 1 年滚动分位"
+                />
                 <CardContent>
                   {percentileOption ? (
                     <ReactECharts option={percentileOption} style={{ height: 300 }} notMerge />
@@ -906,12 +913,13 @@ export default function CommodityOptionsSection() {
           <div>
             <h2 className="text-lg font-semibold mb-4">期限结构</h2>
             <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">
-                  {productLabel ? `${productLabel} IV 期限结构` : "IV 期限结构"}
-                </CardTitle>
-                <CardDescription>各合约系列 / 到期月 ATM 隐含波动率</CardDescription>
-              </CardHeader>
+              <ChartCardHeader
+                className="pb-2"
+                titleClassName="text-base"
+                chartId="iv-term"
+                title={productLabel ? `${productLabel} IV 期限结构` : "IV 期限结构"}
+                description="各合约系列 / 到期月 ATM 隐含波动率"
+              />
               <CardContent>
                 {termOption ? (
                   <ReactECharts option={termOption} style={{ height: 320 }} notMerge lazyUpdate />

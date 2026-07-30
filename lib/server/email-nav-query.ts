@@ -16,6 +16,10 @@ import {
   lookupFundNavCorrectionRule,
   shouldSkipReturnIndexSanitize,
 } from "@/lib/server/fund-nav-correction-rules"
+import {
+  alternateBeianCodesFor,
+  remapManagedProductBeianCode,
+} from "@/lib/server/managed-product-beian"
 
 export type { FundNavSeriesContext }
 
@@ -181,16 +185,22 @@ function isVirtualAccrualNavTableRow(row: EmailNavRawRow): boolean {
 function productCodeMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
   if (!beian) return false
   const productCode = (row.product_code ?? "").trim().toUpperCase()
-  return productCode === beian.trim().toUpperCase() || shareClassProductCodesMatch(productCode, beian)
+  return embeddedCodeMatchesBeian(productCode, beian.trim().toUpperCase())
 }
 
 function productCodeExactlyMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
   if (!beian) return false
-  return (row.product_code ?? "").trim().toUpperCase() === beian.trim().toUpperCase()
+  const productCode = (row.product_code ?? "").trim().toUpperCase()
+  const target = beian.trim().toUpperCase()
+  if (productCode === target) return true
+  const remapped = remapManagedProductBeianCode(productCode)
+  return remapped != null && remapped === target
 }
 
 function embeddedCodeMatchesBeian(code: string, beian: string): boolean {
-  return code === beian || shareClassProductCodesMatch(code, beian)
+  if (code === beian || shareClassProductCodesMatch(code, beian)) return true
+  const remapped = remapManagedProductBeianCode(code)
+  return remapped != null && (remapped === beian || shareClassProductCodesMatch(remapped, beian))
 }
 
 function emailRowEffectiveUnitNav(row: EmailNavRawRow): number | null {
@@ -508,7 +518,7 @@ function collectMultiShareClassNavRows(dayRows: EmailNavRawRow[], beian: string)
   const related = dayRows.filter((row) => {
     const code = (row.product_code ?? "").trim().toUpperCase()
     if (!code) return false
-    return code === beianU || shareClassProductCodesMatch(code, beianU)
+    return embeddedCodeMatchesBeian(code, beianU)
   })
   const plausible = related.filter((row) => {
     const nav = emailRowEffectiveUnitNav(row)
@@ -995,6 +1005,7 @@ async function queryEmailNavManageRawRows(
   await ensureEmailNavTable()
   const aliases = collectFundNameAliases(productName, shortName, extraNames)
   const beian = (beianHao ?? "").trim()
+  const codeAliases = beian ? alternateBeianCodesFor(beian) : []
 
   return query<EmailNavRawRowWithId>(
     `SELECT e.id::text AS id, e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
@@ -1006,6 +1017,7 @@ async function queryEmailNavManageRawRows(
        AND (
          ($1 <> '' AND (
            e.product_code = $1
+           OR ($3::text[] IS NOT NULL AND cardinality($3::text[]) > 0 AND e.product_code = ANY($3::text[]))
            OR COALESCE(e.attachment_filename, '') ILIKE '%' || $1 || '%'
            OR COALESCE(e.subject, '') ILIKE '%' || $1 || '%'
          ))
@@ -1019,7 +1031,7 @@ async function queryEmailNavManageRawRows(
          )
        )
      ORDER BY e.nav_date ASC, e.id ASC`,
-    [beian, aliases],
+    [beian, aliases, codeAliases],
   )
 }
 
@@ -1099,6 +1111,7 @@ export async function loadEmailNavSeries(
   await ensureEmailNavTable()
   const aliases = collectFundNameAliases(productName, shortName, extraNames)
   const beian = (beianHao ?? "").trim()
+  const codeAliases = beian ? alternateBeianCodesFor(beian) : []
 
   const rows = await query<EmailNavRawRow>(
     `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
@@ -1110,6 +1123,7 @@ export async function loadEmailNavSeries(
        AND (
          ($1 <> '' AND (
            e.product_code = $1
+           OR ($3::text[] IS NOT NULL AND cardinality($3::text[]) > 0 AND e.product_code = ANY($3::text[]))
            OR COALESCE(e.attachment_filename, '') ILIKE '%' || $1 || '%'
            OR COALESCE(e.subject, '') ILIKE '%' || $1 || '%'
          ))
@@ -1123,7 +1137,7 @@ export async function loadEmailNavSeries(
          )
        )
      ORDER BY e.nav_date ASC, e.id ASC`,
-    [beian, aliases],
+    [beian, aliases, codeAliases],
   )
 
   const stream = selectEmailNavSeriesRows(rows, beian, aliases)
