@@ -2,7 +2,7 @@ import { Document } from "@langchain/core/documents"
 import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai"
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters"
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory"
-import { collectKnowledgeBaseDocuments, getKnowledgeBaseFile, readFileDocumentText, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
+import { collectKnowledgeBaseDocuments, getKnowledgeBaseFile, readFileDocumentText, normalizeKnowledgeBasePath, listKnowledgeBaseIndexableFiles, probeKnowledgeBaseChatExtract, knowledgeBaseChatExtractReasonLabel } from "@/lib/server/knowledge-base"
 import {
   type FileFingerprint,
   type MemoryVectorRow,
@@ -999,6 +999,7 @@ export type EmbedJobStatus = {
   message: string
   startedAt: number
   finishedAt?: number
+  unembeddableFiles?: Array<{ path: string; reason: string }>
 }
 
 function getEmbedJobMap(): Map<string, EmbedJobStatus> {
@@ -1073,7 +1074,26 @@ export function startEmbedJob(folderPath?: string | null, force = false) {
       job.finishedAt = Date.now()
       job.totalFiles = result.indexedDocuments
       job.processedFiles = result.indexedDocuments
-      job.message = `向量化完成，共 ${result.indexedDocuments} 个文档`
+      const diskInfoAfter = await getDiskIndexInfo(normalized)
+      const indexedAfter = new Set(diskInfoAfter.indexedFiles)
+      const stillMissing = (await listKnowledgeBaseIndexableFiles(normalized || ""))
+        .map((f) => f.relativePath)
+        .filter((p) => !indexedAfter.has(p))
+      const unembeddable: Array<{ path: string; reason: string }> = []
+      for (const relativePath of stillMissing) {
+        const probe = await probeKnowledgeBaseChatExtract(relativePath)
+        if (probe.status !== "ok") {
+          unembeddable.push({ path: relativePath, reason: knowledgeBaseChatExtractReasonLabel(probe) })
+        }
+      }
+      if (unembeddable.length > 0) {
+        job.unembeddableFiles = unembeddable
+        job.message = `向量化完成，共 ${result.indexedDocuments} 个文档；${unembeddable.length} 个文件无法嵌入（见索引状态）`
+      } else if (stillMissing.length > 0) {
+        job.message = `向量化完成，共 ${result.indexedDocuments} 个文档；仍有 ${stillMissing.length} 个文件未入库，请稍后重试或检查 DashScope 配额`
+      } else {
+        job.message = `向量化完成，共 ${result.indexedDocuments} 个文档`
+      }
       setTimeout(() => { if (jobs.get(key) === job) jobs.delete(key) }, 30_000)
     } catch (err: any) {
       job.status = "error"

@@ -1329,6 +1329,116 @@ export function shouldSkipKnowledgeBaseChatPath(relativePath: string, entryName:
   return false
 }
 
+export type KnowledgeBaseChatExtractProbe =
+  | { status: "ok" }
+  | { status: "too_large" }
+  | { status: "unsupported" }
+  | { status: "empty" }
+  | { status: "failed"; message: string }
+
+function formatChatExtractFailure(err: unknown): string {
+  const msg = String((err as Error)?.message || err || "")
+  const lower = msg.toLowerCase()
+  if (lower.includes("password") || msg.includes("密码") || lower.includes("encrypted")) {
+    return "PDF 可能已加密或需要密码，无法提取文本"
+  }
+  if (msg.includes("解析超时")) {
+    return msg
+  }
+  return msg || "无法读取文件内容"
+}
+
+/** Stat-only scan of chat-supported files within a folder scope (matches index coverage UI). */
+export async function listKnowledgeBaseIndexableFiles(
+  folderPath = "",
+): Promise<{ relativePath: string; size: number }[]> {
+  const { target } = await resolveKnowledgeBasePath(folderPath)
+  const stat = await fs.stat(target)
+  if (!stat.isDirectory()) {
+    return []
+  }
+  const results: { relativePath: string; size: number }[] = []
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+
+  async function scan(absoluteDir: string, relativeDir: string) {
+    let entries
+    try {
+      entries = await fs.readdir(absoluteDir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, true)) continue
+        await scan(path.join(absoluteDir, entry.name), relativePath)
+      } else if (entry.isFile()) {
+        if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, false)) continue
+        const ext = getExtension(entry.name)
+        if (!isKnowledgeBaseChatSupported(ext)) continue
+        try {
+          const fileStat = await fs.stat(path.join(absoluteDir, entry.name))
+          if (fileStat.size <= MAX_CHAT_FILE_BYTES) {
+            results.push({ relativePath, size: fileStat.size })
+          }
+        } catch {
+          // skip unreadable
+        }
+      }
+    }
+  }
+
+  await scan(target, normalized)
+  results.sort((a, b) => a.relativePath.localeCompare(b.relativePath, "zh-CN"))
+  return results
+}
+
+/** Check whether a file can be text-extracted for embedding (same rules as vectorize). */
+export async function probeKnowledgeBaseChatExtract(relativePath: string): Promise<KnowledgeBaseChatExtractProbe> {
+  const normalized = normalizeKnowledgeBasePath(relativePath)
+  if (!normalized) {
+    return { status: "failed", message: "无效路径" }
+  }
+  let file: Awaited<ReturnType<typeof getKnowledgeBaseFile>>
+  try {
+    file = await getKnowledgeBaseFile(normalized)
+  } catch {
+    return { status: "failed", message: "文件不存在或无法访问" }
+  }
+  if (!isKnowledgeBaseChatSupported(file.extension)) {
+    return { status: "unsupported" }
+  }
+  if (file.size > MAX_CHAT_FILE_BYTES) {
+    return { status: "too_large" }
+  }
+  try {
+    const text = await withExtractTimeout(readChatDocumentText(file.absolutePath, file.extension), 20_000)
+    if (!text.trim()) {
+      return { status: "empty" }
+    }
+    return { status: "ok" }
+  } catch (err) {
+    return { status: "failed", message: formatChatExtractFailure(err) }
+  }
+}
+
+export function knowledgeBaseChatExtractReasonLabel(probe: KnowledgeBaseChatExtractProbe): string {
+  switch (probe.status) {
+    case "ok":
+      return "可嵌入"
+    case "too_large":
+      return "超过 10MB，不参与问答索引"
+    case "unsupported":
+      return "格式不支持"
+    case "empty":
+      return "未能提取到文本（可能是扫描件 PDF 或无文字层）"
+    case "failed":
+      return probe.message
+    default:
+      return "无法嵌入"
+  }
+}
+
 async function collectChatDocumentsInDirectory(
   absoluteDir: string,
   relativeDir: string,

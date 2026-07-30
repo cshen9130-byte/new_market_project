@@ -1,51 +1,27 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
 import {
-  getKnowledgeBaseStorageRoot,
   normalizeKnowledgeBasePath,
-  isKnowledgeBaseChatSupported,
-  shouldSkipKnowledgeBaseChatPath,
+  listKnowledgeBaseIndexableFiles,
+  probeKnowledgeBaseChatExtract,
+  knowledgeBaseChatExtractReasonLabel,
 } from "@/lib/server/knowledge-base"
 import { getDiskIndexInfo } from "@/lib/server/knowledge-chat"
-import fs from "fs/promises"
-import path from "path"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-const MAX_CHAT_FILE_BYTES = 10 * 1024 * 1024
-
-/** Lightweight recursive file scan — stat only, no file reading. */
-async function scanIndexableFiles(
-  absoluteDir: string,
-  relativeDir: string,
-  results: { relativePath: string; size: number }[],
-) {
-  let entries
-  try {
-    entries = await fs.readdir(absoluteDir, { withFileTypes: true })
-  } catch {
-    return
-  }
-  for (const entry of entries) {
-    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
-    if (entry.isDirectory()) {
-      if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, true)) continue
-      await scanIndexableFiles(path.join(absoluteDir, entry.name), relativePath, results)
-    } else if (entry.isFile()) {
-      if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, false)) continue
-      const ext = path.extname(entry.name).toLowerCase()
-      if (!isKnowledgeBaseChatSupported(ext)) continue
-      try {
-        const stat = await fs.stat(path.join(absoluteDir, entry.name))
-        if (stat.size <= MAX_CHAT_FILE_BYTES) {
-          results.push({ relativePath, size: stat.size })
-        }
-      } catch {
-        // skip unreadable
-      }
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
     }
   }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
+  return results
 }
 
 export async function GET(req: Request) {
@@ -60,18 +36,28 @@ export async function GET(req: Request) {
     const scope = searchParams.get("scope") ?? null
     const normalized = normalizeKnowledgeBasePath(scope)
 
-    // Fast stat-only scan — no file content reads
-    const root = getKnowledgeBaseStorageRoot()
-    const targetDir = normalized ? path.join(root, normalized) : root
-    const allFiles: { relativePath: string; size: number }[] = []
-    await scanIndexableFiles(targetDir, normalized || "", allFiles)
+    const allFiles = await listKnowledgeBaseIndexableFiles(normalized || "")
 
     const diskInfo = await getDiskIndexInfo(normalized)
     const indexedSet = new Set(diskInfo.indexedFiles)
 
-    const notIndexed = allFiles.filter((f) => !indexedSet.has(f.relativePath)).map((f) => f.relativePath)
+    const missingOnDisk = allFiles.filter((f) => !indexedSet.has(f.relativePath))
     const indexed = allFiles.filter((f) => indexedSet.has(f.relativePath)).map((f) => f.relativePath)
     const stale = diskInfo.indexedFiles.filter((p) => !allFiles.find((f) => f.relativePath === p))
+
+    const probes = await mapWithConcurrency(missingOnDisk, 4, async (f) => {
+      const probe = await probeKnowledgeBaseChatExtract(f.relativePath)
+      return { relativePath: f.relativePath, probe }
+    })
+
+    const unembeddableFiles = probes
+      .filter((p) => p.probe.status !== "ok")
+      .map((p) => ({ path: p.relativePath, reason: knowledgeBaseChatExtractReasonLabel(p.probe) }))
+    const pendingEmbedFiles = probes.filter((p) => p.probe.status === "ok").map((p) => p.relativePath)
+
+    const embeddableTotal = indexed.length + pendingEmbedFiles.length
+    const percentIndexed =
+      embeddableTotal > 0 ? Math.round((indexed.length / embeddableTotal) * 100) : allFiles.length === 0 ? 100 : 0
 
     return NextResponse.json({
       scope: normalized || "",
@@ -85,12 +71,14 @@ export async function GET(req: Request) {
       coverage: {
         totalOnDisk: allFiles.length,
         indexed: indexed.length,
-        notIndexed: notIndexed.length,
+        notIndexed: pendingEmbedFiles.length,
+        unembeddable: unembeddableFiles.length,
         stale: stale.length,
-        percentIndexed: allFiles.length > 0 ? Math.round((indexed.length / allFiles.length) * 100) : 0,
+        percentIndexed,
       },
-      // Return full list so UI can correctly gray out all non-embedded files/folders.
-      notIndexedFiles: notIndexed,
+      // Retryable: on disk, extractable, but not yet in PG index.
+      notIndexedFiles: pendingEmbedFiles,
+      unembeddableFiles,
       staleFiles: stale.slice(0, 50),
     })
   } catch (e: any) {

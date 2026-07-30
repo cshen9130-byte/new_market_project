@@ -820,7 +820,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         setEmbedJob(data)
         if (data.status === "done" || data.status === "error") {
           clearInterval(embedPollRef.current!)
-          if (data.status === "done") void refreshEmbedStatus()
+          if (data.status === "done") {
+            void refreshEmbedStatus()
+            void handleCheckIndexCoverage()
+          }
           setTimeout(() => setEmbedJob(null), 5_000)
         }
       } catch {
@@ -2757,8 +2760,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   type IndexInfoResult = {
     scope: string
     diskIndex: { exists: boolean; indexedDocuments: number; indexedChunks: number; updatedAt: string | null; model: string | null }
-    coverage: { totalOnDisk: number; indexed: number; notIndexed: number; stale: number; percentIndexed: number }
+    coverage: { totalOnDisk: number; indexed: number; notIndexed: number; unembeddable: number; stale: number; percentIndexed: number }
     notIndexedFiles: string[]
+    unembeddableFiles: Array<{ path: string; reason: string }>
     staleFiles: string[]
   }
   const [indexInfo, setIndexInfo] = useState<IndexInfoResult | null>(null)
@@ -2769,7 +2773,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       const res = await fetch("/api/knowledge-base/index-info?scope=", { headers: getKnowledgeBaseAuthHeaders() })
       if (!res.ok) return
       const data: IndexInfoResult = await res.json()
-      setNotIndexedSet(new Set(data.notIndexedFiles))
+      setNotIndexedSet(
+        new Set([...data.notIndexedFiles, ...(data.unembeddableFiles ?? []).map((f) => f.path)]),
+      )
     } catch {
       // non-critical – don't block the UI
     }
@@ -2782,7 +2788,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       const scope = selectedFolder || ""
       const res = await fetch(`/api/knowledge-base/index-info?scope=${encodeURIComponent(scope)}`, { headers: getKnowledgeBaseAuthHeaders() })
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText)
-      setIndexInfo(await res.json())
+      const data: IndexInfoResult = await res.json()
+      setIndexInfo(data)
+      setNotIndexedSet(
+        new Set([...data.notIndexedFiles, ...(data.unembeddableFiles ?? []).map((f) => f.path)]),
+      )
     } catch (e: any) {
       setIndexInfo(null)
       alert(`检查失败：${e?.message || e}`)
@@ -5722,9 +5732,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               </span>
                             </div>
                             <Progress value={indexInfo.coverage.percentIndexed} className="h-1.5" />
-                            <div className="flex justify-between text-muted-foreground">
-                              <span>已嵌入 {indexInfo.coverage.indexed} / {indexInfo.coverage.totalOnDisk} 文件</span>
-                              {indexInfo.coverage.notIndexed > 0 && <span className="text-amber-600">{indexInfo.coverage.notIndexed} 未索引</span>}
+                            <div className="flex flex-wrap justify-between gap-x-2 text-muted-foreground">
+                              <span>已嵌入 {indexInfo.coverage.indexed} / {indexInfo.coverage.indexed + indexInfo.coverage.notIndexed} 可索引</span>
+                              {indexInfo.coverage.notIndexed > 0 && <span className="text-amber-600">{indexInfo.coverage.notIndexed} 待向量化</span>}
+                              {indexInfo.coverage.unembeddable > 0 && <span className="text-red-600">{indexInfo.coverage.unembeddable} 无法索引</span>}
                             </div>
                             <div className="text-muted-foreground">
                               向量块 {indexInfo.diskIndex.indexedChunks}
@@ -5736,15 +5747,27 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                             )}
                             {indexInfo.coverage.notIndexed > 0 && (
                               <details className="mt-1">
-                                <summary className="cursor-pointer text-amber-600">未嵌入文件 ({indexInfo.coverage.notIndexed})</summary>
+                                <summary className="cursor-pointer text-amber-600">待向量化 ({indexInfo.coverage.notIndexed})</summary>
                                 <ul className="mt-1 max-h-32 overflow-y-auto space-y-0.5 text-muted-foreground">
                                   {indexInfo.notIndexedFiles.map((f) => (
                                     <li key={f} className="truncate" title={f}>· {f.split("/").pop()}</li>
                                   ))}
-                                  {indexInfo.coverage.notIndexed > indexInfo.notIndexedFiles.length && (
-                                    <li className="text-muted-foreground">...还有 {indexInfo.coverage.notIndexed - indexInfo.notIndexedFiles.length} 个</li>
-                                  )}
                                 </ul>
+                                <p className="mt-1 text-muted-foreground">可再次点击「向量化」。</p>
+                              </details>
+                            )}
+                            {(indexInfo.unembeddableFiles?.length ?? 0) > 0 && (
+                              <details className="mt-1">
+                                <summary className="cursor-pointer text-red-600">无法索引 ({indexInfo.coverage.unembeddable})</summary>
+                                <ul className="mt-1 max-h-32 overflow-y-auto space-y-1 text-muted-foreground">
+                                  {indexInfo.unembeddableFiles.map((f) => (
+                                    <li key={f.path} title={f.path}>
+                                      <div className="truncate">· {f.path.split("/").pop()}</div>
+                                      <div className="text-[10px] text-red-600/80">{f.reason}</div>
+                                    </li>
+                                  ))}
+                                </ul>
+                                <p className="mt-1 text-muted-foreground">向量化无法处理此类文件；请解密 PDF、上传可搜索文本版，或删除该文件。</p>
                               </details>
                             )}
                           </>
@@ -6697,9 +6720,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               </span>
                             </div>
                             <Progress value={indexInfo.coverage.percentIndexed} className="h-1.5" />
-                            <div className="flex justify-between text-cyan-300/60">
-                              <span>{indexInfo.coverage.indexed}/{indexInfo.coverage.totalOnDisk} 文件</span>
-                              {indexInfo.coverage.notIndexed > 0 && <span className="text-amber-400">{indexInfo.coverage.notIndexed} 未索引</span>}
+                            <div className="flex flex-wrap justify-between gap-x-2 text-cyan-300/60">
+                              <span>{indexInfo.coverage.indexed}/{indexInfo.coverage.indexed + indexInfo.coverage.notIndexed} 可索引</span>
+                              {indexInfo.coverage.notIndexed > 0 && <span className="text-amber-400">{indexInfo.coverage.notIndexed} 待向量化</span>}
+                              {indexInfo.coverage.unembeddable > 0 && <span className="text-red-400">{indexInfo.coverage.unembeddable} 无法索引</span>}
                             </div>
                             <div className="text-cyan-300/60">向量块 {indexInfo.diskIndex.indexedChunks}</div>
                             {indexInfo.diskIndex.updatedAt && (
@@ -6709,10 +6733,23 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                             )}
                             {indexInfo.coverage.notIndexed > 0 && (
                               <details className="mt-0.5">
-                                <summary className="cursor-pointer text-amber-400">未嵌入 ({indexInfo.coverage.notIndexed})</summary>
+                                <summary className="cursor-pointer text-amber-400">待向量化 ({indexInfo.coverage.notIndexed})</summary>
                                 <ul className="mt-1 max-h-28 overflow-y-auto space-y-0.5 text-cyan-300/50">
                                   {indexInfo.notIndexedFiles.map((f) => (
                                     <li key={f} className="truncate" title={f}>· {f.split("/").pop()}</li>
+                                  ))}
+                                </ul>
+                              </details>
+                            )}
+                            {(indexInfo.unembeddableFiles?.length ?? 0) > 0 && (
+                              <details className="mt-0.5">
+                                <summary className="cursor-pointer text-red-400">无法索引 ({indexInfo.coverage.unembeddable})</summary>
+                                <ul className="mt-1 max-h-28 overflow-y-auto space-y-1 text-cyan-300/50">
+                                  {indexInfo.unembeddableFiles.map((f) => (
+                                    <li key={f.path} title={f.path}>
+                                      <div className="truncate">· {f.path.split("/").pop()}</div>
+                                      <div className="text-[10px] text-red-400/80">{f.reason}</div>
+                                    </li>
                                   ))}
                                 </ul>
                               </details>
