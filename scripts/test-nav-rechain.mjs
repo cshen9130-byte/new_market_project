@@ -2,6 +2,7 @@ import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuati
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
+  MAX_DAILY_RETURN_LOOKBACK_DAYS,
   capPeriodReturnByDrawdown,
   calcReturn,
   sanitizeNavPointSeries,
@@ -1327,6 +1328,32 @@ const bsj74bDetailLike = calcDailyReturnPctFromHistory(bsj74bFull, 0.7241, "2026
 assert(
   "BSJ74B detail-like series (no val gaps) stays +1.27%",
   bsj74bDetailLike != null && Math.abs(bsj74bDetailLike - 0.012727) < 0.0001,
+)
+
+// VN917B / 天戈钻选CTA1号B类: valuation tip 2026-07-30 / 1.6350 vs stale parent email
+// 2026-06-12 / 1.7792 must NOT become list 最新涨跌幅 (−8.10%).
+const vn917bStaleEmail = [
+  { nav_date: "2026-06-05", nav: 1.7703, return_nav: 1.7703 },
+  { nav_date: "2026-06-12", nav: 1.7792, return_nav: 1.7792 },
+]
+const vn917bBogus = calcDailyReturnPctFromHistory(vn917bStaleEmail, 1.635, "2026-07-30", null)
+assert(
+  "VN917B multi-week email gap must not yield −8.10% daily return",
+  vn917bBogus == null,
+)
+assert(
+  "VN917B gap exceeds MAX_DAILY_RETURN_LOOKBACK_DAYS",
+  (Date.parse("2026-07-30T00:00:00Z") - Date.parse("2026-06-12T00:00:00Z")) / 86_400_000
+    > MAX_DAILY_RETURN_LOOKBACK_DAYS,
+)
+const vn917bValuation = [
+  { nav_date: "2026-07-29", nav: 1.6177, return_nav: 1.6177 },
+  { nav_date: "2026-07-30", nav: 1.635, return_nav: 1.635 },
+]
+const vn917bDaily = calcDailyReturnPctFromHistory(vn917bValuation, 1.635, "2026-07-30", null)
+assert(
+  "VN917B valuation-adjacent series matches detail +1.07%",
+  vn917bDaily != null && Math.abs(vn917bDaily - 0.010694) < 0.0001,
 )
 
 const sbfm35History = [

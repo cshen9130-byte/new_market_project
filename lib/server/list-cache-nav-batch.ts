@@ -52,6 +52,12 @@ function navForReturn(p: NavPoint | null | undefined, fallback?: number): number
 }
 
 /**
+ * Reject "daily" 最新涨跌幅 computed across sparse history gaps (e.g. weekly NAVs are
+ * fine at ~7d; VN917B Jul-30 tip vs Jun-12 email is 48d → bogus −8.10%).
+ */
+export const MAX_DAILY_RETURN_LOOKBACK_DAYS = 21
+
+/**
  * Daily 复权 return for list 最新涨跌幅 — must be the day of `navDate`, matching detail
  * 平台数据. Never reuse an older tip's day return when history lags the listed NAV date.
  */
@@ -83,6 +89,9 @@ export function calcDailyReturnPctFromHistory(
     }
   }
   if (prev) {
+    if (calendarDaysBetween(navDate, prev.nav_date) > MAX_DAILY_RETURN_LOOKBACK_DAYS) {
+      return fallbackReturnPct ?? null
+    }
     const currReturn = navForReturn(curr, unitNav)
     const prevReturn = navForReturn(prev)
     if (currReturn != null && prevReturn != null) return calcReturn(currReturn, prevReturn)
@@ -1518,13 +1527,25 @@ export class BatchNavResolver {
     navDate: string,
     fallbackReturnPct: number | null,
   ): number | null {
-    // Same series as detail 平台数据涨跌幅: email/type6/legacy rechain, no 估值表 gap
-    // fills (those invent intermediate dates detail never shows — BSJ74B +4.61% vs +1.27%).
+    const since = addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS)
+    // Prefer email/type6/legacy (no 估值表 gap fills) when the tip itself is on that
+    // series — BSJ74B: skip Jul-23/24 市价 between email dates (+4.61% vs +1.27%).
+    const detailHist = this.mergedHistoryForDetailDailyReturn(identity, since)
+    const tipOnDetailSeries = detailHist.some((p) => p.nav_date === navDate)
+    if (!tipOnDetailSeries) {
+      // Valuation-led tip ahead of email/legacy (VN917B: list NAV 2026-07-30 / 1.6350
+      // while parent 【净值表】 email still tips 2026-06-12 / 1.7792). Using detail-daily
+      // history alone treats that multi-week gap as one day → −8.10%. Fall back to
+      // display history (includes FOF 估值表 holdings) so prev is the prior trading day.
+      return calcDailyReturnPctFromHistory(
+        this.mergedHistory(identity, since),
+        unitNav,
+        navDate,
+        fallbackReturnPct,
+      )
+    }
     return calcDailyReturnPctFromHistory(
-      this.mergedHistoryForDetailDailyReturn(
-        identity,
-        addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS),
-      ),
+      detailHist,
       unitNav,
       navDate,
       fallbackReturnPct,
