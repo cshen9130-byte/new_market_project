@@ -91,6 +91,8 @@ function mapDbError(err: unknown): { status: number; error: string } {
     return { status: 409, error: "already_exists" }
   }
   if (code === "42501") return { status: 500, error: "permission_denied" }
+  // Cache table missing PRIMARY KEY after build-then-swap (fixed by ensureListCachePrimaryKey).
+  if (code === "42P10") return { status: 500, error: "cache_schema_error" }
   return { status: 500, error: "db_error" }
 }
 

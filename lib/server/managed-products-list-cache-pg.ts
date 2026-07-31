@@ -40,6 +40,7 @@ import {
 import {
   atomicSwapListCacheTable,
   createListCacheStagingIndexes,
+  ensureListCachePrimaryKey,
   prepareListCacheStagingTable,
 } from "@/lib/server/list-cache-table-swap"
 
@@ -102,6 +103,8 @@ export async function ensureManagedProductsListCacheTable(): Promise<void> {
   for (const stmt of MIGRATE_STMTS) {
     await query(stmt)
   }
+  // CREATE TABLE IF NOT EXISTS does not add a missing PK on an existing table.
+  await ensureListCachePrimaryKey(LIVE_CACHE_TABLE, "managed_product_id")
   tableEnsured = true
 }
 
@@ -243,7 +246,11 @@ export async function refreshManagedProductsListCache(
   const writeTable = reuseIdentities ? LIVE_CACHE_TABLE : STAGING_CACHE_TABLE
   if (!reuseIdentities) {
     logProgress("preparing staging table for build-then-swap…")
-    await prepareListCacheStagingTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
+    await prepareListCacheStagingTable(
+      LIVE_CACHE_TABLE,
+      STAGING_CACHE_TABLE,
+      "managed_product_id",
+    )
   }
   if (products.length === 0) {
     if (!reuseIdentities) {

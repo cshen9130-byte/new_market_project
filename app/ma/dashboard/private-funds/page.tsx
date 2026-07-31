@@ -16476,7 +16476,9 @@ function OperationsManagedProductsView() {
                     ? "该基金已在在管产品列表中"
                     : addManagedFundError === "permission_denied"
                       ? "添加失败：数据库账号无写入权限，请联系管理员执行 scripts/db/008_grant_managed_products_write.sql"
-                      : `添加失败：${addManagedFundError}`}
+                      : addManagedFundError === "cache_schema_error"
+                        ? "添加失败：缓存表缺少主键，请联系管理员修复 ops_managed_products_list_cache"
+                        : `添加失败：${addManagedFundError}`}
                 </p>
               )}
               <div className="flex justify-end gap-2">

@@ -28,6 +28,7 @@ import {
 import {
   atomicSwapListCacheTable,
   createListCacheStagingIndexes,
+  ensureListCachePrimaryKey,
   prepareListCacheStagingTable,
 } from "@/lib/server/list-cache-table-swap"
 
@@ -95,6 +96,8 @@ export async function ensureFofOverviewListCacheTable(): Promise<void> {
   for (const stmt of MIGRATE_STMTS) {
     await query(stmt)
   }
+  // CREATE TABLE IF NOT EXISTS does not add a missing PK on an existing table.
+  await ensureListCachePrimaryKey(LIVE_CACHE_TABLE, "fof_underlying_id")
   tableEnsured = true
 }
 
@@ -284,7 +287,11 @@ export async function refreshFofOverviewListCache(
   const writeTable = reuseIdentities ? LIVE_CACHE_TABLE : STAGING_CACHE_TABLE
   if (!reuseIdentities) {
     logProgress("preparing staging table for build-then-swap…", t0)
-    await prepareListCacheStagingTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
+    await prepareListCacheStagingTable(
+      LIVE_CACHE_TABLE,
+      STAGING_CACHE_TABLE,
+      "fof_underlying_id",
+    )
   }
   if (products.length === 0) {
     if (!reuseIdentities) {
