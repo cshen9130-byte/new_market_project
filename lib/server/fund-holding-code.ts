@@ -5,6 +5,7 @@
 
 import { query } from "@/lib/db"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 
 function compactSubjectCode(code: string | null | undefined): string {
   return String(code ?? "")
@@ -47,13 +48,19 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   SNW169: "NW169B",
   SSJ392: "SJ392B",
   STA891: "TA891A",
+  STA891A: "TA891A",
   SZG868: "ZG868A",
+  SBTH74B: "BTH74B",
 }
 
 export function resolveFofValuationCodeAlias(code: string | null | undefined): string | null {
   const c = String(code ?? "").trim().toUpperCase()
   if (!c) return null
-  return FOF_VALUATION_CODE_ALIASES[c] ?? null
+  if (FOF_VALUATION_CODE_ALIASES[c]) return FOF_VALUATION_CODE_ALIASES[c]
+  // Mistaken S-prefixed share-class codes: SBTH74B → BTH74B
+  const canonical = canonicalizeShareClassBeianCode(c)
+  if (canonical && canonical !== c) return canonical
+  return null
 }
 
 /** Known A-share ETF name patterns → 6-digit ticker code. */

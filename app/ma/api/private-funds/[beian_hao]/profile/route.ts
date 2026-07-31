@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { formatFeePayFormula, parseFeePayFormulaConfig } from "@/lib/ma/fund-elements-extra"
+import {
+  loadBasicinfoTrackByBeianKeys,
+  resolveFundElementsBeianKeys,
+} from "@/lib/server/fund-elements-lookup"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 
 export const runtime = "nodejs"
@@ -36,7 +41,6 @@ type TrackRow = {
   advisor: string | null
   inception_date: string | null
   puton_date: string | null
-  operation_date: string | null
   mandator_name: string | null
   open_day: string | null
   is_temporary_open: number | null
@@ -90,23 +94,72 @@ async function loadBfl(beian_hao: string): Promise<BflRow[]> {
 
 async function loadTrack(beian_hao: string): Promise<TrackRow[]> {
   try {
-    return await query<TrackRow>(
+    // Keep operation_date out of this SELECT — column may be missing until
+    // migration 013 is applied; a failed SELECT would blank all 申赎 fields.
+    const keys = await resolveFundElementsBeianKeys(beian_hao)
+    return await loadBasicinfoTrackByBeianKeys<TrackRow>(
+      keys,
       `SELECT fund_name, fund_short_name, register_number,
-              advisor, inception_date::text, operation_date::text, puton_date::text,
+              advisor, inception_date::text, puton_date::text,
               mandator_name, open_day, is_temporary_open,
               fee_purchase, add_amount, fee_redeem,
               precautious_line, closed_period, stop_line,
               fee_manage_rate::text, fee_trust, fee_manage,
               fee_admin_service, fee_pay,
               updated_at::text
-       FROM basicinfo_bfl_track
-       WHERE register_number = $1 OR record_key = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [beian_hao],
+       FROM basicinfo_bfl_track`,
     )
-  } catch {
+  } catch (err) {
+    console.error("[private-funds/profile] basicinfo_bfl_track", err)
     return []
+  }
+}
+
+async function loadOperationDate(beian_hao: string): Promise<string | null> {
+  try {
+    const keys = await resolveFundElementsBeianKeys(beian_hao)
+    const rows = await loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
+      keys,
+      `SELECT operation_date::text AS operation_date
+       FROM basicinfo_bfl_track`,
+    )
+    return fmtDate(rows[0]?.operation_date)
+  } catch {
+    // operation_date column may not exist until migration 013 is applied
+    return null
+  }
+}
+
+async function loadExtraElementFields(beian_hao: string): Promise<{
+  risk_level: string | null
+  lock_period_desc: string | null
+  fee_pay_formula: string | null
+}> {
+  try {
+    const keys = await resolveFundElementsBeianKeys(beian_hao)
+    const rows = await loadBasicinfoTrackByBeianKeys<{
+      risk_level: string | null
+      lock_period_desc: string | null
+      fee_pay_formula: string | null
+      fee_pay_formula_json: unknown
+    }>(
+      keys,
+      `SELECT risk_level, lock_period_desc, fee_pay_formula, fee_pay_formula_json
+       FROM basicinfo_bfl_track`,
+    )
+    const row = rows[0]
+    if (!row) {
+      return { risk_level: null, lock_period_desc: null, fee_pay_formula: null }
+    }
+    const config = parseFeePayFormulaConfig(row.fee_pay_formula_json)
+    return {
+      risk_level: row.risk_level || null,
+      lock_period_desc: row.lock_period_desc || null,
+      fee_pay_formula: row.fee_pay_formula || formatFeePayFormula(config),
+    }
+  } catch {
+    // columns may not exist until migration 018 is applied
+    return { risk_level: null, lock_period_desc: null, fee_pay_formula: null }
   }
 }
 
@@ -131,15 +184,17 @@ export async function GET(
     const productName = pfi?.product_name ?? bfl?.product_name ?? ""
     const shortName = bfl?.short_name ?? ""
 
-    const trackRows = await loadTrack(beian_hao)
+    const [trackRows, operationDate, extra] = await Promise.all([
+      loadTrack(beian_hao),
+      loadOperationDate(beian_hao),
+      loadExtraElementFields(beian_hao),
+    ])
     const track = trackRows[0]
 
     const inceptionDate =
       fmtDate(track?.inception_date) ??
       fmtDate(bfl?.inception_date) ??
       fmtDate(pfi?.inception_date)
-
-    const operationDate = fmtDate(track?.operation_date)
 
     const putonDate =
       fmtDate(track?.puton_date) ??
@@ -174,17 +229,17 @@ export async function GET(
       fee_purchase: track?.fee_purchase ?? null,
       add_amount: track?.add_amount ?? null,
       fee_redeem: track?.fee_redeem ?? null,
-      risk_level: null,
+      risk_level: extra.risk_level,
       precautious_line: track?.precautious_line ?? null,
       closed_period: track?.closed_period ?? null,
       stop_line: track?.stop_line ?? null,
-      lock_period_desc: null,
+      lock_period_desc: extra.lock_period_desc,
       fee_manage_rate: feeManageRate,
       fee_trust: track?.fee_trust ?? null,
       fee_manage: track?.fee_manage ?? null,
       fee_admin_service: track?.fee_admin_service ?? null,
       fee_pay: track?.fee_pay ?? null,
-      fee_pay_formula: null,
+      fee_pay_formula: extra.fee_pay_formula,
       updated_at: track?.updated_at ? fmtDate(track.updated_at) : null,
     })
   } catch (err) {

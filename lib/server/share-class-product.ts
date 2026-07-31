@@ -70,6 +70,34 @@ export function buildTieredBeianCode(baseCode: string, letter: ShareClassLetter)
   return `${code}${letter}`
 }
 
+/**
+ * Normalize mistaken S-prefixed share-class codes (SBTH74B → BTH74B, STA891A → TA891A).
+ * Parent codes without A/B/C suffix are returned unchanged.
+ */
+export function canonicalizeShareClassBeianCode(code: string | null | undefined): string | null {
+  const raw = String(code ?? "").trim().toUpperCase()
+  if (!raw) return null
+  const m = raw.match(/^(.+?)([ABC])$/u)
+  if (!m) return raw
+  return buildTieredBeianCode(m[1], m[2] as ShareClassLetter)
+}
+
+/** SQL: same normalization as canonicalizeShareClassBeianCode. */
+export function sqlCanonicalShareClassBeian(codeExpr: string): string {
+  return `CASE
+    WHEN UPPER(BTRIM(${codeExpr})) ~ '^[A-Z0-9]+[ABC]$'
+    THEN (
+      CASE
+        WHEN regexp_replace(UPPER(BTRIM(${codeExpr})), '[ABC]$', '') ~ '^S[A-Z][A-Z0-9]{4,7}$'
+        THEN substring(regexp_replace(UPPER(BTRIM(${codeExpr})), '[ABC]$', '') from 2)
+             || right(UPPER(BTRIM(${codeExpr})), 1)
+        ELSE UPPER(BTRIM(${codeExpr}))
+      END
+    )
+    ELSE NULLIF(BTRIM(${codeExpr}), '')
+  END`
+}
+
 export async function loadShareClassPreview(
   beianHao: string,
   shareClass?: ShareClassLetter | null,

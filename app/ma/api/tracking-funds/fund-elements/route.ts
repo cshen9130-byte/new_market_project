@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import {
+  loadBasicinfoTrackByBeianKeys,
+  resolveFundElementsBeianKeys,
+} from "@/lib/server/fund-elements-lookup"
 
 export const dynamic = "force-dynamic"
 
@@ -12,9 +16,12 @@ const TEMP_OPEN_MAP: Record<number, string> = {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const beian_hao = (searchParams.get("beian_hao") || "").trim()
+  const product_name = (searchParams.get("product_name") || "").trim()
   if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
 
-  const rows = await query<{
+  const keys = await resolveFundElementsBeianKeys(beian_hao, product_name || null)
+
+  const rows = await loadBasicinfoTrackByBeianKeys<{
     fund_name: string | null
     fund_short_name: string | null
     register_number: string | null
@@ -39,6 +46,7 @@ export async function GET(req: Request) {
     fee_pay: string | null
     updated_at: string | null
   }>(
+    keys,
     `SELECT fund_name, fund_short_name, register_number,
             advisor, advisor2, inception_date::text, puton_date::text,
             mandator_name, manager_names,
@@ -48,11 +56,7 @@ export async function GET(req: Request) {
             fee_manage_rate::text, fee_trust, fee_manage,
             fee_admin_service, fee_pay,
             updated_at::text
-     FROM basicinfo_bfl_track
-     WHERE register_number = $1 OR record_key = $1
-     ORDER BY updated_at DESC NULLS LAST, id DESC
-     LIMIT 1`,
-    [beian_hao]
+     FROM basicinfo_bfl_track`,
   )
 
   if (!rows[0]) {
@@ -60,11 +64,14 @@ export async function GET(req: Request) {
   }
 
   const row = rows[0]
+  const resolvedBeian = (row.register_number || keys[0] || beian_hao).trim()
 
-  // Try to get fund manager from private_fund_info
+  // Try to get fund manager from private_fund_info (try all candidate keys)
   const pfiRows = await query<{ manager: string | null }>(
-    `SELECT manager FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
-    [beian_hao]
+    `SELECT manager FROM private_fund_info
+     WHERE beian_hao = ANY($1::text[])
+     LIMIT 1`,
+    [keys],
   ).catch(() => [] as { manager: string | null }[])
 
   const is_temporary_open_text =
@@ -75,7 +82,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     fund_name: row.fund_name,
     fund_short_name: row.fund_short_name,
-    register_number: row.register_number,
+    register_number: row.register_number ?? resolvedBeian,
     advisor: row.advisor || null,
     fund_manager: pfiRows[0]?.manager || row.advisor || null,
     inception_date: row.inception_date ? row.inception_date.slice(0, 10) : null,

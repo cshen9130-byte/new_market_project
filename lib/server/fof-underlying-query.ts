@@ -15,6 +15,7 @@ import {
 } from "@/lib/server/managed-product-beian"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
 import { shareClassProductNamesMatch } from "@/lib/server/fund-name-match"
+import { sqlCanonicalShareClassBeian } from "@/lib/server/share-class-product"
 import { lookupTeamDataProductFundInfo } from "@/lib/server/team-data-query-pg"
 
 function decodeFundIdentifier(raw: string): string {
@@ -114,7 +115,11 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
 }
 
 function guardedBeianCol(col: string, productNameExpr: string): string {
-  return `NULLIF(BTRIM(CASE WHEN ${sqlShareClassCodeGuard(col, productNameExpr)} THEN ${col} END), '')`
+  // Prefer share-class-correct codes, and collapse mistaken S-prefixed tier codes
+  // (SBTH74B → BTH74B) so FOF cache matches 运维团队数据 / basicinfo_bfl_track keys.
+  return `${sqlCanonicalShareClassBeian(
+    `CASE WHEN ${sqlShareClassCodeGuard(col, productNameExpr)} THEN ${col} END`,
+  )}`
 }
 
 /** Resolve 备案号 preferring share-class-specific codes (e.g. VN917B over SVN917 for B类). */

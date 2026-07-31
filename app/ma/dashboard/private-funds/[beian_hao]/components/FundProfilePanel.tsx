@@ -154,7 +154,7 @@ function BasicInfoContent({ data }: { data: ProfileData }) {
             <ProfileRow l1="止损线" v1={data.stop_line} l2="锁定期说明" v2={data.lock_period_desc} />
             <ProfileRow l1="管理费率" v1={data.fee_manage_rate} l2="托管费" v2={data.fee_trust} />
             <ProfileRow l1="管理费说明" v1={data.fee_manage} l2="外包费" v2={data.fee_admin_service} multiline1 />
-            <ProfileRow l1="业绩报酬说明" v1={data.fee_pay} l2="业绩报酬公式" v2={data.fee_pay_formula} multiline1 />
+            <ProfileRow l1="业绩报酬说明" v1={data.fee_pay} l2="业绩报酬公式" v2={data.fee_pay_formula} multiline1 multiline2 />
           </tbody>
         </table>
       </div>

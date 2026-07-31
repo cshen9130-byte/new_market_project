@@ -1,6 +1,17 @@
 import { createHash } from "crypto"
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import {
+  buildFeePayFormulaConfig,
+  formatFeePayFormula,
+  parseFeePayFormulaConfig,
+  type FeePayFormulaConfig,
+} from "@/lib/ma/fund-elements-extra"
+import {
+  loadBasicinfoTrackByBeianKeys,
+  resolveFundElementsBeianKeys,
+} from "@/lib/server/fund-elements-lookup"
+import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 
 const ELEMENTS_SOURCE = "ops/fund-elements"
 
@@ -11,6 +22,15 @@ const TEMP_OPEN_MAP: Record<number, string> = {
   2: "不可临开",
   3: "可临开回",
 }
+
+/** Columns added by migrations 013 / 018 — strip and retry if not applied yet. */
+const OPTIONAL_TRACK_COLUMNS = new Set([
+  "operation_date",
+  "risk_level",
+  "lock_period_desc",
+  "fee_pay_formula",
+  "fee_pay_formula_json",
+])
 
 type BasicinfoTrackRow = {
   fund_name: string | null
@@ -34,9 +54,17 @@ type BasicinfoTrackRow = {
   fee_pay: string | null
 }
 
-async function loadBasicinfoTrack(beian_hao: string): Promise<BasicinfoTrackRow[]> {
+type ExtraElementFields = {
+  risk_level: string | null
+  lock_period_desc: string | null
+  fee_pay_formula: string | null
+  fee_pay_formula_config: FeePayFormulaConfig | null
+}
+
+async function loadBasicinfoTrack(keys: string[]): Promise<BasicinfoTrackRow[]> {
   try {
-    return await query<BasicinfoTrackRow>(
+    return await loadBasicinfoTrackByBeianKeys<BasicinfoTrackRow>(
+      keys,
       `SELECT fund_name, register_number, advisor,
               inception_date::text, puton_date::text, mandator_name,
               open_day, is_temporary_open,
@@ -44,11 +72,7 @@ async function loadBasicinfoTrack(beian_hao: string): Promise<BasicinfoTrackRow[
               precautious_line, closed_period, stop_line,
               fee_manage_rate::text, fee_trust, fee_manage,
               fee_admin_service, fee_pay
-       FROM basicinfo_bfl_track
-       WHERE register_number = $1 OR record_key = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [beian_hao],
+       FROM basicinfo_bfl_track`,
     )
   } catch (err) {
     console.error("[ops/fund-elements GET] basicinfo_bfl_track", err)
@@ -56,15 +80,12 @@ async function loadBasicinfoTrack(beian_hao: string): Promise<BasicinfoTrackRow[
   }
 }
 
-async function loadOperationDate(beian_hao: string): Promise<string | null> {
+async function loadOperationDate(keys: string[]): Promise<string | null> {
   try {
-    const rows = await query<{ operation_date: string | null }>(
+    const rows = await loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
+      keys,
       `SELECT operation_date::text AS operation_date
-       FROM basicinfo_bfl_track
-       WHERE register_number = $1 OR record_key = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [beian_hao],
+       FROM basicinfo_bfl_track`,
     )
     const value = rows[0]?.operation_date
     return value ? value.slice(0, 10) : null
@@ -74,13 +95,49 @@ async function loadOperationDate(beian_hao: string): Promise<string | null> {
   }
 }
 
+async function loadExtraElementFields(keys: string[]): Promise<ExtraElementFields> {
+  const empty: ExtraElementFields = {
+    risk_level: null,
+    lock_period_desc: null,
+    fee_pay_formula: null,
+    fee_pay_formula_config: null,
+  }
+  try {
+    const rows = await loadBasicinfoTrackByBeianKeys<{
+      risk_level: string | null
+      lock_period_desc: string | null
+      fee_pay_formula: string | null
+      fee_pay_formula_json: unknown
+    }>(
+      keys,
+      `SELECT risk_level, lock_period_desc, fee_pay_formula, fee_pay_formula_json
+       FROM basicinfo_bfl_track`,
+    )
+    const row = rows[0]
+    if (!row) return empty
+    const config = parseFeePayFormulaConfig(row.fee_pay_formula_json)
+    return {
+      risk_level: row.risk_level || null,
+      lock_period_desc: row.lock_period_desc || null,
+      fee_pay_formula: row.fee_pay_formula || formatFeePayFormula(config),
+      fee_pay_formula_config: config,
+    }
+  } catch {
+    // columns may not exist until migration 018 is applied
+    return empty
+  }
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const beian_hao = (searchParams.get("beian_hao") || "").trim()
+  const product_name = (searchParams.get("product_name") || "").trim()
   if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
 
-  const [elementsRows, teamRows, pfiRows, bflRows, operation_date] = await Promise.all([
-    loadBasicinfoTrack(beian_hao),
+  const keys = await resolveFundElementsBeianKeys(beian_hao, product_name || null)
+
+  const [elementsRows, teamRows, pfiRows, bflRows, operation_date, extra] = await Promise.all([
+    loadBasicinfoTrack(keys),
 
     query<{
       platform_strategy_one: string | null
@@ -93,26 +150,31 @@ export async function GET(req: Request) {
       `SELECT platform_strategy_one, platform_strategy_two, platform_strategy_three,
               company_strategy_one, company_strategy_two, company_strategy_three
        FROM type6_ops_team_full
-       WHERE register_number = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
+       WHERE register_number = ANY($1::text[])
+       ORDER BY
+         CASE WHEN UPPER(BTRIM(register_number)) = UPPER(BTRIM($2)) THEN 0 ELSE 1 END,
+         updated_at DESC NULLS LAST, id DESC
        LIMIT 1`,
-      [beian_hao]
+      [keys, keys[0]]
     ).catch(() => []),
 
     query<{ manager: string | null; benchmark: string | null }>(
-      `SELECT manager, benchmark FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
-      [beian_hao]
+      `SELECT manager, benchmark FROM private_fund_info
+       WHERE beian_hao = ANY($1::text[])
+       LIMIT 1`,
+      [keys]
     ).catch(() => []),
 
     query<{ strategy_confirmed: number | null; benchmark_index: string | null }>(
       `SELECT strategy_confirmed, benchmark_index
        FROM private_fund_info_bfl
-       WHERE beian_hao = $1
+       WHERE beian_hao = ANY($1::text[])
        LIMIT 1`,
-      [beian_hao]
+      [keys]
     ).catch(() => []),
 
-    loadOperationDate(beian_hao),
+    loadOperationDate(keys),
+    loadExtraElementFields(keys),
   ])
 
   const el = elementsRows[0]
@@ -133,7 +195,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     fund_name: el?.fund_name ?? null,
-    register_number: el?.register_number ?? beian_hao,
+    register_number: el?.register_number ?? canonicalizeShareClassBeianCode(beian_hao) ?? beian_hao,
     advisor: el?.advisor ?? null,
     fund_manager,
     inception_date: el?.inception_date ? el.inception_date.slice(0, 10) : null,
@@ -153,14 +215,18 @@ export async function GET(req: Request) {
     fee_purchase: el?.fee_purchase ?? null,
     add_amount: el?.add_amount ?? null,
     fee_redeem: el?.fee_redeem ?? null,
+    risk_level: extra.risk_level,
     precautious_line: el?.precautious_line ?? null,
     closed_period: el?.closed_period ?? null,
     stop_line: el?.stop_line ?? null,
+    lock_period_desc: extra.lock_period_desc,
     fee_manage_rate,
     fee_trust: el?.fee_trust ?? null,
     fee_manage: el?.fee_manage ?? null,
     fee_admin_service: el?.fee_admin_service ?? null,
     fee_pay: el?.fee_pay ?? null,
+    fee_pay_formula: extra.fee_pay_formula,
+    fee_pay_formula_config: extra.fee_pay_formula_config,
   })
 }
 
@@ -252,10 +318,128 @@ function buildElementPayload(
   }
 }
 
+function missingOptionalColumn(err: unknown): string | null {
+  const msg = err instanceof Error ? err.message : String(err ?? "")
+  if (!/(does not exist|undefined_column)/i.test(msg)) return null
+  const quoted = msg.match(/column "([^"]+)"/i)
+  if (quoted && OPTIONAL_TRACK_COLUMNS.has(quoted[1])) return quoted[1]
+  for (const col of OPTIONAL_TRACK_COLUMNS) {
+    if (new RegExp(`\\b${col}\\b`, "i").test(msg)) return col
+  }
+  return null
+}
+
+function sqlCastForColumn(column: string): string {
+  if (column === "inception_date" || column === "operation_date" || column === "puton_date") return "::date"
+  if (column === "fee_manage_rate") return "::numeric"
+  if (column === "fee_pay_formula_json") return "::jsonb"
+  return ""
+}
+
+async function upsertBasicinfoTrack(
+  beian_hao: string,
+  fieldValues: Record<string, unknown>,
+): Promise<void> {
+  const setClauses: string[] = []
+  const values: unknown[] = []
+  let paramIndex = 1
+
+  for (const [column, value] of Object.entries(fieldValues)) {
+    if (value === undefined) continue
+    const cast = sqlCastForColumn(column)
+    setClauses.push(`${column} = $${paramIndex}${cast}`)
+    values.push(column === "fee_pay_formula_json" ? JSON.stringify(value) : value)
+    paramIndex++
+  }
+
+  if (setClauses.length === 0) return
+
+  const lookupKeys = await resolveFundElementsBeianKeys(beian_hao)
+  const existing = await query<{ id: number }>(
+    `SELECT id FROM basicinfo_bfl_track
+     WHERE register_number = ANY($1::text[]) OR record_key = ANY($1::text[])
+     ORDER BY
+       CASE
+         WHEN UPPER(BTRIM(register_number)) = UPPER(BTRIM($2)) THEN 0
+         WHEN UPPER(BTRIM(record_key)) = UPPER(BTRIM($2)) THEN 1
+         ELSE 2
+       END,
+       updated_at DESC NULLS LAST, id DESC
+     LIMIT 1`,
+    [lookupKeys, lookupKeys[0] ?? beian_hao],
+  )
+
+  if (existing[0]) {
+    setClauses.push("updated_at = NOW()")
+    values.push(existing[0].id)
+    await query(
+      `UPDATE basicinfo_bfl_track SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`,
+      values,
+    )
+    return
+  }
+
+  const payload = buildElementPayload(beian_hao, fieldValues)
+  const rowHash = buildElementRowHash(beian_hao)
+  const insertColumns = ["record_key", "payload", "row_hash", "source", "register_number"]
+  const insertValues: unknown[] = [beian_hao, payload, rowHash, ELEMENTS_SOURCE, beian_hao]
+  const insertPlaceholders: string[] = ["$1", "$2::jsonb", "$3", "$4", "$5"]
+  let insertIndex = 6
+  for (const [column, value] of Object.entries(fieldValues)) {
+    if (value === undefined) continue
+    insertColumns.push(column)
+    insertPlaceholders.push(`$${insertIndex}${sqlCastForColumn(column)}`)
+    insertValues.push(column === "fee_pay_formula_json" ? JSON.stringify(value) : value)
+    insertIndex++
+  }
+  insertColumns.push("updated_at")
+  insertPlaceholders.push("NOW()")
+  await query(
+    `INSERT INTO basicinfo_bfl_track (${insertColumns.join(", ")}) VALUES (${insertPlaceholders.join(", ")})`,
+    insertValues,
+  )
+}
+
+async function upsertBasicinfoTrackResilient(
+  beian_hao: string,
+  fieldValues: Record<string, unknown>,
+): Promise<void> {
+  let current = { ...fieldValues }
+  for (let attempt = 0; attempt < OPTIONAL_TRACK_COLUMNS.size + 1; attempt++) {
+    try {
+      await upsertBasicinfoTrack(beian_hao, current)
+      return
+    } catch (err) {
+      const missing = missingOptionalColumn(err)
+      if (!missing || !(missing in current) || current[missing] === undefined) throw err
+      const { [missing]: _omit, ...rest } = current
+      current = rest
+    }
+  }
+}
+
 export async function PATCH(req: Request) {
   const body = await req.json().catch(() => null)
-  const beian_hao = String(body?.beian_hao ?? "").trim()
-  if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
+  const rawBeian = String(body?.beian_hao ?? "").trim()
+  if (!rawBeian) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
+  // Persist under canonical share-class code (BTH74B) rather than mistaken SBTH74B.
+  const beian_hao = canonicalizeShareClassBeianCode(rawBeian) || rawBeian
+
+  const formulaConfig =
+    body?.fee_pay_formula_config !== undefined ||
+    body?.fee_pay_mode !== undefined ||
+    body?.fee_pay_gradients !== undefined
+      ? buildFeePayFormulaConfig(
+          body?.fee_pay_formula_config?.mode ?? body?.fee_pay_mode,
+          body?.fee_pay_formula_config?.gradients ?? body?.fee_pay_gradients,
+        )
+      : undefined
+  const feePayFormula =
+    body?.fee_pay_formula !== undefined
+      ? normalizeOptionalString(body.fee_pay_formula)
+      : formulaConfig !== undefined
+        ? formatFeePayFormula(formulaConfig)
+        : undefined
 
   const fieldValues: Record<string, unknown> = {
     fund_name: normalizeOptionalString(body.fund_name),
@@ -269,82 +453,26 @@ export async function PATCH(req: Request) {
     fee_purchase: normalizeOptionalString(body.fee_purchase),
     add_amount: normalizeOptionalString(body.add_amount),
     fee_redeem: normalizeOptionalString(body.fee_redeem),
+    risk_level: normalizeOptionalString(body.risk_level),
     precautious_line: normalizeOptionalString(body.precautious_line),
     closed_period: normalizeOptionalString(body.closed_period),
     stop_line: normalizeOptionalString(body.stop_line),
+    lock_period_desc: normalizeOptionalString(body.lock_period_desc),
     fee_manage_rate: encodeManageRate(body.fee_manage_rate),
     fee_trust: normalizeOptionalString(body.fee_trust),
     fee_manage: normalizeOptionalString(body.fee_manage),
     fee_admin_service: normalizeOptionalString(body.fee_admin_service),
     fee_pay: normalizeOptionalString(body.fee_pay),
+    fee_pay_formula: feePayFormula,
+    fee_pay_formula_json: formulaConfig === undefined ? undefined : formulaConfig,
   }
 
   const fund_manager = normalizeOptionalString(body.fund_manager)
   const advisor = normalizeOptionalString(body.advisor)
   const custodian = normalizeOptionalString(body.custodian)
 
-  const setClauses: string[] = []
-  const values: unknown[] = []
-  let paramIndex = 1
-
-  for (const [column, value] of Object.entries(fieldValues)) {
-    if (value === undefined) continue
-    if (column === "inception_date" || column === "operation_date" || column === "puton_date") {
-      setClauses.push(`${column} = $${paramIndex}::date`)
-    } else if (column === "fee_manage_rate") {
-      setClauses.push(`${column} = $${paramIndex}::numeric`)
-    } else {
-      setClauses.push(`${column} = $${paramIndex}`)
-    }
-    values.push(value)
-    paramIndex++
-  }
-
   try {
-    const existing = await query<{ id: number }>(
-      `SELECT id FROM basicinfo_bfl_track
-       WHERE register_number = $1 OR record_key = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [beian_hao]
-    )
-
-    if (existing[0]) {
-      if (setClauses.length > 0) {
-        setClauses.push("updated_at = NOW()")
-        values.push(existing[0].id)
-        await query(
-          `UPDATE basicinfo_bfl_track SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`,
-          values,
-        )
-      }
-    } else if (setClauses.length > 0) {
-      const payload = buildElementPayload(beian_hao, fieldValues)
-      const rowHash = buildElementRowHash(beian_hao)
-      const insertColumns = ["record_key", "payload", "row_hash", "source", "register_number"]
-      const insertValues: unknown[] = [beian_hao, payload, rowHash, ELEMENTS_SOURCE, beian_hao]
-      const insertPlaceholders: string[] = ["$1", "$2::jsonb", "$3", "$4", "$5"]
-      let insertIndex = 6
-      for (const [column, value] of Object.entries(fieldValues)) {
-        if (value === undefined) continue
-        insertColumns.push(column)
-        if (column === "inception_date" || column === "operation_date" || column === "puton_date") {
-          insertPlaceholders.push(`$${insertIndex}::date`)
-        } else if (column === "fee_manage_rate") {
-          insertPlaceholders.push(`$${insertIndex}::numeric`)
-        } else {
-          insertPlaceholders.push(`$${insertIndex}`)
-        }
-        insertValues.push(value)
-        insertIndex++
-      }
-      insertColumns.push("updated_at")
-      insertPlaceholders.push("NOW()")
-      await query(
-        `INSERT INTO basicinfo_bfl_track (${insertColumns.join(", ")}) VALUES (${insertPlaceholders.join(", ")})`,
-        insertValues,
-      )
-    }
+    await upsertBasicinfoTrackResilient(beian_hao, fieldValues)
 
     if (fund_manager !== undefined) {
       await query(

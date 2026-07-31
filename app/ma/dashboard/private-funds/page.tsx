@@ -1984,11 +1984,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     if (!showElementsDialog || !elementsBeianHao) return
     setElementsData(null)
     setElementsLoading(true)
-    fetch(`/ma/api/tracking-funds/fund-elements?beian_hao=${encodeURIComponent(elementsBeianHao)}`)
+    const qs = new URLSearchParams({ beian_hao: elementsBeianHao })
+    if (elementsName) qs.set("product_name", elementsName)
+    fetch(`/ma/api/tracking-funds/fund-elements?${qs}`)
       .then((r) => r.json())
       .then((d) => { setElementsData(d); setElementsLoading(false) })
       .catch(() => setElementsLoading(false))
-  }, [showElementsDialog, elementsBeianHao])
+  }, [showElementsDialog, elementsBeianHao, elementsName])
 
   const isSupportedPool = pools.some((p) => p.key === activePool)
   const sourcePool = activePool === "bfl_ops" || isSupportedPool ? activePool : "bfl"
@@ -8984,6 +8986,14 @@ function DirectFieldConfigDialog({
 
 type OpsElementsTab = "basic" | "platform" | "subscription" | "attachment" | "team"
 
+type PerfFeeMode = "none" | "fixed" | "annual_gradient" | "excess_gradient" | "benchmark"
+
+interface PerfFeeGradient {
+  fromPct: string
+  toPct: string
+  ratePct: string
+}
+
 interface OpsFundElementsData {
   fund_name: string | null
   register_number: string | null
@@ -9005,14 +9015,21 @@ interface OpsFundElementsData {
   fee_purchase: string | null
   add_amount: string | null
   fee_redeem: string | null
+  risk_level: string | null
   precautious_line: string | null
   closed_period: string | null
   stop_line: string | null
+  lock_period_desc: string | null
   fee_manage_rate: string | null
   fee_trust: string | null
   fee_manage: string | null
   fee_admin_service: string | null
   fee_pay: string | null
+  fee_pay_formula: string | null
+  fee_pay_formula_config: {
+    mode: PerfFeeMode
+    gradients?: PerfFeeGradient[]
+  } | null
 }
 
 const OPS_ELEMENTS_TABS: { key: OpsElementsTab; label: string }[] = [
@@ -9025,13 +9042,10 @@ const OPS_ELEMENTS_TABS: { key: OpsElementsTab; label: string }[] = [
 
 const OPS_BENCHMARK_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数"]
 
-type PerfFeeMode = "none" | "fixed" | "annual_gradient" | "excess_gradient" | "benchmark"
-
-interface PerfFeeGradient {
-  fromPct: string
-  toPct: string
-  ratePct: string
-}
+const DEFAULT_PERF_GRADIENTS: PerfFeeGradient[] = [
+  { fromPct: "0", toPct: "6", ratePct: "0" },
+  { fromPct: "6", toPct: "", ratePct: "40" },
+]
 
 function OpsElementsFieldLabel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
@@ -9063,6 +9077,7 @@ function OpsEditElementsDialog({
   const [tab, setTab] = useState<OpsElementsTab>("basic")
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [platformTree, setPlatformTree] = useState<TrackStrategyNode[]>([])
   const [teamTree, setTeamTree] = useState<TrackStrategyNode[]>([])
 
@@ -9104,14 +9119,12 @@ function OpsEditElementsDialog({
   const [feeAdminService, setFeeAdminService] = useState("")
   const [feeTrust, setFeeTrust] = useState("")
   const [perfFeeMode, setPerfFeeMode] = useState<PerfFeeMode>("annual_gradient")
-  const [perfGradients, setPerfGradients] = useState<PerfFeeGradient[]>([
-    { fromPct: "0", toPct: "6", ratePct: "0" },
-    { fromPct: "6", toPct: "", ratePct: "40" },
-  ])
+  const [perfGradients, setPerfGradients] = useState<PerfFeeGradient[]>(DEFAULT_PERF_GRADIENTS)
 
   useEffect(() => {
     if (!open || !beian_hao) return
     setTab("basic")
+    setSaveError(null)
     setLoading(true)
     Promise.all([
       fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beian_hao)}`).then((r) => r.json()),
@@ -9142,11 +9155,23 @@ function OpsEditElementsDialog({
         setFeePurchase(d.fee_purchase ?? "")
         setFeeRedeem(d.fee_redeem ?? "")
         setClosedPeriod(d.closed_period ?? "")
-        setLockPeriodDesc("")
+        setLockPeriodDesc(d.lock_period_desc ?? "")
         setFeeManageRate(d.fee_manage_rate ?? "")
         setFeeManageDesc(d.fee_manage ?? "")
         setFeePayDesc(d.fee_pay ?? "")
+        setRiskLevel(d.risk_level ?? "")
         setAddAmount(d.add_amount ?? "")
+        if (d.fee_pay_formula_config?.mode) {
+          setPerfFeeMode(d.fee_pay_formula_config.mode)
+          setPerfGradients(
+            d.fee_pay_formula_config.gradients?.length
+              ? d.fee_pay_formula_config.gradients
+              : DEFAULT_PERF_GRADIENTS,
+          )
+        } else {
+          setPerfFeeMode("annual_gradient")
+          setPerfGradients(DEFAULT_PERF_GRADIENTS)
+        }
         setFeeAdminService(d.fee_admin_service ?? "")
         setFeeTrust(d.fee_trust ?? "")
         const tempText = d.is_temporary_open ?? ""
@@ -9187,6 +9212,7 @@ function OpsEditElementsDialog({
   async function handleConfirm() {
     if (!beian_hao) return
     setSaving(true)
+    setSaveError(null)
     try {
       let isTemporaryOpen: string | null = null
       if (tempOpenMode === "no") {
@@ -9205,7 +9231,7 @@ function OpsEditElementsDialog({
       if (stopLineMode === "set") stopLineValue = stopLine || null
       else stopLineValue = "不设置平仓线"
 
-      await fetch("/ma/api/ops/fund-elements", {
+      const elementsRes = await fetch("/ma/api/ops/fund-elements", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -9222,16 +9248,25 @@ function OpsEditElementsDialog({
           fee_purchase: feePurchase || null,
           add_amount: addAmount || null,
           fee_redeem: feeRedeem || null,
+          risk_level: riskLevel || null,
           precautious_line: precautiousLine,
           closed_period: closedPeriod || null,
           stop_line: stopLineValue,
+          lock_period_desc: lockPeriodDesc || null,
           fee_manage_rate: feeManageRate || null,
           fee_trust: feeTrust || null,
           fee_manage: feeManageDesc || null,
           fee_admin_service: feeAdminService || null,
           fee_pay: feePayDesc || null,
+          fee_pay_mode: perfFeeMode,
+          fee_pay_gradients: perfGradients,
         }),
       })
+      if (!elementsRes.ok) {
+        const errBody = await elementsRes.json().catch(() => null) as { error?: string } | null
+        throw new Error(errBody?.error || "要素保存失败")
+      }
+      // Team strategy may 404 for manually-added products not yet in type6_ops_team_full.
       await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -9240,10 +9275,13 @@ function OpsEditElementsDialog({
           strategy_l2: teamL2 || null,
           strategy_l3: teamL3s.length ? teamL3s.join(",") : null,
         }),
-      })
+      }).catch(() => undefined)
       onClose()
-    } catch { /* ignore */ }
-    finally { setSaving(false) }
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "要素保存失败")
+    } finally {
+      setSaving(false)
+    }
   }
 
   function renderStrategySelectors(
@@ -9588,7 +9626,12 @@ function OpsEditElementsDialog({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+        <div className="flex items-center justify-end gap-3 px-6 py-3 border-t flex-shrink-0">
+          {saveError && (
+            <span className="mr-auto text-sm text-red-500 truncate max-w-[60%]" title={saveError}>
+              {saveError}
+            </span>
+          )}
           <button onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
           <button
             onClick={handleConfirm}
@@ -16962,11 +17005,13 @@ function InvestmentManagedProductsView() {
     if (!showInvElementsDialog || !invElementsBeianHao) return
     setInvElementsData(null)
     setInvElementsLoading(true)
-    fetch(`/ma/api/tracking-funds/fund-elements?beian_hao=${encodeURIComponent(invElementsBeianHao)}`)
+    const qs = new URLSearchParams({ beian_hao: invElementsBeianHao })
+    if (invElementsName) qs.set("product_name", invElementsName)
+    fetch(`/ma/api/tracking-funds/fund-elements?${qs}`)
       .then((r) => r.json())
       .then((d) => { setInvElementsData(d); setInvElementsLoading(false) })
       .catch(() => setInvElementsLoading(false))
-  }, [showInvElementsDialog, invElementsBeianHao])
+  }, [showInvElementsDialog, invElementsBeianHao, invElementsName])
 
   async function openInvElementsDialog(beian_hao: string | null, product_name: string) {
     setInvElementsBeianHao(beian_hao)
@@ -18319,11 +18364,13 @@ function InvestmentFofOverviewView() {
     if (!showFofElementsDialog || !fofElementsBeianHao) return
     setFofElementsData(null)
     setFofElementsLoading(true)
-    fetch(`/ma/api/tracking-funds/fund-elements?beian_hao=${encodeURIComponent(fofElementsBeianHao)}`)
+    const qs = new URLSearchParams({ beian_hao: fofElementsBeianHao })
+    if (fofElementsName) qs.set("product_name", fofElementsName)
+    fetch(`/ma/api/tracking-funds/fund-elements?${qs}`)
       .then((r) => r.json())
       .then((d) => { setFofElementsData(d); setFofElementsLoading(false) })
       .catch(() => setFofElementsLoading(false))
-  }, [showFofElementsDialog, fofElementsBeianHao])
+  }, [showFofElementsDialog, fofElementsBeianHao, fofElementsName])
 
   function openFofElementsDialog(beian_hao: string | null, product_name: string) {
     if (!beian_hao) return
