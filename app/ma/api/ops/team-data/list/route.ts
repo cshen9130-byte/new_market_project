@@ -14,6 +14,9 @@ export async function GET(req: Request) {
     const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
     const strategyL2 = (searchParams.get("strategy_l2") || "").trim()
     const strategyL3 = (searchParams.get("strategy_l3") || "").trim()
+    const elementsRaw = (searchParams.get("elements") || "").trim().toLowerCase()
+    const elementsFilter =
+      elementsRaw === "missing" || elementsRaw === "present" ? elementsRaw : "all"
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
@@ -25,6 +28,7 @@ export async function GET(req: Request) {
       strategyL1,
       strategyL2,
       strategyL3,
+      elementsFilter,
       sort,
       sortDir,
     })

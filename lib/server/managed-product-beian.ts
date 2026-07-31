@@ -40,6 +40,8 @@ const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   SBVC25: "SCN504",
   // Custody 产品净值 Excel uses SBT723; AMAC 备案号 is SET723 (墨雪顺遂二号).
   SBT723: "SET723",
+  // Bad parse: share-class letter + year from …桫罗稳鸿…基金2026-07-30 → C2026.
+  C2026: "SBDU00",
 }
 
 /** Parent managed-product name must not swallow A/B/C share-class variants. */

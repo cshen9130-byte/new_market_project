@@ -144,8 +144,9 @@ function extractFundNameFromSubject(subject: string): string | null {
   }
 
   const withoutInvestor = subject.replace(/【[^】]*】/g, " ")
+  // Allow ASCII (e.g. FOF) so "…1号FOF私募证券投资基金" does not collapse to bare "私募".
   const m = withoutInvestor.match(
-    /[\u4e00-\u9fff][\u4e00-\u9fff\d]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
+    /[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
   )
   return m ? normalizeFundDisplayName(m[0]) : null
 }
@@ -255,6 +256,12 @@ function parseValuationTableSubject(text: string): { code: string; fundName: str
     /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})_估值表/u,
   )
   if (tail) return { code: tail[1], fundName: normalizeFundDisplayName(tail[2]) }
+
+  // 【估值表】SCU622 金舆稳健增长1号FOF私募证券投资基金_20260730
+  const bracket = text.match(
+    /【估值表】\s*([A-Z0-9]{4,10})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})/u,
+  )
+  if (bracket) return { code: bracket[1], fundName: normalizeFundDisplayName(bracket[2]) }
   return null
 }
 
@@ -281,7 +288,10 @@ export function extractProductCodeFromText(text: string): string | null {
   // Typical codes: SBPC20, ASX73A, BSJ74B — allow underscore-delimited codes
   const m = text.match(/(?:^|[^A-Z0-9])_?([A-Z]{1,6}\d{2,6}[A-Z]?)(?:_|[^A-Z0-9]|$)/)
     ?? text.match(/(?:^|[^A-Z0-9])([A-Z]{1,6}\d{2,6}[A-Z]?)(?![A-Z0-9])/)
-  return m?.[1] ?? null
+  const code = m?.[1] ?? null
+  // Reject share-class letter glued to a year (e.g. C2026 from …基金2026-07-30).
+  if (code && /^[ABC](?:19|20)\d{2}$/i.test(code)) return null
+  return code
 }
 
 export function extractFundNameFromText(text: string): string | null {

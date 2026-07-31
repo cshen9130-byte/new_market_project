@@ -14093,6 +14093,7 @@ function OperationsTeamDataView() {
   const [strategyL1, setStrategyL1] = useState("")
   const [strategyL2, setStrategyL2] = useState("")
   const [strategyL3, setStrategyL3] = useState("")
+  const [elementsFilter, setElementsFilter] = useState<"all" | "missing" | "present">("all")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<TeamDataSortKey | "">("")
@@ -14179,7 +14180,7 @@ function OperationsTeamDataView() {
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, keyword, pageSize])
 
   useEffect(() => {
     setLoading(true)
@@ -14195,6 +14196,7 @@ function OperationsTeamDataView() {
     else if (strategyL1) params.set("strategy_l1", strategyL1)
     if (strategyL2) params.set("strategy_l2", strategyL2)
     if (strategyL3) params.set("strategy_l3", strategyL3)
+    if (elementsFilter !== "all") params.set("elements", elementsFilter)
     fetch(`/ma/api/ops/team-data/list?${params}`)
       .then((r) => r.json())
       .then((json) => {
@@ -14207,7 +14209,7 @@ function OperationsTeamDataView() {
         setTotal(0)
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, keyword, sortKey, sortDir, teamDataReloadKey])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, keyword, sortKey, sortDir, teamDataReloadKey])
 
   useEffect(() => {
     if (!showTeamDataAddDialog) return
@@ -14677,6 +14679,29 @@ function OperationsTeamDataView() {
             </div>
           </div>
         )}
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品要素：</span>
+          <div className="flex items-center gap-1">
+            {([
+              ["all", "不限"],
+              ["missing", "缺失要素"],
+              ["present", "有要素"],
+            ] as const).map(([key, label]) => (
+              <span
+                key={key}
+                onClick={() => { setElementsFilter(key); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  elementsFilter === key
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
           <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">

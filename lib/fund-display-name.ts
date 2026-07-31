@@ -2,9 +2,12 @@
 export function normalizeFundDisplayName(raw: string): string {
   const s = raw.trim()
   if (!s) return s
+  // Bare legal suffixes (or fragments like "私募") are not real product names.
+  if (/^(?:私募证券投资基金|私募基金|证券投资基金|投资基金)([ABC]类|[ABC])?$/u.test(s)) return ""
   const m = s.match(/^(.+?)(?:私募证券投资基金|私募基金|证券投资基金|投资基金)?([ABC]类|[ABC])?$/)
   if (!m?.[1]) return s
   const base = m[1].trim()
+  if (!base || /^(?:私募|基金|证券|投资|证券投资)$/u.test(base)) return ""
   let shareClass = (m[2] ?? "").trim()
   if (shareClass.length === 1 && /[ABC]/.test(shareClass)) shareClass += "类"
   return `${base}${shareClass}`

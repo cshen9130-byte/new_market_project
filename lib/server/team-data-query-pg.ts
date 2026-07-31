@@ -29,6 +29,18 @@ const TEAM_DATA_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   淮星量化对冲三号A类: "AJU79A",
   众量资产万里阳光1号: "SLP301",
   铸锋太阿3号A类: "SB969A",
+  // C2026 was a false extract (letter + year); canonical AMAC code is SBDU00.
+  桫罗稳鸿: "SBDU00",
+  桫罗稳鸿C类: "SBDU00",
+  金舆稳健增长1号FOF: "SCU622",
+}
+
+/** Reject email product_codes that are clearly not 备案号 (e.g. C2026 = C + year). */
+function isPlausibleEmailProductCode(code: string | null | undefined): boolean {
+  const c = (code ?? "").trim().toUpperCase()
+  if (!c) return false
+  if (/^[ABC](?:19|20)\d{2}$/.test(c)) return false
+  return /^[A-Z0-9]{4,10}$/.test(c)
 }
 
 function teamDataBeianOverride(productName: string): string | null {
@@ -49,6 +61,8 @@ function productNameDedupeKey(productName: string): string {
   return `${fundNameBase(productName).toLowerCase()}|${cls}`
 }
 
+export type TeamDataElementsFilter = "all" | "missing" | "present"
+
 export type TeamDataListParams = {
   page: number
   pageSize: number
@@ -57,6 +71,8 @@ export type TeamDataListParams = {
   strategyL1: string
   strategyL2: string
   strategyL3: string
+  /** Filter by whether 产品要素 (申赎字段) exist in basicinfo_bfl_track. */
+  elementsFilter?: TeamDataElementsFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
@@ -693,8 +709,24 @@ const EMAIL_POOL_JUNK_DENYLIST = new Set(
     "aaa私募",
     "号",
     "上海务扬A类",
+    "私募",
+    "基金",
+    "证券",
+    "投资",
+    "证券投资",
+    "私募基金",
+    "投资基金",
   ].map((s) => s.trim().toLowerCase()),
 )
+
+function isJunkTeamDataProductName(name: string | null | undefined): boolean {
+  const n = (name ?? "").trim()
+  if (!n) return true
+  if (n.length < 3) return true
+  if (EMAIL_POOL_JUNK_DENYLIST.has(n.toLowerCase())) return true
+  if (/^(?:私募|基金|证券|投资|证券投资)$/u.test(n)) return true
+  return false
+}
 
 /** Product-name tokens that distinguish a fund from a bare manager/company label. */
 const EMAIL_POOL_FUND_NAME_MARKERS =
@@ -707,6 +739,7 @@ function isPlausibleEmailPoolFund(productName: string, registerNumber: string): 
   if (name.length < 4 || reg.length < 2) return false
   if (name === "号" || reg === "号") return false
   if (!/[\u4e00-\u9fffA-Za-z]/.test(name)) return false
+  if (isJunkTeamDataProductName(name)) return false
 
   const nameKey = name.toLowerCase()
   const regKey = reg.toLowerCase()
@@ -883,12 +916,13 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
     return emailFundsCache.rows
   }
   await ensureEmailNavTable()
-  const rows = await query<RawEmailFund>(
+  const rows = await query<RawEmailFund & { subject?: string | null }>(
     `WITH email_ranked AS (
        SELECT
          e.id,
          NULLIF(BTRIM(e.product_code), '') AS product_code,
          NULLIF(BTRIM(e.fund_name), '') AS fund_name,
+         NULLIF(BTRIM(e.subject), '') AS subject,
          e.nav_date,
          e.nav,
          e.source,
@@ -903,6 +937,7 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
        fund_key,
        product_code,
        fund_name,
+       subject,
        nav_date::text AS team_nav_date,
        nav::text AS team_nav
      FROM email_ranked
@@ -913,8 +948,23 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
        nav_date DESC,
        id DESC`,
   )
-  emailFundsCache = { rows, at: Date.now() }
-  return rows
+  const repaired = rows.map((row) => {
+    if (!isJunkTeamDataProductName(row.fund_name) || !row.subject) {
+      const { subject: _subject, ...rest } = row
+      return rest
+    }
+    const meta = extractNavMetadata(row.subject, "")
+    const fixedName = meta.fundName?.trim() || null
+    const { subject: _subject, ...rest } = row
+    if (!fixedName || isJunkTeamDataProductName(fixedName)) return rest
+    return {
+      ...rest,
+      fund_name: fixedName,
+      product_code: rest.product_code || meta.productCode || null,
+    }
+  })
+  emailFundsCache = { rows: repaired, at: Date.now() }
+  return repaired
 }
 
 function dedupeRawFunds(rows: RawEmailFund[]): RawEmailFund[] {
@@ -922,13 +972,47 @@ function dedupeRawFunds(rows: RawEmailFund[]): RawEmailFund[] {
   for (const row of rows) {
     const key = dedupeKey(row)
     const prev = byKey.get(key)
-    if (!prev || row.team_nav_date.localeCompare(prev.team_nav_date) > 0) {
+    if (!prev) {
+      byKey.set(key, row)
+      continue
+    }
+    const prevJunk = isJunkTeamDataProductName(nameCandidate(prev))
+    const nextJunk = isJunkTeamDataProductName(nameCandidate(row))
+    if (prevJunk && !nextJunk) {
+      byKey.set(key, {
+        ...row,
+        team_nav_date: row.team_nav_date || prev.team_nav_date,
+        team_nav: row.team_nav || prev.team_nav,
+      })
+      continue
+    }
+    if (!prevJunk && nextJunk) {
+      if (row.team_nav_date && row.team_nav_date.localeCompare(prev.team_nav_date || "") > 0) {
+        byKey.set(key, {
+          ...prev,
+          team_nav_date: row.team_nav_date,
+          team_nav: row.team_nav || prev.team_nav,
+          product_code: prev.product_code || row.product_code,
+        })
+      }
+      continue
+    }
+    if (row.team_nav_date.localeCompare(prev.team_nav_date) > 0) {
       byKey.set(key, row)
     } else if (row.team_nav_date === prev.team_nav_date && row.product_code && !prev.product_code) {
       byKey.set(key, row)
     }
   }
   return Array.from(byKey.values())
+}
+
+function beianPreferScore(code: string): number {
+  const c = code.trim().toUpperCase()
+  if (!c) return -1000
+  if (/^[ABC](?:19|20)\d{2}$/.test(c)) return -100
+  if (/^S[A-Z0-9]{5,}$/.test(c)) return 40
+  if (/^[A-Z]{2,}\d{2,}[A-Z]?$/.test(c)) return 20
+  return 0
 }
 
 function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
@@ -946,13 +1030,30 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
     }
   }
 
+  // Collapse same display-name under different codes (e.g. C2026 vs SBDU00).
+  const byName = new Map<string, ResolvedFund>()
+  for (const row of byBeian.values()) {
+    const nameKey = productNameDedupeKey(row.product_name)
+    const prev = byName.get(nameKey)
+    if (!prev) {
+      byName.set(nameKey, row)
+      continue
+    }
+    const prevScore = beianPreferScore(prev.beian_hao || "")
+    const nextScore = beianPreferScore(row.beian_hao || "")
+    if (
+      nextScore > prevScore
+      || (nextScore === prevScore && row.team_nav_date.localeCompare(prev.team_nav_date) > 0)
+    ) {
+      byName.set(nameKey, row)
+    }
+  }
+
   // Drop name-only rows when the same product already resolved with a 备案号
   // (older emails / subject parses often omit product_code).
-  const codedNameKeys = new Set(
-    [...byBeian.values()].map((r) => productNameDedupeKey(r.product_name)),
-  )
+  const codedNameKeys = new Set([...byName.keys()])
   const keptNoBeian = noBeian.filter((r) => !codedNameKeys.has(productNameDedupeKey(r.product_name)))
-  return [...byBeian.values(), ...keptNoBeian]
+  return [...byName.values(), ...keptNoBeian]
 }
 
 async function loadIdentityTables(): Promise<{ tables: IdentityTables; indexes: IdentityIndexes }> {
@@ -999,10 +1100,13 @@ function resolveFund(
   const t6 = bestT6Match(indexes, candidate, row.product_code)
 
   const autoBeian = (() => {
-    if (row.product_code && codeMatchesShareClass(row.product_code, candidate)) {
-      return row.product_code.trim()
+    const code = row.product_code?.trim() || null
+    if (code && isPlausibleEmailProductCode(code) && codeMatchesShareClass(code, candidate)) {
+      return code
     }
-    return bfl?.beian_hao ?? t6?.register_number ?? fd?.beian_hao ?? track?.beian_hao ?? row.product_code ?? null
+    const fromIdentity = bfl?.beian_hao ?? t6?.register_number ?? fd?.beian_hao ?? track?.beian_hao ?? null
+    if (fromIdentity) return fromIdentity
+    return code && isPlausibleEmailProductCode(code) ? code : null
   })()
 
   const product_name = displayProductName(
@@ -1143,11 +1247,49 @@ function compareRows(a: TeamDataListRow, b: TeamDataListRow, sort: string, dir: 
   return as.localeCompare(bs, "zh") * mul || a.product_name.localeCompare(b.product_name, "zh")
 }
 
+/** Beians that have usable 产品要素 (申赎) fields — matches 要素查询 dialog content. */
+async function loadBeiansWithFundElements(beians: string[]): Promise<Set<string>> {
+  const codes = [...new Set(beians.map((b) => b.trim()).filter(Boolean))]
+  if (codes.length === 0) return new Set()
+  const rows = await query<{ code: string }>(
+    `SELECT DISTINCT COALESCE(NULLIF(BTRIM(register_number), ''), NULLIF(BTRIM(record_key), '')) AS code
+     FROM basicinfo_bfl_track
+     WHERE (register_number = ANY($1::text[]) OR record_key = ANY($1::text[]))
+       AND (
+         mandator_name IS NOT NULL
+         OR open_day IS NOT NULL
+         OR fee_manage_rate IS NOT NULL
+         OR fee_trust IS NOT NULL
+         OR fee_purchase IS NOT NULL
+         OR fee_redeem IS NOT NULL
+         OR closed_period IS NOT NULL
+         OR precautious_line IS NOT NULL
+         OR stop_line IS NOT NULL
+         OR NULLIF(BTRIM(fee_manage), '') IS NOT NULL
+         OR NULLIF(BTRIM(fee_admin_service), '') IS NOT NULL
+         OR NULLIF(BTRIM(fee_pay), '') IS NOT NULL
+       )`,
+    [codes],
+  ).catch(() => [] as { code: string }[])
+  return new Set(rows.map((r) => (r.code || "").trim()).filter(Boolean))
+}
+
 export async function listTeamData(params: TeamDataListParams): Promise<{
   data: TeamDataListRow[]
   total: number
 }> {
-  const { page, pageSize, keyword, strategySource, strategyL1, strategyL2, strategyL3, sort, sortDir } = params
+  const {
+    page,
+    pageSize,
+    keyword,
+    strategySource,
+    strategyL1,
+    strategyL2,
+    strategyL3,
+    elementsFilter = "all",
+    sort,
+    sortDir,
+  } = params
 
   const [rawRows, manualProducts, { indexes }] = await Promise.all([
     loadRawEmailFunds().then(dedupeRawFunds),
@@ -1156,6 +1298,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   ])
 
   let resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
+  resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
   resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
   resolved = await overlayManualTeamNav(resolved)
 
@@ -1178,6 +1321,16 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   }
   if (strategyL3) {
     resolved = resolved.filter((r) => matchesStrategyL3(r.strategy_l3, strategyL3))
+  }
+
+  if (elementsFilter === "missing" || elementsFilter === "present") {
+    const beians = resolved.map((r) => r.beian_hao?.trim() || "").filter(Boolean)
+    const withElements = await loadBeiansWithFundElements(beians)
+    resolved = resolved.filter((r) => {
+      const beian = r.beian_hao?.trim() || ""
+      const has = !!beian && withElements.has(beian)
+      return elementsFilter === "present" ? has : !has
+    })
   }
 
   const sorted = [...resolved].sort((a, b) =>
