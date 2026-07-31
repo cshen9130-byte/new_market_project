@@ -1,6 +1,6 @@
 import { createHash } from "crypto"
 import { NextResponse } from "next/server"
-import { query } from "@/lib/db"
+import { query, withTransaction } from "@/lib/db"
 import {
   ensureManagedProductsListCacheTable,
   refreshManagedProductsListCache,
@@ -13,17 +13,21 @@ function managedProductRowHash(productName: string, beian: string): string {
   return createHash("sha256").update(`manual_add::${beian || productName}::${productName}`).digest("hex")
 }
 
-async function findExistingManagedProductId(
+async function findExistingManagedProduct(
   productName: string,
-): Promise<boolean> {
-  const rows = await query<{ id: string }>(
-    `SELECT id::text AS id
-     FROM managed_products
-     WHERE product_name = $1 AND product_name <> '合计'
+): Promise<{ id: string; hasCache: boolean } | null> {
+  const rows = await query<{ id: string; has_cache: boolean }>(
+    `SELECT m.id::text AS id,
+            (c.managed_product_id IS NOT NULL) AS has_cache
+     FROM managed_products m
+     LEFT JOIN ops_managed_products_list_cache c ON c.managed_product_id = m.id
+     WHERE m.product_name = $1 AND m.product_name <> '合计'
      LIMIT 1`,
     [productName],
   )
-  return !!rows[0]?.id
+  const row = rows[0]
+  if (!row?.id) return null
+  return { id: row.id, hasCache: !!row.has_cache }
 }
 
 async function resolveFundShortName(
@@ -35,32 +39,6 @@ async function resolveFundShortName(
     [beian],
   )
   return rows[0]?.short_name?.trim() || null
-}
-
-async function insertManagedProductRow(productName: string, beian: string): Promise<string> {
-  const rowHash = managedProductRowHash(productName, beian)
-  const rows = await query<{ id: string }>(
-    `WITH next AS (
-       SELECT
-         COALESCE(MAX(source_row_number), 0) + 1 AS sr,
-         COALESCE(MAX(sequence_no), 0) + 1 AS seq
-       FROM managed_products
-     )
-     INSERT INTO managed_products (
-       source_row_number,
-       sequence_no,
-       product_name,
-       row_hash,
-       source_file
-     )
-     SELECT next.sr, next.seq, $1, $2, 'manual_add'
-     FROM next
-     RETURNING id::text AS id`,
-    [productName, rowHash],
-  )
-  const id = rows[0]?.id
-  if (!id) throw new Error("insert_returned_no_id")
-  return id
 }
 
 async function upsertMinimalCacheRow(
@@ -114,13 +92,59 @@ export async function POST(req: Request) {
   try {
     const shortName = await resolveFundShortName(beian)
 
-    const exists = await findExistingManagedProductId(name)
-    if (exists) {
+    // A prior add can leave managed_products without a cache row (list uses INNER JOIN,
+    // so the product is invisible but name-check still returns already_exists).
+    const existing = await findExistingManagedProduct(name)
+    if (existing?.hasCache) {
       return NextResponse.json({ error: "already_exists" }, { status: 409 })
     }
+    if (existing && !existing.hasCache) {
+      await upsertMinimalCacheRow(existing.id, name, beian, shortName)
+      void refreshManagedProductsListCache().catch((err) => {
+        console.error("[managed-products/add] background cache refresh failed", err)
+      })
+      return NextResponse.json({ ok: true, id: existing.id, healed: true })
+    }
 
-    const id = await insertManagedProductRow(name, beian)
-    await upsertMinimalCacheRow(id, name, beian, shortName)
+    await ensureManagedProductsListCacheTable()
+    const id = await withTransaction(async (tx) => {
+      const rowHash = managedProductRowHash(name, beian)
+      const rows = await tx<{ id: string }>(
+        `WITH next AS (
+           SELECT
+             COALESCE(MAX(source_row_number), 0) + 1 AS sr,
+             COALESCE(MAX(sequence_no), 0) + 1 AS seq
+           FROM managed_products
+         )
+         INSERT INTO managed_products (
+           source_row_number,
+           sequence_no,
+           product_name,
+           row_hash,
+           source_file
+         )
+         SELECT next.sr, next.seq, $1, $2, 'manual_add'
+         FROM next
+         RETURNING id::text AS id`,
+        [name, rowHash],
+      )
+      const newId = rows[0]?.id
+      if (!newId) throw new Error("insert_returned_no_id")
+
+      const today = new Date().toISOString().slice(0, 10)
+      await tx(
+        `INSERT INTO ops_managed_products_list_cache (
+           managed_product_id, product_name, beian_hao, short_name, as_of_date, refreshed_at
+         ) VALUES ($1::bigint, $2, $3, $4, $5::date, NOW())
+         ON CONFLICT (managed_product_id) DO UPDATE SET
+           product_name = EXCLUDED.product_name,
+           beian_hao = EXCLUDED.beian_hao,
+           short_name = EXCLUDED.short_name,
+           refreshed_at = NOW()`,
+        [newId, name, beian || null, shortName, today],
+      )
+      return newId
+    })
 
     void refreshManagedProductsListCache().catch((err) => {
       console.error("[managed-products/add] background cache refresh failed", err)

@@ -16,6 +16,39 @@ import { shareClassProductCodesMatch, sqlFundNameMatch } from "@/lib/server/fund
 import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
+/**
+ * Explicit 备案号 for team-data rows when email product_code is missing on some
+ * messages (name-only rows) but the fund identity is known.
+ * Share-class codes follow platform convention (no leading S): BQG14B not SBQG14B.
+ */
+const TEAM_DATA_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
+  峰云汇高地一号B类: "BQG14B",
+  青钱基石1号B类: "BDW42B",
+  准星量化对冲三号A类: "AJU79A",
+  // Occasional OCR / reading mix-up with 准星
+  淮星量化对冲三号A类: "AJU79A",
+  众量资产万里阳光1号: "SLP301",
+  铸锋太阿3号A类: "SB969A",
+}
+
+function teamDataBeianOverride(productName: string): string | null {
+  const name = productName.trim()
+  if (!name) return null
+  const exact = TEAM_DATA_BEIAN_OVERRIDES[name]
+  if (exact) return exact
+  for (const [key, code] of Object.entries(TEAM_DATA_BEIAN_OVERRIDES)) {
+    if (fundNamesMatch(key, name) && shareClassFromFundName(key) === shareClassFromFundName(name)) {
+      return code
+    }
+  }
+  return null
+}
+
+function productNameDedupeKey(productName: string): string {
+  const cls = shareClassFromFundName(productName) || ""
+  return `${fundNameBase(productName).toLowerCase()}|${cls}`
+}
+
 export type TeamDataListParams = {
   page: number
   pageSize: number
@@ -906,13 +939,20 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
       noBeian.push(row)
       continue
     }
-    const key = row.beian_hao.trim()
+    const key = row.beian_hao.trim().toUpperCase()
     const prev = byBeian.get(key)
     if (!prev || row.team_nav_date.localeCompare(prev.team_nav_date) > 0) {
       byBeian.set(key, row)
     }
   }
-  return [...byBeian.values(), ...noBeian]
+
+  // Drop name-only rows when the same product already resolved with a 备案号
+  // (older emails / subject parses often omit product_code).
+  const codedNameKeys = new Set(
+    [...byBeian.values()].map((r) => productNameDedupeKey(r.product_name)),
+  )
+  const keptNoBeian = noBeian.filter((r) => !codedNameKeys.has(productNameDedupeKey(r.product_name)))
+  return [...byBeian.values(), ...keptNoBeian]
 }
 
 async function loadIdentityTables(): Promise<{ tables: IdentityTables; indexes: IdentityIndexes }> {
@@ -971,7 +1011,9 @@ function resolveFund(
     candidate,
   )
 
-  const beian_hao = resolveManagedProductBeian(product_name, autoBeian) ?? autoBeian
+  const overrideBeian = teamDataBeianOverride(product_name) ?? teamDataBeianOverride(candidate)
+  const managedBeian = resolveManagedProductBeian(product_name, autoBeian) ?? autoBeian
+  const beian_hao = (overrideBeian ?? managedBeian)?.trim() || null
 
   const fromT6 = strategiesFromRow(t6, strategySource)
   const fromBfl = strategiesFromRow(bfl, strategySource)

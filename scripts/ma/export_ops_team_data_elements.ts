@@ -442,9 +442,17 @@ async function main() {
 
     const outDir = path.join(process.cwd(), "data")
     fs.mkdirSync(outDir, { recursive: true })
-    const outName = `运维团队数据_产品要素_${new Date().toISOString().slice(0, 10)}.xlsx`
-    const outPath = path.join(outDir, outName)
-    XLSX.writeFile(wb, outPath)
+    const stamp = new Date().toISOString().slice(0, 10)
+    let outPath = path.join(outDir, `运维团队数据_产品要素_${stamp}.xlsx`)
+    try {
+      XLSX.writeFile(wb, outPath)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code !== "EBUSY" && code !== "EPERM") throw err
+      outPath = path.join(outDir, `运维团队数据_产品要素_${stamp}_${Date.now()}.xlsx`)
+      XLSX.writeFile(wb, outPath)
+      console.log(`Primary xlsx locked; wrote alternate path.`)
+    }
 
     console.log(
       `有要素: ${withElements}  仅基本信息: ${basicOnly}  无备案编码: ${missingBeian}  暂无要素: ${missingElements}`,
