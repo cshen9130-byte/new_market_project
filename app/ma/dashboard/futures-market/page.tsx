@@ -62,6 +62,7 @@ function _getScatterSector(code: string): string {
   for (const [sector, codes] of Object.entries(_SCATTER_SECTOR_RULES)) { if (codes.has(c)) return sector }
   return "其他"
 }
+
 function buildScatterEChartsOption(
   points: FuturesVolCorrScatterPoint[],
   volWindow: string, corrWindow: string, benchmark: string,
@@ -358,6 +359,14 @@ export default function FuturesMarketPage() {
   const [basisContDiffTs, setBasisContDiffTs] = useState<{ start_date: string; end_date: string; data: Record<string, Record<string, Array<{ date: string; basis_diff: number | null }>>> } | null>(null)
   const [loadingBasisContDiffTs, setLoadingBasisContDiffTs] = useState(true)
   const [errorBasisContDiffTs, setErrorBasisContDiffTs] = useState<string | null>(null)
+  const [contractDiscountTs, setContractDiscountTs] = useState<{
+    start_date: string
+    end_date: string
+    data: Record<string, Record<string, Array<{ date: string; annualized_discount_pct: number | null }>>>
+    meta: Record<string, Record<string, { role: string | null; expiry_date: string; label: string }>>
+  } | null>(null)
+  const [loadingContractDiscountTs, setLoadingContractDiscountTs] = useState(true)
+  const [errorContractDiscountTs, setErrorContractDiscountTs] = useState<string | null>(null)
   const [selectedCode, setSelectedCode] = useState<"IH" | "IF" | "IC" | "IM">("IF")
   const [showFar, setShowFar] = useState(true)
   const [choiceHeatmap, setChoiceHeatmap] = useState<{ trade_date: string; total_amount: number; data: Array<{ name: string; children: Array<{ name: string; value: number; ret: number | null }> }> } | null>(null)
@@ -608,6 +617,32 @@ export default function FuturesMarketPage() {
     }
   }
 
+  const reloadContractDiscountTs = async (force = false) => {
+    setLoadingContractDiscountTs(true)
+    setErrorContractDiscountTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/contract-discount-timeseries${q(force)}`, force ? { cache: "no-store" } : undefined)
+      const json = await res.json()
+      if (json?.error) throw new Error("api")
+      if (json?.data && typeof json.data === "object") {
+        const v = {
+          start_date: json.start_date,
+          end_date: json.end_date,
+          data: json.data,
+          meta: json.meta || {},
+        }
+        setContractDiscountTs(v)
+        lsSave("contractDiscountTs_v4", v)
+      } else throw new Error("empty")
+    } catch {
+      const cached = lsLoad("contractDiscountTs_v4")
+      if (cached) setContractDiscountTs(cached)
+      else setErrorContractDiscountTs("数据不可用")
+    } finally {
+      setLoadingContractDiscountTs(false)
+    }
+  }
+
   const reloadChoiceHeatmap = async (force = false) => {
     setLoadingChoiceHeatmap(true)
     setErrorChoiceHeatmap(null)
@@ -693,6 +728,8 @@ export default function FuturesMarketPage() {
   useEffect(() => { reloadBasisNearDiffTs(true) }, [])
 
   useEffect(() => { reloadBasisContDiffTs(true) }, [])
+
+  useEffect(() => { reloadContractDiscountTs(true) }, [])
 
   useEffect(() => { reloadChoiceHeatmap(true) }, [])
 
@@ -2510,6 +2547,254 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
+      </div>
+
+      <div className="w-full">
+        {loadingContractDiscountTs ? (
+          <Card>
+            <CardContent className="pt-6">
+              <div className="text-sm text-muted-foreground">正在加载…</div>
+            </CardContent>
+          </Card>
+        ) : errorContractDiscountTs ? (
+          <Card>
+            <CardContent className="pt-6">
+              <div className="text-sm text-destructive">{errorContractDiscountTs}</div>
+            </CardContent>
+          </Card>
+        ) : contractDiscountTs?.data ? (
+          (() => {
+            const products = [
+              { code: "IH", label: "上证50" },
+              { code: "IF", label: "沪深300" },
+              { code: "IC", label: "中证500" },
+              { code: "IM", label: "中证1000" },
+            ] as const
+            const colors = [
+              "#1e3a5f", "#0d9488", "#d97706", "#e11d48", "#7c3aed", "#0891b2", "#ca8a04",
+              "#2563eb", "#059669", "#ea580c", "#db2777", "#4f46e5", "#0e7490", "#a16207",
+              "#64748b", "#14b8a6", "#f59e0b", "#ef4444",
+            ]
+            const cards = products.map((p) => {
+              const roots = Object.keys(contractDiscountTs.data?.[p.code] || {}).sort()
+              const series = roots
+                .map((root, idx) => {
+                  const meta = contractDiscountTs.meta?.[p.code]?.[root]
+                  const name = meta?.label || root
+                  const color = colors[idx % colors.length]
+                  // 基差率 = -贴水 = (settle - spot)/spot annualized → discount is negative
+                  const arr = (contractDiscountTs.data?.[p.code]?.[root] || [])
+                    .filter((d) => typeof d?.annualized_discount_pct === "number")
+                    .map((d) => [d.date, -(d.annualized_discount_pct as number)] as [string, number])
+                  if (!arr.length) return null
+                  return {
+                    name,
+                    type: "line" as const,
+                    data: arr,
+                    smooth: 0.15,
+                    showSymbol: false,
+                    symbol: "none",
+                    connectNulls: false,
+                    lineStyle: { width: 1.8, color },
+                    itemStyle: { color },
+                    emphasis: { disabled: true },
+                  }
+                })
+                .filter((s): s is NonNullable<typeof s> => s !== null)
+
+              // Center 0 on y-axis: symmetric min/max around 0
+              const absMax = series.reduce((m, s) => {
+                for (const [, v] of s.data) {
+                  if (typeof v === "number" && Number.isFinite(v)) m = Math.max(m, Math.abs(v))
+                }
+                return m
+              }, 0)
+              const yPad = Math.max(8, Math.ceil(absMax * 1.15 / 3) * 3)
+              const yMin = -yPad
+              const yMax = yPad
+
+              if (series.length) {
+                ;(series[0] as any).markLine = {
+                  silent: true,
+                  symbol: ["none", "none"],
+                  label: {
+                    show: true,
+                    position: "insideEndTop" as const,
+                    fontSize: 11,
+                    color: "#64748b",
+                  },
+                  data: [
+                    {
+                      yAxis: 0,
+                      name: "0",
+                      lineStyle: { color: "#94a3b8", type: "solid" as const, width: 1 },
+                      label: { show: false },
+                    },
+                    {
+                      yAxis: -8,
+                      name: "参考 -8%",
+                      lineStyle: { color: "#94a3b8", type: "dotted" as const, width: 1.5 },
+                      label: { formatter: "参考 -8%", color: "#64748b" },
+                    },
+                  ],
+                }
+              }
+
+              const legendNames = series.map((s) => s.name)
+              const hasData = series.length > 0
+              // Zoom so every series' last point is still visible (fixes IH2612 falling off-screen)
+              const seriesLastTimes = series
+                .map((s) => new Date(s.data[s.data.length - 1][0] + "T00:00:00Z").getTime())
+                .filter((t) => Number.isFinite(t))
+              const seriesFirstTimes = series
+                .map((s) => new Date(s.data[0][0] + "T00:00:00Z").getTime())
+                .filter((t) => Number.isFinite(t))
+              const tMax = seriesLastTimes.length ? Math.max(...seriesLastTimes) : Date.now()
+              const tMinAll = seriesFirstTimes.length ? Math.min(...seriesFirstTimes) : tMax
+              const monthStart = Date.UTC(
+                new Date(tMax).getUTCFullYear(),
+                new Date(tMax).getUTCMonth(),
+                1,
+              )
+              // Pull zoom start back to the earliest series end still before "now", and at least month start
+              const earliestLast = seriesLastTimes.length ? Math.min(...seriesLastTimes) : monthStart
+              const zoomStartMs = Math.min(monthStart, earliestLast)
+              const zoomEndMs = tMax
+              const span = Math.max(1, tMax - tMinAll)
+              const zoomStartPct = Math.max(0, Math.min(95, ((zoomStartMs - tMinAll) / span) * 100))
+
+              const option = {
+                animationDuration: 450,
+                color: colors,
+                tooltip: {
+                  trigger: "axis" as const,
+                  backgroundColor: "rgba(15,23,42,0.92)",
+                  borderWidth: 0,
+                  padding: [10, 12],
+                  textStyle: { color: "#f8fafc", fontSize: 12 },
+                  axisPointer: {
+                    type: "cross" as const,
+                    crossStyle: { color: "#94a3b8" },
+                    lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
+                  },
+                  valueFormatter: (v: number) => (typeof v === "number" ? `${v.toFixed(2)}%` : "-"),
+                },
+                legend: {
+                  type: "scroll" as const,
+                  data: legendNames,
+                  top: 4,
+                  left: 12,
+                  right: 12,
+                  icon: "roundRect",
+                  itemWidth: 12,
+                  itemHeight: 8,
+                  itemGap: 10,
+                  textStyle: { color: "#64748b", fontSize: 11 },
+                  pageIconColor: "#64748b",
+                  pageTextStyle: { color: "#94a3b8" },
+                  selectedMode: true,
+                },
+                grid: { left: 16, right: 20, top: 56, bottom: 72, containLabel: true },
+                xAxis: {
+                  type: "time" as const,
+                  boundaryGap: false,
+                  axisLine: { lineStyle: { color: "#e2e8f0" } },
+                  axisTick: { show: false },
+                  axisLabel: {
+                    color: "#94a3b8",
+                    fontSize: 11,
+                    hideOverlap: true,
+                    margin: 12,
+                    formatter: (v: number) => {
+                      const d = new Date(v)
+                      const mm = String(d.getMonth() + 1).padStart(2, "0")
+                      const dd = String(d.getDate()).padStart(2, "0")
+                      return `${mm}-${dd}`
+                    },
+                  },
+                  splitLine: { show: false },
+                },
+                yAxis: {
+                  type: "value" as const,
+                  name: "年化基差率 (%)",
+                  nameTextStyle: { color: "#94a3b8", fontSize: 11, padding: [0, 0, 0, 8] },
+                  min: yMin,
+                  max: yMax,
+                  scale: false,
+                  axisLine: { show: false },
+                  axisTick: { show: false },
+                  axisLabel: {
+                    color: "#94a3b8",
+                    fontSize: 11,
+                    formatter: (v: number) => `${v}`,
+                  },
+                  splitLine: { lineStyle: { color: "#f1f5f9", width: 1 } },
+                  splitNumber: 6,
+                },
+                dataZoom: [
+                  {
+                    type: "inside" as const,
+                    xAxisIndex: 0,
+                    filterMode: "none" as const,
+                    start: zoomStartPct,
+                    end: 100,
+                  },
+                  {
+                    type: "slider" as const,
+                    xAxisIndex: 0,
+                    height: 22,
+                    bottom: 12,
+                    start: zoomStartPct,
+                    end: 100,
+                    brushSelect: false,
+                    borderColor: "transparent",
+                    backgroundColor: "#f8fafc",
+                    fillerColor: "rgba(59,130,246,0.12)",
+                    handleStyle: { color: "#94a3b8", borderWidth: 0 },
+                    dataBackground: {
+                      lineStyle: { color: "#cbd5e1", width: 1 },
+                      areaStyle: { color: "#e2e8f0" },
+                    },
+                    textStyle: { color: "#94a3b8", fontSize: 10 },
+                  },
+                ],
+                series,
+              }
+              return (
+                <Card key={p.code}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">{p.code} 合约年化基差率时序</CardTitle>
+                    <CardDescription className="text-xs">
+                      {p.label} · 未到期合约（共 {series.length} 个）
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {hasData ? (
+                      <div className="pb-2">
+                        <ReactECharts
+                          key={`${p.code}-${series.length}-${zoomEndMs}`}
+                          option={option}
+                          style={{ height: 320 }}
+                          notMerge
+                          lazyUpdate
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-sm text-muted-foreground">暂无数据</div>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })
+            return <div className="grid gap-6 md:grid-cols-2">{cards}</div>
+          })()
+        ) : (
+          <Card>
+            <CardContent className="pt-6">
+              <div className="text-sm text-muted-foreground">暂无数据</div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
         </TabsContent>
