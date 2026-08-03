@@ -20,6 +20,7 @@ import type {
 import type {
   InvestmentUnderlyingStatsResult,
 } from "@/lib/server/investment-underlying-stats-query"
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 
 const RED = "#D93025"
 const BLUE = "#1A73E8"
@@ -464,7 +465,7 @@ export function InvestmentOverviewView() {
         : formatStrategyPath(p.company_strategy_l1, p.company_strategy_l2, p.company_strategy_l3)
       return [
         i + 1,
-        p.short_name || p.product_name,
+        resolveFundDisplayLabel(p.short_name, p.product_name),
         strategy,
         formatTags(p.team_tags),
         p.valuation_date ?? "—",
@@ -864,7 +865,7 @@ export function InvestmentOverviewView() {
                     onChange={() => toggleProduct(p.id)}
                     className="mt-0.5"
                   />
-                  <span className="leading-snug">{p.short_name || p.product_name}</span>
+                  <span className="leading-snug">{resolveFundDisplayLabel(p.short_name, p.product_name)}</span>
                 </label>
               ))}
             </div>
@@ -1341,7 +1342,7 @@ export function InvestmentOverviewView() {
                     return (
                       <tr key={p.id} className="border-b hover:bg-muted/20">
                         <td className="px-4 py-2.5 text-zinc-400 tabular-nums">{i + 1}</td>
-                        <td className="px-4 py-2.5">{p.short_name || p.product_name}</td>
+                        <td className="px-4 py-2.5">{resolveFundDisplayLabel(p.short_name, p.product_name)}</td>
                         <td className="px-4 py-2.5">{strategy}</td>
                         <td className="px-4 py-2.5">{formatTags(p.team_tags)}</td>
                         <td className="px-4 py-2.5 tabular-nums">{p.valuation_date ?? "—"}</td>
@@ -1436,7 +1437,7 @@ export function InvestmentOverviewView() {
                     return (
                       <tr key={p.product_key} className="border-b hover:bg-muted/20">
                         <td className="px-4 py-2.5 text-zinc-400 tabular-nums">{i + 1}</td>
-                        <td className="px-4 py-2.5">{p.product_name}</td>
+                        <td className="px-4 py-2.5">{resolveFundDisplayLabel(null, p.product_name)}</td>
                         <td className="px-4 py-2.5 tabular-nums">{p.beian_hao ?? "—"}</td>
                         <td className="px-4 py-2.5">{strategy}</td>
                         <td className="px-4 py-2.5">{p.manager_name ?? "—"}</td>

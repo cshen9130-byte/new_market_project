@@ -4,6 +4,7 @@ import {
   upsertEmailValuationRecords,
   type EmailValuationInsert,
 } from "@/lib/server/email-valuation-pg"
+import { refreshValuationPipelineForTouchedFunds } from "@/lib/server/valuation-cache-refresh"
 
 const MANUAL_CRAWL_ACCOUNT = "team_manual_upload"
 const MAX_FILES = 100
@@ -23,7 +24,7 @@ export async function uploadTeamValuationFiles(options: {
   product_name: string
   files: File[]
 }): Promise<TeamValuationUploadResult> {
-  const beian_hao = options.beian_hao.trim()
+  const beian_hao = options.beian_hao.trim().toUpperCase()
   const product_name = options.product_name.trim()
   if (!beian_hao || !product_name) return { error: "missing_fields" }
 
@@ -50,6 +51,8 @@ export async function uploadTeamValuationFiles(options: {
         continue
       }
 
+      // Bind to the product the operator selected so 估值表分析 can resolve by beian_hao.
+      // Extracted codes from the workbook can differ (share-class / custodian codes).
       inserts.push({
         crawlEmailAccount: MANUAL_CRAWL_ACCOUNT,
         emailUid: manualEmailUid(beian_hao, file.name, buffer),
@@ -57,7 +60,7 @@ export async function uploadTeamValuationFiles(options: {
         subject,
         senderEmail: "",
         attachmentFilename: file.name,
-        productCode: extracted.productCode ?? beian_hao,
+        productCode: beian_hao,
         fundName: extracted.fundName ?? product_name,
         valuationDate: extracted.valuationDate,
         unitNav: extracted.unitNav,
@@ -85,5 +88,19 @@ export async function uploadTeamValuationFiles(options: {
   }
 
   const result = await upsertEmailValuationRecords(inserts)
+
+  // Product 估值表 page reads *_latest tables + precomputed cache. Email ETL
+  // refreshes those after parse; manual upload must do the same or data stays invisible.
+  if (result.recordsSaved > 0) {
+    const touchedCodes = new Set<string>([beian_hao])
+    for (const row of inserts) {
+      const code = row.productCode?.trim().toUpperCase()
+      if (code) touchedCodes.add(code)
+    }
+    await refreshValuationPipelineForTouchedFunds(
+      [...touchedCodes].map((productCode) => ({ productCode, fundName: product_name })),
+    )
+  }
+
   return { saved: result.recordsSaved, failed }
 }

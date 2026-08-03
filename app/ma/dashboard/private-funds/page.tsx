@@ -1667,6 +1667,31 @@ interface TrackFundRow {
   calmar_1y: string | null
 }
 
+/** Prefer 团队策略 tags whenever present; fall back to platform / active-source fields. */
+function trackStrategyTag(
+  row: Pick<
+    TrackFundRow,
+    | "strategy_l1"
+    | "strategy_l2"
+    | "company_strategy_l1"
+    | "company_strategy_l2"
+    | "company_strategy_l3"
+    | "platform_strategy_l1"
+    | "platform_strategy_l2"
+  >,
+): { l1: string | null; l2: string | null } {
+  const hasTeam = Boolean(
+    row.company_strategy_l1 || row.company_strategy_l2 || row.company_strategy_l3,
+  )
+  if (hasTeam) {
+    return { l1: row.company_strategy_l1, l2: row.company_strategy_l2 }
+  }
+  return {
+    l1: row.platform_strategy_l1 ?? row.strategy_l1,
+    l2: row.platform_strategy_l2 ?? row.strategy_l2,
+  }
+}
+
 function TrackPctCell({ value }: { value: string | null }) {
   if (!value) return <span className="text-muted-foreground">—</span>
   const n = parseFloat(value)
@@ -2389,7 +2414,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }
 
   async function openEditStrategyDialog(beian_hao: string, product_name: string) {
-    // pre-load current strategy from type6_ops_team_full via the strategies endpoint
+    // Always load raw 团队策略 from type6 (not platform fallback from detail page).
     setEditStrategyBeianHao(beian_hao)
     setEditStrategyName(product_name)
     setEditStrategyL1("")
@@ -2397,7 +2422,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     setEditStrategyL3("")
     setShowEditStrategyDialog(true)
     try {
-      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`)
+      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
       if (d?.strategy_l1) setEditStrategyL1(d.strategy_l1)
       if (d?.strategy_l2) setEditStrategyL2(d.strategy_l2)
@@ -3306,11 +3331,14 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           short_name={row.short_name}
                           className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[240px]"
                         />
-                        {row.strategy_l1 && (
+                        {(() => {
+                          const tag = trackStrategyTag(row)
+                          return tag.l1 ? (
                           <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
-                            {row.strategy_l1}
+                            {tag.l1}{tag.l2 ? ` · ${tag.l2}` : ""}
                           </span>
-                        )}
+                          ) : null
+                        })()}
                       </td>
                       <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao}</td>
                       <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
@@ -3410,12 +3438,15 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           short_name={row.short_name}
                           className="font-medium text-blue-600 dark:text-blue-400 leading-5 truncate max-w-[220px] hover:underline block"
                         />
-                        {row.strategy_l1 && (
+                        {(() => {
+                          const tag = trackStrategyTag(row)
+                          return tag.l1 ? (
                           <div className="flex items-center gap-1 mt-0.5">
                             <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
-                            <span className="text-[10px] text-muted-foreground">{row.strategy_l1}{row.strategy_l2 ? ` · ${row.strategy_l2}` : ""}</span>
+                            <span className="text-[10px] text-muted-foreground">{tag.l1}{tag.l2 ? ` · ${tag.l2}` : ""}</span>
                           </div>
-                        )}
+                          ) : null
+                        })()}
                       </td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
@@ -3904,11 +3935,14 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           short_name={row.short_name}
                           className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[240px]"
                         />
-                        {row.strategy_l1 && (
+                        {(() => {
+                          const tag = trackStrategyTag(row)
+                          return tag.l1 ? (
                           <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
-                            {row.strategy_l1}
+                            {tag.l1}{tag.l2 ? ` · ${tag.l2}` : ""}
                           </span>
-                        )}
+                          ) : null
+                        })()}
                       </td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
@@ -4309,15 +4343,21 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     if (!editStrategyBeianHao || !editStrategyL1) return
                     setEditStrategySaving(true)
                     try {
-                      await fetch(`/ma/api/private-funds/${encodeURIComponent(editStrategyBeianHao)}/strategy`, {
+                      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(editStrategyBeianHao)}/strategy`, {
                         method: "PATCH",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                           strategy_l1: editStrategyL1 || null,
                           strategy_l2: editStrategyL2 || null,
                           strategy_l3: editStrategyL3 || null,
+                          product_name: editStrategyName || null,
                         }),
                       })
+                      if (!res.ok) {
+                        const errBody = await res.json().catch(() => null) as { error?: string } | null
+                        alert(errBody?.error || `团队策略保存失败（${res.status}）`)
+                        return
+                      }
                       setShowEditStrategyDialog(false)
                       setDataReloadKey((k) => k + 1)
                     } finally {
@@ -9068,11 +9108,13 @@ function OpsEditElementsDialog({
   beian_hao,
   product_name,
   onClose,
+  onSaved,
 }: {
   open: boolean
   beian_hao: string | null
   product_name: string
   onClose: () => void
+  onSaved?: () => void
 }) {
   const [tab, setTab] = useState<OpsElementsTab>("basic")
   const [loading, setLoading] = useState(false)
@@ -9130,8 +9172,9 @@ function OpsEditElementsDialog({
       fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beian_hao)}`).then((r) => r.json()),
       fetch("/ma/api/tracking-funds/strategies?strategy_source=platform&pool=all").then((r) => r.json()),
       fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all").then((r) => r.json()),
+      fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`).then((r) => r.json()).catch(() => null),
     ])
-      .then(([data, pTree, tTree]) => {
+      .then(([data, pTree, tTree, companyStrategy]) => {
         if (Array.isArray(pTree)) setPlatformTree(pTree)
         if (Array.isArray(tTree)) setTeamTree(tTree)
         if (data?.error) return
@@ -9148,9 +9191,13 @@ function OpsEditElementsDialog({
         setPlatformL2(d.platform_l2 ?? "")
         setPlatformL3s(d.platform_l3 ? d.platform_l3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
         setBenchmark(d.benchmark ?? "")
-        setTeamL1(d.company_l1 ?? "")
-        setTeamL2(d.company_l2 ?? "")
-        setTeamL3s(d.company_l3 ? d.company_l3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
+        // Prefer dedicated strategy endpoint so 运维编辑要素 stays aligned with table/detail editors.
+        const companyL1 = companyStrategy?.strategy_l1 ?? d.company_l1 ?? ""
+        const companyL2 = companyStrategy?.strategy_l2 ?? d.company_l2 ?? ""
+        const companyL3 = companyStrategy?.strategy_l3 ?? d.company_l3 ?? ""
+        setTeamL1(companyL1)
+        setTeamL2(companyL2)
+        setTeamL3s(companyL3 ? String(companyL3).split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
         setOpenDay(d.open_day ?? "")
         setFeePurchase(d.fee_purchase ?? "")
         setFeeRedeem(d.fee_redeem ?? "")
@@ -9266,16 +9313,21 @@ function OpsEditElementsDialog({
         const errBody = await elementsRes.json().catch(() => null) as { error?: string } | null
         throw new Error(errBody?.error || "要素保存失败")
       }
-      // Team strategy may 404 for manually-added products not yet in type6_ops_team_full.
-      await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
+      const strategyRes = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           strategy_l1: teamL1 || null,
           strategy_l2: teamL2 || null,
           strategy_l3: teamL3s.length ? teamL3s.join(",") : null,
+          product_name: product_name || null,
         }),
-      }).catch(() => undefined)
+      })
+      if (!strategyRes.ok) {
+        const errBody = await strategyRes.json().catch(() => null) as { error?: string } | null
+        throw new Error(errBody?.error || "团队策略保存失败")
+      }
+      onSaved?.()
       onClose()
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "要素保存失败")
@@ -11786,6 +11838,7 @@ function OperationsDirectView() {
         beian_hao={directElementsDialog?.beian_hao ?? null}
         product_name={directElementsDialog?.product_name ?? ""}
         onClose={() => setDirectElementsDialog(null)}
+        onSaved={() => setDataReloadKey((k) => k + 1)}
       />
       <OpsPermissionDialog
         open={!!directPermissionDialog}
@@ -12393,6 +12446,7 @@ function OperationsFofUnderlyingView() {
         beian_hao={fofElementsDialog?.beian_hao ?? null}
         product_name={fofElementsDialog?.product_name ?? ""}
         onClose={() => setFofElementsDialog(null)}
+        onSaved={() => setFofListReloadKey((k) => k + 1)}
       />
       <OpsPermissionDialog
         open={!!fofPermissionDialog}
@@ -13915,31 +13969,54 @@ function OperationsTeamValuationManageView({
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [uploading, setUploading] = useState(false)
+  const [stagedFiles, setStagedFiles] = useState<File[]>([])
+  const [importing, setImporting] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  async function uploadFiles(rawFiles: FileList | File[]) {
-    const files = Array.from(rawFiles).filter((file) => /\.xlsx?$/i.test(file.name))
-    if (files.length === 0) {
-      setError("请上传 .xls 或 .xlsx 格式的估值表")
-      setMessage(null)
-      return
-    }
-    if (files.length > TEAM_VALUATION_UPLOAD_MAX_FILES) {
-      setError(`每次最多上传 ${TEAM_VALUATION_UPLOAD_MAX_FILES} 份估值表`)
+  function stageFiles(rawFiles: FileList | File[]) {
+    const incoming = Array.from(rawFiles).filter((file) => /\.xlsx?$/i.test(file.name))
+    if (incoming.length === 0) {
+      setError("请选择 .xls 或 .xlsx 格式的估值表")
       setMessage(null)
       return
     }
 
-    setUploading(true)
+    const byKey = new Map(stagedFiles.map((file) => [`${file.name}:${file.size}:${file.lastModified}`, file]))
+    for (const file of incoming) {
+      byKey.set(`${file.name}:${file.size}:${file.lastModified}`, file)
+    }
+    const next = [...byKey.values()]
+    if (next.length > TEAM_VALUATION_UPLOAD_MAX_FILES) {
+      setError(`每次最多导入 ${TEAM_VALUATION_UPLOAD_MAX_FILES} 份估值表`)
+      setMessage(null)
+      return
+    }
+    setStagedFiles(next)
+    setError(null)
+    setMessage(null)
+  }
+
+  function removeStagedFile(index: number) {
+    setStagedFiles((prev) => prev.filter((_, i) => i !== index))
+    setError(null)
+  }
+
+  async function importStagedFiles() {
+    if (stagedFiles.length === 0) {
+      setError("请先拖入或选择估值表，再点击导入")
+      setMessage(null)
+      return
+    }
+
+    setImporting(true)
     setError(null)
     setMessage(null)
     try {
       const form = new FormData()
       form.append("beian_hao", beian_hao)
       form.append("product_name", product_name)
-      for (const file of files) form.append("files", file)
+      for (const file of stagedFiles) form.append("files", file)
 
       const res = await fetch("/ma/api/ops/team-data/valuation/upload", {
         method: "POST",
@@ -13947,39 +14024,49 @@ function OperationsTeamValuationManageView({
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) {
-        throw new Error(typeof json.error === "string" ? json.error : "上传失败")
+        throw new Error(typeof json.error === "string" ? json.error : "导入失败")
       }
 
-      const saved = typeof json.saved === "number" ? json.saved : files.length
+      const saved = typeof json.saved === "number" ? json.saved : stagedFiles.length
       const failed = Array.isArray(json.failed) ? json.failed as string[] : []
       if (failed.length > 0) {
-        setMessage(`成功上传 ${saved} 份估值表，${failed.length} 份失败`)
+        setMessage(`成功解析 ${saved} 份估值表，${failed.length} 份失败。可点击「打开估值表页」核对。`)
+        setError(failed.slice(0, 3).join("；"))
       } else {
-        setMessage(`成功上传 ${saved} 份估值表`)
+        setMessage(`成功解析 ${saved} 份估值表。可点击「打开估值表页」核对是否已展示。`)
       }
+      setStagedFiles([])
     } catch (err) {
-      setError(err instanceof Error ? err.message : "上传失败")
+      setError(err instanceof Error ? err.message : "导入失败")
     } finally {
-      setUploading(false)
+      setImporting(false)
     }
   }
 
   return (
     <div className="flex flex-col flex-1 min-h-0 px-6 py-4">
-      <div className="flex items-center gap-2 mb-4 flex-shrink-0">
+      <div className="flex items-center gap-2 mb-4 flex-shrink-0 flex-wrap">
         <h1 className="text-xl font-semibold text-foreground">{product_name}</h1>
         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-red-50 text-red-500 border border-red-200 dark:bg-red-950/30 dark:border-red-800">
           估值表管理
         </span>
+        <button
+          type="button"
+          onClick={() => openValuationAnalysisPage(beian_hao)}
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm text-foreground hover:bg-muted transition-colors"
+        >
+          <BarChart2 className="h-3.5 w-3.5 text-muted-foreground" />
+          打开估值表页
+        </button>
       </div>
 
       <div className="bg-amber-50 border border-amber-200 text-sm text-zinc-800 px-4 py-3 mb-6 rounded flex-shrink-0 dark:bg-amber-950/20 dark:border-amber-800 dark:text-amber-100">
-        请确保该资产已上传4级估值表，否则可能无法解析。
+        请确保该资产已上传4级估值表，否则可能无法解析。拖入文件后需点击「导入估值表」才会解析入库。
       </div>
 
       <div
         className={[
-          "flex flex-col items-center justify-center rounded-lg border-2 border-dashed bg-muted/30 min-h-[280px] px-6 py-12 transition-colors flex-shrink-0",
+          "flex flex-col items-center justify-center rounded-lg border-2 border-dashed bg-muted/30 min-h-[240px] px-6 py-10 transition-colors flex-shrink-0",
           isDragOver ? "border-red-400 bg-red-50/30 dark:bg-red-950/10" : "border-muted-foreground/20",
         ].join(" ")}
         onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
@@ -13987,7 +14074,7 @@ function OperationsTeamValuationManageView({
         onDrop={(e) => {
           e.preventDefault()
           setIsDragOver(false)
-          if (e.dataTransfer.files.length > 0) void uploadFiles(e.dataTransfer.files)
+          if (e.dataTransfer.files.length > 0) stageFiles(e.dataTransfer.files)
         }}
       >
         <input
@@ -13997,38 +14084,93 @@ function OperationsTeamValuationManageView({
           multiple
           className="hidden"
           onChange={(e) => {
-            if (e.target.files?.length) void uploadFiles(e.target.files)
+            if (e.target.files?.length) stageFiles(e.target.files)
             e.target.value = ""
           }}
         />
         <button
           type="button"
-          disabled={uploading}
+          disabled={importing}
           onClick={() => fileInputRef.current?.click()}
           className="px-6 py-2 rounded border bg-background text-sm hover:bg-muted transition-colors disabled:opacity-50 mb-4"
         >
-          {uploading ? "上传中…" : "上传估值表"}
+          选择估值表
         </button>
         <p className="text-sm text-muted-foreground text-center">
-          请上传【{product_name}】的估值表，估值表格式限制为.xls和.xlsx
+          请拖入或选择【{product_name}】的估值表，格式限制为 .xls / .xlsx
         </p>
         <p className="text-sm text-muted-foreground text-center mt-1">
-          可拖拽上传，每次最多上传100份。
+          每次最多 {TEAM_VALUATION_UPLOAD_MAX_FILES} 份；选好后点击下方「导入估值表」进行解析。
         </p>
-        {message && <p className="text-sm text-green-600 dark:text-green-400 mt-4 text-center">{message}</p>}
-        {error && <p className="text-sm text-red-500 mt-4 text-center">{error}</p>}
       </div>
 
-      <button
-        type="button"
-        onClick={onBack}
-        className="self-center mt-6 px-8 py-2 rounded border text-sm text-muted-foreground hover:bg-muted transition-colors flex-shrink-0"
-      >
-        返回列表
-      </button>
+      {stagedFiles.length > 0 && (
+        <div className="mt-4 rounded-lg border bg-background flex-shrink-0">
+          <div className="px-4 py-2.5 border-b text-sm font-medium text-foreground flex items-center justify-between">
+            <span>待导入（{stagedFiles.length}）</span>
+            <button
+              type="button"
+              disabled={importing}
+              onClick={() => setStagedFiles([])}
+              className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+            >
+              清空
+            </button>
+          </div>
+          <ul className="max-h-48 overflow-y-auto divide-y">
+            {stagedFiles.map((file, index) => (
+              <li key={`${file.name}:${file.size}:${file.lastModified}`} className="px-4 py-2 flex items-center gap-3 text-sm">
+                <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <span className="flex-1 truncate text-foreground">{file.name}</span>
+                <span className="text-xs text-muted-foreground shrink-0">
+                  {(file.size / 1024).toFixed(1)} KB
+                </span>
+                <button
+                  type="button"
+                  disabled={importing}
+                  onClick={() => removeStagedFile(index)}
+                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-50"
+                  aria-label={`移除 ${file.name}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex items-center justify-center gap-3 mt-6 flex-shrink-0 flex-wrap">
+        <button
+          type="button"
+          disabled={importing || stagedFiles.length === 0}
+          onClick={() => void importStagedFiles()}
+          className="px-8 py-2 rounded bg-red-500 text-white text-sm hover:bg-red-600 transition-colors disabled:opacity-50"
+        >
+          {importing ? "解析中…" : "导入估值表"}
+        </button>
+        <button
+          type="button"
+          onClick={() => openValuationAnalysisPage(beian_hao)}
+          className="px-6 py-2 rounded border text-sm text-foreground hover:bg-muted transition-colors inline-flex items-center gap-1.5"
+        >
+          <BarChart2 className="h-3.5 w-3.5 text-muted-foreground" />
+          打开估值表页
+        </button>
+        <button
+          type="button"
+          onClick={onBack}
+          className="px-6 py-2 rounded border text-sm text-muted-foreground hover:bg-muted transition-colors"
+        >
+          {backLabel === "返回团队数据" ? "返回列表" : backLabel}
+        </button>
+      </div>
+
+      {message && <p className="text-sm text-green-600 dark:text-green-400 mt-4 text-center">{message}</p>}
+      {error && <p className="text-sm text-red-500 mt-4 text-center">{error}</p>}
 
       <p className="text-xs text-muted-foreground mt-auto pt-8 flex-shrink-0">
-        备注: 每次最多只能报 <span className="text-red-500 font-medium">100份</span> 估值表，请上传交易日数据。
+        备注: 每次最多只能报 <span className="text-red-500 font-medium">100份</span> 估值表，请上传交易日数据。导入成功后可点「打开估值表页」立即核对。
       </p>
     </div>
   )
@@ -15008,6 +15150,7 @@ function OperationsTeamDataView() {
         beian_hao={teamElementsDialog?.beian_hao ?? null}
         product_name={teamElementsDialog?.product_name ?? ""}
         onClose={() => setTeamElementsDialog(null)}
+        onSaved={() => setTeamDataReloadKey((k) => k + 1)}
       />
       <OpsSyncNavDialog
         open={!!teamSyncNavDialog}
@@ -16407,6 +16550,7 @@ function OperationsManagedProductsView() {
         beian_hao={managedElementsDialog?.beian_hao ?? null}
         product_name={managedElementsDialog?.product_name ?? ""}
         onClose={() => setManagedElementsDialog(null)}
+        onSaved={() => setManagedDataReloadKey((k) => k + 1)}
       />
       <OpsPermissionDialog
         open={!!managedPermissionDialog}
@@ -17082,7 +17226,7 @@ function InvestmentManagedProductsView() {
     setInvStrategyL3("")
     setShowInvStrategyDialog(true)
     try {
-      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`)
+      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
       if (d?.strategy_l1) setInvStrategyL1(d.strategy_l1)
       if (d?.strategy_l2) setInvStrategyL2(d.strategy_l2)
@@ -17957,16 +18101,23 @@ function InvestmentManagedProductsView() {
                     if (!invStrategyBeianHao || !invStrategyL1) return
                     setInvStrategySaving(true)
                     try {
-                      await fetch(`/ma/api/private-funds/${encodeURIComponent(invStrategyBeianHao)}/strategy`, {
+                      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(invStrategyBeianHao)}/strategy`, {
                         method: "PATCH",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                           strategy_l1: invStrategyL1 || null,
                           strategy_l2: invStrategyL2 || null,
                           strategy_l3: invStrategyL3 || null,
+                          product_name: invStrategyName || null,
                         }),
                       })
+                      if (!res.ok) {
+                        const errBody = await res.json().catch(() => null) as { error?: string } | null
+                        alert(errBody?.error || `团队策略保存失败（${res.status}）`)
+                        return
+                      }
                       setShowInvStrategyDialog(false)
+                      setInvDataReloadKey((k) => k + 1)
                     } finally {
                       setInvStrategySaving(false)
                     }
@@ -18442,7 +18593,7 @@ function InvestmentFofOverviewView() {
     setFofStrategyL3("")
     setShowFofStrategyDialog(true)
     try {
-      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`)
+      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
       if (d?.strategy_l1) setFofStrategyL1(d.strategy_l1)
       if (d?.strategy_l2) setFofStrategyL2(d.strategy_l2)
@@ -19946,16 +20097,23 @@ function InvestmentFofOverviewView() {
                     if (!fofStrategyBeianHao || !fofStrategyL1) return
                     setFofStrategySaving(true)
                     try {
-                      await fetch(`/ma/api/private-funds/${encodeURIComponent(fofStrategyBeianHao)}/strategy`, {
+                      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(fofStrategyBeianHao)}/strategy`, {
                         method: "PATCH",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                           strategy_l1: fofStrategyL1 || null,
                           strategy_l2: fofStrategyL2 || null,
                           strategy_l3: fofStrategyL3 || null,
+                          product_name: fofStrategyName || null,
                         }),
                       })
+                      if (!res.ok) {
+                        const errBody = await res.json().catch(() => null) as { error?: string } | null
+                        alert(errBody?.error || `团队策略保存失败（${res.status}）`)
+                        return
+                      }
                       setShowFofStrategyDialog(false)
+                      setFofListReloadKey((k) => k + 1)
                     } finally {
                       setFofStrategySaving(false)
                     }

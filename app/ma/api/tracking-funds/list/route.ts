@@ -339,14 +339,8 @@ function cachedStrategyExprs(
 ): { l1: string; l2: string; l3: string } {
   const src = strategySource === "platform" ? "platform" : "company"
   const json = "cache.raw_strategy_json"
-  if (pool === "bfl") {
-    return {
-      l1: `NULLIF(BTRIM(COALESCE((${json}->'${src}'->>'strategy_one'), '')), '')`,
-      l2: `NULLIF(BTRIM(COALESCE((${json}->'${src}'->>'strategy_two'), '')), '')`,
-      l3: `NULLIF(BTRIM(COALESCE((${json}->'${src}'->>'strategy_three'), '')), '')`,
-    }
-  }
-  if (pool === "all") {
+  // bfl / all: prefer denormalized columns (patched on 团队策略 save), fall back to JSON.
+  if (pool === "bfl" || pool === "all") {
     return {
       l1: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l1, (${json}->'${src}'->>'strategy_one'), '')), '')`,
       l2: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l2, (${json}->'${src}'->>'strategy_two'), '')), '')`,

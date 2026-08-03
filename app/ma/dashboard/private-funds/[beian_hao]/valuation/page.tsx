@@ -48,6 +48,7 @@ import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetri
 import { MonthlyReturnsCalendar } from "../components/MonthlyReturnsCalendar"
 import { AnnualMetricsTable } from "../components/AnnualMetricsTable"
 import { buildFundIntervalMetricsFromNav } from "../components/performanceChartUtils"
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
 import { getNavFieldValue, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "../components/shared"
 
@@ -474,7 +475,10 @@ export default function FundValuationAnalysisPage() {
     router.push(`/ma/dashboard/private-funds?tab=${tab}&side=${sideItem}`)
   }, [router])
 
-  const displayName = data?.product_name ?? data?.fund_name ?? beian_hao
+  const displayName = resolveFundDisplayLabel(
+    null,
+    data?.product_name ?? data?.fund_name ?? beian_hao,
+  )
   const navDateLabel = data?.unit_nav_date ?? data?.valuation_date?.slice(0, 10) ?? "—"
   const isFofLayout = data?.layout_type === "fof" || Boolean(trendData?.fof_trend)
   const isEquityLayout = data?.layout_type === "equity"
@@ -876,7 +880,7 @@ export default function FundValuationAnalysisPage() {
         <div className="bg-white rounded-lg border border-zinc-100 p-10 text-center">
           <p className="text-zinc-700 font-medium mb-2">暂无估值表数据</p>
           <p className="text-sm text-zinc-500 max-w-lg mx-auto leading-relaxed">
-            尚未从邮件中抓取到该基金的估值表。估值表由 nightly ETL 从运维邮箱同步，请确认邮箱已收到附件，或在「运维 → 邮件解析」中手动触发抓取。
+            尚未抓取到该基金的估值表。可由 nightly ETL 从运维邮箱同步，也可在「运维 → 团队数据 → 估值表管理」手动上传，或在「运维 → 邮件解析」中触发抓取。
           </p>
         </div>
       )}

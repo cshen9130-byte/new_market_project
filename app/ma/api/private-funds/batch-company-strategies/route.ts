@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { invalidateTrackingPoolListCaches } from "@/lib/server/tracking-pool-membership"
+import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
+import { addFundToTrackingPool } from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -97,19 +98,42 @@ export async function POST(req: Request) {
 
     try {
       let updated = 0
+      const synced: Array<typeof normalized[number] & { product_name?: string | null }> = []
       for (const item of normalized) {
-        const result = await query<{ register_number: string }>(
+        let result = await query<{ register_number: string }>(
           `UPDATE type6_ops_team_full
            SET company_strategy_one   = $2,
                company_strategy_two   = $3,
-               company_strategy_three = $4
+               company_strategy_three = $4,
+               updated_at = NOW()
            WHERE register_number = $1
            RETURNING register_number`,
           [item.beian_hao, item.strategy_l1, item.strategy_l2, item.strategy_l3],
         )
-        updated += result.length
+        if (!result.length) {
+          // Align with single-fund PATCH: create team-pool row when missing.
+          try {
+            await addFundToTrackingPool("bfl_ops", item.beian_hao, item.beian_hao)
+          } catch {
+            // permission / schema issues — leave as not updated
+          }
+          result = await query<{ register_number: string }>(
+            `UPDATE type6_ops_team_full
+             SET company_strategy_one   = $2,
+                 company_strategy_two   = $3,
+                 company_strategy_three = $4,
+                 updated_at = NOW()
+             WHERE register_number = $1
+             RETURNING register_number`,
+            [item.beian_hao, item.strategy_l1, item.strategy_l2, item.strategy_l3],
+          )
+        }
+        if (result.length) {
+          updated += result.length
+          synced.push(item)
+        }
       }
-      invalidateTrackingPoolListCaches([])
+      await syncCompanyStrategyCaches(synced)
       return NextResponse.json({ ok: true, updated })
     } catch (err) {
       console.error("[batch-company-strategies] sync error:", err)

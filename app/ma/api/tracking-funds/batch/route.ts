@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 import {
@@ -115,15 +116,26 @@ export async function POST(req: Request) {
       // ── Strategy ──────────────────────────────────────────────────────────
       case "set_strategy": {
         const ph = ids.map((_, i) => `$${i + 1}`).join(", ")
+        const l1 = strategy_l1 ?? null
+        const l2 = strategy_l2 ?? null
+        const l3 = strategy_l3 ?? null
         await query(
           `UPDATE type6_ops_team_full
            SET company_strategy_one   = $${ids.length + 1},
                company_strategy_two   = $${ids.length + 2},
-               company_strategy_three = $${ids.length + 3}
+               company_strategy_three = $${ids.length + 3},
+               updated_at = NOW()
            WHERE register_number IN (${ph})`,
-          [...ids, strategy_l1 ?? null, strategy_l2 ?? null, strategy_l3 ?? null]
+          [...ids, l1, l2, l3]
         )
-        invalidateTrackingPoolListCaches([])
+        await syncCompanyStrategyCaches(
+          ids.map((beian_hao) => ({
+            beian_hao,
+            strategy_l1: l1,
+            strategy_l2: l2,
+            strategy_l3: l3,
+          })),
+        )
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -133,11 +145,19 @@ export async function POST(req: Request) {
           `UPDATE type6_ops_team_full
            SET company_strategy_one   = NULL,
                company_strategy_two   = NULL,
-               company_strategy_three = NULL
+               company_strategy_three = NULL,
+               updated_at = NOW()
            WHERE register_number IN (${ph})`,
           ids
         )
-        invalidateTrackingPoolListCaches([])
+        await syncCompanyStrategyCaches(
+          ids.map((beian_hao) => ({
+            beian_hao,
+            strategy_l1: null,
+            strategy_l2: null,
+            strategy_l3: null,
+          })),
+        )
         return NextResponse.json({ ok: true, count: ids.length })
       }
 

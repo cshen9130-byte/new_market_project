@@ -1,41 +1,136 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
+import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
+import { addFundToTrackingPool } from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function PATCH(
-  req: Request,
-  { params }: { params: Promise<{ beian_hao: string }> }
+function trimOrNull(value: unknown): string | null {
+  if (value == null) return null
+  const s = String(value).trim()
+  return s ? s : null
+}
+
+async function updateCompanyStrategy(
+  beian_hao: string,
+  strategy_l1: string | null,
+  strategy_l2: string | null,
+  strategy_l3: string | null,
+) {
+  return query<{ register_number: string }>(
+    `UPDATE type6_ops_team_full
+     SET company_strategy_one   = $2,
+         company_strategy_two   = $3,
+         company_strategy_three = $4,
+         updated_at = NOW()
+     WHERE register_number = $1
+     RETURNING register_number`,
+    [beian_hao, strategy_l1, strategy_l2, strategy_l3],
+  )
+}
+
+/** Return raw 团队策略 fields (not platform fallback) for edit dialogs. */
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ beian_hao: string }> },
 ) {
   const { beian_hao: rawId } = await params
   const beian_hao = await resolveRouteFundId(rawId)
   if (!beian_hao) return NextResponse.json({ error: "Missing beian_hao" }, { status: 400 })
 
-  const body = await req.json()
-  const strategy_l1: string | null = body.strategy_l1 ?? null
-  const strategy_l2: string | null = body.strategy_l2 ?? null
-  const strategy_l3: string | null = body.strategy_l3 ?? null
+  try {
+    const rows = await query<{
+      strategy_l1: string | null
+      strategy_l2: string | null
+      strategy_l3: string | null
+    }>(
+      `SELECT NULLIF(BTRIM(company_strategy_one), '')   AS strategy_l1,
+              NULLIF(BTRIM(company_strategy_two), '')   AS strategy_l2,
+              NULLIF(BTRIM(company_strategy_three), '') AS strategy_l3
+       FROM type6_ops_team_full
+       WHERE register_number = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [beian_hao],
+    )
+    const row = rows[0]
+    return NextResponse.json({
+      beian_hao,
+      strategy_l1: row?.strategy_l1 ?? null,
+      strategy_l2: row?.strategy_l2 ?? null,
+      strategy_l3: row?.strategy_l3 ?? null,
+    })
+  } catch (err) {
+    console.error("Strategy GET error:", err)
+    return NextResponse.json({ error: "Database error" }, { status: 500 })
+  }
+}
+
+export async function PATCH(
+  req: Request,
+  { params }: { params: Promise<{ beian_hao: string }> },
+) {
+  const { beian_hao: rawId } = await params
+  const beian_hao = await resolveRouteFundId(rawId)
+  if (!beian_hao) return NextResponse.json({ error: "Missing beian_hao" }, { status: 400 })
+
+  const body = await req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
+
+  const strategy_l1 = trimOrNull(body.strategy_l1)
+  const strategy_l2 = trimOrNull(body.strategy_l2)
+  const strategy_l3 = trimOrNull(body.strategy_l3)
+  const product_name = trimOrNull(body.product_name) || beian_hao
 
   try {
-    const result = await query<{ register_number: string }>(
-      `UPDATE type6_ops_team_full
-       SET company_strategy_one   = $2,
-           company_strategy_two   = $3,
-           company_strategy_three = $4
-       WHERE register_number = $1
-       RETURNING register_number`,
-      [beian_hao, strategy_l1, strategy_l2, strategy_l3]
-    )
+    let result = await updateCompanyStrategy(beian_hao, strategy_l1, strategy_l2, strategy_l3)
+
+    // Product may exist in BFL / list cache but not yet in the team ops table.
+    if (!result.length) {
+      try {
+        await addFundToTrackingPool("bfl_ops", beian_hao, product_name)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/permission denied|无写入权限/i.test(msg)) {
+          return NextResponse.json(
+            { error: "数据库账号无写入权限（团队策略），请联系管理员执行 scripts/db/019_grant_type6_ops_team_full_write.sql" },
+            { status: 500 },
+          )
+        }
+        throw err
+      }
+      result = await updateCompanyStrategy(beian_hao, strategy_l1, strategy_l2, strategy_l3)
+    }
 
     if (!result.length) {
       return NextResponse.json({ error: "Fund not found in team pool" }, { status: 404 })
     }
 
-    return NextResponse.json({ ok: true, updated: result.length })
+    await syncCompanyStrategyCaches([
+      { beian_hao, strategy_l1, strategy_l2, strategy_l3, product_name },
+    ])
+    // Also bust detail cache keyed by the raw URL id (may differ from resolved beian).
+    invalidateDetailResponseMemoryCache([rawId, beian_hao])
+
+    return NextResponse.json({
+      ok: true,
+      updated: result.length,
+      strategy_l1,
+      strategy_l2,
+      strategy_l3,
+    })
   } catch (err) {
     console.error("Strategy PATCH error:", err)
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/permission denied/i.test(msg)) {
+      return NextResponse.json(
+        { error: "数据库账号无写入权限（团队策略），请联系管理员执行 scripts/db/019_grant_type6_ops_team_full_write.sql" },
+        { status: 500 },
+      )
+    }
     return NextResponse.json({ error: "Database error" }, { status: 500 })
   }
 }

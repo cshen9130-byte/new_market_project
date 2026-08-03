@@ -432,9 +432,10 @@ export function getCustomFundDetail(productCode: string, ownerUserId?: string): 
 }
 
 export function buildCustomFundPrivateDetailResponse(fund: CustomFundRecord) {
-  const strategy_l1 = fund.platform_strategy_l1 ?? fund.team_strategy_l1
-  const strategy_l2 = fund.platform_strategy_l2 ?? fund.team_strategy_l2
-  const strategy_l3 = fund.platform_strategy_l3 ?? fund.team_strategy_l3
+  // 团队策略 is highest priority on the fund detail page.
+  const strategy_l1 = fund.team_strategy_l1 ?? fund.platform_strategy_l1
+  const strategy_l2 = fund.team_strategy_l2 ?? fund.platform_strategy_l2
+  const strategy_l3 = fund.team_strategy_l3 ?? fund.platform_strategy_l3
   const { listCustomFundNavSeries, getCustomFundLatestNav, computeCustomFundHeadlineMetrics } = navHelpers()
   const navSeries = listCustomFundNavSeries(fund.product_code)
   const latestNav = getCustomFundLatestNav(fund.product_code)

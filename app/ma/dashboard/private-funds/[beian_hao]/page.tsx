@@ -48,6 +48,7 @@ import { FundMaterialsPanel } from "./components/FundMaterialsPanel"
 import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
 import { formatReturnTooltipLabel, buildBenchmarkPctChangesByDate, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 
 const menuItems = [
   { key: "market",     label: "市场" },
@@ -225,6 +226,7 @@ function FundDetailPageShell({
 interface FundInfo {
   beian_hao:      string
   product_name:   string
+  short_name?:    string | null
   strategy_l1:    string | null
   strategy_l2:    string | null
   strategy_l3:    string | null
@@ -975,25 +977,38 @@ export default function PrivateFundDetailPage() {
   const [editL2, setEditL2] = useState<string>("")
   const [editL3s, setEditL3s] = useState<string[]>([])
   const [savingStrategy, setSavingStrategy] = useState(false)
+  const [strategySaveError, setStrategySaveError] = useState<string | null>(null)
 
   function openStrategyModal() {
     if (!data) return
+    // Prefill from displayed tags first, then overwrite with raw 团队策略 from type6.
     setEditL1(data.info.strategy_l1 ?? "")
     setEditL2(data.info.strategy_l2 ?? "")
     const l3raw = data.info.strategy_l3 ?? ""
     setEditL3s(l3raw ? l3raw.split(/[，,]/).map(s => s.trim()).filter(Boolean) : [])
     setStrategyTab("team")
+    setStrategySaveError(null)
     setShowStrategyModal(true)
-    if (!strategyTree.length) {
-      fetch("/ma/api/tracking-funds/strategies?pool=tracking")
-        .then(r => r.json())
-        .then(d => Array.isArray(d) && setStrategyTree(d))
-        .catch(() => {})
-    }
+    Promise.all([
+      fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all").then((r) => r.json()),
+      fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`).then((r) => r.json()),
+    ])
+      .then(([tree, company]) => {
+        if (Array.isArray(tree)) setStrategyTree(tree)
+        if (company && !company.error) {
+          setEditL1(company.strategy_l1 ?? "")
+          setEditL2(company.strategy_l2 ?? "")
+          const raw = company.strategy_l3 ?? ""
+          setEditL3s(raw ? String(raw).split(/[，,]/).map((s: string) => s.trim()).filter(Boolean) : [])
+        }
+      })
+      .catch(() => {})
   }
 
   async function saveStrategy() {
+    if (!data) return
     setSavingStrategy(true)
+    setStrategySaveError(null)
     try {
       const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
         method: "PATCH",
@@ -1002,20 +1017,26 @@ export default function PrivateFundDetailPage() {
           strategy_l1: editL1 || null,
           strategy_l2: editL2 || null,
           strategy_l3: editL3s.length ? editL3s.join(",") : null,
+          product_name: data.info.product_name ?? null,
         }),
       })
-      if (res.ok && data) {
-        setData({
-          ...data,
-          info: {
-            ...data.info,
-            strategy_l1: editL1 || null,
-            strategy_l2: editL2 || null,
-            strategy_l3: editL3s.length ? editL3s.join(",") : null,
-          },
-        })
-        setShowStrategyModal(false)
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null) as { error?: string } | null
+        setStrategySaveError(errBody?.error || `保存失败（${res.status}）`)
+        return
       }
+      setData({
+        ...data,
+        info: {
+          ...data.info,
+          strategy_l1: editL1 || null,
+          strategy_l2: editL2 || null,
+          strategy_l3: editL3s.length ? editL3s.join(",") : null,
+        },
+      })
+      setShowStrategyModal(false)
+    } catch {
+      setStrategySaveError("保存失败，请稍后重试")
     } finally {
       setSavingStrategy(false)
     }
@@ -1940,6 +1961,7 @@ export default function PrivateFundDetailPage() {
   }
 
   const { info, metrics, nav_series, nav_data_source } = data
+  const displayName = resolveFundDisplayLabel(info.short_name, info.product_name)
   const navTableTitle = nav_data_source === "team" ? "团队净值" : "平台数据"
   // Prefer last trading-day point so header never shows Sat/Sun forward-fills.
   const latestTradingNav = filterNavRowsByFrequency(nav_series, "全部").at(-1) ?? null
@@ -1980,7 +2002,7 @@ export default function PrivateFundDetailPage() {
       <div className="mb-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-bold text-zinc-900 leading-tight">{info.product_name}</h1>
+            <h1 className="text-2xl font-bold text-zinc-900 leading-tight" title={info.product_name}>{displayName}</h1>
             <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
           {/* ── 策略标签（一级 / 二级 / 三级） ── */}
           {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3) && (
@@ -2731,7 +2753,7 @@ export default function PrivateFundDetailPage() {
                 <thead>
                   <tr>
                     <THLeft>指标名称</THLeft>
-                    <TH>{info.product_name}</TH>
+                    <TH>{displayName}</TH>
                     {hasBench && <TH>{benchmarkLabel}（基准）</TH>}
                   </tr>
                 </thead>
@@ -2973,7 +2995,7 @@ export default function PrivateFundDetailPage() {
               <div className="flex items-center gap-4 text-xs text-zinc-600">
                 <span className="inline-flex items-center gap-1.5">
                   <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                  {info.product_name}
+                  {displayName}
                 </span>
                 {appliedBench && (
                   <span className="inline-flex items-center gap-1.5">
@@ -3051,7 +3073,7 @@ export default function PrivateFundDetailPage() {
                   <Area
                     type="linear"
                     dataKey="fundDD"
-                    name={info.product_name}
+                    name={displayName}
                     stroke="#ef4444"
                     strokeWidth={2}
                     fill="url(#fundDdGrad)"
@@ -3076,7 +3098,7 @@ export default function PrivateFundDetailPage() {
 
 
       <IntervalMetricsTable
-        productName={info.product_name}
+        productName={displayName}
         sampleGroup={info.strategy_l1 ?? info.strategy_l2}
         cutoffDate={intervalCutoffDate}
         fundMetrics={fundIntervalMetrics}
@@ -3087,7 +3109,7 @@ export default function PrivateFundDetailPage() {
 
       {filteredNavRows.length >= 2 && (
         <IntervalReturnsChart
-          productName={info.product_name}
+          productName={displayName}
           sampleGroup={info.strategy_l1 ?? info.strategy_l2}
           dateRangeLabel={`${filteredNavRows[0].price_date} ~ ${filteredNavRows[filteredNavRows.length - 1].price_date}`}
           rows={filteredNavRows}
@@ -3100,7 +3122,7 @@ export default function PrivateFundDetailPage() {
 
       {filteredNavRows.length >= 2 && (
         <MonthlyReturnsCalendar
-          productName={info.product_name}
+          productName={displayName}
           sampleGroup={info.strategy_l1 ?? info.strategy_l2}
           rows={filteredNavRows}
           navType={filterNavType}
@@ -3121,7 +3143,7 @@ export default function PrivateFundDetailPage() {
 
       {annualFundRows.length > 0 && (
         <AnnualMetricsTable
-          productName={info.product_name}
+          productName={displayName}
           sampleGroup={info.strategy_l1 ?? info.strategy_l2}
           dateRangeLabel={
             filteredNavRows.length >= 2
@@ -3141,7 +3163,7 @@ export default function PrivateFundDetailPage() {
       {detailTab === "product" && (
         <WinRateAnalysisPanel
           beian_hao={beian_hao}
-          productName={info.product_name}
+          productName={displayName}
           dateRangeLabel={`${activeFrom} ~ ${activeTo}`}
           rows={filteredNavRows}
           navType={filterNavType}
@@ -3156,7 +3178,7 @@ export default function PrivateFundDetailPage() {
       {detailTab === "rating" && (
         <FundRatingPanel
           beian_hao={beian_hao}
-          productName={info.product_name}
+          productName={displayName}
           cutoffDate={intervalCutoffDate ?? activeTo}
           navSource={navTableTitle}
           sampleGroup={info.strategy_l1 ?? info.strategy_l2}
@@ -3167,7 +3189,7 @@ export default function PrivateFundDetailPage() {
       {detailTab === "scenario" && (
         <ScenarioAnalysisPanel
           beian_hao={beian_hao}
-          productName={info.product_name}
+          productName={displayName}
           dateRangeLabel={`${activeFrom} ~ ${activeTo}`}
           dateFrom={activeFrom}
           dateTo={activeTo}
@@ -3182,7 +3204,7 @@ export default function PrivateFundDetailPage() {
 
       {detailTab === "attribution" && (
         <NavAttributionPanel
-          productName={info.product_name}
+          productName={displayName}
           dateRangeLabel={`${activeFrom} ~ ${activeTo}`}
           dateFrom={activeFrom}
           dateTo={activeTo}
@@ -3286,7 +3308,7 @@ export default function PrivateFundDetailPage() {
           {/* Fund name */}
           <div className="px-5 pt-3 pb-1 flex items-center gap-2">
             <div className="w-1 self-stretch rounded-full" style={{ backgroundColor: "#dc2626" }} />
-            <span className="font-semibold text-zinc-800 text-sm">{info.product_name}</span>
+            <span className="font-semibold text-zinc-800 text-sm" title={info.product_name}>{displayName}</span>
           </div>
 
           {/* Body */}
@@ -3384,7 +3406,7 @@ export default function PrivateFundDetailPage() {
           {/* Fund name */}
           <div className="px-5 pt-3 pb-2 flex items-center gap-2">
             <div className="w-1 self-stretch rounded-full" style={{ backgroundColor: "#dc2626" }} />
-            <span className="font-semibold text-zinc-800 text-sm">{info.product_name}</span>
+            <span className="font-semibold text-zinc-800 text-sm" title={info.product_name}>{displayName}</span>
           </div>
 
           {/* Tabs */}
@@ -3424,13 +3446,16 @@ export default function PrivateFundDetailPage() {
                   <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right">一级策略：</label>
                   <select
                     value={editL1}
-                    onChange={e => { setEditL1(e.target.value); setEditL2(""); setEditL3s([]) }}
+                    onChange={e => { setEditL1(e.target.value); setEditL2(""); setEditL3s([]); setStrategySaveError(null) }}
                     className="flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
                   >
                     <option value="">— 请选择 —</option>
                     {strategyTree.map(n => (
                       <option key={n.l1} value={n.l1}>{n.l1}</option>
                     ))}
+                    {editL1 && !strategyTree.some(n => n.l1 === editL1) && (
+                      <option value={editL1}>{editL1}</option>
+                    )}
                   </select>
                 </div>
 
@@ -3439,7 +3464,7 @@ export default function PrivateFundDetailPage() {
                   <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right">二级策略：</label>
                   <select
                     value={editL2}
-                    onChange={e => { setEditL2(e.target.value); setEditL3s([]) }}
+                    onChange={e => { setEditL2(e.target.value); setEditL3s([]); setStrategySaveError(null) }}
                     className="flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
                     disabled={!editL1}
                   >
@@ -3447,6 +3472,9 @@ export default function PrivateFundDetailPage() {
                     {(strategyTree.find(n => n.l1 === editL1)?.l2s ?? []).map(n => (
                       <option key={n.l2} value={n.l2}>{n.l2}</option>
                     ))}
+                    {editL2 && !(strategyTree.find(n => n.l1 === editL1)?.l2s ?? []).some(n => n.l2 === editL2) && (
+                      <option value={editL2}>{editL2}</option>
+                    )}
                   </select>
                 </div>
 
@@ -3496,6 +3524,11 @@ export default function PrivateFundDetailPage() {
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-2 px-5 py-3 border-t">
+            {strategySaveError && (
+              <span className="mr-auto text-sm text-red-500 truncate max-w-[60%]" title={strategySaveError}>
+                {strategySaveError}
+              </span>
+            )}
             <button
               onClick={() => setShowStrategyModal(false)}
               className="px-4 py-1.5 rounded border border-zinc-200 text-sm text-zinc-600 hover:bg-zinc-50 transition-colors"

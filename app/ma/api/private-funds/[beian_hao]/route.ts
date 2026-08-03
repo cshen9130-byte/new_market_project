@@ -88,17 +88,38 @@ function sanitizeDetailBody<T extends {
   return { ...body, nav_series: series, metrics }
 }
 
+/** 团队策略 is highest priority; fall back to 平台策略 only when team data is empty. */
+function preferTeamStrategy(
+  company: { l1: string | null; l2: string | null; l3: string | null },
+  platform: { l1: string | null; l2: string | null; l3: string | null },
+): { l1: string | null; l2: string | null; l3: string | null } {
+  if (company.l1 || company.l2 || company.l3) return company
+  return platform
+}
+
 function infoFromListCache(
   beian_hao: string,
   cached: ListCacheFundHeader,
 ): InfoRow {
+  const preferred = preferTeamStrategy(
+    {
+      l1: cached.company_strategy_l1,
+      l2: cached.company_strategy_l2,
+      l3: cached.company_strategy_l3,
+    },
+    {
+      l1: cached.platform_strategy_l1,
+      l2: cached.platform_strategy_l2,
+      l3: cached.platform_strategy_l3,
+    },
+  )
   return {
     beian_hao: cached.beian_hao ?? beian_hao,
     product_name: cached.product_name,
     short_name: cached.short_name,
-    strategy_l1: cached.company_strategy_l1 ?? cached.platform_strategy_l1,
-    strategy_l2: null,
-    strategy_l3: null,
+    strategy_l1: preferred.l1,
+    strategy_l2: preferred.l2,
+    strategy_l3: preferred.l3,
     manager: "",
     inception_date: null,
     benchmark: null,
@@ -362,12 +383,35 @@ export async function GET(
             `SELECT strategy_three::text AS l3 FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
             [routeBeianHao],
           ).catch(() => [] as { l3: string | null }[]),
-      strategy_l3
-        ? Promise.resolve([] as { l3: string | null }[])
-        : query<{ l3: string | null }>(
-            `SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
-            [routeBeianHao],
-          ).catch(() => [] as { l3: string | null }[]),
+      // type6 holds both company (团队) and platform (平台) strategies.
+      // Detail tags / 编辑要素 → 团队策略 must prefer company whenever present.
+      query<{
+        company_strategy_one: string | null
+        company_strategy_two: string | null
+        company_strategy_three: string | null
+        platform_strategy_one: string | null
+        platform_strategy_two: string | null
+        platform_strategy_three: string | null
+      }>(
+        `SELECT NULLIF(BTRIM(company_strategy_one), '')    AS company_strategy_one,
+                NULLIF(BTRIM(company_strategy_two), '')    AS company_strategy_two,
+                NULLIF(BTRIM(company_strategy_three), '')  AS company_strategy_three,
+                NULLIF(BTRIM(platform_strategy_one), '')   AS platform_strategy_one,
+                NULLIF(BTRIM(platform_strategy_two), '')   AS platform_strategy_two,
+                NULLIF(BTRIM(platform_strategy_three), '') AS platform_strategy_three
+         FROM type6_ops_team_full
+         WHERE register_number = $1
+         ORDER BY updated_at DESC NULLS LAST, id DESC
+         LIMIT 1`,
+        [routeBeianHao],
+      ).catch(() => [] as {
+        company_strategy_one: string | null
+        company_strategy_two: string | null
+        company_strategy_three: string | null
+        platform_strategy_one: string | null
+        platform_strategy_two: string | null
+        platform_strategy_three: string | null
+      }[]),
       pgCacheHit && pgCached
         ? Promise.resolve(pgCached.nav_series)
         : loadDetailNavSeriesFast({
@@ -395,8 +439,30 @@ export async function GET(
       })
     }
 
-    if (!strategy_l3) {
-      strategy_l3 = strategyL3Rows[0]?.l3 ?? type6StrategyRows[0]?.l3 ?? null
+    const type6Strategy = type6StrategyRows[0]
+    if (type6Strategy) {
+      const preferred = preferTeamStrategy(
+        {
+          l1: type6Strategy.company_strategy_one,
+          l2: type6Strategy.company_strategy_two,
+          l3: type6Strategy.company_strategy_three,
+        },
+        {
+          // Prefer type6 platform over BFL strategy_* when team data is empty.
+          l1: type6Strategy.platform_strategy_one ?? info.strategy_l1,
+          l2: type6Strategy.platform_strategy_two ?? info.strategy_l2,
+          l3: type6Strategy.platform_strategy_three ?? strategy_l3 ?? info.strategy_l3,
+        },
+      )
+      info = {
+        ...info,
+        strategy_l1: preferred.l1,
+        strategy_l2: preferred.l2,
+        strategy_l3: preferred.l3,
+      }
+      strategy_l3 = preferred.l3
+    } else if (!strategy_l3) {
+      strategy_l3 = strategyL3Rows[0]?.l3 ?? null
     }
 
     const scale = bflTrack?.scale?.trim() || amacResolved?.mgmt_scale || null

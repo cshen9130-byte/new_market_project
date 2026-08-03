@@ -256,6 +256,43 @@ async function searchProductsBroad(name: string, limit = 10): Promise<PrivateFun
   })
 }
 
+async function searchProductsByPrefixFast(
+  prefixes: string[],
+  limit: number,
+): Promise<PrivateFundPickerResult[]> {
+  const patterns = Array.from(
+    new Set(
+      prefixes
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p) => `${p}%`),
+    ),
+  )
+  if (!patterns.length) return []
+
+  return query<PrivateFundPickerResult>(
+    `SELECT beian_hao, product_name, short_name, strategy_one
+     FROM (
+       SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1 AS strategy_one
+       FROM private_fund_info
+       WHERE product_name ILIKE ANY($1::text[]) OR beian_hao ILIKE ANY($1::text[])
+       UNION
+       SELECT beian_hao, product_name, short_name, strategy_one
+       FROM private_fund_info_bfl
+       WHERE product_name ILIKE ANY($1::text[])
+          OR short_name ILIKE ANY($1::text[])
+          OR beian_hao ILIKE ANY($1::text[])
+     ) t
+     WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
+     ORDER BY product_name ASC
+     LIMIT $2`,
+    [patterns, limit],
+  ).catch((err) => {
+    console.error("[private-fund-product-search] searchProductsByPrefixFast", err)
+    return []
+  })
+}
+
 /**
  * Autocomplete for UI pickers — same speed as fund keyword search.
  * Single-table prefix match only; never runs the multi-table fuzzy path.
@@ -295,6 +332,98 @@ export async function searchPrivateFundProductsForAutocomplete(
     console.error("[private-fund-product-search] autocomplete by name", err)
     return []
   })
+}
+
+/**
+ * Fast picker for typing UIs: prefix search + in-memory A/B/C synthesis.
+ * Avoids the multi-table fuzzy path used by searchPrivateFundProductsForPicker.
+ */
+export async function searchPrivateFundProductsForFastPicker(
+  q: string,
+  limit = 20,
+): Promise<PrivateFundPickerResult[]> {
+  const trimmed = q.trim()
+  if (!trimmed) return []
+
+  const queryShareClass = shareClassFromProductName(trimmed)
+  const baseQuery = queryShareClass ? stripShareClassSuffix(trimmed) : trimmed
+  const coreQuery = fundNameCore(baseQuery)
+
+  const registerCode = normalizeRegisterCode(trimmed)
+  const registerBase = registerCode
+    ? (shareClassFromRegisterCode(registerCode)
+      ? stripShareClassFromRegisterCode(registerCode)
+      : registerCode)
+    : null
+
+  const prefixes = [trimmed, baseQuery, coreQuery, registerCode, registerBase]
+    .filter((v): v is string => Boolean(v && v.trim()))
+
+  // Fetch a bit more than limit so synthesis still has room after filtering.
+  const fetchLimit = Math.min(Math.max(limit * 2, 20), 40)
+  const rows = await searchProductsByPrefixFast(prefixes, fetchLimit)
+
+  const scored = new Map<string, { row: PrivateFundPickerResult; score: number }>()
+  const addRow = (row: PrivateFundPickerResult, score: number) => {
+    const beian = row.beian_hao?.trim()
+    const name = row.product_name?.trim()
+    if (!beian || !name) return
+    if (!passesShareClassFilters(beian, name, queryShareClass, trimmed)) return
+    const existing = scored.get(beian)
+    if (!existing || score < existing.score) {
+      scored.set(beian, { row: { ...row, beian_hao: beian, product_name: name }, score })
+    }
+  }
+
+  for (const row of rows) {
+    const name = row.product_name?.trim() || ""
+    const beian = row.beian_hao?.trim() || ""
+    const prefixHit =
+      name.toLowerCase().startsWith(trimmed.toLowerCase())
+      || beian.toUpperCase().startsWith(trimmed.toUpperCase())
+    addRow(row, prefixHit ? 0 : 2)
+
+    const rowShareClass = shareClassFromProductName(row.product_name) ?? shareClassFromRegisterCode(row.beian_hao)
+    const wanted = queryShareClass ?? (registerCode ? shareClassFromRegisterCode(registerCode) : null)
+    if (wanted && isBaseProduct(row) && !rowShareClass) {
+      addRow(synthesizeShareClass(row, wanted), 1)
+    }
+  }
+
+  if (queryShareClass) {
+    const hasWanted = Array.from(scored.values()).some(
+      ({ row }) => shareClassFromProductName(row.product_name) === queryShareClass,
+    )
+    if (!hasWanted) {
+      for (const row of rows) {
+        if (!isBaseProduct(row)) continue
+        if (!baseNamesMatch(row.product_name, trimmed) && !(row.short_name && baseNamesMatch(row.short_name, trimmed))) {
+          continue
+        }
+        addRow(synthesizeShareClass(row, queryShareClass), 3)
+      }
+    }
+  } else if (!registerCode || !shareClassFromRegisterCode(registerCode)) {
+    const baseRows = Array.from(scored.values()).filter(({ row }) => isBaseProduct(row))
+    for (const { row: base, score: baseScore } of baseRows) {
+      for (const letter of ["A", "B", "C"] as ShareClassLetter[]) {
+        const alreadyHas = Array.from(scored.values()).some(
+          ({ row }) =>
+            (shareClassFromProductName(row.product_name) === letter
+              || shareClassFromRegisterCode(row.beian_hao) === letter)
+            && baseNamesMatch(row.product_name, base.product_name),
+        )
+        if (!alreadyHas) {
+          addRow(synthesizeShareClass(base, letter), baseScore + 4)
+        }
+      }
+    }
+  }
+
+  return Array.from(scored.values())
+    .sort((a, b) => a.score - b.score || a.row.product_name.localeCompare(b.row.product_name, "zh-CN"))
+    .slice(0, limit)
+    .map((entry) => entry.row)
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   ValuationParseDialog,
   downloadValuationAttachment,
 } from "./ValuationParseDialog"
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 
 type CalendarEntry = {
   date: string
@@ -208,7 +209,9 @@ export default function ValuationRecordsCalendarPage() {
     ])
       .then(([fund, calendar]) => {
         if (fund) {
-          setDisplayName(fund.product_name ?? fund.fund_name ?? beian_hao)
+          setDisplayName(
+            resolveFundDisplayLabel(null, fund.product_name ?? fund.fund_name ?? beian_hao),
+          )
         }
         setSummary(calendar)
         if (calendar.dateTo) {

@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { CopyableInlineText } from "@/components/ma/copyable-inline-text"
+import { CopyableProductName } from "@/components/ma/copyable-inline-text"
 import {
   CalendarDays,
   ChevronDown,
@@ -411,18 +411,10 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
                 </td>
                 <td className="px-2 py-2 text-center text-zinc-500 tabular-nums">{(page - 1) * pageSize + i + 1}</td>
                 <td className="px-3 py-2">
-                  <CopyableInlineText
-                    text={row.product_name}
-                    copyTitle="复制产品名称"
-                    label={
-                      <Link
-                        href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                        className="font-medium text-blue-600 hover:underline leading-5 block truncate max-w-[220px] min-w-0"
-                        title={row.product_name}
-                      >
-                        {row.product_name}
-                      </Link>
-                    }
+                  <CopyableProductName
+                    beian_hao={row.beian_hao}
+                    product_name={row.product_name}
+                    className="font-medium text-blue-600 hover:underline leading-5 block truncate max-w-[220px] min-w-0"
                   />
                   {(row.strategy_l1 || row.strategy_l2) && (
                     <div className="text-[10px] text-zinc-400 mt-0.5 truncate">

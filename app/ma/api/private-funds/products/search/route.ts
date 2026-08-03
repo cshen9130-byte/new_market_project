@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { searchPrivateFundProductsForPicker } from "@/lib/server/private-fund-product-search"
+import { searchPrivateFundProductsForFastPicker } from "@/lib/server/private-fund-product-search"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -16,8 +16,8 @@ export async function GET(req: Request) {
 
   try {
     if (format === "picker") {
-      // Synthesize A/B/C share-class variants when only the base fund exists.
-      const rows = await searchPrivateFundProductsForPicker(q, 20)
+      // Fast prefix search + in-memory A/B/C synthesis (no multi-table fuzzy path).
+      const rows = await searchPrivateFundProductsForFastPicker(q, 20)
       return NextResponse.json(rows)
     }
 

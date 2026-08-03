@@ -55,7 +55,11 @@ export type ListCacheFundHeader = {
   sharpe_1y: string | null
   calmar_1y: string | null
   company_strategy_l1: string | null
+  company_strategy_l2: string | null
+  company_strategy_l3: string | null
   platform_strategy_l1: string | null
+  platform_strategy_l2: string | null
+  platform_strategy_l3: string | null
 }
 
 /** List-cache returns are fractions; detail page formats them as percent points. */
@@ -82,7 +86,8 @@ export async function lookupListCacheFundHeader(
   const id = rawId.trim()
   if (!id) return null
 
-  const selectCols = `
+  // Tracking cache stores full L1–L3 for both sources; FOF/managed only keep L1.
+  const selectCols = (source: ListCacheFundHeader["source"]) => `
     beian_hao,
     product_name,
     short_name,
@@ -97,7 +102,9 @@ export async function lookupListCacheFundHeader(
     sharpe_1y::text AS sharpe_1y,
     calmar_1y::text AS calmar_1y,
     company_strategy_l1,
-    platform_strategy_l1
+    ${source === "tracking" ? "company_strategy_l2, company_strategy_l3," : "NULL::text AS company_strategy_l2, NULL::text AS company_strategy_l3,"}
+    platform_strategy_l1,
+    ${source === "tracking" ? "platform_strategy_l2, platform_strategy_l3" : "NULL::text AS platform_strategy_l2, NULL::text AS platform_strategy_l3"}
   `
 
   type Row = {
@@ -115,7 +122,11 @@ export async function lookupListCacheFundHeader(
     sharpe_1y: string | null
     calmar_1y: string | null
     company_strategy_l1: string | null
+    company_strategy_l2: string | null
+    company_strategy_l3: string | null
     platform_strategy_l1: string | null
+    platform_strategy_l2: string | null
+    platform_strategy_l3: string | null
   }
 
   const tryTable = async (
@@ -125,7 +136,7 @@ export async function lookupListCacheFundHeader(
     try {
       // Prefer exact 备案号 match, then name — single round-trip.
       const rows = await query<Row>(
-        `SELECT ${selectCols}
+        `SELECT ${selectCols(source)}
          FROM ${table}
          WHERE beian_hao = $1 OR product_name = $1 OR short_name = $1
          ORDER BY
@@ -235,14 +246,18 @@ export function buildDetailHeaderFromListCache(
   const beian = (cached.beian_hao ?? rawId).trim()
   const navDate = cached.nav_date ? String(cached.nav_date).slice(0, 10) : null
   const tradingNavDate = navDate && isChinaTradingDay(navDate) ? navDate : null
+  // 团队策略 > 平台策略 for the header paint path as well.
+  const hasTeam = Boolean(
+    cached.company_strategy_l1 || cached.company_strategy_l2 || cached.company_strategy_l3,
+  )
   return {
     partial: true,
     info: {
       beian_hao: beian,
       product_name: cached.product_name,
-      strategy_l1: cached.company_strategy_l1 ?? cached.platform_strategy_l1,
-      strategy_l2: null,
-      strategy_l3: null,
+      strategy_l1: hasTeam ? cached.company_strategy_l1 : cached.platform_strategy_l1,
+      strategy_l2: hasTeam ? cached.company_strategy_l2 : cached.platform_strategy_l2,
+      strategy_l3: hasTeam ? cached.company_strategy_l3 : cached.platform_strategy_l3,
       manager: "",
       manager_names: null,
       manager_registration_no: null,

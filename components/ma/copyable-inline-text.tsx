@@ -105,18 +105,21 @@ export function CopyableProductName({
 
 export function CopyableProductText({
   product_name,
+  short_name,
   className,
 }: {
   product_name: string
+  short_name?: string | null
   className?: string
 }) {
+  const displayName = resolveFundDisplayLabel(short_name, product_name)
   return (
     <CopyableInlineText
       text={product_name}
       copyTitle="复制产品名称"
       label={
         <span className={className ?? "truncate min-w-0 block"} title={product_name}>
-          {product_name}
+          {displayName}
         </span>
       }
     />
