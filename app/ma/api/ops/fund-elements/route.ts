@@ -11,6 +11,7 @@ import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
+import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 
 const ELEMENTS_SOURCE = "ops/fund-elements"
@@ -87,8 +88,8 @@ async function loadOperationDate(keys: string[]): Promise<string | null> {
       `SELECT operation_date::text AS operation_date
        FROM basicinfo_bfl_track`,
     )
-    const value = rows[0]?.operation_date
-    return value ? value.slice(0, 10) : null
+    const value = toIsoDateInputValue(rows[0]?.operation_date)
+    return value || null
   } catch {
     // operation_date column may not exist until migration 013 is applied
     return null
@@ -198,9 +199,9 @@ export async function GET(req: Request) {
     register_number: el?.register_number ?? canonicalizeShareClassBeianCode(beian_hao) ?? beian_hao,
     advisor: el?.advisor ?? null,
     fund_manager,
-    inception_date: el?.inception_date ? el.inception_date.slice(0, 10) : null,
+    inception_date: toIsoDateInputValue(el?.inception_date) || null,
     operation_date,
-    puton_date: el?.puton_date ? el.puton_date.slice(0, 10) : null,
+    puton_date: toIsoDateInputValue(el?.puton_date) || null,
     custodian: el?.mandator_name ?? null,
     platform_l1: team?.platform_strategy_one ?? null,
     platform_l2: team?.platform_strategy_two ?? null,
@@ -231,10 +232,8 @@ export async function GET(req: Request) {
 }
 
 function normalizeDate(value: unknown): string | null {
-  if (value == null) return null
-  const s = String(value).trim()
-  if (!s) return null
-  return s.slice(0, 10)
+  const s = toIsoDateInputValue(value)
+  return s || null
 }
 
 function normalizeOptionalString(value: unknown): string | null | undefined {

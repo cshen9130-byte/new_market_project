@@ -72,6 +72,14 @@ export function CopyableInlineText({
   )
 }
 
+/** Last-line UI guard: never render the long legal fund-type wording. */
+function uiProductLabel(short_name: string | null | undefined, product_name: string): string {
+  return resolveFundDisplayLabel(short_name, product_name)
+    .replace(/私募证券投资基金/g, "")
+    .replace(/私募股权投资基金/g, "")
+    .trim()
+}
+
 export function CopyableProductName({
   beian_hao,
   product_name,
@@ -83,7 +91,7 @@ export function CopyableProductName({
   short_name?: string | null
   className?: string
 }) {
-  const displayName = resolveFundDisplayLabel(short_name, product_name)
+  const displayName = uiProductLabel(short_name, product_name)
   return (
     <CopyableInlineText
       text={product_name}
@@ -112,7 +120,7 @@ export function CopyableProductText({
   short_name?: string | null
   className?: string
 }) {
-  const displayName = resolveFundDisplayLabel(short_name, product_name)
+  const displayName = uiProductLabel(short_name, product_name)
   return (
     <CopyableInlineText
       text={product_name}
@@ -138,7 +146,7 @@ export function FundProductNameLink({
   className?: string
 }) {
   // Always go through display-name helper so legal suffixes never render in tables.
-  const label = resolveFundDisplayLabel(short_name, product_name)
+  const label = uiProductLabel(short_name, product_name)
   const href = `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao || product_name)}`
   return (
     <div className={className ?? "max-w-[200px]"}>

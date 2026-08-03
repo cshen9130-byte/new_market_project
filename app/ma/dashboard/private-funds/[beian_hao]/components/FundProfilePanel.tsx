@@ -93,7 +93,7 @@ function ProfileRow({
       </td>
       <td
         className={[
-          "py-2.5 px-4 text-sm text-zinc-800",
+          "py-2.5 px-4 text-sm text-zinc-800 align-top",
           multiline1 ? "whitespace-pre-wrap leading-relaxed" : "",
         ].join(" ")}
       >
@@ -106,7 +106,7 @@ function ProfileRow({
           </td>
           <td
             className={[
-              "py-2.5 px-4 text-sm text-zinc-800",
+              "py-2.5 px-4 text-sm text-zinc-800 align-top",
               multiline2 ? "whitespace-pre-wrap leading-relaxed" : "",
             ].join(" ")}
           >
@@ -115,6 +115,98 @@ function ProfileRow({
         </>
       )}
     </tr>
+  )
+}
+
+function SubscriptionField({
+  label,
+  value,
+  multiline,
+  borderedRight,
+}: {
+  label: string
+  value: string | null | undefined
+  multiline?: boolean
+  borderedRight?: boolean
+}) {
+  return (
+    <div
+      className={[
+        "flex min-w-0 items-start",
+        borderedRight ? "border-r border-zinc-100" : "",
+      ].join(" ")}
+    >
+      <div className="py-2.5 px-3 text-sm text-zinc-500 bg-zinc-50/80 w-[7.5rem] flex-shrink-0 whitespace-nowrap">
+        {label}
+      </div>
+      <div
+        className={[
+          "py-2.5 px-4 text-sm text-zinc-800 flex-1 min-w-0",
+          multiline ? "whitespace-pre-wrap leading-relaxed break-words" : "break-words",
+        ].join(" ")}
+      >
+        {val(value)}
+      </div>
+    </div>
+  )
+}
+
+function SubscriptionInfoSection({ data }: { data: ProfileData }) {
+  const rows: Array<
+    [
+      { label: string; value: string | null | undefined; multiline?: boolean },
+      { label: string; value: string | null | undefined; multiline?: boolean },
+    ]
+  > = [
+    [
+      { label: "开放日", value: data.open_day, multiline: true },
+      { label: "是否可赎回", value: data.redeemable_status },
+    ],
+    [
+      { label: "申购费", value: data.fee_purchase },
+      { label: "追加申购限制", value: data.add_amount, multiline: true },
+    ],
+    [
+      { label: "赎回费", value: data.fee_redeem, multiline: true },
+      { label: "风险等级", value: data.risk_level },
+    ],
+    [
+      { label: "预警线", value: data.precautious_line },
+      { label: "封闭期", value: data.closed_period },
+    ],
+    [
+      { label: "止损线", value: data.stop_line },
+      { label: "锁定期说明", value: data.lock_period_desc, multiline: true },
+    ],
+    [
+      { label: "管理费率", value: data.fee_manage_rate },
+      { label: "托管费", value: data.fee_trust },
+    ],
+    [
+      { label: "管理费说明", value: data.fee_manage, multiline: true },
+      { label: "外包费", value: data.fee_admin_service },
+    ],
+    [
+      { label: "业绩报酬说明", value: data.fee_pay, multiline: true },
+      { label: "业绩报酬公式", value: data.fee_pay_formula, multiline: true },
+    ],
+  ]
+
+  return (
+    <div className="border border-zinc-100 rounded-lg overflow-hidden text-sm">
+      {rows.map(([left, right], index) => (
+        <div
+          key={left.label}
+          className={[
+            "grid grid-cols-2 items-start border-b border-zinc-100",
+            index === rows.length - 1 ? "border-b-0" : "",
+          ].join(" ")}
+        >
+          <SubscriptionField {...left} borderedRight />
+          <SubscriptionField {...right} />
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -145,18 +237,7 @@ function BasicInfoContent({ data }: { data: ProfileData }) {
             <span className="text-xs text-zinc-400 -mt-2">最近更新: {data.updated_at}</span>
           )}
         </div>
-        <table className="w-full border border-zinc-100 rounded-lg overflow-hidden text-sm">
-          <tbody>
-            <ProfileRow l1="开放日" v1={data.open_day} l2="是否可赎回" v2={data.redeemable_status} />
-            <ProfileRow l1="申购费" v1={data.fee_purchase} l2="追加申购限制" v2={data.add_amount} />
-            <ProfileRow l1="赎回费" v1={data.fee_redeem} l2="风险等级" v2={data.risk_level} />
-            <ProfileRow l1="预警线" v1={data.precautious_line} l2="封闭期" v2={data.closed_period} />
-            <ProfileRow l1="止损线" v1={data.stop_line} l2="锁定期说明" v2={data.lock_period_desc} />
-            <ProfileRow l1="管理费率" v1={data.fee_manage_rate} l2="托管费" v2={data.fee_trust} />
-            <ProfileRow l1="管理费说明" v1={data.fee_manage} l2="外包费" v2={data.fee_admin_service} multiline1 />
-            <ProfileRow l1="业绩报酬说明" v1={data.fee_pay} l2="业绩报酬公式" v2={data.fee_pay_formula} multiline1 multiline2 />
-          </tbody>
-        </table>
+        <SubscriptionInfoSection data={data} />
       </div>
     </div>
   )

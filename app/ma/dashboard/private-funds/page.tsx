@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
+import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
@@ -9103,6 +9104,38 @@ function OpsElementsNotice({ children }: { children: React.ReactNode }) {
   )
 }
 
+const opsDateInputClass =
+  "flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-calendar-picker-indicator]:cursor-pointer"
+
+function OpsDateInput({
+  value,
+  onChange,
+  placeholder = "请选择日期",
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  return (
+    <div className="relative flex-1 min-w-0">
+      <input
+        ref={inputRef}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onClick={() => inputRef.current?.showPicker?.()}
+        className={[opsDateInputClass, "w-full", value ? "text-foreground" : "text-transparent"].join(" ")}
+      />
+      {!value && (
+        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+          {placeholder}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function OpsEditElementsDialog({
   open,
   beian_hao,
@@ -9167,9 +9200,17 @@ function OpsEditElementsDialog({
     if (!open || !beian_hao) return
     setTab("basic")
     setSaveError(null)
+    setInceptionDate("")
+    setOperationDate("")
+    setFilingDate("")
     setLoading(true)
+    const productQuery = product_name.trim()
+      ? `&product_name=${encodeURIComponent(product_name.trim())}`
+      : ""
     Promise.all([
-      fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beian_hao)}`).then((r) => r.json()),
+      fetch(
+        `/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beian_hao)}${productQuery}`,
+      ).then((r) => r.json()),
       fetch("/ma/api/tracking-funds/strategies?strategy_source=platform&pool=all").then((r) => r.json()),
       fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all").then((r) => r.json()),
       fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`).then((r) => r.json()).catch(() => null),
@@ -9183,9 +9224,9 @@ function OpsEditElementsDialog({
         setRegisterNumber(d.register_number ?? beian_hao)
         setAdvisor(d.advisor ?? "")
         setFundManager(d.fund_manager ?? "")
-        setInceptionDate(d.inception_date ?? "")
-        setOperationDate(d.operation_date ?? "")
-        setFilingDate(d.puton_date ?? "")
+        setInceptionDate(toIsoDateInputValue(d.inception_date))
+        setOperationDate(toIsoDateInputValue(d.operation_date))
+        setFilingDate(toIsoDateInputValue(d.puton_date))
         setCustodian(d.custodian ?? "")
         setPlatformL1(d.platform_l1 ?? "")
         setPlatformL2(d.platform_l2 ?? "")
@@ -9254,7 +9295,7 @@ function OpsEditElementsDialog({
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [open, beian_hao])
+  }, [open, beian_hao, product_name])
 
   async function handleConfirm() {
     if (!beian_hao) return
@@ -9472,15 +9513,15 @@ function OpsEditElementsDialog({
               </div>
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>成立日期：</OpsElementsFieldLabel>
-                <input type="date" value={inceptionDate} onChange={(e) => setInceptionDate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                <OpsDateInput value={inceptionDate} onChange={setInceptionDate} />
               </div>
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>备案日期：</OpsElementsFieldLabel>
-                <input type="date" value={filingDate} onChange={(e) => setFilingDate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                <OpsDateInput value={filingDate} onChange={setFilingDate} />
               </div>
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>运作日：</OpsElementsFieldLabel>
-                <input type="date" value={operationDate} onChange={(e) => setOperationDate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                <OpsDateInput value={operationDate} onChange={setOperationDate} />
               </div>
               <div className="col-span-2 flex items-center gap-3">
                 <OpsElementsFieldLabel>托管券商：</OpsElementsFieldLabel>

@@ -3,6 +3,21 @@
  * Weekends are never shown as NAV dates; CN public holidays are handled server-side.
  */
 
+/** Normalize API/DB date strings to YYYY-MM-DD for `<input type="date">`, or "" if invalid. */
+export function toIsoDateInputValue(value: unknown): string {
+  if (value == null) return ""
+  const text = String(value).trim()
+  if (!text) return ""
+  const isoPrefix = text.slice(0, 10)
+  if (parseIsoDateParts(isoPrefix)) return isoPrefix
+  const m = text.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})/)
+  if (m) {
+    const candidate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`
+    return parseIsoDateParts(candidate) ? candidate : ""
+  }
+  return ""
+}
+
 /** Parse YYYY-MM-DD prefix; invalid → null. */
 export function parseIsoDateParts(isoDate: string): { y: number; m: number; d: number } | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(isoDate ?? "").trim())

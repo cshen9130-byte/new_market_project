@@ -2106,6 +2106,9 @@ export default function PrivateFundDetailPage() {
 
   const { info, metrics, nav_series, nav_data_source } = data
   const displayName = resolveFundDisplayLabel(info.short_name, info.product_name)
+    .replace(/私募证券投资基金/g, "")
+    .replace(/私募股权投资基金/g, "")
+    .trim() || info.product_name
   const navTableTitle = nav_data_source === "team" ? "团队净值" : "平台数据"
   // Prefer last trading-day point so header never shows Sat/Sun forward-fills.
   const latestTradingNav = filterNavRowsByFrequency(nav_series, "全部").at(-1) ?? null
