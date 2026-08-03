@@ -32,13 +32,17 @@ export async function POST(req: Request) {
     const form = await req.formData()
     const beian_hao = String(form.get("beian_hao") ?? "").trim()
     const file = form.get("file")
+    const chart_date = String(form.get("chart_date") ?? "").trim() || null
+    const title = String(form.get("title") ?? "").trim() || null
     if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
-    if (!(file instanceof File)) return NextResponse.json({ error: "请上传基金合同文件" }, { status: 400 })
+    if (!(file instanceof File)) return NextResponse.json({ error: "请上传文件" }, { status: 400 })
 
     const row = await saveFundContractMaterial({
       beian_hao,
       file,
       uploaded_by: await currentUser(req),
+      chart_date,
+      title,
     })
 
     return NextResponse.json({ ok: true, data: row })

@@ -696,6 +696,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [uploadTargetFolder, setUploadTargetFolder] = useState<string | null>(null)
   const [uploadFolderBrowsePath, setUploadFolderBrowsePath] = useState("")
   const [isDragOver, setIsDragOver] = useState(false)
+  const [folderUploadDialogPath, setFolderUploadDialogPath] = useState<string | null>(null)
+  const [folderUploadPendingFile, setFolderUploadPendingFile] = useState<File | null>(null)
+  const [folderUploadDragOver, setFolderUploadDragOver] = useState(false)
+  const folderUploadSingleInputRef = useRef<HTMLInputElement | null>(null)
+  const folderUploadMultiInputRef = useRef<HTMLInputElement | null>(null)
+  const folderUploadBatchInputRef = useRef<HTMLInputElement | null>(null)
   const [batchUploading, setBatchUploading] = useState(false)
   const [batchUploadProgress, setBatchUploadProgress] = useState(0)
   const [batchUploadSummary, setBatchUploadSummary] = useState("")
@@ -1599,9 +1605,26 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
-  async function handleUpload() {
-    if (!pendingFile) return
-    if (uploadTargetFolder === null) {
+  function openFolderUploadDialog(folderRelativePath: string) {
+    setFolderUploadPendingFile(null)
+    setFolderUploadDragOver(false)
+    setFolderUploadDialogPath(folderRelativePath)
+  }
+
+  function closeFolderUploadDialog() {
+    setFolderUploadDialogPath(null)
+    setFolderUploadPendingFile(null)
+    setFolderUploadDragOver(false)
+    if (folderUploadSingleInputRef.current) folderUploadSingleInputRef.current.value = ""
+    if (folderUploadMultiInputRef.current) folderUploadMultiInputRef.current.value = ""
+    if (folderUploadBatchInputRef.current) folderUploadBatchInputRef.current.value = ""
+  }
+
+  async function handleUpload(explicitFolderPath?: string) {
+    const folderPath = explicitFolderPath ?? uploadTargetFolder
+    const file = explicitFolderPath !== undefined ? folderUploadPendingFile : pendingFile
+    if (!file) return
+    if (folderPath === null) {
       setError("请先选择目标目录")
       return
     }
@@ -1609,14 +1632,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     try {
       setUploading(true)
       setError(null)
-      const fileName = pendingFile.name
-      const totalBytes = Math.max(pendingFile.size, 1)
+      const fileName = file.name
+      const totalBytes = Math.max(file.size, 1)
       const startedAt = Date.now()
       updateUploadTelemetry(0, totalBytes, startedAt, `准备上传: ${fileName}`)
 
       const form = new FormData()
-      form.append("file", pendingFile)
-      form.append("folderPath", uploadTargetFolder)
+      form.append("file", file)
+      form.append("folderPath", folderPath)
 
       const data = await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
         const currentLoaded = Math.min(loaded, totalBytes)
@@ -1627,12 +1650,20 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       }
 
       updateUploadTelemetry(totalBytes, totalBytes, startedAt, "已完成上传 1 个文件，请手动点击“向量化”")
-      setPendingFile(null)
-      if (singleUploadInputRef.current) {
-        singleUploadInputRef.current.value = ""
+      if (explicitFolderPath !== undefined) {
+        setFolderUploadPendingFile(null)
+        if (folderUploadSingleInputRef.current) {
+          folderUploadSingleInputRef.current.value = ""
+        }
+        closeFolderUploadDialog()
+      } else {
+        setPendingFile(null)
+        if (singleUploadInputRef.current) {
+          singleUploadInputRef.current.value = ""
+        }
+        setUploadTargetFolder(null)
+        setUploadFolderBrowsePath("")
       }
-      setUploadTargetFolder(null)
-      setUploadFolderBrowsePath("")
       await refreshTree()
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
@@ -1683,6 +1714,35 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       return allResults
     }
     return []
+  }
+
+  async function processKnowledgeBaseUploadDrop(
+    dataTransfer: DataTransfer,
+    targetFolder: string,
+    onSingleNonZipFile: (file: File) => void,
+  ) {
+    const items = Array.from(dataTransfer.items).filter((i) => i.kind === "file")
+    const hasDirectory = items.some((item) => item.webkitGetAsEntry?.()?.isDirectory)
+    if (hasDirectory) {
+      const allEntries: Array<{ file: File; relativePath: string }> = []
+      for (const item of items) {
+        const entry = item.webkitGetAsEntry?.()
+        if (entry) allEntries.push(...(await traverseFsEntry(entry, "")))
+      }
+      const valid = allEntries.filter((en) => en.file.size > 0)
+      if (valid.length) void handleBatchUpload(valid, targetFolder)
+      return
+    }
+    const droppedFiles = Array.from(dataTransfer.files).filter((f) => f.size > 0)
+    if (!droppedFiles.length) return
+    const isSingleNonZip =
+      droppedFiles.length === 1 &&
+      !droppedFiles[0].name.toLowerCase().endsWith(".zip")
+    if (isSingleNonZip) {
+      onSingleNonZipFile(droppedFiles[0])
+    } else {
+      void handleBatchUpload(droppedFiles, targetFolder)
+    }
   }
 
   async function handleBatchUpload(
@@ -3470,6 +3530,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     void handlePreview(document)
   }
 
+  function navigateToContainingFolder(document: DocumentNode) {
+    const parentFolder = document.relativePath.includes("/")
+      ? document.relativePath.slice(0, document.relativePath.lastIndexOf("/"))
+      : ""
+    setSelectedFolder(parentFolder)
+    setSelectedExplorerEntry(null)
+    setSelectedDocument(null)
+    setPreviewMode("empty")
+    setPreviewContent("")
+    setFileSearchOpen(false)
+  }
+
   function handleExplorerEntryOpen(entry: ExplorerEntry) {
     if (entry.kind === "folder") {
       setSelectedFolder(entry.relativePath)
@@ -3487,6 +3559,137 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
 
     void handlePreview(entry.document)
+  }
+
+  function renderFolderUploadDialog() {
+    const targetFolder = folderUploadDialogPath
+    if (targetFolder === null) return null
+
+    const folderLabel = targetFolder.includes("/")
+      ? targetFolder.slice(targetFolder.lastIndexOf("/") + 1)
+      : targetFolder
+
+    return (
+      <Dialog
+        open
+        onOpenChange={(open) => {
+          if (!open && !uploading && !batchUploading) closeFolderUploadDialog()
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>上传到文件夹</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              目标目录：<span className="font-medium text-foreground">{folderLabel}</span>
+              <span className="ml-1 text-xs">({targetFolder})</span>
+            </p>
+            <div
+              onDragOver={(e) => {
+                e.preventDefault()
+                setFolderUploadDragOver(true)
+              }}
+              onDragLeave={() => setFolderUploadDragOver(false)}
+              onDrop={async (e) => {
+                e.preventDefault()
+                setFolderUploadDragOver(false)
+                await processKnowledgeBaseUploadDrop(e.dataTransfer, targetFolder, (file) => {
+                  setFolderUploadPendingFile(file)
+                  if (folderUploadSingleInputRef.current) folderUploadSingleInputRef.current.value = ""
+                })
+              }}
+              onClick={() => folderUploadSingleInputRef.current?.click()}
+              className={cn(
+                "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-sm transition-colors",
+                folderUploadDragOver
+                  ? "border-primary bg-primary/5 text-primary"
+                  : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
+              )}
+            >
+              <Upload className="h-6 w-6" />
+              {folderUploadPendingFile ? (
+                <span className="font-medium text-foreground">{folderUploadPendingFile.name}</span>
+              ) : (
+                <span>拖拽文件、文件夹或 ZIP 到此处，或点击选择文件</span>
+              )}
+              <span className="text-center text-xs">支持图片、Word、Excel、CSV、PDF、TXT 等；拖入 ZIP 自动解压</span>
+            </div>
+
+            <input
+              ref={folderUploadSingleInputRef}
+              type="file"
+              className="hidden"
+              onChange={(event) => setFolderUploadPendingFile(event.target.files?.[0] || null)}
+            />
+            <input
+              ref={folderUploadMultiInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                const files = event.target.files
+                if (files?.length) void handleBatchUpload(files, targetFolder)
+                if (folderUploadMultiInputRef.current) folderUploadMultiInputRef.current.value = ""
+              }}
+            />
+            <input
+              ref={folderUploadBatchInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                const files = event.target.files
+                if (files?.length) void handleBatchUpload(files, targetFolder)
+                if (folderUploadBatchInputRef.current) folderUploadBatchInputRef.current.value = ""
+              }}
+              {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            />
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                disabled={!folderUploadPendingFile || uploading || batchUploading}
+                onClick={() => void handleUpload(targetFolder)}
+              >
+                <Upload className="h-4 w-4" />
+                {uploading ? "上传中..." : "上传文档"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={uploading || batchUploading}
+                onClick={() => folderUploadMultiInputRef.current?.click()}
+              >
+                选择文件
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={uploading || batchUploading}
+                onClick={() => folderUploadBatchInputRef.current?.click()}
+              >
+                <FolderOpen className="h-4 w-4" />
+                {batchUploading ? "批量上传中..." : "选择文件夹"}
+              </Button>
+            </div>
+
+            {(uploading || batchUploading) && (
+              <div className="space-y-2">
+                <Progress value={batchUploadProgress} className="h-2" />
+                <div className="text-xs text-muted-foreground">
+                  {batchUploadSummary} · {batchUploadProgress}%
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={uploading || batchUploading} onClick={closeFolderUploadDialog}>
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
   }
 
   function renderExplorer(appearance: "cyber" | "traditional") {
@@ -3777,6 +3980,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
                                   <FolderOpen className="h-4 w-4" />打开
                                 </ContextMenuItem>
+                                <ContextMenuItem onClick={() => openFolderUploadDialog(entry.folder.relativePath)}>
+                                  <Upload className="h-4 w-4" />上传资料
+                                </ContextMenuItem>
                                 <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath.split("/").slice(0, -1).join("/"))}>
                                   <FolderPlus className="h-4 w-4" />新建文件夹
                                 </ContextMenuItem>
@@ -3954,6 +4160,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 <>
                                   <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
                                     <FolderOpen className="h-4 w-4" />打开
+                                  </ContextMenuItem>
+                                  <ContextMenuItem onClick={() => openFolderUploadDialog(entry.folder.relativePath)}>
+                                    <Upload className="h-4 w-4" />上传资料
                                   </ContextMenuItem>
                                   <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath.split("/").slice(0, -1).join("/"))}>
                                     <FolderPlus className="h-4 w-4" />新建文件夹
@@ -4335,31 +4544,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           setError("请先选择目标目录")
                           return
                         }
-                        // Use DataTransferItem API to support folder drag
-                        const items = Array.from(e.dataTransfer.items).filter((i) => i.kind === "file")
-                        const hasDirectory = items.some((item) => item.webkitGetAsEntry?.()?.isDirectory)
-                        if (hasDirectory) {
-                          const allEntries: Array<{ file: File; relativePath: string }> = []
-                          for (const item of items) {
-                            const entry = item.webkitGetAsEntry?.()
-                            if (entry) allEntries.push(...(await traverseFsEntry(entry, "")))
-                          }
-                          const valid = allEntries.filter((en) => en.file.size > 0)
-                          if (valid.length) void handleBatchUpload(valid, uploadTargetFolder)
-                          return
-                        }
-                        const droppedFiles = Array.from(e.dataTransfer.files).filter((f) => f.size > 0)
-                        if (!droppedFiles.length) return
-                        // ZIP files or multi-file drops go straight to batch upload
-                        const isSingleNonZip =
-                          droppedFiles.length === 1 &&
-                          !droppedFiles[0].name.toLowerCase().endsWith(".zip")
-                        if (isSingleNonZip) {
-                          setPendingFile(droppedFiles[0])
+                        await processKnowledgeBaseUploadDrop(e.dataTransfer, uploadTargetFolder, (file) => {
+                          setPendingFile(file)
                           if (singleUploadInputRef.current) singleUploadInputRef.current.value = ""
-                        } else {
-                          void handleBatchUpload(droppedFiles, uploadTargetFolder)
-                        }
+                        })
                       }}
                       onClick={() => singleUploadInputRef.current?.click()}
                       className={cn(
@@ -6266,7 +6454,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           onOpenChange={setFileSearchOpen}
           documents={allDocuments}
           onSelectDocument={navigateToDocument}
+          onOpenContainingFolder={navigateToContainingFolder}
         />
+        {renderFolderUploadDialog()}
       </div>
     )
   }
@@ -6839,7 +7029,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         onOpenChange={setFileSearchOpen}
         documents={allDocuments}
         onSelectDocument={navigateToDocument}
+        onOpenContainingFolder={navigateToContainingFolder}
       />
+      {renderFolderUploadDialog()}
     </div>
   )
 }

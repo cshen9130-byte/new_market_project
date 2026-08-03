@@ -137,6 +137,7 @@ export function FundProductNameLink({
   short_name?: string | null
   className?: string
 }) {
+  // Always go through display-name helper so legal suffixes never render in tables.
   const label = resolveFundDisplayLabel(short_name, product_name)
   const href = `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao || product_name)}`
   return (

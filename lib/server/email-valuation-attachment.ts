@@ -7,6 +7,7 @@ import {
   extractNavMetadata,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
+import { expandWorksheetUsedRange } from "@/lib/server/nav-cleaner"
 import {
   parseValuationRows,
   parseValuationWorkbook,
@@ -226,7 +227,9 @@ function scanWorkbookNav(buffer: Buffer): { unit: number | null; cum: number | n
   let date: string | null = null
 
   for (const sheetName of workbook.SheetNames) {
-    const rows: unknown[][] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+    const sheet = workbook.Sheets[sheetName]
+    expandWorksheetUsedRange(sheet)
+    const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, {
       header: 1,
       defval: null,
       raw: false,

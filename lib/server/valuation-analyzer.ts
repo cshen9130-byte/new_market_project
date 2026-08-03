@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx"
 import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
+import { expandWorksheetUsedRange } from "@/lib/server/nav-cleaner"
 
 export interface ValuationRow {
   code: string
@@ -791,6 +792,9 @@ export function parseValuationWorkbook(buffer: Buffer, filename: string): Valuat
   for (const sheetName of orderedSheets) {
     try {
       const sheet = workbook.Sheets[sheetName]
+      // Custodian / WPS exports often ship a stale <dimension ref="A1:K4"/> while
+      // sheetData still has the full 估值表. SheetJS trusts !ref, so expand first.
+      expandWorksheetUsedRange(sheet)
       const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
         defval: null,

@@ -34,7 +34,7 @@ import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequ
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
 import { WinRateAnalysisPanel } from "./components/WinRateAnalysisPanel"
-import { DrawdownEpisodesTable, buildDrawdownEpisodeRows, buildDrawdownEpisodeMarks, DrawdownEpisodeMarkLabel } from "./components/DrawdownEpisodesTable"
+import { DrawdownEpisodesTable, buildDrawdownEpisodeRows, buildDrawdownEpisodeMarks, DrawdownEpisodeMarkLabel, findNearestDrawdownPoint } from "./components/DrawdownEpisodesTable"
 import { MonthlyReturnsCalendar } from "./components/MonthlyReturnsCalendar"
 import { RankPercentileTrendChart } from "./components/RankPercentileTrendChart"
 import { AnnualMetricsTable } from "./components/AnnualMetricsTable"
@@ -836,6 +836,73 @@ function DrawdownTooltip({
   )
 }
 
+type MaterialChartMark = {
+  id: number
+  date: string
+  chartDate: string
+  y: number
+  label: string
+  filename: string
+}
+
+function MaterialMarkShape({
+  cx,
+  cy,
+  mark,
+  shadowId,
+  onClick,
+}: {
+  cx?: number
+  cy?: number
+  mark: MaterialChartMark
+  shadowId: string
+  onClick?: (mark: MaterialChartMark) => void
+}) {
+  const [hovered, setHovered] = useState(false)
+  if (cx == null || cy == null || !Number.isFinite(cx) || !Number.isFinite(cy)) return null
+
+  const tipWidth = 176
+  const tipHeight = 52
+  const tipX = cx + 10 + tipWidth > 420 ? -tipWidth - 10 : 10
+  const tipY = cy - tipHeight - 8 < 0 ? 10 : -tipHeight - 8
+
+  return (
+    <g
+      transform={`translate(${cx}, ${cy})`}
+      style={{ cursor: "pointer" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick?.(mark)
+      }}
+    >
+      <line x1={0} y1={0} x2={0} y2={-14} stroke="#d97706" strokeWidth={1.5} />
+      <circle r={5.5} fill="#f59e0b" stroke="#ffffff" strokeWidth={2} />
+      <circle r={12} fill="transparent" />
+      {hovered && (
+        <g transform={`translate(${tipX}, ${tipY})`} style={{ pointerEvents: "none" }}>
+          <rect
+            width={tipWidth}
+            height={tipHeight}
+            rx={6}
+            fill="#ffffff"
+            stroke="#e4e4e7"
+            strokeWidth={1}
+            filter={`url(#${shadowId})`}
+          />
+          <text x={10} y={18} fontSize={11} fontWeight={600} fill="#18181b">
+            {(mark.label.length > 18 ? `${mark.label.slice(0, 18)}…` : mark.label)}
+          </text>
+          <text x={10} y={36} fontSize={10} fill="#71717a">
+            {`净值日期 ${mark.chartDate} · 点击查看`}
+          </text>
+        </g>
+      )}
+    </g>
+  )
+}
+
 function NavPerformanceChart({
   data,
   chartMode,
@@ -849,6 +916,8 @@ function NavPerformanceChart({
   gradientId = "navGrad",
   returnLabelMode = "cumulative",
   episodeMarks = [],
+  materialMarks = [],
+  onMaterialMarkClick,
 }: {
   data: NavChartPoint[]
   chartMode: "nav" | "return"
@@ -862,7 +931,10 @@ function NavPerformanceChart({
   gradientId?: string
   returnLabelMode?: ReturnLabelMode
   episodeMarks?: Array<{ date: string; y: number; no: number }>
+  materialMarks?: MaterialChartMark[]
+  onMaterialMarkClick?: (mark: MaterialChartMark) => void
 }) {
+  const markShadowId = `${gradientId}-materialMarkShadow`
   return (
     <ResponsiveContainer width="100%" height={height} debounce={1}>
       <ComposedChart data={data} margin={{ top: 12, right: 12, left: 4, bottom: 4 }}>
@@ -871,6 +943,9 @@ function NavPerformanceChart({
             <stop offset="0%" stopColor="#ef4444" stopOpacity={0.12} />
             <stop offset="100%" stopColor="#ef4444" stopOpacity={0.01} />
           </linearGradient>
+          <filter id={markShadowId} x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#000000" floodOpacity="0.08" />
+          </filter>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f2" vertical={false} />
         <XAxis
@@ -934,6 +1009,24 @@ function NavPerformanceChart({
             r={0}
             ifOverflow="extendDomain"
             label={<DrawdownEpisodeMarkLabel value={mark.no} />}
+          />
+        ))}
+        {materialMarks.map((mark) => (
+          <ReferenceDot
+            key={`nav-mat-${mark.id}-${mark.date}`}
+            x={mark.date}
+            y={mark.y}
+            r={0}
+            ifOverflow="extendDomain"
+            shape={(props) => (
+              <MaterialMarkShape
+                cx={props.cx}
+                cy={props.cy}
+                mark={mark}
+                shadowId={markShadowId}
+                onClick={onMaterialMarkClick}
+              />
+            )}
           />
         ))}
       </ComposedChart>
@@ -1283,6 +1376,31 @@ export default function PrivateFundDetailPage() {
     const tab = searchParams.get("tab")
     if (tab === "materials") setDetailTab("materials")
   }, [searchParams])
+
+  type MaterialMetaRow = {
+    id: number
+    original_filename: string
+    chart_date: string | null
+    title: string
+  }
+  const [materialMetaRows, setMaterialMetaRows] = useState<MaterialMetaRow[]>([])
+
+  useEffect(() => {
+    if (!beian_hao) return
+    let cancelled = false
+    fetch(`/ma/api/ops/fund-contracts?beian_hao=${encodeURIComponent(beian_hao)}`)
+      .then((r) => r.json())
+      .then((json) => {
+        if (cancelled || json.error) return
+        const rows = Array.isArray(json.data) ? (json.data as MaterialMetaRow[]) : []
+        setMaterialMetaRows(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setMaterialMetaRows([])
+      })
+    return () => { cancelled = true }
+  }, [beian_hao, detailTab])
+
   const navChartCaptureRef = useRef<HTMLDivElement>(null)
   const navChartLightboxRef = useRef<HTMLDivElement>(null)
   const [navChartLightboxOpen, setNavChartLightboxOpen] = useState(false)
@@ -1502,6 +1620,32 @@ export default function PrivateFundDetailPage() {
     () => buildDrawdownEpisodeMarks(activeChartData, drawdownEpisodes, (p) => p.value),
     [activeChartData, drawdownEpisodes],
   )
+
+  const materialChartMarks = useMemo((): MaterialChartMark[] => {
+    if (!activeChartData.length) return []
+    return materialMetaRows.flatMap((row) => {
+      const chartDate = (row.chart_date || "").trim()
+      if (!chartDate) return []
+      const point = findNearestDrawdownPoint(activeChartData, chartDate)
+      if (!point || !Number.isFinite(point.value)) return []
+      return [{
+        id: row.id,
+        date: point.date,
+        chartDate,
+        y: point.value,
+        label: (row.title || "").trim() || row.original_filename,
+        filename: row.original_filename,
+      }]
+    })
+  }, [activeChartData, materialMetaRows])
+
+  const handleMaterialMarkClick = useCallback((mark: MaterialChartMark) => {
+    setDetailTab("materials")
+    router.replace(
+      `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}?tab=materials&materialId=${mark.id}`,
+      { scroll: false },
+    )
+  }, [beian_hao, router])
 
   const benchmarkLabel = getBenchmarkLabel(appliedBench)
 
@@ -2530,6 +2674,8 @@ export default function PrivateFundDetailPage() {
               benchmarkLabel={benchmarkLabel}
               gradientId="navGradMain"
               returnLabelMode={returnLabelMode}
+              materialMarks={materialChartMarks}
+              onMaterialMarkClick={handleMaterialMarkClick}
             />
           </div>
           </div>
@@ -2908,6 +3054,8 @@ export default function PrivateFundDetailPage() {
               gradientId="navGradAboveDd"
               returnLabelMode={returnLabelMode}
               episodeMarks={returnChartEpisodeMarks}
+              materialMarks={materialChartMarks}
+              onMaterialMarkClick={handleMaterialMarkClick}
             />
           </div>
           </div>
@@ -3282,6 +3430,8 @@ export default function PrivateFundDetailPage() {
                 height={lightboxChartHeight}
                 gradientId="navGradLightbox"
                 returnLabelMode={returnLabelMode}
+                materialMarks={materialChartMarks}
+                onMaterialMarkClick={handleMaterialMarkClick}
               />
             )}
           </div>

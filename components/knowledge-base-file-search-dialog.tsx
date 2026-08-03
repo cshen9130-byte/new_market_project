@@ -9,6 +9,7 @@ import {
   FileJson,
   FileSpreadsheet,
   FileText,
+  FolderOpen,
 } from "lucide-react"
 import {
   CommandDialog,
@@ -18,6 +19,12 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
 
 export type KnowledgeBaseSearchDocument = {
@@ -32,6 +39,7 @@ type KnowledgeBaseFileSearchDialogProps<T extends KnowledgeBaseSearchDocument = 
   onOpenChange: (open: boolean) => void
   documents: T[]
   onSelectDocument: (document: T) => void
+  onOpenContainingFolder: (document: T) => void
 }
 
 function formatFileSize(size: number): string {
@@ -76,6 +84,7 @@ export function KnowledgeBaseFileSearchDialog<T extends KnowledgeBaseSearchDocum
   onOpenChange,
   documents,
   onSelectDocument,
+  onOpenContainingFolder,
 }: KnowledgeBaseFileSearchDialogProps<T>) {
   const sortedDocuments = useMemo(
     () => [...documents].sort((left, right) => left.name.localeCompare(right.name, "zh-CN")),
@@ -97,21 +106,30 @@ export function KnowledgeBaseFileSearchDialog<T extends KnowledgeBaseSearchDocum
           {sortedDocuments.map((document) => {
             const { icon: Icon, className } = getFileIcon(document.extension)
             return (
-              <CommandItem
-                key={document.relativePath}
-                value={`${document.name} ${document.relativePath}`}
-                onSelect={() => onSelectDocument(document)}
-              >
-                <span className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-md", className)}>
-                  <Icon className="h-4 w-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{document.name}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {getFolderPath(document.relativePath)} · {formatFileSize(document.size)}
-                  </span>
-                </span>
-              </CommandItem>
+              <ContextMenu key={document.relativePath}>
+                <ContextMenuTrigger asChild>
+                  <CommandItem
+                    value={`${document.name} ${document.relativePath}`}
+                    onSelect={() => onSelectDocument(document)}
+                  >
+                    <span className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-md", className)}>
+                      <Icon className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{document.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {getFolderPath(document.relativePath)} · {formatFileSize(document.size)}
+                      </span>
+                    </span>
+                  </CommandItem>
+                </ContextMenuTrigger>
+                <ContextMenuContent className="w-48">
+                  <ContextMenuItem onSelect={() => onOpenContainingFolder(document)}>
+                    <FolderOpen className="h-4 w-4" />
+                    打开所在文件夹
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
             )
           })}
         </CommandGroup>

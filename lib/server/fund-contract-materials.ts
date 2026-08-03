@@ -32,6 +32,32 @@ export type FundContractMaterialRow = {
   mime_type: string
   uploaded_by: string
   uploaded_at: string
+  /** YYYY-MM-DD when set; shown as a marker on the product NAV chart */
+  chart_date: string | null
+  /** Short label for tooltip / list; empty falls back to filename */
+  title: string
+}
+
+const MATERIAL_SELECT_COLS = `
+  id, beian_hao, original_filename, file_size, mime_type, uploaded_by,
+  uploaded_at::text,
+  CASE WHEN chart_date IS NULL THEN NULL ELSE to_char(chart_date, 'YYYY-MM-DD') END AS chart_date,
+  COALESCE(title, '') AS title
+`
+
+function normalizeChartDate(value: string | null | undefined): string | null {
+  const raw = (value ?? "").trim()
+  if (!raw) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    throw new Error("关联净值日期格式应为 YYYY-MM-DD")
+  }
+  const ts = new Date(`${raw}T00:00:00`).getTime()
+  if (!Number.isFinite(ts)) throw new Error("关联净值日期无效")
+  return raw
+}
+
+function normalizeTitle(value: string | null | undefined): string {
+  return (value ?? "").trim().slice(0, 120)
 }
 
 function getExtension(fileName: string) {
@@ -137,19 +163,34 @@ async function ensureTable() {
       file_size         BIGINT NOT NULL DEFAULT 0,
       mime_type         TEXT NOT NULL DEFAULT 'application/octet-stream',
       uploaded_by       VARCHAR(255) NOT NULL DEFAULT '',
-      uploaded_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      uploaded_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      chart_date        DATE,
+      title             TEXT NOT NULL DEFAULT ''
     )
+  `)
+  await query(`
+    ALTER TABLE ops_fund_contract_materials
+      ADD COLUMN IF NOT EXISTS chart_date DATE
+  `)
+  await query(`
+    ALTER TABLE ops_fund_contract_materials
+      ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''
   `)
   await query(`
     CREATE INDEX IF NOT EXISTS idx_ops_fund_contract_materials_beian
       ON ops_fund_contract_materials (beian_hao, uploaded_at DESC)
+  `)
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_ops_fund_contract_materials_chart
+      ON ops_fund_contract_materials (beian_hao, chart_date)
+      WHERE chart_date IS NOT NULL
   `)
 }
 
 export async function listFundContractMaterials(beian_hao: string): Promise<FundContractMaterialRow[]> {
   await ensureTable()
   return query<FundContractMaterialRow>(
-    `SELECT id, beian_hao, original_filename, file_size, mime_type, uploaded_by, uploaded_at::text
+    `SELECT ${MATERIAL_SELECT_COLS}
      FROM ops_fund_contract_materials
      WHERE beian_hao = $1
      ORDER BY uploaded_at DESC, id DESC`,
@@ -161,6 +202,8 @@ export async function saveFundContractMaterial(input: {
   beian_hao: string
   file: File
   uploaded_by?: string
+  chart_date?: string | null
+  title?: string | null
 }): Promise<FundContractMaterialRow> {
   const beian_hao = input.beian_hao.trim()
   if (!beian_hao) throw new Error("missing beian_hao")
@@ -169,12 +212,15 @@ export async function saveFundContractMaterial(input: {
   const ext = getExtension(originalFilename)
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new Error(
-      "仅支持 PDF、Word (.doc/.docx)、Excel (.xls/.xlsx)、图片 (.png/.jpg/.jpeg/.gif/.webp/.bmp) 格式的基金合同",
+      "仅支持 PDF、Word (.doc/.docx)、Excel (.xls/.xlsx)、图片 (.png/.jpg/.jpeg/.gif/.webp/.bmp) 格式",
     )
   }
   if (input.file.size > MAX_FILE_BYTES) {
     throw new Error("文件大小不能超过 5MB")
   }
+
+  const chartDate = normalizeChartDate(input.chart_date)
+  const title = normalizeTitle(input.title)
 
   const buffer = Buffer.from(await input.file.arrayBuffer())
   const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
@@ -188,9 +234,9 @@ export async function saveFundContractMaterial(input: {
   await ensureTable()
   const rows = await query<FundContractMaterialRow>(
     `INSERT INTO ops_fund_contract_materials
-       (beian_hao, original_filename, storage_filename, file_size, mime_type, uploaded_by, uploaded_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())
-     RETURNING id, beian_hao, original_filename, file_size, mime_type, uploaded_by, uploaded_at::text`,
+       (beian_hao, original_filename, storage_filename, file_size, mime_type, uploaded_by, uploaded_at, chart_date, title)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7::date, $8)
+     RETURNING ${MATERIAL_SELECT_COLS}`,
     [
       beian_hao,
       originalFilename,
@@ -198,12 +244,59 @@ export async function saveFundContractMaterial(input: {
       buffer.byteLength,
       mimeTypeForFilename(originalFilename),
       input.uploaded_by?.trim() || "",
+      chartDate,
+      title,
     ],
   )
 
   const row = rows[0]
   if (!row) throw new Error("保存合同失败")
   return row
+}
+
+export async function updateFundContractMaterialMeta(
+  id: number,
+  input: { chart_date?: string | null; title?: string | null },
+): Promise<FundContractMaterialRow | null> {
+  if (!Number.isFinite(id)) return null
+  await ensureTable()
+
+  const existing = await query<{ id: number }>(
+    `SELECT id FROM ops_fund_contract_materials WHERE id = $1 LIMIT 1`,
+    [id],
+  )
+  if (!existing[0]) return null
+
+  const sets: string[] = []
+  const params: unknown[] = []
+  let idx = 1
+
+  if ("chart_date" in input) {
+    const chartDate = normalizeChartDate(input.chart_date)
+    sets.push(`chart_date = $${idx++}::date`)
+    params.push(chartDate)
+  }
+  if ("title" in input) {
+    sets.push(`title = $${idx++}`)
+    params.push(normalizeTitle(input.title))
+  }
+  if (!sets.length) {
+    const rows = await query<FundContractMaterialRow>(
+      `SELECT ${MATERIAL_SELECT_COLS} FROM ops_fund_contract_materials WHERE id = $1 LIMIT 1`,
+      [id],
+    )
+    return rows[0] ?? null
+  }
+
+  params.push(id)
+  const rows = await query<FundContractMaterialRow>(
+    `UPDATE ops_fund_contract_materials
+     SET ${sets.join(", ")}
+     WHERE id = $${idx}
+     RETURNING ${MATERIAL_SELECT_COLS}`,
+    params,
+  )
+  return rows[0] ?? null
 }
 
 export async function getFundContractMaterialById(id: number) {

@@ -1,13 +1,24 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import { ExternalLink, FileText, Loader2, Trash2, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { useSearchParams } from "next/navigation"
+import {
+  ExternalLink,
+  FileText,
+  Loader2,
+  Pencil,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react"
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 type MaterialRow = {
   id: number
@@ -17,6 +28,8 @@ type MaterialRow = {
   mime_type: string
   uploaded_by: string
   uploaded_at: string
+  chart_date: string | null
+  title: string
 }
 
 function formatFileSize(bytes: number) {
@@ -44,12 +57,52 @@ function previewUrl(id: number, filename: string) {
   return needsHtmlPreview(filename) ? `${base}?preview=1` : base
 }
 
+function displayTitle(row: MaterialRow) {
+  return row.title?.trim() || row.original_filename
+}
+
+function UploadMaterialsButton({
+  onClick,
+  disabled,
+}: {
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs font-medium hover:bg-muted transition-colors disabled:opacity-60"
+    >
+      <Upload className="h-3.5 w-3.5" />
+      上传资料
+    </button>
+  )
+}
+
 export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
+  const searchParams = useSearchParams()
+  const materialIdParam = searchParams.get("materialId")
+
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<MaterialRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [previewRow, setPreviewRow] = useState<MaterialRow | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadTitle, setUploadTitle] = useState("")
+  const [uploadChartDate, setUploadChartDate] = useState("")
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  const [editRow, setEditRow] = useState<MaterialRow | null>(null)
+  const [editTitle, setEditTitle] = useState("")
+  const [editChartDate, setEditChartDate] = useState("")
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
 
   const loadRows = useCallback(() => {
     setLoading(true)
@@ -71,14 +124,91 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
     loadRows()
   }, [loadRows])
 
+  useEffect(() => {
+    if (!materialIdParam || loading || rows.length === 0) return
+    const id = parseInt(materialIdParam, 10)
+    if (!Number.isFinite(id)) return
+    const match = rows.find((row) => row.id === id)
+    if (match) setPreviewRow(match)
+  }, [materialIdParam, loading, rows])
+
+  const sortedRows = useMemo(() => rows, [rows])
+
+  function resetUploadForm() {
+    setUploadFile(null)
+    setUploadTitle("")
+    setUploadChartDate("")
+    setUploadError(null)
+  }
+
+  function openEdit(row: MaterialRow) {
+    setEditRow(row)
+    setEditTitle(row.title || "")
+    setEditChartDate(row.chart_date || "")
+    setEditError(null)
+  }
+
+  async function handleUpload() {
+    if (!uploadFile) {
+      setUploadError("请选择文件")
+      return
+    }
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const form = new FormData()
+      form.set("beian_hao", beian_hao)
+      form.set("file", uploadFile)
+      if (uploadTitle.trim()) form.set("title", uploadTitle.trim())
+      if (uploadChartDate.trim()) form.set("chart_date", uploadChartDate.trim())
+      const res = await fetch("/ma/api/ops/fund-contracts", { method: "POST", body: form })
+      const json = await res.json()
+      if (!res.ok || json.error) throw new Error(json.error || "上传失败")
+      setRows((prev) => [json.data as MaterialRow, ...prev])
+      setUploadOpen(false)
+      resetUploadForm()
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "上传失败")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (!editRow) return
+    setSavingEdit(true)
+    setEditError(null)
+    try {
+      const res = await fetch(`/ma/api/ops/fund-contracts/${editRow.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: editTitle.trim(),
+          chart_date: editChartDate.trim() || null,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.error) throw new Error(json.error || "保存失败")
+      const updated = json.data as MaterialRow
+      setRows((prev) => prev.map((row) => (row.id === updated.id ? updated : row)))
+      if (previewRow?.id === updated.id) setPreviewRow(updated)
+      setEditRow(null)
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "保存失败")
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   async function handleDelete(row: MaterialRow) {
-    if (!window.confirm(`确定删除「${row.original_filename}」吗？此操作不可撤销。`)) return
+    if (!window.confirm(`确定删除「${displayTitle(row)}」吗？此操作不可撤销。`)) return
     setDeletingId(row.id)
     try {
       const res = await fetch(`/ma/api/ops/fund-contracts/${row.id}`, { method: "DELETE" })
       const json = await res.json()
       if (!res.ok || json.error) throw new Error(json.error || "删除失败")
       if (previewRow?.id === row.id) setPreviewRow(null)
+      if (editRow?.id === row.id) setEditRow(null)
       setRows((prev) => prev.filter((item) => item.id !== row.id))
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "删除失败")
@@ -98,88 +228,253 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-        {error}
-      </div>
-    )
-  }
-
-  if (rows.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed min-h-[240px] flex items-center justify-center text-sm text-muted-foreground">
-        暂无相关资料。可在「运维 → 数据维护 → 要素提取」中保存基金合同。
+      <div className="space-y-3">
+        <div className="flex justify-end">
+          <UploadMaterialsButton onClick={() => setUploadOpen(true)} />
+        </div>
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
       </div>
     )
   }
 
   return (
     <>
-      <div className="rounded-lg border overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/20 text-sm font-medium">基金合同</div>
-        <div className="divide-y">
-          {rows.map((row) => {
-            const downloadUrl = `/ma/api/ops/fund-contracts/${row.id}/file?download=1`
-            return (
-              <div key={row.id} className="flex items-center justify-between gap-4 px-4 py-3">
-                <div className="flex items-start gap-3 min-w-0">
-                  <FileText className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewRow(row)}
-                      className="text-sm font-medium text-blue-600 hover:underline truncate block text-left"
-                      title={row.original_filename}
-                    >
-                      {row.original_filename}
-                    </button>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      {formatFileSize(Number(row.file_size) || 0)}
-                      {row.uploaded_at ? ` · ${formatDate(row.uploaded_at)}` : ""}
-                      {row.uploaded_by ? ` · ${row.uploaded_by}` : ""}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm text-muted-foreground">
+            上传资料可关联净值日期，并在业绩指标净值图上标注。
+          </div>
+          <UploadMaterialsButton onClick={() => { resetUploadForm(); setUploadOpen(true) }} />
+        </div>
+
+        {sortedRows.length === 0 ? (
+          <div className="rounded-lg border border-dashed min-h-[240px] flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground px-6 text-center">
+            <div>暂无相关资料。可在此上传，或在「运维 → 数据维护 → 要素提取」中保存基金合同。</div>
+            <UploadMaterialsButton onClick={() => { resetUploadForm(); setUploadOpen(true) }} />
+          </div>
+        ) : (
+          <div className="rounded-lg border overflow-hidden">
+            <div className="px-4 py-3 border-b bg-muted/20 text-sm font-medium">相关资料</div>
+            <div className="divide-y">
+              {sortedRows.map((row) => {
+                const downloadUrl = `/ma/api/ops/fund-contracts/${row.id}/file?download=1`
+                return (
+                  <div key={row.id} className="flex items-center justify-between gap-4 px-4 py-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <FileText className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewRow(row)}
+                          className="text-sm font-medium text-blue-600 hover:underline truncate block text-left"
+                          title={displayTitle(row)}
+                        >
+                          {displayTitle(row)}
+                        </button>
+                        <div className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                          {row.title?.trim() && row.title.trim() !== row.original_filename && (
+                            <span className="truncate" title={row.original_filename}>
+                              {row.original_filename}
+                            </span>
+                          )}
+                          <span>{formatFileSize(Number(row.file_size) || 0)}</span>
+                          {row.uploaded_at ? <span>{formatDate(row.uploaded_at)}</span> : null}
+                          {row.uploaded_by ? <span>{row.uploaded_by}</span> : null}
+                          {row.chart_date ? (
+                            <span className="inline-flex items-center rounded bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5">
+                              净值日期 {row.chart_date}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewRow(row)}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        查看
+                      </button>
+                      <a
+                        href={downloadUrl}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                      >
+                        下载
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => openEdit(row)}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(row)}
+                        disabled={deletingId === row.id}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors disabled:opacity-60"
+                      >
+                        {deletingId === row.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                        删除
+                      </button>
                     </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setPreviewRow(row)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    查看
-                  </button>
-                  <a
-                    href={downloadUrl}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
-                  >
-                    下载
-                  </a>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(row)}
-                    disabled={deletingId === row.id}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors disabled:opacity-60"
-                  >
-                    {deletingId === row.id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3.5 w-3.5" />
-                    )}
-                    删除
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
+
+      <Dialog
+        open={uploadOpen}
+        onOpenChange={(open) => {
+          setUploadOpen(open)
+          if (!open) resetUploadForm()
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>上传相关资料</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            <div className="space-y-1.5">
+              <Label htmlFor="material-file">文件</Label>
+              <Input
+                id="material-file"
+                type="file"
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.bmp"
+                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+              />
+              <p className="text-xs text-muted-foreground">
+                支持 PDF / Word / Excel / 图片，最大 5MB
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="material-title">标题（可选）</Label>
+              <Input
+                id="material-title"
+                value={uploadTitle}
+                onChange={(e) => setUploadTitle(e.target.value)}
+                placeholder="例如：回撤说明"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="material-chart-date">关联净值日期（可选）</Label>
+              <Input
+                id="material-chart-date"
+                type="date"
+                value={uploadChartDate}
+                onChange={(e) => setUploadChartDate(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                设置后将在业绩指标净值图上标注该日期
+              </p>
+            </div>
+            {uploadError && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {uploadError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setUploadOpen(false)}
+                className="px-3 py-1.5 rounded border text-xs hover:bg-muted"
+                disabled={uploading}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleUpload}
+                disabled={uploading || !uploadFile}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-zinc-900 text-white text-xs hover:bg-zinc-800 disabled:opacity-60"
+              >
+                {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                上传
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!editRow}
+        onOpenChange={(open) => {
+          if (!open) setEditRow(null)
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>编辑资料信息</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            <div className="text-xs text-muted-foreground truncate" title={editRow?.original_filename}>
+              文件：{editRow?.original_filename}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-material-title">标题</Label>
+              <Input
+                id="edit-material-title"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                placeholder="例如：回撤说明"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-material-chart-date">关联净值日期</Label>
+              <Input
+                id="edit-material-chart-date"
+                type="date"
+                value={editChartDate}
+                onChange={(e) => setEditChartDate(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">清空日期即可取消图表标注</p>
+            </div>
+            {editError && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {editError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setEditRow(null)}
+                className="px-3 py-1.5 rounded border text-xs hover:bg-muted"
+                disabled={savingEdit}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdit}
+                disabled={savingEdit}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-zinc-900 text-white text-xs hover:bg-zinc-800 disabled:opacity-60"
+              >
+                {savingEdit ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                保存
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!previewRow} onOpenChange={(open) => { if (!open) setPreviewRow(null) }}>
         <DialogContent className="max-w-5xl w-[95vw] h-[85vh] flex flex-col p-0 gap-0">
           <DialogHeader className="px-5 py-4 border-b shrink-0">
             <div className="flex items-start justify-between gap-4">
               <DialogTitle className="text-sm font-semibold pr-8 line-clamp-2">
-                {previewRow?.original_filename}
+                {previewRow ? displayTitle(previewRow) : ""}
               </DialogTitle>
               <button
                 type="button"
@@ -195,7 +490,7 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
             <iframe
               key={previewRow.id}
               src={previewUrl(previewRow.id, previewRow.original_filename)}
-              title={previewRow.original_filename}
+              title={displayTitle(previewRow)}
               className="flex-1 w-full border-0 bg-white"
             />
           )}
