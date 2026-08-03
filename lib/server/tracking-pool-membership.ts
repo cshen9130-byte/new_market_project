@@ -58,12 +58,26 @@ export async function addFundToTrackingPool(
   }
 
   if (pool === "bfl_ops") {
+    // SELECT first — market_user may lack INSERT on type6_ops_team_full, and
+    // Postgres still requires INSERT privilege even when WHERE NOT EXISTS yields 0 rows.
+    // Pre-selected membership in the add dialog would otherwise fail as db_error.
+    const existing = await query<{ id: number }>(
+      `SELECT id FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
+      [beian_hao],
+    )
+    if (existing.length > 0) return { created: false }
+
+    const hash = rowHash(pool, beian_hao, product_name)
     const rows = await query<{ id: number }>(
-      `INSERT INTO type6_ops_team_full (register_number, fund_name, updated_at)
-       SELECT $1, $2, NOW()
-       WHERE NOT EXISTS (SELECT 1 FROM type6_ops_team_full WHERE register_number = $1)
+      `INSERT INTO type6_ops_team_full (
+         source_row_number, fund_name, fund_short_name, register_number,
+         row_hash, source_file, imported_at, updated_at
+       )
+       SELECT
+         COALESCE((SELECT MAX(source_row_number) FROM type6_ops_team_full), 0) + 1,
+         $2, $2, $1, $3, 'manual_add', NOW(), NOW()
        RETURNING id`,
-      [beian_hao, product_name],
+      [beian_hao, product_name, hash],
     )
     return { created: rows.length > 0 }
   }

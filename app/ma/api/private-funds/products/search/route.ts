@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { searchPrivateFundProductsForAutocomplete } from "@/lib/server/private-fund-product-search"
+import { searchPrivateFundProductsForPicker } from "@/lib/server/private-fund-product-search"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -16,8 +16,8 @@ export async function GET(req: Request) {
 
   try {
     if (format === "picker") {
-      // Same single-table prefix path as fund keyword autocomplete — keep typing UIs fast.
-      const rows = await searchPrivateFundProductsForAutocomplete(q, 20)
+      // Synthesize A/B/C share-class variants when only the base fund exists.
+      const rows = await searchPrivateFundProductsForPicker(q, 20)
       return NextResponse.json(rows)
     }
 

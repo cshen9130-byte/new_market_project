@@ -18,6 +18,12 @@ async function ensureFundListCacheEntry(beian_hao: string, product_name: string)
   }
 }
 
+function mapDbError(err: unknown): { status: number; error: string } {
+  const code = typeof err === "object" && err && "code" in err ? String((err as { code: string }).code) : ""
+  if (code === "42501") return { status: 500, error: "permission_denied" }
+  return { status: 500, error: "db_error" }
+}
+
 export async function POST(req: Request) {
   let body: unknown
   try { body = await req.json() } catch { return NextResponse.json({ error: "bad_request" }, { status: 400 }) }
@@ -40,7 +46,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[tracking-funds/add]", err)
-    return NextResponse.json({ error: "db_error" }, { status: 500 })
+    const mapped = mapDbError(err)
+    return NextResponse.json({ error: mapped.error }, { status: mapped.status })
   }
 }
 
@@ -60,6 +67,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[tracking-funds/add DELETE]", err)
-    return NextResponse.json({ error: "db_error" }, { status: 500 })
+    const mapped = mapDbError(err)
+    return NextResponse.json({ error: mapped.error }, { status: mapped.status })
   }
 }

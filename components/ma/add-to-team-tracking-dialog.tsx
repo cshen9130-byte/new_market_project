@@ -167,8 +167,12 @@ export function AddToTeamTrackingDialog({
 
       const failed = addResults.filter((r) => !r.ok)
       if (failed.length > 0) {
-        const detail = failed.map((r) => r.body?.error ?? `HTTP ${r.status}`).join(", ")
-        setError(`添加失败: ${detail}`)
+        const codes = failed.map((r) => r.body?.error ?? `HTTP ${r.status}`)
+        if (codes.every((c) => c === "permission_denied")) {
+          setError("添加失败：数据库账号无写入权限（bfl运维池），请联系管理员执行 scripts/db/019_grant_type6_ops_team_full_write.sql")
+        } else {
+          setError(`添加失败: ${codes.join(", ")}`)
+        }
         return
       }
 

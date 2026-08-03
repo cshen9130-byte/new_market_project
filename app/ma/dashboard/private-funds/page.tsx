@@ -14345,7 +14345,19 @@ function OperationsTeamDataView() {
         )
         return
       }
+      // Also add the new share-class product into 团队数据 so NAV can be uploaded immediately.
+      if (json.beian_hao && json.product_name) {
+        await fetch("/ma/api/ops/team-data/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            beian_hao: json.beian_hao,
+            product_name: json.product_name,
+          }),
+        }).catch(() => null)
+      }
       closeShareClassDialog()
+      setTeamDataReloadKey((k) => k + 1)
     } catch {
       setShareClassError("创建失败，请稍后重试")
     } finally {
@@ -15461,7 +15473,7 @@ function OperationsTeamDataView() {
             <div className="px-6 py-5 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
               <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300 flex items-start gap-2">
                 <Info className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>说明：因数据同步，添加成功后5分钟再刷新查看/搜索。</span>
+                <span>说明：创建成功后会自动加入团队数据，可立即上传该分级产品净值。</span>
               </div>
 
               <div className="flex items-start gap-3">

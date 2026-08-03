@@ -98,11 +98,12 @@ export function sqlCanonicalShareClassBeian(codeExpr: string): string {
   END`
 }
 
-export async function loadShareClassPreview(
-  beianHao: string,
-  shareClass?: ShareClassLetter | null,
-): Promise<ShareClassPreview | null> {
-  const mainRows = await query<{
+async function loadMainProduct(beianHao: string): Promise<{
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+} | null> {
+  const bflRows = await query<{
     beian_hao: string
     product_name: string
     short_name: string | null
@@ -113,32 +114,66 @@ export async function loadShareClassPreview(
      LIMIT 1`,
     [beianHao],
   )
-  const main = mainRows[0]
-  if (!main) return null
+  if (bflRows[0]) return bflRows[0]
 
+  // AMAC / non-BFL funds are still valid mains for creating A/B/C tiers.
+  const amacRows = await query<{
+    beian_hao: string
+    product_name: string
+  }>(
+    `SELECT beian_hao, product_name
+     FROM private_fund_info
+     WHERE beian_hao = $1
+     LIMIT 1`,
+    [beianHao],
+  )
+  const amac = amacRows[0]
+  if (!amac) return null
+  return {
+    beian_hao: amac.beian_hao,
+    product_name: amac.product_name,
+    short_name: null,
+  }
+}
+
+async function loadExistingShareClasses(mainProductName: string): Promise<ShareClassProductInfo[]> {
   const existingRows = await query<{
     beian_hao: string
     product_name: string
     short_name: string | null
   }>(
-    `WITH main AS (
-       SELECT product_name FROM private_fund_info_bfl WHERE beian_hao = $1
-     )
-     SELECT b.beian_hao, b.product_name, b.short_name
-     FROM private_fund_info_bfl b
-     CROSS JOIN main m
-     WHERE ${sqlFundNameBase("b.product_name")} = ${sqlFundNameBase("m.product_name")}
-       AND b.product_name ~ '[ABC]类$'
-     ORDER BY b.product_name ASC`,
-    [beianHao],
+    `SELECT beian_hao, product_name, short_name
+     FROM (
+       SELECT beian_hao, product_name, short_name
+       FROM private_fund_info_bfl
+       WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
+         AND product_name ~ '[ABC]类$'
+       UNION
+       SELECT beian_hao, product_name, NULL::text AS short_name
+       FROM private_fund_info
+       WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
+         AND product_name ~ '[ABC]类$'
+     ) t
+     ORDER BY product_name ASC`,
+    [mainProductName],
   )
 
-  const existing = existingRows.map((row) => ({
+  return existingRows.map((row) => ({
     beian_hao: row.beian_hao,
     product_name: row.product_name,
     short_name: row.short_name,
     share_class: shareClassFromProductName(row.product_name),
   }))
+}
+
+export async function loadShareClassPreview(
+  beianHao: string,
+  shareClass?: ShareClassLetter | null,
+): Promise<ShareClassPreview | null> {
+  const main = await loadMainProduct(beianHao)
+  if (!main) return null
+
+  const existing = await loadExistingShareClasses(main.product_name)
 
   const preview = shareClass
     ? {
@@ -163,7 +198,7 @@ export async function loadShareClassPreview(
 export async function createShareClassProduct(params: {
   main_beian_hao: string
   share_class: ShareClassLetter
-}): Promise<{ ok: true } | { error: string }> {
+}): Promise<{ ok: true; beian_hao: string; product_name: string } | { error: string }> {
   const preview = await loadShareClassPreview(params.main_beian_hao, params.share_class)
   if (!preview) return { error: "main_not_found" }
 
@@ -171,14 +206,27 @@ export async function createShareClassProduct(params: {
   if (taken) return { error: "share_class_exists" }
 
   const beianCode = preview.preview?.beian_code
-  if (!beianCode) return { error: "invalid_preview" }
+  const productName = preview.preview?.fund_full_name
+  const shortName = preview.preview?.fund_short_name ?? null
+  if (!beianCode || !productName) return { error: "invalid_preview" }
 
   const dupRows = await query<{ ok: number }>(
-    `SELECT 1 AS ok FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
+    `SELECT 1 AS ok
+     FROM (
+       SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = $1
+       UNION ALL
+       SELECT beian_hao FROM private_fund_info WHERE beian_hao = $1
+     ) t
+     LIMIT 1`,
     [beianCode],
   )
   if (dupRows[0]?.ok) return { error: "beian_exists" }
 
-  // Tiered products are synced from the upstream platform; acknowledge the request here.
-  return { ok: true }
+  await query(
+    `INSERT INTO private_fund_info_bfl (beian_hao, product_name, short_name, updated_at)
+     VALUES ($1, $2, $3, NOW())`,
+    [beianCode, productName, shortName],
+  )
+
+  return { ok: true, beian_hao: beianCode, product_name: productName }
 }

@@ -46,7 +46,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: result.error }, { status })
     }
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({
+      ok: true,
+      beian_hao: result.beian_hao,
+      product_name: result.product_name,
+    })
   } catch (err) {
     console.error("[share-class/create]", err)
     return NextResponse.json({ error: "Failed to create share class product" }, { status: 500 })
