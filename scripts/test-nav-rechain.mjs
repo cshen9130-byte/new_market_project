@@ -1611,6 +1611,39 @@ assert(
   console.log("禾禧五号B 0.05 dividend", hexi21)
 }
 
+// 九鞅禾瑞十号C类: 0.03 dividend (2023-12-20) then another ~0.05 (2024-12-24 → gap 0.08).
+// A 0.05-only gate collapses the 0.03 era to unit=cum and creates a false +2.61% step-up
+// when 累计 reappears on the second ex-div.
+{
+  const heruiC = [
+    { price_date: "2023-12-07", nav: "1.0431", cumulative_nav: "1.0431" },
+    { price_date: "2023-12-14", nav: "1.0451", cumulative_nav: "1.0451" },
+    { price_date: "2023-12-20", nav: "1.0159", cumulative_nav: "1.0459" },
+    { price_date: "2023-12-21", nav: "1.0160", cumulative_nav: "1.0460" },
+    { price_date: "2023-12-28", nav: "1.0189", cumulative_nav: "1.0489" },
+    { price_date: "2024-12-12", nav: "1.1293", cumulative_nav: "1.1593" },
+    { price_date: "2024-12-19", nav: "1.1299", cumulative_nav: "1.1599" },
+    { price_date: "2024-12-24", nav: "1.0794", cumulative_nav: "1.1594" },
+    { price_date: "2024-12-26", nav: "1.0801", cumulative_nav: "1.1601" },
+  ]
+  const heruiOut = mergeNavSeriesWithEmail([], heruiC)
+  const h20 = heruiOut.find((r) => r.price_date === "2023-12-20")
+  const h19 = heruiOut.find((r) => r.price_date === "2024-12-19")
+  const h24 = heruiOut.find((r) => r.price_date === "2024-12-24")
+  assert("禾瑞十号C 2023-12-20 keeps 累计 gap 0.03", Math.abs(parseFloat(h20.cum_nav_withdrawal) - 1.0459) < 0.0001)
+  assert("禾瑞十号C 2023-12-20 not -2.79% unit crash", Math.abs(parseFloat(h20.price_change) + 2.79) > 0.5)
+  assert("禾瑞十号C 2024-12-19 keeps prior 0.03 gap", Math.abs(parseFloat(h19.cum_nav_withdrawal) - 1.1599) < 0.0001)
+  assert("禾瑞十号C 2024-12-19 unit stays 1.1299", Math.abs(parseFloat(h19.nav) - 1.1299) < 0.0001)
+  assert("禾瑞十号C 2024-12-24 keeps 累计 1.1594", Math.abs(parseFloat(h24.cum_nav_withdrawal) - 1.1594) < 0.0001)
+  assert("禾瑞十号C 2024-12-24 not false +2.61% step-up", Math.abs(parseFloat(h24.price_change) - 2.61) > 0.5)
+  assert(
+    "禾瑞十号C 2024-12-24 daily ~ cum ratio",
+    Math.abs(parseFloat(h24.price_change) - ((1.1594 / 1.1599 - 1) * 100)) < 0.15,
+  )
+  assert("禾瑞十号C 2024-12-24 adj >= cum", parseFloat(h24.cumulative_nav) + 0.0005 >= parseFloat(h24.cum_nav_withdrawal))
+  console.log("禾瑞十号C 0.03+0.05 dividends", { h20, h19, h24 })
+}
+
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"
 if (fs.existsSync(excelPath)) {
   const buf = fs.readFileSync(excelPath)

@@ -1368,15 +1368,22 @@ function isUsableEmailCumulativeNav(unit: number, cum: number | null): boolean {
   return cum >= unit - 0.001
 }
 
-/** Cumulative NAV materially above unit NAV — post-dividend structure (e.g. cum = unit + 0.05).
+/** Cumulative NAV materially above unit NAV — post-dividend structure.
  *
- * Threshold is 0.05/unit (common cash dividend). Use a 1e-6 epsilon so float subtraction
- * on exact 0.05 gaps (e.g. 1.2328 − 1.1828 → 0.049999…) still counts — otherwise
- * `alignPreDividendNavRows` treats the ex-div row as pre-dividend and collapses
- * 累计/复权 to 单位 (九鞅禾禧五号B类 2023-12-21).
+ * Threshold is 0.03/unit (common small cash dividend). Use a 1e-6 epsilon so float
+ * subtraction on exact round gaps still counts:
+ * - 0.05: 1.2328 − 1.1828 → 0.049999… (九鞅禾禧五号B类 2023-12-21)
+ * - 0.03: 1.0459 − 1.0159 → 0.03 (九鞅禾瑞十号C类 2023-12-20)
+ *
+ * If the gate stays at 0.05, a later larger dividend makes `alignPreDividendNavRows`
+ * treat the earlier 0.03 era as pre-dividend and collapse 累计→单位, then jump on the
+ * next ex-div (禾瑞十号C类 chart step-up around 2024-12-20).
+ *
+ * Email unit/cum *ratio learning* still uses a separate raw `> 0.05` check — do not
+ * conflate that with this post-dividend regime gate.
  */
 function hasDividendOffset(unit: number, cum: number): boolean {
-  return cum - unit > 0.05 - 1e-6
+  return cum - unit > 0.03 - 1e-6
 }
 
 /** Email 复权 is meaningful only when strictly above 累计 (attachments often copy cum into adj). */

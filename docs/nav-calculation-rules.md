@@ -346,8 +346,8 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `syncExDivAdjustedNav` | Controls adj on ex-div dates — wrong formula breaks invariant immediately |
 | `rechainDerivedFromPrev` | Used everywhere adj is re-derived — switching back to `unitRatio` for adj breaks invariant after unit drops |
 | `propagateMissingAdjRows` | Fills adj for manual-upload rows — removing it leaves cum without adj for ops_team_nav_manual data |
-| `alignPreDividendNavRows` | Sets pre-dividend rows to unit = cum = adj — threshold `hasDividendOffset` (≥ 0.05 with 1e-6 epsilon) determines which rows are "pre-dividend" |
-| `hasDividendOffset` | Gate for first ex-div detection — must treat exact 0.05 gaps as material (float `1.2328−1.1828` → 0.049999…); strict `> 0.05` collapses 九鞅禾禧五号B类 |
+| `alignPreDividendNavRows` | Sets pre-dividend rows to unit = cum = adj — threshold `hasDividendOffset` (≥ 0.03 with 1e-6 epsilon) determines which rows are "pre-dividend" |
+| `hasDividendOffset` | Post-dividend regime gate (≥ 0.03 with epsilon). Must include 0.03 and exact-0.05 float gaps; a 0.05-only gate collapses 九鞅禾禧五号B类 / 禾瑞十号C类 smaller dividends until a later larger ex-div, then jumps |
 | `repairAdjBelowCumRows` | Fixes stale legacy 复权 that drifted below 累计 when email refreshes unit+cum — runs before `alignPreDividendNavRows` |
 | `repairAdjCollapsedToUnitRows` | Fixes legacy rows where 复权 = 单位 while 累计 >> 单位 (AVM354 pattern) — runs before `repairAdjBelowCumRows` |
 | `filterEmailNavManageStream` | Must use `selectEmailNavSeriesRows` — reverting to `selectEmailSourceStream` breaks 在管产品 email unit correction |
@@ -1871,3 +1871,56 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes assertion block **禾禧五号B 0.05 dividend**. Re-upload is not required for already-stored manual rows — display goes through `mergeNavSeriesWithEmail` / `finalizeNavSeries` on read. Refresh the product page after deploy.
+
+---
+
+## What Was Fixed (九鞅禾瑞十号C类 — 0.03 then 0.05 dividends, 2026-08-04)
+
+### The Problem
+
+Same workbook, sheet **九鞅禾瑞十号(固收加)** C类 columns. Uploaded values:
+
+| Date | 单位净值 | 累计净值 | Gap |
+|---|---|---|---|
+| 2023-12-14 | 1.0451 | 1.0451 | 0 |
+| 2023-12-20 | **1.0159** | **1.0459** | **0.03** |
+| … | … | unit+0.03 | 0.03 |
+| 2024-12-19 | 1.1299 | 1.1599 | 0.03 |
+| 2024-12-24 | **1.0794** | **1.1594** | **0.08** |
+
+Team NAV / 收益曲线 showed:
+1. False V-dip around **2023-12-20** (累计 collapsed to 单位, −2.79%)
+2. False step-up around **2024-12-20/24** (累计 suddenly reappears → **+2.61%** on 复权)
+
+Excel was not rewritten — `alignPreDividendNavRows` wiped the 0.03 era.
+
+### Root Cause
+
+After the 禾禧五号B float fix, `hasDividendOffset` still required gap **≥ ~0.05**. The C类 first dividend is only **0.03**, so `findFirstDividendRowIndex` skipped to **2024-12-24** (gap 0.08). Everything before that was forced `unit = cum = adj`, then 累计 jumped back on the second ex-div.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Dividend-offset gate | `hasDividendOffset` | Material gap lowered to **0.03 − 1e-6** (still covers exact 0.05 float case) |
+
+### What This Fix Does NOT Change
+
+- Email unit/cum **ratio learning** still uses raw `cum - unit > 0.05` (SQL / `applyEmailUnitNavCorrection`) — unchanged
+- `syncExDivAdjustedNav` / `rechainDerivedFromPrev` formulas — unchanged
+- SQX078 large-gap unit-rate path (`cumUnitGap > 0.05`) — unchanged
+- SBAH99 / SNF018 / SSG947 / SBPC20 / SLA063 / SQX078 / AVM354 / 禾禧五号B — covered by regression suite
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 涨跌幅 |
+|---|---|---|---|
+| 2023-12-20 | 1.0159 | **1.0459** | ~cum ratio (not −2.79%) |
+| 2024-12-19 | 1.1299 | **1.1599** | small |
+| 2024-12-24 | 1.0794 | **1.1594** | ~cum ratio (not +2.61%) |
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **禾瑞十号C 0.03+0.05 dividends**. Refresh the product page after deploy — no re-upload required.
