@@ -1,6 +1,7 @@
 -- Migration: create ops_email_nav_records table
 -- Stores NAV values extracted from crawled fund emails.
--- Supports multiple NAV dates per email (e.g. historical rows from 净值表 attachments).
+-- Supports multiple NAV dates per email (e.g. historical rows from 净值表 attachments)
+-- and multiple products packed into one CMS/招商 【净值表】 email.
 -- Safe to re-run (uses IF NOT EXISTS / IF EXISTS).
 
 CREATE TABLE IF NOT EXISTS ops_email_nav_records (
@@ -26,14 +27,30 @@ ALTER TABLE ops_email_nav_records
 ALTER TABLE ops_email_nav_records
     DROP CONSTRAINT IF EXISTS uq_email_nav_record;
 
+ALTER TABLE ops_email_nav_records
+    DROP CONSTRAINT IF EXISTS uq_email_nav_record_date;
+
+UPDATE ops_email_nav_records
+    SET product_code = ''
+    WHERE product_code IS NULL;
+
+DELETE FROM ops_email_nav_records a
+    USING ops_email_nav_records b
+    WHERE a.id < b.id
+      AND a.crawl_email_account = b.crawl_email_account
+      AND a.email_uid = b.email_uid
+      AND a.nav_date IS NOT DISTINCT FROM b.nav_date
+      AND a.attachment_filename = b.attachment_filename
+      AND COALESCE(a.product_code, '') = COALESCE(b.product_code, '');
+
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'uq_email_nav_record_date'
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_email_nav_record_date_code'
     ) THEN
         ALTER TABLE ops_email_nav_records
-            ADD CONSTRAINT uq_email_nav_record_date
-            UNIQUE (crawl_email_account, email_uid, nav_date, attachment_filename);
+            ADD CONSTRAINT uq_email_nav_record_date_code
+            UNIQUE (crawl_email_account, email_uid, nav_date, attachment_filename, product_code);
     END IF;
 END $$;
 

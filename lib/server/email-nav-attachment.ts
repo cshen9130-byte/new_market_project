@@ -5,6 +5,7 @@
 
 import {
   extractNavMetadata,
+  normalizeFundDisplayName,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
 import {
@@ -71,7 +72,11 @@ export function extractNavTableFromBuffer(
 ): ExtractedNavData[] {
   try {
     const analysis = analyzeNavWorkbook(buffer, filename)
-    const { productCode, fundName } = extractNavMetadata(subject, filename)
+    const { productCode: subjectCode, fundName: subjectFundName } = extractNavMetadata(
+      subject,
+      filename,
+    )
+    const subjectCodeNorm = subjectCode?.trim().toUpperCase() || null
 
     return analysis.rows.map((row) => {
       let unitNav = row.unitNav
@@ -80,12 +85,21 @@ export function extractNavTableFromBuffer(
         if (hinted != null) unitNav = hinted
       }
       const rowCode = (row.productCode ?? "").trim().toUpperCase() || null
+      const rowFundName = row.fundName?.trim()
+        ? normalizeFundDisplayName(row.fundName)
+        : null
+      // Prefer per-row identity from multi-product CMS 每日净值表.xls; subject is only a fallback.
+      const productCode = rowCode || subjectCodeNorm
+      const fundName =
+        rowCode && subjectCodeNorm && rowCode !== subjectCodeNorm
+          ? rowFundName || null
+          : subjectFundName || rowFundName || null
       return {
         nav: unitNav,
         navDate: row.date,
         cumulativeNav: row.cumulativeNav,
         adjustedNav: row.adjustedNav,
-        productCode: productCode || rowCode,
+        productCode,
         fundName,
         source: "attachment_nav_table" as const,
       }

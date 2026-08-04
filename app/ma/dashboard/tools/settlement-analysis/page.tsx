@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic"
 import Link from "next/link"
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"
-import { AlertTriangle, ArrowLeft, BarChart3, ChevronDown, ChevronUp, Database, FileSpreadsheet, Mail, Save, ScanSearch, Trash2, TrendingUp, UploadCloud } from "lucide-react"
+import { AlertTriangle, ArrowLeft, BarChart3, ChevronDown, ChevronUp, Database, Download, FileArchive, FileSpreadsheet, Mail, Save, ScanSearch, Trash2, TrendingUp, UploadCloud } from "lucide-react"
 import { Input } from "@/components/ui/input"
 
 import { useToast } from "@/hooks/use-toast"
@@ -260,6 +260,135 @@ type GuoxinDBAnalysisResponse = {
   hedgeStructureCharts?: HedgeStructureChart[]
 }
 
+type RonghangEquityPoint = {
+  date: string
+  equity: number
+  nav: number
+  drawdown: number
+  margin: number
+  marginRatio: number
+  dailyPl: number
+  fee: number
+  deposit: number
+  riskDegree: number
+}
+
+type RonghangNamedAmount = {
+  key: string
+  name: string
+  sector?: string
+  pnl: number
+  lots: number
+  weight: number
+}
+
+type RonghangZipReport = {
+  sourceFileName: string
+  fileCount: number
+  meta: {
+    clientId: string
+    clientName: string
+    brokerName: string
+    startDate: string
+    endDate: string
+    tradingDays: number
+  }
+  overview: {
+    startBalance: number
+    endBalance: number
+    startEquity: number
+    endEquity: number
+    totalDeposit: number
+    totalWithdraw: number
+    netDeposit: number
+    totalFee: number
+    netProfit: number
+    unitNav: number
+    maxNav: number
+    periodReturn: number
+    annualizedReturn: number
+    maxDailyDrawdown: number
+    maxPeakDrawdown: number
+    continuousDrawdownCalendarDays: number
+    longestUnderwaterCalendarDays: number
+    annualizedVol: number
+    annualizedDownsideVol: number
+    totalLots: number
+    totalTrades: number
+    dailyWinRate: number
+    monthlyWinRate: number
+    avgMargin: number
+    avgMarginRatio: number
+    sharpe: number
+    sortino: number
+    calmar: number
+    avgFeeRatio: number
+  }
+  equityCurve: RonghangEquityPoint[]
+  monthlyReturns: Array<{ month: string; returnPct: number; pnl: number }>
+  drawdownBuckets: Array<{ label: string; days: number; share: number }>
+  sectorPnl: RonghangNamedAmount[]
+  productPnl: RonghangNamedAmount[]
+  directionAttribution: Array<{
+    product: string
+    productName: string
+    direction: "买" | "卖"
+    pnl: number
+    weight: number
+  }>
+  longShortStats: {
+    overall: {
+      win: { lots: number; pnl: number; avgPnl: number }
+      loss: { lots: number; pnl: number; avgPnl: number }
+      flat: { lots: number; pnl: number; avgPnl: number }
+      totalPnl: number
+      totalLots: number
+      winRate: number
+      profitFactor: number
+    }
+    longClose: {
+      win: { lots: number; pnl: number; avgPnl: number }
+      loss: { lots: number; pnl: number; avgPnl: number }
+      flat: { lots: number; pnl: number; avgPnl: number }
+      totalPnl: number
+      totalLots: number
+      winRate: number
+      profitFactor: number
+    }
+    shortClose: {
+      win: { lots: number; pnl: number; avgPnl: number }
+      loss: { lots: number; pnl: number; avgPnl: number }
+      flat: { lots: number; pnl: number; avgPnl: number }
+      totalPnl: number
+      totalLots: number
+      winRate: number
+      profitFactor: number
+    }
+  }
+  holdingPeriodStats: Array<{
+    period: string
+    profitAmount: number
+    lossAmount: number
+    pnl: number
+    lots: number
+    lotShare: number
+    trades: number
+    wins: number
+    winRate: number
+  }>
+  narrative: {
+    returnSummary: string
+    monthlySummary: string
+    navSummary: string
+    drawdownSummary: string
+    topProfitSectors: string[]
+    topLossSectors: string[]
+    topProfitProducts: string[]
+    topLossProducts: string[]
+  }
+  warnings: string[]
+}
+
 const ACCEPTED_EXTENSIONS = [".xlsx", ".xls", ".xlsm", ".xlsb"]
 
 function readErrorMessage(payload: unknown, fallback: string) {
@@ -287,6 +416,16 @@ function formatSignedCurrency(value: number | null | undefined) {
 function formatPercent(value: number | null | undefined) {
   if (value == null) return "--"
   return `${(value * 100).toFixed(1)}%`
+}
+
+function formatPercentPrecise(value: number | null | undefined, digits = 2) {
+  if (value == null) return "--"
+  return `${(value * 100).toFixed(digits)}%`
+}
+
+function formatRatio(value: number | null | undefined, digits = 4) {
+  if (value == null || !Number.isFinite(value)) return "--"
+  return value.toFixed(digits)
 }
 
 function formatMultiple(value: number | null | undefined) {
@@ -1375,14 +1514,470 @@ function StrategyReportPanels({
   )
 }
 
+function RonghangReportPanels({ report }: { report: RonghangZipReport }) {
+  const o = report.overview
+  const equityOption = useMemo(() => {
+    const dates = report.equityCurve.map((p) => p.date)
+    return {
+      tooltip: { trigger: "axis" },
+      legend: { data: ["权益", "净值", "回撤"] },
+      grid: { left: 56, right: 56, top: 40, bottom: 40 },
+      xAxis: { type: "category", data: dates },
+      yAxis: [
+        { type: "value", name: "权益", scale: true },
+        { type: "value", name: "净值/回撤", scale: true },
+      ],
+      series: [
+        {
+          name: "权益",
+          type: "line",
+          data: report.equityCurve.map((p) => p.equity),
+          showSymbol: false,
+          itemStyle: { color: "#2563eb" },
+        },
+        {
+          name: "净值",
+          type: "line",
+          yAxisIndex: 1,
+          data: report.equityCurve.map((p) => +p.nav.toFixed(4)),
+          showSymbol: false,
+          itemStyle: { color: "#059669" },
+        },
+        {
+          name: "回撤",
+          type: "line",
+          yAxisIndex: 1,
+          data: report.equityCurve.map((p) => +(-p.drawdown * 100).toFixed(2)),
+          showSymbol: false,
+          areaStyle: { color: "rgba(220,38,38,0.12)" },
+          itemStyle: { color: "#dc2626" },
+        },
+      ],
+    }
+  }, [report.equityCurve])
+
+  const marginOption = useMemo(
+    () => ({
+      tooltip: { trigger: "axis" },
+      grid: { left: 48, right: 24, top: 30, bottom: 40 },
+      xAxis: { type: "category", data: report.equityCurve.map((p) => p.date) },
+      yAxis: { type: "value", axisLabel: { formatter: (v: number) => `${v}%` } },
+      series: [
+        {
+          name: "保证金占比",
+          type: "line",
+          data: report.equityCurve.map((p) => +(p.marginRatio * 100).toFixed(2)),
+          showSymbol: false,
+          areaStyle: { color: "rgba(37,99,235,0.08)" },
+          itemStyle: { color: "#2563eb" },
+        },
+      ],
+    }),
+    [report.equityCurve],
+  )
+
+  const monthlyOption = useMemo(
+    () => ({
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ name: string; value: number; dataIndex: number }>) => {
+          const p = params[0]
+          const row = report.monthlyReturns[p.dataIndex]
+          return `${p.name}<br/>收益率 ${(p.value).toFixed(2)}%<br/>盈亏 ${formatSignedCurrency(row?.pnl)}`
+        },
+      },
+      grid: { left: 48, right: 24, top: 30, bottom: 40 },
+      xAxis: { type: "category", data: report.monthlyReturns.map((m) => m.month) },
+      yAxis: { type: "value", axisLabel: { formatter: (v: number) => `${v}%` } },
+      series: [
+        {
+          type: "bar",
+          data: report.monthlyReturns.map((m) => ({
+            value: +(m.returnPct * 100).toFixed(2),
+            itemStyle: { color: m.returnPct >= 0 ? "#059669" : "#dc2626" },
+          })),
+        },
+      ],
+    }),
+    [report.monthlyReturns],
+  )
+
+  const sectorOption = useMemo(() => {
+    const rows = [...report.sectorPnl].sort((a, b) => a.pnl - b.pnl)
+    return {
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ name: string; value: number; dataIndex: number }>) => {
+          const row = rows[params[0]?.dataIndex]
+          if (!row) return ""
+          return `${row.name}<br/>盈亏 ${formatSignedCurrency(row.pnl)}<br/>手数 ${row.lots.toFixed(1)}`
+        },
+      },
+      grid: { left: 88, right: 24, top: 20, bottom: 30 },
+      xAxis: { type: "value" },
+      yAxis: { type: "category", data: rows.map((r) => r.name) },
+      series: [
+        {
+          type: "bar",
+          data: rows.map((r) => ({
+            value: r.pnl,
+            itemStyle: { color: r.pnl >= 0 ? "#059669" : "#dc2626" },
+          })),
+        },
+      ],
+    }
+  }, [report.sectorPnl])
+
+  const productOption = useMemo(() => {
+    const rows = [...report.productPnl].sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl)).slice(0, 12).sort((a, b) => a.pnl - b.pnl)
+    return {
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ name: string; value: number; dataIndex: number }>) => {
+          const row = rows[params[0]?.dataIndex]
+          if (!row) return ""
+          return `${row.name}<br/>盈亏 ${formatSignedCurrency(row.pnl)}<br/>手数 ${row.lots.toFixed(1)}`
+        },
+      },
+      grid: { left: 108, right: 24, top: 20, bottom: 30 },
+      xAxis: { type: "value" },
+      yAxis: { type: "category", data: rows.map((r) => r.name) },
+      series: [
+        {
+          type: "bar",
+          data: rows.map((r) => ({
+            value: r.pnl,
+            itemStyle: { color: r.pnl >= 0 ? "#059669" : "#dc2626" },
+          })),
+        },
+      ],
+    }
+  }, [report.productPnl])
+
+  const metricCards: Array<{ label: string; value: string; hint?: string; tone?: string }> = [
+    { label: "期初资金", value: formatCurrency(o.startBalance) },
+    { label: "期末权益", value: formatCurrency(o.endEquity) },
+    { label: "净收益", value: formatSignedCurrency(o.netProfit), tone: o.netProfit >= 0 ? "text-emerald-700" : "text-red-700" },
+    { label: "周期收益", value: formatPercentPrecise(o.periodReturn), tone: o.periodReturn >= 0 ? "text-emerald-700" : "text-red-700" },
+    { label: "年化收益", value: formatPercentPrecise(o.annualizedReturn) },
+    { label: "最大回撤", value: formatPercentPrecise(o.maxPeakDrawdown, 4), tone: "text-red-700" },
+    { label: "夏普比率", value: formatRatio(o.sharpe) },
+    { label: "卡玛比率", value: formatRatio(o.calmar) },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {metricCards.map((card) => (
+          <Card key={card.label}>
+            <CardHeader className="pb-3">
+              <CardDescription>{card.label}</CardDescription>
+              <CardTitle className={`text-2xl ${card.tone ?? ""}`}>{card.value}</CardTitle>
+            </CardHeader>
+          </Card>
+        ))}
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>第一部分 总览</CardTitle>
+          <CardDescription>
+            账号 {report.meta.clientId || "--"} · 投顾 {report.meta.clientName || "--"} · {report.meta.startDate} ~ {report.meta.endDate} · {report.meta.tradingDays} 个交易日
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+          {[
+            ["总入金", formatCurrency(o.totalDeposit)],
+            ["总出金", formatCurrency(o.totalWithdraw)],
+            ["净出入金", formatCurrency(o.netDeposit)],
+            ["总手续费", formatCurrency(o.totalFee)],
+            ["单位净值(峰值)", formatRatio(o.unitNav)],
+            ["单日最大回撤", formatPercentPrecise(o.maxDailyDrawdown, 4)],
+            ["年化波动率", formatPercentPrecise(o.annualizedVol, 2)],
+            ["年化下行波动率", formatPercentPrecise(o.annualizedDownsideVol, 2)],
+            ["总交易量", `${o.totalLots.toFixed(1)} 手`],
+            ["总交易次数", `${o.totalTrades} 次`],
+            ["日胜率", formatPercentPrecise(o.dailyWinRate)],
+            ["月胜率", formatPercentPrecise(o.monthlyWinRate)],
+            ["日均保证金", formatCurrency(o.avgMargin)],
+            ["日均保证金比", formatPercentPrecise(o.avgMarginRatio, 4)],
+            ["索提诺比率", formatRatio(o.sortino)],
+            ["日均手续费比", formatPercentPrecise(o.avgFeeRatio, 4)],
+            ["连续回撤天数", `${o.continuousDrawdownCalendarDays} 天`],
+            ["最长未创新高", `${o.longestUnderwaterCalendarDays} 天`],
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-center justify-between rounded-lg border px-3 py-2">
+              <span className="text-muted-foreground">{label}</span>
+              <span className="font-medium">{value}</span>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>2.1 / 2.3 权益、净值与动态回撤</CardTitle>
+            <CardDescription>{report.narrative.returnSummary}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={equityOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />
+            <p className="mt-3 text-sm text-muted-foreground">{report.narrative.drawdownSummary}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>2.5 保证金占用比</CardTitle>
+            <CardDescription>{report.narrative.navSummary}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={marginOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>2.2 / 2.7 月收益率与月度盈亏</CardTitle>
+            <CardDescription>{report.narrative.monthlySummary}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={monthlyOption} style={{ height: 320, width: "100%" }} notMerge lazyUpdate />
+            <Table className="mt-4">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>月份</TableHead>
+                  <TableHead className="text-right">收益率</TableHead>
+                  <TableHead className="text-right">盈亏</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {report.monthlyReturns.map((row) => (
+                  <TableRow key={row.month}>
+                    <TableCell>{row.month}</TableCell>
+                    <TableCell className={`text-right ${row.returnPct >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                      {formatPercentPrecise(row.returnPct)}
+                    </TableCell>
+                    <TableCell className={`text-right ${row.pnl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                      {formatSignedCurrency(row.pnl)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>2.4 回撤分布</CardTitle>
+            <CardDescription>按交易日回撤落入各区间的天数与占比。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>回撤率</TableHead>
+                  <TableHead className="text-right">天数</TableHead>
+                  <TableHead className="text-right">占比</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {report.drawdownBuckets.map((row) => (
+                  <TableRow key={row.label}>
+                    <TableCell>{row.label}</TableCell>
+                    <TableCell className="text-right">{row.days}</TableCell>
+                    <TableCell className="text-right">{formatPercentPrecise(row.share)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>3.1 板块盈亏分析</CardTitle>
+            <CardDescription>
+              亏损最多：{report.narrative.topLossSectors[0] ?? "—"}；盈利最多：{report.narrative.topProfitSectors[0] ?? "—"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={sectorOption} style={{ height: 320, width: "100%" }} notMerge lazyUpdate />
+            <ul className="mt-3 space-y-1 text-sm text-muted-foreground">
+              {report.narrative.topLossSectors.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+              {report.narrative.topProfitSectors.map((line) => (
+                <li key={`p-${line}`}>{line}</li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>3.2 品种盈亏分析</CardTitle>
+            <CardDescription>
+              亏损最多：{report.narrative.topLossProducts[0] ?? "—"}；盈利最多：{report.narrative.topProfitProducts[0] ?? "—"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={productOption} style={{ height: 320, width: "100%" }} notMerge lazyUpdate />
+            <ul className="mt-3 space-y-1 text-sm text-muted-foreground">
+              {report.narrative.topLossProducts.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+              {report.narrative.topProfitProducts.map((line) => (
+                <li key={`p-${line}`}>{line}</li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>品种绩效归因</CardTitle>
+          <CardDescription>平仓盈亏 + 当日持仓盯市盈亏，按品种与开仓方向汇总。</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-2">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>品种</TableHead>
+                <TableHead>方向</TableHead>
+                <TableHead className="text-right">利润</TableHead>
+                <TableHead className="text-right">利润比</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {report.directionAttribution.map((row) => (
+                <TableRow key={`${row.product}-${row.direction}`}>
+                  <TableCell>{row.productName}</TableCell>
+                  <TableCell>{row.direction}</TableCell>
+                  <TableCell className={`text-right ${row.pnl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                    {formatSignedCurrency(row.pnl)}
+                  </TableCell>
+                  <TableCell className="text-right">{formatPercentPrecise(row.weight)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>品种</TableHead>
+                <TableHead>板块</TableHead>
+                <TableHead className="text-right">利润</TableHead>
+                <TableHead className="text-right">手数</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {[...report.productPnl].sort((a, b) => a.pnl - b.pnl).map((row) => (
+                <TableRow key={row.key}>
+                  <TableCell>{row.name}</TableCell>
+                  <TableCell>{row.sector ?? "其他"}</TableCell>
+                  <TableCell className={`text-right ${row.pnl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                    {formatSignedCurrency(row.pnl)}
+                  </TableCell>
+                  <TableCell className="text-right">{row.lots.toFixed(1)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>3.3 多空胜率分析</CardTitle>
+            <CardDescription>基于平仓明细；注：最后一日持仓盈亏未单独计入胜率统计。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            {(
+              [
+                ["汇总", report.longShortStats.overall],
+                ["多头-卖平", report.longShortStats.longClose],
+                ["空头-买平", report.longShortStats.shortClose],
+              ] as const
+            ).map(([title, stats]) => (
+              <div key={title} className="rounded-lg border p-3">
+                <div className="mb-2 font-medium">{title}</div>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <div>盈利手数 {stats.win.lots.toFixed(1)}</div>
+                  <div>亏损手数 {stats.loss.lots.toFixed(1)}</div>
+                  <div>累计盈亏 {formatSignedCurrency(stats.totalPnl)}</div>
+                  <div>胜率 {formatPercentPrecise(stats.winRate)} / 盈亏比 {formatRatio(stats.profitFactor, 2)}</div>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>3.4 周期分析</CardTitle>
+            <CardDescription>日内=当日开平；短线≤5日；中线≤20日；超过20日为长线。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>周期</TableHead>
+                  <TableHead className="text-right">累计盈亏</TableHead>
+                  <TableHead className="text-right">手数</TableHead>
+                  <TableHead className="text-right">手数占比</TableHead>
+                  <TableHead className="text-right">胜率</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {report.holdingPeriodStats.map((row) => (
+                  <TableRow key={row.period}>
+                    <TableCell>{row.period}</TableCell>
+                    <TableCell className={`text-right ${row.pnl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                      {formatSignedCurrency(row.pnl)}
+                    </TableCell>
+                    <TableCell className="text-right">{row.lots.toFixed(1)}</TableCell>
+                    <TableCell className="text-right">{formatPercentPrecise(row.lotShare)}</TableCell>
+                    <TableCell className="text-right">{formatPercentPrecise(row.winRate)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </div>
+
+      {report.warnings.length ? (
+        <Alert>
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>解析提示</AlertTitle>
+          <AlertDescription>
+            {report.warnings.slice(0, 8).map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
+  )
+}
+
 export default function SettlementAnalysisPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const zipInputRef = useRef<HTMLInputElement | null>(null)
   const { toast } = useToast()
 
   const [analysis, setAnalysis] = useState<SettlementAnalysisResponse | null>(null)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+
+  const [ronghangReport, setRonghangReport] = useState<RonghangZipReport | null>(null)
+  const [pendingZip, setPendingZip] = useState<File | null>(null)
+  const [isAnalyzingZip, setIsAnalyzingZip] = useState(false)
+  const [isZipDragOver, setIsZipDragOver] = useState(false)
+  const [isDownloadingRonghang, setIsDownloadingRonghang] = useState<"docx" | "pdf" | null>(null)
+  const [advisorName, setAdvisorName] = useState("")
 
   function isAcceptedFile(file: File) {
     const dotIndex = file.name.lastIndexOf(".")
@@ -1447,6 +2042,124 @@ export default function SettlementAnalysisPage() {
     }
   }
 
+  function clearZipAll() {
+    setRonghangReport(null)
+    setPendingZip(null)
+    setIsDownloadingRonghang(null)
+    setAdvisorName("")
+    if (zipInputRef.current) {
+      zipInputRef.current.value = ""
+    }
+  }
+
+  function isAcceptedZip(file: File) {
+    return /\.zip$/i.test(file.name)
+  }
+
+  async function handleDownloadRonghangReport(format: "docx" | "pdf") {
+    if (!pendingZip) {
+      toast({
+        title: "未选择文件",
+        description: "请先拖入融航结算单 ZIP，再下载 Word / PDF 报告。",
+        variant: "destructive",
+      })
+      return
+    }
+    setIsDownloadingRonghang(format)
+    try {
+      const formData = new FormData()
+      formData.append("file", pendingZip)
+      if (advisorName.trim()) {
+        formData.append("advisor", advisorName.trim())
+      }
+      const response = await fetch(`/ma/api/tools/settlement-analysis/ronghang-download-report?format=${format}`, {
+        method: "POST",
+        body: formData,
+      })
+      if (!response.ok) {
+        let message = "报告下载失败。"
+        try {
+          const payload = (await response.json()) as { error?: string; detail?: string }
+          message = payload.error || message
+        } catch {
+          /* ignore */
+        }
+        throw new Error(message)
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = format === "pdf" ? "投资报告分析.pdf" : "投资报告分析.docx"
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast({
+        title: format === "pdf" ? "PDF 已开始下载" : "Word 已开始下载",
+        description: "报告结构对齐示例「投资报告分析 / data analysis report」。",
+      })
+    } catch (error) {
+      toast({
+        title: "下载失败",
+        description: error instanceof Error ? error.message : "报告下载失败。",
+        variant: "destructive",
+      })
+    } finally {
+      setIsDownloadingRonghang(null)
+    }
+  }
+
+  async function handleAnalyzeZip() {
+    if (!pendingZip) {
+      toast({
+        title: "未选择文件",
+        description: "请先拖入或点击选择融航结算单 ZIP（如 data.zip）。",
+        variant: "destructive",
+      })
+      return
+    }
+    if (!isAcceptedZip(pendingZip)) {
+      toast({
+        title: "文件格式不支持",
+        description: "仅支持 .zip 压缩包。",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsAnalyzingZip(true)
+    try {
+      const formData = new FormData()
+      formData.append("file", pendingZip)
+      const response = await fetch("/ma/api/tools/settlement-analysis/ronghang-zip", {
+        method: "POST",
+        body: formData,
+      })
+      const payload = (await response.json()) as RonghangZipReport | { error: string }
+      if (!response.ok) {
+        throw new Error(readErrorMessage(payload, "融航 ZIP 分析失败。"))
+      }
+      const report = payload as RonghangZipReport
+      setRonghangReport(report)
+      if (!advisorName.trim() && report.meta.clientName) {
+        setAdvisorName(report.meta.clientName)
+      }
+      toast({
+        title: "分析报告已生成",
+        description: `已解析 ${report.fileCount} 个交易日结算单。`,
+      })
+    } catch (error) {
+      toast({
+        title: "分析失败",
+        description: error instanceof Error ? error.message : "融航 ZIP 分析失败。",
+        variant: "destructive",
+      })
+    } finally {
+      setIsAnalyzingZip(false)
+    }
+  }
+
   function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault()
     event.stopPropagation()
@@ -1474,6 +2187,35 @@ export default function SettlementAnalysisPage() {
       return
     }
     setPendingFile(file)
+  }
+
+  function handleZipDragOver(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    setIsZipDragOver(true)
+  }
+
+  function handleZipDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    setIsZipDragOver(false)
+  }
+
+  function handleZipDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    setIsZipDragOver(false)
+    const file = event.dataTransfer.files?.[0]
+    if (!file) return
+    if (!isAcceptedZip(file)) {
+      toast({
+        title: "文件格式不支持",
+        description: "仅支持 .zip（例如 融航结算单/data.zip）。",
+        variant: "destructive",
+      })
+      return
+    }
+    setPendingZip(file)
   }
 
   const holdingsOption = useMemo(
@@ -1792,7 +2534,9 @@ export default function SettlementAnalysisPage() {
         </Link>
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">结算单分析</h1>
-          <p className="mt-2 text-muted-foreground">拖入国信交易结算单(盯市)后，分析持仓敞口、板块分布、多空结构，并推断可能的交易风格。</p>
+          <p className="mt-2 text-muted-foreground">
+            拖入国信交易结算单(盯市)，或拖入融航多日结算单 ZIP，分析持仓敞口、业绩指标、板块/品种盈亏并生成报告。
+          </p>
         </div>
       </div>
 
@@ -1800,7 +2544,7 @@ export default function SettlementAnalysisPage() {
         <FileSpreadsheet className="h-4 w-4" />
         <AlertTitle>支持格式</AlertTitle>
         <AlertDescription>
-          支持 xlsx、xls、xlsm、xlsb 结算单文件。上传文件只在分析请求期间进入内存，不会落盘保存。策略判断为启发式推断，用于快速读表，不替代人工复核。
+          单文件支持 xlsx、xls、xlsm、xlsb；融航批量包支持 zip（内含多日 .xls/.xlsx）。上传文件只在分析请求期间进入内存，不会落盘保存。策略判断为启发式推断，用于快速读表，不替代人工复核。
         </AlertDescription>
       </Alert>
 
@@ -1864,6 +2608,141 @@ export default function SettlementAnalysisPage() {
           ) : null}
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileArchive className="h-5 w-5" />
+            2. 融航结算单 ZIP 分析报告
+          </CardTitle>
+          <CardDescription>
+            拖入融航导出的 data.zip（内含多个交易日 Excel，每个文件多 sheet），自动提取账户、成交、平仓与持仓数据，生成与「投资报告分析」同结构的业绩/板块/品种报告。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <label htmlFor="ronghang-advisor-name" className="shrink-0 text-sm font-medium">
+              投顾名称
+            </label>
+            <Input
+              id="ronghang-advisor-name"
+              value={advisorName}
+              onChange={(event) => setAdvisorName(event.target.value)}
+              placeholder="写入封面「投顾名称」，例如：张三"
+              className="max-w-md"
+              disabled={isAnalyzingZip || !!isDownloadingRonghang}
+            />
+            <span className="text-xs text-muted-foreground">用于 Word / PDF 封面；不填则用结算单客户名称</span>
+          </div>
+
+          <div
+            className={`relative flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors ${
+              isZipDragOver ? "border-primary bg-primary/5" : "border-border/60 hover:border-primary/60 hover:bg-muted/30"
+            } ${isAnalyzingZip ? "pointer-events-none opacity-60" : ""}`}
+            onDragOver={handleZipDragOver}
+            onDragEnter={handleZipDragOver}
+            onDragLeave={handleZipDragLeave}
+            onDrop={handleZipDrop}
+            onClick={() => !isAnalyzingZip && zipInputRef.current?.click()}
+          >
+            <input
+              ref={zipInputRef}
+              type="file"
+              accept=".zip,application/zip"
+              className="sr-only"
+              disabled={isAnalyzingZip}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) setPendingZip(file)
+              }}
+            />
+            <UploadCloud className={`h-10 w-10 transition-colors ${isZipDragOver ? "text-primary" : pendingZip ? "text-green-600" : "text-muted-foreground"}`} />
+            <div>
+              <p className="text-sm font-medium">
+                {isZipDragOver ? "松开鼠标以上传" : pendingZip ? pendingZip.name : "拖拽融航结算单 ZIP 到此处，或点击选择文件"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {pendingZip ? "文件已就绪，点击下方按钮生成分析报告" : "示例：融航结算单/data.zip（内含 0170…_YYYY-MM-DD.xls）"}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <Button
+                type="button"
+                variant={pendingZip ? "default" : "outline"}
+                size="sm"
+                disabled={isAnalyzingZip || !!isDownloadingRonghang}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void handleAnalyzeZip()
+                }}
+              >
+                <ScanSearch className="h-4 w-4" />
+                {isAnalyzingZip ? "分析中..." : pendingZip ? "生成分析报告" : "选择 ZIP"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!pendingZip || !!isDownloadingRonghang || isAnalyzingZip}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void handleDownloadRonghangReport("docx")
+                }}
+              >
+                <Download className="h-4 w-4" />
+                {isDownloadingRonghang === "docx" ? "生成 Word 中…" : "下载 Word 报告"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!pendingZip || !!isDownloadingRonghang || isAnalyzingZip}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void handleDownloadRonghangReport("pdf")
+                }}
+              >
+                <FileSpreadsheet className="h-4 w-4" />
+                {isDownloadingRonghang === "pdf" ? "生成 PDF 中…" : "下载 PDF 报告"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!pendingZip && !ronghangReport}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  clearZipAll()
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                清空
+              </Button>
+            </div>
+          </div>
+
+          {pendingZip ? (
+            <p className="text-xs text-muted-foreground">
+              Word / PDF 报告按示例「投资报告分析」结构生成（封面、总览、业绩图表、板块/品种盈亏、多空与周期、持仓分析）。下载前无需先点“生成分析报告”，但网页预览需要先分析。
+            </p>
+          ) : null}
+
+          {ronghangReport ? (
+            <div className="flex flex-wrap gap-2 text-sm">
+              <Badge variant="outline">文件：{ronghangReport.sourceFileName}</Badge>
+              <Badge variant="outline">客户：{ronghangReport.meta.clientName || ronghangReport.meta.clientId}</Badge>
+              <Badge variant="outline">
+                区间：{ronghangReport.meta.startDate} ~ {ronghangReport.meta.endDate}
+              </Badge>
+              <Badge variant="outline">交易日：{ronghangReport.meta.tradingDays}</Badge>
+              <Badge variant="outline">解析文件：{ronghangReport.fileCount}</Badge>
+              <Badge variant="outline">期货公司：{ronghangReport.meta.brokerName || "--"}</Badge>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {ronghangReport ? <RonghangReportPanels report={ronghangReport} /> : null}
 
       {analysis ? (
         <>

@@ -60,13 +60,19 @@ function normaliseDate(raw: string): string | null {
 const FUND_NAME_RE =
   /[\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
 
-/** CMS/招商证券 净值表 subject: 管理人旗下"产品名-CODE". */
+/** CMS/招商证券 净值表 subject: 管理人旗下"产品名-CODE" (optional quotes; may be 等N个产品). */
 function parseCmsCustodyNavSubject(text: string): { code: string; fundName: string } | null {
-  const m = text.match(
+  const quoted = text.match(
     /管理人旗下[""''\u201c\u201d]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)-([A-Z0-9]+)[""''\u201c\u201d]/u,
   )
-  if (!m) return null
-  return { code: m[2], fundName: normalizeFundDisplayName(m[1]) }
+  if (quoted) return { code: quoted[2], fundName: normalizeFundDisplayName(quoted[1]) }
+
+  // Unquoted: 管理人旗下 山信至诚一号证券投资基金-SBA005等2个产品…
+  const unquoted = text.match(
+    /管理人旗下\s*([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)-([A-Z0-9]+)/u,
+  )
+  if (!unquoted) return null
+  return { code: unquoted[2], fundName: normalizeFundDisplayName(unquoted[1]) }
 }
 
 /** Parse CODE_FUNDNAME from 资产净值公告 subjects. */
@@ -662,6 +668,10 @@ const HISTORY_TABLE_ROW_RE =
 const HISTORY_TABLE_ROW_DATE_FIRST_RE =
   /(\d{4}-\d{2}-\d{2})\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/g
 
+/** CMS/招商 净值表: 2026年07月24日 CODE NAME unit cum. */
+const HISTORY_TABLE_ROW_CMS_RE =
+  /(\d{4})年(\d{1,2})月(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/gu
+
 /**
  * Batch 补发 tables sometimes put code/name only in the header/subject and
  * emit one `日期 单位净值 累计净值` row per line.
@@ -675,13 +685,16 @@ function hasNavHistoryTable(bodyText: string, subject: string): boolean {
     /日期\s+产品代码\s+产品名称/u.test(bodyText) ||
     /产品代码\s+产品名称\s+日期/u.test(bodyText) ||
     /批量补发/u.test(subject) ||
-    /资产净值公告/u.test(subject)
+    /资产净值公告/u.test(subject) ||
+    (/管理人旗下/u.test(subject) && /\d{4}年\d{1,2}月\d{1,2}日/u.test(bodyText)) ||
+    (/等\d+个产品/u.test(subject) && /\d{4}年\d{1,2}月\d{1,2}日/u.test(bodyText))
   )
 }
 
 /**
  * Extract all historical NAV rows from a multi-row body table (e.g. 资产净值公告).
- * Only rows whose product code matches the subject metadata are returned.
+ * Single-product mails keep only the subject product code; CMS multi-product
+ * subjects (`等N个产品`) keep every code in the table.
  */
 export function extractNavHistoryFromBody(
   subject: string,
@@ -691,9 +704,10 @@ export function extractNavHistoryFromBody(
 
   const shared = extractNavMetadata(subject, bodyText)
   const expectedCode = shared.productCode?.toUpperCase()
+  const multiProduct = /等\d+个产品/u.test(subject)
 
   const rows: ExtractedNavData[] = []
-  const seenDates = new Set<string>()
+  const seenKeys = new Set<string>()
 
   const pushRow = (
     code: string,
@@ -702,16 +716,22 @@ export function extractNavHistoryFromBody(
     nav: number,
     cumulativeNav: number,
   ) => {
-    if (expectedCode && code !== expectedCode) return
-    if (seenDates.has(navDate)) return
-    seenDates.add(navDate)
+    if (!multiProduct && expectedCode && code !== expectedCode) return
+    const key = `${code}|${navDate}`
+    if (seenKeys.has(key)) return
+    seenKeys.add(key)
+    const rowName = normalizeFundDisplayName(fundNameRaw)
+    const fundName =
+      !multiProduct || !expectedCode || code === expectedCode
+        ? shared.fundName ?? rowName
+        : rowName || shared.fundName
     rows.push({
       nav,
       navDate,
       cumulativeNav,
       adjustedNav: null,
       productCode: code,
-      fundName: shared.fundName ?? normalizeFundDisplayName(fundNameRaw),
+      fundName,
       source: "body_table",
     })
   }
@@ -721,6 +741,11 @@ export function extractNavHistoryFromBody(
   }
   for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_DATE_FIRST_RE)) {
     pushRow(m[2].toUpperCase(), m[3], m[1], parseFloat(m[4]), parseFloat(m[5]))
+  }
+  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_CMS_RE)) {
+    const navDate = normaliseDate(`${m[1]}-${m[2]}-${m[3]}`)
+    if (!navDate) continue
+    pushRow(m[4].toUpperCase(), m[5], navDate, parseFloat(m[6]), parseFloat(m[7]))
   }
 
   // Date/NAV-only rows: require a resolved product code from subject/body metadata.

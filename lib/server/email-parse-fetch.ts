@@ -402,8 +402,11 @@ async function fetchMailbox(
           senderEmail,
         }
 
+        const navKeysFromAttachments = new Set<string>()
         const navDatesFromAttachments = new Set<string>()
         let hasNavTableAttachment = false
+        const attachmentNavKey = (productCode: string | null | undefined, navDate: string) =>
+          `${(productCode ?? "").trim().toUpperCase()}|${navDate}`
         for (const att of selectNavTableAttachments(subject, attachments)) {
           hasNavTableAttachment = true
           try {
@@ -433,6 +436,7 @@ async function fetchMailbox(
               for (const row of rows) {
                 if (!row.navDate) continue
                 navDatesFromAttachments.add(row.navDate)
+                navKeysFromAttachments.add(attachmentNavKey(row.productCode, row.navDate))
                 navRecords.push({
                   ...emailMeta,
                   ...row,
@@ -573,7 +577,9 @@ async function fetchMailbox(
         if (navHistory.length > 0) {
           for (const row of navHistory) {
             if (!row.navDate) continue
-            if (navDatesFromAttachments.has(row.navDate)) continue
+            // Skip only when the same product+date was already taken from the attachment
+            // (CMS multi-product mails share dates across funds).
+            if (navKeysFromAttachments.has(attachmentNavKey(row.productCode, row.navDate))) continue
             navRecords.push({
               ...emailMeta,
               ...row,
@@ -585,7 +591,8 @@ async function fetchMailbox(
           if (navData) {
             const skipTextNav =
               navData.navDate != null
-                ? navDatesFromAttachments.has(navData.navDate)
+                ? navKeysFromAttachments.has(attachmentNavKey(navData.productCode, navData.navDate))
+                  || (navDatesFromAttachments.has(navData.navDate) && !navData.productCode)
                 : navDatesFromAttachments.size > 0
             if (!skipTextNav) {
               navRecords.push({

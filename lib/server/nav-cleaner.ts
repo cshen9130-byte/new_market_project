@@ -12,6 +12,8 @@ export type NavCleanerRow = {
   adjustedNav: number | null
   /** Optional 产品代码 from workbook column when present. */
   productCode?: string | null
+  /** Optional 产品名称 from workbook column when present. */
+  fundName?: string | null
   sourceDate: string
   sourceUnitNav: string
   sourceCumulativeNav: string
@@ -44,7 +46,11 @@ type DateOrder = "ymd" | "mdy" | "dmy"
 const TEMPLATE_PATH = path.join(process.cwd(), "NAV_template", "上传净值模版.xlsx")
 
 const PRODUCT_CODE_HEADER_PATTERNS = [
-  /^产品代码$|^基金代码$|^备案编号$|productcode|fundcode|beian/i,
+  /^产品代码$|^基金代码$|^证券代码$|^备案编号$|productcode|fundcode|beian/i,
+]
+
+const PRODUCT_NAME_HEADER_PATTERNS = [
+  /^产品名称$|^基金名称$|^证券名称$|productname|fundname/i,
 ]
 
 const DATE_HEADER_PATTERNS = [
@@ -489,11 +495,14 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
   const inferredDateFormat = inferDateOrder(dateSamples)
 
   let productCodeIndex: number | null = null
+  let productNameIndex: number | null = null
   for (let index = 0; index < headers.length; index += 1) {
     const normalized = normalizeHeader(headers[index] ?? "")
-    if (matchHeaderScore(normalized, PRODUCT_CODE_HEADER_PATTERNS) > 0) {
+    if (productCodeIndex == null && matchHeaderScore(normalized, PRODUCT_CODE_HEADER_PATTERNS) > 0) {
       productCodeIndex = index
-      break
+    }
+    if (productNameIndex == null && matchHeaderScore(normalized, PRODUCT_NAME_HEADER_PATTERNS) > 0) {
+      productNameIndex = index
     }
   }
 
@@ -504,6 +513,7 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
     cumulativeIndex,
     adjustedIndex,
     productCodeIndex,
+    productNameIndex,
     inferredDateFormat,
   }
 }
@@ -516,7 +526,10 @@ function isWorkbookReturnIndexRow(row: NavCleanerRow, baselineUnit: number): boo
 }
 
 /** Drop summary rows where cumulative-return / AUM columns were misread as unit NAV. */
-function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: string[]): NavCleanerRow[] {
+function filterImplausibleWorkbookNavRowsOneProduct(
+  rows: NavCleanerRow[],
+  warnings: string[],
+): NavCleanerRow[] {
   if (rows.length < 2) return rows
   const SPIKE_RATIO = 2
   const filtered: NavCleanerRow[] = []
@@ -568,6 +581,30 @@ function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: strin
   return cutFrom < filtered.length ? filtered.slice(0, cutFrom) : filtered
 }
 
+/** Run spike/return-index filters per product so multi-product sheets are not cross-contaminated. */
+function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: string[]): NavCleanerRow[] {
+  const groups = new Map<string, NavCleanerRow[]>()
+  for (const row of rows) {
+    const key = (row.productCode ?? "").trim().toUpperCase()
+    const list = groups.get(key)
+    if (list) list.push(row)
+    else groups.set(key, [row])
+  }
+  const out: NavCleanerRow[] = []
+  for (const group of groups.values()) {
+    out.push(...filterImplausibleWorkbookNavRowsOneProduct(group, warnings))
+  }
+  return out.sort((left, right) => {
+    const byDate = left.date.localeCompare(right.date)
+    if (byDate !== 0) return byDate
+    return (left.productCode ?? "").localeCompare(right.productCode ?? "")
+  })
+}
+
+function navRowDedupeKey(row: NavCleanerRow): string {
+  return `${row.date}\0${(row.productCode ?? "").trim().toUpperCase()}`
+}
+
 function formatTemplateDate(isoDate: string) {
   const [yearToken, monthToken, dayToken] = isoDate.split("-")
   const year = Number(yearToken)
@@ -600,6 +637,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
     cumulativeIndex,
     adjustedIndex,
     productCodeIndex,
+    productNameIndex,
     inferredDateFormat,
   } = detectColumns(rawRows, headerRowIndex)
   const warnings: string[] = []
@@ -627,6 +665,10 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
       productCodeIndex != null
         ? stringifyCell(row[productCodeIndex]).trim().toUpperCase() || null
         : null
+    const rowFundName =
+      productNameIndex != null
+        ? stringifyCell(row[productNameIndex]).trim() || null
+        : null
 
     if (!parsedDate) {
       if (stringifyCell(row[dateIndex]) || unitNav != null || cumulativeNav != null || adjustedNav != null) {
@@ -649,6 +691,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
       cumulativeNav: Number(resolvedCumulativeNav.toFixed(8)),
       adjustedNav: Number(resolvedAdjustedNav.toFixed(8)),
       productCode: rowProductCode,
+      fundName: rowFundName,
       sourceDate: stringifyCell(row[dateIndex]),
       sourceUnitNav: unitIndex != null ? stringifyCell(row[unitIndex]) : "",
       sourceCumulativeNav: cumulativeIndex != null ? stringifyCell(row[cumulativeIndex]) : "",
@@ -661,12 +704,17 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
     throw new Error("无法提取有效净值数据，请检查日期列和净值列内容。")
   }
 
-  const dedupedByDate = new Map<string, NavCleanerRow>()
+  // Deduplicate per (date, productCode) so multi-product CMS 净值表 sheets keep both funds.
+  const dedupedByKey = new Map<string, NavCleanerRow>()
   for (const row of parsedRows) {
-    dedupedByDate.set(row.date, row)
+    dedupedByKey.set(navRowDedupeKey(row), row)
   }
 
-  const dedupedRows = [...dedupedByDate.values()].sort((left, right) => left.date.localeCompare(right.date))
+  const dedupedRows = [...dedupedByKey.values()].sort((left, right) => {
+    const byDate = left.date.localeCompare(right.date)
+    if (byDate !== 0) return byDate
+    return (left.productCode ?? "").localeCompare(right.productCode ?? "")
+  })
   const duplicateDateCount = parsedRows.length - dedupedRows.length
   const nonTradingDayCount = dedupedRows.filter((row) => !row.isChinaTradingDay).length
   const filteredRows = filterImplausibleWorkbookNavRows(dedupedRows, warnings)

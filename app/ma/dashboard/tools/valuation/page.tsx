@@ -1,6 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useState, useEffect, useRef } from 'react';
+import { ArrowLeft } from 'lucide-react';
 import * as echarts from 'echarts';
 
 // 定义新的数据接口
@@ -2494,19 +2496,27 @@ ${rowsText}`;
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">估值表分析工具</h1>
-          <p className="text-gray-600 mt-2">精准捕捉估值表的隐含信息，判断最深层的策略逻辑</p>
-        </div>
-        <div className="flex gap-2">
-
-          <button 
-            onClick={downloadReport}
-            className="bg-gray-800 text-white px-4 py-2 rounded-md hover:bg-gray-700 transition-all flex items-center"
-          >
-            <i className="fa fa-download mr-2"></i> 下载分析报告
-          </button>
+      <div className="mb-8 space-y-4">
+        <Link
+          href="/ma/dashboard/tools"
+          className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          返回小工具
+        </Link>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">估值表分析工具</h1>
+            <p className="text-gray-600 mt-2">精准捕捉估值表的隐含信息，判断最深层的策略逻辑</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={downloadReport}
+              className="bg-gray-800 text-white px-4 py-2 rounded-md hover:bg-gray-700 transition-all flex items-center"
+            >
+              <i className="fa fa-download mr-2"></i> 下载分析报告
+            </button>
+          </div>
         </div>
       </div>
 

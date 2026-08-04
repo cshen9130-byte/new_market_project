@@ -13,6 +13,7 @@ import { lookupFundNavCorrectionRule, applyFundNavCorrectionToLegacyRows } from 
 import { isGuotaiValuationSubject, isCustodySendDateValuationSubject } from "../lib/server/email-valuation-attachment.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
+import { extractNavTableFromBuffer } from "../lib/server/email-nav-attachment.ts"
 import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
@@ -23,6 +24,7 @@ import {
 } from "../lib/server/managed-product-nav-seed.ts"
 import { filterWeekendNavRows, isWeekendIsoDate } from "../lib/nav-trading-day.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
+import * as XLSX from "xlsx"
 import fs from "fs"
 
 function assert(name, ok) {
@@ -975,6 +977,56 @@ assert(
   cscBatchDateOnly.length === 3
     && cscBatchDateOnly.every((r) => r.productCode === "SADE15")
     && cscBatchDateOnly[2]?.navDate === "2026-06-05",
+)
+
+// CMS/招商 multi-product 【净值表】: subject names first fund, body/attachment has two codes.
+const cmsMultiSubject =
+  '【净值表】杭州山信私募基金管理有限公司管理人旗下"山信至诚一号私募证券投资基金-SBAD05"等2个产品净值表发送20250620_20260724'
+const cmsMultiMeta = extractNavMetadata(cmsMultiSubject, "")
+assert(
+  "cms multi-product subject extracts SBAD05 / 山信至诚",
+  cmsMultiMeta.productCode === "SBAD05" && cmsMultiMeta.fundName?.includes("山信至诚"),
+)
+const cmsMultiBody =
+  "日期 产品代码 产品名称 单位净值 累计单位净值\n" +
+  "2026年07月23日 SBAD05 山信至诚一号私募证券投资基金 1.0089 1.0016\n" +
+  "2026年07月24日 SBAD05 山信至诚一号私募证券投资基金 1.0095 1.0022\n" +
+  "2026年07月23日 SBCK34 山信韵远一号私募证券投资基金 1.0702 1.0702\n" +
+  "2026年07月24日 SBCK34 山信韵远一号私募证券投资基金 1.0710 1.0710\n"
+const cmsMultiHistory = extractNavHistoryFromBody(cmsMultiSubject, cmsMultiBody)
+assert(
+  "cms multi-product body keeps both SBAD05 and SBCK34",
+  cmsMultiHistory.some((r) => r.productCode === "SBAD05" && r.fundName?.includes("山信至诚"))
+    && cmsMultiHistory.some((r) => r.productCode === "SBCK34" && r.fundName?.includes("山信韵远")),
+)
+assert(
+  "cms multi-product same-date rows not collapsed",
+  cmsMultiHistory.filter((r) => r.navDate === "2026-07-24").length === 2,
+)
+const cmsMultiSheet = XLSX.utils.aoa_to_sheet([
+  ["日期", "产品代码", "产品名称", "单位净值", "累计单位净值"],
+  ["2026-07-23", "SBAD05", "山信至诚一号私募证券投资基金", 1.0089, 1.0016],
+  ["2026-07-24", "SBAD05", "山信至诚一号私募证券投资基金", 1.0095, 1.0022],
+  ["2026-07-23", "SBCK34", "山信韵远一号私募证券投资基金", 1.0702, 1.0702],
+  ["2026-07-24", "SBCK34", "山信韵远一号私募证券投资基金", 1.0710, 1.0710],
+])
+const cmsMultiBook = XLSX.utils.book_new()
+XLSX.utils.book_append_sheet(cmsMultiBook, cmsMultiSheet, "Sheet1")
+const cmsMultiBuf = XLSX.write(cmsMultiBook, { type: "buffer", bookType: "xlsx" })
+const cmsMultiAttach = extractNavTableFromBuffer(cmsMultiBuf, "每日净值表.xls", cmsMultiSubject)
+assert(
+  "cms multi-product attachment keeps per-row product codes",
+  cmsMultiAttach.some((r) => r.productCode === "SBAD05" && r.fundName?.includes("山信至诚"))
+    && cmsMultiAttach.some((r) => r.productCode === "SBCK34" && r.fundName?.includes("山信韵远")),
+)
+assert(
+  "cms multi-product attachment keeps both same-date rows",
+  cmsMultiAttach.filter((r) => r.navDate === "2026-07-24").length === 2,
+)
+const cmsMultiAnalysis = analyzeNavWorkbook(cmsMultiBuf, "每日净值表.xls")
+assert(
+  "cms multi-product workbook dedupes by date+code",
+  cmsMultiAnalysis.rows.filter((r) => r.date === "2026-07-23").length === 2,
 )
 
 const jinyuZhuiTaSubject =

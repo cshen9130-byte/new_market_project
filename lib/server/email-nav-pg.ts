@@ -50,14 +50,32 @@ const MIGRATE_TABLE_SQL = `
   ALTER TABLE ops_email_nav_records
     DROP CONSTRAINT IF EXISTS uq_email_nav_record;
 
+  -- CMS/招商 【净值表】 often packs multiple products in one email/attachment.
+  -- Unique key must include product_code so same-date rows do not overwrite.
+  ALTER TABLE ops_email_nav_records
+    DROP CONSTRAINT IF EXISTS uq_email_nav_record_date;
+
+  UPDATE ops_email_nav_records
+    SET product_code = ''
+    WHERE product_code IS NULL;
+
+  DELETE FROM ops_email_nav_records a
+    USING ops_email_nav_records b
+    WHERE a.id < b.id
+      AND a.crawl_email_account = b.crawl_email_account
+      AND a.email_uid = b.email_uid
+      AND a.nav_date IS NOT DISTINCT FROM b.nav_date
+      AND a.attachment_filename = b.attachment_filename
+      AND COALESCE(a.product_code, '') = COALESCE(b.product_code, '');
+
   DO $$
   BEGIN
     IF NOT EXISTS (
-      SELECT 1 FROM pg_constraint WHERE conname = 'uq_email_nav_record_date'
+      SELECT 1 FROM pg_constraint WHERE conname = 'uq_email_nav_record_date_code'
     ) THEN
       ALTER TABLE ops_email_nav_records
-        ADD CONSTRAINT uq_email_nav_record_date
-        UNIQUE (crawl_email_account, email_uid, nav_date, attachment_filename);
+        ADD CONSTRAINT uq_email_nav_record_date_code
+        UNIQUE (crawl_email_account, email_uid, nav_date, attachment_filename, product_code);
     END IF;
   END $$;
 `
@@ -85,7 +103,7 @@ async function _runEnsure(): Promise<void> {
            AND table_name   = 'ops_email_nav_records'
            AND column_name  IN ('attachment_filename', 'adjusted_nav')) AS col_count,
       EXISTS (SELECT 1 FROM pg_constraint
-              WHERE conname = 'uq_email_nav_record_date') AS has_constraint
+              WHERE conname = 'uq_email_nav_record_date_code') AS has_constraint
   `).catch(() => [] as { col_count: string; has_constraint: boolean }[])
 
   const colCount = parseInt(schemaCheck[0]?.col_count ?? "0", 10)
@@ -129,24 +147,24 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
     const navDate = String(r.navDate ?? "").slice(0, 10)
     if (!navDate || !isChinaTradingDay(navDate)) continue
 
-    const productCode = applyEmailProductCodeOverride(
-      r.productCode,
-      r.fundName,
-      r.subject,
-    )
+    const productCode =
+      applyEmailProductCodeOverride(
+        r.productCode,
+        r.fundName,
+        r.subject,
+      ) ?? ""
     await query(
       `INSERT INTO ops_email_nav_records
          (crawl_email_account, email_uid, sent_at, subject, sender_email,
           nav_date, nav, cumulative_nav, adjusted_nav, product_code, fund_name, source, attachment_filename)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (crawl_email_account, email_uid, nav_date, attachment_filename) DO UPDATE SET
+       ON CONFLICT (crawl_email_account, email_uid, nav_date, attachment_filename, product_code) DO UPDATE SET
          sent_at        = EXCLUDED.sent_at,
          subject        = EXCLUDED.subject,
          sender_email   = EXCLUDED.sender_email,
          nav            = EXCLUDED.nav,
          cumulative_nav = EXCLUDED.cumulative_nav,
          adjusted_nav   = EXCLUDED.adjusted_nav,
-         product_code   = EXCLUDED.product_code,
          fund_name      = EXCLUDED.fund_name,
          source         = EXCLUDED.source`,
       [

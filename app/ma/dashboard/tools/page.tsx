@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { FileSpreadsheet, FileText, Mail, PieChart, Wrench } from "lucide-react"
+import { Activity, BarChart2, FileSpreadsheet, FileText, Mail, PieChart, Wrench } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -31,6 +31,20 @@ const toolCards = [
     description: "上传交易结算单(盯市)后，自动分析持仓敞口、板块分布、多空结构，并推断可能的交易风格。",
     href: "/ma/dashboard/tools/settlement-analysis",
     icon: FileText,
+    actionLabel: "打开小工具",
+  },
+  {
+    title: "估值表分析",
+    description: "搜索并选择产品后，上传估值表解析入库，功能与私募基金运维估值表管理一致，支持打开估值表页核对。",
+    href: "/ma/dashboard/tools/valuation-table-analysis",
+    icon: BarChart2,
+    actionLabel: "打开小工具",
+  },
+  {
+    title: "净值归因",
+    description: "上传产品净值数据，自动生成截面动量、时间序列动量等风格因子回归分析报告，含因子贡献与风险贡献。",
+    href: "/ma/dashboard/tools/nav-attribution",
+    icon: Activity,
     actionLabel: "打开小工具",
   },
 ]
