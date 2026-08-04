@@ -346,7 +346,8 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `syncExDivAdjustedNav` | Controls adj on ex-div dates — wrong formula breaks invariant immediately |
 | `rechainDerivedFromPrev` | Used everywhere adj is re-derived — switching back to `unitRatio` for adj breaks invariant after unit drops |
 | `propagateMissingAdjRows` | Fills adj for manual-upload rows — removing it leaves cum without adj for ops_team_nav_manual data |
-| `alignPreDividendNavRows` | Sets pre-dividend rows to unit = cum = adj — threshold `hasDividendOffset > 0.05` determines which rows are "pre-dividend" |
+| `alignPreDividendNavRows` | Sets pre-dividend rows to unit = cum = adj — threshold `hasDividendOffset` (≥ 0.05 with 1e-6 epsilon) determines which rows are "pre-dividend" |
+| `hasDividendOffset` | Gate for first ex-div detection — must treat exact 0.05 gaps as material (float `1.2328−1.1828` → 0.049999…); strict `> 0.05` collapses 九鞅禾禧五号B类 |
 | `repairAdjBelowCumRows` | Fixes stale legacy 复权 that drifted below 累计 when email refreshes unit+cum — runs before `alignPreDividendNavRows` |
 | `repairAdjCollapsedToUnitRows` | Fixes legacy rows where 复权 = 单位 while 累计 >> 单位 (AVM354 pattern) — runs before `repairAdjBelowCumRows` |
 | `filterEmailNavManageStream` | Must use `selectEmailNavSeriesRows` — reverting to `selectEmailSourceStream` breaks 在管产品 email unit correction |
@@ -1813,3 +1814,60 @@ npx tsx scripts/ma/check_fof_nav_invariant.ts
 **Note:** **多资产轮动策略3号** is **SQQ300** (a different fund). Search **2号** or **SNG210** for this email product.
 
 After deploy: `npx tsx scripts/ma/_repair_sng210_pool.ts`
+
+---
+
+## What Was Fixed (九鞅禾禧五号B类 — exact 0.05 dividend gap, 2026-08-04)
+
+### The Problem
+
+Manual upload of **九鞅禾禧五号、九鞅禾瑞十号周度净值20260731.xlsx** (B类 columns) was correct in the file:
+
+| Date | 单位净值 | 累计净值 |
+|---|---|---|
+| 2023-12-15 | 1.2306 | 1.2306 |
+| 2023-12-21 | **1.1828** | **1.2328** (gap = 0.05) |
+| 2023-12-22 | 1.1827 | 1.2327 |
+| 2023-12-29 | 1.1853 | 1.2353 |
+
+After upload, team NAV / 收益曲线 showed a sharp V-dip around 2023-12-21 with **−3.88%** and `单位 = 累计 = 复权 = 1.1828`. The Excel was **not** altered on disk — `finalizeNavSeries` overwrote 累计 on the ex-div rows.
+
+### Root Cause
+
+`hasDividendOffset` used `cum - unit > 0.05`. For a common **0.05/unit** cash dividend:
+
+```
+1.2328 - 1.1828 === 0.04999999999999982  // not > 0.05
+1.2353 - 1.1853 === 0.050000000000000044  // > 0.05
+```
+
+So 2023-12-21/22 were treated as **pre-dividend**. `alignPreDividendNavRows` then forced `unit = cum = adj` through the day before the first row whose float gap cleared 0.05 (2023-12-29), creating the chart V-shape. Uploaded 累计 on 12/21 was discarded even though `isUsableEmailCumulativeNav` had accepted it.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Dividend-offset gate | `hasDividendOffset` | `cum - unit > 0.05 - 1e-6` so exact 0.05 gaps survive float error |
+
+### What This Fix Does NOT Change
+
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev`, `propagateMissingAdjRows` formulas — unchanged
+- `alignPreDividendNavRows` call order / behavior — unchanged (only its threshold helper)
+- SBAH99 / SNF018 / SSG947 / BAH99A / SBPC20 / SLA063 / SQX078 / AVM354 fixes — unchanged
+- Gaps **below** ~0.05 still count as pre-dividend
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 | 涨跌幅 |
+|---|---|---|---|---|
+| 2023-12-15 | 1.2306 | 1.2306 | 1.2306 | ~+0.23% |
+| 2023-12-21 | 1.1828 | **1.2328** | ≥ 1.2328 | ~+0.18% (cum ratio, not −3.88%) |
+| 2023-12-22 | 1.1827 | **1.2327** | ≥ 1.2327 | ~−0.01% |
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes assertion block **禾禧五号B 0.05 dividend**. Re-upload is not required for already-stored manual rows — display goes through `mergeNavSeriesWithEmail` / `finalizeNavSeries` on read. Refresh the product page after deploy.

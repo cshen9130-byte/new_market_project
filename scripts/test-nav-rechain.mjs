@@ -1581,6 +1581,36 @@ assert(
   assert("FOF bracket virtual NAV uses underlying name 古曲祥辰5号", meta.fundName === "古曲祥辰5号")
 }
 
+// Exact 0.05/unit cash dividend (九鞅禾禧五号B类 2023-12-21): float gap is 0.049999…
+// and must still be treated as post-dividend so 累计/复权 are not collapsed to 单位.
+{
+  const hexiManual = [
+    { price_date: "2023-11-17", nav: "1.2200", cumulative_nav: "1.2200" },
+    { price_date: "2023-11-24", nav: "1.2230", cumulative_nav: "1.2230" },
+    { price_date: "2023-12-01", nav: "1.2249", cumulative_nav: "1.2249" },
+    { price_date: "2023-12-08", nav: "1.2278", cumulative_nav: "1.2278" },
+    { price_date: "2023-12-15", nav: "1.2306", cumulative_nav: "1.2306" },
+    { price_date: "2023-12-21", nav: "1.1828", cumulative_nav: "1.2328" },
+    { price_date: "2023-12-22", nav: "1.1827", cumulative_nav: "1.2327" },
+    { price_date: "2023-12-29", nav: "1.1853", cumulative_nav: "1.2353" },
+  ]
+  const hexiOut = mergeNavSeriesWithEmail([], hexiManual)
+  const hexi21 = hexiOut.find((r) => r.price_date === "2023-12-21")
+  const hexi22 = hexiOut.find((r) => r.price_date === "2023-12-22")
+  const hexi15 = hexiOut.find((r) => r.price_date === "2023-12-15")
+  assert("禾禧五号B 1221 keeps uploaded 累计 1.2328", Math.abs(parseFloat(hexi21.cum_nav_withdrawal) - 1.2328) < 0.0001)
+  assert("禾禧五号B 1221 unit stays 1.1828", Math.abs(parseFloat(hexi21.nav) - 1.1828) < 0.0001)
+  assert("禾禧五号B 1221 adj >= cum", parseFloat(hexi21.cumulative_nav) + 0.0005 >= parseFloat(hexi21.cum_nav_withdrawal))
+  assert("禾禧五号B 1221 not -3.88% unit crash", Math.abs(parseFloat(hexi21.price_change) + 3.88) > 0.5)
+  assert(
+    "禾禧五号B 1221 daily ~ cum ratio",
+    Math.abs(parseFloat(hexi21.price_change) - ((1.2328 / 1.2306 - 1) * 100)) < 0.15,
+  )
+  assert("禾禧五号B 1222 keeps 累计 gap", Math.abs(parseFloat(hexi22.cum_nav_withdrawal) - 1.2327) < 0.0001)
+  assert("禾禧五号B pre-div 1215 unit=cum=adj", hexi15.nav === hexi15.cum_nav_withdrawal && hexi15.nav === hexi15.cumulative_nav)
+  console.log("禾禧五号B 0.05 dividend", hexi21)
+}
+
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"
 if (fs.existsSync(excelPath)) {
   const buf = fs.readFileSync(excelPath)
