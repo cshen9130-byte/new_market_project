@@ -9,11 +9,14 @@ import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   addDays,
   BatchNavResolver,
+  calcDailyReturnPctFromHistory,
+  calcPeriodReturnsFromHistory,
   chunkedInsert,
   clampPgNumeric,
   computeOneYearRiskMetrics,
   loadPrivateFundRiskMetrics,
   NAV_HISTORY_LOOKBACK_DAYS,
+  type NavPoint,
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
@@ -386,10 +389,18 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
 
   const beianHaos = funds.map((f) => f.beian_hao)
   logProgress("loading strategy & risk metadata…")
-  const [riskFromInfo, opsStrategyMap] = await Promise.all([
+  const [riskFromInfo, opsStrategyMap, teamNavBatch] = await Promise.all([
     loadPrivateFundRiskMetrics(beianHaos),
     loadOpsFullStrategy(beianHaos),
+    import("@/lib/server/team-nav-manage-pg").then(({ loadManagedProductTeamNavBatch }) =>
+      loadManagedProductTeamNavBatch(identities),
+    ),
   ])
+  const { resolveTeamSeriesListNavAt } = await import("@/lib/server/managed-product-nav-seed")
+  const teamNavByBeian = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  for (const [code, series] of teamNavBatch) {
+    teamNavByBeian.set(code.trim().toUpperCase(), series)
+  }
 
   if (funds.length === 0) return 0
 
@@ -405,13 +416,29 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
 
     const identity = identities[i]
     const latest = navResolver.resolveAt(identity, asOfDate)
-    const unitNav = latest?.nav ?? null
-    const navDate = latest?.nav_date ?? null
+    let unitNav = latest?.nav ?? null
+    let navDate = latest?.nav_date ?? null
+    // Manual/email team series must win when newer — otherwise nightly rebuild
+    // regresses tips like SZJ909 (upload through 2026-07-31 → stuck at platform 05-22).
+    const teamPoint = resolveTeamSeriesListNavAt(
+      teamNavByBeian.get(row.beian_hao.trim().toUpperCase()) ?? [],
+      asOfDate,
+    )
+    if (teamPoint && (!navDate || teamPoint.nav_date >= navDate)) {
+      unitNav = parseFloat(teamPoint.nav)
+      if (!Number.isFinite(unitNav)) unitNav = latest?.nav ?? null
+      else navDate = teamPoint.nav_date
+    }
 
-    const returnPct =
-      unitNav != null && navDate
-        ? navResolver.calcDailyReturnPct(identity, unitNav, navDate, null)
-        : null
+    let returnPct: number | null = null
+    if (unitNav != null && navDate) {
+      if (teamPoint && navDate === teamPoint.nav_date && teamPoint.prev_nav != null) {
+        const prev = parseFloat(teamPoint.prev_nav)
+        if (Number.isFinite(prev) && prev !== 0) returnPct = unitNav / prev - 1
+      } else {
+        returnPct = navResolver.calcDailyReturnPct(identity, unitNav, navDate, null)
+      }
+    }
 
     const returns =
       unitNav != null && navDate
@@ -527,6 +554,192 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
 
   logProgress(`done — ${funds.length} rows (backfilled ${patched} null-NAV rows)`)
   return funds.length
+}
+
+type TrackingTipFromSeries = {
+  nav_date: string
+  unit_nav: number
+  return_pct: number | null
+  ret_1w: number | null
+  ret_1m: number | null
+  ret_3m: number | null
+  ret_6m: number | null
+  ret_1y: number | null
+  sharpe_1y: number | null
+  calmar_1y: number | null
+}
+
+function seriesToNavPoints(
+  series: Array<{
+    price_date?: string
+    nav?: string
+    cumulative_nav?: string
+  }>,
+): NavPoint[] {
+  const out: NavPoint[] = []
+  for (const row of series) {
+    const navDate = row.price_date?.slice(0, 10)
+    const nav = parseFloat(String(row.nav ?? ""))
+    if (!navDate || !/^\d{4}-\d{2}-\d{2}$/.test(navDate)) continue
+    if (!Number.isFinite(nav) || nav <= 0) continue
+    const cum = parseFloat(String(row.cumulative_nav ?? ""))
+    const point: NavPoint = { nav, nav_date: navDate }
+    if (Number.isFinite(cum) && cum > 0) point.return_nav = cum
+    out.push(point)
+  }
+  return out
+}
+
+/** Tip + period metrics matching the product-page NAV series (复权净值 returns). */
+function tipFieldsFromDetailSeries(
+  series: Array<{
+    price_date?: string
+    nav?: string
+    cumulative_nav?: string
+    price_change?: string
+  }>,
+): TrackingTipFromSeries | null {
+  if (series.length === 0) return null
+  const latest = series[series.length - 1]
+  const prev = series.length >= 2 ? series[series.length - 2] : null
+  const navDate = latest.price_date?.slice(0, 10) ?? null
+  const unitNav = parseFloat(String(latest.nav ?? ""))
+  if (!navDate || !Number.isFinite(unitNav) || unitNav <= 0) return null
+
+  const history = seriesToNavPoints(series)
+  let returnPct = calcDailyReturnPctFromHistory(history, unitNav, navDate, null)
+  if (returnPct == null && prev) {
+    const currAdj = parseFloat(String(latest.cumulative_nav ?? ""))
+    const prevAdj = parseFloat(String(prev.cumulative_nav ?? ""))
+    if (
+      Number.isFinite(currAdj)
+      && Number.isFinite(prevAdj)
+      && prevAdj > 0
+      && currAdj > 0
+    ) {
+      returnPct = currAdj / prevAdj - 1
+    }
+  }
+  if (returnPct == null) {
+    const changeRaw = latest.price_change
+    if (changeRaw != null && changeRaw !== "") {
+      const fromUnit = parseFloat(String(changeRaw)) / 100
+      if (Number.isFinite(fromUnit)) returnPct = fromUnit
+    }
+  }
+  if (returnPct != null && !Number.isFinite(returnPct)) returnPct = null
+
+  const returns =
+    history.length >= 2
+      ? calcPeriodReturnsFromHistory(history, unitNav, navDate)
+      : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
+
+  const risk =
+    history.length >= 2
+      ? computeOneYearRiskMetrics(
+          navDate,
+          history.filter((p) => p.nav_date >= addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS)),
+        )
+      : { sharpe_1y: null, calmar_1y: null }
+
+  return {
+    nav_date: navDate,
+    unit_nav: unitNav,
+    return_pct: returnPct,
+    ret_1w: returns.ret_1w,
+    ret_1m: returns.ret_1m,
+    ret_3m: returns.ret_3m,
+    ret_6m: returns.ret_6m,
+    ret_1y: returns.ret_1y,
+    sharpe_1y: isPlausibleRiskRatio(risk.sharpe_1y) ? risk.sharpe_1y : null,
+    calmar_1y: isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null,
+  }
+}
+
+/**
+ * Write-through: when product detail NAV is refreshed, also advance 跟踪产品
+ * 最新净值日期 / 最新单位净值 / 最新涨跌幅 / period returns so the list does not
+ * lag the product page. No-op when the fund is not in ops_tracking_funds_list_cache.
+ * Only advances (or fills null) — never regresses an already-newer tip.
+ */
+export async function patchTrackingFundsListCacheTipFromSeries(opts: {
+  product_name: string
+  beian_hao?: string | null
+  series: Array<{
+    price_date?: string
+    nav?: string
+    cumulative_nav?: string
+    price_change?: string
+  }>
+}): Promise<boolean> {
+  const tip = tipFieldsFromDetailSeries(opts.series)
+  if (!tip) return false
+  const beian = (opts.beian_hao ?? "").trim() || null
+  const productName = opts.product_name.trim()
+  if (!productName && !beian) return false
+
+  try {
+    await ensureTrackingFundsListCacheTable()
+    const asOfDate = new Date().toISOString().slice(0, 10)
+    const result = await query<{ n: string }>(
+      `WITH updated AS (
+         UPDATE ops_tracking_funds_list_cache
+         SET unit_nav = $1,
+             nav_date = $2::date,
+             return_pct = $3,
+             ret_1w = $4,
+             ret_1m = $5,
+             ret_3m = $6,
+             ret_6m = $7,
+             ret_1y = $8,
+             sharpe_1y = COALESCE($9, sharpe_1y),
+             calmar_1y = COALESCE($10, calmar_1y),
+             as_of_date = GREATEST(as_of_date, $11::date),
+             refreshed_at = NOW()
+         WHERE (
+             ($12::text IS NOT NULL AND UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($12::text)))
+             OR product_name = $13
+           )
+           AND (
+             nav_date IS NULL
+             OR nav_date < $2::date
+             OR (
+               nav_date = $2::date
+               AND (
+                 unit_nav IS DISTINCT FROM $1
+                 OR return_pct IS DISTINCT FROM $3
+               )
+             )
+           )
+         RETURNING 1
+       )
+       SELECT COUNT(*)::text AS n FROM updated`,
+      [
+        clampPgNumeric(tip.unit_nav, 16, 6),
+        tip.nav_date,
+        clampPgNumeric(tip.return_pct, 16, 8),
+        clampPgNumeric(tip.ret_1w, 16, 8),
+        clampPgNumeric(tip.ret_1m, 16, 8),
+        clampPgNumeric(tip.ret_3m, 16, 8),
+        clampPgNumeric(tip.ret_6m, 16, 8),
+        clampPgNumeric(tip.ret_1y, 16, 8),
+        clampPgNumeric(tip.sharpe_1y, 16, 6),
+        clampPgNumeric(tip.calmar_1y, 16, 6),
+        asOfDate,
+        beian,
+        productName,
+      ],
+    )
+    const n = parseInt(result[0]?.n ?? "0", 10)
+    if (n > 0) cacheAsOfMemo = null
+    return n > 0
+  } catch (err) {
+    console.warn(
+      `[tracking-funds-cache] tip patch failed for ${productName || beian}:`,
+      err,
+    )
+    return false
+  }
 }
 
 /** Backfill cache rows that were stored with null NAV (stale platform data outside the default window). */

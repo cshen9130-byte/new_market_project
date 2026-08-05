@@ -24,6 +24,8 @@ export type TeamNavUploadRow = {
   nav_date: string
   unit_nav: string
   cumulative_nav?: string
+  /** 复权净值 from upload file when present */
+  adjusted_nav?: string
 }
 
 type ManualNavRow = {
@@ -31,6 +33,7 @@ type ManualNavRow = {
   nav_date: string
   unit_nav: string
   cumulative_nav: string | null
+  adjusted_nav: string | null
 }
 
 async function ensureTeamNavManualTable(): Promise<void> {
@@ -41,11 +44,21 @@ async function ensureTeamNavManualTable(): Promise<void> {
       nav_date       DATE NOT NULL,
       unit_nav       NUMERIC(16,6) NOT NULL,
       cumulative_nav NUMERIC(16,6),
+      adjusted_nav   NUMERIC(16,6),
       nav_type       VARCHAR(16) NOT NULL DEFAULT 'pre_fee',
       created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (beian_hao, nav_date, nav_type)
     )
   `)
+  try {
+    await query(`
+      ALTER TABLE ops_team_nav_manual
+        ADD COLUMN IF NOT EXISTS adjusted_nav NUMERIC(16,6)
+    `)
+  } catch (err) {
+    // Older DBs created the table without adjusted_nav; uploads/detail merge need it.
+    console.error("[team-nav-manual] failed to add adjusted_nav column:", err)
+  }
   await query(`
     CREATE INDEX IF NOT EXISTS idx_ops_team_nav_manual_beian_date
       ON ops_team_nav_manual (beian_hao, nav_date DESC)
@@ -204,7 +217,8 @@ async function loadManualTeamNavRows(
     `SELECT id::text AS id,
             nav_date::text AS nav_date,
             unit_nav::text AS unit_nav,
-            cumulative_nav::text AS cumulative_nav
+            cumulative_nav::text AS cumulative_nav,
+            adjusted_nav::text AS adjusted_nav
      FROM ops_team_nav_manual
      WHERE beian_hao = $1 AND nav_type = $2
      ORDER BY nav_date ASC`,
@@ -255,22 +269,32 @@ export async function uploadTeamNavRows(params: {
     const nav_date = normalizeNavDate(row.nav_date)
     const unit_nav = row.unit_nav.trim()
     const cumulative_nav = (row.cumulative_nav ?? row.unit_nav).trim()
+    const adjustedRaw = row.adjusted_nav?.trim() ?? ""
+    const adjusted_nav = adjustedRaw && isValidNavNumber(adjustedRaw) ? adjustedRaw : undefined
     if (!nav_date || !isValidNavNumber(unit_nav)) {
       return { error: "invalid_rows" }
     }
-    cleaned.push({ nav_date, unit_nav, cumulative_nav })
+    cleaned.push({ nav_date, unit_nav, cumulative_nav, adjusted_nav })
   }
 
   await ensureTeamNavManualTable()
   for (const row of cleaned) {
     await query(
-      `INSERT INTO ops_team_nav_manual (beian_hao, nav_date, unit_nav, cumulative_nav, nav_type)
-       VALUES ($1, $2::date, $3::numeric, $4::numeric, $5)
+      `INSERT INTO ops_team_nav_manual (beian_hao, nav_date, unit_nav, cumulative_nav, adjusted_nav, nav_type)
+       VALUES ($1, $2::date, $3::numeric, $4::numeric, $5::numeric, $6)
        ON CONFLICT (beian_hao, nav_date, nav_type) DO UPDATE SET
          unit_nav = EXCLUDED.unit_nav,
          cumulative_nav = EXCLUDED.cumulative_nav,
+         adjusted_nav = EXCLUDED.adjusted_nav,
          created_at = NOW()`,
-      [beian_hao, row.nav_date, row.unit_nav, row.cumulative_nav, params.nav_type],
+      [
+        beian_hao,
+        row.nav_date,
+        row.unit_nav,
+        row.cumulative_nav,
+        row.adjusted_nav ?? null,
+        params.nav_type,
+      ],
     )
   }
 
@@ -482,11 +506,23 @@ export async function loadManagedProductEmailPoints(params: {
   ])
 
   const manualDates = new Set(manual.map((row) => row.nav_date))
-  const filteredEmail = emailPoints.filter((row) => !manualDates.has(row.price_date))
+  // Manual upload owns its [min, max] window so mid-week email scraps cannot
+  // intercalate between weekly rows and sawtooth the 复权 chart. Email may still
+  // extend *after* the last manual date for ongoing auto-updates.
+  const manualMin = manual[0]?.nav_date ?? ""
+  const manualMax = manual[manual.length - 1]?.nav_date ?? ""
+  const filteredEmail = emailPoints.filter((row) => {
+    if (manualDates.has(row.price_date)) return false
+    if (manual.length >= 10 && manualMin && manualMax) {
+      return row.price_date < manualMin || row.price_date > manualMax
+    }
+    return true
+  })
   const manualPoints: EmailNavPoint[] = manual.map((row) => ({
     price_date: row.nav_date,
     nav: row.unit_nav,
     cumulative_nav: row.cumulative_nav ?? row.unit_nav,
+    adjusted_nav: row.adjusted_nav,
   }))
 
   return [...filteredEmail, ...manualPoints].sort((a, b) =>
@@ -529,14 +565,16 @@ export async function listTeamNavManageRows(params: {
 
   return merged.map((row, i, arr) => {
     const isLatest = i === arr.length - 1
-    const adjusted = row.cum_nav_withdrawal?.trim() || row.cumulative_nav?.trim() || null
+    // LegacyNavRow: cumulative_nav = 复权, cum_nav_withdrawal = 累计
+    const cum = row.cum_nav_withdrawal?.trim() || row.nav?.trim() || null
+    const adjusted = row.cumulative_nav?.trim() || row.cum_nav_withdrawal?.trim() || null
     const pct = fmtPct(row.price_change)
     const calculating = isLatest && (!adjusted || !pct)
     return {
       id: idByDate.get(row.price_date) ?? row.price_date,
       nav_date: row.price_date,
       unit_nav: fmtNav4(row.nav),
-      cumulative_nav: fmtNav4(row.cumulative_nav || row.nav),
+      cumulative_nav: fmtNav4(cum),
       adjusted_nav: calculating ? null : fmtNav4(adjusted),
       price_change: calculating ? null : pct,
       nav_source: sourceByDate.get(row.price_date) ?? "邮箱抓取",

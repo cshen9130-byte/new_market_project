@@ -182,6 +182,10 @@ function hasTableNav(body: string): boolean {
   if (/试算后单位净值/u.test(body) && /20\d{2}-\d{2}-\d{2}/u.test(body)) {
     return /\d+\.\d{2,8}/.test(text)
   }
+  // Zhongtai/中泰 虚拟净值: 业务日期 YYYYMMDD + 单位净值 (no 净值日期 label).
+  if (/业务日期/u.test(body) && /单位净值/u.test(body) && /20\d{6}/u.test(body)) {
+    return /\d+\.\d{2,8}/.test(text)
+  }
   return /单位净值|基金份额净值|资产净值|虚拟净值|虚拟单位净值/.test(text) && /\d+\.\d{2,8}/.test(text) && /<table|┌|│|净值日期/u.test(body)
 }
 

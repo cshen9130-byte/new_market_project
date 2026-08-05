@@ -98,6 +98,8 @@ function parseCiticsFundNavSubject(text: string): { code: string; fundName: stri
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
 function extractFundNameFromSubject(subject: string): string | null {
   for (const parser of [
+    parseCfscTaVirtualSubject,
+    parseZhongtaiVirtualNavSubject,
     parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
@@ -205,7 +207,9 @@ function guotaiTaVirtualUnderlyingMeta(
 
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
+    parseCfscTaVirtualSubject,
     parseVirtualBracketSubject,
+    parseZhongtaiVirtualNavSubject,
     parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
@@ -236,6 +240,28 @@ function parseVirtualPerfSubject(text: string): { code: string; fundName: string
   )
   if (!m) return null
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
+/**
+ * Zhongtai/中泰证券 virtual NAV:
+ *   SZJ909_汇融林健CTA9号私募证券投资基金_金舆瑞泰一号私募证券投资基金_虚拟净值_20260731
+ * Underlying product is the first fund name; investor/FOF is the second.
+ */
+function parseZhongtaiVirtualNavSubject(text: string): { code: string; fundName: string } | null {
+  const withInvestor = text.match(
+    new RegExp(
+      `^([A-Z0-9]{4,10})_(${FUND_NAME_RE.source})_(${FUND_NAME_RE.source})_虚拟净值_(20\\d{6})(?:\\.|$)`,
+      "u",
+    ),
+  )
+  if (withInvestor) {
+    return { code: withInvestor[1], fundName: normalizeFundDisplayName(withInvestor[2]) }
+  }
+  const simple = text.match(
+    new RegExp(`^([A-Z0-9]{4,10})_(${FUND_NAME_RE.source})_虚拟净值_(20\\d{6})(?:\\.|$)`, "u"),
+  )
+  if (!simple) return null
+  return { code: simple[1], fundName: normalizeFundDisplayName(simple[2]) }
 }
 
 /**
@@ -430,6 +456,21 @@ function parseVirtualBracketSubject(text: string): { code: string; fundName: str
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
 }
 
+/**
+ * CFSC/财通证券 【TA虚拟净值】-DATE-CODE-FUND-INVESTOR
+ * Example: 【TA虚拟净值】-2026-08-03-ZY084A-交睿宏观配置5号私募证券投资基金A-金舆基石一号…
+ */
+function parseCfscTaVirtualSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    new RegExp(
+      `【TA虚拟净值】-\\d{4}-\\d{2}-\\d{2}-([A-Z0-9]{4,10})-(${FUND_NAME_RE.source})-`,
+      "u",
+    ),
+  )
+  if (!m) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
 function subjectDate(subject: string): string | null {
   // YYYY-MM-DD
   const iso = subject.match(/(\d{4}-\d{2}-\d{2})/)
@@ -470,6 +511,25 @@ export function extractNavData(
     }
   }
 
+  // ── 2a0. Body: CFSC 【TA虚拟净值】 table (date code fund investor unit cum virtual) ─
+  // 净值日期 产品代码 产品名称 客户名称 单位净值 累计单位净值 虚拟单位净值 …
+  if (/TA虚拟净值/u.test(subject) && /净值日期/.test(bodyText)) {
+    const cfscRowM = bodyText.match(
+      /(\d{4}-\d{2}-\d{2})\s+([A-Z0-9]{4,10})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+[\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})(?:\s+(\d+\.\d{3,8}))?/u,
+    )
+    if (cfscRowM) {
+      return {
+        nav: parseFloat(cfscRowM[4]),
+        navDate: cfscRowM[1],
+        cumulativeNav: parseFloat(cfscRowM[5]),
+        adjustedNav: null,
+        productCode: shared.productCode ?? cfscRowM[2],
+        fundName: shared.fundName ?? normalizeFundDisplayName(cfscRowM[3]),
+        source: "body_table",
+      }
+    }
+  }
+
   // ── 2a. Body: 【虚拟净值】GJDF table (单位净值 + 累计单位净值 + 虚拟单位净值) ─
   if (/【虚拟净值】/.test(subject) && /净值日期/.test(bodyText)) {
     const bracketRowM = bodyText.match(
@@ -483,6 +543,32 @@ export function extractNavData(
         adjustedNav: null,
         productCode: shared.productCode ?? bracketRowM[2],
         fundName: shared.fundName ?? normalizeFundDisplayName(bracketRowM[3]),
+        source: "body_table",
+      }
+    }
+  }
+
+  // ── 2a1. Body: Zhongtai/中泰 CODE_产品_投资者_虚拟净值_YYYYMMDD ─────────────
+  // 产品代码 产品名称 基金账号 客户名称 业务日期 持仓份额 单位净值 累计单位净值 拟计业绩报酬 虚拟净值
+  // SZJ909 汇融林健CTA9号… QL8059373444 金舆瑞泰一号… 20260731 940,822.28 1.0628 1.5902 0.00 1.0628
+  if (
+    parseZhongtaiVirtualNavSubject(subject)
+    || (/_虚拟净值_\d{8}/u.test(subject) && /业务日期|单位净值/.test(bodyText))
+  ) {
+    const zhongtaiRowM = bodyText.match(
+      new RegExp(
+        `([A-Z0-9]{4,10})\\s+(${FUND_NAME_RE.source})\\s+[A-Z0-9]+\\s+${FUND_NAME_RE.source}\\s+(20\\d{6})\\s+[\\d,]+(?:\\.\\d+)?\\s+(\\d+\\.\\d{3,8})\\s+(\\d+\\.\\d{3,8})`,
+        "u",
+      ),
+    )
+    if (zhongtaiRowM) {
+      return {
+        nav: parseFloat(zhongtaiRowM[4]),
+        navDate: normaliseDate(zhongtaiRowM[3]),
+        cumulativeNav: parseFloat(zhongtaiRowM[5]),
+        adjustedNav: null,
+        productCode: shared.productCode ?? zhongtaiRowM[1],
+        fundName: shared.fundName ?? normalizeFundDisplayName(zhongtaiRowM[2]),
         source: "body_table",
       }
     }

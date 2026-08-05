@@ -2449,8 +2449,10 @@ export function mergeNavSeriesWithEmail(
 }
 
 /**
- * Team / managed NAV wins on every date it has; legacy only supplies dates absent from team.
- * Use for 在管产品 so sparse type6 legacy cannot override the team email stream.
+ * Team / managed NAV wins for its whole coverage window.
+ * Legacy may only backfill dates *before* the first team point — never intercalate
+ * inside [teamStart, teamEnd], or sparse corrupt rows create sawtooth charts between
+ * weekly team/manual points (SZJ909).
  */
 export function mergeLegacyWithTeamNav(
   legacyRows: LegacyNavRow[],
@@ -2458,11 +2460,14 @@ export function mergeLegacyWithTeamNav(
   fundContext?: FundNavSeriesContext | null,
 ): LegacyNavRow[] {
   if (teamRows.length === 0) return finalizeNavSeries(legacyRows, new Set(), new Set(), fundContext)
-  const teamDates = new Set(teamRows.map((row) => row.price_date))
-  const legacyFill = legacyRows.filter((row) => !teamDates.has(row.price_date))
+  const sortedTeam = [...teamRows].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const teamStart = sortedTeam[0]?.price_date ?? ""
+  const legacyFill = teamStart
+    ? legacyRows.filter((row) => row.price_date < teamStart)
+    : []
   const merged = [
     ...legacyFill,
-    ...teamRows.map((row) => ({ ...row })),
+    ...sortedTeam.map((row) => ({ ...row })),
   ].sort((a, b) => a.price_date.localeCompare(b.price_date))
   return finalizeNavSeries(merged, new Set(), new Set(), fundContext)
 }

@@ -19,6 +19,7 @@ import {
   getDetailNavCache,
   isDetailNavCacheFresh,
   persistDetailNavSeries,
+  syncListTipsFromDetailSeries,
 } from "@/lib/server/fund-detail-nav-cache-pg"
 import {
   getDetailResponseMemoryCache,
@@ -429,14 +430,25 @@ export async function GET(
     ])
     const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
 
-    if (!pgCacheHit && navSeriesRaw.length > 0) {
-      // Write-through so the next open is instant (same merge result).
-      void persistDetailNavSeries({
-        beian_hao: routeBeianHao,
-        product_name: productName,
-        short_name: shortName || null,
-        nav_series: navSeriesRaw,
-      })
+    if (navSeriesRaw.length > 0) {
+      if (!pgCacheHit) {
+        // Write-through so the next open is instant (same merge result).
+        // Also advances FOF / 跟踪产品 list tips to match this page.
+        void persistDetailNavSeries({
+          beian_hao: routeBeianHao,
+          product_name: productName,
+          short_name: shortName || null,
+          nav_series: navSeriesRaw,
+        })
+      } else {
+        // Detail cache hit — still write-through list tips. FOF/managed
+        // listHeader may already match while 跟踪产品 tip still lags.
+        void syncListTipsFromDetailSeries({
+          beian_hao: routeBeianHao,
+          product_name: productName,
+          nav_series: navSeriesRaw,
+        })
+      }
     }
 
     const type6Strategy = type6StrategyRows[0]

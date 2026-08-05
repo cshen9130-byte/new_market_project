@@ -633,7 +633,10 @@ def compute_metrics(
 
     return {
         "start_date": work["date"].iloc[0],
-        "end_date": work["date"].iloc[-1],
+        # Report as-of date (selected week/month end), not last NAV observation.
+        # Sparse/weekly series can end earlier than the chosen period end; the
+        # header "数据截至" should still reflect the user-selected cutoff.
+        "end_date": ref_date,
         "week_start": week_start,
         "week_end": week_end,
         "start_nav": start_nav,

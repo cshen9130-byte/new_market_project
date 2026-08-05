@@ -1967,47 +1967,61 @@ export async function patchLatestDailyReturnFromDetailSeries<T extends TrackFund
   })
 }
 
-/** Prefer team/email+manual NAV for ops tracking lists (团队单位净值 columns). */
+/** Prefer team/email+manual NAV for tracking lists (最新净值日期 / 单位净值). */
 export async function overlayTeamNavOnTrackRows<T extends TrackFundMetricsFields>(
   rows: T[],
   asOfDate: string,
 ): Promise<T[]> {
   if (rows.length === 0) return rows
 
-  const { loadManagedProductTeamNavBatch } = await import("@/lib/server/team-nav-manage-pg")
-  const { resolveTeamSeriesListNavAt } = await import("@/lib/server/managed-product-nav-seed")
+  try {
+    const { loadManagedProductTeamNavBatch } = await import("@/lib/server/team-nav-manage-pg")
+    const { resolveTeamSeriesListNavAt } = await import("@/lib/server/managed-product-nav-seed")
 
-  const teamBatch = await loadManagedProductTeamNavBatch(
-    rows.map((row) => ({
-      beian_hao: row.beian_hao,
-      product_name: row.product_name,
-      short_name: row.short_name,
-    })),
-  )
+    const teamBatch = await loadManagedProductTeamNavBatch(
+      rows.map((row) => ({
+        beian_hao: row.beian_hao,
+        product_name: row.product_name,
+        short_name: row.short_name,
+      })),
+    )
+    // Case-insensitive lookup — upload keys may differ in casing from list rows.
+    const byBeian = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+    for (const [code, series] of teamBatch) {
+      byBeian.set(code.trim().toUpperCase(), series)
+    }
 
-  return rows.map((row) => {
-    const series = teamBatch.get(row.beian_hao)
-    if (!series?.length) return row
-    const point = resolveTeamSeriesListNavAt(series, asOfDate)
-    if (!point) return row
+    return rows.map((row) => {
+      const series = byBeian.get((row.beian_hao ?? "").trim().toUpperCase())
+      if (!series?.length) return row
+      const point = resolveTeamSeriesListNavAt(series, asOfDate)
+      if (!point) return row
 
-    const unitNav = parseFloat(point.nav)
-    let returnPct: number | null = null
-    if (point.prev_nav != null) {
-      const prev = parseFloat(point.prev_nav)
-      if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
-        returnPct = unitNav / prev - 1
+      // Only advance (or fill) — never regress a newer platform/cache tip.
+      const existingDate = row.latest_nav_date?.slice(0, 10) ?? ""
+      if (existingDate && existingDate > point.nav_date) return row
+
+      const unitNav = parseFloat(point.nav)
+      let returnPct: number | null = null
+      if (point.prev_nav != null) {
+        const prev = parseFloat(point.prev_nav)
+        if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
+          returnPct = unitNav / prev - 1
+        }
       }
-    }
 
-    return {
-      ...row,
-      latest_nav: point.nav,
-      latest_nav_date: point.nav_date,
-      latest_price_change:
-        returnPct != null ? String(returnPct) : row.latest_price_change,
-    }
-  })
+      return {
+        ...row,
+        latest_nav: point.nav,
+        latest_nav_date: point.nav_date,
+        latest_price_change:
+          returnPct != null ? String(returnPct) : row.latest_price_change,
+      }
+    })
+  } catch (err) {
+    console.warn("[overlayTeamNavOnTrackRows] skipped:", err)
+    return rows
+  }
 }
 
 /** Chunked INSERT to stay within Postgres parameter limits. */

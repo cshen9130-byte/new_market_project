@@ -242,12 +242,30 @@ export async function persistDetailNavSeries(opts: {
     if (!opts.skipFofListTip) {
       await syncFofListTipFromDetailSeries(opts)
     }
+    // Always advance 跟踪产品 tip — even when FOF tip is written by the caller.
+    await syncTrackingListTipFromDetailSeries(opts)
   } catch (err) {
     console.error(
       `[detail-nav-cache] persist failed for ${opts.beian_hao || opts.product_name}:`,
       err,
     )
   }
+}
+
+/**
+ * Advance list-cache tip fields from a detail NAV series (FOF底层 + 跟踪产品).
+ * Safe to call on detail cache hits when the series tip is already ahead of the list.
+ */
+export async function syncListTipsFromDetailSeries(opts: {
+  beian_hao?: string | null
+  product_name: string
+  nav_series: LegacyNavRow[]
+  skipFofListTip?: boolean
+}): Promise<void> {
+  if (!opts.skipFofListTip) {
+    await syncFofListTipFromDetailSeries(opts)
+  }
+  await syncTrackingListTipFromDetailSeries(opts)
 }
 
 async function syncFofListTipFromDetailSeries(opts: {
@@ -267,6 +285,28 @@ async function syncFofListTipFromDetailSeries(opts: {
   } catch (err) {
     console.warn(
       `[detail-nav-cache] FOF tip sync failed for ${opts.beian_hao || opts.product_name}:`,
+      err,
+    )
+  }
+}
+
+async function syncTrackingListTipFromDetailSeries(opts: {
+  beian_hao?: string | null
+  product_name: string
+  nav_series: LegacyNavRow[]
+}): Promise<void> {
+  try {
+    const { patchTrackingFundsListCacheTipFromSeries } = await import(
+      "@/lib/server/tracking-funds-list-cache-pg"
+    )
+    await patchTrackingFundsListCacheTipFromSeries({
+      product_name: opts.product_name,
+      beian_hao: opts.beian_hao,
+      series: opts.nav_series,
+    })
+  } catch (err) {
+    console.warn(
+      `[detail-nav-cache] tracking tip sync failed for ${opts.beian_hao || opts.product_name}:`,
       err,
     )
   }
@@ -327,7 +367,7 @@ export async function refreshDetailNavCacheForFund(
     nav_series: series,
     nav_data_source: identity.nav_data_source ?? null,
   })
-  await syncFofListTipFromDetailSeries({
+  await syncListTipsFromDetailSeries({
     beian_hao: beian || null,
     product_name,
     nav_series: series,

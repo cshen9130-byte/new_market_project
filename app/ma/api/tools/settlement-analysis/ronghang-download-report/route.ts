@@ -104,10 +104,21 @@ async function pythonHasDeps(invocation: PythonInvocation): Promise<boolean> {
 }
 
 function pythonDepsInstallHint(): string {
+  const envPy = (process.env.PYTHON_EXE || process.env.PYTHON_EXECUTABLE || "").trim()
   if (process.platform === "win32") {
-    return "py -3 -m pip install -r ronghang_strategy/requirements.txt"
+    const py = envPy || "py -3"
+    return `${py} -m pip install -r ronghang_strategy/requirements.txt`
   }
-  return ".venv/bin/python3 -m pip install -r ronghang_strategy/requirements.txt"
+  const cwd = process.cwd()
+  const py =
+    envPy ||
+    (existsSync(path.join(cwd, ".venv", "bin", "python3"))
+      ? path.join(cwd, ".venv", "bin", "python3")
+      : ".venv/bin/python3")
+  return (
+    `${py} -m pip install -r ronghang_strategy/requirements.txt` +
+    `  （或: bash scripts/deploy/setup-ronghang-strategy.sh）`
+  )
 }
 
 async function findPython(scriptDir: string): Promise<PythonInvocation> {

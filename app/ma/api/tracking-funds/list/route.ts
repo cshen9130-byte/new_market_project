@@ -516,12 +516,11 @@ async function handleCachedTrackingList(opts: {
     strategySource, orgSize, teamTagMode, teamTags,
     personalTagMode, personalTags, personalUserKey, asOfDate, navSource,
   } = opts
-  const useTeamNav = navSource === "team"
-
   // Check server-side response cache first, with concurrent request deduplication
   // so that multiple simultaneous requests for the same pool never race to run
   // the same expensive query in parallel (only one fires; others await it).
   const serverCacheKey = buildListResponseCacheKey(opts)
+  void navSource
 
   try {
     const responseBody = await withListResponseCache(serverCacheKey, async () => {
@@ -647,10 +646,9 @@ async function handleCachedTrackingList(opts: {
       ])
 
       const total = parseInt(countRow[0]?.total ?? "0")
-      let enrichedRows = await enrichTrackFundMetricsRows(rows, asOfDate)
-      if (useTeamNav) {
-        enrichedRows = await overlayTeamNavOnTrackRows(enrichedRows, asOfDate)
-      }
+      const enrichedRows = await enrichTrackFundMetricsRows(rows, asOfDate)
+      // Cache pre-overlay rows; team/manual tip overlay runs outside the TTL cache
+      // so a fresh upload is visible immediately without waiting for cache expiry.
       return {
         page,
         pageSize,
@@ -658,8 +656,17 @@ async function handleCachedTrackingList(opts: {
         totalPages: Math.ceil(total / pageSize),
         data: sanitizeTrackRows(enrichedRows),
       }
-    })
-    return NextResponse.json(responseBody)
+    }) as {
+      page: number
+      pageSize: number
+      total: number
+      totalPages: number
+      data: TrackRow[]
+    }
+    const data = sanitizeTrackRows(
+      await overlayTeamNavOnTrackRows(responseBody.data ?? [], asOfDate),
+    )
+    return NextResponse.json({ ...responseBody, data })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: message }, { status: 500 })
@@ -796,7 +803,7 @@ async function handleBflOpsList(opts: {
 
     const total = parseInt(countRow[0]?.total ?? "0")
     let data = sanitizeTrackRows(rows)
-    if (navSource === "team" && asOfDate) {
+    if (asOfDate) {
       data = sanitizeTrackRows(await overlayTeamNavOnTrackRows(data, asOfDate))
     }
     return NextResponse.json({
@@ -1204,9 +1211,7 @@ export async function GET(req: Request) {
     // Historical cutoffs skip the precomputed cache — still recompute stale/corrupt NAV
     // so parent funds (e.g. SBHK26) pick up share-class email dates like the detail page.
     let data = await enrichTrackFundMetricsRows(rows, asOfDateForNav)
-    if (navSource === "team") {
-      data = await overlayTeamNavOnTrackRows(data, asOfDateForNav)
-    }
+    data = await overlayTeamNavOnTrackRows(data, asOfDateForNav)
     return NextResponse.json({
       page,
       pageSize,

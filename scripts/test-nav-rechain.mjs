@@ -13,7 +13,10 @@ import { lookupFundNavCorrectionRule, applyFundNavCorrectionToLegacyRows } from 
 import { isGuotaiValuationSubject, isCustodySendDateValuationSubject } from "../lib/server/email-valuation-attachment.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
-import { extractNavTableFromBuffer } from "../lib/server/email-nav-attachment.ts"
+import {
+  extractNavTableFromBuffer,
+  selectNavTableAttachments,
+} from "../lib/server/email-nav-attachment.ts"
 import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
@@ -1089,6 +1092,98 @@ assert(
     && tailai3TaNav?.fundName?.includes("泰来三号") === true
     && !tailai3TaNav?.fundName?.includes("荣熙"),
 )
+
+// CFSC/财通 【TA虚拟净值】-DATE-CODE-FUND-INVESTOR — must ingest attachment + body unit NAV.
+const zy084aTaSubject =
+  "【TA虚拟净值】-2026-08-03-ZY084A-交睿宏观配置5号私募证券投资基金A-金舆基石一号私募证券投资基金"
+const zy084aTaBody =
+  "净值日期 产品代码 产品名称 客户名称 单位净值 累计单位净值 虚拟单位净值 发生份额 业绩计提金额 " +
+  "2026-08-03 ZY084A 交睿宏观配置5号私募证券投资基金A 金舆基石一号私募证券投资基金 1.6804 2.0432 1.6801 597193.19 156.74"
+const zy084aTaMeta = extractNavMetadata(zy084aTaSubject, zy084aTaBody)
+assert(
+  "ZY084A CFSC TA subject extracts code/name",
+  zy084aTaMeta.productCode === "ZY084A"
+    && zy084aTaMeta.fundName?.includes("交睿宏观配置5号") === true
+    && !zy084aTaMeta.fundName?.includes("基石"),
+)
+const zy084aTaNav = extractNavData(zy084aTaSubject, zy084aTaBody)
+assert(
+  "ZY084A CFSC TA body stores 单位净值 1.6804 not 虚拟单位净值 1.6801",
+  zy084aTaNav?.navDate === "2026-08-03"
+    && zy084aTaNav?.nav === 1.6804
+    && zy084aTaNav?.cumulativeNav === 2.0432
+    && zy084aTaNav?.productCode === "ZY084A",
+)
+const zy084aAtts = selectNavTableAttachments(zy084aTaSubject, [
+  {
+    filename:
+      "TA虚拟净值-2026-08-03-ZY084A-交睿宏观配置5号私募证券投资基金A类-金舆基石一号私募证券投资基金.xlsx",
+    part: "2",
+  },
+])
+assert(
+  "ZY084A CFSC TA xlsx is selected as NAV attachment",
+  zy084aAtts.length === 1,
+)
+
+// Weekly team/manual + collapsed legacy mid-weeks must not intercalate (SZJ909 sawtooth).
+{
+  const weeklyTeam = mergeNavSeriesWithEmail([], [
+    { price_date: "2025-10-17", nav: "1.2013", cumulative_nav: "1.5268" },
+    { price_date: "2025-10-24", nav: "0.9997", cumulative_nav: "1.5271" },
+    { price_date: "2025-10-31", nav: "1.0019", cumulative_nav: "1.5293" },
+    { price_date: "2025-11-07", nav: "1.0007", cumulative_nav: "1.5281" },
+  ])
+  const badLegacy = [
+    { price_date: "2023-03-01", nav: "1.0000", cumulative_nav: "1.0000", cum_nav_withdrawal: "1.0000", price_change: "" },
+    { price_date: "2025-10-20", nav: "1.1800", cumulative_nav: "1.1800", cum_nav_withdrawal: "1.1800", price_change: "" },
+    { price_date: "2025-10-28", nav: "1.0000", cumulative_nav: "1.0000", cum_nav_withdrawal: "1.0000", price_change: "" },
+    { price_date: "2025-11-04", nav: "1.0010", cumulative_nav: "1.0010", cum_nav_withdrawal: "1.0010", price_change: "" },
+  ]
+  const merged = mergeLegacyWithTeamNav(badLegacy, weeklyTeam)
+  assert("SZJ909-style merge keeps pre-team legacy", merged.some((r) => r.price_date === "2023-03-01"))
+  assert(
+    "SZJ909-style merge drops mid-window legacy (no sawtooth intercalation)",
+    !merged.some((r) => ["2025-10-20", "2025-10-28", "2025-11-04"].includes(r.price_date)),
+  )
+  assert(
+    "SZJ909-style merge keeps all weekly team dates",
+    ["2025-10-17", "2025-10-24", "2025-10-31", "2025-11-07"].every((d) =>
+      merged.some((r) => r.price_date === d),
+    ),
+  )
+}
+
+// Zhongtai/中泰: CODE_产品_投资者_虚拟净值_YYYYMMDD — body + attachment must ingest.
+const szj909Subject =
+  "SZJ909_汇融林健CTA9号私募证券投资基金_金舆瑞泰一号私募证券投资基金_虚拟净值_20260731"
+const szj909Body =
+  "序号 产品代码 产品名称 基金账号 客户名称 业务日期 持仓份额 单位净值 累计单位净值 拟计业绩报酬 虚拟净值 " +
+  "1 SZJ909 汇融林健CTA9号私募证券投资基金 QL8059373444 金舆瑞泰一号私募证券投资基金 20260731 940,822.28 1.0628 1.5902 0.00 1.0628"
+const szj909Meta = extractNavMetadata(szj909Subject, szj909Body)
+assert(
+  "SZJ909 Zhongtai virtual subject extracts underlying code/name (not investor)",
+  szj909Meta.productCode === "SZJ909"
+    && szj909Meta.fundName?.includes("汇融林健CTA9") === true
+    && !szj909Meta.fundName?.includes("瑞泰"),
+)
+const szj909Nav = extractNavData(szj909Subject, szj909Body)
+assert(
+  "SZJ909 Zhongtai virtual body stores 单位净值/累计 (not 虚拟净值 alone)",
+  szj909Nav?.navDate === "2026-07-31"
+    && szj909Nav?.nav === 1.0628
+    && szj909Nav?.cumulativeNav === 1.5902
+    && szj909Nav?.productCode === "SZJ909"
+    && szj909Nav?.fundName?.includes("汇融林健CTA9") === true,
+)
+const szj909Atts = selectNavTableAttachments(szj909Subject, [
+  {
+    filename:
+      "SZJ909_汇融林健CTA9号私募证券投资基金_金舆瑞泰一号私募证券投资基金_虚拟净值_20260731.xlsx",
+    part: "2",
+  },
+])
+assert("SZJ909 Zhongtai virtual xlsx is selected as NAV attachment", szj909Atts.length === 1)
 
 const sqx078Subject =
   "【虚拟净值】SQX078_特夫郁金香全量化私募证券投资基金_衡颐海泰1号私募证券投资基金_2026-07-15"

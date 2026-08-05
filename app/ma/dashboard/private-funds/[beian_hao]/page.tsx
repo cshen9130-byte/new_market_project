@@ -1310,6 +1310,9 @@ export default function PrivateFundDetailPage() {
         if (cancelled) return
         setData(full)
         setError(null)
+        // Detail open write-throughs 跟踪产品 list tip — drop stale client list rows
+        // so returning to the list picks up the same 最新净值日期 as this page.
+        window.setTimeout(() => invalidateTrackingListCache(), 400)
       })
       .catch(async (e: Error) => {
         if (cancelled) return

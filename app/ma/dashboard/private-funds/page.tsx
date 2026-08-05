@@ -5822,6 +5822,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   nav_date: r.date,
                   unit_nav: r.unit_nav,
                   cumulative_nav: r.cumulative_nav,
+                  adjusted_nav: r.adjusted_nav,
                 })),
               }),
             })
@@ -5831,6 +5832,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             }
             setTrackingNavUploadTarget(null)
             setDataReloadKey((k) => k + 1)
+            try {
+              const { invalidateTrackingListCache } = await import("@/lib/client/tracking-list-cache")
+              window.setTimeout(() => invalidateTrackingListCache(), 500)
+            } catch { /* ignore */ }
           }}
         />
       )}
@@ -12530,6 +12535,7 @@ function OperationsFofUnderlyingView() {
                 nav_date: r.date,
                 unit_nav: r.unit_nav,
                 cumulative_nav: r.cumulative_nav,
+                adjusted_nav: r.adjusted_nav,
               })),
             }),
           })
@@ -12561,6 +12567,7 @@ interface OpsTeamNavUploadPreviewRow {
   date: string
   unit_nav: string
   cumulative_nav: string
+  adjusted_nav?: string
 }
 
 const TEAM_NAV_UPLOAD_MAX_BYTES = 3 * 1024 * 1024
@@ -12605,8 +12612,9 @@ function parseTeamNavSheetPreview(rows: unknown[][]): OpsTeamNavUploadPreviewRow
   if (rows.length < 2) return []
   const header = rows[0].map((cell) => String(cell ?? "").trim())
   const dateIdx = header.findIndex((h) => /日期|净值日期/.test(h))
-  const unitIdx = header.findIndex((h) => /单位净值/.test(h))
-  const cumIdx = header.findIndex((h) => /累计净值/.test(h))
+  const unitIdx = header.findIndex((h) => /单位净值/.test(h) && !/累计|复权|虚拟/.test(h))
+  const cumIdx = header.findIndex((h) => /累计净值|累计单位净值/.test(h))
+  const adjIdx = header.findIndex((h) => /复权(?:单位)?净值/.test(h))
   const parsed: OpsTeamNavUploadPreviewRow[] = []
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]
@@ -12614,12 +12622,14 @@ function parseTeamNavSheetPreview(rows: unknown[][]): OpsTeamNavUploadPreviewRow
     const date = formatTeamNavUploadDate(row[dateIdx >= 0 ? dateIdx : 0])
     const unitNav = String(row[unitIdx >= 0 ? unitIdx : 1] ?? "").trim()
     const cumulativeNav = String(row[cumIdx >= 0 ? cumIdx : 2] ?? unitNav).trim()
+    const adjustedNav = adjIdx >= 0 ? String(row[adjIdx] ?? "").trim() : ""
     if (!date || !unitNav) continue
     parsed.push({
       seq: parsed.length + 1,
       date,
       unit_nav: unitNav,
       cumulative_nav: cumulativeNav || unitNav,
+      ...(adjustedNav ? { adjusted_nav: adjustedNav } : {}),
     })
   }
   return parsed
@@ -13894,6 +13904,7 @@ function OperationsTeamNavManageView({
                 nav_date: r.date,
                 unit_nav: r.unit_nav,
                 cumulative_nav: r.cumulative_nav,
+                adjusted_nav: r.adjusted_nav,
               })),
             }),
           })
@@ -13902,6 +13913,11 @@ function OperationsTeamNavManageView({
             throw new Error(teamNavUploadErrorMessage(json.error))
           }
           setReloadKey((k) => k + 1)
+          // List tips lag without this — investment 跟踪产品 kept stale 最新净值日期.
+          try {
+            const { invalidateTrackingListCache } = await import("@/lib/client/tracking-list-cache")
+            window.setTimeout(() => invalidateTrackingListCache(), 500)
+          } catch { /* ignore */ }
         }}
       />
 
@@ -13931,6 +13947,10 @@ function OperationsTeamNavManageView({
             throw new Error(msg)
           }
           setReloadKey((k) => k + 1)
+          try {
+            const { invalidateTrackingListCache } = await import("@/lib/client/tracking-list-cache")
+            window.setTimeout(() => invalidateTrackingListCache(), 500)
+          } catch { /* ignore */ }
         }}
       />
 

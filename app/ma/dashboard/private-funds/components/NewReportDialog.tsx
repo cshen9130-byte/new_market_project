@@ -13,11 +13,12 @@ import { loadReportTemplates, normalizeTemplate, type ReportCustomTemplate } fro
 import { FofWeeklyReportDialog } from "./FofWeeklyReportDialog"
 import { FofMonthlyReportDialog } from "./FofMonthlyReportDialog"
 import { ProductMonthlyReportDialog } from "./ProductMonthlyReportDialog"
+import { FundOfficialMonthlyReportDialog } from "./FundOfficialMonthlyReportDialog"
 import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
 import { CustomReportGenerateDialog, CustomTemplateCard } from "./CustomReportGenerateDialog"
 
 type TemplateCategory = "weekly" | "monthly" | "custom" | "other"
-type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "custom-report"
+type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "fund-official-monthly" | "custom-report"
 type FofMonthlyLayout = "curve" | "review"
 
 interface ReportTemplate {
@@ -95,6 +96,14 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "other", ReportTempla
       badgeLabel: "月报",
       exampleUrl: "/ma/api/reports/product-monthly/example",
       exampleKind: "pdf",
+    },
+    {
+      id: "monthly-fund-official",
+      title: "单产品投资月报",
+      description: "产品概览 · 经理简介 · 净值走势 · 业绩与持仓",
+      badgeLabel: "月报",
+      exampleUrl: "/ma/api/reports/fund-official-monthly/example",
+      exampleCaption: "单产品官方投资月报版式示例",
     },
   ],
   other: [],
@@ -204,6 +213,10 @@ export function NewReportDialog({
     }
     if (template.id === "monthly-pe-official") {
       setStep("product-monthly")
+      return
+    }
+    if (template.id === "monthly-fund-official") {
+      setStep("fund-official-monthly")
     }
   }
 
@@ -289,7 +302,13 @@ export function NewReportDialog({
                     </div>
                   </>
                 ) : (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  <div
+                    className={[
+                      "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                      // Monthly has 4 official templates — keep 2x2 so the 4th isn't clipped below the fold.
+                      category === "monthly" ? "lg:grid-cols-2" : "lg:grid-cols-3",
+                    ].join(" ")}
+                  >
                     {officialTemplates.map((template) => (
                       <TemplateCard
                         key={template.id}
@@ -318,6 +337,9 @@ export function NewReportDialog({
         )}
         {step === "product-monthly" && (
           <ProductMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+        )}
+        {step === "fund-official-monthly" && (
+          <FundOfficialMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
         )}
         {step === "custom-report" && selectedCustom && (
           <CustomReportGenerateDialog
