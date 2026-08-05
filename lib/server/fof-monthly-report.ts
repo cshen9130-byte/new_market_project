@@ -7,12 +7,13 @@ import { promisify } from "util"
 import { findCustomFundByName, getCustomFundByCode } from "@/lib/server/custom-funds"
 import {
   buildFofWeeklyNavCsv,
+  isValidReportId,
   resolveFofWeeklyProductNavRange,
   resolveProductBeianHao,
   type FofWeeklyNavFrequency,
 } from "@/lib/server/fof-weekly-report"
 
-export { isValidReportId } from "@/lib/server/fof-weekly-report"
+export { isValidReportId }
 import { resolveFofWeeklyBenchmark } from "@/lib/server/fof-weekly-benchmark"
 import { resolveFundNames } from "@/lib/server/fund-nav-series"
 
