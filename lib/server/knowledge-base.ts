@@ -67,7 +67,7 @@ export type KnowledgeBaseFileOwner = {
   ownerEmail?: string
 }
 
-type KnowledgeBaseOwnershipRecord = {
+export type KnowledgeBaseOwnershipRecord = {
   relativePath: string
   entryType?: "file" | "folder"
   ownerId: string
@@ -80,6 +80,7 @@ type KnowledgeBaseOwnershipRecord = {
 const DEFAULT_STORAGE_ROOT = getServerStoragePath("ai-knowledge-base")
 const OWNERSHIP_STORAGE_DIR = getServerStoragePath("ai-knowledge-base-metadata")
 const OWNERSHIP_FILE = path.join(OWNERSHIP_STORAGE_DIR, "file-owners.json")
+const OWNERSHIP_BACKUP_COUNT = 12
 
 const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".doc", ".docx", ".xls", ".xlsx"])
 const EDITABLE_TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".docx"])
@@ -126,6 +127,10 @@ async function ensureKnowledgeBaseMetadataStorage() {
   await fs.mkdir(OWNERSHIP_STORAGE_DIR, { recursive: true })
 }
 
+const OWNERSHIP_LOCK_FILE = `${OWNERSHIP_FILE}.lock`
+const OWNERSHIP_LOCK_STALE_MS = 30_000
+const OWNERSHIP_LOCK_TIMEOUT_MS = 15_000
+
 async function readOwnershipRecords() {
   await ensureKnowledgeBaseMetadataStorage()
   try {
@@ -137,16 +142,109 @@ async function readOwnershipRecords() {
   }
 }
 
+async function rotateOwnershipBackups() {
+  try {
+    await fs.access(OWNERSHIP_FILE)
+  } catch {
+    return
+  }
+
+  await fs.unlink(`${OWNERSHIP_FILE}.bak.${OWNERSHIP_BACKUP_COUNT}`).catch(() => {})
+  for (let index = OWNERSHIP_BACKUP_COUNT - 1; index >= 1; index -= 1) {
+    const from = `${OWNERSHIP_FILE}.bak.${index}`
+    const to = `${OWNERSHIP_FILE}.bak.${index + 1}`
+    try {
+      await fs.rename(from, to)
+    } catch {
+      // missing older backup slots are fine
+    }
+  }
+  try {
+    await fs.rename(`${OWNERSHIP_FILE}.bak`, `${OWNERSHIP_FILE}.bak.1`)
+  } catch {
+    // no prior .bak yet
+  }
+
+  try {
+    await fs.copyFile(OWNERSHIP_FILE, `${OWNERSHIP_FILE}.bak`)
+  } catch {
+    // best-effort backup before mutating
+  }
+}
+
 async function writeOwnershipRecords(records: KnowledgeBaseOwnershipRecord[]) {
   await ensureKnowledgeBaseMetadataStorage()
-  await fs.writeFile(OWNERSHIP_FILE, JSON.stringify(records, null, 2), "utf8")
+  await rotateOwnershipBackups()
+  // Atomic replace so PM2 cluster workers never observe a truncated/partial JSON file.
+  const tmp = `${OWNERSHIP_FILE}.${process.pid}.${Date.now()}.tmp`
+  await fs.writeFile(tmp, JSON.stringify(records, null, 2), "utf8")
+  try {
+    await fs.rename(tmp, OWNERSHIP_FILE)
+  } catch {
+    // Windows cannot rename over an existing file; fall back to replace.
+    await fs.copyFile(tmp, OWNERSHIP_FILE)
+    await fs.unlink(tmp).catch(() => {})
+  }
+}
+
+export function getKnowledgeBaseOwnershipFilePath() {
+  return OWNERSHIP_FILE
+}
+
+export function getKnowledgeBaseOwnershipStorageDir() {
+  return OWNERSHIP_STORAGE_DIR
+}
+
+export async function readKnowledgeBaseOwnershipRecords() {
+  return readOwnershipRecords()
+}
+
+export async function replaceKnowledgeBaseOwnershipRecords(records: KnowledgeBaseOwnershipRecord[]) {
+  return withOwnershipLock(async () => {
+    await writeOwnershipRecords(records)
+  })
+}
+
+async function acquireOwnershipFileLock(): Promise<() => Promise<void>> {
+  await ensureKnowledgeBaseMetadataStorage()
+  const startedAt = Date.now()
+
+  while (true) {
+    try {
+      const handle = await fs.open(OWNERSHIP_LOCK_FILE, "wx")
+      await handle.writeFile(`${process.pid}:${Date.now()}`, "utf8")
+      return async () => {
+        await handle.close().catch(() => {})
+        await fs.unlink(OWNERSHIP_LOCK_FILE).catch(() => {})
+      }
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") {
+        throw error
+      }
+
+      try {
+        const stat = await fs.stat(OWNERSHIP_LOCK_FILE)
+        if (Date.now() - stat.mtimeMs > OWNERSHIP_LOCK_STALE_MS) {
+          await fs.unlink(OWNERSHIP_LOCK_FILE).catch(() => {})
+          continue
+        }
+      } catch {
+        // Lock disappeared between EEXIST and stat — retry acquire.
+      }
+
+      if (Date.now() - startedAt > OWNERSHIP_LOCK_TIMEOUT_MS) {
+        throw new Error("获取知识库归属锁超时")
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 15 + Math.random() * 35))
+    }
+  }
 }
 
 /**
  * Mutex for ownership file read-modify-write operations.
- * With CONCURRENCY=5 parallel uploads each calling setKnowledgeBaseOwnershipRecord,
- * concurrent reads all see the old state and overwrite each other — losing records.
- * Chaining all mutating operations through this lock serialises them.
+ * In-process chaining covers concurrent uploads inside one worker; the lockfile
+ * also serialises PM2 cluster workers so they cannot clobber each other's records.
  */
 let _ownershipMutex: Promise<void> = Promise.resolve()
 
@@ -155,9 +253,15 @@ async function withOwnershipLock<T>(fn: () => Promise<T>): Promise<T> {
   const prev = _ownershipMutex
   _ownershipMutex = new Promise<void>((res) => { release = res })
   await prev
+
+  let releaseFileLock: (() => Promise<void>) | null = null
   try {
+    releaseFileLock = await acquireOwnershipFileLock()
     return await fn()
   } finally {
+    if (releaseFileLock) {
+      await releaseFileLock().catch(() => {})
+    }
     release()
   }
 }
@@ -185,7 +289,7 @@ async function setKnowledgeBaseOwnershipRecord(
       return existing
     }
 
-    const uploadedAt = new Date().toISOString()
+    const uploadedAt = existing?.uploadedAt || new Date().toISOString()
     const nextRecord: KnowledgeBaseOwnershipRecord = {
       relativePath: normalizedPath,
       entryType,
@@ -193,6 +297,7 @@ async function setKnowledgeBaseOwnershipRecord(
       ownerName: owner.ownerName,
       ownerEmail: owner.ownerEmail,
       uploadedAt,
+      locked: existing?.locked,
     }
     const next = records.filter((record) => record.relativePath !== normalizedPath)
     next.push(nextRecord)
@@ -200,6 +305,28 @@ async function setKnowledgeBaseOwnershipRecord(
     await writeOwnershipRecords(next)
     return nextRecord
   })
+}
+
+/** Record ownership for a file/folder (used by shared-note and other non-upload writers). */
+export async function recordKnowledgeBaseOwner(
+  relativePath: string,
+  owner: KnowledgeBaseFileOwner,
+  entryType: "file" | "folder" = "file",
+  overwrite = true,
+) {
+  if (entryType === "folder") {
+    await ensureKnowledgeBaseFolderOwner(relativePath, owner)
+    return
+  }
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) return
+  const parent = normalizedPath.includes("/")
+    ? normalizedPath.slice(0, normalizedPath.lastIndexOf("/"))
+    : ""
+  if (parent) {
+    await ensureKnowledgeBaseFolderOwner(parent, owner)
+  }
+  await setKnowledgeBaseOwnershipRecord(normalizedPath, owner, "file", overwrite)
 }
 
 async function setKnowledgeBaseFileOwner(relativePath: string, owner: KnowledgeBaseFileOwner) {
@@ -226,6 +353,10 @@ async function removeKnowledgeBaseFileOwner(relativePath: string) {
     const next = records.filter((record) => record.relativePath !== normalizedPath)
     await writeOwnershipRecords(next)
   })
+}
+
+export async function removeKnowledgeBaseOwnerRecord(relativePath: string) {
+  await removeKnowledgeBaseFileOwner(relativePath)
 }
 
 function buildKnowledgeBaseDocumentNode(
@@ -416,10 +547,20 @@ async function buildFolderTree(
   let fallbackUploadedAt: string | null = null
 
   const considerCandidate = (candidate: { ownerId: string | null; ownerName: string; uploadedAt: string | null }) => {
-    if (!candidate.uploadedAt || !candidate.ownerName || candidate.ownerName === "未知" || candidate.ownerName === "-") {
+    if (!candidate.ownerName || candidate.ownerName === "未知" || candidate.ownerName === "-") {
       return
     }
 
+    if (!fallbackOwnerName) {
+      fallbackOwnerId = candidate.ownerId
+      fallbackOwnerName = candidate.ownerName
+      fallbackUploadedAt = candidate.uploadedAt
+      return
+    }
+
+    if (!candidate.uploadedAt) {
+      return
+    }
     if (!fallbackUploadedAt) {
       fallbackOwnerId = candidate.ownerId
       fallbackOwnerName = candidate.ownerName
@@ -467,10 +608,67 @@ async function buildFolderTree(
   }
 }
 
+async function persistInferredFolderOwners(
+  node: KnowledgeBaseFolderNode,
+  ownershipMap: Map<string, KnowledgeBaseOwnershipRecord>,
+) {
+  const missing: Array<{ relativePath: string; ownerId: string; ownerName: string; uploadedAt: string }> = []
+
+  const walk = (folder: KnowledgeBaseFolderNode) => {
+    if (
+      folder.relativePath &&
+      folder.ownerId &&
+      folder.ownerName &&
+      folder.ownerName !== "-" &&
+      folder.ownerName !== "未知" &&
+      !ownershipMap.has(folder.relativePath)
+    ) {
+      missing.push({
+        relativePath: folder.relativePath,
+        ownerId: folder.ownerId,
+        ownerName: folder.ownerName,
+        uploadedAt: folder.uploadedAt || new Date().toISOString(),
+      })
+    }
+    for (const child of folder.folders) {
+      walk(child)
+    }
+  }
+  walk(node)
+
+  if (!missing.length) {
+    return
+  }
+
+  await withOwnershipLock(async () => {
+    const records = await readOwnershipRecords()
+    const existing = new Set(records.map((record) => record.relativePath))
+    let changed = false
+    for (const item of missing) {
+      if (existing.has(item.relativePath)) continue
+      records.push({
+        relativePath: item.relativePath,
+        entryType: "folder",
+        ownerId: item.ownerId,
+        ownerName: item.ownerName,
+        uploadedAt: item.uploadedAt,
+      })
+      existing.add(item.relativePath)
+      changed = true
+    }
+    if (!changed) return
+    records.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
+    await writeOwnershipRecords(records)
+  })
+}
+
 export async function listKnowledgeBaseTree(viewerUserId?: string, isAdmin = false) {
   const root = await ensureKnowledgeBaseStorage()
   const ownershipMap = await getOwnershipMap()
-  return buildFolderTree(root, "", ownershipMap, viewerUserId, isAdmin)
+  const tree = await buildFolderTree(root, "", ownershipMap, viewerUserId, isAdmin)
+  // Heal folder rows that lost explicit ownership but still have owned children.
+  void persistInferredFolderOwners(tree, ownershipMap).catch(() => {})
+  return tree
 }
 
 export async function deleteKnowledgeBaseFolder(relativePath: string, actorUserId: string, isAdmin = false) {
@@ -499,12 +697,14 @@ export async function deleteKnowledgeBaseFolder(relativePath: string, actorUserI
   await fs.rm(target, { recursive: true, force: true })
 
   // Remove all ownership records whose paths are inside this folder
-  const records = await readOwnershipRecords()
-  const prefix = normalizedPath + "/"
-  const remaining = records.filter(
-    (r) => r.relativePath !== normalizedPath && !r.relativePath.startsWith(prefix)
-  )
-  await writeOwnershipRecords(remaining)
+  await withOwnershipLock(async () => {
+    const records = await readOwnershipRecords()
+    const prefix = normalizedPath + "/"
+    const remaining = records.filter(
+      (r) => r.relativePath !== normalizedPath && !r.relativePath.startsWith(prefix)
+    )
+    await writeOwnershipRecords(remaining)
+  })
 }
 
 export async function createKnowledgeBaseFolder(relativePath: string, owner?: KnowledgeBaseFileOwner) {

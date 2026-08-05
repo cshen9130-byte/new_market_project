@@ -151,6 +151,7 @@ type GenerateResult = {
   monthStart: string
   monthEnd: string
   previewUrl: string
+  previewDataUrl?: string
   download: { png: string; pdf: string }
 }
 
@@ -457,6 +458,7 @@ export function FofMonthlyReportDialog({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<GenerateResult | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) {
@@ -475,12 +477,20 @@ export function FofMonthlyReportDialog({
       setLoading(false)
       setError(null)
       setResult(null)
+      setPreviewError(null)
     }
   }, [open])
 
   useEffect(() => {
     if (open) setPresets(loadFofMonthlyReportPresets())
   }, [open])
+
+  useEffect(() => {
+    const url = result?.previewDataUrl
+    return () => {
+      if (url?.startsWith("blob:")) URL.revokeObjectURL(url)
+    }
+  }, [result?.previewDataUrl])
 
   function applyPreset(preset: FofMonthlyReportPreset) {
     setProductName(preset.product_name)
@@ -493,6 +503,7 @@ export function FofMonthlyReportDialog({
     setNavFrequency(preset.nav_frequency ?? "monthly")
     setSelectedPresetName(preset.name)
     setResult(null)
+    setPreviewError(null)
     setError(null)
     setPresetMessage(`已加载配置「${preset.name}」`)
   }
@@ -574,6 +585,7 @@ export function FofMonthlyReportDialog({
     setMonthBeginDate(range.begin)
     setMonthEndDate(range.end)
     setResult(null)
+    setPreviewError(null)
     setError(null)
   }
 
@@ -585,6 +597,7 @@ export function FofMonthlyReportDialog({
     setMonthBeginDate("")
     setMonthEndDate("")
     setResult(null)
+    setPreviewError(null)
     setError(null)
   }
 
@@ -613,6 +626,7 @@ export function FofMonthlyReportDialog({
     setLoading(true)
     setError(null)
     setResult(null)
+    setPreviewError(null)
 
     try {
       const resp = await fetch("/ma/api/reports/fof-monthly/generate", {
@@ -633,7 +647,29 @@ export function FofMonthlyReportDialog({
       if (!resp.ok) {
         throw new Error(json.error || "报告生成失败")
       }
-      setResult(json as GenerateResult)
+      const next = json as GenerateResult
+      // Prefer inline preview; fall back to fetching the preview endpoint once into a blob URL.
+      if (!next.previewDataUrl && next.previewUrl) {
+        try {
+          const previewResp = await fetch(`${next.previewUrl}&t=${next.reportId}`)
+          if (previewResp.ok) {
+            const blob = await previewResp.blob()
+            if (blob.type.startsWith("image/") || blob.size > 0) {
+              next.previewDataUrl = URL.createObjectURL(blob)
+            } else {
+              setPreviewError("预览图片加载失败，请尝试下载 PNG")
+            }
+          } else {
+            const previewJson = await previewResp.json().catch(() => null)
+            setPreviewError(
+              (previewJson as { error?: string } | null)?.error || "预览图片加载失败，请尝试下载 PNG",
+            )
+          }
+        } catch {
+          setPreviewError("预览图片加载失败，请尝试下载 PNG")
+        }
+      }
+      setResult(next)
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {
@@ -882,12 +918,19 @@ export function FofMonthlyReportDialog({
                 </div>
               </div>
               <div className="overflow-auto rounded-lg border bg-white dark:bg-zinc-950">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={`${result.previewUrl}&t=${Date.now()}`}
-                  alt={`${result.reportTitle} 月报预览`}
-                  className="mx-auto block max-w-full"
-                />
+                {result.previewDataUrl && !previewError ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={result.previewDataUrl}
+                    alt={`${result.reportTitle} 月报预览`}
+                    className="mx-auto block max-w-full"
+                    onError={() => setPreviewError("预览图片加载失败，请尝试下载 PNG")}
+                  />
+                ) : (
+                  <div className="px-4 py-10 text-center text-sm text-zinc-500">
+                    {previewError || "预览不可用，请使用上方按钮下载 PNG / PDF"}
+                  </div>
+                )}
               </div>
             </div>
           )}

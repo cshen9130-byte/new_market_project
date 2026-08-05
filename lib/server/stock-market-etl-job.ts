@@ -153,9 +153,23 @@ export function startStockMarketEtlJob(options?: {
 
       console.log("[stock-market-etl] starting:", executable, args.join(" "))
 
+      // Pin PYTHON_EXE so nightly_etl child fetch scripts use the same
+      // interpreter that passed the akshare/pandas/psycopg2 probe — not a
+      // incomplete .venv that can leave ashare_daily frozen for days.
+      const env = pythonExecEnv()
+      if (executable !== "py" && executable !== "python" && executable !== "python3") {
+        env.PYTHON_EXE = executable
+      }
+      // East Money AkShare endpoints are frequently blocked; Sina is the
+      // reliable path for amount + turnover used by crowding charts.
+      if (!env.ASHARE_AK_PROVIDER) {
+        env.ASHARE_AK_PROVIDER = "sina"
+      }
+      env.TQDM_DISABLE = env.TQDM_DISABLE || "1"
+
       const { stdout, stderr } = await execFileAsync(executable, args, {
         cwd: process.cwd(),
-        env: pythonExecEnv(),
+        env,
         timeout: JOB_TIMEOUT_MS,
         maxBuffer: 10 * 1024 * 1024,
       })

@@ -509,10 +509,19 @@ function getFolderOwnerInfo(folder: FolderNode): { ownerName: string; uploadedAt
   let fallbackUploadedAt: string | null = null
 
   const considerCandidate = (ownerName: string, uploadedAt: string | null) => {
-    if (!uploadedAt || !ownerName || ownerName === "-" || ownerName === "未知") {
+    if (!ownerName || ownerName === "-" || ownerName === "未知") {
       return
     }
 
+    if (!fallbackOwnerName || fallbackOwnerName === "-") {
+      fallbackOwnerName = ownerName
+      fallbackUploadedAt = uploadedAt
+      return
+    }
+
+    if (!uploadedAt) {
+      return
+    }
     if (!fallbackUploadedAt) {
       fallbackOwnerName = ownerName
       fallbackUploadedAt = uploadedAt
@@ -2879,6 +2888,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
 
   const [deduping, setDeduping] = useState(false)
+  const [recoveringOwnership, setRecoveringOwnership] = useState(false)
 
   async function handleDedup() {
     if (deduping) return
@@ -2905,6 +2915,42 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       alert(`去重失败：${e?.message || e}`)
     } finally {
       setDeduping(false)
+    }
+  }
+
+  async function handleRecoverOwnership() {
+    if (recoveringOwnership || currentUser?.role !== "admin") return
+    if (!window.confirm("确认恢复上传者归属记录？\n将合并备份、在线笔记元数据，以及「用户名-文件夹」命名前缀推断的结果，不会覆盖已有锁定状态。")) return
+    setRecoveringOwnership(true)
+    try {
+      const res = await fetch("/api/knowledge-base/recover-ownership", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ dryRun: false, useNamePrefix: true }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      const report = data.report as {
+        beforeCount: number
+        afterCount: number
+        addedCount: number
+        backupFilesUsed: string[]
+        sampleAdded: Array<{ relativePath: string; ownerName: string; source: string }>
+      }
+      const samples = (report.sampleAdded || [])
+        .slice(0, 8)
+        .map((item) => `· ${item.relativePath} → ${item.ownerName} (${item.source})`)
+        .join("\n")
+      const msg =
+        `归属恢复完成：${report.beforeCount} → ${report.afterCount}（新增 ${report.addedCount}）` +
+        (report.backupFilesUsed?.length ? `\n使用备份 ${report.backupFilesUsed.length} 个` : "\n未找到历史备份文件") +
+        (samples ? `\n示例：\n${samples}` : "")
+      setChatMessages((c) => [...c, { role: "assistant", content: msg }])
+      await refreshTree()
+    } catch (e: any) {
+      alert(`归属恢复失败：${e?.message || e}`)
+    } finally {
+      setRecoveringOwnership(false)
     }
   }
 
@@ -5909,6 +5955,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     >
                       {deduping ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />去重中...</> : "去重（删除重复文件）"}
                     </button>
+                    {currentUser?.role === "admin" && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRecoverOwnership()}
+                        disabled={recoveringOwnership}
+                        title="从备份、在线笔记元数据、命名前缀恢复上传者归属"
+                        className="mt-1.5 w-full rounded border border-amber-500/40 px-2 py-1.5 text-xs text-amber-700 transition-colors hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300"
+                      >
+                        {recoveringOwnership ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />恢复中...</> : "恢复上传者归属"}
+                      </button>
+                    )}
                     {indexInfo && (
                       <div className="mt-2 space-y-1.5 text-[11px]">
                         {indexInfo.diskIndex.exists ? (
@@ -6899,6 +6956,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     >
                       {deduping ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />去重中...</> : "去重（删除重复文件）"}
                     </button>
+                    {currentUser?.role === "admin" && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRecoverOwnership()}
+                        disabled={recoveringOwnership}
+                        title="从备份、在线笔记元数据、命名前缀恢复上传者归属"
+                        className="mt-1 w-full rounded-lg border border-amber-400/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+                      >
+                        {recoveringOwnership ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />恢复中...</> : "恢复上传者归属"}
+                      </button>
+                    )}
                     {indexInfo && (
                       <div className="space-y-1 text-[11px]">
                         {indexInfo.diskIndex.exists ? (

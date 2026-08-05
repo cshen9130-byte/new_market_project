@@ -2,7 +2,12 @@ import { NextResponse } from "next/server"
 import { promises as fs } from "fs"
 import path from "path"
 import { getUserById } from "@/lib/server/users"
-import { getKnowledgeBaseStorageRoot, ensureKnowledgeBaseStorage } from "@/lib/server/knowledge-base"
+import {
+  getKnowledgeBaseStorageRoot,
+  ensureKnowledgeBaseStorage,
+  recordKnowledgeBaseOwner,
+  removeKnowledgeBaseOwnerRecord,
+} from "@/lib/server/knowledge-base"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -69,6 +74,18 @@ export async function GET(req: Request) {
       const notesDir = await getNotesDir()
       const meta = await readMeta(notesDir)
       meta.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      // Backfill ownership for notes created before shared-note wrote file-owners.json
+      void (async () => {
+        for (const note of meta) {
+          if (!note.createdBy || !note.createdByName) continue
+          await recordKnowledgeBaseOwner(
+            note.relativePath,
+            { ownerId: note.createdBy, ownerName: note.createdByName },
+            "file",
+            false,
+          )
+        }
+      })().catch(() => {})
       return NextResponse.json({ ok: true, notes: meta })
     }
 
@@ -152,6 +169,14 @@ export async function PUT(req: Request) {
     }
     await writeMeta(notesDir, meta)
 
+    // Keep explorer「上传者」in sync — shared notes previously bypassed ownership metadata.
+    await recordKnowledgeBaseOwner(
+      relativePath,
+      { ownerId: user.id, ownerName: user.name, ownerEmail: user.email },
+      "file",
+      isNew,
+    )
+
     return NextResponse.json({ ok: true, relativePath, title: rawTitle, isNew })
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || String(e) }, { status: 500 })
@@ -196,6 +221,7 @@ export async function DELETE(req: Request) {
 
     const updated = meta.filter((m) => m.relativePath !== relativePath)
     await writeMeta(notesDir, updated)
+    await removeKnowledgeBaseOwnerRecord(relativePath)
 
     return NextResponse.json({ ok: true })
   } catch (e: any) {

@@ -14,10 +14,11 @@ export async function GET(req: Request) {
 
   try {
     const buffer = await readFofMonthlyReportPreview(reportId)
-    return new Response(buffer, {
+    // Node Buffer → Uint8Array so Response body is reliable across Next/PM2 workers.
+    return new Response(Uint8Array.from(buffer), {
       headers: {
         "Content-Type": "image/png",
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": "private, no-store",
       },
     })
   } catch (err) {

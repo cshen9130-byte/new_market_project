@@ -117,17 +117,26 @@ PCA_ETF_TICKERS = [
 
 
 def _resolve_python_exe() -> str:
-    """Prefer PYTHON_EXE, then project .venv, then platform default.
+    """Resolve interpreter for child scripts.
 
-    Nightly cron historically used system python3 (no joblib/sklearn), which
-    silently broke predict_market_cluster while EmQuant fetch steps still worked.
+    Prefer, in order:
+      1. Explicit PYTHON_EXE path
+      2. The interpreter currently running this ETL (sys.executable)
+      3. Project .venv
+      4. Platform default
+
+    Using sys.executable avoids a common failure mode where the outer job
+    launcher picks a Python that has akshare/deps, but child scripts were
+    force-routed to a .venv that is missing those packages — leaving
+    ashare_daily stuck and stock-market charts frozen.
     """
     env_exe = (os.environ.get("PYTHON_EXE") or "").strip()
     if env_exe and env_exe not in ("py", "python", "python3"):
         return env_exe
-    if env_exe in ("py", "python", "python3"):
-        # Explicit bare name — still prefer venv if present
-        pass
+
+    # Same interpreter that is already running nightly_etl.py (has working deps).
+    if sys.executable:
+        return sys.executable
 
     if sys.platform == "win32":
         venv_candidates = [
@@ -160,6 +169,8 @@ def run_script(
     """Run a Python script in scripts/ma/ and return its JSON stdout."""
     script_path = SCRIPT_DIR / script_name
     env = {**os.environ}
+    # Avoid tqdm pipe-fill deadlocks when stderr is captured.
+    env.setdefault("TQDM_DISABLE", "1")
     if extra_env:
         env.update(extra_env)
 
@@ -168,14 +179,40 @@ def run_script(
     cmd = prefix + [str(script_path)] + (extra_args or [])
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, env=env
+        # Drain stderr on a thread so AkShare progress bars cannot fill the
+        # pipe buffer and deadlock the child (common on Windows).
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        if result.returncode != 0:
-            log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
+        stderr_chunks: list[str] = []
+
+        def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                stderr_chunks.append(line)
+
+        import threading
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+        try:
+            stdout, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            log.error("[%s] timed out after %ds", script_name, timeout)
+            return None
+        stderr_thread.join(timeout=5)
+        stderr = "".join(stderr_chunks).strip()
+        stdout = (stdout or "").strip()
+        if proc.returncode != 0:
+            log.warning("[%s] exit %d: %s", script_name, proc.returncode, stderr[:800])
         elif log_stderr and stderr:
             log.info("[%s] stderr:\n%s", script_name, stderr[:10000])
         if stdout:
@@ -189,9 +226,6 @@ def run_script(
         log.warning("[%s] no valid JSON in stdout", script_name)
         if stderr:
             log.warning("[%s] stderr: %s", script_name, stderr[:800])
-        return None
-    except subprocess.TimeoutExpired:
-        log.error("[%s] timed out after %ds", script_name, timeout)
         return None
     except Exception as exc:
         log.error("[%s] exception: %s", script_name, exc)
@@ -2677,8 +2711,20 @@ def step_ashare_daily(conn, *, force: bool = False) -> int:
         )
         extra_env = {}
         if source == "akshare":
-            # Single-day chunks use fast spot snapshot; multi-day uses per-stock hist.
-            extra_env["ASHARE_AK_MODE"] = "spot" if chunk_start == chunk_end else "hist"
+            # Spot returns the *latest* session only — safe solely when catching up
+            # the current/previous calendar day. Historical single-day gaps must
+            # use hist or they would be mis-labeled with today's prices.
+            use_spot = (
+                chunk_start == chunk_end
+                and chunk_end >= today - timedelta(days=1)
+            )
+            extra_env["ASHARE_AK_MODE"] = "spot" if use_spot else "hist"
+            # Default to Sina — East Money spot/hist are often IP-blocked.
+            # Override with ASHARE_AK_PROVIDER=em to force East Money.
+            extra_env["ASHARE_AK_PROVIDER"] = (
+                os.environ.get("ASHARE_AK_PROVIDER", "").strip() or "sina"
+            )
+            extra_env.setdefault("TQDM_DISABLE", "1")
         out = run_script(
             script,
             extra_args=[iso(chunk_start), iso(chunk_end)],

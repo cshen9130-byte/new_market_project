@@ -20,7 +20,7 @@ export async function GET(req: Request) {
   try {
     const { buffer, fileName, contentType } = await readFofMonthlyReportFile(reportId, format)
     const encoded = encodeURIComponent(fileName)
-    return new Response(buffer, {
+    return new Response(Uint8Array.from(buffer), {
       headers: {
         "Content-Type": contentType,
         "Content-Disposition": `attachment; filename*=UTF-8''${encoded}`,
