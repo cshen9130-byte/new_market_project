@@ -5,6 +5,7 @@ import { CalendarDays, CirclePlus, MinusCircle } from "lucide-react"
 import {
   DEFAULT_SPLICE_FUNDS,
   FUND_SPLICE_CATEGORIES,
+  normalizeSpliceFunds,
   type CustomFundNavGenerationRule,
   type FundSpliceEntry,
   type MomLongExtraDate,
@@ -62,7 +63,14 @@ function userFetchHeaders(): Record<string, string> {
 }
 
 function emptyFund(): FundSpliceEntry {
-  return { fund_category: "私募基金", product_name: "", nav_source: "平台净值", tail_nav_date: "" }
+  return {
+    fund_category: "私募基金",
+    product_name: "",
+    nav_source: "平台净值",
+    start_date: "",
+    end_date: "",
+    tail_nav_date: "",
+  }
 }
 
 function DatePickerInput({
@@ -107,9 +115,6 @@ function DatePickerInput({
     </div>
   )
 }
-
-const FUND_SPLICE_ROW_GRID =
-  "grid grid-cols-[4.5rem_7rem_minmax(10rem,1fr)_7rem_10rem_2.25rem] gap-x-3 gap-y-2 items-center"
 
 function RuleFormRow({
   label,
@@ -207,84 +212,124 @@ function ProductSearchInput({
 function FundSpliceRow({
   index,
   row,
-  showTailDate,
+  isLast,
   showAdd,
   showRemove,
   onChange,
   onAdd,
   onRemove,
-  onAutoTailDate,
-  autoTailLoading,
+  onAutoStartDate,
+  autoStartLoading,
+  onAutoHandoff,
+  autoHandoffLoading,
 }: {
   index: number
   row: FundSpliceEntry
-  showTailDate: boolean
+  isLast: boolean
   showAdd: boolean
   showRemove: boolean
   onChange: (next: FundSpliceEntry) => void
   onAdd: () => void
   onRemove: () => void
-  onAutoTailDate?: () => void
-  autoTailLoading?: boolean
+  onAutoStartDate?: () => void
+  autoStartLoading?: boolean
+  onAutoHandoff?: () => void
+  autoHandoffLoading?: boolean
 }) {
+  const setDates = (patch: Partial<Pick<FundSpliceEntry, "start_date" | "end_date">>) => {
+    const start_date = patch.start_date ?? row.start_date
+    const end_date = patch.end_date ?? row.end_date
+    onChange({ ...row, start_date, end_date, tail_nav_date: end_date })
+  }
+
   return (
-    <div className={FUND_SPLICE_ROW_GRID}>
-      <span className="text-sm text-zinc-600 text-right">
-        <span className="text-red-500 mr-0.5">*</span>
-        基金{index + 1}：
-      </span>
-      <select
-        value={row.fund_category}
-        onChange={(e) => onChange({ ...row, fund_category: e.target.value, product_name: "" })}
-        className="h-9 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-      >
-        {FUND_SPLICE_CATEGORIES.map((item) => <option key={item} value={item}>{item}</option>)}
-      </select>
-      <ProductSearchInput
-        fundCategory={row.fund_category}
-        value={row.product_name}
-        onChange={(product_name) => onChange({ ...row, product_name })}
-      />
-      <select
-        value={row.nav_source}
-        onChange={(e) => onChange({ ...row, nav_source: e.target.value })}
-        className="h-9 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-      >
-        {NAV_SOURCES.map((item) => <option key={item} value={item}>{item}</option>)}
-      </select>
-      <div className="min-w-0">
-        {showTailDate ? (
-          <div className="flex flex-col gap-1 min-w-0">
+    <div className="rounded border border-zinc-100 bg-zinc-50/40 px-3 py-3 space-y-2.5">
+      <div className="grid grid-cols-[4.5rem_7rem_minmax(10rem,1fr)_7rem_2.25rem] gap-x-3 items-center">
+        <span className="text-sm text-zinc-600 text-right">
+          <span className="text-red-500 mr-0.5">*</span>
+          基金{index + 1}：
+        </span>
+        <select
+          value={row.fund_category}
+          onChange={(e) => onChange({ ...row, fund_category: e.target.value, product_name: "" })}
+          className="h-9 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          {FUND_SPLICE_CATEGORIES.map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+        <ProductSearchInput
+          fundCategory={row.fund_category}
+          value={row.product_name}
+          onChange={(product_name) => onChange({ ...row, product_name })}
+        />
+        <select
+          value={row.nav_source}
+          onChange={(e) => onChange({ ...row, nav_source: e.target.value })}
+          className="h-9 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          {NAV_SOURCES.map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+        <div className="flex items-center justify-center">
+          {showAdd && (
+            <button type="button" onClick={onAdd} className="p-2 rounded hover:bg-muted text-red-500 transition-colors" title="添加基金">
+              <CirclePlus className="h-4 w-4" />
+            </button>
+          )}
+          {showRemove && (
+            <button type="button" onClick={onRemove} className="p-2 rounded hover:bg-muted text-zinc-500 transition-colors" title="删除基金">
+              <MinusCircle className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 items-start">
+        <div />
+        <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+          <div className="space-y-1">
+            <div className="text-[11px] text-zinc-500">
+              <span className="text-red-500 mr-0.5">*</span>
+              开始日期
+            </div>
             <DatePickerInput
-              value={row.tail_nav_date}
-              onChange={(tail_nav_date) => onChange({ ...row, tail_nav_date })}
-              placeholder="选择日期"
-              className="w-full"
+              value={row.start_date}
+              onChange={(start_date) => setDates({ start_date })}
+              placeholder="开始日期"
+              className="w-44"
             />
-            {onAutoTailDate && (
+            {onAutoStartDate && (
               <button
                 type="button"
-                onClick={onAutoTailDate}
-                disabled={autoTailLoading}
-                className="text-left text-[11px] text-blue-600 hover:text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline"
+                onClick={onAutoStartDate}
+                disabled={autoStartLoading || !row.product_name.trim()}
+                className="block text-left text-[11px] text-blue-600 hover:text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline"
               >
-                {autoTailLoading ? "计算中…" : "自动对接下一只"}
+                {autoStartLoading ? "获取中…" : "填入成立日期"}
               </button>
             )}
           </div>
-        ) : null}
-      </div>
-      <div className="flex items-center justify-center">
-        {showAdd && (
-          <button type="button" onClick={onAdd} className="p-2 rounded hover:bg-muted text-red-500 transition-colors" title="添加基金">
-            <CirclePlus className="h-4 w-4" />
-          </button>
-        )}
-        {showRemove && (
-          <button type="button" onClick={onRemove} className="p-2 rounded hover:bg-muted text-zinc-500 transition-colors" title="删除基金">
-            <MinusCircle className="h-4 w-4" />
-          </button>
-        )}
+          <div className="space-y-1">
+            <div className="text-[11px] text-zinc-500">
+              {!isLast && <span className="text-red-500 mr-0.5">*</span>}
+              结束日期{isLast ? "（可选）" : ""}
+            </div>
+            <DatePickerInput
+              value={row.end_date}
+              onChange={(end_date) => setDates({ end_date })}
+              placeholder={isLast ? "默认最新净值" : "结束日期"}
+              className="w-44"
+            />
+            {onAutoHandoff && (
+              <button
+                type="button"
+                onClick={onAutoHandoff}
+                disabled={autoHandoffLoading}
+                className="block text-left text-[11px] text-blue-600 hover:text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline"
+              >
+                {autoHandoffLoading ? "计算中…" : "自动对接下一只"}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -370,8 +415,8 @@ export function CustomFundNavGenerationRulesDialog({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
   const [tailHint, setTailHint] = useState("")
-  const [autoTailLoading, setAutoTailLoading] = useState(false)
-  const [autoStartLoading, setAutoStartLoading] = useState(false)
+  const [autoHandoffIndex, setAutoHandoffIndex] = useState<number | null>(null)
+  const [autoStartIndex, setAutoStartIndex] = useState<number | null>(null)
   const [showCalcRules, setShowCalcRules] = useState(false)
 
   useEffect(() => {
@@ -394,7 +439,11 @@ export function CustomFundNavGenerationRulesDialog({
         setMomFixedItem(rule.mom_fixed_item ?? "")
         setMomNonFixedItem(rule.mom_non_fixed_item ?? "")
         setMomExtraDates(Array.isArray(rule.mom_extra_dates) ? rule.mom_extra_dates : [])
-        setFunds(rule.funds?.length ? rule.funds : DEFAULT_SPLICE_FUNDS)
+        const normalized = normalizeSpliceFunds(rule.funds, rule.start_date ?? "")
+        setFunds(normalized.length ? normalized : DEFAULT_SPLICE_FUNDS.map((row) => ({ ...row })))
+        if (!rule.start_date && normalized[0]?.start_date) {
+          setStartDate(normalized[0].start_date)
+        }
       })
       .catch(() => setError("加载规则失败"))
       .finally(() => setLoading(false))
@@ -402,15 +451,17 @@ export function CustomFundNavGenerationRulesDialog({
 
   function updateFund(index: number, next: FundSpliceEntry) {
     setFunds((prev) => prev.map((row, i) => (i === index ? next : row)))
-    if (index === 0) setTailHint("")
+    if (index === 0 && next.start_date) setStartDate(next.start_date)
+    setTailHint("")
   }
 
-  async function handleAutoStartDate() {
-    if (!funds[0]?.product_name.trim()) {
-      setError("请先选择基金1")
+  async function handleAutoStartDate(index: number) {
+    const fund = funds[index]
+    if (!fund?.product_name.trim()) {
+      setError(`请先选择基金${index + 1}`)
       return
     }
-    setAutoStartLoading(true)
+    setAutoStartIndex(index)
     setError("")
     try {
       const res = await fetch("/ma/api/custom-funds/nav-rules/suggest-start", {
@@ -418,28 +469,38 @@ export function CustomFundNavGenerationRulesDialog({
         headers: { "Content-Type": "application/json", ...userFetchHeaders() },
         body: JSON.stringify({
           code: productCode,
-          fund1: funds[0],
+          fund1: fund,
         }),
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) {
         throw new Error(String(json.message || "获取成立日期失败"))
       }
-      setStartDate(String(json.start_date ?? ""))
+      const start = String(json.start_date ?? "")
+      setFunds((prev) => prev.map((row, i) => (
+        i === index ? { ...row, start_date: start } : row
+      )))
+      if (index === 0) setStartDate(start)
       setTailHint("")
     } catch (err) {
       setError(err instanceof Error ? err.message : "获取成立日期失败")
     } finally {
-      setAutoStartLoading(false)
+      setAutoStartIndex(null)
     }
   }
 
-  async function handleAutoTailDate() {
-    if (!startDate || !funds[0]?.product_name.trim() || !funds[1]?.product_name.trim()) {
-      setError("请先填写开始时间，并选择前两只基金")
+  async function handleAutoHandoff(index: number) {
+    const current = funds[index]
+    const next = funds[index + 1]
+    if (!current?.product_name.trim() || !next?.product_name.trim()) {
+      setError("请先选择当前基金与下一只基金")
       return
     }
-    setAutoTailLoading(true)
+    if (!current.start_date.trim()) {
+      setError(`请先填写基金${index + 1}的开始日期`)
+      return
+    }
+    setAutoHandoffIndex(index)
     setError("")
     try {
       const res = await fetch("/ma/api/custom-funds/nav-rules/suggest-tail", {
@@ -447,24 +508,32 @@ export function CustomFundNavGenerationRulesDialog({
         headers: { "Content-Type": "application/json", ...userFetchHeaders() },
         body: JSON.stringify({
           code: productCode,
-          start_date: startDate,
-          fund1: funds[0],
-          fund2: funds[1],
+          start_date: current.start_date,
+          fund1: current,
+          fund2: next,
         }),
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) {
         throw new Error(String(json.message || "自动选择失败"))
       }
-      setFunds((prev) => prev.map((row, i) => (
-        i === 0 ? { ...row, tail_nav_date: String(json.tail_nav_date ?? "") } : row
-      )))
+      const endDate = String(json.end_date ?? json.tail_nav_date ?? "")
+      const nextStart = String(json.next_start_date ?? json.fund2_first_date ?? "")
+      setFunds((prev) => prev.map((row, i) => {
+        if (i === index) {
+          return { ...row, end_date: endDate, tail_nav_date: endDate }
+        }
+        if (i === index + 1) {
+          return { ...row, start_date: nextStart || row.start_date }
+        }
+        return row
+      }))
       setTailHint(String(json.hint ?? ""))
     } catch (err) {
       setTailHint("")
       setError(err instanceof Error ? err.message : "自动选择失败")
     } finally {
-      setAutoTailLoading(false)
+      setAutoHandoffIndex(null)
     }
   }
 
@@ -480,9 +549,15 @@ export function CustomFundNavGenerationRulesDialog({
     setError("")
   }
 
-  const spliceFundCount = funds.filter((f) => f.product_name.trim()).length
+  const activeSpliceFunds = funds.filter((f) => f.product_name.trim())
+  const spliceDatesReady = activeSpliceFunds.length >= 2
+    && activeSpliceFunds.every((f, i) => {
+      if (!f.start_date.trim()) return false
+      if (i < activeSpliceFunds.length - 1 && !f.end_date.trim()) return false
+      return true
+    })
   const canSave = !loading && !saving && (
-    (ruleType === "splice" && !!startDate && spliceFundCount >= 2)
+    (ruleType === "splice" && spliceDatesReady)
     || (ruleType === "fixed_income" && !!startDate && !!annualReturnRate.trim())
     || (ruleType === "mom_long" && !!momProductName && !!startDate && !!momFixedItem.trim() && !!momNonFixedItem.trim())
   )
@@ -499,7 +574,7 @@ export function CustomFundNavGenerationRulesDialog({
           action: "save",
           rule: {
             rule_type: ruleType,
-            start_date: startDate,
+            start_date: ruleType === "splice" ? (funds[0]?.start_date || startDate) : startDate,
             annual_return_rate: annualReturnRate,
             mom_product_name: momProductName,
             mom_fixed_item: momFixedItem,
@@ -511,8 +586,9 @@ export function CustomFundNavGenerationRulesDialog({
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) {
-        if (json.error === "missing_start_date") throw new Error("请选择开始时间")
+        if (json.error === "missing_start_date") throw new Error("请填写第一只基金的开始日期")
         if (json.error === "missing_funds") throw new Error("请至少选择两只基金")
+        if (json.error === "missing_fund_dates") throw new Error(String(json.message || "请填写各基金开始/结束日期"))
         if (json.error === "missing_annual_return_rate") throw new Error("请填写年化收益率")
         if (json.error === "missing_mom_product") throw new Error("请选择产品")
         if (json.error === "missing_mom_adjustments") throw new Error("请填写固定项和非固定项")
@@ -534,7 +610,7 @@ export function CustomFundNavGenerationRulesDialog({
     <>
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
-        className="bg-background rounded-lg shadow-xl w-full max-w-[860px] max-h-[90vh] flex flex-col"
+        className="bg-background rounded-lg shadow-xl w-full max-w-[920px] max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
@@ -561,40 +637,10 @@ export function CustomFundNavGenerationRulesDialog({
           {ruleType === "splice" && (
             <>
               <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                请按实际拼接顺序选择基金。第一只基金的「尾部净值日期」应接在第二只基金开始之前；可点击「自动对接下一只」自动填入。
-              </div>
-
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-sm text-zinc-600 shrink-0">
-                  <span className="text-red-500 mr-0.5">*</span>
-                  开始时间：
-                </span>
-                <DatePickerInput
-                  value={startDate}
-                  onChange={(v) => { setStartDate(v); setTailHint("") }}
-                  placeholder="选择开始时间"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleAutoStartDate()}
-                  disabled={autoStartLoading || !funds[0]?.product_name.trim()}
-                  className="text-sm text-blue-600 hover:text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline shrink-0"
-                >
-                  {autoStartLoading ? "获取中…" : "填入基金1成立日期"}
-                </button>
+                请按拼接顺序选择基金，并为每只基金设置开始/结束日期。前一只的结束日期应接在后一只开始之前；可点击「自动对接下一只」自动填入衔接日期。最后一只的结束日期可留空（使用最新净值）。
               </div>
 
               <div className="space-y-2">
-                {!loading && funds.length > 0 && (
-                  <div className={`${FUND_SPLICE_ROW_GRID} text-[10px] text-zinc-400`}>
-                    <div />
-                    <div />
-                    <div />
-                    <div />
-                    <div>尾部净值日期</div>
-                    <div />
-                  </div>
-                )}
                 {loading ? (
                   <p className="text-sm text-muted-foreground">加载中…</p>
                 ) : (
@@ -604,14 +650,16 @@ export function CustomFundNavGenerationRulesDialog({
                         key={`fund-row-${index}`}
                         index={index}
                         row={row}
-                        showTailDate={index === 0}
+                        isLast={index === funds.length - 1}
                         showAdd={index === 0}
                         showRemove={funds.length > 2 && index === funds.length - 1}
                         onChange={(next) => updateFund(index, next)}
                         onAdd={() => setFunds((prev) => [...prev, emptyFund()])}
                         onRemove={() => setFunds((prev) => prev.slice(0, -1))}
-                        onAutoTailDate={index === 0 ? handleAutoTailDate : undefined}
-                        autoTailLoading={index === 0 ? autoTailLoading : false}
+                        onAutoStartDate={() => void handleAutoStartDate(index)}
+                        autoStartLoading={autoStartIndex === index}
+                        onAutoHandoff={index < funds.length - 1 ? () => void handleAutoHandoff(index) : undefined}
+                        autoHandoffLoading={autoHandoffIndex === index}
                       />
                     ))}
                     {tailHint && (

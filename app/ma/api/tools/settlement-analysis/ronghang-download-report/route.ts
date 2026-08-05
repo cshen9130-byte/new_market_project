@@ -6,12 +6,17 @@ import { tmpdir } from "os"
 import { promisify } from "util"
 import { NextResponse } from "next/server"
 
+import {
+  ensureRonghangZipBuffer,
+  isRonghangArchiveFilename,
+} from "@/lib/server/ronghang-archive"
+
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 const execFileAsync = promisify(execFile)
 
-const REQUIRED_IMPORTS = "import matplotlib, pandas, numpy, docx, xlrd, reportlab"
+const REQUIRED_IMPORTS = "import matplotlib, pandas, numpy, docx, xlrd, reportlab, PIL"
 const PYTHON_DEPS_PROBE_TIMEOUT_MS = 60_000
 
 type PythonInvocation = {
@@ -64,6 +69,11 @@ function listPythonCandidates(scriptDir: string): PythonInvocation[] {
     pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python"))
     pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python3"))
     pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python"))
+    pushPythonCandidate(out, path.join(cwd, "yinhe_strategy", ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(cwd, "guoxin_strategy", ".venv", "bin", "python3"))
+    // bare names last — PATH may point at a usable interpreter
+    pushPythonCandidate(out, "python3")
+    pushPythonCandidate(out, "python")
   }
 
   return out
@@ -138,18 +148,21 @@ export async function POST(request: Request) {
   try {
     formData = await request.formData()
   } catch {
-    return NextResponse.json({ error: "请以 multipart 上传 ZIP 文件。" }, { status: 400 })
+    return NextResponse.json({ error: "请以 multipart 上传 ZIP/RAR 文件。" }, { status: 400 })
   }
 
   const file = formData.get("file")
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: "请先上传融航结算单 ZIP（如 data.zip）。" }, { status: 400 })
+    return NextResponse.json(
+      { error: "请先上传融航结算单压缩包（如 data.zip / data.rar）。" },
+      { status: 400 },
+    )
   }
-  if (!/\.zip$/i.test(file.name)) {
-    return NextResponse.json({ error: "仅支持 .zip 文件。" }, { status: 400 })
+  if (!isRonghangArchiveFilename(file.name)) {
+    return NextResponse.json({ error: "仅支持 .zip / .rar 文件。" }, { status: 400 })
   }
   if (file.size > 80 * 1024 * 1024) {
-    return NextResponse.json({ error: "ZIP 文件过大，请控制在 80MB 以内。" }, { status: 400 })
+    return NextResponse.json({ error: "压缩包过大，请控制在 80MB 以内。" }, { status: 400 })
   }
 
   const advisorRaw = formData.get("advisor")
@@ -163,7 +176,10 @@ export async function POST(request: Request) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error("[ronghang-download-report] No usable Python:", msg)
     cachedPython = null
-    return NextResponse.json({ error: "报告生成失败", detail: msg }, { status: 500 })
+    return NextResponse.json(
+      { error: msg || "报告生成失败：未找到可用的 Python 环境", detail: msg },
+      { status: 500 },
+    )
   }
 
   const workDir = await mkdtemp(path.join(tmpdir(), "ronghang-report-"))
@@ -174,7 +190,10 @@ export async function POST(request: Request) {
   const reportPath = path.join(outDir, reportName)
 
   try {
-    await writeFile(zipPath, Buffer.from(await file.arrayBuffer()))
+    const rawBuffer = Buffer.from(await file.arrayBuffer())
+    // Python report script expects ZIP; convert RAR → ZIP when needed
+    const { zipBuffer } = await ensureRonghangZipBuffer(rawBuffer, file.name)
+    await writeFile(zipPath, zipBuffer)
 
     const scriptArgs = [
       ...python.prefixArgs,
@@ -202,6 +221,9 @@ export async function POST(request: Request) {
           PYTHONIOENCODING: "utf-8",
           RONGHANG_REPORT_OUTPUT_DIR: outDir,
           MPLCONFIGDIR: mplConfigDir,
+          // Prefer the same CJK font used by FOF weekly reports when present
+          RONGHANG_REPORT_FONT_PATH:
+            process.env.RONGHANG_REPORT_FONT_PATH || process.env.FOF_REPORT_FONT_PATH || "",
         },
         encoding: "utf8",
         maxBuffer: 8 * 1024 * 1024,
@@ -221,12 +243,24 @@ export async function POST(request: Request) {
       cachedPython = null
     }
 
-    const missingHint = /ModuleNotFoundError: No module named ['"]?(\w+)/.exec(detail)
-    const error = missingHint
-      ? `报告生成失败：Python 缺少依赖 ${missingHint[1]}。请执行: ${pythonDepsInstallHint()}`
-      : "报告生成失败"
+    const missingHint = /ModuleNotFoundError: No module named ['"]?([\w.]+)/.exec(detail)
+    let error = "报告生成失败"
+    if (missingHint) {
+      error = `报告生成失败：Python 缺少依赖 ${missingHint[1]}。请执行: ${pythonDepsInstallHint()}`
+    } else if (/timed? ?out|ETIMEDOUT|Timeout/i.test(detail)) {
+      error = "报告生成超时，请缩小 ZIP 或稍后重试。"
+    } else {
+      const firstLine =
+        detail
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => line && !line.startsWith("Traceback")) || ""
+      if (firstLine) {
+        error = `报告生成失败：${firstLine.slice(0, 240)}`
+      }
+    }
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
-    return NextResponse.json({ error, detail }, { status: 500 })
+    return NextResponse.json({ error, detail: detail.slice(0, 4000) }, { status: 500 })
   }
 
   if (!existsSync(reportPath)) {

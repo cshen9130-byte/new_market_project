@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import {
   DEFAULT_SPLICE_FUNDS,
+  normalizeSpliceFunds,
   type CustomFundNavGenerationRule,
 } from "@/lib/custom-fund-nav-rules-types"
 import {
@@ -32,7 +33,7 @@ export async function GET(req: Request) {
     const defaultRule: CustomFundNavGenerationRule = {
       rule_type: "splice",
       start_date: "",
-      funds: DEFAULT_SPLICE_FUNDS,
+      funds: DEFAULT_SPLICE_FUNDS.map((row) => ({ ...row })),
       annual_return_rate: "",
       mom_product_name: "",
       mom_fixed_item: "",
@@ -40,8 +41,12 @@ export async function GET(req: Request) {
       mom_extra_dates: [],
       updated_at: "",
     }
+    const resolved = rule ?? defaultRule
     return NextResponse.json({
-      rule: rule ?? defaultRule,
+      rule: {
+        ...resolved,
+        funds: normalizeSpliceFunds(resolved.funds, resolved.start_date),
+      },
     })
   } catch (err) {
     console.error("[custom-funds/nav-rules GET]", err)

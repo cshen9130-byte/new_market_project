@@ -101,12 +101,22 @@ DARK_GREEN = "#3ba272"
 
 def _cn_font_candidates() -> list[str]:
     home = Path.home()
+    env_fonts = [
+        os.environ.get("RONGHANG_REPORT_FONT_PATH", ""),
+        os.environ.get("FOF_REPORT_FONT_PATH", ""),
+    ]
+    bundled = BASE_DIR.parent / "haitai_week_report" / "fonts" / "NotoSansSC-Regular.otf"
     return [
+        *[p for p in env_fonts if p],
+        str(bundled),
         r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\msyh.ttc",
         r"C:\Windows\Fonts\simsun.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/root/new_market_project/haitai_week_report/fonts/NotoSansSC-Regular.otf",
         "/System/Library/Fonts/PingFang.ttc",
         str(home / ".local/share/fonts/NotoSansSC-Regular.otf"),
     ]
@@ -133,6 +143,7 @@ def configure_matplotlib() -> None:
 
 def configure_pdf_font() -> str:
     global _PDF_FONT
+    errors: list[str] = []
     for path in _cn_font_candidates():
         if not path or not os.path.isfile(path):
             continue
@@ -147,9 +158,17 @@ def configure_pdf_font() -> str:
             print(f"[FONT] PDF using: {path}", flush=True)
             return name
         except Exception as exc:
-            print(f"[FONT] skip {path}: {exc}", flush=True)
+            msg = f"{path}: {exc}"
+            errors.append(msg)
+            print(f"[FONT] skip {msg}", flush=True)
             continue
-    return "Helvetica"
+    hint = (
+        "未找到可用中文字体，PDF 无法渲染中文。"
+        "请安装文泉驿/Noto CJK，或设置 FOF_REPORT_FONT_PATH / RONGHANG_REPORT_FONT_PATH。"
+    )
+    if errors:
+        hint += " 尝试失败: " + "; ".join(errors[:3])
+    raise RuntimeError(hint)
 
 
 def _fp() -> dict:
@@ -346,24 +365,52 @@ def parse_workbook(path: Path) -> dict:
     }
 
 
+def _iter_archive_excel_files(archive_path: Path):
+    """Yield (basename, bytes) for .xls/.xlsx members in zip or rar."""
+    suffix = archive_path.suffix.lower()
+    head = archive_path.read_bytes()[:4] if archive_path.is_file() else b""
+    is_rar = suffix == ".rar" or head.startswith(b"Rar!")
+
+    if not is_rar:
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for name in zf.namelist():
+                if not re.search(r"\.xlsx?$", name, re.I) or name.startswith("__MACOSX"):
+                    continue
+                with zf.open(name) as src:
+                    yield Path(name).name, src.read()
+        return
+
+    try:
+        import rarfile  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "检测到 RAR 压缩包，但未安装 rarfile。请执行: pip install rarfile，并确保系统有 unrar/bsdtar。"
+        ) from exc
+
+    with rarfile.RarFile(archive_path) as rf:
+        for name in rf.namelist():
+            if not re.search(r"\.xlsx?$", name, re.I) or name.startswith("__MACOSX"):
+                continue
+            info = rf.getinfo(name)
+            if info.is_dir():
+                continue
+            yield Path(name).name, rf.read(name)
+
+
 def load_zip(zip_path: Path) -> list[dict]:
     days = []
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        names = [n for n in zf.namelist() if re.search(r"\.xlsx?$", n, re.I) and not n.startswith("__MACOSX")]
-        tmp = zip_path.parent / "_ronghang_extract"
-        tmp.mkdir(parents=True, exist_ok=True)
-        for name in names:
-            base = Path(name).name
-            target = tmp / base
-            with zf.open(name) as src, open(target, "wb") as dst:
-                dst.write(src.read())
-            try:
-                days.append(parse_workbook(target))
-            except Exception as exc:
-                print(f"[WARN] skip {base}: {exc}", flush=True)
+    tmp = zip_path.parent / "_ronghang_extract"
+    tmp.mkdir(parents=True, exist_ok=True)
+    for base, raw in _iter_archive_excel_files(zip_path):
+        target = tmp / base
+        target.write_bytes(raw)
+        try:
+            days.append(parse_workbook(target))
+        except Exception as exc:
+            print(f"[WARN] skip {base}: {exc}", flush=True)
     days.sort(key=lambda d: d["account"]["trade_date"])
     if not days:
-        raise RuntimeError("ZIP 中未解析到有效结算单")
+        raise RuntimeError("压缩包中未解析到有效结算单（支持 .zip / .rar）")
     return days
 
 
@@ -2078,7 +2125,7 @@ def build_pdf(data: dict, charts: dict[str, Path], out_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="融航结算单 ZIP → Word/PDF 投资报告分析")
-    parser.add_argument("--zip", required=True, help="data.zip 路径")
+    parser.add_argument("--zip", required=True, help="data.zip / data.rar 路径")
     parser.add_argument("--outdir", default="", help="输出目录")
     parser.add_argument("--format", choices=["docx", "pdf", "both"], default="both")
     parser.add_argument("--advisor", default="", help="封面投顾名称（覆盖结算单客户名称）")

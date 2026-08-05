@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server"
-import type { FundSpliceEntry } from "@/lib/custom-fund-nav-rules-types"
+import {
+  normalizeFundSpliceEntry,
+  type FundSpliceEntry,
+} from "@/lib/custom-fund-nav-rules-types"
 import { assertCustomFundNavRuleAccess } from "@/lib/server/custom-fund-nav-rules"
 import { suggestSpliceStartDate } from "@/lib/server/custom-fund-nav-generate"
 
@@ -33,14 +36,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "not_found" }, { status: 404 })
   }
 
-  const normalizeFund = (row: Partial<FundSpliceEntry> | undefined): FundSpliceEntry => ({
-    fund_category: String(row?.fund_category ?? "私募基金"),
-    product_name: String(row?.product_name ?? "").trim(),
-    nav_source: String(row?.nav_source ?? "平台净值"),
-    tail_nav_date: String(row?.tail_nav_date ?? "").trim(),
-  })
-
-  const result = await suggestSpliceStartDate(normalizeFund(fund1))
+  const result = await suggestSpliceStartDate(normalizeFundSpliceEntry(fund1))
 
   if (!result.ok) {
     return NextResponse.json({ error: "suggest_failed", message: result.error }, { status: 400 })

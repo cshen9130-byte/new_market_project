@@ -177,12 +177,41 @@ async function loadAdjustedSeries(entry: FundSpliceEntry): Promise<AdjPoint[]> {
   }
 }
 
+function fundSegmentBounds(
+  fund: FundSpliceEntry,
+  index: number,
+  fundCount: number,
+  fallbackStart: string,
+  seriesLastDate: string,
+): { start: string; end: string } {
+  const start = normalizeDate(
+    fund.start_date || (index === 0 ? fallbackStart : ""),
+  )
+  const rawEnd = fund.end_date || fund.tail_nav_date || ""
+  const end = rawEnd
+    ? normalizeDate(rawEnd)
+    : index === fundCount - 1
+      ? seriesLastDate
+      : ""
+
+  if (!start) {
+    throw new Error(`请填写「${fund.product_name || `基金${index + 1}`}」的开始日期`)
+  }
+  if (!end) {
+    throw new Error(`请填写「${fund.product_name || `基金${index + 1}`}」的结束日期`)
+  }
+  if (end < start) {
+    throw new Error(`「${fund.product_name}」结束日期不能早于开始日期`)
+  }
+  return { start, end }
+}
+
 function computeSplicedNav(
   startDate: string,
   funds: FundSpliceEntry[],
   segments: AdjPoint[][],
 ): AdjPoint[] {
-  const start = normalizeDate(startDate)
+  const fallbackStart = normalizeDate(startDate)
   const output: AdjPoint[] = []
 
   for (let i = 0; i < funds.length; i += 1) {
@@ -193,20 +222,25 @@ function computeSplicedNav(
       throw new Error(`「${funds[i].product_name}」没有可用净值`)
     }
 
+    const { start: segStart, end: segEnd } = fundSegmentBounds(
+      funds[i],
+      i,
+      funds.length,
+      fallbackStart,
+      points[points.length - 1].date,
+    )
+
     if (i === 0) {
-      const tail = funds[i].tail_nav_date
-        ? normalizeDate(funds[i].tail_nav_date)
-        : points[points.length - 1].date
-      const segment = points.filter((p) => p.date >= start && p.date <= tail)
+      const segment = points.filter((p) => p.date >= segStart && p.date <= segEnd)
       if (!segment.length) {
-        throw new Error(`「${funds[i].product_name}」在拼接开始/尾部日期范围内没有净值`)
+        throw new Error(`「${funds[i].product_name}」在开始/结束日期范围内没有净值`)
       }
       output.push(...segment)
       continue
     }
 
     if (!output.length) {
-      throw new Error("拼接序列为空，请检查第一只基金的开始时间与尾部净值日期")
+      throw new Error("拼接序列为空，请检查第一只基金的开始/结束日期")
     }
 
     const prevEndDate = output[output.length - 1].date
@@ -216,35 +250,39 @@ function computeSplicedNav(
       prevFundIdx = points.reduce((acc, p, idx) => (p.date <= prevEndDate ? idx : acc), -1)
     }
 
-    if (prevFundIdx < 0) {
-      const firstAfter = points.findIndex((p) => p.date > prevEndDate)
-      if (firstAfter < 0) {
-        throw new Error(
-          `「${funds[i].product_name}」在切换日期（${prevEndDate}）之后没有净值，请检查第二只基金的数据起始日期`,
-        )
-      }
-      output.push({ date: points[firstAfter].date, adj: lastOut })
-      lastOut = output[output.length - 1].adj
-      for (let j = firstAfter + 1; j < points.length; j += 1) {
+    const pushReturnPath = (fromIdx: number) => {
+      for (let j = fromIdx; j < points.length; j += 1) {
         const prev = points[j - 1]
         const curr = points[j]
+        if (curr.date < segStart || curr.date <= prevEndDate) continue
+        if (curr.date > segEnd) break
         if (curr.adj <= 0 || prev.adj <= 0) continue
         lastOut = lastOut * (curr.adj / prev.adj)
         output.push({ date: curr.date, adj: lastOut })
       }
+    }
+
+    if (prevFundIdx < 0) {
+      const firstAfter = points.findIndex(
+        (p) => p.date > prevEndDate && p.date >= segStart && p.date <= segEnd,
+      )
+      if (firstAfter < 0) {
+        throw new Error(
+          `「${funds[i].product_name}」在切换日期（${prevEndDate}）之后、设定区间内没有净值`,
+        )
+      }
+      output.push({ date: points[firstAfter].date, adj: lastOut })
+      lastOut = output[output.length - 1].adj
+      pushReturnPath(firstAfter + 1)
       continue
     }
 
-    for (let j = prevFundIdx + 1; j < points.length; j += 1) {
-      const prev = points[j - 1]
-      const curr = points[j]
-      if (curr.adj <= 0 || prev.adj <= 0) continue
-      lastOut = lastOut * (curr.adj / prev.adj)
-      output.push({ date: curr.date, adj: lastOut })
-    }
+    pushReturnPath(prevFundIdx + 1)
 
     if (output[output.length - 1].date <= prevEndDate) {
-      throw new Error(`「${funds[i].product_name}」在切换日期之后没有净值`)
+      throw new Error(
+        `「${funds[i].product_name}」在切换日期之后、设定区间（${segStart}~${segEnd}）内没有净值`,
+      )
     }
   }
 
@@ -288,7 +326,10 @@ export type GenerateNavResult =
 export type SuggestTailResult =
   | {
       ok: true
+      end_date: string
+      /** @deprecated alias of end_date */
       tail_nav_date: string
+      next_start_date: string
       fund1_last_date: string
       fund2_first_date: string
       hint: string
@@ -381,17 +422,20 @@ export async function suggestSpliceStartDate(fund1: FundSpliceEntry): Promise<Su
   }
 }
 
-/** Pick fund-1 tail date = last fund-1 NAV before fund-2 begins (handoff point). */
+/**
+ * Suggest current fund end_date (= last NAV before next fund begins)
+ * and next fund start_date for handoff.
+ */
 export async function suggestSpliceTailDate(
   startDate: string,
   fund1: FundSpliceEntry,
   fund2: FundSpliceEntry,
 ): Promise<SuggestTailResult> {
   try {
-    const start = normalizeDate(startDate)
-    if (!start) return { ok: false, error: "请选择开始时间" }
+    const start = normalizeDate(startDate || fund1.start_date)
+    if (!start) return { ok: false, error: "请先填写当前基金的开始日期" }
     if (!fund1.product_name.trim() || !fund2.product_name.trim()) {
-      return { ok: false, error: "请先选择前两只基金" }
+      return { ok: false, error: "请先选择当前基金与下一只基金" }
     }
 
     const [seg1, seg2] = await Promise.all([
@@ -417,13 +461,15 @@ export async function suggestSpliceTailDate(
 
     return {
       ok: true,
+      end_date: tail,
       tail_nav_date: tail,
+      next_start_date: f2First,
       fund1_last_date: tail,
       fund2_first_date: f2First,
       hint:
         tail === f2First
-          ? `第一只基金与第二只基金在 ${tail} 同日衔接`
-          : `第一只基金接至 ${tail}，第二只基金从 ${f2First} 起按收益率衔接`,
+          ? `「${fund1.product_name}」与「${fund2.product_name}」在 ${tail} 同日衔接`
+          : `「${fund1.product_name}」接至 ${tail}，「${fund2.product_name}」从 ${f2First} 起按收益率衔接`,
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "自动选择失败" }
@@ -442,8 +488,12 @@ export async function generateCustomFundNavFromRule(
       if (activeFunds.length < 2) {
         return { ok: false, error: "请至少选择两只基金" }
       }
+      const seriesStart = activeFunds[0].start_date || rule.start_date
+      if (!seriesStart.trim()) {
+        return { ok: false, error: "请填写第一只基金的开始日期" }
+      }
       const segments = await Promise.all(activeFunds.map((f) => loadAdjustedSeries(f)))
-      points = computeSplicedNav(rule.start_date, activeFunds, segments)
+      points = computeSplicedNav(seriesStart, activeFunds, segments)
     } else if (rule.rule_type === "fixed_income") {
       points = generateFixedIncomeNav(rule.start_date, rule.annual_return_rate)
     } else {

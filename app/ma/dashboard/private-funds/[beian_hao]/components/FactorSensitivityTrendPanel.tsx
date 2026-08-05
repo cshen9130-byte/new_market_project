@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useMemo, useRef, useState } from "react"
-import { HelpCircle, Menu } from "lucide-react"
+import { Menu } from "lucide-react"
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Legend,
 } from "recharts"
@@ -14,9 +14,12 @@ import {
 import { RED } from "./shared"
 import {
   STYLE_FACTOR_DEFS,
+  type AttributionFactorModel,
+  type FactorDef,
   type FactorSensitivityColumn,
   type FactorSensitivityTrend,
 } from "@/lib/style-attribution"
+import { CalcExplanationButton } from "./AttributionCalcExplanation"
 
 const INTERVAL_COLOR = "#2563eb"
 
@@ -52,12 +55,16 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
   dateTo,
   trend,
   loading,
+  factorDefs = STYLE_FACTOR_DEFS.map((f) => ({ key: f.key, name: f.name })),
+  factorModel = "commodity-cta",
 }: {
   productName: string
   dateFrom: string
   dateTo: string
   trend: FactorSensitivityTrend | null
   loading: boolean
+  factorDefs?: FactorDef[]
+  factorModel?: AttributionFactorModel
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [periodMode, setPeriodMode] = useState<"annual" | "quarterly">("annual")
@@ -79,7 +86,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
 
   const radarData = useMemo(() => {
     if (!compareColumn || !intervalColumn) return []
-    return STYLE_FACTOR_DEFS.map((def) => {
+    return factorDefs.map((def) => {
       const primary = compareColumn.factors.find((f) => f.factorKey === def.key)
       const interval = intervalColumn.factors.find((f) => f.factorKey === def.key)
       return {
@@ -88,7 +95,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
         [intervalColumn.label]: interval?.coefficient ?? null,
       }
     })
-  }, [compareColumn, intervalColumn])
+  }, [compareColumn, intervalColumn, factorDefs])
 
   const radarDomain = useMemo(
     () => computeRadarDomain(columns.filter((c) => compareColumn && intervalColumn && (c.key === compareColumn.key || c.key === intervalColumn.key))),
@@ -119,7 +126,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
         <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
           <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
           因子敏感度趋势
-          <HelpCircle className="h-3.5 w-3.5 text-zinc-400" aria-label="因子敏感度趋势说明" />
+          <CalcExplanationButton section="sensitivity" factorModel={factorModel} label="因子敏感度趋势说明" />
         </div>
         <div className="flex items-center gap-2">
           <div className="inline-flex text-xs border border-zinc-200 rounded overflow-hidden">
@@ -236,7 +243,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
               </tr>
             </thead>
             <tbody>
-              {STYLE_FACTOR_DEFS.map((def, idx) => (
+              {factorDefs.map((def, idx) => (
                 <tr
                   key={def.key}
                   className={idx % 2 === 0 ? "bg-zinc-50/50" : "bg-white"}
@@ -254,7 +261,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
                 </tr>
               ))}
               <tr className="border-t border-zinc-100 bg-zinc-50/80">
-                <td className="py-2.5 pr-3 tabular-nums text-zinc-500">{STYLE_FACTOR_DEFS.length + 1}</td>
+                <td className="py-2.5 pr-3 tabular-nums text-zinc-500">{factorDefs.length + 1}</td>
                 <td className="py-2.5 pr-3 text-zinc-800 font-medium">R方值</td>
                 {tableColumns.map((col) => (
                   <td key={col.key} className="py-2.5 px-2 text-right tabular-nums text-zinc-800 font-medium">

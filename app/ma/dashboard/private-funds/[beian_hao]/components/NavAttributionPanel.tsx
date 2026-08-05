@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Download, HelpCircle, Menu, BarChart3, LineChart as LineChartIcon } from "lucide-react"
+import { Download, Menu, BarChart3, LineChart as LineChartIcon } from "lucide-react"
 import {
   LineChart, Line,
   BarChart, Bar, Cell,
@@ -16,27 +16,33 @@ import {
 import { RED, GREEN, getNavFieldValue, type NavRow, type BenchmarkPoint } from "./shared"
 import {
   buildFactorReturns,
+  buildMultiAssetFactorReturns,
   computeFundDailyReturns,
   computeStyleAttribution,
+  factorDefsForModel,
+  marketCodesForModel,
   subtractSeries,
   listYearsInRange,
   listQuartersInRange,
   quarterBounds,
   attributionToSensitivityColumn,
+  type AttributionFactorModel,
   type DailyCloseSeries,
   type StyleAttributionResult,
   type FactorSensitivityTrend,
 } from "@/lib/style-attribution"
 import { FactorSensitivityTrendPanel } from "./FactorSensitivityTrendPanel"
+import { CalcExplanationButton } from "./AttributionCalcExplanation"
 
-const FACTOR_INDEX_CODES = [
-  "NHCI.NH",
-  "NHAI.NH",
-  "NHECI.NH",
-  "NHFI.NH",
-  "NHPMI.NH",
-  "NHNFI.NH",
-] as const
+export type { AttributionFactorModel }
+
+export function guessAttributionFactorModel(productName: string): AttributionFactorModel {
+  const text = productName.trim().toLowerCase()
+  if (/cta|期货|商品|管理期货|trend\s*following|managed\s*futures/.test(text)) {
+    return "commodity-cta"
+  }
+  return "multi-asset"
+}
 
 function formatAxisDate(dateStr: string): string {
   const year = dateStr.slice(2, 4)
@@ -122,7 +128,22 @@ function CoeffBar({ value, maxAbs }: { value: number; maxAbs: number }) {
   )
 }
 
-async function fetchIndexSeries(code: string, from: string, to: string): Promise<DailyCloseSeries[]> {
+async function fetchMarketSeries(code: string, from: string, to: string): Promise<DailyCloseSeries[]> {
+  // ETF tickers use benchmark API; equity/futures indices use scenario-market.
+  if (/^\d+\.(SH|SZ)$/i.test(code)) {
+    const qs = new URLSearchParams({ key: code, from, to })
+    const res = await fetch(`/ma/api/private-funds/benchmark?${qs}`)
+    if (!res.ok) return []
+    const json = await res.json()
+    if (!json.ok || !Array.isArray(json.data)) return []
+    return json.data
+      .map((row: { date: string; value: number | null }) => ({
+        date: row.date,
+        close: row.value ?? 0,
+      }))
+      .filter((row: DailyCloseSeries) => row.close > 0)
+  }
+
   const qs = new URLSearchParams({ code, from, to })
   const res = await fetch(`/ma/api/private-funds/scenario-market?${qs}`)
   if (!res.ok) return []
@@ -186,14 +207,20 @@ function runAttributionForRows(
   excessMode: boolean,
   hasBenchmark: boolean,
   benchmarkSeries: BenchmarkPoint[],
+  factorModel: AttributionFactorModel,
 ): StyleAttributionResult | null {
   const prepared = computeFundReturnsForRows(sliceRows, navType, excessMode, hasBenchmark, benchmarkSeries)
   if (!prepared) return null
-  const factorReturns = buildFactorReturns(indexSeries, prepared.dates)
+  const factorDefs = factorDefsForModel(factorModel)
+  const factorReturns =
+    factorModel === "multi-asset"
+      ? buildMultiAssetFactorReturns(indexSeries, prepared.dates, sliceRows[0].price_date)
+      : buildFactorReturns(indexSeries, prepared.dates)
   return computeStyleAttribution({
     dates: prepared.dates,
     fundReturns: prepared.fundReturns,
     factorReturns,
+    factorDefs,
   })
 }
 
@@ -206,6 +233,8 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
   navType,
   benchmarkSeries,
   hasBenchmark,
+  defaultFactorModel = "commodity-cta",
+  showFactorModelSelect = false,
 }: {
   productName: string
   dateRangeLabel: string
@@ -215,8 +244,11 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
   navType: string
   benchmarkSeries: BenchmarkPoint[]
   hasBenchmark: boolean
+  defaultFactorModel?: AttributionFactorModel
+  showFactorModelSelect?: boolean
 }) {
   const [excessMode, setExcessMode] = useState(false)
+  const [factorModel, setFactorModel] = useState<AttributionFactorModel>(defaultFactorModel)
   const [loading, setLoading] = useState(true)
   const [indexSeries, setIndexSeries] = useState<Record<string, DailyCloseSeries[]>>({})
   const tableRef = useRef<HTMLDivElement>(null)
@@ -224,14 +256,26 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
   const contributionRef = useRef<HTMLDivElement>(null)
   const riskContributionRef = useRef<HTMLDivElement>(null)
   const [contributionChartMode, setContributionChartMode] = useState<"bar" | "line">("bar")
+  const factorDefs = useMemo(() => factorDefsForModel(factorModel), [factorModel])
+
+  useEffect(() => {
+    setFactorModel(defaultFactorModel)
+  }, [defaultFactorModel])
 
   useEffect(() => {
     if (!dateFrom || !dateTo) return
     let cancelled = false
     setLoading(true)
+    const codes = marketCodesForModel(factorModel)
+    // Extend lookback so rolling CTA factors / asset-class ffill have history.
+    const fetchFrom = (() => {
+      const d = new Date(`${dateFrom}T12:00:00`)
+      d.setDate(d.getDate() - 120)
+      return d.toISOString().slice(0, 10)
+    })()
     Promise.all(
-      FACTOR_INDEX_CODES.map(async (code) => {
-        const data = await fetchIndexSeries(code, dateFrom, dateTo)
+      codes.map(async (code) => {
+        const data = await fetchMarketSeries(code, fetchFrom, dateTo)
         return [code, data] as const
       }),
     )
@@ -245,12 +289,14 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
     return () => {
       cancelled = true
     }
-  }, [dateFrom, dateTo])
+  }, [dateFrom, dateTo, factorModel])
 
   const attribution = useMemo((): StyleAttributionResult | null => {
     if (rows.length < 30 || loading) return null
-    return runAttributionForRows(rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries)
-  }, [rows, navType, excessMode, hasBenchmark, benchmarkSeries, indexSeries, loading])
+    return runAttributionForRows(
+      rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel,
+    )
+  }, [rows, navType, excessMode, hasBenchmark, benchmarkSeries, indexSeries, loading, factorModel])
 
   const sensitivityTrend = useMemo((): FactorSensitivityTrend | null => {
     if (!attribution || loading) return null
@@ -260,7 +306,9 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
         const from = `${year}-01-01` < dateFrom ? dateFrom : `${year}-01-01`
         const to = `${year}-12-31` > dateTo ? dateTo : `${year}-12-31`
         const slice = rows.filter((r) => r.price_date >= from && r.price_date <= to)
-        const result = runAttributionForRows(slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries)
+        const result = runAttributionForRows(
+          slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel,
+        )
         if (!result) return null
         return attributionToSensitivityColumn(result, `year-${year}`, `${year}年`, false)
       })
@@ -271,7 +319,9 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
         const bounds = quarterBounds(qKey, dateFrom, dateTo)
         if (!bounds) return null
         const slice = rows.filter((r) => r.price_date >= bounds.from && r.price_date <= bounds.to)
-        const result = runAttributionForRows(slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries)
+        const result = runAttributionForRows(
+          slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel,
+        )
         if (!result) return null
         const [, year, quarter] = qKey.match(/^(\d{4})-Q(\d)$/) ?? []
         const label = year && quarter ? `${year}Q${quarter}` : qKey
@@ -285,7 +335,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
       annualColumns: [...annualPeriodCols, intervalCol],
       quarterlyColumns: [...quarterlyPeriodCols, intervalCol],
     }
-  }, [attribution, loading, rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, dateFrom, dateTo])
+  }, [attribution, loading, rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, dateFrom, dateTo, factorModel])
 
   const maxAbsCoeff = useMemo(
     () => Math.max(...(attribution?.factors.map((f) => Math.abs(f.coefficient)) ?? [1]), 0.01),
@@ -406,7 +456,9 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800 leading-relaxed">
-        净值归因是基于净值和因子做回归分析，与净值颗粒度、因子编制等因素有关，仅供参考，不作为投资建议
+        {factorModel === "multi-asset"
+          ? "当前为多资产大类归因：用权益/债券/黄金/商品指数收益对产品净值做回归，解释大类风险暴露，并非持仓还原，仅供参考。"
+          : "当前为商品 CTA 风格归因：因子由南华商品指数体系构造，适用于期货/CTA 策略；用于非商品策略时解释力可能很弱，仅供参考。"}
       </div>
 
       <div className="rounded-xl border border-zinc-100 bg-white p-5">
@@ -414,22 +466,40 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
           <div>
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 mb-1">
               <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
-              风格归因分析
+              {factorModel === "multi-asset" ? "多资产大类归因分析" : "商品CTA风格归因分析"}
             </div>
             <div className="text-xs text-zinc-500 pl-3 tabular-nums">
               归因区间：{dateRangeLabel}
             </div>
           </div>
-          <CheckboxToggle
-            checked={excessMode}
-            onChange={() => setExcessMode((v) => !v)}
-            label="超额收益"
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            {showFactorModelSelect && (
+              <label className="inline-flex items-center gap-1.5 text-xs text-zinc-600">
+                因子模型
+                <select
+                  value={factorModel}
+                  onChange={(e) => setFactorModel(e.target.value as AttributionFactorModel)}
+                  className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-zinc-300"
+                >
+                  <option value="multi-asset">多资产大类（FOF/综合）</option>
+                  <option value="commodity-cta">商品CTA风格</option>
+                </select>
+              </label>
+            )}
+            <CheckboxToggle
+              checked={excessMode}
+              onChange={() => setExcessMode((v) => !v)}
+              label="超额收益"
+            />
+          </div>
         </div>
 
         <div ref={tableRef}>
           <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-            <div className="text-sm font-semibold text-zinc-800">区间因子回归分析</div>
+            <div className="flex items-center gap-1.5 text-sm font-semibold text-zinc-800">
+              区间因子回归分析
+              <CalcExplanationButton section="regression" factorModel={factorModel} label="区间因子回归分析说明" />
+            </div>
             <button
               type="button"
               onClick={exportRegressionCsv}
@@ -504,7 +574,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
             </div>
             <div className="flex items-center gap-1 text-xs text-zinc-600 pl-3">
               区间因子解释收益率
-              <HelpCircle className="h-3.5 w-3.5 text-zinc-400" aria-label="区间因子解释收益率说明" />
+              <CalcExplanationButton section="explained" factorModel={factorModel} label="区间因子解释收益率说明" />
             </div>
           </div>
           <DropdownMenu>
@@ -602,7 +672,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 mb-1">
               <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
               区间因子收益率贡献
-              <HelpCircle className="h-3.5 w-3.5 text-zinc-400" aria-label="区间因子收益率贡献说明" />
+              <CalcExplanationButton section="contribution" factorModel={factorModel} label="区间因子收益率贡献说明" />
             </div>
             <div className="text-xs text-zinc-500 pl-3">因子贡献收益率</div>
           </div>
@@ -757,7 +827,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 mb-1">
               <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
               区间因子风险贡献
-              <HelpCircle className="h-3.5 w-3.5 text-zinc-400" aria-label="区间因子风险贡献说明" />
+              <CalcExplanationButton section="riskContribution" factorModel={factorModel} label="区间因子风险贡献说明" />
             </div>
             <div className="text-xs text-zinc-500 pl-3">因子贡献年化波动率</div>
           </div>
@@ -831,6 +901,8 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
         dateTo={dateTo}
         trend={sensitivityTrend}
         loading={loading}
+        factorDefs={factorDefs}
+        factorModel={factorModel}
       />
     </div>
   )

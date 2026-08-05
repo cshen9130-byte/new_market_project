@@ -2053,14 +2053,44 @@ export default function SettlementAnalysisPage() {
   }
 
   function isAcceptedZip(file: File) {
-    return /\.zip$/i.test(file.name)
+    const name = (file.name || "").trim().replace(/\\/g, "/")
+    const base = name.includes("/") ? name.slice(name.lastIndexOf("/") + 1) : name
+    if (/\.(zip|rar)$/i.test(base)) return true
+    // Some browsers / downloaders omit the extension but set archive MIME types
+    const mime = (file.type || "").toLowerCase()
+    return (
+      mime === "application/zip" ||
+      mime === "application/x-zip-compressed" ||
+      mime === "application/x-zip" ||
+      mime === "multipart/x-zip" ||
+      mime === "application/vnd.rar" ||
+      mime === "application/x-rar-compressed" ||
+      mime === "application/x-rar"
+    )
+  }
+
+  function pickZipFile(fileList: FileList | File[] | null | undefined): File | null {
+    const files = fileList ? Array.from(fileList) : []
+    return files.find((file) => isAcceptedZip(file)) ?? null
+  }
+
+  function pickZipFromDataTransfer(dataTransfer: DataTransfer): File | null {
+    const fromFiles = pickZipFile(dataTransfer.files)
+    if (fromFiles) return fromFiles
+    const items = dataTransfer.items ? Array.from(dataTransfer.items) : []
+    for (const item of items) {
+      if (item.kind !== "file") continue
+      const file = item.getAsFile()
+      if (file && isAcceptedZip(file)) return file
+    }
+    return null
   }
 
   async function handleDownloadRonghangReport(format: "docx" | "pdf") {
     if (!pendingZip) {
       toast({
         title: "未选择文件",
-        description: "请先拖入融航结算单 ZIP，再下载 Word / PDF 报告。",
+        description: "请先拖入融航结算单 ZIP/RAR，再下载 Word / PDF 报告。",
         variant: "destructive",
       })
       return
@@ -2077,12 +2107,20 @@ export default function SettlementAnalysisPage() {
         body: formData,
       })
       if (!response.ok) {
-        let message = "报告下载失败。"
+        let message = `报告下载失败（HTTP ${response.status}）。`
         try {
           const payload = (await response.json()) as { error?: string; detail?: string }
-          message = payload.error || message
+          const detail = (payload.detail || "").trim()
+          const shortDetail =
+            detail
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .find((line) => line && !/^Traceback/i.test(line)) || ""
+          message =
+            payload.error?.trim() ||
+            (shortDetail ? `报告生成失败：${shortDetail.slice(0, 240)}` : message)
         } catch {
-          /* ignore */
+          /* ignore non-JSON error bodies */
         }
         throw new Error(message)
       }
@@ -2114,7 +2152,7 @@ export default function SettlementAnalysisPage() {
     if (!pendingZip) {
       toast({
         title: "未选择文件",
-        description: "请先拖入或点击选择融航结算单 ZIP（如 data.zip）。",
+        description: "请先拖入或点击选择融航结算单 ZIP/RAR（如 data.zip / data.rar）。",
         variant: "destructive",
       })
       return
@@ -2122,7 +2160,7 @@ export default function SettlementAnalysisPage() {
     if (!isAcceptedZip(pendingZip)) {
       toast({
         title: "文件格式不支持",
-        description: "仅支持 .zip 压缩包。",
+        description: `当前文件「${pendingZip.name}」不是 .zip/.rar，请重新选择融航结算单压缩包。`,
         variant: "destructive",
       })
       return
@@ -2192,6 +2230,11 @@ export default function SettlementAnalysisPage() {
   function handleZipDragOver(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault()
     event.stopPropagation()
+    try {
+      event.dataTransfer.dropEffect = "copy"
+    } catch {
+      /* ignore */
+    }
     setIsZipDragOver(true)
   }
 
@@ -2205,17 +2248,20 @@ export default function SettlementAnalysisPage() {
     event.preventDefault()
     event.stopPropagation()
     setIsZipDragOver(false)
-    const file = event.dataTransfer.files?.[0]
-    if (!file) return
-    if (!isAcceptedZip(file)) {
-      toast({
-        title: "文件格式不支持",
-        description: "仅支持 .zip（例如 融航结算单/data.zip）。",
-        variant: "destructive",
-      })
+    const file = pickZipFromDataTransfer(event.dataTransfer)
+    if (file) {
+      setPendingZip(file)
       return
     }
-    setPendingZip(file)
+    const dropped = event.dataTransfer.files?.[0]
+    const droppedName = dropped?.name?.trim()
+    toast({
+      title: "文件格式不支持",
+      description: droppedName
+        ? `已收到「${droppedName}」，但不是 .zip/.rar。请拖入压缩包本身（如 data.zip / data.rar），不要拖文件夹或解压后的 .xls。`
+        : "未识别到压缩包。请拖入 .zip / .rar（如 融航结算单/data.zip），或点击「选择 ZIP」。",
+      variant: "destructive",
+    })
   }
 
   const holdingsOption = useMemo(
@@ -2544,7 +2590,7 @@ export default function SettlementAnalysisPage() {
         <FileSpreadsheet className="h-4 w-4" />
         <AlertTitle>支持格式</AlertTitle>
         <AlertDescription>
-          单文件支持 xlsx、xls、xlsm、xlsb；融航批量包支持 zip（内含多日 .xls/.xlsx）。上传文件只在分析请求期间进入内存，不会落盘保存。策略判断为启发式推断，用于快速读表，不替代人工复核。
+          单文件支持 xlsx、xls、xlsm、xlsb；融航批量包支持 zip / rar（内含多日 .xls/.xlsx）。上传文件只在分析请求期间进入内存，不会落盘保存。策略判断为启发式推断，用于快速读表，不替代人工复核。
         </AlertDescription>
       </Alert>
 
@@ -2616,7 +2662,7 @@ export default function SettlementAnalysisPage() {
             2. 融航结算单 ZIP 分析报告
           </CardTitle>
           <CardDescription>
-            拖入融航导出的 data.zip（内含多个交易日 Excel，每个文件多 sheet），自动提取账户、成交、平仓与持仓数据，生成与「投资报告分析」同结构的业绩/板块/品种报告。
+            拖入融航导出的 data.zip / data.rar（内含多个交易日 Excel，每个文件多 sheet），自动提取账户、成交、平仓与持仓数据，生成与「投资报告分析」同结构的业绩/板块/品种报告。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -2648,21 +2694,37 @@ export default function SettlementAnalysisPage() {
             <input
               ref={zipInputRef}
               type="file"
-              accept=".zip,application/zip"
+              accept=".zip,.rar,application/zip,application/x-zip-compressed,application/vnd.rar,application/x-rar-compressed"
               className="sr-only"
               disabled={isAnalyzingZip}
               onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) setPendingZip(file)
+                const file = pickZipFile(event.target.files) ?? event.target.files?.[0] ?? null
+                if (!file) return
+                if (!isAcceptedZip(file)) {
+                  toast({
+                    title: "文件格式不支持",
+                    description: `已选择「${file.name}」，仅支持 .zip / .rar 压缩包。`,
+                    variant: "destructive",
+                  })
+                  event.target.value = ""
+                  return
+                }
+                setPendingZip(file)
               }}
             />
             <UploadCloud className={`h-10 w-10 transition-colors ${isZipDragOver ? "text-primary" : pendingZip ? "text-green-600" : "text-muted-foreground"}`} />
             <div>
               <p className="text-sm font-medium">
-                {isZipDragOver ? "松开鼠标以上传" : pendingZip ? pendingZip.name : "拖拽融航结算单 ZIP 到此处，或点击选择文件"}
+                {isZipDragOver
+                  ? "松开鼠标以上传"
+                  : pendingZip
+                    ? pendingZip.name
+                    : "拖拽融航结算单 ZIP/RAR 到此处，或点击选择文件"}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {pendingZip ? "文件已就绪，点击下方按钮生成分析报告" : "示例：融航结算单/data.zip（内含 0170…_YYYY-MM-DD.xls）"}
+                {pendingZip
+                  ? "文件已就绪：可直接下载 Word/PDF，或先点「生成分析报告」做网页预览"
+                  : "请拖入 .zip / .rar 压缩包本身（不要拖文件夹或里面的 .xls）。示例：data.zip"}
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-3">
@@ -2673,11 +2735,15 @@ export default function SettlementAnalysisPage() {
                 disabled={isAnalyzingZip || !!isDownloadingRonghang}
                 onClick={(event) => {
                   event.stopPropagation()
+                  if (!pendingZip) {
+                    zipInputRef.current?.click()
+                    return
+                  }
                   void handleAnalyzeZip()
                 }}
               >
                 <ScanSearch className="h-4 w-4" />
-                {isAnalyzingZip ? "分析中..." : pendingZip ? "生成分析报告" : "选择 ZIP"}
+                {isAnalyzingZip ? "分析中..." : pendingZip ? "生成分析报告" : "选择 ZIP/RAR"}
               </Button>
               <Button
                 type="button"

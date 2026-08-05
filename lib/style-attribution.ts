@@ -15,9 +15,29 @@ export const STYLE_FACTOR_DEFS = [
 
 export type StyleFactorKey = (typeof STYLE_FACTOR_DEFS)[number]["key"]
 
+/** Asset-class factors for FOF / multi-asset NAV attribution (index/ETF daily returns). */
+export const MULTI_ASSET_FACTOR_DEFS = [
+  { key: "if", name: "大盘权益(沪深300)", code: "IF" },
+  { key: "ic", name: "中盘权益(中证500)", code: "IC" },
+  { key: "im", name: "小盘权益(中证1000)", code: "IM" },
+  { key: "ih", name: "蓝筹权益(上证50)", code: "IH" },
+  { key: "bond", name: "利率债(国债ETF)", code: "511010.SH" },
+  { key: "gold", name: "黄金(黄金ETF)", code: "518880.SH" },
+  { key: "commodity", name: "商品(南华商品)", code: "NHCI.NH" },
+] as const
+
+export type MultiAssetFactorKey = (typeof MULTI_ASSET_FACTOR_DEFS)[number]["key"]
+
+export type AttributionFactorModel = "multi-asset" | "commodity-cta"
+
+export interface FactorDef {
+  key: string
+  name: string
+}
+
 export interface FactorRegressionRow {
   index: number
-  factorKey: StyleFactorKey
+  factorKey: string
   factorName: string
   coefficient: number
   stdError: number
@@ -422,6 +442,56 @@ export function buildFactorReturns(
   return out
 }
 
+/** Build asset-class factor returns matched to product NAV return dates. */
+export function buildMultiAssetFactorReturns(
+  indexSeries: Record<string, DailyCloseSeries[]>,
+  returnDates: string[],
+  startDate: string,
+): Record<string, number[]> {
+  const n = returnDates.length
+  const out: Record<string, number[]> = {}
+
+  for (const def of MULTI_ASSET_FACTOR_DEFS) {
+    const series = indexSeries[def.code] ?? []
+    const map = new Map(series.map((p) => [p.date, p.close]))
+    const rets = Array(n).fill(0) as number[]
+
+    const ffillClose = (date: string, fallback: number): number => {
+      if (map.has(date)) return map.get(date)!
+      let close = fallback
+      for (const p of series) {
+        if (p.date <= date) close = p.close
+        else break
+      }
+      return close > 0 ? close : fallback
+    }
+
+    let prevClose = ffillClose(startDate, series[0]?.close ?? 1)
+    for (let i = 0; i < n; i++) {
+      const close = ffillClose(returnDates[i], prevClose)
+      rets[i] = prevClose > 0 ? close / prevClose - 1 : 0
+      prevClose = close
+    }
+    out[def.key] = rets
+  }
+
+  return out
+}
+
+export function factorDefsForModel(model: AttributionFactorModel): FactorDef[] {
+  if (model === "multi-asset") {
+    return MULTI_ASSET_FACTOR_DEFS.map((f) => ({ key: f.key, name: f.name }))
+  }
+  return STYLE_FACTOR_DEFS.map((f) => ({ key: f.key, name: f.name }))
+}
+
+export function marketCodesForModel(model: AttributionFactorModel): string[] {
+  if (model === "multi-asset") {
+    return MULTI_ASSET_FACTOR_DEFS.map((f) => f.code)
+  }
+  return ["NHCI.NH", "NHAI.NH", "NHECI.NH", "NHFI.NH", "NHPMI.NH", "NHNFI.NH"]
+}
+
 function cumulativeReturnPct(returns: number[]): number {
   let acc = 1
   for (const r of returns) acc *= 1 + r
@@ -452,7 +522,7 @@ function sortContributionBars(bars: FactorContributionBar[]): FactorContribution
 
 function buildFactorContributions(
   factors: FactorRegressionRow[],
-  factorReturns: Record<StyleFactorKey, number[]>,
+  factorReturns: Record<string, number[]>,
   fundReturns: number[],
   dates: string[],
 ): {
@@ -520,7 +590,7 @@ function sortRiskContributionBars(bars: FactorContributionBar[]): FactorContribu
 
 function buildFactorRiskContributions(
   factors: FactorRegressionRow[],
-  factorReturns: Record<StyleFactorKey, number[]>,
+  factorReturns: Record<string, number[]>,
   fundReturns: number[],
 ): FactorContributionBar[] {
   const n = fundReturns.length
@@ -552,18 +622,25 @@ function buildFactorRiskContributions(
 export function computeStyleAttribution(opts: {
   dates: string[]
   fundReturns: number[]
-  factorReturns: Record<StyleFactorKey, number[]>
+  factorReturns: Record<string, number[]>
+  factorDefs?: FactorDef[]
   includeIntercept?: boolean
 }): StyleAttributionResult | null {
-  const { dates, fundReturns, factorReturns, includeIntercept = true } = opts
+  const {
+    dates,
+    fundReturns,
+    factorReturns,
+    factorDefs = STYLE_FACTOR_DEFS.map((f) => ({ key: f.key, name: f.name })),
+    includeIntercept = true,
+  } = opts
   const n = fundReturns.length
-  if (n < STYLE_FACTOR_DEFS.length + 5) return null
+  if (n < factorDefs.length + 5) return null
 
-  const factorKeys = STYLE_FACTOR_DEFS.map((f) => f.key)
+  const factorKeys = factorDefs.map((f) => f.key)
   const X: number[][] = []
   for (let i = 0; i < n; i++) {
     const row = includeIntercept ? [1] : []
-    for (const key of factorKeys) row.push(factorReturns[key][i] ?? 0)
+    for (const key of factorKeys) row.push(factorReturns[key]?.[i] ?? 0)
     X.push(row)
   }
 
@@ -571,9 +648,9 @@ export function computeStyleAttribution(opts: {
   if (!ols) return null
 
   const offset = includeIntercept ? 1 : 0
-  const factors: FactorRegressionRow[] = STYLE_FACTOR_DEFS.map((def, idx) => {
+  const factors: FactorRegressionRow[] = factorDefs.map((def, idx) => {
     const fi = idx + offset
-    const factorSeries = factorReturns[def.key]
+    const factorSeries = factorReturns[def.key] ?? []
     return {
       index: idx + 1,
       factorKey: def.key,

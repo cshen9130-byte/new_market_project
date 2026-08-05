@@ -4,7 +4,11 @@ import Link from "next/link"
 import { useMemo, useRef, useState } from "react"
 import { Activity, ArrowLeft, ScanSearch, Trash2, UploadCloud } from "lucide-react"
 
-import { NavAttributionPanel } from "@/app/ma/dashboard/private-funds/[beian_hao]/components/NavAttributionPanel"
+import {
+  NavAttributionPanel,
+  guessAttributionFactorModel,
+  type AttributionFactorModel,
+} from "@/app/ma/dashboard/private-funds/[beian_hao]/components/NavAttributionPanel"
 import type { NavRow } from "@/app/ma/dashboard/private-funds/[beian_hao]/components/shared"
 import { useToast } from "@/hooks/use-toast"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -96,6 +100,7 @@ export default function NavAttributionToolPage() {
   const [analysis, setAnalysis] = useState<NavUploadAnalysis | null>(null)
   const [navType, setNavType] = useState<NavTypeOption>("复权净值")
   const [productName, setProductName] = useState("")
+  const [factorModel, setFactorModel] = useState<AttributionFactorModel>("multi-asset")
 
   const navRows = useMemo(
     () => (analysis ? toNavRows(analysis.rows) : []),
@@ -149,7 +154,9 @@ export default function NavAttributionToolPage() {
       }
 
       setAnalysis(result)
-      setProductName(pickProductName(result))
+      const name = pickProductName(result)
+      setProductName(name)
+      setFactorModel(guessAttributionFactorModel(`${name} ${result.sourceFileName}`))
 
       const types: NavTypeOption[] = []
       if (result.detectedColumns.unitNav) types.push("单位净值")
@@ -163,9 +170,13 @@ export default function NavAttributionToolPage() {
       if (fileInputRef.current) fileInputRef.current.value = ""
       setPendingFile(null)
 
+      const model = guessAttributionFactorModel(`${name} ${result.sourceFileName}`)
       toast({
         title: "识别完成",
-        description: `已识别 ${rows.length} 个有效净值点，正在生成风格因子归因报告。`,
+        description:
+          model === "multi-asset"
+            ? `已识别 ${rows.length} 个有效净值点，将按多资产大类因子（权益/债/金/商品）做归因。`
+            : `已识别 ${rows.length} 个有效净值点，将按商品CTA风格因子做归因。`,
       })
     } catch (error) {
       toast({
@@ -195,6 +206,7 @@ export default function NavAttributionToolPage() {
     setAnalysis(null)
     setProductName("")
     setNavType("复权净值")
+    setFactorModel("multi-asset")
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
@@ -211,7 +223,7 @@ export default function NavAttributionToolPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">净值归因</h1>
           <p className="mt-2 text-muted-foreground">
-            上传产品净值数据，生成截面动量、时间序列动量等风格因子回归分析报告。
+            上传产品净值数据，按策略类型选择多资产大类或商品CTA风格因子，生成回归分析报告。
           </p>
         </div>
       </div>
@@ -372,9 +384,10 @@ export default function NavAttributionToolPage() {
       {analysis && navRows.length >= 30 && (
         <Card>
           <CardHeader>
-            <CardTitle>2. 风格归因报告</CardTitle>
+            <CardTitle>2. 归因报告</CardTitle>
             <CardDescription>
-              基于南华商品指数体系构建截面动量、时间序列动量等因子，对产品净值收益做 OLS 回归归因。
+              FOF/综合产品默认使用多资产大类因子（沪深300、中证500/1000、国债ETF、黄金ETF、南华商品等）；
+              商品CTA策略可切换为南华风格因子模型。
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -387,6 +400,8 @@ export default function NavAttributionToolPage() {
               navType={navType}
               benchmarkSeries={[]}
               hasBenchmark={false}
+              defaultFactorModel={factorModel}
+              showFactorModelSelect
             />
           </CardContent>
         </Card>

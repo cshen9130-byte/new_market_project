@@ -16,7 +16,18 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  serverExternalPackages: ["pdf-parse", "@napi-rs/canvas", "mammoth", "xlsx", "word-extractor", "imapflow", "pino", "thread-stream"],
+  serverExternalPackages: [
+    "pdf-parse",
+    "@napi-rs/canvas",
+    "mammoth",
+    "xlsx",
+    "word-extractor",
+    "imapflow",
+    "pino",
+    "thread-stream",
+    "node-unrar-js",
+    "adm-zip",
+  ],
   images: {
     unoptimized: true,
   },

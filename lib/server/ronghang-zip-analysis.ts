@@ -4,10 +4,8 @@
  * “data analysis report.pdf”.
  */
 
-import AdmZip from "adm-zip"
-
+import { extractRonghangArchiveEntries } from "@/lib/server/ronghang-archive"
 import {
-  isRonghangSettlementFilename,
   parseRonghangWorkbook,
   productDisplayName,
   productSector,
@@ -549,26 +547,19 @@ export function analyzeRonghangDays(days: RonghangDayBundle[], sourceFileName: s
   }
 }
 
-export function analyzeRonghangZipBuffer(buffer: Buffer, sourceFileName: string): RonghangZipReport {
-  const zip = new AdmZip(buffer)
-  const entries = zip.getEntries().filter((e) => {
-    if (e.isDirectory) return false
-    const base = e.entryName.split(/[/\\]/).pop() ?? e.entryName
-    return isRonghangSettlementFilename(base)
-  })
-
-  if (entries.length === 0) {
-    throw new Error("ZIP 中未找到 .xls / .xlsx 结算单文件。请确认压缩包内为融航/国金交易结算日报。")
-  }
+export async function analyzeRonghangZipBuffer(
+  buffer: Buffer,
+  sourceFileName: string,
+): Promise<RonghangZipReport> {
+  const { entries } = await extractRonghangArchiveEntries(buffer, sourceFileName)
 
   const days: RonghangDayBundle[] = []
   const errors: string[] = []
   for (const entry of entries) {
-    const base = entry.entryName.split(/[/\\]/).pop() ?? entry.entryName
     try {
-      days.push(parseRonghangWorkbook(entry.getData(), base))
+      days.push(parseRonghangWorkbook(entry.data, entry.name))
     } catch (error) {
-      errors.push(`${base}: ${error instanceof Error ? error.message : "解析失败"}`)
+      errors.push(`${entry.name}: ${error instanceof Error ? error.message : "解析失败"}`)
     }
   }
 

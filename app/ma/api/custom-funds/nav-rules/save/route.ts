@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import {
+  normalizeSpliceFunds,
   type CustomFundNavGenerationRule,
-  type FundSpliceEntry,
   type NavGenRuleType,
 } from "@/lib/custom-fund-nav-rules-types"
 import {
@@ -16,19 +16,6 @@ export const dynamic = "force-dynamic"
 
 function currentUserId(req: Request): string {
   return String(req.headers.get("x-market-user-id") || "").trim()
-}
-
-function normalizeFunds(raw: unknown): FundSpliceEntry[] {
-  if (!Array.isArray(raw)) return []
-  return raw.map((item) => {
-    const row = item as Partial<FundSpliceEntry>
-    return {
-      fund_category: String(row.fund_category ?? "私募基金"),
-      product_name: String(row.product_name ?? "").trim(),
-      nav_source: String(row.nav_source ?? "平台净值"),
-      tail_nav_date: String(row.tail_nav_date ?? "").trim(),
-    }
-  })
 }
 
 function normalizeMomExtraDates(raw: unknown) {
@@ -78,20 +65,41 @@ export async function POST(req: Request) {
   }
 
   const ruleType = (rule?.rule_type ?? "splice") as NavGenRuleType
-  const startDate = String(rule?.start_date ?? "").trim()
   const annualReturnRate = String(rule?.annual_return_rate ?? "").trim()
   const momProductName = String(rule?.mom_product_name ?? "").trim()
   const momFixedItem = String(rule?.mom_fixed_item ?? "").trim()
   const momNonFixedItem = String(rule?.mom_non_fixed_item ?? "").trim()
   const momExtraDates = normalizeMomExtraDates(rule?.mom_extra_dates)
-  const funds = normalizeFunds(rule?.funds)
+  const funds = normalizeSpliceFunds(rule?.funds, String(rule?.start_date ?? "").trim())
+  const startDate = String(
+    ruleType === "splice"
+      ? (funds[0]?.start_date || rule?.start_date || "")
+      : (rule?.start_date ?? ""),
+  ).trim()
 
   if (action === "save") {
     if (!startDate) {
       return NextResponse.json({ error: "missing_start_date" }, { status: 400 })
     }
-    if (ruleType === "splice" && funds.filter((f) => f.product_name).length < 2) {
-      return NextResponse.json({ error: "missing_funds" }, { status: 400 })
+    if (ruleType === "splice") {
+      const active = funds.filter((f) => f.product_name)
+      if (active.length < 2) {
+        return NextResponse.json({ error: "missing_funds" }, { status: 400 })
+      }
+      for (let i = 0; i < active.length; i += 1) {
+        if (!active[i].start_date) {
+          return NextResponse.json({
+            error: "missing_fund_dates",
+            message: `请填写基金${i + 1}的开始日期`,
+          }, { status: 400 })
+        }
+        if (i < active.length - 1 && !active[i].end_date) {
+          return NextResponse.json({
+            error: "missing_fund_dates",
+            message: `请填写基金${i + 1}的结束日期`,
+          }, { status: 400 })
+        }
+      }
     }
     if (ruleType === "fixed_income") {
       const rate = parseFloat(annualReturnRate)
