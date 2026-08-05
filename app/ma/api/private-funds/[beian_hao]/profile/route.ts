@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { formatFeePayFormula, parseFeePayFormulaConfig } from "@/lib/ma/fund-elements-extra"
+import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
@@ -184,10 +185,11 @@ export async function GET(
     const productName = pfi?.product_name ?? bfl?.product_name ?? ""
     const shortName = bfl?.short_name ?? ""
 
-    const [trackRows, operationDate, extra] = await Promise.all([
+    const [trackRows, operationDate, extra, amacCustodian] = await Promise.all([
       loadTrack(beian_hao),
       loadOperationDate(beian_hao),
       loadExtraElementFields(beian_hao),
+      lookupAmacMandatorName(beian_hao),
     ])
     const track = trackRows[0]
 
@@ -210,6 +212,11 @@ export async function GET(
         ? (TEMP_OPEN_MAP[track.is_temporary_open] ?? String(track.is_temporary_open))
         : null
 
+    const custodian =
+      (track?.mandator_name?.trim() || null) ??
+      (bfl?.custodian?.trim() || null) ??
+      amacCustodian
+
     return NextResponse.json({
       fund_name:
         track?.fund_name ??
@@ -222,7 +229,7 @@ export async function GET(
       register_number: track?.register_number ?? beian_hao,
       inception_date: inceptionDate,
       operation_date: operationDate,
-      custodian: track?.mandator_name ?? bfl?.custodian ?? null,
+      custodian,
       puton_date: putonDate,
       open_day: track?.open_day ?? null,
       redeemable_status: isTemporaryOpen,

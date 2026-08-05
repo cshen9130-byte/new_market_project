@@ -14,10 +14,34 @@ function managerNameBrandHint(managerName: string): string {
 
 export type AmacFundMetadata = {
   manager_name: string | null
+  /** AMAC 托管人名称 → UI「托管券商」 */
+  mandator_name: string | null
   establish_date: string | null
   put_on_record_date: string | null
   mgmt_scale: string | null
   registration_no: string | null
+}
+
+/** Resolve AMAC 托管人 (托管券商) by 备案编号, including share-class suffix match. */
+export async function lookupAmacMandatorName(beianHao: string): Promise<string | null> {
+  const code = beianHao.trim()
+  if (!code) return null
+  const base = beianBaseNo(code)
+
+  try {
+    const rows = await query<{ mandator_name: string | null }>(
+      `SELECT NULLIF(BTRIM(mandator_name), '') AS mandator_name
+       FROM amac_private_funds
+       WHERE UPPER(fund_no) IN (UPPER($1), UPPER($2))
+       ORDER BY CASE WHEN UPPER(fund_no) = UPPER($1) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [code, base],
+    )
+    return rows[0]?.mandator_name ?? null
+  } catch {
+    // amac tables may not exist in some environments
+    return null
+  }
 }
 
 function beianBaseNo(beianHao: string): string {
@@ -260,6 +284,7 @@ export async function lookupAmacFundMetadata(
   try {
     const fundRows = await query<{
       manager_name: string | null
+      mandator_name: string | null
       establish_date: string | null
       put_on_record_date: string | null
       mgmt_scale: string | null
@@ -267,6 +292,7 @@ export async function lookupAmacFundMetadata(
     }>(
       `SELECT
          a.manager_name,
+         NULLIF(BTRIM(a.mandator_name), '') AS mandator_name,
          a.establish_date::text AS establish_date,
          a.put_on_record_date::text AS put_on_record_date,
          COALESCE(d_reg.mgmt_scale_range, d_name.mgmt_scale_range, d_fuzzy.mgmt_scale_range) AS mgmt_scale,
@@ -297,6 +323,7 @@ export async function lookupAmacFundMetadata(
       const row = fundRows[0]
       return {
         manager_name: row.manager_name?.trim() || null,
+        mandator_name: row.mandator_name?.trim() || null,
         establish_date: fmtDate(row.establish_date),
         put_on_record_date: fmtDate(row.put_on_record_date),
         mgmt_scale: row.mgmt_scale?.trim() || null,
@@ -313,6 +340,7 @@ export async function lookupAmacFundMetadata(
       if (byReg) {
         return {
           manager_name: byReg.manager_name?.trim() || null,
+          mandator_name: null,
           establish_date: null,
           put_on_record_date: null,
           mgmt_scale: byReg.mgmt_scale?.trim() || null,
@@ -326,6 +354,7 @@ export async function lookupAmacFundMetadata(
       if (byName) {
         return {
           manager_name: byName.manager_name?.trim() || null,
+          mandator_name: null,
           establish_date: null,
           put_on_record_date: null,
           mgmt_scale: byName.mgmt_scale?.trim() || null,

@@ -56,6 +56,7 @@ const menuItems = [
   { key: "portfolio",  label: "组合" },
   { key: "investment", label: "投资" },
   { key: "operations", label: "运维" },
+  { key: "instructions", label: "指令" },
   { key: "reports",    label: "报告" },
 ]
 
@@ -83,6 +84,7 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   portfolio: "port-simulated",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
+  instructions: "cmd-initiate",
   reports: "rpt-mine",
 }
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
@@ -79,6 +80,10 @@ export async function GET(req: Request) {
       ? (TEMP_OPEN_MAP[row.is_temporary_open] ?? String(row.is_temporary_open))
       : null
 
+  const custodian =
+    row.mandator_name?.trim() ||
+    (await lookupAmacMandatorName(resolvedBeian || beian_hao))
+
   return NextResponse.json({
     fund_name: row.fund_name,
     fund_short_name: row.fund_short_name,
@@ -87,7 +92,7 @@ export async function GET(req: Request) {
     fund_manager: pfiRows[0]?.manager || row.advisor || null,
     inception_date: row.inception_date ? row.inception_date.slice(0, 10) : null,
     puton_date: row.puton_date ? row.puton_date.slice(0, 10) : null,
-    custodian: row.mandator_name || null,
+    custodian,
     open_day: row.open_day || null,
     is_temporary_open: is_temporary_open_text,
     fee_purchase: row.fee_purchase || null,

@@ -7,6 +7,7 @@ import {
   parseFeePayFormulaConfig,
   type FeePayFormulaConfig,
 } from "@/lib/ma/fund-elements-extra"
+import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
@@ -194,6 +195,10 @@ export async function GET(req: Request) {
       ? `${(parseFloat(el.fee_manage_rate) * 100).toFixed(2)}%`
       : null
 
+  const custodian =
+    el?.mandator_name?.trim() ||
+    (await lookupAmacMandatorName(keys[0] || beian_hao))
+
   return NextResponse.json({
     fund_name: el?.fund_name ?? null,
     register_number: el?.register_number ?? canonicalizeShareClassBeianCode(beian_hao) ?? beian_hao,
@@ -202,7 +207,7 @@ export async function GET(req: Request) {
     inception_date: toIsoDateInputValue(el?.inception_date) || null,
     operation_date,
     puton_date: toIsoDateInputValue(el?.puton_date) || null,
-    custodian: el?.mandator_name ?? null,
+    custodian,
     platform_l1: team?.platform_strategy_one ?? null,
     platform_l2: team?.platform_strategy_two ?? null,
     platform_l3: team?.platform_strategy_three ?? null,

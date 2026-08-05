@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSPr
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical, SlidersHorizontal } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
@@ -33,6 +33,8 @@ import { FuturesStyleView } from "./components/FuturesStyleView"
 import { EquityStyleView } from "./components/EquityStyleView"
 import { ReportsManagementView } from "./components/ReportsManagementView"
 import { ReportTemplateManagementView } from "./components/ReportTemplateManagementView"
+import { InstructionsSection } from "./components/InstructionsSection"
+import { DEFAULT_INSTRUCTION_SIDE, INSTRUCTION_SIDE_ITEMS } from "./components/instructions-nav"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -77,6 +79,7 @@ const menuItems = [
   { key: "portfolio", label: "组合" },
   { key: "investment", label: "投资" },
   { key: "operations", label: "运维" },
+  { key: "instructions", label: "指令" },
   { key: "reports", label: "报告" },
 ]
 
@@ -176,6 +179,13 @@ const reportsSidebarGroups: SidebarGroup[] = [
   },
 ]
 
+const instructionsSidebarGroups: SidebarGroup[] = [
+  {
+    label: "指令流程",
+    items: INSTRUCTION_SIDE_ITEMS.map((item) => ({ key: item.key, label: item.label })),
+  },
+]
+
 const portfolioSidebarGroups: SidebarGroup[] = [
   {
     label: "模拟组合",
@@ -216,6 +226,7 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   portfolio: "port-new",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
+  instructions: DEFAULT_INSTRUCTION_SIDE,
   reports: "rpt-mine",
 }
 
@@ -23466,6 +23477,8 @@ function PrivateFundsPageContent() {
         const fallback = visibleInvestmentGroups[0]?.items[0]?.key
         return fallback ?? TAB_DEFAULT_SIDE.funds
       }
+      // legacy: 指令流程 used to be a side item; it is now a group title
+      if (side === "cmd-flow") return TAB_DEFAULT_SIDE.instructions
       return side
     }
     if (tab === "operations" && !showOperationsTab) return TAB_DEFAULT_SIDE.funds
@@ -23698,6 +23711,45 @@ function PrivateFundsPageContent() {
           </aside>
         )}
 
+        {activeTab === "instructions" && (
+          <aside className="w-44 border-r bg-background flex-shrink-0">
+            <div className="flex flex-col items-center gap-2 px-4 py-5 border-b">
+              <div className="h-9 w-9 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+                <SlidersHorizontal className="h-4 w-4 text-white" />
+              </div>
+              <span className="text-sm font-medium text-foreground">指令</span>
+            </div>
+            <nav className="flex flex-col pt-2 pb-4">
+              {instructionsSidebarGroups.map((group) => {
+                const hasActive = group.items.some((i) => i.key === activeSideItem)
+                return (
+                  <div key={group.label}>
+                    <div className={[
+                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                    ].join(" ")}>{group.label}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => setActiveSideItem(item.key)}
+                        className={[
+                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                          activeSideItem === item.key
+                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:right-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
+                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                        ].join(" ")}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
+            </nav>
+          </aside>
+        )}
+
         {activeTab === "reports" && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <div className="flex items-center gap-2 px-4 py-4 border-b">
@@ -23853,6 +23905,7 @@ function PrivateFundsPageContent() {
               该功能正在建设中，敬请期待
             </div>
           )}
+          {activeTab === "instructions" ? <InstructionsSection side={activeSideItem} /> : null}
           {activeTab === "reports" && activeSideItem === "rpt-mine" && <ReportsManagementView />}
           {activeTab === "reports" && activeSideItem === "rpt-templates" && <ReportTemplateManagementView />}
           {activeTab === "reports" && activeSideItem !== "rpt-mine" && activeSideItem !== "rpt-templates" && (

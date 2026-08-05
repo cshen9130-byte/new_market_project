@@ -119,6 +119,16 @@ def _fmt_date_cn(value: str) -> str:
         return value
 
 
+def _display_short_name(short_name: str, product_name: str) -> str:
+    """Drop legal suffixes so legend/table labels stay compact."""
+    raw = (short_name or product_name or "").strip()
+    for suffix in ("私募证券投资基金", "私募投资基金", "证券投资基金", "私募基金", "投资基金"):
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)].strip()
+            break
+    return raw or short_name or product_name
+
+
 def load_nav_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, encoding="utf-8-sig")
     if df.empty:
@@ -340,7 +350,21 @@ def draw_perf_basic(ax, y: float, metrics: dict[str, Any], product_label: str, b
             bg = C_NAVY if r_i == 0 else (C_ROW if r_i == 1 else C_BG)
             fg = "white" if r_i == 0 else C_TEXT
             ax.add_patch(Rectangle((xs, yy), w, row_h, facecolor=bg, edgecolor=C_BORDER, lw=0.5, transform=ax.transAxes, zorder=2))
-            ax.text(xs + w / 2, yy + row_h / 2, cell, transform=ax.transAxes, ha="center", va="center", fontsize=6.8, color=fg, fontproperties=fp_bold if (r_i == 0 or j == 0) else fp, zorder=3)
+            # First column may still be long — shrink font slightly to stay inside the cell.
+            fontsize = 6.2 if (j == 0 and r_i > 0 and len(str(cell)) > 8) else 6.8
+            ax.text(
+                xs + w / 2,
+                yy + row_h / 2,
+                cell,
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=fontsize,
+                color=fg,
+                fontproperties=fp_bold if (r_i == 0 or j == 0) else fp,
+                zorder=3,
+                clip_on=True,
+            )
             xs += w
     return y - 3 * row_h - 0.012
 
@@ -383,15 +407,15 @@ def draw_hbar_chart(ax_plot, items: list[dict[str, Any]], title: str, fp: FontPr
         for spine in ax_plot.spines.values():
             spine.set_visible(False)
         return
-    names = [str(i.get("name", "")) for i in items][::-1]
+    names = [_display_short_name("", str(i.get("name", "")))[:10] for i in items][::-1]
     pcts = [float(i.get("pct", 0) or 0) for i in items][::-1]
     y_pos = np.arange(len(names))
     ax_plot.barh(y_pos, pcts, color=color, height=0.55, zorder=2)
     ax_plot.set_yticks(y_pos)
-    ax_plot.set_yticklabels(names, fontsize=7, fontproperties=fp)
+    ax_plot.set_yticklabels(names, fontsize=6.5, fontproperties=fp)
     ax_plot.set_xlabel("%", fontsize=7, color=C_MUTED, fontproperties=fp)
     ax_plot.tick_params(axis="x", labelsize=6.5, colors=C_MUTED)
-    ax_plot.tick_params(axis="y", length=0)
+    ax_plot.tick_params(axis="y", length=0, pad=1)
     xmax = max(pcts) * 1.25 if pcts else 1
     ax_plot.set_xlim(0, max(xmax, 1))
     for yi, pct in zip(y_pos, pcts):
@@ -406,7 +430,7 @@ def draw_hbar_chart(ax_plot, items: list[dict[str, Any]], title: str, fp: FontPr
 def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
     fp, fp_bold = configure_cn_font()
     product_name = str(config.get("product_name") or "私募基金")
-    short_name = str(config.get("short_name") or product_name)
+    short_name = _display_short_name(str(config.get("short_name") or ""), product_name)
     brand = str(config.get("brand_name") or "内部资料")
     watermark = str(config.get("watermark") or brand)
     end_date = pd.Timestamp(config["end_date"])
@@ -486,8 +510,9 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
     y = draw_section_bar(ax, y, "持仓结构", fp_bold)
     hold_h = min(0.16, max(0.12, y - 0.06))
     hold_bottom = y - hold_h
-    ax_left = fig.add_axes([0.10, hold_bottom + 0.015, 0.38, hold_h - 0.025])
-    ax_right = fig.add_axes([0.55, hold_bottom + 0.015, 0.38, hold_h - 0.025])
+    # Leave a gap + room for short y-labels on the right chart.
+    ax_left = fig.add_axes([0.10, hold_bottom + 0.015, 0.34, hold_h - 0.025])
+    ax_right = fig.add_axes([0.58, hold_bottom + 0.015, 0.35, hold_h - 0.025])
     draw_hbar_chart(ax_left, asset_alloc[:6], "大类资产配置", fp, fp_bold, color=C_BAR)
     draw_hbar_chart(ax_right, industry_alloc[:5], industry_title, fp, fp_bold, color="#DD6B20")
 

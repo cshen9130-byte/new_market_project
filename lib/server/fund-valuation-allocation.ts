@@ -19,6 +19,7 @@ import {
 import { ensureEmailValuationTable, listEmailValuationRecords, lookupLatestValuationCustodian, lookupValuationCustodianByRecordId, type EmailValuationRecordRow } from "@/lib/server/email-valuation-pg"
 import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 import { listFundMetricsLatest } from "@/lib/server/email-valuation-metrics-pg"
+import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import { resolveValuationCustodian, normalizeRegistrationCustodian } from "@/lib/server/email-valuation-custodian"
 import { fetchListedFundNavBatch } from "@/lib/server/listed-fund-eastmoney-nav"
 import {
@@ -380,13 +381,18 @@ async function resolveFundMeta(
     pfi?.inception_date?.slice(0, 10) ??
     null
 
+  let custodian = firstNonEmptyCustodian(
+    normalizeRegistrationCustodian(track?.mandator_name),
+    normalizeRegistrationCustodian(bfl?.custodian),
+  )
+  if (!custodian) {
+    custodian = normalizeRegistrationCustodian(await lookupAmacMandatorName(beian_hao))
+  }
+
   return {
     product_name: pfi?.product_name ?? bfl?.product_name ?? override?.product_name ?? productNameHint ?? null,
     manager: pfi?.manager ?? null,
-    custodian: firstNonEmptyCustodian(
-      normalizeRegistrationCustodian(track?.mandator_name),
-      normalizeRegistrationCustodian(bfl?.custodian),
-    ),
+    custodian,
     inception_date,
     latest_nav,
     latest_nav_date,

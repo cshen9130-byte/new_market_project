@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, writeFile } from "fs/promises"
 import path from "path"
 import { promisify } from "util"
 import { query } from "@/lib/db"
+import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import { findCustomFundByName, getCustomFundByCode } from "@/lib/server/custom-funds"
 import {
   buildFofWeeklyNavCsv,
@@ -64,6 +65,15 @@ function formatInceptionDate(value: string | null | undefined): string {
   const m = value.slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/)
   if (!m) return value
   return `${Number(m[1])}.${Number(m[2])}.${Number(m[3])}`
+}
+
+/** Compact label for chart legend / tables — drop legal fund-type suffixes. */
+function toDisplayShortName(shortName: string | null | undefined, productName: string): string {
+  const raw = (shortName || productName || "").trim()
+  const stripped = raw
+    .replace(/(私募证券投资基金|私募投资基金|证券投资基金|私募基金|投资基金)$/u, "")
+    .trim()
+  return stripped || raw || productName
 }
 
 function classifyMarketBucket(input: {
@@ -152,10 +162,16 @@ async function loadFundOverview(beian_hao: string, product_name: string) {
   const strategy = strategyRows[0]
   const strategyText = [strategy?.l1, strategy?.l2].filter(Boolean).join(" / ")
 
+  const trackOrBflCustodian = (track?.mandator_name || bfl?.custodian || "").trim()
+  const custodian =
+    trackOrBflCustodian ||
+    (await lookupAmacMandatorName(beian_hao)) ||
+    "--"
+
   return {
     manager: (pfi?.manager || "").trim() || "--",
     investment_manager: (track?.advisor || bfl?.investment_advisor || "").trim() || "--",
-    custodian: (track?.mandator_name || bfl?.custodian || "").trim() || "--",
+    custodian,
     inception_date: formatInceptionDate(track?.inception_date || bfl?.inception_date || pfi?.inception_date),
     product_type: (bfl?.fund_type || "私募证券投资基金").trim(),
     strategy: strategyText || "—",
@@ -208,7 +224,7 @@ async function loadAllocation(beian_hao: string): Promise<{
       .sort((a, b) => Number(b.marketPct ?? 0) - Number(a.marketPct ?? 0))
       .slice(0, 5)
       .map((row) => ({
-        name: String(row.assetName).slice(0, 12),
+        name: toDisplayShortName(null, String(row.assetName)).slice(0, 10),
         pct: Number(Number(row.marketPct).toFixed(2)),
       }))
 
@@ -217,7 +233,7 @@ async function loadAllocation(beian_hao: string): Promise<{
       .sort((a, b) => Number(b.marketPct ?? 0) - Number(a.marketPct ?? 0))
       .slice(0, 5)
       .map((row) => ({
-        name: String(row.fundName).slice(0, 12),
+        name: toDisplayShortName(null, String(row.fundName)).slice(0, 10),
         pct: Number(Number(row.marketPct).toFixed(2)),
       }))
 
@@ -245,39 +261,67 @@ async function loadAllocation(beian_hao: string): Promise<{
   }
 }
 
-async function findPython(): Promise<{ executable: string; prefixArgs: string[] }> {
-  const candidates: Array<{ executable: string; prefixArgs: string[] }> = []
-  const venvPython =
-    process.platform === "win32"
-      ? path.join(SCRIPT_DIR, ".venv", "Scripts", "python.exe")
-      : path.join(SCRIPT_DIR, ".venv", "bin", "python")
-  const haitaiVenv =
-    process.platform === "win32"
-      ? path.join(process.cwd(), "haitai_week_report", ".venv", "Scripts", "python.exe")
-      : path.join(process.cwd(), "haitai_week_report", ".venv", "bin", "python")
+let cachedPython: { executable: string; prefixArgs: string[] } | null = null
 
-  if (existsSync(venvPython)) candidates.push({ executable: venvPython, prefixArgs: [] })
-  if (existsSync(haitaiVenv)) candidates.push({ executable: haitaiVenv, prefixArgs: [] })
-  if (process.platform === "win32") {
-    candidates.push({ executable: "py", prefixArgs: ["-3"] })
-  } else {
-    candidates.push({ executable: "python3", prefixArgs: [] })
+async function findPython(): Promise<{ executable: string; prefixArgs: string[] }> {
+  if (cachedPython) return cachedPython
+
+  const candidates: Array<{ executable: string; prefixArgs: string[] }> = []
+  const cwd = process.cwd()
+  const push = (executable: string, prefixArgs: string[] = []) => {
+    if (!executable) return
+    if (executable.includes("/") || executable.includes("\\") || executable.endsWith(".exe")) {
+      if (!existsSync(executable)) return
+    }
+    if (candidates.some((c) => c.executable === executable && c.prefixArgs.join(" ") === prefixArgs.join(" "))) {
+      return
+    }
+    candidates.push({ executable, prefixArgs })
   }
 
+  for (const key of ["PYTHON_EXE", "PYTHON_EXECUTABLE"] as const) {
+    push(process.env[key] ?? "")
+  }
+  if (process.platform === "win32") {
+    push(path.join(cwd, ".venv", "Scripts", "python.exe"))
+    push(path.join(SCRIPT_DIR, ".venv", "Scripts", "python.exe"))
+    push(path.join(cwd, "haitai_week_report", ".venv", "Scripts", "python.exe"))
+    push("py", ["-3"])
+  } else {
+    push(path.join(cwd, ".venv", "bin", "python3"))
+    push(path.join(cwd, ".venv", "bin", "python"))
+    push(path.join(SCRIPT_DIR, ".venv", "bin", "python3"))
+    push(path.join(SCRIPT_DIR, ".venv", "bin", "python"))
+    push(path.join(cwd, "haitai_week_report", ".venv", "bin", "python"))
+    push("python3")
+  }
+
+  const tried: string[] = []
   for (const candidate of candidates) {
+    tried.push(candidate.executable)
     try {
-      await execFileAsync(candidate.executable, [
-        ...candidate.prefixArgs,
-        "-c",
-        "import pandas, matplotlib, numpy",
-      ], { timeout: 30_000 })
+      await execFileAsync(
+        candidate.executable,
+        [...candidate.prefixArgs, "-c", "import pandas, matplotlib, numpy"],
+        { timeout: 60_000 },
+      )
+      cachedPython = candidate
       return candidate
-    } catch {
-      continue
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const stderr = typeof (err as { stderr?: string }).stderr === "string" ? (err as { stderr: string }).stderr : ""
+      console.warn(
+        "[fund-official-monthly-report] Python deps probe failed:",
+        candidate.executable,
+        (stderr || msg).slice(0, 500),
+      )
     }
   }
 
-  throw new Error("Python 报告依赖未安装，请执行: pip install -r fund_official_monthly/requirements.txt")
+  throw new Error(
+    `Python 报告依赖未安装，请执行: pip install -r fund_official_monthly/requirements.txt` +
+      (tried.length ? `（已尝试: ${[...new Set(tried)].join(", ")}）` : ""),
+  )
 }
 
 export async function resolveFundOfficialMonthlyNavRange(
@@ -351,7 +395,7 @@ export async function generateFundOfficialMonthlyReport(
 
   const config = {
     product_name: names.product_name,
-    short_name: names.short_name || names.product_name,
+    short_name: toDisplayShortName(names.short_name, names.product_name),
     brand_name: brandName,
     watermark: (input.watermark || brandName).trim(),
     logo_subtitle: (input.logo_subtitle || "").trim(),

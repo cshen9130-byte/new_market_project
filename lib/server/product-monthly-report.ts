@@ -54,24 +54,32 @@ type ProductProfile = {
   aum: string
 }
 
+/** Cold matplotlib/pptx/reportlab import can exceed 15s under load — that looked like "deps missing". */
+const PYTHON_DEPS_PROBE_TIMEOUT_MS = 60_000
+
+let cachedPython: PythonInvocation | null = null
+
 function pushPythonCandidate(out: PythonInvocation[], executable: string, prefixArgs: string[] = []) {
-  if (!executable || !existsSync(executable)) return
+  if (!executable) return
+  // Allow bare names like "python3" / "py" (resolved via PATH) without existsSync.
+  if (executable.includes("/") || executable.includes("\\") || executable.endsWith(".exe")) {
+    if (!existsSync(executable)) return
+  }
   if (out.some((item) => item.executable === executable && item.prefixArgs.join(" ") === prefixArgs.join(" "))) {
     return
   }
   out.push({ executable, prefixArgs })
 }
 
+/**
+ * Candidate order matches settlement reports + PM2 config:
+ *   1. PYTHON_EXE / PYTHON_EXECUTABLE (ecosystem.config.js)
+ *   2. Project root .venv (where product_ppt deps are usually installed)
+ *   3. Script-local product_ppt/.venv (often missing)
+ */
 function listPythonCandidates(scriptDir: string): PythonInvocation[] {
   const cwd = process.cwd()
   const out: PythonInvocation[] = []
-
-  pushPythonCandidate(
-    out,
-    process.platform === "win32"
-      ? path.join(scriptDir, ".venv", "Scripts", "python.exe")
-      : path.join(scriptDir, ".venv", "bin", "python"),
-  )
 
   for (const key of ["PYTHON_EXE", "PYTHON_EXECUTABLE"] as const) {
     pushPythonCandidate(out, process.env[key] ?? "")
@@ -79,15 +87,15 @@ function listPythonCandidates(scriptDir: string): PythonInvocation[] {
 
   if (process.platform === "win32") {
     pushPythonCandidate(out, path.join(cwd, ".venv", "Scripts", "python.exe"))
-  } else {
-    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python3"))
-    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python"))
-  }
-
-  if (process.platform === "win32") {
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "Scripts", "python.exe"))
     const localAppData = process.env.LOCALAPPDATA ?? ""
     pushPythonCandidate(out, path.join(localAppData, "Programs", "Python", "Launcher", "py.exe"), ["-3"])
     pushPythonCandidate(out, path.join(process.env.SystemRoot ?? "C:\\Windows", "py.exe"), ["-3"])
+  } else {
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python"))
   }
 
   return out
@@ -119,10 +127,17 @@ async function pythonHasReportDeps(invocation: PythonInvocation): Promise<boolea
     await execFileAsync(
       invocation.executable,
       [...invocation.prefixArgs, "-c", "import pandas, matplotlib, pptx, reportlab, pypdf, openpyxl"],
-      { timeout: 15_000 },
+      { timeout: PYTHON_DEPS_PROBE_TIMEOUT_MS },
     )
     return true
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const stderr = typeof (err as { stderr?: string }).stderr === "string" ? (err as { stderr: string }).stderr : ""
+    console.warn(
+      "[product-monthly-report] Python deps probe failed:",
+      invocation.executable,
+      (stderr || msg).slice(0, 500),
+    )
     return false
   }
 }
@@ -131,7 +146,7 @@ function pythonDepsInstallHint(): string {
   if (process.platform === "win32") {
     return "py -3 -m pip install -r product_ppt/requirements.txt"
   }
-  return "python3 -m pip install -r product_ppt/requirements.txt"
+  return ".venv/bin/python3 -m pip install -r product_ppt/requirements.txt"
 }
 
 function pythonExecEnv(): NodeJS.ProcessEnv {
@@ -151,26 +166,40 @@ function pythonExecEnv(): NodeJS.ProcessEnv {
 }
 
 async function findPython(scriptDir: string): Promise<PythonInvocation> {
+  if (cachedPython) return cachedPython
+
   const candidates = listPythonCandidates(scriptDir)
   await appendPathPythonCandidates(candidates)
 
   const tried: string[] = []
   for (const candidate of candidates) {
-    tried.push(candidate.executable)
-    if (await pythonHasReportDeps(candidate)) return candidate
+    tried.push(
+      candidate.prefixArgs.length
+        ? `${candidate.executable} ${candidate.prefixArgs.join(" ")}`
+        : candidate.executable,
+    )
+    if (await pythonHasReportDeps(candidate)) {
+      cachedPython = candidate
+      return candidate
+    }
   }
 
-  if (process.platform !== "win32") {
-    pushPythonCandidate(candidates, "python3")
-  } else {
-    pushPythonCandidate(candidates, "py", ["-3"])
-  }
-  const fallback = candidates.at(-1)
-  if (fallback) {
-    tried.push(fallback.executable)
-    if (await pythonHasReportDeps(fallback)) return fallback
+  // PATH fallback must not go through existsSync("python3") — that always fails.
+  const pathFallback: PythonInvocation =
+    process.platform === "win32"
+      ? { executable: "py", prefixArgs: ["-3"] }
+      : { executable: "python3", prefixArgs: [] }
+  tried.push(
+    pathFallback.prefixArgs.length
+      ? `${pathFallback.executable} ${pathFallback.prefixArgs.join(" ")}`
+      : pathFallback.executable,
+  )
+  if (await pythonHasReportDeps(pathFallback)) {
+    cachedPython = pathFallback
+    return pathFallback
   }
 
+  cachedPython = null
   throw new Error(
     `Python 报告依赖未安装，请在项目目录执行: ${pythonDepsInstallHint()}${tried.length ? `（已尝试: ${[...new Set(tried)].join(", ")}）` : ""}`,
   )

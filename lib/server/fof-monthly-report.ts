@@ -62,36 +62,65 @@ function getMonthStart(dateStr: string): string {
   return `${year}-${month}-01`
 }
 
-async function findPython(): Promise<{ executable: string; prefixArgs: string[] }> {
-  const candidates: Array<{ executable: string; prefixArgs: string[] }> = []
-  const venvPython =
-    process.platform === "win32"
-      ? path.join(SCRIPT_DIR, ".venv", "Scripts", "python.exe")
-      : path.join(SCRIPT_DIR, ".venv", "bin", "python")
+let cachedPython: { executable: string; prefixArgs: string[] } | null = null
 
-  if (existsSync(venvPython)) {
-    candidates.push({ executable: venvPython, prefixArgs: [] })
+async function findPython(): Promise<{ executable: string; prefixArgs: string[] }> {
+  if (cachedPython) return cachedPython
+
+  const candidates: Array<{ executable: string; prefixArgs: string[] }> = []
+  const cwd = process.cwd()
+  const push = (executable: string, prefixArgs: string[] = []) => {
+    if (!executable) return
+    if (executable.includes("/") || executable.includes("\\") || executable.endsWith(".exe")) {
+      if (!existsSync(executable)) return
+    }
+    if (candidates.some((c) => c.executable === executable && c.prefixArgs.join(" ") === prefixArgs.join(" "))) {
+      return
+    }
+    candidates.push({ executable, prefixArgs })
+  }
+
+  for (const key of ["PYTHON_EXE", "PYTHON_EXECUTABLE"] as const) {
+    push(process.env[key] ?? "")
   }
   if (process.platform === "win32") {
-    candidates.push({ executable: "py", prefixArgs: ["-3"] })
+    push(path.join(cwd, ".venv", "Scripts", "python.exe"))
+    push(path.join(SCRIPT_DIR, ".venv", "Scripts", "python.exe"))
+    push("py", ["-3"])
   } else {
-    candidates.push({ executable: "python3", prefixArgs: [] })
+    push(path.join(cwd, ".venv", "bin", "python3"))
+    push(path.join(cwd, ".venv", "bin", "python"))
+    push(path.join(SCRIPT_DIR, ".venv", "bin", "python3"))
+    push(path.join(SCRIPT_DIR, ".venv", "bin", "python"))
+    push("python3")
   }
 
+  const tried: string[] = []
   for (const candidate of candidates) {
+    tried.push(candidate.executable)
     try {
-      await execFileAsync(candidate.executable, [
-        ...candidate.prefixArgs,
-        "-c",
-        "import pandas, matplotlib, openpyxl",
-      ], { timeout: 30_000 })
+      await execFileAsync(
+        candidate.executable,
+        [...candidate.prefixArgs, "-c", "import pandas, matplotlib, openpyxl"],
+        { timeout: 60_000 },
+      )
+      cachedPython = candidate
       return candidate
-    } catch {
-      continue
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const stderr = typeof (err as { stderr?: string }).stderr === "string" ? (err as { stderr: string }).stderr : ""
+      console.warn(
+        "[fof-monthly-report] Python deps probe failed:",
+        candidate.executable,
+        (stderr || msg).slice(0, 500),
+      )
     }
   }
 
-  throw new Error("Python 报告依赖未安装，请在项目目录执行部署脚本安装 haitai_week_report 依赖")
+  throw new Error(
+    `Python 报告依赖未安装，请在项目目录执行部署脚本安装 haitai_week_report 依赖` +
+      (tried.length ? `（已尝试: ${[...new Set(tried)].join(", ")}）` : ""),
+  )
 }
 
 export async function resolveFofMonthlyProductNavRange(

@@ -7,11 +7,13 @@ private_fund_managers_list.
 
 Fields synced:
   - 备案日期  basicinfo_bfl_track.puton_date  ← amac_private_funds.put_on_record_date
+  - 托管券商  basicinfo_bfl_track.mandator_name ← amac_private_funds.mandator_name
   - 公司管理规模 basicinfo_bfl_track.scale     ← amac_manager_details.mgmt_scale_range
   - 管理人规模  private_fund_managers_list.mgmt_scale ← amac_manager_details.mgmt_scale_range
 
 Default behaviour: fill NULL values only — never overwrite existing data.
 Manual ops edits (source = ops/fund-elements) for 备案日期 are always preserved.
+托管券商 fills only when mandator_name is empty (ops values kept).
 
 Manager metric trends (employee count, scale, etc.) are tracked in
 amac_manager_metrics_history by amac_extra_etl.py (append-only snapshots).
@@ -241,6 +243,34 @@ def _build_puton_date_sql(beian_haos: list[str]) -> tuple[str, list]:
     )
 
 
+def _build_mandator_name_sql(beian_haos: list[str]) -> tuple[str, list]:
+    params: list = []
+    beian_clause = _beian_filter("b", beian_haos, params)
+    if beian_haos:
+        params.extend(beian_haos)
+
+    return (
+        f"""
+        UPDATE basicinfo_bfl_track b
+        SET
+            mandator_name = NULLIF(BTRIM(a.mandator_name), ''),
+            payload = jsonb_set(
+                COALESCE(b.payload, '{{}}'::jsonb),
+                '{{mandator_name}}',
+                to_jsonb(NULLIF(BTRIM(a.mandator_name), '')),
+                true
+            ),
+            updated_at = NOW()
+        FROM amac_private_funds a
+        WHERE {_amac_fund_match_clause("b", "a")}
+          AND NULLIF(BTRIM(a.mandator_name), '') IS NOT NULL
+          AND NULLIF(BTRIM(b.mandator_name), '') IS NULL
+          {beian_clause}
+        """,
+        params,
+    )
+
+
 def _build_scale_sql(beian_haos: list[str]) -> tuple[str, list]:
     params: list = []
     beian_clause = _beian_filter("b", beian_haos, params)
@@ -321,7 +351,7 @@ WHERE p.registration_no = d.registration_no
 BACKFILL_ROWS_SQL = """
 INSERT INTO basicinfo_bfl_track (
     record_key, register_number, fund_name, fund_short_name, advisor,
-    inception_date, puton_date, scale, register_code,
+    inception_date, puton_date, mandator_name, scale, register_code,
     payload, row_hash, source, fund_type, imported_at, updated_at
 )
 SELECT
@@ -332,6 +362,7 @@ SELECT
     a.manager_name,
     a.establish_date,
     a.put_on_record_date,
+    NULLIF(BTRIM(a.mandator_name), ''),
     d.mgmt_scale_range,
     COALESCE(d.registration_no, m.registration_no),
     jsonb_build_object(
@@ -339,6 +370,7 @@ SELECT
         'fund_short_name', a.fund_name,
         'register_number', a.fund_no,
         'advisor', COALESCE(a.manager_name, ''),
+        'mandator_name', NULLIF(BTRIM(a.mandator_name), ''),
         'puton_date', to_char(a.put_on_record_date, 'YYYY-MM-DD'),
         'inception_date', to_char(a.establish_date, 'YYYY-MM-DD'),
         'fund_type', 2,
@@ -359,6 +391,10 @@ LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
 WHERE a.fund_no = %s
 ON CONFLICT (record_key) DO UPDATE SET
     puton_date = COALESCE(basicinfo_bfl_track.puton_date, EXCLUDED.puton_date),
+    mandator_name = COALESCE(
+        NULLIF(BTRIM(basicinfo_bfl_track.mandator_name), ''),
+        EXCLUDED.mandator_name
+    ),
     scale = COALESCE(basicinfo_bfl_track.scale, EXCLUDED.scale),
     register_code = COALESCE(NULLIF(BTRIM(basicinfo_bfl_track.register_code), ''), EXCLUDED.register_code),
     advisor = COALESCE(NULLIF(BTRIM(basicinfo_bfl_track.advisor), ''), EXCLUDED.advisor),
@@ -366,7 +402,9 @@ ON CONFLICT (record_key) DO UPDATE SET
     fund_short_name = COALESCE(NULLIF(BTRIM(basicinfo_bfl_track.fund_short_name), ''), EXCLUDED.fund_short_name),
     inception_date = COALESCE(basicinfo_bfl_track.inception_date, EXCLUDED.inception_date),
     payload = CASE
-        WHEN basicinfo_bfl_track.puton_date IS NULL OR basicinfo_bfl_track.scale IS NULL
+        WHEN basicinfo_bfl_track.puton_date IS NULL
+          OR basicinfo_bfl_track.scale IS NULL
+          OR NULLIF(BTRIM(basicinfo_bfl_track.mandator_name), '') IS NULL
         THEN EXCLUDED.payload
         ELSE basicinfo_bfl_track.payload
     END,
@@ -408,6 +446,20 @@ def _preview_counts(cur, beian_haos: list[str]) -> dict:
         f"""
         SELECT COUNT(*)
         FROM basicinfo_bfl_track b
+        JOIN amac_private_funds a
+          ON {_amac_fund_match_clause("b", "a")}
+        WHERE NULLIF(BTRIM(a.mandator_name), '') IS NOT NULL
+          AND NULLIF(BTRIM(b.mandator_name), '') IS NULL
+          {beian_clause}
+        """,
+        params,
+    )
+    mandator_null = cur.fetchone()[0]
+
+    cur.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM basicinfo_bfl_track b
         JOIN (
             SELECT
                 b2.id,
@@ -443,12 +495,16 @@ def _preview_counts(cur, beian_haos: list[str]) -> dict:
     )
     scale_null = cur.fetchone()[0]
 
-    return {"puton_date_null": puton_null, "scale_null": scale_null}
+    return {
+        "puton_date_null": puton_null,
+        "mandator_name_null": mandator_null,
+        "scale_null": scale_null,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sync 备案日期 and 公司管理规模 from AMAC tables into basicinfo_bfl_track."
+        description="Sync 备案日期, 托管券商, and 公司管理规模 from AMAC tables into basicinfo_bfl_track."
     )
     parser.add_argument("--dry-run", action="store_true", help="Preview counts only.")
     parser.add_argument(
@@ -498,6 +554,7 @@ def main() -> None:
             preview = _preview_counts(cur, beian_haos)
             print(
                 f"Candidates (NULL only): puton_date={preview['puton_date_null']:,}, "
+                f"mandator_name={preview['mandator_name_null']:,}, "
                 f"scale={preview['scale_null']:,}"
             )
             if beian_haos:
@@ -516,6 +573,10 @@ def main() -> None:
             puton_sql, puton_params = _build_puton_date_sql(beian_haos)
             cur.execute(puton_sql, puton_params)
             puton_updated = cur.rowcount
+
+            mandator_sql, mandator_params = _build_mandator_name_sql(beian_haos)
+            cur.execute(mandator_sql, mandator_params)
+            mandator_updated = cur.rowcount
 
             scale_sql, scale_params = _build_scale_sql(beian_haos)
             cur.execute(scale_sql, scale_params)
@@ -556,6 +617,7 @@ def main() -> None:
         "ok": True,
         "amac_funds_fetched": fetched,
         "puton_date_updated": puton_updated,
+        "mandator_name_updated": mandator_updated,
         "scale_updated": scale_updated,
         "managers_list_updated": managers_updated,
         "backfill_inserted": backfill_inserted,
@@ -563,8 +625,9 @@ def main() -> None:
     }
     print(json.dumps(summary, ensure_ascii=False))
     print(
-        f"Updated puton_date={puton_updated:,}, scale={scale_updated:,}, "
-        f"managers_list={managers_updated:,}, backfill={backfill_inserted:,}"
+        f"Updated puton_date={puton_updated:,}, mandator_name={mandator_updated:,}, "
+        f"scale={scale_updated:,}, managers_list={managers_updated:,}, "
+        f"backfill={backfill_inserted:,}"
     )
 
 
