@@ -212,14 +212,13 @@ function roleFromHeader(base: string, sub: string, colIdx: number, duplicateOrdi
   if (/权益/.test(baseNorm)) return "rights_info"
 
   if (/^成本$/.test(baseNorm)) {
-    if (/本币/.test(subNorm)) return "cost"
-    if (/原币/.test(subNorm)) return "unknown"
+    // Prefer 本币 when both exist; 华泰等 CNY 估值表 often only fill 原币 amounts.
+    if (/本币/.test(subNorm) || /原币/.test(subNorm)) return "cost"
     return duplicateOrdinal === 1 ? "cost" : "unknown"
   }
 
   if (/^市值$|市场价值|公允价值|持仓市值|估值|marketvalue/i.test(baseNorm)) {
-    if (/本币/.test(subNorm)) return "market_value"
-    if (/原币/.test(subNorm)) return "unknown"
+    if (/本币/.test(subNorm) || /原币/.test(subNorm)) return "market_value"
     return duplicateOrdinal === 1 ? "market_value" : "unknown"
   }
 
@@ -254,30 +253,42 @@ function buildColumnMeta(rows: unknown[][], headerRowIndex: number, headerRowCou
   return columns
 }
 
-/** Prefer 市值-本币 over the first generic 市值 column (招商等双行/三行表头). */
+/** Prefer 市值-本币, then 市值-原币 (华泰 CNY 表), over other generic 市值 columns. */
 function marketValueColumnIndex(columns: ColumnMeta[]): number {
   const marketCols = columns.filter((col) => col.role === "market_value")
   if (marketCols.length === 0) {
-    const labeled = columns.find(
+    const local = columns.find(
       (col) => /市值/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label),
     )
-    return labeled?.index ?? -1
+    if (local) return local.index
+    const original = columns.find(
+      (col) => /市值/.test(col.label) && /原币/.test(col.label) && !/占比|增值/.test(col.label),
+    )
+    return original?.index ?? -1
   }
   const local = marketCols.find((col) => /本币/.test(col.label))
   if (local) return local.index
+  const original = marketCols.find((col) => /原币/.test(col.label))
+  if (original) return original.index
   return marketCols[marketCols.length - 1].index
 }
 
 function costColumnIndex(columns: ColumnMeta[]): number {
   const costCols = columns.filter((col) => col.role === "cost")
   if (costCols.length === 0) {
-    const labeled = columns.find(
+    const local = columns.find(
       (col) => /成本/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label),
     )
-    return labeled?.index ?? -1
+    if (local) return local.index
+    const original = columns.find(
+      (col) => /成本/.test(col.label) && /原币/.test(col.label) && !/占比|增值/.test(col.label),
+    )
+    return original?.index ?? -1
   }
   const local = costCols.find((col) => /本币/.test(col.label))
   if (local) return local.index
+  const original = costCols.find((col) => /原币/.test(col.label))
+  if (original) return original.index
   return costCols[costCols.length - 1].index
 }
 
@@ -287,39 +298,46 @@ function rowLocalizedAmount(row: unknown[], columns: ColumnMeta[], kind: "market
     const v = parseNumber(row[idx])
     if (v) return v
   }
+  let original = 0
   for (const col of columns) {
-    const isMarket = /市值/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label)
-    const isCost = /成本/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label)
-    if ((kind === "market_value" && isMarket) || (kind === "cost" && isCost)) {
-      const v = parseNumber(row[col.index])
-      if (v) return v
-    }
+    const isMarket = /市值/.test(col.label) && !/占比|增值/.test(col.label)
+    const isCost = /成本/.test(col.label) && !/占比|增值/.test(col.label)
+    if ((kind === "market_value" && !isMarket) || (kind === "cost" && !isCost)) continue
+    const v = parseNumber(row[col.index])
+    if (!v) continue
+    if (/本币/.test(col.label)) return v
+    if (/原币/.test(col.label)) original = v
   }
-  return 0
+  return original
+}
+
+function pickAmountFromRowKeys(
+  row: ValuationRow,
+  kind: "market_value" | "cost",
+): number {
+  let original = 0
+  for (const [key, val] of Object.entries(row)) {
+    const isMarket = /市值/.test(key) && !/占比|增值/.test(key)
+    const isCost = /成本/.test(key) && !/占比|增值/.test(key)
+    if ((kind === "market_value" && !isMarket) || (kind === "cost" && !isCost)) continue
+    const n = parseNumber(val)
+    if (!n) continue
+    if (/本币/.test(key)) return Math.abs(n)
+    if (/原币/.test(key)) original = n
+  }
+  return original ? Math.abs(original) : 0
 }
 
 export function pickRowMarketValue(row: ValuationRow): number {
   const direct = parseNumber(row.market_value ?? row.signed_market_value)
   if (direct) return Math.abs(direct)
-  for (const [key, val] of Object.entries(row)) {
-    if (/市值/.test(key) && /本币/.test(key) && !/占比|增值/.test(key)) {
-      const n = parseNumber(val)
-      if (n) return Math.abs(n)
-    }
-  }
-  return 0
+  return pickAmountFromRowKeys(row, "market_value")
 }
 
 export function pickRowCost(row: ValuationRow): number {
   const direct = parseNumber(row.cost ?? row.signed_cost)
   if (direct) return Math.abs(direct)
-  for (const [key, val] of Object.entries(row)) {
-    if (/成本/.test(key) && /本币/.test(key) && !/占比|增值/.test(key)) {
-      const n = parseNumber(val)
-      if (n) return Math.abs(n)
-    }
-  }
-  return 0
+  return pickAmountFromRowKeys(row, "cost")
 }
 
 const CUSTODIAN_HEADER_LABELS = [
@@ -555,12 +573,13 @@ function isOptionContract(code: string, name: string): boolean {
 
 function inferRowKind(code: string, name: string): string {
   const compactCode = normalizeSubjectCode(code)
-  if (isOptionContract(code, name)) return "option"
-  if (compactCode.startsWith("3102")) return "derivative"
-  if (compactCode.startsWith("1001")) return "stock"
+  // Cash / reserve subjects before option-name heuristics (e.g. 结算备付金_期货期权备付金).
   if (compactCode.startsWith("1002")) return "bank_deposit"
   if (compactCode.startsWith("1021")) return "settlement_reserve"
   if (compactCode.startsWith("1031")) return "margin_deposit"
+  if (isOptionContract(code, name)) return "option"
+  if (compactCode.startsWith("3102")) return "derivative"
+  if (compactCode.startsWith("1001")) return "stock"
   if (compactCode.startsWith("1101")) return "bond"
   if (compactCode.startsWith("1102")) return "fund_or_stock"
   if (compactCode.startsWith("1105")) return /货币/.test(name) ? "money_fund" : "fund"
@@ -650,6 +669,8 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
           obj.unit_cost = Math.abs(numberValue)
           break
         case "cost":
+          // Keep 本币 when both 本币/原币 columns exist; allow 原币 to fill when 本币 is empty.
+          if (/原币/.test(col.label) && obj.cost != null && Number(obj.cost) !== 0) break
           obj.cost = Math.abs(numberValue)
           obj.signed_cost = numberValue
           break
@@ -661,6 +682,7 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
           obj.price = Math.abs(numberValue)
           break
         case "market_value":
+          if (/原币/.test(col.label) && obj.market_value != null && Number(obj.market_value) !== 0) break
           obj.market_value = Math.abs(numberValue)
           obj.notional_value = Math.abs(numberValue)
           obj.signed_market_value = numberValue

@@ -245,6 +245,34 @@ function resolveTotalsFromRows(rows: ValuationRow[]): { totalAsset: number; tota
   return { totalAsset, totalLiability }
 }
 
+/**
+ * When 估值表 footer rows (资产净值 / 资产类合计) were not kept in portfolio_data —
+ * common for 华泰 merged-header .xls — derive NAV from leaf asset − liability amounts.
+ */
+function deriveNetAssetValueFromHoldings(rows: ValuationRow[]): number {
+  const LIABILITY_KINDS = new Set(["payable"])
+  const SKIP_KINDS = new Set(["paid_in_capital"])
+  let assets = 0
+  let liabilities = 0
+
+  for (const row of rows) {
+    const kind = String(row.row_kind ?? "other")
+    if (SKIP_KINDS.has(kind)) continue
+    // Prefer leaf rows; parent aggregates double-count children.
+    if (row.is_leaf === false) continue
+    const amount = pickRowMarketValue(row) || pickRowCost(row)
+    if (amount <= 0) continue
+    if (LIABILITY_KINDS.has(kind) || /^22/.test(String(row.code ?? "").replace(/[\s.]/g, ""))) {
+      liabilities += amount
+      continue
+    }
+    assets += amount
+  }
+
+  const derived = assets - liabilities
+  return derived > 1000 ? derived : 0
+}
+
 function resolveNetAssetValue(summary: ValuationAnalysis["summary"], rows: ValuationRow[]): number {
   for (const row of rows) {
     const name = normalizeText(row.name)
@@ -268,7 +296,7 @@ function resolveNetAssetValue(summary: ValuationAnalysis["summary"], rows: Valua
     return summary.nav
   }
 
-  return 0
+  return deriveNetAssetValueFromHoldings(rows)
 }
 
 /** Extract product code like TA891A (uppercase, with share class) from underlying fund holding. */

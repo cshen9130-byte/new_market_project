@@ -334,16 +334,28 @@ function isAClassFund(beianHao: string, aliases: string[]): boolean {
 }
 
 /** Extract product codes embedded in email metadata, e.g. 资产净值公告_SAVF39_… */
+/** Investor/TA accounts that appear in Xingye 业绩报酬试算 subjects — not 备案号. */
+function isLikelyTaAccountCode(code: string): boolean {
+  const c = code.trim().toUpperCase()
+  if (!c) return false
+  // XY8002280517 / S18852474004 / QL8059373444 / NB8003591509
+  if (/^(?:XY|QL|NB)\d{6,}$/u.test(c)) return true
+  if (/^S\d{8,}$/u.test(c)) return true
+  // Long digit tails are accounts; AMAC 备案号 is typically ≤8 alnum chars.
+  if (/^[A-Z]{1,4}\d{8,}$/u.test(c)) return true
+  return false
+}
+
 function extractEmbeddedProductCodes(...parts: Array<string | null | undefined>): string[] {
   const codes = new Set<string>()
   for (const part of parts) {
     const text = (part ?? "").trim()
     if (!text) continue
     for (const m of text.matchAll(/资产净值公告_([A-Z0-9]+)_/gi)) {
-      if (m[1]) codes.add(m[1].toUpperCase())
+      if (m[1] && !isLikelyTaAccountCode(m[1])) codes.add(m[1].toUpperCase())
     }
     for (const m of text.matchAll(/_([A-Z]{1,6}\d+[A-Z]?)_/g)) {
-      if (m[1]) codes.add(m[1].toUpperCase())
+      if (m[1] && !isLikelyTaAccountCode(m[1])) codes.add(m[1].toUpperCase())
     }
   }
   return Array.from(codes)
@@ -412,6 +424,12 @@ export function emailRowMatchesFund(
 
   const productCode = (row.product_code ?? "").trim().toUpperCase()
   if (beian && productCode && !embeddedCodeMatchesBeian(productCode, beian)) return false
+
+  // Authoritative product_code match wins. Xingye 业绩报酬试算 subjects embed
+  // investor TA accounts (…_XY8002280517_…) that must not override SBBC18.
+  if (beian && productCode && embeddedCodeMatchesBeian(productCode, beian)) {
+    return true
+  }
 
   const embedded = extractEmbeddedProductCodes(row.fund_name, row.attachment_filename, row.subject)
   const meta = `${row.attachment_filename ?? ""} ${row.subject ?? ""} ${row.fund_name ?? ""}`
@@ -990,7 +1008,11 @@ export type EmailNavManageRow = {
 }
 
 function isVirtualNavRow(row: EmailNavRawRow): boolean {
-  const meta = `${row.subject ?? ""}${row.fund_name ?? ""}${row.attachment_filename ?? ""}`
+  const subject = row.subject ?? ""
+  // Xingye 业绩报酬试算表 xlsx is often named *_虚拟净值试算结果.xlsx but stores
+  // official 单位净值 (not investor virtual NAV). Keep it on the pre_fee stream.
+  if (/业绩报酬试算表/u.test(subject)) return false
+  const meta = `${subject}${row.fund_name ?? ""}${row.attachment_filename ?? ""}`
   return /虚拟/u.test(meta)
 }
 
@@ -2373,6 +2395,25 @@ export function mergeNavSeriesWithEmail(
         : null
     const emailAdj =
       isPlausibleEmailAdjustedNav(resolvedCum, emailAdjRaw) ? emailAdjRaw : null
+
+    // Unit-only FOF 估值表 holdings across a sparse gap (no 累计) collapse cum→unit and
+    // invent a false crash (SBBC18: June 1.1459 → Aug 0.9832 / −14%). Skip those marks;
+    // Xingye 业绩报酬试算 rows supply real 累计 and still merge.
+    if (
+      !existing
+      && resolvedCum == null
+      && prevRow != null
+      && (() => {
+        const prevUnit = parseOptionalNav(prevRow.nav)
+        const prevCum =
+          parseOptionalNav(prevRow.cum_nav_withdrawal) ?? parseOptionalNav(prevRow.cumulative_nav)
+        if (prevUnit == null || prevUnit <= 0 || prevCum == null) return false
+        if (hasDividendOffset(prevUnit, prevCum)) return false
+        return resolvedUnitNav < prevUnit * 0.95
+      })()
+    ) {
+      continue
+    }
 
     if (existing) {
       const updated: LegacyNavRow = {

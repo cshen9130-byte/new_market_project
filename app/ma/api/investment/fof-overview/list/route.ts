@@ -15,6 +15,7 @@ import {
   shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
+import { managedUnderlyingMarketValueExpr } from "@/lib/server/managed-fof-underlying-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -180,7 +181,9 @@ export async function GET(req: Request) {
     if (useCache) {
       await ensureFofOverviewListCachePopulated()
 
-      const marketValueExpr = `COALESCE(cache.market_value, f.market_value, 0)`
+      // Holding 市值 must come from latest 在管估值表 (cache), never the static
+      // fof_underlying_summary spreadsheet — otherwise cleared underlyings stay in 持仓中.
+      const marketValueExpr = `COALESCE(cache.market_value, 0)`
       const displayNameExpr = `CASE
         WHEN cache.short_name IS NOT NULL
           AND f.product_name ~ '[ABC]类'
@@ -340,7 +343,9 @@ export async function GET(req: Request) {
     const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const teamTagsExpr = `CASE WHEN jsonb_typeof(o.tag->'company') = 'array' THEN o.tag->'company' ELSE '[]'::jsonb END`
+    const marketValueExpr = `COALESCE(${managedUnderlyingMarketValueExpr(BEIAN_EXPR, PRODUCT_EXPR)}, 0)`
     const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "sequence_no"
+    // Outer ORDER BY uses the subquery alias; inner SELECT projects managed 市值 as market_value.
     const sortCol = sortKey === "sequence_no" ? "sequence_no" : ALLOWED_SORT_SLOW[sortKey]
 
     const conditions: string[] = [
@@ -368,9 +373,9 @@ export async function GET(req: Request) {
     }
 
     if (holdingStatus === "holding") {
-      conditions.push(`COALESCE(f.market_value, 0) > 0`)
+      conditions.push(`${marketValueExpr} > 0`)
     } else if (holdingStatus === "cleared") {
-      conditions.push(`COALESCE(f.market_value, 0) <= 0`)
+      conditions.push(`${marketValueExpr} <= 0`)
     }
 
     if (teamTags.length > 0) {
@@ -410,7 +415,7 @@ export async function GET(req: Request) {
     const [countRows, totalMvRows] = await Promise.all([
       query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
       query<{ total_mv: string }>(
-        `SELECT COALESCE(SUM(f.market_value), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
+        `SELECT COALESCE(SUM(${marketValueExpr}), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
         params,
       ),
     ])
@@ -478,7 +483,7 @@ export async function GET(req: Request) {
            (${currentNavExpr})::text AS latest_unit_nav,
            ${currentDateExpr} AS latest_nav_date,
            (${currentPctExpr})::text AS latest_return_pct,
-           f.market_value::text AS market_value,
+           ${marketValueExpr}::text AS market_value,
            CASE WHEN h1w.nav IS NOT NULL AND h1w.nav <> 0
              THEN ((${currentNavExpr}) / h1w.nav - 1)::text END AS ret_1w,
            CASE WHEN h1m.nav IS NOT NULL AND h1m.nav <> 0

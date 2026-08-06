@@ -104,6 +104,19 @@ function resolveHoldingTicker(
   return resolved.replace(/\.(SH|SZ|BJ)$/i, "")
 }
 
+/** True when name/code looks like an exchange-listed ETF, not a 私募 with "ETF" in the strategy name. */
+function isExchangeEtfNameOrCode(name: string, code: string): boolean {
+  if (/私募/u.test(name)) return false
+  if (code && !/^\d{6}$/.test(code)) return false
+  if (/ETF/u.test(name)) {
+    // Private-fund short names like 绵烁ETF套利3号A类 must stay in FOF底层.
+    if (/[0-9]+号|[ABC]类/u.test(name) && !/^\d{6}$/.test(code)) return false
+    if (/^\d{6}$/.test(code)) return isExchangeEtfTicker(code)
+    return !/[0-9]+号/u.test(name)
+  }
+  return /^\d{6}$/.test(code) && isExchangeEtfTicker(code)
+}
+
 /** Direct A-share stock or exchange ETF — not an FOF underlying fund holding. */
 export function isDirectEquityOrListedEtfHolding(input: {
   subjectCode?: string | null
@@ -115,11 +128,11 @@ export function isDirectEquityOrListedEtfHolding(input: {
   const kind = String(input.rowKind ?? "")
   const compactSubj = compactSubjectCode(input.subjectCode)
 
-  if (/ETF/u.test(name)) return true
+  if (kind === "private_fund" || /私募/u.test(name)) return false
   if (kind === "stock") return true
 
   const ticker = resolveHoldingTicker(input.subjectCode, name, input.symbol)
-  if (/^\d{6}$/.test(ticker) && isExchangeEtfTicker(ticker)) return true
+  if (isExchangeEtfNameOrCode(name, ticker)) return true
 
   if (/基金|私募/u.test(name)) return false
 
@@ -144,21 +157,28 @@ export function isDirectEquityOrListedEtfProduct(
   beianHao?: string | null,
 ): boolean {
   const name = String(productName ?? "")
-  if (/ETF/u.test(name)) return true
-  if (/基金|私募/u.test(name)) return false
+  if (/私募/u.test(name)) return false
 
   const code = String(beianHao ?? "").trim().toUpperCase() || extractListedFundCodeFromName(name) || ""
   const ticker = code.replace(/\.(SH|SZ|BJ)$/i, "")
+
+  if (isExchangeEtfNameOrCode(name, ticker)) return true
+  if (/基金|私募/u.test(name)) return false
   if (!/^\d{6}$/.test(ticker)) return false
 
-  return isExchangeEtfTicker(ticker) || isAshareStockTicker(ticker)
+  return isAshareStockTicker(ticker)
 }
 
 /** SQL fragment: true when a summary-row product should be excluded from FOF底层 tables. */
 export function sqlExcludeFofUnderlyingProduct(productNameExpr: string, beianExpr: string): string {
   const beian = `COALESCE(NULLIF(BTRIM(${beianExpr}), ''), '')`
+  // "ETF" in a 私募 short name (e.g. 绵烁ETF套利3号A类 / BBZ20A) is not an exchange ETF.
   return `NOT (
-    ${productNameExpr} ~* 'ETF'
+    (
+      ${productNameExpr} ~* 'ETF'
+      AND ${productNameExpr} !~* '私募'
+      AND ${beian} ~ '^[0-9]{6}$'
+    )
     OR (
       ${productNameExpr} !~* '基金|私募|ETF'
       AND ${beian} ~ '^(50[0-9]{4}|51[0-9]{4}|52[0-9]{4}|53[0-9]{4}|56[0-9]{4}|588[0-9]{3}|159[0-9]{3}|16[0-3][0-9]{3})$'
@@ -182,8 +202,9 @@ export function isDirectEquityOrEtfValuationHolding(
   const sym = String(symbol ?? "").trim()
   const compactCode = String(subjectCode ?? "").replace(/\s/g, "").replace(/\./g, "")
 
-  if (/ETF/i.test(name)) return true
+  if (kind === "private_fund" || /私募/u.test(name)) return false
   if (kind === "stock") return true
+  if (isExchangeEtfNameOrCode(name, sym.replace(/\.(SH|SZ|BJ)$/i, ""))) return true
   if (
     kind === "fund_or_stock"
     && !/基金|私募|ETF/i.test(name)
@@ -205,7 +226,12 @@ export function isDirectEquityOrEtfValuationHolding(
 
 /** SQL fragment: true when valuation holding alias should be excluded from FOF底层 extraction. */
 export const SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF = `(
-  h.subject_name ~* 'ETF'
+  (
+    h.subject_name ~* 'ETF'
+    AND h.subject_name !~* '私募'
+    AND h.row_kind IS DISTINCT FROM 'private_fund'
+    AND NULLIF(BTRIM(h.symbol), '') ~ '^\\d{6}$'
+  )
   OR h.row_kind = 'stock'
   OR (
     h.row_kind = 'fund_or_stock'
@@ -226,7 +252,12 @@ export const SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF = `(
 
 /** Same as above for ops_managed_fof_underlying (alias m). */
 export const SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF = `(
-  m.underlying_name ~* 'ETF'
+  (
+    m.underlying_name ~* 'ETF'
+    AND m.underlying_name !~* '私募'
+    AND m.row_kind IS DISTINCT FROM 'private_fund'
+    AND NULLIF(BTRIM(m.underlying_product_code), '') ~ '^\\d{6}$'
+  )
   OR m.row_kind = 'stock'
   OR (
     m.row_kind = 'fund_or_stock'

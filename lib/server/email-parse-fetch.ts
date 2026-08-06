@@ -12,7 +12,6 @@ import {
   getRecordsNeedingSender,
   maxSentAtByCrawlAccount,
   patchSenderEmails,
-  getParsedEmailUidsForAccount,
   replaceEmailParseRecords,
   type EmailParseRecord,
   type ParseStepStatus,
@@ -257,20 +256,26 @@ type FetchMailboxResult = {
   downloaded: number
 }
 
+/** Stable key so IMAP UID reuse (new mail, same uid) is not skipped as "already parsed". */
+function processedEmailKey(uid: string, subject: string): string {
+  return `${String(uid).trim()}\0${subject.trim()}`
+}
+
 /**
- * UIDs safe to skip on checkpoint polls: already stored as NAV/估值表, or already
- * envelope-parsed (even when that mail produced no NAV/估值表 rows).
+ * Emails safe to skip on checkpoint polls: already stored as NAV/估值表 for the
+ * same UID+subject. Parse-record-only rows are retried (extractor fixes), and
+ * UID reuse with a different subject is re-downloaded.
  */
-async function loadKnownProcessedEmailUids(account: string): Promise<Set<string>> {
-  const known = getParsedEmailUidsForAccount(account)
+async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>> {
+  const known = new Set<string>()
   const { query } = await import("@/lib/db")
-  const rows = await query<{ email_uid: string }>(
-    `SELECT DISTINCT email_uid
+  const rows = await query<{ email_uid: string; subject: string | null }>(
+    `SELECT email_uid, subject
      FROM (
-       SELECT email_uid FROM ops_email_nav_records
+       SELECT email_uid, subject FROM ops_email_nav_records
        WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
        UNION
-       SELECT email_uid FROM ops_email_valuation_records
+       SELECT email_uid, subject FROM ops_email_valuation_records
        WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
      ) t
      WHERE NULLIF(BTRIM(email_uid), '') IS NOT NULL`,
@@ -278,7 +283,8 @@ async function loadKnownProcessedEmailUids(account: string): Promise<Set<string>
   )
   for (const row of rows) {
     const uid = String(row.email_uid).trim()
-    if (uid) known.add(uid)
+    if (!uid) continue
+    known.add(processedEmailKey(uid, row.subject ?? ""))
   }
   return known
 }
@@ -295,7 +301,7 @@ async function fetchMailbox(
   since: Date,
   errors: string[],
   signal?: AbortSignal,
-  knownUids: Set<string> = new Set(),
+  knownEmailKeys: Set<string> = new Set(),
 ): Promise<FetchMailboxResult> {
   throwIfAborted(signal)
   if (!account.pass?.trim()) {
@@ -374,7 +380,7 @@ async function fetchMailbox(
       // skip the expensive download so empty 5-minute polls finish in seconds.
       for (const { uid, subject, sentAt, senderEmail, attachments, textParts } of candidates) {
         throwIfAborted(signal)
-        if (knownUids.has(String(uid))) {
+        if (knownEmailKeys.has(processedEmailKey(String(uid), subject))) {
           skippedKnown++
           continue
         }
@@ -625,7 +631,7 @@ export async function fetchEmailParseRecords(options?: {
   /**
    * Intraday / checkpoint-poll mode: upsert NAV + 估值表 only.
    * Skips full rebuilds of holdings/metrics/FOF underlying (~thousands of funds).
-   * Already-processed UIDs are not re-downloaded.
+   * Already-stored UID+subject NAV/估值表 pairs are not re-downloaded.
    */
   light?: boolean
   /** When aborted, stop IMAP/DB work promptly (scheduled ETL yield). */
@@ -691,13 +697,13 @@ export async function fetchEmailParseRecords(options?: {
     scanByAccount[account.account] = { since: since.toISOString().slice(0, 10), mode }
 
     try {
-      // Light/checkpoint polls skip re-download of UIDs already stored as NAV/估值表.
+      // Light/checkpoint polls skip re-download of UID+subject already stored as NAV/估值表.
       // Full/manual runs re-parse so repairs and attachment fixes still apply.
-      const knownUids = light
-        ? await loadKnownProcessedEmailUids(account.account)
+      const knownEmailKeys = light
+        ? await loadKnownProcessedEmailKeys(account.account)
         : new Set<string>()
       const { parseRecords, navRecords, valuationRecords, skippedKnown, downloaded } =
-        await fetchMailbox(account, since, errors, signal, knownUids)
+        await fetchMailbox(account, since, errors, signal, knownEmailKeys)
       emailsScanned += skippedKnown + downloaded
       emailsSkippedKnown += skippedKnown
       emailsDownloaded += downloaded

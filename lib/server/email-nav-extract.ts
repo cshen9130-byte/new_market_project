@@ -98,6 +98,7 @@ function parseCiticsFundNavSubject(text: string): { code: string; fundName: stri
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
 function extractFundNameFromSubject(subject: string): string | null {
   for (const parser of [
+    parseXingyePerfTrialSubject,
     parseCfscTaVirtualSubject,
     parseZhongtaiVirtualNavSubject,
     parseFofBracketVirtualNavSubject,
@@ -207,6 +208,7 @@ function guotaiTaVirtualUnderlyingMeta(
 
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
+    parseXingyePerfTrialSubject,
     parseCfscTaVirtualSubject,
     parseVirtualBracketSubject,
     parseZhongtaiVirtualNavSubject,
@@ -240,6 +242,41 @@ function parseVirtualPerfSubject(text: string): { code: string; fundName: string
   )
   if (!m) return null
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
+/**
+ * Xingye/兴证运营 业绩报酬试算表:
+ *   20260805_SBBC18贞元强势1号私募证券投资基金_XY8002280517_金舆守安一号…业绩报酬试算表
+ *   20260805_ADS17B臻财长雪1号B类_XY8002280517_金舆守安一号…业绩报酬试算表
+ * Code is glued to the fund name (no underscore). Investor/FOF is the trailing name.
+ */
+function parseXingyePerfTrialSubject(text: string): { code: string; fundName: string } | null {
+  if (!/业绩报酬试算表/u.test(text)) return null
+  const full = text.match(
+    new RegExp(`^(20\\d{6})_([A-Z0-9]{4,10})(${FUND_NAME_RE.source})_[A-Z0-9]+_`, "u"),
+  )
+  if (full) return { code: full[2], fundName: normalizeFundDisplayName(full[3]) }
+
+  // Short display names without 私募证券投资基金 (e.g. 臻财长雪1号B类).
+  const short = text.match(
+    /^(20\d{6})_([A-Z0-9]{4,10})([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9]*?(?:[ABC]类|[ABC])?)_([A-Z]{1,4}\d{6,}|\d{6,})_/u,
+  )
+  if (!short) return null
+  return { code: short[2], fundName: normalizeFundDisplayName(short[3]) }
+}
+
+/** Strip a leading beian/product code glued onto a Chinese fund name (SBBC18贞元…). */
+function stripLeadingProductCode(name: string, productCode?: string | null): string {
+  const trimmed = name.trim()
+  if (!trimmed) return trimmed
+  const code = (productCode ?? "").trim().toUpperCase()
+  if (code && trimmed.toUpperCase().startsWith(code)) {
+    const rest = trimmed.slice(code.length).replace(/^[\s_\-]+/u, "")
+    if (/^[\u4e00-\u9fff]/u.test(rest)) return rest
+  }
+  const glued = trimmed.match(/^([A-Z]{1,6}\d{2,6}[A-Z]?)([\u4e00-\u9fff].+)$/u)
+  if (glued) return glued[2]
+  return trimmed
 }
 
 /**
@@ -349,7 +386,7 @@ function ensureShareClass(
   subject: string,
 ): string | null {
   if (!fundName) return null
-  let name = normalizeFundDisplayName(fundName)
+  let name = normalizeFundDisplayName(stripLeadingProductCode(fundName, productCode))
   if (/[ABC]类$/.test(name)) return name
 
   const fromEstSubj = parseVirtualEstSubject(subject)
@@ -427,11 +464,14 @@ export function extractNavMetadata(subject: string, bodyText: string) {
 
 // ── date candidates from subject ──────────────────────────────────────────────
 
-/** Match 单位净值 but not 虚拟单位净值 (GJDF 【虚拟净值】 tables list both). */
+/**
+ * Match 单位净值 but not 虚拟单位净值 / 试算单位净值 / 试算后单位净值.
+ * Xingye 业绩报酬试算表 lists both official 单位净值 and fee-trial 试算单位净值.
+ */
 function matchActualUnitNav(bodyText: string): RegExpMatchArray | null {
   return (
-    bodyText.match(/(?<!虚拟)单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
-    ?? bodyText.match(/(?<!虚拟)单位净值\s+(\d+\.\d{3,8})/u)
+    bodyText.match(/(?<!虚拟)(?<!试算)(?<!试算后)单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/(?<!虚拟)(?<!试算)(?<!试算后)单位净值\s+(\d+\.\d{3,8})/u)
     // CSC/中信建投 资产净值公告 body labels
     ?? bodyText.match(/基金份额净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/基金份额净值\s+(\d+\.\d{3,8})/u)
@@ -443,6 +483,7 @@ function matchCumulativeUnitNav(bodyText: string): RegExpMatchArray | null {
     bodyText.match(/累计单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/累计单位净值\s+(\d+\.\d{3,8})/u)
     ?? bodyText.match(/(?<!虚拟)累计净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/(?<!虚拟)累计净值\s+(\d+\.\d{3,8})/u)
     ?? bodyText.match(/基金份额累计净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/基金份额累计净值\s+(\d+\.\d{3,8})/u)
   )
@@ -508,6 +549,26 @@ export function extractNavData(
       adjustedNav: null,
       ...shared,
       source: "subject",
+    }
+  }
+
+  // ── 1b. Xingye/兴证 业绩报酬试算表 (official 单位净值, not 试算单位净值) ───
+  if (/业绩报酬试算表/u.test(subject) || parseXingyePerfTrialSubject(subject)) {
+    const unitNavM = matchActualUnitNav(bodyText)
+    const cumNavM = matchCumulativeUnitNav(bodyText)
+    const dateM =
+      bodyText.match(/基金净值日期\s*[：:\s]\s*(20\d{6}|\d{4}[-年/]\d{1,2}[-月/]\d{1,2}日?)/u)
+      ?? bodyText.match(/净值日期\s*[：:\s]\s*(20\d{6}|\d{4}[-年/]\d{1,2}[-月/]\d{1,2}日?)/u)
+    const navDate = dateM ? normaliseDate(dateM[1]) : subjectDate(subject)
+    if (unitNavM && navDate) {
+      return {
+        nav: parseFloat(unitNavM[1]),
+        navDate,
+        cumulativeNav: cumNavM ? parseFloat(cumNavM[1]) : null,
+        adjustedNav: null,
+        ...shared,
+        source: "body_table",
+      }
     }
   }
 

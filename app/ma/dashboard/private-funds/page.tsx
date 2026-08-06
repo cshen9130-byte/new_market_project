@@ -14311,7 +14311,7 @@ function OperationsTeamDataView() {
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<TeamDataSortKey | "">("")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [data, setData] = useState<TeamDataRow[]>([])
@@ -14632,7 +14632,7 @@ function OperationsTeamDataView() {
 
   function handleSort(col: TeamDataSortKey) {
     if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
-    else { setSortKey(col); setSortDir("asc") }
+    else { setSortKey(col); setSortDir("desc") }
   }
 
   function TeamSortIcon({ col }: { col: TeamDataSortKey }) {

@@ -442,8 +442,42 @@ export async function refreshFofOverviewListCache(
     await atomicSwapListCacheTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
   }
 
+  // Keep spreadsheet 市值 aligned with latest 在管估值表 so cleared underlyings
+  // (e.g. sold out of all FOFs) leave 持仓中 even for readers of f.market_value.
+  logProgress("syncing fof_underlying_summary.market_value from managed holdings…", t0)
+  await syncFofUnderlyingSummaryMarketValues(managedMarketById)
+
   logProgress(`done — ${products.length} rows`, t0)
   return products.length
+}
+
+async function syncFofUnderlyingSummaryMarketValues(
+  managedMarketById: Map<string, number>,
+): Promise<void> {
+  const ids = [...managedMarketById.keys()].map((id) => parseInt(id, 10)).filter((n) => Number.isFinite(n))
+  const mvs = ids.map((id) => managedMarketById.get(String(id)) ?? 0)
+
+  if (ids.length > 0) {
+    await query(
+      `UPDATE fof_underlying_summary AS f
+       SET market_value = v.mv, updated_at = NOW()
+       FROM (
+         SELECT UNNEST($1::bigint[]) AS id, UNNEST($2::numeric[]) AS mv
+       ) v
+       WHERE f.id = v.id
+         AND COALESCE(f.market_value, 0) IS DISTINCT FROM v.mv`,
+      [ids, mvs],
+    )
+  }
+
+  await query(
+    `UPDATE fof_underlying_summary f
+     SET market_value = 0, updated_at = NOW()
+     WHERE f.product_name <> '合计'
+       AND COALESCE(f.market_value, 0) <> 0
+       AND NOT (f.id = ANY($1::bigint[]))`,
+    [ids],
+  )
 }
 
 type FofTipFromSeries = {

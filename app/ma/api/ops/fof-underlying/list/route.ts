@@ -14,6 +14,7 @@ import {
   shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
+import { managedUnderlyingMarketValueExpr } from "@/lib/server/managed-fof-underlying-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -122,10 +123,12 @@ export async function GET(req: Request) {
         pi++
       }
 
+      // Same rule as FOF概览: holding status follows latest 在管估值表 cache, not the static spreadsheet.
+      const marketValueExpr = `COALESCE(cache.market_value, 0)`
       if (holdingStatus === "holding") {
-        conditions.push(`COALESCE(f.market_value, 0) > 0`)
+        conditions.push(`${marketValueExpr} > 0`)
       } else if (holdingStatus === "cleared") {
-        conditions.push(`COALESCE(f.market_value, 0) <= 0`)
+        conditions.push(`${marketValueExpr} <= 0`)
       }
 
       if (fofRegister) {
@@ -223,10 +226,11 @@ export async function GET(req: Request) {
       pi++
     }
 
+    const marketValueExpr = `COALESCE(${managedUnderlyingMarketValueExpr(BEIAN_EXPR, PRODUCT_EXPR)}, 0)`
     if (holdingStatus === "holding") {
-      conditions.push(`COALESCE(f.market_value, 0) > 0`)
+      conditions.push(`${marketValueExpr} > 0`)
     } else if (holdingStatus === "cleared") {
-      conditions.push(`COALESCE(f.market_value, 0) <= 0`)
+      conditions.push(`${marketValueExpr} <= 0`)
     }
 
     if (fofRegister) {

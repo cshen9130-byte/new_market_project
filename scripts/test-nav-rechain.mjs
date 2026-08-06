@@ -1,4 +1,4 @@
-import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate } from "../lib/server/email-nav-query.ts"
+import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
@@ -1153,6 +1153,107 @@ assert(
     ),
   )
 }
+
+// Xingye/兴证: YYYYMMDD_CODE基金名_账号_投资者业绩报酬试算表 — official 单位净值, not 试算单位净值.
+const sbbc18TrialSubject =
+  "20260805_SBBC18贞元强势1号私募证券投资基金_XY8002280517_金舆守安一号私募证券投资基金业绩报酬试算表，请查收！"
+const sbbc18TrialBody =
+  "客户名称 金舆守安一号私募证券投资基金 基金名称 贞元强势1号 基金代码 SBBC18 " +
+  "协会备案代码 SBBC18 投资人基金账号 XY8002280517 基金净值日期 20260805 " +
+  "持有份额 1,018,122.58 单位净值 0.9849 累计净值 1.1354 " +
+  "试算业绩报酬 1,058.85 试算单位净值 (扣除业绩报酬后) 0.9839"
+const sbbc18TrialMeta = extractNavMetadata(sbbc18TrialSubject, sbbc18TrialBody)
+assert(
+  "SBBC18 Xingye trial subject extracts code without gluing it into fund name",
+  sbbc18TrialMeta.productCode === "SBBC18"
+    && sbbc18TrialMeta.fundName === "贞元强势1号"
+    && !String(sbbc18TrialMeta.fundName).startsWith("SBBC18"),
+)
+const sbbc18TrialNav = extractNavData(sbbc18TrialSubject, sbbc18TrialBody)
+assert(
+  "SBBC18 Xingye trial body stores official 单位净值 0.9849 (not 试算 0.9839)",
+  sbbc18TrialNav?.navDate === "2026-08-05"
+    && sbbc18TrialNav?.nav === 0.9849
+    && sbbc18TrialNav?.cumulativeNav === 1.1354
+    && sbbc18TrialNav?.productCode === "SBBC18"
+    && sbbc18TrialNav?.fundName === "贞元强势1号",
+)
+const sbbc18TrialAtts = selectNavTableAttachments(sbbc18TrialSubject, [
+  {
+    filename:
+      "贞元强势1号私募证券投资基金_20260805_金舆守安一号私募证券投资基金_计提净值试算结果.xlsx",
+    part: "2",
+  },
+  {
+    filename: "虚拟业绩报酬_其他产品_2026-08-05.xls",
+    part: "3",
+  },
+])
+assert(
+  "SBBC18 Xingye trial xlsx is selected; pure 虚拟业绩报酬 attachment stays excluded",
+  sbbc18TrialAtts.length === 1
+    && sbbc18TrialAtts[0].filename.includes("计提净值试算结果"),
+)
+assert(
+  "SBBC18 Xingye trial row matches fund despite investor TA account in subject",
+  emailRowMatchesFund(
+    {
+      product_code: "SBBC18",
+      fund_name: "贞元强势1号",
+      nav_date: "2026-08-05",
+      nav: "0.984900",
+      cumulative_nav: "1.135400",
+      adjusted_nav: null,
+      source: "attachment_nav_table",
+      subject: sbbc18TrialSubject,
+      attachment_filename:
+        "贞元强势1号私募证券投资基金_20260805_金舆守安一号私募证券投资基金_虚拟净值试算结果.xlsx",
+    },
+    "SBBC18",
+    ["贞元强势1号", "贞元强势1号私募证券投资基金"],
+  ),
+)
+
+// Sparse gap: unit-only FOF 估值表 holdings must not collapse 累计 after June pre-div tip.
+const sbbc18JuneTip = [
+  {
+    price_date: "2026-06-24",
+    nav: "1.145900",
+    cumulative_nav: "1.145900",
+    cum_nav_withdrawal: "1.145900",
+    price_change: "",
+  },
+]
+const sbbc18FofOnly = mergeNavSeriesWithEmail(
+  sbbc18JuneTip,
+  [{ price_date: "2026-08-04", nav: "0.983200", cumulative_nav: null, adjusted_nav: null }],
+  { beian_hao: "SBBC18", product_name: "贞元强势1号私募证券投资基金", short_name: "贞元强势1号" },
+)
+assert(
+  "SBBC18 skips unit-only FOF holdings crash across June→Aug gap (no false −14%)",
+  sbbc18FofOnly.length === 1
+    && sbbc18FofOnly[0].price_date === "2026-06-24"
+    && Number(sbbc18FofOnly[0].nav) === 1.1459,
+)
+const sbbc18EmailCum = mergeNavSeriesWithEmail(
+  sbbc18JuneTip,
+  [
+    {
+      price_date: "2026-08-05",
+      nav: "0.984900",
+      cumulative_nav: "1.135400",
+      adjusted_nav: null,
+    },
+  ],
+  { beian_hao: "SBBC18", product_name: "贞元强势1号私募证券投资基金", short_name: "贞元强势1号" },
+)
+const sbbc18Aug5 = sbbc18EmailCum.find((r) => r.price_date === "2026-08-05")
+assert(
+  "SBBC18 Xingye trial keeps email 累计净值 1.1354 across sparse gap",
+  sbbc18Aug5 != null
+    && Number(sbbc18Aug5.nav) === 0.9849
+    && Math.abs(Number(sbbc18Aug5.cum_nav_withdrawal) - 1.1354) < 0.0001,
+)
 
 // Zhongtai/中泰: CODE_产品_投资者_虚拟净值_YYYYMMDD — body + attachment must ingest.
 const szj909Subject =

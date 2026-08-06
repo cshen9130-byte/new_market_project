@@ -346,6 +346,24 @@ function valuationPointsToNavMaps(
   return { byCode, byName }
 }
 
+/** True when a unit-only 估值表 mark would crash a pre-dividend tip (no 累计 to preserve). */
+function isSparseGapUnitOnlyCrash(
+  navSeries: LegacyNavRow[],
+  unitNav: number,
+  pointCum: number | null,
+): boolean {
+  if (pointCum != null && Number.isFinite(pointCum) && pointCum - unitNav > 0.03) return false
+  const tip = navSeries[navSeries.length - 1]
+  if (!tip) return false
+  const tipUnit = tip.nav != null ? parseFloat(String(tip.nav)) : NaN
+  const tipCumRaw = tip.cum_nav_withdrawal || tip.cumulative_nav
+  const tipCum = tipCumRaw != null && tipCumRaw !== "" ? parseFloat(String(tipCumRaw)) : NaN
+  if (!Number.isFinite(tipUnit) || tipUnit <= 0 || !Number.isFinite(tipCum)) return false
+  // Pre-div tip (unit≈cum) + sharp unit drop without 累计 → SBBC18 FOF holdings false crash.
+  if (tipCum - tipUnit > 0.03) return false
+  return unitNav < tipUnit * 0.95
+}
+
 function extendSeriesWithPoints(
   navSeries: LegacyNavRow[],
   fundContext: { beian_hao: string; product_name: string; short_name: string | null },
@@ -360,6 +378,21 @@ function extendSeriesWithPoints(
     if (!isChinaTradingDay(date)) continue
     if (latestSeriesDate && date <= latestSeriesDate) continue
     if (targetDate && date > targetDate) continue
+    const pointNav = point.nav != null ? parseFloat(String(point.nav)) : NaN
+    const pointCum =
+      point.cumulative_nav != null && point.cumulative_nav !== ""
+        ? parseFloat(String(point.cumulative_nav))
+        : null
+    if (
+      Number.isFinite(pointNav)
+      && isSparseGapUnitOnlyCrash(
+        navSeries,
+        pointNav,
+        pointCum != null && Number.isFinite(pointCum) ? pointCum : null,
+      )
+    ) {
+      continue
+    }
     extensionByDate.set(date, point)
   }
   if (
@@ -368,6 +401,7 @@ function extendSeriesWithPoints(
     && isChinaTradingDay(targetDate)
     && (!latestSeriesDate || targetDate > latestSeriesDate)
     && !extensionByDate.has(targetDate)
+    && !isSparseGapUnitOnlyCrash(navSeries, resolvedNav, null)
   ) {
     extensionByDate.set(targetDate, {
       price_date: targetDate,

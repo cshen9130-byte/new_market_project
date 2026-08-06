@@ -88,6 +88,8 @@ export type TeamDataListRow = {
   valuation_date: string | null
   product_source: string
   strategy_l1: string | null
+  /** Last edit / sync time — used for default newest-first ordering. */
+  updated_at: string | null
 }
 
 type RawEmailFund = {
@@ -96,6 +98,7 @@ type RawEmailFund = {
   fund_name: string | null
   team_nav_date: string
   team_nav: string
+  updated_at: string
 }
 
 type ResolvedFund = {
@@ -108,6 +111,7 @@ type ResolvedFund = {
   strategy_l2: string | null
   strategy_l3: string | null
   product_source: string
+  updated_at: string
 }
 
 type BflRow = {
@@ -158,6 +162,15 @@ let emailFundsCache: { rows: RawEmailFund[]; at: number } | null = null
 type ManualTeamDataProduct = {
   beian_hao: string
   product_name: string
+  created_at: string
+}
+
+function maxIsoTimestamp(a: string | null | undefined, b: string | null | undefined): string {
+  const left = (a ?? "").trim()
+  const right = (b ?? "").trim()
+  if (!left) return right
+  if (!right) return left
+  return left.localeCompare(right) >= 0 ? left : right
 }
 
 export function invalidateTeamDataListCaches(): void {
@@ -239,7 +252,7 @@ async function ensureTeamDataProductsTable(): Promise<void> {
 async function loadManualTeamDataProducts(): Promise<ManualTeamDataProduct[]> {
   await ensureTeamDataProductsTable()
   return query<ManualTeamDataProduct>(
-    `SELECT beian_hao, product_name
+    `SELECT beian_hao, product_name, created_at::text AS created_at
      FROM ops_team_data_products
      ORDER BY created_at DESC, id DESC`,
   )
@@ -340,6 +353,7 @@ function resolveManualProduct(
     strategy_l2: strategies.l2,
     strategy_l3: strategies.l3,
     product_source: "手动添加",
+    updated_at: manual.created_at?.trim() || "",
   }
 }
 
@@ -372,6 +386,7 @@ const EMAIL_FUNDS_SORT: Record<string, string> = {
   platform_nav: "platform_nav",
   platform_nav_date: "platform_nav_date",
   valuation_date: "valuation_date",
+  updated_at: "updated_at",
 }
 
 function fundNameBase(name: string): string {
@@ -926,27 +941,45 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
          e.nav_date,
          e.nav,
          e.source,
+         e.created_at,
          COALESCE(
            NULLIF(BTRIM(e.product_code), ''),
            NULLIF(BTRIM(e.fund_name), '')
          ) AS fund_key
        FROM ops_email_nav_records e
        WHERE e.nav IS NOT NULL AND e.nav_date IS NOT NULL
+     ),
+     latest_edit AS (
+       SELECT fund_key, MAX(created_at) AS updated_at
+       FROM email_ranked
+       GROUP BY fund_key
+     ),
+     latest_nav AS (
+       SELECT DISTINCT ON (fund_key)
+         fund_key,
+         product_code,
+         fund_name,
+         subject,
+         nav_date,
+         nav
+       FROM email_ranked
+       ORDER BY
+         fund_key,
+         ${EMAIL_NAV_SOURCE_PRIORITY.replace(/\be\./g, "")},
+         CASE WHEN COALESCE(fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
+         nav_date DESC,
+         id DESC
      )
-     SELECT DISTINCT ON (fund_key)
-       fund_key,
-       product_code,
-       fund_name,
-       subject,
-       nav_date::text AS team_nav_date,
-       nav::text AS team_nav
-     FROM email_ranked
-     ORDER BY
-       fund_key,
-       ${EMAIL_NAV_SOURCE_PRIORITY.replace(/\be\./g, "")},
-       CASE WHEN COALESCE(fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
-       nav_date DESC,
-       id DESC`,
+     SELECT
+       n.fund_key,
+       n.product_code,
+       n.fund_name,
+       n.subject,
+       n.nav_date::text AS team_nav_date,
+       n.nav::text AS team_nav,
+       e.updated_at::text AS updated_at
+     FROM latest_nav n
+     JOIN latest_edit e USING (fund_key)`,
   )
   const repaired = rows.map((row) => {
     if (!isJunkTeamDataProductName(row.fund_name) || !row.subject) {
@@ -983,6 +1016,7 @@ function dedupeRawFunds(rows: RawEmailFund[]): RawEmailFund[] {
         ...row,
         team_nav_date: row.team_nav_date || prev.team_nav_date,
         team_nav: row.team_nav || prev.team_nav,
+        updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
       })
       continue
     }
@@ -993,14 +1027,31 @@ function dedupeRawFunds(rows: RawEmailFund[]): RawEmailFund[] {
           team_nav_date: row.team_nav_date,
           team_nav: row.team_nav || prev.team_nav,
           product_code: prev.product_code || row.product_code,
+          updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+        })
+      } else {
+        byKey.set(key, {
+          ...prev,
+          updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
         })
       }
       continue
     }
     if (row.team_nav_date.localeCompare(prev.team_nav_date) > 0) {
-      byKey.set(key, row)
+      byKey.set(key, {
+        ...row,
+        updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+      })
     } else if (row.team_nav_date === prev.team_nav_date && row.product_code && !prev.product_code) {
-      byKey.set(key, row)
+      byKey.set(key, {
+        ...row,
+        updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+      })
+    } else {
+      byKey.set(key, {
+        ...prev,
+        updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+      })
     }
   }
   return Array.from(byKey.values())
@@ -1026,7 +1077,15 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
     const key = row.beian_hao.trim().toUpperCase()
     const prev = byBeian.get(key)
     if (!prev || row.team_nav_date.localeCompare(prev.team_nav_date) > 0) {
-      byBeian.set(key, row)
+      byBeian.set(key, {
+        ...row,
+        updated_at: maxIsoTimestamp(row.updated_at, prev?.updated_at),
+      })
+    } else {
+      byBeian.set(key, {
+        ...prev,
+        updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+      })
     }
   }
 
@@ -1041,12 +1100,14 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
     }
     const prevScore = beianPreferScore(prev.beian_hao || "")
     const nextScore = beianPreferScore(row.beian_hao || "")
-    if (
+    const preferNext =
       nextScore > prevScore
       || (nextScore === prevScore && row.team_nav_date.localeCompare(prev.team_nav_date) > 0)
-    ) {
-      byName.set(nameKey, row)
-    }
+    const winner = preferNext ? row : prev
+    byName.set(nameKey, {
+      ...winner,
+      updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+    })
   }
 
   // Drop name-only rows when the same product already resolved with a 备案号
@@ -1137,6 +1198,7 @@ function resolveFund(
     strategy_l2: strategies.l2,
     strategy_l3: strategies.l3,
     product_source: "邮箱同步",
+    updated_at: row.updated_at?.trim() || "",
   }
 }
 
@@ -1161,14 +1223,30 @@ function mergeLatestTeamNav(
 async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
   const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
   if (beians.length === 0) return rows
-  const manualByBeian = await loadManualTeamNavBatch(beians)
-  if (manualByBeian.size === 0) return rows
+  const [manualByBeian, manualEditRows] = await Promise.all([
+    loadManualTeamNavBatch(beians),
+    query<{ beian_hao: string; updated_at: string }>(
+      `SELECT beian_hao, MAX(created_at)::text AS updated_at
+       FROM ops_team_nav_manual
+       WHERE beian_hao = ANY($1::text[])
+       GROUP BY beian_hao`,
+      [beians],
+    ).catch(() => [] as Array<{ beian_hao: string; updated_at: string }>),
+  ])
+  const manualEditByBeian = new Map(
+    manualEditRows.map((r) => [r.beian_hao.trim(), r.updated_at]),
+  )
+  if (manualByBeian.size === 0 && manualEditByBeian.size === 0) return rows
   return rows.map((row) => {
     if (!row.beian_hao) return row
     const manual = manualByBeian.get(row.beian_hao)
-    if (!manual?.length) return row
+    const manualEdit = manualEditByBeian.get(row.beian_hao)
+    const updated_at = maxIsoTimestamp(row.updated_at, manualEdit)
+    if (!manual?.length) {
+      return updated_at === row.updated_at ? row : { ...row, updated_at }
+    }
     const merged = mergeLatestTeamNav(row.team_nav_date, row.team_nav, manual)
-    return { ...row, ...merged }
+    return { ...row, ...merged, updated_at }
   })
 }
 
@@ -1220,12 +1298,13 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
       valuation_date: row.beian_hao ? (vmByCode.get(row.beian_hao) ?? null) : null,
       product_source: row.product_source,
       strategy_l1: row.strategy_l1,
+      updated_at: row.updated_at?.trim() || null,
     }
   })
 }
 
 function compareRows(a: TeamDataListRow, b: TeamDataListRow, sort: string, dir: "ASC" | "DESC"): number {
-  const col = EMAIL_FUNDS_SORT[sort] ?? "team_nav_date"
+  const col = EMAIL_FUNDS_SORT[sort] ?? "updated_at"
   const av = a[col as keyof TeamDataListRow]
   const bv = b[col as keyof TeamDataListRow]
   const mul = dir === "ASC" ? 1 : -1
@@ -1333,12 +1412,14 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     })
   }
 
+  const effectiveSort = sort || "updated_at"
+  const effectiveDir = sort ? sortDir : "DESC"
   const sorted = [...resolved].sort((a, b) =>
     compareRows(
       { ...a, platform_nav: null, platform_nav_date: null, valuation_date: null },
       { ...b, platform_nav: null, platform_nav_date: null, valuation_date: null },
-      sort,
-      sortDir,
+      effectiveSort,
+      effectiveDir,
     ),
   )
 

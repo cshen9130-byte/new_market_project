@@ -113,15 +113,19 @@ export async function refreshManagedFofUnderlying(
   await ensureEmailValuationHoldingsTables()
 
   // Repair row_kind for 4-level 估值表 private fund rows stored as "other" (1109xxxx codes).
+  // Limit to rows that can enter underlying extraction to avoid a full-table rewrite.
   await query(
-    `UPDATE ops_email_valuation_holdings
+    `UPDATE ops_email_valuation_holdings h
      SET row_kind = 'private_fund'
-     WHERE row_kind = 'other'
+     WHERE h.row_kind = 'other'
+       AND h.include_in_detail = TRUE
+       AND COALESCE(h.market_value, h.cost, 0) > 0
+       AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
        AND (
-         subject_code LIKE '1109%'
-         OR subject_code LIKE '1108%'
-         OR subject_name ~ '私募证券投资基金'
-         OR subject_name ~ '私募基金'
+         h.subject_code LIKE '1109%'
+         OR h.subject_code LIKE '1108%'
+         OR h.subject_name ~ '私募证券投资基金'
+         OR h.subject_name ~ '私募基金'
        )`,
   )
 
@@ -1744,13 +1748,13 @@ export function managedUnderlyingMarketValueExpr(
   )`
 }
 
-/** Prefer managed 市值 sum, then cached / summary values. */
+/** Prefer managed 市值 sum, then cache. Never fall back to static summary spreadsheet. */
 export function effectiveUnderlyingMarketValueExpr(
   beianExpr: string,
   productNameExpr: string,
 ): string {
   const managedMv = managedUnderlyingMarketValueExpr(beianExpr, productNameExpr)
-  return `COALESCE(NULLIF(${managedMv}, 0), cache.market_value, f.market_value)`
+  return `COALESCE(NULLIF(${managedMv}, 0), cache.market_value)`
 }
 
 export type UnderlyingHoldingsRow = {

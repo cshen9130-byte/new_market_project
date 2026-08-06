@@ -3,9 +3,33 @@ import {
   getFundValuationTrendAnalysis,
   getFundValuationAllocation,
 } from "@/lib/server/fund-valuation-allocation"
+import {
+  isValuationCashHoldingName,
+  stripValuationSubjectPathPrefix,
+} from "@/lib/valuation-holding-display-name"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+function sanitizeFundHoldingsPayload<T extends {
+  fund_holdings?: Array<{ fundName: string; rowKind?: string; index?: number }>
+}>(data: T): T {
+  if (!Array.isArray(data.fund_holdings)) return data
+  const fund_holdings = data.fund_holdings
+    .filter((h) => {
+      const kind = String(h.rowKind ?? "")
+      if (["bank_deposit", "settlement_reserve", "margin_deposit", "payable", "clearing"].includes(kind)) {
+        return false
+      }
+      return !isValuationCashHoldingName(h.fundName)
+    })
+    .map((h, i) => ({
+      ...h,
+      index: i + 1,
+      fundName: stripValuationSubjectPathPrefix(h.fundName) || h.fundName,
+    }))
+  return { ...data, fund_holdings }
+}
 
 export async function GET(
   req: Request,
@@ -30,7 +54,7 @@ export async function GET(
       curvesFrom: url.searchParams.get("from") ?? undefined,
       curvesTo: url.searchParams.get("to") ?? undefined,
     })
-    return NextResponse.json(data)
+    return NextResponse.json(sanitizeFundHoldingsPayload(data))
   } catch (e) {
     const message = e instanceof Error ? e.message : "读取失败"
     console.error("[valuation]", message, e)

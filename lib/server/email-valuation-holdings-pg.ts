@@ -3,7 +3,11 @@
  */
 
 import { query } from "@/lib/db"
-import type { ValuationRow } from "@/lib/server/valuation-analyzer"
+import {
+  pickRowCost,
+  pickRowMarketValue,
+  type ValuationRow,
+} from "@/lib/server/valuation-analyzer"
 import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
 
@@ -223,6 +227,34 @@ export function mapValuationRowsToHoldings(
       if (!KNOWN_HOLDING_FIELDS.has(key)) extra[key] = value
     }
 
+    // 华泰等表把金额放在 市值_原币_* / 成本_原币_*，标准字段可能为空。
+    const pickedMv = pickRowMarketValue(row)
+    const pickedCost = pickRowCost(row)
+    const marketValue = numOrNull(row.market_value ?? row.notional_value) ?? (pickedMv || null)
+    const cost = numOrNull(row.cost) ?? (pickedCost || null)
+    const signedMarketValue = numOrNull(row.signed_market_value) ?? (marketValue != null ? marketValue : null)
+    const signedCost = numOrNull(row.signed_cost) ?? (cost != null ? cost : null)
+    const quantity = numOrNull(row.quantity ?? row.position ?? row.volume)
+    const unrealizedPnl = numOrNull(row.unrealized_pnl ?? row.net_value_change)
+    const hasValue =
+      Math.abs(quantity ?? 0) > 0
+      || Math.abs(marketValue ?? 0) > 0
+      || Math.abs(cost ?? 0) > 0
+      || Math.abs(unrealizedPnl ?? 0) > 0
+    const isLeaf = boolOrNull(row.is_leaf)
+    const compactCode = String(row.code ?? "").replace(/[\s.]/g, "")
+    // Repair legacy JSONB where 结算备付金_*期权* was tagged as option.
+    let rowKind = strOrNull(row.row_kind)
+    if (compactCode.startsWith("1002")) rowKind = "bank_deposit"
+    else if (compactCode.startsWith("1021")) rowKind = "settlement_reserve"
+    else if (compactCode.startsWith("1031")) rowKind = "margin_deposit"
+    const includeInDetail = row.include_in_detail === true || Boolean(isLeaf && hasValue)
+    const includeInAnalysis = row.include_in_analysis === true || Boolean(
+      includeInDetail
+      && rowKind
+      && ["derivative", "option", "stock", "bond", "fund_or_stock", "private_fund"].includes(rowKind),
+    )
+
     return {
       valuationRecordId: meta.valuationRecordId,
       productCode: meta.productCode,
@@ -238,25 +270,25 @@ export function mapValuationRowsToHoldings(
         strOrNull(row.symbol),
         strOrNull(row.original_code),
       ),
-      rowKind: strOrNull(row.row_kind),
+      rowKind,
       direction: strOrNull(row.direction),
       exchange: strOrNull(row.exchange),
       assetClass: strOrNull(row.asset_class),
       currency: strOrNull(row.currency),
       fxRate: numOrNull(row.fx_rate),
-      quantity: numOrNull(row.quantity ?? row.position ?? row.volume),
+      quantity,
       unitCost: numOrNull(row.unit_cost),
-      cost: numOrNull(row.cost),
-      signedCost: numOrNull(row.signed_cost),
+      cost,
+      signedCost,
       price: numOrNull(row.price ?? row.current_price),
-      marketValue: numOrNull(row.market_value ?? row.notional_value),
-      signedMarketValue: numOrNull(row.signed_market_value),
-      unrealizedPnl: numOrNull(row.unrealized_pnl ?? row.net_value_change),
+      marketValue,
+      signedMarketValue,
+      unrealizedPnl,
       costWeight: numOrNull(row.cost_weight),
       marketWeight: numOrNull(row.market_weight),
-      isLeaf: boolOrNull(row.is_leaf),
-      includeInDetail: row.include_in_detail === true,
-      includeInAnalysis: row.include_in_analysis === true,
+      isLeaf,
+      includeInDetail,
+      includeInAnalysis,
       extra,
     }
   })
@@ -363,14 +395,33 @@ export async function replaceValuationHoldings(
     valuationRecordId,
   ])
 
-  const holdings = mapValuationRowsToHoldings(rows, {
-    valuationRecordId,
-    ...meta,
-  }).filter((h) => h.subjectCode && h.subjectName)
+  const holdings = dedupeHoldingsBySubject(
+    mapValuationRowsToHoldings(rows, {
+      valuationRecordId,
+      ...meta,
+    }).filter((h) => h.subjectCode && h.subjectName),
+  )
 
   if (holdings.length === 0) return 0
   await insertHoldingsBatch(holdings)
   return holdings.length
+}
+
+/** UNIQUE (valuation_record_id, subject_code, subject_name) — keep the richer row. */
+function dedupeHoldingsBySubject(holdings: ValuationHoldingInsert[]): ValuationHoldingInsert[] {
+  const byKey = new Map<string, ValuationHoldingInsert>()
+  for (const h of holdings) {
+    const key = `${h.valuationRecordId}\0${h.subjectCode}\0${h.subjectName}`
+    const prev = byKey.get(key)
+    if (!prev) {
+      byKey.set(key, h)
+      continue
+    }
+    const prevScore = Math.abs(prev.marketValue ?? 0) + Math.abs(prev.cost ?? 0) + Math.abs(prev.quantity ?? 0)
+    const nextScore = Math.abs(h.marketValue ?? 0) + Math.abs(h.cost ?? 0) + Math.abs(h.quantity ?? 0)
+    if (nextScore >= prevScore) byKey.set(key, h)
+  }
+  return [...byKey.values()]
 }
 
 export async function refreshFundLatestValuationHoldings(): Promise<number> {

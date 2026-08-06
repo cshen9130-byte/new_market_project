@@ -3,6 +3,10 @@
 import { useMemo, useState, type ReactNode } from "react"
 import { ChevronDown, Clock, Download, Info, Search, SquarePen } from "lucide-react"
 import { ProductSelectionPanel } from "@/components/ma/product-selection-panel"
+import {
+  isValuationCashHoldingName,
+  stripValuationSubjectPathPrefix,
+} from "@/lib/valuation-holding-display-name"
 
 export type FundHoldingRow = {
   index: number
@@ -39,6 +43,17 @@ function isStockRow(row: FundHoldingRow): boolean {
     if (!row.valuationCode && !row.beianHao) return true
   }
   return false
+}
+
+function isCashOrNonFundRow(row: FundHoldingRow): boolean {
+  if (["bank_deposit", "settlement_reserve", "margin_deposit", "payable", "clearing"].includes(row.rowKind)) {
+    return true
+  }
+  return isValuationCashHoldingName(row.fundName)
+}
+
+function displayFundName(row: FundHoldingRow): string {
+  return stripValuationSubjectPathPrefix(row.fundName) || row.fundName
 }
 
 type Props = {
@@ -89,15 +104,16 @@ function fundDetailHref(row: FundHoldingRow): string {
 }
 
 function FundNameLink({ row }: { row: FundHoldingRow }) {
+  const name = displayFundName(row)
   return (
     <a
       href={fundDetailHref(row)}
       target="_blank"
       rel="noopener noreferrer"
       className="text-blue-600 hover:underline block truncate"
-      title={row.fundName}
+      title={name}
     >
-      {row.fundName}
+      {name}
     </a>
   )
 }
@@ -314,7 +330,12 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
   const [sortKey, setSortKey] = useState<SortKey | null>("marketValue")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
 
-  const fundOnlyRows = useMemo(() => rows.filter((r) => !isStockRow(r)), [rows])
+  const fundOnlyRows = useMemo(
+    () => rows
+      .filter((r) => !isStockRow(r) && !isCashOrNonFundRow(r))
+      .map((r) => ({ ...r, fundName: displayFundName(r) })),
+    [rows],
+  )
   const stockOnlyRows = useMemo(() => rows.filter((r) => isStockRow(r)), [rows])
 
   const strategyTabs = useMemo(() => {

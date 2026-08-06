@@ -39,6 +39,10 @@ import {
   cacheFreshValuationSnapshot,
   readValuationCacheIfFresh,
 } from "@/lib/server/valuation-cache-refresh"
+import {
+  isValuationCashHoldingName,
+  stripValuationSubjectPathPrefix,
+} from "@/lib/valuation-holding-display-name"
 
 export type AllocationMode = "major" | "all"
 
@@ -748,11 +752,27 @@ function isDirectEquityStock(h: HoldingRow): boolean {
   return false
 }
 
+function isCashLikeHoldingKind(kind: string | null | undefined): boolean {
+  return [
+    "bank_deposit",
+    "settlement_reserve",
+    "margin_deposit",
+    "payable",
+    "receivable",
+    "clearing",
+    "paid_in_capital",
+  ].includes(kind ?? "")
+}
+
 function isUnderlyingFundInvestment(h: HoldingRow): boolean {
   if (!isFundHoldingRow(h) || isDirectEquityStock(h)) return false
   const kind = h.row_kind ?? "other"
+  if (isCashLikeHoldingKind(kind)) return false
   if (["private_fund", "fund", "money_fund"].includes(kind)) return true
-  if (/私募/.test(String(h.subject_name ?? ""))) return true
+  // Avoid matching 银行存款…金舆锡泰一号私募证券投资基金 custody labels.
+  if (/私募/.test(String(h.subject_name ?? "")) && !/^银行存款|^结算备付金|^存出保证金/.test(String(h.subject_name ?? ""))) {
+    return true
+  }
   const code = String(h.subject_code ?? "").replace(/\s/g, "")
   if (code.startsWith("1109") || code.startsWith("1108")) return true
   if (extractListedFundCodeFromName(String(h.subject_name ?? ""))) return true
@@ -929,11 +949,14 @@ function isFundHoldingRow(h: HoldingRow): boolean {
   if (!hasEconomicHoldingValue(h)) return false
 
   const kind = h.row_kind ?? "other"
+  if (isCashLikeHoldingKind(kind)) return false
   if (["private_fund", "fund_or_stock", "fund", "money_fund", "stock"].includes(kind)) return true
 
   const code = String(h.subject_code ?? "").replace(/\s/g, "")
   if (code.startsWith("1109") || code.startsWith("1108")) return true
-  if (/私募证券投资基金|私募基金/.test(String(h.subject_name ?? ""))) return true
+  const name = String(h.subject_name ?? "")
+  if (/^银行存款|^结算备付金|^存出保证金/.test(name)) return false
+  if (/私募证券投资基金|私募基金/.test(name)) return true
   if (kind === "other" && String(h.symbol ?? "").trim()) return true
   return false
 }
@@ -1395,7 +1418,7 @@ async function buildFundHoldings(
       const signedCost = parseNum(h.signed_cost) || parseNum(h.cost)
       const price = parseNum(h.price) || null
       return {
-        fundName: String(h.subject_name ?? h.symbol ?? "").trim(),
+        fundName: fundHoldingDisplayName(h) || String(h.symbol ?? "").trim(),
         valuationCode,
         navDate: valuationDate?.slice(0, 10) ?? null,
         virtualUnitNav,
@@ -1818,7 +1841,7 @@ export async function getFundValuationAllocation(
         rawBeianHao,
         "snapshot",
       )
-      if (cached) return cached
+      if (cached) return sanitizeAllocationDisplayNames(cached)
     } else if (curvesFrom && curvesTo) {
       // Curves request: try combining cached snapshot + cached curves
       const [snapshot, curves] = await Promise.all([
@@ -1828,8 +1851,10 @@ export async function getFundValuationAllocation(
           toDate: curvesTo,
         }),
       ])
-      if (snapshot && curves) return { ...snapshot, return_curves: curves }
-      if (snapshot) return snapshot
+      if (snapshot && curves) {
+        return sanitizeAllocationDisplayNames({ ...snapshot, return_curves: curves })
+      }
+      if (snapshot) return sanitizeAllocationDisplayNames(snapshot)
     }
   }
 
@@ -1914,11 +1939,24 @@ export async function getFundValuationAllocation(
   }
 
   const layout_type = detectValuationLayoutType(holdings)
-  const allocation = layout_type === "fof"
+  let allocation = layout_type === "fof"
     ? aggregateFofAllocation(holdings, net_asset_value, custody_balance)
     : layout_type === "equity"
       ? aggregateEquityAllocation(holdings, net_asset_value, custody_balance)
       : buildAllocation(sums, net_asset_value)
+
+  // FOF: major-kind NAV fallback is cash-only; prefer sum of FOF allocation buckets.
+  if (
+    layout_type === "fof"
+    && !(metrics && parseNum(metrics.net_asset_value) > 0)
+    && allocation.length > 0
+  ) {
+    const allocNav = allocation.reduce((s, row) => s + row.value, 0)
+    if (allocNav > 0) {
+      net_asset_value = allocNav
+      allocation = aggregateFofAllocation(holdings, net_asset_value, custody_balance)
+    }
+  }
 
   const derivatives = layout_type === "derivative"
     ? buildDerivatives(holdings, net_asset_value)
@@ -2082,11 +2120,13 @@ export async function getFundValuationAllocation(
     match_method,
   }
 
-  if (mode === "major" && !includeReturnCurves && result.has_data) {
-    void cacheFreshValuationSnapshot(rawBeianHao, result)
+  const sanitized = sanitizeAllocationDisplayNames(result)
+
+  if (mode === "major" && !includeReturnCurves && sanitized.has_data) {
+    void cacheFreshValuationSnapshot(rawBeianHao, sanitized)
   }
 
-  return result
+  return sanitized
 }
 
 export type AllocationTrendSeries = {
@@ -2596,7 +2636,20 @@ function buildContractEquityTrend(
 }
 
 function fundHoldingDisplayName(h: HoldingRow): string {
-  return String(h.subject_name ?? h.symbol ?? "").trim()
+  return stripValuationSubjectPathPrefix(String(h.subject_name ?? h.symbol ?? ""))
+}
+
+function sanitizeAllocationDisplayNames(
+  result: FundValuationAllocationResult,
+): FundValuationAllocationResult {
+  if (!result.fund_holdings?.length) return result
+  const fund_holdings = result.fund_holdings
+    .filter((h) => !isCashLikeHoldingKind(h.rowKind) && !isValuationCashHoldingName(h.fundName))
+    .map((h, i) => {
+      const fundName = stripValuationSubjectPathPrefix(h.fundName) || h.fundName
+      return { ...h, index: i + 1, fundName }
+    })
+  return { ...result, fund_holdings }
 }
 
 function fundHoldingBeianCode(h: HoldingRow): string | null {

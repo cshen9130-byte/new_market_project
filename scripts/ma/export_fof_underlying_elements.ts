@@ -149,12 +149,12 @@ async function main() {
          f.product_name,
          COALESCE(NULLIF(BTRIM(cache.short_name), ''), f.product_name) AS short_name,
          cache.beian_hao,
-         COALESCE(cache.market_value, f.market_value, 0)::text AS market_value
+         COALESCE(cache.market_value, 0)::text AS market_value
        FROM fof_underlying_summary f
        LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
        WHERE f.product_name <> '合计'
          AND ${exclude}
-         AND COALESCE(cache.market_value, f.market_value, 0) > 0
+         AND COALESCE(cache.market_value, 0) > 0
        ORDER BY f.sequence_no ASC NULLS LAST, f.id ASC`,
     )
 
