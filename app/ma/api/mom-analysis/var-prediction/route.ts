@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { withMomCache } from "@/lib/server/mom-cache"
+import { paramKey, readCache, writeCache } from "@/lib/server/mom-cache"
 import { getPrefix } from "@/lib/server/prod-utils"
 
 export const runtime = "nodejs"
@@ -10,6 +10,22 @@ function toNum(v: unknown): number {
   if (v == null) return 0
   const n = parseFloat(String(v).replace(/[,%\s]/g, ""))
   return isNaN(n) ? 0 : n
+}
+
+/** Normalise DATE/TIMESTAMP text to YYYY-MM-DD for map keys / joins. */
+function normDate(d: string): string {
+  return d.slice(0, 10)
+}
+
+/** Binary search: last index i such that arr[i] <= target, or -1 if none. */
+function floorIndex(arr: string[], target: string): number {
+  let lo = 0, hi = arr.length - 1, idx = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (arr[mid] <= target) { idx = mid; lo = mid + 1 }
+    else hi = mid - 1
+  }
+  return idx
 }
 
 const numExpr = (col: string) =>
@@ -153,21 +169,23 @@ async function _GET(req: Request) {
     const totalPnlMap = new Map<string, number>()
 
     const addPnl = (contract: string, date: string, pnl: number) => {
+      const d = normDate(date)
       const prod = getPrefix(contract)
       if (!prodPnlMap.has(prod)) prodPnlMap.set(prod, new Map())
       const m = prodPnlMap.get(prod)!
-      m.set(date, (m.get(date) ?? 0) + pnl)
-      totalPnlMap.set(date, (totalPnlMap.get(date) ?? 0) + pnl)
+      m.set(d, (m.get(d) ?? 0) + pnl)
+      totalPnlMap.set(d, (totalPnlMap.get(d) ?? 0) + pnl)
     }
     for (const r of closeRows) addPnl(r.contract, r.date, toNum(r.pnl))
     for (const r of posRows)   addPnl(r.contract, r.date, toNum(r.pnl))
     for (const r of feeRows)   addPnl(r.contract, r.date, -toNum(r.fee) + toNum(r.premium))
 
     for (const r of mvRows) {
+      const d = normDate(r.date)
       const prod = getPrefix(r.contract)
       if (!prodMvMap.has(prod)) prodMvMap.set(prod, new Map())
       const m = prodMvMap.get(prod)!
-      m.set(r.date, (m.get(r.date) ?? 0) + toNum(r.mv))  // signed: positive = net long
+      m.set(d, (m.get(d) ?? 0) + toNum(r.mv))  // signed: positive = net long
     }
 
     const allProds     = [...prodPnlMap.keys()].filter(p => !prodsFilter || prodsFilter.has(p))
@@ -205,8 +223,9 @@ async function _GET(req: Request) {
 
     const pctMap = new Map<string, Map<string, number>>()
     for (const r of pctRows) {
+      const d = normDate(r.date)
       if (!pctMap.has(r.code)) pctMap.set(r.code, new Map())
-      pctMap.get(r.code)!.set(r.date, toNum(r.pct) / 100)
+      pctMap.get(r.code)!.set(d, toNum(r.pct) / 100)
     }
 
     const getPctSeries = (prod: string, dates: string[]): number[] => {
@@ -216,7 +235,7 @@ async function _GET(req: Request) {
       return dates.map((dt) => m?.get(dt) ?? 0)
     }
 
-    const allMktDates = [...new Set(pctRows.map((r) => r.date))].sort()
+    const allMktDates = [...new Set(pctRows.map((r) => normDate(r.date)))].sort()
     const corrDates   = allMktDates.slice(-CORR_WINDOW)
     const retSeries   = allProds.map((p) => getPctSeries(p, corrDates))
     const N           = allProds.length
@@ -234,21 +253,22 @@ async function _GET(req: Request) {
       )
     )
 
-    // Helper: compute parametric VaR for a single day d using today's MV and recent vol window
+    // Helper: compute parametric VaR for a single day d using that day's MV and recent vol window.
+    // Market dates may lag MOM settlement dates — use floorIndex (same as var-sector-timeseries /
+    // var-sandbox) so a missing akshare day does not silently zero VaR.
     const computeVar = (d: string): number => {
-      const mi       = allMktDates.indexOf(d)
-      const volDates = mi >= VOL_WINDOW
-        ? allMktDates.slice(mi - VOL_WINDOW, mi)
-        : allMktDates.slice(0, Math.max(0, mi))
+      const day = normDate(d)
+      const mi  = floorIndex(allMktDates, day)
+      if (mi < 1) return 0
 
       const dollarVols = allProds.map((prod) => {
-        const mvD = prodMvMap.get(prod)?.get(d) ?? 0
+        const mvD = prodMvMap.get(prod)?.get(day) ?? 0
         if (Math.abs(mvD) < 1000) return 0
         const code = AKSHARE_CODE[prod]
         const cleanRets = cleanPctByCode.get(code ?? "") ?? []
         const rets = (mi >= VOL_WINDOW
           ? cleanRets.slice(mi - VOL_WINDOW, mi)
-          : cleanRets.slice(0, Math.max(0, mi))).filter(r => r !== 0)
+          : cleanRets.slice(0, mi)).filter(r => r !== 0)
         const sigma = stdDev(rets)
         return sigma * mvD
       })
@@ -313,4 +333,41 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("var-prediction", _GET)
+/**
+ * Cache wrapper with tip-zero bypass: when akshare lags MOM dates, a stale daily
+ * cache can freeze VaR=0 on the latest point even after market data catches up.
+ * Recompute (and overwrite) those bad entries instead of serving them.
+ */
+export async function GET(req: Request) {
+  const url = new URL(req.url)
+  const noCache = url.searchParams.get("nocache") === "1"
+  const key = "var-prediction" + paramKey(url.searchParams)
+  const cacheHeaders = { "Cache-Control": "no-cache" }
+
+  if (!noCache) {
+    const cached = readCache<{
+      data?: { date: string; var: number; actual: number }[]
+      nextDayVar?: number
+    }>(key)
+    if (cached != null) {
+      const last = cached.data?.at(-1)
+      // Bad tip from market-data lag (exact indexOf miss) — recompute instead of serving.
+      const tipBroken = !!last && last.var === 0 && last.actual > 0
+      if (!tipBroken) {
+        return NextResponse.json(cached, { headers: cacheHeaders })
+      }
+    }
+  }
+
+  const resp = await _GET(req)
+  if (resp.status === 200) {
+    try {
+      const body = await resp.json()
+      writeCache(key, body)
+      return NextResponse.json(body, { headers: cacheHeaders })
+    } catch {
+      // fall through
+    }
+  }
+  return resp
+}

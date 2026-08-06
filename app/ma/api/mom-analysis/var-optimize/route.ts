@@ -12,6 +12,17 @@ function toNum(v: unknown): number {
   const n = parseFloat(String(v).replace(/[,%\s]/g, ""))
   return isNaN(n) ? 0 : n
 }
+
+/** Binary search: last index i such that arr[i] <= target, or -1 if none. */
+function floorIndex(arr: string[], target: string): number {
+  let lo = 0, hi = arr.length - 1, idx = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (arr[mid] <= target) { idx = mid; lo = mid + 1 }
+    else hi = mid - 1
+  }
+  return idx
+}
 const numExpr = (col: string) =>
   `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}"::text, ''), ',', ''), ' ', ''), '')::numeric, 0)`
 
@@ -241,9 +252,7 @@ async function _GET(_req: Request) {
       const m = pctMap.get(code)
       return dates.map((dt) => m?.get(dt) ?? 0)
     }
-    const allMktDates  = [...new Set(pctRows.map((r) => r.date))].sort()
-    const mktDateIndex = new Map<string, number>()
-    allMktDates.forEach((d, i) => mktDateIndex.set(d, i))
+    const allMktDates = [...new Set(pctRows.map((r) => r.date.slice(0, 10)))].sort()
 
     const Np = allProds.length
 
@@ -273,7 +282,8 @@ async function _GET(_req: Request) {
       for (let di = vd; di < tradingDates.length - 1; di++) {
         const d     = tradingDates[di]
         const dNext = tradingDates[di + 1]
-        const mi    = mktDateIndex.get(d) ?? -1
+        // floorIndex: MOM settlement dates can be ahead of akshare market dates
+        const mi    = floorIndex(allMktDates, d.slice(0, 10))
         const volDates =
           mi >= vd
             ? allMktDates.slice(mi - vd, mi)

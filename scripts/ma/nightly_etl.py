@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 from datetime import date, datetime, timedelta
@@ -159,6 +160,28 @@ def _resolve_python_exe() -> str:
     return "py" if sys.platform == "win32" else "python3"
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Force-kill a child (and its process group on Unix).
+
+    Used after communicate() timeouts. A bare proc.kill() is not enough when the
+    child has spawned helpers, and a second communicate() without a timeout can
+    hang forever if pipes/readers are wedged — that previously left nightly ETL
+    stuck on option_iv for ~20h and blocked later steps like akshare_futures_daily.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform != "win32" and proc.pid:
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+
 def run_script(
     script_name: str,
     extra_env: dict | None = None,
@@ -179,8 +202,10 @@ def run_script(
     cmd = prefix + [str(script_path)] + (extra_args or [])
 
     try:
-        # Drain stderr on a thread so AkShare progress bars cannot fill the
-        # pipe buffer and deadlock the child (common on Windows).
+        # Use a new session on Unix so timeout can kill the whole process group.
+        # Rely solely on communicate() to drain stdout/stderr — a competing
+        # stderr reader thread previously raced communicate() and could prevent
+        # clean timeout teardown (nightly ETL hung overnight on option_iv).
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -189,27 +214,20 @@ def run_script(
             encoding="utf-8",
             errors="replace",
             env=env,
+            start_new_session=(sys.platform != "win32"),
         )
-        stderr_chunks: list[str] = []
-
-        def _drain_stderr() -> None:
-            assert proc.stderr is not None
-            for line in proc.stderr:
-                stderr_chunks.append(line)
-
-        import threading
-
-        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
-        stderr_thread.start()
         try:
-            stdout, _ = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
-            log.error("[%s] timed out after %ds", script_name, timeout)
+            log.error("[%s] timed out after %ds — killing process tree", script_name, timeout)
+            _kill_process_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(proc)
+                stdout, stderr = "", ""
             return None
-        stderr_thread.join(timeout=5)
-        stderr = "".join(stderr_chunks).strip()
+        stderr = (stderr or "").strip()
         stdout = (stdout or "").strip()
         if proc.returncode != 0:
             log.warning("[%s] exit %d: %s", script_name, proc.returncode, stderr[:800])
@@ -1401,13 +1419,16 @@ def step_option_iv(conn, *, force: bool = False) -> int:
         log.info("Option IV: refreshing stale underlyings (< %s): %s", target, ", ".join(stale))
 
     log.info("Option IV: fetching cross-section + QVIX …")
+    # Hard-cap wall time; run_script kills the process group on timeout.
     out = run_script(
         "fetch_option_iv_daily.py",
-        timeout=900,
+        timeout=600,
         log_stderr=True,
     )
     if not out or out.get("error"):
-        raise RuntimeError(f"Option IV fetch failed: {out}")
+        # Non-fatal for the rest of the pipeline (futures already fetched earlier).
+        log.error("Option IV fetch failed/timed out: %s — continuing ETL", out)
+        return 0
 
     trade_date = to_date(out.get("trade_date")) or today
     underlyings = out.get("underlyings") or {}
@@ -1567,11 +1588,12 @@ def step_commodity_option_iv(conn, *, force: bool = False) -> int:
     out = run_script(
         "fetch_commodity_option_iv_daily.py",
         extra_args=["--days", str(hist_days)],
-        timeout=1800,
+        timeout=900,
         log_stderr=True,
     )
     if not out or out.get("error"):
-        raise RuntimeError(f"Commodity option IV fetch failed: {out}")
+        log.error("Commodity option IV fetch failed/timed out: %s — continuing ETL", out)
+        return 0
 
     trade_date = to_date(out.get("trade_date")) or today
     underlyings = out.get("underlyings") or {}
@@ -4824,11 +4846,13 @@ ORDERED_STEPS = [
     "nanhua_indices",              # all 17 NH sub-indices OHLCV
     "nanhua_commodity_indices",    # all 80 NH single-commodity indices OHLCV
     "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded (EmQuant)
+    # Continuous futures BEFORE option IV — MOM VaR depends on this table. option_iv
+    # has hung for hours on AkShare; it must not gate market-data catchup.
+    "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
     "akshare_exchange_daily",       # per-contract volume+OI from exchange bulletins (free fallback)
     "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
     "option_iv",                    # China financial option IV snapshot + QVIX (AkShare)
     "commodity_option_iv",          # China commodity option series/ATM IV (AkShare exchanges)
-    "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
     "futures_rollover_dates",       # rollover dates from OI-dominant-contract tracking
     "spot_closes",
     "futures_latest",
