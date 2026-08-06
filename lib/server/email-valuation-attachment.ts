@@ -60,11 +60,16 @@ function isPlausibleUnitNav(n: number): boolean {
   return n > 0.05 && n < 500
 }
 
+/** Prior-day NAV labels on CMS/招商 估值表 — must not overwrite today's 单位净值. */
+function isPriorDayUnitNavLabel(name: string): boolean {
+  return /昨日|上日|前一|上一|前天/.test(name)
+}
+
 function isUnitNavLabel(name: string): boolean {
   const n = normalizeName(name)
-  if (!n || /累计/.test(n)) return false
+  if (!n || /累计/.test(n) || isPriorDayUnitNavLabel(n)) return false
   return /^(单位净值|今日单位净值|基金份额净值|基金单位净值|份额净值|基金净值)$/.test(n)
-    || (/单位净值/.test(n) && !/累计/.test(n))
+    || (/单位净值/.test(n) && !/累计/.test(n) && !isPriorDayUnitNavLabel(n))
 }
 
 function isCumNavLabel(name: string): boolean {
@@ -179,11 +184,16 @@ function scanRowsForNav(rows: unknown[][]): { unit: number | null; cum: number |
   let unit: number | null = null
   let cum: number | null = null
   let date: string | null = null
+  // Header inline「单位净值：x.xxxx」is ground truth for CMS/招商. Do not let later
+  // 昨日单位净值 / holdings cells overwrite it (last-wins caused a 1-day NAV shift).
+  let unitLockedFromHeader = false
 
   // Date lives in the workbook header; scanning deep into holdings rewrites it with 到期日 etc.
-  for (const row of rows.slice(0, 120)) {
+  for (let rowIdx = 0; rowIdx < Math.min(rows.length, 120); rowIdx += 1) {
+    const row = rows[rowIdx]
     const cells = (row ?? []).map((cell) => String(cell ?? "").trim())
     const joined = cells.join(" ")
+    const inHeaderZone = rowIdx < 15
 
     if (!date) {
       const headerDate = extractValuationDateFromHeaderRow(row ?? [])
@@ -195,10 +205,16 @@ function scanRowsForNav(rows: unknown[][]): { unit: number | null; cum: number |
       }
     }
 
-    const joinedUnit = joined.match(/(?:^|[^累计])单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
-    if (joinedUnit) {
-      const n = parseFloat(joinedUnit[1])
-      if (isPlausibleUnitNav(n)) unit = n
+    // Skip prior-day NAV labels entirely (昨日单位净值 / 上日单位净值).
+    if (!isPriorDayUnitNavLabel(joined)) {
+      const joinedUnit = joined.match(/(?:^|[^累计])单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
+      if (joinedUnit && (!unitLockedFromHeader || inHeaderZone)) {
+        const n = parseFloat(joinedUnit[1])
+        if (isPlausibleUnitNav(n)) {
+          unit = n
+          if (inHeaderZone) unitLockedFromHeader = true
+        }
+      }
     }
     const joinedCum = joined.match(/累计(?:单位)?净值\s*[：:]\s*(\d+\.\d{3,8})/)
     if (joinedCum) {
@@ -206,13 +222,21 @@ function scanRowsForNav(rows: unknown[][]): { unit: number | null; cum: number |
       if (n > 0.05) cum = n
     }
 
+    // Once header inline 单位净值 is locked, ignore body「单位净值」subject rows
+    // (CMS often repeats the prior close under that label below the holdings).
+    if (unitLockedFromHeader) continue
+
     for (let i = 0; i < cells.length; i++) {
-      const label = normalizeName(cells[i])
-      if (isUnitNavLabel(label) || (/单位净值/.test(cells[i]) && !/累计/.test(cells[i]))) {
+      const cell = cells[i]
+      if (isPriorDayUnitNavLabel(cell)) continue
+      const label = normalizeName(cell)
+      // Inline「单位净值:0.9884」already handled above; do not let adjacent cells overwrite.
+      if (/单位净值\s*[：:]\s*\d+\.\d{3,8}/.test(cell) && !/累计/.test(cell)) continue
+      if (isUnitNavLabel(label) || (/单位净值/.test(cell) && !/累计/.test(cell))) {
         const n = firstPlausibleNavInCells(cells, i + 1)
         if (n != null) unit = n
       }
-      if (isCumNavLabel(label) || (/累计/.test(cells[i]) && /净值/.test(cells[i]))) {
+      if (isCumNavLabel(label) || (/累计/.test(cell) && /净值/.test(cell))) {
         const n = firstPlausibleNavInCells(cells, i + 1)
         if (n != null) cum = n
       }

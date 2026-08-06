@@ -32,6 +32,7 @@ import {
   Folder,
   FolderOpen,
   File as FileIcon,
+  Building2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -94,9 +95,20 @@ interface Skill {
   singleFund?: boolean
   /** When true, skip fund picker — use KB path as primary input */
   noFundRequired?: boolean
+  /** When true, require a free-text employer/background keyword (no fund picker) */
+  keywordRequired?: boolean
   /** API route path (relative to /ma/api/ai-researcher/) */
   apiPath?: string
 }
+
+const TEAM_BACKGROUND_CHIPS = [
+  { label: "UBS/瑞银", keyword: "UBS/瑞银" },
+  { label: "高盛", keyword: "高盛" },
+  { label: "摩根", keyword: "摩根" },
+  { label: "中金", keyword: "中金" },
+  { label: "Two Sigma", keyword: "Two Sigma" },
+  { label: "Jump", keyword: "Jump" },
+] as const
 
 // ── Skills catalog ─────────────────────────────────────────────────────────────
 
@@ -159,6 +171,27 @@ const SKILLS: Skill[] = [
     steps: ["读取路演文档", "查询数据库基金指标", "分析策略与净值一致性", "检测历史叙事矛盾", "生成尽调风险报告"],
     noFundRequired: true,
     apiPath: "roadshow-analysis",
+  },
+  {
+    id: "team-background",
+    name: "团队背景筛选",
+    description: "输入前任机构名称（如 UBS、高盛、中金），自动检索 AMAC 高管履历与知识库尽调材料，找出团队含该背景的私募管理人并生成报告。",
+    icon: <Building2 className="h-5 w-5" />,
+    badge: "可用",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(99 102 241 / 0.16), rgb(14 165 233 / 0.16))",
+      border: "rgb(99 102 241 / 0.32)",
+      icon: "#6366f1",
+    },
+    steps: [
+      "扩展关键词并检索 AMAC 高管履历",
+      "检索知识库尽调/路演材料",
+      "汇总管理人并甄别名称命中",
+      "整理雇主分布与证据包",
+      "生成团队背景筛选报告",
+    ],
+    keywordRequired: true,
+    apiPath: "team-background",
   },
   {
     id: "trend-research",
@@ -553,6 +586,7 @@ export function AIResearcherPage() {
   const [selectedFunds, setSelectedFunds] = useState<FundSearchResult[]>([])
   const [kbPath, setKbPath] = useState("")
   const [roadshowBeianHao, setRoadshowBeianHao] = useState("")
+  const [backgroundKeyword, setBackgroundKeyword] = useState("")
   // ── KB folder browser ────────────────────────────────────────────────────
   const [kbBrowserOpen, setKbBrowserOpen] = useState(false)
   const [kbTree, setKbTree] = useState<KbFolder | null>(null)
@@ -640,6 +674,7 @@ export function AIResearcherPage() {
     setSelectedFunds([])
     setKbPath("")
     setRoadshowBeianHao("")
+    setBackgroundKeyword("")
   }
 
   function handleCancelForm() {
@@ -650,13 +685,20 @@ export function AIResearcherPage() {
   async function handleRunTask() {
     if (!selectedSkillId) return
     const skill = SKILLS.find((s) => s.id === selectedSkillId)!
-    if (!skill.noFundRequired && selectedFunds.length === 0) return
-    if (skill.noFundRequired && !kbPath.trim()) return
+    if (skill.keywordRequired) {
+      if (!backgroundKeyword.trim()) return
+    } else if (skill.noFundRequired) {
+      if (!kbPath.trim()) return
+    } else if (selectedFunds.length === 0) {
+      return
+    }
 
     const taskId = `task-${Date.now()}`
-    const subjects = skill.noFundRequired
-      ? [kbPath.trim() || "全部知识库"]
-      : selectedFunds.map((f) => f.product_name)
+    const subjects = skill.keywordRequired
+      ? [backgroundKeyword.trim()]
+      : skill.noFundRequired
+        ? [kbPath.trim() || "全部知识库"]
+        : selectedFunds.map((f) => f.product_name)
 
     const initialSteps: TaskStep[] = skill.steps.map((title, i) => ({
       step: i + 1,
@@ -690,11 +732,13 @@ export function AIResearcherPage() {
     abortRef.current = ctrl
 
     const apiPath = skill.apiPath ?? "compare-analysis"
-    const payload = skill.noFundRequired
-      ? { kbPath: kbPath.trim(), beianHao: roadshowBeianHao.trim() }
-      : skill.singleFund
-        ? { subject: subjects[0], kbPath }
-        : { subjects, kbPath }
+    const payload = skill.keywordRequired
+      ? { keyword: backgroundKeyword.trim(), kbPath: kbPath.trim() }
+      : skill.noFundRequired
+        ? { kbPath: kbPath.trim(), beianHao: roadshowBeianHao.trim() }
+        : skill.singleFund
+          ? { subject: subjects[0], kbPath }
+          : { subjects, kbPath }
 
     try {
       const res = await fetch(`/ma/api/ai-researcher/${apiPath}`, {
@@ -791,8 +835,13 @@ export function AIResearcherPage() {
     const prefix =
       activeTask?.skillId === "similar-fund" ? "相似基金分析" :
       activeTask?.skillId === "opposite-fund" ? "相反基金分析" :
+      activeTask?.skillId === "team-background" ? "团队背景筛选" :
+      activeTask?.skillId === "roadshow-analysis" ? "路演漏洞扫描" :
       "对比分析报告"
-    return `${prefix}_${activeTask?.subjects.slice(0, 2).join("_") ?? "报告"}_${new Date().toISOString().slice(0, 10)}`
+    const subjectPart = (activeTask?.subjects.slice(0, 2).join("_") ?? "报告")
+      .replace(/[\\/:*?"<>|]+/g, "_")
+      .slice(0, 40)
+    return `${prefix}_${subjectPart}_${new Date().toISOString().slice(0, 10)}`
   }
 
   function handleDownloadReport() {
@@ -802,7 +851,10 @@ export function AIResearcherPage() {
 
   function handleDownloadWord() {
     if (!activeTask?.reportText) return
-    const title = activeTask.subjects.join("、") + "对比分析报告"
+    const title =
+      activeTask.skillId === "team-background"
+        ? `团队有「${activeTask.subjects[0] ?? ""}」背景的私募筛选报告`
+        : activeTask.subjects.join("、") + (activeTask.skillName || "研究报告")
     const dateStr = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })
     const subjectLine = activeTask.subjects.join(" · ")
     const bodyHtml = mdToWordHtml(activeTask.reportText)
@@ -1186,7 +1238,71 @@ export function AIResearcherPage() {
               </div>
 
               <div className="space-y-4">
-                {selectedSkill.noFundRequired ? (
+                {selectedSkill.keywordRequired ? (
+                  <>
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        背景机构
+                        <span className="text-destructive ml-1">*</span>
+                        <span className="text-xs text-muted-foreground ml-2 font-normal">
+                          输入前任机构中英文名称，系统会自动扩展常见别名
+                        </span>
+                      </label>
+                      <div className="relative">
+                        <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                        <Input
+                          value={backgroundKeyword}
+                          onChange={(e) => setBackgroundKeyword(e.target.value)}
+                          placeholder="例：UBS、瑞银、高盛、中金、Two Sigma"
+                          className="pl-9"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && backgroundKeyword.trim()) handleRunTask()
+                          }}
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {TEAM_BACKGROUND_CHIPS.map((chip) => (
+                          <button
+                            key={chip.keyword}
+                            type="button"
+                            onClick={() => setBackgroundKeyword(chip.keyword)}
+                            className={cn(
+                              "rounded-md border px-2 py-0.5 text-xs transition-colors",
+                              backgroundKeyword === chip.keyword
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-border bg-muted/40 text-muted-foreground hover:bg-muted",
+                            )}
+                          >
+                            {chip.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        知识库路径
+                        <span className="text-xs text-muted-foreground ml-2 font-normal">
+                          留空则全库检索尽调材料；填写可缩小范围
+                        </span>
+                      </label>
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <BookOpen className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                          <Input
+                            value={kbPath}
+                            onChange={(e) => setKbPath(e.target.value)}
+                            placeholder="留空全库，或如：内部尽调资料"
+                            className="pl-9"
+                          />
+                        </div>
+                        <Button type="button" variant="outline" onClick={openKbBrowser} className="shrink-0">
+                          <FolderOpen className="mr-1.5 h-4 w-4" />
+                          浏览
+                        </Button>
+                      </div>
+                    </div>
+                  </>
+                ) : selectedSkill.noFundRequired ? (
                   <>
                     <div>
                       <label className="text-sm font-medium mb-1.5 block">
@@ -1273,12 +1389,23 @@ export function AIResearcherPage() {
                 <div className="pt-1 flex items-center gap-3">
                   <Button
                     onClick={handleRunTask}
-                    disabled={selectedSkill.noFundRequired ? !kbPath.trim() : selectedFunds.length === 0}
+                    disabled={
+                      selectedSkill.keywordRequired
+                        ? !backgroundKeyword.trim()
+                        : selectedSkill.noFundRequired
+                          ? !kbPath.trim()
+                          : selectedFunds.length === 0
+                    }
                     className="gap-2"
                   >
                     <Sparkles className="h-4 w-4" />
                     开始分析
-                    {!selectedSkill.noFundRequired && selectedFunds.length > 0 && (
+                    {selectedSkill.keywordRequired && backgroundKeyword.trim() && (
+                      <Badge variant="secondary" className="ml-1 text-xs">
+                        {backgroundKeyword.trim()}
+                      </Badge>
+                    )}
+                    {!selectedSkill.keywordRequired && !selectedSkill.noFundRequired && selectedFunds.length > 0 && (
                       <Badge variant="secondary" className="ml-1 text-xs">
                         {selectedSkill.singleFund ? selectedFunds[0].product_name : `${selectedFunds.length}个对象`}
                       </Badge>

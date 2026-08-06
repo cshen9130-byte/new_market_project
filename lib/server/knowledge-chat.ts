@@ -1246,11 +1246,91 @@ function stringifyModelContent(content: unknown) {
 
 // ── Shared retrieval context builder ─────────────────────────────────────────
 
+export type KbChatHistoryTurn = {
+  role: "user" | "assistant"
+  content: string
+}
+
+type ChatMessageRole = "system" | "user" | "assistant"
+
 type RetrievalContext = {
-  messages: Array<{ role: "system" | "user"; content: string }>
+  messages: Array<{ role: ChatMessageRole; content: string }>
   sources: string[]
   indexedDocuments: number
   indexedChunks: number
+}
+
+const MAX_HISTORY_TURNS = 12
+const MAX_HISTORY_CHARS = 8000
+const MAX_HISTORY_MSG_CHARS = 2000
+
+/** Keep recent turns within a char budget so docs + history fit the model window. */
+function normalizeChatHistory(history: KbChatHistoryTurn[] | null | undefined): KbChatHistoryTurn[] {
+  if (!Array.isArray(history) || history.length === 0) return []
+
+  const cleaned: KbChatHistoryTurn[] = []
+  for (const turn of history) {
+    const role = turn?.role === "assistant" ? "assistant" : turn?.role === "user" ? "user" : null
+    const content = String(turn?.content || "").trim()
+    if (!role || !content) continue
+    cleaned.push({
+      role,
+      content: content.length > MAX_HISTORY_MSG_CHARS
+        ? `${content.slice(0, MAX_HISTORY_MSG_CHARS)}\n…[已截断]`
+        : content,
+    })
+  }
+
+  const recent = cleaned.slice(-MAX_HISTORY_TURNS)
+  let total = 0
+  const kept: KbChatHistoryTurn[] = []
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const len = recent[i].content.length
+    if (kept.length > 0 && total + len > MAX_HISTORY_CHARS) break
+    kept.push(recent[i])
+    total += len
+  }
+  return kept.reverse()
+}
+
+/**
+ * Build a retrieval query that stays useful for follow-ups
+ * ("那拥挤度呢？" / "为什么？") by folding in recent user turns.
+ */
+function buildRetrievalQuestion(question: string, history: KbChatHistoryTurn[]): string {
+  if (history.length === 0) return question
+
+  const recentUser = history
+    .filter((m) => m.role === "user")
+    .slice(-3)
+    .map((m) => m.content.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+
+  const looksLikeFollowUp =
+    question.length < 48 ||
+    /^(那|这|它|其|上述|刚才|继续|还有|另外|以及|所以|因此|为什么|怎么|如何|呢|吗|？|\?)/.test(question) ||
+    /(这个|那个|上面|前述|刚才|继续|还有呢|为什么|怎么看|如何理解)/.test(question)
+
+  if (!looksLikeFollowUp || recentUser.length === 0) return question
+
+  const contextBits = recentUser.slice(-2)
+  return `对话上文：${contextBits.join(" / ")}\n当前问题：${question}`
+}
+
+function withConversationHistory(
+  systemContent: string,
+  history: KbChatHistoryTurn[],
+  currentUserContent: string,
+): Array<{ role: ChatMessageRole; content: string }> {
+  const system = history.length > 0
+    ? `${systemContent}\n\n这是多轮对话：请结合上文理解指代与追问，保持回答连贯；仍以本轮提供的资料为准，资料不足时明确说明。`
+    : systemContent
+
+  return [
+    { role: "system", content: system },
+    ...history.map((m) => ({ role: m.role as ChatMessageRole, content: m.content })),
+    { role: "user", content: currentUserContent },
+  ]
 }
 
 /** Embed a question and run PG HNSW similarity search. Used for large scopes where vectors aren't in RAM. */
@@ -1274,8 +1354,10 @@ async function buildMultiFileRetrievalContext(input: {
   question: string
   filePaths: string[]
   inlineDocuments?: Array<{ name: string; text: string }>
+  history?: KbChatHistoryTurn[]
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
+  const history = normalizeChatHistory(input.history)
   const MAX_CONTEXT_CHARS = 28000
   const parts: string[] = []
   const sources: string[] = []
@@ -1306,22 +1388,15 @@ async function buildMultiFileRetrievalContext(input: {
   }
 
   const scopeLabel = `侧栏 ${sources.length} 个文件`
+  const systemContent = parts.length > 0
+    ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。资料来自用户侧栏暂存的多个文件。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件。"
+    : "你是市场研究助手。侧栏文件内容为空或暂不支持提取文字。请告知用户无法解读这些文件内容。回答使用中文。"
+  const userContent = parts.length > 0
+    ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${combined}`
+    : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`
 
   return {
-    messages: [
-      {
-        role: "system",
-        content: parts.length > 0
-          ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。资料来自用户侧栏暂存的多个文件。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件。"
-          : "你是市场研究助手。侧栏文件内容为空或暂不支持提取文字。请告知用户无法解读这些文件内容。回答使用中文。",
-      },
-      {
-        role: "user",
-        content: parts.length > 0
-          ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${combined}`
-          : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`,
-      },
-    ],
+    messages: withConversationHistory(systemContent, history, userContent),
     sources,
     indexedDocuments: sources.length,
     indexedChunks: sources.length,
@@ -1334,12 +1409,15 @@ async function buildRetrievalContext(input: {
   filePath?: string | null
   filePaths?: string[] | null
   inlineDocuments?: Array<{ name: string; text: string }> | null
+  history?: KbChatHistoryTurn[] | null
   useBm25?: boolean
   useGraphRag?: boolean
   deepSearch?: boolean
   thinkingSearch?: boolean
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
+  const history = normalizeChatHistory(input.history)
+  const retrievalQuestion = buildRetrievalQuestion(question, history)
   const enableBm25 = input.useBm25 !== false
   const enableGraphRag = input.useGraphRag === true
   const topK = input.thinkingSearch ? 40 : input.deepSearch ? 20 : 4
@@ -1348,7 +1426,7 @@ async function buildRetrievalContext(input: {
   const filePaths = (input.filePaths ?? []).map((p) => String(p).trim()).filter(Boolean)
   const inlineDocuments = (input.inlineDocuments ?? []).filter((doc) => doc.name && doc.text?.trim())
   if (filePaths.length > 0 || inlineDocuments.length > 0) {
-    return buildMultiFileRetrievalContext({ question, filePaths, inlineDocuments })
+    return buildMultiFileRetrievalContext({ question, filePaths, inlineDocuments, history })
   }
 
   // ── Single-file mode ──
@@ -1356,21 +1434,14 @@ async function buildRetrievalContext(input: {
     const file = await getKnowledgeBaseFile(input.filePath)
     const text = await readFileDocumentText(file.absolutePath, file.extension)
     const scopeLabel = file.relativePath
+    const systemContent = text
+      ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文。"
+      : "你是市场研究助手。该文档内容为空或暂不支持提取文字。请告知用户无法解读该文件内容。回答使用中文。"
+    const userContent = text
+      ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${text}`
+      : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`
     return {
-      messages: [
-        {
-          role: "system",
-          content: text
-            ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文。"
-            : "你是市场研究助手。该文档内容为空或暂不支持提取文字。请告知用户无法解读该文件内容。回答使用中文。",
-        },
-        {
-          role: "user",
-          content: text
-            ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${text}`
-            : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`,
-        },
-      ],
+      messages: withConversationHistory(systemContent, history, userContent),
       sources: [file.relativePath],
       indexedDocuments: 1,
       indexedChunks: 1,
@@ -1386,10 +1457,10 @@ async function buildRetrievalContext(input: {
     index = await getOrBuildVectorStore(folderPath, undefined, { queryOnly: true })
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
     const denseMatches = rows.length > 0
-      ? await index.vectorStore.similaritySearch(question, topK)
-      : await pgVectorSearchDocs(folderPath, question, createIndexEmbeddingsModel(), topK)
+      ? await index.vectorStore.similaritySearch(retrievalQuestion, topK)
+      : await pgVectorSearchDocs(folderPath, retrievalQuestion, createIndexEmbeddingsModel(), topK)
     const useBm25 = enableBm25 && index.indexedChunks <= KB_QUERY_BM25_MAX_CHUNKS
-    const bm25Matches = useBm25 ? bm25RankChunks(question, rows, index.bm25Index, topK) : []
+    const bm25Matches = useBm25 ? bm25RankChunks(retrievalQuestion, rows, index.bm25Index, topK) : []
     const seedDocs = [...denseMatches, ...bm25Matches]
 
     // Collect seed chunk indices (positions in the rows array) for graph expansion
@@ -1406,7 +1477,7 @@ async function buildRetrievalContext(input: {
     const merged = [...seedDocs]
     // Graph RAG expansion: 1-hop traversal via shared entities
     if (enableGraphRag && seedIndices.length > 0) {
-      const graphExpanded = graphExpandContext(question, rows, seedIndices, index.graphIndex, topK)
+      const graphExpanded = graphExpandContext(retrievalQuestion, rows, seedIndices, index.graphIndex, topK)
       merged.push(...graphExpanded)
     }
 
@@ -1446,23 +1517,15 @@ async function buildRetrievalContext(input: {
     ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。部分资料来自知识图谱关联扩展（标注[图谱扩展]），请综合利用。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
     : "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
 
+  const systemContent = matches.length > 0
+    ? systemNote
+    : "你是市场研究助手。当前本地知识库为空，因此本轮回答不引用本地资料。你可以直接回答用户的问题，但需要明确说明当前没有本地文档可供检索。回答使用中文。"
+  const userContent = matches.length > 0
+    ? `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n参考资料：\n${context}`
+    : `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n当前知识库目录为空，请直接基于通用能力回答，并提醒用户尚未上传资料。`
+
   return {
-    messages: [
-      {
-        role: "system",
-        content:
-          matches.length > 0
-            ? systemNote
-            : "你是市场研究助手。当前本地知识库为空，因此本轮回答不引用本地资料。你可以直接回答用户的问题，但需要明确说明当前没有本地文档可供检索。回答使用中文。",
-      },
-      {
-        role: "user",
-        content:
-          matches.length > 0
-            ? `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n参考资料：\n${context}`
-            : `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n当前知识库目录为空，请直接基于通用能力回答，并提醒用户尚未上传资料。`,
-      },
-    ],
+    messages: withConversationHistory(systemContent, history, userContent),
     sources,
     indexedDocuments: index?.indexedDocuments ?? 0,
     indexedChunks: index?.indexedChunks ?? 0,
@@ -1475,6 +1538,7 @@ export async function askKnowledgeBaseQuestion(input: {
   filePath?: string | null
   filePaths?: string[] | null
   inlineDocuments?: Array<{ name: string; text: string }> | null
+  history?: KbChatHistoryTurn[] | null
   useBm25?: boolean
   useGraphRag?: boolean
   modelMode?: KbModelMode
@@ -1509,6 +1573,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
   filePath?: string | null
   filePaths?: string[] | null
   inlineDocuments?: Array<{ name: string; text: string }> | null
+  history?: KbChatHistoryTurn[] | null
   useBm25?: boolean
   useGraphRag?: boolean
   modelMode?: KbModelMode

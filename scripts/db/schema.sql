@@ -152,6 +152,60 @@ CREATE INDEX IF NOT EXISTS derived_ashare_crowding_daily_date_idx
     ON derived_ashare_crowding_daily (trade_date DESC);
 
 
+-- A-share hot industry / concept boards (涨跌幅排名)
+-- Source: AkShare 同花顺行业 + 新浪概念 (nightly_etl step_ashare_hot_sectors)
+CREATE TABLE IF NOT EXISTS derived_ashare_hot_sectors_daily (
+    trade_date       DATE         NOT NULL,
+    board_type       VARCHAR(20)  NOT NULL,  -- industry | concept
+    board_name       VARCHAR(100) NOT NULL,
+    change_pct       NUMERIC(10,4),
+    amount           NUMERIC(20,2),         -- yuan
+    lead_stock       VARCHAR(100),
+    lead_change_pct  NUMERIC(10,4),
+    rank_no          INTEGER,
+    source           VARCHAR(60),
+    fetched_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trade_date, board_type, board_name)
+);
+CREATE INDEX IF NOT EXISTS derived_ashare_hot_sectors_daily_lookup_idx
+    ON derived_ashare_hot_sectors_daily (trade_date DESC, board_type, rank_no);
+
+
+-- Selected industry/concept board daily amount + return (for sector crowding chart)
+-- Source: AkShare 同花顺板块指数历史 (backfill_ashare_board_amount_hist.py)
+CREATE TABLE IF NOT EXISTS derived_ashare_board_amount_daily (
+    trade_date   DATE         NOT NULL,
+    board_type   VARCHAR(20)  NOT NULL,  -- industry | concept
+    board_name   VARCHAR(100) NOT NULL,
+    amount       NUMERIC(20,2),         -- yuan
+    change_pct   NUMERIC(10,4),
+    close        NUMERIC(16,4),
+    source       VARCHAR(60),
+    fetched_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trade_date, board_type, board_name)
+);
+CREATE INDEX IF NOT EXISTS derived_ashare_board_amount_daily_lookup_idx
+    ON derived_ashare_board_amount_daily (board_type, board_name, trade_date DESC);
+
+
+-- Sector fund flow (净流入, 亿元) + cumulative stock computed in API
+-- Live: AkShare 同花顺即时行业/概念资金流; Hist proxy: amount × return
+CREATE TABLE IF NOT EXISTS derived_ashare_sector_fund_flow_daily (
+    trade_date   DATE         NOT NULL,
+    board_type   VARCHAR(20)  NOT NULL,  -- industry | concept
+    board_name   VARCHAR(100) NOT NULL,
+    inflow       NUMERIC(20,4),         -- 亿元
+    outflow      NUMERIC(20,4),
+    net_flow     NUMERIC(20,4),         -- 亿元
+    change_pct   NUMERIC(10,4),
+    source       VARCHAR(60),
+    fetched_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trade_date, board_type, board_name)
+);
+CREATE INDEX IF NOT EXISTS derived_ashare_sector_fund_flow_daily_lookup_idx
+    ON derived_ashare_sector_fund_flow_daily (board_type, board_name, trade_date DESC);
+
+
 -- =============================================================
 -- DERIVED LAYER  (computed from raw tables)
 -- =============================================================

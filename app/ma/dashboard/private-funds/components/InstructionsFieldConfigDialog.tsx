@@ -41,7 +41,6 @@ export const INSTRUCTION_FIELD_DEFAULT: readonly InstructionFieldLabel[] = [
   "发起人",
 ]
 
-const LOCKED_SET = new Set<string>(INSTRUCTION_FIELD_LOCKED)
 const ALL_SET = new Set<string>(INSTRUCTION_FIELD_OPTIONS)
 
 const STORAGE_KEY = "instructions_field_config_selected"
@@ -67,10 +66,13 @@ export function writeInstructionFieldConfig(fields: string[]) {
   }
 }
 
-function ensureLocked(fields: string[]): string[] {
+function ensureLocked(
+  fields: string[],
+  lockedFields: readonly string[] = INSTRUCTION_FIELD_LOCKED,
+): string[] {
   const next = fields.filter((f) => ALL_SET.has(f))
-  for (const locked of INSTRUCTION_FIELD_LOCKED) {
-    if (!next.includes(locked)) next.push(locked)
+  for (const locked of lockedFields) {
+    if (ALL_SET.has(locked) && !next.includes(locked)) next.push(locked)
   }
   return next
 }
@@ -80,31 +82,47 @@ export function InstructionsFieldConfigDialog({
   selected,
   onClose,
   onConfirm,
+  /** Fields that cannot be unchecked (defaults to INSTRUCTION_FIELD_LOCKED). */
+  lockedFields,
+  /** Hide these options entirely (e.g. 发起人 on 直投申赎). */
+  hiddenFields,
 }: {
   open: boolean
   selected: string[]
   onClose: () => void
   onConfirm: (fields: string[]) => void
+  lockedFields?: readonly string[]
+  hiddenFields?: readonly string[]
 }) {
+  const locked = lockedFields ?? INSTRUCTION_FIELD_LOCKED
+  const lockedSet = new Set(locked)
+  const hiddenSet = new Set(hiddenFields ?? [])
+  const visibleOptions = INSTRUCTION_FIELD_OPTIONS.filter((f) => !hiddenSet.has(f))
+
   const [draft, setDraft] = useState<string[]>(selected)
   const [dragIdx, setDragIdx] = useState<number | null>(null)
 
   useEffect(() => {
-    if (open) setDraft(ensureLocked(selected))
-  }, [open, selected])
+    if (!open) return
+    const next = ensureLocked(
+      selected.filter((f) => !hiddenSet.has(f)),
+      locked,
+    )
+    setDraft(next)
+  }, [open, selected, lockedFields, hiddenFields])
 
   if (!open) return null
 
   function toggleDraft(field: string) {
-    if (LOCKED_SET.has(field)) return
+    if (lockedSet.has(field)) return
     setDraft((prev) => {
       const next = prev.includes(field) ? prev.filter((x) => x !== field) : [...prev, field]
-      return ensureLocked(next)
+      return ensureLocked(next.filter((f) => !hiddenSet.has(f)), locked)
     })
   }
 
   function clearDraft() {
-    setDraft([...INSTRUCTION_FIELD_LOCKED])
+    setDraft([...locked])
   }
 
   function handleDragOver(e: DragEvent, idx: number) {
@@ -139,20 +157,20 @@ export function InstructionsFieldConfigDialog({
         <div className="flex flex-1 overflow-hidden min-h-[280px]">
           <div className="flex-1 min-w-0 px-6 py-4 overflow-y-auto">
             <div className="grid grid-cols-3 gap-x-6 gap-y-3">
-              {INSTRUCTION_FIELD_OPTIONS.map((f) => {
-                const locked = LOCKED_SET.has(f)
+              {visibleOptions.map((f) => {
+                const isLocked = lockedSet.has(f)
                 return (
                   <label
                     key={f}
                     className={[
                       "flex items-center gap-2 text-sm",
-                      locked ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+                      isLocked ? "cursor-not-allowed opacity-60" : "cursor-pointer",
                     ].join(" ")}
                   >
                     <input
                       type="checkbox"
                       checked={draft.includes(f)}
-                      disabled={locked}
+                      disabled={isLocked}
                       onChange={() => toggleDraft(f)}
                       className="rounded h-3.5 w-3.5 accent-red-500 disabled:opacity-70"
                     />
@@ -176,7 +194,7 @@ export function InstructionsFieldConfigDialog({
             </div>
             <div className="flex-1 overflow-y-auto space-y-1">
               {draft.map((f, idx) => {
-                const locked = LOCKED_SET.has(f)
+                const isLocked = lockedSet.has(f)
                 return (
                   <div
                     key={f}
@@ -187,7 +205,7 @@ export function InstructionsFieldConfigDialog({
                     className="flex items-center justify-between text-sm py-0.5 cursor-grab select-none"
                   >
                     <span className="text-zinc-700 dark:text-zinc-300 truncate">{f}</span>
-                    {locked ? (
+                    {isLocked ? (
                       <span className="text-zinc-300 ml-1 flex-shrink-0 cursor-not-allowed">×</span>
                     ) : (
                       <button
@@ -220,7 +238,9 @@ export function InstructionsFieldConfigDialog({
             </button>
             <button
               type="button"
-              onClick={() => onConfirm(ensureLocked(draft))}
+              onClick={() =>
+                onConfirm(ensureLocked(draft.filter((f) => !hiddenSet.has(f)), locked))
+              }
               className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors"
             >
               确定

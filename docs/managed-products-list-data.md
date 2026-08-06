@@ -323,6 +323,19 @@ npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --managed-only
 npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --fof-only
 ```
 
+### Fix CMS/招商 单位净值 day-shift (2026-08-06)
+
+If CMS `【估值表】` shows the prior trading day's unit NAV (header correct, UI lagging one day), see **What Was Fixed (CMS/招商 估值表 NAV day-shift…)** in `docs/nav-calculation-rules.md`.
+
+**Why it recurred:** parse fix is forward-only; nightly `--cache-only` skipped valuation NAV backfill, so unrepaired rows stayed wrong. Nightly now runs `healCmsNavDayShiftFromRecords()` even on `--cache-only`.
+
+```bash
+# Scan all CMS products / repair mismatches
+npx tsx scripts/ma/_scan_cms_nav_shift.ts --since=2026-07-01
+npx tsx scripts/ma/_scan_cms_nav_shift.ts --since=2026-07-01 --fix
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --managed-only
+```
+
 ### Historical date picker (cutoff ≠ today)
 
 Uses **slow path** only. To support historical dates from cache, you would need either:

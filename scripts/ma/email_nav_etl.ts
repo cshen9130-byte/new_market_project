@@ -64,6 +64,19 @@ async function main() {
 
       if (cacheOnly) {
         console.error("[email_nav_etl] --cache-only: skipping valuation/holdings backfills")
+        // Still heal CMS/招商 day-shift: header 单位净值 vs ops_email_nav_records
+        // can diverge when nightly never runs full backfill (see nav-calculation-rules).
+        try {
+          const { healCmsNavDayShiftFromRecords } = await import(
+            "@/lib/server/email-valuation-nav-backfill"
+          )
+          const healed = await healCmsNavDayShiftFromRecords({ sinceDate: "2026-06-01" })
+          console.error(
+            `[email_nav_etl] CMS NAV day-shift heal done (products=${healed.products}, mismatches=${healed.mismatches}, navUpserted=${healed.navUpserted})`,
+          )
+        } catch (err) {
+          console.warn("[email_nav_etl] CMS NAV day-shift heal skipped:", err)
+        }
       } else {
       const { syncEmailValuationToProductTables } = await import(
         "@/lib/server/email-valuation-sync-pg"

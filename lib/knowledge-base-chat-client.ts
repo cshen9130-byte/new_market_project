@@ -52,6 +52,8 @@ export async function streamKnowledgeBaseChat(input: {
   question: string
   scope: KnowledgeChatScope
   conversationId?: string | null
+  /** Prior turns only (exclude the current user question). */
+  history?: Array<{ role: "user" | "assistant"; content: string }>
   signal?: AbortSignal
   onDelta?: (content: string) => void
   modelMode?: "auto" | "plus" | "turbo" | "max"
@@ -70,6 +72,9 @@ export async function streamKnowledgeBaseChat(input: {
   const folderPath = scope.folderPath ?? null
   const filePaths = scope.filePaths?.filter(Boolean) ?? []
   const inlineDocuments = scope.inlineDocuments?.filter((doc) => doc.name && doc.text?.trim()) ?? []
+  const history = (input.history ?? [])
+    .filter((m) => (m.role === "user" || m.role === "assistant") && String(m.content || "").trim())
+    .map((m) => ({ role: m.role, content: String(m.content).trim() }))
 
   const res = await fetch("/api/knowledge-base/chat", {
     method: "POST",
@@ -81,6 +86,7 @@ export async function streamKnowledgeBaseChat(input: {
       filePath: filePaths.length > 0 ? null : filePath,
       filePaths: filePaths.length > 0 ? filePaths : undefined,
       inlineDocuments: inlineDocuments.length > 0 ? inlineDocuments : undefined,
+      history: history.length > 0 ? history : undefined,
       useBm25: input.useBm25 !== false,
       useGraphRag: input.useGraphRag === true,
       stream: true,

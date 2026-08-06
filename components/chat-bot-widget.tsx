@@ -45,7 +45,7 @@ function getPageContext(path: string): string {
   if (path.includes("/macro-market"))
     return "当前页面：【宏观市场分析】（国内已实现，全球待开发）。包含三个模块：①PCA 聚类模型 — 基于宏观因子（CPI、PMI、M1、信贷等）的主成分分析双标图，识别当前宏观环境所属聚类及因子载荷；②经济体制相似性模型 — 计算当前宏观指标与历史各时期的欧氏距离，找出最相似的历史宏观环境并展示对应期间资产表现；③货币+信用 周期模型 — 展示货币宽松/收紧与信用扩张/收缩的四象限周期轮动，判断当前所处位置。"
   if (path.includes("/stock-market"))
-    return "当前页面：【股票市场分析】。展示 A 股拥挤度指标（基于全市场个股成交额 HHI 的 60 日分位数）、板块成交额占比（上证/深证/创业板/科创板/北交所）、个股成交额 Top15。数据来自 Choice API 每日增量更新。"
+    return "当前页面：【股票市场分析】。展示 A 股拥挤度、Top 5% 成交额占比、主题成交额占比 vs 全A拥挤度、板块资金流向、全市场板块表现（全部行业/概念涨跌与净流入散点及完整排名）、交易所板块成交额占比、个股 Top15、热点板块 Top15 与持续性。"
   if (path.includes("/options-market"))
     return "当前页面：【期权市场分析】。目前展示：隐含波动率 vs 已实现波动率走势、期权 Put/Call 比率、期权到期持仓分布。（数据部分为示例占位数据，实际功能开发中）"
   if (path.includes("/private-funds"))
@@ -475,6 +475,9 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
           question: text,
           scope: kbScope,
           conversationId: convId,
+          history: messages
+            .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
+            .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
           signal: abort.signal,
           onDelta: (content) => {
             accumulated = content

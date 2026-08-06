@@ -2790,7 +2790,15 @@ def _to_ts_code(code: str) -> str:
 
 
 def step_ashare_stock_names(conn, *, force: bool = False) -> int:
-    """Sync A-share ts_code → Chinese name from AkShare stock_info_a_code_name()."""
+    """Sync A-share ts_code → Chinese name from AkShare stock_info_a_code_name().
+
+    Always refreshes when:
+      - force=True, or
+      - dim table is small / empty, or
+      - latest trade date in raw_ashare_daily has codes missing from dim
+        (covers new listings like 688825 长鑫科技), or
+      - dim has not been refreshed in >7 days.
+    """
     with conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS dim_ashare_stock (
@@ -2803,11 +2811,46 @@ def step_ashare_stock_names(conn, *, force: bool = False) -> int:
 
     if not force:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM dim_ashare_stock")
+            cur.execute("SELECT COUNT(*), MAX(updated_at) FROM dim_ashare_stock")
             row = cur.fetchone()
-            if row and row[0] and int(row[0]) > 4000:
-                log.info("A-share stock names: %d rows, skipping.", row[0])
+            dim_count = int(row[0] or 0) if row else 0
+            max_updated = row[1] if row else None
+
+            cur.execute("""
+                SELECT COUNT(*) FROM (
+                  SELECT r.ts_code
+                  FROM raw_ashare_daily r
+                  LEFT JOIN dim_ashare_stock s ON s.ts_code = r.ts_code
+                  WHERE r.trade_date = (SELECT MAX(trade_date) FROM raw_ashare_daily)
+                    AND r.amount > 0
+                    AND s.ts_code IS NULL
+                  LIMIT 5
+                ) missing
+            """)
+            missing = int((cur.fetchone() or [0])[0] or 0)
+
+            fresh = False
+            if max_updated is not None:
+                try:
+                    from datetime import timezone as _tz
+                    now = datetime.now(_tz.utc)
+                    updated = (
+                        max_updated
+                        if getattr(max_updated, "tzinfo", None)
+                        else max_updated.replace(tzinfo=_tz.utc)
+                    )
+                    fresh = (now - updated).total_seconds() < 7 * 24 * 3600
+                except Exception:
+                    fresh = False
+
+            if dim_count > 4000 and missing == 0 and fresh:
+                log.info(
+                    "A-share stock names: %d rows, no missing codes on latest day, fresh — skipping.",
+                    dim_count,
+                )
                 return 0
+            if missing:
+                log.info("A-share stock names: %d missing codes on latest day — refreshing.", missing)
 
     try:
         import akshare as ak
@@ -3234,6 +3277,381 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
         smooth_window,
     )
     return len(pending)
+
+
+def step_ashare_hot_sectors(conn, *, force: bool = False) -> int:
+    """Snapshot hot industry/concept boards (同花顺/新浪) into derived_ashare_hot_sectors_daily."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_ashare_hot_sectors_daily (
+                trade_date       DATE         NOT NULL,
+                board_type       VARCHAR(20)  NOT NULL,
+                board_name       VARCHAR(100) NOT NULL,
+                change_pct       NUMERIC(10,4),
+                amount           NUMERIC(20,2),
+                lead_stock       VARCHAR(100),
+                lead_change_pct  NUMERIC(10,4),
+                rank_no          INTEGER,
+                source           VARCHAR(60),
+                fetched_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, board_type, board_name)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS derived_ashare_hot_sectors_daily_lookup_idx
+              ON derived_ashare_hot_sectors_daily (trade_date DESC, board_type, rank_no)
+        """)
+    conn.commit()
+
+    if not force:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM derived_ashare_hot_sectors_daily
+                WHERE trade_date = CURRENT_DATE
+                  AND fetched_at > NOW() - INTERVAL '4 hours'
+            """)
+            row = cur.fetchone()
+            if row and row[0] and int(row[0]) >= 20:
+                log.info("A-share hot sectors: fresh snapshot exists (%d rows), skipping.", row[0])
+                return 0
+
+    payload = run_script("fetch_ashare_hot_sectors.py", extra_args=["--top", "100"], timeout=120)
+    if not payload or payload.get("error"):
+        raise RuntimeError(f"ashare_hot_sectors fetch failed: {(payload or {}).get('error', 'no data')}")
+
+    trade_date = str(payload.get("trade_date") or date.today().isoformat())[:10]
+    # Prefer latest A-share session date when today's bar data is not in yet.
+    with conn.cursor() as cur:
+        cur.execute("SELECT MAX(trade_date) FROM raw_ashare_daily")
+        row = cur.fetchone()
+        if row and row[0]:
+            latest_ashare = row[0] if isinstance(row[0], date) else date.fromisoformat(str(row[0])[:10])
+            try:
+                snap = date.fromisoformat(trade_date)
+            except ValueError:
+                snap = latest_ashare
+            if snap > latest_ashare:
+                trade_date = latest_ashare.isoformat()
+    sources = payload.get("source") or {}
+    records: list[tuple] = []
+    for board_type in ("industry", "concept"):
+        src = None
+        if isinstance(sources, dict):
+            src = sources.get(board_type)
+        for item in payload.get(board_type) or []:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            records.append((
+                trade_date,
+                board_type,
+                name[:100],
+                item.get("change_pct"),
+                item.get("amount"),
+                (str(item["lead_stock"])[:100] if item.get("lead_stock") else None),
+                item.get("lead_change_pct"),
+                item.get("rank"),
+                (str(src)[:60] if src else None),
+            ))
+
+    if not records:
+        raise RuntimeError("ashare_hot_sectors: empty normalized records")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM derived_ashare_hot_sectors_daily WHERE trade_date = %s::date",
+            (trade_date,),
+        )
+        execute_values(
+            cur,
+            """
+            INSERT INTO derived_ashare_hot_sectors_daily (
+                trade_date, board_type, board_name, change_pct, amount,
+                lead_stock, lead_change_pct, rank_no, source, fetched_at
+            ) VALUES %s
+            ON CONFLICT (trade_date, board_type, board_name) DO UPDATE
+                SET change_pct = EXCLUDED.change_pct,
+                    amount = EXCLUDED.amount,
+                    lead_stock = EXCLUDED.lead_stock,
+                    lead_change_pct = EXCLUDED.lead_change_pct,
+                    rank_no = EXCLUDED.rank_no,
+                    source = EXCLUDED.source,
+                    fetched_at = NOW()
+            """,
+            records,
+            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+            page_size=200,
+        )
+    conn.commit()
+    log.info("A-share hot sectors: upserted %d rows for %s.", len(records), trade_date)
+    return len(records)
+
+
+def step_ashare_board_amount_hist(conn, *, force: bool = False) -> int:
+    """Backfill curated AI/related board amount history for sector-crowding chart."""
+    lookback_days = int(os.environ.get("BOARD_AMOUNT_HIST_DAYS", "365"))
+    min_dates = int(os.environ.get("BOARD_AMOUNT_HIST_MIN_DATES", "80"))
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_ashare_board_amount_daily (
+                trade_date   DATE         NOT NULL,
+                board_type   VARCHAR(20)  NOT NULL,
+                board_name   VARCHAR(100) NOT NULL,
+                amount       NUMERIC(20,2),
+                change_pct   NUMERIC(10,4),
+                close        NUMERIC(16,4),
+                source       VARCHAR(60),
+                fetched_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, board_type, board_name)
+            )
+        """)
+        cur.execute("""
+            SELECT COUNT(DISTINCT trade_date)
+            FROM derived_ashare_board_amount_daily
+            WHERE board_name = '人工智能'
+              AND amount IS NOT NULL
+              AND trade_date >= CURRENT_DATE - (%s || ' days')::interval
+        """, (lookback_days,))
+        row = cur.fetchone()
+        ai_dates = int(row[0] or 0) if row else 0
+
+    if not force and ai_dates >= min_dates:
+        log.info(
+            "A-share board amount hist: 人工智能 has %d dates (>= %d), skipping.",
+            ai_dates,
+            min_dates,
+        )
+        return 0
+
+    log.info("A-share board amount hist: backfilling AI preset for %d days …", lookback_days)
+    payload = run_script(
+        "backfill_ashare_board_amount_hist.py",
+        extra_args=["--preset", "ai", "--days", str(lookback_days)],
+        timeout=900,
+    )
+    if not payload or payload.get("error"):
+        raise RuntimeError(
+            f"ashare_board_amount_hist failed: {(payload or {}).get('error', 'no data')}"
+        )
+    rows = int(payload.get("rows") or 0)
+    log.info("A-share board amount hist: upserted %d rows.", rows)
+    return rows
+
+
+def _ensure_sector_fund_flow_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_ashare_sector_fund_flow_daily (
+                trade_date   DATE         NOT NULL,
+                board_type   VARCHAR(20)  NOT NULL,
+                board_name   VARCHAR(100) NOT NULL,
+                inflow       NUMERIC(20,4),
+                outflow      NUMERIC(20,4),
+                net_flow     NUMERIC(20,4),
+                change_pct   NUMERIC(10,4),
+                source       VARCHAR(60),
+                fetched_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, board_type, board_name)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS derived_ashare_sector_fund_flow_daily_lookup_idx
+              ON derived_ashare_sector_fund_flow_daily (board_type, board_name, trade_date DESC)
+        """)
+    conn.commit()
+
+
+def step_ashare_sector_fund_flow(conn, *, force: bool = False) -> int:
+    """
+    1) Upsert today's industry/concept fund-flow snapshot (同花顺即时净额, 亿元)
+    2) Gap-fill historical proxy from board amount × return when coverage is thin
+    """
+    _ensure_sector_fund_flow_table(conn)
+
+    force_fetch = True
+    if not force:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM derived_ashare_sector_fund_flow_daily
+                WHERE trade_date = (
+                        SELECT MAX(trade_date) FROM raw_ashare_daily
+                      )
+                  AND source LIKE '%fund_flow%spot%'
+                  AND fetched_at > NOW() - INTERVAL '4 hours'
+            """)
+            row = cur.fetchone()
+            live_n = int(row[0] or 0) if row else 0
+            if live_n >= 50:
+                log.info("A-share sector fund flow: fresh live snapshot (%d rows), skipping fetch.", live_n)
+                force_fetch = False
+
+    total = 0
+    live_ok = False
+    if force_fetch:
+        payload = run_script("fetch_ashare_sector_fund_flow.py", timeout=180)
+        if not payload or payload.get("error"):
+            log.warning(
+                "A-share sector fund flow live fetch failed: %s — will rely on proxy.",
+                (payload or {}).get("error", "no data"),
+            )
+        else:
+            trade_date = str(payload.get("trade_date") or date.today().isoformat())[:10]
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(trade_date) FROM raw_ashare_daily")
+                row = cur.fetchone()
+                if row and row[0]:
+                    latest = row[0] if isinstance(row[0], date) else date.fromisoformat(str(row[0])[:10])
+                    try:
+                        snap = date.fromisoformat(trade_date)
+                    except ValueError:
+                        snap = latest
+                    if snap > latest:
+                        trade_date = latest.isoformat()
+
+            sources = payload.get("source") or {}
+            records: list[tuple] = []
+            seen: set[tuple[str, str]] = set()
+            for board_type in ("industry", "concept"):
+                src = sources.get(board_type) if isinstance(sources, dict) else None
+                for item in payload.get(board_type) or []:
+                    name = str(item.get("name") or "").strip()[:100]
+                    if not name or item.get("net_flow") is None:
+                        continue
+                    key = (board_type, name)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    records.append((
+                        trade_date,
+                        board_type,
+                        name,
+                        item.get("inflow"),
+                        item.get("outflow"),
+                        item.get("net_flow"),
+                        item.get("change_pct"),
+                        (str(src)[:60] if src else "ths_fund_flow_spot"),
+                    ))
+            if records:
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO derived_ashare_sector_fund_flow_daily (
+                            trade_date, board_type, board_name, inflow, outflow,
+                            net_flow, change_pct, source, fetched_at
+                        ) VALUES %s
+                        ON CONFLICT (trade_date, board_type, board_name) DO UPDATE
+                            SET inflow = EXCLUDED.inflow,
+                                outflow = EXCLUDED.outflow,
+                                net_flow = EXCLUDED.net_flow,
+                                change_pct = EXCLUDED.change_pct,
+                                source = EXCLUDED.source,
+                                fetched_at = NOW()
+                        """,
+                        records,
+                        template="(%s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+                        page_size=500,
+                    )
+                conn.commit()
+                total += len(records)
+                live_ok = True
+                log.info("A-share sector fund flow: upserted %d live rows for %s.", len(records), trade_date)
+
+    # Proxy history for cumulative stock chart
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT COUNT(DISTINCT trade_date)
+            FROM derived_ashare_sector_fund_flow_daily
+            WHERE board_type = 'industry'
+              AND trade_date >= CURRENT_DATE - INTERVAL '120 days'
+        """)
+        hist_dates = int((cur.fetchone() or [0])[0] or 0)
+
+    if force or hist_dates < 40 or not live_ok:
+        proxy = run_script(
+            "backfill_ashare_sector_fund_flow_proxy.py",
+            extra_args=["--days", os.environ.get("SECTOR_FUND_FLOW_PROXY_DAYS", "365")],
+            timeout=300,
+        )
+        if proxy and not proxy.get("error"):
+            proxied = int(proxy.get("rows") or 0)
+            total += proxied
+            log.info("A-share sector fund flow: proxy backfilled %d rows.", proxied)
+        elif proxy and proxy.get("error"):
+            log.warning("A-share sector fund flow proxy failed: %s", proxy.get("error"))
+
+    if total <= 0:
+        raise RuntimeError("ashare_sector_fund_flow: no live or proxy rows written")
+    return total
+
+
+def step_ashare_hot_sectors_hist(conn, *, force: bool = False) -> int:
+    """
+    Gap-fill industry (and optionally concept) daily ranks from THS index history.
+    Skips when industry already has enough distinct trade dates in the lookback window.
+    """
+    lookback_days = int(os.environ.get("HOT_SECTORS_HIST_DAYS", "60"))
+    min_dates = int(os.environ.get("HOT_SECTORS_HIST_MIN_DATES", "20"))
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_ashare_hot_sectors_daily (
+                trade_date       DATE         NOT NULL,
+                board_type       VARCHAR(20)  NOT NULL,
+                board_name       VARCHAR(100) NOT NULL,
+                change_pct       NUMERIC(10,4),
+                amount           NUMERIC(20,2),
+                lead_stock       VARCHAR(100),
+                lead_change_pct  NUMERIC(10,4),
+                rank_no          INTEGER,
+                source           VARCHAR(60),
+                fetched_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, board_type, board_name)
+            )
+        """)
+        cur.execute("""
+            SELECT COUNT(DISTINCT trade_date)
+            FROM derived_ashare_hot_sectors_daily
+            WHERE board_type = 'industry'
+              AND trade_date >= CURRENT_DATE - (%s || ' days')::interval
+        """, (lookback_days,))
+        row = cur.fetchone()
+        industry_dates = int(row[0] or 0) if row else 0
+
+    if not force and industry_dates >= min_dates:
+        log.info(
+            "A-share hot sectors hist: industry has %d dates (>= %d), skipping.",
+            industry_dates,
+            min_dates,
+        )
+        return 0
+
+    # Industry first ( ~90 boards). Concept hist is heavier; opt-in via env.
+    include_concept = os.environ.get("HOT_SECTORS_HIST_INCLUDE_CONCEPT", "0") == "1"
+    board_type = "both" if include_concept else "industry"
+    timeout = 1800 if include_concept else 600
+
+    log.info(
+        "A-share hot sectors hist: backfilling %s for %d days …",
+        board_type,
+        lookback_days,
+    )
+    payload = run_script(
+        "backfill_ashare_hot_sectors_hist.py",
+        extra_args=["--type", board_type, "--days", str(lookback_days), "--store-top", "0"],
+        timeout=timeout,
+    )
+    if not payload or payload.get("error"):
+        raise RuntimeError(
+            f"ashare_hot_sectors_hist failed: {(payload or {}).get('error', 'no data')}"
+        )
+
+    total = 0
+    for r in payload.get("results") or []:
+        total += int(r.get("rows") or 0)
+    log.info("A-share hot sectors hist: upserted %d rows.", total)
+    return total
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4388,12 +4806,16 @@ MACRO_STEPS = [
     "money_credit",
 ]
 
-# Steps that refresh /ma/dashboard/stock-market charts (crowding, board share, top stocks).
+# Steps that refresh /ma/dashboard/stock-market charts (crowding, board share, top stocks, hot sectors).
 STOCK_STEPS = [
     "ashare_daily",
     "ashare_stock_names",
     "ashare_index",
     "ashare_crowding",
+    "ashare_hot_sectors",
+    "ashare_hot_sectors_hist",
+    "ashare_board_amount_hist",
+    "ashare_sector_fund_flow",
 ]
 
 ORDERED_STEPS = [
@@ -4417,6 +4839,10 @@ ORDERED_STEPS = [
     "ashare_stock_names",
     "ashare_index",
     "ashare_crowding",
+    "ashare_hot_sectors",
+    "ashare_hot_sectors_hist",
+    "ashare_board_amount_hist",
+    "ashare_sector_fund_flow",
     "derive_basis",
     "repair_basis_annualization",  # fix far L1 days-to-expiry / annualized spikes
     "derive_basis_cont",
@@ -4556,6 +4982,10 @@ def main():
         "ashare_stock_names":  lambda: step_ashare_stock_names(conn, force=force),
         "ashare_index":        lambda: step_ashare_index(conn, force=force),
         "ashare_crowding":     lambda: step_compute_ashare_crowding(conn, force=force),
+        "ashare_hot_sectors":  lambda: step_ashare_hot_sectors(conn, force=force),
+        "ashare_hot_sectors_hist": lambda: step_ashare_hot_sectors_hist(conn, force=force),
+        "ashare_board_amount_hist": lambda: step_ashare_board_amount_hist(conn, force=force),
+        "ashare_sector_fund_flow": lambda: step_ashare_sector_fund_flow(conn, force=force),
         "derive_basis":          lambda: step_compute_basis_daily(conn, force=force),
         "repair_basis_annualization": lambda: step_repair_basis_annualization(conn, force=force),
         "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),

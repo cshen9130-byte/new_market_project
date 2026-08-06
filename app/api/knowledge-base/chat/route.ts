@@ -1,11 +1,23 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
-import { askKnowledgeBaseQuestion, streamKnowledgeBaseAnswer, type KbModelMode } from "@/lib/server/knowledge-chat"
-import { appendMessage, countMessages, createConversation, updateConversationTitle } from "@/lib/server/chat-db"
+import { askKnowledgeBaseQuestion, streamKnowledgeBaseAnswer, type KbChatHistoryTurn, type KbModelMode } from "@/lib/server/knowledge-chat"
+import { appendMessage, countMessages, createConversation, getMessages, updateConversationTitle } from "@/lib/server/chat-db"
 import { appendTokenUsage } from "@/lib/server/token-usage"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+function parseHistory(raw: unknown): KbChatHistoryTurn[] {
+  if (!Array.isArray(raw)) return []
+  const turns: KbChatHistoryTurn[] = []
+  for (const item of raw) {
+    const role = item?.role === "assistant" ? "assistant" : item?.role === "user" ? "user" : null
+    const content = String(item?.content || "").trim()
+    if (!role || !content) continue
+    turns.push({ role, content })
+  }
+  return turns
+}
 
 export async function POST(req: Request) {
   try {
@@ -38,6 +50,15 @@ export async function POST(req: Request) {
       effectiveConversationId = created.id
     }
 
+    // Prefer client-sent history (current session); fall back to persisted conversation.
+    let history = parseHistory(body?.history)
+    if (history.length === 0 && effectiveConversationId && user) {
+      history = getMessages(effectiveConversationId, user.id).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }))
+    }
+
     const validModes: KbModelMode[] = ["auto", "plus", "turbo", "max"]
     const modelMode: KbModelMode = validModes.includes(body?.modelMode) ? body.modelMode : "auto"
 
@@ -54,6 +75,7 @@ export async function POST(req: Request) {
               filePath: filePaths.length > 0 ? null : body?.filePath ?? null,
               filePaths: filePaths.length > 0 ? filePaths : undefined,
               inlineDocuments: inlineDocuments.length > 0 ? inlineDocuments : undefined,
+              history,
               useBm25: body?.useBm25 !== false,
               useGraphRag: body?.useGraphRag === true,
               modelMode,
@@ -116,6 +138,7 @@ export async function POST(req: Request) {
       filePath: filePaths.length > 0 ? null : body?.filePath ?? null,
       filePaths: filePaths.length > 0 ? filePaths : undefined,
       inlineDocuments: inlineDocuments.length > 0 ? inlineDocuments : undefined,
+      history,
       useBm25: body?.useBm25 !== false,
       useGraphRag: body?.useGraphRag === true,
       modelMode,

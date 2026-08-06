@@ -3162,6 +3162,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     const trimmedQuestion = question.trim()
     if (!trimmedQuestion) return
 
+    const priorHistory = chatMessages
+      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
+      .map((m) => ({ role: m.role, content: m.content }))
+    // Skip the welcome-only placeholder so the first turn stays a clean single question.
+    const historyForApi = priorHistory.some((m) => m.role === "user") ? priorHistory : []
     const nextMessages = [...chatMessages, { role: "user" as const, content: trimmedQuestion }]
     setChatMessages(nextMessages)
     setQuestion("")
@@ -3187,6 +3192,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           question: trimmedQuestion,
           folderPath: chatScopeFolderPath,
           filePath: chatScopeFilePath,
+          history: historyForApi,
           useBm25,
           useGraphRag,
           stream: true,

@@ -22,6 +22,129 @@ type SeriesPoint = {
 
 type BoardItem = { name: string; share: number }
 type TopStock = { ts_code: string; name: string | null; amount: number | null; share: number | null }
+type HotSectorType = "industry" | "concept"
+type HotSectorItem = {
+  name: string
+  change_pct: number | null
+  amount: number | null
+  lead_stock: string | null
+  lead_change_pct: number | null
+  rank: number | null
+}
+type HotSectorsPayload = {
+  trade_date: string | null
+  fetched_at: string | null
+  industry: HotSectorItem[]
+  concept: HotSectorItem[]
+}
+type HotHistoryBoard = {
+  name: string
+  hot_days: number
+  hot_share: number
+  max_streak: number
+  current_streak: number
+  avg_rank: number | null
+  best_rank: number | null
+  avg_change_pct: number | null
+  ranks: Array<number | null>
+  hot_flags: number[]
+}
+type HotHistoryPayload = {
+  board_type: HotSectorType
+  days: number
+  top_n: number
+  start_date: string | null
+  end_date: string | null
+  session_count: number
+  dates: string[]
+  boards: HotHistoryBoard[]
+  coverage_note: string | null
+}
+type HotHistoryMetric = "hot_days" | "max_streak" | "current_streak"
+type SectorCrowdingBoard = { type: HotSectorType; name: string; group: string }
+type SectorCrowdingPoint = {
+  date: string
+  amount_share: number | null
+  crowding_pct: number | null
+  amount: number | null
+  total_amount: number | null
+  change_pct: number | null
+  rank: number | null
+  is_hot: boolean
+}
+type SectorCrowdingPayload = {
+  board: SectorCrowdingBoard
+  days: number
+  hot_top_n: number
+  start_date: string | null
+  end_date: string | null
+  latest: {
+    trade_date: string | null
+    amount_share: number | null
+    crowding_pct: number | null
+    amount: number | null
+    total_amount: number | null
+    change_pct: number | null
+    is_hot: boolean
+  }
+  series: SectorCrowdingPoint[]
+  boards: SectorCrowdingBoard[]
+  note: string | null
+}
+type SectorFundFlowBoard = {
+  name: string
+  latest_net: number | null
+  cum_net: number | null
+  latest_share_pct: number | null
+  latest_roll5: number | null
+  latest_roll20: number | null
+  hot_days_inflow: number
+  series: Array<number | null>
+  daily_net: Array<number | null>
+  share_pct: Array<number | null>
+  roll5: Array<number | null>
+  roll20: Array<number | null>
+}
+type SectorFundFlowPayload = {
+  board_type: HotSectorType
+  days: number
+  unit: "yi"
+  start_date: string | null
+  end_date: string | null
+  dates: string[]
+  boards: SectorFundFlowBoard[]
+  latest_bars: Array<{ name: string; net_flow: number; change_pct: number | null }>
+  crowding: Array<number | null>
+  focus: string | null
+  note: string | null
+  preset: string
+}
+type SectorOverviewItem = {
+  name: string
+  change_pct: number | null
+  period_return: number | null
+  net_flow: number | null
+  period_net: number | null
+  amount: number | null
+  rank: number | null
+  period_rank: number | null
+}
+type SectorOverviewPayload = {
+  board_type: HotSectorType
+  days: number
+  sort: string
+  trade_date: string | null
+  start_date: string | null
+  session_count: number
+  available_dates: string[]
+  prev_date: string | null
+  next_date: string | null
+  breadth: { up: number; down: number; flat: number; total: number }
+  period_breadth: { up: number; down: number; flat: number; total: number }
+  boards: SectorOverviewItem[]
+  note: string | null
+}
+type OverviewSort = "change" | "period_return" | "net_flow" | "period_net"
 
 type CrowdingPayload = {
   series: SeriesPoint[]
@@ -88,6 +211,35 @@ export default function AshareCrowdingChart() {
   const [showHelp, setShowHelp] = useState(false)
   const [showTop5Help, setShowTop5Help] = useState(false)
   const [chartView, setChartView] = useState<ChartView>("sentiment")
+  const [hotSectors, setHotSectors] = useState<HotSectorsPayload | null>(null)
+  const [hotLoading, setHotLoading] = useState(true)
+  const [hotError, setHotError] = useState<string | null>(null)
+  const [hotSectorType, setHotSectorType] = useState<HotSectorType>("industry")
+  const [hotHistory, setHotHistory] = useState<HotHistoryPayload | null>(null)
+  const [hotHistLoading, setHotHistLoading] = useState(true)
+  const [hotHistError, setHotHistError] = useState<string | null>(null)
+  const [hotHistDays, setHotHistDays] = useState<10 | 20 | 60>(20)
+  const [hotHistTopN, setHotHistTopN] = useState<5 | 10 | 15>(10)
+  const [hotHistMetric, setHotHistMetric] = useState<HotHistoryMetric>("hot_days")
+  const [sectorCrowding, setSectorCrowding] = useState<SectorCrowdingPayload | null>(null)
+  const [sectorLoading, setSectorLoading] = useState(true)
+  const [sectorError, setSectorError] = useState<string | null>(null)
+  const [sectorBoardKey, setSectorBoardKey] = useState("concept:人工智能")
+  const [sectorDays, setSectorDays] = useState<120 | 250 | 365>(365)
+  const [fundFlow, setFundFlow] = useState<SectorFundFlowPayload | null>(null)
+  const [fundFlowLoading, setFundFlowLoading] = useState(true)
+  const [fundFlowError, setFundFlowError] = useState<string | null>(null)
+  const [fundFlowType, setFundFlowType] = useState<HotSectorType>("industry")
+  const [fundFlowDays, setFundFlowDays] = useState<60 | 120 | 250>(120)
+  const [fundFlowPreset, setFundFlowPreset] = useState<"top" | "ai">("ai")
+  const [fundFlowFocus, setFundFlowFocus] = useState<string>("")
+  const [sectorOverview, setSectorOverview] = useState<SectorOverviewPayload | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(true)
+  const [overviewError, setOverviewError] = useState<string | null>(null)
+  const [overviewType, setOverviewType] = useState<HotSectorType>("industry")
+  const [overviewDays, setOverviewDays] = useState<1 | 5 | 20>(1)
+  const [overviewSort, setOverviewSort] = useState<OverviewSort>("change")
+  const [overviewDate, setOverviewDate] = useState<string>("")
 
   const load = useCallback(async (showLoading: boolean) => {
     if (showLoading) setLoading(true)
@@ -106,7 +258,147 @@ export default function AshareCrowdingChart() {
     }
   }, [])
 
+  const loadHotSectors = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setHotLoading(true)
+    setHotError(null)
+    try {
+      const res = await fetch(`/ma/api/stock/hot-sectors?top=15&ts=${Date.now()}`, {
+        cache: "no-store",
+      })
+      const json = await res.json()
+      if (!res.ok || (!json.industry?.length && !json.concept?.length)) {
+        throw new Error(json.error || "failed")
+      }
+      setHotSectors(json)
+    } catch (e: unknown) {
+      setHotError(e instanceof Error ? e.message : "数据不可用")
+    } finally {
+      if (showLoading) setHotLoading(false)
+    }
+  }, [])
+
+  const loadHotHistory = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setHotHistLoading(true)
+    setHotHistError(null)
+    try {
+      const qs = new URLSearchParams({
+        type: hotSectorType,
+        days: String(hotHistDays),
+        top_n: String(hotHistTopN),
+        limit: "15",
+        ts: String(Date.now()),
+      })
+      const res = await fetch(`/ma/api/stock/hot-sectors/history?${qs}`, { cache: "no-store" })
+      const json = await res.json()
+      if (!res.ok || !json.boards?.length) {
+        throw new Error(json.error || json.coverage_note || "failed")
+      }
+      setHotHistory(json)
+    } catch (e: unknown) {
+      setHotHistory(null)
+      setHotHistError(e instanceof Error ? e.message : "数据不可用")
+    } finally {
+      if (showLoading) setHotHistLoading(false)
+    }
+  }, [hotSectorType, hotHistDays, hotHistTopN])
+
+  const loadSectorCrowding = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setSectorLoading(true)
+    setSectorError(null)
+    try {
+      const [type, ...rest] = sectorBoardKey.split(":")
+      const board = rest.join(":")
+      const qs = new URLSearchParams({
+        type: type || "concept",
+        board: board || "人工智能",
+        days: String(sectorDays),
+        top_n: "10",
+        ts: String(Date.now()),
+      })
+      const res = await fetch(`/ma/api/stock/sector-crowding?${qs}`, { cache: "no-store" })
+      const json = await res.json()
+      if (!res.ok || !json.series?.length) {
+        throw new Error(json.error || json.note || "failed")
+      }
+      setSectorCrowding(json)
+      if (Array.isArray(json.boards) && json.boards.length && !json.boards.some(
+        (b: SectorCrowdingBoard) => `${b.type}:${b.name}` === sectorBoardKey,
+      )) {
+        // keep selection
+      }
+    } catch (e: unknown) {
+      setSectorCrowding(null)
+      setSectorError(e instanceof Error ? e.message : "数据不可用")
+    } finally {
+      if (showLoading) setSectorLoading(false)
+    }
+  }, [sectorBoardKey, sectorDays])
+
+  const loadFundFlow = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setFundFlowLoading(true)
+    setFundFlowError(null)
+    try {
+      const qs = new URLSearchParams({
+        type: fundFlowType,
+        days: String(fundFlowDays),
+        limit: "8",
+        preset: fundFlowPreset,
+        ts: String(Date.now()),
+      })
+      const res = await fetch(`/ma/api/stock/sector-fund-flow?${qs}`, { cache: "no-store" })
+      const json = await res.json() as SectorFundFlowPayload & { error?: string }
+      if (!res.ok || !json.boards?.length) {
+        throw new Error(json.error || json.note || "failed")
+      }
+      setFundFlow(json)
+      const names = json.boards.map((b) => b.name)
+      setFundFlowFocus((prev) =>
+        prev && names.includes(prev) ? prev : (json.focus || names[0] || ""),
+      )
+    } catch (e: unknown) {
+      setFundFlow(null)
+      setFundFlowError(e instanceof Error ? e.message : "数据不可用")
+    } finally {
+      if (showLoading) setFundFlowLoading(false)
+    }
+  }, [fundFlowType, fundFlowDays, fundFlowPreset])
+
+  const loadSectorOverview = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setOverviewLoading(true)
+    setOverviewError(null)
+    try {
+      const qs = new URLSearchParams({
+        type: overviewType,
+        days: String(overviewDays),
+        sort: overviewSort,
+        ts: String(Date.now()),
+      })
+      if (overviewDate) qs.set("date", overviewDate)
+      const res = await fetch(`/ma/api/stock/sector-overview?${qs}`, { cache: "no-store" })
+      const json = await res.json() as SectorOverviewPayload & { error?: string }
+      if (!res.ok || !json.boards?.length) {
+        throw new Error(json.error || json.note || "failed")
+      }
+      setSectorOverview(json)
+      setOverviewDate((prev) => {
+        if (!json.trade_date) return prev
+        if (!prev || prev !== json.trade_date) return json.trade_date
+        return prev
+      })
+    } catch (e: unknown) {
+      setSectorOverview(null)
+      setOverviewError(e instanceof Error ? e.message : "数据不可用")
+    } finally {
+      if (showLoading) setOverviewLoading(false)
+    }
+  }, [overviewType, overviewDays, overviewSort, overviewDate])
+
   useChartAutoRefresh(load, [])
+  useChartAutoRefresh(loadHotSectors, [], 5 * 60_000)
+  useChartAutoRefresh(loadHotHistory, [hotSectorType, hotHistDays, hotHistTopN], 10 * 60_000)
+  useChartAutoRefresh(loadSectorCrowding, [sectorBoardKey, sectorDays], 10 * 60_000)
+  useChartAutoRefresh(loadFundFlow, [fundFlowType, fundFlowDays, fundFlowPreset], 10 * 60_000)
+  useChartAutoRefresh(loadSectorOverview, [overviewType, overviewDays, overviewSort, overviewDate], 10 * 60_000)
 
   const latest = payload?.latest
   const series = payload?.series ?? []
@@ -252,6 +544,745 @@ export default function AshareCrowdingChart() {
       }],
     }
   }, [latest])
+
+  const hotSectorItems = useMemo(() => {
+    if (!hotSectors) return []
+    return hotSectorType === "industry" ? hotSectors.industry : hotSectors.concept
+  }, [hotSectors, hotSectorType])
+
+  const hotSectorOption = useMemo(() => {
+    const items = hotSectorItems
+    if (!items.length) return {}
+    const labels = items.map((s) => s.name)
+    const values = items.map((s) => s.change_pct ?? 0)
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (p: Array<{ name: string; value: number; dataIndex?: number }>) => {
+          const idx = p[0]?.dataIndex ?? 0
+          const item = items[idx]
+          const lead = item?.lead_stock
+            ? `<br/>领涨: ${item.lead_stock}${
+                item.lead_change_pct != null ? ` ${item.lead_change_pct >= 0 ? "+" : ""}${item.lead_change_pct.toFixed(2)}%` : ""
+              }`
+            : ""
+          const amt =
+            item?.amount != null
+              ? `<br/>成交额: ${formatAmountYi(item.amount)}`
+              : ""
+          const chg = p[0]?.value
+          return `${item?.name || p[0]?.name || ""}<br/>涨跌幅: ${
+            chg != null ? `${chg >= 0 ? "+" : ""}${Number(chg).toFixed(2)}%` : "—"
+          }${lead}${amt}`
+        },
+      },
+      grid: { left: 104, right: 48, top: 8, bottom: 8 },
+      xAxis: {
+        type: "value",
+        axisLabel: {
+          fontSize: 10,
+          formatter: (v: number) => `${v > 0 ? "+" : ""}${v}%`,
+        },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      yAxis: {
+        type: "category",
+        data: labels,
+        inverse: true,
+        axisLabel: { fontSize: 11 },
+      },
+      series: [{
+        type: "bar",
+        data: values.map((v) => ({
+          value: v,
+          itemStyle: {
+            color: v >= 0 ? "rgba(220, 38, 38, 0.75)" : "rgba(22, 163, 74, 0.75)",
+            borderRadius: v >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4],
+          },
+          label: {
+            show: true,
+            position: v >= 0 ? "right" : "left",
+            formatter: `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}%`,
+            fontSize: 10,
+          },
+        })),
+      }],
+    }
+  }, [hotSectorItems])
+
+  const hotHistoryMetricLabel =
+    hotHistMetric === "hot_days" ? "上榜天数" : hotHistMetric === "max_streak" ? "最长连热" : "当前连热"
+
+  const hotHistoryBarOption = useMemo(() => {
+    const boards = hotHistory?.boards ?? []
+    if (!boards.length) return {}
+    const labels = boards.map((b) => b.name)
+    const values = boards.map((b) =>
+      hotHistMetric === "hot_days"
+        ? b.hot_days
+        : hotHistMetric === "max_streak"
+          ? b.max_streak
+          : b.current_streak,
+    )
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (p: Array<{ name: string; value: number; dataIndex?: number }>) => {
+          const idx = p[0]?.dataIndex ?? 0
+          const b = boards[idx]
+          if (!b) return ""
+          return [
+            b.name,
+            `上榜天数: ${b.hot_days} / ${hotHistory?.session_count ?? "—"} (${(b.hot_share * 100).toFixed(0)}%)`,
+            `最长连热: ${b.max_streak} 日`,
+            `当前连热: ${b.current_streak} 日`,
+            `最佳排名: ${b.best_rank ?? "—"}`,
+            `平均排名: ${b.avg_rank != null ? b.avg_rank.toFixed(1) : "—"}`,
+            `上榜日均涨跌: ${
+              b.avg_change_pct != null
+                ? `${b.avg_change_pct >= 0 ? "+" : ""}${b.avg_change_pct.toFixed(2)}%`
+                : "—"
+            }`,
+          ].join("<br/>")
+        },
+      },
+      grid: { left: 104, right: 40, top: 8, bottom: 8 },
+      xAxis: {
+        type: "value",
+        minInterval: 1,
+        axisLabel: { fontSize: 10 },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      yAxis: {
+        type: "category",
+        data: labels,
+        inverse: true,
+        axisLabel: { fontSize: 11 },
+      },
+      series: [{
+        type: "bar",
+        data: values,
+        itemStyle: {
+          color: "rgba(37, 99, 235, 0.75)",
+          borderRadius: [0, 4, 4, 0],
+        },
+        label: {
+          show: true,
+          position: "right",
+          formatter: (p: { value?: number }) => (p.value != null ? String(p.value) : ""),
+          fontSize: 10,
+        },
+      }],
+    }
+  }, [hotHistory, hotHistMetric])
+
+  const sectorCrowdingOption = useMemo(() => {
+    const series = sectorCrowding?.series ?? []
+    if (!series.length) return {}
+    const dates = series.map((d) => d.date)
+    const share = series.map((d) => d.amount_share)
+    const crowding = series.map((d) => d.crowding_pct)
+    const boardName = sectorCrowding?.board.name ?? "板块"
+    const hotMarks = series
+      .map((d, i) =>
+        d.is_hot && d.amount_share != null
+          ? { coord: [dates[i], d.amount_share], value: d.rank ?? d.change_pct ?? 0 }
+          : null,
+      )
+      .filter(Boolean)
+
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ axisValue: string; seriesName: string; value: number | null; dataIndex?: number }>) => {
+          const date = params[0]?.axisValue ?? ""
+          const idx = params[0]?.dataIndex ?? 0
+          const pt = series[idx]
+          const lines = params.map((p) => {
+            if (p.value == null) return `${p.seriesName}: —`
+            if (p.seriesName.includes("拥挤")) return `${p.seriesName}: ${Number(p.value).toFixed(1)}`
+            return `${p.seriesName}: ${Number(p.value).toFixed(2)}%`
+          })
+          if (pt?.is_hot) {
+            lines.push(
+              pt.rank != null
+                ? `热点日：排名 #${pt.rank}`
+                : `热点日：涨跌 ${pt.change_pct != null ? `${pt.change_pct >= 0 ? "+" : ""}${pt.change_pct.toFixed(2)}%` : "—"}`,
+            )
+          }
+          if (pt?.amount != null) lines.push(`板块成交额: ${formatAmountYi(pt.amount)}`)
+          if (pt?.total_amount != null) lines.push(`全A成交额: ${formatAmountYi(pt.total_amount)}`)
+          return [date, ...lines].join("<br/>")
+        },
+      },
+      legend: {
+        data: [`${boardName}成交额占比`, "全A拥挤度", "热点日"],
+        bottom: 0,
+        textStyle: { fontSize: 11 },
+      },
+      grid: { left: 52, right: 52, top: 28, bottom: 48 },
+      xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: [
+        {
+          type: "value",
+          name: "成交额占比 (%)",
+          axisLabel: { fontSize: 10, formatter: "{value}%" },
+          splitLine: { lineStyle: { opacity: 0.2 } },
+        },
+        {
+          type: "value",
+          name: "拥挤度",
+          min: 0,
+          max: 100,
+          axisLabel: { fontSize: 10 },
+          splitLine: { show: false },
+        },
+      ],
+      series: [
+        {
+          name: `${boardName}成交额占比`,
+          type: "line",
+          data: share,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 2, color: "#dc2626" },
+          itemStyle: { color: "#dc2626" },
+          markPoint: hotMarks.length
+            ? {
+                symbol: "circle",
+                symbolSize: 8,
+                itemStyle: { color: "rgba(244,114,182,0.9)", borderColor: "#be185d", borderWidth: 1 },
+                data: hotMarks as Array<{ coord: [string, number]; value: number }>,
+                label: { show: false },
+              }
+            : undefined,
+        },
+        {
+          name: "全A拥挤度",
+          type: "line",
+          yAxisIndex: 1,
+          data: crowding,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 1.5, color: "#2563eb" },
+          itemStyle: { color: "#2563eb" },
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed", opacity: 0.45 },
+            data: [
+              { yAxis: 70, label: { formatter: "高拥挤 70", fontSize: 10 } },
+              { yAxis: 40, label: { formatter: "低拥挤 40", fontSize: 10 } },
+            ],
+          },
+        },
+        {
+          // Legend-only proxy for hot-day markers
+          name: "热点日",
+          type: "scatter",
+          data: [],
+          symbolSize: 8,
+          itemStyle: { color: "rgba(244,114,182,0.9)" },
+        },
+      ],
+    }
+  }, [sectorCrowding])
+
+  const fundFlowCumOption = useMemo(() => {
+    const boards = fundFlow?.boards ?? []
+    const dates = fundFlow?.dates ?? []
+    if (!boards.length || !dates.length) return {}
+    const colors = [
+      "#dc2626", "#2563eb", "#d97706", "#059669", "#7c3aed",
+      "#db2777", "#0891b2", "#65a30d",
+    ]
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ axisValue: string; seriesName: string; value: number | null; color?: string }>) => {
+          const date = params[0]?.axisValue ?? ""
+          const lines = params.map((p) => {
+            const v = p.value
+            return `<span style="color:${p.color}">●</span> ${p.seriesName}: ${
+              v != null ? `${v >= 0 ? "+" : ""}${Number(v).toFixed(1)}亿` : "—"
+            }`
+          })
+          return [date, ...lines].join("<br/>")
+        },
+      },
+      legend: {
+        type: "scroll",
+        data: boards.map((b) => b.name),
+        bottom: 0,
+        textStyle: { fontSize: 10 },
+      },
+      grid: { left: 56, right: 24, top: 24, bottom: 56 },
+      xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: {
+        type: "value",
+        name: "累计净流入(亿)",
+        axisLabel: { fontSize: 10 },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      series: boards.map((b, i) => ({
+        name: b.name,
+        type: "line",
+        data: b.series,
+        smooth: true,
+        symbol: "none",
+        lineStyle: { width: 2, color: colors[i % colors.length] },
+        itemStyle: { color: colors[i % colors.length] },
+      })),
+    }
+  }, [fundFlow])
+
+  const fundFlowBarOption = useMemo(() => {
+    const bars = fundFlow?.latest_bars ?? []
+    if (!bars.length) return {}
+    const labels = bars.map((b) => b.name)
+    const values = bars.map((b) => b.net_flow)
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (p: Array<{ name: string; value: number; dataIndex?: number }>) => {
+          const idx = p[0]?.dataIndex ?? 0
+          const item = bars[idx]
+          const chg =
+            item?.change_pct != null
+              ? `<br/>涨跌幅: ${item.change_pct >= 0 ? "+" : ""}${item.change_pct.toFixed(2)}%`
+              : ""
+          return `${item?.name || p[0]?.name}<br/>当日净流入: ${
+            p[0]?.value != null ? `${p[0].value >= 0 ? "+" : ""}${Number(p[0].value).toFixed(2)}亿` : "—"
+          }${chg}`
+        },
+      },
+      grid: { left: 104, right: 48, top: 8, bottom: 8 },
+      xAxis: {
+        type: "value",
+        axisLabel: { fontSize: 10, formatter: (v: number) => `${v}亿` },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      yAxis: {
+        type: "category",
+        data: labels,
+        inverse: true,
+        axisLabel: { fontSize: 11 },
+      },
+      series: [{
+        type: "bar",
+        data: values.map((v) => ({
+          value: v,
+          itemStyle: {
+            color: v >= 0 ? "rgba(220, 38, 38, 0.75)" : "rgba(22, 163, 74, 0.75)",
+            borderRadius: v >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4],
+          },
+          label: {
+            show: true,
+            position: v >= 0 ? "right" : "left",
+            formatter: `${v >= 0 ? "+" : ""}${Number(v).toFixed(1)}`,
+            fontSize: 10,
+          },
+        })),
+      }],
+    }
+  }, [fundFlow])
+
+  const fundFlowColors = [
+    "#dc2626", "#2563eb", "#d97706", "#059669", "#7c3aed",
+    "#db2777", "#0891b2", "#65a30d",
+  ]
+
+  const fundFlowShareOption = useMemo(() => {
+    const boards = fundFlow?.boards ?? []
+    const dates = fundFlow?.dates ?? []
+    if (!boards.length || !dates.length) return {}
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ axisValue: string; seriesName: string; value: number | null; color?: string }>) => {
+          const date = params[0]?.axisValue ?? ""
+          const lines = params.map((p) =>
+            `<span style="color:${p.color}">●</span> ${p.seriesName}: ${
+              p.value != null ? `${Number(p.value).toFixed(2)}%` : "—"
+            }`,
+          )
+          return [date, ...lines].join("<br/>")
+        },
+      },
+      legend: {
+        type: "scroll",
+        data: boards.map((b) => b.name),
+        bottom: 0,
+        textStyle: { fontSize: 10 },
+      },
+      grid: { left: 52, right: 24, top: 24, bottom: 56 },
+      xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: {
+        type: "value",
+        name: "净流入占比 (%)",
+        axisLabel: { fontSize: 10, formatter: "{value}%" },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      series: boards.map((b, i) => ({
+        name: b.name,
+        type: "line",
+        data: b.share_pct ?? [],
+        smooth: true,
+        symbol: "none",
+        lineStyle: { width: 1.8, color: fundFlowColors[i % fundFlowColors.length] },
+        itemStyle: { color: fundFlowColors[i % fundFlowColors.length] },
+      })),
+    }
+  }, [fundFlow])
+
+  const fundFlowFocusBoard = useMemo(() => {
+    const boards = fundFlow?.boards ?? []
+    if (!boards.length) return null
+    return boards.find((b) => b.name === fundFlowFocus) || boards[0]
+  }, [fundFlow, fundFlowFocus])
+
+  const fundFlowRollOption = useMemo(() => {
+    const board = fundFlowFocusBoard
+    const dates = fundFlow?.dates ?? []
+    if (!board || !dates.length) return {}
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ axisValue: string; seriesName: string; value: number | null }>) => {
+          const date = params[0]?.axisValue ?? ""
+          const lines = params.map((p) =>
+            `${p.seriesName}: ${
+              p.value != null ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(1)}亿` : "—"
+            }`,
+          )
+          return [date, ...lines].join("<br/>")
+        },
+      },
+      legend: {
+        data: ["当日净流入", "5日滚动", "20日滚动"],
+        bottom: 0,
+        textStyle: { fontSize: 11 },
+      },
+      grid: { left: 56, right: 24, top: 24, bottom: 48 },
+      xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: {
+        type: "value",
+        name: "净流入(亿)",
+        axisLabel: { fontSize: 10 },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      series: [
+        {
+          name: "当日净流入",
+          type: "bar",
+          data: (board.daily_net ?? []).map((v) => ({
+            value: v,
+            itemStyle: {
+              color: v != null && v >= 0 ? "rgba(220,38,38,0.35)" : "rgba(22,163,74,0.35)",
+            },
+          })),
+          barMaxWidth: 6,
+        },
+        {
+          name: "5日滚动",
+          type: "line",
+          data: board.roll5 ?? [],
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 2, color: "#dc2626" },
+          itemStyle: { color: "#dc2626" },
+        },
+        {
+          name: "20日滚动",
+          type: "line",
+          data: board.roll20 ?? [],
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 2, color: "#2563eb" },
+          itemStyle: { color: "#2563eb" },
+        },
+      ],
+    }
+  }, [fundFlow, fundFlowFocusBoard])
+
+  const fundFlowCrowdingOption = useMemo(() => {
+    const board = fundFlowFocusBoard
+    const dates = fundFlow?.dates ?? []
+    const crowding = fundFlow?.crowding ?? []
+    if (!board || !dates.length) return {}
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ axisValue: string; seriesName: string; value: number | null }>) => {
+          const date = params[0]?.axisValue ?? ""
+          const lines = params.map((p) => {
+            if (p.value == null) return `${p.seriesName}: —`
+            if (p.seriesName.includes("拥挤")) return `${p.seriesName}: ${Number(p.value).toFixed(1)}`
+            return `${p.seriesName}: ${Number(p.value) >= 0 ? "+" : ""}${Number(p.value).toFixed(1)}亿`
+          })
+          return [date, ...lines].join("<br/>")
+        },
+      },
+      legend: {
+        data: [`${board.name}存量资金`, "全A拥挤度"],
+        bottom: 0,
+        textStyle: { fontSize: 11 },
+      },
+      grid: { left: 56, right: 52, top: 28, bottom: 48 },
+      xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: [
+        {
+          type: "value",
+          name: "累计净流入(亿)",
+          axisLabel: { fontSize: 10 },
+          splitLine: { lineStyle: { opacity: 0.2 } },
+        },
+        {
+          type: "value",
+          name: "拥挤度",
+          min: 0,
+          max: 100,
+          axisLabel: { fontSize: 10 },
+          splitLine: { show: false },
+        },
+      ],
+      series: [
+        {
+          name: `${board.name}存量资金`,
+          type: "line",
+          data: board.series,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 2.2, color: "#dc2626" },
+          itemStyle: { color: "#dc2626" },
+          areaStyle: { color: "rgba(220,38,38,0.08)" },
+        },
+        {
+          name: "全A拥挤度",
+          type: "line",
+          yAxisIndex: 1,
+          data: crowding,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 1.8, color: "#2563eb" },
+          itemStyle: { color: "#2563eb" },
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed", opacity: 0.45 },
+            data: [
+              { yAxis: 70, label: { formatter: "高拥挤 70", fontSize: 10 } },
+              { yAxis: 40, label: { formatter: "低拥挤 40", fontSize: 10 } },
+            ],
+          },
+        },
+      ],
+    }
+  }, [fundFlow, fundFlowFocusBoard])
+
+  const overviewMetric = useCallback(
+    (b: SectorOverviewItem): number | null => {
+      if (overviewSort === "period_return") return b.period_return
+      if (overviewSort === "net_flow") return b.net_flow
+      if (overviewSort === "period_net") return b.period_net
+      return overviewDays <= 1 ? b.change_pct : b.period_return ?? b.change_pct
+    },
+    [overviewSort, overviewDays],
+  )
+
+  const overviewMetricLabel =
+    overviewSort === "net_flow"
+      ? "当日净流入"
+      : overviewSort === "period_net"
+        ? `${overviewDays}日累计净流入`
+        : overviewDays <= 1
+          ? "当日涨跌幅"
+          : `${overviewDays}日涨跌幅`
+
+  const overviewBarHeight = Math.min(
+    720,
+    Math.max(380, (sectorOverview?.boards.length ?? 0) * 12 + 48),
+  )
+
+  const overviewBarOption = useMemo(() => {
+    const boards = sectorOverview?.boards ?? []
+    if (!boards.length) return {}
+    // Show full universe, strongest at top.
+    const items = [...boards].reverse()
+    const labels = items.map((b) => b.name)
+    const values = items.map((b) => overviewMetric(b) ?? 0)
+    const isPct = overviewSort === "change" || overviewSort === "period_return"
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (p: Array<{ name: string; value: number; dataIndex?: number }>) => {
+          const idx = p[0]?.dataIndex ?? 0
+          const b = items[idx]
+          if (!b) return ""
+          const ret = overviewDays <= 1 ? b.change_pct : b.period_return
+          return [
+            b.name,
+            `涨跌幅: ${ret != null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%` : "—"}`,
+            `净流入: ${b.net_flow != null ? `${b.net_flow >= 0 ? "+" : ""}${b.net_flow.toFixed(1)}亿` : "—"}`,
+            overviewDays > 1
+              ? `区间净流入: ${b.period_net != null ? `${b.period_net >= 0 ? "+" : ""}${b.period_net.toFixed(1)}亿` : "—"}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join("<br/>")
+        },
+      },
+      grid: { left: 110, right: 48, top: 8, bottom: boards.length > 40 ? 28 : 8 },
+      dataZoom:
+        boards.length > 45
+          ? [
+              { type: "slider", yAxisIndex: 0, right: 4, width: 14, start: 65, end: 100 },
+              { type: "inside", yAxisIndex: 0 },
+            ]
+          : undefined,
+      xAxis: {
+        type: "value",
+        axisLabel: {
+          fontSize: 10,
+          formatter: (v: number) => (isPct ? `${v}%` : `${v}亿`),
+        },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      yAxis: {
+        type: "category",
+        data: labels,
+        axisLabel: { fontSize: 10 },
+      },
+      series: [{
+        type: "bar",
+        data: values.map((v) => ({
+          value: v,
+          itemStyle: {
+            color: v >= 0 ? "rgba(220, 38, 38, 0.72)" : "rgba(22, 163, 74, 0.72)",
+            borderRadius: v >= 0 ? [0, 3, 3, 0] : [3, 0, 0, 3],
+          },
+        })),
+        barMaxWidth: 12,
+      }],
+    }
+  }, [sectorOverview, overviewMetric, overviewSort, overviewDays])
+
+  const overviewScatterOption = useMemo(() => {
+    const boards = sectorOverview?.boards ?? []
+    if (!boards.length) return {}
+    const data = boards
+      .filter((b) => b.change_pct != null || b.period_return != null)
+      .map((b) => {
+        const x = (overviewDays <= 1 ? b.change_pct : b.period_return) ?? 0
+        const y = (overviewDays <= 1 ? b.net_flow : b.period_net) ?? 0
+        return {
+          value: [x, y, b.name],
+          name: b.name,
+          itemStyle: {
+            color: x >= 0 ? "rgba(220,38,38,0.75)" : "rgba(22,163,74,0.75)",
+          },
+        }
+      })
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        formatter: (p: { value?: [number, number, string] }) => {
+          const [x, y, name] = p.value ?? [0, 0, ""]
+          return [
+            name,
+            `涨跌幅: ${x >= 0 ? "+" : ""}${Number(x).toFixed(2)}%`,
+            `净流入: ${y >= 0 ? "+" : ""}${Number(y).toFixed(1)}亿`,
+          ].join("<br/>")
+        },
+      },
+      grid: { left: 56, right: 24, top: 28, bottom: 40 },
+      xAxis: {
+        type: "value",
+        name: overviewDays <= 1 ? "涨跌幅 (%)" : `${overviewDays}日涨跌 (%)`,
+        axisLabel: { fontSize: 10, formatter: "{value}%" },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      yAxis: {
+        type: "value",
+        name: overviewDays <= 1 ? "净流入 (亿)" : `${overviewDays}日净流入 (亿)`,
+        axisLabel: { fontSize: 10 },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      series: [{
+        type: "scatter",
+        symbolSize: 9,
+        data,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          lineStyle: { type: "dashed", opacity: 0.35 },
+          data: [{ xAxis: 0 }, { yAxis: 0 }],
+        },
+      }],
+    }
+  }, [sectorOverview, overviewDays])
+
+  const hotHistoryHeatOption = useMemo(() => {
+    const boards = hotHistory?.boards ?? []
+    const dates = hotHistory?.dates ?? []
+    if (!boards.length || !dates.length) return {}
+    const yLabels = boards.map((b) => b.name)
+    const data: Array<[number, number, number]> = []
+    boards.forEach((b, yi) => {
+      b.hot_flags.forEach((flag, xi) => {
+        data.push([xi, yi, flag])
+      })
+    })
+    const shortDates = dates.map((d) => d.slice(5))
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        formatter: (p: { value?: [number, number, number] }) => {
+          const [xi, yi] = p.value ?? [-1, -1, 0]
+          const name = yLabels[yi] ?? ""
+          const date = dates[xi] ?? ""
+          const rank = boards[yi]?.ranks[xi]
+          return `${name}<br/>${date}<br/>${rank != null ? `排名 #${rank}` : "未上榜"}`
+        },
+      },
+      grid: { left: 104, right: 16, top: 8, bottom: 40 },
+      xAxis: {
+        type: "category",
+        data: shortDates,
+        axisLabel: { fontSize: 9, rotate: dates.length > 25 ? 45 : 0 },
+      },
+      yAxis: {
+        type: "category",
+        data: yLabels,
+        inverse: true,
+        axisLabel: { fontSize: 11 },
+      },
+      visualMap: {
+        show: false,
+        min: 0,
+        max: 1,
+        inRange: { color: ["rgba(148,163,184,0.12)", "rgba(220,38,38,0.85)"] },
+      },
+      series: [{
+        type: "heatmap",
+        data,
+        itemStyle: { borderWidth: 1, borderColor: "rgba(255,255,255,0.6)" },
+      }],
+    }
+  }, [hotHistory])
 
   const top5pctStats = useMemo(() => {
     const values = series.map((d) => d.top5pct_share)
@@ -660,6 +1691,305 @@ export default function AshareCrowdingChart() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div className="space-y-1.5">
+            <CardTitle>Top 5% 成交额占比</CardTitle>
+            <CardDescription>
+              {latest?.trade_date ? `截至 ${formatTradeDate(latest.trade_date)} · ` : ""}
+              按股票数量取前 5% 个股的成交额占全 A 比例
+              {top5pctStats.latestVal != null ? ` · 最新 ${top5pctStats.latestVal.toFixed(1)}%` : ""}
+              {top5pctStats.diffMa20 != null
+                ? ` · 较20日均 ${top5pctStats.diffMa20 >= 0 ? "+" : ""}${top5pctStats.diffMa20.toFixed(1)}pp`
+                : ""}
+            </CardDescription>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowTop5Help(true)}
+            className="w-5 h-5 rounded-full border border-border text-muted-foreground hover:text-foreground text-xs leading-none flex items-center justify-center flex-shrink-0 mt-0.5"
+            title="计算方法说明"
+          >
+            ?
+          </button>
+        </CardHeader>
+        <CardContent>
+          {loading || error || !series.length || top5pctStats.values.every((v) => v == null) ? (
+            <div className="h-[300px] flex items-center justify-center text-sm text-muted-foreground">
+              {error || (loading ? "加载中..." : "暂无数据（需运行 ETL 回填 top5pct_share）")}
+            </div>
+          ) : (
+            <ReactECharts option={top5pctOption} style={{ height: "300px", width: "100%" }} />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div className="space-y-1.5 min-w-0">
+            <CardTitle>主题成交额占比 vs 全A拥挤度</CardTitle>
+            <CardDescription>
+              {sectorCrowding?.latest.trade_date
+                ? `截至 ${formatTradeDate(sectorCrowding.latest.trade_date)} · `
+                : ""}
+              {sectorCrowding?.board.name ?? "主题"}资金占全A成交额比例（左轴）叠加市场拥挤度（右轴）
+              {sectorCrowding?.latest.amount_share != null
+                ? ` · 占比 ${sectorCrowding.latest.amount_share.toFixed(2)}%`
+                : ""}
+              {sectorCrowding?.latest.crowding_pct != null
+                ? ` · 拥挤度 ${sectorCrowding.latest.crowding_pct.toFixed(1)}`
+                : ""}
+              {sectorCrowding?.latest.is_hot ? " · 当日热点" : ""}
+            </CardDescription>
+          </div>
+          <div className="flex flex-col items-end gap-1.5 mt-0.5 shrink-0">
+            <select
+              value={sectorBoardKey}
+              onChange={(e) => setSectorBoardKey(e.target.value)}
+              className="h-7 max-w-[200px] rounded border border-border bg-background px-2 text-xs"
+            >
+              {(sectorCrowding?.boards?.length
+                ? sectorCrowding.boards
+                : [
+                    { type: "concept" as const, name: "人工智能", group: "AI主题" },
+                    { type: "industry" as const, name: "半导体", group: "相关行业" },
+                  ]
+              ).map((b) => (
+                <option key={`${b.type}:${b.name}`} value={`${b.type}:${b.name}`}>
+                  {b.group} · {b.name}
+                </option>
+              ))}
+            </select>
+            <div className="flex gap-1">
+              {([120, 250, 365] as const).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setSectorDays(d)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                    sectorDays === d
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {d}日
+                </button>
+              ))}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {sectorCrowding?.note ? (
+            <p className="text-xs text-muted-foreground">{sectorCrowding.note}</p>
+          ) : null}
+          {sectorLoading ? (
+            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">
+              加载中（首次选择板块可能需回填同花顺成交额历史）…
+            </div>
+          ) : sectorError || !sectorCrowding?.series.some((s) => s.amount_share != null) ? (
+            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground px-4 text-center">
+              {sectorError || "暂无数据"}
+            </div>
+          ) : (
+            <ReactECharts
+              option={sectorCrowdingOption}
+              style={{ height: "360px", width: "100%" }}
+              notMerge
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div className="space-y-1.5 min-w-0">
+            <CardTitle>板块资金流向 · 存量资金</CardTitle>
+            <CardDescription>
+              {fundFlow?.start_date && fundFlow?.end_date
+                ? `${formatTradeDate(fundFlow.start_date)} → ${formatTradeDate(fundFlow.end_date)} · `
+                : ""}
+              每日净流入累计（亿元）；左图看谁在吸金，右图看当日净流入 Top15
+              {fundFlow?.boards[0]?.cum_net != null
+                ? ` · 窗口累计领先 ${fundFlow.boards[0].name} ${
+                    fundFlow.boards[0].cum_net >= 0 ? "+" : ""
+                  }${fundFlow.boards[0].cum_net.toFixed(0)}亿`
+                : ""}
+            </CardDescription>
+          </div>
+          <div className="flex flex-col items-end gap-1.5 mt-0.5 shrink-0">
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setFundFlowType("industry")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  fundFlowType === "industry"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                行业
+              </button>
+              <button
+                type="button"
+                onClick={() => setFundFlowType("concept")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  fundFlowType === "concept"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                概念
+              </button>
+            </div>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setFundFlowPreset("ai")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  fundFlowPreset === "ai"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                AI篮子
+              </button>
+              <button
+                type="button"
+                onClick={() => setFundFlowPreset("top")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  fundFlowPreset === "top"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                累计Top
+              </button>
+            </div>
+            <div className="flex gap-1">
+              {([60, 120, 250] as const).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setFundFlowDays(d)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                    fundFlowDays === d
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {d}日
+                </button>
+              ))}
+            </div>
+            {fundFlow?.boards?.length ? (
+              <select
+                value={fundFlowFocus || fundFlow.focus || fundFlow.boards[0]?.name || ""}
+                onChange={(e) => setFundFlowFocus(e.target.value)}
+                className="h-7 max-w-[180px] rounded border border-border bg-background px-2 text-xs"
+                title="聚焦板块（滚动净流入 / 存量vs拥挤度）"
+              >
+                {fundFlow.boards.map((b) => (
+                  <option key={b.name} value={b.name}>
+                    聚焦 · {b.name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {fundFlow?.note ? (
+            <p className="text-xs text-muted-foreground">{fundFlow.note}</p>
+          ) : null}
+          {fundFlowLoading ? (
+            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">
+              加载资金流向中（首次会拉取即时净额并回填历史代理）…
+            </div>
+          ) : fundFlowError || !fundFlow?.boards.length ? (
+            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground px-4 text-center">
+              {fundFlowError || "暂无数据"}
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    存量资金（窗口内累计净流入）
+                  </p>
+                  <ReactECharts
+                    option={fundFlowCumOption}
+                    style={{ height: "320px", width: "100%" }}
+                    notMerge
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    最新一日净流入 Top15
+                  </p>
+                  <ReactECharts
+                    option={fundFlowBarOption}
+                    style={{ height: "320px", width: "100%" }}
+                    notMerge
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    净流入占比时序（板块净流入 / Σ|同口径全市场净流入|）
+                    {fundFlowFocusBoard?.latest_share_pct != null
+                      ? ` · ${fundFlowFocusBoard.name} 最新 ${fundFlowFocusBoard.latest_share_pct.toFixed(1)}%`
+                      : ""}
+                  </p>
+                  <ReactECharts
+                    option={fundFlowShareOption}
+                    style={{ height: "320px", width: "100%" }}
+                    notMerge
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    滚动净流入（{fundFlowFocusBoard?.name ?? "聚焦板块"}）
+                    {fundFlowFocusBoard?.latest_roll5 != null
+                      ? ` · 5日 ${fundFlowFocusBoard.latest_roll5 >= 0 ? "+" : ""}${fundFlowFocusBoard.latest_roll5.toFixed(0)}亿`
+                      : ""}
+                    {fundFlowFocusBoard?.latest_roll20 != null
+                      ? ` · 20日 ${fundFlowFocusBoard.latest_roll20 >= 0 ? "+" : ""}${fundFlowFocusBoard.latest_roll20.toFixed(0)}亿`
+                      : ""}
+                  </p>
+                  <ReactECharts
+                    option={fundFlowRollOption}
+                    style={{ height: "320px", width: "100%" }}
+                    notMerge
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-muted-foreground mb-2">
+                  存量资金 vs 全A拥挤度（{fundFlowFocusBoard?.name ?? "聚焦板块"}）
+                  {fundFlowFocusBoard?.cum_net != null
+                    ? ` · 累计 ${fundFlowFocusBoard.cum_net >= 0 ? "+" : ""}${fundFlowFocusBoard.cum_net.toFixed(0)}亿`
+                    : ""}
+                </p>
+                <ReactECharts
+                  option={fundFlowCrowdingOption}
+                  style={{ height: "340px", width: "100%" }}
+                  notMerge
+                />
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid gap-6 md:grid-cols-2">
         <Card>
           <CardHeader>
@@ -704,33 +2034,359 @@ export default function AshareCrowdingChart() {
 
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-2">
-          <div className="space-y-1.5">
-            <CardTitle>Top 5% 成交额占比</CardTitle>
+          <div className="space-y-1.5 min-w-0">
+            <CardTitle>全市场板块表现</CardTitle>
             <CardDescription>
-              {latest?.trade_date ? `截至 ${formatTradeDate(latest.trade_date)} · ` : ""}
-              按股票数量取前 5% 个股的成交额占全 A 比例
-              {top5pctStats.latestVal != null ? ` · 最新 ${top5pctStats.latestVal.toFixed(1)}%` : ""}
-              {top5pctStats.diffMa20 != null
-                ? ` · 较20日均 ${top5pctStats.diffMa20 >= 0 ? "+" : ""}${top5pctStats.diffMa20.toFixed(1)}pp`
+              {sectorOverview?.trade_date
+                ? `截面 ${formatTradeDate(sectorOverview.trade_date)} · `
+                : ""}
+              全部{overviewType === "industry" ? "行业" : "概念"}（非仅热点）
+              {sectorOverview
+                ? ` · ${sectorOverview.boards.length} 个板块 · 上涨 ${sectorOverview.breadth.up} / 下跌 ${sectorOverview.breadth.down}`
+                : ""}
+              {overviewDays > 1 && sectorOverview
+                ? ` · 回溯${overviewDays}日（自 ${formatTradeDate(sectorOverview.start_date)}）· 区间上涨 ${sectorOverview.period_breadth.up}`
                 : ""}
             </CardDescription>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowTop5Help(true)}
-            className="w-5 h-5 rounded-full border border-border text-muted-foreground hover:text-foreground text-xs leading-none flex items-center justify-center flex-shrink-0 mt-0.5"
-            title="计算方法说明"
-          >
-            ?
-          </button>
+          <div className="flex flex-col items-end gap-1.5 mt-0.5 shrink-0">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={!sectorOverview?.prev_date}
+                onClick={() => sectorOverview?.prev_date && setOverviewDate(sectorOverview.prev_date)}
+                className="px-2 py-0.5 rounded text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:pointer-events-none"
+                title="上一交易日"
+              >
+                ‹
+              </button>
+              <label className="relative inline-flex items-center">
+                <input
+                  type="date"
+                  value={overviewDate || sectorOverview?.trade_date || ""}
+                  min={
+                    sectorOverview?.available_dates?.length
+                      ? sectorOverview.available_dates[sectorOverview.available_dates.length - 1]
+                      : undefined
+                  }
+                  max={sectorOverview?.available_dates?.[0]}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    if (v) setOverviewDate(v)
+                  }}
+                  className="h-7 rounded border border-border bg-background px-2 pr-1 text-xs"
+                  title="选择截面日期"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={!sectorOverview?.next_date}
+                onClick={() => sectorOverview?.next_date && setOverviewDate(sectorOverview.next_date)}
+                className="px-2 py-0.5 rounded text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:pointer-events-none"
+                title="下一交易日"
+              >
+                ›
+              </button>
+              <button
+                type="button"
+                disabled={!sectorOverview?.available_dates?.[0] || overviewDate === sectorOverview?.available_dates?.[0]}
+                onClick={() => {
+                  const latest = sectorOverview?.available_dates?.[0]
+                  if (latest) setOverviewDate(latest)
+                }}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  overviewDate && sectorOverview?.available_dates?.[0] === overviewDate
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+                title="回到最新交易日"
+              >
+                最新
+              </button>
+            </div>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setOverviewType("industry")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  overviewType === "industry"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                行业
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverviewType("concept")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  overviewType === "concept"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                概念
+              </button>
+            </div>
+            <div className="flex gap-1">
+              {([1, 5, 20] as const).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => {
+                    setOverviewDays(d)
+                    setOverviewSort(d <= 1 ? "change" : "period_return")
+                  }}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                    overviewDays === d
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {d === 1 ? "当日" : `${d}日`}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setOverviewSort(overviewDays <= 1 ? "change" : "period_return")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  overviewSort === "change" || overviewSort === "period_return"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                按涨跌
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverviewSort(overviewDays <= 1 ? "net_flow" : "period_net")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  overviewSort === "net_flow" || overviewSort === "period_net"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                按净流入
+              </button>
+            </div>
+          </div>
         </CardHeader>
-        <CardContent>
-          {loading || error || !series.length || top5pctStats.values.every((v) => v == null) ? (
-            <div className="h-[300px] flex items-center justify-center text-sm text-muted-foreground">
-              {error || (loading ? "加载中..." : "暂无数据（需运行 ETL 回填 top5pct_share）")}
+        <CardContent className="space-y-3">
+          {sectorOverview?.note ? (
+            <p className="text-xs text-muted-foreground">{sectorOverview.note}</p>
+          ) : null}
+          {overviewLoading ? (
+            <div className="h-[380px] flex items-center justify-center text-sm text-muted-foreground">
+              加载全市场板块中...
+            </div>
+          ) : overviewError || !sectorOverview?.boards.length ? (
+            <div className="h-[380px] flex items-center justify-center text-sm text-muted-foreground px-4 text-center">
+              {overviewError || "暂无数据"}
             </div>
           ) : (
-            <ReactECharts option={top5pctOption} style={{ height: "300px", width: "100%" }} />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div>
+                <p className="text-xs text-muted-foreground mb-2">
+                  全板块排名（{overviewMetricLabel}，可滚动）
+                </p>
+                <ReactECharts
+                  option={overviewBarOption}
+                  style={{ height: overviewBarHeight, width: "100%" }}
+                  notMerge
+                />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-2">
+                  涨跌幅 vs 净流入散点（右上=涨且吸金，左下=跌且流出）
+                </p>
+                <ReactECharts
+                  option={overviewScatterOption}
+                  style={{ height: overviewBarHeight, width: "100%" }}
+                  notMerge
+                />
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div className="space-y-1.5">
+            <CardTitle>热点板块 Top15</CardTitle>
+            <CardDescription>
+              {hotSectors?.trade_date ? `截至 ${formatTradeDate(hotSectors.trade_date)} · ` : ""}
+              按涨跌幅排序的{hotSectorType === "industry" ? "行业" : "概念"}板块（仅头部热点）
+              {hotSectorItems[0]?.name
+                ? ` · 领涨 ${hotSectorItems[0].name}${
+                    hotSectorItems[0].change_pct != null
+                      ? ` ${hotSectorItems[0].change_pct >= 0 ? "+" : ""}${hotSectorItems[0].change_pct.toFixed(2)}%`
+                      : ""
+                  }`
+                : ""}
+            </CardDescription>
+          </div>
+          <div className="flex shrink-0 gap-1 mt-0.5">
+            <button
+              type="button"
+              onClick={() => setHotSectorType("industry")}
+              className={cn(
+                "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                hotSectorType === "industry"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted",
+              )}
+            >
+              行业
+            </button>
+            <button
+              type="button"
+              onClick={() => setHotSectorType("concept")}
+              className={cn(
+                "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                hotSectorType === "concept"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted",
+              )}
+            >
+              概念
+            </button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {hotLoading ? (
+            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">
+              加载中...
+            </div>
+          ) : hotError || !hotSectorItems.length ? (
+            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">
+              {hotError || "暂无数据"}
+            </div>
+          ) : (
+            <ReactECharts option={hotSectorOption} style={{ height: "360px", width: "100%" }} notMerge />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div className="space-y-1.5">
+            <CardTitle>热点持续性</CardTitle>
+            <CardDescription>
+              {hotHistory?.start_date && hotHistory?.end_date
+                ? `${formatTradeDate(hotHistory.start_date)} → ${formatTradeDate(hotHistory.end_date)} · `
+                : ""}
+              近 {hotHistDays} 日{hotSectorType === "industry" ? "行业" : "概念"}进入涨跌幅 Top{hotHistTopN} 的频率与连热
+              {hotHistory?.boards[0]
+                ? ` · 最持续 ${hotHistory.boards[0].name}（上榜 ${hotHistory.boards[0].hot_days} 日 / 最长连热 ${hotHistory.boards[0].max_streak}）`
+                : ""}
+            </CardDescription>
+          </div>
+          <div className="flex flex-col items-end gap-1.5 mt-0.5">
+            <div className="flex gap-1">
+              {([10, 20, 60] as const).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setHotHistDays(d)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                    hotHistDays === d
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {d}日
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              {([5, 10, 15] as const).map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setHotHistTopN(n)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                    hotHistTopN === n
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  Top{n}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              {(
+                [
+                  ["hot_days", "上榜天数"],
+                  ["max_streak", "最长连热"],
+                  ["current_streak", "当前连热"],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setHotHistMetric(key)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                    hotHistMetric === key
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {hotHistLoading ? (
+            <div className="h-[320px] flex items-center justify-center text-sm text-muted-foreground">
+              加载历史热点中（首次可能需回填同花顺行业指数）…
+            </div>
+          ) : hotHistError || !hotHistory?.boards.length ? (
+            <div className="h-[320px] flex items-center justify-center text-sm text-muted-foreground px-4 text-center">
+              {hotHistError || "暂无历史数据"}
+            </div>
+          ) : (
+            <>
+              {hotHistory.coverage_note ? (
+                <p className="text-xs text-muted-foreground">{hotHistory.coverage_note}</p>
+              ) : null}
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    按{hotHistoryMetricLabel}排序（窗口 {hotHistory.session_count} 个交易日）
+                  </p>
+                  <ReactECharts
+                    option={hotHistoryBarOption}
+                    style={{ height: "360px", width: "100%" }}
+                    notMerge
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    上榜轨迹（红色=当日进入涨跌幅 Top{hotHistTopN}）
+                  </p>
+                  <ReactECharts
+                    option={hotHistoryHeatOption}
+                    style={{ height: "360px", width: "100%" }}
+                    notMerge
+                  />
+                </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

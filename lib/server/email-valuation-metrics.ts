@@ -316,6 +316,9 @@ export function enrichValuationMetrics(analysis: ValuationAnalysis): {
 
   for (const row of rows) {
     const name = normalizeText(row.name)
+    // Skip 昨日/上日单位净值 — CMS sheets put prior-day NAV in the body; using it
+    // shifts the published 单位净值 back one trading day.
+    if (/昨日|上日|前一|上一|前天/.test(name)) continue
     if (/^单位净值$/.test(name) || (/单位净值/.test(name) && !/累计/.test(name))) {
       const n = pickUnitNavFromRow(row)
       if (n != null) unitNav = n

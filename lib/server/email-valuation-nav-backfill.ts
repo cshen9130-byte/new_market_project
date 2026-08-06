@@ -48,6 +48,8 @@ export function unitNavFromValuationSummary(summary: unknown): number | null {
     if (!Array.isArray(row)) continue
     const cells = row.map((c) => String(c ?? "").trim())
     const joined = cells.join(" ")
+    // CMS/招商 often also prints 昨日单位净值 — never treat that as today's NAV.
+    if (/昨日|上日|前一|上一|前天/.test(joined)) continue
     if (/累计/.test(joined) && !/单位净值/.test(joined.replace(/累计单位净值/g, ""))) continue
 
     const inline = joined.match(/(?:^|[^累计])单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
@@ -58,6 +60,7 @@ export function unitNavFromValuationSummary(summary: unknown): number | null {
 
     for (let i = 0; i < cells.length - 1; i += 1) {
       const label = cells[i].replace(/\s+/g, "")
+      if (/昨日|上日|前一|上一|前天/.test(label)) continue
       if (/^(单位净值|今日单位净值|基金份额净值|基金单位净值|份额净值)$/.test(label)
         || (/单位净值/.test(label) && !/累计/.test(label))) {
         const n = parseFloat(cells[i + 1].replace(/,/g, ""))
@@ -125,6 +128,95 @@ function valuationRowToNavInsert(row: ValuationNavRow, unitNav: number): EmailNa
     fundName: row.fund_name,
     source: "attachment_valuation_table",
   }
+}
+
+/**
+ * Heal CMS/招商 day-shift: when ops_email_nav_records.nav disagrees with the
+ * valuation header 单位净值 for the same email/attachment/date, rewrite nav
+ * (and column/summary.unit_nav) from the header. Safe to run on --cache-only
+ * nightly — scoped to CMS subjects and recent dates only.
+ */
+export async function healCmsNavDayShiftFromRecords(options?: {
+  sinceDate?: string
+}): Promise<{ products: number; mismatches: number; navUpserted: number }> {
+  await ensureEmailValuationTable()
+  await ensureEmailNavTable()
+
+  const sinceDate = options?.sinceDate ?? "2026-07-01"
+  const rows = await query<
+    ValuationNavRow & { nav_unit: string | null; val_id: number }
+  >(
+    `SELECT v.id AS val_id, v.crawl_email_account, v.email_uid, v.sent_at::text,
+            v.subject, v.sender_email, v.attachment_filename, v.product_code,
+            v.fund_name, v.valuation_date::text, v.unit_nav::text, v.cumulative_nav::text,
+            v.source, v.summary, n.nav::text AS nav_unit
+     FROM ops_email_valuation_records v
+     JOIN ops_email_nav_records n
+       ON n.crawl_email_account = v.crawl_email_account
+      AND n.email_uid = v.email_uid
+      AND n.attachment_filename = v.attachment_filename
+      AND n.nav_date = v.valuation_date
+      AND coalesce(n.product_code, '') = coalesce(v.product_code, '')
+      AND n.source = 'attachment_valuation_table'
+     WHERE v.valuation_date >= $1::date
+       AND coalesce(v.product_code, '') <> ''
+       AND (
+         v.subject ~ '【估值表】'
+         OR coalesce(v.attachment_filename, '') ~ '委托资产资产估值表'
+         OR coalesce(v.summary->>'custodian', '') LIKE '%招商证券%'
+       )
+     ORDER BY v.valuation_date ASC, v.id ASC`,
+    [sinceDate],
+  )
+
+  const inserts: EmailNavInsert[] = []
+  const codes = new Set<string>()
+  let mismatches = 0
+
+  for (const row of rows) {
+    const { unitNav, needsColumnHeal } = resolveRowUnitNav(row)
+    const nav = parseOptionalNav(row.nav_unit)
+    if (unitNav == null || nav == null) continue
+    if (Math.abs(unitNav - nav) <= 1e-6) continue
+
+    mismatches += 1
+    const code = (row.product_code ?? "").trim().toUpperCase()
+    if (code) codes.add(code)
+
+    if (needsColumnHeal) {
+      await query(
+        `UPDATE ops_email_valuation_records SET unit_nav = $1 WHERE id = $2`,
+        [unitNav, row.val_id],
+      )
+    }
+
+    const summaryUnit = parseOptionalNav(
+      row.summary != null && typeof row.summary === "object"
+        ? String((row.summary as { unit_nav?: unknown }).unit_nav ?? "")
+        : null,
+    )
+    if (
+      row.summary != null &&
+      typeof row.summary === "object" &&
+      (summaryUnit == null || Math.abs(summaryUnit - unitNav) > 1e-9)
+    ) {
+      await query(
+        `UPDATE ops_email_valuation_records
+         SET summary = jsonb_set(coalesce(summary, '{}'::jsonb), '{unit_nav}', to_jsonb($1::numeric), true)
+         WHERE id = $2`,
+        [unitNav, row.val_id],
+      )
+    }
+
+    const insert = valuationRowToNavInsert(
+      { ...row, id: row.val_id },
+      unitNav,
+    )
+    if (insert) inserts.push(insert)
+  }
+
+  const navUpserted = await upsertEmailNavRecords(inserts)
+  return { products: codes.size, mismatches, navUpserted }
 }
 
 /** Copy custody 估值表 unit NAV into ops_email_nav_records (idempotent upsert). */

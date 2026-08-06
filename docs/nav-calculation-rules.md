@@ -1924,3 +1924,81 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes **禾瑞十号C 0.03+0.05 dividends**. Refresh the product page after deploy — no re-upload required.
+
+---
+
+## What Was Fixed (CMS/招商 估值表 NAV day-shift — SCJ536 / SCU622 / SBNX55 / SSG947, 2026-08-06)
+
+### The Problem
+
+Several CMS/招商证券 custody products showed unit NAV **one trading day behind** the workbook header `单位净值`:
+
+| Product | Code | Example |
+|---|---|---|
+| 金舆追风1号 | SCJ536 | UI 08-05 **0.9846** vs Excel **0.9884** |
+| 金舆稳健增长1号FOF | SCU622 | UI 08-05 **0.9999** vs Excel **1.0001** |
+| 荣熙共赢 | SBNX55 | UI 08-04 **0.9682** vs header **0.9766** |
+| 抱朴聚融祥和一号 | SSG947 | UI 08-04 **1.8445** vs header **1.8634** |
+
+`ops_email_valuation_records` header_rows / column often already had the correct today value; `ops_email_nav_records` (what the detail page reads) held the prior close.
+
+### Root Cause (parse)
+
+CMS 估值表 prints **今日** `单位净值:0.9884` in the header and often also **昨日单位净值** (or a body row labeled `单位净值` holding the prior close). `scanRowsForNav()` used last-wins over `/单位净值/` matches, so the prior-day value overwrote the header and was written to `ops_email_nav_records` at parse time.
+
+This is **not** the Guohai/GTJA `估值表_YYYYMMDD` date-shift bug (`resolveValuationTableNavDate`).
+
+### Why It Happened Again After SCJ536 Was Fixed
+
+1. **Parse fix is forward-only.** Ignoring `昨日单位净值` stops *new* emails from writing the wrong NAV. Rows already in `ops_email_nav_records` stay wrong until repaired.
+2. **Nightly ETL used `--cache-only`**, which skipped `backfillCustodyValuationNavFromRecords()`. List/detail caches were rebuilt from the still-shifted nav table — so SCU622 (and others) kept showing the old shift even after the parse code landed.
+3. **Per-fund manual repair** (SCJ536 only) did not scan the rest of the CMS book.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Prior-day label filter | `isUnitNavLabel` / `scanRowsForNav` in `email-valuation-attachment.ts` | Ignore `昨日/上日/前一…单位净值`; lock header-zone inline `单位净值：…` so later body rows cannot overwrite |
+| Metrics body scan | `enrichValuationMetrics` | Same prior-day skip |
+| Header backfill reader | `unitNavFromValuationSummary` | Skip prior-day header rows |
+| Nightly auto-heal | `healCmsNavDayShiftFromRecords()` in `email-valuation-nav-backfill.ts`, called from `email_nav_etl.ts --cache-only` | Compares CMS valuation header vs nav; rewrites mismatched nav (+ column/summary) before cache rebuild — prevents recurrence without a full valuation backfill |
+| Scan / bulk repair | `scripts/ma/_scan_cms_nav_shift.ts` | Find all CMS mismatches; `--fix` repairs every affected code |
+| Per-code repair + cache | `_repair_cms_nav_shift.ts` / `_refresh_cms_detail_cache.ts` | Optional single-product recovery |
+
+### What This Fix Does NOT Change
+
+- Guohai/GTJA `resolveValuationTableNavDate()` / `repair_valuation_nav_shift.mjs --db-fix-dates` — unchanged
+- Dividend / rechain rules (SBAH99, SNF018, SBPC20, SLA063, SQX078, AVM354, 禾禧, 禾瑞, etc.) — unchanged
+- Non-CMS custody formats — heal is scoped to `【估值表】` / `委托资产资产估值表` / 招商证券 custodian
+
+### Scan + Repair (all CMS products)
+
+```bash
+# Report only
+npx tsx scripts/ma/_scan_cms_nav_shift.ts --since=2026-07-01
+
+# Repair every mismatched CMS code, then refresh caches
+npx tsx scripts/ma/_scan_cms_nav_shift.ts --since=2026-07-01 --fix
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --managed-only
+```
+
+Single-product (optional):
+
+```bash
+npx tsx scripts/ma/_repair_cms_nav_shift.ts --code=SCU622
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SCU622 --name=金舆稳健增长1号FOF
+```
+
+### Prevention Going Forward
+
+- **New mail:** parse path no longer picks 昨日单位净值.
+- **Nightly:** `--cache-only` runs `healCmsNavDayShiftFromRecords({ sinceDate: "2026-06-01" })` before rebuilding list/detail caches, so any residual mismatch is corrected automatically.
+- **Manual check:** `_scan_cms_nav_shift.ts` (expect `0 mismatches`).
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **CMS header unit beats 昨日单位净值** / **CMS extractNav uses header 0.9884**.

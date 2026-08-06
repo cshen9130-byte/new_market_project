@@ -10,7 +10,12 @@ import {
   backfillParentEmailFromShareClassSiblings,
 } from "../lib/server/list-cache-nav-batch.ts"
 import { lookupFundNavCorrectionRule, applyFundNavCorrectionToLegacyRows } from "../lib/server/fund-nav-correction-rules.ts"
-import { isGuotaiValuationSubject, isCustodySendDateValuationSubject } from "../lib/server/email-valuation-attachment.ts"
+import {
+  isGuotaiValuationSubject,
+  isCustodySendDateValuationSubject,
+  extractNavFromValuationBuffer,
+} from "../lib/server/email-valuation-attachment.ts"
+import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
 import {
@@ -1919,4 +1924,52 @@ if (fs.existsSync(excelPath)) {
       adj: got.cumulative_nav,
     })
   }
+}
+
+// CMS/招商 估值表: header 单位净值 must win over 昨日单位净值 (SCJ536 day-shift).
+{
+  const fromHeader = unitNavFromValuationSummary({
+    header_rows: [
+      ["SCJ536金舆追风1号私募证券投资基金委托资产资产估值表20260805"],
+      [],
+      ["招商证券股份有限公司_金舆追风1号私募证券投资基金_专用表"],
+      ["日期：2026-08-05", "单位净值:0.9884"],
+      ["昨日单位净值:0.9846", "累计单位净值:0.9884"],
+    ],
+  })
+  assert("CMS header unit beats 昨日单位净值", fromHeader === 0.9884)
+
+  const skipPrior = unitNavFromValuationSummary({
+    header_rows: [
+      ["昨日单位净值:0.9846"],
+      ["单位净值:0.9884"],
+    ],
+  })
+  assert("CMS skips prior-day-only header row", skipPrior === 0.9884)
+
+  const wb = XLSX.utils.book_new()
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ["SCJ536金舆追风1号私募证券投资基金委托资产资产估值表20260805"],
+    [],
+    ["招商证券股份有限公司_金舆追风1号私募证券投资基金_专用表"],
+    ["日期：2026-08-05", "单位净值:0.9884"],
+    ["科目代码", "科目名称", "市值-本币"],
+    ["1002", "银行存款", 3000148.33],
+    ["1102", "交易性金融资产", 12838786.38],
+    ["", "昨日单位净值", 0.9846],
+    ["", "资产合计", 15838973.52],
+    ["", "负债合计", 7768.08],
+    ["", "资产净值", 15831205.44],
+    ["", "实收资本", 16078819.26],
+    ["", "单位净值", 0.9846],
+  ])
+  XLSX.utils.book_append_sheet(wb, sheet, "Sheet1")
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xls" })
+  const cmsNav = extractNavFromValuationBuffer(
+    Buffer.from(buf),
+    "SCJ536金舆追风1号私募证券投资基金委托资产资产估值表20260805.xls",
+    "【估值表】SCJ536 金舆追风1号私募证券投资基金_20260805",
+  )
+  assert("CMS extractNav uses header 0.9884 not 昨日/body 0.9846", cmsNav?.nav === 0.9884)
+  assert("CMS extractNav date 2026-08-05", cmsNav?.navDate === "2026-08-05")
 }

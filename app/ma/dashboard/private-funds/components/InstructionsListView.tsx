@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import {
   INSTRUCTION_FIELD_DEFAULT,
+  INSTRUCTION_FIELD_LOCKED,
   InstructionsFieldConfigDialog,
   readInstructionFieldConfig,
   writeInstructionFieldConfig,
@@ -40,8 +41,8 @@ const STANDARD_TABS: { key: CategoryTab; label: string }[] = [
 ]
 
 const ALL_TABS: { key: CategoryTab; label: string }[] = [
-  { key: "underlying", label: "申赎中继" },
-  { key: "direct", label: "直投中继" },
+  { key: "underlying", label: "底层申赎" },
+  { key: "direct", label: "直投申赎" },
   { key: "customer", label: "客户申赎" },
   { key: "pool", label: "入/出池审批" },
 ]
@@ -56,13 +57,29 @@ const POOL_KEYWORD_FIELD_OPTIONS: { key: KeywordField; label: string }[] = [
   { key: "fundName", label: "基金名称" },
 ]
 
+const CUSTOMER_KEYWORD_FIELD_OPTIONS: { key: KeywordField; label: string }[] = [
+  { key: "fundName", label: "基金名称" },
+]
+
+/** 我发起的/我处理的 → 入/出池审批 (no 发起人) */
 const POOL_COLUMNS: ColumnDef[] = [
   { key: "index", label: "序号", width: "w-14 text-center" },
   { key: "id", label: "指令ID", width: "min-w-[120px]" },
   { key: "fundManager", label: "基金/管理人名称", width: "min-w-[160px]" },
   { key: "type", label: "指令类型", width: "min-w-[100px]", filter: true },
-  { key: "initiator", label: "发起人", width: "min-w-[90px]" },
   { key: "createdAt", label: "发起时间", width: "min-w-[140px]", sort: true },
+  { key: "progress", label: "指令进度", width: "min-w-[100px]", filter: true },
+  { key: "actions", label: "操作", width: "w-20 text-center" },
+]
+
+/** 所有指令 → 入/出池审批 (includes 发起人) */
+const POOL_COLUMNS_ALL: ColumnDef[] = [
+  { key: "index", label: "序号", width: "w-14 text-center" },
+  { key: "id", label: "指令ID", width: "min-w-[120px]" },
+  { key: "fundManager", label: "基金/管理人名称", width: "min-w-[160px]" },
+  { key: "type", label: "指令类型", width: "min-w-[100px]", filter: true },
+  { key: "createdAt", label: "发起时间", width: "min-w-[140px]", sort: true },
+  { key: "initiator", label: "发起人", width: "min-w-[90px]" },
   { key: "progress", label: "指令进度", width: "min-w-[100px]", filter: true },
   { key: "actions", label: "操作", width: "w-20 text-center" },
 ]
@@ -83,6 +100,15 @@ const FIXED_LEFT_COLUMNS_DIRECT: ColumnDef[] = [
   { key: "directProduct", label: "直投产品", width: "min-w-[140px]" },
 ]
 
+/** 所有指令 → 直投申赎 uses 直投基金 instead of 直投产品 */
+const FIXED_LEFT_COLUMNS_DIRECT_ALL: ColumnDef[] = [
+  { key: "index", label: "序号", width: "w-14 text-center" },
+  { key: "id", label: "指令ID", width: "min-w-[120px]" },
+  { key: "investor", label: "投资者名称", width: "min-w-[140px]" },
+  { key: "type", label: "指令类型", width: "min-w-[100px]", filter: true },
+  { key: "directFund", label: "直投基金", width: "min-w-[140px]" },
+]
+
 const FIXED_LEFT_COLUMNS_CUSTOMER: ColumnDef[] = [
   { key: "index", label: "序号", width: "w-14 text-center" },
   { key: "id", label: "指令ID", width: "min-w-[120px]" },
@@ -91,12 +117,12 @@ const FIXED_LEFT_COLUMNS_CUSTOMER: ColumnDef[] = [
   { key: "fundName", label: "基金名称", width: "min-w-[140px]" },
 ]
 
-const FIXED_RIGHT_COLUMNS: ColumnDef[] = [
+const FIXED_RIGHT_COLUMNS_PROGRESS: ColumnDef[] = [
   { key: "progress", label: "指令进度", width: "min-w-[100px]", filter: true },
   { key: "actions", label: "操作", width: "w-20 text-center" },
 ]
 
-const FIXED_RIGHT_COLUMNS_CUSTOMER: ColumnDef[] = [
+const FIXED_RIGHT_COLUMNS_STATUS: ColumnDef[] = [
   { key: "status", label: "指令状态", width: "min-w-[100px]", filter: true },
   { key: "actions", label: "操作", width: "w-20 text-center" },
 ]
@@ -121,20 +147,44 @@ const CONFIG_COLUMN_META: Record<string, Omit<ColumnDef, "label">> = {
   转入交易费用: { key: "transferInFee", width: "min-w-[110px]" },
 }
 
-function leftColumnsForTab(categoryTab: CategoryTab): ColumnDef[] {
-  if (categoryTab === "direct") return FIXED_LEFT_COLUMNS_DIRECT
+function leftColumnsForTab(categoryTab: CategoryTab, isAll: boolean): ColumnDef[] {
+  if (categoryTab === "direct") {
+    return isAll ? FIXED_LEFT_COLUMNS_DIRECT_ALL : FIXED_LEFT_COLUMNS_DIRECT
+  }
   if (categoryTab === "customer") return FIXED_LEFT_COLUMNS_CUSTOMER
   return FIXED_LEFT_COLUMNS_UNDERLYING
 }
 
 function rightColumnsForTab(categoryTab: CategoryTab): ColumnDef[] {
-  if (categoryTab === "customer") return FIXED_RIGHT_COLUMNS_CUSTOMER
-  return FIXED_RIGHT_COLUMNS
+  // 直投/客户 use 指令进度; 底层 uses 指令状态
+  if (categoryTab === "direct" || categoryTab === "customer") {
+    return FIXED_RIGHT_COLUMNS_PROGRESS
+  }
+  return FIXED_RIGHT_COLUMNS_STATUS
 }
 
-function buildColumns(categoryTab: CategoryTab, selectedFields: string[]): ColumnDef[] {
-  if (categoryTab === "pool") return POOL_COLUMNS
-  const configurable = selectedFields.map((label) => {
+function fieldsForTab(
+  categoryTab: CategoryTab,
+  selectedFields: string[],
+  isAll: boolean,
+): string[] {
+  // 客户申赎 always hides 发起人; 直投 hides it except on 所有指令
+  if (categoryTab === "customer") {
+    return selectedFields.filter((f) => f !== "发起人")
+  }
+  if (!isAll && categoryTab === "direct") {
+    return selectedFields.filter((f) => f !== "发起人")
+  }
+  return selectedFields
+}
+
+function buildColumns(
+  categoryTab: CategoryTab,
+  selectedFields: string[],
+  isAll: boolean,
+): ColumnDef[] {
+  if (categoryTab === "pool") return isAll ? POOL_COLUMNS_ALL : POOL_COLUMNS
+  const configurable = fieldsForTab(categoryTab, selectedFields, isAll).map((label) => {
     const meta = CONFIG_COLUMN_META[label] ?? {
       key: label,
       width: "min-w-[100px]",
@@ -142,7 +192,7 @@ function buildColumns(categoryTab: CategoryTab, selectedFields: string[]): Colum
     return { ...meta, label }
   })
   return [
-    ...leftColumnsForTab(categoryTab),
+    ...leftColumnsForTab(categoryTab, isAll),
     ...configurable,
     ...rightColumnsForTab(categoryTab),
   ]
@@ -238,6 +288,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
   const [processStatus, setProcessStatus] = useState<ProcessStatus>("pending")
   const [fofInput, setFofInput] = useState("")
   const [underlyingInput, setUnderlyingInput] = useState("")
+  const [customerInput, setCustomerInput] = useState("")
   const [keywordField, setKeywordField] = useState<KeywordField>("fof")
   const [keyword, setKeyword] = useState("")
   const [dateFrom, setDateFrom] = useState("")
@@ -253,8 +304,8 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
   }, [])
 
   const columns = useMemo(
-    () => buildColumns(categoryTab, selectedFields),
-    [categoryTab, selectedFields],
+    () => buildColumns(categoryTab, selectedFields, isAll),
+    [categoryTab, selectedFields, isAll],
   )
 
   const showProcessStatus = variant === "handled"
@@ -265,8 +316,11 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
   function resetFilters() {
     setFofInput("")
     setUnderlyingInput("")
+    setCustomerInput("")
     setKeyword("")
-    setKeywordField(categoryTab === "pool" ? "fundName" : "fof")
+    setKeywordField(
+      categoryTab === "pool" || categoryTab === "customer" ? "fundName" : "fof",
+    )
     setDateFrom("")
     setDateTo("")
     setPage(1)
@@ -286,12 +340,22 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
 
   const isPoolTab = categoryTab === "pool"
   const showUnderlyingFundFilters = !isAll && categoryTab === "underlying"
-  const showFundKeyword =
-    !isAll && (categoryTab === "direct" || categoryTab === "customer")
-  const showPoolKeyword = !isAll && isPoolTab
+  const showFundKeyword = !isAll && categoryTab === "direct"
+  const showCustomerFilter = !isAll && categoryTab === "customer"
+  const showPoolKeyword = isPoolTab
+  /** 所有指令 → 底层: keyword field dropdown (FOF/底层/ID) */
+  const showAllUnderlyingKeyword = isAll && categoryTab === "underlying"
+  /** 所有指令 → 直投: simple keyword (no field dropdown) */
+  const showAllDirectKeyword = isAll && categoryTab === "direct"
+  /** 所有指令 → 客户: keyword dropdown (基金名称) */
+  const showAllCustomerKeyword = isAll && categoryTab === "customer"
   const showDateFilter = !isPoolTab
-  const showFieldConfigButton = !isPoolTab
+  /** 所有指令 → 入/出池: no 字段配置 / 分级修正, only 导出 */
+  const showFieldConfigButton = !(isAll && isPoolTab)
+  const showGradeCorrection = isAll && !isPoolTab
   const showQueryActions = !isPoolTab
+  const hideInitiatorInFieldConfig =
+    categoryTab === "customer" || (!isAll && categoryTab === "direct")
 
   return (
     <div className="flex flex-col flex-1 min-h-0 min-w-0">
@@ -302,7 +366,11 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
             type="button"
             onClick={() => {
               setCategoryTab(tab.key)
-              if (tab.key === "pool") setKeywordField("fundName")
+              if (tab.key === "pool" || tab.key === "customer") {
+                setKeywordField("fundName")
+              } else if (tab.key === "underlying") {
+                setKeywordField("fof")
+              }
               setPage(1)
               setPageInput("1")
             }}
@@ -346,7 +414,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
           </div>
         )}
 
-        {isAll && (
+        {showAllUnderlyingKeyword && (
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 shrink-0">关键字</span>
             <div className="relative">
@@ -356,6 +424,50 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
                 className="h-8 appearance-none rounded-md border border-border bg-background pl-2.5 pr-7 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
               >
                 {KEYWORD_FIELD_OPTIONS.map((opt) => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSearch()
+              }}
+              placeholder="请输入关键字，回车搜索"
+              className="h-8 w-56 rounded-md border border-border bg-background px-2.5 text-xs placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        )}
+
+        {showAllDirectKeyword && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-400 shrink-0">关键字</span>
+            <input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSearch()
+              }}
+              placeholder="输入基金名称/指令ID，回车以搜索"
+              className="h-8 w-64 rounded-md border border-border bg-background px-2.5 text-xs placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        )}
+
+        {showAllCustomerKeyword && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-400 shrink-0">关键字</span>
+            <div className="relative">
+              <select
+                value={keywordField}
+                onChange={(e) => setKeywordField(e.target.value as KeywordField)}
+                className="h-8 appearance-none rounded-md border border-border bg-background pl-2.5 pr-7 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {CUSTOMER_KEYWORD_FIELD_OPTIONS.map((opt) => (
                   <option key={opt.key} value={opt.key}>
                     {opt.label}
                   </option>
@@ -409,6 +521,18 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
               }}
               placeholder="请输入关键字，回车搜索"
               className="h-8 w-56 rounded-md border border-border bg-background px-2.5 text-xs placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        )}
+
+        {showCustomerFilter && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-400 shrink-0">客户</span>
+            <input
+              value={customerInput}
+              onChange={(e) => setCustomerInput(e.target.value)}
+              placeholder="请输入并选择客户"
+              className="h-8 w-48 rounded-md border border-border bg-background px-2.5 text-xs placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
         )}
@@ -498,18 +622,21 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
               <>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-foreground transition-colors"
+                  disabled={total === 0}
+                  className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-foreground transition-colors disabled:opacity-40 disabled:pointer-events-none"
                 >
                   <Download className="h-3.5 w-3.5" />
                   导出
                 </button>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-foreground transition-colors"
-                >
-                  <CheckSquare className="h-3.5 w-3.5" />
-                  分级修正
-                </button>
+                {showGradeCorrection && (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-foreground transition-colors"
+                  >
+                    <CheckSquare className="h-3.5 w-3.5" />
+                    分级修正
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -600,10 +727,21 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
       <InstructionsFieldConfigDialog
         open={showFieldConfig}
         selected={selectedFields}
+        hiddenFields={hideInitiatorInFieldConfig ? ["发起人"] : undefined}
+        lockedFields={
+          hideInitiatorInFieldConfig
+            ? INSTRUCTION_FIELD_LOCKED.filter((f) => f !== "发起人")
+            : undefined
+        }
         onClose={() => setShowFieldConfig(false)}
         onConfirm={(fields) => {
-          setSelectedFields(fields)
-          writeInstructionFieldConfig(fields)
+          // Persist 发起人 for 底层申赎 even when configuring 直投/客户 tabs
+          const stored =
+            hideInitiatorInFieldConfig && !fields.includes("发起人")
+              ? [...fields, "发起人"]
+              : fields
+          setSelectedFields(stored)
+          writeInstructionFieldConfig(stored)
           setShowFieldConfig(false)
         }}
       />
