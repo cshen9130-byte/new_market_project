@@ -154,7 +154,7 @@ function parseVirtualFeeSubject(subject: string): string | null {
 }
 
 function parseEstimateSubject(subject: string): string | null {
-  const m = subject.match(/【基金虚拟净值表现估算】[^_]+_.+_\d{4}-\d{2}-\d{2}_(.+)$/u)
+  const m = subject.match(/【基金虚拟净值表现估[算值]】[^_]+_.+_\d{4}-\d{2}-\d{2}_(.+)$/u)
   const name = cleanCustomerName(m?.[1] ?? "")
   return isValidCustomerName(name) ? name : null
 }
@@ -219,7 +219,7 @@ function isRelevantEmail(subject: string): boolean {
   return (
     subject.includes("TA虚拟净值") ||
     subject.startsWith("虚拟业绩报酬_") ||
-    subject.includes("【基金虚拟净值表现估算】")
+    /【基金虚拟净值表现估[算值]】/u.test(subject)
   )
 }
 
@@ -300,7 +300,7 @@ async function fetchMailbox(
         continue
       }
 
-      if (subject.includes("【基金虚拟净值表现估算】")) {
+      if (/【基金虚拟净值表现估[算值]】/u.test(subject)) {
         const customerName = parseEstimateSubject(subject)
         if (!customerName) continue
         const sheets = collectSpreadsheetParts(structure)

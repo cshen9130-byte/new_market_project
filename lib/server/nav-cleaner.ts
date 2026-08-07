@@ -59,10 +59,15 @@ const DATE_HEADER_PATTERNS = [
 
 const UNIT_NAV_HEADER_PATTERNS = [
   /试算后单位净值/i,
+  /扣除净值后的单位净值/i,
+  /虚拟净值提取后单位净值/i,
   /单位净值|今日单位净值|基金份额净值|基金单位净值|份额净值|netassetvalue|unitnav|navperunit|navunit|^nav$/i,
 ]
 
 const WITHDRAWAL_NAV_HEADER_PATTERNS = [
+  /扣除净值后的累计单位净值/i,
+  /虚拟净值提取后累计单位净值/i,
+  /虚拟净值提取前累计单位净值/i,
   /累计单位净值|累计份额净值|累计净值|累积净值|accumulatednav|accnav|totalnav/i,
 ]
 
@@ -91,7 +96,8 @@ function isCumulativeNavHeader(normalizedHeader: string): boolean {
 /** Total AUM / share-count columns must not score as unit NAV (Citics 【基金净值】 xlsx). */
 function isNonUnitNavHeader(normalizedHeader: string): boolean {
   if (isCumulativeNavHeader(normalizedHeader)) return true
-  return /资产净值|净资产|资产份额|持有份额|份额数|成立以来|收益率|涨跌幅|试算前单位净值|试算前累计|虚拟单位净值|totalasset|netasset(?!value)/i.test(
+  // CSC 虚拟净值: keep 提取后/扣除后 unit; drop pre-fee 提取前/未扣除 columns.
+  return /资产净值|净资产|资产份额|持有份额|份额数|成立以来|收益率|涨跌幅|试算前单位净值|试算前累计|虚拟单位净值|未扣除计提费用的单位净值|未扣除.*单位净值|虚拟净值提取前单位净值|totalasset|netasset(?!value)/i.test(
     normalizedHeader,
   )
 }
@@ -429,6 +435,7 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
         (isNonUnitNavHeader(normalizedHeader)
           ? 0
           : matchHeaderScore(normalizedHeader, UNIT_NAV_HEADER_PATTERNS)) +
+        (/试算后单位净值|扣除净值后的单位净值|虚拟净值提取后单位净值/i.test(normalizedHeader) ? 3 : 0) +
         (numericCount / sampleCount) * 3,
       withdrawalScore:
         matchHeaderScore(normalizedHeader, WITHDRAWAL_NAV_HEADER_PATTERNS) + (numericCount / sampleCount) * 3,

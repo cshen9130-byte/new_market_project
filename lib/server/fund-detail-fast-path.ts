@@ -163,7 +163,32 @@ export async function lookupListCacheFundHeader(
     tryTable("ops_managed_products_list_cache", "managed"),
     tryTable("ops_tracking_funds_list_cache", "tracking"),
   ])
-  return fof ?? managed ?? tracking
+  const candidates = [fof, managed, tracking].filter(
+    (row): row is ListCacheFundHeader => row != null,
+  )
+  if (candidates.length === 0) return null
+
+  // Tip freshness must follow the newest list tip. Preferring FOF unconditionally
+  // trapped TG733C: stale FOF 07-15 hid tracking 08-05 and kept detail cache "fresh".
+  const tipSource = [...candidates].sort((a, b) => {
+    const da = a.nav_date ?? ""
+    const db = b.nav_date ?? ""
+    if (da !== db) return db.localeCompare(da)
+    const rank = { tracking: 0, fof: 1, managed: 2 } as const
+    return rank[a.source] - rank[b.source]
+  })[0]
+
+  // Tracking keeps full L1–L3; overlay strategy fields when tip came from FOF/managed.
+  const strategySource = tracking ?? tipSource
+  return {
+    ...tipSource,
+    company_strategy_l1: strategySource.company_strategy_l1 ?? tipSource.company_strategy_l1,
+    company_strategy_l2: strategySource.company_strategy_l2 ?? tipSource.company_strategy_l2,
+    company_strategy_l3: strategySource.company_strategy_l3 ?? tipSource.company_strategy_l3,
+    platform_strategy_l1: strategySource.platform_strategy_l1 ?? tipSource.platform_strategy_l1,
+    platform_strategy_l2: strategySource.platform_strategy_l2 ?? tipSource.platform_strategy_l2,
+    platform_strategy_l3: strategySource.platform_strategy_l3 ?? tipSource.platform_strategy_l3,
+  }
 }
 
 /**

@@ -540,6 +540,8 @@ async function writeFofCacheTipRow(
   // Prefer product_name match (FOF tip must advance even when cached 备案号
   // differs slightly from the detail/email code, e.g. BSJ74B vs BSJ748 OCR).
   // Also allow a pure 备案号 match when the display name drifts.
+  // Never regress tip date — stale detail-cache write-through used to pull FOF
+  // tips backward (TG733C 08-05 → 07-15) and trap the detail page on a "fresh" miss.
   const result = await query<{ n: string }>(
     `WITH updated AS (
        UPDATE ${targetTable}
@@ -547,11 +549,24 @@ async function writeFofCacheTipRow(
            nav_date = $2::date,
            return_pct = $3,
            refreshed_at = NOW()
-       WHERE product_name = $4
-          OR (
-            $5::text IS NOT NULL
-            AND NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NOT NULL
-            AND UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($5::text))
+       WHERE (
+            product_name = $4
+            OR (
+              $5::text IS NOT NULL
+              AND NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NOT NULL
+              AND UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($5::text))
+            )
+          )
+          AND (
+            nav_date IS NULL
+            OR nav_date < $2::date
+            OR (
+              nav_date = $2::date
+              AND (
+                unit_nav IS DISTINCT FROM $1
+                OR return_pct IS DISTINCT FROM $3
+              )
+            )
           )
        RETURNING 1
      )

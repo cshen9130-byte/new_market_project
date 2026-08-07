@@ -4,6 +4,7 @@
  */
 
 import { fmtIso, query, queryUnbounded } from "@/lib/db"
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 import {
   BatchNavResolver,
   addDays,
@@ -2001,12 +2002,13 @@ function mapDetailRowFromDb(r: DetailRawRow, seqNo: number | null): DetailEnrich
   const navDate = r.nav_date ? fmtIso(r.nav_date) : valuationDate
   const priceChange = r.price_change != null ? String(r.price_change) : null
 
+  const displayName = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
   return {
     id: String(r.id),
     seq_no: seqNo,
     fof_fund_name: r.fof_fund_name,
-    product_name: r.product_name,
-    short_name: r.product_name,
+    product_name: displayName,
+    short_name: displayName,
     beian_hao: beian,
     unit_nav: unitNav != null ? String(unitNav) : null,
     nav_date: navDate,
@@ -2060,12 +2062,13 @@ function enrichDetailRows(
       priceChange = fmtPriceChangePct(pct)
     }
 
+    const displayName = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
     return {
       id: String(r.id),
       seq_no: null,
       fof_fund_name: r.fof_fund_name,
-      product_name: r.product_name,
-      short_name: r.product_name,
+      product_name: displayName,
+      short_name: displayName,
       beian_hao: beian,
       unit_nav: unitNav != null ? String(unitNav) : null,
       nav_date: navDate,

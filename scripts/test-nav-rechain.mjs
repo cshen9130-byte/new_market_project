@@ -1291,6 +1291,103 @@ const szj909Atts = selectNavTableAttachments(szj909Subject, [
 ])
 assert("SZJ909 Zhongtai virtual xlsx is selected as NAV attachment", szj909Atts.length === 1)
 
+// CSC/中信建投 虚拟净值提取信息披露 (SVP460 墨雪鑫瑞1号) — body + 虚拟净值查询 xlsx.
+const svp460VirtualSubject =
+  "墨雪鑫瑞1号私募证券投资基金-金舆稳健增长1号FOF私募证券投资基金-虚拟净值提取信息披露邮件20260806"
+const svp460VirtualFilename =
+  "墨雪鑫瑞1号私募证券投资基金_金舆稳健增长1号FOF私募证券投资基金_虚拟净值数据20260807.xlsx"
+const svp460VirtualBody =
+  "产品代码 产品名称 客户名称 基金账号 证件类型 证件号码 净值日期 未扣除计提费用的单位净值 参与/计划份额 进账计划计提报酬 扣除净值后的单位净值 扣除净值后的累计单位净值 产品净值规模 投资者占比 所有人虚拟参考市值 " +
+  "SVP460 墨雪鑫瑞1号私募证券投资基金 金舆稳健增长1号FOF私募证券投资基金 C50233778849 其它 SCU622 20260806 3.7673 1328127.08 1726.57 3.766 3.7673 25369312.12 10.72% 5001726.58"
+const svp460VirtualMeta = extractNavMetadata(svp460VirtualSubject, svp460VirtualBody)
+assert(
+  "SVP460 CSC virtual subject/body extracts underlying (not FOF investor)",
+  svp460VirtualMeta.productCode === "SVP460"
+    && svp460VirtualMeta.fundName?.includes("墨雪鑫瑞1") === true
+    && !svp460VirtualMeta.fundName?.includes("金舆"),
+)
+const svp460VirtualNav = extractNavData(svp460VirtualSubject, svp460VirtualBody)
+assert(
+  "SVP460 CSC virtual body uses 扣除净值后的单位净值 3.766 (not 未扣除 3.7673)",
+  svp460VirtualNav?.navDate === "2026-08-06"
+    && svp460VirtualNav?.nav === 3.766
+    && svp460VirtualNav?.cumulativeNav === 3.7673
+    && svp460VirtualNav?.productCode === "SVP460",
+)
+const svp460VirtualAtts = selectNavTableAttachments(svp460VirtualSubject, [
+  { filename: svp460VirtualFilename, part: "2" },
+])
+assert("SVP460 CSC 虚拟净值数据 xlsx is selected as NAV attachment", svp460VirtualAtts.length === 1)
+
+{
+  // CSC 资产净值公告 label/value form (no date column table).
+  const wb = XLSX.utils.book_new()
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ["资产净值公告"],
+    ["中信建投证券基金运营业务___专用表"],
+    ["2026-08-05"],
+    ["  截至2026-08-05,以下基金资产净值如下："],
+    ["单位：人民币元"],
+    ["基金代码：", "SVP460"],
+    ["基金名称：", "墨雪鑫瑞1号私募证券投资基金"],
+    ["基金份额累计净值：", "3.7647"],
+  ])
+  XLSX.utils.book_append_sheet(wb, sheet, "Sheet1")
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xls" })
+  const formRows = extractNavTableFromBuffer(
+    Buffer.from(buf),
+    "资产净值公告_SVP460墨雪鑫瑞1号私募证券投资基金_20260805.xls",
+    "20260805墨雪鑫瑞1号私募证券投资基金SVP460资产净值公告",
+  )
+  assert(
+    "SVP460 CSC 资产净值公告 form uses 累计净值 as unit when unit missing",
+    formRows.length === 1
+      && formRows[0]?.navDate === "2026-08-05"
+      && formRows[0]?.nav === 3.7647
+      && formRows[0]?.cumulativeNav === 3.7647
+      && formRows[0]?.productCode === "SVP460",
+  )
+}
+
+{
+  const wb = XLSX.utils.book_new()
+  const sheet = XLSX.utils.aoa_to_sheet([
+    [
+      "产品代码",
+      "产品名称",
+      "净值日期",
+      "虚拟净值提取前单位净值",
+      "参与计提份额",
+      "虚拟计提金额",
+      "虚拟净值提取后单位净值",
+      "虚拟净值提取前累计单位净值",
+      "产品净值规模",
+    ],
+    [
+      "SVP460",
+      "墨雪鑫瑞1号私募证券投资基金",
+      "20260806",
+      3.7673,
+      1328127.08,
+      1726.57,
+      3.766,
+      3.7673,
+      25369312.12,
+    ],
+  ])
+  XLSX.utils.book_append_sheet(wb, sheet, "Sheet1")
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" })
+  const rows = extractNavTableFromBuffer(Buffer.from(buf), svp460VirtualFilename, svp460VirtualSubject)
+  assert(
+    "SVP460 CSC virtual xlsx prefers 提取后 unit over 提取前",
+    rows.length === 1
+      && rows[0]?.navDate === "2026-08-06"
+      && rows[0]?.nav === 3.766
+      && rows[0]?.cumulativeNav === 3.7673
+      && rows[0]?.productCode === "SVP460",
+  )
+}
+
 const sqx078Subject =
   "【虚拟净值】SQX078_特夫郁金香全量化私募证券投资基金_衡颐海泰1号私募证券投资基金_2026-07-15"
 const sqx078Body =
@@ -1323,6 +1420,27 @@ assert(
     && bhk26aEstimateNav?.nav === 1.0548
     && bhk26aEstimateNav?.cumulativeNav === 1.675
     && bhk26aEstimateNav?.productCode === "BHK26A",
+)
+
+// Citics 【基金虚拟净值表现估值|估算】 + T07998 must remap onto AMAC TG733C / 宁苑沛华.
+const tg733cValuationSubject =
+  "【基金虚拟净值表现估算】T07998_宁苑沛华稳定增长一号私募证券投资基金C类_2026-08-05_荣熙共赢私募证券投资基金"
+const tg733cValuationBody =
+  "客户名称 荣熙共赢私募证券投资基金 基金账号 S58007873812 " +
+  "估值基准日 2026-08-05 计提方式 TA计提 持仓份额 2,051,928.61 " +
+  "虚拟净值 实际净值 实际累计净值 " +
+  "2026-08-05 TA计提 2,051,928.61 0 3.9638 3.9638 3.9638"
+const tg733cValuationNav = extractNavData(tg733cValuationSubject, tg733cValuationBody)
+assert(
+  "TG733C Citics 表现估算 remaps T07998→TG733C and stores 实际净值 3.9638",
+  tg733cValuationNav?.navDate === "2026-08-05"
+    && tg733cValuationNav?.nav === 3.9638
+    && tg733cValuationNav?.cumulativeNav === 3.9638
+    && tg733cValuationNav?.productCode === "TG733C",
+)
+assert(
+  "T07998 email product-code override maps to TG733C",
+  applyEmailProductCodeOverride("T07998", "宁苑沛华稳定增长一号C类", tg733cValuationSubject) === "TG733C",
 )
 
 // SQX078: virtual email cum/unit > 2 must not be stripped; 复权 grows at unit rate on email tail

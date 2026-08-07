@@ -9,7 +9,10 @@ import { extractNavMetadata, normalizeFundDisplayName } from "@/lib/server/email
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
 import { getAllEmailParseRecords } from "@/lib/server/email-parse-records"
-import { EMAIL_NAV_SOURCE_PRIORITY } from "@/lib/server/email-nav-query"
+import {
+  EMAIL_NAV_SOURCE_PRIORITY,
+  sqlPostInvestmentVirtualNavExpr,
+} from "@/lib/server/email-nav-query"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
 import { shareClassProductCodesMatch, sqlFundNameMatch } from "@/lib/server/fund-name-match"
@@ -963,11 +966,15 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
          nav_date,
          nav
        FROM email_ranked
+       -- Prefer the newest NAV date (same as fund-detail latest joins). Attachment-first
+       -- ranking previously froze team_nav_date on older attachment_nav_table rows while
+       -- newer post-investment virtual body emails (e.g. 虚拟业绩报酬_) were ignored.
        ORDER BY
          fund_key,
+         nav_date DESC,
+         CASE WHEN ${sqlPostInvestmentVirtualNavExpr("subject")} THEN 0 ELSE 1 END,
          ${EMAIL_NAV_SOURCE_PRIORITY.replace(/\be\./g, "")},
          CASE WHEN COALESCE(fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
-         nav_date DESC,
          id DESC
      )
      SELECT

@@ -1,16 +1,21 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
 import {
-  CalendarDays,
   CheckSquare,
   ChevronDown,
   ChevronsUpDown,
+  Copy,
   Download,
+  Eye,
   Filter,
+  History,
   Inbox,
+  Pencil,
   Settings2,
+  Trash2,
 } from "lucide-react"
+import { DateInput } from "@/components/ui/date-input"
 import {
   INSTRUCTION_FIELD_DEFAULT,
   INSTRUCTION_FIELD_LOCKED,
@@ -18,6 +23,13 @@ import {
   readInstructionFieldConfig,
   writeInstructionFieldConfig,
 } from "./InstructionsFieldConfigDialog"
+import {
+  getInstructionRecordsServerSnapshot,
+  getInstructionRecordsSnapshot,
+  listInstructionRecords,
+  subscribeInstructionRecords,
+  type InstructionRecord,
+} from "./instructions-store"
 
 export type InstructionsListVariant = "handled" | "mine" | "all"
 
@@ -118,13 +130,13 @@ const FIXED_LEFT_COLUMNS_CUSTOMER: ColumnDef[] = [
 ]
 
 const FIXED_RIGHT_COLUMNS_PROGRESS: ColumnDef[] = [
-  { key: "progress", label: "指令进度", width: "min-w-[100px]", filter: true },
-  { key: "actions", label: "操作", width: "w-20 text-center" },
+  { key: "progress", label: "指令进度", width: "min-w-[120px]", filter: true },
+  { key: "actions", label: "操作", width: "min-w-[140px] text-center" },
 ]
 
 const FIXED_RIGHT_COLUMNS_STATUS: ColumnDef[] = [
   { key: "status", label: "指令状态", width: "min-w-[100px]", filter: true },
-  { key: "actions", label: "操作", width: "w-20 text-center" },
+  { key: "actions", label: "操作", width: "min-w-[140px] text-center" },
 ]
 
 const CONFIG_COLUMN_META: Record<string, Omit<ColumnDef, "label">> = {
@@ -155,12 +167,8 @@ function leftColumnsForTab(categoryTab: CategoryTab, isAll: boolean): ColumnDef[
   return FIXED_LEFT_COLUMNS_UNDERLYING
 }
 
-function rightColumnsForTab(categoryTab: CategoryTab): ColumnDef[] {
-  // 直投/客户 use 指令进度; 底层 uses 指令状态
-  if (categoryTab === "direct" || categoryTab === "customer") {
-    return FIXED_RIGHT_COLUMNS_PROGRESS
-  }
-  return FIXED_RIGHT_COLUMNS_STATUS
+function rightColumnsForTab(_categoryTab: CategoryTab): ColumnDef[] {
+  return FIXED_RIGHT_COLUMNS_PROGRESS
 }
 
 function fieldsForTab(
@@ -201,7 +209,7 @@ function buildColumns(
 const thBase =
   "px-3 py-0 h-9 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap box-border leading-tight align-middle"
 
-/** Native date inputs show OS-locale placeholders (e.g. yyyy/mm/日 on zh-CN Windows). Overlay our own text. */
+/** See docs/date-input-locale-placeholder.md — use shared DateInput. */
 function FilterDateInput({
   value,
   onChange,
@@ -211,44 +219,15 @@ function FilterDateInput({
   onChange: (value: string) => void
   placeholder: string
 }) {
-  const inputRef = useRef<HTMLInputElement>(null)
-
   return (
-    <div className="relative w-[168px]">
-      <input
-        ref={inputRef}
-        type="date"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onClick={() => inputRef.current?.showPicker?.()}
-        className={[
-          "h-8 w-full rounded-md border border-border bg-background pl-2 pr-8 text-xs",
-          "text-transparent caret-transparent",
-          "[&::-webkit-datetime-edit]:text-transparent",
-          "[&::-webkit-datetime-edit-fields-wrapper]:text-transparent",
-          "[&::-webkit-datetime-edit-text]:text-transparent",
-          "[&::-webkit-datetime-edit-year-field]:text-transparent",
-          "[&::-webkit-datetime-edit-month-field]:text-transparent",
-          "[&::-webkit-datetime-edit-day-field]:text-transparent",
-          "[&::-webkit-calendar-picker-indicator]:absolute",
-          "[&::-webkit-calendar-picker-indicator]:inset-0",
-          "[&::-webkit-calendar-picker-indicator]:h-full",
-          "[&::-webkit-calendar-picker-indicator]:w-full",
-          "[&::-webkit-calendar-picker-indicator]:cursor-pointer",
-          "[&::-webkit-calendar-picker-indicator]:opacity-0",
-          "focus:outline-none focus:ring-1 focus:ring-ring",
-        ].join(" ")}
-      />
-      <span
-        className={[
-          "pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs truncate max-w-[calc(100%-2rem)]",
-          value ? "text-foreground" : "text-zinc-400",
-        ].join(" ")}
-      >
-        {value || placeholder}
-      </span>
-      <CalendarDays className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
-    </div>
+    <DateInput
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      className="w-[168px]"
+      inputClassName="h-8 rounded-md pl-2 pr-8 text-xs"
+      displayClassName="left-2 text-xs"
+    />
   )
 }
 
@@ -280,6 +259,72 @@ function ColumnHeader({
   return <>{label}</>
 }
 
+function cellDash(value: string | null | undefined) {
+  if (value == null || value === "") return "-"
+  return value
+}
+
+function renderInstructionCell(colKey: string, row: InstructionRecord, index: number) {
+  switch (colKey) {
+    case "index":
+      return index
+    case "id":
+      return row.id
+    case "fof":
+    case "investor":
+    case "customer":
+      return row.fofFundName
+    case "type":
+      return (
+        <span className="inline-flex rounded bg-sky-50 px-1.5 py-0.5 text-xs text-sky-600 dark:bg-sky-950/40 dark:text-sky-300">
+          {row.type}
+        </span>
+      )
+    case "underlying":
+    case "fundName":
+      return row.underlyingFundName
+    case "applyDate":
+      return row.applyDate
+    case "amount":
+      return row.amount
+    case "shares":
+      return cellDash(row.shares)
+    case "nav":
+      return cellDash(row.nav)
+    case "progress":
+    case "status":
+      return (
+        <span className="inline-flex rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+          {row.progress}
+        </span>
+      )
+    case "initiator":
+      return row.initiator
+    case "actions":
+      return (
+        <div className="inline-flex items-center justify-center gap-1.5 text-zinc-400">
+          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="查看">
+            <Eye className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="流转">
+            <History className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="复制">
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="编辑">
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="删除">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )
+    default:
+      return "-"
+  }
+}
+
 export function InstructionsListView({ variant }: { variant: InstructionsListVariant }) {
   const isAll = variant === "all"
   const tabs = isAll ? ALL_TABS : STANDARD_TABS
@@ -293,11 +338,21 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
   const [keyword, setKeyword] = useState("")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
+  const [appliedFof, setAppliedFof] = useState("")
+  const [appliedUnderlying, setAppliedUnderlying] = useState("")
+  const [appliedDateFrom, setAppliedDateFrom] = useState("")
+  const [appliedDateTo, setAppliedDateTo] = useState("")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [pageInput, setPageInput] = useState("1")
   const [showFieldConfig, setShowFieldConfig] = useState(false)
   const [selectedFields, setSelectedFields] = useState<string[]>(() => [...INSTRUCTION_FIELD_DEFAULT])
+
+  const allRecords = useSyncExternalStore(
+    subscribeInstructionRecords,
+    getInstructionRecordsSnapshot,
+    getInstructionRecordsServerSnapshot,
+  )
 
   useEffect(() => {
     setSelectedFields(readInstructionFieldConfig())
@@ -309,9 +364,34 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
   )
 
   const showProcessStatus = variant === "handled"
-  const total = 0
+
+  const filteredRows = useMemo(() => {
+    let next = listInstructionRecords({ category: categoryTab, variant })
+    if (categoryTab === "underlying") {
+      const fofQ = appliedFof.trim()
+      const undQ = appliedUnderlying.trim()
+      if (fofQ) next = next.filter((r) => r.fofFundName.includes(fofQ))
+      if (undQ) next = next.filter((r) => r.underlyingFundName.includes(undQ))
+      if (appliedDateFrom) next = next.filter((r) => r.applyDate >= appliedDateFrom)
+      if (appliedDateTo) next = next.filter((r) => r.applyDate <= appliedDateTo)
+    }
+    return next
+  }, [
+    allRecords,
+    categoryTab,
+    variant,
+    appliedFof,
+    appliedUnderlying,
+    appliedDateFrom,
+    appliedDateTo,
+  ])
+
+  const total = filteredRows.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const rows = useMemo(() => [] as never[], [])
+  const rows = useMemo(() => {
+    const start = (page - 1) * pageSize
+    return filteredRows.slice(start, start + pageSize)
+  }, [filteredRows, page, pageSize])
 
   function resetFilters() {
     setFofInput("")
@@ -323,11 +403,19 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
     )
     setDateFrom("")
     setDateTo("")
+    setAppliedFof("")
+    setAppliedUnderlying("")
+    setAppliedDateFrom("")
+    setAppliedDateTo("")
     setPage(1)
     setPageInput("1")
   }
 
   function handleSearch() {
+    setAppliedFof(fofInput)
+    setAppliedUnderlying(underlyingInput)
+    setAppliedDateFrom(dateFrom)
+    setAppliedDateTo(dateTo)
     setPage(1)
     setPageInput("1")
   }
@@ -660,7 +748,27 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
               </tr>
             </thead>
             <tbody>
-              {rows.length > 0 ? null : (
+              {rows.length > 0 ? (
+                rows.map((row, i) => (
+                  <tr
+                    key={row.id}
+                    className="border-t border-zinc-100 hover:bg-muted/30 dark:border-zinc-800"
+                  >
+                    {columns.map((col) => (
+                      <td
+                        key={col.key}
+                        className={[
+                          "px-3 py-2.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-nowrap",
+                          col.key === "index" || col.key === "actions" ? "text-center" : "",
+                          col.width,
+                        ].join(" ")}
+                      >
+                        {renderInstructionCell(col.key, row, (page - 1) * pageSize + i + 1)}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : (
                 <tr>
                   <td colSpan={columns.length} className="h-56">
                     <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">

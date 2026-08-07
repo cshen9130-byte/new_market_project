@@ -45,6 +45,9 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   SVN917: "VN917B",
   SATL22: "ATL22A",
   STG733: "TG733C",
+  // Citics Auto-Disclosure virtual-NAV codes for the same underlying (C类 / OCR).
+  T07998: "TG733C",
+  TG7998: "TG733C",
   SNW169: "NW169B",
   SSJ392: "SJ392B",
   STA891: "TA891A",

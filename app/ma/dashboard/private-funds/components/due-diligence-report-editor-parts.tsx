@@ -5,7 +5,6 @@ import {
   AlignLeft,
   AlignRight,
   Bold,
-  CalendarDays,
   ChevronDown,
   FolderOpen,
   Italic,
@@ -24,6 +23,7 @@ import {
   X,
 } from "lucide-react"
 import type { ReactNode } from "react"
+import { DateInput } from "@/components/ui/date-input"
 
 export const inputClass =
   "h-9 w-full rounded border border-zinc-200 px-3 text-sm text-zinc-700 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -170,16 +170,12 @@ export function DateField({
   placeholder?: string
 }) {
   return (
-    <div className="relative">
-      <input
-        type="date"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className={`${inputClass} pr-9`}
-      />
-      <CalendarDays className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-    </div>
+    <DateInput
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      inputClassName="rounded border-zinc-200 text-zinc-700"
+    />
   )
 }
 

@@ -1,6 +1,7 @@
 "use client"
 
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 import { useState, type MouseEvent, type ReactNode } from "react"
 import { Copy, Check } from "lucide-react"
 
@@ -72,12 +73,14 @@ export function CopyableInlineText({
   )
 }
 
-/** Last-line UI guard: never render the long legal fund-type wording. */
+/** Last-line UI guard: never render legal fund-type wording or 估值表 path prefixes. */
 function uiProductLabel(short_name: string | null | undefined, product_name: string): string {
-  return resolveFundDisplayLabel(short_name, product_name)
+  const cleaned = resolveFundDisplayLabel(short_name, product_name)
     .replace(/私募证券投资基金/g, "")
     .replace(/私募股权投资基金/g, "")
     .trim()
+  // Belt-and-suspenders: strip 场外_… even if an upstream label slipped through.
+  return stripValuationSubjectPathPrefix(cleaned) || cleaned
 }
 
 export function CopyableProductName({
@@ -94,7 +97,7 @@ export function CopyableProductName({
   const displayName = uiProductLabel(short_name, product_name)
   return (
     <CopyableInlineText
-      text={product_name}
+      text={displayName || product_name}
       copyTitle="复制产品名称"
       label={
         <a
@@ -102,7 +105,7 @@ export function CopyableProductName({
           target="_blank"
           rel="noopener noreferrer"
           className={className ?? "truncate min-w-0 font-medium text-blue-600 dark:text-blue-400 hover:underline leading-5 block"}
-          title={product_name}
+          title={displayName || product_name}
         >
           {displayName}
         </a>
@@ -123,10 +126,10 @@ export function CopyableProductText({
   const displayName = uiProductLabel(short_name, product_name)
   return (
     <CopyableInlineText
-      text={product_name}
+      text={displayName || product_name}
       copyTitle="复制产品名称"
       label={
-        <span className={className ?? "truncate min-w-0 block"} title={product_name}>
+        <span className={className ?? "truncate min-w-0 block"} title={displayName || product_name}>
           {displayName}
         </span>
       }
@@ -145,13 +148,13 @@ export function FundProductNameLink({
   short_name?: string | null
   className?: string
 }) {
-  // Always go through display-name helper so legal suffixes never render in tables.
+  // Always go through display-name helper so legal suffixes / 估值表 path prefixes never render.
   const label = uiProductLabel(short_name, product_name)
   const href = `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao || product_name)}`
   return (
     <div className={className ?? "max-w-[200px]"}>
       <CopyableInlineText
-        text={product_name}
+        text={label || product_name}
         copyTitle="复制产品名称"
         label={
           <a
@@ -159,7 +162,7 @@ export function FundProductNameLink({
             target="_blank"
             rel="noopener noreferrer"
             className="truncate min-w-0 font-medium text-blue-600 dark:text-blue-400 hover:underline leading-5"
-            title={product_name}
+            title={label || product_name}
           >
             {label}
           </a>

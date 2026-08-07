@@ -1,0 +1,13 @@
+---
+description: Native HTML date inputs (type=date), DatePicker, 交易申请日期, 请选择日期 — avoid yyyy/mm/日 locale placeholder bug. Read docs/date-input-locale-placeholder.md first.
+globs: **/*.{tsx,ts,jsx,js}
+alwaysApply: false
+---
+
+# Date input rule
+
+Before adding or editing any date field / `type="date"` / date picker:
+
+1. **Read** [`docs/date-input-locale-placeholder.md`](../../docs/date-input-locale-placeholder.md) first.
+2. Use `@/components/ui/date-input` (`DateInput`). Do **not** ship a bare `<input type="date" />`.
+3. Keep values as ISO `YYYY-MM-DD`. Empty UI copy should be Chinese (e.g. `请选择日期`), never rely on the browser’s `yyyy/mm/日` hint.

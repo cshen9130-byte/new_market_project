@@ -22,6 +22,10 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   // FOF virtual-NAV mails like 金舆守安一号【SBYC86-峰云汇高山一号】… mis-link 守安 → SBYC86.
   // AMAC + custody 估值表: SCN504_金舆守安一号… (legacy mis-map used SBVC25).
   金舆守安一号: "SCN504",
+  // Guotai TA虚拟净值: 锡和鑫安商品套利1号【金舆锡泰一号…】… stores product_code=SBKM53
+  // + fund_name=金舆锡泰一号, so auto-resolution linked 锡泰 → SBKM53 (wrong page).
+  // Custody 估值表: SCQ403_金舆锡泰一号…
+  金舆锡泰一号: "SCQ403",
 }
 
 /** Known 托管券商 for 在管产品 when registration tables are incomplete. */
@@ -42,6 +46,11 @@ const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   SBT723: "SET723",
   // Bad parse: share-class letter + year from …桫罗稳鸿…基金2026-07-30 → C2026.
   C2026: "SBDU00",
+  // Citics Auto-Disclosure virtual-NAV product codes; AMAC / dashboard is TG733C.
+  // Emails use T07998 (C类) and occasionally TG7998 OCR/variants; STG733 is parent.
+  T07998: "TG733C",
+  TG7998: "TG733C",
+  STG733: "TG733C",
 }
 
 /** Parent managed-product name must not swallow A/B/C share-class variants. */

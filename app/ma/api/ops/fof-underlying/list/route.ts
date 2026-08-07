@@ -15,6 +15,7 @@ import {
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
 import { managedUnderlyingMarketValueExpr } from "@/lib/server/managed-fof-underlying-pg"
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -61,11 +62,15 @@ function mapRow(r: {
   latest_return_pct: string | null
 }): FofRow {
   const navDate = r.latest_nav_date ? fmtIso(r.latest_nav_date) : null
+  const productName = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
+  const shortName = r.short_name
+    ? (stripValuationSubjectPathPrefix(r.short_name) || r.short_name)
+    : null
   return {
     id: r.id,
     beian_hao: r.beian_hao,
-    product_name: r.product_name,
-    short_name: r.short_name,
+    product_name: productName,
+    short_name: shortName,
     strategy_l1: r.strategy_l1,
     latest_nav: r.latest_unit_nav,
     latest_nav_date: navDate,

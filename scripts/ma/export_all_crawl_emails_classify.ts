@@ -172,7 +172,7 @@ function classifyEmail(
   if (/结算单|交易结算单|盯市/u.test(blob)) return "settlement"
   if (/TA虚拟净值|TA\s*虚拟/u.test(subject)) return "ta"
   if (/^虚拟业绩报酬_/u.test(subject)) return "performance_fee"
-  if (/虚拟净值|基金虚拟净值表现估算/u.test(subject)) return "virtual_nav"
+  if (/虚拟净值|基金虚拟净值表现估[算值]/u.test(subject)) return "virtual_nav"
   if (/估值表|估值/i.test(blob) && !/净值表|虚拟净值表现/u.test(blob)) return "valuation"
   if (/台账|份额明细|投资者明细|持有人明细/u.test(blob)) return "ledger"
   if (/净值波动表|净值表|资产净值公告|单位净值|基金份额净值|净值发送|净值公告/u.test(blob)) return "nav"
@@ -232,7 +232,7 @@ function extractPerformanceFeeMother(subject: string): string | null {
 }
 
 function extractVirtualEstimateMother(subject: string): string | null {
-  const m = subject.match(/【基金虚拟净值表现估算】[^_]+_.+_\d{4}-\d{2}-\d{2}_(.+)$/u)
+  const m = subject.match(/【基金虚拟净值表现估[算值]】[^_]+_.+_\d{4}-\d{2}-\d{2}_(.+)$/u)
   if (!m?.[1]) return null
   const name = normalizeFundDisplayName(m[1])
   return /私募证券|投资基金/u.test(name) ? name : null

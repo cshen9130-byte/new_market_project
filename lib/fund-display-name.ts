@@ -1,3 +1,5 @@
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
+
 /** Legal fund-type phrases that are redundant in private-fund UI labels. */
 const LEGAL_PHRASES =
   "私募证券投资基金|私募股权投资基金|私募基金|证券投资基金|投资基金"
@@ -53,10 +55,12 @@ export function normalizeFundDisplayName(raw: string): string {
 }
 
 function toDisplayLabel(raw: string): string {
-  const normalized = normalizeFundDisplayName(raw)
+  // Drop 估值表 subject-path prefixes (场外_已上市_开放式_私募_…) before legal cleanup.
+  const withoutSubjectPath = stripValuationSubjectPathPrefix(raw) || raw
+  const normalized = normalizeFundDisplayName(withoutSubjectPath)
   // Final guarantee: the long legal wording must never remain in UI labels.
-  const stripped = stripLegalPhrases(normalized || raw).trim()
-  return stripped || normalized || raw.trim()
+  const stripped = stripLegalPhrases(normalized || withoutSubjectPath).trim()
+  return stripped || normalized || withoutSubjectPath.trim() || raw.trim()
 }
 
 /**

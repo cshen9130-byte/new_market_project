@@ -196,8 +196,12 @@ function hasPostTableNav(body: string): boolean {
 }
 
 function hasValuation(subject: string, attachments: AttachmentInfo[]): boolean {
-  if (/估值表|估值/i.test(subject)) return true
-  return attachments.some((a) => /估值表|估值|专用表/i.test(a.filename) || /\.zip$/i.test(a.filename))
+  // Citics 【基金虚拟净值表现估值】 is a virtual-NAV mail, not a custody 估值表.
+  if (!/虚拟净值表现估[算值]/u.test(subject) && /估值表|估值/i.test(subject)) return true
+  return attachments.some((a) => {
+    if (/虚拟净值表现估[算值]/u.test(a.filename)) return false
+    return /估值表|估值|专用表/i.test(a.filename) || /\.zip$/i.test(a.filename)
+  })
 }
 
 function hasLedger(subject: string, attachments: AttachmentInfo[]): boolean {

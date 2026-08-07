@@ -52,24 +52,29 @@ export function isPostInvestmentVirtualNavEmail(
   const subj = (subject ?? "").trim()
   if (!subj) return false
   if (/TA虚拟净值/u.test(subj)) return true
-  if (/【基金虚拟净值表现估算】/u.test(subj)) return true
+  // Citics Auto-Disclosure uses both 估算 and 估值 in the bracket tag.
+  if (/【基金虚拟净值表现估[算值]】/u.test(subj)) return true
   if (/^虚拟业绩报酬_/u.test(subj)) return true
   if (/虚拟净值/u.test(subj) && !/虚拟净值表现/u.test(subj)) return true
   return false
 }
 
-/** SQL guard matching {@link isPostInvestmentVirtualNavEmail}. */
-export function sqlPostInvestmentVirtualNavFilter(recordAlias: string): string {
-  const e = recordAlias
+/** SQL predicate matching {@link isPostInvestmentVirtualNavEmail} for a subject expression. */
+export function sqlPostInvestmentVirtualNavExpr(subjectExpr: string): string {
   return `(
-    COALESCE(${e}.subject, '') ILIKE '%TA虚拟净值%'
-    OR COALESCE(${e}.subject, '') ILIKE '%【基金虚拟净值表现估算】%'
-    OR COALESCE(${e}.subject, '') ILIKE '虚拟业绩报酬\_%'
+    COALESCE(${subjectExpr}, '') ILIKE '%TA虚拟净值%'
+    OR COALESCE(${subjectExpr}, '') ~ '【基金虚拟净值表现估[算值]】'
+    OR COALESCE(${subjectExpr}, '') ILIKE '虚拟业绩报酬\_%'
     OR (
-      COALESCE(${e}.subject, '') ILIKE '%虚拟净值%'
-      AND COALESCE(${e}.subject, '') NOT ILIKE '%虚拟净值表现%'
+      COALESCE(${subjectExpr}, '') ILIKE '%虚拟净值%'
+      AND COALESCE(${subjectExpr}, '') NOT ILIKE '%虚拟净值表现%'
     )
   )`
+}
+
+/** SQL guard matching {@link isPostInvestmentVirtualNavEmail}. */
+export function sqlPostInvestmentVirtualNavFilter(recordAlias: string): string {
+  return sqlPostInvestmentVirtualNavExpr(`${recordAlias}.subject`)
 }
 
 /**
@@ -331,6 +336,28 @@ export function collectFundNameAliases(
 function isAClassFund(beianHao: string, aliases: string[]): boolean {
   if (/A$/i.test(beianHao)) return true
   return aliases.some((name) => /A类/u.test(name))
+}
+
+/** Target A/B/C share class from beian suffix or alias names; null = unclassified parent. */
+function targetShareClassLetter(beianHao: string, aliases: string[]): "A" | "B" | "C" | null {
+  if (isAClassFund(beianHao, aliases)) return "A"
+  if (/B$/i.test(beianHao) || aliases.some((name) => /B类/u.test(name))) return "B"
+  if (/C$/i.test(beianHao) || aliases.some((name) => /C类/u.test(name))) return "C"
+  return null
+}
+
+/** Whether email fund_name / attachment meta matches the target share class. */
+function emailMetaMatchesShareClass(
+  meta: string,
+  beianHao: string,
+  aliases: string[],
+): boolean {
+  const letter = targetShareClassLetter(beianHao, aliases)
+  if (letter === "A") return /A类/u.test(meta)
+  if (letter === "B") return /B类/u.test(meta)
+  if (letter === "C") return /C类/u.test(meta)
+  // Parent / unclassified: prefer rows that are not explicitly A/B/C share-class tagged.
+  return !/[ABC]类/u.test(meta)
 }
 
 /** Extract product codes embedded in email metadata, e.g. 资产净值公告_SAVF39_… */
@@ -626,12 +653,12 @@ export function selectEmailNavSeriesRows(
   for (const [date, dayFiltered] of filteredByDate) {
     const dayPool = dayFiltered.filter((row) => {
       const meta = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""}`
-      return aClass ? /A类/u.test(meta) : !/[ABC]类/u.test(meta)
+      return emailMetaMatchesShareClass(meta, beianHao, aliases)
     })
-    const dayFallback = aClass
-      ? dayFiltered.filter((row) => productCodeExactlyMatchesBeian(row, beian))
-      : dayFiltered
-    const dayCandidates = dayPool.length > 0 ? dayPool : dayFallback
+    const dayCodeFallback = dayFiltered.filter((row) => productCodeExactlyMatchesBeian(row, beian))
+    const dayCandidates = dayPool.length > 0
+      ? dayPool
+      : (dayCodeFallback.length > 0 ? dayCodeFallback : dayFiltered)
     if (dayCandidates.length === 0) continue
     byDateGroups.set(date, dayCandidates)
   }
@@ -644,12 +671,10 @@ export function selectEmailNavSeriesRows(
     const dayFiltered = filteredByDate.get(date) ?? []
     const dayPool = dayFiltered.filter((row) => {
       const meta = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""}`
-      return aClass ? /A类/u.test(meta) : !/[ABC]类/u.test(meta)
+      return emailMetaMatchesShareClass(meta, beianHao, aliases)
     })
-    const dayFallback = aClass
-      ? dayFiltered.filter((row) => productCodeExactlyMatchesBeian(row, beian))
-      : dayFiltered
-    const usingShareClassFallback = dayPool.length === 0 && dayFallback.length > 0
+    const dayCodeFallback = dayFiltered.filter((row) => productCodeExactlyMatchesBeian(row, beian))
+    const usingShareClassFallback = dayPool.length === 0 && dayCodeFallback.length > 0
     const dayRows = [...(byDateGroups.get(date) ?? [])].sort((a, b) => {
       // PreferEmailNavRow keeps `current` on ties — match detail's ORDER BY id ASC
       // so multi-investor 【基金虚拟净值表现估算】 picks are not list/detail divergent.
@@ -2399,10 +2424,16 @@ export function mergeNavSeriesWithEmail(
     // Unit-only FOF 估值表 holdings across a sparse gap (no 累计) collapse cum→unit and
     // invent a false crash (SBBC18: June 1.1459 → Aug 0.9832 / −14%). Skip those marks;
     // Xingye 业绩报酬试算 rows supply real 累计 and still merge.
+    // Do NOT apply this guard when extending past the legacy tip — post-investment virtual
+    // NAV (e.g. 虚拟业绩报酬) often sits below published platform unit after platform stops
+    // (ABG50B: platform 1.21 → email virtual ~1.05).
+    const legacyTipDate = sortedLegacyDates.at(-1) ?? ""
+    const isPostLegacyTip = Boolean(legacyTipDate) && row.price_date > legacyTipDate
     if (
       !existing
       && resolvedCum == null
       && prevRow != null
+      && !isPostLegacyTip
       && (() => {
         const prevUnit = parseOptionalNav(prevRow.nav)
         const prevCum =
