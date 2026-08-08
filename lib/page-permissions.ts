@@ -15,5 +15,12 @@ export function buildPermissionsSnapshot(source: PagePermissions | undefined): P
   for (const col of PERM_COLUMNS) {
     result[col.key] = !!source?.[col.key]
   }
+  // Preserve non-boolean instruction workflow fields when saving page permissions.
+  if (source?.instructionRole) {
+    result.instructionRole = source.instructionRole
+  }
+  if (source?.instructionRoleName) {
+    result.instructionRoleName = source.instructionRoleName
+  }
   return result
 }

@@ -130,6 +130,11 @@ function formatNav(value: string | null | undefined, date?: string | null): stri
   return date ? `${navText} (${date})` : navText
 }
 
+function parseNumberInput(value: string): number | null {
+  const n = Number(String(value).replace(/,/g, "").trim())
+  return Number.isFinite(n) ? n : null
+}
+
 /** Convert RMB amount to Chinese uppercase, e.g. 1000000 -> 壹佰万元整 */
 function amountToChineseUppercase(value: string): string {
   const raw = value.replace(/,/g, "").trim()
@@ -254,8 +259,12 @@ export function DirectSubscribeForm({
   const [fundShow, setFundShow] = useState(false)
   const [fundLoading, setFundLoading] = useState(false)
 
+  const isRedeem = instructionType === "赎回"
+
   const [applyDate, setApplyDate] = useState("")
   const [amount, setAmount] = useState("")
+  const [shares, setShares] = useState("")
+  const [holdingShares, setHoldingShares] = useState<string | null>(null)
   const [summary, setSummary] = useState("")
   const [attachment, setAttachment] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -264,6 +273,13 @@ export function DirectSubscribeForm({
   const [tempOpen, setTempOpen] = useState<string | null>(null)
 
   const amountChinese = amountToChineseUppercase(amount)
+  const holdingSharesNum = parseNumberInput(holdingShares ?? "")
+  const applySharesNum = parseNumberInput(shares)
+  const sharesOverHolding =
+    isRedeem
+    && holdingSharesNum != null
+    && applySharesNum != null
+    && applySharesNum > holdingSharesNum + 1e-8
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const investorWrapRef = useRef<HTMLDivElement>(null)
@@ -339,8 +355,10 @@ export function DirectSubscribeForm({
     if (!fundSelected) {
       setOpenDay(null)
       setTempOpen(null)
+      setHoldingShares(null)
       return
     }
+    setHoldingShares(null)
     const ac = new AbortController()
     const params = new URLSearchParams({
       beian_hao: fundSelected.beian_hao,
@@ -375,12 +393,34 @@ export function DirectSubscribeForm({
     setFundShow(false)
     setApplyDate("")
     setAmount("")
+    setShares("")
+    setHoldingShares(null)
     setSummary("")
     setAttachment(null)
     setDragOver(false)
     setOpenDay(null)
     setTempOpen(null)
     if (fileInputRef.current) fileInputRef.current.value = ""
+  }
+
+  function syncSharesFromAmount(nextAmount: string) {
+    setAmount(nextAmount)
+    if (!isRedeem) return
+    const amt = parseNumberInput(nextAmount)
+    const nav = parseNumberInput(fundSelected?.unit_nav ?? "")
+    if (amt != null && nav != null && nav > 0) {
+      setShares((amt / nav).toFixed(2))
+    }
+  }
+
+  function syncAmountFromShares(nextShares: string) {
+    setShares(nextShares)
+    if (!isRedeem) return
+    const shareNum = parseNumberInput(nextShares)
+    const nav = parseNumberInput(fundSelected?.unit_nav ?? "")
+    if (shareNum != null && nav != null && nav > 0) {
+      setAmount((shareNum * nav).toFixed(2))
+    }
   }
 
   function handleSubmit() {
@@ -396,7 +436,12 @@ export function DirectSubscribeForm({
       toast({ title: "请选择交易申请日期", variant: "destructive" })
       return
     }
-    if (!amount.trim()) {
+    if (isRedeem) {
+      if (!shares.trim() && !amount.trim()) {
+        toast({ title: "请输入申请份额或申请金额", variant: "destructive" })
+        return
+      }
+    } else if (!amount.trim()) {
       toast({ title: "请输入申请金额", variant: "destructive" })
       return
     }
@@ -412,6 +457,7 @@ export function DirectSubscribeForm({
         underlyingBeianHao: fundSelected.beian_hao,
         applyDate,
         amount: amount.trim(),
+        shares: isRedeem ? (shares.trim() || null) : null,
         summary: summary.trim(),
         nav: fundSelected.unit_nav,
         progress: "待审批(2/4)",
@@ -644,45 +690,144 @@ export function DirectSubscribeForm({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-x-10 gap-y-4 lg:grid-cols-2 lg:items-start">
-            <div className="flex items-start gap-3">
-              <FormLabel required className="pt-2">申请金额:</FormLabel>
-              <div className="min-w-0 flex-1">
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  onBlur={() => {
-                    const n = Number(String(amount).replace(/,/g, "").trim())
-                    if (Number.isFinite(n) && n >= 0 && amount.trim()) {
-                      setAmount(n.toFixed(2))
-                    }
-                  }}
-                  placeholder="请输入申请金额"
-                  className="h-9 w-full rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                />
-                {amountChinese ? (
-                  <div className="mt-1 text-xs text-orange-500">{amountChinese}</div>
-                ) : null}
+          {isRedeem ? (
+            <>
+              <div className="grid grid-cols-1 gap-x-10 gap-y-4 lg:grid-cols-2 lg:items-start">
+                <div className="flex items-start gap-3">
+                  <FormLabel required className="pt-2">申请金额:</FormLabel>
+                  <div className="min-w-0 flex-1">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={amount}
+                        onChange={(e) => syncSharesFromAmount(e.target.value)}
+                        onBlur={() => {
+                          const n = Number(String(amount).replace(/,/g, "").trim())
+                          if (Number.isFinite(n) && n >= 0 && amount.trim()) {
+                            syncSharesFromAmount(n.toFixed(2))
+                          }
+                        }}
+                        placeholder="请输入申请金额"
+                        className="h-9 w-full rounded border border-border bg-background px-3 pr-8 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      />
+                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-zinc-400">
+                        元
+                      </span>
+                    </div>
+                    {amountChinese ? (
+                      <div className="mt-1 text-xs text-orange-500">{amountChinese}</div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 pt-2">
+                  <FormLabel className="pt-0">持有份额:</FormLabel>
+                  <span className="text-sm text-zinc-500">
+                    {holdingShares != null && holdingShares !== ""
+                      ? `${Number(holdingShares).toLocaleString("zh-CN", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 4,
+                        })} 份`
+                      : "-"}
+                  </span>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-3 pt-2">
-              <FormLabel className="pt-0">持仓金额:</FormLabel>
-              <span className="text-sm text-zinc-500">-</span>
-            </div>
-          </div>
 
-          <div className="grid grid-cols-1 gap-x-10 lg:grid-cols-2">
-            <div className="flex items-center gap-3">
-              <FormLabel>单位净值:</FormLabel>
-              <span className="text-sm text-zinc-500">
-                {fundSelected && fundSelected.unit_nav
-                  ? formatNav(fundSelected.unit_nav, fundSelected.nav_date)
-                  : "-"}
-              </span>
-            </div>
-          </div>
+              <div className="grid grid-cols-1 gap-x-10 gap-y-4 lg:grid-cols-2 lg:items-start">
+                <div className="flex items-start gap-3">
+                  <FormLabel className="pt-2">申请份额:</FormLabel>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <div className="relative min-w-0 flex-1">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={shares}
+                          onChange={(e) => syncAmountFromShares(e.target.value)}
+                          placeholder="请输入申请份额"
+                          className={[
+                            "h-9 w-full rounded border bg-background px-3 pr-8 text-sm focus:outline-none focus:ring-1 placeholder:text-muted-foreground/50",
+                            sharesOverHolding
+                              ? "border-red-400 focus:ring-red-400/60"
+                              : "border-border focus:ring-ring",
+                          ].join(" ")}
+                        />
+                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-zinc-400">
+                          份
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!holdingShares) {
+                            toast({ title: "暂无持有份额数据", variant: "destructive" })
+                            return
+                          }
+                          syncAmountFromShares(String(holdingShares))
+                        }}
+                        className="shrink-0 text-sm text-blue-500 hover:text-blue-600 hover:underline"
+                      >
+                        全部赎回
+                      </button>
+                    </div>
+                    {sharesOverHolding ? (
+                      <div className="mt-1 text-xs text-red-500">请注意赎回份额大于持有份额</div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 pt-2">
+                  <FormLabel className="pt-0">单位净值:</FormLabel>
+                  <span className="text-sm text-zinc-500">
+                    {fundSelected && fundSelected.unit_nav
+                      ? formatNav(fundSelected.unit_nav, fundSelected.nav_date)
+                      : "-"}
+                  </span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-x-10 gap-y-4 lg:grid-cols-2 lg:items-start">
+                <div className="flex items-start gap-3">
+                  <FormLabel required className="pt-2">申请金额:</FormLabel>
+                  <div className="min-w-0 flex-1">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      onBlur={() => {
+                        const n = Number(String(amount).replace(/,/g, "").trim())
+                        if (Number.isFinite(n) && n >= 0 && amount.trim()) {
+                          setAmount(n.toFixed(2))
+                        }
+                      }}
+                      placeholder="请输入申请金额"
+                      className="h-9 w-full rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    />
+                    {amountChinese ? (
+                      <div className="mt-1 text-xs text-orange-500">{amountChinese}</div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 pt-2">
+                  <FormLabel className="pt-0">持仓金额:</FormLabel>
+                  <span className="text-sm text-zinc-500">-</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-x-10 lg:grid-cols-2">
+                <div className="flex items-center gap-3">
+                  <FormLabel>单位净值:</FormLabel>
+                  <span className="text-sm text-zinc-500">
+                    {fundSelected && fundSelected.unit_nav
+                      ? formatNav(fundSelected.unit_nav, fundSelected.nav_date)
+                      : "-"}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
 
           <div className="flex items-start gap-3">
             <FormLabel className="pt-2">指令摘要:</FormLabel>

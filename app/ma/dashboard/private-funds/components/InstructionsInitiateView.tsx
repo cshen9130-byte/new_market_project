@@ -9,7 +9,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useToast } from "@/hooks/use-toast"
+import { DirectConvertForm } from "./DirectConvertForm"
 import { DirectSubscribeForm } from "./DirectSubscribeForm"
+import { FundPoolEntryForm } from "./FundPoolEntryForm"
+import { ManagerExitPoolForm } from "./ManagerExitPoolForm"
+import { ManagerPoolEntryForm } from "./ManagerPoolEntryForm"
 import { UnderlyingConvertForm } from "./UnderlyingConvertForm"
 import { UnderlyingSubscribeForm } from "./UnderlyingSubscribeForm"
 
@@ -21,6 +25,12 @@ type InstructionFormKey =
   | "underlying-convert"
   | "direct-subscribe"
   | "direct-purchase"
+  | "direct-convert"
+  | "fund-pool-entry"
+  | "fund-pool-exit"
+  | "manager-pool-entry"
+  | "manager-pool-exit"
+  | "direct-redeem"
 
 type InstructionCard = {
   title: string
@@ -102,8 +112,8 @@ const SECTIONS: InstructionSection[] = [
     cards: [
       { title: "认购基金产品", description: "发起认购基金产品", mark: "认", formKey: "direct-subscribe" },
       { title: "申购基金产品", description: "发起申购基金产品", mark: "申", formKey: "direct-purchase" },
-      { title: "赎回基金产品", description: "发起赎回基金产品", mark: "赎" },
-      { title: "转换基金产品", description: "发起转换基金产品", mark: "转" },
+      { title: "赎回基金产品", description: "发起赎回基金产品", mark: "赎", formKey: "direct-redeem" },
+      { title: "转换基金产品", description: "发起转换基金产品", mark: "转", formKey: "direct-convert" },
     ],
   },
   {
@@ -111,10 +121,10 @@ const SECTIONS: InstructionSection[] = [
     description: "仅限基金经理填写。",
     tone: "cool",
     cards: [
-      { title: "基金产品入池", description: "发起基金入池申请", mark: "入" },
-      { title: "基金产品出池", description: "发起基金出池申请", mark: "出" },
-      { title: "管理人入池", description: "发起管理人入池申请", mark: "入" },
-      { title: "管理人出池", description: "发起管理人出池申请", mark: "出" },
+      { title: "基金产品入池", description: "发起基金入池申请", mark: "入", formKey: "fund-pool-entry" },
+      { title: "基金产品出池", description: "发起基金出池申请", mark: "出", formKey: "fund-pool-exit" },
+      { title: "管理人入池", description: "发起管理人入池申请", mark: "入", formKey: "manager-pool-entry" },
+      { title: "管理人出池", description: "发起管理人出池申请", mark: "出", formKey: "manager-pool-exit" },
     ],
   },
 ]
@@ -351,6 +361,40 @@ export function InstructionsInitiateView() {
         onBack={() => setActiveForm(null)}
       />
     )
+  }
+
+  if (activeForm === "direct-redeem") {
+    return (
+      <DirectSubscribeForm
+        instructionType="赎回"
+        onBack={() => setActiveForm(null)}
+      />
+    )
+  }
+
+  if (activeForm === "direct-convert") {
+    return <DirectConvertForm onBack={() => setActiveForm(null)} />
+  }
+
+  if (activeForm === "fund-pool-entry") {
+    return <FundPoolEntryForm onBack={() => setActiveForm(null)} />
+  }
+
+  if (activeForm === "fund-pool-exit") {
+    return (
+      <FundPoolEntryForm
+        instructionType="基金出池"
+        onBack={() => setActiveForm(null)}
+      />
+    )
+  }
+
+  if (activeForm === "manager-pool-entry") {
+    return <ManagerPoolEntryForm onBack={() => setActiveForm(null)} />
+  }
+
+  if (activeForm === "manager-pool-exit") {
+    return <ManagerExitPoolForm onBack={() => setActiveForm(null)} />
   }
 
   return (

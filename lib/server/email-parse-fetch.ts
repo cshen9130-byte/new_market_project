@@ -33,6 +33,16 @@ import {
   isValuationZipFilename,
   zipInnerAttachmentKey,
 } from "@/lib/server/email-valuation-zip"
+import {
+  hasConfirmAttachment,
+  selectConfirmAttachments,
+} from "@/lib/server/email-confirm-attachment"
+import { parseConfirmSlipFromBuffer } from "@/lib/server/email-confirm-parse"
+import {
+  ensureEmailConfirmTable,
+  upsertEmailConfirmRecords,
+  type EmailConfirmInsert,
+} from "@/lib/server/email-confirm-pg"
 import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
 import {
   upsertEmailValuationRecords,
@@ -56,6 +66,8 @@ export type EmailParseFetchResult = {
   navSaved: number
   valuationSaved: number
   valuationHoldingsSaved: number
+  /** 确认单/确认函 PDFs saved */
+  confirmSaved: number
   /** 估值表 unit NAV copied into ops_email_nav_records */
   custodyValuationNavBackfilled: number
   valuationLatestHoldingsRefreshed: number
@@ -78,7 +90,7 @@ export type EmailParseFetchResult = {
 }
 
 const FUND_EMAIL_RE =
-  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金/u
+  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金|确认单|确认函|交易确认|成交确认|申购确认|赎回确认|认购确认|基金成立/u
 
 // ImapFlow defaults (connectionTimeout=90s, greetingTimeout=16s, socketTimeout=300s)
 // let a single slow/unresponsive mail server block this call for minutes per
@@ -163,9 +175,13 @@ function stripHtml(html: string): string {
 
 function isFundRelated(subject: string, attachments: AttachmentInfo[]): boolean {
   if (FUND_EMAIL_RE.test(subject)) return true
+  if (hasConfirmAttachment(subject, attachments)) return true
   return attachments.some((a) => {
     const lower = a.filename.toLowerCase()
-    return (lower.endsWith(".xlsx") || lower.endsWith(".xls")) && FUND_EMAIL_RE.test(a.filename)
+    return (
+      ((lower.endsWith(".xlsx") || lower.endsWith(".xls")) && FUND_EMAIL_RE.test(a.filename))
+      || (lower.endsWith(".pdf") && FUND_EMAIL_RE.test(a.filename))
+    )
   })
 }
 
@@ -256,6 +272,7 @@ type FetchMailboxResult = {
   parseRecords: Omit<EmailParseRecord, "id">[]
   navRecords: EmailNavInsert[]
   valuationRecords: EmailValuationInsert[]
+  confirmRecords: EmailConfirmInsert[]
   skippedKnown: number
   downloaded: number
 }
@@ -281,10 +298,27 @@ async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>
        UNION
        SELECT email_uid, subject FROM ops_email_valuation_records
        WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
+       UNION
+       SELECT email_uid, subject FROM ops_email_confirm_records
+       WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
      ) t
      WHERE NULLIF(BTRIM(email_uid), '') IS NOT NULL`,
     [account],
-  )
+  ).catch(async () => {
+    // Confirm table may not exist yet on first light poll before ensure runs.
+    return query<{ email_uid: string; subject: string | null }>(
+      `SELECT email_uid, subject
+       FROM (
+         SELECT email_uid, subject FROM ops_email_nav_records
+         WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
+         UNION
+         SELECT email_uid, subject FROM ops_email_valuation_records
+         WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
+       ) t
+       WHERE NULLIF(BTRIM(email_uid), '') IS NOT NULL`,
+      [account],
+    )
+  })
   for (const row of rows) {
     const uid = String(row.email_uid).trim()
     if (!uid) continue
@@ -310,7 +344,14 @@ async function fetchMailbox(
   throwIfAborted(signal)
   if (!account.pass?.trim()) {
     errors.push(`${account.account}: 未配置授权码`)
-    return { parseRecords: [], navRecords: [], valuationRecords: [], skippedKnown: 0, downloaded: 0 }
+    return {
+      parseRecords: [],
+      navRecords: [],
+      valuationRecords: [],
+      confirmRecords: [],
+      skippedKnown: 0,
+      downloaded: 0,
+    }
   }
 
   const client = createSafeImapFlow({
@@ -328,6 +369,7 @@ async function fetchMailbox(
   const parseRecords: Omit<EmailParseRecord, "id">[] = []
   const navRecords: EmailNavInsert[] = []
   const valuationRecords: EmailValuationInsert[] = []
+  const confirmRecords: EmailConfirmInsert[] = []
   let skippedKnown = 0
   let downloaded = 0
 
@@ -587,6 +629,27 @@ async function fetchMailbox(
           parseRecords[parseRecordIdx].valuationStatus = valuationSavedForEmail ? "成功" : "失败"
         }
 
+        for (const att of selectConfirmAttachments(subject, attachments)) {
+          try {
+            const buf = await downloadPart(client, String(uid), att.part)
+            if (!buf.length) {
+              errors.push(`${account.account} UID ${uid} confirm ${att.filename}: empty attachment`)
+              continue
+            }
+            const parsed = await parseConfirmSlipFromBuffer(buf, att.filename, subject)
+            confirmRecords.push({
+              ...emailMeta,
+              attachmentFilename: att.filename,
+              buffer: buf,
+              parsed,
+            })
+          } catch (e) {
+            errors.push(
+              `${account.account} UID ${uid} confirm ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+            )
+          }
+        }
+
         const navHistory = extractNavHistoryFromBody(subject, bodyText)
         if (navHistory.length > 0) {
           for (const row of navHistory) {
@@ -623,7 +686,7 @@ async function fetchMailbox(
     await closeImapFlow(client, { force: Boolean(signal?.aborted) })
   }
 
-  return { parseRecords, navRecords, valuationRecords, skippedKnown, downloaded }
+  return { parseRecords, navRecords, valuationRecords, confirmRecords, skippedKnown, downloaded }
 }
 
 export async function fetchEmailParseRecords(options?: {
@@ -648,6 +711,12 @@ export async function fetchEmailParseRecords(options?: {
 
   throwIfAborted(signal)
 
+  try {
+    await ensureEmailConfirmTable()
+  } catch (e) {
+    errors.push(`初始化确认单表失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   const accounts: CrawlEmailAccount[] = []
   if (options?.crawlEmailId) {
     const one = getCrawlEmailById(options.crawlEmailId)
@@ -671,6 +740,7 @@ export async function fetchEmailParseRecords(options?: {
   const allParseRecords: Omit<EmailParseRecord, "id">[] = []
   const allNavRecords: EmailNavInsert[] = []
   const allValuationRecords: EmailValuationInsert[] = []
+  const allConfirmRecords: EmailConfirmInsert[] = []
   let emailsScanned = 0
   let emailsSkippedKnown = 0
   let emailsDownloaded = 0
@@ -706,7 +776,7 @@ export async function fetchEmailParseRecords(options?: {
       const knownEmailKeys = light
         ? await loadKnownProcessedEmailKeys(account.account)
         : new Set<string>()
-      const { parseRecords, navRecords, valuationRecords, skippedKnown, downloaded } =
+      const { parseRecords, navRecords, valuationRecords, confirmRecords, skippedKnown, downloaded } =
         await fetchMailbox(account, since, errors, signal, knownEmailKeys)
       emailsScanned += skippedKnown + downloaded
       emailsSkippedKnown += skippedKnown
@@ -714,6 +784,7 @@ export async function fetchEmailParseRecords(options?: {
       allParseRecords.push(...parseRecords)
       allNavRecords.push(...navRecords)
       allValuationRecords.push(...valuationRecords)
+      allConfirmRecords.push(...confirmRecords)
 
       let maxSentAt: Date | null = null
       for (const row of parseRecords) {
@@ -742,6 +813,7 @@ export async function fetchEmailParseRecords(options?: {
 
   let valuationSaved = 0
   let valuationHoldingsSaved = 0
+  let confirmSaved = 0
   let valuationLatestHoldingsRefreshed = 0
   let valuationMetricsRefreshed = 0
   let underlyingMarketRefreshed = 0
@@ -757,9 +829,16 @@ export async function fetchEmailParseRecords(options?: {
     errors.push(`保存估值表数据失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  try {
+    confirmSaved = await upsertEmailConfirmRecords(allConfirmRecords)
+  } catch (e) {
+    errors.push(`保存确认单失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   // Scoped custody NAV backfill: recent window for light/intraday, full history otherwise.
   // Skip on empty light polls — nothing new to copy into ops_email_nav_records.
-  const lightHadNewRows = allNavRecords.length > 0 || allValuationRecords.length > 0
+  const lightHadNewRows =
+    allNavRecords.length > 0 || allValuationRecords.length > 0 || allConfirmRecords.length > 0
   if (!light || lightHadNewRows) {
     try {
       const { backfillCustodyValuationNavFromRecords } = await import(
@@ -866,6 +945,7 @@ export async function fetchEmailParseRecords(options?: {
     navSaved,
     valuationSaved,
     valuationHoldingsSaved,
+    confirmSaved,
     custodyValuationNavBackfilled,
     valuationLatestHoldingsRefreshed,
     valuationMetricsRefreshed,

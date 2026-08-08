@@ -16,6 +16,7 @@ import { FofFundsPanel, type FundHoldingRow } from "./FofFundsPanel"
 import { FofReturnCurvePanel, type ReturnCurveSeries } from "./FofReturnCurvePanel"
 import { FofReturnAnalysisPanel } from "./FofReturnAnalysisPanel"
 import { ValuationEmptyAnalysis } from "./ValuationEmptyAnalysis"
+import { FofTransactionAnalysisPanel } from "./FofTransactionAnalysisPanel"
 import { OtherHoldingsPanel, type OtherHoldingRow } from "./OtherHoldingsPanel"
 import { EquityValuationPanel, type ValuationHoldingDetailRow, type StockRiskExposure } from "./EquityValuationPanel"
 import {
@@ -842,7 +843,13 @@ export default function FundValuationAnalysisPage() {
       {/* Tabs */}
       <div className="flex items-center gap-6 border-b border-zinc-100 mb-4 overflow-x-auto bg-white px-1">
         {VALUATION_TABS.map((tab) => {
-          const enabled = tab === "持仓要素" || tab === "持仓分析" || tab === "收益分析" || tab === "产品表现" || tab === "业绩指标"
+          const enabled =
+            tab === "持仓要素"
+            || tab === "持仓分析"
+            || tab === "收益分析"
+            || tab === "产品表现"
+            || tab === "业绩指标"
+            || tab === "交易分析"
           return (
           <button
             key={tab}
@@ -991,6 +998,13 @@ export default function FundValuationAnalysisPage() {
         ) : (
           <ValuationEmptyAnalysis message="【当前产品没有基金持仓，不支持该类分析】" />
         )
+      )}
+
+      {!loading && !error && activeTab === "交易分析" && beian_hao && (
+        <FofTransactionAnalysisPanel
+          beianHao={beian_hao}
+          productName={data?.product_name ?? data?.fund_name ?? null}
+        />
       )}
 
       {!loading && !error && activeTab === "持仓分析" && (

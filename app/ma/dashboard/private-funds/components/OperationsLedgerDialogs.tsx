@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { CalendarDays, ChevronDown, Inbox, Search } from "lucide-react"
+import { addLedgerRecord, addLedgerRecords } from "./ops-ledger-store"
 
 interface FundOption {
   register_number: string
@@ -165,26 +166,26 @@ export function AddSingleLedgerDialog({
     setSaving(true)
     setError(null)
     try {
-      const res = await fetch("/ma/api/ops/ledger/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fof_register_number: fofFundSelected.register_number,
-          fof_fund_name: fofFundSelected.product_name,
-          underlying_beian_hao: underlyingSelected.beian_hao,
-          underlying_fund_name: underlyingSelected.short_name || underlyingSelected.product_name,
-          transaction_type: txType,
-          apply_date: applyDate,
-          confirm_date: confirmDate,
-          confirmed_amount: netAmount.trim(),
-          confirmed_shares: shares.trim() || null,
-          confirmed_unit_nav: unitNav.trim(),
-          transaction_fee: fee.trim() || null,
-          remark: remark.trim() || null,
-        }),
+      addLedgerRecord({
+        fof_register_number: fofFundSelected.register_number,
+        fof_fund_name: fofFundSelected.product_name,
+        underlying_beian_hao: underlyingSelected.beian_hao,
+        underlying_fund_name: underlyingSelected.short_name || underlyingSelected.product_name,
+        underlying_type: "FOF底层",
+        transaction_type: txType,
+        apply_date: applyDate,
+        confirm_date: confirmDate,
+        confirmed_amount: netAmount.trim(),
+        confirmed_shares: shares.trim() || null,
+        confirmed_unit_nav: unitNav.trim(),
+        transaction_fee: fee.trim() || null,
+        performance_fee: null,
+        share_balance: null,
+        dividend_per_unit: null,
+        source: "手工",
+        remark: remark.trim() || null,
+        instruction_id: null,
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error ?? "保存失败")
       onSaved?.()
       onClose()
     } catch (err) {
@@ -524,6 +525,45 @@ export function BatchUploadLedgerDialog({
                 : json.error ?? "上传失败"
         throw new Error(msg)
       }
+      const parsedRows = Array.isArray(json.rows) ? json.rows : []
+      if (parsedRows.length === 0) throw new Error("未能识别有效数据，请使用官方模板填写后上传")
+      addLedgerRecords(
+        parsedRows.map((row: {
+          fof_fund_name: string
+          fof_register_number: string
+          underlying_fund_name: string
+          underlying_beian_hao: string
+          transaction_type: string
+          apply_date: string
+          confirm_date: string
+          confirmed_amount: string | null
+          confirmed_shares: string | null
+          confirmed_unit_nav: string | null
+          transaction_fee: string | null
+          performance_fee: string | null
+          dividend_per_unit: string | null
+          remark: string | null
+        }) => ({
+          fof_fund_name: row.fof_fund_name,
+          fof_register_number: row.fof_register_number || null,
+          underlying_fund_name: row.underlying_fund_name,
+          underlying_beian_hao: row.underlying_beian_hao || null,
+          underlying_type: "FOF底层",
+          transaction_type: row.transaction_type,
+          apply_date: row.apply_date,
+          confirm_date: row.confirm_date,
+          confirmed_amount: row.confirmed_amount,
+          confirmed_shares: row.confirmed_shares,
+          confirmed_unit_nav: row.confirmed_unit_nav,
+          transaction_fee: row.transaction_fee,
+          performance_fee: row.performance_fee,
+          share_balance: null,
+          dividend_per_unit: row.dividend_per_unit,
+          source: "手工",
+          remark: row.remark,
+          instruction_id: null,
+        })),
+      )
       onUploaded?.()
       onClose()
     } catch (err) {

@@ -1,21 +1,26 @@
 "use client"
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import {
+  BadgeCheck,
   CheckSquare,
   ChevronDown,
   ChevronsUpDown,
+  ClipboardX,
+  CloudUpload,
   Copy,
   Download,
-  Eye,
+  FilePenLine,
+  FileText,
   Filter,
-  History,
   Inbox,
-  Pencil,
+  PlayCircle,
   Settings2,
-  Trash2,
+  X,
 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { useToast } from "@/hooks/use-toast"
 import {
   INSTRUCTION_FIELD_DEFAULT,
   INSTRUCTION_FIELD_LOCKED,
@@ -24,12 +29,58 @@ import {
   writeInstructionFieldConfig,
 } from "./InstructionsFieldConfigDialog"
 import {
+  openInstructionAttachment,
+  saveInstructionAttachmentBlob,
+} from "./instruction-attachment-files"
+import {
+  attachmentMetaFromFile,
+  emailConfirmAttachmentId,
   getInstructionRecordsServerSnapshot,
   getInstructionRecordsSnapshot,
+  isInstructionExecuted,
   listInstructionRecords,
+  removeInstructionRecord,
+  requiresContractAtExecute,
   subscribeInstructionRecords,
+  updateInstructionRecord,
+  type InstructionAttachmentMeta,
   type InstructionRecord,
 } from "./instructions-store"
+
+type EmailConfirmCandidate = {
+  id: number
+  subject: string
+  fund_name: string | null
+  fund_code: string | null
+  investor_name: string | null
+  apply_date: string | null
+  confirm_date: string | null
+  confirmed_amount: string | null
+  confirmed_shares: string | null
+  unit_nav: string | null
+  trade_fee: string | null
+  broker: string | null
+  attachment_filename: string
+  file_size: number
+  score: number
+  reasons: string[]
+}
+
+async function persistAttachmentFromFile(file: File): Promise<InstructionAttachmentMeta> {
+  const meta = attachmentMetaFromFile(file)
+  await saveInstructionAttachmentBlob(meta.id, file)
+  return meta
+}
+import {
+  backfillLedgerFromConfirmedInstructions,
+  isInstructionConfirmed,
+  removeLedgerByInstructionId,
+  upsertLedgerFromConfirmedInstruction,
+} from "./ops-ledger-store"
+import {
+  UnderlyingSubscribeForm,
+  type UnderlyingTradeType,
+} from "./UnderlyingSubscribeForm"
 
 export type InstructionsListVariant = "handled" | "mine" | "all"
 
@@ -81,7 +132,7 @@ const POOL_COLUMNS: ColumnDef[] = [
   { key: "type", label: "指令类型", width: "min-w-[100px]", filter: true },
   { key: "createdAt", label: "发起时间", width: "min-w-[140px]", sort: true },
   { key: "progress", label: "指令进度", width: "min-w-[100px]", filter: true },
-  { key: "actions", label: "操作", width: "w-20 text-center" },
+  { key: "actions", label: "操作", width: "min-w-[120px] text-center" },
 ]
 
 /** 所有指令 → 入/出池审批 (includes 发起人) */
@@ -93,7 +144,7 @@ const POOL_COLUMNS_ALL: ColumnDef[] = [
   { key: "createdAt", label: "发起时间", width: "min-w-[140px]", sort: true },
   { key: "initiator", label: "发起人", width: "min-w-[90px]" },
   { key: "progress", label: "指令进度", width: "min-w-[100px]", filter: true },
-  { key: "actions", label: "操作", width: "w-20 text-center" },
+  { key: "actions", label: "操作", width: "min-w-[120px] text-center" },
 ]
 
 const FIXED_LEFT_COLUMNS_UNDERLYING: ColumnDef[] = [
@@ -264,7 +315,1135 @@ function cellDash(value: string | null | undefined) {
   return value
 }
 
-function renderInstructionCell(colKey: string, row: InstructionRecord, index: number) {
+function VoidInstructionDialog({
+  open,
+  instructionId,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  instructionId: string
+  onClose: () => void
+  onConfirm: (reason: string) => void
+}) {
+  const [reason, setReason] = useState("")
+  const [touched, setTouched] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setReason("")
+    setTouched(false)
+  }, [open, instructionId])
+
+  if (!open) return null
+
+  const trimmed = reason.trim()
+  const showError = touched && !trimmed
+
+  function handleConfirm() {
+    setTouched(true)
+    if (!trimmed) return
+    onConfirm(trimmed)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-[560px] rounded-lg bg-background shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-5 py-3.5">
+          <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">作废指令</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3 px-5 py-5">
+          <label className="block text-sm text-zinc-700 dark:text-zinc-200">
+            <span className="text-red-500">*</span> 作废理由 (指令ID: {instructionId}):
+          </label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            onBlur={() => setTouched(true)}
+            placeholder="请输入内容"
+            rows={5}
+            className={[
+              "w-full resize-none rounded-md border bg-background px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:ring-1 dark:text-zinc-100",
+              showError
+                ? "border-red-400 focus:ring-red-400"
+                : "border-border focus:ring-ring",
+            ].join(" ")}
+          />
+          {showError ? (
+            <p className="text-xs text-red-500">请输入作废理由</p>
+          ) : null}
+          <p className="text-sm text-red-500">
+            说明：1. 【已确认】的指令作废后，会删除对应的台账。
+          </p>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            className="rounded bg-red-500 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
+          >
+            确定
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function InstructionFileUpload({
+  label,
+  required = false,
+  file,
+  existing,
+  onChange,
+}: {
+  label: string
+  required?: boolean
+  file: File | null
+  existing?: InstructionAttachmentMeta | null
+  onChange: (file: File | null) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const displayName = file?.name || existing?.name || null
+
+  return (
+    <div className="block">
+      <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
+        {required ? <span className="text-red-500">*</span> : null} {label}
+      </span>
+      <input
+        ref={inputRef}
+        type="file"
+        className="hidden"
+        onChange={(e) => onChange(e.target.files?.[0] ?? null)}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragOver(true)
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          onChange(e.dataTransfer.files?.[0] ?? null)
+        }}
+        className={[
+          "flex h-24 w-full flex-col items-center justify-center gap-2 rounded border border-dashed text-sm transition-colors",
+          dragOver
+            ? "border-red-400 bg-red-50/60 dark:bg-red-950/20"
+            : "border-zinc-300 bg-zinc-50/80 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900/40 dark:hover:bg-zinc-900/70",
+        ].join(" ")}
+      >
+        <CloudUpload className="h-5 w-5 text-zinc-400" />
+        {displayName ? (
+          <span className="max-w-[90%] truncate px-3 text-zinc-700 dark:text-zinc-200">
+            {displayName}
+          </span>
+        ) : (
+          <span className="text-zinc-400">点击或拖拽上传</span>
+        )}
+      </button>
+      {file || existing ? (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          className="mt-1 text-xs text-zinc-400 hover:text-zinc-600"
+        >
+          清除
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+function ExecuteTradeDialog({
+  open,
+  record,
+  onClose,
+  onExecute,
+}: {
+  open: boolean
+  record: InstructionRecord | null
+  onClose: () => void
+  onExecute: (payload: {
+    actualApplyDate: string
+    execRemark: string
+    contractAttachment: InstructionAttachmentMeta | null
+  }) => void
+}) {
+  const [actualApplyDate, setActualApplyDate] = useState("")
+  const [execRemark, setExecRemark] = useState("")
+  const [contractFile, setContractFile] = useState<File | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  const needsContract = Boolean(record && requiresContractAtExecute(record.type))
+
+  useEffect(() => {
+    if (!open || !record) return
+    setActualApplyDate(record.actualApplyDate || record.applyDate || "")
+    setExecRemark(record.execRemark || "")
+    setContractFile(null)
+    setError(null)
+    setSubmitting(false)
+  }, [open, record])
+
+  if (!open || !record) return null
+
+  async function handleSubmit() {
+    if (!actualApplyDate.trim()) {
+      setError("请选择实际申请日期")
+      return
+    }
+    if (needsContract && !contractFile && !record.contractAttachment) {
+      setError("请上传合同")
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      const contractAttachment = contractFile
+        ? await persistAttachmentFromFile(contractFile)
+        : (record.contractAttachment ?? null)
+      onExecute({
+        actualApplyDate: actualApplyDate.trim(),
+        execRemark: execRemark.trim(),
+        contractAttachment,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存合同失败")
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-[520px] rounded-lg bg-background shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-5 py-3.5">
+          <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">产品运维执行</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3 px-5 py-5 text-sm">
+          <p className="text-zinc-500">
+            指令ID：{record.id} · {record.fofFundName} / {record.underlyingFundName}
+          </p>
+          <p className="text-zinc-500">
+            指令类型：<span className="font-medium text-red-500">{record.type}</span>
+          </p>
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
+              <span className="text-red-500">*</span> 实际申请日期
+            </span>
+            <DateInput
+              value={actualApplyDate}
+              onChange={setActualApplyDate}
+              className="h-9 w-full"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">执行备注</span>
+            <textarea
+              value={execRemark}
+              onChange={(e) => setExecRemark(e.target.value)}
+              rows={2}
+              placeholder="请输入内容"
+              className="w-full resize-y rounded border border-border bg-background px-3 py-2 focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+            />
+          </label>
+          {needsContract ? (
+            <InstructionFileUpload
+              label="合同"
+              required
+              file={contractFile}
+              existing={record.contractAttachment}
+              onChange={setContractFile}
+            />
+          ) : (
+            <p className="text-xs text-zinc-400">追加类指令无需上传合同。</p>
+          )}
+          <p className="text-xs text-zinc-400">
+            执行后指令进度将变为「待确认」，由产品运维完成确认。
+          </p>
+          {error ? <p className="text-xs text-red-500">{error}</p> : null}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSubmit()}
+            disabled={submitting}
+            className="rounded bg-red-500 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600 disabled:opacity-60"
+          >
+            {submitting ? "保存中…" : "确认执行"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmTradeDialog({
+  open,
+  record,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  record: InstructionRecord | null
+  onClose: () => void
+  onConfirm: (payload: {
+    confirmDate: string
+    amount: string
+    shares: string
+    nav: string
+    tradeFee: string
+    modifyReason: string
+    confirmAttachment: InstructionAttachmentMeta
+  }) => void
+}) {
+  const [confirmDate, setConfirmDate] = useState("")
+  const [amount, setAmount] = useState("")
+  const [shares, setShares] = useState("")
+  const [nav, setNav] = useState("")
+  const [tradeFee, setTradeFee] = useState("0.00")
+  const [modifyReason, setModifyReason] = useState("")
+  const [confirmFile, setConfirmFile] = useState<File | null>(null)
+  const [emailAttachment, setEmailAttachment] = useState<InstructionAttachmentMeta | null>(null)
+  const [candidates, setCandidates] = useState<EmailConfirmCandidate[]>([])
+  const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null)
+  const [fetchingEmail, setFetchingEmail] = useState(false)
+  const [fetchHint, setFetchHint] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  function applyCandidate(c: EmailConfirmCandidate) {
+    setSelectedCandidateId(c.id)
+    if (c.confirm_date) setConfirmDate(c.confirm_date)
+    if (c.confirmed_amount) setAmount(String(c.confirmed_amount).replace(/,/g, ""))
+    if (c.confirmed_shares) setShares(String(c.confirmed_shares).replace(/,/g, ""))
+    if (c.unit_nav) setNav(String(c.unit_nav).replace(/,/g, ""))
+    if (c.trade_fee != null && c.trade_fee !== "") {
+      setTradeFee(String(c.trade_fee).replace(/,/g, ""))
+    }
+    setConfirmFile(null)
+    setEmailAttachment({
+      id: emailConfirmAttachmentId(c.id),
+      name: c.attachment_filename || `确认单-${c.id}.pdf`,
+      size: c.file_size || 0,
+      uploadedAt: new Date().toISOString(),
+      source: "email",
+      confirmRecordId: c.id,
+    })
+  }
+
+  async function fetchConfirmFromEmail(refresh: boolean) {
+    if (!record) return
+    setFetchingEmail(true)
+    setFetchHint(null)
+    setError(null)
+    try {
+      const res = await fetch("/ma/api/ops/email-confirm-records/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fundName: record.underlyingFundName,
+          fundCode: record.underlyingBeianHao || undefined,
+          investorName: record.fofFundName,
+          amount: String(record.amount || "").replace(/,/g, ""),
+          applyDate: record.applyDate || undefined,
+          refresh,
+          limit: 10,
+        }),
+      })
+      const json = (await res.json()) as {
+        ok?: boolean
+        data?: EmailConfirmCandidate[]
+        refreshStarted?: boolean
+        error?: string
+      }
+      if (!res.ok || json.error) throw new Error(json.error || "匹配确认单失败")
+      const list = Array.isArray(json.data) ? json.data : []
+      setCandidates(list)
+      if (list.length === 1 && list[0].score >= 40) {
+        applyCandidate(list[0])
+        setFetchHint(
+          json.refreshStarted
+            ? "已启动邮箱补抓；已自动匹配到 1 份确认单（可稍后再次获取以纳入最新邮件）"
+            : "已自动匹配到 1 份确认单",
+        )
+      } else if (list.length > 1) {
+        setFetchHint(`找到 ${list.length} 份候选确认单，请选择`)
+      } else {
+        setFetchHint(
+          json.refreshStarted
+            ? "已启动邮箱补抓，暂无匹配结果；请稍后再点「从邮箱获取」"
+            : "未匹配到确认单，可手动上传或稍后重试",
+        )
+      }
+    } catch (err) {
+      setFetchHint(err instanceof Error ? err.message : "从邮箱获取失败")
+    } finally {
+      setFetchingEmail(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!open || !record) return
+    setConfirmDate(record.confirmDate || record.applyDate || "")
+    setAmount(String(record.amount || "").replace(/,/g, ""))
+    setShares(record.shares ? String(record.shares).replace(/,/g, "") : "")
+    setNav(record.nav ? String(record.nav).replace(/,/g, "") : "")
+    setTradeFee(record.tradeFee ? String(record.tradeFee).replace(/,/g, "") : "0.00")
+    setModifyReason(record.modifyReason || "")
+    setConfirmFile(null)
+    setEmailAttachment(
+      record.confirmAttachment?.source === "email" ? record.confirmAttachment : null,
+    )
+    setCandidates([])
+    setSelectedCandidateId(record.confirmAttachment?.confirmRecordId ?? null)
+    setError(null)
+    setFetchHint(null)
+    setSubmitting(false)
+    void fetchConfirmFromEmail(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when dialog opens / record changes
+  }, [open, record?.id])
+
+  if (!open || !record) return null
+
+  const effectiveAttachment =
+    emailAttachment
+    || (confirmFile ? null : record.confirmAttachment)
+    || null
+
+  async function handleSubmit() {
+    if (!confirmDate.trim()) {
+      setError("请选择交易确认日期")
+      return
+    }
+    if (!amount.trim()) {
+      setError("请输入确认金额")
+      return
+    }
+    if (!nav.trim()) {
+      setError("请输入确认单位净值")
+      return
+    }
+    if (!confirmFile && !effectiveAttachment) {
+      setError("请上传确认函/确认单，或从邮箱获取")
+      return
+    }
+    let nextShares = shares.trim()
+    if (!nextShares) {
+      const amt = Number(amount.replace(/,/g, "").trim())
+      const n = Number(nav.replace(/,/g, "").trim())
+      if (Number.isFinite(amt) && Number.isFinite(n) && n > 0) {
+        nextShares = (amt / n).toFixed(2)
+      }
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      const confirmAttachment = confirmFile
+        ? await persistAttachmentFromFile(confirmFile)
+        : effectiveAttachment!
+      onConfirm({
+        confirmDate: confirmDate.trim(),
+        amount: amount.trim(),
+        shares: nextShares,
+        nav: nav.trim(),
+        tradeFee: tradeFee.trim() || "0.00",
+        modifyReason: modifyReason.trim(),
+        confirmAttachment,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存确认函失败")
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-[560px] max-h-[min(860px,calc(100vh-2rem))] overflow-y-auto rounded-lg bg-background shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-5 py-3.5">
+          <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">产品运维确认</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3 px-5 py-5 text-sm">
+          <p className="text-zinc-500">
+            指令ID：{record.id} · {record.fofFundName} / {record.underlyingFundName}
+          </p>
+
+          <div className="rounded border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-900/40">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="font-medium text-zinc-700 dark:text-zinc-200">确认单（邮箱）</span>
+              <button
+                type="button"
+                disabled={fetchingEmail}
+                onClick={() => void fetchConfirmFromEmail(true)}
+                className="rounded border border-red-200 bg-white px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-60 dark:border-red-900 dark:bg-zinc-950 dark:hover:bg-red-950/30"
+              >
+                {fetchingEmail ? "获取中…" : "从邮箱获取"}
+              </button>
+            </div>
+            {fetchHint ? <p className="mb-2 text-xs text-zinc-500">{fetchHint}</p> : null}
+            {candidates.length > 0 ? (
+              <ul className="max-h-40 space-y-1.5 overflow-y-auto">
+                {candidates.map((c) => {
+                  const active = selectedCandidateId === c.id
+                  return (
+                    <li key={c.id}>
+                      <button
+                        type="button"
+                        onClick={() => applyCandidate(c)}
+                        className={[
+                          "w-full rounded border px-2.5 py-2 text-left text-xs transition-colors",
+                          active
+                            ? "border-red-400 bg-red-50/80 dark:border-red-700 dark:bg-red-950/30"
+                            : "border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:hover:bg-zinc-900",
+                        ].join(" ")}
+                      >
+                        <div className="font-medium text-zinc-800 dark:text-zinc-100 truncate">
+                          {c.fund_name || c.attachment_filename || `确认单 #${c.id}`}
+                          {c.broker ? ` · ${c.broker}` : ""}
+                        </div>
+                        <div className="mt-0.5 text-zinc-500">
+                          {[
+                            c.confirm_date || c.apply_date,
+                            c.confirmed_amount ? `${c.confirmed_amount} 元` : null,
+                            c.unit_nav ? `净值 ${c.unit_nav}` : null,
+                            c.reasons?.[0],
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </div>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : (
+              <p className="text-xs text-zinc-400">暂无候选；可点击「从邮箱获取」或下方手动上传。</p>
+            )}
+          </div>
+
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
+              <span className="text-red-500">*</span> 交易确认日期
+            </span>
+            <DateInput
+              value={confirmDate}
+              onChange={setConfirmDate}
+              className="h-9 w-full"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">交易费用</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={tradeFee}
+              onChange={(e) => setTradeFee(e.target.value)}
+              className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
+              <span className="text-red-500">*</span> 确认单位净值
+            </span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={nav}
+              onChange={(e) => setNav(e.target.value)}
+              className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
+              <span className="text-red-500">*</span> 确认金额
+            </span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">确认份额</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={shares}
+              onChange={(e) => setShares(e.target.value)}
+              placeholder="可留空，按金额/净值自动计算"
+              className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">修改理由</span>
+            <textarea
+              value={modifyReason}
+              onChange={(e) => setModifyReason(e.target.value)}
+              rows={2}
+              placeholder="请输入内容"
+              className="w-full resize-y rounded border border-border bg-background px-3 py-2 focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+            />
+          </label>
+          <InstructionFileUpload
+            label="确认函/确认单（手动上传）"
+            required={!effectiveAttachment}
+            file={confirmFile}
+            existing={effectiveAttachment}
+            onChange={(file) => {
+              setConfirmFile(file)
+              if (file) {
+                setEmailAttachment(null)
+                setSelectedCandidateId(null)
+              }
+            }}
+          />
+          <p className="text-xs text-zinc-400">
+            优先从邮箱自动匹配确认单；确认后指令进度将变为「已确认」，并写入 FOF 台账。
+          </p>
+          {error ? <p className="text-xs text-red-500">{error}</p> : null}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSubmit()}
+            disabled={submitting}
+            className="rounded bg-red-500 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600 disabled:opacity-60"
+          >
+            {submitting ? "保存中…" : "确认"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function isUnderlyingTradeType(type: string): type is UnderlyingTradeType {
+  return type === "认购" || type === "申购" || type === "赎回"
+}
+
+function underlyingFormType(type: string): UnderlyingTradeType | null {
+  if (isUnderlyingTradeType(type)) return type
+  if (type === "初次申购" || type === "追加申购") return "申购"
+  return null
+}
+
+function formatInstructionDateTime(value: string | null | undefined): string {
+  if (!value) return "-"
+  return value.replace("T", " ").slice(0, 19)
+}
+
+function formatTemporaryOpenLabel(value: string | null | undefined): string {
+  if (!value) return "-"
+  if (value.includes("不可")) return "否"
+  if (value.includes("可")) return "是"
+  return value
+}
+
+function approvalStatusFromProgress(progress: string): string {
+  if (!progress) return "待审批"
+  if (progress.includes("已确认") || progress.includes("已完成") || progress.includes("结束")) {
+    return "已通过"
+  }
+  if (progress.includes("驳回") || progress.includes("拒绝")) return "已驳回"
+  if (progress.includes("待审批") || progress.includes("待审核")) return "待审批"
+  return progress
+}
+
+/** Default trade / underlying / direct instruction flow */
+const DETAIL_TIMELINE_TRADE = [
+  "基金经理发起",
+  "总经理审批",
+  "产品运维执行",
+  "产品运维确认",
+  "指令结束",
+] as const
+
+/** 入/出池审批 — shorter approval flow (e.g. 基金入池) */
+const DETAIL_TIMELINE_POOL = [
+  "基金经理发起",
+  "总经理审批",
+  "指令结束",
+] as const
+
+function detailTimelineStepsFor(record: InstructionRecord): readonly string[] {
+  if (
+    record.category === "pool"
+    || record.type === "基金入池"
+    || record.type === "基金出池"
+    || record.type === "管理人入池"
+    || record.type === "管理人出池"
+  ) {
+    return DETAIL_TIMELINE_POOL
+  }
+  return DETAIL_TIMELINE_TRADE
+}
+
+function hasPositiveHolding(
+  marketValue: string | null | undefined,
+  investmentShares: string | null | undefined,
+): boolean {
+  const mv = Number(String(marketValue ?? "").replace(/,/g, "").trim())
+  if (Number.isFinite(mv) && mv > 0) return true
+  const sh = Number(String(investmentShares ?? "").replace(/,/g, "").trim())
+  return Number.isFinite(sh) && sh > 0
+}
+
+function DetailField({
+  label,
+  value,
+  accent = false,
+  fullWidth = false,
+}: {
+  label: string
+  value: ReactNode
+  accent?: boolean
+  fullWidth?: boolean
+}) {
+  return (
+    <div className={["flex items-start gap-1 text-sm min-w-0", fullWidth ? "sm:col-span-2" : ""].join(" ")}>
+      <span className="shrink-0 text-zinc-500 dark:text-zinc-400">{label}:</span>
+      <span
+        className={[
+          "min-w-0 break-words",
+          accent ? "font-medium text-red-500" : "text-zinc-800 dark:text-zinc-100",
+        ].join(" ")}
+      >
+        {value}
+      </span>
+    </div>
+  )
+}
+
+function AttachmentDetailValue({
+  attachment,
+}: {
+  attachment: InstructionAttachmentMeta | null | undefined
+}) {
+  if (!attachment?.id || !attachment.name) return <>{cellDash(null)}</>
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void openInstructionAttachment(attachment.id).catch(() => {
+          window.alert("无法打开附件，文件可能已被清除")
+        })
+      }}
+      className="text-left text-sky-600 hover:underline dark:text-sky-400"
+      title={attachment.name}
+    >
+      {attachment.name}
+    </button>
+  )
+}
+
+function InstructionDetailDialog({
+  open,
+  record,
+  onClose,
+}: {
+  open: boolean
+  record: InstructionRecord | null
+  onClose: () => void
+}) {
+  const [openDay, setOpenDay] = useState<string | null>(null)
+  const [temporaryOpen, setTemporaryOpen] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open || !record) {
+      setOpenDay(null)
+      setTemporaryOpen(null)
+      return
+    }
+
+    if (!record.underlyingBeianHao && !record.underlyingFundName) {
+      setOpenDay(null)
+      setTemporaryOpen(null)
+      return
+    }
+    const ac = new AbortController()
+    const params = new URLSearchParams({
+      beian_hao: record.underlyingBeianHao || record.underlyingFundName,
+      product_name: record.underlyingFundName,
+    })
+    fetch(`/ma/api/ops/fund-elements?${params}`, { signal: ac.signal })
+      .then(async (r) => {
+        if (!r.ok) throw new Error("elements not found")
+        return r.json()
+      })
+      .then((d: { open_day?: string | null; is_temporary_open?: string | null }) => {
+        if (ac.signal.aborted) return
+        setOpenDay(d.open_day ?? null)
+        setTemporaryOpen(d.is_temporary_open ?? null)
+      })
+      .catch(() => {
+        if (ac.signal.aborted) return
+        setOpenDay(null)
+        setTemporaryOpen(null)
+      })
+    return () => ac.abort()
+  }, [open, record?.id, record?.underlyingBeianHao, record?.underlyingFundName])
+
+  // Legacy rows may still store "申购"; refine once and persist so list/detail stay in sync.
+  useEffect(() => {
+    if (!open || !record) return
+    if (record.type !== "申购") return
+    if (!record.fofFundName || !record.underlyingFundName) {
+      updateInstructionRecord(record.id, { type: "初次申购" })
+      return
+    }
+    const ac = new AbortController()
+    const params = new URLSearchParams({
+      page: "1",
+      pageSize: "50",
+      fof_fund_name: record.fofFundName,
+      keyword: record.underlyingFundName,
+    })
+    fetch(`/ma/api/investment/fof-underlying-detail/list?${params}`, { signal: ac.signal })
+      .then((r) => r.json())
+      .then((d: { data?: unknown }) => {
+        if (ac.signal.aborted) return
+        const rows = Array.isArray(d.data) ? d.data : []
+        const match = rows.find((row) => {
+          const r = row as {
+            beian_hao?: string | null
+            product_name?: string | null
+            short_name?: string | null
+          }
+          return (
+            (record.underlyingBeianHao && r.beian_hao === record.underlyingBeianHao)
+            || r.product_name === record.underlyingFundName
+            || r.short_name === record.underlyingFundName
+          )
+        }) as
+          | {
+              market_value?: string | null
+              investment_shares?: string | null
+            }
+          | undefined
+        const holding = Boolean(
+          match
+          && hasPositiveHolding(match.market_value, match.investment_shares),
+        )
+        updateInstructionRecord(record.id, { type: holding ? "追加申购" : "初次申购" })
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) {
+          updateInstructionRecord(record.id, { type: "初次申购" })
+        }
+      })
+    return () => ac.abort()
+  }, [
+    open,
+    record?.id,
+    record?.type,
+    record?.fofFundName,
+    record?.underlyingFundName,
+    record?.underlyingBeianHao,
+  ])
+
+  if (!open || !record) return null
+
+  const operator = record.initiator || "-"
+  const operatedAt = formatInstructionDateTime(record.createdAt)
+  const amountText =
+    record.amount && record.amount !== "-"
+      ? `${record.amount}${String(record.amount).includes("元") ? "" : " 元"}`
+      : "-"
+  const fofLabel =
+    record.category === "direct"
+      ? "投资者名称"
+      : record.category === "customer"
+        ? "客户名称"
+        : record.category === "pool"
+          ? "基金/管理人名称"
+          : "FOF基金"
+  const underlyingLabel =
+    record.category === "direct"
+      ? "直投产品"
+      : record.category === "customer" || record.category === "pool"
+        ? "基金名称"
+        : "底层基金"
+  const approvalStatus = approvalStatusFromProgress(record.progress)
+  // Always show the stored type so list badge and detail stay identical.
+  const displayType = record.type
+  const timelineSteps = detailTimelineStepsFor(record)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="flex w-full max-w-[920px] max-h-[min(860px,calc(100vh-2rem))] flex-col overflow-hidden rounded-lg bg-background shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-5 py-3.5 flex-shrink-0">
+          <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">指令详情</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <aside className="w-[200px] shrink-0 border-r border-zinc-100 bg-zinc-50/70 px-4 py-5 dark:border-zinc-800 dark:bg-zinc-900/40 overflow-y-auto">
+            <ol className="relative space-y-0">
+              {timelineSteps.map((label, index) => {
+                const done = index === 0
+                const isLast = index === timelineSteps.length - 1
+                return (
+                  <li key={label} className="relative flex gap-3 pb-6 last:pb-0">
+                    {!isLast ? (
+                      <span
+                        className="absolute left-[7px] top-4 bottom-0 w-px bg-zinc-200 dark:bg-zinc-700"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    <span
+                      className={[
+                        "relative z-[1] mt-1 h-3.5 w-3.5 shrink-0 rounded-full border-2 bg-background",
+                        done
+                          ? "border-red-500 bg-red-500"
+                          : "border-zinc-300 dark:border-zinc-600",
+                      ].join(" ")}
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0 pt-0.5">
+                      <div
+                        className={[
+                          "text-sm leading-snug",
+                          done
+                            ? "font-medium text-zinc-800 dark:text-zinc-100"
+                            : "text-zinc-500 dark:text-zinc-400",
+                        ].join(" ")}
+                      >
+                        {label}
+                      </div>
+                      {done ? (
+                        <div className="mt-1 space-y-0.5 text-xs text-zinc-400">
+                          <div>{operator}</div>
+                          <div>{operatedAt}</div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </li>
+                )
+              })}
+            </ol>
+          </aside>
+
+          <div className="min-w-0 flex-1 overflow-y-auto px-5 py-4">
+            <div className="mb-3 flex items-center justify-end text-xs text-zinc-400">
+              操作: {operator} ({operatedAt})
+            </div>
+
+            <section className="mb-5">
+              <div className="mb-3 flex items-center gap-2">
+                <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
+                <h3 className="text-sm font-semibold text-foreground">交易信息</h3>
+              </div>
+              <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                <DetailField label="指令ID" value={record.id} />
+                <DetailField label="指令类型" value={displayType} accent />
+                <DetailField label={fofLabel} value={cellDash(record.fofFundName)} />
+                <DetailField
+                  label="开放日"
+                  value={openDay?.trim() || "-"}
+                />
+                <DetailField label={underlyingLabel} value={cellDash(record.underlyingFundName)} />
+                <DetailField
+                  label="是否临开"
+                  value={formatTemporaryOpenLabel(temporaryOpen)}
+                />
+                <DetailField label="交易申请日期" value={cellDash(record.applyDate)} />
+                <DetailField label="申请金额" value={amountText} accent />
+                {record.shares ? (
+                  <DetailField label="申请份额" value={`${record.shares} 份`} />
+                ) : null}
+                <DetailField
+                  label="指令摘要"
+                  value={cellDash(record.summary)}
+                  fullWidth
+                />
+              </div>
+            </section>
+
+            <section className="mb-5">
+              <div className="mb-3 flex items-center gap-2">
+                <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
+                <h3 className="text-sm font-semibold text-foreground">审批信息</h3>
+              </div>
+              <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                <DetailField label="审批" value={approvalStatus} accent />
+                <DetailField label="审批备注" value="-" />
+              </div>
+            </section>
+
+            {record.category === "underlying" || record.category === "direct" ? (
+              <>
+                <section className="mb-5">
+                  <div className="mb-3 flex items-center gap-2">
+                    <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
+                    <h3 className="text-sm font-semibold text-foreground">执行信息</h3>
+                  </div>
+                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                    <DetailField
+                      label="执行"
+                      value={isInstructionExecuted(record.progress) ? "已执行" : "待执行"}
+                      accent
+                    />
+                    <DetailField
+                      label="实际申请日期"
+                      value={cellDash(record.actualApplyDate)}
+                    />
+                    <DetailField
+                      label="执行备注"
+                      value={cellDash(record.execRemark)}
+                      fullWidth
+                    />
+                    {requiresContractAtExecute(record.type) ? (
+                      <DetailField
+                        label="合同"
+                        value={<AttachmentDetailValue attachment={record.contractAttachment} />}
+                        fullWidth
+                      />
+                    ) : null}
+                  </div>
+                </section>
+
+                <section>
+                  <div className="mb-3 flex items-center gap-2">
+                    <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
+                    <h3 className="text-sm font-semibold text-foreground">确认信息</h3>
+                  </div>
+                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                    <DetailField label="交易确认日期" value={cellDash(record.confirmDate)} />
+                    <DetailField label="交易费用" value={cellDash(record.tradeFee)} />
+                    <DetailField label="确认单位净值" value={cellDash(record.nav)} />
+                    <DetailField label="确认金额" value={cellDash(record.amount)} />
+                    <DetailField label="确认份额" value={cellDash(record.shares)} />
+                    <DetailField
+                      label="修改理由"
+                      value={cellDash(record.modifyReason)}
+                      fullWidth
+                    />
+                    <DetailField
+                      label="确认函/确认单"
+                      value={<AttachmentDetailValue attachment={record.confirmAttachment} />}
+                      fullWidth
+                    />
+                  </div>
+                </section>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end border-t px-5 py-3 flex-shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded bg-red-500 px-5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function canExecuteTrade(row: InstructionRecord): boolean {
+  if (row.category !== "underlying" && row.category !== "direct") return false
+  if (isInstructionConfirmed(row.progress)) return false
+  return !isInstructionExecuted(row.progress)
+}
+
+function canConfirmTrade(row: InstructionRecord): boolean {
+  if (row.category !== "underlying" && row.category !== "direct") return false
+  if (isInstructionConfirmed(row.progress)) return false
+  return isInstructionExecuted(row.progress)
+}
+
+function renderInstructionCell(
+  colKey: string,
+  row: InstructionRecord,
+  index: number,
+  onVoid: (row: InstructionRecord) => void,
+  onEdit: (row: InstructionRecord) => void,
+  onDetail: (row: InstructionRecord) => void,
+  onExecuteTrade: (row: InstructionRecord) => void,
+  onConfirmTrade: (row: InstructionRecord) => void,
+) {
   switch (colKey) {
     case "index":
       return index
@@ -282,7 +1461,11 @@ function renderInstructionCell(colKey: string, row: InstructionRecord, index: nu
       )
     case "underlying":
     case "fundName":
+    case "fundManager":
+    case "directProduct":
       return row.underlyingFundName
+    case "createdAt":
+      return row.createdAt ? row.createdAt.replace("T", " ").slice(0, 19) : "-"
     case "applyDate":
       return row.applyDate
     case "amount":
@@ -303,21 +1486,87 @@ function renderInstructionCell(colKey: string, row: InstructionRecord, index: nu
     case "actions":
       return (
         <div className="inline-flex items-center justify-center gap-1.5 text-zinc-400">
-          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="查看">
-            <Eye className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="流转">
-            <History className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="复制">
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="编辑">
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200" title="删除">
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          {canExecuteTrade(row) ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onExecuteTrade(row)}
+                  className="rounded p-0.5 hover:text-amber-600 dark:hover:text-amber-400"
+                  aria-label="产品运维执行"
+                >
+                  <PlayCircle className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>产品运维执行</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {canConfirmTrade(row) ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onConfirmTrade(row)}
+                  className="rounded p-0.5 hover:text-emerald-600 dark:hover:text-emerald-400"
+                  aria-label="产品运维确认"
+                >
+                  <BadgeCheck className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>产品运维确认</TooltipContent>
+            </Tooltip>
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onVoid(row)}
+                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                aria-label="作废"
+              >
+                <ClipboardX className="h-3.5 w-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>作废</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onEdit(row)}
+                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                aria-label="编辑"
+              >
+                <FilePenLine className="h-3.5 w-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>编辑</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                aria-label="复制"
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>复制</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onDetail(row)}
+                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                aria-label="详情"
+              >
+                <FileText className="h-3.5 w-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>详情</TooltipContent>
+          </Tooltip>
         </div>
       )
     default:
@@ -326,6 +1575,7 @@ function renderInstructionCell(colKey: string, row: InstructionRecord, index: nu
 }
 
 export function InstructionsListView({ variant }: { variant: InstructionsListVariant }) {
+  const { toast } = useToast()
   const isAll = variant === "all"
   const tabs = isAll ? ALL_TABS : STANDARD_TABS
 
@@ -346,6 +1596,11 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
   const [pageSize, setPageSize] = useState(20)
   const [pageInput, setPageInput] = useState("1")
   const [showFieldConfig, setShowFieldConfig] = useState(false)
+  const [voidTarget, setVoidTarget] = useState<InstructionRecord | null>(null)
+  const [executeTarget, setExecuteTarget] = useState<InstructionRecord | null>(null)
+  const [confirmTarget, setConfirmTarget] = useState<InstructionRecord | null>(null)
+  const [detailTarget, setDetailTarget] = useState<InstructionRecord | null>(null)
+  const [editTarget, setEditTarget] = useState<InstructionRecord | null>(null)
   const [selectedFields, setSelectedFields] = useState<string[]>(() => [...INSTRUCTION_FIELD_DEFAULT])
 
   const allRecords = useSyncExternalStore(
@@ -356,6 +1611,10 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
 
   useEffect(() => {
     setSelectedFields(readInstructionFieldConfig())
+  }, [])
+
+  useEffect(() => {
+    backfillLedgerFromConfirmedInstructions()
   }, [])
 
   const columns = useMemo(
@@ -418,6 +1677,28 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
     setAppliedDateTo(dateTo)
     setPage(1)
     setPageInput("1")
+  }
+
+  function handleEdit(row: InstructionRecord) {
+    if (row.category === "underlying" && underlyingFormType(row.type)) {
+      setEditTarget(row)
+      return
+    }
+    toast({
+      title: "暂不支持编辑",
+      description: `${row.type}指令的编辑表单正在建设中。`,
+    })
+  }
+
+  const editFormType = editTarget ? underlyingFormType(editTarget.type) : null
+  if (editTarget && editFormType) {
+    return (
+      <UnderlyingSubscribeForm
+        instructionType={editFormType}
+        initialRecord={editTarget}
+        onBack={() => setEditTarget(null)}
+      />
+    )
   }
 
   function goToPage(next: number) {
@@ -763,7 +2044,16 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
                           col.width,
                         ].join(" ")}
                       >
-                        {renderInstructionCell(col.key, row, (page - 1) * pageSize + i + 1)}
+                        {renderInstructionCell(
+                          col.key,
+                          row,
+                          (page - 1) * pageSize + i + 1,
+                          setVoidTarget,
+                          handleEdit,
+                          setDetailTarget,
+                          setExecuteTarget,
+                          setConfirmTarget,
+                        )}
                       </td>
                     ))}
                   </tr>
@@ -852,6 +2142,79 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
           writeInstructionFieldConfig(stored)
           setShowFieldConfig(false)
         }}
+      />
+
+      <VoidInstructionDialog
+        open={Boolean(voidTarget)}
+        instructionId={voidTarget?.id ?? ""}
+        onClose={() => setVoidTarget(null)}
+        onConfirm={() => {
+          if (!voidTarget) return
+          if (isInstructionConfirmed(voidTarget.progress)) {
+            removeLedgerByInstructionId(voidTarget.id)
+          }
+          removeInstructionRecord(voidTarget.id)
+          setVoidTarget(null)
+          toast({ title: "指令已作废" })
+        }}
+      />
+
+      <ExecuteTradeDialog
+        open={Boolean(executeTarget)}
+        record={executeTarget}
+        onClose={() => setExecuteTarget(null)}
+        onExecute={(payload) => {
+          if (!executeTarget) return
+          const updated = updateInstructionRecord(executeTarget.id, {
+            progress: "待确认(4/4)",
+            actualApplyDate: payload.actualApplyDate,
+            execRemark: payload.execRemark || null,
+            contractAttachment: payload.contractAttachment,
+          })
+          if (updated) {
+            toast({
+              title: "执行完成",
+              description: requiresContractAtExecute(updated.type)
+                ? "合同已记录，请继续产品运维确认"
+                : "请继续产品运维确认",
+            })
+          }
+          setExecuteTarget(null)
+        }}
+      />
+
+      <ConfirmTradeDialog
+        open={Boolean(confirmTarget)}
+        record={confirmTarget}
+        onClose={() => setConfirmTarget(null)}
+        onConfirm={(payload) => {
+          if (!confirmTarget) return
+          const updated = updateInstructionRecord(confirmTarget.id, {
+            progress: "已确认",
+            confirmDate: payload.confirmDate,
+            amount: payload.amount,
+            shares: payload.shares || null,
+            nav: payload.nav,
+            tradeFee: payload.tradeFee,
+            modifyReason: payload.modifyReason || null,
+            confirmAttachment: payload.confirmAttachment,
+          })
+          if (updated) {
+            upsertLedgerFromConfirmedInstruction(updated)
+            toast({ title: "交易已确认", description: "已同步写入 FOF 台账（来源：指令）" })
+          }
+          setConfirmTarget(null)
+        }}
+      />
+
+      <InstructionDetailDialog
+        open={Boolean(detailTarget)}
+        record={
+          detailTarget
+            ? (allRecords.find((r) => r.id === detailTarget.id) ?? detailTarget)
+            : null
+        }
+        onClose={() => setDetailTarget(null)}
       />
     </div>
   )

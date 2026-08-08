@@ -17,6 +17,7 @@ import {
   getInstructionRecordsServerSnapshot,
   getInstructionRecordsSnapshot,
   subscribeInstructionRecords,
+  updateInstructionRecord,
   type InstructionRecord,
 } from "./instructions-store"
 
@@ -36,6 +37,16 @@ interface UnderlyingOption {
   investment_shares: string | null
   unit_nav: string | null
   nav_date: string | null
+}
+
+function shortFundDisplayName(productName: string): string {
+  const trimmed = productName.trim()
+  const short = trimmed
+    .replace(/私募证券投资基金/g, "")
+    .replace(/证券投资基金/g, "")
+    .replace(/私募基金/g, "")
+    .trim()
+  return short || trimmed
 }
 
 function parseUnderlyingHoldingOptions(json: unknown): UnderlyingOption[] {
@@ -69,6 +80,61 @@ function parseUnderlyingHoldingOptions(json: unknown): UnderlyingOption[] {
     })
   }
   return out
+}
+
+/** All private funds from the platform catalog (not limited to current FOF holdings). */
+function parsePrivateFundOptions(json: unknown): UnderlyingOption[] {
+  const data = (json as { data?: unknown } | null)?.data
+  if (!Array.isArray(data)) return []
+  const out: UnderlyingOption[] = []
+  const seen = new Set<string>()
+  for (const row of data as {
+    product_name?: string
+    short_name?: string | null
+    beian_hao?: string | null
+    latest_nav?: string | null
+    latest_nav_date?: string | null
+  }[]) {
+    if (!row.product_name || !row.beian_hao) continue
+    const key = `${row.beian_hao}::${row.product_name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const short = (row.short_name || "").trim() || shortFundDisplayName(row.product_name)
+    out.push({
+      product_name: row.product_name,
+      short_name: short,
+      beian_hao: row.beian_hao,
+      is_holding: false,
+      market_value: null,
+      investment_shares: null,
+      unit_nav: row.latest_nav ?? null,
+      nav_date: row.latest_nav_date ?? null,
+    })
+  }
+  return out
+}
+
+function mergeUnderlyingOptions(...lists: UnderlyingOption[][]): UnderlyingOption[] {
+  const map = new Map<string, UnderlyingOption>()
+  for (const list of lists) {
+    for (const opt of list) {
+      const key = `${opt.beian_hao}::${opt.product_name}`
+      const prev = map.get(key)
+      if (!prev) {
+        map.set(key, opt)
+        continue
+      }
+      // Prefer holding rows so 持仓 badge / shares / market value stay accurate.
+      if (opt.is_holding && !prev.is_holding) map.set(key, opt)
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.is_holding !== b.is_holding) return a.is_holding ? -1 : 1
+    return (a.short_name || a.product_name).localeCompare(
+      b.short_name || b.product_name,
+      "zh-CN",
+    )
+  })
 }
 
 function parseManagedFundOptions(json: unknown): FundOption[] {
@@ -278,17 +344,51 @@ const TRADE_TYPE_TITLE: Record<UnderlyingTradeType, string> = {
   赎回: "底层赎回",
 }
 
+function initialFofFromRecord(record: InstructionRecord | undefined): FundOption | null {
+  if (!record?.fofFundName) return null
+  return {
+    beian_hao: record.fofBeianHao || record.fofFundName,
+    product_name: record.fofFundName,
+    custody_balance: null,
+    valuation_date: null,
+  }
+}
+
+function initialUnderlyingFromRecord(
+  record: InstructionRecord | undefined,
+): UnderlyingOption | null {
+  if (!record?.underlyingFundName) return null
+  return {
+    beian_hao: record.underlyingBeianHao || record.underlyingFundName,
+    product_name: record.underlyingFundName,
+    short_name: record.underlyingFundName,
+    is_holding: true,
+    market_value: null,
+    investment_shares: null,
+    unit_nav: null,
+    nav_date: null,
+  }
+}
+
+function stripAmountCommas(value: string): string {
+  return String(value).replace(/,/g, "").trim()
+}
+
 export function UnderlyingSubscribeForm({
   onBack,
   onSubmitted,
   instructionType = "认购",
+  initialRecord,
 }: {
   onBack: () => void
   onSubmitted?: (record: InstructionRecord) => void
   instructionType?: UnderlyingTradeType
+  /** When set, form opens in edit mode and submit updates this record. */
+  initialRecord?: InstructionRecord
 }) {
   const { toast } = useToast()
   const pageTitle = TRADE_TYPE_TITLE[instructionType]
+  const editingId = initialRecord?.id ?? null
 
   const allRecords = useSyncExternalStore(
     subscribeInstructionRecords,
@@ -298,14 +398,18 @@ export function UnderlyingSubscribeForm({
 
   const [submittedRecord, setSubmittedRecord] = useState<InstructionRecord | null>(null)
   const [fofFundInput, setFofFundInput] = useState("")
-  const [fofFundSelected, setFofFundSelected] = useState<FundOption | null>(null)
+  const [fofFundSelected, setFofFundSelected] = useState<FundOption | null>(() =>
+    initialFofFromRecord(initialRecord),
+  )
   const [fofFundOptions, setFofFundOptions] = useState<FundOption[]>([])
   const [fofFundShowDropdown, setFofFundShowDropdown] = useState(false)
   const [fofFundLoading, setFofFundLoading] = useState(false)
 
   const [fundType, setFundType] = useState("private")
   const [underlyingInput, setUnderlyingInput] = useState("")
-  const [underlyingSelected, setUnderlyingSelected] = useState<UnderlyingOption | null>(null)
+  const [underlyingSelected, setUnderlyingSelected] = useState<UnderlyingOption | null>(() =>
+    initialUnderlyingFromRecord(initialRecord),
+  )
   const [underlyingOptions, setUnderlyingOptions] = useState<UnderlyingOption[]>([])
   const [underlyingShowDropdown, setUnderlyingShowDropdown] = useState(false)
   const [underlyingLoading, setUnderlyingLoading] = useState(false)
@@ -314,14 +418,32 @@ export function UnderlyingSubscribeForm({
   const [elementsLoading, setElementsLoading] = useState(false)
 
   const isRedeem = instructionType === "赎回"
+  const isPurchase = instructionType === "申购"
+  // Prefer amount/shares over is_holding flag (list API marks all rows as holdings).
+  const hasHolding = (() => {
+    if (!underlyingSelected) return false
+    const mv = Number(String(underlyingSelected.market_value ?? "").replace(/,/g, "").trim())
+    if (Number.isFinite(mv) && mv > 0) return true
+    const sh = Number(String(underlyingSelected.investment_shares ?? "").replace(/,/g, "").trim())
+    return Number.isFinite(sh) && sh > 0
+  })()
+  /** 申购 is refined to 初次申购 / 追加申购 from current position. */
+  const displayInstructionType = isPurchase
+    ? hasHolding
+      ? "追加申购"
+      : "初次申购"
+    : instructionType
 
-  const [applyDate, setApplyDate] = useState("")
-  const [amount, setAmount] = useState("")
-  const [shares, setShares] = useState("")
-  const [summary, setSummary] = useState("")
+  const [applyDate, setApplyDate] = useState(() => initialRecord?.applyDate ?? "")
+  const [amount, setAmount] = useState(() =>
+    initialRecord ? stripAmountCommas(initialRecord.amount) : "",
+  )
+  const [shares, setShares] = useState(() => initialRecord?.shares ?? "")
+  const [summary, setSummary] = useState(() => initialRecord?.summary ?? "")
   const [attachment, setAttachment] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const skipFofClearRef = useRef(true)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fofWrapRef = useRef<HTMLDivElement>(null)
@@ -339,7 +461,7 @@ export function UnderlyingSubscribeForm({
   const latestNavDisplay = underlyingSelected
     ? formatNav(underlyingSelected.unit_nav, underlyingSelected.nav_date)
     : placeholderHint
-  const amountChinese = isRedeem ? amountToChineseUppercase(amount) : ""
+  const amountChinese = amountToChineseUppercase(amount)
   const holdingSharesNum = parseNumberInput(underlyingSelected?.investment_shares ?? "")
   const applySharesNum = parseNumberInput(shares)
   const sharesOverHolding =
@@ -364,6 +486,7 @@ export function UnderlyingSubscribeForm({
     const undBeian = underlyingSelected.beian_hao.trim()
     return allRecords
       .filter((r) => {
+        if (editingId && r.id === editingId) return false
         if (r.category !== "underlying") return false
         const nameMatch =
           r.underlyingFundName === undName
@@ -379,7 +502,7 @@ export function UnderlyingSubscribeForm({
         return true
       })
       .slice(0, 20)
-  }, [allRecords, underlyingSelected, fofFundSelected])
+  }, [allRecords, underlyingSelected, fofFundSelected, editingId])
 
   useEffect(() => {
     if (!fofFundShowDropdown) return
@@ -423,25 +546,53 @@ export function UnderlyingSubscribeForm({
     underlyingSearchRef.current = setTimeout(() => {
       const q = underlyingInput.trim()
       setUnderlyingLoading(true)
-      const params = new URLSearchParams({
+
+      const holdingParams = new URLSearchParams({
         page: "1",
         pageSize: "50",
         fof_fund_name: fofFundSelected.product_name,
       })
-      if (q) params.set("keyword", q)
-      fetch(`/ma/api/investment/fof-underlying-detail/list?${params}`)
+      if (q) holdingParams.set("keyword", q)
+
+      const holdingsPromise = fetch(
+        `/ma/api/investment/fof-underlying-detail/list?${holdingParams}`,
+      )
         .then((r) => r.json())
-        .then((d) => setUnderlyingOptions(parseUnderlyingHoldingOptions(d)))
-        .catch(() => setUnderlyingOptions([]))
+        .then((d) => parseUnderlyingHoldingOptions(d))
+        .catch(() => [] as UnderlyingOption[])
+
+      // Redeem: only funds currently held. Subscribe/purchase: any platform fund.
+      if (isRedeem) {
+        holdingsPromise
+          .then((opts) => setUnderlyingOptions(opts))
+          .finally(() => setUnderlyingLoading(false))
+        return
+      }
+
+      const allParams = new URLSearchParams({ page: "1", pageSize: "50" })
+      if (q) allParams.set("keyword", q)
+      const allPromise = fetch(`/ma/api/private-funds/list?${allParams}`)
+        .then((r) => r.json())
+        .then((d) => parsePrivateFundOptions(d))
+        .catch(() => [] as UnderlyingOption[])
+
+      Promise.all([holdingsPromise, allPromise])
+        .then(([holding, all]) =>
+          setUnderlyingOptions(mergeUnderlyingOptions(holding, all)),
+        )
         .finally(() => setUnderlyingLoading(false))
     }, 150)
     return () => {
       if (underlyingSearchRef.current) clearTimeout(underlyingSearchRef.current)
     }
-  }, [underlyingInput, underlyingShowDropdown, fofFundSelected])
+  }, [underlyingInput, underlyingShowDropdown, fofFundSelected, isRedeem])
 
-  // Clear underlying selection when FOF changes
+  // Clear underlying selection when FOF changes (skip initial mount / edit prefill)
   useEffect(() => {
+    if (skipFofClearRef.current) {
+      skipFofClearRef.current = false
+      return
+    }
     setUnderlyingSelected(null)
     setUnderlyingInput("")
     setUnderlyingOptions([])
@@ -449,6 +600,88 @@ export function UnderlyingSubscribeForm({
     setOpenDay(null)
     setTemporaryOpen(null)
   }, [fofFundSelected?.beian_hao, fofFundSelected?.product_name])
+
+  // Enrich FOF custody balance when editing a saved instruction
+  useEffect(() => {
+    if (!initialRecord?.fofFundName) return
+    const ac = new AbortController()
+    const q = encodeURIComponent(initialRecord.fofFundName)
+    fetch(`/ma/api/ops/managed-products/list?pageSize=50&keyword=${q}`, {
+      signal: ac.signal,
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (ac.signal.aborted) return
+        const opts = parseManagedFundOptions(d)
+        const match =
+          opts.find((o) => o.beian_hao === initialRecord.fofBeianHao)
+          || opts.find((o) => o.product_name === initialRecord.fofFundName)
+        if (!match) return
+        setFofFundSelected((prev) => {
+          if (!prev) return match
+          // Keep identity keys stable so FOF-change clear effect does not wipe underlying.
+          if (
+            prev.product_name === match.product_name
+            || prev.beian_hao === match.beian_hao
+          ) {
+            return {
+              ...prev,
+              custody_balance: match.custody_balance,
+              valuation_date: match.valuation_date,
+            }
+          }
+          return prev
+        })
+      })
+      .catch(() => {})
+    return () => ac.abort()
+  }, [initialRecord?.id, initialRecord?.fofFundName, initialRecord?.fofBeianHao])
+
+  // Enrich underlying holding metrics when editing
+  useEffect(() => {
+    if (!initialRecord?.fofFundName || !initialRecord.underlyingFundName) return
+    const ac = new AbortController()
+    const params = new URLSearchParams({
+      page: "1",
+      pageSize: "50",
+      fof_fund_name: initialRecord.fofFundName,
+      keyword: initialRecord.underlyingFundName,
+    })
+    fetch(`/ma/api/investment/fof-underlying-detail/list?${params}`, {
+      signal: ac.signal,
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (ac.signal.aborted) return
+        const opts = parseUnderlyingHoldingOptions(d)
+        const match =
+          opts.find((o) => o.beian_hao === initialRecord.underlyingBeianHao)
+          || opts.find(
+            (o) =>
+              o.product_name === initialRecord.underlyingFundName
+              || o.short_name === initialRecord.underlyingFundName,
+          )
+        if (!match) return
+        setUnderlyingSelected((prev) => {
+          if (!prev) return match
+          if (
+            prev.product_name === match.product_name
+            || prev.beian_hao === match.beian_hao
+            || prev.short_name === match.short_name
+          ) {
+            return match
+          }
+          return prev
+        })
+      })
+      .catch(() => {})
+    return () => ac.abort()
+  }, [
+    initialRecord?.id,
+    initialRecord?.fofFundName,
+    initialRecord?.underlyingFundName,
+    initialRecord?.underlyingBeianHao,
+  ])
 
   useEffect(() => {
     if (!underlyingSelected) {
@@ -539,9 +772,9 @@ export function UnderlyingSubscribeForm({
 
     setSubmitting(true)
     try {
-      const record = addInstructionRecord({
-        category: "underlying",
-        type: instructionType,
+      const payload = {
+        category: "underlying" as const,
+        type: displayInstructionType,
         fofFundName: fofFundSelected.product_name,
         fofBeianHao: fofFundSelected.beian_hao,
         underlyingFundName:
@@ -551,8 +784,15 @@ export function UnderlyingSubscribeForm({
         amount: amount.trim() || "0",
         shares: shares.trim() || null,
         summary: summary.trim(),
-        progress: "待审批(2/4)",
-      })
+        progress: initialRecord?.progress ?? "待审批(2/4)",
+      }
+      const record = editingId
+        ? updateInstructionRecord(editingId, payload)
+        : addInstructionRecord(payload)
+      if (!record) {
+        toast({ title: "提交失败", description: "指令不存在或已作废", variant: "destructive" })
+        return
+      }
       setSubmittedRecord(record)
       onSubmitted?.(record)
       resetForm()
@@ -684,7 +924,7 @@ export function UnderlyingSubscribeForm({
             </div>
             <div className="flex items-center gap-1">
               <span className="text-zinc-500 dark:text-zinc-400">指令类型:</span>
-              <span className="font-medium text-red-500">{instructionType}</span>
+              <span className="font-medium text-red-500">{displayInstructionType}</span>
             </div>
           </div>
         ) : (
@@ -694,7 +934,7 @@ export function UnderlyingSubscribeForm({
             <div>托管户预估余额: —</div>
             <div className="flex items-center gap-1">
               <span>指令类型:</span>
-              <span className="font-medium text-red-500">{instructionType}</span>
+              <span className="font-medium text-red-500">{displayInstructionType}</span>
             </div>
           </div>
         )}
@@ -787,7 +1027,9 @@ export function UnderlyingSubscribeForm({
                     ) : underlyingLoading && underlyingOptions.length === 0 ? (
                       <div className="px-3 py-2 text-sm text-zinc-400">加载中…</div>
                     ) : underlyingOptions.length === 0 ? (
-                      <div className="px-3 py-2 text-sm text-zinc-400">暂无持仓底层基金</div>
+                      <div className="px-3 py-2 text-sm text-zinc-400">
+                        {isRedeem ? "暂无持仓底层基金" : "暂无匹配基金"}
+                      </div>
                     ) : (
                       underlyingOptions.map((opt) => (
                         <button
@@ -969,24 +1211,31 @@ export function UnderlyingSubscribeForm({
               </div>
             </>
           ) : (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
-              <div className="flex items-center gap-3 min-w-0">
-                <FormLabel required>申请金额:</FormLabel>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="请输入申请金额"
-                  className="h-9 w-full max-w-md flex-1 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-start">
+              <div className="flex items-start gap-3 min-w-0">
+                <FormLabel required className="pt-2">申请金额:</FormLabel>
+                <div className="min-w-0 max-w-md flex-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="请输入申请金额"
+                    className="h-9 w-full rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                  />
+                  {amountChinese ? (
+                    <div className="mt-1 text-xs text-zinc-400">{amountChinese}</div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="pt-2">
+                <InfoRow
+                  label="持仓金额"
+                  value={holdingAmountDisplay}
+                  accent={Boolean(underlyingSelected)}
+                  placeholder={!underlyingSelected}
                 />
               </div>
-              <InfoRow
-                label="持仓金额"
-                value={holdingAmountDisplay}
-                accent={Boolean(underlyingSelected)}
-                placeholder={!underlyingSelected}
-              />
             </div>
           )}
 

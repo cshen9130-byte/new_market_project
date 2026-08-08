@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
-import { authService, type User } from "@/lib/auth"
+import { authService, type PagePermissions, type User } from "@/lib/auth"
+import { buildPermissionsSnapshot } from "@/lib/page-permissions"
+import {
+  INSTRUCTION_ROLES,
+  INSTRUCTION_TYPE_OPTIONS,
+  OFFICIAL_PROCESS_NODES,
+  type InstructionRoleKey,
+  type InstructionTypeOption,
+} from "@/lib/ma/instruction-roles"
 
 // ─── localStorage keys ───────────────────────────────────────────────────────
 const METRIC_TEMPLATES_KEY = "tracking_metric_templates"
@@ -57,6 +65,8 @@ const LEFT_NAV = [
 
 const SECTION_FROM_PARAM: Record<string, string> = {
   "personal-tags": "个人标签",
+  "user-center": "用户中心",
+  "instruction-settings": "指令设置",
 }
 
 const PERSONAL_TAG_CATEGORIES = [
@@ -1654,6 +1664,318 @@ function InviteRegistrationPanel() {
   )
 }
 
+// ─── InstructionSettingsPanel ─────────────────────────────────────────────────
+const INSTRUCTION_USER_ORDER = [
+  "benc",
+  "chy",
+  "chenpeifeng",
+  "sunjie",
+  "liuyamin",
+  "g.wave",
+  "sunzhou",
+  "luoshuang",
+  "hcx",
+  "yuki",
+  "zzh",
+  "cshen",
+] as const
+
+function instructionUserSortKey(u: User): string {
+  return (u.name || "").trim().toLowerCase()
+}
+
+function isCshenAccount(u: User): boolean {
+  const key = instructionUserSortKey(u)
+  const email = (u.email || "").trim().toLowerCase()
+  return key === "cshen" || email.startsWith("cshen@")
+}
+
+function instructionUserOrderIndex(u: User): number {
+  const key = instructionUserSortKey(u)
+  const idx = INSTRUCTION_USER_ORDER.indexOf(key as (typeof INSTRUCTION_USER_ORDER)[number])
+  if (idx >= 0) return idx
+  // Match email local-part for accounts whose display name differs slightly.
+  const local = (u.email || "").trim().toLowerCase().split("@")[0] || ""
+  const emailIdx = INSTRUCTION_USER_ORDER.indexOf(local as (typeof INSTRUCTION_USER_ORDER)[number])
+  // Unknown accounts sit after the named list, still above cshen.
+  return emailIdx >= 0 ? emailIdx : INSTRUCTION_USER_ORDER.length
+}
+
+function sortInstructionUsers(list: User[], currentUserId: string | undefined): User[] {
+  return [...list].sort((a, b) => {
+    const aCshen = isCshenAccount(a)
+    const bCshen = isCshenAccount(b)
+    // cshen always last
+    if (aCshen !== bCshen) return aCshen ? 1 : -1
+
+    const aCurrent = !aCshen && !!currentUserId && a.id === currentUserId
+    const bCurrent = !bCshen && !!currentUserId && b.id === currentUserId
+    if (aCurrent !== bCurrent) return aCurrent ? -1 : 1
+
+    const orderDiff = instructionUserOrderIndex(a) - instructionUserOrderIndex(b)
+    if (orderDiff !== 0) return orderDiff
+    return instructionUserSortKey(a).localeCompare(instructionUserSortKey(b))
+  })
+}
+
+function InstructionSettingsPanel() {
+  const [instructionType, setInstructionType] = useState<InstructionTypeOption>(INSTRUCTION_TYPE_OPTIONS[0])
+  const [processType, setProcessType] = useState<"official" | "custom">("official")
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [users, setUsers] = useState<User[]>([])
+  const [roleDraft, setRoleDraft] = useState<Record<string, InstructionRoleKey | "">>({})
+  const [nameDraft, setNameDraft] = useState<Record<string, string>>({})
+  const [loadingUsers, setLoadingUsers] = useState(false)
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [saveMsg, setSaveMsg] = useState<Record<string, string>>({})
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      const current = await authService.refreshCurrentUser()
+      if (cancelled) return
+      const admin = current?.role === "admin"
+      setIsAdmin(!!admin)
+      if (!admin) return
+      setLoadingUsers(true)
+      setLoadError(null)
+      try {
+        const list = await authService.listUsers()
+        if (cancelled) return
+        const sorted = sortInstructionUsers(list, current?.id)
+        setUsers(sorted)
+        const nextRoleDraft: Record<string, InstructionRoleKey | ""> = {}
+        const nextNameDraft: Record<string, string> = {}
+        for (const u of sorted) {
+          const role = u.permissions?.instructionRole
+          nextRoleDraft[u.id] =
+            role === "fund_manager" || role === "general_manager" || role === "ops" ? role : ""
+          nextNameDraft[u.id] = u.permissions?.instructionRoleName || ""
+        }
+        setRoleDraft(nextRoleDraft)
+        setNameDraft(nextNameDraft)
+      } catch (e: any) {
+        if (!cancelled) setLoadError(e?.message || "加载用户失败")
+      } finally {
+        if (!cancelled) setLoadingUsers(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  async function saveRole(userId: string) {
+    const target = users.find((u) => u.id === userId)
+    if (!target) return
+    setSavingId(userId)
+    setSaveMsg((m) => ({ ...m, [userId]: "" }))
+    const nextRole = roleDraft[userId] || ""
+    const nextName = (nameDraft[userId] || "").trim()
+    const permissions: PagePermissions = {
+      ...buildPermissionsSnapshot(target.permissions),
+      instructionRole: nextRole,
+      instructionRoleName: nextName,
+    }
+    const res = await authService.updatePermissions(userId, permissions)
+    setSavingId(null)
+    if (res.success) {
+      setUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, permissions } : u)),
+      )
+      setNameDraft((prev) => ({ ...prev, [userId]: nextName }))
+      setSaveMsg((m) => ({ ...m, [userId]: "已保存" }))
+    } else {
+      setSaveMsg((m) => ({ ...m, [userId]: res.error || "保存失败" }))
+    }
+  }
+
+  const processNodes = OFFICIAL_PROCESS_NODES[instructionType]
+
+  return (
+    <div>
+      <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-6">审批节点配置</h2>
+
+      <div className="space-y-6">
+        <div className="flex items-start gap-4">
+          <div className="flex items-center gap-2 shrink-0 pt-2">
+            <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
+            <span className="text-sm text-zinc-700 dark:text-zinc-200">指令类型:</span>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {INSTRUCTION_TYPE_OPTIONS.map((type) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => setInstructionType(type)}
+                className={[
+                  "min-w-[120px] px-5 py-2 text-sm border rounded transition-colors",
+                  instructionType === type
+                    ? "border-red-500 text-red-500 bg-red-50/40 dark:bg-red-950/20"
+                    : "border-border text-zinc-700 dark:text-zinc-300 hover:border-zinc-400",
+                ].join(" ")}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-6">
+          <span className="text-sm text-zinc-700 dark:text-zinc-200 shrink-0">流程类型</span>
+          <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 cursor-pointer">
+            <input
+              type="radio"
+              name="instruction-process-type"
+              checked={processType === "official"}
+              onChange={() => setProcessType("official")}
+              className="accent-red-500"
+            />
+            官方
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 cursor-pointer">
+            <input
+              type="radio"
+              name="instruction-process-type"
+              checked={processType === "custom"}
+              onChange={() => setProcessType("custom")}
+              className="accent-red-500"
+            />
+            自定义
+          </label>
+        </div>
+
+        {processType === "official" ? (
+          <div className="rounded-lg border border-border/70 bg-muted/10 px-5 py-4">
+            <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-3">官方审批节点</p>
+            <div className="flex flex-wrap items-center gap-2">
+              {processNodes.map((node, idx) => (
+                <div key={`${node}-${idx}`} className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-3 py-1.5 text-sm text-zinc-700 dark:text-zinc-200">
+                    <span className="text-xs text-zinc-400 tabular-nums">{String(idx + 1).padStart(2, "0")}</span>
+                    {node}
+                  </span>
+                  {idx < processNodes.length - 1 && (
+                    <span className="text-zinc-300 dark:text-zinc-600">→</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-5 py-8 text-center text-sm text-muted-foreground">
+            自定义审批流程配置暂未开放
+          </div>
+        )}
+
+        {isAdmin && (
+          <div className="pt-2">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="inline-block w-2 h-2 rounded-sm bg-red-500 shrink-0" />
+              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">指令角色分配</span>
+              <span className="text-xs text-zinc-400">（仅管理员可编辑）</span>
+            </div>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+              为每个账户指定指令模块角色与角色姓名；角色姓名将显示在指令流程节点中。
+            </p>
+            {loadError ? (
+              <div className="text-sm text-red-500 py-6">{loadError}</div>
+            ) : loadingUsers ? (
+              <div className="text-sm text-muted-foreground py-10 text-center">加载中…</div>
+            ) : (
+              <div className="overflow-auto rounded border w-fit max-w-full">
+                <table className="text-sm border-collapse table-fixed w-[640px]">
+                  <thead>
+                    <tr className="bg-muted/40 border-b">
+                      <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-14">序号</th>
+                      <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-32">用户名</th>
+                      <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-36">指令角色</th>
+                      <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-40">角色姓名</th>
+                      <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-28">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.length === 0 ? (
+                      <EmptyTableState colSpan={5} />
+                    ) : (
+                      users.map((u, i) => {
+                        const currentRole = u.permissions?.instructionRole || ""
+                        const draftRole = roleDraft[u.id] ?? ""
+                        const currentName = u.permissions?.instructionRoleName || ""
+                        const draftName = nameDraft[u.id] ?? ""
+                        const dirty = draftRole !== currentRole || draftName.trim() !== currentName.trim()
+                        return (
+                          <tr key={u.id} className="border-b hover:bg-muted/20 transition-colors">
+                            <td className="px-3 py-2.5 text-muted-foreground tabular-nums">{i + 1}</td>
+                            <td className="px-3 py-2.5 font-medium text-zinc-700 dark:text-zinc-200 truncate" title={u.name}>
+                              {u.name}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <select
+                                value={draftRole}
+                                onChange={(e) =>
+                                  setRoleDraft((prev) => ({
+                                    ...prev,
+                                    [u.id]: e.target.value as InstructionRoleKey | "",
+                                  }))
+                                }
+                                className="w-full border rounded px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-red-400"
+                              >
+                                <option value="">未分配</option>
+                                {INSTRUCTION_ROLES.map((r) => (
+                                  <option key={r.key} value={r.key}>{r.label}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <input
+                                type="text"
+                                value={draftName}
+                                onChange={(e) =>
+                                  setNameDraft((prev) => ({
+                                    ...prev,
+                                    [u.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder="指令流程显示名"
+                                className="w-full border rounded px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-red-400"
+                              />
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={!dirty || savingId === u.id}
+                                  onClick={() => saveRole(u.id)}
+                                  className="px-3 py-1 text-xs border border-red-500 text-red-500 rounded hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                >
+                                  {savingId === u.id ? "保存中…" : "保存"}
+                                </button>
+                                {saveMsg[u.id] && (
+                                  <span className={[
+                                    "text-xs",
+                                    saveMsg[u.id] === "已保存" ? "text-emerald-600" : "text-red-500",
+                                  ].join(" ")}>
+                                    {saveMsg[u.id]}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Placeholder panels ───────────────────────────────────────────────────────
 function PlaceholderPanel({ title }: { title: string }) {
   return (
@@ -1729,6 +2051,10 @@ export default function SettingsPage() {
         ) : activeLeft === "邀请注册" ? (
           <div className="p-8">
             <InviteRegistrationPanel />
+          </div>
+        ) : activeLeft === "指令设置" ? (
+          <div className="p-8">
+            <InstructionSettingsPanel />
           </div>
         ) : activeLeft !== "个人配置" ? (
           <div className="p-8">

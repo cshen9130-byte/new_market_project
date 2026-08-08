@@ -20,14 +20,21 @@ export function InstructionSubmitSuccess({
           { label: "申请金额", value: record.amount },
           { label: "交易申请日期", value: record.applyDate },
         ]
-      : [
-          { label: "指令ID", value: record.id },
-          { label: "FOF基金", value: record.fofFundName },
-          { label: "底层基金", value: record.underlyingFundName },
-          { label: "指令类型", value: record.type },
-          { label: "申请金额", value: record.amount },
-          { label: "交易申请日期", value: record.applyDate },
-        ]
+      : record.category === "pool"
+        ? [
+            { label: "指令ID", value: record.id },
+            { label: "基金名称", value: record.underlyingFundName },
+            { label: "指令类型", value: record.type },
+            { label: "发起日期", value: record.applyDate },
+          ]
+        : [
+            { label: "指令ID", value: record.id },
+            { label: "FOF基金", value: record.fofFundName },
+            { label: "底层基金", value: record.underlyingFundName },
+            { label: "指令类型", value: record.type },
+            { label: "申请金额", value: record.amount },
+            { label: "交易申请日期", value: record.applyDate },
+          ]
 
   return (
     <div className="flex min-h-[420px] flex-col items-center justify-center px-6 py-16">

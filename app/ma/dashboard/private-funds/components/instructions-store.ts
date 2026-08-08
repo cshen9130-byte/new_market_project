@@ -1,5 +1,32 @@
 export type InstructionCategory = "underlying" | "direct" | "customer" | "pool"
 
+/** Lightweight attachment meta persisted with the local instruction record. */
+export type InstructionAttachmentMeta = {
+  /** IndexedDB key for the file blob (see instruction-attachment-files), or email-confirm:{id}. */
+  id: string
+  name: string
+  size: number
+  uploadedAt: string
+  /** upload = local IndexedDB; email = server ops_email_confirm_records. */
+  source?: "upload" | "email"
+  /** Server row id when source === "email". */
+  confirmRecordId?: number
+}
+
+export function isEmailConfirmAttachmentId(id: string | null | undefined): boolean {
+  return Boolean(id && id.startsWith("email-confirm:"))
+}
+
+export function emailConfirmAttachmentId(recordId: number): string {
+  return `email-confirm:${recordId}`
+}
+
+export function parseEmailConfirmRecordId(id: string | null | undefined): number | null {
+  if (!id?.startsWith("email-confirm:")) return null
+  const n = parseInt(id.slice("email-confirm:".length), 10)
+  return Number.isFinite(n) ? n : null
+}
+
 export type InstructionRecord = {
   id: string
   category: InstructionCategory
@@ -12,10 +39,60 @@ export type InstructionRecord = {
   amount: string
   shares: string | null
   nav: string | null
+  /** Trade confirmation date (YYYY-MM-DD), set when progress becomes 已确认. */
+  confirmDate?: string | null
+  /** Actual application date set at 产品运维执行. */
+  actualApplyDate?: string | null
+  execRemark?: string | null
+  tradeFee?: string | null
+  modifyReason?: string | null
+  /** 合同 — required at 产品运维执行 when type is not 追加. */
+  contractAttachment?: InstructionAttachmentMeta | null
+  /** 确认函/确认单 — required at 产品运维确认. */
+  confirmAttachment?: InstructionAttachmentMeta | null
   progress: string
   summary: string
   createdAt: string
   initiator: string
+}
+
+/** 追加申购 (and similar) skip the contract upload at 产品运维执行. */
+export function isAdditionalSubscribeType(type: string | null | undefined): boolean {
+  return Boolean(type && type.includes("追加"))
+}
+
+/** Contract upload is required at 产品运维执行 for non-追加 underlying/direct trades. */
+export function requiresContractAtExecute(type: string | null | undefined): boolean {
+  return !isAdditionalSubscribeType(type)
+}
+
+export function isInstructionExecuted(progress: string | null | undefined): boolean {
+  if (!progress) return false
+  return (
+    progress.includes("待确认")
+    || progress.includes("已确认")
+    || progress.includes("已执行")
+    || progress.includes("已完成")
+    || progress.includes("结束")
+  )
+}
+
+export function createAttachmentId(): string {
+  return `att_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+export function attachmentMetaFromFile(
+  file: File,
+  uploadedAt = new Date().toISOString(),
+  id = createAttachmentId(),
+): InstructionAttachmentMeta {
+  return {
+    id,
+    name: file.name,
+    size: file.size,
+    uploadedAt,
+    source: "upload",
+  }
 }
 
 const STORAGE_KEY = "ma_instruction_records_v1"
@@ -125,6 +202,36 @@ export function listInstructionRecords(options?: {
   // "handled" stays empty until approval workflow exists.
   if (options?.variant === "handled") return EMPTY_SNAPSHOT
   return rows
+}
+
+export function removeInstructionRecord(id: string): boolean {
+  const rows = readAll()
+  const next = rows.filter((r) => r.id !== id)
+  if (next.length === rows.length) return false
+  writeAll(next)
+  return true
+}
+
+export function updateInstructionRecord(
+  id: string,
+  patch: Partial<Omit<InstructionRecord, "id" | "createdAt">>,
+): InstructionRecord | null {
+  const rows = readAll()
+  const idx = rows.findIndex((r) => r.id === id)
+  if (idx < 0) return null
+  const current = rows[idx]
+  const nextRecord: InstructionRecord = {
+    ...current,
+    ...patch,
+    id: current.id,
+    createdAt: current.createdAt,
+    amount:
+      patch.amount != null ? formatInstructionAmount(patch.amount) : current.amount,
+  }
+  const next = [...rows]
+  next[idx] = nextRecord
+  writeAll(next)
+  return nextRecord
 }
 
 export function subscribeInstructionRecords(listener: () => void): () => void {

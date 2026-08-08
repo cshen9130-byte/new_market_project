@@ -9,6 +9,10 @@ export type PagePermissions = {
   pfOperations?: boolean
   pfInvestmentAlt?: boolean
   pfInvestmentPool?: boolean
+  /** 指令模块角色：基金经理 / 总经理 / 产品运维 */
+  instructionRole?: "fund_manager" | "general_manager" | "ops" | ""
+  /** 指令流程中展示的角色姓名 */
+  instructionRoleName?: string
 }
 
 export type StoredUser = {

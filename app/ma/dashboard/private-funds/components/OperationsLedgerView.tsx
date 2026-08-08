@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import {
   CalendarDays,
   CheckSquare,
@@ -20,30 +20,20 @@ import {
   LEDGER_FIELD_CONFIG_DEFAULT,
   OperationsLedgerFieldConfigDialog,
 } from "./OperationsLedgerFieldConfigDialog"
+import {
+  backfillLedgerFromConfirmedInstructions,
+  getLedgerRecordsServerSnapshot,
+  getLedgerRecordsSnapshot,
+  listLedgerRecords,
+  removeLedgerRecord,
+  subscribeLedgerRecords,
+  type OpsLedgerRow,
+} from "./ops-ledger-store"
 
 type RunStatus = "running" | "liquidated"
 type LedgerSortKey = "apply_date" | "confirm_date"
 
-interface LedgerRow {
-  id: string
-  fof_fund_name: string
-  fof_register_number: string | null
-  transaction_type: string
-  underlying_type: string | null
-  underlying_fund_name: string
-  underlying_beian_hao: string | null
-  apply_date: string
-  confirm_date: string
-  confirmed_shares: string | null
-  confirmed_amount: string | null
-  confirmed_unit_nav: string | null
-  transaction_fee: string | null
-  performance_fee: string | null
-  share_balance: string | null
-  dividend_per_unit: string | null
-  source: string | null
-  remark: string | null
-}
+type LedgerRow = OpsLedgerRow
 
 interface FundOption {
   register_number: string
@@ -112,66 +102,67 @@ export function OperationsLedgerView() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
-  const [data, setData] = useState<LedgerRow[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchSelectMode, setBatchSelectMode] = useState(false)
   const [showAddLedgerMenu, setShowAddLedgerMenu] = useState(false)
   const [showSingleLedgerDialog, setShowSingleLedgerDialog] = useState(false)
   const [showBatchLedgerDialog, setShowBatchLedgerDialog] = useState(false)
-  const [listRefreshKey, setListRefreshKey] = useState(0)
   const [showFieldConfig, setShowFieldConfig] = useState(false)
   const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>([...LEDGER_FIELD_CONFIG_DEFAULT])
 
   const fofFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const underlyingSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const allLedgerRows = useSyncExternalStore(
+    subscribeLedgerRecords,
+    getLedgerRecordsSnapshot,
+    getLedgerRecordsServerSnapshot,
+  )
+
+  useEffect(() => {
+    backfillLedgerFromConfirmedInstructions()
+  }, [])
 
   useEffect(() => {
     setPage(1)
   }, [appliedRunStatus, appliedFofRegister, appliedUnderlyingBeian, appliedApplyDateFrom, appliedApplyDateTo, pageSize, sortKey, sortDir])
 
-  useEffect(() => {
-    setLoading(true)
-    const params = new URLSearchParams({
-      page: String(page),
-      pageSize: String(pageSize),
-      run_status: appliedRunStatus,
-      dir: sortDir,
-    })
-    if (sortKey) params.set("sort", sortKey)
-    if (appliedFofRegister) params.set("fof_register_number", appliedFofRegister)
-    if (appliedUnderlyingBeian) params.set("underlying_beian_hao", appliedUnderlyingBeian)
-    if (appliedApplyDateFrom) params.set("apply_date_from", appliedApplyDateFrom)
-    if (appliedApplyDateTo) params.set("apply_date_to", appliedApplyDateTo)
+  // run_status filter is UI-only for now (no product status on local rows)
+  void appliedRunStatus
 
-    fetch(`/ma/api/ops/ledger/list?${params}`)
-      .then((r) => r.json())
-      .then((json) => {
-        setData(Array.isArray(json.data) ? json.data : [])
-        setTotal(json.total ?? 0)
-        setSelected(new Set())
-      })
-      .catch(() => {
-        setData([])
-        setTotal(0)
-        setSelected(new Set())
-      })
-      .finally(() => setLoading(false))
-  }, [
-    page,
-    pageSize,
-    appliedRunStatus,
-    appliedFofRegister,
-    appliedUnderlyingBeian,
-    appliedApplyDateFrom,
-    appliedApplyDateTo,
-    sortKey,
-    sortDir,
-    listRefreshKey,
-  ])
+  const listResult = useMemo(
+    () =>
+      listLedgerRecords({
+        page,
+        pageSize,
+        fof_register_number: appliedFofRegister,
+        underlying_beian_hao: appliedUnderlyingBeian,
+        apply_date_from: appliedApplyDateFrom,
+        apply_date_to: appliedApplyDateTo,
+        sort: sortKey || "apply_date",
+        dir: sortDir,
+      }),
+    [
+      allLedgerRows,
+      page,
+      pageSize,
+      appliedFofRegister,
+      appliedUnderlyingBeian,
+      appliedApplyDateFrom,
+      appliedApplyDateTo,
+      sortKey,
+      sortDir,
+    ],
+  )
+
+  const data = listResult.data
+  const total = listResult.total
+  const totalPages = listResult.totalPages
+  const loading = false
+
+  useEffect(() => {
+    setSelected(new Set())
+  }, [data])
 
   useEffect(() => {
     if (fofFundSearchRef.current) clearTimeout(fofFundSearchRef.current)
@@ -599,7 +590,14 @@ export function OperationsLedgerView() {
                   <td className={`${cell} text-center sticky right-0 bg-background group-hover:bg-muted border-l`}>
                     <div className="flex items-center justify-center gap-2 text-muted-foreground">
                       <button type="button" className="hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
-                      <button type="button" className="hover:text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
+                      <button
+                        type="button"
+                        className="hover:text-red-500"
+                        onClick={() => removeLedgerRecord(row.id)}
+                        aria-label="删除台账"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -665,12 +663,10 @@ export function OperationsLedgerView() {
       <AddSingleLedgerDialog
         open={showSingleLedgerDialog}
         onClose={() => setShowSingleLedgerDialog(false)}
-        onSaved={() => setListRefreshKey((k) => k + 1)}
       />
       <BatchUploadLedgerDialog
         open={showBatchLedgerDialog}
         onClose={() => setShowBatchLedgerDialog(false)}
-        onUploaded={() => setListRefreshKey((k) => k + 1)}
       />
 
       <OperationsLedgerFieldConfigDialog

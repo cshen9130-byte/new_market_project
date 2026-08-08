@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSPr
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical, SlidersHorizontal } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical, SlidersHorizontal, UserRound } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
@@ -23539,21 +23539,30 @@ function PrivateFundsPageContent() {
     <div className="flex flex-col h-full overflow-hidden">
       {/* Top menu bar */}
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
-        <nav className="flex items-center gap-1 px-6 h-12">
-          {visibleMenuItems.map((item) => (
-            <button
-              key={item.key}
-              onClick={() => handleTabChange(item.key)}
-              className={[
-                "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
-                activeTab === item.key
-                  ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
-                  : "text-muted-foreground hover:text-foreground",
-              ].join(" ")}
-            >
-              {item.label}
-            </button>
-          ))}
+        <nav className="flex items-center justify-between gap-1 px-6 h-12">
+          <div className="flex items-center gap-1 h-full">
+            {visibleMenuItems.map((item) => (
+              <button
+                key={item.key}
+                onClick={() => handleTabChange(item.key)}
+                className={[
+                  "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
+                  activeTab === item.key
+                    ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
+                    : "text-muted-foreground hover:text-foreground",
+                ].join(" ")}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <Link
+            href="/ma/dashboard/settings?section=user-center"
+            className="inline-flex items-center gap-1.5 px-3 h-8 text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+          >
+            <UserRound className="h-4 w-4" />
+            用户中心
+          </Link>
         </nav>
       </div>
 
