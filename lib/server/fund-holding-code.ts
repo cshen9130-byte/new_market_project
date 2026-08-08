@@ -166,10 +166,50 @@ export function isDirectEquityOrListedEtfProduct(
   const ticker = code.replace(/\.(SH|SZ|BJ)$/i, "")
 
   if (isExchangeEtfNameOrCode(name, ticker)) return true
-  if (/基金|私募/u.test(name)) return false
+  if (/基金|私募|资管|信托|专户/u.test(name)) return false
+  // Private-fund short names like 策行9号 / 径灵成长1号A类 are not equities.
+  if (/[0-9]+号/u.test(name)) return false
+  // Non-6-digit pure-numeric codes (e.g. 杰理科技 / 1920138) are not fund beians.
+  if (/^\d+$/.test(ticker) && ticker.length !== 6) return true
   if (!/^\d{6}$/.test(ticker)) return false
 
   return isAshareStockTicker(ticker)
+}
+
+export type FofUnderlyingFundClass = "private" | "public"
+
+/**
+ * SQL fragment: true when a FOF底层 summary row is a 私募基金
+ * (AMAC letter beian, 私募 in name, or typical N号 short name — not 公募/个股).
+ */
+export function sqlIsPrivateFofUnderlying(productNameExpr: string, beianExpr: string): string {
+  const beian = `COALESCE(NULLIF(BTRIM(${beianExpr}), ''), '')`
+  return `(
+    ${productNameExpr} ~* '私募'
+    OR ${beian} ~ '[A-Za-z]'
+    OR (
+      ${productNameExpr} ~* '[0-9]+号'
+      AND ${beian} !~ '^[0-9]{6}$'
+    )
+  )`
+}
+
+/** SQL fragment filtering FOF底层 by 基金分类 (私募 / 公募). */
+export function sqlFofUnderlyingFundClassFilter(
+  fundClass: FofUnderlyingFundClass,
+  productNameExpr: string,
+  beianExpr: string,
+): string {
+  const beian = `COALESCE(NULLIF(BTRIM(${beianExpr}), ''), '')`
+  const isPrivate = sqlIsPrivateFofUnderlying(productNameExpr, beianExpr)
+  if (fundClass === "private") return isPrivate
+  return `(
+    NOT ${isPrivate}
+    AND (
+      ${productNameExpr} ~* '公募'
+      OR ${beian} ~ '^[0-9]{6}$'
+    )
+  )`
 }
 
 /** SQL fragment: true when a summary-row product should be excluded from FOF底层 tables. */
@@ -190,6 +230,12 @@ export function sqlExcludeFofUnderlyingProduct(productNameExpr: string, beianExp
       ${productNameExpr} !~* '基金|私募|ETF'
       AND ${beian} ~ '^(000|001|002|003|300|301|600|601|603|605|688|689)[0-9]{3}$'
     )
+    OR (
+      ${productNameExpr} !~* '基金|私募|资管|信托|专户|ETF'
+      AND ${productNameExpr} !~* '[0-9]+号'
+      AND ${beian} ~ '^[0-9]+$'
+      AND ${beian} !~ '^[0-9]{6}$'
+    )
   )`
 }
 
@@ -207,7 +253,8 @@ export function isDirectEquityOrEtfValuationHolding(
 
   if (kind === "private_fund" || /私募/u.test(name)) return false
   if (kind === "stock") return true
-  if (isExchangeEtfNameOrCode(name, sym.replace(/\.(SH|SZ|BJ)$/i, ""))) return true
+  const ticker = sym.replace(/\.(SH|SZ|BJ)$/i, "")
+  if (isExchangeEtfNameOrCode(name, ticker)) return true
   if (
     kind === "fund_or_stock"
     && !/基金|私募|ETF/i.test(name)
@@ -221,6 +268,14 @@ export function isDirectEquityOrEtfValuationHolding(
     (kind === "fund" || kind === "fund_or_stock")
     && !/基金|私募/i.test(name)
     && isExchangeEtfTicker(sym)
+  ) {
+    return true
+  }
+  if (
+    !/基金|私募|资管|信托|专户|ETF/i.test(name)
+    && !/[0-9]+号/u.test(name)
+    && /^\d+$/.test(ticker)
+    && ticker.length !== 6
   ) {
     return true
   }
@@ -251,6 +306,13 @@ export const SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF = `(
     AND h.subject_name !~* '基金|私募'
     AND NULLIF(BTRIM(h.symbol), '') ~ '^(50[0-9]{4}|51[0-9]{4}|52[0-9]{4}|53[0-9]{4}|56[0-9]{4}|588[0-9]{3}|159[0-9]{3}|16[0-3][0-9]{3})$'
   )
+  OR (
+    h.row_kind IS DISTINCT FROM 'private_fund'
+    AND h.subject_name !~* '基金|私募|资管|信托|专户|ETF'
+    AND h.subject_name !~* '[0-9]+号'
+    AND NULLIF(BTRIM(h.symbol), '') ~ '^[0-9]+$'
+    AND NULLIF(BTRIM(h.symbol), '') !~ '^[0-9]{6}$'
+  )
 )`
 
 /** Same as above for ops_managed_fof_underlying (alias m). */
@@ -276,6 +338,13 @@ export const SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF = `(
     m.row_kind IN ('fund', 'fund_or_stock')
     AND m.underlying_name !~* '基金|私募'
     AND NULLIF(BTRIM(m.underlying_product_code), '') ~ '^(50[0-9]{4}|51[0-9]{4}|52[0-9]{4}|53[0-9]{4}|56[0-9]{4}|588[0-9]{3}|159[0-9]{3}|16[0-3][0-9]{3})$'
+  )
+  OR (
+    m.row_kind IS DISTINCT FROM 'private_fund'
+    AND m.underlying_name !~* '基金|私募|资管|信托|专户|ETF'
+    AND m.underlying_name !~* '[0-9]+号'
+    AND NULLIF(BTRIM(m.underlying_product_code), '') ~ '^[0-9]+$'
+    AND NULLIF(BTRIM(m.underlying_product_code), '') !~ '^[0-9]{6}$'
   )
 )`
 

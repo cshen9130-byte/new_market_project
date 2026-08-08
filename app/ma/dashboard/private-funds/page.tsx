@@ -12030,6 +12030,7 @@ function OperationsFofUnderlyingView() {
     const params = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
+      fund_class: fundClass,
       strategy_source: strategySource,
       holding_status: holdingStatus,
       keyword,
@@ -12052,7 +12053,7 @@ function OperationsFofUnderlyingView() {
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, fofFundSelected?.register_number, fofListReloadKey])
+  }, [page, pageSize, fundClass, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, fofFundSelected?.register_number, fofListReloadKey])
 
   useEffect(() => {
     fetch("/ma/api/ops/fof-underlying/fof-funds")
@@ -18781,6 +18782,7 @@ function InvestmentFofOverviewView() {
     const params = new URLSearchParams({
       page: favoritesOnly ? "1" : String(page),
       pageSize: favoritesOnly ? "100000" : String(pageSize),
+      fund_class: fundClass,
       strategy_source: strategySource,
       holding_status: holdingStatus,
       team_tag_mode: teamTagMode,

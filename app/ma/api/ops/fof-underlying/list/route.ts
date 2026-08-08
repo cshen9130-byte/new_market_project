@@ -13,7 +13,11 @@ import {
   ensureFofOverviewListCachePopulated,
   shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
-import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
+import {
+  sqlExcludeFofUnderlyingProduct,
+  sqlFofUnderlyingFundClassFilter,
+  type FofUnderlyingFundClass,
+} from "@/lib/server/fund-holding-code"
 import { managedUnderlyingMarketValueExpr } from "@/lib/server/managed-fof-underlying-pg"
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
@@ -90,6 +94,8 @@ export async function GET(req: Request) {
     const strategySource = searchParams.get("strategy_source") === "platform" ? "platform" : "company"
     const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
     const holdingStatus = searchParams.get("holding_status") || "holding"
+    const fundClass: FofUnderlyingFundClass =
+      searchParams.get("fund_class") === "public" ? "public" : "private"
     const fofRegister = (searchParams.get("fof_register_number") || "").trim()
     const sortParam = searchParams.get("sort") || ""
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
@@ -110,6 +116,7 @@ export async function GET(req: Request) {
       const conditions: string[] = [
         "f.product_name <> '合计'",
         sqlExcludeFofUnderlyingProduct("f.product_name", "cache.beian_hao"),
+        sqlFofUnderlyingFundClassFilter(fundClass, "f.product_name", "cache.beian_hao"),
       ]
       const params: unknown[] = []
       let pi = 1
@@ -210,6 +217,7 @@ export async function GET(req: Request) {
     const conditions: string[] = [
       "f.product_name <> '合计'",
       sqlExcludeFofUnderlyingProduct("f.product_name", BEIAN_EXPR),
+      sqlFofUnderlyingFundClassFilter(fundClass, "f.product_name", BEIAN_EXPR),
     ]
     const params: unknown[] = []
     let pi = 1
