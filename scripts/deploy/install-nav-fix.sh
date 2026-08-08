@@ -37,8 +37,6 @@ bash scripts/deploy/setup-choice-emquant.sh \
   --debug-build \
   --build-debug-interval-sec 30
 
-echo "==> SLA063 cache patch"
-export DB_STATEMENT_TIMEOUT=120000
-npx tsx scripts/ma/_fix_sla063_cache.ts
+# SLA063 one-off cache patch removed (405d039c); covered by email NAV ingestion.
 
 echo "Deploy complete. Verify: http://8.154.33.143/ma/dashboard/private-funds/SLA063"

@@ -37,10 +37,7 @@ if [[ "${WEB_N}" -lt 2 ]]; then
   echo "WARN: web cluster has ${WEB_N} process(es); check ecosystem.config.js WEB_INSTANCES" >&2
 fi
 
-echo "==> SLA063 cache patch"
-DB_STATEMENT_TIMEOUT=120000 npx tsx scripts/ma/_fix_sla063_cache.ts
-
-echo "==> ruinai tracking cache patch (SBDF95 / BDF95A)"
-DB_STATEMENT_TIMEOUT=120000 npx tsx scripts/ma/_fix_tracking_ruinai.ts
+# One-off SLA063 / Ruinai cache patches were removed (405d039c); list NAV
+# ingestion now covers those cases without post-deploy scripts.
 
 echo "==> done"
