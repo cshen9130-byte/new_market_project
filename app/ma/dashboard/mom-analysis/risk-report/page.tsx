@@ -26,6 +26,7 @@ const AdvisorCapitalEfficiency    = dynamic(() => import("@/components/ma/adviso
 const AdvisorReallocation         = dynamic(() => import("@/components/ma/advisor-reallocation"),            { ssr: false })
 const AdvisorSectorLeverageHeatmap  = dynamic(() => import("@/components/ma/advisor-sector-leverage-heatmap"),  { ssr: false })
 const AdvisorSectorExposureStack   = dynamic(() => import("@/components/ma/advisor-sector-exposure-stack"),   { ssr: false })
+const OptionFloatingPnlCharts  = dynamic(() => import("@/components/ma/option-floating-pnl-charts"),  { ssr: false })
 
 const subNavItems = [
   { key: "overview",  name: "产品总览", icon: BarChart2 },
@@ -3798,8 +3799,7 @@ function PositionChangeVarMiniCard() {
 function OptionHoldingContent() {
   const [rows, setRows] = useState<OptionRow[]>([])
   const [date, setDate] = useState<string>("")
-  const [loading, setLoading] = useState(false)
-  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [tableExpanded, setTableExpanded] = useState(false)
   const [contractSearch, setContractSearch] = useState("")
   const [accountFilter, setAccountFilter] = useState("全部")
@@ -3810,19 +3810,17 @@ function OptionHoldingContent() {
   const [pnlFilter, setPnlFilter] = useState("全部")
 
   useEffect(() => {
-    if (!tableExpanded || hasLoadedOnce) return
     setLoading(true)
     fetchJsonCached("/ma/api/mom-analysis/option-positions")
       .then(j => {
         if (j.ok) {
           setRows(j.rows ?? [])
           setDate(j.date ?? "")
-          setHasLoadedOnce(true)
         }
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [tableExpanded, hasLoadedOnce])
+  }, [])
 
   const accounts   = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.account))).sort()], [rows])
   const tradeDates = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.tradeDate).filter(Boolean))).sort().reverse()], [rows])
@@ -3864,6 +3862,7 @@ function OptionHoldingContent() {
   }
 
   return (
+    <>
     <Card className="mt-6">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between gap-2">
@@ -3987,6 +3986,9 @@ function OptionHoldingContent() {
       </CardContent>
       )}
     </Card>
+
+    <OptionFloatingPnlCharts className="mt-4" prodNameMap={PROD_NAMES} />
+    </>
   )
 }
 
@@ -9271,6 +9273,20 @@ export default function RiskReportNewPage() {
                     <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4"
                          style={{ background: "#ffffff" }}>
                       <AdvisorCorrTimeseries height={380} />
+                    </div>
+
+                    {/* Section: 期权浮动盈亏 */}
+                    <div className="flex items-center gap-3 mt-5 mb-3">
+                      <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
+                      <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
+                          style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
+                        五、期权浮动盈亏
+                      </h2>
+                      <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4 p-2"
+                         style={{ background: "#ffffff" }}>
+                      <OptionFloatingPnlCharts height={260} prodNameMap={PROD_NAMES} />
                     </div>
                   </>
                 ) : (
