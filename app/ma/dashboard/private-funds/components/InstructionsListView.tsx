@@ -34,13 +34,26 @@ import {
 } from "./instruction-attachment-files"
 import {
   attachmentMetaFromFile,
+  canApproveInstruction,
+  canConfirmInstruction,
+  canExecuteInstruction,
+  currentInstructionInitiator,
+  currentInstructionUserId,
   emailConfirmAttachmentId,
   getInstructionRecordsServerSnapshot,
   getInstructionRecordsSnapshot,
+  instructionTimelineActiveIndex,
+  instructionTimelineSteps,
+  isInstructionAwaitingExecute,
   isInstructionExecuted,
+  isInstructionPendingApproval,
+  isInstructionRejected,
+  isInstructionWorkflowFinished,
   listInstructionRecords,
+  progressAfterApproval,
   removeInstructionRecord,
   requiresContractAtExecute,
+  resolveInstructionInitiatorDisplay,
   subscribeInstructionRecords,
   updateInstructionRecord,
   type InstructionAttachmentMeta,
@@ -1009,41 +1022,26 @@ function formatTemporaryOpenLabel(value: string | null | undefined): string {
 
 function approvalStatusFromProgress(progress: string): string {
   if (!progress) return "待审批"
-  if (progress.includes("已确认") || progress.includes("已完成") || progress.includes("结束")) {
+  if (isInstructionRejected(progress)) return "已驳回"
+  if (isInstructionPendingApproval(progress)) return "待审批"
+  if (
+    progress.includes("待执行")
+    || progress.includes("待确认")
+    || progress.includes("已确认")
+    || progress.includes("已完成")
+    || progress.includes("结束")
+    || progress.includes("已通过")
+  ) {
     return "已通过"
   }
-  if (progress.includes("驳回") || progress.includes("拒绝")) return "已驳回"
-  if (progress.includes("待审批") || progress.includes("待审核")) return "待审批"
   return progress
 }
 
-/** Default trade / underlying / direct instruction flow */
-const DETAIL_TIMELINE_TRADE = [
-  "基金经理发起",
-  "总经理审批",
-  "产品运维执行",
-  "产品运维确认",
-  "指令结束",
-] as const
-
-/** 入/出池审批 — shorter approval flow (e.g. 基金入池) */
-const DETAIL_TIMELINE_POOL = [
-  "基金经理发起",
-  "总经理审批",
-  "指令结束",
-] as const
-
-function detailTimelineStepsFor(record: InstructionRecord): readonly string[] {
-  if (
-    record.category === "pool"
-    || record.type === "基金入池"
-    || record.type === "基金出池"
-    || record.type === "管理人入池"
-    || record.type === "管理人出池"
-  ) {
-    return DETAIL_TIMELINE_POOL
-  }
-  return DETAIL_TIMELINE_TRADE
+function executionStatusFromProgress(progress: string): string {
+  if (isInstructionExecuted(progress)) return "已执行"
+  if (isInstructionAwaitingExecute(progress)) return "待执行"
+  if (isInstructionPendingApproval(progress) || isInstructionRejected(progress)) return "待执行"
+  return "待执行"
 }
 
 function hasPositiveHolding(
@@ -1108,13 +1106,24 @@ function InstructionDetailDialog({
   open,
   record,
   onClose,
+  onRequestExecute,
+  onRequestConfirm,
 }: {
   open: boolean
   record: InstructionRecord | null
   onClose: () => void
+  onRequestExecute?: (record: InstructionRecord) => void
+  onRequestConfirm?: (record: InstructionRecord) => void
 }) {
+  const { toast } = useToast()
   const [openDay, setOpenDay] = useState<string | null>(null)
   const [temporaryOpen, setTemporaryOpen] = useState<string | null>(null)
+  const [approvalRemark, setApprovalRemark] = useState("")
+  const [approving, setApproving] = useState(false)
+  const tradeSectionRef = useRef<HTMLElement>(null)
+  const approvalSectionRef = useRef<HTMLElement>(null)
+  const executeSectionRef = useRef<HTMLElement>(null)
+  const confirmSectionRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     if (!open || !record) {
@@ -1209,10 +1218,49 @@ function InstructionDetailDialog({
     record?.underlyingBeianHao,
   ])
 
+  useEffect(() => {
+    if (!open || !record) {
+      setApprovalRemark("")
+      setApproving(false)
+      return
+    }
+    setApprovalRemark(record.approvalRemark || "")
+    setApproving(false)
+  }, [open, record?.id, record?.approvalRemark])
+
+  const timelineSteps = record ? instructionTimelineSteps(record) : []
+  const activeStepIndex = record ? instructionTimelineActiveIndex(record) : 0
+  const workflowFinished = record ? isInstructionWorkflowFinished(record) : false
+  const activeStepLabel = timelineSteps[activeStepIndex] || ""
+
+  useEffect(() => {
+    if (!open || !record) return
+    const target =
+      activeStepLabel === "总经理审批"
+        ? approvalSectionRef.current
+        : activeStepLabel === "产品运维执行"
+          ? executeSectionRef.current
+          : activeStepLabel === "产品运维确认"
+            ? confirmSectionRef.current
+            : activeStepLabel === "基金经理发起"
+              ? tradeSectionRef.current
+              : null
+    if (!target) return
+    const id = window.setTimeout(() => {
+      target.scrollIntoView({ behavior: "smooth", block: "start" })
+    }, 60)
+    return () => window.clearTimeout(id)
+  }, [open, record?.id, record?.progress, activeStepLabel])
+
   if (!open || !record) return null
 
-  const operator = record.initiator || "-"
+  const operator = resolveInstructionInitiatorDisplay(
+    record.initiator,
+    record.initiatorUserId,
+  )
   const operatedAt = formatInstructionDateTime(record.createdAt)
+  const approverName = (record.approver || "").trim() || "-"
+  const approvedAt = formatInstructionDateTime(record.approvedAt)
   const amountText =
     record.amount && record.amount !== "-"
       ? `${record.amount}${String(record.amount).includes("元") ? "" : " 元"}`
@@ -1232,9 +1280,46 @@ function InstructionDetailDialog({
         ? "基金名称"
         : "底层基金"
   const approvalStatus = approvalStatusFromProgress(record.progress)
-  // Always show the stored type so list badge and detail stay identical.
   const displayType = record.type
-  const timelineSteps = detailTimelineStepsFor(record)
+  const canApprove = canApproveInstruction(record)
+  const canExecute = canExecuteInstruction(record)
+  const canConfirm = canConfirmInstruction(record)
+  const showTradeOps = record.category === "underlying" || record.category === "direct"
+
+  function timelineMeta(label: string, index: number): { name: string; at: string } | null {
+    if (index === 0) return { name: operator, at: operatedAt }
+    if (label === "总经理审批" && record.approver && record.approvedAt) {
+      return { name: approverName, at: approvedAt }
+    }
+    return null
+  }
+
+  function handleApproval(decision: "approve" | "reject") {
+    if (!canApprove || approving) return
+    setApproving(true)
+    const now = new Date().toISOString()
+    const updated = updateInstructionRecord(record.id, {
+      progress: decision === "approve" ? progressAfterApproval(record) : "已驳回",
+      approvalRemark: approvalRemark.trim() || null,
+      approver: currentInstructionInitiator(),
+      approverUserId: currentInstructionUserId() || undefined,
+      approvedAt: now,
+    })
+    setApproving(false)
+    if (!updated) {
+      toast({ title: "审批失败", description: "指令可能已被删除" })
+      return
+    }
+    toast({
+      title: decision === "approve" ? "审批已通过" : "审批已驳回",
+      description:
+        decision === "approve"
+          ? progressAfterApproval(record).includes("待执行")
+            ? "已进入产品运维执行"
+            : "指令流程已结束"
+          : "指令已驳回",
+    })
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
@@ -1258,13 +1343,26 @@ function InstructionDetailDialog({
           <aside className="w-[200px] shrink-0 border-r border-zinc-100 bg-zinc-50/70 px-4 py-5 dark:border-zinc-800 dark:bg-zinc-900/40 overflow-y-auto">
             <ol className="relative space-y-0">
               {timelineSteps.map((label, index) => {
-                const done = index === 0
+                const rejected = isInstructionRejected(record.progress)
+                const done = rejected
+                  ? index < activeStepIndex
+                  : workflowFinished
+                    ? index <= activeStepIndex
+                    : index < activeStepIndex
+                const current = !workflowFinished && !rejected && index === activeStepIndex
+                const rejectedCurrent = rejected && index === activeStepIndex
                 const isLast = index === timelineSteps.length - 1
+                const meta = done || (rejectedCurrent && Boolean(record.approver))
+                  ? timelineMeta(label, index)
+                  : null
                 return (
                   <li key={label} className="relative flex gap-3 pb-6 last:pb-0">
                     {!isLast ? (
                       <span
-                        className="absolute left-[7px] top-4 bottom-0 w-px bg-zinc-200 dark:bg-zinc-700"
+                        className={[
+                          "absolute left-[7px] top-4 bottom-0 w-px",
+                          done ? "bg-red-300 dark:bg-red-900" : "bg-zinc-200 dark:bg-zinc-700",
+                        ].join(" ")}
                         aria-hidden="true"
                       />
                     ) : null}
@@ -1273,7 +1371,9 @@ function InstructionDetailDialog({
                         "relative z-[1] mt-1 h-3.5 w-3.5 shrink-0 rounded-full border-2 bg-background",
                         done
                           ? "border-red-500 bg-red-500"
-                          : "border-zinc-300 dark:border-zinc-600",
+                          : current || rejectedCurrent
+                            ? "border-red-500"
+                            : "border-zinc-300 dark:border-zinc-600",
                       ].join(" ")}
                       aria-hidden="true"
                     />
@@ -1281,18 +1381,20 @@ function InstructionDetailDialog({
                       <div
                         className={[
                           "text-sm leading-snug",
-                          done
+                          done || current || rejectedCurrent
                             ? "font-medium text-zinc-800 dark:text-zinc-100"
                             : "text-zinc-500 dark:text-zinc-400",
                         ].join(" ")}
                       >
                         {label}
                       </div>
-                      {done ? (
+                      {meta ? (
                         <div className="mt-1 space-y-0.5 text-xs text-zinc-400">
-                          <div>{operator}</div>
-                          <div>{operatedAt}</div>
+                          <div>{meta.name}</div>
+                          <div>{meta.at}</div>
                         </div>
+                      ) : current ? (
+                        <div className="mt-1 text-xs text-red-500">进行中</div>
                       ) : null}
                     </div>
                   </li>
@@ -1306,12 +1408,18 @@ function InstructionDetailDialog({
               操作: {operator} ({operatedAt})
             </div>
 
-            <section className="mb-5">
-              <div className="mb-3 flex items-center gap-2">
+            <section
+              ref={tradeSectionRef}
+              className={[
+                "mb-5 rounded-md transition-colors",
+                activeStepLabel === "基金经理发起" ? "bg-red-50/50 ring-1 ring-red-100 dark:bg-red-950/20 dark:ring-red-900/40" : "",
+              ].join(" ")}
+            >
+              <div className="mb-3 flex items-center gap-2 px-1 pt-1">
                 <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
                 <h3 className="text-sm font-semibold text-foreground">交易信息</h3>
               </div>
-              <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-x-8 gap-y-3 px-1 pb-1 sm:grid-cols-2">
                 <DetailField label="指令ID" value={record.id} />
                 <DetailField label="指令类型" value={displayType} accent />
                 <DetailField label={fofLabel} value={cellDash(record.fofFundName)} />
@@ -1337,28 +1445,74 @@ function InstructionDetailDialog({
               </div>
             </section>
 
-            <section className="mb-5">
-              <div className="mb-3 flex items-center gap-2">
+            <section
+              ref={approvalSectionRef}
+              className={[
+                "mb-5 rounded-md transition-colors",
+                activeStepLabel === "总经理审批" ? "bg-red-50/50 ring-1 ring-red-100 dark:bg-red-950/20 dark:ring-red-900/40" : "",
+              ].join(" ")}
+            >
+              <div className="mb-3 flex items-center gap-2 px-1 pt-1">
                 <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
                 <h3 className="text-sm font-semibold text-foreground">审批信息</h3>
               </div>
-              <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-x-8 gap-y-3 px-1 pb-1 sm:grid-cols-2">
                 <DetailField label="审批" value={approvalStatus} accent />
-                <DetailField label="审批备注" value="-" />
+                {canApprove ? (
+                  <label className="sm:col-span-2 block text-sm">
+                    <span className="mb-1 block text-zinc-500 dark:text-zinc-400">审批备注</span>
+                    <textarea
+                      value={approvalRemark}
+                      onChange={(e) => setApprovalRemark(e.target.value)}
+                      rows={3}
+                      placeholder="请输入审批意见（可选）"
+                      className="w-full resize-y rounded border border-border bg-background px-3 py-2 focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    />
+                  </label>
+                ) : (
+                  <DetailField
+                    label="审批备注"
+                    value={cellDash(record.approvalRemark)}
+                    fullWidth
+                  />
+                )}
+                {record.approver ? (
+                  <>
+                    <DetailField label="审批人" value={approverName} />
+                    <DetailField label="审批时间" value={approvedAt} />
+                  </>
+                ) : null}
               </div>
             </section>
 
-            {record.category === "underlying" || record.category === "direct" ? (
+            {showTradeOps ? (
               <>
-                <section className="mb-5">
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
-                    <h3 className="text-sm font-semibold text-foreground">执行信息</h3>
+                <section
+                  ref={executeSectionRef}
+                  className={[
+                    "mb-5 rounded-md transition-colors",
+                    activeStepLabel === "产品运维执行" ? "bg-red-50/50 ring-1 ring-red-100 dark:bg-red-950/20 dark:ring-red-900/40" : "",
+                  ].join(" ")}
+                >
+                  <div className="mb-3 flex items-center justify-between gap-2 px-1 pt-1">
+                    <div className="flex items-center gap-2">
+                      <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
+                      <h3 className="text-sm font-semibold text-foreground">执行信息</h3>
+                    </div>
+                    {canExecute && onRequestExecute ? (
+                      <button
+                        type="button"
+                        onClick={() => onRequestExecute(record)}
+                        className="rounded bg-amber-500 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600"
+                      >
+                        去执行
+                      </button>
+                    ) : null}
                   </div>
-                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 px-1 pb-1 sm:grid-cols-2">
                     <DetailField
                       label="执行"
-                      value={isInstructionExecuted(record.progress) ? "已执行" : "待执行"}
+                      value={executionStatusFromProgress(record.progress)}
                       accent
                     />
                     <DetailField
@@ -1380,12 +1534,29 @@ function InstructionDetailDialog({
                   </div>
                 </section>
 
-                <section>
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
-                    <h3 className="text-sm font-semibold text-foreground">确认信息</h3>
+                <section
+                  ref={confirmSectionRef}
+                  className={[
+                    "rounded-md transition-colors",
+                    activeStepLabel === "产品运维确认" ? "bg-red-50/50 ring-1 ring-red-100 dark:bg-red-950/20 dark:ring-red-900/40" : "",
+                  ].join(" ")}
+                >
+                  <div className="mb-3 flex items-center justify-between gap-2 px-1 pt-1">
+                    <div className="flex items-center gap-2">
+                      <span className="h-3.5 w-1 rounded-sm bg-red-500" aria-hidden="true" />
+                      <h3 className="text-sm font-semibold text-foreground">确认信息</h3>
+                    </div>
+                    {canConfirm && onRequestConfirm ? (
+                      <button
+                        type="button"
+                        onClick={() => onRequestConfirm(record)}
+                        className="rounded bg-emerald-500 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600"
+                      >
+                        去确认
+                      </button>
+                    ) : null}
                   </div>
-                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 px-1 pb-1 sm:grid-cols-2">
                     <DetailField label="交易确认日期" value={cellDash(record.confirmDate)} />
                     <DetailField label="交易费用" value={cellDash(record.tradeFee)} />
                     <DetailField label="确认单位净值" value={cellDash(record.nav)} />
@@ -1408,14 +1579,42 @@ function InstructionDetailDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end border-t px-5 py-3 flex-shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded bg-red-500 px-5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
-          >
-            关闭
-          </button>
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3 flex-shrink-0">
+          {canApprove ? (
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
+              >
+                关闭
+              </button>
+              <button
+                type="button"
+                disabled={approving}
+                onClick={() => handleApproval("reject")}
+                className="rounded border border-zinc-300 px-4 py-1.5 text-sm transition-colors hover:bg-muted disabled:opacity-60 dark:border-zinc-600"
+              >
+                驳回
+              </button>
+              <button
+                type="button"
+                disabled={approving}
+                onClick={() => handleApproval("approve")}
+                className="rounded bg-red-500 px-5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600 disabled:opacity-60"
+              >
+                {approving ? "提交中…" : "通过"}
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded bg-red-500 px-5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
+            >
+              关闭
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1423,15 +1622,11 @@ function InstructionDetailDialog({
 }
 
 function canExecuteTrade(row: InstructionRecord): boolean {
-  if (row.category !== "underlying" && row.category !== "direct") return false
-  if (isInstructionConfirmed(row.progress)) return false
-  return !isInstructionExecuted(row.progress)
+  return canExecuteInstruction(row)
 }
 
 function canConfirmTrade(row: InstructionRecord): boolean {
-  if (row.category !== "underlying" && row.category !== "direct") return false
-  if (isInstructionConfirmed(row.progress)) return false
-  return isInstructionExecuted(row.progress)
+  return canConfirmInstruction(row)
 }
 
 function renderInstructionCell(
@@ -1482,7 +1677,7 @@ function renderInstructionCell(
         </span>
       )
     case "initiator":
-      return row.initiator
+      return resolveInstructionInitiatorDisplay(row.initiator, row.initiatorUserId)
     case "actions":
       return (
         <div className="inline-flex items-center justify-center gap-1.5 text-zinc-400">
@@ -1624,6 +1819,8 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
 
   const showProcessStatus = variant === "handled"
 
+  const viewerUserId = currentInstructionUserId()
+
   const filteredRows = useMemo(() => {
     let next = listInstructionRecords({ category: categoryTab, variant })
     if (categoryTab === "underlying") {
@@ -1639,6 +1836,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
     allRecords,
     categoryTab,
     variant,
+    viewerUserId,
     appliedFof,
     appliedUnderlying,
     appliedDateFrom,
@@ -2215,6 +2413,14 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
             : null
         }
         onClose={() => setDetailTarget(null)}
+        onRequestExecute={(row) => {
+          setDetailTarget(null)
+          setExecuteTarget(row)
+        }}
+        onRequestConfirm={(row) => {
+          setDetailTarget(null)
+          setConfirmTarget(row)
+        }}
       />
     </div>
   )
