@@ -1,8 +1,7 @@
 "use client"
 
-import Link from "next/link"
 import { LogoutButton } from "@/components/logout-button"
-import { Bot, Moon, Sun, Menu, UserRound } from "lucide-react"
+import { Bot, Moon, Sun, Menu } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 
@@ -62,13 +61,6 @@ export function DashboardHeader({ user, onChatToggle, onMenuToggle }: DashboardH
             <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
             <span className="sr-only">切换主题</span>
           </Button>
-          <Link
-            href="/ma/dashboard/settings?section=user-center"
-            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium text-zinc-700 dark:text-zinc-200 hover:bg-accent hover:text-accent-foreground transition-colors"
-          >
-            <UserRound className="h-4 w-4" />
-            用户中心
-          </Link>
           <LogoutButton />
         </div>
       </div>

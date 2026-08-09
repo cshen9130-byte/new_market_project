@@ -69,14 +69,14 @@ export function DateInput({
       />
       <span
         className={cn(
-          "pointer-events-none absolute left-3 top-1/2 max-w-[calc(100%-2.25rem)] -translate-y-1/2 truncate text-sm",
+          "pointer-events-none absolute left-3 top-1/2 z-10 max-w-[calc(100%-2.25rem)] -translate-y-1/2 truncate text-sm",
           value ? "text-foreground" : "text-muted-foreground/70",
           displayClassName,
         )}
       >
         {value || placeholder}
       </span>
-      <CalendarDays className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+      <CalendarDays className="pointer-events-none absolute right-3 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
     </div>
   )
 }

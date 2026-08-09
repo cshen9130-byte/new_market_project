@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
-import { CalendarDays, ChevronDown, ChevronRight, Inbox } from "lucide-react"
+import { ChevronDown, ChevronRight, Download, Inbox } from "lucide-react"
+import { DateInput } from "@/components/ui/date-input"
 import { useToast } from "@/hooks/use-toast"
-import { openInstructionAttachment } from "../../components/instruction-attachment-files"
+import { downloadInstructionAttachment } from "../../components/instruction-attachment-files"
 import { isEmailConfirmAttachmentId } from "../../components/instructions-store"
 import {
   backfillLedgerFromConfirmedInstructions,
@@ -18,6 +19,16 @@ import {
 function formatCell(value: string | null | undefined): string {
   if (value == null || value === "") return "—"
   return value
+}
+
+function csvEscape(value: string): string {
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
+  return value
+}
+
+function csvCell(value: string | null | undefined): string {
+  if (value == null || value === "") return ""
+  return csvEscape(value)
 }
 
 function TxTypeBadge({ type }: { type: string }) {
@@ -108,31 +119,83 @@ export function FofTransactionAnalysisPanel({
     setPage(1)
   }
 
-  async function handleOpenAttachment(attachment: OpsLedgerAttachment) {
+  function handleDownloadCsv() {
+    const filter = {
+      fof_register_number: beianHao,
+      fof_fund_name: productName || undefined,
+      underlying_name_q: appliedName || undefined,
+      apply_date_from: appliedFrom || undefined,
+      apply_date_to: appliedTo || undefined,
+      sort: "apply_date" as const,
+      dir: "desc" as const,
+    }
+    const first = listLedgerRecords({ ...filter, page: 1, pageSize: 200 })
+    const rows: OpsLedgerRow[] = [...first.data]
+    for (let p = 2; p <= first.totalPages; p++) {
+      rows.push(...listLedgerRecords({ ...filter, page: p, pageSize: 200 }).data)
+    }
+
+    const headers = [
+      "序号",
+      "FOF名称",
+      "交易类型",
+      "申赎日期",
+      "确认日期",
+      "确认净额",
+      "确认份额",
+      "确认单位净值",
+      "交易费用",
+      "业绩报酬",
+      "合同",
+      "确认单",
+      "来源",
+      "备注",
+    ]
+    const lines = rows.map((row, i) =>
+      [
+        String(i + 1),
+        csvCell(row.underlying_fund_name),
+        csvCell(row.transaction_type),
+        csvCell(row.apply_date),
+        csvCell(row.confirm_date),
+        csvCell(row.confirmed_amount),
+        csvCell(row.confirmed_shares),
+        csvCell(row.confirmed_unit_nav),
+        csvCell(row.transaction_fee),
+        csvCell(row.performance_fee),
+        csvCell(row.contract_attachment?.name),
+        csvCell(row.confirm_attachment?.name),
+        csvCell(row.source),
+        csvCell(row.remark),
+      ].join(","),
+    )
+    const blob = new Blob(["\uFEFF" + [headers.join(","), ...lines].join("\n")], {
+      type: "text/csv;charset=utf-8",
+    })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    const stamp = new Date().toISOString().slice(0, 10)
+    const namePart = (productName || beianHao || "FOF").replace(/[\\/:*?"<>|]/g, "_")
+    a.download = `FOF台账_${namePart}_${stamp}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  async function handleDownloadAttachment(attachment: OpsLedgerAttachment) {
     try {
-      if (
-        attachment.source === "email"
-        || attachment.confirmRecordId != null
-        || isEmailConfirmAttachmentId(attachment.id)
-      ) {
-        const recordId =
-          attachment.confirmRecordId
-          ?? (isEmailConfirmAttachmentId(attachment.id)
-            ? Number(attachment.id.replace("email-confirm:", ""))
-            : null)
-        if (recordId != null && Number.isFinite(recordId)) {
-          window.open(
-            `/ma/api/ops/email-confirm-records/${recordId}/file`,
-            "_blank",
-            "noopener,noreferrer",
-          )
-          return
-        }
-      }
-      await openInstructionAttachment(attachment.id)
+      const recordId =
+        attachment.confirmRecordId
+        ?? (isEmailConfirmAttachmentId(attachment.id)
+          ? Number(attachment.id.replace("email-confirm:", ""))
+          : null)
+      const attachmentId =
+        recordId != null && Number.isFinite(recordId)
+          ? `email-confirm:${recordId}`
+          : attachment.id
+      await downloadInstructionAttachment(attachmentId, attachment.name)
     } catch (err) {
       toast({
-        title: "无法打开附件",
+        title: "无法下载附件",
         description: err instanceof Error ? err.message : "附件不存在",
         variant: "destructive",
       })
@@ -184,25 +247,23 @@ export function FofTransactionAnalysisPanel({
         <div className="flex items-center">
           <span className="text-zinc-400 shrink-0 pr-3">申赎日期：</span>
           <div className="flex items-center gap-1.5">
-            <div className="relative">
-              <CalendarDays className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="h-7 w-32 border rounded pl-7 pr-2 bg-background outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
+            <DateInput
+              value={dateFrom}
+              onChange={setDateFrom}
+              placeholder="开始日期"
+              className="w-36"
+              inputClassName="h-7 rounded pl-2 pr-8 text-xs"
+              displayClassName="left-2 text-xs"
+            />
             <span className="text-muted-foreground">-</span>
-            <div className="relative">
-              <CalendarDays className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="h-7 w-32 border rounded pl-7 pr-2 bg-background outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
+            <DateInput
+              value={dateTo}
+              onChange={setDateTo}
+              placeholder="结束日期"
+              className="w-36"
+              inputClassName="h-7 rounded pl-2 pr-8 text-xs"
+              displayClassName="left-2 text-xs"
+            />
           </div>
         </div>
         <button
@@ -211,6 +272,15 @@ export function FofTransactionAnalysisPanel({
           className="h-7 px-4 rounded bg-red-500 text-white text-xs font-medium hover:bg-red-600 transition-colors"
         >
           查询
+        </button>
+        <button
+          type="button"
+          onClick={handleDownloadCsv}
+          disabled={total === 0}
+          className="h-7 px-3 rounded border border-border bg-background text-xs text-zinc-600 inline-flex items-center gap-1.5 hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Download className="h-3.5 w-3.5" />
+          下载
         </button>
       </div>
 
@@ -279,13 +349,13 @@ export function FofTransactionAnalysisPanel({
                   <td className="border-b px-3 py-2">
                     <AttachmentLink
                       attachment={row.contract_attachment}
-                      onOpen={handleOpenAttachment}
+                      onOpen={handleDownloadAttachment}
                     />
                   </td>
                   <td className="border-b px-3 py-2">
                     <AttachmentLink
                       attachment={row.confirm_attachment}
-                      onOpen={handleOpenAttachment}
+                      onOpen={handleDownloadAttachment}
                     />
                   </td>
                   <td className="border-b px-3 py-2">{formatCell(row.source)}</td>

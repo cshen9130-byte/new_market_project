@@ -652,7 +652,6 @@ export function UnderlyingConvertForm({ onBack }: { onBack: () => void }) {
         amount: outAmount.trim() || "0",
         shares: outShares.trim() || null,
         summary: summary.trim() || `转入：${inName}${inAmount.trim() ? `，转入金额 ${inAmount.trim()}` : ""}`,
-        progress: "待审批(2/4)",
       })
       setSubmittedRecord(record)
       resetForm()

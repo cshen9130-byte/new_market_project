@@ -6,7 +6,12 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 function usernameFromRequest(req: Request): string {
-  return String(req.headers.get("x-market-user-name") || req.headers.get("x-market-user-id") || "").trim()
+  const raw = String(req.headers.get("x-market-user-name") || req.headers.get("x-market-user-id") || "").trim()
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
 }
 
 async function ensureTable() {

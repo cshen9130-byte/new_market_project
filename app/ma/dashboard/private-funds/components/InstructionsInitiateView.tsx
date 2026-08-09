@@ -1,6 +1,6 @@
 "use client"
 
-import { useId, useState } from "react"
+import { useId, useState, useSyncExternalStore } from "react"
 import { X } from "lucide-react"
 import {
   Dialog,
@@ -9,9 +9,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useToast } from "@/hooks/use-toast"
+import {
+  getInstructionProcessConfigServerSnapshot,
+  getInstructionProcessConfigSnapshot,
+  requiresGmApprovalForType,
+  subscribeInstructionProcessConfig,
+} from "@/lib/ma/instruction-process-config"
+import type { InstructionTypeOption } from "@/lib/ma/instruction-roles"
 import { DirectConvertForm } from "./DirectConvertForm"
 import { DirectSubscribeForm } from "./DirectSubscribeForm"
 import { FundPoolEntryForm } from "./FundPoolEntryForm"
+import { canInitiateInstruction } from "./instructions-store"
 import { ManagerExitPoolForm } from "./ManagerExitPoolForm"
 import { ManagerPoolEntryForm } from "./ManagerPoolEntryForm"
 import { UnderlyingConvertForm } from "./UnderlyingConvertForm"
@@ -71,6 +79,25 @@ const PROCESS_FLOWS: Record<string, ProcessStep[]> = {
   底层申赎类: UNDERLYING_OR_DIRECT_PROCESS,
   直投申赎类: UNDERLYING_OR_DIRECT_PROCESS,
   "入/出池审批": POOL_APPROVAL_PROCESS,
+}
+
+function renumberProcessSteps(steps: ProcessStep[]): ProcessStep[] {
+  return steps.map((step, idx) => ({
+    ...step,
+    no: String(idx + 1).padStart(2, "0"),
+  }))
+}
+
+function processStepsForSection(
+  sectionTitle: string,
+  requireGmApproval: boolean,
+): ProcessStep[] | null {
+  const base = PROCESS_FLOWS[sectionTitle]
+  if (!base) return null
+  const filtered = requireGmApproval
+    ? base
+    : base.filter((step) => step.label !== "总经理审批")
+  return renumberProcessSteps(filtered)
 }
 
 const STEP_TONE_STYLES: Record<
@@ -155,26 +182,36 @@ function HexMark({ mark, tone }: { mark: string; tone: InstructionTone }) {
 function InstructionCardButton({
   card,
   tone,
+  disabled,
   onClick,
 }: {
   card: InstructionCard
   tone: InstructionTone
+  disabled?: boolean
   onClick: () => void
 }) {
   const bg =
     tone === "warm"
       ? "bg-[#fff4eb] hover:bg-[#ffe9d9] dark:bg-orange-950/30 dark:hover:bg-orange-950/45"
       : "bg-[#eef5ff] hover:bg-[#e2eeff] dark:bg-blue-950/30 dark:hover:bg-blue-950/45"
+  const disabledBg =
+    tone === "warm"
+      ? "bg-[#fff4eb] dark:bg-orange-950/30"
+      : "bg-[#eef5ff] dark:bg-blue-950/30"
 
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
+      title={disabled ? "仅限基金经理发起" : undefined}
+      aria-disabled={disabled || undefined}
       className={[
         "group flex w-full items-center justify-between gap-3 rounded-md px-5 py-5 text-left transition-colors",
-        "border border-transparent hover:border-black/5 dark:hover:border-white/10",
-        "focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50",
-        bg,
+        "border border-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50",
+        disabled
+          ? `${disabledBg} cursor-not-allowed opacity-55`
+          : `${bg} hover:border-black/5 dark:hover:border-white/10`,
       ].join(" ")}
     >
       <div className="min-w-0">
@@ -289,8 +326,22 @@ export function InstructionsInitiateView() {
   const { toast } = useToast()
   const [activeForm, setActiveForm] = useState<InstructionFormKey | null>(null)
   const [processSection, setProcessSection] = useState<string | null>(null)
+  const processConfig = useSyncExternalStore(
+    subscribeInstructionProcessConfig,
+    getInstructionProcessConfigSnapshot,
+    getInstructionProcessConfigServerSnapshot,
+  )
+  const canInitiate = canInitiateInstruction()
 
   function handleStart(card: InstructionCard) {
+    if (!canInitiateInstruction()) {
+      toast({
+        title: "无法发起",
+        description: "仅限基金经理发起指令。",
+        variant: "destructive",
+      })
+      return
+    }
     if (card.formKey) {
       setActiveForm(card.formKey)
       return
@@ -312,7 +363,15 @@ export function InstructionsInitiateView() {
     })
   }
 
-  const processSteps = processSection ? PROCESS_FLOWS[processSection] : null
+  const processSteps = processSection
+    ? processStepsForSection(
+        processSection,
+        requiresGmApprovalForType(
+          processSection as InstructionTypeOption,
+          processConfig,
+        ),
+      )
+    : null
 
   if (activeForm === "underlying-subscribe") {
     return (
@@ -423,6 +482,7 @@ export function InstructionsInitiateView() {
                 key={`${section.title}-${card.title}`}
                 card={card}
                 tone={section.tone}
+                disabled={!canInitiate}
                 onClick={() => handleStart(card)}
               />
             ))}

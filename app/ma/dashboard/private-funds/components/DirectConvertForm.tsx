@@ -540,7 +540,6 @@ export function DirectConvertForm({ onBack }: { onBack: () => void }) {
         shares: outShares.trim() || null,
         summary: summary.trim() || `转入：${inName}${inAmount.trim() ? `，转入金额 ${inAmount.trim()}` : ""}`,
         nav: outSelected.unit_nav,
-        progress: "待审批(2/4)",
       })
       setSubmittedRecord(record)
       resetForm()

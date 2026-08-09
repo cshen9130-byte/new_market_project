@@ -23558,7 +23558,7 @@ function PrivateFundsPageContent() {
           </div>
           <Link
             href="/ma/dashboard/settings?section=user-center"
-            className="shrink-0 inline-flex items-center gap-1.5 px-3 h-8 rounded border border-red-500 text-sm font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <UserRound className="h-4 w-4" />
             用户中心

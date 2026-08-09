@@ -784,7 +784,9 @@ export function UnderlyingSubscribeForm({
         amount: amount.trim() || "0",
         shares: shares.trim() || null,
         summary: summary.trim(),
-        progress: initialRecord?.progress ?? "待审批(2/4)",
+        ...(editingId && initialRecord?.progress
+          ? { progress: initialRecord.progress }
+          : {}),
       }
       const record = editingId
         ? updateInstructionRecord(editingId, payload)

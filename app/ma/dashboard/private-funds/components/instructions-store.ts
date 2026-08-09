@@ -1,5 +1,10 @@
 import { authService } from "@/lib/auth"
 import {
+  instructionTypeOptionFromCategory,
+  readInstructionProcessConfig,
+  requiresGmApprovalForType,
+} from "@/lib/ma/instruction-process-config"
+import {
   instructionRoleDisplayName,
   type InstructionRoleKey,
 } from "@/lib/ma/instruction-roles"
@@ -120,6 +125,17 @@ export type InstructionRecord = {
   approver?: string | null
   approverUserId?: string | null
   approvedAt?: string | null
+  /** 产品运维 who completed 执行 */
+  executorUserId?: string | null
+  executedAt?: string | null
+  /** 产品运维 who completed 确认 */
+  confirmerUserId?: string | null
+  confirmedAt?: string | null
+  /**
+   * Snapshot of process config at create time.
+   * Undefined on legacy rows → treat as requiring 总经理审批.
+   */
+  requireGmApproval?: boolean
 }
 
 /** 追加申购 (and similar) skip the contract upload at 产品运维执行. */
@@ -189,10 +205,21 @@ export const INSTRUCTION_TIMELINE_POOL = [
   "指令结束",
 ] as const
 
+/** Whether this record's official flow includes 总经理审批. */
+export function recordRequiresGmApproval(
+  record: Pick<InstructionRecord, "category" | "type" | "requireGmApproval">,
+): boolean {
+  if (typeof record.requireGmApproval === "boolean") return record.requireGmApproval
+  const typeOpt = instructionTypeOptionFromCategory(record.category)
+  return requiresGmApprovalForType(typeOpt)
+}
+
 export function instructionTimelineSteps(
-  record: Pick<InstructionRecord, "category" | "type">,
+  record: Pick<InstructionRecord, "category" | "type" | "requireGmApproval">,
 ): readonly string[] {
-  return isPoolInstruction(record) ? INSTRUCTION_TIMELINE_POOL : INSTRUCTION_TIMELINE_TRADE
+  const base = isPoolInstruction(record) ? INSTRUCTION_TIMELINE_POOL : INSTRUCTION_TIMELINE_TRADE
+  if (recordRequiresGmApproval(record)) return base
+  return base.filter((step) => step !== "总经理审批")
 }
 
 /**
@@ -205,7 +232,8 @@ export function instructionTimelineActiveIndex(record: InstructionRecord): numbe
   const p = record.progress || ""
 
   if (isInstructionRejected(p)) {
-    return Math.min(1, last)
+    const gmIdx = steps.indexOf("总经理审批")
+    return gmIdx >= 0 ? gmIdx : Math.min(1, last)
   }
   if (
     p.includes("已确认")
@@ -227,8 +255,39 @@ export function instructionTimelineActiveIndex(record: InstructionRecord): numbe
     const idx = steps.indexOf("总经理审批")
     return idx >= 0 ? idx : 1
   }
-  // Fallback: treat unknown mid-state as awaiting approval.
+  // Fallback: treat unknown mid-state as awaiting approval / next actionable step.
+  if (!recordRequiresGmApproval(record)) {
+    const execIdx = steps.indexOf("产品运维执行")
+    if (execIdx >= 0) return execIdx
+    return last
+  }
   return Math.min(1, last)
+}
+
+/** Initial progress when a new instruction is submitted. */
+export function initialProgressForInstruction(
+  record: Pick<InstructionRecord, "category" | "type">,
+  requireGmApproval?: boolean,
+): string {
+  const needsGm =
+    typeof requireGmApproval === "boolean"
+      ? requireGmApproval
+      : recordRequiresGmApproval({
+          ...record,
+          requireGmApproval: undefined,
+        })
+  if (isPoolInstruction(record)) {
+    return needsGm ? "待审批(2/3)" : "已完成"
+  }
+  return needsGm ? "待审批(2/4)" : "待执行(2/3)"
+}
+
+/** Snapshot requireGmApproval from current process settings for a new record. */
+export function snapshotRequireGmApproval(
+  category: InstructionRecord["category"],
+): boolean {
+  const typeOpt = instructionTypeOptionFromCategory(category)
+  return requiresGmApprovalForType(typeOpt, readInstructionProcessConfig())
 }
 
 export function isInstructionWorkflowFinished(record: InstructionRecord): boolean {
@@ -240,11 +299,26 @@ export function isInstructionWorkflowFinished(record: InstructionRecord): boolea
 }
 
 /** Progress after 总经理审批通过. */
-export function progressAfterApproval(record: Pick<InstructionRecord, "category" | "type">): string {
+export function progressAfterApproval(
+  record: Pick<InstructionRecord, "category" | "type" | "requireGmApproval">,
+): string {
   return isPoolInstruction(record) ? "已完成" : "待执行(3/4)"
 }
 
+/** Progress after 产品运维执行. */
+export function progressAfterExecute(
+  record: Pick<InstructionRecord, "category" | "type" | "requireGmApproval">,
+): string {
+  return recordRequiresGmApproval(record) ? "待确认(4/4)" : "待确认(3/3)"
+}
+
+/** Only 基金经理 may initiate new instructions (admins included via role helper). */
+export function canInitiateInstruction(): boolean {
+  return currentUserHasInstructionRole("fund_manager")
+}
+
 export function canApproveInstruction(record: InstructionRecord): boolean {
+  if (!recordRequiresGmApproval(record)) return false
   if (!isInstructionPendingApproval(record.progress)) return false
   return currentUserHasInstructionRole("general_manager")
 }
@@ -263,11 +337,71 @@ export function canConfirmInstruction(record: InstructionRecord): boolean {
   return currentUserHasInstructionRole("ops")
 }
 
-function canCurrentUserHandle(record: InstructionRecord): boolean {
+/** True when the current user still has an action on this instruction. */
+export function isInstructionPendingForCurrentUser(record: InstructionRecord): boolean {
   if (canApproveInstruction(record)) return true
   if (canExecuteInstruction(record)) return true
   if (canConfirmInstruction(record)) return true
   return false
+}
+
+function sameInstructionUser(
+  storedId: string | null | undefined,
+  userId: string,
+): boolean {
+  const a = (storedId || "").trim()
+  return Boolean(a && userId && a === userId)
+}
+
+/**
+ * True when the current user already completed a step on this instruction.
+ * Used by 我处理的 → 已处理.
+ *
+ * Attribution is by user id (survives 指令角色 switching on the same account).
+ * Role-based fallbacks cover legacy rows and the ops team inbox.
+ */
+export function isInstructionDoneForCurrentUser(record: InstructionRecord): boolean {
+  const userId = currentInstructionUserId()
+  const p = record.progress || ""
+  const myName = currentInstructionInitiator()
+
+  // Same login user acted as approver / executor / confirmer (any current role)
+  if (
+    sameInstructionUser(record.approverUserId, userId)
+    || sameInstructionUser(record.executorUserId, userId)
+    || sameInstructionUser(record.confirmerUserId, userId)
+  ) {
+    return true
+  }
+
+  // 总经理: legacy rows / display-name match when user id was not stored
+  if (currentUserHasInstructionRole("general_manager")) {
+    if (record.approver && myName && record.approver === myName) return true
+    const approverId = (record.approverUserId || "").trim()
+    if (!approverId && record.approvedAt) return true
+    // Finished instructions on the GM flow: keep in 已处理 (incl. 已确认).
+    // Only exclude when another user is explicitly recorded as approver.
+    if (
+      recordRequiresGmApproval(record)
+      && (p.includes("已确认") || p.includes("已完成") || p.includes("已驳回"))
+      && (!approverId || !userId || approverId === userId)
+    ) {
+      return true
+    }
+  }
+
+  // 产品运维: executed or confirmed (no remaining ops action for this row)
+  if (currentUserHasInstructionRole("ops")) {
+    if (record.confirmDate || p.includes("已确认")) return true
+    if (canExecuteInstruction(record) || canConfirmInstruction(record)) return false
+    if (record.actualApplyDate || isInstructionExecuted(p)) return true
+  }
+
+  return false
+}
+
+function canCurrentUserHandle(record: InstructionRecord): boolean {
+  return isInstructionPendingForCurrentUser(record) || isInstructionDoneForCurrentUser(record)
 }
 
 export function createAttachmentId(): string {
@@ -363,8 +497,13 @@ export function addInstructionRecord(
     nav?: string | null
     initiator?: string
     initiatorUserId?: string
+    requireGmApproval?: boolean
   },
 ): InstructionRecord {
+  const requireGmApproval =
+    typeof input.requireGmApproval === "boolean"
+      ? input.requireGmApproval
+      : snapshotRequireGmApproval(input.category)
   const record: InstructionRecord = {
     id: input.id ?? createInstructionId(),
     category: input.category,
@@ -377,11 +516,17 @@ export function addInstructionRecord(
     amount: formatInstructionAmount(input.amount),
     shares: input.shares ?? null,
     nav: input.nav ?? null,
-    progress: input.progress ?? "待审批(2/4)",
+    progress:
+      input.progress
+      ?? initialProgressForInstruction(
+        { category: input.category, type: input.type },
+        requireGmApproval,
+      ),
     summary: input.summary,
     createdAt: new Date().toISOString(),
     initiator: input.initiator ?? currentInstructionInitiator(),
     initiatorUserId: input.initiatorUserId ?? (currentInstructionUserId() || undefined),
+    requireGmApproval,
   }
   const next = [record, ...readAll()]
   writeAll(next)

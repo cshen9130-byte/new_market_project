@@ -87,7 +87,8 @@ function authHeaders(): HeadersInit {
     const user = JSON.parse(raw) as { id?: string; name?: string }
     const headers: Record<string, string> = {}
     if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
-    if (user.name?.trim()) headers["x-market-user-name"] = user.name.trim()
+    // Header values must be ISO-8859-1; Chinese names need percent-encoding.
+    if (user.name?.trim()) headers["x-market-user-name"] = encodeURIComponent(user.name.trim())
     return headers
   } catch {
     return {}

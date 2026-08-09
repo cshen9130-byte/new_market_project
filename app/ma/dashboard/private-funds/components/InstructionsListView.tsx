@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import {
   BadgeCheck,
   CheckSquare,
@@ -10,6 +11,7 @@ import {
   CloudUpload,
   Copy,
   Download,
+  Eye,
   FilePenLine,
   FileText,
   Filter,
@@ -45,12 +47,15 @@ import {
   instructionTimelineActiveIndex,
   instructionTimelineSteps,
   isInstructionAwaitingExecute,
+  isInstructionDoneForCurrentUser,
   isInstructionExecuted,
   isInstructionPendingApproval,
+  isInstructionPendingForCurrentUser,
   isInstructionRejected,
   isInstructionWorkflowFinished,
   listInstructionRecords,
   progressAfterApproval,
+  progressAfterExecute,
   removeInstructionRecord,
   requiresContractAtExecute,
   resolveInstructionInitiatorDisplay,
@@ -59,6 +64,16 @@ import {
   type InstructionAttachmentMeta,
   type InstructionRecord,
 } from "./instructions-store"
+import {
+  backfillLedgerFromConfirmedInstructions,
+  isInstructionConfirmed,
+  removeLedgerByInstructionId,
+  upsertLedgerFromConfirmedInstruction,
+} from "./ops-ledger-store"
+import {
+  UnderlyingSubscribeForm,
+  type UnderlyingTradeType,
+} from "./UnderlyingSubscribeForm"
 
 type EmailConfirmCandidate = {
   id: number
@@ -84,16 +99,48 @@ async function persistAttachmentFromFile(file: File): Promise<InstructionAttachm
   await saveInstructionAttachmentBlob(meta.id, file)
   return meta
 }
-import {
-  backfillLedgerFromConfirmedInstructions,
-  isInstructionConfirmed,
-  removeLedgerByInstructionId,
-  upsertLedgerFromConfirmedInstruction,
-} from "./ops-ledger-store"
-import {
-  UnderlyingSubscribeForm,
-  type UnderlyingTradeType,
-} from "./UnderlyingSubscribeForm"
+
+/**
+ * Portal modals to document.body so focus/scroll-into-view inside inputs does not
+ * scroll the page's overflow container (which makes the dialog appear to flash away).
+ * Also ignore the ghost click that lands on the backdrop when a native date picker closes.
+ */
+function InstructionModalFrame({
+  onClose,
+  className,
+  children,
+}: {
+  onClose: () => void
+  className: string
+  children: ReactNode
+}) {
+  const ignoreBackdropCloseUntilRef = useRef(0)
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+      onClick={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (Date.now() < ignoreBackdropCloseUntilRef.current) return
+        onClose()
+      }}
+    >
+      <div
+        className={className}
+        onClick={(e) => e.stopPropagation()}
+        onBlurCapture={(e) => {
+          const t = e.target
+          if (t instanceof HTMLInputElement && t.type === "date") {
+            ignoreBackdropCloseUntilRef.current = Date.now() + 400
+          }
+        }}
+      >
+        {children}
+      </div>
+    </div>,
+    document.body,
+  )
+}
 
 export type InstructionsListVariant = "handled" | "mine" | "all"
 
@@ -360,66 +407,64 @@ function VoidInstructionDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-[560px] rounded-lg bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b px-5 py-3.5">
-          <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">作废指令</span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-            aria-label="关闭"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="space-y-3 px-5 py-5">
-          <label className="block text-sm text-zinc-700 dark:text-zinc-200">
-            <span className="text-red-500">*</span> 作废理由 (指令ID: {instructionId}):
-          </label>
-          <textarea
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            onBlur={() => setTouched(true)}
-            placeholder="请输入内容"
-            rows={5}
-            className={[
-              "w-full resize-none rounded-md border bg-background px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:ring-1 dark:text-zinc-100",
-              showError
-                ? "border-red-400 focus:ring-red-400"
-                : "border-border focus:ring-ring",
-            ].join(" ")}
-          />
-          {showError ? (
-            <p className="text-xs text-red-500">请输入作废理由</p>
-          ) : null}
-          <p className="text-sm text-red-500">
-            说明：1. 【已确认】的指令作废后，会删除对应的台账。
-          </p>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={handleConfirm}
-            className="rounded bg-red-500 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
-          >
-            确定
-          </button>
-        </div>
+    <InstructionModalFrame
+      onClose={onClose}
+      className="w-full max-w-[560px] rounded-lg bg-background shadow-xl"
+    >
+      <div className="flex items-center justify-between border-b px-5 py-3.5">
+        <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">作废指令</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+          aria-label="关闭"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
-    </div>
+
+      <div className="space-y-3 px-5 py-5">
+        <label className="block text-sm text-zinc-700 dark:text-zinc-200">
+          <span className="text-red-500">*</span> 作废理由 (指令ID: {instructionId}):
+        </label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          onBlur={() => setTouched(true)}
+          placeholder="请输入内容"
+          rows={5}
+          className={[
+            "w-full resize-none rounded-md border bg-background px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:ring-1 dark:text-zinc-100",
+            showError
+              ? "border-red-400 focus:ring-red-400"
+              : "border-border focus:ring-ring",
+          ].join(" ")}
+        />
+        {showError ? (
+          <p className="text-xs text-red-500">请输入作废理由</p>
+        ) : null}
+        <p className="text-sm text-red-500">
+          说明：1. 【已确认】的指令作废后，会删除对应的台账。
+        </p>
+      </div>
+
+      <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={handleConfirm}
+          className="rounded bg-red-500 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
+        >
+          确定
+        </button>
+      </div>
+    </InstructionModalFrame>
   )
 }
 
@@ -439,6 +484,7 @@ function InstructionFileUpload({
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
   const displayName = file?.name || existing?.name || null
+  const previewableExisting = !file && existing?.id ? existing : null
 
   return (
     <div className="block">
@@ -481,13 +527,29 @@ function InstructionFileUpload({
         )}
       </button>
       {file || existing ? (
-        <button
-          type="button"
-          onClick={() => onChange(null)}
-          className="mt-1 text-xs text-zinc-400 hover:text-zinc-600"
-        >
-          清除
-        </button>
+        <div className="mt-1 flex items-center gap-3">
+          {previewableExisting ? (
+            <button
+              type="button"
+              onClick={() => {
+                void openInstructionAttachment(previewableExisting.id).catch(() => {
+                  window.alert("无法打开确认单，请检查浏览器弹窗拦截")
+                })
+              }}
+              className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline dark:text-sky-400"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              预览
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="text-xs text-zinc-400 hover:text-zinc-600"
+          >
+            清除
+          </button>
+        </div>
       ) : null}
     </div>
   )
@@ -523,7 +585,8 @@ function ExecuteTradeDialog({
     setContractFile(null)
     setError(null)
     setSubmitting(false)
-  }, [open, record])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when dialog opens / record changes
+  }, [open, record?.id])
 
   if (!open || !record) return null
 
@@ -554,11 +617,10 @@ function ExecuteTradeDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-[520px] rounded-lg bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <InstructionModalFrame
+      onClose={onClose}
+      className="w-full max-w-[520px] rounded-lg bg-background shadow-xl"
+    >
         <div className="flex items-center justify-between border-b px-5 py-3.5">
           <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">产品运维执行</span>
           <button
@@ -632,8 +694,7 @@ function ExecuteTradeDialog({
             {submitting ? "保存中…" : "确认执行"}
           </button>
         </div>
-      </div>
-    </div>
+    </InstructionModalFrame>
   )
 }
 
@@ -723,8 +784,8 @@ function ConfirmTradeDialog({
         applyCandidate(list[0])
         setFetchHint(
           json.refreshStarted
-            ? "已启动邮箱补抓；已自动匹配到 1 份确认单（可稍后再次获取以纳入最新邮件）"
-            : "已自动匹配到 1 份确认单",
+            ? "已启动邮箱补抓；已自动匹配到 1 份确认单，可点击预览（可稍后再次获取以纳入最新邮件）"
+            : "已自动匹配到 1 份确认单，可点击预览",
         )
       } else if (list.length > 1) {
         setFetchHint(`找到 ${list.length} 份候选确认单，请选择`)
@@ -817,11 +878,10 @@ function ConfirmTradeDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-[560px] max-h-[min(860px,calc(100vh-2rem))] overflow-y-auto rounded-lg bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <InstructionModalFrame
+      onClose={onClose}
+      className="w-full max-w-[560px] max-h-[min(860px,calc(100vh-2rem))] overflow-y-auto rounded-lg bg-background shadow-xl"
+    >
         <div className="flex items-center justify-between border-b px-5 py-3.5">
           <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">产品运维确认</span>
           <button
@@ -993,8 +1053,7 @@ function ConfirmTradeDialog({
             {submitting ? "保存中…" : "确认"}
           </button>
         </div>
-      </div>
-    </div>
+    </InstructionModalFrame>
   )
 }
 
@@ -1322,11 +1381,10 @@ function InstructionDetailDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div
-        className="flex w-full max-w-[920px] max-h-[min(860px,calc(100vh-2rem))] flex-col overflow-hidden rounded-lg bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <InstructionModalFrame
+      onClose={onClose}
+      className="flex w-full max-w-[920px] max-h-[min(860px,calc(100vh-2rem))] flex-col overflow-hidden rounded-lg bg-background shadow-xl"
+    >
         <div className="flex items-center justify-between border-b px-5 py-3.5 flex-shrink-0">
           <span className="text-[15px] font-medium text-zinc-800 dark:text-zinc-100">指令详情</span>
           <button
@@ -1616,8 +1674,7 @@ function InstructionDetailDialog({
             </button>
           )}
         </div>
-      </div>
-    </div>
+    </InstructionModalFrame>
   )
 }
 
@@ -1823,6 +1880,13 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
 
   const filteredRows = useMemo(() => {
     let next = listInstructionRecords({ category: categoryTab, variant })
+    if (variant === "handled") {
+      next = next.filter((r) =>
+        processStatus === "pending"
+          ? isInstructionPendingForCurrentUser(r)
+          : isInstructionDoneForCurrentUser(r),
+      )
+    }
     if (categoryTab === "underlying") {
       const fofQ = appliedFof.trim()
       const undQ = appliedUnderlying.trim()
@@ -1836,6 +1900,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
     allRecords,
     categoryTab,
     variant,
+    processStatus,
     viewerUserId,
     appliedFof,
     appliedUnderlying,
@@ -2363,11 +2428,14 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
         onClose={() => setExecuteTarget(null)}
         onExecute={(payload) => {
           if (!executeTarget) return
+          const now = new Date().toISOString()
           const updated = updateInstructionRecord(executeTarget.id, {
-            progress: "待确认(4/4)",
+            progress: progressAfterExecute(executeTarget),
             actualApplyDate: payload.actualApplyDate,
             execRemark: payload.execRemark || null,
             contractAttachment: payload.contractAttachment,
+            executorUserId: currentInstructionUserId() || undefined,
+            executedAt: now,
           })
           if (updated) {
             toast({
@@ -2387,6 +2455,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
         onClose={() => setConfirmTarget(null)}
         onConfirm={(payload) => {
           if (!confirmTarget) return
+          const now = new Date().toISOString()
           const updated = updateInstructionRecord(confirmTarget.id, {
             progress: "已确认",
             confirmDate: payload.confirmDate,
@@ -2396,6 +2465,8 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
             tradeFee: payload.tradeFee,
             modifyReason: payload.modifyReason || null,
             confirmAttachment: payload.confirmAttachment,
+            confirmerUserId: currentInstructionUserId() || undefined,
+            confirmedAt: now,
           })
           if (updated) {
             upsertLedgerFromConfirmedInstruction(updated)

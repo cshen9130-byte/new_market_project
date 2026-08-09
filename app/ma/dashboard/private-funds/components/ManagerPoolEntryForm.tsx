@@ -160,7 +160,6 @@ export function ManagerPoolEntryForm({ onBack }: { onBack: () => void }) {
         applyDate: new Date().toISOString().slice(0, 10),
         amount: "—",
         summary: summary.trim(),
-        progress: "待审批(2/3)",
       })
       setSubmittedRecord(record)
       resetForm()

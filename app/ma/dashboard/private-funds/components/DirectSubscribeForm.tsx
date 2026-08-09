@@ -460,7 +460,6 @@ export function DirectSubscribeForm({
         shares: isRedeem ? (shares.trim() || null) : null,
         summary: summary.trim(),
         nav: fundSelected.unit_nav,
-        progress: "待审批(2/4)",
       })
       setSubmittedRecord(record)
       resetForm()

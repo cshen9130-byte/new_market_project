@@ -76,6 +76,16 @@ export async function getInstructionAttachmentBlob(
   }
 }
 
+function triggerBrowserDownload(url: string, filename?: string): void {
+  const a = document.createElement("a")
+  a.href = url
+  if (filename) a.download = filename
+  a.rel = "noopener"
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
 /** Open the stored file in a new tab (or trigger download if blocked). */
 export async function openInstructionAttachment(id: string): Promise<void> {
   if (isEmailConfirmAttachmentId(id)) {
@@ -92,14 +102,30 @@ export async function openInstructionAttachment(id: string): Promise<void> {
   const url = URL.createObjectURL(row.blob)
   const opened = window.open(url, "_blank", "noopener,noreferrer")
   if (!opened) {
-    const a = document.createElement("a")
-    a.href = url
-    a.download = row.name
-    a.rel = "noopener"
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
+    triggerBrowserDownload(url, row.name)
   }
   // Revoke after the browser has a chance to load the blob.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+/** Force-download the stored file instead of opening a preview tab. */
+export async function downloadInstructionAttachment(
+  id: string,
+  filename?: string,
+): Promise<void> {
+  if (isEmailConfirmAttachmentId(id)) {
+    const recordId = parseEmailConfirmRecordId(id)
+    if (recordId == null) throw new Error("确认单链接无效")
+    triggerBrowserDownload(
+      `/ma/api/ops/email-confirm-records/${recordId}/file?download=1`,
+      filename,
+    )
+    return
+  }
+
+  const row = await getInstructionAttachmentBlob(id)
+  if (!row) throw new Error("附件不存在或已被清除")
+  const url = URL.createObjectURL(row.blob)
+  triggerBrowserDownload(url, filename || row.name)
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }

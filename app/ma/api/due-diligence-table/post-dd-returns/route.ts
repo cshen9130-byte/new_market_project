@@ -15,7 +15,13 @@ async function getActor(req: Request): Promise<{ id: string; name: string } | nu
   const user = await getUserById(userId)
   if (user) return { id: user.id, name: user.name }
 
-  const fallbackName = String(req.headers.get("x-market-user-name") || userId).trim()
+  const rawName = String(req.headers.get("x-market-user-name") || userId).trim()
+  let fallbackName = rawName
+  try {
+    fallbackName = decodeURIComponent(rawName)
+  } catch {
+    // keep raw if not percent-encoded
+  }
   return { id: userId, name: fallbackName }
 }
 

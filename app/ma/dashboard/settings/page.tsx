@@ -5,9 +5,14 @@ import { useSearchParams } from "next/navigation"
 import { authService, type PagePermissions, type User } from "@/lib/auth"
 import { buildPermissionsSnapshot } from "@/lib/page-permissions"
 import {
+  getOfficialProcessNodes,
+  readInstructionProcessConfig,
+  updateInstructionProcessTypeConfig,
+  type InstructionProcessConfig,
+} from "@/lib/ma/instruction-process-config"
+import {
   INSTRUCTION_ROLES,
   INSTRUCTION_TYPE_OPTIONS,
-  OFFICIAL_PROCESS_NODES,
   type InstructionRoleKey,
   type InstructionTypeOption,
 } from "@/lib/ma/instruction-roles"
@@ -1721,6 +1726,10 @@ function sortInstructionUsers(list: User[], currentUserId: string | undefined): 
 function InstructionSettingsPanel() {
   const [instructionType, setInstructionType] = useState<InstructionTypeOption>(INSTRUCTION_TYPE_OPTIONS[0])
   const [processType, setProcessType] = useState<"official" | "custom">("official")
+  const [processConfig, setProcessConfig] = useState<InstructionProcessConfig>(() =>
+    readInstructionProcessConfig(),
+  )
+  const [processSaveMsg, setProcessSaveMsg] = useState<string | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [users, setUsers] = useState<User[]>([])
   const [roleDraft, setRoleDraft] = useState<Record<string, InstructionRoleKey | "">>({})
@@ -1729,6 +1738,10 @@ function InstructionSettingsPanel() {
   const [savingId, setSavingId] = useState<string | null>(null)
   const [saveMsg, setSaveMsg] = useState<Record<string, string>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setProcessConfig(readInstructionProcessConfig())
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1790,7 +1803,17 @@ function InstructionSettingsPanel() {
     }
   }
 
-  const processNodes = OFFICIAL_PROCESS_NODES[instructionType]
+  function setRequireGmApproval(checked: boolean) {
+    const next = updateInstructionProcessTypeConfig(instructionType, {
+      requireGmApproval: checked,
+    })
+    setProcessConfig(next)
+    setProcessSaveMsg("已保存")
+    window.setTimeout(() => setProcessSaveMsg(null), 2000)
+  }
+
+  const requireGmApproval = processConfig[instructionType]?.requireGmApproval !== false
+  const processNodes = getOfficialProcessNodes(instructionType, processConfig)
 
   return (
     <div>
@@ -1846,12 +1869,41 @@ function InstructionSettingsPanel() {
         </div>
 
         {processType === "official" ? (
-          <div className="rounded-lg border border-border/70 bg-muted/10 px-5 py-4">
-            <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-3">官方审批节点</p>
+          <div className="rounded-lg border border-border/70 bg-muted/10 px-5 py-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">官方审批节点</p>
+              <div className="flex items-center gap-3">
+                <label
+                  className={[
+                    "inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 select-none",
+                    isAdmin ? "cursor-pointer" : "cursor-default opacity-80",
+                  ].join(" ")}
+                >
+                  <input
+                    type="checkbox"
+                    checked={requireGmApproval}
+                    disabled={!isAdmin}
+                    onChange={(e) => setRequireGmApproval(e.target.checked)}
+                    className="accent-red-500 disabled:opacity-60"
+                  />
+                  需要总经理审批
+                </label>
+                {processSaveMsg && (
+                  <span className="text-xs text-emerald-600">{processSaveMsg}</span>
+                )}
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               {processNodes.map((node, idx) => (
                 <div key={`${node}-${idx}`} className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-3 py-1.5 text-sm text-zinc-700 dark:text-zinc-200">
+                  <span
+                    className={[
+                      "inline-flex items-center gap-1.5 rounded border px-3 py-1.5 text-sm",
+                      node === "总经理审批"
+                        ? "border-amber-300 bg-amber-50/60 text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-100"
+                        : "border-border bg-background text-zinc-700 dark:text-zinc-200",
+                    ].join(" ")}
+                  >
                     <span className="text-xs text-zinc-400 tabular-nums">{String(idx + 1).padStart(2, "0")}</span>
                     {node}
                   </span>
@@ -1861,6 +1913,11 @@ function InstructionSettingsPanel() {
                 </div>
               ))}
             </div>
+            <p className="text-xs text-zinc-400">
+              关闭「需要总经理审批」后，新发起的该类指令将跳过总经理审批节点
+              {instructionType === "入/出池审批" ? "并直接结束" : "，进入产品运维执行"}。
+              已发起的指令仍按发起时的流程执行。
+            </p>
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border px-5 py-8 text-center text-sm text-muted-foreground">

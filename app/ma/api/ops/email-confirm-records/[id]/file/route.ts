@@ -8,7 +8,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
@@ -28,11 +28,16 @@ export async function GET(
       return NextResponse.json({ error: "确认单文件不存在" }, { status: 404 })
     }
 
+    const { searchParams } = new URL(req.url)
+    const download = searchParams.get("download") === "1"
     const encoded = encodeURIComponent(file.filename)
+    const disposition = download
+      ? `attachment; filename*=UTF-8''${encoded}`
+      : `inline; filename*=UTF-8''${encoded}`
     return new NextResponse(new Uint8Array(file.buffer), {
       headers: {
         "Content-Type": file.mimeType,
-        "Content-Disposition": `inline; filename*=UTF-8''${encoded}`,
+        "Content-Disposition": disposition,
         "Content-Length": String(file.buffer.length),
       },
     })
