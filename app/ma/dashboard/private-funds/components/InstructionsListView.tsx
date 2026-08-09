@@ -83,6 +83,7 @@ type EmailConfirmCandidate = {
   investor_name: string | null
   apply_date: string | null
   confirm_date: string | null
+  business_type: string | null
   confirmed_amount: string | null
   confirmed_shares: string | null
   unit_nav: string | null
@@ -90,8 +91,50 @@ type EmailConfirmCandidate = {
   broker: string | null
   attachment_filename: string
   file_size: number
+  sent_at: string | null
   score: number
   reasons: string[]
+}
+
+/** Drop bilingual PDF label leftovers like "FundName" so the list can fall back to filename. */
+function usableConfirmField(value: string | null | undefined): string | null {
+  const v = (value || "").trim()
+  if (!v) return null
+  const compact = v.replace(/\s+/g, "")
+  if (
+    /^(FundName|InvestorName|FundCode|BusinessType|ApplicationDate|ConfirmedDate|ConfirmationDate|ConfirmedAmount)$/i.test(
+      compact,
+    )
+  ) {
+    return null
+  }
+  if (/^(基金名称|投资人名称|基金代码|业务类型|申请日期|确认日期|确认金额)$/.test(compact)) {
+    return null
+  }
+  return v
+}
+
+function confirmCandidateTitle(c: EmailConfirmCandidate): string {
+  const fund = usableConfirmField(c.fund_name)
+  if (fund) return c.broker ? `${fund} · ${c.broker}` : fund
+  const file = usableConfirmField(c.attachment_filename)
+  if (file) return file
+  const subject = usableConfirmField(c.subject)
+  if (subject) return subject
+  return `确认单 #${c.id}`
+}
+
+function confirmCandidateMeta(c: EmailConfirmCandidate): string {
+  const investor = usableConfirmField(c.investor_name)
+  return [
+    c.confirm_date || c.apply_date || (c.sent_at ? `邮件 ${c.sent_at.slice(0, 10)}` : null),
+    c.business_type || null,
+    c.confirmed_amount ? `${c.confirmed_amount} 元` : null,
+    c.unit_nav ? `净值 ${c.unit_nav}` : null,
+    investor ? `投资人 ${investor}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ")
 }
 
 async function persistAttachmentFromFile(file: File): Promise<InstructionAttachmentMeta> {
@@ -698,6 +741,17 @@ function ExecuteTradeDialog({
   )
 }
 
+function formatConfirmNav(value: number): string {
+  return value.toFixed(6)
+}
+
+function calcConfirmShares(amountText: string, navText: string): string | null {
+  const amt = Number(String(amountText).replace(/,/g, "").trim())
+  const n = Number(String(navText).replace(/,/g, "").trim())
+  if (!Number.isFinite(amt) || !Number.isFinite(n) || n <= 0) return null
+  return (amt / n).toFixed(2)
+}
+
 function ConfirmTradeDialog({
   open,
   record,
@@ -731,13 +785,27 @@ function ConfirmTradeDialog({
   const [fetchHint, setFetchHint] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [fetchingNav, setFetchingNav] = useState(false)
+  const [navHint, setNavHint] = useState<string | null>(null)
+  const [sharesHint, setSharesHint] = useState<string | null>(null)
+  const navManualRef = useRef(false)
+  const sharesManualRef = useRef(false)
 
   function applyCandidate(c: EmailConfirmCandidate) {
     setSelectedCandidateId(c.id)
     if (c.confirm_date) setConfirmDate(c.confirm_date)
     if (c.confirmed_amount) setAmount(String(c.confirmed_amount).replace(/,/g, ""))
-    if (c.confirmed_shares) setShares(String(c.confirmed_shares).replace(/,/g, ""))
-    if (c.unit_nav) setNav(String(c.unit_nav).replace(/,/g, ""))
+    if (c.confirmed_shares) {
+      setShares(String(c.confirmed_shares).replace(/,/g, ""))
+      sharesManualRef.current = true
+      setSharesHint(`已使用确认单份额 ${String(c.confirmed_shares).replace(/,/g, "")}（可修改）`)
+    }
+    if (c.unit_nav) {
+      const nextNav = String(c.unit_nav).replace(/,/g, "")
+      setNav(nextNav)
+      navManualRef.current = true
+      setNavHint(`已使用确认单净值 ${nextNav}（可修改）`)
+    }
     if (c.trade_fee != null && c.trade_fee !== "") {
       setTradeFee(String(c.trade_fee).replace(/,/g, ""))
     }
@@ -788,7 +856,9 @@ function ConfirmTradeDialog({
             : "已自动匹配到 1 份确认单，可点击预览",
         )
       } else if (list.length > 1) {
-        setFetchHint(`找到 ${list.length} 份候选确认单，请选择`)
+        setFetchHint(
+          `找到 ${list.length} 份候选，请按日期/金额/附件名区分，或点「预览」核对后选择`,
+        )
       } else {
         setFetchHint(
           json.refreshStarted
@@ -820,9 +890,89 @@ function ConfirmTradeDialog({
     setError(null)
     setFetchHint(null)
     setSubmitting(false)
+    navManualRef.current = false
+    sharesManualRef.current = Boolean(record.shares)
+    setNavHint(null)
+    setSharesHint(
+      record.shares
+        ? `当前确认份额 ${String(record.shares).replace(/,/g, "")}（可修改）`
+        : null,
+    )
+    setFetchingNav(false)
     void fetchConfirmFromEmail(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when dialog opens / record changes
   }, [open, record?.id])
+
+  useEffect(() => {
+    if (!open || !record) return
+    const date = confirmDate.trim().slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return
+    if (navManualRef.current) return
+    const beian = (record.underlyingBeianHao || "").trim()
+    const productName = (record.underlyingFundName || "").trim()
+    if (!beian && !productName) {
+      setNavHint("缺少产品标识，无法自动读取净值")
+      return
+    }
+
+    const ac = new AbortController()
+    setFetchingNav(true)
+    setNavHint("正在读取交易日净值…")
+    const params = new URLSearchParams({ date })
+    if (beian) params.set("beian_hao", beian)
+    if (productName) params.set("product_name", productName)
+
+    fetch(`/ma/api/tracking-funds/nav-on-date?${params}`, { signal: ac.signal })
+      .then(async (res) => {
+        const json = (await res.json()) as {
+          unit_nav?: number | null
+          nav_date?: string | null
+          exact?: boolean
+          error?: string
+        }
+        if (!res.ok || json.error) throw new Error(json.error || "读取净值失败")
+        return json
+      })
+      .then((json) => {
+        if (ac.signal.aborted || navManualRef.current) return
+        const unitNav = json.unit_nav
+        if (unitNav == null || !Number.isFinite(unitNav) || unitNav <= 0) {
+          setNavHint(`未找到 ${date} 及以前的产品净值，请手动填写`)
+          return
+        }
+        const formatted = formatConfirmNav(unitNav)
+        setNav(formatted)
+        const navDate = json.nav_date || date
+        setNavHint(
+          json.exact
+            ? `已使用 ${navDate} 单位净值 ${formatted}（可修改）`
+            : `确认日无净值，已使用最近交易日 ${navDate} 单位净值 ${formatted}（可修改）`,
+        )
+      })
+      .catch((err) => {
+        if (ac.signal.aborted) return
+        setNavHint(err instanceof Error ? err.message : "读取净值失败，请手动填写")
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setFetchingNav(false)
+      })
+
+    return () => ac.abort()
+  }, [open, record?.id, record?.underlyingBeianHao, record?.underlyingFundName, confirmDate])
+
+  useEffect(() => {
+    if (!open) return
+    if (sharesManualRef.current) return
+    const next = calcConfirmShares(amount, nav)
+    if (!next) {
+      setSharesHint(null)
+      return
+    }
+    setShares(next)
+    const amtText = String(amount).replace(/,/g, "").trim()
+    const navText = String(nav).replace(/,/g, "").trim()
+    setSharesHint(`已按 确认金额 / 确认单位净值 计算：${amtText} ÷ ${navText} = ${next}（可修改）`)
+  }, [open, amount, nav])
 
   if (!open || !record) return null
 
@@ -850,11 +1000,7 @@ function ConfirmTradeDialog({
     }
     let nextShares = shares.trim()
     if (!nextShares) {
-      const amt = Number(amount.replace(/,/g, "").trim())
-      const n = Number(nav.replace(/,/g, "").trim())
-      if (Number.isFinite(amt) && Number.isFinite(n) && n > 0) {
-        nextShares = (amt / n).toFixed(2)
-      }
+      nextShares = calcConfirmShares(amount, nav) || ""
     }
     setSubmitting(true)
     setError(null)
@@ -913,36 +1059,82 @@ function ConfirmTradeDialog({
             </div>
             {fetchHint ? <p className="mb-2 text-xs text-zinc-500">{fetchHint}</p> : null}
             {candidates.length > 0 ? (
-              <ul className="max-h-40 space-y-1.5 overflow-y-auto">
-                {candidates.map((c) => {
+              <ul className="max-h-56 space-y-1.5 overflow-y-auto">
+                {candidates.map((c, index) => {
                   const active = selectedCandidateId === c.id
+                  const title = confirmCandidateTitle(c)
+                  const meta = confirmCandidateMeta(c)
+                  const fileName = usableConfirmField(c.attachment_filename)
+                  const subject = usableConfirmField(c.subject)
                   return (
                     <li key={c.id}>
-                      <button
-                        type="button"
-                        onClick={() => applyCandidate(c)}
+                      <div
                         className={[
-                          "w-full rounded border px-2.5 py-2 text-left text-xs transition-colors",
+                          "rounded border px-2.5 py-2 text-xs transition-colors",
                           active
                             ? "border-red-400 bg-red-50/80 dark:border-red-700 dark:bg-red-950/30"
-                            : "border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:hover:bg-zinc-900",
+                            : "border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950",
                         ].join(" ")}
                       >
-                        <div className="font-medium text-zinc-800 dark:text-zinc-100 truncate">
-                          {c.fund_name || c.attachment_filename || `确认单 #${c.id}`}
-                          {c.broker ? ` · ${c.broker}` : ""}
+                        <div className="flex items-start gap-2">
+                          <button
+                            type="button"
+                            onClick={() => applyCandidate(c)}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800">
+                                #{index + 1}
+                              </span>
+                              <span className="truncate font-medium text-zinc-800 dark:text-zinc-100">
+                                {title}
+                              </span>
+                            </div>
+                            {meta ? (
+                              <div className="mt-0.5 text-zinc-600 dark:text-zinc-300">{meta}</div>
+                            ) : null}
+                            {fileName && fileName !== title ? (
+                              <div className="mt-0.5 truncate text-zinc-500" title={fileName}>
+                                附件：{fileName}
+                              </div>
+                            ) : null}
+                            {subject && subject !== title && subject !== fileName ? (
+                              <div className="mt-0.5 truncate text-zinc-400" title={subject}>
+                                主题：{subject}
+                              </div>
+                            ) : null}
+                            {c.reasons?.length ? (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {c.reasons.slice(0, 3).map((reason) => (
+                                  <span
+                                    key={reason}
+                                    className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800"
+                                  >
+                                    {reason}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </button>
+                          <button
+                            type="button"
+                            title="预览确认单"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void openInstructionAttachment(emailConfirmAttachmentId(c.id)).catch(
+                                (err) => {
+                                  setFetchHint(
+                                    err instanceof Error ? err.message : "预览确认单失败",
+                                  )
+                                },
+                              )
+                            }}
+                            className="shrink-0 rounded border border-zinc-200 p-1.5 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800 dark:border-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-100"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                          </button>
                         </div>
-                        <div className="mt-0.5 text-zinc-500">
-                          {[
-                            c.confirm_date || c.apply_date,
-                            c.confirmed_amount ? `${c.confirmed_amount} 元` : null,
-                            c.unit_nav ? `净值 ${c.unit_nav}` : null,
-                            c.reasons?.[0],
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </div>
-                      </button>
+                      </div>
                     </li>
                   )
                 })}
@@ -958,7 +1150,11 @@ function ConfirmTradeDialog({
             </span>
             <DateInput
               value={confirmDate}
-              onChange={setConfirmDate}
+              onChange={(next) => {
+                setConfirmDate(next)
+                // Changing the trade date re-enables auto NAV lookup.
+                navManualRef.current = false
+              }}
               className="h-9 w-full"
             />
           </label>
@@ -973,16 +1169,26 @@ function ConfirmTradeDialog({
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
-              <span className="text-red-500">*</span> 确认单位净值
+            <span className="mb-1 flex items-center gap-2 text-zinc-700 dark:text-zinc-200">
+              <span>
+                <span className="text-red-500">*</span> 确认单位净值
+              </span>
+              {fetchingNav ? (
+                <span className="text-xs font-normal text-zinc-400">读取中…</span>
+              ) : null}
             </span>
             <input
               type="text"
               inputMode="decimal"
               value={nav}
-              onChange={(e) => setNav(e.target.value)}
+              onChange={(e) => {
+                setNav(e.target.value)
+                navManualRef.current = true
+                setNavHint("已手动修改净值（可继续编辑）")
+              }}
               className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring"
             />
+            {navHint ? <p className="mt-1 text-xs text-zinc-500">{navHint}</p> : null}
           </label>
           <label className="block">
             <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
@@ -992,7 +1198,11 @@ function ConfirmTradeDialog({
               type="text"
               inputMode="decimal"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => {
+                setAmount(e.target.value)
+                // Amount change should refresh auto-calculated shares.
+                if (!sharesManualRef.current) setSharesHint(null)
+              }}
               className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
@@ -1002,10 +1212,19 @@ function ConfirmTradeDialog({
               type="text"
               inputMode="decimal"
               value={shares}
-              onChange={(e) => setShares(e.target.value)}
-              placeholder="可留空，按金额/净值自动计算"
+              onChange={(e) => {
+                setShares(e.target.value)
+                sharesManualRef.current = true
+                setSharesHint(
+                  e.target.value.trim()
+                    ? `已手动修改份额 ${e.target.value.trim()}（可继续编辑）`
+                    : "已清空自动计算，可手动填写",
+                )
+              }}
+              placeholder="按金额/净值自动计算，也可手动修改"
               className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
             />
+            {sharesHint ? <p className="mt-1 text-xs text-zinc-500">{sharesHint}</p> : null}
           </label>
           <label className="block">
             <span className="mb-1 block text-zinc-700 dark:text-zinc-200">修改理由</span>

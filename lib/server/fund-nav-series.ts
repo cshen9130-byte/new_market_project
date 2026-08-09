@@ -200,6 +200,40 @@ export async function loadFundLatestUnitNav(
   }
 }
 
+/** Unit NAV on `asOfDate`, or the latest point on/before that date. */
+export async function loadFundUnitNavOnOrBefore(
+  beian_hao: string,
+  asOfDate: string,
+  product_name?: string,
+): Promise<{ nav: number | null; price_date: string | null; exact: boolean }> {
+  const asOf = asOfDate.slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+    return { nav: null, price_date: null, exact: false }
+  }
+  const names = await resolveFundNames(beian_hao, product_name)
+  const rows = await loadMergedNavRows(beian_hao, names.product_name, names.short_name)
+  let bestDate: string | null = null
+  let bestNav: number | null = null
+  for (const row of rows) {
+    const d = row.price_date.slice(0, 10)
+    if (d > asOf) continue
+    const unit = parseFloat(row.nav)
+    if (!Number.isFinite(unit) || unit <= 0) continue
+    if (bestDate == null || d >= bestDate) {
+      bestDate = d
+      bestNav = unit
+    }
+  }
+  if (bestDate == null || bestNav == null) {
+    return { nav: null, price_date: null, exact: false }
+  }
+  return {
+    nav: bestNav,
+    price_date: bestDate,
+    exact: bestDate === asOf,
+  }
+}
+
 export async function loadFundNavRange(
   beian_hao: string,
   product_name: string,

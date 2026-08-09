@@ -55,10 +55,28 @@ function toNumberString(raw: string | null | undefined): string | null {
   return cleaned
 }
 
+/** Reject bilingual PDF field labels mistaken for values (e.g. "Fund Name" → "FundName"). */
+function cleanCapturedValue(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const v = raw.trim()
+  if (!v) return null
+  const compact = v.replace(/\s+/g, "")
+  const labelOnly =
+    /^(FundName|InvestorName|FundCode|FundNumber|BusinessType|TransactionType|ApplicationDate|TradeDate|ConfirmedDate|ConfirmationDate|ConfirmedAmount|ConfirmedNetAmount|ConfirmedShares?|NetAssetValue|NAVperShare|TransactionFee|TradeFee)$/i.test(
+      compact,
+    )
+    || /^(基金名称|产品名称|投资人名称|客户名称|委托人名称|基金代码|产品代码|业务类型|申请日期|确认日期|确认金额|确认净额|确认份额|单位净值|交易费用|手续费)$/.test(
+      compact,
+    )
+  if (labelOnly) return null
+  return v
+}
+
 function firstMatch(text: string, patterns: RegExp[]): string | null {
   for (const re of patterns) {
     const m = text.match(re)
-    if (m?.[1]?.trim()) return m[1].trim()
+    const cleaned = cleanCapturedValue(m?.[1])
+    if (cleaned) return cleaned
   }
   return null
 }
@@ -77,19 +95,20 @@ function extractFromText(text: string, filename: string, subject: string): Parse
   const t = normalizeWhitespace(text)
 
   const fundName = firstMatch(t, [
-    /基金名称(?:\s*\([^)]*\))?\s*([^\n基金代码管理人销售商客户名称投资人委托人]{2,80})/,
+    // Skip bilingual "Fund Name" label that often sits on the same line / next line.
+    /基金名称(?:\s*\([^)]*\))?(?:\s*Fund\s*Name)?\s*([^\n基金代码管理人销售商客户名称投资人委托人]{2,80})/,
     /产品名称[：:]\s*([^\n]{2,80})/,
     /Fund\s*Name\s+([^\n]{2,80})/,
   ])
 
   const fundCode = firstMatch(t, [
-    /基金代码(?:\s*\([^)]*\))?\s*([A-Za-z0-9]{4,12})/,
+    /基金代码(?:\s*\([^)]*\))?(?:\s*Fund\s*(?:Code|Number))?\s*([A-Za-z0-9]{4,12})/,
     /产品代码[：:]\s*([A-Za-z0-9]{4,12})/,
     /Fund\s*(?:Code|Number)\s+([A-Za-z0-9]{4,12})/,
   ])
 
   const investorName = firstMatch(t, [
-    /投资人名称(?:\s*\([^)]*\))?\s*([^\n证件号码证件类型投资人类型]{2,40})/,
+    /投资人名称(?:\s*\([^)]*\))?(?:\s*Investor\s*Name)?\s*([^\n证件号码证件类型投资人类型]{2,40})/,
     /客户名称(?:\s*\([^)]*\))?\s*([^\n客户类型]{2,40})/,
     /委托人名称\s+([^\n]{2,40})/,
     /Investor\s*Name\s+([^\n]{2,40})/,
