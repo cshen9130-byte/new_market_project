@@ -54,6 +54,7 @@ import {
   isInstructionRejected,
   isInstructionWorkflowFinished,
   listInstructionRecords,
+  parseEmailConfirmRecordId,
   progressAfterApproval,
   progressAfterExecute,
   removeInstructionRecord,
@@ -528,6 +529,9 @@ function InstructionFileUpload({
   const [dragOver, setDragOver] = useState(false)
   const displayName = file?.name || existing?.name || null
   const previewableExisting = !file && existing?.id ? existing : null
+  const emailPreviewRecordId = previewableExisting
+    ? parseEmailConfirmRecordId(previewableExisting.id)
+    : null
 
   return (
     <div className="block">
@@ -572,18 +576,30 @@ function InstructionFileUpload({
       {file || existing ? (
         <div className="mt-1 flex items-center gap-3">
           {previewableExisting ? (
-            <button
-              type="button"
-              onClick={() => {
-                void openInstructionAttachment(previewableExisting.id).catch(() => {
-                  window.alert("无法打开确认单，请检查浏览器弹窗拦截")
-                })
-              }}
-              className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline dark:text-sky-400"
-            >
-              <Eye className="h-3.5 w-3.5" />
-              预览
-            </button>
+            emailPreviewRecordId != null ? (
+              <a
+                href={`/ma/api/ops/email-confirm-records/${emailPreviewRecordId}/file`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline dark:text-sky-400"
+              >
+                <Eye className="h-3.5 w-3.5" />
+                预览
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  void openInstructionAttachment(previewableExisting.id).catch((err) => {
+                    window.alert(err instanceof Error ? err.message : "无法打开确认单")
+                  })
+                }}
+                className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline dark:text-sky-400"
+              >
+                <Eye className="h-3.5 w-3.5" />
+                预览
+              </button>
+            )
           ) : null}
           <button
             type="button"
@@ -1116,23 +1132,16 @@ function ConfirmTradeDialog({
                               </div>
                             ) : null}
                           </button>
-                          <button
-                            type="button"
+                          <a
+                            href={`/ma/api/ops/email-confirm-records/${c.id}/file`}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             title="预览确认单"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              void openInstructionAttachment(emailConfirmAttachmentId(c.id)).catch(
-                                (err) => {
-                                  setFetchHint(
-                                    err instanceof Error ? err.message : "预览确认单失败",
-                                  )
-                                },
-                              )
-                            }}
+                            onClick={(e) => e.stopPropagation()}
                             className="shrink-0 rounded border border-zinc-200 p-1.5 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800 dark:border-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-100"
                           >
                             <Eye className="h-3.5 w-3.5" />
-                          </button>
+                          </a>
                         </div>
                       </div>
                     </li>
@@ -1364,6 +1373,20 @@ function AttachmentDetailValue({
   attachment: InstructionAttachmentMeta | null | undefined
 }) {
   if (!attachment?.id || !attachment.name) return <>{cellDash(null)}</>
+  const emailRecordId = parseEmailConfirmRecordId(attachment.id)
+  if (emailRecordId != null) {
+    return (
+      <a
+        href={`/ma/api/ops/email-confirm-records/${emailRecordId}/file`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-left text-sky-600 hover:underline dark:text-sky-400"
+        title={attachment.name}
+      >
+        {attachment.name}
+      </a>
+    )
+  }
   return (
     <button
       type="button"

@@ -86,22 +86,52 @@ function triggerBrowserDownload(url: string, filename?: string): void {
   a.remove()
 }
 
+/**
+ * Open a URL in a new tab. Avoid windowFeatures — browsers treat that as a
+ * popup and block it even on direct clicks. Fall back to a synthetic <a>.
+ */
+function openUrlInNewTab(url: string): boolean {
+  // No third-arg features: opens as a tab, not a popup.
+  const opened = window.open(url, "_blank")
+  if (opened) {
+    try {
+      opened.opener = null
+    } catch {
+      /* ignore */
+    }
+    return true
+  }
+  const a = document.createElement("a")
+  a.href = url
+  a.target = "_blank"
+  a.rel = "noopener noreferrer"
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  return true
+}
+
 /** Open the stored file in a new tab (or trigger download if blocked). */
 export async function openInstructionAttachment(id: string): Promise<void> {
   if (isEmailConfirmAttachmentId(id)) {
     const recordId = parseEmailConfirmRecordId(id)
     if (recordId == null) throw new Error("确认单链接无效")
     const url = `/ma/api/ops/email-confirm-records/${recordId}/file`
-    const opened = window.open(url, "_blank", "noopener,noreferrer")
-    if (!opened) throw new Error("无法打开确认单，请检查浏览器弹窗拦截")
+    openUrlInNewTab(url)
     return
   }
 
   const row = await getInstructionAttachmentBlob(id)
   if (!row) throw new Error("附件不存在或已被清除")
   const url = URL.createObjectURL(row.blob)
-  const opened = window.open(url, "_blank", "noopener,noreferrer")
-  if (!opened) {
+  const opened = window.open(url, "_blank")
+  if (opened) {
+    try {
+      opened.opener = null
+    } catch {
+      /* ignore */
+    }
+  } else {
     triggerBrowserDownload(url, row.name)
   }
   // Revoke after the browser has a chance to load the blob.
