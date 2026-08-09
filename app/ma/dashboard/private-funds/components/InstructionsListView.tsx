@@ -864,17 +864,35 @@ function ConfirmTradeDialog({
       if (!res.ok || json.error) throw new Error(json.error || "匹配确认单失败")
       const list = Array.isArray(json.data) ? json.data : []
       setCandidates(list)
-      if (list.length === 1 && list[0].score >= 40) {
-        applyCandidate(list[0])
-        setFetchHint(
-          json.refreshStarted
-            ? "已启动邮箱补抓；已自动匹配到 1 份确认单，可点击预览（可稍后再次获取以纳入最新邮件）"
-            : "已自动匹配到 1 份确认单，可点击预览",
-        )
+      const best = list[0]
+      const bestHasSlipFields = Boolean(
+        best &&
+          (best.unit_nav ||
+            best.confirmed_shares ||
+            best.confirm_date ||
+            best.confirmed_amount),
+      )
+      // Prefer filling form fields from 确认单 when a confident match exists,
+      // or when parsed slip fields are already available on the top candidate.
+      if (best && (best.score >= 40 || (bestHasSlipFields && best.score >= 15))) {
+        applyCandidate(best)
+        if (list.length === 1) {
+          setFetchHint(
+            json.refreshStarted
+              ? "已启动邮箱补抓；已自动匹配到 1 份确认单并回填字段，可点击预览（可稍后再次获取以纳入最新邮件）"
+              : "已自动匹配到 1 份确认单并回填字段，可点击预览",
+          )
+        } else {
+          setFetchHint(
+            `找到 ${list.length} 份候选，已用最高匹配回填表单；可点其他候选或「预览」核对`,
+          )
+        }
       } else if (list.length > 1) {
         setFetchHint(
           `找到 ${list.length} 份候选，请按日期/金额/附件名区分，或点「预览」核对后选择`,
         )
+      } else if (list.length === 1) {
+        setFetchHint("找到 1 份候选但匹配度较低，请点选确认后回填，或预览核对")
       } else {
         setFetchHint(
           json.refreshStarted

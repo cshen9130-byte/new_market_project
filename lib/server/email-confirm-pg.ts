@@ -7,7 +7,10 @@ import { promises as fs } from "fs"
 import path from "path"
 import { query } from "@/lib/db"
 import { getServerStoragePath } from "@/lib/server/storage"
-import type { ParsedConfirmSlip } from "@/lib/server/email-confirm-parse"
+import {
+  parseConfirmSlipFromBuffer,
+  type ParsedConfirmSlip,
+} from "@/lib/server/email-confirm-parse"
 
 export type EmailConfirmInsert = {
   crawlEmailAccount: string
@@ -267,6 +270,97 @@ export async function getEmailConfirmRecordById(id: number): Promise<EmailConfir
   return rows[0] ?? null
 }
 
+function confirmFieldsIncomplete(row: EmailConfirmRecord): boolean {
+  return !(row.confirm_date || row.apply_date)
+    || !row.confirmed_amount
+    || !row.confirmed_shares
+    || !row.unit_nav
+    || !row.fund_name
+    || /^(FundName|基金名称)$/i.test((row.fund_name || "").replace(/\s+/g, ""))
+}
+
+function preferText(
+  next: string | null | undefined,
+  prev: string | null | undefined,
+): string | null {
+  const n = (next || "").trim()
+  if (n) return n
+  const p = (prev || "").trim()
+  return p || null
+}
+
+/**
+ * Re-read a stored PDF and fill previously-null parsed fields (e.g. after bilingual parser fixes).
+ * Does not overwrite non-null columns.
+ */
+export async function reparseEmailConfirmRecord(
+  id: number,
+): Promise<EmailConfirmRecord | null> {
+  const existing = await getEmailConfirmRecordById(id)
+  if (!existing) return null
+  const file = await readEmailConfirmFile(existing)
+  if (!file) return existing
+
+  const parsed = await parseConfirmSlipFromBuffer(
+    file.buffer,
+    file.filename,
+    existing.subject || "",
+  )
+  const prevNameBad =
+    !existing.fund_name
+    || /^(FundName|基金名称)$/i.test(existing.fund_name.replace(/\s+/g, ""))
+  await query(
+    `UPDATE ops_email_confirm_records SET
+       fund_name = $2,
+       fund_code = COALESCE($3, fund_code),
+       investor_name = COALESCE($4, investor_name),
+       apply_date = COALESCE($5::date, apply_date),
+       confirm_date = COALESCE($6::date, confirm_date),
+       business_type = COALESCE($7, business_type),
+       confirmed_amount = COALESCE($8::numeric, confirmed_amount),
+       confirmed_shares = COALESCE($9::numeric, confirmed_shares),
+       unit_nav = COALESCE($10::numeric, unit_nav),
+       trade_fee = COALESCE($11::numeric, trade_fee),
+       broker = COALESCE($12, broker)
+     WHERE id = $1`,
+    [
+      id,
+      preferText(parsed.fundName, prevNameBad ? null : existing.fund_name),
+      parsed.fundCode,
+      parsed.investorName,
+      parsed.applyDate,
+      parsed.confirmDate,
+      parsed.businessType,
+      numOrNull(parsed.confirmedAmount),
+      numOrNull(parsed.confirmedShares),
+      numOrNull(parsed.unitNav),
+      numOrNull(parsed.tradeFee),
+      parsed.broker,
+    ],
+  )
+  return getEmailConfirmRecordById(id)
+}
+
+/** Reparse incomplete candidates so the confirm dialog can auto-fill from 确认单. */
+export async function enrichConfirmRecordsWithReparse(
+  rows: EmailConfirmRecord[],
+): Promise<EmailConfirmRecord[]> {
+  const out: EmailConfirmRecord[] = []
+  for (const row of rows) {
+    if (!confirmFieldsIncomplete(row)) {
+      out.push(row)
+      continue
+    }
+    try {
+      out.push((await reparseEmailConfirmRecord(row.id)) ?? row)
+    } catch (err) {
+      console.warn(`[email-confirm] reparse id=${row.id} failed`, err)
+      out.push(row)
+    }
+  }
+  return out
+}
+
 export async function readEmailConfirmFile(
   record: EmailConfirmRecord,
 ): Promise<{ buffer: Buffer; filename: string; mimeType: string } | null> {
@@ -360,6 +454,11 @@ export async function matchEmailConfirmRecords(
     params,
   )
 
+  // Reparse incomplete bilingual PDFs before scoring so amount/date/nav can match.
+  const rowsForScore = await enrichConfirmRecordsWithReparse(rows.slice(0, 40))
+  const enrichedById = new Map(rowsForScore.map((r) => [r.id, r]))
+  const scoredRows = rows.map((r) => enrichedById.get(r.id) ?? r)
+
   const wantAmount = parseAmount(input.amount)
   const wantInvestor = normalizeName(input.investorName)
   const wantFund = normalizeName(fundName)
@@ -368,7 +467,7 @@ export async function matchEmailConfirmRecords(
   const wantConfirm = input.confirmDate?.trim() || null
 
   const scored: EmailConfirmMatchCandidate[] = []
-  for (const row of rows) {
+  for (const row of scoredRows) {
     let score = 0
     const reasons: string[] = []
     const rowFund = normalizeName(row.fund_name)
@@ -376,18 +475,23 @@ export async function matchEmailConfirmRecords(
     const rowInvestor = normalizeName(row.investor_name)
     const rowAmount = parseAmount(row.confirmed_amount)
     const subjectNorm = normalizeName(row.subject)
+    const fileNorm = normalizeName(row.attachment_filename)
 
     if (wantCode && rowCode && wantCode === rowCode) {
       score += 40
       reasons.push("基金代码匹配")
     }
     if (wantFund) {
+      const fundKey = wantFund.slice(0, Math.min(6, wantFund.length))
       if (rowFund && (rowFund.includes(wantFund) || wantFund.includes(rowFund))) {
         score += 35
         reasons.push("基金名称匹配")
-      } else if (subjectNorm.includes(wantFund.slice(0, Math.min(6, wantFund.length)))) {
+      } else if (subjectNorm.includes(fundKey)) {
         score += 15
         reasons.push("主题含基金名")
+      } else if (fileNorm.includes(fundKey)) {
+        score += 15
+        reasons.push("附件名含基金名")
       }
     }
     if (wantInvestor && rowInvestor) {
