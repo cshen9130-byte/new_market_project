@@ -260,14 +260,32 @@ export async function upsertEmailConfirmRecords(rows: EmailConfirmInsert[]): Pro
   return saved
 }
 
-export async function getEmailConfirmRecordById(id: number): Promise<EmailConfirmRecord | null> {
-  if (!Number.isFinite(id)) return null
+function toConfirmRecordId(id: number | string | null | undefined): number | null {
+  // node-pg returns BIGINT/BIGSERIAL as string; Number.isFinite("3") === false.
+  const n = typeof id === "string" ? Number.parseInt(id, 10) : Number(id)
+  return Number.isFinite(n) ? n : null
+}
+
+export async function getEmailConfirmRecordById(
+  id: number | string,
+): Promise<EmailConfirmRecord | null> {
+  const recordId = toConfirmRecordId(id)
+  if (recordId == null) return null
   await ensureEmailConfirmTable()
   const rows = await query<EmailConfirmRecord>(
     `SELECT ${SELECT_COLS} FROM ops_email_confirm_records WHERE id = $1 LIMIT 1`,
-    [id],
+    [recordId],
   )
   return rows[0] ?? null
+}
+
+function isLabelLikeName(value: string | null | undefined): boolean {
+  const compact = (value || "").replace(/\s+/g, "")
+  if (!compact) return true
+  if (compact.length < 4) return true
+  return /^(FundName|基金名称|InvestorName|投资人名称|BusinessType|业务类型|基金代码|FundCode|基金账|TypeofLar.*)$/i.test(
+    compact,
+  )
 }
 
 function confirmFieldsIncomplete(row: EmailConfirmRecord): boolean {
@@ -275,8 +293,8 @@ function confirmFieldsIncomplete(row: EmailConfirmRecord): boolean {
     || !row.confirmed_amount
     || !row.confirmed_shares
     || !row.unit_nav
-    || !row.fund_name
-    || /^(FundName|基金名称)$/i.test((row.fund_name || "").replace(/\s+/g, ""))
+    || isLabelLikeName(row.fund_name)
+    || isLabelLikeName(row.business_type)
 }
 
 function preferText(
@@ -284,19 +302,21 @@ function preferText(
   prev: string | null | undefined,
 ): string | null {
   const n = (next || "").trim()
-  if (n) return n
+  if (n && !isLabelLikeName(n)) return n
   const p = (prev || "").trim()
-  return p || null
+  if (p && !isLabelLikeName(p)) return p
+  return n || p || null
 }
 
 /**
- * Re-read a stored PDF and fill previously-null parsed fields (e.g. after bilingual parser fixes).
- * Does not overwrite non-null columns.
+ * Re-read a stored PDF and refresh parsed fields (prefers freshly extracted non-null values).
  */
 export async function reparseEmailConfirmRecord(
-  id: number,
+  id: number | string,
 ): Promise<EmailConfirmRecord | null> {
-  const existing = await getEmailConfirmRecordById(id)
+  const recordId = toConfirmRecordId(id)
+  if (recordId == null) return null
+  const existing = await getEmailConfirmRecordById(recordId)
   if (!existing) return null
   const file = await readEmailConfirmFile(existing)
   if (!file) return existing
@@ -306,39 +326,45 @@ export async function reparseEmailConfirmRecord(
     file.filename,
     existing.subject || "",
   )
-  const prevNameBad =
-    !existing.fund_name
-    || /^(FundName|基金名称)$/i.test(existing.fund_name.replace(/\s+/g, ""))
+  const nextFundCode =
+    parsed.fundCode
+    || (existing.fund_code && !/^(FUND|CODE|NUMBER)$/i.test(existing.fund_code)
+      ? existing.fund_code
+      : null)
+  // Prefer fresh parse; clear known-bad placeholders left by label-only extraction.
+  const nextAmount = numOrNull(parsed.confirmedAmount)
+  const nextShares = numOrNull(parsed.confirmedShares)
+  const nextNav = numOrNull(parsed.unitNav)
   await query(
     `UPDATE ops_email_confirm_records SET
        fund_name = $2,
-       fund_code = COALESCE($3, fund_code),
-       investor_name = COALESCE($4, investor_name),
+       fund_code = $3,
+       investor_name = $4,
        apply_date = COALESCE($5::date, apply_date),
        confirm_date = COALESCE($6::date, confirm_date),
-       business_type = COALESCE($7, business_type),
-       confirmed_amount = COALESCE($8::numeric, confirmed_amount),
+       business_type = $7,
+       confirmed_amount = COALESCE($8::numeric, NULLIF(confirmed_amount, 0)),
        confirmed_shares = COALESCE($9::numeric, confirmed_shares),
        unit_nav = COALESCE($10::numeric, unit_nav),
        trade_fee = COALESCE($11::numeric, trade_fee),
        broker = COALESCE($12, broker)
      WHERE id = $1`,
     [
-      id,
-      preferText(parsed.fundName, prevNameBad ? null : existing.fund_name),
-      parsed.fundCode,
-      parsed.investorName,
+      recordId,
+      preferText(parsed.fundName, existing.fund_name),
+      nextFundCode,
+      preferText(parsed.investorName, existing.investor_name),
       parsed.applyDate,
       parsed.confirmDate,
-      parsed.businessType,
-      numOrNull(parsed.confirmedAmount),
-      numOrNull(parsed.confirmedShares),
-      numOrNull(parsed.unitNav),
+      preferText(parsed.businessType, existing.business_type),
+      nextAmount,
+      nextShares,
+      nextNav,
       numOrNull(parsed.tradeFee),
       parsed.broker,
     ],
   )
-  return getEmailConfirmRecordById(id)
+  return getEmailConfirmRecordById(recordId)
 }
 
 /** Reparse incomplete candidates so the confirm dialog can auto-fill from 确认单. */
@@ -352,7 +378,10 @@ export async function enrichConfirmRecordsWithReparse(
       continue
     }
     try {
-      out.push((await reparseEmailConfirmRecord(row.id)) ?? row)
+      const recordId = toConfirmRecordId(row.id)
+      out.push(
+        (recordId != null ? await reparseEmailConfirmRecord(recordId) : null) ?? row,
+      )
     } catch (err) {
       console.warn(`[email-confirm] reparse id=${row.id} failed`, err)
       out.push(row)
@@ -494,10 +523,25 @@ export async function matchEmailConfirmRecords(
         reasons.push("附件名含基金名")
       }
     }
-    if (wantInvestor && rowInvestor) {
-      if (rowInvestor.includes(wantInvestor) || wantInvestor.includes(rowInvestor)) {
-        score += 20
-        reasons.push("投资人/FOF匹配")
+    if (wantInvestor) {
+      const core = (s: string) =>
+        s.replace(/私募证券投资基金|证券投资基金|fof/g, "")
+      const wantCore = core(wantInvestor)
+      const rowCore = core(rowInvestor)
+      const fileCore = core(fileNorm)
+      const subjectCore = core(subjectNorm)
+      const keyLen = Math.min(4, wantCore.length)
+      const wantKey = wantCore.slice(0, keyLen)
+      const investorHit =
+        (rowCore && (rowCore.includes(wantKey) || wantCore.includes(rowCore.slice(0, keyLen))))
+        || (wantKey && (fileCore.includes(wantKey) || subjectCore.includes(wantKey)))
+      if (investorHit) {
+        score += rowCore ? 35 : 25
+        reasons.push(rowCore ? "投资人/FOF匹配" : "附件/主题含投资人")
+      } else if (rowCore || /金舆|FOF/.test(fileNorm) || /金舆|FOF/.test(subjectNorm)) {
+        // Same underlying, different FOF — do not offer as a match.
+        score -= 50
+        reasons.push("投资人不匹配")
       }
     }
     if (wantAmount != null && rowAmount != null) {

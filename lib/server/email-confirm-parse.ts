@@ -1,12 +1,51 @@
 /**
  * Parse broker 交易确认单 / 确认函 PDF text into structured fields.
  * Styles covered: 国泰海通 / 华泰 / 招商 / 中金 / 中信 / 众量(恒生TA bilingual) (and generic fallbacks).
+ *
+ * Note: 中信/众量 TA PDFs use CID fonts (UniGB-UTF16). Without a Node CMap reader,
+ * pdf.js only returns field labels and all values (净值/份额/金额) are lost.
  */
 
+import fs from "fs"
+import path from "path"
+import { pathToFileURL } from "url"
 import { PDFParse } from "pdf-parse"
 import { CanvasFactory, getData } from "pdf-parse/worker"
 
 PDFParse.setWorker(getData())
+
+const PDFJS_CMAP_DIR = path.resolve(process.cwd(), "node_modules/pdfjs-dist/cmaps")
+const PDFJS_STANDARD_FONT_DIR = path.resolve(
+  process.cwd(),
+  "node_modules/pdfjs-dist/standard_fonts",
+)
+
+class NodeCMapReaderFactory {
+  async fetch({ name }: { name: string }) {
+    const file = path.join(PDFJS_CMAP_DIR, `${name}.bcmap`)
+    const buf = fs.readFileSync(file)
+    return { cMapData: new Uint8Array(buf), isCompressed: true }
+  }
+}
+
+class NodeStandardFontDataFactory {
+  async fetch({ filename }: { filename: string }) {
+    const file = path.join(PDFJS_STANDARD_FONT_DIR, filename)
+    return new Uint8Array(fs.readFileSync(file))
+  }
+}
+
+function pdfParseLoadOptions(buffer: Buffer) {
+  return {
+    data: buffer,
+    CanvasFactory,
+    cMapUrl: pathToFileURL(PDFJS_CMAP_DIR + path.sep).href,
+    cMapPacked: true,
+    CMapReaderFactory: NodeCMapReaderFactory,
+    StandardFontDataFactory: NodeStandardFontDataFactory,
+    useSystemFonts: true,
+  }
+}
 
 export type ParsedConfirmSlip = {
   fundName: string | null
@@ -241,9 +280,136 @@ function detectBroker(text: string, filename: string, subject: string): string |
   if (/华泰证券|华泰/.test(blob)) return "华泰"
   if (/招商证券|招商/.test(blob)) return "招商"
   if (/中金公司|中国国际金融|中金/.test(blob)) return "中金"
-  if (/中信证券|中信/.test(blob)) return "中信"
+  if (/中信证券|中信|中信中证/.test(blob)) return "中信"
   if (/众量/.test(blob)) return "众量"
   return null
+}
+
+/** All decimal numbers in document order (CID-font TA PDFs dump values after labels). */
+function allDecimalNumbers(text: string): string[] {
+  const out: string[] = []
+  const re = /([0-9,]+\.\d{2,8})(?!\d)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) != null) {
+    const n = toNumberString(m[1])
+    if (n) out.push(n)
+  }
+  return out
+}
+
+/**
+ * Fallback for 中信/众量 TA PDFs where values are scattered after all labels.
+ * Prefer NAV-with-date, then amount/shares that reconcile with that NAV.
+ */
+function extractScatteredTaFields(text: string): {
+  fundName: string | null
+  fundCode: string | null
+  investorName: string | null
+  businessType: string | null
+  confirmedAmount: string | null
+  confirmedShares: string | null
+  unitNav: string | null
+  tradeFee: string | null
+  applyDate: string | null
+  confirmDate: string | null
+} {
+  const unitNav = looksLikeUnitNav(
+    firstMatch(text, [/(?<![0-9,])([0-9]+\.\d{3,6})\s*\(\s*20\d{6}\s*\)/]),
+  )
+
+  const nums = allDecimalNumbers(text)
+  // Money-like amounts: ignore tiny fees (0.00) when larger amounts exist.
+  const moneyAmounts = nums.filter((n) => Number(n) >= 100)
+  let confirmedAmount: string | null = null
+  if (moneyAmounts.length) {
+    // Mode (most frequent) among large amounts — 确认/申请/净确认 often repeat.
+    const counts = new Map<string, number>()
+    for (const a of moneyAmounts) counts.set(a, (counts.get(a) || 0) + 1)
+    confirmedAmount = [...counts.entries()].sort((a, b) => b[1] - a[1] || Number(b[0]) - Number(a[0]))[0][0]
+  }
+
+  let confirmedShares: string | null = null
+  if (confirmedAmount && unitNav) {
+    const target = Number(confirmedAmount) / Number(unitNav)
+    let best: { n: string; err: number } | null = null
+    for (const n of nums) {
+      if (Number(n) === Number(confirmedAmount)) continue
+      if (looksLikeUnitNav(n)) continue
+      const err = Math.abs(Number(n) - target)
+      if (err > Math.max(1, target * 0.002)) continue
+      if (!best || err < best.err) best = { n, err }
+    }
+    confirmedShares = best?.n ?? null
+  }
+  if (!confirmedShares && confirmedAmount) {
+    for (const n of nums) {
+      const s = looksLikeConfirmedShares(n, confirmedAmount)
+      if (s) {
+        confirmedShares = s
+        break
+      }
+    }
+  }
+
+  const codeHits = [...text.matchAll(/\b([A-Z]{2,5}\d{2,5}[A-Z0-9]?)\b/g)]
+    .map((m) => looksLikeFundCode(m[1]))
+    .filter((c): c is string => Boolean(c))
+  // Prefer product share-class codes (BLF14C) over AMAC codes (SBLF14).
+  const fundCode =
+    codeHits.find((c) => /[A-Z]$/.test(c) && !c.startsWith("S")) ||
+    codeHits.find((c) => !c.startsWith("S")) ||
+    codeHits[0] ||
+    null
+
+  const fundNames = [...text.matchAll(/([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|证券投资基金)[A-Z]?类?)/g)]
+    .map((m) => m[1]?.replace(/\s+/g, "") || "")
+    .filter((n) => n.length >= 8)
+  // Underlying product name (众量/聚宝…C类), not the FOF investor.
+  const fundName =
+    fundNames.find((n) => /[A-Z]类$/.test(n) && !/FOF/.test(n)) ||
+    fundNames.find((n) => /众量|聚宝|资产/.test(n) && !/FOF/.test(n)) ||
+    fundNames.find((n) => !/FOF|金舆/.test(n)) ||
+    null
+
+  const investorName =
+    fundNames.find((n) => /FOF/.test(n)) ||
+    fundNames.find((n) => /金舆|基石|锡泰|守安|稳健/.test(n) && n !== fundName) ||
+    null
+
+  // Avoid matching inside 巨额赎回方式.
+  const businessType = firstMatch(text, [
+    /(申购|认购)/,
+    /(?<!巨额)(赎回)/,
+    /(转换|红利再投资|强制赎回)/,
+  ])
+
+  const dates = [...text.matchAll(/\b(20\d{2}-\d{2}-\d{2})\b/g)].map((m) => m[1])
+  const uniqueDates = [...new Set(dates)]
+  let applyDate: string | null = uniqueDates[0] ?? null
+  let confirmDate: string | null = uniqueDates.find((d) => d !== applyDate) ?? uniqueDates[1] ?? null
+  // If NAV footnote date is present as YYYYMMDD, apply date often matches that trading day.
+  const navAsOf = toIsoDate(firstMatch(text, [/[0-9]+\.\d{3,6}\s*\(\s*(20\d{6})\s*\)/]))
+  if (navAsOf && uniqueDates.includes(navAsOf)) applyDate = navAsOf
+  if (applyDate && confirmDate === applyDate) {
+    confirmDate = uniqueDates.find((d) => d !== applyDate) ?? confirmDate
+  }
+
+  const tradeFee =
+    toNumberString(firstMatch(text, [/交易费(?:用)?(?:\s*\([^)]*\))?[^\d]{0,40}([0-9,]+\.\d{2})/])) ||
+    (nums.includes("0.00") ? "0.00" : null)
+
+  return {
+    fundName,
+    fundCode,
+    investorName,
+    businessType,
+    confirmedAmount,
+    confirmedShares,
+    unitNav,
+    tradeFee,
+    applyDate,
+    confirmDate,
+  }
 }
 
 export function extractConfirmFieldsFromText(
@@ -336,13 +502,17 @@ export function extractConfirmFieldsFromText(
     }
   }
 
-  const businessType = firstMatch(t, [
-    /业务类型(?:\s*\([^)]*\))?(?:\s*Transaction\s*Type|\s*Business\s*Type)?\s*([^\n确认状态Confirmed]{2,20})/,
-    /Business\s*Type\s*([^\n]{2,20})/,
-    /Transaction\s*Type\s*([^\n]{2,20})/,
+  const businessTypeRaw = firstMatch(t, [
+    /业务类型(?:\s*\([^)]*\))?(?:\s*Transaction\s*Type|\s*Business\s*Type)?\s*([认申赎转红利强增派][^\nA-Za-z]{0,12})/,
+    /Transaction\s*Type\s*([认申赎转红利强增派][^\nA-Za-z]{0,12})/,
+    /业务类型(?:\s*\([^)]*\))?(?:\s*Transaction\s*Type|\s*Business\s*Type)?\s*([^\n确认状态基金代码Confirmed]{2,20})/,
   ])
+  const businessType =
+    businessTypeRaw && !/^(基金代码|确认状态|产品代码)$/.test(businessTypeRaw.replace(/\s+/g, ""))
+      ? businessTypeRaw
+      : null
 
-  const confirmedAmount = toNumberString(
+  let confirmedAmount = toNumberString(
     valueAfterLabel(
       t,
       /确认金额(?:\s*\([^)]*\))?|Confirmed\s*(?:Net\s*)?Amount(?:\s*\([^)]*\))?/gi,
@@ -354,13 +524,15 @@ export function extractConfirmFieldsFromText(
         /Confirmed\s*(?:Amount|Net\s*Amount)[：:\s]*([0-9,]+\.\d{2})/,
       ]),
   )
+  // Reject fee-sized false positives from jumbled TA value dumps.
+  if (confirmedAmount && Number(confirmedAmount) < 1) confirmedAmount = null
 
-  const confirmedShares = extractConfirmedShares(t, confirmedAmount)
+  let confirmedShares = extractConfirmedShares(t, confirmedAmount)
 
-  const unitNav =
+  let unitNav =
     extractUnitNav(t) || deriveUnitNav(confirmedAmount, confirmedShares)
 
-  const tradeFee = toNumberString(
+  let tradeFee = toNumberString(
     valueAfterLabel(
       t,
       /交易费(?:用)?(?:\s*\([^)]*\))?|Trade\s*Fee(?:\s*\([^)]*\))?|Transaction\s*[Ff]ee(?:\s*\([^)]*\))?|手续费用?/gi,
@@ -374,13 +546,31 @@ export function extractConfirmFieldsFromText(
       ]),
   )
 
+  // 中信/众量 CID-font PDFs often dump values after labels; fill any remaining gaps.
+  const scattered = extractScatteredTaFields(t)
+  const mergedFundName = (fundName && !/^(Typeof|FundName|基金)/i.test(fundName.replace(/\s+/g, "")))
+    ? fundName
+    : scattered.fundName
+  const mergedFundCode = fundCode || scattered.fundCode
+  const mergedInvestor =
+    (investorName && investorName.length >= 6 && !/^(基金账|Investor)/i.test(investorName))
+      ? investorName
+      : scattered.investorName
+  const mergedBusiness = businessType || scattered.businessType
+  confirmedAmount = confirmedAmount || scattered.confirmedAmount
+  confirmedShares = confirmedShares || scattered.confirmedShares
+  unitNav = unitNav || scattered.unitNav || deriveUnitNav(confirmedAmount, confirmedShares)
+  tradeFee = tradeFee ?? scattered.tradeFee
+  const mergedApply = applyDate || scattered.applyDate
+  const mergedConfirm = confirmDate || scattered.confirmDate
+
   return {
-    fundName: fundName?.replace(/\s+/g, "").replace(/^FundName/i, "") || null,
-    fundCode: fundCode ?? null,
-    investorName: investorName ?? null,
-    applyDate,
-    confirmDate,
-    businessType: businessType?.replace(/[A-Za-z].*$/, "").replace(/\s+/g, "") || null,
+    fundName: mergedFundName?.replace(/\s+/g, "").replace(/^FundName/i, "") || null,
+    fundCode: mergedFundCode ?? null,
+    investorName: mergedInvestor?.replace(/\s+/g, "") || null,
+    applyDate: mergedApply,
+    confirmDate: mergedConfirm,
+    businessType: mergedBusiness?.replace(/[A-Za-z].*$/, "").replace(/\s+/g, "") || null,
     confirmedAmount,
     confirmedShares,
     unitNav,
@@ -396,7 +586,7 @@ export async function extractConfirmTextFromBuffer(
 ): Promise<string> {
   const lower = filename.toLowerCase()
   if (lower.endsWith(".pdf")) {
-    const parser = new PDFParse({ data: buffer, CanvasFactory })
+    const parser = new PDFParse(pdfParseLoadOptions(buffer))
     try {
       const result = await parser.getText()
       return normalizeWhitespace(result.text || "")

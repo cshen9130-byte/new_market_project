@@ -5,6 +5,20 @@ import { startEmailParseFetchJob } from "@/lib/server/email-parse-fetch-job"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+/** Cover apply/confirm date with buffer; TA emails often arrive several days later. */
+function refreshLookbackDays(applyDate?: string, confirmDate?: string): number {
+  const today = Date.now()
+  let days = 14
+  for (const raw of [applyDate, confirmDate]) {
+    if (!raw || !/^\d{4}-\d{2}-\d{2}/.test(raw)) continue
+    const t = new Date(`${raw.slice(0, 10)}T00:00:00Z`).getTime()
+    if (!Number.isFinite(t)) continue
+    const age = Math.ceil((today - t) / 86_400_000) + 10
+    days = Math.max(days, age)
+  }
+  return Math.min(60, Math.max(14, days))
+}
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json().catch(() => ({}))) as {
@@ -21,9 +35,11 @@ export async function POST(req: Request) {
     }
 
     let refreshStarted = false
+    let refreshDays: number | undefined
     if (body.refresh) {
       try {
-        const started = startEmailParseFetchJob({ light: true, days: 7 })
+        refreshDays = refreshLookbackDays(body.applyDate, body.confirmDate)
+        const started = startEmailParseFetchJob({ light: true, days: refreshDays })
         refreshStarted = started.ok === true
       } catch (e) {
         // Non-fatal: match against whatever is already stored.
@@ -42,7 +58,12 @@ export async function POST(req: Request) {
       limit: body.limit,
     })
 
-    return NextResponse.json({ ok: true, data: candidates, refreshStarted })
+    return NextResponse.json({
+      ok: true,
+      data: candidates,
+      refreshStarted,
+      refreshDays,
+    })
   } catch (err) {
     console.error("[ops/email-confirm-records/match POST]", err)
     return NextResponse.json(
