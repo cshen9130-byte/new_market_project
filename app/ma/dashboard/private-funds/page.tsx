@@ -23539,14 +23539,14 @@ function PrivateFundsPageContent() {
     <div className="flex flex-col h-full overflow-hidden">
       {/* Top menu bar */}
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
-        <nav className="flex items-center justify-between gap-1 px-6 h-12">
-          <div className="flex items-center gap-1 h-full">
+        <nav className="flex items-center gap-3 px-6 h-12">
+          <div className="flex items-center gap-1 h-full min-w-0 flex-1 overflow-x-auto">
             {visibleMenuItems.map((item) => (
               <button
                 key={item.key}
                 onClick={() => handleTabChange(item.key)}
                 className={[
-                  "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
+                  "relative shrink-0 px-4 h-full text-sm font-medium transition-colors focus:outline-none",
                   activeTab === item.key
                     ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
                     : "text-muted-foreground hover:text-foreground",
@@ -23558,7 +23558,7 @@ function PrivateFundsPageContent() {
           </div>
           <Link
             href="/ma/dashboard/settings?section=user-center"
-            className="inline-flex items-center gap-1.5 px-3 h-8 text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 h-8 rounded border border-red-500 text-sm font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
           >
             <UserRound className="h-4 w-4" />
             用户中心
