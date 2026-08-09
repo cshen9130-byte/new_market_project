@@ -524,24 +524,33 @@ export async function matchEmailConfirmRecords(
       }
     }
     if (wantInvestor) {
-      const core = (s: string) =>
-        s.replace(/私募证券投资基金|证券投资基金|fof/g, "")
-      const wantCore = core(wantInvestor)
-      const rowCore = core(rowInvestor)
-      const fileCore = core(fileNorm)
-      const subjectCore = core(subjectNorm)
-      const keyLen = Math.min(4, wantCore.length)
-      const wantKey = wantCore.slice(0, keyLen)
-      const investorHit =
-        (rowCore && (rowCore.includes(wantKey) || wantCore.includes(rowCore.slice(0, keyLen))))
-        || (wantKey && (fileCore.includes(wantKey) || subjectCore.includes(wantKey)))
-      if (investorHit) {
-        score += rowCore ? 35 : 25
-        reasons.push(rowCore ? "投资人/FOF匹配" : "附件/主题含投资人")
-      } else if (rowCore || /金舆|FOF/.test(fileNorm) || /金舆|FOF/.test(subjectNorm)) {
-        // Same underlying, different FOF — do not offer as a match.
-        score -= 50
+      const tags = ["基石", "锡泰", "守安", "稳健增长"] as const
+      const tagOf = (s: string) => tags.find((t) => s.includes(t)) ?? null
+      const wantTag = tagOf(wantInvestor)
+      const gotBlob = `${rowInvestor}${fileNorm}${subjectNorm}`
+      const gotTag = tagOf(gotBlob)
+      if (wantTag && gotTag && wantTag !== gotTag) {
+        // Same underlying, different FOF — exclude from results.
+        score -= 80
         reasons.push("投资人不匹配")
+      } else {
+        const core = (s: string) =>
+          s.replace(/私募证券投资基金|证券投资基金|fof/g, "")
+        const wantCore = core(wantInvestor)
+        const rowCore = core(rowInvestor)
+        const keyLen = Math.min(4, wantCore.length)
+        const wantKey = wantCore.slice(0, keyLen)
+        const investorHit =
+          (wantTag && gotTag && wantTag === gotTag)
+          || (rowCore && (rowCore.includes(wantKey) || wantCore.includes(rowCore.slice(0, keyLen))))
+          || (wantKey && (fileNorm.includes(wantKey) || subjectNorm.includes(wantKey)))
+        if (investorHit) {
+          score += rowCore || (wantTag && gotTag) ? 40 : 25
+          reasons.push("投资人/FOF匹配")
+        } else if (rowCore || /金舆|fof/.test(fileNorm) || /金舆|fof/.test(subjectNorm)) {
+          score -= 50
+          reasons.push("投资人不匹配")
+        }
       }
     }
     if (wantAmount != null && rowAmount != null) {

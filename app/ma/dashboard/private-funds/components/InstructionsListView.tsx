@@ -115,6 +115,41 @@ function usableConfirmField(value: string | null | undefined): string | null {
   return v
 }
 
+/** Distinct FOF name tags — same underlying product often has slips for several FOFs. */
+const FOF_INVESTOR_TAGS = ["基石", "锡泰", "守安", "稳健增长"] as const
+
+function fofInvestorTag(text: string): (typeof FOF_INVESTOR_TAGS)[number] | null {
+  const s = text.replace(/\s+/g, "")
+  return FOF_INVESTOR_TAGS.find((t) => s.includes(t)) ?? null
+}
+
+/** True when confirm-slip investor matches the instruction FOF (reject sibling FOFs). */
+function confirmInvestorAligned(
+  wantInvestor: string | null | undefined,
+  candidate: {
+    investor_name?: string | null
+    attachment_filename?: string | null
+    subject?: string | null
+  },
+): boolean {
+  const want = (wantInvestor || "").replace(/\s+/g, "")
+  if (!want) return true
+  const blob = [candidate.investor_name, candidate.attachment_filename, candidate.subject]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, "")
+  if (!blob) return false
+  const wantTag = fofInvestorTag(want)
+  const gotTag = fofInvestorTag(blob)
+  if (wantTag && gotTag) return wantTag === gotTag
+  if (wantTag && !gotTag) return false
+  const core = (s: string) => s.replace(/私募证券投资基金|证券投资基金|FOF/gi, "")
+  const a = core(want)
+  const b = core(blob)
+  const n = Math.min(4, a.length, b.length)
+  return n > 0 && (a.includes(b.slice(0, n)) || b.includes(a.slice(0, n)))
+}
+
 function confirmCandidateTitle(c: EmailConfirmCandidate): string {
   const fund = usableConfirmField(c.fund_name)
   if (fund) return c.broker ? `${fund} · ${c.broker}` : fund
@@ -867,19 +902,23 @@ function ConfirmTradeDialog({
   }
 
   async function applyCandidate(c: EmailConfirmCandidate) {
+    if (!confirmInvestorAligned(record?.fofFundName, c)) {
+      setFetchHint(
+        `已忽略确认单：投资人是「${c.investor_name || "其他产品"}」，与指令「${record?.fofFundName || ""}」不一致`,
+      )
+      return
+    }
     const seq = ++applyCandidateSeqRef.current
     setSelectedCandidateId(c.id)
     // Block product-NAV lookup while we re-parse the selected 确认单.
     slipNavLockRef.current = true
     navManualRef.current = true
     setNavHint("正在从确认单提取净值…")
-    // Clear stale product-NAV so we never keep 确认日行情净值 over the slip.
-    if (!c.unit_nav && !(c.confirmed_amount && c.confirmed_shares)) {
-      setNav("")
-      setShares("")
-      sharesManualRef.current = false
-      setSharesHint(null)
-    }
+    // Always clear before slip fill — avoid mixing product NAV with another slip's shares.
+    setNav("")
+    setShares("")
+    sharesManualRef.current = false
+    setSharesHint(null)
 
     // Optimistic fill from whatever match already returned.
     fillFormFromConfirmCandidate(c)
@@ -957,24 +996,24 @@ function ConfirmTradeDialog({
       }
       if (!res.ok || json.error) throw new Error(json.error || "匹配确认单失败")
       const list = Array.isArray(json.data) ? json.data : []
-      setCandidates(list)
-      const wantInvestor = (record.fofFundName || "").replace(/\s+/g, "")
-      const investorAligned = (c: EmailConfirmCandidate) => {
-        const got = (
-          c.investor_name ||
-          c.attachment_filename ||
-          c.subject ||
-          ""
-        ).replace(/\s+/g, "")
-        if (!wantInvestor || !got) return true
-        const core = (s: string) => s.replace(/私募证券投资基金|证券投资基金|FOF/gi, "")
-        const a = core(wantInvestor)
-        const b = core(got)
-        if (!a || !b) return true
-        const n = Math.min(4, a.length, b.length)
-        return a.includes(b.slice(0, n)) || b.includes(a.slice(0, n))
+      const aligned = list.filter(
+        (c) => confirmInvestorAligned(record.fofFundName, c) && c.score > 0,
+      )
+      // Only show same-FOF slips — sibling FOF confirms (e.g. 稳健/锡泰/守安) must not appear.
+      setCandidates(aligned)
+      setSelectedCandidateId((prev) =>
+        prev != null && aligned.some((c) => c.id === prev) ? prev : null,
+      )
+      if (aligned.length === 0) {
+        setEmailAttachment(null)
+        // Drop foreign-slip shares that may have been filled earlier.
+        if (!record.shares) {
+          setShares("")
+          sharesManualRef.current = false
+          setSharesHint(null)
+        }
+        slipNavLockRef.current = false
       }
-      const aligned = list.filter((c) => investorAligned(c) && c.score > 0)
       const best = aligned.find((c) => c.score >= 15) || aligned[0]
       const bestHasSlipFields = Boolean(
         best &&
@@ -984,7 +1023,6 @@ function ConfirmTradeDialog({
             best.confirmed_amount),
       )
       // Prefer filling form fields from 确认单 when a confident match exists.
-      // Never auto-fill a slip whose投资人 clearly belongs to another FOF.
       if (
         best &&
         (best.score >= 40 || (bestHasSlipFields && best.score >= 15))
@@ -1008,15 +1046,18 @@ function ConfirmTradeDialog({
       } else if (list.length > 0) {
         setFetchHint(
           json.refreshStarted
-            ? `邮箱中有 ${list.length} 份同产品确认单，但投资人不是「${record.fofFundName}」；已扩大补抓近 ${json.refreshDays ?? "?"} 天，请稍后再次「从邮箱获取」`
-            : `邮箱候选属于其他投资人，不是「${record.fofFundName}」。请点「从邮箱获取」扩大补抓，或手动上传确认单`,
+            ? `已忽略 ${list.length} 份其他投资人的同产品确认单；已扩大补抓近 ${json.refreshDays ?? "?"} 天以查找「${record.fofFundName}」，请稍后再次「从邮箱获取」，或手动上传确认单`
+            : `当前邮箱只有其他投资人的同产品确认单，不是「${record.fofFundName}」。请点「从邮箱获取」扩大补抓，或手动上传该笔确认单`,
         )
+        // First open often only has sibling-FOF slips; kick a longer lookback once.
+        if (!refresh) void fetchConfirmFromEmail(true)
       } else {
         setFetchHint(
           json.refreshStarted
             ? `已启动邮箱补抓（近 ${json.refreshDays ?? "?"} 天），暂无「${record.fofFundName}」的确认单；请稍后再点「从邮箱获取」，或手动上传`
             : "未匹配到确认单，可手动上传或点「从邮箱获取」扩大补抓",
         )
+        if (!refresh) void fetchConfirmFromEmail(true)
       }
     } catch (err) {
       setFetchHint(err instanceof Error ? err.message : "从邮箱获取失败")
@@ -1059,7 +1100,10 @@ function ConfirmTradeDialog({
 
   useEffect(() => {
     if (!open || !record) return
-    const date = confirmDate.trim().slice(0, 10)
+    // TA 单位净值 follows 申请日 (trade date), not 确认日.
+    const applyDay = (record.applyDate || "").trim().slice(0, 10)
+    const confirmDay = confirmDate.trim().slice(0, 10)
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(applyDay) ? applyDay : confirmDay
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return
     // Prefer 确认单 NAV whenever a slip is selected / being parsed.
     if (navManualRef.current || slipNavLockRef.current) return
@@ -1072,7 +1116,11 @@ function ConfirmTradeDialog({
 
     const ac = new AbortController()
     setFetchingNav(true)
-    setNavHint("正在读取交易日净值…")
+    setNavHint(
+      date === applyDay
+        ? "正在读取申请日净值…"
+        : "正在读取交易日净值…",
+    )
     const params = new URLSearchParams({ date })
     if (beian) params.set("beian_hao", beian)
     if (productName) params.set("product_name", productName)
@@ -1092,16 +1140,26 @@ function ConfirmTradeDialog({
         if (ac.signal.aborted || navManualRef.current || slipNavLockRef.current) return
         const unitNav = json.unit_nav
         if (unitNav == null || !Number.isFinite(unitNav) || unitNav <= 0) {
-          setNavHint(`未找到 ${date} 及以前的产品净值，请手动填写`)
+          setNav("")
+          setNavHint(
+            `未找到申请日 ${date} 的产品净值；请按确认单填写（勿使用其他投资人确认单）`,
+          )
           return
         }
         const formatted = formatConfirmNav(unitNav)
         setNav(formatted)
+        // Product NAV path must not keep foreign 确认单 shares.
+        if (!sharesManualRef.current) {
+          /* shares auto-calc effect will run */
+        } else {
+          sharesManualRef.current = false
+          setSharesHint(null)
+        }
         const navDate = json.nav_date || date
         setNavHint(
           json.exact
-            ? `已使用 ${navDate} 单位净值 ${formatted}（可修改）`
-            : `确认日无净值，已使用最近交易日 ${navDate} 单位净值 ${formatted}（可修改）`,
+            ? `已使用申请日 ${navDate} 单位净值 ${formatted}（可修改；仍建议以确认单为准）`
+            : `申请日无净值，已使用最近交易日 ${navDate} 单位净值 ${formatted}（可修改；仍建议以确认单为准）`,
         )
       })
       .catch((err) => {
@@ -1113,7 +1171,7 @@ function ConfirmTradeDialog({
       })
 
     return () => ac.abort()
-  }, [open, record?.id, record?.underlyingBeianHao, record?.underlyingFundName, confirmDate])
+  }, [open, record?.id, record?.underlyingBeianHao, record?.underlyingFundName, record?.applyDate, confirmDate])
 
   useEffect(() => {
     if (!open) return
