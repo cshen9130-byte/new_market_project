@@ -113,8 +113,11 @@ const DATE_VALUE =
   /((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/
 const AMOUNT_VALUE = /([0-9,]+\.\d{2})(?!\d)/
 const SHARES_VALUE = /([0-9,]+\.\d{2,8})(?!\d)/
-const NAV_VALUE = /([0-9]+\.\d{2,8})(?!\d)/
+/** Unit NAV only (no thousands separators); rejects trailing ",000.00" fragments. */
+const NAV_VALUE = /(?<![0-9,])([0-9]+\.\d{2,8})(?!\d)/
 const FUND_CODE_VALUE = /\b([A-Za-z]{0,4}\d[A-Za-z0-9]{2,10}|[A-Z]{5,10}\d[A-Za-z0-9]*)\b/
+/** 众量/恒生 TA often prints NAV as `1.1451 (20260729)`. */
+const NAV_WITH_DATE_VALUE = /(?<![0-9,])([0-9]+\.\d{2,8})\s*\(\s*20\d{6}\s*\)/
 
 function looksLikeFundCode(value: string | null | undefined): string | null {
   const v = cleanCapturedValue(value)
@@ -124,6 +127,112 @@ function looksLikeFundCode(value: string | null | undefined): string | null {
   // Real product/TA codes almost always include a digit (BLF14C / SBLF14 / 000001).
   if (!/\d/.test(v)) return null
   return v.toUpperCase()
+}
+
+function looksLikeUnitNav(value: string | null | undefined): string | null {
+  const n = toNumberString(value)
+  if (!n) return null
+  const v = Number(n)
+  // Private-fund NAVs are typically near 1.x; reject fees (0) and amounts.
+  if (!(v > 0.05 && v < 100)) return null
+  return n
+}
+
+function deriveUnitNav(
+  amount: string | null,
+  shares: string | null,
+): string | null {
+  if (!amount || !shares) return null
+  const a = Number(amount)
+  const s = Number(shares)
+  if (!(a > 0) || !(s > 0)) return null
+  const nav = a / s
+  if (!(nav > 0.05 && nav < 100)) return null
+  // Keep up to 8 dp, trim trailing zeros carefully via Number→string for short values.
+  const fixed = nav.toFixed(8).replace(/\.?0+$/, "")
+  return looksLikeUnitNav(fixed.includes(".") ? fixed : `${fixed}.0`) || nav.toFixed(4)
+}
+
+function extractUnitNav(text: string): string | null {
+  // Prefer NAV printed with its as-of date: 1.1451 (20260729)
+  const withDate =
+    valueAfterLabel(
+      text,
+      /单位净值(?:\s*\([^)]*\))?|NAV\s*per\s*Share|Net\s*Asset\s*Value(?:\s*\([^)]*\))?/gi,
+      NAV_WITH_DATE_VALUE,
+      600,
+    ) ||
+    firstMatch(text, [
+      /单位净值[\s\S]{0,600}?([0-9]+\.\d{2,8})\s*\(\s*20\d{6}\s*\)/i,
+      /NAV\s*per\s*Share[\s\S]{0,600}?([0-9]+\.\d{2,8})\s*\(\s*20\d{6}\s*\)/i,
+      /(?<![0-9,])([0-9]+\.\d{3,6})\s*\(\s*20\d{6}\s*\)/,
+    ])
+  const fromDate = looksLikeUnitNav(withDate)
+  if (fromDate) return fromDate
+
+  const nearLabel = looksLikeUnitNav(
+    valueAfterLabel(
+      text,
+      /单位净值(?:\s*\([^)]*\))?|NAV\s*per\s*Share|Net\s*Asset\s*Value(?:\s*\([^)]*\))?/gi,
+      NAV_VALUE,
+      600,
+    ),
+  )
+  if (nearLabel) return nearLabel
+
+  return looksLikeUnitNav(
+    firstMatch(text, [
+      /单位净值(?:\s*\([^)]*\))?[：:\s]*([0-9]+\.\d{2,8})/,
+      /Net\s*Asset\s*Value[：:\s]*([0-9]+\.\d{2,8})/,
+      /NAV\s*per\s*Share[：:\s]*([0-9]+\.\d{2,8})/,
+    ]),
+  )
+}
+
+function looksLikeConfirmedShares(
+  value: string | null | undefined,
+  confirmedAmount: string | null,
+): string | null {
+  const n = toNumberString(value)
+  if (!n) return null
+  const s = Number(n)
+  if (!(s > 0)) return null
+  // Avoid grabbing 确认金额 when PDF dumps columns out of order.
+  if (confirmedAmount && Math.abs(s - Number(confirmedAmount)) < 0.005) return null
+  if (confirmedAmount) {
+    const a = Number(confirmedAmount)
+    if (a > 0) {
+      // shares ≈ amount / nav with nav typically in (0.05, 100)
+      if (s > a / 0.05 + 1) return null
+      // For normal subscriptions, skip NAV-sized numbers (e.g. 1.1451) before real shares.
+      if (a >= 1000 && s < Math.max(10, a / 100)) return null
+    }
+  }
+  return n
+}
+
+function extractConfirmedShares(text: string, confirmedAmount: string | null): string | null {
+  const labelRe = /确认份额(?:\s*\([^)]*\))?|Confirmed\s*Shares?(?:\s*\([^)]*\))?/gi
+  let labelMatch: RegExpExecArray | null
+  while ((labelMatch = labelRe.exec(text)) != null) {
+    const slice = text.slice(labelMatch.index + labelMatch[0].length, labelMatch.index + labelMatch[0].length + 500)
+    // Walk every numeric candidate; skip NAV-with-date and amount-sized values.
+    const numRe = /([0-9,]+\.\d{2,8})(?!\d)/g
+    let numMatch: RegExpExecArray | null
+    while ((numMatch = numRe.exec(slice)) != null) {
+      const around = slice.slice(numMatch.index, numMatch.index + numMatch[0].length + 16)
+      if (/\(\s*20\d{6}\s*\)/.test(around)) continue // 1.1451 (20260729)
+      const shares = looksLikeConfirmedShares(numMatch[1], confirmedAmount)
+      if (shares) return shares
+    }
+  }
+  return looksLikeConfirmedShares(
+    firstMatch(text, [
+      /确认份额(?:\s*\([^)]*\))?[：:\s]*([0-9,]+\.\d{2,8})/,
+      /Confirmed\s*Share[s]?[：:\s]*([0-9,]+\.\d{2,8})/,
+    ]),
+    confirmedAmount,
+  )
 }
 
 function detectBroker(text: string, filename: string, subject: string): string | null {
@@ -187,12 +296,11 @@ export function extractConfirmFieldsFromText(
     /尊敬的([^您，,\s]{2,20})您好/,
   ])
 
+  // Prefer dashed dates; avoid NAV footnotes like `1.1451 (20260729)`.
+  const DASHED_DATE_VALUE = /(20\d{2}-\d{2}-\d{2})/
   const applyDate = toIsoDate(
-    valueAfterLabel(
-      t,
-      /申请日期(?:\s*\([^)]*\))?|Application\s*Date|Trade\s*Date/gi,
-      DATE_VALUE,
-    ) ||
+    valueAfterLabel(t, /申请日期(?:\s*\([^)]*\))?|Application\s*Date|Trade\s*Date/gi, DASHED_DATE_VALUE, 500) ||
+      valueAfterLabel(t, /申请日期(?:\s*\([^)]*\))?|Application\s*Date|Trade\s*Date/gi, DATE_VALUE, 500) ||
       firstMatch(t, [
         /申请日期(?:\s*\([^)]*\))?\s*((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/,
         /Application\s*Date\s*((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/,
@@ -200,18 +308,33 @@ export function extractConfirmFieldsFromText(
       ]),
   )
 
-  const confirmDate = toIsoDate(
-    valueAfterLabel(
-      t,
-      /确认日期(?:\s*\([^)]*\))?|Confirmation\s*Date|Confirmed\s*Date/gi,
-      DATE_VALUE,
-    ) ||
-      firstMatch(t, [
-        /确认日期(?:\s*\([^)]*\))?\s*((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/,
-        /Confirmed\s*Date\s*((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/,
-        /Confirmation\s*Date\s*((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/,
-      ]),
-  )
+  // Column-dump PDFs list both dates after labels; skip the apply-date value when present.
+  let confirmDate: string | null = null
+  {
+    const labelRe = /确认日期(?:\s*\([^)]*\))?|Confirmation\s*Date|Confirmed\s*Date/gi
+    let labelMatch: RegExpExecArray | null
+    while (!confirmDate && (labelMatch = labelRe.exec(t)) != null) {
+      const slice = t.slice(labelMatch.index + labelMatch[0].length, labelMatch.index + labelMatch[0].length + 500)
+      const dateRe = /(20\d{2}-\d{2}-\d{2})|(20\d{6})/g
+      let dm: RegExpExecArray | null
+      while ((dm = dateRe.exec(slice)) != null) {
+        const iso = toIsoDate(dm[1] || dm[2])
+        if (!iso) continue
+        if (applyDate && iso === applyDate) continue
+        confirmDate = iso
+        break
+      }
+    }
+    if (!confirmDate) {
+      confirmDate = toIsoDate(
+        valueAfterLabel(t, /确认日期(?:\s*\([^)]*\))?|Confirmation\s*Date|Confirmed\s*Date/gi, DASHED_DATE_VALUE, 500) ||
+          firstMatch(t, [
+            /确认日期(?:\s*\([^)]*\))?\s*((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/,
+            /Confirmation\s*Date\s*((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/,
+          ]),
+      )
+    }
+  }
 
   const businessType = firstMatch(t, [
     /业务类型(?:\s*\([^)]*\))?(?:\s*Transaction\s*Type|\s*Business\s*Type)?\s*([^\n确认状态Confirmed]{2,20})/,
@@ -232,30 +355,10 @@ export function extractConfirmFieldsFromText(
       ]),
   )
 
-  const confirmedShares = toNumberString(
-    valueAfterLabel(
-      t,
-      /确认份额(?:\s*\([^)]*\))?|Confirmed\s*Shares?(?:\s*\([^)]*\))?/gi,
-      SHARES_VALUE,
-    ) ||
-      firstMatch(t, [
-        /确认份额(?:\s*\([^)]*\))?[：:\s]*([0-9,]+\.\d{2,8})/,
-        /Confirmed\s*Share[s]?[：:\s]*([0-9,]+\.\d{2,8})/,
-      ]),
-  )
+  const confirmedShares = extractConfirmedShares(t, confirmedAmount)
 
-  const unitNav = toNumberString(
-    valueAfterLabel(
-      t,
-      /单位净值(?:\s*\([^)]*\))?|NAV\s*per\s*Share|Net\s*Asset\s*Value(?:\s*\([^)]*\))?/gi,
-      NAV_VALUE,
-    ) ||
-      firstMatch(t, [
-        /单位净值(?:\s*\([^)]*\))?[：:\s]*([0-9]+\.\d{2,8})/,
-        /Net\s*Asset\s*Value[：:\s]*([0-9]+\.\d{2,8})/,
-        /NAV\s*per\s*Share[：:\s]*([0-9]+\.\d{2,8})/,
-      ]),
-  )
+  const unitNav =
+    extractUnitNav(t) || deriveUnitNav(confirmedAmount, confirmedShares)
 
   const tradeFee = toNumberString(
     valueAfterLabel(

@@ -809,19 +809,43 @@ function ConfirmTradeDialog({
 
   function applyCandidate(c: EmailConfirmCandidate) {
     setSelectedCandidateId(c.id)
-    if (c.confirm_date) setConfirmDate(c.confirm_date)
-    if (c.confirmed_amount) setAmount(String(c.confirmed_amount).replace(/,/g, ""))
-    if (c.confirmed_shares) {
-      setShares(String(c.confirmed_shares).replace(/,/g, ""))
-      sharesManualRef.current = true
-      setSharesHint(`已使用确认单份额 ${String(c.confirmed_shares).replace(/,/g, "")}（可修改）`)
+    const nextAmount = c.confirmed_amount
+      ? String(c.confirmed_amount).replace(/,/g, "")
+      : ""
+    const nextShares = c.confirmed_shares
+      ? String(c.confirmed_shares).replace(/,/g, "")
+      : ""
+    let nextNav = c.unit_nav ? String(c.unit_nav).replace(/,/g, "") : ""
+    // Prefer 确认单: if NAV missing but amount/shares exist, derive NAV before
+    // the confirm-date effect can pull product NAV (often wrong day).
+    if (!nextNav && nextAmount && nextShares) {
+      const a = Number(nextAmount)
+      const s = Number(nextShares)
+      if (Number.isFinite(a) && Number.isFinite(s) && a > 0 && s > 0) {
+        const derived = a / s
+        if (derived > 0.05 && derived < 100) {
+          nextNav = String(Number(derived.toFixed(8)))
+        }
+      }
     }
-    if (c.unit_nav) {
-      const nextNav = String(c.unit_nav).replace(/,/g, "")
+
+    // Lock NAV/shares before updating confirmDate so auto nav-on-date cannot overwrite.
+    if (nextNav) {
       setNav(nextNav)
       navManualRef.current = true
-      setNavHint(`已使用确认单净值 ${nextNav}（可修改）`)
+      setNavHint(
+        c.unit_nav
+          ? `已使用确认单净值 ${nextNav}（可修改）`
+          : `已按确认单 确认金额/确认份额 反推净值 ${nextNav}（可修改）`,
+      )
     }
+    if (nextShares) {
+      setShares(nextShares)
+      sharesManualRef.current = true
+      setSharesHint(`已使用确认单份额 ${nextShares}（可修改）`)
+    }
+    if (nextAmount) setAmount(nextAmount)
+    if (c.confirm_date) setConfirmDate(c.confirm_date)
     if (c.trade_fee != null && c.trade_fee !== "") {
       setTradeFee(String(c.trade_fee).replace(/,/g, ""))
     }
