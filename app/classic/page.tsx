@@ -11,7 +11,7 @@ export default function ClassicPage() {
     const user = authService.getCurrentUser()
     if (!user) {
       router.replace("/login")
-    } else if (user.role !== "admin" && !user.permissions?.classic) {
+    } else if (user.role !== "admin" && !user.permissions?.classic && !user.permissions?.ma) {
       router.replace("/dashboard")
     } else {
       router.replace("/ma/dashboard")

@@ -48,9 +48,14 @@ export default function LoginPage() {
       if (styleChoice === "cyber") {
         router.push("/dashboard")
       } else if (canMa || canClassic) {
+        // 传统风格 → /ma/dashboard（需 ma 或 classic 权限）
         router.push("/ma/dashboard")
       } else {
-        router.push("/dashboard")
+        toast({
+          title: "无传统风格权限",
+          description: "请联系管理员开通「分析看板（传统风格）」或「MA 市场监控」权限",
+          variant: "destructive",
+        })
       }
     } else {
       toast({

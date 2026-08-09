@@ -38,7 +38,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         router.replace("/login")
         return
       }
-      if (current.role !== "admin" && !current.permissions?.ma) {
+      // 传统风格入口依赖 ma 或 classic 任一权限（与登录页 /classic 路由一致）
+      if (current.role !== "admin" && !current.permissions?.ma && !current.permissions?.classic) {
         router.replace("/dashboard")
         return
       }
