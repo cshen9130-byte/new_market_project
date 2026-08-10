@@ -1690,18 +1690,33 @@ function trackStrategyTag(
     | "company_strategy_l3"
     | "platform_strategy_l1"
     | "platform_strategy_l2"
+    | "platform_strategy_l3"
   >,
-): { l1: string | null; l2: string | null } {
+): { l1: string | null; l2: string | null; l3: string | null } {
   const hasTeam = Boolean(
     row.company_strategy_l1 || row.company_strategy_l2 || row.company_strategy_l3,
   )
   if (hasTeam) {
-    return { l1: row.company_strategy_l1, l2: row.company_strategy_l2 }
+    return {
+      l1: row.company_strategy_l1,
+      l2: row.company_strategy_l2,
+      l3: row.company_strategy_l3,
+    }
   }
   return {
     l1: row.platform_strategy_l1 ?? row.strategy_l1,
     l2: row.platform_strategy_l2 ?? row.strategy_l2,
+    l3: row.platform_strategy_l3 ?? null,
   }
+}
+
+/** Product-name strategy line: 一级 · 二级 · 三级. */
+function formatStrategyTagLabel(
+  l1: string | null | undefined,
+  l2?: string | null,
+  l3?: string | null,
+): string {
+  return [l1, l2, l3].map((v) => (v || "").trim()).filter(Boolean).join(" · ")
 }
 
 function TrackPctCell({ value }: { value: string | null }) {
@@ -3345,9 +3360,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         />
                         {(() => {
                           const tag = trackStrategyTag(row)
-                          return tag.l1 ? (
+                          const label = formatStrategyTagLabel(tag.l1, tag.l2, tag.l3)
+                          return label ? (
                           <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
-                            {tag.l1}{tag.l2 ? ` · ${tag.l2}` : ""}
+                            {label}
                           </span>
                           ) : null
                         })()}
@@ -3452,10 +3468,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         />
                         {(() => {
                           const tag = trackStrategyTag(row)
-                          return tag.l1 ? (
+                          const label = formatStrategyTagLabel(tag.l1, tag.l2, tag.l3)
+                          return label ? (
                           <div className="flex items-center gap-1 mt-0.5">
                             <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
-                            <span className="text-[10px] text-muted-foreground">{tag.l1}{tag.l2 ? ` · ${tag.l2}` : ""}</span>
+                            <span className="text-[10px] text-muted-foreground">{label}</span>
                           </div>
                           ) : null
                         })()}
@@ -3949,9 +3966,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         />
                         {(() => {
                           const tag = trackStrategyTag(row)
-                          return tag.l1 ? (
+                          const strategyLabel = formatStrategyTagLabel(tag.l1, tag.l2, tag.l3)
+                          return strategyLabel ? (
                           <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
-                            {tag.l1}{tag.l2 ? ` · ${tag.l2}` : ""}
+                            {strategyLabel}
                           </span>
                           ) : null
                         })()}
@@ -15912,8 +15930,14 @@ interface ManagedProductRow {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  strategy_l2?: string | null
+  strategy_l3?: string | null
   platform_strategy_l1?: string | null
+  platform_strategy_l2?: string | null
+  platform_strategy_l3?: string | null
   company_strategy_l1?: string | null
+  company_strategy_l2?: string | null
+  company_strategy_l3?: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -15940,6 +15964,8 @@ interface ManagedProductsListParams {
   sortKey: string
   sortDir: "asc" | "desc"
   strategyL1: string
+  strategyL2?: string
+  strategyL3?: string
   teamTags: string[]
   cutoff?: string
 }
@@ -15958,6 +15984,8 @@ function buildManagedProductsListParams(p: ManagedProductsListParams): URLSearch
   if (p.cutoff) params.set("cutoff", p.cutoff)
   if (p.strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
   else if (p.strategyL1) params.set("strategy_l1", p.strategyL1)
+  if (p.strategyL2) params.set("strategy_l2", p.strategyL2)
+  if (p.strategyL3) params.set("strategy_l3", p.strategyL3)
   p.teamTags.forEach((t) => params.append("team_tag", t))
   return params
 }
@@ -17111,6 +17139,8 @@ function InvestmentManagedProductsView() {
   const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
+  const [strategyL2, setStrategyL2] = useState("")
+  const [strategyL3, setStrategyL3] = useState("")
   const [teamTagMode, setTeamTagMode] = useState<"and" | "or">("and")
   const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
   const [teamTags, setTeamTags] = useState<string[]>([])
@@ -17180,6 +17210,12 @@ function InvestmentManagedProductsView() {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const invSelectedBeianCount = data.filter((r) => selected.has(r.id) && r.beian_hao).length
+  const invL2Options = strategyL1
+    ? (strategyHierarchy.find((n) => n.l1 === strategyL1)?.l2s ?? [])
+    : []
+  const invL3Options = strategyL2
+    ? (invL2Options.find((n) => n.l2 === strategyL2)?.l3s ?? [])
+    : []
 
   useEffect(() => {
     fetchFundTeamTagOptions().then(setTeamTagOptions)
@@ -17204,14 +17240,14 @@ function InvestmentManagedProductsView() {
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, teamTagMode, teamTags.join("\u0001"), runStatus, keyword, pageSize, cutoffDate])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, teamTagMode, teamTags.join("\u0001"), runStatus, keyword, pageSize, cutoffDate])
 
   useEffect(() => {
     const ac = new AbortController()
     setLoading(true)
     const params = buildManagedProductsListParams({
       page, pageSize, strategySource, runStatus, teamTagMode, keyword,
-      sortKey, sortDir, strategyL1, teamTags, cutoff: cutoffDate,
+      sortKey, sortDir, strategyL1, strategyL2, strategyL3, teamTags, cutoff: cutoffDate,
     })
     fetchManagedProductsList(params, ac.signal)
       .then(({ data: rows, total: n, totalNetAssetValue: navTotal }) => {
@@ -17232,7 +17268,7 @@ function InvestmentManagedProductsView() {
         if (!ac.signal.aborted) setLoading(false)
       })
     return () => ac.abort()
-  }, [page, pageSize, strategySource, strategyL1, teamTagMode, teamTags, runStatus, keyword, sortKey, sortDir, cutoffDate, invDataReloadKey])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, teamTagMode, teamTags, runStatus, keyword, sortKey, sortDir, cutoffDate, invDataReloadKey])
 
   async function handleInvBatchOp(action: string, extra: Record<string, unknown> = {}) {
     const beian_haos = data.filter((r) => selected.has(r.id) && r.beian_hao).map((r) => r.beian_hao!)
@@ -17439,6 +17475,8 @@ function InvestmentManagedProductsView() {
                   if (strategySource === next) return
                   setStrategySource(next)
                   setStrategyL1("")
+                  setStrategyL2("")
+                  setStrategyL3("")
                   setPage(1)
                 }}
                 className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -17449,7 +17487,7 @@ function InvestmentManagedProductsView() {
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
             </div>
             <span
-              onClick={() => { setStrategyL1(""); setPage(1) }}
+              onClick={() => { setStrategyL1(""); setStrategyL2(""); setStrategyL3(""); setPage(1) }}
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                 !strategyL1
@@ -17462,7 +17500,10 @@ function InvestmentManagedProductsView() {
             {strategyHierarchy.map((node) => (
               <span
                 key={node.l1}
-                onClick={() => { setStrategyL1(strategyL1 === node.l1 ? "" : node.l1); setPage(1) }}
+                onClick={() => {
+                  const next = strategyL1 === node.l1 ? "" : node.l1
+                  setStrategyL1(next); setStrategyL2(""); setStrategyL3(""); setPage(1)
+                }}
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                   strategyL1 === node.l1
@@ -17474,7 +17515,10 @@ function InvestmentManagedProductsView() {
               </span>
             ))}
             <span
-              onClick={() => { setStrategyL1(strategyL1 === "__unconfigured__" ? "" : "__unconfigured__"); setPage(1) }}
+              onClick={() => {
+                const next = strategyL1 === "__unconfigured__" ? "" : "__unconfigured__"
+                setStrategyL1(next); setStrategyL2(""); setStrategyL3(""); setPage(1)
+              }}
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                 strategyL1 === "__unconfigured__"
@@ -17486,6 +17530,73 @@ function InvestmentManagedProductsView() {
             </span>
           </div>
         </div>
+        {strategyL1 && strategyL1 !== "__unconfigured__" && invL2Options.length > 0 && (
+          <div className="flex items-start px-4 py-2 bg-muted/20">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">二级策略：</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                onClick={() => { setStrategyL2(""); setStrategyL3(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !strategyL2
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {invL2Options.map((node) => (
+                <span
+                  key={node.l2}
+                  onClick={() => {
+                    const next = strategyL2 === node.l2 ? "" : node.l2
+                    setStrategyL2(next); setStrategyL3(""); setPage(1)
+                  }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                    strategyL2 === node.l2
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {node.l2}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {strategyL2 && invL3Options.length > 0 && (
+          <div className="flex items-start px-4 py-2 bg-muted/30">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">三级策略：</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                onClick={() => { setStrategyL3(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !strategyL3
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {invL3Options.map((v) => (
+                <span
+                  key={v}
+                  onClick={() => { setStrategyL3(strategyL3 === v ? "" : v); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                    strategyL3 === v
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {v}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队标签：</span>
           <div className="flex items-center gap-2 flex-wrap flex-1">
@@ -17821,12 +17932,15 @@ function InvestmentManagedProductsView() {
                           short_name={row.short_name}
                           className="block max-w-[220px]"
                         />
-                        {row.strategy_l1 && (
-                          <div className="flex items-center gap-1 mt-0.5">
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
-                            <span className="text-[10px] text-muted-foreground">{row.strategy_l1}</span>
-                          </div>
-                        )}
+                        {(() => {
+                          const tag = formatStrategyTagLabel(row.strategy_l1, row.strategy_l2, row.strategy_l3)
+                          return tag ? (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                              <span className="text-[10px] text-muted-foreground">{tag}</span>
+                            </div>
+                          ) : null
+                        })()}
                       </td>
                       {invFieldConfigSelected.map((label) => renderInvFieldCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
@@ -18476,6 +18590,8 @@ interface FofOverviewRow {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  strategy_l2?: string | null
+  strategy_l3?: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -18537,6 +18653,8 @@ function InvestmentFofOverviewView() {
   const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
+  const [strategyL2, setStrategyL2] = useState("")
+  const [strategyL3, setStrategyL3] = useState("")
   const [teamTagMode, setTeamTagMode] = useState<"and" | "or">("and")
   const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
   const [teamTags, setTeamTags] = useState<string[]>([])
@@ -18763,6 +18881,13 @@ function InvestmentFofOverviewView() {
     })
   }, [])
 
+  const fofL2Options = strategyL1
+    ? (strategyHierarchy.find((n) => n.l1 === strategyL1)?.l2s ?? [])
+    : []
+  const fofL3Options = strategyL2
+    ? (fofL2Options.find((n) => n.l2 === strategyL2)?.l3s ?? [])
+    : []
+
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "all" })
     fetch(`/ma/api/tracking-funds/strategies?${params}`)
@@ -18773,7 +18898,7 @@ function InvestmentFofOverviewView() {
 
   useEffect(() => {
     setPage(1)
-  }, [viewTab, fundClass, strategySource, strategyL1, teamTagMode, teamTags.join("\u0001"), holdingStatus, keyword, pageSize, cutoffDate, fofFundSelected?.register_number, favoritesOnly])
+  }, [viewTab, fundClass, strategySource, strategyL1, strategyL2, strategyL3, teamTagMode, teamTags.join("\u0001"), holdingStatus, keyword, pageSize, cutoffDate, fofFundSelected?.register_number, favoritesOnly])
 
   useEffect(() => {
     if (viewTab === "detail") return
@@ -18793,6 +18918,8 @@ function InvestmentFofOverviewView() {
     if (sortKey) params.set("sort", sortKey)
     if (strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
     else if (strategyL1) params.set("strategy_l1", strategyL1)
+    if (strategyL2) params.set("strategy_l2", strategyL2)
+    if (strategyL3) params.set("strategy_l3", strategyL3)
     if (fofFundSelected?.register_number) params.set("fof_register_number", fofFundSelected.register_number)
     teamTags.forEach((t) => params.append("team_tag", t))
     fetch(`/ma/api/investment/fof-overview/list?${params}`, { signal: ac.signal })
@@ -18825,7 +18952,7 @@ function InvestmentFofOverviewView() {
         if (!ac.signal.aborted) setLoading(false)
       })
     return () => ac.abort()
-  }, [viewTab, page, pageSize, fundClass, strategySource, strategyL1, teamTagMode, teamTags, holdingStatus, keyword, sortKey, sortDir, cutoffDate, fofFundSelected?.register_number, favoritesOnly, fofFavorites, fofOverviewReloadKey])
+  }, [viewTab, page, pageSize, fundClass, strategySource, strategyL1, strategyL2, strategyL3, teamTagMode, teamTags, holdingStatus, keyword, sortKey, sortDir, cutoffDate, fofFundSelected?.register_number, favoritesOnly, fofFavorites, fofOverviewReloadKey])
 
   useEffect(() => {
     if (viewTab !== "detail") return
@@ -19089,6 +19216,8 @@ function InvestmentFofOverviewView() {
                   if (strategySource === next) return
                   setStrategySource(next)
                   setStrategyL1("")
+                  setStrategyL2("")
+                  setStrategyL3("")
                   setPage(1)
                 }}
                 className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -19099,7 +19228,7 @@ function InvestmentFofOverviewView() {
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
             </div>
             <span
-              onClick={() => { setStrategyL1(""); setPage(1) }}
+              onClick={() => { setStrategyL1(""); setStrategyL2(""); setStrategyL3(""); setPage(1) }}
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                 !strategyL1
@@ -19112,7 +19241,10 @@ function InvestmentFofOverviewView() {
             {strategyHierarchy.map((node) => (
               <span
                 key={node.l1}
-                onClick={() => { setStrategyL1(strategyL1 === node.l1 ? "" : node.l1); setPage(1) }}
+                onClick={() => {
+                  const next = strategyL1 === node.l1 ? "" : node.l1
+                  setStrategyL1(next); setStrategyL2(""); setStrategyL3(""); setPage(1)
+                }}
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                   strategyL1 === node.l1
@@ -19125,6 +19257,73 @@ function InvestmentFofOverviewView() {
             ))}
           </div>
         </div>
+        {strategyL1 && fofL2Options.length > 0 && (
+          <div className="flex items-start px-4 py-2 bg-muted/20">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">二级策略：</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                onClick={() => { setStrategyL2(""); setStrategyL3(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !strategyL2
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {fofL2Options.map((node) => (
+                <span
+                  key={node.l2}
+                  onClick={() => {
+                    const next = strategyL2 === node.l2 ? "" : node.l2
+                    setStrategyL2(next); setStrategyL3(""); setPage(1)
+                  }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                    strategyL2 === node.l2
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {node.l2}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {strategyL2 && fofL3Options.length > 0 && (
+          <div className="flex items-start px-4 py-2 bg-muted/30">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">三级策略：</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                onClick={() => { setStrategyL3(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !strategyL3
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {fofL3Options.map((v) => (
+                <span
+                  key={v}
+                  onClick={() => { setStrategyL3(strategyL3 === v ? "" : v); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                    strategyL3 === v
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {v}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队标签：</span>
           <div className="flex items-center gap-2 flex-wrap flex-1">
@@ -19590,12 +19789,15 @@ function InvestmentFofOverviewView() {
                           product_name={row.product_name}
                           short_name={row.short_name}
                         />
-                        {row.strategy_l1 && (
-                          <div className="flex items-center gap-1 mt-0.5">
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
-                            <span className="text-[10px] text-muted-foreground truncate">{row.strategy_l1}</span>
-                          </div>
-                        )}
+                        {(() => {
+                          const tag = formatStrategyTagLabel(row.strategy_l1, row.strategy_l2, row.strategy_l3)
+                          return tag ? (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                              <span className="text-[10px] text-muted-foreground truncate">{tag}</span>
+                            </div>
+                          ) : null
+                        })()}
                       </td>
                       {fofFieldConfigSelected.map((label) => renderInvFofFieldCell(label, row, scrollCell))}
                       <td className={`${scrollCell} text-right tabular-nums`}>

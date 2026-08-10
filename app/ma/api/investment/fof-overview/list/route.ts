@@ -112,6 +112,8 @@ interface FofOverviewRow {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  strategy_l2: string | null
+  strategy_l3: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -131,6 +133,8 @@ function mapRow(r: {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  strategy_l2?: string | null
+  strategy_l3?: string | null
   latest_unit_nav: string | null
   latest_nav_date: string | Date | null
   latest_return_pct: string | null
@@ -153,6 +157,8 @@ function mapRow(r: {
     product_name: productName,
     short_name: shortName,
     strategy_l1: r.strategy_l1,
+    strategy_l2: r.strategy_l2 ?? null,
+    strategy_l3: r.strategy_l3 ?? null,
     latest_nav: r.latest_unit_nav,
     latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
     latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
@@ -176,6 +182,8 @@ export async function GET(req: Request) {
     const keyword = (searchParams.get("keyword") || "").trim()
     const strategySource = searchParams.get("strategy_source") === "platform" ? "platform" : "company"
     const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
+    const strategyL2 = (searchParams.get("strategy_l2") || "").trim()
+    const strategyL3 = (searchParams.get("strategy_l3") || "").trim()
     const holdingStatus = searchParams.get("holding_status") || "holding"
     const fundClass: FofUnderlyingFundClass =
       searchParams.get("fund_class") === "public" ? "public" : "private"
@@ -203,9 +211,10 @@ export async function GET(req: Request) {
         ELSE COALESCE(cache.short_name, f.product_name)
       END`
 
-      const stratCol = strategySource === "platform"
-        ? "cache.platform_strategy_l1"
-        : "cache.company_strategy_l1"
+      const stratPrefix = strategySource === "platform" ? "platform" : "company"
+      const stratCol = `cache.${stratPrefix}_strategy_l1`
+      const stratL2Col = `cache.${stratPrefix}_strategy_l2`
+      const stratL3Col = `cache.${stratPrefix}_strategy_l3`
       const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
       const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
       const sortCol = sortKey === "sequence_no"
@@ -236,6 +245,16 @@ export async function GET(req: Request) {
       } else if (strategyL1) {
         conditions.push(`${stratCol} = $${pi}`)
         params.push(strategyL1)
+        pi++
+      }
+      if (strategyL2) {
+        conditions.push(`${stratL2Col} = $${pi}`)
+        params.push(strategyL2)
+        pi++
+      }
+      if (strategyL3) {
+        conditions.push(`COALESCE(${stratL3Col}, '') ILIKE $${pi}`)
+        params.push(`%${strategyL3}%`)
         pi++
       }
 
@@ -298,6 +317,8 @@ export async function GET(req: Request) {
         product_name: string
         short_name: string | null
         strategy_l1: string | null
+        strategy_l2: string | null
+        strategy_l3: string | null
         latest_unit_nav: string | null
         latest_nav_date: string | null
         latest_return_pct: string | null
@@ -318,6 +339,8 @@ export async function GET(req: Request) {
            f.product_name,
            ${displayNameExpr}                     AS short_name,
            ${stratCol}                          AS strategy_l1,
+           ${stratL2Col}                        AS strategy_l2,
+           ${stratL3Col}                        AS strategy_l3,
            COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
            COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
            COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct,
@@ -352,7 +375,10 @@ export async function GET(req: Request) {
     }
 
     // ─── SLOW PATH — historical cutoff, recompute on the fly ────────────────
-    const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
+    const strategyPrefix = strategySource === "platform" ? "platform" : "company"
+    const strategyCol = `o.${strategyPrefix}_strategy_one`
+    const strategyL2Expr = `NULLIF(BTRIM(o.${strategyPrefix}_strategy_two), '')`
+    const strategyL3Expr = `NULLIF(BTRIM(o.${strategyPrefix}_strategy_three), '')`
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const teamTagsExpr = `CASE WHEN jsonb_typeof(o.tag->'company') = 'array' THEN o.tag->'company' ELSE '[]'::jsonb END`
     const marketValueExpr = `COALESCE(${managedUnderlyingMarketValueExpr(BEIAN_EXPR, PRODUCT_EXPR)}, 0)`
@@ -382,6 +408,16 @@ export async function GET(req: Request) {
     } else if (strategyL1) {
       conditions.push(`${strategyExpr} = $${pi}`)
       params.push(strategyL1)
+      pi++
+    }
+    if (strategyL2) {
+      conditions.push(`${strategyL2Expr} = $${pi}`)
+      params.push(strategyL2)
+      pi++
+    }
+    if (strategyL3) {
+      conditions.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${pi}`)
+      params.push(`%${strategyL3}%`)
       pi++
     }
 
@@ -472,6 +508,8 @@ export async function GET(req: Request) {
       product_name: string
       short_name: string | null
       strategy_l1: string | null
+      strategy_l2: string | null
+      strategy_l3: string | null
       latest_unit_nav: string | null
       latest_nav_date: string | Date | null
       latest_return_pct: string | null
@@ -493,6 +531,8 @@ export async function GET(req: Request) {
            f.product_name,
            ${SHORT_EXPR} AS short_name,
            ${strategyExpr} AS strategy_l1,
+           ${strategyL2Expr} AS strategy_l2,
+           ${strategyL3Expr} AS strategy_l3,
            (${currentNavExpr})::text AS latest_unit_nav,
            ${currentDateExpr} AS latest_nav_date,
            (${currentPctExpr})::text AS latest_return_pct,

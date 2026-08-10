@@ -83,9 +83,11 @@ async function patchManagedListCache(update: CompanyStrategyUpdate): Promise<voi
   await query(
     `UPDATE ops_managed_products_list_cache
      SET company_strategy_l1 = $2,
+         company_strategy_l2 = $3,
+         company_strategy_l3 = $4,
          refreshed_at = NOW()
      WHERE UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($1))`,
-    [update.beian_hao, update.strategy_l1],
+    [update.beian_hao, update.strategy_l1, update.strategy_l2, update.strategy_l3],
   ).catch(() => undefined)
 }
 
@@ -93,9 +95,11 @@ async function patchFofListCache(update: CompanyStrategyUpdate): Promise<void> {
   await query(
     `UPDATE ops_fof_overview_list_cache
      SET company_strategy_l1 = $2,
+         company_strategy_l2 = $3,
+         company_strategy_l3 = $4,
          refreshed_at = NOW()
      WHERE UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($1))`,
-    [update.beian_hao, update.strategy_l1],
+    [update.beian_hao, update.strategy_l1, update.strategy_l2, update.strategy_l3],
   ).catch(() => undefined)
 }
 

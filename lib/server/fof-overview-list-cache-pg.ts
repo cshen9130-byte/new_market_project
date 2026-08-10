@@ -40,7 +40,9 @@ const STAGING_INDEX_SQLS = [
   `CREATE INDEX ON ${STAGING_CACHE_TABLE} (beian_hao)`,
   `CREATE INDEX ON ${STAGING_CACHE_TABLE} (product_name)`,
   `CREATE INDEX ON ${STAGING_CACHE_TABLE} (company_strategy_l1)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (company_strategy_l2)`,
   `CREATE INDEX ON ${STAGING_CACHE_TABLE} (platform_strategy_l1)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (platform_strategy_l2)`,
 ]
 
 const CREATE_TABLE_SQL = `
@@ -60,7 +62,11 @@ const CREATE_TABLE_SQL = `
     sharpe_1y             NUMERIC(16,6),
     calmar_1y             NUMERIC(16,6),
     company_strategy_l1   TEXT,
+    company_strategy_l2   TEXT,
+    company_strategy_l3   TEXT,
     platform_strategy_l1  TEXT,
+    platform_strategy_l2  TEXT,
+    platform_strategy_l3  TEXT,
     team_tags             JSONB,
     as_of_date            DATE        NOT NULL,
     refreshed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -81,14 +87,52 @@ const CREATE_TABLE_SQL = `
 
 const MIGRATE_STMTS = [
   `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS company_strategy_l1  TEXT`,
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS company_strategy_l2  TEXT`,
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS company_strategy_l3  TEXT`,
   `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS platform_strategy_l1 TEXT`,
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS platform_strategy_l2 TEXT`,
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS platform_strategy_l3 TEXT`,
   `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS team_tags             JSONB`,
   `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS market_value          NUMERIC(20,2)`,
   `CREATE INDEX IF NOT EXISTS idx_fof_overview_list_cache_company_strat  ON ops_fof_overview_list_cache (company_strategy_l1)`,
+  `CREATE INDEX IF NOT EXISTS idx_fof_overview_list_cache_company_strat_l2 ON ops_fof_overview_list_cache (company_strategy_l2)`,
   `CREATE INDEX IF NOT EXISTS idx_fof_overview_list_cache_platform_strat ON ops_fof_overview_list_cache (platform_strategy_l1)`,
+  `CREATE INDEX IF NOT EXISTS idx_fof_overview_list_cache_platform_strat_l2 ON ops_fof_overview_list_cache (platform_strategy_l2)`,
 ]
 
 let tableEnsured = false
+let strategyL2L3Backfilled = false
+
+/** Patch l2/l3 from type6 without a full metric rebuild (one-shot after migrate). */
+async function backfillFofStrategyL2L3(): Promise<void> {
+  if (strategyL2L3Backfilled) return
+  await query(
+    `UPDATE ops_fof_overview_list_cache c
+     SET company_strategy_l2 = o.company_strategy_l2,
+         company_strategy_l3 = o.company_strategy_l3,
+         platform_strategy_l2 = o.platform_strategy_l2,
+         platform_strategy_l3 = o.platform_strategy_l3
+     FROM (
+       SELECT DISTINCT ON (register_number)
+         register_number,
+         NULLIF(BTRIM(company_strategy_two), '')    AS company_strategy_l2,
+         NULLIF(BTRIM(company_strategy_three), '')  AS company_strategy_l3,
+         NULLIF(BTRIM(platform_strategy_two), '')   AS platform_strategy_l2,
+         NULLIF(BTRIM(platform_strategy_three), '') AS platform_strategy_l3
+       FROM type6_ops_team_full
+       WHERE register_number IS NOT NULL
+       ORDER BY register_number, updated_at DESC NULLS LAST, id DESC
+     ) o
+     WHERE UPPER(BTRIM(c.beian_hao)) = UPPER(BTRIM(o.register_number))
+       AND (
+         c.company_strategy_l2 IS DISTINCT FROM o.company_strategy_l2
+         OR c.company_strategy_l3 IS DISTINCT FROM o.company_strategy_l3
+         OR c.platform_strategy_l2 IS DISTINCT FROM o.platform_strategy_l2
+         OR c.platform_strategy_l3 IS DISTINCT FROM o.platform_strategy_l3
+       )`,
+  ).catch(() => undefined)
+  strategyL2L3Backfilled = true
+}
 
 export async function ensureFofOverviewListCacheTable(): Promise<void> {
   if (tableEnsured) return
@@ -98,6 +142,7 @@ export async function ensureFofOverviewListCacheTable(): Promise<void> {
   }
   // CREATE TABLE IF NOT EXISTS does not add a missing PK on an existing table.
   await ensureListCachePrimaryKey(LIVE_CACHE_TABLE, "fof_underlying_id")
+  await backfillFofStrategyL2L3()
   tableEnsured = true
 }
 
@@ -132,7 +177,11 @@ const FOF_CACHE_UPSERT_SUFFIX = `
     sharpe_1y            = EXCLUDED.sharpe_1y,
     calmar_1y            = EXCLUDED.calmar_1y,
     company_strategy_l1  = EXCLUDED.company_strategy_l1,
+    company_strategy_l2  = EXCLUDED.company_strategy_l2,
+    company_strategy_l3  = EXCLUDED.company_strategy_l3,
     platform_strategy_l1 = EXCLUDED.platform_strategy_l1,
+    platform_strategy_l2 = EXCLUDED.platform_strategy_l2,
+    platform_strategy_l3 = EXCLUDED.platform_strategy_l3,
     team_tags            = EXCLUDED.team_tags,
     market_value         = EXCLUDED.market_value,
     as_of_date           = EXCLUDED.as_of_date,
@@ -371,12 +420,16 @@ export async function refreshFofOverviewListCache(
     const ops = beian ? opsStrategyMap.get(beian) : undefined
     const bflStrategy = beian ? bflStrategyMap.get(beian) : undefined
     const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
+    const company_strategy_l2 = ops?.company_strategy_l2 ?? null
+    const company_strategy_l3 = ops?.company_strategy_l3 ?? null
     const platform_strategy_l1 = ops?.platform_strategy_l1 ?? bflStrategy ?? null
+    const platform_strategy_l2 = ops?.platform_strategy_l2 ?? null
+    const platform_strategy_l3 = ops?.platform_strategy_l3 ?? null
     const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
     const managedMarketValue = managedMarketById.get(row.fof_underlying_id) ?? null
 
     placeholders.push(
-      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}, $${pi + 18}::date, NOW())`,
+      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}, $${pi + 17}, $${pi + 18}, $${pi + 19}, $${pi + 20}::jsonb, $${pi + 21}, $${pi + 22}::date, NOW())`,
     )
     values.push(
       row.fof_underlying_id,
@@ -394,12 +447,16 @@ export async function refreshFofOverviewListCache(
       clampPgNumeric(sharpe_1y, 16, 6),
       clampPgNumeric(calmar_1y, 16, 6),
       company_strategy_l1,
+      company_strategy_l2,
+      company_strategy_l3,
       platform_strategy_l1,
+      platform_strategy_l2,
+      platform_strategy_l3,
       team_tags,
       clampPgNumeric(managedMarketValue, 20, 2),
       asOfDate,
     )
-    pi += 19
+    pi += 23
   }
 
   logProgress(
@@ -412,14 +469,16 @@ export async function refreshFofOverviewListCache(
        unit_nav, nav_date, return_pct,
        ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
        sharpe_1y, calmar_1y,
-       company_strategy_l1, platform_strategy_l1, team_tags,
+       company_strategy_l1, company_strategy_l2, company_strategy_l3,
+       platform_strategy_l1, platform_strategy_l2, platform_strategy_l3,
+       team_tags,
        market_value,
        as_of_date, refreshed_at
      ) VALUES`,
     reuseIdentities ? FOF_CACHE_UPSERT_SUFFIX : "",
     placeholders,
     values,
-    19,
+    23,
   )
 
   // Force 最新涨跌幅 (+ tip NAV/date) to match each product's detail 平台数据 row.

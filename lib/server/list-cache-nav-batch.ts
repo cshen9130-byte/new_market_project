@@ -1751,7 +1751,11 @@ export function calcPeriodReturnsFromHistory(
 export type OpsStrategyRow = {
   register_number: string
   company_strategy_l1: string | null
+  company_strategy_l2: string | null
+  company_strategy_l3: string | null
   platform_strategy_l1: string | null
+  platform_strategy_l2: string | null
+  platform_strategy_l3: string | null
   team_tags: unknown
 }
 
@@ -1765,8 +1769,12 @@ export async function loadOpsStrategyAndTags(
   const rows = await query<OpsStrategyRow>(
     `SELECT DISTINCT ON (register_number)
        register_number,
-       NULLIF(BTRIM(company_strategy_one), '')  AS company_strategy_l1,
-       NULLIF(BTRIM(platform_strategy_one), '') AS platform_strategy_l1,
+       NULLIF(BTRIM(company_strategy_one), '')    AS company_strategy_l1,
+       NULLIF(BTRIM(company_strategy_two), '')    AS company_strategy_l2,
+       NULLIF(BTRIM(company_strategy_three), '')  AS company_strategy_l3,
+       NULLIF(BTRIM(platform_strategy_one), '')   AS platform_strategy_l1,
+       NULLIF(BTRIM(platform_strategy_two), '')   AS platform_strategy_l2,
+       NULLIF(BTRIM(platform_strategy_three), '') AS platform_strategy_l3,
        CASE WHEN jsonb_typeof(tag->'company') = 'array'
             THEN tag->'company' ELSE '[]'::jsonb END AS team_tags
      FROM type6_ops_team_full

@@ -76,6 +76,8 @@ interface ManagedRow {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  strategy_l2: string | null
+  strategy_l3: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -84,7 +86,11 @@ interface ManagedRow {
   valuation_date: string | null
   nav_is_team: boolean
   platform_strategy_l1?: string | null
+  platform_strategy_l2?: string | null
+  platform_strategy_l3?: string | null
   company_strategy_l1?: string | null
+  company_strategy_l2?: string | null
+  company_strategy_l3?: string | null
   ret_1w?: string | null
   ret_1m?: string | null
   ret_3m?: string | null
@@ -100,8 +106,14 @@ function mapRow(r: {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  strategy_l2?: string | null
+  strategy_l3?: string | null
   platform_strategy_l1?: string | null
+  platform_strategy_l2?: string | null
+  platform_strategy_l3?: string | null
   company_strategy_l1?: string | null
+  company_strategy_l2?: string | null
+  company_strategy_l3?: string | null
   latest_unit_nav: string | null
   latest_nav_date: string | Date | null
   latest_return_pct: string | null
@@ -123,8 +135,14 @@ function mapRow(r: {
     product_name: r.product_name,
     short_name: r.short_name,
     strategy_l1: r.strategy_l1,
+    strategy_l2: r.strategy_l2 ?? null,
+    strategy_l3: r.strategy_l3 ?? null,
     platform_strategy_l1: r.platform_strategy_l1 ?? null,
+    platform_strategy_l2: r.platform_strategy_l2 ?? null,
+    platform_strategy_l3: r.platform_strategy_l3 ?? null,
     company_strategy_l1: r.company_strategy_l1 ?? null,
+    company_strategy_l2: r.company_strategy_l2 ?? null,
+    company_strategy_l3: r.company_strategy_l3 ?? null,
     latest_nav: r.latest_unit_nav,
     latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
     latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
@@ -311,6 +329,8 @@ export async function GET(req: Request) {
     const keyword     = (searchParams.get("keyword") || "").trim()
     const strategySource = searchParams.get("strategy_source") === "platform" ? "platform" : "company"
     const strategyL1  = (searchParams.get("strategy_l1") || "").trim()
+    const strategyL2  = (searchParams.get("strategy_l2") || "").trim()
+    const strategyL3  = (searchParams.get("strategy_l3") || "").trim()
     const runStatus   = searchParams.get("run_status") || "running"
     const teamTagMode = searchParams.get("team_tag_mode") === "or" ? "or" : "and"
     const teamTags    = searchParams.getAll("team_tag").map((t) => t.trim()).filter(Boolean)
@@ -325,9 +345,10 @@ export async function GET(req: Request) {
     if (useCache) {
       await ensureManagedProductsListCachePopulated()
 
-      const stratCol = strategySource === "platform"
-        ? "cache.platform_strategy_l1"
-        : "cache.company_strategy_l1"
+      const stratPrefix = strategySource === "platform" ? "platform" : "company"
+      const stratCol = `cache.${stratPrefix}_strategy_l1`
+      const stratL2Col = `cache.${stratPrefix}_strategy_l2`
+      const stratL3Col = `cache.${stratPrefix}_strategy_l3`
       const tagsCol  = "COALESCE(cache.team_tags, '[]'::jsonb)"
 
       const conditions: string[] = ["m.product_name <> '合计'"]
@@ -345,6 +366,16 @@ export async function GET(req: Request) {
       } else if (strategyL1) {
         conditions.push(`${stratCol} = $${pi}`)
         params.push(strategyL1)
+        pi++
+      }
+      if (strategyL2) {
+        conditions.push(`${stratL2Col} = $${pi}`)
+        params.push(strategyL2)
+        pi++
+      }
+      if (strategyL3) {
+        conditions.push(`COALESCE(${stratL3Col}, '') ILIKE $${pi}`)
+        params.push(`%${strategyL3}%`)
         pi++
       }
 
@@ -385,8 +416,14 @@ export async function GET(req: Request) {
       const rows = await query<{
         id: string; beian_hao: string | null; product_name: string; short_name: string | null
         strategy_l1: string | null
+        strategy_l2: string | null
+        strategy_l3: string | null
         platform_strategy_l1: string | null
+        platform_strategy_l2: string | null
+        platform_strategy_l3: string | null
         company_strategy_l1: string | null
+        company_strategy_l2: string | null
+        company_strategy_l3: string | null
         latest_unit_nav: string | null; latest_nav_date: string | null
         latest_return_pct: string | null; custody_account_balance: string | null
         net_asset_value: string | null; sequence_no: number | null
@@ -401,8 +438,14 @@ export async function GET(req: Request) {
            m.product_name,
            cache.short_name,
            ${stratCol}                          AS strategy_l1,
+           ${stratL2Col}                        AS strategy_l2,
+           ${stratL3Col}                        AS strategy_l3,
            cache.platform_strategy_l1,
+           cache.platform_strategy_l2,
+           cache.platform_strategy_l3,
            cache.company_strategy_l1,
+           cache.company_strategy_l2,
+           cache.company_strategy_l3,
            cache.unit_nav::text                 AS latest_unit_nav,
            cache.nav_date::text                 AS latest_nav_date,
            cache.return_pct::text               AS latest_return_pct,
@@ -473,7 +516,10 @@ export async function GET(req: Request) {
       )
     }
 
-    const strategyCol  = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
+    const strategyPrefix = strategySource === "platform" ? "platform" : "company"
+    const strategyCol  = `o.${strategyPrefix}_strategy_one`
+    const strategyL2Expr = `NULLIF(BTRIM(o.${strategyPrefix}_strategy_two), '')`
+    const strategyL3Expr = `NULLIF(BTRIM(o.${strategyPrefix}_strategy_three), '')`
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const teamTagsExpr = `CASE WHEN jsonb_typeof(o.tag->'company') = 'array' THEN o.tag->'company' ELSE '[]'::jsonb END`
     const sortCol      = ALLOWED_SORT_SLOW[sortParam] ?? "sequence_no"
@@ -492,6 +538,16 @@ export async function GET(req: Request) {
     } else if (strategyL1) {
       conditions.push(`${strategyExpr} = $${pi}`)
       params.push(strategyL1)
+      pi++
+    }
+    if (strategyL2) {
+      conditions.push(`${strategyL2Expr} = $${pi}`)
+      params.push(strategyL2)
+      pi++
+    }
+    if (strategyL3) {
+      conditions.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${pi}`)
+      params.push(`%${strategyL3}%`)
       pi++
     }
     if (runStatus === "running") {
@@ -543,8 +599,14 @@ export async function GET(req: Request) {
     const rows = await query<{
       id: string; beian_hao: string | null; product_name: string; short_name: string | null
       strategy_l1: string | null
+      strategy_l2: string | null
+      strategy_l3: string | null
       platform_strategy_l1: string | null
+      platform_strategy_l2: string | null
+      platform_strategy_l3: string | null
       company_strategy_l1: string | null
+      company_strategy_l2: string | null
+      company_strategy_l3: string | null
       latest_unit_nav: string | null; latest_nav_date: string | Date | null
       latest_return_pct: string | null; custody_account_balance: string | null
       net_asset_value: string | null; valuation_date: string | null
@@ -561,8 +623,14 @@ export async function GET(req: Request) {
            m.product_name,
            ${SHORT_EXPR} AS short_name,
            ${strategyExpr} AS strategy_l1,
+           ${strategyL2Expr} AS strategy_l2,
+           ${strategyL3Expr} AS strategy_l3,
            NULLIF(BTRIM(o.company_strategy_one), '') AS company_strategy_l1,
+           NULLIF(BTRIM(o.company_strategy_two), '') AS company_strategy_l2,
+           NULLIF(BTRIM(o.company_strategy_three), '') AS company_strategy_l3,
            NULLIF(BTRIM(o.platform_strategy_one), '') AS platform_strategy_l1,
+           NULLIF(BTRIM(o.platform_strategy_two), '') AS platform_strategy_l2,
+           NULLIF(BTRIM(o.platform_strategy_three), '') AS platform_strategy_l3,
            (${navExpr})::text AS latest_unit_nav,
            ${dateExpr} AS latest_nav_date,
            (${pctExpr})::text AS latest_return_pct,
