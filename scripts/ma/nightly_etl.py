@@ -4550,6 +4550,28 @@ def step_dd_materials_links() -> int:
     return changed
 
 
+def step_dd_table_daily_backup() -> int:
+    """Snapshot 尽调表格 into due_diligence_team_table_backups (keep last 3 daily)."""
+    log.info("dd_table_daily_backup: creating daily due diligence table backup …")
+    result = run_node_script("dd_table_daily_backup_etl.ts", timeout=300)
+    if not result:
+        raise RuntimeError("dd_table_daily_backup: no result from dd_table_daily_backup_etl.ts")
+    if not result.get("ok"):
+        raise RuntimeError(
+            f"dd_table_daily_backup: failed — {result.get('error', 'unknown')}"
+        )
+    if result.get("skipped"):
+        log.info("dd_table_daily_backup: skipped (%s)", result.get("reason") or "empty")
+        return 0
+    log.info(
+        "dd_table_daily_backup: id=%s rows=%s created_at=%s",
+        result.get("id"),
+        result.get("rowCount"),
+        result.get("createdAt"),
+    )
+    return 1
+
+
 def step_amac_extra(force_full: bool = False) -> int:
     """Fetch AMAC manager/personnel data and upsert amac_* extra tables."""
     project_root = SCRIPT_DIR.parent.parent
@@ -4889,6 +4911,7 @@ ORDERED_STEPS = [
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "dd_materials_links",            # 尽调表格 ↔ 内部尽调资料 knowledge-base folder links
+    "dd_table_daily_backup",         # 尽调表格 daily snapshot (rolling keep last 3)
     "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)
     "warm_mom_cache",                # warm MOM dashboard API caches
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
@@ -5032,6 +5055,7 @@ def main():
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "dd_materials_links":              lambda: step_dd_materials_links(),
+        "dd_table_daily_backup":           lambda: step_dd_table_daily_backup(),
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
         "valuation_cache":                 lambda: step_valuation_cache(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),

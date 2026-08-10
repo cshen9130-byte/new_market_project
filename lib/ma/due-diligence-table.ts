@@ -413,3 +413,64 @@ export async function saveDueDiligenceTableToServer(
     updatedBy: data.updatedBy,
   }
 }
+
+export type DueDiligenceTableBackupMeta = {
+  id: number
+  kind: "pre_reset" | "daily"
+  rowCount: number
+  sourceUpdatedAt: string | null
+  sourceUpdatedBy: string
+  createdAt: string
+  createdBy: string
+}
+
+export async function resetDueDiligenceTableFromSeedOnServer(): Promise<
+  DueDiligenceTableServerData & { backup: DueDiligenceTableBackupMeta | null }
+> {
+  const data = await apiFetch<{
+    ok: true
+    rows: DueDiligenceTableRow[]
+    formats: TableCellFormats
+    updatedAt: string
+    updatedBy: string
+    backup: DueDiligenceTableBackupMeta | null
+  }>("/ma/api/due-diligence-table/reset-seed", { method: "POST" })
+  return {
+    rows: data.rows,
+    formats: data.formats ?? {},
+    updatedAt: data.updatedAt,
+    updatedBy: data.updatedBy,
+    backup: data.backup ?? null,
+  }
+}
+
+export async function listDueDiligenceTableBackupsFromServer(
+  limit = 20,
+): Promise<DueDiligenceTableBackupMeta[]> {
+  const data = await apiFetch<{
+    ok: true
+    backups: DueDiligenceTableBackupMeta[]
+  }>(`/ma/api/due-diligence-table/backups?limit=${encodeURIComponent(String(limit))}`)
+  return Array.isArray(data.backups) ? data.backups : []
+}
+
+export async function restoreDueDiligenceTableBackupOnServer(
+  backupId: number,
+): Promise<DueDiligenceTableServerData> {
+  const data = await apiFetch<{
+    ok: true
+    rows: DueDiligenceTableRow[]
+    formats: TableCellFormats
+    updatedAt: string
+    updatedBy: string
+  }>("/ma/api/due-diligence-table/backups", {
+    method: "POST",
+    body: JSON.stringify({ backupId }),
+  })
+  return {
+    rows: data.rows,
+    formats: data.formats ?? {},
+    updatedAt: data.updatedAt,
+    updatedBy: data.updatedBy,
+  }
+}

@@ -200,9 +200,14 @@ export function updateServerInvestmentNote(
     throw new Error(`笔记内容过长，请控制在 ${MAX_CONTENT_CHARS.toLocaleString("zh-CN")} 字以内`)
   }
 
+  // Omit undefined patch fields so a partial update cannot clear teamShared / tags / etc.
+  const definedPatch = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== undefined),
+  ) as typeof patch
+
   const updated: InvestmentNote & { creatorId: string } = {
     ...existing,
-    ...patch,
+    ...definedPatch,
     title:
       patch.title !== undefined
         ? String(patch.title).trim().slice(0, MAX_TITLE_CHARS) || "无标题"

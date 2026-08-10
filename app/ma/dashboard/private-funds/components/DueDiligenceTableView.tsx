@@ -21,6 +21,7 @@ import {
   ChevronDown,
   Expand,
   Filter,
+  History,
   Italic,
   Loader2,
   Maximize2,
@@ -56,13 +57,15 @@ import {
   getCellFormat,
   getDueDiligenceTableNaturalWidth,
   insertDueDiligenceTableRowsAt,
+  listDueDiligenceTableBackupsFromServer,
   loadDueDiligenceTableFromServer,
   patchCellFormat,
   pruneCellFormatsForRows,
-  resetDueDiligenceTableFromSeed,
+  restoreDueDiligenceTableBackupOnServer,
   rowMatchesKeyword,
   saveDueDiligenceTableToServer,
   updateDueDiligenceTableRow,
+  type DueDiligenceTableBackupMeta,
 } from "@/lib/ma/due-diligence-table"
 import {
   countExtractableRows,
@@ -2108,13 +2111,101 @@ export function DueDiligenceTableView() {
     handleDeleteRows(selectedRowIdsFromSelection(selection, rows))
   }
 
-  function handleResetSeed() {
-    if (!window.confirm("将用初始 Excel 数据覆盖当前表格，是否继续？")) return
-    const next = resetDueDiligenceTableFromSeed()
+  function shanghaiDateKey(date: Date): string {
+    return date.toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })
+  }
+
+  function yesterdayShanghaiDateKey(): string {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date())
+    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]))
+    const y = Number(map.year)
+    const m = Number(map.month)
+    const d = Number(map.day)
+    const utc = new Date(Date.UTC(y, m - 1, d - 1))
+    return `${utc.getUTCFullYear()}-${String(utc.getUTCMonth() + 1).padStart(2, "0")}-${String(utc.getUTCDate()).padStart(2, "0")}`
+  }
+
+  function pickYesterdayDailyBackup(
+    backups: DueDiligenceTableBackupMeta[],
+  ): { backup: DueDiligenceTableBackupMeta; exactYesterday: boolean } | null {
+    const daily = backups.filter((b) => b.kind === "daily")
+    if (daily.length === 0) return null
+    const yesterdayKey = yesterdayShanghaiDateKey()
+    const exact = daily.find((b) => shanghaiDateKey(new Date(b.createdAt)) === yesterdayKey)
+    if (exact) return { backup: exact, exactYesterday: true }
+    return { backup: daily[0], exactYesterday: false }
+  }
+
+  async function applyBackupRestore(backup: DueDiligenceTableBackupMeta) {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    pendingSaveRef.current = null
+    setSaveStatus("saving")
+    setSaveError(null)
+    const result = await restoreDueDiligenceTableBackupOnServer(backup.id)
     snapshot(rows, formats)
-    setRows(next)
-    setFormats({})
-    scheduleServerSave(next, {})
+    applyServerData(result)
+    setSaveStatus("saved")
+  }
+
+  async function handleRestoreLatestBackup() {
+    try {
+      const backups = await listDueDiligenceTableBackupsFromServer(10)
+      if (backups.length === 0) {
+        alert("暂无可用备份（每日备份或重置前备份）。")
+        return
+      }
+      const latest = backups[0]
+      const kindLabel = latest.kind === "pre_reset" ? "重置前备份" : "每日备份"
+      const when = new Date(latest.createdAt).toLocaleString("zh-CN", { hour12: false })
+      if (
+        !window.confirm(
+          `将用${kindLabel}覆盖当前表格（${latest.rowCount} 行，备份于 ${when}）。当前内容会先再备份一次。是否继续？`,
+        )
+      ) {
+        return
+      }
+      await applyBackupRestore(latest)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "恢复失败"
+      setSaveError(message)
+      setSaveStatus("error")
+      alert(`恢复备份失败：${message}`)
+    }
+  }
+
+  async function handleRestoreYesterdayBackup() {
+    try {
+      const backups = await listDueDiligenceTableBackupsFromServer(20)
+      const picked = pickYesterdayDailyBackup(backups)
+      if (!picked) {
+        alert("暂无每日备份可恢复。")
+        return
+      }
+      const { backup, exactYesterday } = picked
+      const when = new Date(backup.createdAt).toLocaleString("zh-CN", { hour12: false })
+      const label = exactYesterday ? "昨日每日备份" : "最近一次每日备份（未找到昨日备份）"
+      if (
+        !window.confirm(
+          `将用${label}覆盖当前表格（${backup.rowCount} 行，备份于 ${when}）。当前内容会先再备份一次。是否继续？`,
+        )
+      ) {
+        return
+      }
+      await applyBackupRestore(backup)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "恢复失败"
+      setSaveError(message)
+      setSaveStatus("error")
+      alert(`恢复昨日备份失败：${message}`)
+    }
   }
 
   async function handleExtractToCalendar() {
@@ -2253,9 +2344,21 @@ export function DueDiligenceTableView() {
               <Upload className="h-3.5 w-3.5" />
               {isSyncingStrategies ? "同步中…" : "从团队策略提取标签"}
             </button>
-            <button type="button" onClick={handleResetSeed}
-              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
-              <RotateCcw className="h-3.5 w-3.5" />恢复初始数据
+            <button
+              type="button"
+              onClick={() => void handleRestoreLatestBackup()}
+              title="恢复最近一次每日备份或重置前备份"
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors"
+            >
+              <History className="h-3.5 w-3.5" />恢复最近备份
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleRestoreYesterdayBackup()}
+              title="恢复昨日的每日备份；若无昨日备份则使用最近一次每日备份"
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />恢复昨日备份
             </button>
             <button type="button" onClick={() => setShowAddRecordDialog(true)}
               className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 transition-colors">
@@ -2470,11 +2573,19 @@ export function DueDiligenceTableView() {
                 <p className="text-sm text-zinc-500">暂无记录，数据未能加载</p>
                 <button
                   type="button"
-                  onClick={() => handleResetSeed()}
+                  onClick={() => void handleRestoreLatestBackup()}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-50 transition-colors"
+                >
+                  <History className="h-4 w-4" />
+                  恢复最近备份
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRestoreYesterdayBackup()}
                   className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 transition-colors"
                 >
                   <RotateCcw className="h-4 w-4" />
-                  从初始 Excel 数据恢复
+                  恢复昨日备份
                 </button>
               </>
             ) : (

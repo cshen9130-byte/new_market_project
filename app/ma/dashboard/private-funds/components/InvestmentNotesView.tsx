@@ -29,6 +29,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { Switch } from "@/components/ma/ui/switch"
+import { useToast } from "@/hooks/use-toast"
 import type { InvestmentNote, InvestmentNoteAttachment } from "@/lib/ma/investment-notes"
 import {
   associationDisplayLabel,
@@ -189,11 +190,15 @@ function NoteContentBody({
   )
 }
 
+const MAX_NOTE_CONTENT_CHARS = 500_000
+
 export function InvestmentNotesView() {
+  const { toast } = useToast()
   const [activeTab, setActiveTab] = useState<NotesTab>("team")
   const [notes, setNotes] = useState<InvestmentNote[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [keyword, setKeyword] = useState("")
   const [draftTitle, setDraftTitle] = useState("")
   const [draftContent, setDraftContent] = useState("")
@@ -301,13 +306,14 @@ export function InvestmentNotesView() {
     const note = await createInvestmentNote({
       title: "无标题",
       content: "",
-      teamShared: activeTab === "team",
+      teamShared: true,
     })
     await reloadNotes()
     setSelectedId(note.id)
     setDraftTitle("无标题")
     setDraftContent("")
     setDraftAttachments([])
+    setTeamSharedDraft(true)
     setEditing(true)
   }
 
@@ -320,14 +326,37 @@ export function InvestmentNotesView() {
   }
 
   async function handleSave() {
-    if (!selectedNote) return
-    await updateInvestmentNote(selectedNote.id, {
-      title: draftTitle.trim() || "无标题",
-      content: draftContent,
-      attachments: draftAttachments,
-    })
-    setEditing(false)
-    await reloadNotes()
+    if (!selectedNote || saving) return
+
+    if (draftContent.length > MAX_NOTE_CONTENT_CHARS) {
+      toast({
+        title: "保存失败",
+        description: `笔记内容过长，请控制在 ${MAX_NOTE_CONTENT_CHARS.toLocaleString("zh-CN")} 字以内（当前 ${draftContent.length.toLocaleString("zh-CN")} 字）`,
+        variant: "destructive",
+      })
+      return
+    }
+
+    setSaving(true)
+    try {
+      await updateInvestmentNote(selectedNote.id, {
+        title: draftTitle.trim() || "无标题",
+        content: draftContent,
+        attachments: draftAttachments,
+      })
+      setEditing(false)
+      await reloadNotes()
+      toast({ title: "保存成功" })
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "请稍后重试"
+      toast({
+        title: "保存失败",
+        description: message,
+        variant: "destructive",
+      })
+    } finally {
+      setSaving(false)
+    }
   }
 
   function handleDelete() {
@@ -562,9 +591,10 @@ export function InvestmentNotesView() {
                     <button
                       type="button"
                       onClick={handleSave}
-                      className="inline-flex items-center rounded bg-red-500 px-4 py-1.5 text-sm text-white hover:bg-red-600 transition-colors"
+                      disabled={saving}
+                      className="inline-flex items-center rounded bg-red-500 px-4 py-1.5 text-sm text-white hover:bg-red-600 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      保存
+                      {saving ? "保存中..." : "保存"}
                     </button>
                   ) : (
                     <button

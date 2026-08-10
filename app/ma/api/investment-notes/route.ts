@@ -69,7 +69,7 @@ export async function PUT(req: Request) {
       title: body?.title !== undefined ? String(body.title) : undefined,
       content: body?.content !== undefined ? String(body.content) : undefined,
       contentVariant: body?.contentVariant,
-      teamShared: body?.teamShared,
+      teamShared: typeof body?.teamShared === "boolean" ? body.teamShared : undefined,
       tags: body?.tags,
       associations: body?.associations,
       attachments: body?.attachments,
