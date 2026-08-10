@@ -1,12 +1,13 @@
 "use client"
 
-import { useEffect, useRef, useState, type RefObject } from "react"
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type RefObject } from "react"
 import {
   AlignCenter,
   AlignLeft,
   AlignRight,
   Bold,
   ChevronDown,
+  FileText,
   FolderOpen,
   Italic,
   Link2,
@@ -26,7 +27,26 @@ import {
   Video,
 } from "lucide-react"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import type { InvestmentNoteAttachment } from "@/lib/ma/investment-notes"
+import { useToast } from "@/hooks/use-toast"
+import { compactRichNoteHtml, type InvestmentNoteAttachment } from "@/lib/ma/investment-notes"
+
+function isWordFile(file: File): boolean {
+  const name = file.name.toLowerCase()
+  return (
+    name.endsWith(".docx") ||
+    name.endsWith(".doc") ||
+    file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    file.type === "application/msword"
+  )
+}
+
+function isDocxFile(file: File): boolean {
+  const name = file.name.toLowerCase()
+  return (
+    name.endsWith(".docx") ||
+    file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  )
+}
 
 function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`
@@ -185,8 +205,12 @@ export function NoteRichTextEditor({
   onChange: (value: string) => void
   onUploadAttachment: () => void
 }) {
+  const { toast } = useToast()
   const editorRef = useRef<HTMLDivElement>(null)
+  const wordInputRef = useRef<HTMLInputElement>(null)
   const lastExternalValue = useRef(value)
+  const [importingWord, setImportingWord] = useState(false)
+  const [wordDragOver, setWordDragOver] = useState(false)
 
   useEffect(() => {
     const el = editorRef.current
@@ -209,17 +233,163 @@ export function NoteRichTextEditor({
     onChange(html)
   }
 
+  function handlePaste(e: ClipboardEvent<HTMLDivElement>) {
+    const html = e.clipboardData.getData("text/html")
+    if (!html) return
+
+    e.preventDefault()
+    const cleaned = compactRichNoteHtml(html)
+    document.execCommand("insertHTML", false, cleaned)
+    syncContent()
+  }
+
+  async function importWordFile(file: File) {
+    if (!isWordFile(file)) {
+      toast({
+        title: "导入失败",
+        description: "请拖入或选择 Word 文件（.docx）",
+        variant: "destructive",
+      })
+      return
+    }
+    if (!isDocxFile(file)) {
+      toast({
+        title: "导入失败",
+        description: "暂不支持旧版 .doc，请先另存为 .docx 后再导入",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setImportingWord(true)
+    try {
+      const form = new FormData()
+      form.append("file", file)
+
+      let userId = ""
+      try {
+        const raw = localStorage.getItem("currentUser")
+        if (raw) userId = String((JSON.parse(raw) as { id?: string }).id || "").trim()
+      } catch {
+        userId = ""
+      }
+
+      const res = await fetch("/ma/api/investment-notes/import-word", {
+        method: "POST",
+        headers: userId ? { "x-market-user-id": userId } : {},
+        body: form,
+      })
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        html?: string
+        fileName?: string
+        error?: string
+      }
+      if (!res.ok || !data.ok || !data.html) {
+        throw new Error(data.error || res.statusText || "导入失败")
+      }
+
+      const cleaned = compactRichNoteHtml(data.html)
+      const el = editorRef.current
+      if (!el) return
+      el.innerHTML = cleaned
+      lastExternalValue.current = cleaned
+      onChange(cleaned)
+      toast({ title: "Word 导入成功", description: data.fileName || file.name })
+    } catch (e: unknown) {
+      toast({
+        title: "导入失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setImportingWord(false)
+      setWordDragOver(false)
+    }
+  }
+
+  function handleWordDrop(e: DragEvent<HTMLElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    setWordDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) void importWordFile(file)
+  }
+
+  function handleWordDragOver(e: DragEvent<HTMLElement>) {
+    if (![...e.dataTransfer.types].includes("Files")) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (!wordDragOver) setWordDragOver(true)
+  }
+
+  function handleWordDragLeave(e: DragEvent<HTMLElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    const next = e.relatedTarget as Node | null
+    if (next && e.currentTarget.contains(next)) return
+    setWordDragOver(false)
+  }
+
   return (
     <div className="flex h-full flex-col">
+      <input
+        ref={wordInputRef}
+        type="file"
+        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) void importWordFile(file)
+          e.target.value = ""
+        }}
+      />
+      <div className="flex items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2">
+        <button
+          type="button"
+          disabled={importingWord}
+          onClick={() => wordInputRef.current?.click()}
+          onDragEnter={handleWordDragOver}
+          onDragOver={handleWordDragOver}
+          onDragLeave={handleWordDragLeave}
+          onDrop={handleWordDrop}
+          className={[
+            "inline-flex items-center gap-1.5 rounded border px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+            wordDragOver
+              ? "border-red-400 bg-red-50 text-red-600"
+              : "border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-red-300 hover:bg-red-50 hover:text-red-600",
+          ].join(" ")}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          {importingWord ? "导入中..." : wordDragOver ? "松开以导入 Word" : "导入 Word"}
+        </button>
+        <span className="text-xs text-zinc-400">点击选择，或将 .docx 拖到此按钮</span>
+      </div>
       <RichTextToolbar editorRef={editorRef} onUploadAttachment={onUploadAttachment} />
       <div
-        ref={editorRef}
-        contentEditable
-        suppressContentEditableWarning
-        onInput={syncContent}
-        data-placeholder="请输入内容..."
-        className="min-h-[420px] flex-1 w-full overflow-auto border-0 px-6 py-4 text-sm leading-7 text-zinc-700 focus:outline-none empty:before:text-zinc-400 empty:before:content-[attr(data-placeholder)]"
-      />
+        className="relative flex min-h-0 flex-1 flex-col"
+        onDragEnter={handleWordDragOver}
+        onDragOver={handleWordDragOver}
+        onDragLeave={handleWordDragLeave}
+        onDrop={handleWordDrop}
+      >
+        {wordDragOver && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-red-400 bg-red-50/80">
+            <div className="rounded bg-white px-4 py-2 text-sm text-red-600 shadow-sm">
+              松开以导入 Word 文件
+            </div>
+          </div>
+        )}
+        <div
+          ref={editorRef}
+          contentEditable
+          suppressContentEditableWarning
+          onInput={syncContent}
+          onPaste={handlePaste}
+          data-placeholder="请输入内容..."
+          className="min-h-[420px] flex-1 w-full overflow-auto border-0 px-6 py-4 text-sm leading-7 text-zinc-700 focus:outline-none empty:before:text-zinc-400 empty:before:content-[attr(data-placeholder)]"
+        />
+      </div>
     </div>
   )
 }

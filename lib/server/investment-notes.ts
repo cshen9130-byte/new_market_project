@@ -1,15 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import path from "path"
 import { getServerStoragePath } from "@/lib/server/storage"
-import type {
-  InvestmentNote,
-  InvestmentNoteAssociation,
-  InvestmentNoteAttachment,
-  InvestmentNoteContentVariant,
+import {
+  MAX_INVESTMENT_NOTE_CONTENT_CHARS,
+  MAX_INVESTMENT_NOTE_TITLE_CHARS,
+  compactRichNoteHtml,
+  type InvestmentNote,
+  type InvestmentNoteAssociation,
+  type InvestmentNoteAttachment,
+  type InvestmentNoteContentVariant,
 } from "@/lib/ma/investment-notes"
 
-const MAX_CONTENT_CHARS = 500_000
-const MAX_TITLE_CHARS = 200
+const MAX_CONTENT_CHARS = MAX_INVESTMENT_NOTE_CONTENT_CHARS
+const MAX_TITLE_CHARS = MAX_INVESTMENT_NOTE_TITLE_CHARS
 
 function storageDir() {
   return getServerStoragePath("investment-notes")
@@ -24,7 +27,14 @@ function ensureStorageDir() {
 }
 
 function previewFromContent(content: string): string {
-  const line = content.replace(/\s+/g, " ").trim()
+  const line = content
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim()
   return line.length > 80 ? `${line.slice(0, 80)}...` : line
 }
 
@@ -133,9 +143,11 @@ export function createServerInvestmentNote(
   const safeUserId = String(userId || "").trim()
   if (!safeUserId) throw new Error("用户未登录")
 
-  const content = String(partial?.content ?? "")
+  const content = compactRichNoteHtml(String(partial?.content ?? ""))
   if (content.length > MAX_CONTENT_CHARS) {
-    throw new Error(`笔记内容过长，请控制在 ${MAX_CONTENT_CHARS.toLocaleString("zh-CN")} 字以内`)
+    throw new Error(
+      `笔记内容过长，请控制在 ${MAX_CONTENT_CHARS.toLocaleString("zh-CN")} 字符以内（含格式代码，当前 ${content.length.toLocaleString("zh-CN")}）`,
+    )
   }
 
   const title = String(partial?.title ?? "").trim().slice(0, MAX_TITLE_CHARS) || "无标题"
@@ -195,9 +207,12 @@ export function updateServerInvestmentNote(
     throw new Error("没有权限修改此笔记")
   }
 
-  const content = patch.content !== undefined ? String(patch.content) : existing.content
+  const content =
+    patch.content !== undefined ? compactRichNoteHtml(String(patch.content)) : existing.content
   if (content.length > MAX_CONTENT_CHARS) {
-    throw new Error(`笔记内容过长，请控制在 ${MAX_CONTENT_CHARS.toLocaleString("zh-CN")} 字以内`)
+    throw new Error(
+      `笔记内容过长，请控制在 ${MAX_CONTENT_CHARS.toLocaleString("zh-CN")} 字符以内（含格式代码，当前 ${content.length.toLocaleString("zh-CN")}）`,
+    )
   }
 
   // Omit undefined patch fields so a partial update cannot clear teamShared / tags / etc.

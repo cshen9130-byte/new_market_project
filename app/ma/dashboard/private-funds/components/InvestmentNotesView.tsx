@@ -32,7 +32,9 @@ import { Switch } from "@/components/ma/ui/switch"
 import { useToast } from "@/hooks/use-toast"
 import type { InvestmentNote, InvestmentNoteAttachment } from "@/lib/ma/investment-notes"
 import {
+  MAX_INVESTMENT_NOTE_CONTENT_CHARS,
   associationDisplayLabel,
+  compactRichNoteHtml,
   createInvestmentNote,
   deleteInvestmentNote,
   listInvestmentNotes,
@@ -103,7 +105,7 @@ function NoteAssociations({
   onManage: () => void
 }) {
   return (
-    <div className="border-t border-dashed border-zinc-200 px-8 py-5">
+    <div className="border-b border-dashed border-zinc-200 px-8 py-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600">
         <span className="text-sky-600">关联：</span>
         {note.associations.map((item) => (
@@ -139,6 +141,7 @@ function NoteContentBody({
 
   return (
     <div key={note.id} className="flex min-h-full flex-col">
+      <NoteAssociations note={note} onManage={onManageAssociations} />
       <div className="flex-1 px-8 py-6">
         {isAnalysis && (
           <h1 className="mb-6 text-center text-lg font-semibold text-zinc-800">{displayNoteTitle(note.title)}</h1>
@@ -185,12 +188,9 @@ function NoteContentBody({
           <div className="min-h-[280px]" />
         ) : null}
       </div>
-      <NoteAssociations note={note} onManage={onManageAssociations} />
     </div>
   )
 }
-
-const MAX_NOTE_CONTENT_CHARS = 500_000
 
 export function InvestmentNotesView() {
   const { toast } = useToast()
@@ -328,10 +328,11 @@ export function InvestmentNotesView() {
   async function handleSave() {
     if (!selectedNote || saving) return
 
-    if (draftContent.length > MAX_NOTE_CONTENT_CHARS) {
+    const content = compactRichNoteHtml(draftContent)
+    if (content.length > MAX_INVESTMENT_NOTE_CONTENT_CHARS) {
       toast({
         title: "保存失败",
-        description: `笔记内容过长，请控制在 ${MAX_NOTE_CONTENT_CHARS.toLocaleString("zh-CN")} 字以内（当前 ${draftContent.length.toLocaleString("zh-CN")} 字）`,
+        description: `笔记内容过长，请控制在 ${MAX_INVESTMENT_NOTE_CONTENT_CHARS.toLocaleString("zh-CN")} 字符以内（含格式代码，当前 ${content.length.toLocaleString("zh-CN")}）`,
         variant: "destructive",
       })
       return
@@ -339,9 +340,12 @@ export function InvestmentNotesView() {
 
     setSaving(true)
     try {
+      if (content !== draftContent) {
+        setDraftContent(content)
+      }
       await updateInvestmentNote(selectedNote.id, {
         title: draftTitle.trim() || "无标题",
-        content: draftContent,
+        content,
         attachments: draftAttachments,
       })
       setEditing(false)

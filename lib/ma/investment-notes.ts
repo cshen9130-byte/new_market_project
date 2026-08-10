@@ -1,3 +1,29 @@
+/** Max stored note HTML length (includes markup, not just visible text). */
+export const MAX_INVESTMENT_NOTE_CONTENT_CHARS = 10_000_000
+export const MAX_INVESTMENT_NOTE_TITLE_CHARS = 200
+
+/**
+ * Shrink pasted rich HTML (e.g. WeChat articles) by dropping scripts, classes,
+ * data-* attrs, and bulky inline styles while keeping structure/tables/text.
+ */
+export function compactRichNoteHtml(html: string): string {
+  if (!html || !/<[a-z][\s\S]*>/i.test(html)) return html
+
+  let out = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+    .replace(/<\/?(?:meta|link|xml|o:p|w:[a-z]+)[^>]*>/gi, "")
+    .replace(/\s(?:class|id|data-[\w:-]+)=("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\sstyle=("[^"]*"|'[^']*')/gi, "")
+    .replace(/<(span|font)(\s[^>]*)?>/gi, "")
+    .replace(/<\/(span|font)>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+
+  return out.trim()
+}
+
 export type InvestmentNoteAttachment = {
   id: string
   name: string
