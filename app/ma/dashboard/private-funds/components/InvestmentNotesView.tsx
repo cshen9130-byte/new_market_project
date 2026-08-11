@@ -153,7 +153,7 @@ function NoteContentBody({
         {note.content.trim() ? (
           isRichHtmlContent(note.content) ? (
             <div
-              className="prose prose-sm max-w-none text-sm leading-7 text-zinc-700"
+              className="investment-note-rich text-sm leading-7 text-zinc-700"
               dangerouslySetInnerHTML={{ __html: note.content }}
             />
           ) : (

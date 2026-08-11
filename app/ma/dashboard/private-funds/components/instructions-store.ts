@@ -337,11 +337,21 @@ export function canConfirmInstruction(record: InstructionRecord): boolean {
   return currentUserHasInstructionRole("ops")
 }
 
+/** 基金经理 / 产品运维 can browse the shared team inbox (not only personal action items). */
+export function canBrowseTeamInstructions(): boolean {
+  return (
+    currentUserHasInstructionRole("fund_manager")
+    || currentUserHasInstructionRole("ops")
+  )
+}
+
 /** True when the current user still has an action on this instruction. */
 export function isInstructionPendingForCurrentUser(record: InstructionRecord): boolean {
   if (canApproveInstruction(record)) return true
   if (canExecuteInstruction(record)) return true
   if (canConfirmInstruction(record)) return true
+  // Shared visibility: 基金经理 / 产品运维 see unfinished team instructions under 待处理.
+  if (canBrowseTeamInstructions() && !isInstructionWorkflowFinished(record)) return true
   return false
 }
 
@@ -424,13 +434,20 @@ export function attachmentMetaFromFile(
 
 const STORAGE_KEY = "ma_instruction_records_v1"
 const CHANGE_EVENT = "ma-instruction-records-changed"
+const API_PATH = "/ma/api/instructions"
 const EMPTY_SNAPSHOT: InstructionRecord[] = []
 
 /** Cached for useSyncExternalStore — must return a stable reference between updates. */
 let cachedSnapshot: InstructionRecord[] | null = null
+let hydratePromise: Promise<void> | null = null
 
 function canUseStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined"
+}
+
+function authHeaders(): HeadersInit {
+  const uid = currentInstructionUserId()
+  return uid ? { "x-market-user-id": uid } : {}
 }
 
 function parseStored(raw: string | null): InstructionRecord[] {
@@ -447,6 +464,14 @@ function parseStored(raw: string | null): InstructionRecord[] {
   }
 }
 
+function sortByCreatedDesc(rows: InstructionRecord[]): InstructionRecord[] {
+  return [...rows].sort((a, b) => {
+    const ta = Date.parse(a.createdAt) || 0
+    const tb = Date.parse(b.createdAt) || 0
+    return tb - ta
+  })
+}
+
 function readAll(): InstructionRecord[] {
   if (cachedSnapshot) return cachedSnapshot
   if (!canUseStorage()) {
@@ -459,13 +484,85 @@ function readAll(): InstructionRecord[] {
 
 function writeAll(rows: InstructionRecord[]) {
   if (!canUseStorage()) return
-  cachedSnapshot = rows.length === 0 ? EMPTY_SNAPSHOT : rows
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
+  cachedSnapshot = rows.length === 0 ? EMPTY_SNAPSHOT : sortByCreatedDesc(rows)
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedSnapshot))
   window.dispatchEvent(new Event(CHANGE_EVENT))
 }
 
 function invalidateCache() {
   cachedSnapshot = null
+}
+
+async function apiFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+      ...(init?.headers || {}),
+    },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || res.statusText || "请求失败")
+  }
+  return data as T
+}
+
+async function pushRecordToServer(record: InstructionRecord, method: "POST" | "PUT") {
+  await apiFetch<{ ok: true; record: InstructionRecord }>(API_PATH, {
+    method,
+    body: JSON.stringify({ record }),
+  })
+}
+
+async function deleteRecordOnServer(id: string) {
+  await apiFetch<{ ok: true }>(`${API_PATH}?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  })
+}
+
+/**
+ * Pull shared records from server (source of truth) and upload any local-only rows.
+ * Safe to call repeatedly; concurrent callers share one in-flight promise.
+ */
+export function ensureInstructionRecordsHydrated(): Promise<void> {
+  if (!canUseStorage()) return Promise.resolve()
+  if (hydratePromise) return hydratePromise
+
+  hydratePromise = (async () => {
+    try {
+      const local = readAll()
+      const data = await apiFetch<{ ok: true; records: InstructionRecord[] }>(API_PATH)
+      const serverRows = Array.isArray(data.records) ? data.records : []
+      const serverIds = new Set(serverRows.map((r) => r.id))
+      const localOnly = local.filter((r) => r.id && !serverIds.has(r.id))
+
+      for (const row of localOnly) {
+        try {
+          await pushRecordToServer(row, "POST")
+        } catch {
+          // Keep local row even if upload fails (e.g. role not assigned yet).
+        }
+      }
+
+      const merged = sortByCreatedDesc([...serverRows, ...localOnly])
+      writeAll(merged)
+    } catch {
+      // Offline / unauthorized: keep local cache so the page still works.
+    } finally {
+      // Allow a later refresh (e.g. after login / role change).
+      hydratePromise = null
+    }
+  })()
+
+  return hydratePromise
+}
+
+/** Force a fresh pull from the shared server inbox. */
+export function refreshInstructionRecordsFromServer(): Promise<void> {
+  hydratePromise = null
+  return ensureInstructionRecordsHydrated()
 }
 
 /** ID format similar to reference: YYYYMMDD + 9 random digits */
@@ -530,6 +627,9 @@ export function addInstructionRecord(
   }
   const next = [record, ...readAll()]
   writeAll(next)
+  void pushRecordToServer(record, "POST").catch(() => {
+    // Local write already succeeded; next hydrate/retry can re-upload.
+  })
   return record
 }
 
@@ -572,6 +672,9 @@ export function removeInstructionRecord(id: string): boolean {
   const next = rows.filter((r) => r.id !== id)
   if (next.length === rows.length) return false
   writeAll(next)
+  void deleteRecordOnServer(id).catch(() => {
+    // Local delete already applied; server may catch up on next edit cycle.
+  })
   return true
 }
 
@@ -594,6 +697,9 @@ export function updateInstructionRecord(
   const next = [...rows]
   next[idx] = nextRecord
   writeAll(next)
+  void pushRecordToServer(nextRecord, "PUT").catch(() => {
+    // Local write already succeeded; next hydrate/retry can re-upload.
+  })
   return nextRecord
 }
 

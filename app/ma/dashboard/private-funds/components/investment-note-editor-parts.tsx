@@ -173,7 +173,15 @@ export function RichTextToolbar({
       <button
         type="button"
         className={btnClass()}
-        onClick={() => exec("insertTable", "2x2")}
+        onClick={() => {
+          editorRef.current?.focus()
+          document.execCommand(
+            "insertHTML",
+            false,
+            "<table><tbody><tr><td><br></td><td><br></td></tr><tr><td><br></td><td><br></td></tr></tbody></table><p><br></p>",
+          )
+          setRefreshToken((n) => n + 1)
+        }}
         aria-label="表格"
       >
         <Table2 className="h-3.5 w-3.5" />
@@ -387,7 +395,7 @@ export function NoteRichTextEditor({
           onInput={syncContent}
           onPaste={handlePaste}
           data-placeholder="请输入内容..."
-          className="min-h-[420px] flex-1 w-full overflow-auto border-0 px-6 py-4 text-sm leading-7 text-zinc-700 focus:outline-none empty:before:text-zinc-400 empty:before:content-[attr(data-placeholder)]"
+          className="investment-note-rich min-h-[420px] flex-1 w-full overflow-auto border-0 px-6 py-4 text-sm leading-7 text-zinc-700 focus:outline-none empty:before:text-zinc-400 empty:before:content-[attr(data-placeholder)]"
         />
       </div>
     </div>

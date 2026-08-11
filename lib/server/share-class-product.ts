@@ -230,3 +230,86 @@ export async function createShareClassProduct(params: {
 
   return { ok: true, beian_hao: beianCode, product_name: productName }
 }
+
+async function fundBeianExists(beianHao: string): Promise<boolean> {
+  const code = beianHao.trim()
+  if (!code) return false
+  const rows = await query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM (
+       SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = $1
+       UNION ALL
+       SELECT beian_hao FROM private_fund_info WHERE beian_hao = $1
+       UNION ALL
+       SELECT register_number FROM type6_ops_team_full WHERE register_number = $1
+     ) t
+     LIMIT 1`,
+    [code],
+  ).catch(() => [] as { ok: number }[])
+  return Boolean(rows[0]?.ok)
+}
+
+/**
+ * Fund pickers may synthesize A/B/C share-class codes (SAJD58 → AJD58B) that are not
+ * yet rows in private_fund_info(_bfl). Materialize the tier from the main product so
+ * product-page / contract links resolve instead of 404.
+ */
+export async function ensureShareClassBeianProduct(beianHao: string): Promise<{
+  beian_hao: string
+  product_name: string
+  created: boolean
+} | null> {
+  const raw = String(beianHao ?? "").trim().toUpperCase()
+  if (!raw) return null
+  const canonical = canonicalizeShareClassBeianCode(raw) || raw
+
+  for (const code of [canonical, raw]) {
+    if (!(await fundBeianExists(code))) continue
+    const main = await loadMainProduct(code)
+    return {
+      beian_hao: code,
+      product_name: main?.product_name ?? code,
+      created: false,
+    }
+  }
+
+  const m = canonical.match(/^([A-Z][A-Z0-9]{3,10})([ABC])$/u)
+  if (!m) return null
+  const base = m[1]
+  const letter = m[2] as ShareClassLetter
+
+  const mainCandidates = Array.from(new Set([`S${base}`, base]))
+  for (const mainCode of mainCandidates) {
+    const main = await loadMainProduct(mainCode)
+    if (!main) continue
+    const expected = buildTieredBeianCode(main.beian_hao, letter)
+    if (expected !== canonical && expected !== raw) continue
+
+    const existing = (await loadExistingShareClasses(main.product_name))
+      .find((row) => row.share_class === letter)
+    if (existing) {
+      return {
+        beian_hao: existing.beian_hao,
+        product_name: existing.product_name,
+        created: false,
+      }
+    }
+
+    const result = await createShareClassProduct({
+      main_beian_hao: main.beian_hao,
+      share_class: letter,
+    })
+    if ("ok" in result) {
+      return { beian_hao: result.beian_hao, product_name: result.product_name, created: true }
+    }
+    if (result.error === "beian_exists" || result.error === "share_class_exists") {
+      return {
+        beian_hao: expected,
+        product_name: buildTieredFullName(main.product_name, letter),
+        created: false,
+      }
+    }
+  }
+
+  return null
+}

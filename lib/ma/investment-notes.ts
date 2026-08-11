@@ -3,8 +3,9 @@ export const MAX_INVESTMENT_NOTE_CONTENT_CHARS = 10_000_000
 export const MAX_INVESTMENT_NOTE_TITLE_CHARS = 200
 
 /**
- * Shrink pasted rich HTML (e.g. WeChat articles) by dropping scripts, classes,
- * data-* attrs, and bulky inline styles while keeping structure/tables/text.
+ * Shrink pasted rich HTML (e.g. WeChat articles / Word) by dropping scripts,
+ * classes, data-* attrs, and bulky inline styles while keeping structure,
+ * tables, and text. Table chrome is restored via `.investment-note-rich` CSS.
  */
 export function compactRichNoteHtml(html: string): string {
   if (!html || !/<[a-z][\s\S]*>/i.test(html)) return html
@@ -16,6 +17,8 @@ export function compactRichNoteHtml(html: string): string {
     .replace(/<\/?(?:meta|link|xml|o:p|w:[a-z]+)[^>]*>/gi, "")
     .replace(/\s(?:class|id|data-[\w:-]+)=("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     .replace(/\sstyle=("[^"]*"|'[^']*')/gi, "")
+    // Word often emits border=0 and relies on CSS borders we just stripped.
+    .replace(/\sborder=("0"|'0'|0)/gi, "")
     .replace(/<(span|font)(\s[^>]*)?>/gi, "")
     .replace(/<\/(span|font)>/gi, "")
     .replace(/\n{3,}/g, "\n\n")

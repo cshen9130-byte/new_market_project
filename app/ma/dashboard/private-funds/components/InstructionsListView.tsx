@@ -53,10 +53,12 @@ import {
   isInstructionPendingForCurrentUser,
   isInstructionRejected,
   isInstructionWorkflowFinished,
+  ensureInstructionRecordsHydrated,
   listInstructionRecords,
   parseEmailConfirmRecordId,
   progressAfterApproval,
   progressAfterExecute,
+  refreshInstructionRecordsFromServer,
   removeInstructionRecord,
   requiresContractAtExecute,
   resolveInstructionInitiatorDisplay,
@@ -2303,6 +2305,21 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
 
   useEffect(() => {
     setSelectedFields(readInstructionFieldConfig())
+  }, [])
+
+  useEffect(() => {
+    void ensureInstructionRecordsHydrated()
+    const onFocus = () => {
+      void refreshInstructionRecordsFromServer()
+    }
+    const timer = window.setInterval(() => {
+      void refreshInstructionRecordsFromServer()
+    }, 15_000)
+    window.addEventListener("focus", onFocus)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener("focus", onFocus)
+    }
   }, [])
 
   useEffect(() => {

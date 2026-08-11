@@ -126,6 +126,37 @@
   }
 }
 
+/* Rich note HTML from Word import / paste: restore table chrome after preflight. */
+.investment-note-rich table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  table-layout: auto;
+}
+
+.investment-note-rich th,
+.investment-note-rich td {
+  border: 1px solid #d4d4d8;
+  padding: 0.375rem 0.625rem;
+  vertical-align: top;
+  text-align: start;
+}
+
+.investment-note-rich th {
+  background: #f4f4f5;
+  font-weight: 600;
+}
+
+.investment-note-rich td > p,
+.investment-note-rich th > p {
+  margin: 0;
+}
+
+.investment-note-rich img {
+  max-width: 100%;
+  height: auto;
+}
+
 @layer utilities {
   .scrollbar-subtle {
     scrollbar-width: thin;

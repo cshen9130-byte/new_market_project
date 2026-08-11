@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { authService } from "@/lib/auth"
 import { listFundContractMaterials, saveFundContractMaterial } from "@/lib/server/fund-contract-materials"
+import { ensureShareClassBeianProduct } from "@/lib/server/share-class-product"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -37,8 +38,12 @@ export async function POST(req: Request) {
     if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
     if (!(file instanceof File)) return NextResponse.json({ error: "请上传文件" }, { status: 400 })
 
+    // Synthesized A/B/C codes from element-extract matching may not exist yet.
+    const ensured = await ensureShareClassBeianProduct(beian_hao)
+    const resolvedBeian = ensured?.beian_hao || beian_hao
+
     const row = await saveFundContractMaterial({
-      beian_hao,
+      beian_hao: resolvedBeian,
       file,
       uploaded_by: await currentUser(req),
       chart_date,

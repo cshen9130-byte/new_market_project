@@ -1,7 +1,9 @@
 "use client"
 
+import { useEffect } from "react"
 import { InstructionsInitiateView } from "./InstructionsInitiateView"
 import { InstructionsListView } from "./InstructionsListView"
+import { ensureInstructionRecordsHydrated } from "./instructions-store"
 import {
   DEFAULT_INSTRUCTION_SIDE,
   INSTRUCTION_SIDE_KEYS,
@@ -15,6 +17,10 @@ function resolveSide(side: string): InstructionSideKey {
 
 export function InstructionsSection({ side }: { side: string }) {
   const resolved = resolveSide(side)
+
+  useEffect(() => {
+    void ensureInstructionRecordsHydrated()
+  }, [])
 
   if (resolved === "cmd-initiate") {
     return <InstructionsInitiateView />

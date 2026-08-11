@@ -8,6 +8,7 @@ import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
+import { ensureShareClassBeianProduct } from "@/lib/server/share-class-product"
 import {
   buildDetailHeaderFromListCache,
   loadDetailNavSeriesFast,
@@ -310,7 +311,53 @@ export async function GET(
       const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
         ?? (rawId !== beian_hao ? tryGetCustomFundPrivateDetail(beian_hao, ownerUserId) : null)
       if (customDetail) return NextResponse.json(customDetail)
-      return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+
+      // Element-extract / picker may link to a synthesized share-class code (e.g. AJD58B)
+      // before the tier row exists. Materialize it from the main product (SAJD58).
+      const ensured =
+        await ensureShareClassBeianProduct(rawId)
+        ?? (rawId !== beian_hao ? await ensureShareClassBeianProduct(beian_hao) : null)
+      if (ensured?.beian_hao) {
+        const ensuredRows = await query<InfoRow>(
+          `SELECT beian_hao, product_name, short_name,
+                  strategy_one AS strategy_l1,
+                  strategy_two AS strategy_l2,
+                  strategy_three AS strategy_l3,
+                  ''::text     AS manager,
+                  NULL::text   AS inception_date,
+                  NULL::text   AS benchmark,
+                  NULL::text   AS ret_1w,
+                  NULL::text   AS ret_1m,
+                  NULL::text   AS ret_3m,
+                  NULL::text   AS ret_6m,
+                  NULL::text   AS ret_1y,
+                  NULL::text   AS sharpe_1y,
+                  NULL::text   AS calmar_1y
+           FROM private_fund_info_bfl
+           WHERE beian_hao = $1
+           LIMIT 1`,
+          [ensured.beian_hao],
+        ).catch(() => [] as InfoRow[])
+        info = ensuredRows[0] ?? {
+          beian_hao: ensured.beian_hao,
+          product_name: ensured.product_name,
+          short_name: ensured.product_name,
+          strategy_l1: null,
+          strategy_l2: null,
+          strategy_l3: null,
+          manager: "",
+          inception_date: null,
+          benchmark: null,
+          ret_1w: null,
+          ret_1m: null,
+          ret_3m: null,
+          ret_6m: null,
+          ret_1y: null,
+          sharpe_1y: null,
+          calmar_1y: null,
+        }
+      }
+      if (!info) return NextResponse.json({ error: "Fund not found" }, { status: 404 })
     }
 
     const routeBeianHao = info.beian_hao || beian_hao
