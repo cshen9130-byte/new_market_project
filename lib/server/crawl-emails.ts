@@ -77,6 +77,21 @@ function writeAll(rows: CrawlEmailAccount[]): void {
   fs.renameSync(tmpFile, DATA_FILE)
 }
 
+/**
+ * Serialize read-modify-write updates so concurrent create/update/delete/import
+ * cannot drop each other's rows (classic lost-update on the JSON file).
+ */
+let writeChain: Promise<unknown> = Promise.resolve()
+
+function withCrawlEmailLock<T>(fn: () => T | Promise<T>): Promise<T> {
+  const run = writeChain.then(fn, fn)
+  writeChain = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
 export function toPublic(row: CrawlEmailAccount): CrawlEmailPublic {
   const { pass, ...rest } = row
   return { ...rest, passMasked: pass ? "******" : "" }
@@ -274,11 +289,17 @@ export async function createCrawlEmail(input: {
     updatedAt: now,
   }
 
-  const rows = readAll()
-  rows.push(row)
-  writeAll(rows)
-  resetEmailParseCursor(row.account)
-  return toPublic(row)
+  return withCrawlEmailLock(() => {
+    const rows = readAll()
+    const key = row.account.trim().toLowerCase()
+    if (rows.some((r) => r.account.trim().toLowerCase() === key)) {
+      throw new Error(`抓取邮箱已存在: ${row.account}`)
+    }
+    rows.push(row)
+    writeAll(rows)
+    resetEmailParseCursor(row.account)
+    return toPublic(row)
+  })
 }
 
 export async function updateCrawlEmail(
@@ -293,13 +314,11 @@ export async function updateCrawlEmail(
     remark: string
   }>,
 ): Promise<CrawlEmailPublic | null> {
-  const rows = readAll()
-  const idx = rows.findIndex((r) => r.id === id)
-  if (idx === -1) return null
+  const existing = getCrawlEmailById(id)
+  if (!existing) return null
 
-  const current = rows[idx]
-  const next: CrawlEmailAccount = {
-    ...current,
+  const tentative: CrawlEmailAccount = {
+    ...existing,
     ...("emailType" in patch && patch.emailType !== undefined ? { emailType: patch.emailType.trim() } : {}),
     ...("account" in patch && patch.account !== undefined ? { account: patch.account.trim() } : {}),
     ...("pass" in patch && patch.pass !== undefined && patch.pass.trim() ? { pass: patch.pass.trim() } : {}),
@@ -318,24 +337,49 @@ export async function updateCrawlEmail(
     ("imapHost" in patch && patch.imapHost !== undefined) ||
     ("imapPort" in patch && patch.imapPort !== undefined)
 
+  let crawlStatus = existing.crawlStatus
   if (shouldRetest) {
     try {
-      await testImapConnection(next.account, next.pass, next.imapHost, next.imapPort)
-      next.crawlStatus = "成功"
+      await testImapConnection(tentative.account, tentative.pass, tentative.imapHost, tentative.imapPort)
+      crawlStatus = "成功"
     } catch {
-      next.crawlStatus = "失败"
+      crawlStatus = "失败"
     }
   }
 
-  rows[idx] = next
-  writeAll(rows)
-  return toPublic(next)
+  return withCrawlEmailLock(() => {
+    const rows = readAll()
+    const idx = rows.findIndex((r) => r.id === id)
+    if (idx === -1) return null
+
+    const current = rows[idx]
+    const next: CrawlEmailAccount = {
+      ...current,
+      ...("emailType" in patch && patch.emailType !== undefined ? { emailType: patch.emailType.trim() } : {}),
+      ...("account" in patch && patch.account !== undefined ? { account: patch.account.trim() } : {}),
+      ...("pass" in patch && patch.pass !== undefined && patch.pass.trim() ? { pass: patch.pass.trim() } : {}),
+      ...("imapHost" in patch && patch.imapHost !== undefined ? { imapHost: patch.imapHost.trim() } : {}),
+      ...("imapPort" in patch && patch.imapPort !== undefined ? { imapPort: patch.imapPort } : {}),
+      ...("imapFolders" in patch && Array.isArray(patch.imapFolders)
+        ? { imapFolders: patch.imapFolders.length ? patch.imapFolders : ["INBOX"] }
+        : {}),
+      ...("remark" in patch && patch.remark !== undefined ? { remark: patch.remark.trim() } : {}),
+      updatedAt: new Date().toISOString(),
+      ...(shouldRetest ? { crawlStatus } : {}),
+    }
+
+    rows[idx] = next
+    writeAll(rows)
+    return toPublic(next)
+  })
 }
 
-export function deleteCrawlEmail(id: string): boolean {
-  const rows = readAll()
-  const filtered = rows.filter((r) => r.id !== id)
-  if (filtered.length === rows.length) return false
-  writeAll(filtered)
-  return true
+export async function deleteCrawlEmail(id: string): Promise<boolean> {
+  return withCrawlEmailLock(() => {
+    const rows = readAll()
+    const filtered = rows.filter((r) => r.id !== id)
+    if (filtered.length === rows.length) return false
+    writeAll(filtered)
+    return true
+  })
 }

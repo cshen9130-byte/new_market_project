@@ -11110,6 +11110,9 @@ function OperationsDirectView() {
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
   const [holdingStatus, setHoldingStatus] = useState<DirectHoldingStatus>("holding")
+  const [isAdminUser, setIsAdminUser] = useState(false)
+  const [crawlEmailOptions, setCrawlEmailOptions] = useState<string[]>([])
+  const [crawlEmail, setCrawlEmail] = useState("")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<DirectSortKey>("product_name")
@@ -11160,8 +11163,40 @@ function OperationsDirectView() {
   }, [strategySource])
 
   useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const current = await authService.refreshCurrentUser()
+      if (cancelled) return
+      const admin = current?.role === "admin"
+      setIsAdminUser(!!admin)
+      if (!admin) {
+        setCrawlEmailOptions([])
+        setCrawlEmail("")
+        return
+      }
+      const uid = current?.id || ""
+      try {
+        const res = await fetch("/ma/api/ops/direct-email-visibility", {
+          headers: uid ? { "x-market-user-id": uid } : {},
+        })
+        const json = await res.json().catch(() => ({}))
+        if (cancelled || !res.ok) return
+        const rows = Array.isArray(json.data) ? json.data : []
+        setCrawlEmailOptions(
+          rows
+            .map((r: { crawlEmailAccount?: string }) => String(r?.crawlEmailAccount || "").trim().toLowerCase())
+            .filter(Boolean),
+        )
+      } catch {
+        if (!cancelled) setCrawlEmailOptions([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
     setPage(1)
-  }, [fundClass, strategySource, strategyL1, holdingStatus, keyword, pageSize])
+  }, [fundClass, strategySource, strategyL1, holdingStatus, crawlEmail, keyword, pageSize])
 
   useEffect(() => {
     setLoading(true)
@@ -11176,6 +11211,7 @@ function OperationsDirectView() {
       dir: sortDir,
     })
     if (strategyL1) params.set("strategy_l1", strategyL1)
+    if (isAdminUser && crawlEmail) params.set("crawl_email", crawlEmail)
     let userId = ""
     try {
       const u = JSON.parse(localStorage.getItem("currentUser") || "null")
@@ -11196,7 +11232,7 @@ function OperationsDirectView() {
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, fundClass, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, dataReloadKey])
+  }, [page, pageSize, fundClass, strategySource, strategyL1, holdingStatus, crawlEmail, isAdminUser, keyword, sortKey, sortDir, dataReloadKey])
 
   useEffect(() => {
     if (!showAddDirectDialog) return
@@ -11481,6 +11517,38 @@ function OperationsDirectView() {
             ))}
           </div>
         </div>
+        {isAdminUser && (
+          <div className="flex items-start px-4 py-2">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">抓取邮箱：</span>
+            <div className="flex items-center gap-2 flex-wrap flex-1">
+              <span
+                onClick={() => { setCrawlEmail(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !crawlEmail
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {crawlEmailOptions.map((email) => (
+                <span
+                  key={email}
+                  onClick={() => { setCrawlEmail(crawlEmail === email ? "" : email); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-mono cursor-pointer transition-colors",
+                    crawlEmail === email
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {email}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
           <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-72">

@@ -9,7 +9,13 @@ import {
   type InvestmentNoteAssociation,
   type InvestmentNoteAttachment,
   type InvestmentNoteContentVariant,
+  type InvestmentNoteRoadshowAssociation,
 } from "@/lib/ma/investment-notes"
+import {
+  removeTeamNoteFromKnowledgeBase,
+  upsertTeamNoteInKnowledgeBase,
+  type InvestmentNoteKbOwner,
+} from "@/lib/server/investment-notes-kb-sync"
 
 const MAX_CONTENT_CHARS = MAX_INVESTMENT_NOTE_CONTENT_CHARS
 const MAX_TITLE_CHARS = MAX_INVESTMENT_NOTE_TITLE_CHARS
@@ -41,6 +47,7 @@ function previewFromContent(content: string): string {
 function normalizeNote(raw: unknown): InvestmentNote & { creatorId: string } {
   const note = (raw ?? {}) as Partial<InvestmentNote & { creatorId?: string }> & {
     associations?: unknown
+    roadshowAssociations?: unknown
   }
   const now = new Date().toISOString().slice(0, 10).replace(/-/g, "/")
   const content = typeof note.content === "string" ? note.content : ""
@@ -57,8 +64,13 @@ function normalizeNote(raw: unknown): InvestmentNote & { creatorId: string } {
         : previewFromContent(content),
     contentVariant: (note.contentVariant ?? "plain") as InvestmentNoteContentVariant,
     teamShared: typeof note.teamShared === "boolean" ? note.teamShared : false,
+    kbRelativePath:
+      typeof note.kbRelativePath === "string" && note.kbRelativePath
+        ? note.kbRelativePath
+        : null,
     tags: Array.isArray(note.tags) ? note.tags.filter((t): t is string => typeof t === "string") : [],
     associations: normalizeAssociations(note.associations),
+    roadshowAssociations: normalizeRoadshowAssociations(note.roadshowAssociations),
     attachments: Array.isArray(note.attachments)
       ? (note.attachments as InvestmentNoteAttachment[])
       : [],
@@ -85,6 +97,42 @@ function normalizeAssociations(value: unknown): InvestmentNoteAssociation[] {
       recordNo: row.recordNo ?? "",
     }
   })
+}
+
+function optionalTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed || undefined
+}
+
+function normalizeRoadshowAssociations(value: unknown): InvestmentNoteRoadshowAssociation[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const result: InvestmentNoteRoadshowAssociation[] = []
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue
+    const row = item as Partial<InvestmentNoteRoadshowAssociation>
+    const rowId = typeof row.rowId === "string" ? row.rowId.trim() : ""
+    if (!rowId || seen.has(rowId)) continue
+    seen.add(rowId)
+    const ddDate = optionalTrimmedString(row.ddDate)
+    const fundCompany = optionalTrimmedString(row.fundCompany)
+    const ddTarget = optionalTrimmedString(row.ddTarget)
+    const representativeProduct = optionalTrimmedString(row.representativeProduct)
+    const label =
+      optionalTrimmedString(row.label) ||
+      [ddDate, fundCompany || ddTarget, representativeProduct].filter(Boolean).join(" ") ||
+      rowId
+    result.push({
+      rowId,
+      label,
+      ...(ddDate ? { ddDate } : {}),
+      ...(fundCompany ? { fundCompany } : {}),
+      ...(ddTarget ? { ddTarget } : {}),
+      ...(representativeProduct ? { representativeProduct } : {}),
+    })
+  }
+  return result
 }
 
 function readAllNotes(): Array<InvestmentNote & { creatorId: string }> {
@@ -135,6 +183,37 @@ export function listServerInvestmentNotes(
   return filtered.map(({ creatorId: _creatorId, ...note }) => note)
 }
 
+function applyKbRelativePath(id: string, kbRelativePath: string | null) {
+  const notes = readAllNotes()
+  const idx = notes.findIndex((n) => n.id === id)
+  if (idx < 0) return
+  notes[idx] = { ...notes[idx], kbRelativePath }
+  writeAllNotes(notes)
+}
+
+async function mirrorNoteToKnowledgeBase(
+  note: InvestmentNote & { creatorId: string },
+  owner: InvestmentNoteKbOwner,
+  previousKbRelativePath?: string | null,
+): Promise<InvestmentNote> {
+  try {
+    const kbRelativePath = await upsertTeamNoteInKnowledgeBase(
+      note,
+      owner,
+      previousKbRelativePath,
+    )
+    if (kbRelativePath !== (note.kbRelativePath ?? null)) {
+      applyKbRelativePath(note.id, kbRelativePath)
+    }
+    const { creatorId: _creatorId, ...result } = { ...note, kbRelativePath }
+    return result
+  } catch (err) {
+    console.error("[investment-notes] KB mirror failed:", err)
+    const { creatorId: _creatorId, ...result } = note
+    return result
+  }
+}
+
 export function createServerInvestmentNote(
   userId: string,
   userName: string,
@@ -159,8 +238,10 @@ export function createServerInvestmentNote(
     preview: previewFromContent(content),
     contentVariant: "plain",
     teamShared: partial?.teamShared ?? false,
+    kbRelativePath: null,
     tags: [],
     associations: [],
+    roadshowAssociations: [],
     attachments: [],
     creator: userName,
     creatorId: safeUserId,
@@ -177,6 +258,17 @@ export function createServerInvestmentNote(
   return result
 }
 
+export async function createServerInvestmentNoteWithKbSync(
+  userId: string,
+  userName: string,
+  owner: InvestmentNoteKbOwner,
+  partial?: Partial<Pick<InvestmentNote, "title" | "content" | "teamShared">>,
+): Promise<InvestmentNote> {
+  const note = createServerInvestmentNote(userId, userName, partial)
+  if (!note.teamShared) return note
+  return mirrorNoteToKnowledgeBase({ ...note, creatorId: userId }, owner, null)
+}
+
 export function updateServerInvestmentNote(
   id: string,
   userId: string,
@@ -190,6 +282,7 @@ export function updateServerInvestmentNote(
       | "teamShared"
       | "tags"
       | "associations"
+      | "roadshowAssociations"
       | "attachments"
     >
   >,
@@ -229,6 +322,14 @@ export function updateServerInvestmentNote(
         : existing.title,
     content,
     preview: patch.content !== undefined ? previewFromContent(content) : existing.preview,
+    associations:
+      patch.associations !== undefined
+        ? normalizeAssociations(patch.associations)
+        : existing.associations,
+    roadshowAssociations:
+      patch.roadshowAssociations !== undefined
+        ? normalizeRoadshowAssociations(patch.roadshowAssociations)
+        : existing.roadshowAssociations,
     lastModifiedBy: userName,
     modifiedDate: isoDate(),
   }
@@ -238,6 +339,34 @@ export function updateServerInvestmentNote(
 
   const { creatorId: _creatorId, ...result } = updated
   return result
+}
+
+export async function updateServerInvestmentNoteWithKbSync(
+  id: string,
+  userId: string,
+  userName: string,
+  owner: InvestmentNoteKbOwner,
+  patch: Partial<
+    Pick<
+      InvestmentNote,
+      | "title"
+      | "content"
+      | "contentVariant"
+      | "teamShared"
+      | "tags"
+      | "associations"
+      | "roadshowAssociations"
+      | "attachments"
+    >
+  >,
+): Promise<InvestmentNote | null> {
+  const before = readAllNotes().find((n) => n.id === id)
+  const previousKbRelativePath = before?.kbRelativePath ?? null
+  const note = updateServerInvestmentNote(id, userId, userName, patch)
+  if (!note) return null
+
+  const creatorId = before?.creatorId || userId
+  return mirrorNoteToKnowledgeBase({ ...note, creatorId }, owner, previousKbRelativePath)
 }
 
 export function deleteServerInvestmentNote(id: string, userId: string): boolean {
@@ -254,4 +383,41 @@ export function deleteServerInvestmentNote(id: string, userId: string): boolean 
 
   writeAllNotes(notes.filter((n) => n.id !== safeId))
   return true
+}
+
+export async function deleteServerInvestmentNoteWithKbSync(
+  id: string,
+  userId: string,
+): Promise<boolean> {
+  const target = readAllNotes().find((n) => n.id === id)
+  const deleted = deleteServerInvestmentNote(id, userId)
+  if (deleted && target?.teamShared) {
+    try {
+      await removeTeamNoteFromKnowledgeBase(target)
+    } catch (err) {
+      console.error("[investment-notes] KB remove failed:", err)
+    }
+  }
+  return deleted
+}
+
+/** One-time / lazy backfill for team notes that are not yet mirrored to「投资笔记」. */
+export async function backfillTeamNotesToKnowledgeBase(
+  owner: InvestmentNoteKbOwner,
+): Promise<number> {
+  const notes = readAllNotes().filter((n) => n.teamShared && !n.kbRelativePath)
+  let synced = 0
+  for (const note of notes) {
+    const result = await mirrorNoteToKnowledgeBase(
+      note,
+      {
+        id: note.creatorId || owner.id,
+        name: note.creator || owner.name,
+        email: owner.email,
+      },
+      null,
+    )
+    if (result.kbRelativePath) synced += 1
+  }
+  return synced
 }

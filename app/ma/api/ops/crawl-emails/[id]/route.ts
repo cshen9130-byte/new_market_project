@@ -31,7 +31,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
-    const ok = deleteCrawlEmail(id)
+    const ok = await deleteCrawlEmail(id)
     if (!ok) return NextResponse.json({ error: "记录不存在" }, { status: 404 })
     return NextResponse.json({ success: true })
   } catch (e) {

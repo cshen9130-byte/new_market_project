@@ -17,7 +17,7 @@ export async function GET(req: Request) {
     if (!auth.ok) {
       return NextResponse.json({ error: auth.error }, { status: auth.status })
     }
-    return NextResponse.json({ data: listDirectEmailVisibilityRows() })
+    return NextResponse.json({ data: await listDirectEmailVisibilityRows() })
   } catch (e) {
     const message = e instanceof Error ? e.message : "读取失败"
     return NextResponse.json({ error: message }, { status: 500 })
@@ -55,7 +55,7 @@ export async function PUT(req: Request) {
       updates.push({ crawlEmailAccount, userId, userName })
     }
 
-    const data = saveDirectEmailVisibilityMappings(updates)
+    const data = await saveDirectEmailVisibilityMappings(updates)
     // Bust list caches so 邮箱运维池 / 直投产品 pick up new visibility immediately.
     invalidateListResponseCache(EMAIL_OPS_POOL_KEY)
     return NextResponse.json({ data })

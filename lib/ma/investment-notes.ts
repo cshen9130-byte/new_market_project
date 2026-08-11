@@ -66,6 +66,47 @@ export function associationKey(item: InvestmentNoteAssociation): string {
   return `${item.category}::${item.recordNo || item.name}`
 }
 
+/** Link from an investment note to a 尽调表格 row (treated as a roadshow record). */
+export type InvestmentNoteRoadshowAssociation = {
+  rowId: string
+  label: string
+  ddDate?: string
+  fundCompany?: string
+  ddTarget?: string
+  representativeProduct?: string
+}
+
+export function roadshowAssociationKey(item: InvestmentNoteRoadshowAssociation): string {
+  return item.rowId
+}
+
+export function roadshowAssociationDisplayLabel(item: InvestmentNoteRoadshowAssociation): string {
+  return item.label?.trim() || item.representativeProduct || item.fundCompany || item.ddTarget || item.rowId
+}
+
+export function buildRoadshowAssociationFromDdRow(row: {
+  id: string
+  ddDate?: string
+  fundCompany?: string
+  ddTarget?: string
+  representativeProduct?: string
+}): InvestmentNoteRoadshowAssociation {
+  const ddDate = (row.ddDate ?? "").trim()
+  const fundCompany = (row.fundCompany ?? "").trim()
+  const ddTarget = (row.ddTarget ?? "").trim()
+  const representativeProduct = (row.representativeProduct ?? "").trim()
+  const companyOrTarget = fundCompany || ddTarget
+  const label = [ddDate, companyOrTarget, representativeProduct].filter(Boolean).join(" ")
+  return {
+    rowId: row.id,
+    label: label || row.id,
+    ...(ddDate ? { ddDate } : {}),
+    ...(fundCompany ? { fundCompany } : {}),
+    ...(ddTarget ? { ddTarget } : {}),
+    ...(representativeProduct ? { representativeProduct } : {}),
+  }
+}
+
 export type InvestmentNoteContentVariant = "analysis" | "memo" | "plain"
 
 export type InvestmentNote = {
@@ -75,8 +116,12 @@ export type InvestmentNote = {
   preview: string
   contentVariant: InvestmentNoteContentVariant
   teamShared: boolean
+  /** Relative path under AI 知识库 when mirrored to「投资笔记」. */
+  kbRelativePath?: string | null
   tags: string[]
   associations: InvestmentNoteAssociation[]
+  /** Linked 尽调表格 rows (路演). */
+  roadshowAssociations: InvestmentNoteRoadshowAssociation[]
   attachments: InvestmentNoteAttachment[]
   creator: string
   lastModifiedBy: string
@@ -145,6 +190,7 @@ export async function updateInvestmentNote(
       | "teamShared"
       | "tags"
       | "associations"
+      | "roadshowAssociations"
       | "attachments"
       | "lastModifiedBy"
       | "modifiedDate"
@@ -180,4 +226,11 @@ export async function setInvestmentNoteAssociations(
   associations: InvestmentNoteAssociation[],
 ): Promise<InvestmentNote | null> {
   return updateInvestmentNote(id, { associations })
+}
+
+export async function setInvestmentNoteRoadshowAssociations(
+  id: string,
+  roadshowAssociations: InvestmentNoteRoadshowAssociation[],
+): Promise<InvestmentNote | null> {
+  return updateInvestmentNote(id, { roadshowAssociations })
 }

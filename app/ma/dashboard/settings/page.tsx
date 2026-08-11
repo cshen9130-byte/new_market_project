@@ -2145,7 +2145,7 @@ function DirectInvestSettingsPanel() {
     <div>
       <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-2">直投邮箱可见性</h2>
       <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-6">
-        将抓取邮箱关联到账户后，该账户仅能在「直投产品」与「邮箱运维池」中看到该邮箱抓取的产品；管理员始终可见全部。未关联的邮箱对所有账户可见。
+        将抓取邮箱关联到账户后，该账户仅能在「直投产品」与「邮箱运维池」中看到该邮箱抓取的产品；管理员始终可见全部。未关联的邮箱对所有账户可见。列表包含「抓取邮箱设置」中的账户，以及已产生净值/估值数据的邮箱。
       </p>
 
       {loadError && <div className="text-sm text-red-500 mb-4">{loadError}</div>}
@@ -2189,7 +2189,6 @@ function DirectInvestSettingsPanel() {
                         {users.map((u) => (
                           <option key={u.id} value={u.id}>
                             {u.name || u.email}
-                            {u.role === "admin" ? "（管理员）" : ""}
                           </option>
                         ))}
                       </select>

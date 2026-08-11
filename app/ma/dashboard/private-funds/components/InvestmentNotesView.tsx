@@ -38,12 +38,15 @@ import {
   createInvestmentNote,
   deleteInvestmentNote,
   listInvestmentNotes,
+  roadshowAssociationDisplayLabel,
   setInvestmentNoteAssociations,
+  setInvestmentNoteRoadshowAssociations,
   setInvestmentNoteTags,
   setInvestmentNoteTeamShared,
   updateInvestmentNote,
 } from "@/lib/ma/investment-notes"
 import { InvestmentNoteAssociationDialog } from "./InvestmentNoteAssociationDialog"
+import { InvestmentNoteRoadshowAssociationDialog } from "./InvestmentNoteRoadshowAssociationDialog"
 import {
   NoteAttachmentPopover,
   NoteRichTextEditor,
@@ -100,14 +103,17 @@ function AnalysisChart() {
 function NoteAssociations({
   note,
   onManage,
+  onManageRoadshows,
 }: {
   note: InvestmentNote
   onManage: () => void
+  onManageRoadshows: () => void
 }) {
+  const roadshowAssociations = note.roadshowAssociations ?? []
   return (
     <div className="border-b border-dashed border-zinc-200 px-8 py-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600">
-        <span className="text-sky-600">关联：</span>
+        <span className="text-sky-600">关联产品：</span>
         {note.associations.map((item) => (
           <span
             key={`${item.category}-${item.recordNo || item.name}`}
@@ -123,6 +129,24 @@ function NoteAssociations({
         >
           + 添加关联
         </button>
+        <span className="mx-1 text-zinc-300">|</span>
+        <span className="text-sky-600">关联路演：</span>
+        {roadshowAssociations.map((item) => (
+          <span
+            key={item.rowId}
+            className="inline-flex items-center rounded border border-red-200 bg-red-50 px-2 py-0.5 text-xs text-red-500"
+            title={item.ddDate || undefined}
+          >
+            {roadshowAssociationDisplayLabel(item)}
+          </span>
+        ))}
+        <button
+          type="button"
+          onClick={onManageRoadshows}
+          className="inline-flex items-center rounded border border-dashed border-zinc-300 px-3 py-1.5 text-sm text-zinc-500 hover:bg-zinc-50"
+        >
+          + 添加关联
+        </button>
       </div>
     </div>
   )
@@ -131,9 +155,11 @@ function NoteAssociations({
 function NoteContentBody({
   note,
   onManageAssociations,
+  onManageRoadshowAssociations,
 }: {
   note: InvestmentNote
   onManageAssociations: () => void
+  onManageRoadshowAssociations: () => void
 }) {
   const isMemo = note.contentVariant === "memo"
   const isAnalysis = note.contentVariant === "analysis"
@@ -141,7 +167,11 @@ function NoteContentBody({
 
   return (
     <div key={note.id} className="flex min-h-full flex-col">
-      <NoteAssociations note={note} onManage={onManageAssociations} />
+      <NoteAssociations
+        note={note}
+        onManage={onManageAssociations}
+        onManageRoadshows={onManageRoadshowAssociations}
+      />
       <div className="flex-1 px-8 py-6">
         {isAnalysis && (
           <h1 className="mb-6 text-center text-lg font-semibold text-zinc-800">{displayNoteTitle(note.title)}</h1>
@@ -210,6 +240,7 @@ export function InvestmentNotesView() {
   const [renameNote, setRenameNote] = useState<InvestmentNote | null>(null)
   const [renameTitleDraft, setRenameTitleDraft] = useState("")
   const [associationOpen, setAssociationOpen] = useState(false)
+  const [roadshowAssociationOpen, setRoadshowAssociationOpen] = useState(false)
   const [draftAttachments, setDraftAttachments] = useState<InvestmentNoteAttachment[]>([])
   const [loading, setLoading] = useState(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -429,10 +460,24 @@ export function InvestmentNotesView() {
     setAssociationOpen(true)
   }
 
+  function openRoadshowAssociationDialog() {
+    if (!selectedNote) return
+    setRoadshowAssociationOpen(true)
+  }
+
   async function confirmAssociations(associations: InvestmentNote["associations"]) {
     if (!selectedNote) return
     await setInvestmentNoteAssociations(selectedNote.id, associations)
     setAssociationOpen(false)
+    await reloadNotes()
+  }
+
+  async function confirmRoadshowAssociations(
+    roadshowAssociations: InvestmentNote["roadshowAssociations"],
+  ) {
+    if (!selectedNote) return
+    await setInvestmentNoteRoadshowAssociations(selectedNote.id, roadshowAssociations)
+    setRoadshowAssociationOpen(false)
     await reloadNotes()
   }
 
@@ -658,7 +703,11 @@ export function InvestmentNotesView() {
                     onUploadAttachment={triggerUpload}
                   />
                 ) : (
-                  <NoteContentBody note={selectedNote} onManageAssociations={openAssociationDialog} />
+                  <NoteContentBody
+                    note={selectedNote}
+                    onManageAssociations={openAssociationDialog}
+                    onManageRoadshowAssociations={openRoadshowAssociationDialog}
+                  />
                 )}
               </div>
             </>
@@ -743,6 +792,13 @@ export function InvestmentNotesView() {
         onOpenChange={setAssociationOpen}
         initialAssociations={selectedNote?.associations ?? []}
         onConfirm={confirmAssociations}
+      />
+
+      <InvestmentNoteRoadshowAssociationDialog
+        open={roadshowAssociationOpen}
+        onOpenChange={setRoadshowAssociationOpen}
+        initialAssociations={selectedNote?.roadshowAssociations ?? []}
+        onConfirm={confirmRoadshowAssociations}
       />
 
       <Dialog

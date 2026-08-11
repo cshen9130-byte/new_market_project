@@ -32,6 +32,7 @@ import {
 } from "@/lib/ma/product-field-config"
 import { ProductFieldConfigDialog } from "./ProductFieldConfigDialog"
 import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./product-field-config-table"
+import { authService } from "@/lib/auth"
 
 type DirectFundClass = "private" | "public" | "team"
 type DirectHoldingStatus = "holding" | "cleared"
@@ -576,6 +577,9 @@ export function InvestmentDirectProductsView() {
   const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
   const [teamTags, setTeamTags] = useState<string[]>([])
   const [holdingStatus, setHoldingStatus] = useState<DirectHoldingStatus>("holding")
+  const [isAdminUser, setIsAdminUser] = useState(false)
+  const [crawlEmailOptions, setCrawlEmailOptions] = useState<string[]>([])
+  const [crawlEmail, setCrawlEmail] = useState("")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
@@ -583,7 +587,12 @@ export function InvestmentDirectProductsView() {
   const [showInterval, setShowInterval] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [showFieldConfig, setShowFieldConfig] = useState(false)
-  const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invDirect, INV_DIRECT_FIELD_DEFAULT))
+  const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>(() => {
+    const removed = new Set(["最新累计净值", "持仓市值(元)"])
+    const fields = readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invDirect, INV_DIRECT_FIELD_DEFAULT)
+      .filter((f) => !removed.has(f))
+    return fields.length > 0 ? fields : [...INV_DIRECT_FIELD_DEFAULT]
+  })
   const [showAddMetric, setShowAddMetric] = useState(false)
   const [addedCols, setAddedCols] = useState<AddedCol[]>([])
   const [showTemplateMenu, setShowTemplateMenu] = useState(false)
@@ -606,9 +615,9 @@ export function InvestmentDirectProductsView() {
   const isTeam = fundClass === "team"
   const isPrivate = fundClass === "private"
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const privateColSpan = 3 + fieldConfigSelected.length + 7 + addedCols.length + 3
-  const publicColSpan = 16 + addedCols.length
-  const teamColSpan = 19 + addedCols.length
+  const privateColSpan = 3 + fieldConfigSelected.length + 8 + addedCols.length + 2
+  const publicColSpan = 15 + addedCols.length
+  const teamColSpan = 18 + addedCols.length
   const colSpan = isPublic ? publicColSpan : isTeam ? teamColSpan : privateColSpan
 
   function resetStrategyFilters() {
@@ -655,10 +664,47 @@ export function InvestmentDirectProductsView() {
   }
 
   useEffect(() => {
+    writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invDirect, fieldConfigSelected)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
     fetch("/ma/api/ops/team-tags?category=fund")
       .then((r) => r.json())
       .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
       .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const current = await authService.refreshCurrentUser()
+      if (cancelled) return
+      const admin = current?.role === "admin"
+      setIsAdminUser(!!admin)
+      if (!admin) {
+        setCrawlEmailOptions([])
+        setCrawlEmail("")
+        return
+      }
+      const uid = current?.id || ""
+      try {
+        const res = await fetch("/ma/api/ops/direct-email-visibility", {
+          headers: uid ? { "x-market-user-id": uid } : {},
+        })
+        const json = await res.json().catch(() => ({}))
+        if (cancelled || !res.ok) return
+        const rows = Array.isArray(json.data) ? json.data : []
+        setCrawlEmailOptions(
+          rows
+            .map((r: { crawlEmailAccount?: string }) => String(r?.crawlEmailAccount || "").trim().toLowerCase())
+            .filter(Boolean),
+        )
+      } catch {
+        if (!cancelled) setCrawlEmailOptions([])
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -671,7 +717,7 @@ export function InvestmentDirectProductsView() {
 
   useEffect(() => {
     setPage(1)
-  }, [fundClass, strategySource, strategyL1, strategyL2, strategyL3, teamTags.join("\u0001"), holdingStatus, keyword, pageSize, cutoffDate])
+  }, [fundClass, strategySource, strategyL1, strategyL2, strategyL3, teamTags.join("\u0001"), holdingStatus, crawlEmail, keyword, pageSize, cutoffDate])
 
   useEffect(() => {
     setLoading(true)
@@ -690,6 +736,7 @@ export function InvestmentDirectProductsView() {
     if (strategyL2) params.set("strategy_l2", strategyL2)
     if (strategyL3) params.set("strategy_l3", strategyL3)
     if (teamTags.length > 0) params.set("team_tags", teamTags.join(","))
+    if (isAdminUser && crawlEmail) params.set("crawl_email", crawlEmail)
     let userId = ""
     try {
       const u = JSON.parse(localStorage.getItem("currentUser") || "null")
@@ -710,7 +757,7 @@ export function InvestmentDirectProductsView() {
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, fundClass, strategySource, strategyL1, strategyL2, strategyL3, teamTags, holdingStatus, keyword, sortKey, sortDir, cutoffDate])
+  }, [page, pageSize, fundClass, strategySource, strategyL1, strategyL2, strategyL3, teamTags, holdingStatus, crawlEmail, isAdminUser, keyword, sortKey, sortDir, cutoffDate])
 
   function toggleTeamTag(tag: string) {
     setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
@@ -827,7 +874,7 @@ export function InvestmentDirectProductsView() {
       ? ["产品名称", "基金公司", "团队标签", "单位净值", "净值日期", "累计净值", "复权净值", "涨跌幅", "持有市值(元)", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益"]
       : isTeam
         ? ["产品名称", "团队标签", "持仓市值(元)", "单位净值", "累计净值", "涨跌幅", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率", "指标计算时间"]
-        : ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "最新累计净值", "持仓市值(元)", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
+        : ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "最新收益", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => isPublic
@@ -846,7 +893,7 @@ export function InvestmentDirectProductsView() {
             ].join(",")
           : [
               escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav_date),
-              escape(r.latest_nav), escape(r.cumulative_nav), escape(r.holding_mv),
+              escape(r.latest_nav), escape(r.latest_price_change),
               escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
               escape(r.sharpe_1y), escape(r.calmar_1y),
             ].join(",")),
@@ -999,6 +1046,38 @@ export function InvestmentDirectProductsView() {
             ))}
           </div>
         </div>
+        {isAdminUser && (
+          <div className="flex items-start px-4 py-2">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">抓取邮箱：</span>
+            <div className="flex items-center gap-2 flex-wrap flex-1">
+              <span
+                onClick={() => { setCrawlEmail(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !crawlEmail
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {crawlEmailOptions.map((email) => (
+                <span
+                  key={email}
+                  onClick={() => { setCrawlEmail(crawlEmail === email ? "" : email); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-mono cursor-pointer transition-colors",
+                    crawlEmail === email
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {email}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
           <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
@@ -1242,6 +1321,11 @@ export function InvestmentDirectProductsView() {
                   {fieldConfigSelected.map(renderDirectFieldHeader)}
                 </>
               )}
+              {isPrivate && (
+                <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("latest_price_change")}>
+                  最新收益<SortIcon col="latest_price_change" />
+                </th>
+              )}
               <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
                 <div>近一周收益<SortIcon col="ret_1w" /></div>
                 {isPrivate && showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 7)}</div>}
@@ -1275,7 +1359,6 @@ export function InvestmentDirectProductsView() {
                 <th key={col.id} className={`${thBase} text-right min-w-[96px]`}>{col.label}</th>
               ))}
               <th className={`${thBase} text-center w-16`}>走势</th>
-              <th className={`${thBase} text-center w-16`}>资料</th>
               <th className={`${thBase} text-center w-16`}>操作</th>
             </tr>
           </thead>
@@ -1366,6 +1449,11 @@ export function InvestmentDirectProductsView() {
                       {fieldConfigSelected.map((label) => renderDirectFieldCell(label, row, cell))}
                     </>
                   )}
+                  {isPrivate && (
+                    <td className={`${cell} text-right tabular-nums`}>
+                      <TrackPctCell value={row.latest_price_change} />
+                    </td>
+                  )}
                   {retCell(row.ret_1w, 7)}
                   {retCell(row.ret_1m, 30)}
                   {retCell(row.ret_3m, 91)}
@@ -1412,7 +1500,6 @@ export function InvestmentDirectProductsView() {
                       </button>
                     </div>
                   </td>
-                  <td className={`${cell} text-center text-muted-foreground`}>—</td>
                   <td className={`${cell} text-center`}>
                     <DirectRowMenu
                       beian_hao={row.beian_hao}

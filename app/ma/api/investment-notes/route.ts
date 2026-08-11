@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
 import {
-  createServerInvestmentNote,
-  deleteServerInvestmentNote,
+  backfillTeamNotesToKnowledgeBase,
+  createServerInvestmentNoteWithKbSync,
+  deleteServerInvestmentNoteWithKbSync,
   listServerInvestmentNotes,
-  updateServerInvestmentNote,
+  updateServerInvestmentNoteWithKbSync,
 } from "@/lib/server/investment-notes"
 
 export const runtime = "nodejs"
@@ -24,6 +25,20 @@ export async function GET(req: Request) {
 
     const { searchParams } = new URL(req.url)
     const scope = searchParams.get("scope") === "mine" ? "mine" : "team"
+
+    // Lazy backfill: existing 团队笔记 → AI 知识库「投资笔记」
+    if (scope === "team") {
+      try {
+        await backfillTeamNotesToKnowledgeBase({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        })
+      } catch (err) {
+        console.error("[investment-notes] KB backfill failed:", err)
+      }
+    }
+
     const notes = listServerInvestmentNotes(scope, user.id)
     return NextResponse.json({ ok: true, notes })
   } catch (e: unknown) {
@@ -40,11 +55,16 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}))
-    const note = createServerInvestmentNote(user.id, user.name, {
-      title: body?.title ? String(body.title) : undefined,
-      content: body?.content !== undefined ? String(body.content) : undefined,
-      teamShared: Boolean(body?.teamShared),
-    })
+    const note = await createServerInvestmentNoteWithKbSync(
+      user.id,
+      user.name,
+      { id: user.id, name: user.name, email: user.email },
+      {
+        title: body?.title ? String(body.title) : undefined,
+        content: body?.content !== undefined ? String(body.content) : undefined,
+        teamShared: Boolean(body?.teamShared),
+      },
+    )
     return NextResponse.json({ ok: true, note })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
@@ -65,15 +85,22 @@ export async function PUT(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少笔记 ID" }, { status: 400 })
     }
 
-    const note = updateServerInvestmentNote(id, user.id, user.name, {
-      title: body?.title !== undefined ? String(body.title) : undefined,
-      content: body?.content !== undefined ? String(body.content) : undefined,
-      contentVariant: body?.contentVariant,
-      teamShared: typeof body?.teamShared === "boolean" ? body.teamShared : undefined,
-      tags: body?.tags,
-      associations: body?.associations,
-      attachments: body?.attachments,
-    })
+    const note = await updateServerInvestmentNoteWithKbSync(
+      id,
+      user.id,
+      user.name,
+      { id: user.id, name: user.name, email: user.email },
+      {
+        title: body?.title !== undefined ? String(body.title) : undefined,
+        content: body?.content !== undefined ? String(body.content) : undefined,
+        contentVariant: body?.contentVariant,
+        teamShared: typeof body?.teamShared === "boolean" ? body.teamShared : undefined,
+        tags: body?.tags,
+        associations: body?.associations,
+        roadshowAssociations: body?.roadshowAssociations,
+        attachments: body?.attachments,
+      },
+    )
 
     if (!note) {
       return NextResponse.json({ ok: false, error: "笔记不存在" }, { status: 404 })
@@ -100,7 +127,7 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少笔记 ID" }, { status: 400 })
     }
 
-    const deleted = deleteServerInvestmentNote(id, user.id)
+    const deleted = await deleteServerInvestmentNoteWithKbSync(id, user.id)
     if (!deleted) {
       return NextResponse.json({ ok: false, error: "笔记不存在" }, { status: 404 })
     }

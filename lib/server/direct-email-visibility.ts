@@ -14,6 +14,53 @@ import { listCrawlEmails } from "@/lib/server/crawl-emails"
 import { getUserById } from "@/lib/server/users"
 import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 
+/** True for real mailbox addresses; excludes sentinels like team_manual_upload. */
+function isMailboxAccount(account: string): boolean {
+  const a = account.trim().toLowerCase()
+  return a.includes("@") && !a.includes(" ")
+}
+
+/**
+ * Crawl mailboxes known to the system: configured IMAP accounts plus any
+ * address that has already produced NAV / valuation rows. Config-only reads
+ * can miss mailboxes that were removed from ops_crawl_emails.json (or lost
+ * in a concurrent write) while their products remain in the pool.
+ */
+async function listKnownCrawlEmailAccounts(): Promise<string[]> {
+  const fromConfig = listCrawlEmails()
+    .map((e) => e.account.trim().toLowerCase())
+    .filter(isMailboxAccount)
+
+  const fromDbSql = `
+    SELECT DISTINCT lower(btrim(crawl_email_account)) AS account
+    FROM (
+      SELECT crawl_email_account FROM ops_email_nav_records
+      UNION ALL
+      SELECT crawl_email_account FROM ops_email_valuation_records
+    ) t
+    WHERE crawl_email_account IS NOT NULL
+      AND btrim(crawl_email_account) <> ''
+      AND position('@' in crawl_email_account) > 0`
+
+  const fromDbNavOnlySql = `
+    SELECT DISTINCT lower(btrim(crawl_email_account)) AS account
+    FROM ops_email_nav_records
+    WHERE crawl_email_account IS NOT NULL
+      AND btrim(crawl_email_account) <> ''
+      AND position('@' in crawl_email_account) > 0`
+
+  const dbRows = await query<{ account: string }>(fromDbSql).catch(() =>
+    query<{ account: string }>(fromDbNavOnlySql).catch(() => []),
+  )
+
+  const set = new Set<string>(fromConfig)
+  for (const row of dbRows) {
+    const a = String(row.account || "").trim().toLowerCase()
+    if (isMailboxAccount(a)) set.add(a)
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b))
+}
+
 export type DirectEmailVisibilityMapping = {
   /** Crawl mailbox address, lowercased */
   crawlEmailAccount: string
@@ -89,13 +136,13 @@ export function readDirectEmailVisibilityMap(): Map<string, DirectEmailVisibilit
 }
 
 /**
- * List rows for the settings UI: every crawl mailbox, with current visibility link.
+ * List rows for the settings UI: every known crawl mailbox, with current visibility link.
  */
-export function listDirectEmailVisibilityRows(): DirectEmailVisibilityMapping[] {
+export async function listDirectEmailVisibilityRows(): Promise<DirectEmailVisibilityMapping[]> {
   const map = readDirectEmailVisibilityMap()
   const now = new Date().toISOString()
-  return listCrawlEmails().map((email) => {
-    const key = email.account.trim().toLowerCase()
+  const accounts = await listKnownCrawlEmailAccounts()
+  return accounts.map((key) => {
     const existing = map.get(key)
     return (
       existing ?? {
@@ -108,14 +155,14 @@ export function listDirectEmailVisibilityRows(): DirectEmailVisibilityMapping[] 
   })
 }
 
-export function saveDirectEmailVisibilityMappings(
+export async function saveDirectEmailVisibilityMappings(
   updates: { crawlEmailAccount: string; userId: string; userName?: string }[],
-): DirectEmailVisibilityMapping[] {
+): Promise<DirectEmailVisibilityMapping[]> {
   const map = readDirectEmailVisibilityMap()
   const now = new Date().toISOString()
   for (const u of updates) {
     const key = String(u.crawlEmailAccount || "").trim().toLowerCase()
-    if (!key) continue
+    if (!key || !isMailboxAccount(key)) continue
     const userId = String(u.userId || "").trim()
     map.set(key, {
       crawlEmailAccount: key,
@@ -148,7 +195,7 @@ export async function resolveAllowedCrawlEmailsForUser(opts: {
   const restrictive = Array.from(map.values()).filter((m) => m.userId)
   if (restrictive.length === 0) return null
 
-  const crawlAccounts = listCrawlEmails().map((e) => e.account.trim().toLowerCase())
+  const crawlAccounts = await listKnownCrawlEmailAccounts()
   const allowed = new Set<string>()
   for (const account of crawlAccounts) {
     const link = map.get(account)
@@ -163,24 +210,19 @@ export async function resolveAllowedCrawlEmailsForUser(opts: {
 }
 
 /**
- * Register numbers (备案号) visible to the user inside the email-sourced pool.
- * null → no filter (show all pool rows).
+ * Register numbers in the email ops pool that were fetched from any of the given crawl mailboxes.
  */
-export async function resolveVisibleEmailPoolRegistersForUser(opts: {
-  userId: string
-  isAdmin?: boolean
-}): Promise<string[] | null> {
-  let isAdmin = opts.isAdmin
-  if (isAdmin === undefined) {
-    const user = await getUserById(opts.userId)
-    isAdmin = user?.role === "admin"
-  }
-  const allowedEmails = await resolveAllowedCrawlEmailsForUser({
-    userId: opts.userId,
-    isAdmin: !!isAdmin,
-  })
-  if (allowedEmails === null) return null
-  if (allowedEmails.length === 0) return []
+export async function resolveEmailPoolRegistersForCrawlEmails(
+  crawlEmails: string[],
+): Promise<string[]> {
+  const emails = Array.from(
+    new Set(
+      crawlEmails
+        .map((e) => String(e || "").trim().toLowerCase())
+        .filter(isMailboxAccount),
+    ),
+  )
+  if (emails.length === 0) return []
 
   // Match pool membership against email NAV / valuation provenance (code or fund name).
   const sql = `
@@ -231,11 +273,33 @@ export async function resolveVisibleEmailPoolRegistersForUser(opts: {
         )
       )`
 
-  const rows = await query<{ register_number: string }>(sql, [allowedEmails, EMAIL_OPS_POOL_KEY]).catch(
-    () => query<{ register_number: string }>(navOnlySql, [allowedEmails, EMAIL_OPS_POOL_KEY]),
+  const rows = await query<{ register_number: string }>(sql, [emails, EMAIL_OPS_POOL_KEY]).catch(
+    () => query<{ register_number: string }>(navOnlySql, [emails, EMAIL_OPS_POOL_KEY]),
   )
 
   return rows.map((r) => r.register_number)
+}
+
+/**
+ * Register numbers (备案号) visible to the user inside the email-sourced pool.
+ * null → no filter (show all pool rows).
+ */
+export async function resolveVisibleEmailPoolRegistersForUser(opts: {
+  userId: string
+  isAdmin?: boolean
+}): Promise<string[] | null> {
+  let isAdmin = opts.isAdmin
+  if (isAdmin === undefined) {
+    const user = await getUserById(opts.userId)
+    isAdmin = user?.role === "admin"
+  }
+  const allowedEmails = await resolveAllowedCrawlEmailsForUser({
+    userId: opts.userId,
+    isAdmin: !!isAdmin,
+  })
+  if (allowedEmails === null) return null
+  if (allowedEmails.length === 0) return []
+  return resolveEmailPoolRegistersForCrawlEmails(allowedEmails)
 }
 
 export async function requireAdminUser(req: Request): Promise<

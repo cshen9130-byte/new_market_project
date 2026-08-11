@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
-import { resolveVisibleEmailPoolRegistersForUser } from "@/lib/server/direct-email-visibility"
+import {
+  resolveEmailPoolRegistersForCrawlEmails,
+  resolveVisibleEmailPoolRegistersForUser,
+} from "@/lib/server/direct-email-visibility"
 import { getUserById } from "@/lib/server/users"
 import { ensureTrackingFundsListCachePopulated } from "@/lib/server/tracking-funds-list-cache-pg"
 
@@ -12,6 +15,7 @@ export const dynamic = "force-dynamic"
  * 直投产品 list — backed by email-synced products (邮箱运维池 / custom_email_nav),
  * filtered by 直投设置 crawl-email → account visibility.
  * Admin sees all; linked mailbox products are visible only to the linked account.
+ * Optional `crawl_email` query param (admin only) further filters by fetch mailbox.
  */
 export async function GET(req: Request) {
   try {
@@ -23,15 +27,37 @@ export async function GET(req: Request) {
     const strategySource = (searchParams.get("strategy_source") || "platform").trim().toLowerCase()
     const sortKey = (searchParams.get("sort") || "product_name").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
+    const crawlEmail = (searchParams.get("crawl_email") || "").trim().toLowerCase()
     const userId = String(req.headers.get("x-market-user-id") || "").trim()
+
+    const user = userId ? await getUserById(userId).catch(() => null) : null
+    const isAdmin = user?.role === "admin"
+
+    if (crawlEmail && !isAdmin) {
+      return NextResponse.json(
+        { error: "仅系统管理员可按抓取邮箱筛选", data: [], total: 0, page, pageSize, totalPages: 1 },
+        { status: 403 },
+      )
+    }
 
     let emailVisibilityRegisters: string[] | null = null
     if (userId) {
-      const user = await getUserById(userId).catch(() => null)
       emailVisibilityRegisters = await resolveVisibleEmailPoolRegistersForUser({
         userId,
-        isAdmin: user?.role === "admin",
+        isAdmin,
       })
+    }
+
+    if (crawlEmail) {
+      const emailRegisters = await resolveEmailPoolRegistersForCrawlEmails([crawlEmail])
+      if (emailVisibilityRegisters === null) {
+        emailVisibilityRegisters = emailRegisters
+      } else {
+        const allow = new Set(emailRegisters.map((r) => r.trim().toUpperCase()))
+        emailVisibilityRegisters = emailVisibilityRegisters.filter((r) =>
+          allow.has(r.trim().toUpperCase()),
+        )
+      }
     }
 
     await ensureTrackingFundsListCachePopulated().catch(() => {})
@@ -45,6 +71,7 @@ export async function GET(req: Request) {
       product_name: "i.product_name",
       latest_nav_date: "cache.nav_date",
       latest_nav: "cache.unit_nav",
+      latest_price_change: "cache.return_pct",
       ret_1w: "cache.ret_1w",
       ret_1m: "cache.ret_1m",
       ret_3m: "cache.ret_3m",
