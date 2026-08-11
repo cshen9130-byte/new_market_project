@@ -58,32 +58,114 @@ function normaliseDate(raw: string): string | null {
 
 // ── helper extractors ─────────────────────────────────────────────────────────
 
+/**
+ * Legal fund-type suffix.
+ * Negative lookahead on 私募基金 avoids matching inside 私募基金管理有限公司.
+ */
+const FUND_LEGAL_SUFFIX =
+  "(?:私募证券投资基金|私募基金(?!管理)|证券投资基金|投资基金)"
+
 /** Allow ASCII letters in names (e.g. 衡颐承和FOF1号). */
-const FUND_NAME_RE =
-  /[\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
+const FUND_NAME_RE = new RegExp(
+  `[\\u4e00-\\u9fffA-Za-z0-9]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?`,
+  "u",
+)
+
+const MANAGER_COMPANY_PREFIX_SOURCE =
+  "[\\u4e00-\\u9fffA-Za-z0-9]*?(?:私募)?基金管理(?:（[^）]*）|\\([^)]*\\))?有限公司"
+
+function stripManagerCompanyPrefixes(value: string, replacement = ""): string {
+  return value.replace(new RegExp(MANAGER_COMPANY_PREFIX_SOURCE, "gu"), replacement)
+}
+
+/** Drop announcement / company glue left by subject regexes. */
+function finalizeExtractedFundName(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  let s = raw.trim()
+  if (!s) return null
+  s = s.replace(/^关于+/u, "")
+  s = stripManagerCompanyPrefixes(s)
+  s = s.replace(/^有限公司/u, "")
+  s = s.replace(/^管理有限公司/u, "")
+  const normalized = normalizeFundDisplayName(s)
+  if (!normalized) return null
+  if (/管理有限公司|基金管理有限公司/u.test(normalized)) return null
+  if (/^有限公司/u.test(normalized)) return null
+  if (/有限公司/u.test(normalized) && !/号/u.test(normalized)) return null
+  if (/^关于/u.test(normalized)) return null
+  return normalized
+}
+
+function prepareSubjectForFundName(subject: string): string {
+  return stripManagerCompanyPrefixes(
+    subject.replace(/【[^】]*】/g, " ").replace(/^关于+/u, ""),
+    " ",
+  )
+}
+
+/** Pick the most product-like fund name from a subject (prefer …号 over manager labels). */
+function pickBestFundNameMatch(text: string): string | null {
+  const prepared = prepareSubjectForFundName(text)
+  const bracketStripped = text.replace(/【[^】]*】/g, " ").replace(/^关于+/u, "")
+  const candidates: string[] = []
+  for (const blob of [prepared, bracketStripped]) {
+    const re = new RegExp(FUND_NAME_RE.source, "gu")
+    let m: RegExpExecArray | null
+    while ((m = re.exec(blob)) !== null) {
+      const cleaned = finalizeExtractedFundName(m[0])
+      if (cleaned) candidates.push(cleaned)
+    }
+  }
+  if (candidates.length === 0) return null
+  const uniq = [...new Set(candidates)]
+  uniq.sort((a, b) => {
+    const score = (n: string) =>
+      (/号/u.test(n) ? 20 : 0) +
+      (/[ABC]类/u.test(n) ? 5 : 0) -
+      (/有限公司/u.test(n) ? 50 : 0) +
+      Math.min(n.length, 40) * 0.01
+    return score(b) - score(a)
+  })
+  return uniq[0] ?? null
+}
 
 /** CMS/招商证券 净值表 subject: 管理人旗下"产品名-CODE" (optional quotes; may be 等N个产品). */
 function parseCmsCustodyNavSubject(text: string): { code: string; fundName: string } | null {
   const quoted = text.match(
-    /管理人旗下[""''\u201c\u201d]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)-([A-Z0-9]+)[""''\u201c\u201d]/u,
+    new RegExp(
+      `管理人旗下[""''\\u201c\\u201d]([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)-([A-Z0-9]+)[""''\\u201c\\u201d]`,
+      "u",
+    ),
   )
-  if (quoted) return { code: quoted[2], fundName: normalizeFundDisplayName(quoted[1]) }
+  if (quoted) {
+    const fundName = finalizeExtractedFundName(quoted[1])
+    if (fundName) return { code: quoted[2], fundName }
+  }
 
   // Unquoted: 管理人旗下 山信至诚一号证券投资基金-SBA005等2个产品…
   const unquoted = text.match(
-    /管理人旗下\s*([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)-([A-Z0-9]+)/u,
+    new RegExp(
+      `管理人旗下\\s*([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)-([A-Z0-9]+)`,
+      "u",
+    ),
   )
   if (!unquoted) return null
-  return { code: unquoted[2], fundName: normalizeFundDisplayName(unquoted[1]) }
+  const fundName = finalizeExtractedFundName(unquoted[1])
+  if (!fundName) return null
+  return { code: unquoted[2], fundName }
 }
 
 /** Parse CODE_FUNDNAME from 资产净值公告 subjects / filenames. */
 function parseAssetNavAnnouncementSubject(text: string): { code: string; fundName: string } | null {
   const underscored = text.match(
-    /资产净值公告_([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
+    new RegExp(
+      `资产净值公告_([A-Z0-9]+)_([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)_`,
+      "u",
+    ),
   )
   if (underscored) {
-    return { code: underscored[1], fundName: normalizeFundDisplayName(underscored[2]) }
+    const fundName = finalizeExtractedFundName(underscored[2])
+    if (fundName) return { code: underscored[1], fundName }
   }
   // Filename: 资产净值公告_SVP460墨雪鑫瑞1号私募证券投资基金_20260805.xls
   const glued = text.match(
@@ -92,13 +174,19 @@ function parseAssetNavAnnouncementSubject(text: string): { code: string; fundNam
       "u",
     ),
   )
-  if (glued) return { code: glued[1], fundName: normalizeFundDisplayName(glued[2]) }
+  if (glued) {
+    const fundName = finalizeExtractedFundName(glued[2])
+    if (fundName) return { code: glued[1], fundName }
+  }
 
   // Subject: 20260805墨雪鑫瑞1号私募证券投资基金SVP460资产净值公告
   const dated = text.match(
     new RegExp(`^(20\\d{6})(${FUND_NAME_RE.source})([A-Z0-9]{4,10})资产净值公告`, "u"),
   )
-  if (dated) return { code: dated[3], fundName: normalizeFundDisplayName(dated[2]) }
+  if (dated) {
+    const fundName = finalizeExtractedFundName(dated[2])
+    if (fundName) return { code: dated[3], fundName }
+  }
 
   return null
 }
@@ -109,9 +197,9 @@ function parseCiticsFundNavSubject(text: string): { code: string; fundName: stri
     new RegExp(`【基金净值】([A-Z0-9]+)(?:\\([总]\\))?_(?:${FUND_NAME_RE.source})_`),
   )
   if (!m) return null
-  const fundMatch = text.match(FUND_NAME_RE)
-  if (!fundMatch) return null
-  return { code: m[1], fundName: normalizeFundDisplayName(fundMatch[0]) }
+  const fundName = pickBestFundNameMatch(text)
+  if (!fundName) return null
+  return { code: m[1], fundName }
 }
 
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
@@ -129,61 +217,69 @@ function extractFundNameFromSubject(subject: string): string | null {
     parseValuationTableSubject,
   ]) {
     const parsed = parser(subject)
-    if (parsed) return parsed.fundName
+    if (parsed?.fundName) {
+      return finalizeExtractedFundName(parsed.fundName) ?? parsed.fundName
+    }
   }
 
   const taVirtualInvestor = subject.match(
-    /【([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)】TA虚拟净值/u,
+    new RegExp(
+      `【([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)】TA虚拟净值`,
+      "u",
+    ),
   )
   if (taVirtualInvestor) {
     // Guotai TA虚拟净值: underlying fund is outside 【】; bracket is the 在管/investor.
     // Always prefer the outer name — do not require an override hit (锡泰 was missing).
-    const withoutInvestor = subject.replace(/【[^】]*】/g, " ")
-    const underlying = withoutInvestor.match(
-      /[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
-    )
-    if (underlying) return normalizeFundDisplayName(underlying[0])
-    return normalizeFundDisplayName(taVirtualInvestor[1])
+    const underlying = pickBestFundNameMatch(subject.replace(/【[^】]*】/g, " "))
+    if (underlying) return underlying
+    return finalizeExtractedFundName(taVirtualInvestor[1])
   }
 
   const bracketVirtualSubj = subject.match(
-    /【虚拟净值】[A-Z0-9]+[\s_]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
+    new RegExp(
+      `【虚拟净值】[A-Z0-9]+[\\s_]([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX})_`,
+      "u",
+    ),
   )
-  if (bracketVirtualSubj) return normalizeFundDisplayName(bracketVirtualSubj[1])
+  if (bracketVirtualSubj) return finalizeExtractedFundName(bracketVirtualSubj[1])
 
   const virtualSubj = subject.match(
-    /】[A-Z0-9]+(?:\([总]\))?_(?:[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
+    new RegExp(
+      `】[A-Z0-9]+(?:\\([总]\\))?_(?:[\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)_`,
+      "u",
+    ),
   )
   if (virtualSubj) {
-    const fundMatch = subject.match(FUND_NAME_RE)
-    if (fundMatch) return normalizeFundDisplayName(fundMatch[0])
+    const fundName = pickBestFundNameMatch(subject)
+    if (fundName) return fundName
   }
 
   const guotaiSubj = subject.match(/发送[：:](.+?)(?:【|$)/)
   if (guotaiSubj && /私募证券|投资基金/.test(guotaiSubj[1])) {
     // The capture may include a leading beian code and trailing date, e.g.
     // "SAVW72_金舆基石一号私募证券投资基金20260617估值表" — apply FUND_NAME_RE
-    // to extract just the clean fund name.
-    const fundMatch = guotaiSubj[1].match(FUND_NAME_RE)
-    if (fundMatch) return normalizeFundDisplayName(fundMatch[0])
-    return normalizeFundDisplayName(guotaiSubj[1])
+    // to extract just the clean fund name. Never keep bare manager company names.
+    const fromCapture = pickBestFundNameMatch(guotaiSubj[1])
+    if (fromCapture) return fromCapture
+    return finalizeExtractedFundName(guotaiSubj[1])
   }
 
-  const withoutInvestor = subject.replace(/【[^】]*】/g, " ")
-  // Allow ASCII (e.g. FOF) so "…1号FOF私募证券投资基金" does not collapse to bare "私募".
-  const m = withoutInvestor.match(
-    /[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
-  )
-  return m ? normalizeFundDisplayName(m[0]) : null
+  return pickBestFundNameMatch(subject)
 }
 
 /** Guosen/国信托管: SAUV26邦客鼎成精选私募证券投资基金净值2026-07-09【国信托管】 */
 function parseGuosenCustodyNavSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
-    /^([A-Z0-9]{4,8})([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)净值(\d{4}-\d{2}-\d{2}|20\d{6})/u,
+    new RegExp(
+      `^([A-Z0-9]{4,8})([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)净值(\\d{4}-\\d{2}-\\d{2}|20\\d{6})`,
+      "u",
+    ),
   )
   if (!m) return null
-  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+  const fundName = finalizeExtractedFundName(m[2])
+  if (!fundName) return null
+  return { code: m[1], fundName }
 }
 
 /**
@@ -194,9 +290,10 @@ function parseGuosenCustodyNavSubject(text: string): { code: string; fundName: s
  */
 function isGuotaiTaVirtualManagedProductNavEmail(subject: string): boolean {
   // Any Guotai-style …【investor】TA虚拟净值… — bracket is never the NAV fund.
-  return /【[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?】TA虚拟净值/u.test(
-    subject,
-  )
+  return new RegExp(
+    `【[\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?】TA虚拟净值`,
+    "u",
+  ).test(subject)
 }
 
 /**
@@ -209,13 +306,7 @@ function guotaiTaVirtualUnderlyingMeta(
 ): { productCode: string | null; fundName: string | null } {
   if (!isGuotaiTaVirtualManagedProductNavEmail(subject)) return shared
 
-  const withoutInvestor = subject.replace(/【[^】]*】/g, " ")
-  const underlyingMatch = withoutInvestor.match(
-    /[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
-  )
-  const underlyingName = underlyingMatch
-    ? normalizeFundDisplayName(underlyingMatch[0])
-    : null
+  const underlyingName = pickBestFundNameMatch(subject.replace(/【[^】]*】/g, " "))
 
   // If extract still landed on a 在管/investor label, force the outer underlying name.
   let fundName = shared.fundName
@@ -396,14 +487,16 @@ export function extractProductCodeFromText(text: string): string | null {
 
 export function extractFundNameFromText(text: string): string | null {
   const labeled = text.match(/基金名称\s*[：:]\s*([^\n\r]+)/)
-  if (labeled) return normalizeFundDisplayName(labeled[1])
+  if (labeled) {
+    const fromLabel = finalizeExtractedFundName(labeled[1])
+    if (fromLabel) return fromLabel
+  }
 
   const firstLine = text.split("\n")[0] ?? ""
   const fromSubject = extractFundNameFromSubject(firstLine)
   if (fromSubject) return fromSubject
 
-  const m = text.match(FUND_NAME_RE)
-  return m ? normalizeFundDisplayName(m[0]) : null
+  return pickBestFundNameMatch(text)
 }
 
 function shareClassFromProductCode(code: string | null): string {

@@ -1,3 +1,4 @@
+import { authService } from "@/lib/auth"
 import {
   formatInstructionAmount,
   listInstructionRecords,
@@ -52,12 +53,26 @@ export type OpsLedgerInput = Omit<OpsLedgerRow, "id"> & { id?: string }
 
 const STORAGE_KEY = "ma_ops_ledger_records_v1"
 const CHANGE_EVENT = "ma-ops-ledger-records-changed"
+const LIST_API = "/ma/api/ops/ledger/list"
+const ADD_API = "/ma/api/ops/ledger/add"
+const DELETE_API = "/ma/api/ops/ledger/delete"
 const EMPTY_SNAPSHOT: OpsLedgerRow[] = []
 
 let cachedSnapshot: OpsLedgerRow[] | null = null
+let hydratePromise: Promise<void> | null = null
+let lastHydrateError: string | null = null
+
+export function getLedgerRecordsHydrateError(): string | null {
+  return lastHydrateError
+}
 
 function canUseStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined"
+}
+
+function authHeaders(): HeadersInit {
+  const uid = authService.getCurrentUser()?.id?.trim() || ""
+  return uid ? { "x-market-user-id": uid } : {}
 }
 
 function parseStored(raw: string | null): OpsLedgerRow[] {
@@ -93,6 +108,85 @@ function writeAll(rows: OpsLedgerRow[]) {
 
 function invalidateCache() {
   cachedSnapshot = null
+}
+
+async function apiFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+      ...(init?.headers || {}),
+    },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || res.statusText || "请求失败")
+  }
+  return data as T
+}
+
+async function pushRecordToServer(record: OpsLedgerRow) {
+  await apiFetch<{ ok: true; record: OpsLedgerRow }>(ADD_API, {
+    method: "POST",
+    body: JSON.stringify({ record }),
+  })
+}
+
+async function pushRecordsToServer(records: OpsLedgerRow[]) {
+  if (records.length === 0) return
+  await apiFetch<{ ok: true; records: OpsLedgerRow[] }>(ADD_API, {
+    method: "POST",
+    body: JSON.stringify({ records }),
+  })
+}
+
+async function deleteRecordOnServer(id: string) {
+  await apiFetch<{ ok: true }>(`${DELETE_API}?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  })
+}
+
+async function deleteByInstructionOnServer(instructionId: string) {
+  await apiFetch<{ ok: true }>(
+    `${DELETE_API}?instruction_id=${encodeURIComponent(instructionId)}`,
+    { method: "DELETE" },
+  )
+}
+
+/**
+ * Pull shared ledger from server (source of truth).
+ * Safe to call repeatedly; concurrent callers share one in-flight promise.
+ */
+export function ensureLedgerRecordsHydrated(): Promise<void> {
+  if (!canUseStorage()) return Promise.resolve()
+  if (hydratePromise) return hydratePromise
+
+  hydratePromise = (async () => {
+    try {
+      const data = await apiFetch<{ ok: true; records: OpsLedgerRow[] }>(
+        `${LIST_API}?all=1`,
+      )
+      const serverRows = Array.isArray(data.records) ? data.records : []
+      writeAll(serverRows)
+      lastHydrateError = null
+    } catch (e) {
+      lastHydrateError = e instanceof Error ? e.message : "台账列表同步失败"
+    } finally {
+      hydratePromise = null
+      if (canUseStorage()) {
+        window.dispatchEvent(new Event(CHANGE_EVENT))
+      }
+    }
+  })()
+
+  return hydratePromise
+}
+
+/** Force a fresh pull from the shared server ledger. */
+export function refreshLedgerRecordsFromServer(): Promise<void> {
+  hydratePromise = null
+  return ensureLedgerRecordsHydrated()
 }
 
 function createLedgerId(now = new Date()): string {
@@ -159,8 +253,8 @@ export function ledgerRowFromInstruction(record: InstructionWithConfirm): OpsLed
   }
 }
 
-export function addLedgerRecord(input: OpsLedgerInput): OpsLedgerRow {
-  const record: OpsLedgerRow = {
+function buildLedgerRecord(input: OpsLedgerInput): OpsLedgerRow {
+  return {
     id: input.id ?? createLedgerId(),
     fof_fund_name: input.fof_fund_name,
     fof_register_number: input.fof_register_number,
@@ -183,36 +277,39 @@ export function addLedgerRecord(input: OpsLedgerInput): OpsLedgerRow {
     contract_attachment: input.contract_attachment ?? null,
     confirm_attachment: input.confirm_attachment ?? null,
   }
-  writeAll([record, ...readAll()])
+}
+
+export async function addLedgerRecord(input: OpsLedgerInput): Promise<OpsLedgerRow> {
+  const record = buildLedgerRecord(input)
+  writeAll([record, ...readAll().filter((r) => r.id !== record.id)])
+  try {
+    await pushRecordToServer(record)
+    lastHydrateError = null
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "台账同步失败"
+    lastHydrateError = message
+    throw new Error(message)
+  }
   return record
 }
 
-export function addLedgerRecords(inputs: OpsLedgerInput[]): OpsLedgerRow[] {
+export async function addLedgerRecords(inputs: OpsLedgerInput[]): Promise<OpsLedgerRow[]> {
   if (inputs.length === 0) return []
-  const created = inputs.map((input) => ({
-    id: input.id ?? createLedgerId(),
-    fof_fund_name: input.fof_fund_name,
-    fof_register_number: input.fof_register_number,
-    transaction_type: input.transaction_type,
+  const created = inputs.map((input) => buildLedgerRecord({
+    ...input,
     underlying_type: input.underlying_type ?? "FOF底层",
-    underlying_fund_name: input.underlying_fund_name,
-    underlying_beian_hao: input.underlying_beian_hao,
-    apply_date: input.apply_date,
-    confirm_date: input.confirm_date,
-    confirmed_shares: formatLedgerNumber(input.confirmed_shares),
-    confirmed_amount: formatLedgerNumber(input.confirmed_amount),
-    confirmed_unit_nav: input.confirmed_unit_nav,
-    transaction_fee: formatLedgerNumber(input.transaction_fee),
-    performance_fee: formatLedgerNumber(input.performance_fee),
-    share_balance: formatLedgerNumber(input.share_balance),
-    dividend_per_unit: input.dividend_per_unit,
     source: input.source ?? "手工",
-    remark: input.remark,
-    instruction_id: input.instruction_id ?? null,
-    contract_attachment: input.contract_attachment ?? null,
-    confirm_attachment: input.confirm_attachment ?? null,
   }))
-  writeAll([...created, ...readAll()])
+  const createdIds = new Set(created.map((r) => r.id))
+  writeAll([...created, ...readAll().filter((r) => !createdIds.has(r.id))])
+  try {
+    await pushRecordsToServer(created)
+    lastHydrateError = null
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "台账批量同步失败"
+    lastHydrateError = message
+    throw new Error(message)
+  }
   return created
 }
 
@@ -240,50 +337,83 @@ function ledgerContentEqual(a: OpsLedgerRow, b: OpsLedgerRow): boolean {
   )
 }
 
-export function upsertLedgerFromConfirmedInstruction(record: InstructionWithConfirm): OpsLedgerRow | null {
+export async function upsertLedgerFromConfirmedInstruction(
+  record: InstructionWithConfirm,
+): Promise<OpsLedgerRow | null> {
   if (!isInstructionConfirmed(record.progress)) return null
   if (record.category !== "underlying" && record.category !== "direct") return null
 
   const mapped = ledgerRowFromInstruction(record)
   const rows = readAll()
   const idx = rows.findIndex((r) => r.instruction_id === record.id)
+  let nextRow: OpsLedgerRow
   if (idx >= 0) {
     const merged = { ...mapped, id: rows[idx].id }
     if (ledgerContentEqual(rows[idx], merged)) return rows[idx]
     const next = [...rows]
     next[idx] = merged
     writeAll(next)
-    return merged
+    nextRow = merged
+  } else {
+    writeAll([mapped, ...rows])
+    nextRow = mapped
   }
-  writeAll([mapped, ...rows])
-  return mapped
+
+  try {
+    await pushRecordToServer(nextRow)
+    lastHydrateError = null
+  } catch (e) {
+    lastHydrateError = e instanceof Error ? e.message : "台账同步失败"
+    // Keep local row; instruction confirm already succeeded.
+  }
+  return nextRow
 }
 
-export function removeLedgerByInstructionId(instructionId: string): boolean {
+export async function removeLedgerByInstructionId(instructionId: string): Promise<boolean> {
   const rows = readAll()
   const next = rows.filter((r) => r.instruction_id !== instructionId)
-  if (next.length === rows.length) return false
+  if (next.length === rows.length) {
+    // Still try server delete in case local cache was stale.
+    try {
+      await deleteByInstructionOnServer(instructionId)
+    } catch {
+      /* ignore */
+    }
+    return false
+  }
   writeAll(next)
+  try {
+    await deleteByInstructionOnServer(instructionId)
+    lastHydrateError = null
+  } catch (e) {
+    lastHydrateError = e instanceof Error ? e.message : "台账删除同步失败"
+  }
   return true
 }
 
-export function removeLedgerRecord(id: string): boolean {
+export async function removeLedgerRecord(id: string): Promise<boolean> {
   const rows = readAll()
   const next = rows.filter((r) => r.id !== id)
   if (next.length === rows.length) return false
   writeAll(next)
+  try {
+    await deleteRecordOnServer(id)
+    lastHydrateError = null
+  } catch (e) {
+    lastHydrateError = e instanceof Error ? e.message : "台账删除同步失败"
+  }
   return true
 }
 
 /** Backfill ledger rows from any already-confirmed instruction records. */
-export function backfillLedgerFromConfirmedInstructions(): number {
+export async function backfillLedgerFromConfirmedInstructions(): Promise<number> {
   const instructions = listInstructionRecords()
   let count = 0
   for (const record of instructions) {
     if (!isInstructionConfirmed(record.progress)) continue
     if (record.category !== "underlying" && record.category !== "direct") continue
     const beforeLen = readAll().length
-    upsertLedgerFromConfirmedInstruction(record)
+    await upsertLedgerFromConfirmedInstruction(record)
     if (readAll().length > beforeLen) count += 1
   }
   return count

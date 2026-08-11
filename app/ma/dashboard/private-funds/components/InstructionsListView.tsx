@@ -71,6 +71,7 @@ import {
 } from "./instructions-store"
 import {
   backfillLedgerFromConfirmedInstructions,
+  ensureLedgerRecordsHydrated,
   isInstructionConfirmed,
   removeLedgerByInstructionId,
   upsertLedgerFromConfirmedInstruction,
@@ -2341,8 +2342,11 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
   }, [])
 
   useEffect(() => {
-    backfillLedgerFromConfirmedInstructions()
-  }, [allRecords])
+    void (async () => {
+      await ensureLedgerRecordsHydrated()
+      await backfillLedgerFromConfirmedInstructions()
+    })()
+  }, [])
 
   const columns = useMemo(
     () => buildColumns(categoryTab, selectedFields, isAll),
@@ -2948,7 +2952,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
           const target = voidTarget
           void (async () => {
             if (isInstructionConfirmed(target.progress)) {
-              removeLedgerByInstructionId(target.id)
+              await removeLedgerByInstructionId(target.id)
             }
             await removeInstructionRecord(target.id)
             setVoidTarget(null)
@@ -3018,7 +3022,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
                 confirmedAt: now,
               })
               if (updated) {
-                upsertLedgerFromConfirmedInstruction(updated)
+                await upsertLedgerFromConfirmedInstruction(updated)
                 toast({ title: "交易已确认", description: "已同步写入 FOF 台账（来源：指令）" })
               }
               setConfirmTarget(null)

@@ -27,7 +27,10 @@ function hasLegalPhrase(value: string): boolean {
 
 /** Strip legal fund-type suffixes for UI display; preserve A/B/C… share class. */
 export function normalizeFundDisplayName(raw: string): string {
-  const s = raw.trim()
+  let s = raw.trim()
+  if (!s) return s
+  // Announcement subjects often start with 关于…基金合同变更 / 净值通知.
+  s = s.replace(/^关于+/u, "")
   if (!s) return s
   if (BARE_LEGAL_RE.test(s)) return ""
 

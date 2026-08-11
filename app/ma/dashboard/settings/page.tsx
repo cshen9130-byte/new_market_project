@@ -5,6 +5,8 @@ import { useSearchParams } from "next/navigation"
 import { authService, type PagePermissions, type User } from "@/lib/auth"
 import { buildPermissionsSnapshot } from "@/lib/page-permissions"
 import {
+  DEFAULT_INSTRUCTION_PROCESS_CONFIG,
+  ensureInstructionProcessConfigHydrated,
   getOfficialProcessNodes,
   readInstructionProcessConfig,
   updateInstructionProcessTypeConfig,
@@ -1727,9 +1729,11 @@ function sortInstructionUsers(list: User[], currentUserId: string | undefined): 
 function InstructionSettingsPanel() {
   const [instructionType, setInstructionType] = useState<InstructionTypeOption>(INSTRUCTION_TYPE_OPTIONS[0])
   const [processType, setProcessType] = useState<"official" | "custom">("official")
-  const [processConfig, setProcessConfig] = useState<InstructionProcessConfig>(() =>
-    readInstructionProcessConfig(),
+  const [processConfig, setProcessConfig] = useState<InstructionProcessConfig>(
+    DEFAULT_INSTRUCTION_PROCESS_CONFIG,
   )
+  const [processLoading, setProcessLoading] = useState(true)
+  const [processSaving, setProcessSaving] = useState(false)
   const [processSaveMsg, setProcessSaveMsg] = useState<string | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [users, setUsers] = useState<User[]>([])
@@ -1741,7 +1745,18 @@ function InstructionSettingsPanel() {
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
-    setProcessConfig(readInstructionProcessConfig())
+    let cancelled = false
+    async function loadProcessConfig() {
+      setProcessLoading(true)
+      await ensureInstructionProcessConfigHydrated()
+      if (cancelled) return
+      setProcessConfig(readInstructionProcessConfig())
+      setProcessLoading(false)
+    }
+    void loadProcessConfig()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -1804,13 +1819,22 @@ function InstructionSettingsPanel() {
     }
   }
 
-  function setRequireGmApproval(checked: boolean) {
-    const next = updateInstructionProcessTypeConfig(instructionType, {
-      requireGmApproval: checked,
-    })
-    setProcessConfig(next)
-    setProcessSaveMsg("已保存")
-    window.setTimeout(() => setProcessSaveMsg(null), 2000)
+  async function setRequireGmApproval(checked: boolean) {
+    if (!isAdmin || processSaving) return
+    setProcessSaving(true)
+    setProcessSaveMsg(null)
+    try {
+      const next = await updateInstructionProcessTypeConfig(instructionType, {
+        requireGmApproval: checked,
+      })
+      setProcessConfig(next)
+      setProcessSaveMsg("已保存（全员生效）")
+      window.setTimeout(() => setProcessSaveMsg(null), 2000)
+    } catch (e: unknown) {
+      setProcessSaveMsg(e instanceof Error ? e.message : "保存失败")
+    } finally {
+      setProcessSaving(false)
+    }
   }
 
   const requireGmApproval = processConfig[instructionType]?.requireGmApproval !== false
@@ -1883,14 +1907,26 @@ function InstructionSettingsPanel() {
                   <input
                     type="checkbox"
                     checked={requireGmApproval}
-                    disabled={!isAdmin}
-                    onChange={(e) => setRequireGmApproval(e.target.checked)}
+                    disabled={!isAdmin || processLoading || processSaving}
+                    onChange={(e) => void setRequireGmApproval(e.target.checked)}
                     className="accent-red-500 disabled:opacity-60"
                   />
                   需要总经理审批
                 </label>
+                {processLoading && (
+                  <span className="text-xs text-zinc-400">同步中…</span>
+                )}
                 {processSaveMsg && (
-                  <span className="text-xs text-emerald-600">{processSaveMsg}</span>
+                  <span
+                    className={[
+                      "text-xs",
+                      processSaveMsg.includes("失败") || processSaveMsg.includes("仅系统管理员")
+                        ? "text-red-500"
+                        : "text-emerald-600",
+                    ].join(" ")}
+                  >
+                    {processSaveMsg}
+                  </span>
                 )}
               </div>
             </div>

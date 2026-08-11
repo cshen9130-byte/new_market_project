@@ -1,10 +1,18 @@
-/** IndexedDB blob store for instruction 合同 / 确认函 files (client-local demo). */
+/**
+ * Instruction 合同 / 确认函 files.
+ * Server disk is the source of truth; IndexedDB is an optional local cache.
+ */
 
-import { isEmailConfirmAttachmentId, parseEmailConfirmRecordId } from "./instructions-store"
+import { authService } from "@/lib/auth"
+import {
+  isEmailConfirmAttachmentId,
+  parseEmailConfirmRecordId,
+} from "./instructions-store"
 
 const DB_NAME = "ma_instruction_attachments_v1"
 const STORE_NAME = "files"
 const DB_VERSION = 1
+const UPLOAD_API = "/ma/api/instructions/attachments"
 
 type StoredFile = {
   id: string
@@ -13,6 +21,11 @@ type StoredFile = {
   size: number
   blob: Blob
   savedAt: string
+}
+
+function authHeaders(): HeadersInit {
+  const uid = authService.getCurrentUser()?.id?.trim() || ""
+  return uid ? { "x-market-user-id": uid } : {}
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -40,40 +53,68 @@ function idbRequest<T>(req: IDBRequest<T>): Promise<T> {
   })
 }
 
-export async function saveInstructionAttachmentBlob(
-  id: string,
-  file: File,
-): Promise<void> {
-  const db = await openDb()
+async function cacheLocalBlob(id: string, file: File | Blob, name: string): Promise<void> {
   try {
-    const tx = db.transaction(STORE_NAME, "readwrite")
-    const store = tx.objectStore(STORE_NAME)
-    const row: StoredFile = {
-      id,
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-      blob: file,
-      savedAt: new Date().toISOString(),
+    const db = await openDb()
+    try {
+      const tx = db.transaction(STORE_NAME, "readwrite")
+      const store = tx.objectStore(STORE_NAME)
+      const row: StoredFile = {
+        id,
+        name,
+        type: file.type || "application/octet-stream",
+        size: file.size,
+        blob: file,
+        savedAt: new Date().toISOString(),
+      }
+      await idbRequest(store.put(row))
+    } finally {
+      db.close()
     }
-    await idbRequest(store.put(row))
-  } finally {
-    db.close()
+  } catch {
+    // Cache is best-effort; server upload is authoritative.
   }
 }
 
 export async function getInstructionAttachmentBlob(
   id: string,
 ): Promise<StoredFile | null> {
-  const db = await openDb()
   try {
-    const tx = db.transaction(STORE_NAME, "readonly")
-    const store = tx.objectStore(STORE_NAME)
-    const row = await idbRequest(store.get(id) as IDBRequest<StoredFile | undefined>)
-    return row ?? null
-  } finally {
-    db.close()
+    const db = await openDb()
+    try {
+      const tx = db.transaction(STORE_NAME, "readonly")
+      const store = tx.objectStore(STORE_NAME)
+      const row = await idbRequest(store.get(id) as IDBRequest<StoredFile | undefined>)
+      return row ?? null
+    } finally {
+      db.close()
+    }
+  } catch {
+    return null
   }
+}
+
+/**
+ * Upload attachment to the shared server store (and cache locally).
+ * When `id` is provided, the server stores under that id (matches instruction meta).
+ */
+export async function saveInstructionAttachmentBlob(
+  id: string,
+  file: File,
+): Promise<void> {
+  const fd = new FormData()
+  fd.append("file", file)
+  fd.append("id", id)
+  const res = await fetch(UPLOAD_API, {
+    method: "POST",
+    headers: authHeaders(),
+    body: fd,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || res.statusText || "附件上传失败")
+  }
+  await cacheLocalBlob(id, file, file.name)
 }
 
 function triggerBrowserDownload(url: string, filename?: string): void {
@@ -91,7 +132,6 @@ function triggerBrowserDownload(url: string, filename?: string): void {
  * popup and block it even on direct clicks. Fall back to a synthetic <a>.
  */
 function openUrlInNewTab(url: string): boolean {
-  // No third-arg features: opens as a tab, not a popup.
   const opened = window.open(url, "_blank")
   if (opened) {
     try {
@@ -111,6 +151,31 @@ function openUrlInNewTab(url: string): boolean {
   return true
 }
 
+function serverFileUrl(id: string, download = false): string {
+  const base = `${UPLOAD_API}/${encodeURIComponent(id)}/file`
+  return download ? `${base}?download=1` : base
+}
+
+async function fetchServerAttachmentBlob(
+  id: string,
+): Promise<{ blob: Blob; filename?: string } | null> {
+  const res = await fetch(serverFileUrl(id), {
+    headers: authHeaders(),
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data?.error || res.statusText || "读取附件失败")
+  }
+  const blob = await res.blob()
+  const disposition = res.headers.get("Content-Disposition") || ""
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i)
+  const filename = match
+    ? decodeURIComponent((match[1] || match[2] || "").trim())
+    : undefined
+  return { blob, filename }
+}
+
 /** Open the stored file in a new tab (or trigger download if blocked). */
 export async function openInstructionAttachment(id: string): Promise<void> {
   if (isEmailConfirmAttachmentId(id)) {
@@ -119,6 +184,30 @@ export async function openInstructionAttachment(id: string): Promise<void> {
     const url = `/ma/api/ops/email-confirm-records/${recordId}/file`
     openUrlInNewTab(url)
     return
+  }
+
+  try {
+    const server = await fetchServerAttachmentBlob(id)
+    if (server) {
+      const url = URL.createObjectURL(server.blob)
+      const opened = window.open(url, "_blank")
+      if (opened) {
+        try {
+          opened.opener = null
+        } catch {
+          /* ignore */
+        }
+      } else {
+        triggerBrowserDownload(url, server.filename)
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      void cacheLocalBlob(id, server.blob, server.filename || id)
+      return
+    }
+  } catch (e) {
+    // Fall through to IndexedDB cache for offline / legacy local-only uploads.
+    const local = await getInstructionAttachmentBlob(id)
+    if (!local) throw e
   }
 
   const row = await getInstructionAttachmentBlob(id)
@@ -134,7 +223,6 @@ export async function openInstructionAttachment(id: string): Promise<void> {
   } else {
     triggerBrowserDownload(url, row.name)
   }
-  // Revoke after the browser has a chance to load the blob.
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
@@ -151,6 +239,27 @@ export async function downloadInstructionAttachment(
       filename,
     )
     return
+  }
+
+  try {
+    const res = await fetch(serverFileUrl(id, true), {
+      headers: authHeaders(),
+    })
+    if (res.status === 404) {
+      // fall through
+    } else if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || res.statusText || "下载附件失败")
+    } else {
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      triggerBrowserDownload(url, filename)
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      return
+    }
+  } catch (e) {
+    const local = await getInstructionAttachmentBlob(id)
+    if (!local) throw e
   }
 
   const row = await getInstructionAttachmentBlob(id)

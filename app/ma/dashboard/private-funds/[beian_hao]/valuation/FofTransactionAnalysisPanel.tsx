@@ -17,6 +17,7 @@ import {
 import { parseEmailConfirmRecordId } from "../../components/instructions-store"
 import {
   backfillLedgerFromConfirmedInstructions,
+  ensureLedgerRecordsHydrated,
   getLedgerRecordsServerSnapshot,
   getLedgerRecordsSnapshot,
   listLedgerRecords,
@@ -154,7 +155,10 @@ export function FofTransactionAnalysisPanel({
   )
 
   useEffect(() => {
-    backfillLedgerFromConfirmedInstructions()
+    void (async () => {
+      await ensureLedgerRecordsHydrated()
+      await backfillLedgerFromConfirmedInstructions()
+    })()
   }, [beianHao])
 
   useEffect(() => {

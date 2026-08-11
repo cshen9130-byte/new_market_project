@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import { InstructionsInitiateView } from "./InstructionsInitiateView"
 import { InstructionsListView } from "./InstructionsListView"
+import { ensureInstructionProcessConfigHydrated } from "@/lib/ma/instruction-process-config"
 import { ensureInstructionRecordsHydrated } from "./instructions-store"
 import {
   DEFAULT_INSTRUCTION_SIDE,
@@ -20,6 +21,7 @@ export function InstructionsSection({ side }: { side: string }) {
 
   useEffect(() => {
     void ensureInstructionRecordsHydrated()
+    void ensureInstructionProcessConfigHydrated()
   }, [])
 
   if (resolved === "cmd-initiate") {

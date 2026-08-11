@@ -22,9 +22,11 @@ import {
 } from "./OperationsLedgerFieldConfigDialog"
 import {
   backfillLedgerFromConfirmedInstructions,
+  ensureLedgerRecordsHydrated,
   getLedgerRecordsServerSnapshot,
   getLedgerRecordsSnapshot,
   listLedgerRecords,
+  refreshLedgerRecordsFromServer,
   removeLedgerRecord,
   subscribeLedgerRecords,
   type OpsLedgerRow,
@@ -120,7 +122,15 @@ export function OperationsLedgerView() {
   )
 
   useEffect(() => {
-    backfillLedgerFromConfirmedInstructions()
+    void (async () => {
+      await ensureLedgerRecordsHydrated()
+      await backfillLedgerFromConfirmedInstructions()
+    })()
+    const onFocus = () => {
+      void refreshLedgerRecordsFromServer()
+    }
+    window.addEventListener("focus", onFocus)
+    return () => window.removeEventListener("focus", onFocus)
   }, [])
 
   useEffect(() => {
@@ -593,7 +603,9 @@ export function OperationsLedgerView() {
                       <button
                         type="button"
                         className="hover:text-red-500"
-                        onClick={() => removeLedgerRecord(row.id)}
+                        onClick={() => {
+                          void removeLedgerRecord(row.id)
+                        }}
                         aria-label="删除台账"
                       >
                         <Trash2 className="h-3.5 w-3.5" />

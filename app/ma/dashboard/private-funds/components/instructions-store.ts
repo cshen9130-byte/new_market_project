@@ -63,14 +63,14 @@ export function resolveInstructionInitiatorDisplay(
   return value
 }
 
-/** Lightweight attachment meta persisted with the local instruction record. */
+/** Lightweight attachment meta persisted with the instruction record. */
 export type InstructionAttachmentMeta = {
-  /** IndexedDB key for the file blob (see instruction-attachment-files), or email-confirm:{id}. */
+  /** Server attachment id (upload) or email-confirm:{id}. */
   id: string
   name: string
   size: number
   uploadedAt: string
-  /** upload = local IndexedDB; email = server ops_email_confirm_records. */
+  /** upload = shared server file; email = ops_email_confirm_records. */
   source?: "upload" | "email"
   /** Server row id when source === "email". */
   confirmRecordId?: number

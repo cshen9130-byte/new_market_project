@@ -672,9 +672,18 @@ async function loadRawEmailFundsFromSubjects(): Promise<RawEmailFund[]> {
      ) s`,
   )
   const subjects = new Set(rows.map((r) => r.subject.trim()).filter(Boolean))
+  // Parse-record subjects are discovery-only. Skip failed non-NAV mail
+  // (合同变更 / 信披月报 / 公告) that polluted 邮箱运维池 with junk names.
   for (const rec of getAllEmailParseRecords()) {
     const subject = rec.subject?.trim()
-    if (subject) subjects.add(subject)
+    if (!subject) continue
+    const anySuccess =
+      rec.tableNavStatus === "成功" ||
+      rec.postTableNavStatus === "成功" ||
+      rec.valuationStatus === "成功" ||
+      rec.ledgerStatus === "成功"
+    if (!anySuccess) continue
+    subjects.add(subject)
   }
 
   const out: RawEmailFund[] = []
@@ -683,6 +692,9 @@ async function loadRawEmailFundsFromSubjects(): Promise<RawEmailFund[]> {
     const productCode = meta.productCode?.trim() || null
     const fundName = meta.fundName?.trim() || null
     if (!productCode && !fundName) continue
+    // Subject-only rows without a product code are name-only pool keys and
+    // cannot join NAV cache — only keep them when the name looks product-like.
+    if (!productCode && !/号|类/u.test(fundName!)) continue
     const fund_key = productCode ?? fundName!
     out.push({
       fund_key,
@@ -750,6 +762,14 @@ function isJunkTeamDataProductName(name: string | null | undefined): boolean {
 const EMAIL_POOL_FUND_NAME_MARKERS =
   /号|类|私募|证券|基金|专享|投资|对冲|CTA|量化|成长|精选|均衡|基石|轮动|文艺复兴/u
 
+function isEmailPoolCompanyOrAnnouncementName(name: string): boolean {
+  if (/^关于/u.test(name)) return true
+  if (/管理有限公司|基金管理有限公司/u.test(name)) return true
+  if (/^有限公司/u.test(name)) return true
+  if (/有限公司/u.test(name) && !/号/u.test(name)) return true
+  return false
+}
+
 function isPlausibleEmailPoolFund(productName: string, registerNumber: string): boolean {
   const name = productName.trim()
   const reg = registerNumber.trim()
@@ -758,6 +778,8 @@ function isPlausibleEmailPoolFund(productName: string, registerNumber: string): 
   if (name === "号" || reg === "号") return false
   if (!/[\u4e00-\u9fffA-Za-z]/.test(name)) return false
   if (isJunkTeamDataProductName(name)) return false
+  if (isEmailPoolCompanyOrAnnouncementName(name)) return false
+  if (isEmailPoolCompanyOrAnnouncementName(reg)) return false
 
   const nameKey = name.toLowerCase()
   const regKey = reg.toLowerCase()
@@ -765,10 +787,22 @@ function isPlausibleEmailPoolFund(productName: string, registerNumber: string): 
     return false
   }
 
+  // Attachment parses sometimes yield a bare code with no fund_name (e.g. SAUY00).
+  // Those are not real products for 邮箱运维池.
+  if (
+    isFundCodeRegisterNumber(name) &&
+    name.toUpperCase() === reg.toUpperCase()
+  ) {
+    return false
+  }
+  if (!/[\u4e00-\u9fff]/u.test(name)) return false
+
   // Name-only pool keys (no 备案号) must look like fund products, not manager labels.
   if (!isFundCodeRegisterNumber(reg)) {
     if (reg === name && !EMAIL_POOL_FUND_NAME_MARKERS.test(name)) return false
     if (/^20\d{2}年/.test(name) || /^20\d{2}年/.test(reg)) return false
+    // Short labels without 号/类 are almost always manager fragments (青岛立心…).
+    if (!/号|类/u.test(name) && name.length <= 10) return false
   }
 
   return true

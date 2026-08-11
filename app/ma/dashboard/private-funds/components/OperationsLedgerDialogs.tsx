@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { CalendarDays, ChevronDown, Inbox, Search } from "lucide-react"
-import { addLedgerRecord, addLedgerRecords } from "./ops-ledger-store"
+import { authService } from "@/lib/auth"
+import { addLedgerRecord, refreshLedgerRecordsFromServer } from "./ops-ledger-store"
 
 interface FundOption {
   register_number: string
@@ -166,7 +167,7 @@ export function AddSingleLedgerDialog({
     setSaving(true)
     setError(null)
     try {
-      addLedgerRecord({
+      await addLedgerRecord({
         fof_register_number: fofFundSelected.register_number,
         fof_fund_name: fofFundSelected.product_name,
         underlying_beian_hao: underlyingSelected.beian_hao,
@@ -512,7 +513,12 @@ export function BatchUploadLedgerDialog({
     try {
       const fd = new FormData()
       fd.append("file", batchFile)
-      const res = await fetch("/ma/api/ops/ledger/batch-upload", { method: "POST", body: fd })
+      const uid = authService.getCurrentUser()?.id?.trim() || ""
+      const res = await fetch("/ma/api/ops/ledger/batch-upload", {
+        method: "POST",
+        headers: uid ? { "x-market-user-id": uid } : {},
+        body: fd,
+      })
       const json = await res.json()
       if (!res.ok) {
         const msg =
@@ -522,48 +528,15 @@ export function BatchUploadLedgerDialog({
               ? "文件大小不能超过3M"
               : json.error === "invalid_file_type"
                 ? "只能上传 Excel 文件"
-                : json.error ?? "上传失败"
+                : json.error === "请先登录"
+                  ? "请先登录"
+                  : json.error ?? "上传失败"
         throw new Error(msg)
       }
-      const parsedRows = Array.isArray(json.rows) ? json.rows : []
-      if (parsedRows.length === 0) throw new Error("未能识别有效数据，请使用官方模板填写后上传")
-      addLedgerRecords(
-        parsedRows.map((row: {
-          fof_fund_name: string
-          fof_register_number: string
-          underlying_fund_name: string
-          underlying_beian_hao: string
-          transaction_type: string
-          apply_date: string
-          confirm_date: string
-          confirmed_amount: string | null
-          confirmed_shares: string | null
-          confirmed_unit_nav: string | null
-          transaction_fee: string | null
-          performance_fee: string | null
-          dividend_per_unit: string | null
-          remark: string | null
-        }) => ({
-          fof_fund_name: row.fof_fund_name,
-          fof_register_number: row.fof_register_number || null,
-          underlying_fund_name: row.underlying_fund_name,
-          underlying_beian_hao: row.underlying_beian_hao || null,
-          underlying_type: "FOF底层",
-          transaction_type: row.transaction_type,
-          apply_date: row.apply_date,
-          confirm_date: row.confirm_date,
-          confirmed_amount: row.confirmed_amount,
-          confirmed_shares: row.confirmed_shares,
-          confirmed_unit_nav: row.confirmed_unit_nav,
-          transaction_fee: row.transaction_fee,
-          performance_fee: row.performance_fee,
-          share_balance: null,
-          dividend_per_unit: row.dividend_per_unit,
-          source: "手工",
-          remark: row.remark,
-          instruction_id: null,
-        })),
-      )
+      const count = typeof json.count === "number" ? json.count : (Array.isArray(json.rows) ? json.rows.length : 0)
+      if (count === 0) throw new Error("未能识别有效数据，请使用官方模板填写后上传")
+      // Server already persisted; refresh shared cache for this browser.
+      await refreshLedgerRecordsFromServer()
       onUploaded?.()
       onClose()
     } catch (err) {
