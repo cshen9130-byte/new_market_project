@@ -2510,7 +2510,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       cutoff: exportCutoff,
     })
     teamTags.forEach((tag) => params.append("team_tag", tag))
-    const json = await fetch(`/ma/api/tracking-funds/list?${params}`).then((r) => r.json())
+    const json = await fetch(`/ma/api/tracking-funds/list?${params}`, {
+      headers: userFetchHeaders(),
+    }).then((r) => r.json())
     const rows: TrackFundRow[] = json.data ?? []
     const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)"]
     const csvRows = [
@@ -2626,7 +2628,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     // Stale-while-revalidate: render cached rows instantly, then refresh in the
     // background so pool switches / revisits feel instant while still picking up
     // server-side changes (new NAV, edits, etc.).
-    const cacheKey = (isMineTab ? `mine\u0000${currentUserId()}\u0000` : "team\u0000") + params.toString()
+    // Include user id for team pools too — 邮箱运维池 visibility is per-account.
+    const cacheKey = `${isMineTab ? "mine" : "team"}\u0000${currentUserId()}\u0000${params.toString()}`
     const cached = readListCache(cacheKey)
     if (cached) {
       setData(cached.data)
@@ -2641,7 +2644,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     let cancelled = false
     const ac = new AbortController()
     fetch(`/ma/api/tracking-funds/list?${params}`, {
-      headers: isMineTab ? userFetchHeaders() : {},
+      // Always send user id so 邮箱运维池 can apply 直投设置 email→account visibility.
+      headers: userFetchHeaders(),
       signal: ac.signal,
     })
       .then((r) => r.json())
@@ -11172,7 +11176,14 @@ function OperationsDirectView() {
       dir: sortDir,
     })
     if (strategyL1) params.set("strategy_l1", strategyL1)
-    fetch(`/ma/api/ops/direct-funds/list?${params}`)
+    let userId = ""
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      userId = u?.id ? String(u.id) : ""
+    } catch { /* ignore */ }
+    fetch(`/ma/api/ops/direct-funds/list?${params}`, {
+      headers: userId ? { "x-market-user-id": userId } : {},
+    })
       .then((r) => r.json())
       .then((json) => {
         setData(json.data ?? [])

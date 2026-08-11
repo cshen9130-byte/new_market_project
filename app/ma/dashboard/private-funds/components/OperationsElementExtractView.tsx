@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { CheckCircle2, FileSearch, FileText, Loader2, PlusCircle, Upload, X } from "lucide-react"
+import { CheckCircle2, FileSearch, FileText, Loader2, Pencil, PlusCircle, Upload, X } from "lucide-react"
 
 type ExtractedFundElements = {
   fund_name: string | null
@@ -196,37 +196,74 @@ function buildApplyPayload(job: ContractJob): Record<string, string | null> | nu
   return Object.keys(payload).length > 1 ? payload : null
 }
 
+const LONG_TEXT_KEYS = new Set<ElementKey>([
+  "open_day",
+  "fee_redeem",
+  "fee_manage",
+  "fee_pay",
+  "closed_period",
+  "is_temporary_open",
+  "fee_admin_service",
+])
+
 function FieldCompareRow({
   fieldKey,
   extracted,
   current,
   selected,
   onToggle,
+  editing,
+  onExtractedChange,
 }: {
   fieldKey: ElementKey
   extracted: string | null
   current: string | null
   selected: boolean
   onToggle: (checked: boolean) => void
+  editing: boolean
+  onExtractedChange: (value: string) => void
 }) {
   const extractedText = extracted?.trim() || ""
   const currentText = current?.trim() || ""
   const changed = extractedText && extractedText !== currentText
   const disabled = !extractedText
+  const useTextarea = LONG_TEXT_KEYS.has(fieldKey)
 
   return (
-    <tr className={disabled ? "opacity-50" : undefined}>
+    <tr className={!editing && disabled ? "opacity-50" : undefined}>
       <td className="px-3 py-2 align-top">
         <input
           type="checkbox"
           checked={selected && !disabled}
-          disabled={disabled}
+          disabled={disabled || editing}
           onChange={(e) => onToggle(e.target.checked)}
           className="accent-red-500"
         />
       </td>
       <td className="px-3 py-2 text-sm text-zinc-600 whitespace-nowrap">{FIELD_LABELS[fieldKey]}</td>
-      <td className="px-3 py-2 text-sm">{displayValue(extracted)}</td>
+      <td className="px-3 py-2 text-sm">
+        {editing ? (
+          useTextarea ? (
+            <textarea
+              value={extracted ?? ""}
+              onChange={(e) => onExtractedChange(e.target.value)}
+              rows={2}
+              className="w-full min-w-[180px] border rounded px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+              placeholder="未提取，可手动填写"
+            />
+          ) : (
+            <input
+              type="text"
+              value={extracted ?? ""}
+              onChange={(e) => onExtractedChange(e.target.value)}
+              className="w-full min-w-[140px] border rounded px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder="未提取，可手动填写"
+            />
+          )
+        ) : (
+          displayValue(extracted)
+        )}
+      </td>
       <td className="px-3 py-2 text-sm text-muted-foreground">{displayValue(current)}</td>
       <td className="px-3 py-2 text-xs">
         {disabled ? (
@@ -259,6 +296,8 @@ export function OperationsElementExtractView() {
   const [fundShowDropdown, setFundShowDropdown] = useState(false)
   const [fundSearchError, setFundSearchError] = useState<string | null>(null)
   const [batchApplying, setBatchApplying] = useState(false)
+  const [editingExtracted, setEditingExtracted] = useState(false)
+  const [editDraft, setEditDraft] = useState<ExtractedFundElements | null>(null)
 
   const activeJob = useMemo(
     () => jobs.find((job) => job.id === activeJobId) ?? null,
@@ -387,6 +426,7 @@ export function OperationsElementExtractView() {
     setFundOptions([])
     setFundShowDropdown(false)
     setFundSearchError(null)
+    cancelEditExtracted()
   }
 
   const hasWork = files.length > 0 || jobs.length > 0
@@ -493,19 +533,52 @@ export function OperationsElementExtractView() {
   }
 
   function toggleField(key: ElementKey, checked: boolean) {
-    if (!activeJob) return
+    if (!activeJob || editingExtracted) return
     updateJob(activeJob.id, {
       selectedFields: { ...activeJob.selectedFields, [key]: checked },
     })
   }
 
   function toggleGroup(keys: ElementKey[], checked: boolean) {
-    if (!activeJob?.extracted) return
+    if (!activeJob?.extracted || editingExtracted) return
     const next = { ...activeJob.selectedFields }
     for (const key of keys) {
       if (activeJob.extracted[key]?.trim()) next[key] = checked
     }
     updateJob(activeJob.id, { selectedFields: next })
+  }
+
+  function startEditExtracted() {
+    if (!activeJob?.extracted) return
+    setEditDraft({ ...activeJob.extracted })
+    setEditingExtracted(true)
+  }
+
+  function cancelEditExtracted() {
+    setEditingExtracted(false)
+    setEditDraft(null)
+  }
+
+  function saveEditExtracted() {
+    if (!activeJob || !editDraft) return
+    const nextSelected = { ...activeJob.selectedFields }
+    for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
+      const hasValue = Boolean(editDraft[key]?.trim())
+      if (!hasValue) nextSelected[key] = false
+      else if (!activeJob.extracted?.[key]?.trim()) nextSelected[key] = true
+    }
+    updateJob(activeJob.id, {
+      extracted: editDraft,
+      selectedFields: nextSelected,
+      applyStatus: "idle",
+      applyMessage: undefined,
+    })
+    setEditingExtracted(false)
+    setEditDraft(null)
+  }
+
+  function updateEditDraftField(key: ElementKey, value: string) {
+    setEditDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
   }
 
   async function applyJob(job: ContractJob) {
@@ -587,17 +660,22 @@ export function OperationsElementExtractView() {
   }
 
   function renderFieldTable(job: ContractJob, keys: ElementKey[], title: string) {
-    const selectableKeys = keys.filter((key) => job.extracted?.[key]?.trim())
+    const source = editingExtracted && editDraft ? editDraft : job.extracted
+    const selectableKeys = keys.filter((key) => source?.[key]?.trim())
     const allSelected = selectableKeys.length > 0 && selectableKeys.every((key) => job.selectedFields[key])
 
     return (
       <div className="rounded-lg border overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/20">
           <span className="text-sm font-medium">{title}</span>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+          <label className={[
+            "flex items-center gap-2 text-xs text-muted-foreground",
+            editingExtracted ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+          ].join(" ")}>
             <input
               type="checkbox"
               checked={allSelected}
+              disabled={editingExtracted}
               onChange={(e) => toggleGroup(keys, e.target.checked)}
               className="accent-red-500"
             />
@@ -620,10 +698,12 @@ export function OperationsElementExtractView() {
                 <FieldCompareRow
                   key={key}
                   fieldKey={key}
-                  extracted={job.extracted?.[key] ?? null}
+                  extracted={source?.[key] ?? null}
                   current={job.currentElements?.[key] ?? null}
                   selected={job.selectedFields[key]}
                   onToggle={(checked) => toggleField(key, checked)}
+                  editing={editingExtracted}
+                  onExtractedChange={(value) => updateEditDraftField(key, value)}
                 />
               ))}
             </tbody>
@@ -769,7 +849,10 @@ export function OperationsElementExtractView() {
               <button
                 key={job.id}
                 type="button"
-                onClick={() => setActiveJobId(job.id)}
+                onClick={() => {
+                  setActiveJobId(job.id)
+                  cancelEditExtracted()
+                }}
                 className={[
                   "max-w-xs rounded-full border px-3 py-1 text-xs transition-colors truncate",
                   activeJobId === job.id
@@ -930,18 +1013,52 @@ export function OperationsElementExtractView() {
               <div>
                 <h2 className="text-sm font-medium">提取结果预览</h2>
                 <p className="text-xs text-muted-foreground mt-1">
-                  勾选需要写入的字段，将更新到目标基金的「基本信息 / 申赎信息」。
+                  {editingExtracted
+                    ? "编辑模式下可修正提取值；保存后可勾选写入目标基金。"
+                    : "勾选需要写入的字段，将更新到目标基金的「基本信息 / 申赎信息」。"}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={handleApplyActive}
-                disabled={!activeJob.selectedFund || activeJob.applyStatus === "applying" || activeJob.loadingCurrent || selectedCount === 0}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-60"
-              >
-                {activeJob.applyStatus === "applying" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                {activeJob.applyStatus === "applying" ? "写入中…" : `写入 ${selectedCount} 个字段`}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {editingExtracted ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={cancelEditExtracted}
+                      className="px-3 py-2 rounded border text-sm hover:bg-muted transition-colors"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveEditExtracted}
+                      className="px-3 py-2 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors"
+                    >
+                      保存修改
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={startEditExtracted}
+                      disabled={activeJob.loadingCurrent || activeJob.applyStatus === "applying"}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-60"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      编辑提取值
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleApplyActive}
+                      disabled={!activeJob.selectedFund || activeJob.applyStatus === "applying" || activeJob.loadingCurrent || selectedCount === 0}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-60"
+                    >
+                      {activeJob.applyStatus === "applying" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {activeJob.applyStatus === "applying" ? "写入中…" : `写入 ${selectedCount} 个字段`}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
             {activeJob.applyMessage && (
               <div className={[

@@ -440,6 +440,12 @@ const EMPTY_SNAPSHOT: InstructionRecord[] = []
 /** Cached for useSyncExternalStore — must return a stable reference between updates. */
 let cachedSnapshot: InstructionRecord[] | null = null
 let hydratePromise: Promise<void> | null = null
+let lastHydrateError: string | null = null
+
+/** Last shared-inbox sync error (null when the latest hydrate succeeded). */
+export function getInstructionRecordsHydrateError(): string | null {
+  return lastHydrateError
+}
 
 function canUseStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined"
@@ -532,31 +538,53 @@ export function ensureInstructionRecordsHydrated(): Promise<void> {
 
   hydratePromise = (async () => {
     try {
-      const local = readAll()
+      // Live shared inbox is source of truth. Do not auto-upload browser-local history
+      // (that re-seeded old test rows). Explicit create/update still POSTs immediately.
       const data = await apiFetch<{ ok: true; records: InstructionRecord[] }>(API_PATH)
       const serverRows = Array.isArray(data.records) ? data.records : []
-      const serverIds = new Set(serverRows.map((r) => r.id))
-      const localOnly = local.filter((r) => r.id && !serverIds.has(r.id))
-
-      for (const row of localOnly) {
-        try {
-          await pushRecordToServer(row, "POST")
-        } catch {
-          // Keep local row even if upload fails (e.g. role not assigned yet).
-        }
-      }
-
-      const merged = sortByCreatedDesc([...serverRows, ...localOnly])
-      writeAll(merged)
-    } catch {
-      // Offline / unauthorized: keep local cache so the page still works.
+      writeAll(sortByCreatedDesc(serverRows))
+      lastHydrateError = null
+    } catch (e) {
+      // Keep local cache so the page still works, but expose the error.
+      lastHydrateError = e instanceof Error ? e.message : "指令列表同步失败"
     } finally {
       // Allow a later refresh (e.g. after login / role change).
       hydratePromise = null
+      if (canUseStorage()) {
+        window.dispatchEvent(new Event(CHANGE_EVENT))
+      }
     }
   })()
 
   return hydratePromise
+}
+
+/**
+ * One-shot recovery: upload browser-local rows missing from the shared inbox.
+ * Use on the machine/browser that still has the original 发起 data (e.g. benc).
+ */
+export async function uploadLocalOnlyInstructionRecords(): Promise<{
+  uploaded: number
+  failed: string[]
+}> {
+  if (!canUseStorage()) return { uploaded: 0, failed: ["无 localStorage"] }
+  const local = readAll()
+  const data = await apiFetch<{ ok: true; records: InstructionRecord[] }>(API_PATH)
+  const serverRows = Array.isArray(data.records) ? data.records : []
+  const serverIds = new Set(serverRows.map((r) => r.id))
+  const localOnly = local.filter((r) => r.id && !serverIds.has(r.id))
+  const failed: string[] = []
+  let uploaded = 0
+  for (const row of localOnly) {
+    try {
+      await pushRecordToServer(row, "POST")
+      uploaded += 1
+    } catch (e) {
+      failed.push(e instanceof Error ? e.message : `指令 ${row.id} 同步失败`)
+    }
+  }
+  await refreshInstructionRecordsFromServer()
+  return { uploaded, failed }
 }
 
 /** Force a fresh pull from the shared server inbox. */
@@ -583,7 +611,7 @@ export function formatInstructionAmount(value: string): string {
   })
 }
 
-export function addInstructionRecord(
+export async function addInstructionRecord(
   input: Omit<
     InstructionRecord,
     "id" | "createdAt" | "progress" | "shares" | "nav" | "initiator" | "initiatorUserId"
@@ -596,7 +624,7 @@ export function addInstructionRecord(
     initiatorUserId?: string
     requireGmApproval?: boolean
   },
-): InstructionRecord {
+): Promise<InstructionRecord> {
   const requireGmApproval =
     typeof input.requireGmApproval === "boolean"
       ? input.requireGmApproval
@@ -627,9 +655,14 @@ export function addInstructionRecord(
   }
   const next = [record, ...readAll()]
   writeAll(next)
-  void pushRecordToServer(record, "POST").catch(() => {
-    // Local write already succeeded; next hydrate/retry can re-upload.
-  })
+  try {
+    await pushRecordToServer(record, "POST")
+    lastHydrateError = null
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "指令同步失败"
+    lastHydrateError = message
+    throw new Error(message)
+  }
   return record
 }
 
@@ -667,21 +700,25 @@ export function listInstructionRecords(options?: {
   return rows
 }
 
-export function removeInstructionRecord(id: string): boolean {
+export async function removeInstructionRecord(id: string): Promise<boolean> {
   const rows = readAll()
   const next = rows.filter((r) => r.id !== id)
   if (next.length === rows.length) return false
   writeAll(next)
-  void deleteRecordOnServer(id).catch(() => {
-    // Local delete already applied; server may catch up on next edit cycle.
-  })
+  try {
+    await deleteRecordOnServer(id)
+    lastHydrateError = null
+  } catch (e) {
+    // Keep local delete; surface sync issue for retry awareness.
+    lastHydrateError = e instanceof Error ? e.message : "指令删除同步失败"
+  }
   return true
 }
 
-export function updateInstructionRecord(
+export async function updateInstructionRecord(
   id: string,
   patch: Partial<Omit<InstructionRecord, "id" | "createdAt">>,
-): InstructionRecord | null {
+): Promise<InstructionRecord | null> {
   const rows = readAll()
   const idx = rows.findIndex((r) => r.id === id)
   if (idx < 0) return null
@@ -697,9 +734,14 @@ export function updateInstructionRecord(
   const next = [...rows]
   next[idx] = nextRecord
   writeAll(next)
-  void pushRecordToServer(nextRecord, "PUT").catch(() => {
-    // Local write already succeeded; next hydrate/retry can re-upload.
-  })
+  try {
+    await pushRecordToServer(nextRecord, "PUT")
+    lastHydrateError = null
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "指令同步失败"
+    lastHydrateError = message
+    throw new Error(message)
+  }
   return nextRecord
 }
 

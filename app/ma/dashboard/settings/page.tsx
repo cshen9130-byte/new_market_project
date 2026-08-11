@@ -65,13 +65,14 @@ const DEFAULT_CALC: CalcSettings = {
 
 const LEFT_NAV = [
   { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "邀请注册", "登录设置"] },
-  { group: "团队管理", items: ["评分设置", "指令设置", "报告设置"] },
+  { group: "团队管理", items: ["评分设置", "指令设置", "直投设置", "报告设置"] },
 ]
 
 const SECTION_FROM_PARAM: Record<string, string> = {
   "personal-tags": "个人标签",
   "user-center": "用户中心",
   "instruction-settings": "指令设置",
+  "direct-invest-settings": "直投设置",
 }
 
 const PERSONAL_TAG_CATEGORIES = [
@@ -2033,6 +2034,188 @@ function InstructionSettingsPanel() {
   )
 }
 
+// ─── DirectInvestSettingsPanel ────────────────────────────────────────────────
+type DirectEmailVisibilityRow = {
+  crawlEmailAccount: string
+  userId: string
+  userName: string
+  updatedAt: string
+}
+
+function DirectInvestSettingsPanel() {
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [rows, setRows] = useState<DirectEmailVisibilityRow[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      const current = await authService.refreshCurrentUser()
+      if (cancelled) return
+      const admin = current?.role === "admin"
+      setIsAdmin(!!admin)
+      setAuthChecked(true)
+      if (!admin) return
+
+      setLoading(true)
+      setLoadError(null)
+      try {
+        const uid = current?.id || ""
+        const headers: Record<string, string> = uid ? { "x-market-user-id": uid } : {}
+        const [visRes, userList] = await Promise.all([
+          fetch("/ma/api/ops/direct-email-visibility", { headers }).then(async (r) => {
+            const json = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(json?.error || "加载映射失败")
+            return json as { data: DirectEmailVisibilityRow[] }
+          }),
+          authService.listUsers(),
+        ])
+        if (cancelled) return
+        const sortedUsers = sortInstructionUsers(userList, current?.id)
+        setUsers(sortedUsers)
+        const data = Array.isArray(visRes.data) ? visRes.data : []
+        setRows(data)
+        const nextDraft: Record<string, string> = {}
+        for (const row of data) nextDraft[row.crawlEmailAccount] = row.userId || ""
+        setDraft(nextDraft)
+      } catch (e: any) {
+        if (!cancelled) setLoadError(e?.message || "加载失败")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  async function saveAll() {
+    const current = authService.getCurrentUser()
+    if (!current || current.role !== "admin") return
+    setSaving(true)
+    setSaveMsg(null)
+    setLoadError(null)
+    try {
+      const mappings = rows.map((row) => ({
+        crawlEmailAccount: row.crawlEmailAccount,
+        userId: draft[row.crawlEmailAccount] || "",
+      }))
+      const res = await fetch("/ma/api/ops/direct-email-visibility", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-market-user-id": current.id,
+        },
+        body: JSON.stringify({ mappings }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json?.error || "保存失败")
+      const data = Array.isArray(json.data) ? (json.data as DirectEmailVisibilityRow[]) : []
+      setRows(data)
+      const nextDraft: Record<string, string> = {}
+      for (const row of data) nextDraft[row.crawlEmailAccount] = row.userId || ""
+      setDraft(nextDraft)
+      setSaveMsg("已保存")
+      window.setTimeout(() => setSaveMsg(null), 2000)
+    } catch (e: any) {
+      setLoadError(e?.message || "保存失败")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!authChecked) {
+    return <div className="text-sm text-muted-foreground py-10 text-center">加载中…</div>
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="rounded-lg border border-dashed border-border px-5 py-12 text-center text-sm text-muted-foreground">
+        仅系统管理员可访问直投设置
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-2">直投邮箱可见性</h2>
+      <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-6">
+        将抓取邮箱关联到账户后，该账户仅能在「直投产品」与「邮箱运维池」中看到该邮箱抓取的产品；管理员始终可见全部。未关联的邮箱对所有账户可见。
+      </p>
+
+      {loadError && <div className="text-sm text-red-500 mb-4">{loadError}</div>}
+
+      {loading ? (
+        <div className="text-sm text-muted-foreground py-10 text-center">加载中…</div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border px-5 py-12 text-center text-sm text-muted-foreground">
+          暂无抓取邮箱，请先在运维 → 邮箱同步中配置
+        </div>
+      ) : (
+        <>
+          <div className="overflow-auto rounded border w-fit max-w-full">
+            <table className="text-sm border-collapse table-fixed w-[720px]">
+              <thead>
+                <tr className="bg-muted/40 border-b">
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-14">序号</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-64">抓取邮箱</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500">可见账户</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr key={row.crawlEmailAccount} className="border-b last:border-b-0">
+                    <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{idx + 1}</td>
+                    <td className="px-3 py-2.5 text-zinc-700 dark:text-zinc-200 font-mono text-xs">
+                      {row.crawlEmailAccount}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <select
+                        className="w-full max-w-xs h-8 rounded border border-border bg-background px-2 text-sm"
+                        value={draft[row.crawlEmailAccount] || ""}
+                        onChange={(e) =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            [row.crawlEmailAccount]: e.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">全部账户可见</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name || u.email}
+                            {u.role === "admin" ? "（管理员）" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={saveAll}
+              disabled={saving}
+              className="px-4 h-8 rounded bg-red-500 text-white text-sm hover:bg-red-600 disabled:opacity-60 transition-colors"
+            >
+              {saving ? "保存中…" : "保存"}
+            </button>
+            {saveMsg && <span className="text-xs text-emerald-600">{saveMsg}</span>}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── Placeholder panels ───────────────────────────────────────────────────────
 function PlaceholderPanel({ title }: { title: string }) {
   return (
@@ -2112,6 +2295,10 @@ export default function SettingsPage() {
         ) : activeLeft === "指令设置" ? (
           <div className="p-8">
             <InstructionSettingsPanel />
+          </div>
+        ) : activeLeft === "直投设置" ? (
+          <div className="p-8">
+            <DirectInvestSettingsPanel />
           </div>
         ) : activeLeft !== "个人配置" ? (
           <div className="p-8">

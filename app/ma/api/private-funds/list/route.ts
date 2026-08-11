@@ -5,6 +5,54 @@ import { enrichPrivateFundListMetrics } from "@/lib/server/private-fund-list-met
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+/** Plain AMAC master list (default browse). */
+const AMAC_LIST_SOURCE = `private_fund_info i`
+
+/**
+ * AMAC + BFL-only rows (share-class tiers from 要素提取 / 分级创建).
+ * Used for keyword search so AJD58B-style products are findable; browse stays AMAC-only.
+ */
+const SEARCH_LIST_SOURCE = `(
+  SELECT
+    beian_hao,
+    product_name,
+    strategy_l1,
+    manager,
+    inception_date,
+    benchmark,
+    ret_1w,
+    ret_1m,
+    ret_3m,
+    ret_6m,
+    ret_1y,
+    sharpe_1y,
+    calmar_1y,
+    latest_nav,
+    latest_nav_date
+  FROM private_fund_info
+  UNION ALL
+  SELECT
+    b.beian_hao,
+    b.product_name,
+    b.strategy_one AS strategy_l1,
+    ''::text AS manager,
+    NULL::date AS inception_date,
+    NULL::text AS benchmark,
+    NULL AS ret_1w,
+    NULL AS ret_1m,
+    NULL AS ret_3m,
+    NULL AS ret_6m,
+    NULL AS ret_1y,
+    NULL AS sharpe_1y,
+    NULL AS calmar_1y,
+    NULL AS latest_nav,
+    NULL AS latest_nav_date
+  FROM private_fund_info_bfl b
+  WHERE NOT EXISTS (
+    SELECT 1 FROM private_fund_info p WHERE p.beian_hao = b.beian_hao
+  )
+) i`
+
 const ALLOWED_SORT: Record<string, string> = {
   product_name: "i.product_name",
   inception_date: "i.inception_date",
@@ -264,12 +312,13 @@ export async function GET(req: Request) {
     where.push(`i.beian_hao IN (
       SELECT beian_hao FROM (
         SELECT beian_hao, PERCENT_RANK() OVER (ORDER BY ${bareCol} ${rankOrder}) AS prank
-        FROM private_fund_info
+        FROM ${keyword ? SEARCH_LIST_SOURCE : AMAC_LIST_SOURCE}
       ) _r WHERE _r.prank < $${filterParams.length}
     )`)
   }
 
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
+  const listSource = keyword ? SEARCH_LIST_SOURCE : AMAC_LIST_SOURCE
 
   async function fetchList(storedNav: boolean) {
     const listParams = [...filterParams]
@@ -287,11 +336,11 @@ export async function GET(req: Request) {
     const orderSql = `${orderCol} ${sortDir} NULLS LAST`
 
     const countPromise = query<{ total: string }>(
-      `SELECT COUNT(*)::text AS total FROM private_fund_info i ${whereClause}`,
+      `SELECT COUNT(*)::text AS total FROM ${listSource} ${whereClause}`,
       filterParams,
     )
 
-    // ─── FAST PATH — read precomputed latest_nav from private_fund_info ───────
+    // ─── FAST PATH — read precomputed latest_nav from list source ─────────────
     if (storedNav) {
       const [rows, countRow] = await Promise.all([
         query<FundListRow>(
@@ -299,7 +348,7 @@ export async function GET(req: Request) {
              ${BASE_SELECT},
              i.latest_nav::text AS latest_nav,
              i.latest_nav_date::text AS latest_nav_date
-           FROM private_fund_info i
+           FROM ${listSource}
            ${whereClause}
            ORDER BY ${orderSql}
            LIMIT $${pLimit} OFFSET $${pOffset}`,
@@ -326,7 +375,7 @@ export async function GET(req: Request) {
              ${BASE_SELECT},
              fn.nav::text AS latest_nav,
              fn.price_date::text AS latest_nav_date
-           FROM private_fund_info i
+           FROM ${listSource}
            LEFT JOIN LATERAL (
              SELECT n.nav, n.price_date
              FROM private_fund_nav n
@@ -360,7 +409,7 @@ export async function GET(req: Request) {
     const [baseRows, countRow] = await Promise.all([
       query<Omit<FundListRow, "latest_nav" | "latest_nav_date">>(
         `SELECT ${BASE_SELECT}
-         FROM private_fund_info i
+         FROM ${listSource}
          ${whereClause}
          ORDER BY ${orderSql}
          LIMIT $${pPageLimit} OFFSET $${pPageOffset}`,

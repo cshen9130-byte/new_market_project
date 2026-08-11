@@ -1,6 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
-import path from "path"
-import { getServerStoragePath } from "@/lib/server/storage"
+import { query } from "@/lib/db"
 import type { StoredUser } from "@/lib/server/users"
 
 export type InstructionCategory = "underlying" | "direct" | "customer" | "pool"
@@ -51,17 +49,7 @@ export type InstructionRecord = {
 
 const CATEGORIES = new Set<InstructionCategory>(["underlying", "direct", "customer", "pool"])
 
-function storageDir() {
-  return getServerStoragePath("instruction-records")
-}
-
-function storageFile() {
-  return path.join(storageDir(), "records.json")
-}
-
-function ensureStorageDir() {
-  mkdirSync(storageDir(), { recursive: true })
-}
+let initPromise: Promise<void> | null = null
 
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback
@@ -143,26 +131,6 @@ export function normalizeInstructionRecord(raw: unknown): InstructionRecord | nu
   }
 }
 
-function readAll(): InstructionRecord[] {
-  ensureStorageDir()
-  const file = storageFile()
-  if (!existsSync(file)) return []
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown
-    if (!Array.isArray(parsed)) return []
-    return parsed
-      .map(normalizeInstructionRecord)
-      .filter((row): row is InstructionRecord => Boolean(row))
-  } catch {
-    return []
-  }
-}
-
-function writeAll(rows: InstructionRecord[]) {
-  ensureStorageDir()
-  writeFileSync(storageFile(), JSON.stringify(rows, null, 2), "utf-8")
-}
-
 function sortByCreatedDesc(rows: InstructionRecord[]): InstructionRecord[] {
   return [...rows].sort((a, b) => {
     const ta = Date.parse(a.createdAt) || 0
@@ -171,58 +139,95 @@ function sortByCreatedDesc(rows: InstructionRecord[]): InstructionRecord[] {
   })
 }
 
-/** Logged-in users with an instruction role (or admin) may read/write the shared inbox. */
+async function ensureTable() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      await query(`
+        CREATE TABLE IF NOT EXISTS ops_instruction_records (
+          id          TEXT PRIMARY KEY,
+          category    TEXT NOT NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          payload     JSONB NOT NULL
+        )
+      `)
+      await query(`
+        CREATE INDEX IF NOT EXISTS idx_ops_instruction_records_category
+          ON ops_instruction_records (category)
+      `)
+      await query(`
+        CREATE INDEX IF NOT EXISTS idx_ops_instruction_records_created_at
+          ON ops_instruction_records (created_at DESC)
+      `)
+    })().catch((e) => {
+      initPromise = null
+      throw e
+    })
+  }
+  await initPromise
+}
+
+/** Any logged-in account may use the shared instruction inbox. */
 export function canAccessInstructionRecords(
-  user: Pick<StoredUser, "role" | "permissions"> | null | undefined,
+  user: Pick<StoredUser, "id" | "role" | "permissions"> | null | undefined,
 ): boolean {
-  if (!user) return false
-  if (user.role === "admin") return true
-  const role = user.permissions?.instructionRole
-  return role === "fund_manager" || role === "general_manager" || role === "ops"
+  return Boolean(user?.id?.trim())
 }
 
-export function listServerInstructionRecords(): InstructionRecord[] {
-  return sortByCreatedDesc(readAll())
+export async function listServerInstructionRecords(): Promise<InstructionRecord[]> {
+  await ensureTable()
+  const rows = await query<{ payload: InstructionRecord | string }>(
+    `SELECT payload
+       FROM ops_instruction_records
+      ORDER BY created_at DESC`,
+  )
+  const out: InstructionRecord[] = []
+  for (const row of rows) {
+    const payload =
+      typeof row.payload === "string"
+        ? (() => {
+            try {
+              return JSON.parse(row.payload) as unknown
+            } catch {
+              return null
+            }
+          })()
+        : row.payload
+    const record = normalizeInstructionRecord(payload)
+    if (record) out.push(record)
+  }
+  return sortByCreatedDesc(out)
 }
 
-export function upsertServerInstructionRecord(input: unknown): InstructionRecord {
+export async function upsertServerInstructionRecord(input: unknown): Promise<InstructionRecord> {
+  await ensureTable()
   const record = normalizeInstructionRecord(input)
   if (!record) throw new Error("指令数据无效")
 
-  const rows = readAll()
-  const idx = rows.findIndex((r) => r.id === record.id)
-  if (idx >= 0) {
-    rows[idx] = {
-      ...rows[idx],
-      ...record,
-      id: rows[idx].id,
-      createdAt: rows[idx].createdAt || record.createdAt,
-    }
-  } else {
-    rows.unshift(record)
-  }
-  writeAll(sortByCreatedDesc(rows))
-  return idx >= 0 ? rows.find((r) => r.id === record.id)! : record
+  await query(
+    `INSERT INTO ops_instruction_records (id, category, created_at, updated_at, payload)
+     VALUES ($1, $2, $3::timestamptz, NOW(), $4::jsonb)
+     ON CONFLICT (id) DO UPDATE SET
+       category = EXCLUDED.category,
+       updated_at = NOW(),
+       payload = EXCLUDED.payload`,
+    [
+      record.id,
+      record.category,
+      record.createdAt || new Date().toISOString(),
+      JSON.stringify(record),
+    ],
+  )
+  return record
 }
 
-export function deleteServerInstructionRecord(id: string): boolean {
+export async function deleteServerInstructionRecord(id: string): Promise<boolean> {
+  await ensureTable()
   const safeId = String(id || "").trim()
   if (!safeId) return false
-  const rows = readAll()
-  const next = rows.filter((r) => r.id !== safeId)
-  if (next.length === rows.length) return false
-  writeAll(next)
-  return true
-}
-
-export function replaceServerInstructionRecords(input: unknown): InstructionRecord[] {
-  if (!Array.isArray(input)) throw new Error("指令列表无效")
-  const rows = input
-    .map(normalizeInstructionRecord)
-    .filter((row): row is InstructionRecord => Boolean(row))
-  const deduped = new Map<string, InstructionRecord>()
-  for (const row of rows) deduped.set(row.id, row)
-  const next = sortByCreatedDesc(Array.from(deduped.values()))
-  writeAll(next)
-  return next
+  const rows = await query<{ id: string }>(
+    `DELETE FROM ops_instruction_records WHERE id = $1 RETURNING id`,
+    [safeId],
+  )
+  return rows.length > 0
 }

@@ -54,6 +54,7 @@ import {
   isInstructionRejected,
   isInstructionWorkflowFinished,
   ensureInstructionRecordsHydrated,
+  getInstructionRecordsHydrateError,
   listInstructionRecords,
   parseEmailConfirmRecordId,
   progressAfterApproval,
@@ -64,6 +65,7 @@ import {
   resolveInstructionInitiatorDisplay,
   subscribeInstructionRecords,
   updateInstructionRecord,
+  uploadLocalOnlyInstructionRecords,
   type InstructionAttachmentMeta,
   type InstructionRecord,
 } from "./instructions-store"
@@ -1666,7 +1668,7 @@ function InstructionDetailDialog({
     if (!open || !record) return
     if (record.type !== "申购") return
     if (!record.fofFundName || !record.underlyingFundName) {
-      updateInstructionRecord(record.id, { type: "初次申购" })
+      void updateInstructionRecord(record.id, { type: "初次申购" }).catch(() => {})
       return
     }
     const ac = new AbortController()
@@ -1702,11 +1704,13 @@ function InstructionDetailDialog({
           match
           && hasPositiveHolding(match.market_value, match.investment_shares),
         )
-        updateInstructionRecord(record.id, { type: holding ? "追加申购" : "初次申购" })
+        void updateInstructionRecord(record.id, {
+          type: holding ? "追加申购" : "初次申购",
+        }).catch(() => {})
       })
       .catch(() => {
         if (!ac.signal.aborted) {
-          updateInstructionRecord(record.id, { type: "初次申购" })
+          void updateInstructionRecord(record.id, { type: "初次申购" }).catch(() => {})
         }
       })
     return () => ac.abort()
@@ -1795,31 +1799,40 @@ function InstructionDetailDialog({
     return null
   }
 
-  function handleApproval(decision: "approve" | "reject") {
+  async function handleApproval(decision: "approve" | "reject") {
     if (!canApprove || approving) return
     setApproving(true)
     const now = new Date().toISOString()
-    const updated = updateInstructionRecord(record.id, {
-      progress: decision === "approve" ? progressAfterApproval(record) : "已驳回",
-      approvalRemark: approvalRemark.trim() || null,
-      approver: currentInstructionInitiator(),
-      approverUserId: currentInstructionUserId() || undefined,
-      approvedAt: now,
-    })
-    setApproving(false)
-    if (!updated) {
-      toast({ title: "审批失败", description: "指令可能已被删除" })
-      return
+    try {
+      const updated = await updateInstructionRecord(record.id, {
+        progress: decision === "approve" ? progressAfterApproval(record) : "已驳回",
+        approvalRemark: approvalRemark.trim() || null,
+        approver: currentInstructionInitiator(),
+        approverUserId: currentInstructionUserId() || undefined,
+        approvedAt: now,
+      })
+      if (!updated) {
+        toast({ title: "审批失败", description: "指令可能已被删除" })
+        return
+      }
+      toast({
+        title: decision === "approve" ? "审批已通过" : "审批已驳回",
+        description:
+          decision === "approve"
+            ? progressAfterApproval(record).includes("待执行")
+              ? "已进入产品运维执行"
+              : "指令流程已结束"
+            : "指令已驳回",
+      })
+    } catch (e) {
+      toast({
+        title: "审批失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setApproving(false)
     }
-    toast({
-      title: decision === "approve" ? "审批已通过" : "审批已驳回",
-      description:
-        decision === "approve"
-          ? progressAfterApproval(record).includes("待执行")
-            ? "已进入产品运维执行"
-            : "指令流程已结束"
-          : "指令已驳回",
-    })
   }
 
   return (
@@ -2302,6 +2315,11 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
     getInstructionRecordsSnapshot,
     getInstructionRecordsServerSnapshot,
   )
+  const hydrateError = useSyncExternalStore(
+    subscribeInstructionRecords,
+    getInstructionRecordsHydrateError,
+    () => null,
+  )
 
   useEffect(() => {
     setSelectedFields(readInstructionFieldConfig())
@@ -2324,7 +2342,7 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
 
   useEffect(() => {
     backfillLedgerFromConfirmedInstructions()
-  }, [])
+  }, [allRecords])
 
   const columns = useMemo(
     () => buildColumns(categoryTab, selectedFields, isAll),
@@ -2448,6 +2466,63 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
 
   return (
     <div className="flex flex-col flex-1 min-h-0 min-w-0">
+      {hydrateError ? (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+          <span>指令同步异常：{hydrateError}</span>
+          <button
+            type="button"
+            className="shrink-0 rounded border border-amber-400 px-2 py-0.5 text-xs hover:bg-amber-100 dark:hover:bg-amber-900/50"
+            onClick={() => {
+              void refreshInstructionRecordsFromServer()
+            }}
+          >
+            重试同步
+          </button>
+        </div>
+      ) : null}
+      {isAll ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <span>
+            若本机浏览器曾发起过指令但服务器没有：点右侧按钮上传本机未同步指令（请用发起人账号/原浏览器操作）。
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded border border-border bg-background px-2 py-1 text-xs text-foreground hover:bg-muted"
+            onClick={() => {
+              void (async () => {
+                try {
+                  const result = await uploadLocalOnlyInstructionRecords()
+                  if (result.uploaded > 0) {
+                    toast({
+                      title: "已恢复到服务器",
+                      description: `上传 ${result.uploaded} 条本机指令`,
+                    })
+                  } else if (result.failed.length > 0) {
+                    toast({
+                      title: "恢复失败",
+                      description: result.failed[0],
+                      variant: "destructive",
+                    })
+                  } else {
+                    toast({
+                      title: "没有可恢复的本机指令",
+                      description: "当前浏览器 localStorage 中没有未上传记录",
+                    })
+                  }
+                } catch (e) {
+                  toast({
+                    title: "恢复失败",
+                    description: e instanceof Error ? e.message : "请稍后重试",
+                    variant: "destructive",
+                  })
+                }
+              })()
+            }}
+          >
+            上传本机未同步指令
+          </button>
+        </div>
+      ) : null}
       <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
         {tabs.map((tab) => (
           <button
@@ -2870,12 +2945,15 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
         onClose={() => setVoidTarget(null)}
         onConfirm={() => {
           if (!voidTarget) return
-          if (isInstructionConfirmed(voidTarget.progress)) {
-            removeLedgerByInstructionId(voidTarget.id)
-          }
-          removeInstructionRecord(voidTarget.id)
-          setVoidTarget(null)
-          toast({ title: "指令已作废" })
+          const target = voidTarget
+          void (async () => {
+            if (isInstructionConfirmed(target.progress)) {
+              removeLedgerByInstructionId(target.id)
+            }
+            await removeInstructionRecord(target.id)
+            setVoidTarget(null)
+            toast({ title: "指令已作废" })
+          })()
         }}
       />
 
@@ -2885,24 +2963,35 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
         onClose={() => setExecuteTarget(null)}
         onExecute={(payload) => {
           if (!executeTarget) return
+          const target = executeTarget
           const now = new Date().toISOString()
-          const updated = updateInstructionRecord(executeTarget.id, {
-            progress: progressAfterExecute(executeTarget),
-            actualApplyDate: payload.actualApplyDate,
-            execRemark: payload.execRemark || null,
-            contractAttachment: payload.contractAttachment,
-            executorUserId: currentInstructionUserId() || undefined,
-            executedAt: now,
-          })
-          if (updated) {
-            toast({
-              title: "执行完成",
-              description: requiresContractAtExecute(updated.type)
-                ? "合同已记录，请继续产品运维确认"
-                : "请继续产品运维确认",
-            })
-          }
-          setExecuteTarget(null)
+          void (async () => {
+            try {
+              const updated = await updateInstructionRecord(target.id, {
+                progress: progressAfterExecute(target),
+                actualApplyDate: payload.actualApplyDate,
+                execRemark: payload.execRemark || null,
+                contractAttachment: payload.contractAttachment,
+                executorUserId: currentInstructionUserId() || undefined,
+                executedAt: now,
+              })
+              if (updated) {
+                toast({
+                  title: "执行完成",
+                  description: requiresContractAtExecute(updated.type)
+                    ? "合同已记录，请继续产品运维确认"
+                    : "请继续产品运维确认",
+                })
+              }
+              setExecuteTarget(null)
+            } catch (e) {
+              toast({
+                title: "执行失败",
+                description: e instanceof Error ? e.message : "请稍后重试",
+                variant: "destructive",
+              })
+            }
+          })()
         }}
       />
 
@@ -2912,24 +3001,35 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
         onClose={() => setConfirmTarget(null)}
         onConfirm={(payload) => {
           if (!confirmTarget) return
+          const target = confirmTarget
           const now = new Date().toISOString()
-          const updated = updateInstructionRecord(confirmTarget.id, {
-            progress: "已确认",
-            confirmDate: payload.confirmDate,
-            amount: payload.amount,
-            shares: payload.shares || null,
-            nav: payload.nav,
-            tradeFee: payload.tradeFee,
-            modifyReason: payload.modifyReason || null,
-            confirmAttachment: payload.confirmAttachment,
-            confirmerUserId: currentInstructionUserId() || undefined,
-            confirmedAt: now,
-          })
-          if (updated) {
-            upsertLedgerFromConfirmedInstruction(updated)
-            toast({ title: "交易已确认", description: "已同步写入 FOF 台账（来源：指令）" })
-          }
-          setConfirmTarget(null)
+          void (async () => {
+            try {
+              const updated = await updateInstructionRecord(target.id, {
+                progress: "已确认",
+                confirmDate: payload.confirmDate,
+                amount: payload.amount,
+                shares: payload.shares || null,
+                nav: payload.nav,
+                tradeFee: payload.tradeFee,
+                modifyReason: payload.modifyReason || null,
+                confirmAttachment: payload.confirmAttachment,
+                confirmerUserId: currentInstructionUserId() || undefined,
+                confirmedAt: now,
+              })
+              if (updated) {
+                upsertLedgerFromConfirmedInstruction(updated)
+                toast({ title: "交易已确认", description: "已同步写入 FOF 台账（来源：指令）" })
+              }
+              setConfirmTarget(null)
+            } catch (e) {
+              toast({
+                title: "确认失败",
+                description: e instanceof Error ? e.message : "请稍后重试",
+                variant: "destructive",
+              })
+            }
+          })()
         }}
       />
 

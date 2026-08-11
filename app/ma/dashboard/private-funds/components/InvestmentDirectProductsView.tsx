@@ -690,7 +690,14 @@ export function InvestmentDirectProductsView() {
     if (strategyL2) params.set("strategy_l2", strategyL2)
     if (strategyL3) params.set("strategy_l3", strategyL3)
     if (teamTags.length > 0) params.set("team_tags", teamTags.join(","))
-    fetch(`/ma/api/ops/direct-funds/list?${params}`)
+    let userId = ""
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      userId = u?.id ? String(u.id) : ""
+    } catch { /* ignore */ }
+    fetch(`/ma/api/ops/direct-funds/list?${params}`, {
+      headers: userId ? { "x-market-user-id": userId } : {},
+    })
       .then((r) => r.json())
       .then((json) => {
         setData(json.data ?? [])

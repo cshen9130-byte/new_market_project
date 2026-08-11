@@ -34,6 +34,46 @@ type TokenRecord = {
   questionPreview: string
 }
 
+type DeployWindow = {
+  minutes: number
+  label: string
+  requests: number
+  uniqueIps: string[]
+}
+
+type DeployStatus = {
+  checkedAt: string
+  goodToDeploy: boolean
+  level: "good" | "caution" | "busy" | "unknown"
+  reason: string
+  windows: DeployWindow[]
+  lastRequest: {
+    at: string
+    ip: string
+    method: string
+    path: string
+    status: number
+  } | null
+  topPaths5m: Array<{ path: string; count: number }>
+  activity: {
+    available: boolean
+    browseAgoSec: number | null
+    mutateAgoSec: number | null
+    recentHits15s: number
+    yieldingBackgroundWork: boolean
+  }
+  nginx: { path: string | null; readable: boolean; error?: string }
+  viewerIp: string | null
+  otherActiveIps5m: string[]
+}
+
+function formatAgo(sec: number | null | undefined): string {
+  if (sec == null || !Number.isFinite(sec)) return "—"
+  if (sec < 60) return `${Math.round(sec)} 秒前`
+  if (sec < 3600) return `${Math.round(sec / 60)} 分钟前`
+  return `${(sec / 3600).toFixed(1)} 小时前`
+}
+
 export default function AdminAccountsPage() {
   const router = useRouter()
   const [authorized, setAuthorized] = useState<boolean>(false)
@@ -60,6 +100,10 @@ export default function AdminAccountsPage() {
   const [tokenLoading, setTokenLoading] = useState(false)
   const [showRecentRecords, setShowRecentRecords] = useState(false)
 
+  const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null)
+  const [deployLoading, setDeployLoading] = useState(false)
+  const [deployError, setDeployError] = useState<string | null>(null)
+
   useEffect(() => {
     authService.init()
     const isAdmin = authService.isAdmin()
@@ -70,7 +114,33 @@ export default function AdminAccountsPage() {
     }
     refreshUsers()
     refreshTokenStats()
+    refreshDeployStatus()
   }, [])
+
+  async function refreshDeployStatus() {
+    setDeployLoading(true)
+    setDeployError(null)
+    try {
+      const currentUser = authService.getCurrentUser()
+      if (!currentUser) return
+      const res = await fetch("/api/admin/deploy-status", {
+        headers: { "x-market-user-id": currentUser.id },
+        cache: "no-store",
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) {
+        setDeployError(data?.error || res.statusText || "加载失败")
+        setDeployStatus(null)
+        return
+      }
+      setDeployStatus(data as DeployStatus)
+    } catch (e: any) {
+      setDeployError(e?.message || "加载失败")
+      setDeployStatus(null)
+    } finally {
+      setDeployLoading(false)
+    }
+  }
 
   async function refreshTokenStats() {
     setTokenLoading(true)
@@ -246,6 +316,114 @@ export default function AdminAccountsPage() {
       </div>
 
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-8">
+        <Card className="bg-black/60 border border-cyan-500/30 backdrop-blur-md p-6">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-lg font-medium">部署时机检查</div>
+            <Button
+              variant="outline"
+              className="border-cyan-500/50 text-cyan-300 text-xs"
+              onClick={refreshDeployStatus}
+              disabled={deployLoading}
+            >
+              {deployLoading ? "检查中..." : "刷新"}
+            </Button>
+          </div>
+          <Separator className="my-4 bg-cyan-500/30" />
+          {deployLoading && !deployStatus ? (
+            <div className="text-cyan-500">正在统计近 1 小时访问...</div>
+          ) : deployError ? (
+            <div className="text-red-400 text-sm">{deployError}</div>
+          ) : deployStatus ? (
+            <>
+              <div
+                className={cn(
+                  "rounded-md border px-4 py-3 mb-4",
+                  deployStatus.level === "good" && "border-green-500/40 bg-green-500/10 text-green-300",
+                  deployStatus.level === "caution" && "border-amber-500/40 bg-amber-500/10 text-amber-200",
+                  deployStatus.level === "busy" && "border-red-500/40 bg-red-500/10 text-red-300",
+                  deployStatus.level === "unknown" && "border-cyan-500/30 bg-cyan-500/5 text-cyan-300",
+                )}
+              >
+                <div className="text-base font-semibold">
+                  {deployStatus.level === "good" && "适合部署"}
+                  {deployStatus.level === "caution" && "可以部署，建议留意"}
+                  {deployStatus.level === "busy" && "不建议现在部署"}
+                  {deployStatus.level === "unknown" && "状态未知"}
+                </div>
+                <div className="text-sm mt-1 opacity-90">{deployStatus.reason}</div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                {deployStatus.windows.map((w) => (
+                  <div key={w.label} className="bg-black/40 border border-cyan-500/20 rounded p-3">
+                    <div className="text-xs text-cyan-500 mb-1">近 {w.label}</div>
+                    <div className="text-xl font-bold text-cyan-300">{w.uniqueIps.length}</div>
+                    <div className="text-xs text-cyan-500/80 mt-1">
+                      独立 IP · {w.requests} 次请求
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid gap-2 text-sm text-cyan-400/90">
+                <div>
+                  近 5 分钟其他活跃 IP：{" "}
+                  <span className="text-cyan-200">
+                    {deployStatus.otherActiveIps5m.length > 0
+                      ? deployStatus.otherActiveIps5m.join(", ")
+                      : "无"}
+                  </span>
+                </div>
+                <div>
+                  最近一次访问：{" "}
+                  {deployStatus.lastRequest ? (
+                    <span className="text-cyan-200">
+                      {new Date(deployStatus.lastRequest.at).toLocaleString("zh-CN")} ·{" "}
+                      {deployStatus.lastRequest.ip} · {deployStatus.lastRequest.method}{" "}
+                      {deployStatus.lastRequest.path}
+                    </span>
+                  ) : (
+                    <span className="text-cyan-200">近 1 小时无记录</span>
+                  )}
+                </div>
+                <div>
+                  应用内最近浏览：{" "}
+                  <span className="text-cyan-200">
+                    {formatAgo(deployStatus.activity.browseAgoSec)}
+                  </span>
+                  {" · "}写入：{" "}
+                  <span className="text-cyan-200">
+                    {formatAgo(deployStatus.activity.mutateAgoSec)}
+                  </span>
+                </div>
+                <div className="text-xs text-cyan-600">
+                  检查时间 {new Date(deployStatus.checkedAt).toLocaleString("zh-CN")}
+                  {deployStatus.viewerIp ? ` · 当前 IP ${deployStatus.viewerIp}` : ""}
+                  {deployStatus.nginx.readable
+                    ? ` · 日志 ${deployStatus.nginx.path}`
+                    : " · nginx 日志不可读（已回退应用内活动）"}
+                </div>
+              </div>
+
+              {deployStatus.topPaths5m.length > 0 && (
+                <div className="mt-4">
+                  <div className="text-xs text-cyan-500 mb-2">近 5 分钟热门路径</div>
+                  <div className="space-y-1">
+                    {deployStatus.topPaths5m.map((p) => (
+                      <div key={p.path} className="flex justify-between gap-3 text-xs text-cyan-300/90">
+                        <span className="truncate">{p.path}</span>
+                        <span className="shrink-0 text-cyan-500">{p.count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-cyan-600 text-sm">暂无数据</div>
+          )}
+        </Card>
+
         <Card className="bg-black/60 border border-cyan-500/30 backdrop-blur-md p-6">
           <div className="text-lg font-medium">新增用户</div>
           <Separator className="my-4 bg-cyan-500/30" />

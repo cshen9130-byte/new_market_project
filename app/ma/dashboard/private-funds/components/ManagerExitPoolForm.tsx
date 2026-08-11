@@ -138,7 +138,7 @@ export function ManagerExitPoolForm({ onBack }: { onBack: () => void }) {
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (selectedManagers.length === 0) {
       toast({ title: "请选择管理人", variant: "destructive" })
       return
@@ -148,7 +148,7 @@ export function ManagerExitPoolForm({ onBack }: { onBack: () => void }) {
     try {
       const names = selectedManagers.map((m) => m.manager_name).join("、")
       const codes = selectedManagers.map((m) => m.registration_no).join(",")
-      const record = addInstructionRecord({
+      const record = await addInstructionRecord({
         category: "pool",
         type: "管理人出池",
         fofFundName: "",
@@ -161,8 +161,12 @@ export function ManagerExitPoolForm({ onBack }: { onBack: () => void }) {
       })
       setSubmittedRecord(record)
       resetForm()
-    } catch {
-      toast({ title: "提交失败", description: "请稍后重试", variant: "destructive" })
+    } catch (e) {
+      toast({
+        title: "提交失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
     } finally {
       setSubmitting(false)
     }

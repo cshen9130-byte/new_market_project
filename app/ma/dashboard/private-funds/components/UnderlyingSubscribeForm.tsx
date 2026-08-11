@@ -747,7 +747,7 @@ export function UnderlyingSubscribeForm({
     setAttachment(file)
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!fofFundSelected) {
       toast({ title: "请选择FOF基金", variant: "destructive" })
       return
@@ -789,8 +789,8 @@ export function UnderlyingSubscribeForm({
           : {}),
       }
       const record = editingId
-        ? updateInstructionRecord(editingId, payload)
-        : addInstructionRecord(payload)
+        ? await updateInstructionRecord(editingId, payload)
+        : await addInstructionRecord(payload)
       if (!record) {
         toast({ title: "提交失败", description: "指令不存在或已作废", variant: "destructive" })
         return
@@ -798,8 +798,12 @@ export function UnderlyingSubscribeForm({
       setSubmittedRecord(record)
       onSubmitted?.(record)
       resetForm()
-    } catch {
-      toast({ title: "提交失败", description: "请稍后重试", variant: "destructive" })
+    } catch (e) {
+      toast({
+        title: "提交失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
     } finally {
       setSubmitting(false)
     }

@@ -158,7 +158,7 @@ export function FundPoolEntryForm({
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (selectedFunds.length === 0) {
       toast({ title: "请选择基金", variant: "destructive" })
       return
@@ -168,7 +168,7 @@ export function FundPoolEntryForm({
     try {
       const names = selectedFunds.map((f) => f.display_name || f.product_name).join("、")
       const codes = selectedFunds.map((f) => f.beian_hao).join(",")
-      const record = addInstructionRecord({
+      const record = await addInstructionRecord({
         category: "pool",
         type: instructionType,
         fofFundName: selectedFunds[0]?.manager ?? "",
@@ -181,8 +181,12 @@ export function FundPoolEntryForm({
       })
       setSubmittedRecord(record)
       resetForm()
-    } catch {
-      toast({ title: "提交失败", description: "请稍后重试", variant: "destructive" })
+    } catch (e) {
+      toast({
+        title: "提交失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
     } finally {
       setSubmitting(false)
     }

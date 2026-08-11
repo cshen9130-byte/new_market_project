@@ -64,6 +64,8 @@ function isInteractivePath(pathname: string): boolean {
   // Background job status polling should not block the job itself.
   if (pathname.includes("/email-parse-records/fetch-status")) return false
   if (pathname.includes("/mom-analysis/data-import/etl-status")) return false
+  // Admin deploy-readiness polling should not look like live user traffic.
+  if (pathname.includes("/api/admin/deploy-status")) return false
   return (
     pathname.startsWith("/api/") ||
     pathname.startsWith("/ma/api/") ||

@@ -498,7 +498,7 @@ export function DirectConvertForm({ onBack }: { onBack: () => void }) {
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!investorSelected) {
       toast({ title: "请选择投资者名称", variant: "destructive" })
       return
@@ -528,7 +528,7 @@ export function DirectConvertForm({ onBack }: { onBack: () => void }) {
     try {
       const outName = outSelected.display_name
       const inName = inSelected.display_name
-      const record = addInstructionRecord({
+      const record = await addInstructionRecord({
         category: "direct",
         type: "转换",
         fofFundName: investorSelected.name,
@@ -543,8 +543,12 @@ export function DirectConvertForm({ onBack }: { onBack: () => void }) {
       })
       setSubmittedRecord(record)
       resetForm()
-    } catch {
-      toast({ title: "提交失败", description: "请稍后重试", variant: "destructive" })
+    } catch (e) {
+      toast({
+        title: "提交失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
     } finally {
       setSubmitting(false)
     }

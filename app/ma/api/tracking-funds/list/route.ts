@@ -14,6 +14,9 @@ import {
   buildListResponseCacheKey,
   withListResponseCache,
 } from "@/lib/server/list-response-cache"
+import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
+import { resolveVisibleEmailPoolRegistersForUser } from "@/lib/server/direct-email-visibility"
+import { getUserById } from "@/lib/server/users"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -509,12 +512,15 @@ async function handleCachedTrackingList(opts: {
   personalUserKey: string
   asOfDate: string
   navSource?: string
+  /** null = no email-visibility filter; [] = hide all; string[] = whitelist */
+  emailVisibilityRegisters?: string[] | null
 }): Promise<NextResponse> {
   const {
     page, pageSize, offset, sortKey, sortDir, pool, requestedPool,
     isCustomPool, isMineAllPool, keyword, strategyL1, strategyL2, strategyL3,
     strategySource, orgSize, teamTagMode, teamTags,
     personalTagMode, personalTags, personalUserKey, asOfDate, navSource,
+    emailVisibilityRegisters = null,
   } = opts
   // Check server-side response cache first, with concurrent request deduplication
   // so that multiple simultaneous requests for the same pool never race to run
@@ -576,6 +582,10 @@ async function handleCachedTrackingList(opts: {
           )`
         })
         where.push(personalTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+      }
+      if (emailVisibilityRegisters !== null) {
+        filterParams.push(emailVisibilityRegisters)
+        where.push(`UPPER(BTRIM(i.beian_hao)) = ANY(SELECT UPPER(BTRIM(x)) FROM unnest($${filterParams.length}::text[]) x)`)
       }
       const scaleValue = ORG_SIZE_SCALE[orgSize]
       if (scaleValue) {
@@ -860,6 +870,16 @@ export async function GET(req: Request) {
     ? cutoffRaw
     : new Date().toISOString().slice(0, 10)
 
+  // 邮箱运维池: filter products by 直投设置 crawl-email → account visibility.
+  let emailVisibilityRegisters: string[] | null = null
+  if (pool === EMAIL_OPS_POOL_KEY && personalUserKey) {
+    const user = await getUserById(personalUserKey).catch(() => null)
+    emailVisibilityRegisters = await resolveVisibleEmailPoolRegistersForUser({
+      userId: personalUserKey,
+      isAdmin: user?.role === "admin",
+    })
+  }
+
   if (await shouldUseTrackingFundsListCache(cutoffRaw)) {
     return handleCachedTrackingList({
       page,
@@ -884,6 +904,7 @@ export async function GET(req: Request) {
       personalUserKey,
       asOfDate: asOfDateForNav,
       navSource,
+      emailVisibilityRegisters,
     })
   }
 
@@ -1076,7 +1097,8 @@ export async function GET(req: Request) {
       )`
 
   // For custom pools, pool_key is always the first param ($1) unless listing all mine pools
-  const filterParams: (string | number)[] = isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
+  const filterParams: (string | number | string[])[] =
+    isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
   const where: string[] = []
 
   if (strategyL1) {
@@ -1115,6 +1137,10 @@ export async function GET(req: Request) {
       )`
     })
     where.push(personalTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+  }
+  if (emailVisibilityRegisters !== null) {
+    filterParams.push(emailVisibilityRegisters)
+    where.push(`UPPER(BTRIM(i.beian_hao)) = ANY(SELECT UPPER(BTRIM(x)) FROM unnest($${filterParams.length}::text[]) x)`)
   }
   const scaleValue = ORG_SIZE_SCALE[orgSize]
   if (scaleValue) {
