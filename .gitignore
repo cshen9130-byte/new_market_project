@@ -112,3 +112,10 @@ nav_csv_group/
 nav_csv_group_type6/
 type3_团队跟踪_全量.csv
 basicinfo_bfl_track/
+
+# Local scratch / monitor / generated reports
+data/tmp/
+data/runtime/
+data/hw_monitor_*
+data/list_perf_*
+yinhe_strategy/report_output/
