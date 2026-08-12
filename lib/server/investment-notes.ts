@@ -12,6 +12,7 @@ import {
   type InvestmentNoteRoadshowAssociation,
 } from "@/lib/ma/investment-notes"
 import {
+  expectedKbRelativePath,
   removeTeamNoteFromKnowledgeBase,
   upsertTeamNoteInKnowledgeBase,
   type InvestmentNoteKbOwner,
@@ -217,7 +218,9 @@ async function mirrorNoteToKnowledgeBase(
 export function createServerInvestmentNote(
   userId: string,
   userName: string,
-  partial?: Partial<Pick<InvestmentNote, "title" | "content" | "teamShared">>,
+  partial?: Partial<
+    Pick<InvestmentNote, "title" | "content" | "teamShared" | "associations" | "roadshowAssociations">
+  >,
 ): InvestmentNote {
   const safeUserId = String(userId || "").trim()
   if (!safeUserId) throw new Error("用户未登录")
@@ -240,8 +243,14 @@ export function createServerInvestmentNote(
     teamShared: partial?.teamShared ?? false,
     kbRelativePath: null,
     tags: [],
-    associations: [],
-    roadshowAssociations: [],
+    associations:
+      partial?.associations !== undefined
+        ? normalizeAssociations(partial.associations)
+        : [],
+    roadshowAssociations:
+      partial?.roadshowAssociations !== undefined
+        ? normalizeRoadshowAssociations(partial.roadshowAssociations)
+        : [],
     attachments: [],
     creator: userName,
     creatorId: safeUserId,
@@ -262,7 +271,9 @@ export async function createServerInvestmentNoteWithKbSync(
   userId: string,
   userName: string,
   owner: InvestmentNoteKbOwner,
-  partial?: Partial<Pick<InvestmentNote, "title" | "content" | "teamShared">>,
+  partial?: Partial<
+    Pick<InvestmentNote, "title" | "content" | "teamShared" | "associations" | "roadshowAssociations">
+  >,
 ): Promise<InvestmentNote> {
   const note = createServerInvestmentNote(userId, userName, partial)
   if (!note.teamShared) return note
@@ -401,11 +412,19 @@ export async function deleteServerInvestmentNoteWithKbSync(
   return deleted
 }
 
-/** One-time / lazy backfill for team notes that are not yet mirrored to「投资笔记」. */
+/**
+ * Lazy backfill / rename for team notes mirrored to「投资笔记」.
+ * Also rewrites files whose stored path no longer matches the derived title
+ * (fixes bare `{id}.html` and stale titles from the first sync).
+ */
 export async function backfillTeamNotesToKnowledgeBase(
   owner: InvestmentNoteKbOwner,
 ): Promise<number> {
-  const notes = readAllNotes().filter((n) => n.teamShared && !n.kbRelativePath)
+  const notes = readAllNotes().filter((n) => {
+    if (!n.teamShared) return false
+    const expected = expectedKbRelativePath(n)
+    return !n.kbRelativePath || n.kbRelativePath !== expected
+  })
   let synced = 0
   for (const note of notes) {
     const result = await mirrorNoteToKnowledgeBase(
@@ -415,7 +434,7 @@ export async function backfillTeamNotesToKnowledgeBase(
         name: note.creator || owner.name,
         email: owner.email,
       },
-      null,
+      note.kbRelativePath,
     )
     if (result.kbRelativePath) synced += 1
   }

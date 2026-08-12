@@ -81,7 +81,7 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
 ]
 
 export const TABLE_INDEX_WIDTH = 36
-export const TABLE_ACTION_WIDTH = 64
+export const TABLE_ACTION_WIDTH = 120
 
 export const DD_METHOD_OPTIONS = ["线上尽调", "线下尽调"] as const
 

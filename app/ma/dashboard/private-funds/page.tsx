@@ -23725,6 +23725,7 @@ export default function PrivateFundsPage() {
 
 function PrivateFundsPageContent() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const [currentUser, setCurrentUser] = useState<User | null>(() => authService.getCurrentUser())
 
   useEffect(() => {
@@ -23769,6 +23770,35 @@ function PrivateFundsPageContent() {
     return TAB_DEFAULT_SIDE[tab] ?? "private-funds"
   })
 
+  // Soft-navigate only when the URL deep link itself changes.
+  // Do not depend on activeTab/activeSideItem — otherwise sidebar clicks get overwritten
+  // by the stale ?side= from the previous deep link.
+  const lastAppliedDeepLinkRef = useRef<string>("")
+  useEffect(() => {
+    const tab = searchParams.get("tab") || ""
+    const side = searchParams.get("side") || ""
+    const noteId = searchParams.get("noteId") || ""
+    const deepLinkKey = `${tab}|${side}|${noteId}`
+    if (!tab && !side) return
+    if (lastAppliedDeepLinkRef.current === deepLinkKey) return
+    lastAppliedDeepLinkRef.current = deepLinkKey
+
+    const nextTab = tab || "investment"
+    if (nextTab === "operations" && !showOperationsTab) return
+    if (nextTab === "investment" && !showInvestmentTab) return
+
+    if (tab) setActiveTab(tab)
+
+    if (side) {
+      if (nextTab === "investment" && !isAllowedInvestmentSideItem(currentUser, side)) return
+      if (side === "cmd-flow") {
+        setActiveSideItem(TAB_DEFAULT_SIDE.instructions)
+        return
+      }
+      setActiveSideItem(side)
+    }
+  }, [searchParams, showOperationsTab, showInvestmentTab, currentUser])
+
   // Keep heavy investment sections mounted after first visit so sidebar clicks are instant
   // (no remount / refetch). First visit still loads once.
   const KEEP_ALIVE_INVESTMENT = useMemo(
@@ -23804,16 +23834,40 @@ function PrivateFundsPageContent() {
     }
   }, [activeTab, activeSideItem, showOperationsTab, showInvestmentTab, currentUser, visibleInvestmentGroups])
 
+  function syncUrlNavigation(tab: string, side: string) {
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("tab", tab)
+    params.set("side", side)
+    params.delete("noteId")
+    params.delete("notesScope")
+    const next = `/ma/dashboard/private-funds?${params.toString()}`
+    const current = `/ma/dashboard/private-funds?${searchParams.toString()}`
+    if (next !== current) {
+      router.replace(next, { scroll: false })
+    }
+  }
+
+  function handleSideItemChange(side: string) {
+    setActiveSideItem(side)
+    syncUrlNavigation(activeTab, side)
+  }
+
   function handleTabChange(tab: string) {
     if (tab === "operations" && !showOperationsTab) return
     if (tab === "investment" && !showInvestmentTab) return
     setActiveTab(tab)
     if (tab === "investment") {
       const fallback = visibleInvestmentGroups[0]?.items[0]?.key
-      setActiveSideItem(fallback ?? TAB_DEFAULT_SIDE[tab] ?? "private-funds")
+      const side = fallback ?? TAB_DEFAULT_SIDE[tab] ?? "private-funds"
+      setActiveSideItem(side)
+      syncUrlNavigation(tab, side)
       return
     }
-    if (TAB_DEFAULT_SIDE[tab]) setActiveSideItem(TAB_DEFAULT_SIDE[tab])
+    if (TAB_DEFAULT_SIDE[tab]) {
+      const side = TAB_DEFAULT_SIDE[tab]
+      setActiveSideItem(side)
+      syncUrlNavigation(tab, side)
+    }
   }
 
   return (
@@ -23869,7 +23923,7 @@ function PrivateFundsPageContent() {
                     {group.items.map((item) => (
                       <button
                         key={item.key}
-                        onClick={() => setActiveSideItem(item.key)}
+                        onClick={() => handleSideItemChange(item.key)}
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
@@ -23906,7 +23960,7 @@ function PrivateFundsPageContent() {
                     {group.items.map((item) => (
                       <button
                         key={item.key}
-                        onClick={() => setActiveSideItem(item.key)}
+                        onClick={() => handleSideItemChange(item.key)}
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
@@ -23943,7 +23997,7 @@ function PrivateFundsPageContent() {
                     {group.items.map((item) => (
                       <button
                         key={item.key}
-                        onClick={() => setActiveSideItem(item.key)}
+                        onClick={() => handleSideItemChange(item.key)}
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
@@ -23985,7 +24039,7 @@ function PrivateFundsPageContent() {
                     {group.items.map((item) => (
                       <button
                         key={item.key}
-                        onClick={() => setActiveSideItem(item.key)}
+                        onClick={() => handleSideItemChange(item.key)}
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
@@ -24024,7 +24078,7 @@ function PrivateFundsPageContent() {
                       <button
                         key={item.key}
                         type="button"
-                        onClick={() => setActiveSideItem(item.key)}
+                        onClick={() => handleSideItemChange(item.key)}
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
@@ -24063,7 +24117,7 @@ function PrivateFundsPageContent() {
                       <button
                         key={item.key}
                         type="button"
-                        onClick={() => setActiveSideItem(item.key)}
+                        onClick={() => handleSideItemChange(item.key)}
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
@@ -24101,7 +24155,7 @@ function PrivateFundsPageContent() {
                     {group.items.map((item) => (
                       <button
                         key={item.key}
-                        onClick={() => setActiveSideItem(item.key)}
+                        onClick={() => handleSideItemChange(item.key)}
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key

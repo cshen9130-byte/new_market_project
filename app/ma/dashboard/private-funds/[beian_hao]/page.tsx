@@ -3387,7 +3387,10 @@ export default function PrivateFundDetailPage() {
       )}
 
       {detailTab === "materials" && (
-        <FundMaterialsPanel beian_hao={beian_hao} />
+        <FundMaterialsPanel
+          beian_hao={beian_hao}
+          product_name={data?.info?.product_name}
+        />
       )}
 
       {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && detailTab !== "company" && detailTab !== "profile" && detailTab !== "materials" && (

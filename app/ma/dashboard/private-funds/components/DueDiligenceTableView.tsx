@@ -83,6 +83,16 @@ import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
+import { OpenLinkedInvestmentNoteButton } from "@/components/ma/open-linked-investment-note-button"
+import { CreateInvestmentNoteFromRoadshowButton } from "@/components/ma/create-investment-note-from-roadshow-button"
+import {
+  createInvestmentNoteFromRoadshow,
+  investmentNoteDeepLink,
+  loadRoadshowLinkedNoteMap,
+  type LinkedInvestmentNoteRef,
+} from "@/lib/ma/investment-notes"
+import { useToast } from "@/hooks/use-toast"
+import { useRouter } from "next/navigation"
 import {
   AddDueDiligenceRecordDialog,
   recordFormToRowData,
@@ -985,6 +995,8 @@ function buildPerformanceFetchPayload(
 // ── Main view ──────────────────────────────────────────────────────────────
 
 export function DueDiligenceTableView() {
+  const { toast } = useToast()
+  const router = useRouter()
   const [rows, setRows] = useState<DueDiligenceTableRow[]>([])
   const [formats, setFormats] = useState<TableCellFormats>({})
   const [keyword, setKeyword] = useState("")
@@ -1016,6 +1028,8 @@ export function DueDiligenceTableView() {
   const [trackedTeam, setTrackedTeam] = useState<Set<string>>(new Set())
   const [trackingDialogFund, setTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [teamTrackingDialogFund, setTeamTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [linkedNotesByRowId, setLinkedNotesByRowId] = useState<Record<string, LinkedInvestmentNoteRef>>({})
+  const [creatingNoteRowId, setCreatingNoteRowId] = useState<string | null>(null)
   const [savedTeamStrategies, setSavedTeamStrategies] = useState<SavedTeamStrategiesMap>({})
   const [savedStrategiesLoading, setSavedStrategiesLoading] = useState(false)
   const [isImportingStrategies, setIsImportingStrategies] = useState(false)
@@ -1185,6 +1199,29 @@ export function DueDiligenceTableView() {
     })()
     return () => { cancelled = true }
   }, [reload])
+
+  useEffect(() => {
+    let cancelled = false
+    async function refreshLinkedNotes() {
+      try {
+        const map = await loadRoadshowLinkedNoteMap()
+        if (!cancelled) setLinkedNotesByRowId(map)
+      } catch {
+        if (!cancelled) setLinkedNotesByRowId({})
+      }
+    }
+    void refreshLinkedNotes()
+    function onRefresh() {
+      void refreshLinkedNotes()
+    }
+    window.addEventListener("focus", onRefresh)
+    document.addEventListener("visibilitychange", onRefresh)
+    return () => {
+      cancelled = true
+      window.removeEventListener("focus", onRefresh)
+      document.removeEventListener("visibilitychange", onRefresh)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -3006,26 +3043,63 @@ export function DueDiligenceTableView() {
                         const { inMine, inTeam } = splitFundPoolMemberships(allPools)
                         const heartTracked = poolsReady ? inMine : (beian ? trackedMine.has(beian) : false)
                         const teamTracked = poolsReady ? inTeam : (beian ? trackedTeam.has(beian) : false)
+                        const linkedNote = linkedNotesByRowId[row.id]
                         return (
-                          <div
-                            className={[
-                              "flex items-center justify-center gap-0.5",
-                              canTrack ? "" : "opacity-40 pointer-events-none",
-                            ].join(" ")}
-                            title={canTrack ? undefined : "请先关联代表产品"}
-                          >
-                            <AddToTrackingButton
-                              isTracked={heartTracked}
+                          <div className="flex items-center justify-center gap-0.5">
+                            <div
+                              className={[
+                                "flex items-center gap-0.5",
+                                canTrack ? "" : "opacity-40 pointer-events-none",
+                              ].join(" ")}
+                              title={canTrack ? undefined : "请先关联代表产品"}
+                            >
+                              <AddToTrackingButton
+                                isTracked={heartTracked}
+                                onClick={() => {
+                                  if (!beian) return
+                                  setTrackingDialogFund({ beian_hao: beian, product_name: productName })
+                                }}
+                              />
+                              <AddToTeamTrackingButton
+                                isTracked={teamTracked}
+                                onClick={() => {
+                                  if (!beian) return
+                                  setTeamTrackingDialogFund({ beian_hao: beian, product_name: productName })
+                                }}
+                              />
+                            </div>
+                            <OpenLinkedInvestmentNoteButton
+                              hasNote={Boolean(linkedNote)}
+                              noteTitle={linkedNote?.title}
                               onClick={() => {
-                                if (!beian) return
-                                setTrackingDialogFund({ beian_hao: beian, product_name: productName })
+                                if (!linkedNote) return
+                                router.push(investmentNoteDeepLink(linkedNote))
                               }}
                             />
-                            <AddToTeamTrackingButton
-                              isTracked={teamTracked}
+                            <CreateInvestmentNoteFromRoadshowButton
+                              loading={creatingNoteRowId === row.id}
                               onClick={() => {
-                                if (!beian) return
-                                setTeamTrackingDialogFund({ beian_hao: beian, product_name: productName })
+                                if (creatingNoteRowId) return
+                                void (async () => {
+                                  setCreatingNoteRowId(row.id)
+                                  try {
+                                    const created = await createInvestmentNoteFromRoadshow(row)
+                                    setLinkedNotesByRowId((prev) => ({
+                                      ...prev,
+                                      [row.id]: created,
+                                    }))
+                                    router.push(investmentNoteDeepLink(created))
+                                  } catch (err) {
+                                    const message = err instanceof Error ? err.message : "请稍后重试"
+                                    toast({
+                                      title: "创建投资笔记失败",
+                                      description: message,
+                                      variant: "destructive",
+                                    })
+                                  } finally {
+                                    setCreatingNoteRowId(null)
+                                  }
+                                })()
                               }}
                             />
                           </div>

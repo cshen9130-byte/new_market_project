@@ -107,6 +107,129 @@ export function buildRoadshowAssociationFromDdRow(row: {
   }
 }
 
+function escapeNoteHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+function noteHtmlLine(text: string): string {
+  if (!text) return "<div><br></div>"
+  return text
+    .split(/\r?\n/)
+    .map((line) => `<div>${line ? escapeNoteHtml(line) : "<br>"}</div>`)
+    .join("")
+}
+
+function noteHtmlField(label: string, value?: string | null): string | null {
+  const trimmed = (value ?? "").trim()
+  if (!trimmed) return null
+  const [first, ...rest] = trimmed.split(/\r?\n/)
+  const head = noteHtmlLine(`${label}：${first ?? ""}`)
+  if (rest.length === 0) return head
+  return head + rest.map((line) => noteHtmlLine(line)).join("")
+}
+
+export type RoadshowNoteSourceRow = {
+  id: string
+  ddPersonnel?: string
+  ddDate?: string
+  ddTime?: string
+  ddMethod?: string
+  ddTarget?: string
+  recommender?: string
+  strategyPreliminary?: string
+  fundCompany?: string
+  investmentManager?: string
+  representativeProduct?: string
+  representativeProductBeianHao?: string
+  strategyLevel1?: string
+  strategyLevel2?: string
+  strategyLevel3?: string
+  inTrackingPool?: string
+  otherInfo?: string
+  ddConclusion?: string
+}
+
+/** Default title for a note created from a 尽调表格 roadshow row. */
+export function buildInvestmentNoteTitleFromDdRow(row: RoadshowNoteSourceRow): string {
+  const assoc = buildRoadshowAssociationFromDdRow(row)
+  if (assoc.label && assoc.label !== row.id) return assoc.label
+  const primary =
+    (row.fundCompany ?? "").trim() ||
+    (row.ddTarget ?? "").trim() ||
+    (row.representativeProduct ?? "").trim()
+  return primary ? `${primary} 路演笔记` : "路演笔记"
+}
+
+/** Rich HTML body seeded from roadshow basic fields. */
+export function buildInvestmentNoteContentFromDdRow(row: RoadshowNoteSourceRow): string {
+  const strategy = [row.strategyLevel1, row.strategyLevel2, row.strategyLevel3]
+    .map((v) => (v ?? "").trim())
+    .filter(Boolean)
+    .join(" / ")
+  const datetime = [(row.ddDate ?? "").trim(), (row.ddTime ?? "").trim()].filter(Boolean).join(" ")
+
+  const lines = [
+    "<div><b>路演基本信息</b></div>",
+    noteHtmlField("尽调日期", datetime),
+    noteHtmlField("尽调形式", row.ddMethod),
+    noteHtmlField("尽调人员", row.ddPersonnel),
+    noteHtmlField("尽调对象", row.ddTarget),
+    noteHtmlField("基金公司", row.fundCompany),
+    noteHtmlField("投资经理", row.investmentManager),
+    noteHtmlField("代表产品", row.representativeProduct),
+    noteHtmlField("备案编码", row.representativeProductBeianHao),
+    noteHtmlField("推荐人", row.recommender),
+    noteHtmlField("策略初筛", row.strategyPreliminary),
+    noteHtmlField("策略", strategy),
+    noteHtmlField("已加入跟踪池", row.inTrackingPool),
+    noteHtmlField("其他补充信息", row.otherInfo),
+    noteHtmlField("尽调结论", row.ddConclusion),
+    noteHtmlLine(""),
+    "<div><b>笔记内容</b></div>",
+    noteHtmlLine(""),
+  ].filter((line): line is string => Boolean(line))
+
+  return lines.join("")
+}
+
+export function buildProductAssociationFromDdRow(
+  row: RoadshowNoteSourceRow,
+): InvestmentNoteAssociation | null {
+  const beian = (row.representativeProductBeianHao ?? "").trim()
+  const name = (row.representativeProduct ?? "").trim()
+  if (!beian && !name) return null
+  return {
+    category: "私募基金",
+    name: name || beian,
+    recordNo: beian,
+  }
+}
+
+/** Create a team investment note linked to a roadshow, with basic fields imported. */
+export async function createInvestmentNoteFromRoadshow(
+  row: RoadshowNoteSourceRow,
+): Promise<LinkedInvestmentNoteRef> {
+  const title = buildInvestmentNoteTitleFromDdRow(row)
+  const content = buildInvestmentNoteContentFromDdRow(row)
+  const product = buildProductAssociationFromDdRow(row)
+  const note = await createInvestmentNote({
+    title,
+    content,
+    teamShared: true,
+    roadshowAssociations: [buildRoadshowAssociationFromDdRow(row)],
+    associations: product ? [product] : [],
+  })
+  return {
+    id: note.id,
+    title: note.title || title,
+    scope: "team",
+  }
+}
+
 export type InvestmentNoteContentVariant = "analysis" | "memo" | "plain"
 
 export type InvestmentNote = {
@@ -170,7 +293,9 @@ export async function listInvestmentNotes(scope: "team" | "mine"): Promise<Inves
 }
 
 export async function createInvestmentNote(
-  partial?: Partial<Pick<InvestmentNote, "title" | "content" | "teamShared">>,
+  partial?: Partial<
+    Pick<InvestmentNote, "title" | "content" | "teamShared" | "associations" | "roadshowAssociations">
+  >,
 ): Promise<InvestmentNote> {
   const data = await apiFetch<{ ok: true; note: InvestmentNote }>("/ma/api/investment-notes", {
     method: "POST",
@@ -233,4 +358,144 @@ export async function setInvestmentNoteRoadshowAssociations(
   roadshowAssociations: InvestmentNoteRoadshowAssociation[],
 ): Promise<InvestmentNote | null> {
   return updateInvestmentNote(id, { roadshowAssociations })
+}
+
+/** Linked investment note for a 尽调表格 / roadshow row. */
+export type LinkedInvestmentNoteRef = {
+  id: string
+  title: string
+  scope: "team" | "mine"
+}
+
+/** Build rowId → note map (team notes win over mine when both link the same row). */
+export function buildRoadshowLinkedNoteMap(
+  teamNotes: InvestmentNote[],
+  mineNotes: InvestmentNote[],
+): Record<string, LinkedInvestmentNoteRef> {
+  const map: Record<string, LinkedInvestmentNoteRef> = {}
+  for (const note of mineNotes) {
+    for (const assoc of note.roadshowAssociations ?? []) {
+      const rowId = assoc.rowId?.trim()
+      if (!rowId || map[rowId]) continue
+      map[rowId] = { id: note.id, title: note.title, scope: "mine" }
+    }
+  }
+  for (const note of teamNotes) {
+    for (const assoc of note.roadshowAssociations ?? []) {
+      const rowId = assoc.rowId?.trim()
+      if (!rowId) continue
+      map[rowId] = { id: note.id, title: note.title, scope: "team" }
+    }
+  }
+  return map
+}
+
+export function investmentNoteDeepLink(note: LinkedInvestmentNoteRef): string {
+  const params = new URLSearchParams({
+    tab: "investment",
+    side: "inv-dd-notes",
+    noteId: note.id,
+    notesScope: note.scope,
+  })
+  return `/ma/dashboard/private-funds?${params.toString()}`
+}
+
+/** True when the note associates to this private-fund product (by beian_hao). */
+export function noteAssociatesToProduct(
+  note: Pick<InvestmentNote, "associations">,
+  beianHao: string,
+  productName?: string,
+): boolean {
+  const beian = beianHao.trim()
+  const name = (productName ?? "").trim()
+  if (!beian && !name) return false
+  return (note.associations ?? []).some((item) => {
+    if (item.category !== "私募基金") return false
+    const recordNo = (item.recordNo || "").trim()
+    if (beian && recordNo === beian) return true
+    if (!recordNo && name && (item.name || "").trim() === name) return true
+    return false
+  })
+}
+
+export type ProductLinkedInvestmentNote = InvestmentNote & {
+  scope: "team" | "mine"
+}
+
+/** Filter notes linked to a product; team scope wins when the same id appears in both. */
+export function filterInvestmentNotesLinkedToProduct(
+  teamNotes: InvestmentNote[],
+  mineNotes: InvestmentNote[],
+  beianHao: string,
+  productName?: string,
+): ProductLinkedInvestmentNote[] {
+  const byId = new Map<string, ProductLinkedInvestmentNote>()
+  for (const note of mineNotes) {
+    if (!noteAssociatesToProduct(note, beianHao, productName)) continue
+    byId.set(note.id, { ...note, scope: "mine" })
+  }
+  for (const note of teamNotes) {
+    if (!noteAssociatesToProduct(note, beianHao, productName)) continue
+    byId.set(note.id, { ...note, scope: "team" })
+  }
+  return Array.from(byId.values()).sort((a, b) =>
+    (b.modifiedDate || b.createdDate || "").localeCompare(a.modifiedDate || a.createdDate || ""),
+  )
+}
+
+/** Load team + mine notes linked to a private-fund product. */
+export async function listInvestmentNotesLinkedToProduct(
+  beianHao: string,
+  productName?: string,
+): Promise<ProductLinkedInvestmentNote[]> {
+  const [teamNotes, mineNotes] = await Promise.all([
+    listInvestmentNotes("team"),
+    listInvestmentNotes("mine"),
+  ])
+  return filterInvestmentNotesLinkedToProduct(teamNotes, mineNotes, beianHao, productName)
+}
+
+/** Load team + mine notes and index by linked 尽调表格 row id. */
+export async function loadRoadshowLinkedNoteMap(): Promise<Record<string, LinkedInvestmentNoteRef>> {
+  const [teamNotes, mineNotes] = await Promise.all([
+    listInvestmentNotes("team"),
+    listInvestmentNotes("mine"),
+  ])
+  return buildRoadshowLinkedNoteMap(teamNotes, mineNotes)
+}
+
+export type InvestmentNoteProofreadChange = {
+  field: string
+  from: string
+  to: string
+}
+
+export type InvestmentNoteProofreadResult = {
+  content: string
+  changes: InvestmentNoteProofreadChange[]
+  roadshowLabel?: string
+}
+
+/** AI-proofread note content against linked 尽调表格 roadshow rows. */
+export async function proofreadInvestmentNoteWithRoadshow(input: {
+  content: string
+  rowIds: string[]
+}): Promise<InvestmentNoteProofreadResult> {
+  const data = await apiFetch<{
+    ok: true
+    content: string
+    changes?: InvestmentNoteProofreadChange[]
+    roadshowLabel?: string
+  }>("/ma/api/investment-notes/proofread", {
+    method: "POST",
+    body: JSON.stringify({
+      content: input.content,
+      rowIds: input.rowIds,
+    }),
+  })
+  return {
+    content: data.content,
+    changes: Array.isArray(data.changes) ? data.changes : [],
+    roadshowLabel: data.roadshowLabel,
+  }
 }

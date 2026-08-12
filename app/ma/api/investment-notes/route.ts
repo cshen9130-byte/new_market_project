@@ -26,17 +26,15 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url)
     const scope = searchParams.get("scope") === "mine" ? "mine" : "team"
 
-    // Lazy backfill: existing 团队笔记 → AI 知识库「投资笔记」
+    // Lazy backfill in background so listing notes stays fast
     if (scope === "team") {
-      try {
-        await backfillTeamNotesToKnowledgeBase({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-        })
-      } catch (err) {
+      void backfillTeamNotesToKnowledgeBase({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+      }).catch((err) => {
         console.error("[investment-notes] KB backfill failed:", err)
-      }
+      })
     }
 
     const notes = listServerInvestmentNotes(scope, user.id)
@@ -63,6 +61,8 @@ export async function POST(req: Request) {
         title: body?.title ? String(body.title) : undefined,
         content: body?.content !== undefined ? String(body.content) : undefined,
         teamShared: Boolean(body?.teamShared),
+        associations: body?.associations,
+        roadshowAssociations: body?.roadshowAssociations,
       },
     )
     return NextResponse.json({ ok: true, note })

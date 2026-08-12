@@ -230,7 +230,18 @@ export function InvestmentNoteAssociationDialog({
                               onCheckedChange={(value) => toggleRow(row, value === true)}
                             />
                           </td>
-                          <td className="px-3 py-2.5 text-zinc-700">{row.product_name}</td>
+                          <td className="px-3 py-2.5 text-zinc-700">
+                            <a
+                              href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sky-600 hover:underline"
+                              title={row.product_name}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {row.product_name}
+                            </a>
+                          </td>
                           <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{row.beian_hao}</td>
                         </tr>
                       )
@@ -250,27 +261,43 @@ export function InvestmentNoteAssociationDialog({
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {selected.map((item) => (
-                    <div
-                      key={associationKey(item)}
-                      className="flex items-start justify-between gap-2 rounded border border-zinc-200 bg-white px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-sm text-zinc-800">{associationDisplayLabel(item)}</div>
-                        {item.recordNo ? (
-                          <div className="mt-0.5 text-xs text-zinc-400 tabular-nums">{item.recordNo}</div>
-                        ) : null}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeSelected(item)}
-                        className="shrink-0 rounded p-0.5 text-zinc-400 hover:text-zinc-600"
-                        aria-label="移除"
+                  {selected.map((item) => {
+                    const recordNo = (item.recordNo || "").trim()
+                    const label = associationDisplayLabel(item)
+                    return (
+                      <div
+                        key={associationKey(item)}
+                        className="flex items-start justify-between gap-2 rounded border border-zinc-200 bg-white px-3 py-2"
                       >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  ))}
+                        <div className="min-w-0">
+                          {recordNo ? (
+                            <a
+                              href={`/ma/dashboard/private-funds/${encodeURIComponent(recordNo)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block truncate text-sm text-sky-600 hover:underline"
+                              title={label}
+                            >
+                              {label}
+                            </a>
+                          ) : (
+                            <div className="truncate text-sm text-zinc-800">{label}</div>
+                          )}
+                          {recordNo ? (
+                            <div className="mt-0.5 text-xs text-zinc-400 tabular-nums">{recordNo}</div>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeSelected(item)}
+                          className="shrink-0 rounded p-0.5 text-zinc-400 hover:text-zinc-600"
+                          aria-label="移除"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>

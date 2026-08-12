@@ -1,12 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { useSearchParams } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   ExternalLink,
   FileText,
   Loader2,
   Pencil,
+  StickyNote,
   Trash2,
   Upload,
   X,
@@ -19,6 +20,15 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  investmentNoteDeepLink,
+  listInvestmentNotesLinkedToProduct,
+  type ProductLinkedInvestmentNote,
+} from "@/lib/ma/investment-notes"
+
+function isRichHtmlContent(value: string) {
+  return /<[a-z][\s\S]*>/i.test(value || "")
+}
 
 type MaterialRow = {
   id: number
@@ -81,7 +91,18 @@ function UploadMaterialsButton({
   )
 }
 
-export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
+function displayNoteTitle(title: string) {
+  return title.trim() || "无标题"
+}
+
+export function FundMaterialsPanel({
+  beian_hao,
+  product_name,
+}: {
+  beian_hao: string
+  product_name?: string
+}) {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const materialIdParam = searchParams.get("materialId")
 
@@ -89,6 +110,9 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
   const [rows, setRows] = useState<MaterialRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [previewRow, setPreviewRow] = useState<MaterialRow | null>(null)
+  const [linkedNotes, setLinkedNotes] = useState<ProductLinkedInvestmentNote[]>([])
+  const [notesLoading, setNotesLoading] = useState(true)
+  const [previewNote, setPreviewNote] = useState<ProductLinkedInvestmentNote | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
 
   const [uploadOpen, setUploadOpen] = useState(false)
@@ -125,6 +149,24 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
   }, [loadRows])
 
   useEffect(() => {
+    let cancelled = false
+    setNotesLoading(true)
+    void listInvestmentNotesLinkedToProduct(beian_hao, product_name)
+      .then((notes) => {
+        if (!cancelled) setLinkedNotes(notes)
+      })
+      .catch(() => {
+        if (!cancelled) setLinkedNotes([])
+      })
+      .finally(() => {
+        if (!cancelled) setNotesLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [beian_hao, product_name])
+
+  useEffect(() => {
     if (!materialIdParam || loading || rows.length === 0) return
     const id = parseInt(materialIdParam, 10)
     if (!Number.isFinite(id)) return
@@ -133,6 +175,9 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
   }, [materialIdParam, loading, rows])
 
   const sortedRows = useMemo(() => rows, [rows])
+  const hasMaterials = sortedRows.length > 0
+  const hasLinkedNotes = linkedNotes.length > 0
+  const panelLoading = loading || notesLoading
 
   function resetUploadForm() {
     setUploadFile(null)
@@ -217,7 +262,7 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
     }
   }
 
-  if (loading) {
+  if (panelLoading) {
     return (
       <div className="flex items-center justify-center min-h-[240px] text-sm text-muted-foreground gap-2">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -226,7 +271,7 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
     )
   }
 
-  if (error) {
+  if (error && !hasLinkedNotes) {
     return (
       <div className="space-y-3">
         <div className="flex justify-end">
@@ -244,94 +289,167 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm text-muted-foreground">
-            上传资料可关联净值日期，并在业绩指标净值图上标注。
+            上传资料可关联净值日期，并在业绩指标净值图上标注。关联产品的投资笔记也会显示在此。
           </div>
           <UploadMaterialsButton onClick={() => { resetUploadForm(); setUploadOpen(true) }} />
         </div>
 
-        {sortedRows.length === 0 ? (
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        {!hasMaterials && !hasLinkedNotes ? (
           <div className="rounded-lg border border-dashed min-h-[240px] flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground px-6 text-center">
-            <div>暂无相关资料。可在此上传，或在「运维 → 数据维护 → 要素提取」中保存基金合同。</div>
+            <div>暂无相关资料。可在此上传，或在「运维 → 数据维护 → 要素提取」中保存基金合同；也可在投资笔记中关联本产品。</div>
             <UploadMaterialsButton onClick={() => { resetUploadForm(); setUploadOpen(true) }} />
           </div>
         ) : (
-          <div className="rounded-lg border overflow-hidden">
-            <div className="px-4 py-3 border-b bg-muted/20 text-sm font-medium">相关资料</div>
-            <div className="divide-y">
-              {sortedRows.map((row) => {
-                const downloadUrl = `/ma/api/ops/fund-contracts/${row.id}/file?download=1`
-                return (
-                  <div key={row.id} className="flex items-center justify-between gap-4 px-4 py-3">
-                    <div className="flex items-start gap-3 min-w-0">
-                      <FileText className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
-                      <div className="min-w-0">
-                        <button
-                          type="button"
-                          onClick={() => setPreviewRow(row)}
-                          className="text-sm font-medium text-blue-600 hover:underline truncate block text-left"
-                          title={displayTitle(row)}
-                        >
-                          {displayTitle(row)}
-                        </button>
-                        <div className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-                          {row.title?.trim() && row.title.trim() !== row.original_filename && (
-                            <span className="truncate" title={row.original_filename}>
-                              {row.original_filename}
-                            </span>
-                          )}
-                          <span>{formatFileSize(Number(row.file_size) || 0)}</span>
-                          {row.uploaded_at ? <span>{formatDate(row.uploaded_at)}</span> : null}
-                          {row.uploaded_by ? <span>{row.uploaded_by}</span> : null}
-                          {row.chart_date ? (
+          <>
+            {hasLinkedNotes && (
+              <div className="rounded-lg border overflow-hidden">
+                <div className="px-4 py-3 border-b bg-muted/20 text-sm font-medium">关联投资笔记</div>
+                <div className="divide-y">
+                  {linkedNotes.map((note) => (
+                    <div key={note.id} className="flex items-center justify-between gap-4 px-4 py-3">
+                      <div className="flex items-start gap-3 min-w-0">
+                        <StickyNote className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewNote(note)}
+                            className="text-sm font-medium text-blue-600 hover:underline truncate block text-left"
+                            title={displayNoteTitle(note.title)}
+                          >
+                            {displayNoteTitle(note.title)}
+                          </button>
+                          <div className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
                             <span className="inline-flex items-center rounded bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5">
-                              净值日期 {row.chart_date}
+                              投资笔记
                             </span>
-                          ) : null}
+                            <span>{note.scope === "team" ? "团队笔记" : "我的笔记"}</span>
+                            {note.creator ? <span>{note.creator}</span> : null}
+                            {note.modifiedDate ? <span>{note.modifiedDate}</span> : null}
+                            {note.preview?.trim() ? (
+                              <span className="truncate max-w-[280px]" title={note.preview}>
+                                {note.preview}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewNote(note)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          查看
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            router.push(
+                              investmentNoteDeepLink({
+                                id: note.id,
+                                title: note.title,
+                                scope: note.scope,
+                              }),
+                            )
+                          }
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                        >
+                          打开笔记
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setPreviewRow(row)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        查看
-                      </button>
-                      <a
-                        href={downloadUrl}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
-                      >
-                        下载
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => openEdit(row)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        编辑
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(row)}
-                        disabled={deletingId === row.id}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors disabled:opacity-60"
-                      >
-                        {deletingId === row.id ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-3.5 w-3.5" />
-                        )}
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {hasMaterials && (
+              <div className="rounded-lg border overflow-hidden">
+                <div className="px-4 py-3 border-b bg-muted/20 text-sm font-medium">相关资料</div>
+                <div className="divide-y">
+                  {sortedRows.map((row) => {
+                    const downloadUrl = `/ma/api/ops/fund-contracts/${row.id}/file?download=1`
+                    return (
+                      <div key={row.id} className="flex items-center justify-between gap-4 px-4 py-3">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <FileText className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+                          <div className="min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewRow(row)}
+                              className="text-sm font-medium text-blue-600 hover:underline truncate block text-left"
+                              title={displayTitle(row)}
+                            >
+                              {displayTitle(row)}
+                            </button>
+                            <div className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                              {row.title?.trim() && row.title.trim() !== row.original_filename && (
+                                <span className="truncate" title={row.original_filename}>
+                                  {row.original_filename}
+                                </span>
+                              )}
+                              <span>{formatFileSize(Number(row.file_size) || 0)}</span>
+                              {row.uploaded_at ? <span>{formatDate(row.uploaded_at)}</span> : null}
+                              {row.uploaded_by ? <span>{row.uploaded_by}</span> : null}
+                              {row.chart_date ? (
+                                <span className="inline-flex items-center rounded bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5">
+                                  净值日期 {row.chart_date}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewRow(row)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            查看
+                          </button>
+                          <a
+                            href={downloadUrl}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                          >
+                            下载
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => openEdit(row)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(row)}
+                            disabled={deletingId === row.id}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors disabled:opacity-60"
+                          >
+                            {deletingId === row.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -493,6 +611,70 @@ export function FundMaterialsPanel({ beian_hao }: { beian_hao: string }) {
               title={displayTitle(previewRow)}
               className="flex-1 w-full border-0 bg-white"
             />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!previewNote} onOpenChange={(open) => { if (!open) setPreviewNote(null) }}>
+        <DialogContent className="max-w-5xl w-[95vw] h-[85vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-5 py-4 border-b shrink-0">
+            <div className="flex items-start justify-between gap-4 pr-8">
+              <div className="min-w-0">
+                <DialogTitle className="text-sm font-semibold line-clamp-2">
+                  {previewNote ? displayNoteTitle(previewNote.title) : ""}
+                </DialogTitle>
+                {previewNote && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {previewNote.scope === "team" ? "团队笔记" : "我的笔记"}
+                    {previewNote.creator ? ` · ${previewNote.creator}` : ""}
+                    {previewNote.modifiedDate ? ` · ${previewNote.modifiedDate}` : ""}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {previewNote && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const note = previewNote
+                      setPreviewNote(null)
+                      router.push(
+                        investmentNoteDeepLink({
+                          id: note.id,
+                          title: note.title,
+                          scope: note.scope,
+                        }),
+                      )
+                    }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
+                  >
+                    打开笔记
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPreviewNote(null)}
+                  className="p-1 rounded text-muted-foreground hover:text-foreground"
+                  aria-label="关闭预览"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </DialogHeader>
+          {previewNote && (
+            <div className="flex-1 overflow-auto bg-white px-8 py-6">
+              {isRichHtmlContent(previewNote.content) ? (
+                <div
+                  className="investment-note-rich text-sm leading-7 text-zinc-700"
+                  dangerouslySetInnerHTML={{ __html: previewNote.content }}
+                />
+              ) : (
+                <div className="whitespace-pre-wrap text-sm leading-7 text-zinc-700">
+                  {previewNote.content || "（空笔记）"}
+                </div>
+              )}
+            </div>
           )}
         </DialogContent>
       </Dialog>

@@ -1,11 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import {
+  Loader2,
   MoreHorizontal,
   Pencil,
   Search,
   Share2,
+  Sparkles,
   Tag,
   Trash2,
 } from "lucide-react"
@@ -38,6 +41,7 @@ import {
   createInvestmentNote,
   deleteInvestmentNote,
   listInvestmentNotes,
+  proofreadInvestmentNoteWithRoadshow,
   roadshowAssociationDisplayLabel,
   setInvestmentNoteAssociations,
   setInvestmentNoteRoadshowAssociations,
@@ -114,14 +118,34 @@ function NoteAssociations({
     <div className="border-b border-dashed border-zinc-200 px-8 py-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600">
         <span className="text-sky-600">关联产品：</span>
-        {note.associations.map((item) => (
-          <span
-            key={`${item.category}-${item.recordNo || item.name}`}
-            className="inline-flex items-center rounded border border-red-200 bg-red-50 px-2 py-0.5 text-xs text-red-500"
-          >
-            {associationDisplayLabel(item)}
-          </span>
-        ))}
+        {note.associations.map((item) => {
+          const recordNo = (item.recordNo || "").trim()
+          const label = associationDisplayLabel(item)
+          const className =
+            "inline-flex items-center rounded border border-red-200 bg-red-50 px-2 py-0.5 text-xs text-red-500"
+          if (recordNo) {
+            return (
+              <a
+                key={`${item.category}-${recordNo}`}
+                href={`/ma/dashboard/private-funds/${encodeURIComponent(recordNo)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`${className} hover:bg-red-100 hover:underline`}
+                title={label}
+              >
+                {label}
+              </a>
+            )
+          }
+          return (
+            <span
+              key={`${item.category}-${item.name}`}
+              className={className}
+            >
+              {label}
+            </span>
+          )
+        })}
         <button
           type="button"
           onClick={onManage}
@@ -224,9 +248,14 @@ function NoteContentBody({
 
 export function InvestmentNotesView() {
   const { toast } = useToast()
-  const [activeTab, setActiveTab] = useState<NotesTab>("team")
+  const searchParams = useSearchParams()
+  const deepLinkNoteId = (searchParams.get("noteId") || "").trim()
+  const deepLinkScope: NotesTab = searchParams.get("notesScope") === "mine" ? "mine" : "team"
+  const [activeTab, setActiveTab] = useState<NotesTab>(() =>
+    deepLinkNoteId ? deepLinkScope : "team",
+  )
   const [notes, setNotes] = useState<InvestmentNote[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(() => deepLinkNoteId || null)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [keyword, setKeyword] = useState("")
@@ -243,13 +272,28 @@ export function InvestmentNotesView() {
   const [roadshowAssociationOpen, setRoadshowAssociationOpen] = useState(false)
   const [draftAttachments, setDraftAttachments] = useState<InvestmentNoteAttachment[]>([])
   const [loading, setLoading] = useState(true)
+  const [proofreading, setProofreading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const pendingDeepLinkRef = useRef<string | null>(deepLinkNoteId || null)
+
+  useEffect(() => {
+    if (!deepLinkNoteId) return
+    pendingDeepLinkRef.current = deepLinkNoteId
+    setActiveTab(deepLinkScope)
+    setSelectedId(deepLinkNoteId)
+    setEditing(false)
+  }, [deepLinkNoteId, deepLinkScope])
 
   const reloadNotes = useCallback(async () => {
     try {
       const items = await listInvestmentNotes(activeTab)
       setNotes(items)
       setSelectedId((prev) => {
+        const pending = pendingDeepLinkRef.current
+        if (pending && items.some((n) => n.id === pending)) {
+          pendingDeepLinkRef.current = null
+          return pending
+        }
         if (prev && items.some((n) => n.id === prev)) return prev
         return items[0]?.id ?? null
       })
@@ -354,6 +398,63 @@ export function InvestmentNotesView() {
     setDraftContent(selectedNote.content)
     setDraftAttachments(selectedNote.attachments)
     setEditing(true)
+  }
+
+  async function handleAiProofread() {
+    if (!selectedNote || proofreading || saving) return
+    const rowIds = (selectedNote.roadshowAssociations ?? [])
+      .map((item) => item.rowId?.trim())
+      .filter(Boolean)
+    if (rowIds.length === 0) {
+      toast({
+        title: "无法校对",
+        description: "请先为该笔记关联路演",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const sourceContent = editing ? draftContent : selectedNote.content
+    if (!sourceContent.trim()) {
+      toast({
+        title: "无法校对",
+        description: "笔记内容为空",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setProofreading(true)
+    try {
+      const result = await proofreadInvestmentNoteWithRoadshow({
+        content: sourceContent,
+        rowIds,
+      })
+      const nextContent = compactRichNoteHtml(result.content)
+      await updateInvestmentNote(selectedNote.id, { content: nextContent })
+      setDraftContent(nextContent)
+      await reloadNotes()
+
+      const changeCount = result.changes.length
+      toast({
+        title: changeCount > 0 ? "AI 校对完成" : "AI 校对完成，未发现需修正项",
+        description:
+          changeCount > 0
+            ? `已按关联路演修正 ${changeCount} 处基础信息${result.roadshowLabel ? `（${result.roadshowLabel}）` : ""}`
+            : result.roadshowLabel
+              ? `已对照路演：${result.roadshowLabel}`
+              : undefined,
+      })
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "请稍后重试"
+      toast({
+        title: "AI 校对失败",
+        description: message,
+        variant: "destructive",
+      })
+    } finally {
+      setProofreading(false)
+    }
   }
 
   async function handleSave() {
@@ -640,7 +741,7 @@ export function InvestmentNotesView() {
                     <button
                       type="button"
                       onClick={handleSave}
-                      disabled={saving}
+                      disabled={saving || proofreading}
                       className="inline-flex items-center rounded bg-red-500 px-4 py-1.5 text-sm text-white hover:bg-red-600 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {saving ? "保存中..." : "保存"}
@@ -649,12 +750,39 @@ export function InvestmentNotesView() {
                     <button
                       type="button"
                       onClick={handleEdit}
-                      className="inline-flex items-center gap-1 rounded border border-red-400 px-3 py-1.5 text-sm text-red-500 hover:bg-red-50 transition-colors"
+                      disabled={proofreading}
+                      className="inline-flex items-center gap-1 rounded border border-red-400 px-3 py-1.5 text-sm text-red-500 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <Pencil className="h-3.5 w-3.5" />
                       编辑
                     </button>
                   )}
+
+                  {(() => {
+                    const hasRoadshow = (selectedNote.roadshowAssociations?.length ?? 0) > 0
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => void handleAiProofread()}
+                        disabled={!hasRoadshow || proofreading || saving}
+                        title={hasRoadshow ? "按关联路演校对报告基础信息" : "请先关联路演"}
+                        className={[
+                          "inline-flex items-center gap-1 rounded border px-3 py-1.5 text-sm transition-colors",
+                          hasRoadshow
+                            ? "border-violet-300 text-violet-600 hover:bg-violet-50"
+                            : "border-zinc-200 text-zinc-400 cursor-not-allowed",
+                          proofreading ? "opacity-70" : "",
+                        ].join(" ")}
+                      >
+                        {proofreading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-3.5 w-3.5" />
+                        )}
+                        {proofreading ? "校对中..." : "AI 校对"}
+                      </button>
+                    )
+                  })()}
 
                   <NoteAttachmentPopover
                     attachments={activeAttachments}
