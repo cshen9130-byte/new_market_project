@@ -402,14 +402,21 @@ export function NoteRichTextEditor({
   )
 }
 
+export type NoteAttachmentListItem = InvestmentNoteAttachment & {
+  /** Real file from「上传资料」that can be opened */
+  openable?: boolean
+}
+
 export function NoteAttachmentPopover({
   attachments,
   onTriggerUpload,
   onRemove,
+  onOpen,
 }: {
-  attachments: InvestmentNoteAttachment[]
+  attachments: NoteAttachmentListItem[]
   onTriggerUpload: () => void
   onRemove: (id: string) => void
+  onOpen?: (id: string) => void
 }) {
   return (
     <Popover>
@@ -447,14 +454,25 @@ export function NoteAttachmentPopover({
                   className="flex items-center justify-between gap-2 rounded px-2 py-2 hover:bg-zinc-50"
                 >
                   <div className="min-w-0">
-                    <div className="truncate text-sm text-zinc-700">{file.name}</div>
+                    {file.openable && onOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpen(file.id)}
+                        className="block w-full truncate text-left text-sm text-sky-600 hover:underline"
+                        title={file.name}
+                      >
+                        {file.name}
+                      </button>
+                    ) : (
+                      <div className="truncate text-sm text-zinc-700">{file.name}</div>
+                    )}
                     <div className="text-xs text-zinc-400">{formatFileSize(file.size)}</div>
                   </div>
                   <button
                     type="button"
                     onClick={() => onRemove(file.id)}
                     className="shrink-0 rounded p-1 text-zinc-400 hover:text-red-500"
-                    aria-label="删除附件"
+                    aria-label="移除附件"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

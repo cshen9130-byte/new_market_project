@@ -126,9 +126,19 @@ export async function GET() {
       yield_10y: "10Y收益率",
       spread_10y1y: "期限利差",
     }
+    // True blockers = indicators that have not moved past current_month.
+    // (Previously we listed everything behind newestAmong, which wrongly included
+    // PMI/CPI that already had a newer month than the frozen current_month.)
     const blocking = Object.entries(indicatorLatest)
-      .filter(([, m]) => m && newestAmong && m < newestAmong)
+      .filter(([, m]) => m && currentMonth && m <= currentMonth)
       .map(([k]) => k)
+
+    const blockingDetail = blocking
+      .map((k) => {
+        const latest = indicatorLatest[k as keyof typeof indicatorLatest]
+        return latest ? `${nameMap[k] ?? k}（最新 ${latest}）` : (nameMap[k] ?? k)
+      })
+      .join("、")
 
     return NextResponse.json({
       run_date: runDate,
@@ -137,7 +147,7 @@ export async function GET() {
       blocking_indicators: blocking,
       data_note:
         blocking.length && newestAmong && currentMonth && currentMonth < newestAmong
-          ? `当期停在 ${currentMonth}：等待 ${blocking.map((k) => nameMap[k] ?? k).join("、")} 官方更新（其他指标已到 ${newestAmong}）`
+          ? `当期停在 ${currentMonth}：等待 ${blockingDetail} 更新后才能推进（其他指标已到 ${newestAmong}）`
           : null,
       current_zscores: cur
         ? {

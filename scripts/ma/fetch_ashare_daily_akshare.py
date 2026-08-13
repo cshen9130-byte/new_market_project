@@ -123,11 +123,55 @@ def _fval(row, *keys):
     return None
 
 
+def _codes_from_spot_df(df) -> list[str]:
+    code_col = df.columns[0]
+    codes: list[str] = []
+    for raw in df[code_col].tolist():
+        s = str(raw).strip().lower()
+        if s.startswith(("sh", "sz", "bj")) and len(s) >= 8:
+            codes.append(s[2:].zfill(6))
+        elif "." in s:
+            codes.append(s.split(".", 1)[0].zfill(6))
+        else:
+            codes.append(s.zfill(6)[-6:])
+    # Preserve order but drop empties/dupes
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in codes:
+        if len(c) != 6 or c in seen:
+            continue
+        seen.add(c)
+        out.append(c)
+    return out
+
+
 def _fetch_universe() -> list[str]:
+    """A-share code list for hist mode.
+
+    East Money `stock_info_a_code_name` is frequently RemoteDisconnected on the
+    production host; fall back to Sina spot codes (same universe, already proven
+    reachable) so hist catch-up does not freeze stock-market charts for days.
+    """
     import akshare as ak
 
-    df = _retry(lambda: ak.stock_info_a_code_name())
-    return [str(c).zfill(6) for c in df["code"].tolist()]
+    try:
+        df = _retry(lambda: ak.stock_info_a_code_name(), attempts=2, base_sleep=1.5)
+        codes = [str(c).zfill(6) for c in df["code"].tolist()]
+        if len(codes) >= 3000:
+            return codes
+        sys.stderr.write(
+            f"stock_info_a_code_name returned only {len(codes)} codes; falling back to sina spot\n"
+        )
+    except Exception as exc:
+        sys.stderr.write(
+            f"stock_info_a_code_name failed ({exc}); falling back to sina spot codes\n"
+        )
+
+    df = _retry(lambda: ak.stock_zh_a_spot(), attempts=3, base_sleep=2.0)
+    codes = _codes_from_spot_df(df)
+    if len(codes) < 3000:
+        raise RuntimeError(f"sina spot universe too small: {len(codes)} codes")
+    return codes
 
 
 def _rows_from_spot_em(trade_date: str) -> list[dict]:
@@ -196,13 +240,22 @@ def _rows_from_spot(trade_date: str) -> list[dict]:
         if len(rows) >= 3000:
             return rows
         sys.stderr.write(
-            f"akshare spot_em returned only {len(rows)} rows; falling back to sina daily hist\n"
+            f"akshare spot_em returned only {len(rows)} rows; trying sina daily hist\n"
         )
     except Exception as exc:
-        sys.stderr.write(f"akshare spot_em failed ({exc}); falling back to sina daily hist\n")
+        sys.stderr.write(f"akshare spot_em failed ({exc}); trying sina daily hist\n")
 
-    # Sina spot lacks turnover (needed for crowding). Prefer single-day sina hist.
-    return _fetch_hist_range(trade_date, trade_date, provider="sina")
+    # Sina spot lacks turnover (needed for crowding %). Prefer single-day sina hist.
+    try:
+        return _fetch_hist_range(trade_date, trade_date, provider="sina")
+    except Exception as exc:
+        sys.stderr.write(
+            f"sina daily hist failed ({exc}); using sina spot without turnover\n"
+        )
+        rows = _rows_from_spot_sina(trade_date)
+        if len(rows) < 3000:
+            raise RuntimeError(f"sina spot returned only {len(rows)} rows")
+        return rows
 
 
 def _rows_from_hist_em(code: str, start: str, end: str) -> list[dict]:
@@ -304,8 +357,6 @@ def _rows_from_hist(code: str, start: str, end: str, *, provider: str) -> list[d
 
 def _fetch_hist_range(start: str, end: str, *, provider: str | None = None) -> list[dict]:
     codes = _fetch_universe()
-    max_workers = int(os.environ.get("ASHARE_AK_MAX_WORKERS", "8"))
-    delay = float(os.environ.get("ASHARE_AK_DELAY", "0.05"))
     limit = int(os.environ.get("ASHARE_AK_CODE_LIMIT", "0"))
     if limit > 0:
         codes = codes[:limit]
@@ -322,42 +373,72 @@ def _fetch_hist_range(start: str, end: str, *, provider: str | None = None) -> l
             provider = "sina"
             sys.stderr.write("akshare EM hist probe failed; using sina stock_zh_a_daily\n")
 
+    # Sina/akshare pulls JS via mini_racer — concurrent workers segfault
+    # (SIGSEGV in libmini_racer). Default to 1 for sina; EM can stay parallel.
+    default_workers = "1" if provider == "sina" else "8"
+    max_workers = int(os.environ.get("ASHARE_AK_MAX_WORKERS", default_workers))
+    if provider == "sina" and max_workers > 1:
+        sys.stderr.write(
+            f"akshare hist(sina): clamping workers {max_workers} → 1 "
+            f"(mini_racer is not thread-safe)\n"
+        )
+        max_workers = 1
+    delay = float(os.environ.get("ASHARE_AK_DELAY", "0" if provider == "sina" else "0.05"))
+
     sys.stderr.write(
         f"akshare hist({provider}): {len(codes)} codes, {start} → {end}, workers={max_workers}\n"
     )
     all_rows: list[dict] = []
     done = 0
     errors = 0
+    timed_out = 0
+    task_timeout = float(os.environ.get("ASHARE_TASK_TIMEOUT", "25"))
 
     def task(code: str) -> list[dict]:
         if delay > 0:
             time.sleep(delay)
         return _rows_from_hist(code, start, end, provider=provider)
 
-    task_timeout = float(os.environ.get("ASHARE_TASK_TIMEOUT", "25"))
-    timed_out = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(task, code): code for code in codes}
-        for fut in as_completed(futures):
-            code = futures[fut]
+    def _note_progress() -> None:
+        if done % 500 == 0 or done == len(codes):
+            sys.stderr.write(
+                f"  progress {done}/{len(codes)} codes, {len(all_rows)} rows, "
+                f"errors={errors}, timeouts={timed_out}\n"
+            )
+            sys.stderr.flush()
+
+    if max_workers <= 1:
+        # Sequential path — required for sina/mini_racer stability.
+        for code in codes:
             try:
-                rows = fut.result(timeout=task_timeout)
-                all_rows.extend(rows)
-            except TimeoutError:
-                timed_out += 1
-                if timed_out <= 5:
-                    sys.stderr.write(f"  {code} timed out after {task_timeout}s\n")
+                all_rows.extend(task(code))
             except Exception as exc:
                 errors += 1
                 if errors <= 5:
                     sys.stderr.write(f"  {code} failed: {exc}\n")
             done += 1
-            if done % 500 == 0:
-                sys.stderr.write(
-                    f"  progress {done}/{len(codes)} codes, {len(all_rows)} rows, "
-                    f"errors={errors}, timeouts={timed_out}\n"
-                )
-                sys.stderr.flush()
+            _note_progress()
+    else:
+        # Submit in batches so we never hold thousands of pending futures.
+        batch_size = max(max_workers * 8, 32)
+        for batch_start in range(0, len(codes), batch_size):
+            batch = codes[batch_start : batch_start + batch_size]
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(task, code): code for code in batch}
+                for fut in as_completed(futures):
+                    code = futures[fut]
+                    try:
+                        all_rows.extend(fut.result(timeout=task_timeout))
+                    except TimeoutError:
+                        timed_out += 1
+                        if timed_out <= 5:
+                            sys.stderr.write(f"  {code} timed out after {task_timeout}s\n")
+                    except Exception as exc:
+                        errors += 1
+                        if errors <= 5:
+                            sys.stderr.write(f"  {code} failed: {exc}\n")
+                    done += 1
+                    _note_progress()
 
     sys.stderr.write(
         f"akshare hist({provider}) done: {len(all_rows)} rows, "

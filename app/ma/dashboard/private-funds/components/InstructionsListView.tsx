@@ -329,12 +329,12 @@ const FIXED_LEFT_COLUMNS_CUSTOMER: ColumnDef[] = [
 
 const FIXED_RIGHT_COLUMNS_PROGRESS: ColumnDef[] = [
   { key: "progress", label: "指令进度", width: "min-w-[120px]", filter: true },
-  { key: "actions", label: "操作", width: "min-w-[140px] text-center" },
+  { key: "actions", label: "操作", width: "min-w-[240px] text-center" },
 ]
 
 const FIXED_RIGHT_COLUMNS_STATUS: ColumnDef[] = [
   { key: "status", label: "指令状态", width: "min-w-[100px]", filter: true },
-  { key: "actions", label: "操作", width: "min-w-[140px] text-center" },
+  { key: "actions", label: "操作", width: "min-w-[240px] text-center" },
 ]
 
 const CONFIG_COLUMN_META: Record<string, Omit<ColumnDef, "label">> = {
@@ -2198,6 +2198,35 @@ function canConfirmTrade(row: InstructionRecord): boolean {
   return canConfirmInstruction(row)
 }
 
+function productPageHref(beianHao: string | null | undefined): string | null {
+  const id = (beianHao || "").trim()
+  if (!id) return null
+  return `/ma/dashboard/private-funds/${encodeURIComponent(id)}`
+}
+
+function ProductNameLink({
+  name,
+  beianHao,
+}: {
+  name: string
+  beianHao: string | null | undefined
+}) {
+  const label = name?.trim() || "-"
+  const href = productPageHref(beianHao)
+  if (!href || label === "-") return label
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-blue-600 hover:underline dark:text-blue-400"
+      title={`打开产品页：${label}`}
+    >
+      {label}
+    </a>
+  )
+}
+
 function renderInstructionCell(
   colKey: string,
   row: InstructionRecord,
@@ -2214,6 +2243,7 @@ function renderInstructionCell(
     case "id":
       return row.id
     case "fof":
+      return <ProductNameLink name={row.fofFundName} beianHao={row.fofBeianHao} />
     case "investor":
     case "customer":
       return row.fofFundName
@@ -2224,9 +2254,16 @@ function renderInstructionCell(
         </span>
       )
     case "underlying":
+      return (
+        <ProductNameLink
+          name={row.underlyingFundName}
+          beianHao={row.underlyingBeianHao}
+        />
+      )
     case "fundName":
     case "fundManager":
     case "directProduct":
+    case "directFund":
       return row.underlyingFundName
     case "createdAt":
       return row.createdAt ? row.createdAt.replace("T", " ").slice(0, 19) : "-"
@@ -2247,92 +2284,95 @@ function renderInstructionCell(
       )
     case "initiator":
       return resolveInstructionInitiatorDisplay(row.initiator, row.initiatorUserId)
-    case "actions":
+    case "actions": {
+      const showPrimaryAction = canExecuteTrade(row) || canConfirmTrade(row)
       return (
-        <div className="inline-flex items-center justify-center gap-1.5 text-zinc-400">
+        <div className="inline-flex items-center justify-center gap-2.5">
           {canExecuteTrade(row) ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => onExecuteTrade(row)}
-                  className="rounded p-0.5 hover:text-amber-600 dark:hover:text-amber-400"
-                  aria-label="产品运维执行"
-                >
-                  <PlayCircle className="h-3.5 w-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={6}>产品运维执行</TooltipContent>
-            </Tooltip>
+            <button
+              type="button"
+              onClick={() => onExecuteTrade(row)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-amber-500 px-3.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-600"
+              aria-label="产品运维执行"
+            >
+              <PlayCircle className="h-4 w-4" />
+              执行
+            </button>
           ) : null}
           {canConfirmTrade(row) ? (
+            <button
+              type="button"
+              onClick={() => onConfirmTrade(row)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-3.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600"
+              aria-label="产品运维确认"
+            >
+              <BadgeCheck className="h-4 w-4" />
+              确认
+            </button>
+          ) : null}
+          <div
+            className={[
+              "inline-flex items-center gap-1.5 text-zinc-400",
+              showPrimaryAction
+                ? "border-l border-zinc-200 pl-2.5 dark:border-zinc-700"
+                : "",
+            ].join(" ")}
+          >
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={() => onConfirmTrade(row)}
-                  className="rounded p-0.5 hover:text-emerald-600 dark:hover:text-emerald-400"
-                  aria-label="产品运维确认"
+                  onClick={() => onVoid(row)}
+                  className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  aria-label="作废"
                 >
-                  <BadgeCheck className="h-3.5 w-3.5" />
+                  <ClipboardX className="h-3.5 w-3.5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={6}>产品运维确认</TooltipContent>
+              <TooltipContent side="bottom" sideOffset={6}>作废</TooltipContent>
             </Tooltip>
-          ) : null}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => onVoid(row)}
-                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
-                aria-label="作废"
-              >
-                <ClipboardX className="h-3.5 w-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>作废</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => onEdit(row)}
-                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
-                aria-label="编辑"
-              >
-                <FilePenLine className="h-3.5 w-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>编辑</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
-                aria-label="复制"
-              >
-                <Copy className="h-3.5 w-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>复制</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => onDetail(row)}
-                className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
-                aria-label="详情"
-              >
-                <FileText className="h-3.5 w-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>详情</TooltipContent>
-          </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onEdit(row)}
+                  className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  aria-label="编辑"
+                >
+                  <FilePenLine className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>编辑</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  aria-label="复制"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>复制</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onDetail(row)}
+                  className="rounded p-0.5 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  aria-label="详情"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>详情</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
       )
+    }
     default:
       return "-"
   }
@@ -2449,6 +2489,12 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
     const start = (page - 1) * pageSize
     return filteredRows.slice(start, start + pageSize)
   }, [filteredRows, page, pageSize])
+
+  const executablePendingRows = useMemo(
+    () => filteredRows.filter(canExecuteInstruction),
+    [filteredRows],
+  )
+  const firstExecutable = executablePendingRows[0] ?? null
 
   function resetFilters() {
     setFofInput("")
@@ -2866,6 +2912,41 @@ export function InstructionsListView({ variant }: { variant: InstructionsListVar
           </div>
         )}
       </div>
+
+      {firstExecutable ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-sm dark:border-amber-700 dark:bg-amber-950/40">
+          <div className="min-w-0 flex items-start gap-3">
+            <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-500 text-white">
+              <PlayCircle className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-amber-950 dark:text-amber-50">
+                {executablePendingRows.length === 1
+                  ? "有 1 条指令待产品运维执行"
+                  : `有 ${executablePendingRows.length} 条指令待产品运维执行`}
+              </p>
+              <p className="mt-0.5 truncate text-xs text-amber-800/90 dark:text-amber-100/80">
+                {firstExecutable.id}
+                {" · "}
+                {firstExecutable.fofFundName || "-"}
+                {" · "}
+                {firstExecutable.underlyingFundName || "-"}
+                {" · "}
+                {firstExecutable.type}
+                {executablePendingRows.length > 1 ? " 等" : ""}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setExecuteTarget(firstExecutable)}
+            className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md bg-amber-500 px-5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-600"
+          >
+            <PlayCircle className="h-4 w-4" />
+            {executablePendingRows.length === 1 ? "立即执行" : "执行下一条"}
+          </button>
+        </div>
+      ) : null}
 
       <div className="flex-1 min-h-0 bg-background border rounded-xl shadow-sm overflow-hidden flex flex-col">
         <div className="overflow-auto flex-1 min-h-0">

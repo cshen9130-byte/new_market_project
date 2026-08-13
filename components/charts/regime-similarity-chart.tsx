@@ -46,6 +46,7 @@ type ApiResponse = {
   all_distances: DistItem[]
   data_note?: string | null
   blocking_indicators?: string[]
+  indicator_latest?: Record<string, string | null>
 }
 
 // ── ERA colour coding (mirrors Python plot) ───────────────────────────────────
@@ -344,6 +345,9 @@ export default function RegimeSimilarityChart() {
           {data.data_note && (
             <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">{data.data_note}</p>
           )}
+          <p className="mt-1 text-xs text-muted-foreground">
+            「刷新」只重新读取已计算结果；模型需 7 项指标齐备才会推进参考月份。
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -353,6 +357,7 @@ export default function RegimeSimilarityChart() {
             onClick={() => void loadData(true)}
             disabled={loading}
             className="h-8 gap-2"
+            title="重新读取数据库中的最新计算结果（不会触发上游数据抓取）"
           >
             <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
             刷新

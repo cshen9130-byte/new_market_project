@@ -2580,9 +2580,23 @@ def _ashare_backfill_start(today: date) -> date:
 
 
 def _ashare_fetch_chunks(start: date, end: date) -> list[tuple[date, date]]:
-    """Split long backfills into monthly chunks to limit JSON payload size."""
+    """Split fetches into chunks to limit JSON payload size / isolate failures.
+
+    Short incremental gaps (default ≤7 calendar days) are fetched day-by-day so:
+      - today/yesterday can use fast spot mode
+      - a single bad day does not abort the whole catch-up range
+    Longer backfills stay on ASHARE_CHUNK_DAYS (default 31).
+    """
+    span_days = (end - start).days
+    day_by_day_max = int(os.environ.get("ASHARE_DAY_BY_DAY_MAX", "7"))
+    if 0 <= span_days <= day_by_day_max:
+        return [
+            (start + timedelta(days=i), start + timedelta(days=i))
+            for i in range(span_days + 1)
+        ]
+
     chunk_days = int(os.environ.get("ASHARE_CHUNK_DAYS", "31"))
-    if (end - start).days <= chunk_days:
+    if span_days <= chunk_days:
         return [(start, end)]
     chunks: list[tuple[date, date]] = []
     cur = start
@@ -2773,6 +2787,14 @@ def step_ashare_daily(conn, *, force: bool = False) -> int:
             idx, len(chunks), len(codes_found), len(rows_raw),
         )
         if not rows_raw:
+            # Day-by-day catch-up hits Sat/Sun/holidays with zero bars — skip and
+            # continue so a weekend gap cannot abort Monday's refresh.
+            if chunk_start == chunk_end:
+                log.info(
+                    "A-share daily: no bars for %s (non-trading day?) — continuing.",
+                    chunk_start,
+                )
+                continue
             log.warning(
                 "A-share daily: empty data for %s → %s (likely quota); stopping backfill.",
                 chunk_start, chunk_end,

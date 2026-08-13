@@ -33,14 +33,21 @@ import {
 } from "@/components/ui/context-menu"
 import { Switch } from "@/components/ma/ui/switch"
 import { useToast } from "@/hooks/use-toast"
-import type { InvestmentNote, InvestmentNoteAttachment } from "@/lib/ma/investment-notes"
+import type {
+  InvestmentNote,
+  InvestmentNoteAttachment,
+  InvestmentNoteMaterial,
+} from "@/lib/ma/investment-notes"
 import {
   MAX_INVESTMENT_NOTE_CONTENT_CHARS,
   associationDisplayLabel,
   compactRichNoteHtml,
   createInvestmentNote,
   deleteInvestmentNote,
+  linkInvestmentNoteMaterial,
+  listInvestmentNoteMaterials,
   listInvestmentNotes,
+  openInvestmentNoteMaterial,
   proofreadInvestmentNoteWithRoadshow,
   roadshowAssociationDisplayLabel,
   setInvestmentNoteAssociations,
@@ -48,15 +55,17 @@ import {
   setInvestmentNoteTags,
   setInvestmentNoteTeamShared,
   updateInvestmentNote,
+  uploadInvestmentNoteMaterial,
 } from "@/lib/ma/investment-notes"
+import { AssociatedProductHoverCard } from "./AssociatedProductHoverCard"
 import { InvestmentNoteAssociationDialog } from "./InvestmentNoteAssociationDialog"
 import { InvestmentNoteMaterialsView } from "./InvestmentNoteMaterialsView"
 import { InvestmentNoteRoadshowAssociationDialog } from "./InvestmentNoteRoadshowAssociationDialog"
 import {
   NoteAttachmentPopover,
   NoteRichTextEditor,
-  filesToAttachments,
   isRichHtmlContent,
+  type NoteAttachmentListItem,
 } from "./investment-note-editor-parts"
 
 type NotesTab = "team" | "mine" | "uploads"
@@ -125,9 +134,8 @@ function NoteAssociations({
           const className =
             "inline-flex items-center rounded border border-red-200 bg-red-50 px-2 py-0.5 text-xs text-red-500"
           if (recordNo) {
-            return (
+            const chip = (
               <a
-                key={`${item.category}-${recordNo}`}
                 href={`/ma/dashboard/private-funds/${encodeURIComponent(recordNo)}`}
                 target="_blank"
                 rel="noopener noreferrer"
@@ -137,6 +145,19 @@ function NoteAssociations({
                 {label}
               </a>
             )
+            // Profile + NAV hover uses private-fund APIs (recordNo = beian_hao)
+            if (item.category === "私募基金") {
+              return (
+                <AssociatedProductHoverCard
+                  key={`${item.category}-${recordNo}`}
+                  beian_hao={recordNo}
+                  productName={item.name}
+                >
+                  {chip}
+                </AssociatedProductHoverCard>
+              )
+            }
+            return <span key={`${item.category}-${recordNo}`}>{chip}</span>
           }
           return (
             <span
@@ -273,8 +294,10 @@ export function InvestmentNotesView() {
   const [associationOpen, setAssociationOpen] = useState(false)
   const [roadshowAssociationOpen, setRoadshowAssociationOpen] = useState(false)
   const [draftAttachments, setDraftAttachments] = useState<InvestmentNoteAttachment[]>([])
+  const [linkedMaterials, setLinkedMaterials] = useState<InvestmentNoteMaterial[]>([])
   const [loading, setLoading] = useState(true)
   const [proofreading, setProofreading] = useState(false)
+  const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingDeepLinkRef = useRef<string | null>(deepLinkNoteId || null)
 
@@ -310,6 +333,19 @@ export function InvestmentNotesView() {
     }
   }, [activeTab, notesScope])
 
+  const reloadLinkedMaterials = useCallback(async (noteId: string | null) => {
+    if (!noteId) {
+      setLinkedMaterials([])
+      return
+    }
+    try {
+      const items = await listInvestmentNoteMaterials()
+      setLinkedMaterials(items.filter((m) => m.noteId === noteId))
+    } catch {
+      setLinkedMaterials([])
+    }
+  }, [])
+
   useEffect(() => {
     if (activeTab === "uploads") {
       setLoading(false)
@@ -319,6 +355,7 @@ export function InvestmentNotesView() {
     void reloadNotes()
     function onRefresh() {
       void reloadNotes()
+      void reloadLinkedMaterials(selectedId)
     }
     window.addEventListener("focus", onRefresh)
     document.addEventListener("visibilitychange", onRefresh)
@@ -328,7 +365,12 @@ export function InvestmentNotesView() {
       document.removeEventListener("visibilitychange", onRefresh)
       window.clearInterval(timer)
     }
-  }, [activeTab, reloadNotes])
+  }, [activeTab, reloadNotes, reloadLinkedMaterials, selectedId])
+
+  useEffect(() => {
+    if (activeTab === "uploads") return
+    void reloadLinkedMaterials(selectedId)
+  }, [activeTab, selectedId, reloadLinkedMaterials])
 
   const filteredNotes = useMemo(() => {
     const q = keyword.trim().toLowerCase()
@@ -353,15 +395,68 @@ export function InvestmentNotesView() {
     setDraftAttachments(selectedNote.attachments)
   }, [selectedNote, editing])
 
-  const activeAttachments = editing ? draftAttachments : (selectedNote?.attachments ?? [])
+  const legacyAttachments = editing
+    ? draftAttachments
+    : (selectedNote?.attachments ?? [])
+
+  const activeAttachments: NoteAttachmentListItem[] = useMemo(() => {
+    const materialItems: NoteAttachmentListItem[] = linkedMaterials.map((m) => ({
+      id: m.id,
+      name: m.name,
+      size: m.size,
+      openable: true,
+    }))
+    const materialIds = new Set(materialItems.map((m) => m.id))
+    const legacyItems: NoteAttachmentListItem[] = legacyAttachments
+      .filter((a) => !materialIds.has(a.id))
+      .map((a) => ({ ...a, openable: false }))
+    return [...materialItems, ...legacyItems]
+  }, [linkedMaterials, legacyAttachments])
 
   function triggerUpload() {
+    if (!selectedNote || uploadingAttachments) return
     fileInputRef.current?.click()
   }
 
   async function handleUploadFiles(files: FileList) {
-    const items = filesToAttachments(files)
-    const next = [...activeAttachments, ...items]
+    if (!selectedNote || files.length === 0) return
+    setUploadingAttachments(true)
+    try {
+      for (const file of Array.from(files)) {
+        await uploadInvestmentNoteMaterial(file, selectedNote.id)
+      }
+      await reloadLinkedMaterials(selectedNote.id)
+      toast({
+        title: "上传成功",
+        description: `已添加 ${files.length} 个附件`,
+      })
+    } catch (err) {
+      toast({
+        title: "上传失败",
+        description: err instanceof Error ? err.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setUploadingAttachments(false)
+    }
+  }
+
+  async function handleRemoveAttachment(id: string) {
+    const isMaterial = linkedMaterials.some((m) => m.id === id)
+    if (isMaterial) {
+      try {
+        await linkInvestmentNoteMaterial(id, null)
+        setLinkedMaterials((prev) => prev.filter((m) => m.id !== id))
+      } catch (err) {
+        toast({
+          title: "移除失败",
+          description: err instanceof Error ? err.message : "请稍后重试",
+          variant: "destructive",
+        })
+      }
+      return
+    }
+    const next = legacyAttachments.filter((item) => item.id !== id)
     setDraftAttachments(next)
     if (selectedNote && !editing) {
       await updateInvestmentNote(selectedNote.id, { attachments: next })
@@ -369,12 +464,15 @@ export function InvestmentNotesView() {
     }
   }
 
-  async function handleRemoveAttachment(id: string) {
-    const next = activeAttachments.filter((item) => item.id !== id)
-    setDraftAttachments(next)
-    if (selectedNote && !editing) {
-      await updateInvestmentNote(selectedNote.id, { attachments: next })
-      await reloadNotes()
+  async function handleOpenAttachment(id: string) {
+    try {
+      await openInvestmentNoteMaterial(id)
+    } catch (err) {
+      toast({
+        title: "打开失败",
+        description: err instanceof Error ? err.message : "无法打开文件",
+        variant: "destructive",
+      })
     }
   }
 
@@ -600,7 +698,7 @@ export function InvestmentNotesView() {
         className="hidden"
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {
-            handleUploadFiles(e.target.files)
+            void handleUploadFiles(e.target.files)
           }
           e.target.value = ""
         }}
@@ -800,7 +898,8 @@ export function InvestmentNotesView() {
                   <NoteAttachmentPopover
                     attachments={activeAttachments}
                     onTriggerUpload={triggerUpload}
-                    onRemove={handleRemoveAttachment}
+                    onRemove={(id) => void handleRemoveAttachment(id)}
+                    onOpen={(id) => void handleOpenAttachment(id)}
                   />
 
                   <DropdownMenu>

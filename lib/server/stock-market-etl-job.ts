@@ -162,8 +162,15 @@ export function startStockMarketEtlJob(options?: {
       }
       // East Money AkShare endpoints are frequently blocked; Sina is the
       // reliable path for amount + turnover used by crowding charts.
+      // Sina hist must stay single-threaded — mini_racer segfaults under workers>1.
       if (!env.ASHARE_AK_PROVIDER) {
         env.ASHARE_AK_PROVIDER = "sina"
+      }
+      if (!env.ASHARE_AK_MAX_WORKERS) {
+        env.ASHARE_AK_MAX_WORKERS = "1"
+      }
+      if (!env.ASHARE_AK_DELAY) {
+        env.ASHARE_AK_DELAY = "0"
       }
       env.TQDM_DISABLE = env.TQDM_DISABLE || "1"
 
