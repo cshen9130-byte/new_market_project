@@ -50,6 +50,7 @@ import {
   updateInvestmentNote,
 } from "@/lib/ma/investment-notes"
 import { InvestmentNoteAssociationDialog } from "./InvestmentNoteAssociationDialog"
+import { InvestmentNoteMaterialsView } from "./InvestmentNoteMaterialsView"
 import { InvestmentNoteRoadshowAssociationDialog } from "./InvestmentNoteRoadshowAssociationDialog"
 import {
   NoteAttachmentPopover,
@@ -58,7 +59,7 @@ import {
   isRichHtmlContent,
 } from "./investment-note-editor-parts"
 
-type NotesTab = "team" | "mine"
+type NotesTab = "team" | "mine" | "uploads"
 
 function displayNoteTitle(title: string): string {
   return title.trim() || "无标题"
@@ -250,7 +251,8 @@ export function InvestmentNotesView() {
   const { toast } = useToast()
   const searchParams = useSearchParams()
   const deepLinkNoteId = (searchParams.get("noteId") || "").trim()
-  const deepLinkScope: NotesTab = searchParams.get("notesScope") === "mine" ? "mine" : "team"
+  const deepLinkScope: "team" | "mine" =
+    searchParams.get("notesScope") === "mine" ? "mine" : "team"
   const [activeTab, setActiveTab] = useState<NotesTab>(() =>
     deepLinkNoteId ? deepLinkScope : "team",
   )
@@ -284,9 +286,12 @@ export function InvestmentNotesView() {
     setEditing(false)
   }, [deepLinkNoteId, deepLinkScope])
 
+  const notesScope: "team" | "mine" = activeTab === "mine" ? "mine" : "team"
+
   const reloadNotes = useCallback(async () => {
+    if (activeTab === "uploads") return
     try {
-      const items = await listInvestmentNotes(activeTab)
+      const items = await listInvestmentNotes(notesScope)
       setNotes(items)
       setSelectedId((prev) => {
         const pending = pendingDeepLinkRef.current
@@ -303,9 +308,13 @@ export function InvestmentNotesView() {
     } finally {
       setLoading(false)
     }
-  }, [activeTab])
+  }, [activeTab, notesScope])
 
   useEffect(() => {
+    if (activeTab === "uploads") {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     void reloadNotes()
     function onRefresh() {
@@ -319,7 +328,7 @@ export function InvestmentNotesView() {
       document.removeEventListener("visibilitychange", onRefresh)
       window.clearInterval(timer)
     }
-  }, [reloadNotes])
+  }, [activeTab, reloadNotes])
 
   const filteredNotes = useMemo(() => {
     const q = keyword.trim().toLowerCase()
@@ -600,6 +609,7 @@ export function InvestmentNotesView() {
         {([
           { key: "team" as const, label: "团队笔记" },
           { key: "mine" as const, label: "我的笔记" },
+          { key: "uploads" as const, label: "上传资料" },
         ]).map((tab) => (
           <button
             key={tab.key}
@@ -607,7 +617,7 @@ export function InvestmentNotesView() {
             onClick={() => {
               setActiveTab(tab.key)
               setEditing(false)
-              setSelectedId(null)
+              if (tab.key !== "uploads") setSelectedId(null)
             }}
             className={[
               "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
@@ -621,6 +631,9 @@ export function InvestmentNotesView() {
         ))}
       </div>
 
+      {activeTab === "uploads" ? (
+        <InvestmentNoteMaterialsView />
+      ) : (
       <div className="flex flex-1 min-h-0">
         <aside className="flex w-[300px] shrink-0 flex-col border-r bg-white">
           <div className="border-b px-4 py-4">
@@ -689,7 +702,7 @@ export function InvestmentNotesView() {
                             <div className="mt-1 text-xs text-zinc-400">{note.createdDate}</div>
                           </div>
                           <span className="shrink-0 text-xs text-zinc-400 pt-0.5">
-                            {activeTab === "mine" || !isDraftNote(note) ? note.creator : "笔记"}
+                            {notesScope === "mine" || !isDraftNote(note) ? note.creator : "笔记"}
                           </span>
                         </div>
                         {note.preview ? (
@@ -846,6 +859,7 @@ export function InvestmentNotesView() {
           )}
         </section>
       </div>
+      )}
 
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
         <DialogContent className="max-w-md gap-0 p-0" showCloseButton>

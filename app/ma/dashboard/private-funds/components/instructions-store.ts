@@ -210,8 +210,8 @@ export function recordRequiresGmApproval(
   record: Pick<InstructionRecord, "category" | "type" | "requireGmApproval">,
 ): boolean {
   if (typeof record.requireGmApproval === "boolean") return record.requireGmApproval
-  const typeOpt = instructionTypeOptionFromCategory(record.category)
-  return requiresGmApprovalForType(typeOpt)
+  // Legacy rows (no snapshot): keep GM step so in-flight 待审批 stays consistent.
+  return true
 }
 
 export function instructionTimelineSteps(

@@ -499,3 +499,103 @@ export async function proofreadInvestmentNoteWithRoadshow(input: {
     roadshowLabel: data.roadshowLabel,
   }
 }
+
+export type InvestmentNoteMaterial = {
+  id: string
+  name: string
+  size: number
+  mimeType: string
+  noteId: string | null
+  noteTitle: string | null
+  uploadedBy: string
+  uploadedByName: string
+  createdAt: string
+}
+
+export async function listInvestmentNoteMaterials(): Promise<InvestmentNoteMaterial[]> {
+  const data = await apiFetch<{ ok: true; materials: InvestmentNoteMaterial[] }>(
+    "/ma/api/investment-notes/materials",
+  )
+  return data.materials
+}
+
+export async function uploadInvestmentNoteMaterial(
+  file: File,
+  noteId?: string | null,
+): Promise<InvestmentNoteMaterial> {
+  const form = new FormData()
+  form.set("file", file)
+  if (noteId) form.set("noteId", noteId)
+
+  const res = await fetch("/ma/api/investment-notes/materials", {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+    },
+    body: form,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || res.statusText || "上传失败")
+  }
+  return data.material as InvestmentNoteMaterial
+}
+
+export async function linkInvestmentNoteMaterial(
+  id: string,
+  noteId: string | null,
+): Promise<InvestmentNoteMaterial> {
+  const data = await apiFetch<{ ok: true; material: InvestmentNoteMaterial }>(
+    "/ma/api/investment-notes/materials",
+    {
+      method: "PUT",
+      body: JSON.stringify({ id, noteId }),
+    },
+  )
+  return data.material
+}
+
+export async function deleteInvestmentNoteMaterial(id: string): Promise<void> {
+  await apiFetch<{ ok: true }>(
+    `/ma/api/investment-notes/materials?id=${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  )
+}
+
+export function investmentNoteMaterialFileUrl(id: string): string {
+  return `/ma/api/investment-notes/materials/${encodeURIComponent(id)}/file`
+}
+
+/** Open a stored material in a new tab (sends auth header). */
+export async function openInvestmentNoteMaterial(id: string): Promise<void> {
+  const res = await fetch(investmentNoteMaterialFileUrl(id), {
+    headers: {
+      ...authHeaders(),
+    },
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data?.error || res.statusText || "无法打开文件")
+  }
+  const blob = await res.blob()
+  const disposition = res.headers.get("Content-Disposition") || ""
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i)
+  const filename = match
+    ? decodeURIComponent((match[1] || match[2] || "").trim())
+    : undefined
+  const url = URL.createObjectURL(blob)
+  const opened = window.open(url, "_blank")
+  if (!opened) {
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename || "material"
+    a.click()
+  } else {
+    try {
+      opened.opener = null
+    } catch {
+      /* ignore */
+    }
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}

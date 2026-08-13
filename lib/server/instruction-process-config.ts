@@ -56,11 +56,11 @@ export async function getServerInstructionProcessConfig(): Promise<InstructionPr
   )
 
   if (rows.length === 0) {
-    return {
-      config: normalizeInstructionProcessConfig(DEFAULT_INSTRUCTION_PROCESS_CONFIG),
-      updatedAt: null,
-      updatedBy: "",
-    }
+    // Persist team-wide defaults on first read so every account hydrates the same config.
+    return saveServerInstructionProcessConfig(
+      DEFAULT_INSTRUCTION_PROCESS_CONFIG,
+      "system-default",
+    )
   }
 
   const row = rows[0]
@@ -75,6 +75,25 @@ export async function getServerInstructionProcessConfig(): Promise<InstructionPr
         })()
       : row.config
 
+  const config = normalizeInstructionProcessConfig(raw)
+
+  // Legacy product default was requireGmApproval=true for every type. Migrate that
+  // untouched default to the new team-wide default (off) so all accounts match.
+  const isLegacyAllRequired =
+    config.底层申赎类.requireGmApproval === true &&
+    config.直投申赎类.requireGmApproval === true &&
+    config["入/出池审批"].requireGmApproval === true
+  const actor = String(row.updated_by || "")
+  if (
+    isLegacyAllRequired &&
+    (actor === "" || actor === "system-default")
+  ) {
+    return saveServerInstructionProcessConfig(
+      DEFAULT_INSTRUCTION_PROCESS_CONFIG,
+      "system-default",
+    )
+  }
+
   const updatedAt =
     row.updated_at == null
       ? null
@@ -83,9 +102,9 @@ export async function getServerInstructionProcessConfig(): Promise<InstructionPr
         : row.updated_at.toISOString()
 
   return {
-    config: normalizeInstructionProcessConfig(raw),
+    config,
     updatedAt,
-    updatedBy: String(row.updated_by || ""),
+    updatedBy: actor,
   }
 }
 

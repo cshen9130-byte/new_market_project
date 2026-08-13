@@ -54,6 +54,7 @@ import {
   isInstructionRejected,
   isInstructionWorkflowFinished,
   ensureInstructionRecordsHydrated,
+  formatInstructionAmount,
   getInstructionRecordsHydrateError,
   listInstructionRecords,
   parseEmailConfirmRecordId,
@@ -807,7 +808,55 @@ function calcConfirmShares(amountText: string, navText: string): string | null {
   const amt = Number(String(amountText).replace(/,/g, "").trim())
   const n = Number(String(navText).replace(/,/g, "").trim())
   if (!Number.isFinite(amt) || !Number.isFinite(n) || n <= 0) return null
-  return (amt / n).toFixed(2)
+  return formatInstructionAmount((amt / n).toFixed(2))
+}
+
+/** Controlled money text input that keeps local draft while focused so parent
+ *  re-renders (邮箱匹配 / 净值读取) do not clear selection or flash the value. */
+function FormattedAmountInput({
+  value,
+  onChange,
+  onBlur,
+  className,
+  placeholder,
+}: {
+  value: string
+  onChange: (value: string) => void
+  onBlur?: (value: string) => void
+  className?: string
+  placeholder?: string
+}) {
+  const [text, setText] = useState(value)
+  const focusedRef = useRef(false)
+
+  useEffect(() => {
+    if (!focusedRef.current) setText(value)
+  }, [value])
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={text}
+      placeholder={placeholder}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onChange={(e) => {
+        const next = e.target.value
+        setText(next)
+        onChange(next)
+      }}
+      onBlur={() => {
+        focusedRef.current = false
+        const formatted = text.trim() ? formatInstructionAmount(text) : ""
+        setText(formatted)
+        onChange(formatted)
+        onBlur?.(formatted)
+      }}
+      className={className}
+    />
+  )
 }
 
 function ConfirmTradeDialog({
@@ -884,15 +933,17 @@ function ConfirmTradeDialog({
       )
     }
     if (nextShares) {
-      setShares(nextShares)
+      const sharesFmt = formatInstructionAmount(nextShares)
+      setShares(sharesFmt)
       sharesManualRef.current = true
-      setSharesHint(`已使用确认单份额 ${nextShares}（可修改）`)
+      setSharesHint(`已使用确认单份额 ${sharesFmt}（可修改）`)
     }
-    if (nextAmount) setAmount(nextAmount)
-    if (c.confirm_date) setConfirmDate(c.confirm_date)
-    else if (c.apply_date) setConfirmDate(c.apply_date)
+    if (nextAmount) setAmount(formatInstructionAmount(nextAmount))
+    // 交易确认日期 uses 申请日期 (Trade Date); fall back to 确认日期 if missing.
+    if (c.apply_date) setConfirmDate(c.apply_date)
+    else if (c.confirm_date) setConfirmDate(c.confirm_date)
     if (c.trade_fee != null && c.trade_fee !== "") {
-      setTradeFee(String(c.trade_fee).replace(/,/g, ""))
+      setTradeFee(formatInstructionAmount(String(c.trade_fee).replace(/,/g, "")))
     }
     setConfirmFile(null)
     setEmailAttachment({
@@ -954,7 +1005,8 @@ function ConfirmTradeDialog({
         slipNavLockRef.current = false
         navManualRef.current = false
         setNavHint("确认单未解析到净值，将尝试读取产品净值（可手动修改）")
-        if (fresh.confirm_date) setConfirmDate(fresh.confirm_date)
+        if (fresh.apply_date) setConfirmDate(fresh.apply_date)
+        else if (fresh.confirm_date) setConfirmDate(fresh.confirm_date)
       }
     } catch (err) {
       if (seq !== applyCandidateSeqRef.current) return
@@ -1074,10 +1126,12 @@ function ConfirmTradeDialog({
   useEffect(() => {
     if (!open || !record) return
     setConfirmDate(record.confirmDate || record.applyDate || "")
-    setAmount(String(record.amount || "").replace(/,/g, ""))
-    setShares(record.shares ? String(record.shares).replace(/,/g, "") : "")
+    setAmount(record.amount ? formatInstructionAmount(String(record.amount)) : "")
+    setShares(record.shares ? formatInstructionAmount(String(record.shares)) : "")
     setNav(record.nav ? String(record.nav).replace(/,/g, "") : "")
-    setTradeFee(record.tradeFee ? String(record.tradeFee).replace(/,/g, "") : "0.00")
+    setTradeFee(
+      record.tradeFee ? formatInstructionAmount(String(record.tradeFee)) : "0.00",
+    )
     setModifyReason(record.modifyReason || "")
     setConfirmFile(null)
     setEmailAttachment(
@@ -1183,13 +1237,14 @@ function ConfirmTradeDialog({
     if (sharesManualRef.current) return
     const next = calcConfirmShares(amount, nav)
     if (!next) {
-      setSharesHint(null)
+      setSharesHint((prev) => (prev == null ? prev : null))
       return
     }
-    setShares(next)
-    const amtText = String(amount).replace(/,/g, "").trim()
+    const amtText = formatInstructionAmount(String(amount).replace(/,/g, "").trim())
     const navText = String(nav).replace(/,/g, "").trim()
-    setSharesHint(`已按 确认金额 / 确认单位净值 计算：${amtText} ÷ ${navText} = ${next}（可修改）`)
+    const hint = `已按 确认金额 / 确认单位净值 计算：${amtText} ÷ ${navText} = ${next}（可修改）`
+    setShares((prev) => (prev === next ? prev : next))
+    setSharesHint((prev) => (prev === hint ? prev : hint))
   }, [open, amount, nav])
 
   if (!open || !record) return null
@@ -1372,11 +1427,9 @@ function ConfirmTradeDialog({
           </label>
           <label className="block">
             <span className="mb-1 block text-zinc-700 dark:text-zinc-200">交易费用</span>
-            <input
-              type="text"
-              inputMode="decimal"
+            <FormattedAmountInput
               value={tradeFee}
-              onChange={(e) => setTradeFee(e.target.value)}
+              onChange={setTradeFee}
               className="h-9 w-full rounded border border-border bg-background px-3 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>
@@ -1406,12 +1459,10 @@ function ConfirmTradeDialog({
             <span className="mb-1 block text-zinc-700 dark:text-zinc-200">
               <span className="text-red-500">*</span> 确认金额
             </span>
-            <input
-              type="text"
-              inputMode="decimal"
+            <FormattedAmountInput
               value={amount}
-              onChange={(e) => {
-                setAmount(e.target.value)
+              onChange={(next) => {
+                setAmount(next)
                 // Amount change should refresh auto-calculated shares.
                 if (!sharesManualRef.current) setSharesHint(null)
               }}
@@ -1420,16 +1471,21 @@ function ConfirmTradeDialog({
           </label>
           <label className="block">
             <span className="mb-1 block text-zinc-700 dark:text-zinc-200">确认份额</span>
-            <input
-              type="text"
-              inputMode="decimal"
+            <FormattedAmountInput
               value={shares}
-              onChange={(e) => {
-                setShares(e.target.value)
+              onChange={(next) => {
+                setShares(next)
                 sharesManualRef.current = true
                 setSharesHint(
-                  e.target.value.trim()
-                    ? `已手动修改份额 ${e.target.value.trim()}（可继续编辑）`
+                  next.trim()
+                    ? `已手动修改份额 ${next.trim()}（可继续编辑）`
+                    : "已清空自动计算，可手动填写",
+                )
+              }}
+              onBlur={(formatted) => {
+                setSharesHint(
+                  formatted.trim()
+                    ? `已手动修改份额 ${formatted}（可继续编辑）`
                     : "已清空自动计算，可手动填写",
                 )
               }}

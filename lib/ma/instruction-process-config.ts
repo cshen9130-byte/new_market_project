@@ -14,7 +14,7 @@ const CHANGE_EVENT = "ma-instruction-process-config-changed"
 const API_PATH = "/ma/api/instructions/process-config"
 
 export type InstructionProcessTypeConfig = {
-  /** When false, skip 总经理审批 in the official flow. Default true. */
+  /** When true, include 总经理审批 in the official flow. Default false (opt-in). */
   requireGmApproval: boolean
 }
 
@@ -24,9 +24,9 @@ export type InstructionProcessConfig = Record<
 >
 
 export const DEFAULT_INSTRUCTION_PROCESS_CONFIG: InstructionProcessConfig = {
-  底层申赎类: { requireGmApproval: true },
-  直投申赎类: { requireGmApproval: true },
-  "入/出池审批": { requireGmApproval: true },
+  底层申赎类: { requireGmApproval: false },
+  直投申赎类: { requireGmApproval: false },
+  "入/出池审批": { requireGmApproval: false },
 }
 
 function canUseStorage() {
@@ -209,7 +209,7 @@ export function requiresGmApprovalForType(
   type: InstructionTypeOption,
   config: InstructionProcessConfig = readInstructionProcessConfig(),
 ): boolean {
-  return config[type]?.requireGmApproval !== false
+  return config[type]?.requireGmApproval === true
 }
 
 /** Official node list for settings / diagrams, filtered by process config. */

@@ -1837,7 +1837,7 @@ function InstructionSettingsPanel() {
     }
   }
 
-  const requireGmApproval = processConfig[instructionType]?.requireGmApproval !== false
+  const requireGmApproval = processConfig[instructionType]?.requireGmApproval === true
   const processNodes = getOfficialProcessNodes(instructionType, processConfig)
 
   return (
