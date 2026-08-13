@@ -1306,6 +1306,20 @@ assert(
     && svp460VirtualMeta.fundName?.includes("墨雪鑫瑞1") === true
     && !svp460VirtualMeta.fundName?.includes("金舆"),
 )
+const svp460SubjectOnly = extractNavMetadata(svp460VirtualSubject, "")
+assert(
+  "SVP460 CSC virtual subject-only keeps underlying (not FOF investor)",
+  svp460SubjectOnly.fundName?.includes("墨雪鑫瑞1") === true
+    && !svp460SubjectOnly.fundName?.includes("金舆"),
+)
+const bsq40bVirtualSubject =
+  "自然红启程2号私募证券投资基金（B类份额）-金舆稳健增长1号FOF私募证券投资基金-虚拟净值提取信息披露邮件20260812"
+const bsq40bSubjectOnly = extractNavMetadata(bsq40bVirtualSubject, "")
+assert(
+  "BSQ40B CSC virtual subject keeps underlying (not SCU622 FOF investor)",
+  bsq40bSubjectOnly.fundName?.includes("自然红启程") === true
+    && !bsq40bSubjectOnly.fundName?.includes("金舆"),
+)
 const svp460VirtualNav = extractNavData(svp460VirtualSubject, svp460VirtualBody)
 assert(
   "SVP460 CSC virtual body uses 扣除净值后的单位净值 3.766 (not 未扣除 3.7673)",

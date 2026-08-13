@@ -208,6 +208,7 @@ function extractFundNameFromSubject(subject: string): string | null {
     parseXingyePerfTrialSubject,
     parseCfscTaVirtualSubject,
     parseZhongtaiVirtualNavSubject,
+    parseCscVirtualNavDisclosureSubject,
     parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
@@ -424,6 +425,28 @@ function parseZhongtaiVirtualNavSubject(text: string): { code: string; fundName:
 }
 
 /**
+ * CSC/中信建投 虚拟净值提取信息披露 (subject or attachment filename):
+ *   墨雪鑫瑞1号私募证券投资基金-金舆稳健增长1号FOF私募证券投资基金-虚拟净值提取信息披露邮件20260806
+ *   自然红启程2号私募证券投资基金（B类份额）-金舆稳健增长1号FOF…-虚拟净值提取…
+ *   墨雪鑫瑞1号…_金舆稳健增长1号FOF…_虚拟净值数据20260807.xlsx
+ * Underlying is the first fund name; investor/FOF is the second.
+ * Code is usually only in the body/xlsx — leave empty so body/attachment can fill it.
+ */
+function parseCscVirtualNavDisclosureSubject(text: string): { code: string; fundName: string } | null {
+  if (!/虚拟净值提取|虚拟净值查询|虚拟净值数据/u.test(text)) return null
+  const m = text.match(
+    new RegExp(
+      `(${FUND_NAME_RE.source})(?:（[^）]*）|\\([^)]*\\))?[\\-_](${FUND_NAME_RE.source})[\\-_]?虚拟净值`,
+      "u",
+    ),
+  )
+  if (!m) return null
+  const fundName = normalizeFundDisplayName(m[1])
+  if (!fundName) return null
+  return { code: "", fundName }
+}
+
+/**
  * FOF virtual-NAV mail: outer investor/FOF name + bracket underlying code/name.
  * Example: 金舆基石一号私募证券投资基金【SXN097-古曲祥辰5号私募证券投资基金】虚拟净值20260709
  * NAV belongs to the bracket product (SXN097 / 古曲祥辰5号), not the outer FOF name.
@@ -565,7 +588,9 @@ export function applyEmailProductCodeOverride(
 
 export function extractNavMetadata(subject: string, bodyText: string) {
   const structured = resolveFromStructuredSubject(subject)
-  if (structured) {
+  // CSC virtual disclosure subjects have no product code — do not short-circuit
+  // before body/attachment can supply SVP460 / BSQ40B etc.
+  if (structured?.code) {
     return {
       productCode: applyEmailProductCodeOverride(
         structured.code,

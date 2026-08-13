@@ -2002,3 +2002,52 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes **CMS header unit beats 昨日单位净值** / **CMS extractNav uses header 0.9884**.
+
+---
+
+## What Was Fixed (CSC 虚拟净值提取 FOF-investor fund_name bleed — SCU622, 2026-08-13)
+
+### The Problem
+
+**金舆稳健增长1号FOF** (备案号 **SCU622**) detail page spiked on **2026-08-12** to unit NAV **1.0946** (+9.42% day) after a flat ~1.000 series. Custody 估值表 for SCU622 only reached **2026-08-11 / 1.0004** — the spike was **自然红启程2号B类 (BSQ40B)** virtual NAV, not the FOF.
+
+### Root Cause
+
+CSC/中信建投 subjects look like:
+
+`自然红启程2号私募证券投资基金（B类份额）-金舆稳健增长1号FOF私募证券投资基金-虚拟净值提取信息披露邮件20260812`
+
+Underlying is first; **investor/FOF is second**. `pickBestFundNameMatch` preferred the longer FOF name, so `ops_email_nav_records.fund_name` became **金舆稳健增长1号FOF** while `product_code` stayed **BSQ40B** / **SVP460**. Name-based email merge then attached underlying NAV to the FOF (list/detail tip **1.0946**).
+
+SVP460 already had `preserve_high_nav_scale` for legitimate large moves — this bug is separate (wrong fund_name attribution).
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Subject parser | `parseCscVirtualNavDisclosureSubject` in `email-nav-extract.ts` | First fund name = underlying; ignore investor/FOF after `-`/`_` |
+| Metadata short-circuit | `extractNavMetadata` | Do not treat empty structured `code` as final (body/xlsx still supply SVP460/BSQ40B) |
+| Attachment identity | `extractNavTableFromBuffer` | Prefer workbook row `fundName` over subject (stops FOF name override) |
+| One-time repair | `scripts/ma/_repair_csc_virtual_fof_bleed.ts` | Rewrite bleed `fund_name` + refresh SCU622 detail cache |
+
+### What This Fix Does NOT Change
+
+- SVP460 `preserve_high_nav_scale` correction rule — unchanged
+- CMS 估值表 day-shift heal (SCU622 / SCJ536 / …) — unchanged
+- Zhongtai `_虚拟净值_` / Guotai `【investor】TA虚拟净值` parsers — unchanged
+- Dividend / rechain rules for other funds — unchanged
+
+### Repair + refresh (SCU622)
+
+```bash
+npx tsx scripts/ma/_repair_csc_virtual_fof_bleed.ts --investor=金舆稳健增长1号FOF
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SCU622 --name=金舆稳健增长1号FOF
+```
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **SVP460/BSQ40B CSC virtual subject keeps underlying (not FOF investor)**.

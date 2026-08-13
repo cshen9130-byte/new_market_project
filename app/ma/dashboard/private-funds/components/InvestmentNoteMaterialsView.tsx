@@ -2,14 +2,29 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  Check,
+  ChevronsUpDown,
   CloudUpload,
   ExternalLink,
   FileText,
+  Link2,
   Loader2,
   Search,
   Trash2,
+  X,
 } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useToast } from "@/hooks/use-toast"
+import { cn } from "@/lib/utils"
 import type { InvestmentNote, InvestmentNoteMaterial } from "@/lib/ma/investment-notes"
 import {
   deleteInvestmentNoteMaterial,
@@ -57,6 +72,107 @@ function currentUserId(): string {
   }
 }
 
+function noteLabel(note: NoteOption): string {
+  return `${note.title}（${note.scope === "mine" ? "我的" : "团队"}）`
+}
+
+function NoteSearchPicker({
+  notes,
+  value,
+  onChange,
+  placeholder = "搜索并选择笔记",
+  allowClear = true,
+  clearLabel = "未关联",
+  disabled = false,
+  className,
+  buttonClassName,
+}: {
+  notes: NoteOption[]
+  value: string
+  onChange: (noteId: string) => void
+  placeholder?: string
+  allowClear?: boolean
+  clearLabel?: string
+  disabled?: boolean
+  className?: string
+  buttonClassName?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const selected = notes.find((n) => n.id === value) ?? null
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className={cn(
+            "inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded border border-zinc-200 bg-white px-2 text-left text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
+            buttonClassName,
+          )}
+        >
+          <span className={cn("truncate", !selected && "text-zinc-400")}>
+            {selected ? noteLabel(selected) : placeholder}
+          </span>
+          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className={cn("w-[320px] p-0", className)}
+        align="start"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        <Command>
+          <CommandInput placeholder="搜索笔记标题..." />
+          <CommandList>
+            <CommandEmpty>未找到匹配的笔记</CommandEmpty>
+            <CommandGroup>
+              {allowClear ? (
+                <CommandItem
+                  value="__clear__ 未关联"
+                  onSelect={() => {
+                    onChange("")
+                    setOpen(false)
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      "mr-2 h-3.5 w-3.5 shrink-0",
+                      !value ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                  <span className="text-zinc-500">{clearLabel}</span>
+                </CommandItem>
+              ) : null}
+              {notes.map((note) => (
+                <CommandItem
+                  key={note.id}
+                  value={`${note.title} ${note.scope === "mine" ? "我的" : "团队"} ${note.id}`}
+                  onSelect={() => {
+                    onChange(note.id)
+                    setOpen(false)
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      "mr-2 h-3.5 w-3.5 shrink-0",
+                      value === note.id ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{note.title}</span>
+                  <span className="ml-2 shrink-0 text-[11px] text-zinc-400">
+                    {note.scope === "mine" ? "我的" : "团队"}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function InvestmentNoteMaterialsView() {
   const { toast } = useToast()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -68,6 +184,9 @@ export function InvestmentNoteMaterialsView() {
   const [keyword, setKeyword] = useState("")
   const [defaultNoteId, setDefaultNoteId] = useState("")
   const [linkingId, setLinkingId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [batchNoteId, setBatchNoteId] = useState("")
+  const [batchLinking, setBatchLinking] = useState(false)
   const userId = useMemo(() => currentUserId(), [])
 
   const reload = useCallback(async () => {
@@ -94,6 +213,14 @@ export function InvestmentNoteMaterialsView() {
       pushNotes(mineNotes, "mine")
       pushNotes(teamNotes, "team")
       setNoteOptions(options)
+      setSelectedIds((prev) => {
+        if (prev.size === 0) return prev
+        const next = new Set<string>()
+        for (const id of prev) {
+          if (items.some((m) => m.id === id)) next.add(id)
+        }
+        return next
+      })
     } catch (err) {
       setMaterials([])
       toast({
@@ -121,6 +248,13 @@ export function InvestmentNoteMaterialsView() {
         m.uploadedByName.toLowerCase().includes(q),
     )
   }, [materials, keyword])
+
+  const filteredIds = useMemo(() => filtered.map((m) => m.id), [filtered])
+  const allFilteredSelected =
+    filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id))
+  const someFilteredSelected =
+    filteredIds.some((id) => selectedIds.has(id)) && !allFilteredSelected
+  const selectedCount = selectedIds.size
 
   async function uploadFiles(files: FileList | File[]) {
     const list = Array.from(files)
@@ -162,11 +296,52 @@ export function InvestmentNoteMaterialsView() {
     }
   }
 
+  async function handleBatchLink() {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    if (!batchNoteId) {
+      toast({
+        title: "请先选择笔记",
+        description: "搜索并选择要关联的投资笔记",
+        variant: "destructive",
+      })
+      return
+    }
+    setBatchLinking(true)
+    try {
+      const updates = await Promise.all(
+        ids.map((id) => linkInvestmentNoteMaterial(id, batchNoteId)),
+      )
+      const byId = new Map(updates.map((m) => [m.id, m]))
+      setMaterials((prev) => prev.map((m) => byId.get(m.id) ?? m))
+      setSelectedIds(new Set())
+      toast({
+        title: "批量关联成功",
+        description: `已将 ${ids.length} 个文件关联到同一笔记`,
+      })
+    } catch (err) {
+      toast({
+        title: "批量关联失败",
+        description: err instanceof Error ? err.message : "请稍后重试",
+        variant: "destructive",
+      })
+      await reload()
+    } finally {
+      setBatchLinking(false)
+    }
+  }
+
   async function handleDelete(material: InvestmentNoteMaterial) {
     if (!window.confirm(`确定删除「${material.name}」？`)) return
     try {
       await deleteInvestmentNoteMaterial(material.id)
       setMaterials((prev) => prev.filter((m) => m.id !== material.id))
+      setSelectedIds((prev) => {
+        if (!prev.has(material.id)) return prev
+        const next = new Set(prev)
+        next.delete(material.id)
+        return next
+      })
     } catch (err) {
       toast({
         title: "删除失败",
@@ -179,6 +354,27 @@ export function InvestmentNoteMaterialsView() {
   function noteScopeFor(noteId: string | null): "team" | "mine" {
     if (!noteId) return "team"
     return noteOptions.find((n) => n.id === noteId)?.scope ?? "team"
+  }
+
+  function toggleSelect(id: string, checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  function toggleSelectAllFiltered(checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) {
+        for (const id of filteredIds) next.add(id)
+      } else {
+        for (const id of filteredIds) next.delete(id)
+      }
+      return next
+    })
   }
 
   return (
@@ -208,18 +404,16 @@ export function InvestmentNoteMaterialsView() {
           </div>
           <div className="flex items-center gap-2 text-sm text-zinc-600">
             <span className="shrink-0">默认关联笔记</span>
-            <select
-              value={defaultNoteId}
-              onChange={(e) => setDefaultNoteId(e.target.value)}
-              className="h-9 min-w-[200px] rounded border border-zinc-200 bg-white px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <option value="">上传后手动关联</option>
-              {noteOptions.map((note) => (
-                <option key={note.id} value={note.id}>
-                  {note.title}（{note.scope === "mine" ? "我的" : "团队"}）
-                </option>
-              ))}
-            </select>
+            <div className="min-w-[220px]">
+              <NoteSearchPicker
+                notes={noteOptions}
+                value={defaultNoteId}
+                onChange={setDefaultNoteId}
+                placeholder="上传后手动关联"
+                clearLabel="上传后手动关联"
+                buttonClassName="h-9 text-sm"
+              />
+            </div>
           </div>
         </div>
 
@@ -259,6 +453,48 @@ export function InvestmentNoteMaterialsView() {
         </button>
       </div>
 
+      {selectedCount > 0 ? (
+        <div className="flex flex-wrap items-center gap-3 border-b bg-red-50/50 px-6 py-2.5">
+          <span className="text-sm text-zinc-700">
+            已选 <span className="font-medium text-red-600">{selectedCount}</span> 个文件
+          </span>
+          <div className="flex min-w-[260px] flex-1 items-center gap-2">
+            <span className="shrink-0 text-sm text-zinc-600">批量关联到</span>
+            <NoteSearchPicker
+              notes={noteOptions}
+              value={batchNoteId}
+              onChange={setBatchNoteId}
+              placeholder="搜索要关联的笔记..."
+              allowClear={false}
+              disabled={batchLinking}
+              buttonClassName="h-9 text-sm"
+            />
+          </div>
+          <button
+            type="button"
+            disabled={batchLinking || !batchNoteId}
+            onClick={() => void handleBatchLink()}
+            className="inline-flex h-9 items-center gap-1.5 rounded bg-red-500 px-3 text-sm font-medium text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {batchLinking ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Link2 className="h-3.5 w-3.5" />
+            )}
+            关联选中
+          </button>
+          <button
+            type="button"
+            disabled={batchLinking}
+            onClick={() => setSelectedIds(new Set())}
+            className="inline-flex h-9 items-center gap-1 rounded border border-zinc-200 bg-white px-2.5 text-sm text-zinc-600 hover:bg-zinc-50"
+          >
+            <X className="h-3.5 w-3.5" />
+            取消选择
+          </button>
+        </div>
+      ) : null}
+
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="px-6 py-16 text-center text-sm text-zinc-400">加载中...</div>
@@ -268,8 +504,21 @@ export function InvestmentNoteMaterialsView() {
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-zinc-50 text-left text-xs text-zinc-500">
               <tr className="border-b">
-                <th className="px-6 py-3 font-medium">文件</th>
-                <th className="px-4 py-3 font-medium w-[280px]">关联投资笔记</th>
+                <th className="w-10 px-4 py-3">
+                  <Checkbox
+                    checked={
+                      allFilteredSelected
+                        ? true
+                        : someFilteredSelected
+                          ? "indeterminate"
+                          : false
+                    }
+                    onCheckedChange={(v) => toggleSelectAllFiltered(v === true)}
+                    aria-label="全选当前列表"
+                  />
+                </th>
+                <th className="px-2 py-3 font-medium">文件</th>
+                <th className="px-4 py-3 font-medium w-[300px]">关联投资笔记</th>
                 <th className="px-4 py-3 font-medium w-[120px]">大小</th>
                 <th className="px-4 py-3 font-medium w-[140px]">上传人</th>
                 <th className="px-4 py-3 font-medium w-[150px]">上传时间</th>
@@ -279,9 +528,23 @@ export function InvestmentNoteMaterialsView() {
             <tbody>
               {filtered.map((material) => {
                 const canDelete = !material.uploadedBy || material.uploadedBy === userId
+                const checked = selectedIds.has(material.id)
                 return (
-                  <tr key={material.id} className="border-b border-zinc-100 hover:bg-zinc-50/70">
-                    <td className="px-6 py-3">
+                  <tr
+                    key={material.id}
+                    className={cn(
+                      "border-b border-zinc-100 hover:bg-zinc-50/70",
+                      checked && "bg-red-50/40",
+                    )}
+                  >
+                    <td className="px-4 py-3">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(v) => toggleSelect(material.id, v === true)}
+                        aria-label={`选择 ${material.name}`}
+                      />
+                    </td>
+                    <td className="px-2 py-3">
                       <button
                         type="button"
                         onClick={() => {
@@ -301,19 +564,16 @@ export function InvestmentNoteMaterialsView() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
-                        <select
-                          value={material.noteId || ""}
-                          disabled={linkingId === material.id}
-                          onChange={(e) => void handleLink(material.id, e.target.value)}
-                          className="h-8 min-w-0 flex-1 rounded border border-zinc-200 bg-white px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-                        >
-                          <option value="">未关联</option>
-                          {noteOptions.map((note) => (
-                            <option key={note.id} value={note.id}>
-                              {note.title}（{note.scope === "mine" ? "我的" : "团队"}）
-                            </option>
-                          ))}
-                        </select>
+                        <div className="min-w-0 flex-1">
+                          <NoteSearchPicker
+                            notes={noteOptions}
+                            value={material.noteId || ""}
+                            onChange={(noteId) => void handleLink(material.id, noteId)}
+                            placeholder="未关联"
+                            clearLabel="未关联"
+                            disabled={linkingId === material.id || batchLinking}
+                          />
+                        </div>
                         {material.noteId ? (
                           <a
                             href={investmentNoteDeepLink({

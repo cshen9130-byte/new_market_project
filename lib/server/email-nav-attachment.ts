@@ -207,12 +207,14 @@ export function extractNavTableFromBuffer(
       const rowFundName = row.fundName?.trim()
         ? normalizeFundDisplayName(row.fundName)
         : null
-      // Prefer per-row identity from multi-product CMS 每日净值表.xls; subject is only a fallback.
+      // Prefer per-row identity from the workbook; subject is only a fallback.
+      // CSC 虚拟净值提取 subjects put the FOF/investor second — a wrong subjectFundName
+      // must not override the underlying name from the xlsx row (SCU622 bleed).
       const productCode = rowCode || subjectCodeNorm
       const fundName =
         rowCode && subjectCodeNorm && rowCode !== subjectCodeNorm
           ? rowFundName || null
-          : subjectFundName || rowFundName || null
+          : rowFundName || subjectFundName || null
       return {
         nav: unitNav,
         navDate: row.date,
