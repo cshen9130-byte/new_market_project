@@ -7,7 +7,7 @@ import { query } from "@/lib/db"
 import { readFileDocumentText } from "@/lib/server/knowledge-base"
 import { getServerStoragePath } from "@/lib/server/storage"
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024
+const MAX_FILE_BYTES = 20 * 1024 * 1024
 const HTML_PREVIEW_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"])
 
 const ALLOWED_EXTENSIONS = new Set([
@@ -153,6 +153,10 @@ export function needsHtmlPreview(filename: string) {
   return HTML_PREVIEW_EXTENSIONS.has(getExtension(filename))
 }
 
+export async function ensureFundContractMaterialsTable() {
+  await ensureTable()
+}
+
 async function ensureTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS ops_fund_contract_materials (
@@ -198,9 +202,10 @@ export async function listFundContractMaterials(beian_hao: string): Promise<Fund
   )
 }
 
-export async function saveFundContractMaterial(input: {
+export async function saveFundContractMaterialFromBuffer(input: {
   beian_hao: string
-  file: File
+  buffer: Buffer
+  originalFilename: string
   uploaded_by?: string
   chart_date?: string | null
   title?: string | null
@@ -208,28 +213,27 @@ export async function saveFundContractMaterial(input: {
   const beian_hao = input.beian_hao.trim()
   if (!beian_hao) throw new Error("missing beian_hao")
 
-  const originalFilename = sanitizeFilename(input.file.name || "contract.pdf")
+  const originalFilename = sanitizeFilename(input.originalFilename || "contract.pdf")
   const ext = getExtension(originalFilename)
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new Error(
       "仅支持 PDF、Word (.doc/.docx)、Excel (.xls/.xlsx)、图片 (.png/.jpg/.jpeg/.gif/.webp/.bmp) 格式",
     )
   }
-  if (input.file.size > MAX_FILE_BYTES) {
-    throw new Error("文件大小不能超过 5MB")
+  if (input.buffer.byteLength > MAX_FILE_BYTES) {
+    throw new Error("文件大小不能超过 20MB")
   }
 
   const chartDate = normalizeChartDate(input.chart_date)
   const title = normalizeTitle(input.title)
 
-  const buffer = Buffer.from(await input.file.arrayBuffer())
-  const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
+  const hash = createHash("sha256").update(input.buffer).digest("hex").slice(0, 16)
   const storageFilename = `${beian_hao}_${Date.now()}_${hash}${ext}`
   const storageDir = getServerStoragePath("fund-contracts", beian_hao)
   const storagePath = path.join(storageDir, storageFilename)
 
   await fs.mkdir(storageDir, { recursive: true })
-  await fs.writeFile(storagePath, buffer)
+  await fs.writeFile(storagePath, input.buffer)
 
   await ensureTable()
   const rows = await query<FundContractMaterialRow>(
@@ -241,7 +245,7 @@ export async function saveFundContractMaterial(input: {
       beian_hao,
       originalFilename,
       storageFilename,
-      buffer.byteLength,
+      input.buffer.byteLength,
       mimeTypeForFilename(originalFilename),
       input.uploaded_by?.trim() || "",
       chartDate,
@@ -252,6 +256,24 @@ export async function saveFundContractMaterial(input: {
   const row = rows[0]
   if (!row) throw new Error("保存合同失败")
   return row
+}
+
+export async function saveFundContractMaterial(input: {
+  beian_hao: string
+  file: File
+  uploaded_by?: string
+  chart_date?: string | null
+  title?: string | null
+}): Promise<FundContractMaterialRow> {
+  const buffer = Buffer.from(await input.file.arrayBuffer())
+  return saveFundContractMaterialFromBuffer({
+    beian_hao: input.beian_hao,
+    buffer,
+    originalFilename: input.file.name || "contract.pdf",
+    uploaded_by: input.uploaded_by,
+    chart_date: input.chart_date,
+    title: input.title,
+  })
 }
 
 export async function updateFundContractMaterialMeta(
@@ -334,14 +356,9 @@ export async function readFundContractMaterialFile(id: number) {
   }
 }
 
-export async function readFundContractMaterialPreview(id: number) {
-  const row = await getFundContractMaterialById(id)
-  if (!row) return null
-
-  const ext = getExtension(row.original_filename)
+export async function previewStoredDocument(absolutePath: string, originalFilename: string) {
+  const ext = getExtension(originalFilename)
   if (!HTML_PREVIEW_EXTENSIONS.has(ext)) return null
-
-  const absolutePath = getServerStoragePath("fund-contracts", row.beian_hao, row.storage_filename)
 
   if (ext === ".docx") {
     try {
@@ -349,7 +366,7 @@ export async function readFundContractMaterialPreview(id: number) {
       const parsed = await mammoth.convertToHtml({ buffer })
       if (parsed.value) {
         return {
-          content: buildPreviewHtml(row.original_filename, parsed.value),
+          content: buildPreviewHtml(originalFilename, parsed.value),
           contentType: "text/html; charset=utf-8",
         }
       }
@@ -368,7 +385,7 @@ export async function readFundContractMaterialPreview(id: number) {
       }).join("")
       if (sections) {
         return {
-          content: buildPreviewHtml(row.original_filename, sections),
+          content: buildPreviewHtml(originalFilename, sections),
           contentType: "text/html; charset=utf-8",
         }
       }
@@ -382,9 +399,16 @@ export async function readFundContractMaterialPreview(id: number) {
     ? text.split(/\n+/).filter((p: string) => p.trim()).map((p: string) => `<p>${escapeHtml(p.trim())}</p>`).join("\n")
     : `<pre>${escapeHtml(text)}</pre>`
   return {
-    content: buildPreviewHtml(row.original_filename, body),
+    content: buildPreviewHtml(originalFilename, body),
     contentType: "text/html; charset=utf-8",
   }
+}
+
+export async function readFundContractMaterialPreview(id: number) {
+  const row = await getFundContractMaterialById(id)
+  if (!row) return null
+  const absolutePath = getServerStoragePath("fund-contracts", row.beian_hao, row.storage_filename)
+  return previewStoredDocument(absolutePath, row.original_filename)
 }
 
 export async function deleteFundContractMaterial(id: number): Promise<boolean> {

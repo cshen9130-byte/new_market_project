@@ -5,7 +5,7 @@
 
 import type { ValuationAnalysis, ValuationRow, ValuationSummary } from "@/lib/server/valuation-analyzer"
 import { pickRowCost, pickRowMarketValue } from "@/lib/server/valuation-analyzer"
-import { isDirectEquityOrListedEtfHolding, resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
+import { isDirectEquityOrListedEtfHolding, isValuationIncrementSubjectCode, resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 
 export type EnrichedValuationSummary = ValuationSummary & {
   unit_nav: number
@@ -62,11 +62,14 @@ export function isFofUnderlyingHolding(row: {
     return false
   }
 
+  const code = String(row.code ?? "").replace(/\s+/g, "").replace(/\./g, "")
+  if (code.startsWith("3003")) return false
+  if (isValuationIncrementSubjectCode(code)) return false
+
   const rowKind = String(row.row_kind ?? "")
   if (NON_UNDERLYING_ROW_KINDS.has(rowKind)) return false
   if (UNDERLYING_ROW_KINDS.has(rowKind)) return true
 
-  const code = String(row.code ?? "").replace(/\s+/g, "").replace(/\./g, "")
   const name = String(row.name ?? "")
   if (code.startsWith("1109") || code.startsWith("1108")) return true
   if (/私募证券投资基金|私募基金/.test(name)) return true

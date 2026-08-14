@@ -1,14 +1,26 @@
 import type { PagePermissions, User } from "@/lib/auth"
-import type { InstructionRoleKey } from "@/lib/ma/instruction-roles"
+import {
+  normalizeInstructionRoles,
+  type InstructionRoleKey,
+} from "@/lib/ma/instruction-roles"
 
 export function isAdmin(user: User | null | undefined): boolean {
   return user?.role === "admin"
 }
 
+export function getInstructionRoles(user: User | null | undefined): InstructionRoleKey[] {
+  return normalizeInstructionRoles(user?.permissions)
+}
+
 export function getInstructionRole(user: User | null | undefined): InstructionRoleKey | "" {
-  const role = user?.permissions?.instructionRole
-  if (role === "fund_manager" || role === "general_manager" || role === "ops") return role
-  return ""
+  return getInstructionRoles(user)[0] ?? ""
+}
+
+export function hasInstructionRole(
+  user: User | null | undefined,
+  role: InstructionRoleKey,
+): boolean {
+  return getInstructionRoles(user).includes(role)
 }
 
 export function hasMaScopedPermission(

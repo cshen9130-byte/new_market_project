@@ -8,7 +8,7 @@ import {
   pickRowMarketValue,
   type ValuationRow,
 } from "@/lib/server/valuation-analyzer"
-import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
+import { resolveFundHoldingCode, isValuationClearingSubjectCode } from "@/lib/server/fund-holding-code"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
 
 const KNOWN_HOLDING_FIELDS = new Set([
@@ -201,6 +201,20 @@ function numOrNull(value: unknown): number | null {
   return null
 }
 
+function coerceHoldingRowKind(
+  subjectCode: string | null | undefined,
+  originalSubjectCode: string | null | undefined,
+  rowKind: string | null,
+): string | null {
+  if (
+    isValuationClearingSubjectCode(subjectCode)
+    || isValuationClearingSubjectCode(originalSubjectCode)
+  ) {
+    return "clearing"
+  }
+  return rowKind
+}
+
 function strOrNull(value: unknown): string | null {
   if (value == null) return null
   const s = String(value).trim()
@@ -243,11 +257,13 @@ export function mapValuationRowsToHoldings(
       || Math.abs(unrealizedPnl ?? 0) > 0
     const isLeaf = boolOrNull(row.is_leaf)
     const compactCode = String(row.code ?? "").replace(/[\s.]/g, "")
-    // Repair legacy JSONB where 结算备付金_*期权* was tagged as option.
+    // Repair legacy JSONB where 结算备付金_*期权* was tagged as option,
+    // and 3003 理财产品申购款 leaves named after a 私募 were tagged private_fund.
     let rowKind = strOrNull(row.row_kind)
     if (compactCode.startsWith("1002")) rowKind = "bank_deposit"
     else if (compactCode.startsWith("1021")) rowKind = "settlement_reserve"
     else if (compactCode.startsWith("1031")) rowKind = "margin_deposit"
+    else if (compactCode.startsWith("3003")) rowKind = "clearing"
     const includeInDetail = row.include_in_detail === true || Boolean(isLeaf && hasValue)
     const includeInAnalysis = row.include_in_analysis === true || Boolean(
       includeInDetail
@@ -616,6 +632,9 @@ export async function listFundLatestValuationHoldings(options?: {
      LIMIT $${idx++} OFFSET $${idx++}`,
     [...params, limit, offset],
   )
+  for (const h of holdings) {
+    h.row_kind = coerceHoldingRowKind(h.subject_code, h.original_subject_code, h.row_kind)
+  }
 
   if (options?.skipTotal) {
     return { holdings, total: holdings.length }
@@ -656,7 +675,11 @@ export async function listValuationHoldingsByRecordId(
     originalSubjectCode: strOrNull(r.original_subject_code),
     subjectName: String(r.subject_name),
     symbol: strOrNull(r.symbol),
-    rowKind: strOrNull(r.row_kind),
+    rowKind: coerceHoldingRowKind(
+      String(r.subject_code),
+      strOrNull(r.original_subject_code),
+      strOrNull(r.row_kind),
+    ),
     direction: strOrNull(r.direction),
     exchange: strOrNull(r.exchange),
     assetClass: strOrNull(r.asset_class),

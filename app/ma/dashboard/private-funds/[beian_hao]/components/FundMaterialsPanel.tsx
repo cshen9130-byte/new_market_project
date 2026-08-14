@@ -474,7 +474,7 @@ export function FundMaterialsPanel({
                 onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
               />
               <p className="text-xs text-muted-foreground">
-                支持 PDF / Word / Excel / 图片，最大 5MB
+                支持 PDF / Word / Excel / 图片，最大 20MB
               </p>
             </div>
             <div className="space-y-1.5">

@@ -8,7 +8,7 @@ import {
   instructionRoleDisplayName,
   type InstructionRoleKey,
 } from "@/lib/ma/instruction-roles"
-import { getInstructionRole, isAdmin } from "@/lib/permissions"
+import { getInstructionRole, hasInstructionRole, isAdmin } from "@/lib/permissions"
 
 export type InstructionCategory = "underlying" | "direct" | "customer" | "pool"
 
@@ -27,7 +27,7 @@ export function currentUserHasInstructionRole(role: InstructionRoleKey): boolean
   const user = authService.getCurrentUser()
   if (!user) return false
   if (isAdmin(user)) return true
-  return getInstructionRole(user) === role
+  return hasInstructionRole(user, role)
 }
 
 /** Initiator label for new instructions: 角色姓名 from 指令设置. */
@@ -56,7 +56,7 @@ export function resolveInstructionInitiatorDisplay(
 
   const value = (stored || "").trim()
   if (!value || value === "我") {
-    if (!ownerId && user?.permissions?.instructionRole === "fund_manager") return "我"
+    if (!ownerId && hasInstructionRole(user, "fund_manager")) return "我"
     if (!ownerId) return "基金经理"
     return value || "-"
   }
@@ -677,8 +677,7 @@ function isInitiatedByCurrentUser(row: InstructionRecord, userId: string): boole
   if (initiator && initiator !== "我") {
     return initiator === currentInstructionInitiator()
   }
-  const role = authService.getCurrentUser()?.permissions?.instructionRole
-  return role === "fund_manager"
+  return hasInstructionRole(authService.getCurrentUser(), "fund_manager")
 }
 
 export function listInstructionRecords(options?: {

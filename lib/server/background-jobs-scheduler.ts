@@ -119,5 +119,33 @@ export async function registerBackgroundJobs(): Promise<void> {
     })()
   })
 
+  // Every 10 minutes: drain queued contract-element extract jobs (LLM).
+  // Upload API also kicks the runner; this catches leftovers when the web
+  // process did not run background work (RUN_BACKGROUND_JOBS=0).
+  cron.schedule("*/10 * * * *", () => {
+    void (async () => {
+      try {
+        const { shouldYieldBackgroundWorkToUsers } = await import("./user-activity-priority")
+        if (shouldYieldBackgroundWorkToUsers()) {
+          console.log("[contract-extract-10m] deferred: interactive users active")
+          return
+        }
+        const { startContractExtractJob } = await import("./fund-contract-extract-job")
+        const result = startContractExtractJob({
+          yieldToUserTraffic: true,
+          maxJobs: 20,
+          maxMs: 8 * 60 * 1000,
+        })
+        if (!result.ok) {
+          console.log("[contract-extract-10m] skipped: extract job already running")
+        } else {
+          console.log("[contract-extract-10m] drain started")
+        }
+      } catch (e) {
+        console.error("[contract-extract-10m] scheduler error:", e)
+      }
+    })()
+  })
+
   console.log("[background-jobs] cron schedules registered")
 }

@@ -11,10 +11,10 @@ import {
 import {
   shareClassProductNamesMatch,
 } from "@/lib/server/fund-name-match"
-import { shareClassFromProductName } from "@/lib/server/share-class-product"
+import { shareClassFromProductName, canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 import { getServerStoragePath } from "@/lib/server/storage"
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024
+const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_TEXT_CHARS = 120_000
 const LLM_TEXT_CHARS = 24_000
 
@@ -280,7 +280,7 @@ export async function readFundContractText(buffer: Buffer, fileName: string): Pr
     throw new Error(SUPPORTED_FORMATS_MESSAGE)
   }
   if (buffer.byteLength > MAX_FILE_BYTES) {
-    throw new Error("文件大小不能超过 5MB")
+    throw new Error("文件大小不能超过 20MB")
   }
 
   if (IMAGE_EXTENSIONS.has(ext)) {
@@ -452,6 +452,33 @@ function rankMatchedFunds(
     .sort((a, b) => a.score - b.score || a.product_name.localeCompare(b.product_name, "zh-CN"))
     .slice(0, 10)
     .map(({ beian_hao, product_name, short_name }) => ({ beian_hao, product_name, short_name }))
+}
+
+export function pickHighConfidenceFundMatch(
+  extracted: ExtractedFundElements,
+  matchedFunds: FundMatchCandidate[],
+): FundMatchCandidate | null {
+  if (!matchedFunds.length) return null
+
+  const register = (extracted.register_number ?? "").trim().toUpperCase()
+  if (register) {
+    const exact = matchedFunds.filter((fund) => fund.beian_hao.trim().toUpperCase() === register)
+    if (exact.length === 1) return exact[0]
+    const canon = canonicalizeShareClassBeianCode(register) || register
+    const canonHits = matchedFunds.filter((fund) => {
+      const code = canonicalizeShareClassBeianCode(fund.beian_hao) || fund.beian_hao.trim().toUpperCase()
+      return code === canon
+    })
+    if (canonHits.length === 1) return canonHits[0]
+  }
+
+  const extractedName = (extracted.fund_name ?? "").trim()
+  if (extractedName) {
+    const exactName = matchedFunds.filter((fund) => fund.product_name.trim() === extractedName)
+    if (exactName.length === 1) return exactName[0]
+  }
+
+  return null
 }
 
 export async function matchFundsFromExtracted(

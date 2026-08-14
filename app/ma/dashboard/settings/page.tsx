@@ -2,8 +2,15 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
-import { authService, type PagePermissions, type User } from "@/lib/auth"
-import { buildPermissionsSnapshot } from "@/lib/page-permissions"
+import { ChevronDown } from "lucide-react"
+import { authService, type User } from "@/lib/auth"
+import { withInstructionAssignment } from "@/lib/page-permissions"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   DEFAULT_INSTRUCTION_PROCESS_CONFIG,
   ensureInstructionProcessConfigHydrated,
@@ -15,6 +22,9 @@ import {
 import {
   INSTRUCTION_ROLES,
   INSTRUCTION_TYPE_OPTIONS,
+  instructionRolesLabel,
+  normalizeInstructionRoles,
+  sameInstructionRoles,
   type InstructionRoleKey,
   type InstructionTypeOption,
 } from "@/lib/ma/instruction-roles"
@@ -1737,7 +1747,7 @@ function InstructionSettingsPanel() {
   const [processSaveMsg, setProcessSaveMsg] = useState<string | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [users, setUsers] = useState<User[]>([])
-  const [roleDraft, setRoleDraft] = useState<Record<string, InstructionRoleKey | "">>({})
+  const [roleDraft, setRoleDraft] = useState<Record<string, InstructionRoleKey[]>>({})
   const [nameDraft, setNameDraft] = useState<Record<string, string>>({})
   const [loadingUsers, setLoadingUsers] = useState(false)
   const [savingId, setSavingId] = useState<string | null>(null)
@@ -1774,12 +1784,10 @@ function InstructionSettingsPanel() {
         if (cancelled) return
         const sorted = sortInstructionUsers(list, current?.id)
         setUsers(sorted)
-        const nextRoleDraft: Record<string, InstructionRoleKey | ""> = {}
+        const nextRoleDraft: Record<string, InstructionRoleKey[]> = {}
         const nextNameDraft: Record<string, string> = {}
         for (const u of sorted) {
-          const role = u.permissions?.instructionRole
-          nextRoleDraft[u.id] =
-            role === "fund_manager" || role === "general_manager" || role === "ops" ? role : ""
+          nextRoleDraft[u.id] = normalizeInstructionRoles(u.permissions)
           nextNameDraft[u.id] = u.permissions?.instructionRoleName || ""
         }
         setRoleDraft(nextRoleDraft)
@@ -1799,13 +1807,9 @@ function InstructionSettingsPanel() {
     if (!target) return
     setSavingId(userId)
     setSaveMsg((m) => ({ ...m, [userId]: "" }))
-    const nextRole = roleDraft[userId] || ""
+    const nextRoles = roleDraft[userId] || []
     const nextName = (nameDraft[userId] || "").trim()
-    const permissions: PagePermissions = {
-      ...buildPermissionsSnapshot(target.permissions),
-      instructionRole: nextRole,
-      instructionRoleName: nextName,
-    }
+    const permissions = withInstructionAssignment(target.permissions, nextRoles, nextName)
     const res = await authService.updatePermissions(userId, permissions)
     setSavingId(null)
     if (res.success) {
@@ -1970,7 +1974,7 @@ function InstructionSettingsPanel() {
               <span className="text-xs text-zinc-400">（仅管理员可编辑）</span>
             </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-              为每个账户指定指令模块角色与角色姓名；角色姓名将显示在指令流程节点中。
+              为每个账户指定一个或多个指令模块角色与角色姓名；角色姓名将显示在指令流程节点中。
             </p>
             {loadError ? (
               <div className="text-sm text-red-500 py-6">{loadError}</div>
@@ -1978,12 +1982,12 @@ function InstructionSettingsPanel() {
               <div className="text-sm text-muted-foreground py-10 text-center">加载中…</div>
             ) : (
               <div className="overflow-auto rounded border w-fit max-w-full">
-                <table className="text-sm border-collapse table-fixed w-[640px]">
+                <table className="text-sm border-collapse table-fixed w-[720px]">
                   <thead>
                     <tr className="bg-muted/40 border-b">
                       <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-14">序号</th>
                       <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-32">用户名</th>
-                      <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-36">指令角色</th>
+                      <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-52">指令角色</th>
                       <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-40">角色姓名</th>
                       <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-28">操作</th>
                     </tr>
@@ -1993,11 +1997,14 @@ function InstructionSettingsPanel() {
                       <EmptyTableState colSpan={5} />
                     ) : (
                       users.map((u, i) => {
-                        const currentRole = u.permissions?.instructionRole || ""
-                        const draftRole = roleDraft[u.id] ?? ""
+                        const currentRoles = normalizeInstructionRoles(u.permissions)
+                        const draftRoles = roleDraft[u.id] ?? []
                         const currentName = u.permissions?.instructionRoleName || ""
                         const draftName = nameDraft[u.id] ?? ""
-                        const dirty = draftRole !== currentRole || draftName.trim() !== currentName.trim()
+                        const dirty =
+                          !sameInstructionRoles(draftRoles, currentRoles)
+                          || draftName.trim() !== currentName.trim()
+                        const roleLabel = instructionRolesLabel(draftRoles)
                         return (
                           <tr key={u.id} className="border-b hover:bg-muted/20 transition-colors">
                             <td className="px-3 py-2.5 text-muted-foreground tabular-nums">{i + 1}</td>
@@ -2005,21 +2012,46 @@ function InstructionSettingsPanel() {
                               {u.name}
                             </td>
                             <td className="px-3 py-2.5">
-                              <select
-                                value={draftRole}
-                                onChange={(e) =>
-                                  setRoleDraft((prev) => ({
-                                    ...prev,
-                                    [u.id]: e.target.value as InstructionRoleKey | "",
-                                  }))
-                                }
-                                className="w-full border rounded px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-red-400"
-                              >
-                                <option value="">未分配</option>
-                                {INSTRUCTION_ROLES.map((r) => (
-                                  <option key={r.key} value={r.key}>{r.label}</option>
-                                ))}
-                              </select>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    type="button"
+                                    title={roleLabel}
+                                    className="flex w-full items-center justify-between gap-1 border rounded px-2 py-1.5 text-sm bg-background text-left focus:outline-none focus:ring-1 focus:ring-red-400"
+                                  >
+                                    <span className={draftRoles.length ? "truncate" : "truncate text-zinc-400"}>
+                                      {roleLabel}
+                                    </span>
+                                    <ChevronDown className="size-3.5 shrink-0 text-zinc-400" />
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="start" className="w-44">
+                                  {INSTRUCTION_ROLES.map((r) => {
+                                    const checked = draftRoles.includes(r.key)
+                                    return (
+                                      <DropdownMenuCheckboxItem
+                                        key={r.key}
+                                        checked={checked}
+                                        onCheckedChange={(nextChecked) => {
+                                          setRoleDraft((prev) => {
+                                            const current = prev[u.id] ?? []
+                                            const next = nextChecked
+                                              ? [...current, r.key]
+                                              : current.filter((key) => key !== r.key)
+                                            return {
+                                              ...prev,
+                                              [u.id]: normalizeInstructionRoles({ instructionRoles: next }),
+                                            }
+                                          })
+                                        }}
+                                        onSelect={(e) => e.preventDefault()}
+                                      >
+                                        {r.label}
+                                      </DropdownMenuCheckboxItem>
+                                    )
+                                  })}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                             </td>
                             <td className="px-3 py-2.5">
                               <input

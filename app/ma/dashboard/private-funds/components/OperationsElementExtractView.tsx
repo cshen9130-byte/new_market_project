@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { CheckCircle2, FileSearch, FileText, Loader2, Pencil, PlusCircle, Upload, X } from "lucide-react"
+import { OperationsElementExtractBatchPanel } from "./OperationsElementExtractBatchPanel"
 
 type ExtractedFundElements = {
   fund_name: string | null
@@ -280,7 +281,7 @@ function FieldCompareRow({
   )
 }
 
-export function OperationsElementExtractView() {
+function InstantExtractPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentLoadRef = useRef(0)
@@ -715,13 +716,6 @@ export function OperationsElementExtractView() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-lg font-semibold">要素提取</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          支持批量上传基金合同，同时提取基本信息与申赎信息，并写入对应产品的要素字段。
-        </p>
-      </div>
-
       <div className="rounded-lg border p-5 space-y-4">
         <div className="flex items-center gap-2 text-sm font-medium">
           <Upload className="h-4 w-4 text-red-500" />
@@ -749,7 +743,7 @@ export function OperationsElementExtractView() {
               将文件拖到此处，或点击上传（可多选）
             </span>
             <span className="text-xs text-muted-foreground">
-              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 5MB，最多 {MAX_FILES} 份
+              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 20MB，最多 {MAX_FILES} 份
             </span>
             <input
               ref={fileInputRef}
@@ -1081,6 +1075,50 @@ export function OperationsElementExtractView() {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+export function OperationsElementExtractView() {
+  const [tab, setTab] = useState<"batch" | "instant">("batch")
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-lg font-semibold">要素提取</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          {tab === "batch"
+            ? "批量上传基金合同后在后台提取并写入空缺要素；可查看历史任务状态，以及哪些 FOF底层产品尚未关联合同。"
+            : "即时提取：上传后立即解析，核对匹配产品与字段后再写入。"}
+        </p>
+      </div>
+      <div className="flex gap-1 border-b">
+        <button
+          type="button"
+          onClick={() => setTab("batch")}
+          className={[
+            "px-3 py-2 text-sm -mb-px border-b-2 transition-colors",
+            tab === "batch"
+              ? "border-red-500 text-red-600 font-medium"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          ].join(" ")}
+        >
+          批量入库
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("instant")}
+          className={[
+            "px-3 py-2 text-sm -mb-px border-b-2 transition-colors",
+            tab === "instant"
+              ? "border-red-500 text-red-600 font-medium"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          ].join(" ")}
+        >
+          即时提取
+        </button>
+      </div>
+      {tab === "batch" ? <OperationsElementExtractBatchPanel /> : <InstantExtractPanel />}
     </div>
   )
 }

@@ -14,6 +14,45 @@ function compactSubjectCode(code: string | null | undefined): string {
     .replace(/(SH|SZ|BJ|OTC)$/i, "")
 }
 
+/** 3003 证券清算款 (e.g. 理财产品申购款) — not a fund holding, even if the leaf name is a 私募. */
+export function isValuationClearingSubjectCode(code: string | null | undefined): boolean {
+  return compactSubjectCode(code).startsWith("3003")
+}
+
+export function sqlSubjectCodeIsClearing(codeExpr: string): string {
+  return `REPLACE(REPLACE(COALESCE(${codeExpr}, ''), ' ', ''), '.', '') LIKE '3003%'`
+}
+
+/**
+ * 1109.06.99 / 1108.02.99 估值增值 leaf (11090699STX591).
+ * Does not match product codes that merely contain "99" (11090601BAH99C).
+ */
+export function isValuationIncrementSubjectCode(code: string | null | undefined): boolean {
+  return /^110[89]\d{2}99/i.test(compactSubjectCode(code))
+}
+
+export function sqlSubjectCodeIsValuationIncrement(codeExpr: string): string {
+  return `REPLACE(REPLACE(COALESCE(${codeExpr}, ''), ' ', ''), '.', '') ~ '^110[89][0-9]{2}99'`
+}
+
+export type ValuationFundSubjectRole =
+  | "position"
+  | "valuation_adj"
+  | "subscription"
+  | "redemption"
+  | "clearing"
+
+export function classifyValuationFundSubjectRole(
+  code: string | null | undefined,
+): ValuationFundSubjectRole {
+  const c = compactSubjectCode(code)
+  if (isValuationIncrementSubjectCode(c)) return "valuation_adj"
+  if (c.startsWith("30032002")) return "redemption"
+  if (c.startsWith("30032001") || c.startsWith("30032003")) return "subscription"
+  if (c.startsWith("3003")) return "clearing"
+  return "position"
+}
+
 function extractCodeFromDottedSubject(original: string): string | null {
   const text = String(original ?? "").trim()
   if (!text) return null
@@ -228,13 +267,18 @@ export function sqlExcludeFofUnderlyingProduct(productNameExpr: string, beianExp
     )
     OR (
       ${productNameExpr} !~* '基金|私募|ETF'
-      AND ${beian} ~ '^(000|001|002|003|300|301|600|601|603|605|688|689)[0-9]{3}$'
+      AND ${beian} ~ '^(000|001|002|003|300|301|600|601|603|605|688|689|430|820|830|831|832|833|834|835|836|837|838|839|870|871|872|873|920)[0-9]{3}$'
     )
     OR (
       ${productNameExpr} !~* '基金|私募|资管|信托|专户|ETF'
       AND ${productNameExpr} !~* '[0-9]+号'
       AND ${beian} ~ '^[0-9]+$'
       AND ${beian} !~ '^[0-9]{6}$'
+    )
+    OR (
+      ${productNameExpr} ~ '^[A-Z]?[\u4e00-\u9fff]{1,4}$'
+      AND ${productNameExpr} !~* '基金|私募|号'
+      AND ${beian} ~ '^[0-9]+$'
     )
   )`
 }

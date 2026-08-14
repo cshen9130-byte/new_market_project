@@ -1,4 +1,8 @@
 import type { PagePermissions } from "@/lib/auth"
+import {
+  normalizeInstructionRoles,
+  type InstructionRoleKey,
+} from "@/lib/ma/instruction-roles"
 
 export const PERM_COLUMNS: { key: keyof PagePermissions; label: string; hint?: string }[] = [
   { key: "ma", label: "MA 市场监控" },
@@ -16,11 +20,27 @@ export function buildPermissionsSnapshot(source: PagePermissions | undefined): P
     result[col.key] = !!source?.[col.key]
   }
   // Preserve non-boolean instruction workflow fields when saving page permissions.
-  if (source?.instructionRole) {
-    result.instructionRole = source.instructionRole
+  const roles = normalizeInstructionRoles(source)
+  if (roles.length > 0) {
+    result.instructionRoles = roles
+    result.instructionRole = roles[0]
   }
   if (source?.instructionRoleName) {
     result.instructionRoleName = source.instructionRoleName
   }
   return result
+}
+
+export function withInstructionAssignment(
+  source: PagePermissions | undefined,
+  roles: InstructionRoleKey[],
+  roleName: string,
+): PagePermissions {
+  const normalized = normalizeInstructionRoles({ instructionRoles: roles })
+  return {
+    ...buildPermissionsSnapshot(source),
+    instructionRoles: normalized,
+    instructionRole: normalized[0] ?? "",
+    instructionRoleName: roleName,
+  }
 }

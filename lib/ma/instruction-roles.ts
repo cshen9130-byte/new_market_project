@@ -26,8 +26,41 @@ export function instructionRoleLabel(role: string | null | undefined): string {
   return INSTRUCTION_ROLES.find((r) => r.key === role)?.label ?? "未分配"
 }
 
+export function instructionRolesLabel(roles: InstructionRoleKey[]): string {
+  if (!roles.length) return "未分配"
+  return roles.map((role) => instructionRoleLabel(role)).join("、")
+}
+
 export function isInstructionRoleKey(value: unknown): value is InstructionRoleKey {
   return typeof value === "string" && INSTRUCTION_ROLES.some((r) => r.key === value)
+}
+
+/** Stable unique roles from new `instructionRoles` or legacy single `instructionRole`. */
+export function normalizeInstructionRoles(
+  permissions:
+    | { instructionRoles?: unknown; instructionRole?: unknown }
+    | null
+    | undefined,
+): InstructionRoleKey[] {
+  const seen = new Set<InstructionRoleKey>()
+  if (Array.isArray(permissions?.instructionRoles)) {
+    for (const item of permissions.instructionRoles) {
+      if (isInstructionRoleKey(item)) seen.add(item)
+    }
+    return INSTRUCTION_ROLES.map((r) => r.key).filter((key) => seen.has(key))
+  }
+  if (isInstructionRoleKey(permissions?.instructionRole)) {
+    return [permissions.instructionRole]
+  }
+  return []
+}
+
+export function sameInstructionRoles(
+  a: InstructionRoleKey[],
+  b: InstructionRoleKey[],
+): boolean {
+  if (a.length !== b.length) return false
+  return a.every((role, i) => role === b[i])
 }
 
 /** Display name shown in the 指令 process UI. */

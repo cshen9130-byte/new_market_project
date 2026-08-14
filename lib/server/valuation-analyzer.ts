@@ -584,12 +584,13 @@ function inferRowKind(code: string, name: string): string {
   if (compactCode.startsWith("1102")) return "fund_or_stock"
   if (compactCode.startsWith("1105")) return /货币/.test(name) ? "money_fund" : "fund"
   if (compactCode.startsWith("1108") || compactCode.startsWith("1109")) return "private_fund"
-  if (/私募证券投资基金|私募基金/.test(name)) return "private_fund"
   if (compactCode.startsWith("1202")) return "repo"
   if (compactCode.startsWith("1203") || compactCode.startsWith("1207")) return "receivable"
   if (compactCode.startsWith("3003")) return "clearing"
   if (compactCode.startsWith("4001") || /实收资本/.test(name)) return "paid_in_capital"
   if (/^22/.test(compactCode)) return "payable"
+  // Name fallback last — 3003 理财产品申购款 leaves are often named after the 私募.
+  if (/私募证券投资基金|私募基金/.test(name)) return "private_fund"
   return "other"
 }
 

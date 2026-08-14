@@ -4572,6 +4572,32 @@ def step_dd_materials_links() -> int:
     return changed
 
 
+def step_contract_extract() -> int:
+    """Drain queued/failed fund-contract element extract jobs (LLM)."""
+    log.info("contract_extract: draining queued contract extract jobs …")
+    result = run_node_script("contract_extract_etl.ts", extra_args=["--retry-failed"], timeout=3600)
+    if not result:
+        raise RuntimeError("contract_extract: no result from contract_extract_etl.ts")
+    if not result.get("ok"):
+        raise RuntimeError(
+            f"contract_extract: failed — {result.get('error', 'unknown')}"
+        )
+    processed = int(result.get("processed") or 0)
+    applied = int(result.get("applied") or 0)
+    needs_review = int(result.get("needsReview") or 0)
+    failed = int(result.get("failed") or 0)
+    remaining = int(result.get("remaining") or 0)
+    log.info(
+        "contract_extract: processed=%d applied=%d needs_review=%d failed=%d remaining=%d",
+        processed,
+        applied,
+        needs_review,
+        failed,
+        remaining,
+    )
+    return processed
+
+
 def step_dd_table_daily_backup() -> int:
     """Snapshot 尽调表格 into due_diligence_team_table_backups (keep last 3 daily)."""
     log.info("dd_table_daily_backup: creating daily due diligence table backup …")
@@ -4933,6 +4959,7 @@ ORDERED_STEPS = [
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "dd_materials_links",            # 尽调表格 ↔ 内部尽调资料 knowledge-base folder links
+    "contract_extract",              # queued fund-contract LLM extract → 产品要素 + 合同附件
     "dd_table_daily_backup",         # 尽调表格 daily snapshot (rolling keep last 3)
     "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)
     "warm_mom_cache",                # warm MOM dashboard API caches
@@ -5077,6 +5104,7 @@ def main():
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "dd_materials_links":              lambda: step_dd_materials_links(),
+        "contract_extract":                lambda: step_contract_extract(),
         "dd_table_daily_backup":           lambda: step_dd_table_daily_backup(),
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
         "valuation_cache":                 lambda: step_valuation_cache(),

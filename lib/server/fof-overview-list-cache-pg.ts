@@ -11,7 +11,7 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
-import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingMarketValueMapFromCache, loadManagedUnderlyingValuationNavLookup, loadManagedUnderlyingNavHistoryIncremental, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
+import { loadManagedUnderlyingMarketLookup, loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingMarketValueMapFromCache, loadManagedUnderlyingNavHistoryIncremental, loadManagedUnderlyingValuationNavLookup, resolveManagedUnderlyingMarket, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import { shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 import {
@@ -189,9 +189,10 @@ const FOF_CACHE_UPSERT_SUFFIX = `
 
 export type FofOverviewListCacheRefreshOptions = {
   /**
-   * Intraday mode: refresh NAV / 市值 / returns for products already in the cache and skip
-   * every fuzzy fund-name join, including the one behind the 市值 map. Products missing from
-   * the cache are left for the next full rebuild rather than resolved on the spot.
+   * Intraday mode: reuse cached 备案号 for products already in the cache and skip
+   * fuzzy joins for those rows. Newly auto-added FOF底层 products (not yet in cache)
+   * still get a beian join + 市值 so they appear in 投后 FOF底层 without waiting
+   * for the nightly full rebuild.
    */
   reuseResolvedIdentities?: boolean
 }
@@ -237,11 +238,10 @@ export async function refreshFofOverviewListCache(
   )
   logProgress(`found ${baseRows.length} products`, t0)
 
-  // Products already in cache get beian without lateral joins. Intraday runs never pay for
-  // the joins at all: an unseen product waits for the next full rebuild.
-  const needBeianJoin = reuseIdentities
-    ? []
-    : baseRows.filter((r) => !cachedBeian.has(r.product_name))
+  // Cached products skip lateral joins. New auto-added FOF底层 rows still join so
+  // they enter the cache on the same intraday pass (otherwise 投后 FOF底层 持仓中
+  // stays empty until nightly rebuild).
+  const needBeianJoin = baseRows.filter((r) => !cachedBeian.has(r.product_name))
   logProgress(
     `${baseRows.length - needBeianJoin.length} beian from cache, ${needBeianJoin.length} need lateral join…`,
     t0,
@@ -265,9 +265,6 @@ export async function refreshFofOverviewListCache(
   }
 
   const products: BaseProductRow[] = baseRows
-    // Intraday runs resolve nothing, so a product missing from the cache would be written with
-    // a null 备案号 and stay wrong until the nightly rebuild. Leave it out instead.
-    .filter((r) => !reuseIdentities || cachedBeian.has(r.product_name))
     .map((r) => {
       const fromCache = cachedBeian.has(r.product_name)
       const fromJoin = joinedBeian.get(r.fof_underlying_id)
@@ -275,6 +272,28 @@ export async function refreshFofOverviewListCache(
       const short_name = fromJoin?.short_name ?? r.product_name
       return { ...r, beian_hao, short_name }
     })
+
+  const missingBeian = products.filter((p) => !p.beian_hao)
+  if (missingBeian.length > 0) {
+    const codeRows = await query<{ name: string; code: string }>(
+      `SELECT TRIM(underlying_name) AS name,
+              TRIM(UPPER(underlying_product_code)) AS code
+       FROM ops_managed_fof_underlying
+       WHERE COALESCE(market_value, 0) > 0
+         AND NULLIF(BTRIM(underlying_product_code), '') IS NOT NULL`,
+    )
+    const codeByName = new Map<string, string>()
+    for (const row of codeRows) {
+      if (!codeByName.has(row.name)) codeByName.set(row.name, row.code)
+      const short = row.name.replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "").trim()
+      if (short && !codeByName.has(short)) codeByName.set(short, row.code)
+    }
+    for (const p of missingBeian) {
+      const code = codeByName.get(p.product_name)
+        ?? codeByName.get(p.product_name.replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "").trim())
+      if (code) p.beian_hao = code
+    }
+  }
 
   // Prefer the cache-backed 市值 map whenever the overview cache is warm. The full
   // buildFofUnderlyingSummaryFrom path re-derives 备案号 via 250k-row fuzzy joins and
@@ -286,6 +305,16 @@ export async function refreshFofOverviewListCache(
       : new Map<string, number>()
   if (managedMarketById.size === 0) {
     managedMarketById = await loadManagedUnderlyingMarketValueMap()
+  }
+  const missingMarketIds = products.filter((p) => !managedMarketById.has(p.fof_underlying_id))
+  if (missingMarketIds.length > 0) {
+    const lookup = await loadManagedUnderlyingMarketLookup()
+    for (const p of missingMarketIds) {
+      const agg = resolveManagedUnderlyingMarket(p.product_name, p.beian_hao, lookup)
+      if (agg.market_value != null && agg.market_value > 0) {
+        managedMarketById.set(p.fof_underlying_id, agg.market_value)
+      }
+    }
   }
   logProgress(`managed 市值 map loaded (${managedMarketById.size} ids)`, t0)
 

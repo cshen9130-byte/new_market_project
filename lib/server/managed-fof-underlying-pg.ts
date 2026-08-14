@@ -28,7 +28,7 @@ import {
   sqlShareClassHoldingCodeGuard,
   sqlShareClassProductNameGuard,
 } from "@/lib/server/fund-name-match"
-import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode, isDirectEquityOrEtfValuationHolding } from "@/lib/server/fund-holding-code"
+import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode, isDirectEquityOrEtfValuationHolding, isValuationClearingSubjectCode, isValuationIncrementSubjectCode, sqlSubjectCodeIsClearing, sqlSubjectCodeIsValuationIncrement } from "@/lib/server/fund-holding-code"
 import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 
 /** Managed products excluded from FOF underlying extraction (non-FOF). */
@@ -93,6 +93,10 @@ let managedFofUnderlyingRefreshInFlight: Promise<number> | null = null
 export type ManagedFofUnderlyingRefreshOptions = {
   /** Skip slow symbol backfill when holdings already have codes (on-demand page load). */
   skipSymbolBackfill?: boolean
+  /** Skip NAV column backfill (light polls). Overview cache resolves NAV independently. */
+  skipNavBackfill?: boolean
+  /** Rebuild only these FOF 估值表 product codes (light poll after a 估值表 arrives). */
+  productCodes?: string[]
 }
 
 export async function ensureManagedFofUnderlyingTable(): Promise<void> {
@@ -105,10 +109,139 @@ export async function ensureManagedFofUnderlyingTable(): Promise<void> {
   tableEnsured = true
 }
 
+const UNDERLYING_HOLDING_FILTER_SQL = `
+       h.include_in_detail = TRUE
+         AND COALESCE(h.market_value, h.cost, 0) > 0
+         AND h.row_kind NOT IN (
+           'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
+           'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
+         )
+         AND NOT ${sqlSubjectCodeIsClearing("h.subject_code")}
+         AND NOT ${sqlSubjectCodeIsValuationIncrement("h.subject_code")}
+         AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
+         AND BTRIM(h.symbol) ~ '^[A-Za-z0-9]+$'
+         AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
+         AND (
+           h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
+           OR h.subject_code LIKE '1109%'
+           OR h.subject_code LIKE '1108%'
+           OR h.subject_name ~ '私募证券投资基金'
+           OR h.subject_name ~ '私募基金'
+           OR (h.row_kind = 'other' AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL)
+         )`
+
+/**
+ * Fast path for light polls: rebuild FOF底层 for specific 估值表 product codes only.
+ * Skips the all-managed-products beian lateral joins that make a full refresh too slow
+ * for the 5-minute checkpoint job.
+ */
+async function refreshManagedFofUnderlyingForProductCodes(
+  productCodes: string[],
+  options: ManagedFofUnderlyingRefreshOptions,
+): Promise<number> {
+  await ensureManagedFofUnderlyingTable()
+  await ensureEmailValuationHoldingsTables()
+
+  await query(
+    `DELETE FROM ops_managed_fof_underlying
+     WHERE UPPER(BTRIM(fof_product_code)) = ANY($1::text[])`,
+    [productCodes],
+  )
+
+  const fundMatch = sqlFundNameMatch("r.fund_name", "m.product_name")
+  const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
+
+  const rows = await query<{ n: string }>(
+    `WITH latest_valuation AS (
+       SELECT DISTINCT ON (m.id)
+         m.id AS managed_product_id,
+         m.product_name AS fof_product_name,
+         UPPER(BTRIM(r.product_code)) AS fof_product_code,
+         r.id AS valuation_record_id,
+         r.valuation_date
+       FROM managed_products m
+       INNER JOIN ops_email_valuation_records r
+         ON UPPER(BTRIM(r.product_code)) = ANY($1::text[])
+        AND ${fundMatch}
+       WHERE m.product_name <> '合计'
+         AND m.product_name NOT ILIKE $2
+       ORDER BY m.id, r.valuation_date DESC, r.id DESC
+     ),
+     underlying_rows AS (
+       SELECT DISTINCT ON (lv.managed_product_id, ${underlyingKey})
+         lv.managed_product_id,
+         lv.fof_product_name,
+         lv.fof_product_code,
+         lv.valuation_date,
+         lv.valuation_record_id,
+         NULLIF(BTRIM(UPPER(h.symbol)), '') AS underlying_product_code,
+         h.subject_name AS underlying_name,
+         h.subject_code,
+         CASE
+           WHEN h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund') THEN h.row_kind
+           WHEN h.subject_code LIKE '1109%' OR h.subject_code LIKE '1108%'
+             OR h.subject_name ~ '私募证券投资基金' OR h.subject_name ~ '私募基金'
+             THEN 'private_fund'
+           ELSE h.row_kind
+         END AS row_kind,
+         h.market_value,
+         h.quantity,
+         h.cost,
+         h.market_weight,
+         h.price
+       FROM latest_valuation lv
+       INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = lv.valuation_record_id
+       WHERE ${UNDERLYING_HOLDING_FILTER_SQL}
+       ORDER BY lv.managed_product_id, ${underlyingKey}, h.market_value DESC NULLS LAST
+     ),
+     inserted AS (
+       INSERT INTO ops_managed_fof_underlying (
+         managed_product_id, fof_product_name, fof_product_code,
+         valuation_date, valuation_record_id,
+         underlying_product_code, underlying_name, subject_code, row_kind,
+         market_value, quantity, cost, market_weight, price
+       )
+       SELECT
+         managed_product_id, fof_product_name, fof_product_code,
+         valuation_date, valuation_record_id,
+         underlying_product_code, underlying_name, subject_code, row_kind,
+         market_value, quantity, cost, market_weight, price
+       FROM underlying_rows
+       ON CONFLICT (managed_product_id, valuation_date, underlying_product_code, underlying_name, subject_code)
+       DO UPDATE SET
+         market_value  = EXCLUDED.market_value,
+         quantity      = EXCLUDED.quantity,
+         cost          = EXCLUDED.cost,
+         market_weight = EXCLUDED.market_weight,
+         price         = EXCLUDED.price,
+         refreshed_at  = NOW()
+       RETURNING 1
+     )
+     SELECT COUNT(*)::text AS n FROM inserted`,
+    [productCodes, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
+  )
+
+  const inserted = parseInt(rows[0]?.n ?? "0", 10)
+  if (inserted > 0 && !options.skipNavBackfill) {
+    await backfillManagedFofUnderlyingNavFields({
+      skipSymbolBackfill: options.skipSymbolBackfill,
+    })
+  }
+  return inserted
+}
+
 /** Rebuild 在管产品 FOF 底层持仓 from latest email 估值表 per managed fund. */
 export async function refreshManagedFofUnderlying(
   options: ManagedFofUnderlyingRefreshOptions = {},
 ): Promise<number> {
+  const productCodes = [...new Set(
+    (options.productCodes ?? []).map((c) => c.trim().toUpperCase()).filter(Boolean),
+  )]
+  if (options.productCodes !== undefined) {
+    if (productCodes.length === 0) return 0
+    return refreshManagedFofUnderlyingForProductCodes(productCodes, options)
+  }
+
   await ensureManagedFofUnderlyingTable()
   await ensureEmailValuationMetricsTables()
   await ensureEmailValuationHoldingsTables()
@@ -117,11 +250,26 @@ export async function refreshManagedFofUnderlying(
   // Limit to rows that can enter underlying extraction to avoid a full-table rewrite.
   await query(
     `UPDATE ops_email_valuation_holdings h
+     SET row_kind = 'clearing'
+     WHERE ${sqlSubjectCodeIsClearing("h.subject_code")}
+       AND h.row_kind IS DISTINCT FROM 'clearing'`,
+  )
+
+  await query(
+    `UPDATE ops_email_valuation_fund_holdings_latest h
+     SET row_kind = 'clearing'
+     WHERE ${sqlSubjectCodeIsClearing("h.subject_code")}
+       AND h.row_kind IS DISTINCT FROM 'clearing'`,
+  )
+
+  await query(
+    `UPDATE ops_email_valuation_holdings h
      SET row_kind = 'private_fund'
      WHERE h.row_kind = 'other'
        AND h.include_in_detail = TRUE
        AND COALESCE(h.market_value, h.cost, 0) > 0
        AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
+       AND NOT ${sqlSubjectCodeIsClearing("h.subject_code")}
        AND (
          h.subject_code LIKE '1109%'
          OR h.subject_code LIKE '1108%'
@@ -189,23 +337,7 @@ export async function refreshManagedFofUnderlying(
          h.price
        FROM latest_valuation lv
        INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = lv.valuation_record_id
-       WHERE h.include_in_detail = TRUE
-         AND COALESCE(h.market_value, h.cost, 0) > 0
-         AND h.row_kind NOT IN (
-           'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
-           'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
-         )
-         AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
-         AND BTRIM(h.symbol) ~ '^[A-Za-z0-9]+$'
-         AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
-         AND (
-           h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
-           OR h.subject_code LIKE '1109%'
-           OR h.subject_code LIKE '1108%'
-           OR h.subject_name ~ '私募证券投资基金'
-           OR h.subject_name ~ '私募基金'
-           OR (h.row_kind = 'other' AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL)
-         )
+       WHERE ${UNDERLYING_HOLDING_FILTER_SQL}
        ORDER BY lv.managed_product_id, ${underlyingKey}, h.market_value DESC NULLS LAST
      ),
      inserted AS (
@@ -236,7 +368,7 @@ export async function refreshManagedFofUnderlying(
   )
 
   const inserted = parseInt(rows[0]?.n ?? "0", 10)
-  if (inserted > 0) {
+  if (inserted > 0 && !options.skipNavBackfill) {
     await backfillManagedFofUnderlyingNavFields({
       skipSymbolBackfill: options.skipSymbolBackfill,
     })
@@ -406,6 +538,8 @@ const SQL_FOF_VALUATION_HOLDING_CORE_FILTERS = `
     'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
     'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
   )
+  AND NOT ${sqlSubjectCodeIsClearing("h.subject_code")}
+  AND NOT ${sqlSubjectCodeIsValuationIncrement("h.subject_code")}
   AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
   AND (
     h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
@@ -1390,6 +1524,8 @@ function isPrivateFundUnderlyingValuationRow(row: ValuationRow): boolean {
   const symbol = row.symbol != null ? String(row.symbol) : null
 
   if (EXCLUDED_ROW_KINDS.has(rowKind)) return false
+  if (isValuationClearingSubjectCode(subjectCode)) return false
+  if (isValuationIncrementSubjectCode(subjectCode)) return false
   if (isDirectEquityOrEtfValuationHolding(subjectName, subjectCode, symbol, rowKind)) return false
 
   return (

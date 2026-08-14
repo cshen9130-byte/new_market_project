@@ -25,10 +25,15 @@ import { fetchListedFundNavBatch } from "@/lib/server/listed-fund-eastmoney-nav"
 import {
   extractListedFundCodeFromName,
   isListedFundCode,
+  isValuationClearingSubjectCode,
   listedFundCodeToTickers,
   lookupFundCodeByProductName,
   resolveFundHoldingCode,
 } from "@/lib/server/fund-holding-code"
+import {
+  isFundHoldingMergeCandidate,
+  mergeSameProductFundHoldings,
+} from "@/lib/server/fund-holding-merge"
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { resolveRouteFundIdFast } from "@/lib/server/fund-detail-fast-path"
 import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
@@ -947,6 +952,12 @@ function isFundHoldingRow(h: HoldingRow): boolean {
   if (h.include_in_detail === false) return false
   if (h.is_leaf === false) return false
   if (!hasEconomicHoldingValue(h)) return false
+  if (
+    isValuationClearingSubjectCode(h.subject_code)
+    || isValuationClearingSubjectCode(h.original_subject_code)
+  ) {
+    return false
+  }
 
   const kind = h.row_kind ?? "other"
   if (isCashLikeHoldingKind(kind)) return false
@@ -991,19 +1002,9 @@ function scoreFundHoldingCandidate(h: HoldingRow): number {
   return score
 }
 
-/** One row per underlying fund — same fund may appear under multiple 科目 codes in 估值表. */
+/** One row per underlying fund — same fund may split across 1109/1108/99/3003 科目. */
 function dedupeFundHoldings(holdings: HoldingRow[]): HoldingRow[] {
-  const byKey = new Map<string, HoldingRow>()
-  for (const h of holdings) {
-    if (!isFundHoldingRow(h)) continue
-    const key = fundHoldingIdentityKey(h)
-    if (!key) continue
-    const prev = byKey.get(key)
-    if (!prev || scoreFundHoldingCandidate(h) > scoreFundHoldingCandidate(prev)) {
-      byKey.set(key, h)
-    }
-  }
-  return [...byKey.values()].sort((a, b) => Math.abs(rowMarketValue(b)) - Math.abs(rowMarketValue(a)))
+  return mergeSameProductFundHoldings(holdings.filter(isFundHoldingMergeCandidate))
 }
 
 function classifyFundHoldingKind(h: HoldingRow): "private_fund" | "public_fund" {

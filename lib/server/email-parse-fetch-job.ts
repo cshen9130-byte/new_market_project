@@ -342,6 +342,38 @@ export function startEmailParseFetchJob(options?: {
             }
           }
 
+          if (result.valuationSaved > 0) {
+            if (abort.signal.aborted) {
+              throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+            }
+            job.message = "正在刷新在管产品FOF底层并补充新产品…"
+            try {
+              const { refreshManagedFofUnderlyingAndAutoAdd } = await import(
+                "@/lib/server/fof-underlying-auto-add-pg"
+              )
+              const fofSync = await refreshManagedFofUnderlyingAndAutoAdd({
+                skipSymbolBackfill: true,
+                skipNavBackfill: true,
+                productCodes: result.touchedFunds
+                  .map((fund) => fund.productCode)
+                  .filter(Boolean),
+              })
+              result.managedFofUnderlyingRefreshed = fofSync.managedRows
+              result.opsFofUnderlyingAdded = fofSync.opsFofUnderlyingAdded
+              result.detailFofUnderlyingAdded = fofSync.detailFofUnderlyingAdded
+              console.log(
+                `[email-parse-fetch-job] managed FOF underlying refresh` +
+                  ` rows=${fofSync.managedRows} summary+=${fofSync.opsFofUnderlyingAdded}` +
+                  ` detail+=${fofSync.detailFofUnderlyingAdded}`,
+              )
+            } catch (e) {
+              if (isAbortError(e)) throw e
+              result.errors.push(
+                `刷新在管产品FOF底层失败: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            }
+          }
+
           if (abort.signal.aborted) {
             throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
           }

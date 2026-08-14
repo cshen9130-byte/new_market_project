@@ -136,3 +136,27 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
     detailFofUnderlyingAdded: parseInt(detailRows[0]?.n ?? "0", 10),
   }
 }
+
+/**
+ * Rebuild ops_managed_fof_underlying from latest 估值表, then insert any newly
+ * seen underlyings into fof_underlying_summary / fof_underlying_detail.
+ * Used by full ETL and by light polls after a managed FOF 估值表 arrives.
+ */
+export async function refreshManagedFofUnderlyingAndAutoAdd(
+  options: {
+    skipSymbolBackfill?: boolean
+    skipNavBackfill?: boolean
+    productCodes?: string[]
+  } = {},
+): Promise<FofUnderlyingAutoAddResult & { managedRows: number }> {
+  const { refreshManagedFofUnderlying } = await import(
+    "@/lib/server/managed-fof-underlying-pg"
+  )
+  const managedRows = await refreshManagedFofUnderlying({
+    skipSymbolBackfill: options.skipSymbolBackfill !== false,
+    skipNavBackfill: options.skipNavBackfill !== false,
+    productCodes: options.productCodes,
+  })
+  const added = await autoAddFofUnderlyingToTables()
+  return { managedRows, ...added }
+}

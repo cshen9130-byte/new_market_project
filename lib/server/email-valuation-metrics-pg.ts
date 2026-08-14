@@ -6,7 +6,7 @@ import { query } from "@/lib/db"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
 import { ensureEmailValuationHoldingsTables } from "@/lib/server/email-valuation-holdings-pg"
 import type { FofUnderlyingMetric } from "@/lib/server/email-valuation-metrics"
-import { backfillFundHoldingSymbols, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF } from "@/lib/server/fund-holding-code"
+import { backfillFundHoldingSymbols, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, sqlSubjectCodeIsClearing, sqlSubjectCodeIsValuationIncrement } from "@/lib/server/fund-holding-code"
 
 const CREATE_FUND_METRICS_SQL = `
   CREATE TABLE IF NOT EXISTS ops_email_valuation_fund_metrics_latest (
@@ -174,8 +174,23 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
 
   await query(
     `UPDATE ops_email_valuation_holdings
+     SET row_kind = 'clearing'
+     WHERE ${sqlSubjectCodeIsClearing("subject_code")}
+       AND row_kind IS DISTINCT FROM 'clearing'`,
+  )
+
+  await query(
+    `UPDATE ops_email_valuation_fund_holdings_latest
+     SET row_kind = 'clearing'
+     WHERE ${sqlSubjectCodeIsClearing("subject_code")}
+       AND row_kind IS DISTINCT FROM 'clearing'`,
+  )
+
+  await query(
+    `UPDATE ops_email_valuation_holdings
      SET row_kind = 'private_fund'
      WHERE row_kind = 'other'
+       AND NOT ${sqlSubjectCodeIsClearing("subject_code")}
        AND (
          subject_code LIKE '1109%'
          OR subject_code LIKE '1108%'
@@ -266,6 +281,8 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
            'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
            'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
          )
+         AND NOT ${sqlSubjectCodeIsClearing("h.subject_code")}
+         AND NOT ${sqlSubjectCodeIsValuationIncrement("h.subject_code")}
          AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
          AND (
            h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
