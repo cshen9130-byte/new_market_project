@@ -69,12 +69,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <DashboardSidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
-      <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="flex min-w-0 flex-col flex-1 overflow-hidden">
         <DashboardHeader user={headerUser} onChatToggle={() => setChatVisible((v) => !v)} onMenuToggle={() => setMobileSidebarOpen((v) => !v)} />
         <main
           className={cn(
             "flex-1 px-4 md:px-6 pb-6",
-            isPrivateFundsSection ? "flex flex-col min-h-0 overflow-hidden" : "overflow-y-auto",
+            isPrivateFundsSection ? "flex min-h-0 min-w-0 flex-col overflow-hidden" : "overflow-y-auto",
           )}
         >
           {children}

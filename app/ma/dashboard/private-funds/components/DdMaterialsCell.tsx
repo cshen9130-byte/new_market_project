@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { Bot, CheckCircle2, ExternalLink, FileText, FolderInput, GripVertical, Link2, Loader2, Pencil, X, XCircle } from "lucide-react"
+import { Bot, CheckCircle2, ExternalLink, FileText, FolderInput, GripVertical, Link2, Loader2, Pencil, Upload, X, XCircle } from "lucide-react"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsLinkStatus } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsDocument } from "@/lib/ma/due-diligence-materials"
@@ -187,6 +187,7 @@ function FileDropSurface({
   style,
   title,
   onFiles,
+  overlay,
   children,
 }: {
   enabled: boolean
@@ -194,6 +195,7 @@ function FileDropSurface({
   style?: CSSProperties
   title?: string
   onFiles: (files: File[]) => void
+  overlay?: ReactNode | ((dragOver: boolean) => ReactNode)
   children: ReactNode
 }) {
   const [dragOver, setDragOver] = useState(false)
@@ -233,6 +235,7 @@ function FileDropSurface({
       }}
     >
       {children}
+      {typeof overlay === "function" ? overlay(dragOver) : overlay}
     </div>
   )
 }
@@ -285,6 +288,7 @@ export function DdMaterialsCell({
   const [open, setOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [linkMode, setLinkMode] = useState(false)
+  const [uploadMode, setUploadMode] = useState(false)
   const [selectedFilePaths, setSelectedFilePaths] = useState<Set<string>>(new Set())
   const [mounted, setMounted] = useState(false)
   const [previewDoc, setPreviewDoc] = useState<DdMaterialsDocument | null>(null)
@@ -295,6 +299,7 @@ export function DdMaterialsCell({
   const [uploading, setUploading] = useState(false)
   const dragRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ px: number; py: number; w: number; h: number; dir: "se" | "e" | "s" } | null>(null)
+  const uploadFileInputRef = useRef<HTMLInputElement>(null)
   /** Block click-through reopening the cell right after closing the panel. */
   const suppressOpenUntilRef = useRef(0)
   const { toast } = useToast()
@@ -323,14 +328,23 @@ export function DdMaterialsCell({
   const allFilesSelected = documents.length > 0 && selectedCount === documents.length
   const canDropUpload = canManageLink && !uploading
   const uploadTargetFolder = resolveUploadFolder(folderPath, suggestedFolderPath ?? "")
+  const uploadFolderLabel = uploadTargetFolder.split("/").pop() || uploadTargetFolder
   const dropHint = "拖入文件以上传并关联尽调资料，或点击手动选择"
+  const panelIsEmpty = documents.length === 0
+  const panelUploadEnabled = canDropUpload && (uploadMode || panelIsEmpty)
 
   useEffect(() => {
     if (!open) {
       setSelectedFilePaths(new Set())
       setLinkMode(false)
+      setUploadMode(false)
     }
   }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    if (panelIsEmpty) setUploadMode(true)
+  }, [open, panelIsEmpty])
 
   useEffect(() => {
     setSelectedFilePaths((prev) => {
@@ -458,6 +472,7 @@ export function DdMaterialsCell({
     setPreviewDoc(null)
     setEditingDoc(null)
     setLinkMode(false)
+    setUploadMode(false)
     setSelectedFilePaths(new Set())
     setOpen(false)
   }
@@ -467,6 +482,18 @@ export function DdMaterialsCell({
       if (current) setSelectedFilePaths(new Set())
       return !current
     })
+  }
+
+  function toggleUploadMode() {
+    setUploadMode((current) => !current)
+  }
+
+  function openUploadFilePicker(event?: { preventDefault: () => void; stopPropagation: () => void }) {
+    event?.preventDefault()
+    event?.stopPropagation()
+    if (!canDropUpload) return
+    setUploadMode(true)
+    uploadFileInputRef.current?.click()
   }
 
   function selectPreviewDoc(doc: DdMaterialsDocument) {
@@ -493,11 +520,11 @@ export function DdMaterialsCell({
     setDialogSize(size)
     setDialogPos(defaultDialogPosition(size))
     setPreviewDoc(documents[0] ?? null)
+    if (documents.length === 0) setUploadMode(true)
     setOpen(true)
   }
 
   function openModal(event: MouseEvent) {
-    if (!hasMaterials && !folderPath) return
     openPanel(event)
   }
 
@@ -544,7 +571,7 @@ export function DdMaterialsCell({
         onManualLink(targetFolder)
         await onRefreshMaterials?.()
         toast({
-          title: "已关联尽调资料",
+          title: "已上传到本条路演",
           description: `已上传 ${files.length} 个文件到「${targetFolder.split("/").pop() || targetFolder}」`,
         })
         if (!open) openPanel()
@@ -637,6 +664,27 @@ export function DdMaterialsCell({
                       onPointerDown={(event) => {
                         event.preventDefault()
                         event.stopPropagation()
+                        toggleUploadMode()
+                      }}
+                      className={[
+                        "inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs transition-colors",
+                        uploadMode
+                          ? "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"
+                          : "bg-background hover:bg-muted",
+                      ].join(" ")}
+                      title={uploadMode ? "退出上传模式" : "上传文件到本条路演"}
+                      disabled={uploading}
+                    >
+                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      {uploading ? "上传中…" : "上传"}
+                    </button>
+                  )}
+                  {canManageLink && (
+                    <button
+                      type="button"
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
                         toggleLinkMode()
                       }}
                       className={[
@@ -706,6 +754,23 @@ export function DdMaterialsCell({
                 </div>
               </div>
 
+              {canManageLink && uploadMode && (
+                <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-blue-100 bg-blue-50/60 px-4 py-2 text-xs text-blue-900">
+                  <Upload className="h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    将文件拖入下方窗口以上传到本条路演「{uploadFolderLabel}」
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(event) => openUploadFilePicker(event)}
+                    disabled={!canDropUpload}
+                    className="inline-flex items-center gap-1.5 rounded border border-blue-200 bg-white px-2.5 py-1 text-xs text-blue-800 hover:bg-blue-50 transition-colors disabled:opacity-60"
+                  >
+                    选择文件
+                  </button>
+                </div>
+              )}
+
               {canManageLink && linkMode && (
                 <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/10 px-4 py-2">
                   <FileDropSurface
@@ -771,6 +836,60 @@ export function DdMaterialsCell({
                 </div>
               )}
 
+              <FileDropSurface
+                enabled={panelUploadEnabled}
+                className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                onFiles={(files) => { void handleDroppedFiles(files) }}
+                overlay={(dragOver) =>
+                  panelUploadEnabled && (dragOver || uploading) ? (
+                    <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-blue-50/85 text-blue-800">
+                      {uploading ? (
+                        <>
+                          <Loader2 className="h-8 w-8 animate-spin" />
+                          <p className="text-sm font-medium">正在上传到本条路演…</p>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="h-8 w-8" />
+                          <p className="text-sm font-medium">松开以上传到本条路演</p>
+                          <p className="text-xs text-blue-700/80">
+                            目标文件夹：{uploadTargetFolder}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  ) : null
+                }
+              >
+              {panelIsEmpty ? (
+                <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-zinc-50 p-8 text-center">
+                  {panelUploadEnabled ? (
+                    <>
+                      <Upload className="h-8 w-8 text-blue-500" />
+                      <p className="text-sm font-medium text-blue-900">拖入文件以上传到本条路演</p>
+                      <p className="text-xs text-muted-foreground">
+                        目标文件夹：{uploadFolderLabel}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={(event) => openUploadFilePicker(event)}
+                        disabled={!canDropUpload}
+                        className="mt-1 inline-flex items-center gap-1.5 rounded border border-blue-200 bg-white px-3 py-1.5 text-xs text-blue-800 hover:bg-blue-50 transition-colors disabled:opacity-60"
+                      >
+                        选择文件
+                      </button>
+                    </>
+                  ) : folderPath ? (
+                    <p className="text-sm text-muted-foreground">
+                      该文件夹暂无文件，或您暂无访问权限。
+                    </p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      未能根据尽调日期和基金公司匹配到知识库文件夹。请确认资料已上传至「内部尽调资料」。
+                    </p>
+                  )}
+                </div>
+              ) : (
               <div className="flex min-h-0 flex-1 overflow-hidden">
                 <aside
                   className="border-r overflow-y-auto overflow-x-hidden flex flex-col bg-white"
@@ -792,13 +911,6 @@ export function DdMaterialsCell({
                       全选文件
                     </label>
                   )}
-                  {documents.length === 0 ? (
-                    <div className="p-4 text-sm text-muted-foreground">
-                      {folderPath
-                        ? "该文件夹暂无文件，或您暂无访问权限。"
-                        : "未能根据尽调日期和基金公司匹配到知识库文件夹。请确认资料已上传至「内部尽调资料」。"}
-                    </div>
-                  ) : (
                     <div className="divide-y">
                       {documents.map((doc) => {
                         const active = previewDoc?.relativePath === doc.relativePath
@@ -880,7 +992,6 @@ export function DdMaterialsCell({
                         )
                       })}
                     </div>
-                  )}
                 </aside>
 
                 <section
@@ -927,11 +1038,27 @@ export function DdMaterialsCell({
                     </>
                   ) : (
                     <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-                      {documents.length > 0 ? "点击左侧文件进行预览" : "暂无可预览的资料"}
+                      点击左侧文件进行预览
                     </div>
                   )}
                 </section>
               </div>
+              )}
+              </FileDropSurface>
+
+              <input
+                ref={uploadFileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []).filter(
+                    (file) => file.name && (file.size > 0 || /\.[a-z0-9]+$/i.test(file.name)),
+                  )
+                  event.target.value = ""
+                  if (files.length) void handleDroppedFiles(files)
+                }}
+              />
 
               <div
                 className="absolute bottom-0 right-0 z-10 h-4 w-4 cursor-se-resize"
@@ -1041,7 +1168,7 @@ export function DdMaterialsCell({
                 <Loader2 className="h-3 w-3 animate-spin" />
                 上传中…
               </span>
-            ) : displayLabel}
+            ) : (displayLabel.trim() || "未上传")}
           </button>
         </FileDropSurface>
         {panel}
@@ -1062,40 +1189,43 @@ export function DdMaterialsCell({
     )
   }
 
+  const emptyLabel = displayLabel.trim() || "未上传"
+
   return (
     <>
       <FileDropSurface
         enabled={canDropUpload}
-        className="flex items-center gap-0.5"
-        style={{ width: width - 4 }}
-        title={canManageLink ? dropHint : undefined}
+        title={dropHint}
         onFiles={(files) => { void handleDroppedFiles(files) }}
       >
-        <input
-          type="text"
+        <button
+          type="button"
           data-cell={cellId}
-          value={inactiveValue}
-          style={{ ...style, width: canManageLink ? width - 22 : width - 4 }}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={onActivate}
-          className={baseClass}
-        />
-        {canManageLink && (
-          <button
-            type="button"
-            title={dropHint}
-            disabled={uploading}
-            onMouseDown={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              if (uploading) return
-              openManualPicker(event)
-            }}
-            className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-100 hover:text-blue-600 disabled:opacity-60"
-          >
-            {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderInput className="h-3.5 w-3.5" />}
-          </button>
-        )}
+          style={style}
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (canManageLink) {
+              openPanel(event)
+              return
+            }
+            onActivate()
+          }}
+          onDoubleClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onActivate()
+          }}
+          className={`${baseClass} w-full text-left text-blue-600 hover:text-blue-700 hover:underline cursor-pointer`}
+          title={dropHint}
+        >
+          {uploading ? (
+            <span className="inline-flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              上传中…
+            </span>
+          ) : emptyLabel}
+        </button>
       </FileDropSurface>
       {panel}
       {picker}

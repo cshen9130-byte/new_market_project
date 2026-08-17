@@ -149,6 +149,7 @@ export type RoadshowNoteSourceRow = {
   strategyLevel2?: string
   strategyLevel3?: string
   inTrackingPool?: string
+  suggestedTracking?: string
   ddConclusion?: string
 }
 
@@ -185,6 +186,7 @@ export function buildInvestmentNoteContentFromDdRow(row: RoadshowNoteSourceRow):
     noteHtmlField("策略初筛", row.strategyPreliminary),
     noteHtmlField("策略", strategy),
     noteHtmlField("已加入跟踪池", row.inTrackingPool),
+    noteHtmlField("建议跟踪", row.suggestedTracking),
     noteHtmlField("尽调结论", row.ddConclusion),
     noteHtmlLine(""),
     "<div><b>笔记内容</b></div>",

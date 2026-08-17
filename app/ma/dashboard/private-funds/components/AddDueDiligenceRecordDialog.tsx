@@ -686,6 +686,17 @@ export function AddDueDiligenceRecordDialog({
               />
             </FormRow>
 
+            <FormRow label="建议跟踪">
+              <InlineRadio
+                value={form.suggestedTracking}
+                onChange={(v) => patch("suggestedTracking", v)}
+                options={[
+                  { value: "是", label: "是" },
+                  { value: "否", label: "否" },
+                ]}
+              />
+            </FormRow>
+
             <FormRow label="尽调结论">
               <RichTextArea
                 value={form.ddConclusion}

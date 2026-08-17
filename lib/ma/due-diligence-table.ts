@@ -18,6 +18,7 @@ export type DueDiligenceTableRowData = {
   strategyLevel2: string
   strategyLevel3: string
   inTrackingPool: string
+  suggestedTracking: string
   ddMaterials: string
   ddConclusion: string
 }
@@ -67,6 +68,7 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
   { key: "ddTarget",           label: "尽调对象",      width: 110, hoverPreview: true },
   { key: "recommender",        label: "推荐人",        width: 60, hoverPreview: true },
   { key: "strategyPreliminary",label: "策略初筛",      width: 68 },
+  { key: "ddMaterials",        label: "尽调材料",      width: 84 },
   { key: "fundCompany",        label: "基金公司",      width: 90, hoverPreview: true },
   { key: "investmentManager",  label: "投资经理",      width: 90, hoverPreview: true },
   { key: "representativeProduct", label: "代表产品",   width: 100 },
@@ -74,7 +76,7 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
   { key: "strategyLevel2",     label: "二级策略",      width: 68 },
   { key: "strategyLevel3",     label: "三级策略",      width: 90 },
   { key: "inTrackingPool",     label: "已加入跟踪池", width: 130 },
-  { key: "ddMaterials",        label: "尽调材料",      width: 84 },
+  { key: "suggestedTracking",  label: "建议跟踪",      width: 72 },
   { key: "ddConclusion",       label: "尽调结论",      width: 200, multiline: true, hoverPreview: true },
 ]
 
@@ -84,6 +86,7 @@ export const TABLE_INDEX_WIDTH = 36
 export const TABLE_ACTION_WIDTH = 120
 
 export const DD_METHOD_OPTIONS = ["线上尽调", "线下尽调"] as const
+export const SUGGESTED_TRACKING_OPTIONS = ["是", "否"] as const
 
 /** 15-minute slots for 尽调时间; includes the current cell value when non-standard. */
 export function buildDdTimeOptions(currentValue?: string): string[] {
@@ -218,6 +221,7 @@ export function defaultDueDiligenceTableRowData(): DueDiligenceTableRowData {
     strategyLevel2: "",
     strategyLevel3: "",
     inTrackingPool: "",
+    suggestedTracking: "",
     ddMaterials: "",
     ddConclusion: "",
   }

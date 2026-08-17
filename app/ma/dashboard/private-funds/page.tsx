@@ -23758,7 +23758,7 @@ function PrivateFundsPageContent() {
       </div>
 
       {/* Body: sidebar + content */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex min-h-0 min-w-0 w-full flex-1">
         {activeTab === "market" && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <div className="flex items-center gap-2 px-4 py-4 border-b">
@@ -24030,7 +24030,12 @@ function PrivateFundsPageContent() {
         )}
 
         {/* Page content area */}
-        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-auto p-5 scrollbar-subtle">
+        <div
+          className={[
+            "flex w-full min-w-0 min-h-0 flex-1 flex-col p-5 scrollbar-subtle",
+            activeSideItem === "inv-dd-table" ? "overflow-hidden" : "overflow-auto",
+          ].join(" ")}
+        >
           {activeTab === "market" && activeSideItem === "strategy-observation" && <StrategyObservationView />}
           {activeTab === "market" && activeSideItem === "pe-index" && <PeIndexView />}
           {activeTab === "market" && activeSideItem === "pe-industry" && <PeIndustryView />}

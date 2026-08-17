@@ -28,7 +28,6 @@ import {
   Minimize2,
   Pencil,
   Plus,
-  RotateCcw,
   Search,
   Strikethrough,
   Trash2,
@@ -50,6 +49,7 @@ import {
   TABLE_INDEX_WIDTH,
   buildDdTimeOptions,
   DD_METHOD_OPTIONS,
+  SUGGESTED_TRACKING_OPTIONS,
   cellFormatKey,
   clearCellFormat,
   createDueDiligenceTableRow,
@@ -302,6 +302,26 @@ function fitZoom(containerPx: number): number {
   const natural = getDueDiligenceTableNaturalWidth()
   if (containerPx <= 0 || natural <= containerPx) return 1
   return clampZoom(Math.floor((containerPx / natural) * 100) / 100)
+}
+
+function buildFilledTableLayout(containerPx: number) {
+  const natural = getDueDiligenceTableNaturalWidth()
+  const target = containerPx > natural ? Math.floor(containerPx) : natural
+  const scale = target / natural
+  const colWidths = {} as Record<DueDiligenceTableColumn["key"], number>
+  const indexWidth = Math.round(TABLE_INDEX_WIDTH * scale)
+  const actionWidth = Math.round(TABLE_ACTION_WIDTH * scale)
+  let used = indexWidth + actionWidth
+  const lastIndex = DD_TABLE_COLUMNS.length - 1
+  DD_TABLE_COLUMNS.forEach((col, i) => {
+    if (i === lastIndex) return
+    const width = Math.round(col.width * scale)
+    colWidths[col.key] = width
+    used += width
+  })
+  const last = DD_TABLE_COLUMNS[lastIndex]!
+  colWidths[last.key] = Math.max(1, target - used)
+  return { totalWidth: target, indexWidth, actionWidth, colWidths }
 }
 
 function formatToStyle(fmt: CellFormat): CSSProperties {
@@ -1011,6 +1031,7 @@ export function DueDiligenceTableView() {
   const [returnsItemCount, setReturnsItemCount] = useState(0)
   const [hydrated, setHydrated] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const [containerWidth, setContainerWidth] = useState(0)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [selection, setSelection] = useState<SelectionState>({ kind: "none" })
   const [focusCell, setFocusCell] = useState<CellCoord | null>(null)
@@ -1452,6 +1473,7 @@ export function DueDiligenceTableView() {
 
   const applyFitZoom = useCallback(() => {
     const w = containerRef.current?.clientWidth ?? 0
+    setContainerWidth((prev) => (prev === w ? prev : w))
     setZoom(fitZoom(w))
   }, [])
 
@@ -2155,36 +2177,6 @@ export function DueDiligenceTableView() {
     handleDeleteRows(selectedRowIdsFromSelection(selection, rows))
   }
 
-  function shanghaiDateKey(date: Date): string {
-    return date.toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })
-  }
-
-  function yesterdayShanghaiDateKey(): string {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Shanghai",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(new Date())
-    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]))
-    const y = Number(map.year)
-    const m = Number(map.month)
-    const d = Number(map.day)
-    const utc = new Date(Date.UTC(y, m - 1, d - 1))
-    return `${utc.getUTCFullYear()}-${String(utc.getUTCMonth() + 1).padStart(2, "0")}-${String(utc.getUTCDate()).padStart(2, "0")}`
-  }
-
-  function pickYesterdayDailyBackup(
-    backups: DueDiligenceTableBackupMeta[],
-  ): { backup: DueDiligenceTableBackupMeta; exactYesterday: boolean } | null {
-    const daily = backups.filter((b) => b.kind === "daily")
-    if (daily.length === 0) return null
-    const yesterdayKey = yesterdayShanghaiDateKey()
-    const exact = daily.find((b) => shanghaiDateKey(new Date(b.createdAt)) === yesterdayKey)
-    if (exact) return { backup: exact, exactYesterday: true }
-    return { backup: daily[0], exactYesterday: false }
-  }
-
   async function applyBackupRestore(backup: DueDiligenceTableBackupMeta) {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current)
@@ -2222,33 +2214,6 @@ export function DueDiligenceTableView() {
       setSaveError(message)
       setSaveStatus("error")
       alert(`恢复备份失败：${message}`)
-    }
-  }
-
-  async function handleRestoreYesterdayBackup() {
-    try {
-      const backups = await listDueDiligenceTableBackupsFromServer(20)
-      const picked = pickYesterdayDailyBackup(backups)
-      if (!picked) {
-        alert("暂无每日备份可恢复。")
-        return
-      }
-      const { backup, exactYesterday } = picked
-      const when = new Date(backup.createdAt).toLocaleString("zh-CN", { hour12: false })
-      const label = exactYesterday ? "昨日每日备份" : "最近一次每日备份（未找到昨日备份）"
-      if (
-        !window.confirm(
-          `将用${label}覆盖当前表格（${backup.rowCount} 行，备份于 ${when}）。当前内容会先再备份一次。是否继续？`,
-        )
-      ) {
-        return
-      }
-      await applyBackupRestore(backup)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "恢复失败"
-      setSaveError(message)
-      setSaveStatus("error")
-      alert(`恢复昨日备份失败：${message}`)
     }
   }
 
@@ -2324,14 +2289,14 @@ export function DueDiligenceTableView() {
     } catch { /* ignore */ }
   }
 
-  const totalWidth = getDueDiligenceTableNaturalWidth()
+  const tableLayout = useMemo(() => buildFilledTableLayout(containerWidth), [containerWidth])
 
   return (
     <div
       ref={rootRef}
       onKeyDown={handleKeyDown}
       className={[
-        "flex h-full min-h-0 flex-col bg-background focus-within:outline-none",
+        "flex h-full min-h-0 w-full min-w-0 flex-1 flex-col bg-background focus-within:outline-none",
         isFullscreen ? "fixed inset-0 z-50 h-screen w-screen" : "",
       ].join(" ")}
     >
@@ -2395,14 +2360,6 @@ export function DueDiligenceTableView() {
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors"
             >
               <History className="h-3.5 w-3.5" />恢复最近备份
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleRestoreYesterdayBackup()}
-              title="恢复昨日的每日备份；若无昨日备份则使用最近一次每日备份"
-              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />恢复昨日备份
             </button>
             <button type="button" onClick={() => setShowAddRecordDialog(true)}
               className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 transition-colors">
@@ -2606,7 +2563,7 @@ export function DueDiligenceTableView() {
       {/* ── Table ── */}
       <div
         ref={containerRef}
-        className={["min-h-0 flex-1 overflow-auto", isDragging ? "select-none" : ""].join(" ")}
+        className={["min-h-0 min-w-0 w-full flex-1 overflow-auto", isDragging ? "select-none" : ""].join(" ")}
       >
         {!hydrated ? (
           <div className="flex h-40 items-center justify-center text-sm text-zinc-500">加载中…</div>
@@ -2623,14 +2580,6 @@ export function DueDiligenceTableView() {
                   <History className="h-4 w-4" />
                   恢复最近备份
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void handleRestoreYesterdayBackup()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 transition-colors"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  恢复昨日备份
-                </button>
               </>
             ) : (
               <p className="text-sm text-zinc-500">没有匹配的搜索结果</p>
@@ -2639,18 +2588,18 @@ export function DueDiligenceTableView() {
         ) : (
           <div
             className="origin-top-left"
-            style={{ zoom, width: totalWidth, minHeight: "100%" } as CSSProperties}
+            style={{ zoom, width: tableLayout.totalWidth, minHeight: "100%" } as CSSProperties}
           >
             <table
               className="border-collapse"
-              style={{ tableLayout: "fixed", width: totalWidth }}
+              style={{ tableLayout: "fixed", width: tableLayout.totalWidth }}
             >
               <colgroup>
-                <col style={{ width: TABLE_INDEX_WIDTH }} />
+                <col style={{ width: tableLayout.indexWidth }} />
                 {DD_TABLE_COLUMNS.map((col) => (
-                  <col key={col.key} style={{ width: col.width }} />
+                  <col key={col.key} style={{ width: tableLayout.colWidths[col.key] }} />
                 ))}
-                <col style={{ width: TABLE_ACTION_WIDTH }} />
+                <col style={{ width: tableLayout.actionWidth }} />
               </colgroup>
               <thead className="sticky top-0 z-20">
                 <tr>
@@ -2707,6 +2656,7 @@ export function DueDiligenceTableView() {
                       const isActive =
                         focusCell?.rowId === row.id && focusCell?.colKey === col.key
                       const fmt = getCellFormat(formats, row.id, col.key)
+                      const colWidth = tableLayout.colWidths[col.key]
                       return (
                         <td
                           key={col.key}
@@ -2735,7 +2685,7 @@ export function DueDiligenceTableView() {
                               value={row.representativeProduct}
                               linkedBeianHao={row.representativeProductBeianHao}
                               ddDate={row.ddDate}
-                              width={col.width}
+                              width={colWidth}
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
@@ -2755,7 +2705,7 @@ export function DueDiligenceTableView() {
                             <DdDateCell
                               cellId={cellId}
                               value={row.ddDate}
-                              width={col.width}
+                              width={colWidth}
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
@@ -2773,7 +2723,7 @@ export function DueDiligenceTableView() {
                             <DdSelectCell
                               cellId={cellId}
                               value={row.ddTime}
-                              width={col.width}
+                              width={colWidth}
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
@@ -2793,7 +2743,7 @@ export function DueDiligenceTableView() {
                             <DdSelectCell
                               cellId={cellId}
                               value={row.ddMethod}
-                              width={col.width}
+                              width={colWidth}
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
@@ -2817,7 +2767,7 @@ export function DueDiligenceTableView() {
                               <StrategySelectCell
                                 cellId={cellId}
                                 value={row.strategyLevel1}
-                                width={col.width}
+                                width={colWidth}
                                 format={fmt}
                                 isActive={isActive}
                                 isSelected={isSelected}
@@ -2846,7 +2796,7 @@ export function DueDiligenceTableView() {
                               <StrategySelectCell
                                 cellId={cellId}
                                 value={row.strategyLevel2}
-                                width={col.width}
+                                width={colWidth}
                                 format={fmt}
                                 isActive={isActive}
                                 isSelected={isSelected}
@@ -2875,7 +2825,7 @@ export function DueDiligenceTableView() {
                               <StrategyMultiSelectCell
                                 cellId={cellId}
                                 value={row.strategyLevel3}
-                                width={col.width}
+                                width={colWidth}
                                 format={fmt}
                                 isActive={isActive}
                                 isSelected={isSelected}
@@ -2920,10 +2870,30 @@ export function DueDiligenceTableView() {
                                     && beian != null
                                     && !(beian in poolMemberships)
                                   }
-                                  width={col.width}
+                                  width={colWidth}
                                 />
                               )
                             })()
+                          ) : col.key === "suggestedTracking" ? (
+                            <DdSelectCell
+                              cellId={cellId}
+                              value={row.suggestedTracking}
+                              width={colWidth}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              options={[...SUGGESTED_TRACKING_OPTIONS]}
+                              placeholder="建议跟踪"
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleCellChange(row.id, col.key, value)}
+                            />
                           ) : col.key === "ddMaterials" ? (
                             (() => {
                               const materials = rowMaterialsMap.get(row.id)
@@ -2931,7 +2901,7 @@ export function DueDiligenceTableView() {
                                 <DdMaterialsCell
                                   cellId={cellId}
                                   value={row.ddMaterials}
-                                  width={col.width}
+                                  width={colWidth}
                                   format={fmt}
                                   isActive={isActive}
                                   isSelected={isSelected}
@@ -2998,7 +2968,7 @@ export function DueDiligenceTableView() {
                               <EditableCell
                                 cellId={cellId}
                                 value={row.ddConclusion}
-                                width={col.width}
+                                width={colWidth}
                                 multiline={col.multiline}
                                 format={fmt}
                                 isActive={isActive}
@@ -3019,7 +2989,7 @@ export function DueDiligenceTableView() {
                             <EditableCell
                               cellId={cellId}
                               value={row[col.key]}
-                              width={col.width}
+                              width={colWidth}
                               multiline={col.multiline}
                               format={fmt}
                               isActive={isActive}
