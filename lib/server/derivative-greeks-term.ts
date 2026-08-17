@@ -5,6 +5,9 @@
 import { extractContractRootSymbol } from "@/lib/server/derivative-sector"
 import {
   extractOptionContractFromText,
+  isChineseOptionContractName,
+  isOptionAccountSummaryName,
+  looksLikeOptionContract,
   normalizeOptionContractCode,
 } from "@/lib/server/option-contract-code"
 import type { ContractGreeks } from "@/lib/server/option-greeks-market"
@@ -41,6 +44,8 @@ export type TermAnalysisRow = {
 
 type HoldingLike = {
   subject_name: string
+  subject_code?: string | null
+  original_subject_code?: string | null
   symbol: string | null
   asset_class: string | null
   row_kind: string | null
@@ -112,9 +117,19 @@ export function extractVarietyLabel(h: HoldingLike): string {
 }
 
 function isDerivativeLike(h: HoldingLike): boolean {
+  if (isOptionAccountSummaryName(h.subject_name) && !looksLikeOptionContract(
+    String(h.original_subject_code ?? h.subject_code ?? ""),
+    h.subject_name,
+    h.symbol,
+  )) return false
   if (h.row_kind === "derivative" || h.row_kind === "option") return true
   if (h.asset_class === "期权") return true
-  if (/期权/.test(h.subject_name)) return true
+  if (isChineseOptionContractName(h.subject_name)) return true
+  if (/期权/.test(h.subject_name) && looksLikeOptionContract(
+    String(h.original_subject_code ?? h.subject_code ?? ""),
+    h.subject_name,
+    h.symbol,
+  )) return true
   return /[A-Za-z]{1,4}\d{3,4}/.test(`${h.symbol ?? ""}${h.subject_name}`)
 }
 
@@ -123,10 +138,11 @@ function readGreek(h: HoldingLike, field: "delta" | "gamma" | "vega" | "theta" |
 }
 
 function isOptionLike(h: HoldingLike): boolean {
-  if (h.row_kind === "option") return true
-  if (h.asset_class === "期权") return true
-  if (/期权/.test(h.subject_name)) return true
-  return /[A-Za-z]{1,6}\d{3,4}[CPcp]\d+/.test(`${h.symbol ?? ""}${h.subject_name}`)
+  return looksLikeOptionContract(
+    String(h.original_subject_code ?? h.subject_code ?? ""),
+    h.subject_name,
+    h.symbol,
+  )
 }
 
 function resolveSignedQuantity(h: HoldingLike): number {
@@ -217,7 +233,12 @@ export function buildGreekLetters(
     }
 
     if (marketGreeks && isOptionLike(h)) {
-      const rawCode = extractOptionContractFromText(h.symbol, h.subject_name)
+      const rawCode = extractOptionContractFromText(
+        h.symbol,
+        h.subject_name,
+        h.original_subject_code,
+        h.subject_code,
+      )
       const choiceCode = rawCode ? normalizeOptionContractCode(rawCode) : null
       const g = choiceCode ? marketGreeks.get(choiceCode) : null
       if (g) {

@@ -135,26 +135,36 @@ chmod 644 "$MOM_ETL_LOG"
 echo "[setup_db] Log file: $MOM_ETL_LOG"
 
 # ---- 8. Set up cron job -----------------------------------------------
-# Source Choice env (EmQuant + PYTHON_EXE) when present so PCA predict has joblib.
-CRON_CMD="$CRON_MIN $CRON_HOUR * * * cd $PROJECT_ROOT && (test -f .choice_env.sh && . ./.choice_env.sh; exec $PYTHON_EXE $ETL_SCRIPT) >> $ETL_LOG 2>&1"
-MOM_CRON_CMD="$MOM_CRON_MIN $MOM_CRON_HOUR * * * cd $PROJECT_ROOT && (test -f .choice_env.sh && . ./.choice_env.sh; exec $PYTHON_EXE $MOM_ETL_SCRIPT) >> $MOM_ETL_LOG 2>&1"
+# Launchers resolve python themselves (venv if present, else python3) and
+# always source Choice/EmQuant env. Do not pin cron at .venv/bin/python3 —
+# a missing venv previously froze 期货/期权 charts for days.
+NIGHTLY_LAUNCHER="$PROJECT_ROOT/scripts/ma/run_nightly_etl.sh"
+MOM_LAUNCHER="$PROJECT_ROOT/scripts/ma/run_mom_data_etl.sh"
+FUTURES_LOG="${FUTURES_ETL_LOG:-/var/log/market_futures_etl.log}"
+chmod +x "$NIGHTLY_LAUNCHER" "$MOM_LAUNCHER" 2>/dev/null || true
+touch "$FUTURES_LOG"
+chmod 644 "$FUTURES_LOG"
 
-# Check if cron entry already exists
-EXISTING=$(crontab -l 2>/dev/null || true)
-if echo "$EXISTING" | grep -qF "$ETL_SCRIPT"; then
-  echo "[setup_db] Cron job already configured, skipping."
-else
-  (echo "$EXISTING"; echo "$CRON_CMD") | crontab -
-  echo "[setup_db] Cron job added: $CRON_CMD"
-fi
+CRON_CMD="$CRON_MIN $CRON_HOUR * * * $NIGHTLY_LAUNCHER >> $ETL_LOG 2>&1"
+MOM_CRON_CMD="$MOM_CRON_MIN $MOM_CRON_HOUR * * * $MOM_LAUNCHER >> $MOM_ETL_LOG 2>&1"
+FUTURES_CRON_CMD="15 3 * * * $NIGHTLY_LAUNCHER --group futures >> $FUTURES_LOG 2>&1"
 
-EXISTING=$(crontab -l 2>/dev/null || true)
-if echo "$EXISTING" | grep -qF "$MOM_ETL_SCRIPT"; then
-  echo "[setup_db] MOM cron job already configured, skipping."
-else
-  (echo "$EXISTING"; echo "$MOM_CRON_CMD") | crontab -
-  echo "[setup_db] MOM cron job added: $MOM_CRON_CMD"
-fi
+EXISTING="$(crontab -l 2>/dev/null || true)"
+FILTERED="$(printf '%s\n' "$EXISTING" \
+  | grep -vF "run_nightly_etl.sh" \
+  | grep -vF "run_mom_data_etl.sh" \
+  | grep -vF "scripts/ma/nightly_etl.py" \
+  | grep -vF "scripts/ma/mom_data_etl.py" \
+  || true)"
+{
+  printf '%s\n' "$FILTERED"
+  printf '%s\n' "$CRON_CMD"
+  printf '%s\n' "$FUTURES_CRON_CMD"
+  printf '%s\n' "$MOM_CRON_CMD"
+} | crontab -
+echo "[setup_db] Cron job set: $CRON_CMD"
+echo "[setup_db] Futures/options cron job set: $FUTURES_CRON_CMD"
+echo "[setup_db] MOM cron job set: $MOM_CRON_CMD"
 
 # ---- Summary -----------------------------------------------------------
 echo ""
@@ -165,9 +175,11 @@ echo ""
 echo " Database : $DB_NAME"
 echo " User     : $DB_USER"
 echo " Port     : $DB_PORT"
-echo " Cron     : daily at ${CRON_HOUR}:$(printf '%02d' $CRON_MIN) -> $ETL_SCRIPT"
-echo " Cron     : daily at ${MOM_CRON_HOUR}:$(printf '%02d' $MOM_CRON_MIN) -> $MOM_ETL_SCRIPT"
+echo " Cron     : daily at ${CRON_HOUR}:$(printf '%02d' $CRON_MIN) -> $NIGHTLY_LAUNCHER"
+echo " Cron     : daily at 03:15 -> $NIGHTLY_LAUNCHER --group futures"
+echo " Cron     : daily at ${MOM_CRON_HOUR}:$(printf '%02d' $MOM_CRON_MIN) -> $MOM_LAUNCHER"
 echo " Log      : $ETL_LOG"
+echo " Log      : $FUTURES_LOG"
 echo " Log      : $MOM_ETL_LOG"
 echo ""
 echo " Make sure these are set in $PROJECT_ROOT/.env (or .env.local):"

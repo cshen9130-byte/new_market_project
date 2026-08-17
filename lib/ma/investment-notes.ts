@@ -149,7 +149,6 @@ export type RoadshowNoteSourceRow = {
   strategyLevel2?: string
   strategyLevel3?: string
   inTrackingPool?: string
-  otherInfo?: string
   ddConclusion?: string
 }
 
@@ -186,7 +185,6 @@ export function buildInvestmentNoteContentFromDdRow(row: RoadshowNoteSourceRow):
     noteHtmlField("策略初筛", row.strategyPreliminary),
     noteHtmlField("策略", strategy),
     noteHtmlField("已加入跟踪池", row.inTrackingPool),
-    noteHtmlField("其他补充信息", row.otherInfo),
     noteHtmlField("尽调结论", row.ddConclusion),
     noteHtmlLine(""),
     "<div><b>笔记内容</b></div>",
@@ -250,6 +248,148 @@ export type InvestmentNote = {
   lastModifiedBy: string
   modifiedDate: string
   createdDate: string
+}
+
+export const INVESTMENT_NOTE_INTEGRATION_TITLE_MARK = "路演整合"
+
+export function isIntegratedInvestmentNote(note: Pick<InvestmentNote, "title" | "tags">): boolean {
+  const title = (note.title ?? "").trim()
+  if (title.includes(INVESTMENT_NOTE_INTEGRATION_TITLE_MARK) || title.endsWith("整合笔记")) return true
+  return (note.tags ?? []).includes("整合")
+}
+
+export function isEmptyDraftInvestmentNote(note: Pick<InvestmentNote, "title" | "content">): boolean {
+  const title = (note.title ?? "").trim()
+  return (!title || title === "无标题") && !(note.content ?? "").trim()
+}
+
+/** Flattened text used by the notes list search (title, body, products, roadshows). */
+export function investmentNoteSearchText(note: InvestmentNote): string {
+  const associations = (note.associations ?? []).flatMap((item) => [
+    item.name,
+    item.category,
+    item.recordNo,
+    associationDisplayLabel(item),
+  ])
+  const roadshows = (note.roadshowAssociations ?? []).flatMap((item) => [
+    item.label,
+    item.fundCompany,
+    item.ddTarget,
+    item.representativeProduct,
+    item.ddDate,
+  ])
+  const strippedContent = (note.content ?? "").replace(/<[^>]+>/g, " ")
+  return [
+    note.title,
+    note.preview,
+    strippedContent,
+    note.creator,
+    ...(note.tags ?? []),
+    ...associations,
+    ...roadshows,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+}
+
+export function noteMatchesKeyword(note: InvestmentNote, keyword: string): boolean {
+  const q = keyword.trim().toLowerCase()
+  if (!q) return true
+  return investmentNoteSearchText(note).includes(q)
+}
+
+/** Source notes to merge: skip empty drafts and previous integration notes, oldest first. */
+export function selectNotesForIntegration(notes: InvestmentNote[]): InvestmentNote[] {
+  return notes
+    .filter((note) => !isEmptyDraftInvestmentNote(note) && !isIntegratedInvestmentNote(note))
+    .slice()
+    .sort((a, b) => {
+      const byDate = (a.createdDate || a.modifiedDate || "").localeCompare(b.createdDate || b.modifiedDate || "")
+      if (byDate !== 0) return byDate
+      return (a.title || "").localeCompare(b.title || "", "zh")
+    })
+}
+
+function noteBodyHtml(content: string): string {
+  const trimmed = (content ?? "").trim()
+  if (!trimmed) return noteHtmlLine("（无内容）")
+  if (/<[a-z][\s\S]*>/i.test(trimmed)) return trimmed
+  return noteHtmlLine(trimmed)
+}
+
+export type IntegratedInvestmentNoteDraft = Pick<
+  InvestmentNote,
+  "title" | "content" | "associations" | "roadshowAssociations"
+>
+
+/** Build a new note body that concatenates source notes in chronological order. */
+export function buildIntegratedInvestmentNoteDraft(
+  notes: InvestmentNote[],
+  keyword: string,
+): IntegratedInvestmentNoteDraft {
+  const sources = selectNotesForIntegration(notes)
+  const q = keyword.trim()
+  const titleBase = q || (sources[0]?.title ?? "").trim() || "路演"
+  const title = `${titleBase} ${INVESTMENT_NOTE_INTEGRATION_TITLE_MARK}`.slice(0, MAX_INVESTMENT_NOTE_TITLE_CHARS)
+
+  const intro = [
+    "<div><b>整合说明</b></div>",
+    noteHtmlLine(
+      `本笔记由${q ? `搜索「${q}」得到的 ` : ""}${sources.length} 条路演笔记按时间顺序整合，原文笔记仍保留。`,
+    ),
+    noteHtmlLine(""),
+  ]
+
+  const sections = sources.flatMap((note, index) => {
+    const headingParts = [
+      note.createdDate?.trim(),
+      (note.title ?? "").trim() || "无标题",
+    ].filter(Boolean)
+    const meta = [
+      note.creator?.trim() ? `作者：${note.creator.trim()}` : "",
+      note.modifiedDate?.trim() && note.modifiedDate !== note.createdDate
+        ? `更新：${note.modifiedDate.trim()}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("  ")
+    return [
+      `<div><b>${index + 1}. ${escapeNoteHtml(headingParts.join(" · "))}</b></div>`,
+      meta ? noteHtmlLine(meta) : null,
+      noteBodyHtml(note.content),
+      noteHtmlLine(""),
+    ].filter((line): line is string => Boolean(line))
+  })
+
+  const associations: InvestmentNoteAssociation[] = []
+  const seenAssociations = new Set<string>()
+  for (const note of sources) {
+    for (const item of note.associations ?? []) {
+      const key = associationKey(item)
+      if (seenAssociations.has(key)) continue
+      seenAssociations.add(key)
+      associations.push(item)
+    }
+  }
+
+  const roadshowAssociations: InvestmentNoteRoadshowAssociation[] = []
+  const seenRoadshows = new Set<string>()
+  for (const note of sources) {
+    for (const item of note.roadshowAssociations ?? []) {
+      const key = roadshowAssociationKey(item)
+      if (!key || seenRoadshows.has(key)) continue
+      seenRoadshows.add(key)
+      roadshowAssociations.push(item)
+    }
+  }
+
+  return {
+    title,
+    content: compactRichNoteHtml([...intro, ...sections].join("")),
+    associations,
+    roadshowAssociations,
+  }
 }
 
 function currentUserId(): string {

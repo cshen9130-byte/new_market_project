@@ -13,10 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-import matplotlib.pyplot as plt
 import pandas as pd
-
-from iv_analysis.plot_utils import save_figure
 
 SmileMode = Literal["otm", "raw"]
 
@@ -192,6 +189,8 @@ def plot_iv_smile(
 
     days = int(expiry_df["days_to_expiry"].min())
     expiry_code = expiry.strftime("%y%m")
+    import matplotlib.pyplot as plt
+    from iv_analysis.plot_utils import save_figure
     n_strikes = len(slice_df)
 
     fig, ax = plt.subplots()

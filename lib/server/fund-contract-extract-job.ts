@@ -2,12 +2,15 @@ import fs from "fs"
 import path from "path"
 import {
   extractFundContractElements,
+  matchFundsFromExtracted,
   pickHighConfidenceFundMatch,
 } from "@/lib/server/fund-contract-element-extract"
 import {
   claimNextElementExtractJob,
   countQueuedElementExtractJobs,
   getElementExtractJobById,
+  listAppliedExtractJobsByBeiAns,
+  listNeedsReviewExtractJobs,
   readElementExtractJobFile,
   updateElementExtractJob,
   type ElementExtractJobRow,
@@ -15,11 +18,15 @@ import {
 import { saveFundContractMaterialFromBuffer } from "@/lib/server/fund-contract-materials"
 import {
   appliedFieldKeys,
-  buildFillEmptyWriteBody,
-  loadExtractedElementDisplayValues,
-  writeFundElementsFromBody,
+  writeFillEmptyElementsAcrossShareClasses,
+  writeFundElementsAcrossShareClasses,
+  writeOverwriteElementsAcrossShareClasses,
 } from "@/lib/server/fund-elements-write"
-import { ensureShareClassBeianProduct } from "@/lib/server/share-class-product"
+import { ensureShareClassBeianProduct, listFundFamilyProducts } from "@/lib/server/share-class-product"
+import {
+  contractDocumentRecency,
+  isLatestContractDocument,
+} from "@/lib/server/contract-document-recency"
 import { shouldYieldBackgroundWorkToUsers } from "@/lib/server/user-activity-priority"
 
 export type ContractExtractRunResult = {
@@ -140,12 +147,30 @@ async function attachContractAndApply(
     contractId = material.id
   }
 
-  const current = await loadExtractedElementDisplayValues(resolvedBeian, productName)
-  const writeBody = buildFillEmptyWriteBody(resolvedBeian, extracted, current)
-  const fields = appliedFieldKeys(writeBody)
-  if (writeBody) {
-    await writeFundElementsFromBody(writeBody)
-  }
+  const currentRecency = contractDocumentRecency({
+    fileName: job.original_filename,
+    uploadedAt: job.uploaded_at,
+  })
+  const family = await listFundFamilyProducts(resolvedBeian)
+  const applied = await listAppliedExtractJobsByBeiAns(
+    family.map((row) => row.beian_hao).concat(resolvedBeian),
+  )
+  const otherRecencies = applied
+    .filter((row) => row.id !== job.id)
+    .map((row) => contractDocumentRecency({
+      fileName: row.original_filename,
+      uploadedAt: row.uploaded_at,
+    }))
+  const useLatest = isLatestContractDocument(currentRecency, otherRecencies)
+  const fields = useLatest
+    ? await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted)
+    : await writeFillEmptyElementsAcrossShareClasses(resolvedBeian, productName, extracted)
+
+  const latestNote = useLatest
+    ? null
+    : currentRecency.kind === "announcement"
+      ? "已保存文件；公告/说明未覆盖合同要素"
+      : "已保存合同；要素以更新的合同或补充协议为准"
 
   await updateElementExtractJob(job.id, {
     status: "applied",
@@ -155,20 +180,35 @@ async function attachContractAndApply(
     matched_funds: matchedFunds,
     text_preview: textPreview,
     applied_fields: fields,
-    error_message: null,
+    error_message: latestNote,
     contract_material_id: contractId,
   })
   return "applied"
 }
 
-async function processOneJob(job: ElementExtractJobRow): Promise<"applied" | "needs_review" | "failed"> {
+async function processOneJob(
+  job: ElementExtractJobRow,
+  options?: { reuseExtracted?: boolean },
+): Promise<"applied" | "needs_review" | "failed"> {
   try {
     const buffer = await readElementExtractJobFile(job)
-    const result = await extractFundContractElements({
-      buffer,
+    const hints = {
+      fileName: job.original_filename,
+      contractText: job.text_preview ?? undefined,
+    }
+    const result = options?.reuseExtracted && job.extracted_json
+      ? {
+          extracted: job.extracted_json,
+          matched_funds: await matchFundsFromExtracted(job.extracted_json, hints),
+          text_preview: job.text_preview ?? "",
+        }
+      : await extractFundContractElements({
+          buffer,
+          fileName: job.original_filename,
+        })
+    const match = pickHighConfidenceFundMatch(result.extracted, result.matched_funds, {
       fileName: job.original_filename,
     })
-    const match = pickHighConfidenceFundMatch(result.extracted, result.matched_funds)
     if (!match) {
       await updateElementExtractJob(job.id, {
         status: "needs_review",
@@ -201,6 +241,36 @@ async function processOneJob(job: ElementExtractJobRow): Promise<"applied" | "ne
     })
     return "failed"
   }
+}
+
+export async function rematchNeedsReviewExtractJobs(options?: {
+  maxJobs?: number
+}): Promise<ContractExtractRunResult> {
+  const maxJobs = Math.max(1, options?.maxJobs ?? 200)
+  const result: ContractExtractRunResult = {
+    processed: 0,
+    applied: 0,
+    needsReview: 0,
+    failed: 0,
+    remaining: 0,
+  }
+
+  const jobs = (await listNeedsReviewExtractJobs()).slice(0, maxJobs)
+  for (const job of jobs) {
+    const claimed = await updateElementExtractJob(job.id, {
+      status: "extracting",
+      error_message: null,
+    })
+    if (!claimed || claimed.status !== "extracting") continue
+    const outcome = await processOneJob({ ...job, ...claimed }, { reuseExtracted: true })
+    result.processed += 1
+    if (outcome === "applied") result.applied += 1
+    else if (outcome === "needs_review") result.needsReview += 1
+    else result.failed += 1
+  }
+
+  result.remaining = await countQueuedElementExtractJobs()
+  return result
 }
 
 export async function processContractExtractQueue(options?: {
@@ -336,16 +406,13 @@ export async function applyElementExtractJobManually(input: {
   }
 
   const extracted = job.extracted_json
-  const writeBody = input.fields
-    ? { beian_hao: resolvedBeian, ...input.fields }
-    : buildFillEmptyWriteBody(
-        resolvedBeian,
-        extracted,
-        await loadExtractedElementDisplayValues(resolvedBeian, productName),
-      )
-  const fields = appliedFieldKeys(writeBody)
-  if (writeBody) {
-    await writeFundElementsFromBody(writeBody)
+  let fields: string[] = []
+  if (input.fields) {
+    const writeBody = { beian_hao: resolvedBeian, ...input.fields }
+    await writeFundElementsAcrossShareClasses(writeBody)
+    fields = appliedFieldKeys(writeBody)
+  } else {
+    fields = await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted)
   }
 
   const updated = await updateElementExtractJob(job.id, {

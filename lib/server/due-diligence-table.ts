@@ -4,6 +4,7 @@ import {
   DD_TABLE_COLUMNS,
   compactCellFormats,
   defaultDueDiligenceTableRowData,
+  mergeOtherInfoIntoDdConclusion,
   seedDueDiligenceTableRows,
 } from "@/lib/ma/due-diligence-table"
 
@@ -84,6 +85,10 @@ function sanitizeRow(row: unknown): DueDiligenceTableRow | null {
   for (const col of DD_TABLE_COLUMNS) {
     data[col.key] = String(r[col.key] ?? "").trim()
   }
+  data.ddConclusion = mergeOtherInfoIntoDdConclusion(
+    data.ddConclusion,
+    String(r.otherInfo ?? ""),
+  )
   const now = new Date().toISOString()
   return {
     ...data,
@@ -126,6 +131,11 @@ function sanitizeDdMaterialsFileLinks(
 function sanitizeRows(value: unknown): DueDiligenceTableRow[] {
   if (!Array.isArray(value)) return []
   return value.map(sanitizeRow).filter((row): row is DueDiligenceTableRow => row !== null)
+}
+
+function rawRowsHaveOtherInfo(value: unknown): boolean {
+  if (!Array.isArray(value)) return false
+  return value.some((row) => row && typeof row === "object" && "otherInfo" in row)
 }
 
 function sanitizeFormats(value: unknown, rowIds?: Set<string>): TableCellFormats {
@@ -185,7 +195,7 @@ async function readSnapshot(): Promise<DueDiligenceTableSnapshot | null> {
 
   const rowIds = new Set(sanitizedRows.map((row) => row.id))
   const updatedAt = rows[0].updated_at
-  return {
+  const snapshot: DueDiligenceTableSnapshot = {
     rows: sanitizedRows,
     formats: sanitizeFormats(rows[0].formats, rowIds),
     updatedAt:
@@ -194,6 +204,10 @@ async function readSnapshot(): Promise<DueDiligenceTableSnapshot | null> {
         : updatedAt.toISOString(),
     updatedBy: rows[0].updated_by || "",
   }
+  if (rawRowsHaveOtherInfo(rows[0].rows)) {
+    await writeSnapshot(snapshot)
+  }
+  return snapshot
 }
 
 async function writeSnapshot(snapshot: DueDiligenceTableSnapshot): Promise<void> {

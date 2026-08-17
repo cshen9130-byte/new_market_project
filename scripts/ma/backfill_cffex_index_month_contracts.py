@@ -13,6 +13,7 @@ Usage
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -203,6 +204,7 @@ def main() -> None:
             )
         conn.commit()
         print(f"Upserted {len(all_rows)} rows.", file=sys.stderr)
+        print(json.dumps({"rows": len(all_rows), "contracts": len(roots)}))
     finally:
         conn.close()
 

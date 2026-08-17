@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import {
+  Combine,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -41,15 +42,18 @@ import type {
 import {
   MAX_INVESTMENT_NOTE_CONTENT_CHARS,
   associationDisplayLabel,
+  buildIntegratedInvestmentNoteDraft,
   compactRichNoteHtml,
   createInvestmentNote,
   deleteInvestmentNote,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
   listInvestmentNotes,
+  noteMatchesKeyword,
   openInvestmentNoteMaterial,
   proofreadInvestmentNoteWithRoadshow,
   roadshowAssociationDisplayLabel,
+  selectNotesForIntegration,
   setInvestmentNoteAssociations,
   setInvestmentNoteRoadshowAssociations,
   setInvestmentNoteTags,
@@ -57,6 +61,16 @@ import {
   updateInvestmentNote,
   uploadInvestmentNoteMaterial,
 } from "@/lib/ma/investment-notes"
+import type { DueDiligenceTableRow } from "@/lib/ma/due-diligence-table"
+import { loadDueDiligenceTableFromServer } from "@/lib/ma/due-diligence-table"
+import type { DdMaterialsDocument, DdMaterialsFolderIndex } from "@/lib/ma/due-diligence-materials"
+import {
+  buildDdMaterialsFileUrl,
+  buildDdMaterialsFolderIndex,
+  collectDdMaterialsDocumentsForRows,
+  parseRoadshowDdMaterialAttachmentId,
+  roadshowDdMaterialAttachmentId,
+} from "@/lib/ma/due-diligence-materials"
 import { AssociatedProductHoverCard } from "./AssociatedProductHoverCard"
 import { InvestmentNoteAssociationDialog } from "./InvestmentNoteAssociationDialog"
 import { InvestmentNoteMaterialsView } from "./InvestmentNoteMaterialsView"
@@ -295,8 +309,11 @@ export function InvestmentNotesView() {
   const [roadshowAssociationOpen, setRoadshowAssociationOpen] = useState(false)
   const [draftAttachments, setDraftAttachments] = useState<InvestmentNoteAttachment[]>([])
   const [linkedMaterials, setLinkedMaterials] = useState<InvestmentNoteMaterial[]>([])
+  const [ddRowsById, setDdRowsById] = useState<Map<string, DueDiligenceTableRow>>(new Map())
+  const [materialsIndex, setMaterialsIndex] = useState<DdMaterialsFolderIndex | null>(null)
   const [loading, setLoading] = useState(true)
   const [proofreading, setProofreading] = useState(false)
+  const [integrating, setIntegrating] = useState(false)
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingDeepLinkRef = useRef<string | null>(deepLinkNoteId || null)
@@ -373,20 +390,83 @@ export function InvestmentNotesView() {
   }, [activeTab, selectedId, reloadLinkedMaterials])
 
   const filteredNotes = useMemo(() => {
-    const q = keyword.trim().toLowerCase()
-    if (!q) return notes
-    return notes.filter(
-      (n) =>
-        n.title.toLowerCase().includes(q) ||
-        n.preview.toLowerCase().includes(q) ||
-        n.content.toLowerCase().includes(q),
-    )
+    if (!keyword.trim()) return notes
+    return notes.filter((n) => noteMatchesKeyword(n, keyword))
   }, [notes, keyword])
+
+  const mergeableNotes = useMemo(
+    () => selectNotesForIntegration(filteredNotes),
+    [filteredNotes],
+  )
 
   const selectedNote = useMemo(
     () => notes.find((n) => n.id === selectedId) ?? filteredNotes.find((n) => n.id === selectedId) ?? null,
     [notes, filteredNotes, selectedId],
   )
+
+  const roadshowRowIds = useMemo(
+    () =>
+      (selectedNote?.roadshowAssociations ?? [])
+        .map((item) => item.rowId?.trim())
+        .filter((id): id is string => Boolean(id)),
+    [selectedNote],
+  )
+  const hasLinkedRoadshows = roadshowRowIds.length > 0
+
+  useEffect(() => {
+    if (!hasLinkedRoadshows) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const data = await loadDueDiligenceTableFromServer()
+        if (cancelled) return
+        setDdRowsById(new Map(data.rows.map((row) => [row.id, row])))
+      } catch {
+        if (!cancelled) setDdRowsById(new Map())
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [hasLinkedRoadshows])
+
+  useEffect(() => {
+    if (!hasLinkedRoadshows) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const headers: Record<string, string> = {}
+        try {
+          const raw = localStorage.getItem("currentUser")
+          if (raw) {
+            const user = JSON.parse(raw) as { id?: string }
+            if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+          }
+        } catch {
+          // ignore
+        }
+        const res = await fetch("/api/knowledge-base/tree", { headers })
+        const data = await res.json()
+        if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+        if (cancelled) return
+        setMaterialsIndex(buildDdMaterialsFolderIndex(data.tree ?? null))
+      } catch {
+        if (!cancelled) setMaterialsIndex(buildDdMaterialsFolderIndex(null))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [hasLinkedRoadshows])
+
+  const roadshowMaterials = useMemo((): DdMaterialsDocument[] => {
+    if (!materialsIndex || roadshowRowIds.length === 0) return []
+    const rows = roadshowRowIds
+      .map((id) => ddRowsById.get(id))
+      .filter((row): row is DueDiligenceTableRow => Boolean(row))
+    if (rows.length === 0) return []
+    return collectDdMaterialsDocumentsForRows(rows, materialsIndex)
+  }, [ddRowsById, materialsIndex, roadshowRowIds])
 
   useEffect(() => {
     if (!selectedNote || editing) return
@@ -400,18 +480,30 @@ export function InvestmentNotesView() {
     : (selectedNote?.attachments ?? [])
 
   const activeAttachments: NoteAttachmentListItem[] = useMemo(() => {
+    const roadshowItems: NoteAttachmentListItem[] = roadshowMaterials.map((doc) => ({
+      id: roadshowDdMaterialAttachmentId(doc.relativePath),
+      name: doc.name,
+      size: doc.size,
+      openable: true,
+      removable: false,
+      sourceLabel: "尽调材料",
+    }))
     const materialItems: NoteAttachmentListItem[] = linkedMaterials.map((m) => ({
       id: m.id,
       name: m.name,
       size: m.size,
       openable: true,
     }))
-    const materialIds = new Set(materialItems.map((m) => m.id))
+    const seenIds = new Set([
+      ...roadshowItems.map((m) => m.id),
+      ...materialItems.map((m) => m.id),
+    ])
+    const seenNames = new Set(roadshowItems.map((m) => m.name.trim().toLowerCase()))
     const legacyItems: NoteAttachmentListItem[] = legacyAttachments
-      .filter((a) => !materialIds.has(a.id))
+      .filter((a) => !seenIds.has(a.id) && !seenNames.has(a.name.trim().toLowerCase()))
       .map((a) => ({ ...a, openable: false }))
-    return [...materialItems, ...legacyItems]
-  }, [linkedMaterials, legacyAttachments])
+    return [...roadshowItems, ...materialItems, ...legacyItems]
+  }, [linkedMaterials, legacyAttachments, roadshowMaterials])
 
   function triggerUpload() {
     if (!selectedNote || uploadingAttachments) return
@@ -442,6 +534,7 @@ export function InvestmentNotesView() {
   }
 
   async function handleRemoveAttachment(id: string) {
+    if (parseRoadshowDdMaterialAttachmentId(id)) return
     const isMaterial = linkedMaterials.some((m) => m.id === id)
     if (isMaterial) {
       try {
@@ -465,6 +558,18 @@ export function InvestmentNotesView() {
   }
 
   async function handleOpenAttachment(id: string) {
+    const kbPath = parseRoadshowDdMaterialAttachmentId(id)
+    if (kbPath) {
+      const opened = window.open(buildDdMaterialsFileUrl(kbPath), "_blank", "noopener,noreferrer")
+      if (!opened) {
+        toast({
+          title: "打开失败",
+          description: "浏览器拦截了新窗口，请允许弹窗后重试",
+          variant: "destructive",
+        })
+      }
+      return
+    }
     try {
       await openInvestmentNoteMaterial(id)
     } catch (err) {
@@ -497,6 +602,67 @@ export function InvestmentNotesView() {
     setDraftAttachments([])
     setTeamSharedDraft(true)
     setEditing(true)
+  }
+
+  async function handleIntegrateNotes() {
+    if (integrating || saving) return
+    const q = keyword.trim()
+    if (!q) {
+      toast({
+        title: "无法整合",
+        description: "请先搜索同一管理人，再整合当前列表中的多条路演笔记",
+        variant: "destructive",
+      })
+      return
+    }
+    const sources = selectNotesForIntegration(filteredNotes)
+    if (sources.length < 2) {
+      toast({
+        title: "无法整合",
+        description: "当前搜索结果不足 2 条可整合笔记（空草稿和已整合笔记不会计入）",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const draft = buildIntegratedInvestmentNoteDraft(sources, q)
+    if (draft.content.length > MAX_INVESTMENT_NOTE_CONTENT_CHARS) {
+      toast({
+        title: "无法整合",
+        description: `合并后内容过长，请控制在 ${MAX_INVESTMENT_NOTE_CONTENT_CHARS.toLocaleString("zh-CN")} 字符以内（含格式代码，当前 ${draft.content.length.toLocaleString("zh-CN")}）`,
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIntegrating(true)
+    try {
+      const note = await createInvestmentNote({
+        title: draft.title,
+        content: draft.content,
+        teamShared: notesScope === "team",
+        associations: draft.associations,
+        roadshowAssociations: draft.roadshowAssociations,
+      })
+      await reloadNotes()
+      setSelectedId(note.id)
+      setDraftTitle(note.title)
+      setDraftContent(note.content)
+      setDraftAttachments(note.attachments)
+      setEditing(false)
+      toast({
+        title: "已整合为新笔记",
+        description: `已将 ${sources.length} 条笔记合并为「${displayNoteTitle(note.title)}」，原文仍保留`,
+      })
+    } catch (err) {
+      toast({
+        title: "整合失败",
+        description: err instanceof Error ? err.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setIntegrating(false)
+    }
   }
 
   function handleEdit() {
@@ -742,6 +908,30 @@ export function InvestmentNotesView() {
             >
               写笔记
             </button>
+            <button
+              type="button"
+              onClick={() => void handleIntegrateNotes()}
+              disabled={integrating || !keyword.trim() || mergeableNotes.length < 2}
+              title={
+                !keyword.trim()
+                  ? "请先搜索同一管理人的多条路演笔记"
+                  : mergeableNotes.length < 2
+                    ? "至少需要 2 条可整合笔记"
+                    : `将当前 ${mergeableNotes.length} 条笔记整合为一条`
+              }
+              className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded border border-red-300 bg-white py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-400 disabled:hover:bg-white"
+            >
+              {integrating ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Combine className="h-3.5 w-3.5" />
+              )}
+              {integrating
+                ? "整合中..."
+                : keyword.trim() && mergeableNotes.length >= 2
+                  ? `整合当前 ${mergeableNotes.length} 条笔记`
+                  : "整合笔记"}
+            </button>
           </div>
           <div className="border-b px-4 py-3">
             <div className="relative">
@@ -750,7 +940,7 @@ export function InvestmentNotesView() {
                 type="text"
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
-                placeholder="请输入关键字，回车搜索"
+                placeholder="搜索管理人 / 路演 / 产品"
                 className="h-9 w-full rounded border border-zinc-200 bg-white pl-9 pr-3 text-sm placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
               />
             </div>

@@ -35,7 +35,7 @@ export async function GET(req: Request) {
               downloaded: fetchResult.downloaded.length,
               skipped: fetchResult.skipped.length,
               errors: fetchResult.errors,
-              log: fetchResult.log.slice(-30),
+              log: fetchResult.log.slice(-80),
               folder: fetchResult.folder,
             }
           : null,

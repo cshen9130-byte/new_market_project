@@ -38,6 +38,8 @@ export function normalizeRegisterCode(value: string | null | undefined): string 
   const s = String(value).trim().toUpperCase()
   if (!s || INVALID_REGISTER_VALUES.has(s) || INVALID_REGISTER_VALUES.has(s.toLowerCase())) return null
   if (!/^[A-Z][A-Z0-9]{4,7}[A-Z]?$/.test(s)) return null
+  // Real AMAC/product codes contain a digit; drop words scraped from contracts (HTTPS, REITS, TRADING).
+  if (!/\d/.test(s)) return null
   return s
 }
 
@@ -65,9 +67,13 @@ export function collectFundSearchNameCandidates(q: string): string[] {
   }
 
   add(trimmed)
+  const compact = trimmed.replace(/[\s\u3000]+/g, "")
+  if (compact !== trimmed) add(compact)
 
   const core = fundNameCore(trimmed)
   if (core) add(core)
+  const compactCore = fundNameCore(compact)
+  if (compactCore) add(compactCore)
 
   for (const dash of ["-", "－", "—", "–"]) {
     const idx = trimmed.indexOf(dash)

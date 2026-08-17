@@ -3,6 +3,7 @@ import { query } from "@/lib/db"
 import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import {
   loadBasicinfoTrackByBeianKeys,
+  loadFundElementExtraFields,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
 
@@ -22,43 +23,46 @@ export async function GET(req: Request) {
 
   const keys = await resolveFundElementsBeianKeys(beian_hao, product_name || null)
 
-  const rows = await loadBasicinfoTrackByBeianKeys<{
-    fund_name: string | null
-    fund_short_name: string | null
-    register_number: string | null
-    advisor: string | null
-    advisor2: string | null
-    inception_date: string | null
-    puton_date: string | null
-    mandator_name: string | null
-    manager_names: string | null
-    open_day: string | null
-    is_temporary_open: number | null
-    fee_purchase: string | null
-    add_amount: string | null
-    fee_redeem: string | null
-    precautious_line: string | null
-    closed_period: string | null
-    stop_line: string | null
-    fee_manage_rate: string | null
-    fee_trust: string | null
-    fee_manage: string | null
-    fee_admin_service: string | null
-    fee_pay: string | null
-    updated_at: string | null
-  }>(
-    keys,
-    `SELECT fund_name, fund_short_name, register_number,
-            advisor, advisor2, inception_date::text, puton_date::text,
-            mandator_name, manager_names,
-            open_day, is_temporary_open,
-            fee_purchase, add_amount, fee_redeem,
-            precautious_line, closed_period, stop_line,
-            fee_manage_rate::text, fee_trust, fee_manage,
-            fee_admin_service, fee_pay,
-            updated_at::text
-     FROM basicinfo_bfl_track`,
-  )
+  const [rows, extra] = await Promise.all([
+    loadBasicinfoTrackByBeianKeys<{
+      fund_name: string | null
+      fund_short_name: string | null
+      register_number: string | null
+      advisor: string | null
+      advisor2: string | null
+      inception_date: string | null
+      puton_date: string | null
+      mandator_name: string | null
+      manager_names: string | null
+      open_day: string | null
+      is_temporary_open: number | null
+      fee_purchase: string | null
+      add_amount: string | null
+      fee_redeem: string | null
+      precautious_line: string | null
+      closed_period: string | null
+      stop_line: string | null
+      fee_manage_rate: string | null
+      fee_trust: string | null
+      fee_manage: string | null
+      fee_admin_service: string | null
+      fee_pay: string | null
+      updated_at: string | null
+    }>(
+      keys,
+      `SELECT fund_name, fund_short_name, register_number,
+              advisor, advisor2, inception_date::text, puton_date::text,
+              mandator_name, manager_names,
+              open_day, is_temporary_open,
+              fee_purchase, add_amount, fee_redeem,
+              precautious_line, closed_period, stop_line,
+              fee_manage_rate::text, fee_trust, fee_manage,
+              fee_admin_service, fee_pay,
+              updated_at::text
+       FROM basicinfo_bfl_track`,
+    ),
+    loadFundElementExtraFields(keys),
+  ])
 
   if (!rows[0]) {
     return NextResponse.json({ error: "not found" }, { status: 404 })
@@ -106,6 +110,9 @@ export async function GET(req: Request) {
     fee_manage: row.fee_manage || null,
     fee_admin_service: row.fee_admin_service || null,
     fee_pay: row.fee_pay || null,
+    risk_level: extra.risk_level,
+    lock_period_desc: extra.lock_period_desc,
+    fee_pay_formula: extra.fee_pay_formula,
     updated_at: row.updated_at ? row.updated_at.slice(0, 10) : null,
   })
 }

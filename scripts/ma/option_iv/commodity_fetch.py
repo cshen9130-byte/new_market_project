@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from commodity_config import UNDERLYINGS, CommodityUnderlying
-from iv_analysis.charts.percentile import _percentile_rank
+from iv_analysis.percentile_rank import _percentile_rank
 
 HISTORY_DAYS = 252
 

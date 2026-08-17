@@ -10,7 +10,7 @@ import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
-import { writeFundElementsFromBody } from "@/lib/server/fund-elements-write"
+import { writeFundElementsAcrossShareClasses, writeFundElementsFromBody } from "@/lib/server/fund-elements-write"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 
@@ -230,7 +230,11 @@ export async function PATCH(req: Request) {
   if (!body || !rawBeian) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
 
   try {
-    await writeFundElementsFromBody(body)
+    if (body.fanout_share_classes === true) {
+      await writeFundElementsAcrossShareClasses(body)
+    } else {
+      await writeFundElementsFromBody(body)
+    }
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[ops/fund-elements PATCH]", err)

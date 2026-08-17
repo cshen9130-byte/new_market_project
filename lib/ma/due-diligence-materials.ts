@@ -223,6 +223,19 @@ export function extractDdMaterialsLabel(
   return collectDdMaterialsPrimaryLabels(row)[0] ?? ""
 }
 
+function sanitizeKbFolderSegment(name: string): string {
+  const cleaned = name
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
+    .replace(/[. ]+$/g, "")
+    .trim()
+  return cleaned || "未命名"
+}
+
+function todayKbFolderDate(): string {
+  const now = new Date()
+  return `${now.getFullYear()}.${now.getMonth() + 1}.${now.getDate()}`
+}
+
 /** Expected folder name segment, e.g. `2026.6.26-标准定律`. */
 export function buildExpectedFolderSlug(
   row: Pick<DueDiligenceTableRow, "ddDate" | "fundCompany" | "investmentManager" | "representativeProduct">,
@@ -231,6 +244,35 @@ export function buildExpectedFolderSlug(
   const label = extractDdMaterialsLabel(row)
   if (!datePart || !label) return null
   return `${datePart}-${label}`
+}
+
+/** Target KB folder for newly uploaded 尽调资料, e.g. `内部尽调资料/2026.6.26-标准定律`. */
+export function buildDdMaterialsUploadFolderPath(
+  row: Pick<DueDiligenceTableRow, "ddDate" | "fundCompany" | "investmentManager" | "representativeProduct">,
+): string {
+  const datePart = formatKbFolderDate(row.ddDate) ?? todayKbFolderDate()
+  const label = sanitizeKbFolderSegment(extractDdMaterialsLabel(row) || "未命名")
+  return `${DD_MATERIALS_KB_ROOT}/${datePart}-${label}`
+}
+
+export function isDdMaterialsKbFilePath(relativePath: string): boolean {
+  const leaf = relativePath.split("/").pop() ?? relativePath
+  return /\.[a-z0-9]{2,5}$/i.test(leaf) && relativePath.includes("/")
+}
+
+/** Prefer an existing linked folder; otherwise the expected upload folder for this row. */
+export function resolveDdMaterialsUploadFolderPath(
+  existingPath: string | null | undefined,
+  row: Pick<DueDiligenceTableRow, "ddDate" | "fundCompany" | "investmentManager" | "representativeProduct">,
+): string {
+  const existing = existingPath?.trim() ?? ""
+  if (existing && existing !== DD_MATERIALS_KB_ROOT) {
+    if (isDdMaterialsKbFilePath(existing)) {
+      return existing.replace(/\/[^/]+$/u, "")
+    }
+    return existing
+  }
+  return buildDdMaterialsUploadFolderPath(row)
 }
 
 export function buildDdMaterialsKbUrl(folderPath: string): string {
@@ -546,7 +588,6 @@ function collectRowIdentityTerms(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
   >,
 ): string[] {
@@ -563,7 +604,6 @@ function collectRowIdentityTerms(
   addAlternateMatchLabel(terms, row.investmentManager.split(/[、,，/]/u)[0] ?? "")
   addAlternateMatchLabel(terms, row.ddTarget)
   addAlternateMatchLabel(terms, row.strategyPreliminary)
-  addAlternateMatchLabel(terms, row.otherInfo)
   addAlternateMatchLabel(terms, row.ddConclusion)
   const label = extractDdMaterialsLabel(row)
   if (label) terms.add(label)
@@ -621,7 +661,6 @@ function scoreFolderFundReuseMatch(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
     | "strategyLevel1"
     | "strategyLevel2"
@@ -729,7 +768,6 @@ function scoreFolderMonthDayIdentityMatch(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
   >,
 ): number {
@@ -829,7 +867,6 @@ function isPlausibleDdMaterialsFolderMatch(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
     | "strategyLevel1"
     | "strategyLevel2"
@@ -865,13 +902,10 @@ export function resolveDdMaterialsFolderPath(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
     | "strategyLevel1"
     | "strategyLevel2"
     | "strategyLevel3"
-    | "otherInfo"
-    | "ddConclusion"
     | "ddMaterialsKbPath"
     | "ddMaterialsLinkStatus"
   >,
@@ -1145,7 +1179,6 @@ function scoreLooseFileMatch(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
     | "strategyLevel1"
     | "strategyLevel2"
@@ -1216,13 +1249,10 @@ export function getDdMaterialsDocumentsForRow(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
     | "strategyLevel1"
     | "strategyLevel2"
     | "strategyLevel3"
-    | "otherInfo"
-    | "ddConclusion"
     | "ddMaterialsKbPath"
     | "ddMaterialsLinkStatus"
     | "ddMaterialsFileLinks"
@@ -1275,6 +1305,33 @@ export function resolveDdMaterialsDisplayLabel(
   return row.ddMaterials
 }
 
+/** Prefix for virtual note-attachment ids that point at 尽调材料 KB files. */
+export const ROADSHOW_DD_MATERIAL_ID_PREFIX = "dd-mat:"
+
+export function roadshowDdMaterialAttachmentId(relativePath: string): string {
+  return `${ROADSHOW_DD_MATERIAL_ID_PREFIX}${relativePath}`
+}
+
+export function parseRoadshowDdMaterialAttachmentId(id: string): string | null {
+  if (!id.startsWith(ROADSHOW_DD_MATERIAL_ID_PREFIX)) return null
+  const relativePath = id.slice(ROADSHOW_DD_MATERIAL_ID_PREFIX.length).trim()
+  return relativePath || null
+}
+
+/** Unique 尽调材料 documents for the given 尽调表格 rows (linked roadshows). */
+export function collectDdMaterialsDocumentsForRows(
+  rows: Array<Parameters<typeof getDdMaterialsDocumentsForRow>[0]>,
+  index: DdMaterialsFolderIndex,
+): DdMaterialsDocument[] {
+  const byPath = new Map<string, DdMaterialsDocument>()
+  for (const row of rows) {
+    for (const doc of getDdMaterialsDocumentsForRow(row, index)) {
+      if (!byPath.has(doc.relativePath)) byPath.set(doc.relativePath, doc)
+    }
+  }
+  return Array.from(byPath.values())
+}
+
 export function buildDdMaterialsRowPresentation(
   row: Pick<
     DueDiligenceTableRow,
@@ -1284,7 +1341,6 @@ export function buildDdMaterialsRowPresentation(
     | "representativeProduct"
     | "ddTarget"
     | "strategyPreliminary"
-    | "otherInfo"
     | "ddConclusion"
     | "strategyLevel1"
     | "strategyLevel2"

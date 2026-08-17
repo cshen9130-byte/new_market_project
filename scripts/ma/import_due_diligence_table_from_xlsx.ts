@@ -5,7 +5,7 @@
 import fs from "fs"
 import path from "path"
 import * as XLSX from "xlsx"
-import { DD_TABLE_COLUMNS } from "../../lib/ma/due-diligence-table"
+import { DD_TABLE_COLUMNS, mergeOtherInfoIntoDdConclusion } from "../../lib/ma/due-diligence-table"
 
 const SEED_KEYS = DD_TABLE_COLUMNS.map((c) => c.key)
 
@@ -154,8 +154,7 @@ async function main() {
       strategyLevel3: cellText(line[14]),
       inTrackingPool: cellText(line[15]),
       ddMaterials: cellText(line[16]),
-      otherInfo: cellText(line[17]),
-      ddConclusion: cellText(line[18]),
+      ddConclusion: mergeOtherInfoIntoDdConclusion(cellText(line[18]), cellText(line[17])),
     }
 
     if (!shouldImportRow(values)) continue

@@ -409,6 +409,17 @@ def max_date(conn, table: str, col: str = "trade_date") -> date | None:
     return row[0] if (row and row[0]) else None
 
 
+def max_valid_close_date(conn, table: str, extra_where: str = "") -> date | None:
+    """Max trade_date that has a usable close, so empty pre-close rows cannot freeze skip logic."""
+    where = "close IS NOT NULL AND close > 0"
+    if extra_where:
+        where = f"{where} AND ({extra_where})"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT MAX(trade_date) FROM {table} WHERE {where}")  # noqa: S608
+        row = cur.fetchone()
+    return row[0] if (row and row[0]) else None
+
+
 def row_count(conn, table: str, where_sql: str = "", params=()) -> int:
     with conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) FROM {table} {where_sql}", params)  # noqa: S608
@@ -555,7 +566,7 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = max_date(conn, "raw_nanhua_indices_daily")
+    cur_max = max_valid_close_date(conn, "raw_nanhua_indices_daily")
 
     if not force and cur_max and cur_max >= today - timedelta(days=1):
         log.info("NH indices up-to-date (%s), skipping.", cur_max)
@@ -589,13 +600,14 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
     for r in rows_raw:
         d    = to_date(str(r.get("date", "")).replace("-", ""))
         code = r.get("code")
-        if not d or not code:
+        cl   = safe_float(r.get("close"))
+        if not d or not code or cl is None or cl <= 0:
             continue
         records.append((
             d, code,
             r.get("name") or "",
             safe_float(r.get("open")),
-            safe_float(r.get("close")),
+            cl,
             safe_float(r.get("high")),
             safe_float(r.get("low")),
             safe_float(r.get("preclose")),
@@ -1422,13 +1434,11 @@ def step_option_iv(conn, *, force: bool = False) -> int:
     # Hard-cap wall time; run_script kills the process group on timeout.
     out = run_script(
         "fetch_option_iv_daily.py",
-        timeout=600,
+        timeout=900,
         log_stderr=True,
     )
     if not out or out.get("error"):
-        # Non-fatal for the rest of the pipeline (futures already fetched earlier).
-        log.error("Option IV fetch failed/timed out: %s — continuing ETL", out)
-        return 0
+        raise RuntimeError(f"Option IV fetch failed: {out}")
 
     trade_date = to_date(out.get("trade_date")) or today
     underlyings = out.get("underlyings") or {}
@@ -1592,8 +1602,7 @@ def step_commodity_option_iv(conn, *, force: bool = False) -> int:
         log_stderr=True,
     )
     if not out or out.get("error"):
-        log.error("Commodity option IV fetch failed/timed out: %s — continuing ETL", out)
-        return 0
+        raise RuntimeError(f"Commodity option IV fetch failed: {out}")
 
     trade_date = to_date(out.get("trade_date")) or today
     underlyings = out.get("underlyings") or {}
@@ -1738,17 +1747,28 @@ def step_akshare_exchange_daily(conn, *, force: bool = False) -> int:
     """
     today   = date.today()
     cur_max = max_date(conn, "raw_futures_contracts_daily")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MAX(trade_date) FROM raw_futures_contracts_daily
+            WHERE contract ~* '^(IH|IF|IC|IM)[0-9]{4}'
+            """
+        )
+        row = cur.fetchone()
+    index_max = row[0] if (row and row[0]) else None
+    # Table-wide max can be commodity contracts; CFFEX index months often lag.
+    effective_max = index_max if index_max and (cur_max is None or index_max < cur_max) else cur_max
 
-    if not force and cur_max and cur_max >= today - timedelta(days=1):
-        log.info("AkShare exchange daily up-to-date (%s), skipping.", cur_max)
+    if not force and effective_max and effective_max >= today - timedelta(days=1):
+        log.info("AkShare exchange daily up-to-date (%s), skipping.", effective_max)
         return 0
 
-    if cur_max is None or force:
+    if effective_max is None or force:
         start = _AK_EXCHANGE_BACKFILL_START
         log.info("AkShare exchange daily: %s, backfilling from %s …",
                  "forced" if force else "first run", start)
     else:
-        start = cur_max + timedelta(days=1)
+        start = effective_max + timedelta(days=1)
         log.info("AkShare exchange daily: incremental fetch %s → %s …", start, today)
 
     if start > today:
@@ -1767,6 +1787,40 @@ def step_akshare_exchange_daily(conn, *, force: bool = False) -> int:
 
     rows = int(out.get("rows", 0))
     log.info("AkShare exchange daily: upserted %d rows (%s → %s).", rows, start, today)
+    return rows
+
+
+def step_cffex_index_month_contracts(conn, *, force: bool = False) -> int:
+    """Refresh IH/IF/IC/IM month contracts for 合约年化基差率时序 via Sina/AkShare.
+
+    raw_futures_contracts_daily is shared with commodity contracts, so the
+    table-wide max date can look current while CFFEX index months are stale.
+    """
+    today = date.today()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MAX(trade_date) FROM raw_futures_contracts_daily
+            WHERE contract ~* '^(IH|IF|IC|IM)[0-9]{4}'
+              AND COALESCE(NULLIF(clear, 0), NULLIF(close, 0)) IS NOT NULL
+            """
+        )
+        row = cur.fetchone()
+    cur_max = row[0] if (row and row[0]) else None
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("CFFEX index month contracts up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    log.info("Fetching CFFEX index month contracts (IH/IF/IC/IM) …")
+    out = run_script(
+        "backfill_cffex_index_month_contracts.py",
+        timeout=600,
+        log_stderr=True,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"CFFEX index month contracts fetch failed: {out}")
+    rows = int(out.get("rows") or 0)
+    log.info("CFFEX index month contracts: upserted %d rows.", rows)
     return rows
 
 
@@ -1803,7 +1857,7 @@ def step_akshare_futures_daily(conn, *, force: bool = False) -> int:
     conn.commit()
 
     today   = date.today()
-    cur_max = max_date(conn, "raw_akshare_futures_daily")
+    cur_max = max_valid_close_date(conn, "raw_akshare_futures_daily")
 
     if not force and cur_max and cur_max >= today - timedelta(days=1):
         log.info("AkShare futures daily up-to-date (%s), skipping.", cur_max)
@@ -1839,12 +1893,13 @@ def step_akshare_futures_daily(conn, *, force: bool = False) -> int:
     for r in rows_raw:
         d    = to_date(str(r.get("date", "")).replace("-", ""))
         code = r.get("code", "").strip()
-        if not d or not code:
+        cl   = safe_float(r.get("close"))
+        if not d or not code or cl is None or cl <= 0:
             continue
         records.append((
             d, code,
             safe_float(r.get("open")),
-            safe_float(r.get("close")),
+            cl,
             safe_float(r.get("high")),
             safe_float(r.get("low")),
             safe_float(r.get("pct_change")),
@@ -4884,9 +4939,22 @@ def step_warm_mom_cache() -> int:
         return 0
 
 
-# Steps that refresh /ma/dashboard/macro-market charts (PCA, regime, money-credit).
+# Steps that refresh /ma/dashboard/macro-market and 期货市场 Nanhua charts.
+# nanhua_indices lives here (not only the 01:00 full nightly) so sector charts
+# keep updating when the full cron is down — the 02:30 macro job is the one
+# that actually runs every day.
 MACRO_STEPS = [
     "nhci",
+    "nanhua_indices",
+    "akshare_futures_daily",
+    "futures_rollover_dates",
+    "commodity_amounts",
+    "spot_closes",
+    "futures_continuous_gapfill",
+    "repair_futures_snapshot",
+    "derive_basis",
+    "derive_basis_cont",
+    "cffex_index_month_contracts",
     "etf_prices",
     "predict_market_cluster",
     "predict_market_cluster_weekly",
@@ -4896,6 +4964,24 @@ MACRO_STEPS = [
     "regime_similarity",
     "shibor_3m",
     "money_credit",
+]
+
+# Chart-critical 期货/期权 steps. Scheduled separately so a broken 01:00 full
+# nightly (venv missing, later AMAC timeouts, etc.) cannot freeze those pages.
+FUTURES_STEPS = [
+    "nhci",
+    "nanhua_indices",
+    "akshare_futures_daily",
+    "futures_rollover_dates",
+    "commodity_amounts",
+    "spot_closes",
+    "futures_continuous_gapfill",
+    "repair_futures_snapshot",
+    "derive_basis",
+    "derive_basis_cont",
+    "cffex_index_month_contracts",
+    "option_iv",
+    "commodity_option_iv",
 ]
 
 # Steps that refresh /ma/dashboard/stock-market charts (crowding, board share, top stocks, hot sectors).
@@ -4920,6 +5006,7 @@ ORDERED_STEPS = [
     # has hung for hours on AkShare; it must not gate market-data catchup.
     "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
     "akshare_exchange_daily",       # per-contract volume+OI from exchange bulletins (free fallback)
+    "cffex_index_month_contracts",  # IH/IF/IC/IM month contracts for 合约年化基差 charts
     "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
     "option_iv",                    # China financial option IV snapshot + QVIX (AkShare)
     "commodity_option_iv",          # China commodity option series/ATM IV (AkShare exchanges)
@@ -5019,8 +5106,8 @@ def main():
     parser.add_argument("--step", choices=ORDERED_STEPS, help="Run a single step only")
     parser.add_argument(
         "--group",
-        choices=["macro", "stock"],
-        help="Run a predefined step group (macro = macro-market charts, stock = A-share crowding charts)",
+        choices=["macro", "stock", "futures"],
+        help="Run a predefined step group (macro / stock / futures+options charts)",
     )
     parser.add_argument("--backfill", action="store_true", help="Force full history reload")
     parser.add_argument("--force", action="store_true", help="Re-fetch even if data already in DB")
@@ -5064,6 +5151,7 @@ def main():
         "nanhua_commodity_indices":  lambda: step_nanhua_commodity_indices(conn, force=force),
         "futures_contracts_ohlcv":    lambda: step_futures_contracts_ohlcv(conn, force=force),
         "akshare_exchange_daily":      lambda: step_akshare_exchange_daily(conn, force=force),
+        "cffex_index_month_contracts": lambda: step_cffex_index_month_contracts(conn, force=force),
         "options_contracts_ohlcv":    lambda: step_options_contracts_ohlcv(conn, force=force),
         "option_iv":                  lambda: step_option_iv(conn, force=force),
         "commodity_option_iv":        lambda: step_commodity_option_iv(conn, force=force),
@@ -5120,6 +5208,9 @@ def main():
     elif args.group == "stock":
         steps_to_run = STOCK_STEPS
         log.info("Running stock-market step group (%d steps)", len(steps_to_run))
+    elif args.group == "futures":
+        steps_to_run = FUTURES_STEPS
+        log.info("Running futures/options step group (%d steps)", len(steps_to_run))
     else:
         steps_to_run = ORDERED_STEPS
     errors = []

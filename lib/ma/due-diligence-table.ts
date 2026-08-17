@@ -19,7 +19,6 @@ export type DueDiligenceTableRowData = {
   strategyLevel3: string
   inTrackingPool: string
   ddMaterials: string
-  otherInfo: string
   ddConclusion: string
 }
 
@@ -76,9 +75,10 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
   { key: "strategyLevel3",     label: "三级策略",      width: 90 },
   { key: "inTrackingPool",     label: "已加入跟踪池", width: 130 },
   { key: "ddMaterials",        label: "尽调材料",      width: 84 },
-  { key: "otherInfo",          label: "其他补充信息",  width: 150, multiline: true, hoverPreview: true },
   { key: "ddConclusion",       label: "尽调结论",      width: 200, multiline: true, hoverPreview: true },
 ]
+
+const DD_TABLE_COLUMN_KEYS = new Set<string>(DD_TABLE_COLUMNS.map((col) => col.key))
 
 export const TABLE_INDEX_WIDTH = 36
 export const TABLE_ACTION_WIDTH = 120
@@ -150,10 +150,11 @@ export function compactCellFormats(
   const out: TableCellFormats = {}
   for (const [key, fmt] of Object.entries(formats)) {
     if (isEmptyCellFormat(fmt)) continue
-    if (validRowIds) {
-      const rowId = key.split("::")[0]
-      if (!validRowIds.has(rowId)) continue
-    }
+    const sep = key.lastIndexOf("::")
+    const rowId = sep >= 0 ? key.slice(0, sep) : key
+    const colKey = sep >= 0 ? key.slice(sep + 2) : ""
+    if (validRowIds && !validRowIds.has(rowId)) continue
+    if (colKey && !DD_TABLE_COLUMN_KEYS.has(colKey)) continue
     out[key] = fmt
   }
   return out
@@ -218,9 +219,18 @@ export function defaultDueDiligenceTableRowData(): DueDiligenceTableRowData {
     strategyLevel3: "",
     inTrackingPool: "",
     ddMaterials: "",
-    otherInfo: "",
     ddConclusion: "",
   }
+}
+
+/** Fold leftover 其他补充信息 into 尽调结论 without duplicating text already present. */
+export function mergeOtherInfoIntoDdConclusion(ddConclusion: string, otherInfo: string): string {
+  const extra = otherInfo.trim()
+  const base = ddConclusion.trim()
+  if (!extra) return base
+  if (!base) return extra
+  if (base.includes(extra)) return base
+  return `${base}\n${extra}`
 }
 
 function rowFromSeed(seed: Record<string, string>): DueDiligenceTableRow {
@@ -229,6 +239,7 @@ function rowFromSeed(seed: Record<string, string>): DueDiligenceTableRow {
   for (const col of DD_TABLE_COLUMNS) {
     data[col.key] = String(seed[col.key] ?? "").trim()
   }
+  data.ddConclusion = mergeOtherInfoIntoDdConclusion(data.ddConclusion, String(seed.otherInfo ?? ""))
   return {
     ...data,
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

@@ -4,20 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import pandas as pd
 
-from iv_analysis.plot_utils import save_figure
-
-
-def _percentile_rank(series: pd.Series, window: int | None = None) -> pd.Series:
-    if window:
-        return series.rolling(window, min_periods=60).apply(
-            lambda x: pd.Series(x).rank(pct=True).iloc[-1] * 100,
-            raw=False,
-        )
-    return series.rank(pct=True) * 100
+from iv_analysis.percentile_rank import _percentile_rank
 
 
 def plot_iv_percentile(qvix: pd.DataFrame, label: str, output_path: Path, lookback_days: int = 1260) -> Path | None:
@@ -29,6 +18,9 @@ def plot_iv_percentile(qvix: pd.DataFrame, label: str, output_path: Path, lookba
     df["percentile_1y"] = _percentile_rank(df["iv"], window=252)
 
     latest = df.iloc[-1]
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+    from iv_analysis.plot_utils import save_figure
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
     axes[0].plot(df["trade_date"], df["iv"], color="#0f766e", linewidth=1.4)

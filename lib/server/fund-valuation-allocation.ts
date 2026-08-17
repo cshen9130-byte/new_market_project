@@ -6,7 +6,11 @@ import { query } from "@/lib/db"
 import { buildGreekLetters, buildTermAnalysis, type GreekLetterRow, type TermAnalysisRow } from "@/lib/server/derivative-greeks-term"
 import {
   extractOptionContractFromText,
+  isOptionAccountSummaryName,
+  isValuationAccountPrefixSymbol,
+  looksLikeOptionContract,
   normalizeOptionContractCode,
+  optionHoldingDisplayName,
 } from "@/lib/server/option-contract-code"
 import { loadOptionMarketGreeks } from "@/lib/server/option-greeks-market"
 import { inferDerivativeSector, DERIVATIVE_SECTOR_CHART_ORDER, type DerivativeSector } from "@/lib/server/derivative-sector"
@@ -558,18 +562,27 @@ function buildAllocation(
 type HoldingRow = Awaited<ReturnType<typeof listFundLatestValuationHoldings>>["holdings"][number]
 
 function isOptionHolding(h: HoldingRow): boolean {
-  if (h.row_kind === "option") return true
-  if (h.asset_class === "期权") return true
+  if (isCashLikeHoldingKind(h.row_kind)) return false
   const name = String(h.subject_name ?? "")
-  if (/期权/.test(name)) return true
-  return /[A-Za-z]{1,4}\d{3,4}[CPcp]\d+/.test(`${h.symbol ?? ""}${name}`)
+  const code = String(h.original_subject_code ?? h.subject_code ?? "")
+  if (/存出保证金|结算备付金|银行存款/.test(name) && !looksLikeOptionContract(code, name, h.symbol)) {
+    return false
+  }
+  if (isOptionAccountSummaryName(name) && !looksLikeOptionContract(code, name, h.symbol)) {
+    return false
+  }
+  return looksLikeOptionContract(code, name, h.symbol)
 }
 
 function extractValuationCode(h: HoldingRow): string {
-  if (h.symbol) return String(h.symbol).toUpperCase()
-  const name = String(h.subject_name ?? "")
-  const match = name.match(/([A-Za-z]+\d{3,4}[CPcp]\d+)/)
-  if (match) return match[1].toUpperCase()
+  const fromContract = extractOptionContractFromText(
+    h.symbol,
+    String(h.subject_name ?? ""),
+    h.original_subject_code,
+    h.subject_code,
+  )
+  if (fromContract) return fromContract
+  if (h.symbol && !isValuationAccountPrefixSymbol(h.symbol)) return String(h.symbol).toUpperCase()
   return String(h.original_subject_code ?? h.subject_code ?? "").replace(/\s/g, "")
 }
 
@@ -679,7 +692,12 @@ function buildOptions(holdings: HoldingRow[], netAssetValue: number): OptionRow[
             : 0
 
       return {
-        assetName: String(h.subject_name ?? h.symbol ?? "").trim(),
+        assetName: optionHoldingDisplayName(
+          String(h.subject_name ?? ""),
+          h.symbol,
+          h.original_subject_code,
+          h.subject_code,
+        ),
         directionLabel,
         valuationCode: extractValuationCode(h),
         quantity: Math.abs(parseNum(h.quantity)),
@@ -2002,6 +2020,8 @@ export async function getFundValuationAllocation(
   const holdingExtras = layout_type === "derivative"
     ? holdings.map((h) => ({
       subject_name: h.subject_name,
+      subject_code: h.subject_code,
+      original_subject_code: h.original_subject_code,
       symbol: h.symbol,
       asset_class: h.asset_class,
       row_kind: h.row_kind,
@@ -2020,7 +2040,12 @@ export async function getFundValuationAllocation(
     ? holdings
       .filter((h) => isOptionHolding(h))
       .map((h) => {
-        const raw = extractOptionContractFromText(h.symbol, h.subject_name)
+        const raw = extractOptionContractFromText(
+          h.symbol,
+          h.subject_name,
+          h.original_subject_code,
+          h.subject_code,
+        )
         return raw ? normalizeOptionContractCode(raw) : null
       })
       .filter((c): c is string => Boolean(c))

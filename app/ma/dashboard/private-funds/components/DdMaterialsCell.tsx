@@ -1,23 +1,26 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { Bot, CheckCircle2, ExternalLink, FileText, FolderInput, GripVertical, Link2, Loader2, Pencil, X, XCircle } from "lucide-react"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsLinkStatus } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsDocument } from "@/lib/ma/due-diligence-materials"
 import {
+  DD_MATERIALS_KB_ROOT,
   buildDdMaterialsFileUrl,
   buildDdMaterialsKbUrl,
   buildDdMaterialsPreviewUrl,
   ddMaterialsFileLinkStatusLabel,
   ddMaterialsLinkStatusLabel,
+  isDdMaterialsKbFilePath,
   isDdMaterialsLinkLocked,
   isDdMaterialsAutoLinkDisabled,
   resolveDdMaterialsDisplayLabel,
   isDdMaterialsEditable,
 } from "@/lib/ma/due-diligence-materials"
 import { dispatchMaChatOpenDocuments, MA_CHAT_DOCUMENT_MIME, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
+import { useToast } from "@/hooks/use-toast"
 import { DdMaterialsFileEditor } from "./DdMaterialsFileEditor"
 import { DdMaterialsLinkPickerDialog } from "./DdMaterialsLinkPickerDialog"
 
@@ -116,6 +119,124 @@ function stopPointerBubble(event: React.PointerEvent) {
   event.stopPropagation()
 }
 
+function kbAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
+  try {
+    const raw = localStorage.getItem("currentUser")
+    if (raw) {
+      const user = JSON.parse(raw) as { id?: string }
+      if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+    }
+  } catch {
+    // ignore
+  }
+  return headers
+}
+
+function hasLocalFiles(event: React.DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files")
+}
+
+function collectDroppedFiles(dataTransfer: DataTransfer): File[] {
+  return Array.from(dataTransfer.files).filter(
+    (file) => file.name && (file.size > 0 || /\.[a-z0-9]+$/i.test(file.name)),
+  )
+}
+
+async function ensureKbFolder(folderPath: string) {
+  const res = await fetch("/api/knowledge-base/folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...kbAuthHeaders() },
+    body: JSON.stringify({ path: folderPath }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || !data?.ok) throw new Error(data?.error || "创建文件夹失败")
+}
+
+async function uploadKbFiles(folderPath: string, files: File[]) {
+  await ensureKbFolder(folderPath)
+  const form = new FormData()
+  form.append("folderPath", folderPath)
+  for (const file of files) {
+    form.append("files", file)
+    form.append("relativePaths", file.name)
+  }
+  const res = await fetch("/api/knowledge-base/upload", {
+    method: "POST",
+    headers: kbAuthHeaders(),
+    body: form,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || !data?.ok) throw new Error(data?.error || "上传失败")
+}
+
+function resolveUploadFolder(existingPath: string | null | undefined, suggestedFolderPath: string): string {
+  const existing = existingPath?.trim() ?? ""
+  if (existing && existing !== DD_MATERIALS_KB_ROOT) {
+    if (isDdMaterialsKbFilePath(existing)) {
+      return existing.replace(/\/[^/]+$/u, "")
+    }
+    return existing
+  }
+  return suggestedFolderPath.trim() || DD_MATERIALS_KB_ROOT
+}
+
+function FileDropSurface({
+  enabled,
+  className,
+  style,
+  title,
+  onFiles,
+  children,
+}: {
+  enabled: boolean
+  className?: string
+  style?: CSSProperties
+  title?: string
+  onFiles: (files: File[]) => void
+  children: ReactNode
+}) {
+  const [dragOver, setDragOver] = useState(false)
+
+  return (
+    <div
+      className={[
+        className,
+        dragOver && enabled ? "ring-2 ring-blue-400 bg-blue-50/80 rounded" : "",
+      ].filter(Boolean).join(" ")}
+      style={style}
+      title={title}
+      onDragEnter={(event) => {
+        if (!enabled || !hasLocalFiles(event)) return
+        event.preventDefault()
+        event.stopPropagation()
+        setDragOver(true)
+      }}
+      onDragOver={(event) => {
+        if (!enabled || !hasLocalFiles(event)) return
+        event.preventDefault()
+        event.stopPropagation()
+        event.dataTransfer.dropEffect = "copy"
+        setDragOver(true)
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node)) return
+        setDragOver(false)
+      }}
+      onDrop={(event) => {
+        if (!enabled) return
+        event.preventDefault()
+        event.stopPropagation()
+        setDragOver(false)
+        const files = collectDroppedFiles(event.dataTransfer)
+        if (files.length) onFiles(files)
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 export function DdMaterialsCell({
   cellId,
   value,
@@ -129,6 +250,7 @@ export function DdMaterialsCell({
   materialsLoading,
   linkStatus,
   fileLinks,
+  suggestedFolderPath,
   onActivate,
   onChange,
   onApproveLink,
@@ -136,6 +258,7 @@ export function DdMaterialsCell({
   onManualLink,
   onApproveFiles,
   onRejectFiles,
+  onRefreshMaterials,
 }: {
   cellId: string
   value: string
@@ -149,6 +272,7 @@ export function DdMaterialsCell({
   materialsLoading: boolean
   linkStatus?: DdMaterialsLinkStatus
   fileLinks?: Partial<Record<string, "approved" | "rejected">>
+  suggestedFolderPath?: string
   onActivate: () => void
   onChange: (next: string) => void
   onApproveLink?: () => void
@@ -156,6 +280,7 @@ export function DdMaterialsCell({
   onManualLink?: (kbPath: string) => void
   onApproveFiles?: (paths: string[]) => void
   onRejectFiles?: (paths: string[]) => void
+  onRefreshMaterials?: () => Promise<void> | void
 }) {
   const [open, setOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -167,10 +292,12 @@ export function DdMaterialsCell({
   const [previewRevision, setPreviewRevision] = useState(0)
   const [dialogSize, setDialogSize] = useState(defaultDialogSize)
   const [dialogPos, setDialogPos] = useState({ x: 0, y: 0 })
+  const [uploading, setUploading] = useState(false)
   const dragRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ px: number; py: number; w: number; h: number; dir: "se" | "e" | "s" } | null>(null)
   /** Block click-through reopening the cell right after closing the panel. */
   const suppressOpenUntilRef = useRef(0)
+  const { toast } = useToast()
 
   const style: CSSProperties = {
     width: width - 4,
@@ -194,6 +321,9 @@ export function DdMaterialsCell({
   const statusLabel = ddMaterialsLinkStatusLabel(linkStatus)
   const selectedCount = selectedFilePaths.size
   const allFilesSelected = documents.length > 0 && selectedCount === documents.length
+  const canDropUpload = canManageLink && !uploading
+  const uploadTargetFolder = resolveUploadFolder(folderPath, suggestedFolderPath ?? "")
+  const dropHint = "拖入文件以上传并关联尽调资料，或点击手动选择"
 
   useEffect(() => {
     if (!open) {
@@ -404,6 +534,35 @@ export function DdMaterialsCell({
     setPickerOpen(true)
   }
 
+  const handleDroppedFiles = useCallback(
+    async (files: File[], preferredFolder?: string) => {
+      if (!onManualLink || uploading || files.length === 0) return false
+      const targetFolder = resolveUploadFolder(preferredFolder ?? folderPath, suggestedFolderPath ?? "")
+      setUploading(true)
+      try {
+        await uploadKbFiles(targetFolder, files)
+        onManualLink(targetFolder)
+        await onRefreshMaterials?.()
+        toast({
+          title: "已关联尽调资料",
+          description: `已上传 ${files.length} 个文件到「${targetFolder.split("/").pop() || targetFolder}」`,
+        })
+        if (!open) openPanel()
+        return true
+      } catch (err) {
+        toast({
+          title: "上传失败",
+          description: err instanceof Error ? err.message : "请稍后重试",
+          variant: "destructive",
+        })
+        return false
+      } finally {
+        setUploading(false)
+      }
+    },
+    [folderPath, onManualLink, onRefreshMaterials, open, suggestedFolderPath, toast, uploading],
+  )
+
   function fileStatusBadge(relativePath: string) {
     const status = ddMaterialsFileLinkStatusLabel(relativePath, fileLinks, linkStatus)
     return (
@@ -549,14 +708,20 @@ export function DdMaterialsCell({
 
               {canManageLink && linkMode && (
                 <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/10 px-4 py-2">
-                  <button
-                    type="button"
-                    onClick={(event) => openManualPicker(event)}
-                    className="inline-flex items-center gap-1.5 rounded border bg-background px-2.5 py-1 text-xs hover:bg-muted transition-colors"
+                  <FileDropSurface
+                    enabled={canDropUpload}
+                    onFiles={(files) => { void handleDroppedFiles(files) }}
                   >
-                    <FolderInput className="h-3.5 w-3.5" />
-                    手动关联
-                  </button>
+                    <button
+                      type="button"
+                      onClick={(event) => openManualPicker(event)}
+                      className="inline-flex items-center gap-1.5 rounded border bg-background px-2.5 py-1 text-xs hover:bg-muted transition-colors"
+                      title={dropHint}
+                    >
+                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderInput className="h-3.5 w-3.5" />}
+                      {uploading ? "上传中…" : "手动关联"}
+                    </button>
+                  </FileDropSurface>
                   {selectedCount > 0 && onApproveFiles && (
                     <button
                       type="button"
@@ -795,8 +960,11 @@ export function DdMaterialsCell({
             onOpenChange={setPickerOpen}
             initialPath={folderPath}
             currentFolderPath={folderPath}
+            suggestedFolderPath={uploadTargetFolder}
             rowLinkStatus={linkStatus}
             fileLinks={fileLinks}
+            uploading={uploading}
+            onUploadFiles={handleDroppedFiles}
             onConfirm={(kbPath) => {
               onManualLink(kbPath)
               if (!open) openPanel()
@@ -808,7 +976,13 @@ export function DdMaterialsCell({
   if (isActive) {
     return (
       <>
-        <div className="flex items-center gap-0.5" style={{ width: width - 4 }}>
+        <FileDropSurface
+          enabled={canDropUpload}
+          className="flex items-center gap-0.5"
+          style={{ width: width - 4 }}
+          title={canManageLink ? dropHint : undefined}
+          onFiles={(files) => { void handleDroppedFiles(files) }}
+        >
           <input
             type="text"
             data-cell={cellId}
@@ -821,18 +995,20 @@ export function DdMaterialsCell({
           {canManageLink && (
             <button
               type="button"
-              title="管理尽调资料关联"
+              title={dropHint}
+              disabled={uploading}
               onMouseDown={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
+                if (uploading) return
                 openPanel()
               }}
-              className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-100 hover:text-blue-600"
+              className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-100 hover:text-blue-600 disabled:opacity-60"
             >
-              <FolderInput className="h-3.5 w-3.5" />
+              {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderInput className="h-3.5 w-3.5" />}
             </button>
           )}
-        </div>
+        </FileDropSurface>
         {panel}
         {picker}
       </>
@@ -842,21 +1018,32 @@ export function DdMaterialsCell({
   if (hasMaterials || folderPath) {
     return (
       <>
-        <button
-          type="button"
-          data-cell={cellId}
-          style={style}
-          onMouseDown={handleOpenMouseDown}
-          onDoubleClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            onActivate()
-          }}
-          className={`${baseClass} w-full text-left text-blue-600 hover:text-blue-700 hover:underline cursor-pointer`}
-          title={folderName ? `查看 ${folderName} 的资料` : "查看尽调资料"}
+        <FileDropSurface
+          enabled={canDropUpload}
+          title={folderName ? `查看 ${folderName} 的资料，或拖入文件补充上传` : dropHint}
+          onFiles={(files) => { void handleDroppedFiles(files) }}
         >
-          {displayLabel}
-        </button>
+          <button
+            type="button"
+            data-cell={cellId}
+            style={style}
+            onMouseDown={handleOpenMouseDown}
+            onDoubleClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              onActivate()
+            }}
+            className={`${baseClass} w-full text-left text-blue-600 hover:text-blue-700 hover:underline cursor-pointer`}
+            title={folderName ? `查看 ${folderName} 的资料，或拖入文件补充上传` : dropHint}
+          >
+            {uploading ? (
+              <span className="inline-flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                上传中…
+              </span>
+            ) : displayLabel}
+          </button>
+        </FileDropSurface>
         {panel}
         {picker}
       </>
@@ -877,7 +1064,13 @@ export function DdMaterialsCell({
 
   return (
     <>
-      <div className="flex items-center gap-0.5" style={{ width: width - 4 }}>
+      <FileDropSurface
+        enabled={canDropUpload}
+        className="flex items-center gap-0.5"
+        style={{ width: width - 4 }}
+        title={canManageLink ? dropHint : undefined}
+        onFiles={(files) => { void handleDroppedFiles(files) }}
+      >
         <input
           type="text"
           data-cell={cellId}
@@ -890,18 +1083,20 @@ export function DdMaterialsCell({
         {canManageLink && (
           <button
             type="button"
-            title="手动关联尽调资料"
+            title={dropHint}
+            disabled={uploading}
             onMouseDown={(event) => {
               event.preventDefault()
               event.stopPropagation()
+              if (uploading) return
               openManualPicker(event)
             }}
-            className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-100 hover:text-blue-600"
+            className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-100 hover:text-blue-600 disabled:opacity-60"
           >
-            <FolderInput className="h-3.5 w-3.5" />
+            {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderInput className="h-3.5 w-3.5" />}
           </button>
         )}
-      </div>
+      </FileDropSurface>
       {panel}
       {picker}
     </>

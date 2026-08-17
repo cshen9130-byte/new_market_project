@@ -14,8 +14,9 @@ export async function registerBackgroundJobs(): Promise<void> {
     runDueSettlementFetch().catch((e) => console.error("[settlement-email] scheduler error:", e))
   })
 
-  // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit).
-  // Frontend charts poll APIs every minute; this job updates the underlying DB.
+  // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit)
+  // plus 期货市场 Nanhua / vol-corr / 成交额 tables. Frontend charts poll
+  // APIs every minute; this job updates the underlying DB.
   // Linux cron may also run nightly_etl at 01:00 — the 20h dedupe guard avoids double work.
   cron.schedule("30 2 * * *", () => {
     void (async () => {

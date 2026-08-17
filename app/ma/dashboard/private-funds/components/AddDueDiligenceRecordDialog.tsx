@@ -686,15 +686,6 @@ export function AddDueDiligenceRecordDialog({
               />
             </FormRow>
 
-            <FormRow label="其他补充信息">
-              <RichTextArea
-                value={form.otherInfo}
-                onChange={(v) => patch("otherInfo", v)}
-                placeholder="请输入其他补充信息…"
-                rows={4}
-              />
-            </FormRow>
-
             <FormRow label="尽调结论">
               <RichTextArea
                 value={form.ddConclusion}

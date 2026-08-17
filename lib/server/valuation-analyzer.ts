@@ -1,6 +1,12 @@
 import * as XLSX from "xlsx"
 import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 import { expandWorksheetUsedRange } from "@/lib/server/nav-cleaner"
+import {
+  extractOptionContractFromText,
+  isChineseOptionContractName,
+  isValuationAccountPrefixSymbol,
+  looksLikeOptionContract,
+} from "@/lib/server/option-contract-code"
 
 export interface ValuationRow {
   code: string
@@ -528,12 +534,13 @@ function normalizeSubjectCode(code: string): string {
 }
 
 function extractContractSymbol(code: string, name: string): string {
+  const option = extractOptionContractFromText(null, name, code)
+  if (option) return option
   const matches = `${code} ${name}`.match(/[A-Za-z]{1,4}\d{2,5}/g) || []
-  return (
-    matches.find((match) => !/^(DD|DE|DF|DG)\d/i.test(match) && !/^[A-Za-z]\d01$/i.test(match))?.toUpperCase() ||
-    matches[0]?.toUpperCase() ||
-    ""
-  )
+  const valid = matches
+    .map((match) => match.toUpperCase())
+    .filter((match) => !isValuationAccountPrefixSymbol(match))
+  return valid[0] || ""
 }
 
 function inferExchange(code: string, symbol: string): string {
@@ -559,7 +566,9 @@ function inferExchange(code: string, symbol: string): string {
 }
 
 function inferAssetClass(symbol: string, name: string): string {
-  if (/期权/.test(name)) return "期权"
+  if (looksLikeOptionContract(symbol, name, symbol) || isChineseOptionContractName(name) || /期权/.test(name)) {
+    return "期权"
+  }
   if (/^(IF|IH|IC|IM)/.test(symbol)) return "股指期货"
   if (/^(T|TF|TS|TL)/.test(symbol)) return "国债期货"
   if (symbol) return "商品期货"
@@ -567,8 +576,7 @@ function inferAssetClass(symbol: string, name: string): string {
 }
 
 function isOptionContract(code: string, name: string): boolean {
-  if (/期权/.test(name)) return true
-  return /[A-Za-z]{1,4}\d{3,4}[CPcp]\d+/.test(`${code}${name}`)
+  return looksLikeOptionContract(code, name)
 }
 
 function inferRowKind(code: string, name: string): string {
@@ -606,7 +614,7 @@ function hasEconomicValue(row: ValuationRow): boolean {
 function isOffsetOrSummaryRow(code: string, name: string): boolean {
   const compactCode = code.replace(/\s+/g, "")
   const normalizedName = normalizeText(name)
-  const hasContractInName = /[A-Za-z]{1,4}\d{2,5}/.test(name)
+  const hasContractInName = Boolean(extractContractSymbol("", name)) || isChineseOptionContractName(name)
 
   if (!name) return true
   if (/^(基金)?资产净值$/.test(normalizedName) || /^净资产$/.test(normalizedName)) return false
@@ -622,7 +630,12 @@ function isOffsetOrSummaryRow(code: string, name: string): boolean {
   if (/冲销|冲抵|估值增值|应计利息/.test(normalizedName)) return true
   if (compactCode.startsWith("3102") && /初始合约价值/.test(name) && !hasContractInName) return true
   if (/^3102\.[^.]+\.(02)\./.test(compactCode)) return true
-  if (compactCode.startsWith("3102") && !/[A-Za-z]{1,4}\d{2,4}/.test(`${compactCode}${name}`)) return true
+  if (
+    compactCode.startsWith("3102")
+    && !extractContractSymbol(compactCode, name)
+    && !isChineseOptionContractName(name)
+    && !extractOptionContractFromText(null, name, compactCode)
+  ) return true
 
   return false
 }
@@ -742,7 +755,11 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
 
   for (const row of result) {
     const code = normalizeSubjectCode(row.code)
-    const hasContract = code.startsWith("3102") && /[A-Za-z]{1,4}\d{2,5}/.test(`${code}${row.name || ""}`)
+    const hasContract = code.startsWith("3102") && Boolean(
+      extractContractSymbol(code, row.name || "")
+      || isChineseOptionContractName(row.name || "")
+      || extractOptionContractFromText(null, row.name || "", code),
+    )
     const isLeaf = hasContract || !codes.some((other) => other !== code && other.startsWith(code))
     const rowKind = inferRowKind(code, row.name)
 

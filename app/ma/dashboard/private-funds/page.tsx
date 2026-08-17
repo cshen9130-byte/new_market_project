@@ -60,6 +60,7 @@ import {
   readProductFieldConfig,
   writeProductFieldConfig,
 } from "@/lib/ma/product-field-config"
+import { ProductElementsDialogContent } from "./components/ProductElementsDialogContent"
 import { ProductFieldConfigDialog } from "./components/ProductFieldConfigDialog"
 import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./components/product-field-config-table"
 
@@ -5772,66 +5773,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               {!elementsLoading && elementsData && elementsData.error && (
                 <div className="text-sm text-muted-foreground py-8 text-center">暂无产品要素数据</div>
               )}
-              {!elementsLoading && elementsData && !elementsData.error && (() => {
-                const d = elementsData
-                const val = (v: string | null | undefined) => v || "—"
-                const Row2 = ({ l1, v1, l2, v2 }: { l1: string; v1?: string | null; l2?: string; v2?: string | null }) => (
-                  <tr className="border-b border-border/50 last:border-0">
-                    <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l1}</td>
-                    <td className="py-2 px-4 text-sm text-foreground">{val(v1)}</td>
-                    {l2 !== undefined && <>
-                      <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l2}</td>
-                      <td className="py-2 px-4 text-sm text-foreground">{val(v2)}</td>
-                    </>}
-                  </tr>
-                )
-                return (
-                  <>
-                    {/* 基本信息 */}
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
-                      <span className="text-sm font-semibold">基本信息</span>
-                    </div>
-                    <table className="w-full border border-border rounded-lg overflow-hidden mb-5 text-sm">
-                      <tbody>
-                        <Row2 l1="产品全称" v1={d.fund_name as string} l2="备案编号" v2={d.register_number as string} />
-                        <Row2 l1="投资顾问" v1={d.advisor as string} l2="基金管理人" v2={d.fund_manager as string} />
-                        <Row2 l1="成立日期" v1={d.inception_date as string} l2="备案日期" v2={d.puton_date as string} />
-                        <tr className="border-b border-border/50 last:border-0">
-                          <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">托管券商</td>
-                          <td className="py-2 px-4 text-sm text-foreground" colSpan={3}>{val(d.custodian as string)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-
-                    {/* 申赎信息 */}
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
-                        <span className="text-sm font-semibold">申赎信息</span>
-                      </div>
-                      {d.updated_at && (
-                        <span className="text-xs text-muted-foreground">最近更新: {d.updated_at as string}</span>
-                      )}
-                    </div>
-                    <table className="w-full border border-border rounded-lg overflow-hidden text-sm">
-                      <tbody>
-                        <Row2 l1="开放日" v1={d.open_day as string} l2="是否可临开" v2={d.is_temporary_open as string} />
-                        <Row2 l1="申购费" v1={d.fee_purchase as string} l2="追加限制" v2={d.add_amount as string} />
-                        <Row2 l1="赎回费" v1={d.fee_redeem as string} l2="风险等级" v2={null} />
-                        <Row2 l1="预警线" v1={d.precautious_line as string} l2="封闭期" v2={d.closed_period as string} />
-                        <Row2 l1="平仓线" v1={d.stop_line as string} l2="锁定期说明" v2={null} />
-                        <Row2 l1="管理费率" v1={d.fee_manage_rate as string} l2="托管费" v2={d.fee_trust as string} />
-                        <Row2 l1="管理费说明" v1={d.fee_manage as string} l2="外包费" v2={d.fee_admin_service as string} />
-                        <tr className="border-b border-border/50 last:border-0">
-                          <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap align-top">业绩报酬说明</td>
-                          <td className="py-2 px-4 text-sm text-foreground whitespace-pre-wrap leading-relaxed" colSpan={3}>{val(d.fee_pay as string)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </>
-                )
-              })()}
+              {!elementsLoading && elementsData && !elementsData.error && (
+                <ProductElementsDialogContent data={elementsData} />
+              )}
             </div>
           </div>
         </div>
@@ -18180,53 +18124,9 @@ function InvestmentManagedProductsView() {
               {!invElementsLoading && invElementsData && invElementsData.error && (
                 <div className="text-sm text-muted-foreground py-8 text-center">暂无产品要素数据</div>
               )}
-              {!invElementsLoading && invElementsData && !invElementsData.error && (() => {
-                const d = invElementsData
-                const val = (v: string | null | undefined) => v || "—"
-                const Row2 = ({ l1, v1, l2, v2 }: { l1: string; v1?: string | null; l2?: string; v2?: string | null }) => (
-                  <tr className="border-b border-border/50 last:border-0">
-                    <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l1}</td>
-                    <td className="py-2 px-4 text-sm text-foreground">{val(v1)}</td>
-                    {l2 !== undefined && <>
-                      <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l2}</td>
-                      <td className="py-2 px-4 text-sm text-foreground">{val(v2)}</td>
-                    </>}
-                  </tr>
-                )
-                return (
-                  <>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
-                      <span className="text-sm font-semibold">基本信息</span>
-                    </div>
-                    <table className="w-full border border-border rounded-lg overflow-hidden mb-5 text-sm">
-                      <tbody>
-                        <Row2 l1="产品全称" v1={d.fund_name as string} l2="备案编号" v2={d.register_number as string} />
-                        <Row2 l1="投资顾问" v1={d.advisor as string} l2="基金管理人" v2={d.fund_manager as string} />
-                        <Row2 l1="成立日期" v1={d.inception_date as string} l2="备案日期" v2={d.puton_date as string} />
-                        <tr className="border-b border-border/50 last:border-0">
-                          <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">托管券商</td>
-                          <td className="py-2 px-4 text-sm text-foreground" colSpan={3}>{val(d.custodian as string)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
-                      <span className="text-sm font-semibold">申赎信息</span>
-                    </div>
-                    <table className="w-full border border-border rounded-lg overflow-hidden text-sm">
-                      <tbody>
-                        <Row2 l1="开放日" v1={d.open_day as string} l2="是否可临开" v2={d.is_temporary_open as string} />
-                        <Row2 l1="申购费" v1={d.fee_purchase as string} l2="追加限制" v2={d.add_amount as string} />
-                        <Row2 l1="赎回费" v1={d.fee_redeem as string} l2="风险等级" v2={null} />
-                        <Row2 l1="预警线" v1={d.precautious_line as string} l2="封闭期" v2={d.closed_period as string} />
-                        <Row2 l1="平仓线" v1={d.stop_line as string} l2="锁定期说明" v2={null} />
-                        <Row2 l1="管理费率" v1={d.fee_manage_rate as string} l2="托管费" v2={d.fee_trust as string} />
-                      </tbody>
-                    </table>
-                  </>
-                )
-              })()}
+              {!invElementsLoading && invElementsData && !invElementsData.error && (
+                <ProductElementsDialogContent data={invElementsData} />
+              )}
             </div>
           </div>
         </div>
@@ -20265,53 +20165,9 @@ function InvestmentFofOverviewView() {
               {!fofElementsLoading && fofElementsData && fofElementsData.error && (
                 <div className="text-sm text-muted-foreground py-8 text-center">暂无产品要素数据</div>
               )}
-              {!fofElementsLoading && fofElementsData && !fofElementsData.error && (() => {
-                const d = fofElementsData
-                const val = (v: string | null | undefined) => v || "—"
-                const Row2 = ({ l1, v1, l2, v2 }: { l1: string; v1?: string | null; l2?: string; v2?: string | null }) => (
-                  <tr className="border-b border-border/50 last:border-0">
-                    <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l1}</td>
-                    <td className="py-2 px-4 text-sm text-foreground">{val(v1)}</td>
-                    {l2 !== undefined && <>
-                      <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l2}</td>
-                      <td className="py-2 px-4 text-sm text-foreground">{val(v2)}</td>
-                    </>}
-                  </tr>
-                )
-                return (
-                  <>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
-                      <span className="text-sm font-semibold">基本信息</span>
-                    </div>
-                    <table className="w-full border border-border rounded-lg overflow-hidden mb-5 text-sm">
-                      <tbody>
-                        <Row2 l1="产品全称" v1={d.fund_name as string} l2="备案编号" v2={d.register_number as string} />
-                        <Row2 l1="投资顾问" v1={d.advisor as string} l2="基金管理人" v2={d.fund_manager as string} />
-                        <Row2 l1="成立日期" v1={d.inception_date as string} l2="备案日期" v2={d.puton_date as string} />
-                        <tr className="border-b border-border/50 last:border-0">
-                          <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">托管券商</td>
-                          <td className="py-2 px-4 text-sm text-foreground" colSpan={3}>{val(d.custodian as string)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
-                      <span className="text-sm font-semibold">申赎信息</span>
-                    </div>
-                    <table className="w-full border border-border rounded-lg overflow-hidden text-sm">
-                      <tbody>
-                        <Row2 l1="开放日" v1={d.open_day as string} l2="是否可临开" v2={d.is_temporary_open as string} />
-                        <Row2 l1="申购费" v1={d.fee_purchase as string} l2="追加限制" v2={d.add_amount as string} />
-                        <Row2 l1="赎回费" v1={d.fee_redeem as string} l2="风险等级" v2={null} />
-                        <Row2 l1="预警线" v1={d.precautious_line as string} l2="封闭期" v2={d.closed_period as string} />
-                        <Row2 l1="平仓线" v1={d.stop_line as string} l2="锁定期说明" v2={null} />
-                        <Row2 l1="管理费率" v1={d.fee_manage_rate as string} l2="托管费" v2={d.fee_trust as string} />
-                      </tbody>
-                    </table>
-                  </>
-                )
-              })()}
+              {!fofElementsLoading && fofElementsData && !fofElementsData.error && (
+                <ProductElementsDialogContent data={fofElementsData} />
+              )}
             </div>
           </div>
         </div>

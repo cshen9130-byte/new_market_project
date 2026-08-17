@@ -7,7 +7,7 @@ import { configureEtlDbTimeout, loadProjectEnvFiles } from "@/lib/server/load-pr
 const execFileAsync = promisify(execFile)
 
 const JOB_KEY = "__macroMarketEtl"
-const JOB_TIMEOUT_MS = 45 * 60 * 1000
+const JOB_TIMEOUT_MS = 90 * 60 * 1000
 const MIN_RERUN_MS = 20 * 60 * 60 * 1000
 
 export type MacroMarketEtlJobStatus = {

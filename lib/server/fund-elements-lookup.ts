@@ -1,6 +1,48 @@
 import { query } from "@/lib/db"
+import {
+  formatFeePayFormula,
+  parseFeePayFormulaConfig,
+} from "@/lib/ma/fund-elements-extra"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
+
+export type FundElementExtraFields = {
+  risk_level: string | null
+  lock_period_desc: string | null
+  fee_pay_formula: string | null
+}
+
+const EMPTY_EXTRA_FIELDS: FundElementExtraFields = {
+  risk_level: null,
+  lock_period_desc: null,
+  fee_pay_formula: null,
+}
+
+/** Extra 申赎 columns from migration 018 (risk / lock / performance-fee formula). */
+export async function loadFundElementExtraFields(keys: string[]): Promise<FundElementExtraFields> {
+  try {
+    const rows = await loadBasicinfoTrackByBeianKeys<{
+      risk_level: string | null
+      lock_period_desc: string | null
+      fee_pay_formula: string | null
+      fee_pay_formula_json: unknown
+    }>(
+      keys,
+      `SELECT risk_level, lock_period_desc, fee_pay_formula, fee_pay_formula_json
+       FROM basicinfo_bfl_track`,
+    )
+    const row = rows[0]
+    if (!row) return EMPTY_EXTRA_FIELDS
+    const config = parseFeePayFormulaConfig(row.fee_pay_formula_json)
+    return {
+      risk_level: row.risk_level || null,
+      lock_period_desc: row.lock_period_desc || null,
+      fee_pay_formula: row.fee_pay_formula || formatFeePayFormula(config),
+    }
+  } catch {
+    return EMPTY_EXTRA_FIELDS
+  }
+}
 
 /** Candidate 备案号 keys for 要素 lookup (wrong S-prefix + team register by name). */
 export async function resolveFundElementsBeianKeys(

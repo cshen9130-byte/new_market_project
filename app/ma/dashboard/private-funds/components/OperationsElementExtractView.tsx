@@ -184,9 +184,12 @@ function countSelectedFields(job: ContractJob): number {
   ).length
 }
 
-function buildApplyPayload(job: ContractJob): Record<string, string | null> | null {
+function buildApplyPayload(job: ContractJob): Record<string, string | boolean | null> | null {
   if (!job.selectedFund?.beian_hao || !job.extracted) return null
-  const payload: Record<string, string | null> = { beian_hao: job.selectedFund.beian_hao }
+  const payload: Record<string, string | boolean | null> = {
+    beian_hao: job.selectedFund.beian_hao,
+    fanout_share_classes: true,
+  }
   for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
     if (!job.selectedFields[key]) continue
     const value = job.extracted[key]

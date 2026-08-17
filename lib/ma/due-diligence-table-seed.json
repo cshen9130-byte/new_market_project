@@ -16,8 +16,7 @@
     "strategyLevel3": "盘中板、扫板",
     "inTrackingPool": "是",
     "ddMaterials": "已上传",
-    "otherInfo": "史入职在绵烁，跟周是夫妻关系",
-    "ddConclusion": "团队有大厂工作经验，擅长集合竞价强势股策略；盘中板实盘半年，以扫板为主，1-3月份表现平淡，4月底大幅上涨，收费1+40%，建议试投"
+    "ddConclusion": "团队有大厂工作经验，擅长集合竞价强势股策略；盘中板实盘半年，以扫板为主，1-3月份表现平淡，4月底大幅上涨，收费1+40%，建议试投\n史入职在绵烁，跟周是夫妻关系"
   },
   {
     "index": "2",
@@ -36,7 +35,6 @@
     "strategyLevel3": "1000指增、高频",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "端到端的深度学习，主要做中证1000指增和中性策略，中证1000指增最近一年业绩市场靠前"
   },
   {
@@ -56,7 +54,6 @@
     "strategyLevel3": "ETF轮动",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": "宏观判断+行业比较+标的筛选+交易择时+组合构建。"
   },
   {
@@ -76,7 +73,6 @@
     "strategyLevel3": "择时择股，主观",
     "inTrackingPool": "是",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "主要做市场板块热点，当市场热点出现时，会先研究一下题材情况，观察市场是否认可再参与，会研究基本面，双基金经理模式，张每日依据市场情况决定整体仓位和细分题材板块仓位，袁祥在此基础上做选票和短线交易，曾经参与过煤炭、金属、商业航天、AI的行情，熊市的热点行情也会参与，但是题材规模小，对收益贡献不明显。依据市场情况调整仓位，但是市场不好的时候，还是会有30%仓位交易，保持对市场的敏感度。"
   },
   {
@@ -96,7 +92,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "策略是人工➕量化，把人工打板的逻辑变成量化程序，六维选股模型（资讯、大模型关键词解析、市场情绪分析、热点预判、板块行情验证、龙头股筛选），每天盘前量化程序选出票，然后人工筛选一遍，只做排板，一板二板三板都会打，一板相对少，高位加速板，反包板都会打，打的票大概都在50亿到300亿之间，仅交易主板非ST股票，单票最高25%，实际单票在10%–15%，整体持仓股票数≤20只，交易执行：仅在涨停封板瞬间排单，系统自动撤单机制覆盖三种情形：大单砸盘、连续3次排单失败、临近跌停；卖出逻辑刚性：破板即卖、跌停预警即卖、次日高开超3%–5%即卖，全程无人工干预"
   },
   {
@@ -116,7 +111,6 @@
     "strategyLevel3": "强势股、主观",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "基金经理投资框架清晰，融合景气度投资（选方向）与增量资金策略（择时），通过基本面选股、资金面择时实现稳健收益【8†L10-L11】。历史业绩验证有效：专户产品2023.11-2024.10累计收益约70%，最大回撤约15%【8†L19-L20】；私募产品2025.1至今最大回撤约5%【8†L20-L21】。风控严格，采用分散持仓（20-30只）、仓位管理（年均60-70%）及累计回撤3%减仓/5%清仓的止损机制【8†L12-L13】。当前仓位约45%【8†L21】。整体风格偏稳健，适合认可其景气度+资金面融合框架、注重回撤控制的投资者【8†L25-L26】"
   },
   {
@@ -136,7 +130,6 @@
     "strategyLevel3": "成长、科技",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "基金经理张旭东原混沌投资研究员，21年进入混沌，主要研究半导体、商业航天等科技板块，有丰富的一级和二级投研经验，策略是抓产业趋势，找产业趋势里的最大变化和预期差，在有变化的时候买，在变化兑现的时候卖，不上杠杆，持股分散，板块集中，单票一般持股不超过15%，非常确定的可能会到20%。认为26年是AI最确定的一年，产业在加速。"
   },
   {
@@ -156,7 +149,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": "上海创奥的ETF轮动灵活对冲策略以截面多因子筛选行业主题ETF为主，叠加多周期趋势信号进行动态仓位管理，年化收益约24%、近三年最大回撤仅6.12%，通过独立空头对冲和严格行业持仓约束控制风险，当前规模27亿元，预计可承载百亿以上，并可采用成分股替代应对流动性冲击，整体展现出色的风险收益比和配置价值。"
   },
   {
@@ -176,7 +168,6 @@
     "strategyLevel3": "择时择股，主观",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "古木投资的风云海策略由冠军基金经理苍老师主导，选股能力突出、近期业绩爆发力强（约3个月翻倍），投资框架系统完善，但需注意业绩可追溯期较短、高度依赖个人能力以及规模扩张后的策略容量与持续性风险。"
   },
   {
@@ -196,7 +187,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "陈风为原中信建投周金涛团队成员，大类资产分析师、策略分析师，后在民生理财等机构做投资经理，用量化+人工的方法做大类资产配置，包括商品、权益、债券等，底层逻辑为周期理论和央行调控带来的流动性变化"
   },
   {
@@ -216,7 +206,6 @@
     "strategyLevel3": "高频套利、股指套利",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "爱凡哲2015年成立，团队约40人，主推低波混合策略，动态配比股指套利与股票中性，依赖高波动市场。策略切换由管理层低频主观决策，管理规模15亿。转型资管主要为吸引人才、证明团队实力，应对行业竞争与内部发展期望。"
   },
   {
@@ -236,7 +225,6 @@
     "strategyLevel3": "轮动+套利策略",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "哈福基金套利策略防守能力突出（最大回撤仅1.6%），但年化收益已从8-10%降至约5.2%，收益可持续性存疑；量化选股策略2024年收益约30%但近期回撤，四个子策略资金平均分配，因子为传统人工因子。整体定位为稳健型理财替代，进攻性有限，建议作为低风险配置的一部分，需关注套利收益持续性和股票策略实盘表现。"
   },
   {
@@ -256,7 +244,6 @@
     "strategyLevel3": "量化、主观、盘中板、强势股",
     "inTrackingPool": "是",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "该盘中板策略结合了量化和人工（主观），多盘手共同竞争，通过ai选股，通过大量盘手实际交易调参，收益可观。"
   },
   {
@@ -276,7 +263,6 @@
     "strategyLevel3": "成长、科技",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "徐远航公募出身，在公募和卖方从业十几年，看TMT,现在看好AI产业链，包括存储、光芯片等"
   },
   {
@@ -296,7 +282,6 @@
     "strategyLevel3": "申赎套利、手工、ETF-T0、ETF轮动",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "黑玺私募专注A股交易型策略，总部徐州，设沪杭分支。核心业务含ETF套利（手工+量化，年化6-7%，回撤1%）、股指高频（分钟级跨期，年化8-9%）及ETF轮动（CTA信号，三年年化30%）。收费模式多为1+20，低波组合目标净收益5.5%以上。策略偏成本控制与风控，规模约28亿，量化转型成效显著。"
   },
   {
@@ -316,7 +301,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -336,7 +320,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "爱方资产为成立14年的量化私募，规模约60亿，CTA策略为三大主线之一（规模15亿）。策略含趋势跟踪（70%）、期限结构、基本面量化及截面量价四类，均基于线性模型。历史年化收益约20%，波动率18%，近年优化后回撤控制在10%内。产品覆盖高中低杠杆，与股票负相关，具危机阿尔法效应。机构客户为主，策略容量约40亿。"
   },
   {
@@ -356,7 +339,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "该产品以ETF-FOF模式进行多策略大类配置，权益为主、债券为辅，灵活配置黄金与境外资产，并通过风格与行业轮动捕捉机会。成立154个交易日年化收益约12.4%，最大回撤9%，风控严格。当前科技仓位偏高，境外比例已下调，策略持续动态迭代。"
   },
   {
@@ -376,7 +358,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -396,7 +377,6 @@
     "strategyLevel3": "配置型",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "蜂起资本专注系统化宏观投资，主打全球宏观配置与宏观对冲两类产品，通过风险均衡、动态趋势信号及多空策略控制回撤。实盘超七年，年化收益近10%，回撤约20%，强调风控贡献阿尔法，策略高度纪律化，拒绝主观干预。"
   },
   {
@@ -416,7 +396,6 @@
     "strategyLevel3": "配置型",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "泓湖投资在本次策略交流会上指出,下半年全球宏观最大风险是油价:尽管当前油价疲弱、已基本跌回中东冲突前水平,但原油资本开支长期下行、中美及全球战略库存缓冲已近耗尽,向上弹性远大于向下;同时美国PPI已升至6.5%并大概率向CPI传导,美联储转鹰、年内或仍加息。产品端因美伊停战、原油现货下跌等多头寸同时不利致6月18日当周回撤,均衡产品罕见启用降波动率风控。团队强调以\"假说—跟踪—应对\"方法运作,看好AI资本开支链条,但提示明年需警惕AI泡沫与通胀风险。"
   },
   {
@@ -436,7 +415,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -456,7 +434,6 @@
     "strategyLevel3": "偏CTA",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "本次路演由智领三联基金经理朱思凝介绍其宏观多策略产品\"善进1号\"：公司专注宏观多策略，管理规模约3.1亿元，产品截至2024年5月累计净值约5.87，年化收益约41%，最大回撤约11%。策略基于美林时钟理论，按季度轮动配置股指、商品、国债三类资产，2021-2024年收益主要来自国债套利，2025年起转向以股指为主、商品为辅，商品端含单边做多与跨品种套利两个子策略，未配置黄金，风控上设有单品种仓位上限，核心团队均已跟投。"
   },
   {
@@ -476,7 +453,6 @@
     "strategyLevel3": "强势股",
     "inTrackingPool": "",
     "ddMaterials": "已上传",
-    "otherInfo": "",
     "ddConclusion": "上海波克私募成立于2022年，管理规模约150亿元，以互联网思维和量化模型驱动。强势股策略为事件驱动短线交易，年化收益约18%，夏普2.336，仓位灵活、持仓高度分散，严格控回撤。策略已取消对冲，纯多头运作，依赖量价与另类因子，交易系统自研低延时，定位稳健增值型中性替代产品。"
   },
   {
@@ -496,7 +472,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -516,7 +491,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -536,7 +510,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -556,7 +529,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -576,7 +548,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -596,7 +567,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -616,7 +586,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -636,7 +605,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -656,7 +624,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -676,7 +643,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -696,7 +662,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -716,7 +681,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -736,7 +700,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -756,7 +719,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -776,7 +738,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   },
   {
@@ -796,7 +757,6 @@
     "strategyLevel3": "",
     "inTrackingPool": "",
     "ddMaterials": "",
-    "otherInfo": "",
     "ddConclusion": ""
   }
 ]

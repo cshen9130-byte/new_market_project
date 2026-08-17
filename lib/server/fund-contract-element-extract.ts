@@ -11,7 +11,11 @@ import {
 import {
   shareClassProductNamesMatch,
 } from "@/lib/server/fund-name-match"
-import { shareClassFromProductName, canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
+import {
+  shareClassFromProductName,
+  canonicalizeShareClassBeianCode,
+  type ShareClassLetter,
+} from "@/lib/server/share-class-product"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -242,6 +246,15 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 
 无法从合同中确定的字段填 null。只输出 JSON 对象。
 
+份额类别（重要）：
+合同常对 A/B/C 类份额规定不同的管理费、业绩报酬、申购赎回或封闭期。遇到这种情况时：
+- fee_manage、fee_pay、fee_redeem、fee_purchase、closed_period、add_amount、open_day 必须写成覆盖全部分额的完整说明，按 A/B/C 逐条写明规则，不要只提取其中一类。
+- 示例（管理费说明）：「A类（机构/产品类合格投资者）：年化管理费率1%，每日计提、按季支付；B类（个人合格投资者）：年化管理费率0.2%，每日计提、按季支付；C类：年化管理费率1%，每日计提、按季支付。」
+- 示例（业绩报酬说明）：「按每个客户/每个账户高水位法计提。A类：对超过0%的收益部分按35%计提业绩报酬；B类：不计提业绩报酬；C类：对超过0%的收益部分按50%计提业绩报酬。」
+- fee_manage_rate：各类相同则填该年化费率（如 "1.00%"）；各类不同时填 A 类或主份额费率，细节仍须写在 fee_manage 中。
+
+若文本是补充协议、修订协议或合同变更：只提取本文件明确变更或重申的最新有效规则；未提及的字段填 null，不要用旧合同条款填满。
+
 合同文本：
 `
 
@@ -314,14 +327,35 @@ type MatchHints = {
 
 type ScoredFundMatch = FundMatchCandidate & { score: number }
 
+const GENERIC_FILE_NAME_SEGMENTS = new Set([
+  "合同",
+  "基金合同",
+  "产品合同",
+  "私募基金合同",
+  "私募合同",
+  "投资条款",
+  "说明函",
+  "公告",
+  "补充协议",
+  "修订协议",
+])
+
+function compactFundName(name: string): string {
+  return String(name ?? "").replace(/[\s\u3000]+/g, "")
+}
+
+function familyKey(name: string): string {
+  return fundNameCore(compactFundName(name)).toLowerCase()
+}
+
 function serialSuffix(name: string): string {
-  const m = fundNameCore(name).match(/[一二三四五六七八九十百千0-9]+号$/)
+  const m = fundNameCore(compactFundName(name)).match(/[一二三四五六七八九十百千0-9]+号$/)
   return m?.[0] ?? ""
 }
 
 function namesLooselyMatch(a: string, b: string): boolean {
-  const left = a.trim()
-  const right = b.trim()
+  const left = compactFundName(a)
+  const right = compactFundName(b)
   if (!left || !right) return false
   if (left === right) return true
   const guard = serialSuffix(left) === serialSuffix(right)
@@ -335,6 +369,48 @@ function namesLooselyMatch(a: string, b: string): boolean {
     if (rightBase.startsWith(leftBase) && guard) return true
   }
   return false
+}
+
+function shareClassFromFileName(fileName: string): ShareClassLetter | null {
+  const fromName = shareClassFromProductName(fileName)
+  if (fromName) return fromName
+  const base = path.basename(fileName, path.extname(fileName))
+  const m = base.match(/号([ABC])(?:类|份额)?(?:_|-|\s|$)/u)
+  return m ? (m[1] as ShareClassLetter) : null
+}
+
+function fundNameAgrees(fund: FundMatchCandidate, extractedName: string): boolean {
+  if (namesLooselyMatch(fund.product_name, extractedName)) return true
+  if (fund.short_name && namesLooselyMatch(fund.short_name, extractedName)) return true
+  return false
+}
+
+function uniqueByBeian(funds: FundMatchCandidate[]): FundMatchCandidate[] {
+  const map = new Map<string, FundMatchCandidate>()
+  for (const fund of funds) {
+    const key = fund.beian_hao.trim().toUpperCase()
+    if (key && !map.has(key)) map.set(key, fund)
+  }
+  return Array.from(map.values())
+}
+
+function pickFromFamily(
+  pool: FundMatchCandidate[],
+  wantedShareClass: ShareClassLetter | null,
+): FundMatchCandidate | null {
+  const unique = uniqueByBeian(pool)
+  if (!unique.length) return null
+
+  if (wantedShareClass) {
+    const classHits = unique.filter((fund) => shareClassFromProductName(fund.product_name) === wantedShareClass)
+    const uniqueClass = uniqueByBeian(classHits)
+    if (uniqueClass.length === 1) return uniqueClass[0]
+  }
+
+  const parents = unique.filter((fund) => !shareClassFromProductName(fund.product_name))
+  if (parents.length === 1) return parents[0]
+  if (unique.length === 1) return unique[0]
+  return null
 }
 
 function extractBeianCodes(...sources: Array<string | null | undefined>): string[] {
@@ -355,7 +431,7 @@ function extractFundNamesFromFileName(fileName: string): string[] {
   const out = new Set<string>()
   for (const segment of base.split(/[-_]/)) {
     const name = segment.trim()
-    if (!name || name === "合同" || /^\d{8}/.test(name)) continue
+    if (!name || GENERIC_FILE_NAME_SEGMENTS.has(name) || /^\d{8}/.test(name)) continue
     if (/^[A-Z][A-Z0-9]{4,7}[A-Z]?$/.test(name)) continue
     if (name.includes("基金") || name.includes("私募") || name.length >= 4) {
       out.add(name)
@@ -366,9 +442,22 @@ function extractFundNamesFromFileName(fileName: string): string[] {
 
 function collectMatchNameCandidates(elements: ExtractedFundElements, hints?: MatchHints): string[] {
   const out = new Set<string>()
-  const fundName = elements.fund_name?.trim()
-  if (fundName) out.add(fundName)
-  for (const name of extractFundNamesFromFileName(hints?.fileName ?? "")) out.add(name)
+  const add = (value: string) => {
+    const name = value.trim()
+    if (!name) return
+    out.add(name)
+    const compact = compactFundName(name)
+    if (compact && compact !== name) out.add(compact)
+  }
+
+  const fundName = elements.fund_name?.trim() ?? ""
+  if (fundName) add(fundName)
+
+  for (const name of extractFundNamesFromFileName(hints?.fileName ?? "")) {
+    // Filenames often include the parent FOF; don't search those once the contract name is known.
+    if (fundName && !namesLooselyMatch(name, fundName)) continue
+    add(name)
+  }
   return Array.from(out)
 }
 
@@ -377,7 +466,10 @@ function collectRegisterCandidates(elements: ExtractedFundElements, hints?: Matc
   const register = normalizeRegisterCode(elements.register_number)
   if (register) out.add(register)
   for (const code of extractBeianCodes(hints?.contractText, elements.fund_name)) out.add(code)
-  for (const code of extractBeianCodes(hints?.fileName)) out.add(code)
+  // Filename codes are often the parent FOF 备案号. Keep them only when the contract name is unknown.
+  if (!(elements.fund_name ?? "").trim()) {
+    for (const code of extractBeianCodes(hints?.fileName)) out.add(code)
+  }
   return Array.from(out)
 }
 
@@ -457,28 +549,41 @@ function rankMatchedFunds(
 export function pickHighConfidenceFundMatch(
   extracted: ExtractedFundElements,
   matchedFunds: FundMatchCandidate[],
+  hints?: MatchHints,
 ): FundMatchCandidate | null {
   if (!matchedFunds.length) return null
 
-  const register = (extracted.register_number ?? "").trim().toUpperCase()
+  const extractedName = (extracted.fund_name ?? "").trim()
+  const wantedShareClass =
+    shareClassFromProductName(extractedName) ?? shareClassFromFileName(hints?.fileName ?? "")
+
+  const register = normalizeRegisterCode(extracted.register_number)
   if (register) {
-    const exact = matchedFunds.filter((fund) => fund.beian_hao.trim().toUpperCase() === register)
+    const nameOk = (fund: FundMatchCandidate) => !extractedName || fundNameAgrees(fund, extractedName)
+    const exact = matchedFunds.filter(
+      (fund) => fund.beian_hao.trim().toUpperCase() === register && nameOk(fund),
+    )
     if (exact.length === 1) return exact[0]
     const canon = canonicalizeShareClassBeianCode(register) || register
     const canonHits = matchedFunds.filter((fund) => {
       const code = canonicalizeShareClassBeianCode(fund.beian_hao) || fund.beian_hao.trim().toUpperCase()
-      return code === canon
+      return code === canon && nameOk(fund)
     })
     if (canonHits.length === 1) return canonHits[0]
   }
 
-  const extractedName = (extracted.fund_name ?? "").trim()
-  if (extractedName) {
-    const exactName = matchedFunds.filter((fund) => fund.product_name.trim() === extractedName)
-    if (exactName.length === 1) return exactName[0]
-  }
+  if (!extractedName) return null
 
-  return null
+  const familyHits = matchedFunds.filter((fund) => fundNameAgrees(fund, extractedName))
+  if (!familyHits.length) return null
+
+  const extractedKey = familyKey(extractedName)
+  const sameFamily = familyHits.filter((fund) => {
+    if (familyKey(fund.product_name) === extractedKey) return true
+    if (fund.short_name && familyKey(fund.short_name) === extractedKey) return true
+    return false
+  })
+  return pickFromFamily(sameFamily.length ? sameFamily : familyHits, wantedShareClass)
 }
 
 export async function matchFundsFromExtracted(

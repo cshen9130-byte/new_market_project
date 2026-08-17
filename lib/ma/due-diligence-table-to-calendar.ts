@@ -81,7 +81,6 @@ function buildScheduleDescription(row: DueDiligenceTableRow): string {
   const strategy = [row.strategyLevel1, row.strategyLevel2, row.strategyLevel3].filter(Boolean).join(" / ")
   if (strategy) parts.push(`策略：${strategy}`)
   if (row.representativeProduct.trim()) parts.push(`代表产品：${row.representativeProduct.trim()}`)
-  if (row.otherInfo.trim()) parts.push(row.otherInfo.trim())
   if (row.ddConclusion.trim()) parts.push(`尽调结论：${row.ddConclusion.trim()}`)
   return parts.join("\n")
 }

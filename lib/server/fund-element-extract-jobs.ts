@@ -225,6 +225,31 @@ export async function listElementExtractJobs(input?: {
   return { rows: rows.map(mapJobRow), total }
 }
 
+export async function listNeedsReviewExtractJobs(): Promise<ElementExtractJobRow[]> {
+  await ensureElementExtractJobsTable()
+  const rows = await query<ElementExtractJobRow>(
+    `SELECT ${JOB_SELECT_COLS}
+     FROM ops_element_extract_jobs
+     WHERE status = 'needs_review'
+     ORDER BY id ASC`,
+  )
+  return rows.map(mapJobRow)
+}
+
+export async function listAppliedExtractJobsByBeiAns(beiAns: string[]): Promise<ElementExtractJobRow[]> {
+  await ensureElementExtractJobsTable()
+  const codes = [...new Set(beiAns.map((code) => code.trim().toUpperCase()).filter(Boolean))]
+  if (!codes.length) return []
+  const rows = await query<ElementExtractJobRow>(
+    `SELECT ${JOB_SELECT_COLS}
+     FROM ops_element_extract_jobs
+     WHERE status = 'applied' AND UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+     ORDER BY id DESC`,
+    [codes],
+  )
+  return rows.map(mapJobRow)
+}
+
 export async function getElementExtractJobById(id: number): Promise<ElementExtractJobRow | null> {
   await ensureElementExtractJobsTable()
   if (!Number.isFinite(id)) return null

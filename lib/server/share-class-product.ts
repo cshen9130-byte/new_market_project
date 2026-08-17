@@ -166,6 +166,47 @@ async function loadExistingShareClasses(mainProductName: string): Promise<ShareC
   }))
 }
 
+/** Parent product plus any existing A/B/C share classes that share the same fund name base. */
+export async function listFundFamilyProducts(beianHao: string): Promise<Array<{
+  beian_hao: string
+  product_name: string
+}>> {
+  const code = String(beianHao ?? "").trim()
+  if (!code) return []
+  const current = await loadMainProduct(code)
+  const name = current?.product_name?.trim()
+  if (!name) return [{ beian_hao: code, product_name: code }]
+
+  const rows = await query<{ beian_hao: string; product_name: string }>(
+    `SELECT beian_hao, product_name
+     FROM (
+       SELECT beian_hao, product_name
+       FROM private_fund_info_bfl
+       WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
+       UNION
+       SELECT beian_hao, product_name
+       FROM private_fund_info
+       WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
+     ) t
+     ORDER BY
+       CASE WHEN product_name ~ '[ABC]类' THEN 1 ELSE 0 END,
+       product_name ASC`,
+    [name],
+  )
+  const seen = new Set<string>()
+  const out: Array<{ beian_hao: string; product_name: string }> = []
+  for (const row of rows) {
+    const beian = row.beian_hao.trim()
+    if (!beian || seen.has(beian.toUpperCase())) continue
+    seen.add(beian.toUpperCase())
+    out.push({ beian_hao: beian, product_name: row.product_name })
+  }
+  if (!seen.has(code.toUpperCase())) {
+    out.unshift({ beian_hao: code, product_name: name })
+  }
+  return out
+}
+
 export async function loadShareClassPreview(
   beianHao: string,
   shareClass?: ShareClassLetter | null,

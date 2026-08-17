@@ -1,8 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react"
 import { createPortal } from "react-dom"
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Loader2, Search, X } from "lucide-react"
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Loader2, Search, Upload, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -187,16 +187,22 @@ export function DdMaterialsLinkPickerDialog({
   onOpenChange,
   initialPath,
   currentFolderPath,
+  suggestedFolderPath,
   rowLinkStatus,
   fileLinks,
+  uploading,
+  onUploadFiles,
   onConfirm,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialPath?: string | null
   currentFolderPath?: string | null
+  suggestedFolderPath?: string | null
   rowLinkStatus?: DdMaterialsLinkStatus
   fileLinks?: Partial<Record<string, "approved" | "rejected">>
+  uploading?: boolean
+  onUploadFiles?: (files: File[], folderPath: string) => Promise<boolean | void>
   onConfirm: (kbPath: string) => void
 }) {
   const [mounted, setMounted] = useState(false)
@@ -207,6 +213,7 @@ export function DdMaterialsLinkPickerDialog({
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set([DD_MATERIALS_KB_ROOT]))
   const [searchQuery, setSearchQuery] = useState("")
+  const [dragOver, setDragOver] = useState(false)
 
   const ddRoot = useMemo(() => findDdMaterialsRoot(tree), [tree])
   const searchEntries = useMemo(() => (ddRoot ? collectSearchEntries(ddRoot) : []), [ddRoot])
@@ -223,6 +230,32 @@ export function DdMaterialsLinkPickerDialog({
   )
 
   const selectedPath = selectedFilePath ?? selectedFolderPath
+  const canDropUpload = Boolean(onUploadFiles) && !uploading && !loading
+
+  function resolveDropFolder(): string {
+    if (selectedFolderPath && selectedFolderPath !== DD_MATERIALS_KB_ROOT) {
+      return selectedFolderPath
+    }
+    return suggestedFolderPath?.trim() || DD_MATERIALS_KB_ROOT
+  }
+
+  function hasLocalFiles(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes("Files")
+  }
+
+  async function handleDroppedFiles(event: DragEvent) {
+    if (!canDropUpload || !onUploadFiles) return
+    event.preventDefault()
+    event.stopPropagation()
+    setDragOver(false)
+    const files = Array.from(event.dataTransfer.files).filter(
+      (file) => file.name && (file.size > 0 || /\.[a-z0-9]+$/i.test(file.name)),
+    )
+    if (files.length === 0) return
+    const folderPath = resolveDropFolder()
+    const ok = await onUploadFiles(files, folderPath)
+    if (ok !== false) onOpenChange(false)
+  }
 
   const loadTree = useCallback(async () => {
     setLoading(true)
@@ -352,12 +385,32 @@ export function DdMaterialsLinkPickerDialog({
           height: "min(820px, 92vh)",
         }}
         onMouseDown={(event) => event.stopPropagation()}
+        onDragEnter={(event) => {
+          if (!canDropUpload || !hasLocalFiles(event)) return
+          event.preventDefault()
+          event.stopPropagation()
+          setDragOver(true)
+        }}
+        onDragOver={(event) => {
+          if (!canDropUpload || !hasLocalFiles(event)) return
+          event.preventDefault()
+          event.stopPropagation()
+          event.dataTransfer.dropEffect = "copy"
+          setDragOver(true)
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node)) return
+          setDragOver(false)
+        }}
+        onDrop={(event) => {
+          void handleDroppedFiles(event)
+        }}
       >
         <div className="flex shrink-0 items-start justify-between gap-3 border-b px-5 py-4">
           <div className="min-w-0">
             <h2 className="text-base font-semibold">手动关联尽调资料</h2>
             <p className="text-xs text-muted-foreground mt-1">
-              搜索或浏览「{DD_MATERIALS_KB_ROOT}」下的文件夹与文件。
+              搜索或浏览「{DD_MATERIALS_KB_ROOT}」下的文件夹与文件，也可将本地文件拖入以上传并关联。
             </p>
           </div>
           <button
@@ -458,8 +511,10 @@ export function DdMaterialsLinkPickerDialog({
               {!selectedFolder ? (
                 <div className="p-4 text-sm text-muted-foreground">请选择左侧文件夹</div>
               ) : selectedFolder.documents.length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">
-                  该文件夹暂无文件，可直接关联整个文件夹。
+                <div className="flex h-full min-h-[180px] flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted-foreground">
+                  <Upload className="h-6 w-6 text-zinc-300" />
+                  <span>该文件夹暂无文件，可直接关联整个文件夹。</span>
+                  {canDropUpload && <span className="text-xs">也可将本地文件拖入此窗口以上传并关联。</span>}
                 </div>
               ) : (
                 <div className="divide-y">
@@ -498,25 +553,53 @@ export function DdMaterialsLinkPickerDialog({
         )}
 
         <div className="shrink-0 border-t bg-muted/10 px-5 py-2 text-xs text-muted-foreground truncate">
-          {selectedPath ? `已选：${selectedPath}` : "尚未选择"}
+          {uploading
+            ? "正在上传文件…"
+            : selectedPath
+              ? `已选：${selectedPath}`
+              : "尚未选择"}
+          {!uploading && canDropUpload && (
+            <span className="ml-2 text-[11px] text-muted-foreground/80">
+              拖入文件将上传到「{(resolveDropFolder().split("/").pop() || resolveDropFolder())}」
+            </span>
+          )}
         </div>
 
         <div className="flex shrink-0 justify-end gap-2 border-t px-5 py-3">
-          <Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button size="sm" variant="outline" disabled={uploading} onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button
             size="sm"
-            disabled={!selectedPath}
+            disabled={!selectedPath || uploading}
             onClick={() => {
               if (!selectedPath) return
               onConfirm(selectedPath)
               onOpenChange(false)
             }}
           >
-            确认关联
+            {uploading ? "上传中…" : "确认关联"}
           </Button>
         </div>
+
+        {(dragOver || uploading) && canDropUpload && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-blue-50/85 text-blue-800">
+            {uploading ? (
+              <>
+                <Loader2 className="h-8 w-8 animate-spin" />
+                <p className="text-sm font-medium">正在上传并关联尽调资料…</p>
+              </>
+            ) : (
+              <>
+                <Upload className="h-8 w-8" />
+                <p className="text-sm font-medium">松开以上传并关联到本条路演</p>
+                <p className="text-xs text-blue-700/80">
+                  目标文件夹：{resolveDropFolder()}
+                </p>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </>,
     document.body,

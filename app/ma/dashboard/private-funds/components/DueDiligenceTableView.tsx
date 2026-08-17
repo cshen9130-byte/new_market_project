@@ -84,7 +84,6 @@ import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-di
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { OpenLinkedInvestmentNoteButton } from "@/components/ma/open-linked-investment-note-button"
-import { CreateInvestmentNoteFromRoadshowButton } from "@/components/ma/create-investment-note-from-roadshow-button"
 import {
   createInvestmentNoteFromRoadshow,
   investmentNoteDeepLink,
@@ -161,6 +160,7 @@ import {
   buildDdMaterialsAutoFillPatch,
   buildDdMaterialsFolderIndex,
   buildDdMaterialsRowPresentation,
+  resolveDdMaterialsUploadFolderPath,
   type DdMaterialsDocument,
   type DdMaterialsFolderIndex,
 } from "@/lib/ma/due-diligence-materials"
@@ -798,14 +798,17 @@ const SERVER_SAVE_DEBOUNCE_MS = 500
 
 type SaveStatus = "idle" | "saving" | "saved" | "error"
 
+type StrategySyncLevelPreview = {
+  label: string
+  tableValue: string
+  dbValue: string
+}
+
 type StrategySyncTarget = {
   rowId: string
   beianHao: string
   productName: string
-  level: 1 | 2 | 3
-  levelLabel: string
-  tableValue: string
-  dbValue: string
+  levels: StrategySyncLevelPreview[]
 }
 
 function strategyLevelLabel(level: 1 | 2 | 3): string {
@@ -830,13 +833,11 @@ function collectDdPersonnelOptions(rows: DueDiligenceTableRow[]): string[] {
 
 function StrategyCellContextMenu({
   row,
-  level,
   onSyncRequest,
   children,
 }: {
   row: DueDiligenceTableRow
-  level: 1 | 2 | 3
-  onSyncRequest: (row: DueDiligenceTableRow, level: 1 | 2 | 3) => void
+  onSyncRequest: (row: DueDiligenceTableRow) => void
   children: ReactNode
 }) {
   return (
@@ -849,7 +850,7 @@ function StrategyCellContextMenu({
       <ContextMenuContent className="w-44">
         <ContextMenuItem
           disabled={!row.representativeProductBeianHao}
-          onClick={() => onSyncRequest(row, level)}
+          onClick={() => onSyncRequest(row)}
         >
           <Upload className="h-3.5 w-3.5" />
           同步标签到数据库
@@ -1223,28 +1224,33 @@ export function DueDiligenceTableView() {
     }
   }, [])
 
+  const refreshMaterials = useCallback(async () => {
+    try {
+      const headers: Record<string, string> = {}
+      try {
+        const raw = localStorage.getItem("currentUser")
+        if (raw) {
+          const user = JSON.parse(raw) as { id?: string }
+          if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+        }
+      } catch {
+        // ignore
+      }
+      const res = await fetch("/api/knowledge-base/tree", { headers })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      setMaterialsIndex(buildDdMaterialsFolderIndex(data.tree ?? null))
+    } catch {
+      setMaterialsIndex((current) => current ?? buildDdMaterialsFolderIndex(null))
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     setMaterialsLoading(true)
     void (async () => {
       try {
-        const headers: Record<string, string> = {}
-        try {
-          const raw = localStorage.getItem("currentUser")
-          if (raw) {
-            const user = JSON.parse(raw) as { id?: string }
-            if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
-          }
-        } catch {
-          // ignore
-        }
-        const res = await fetch("/api/knowledge-base/tree", { headers })
-        const data = await res.json()
-        if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
-        if (cancelled) return
-        setMaterialsIndex(buildDdMaterialsFolderIndex(data.tree ?? null))
-      } catch {
-        if (!cancelled) setMaterialsIndex(buildDdMaterialsFolderIndex(null))
+        await refreshMaterials()
       } finally {
         if (!cancelled) setMaterialsLoading(false)
       }
@@ -1252,7 +1258,7 @@ export function DueDiligenceTableView() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [refreshMaterials])
 
   const rowMaterialsMap = useMemo(() => {
     if (!materialsIndex) {
@@ -1793,22 +1799,34 @@ export function DueDiligenceTableView() {
     }
   }
 
-  function openStrategySyncConfirm(row: DueDiligenceTableRow, level: 1 | 2 | 3) {
+  function openStrategySyncConfirm(row: DueDiligenceTableRow) {
     const beian = row.representativeProductBeianHao
     if (!beian) {
       alert("请先关联代表产品（备案编码）。")
       return
     }
-    const tableValue =
-      level === 1 ? row.strategyLevel1 : level === 2 ? row.strategyLevel2 : row.strategyLevel3
+    const saved = getRowSavedStrategy(row)
     setStrategySyncTarget({
       rowId: row.id,
       beianHao: beian,
       productName: row.representativeProduct.trim() || beian,
-      level,
-      levelLabel: strategyLevelLabel(level),
-      tableValue: tableValue.trim(),
-      dbValue: (getSavedStrategyValueForCell(row, level) ?? "").trim(),
+      levels: [
+        {
+          label: strategyLevelLabel(1),
+          tableValue: row.strategyLevel1.trim(),
+          dbValue: (saved?.strategy_l1 ?? "").trim(),
+        },
+        {
+          label: strategyLevelLabel(2),
+          tableValue: row.strategyLevel2.trim(),
+          dbValue: (saved?.strategy_l2 ?? "").trim(),
+        },
+        {
+          label: strategyLevelLabel(3),
+          tableValue: row.strategyLevel3.trim(),
+          dbValue: strategyLevel3FromDatabase(saved?.strategy_l3 ?? "").trim(),
+        },
+      ],
     })
   }
 
@@ -1822,27 +1840,16 @@ export function DueDiligenceTableView() {
 
     setIsSyncingSingleStrategy(true)
     try {
-      const saved = getRowSavedStrategy(row)
-      const { level, beianHao, levelLabel } = strategySyncTarget
       const update = {
-        beian_hao: beianHao,
-        strategy_l1:
-          level === 1
-            ? row.strategyLevel1.trim()
-            : (saved?.strategy_l1 ?? row.strategyLevel1.trim()),
-        strategy_l2:
-          level === 2
-            ? row.strategyLevel2.trim()
-            : (saved?.strategy_l2 ?? row.strategyLevel2.trim()),
-        strategy_l3:
-          level === 3
-            ? strategyLevel3ForDatabase(row.strategyLevel3)
-            : (saved?.strategy_l3 ?? strategyLevel3ForDatabase(row.strategyLevel3)),
+        beian_hao: strategySyncTarget.beianHao,
+        strategy_l1: row.strategyLevel1.trim(),
+        strategy_l2: row.strategyLevel2.trim(),
+        strategy_l3: strategyLevel3ForDatabase(row.strategyLevel3),
       }
       await syncTeamStrategiesToDatabase([update])
       await refreshSavedTeamStrategies()
       setStrategySyncTarget(null)
-      alert(`已同步${levelLabel}到数据库。`)
+      alert("已同步一、二、三级策略到数据库。")
     } catch (err) {
       const message = err instanceof Error ? err.message : "同步失败"
       alert(`同步团队策略标签失败：${message}`)
@@ -2805,7 +2812,6 @@ export function DueDiligenceTableView() {
                           ) : col.key === "strategyLevel1" ? (
                             <StrategyCellContextMenu
                               row={row}
-                              level={1}
                               onSyncRequest={openStrategySyncConfirm}
                             >
                               <StrategySelectCell
@@ -2835,7 +2841,6 @@ export function DueDiligenceTableView() {
                           ) : col.key === "strategyLevel2" ? (
                             <StrategyCellContextMenu
                               row={row}
-                              level={2}
                               onSyncRequest={openStrategySyncConfirm}
                             >
                               <StrategySelectCell
@@ -2865,7 +2870,6 @@ export function DueDiligenceTableView() {
                           ) : col.key === "strategyLevel3" ? (
                             <StrategyCellContextMenu
                               row={row}
-                              level={3}
                               onSyncRequest={openStrategySyncConfirm}
                             >
                               <StrategyMultiSelectCell
@@ -2937,6 +2941,10 @@ export function DueDiligenceTableView() {
                                   materialsLoading={materialsLoading}
                                   linkStatus={row.ddMaterialsLinkStatus}
                                   fileLinks={row.ddMaterialsFileLinks}
+                                  suggestedFolderPath={resolveDdMaterialsUploadFolderPath(
+                                    materials?.folderPath ?? row.ddMaterialsKbPath,
+                                    row,
+                                  )}
                                   onActivate={() => {
                                     setFocusCell({ rowId: row.id, colKey: col.key })
                                     setSelection({
@@ -2978,6 +2986,7 @@ export function DueDiligenceTableView() {
                                     for (const path of paths) patch[path] = "rejected"
                                     handleDdMaterialsLinkPatch(row.id, { ddMaterialsFileLinks: patch })
                                   }}
+                                  onRefreshMaterials={refreshMaterials}
                                 />
                               )
                             })()
@@ -3071,14 +3080,12 @@ export function DueDiligenceTableView() {
                             <OpenLinkedInvestmentNoteButton
                               hasNote={Boolean(linkedNote)}
                               noteTitle={linkedNote?.title}
-                              onClick={() => {
-                                if (!linkedNote) return
-                                router.push(investmentNoteDeepLink(linkedNote))
-                              }}
-                            />
-                            <CreateInvestmentNoteFromRoadshowButton
                               loading={creatingNoteRowId === row.id}
                               onClick={() => {
+                                if (linkedNote) {
+                                  router.push(investmentNoteDeepLink(linkedNote))
+                                  return
+                                }
                                 if (creatingNoteRowId) return
                                 void (async () => {
                                   setCreatingNoteRowId(row.id)
@@ -3168,18 +3175,22 @@ export function DueDiligenceTableView() {
                 <p>
                   此操作将用表格中的值
                   <span className="font-medium text-foreground">覆盖</span>
-                  数据库中「{strategySyncTarget?.productName}」的
-                  {strategySyncTarget?.levelLabel}。
+                  数据库中「{strategySyncTarget?.productName}」的一、二、三级策略。
                 </p>
-                <div className="rounded-md border border-zinc-200 bg-zinc-50/80 px-3 py-2 text-xs leading-relaxed text-zinc-700">
-                  <p>
-                    <span className="text-zinc-500">表格当前值：</span>
-                    {strategySyncTarget?.tableValue || "（空）"}
-                  </p>
-                  <p className="mt-1">
-                    <span className="text-zinc-500">数据库当前值：</span>
-                    {strategySyncTarget?.dbValue || "（空）"}
-                  </p>
+                <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50/80 px-3 py-2 text-xs leading-relaxed text-zinc-700">
+                  {strategySyncTarget?.levels.map((level) => (
+                    <div key={level.label}>
+                      <p className="font-medium text-zinc-800">{level.label}</p>
+                      <p>
+                        <span className="text-zinc-500">表格当前值：</span>
+                        {level.tableValue || "（空）"}
+                      </p>
+                      <p>
+                        <span className="text-zinc-500">数据库当前值：</span>
+                        {level.dbValue || "（空）"}
+                      </p>
+                    </div>
+                  ))}
                 </div>
                 <p>确认继续？</p>
               </div>

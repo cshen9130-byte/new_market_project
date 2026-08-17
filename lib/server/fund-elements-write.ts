@@ -15,7 +15,7 @@ import {
   type ExtractedFundElements,
 } from "@/lib/server/fund-contract-element-extract"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
-import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
+import { canonicalizeShareClassBeianCode, listFundFamilyProducts } from "@/lib/server/share-class-product"
 
 const ELEMENTS_SOURCE = "ops/fund-elements"
 
@@ -421,10 +421,12 @@ export function buildFillEmptyWriteBody(
   beian_hao: string,
   extracted: ExtractedFundElements,
   current: ExtractedFundElements | null,
+  options?: { skipKeys?: Array<keyof ExtractedFundElements> },
 ): FundElementWriteBody | null {
+  const skip = new Set(options?.skipKeys ?? [])
   const body: FundElementWriteBody = { beian_hao }
   for (const key of WRITE_KEYS) {
-    if (key === "register_number") continue
+    if (key === "register_number" || skip.has(key)) continue
     const next = extracted[key]?.trim()
     if (!next) continue
     if (hasText(current?.[key])) continue
@@ -436,4 +438,83 @@ export function buildFillEmptyWriteBody(
 export function appliedFieldKeys(body: FundElementWriteBody | null): string[] {
   if (!body) return []
   return Object.keys(body).filter((key) => key !== "beian_hao" && body[key] !== undefined)
+}
+
+/** Fill empty 要素 on the matched product and every A/B/C share class with the same extracted rules. */
+export async function writeFillEmptyElementsAcrossShareClasses(
+  beian_hao: string,
+  product_name: string,
+  extracted: ExtractedFundElements,
+): Promise<string[]> {
+  return writeExtractedElementsAcrossShareClasses(beian_hao, product_name, extracted, "fill-empty")
+}
+
+export async function writeOverwriteElementsAcrossShareClasses(
+  beian_hao: string,
+  product_name: string,
+  extracted: ExtractedFundElements,
+): Promise<string[]> {
+  return writeExtractedElementsAcrossShareClasses(beian_hao, product_name, extracted, "overwrite")
+}
+
+async function writeExtractedElementsAcrossShareClasses(
+  beian_hao: string,
+  product_name: string,
+  extracted: ExtractedFundElements,
+  mode: "fill-empty" | "overwrite",
+): Promise<string[]> {
+  const family = await listFundFamilyProducts(beian_hao)
+  const targets = family.length ? family : [{ beian_hao, product_name }]
+  const primary = beian_hao.trim().toUpperCase()
+  let primaryFields: string[] = []
+
+  for (const target of targets) {
+    const isPrimary = target.beian_hao.trim().toUpperCase() === primary
+    const current = await loadExtractedElementDisplayValues(target.beian_hao, target.product_name)
+    const skipKeys: Array<keyof ExtractedFundElements> = isPrimary ? [] : ["fund_name"]
+    const body = mode === "overwrite"
+      ? buildOverwriteNonEmptyWriteBody(target.beian_hao, extracted, skipKeys)
+      : buildFillEmptyWriteBody(target.beian_hao, extracted, current, { skipKeys })
+    if (!body) continue
+    await writeFundElementsFromBody(body)
+    if (isPrimary) primaryFields = appliedFieldKeys(body)
+  }
+  return primaryFields
+}
+
+function buildOverwriteNonEmptyWriteBody(
+  beian_hao: string,
+  extracted: ExtractedFundElements,
+  skipKeys: Array<keyof ExtractedFundElements>,
+): FundElementWriteBody | null {
+  const skip = new Set(skipKeys)
+  const body: FundElementWriteBody = { beian_hao }
+  for (const key of WRITE_KEYS) {
+    if (key === "register_number" || skip.has(key)) continue
+    const next = extracted[key]?.trim()
+    if (!next) continue
+    body[key] = next
+  }
+  return Object.keys(body).length > 1 ? body : null
+}
+
+const SHARE_CLASS_FANOUT_SKIP = new Set(["beian_hao", "fund_name", "register_number", "fanout_share_classes"])
+
+/** Copy the same PATCH fields onto every A/B/C share class (used by live 要素提取). */
+export async function writeFundElementsAcrossShareClasses(body: FundElementWriteBody): Promise<{ beian_hao: string }> {
+  const written = await writeFundElementsFromBody(body)
+  const family = await listFundFamilyProducts(written.beian_hao)
+  const primary = written.beian_hao.trim().toUpperCase()
+  for (const target of family) {
+    if (target.beian_hao.trim().toUpperCase() === primary) continue
+    const sibling: FundElementWriteBody = { beian_hao: target.beian_hao }
+    for (const [key, value] of Object.entries(body)) {
+      if (SHARE_CLASS_FANOUT_SKIP.has(key)) continue
+      sibling[key] = value
+    }
+    if (Object.keys(sibling).length > 1) {
+      await writeFundElementsFromBody(sibling)
+    }
+  }
+  return written
 }

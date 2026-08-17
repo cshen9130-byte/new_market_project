@@ -161,6 +161,7 @@ function collectAttachmentParts(
 /** Decode RFC2047 / URL-encoded attachment filenames when present. */
 function decodeMimeFilename(raw: string): string {
   if (!raw) return ""
+  let decoded = raw
   try {
     const rfc2047 = raw.replace(/=\?([^?]+)\?([bq])\?([^?]*)\?=/gi, (_m, _cs, enc, data) => {
       if (String(enc).toLowerCase() === "b") {
@@ -171,16 +172,18 @@ function decodeMimeFilename(raw: string): string {
       )
       return q
     })
-    if (rfc2047 !== raw) return rfc2047.trim()
+    if (rfc2047 !== raw) decoded = rfc2047
   } catch {
     /* ignore */
   }
-  try {
-    if (/%[0-9A-Fa-f]{2}/.test(raw)) return decodeURIComponent(raw)
-  } catch {
-    /* ignore */
+  if (decoded === raw) {
+    try {
+      if (/%[0-9A-Fa-f]{2}/.test(raw)) decoded = decodeURIComponent(raw)
+    } catch {
+      /* ignore */
+    }
   }
-  return raw.trim()
+  return decoded.replace(/[\u0000-\u001F]+/g, " ").replace(/\s+/g, " ").trim()
 }
 
 function subjectMatches(subject: string, cfg: YinheEmailConfig): boolean {
@@ -190,6 +193,42 @@ function subjectMatches(subject: string, cfg: YinheEmailConfig): boolean {
   // Prefer the dated settlement subject pattern, but allow needle-only match.
   if (/银河期货结[算]?单/.test(s)) return true
   return Boolean(needle) && s.includes(needle)
+}
+
+function matchesSender(fromAddresses: string[], senderFilter: string): boolean {
+  if (!senderFilter) return true
+  return fromAddresses.some((addr) => addr.includes(senderFilter) || senderFilter.includes(addr))
+}
+
+function ymd(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+function addDays(d: Date, n: number): Date {
+  const x = new Date(d.getTime())
+  x.setDate(x.getDate() + n)
+  return x
+}
+
+/** Split a long lookback into short SINCE/BEFORE windows so 163 IMAP cannot silently cap results. */
+function imapDateWindows(lookbackDays: number, chunkDays = 21): Array<{ since: Date; before?: Date }> {
+  const lookback = Math.max(1, lookbackDays)
+  const chunk = Math.max(7, chunkDays)
+  const now = new Date()
+  const windows: Array<{ since: Date; before?: Date }> = []
+  let remaining = lookback
+  let before: Date | undefined
+  while (remaining > 0) {
+    const span = Math.min(chunk, remaining)
+    const since = addDays(before ?? now, -span)
+    windows.push(before ? { since, before } : { since })
+    before = since
+    remaining -= span
+  }
+  return windows
 }
 
 export async function fetchYinheSettlementEmails(
@@ -223,57 +262,37 @@ export async function fetchYinheSettlementEmails(
     await client.connect()
     await client.mailboxOpen("INBOX")
 
-    const since = new Date()
-    since.setDate(since.getDate() - Math.max(1, lookback))
-
     const senderFilter = (cfg.sender ?? "").trim().toLowerCase()
     log.push(
       `使用抓取邮箱 ${mailbox.email}（${mailbox.source === "crawl-email" ? "运维抓取邮箱设置" : "本地配置"}）`,
     )
     if (senderFilter) log.push(`发件人过滤: ${senderFilter}`)
 
-    // Prefer server-side FROM+SINCE when possible — 120d full-inbox scans are too slow.
-    // Some IMAP servers reject FROM; fall back to date-only + client-side filter.
-    let allUids: number[] = []
-    let usedFromSearch = false
-    if (senderFilter) {
-      try {
-        const fromUids = await client.search({ since, from: senderFilter }, { uid: true })
-        if (Array.isArray(fromUids)) {
-          allUids = fromUids
-          usedFromSearch = true
-          log.push(`IMAP FROM+SINCE 命中 ${allUids.length} 封（回看 ${lookback} 天）`)
-        }
-      } catch (e) {
-        log.push(
-          `IMAP FROM 搜索不可用，回退日期扫描: ${e instanceof Error ? e.message : String(e)}`,
-        )
-      }
+    // 163 IMAP SEARCH FROM/SUBJECT often returns an empty set even when matching
+    // mail exists (observed 2026-08: Galaxy settlements in INBOX, FROM+SINCE=0).
+    // An empty array is still an Array — treating it as success skipped fallback
+    // and froze the report at the last locally downloaded date.
+    // Same strategy as 国信结算抓取: SINCE only, then filter envelopes client-side.
+    const uidSet = new Set<number>()
+    for (const window of imapDateWindows(lookback)) {
+      const query = window.before ? { since: window.since, before: window.before } : { since: window.since }
+      const found = await client.search(query, { uid: true })
+      const n = Array.isArray(found) ? found.length : 0
+      if (Array.isArray(found)) found.forEach((u) => uidSet.add(u))
+      log.push(
+        `日期窗 ${ymd(window.since)}${window.before ? ` ~ ${ymd(window.before)}` : " ~ 今"}: ${n} 封`,
+      )
     }
-    if (!usedFromSearch) {
-      const sinceUids = await client.search({ since }, { uid: true })
-      allUids = Array.isArray(sinceUids) ? sinceUids : []
-      log.push(`收件箱最近 ${lookback} 天共 ${allUids.length} 封邮件（将批量拉取信封后过滤）`)
-    }
+    const allUids = [...uidSet].sort((a, b) => a - b)
+    log.push(`收件箱最近 ${lookback} 天去重后 ${allUids.length} 封（按信封过滤发件人/主题）`)
 
     if (allUids.length === 0) {
       log.push("无匹配邮件，结束拉取")
     } else {
-      type Candidate = {
-        uid: number
-        subject: string
-        fromAddresses: string[]
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        structure: any
-      }
-      const candidates: Candidate[] = []
+      type EnvelopeHit = { uid: number; subject: string; fromAddresses: string[] }
+      const envelopeHits: EnvelopeHit[] = []
 
-      // One IMAP FETCH for envelopes + body structures instead of 2×N round-trips.
-      for await (const msg of client.fetch(
-        allUids,
-        { uid: true, envelope: true, bodyStructure: true },
-        { uid: true },
-      )) {
+      for await (const msg of client.fetch(allUids, { uid: true, envelope: true }, { uid: true })) {
         const envelope = (
           msg as {
             envelope?: { subject?: string; from?: { address?: string }[]; date?: Date }
@@ -281,26 +300,32 @@ export async function fetchYinheSettlementEmails(
         ).envelope
         const subject = envelope?.subject ?? ""
         const fromAddresses = (envelope?.from ?? []).map((f) => (f.address ?? "").toLowerCase())
-
-        if (senderFilter && !usedFromSearch) {
-          const matchesSender = fromAddresses.some(
-            (addr) => addr.includes(senderFilter) || senderFilter.includes(addr),
-          )
-          if (!matchesSender) continue
-        }
-
-        if (!subjectMatches(subject, cfg)) continue
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const structure = (msg as any).bodyStructure
-        if (!structure) continue
-
         const uid = (msg as { uid?: number }).uid ?? 0
         if (!uid) continue
-        candidates.push({ uid, subject, fromAddresses, structure })
+        if (!matchesSender(fromAddresses, senderFilter)) continue
+        if (!subjectMatches(subject, cfg)) continue
+        envelopeHits.push({ uid, subject, fromAddresses })
       }
 
-      log.push(`主题匹配 ${candidates.length} 封，开始下载附件`)
+      log.push(`发件人+主题匹配 ${envelopeHits.length} 封，开始下载附件`)
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const structureByUid = new Map<number, any>()
+      const hitUids = envelopeHits.map((h) => h.uid)
+      if (hitUids.length > 0) {
+        for await (const msg of client.fetch(hitUids, { uid: true, bodyStructure: true }, { uid: true })) {
+          const uid = (msg as { uid?: number }).uid ?? 0
+          if (!uid) continue
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          structureByUid.set(uid, (msg as any).bodyStructure)
+        }
+      }
+
+      const candidates = envelopeHits.flatMap((hit) => {
+        const structure = structureByUid.get(hit.uid)
+        if (!structure) return []
+        return [{ ...hit, structure }]
+      })
 
       for (const { uid, subject, fromAddresses, structure } of candidates) {
         log.push(`匹配邮件: ${fromAddresses.join(", ")} | ${subject}`)

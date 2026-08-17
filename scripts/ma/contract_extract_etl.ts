@@ -6,17 +6,32 @@
  *
  * Direct:
  *   npx tsx scripts/ma/contract_extract_etl.ts [--retry-failed]
+ *   npx tsx scripts/ma/contract_extract_etl.ts --rematch-review
  */
 
-import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-project-env"
-import { processContractExtractQueue } from "@/lib/server/fund-contract-extract-job"
+import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
+import {
+  processContractExtractQueue,
+  rematchNeedsReviewExtractJobs,
+} from "@/lib/server/fund-contract-extract-job"
 
-loadProjectEnvFiles()
+ensureScriptDatabaseEnv()
 configureEtlDbTimeout()
 
 async function main() {
   const retryFailed = process.argv.includes("--retry-failed") || process.argv.includes("--retryFailed")
+  const rematchReview = process.argv.includes("--rematch-review") || process.argv.includes("--rematchReview")
   try {
+    if (rematchReview) {
+      console.error("[contract_extract_etl] rematching needs_review jobs (reuse extracted JSON)…")
+      const result = await rematchNeedsReviewExtractJobs({ maxJobs: 200 })
+      console.error(
+        `[contract_extract_etl] rematch done: processed=${result.processed} applied=${result.applied} ` +
+          `needs_review=${result.needsReview} failed=${result.failed} remaining=${result.remaining}`,
+      )
+      console.log(JSON.stringify({ ok: true, rematch: true, ...result }))
+      process.exit(0)
+    }
     console.error(
       `[contract_extract_etl] draining extract jobs${retryFailed ? " (including failed retries)" : ""}…`,
     )

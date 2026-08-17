@@ -11,7 +11,7 @@ from scipy.interpolate import griddata
 
 from config import UNDERLYINGS
 from deeper_analysis import attach_deeper_charts
-from iv_analysis.charts.percentile import _percentile_rank
+from iv_analysis.percentile_rank import _percentile_rank
 from iv_analysis.charts.smile import (
     _select_smile_expiry,
     _select_smile_slice,

@@ -171,6 +171,10 @@ function ProductHoverBody({
                   { label: "管理费率", value: profile.fee_manage_rate },
                   { label: "托管费", value: profile.fee_trust },
                   { label: "锁定期说明", value: profile.lock_period_desc },
+                  { label: "管理费说明", value: profile.fee_manage },
+                  { label: "外包费", value: profile.fee_admin_service },
+                  { label: "业绩报酬说明", value: profile.fee_pay },
+                  { label: "业绩报酬公式", value: profile.fee_pay_formula },
                 ]}
               />
             </div>

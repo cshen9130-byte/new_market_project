@@ -9,13 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from iv_analysis.charts.smile import MIN_IV_PCT, _select_smile_slice, _spot_price, _trim_symmetric_wings
 from iv_analysis.data import enrich_chain_open_interest
-from iv_analysis.plot_utils import save_figure
 
 # Chain uses a slightly relaxed premium gate so liquid near-ATM wings (e.g. 2.95) remain.
 CHAIN_MIN_PREMIUM_TO_SPOT = 0.00005  # 0.005% of spot
@@ -273,7 +271,7 @@ def _save_chain_table(table: pd.DataFrame, output_path: Path, spot: float, expir
     out.to_csv(output_path.with_name("iv_smile_chain.csv"), index=False, encoding="utf-8-sig")
 
 
-def _plot_iv_curve(ax: plt.Axes, table: pd.DataFrame) -> None:
+def _plot_iv_curve(ax, table: pd.DataFrame) -> None:
     strikes = table["strike"].to_numpy()
     ivs = table["iv"].to_numpy()
 
@@ -300,6 +298,8 @@ def plot_iv_smile_chain(df: pd.DataFrame, label: str, output_path: Path) -> Path
 
     days = int(expiry_df["days_to_expiry"].min())
     expiry_code = expiry.strftime("%y%m")
+    import matplotlib.pyplot as plt
+    from iv_analysis.plot_utils import save_figure
     strikes = table["strike"].to_numpy()
     step = _infer_strike_step(strikes)
     bar_width = step * 0.35

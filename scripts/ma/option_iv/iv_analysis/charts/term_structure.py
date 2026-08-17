@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import pandas as pd
-
-from iv_analysis.plot_utils import save_figure
 
 
 def _atm_by_expiry(df: pd.DataFrame) -> pd.DataFrame:
@@ -51,6 +48,8 @@ def plot_iv_term_structure(df: pd.DataFrame, label: str, output_path: Path) -> P
     if atm.empty:
         return None
 
+    import matplotlib.pyplot as plt
+    from iv_analysis.plot_utils import save_figure
     fig, ax = plt.subplots()
     ax.plot(atm["days_to_expiry"], atm["iv"], marker="o", linewidth=2, color="#2563eb")
     ax.set_xlabel("Days to Expiry")
