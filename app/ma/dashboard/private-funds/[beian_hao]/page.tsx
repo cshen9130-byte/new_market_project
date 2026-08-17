@@ -1379,7 +1379,9 @@ export default function PrivateFundDetailPage() {
 
   useEffect(() => {
     const tab = searchParams.get("tab")
-    if (tab === "materials") setDetailTab("materials")
+    if (tab && FUND_DETAIL_TABS.some((item) => item.key === tab)) {
+      setDetailTab(tab as FundDetailTab)
+    }
   }, [searchParams])
 
   type MaterialMetaRow = {

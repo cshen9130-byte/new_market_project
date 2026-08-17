@@ -1,6 +1,7 @@
 import { promises as fs } from "fs"
 import path from "path"
 import { ChatOpenAI } from "@langchain/openai"
+import { PDFParse } from "pdf-parse"
 import { readFileDocumentText } from "@/lib/server/knowledge-base"
 import {
   fundNameCore,
@@ -17,10 +18,13 @@ import {
   type ShareClassLetter,
 } from "@/lib/server/share-class-product"
 import { getServerStoragePath } from "@/lib/server/storage"
+import { pdfParseLoadOptions, readPdfTextWithCmaps } from "@/lib/server/pdf-text"
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_TEXT_CHARS = 120_000
 const LLM_TEXT_CHARS = 24_000
+const PDF_OCR_MAX_PAGES = 4
+const SPARSE_PDF_TEXT_CHARS = 80
 
 const ALLOWED_EXTENSIONS = new Set([
   ".pdf",
@@ -172,6 +176,51 @@ async function extractTextFromImage(buffer: Buffer, ext: string): Promise<string
   return text.replace(/\s+/g, " ").trim()
 }
 
+function isSparsePdfText(text: string): boolean {
+  const cleaned = text
+    .replace(/--\s*\d+\s+of\s+\d+\s*--/gi, " ")
+    .replace(/page\s+\d+\s*(of|\/)\s*\d+/gi, " ")
+    .replace(/\s+/g, "")
+  return cleaned.length < SPARSE_PDF_TEXT_CHARS
+}
+
+async function ocrPdfPages(buffer: Buffer): Promise<string> {
+  const parser = new PDFParse(pdfParseLoadOptions(buffer))
+  try {
+    const shot = await parser.getScreenshot({
+      scale: 2,
+      first: PDF_OCR_MAX_PAGES,
+      imageDataUrl: false,
+      imageBuffer: true,
+    })
+    const pages = shot.pages ?? []
+    const parts: string[] = []
+    for (const page of pages) {
+      const bytes = page.data
+      if (!bytes || bytes.length === 0) continue
+      const text = await extractTextFromImage(Buffer.from(bytes), ".png")
+      if (text.trim()) parts.push(text.trim())
+    }
+    return parts.join("\n\n").trim()
+  } finally {
+    await parser.destroy().catch(() => undefined)
+  }
+}
+
+async function readPdfTextWithOcrFallback(buffer: Buffer, fileName: string): Promise<string> {
+  let text = ""
+  try {
+    text = await readPdfTextWithCmaps(buffer)
+  } catch {
+    text = ""
+  }
+  if (!isSparsePdfText(text)) return text.slice(0, MAX_TEXT_CHARS)
+  const ocr = await ocrPdfPages(buffer)
+  if (ocr && !isSparsePdfText(ocr)) return ocr.slice(0, MAX_TEXT_CHARS)
+  if (text.trim()) return text.slice(0, MAX_TEXT_CHARS)
+  throw new Error(`未能从文件「${fileName}」读取文字，请确认文件未加密且内容可读`)
+}
+
 function stringifyModelContent(content: unknown) {
   if (typeof content === "string") return content
   if (Array.isArray(content)) {
@@ -253,9 +302,11 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 - 示例（业绩报酬说明）：「按每个客户/每个账户高水位法计提。A类：对超过0%的收益部分按35%计提业绩报酬；B类：不计提业绩报酬；C类：对超过0%的收益部分按50%计提业绩报酬。」
 - fee_manage_rate：各类相同则填该年化费率（如 "1.00%"）；各类不同时填 A 类或主份额费率，细节仍须写在 fee_manage 中。
 
-若文本是补充协议、修订协议或合同变更：只提取本文件明确变更或重申的最新有效规则；未提及的字段填 null，不要用旧合同条款填满。
+若文本是补充协议、修订协议、合同变更，或业绩报酬减免说明函、费率调整说明等非合同文件：这些文件同样会影响产品要素。请提取 fund_name、register_number，以及本文件明确变更或重申的最新规则（尤其是 fee_pay、fee_manage）；未提及的字段填 null。
+- 落款日期、发函日期、用印日期不是成立日期或备案日期，inception_date 与 puton_date 必须填 null。
+- 业绩报酬减免说明：fee_pay 须写明适用份额（A/B/C 或产品代码）、减免比例、减免区间、是否刷新高水位、虚拟净值是否同步、计算公式（如 实际业绩报酬=原计提业绩报酬×(1-减免比例)）。
 
-合同文本：
+合同或说明文本：
 `
 
 async function extractElementsWithLlm(text: string): Promise<ExtractedFundElements> {
@@ -299,6 +350,10 @@ export async function readFundContractText(buffer: Buffer, fileName: string): Pr
   if (IMAGE_EXTENSIONS.has(ext)) {
     const text = await extractTextFromImage(buffer, ext)
     return text.slice(0, MAX_TEXT_CHARS)
+  }
+
+  if (ext === ".pdf") {
+    return readPdfTextWithOcrFallback(buffer, fileName)
   }
 
   const tempDir = getServerStoragePath("fund-elements", "tmp")
@@ -572,7 +627,9 @@ export function pickHighConfidenceFundMatch(
     if (canonHits.length === 1) return canonHits[0]
   }
 
-  if (!extractedName) return null
+  if (!extractedName) {
+    return pickFromFamily(matchedFunds, wantedShareClass)
+  }
 
   const familyHits = matchedFunds.filter((fund) => fundNameAgrees(fund, extractedName))
   if (!familyHits.length) return null
@@ -630,7 +687,7 @@ export async function extractFundContractElements(input: {
   return {
     extracted,
     matched_funds,
-    text_preview: text.slice(0, 500),
+    text_preview: text.slice(0, 2000),
   }
 }
 

@@ -48,6 +48,14 @@ export type ContractExtractJobStatus = {
 const JOB_KEY = "__contractExtract"
 const YIELD_POLL_MS = 3_000
 
+function extractedHasContent(
+  extracted: ElementExtractJobRow["extracted_json"] | null | undefined,
+): boolean {
+  return Boolean(
+    extracted && Object.values(extracted).some((value) => String(value ?? "").trim()),
+  )
+}
+
 function getJobMap(): Map<string, ContractExtractJobStatus> {
   const g = globalThis as typeof globalThis & {
     __contractExtractJobs?: Map<string, ContractExtractJobStatus>
@@ -123,6 +131,15 @@ export function getContractExtractJobStatus(): ContractExtractJobStatus | null {
   return getJobMap().get(JOB_KEY) ?? null
 }
 
+function sanitizeExtractedForDocument(
+  fileName: string,
+  extracted: NonNullable<ElementExtractJobRow["extracted_json"]>,
+): NonNullable<ElementExtractJobRow["extracted_json"]> {
+  if (/合同/.test(fileName)) return extracted
+  if (!/说明函|减免说明|意见征询|告知函|公告/.test(fileName)) return extracted
+  return { ...extracted, inception_date: null, puton_date: null }
+}
+
 async function attachContractAndApply(
   job: ElementExtractJobRow,
   buffer: Buffer,
@@ -196,7 +213,8 @@ async function processOneJob(
       fileName: job.original_filename,
       contractText: job.text_preview ?? undefined,
     }
-    const result = options?.reuseExtracted && job.extracted_json
+    const hasExtractedContent = extractedHasContent(job.extracted_json)
+    const result = options?.reuseExtracted && hasExtractedContent
       ? {
           extracted: job.extracted_json,
           matched_funds: await matchFundsFromExtracted(job.extracted_json, hints),
@@ -206,20 +224,33 @@ async function processOneJob(
           buffer,
           fileName: job.original_filename,
         })
-    const match = pickHighConfidenceFundMatch(result.extracted, result.matched_funds, {
+    const extracted = sanitizeExtractedForDocument(job.original_filename, result.extracted)
+    const match = pickHighConfidenceFundMatch(extracted, result.matched_funds, {
       fileName: job.original_filename,
     })
     if (!match) {
       await updateElementExtractJob(job.id, {
         status: "needs_review",
-        extracted_json: result.extracted,
+        extracted_json: extracted,
         matched_funds: result.matched_funds,
         text_preview: result.text_preview,
         beian_hao: null,
-        product_name: result.extracted.fund_name,
+        product_name: extracted.fund_name,
         error_message: result.matched_funds.length
           ? "匹配不唯一，请人工确认目标产品后写入"
           : "未匹配到产品，请人工搜索后写入",
+      })
+      return "needs_review"
+    }
+    if (!extractedHasContent(extracted)) {
+      await updateElementExtractJob(job.id, {
+        status: "needs_review",
+        extracted_json: extracted,
+        matched_funds: result.matched_funds,
+        text_preview: result.text_preview,
+        beian_hao: match.beian_hao,
+        product_name: match.product_name,
+        error_message: "已匹配产品，但未能从文件提取要素（扫描件请确认清晰后重试）",
       })
       return "needs_review"
     }
@@ -228,7 +259,7 @@ async function processOneJob(
       buffer,
       match.beian_hao,
       match.product_name,
-      result.extracted,
+      extracted,
       result.matched_funds,
       result.text_preview,
     )

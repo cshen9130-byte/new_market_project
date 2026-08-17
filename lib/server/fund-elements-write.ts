@@ -473,13 +473,50 @@ async function writeExtractedElementsAcrossShareClasses(
     const current = await loadExtractedElementDisplayValues(target.beian_hao, target.product_name)
     const skipKeys: Array<keyof ExtractedFundElements> = isPrimary ? [] : ["fund_name"]
     const body = mode === "overwrite"
-      ? buildOverwriteNonEmptyWriteBody(target.beian_hao, extracted, skipKeys)
+      ? buildOverwriteNonEmptyWriteBody(
+          target.beian_hao,
+          mergeAmendmentIntoCurrent(extracted, current, skipKeys),
+          skipKeys,
+        )
       : buildFillEmptyWriteBody(target.beian_hao, extracted, current, { skipKeys })
     if (!body) continue
     await writeFundElementsFromBody(body)
     if (isPrimary) primaryFields = appliedFieldKeys(body)
   }
   return primaryFields
+}
+
+function mergeAmendmentIntoCurrent(
+  extracted: ExtractedFundElements,
+  current: ExtractedFundElements | null,
+  skipKeys: Array<keyof ExtractedFundElements>,
+): ExtractedFundElements {
+  if (!current) return extracted
+  const skip = new Set(skipKeys)
+  const out = { ...extracted }
+  const mergeKeys: Array<keyof ExtractedFundElements> = [
+    "fee_pay",
+    "fee_manage",
+    "fee_redeem",
+    "fee_purchase",
+    "closed_period",
+    "open_day",
+    "add_amount",
+    "fee_trust",
+    "fee_admin_service",
+  ]
+  for (const key of mergeKeys) {
+    if (skip.has(key)) continue
+    const add = extracted[key]?.trim()
+    const prev = current[key]?.trim()
+    if (!add || !prev) continue
+    if (prev.includes(add) || add.includes(prev)) {
+      out[key] = add.length >= prev.length ? add : prev
+      continue
+    }
+    out[key] = `${prev}；${add}`
+  }
+  return out
 }
 
 function buildOverwriteNonEmptyWriteBody(

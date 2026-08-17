@@ -19,9 +19,9 @@ const KIND_RANK: Record<ContractDocumentKind, number> = {
   announcement: 0,
 }
 
-const SUPPLEMENT_RE = /补充协议|补充合同|修订协议|变更协议|合同变更|条款变更|修正案|修订案/
+const SUPPLEMENT_RE = /补充协议|补充合同|修订协议|变更协议|合同变更|条款变更|修正案|修订案|减免说明|业绩报酬减免|费率调整|要素变更/
 const CONTRACT_RE = /基金合同|产品合同|私募基金合同|私募合同|合同/
-const ANNOUNCEMENT_RE = /公告|说明函|意见征询|通知|告知函/
+const ANNOUNCEMENT_RE = /公告|意见征询|通知|告知函/
 
 export function contractDocumentKind(fileName: string): ContractDocumentKind {
   const name = fileName || ""
@@ -90,6 +90,11 @@ export function isLatestContractDocument(
   others: ContractDocumentRecency[],
 ): boolean {
   if (current.kind === "announcement") return false
+  if (current.kind === "supplement") {
+    const otherSupplements = others.filter((row) => row.kind === "supplement")
+    return otherSupplements.every((row) => compareContractDocumentRecency(current, row) >= 0)
+  }
+  if (others.some((row) => row.kind === "supplement")) return false
   for (const other of others) {
     if (compareContractDocumentRecency(current, other) < 0) return false
   }

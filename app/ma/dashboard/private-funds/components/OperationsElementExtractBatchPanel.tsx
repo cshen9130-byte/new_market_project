@@ -192,6 +192,10 @@ function jobFileUrl(id: number, download = false) {
   return download ? `${base}?download=1` : base
 }
 
+function productProfileUrl(beianHao: string) {
+  return `/ma/dashboard/private-funds/${encodeURIComponent(beianHao)}?tab=profile`
+}
+
 function statusClass(status: ExtractJobStatus) {
   if (status === "applied") return "bg-emerald-50 text-emerald-800 border-emerald-200"
   if (status === "needs_review") return "bg-amber-50 text-amber-800 border-amber-200"
@@ -789,15 +793,19 @@ export function OperationsElementExtractBatchPanel() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
-                      <a
-                        href={jobFileUrl(job.id)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-xs text-blue-600 hover:underline"
-                      >
-                        查看
-                      </a>
+                      {job.beian_hao ? (
+                        <a
+                          href={productProfileUrl(job.beian_hao)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
+                          查看
+                        </a>
+                      ) : (
+                        <span className="text-xs text-muted-foreground" title="尚未匹配产品">查看</span>
+                      )}
                       <a
                         href={jobFileUrl(job.id, true)}
                         onClick={(e) => e.stopPropagation()}
