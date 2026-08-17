@@ -19,12 +19,19 @@ import {
 } from "@/lib/server/share-class-product"
 import { getServerStoragePath } from "@/lib/server/storage"
 import { pdfParseLoadOptions, readPdfTextWithCmaps } from "@/lib/server/pdf-text"
+import {
+  formatFeePayFormula,
+  parseFeePayFormulaConfig,
+  type FeePayFormulaConfig,
+} from "@/lib/ma/fund-elements-extra"
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
-const MAX_TEXT_CHARS = 120_000
-const LLM_TEXT_CHARS = 24_000
-const PDF_OCR_MAX_PAGES = 4
+const MAX_TEXT_CHARS = 160_000
+const LLM_TEXT_CHARS = 48_000
+const PDF_OCR_MAX_PAGES = 8
 const SPARSE_PDF_TEXT_CHARS = 80
+const CONTRACT_HEAD_CHARS = 8_000
+const CONTRACT_WINDOW_GAP = 120
 
 const ALLOWED_EXTENSIONS = new Set([
   ".pdf",
@@ -64,6 +71,10 @@ export type ExtractedFundElements = {
   fee_manage: string | null
   fee_admin_service: string | null
   fee_pay: string | null
+  risk_level: string | null
+  lock_period_desc: string | null
+  fee_pay_formula: string | null
+  fee_pay_formula_config?: FeePayFormulaConfig | null
 }
 
 export type FundMatchCandidate = {
@@ -93,9 +104,33 @@ const EMPTY_ELEMENTS: ExtractedFundElements = {
   fee_manage: null,
   fee_admin_service: null,
   fee_pay: null,
+  risk_level: null,
+  lock_period_desc: null,
+  fee_pay_formula: null,
 }
 
-const ELEMENT_KEYS = Object.keys(EMPTY_ELEMENTS) as (keyof ExtractedFundElements)[]
+export type ExtractedFundElementTextKey = Exclude<keyof ExtractedFundElements, "fee_pay_formula_config">
+
+const ELEMENT_KEYS = Object.keys(EMPTY_ELEMENTS) as ExtractedFundElementTextKey[]
+
+const FEE_AND_SUBSCRIPTION_KEYS: ExtractedFundElementTextKey[] = [
+  "open_day",
+  "is_temporary_open",
+  "fee_purchase",
+  "add_amount",
+  "fee_redeem",
+  "precautious_line",
+  "closed_period",
+  "stop_line",
+  "fee_manage_rate",
+  "fee_trust",
+  "fee_manage",
+  "fee_admin_service",
+  "fee_pay",
+  "risk_level",
+  "lock_period_desc",
+  "fee_pay_formula",
+]
 
 function getExtension(fileName: string) {
   return path.extname(fileName).toLowerCase()
@@ -266,6 +301,136 @@ function normalizeElements(raw: Record<string, unknown>): ExtractedFundElements 
     }
     out[key] = normalizeNullableString(raw[key])
   }
+  const config = parseFeePayFormulaConfig(
+    raw.fee_pay_formula_config ?? {
+      mode: raw.fee_pay_mode,
+      gradients: raw.fee_pay_gradients,
+    },
+  )
+  if (config) out.fee_pay_formula_config = config
+  if (!out.fee_pay_formula && config) {
+    out.fee_pay_formula = formatFeePayFormula(config)
+  }
+  return out
+}
+
+type ContractSectionWindow = {
+  re: RegExp
+  before: number
+  after: number
+  priority: number
+}
+
+const CONTRACT_SECTION_WINDOWS: ContractSectionWindow[] = [
+  { re: /管理费/g, before: 240, after: 3200, priority: 10 },
+  { re: /托管费/g, before: 200, after: 2400, priority: 10 },
+  { re: /运营服务费|外包费|行政服务费|销售服务费/g, before: 180, after: 2200, priority: 9 },
+  { re: /业绩报酬|业绩提成/g, before: 500, after: 4200, priority: 10 },
+  { re: /年化收益率|计提比例/g, before: 300, after: 2800, priority: 9 },
+  { re: /申购费|赎回费/g, before: 180, after: 1800, priority: 8 },
+  { re: /开放日|临时开放|临开/g, before: 180, after: 2000, priority: 8 },
+  { re: /封闭期|锁定期|份额锁定/g, before: 180, after: 2000, priority: 8 },
+  { re: /预警线|止损线|平仓线/g, before: 120, after: 1400, priority: 8 },
+  { re: /风险等级|风险评级/g, before: 80, after: 900, priority: 6 },
+  { re: /追加申购|最低追加|追加金额/g, before: 80, after: 900, priority: 6 },
+  { re: /是否可赎回|赎回申请/g, before: 80, after: 900, priority: 5 },
+]
+
+type TextRange = { start: number; end: number; priority: number }
+
+function findAllIndices(text: string, pattern: RegExp): number[] {
+  const re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`)
+  const out: number[] = []
+  let match: RegExpExecArray | null
+  while ((match = re.exec(text)) !== null) {
+    out.push(match.index)
+    if (match[0].length === 0) re.lastIndex += 1
+  }
+  return out
+}
+
+function mergeTextRanges(ranges: TextRange[]): TextRange[] {
+  if (!ranges.length) return []
+  const sorted = [...ranges].sort((a, b) => a.start - b.start || b.priority - a.priority)
+  const merged: TextRange[] = [{ ...sorted[0] }]
+  for (const range of sorted.slice(1)) {
+    const last = merged[merged.length - 1]
+    if (range.start <= last.end + CONTRACT_WINDOW_GAP) {
+      last.end = Math.max(last.end, range.end)
+      last.priority = Math.max(last.priority, range.priority)
+    } else {
+      merged.push({ ...range })
+    }
+  }
+  return merged
+}
+
+function clipRangesToBudget(ranges: TextRange[], budget: number): TextRange[] {
+  const total = ranges.reduce((sum, range) => sum + (range.end - range.start), 0)
+  if (total <= budget) return ranges
+  const ranked = [...ranges].sort((a, b) => b.priority - a.priority || (b.end - b.start) - (a.end - a.start))
+  const kept: TextRange[] = []
+  let used = 0
+  for (const range of ranked) {
+    const size = range.end - range.start
+    if (used + size > budget && kept.length > 0) continue
+    kept.push(range)
+    used += size
+    if (used >= budget) break
+  }
+  return kept.sort((a, b) => a.start - b.start)
+}
+
+export function selectContractTextForExtraction(
+  text: string,
+  options?: { feeOnly?: boolean; maxChars?: number },
+): string {
+  const maxChars = options?.maxChars ?? LLM_TEXT_CHARS
+  const source = text.slice(0, MAX_TEXT_CHARS)
+  if (source.length <= maxChars) return source
+
+  const headChars = options?.feeOnly ? 1_500 : CONTRACT_HEAD_CHARS
+  const head = source.slice(0, Math.min(headChars, source.length))
+  const budget = Math.max(4_000, maxChars - head.length - 400)
+  const ranges: TextRange[] = []
+  for (const window of CONTRACT_SECTION_WINDOWS) {
+    for (const index of findAllIndices(source, window.re)) {
+      ranges.push({
+        start: Math.max(0, index - window.before),
+        end: Math.min(source.length, index + window.after),
+        priority: window.priority,
+      })
+    }
+  }
+  const selected = clipRangesToBudget(mergeTextRanges(ranges), budget)
+  const parts = [head]
+  let cursor = head.length
+  for (const range of selected) {
+    if (range.end <= cursor) continue
+    const start = Math.max(range.start, cursor)
+    if (start > cursor + 40) parts.push("……")
+    parts.push(source.slice(start, range.end).trim())
+    cursor = range.end
+  }
+  const combined = parts.filter(Boolean).join("\n\n").trim()
+  return combined.slice(0, maxChars) || source.slice(0, maxChars)
+}
+
+function filledFieldCount(extracted: ExtractedFundElements, keys: ExtractedFundElementTextKey[]): number {
+  return keys.filter((key) => Boolean(extracted[key]?.trim())).length
+}
+
+function mergeExtractedElements(
+  base: ExtractedFundElements,
+  extra: ExtractedFundElements,
+): ExtractedFundElements {
+  const out: ExtractedFundElements = { ...base }
+  for (const key of ELEMENT_KEYS) {
+    if (!out[key]?.trim() && extra[key]?.trim()) out[key] = extra[key]
+  }
+  if (!out.fee_pay_formula_config && extra.fee_pay_formula_config) {
+    out.fee_pay_formula_config = extra.fee_pay_formula_config
+  }
   return out
 }
 
@@ -287,19 +452,26 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 - precautious_line: 预警线；无则填 "不设置预警线"
 - closed_period: 封闭期
 - stop_line: 平仓线/止损线；无则填 "不设置平仓线"
-- fee_manage_rate: 年化管理费率，带百分号，如 "1.50%"
-- fee_trust: 托管费
-- fee_manage: 管理费说明
-- fee_admin_service: 外包费/行政服务费
-- fee_pay: 业绩报酬说明
+- risk_level: 风险等级/风险评级
+- lock_period_desc: 锁定期说明（份额锁定、到期赎回限制等）
+- fee_manage_rate: 年化管理费率，带百分号，如 "1.00%"。0.01% 这类低费率也必须提取，不要当成缺失。
+- fee_trust: 托管费，写明年化费率与计提/支付方式
+- fee_manage: 管理费说明，含费率、计提基数、支付频率
+- fee_admin_service: 外包费/行政服务费/运营服务费，写明年化费率与计提/支付方式
+- fee_pay: 业绩报酬说明，必须覆盖 A/B/C 类（如有）的计提条件、比例、高水位、计提时点
+- fee_pay_formula: 各类份额业绩报酬计算公式的完整文字，保留合同中的 H/R/C/F/N 公式，不要只写“详见合同”
+- fee_pay_formula_config: 若能归纳为单一主份额公式则输出对象，否则 null。格式：
+  {"mode":"annual_gradient"|"excess_gradient"|"fixed"|"none","gradients":[{"fromPct":"0","toPct":"6","ratePct":"20"}]}
 
-无法从合同中确定的字段填 null。只输出 JSON 对象。
+无法从合同中确定的字段填 null。只输出 JSON 对象。文本可能用“……”省略无关章节，费用、申赎、业绩报酬仍完整出现在摘录中，必须提取，不要因为不在文首就填 null。
 
 份额类别（重要）：
 合同常对 A/B/C 类份额规定不同的管理费、业绩报酬、申购赎回或封闭期。遇到这种情况时：
-- fee_manage、fee_pay、fee_redeem、fee_purchase、closed_period、add_amount、open_day 必须写成覆盖全部分额的完整说明，按 A/B/C 逐条写明规则，不要只提取其中一类。
+- fee_manage、fee_pay、fee_pay_formula、fee_redeem、fee_purchase、closed_period、add_amount、open_day、lock_period_desc 必须写成覆盖全部分额的完整说明，按 A/B/C 逐条写明规则，不要只提取其中一类。
 - 示例（管理费说明）：「A类（机构/产品类合格投资者）：年化管理费率1%，每日计提、按季支付；B类（个人合格投资者）：年化管理费率0.2%，每日计提、按季支付；C类：年化管理费率1%，每日计提、按季支付。」
-- 示例（业绩报酬说明）：「按每个客户/每个账户高水位法计提。A类：对超过0%的收益部分按35%计提业绩报酬；B类：不计提业绩报酬；C类：对超过0%的收益部分按50%计提业绩报酬。」
+- 示例（托管费）：「年化托管费率0.01%，按基金资产净值每日计提，按自然季度支付，下一自然季度前10个工作日内自动支付。」
+- 示例（业绩报酬说明）：「按每个投资者账户年化收益率R计提。A类：R≤0不计提；0<R≤6%按20%计提；R>6%时6%以内按20%、超出部分按25%计提。B类：R≤6%不计提；R>6%时超出6%部分按50%计提。财产分配前从分配金额中扣除。」
+- 示例（业绩报酬公式）：「A类：R≤0时H=0；0<R≤6%时H=R×20%×C×F×N/365；R>6%时H=[6%×20%+(R-6%)×25%]×C×F×N/365。B类：R≤6%时H=0；R>6%时H=(R-6%)×50%×C×F×N/365。」
 - fee_manage_rate：各类相同则填该年化费率（如 "1.00%"）；各类不同时填 A 类或主份额费率，细节仍须写在 fee_manage 中。
 
 若文本是补充协议、修订协议、合同变更，或业绩报酬减免说明函、费率调整说明等非合同文件：这些文件同样会影响产品要素。请提取 fund_name、register_number，以及本文件明确变更或重申的最新规则（尤其是 fee_pay、fee_manage）；未提及的字段填 null。
@@ -309,8 +481,7 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 合同或说明文本：
 `
 
-async function extractElementsWithLlm(text: string): Promise<ExtractedFundElements> {
-  const truncated = text.slice(0, LLM_TEXT_CHARS)
+async function invokeElementExtraction(selectedText: string): Promise<ExtractedFundElements> {
   const model = new ChatOpenAI({
     apiKey: getDashScopeApiKey(),
     model: process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
@@ -321,7 +492,7 @@ async function extractElementsWithLlm(text: string): Promise<ExtractedFundElemen
 
   let raw = ""
   try {
-    const resp = await model.invoke([{ role: "user", content: EXTRACTION_PROMPT + truncated }])
+    const resp = await model.invoke([{ role: "user", content: EXTRACTION_PROMPT + selectedText }])
     raw = stringifyModelContent(resp.content).trim()
   } catch (err) {
     console.error("[fund-contract-element-extract] llm error", err)
@@ -331,11 +502,30 @@ async function extractElementsWithLlm(text: string): Promise<ExtractedFundElemen
   const jsonStr = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim()
   try {
     const parsed = JSON.parse(jsonStr)
-    if (!parsed || typeof parsed !== "object") return EMPTY_ELEMENTS
+    if (!parsed || typeof parsed !== "object") return { ...EMPTY_ELEMENTS }
     return normalizeElements(parsed as Record<string, unknown>)
   } catch {
     throw new Error("AI 返回格式无效，请重试或更换合同文件")
   }
+}
+
+async function extractElementsWithLlm(text: string): Promise<ExtractedFundElements> {
+  const selected = selectContractTextForExtraction(text)
+  console.log(
+    `[fund-contract-element-extract] contract chars=${text.length} selected chars=${selected.length}`,
+  )
+  const extracted = await invokeElementExtraction(selected)
+  const feeKeywordsPresent = /管理费|托管费|业绩报酬|运营服务费/.test(selected)
+  if (feeKeywordsPresent && filledFieldCount(extracted, FEE_AND_SUBSCRIPTION_KEYS) < 4) {
+    const feeOnly = selectContractTextForExtraction(text, { feeOnly: true })
+    try {
+      const feeExtracted = await invokeElementExtraction(feeOnly)
+      return mergeExtractedElements(extracted, feeExtracted)
+    } catch (err) {
+      console.error("[fund-contract-element-extract] fee fallback failed", err)
+    }
+  }
+  return extracted
 }
 
 export async function readFundContractText(buffer: Buffer, fileName: string): Promise<string> {
@@ -691,7 +881,7 @@ export async function extractFundContractElements(input: {
   }
 }
 
-export const FUND_ELEMENT_FIELD_LABELS: Record<keyof ExtractedFundElements, string> = {
+export const FUND_ELEMENT_FIELD_LABELS: Record<ExtractedFundElementTextKey, string> = {
   fund_name: "产品全称",
   register_number: "备案编号",
   advisor: "投资顾问",
@@ -712,9 +902,12 @@ export const FUND_ELEMENT_FIELD_LABELS: Record<keyof ExtractedFundElements, stri
   fee_manage: "管理费说明",
   fee_admin_service: "外包费",
   fee_pay: "业绩报酬说明",
+  risk_level: "风险等级",
+  lock_period_desc: "锁定期说明",
+  fee_pay_formula: "业绩报酬公式",
 }
 
-export const FUND_ELEMENT_BASIC_KEYS: (keyof ExtractedFundElements)[] = [
+export const FUND_ELEMENT_BASIC_KEYS: ExtractedFundElementTextKey[] = [
   "fund_name",
   "register_number",
   "advisor",
@@ -724,7 +917,7 @@ export const FUND_ELEMENT_BASIC_KEYS: (keyof ExtractedFundElements)[] = [
   "custodian",
 ]
 
-export const FUND_ELEMENT_SUBSCRIPTION_KEYS: (keyof ExtractedFundElements)[] = [
+export const FUND_ELEMENT_SUBSCRIPTION_KEYS: ExtractedFundElementTextKey[] = [
   "open_day",
   "is_temporary_open",
   "fee_purchase",
@@ -733,9 +926,12 @@ export const FUND_ELEMENT_SUBSCRIPTION_KEYS: (keyof ExtractedFundElements)[] = [
   "precautious_line",
   "closed_period",
   "stop_line",
+  "risk_level",
+  "lock_period_desc",
   "fee_manage_rate",
   "fee_trust",
   "fee_manage",
   "fee_admin_service",
   "fee_pay",
+  "fee_pay_formula",
 ]

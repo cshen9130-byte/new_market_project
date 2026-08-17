@@ -33,6 +33,9 @@ type ExtractedFundElements = {
   fee_manage: string | null
   fee_admin_service: string | null
   fee_pay: string | null
+  risk_level: string | null
+  lock_period_desc: string | null
+  fee_pay_formula: string | null
 }
 
 type FundMatchCandidate = {
@@ -107,6 +110,9 @@ const SUBSCRIPTION_KEYS: ElementKey[] = [
   "fee_manage",
   "fee_admin_service",
   "fee_pay",
+  "risk_level",
+  "lock_period_desc",
+  "fee_pay_formula",
 ]
 
 const FIELD_LABELS: Record<ElementKey, string> = {
@@ -130,6 +136,9 @@ const FIELD_LABELS: Record<ElementKey, string> = {
   fee_manage: "管理费说明",
   fee_admin_service: "外包费",
   fee_pay: "业绩报酬说明",
+  risk_level: "风险等级",
+  lock_period_desc: "锁定期说明",
+  fee_pay_formula: "业绩报酬公式",
 }
 
 const ACCEPTED_EXTENSIONS = [
@@ -271,6 +280,8 @@ export function OperationsElementExtractBatchPanel() {
   const [selectedFields, setSelectedFields] = useState<Record<ElementKey, boolean>>(buildDefaultSelection(null))
   const [applying, setApplying] = useState(false)
   const [applyMessage, setApplyMessage] = useState<string | null>(null)
+  const [reextracting, setReextracting] = useState(false)
+  const [reextractMessage, setReextractMessage] = useState<string | null>(null)
 
   const activeJob = useMemo(
     () => jobs.find((job) => job.id === activeJobId) ?? null,
@@ -477,6 +488,22 @@ export function OperationsElementExtractBatchPanel() {
   async function handleRetry(id: number) {
     await fetch(`/ma/api/ops/fund-elements/jobs/${id}/retry`, { method: "POST" })
     await loadJobs()
+  }
+
+  async function handleReextractAll() {
+    setReextracting(true)
+    setReextractMessage(null)
+    try {
+      const res = await fetch("/ma/api/ops/fund-elements/jobs/reextract", { method: "POST" })
+      const json = await res.json()
+      if (!res.ok || json.error) throw new Error(json.error || "重新提取排队失败")
+      setReextractMessage(json.message || "已开始重新提取")
+      await Promise.all([loadJobs(), loadCoverage()])
+    } catch (err) {
+      setReextractMessage(err instanceof Error ? err.message : "重新提取排队失败")
+    } finally {
+      setReextracting(false)
+    }
   }
 
   async function handleApply() {
@@ -759,15 +786,29 @@ export function OperationsElementExtractBatchPanel() {
       <div className="rounded-lg border p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-sm font-medium">提取任务 ({jobsTotal})</div>
-          <button
-            type="button"
-            onClick={() => { void loadJobs(); void loadCoverage() }}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${jobsLoading || busyJobs ? "animate-spin" : ""}`} />
-            刷新
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => { void handleReextractAll() }}
+              disabled={reextracting || busyJobs}
+              className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 disabled:opacity-50"
+            >
+              {reextracting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileSearch className="h-3.5 w-3.5" />}
+              重新提取缺失要素
+            </button>
+            <button
+              type="button"
+              onClick={() => { void loadJobs(); void loadCoverage() }}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${jobsLoading || busyJobs ? "animate-spin" : ""}`} />
+              刷新
+            </button>
+          </div>
         </div>
+        {reextractMessage && (
+          <p className="text-xs text-muted-foreground">{reextractMessage}</p>
+        )}
         <div className="flex flex-wrap gap-2">
           {JOB_STATUS_FILTERS.map((status) => (
             <button
@@ -859,7 +900,7 @@ export function OperationsElementExtractBatchPanel() {
                       >
                         下载
                       </a>
-                      {(job.status === "failed" || job.status === "needs_review") && (
+                      {(job.status === "failed" || job.status === "needs_review" || job.status === "applied") && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -868,7 +909,7 @@ export function OperationsElementExtractBatchPanel() {
                           }}
                           className="text-xs text-red-600 hover:underline"
                         >
-                          重试
+                          {job.status === "applied" ? "重新提取" : "重试"}
                         </button>
                       )}
                     </div>

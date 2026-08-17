@@ -1,5 +1,6 @@
 import fs from "fs"
 import path from "path"
+import { query } from "@/lib/db"
 import {
   extractFundContractElements,
   matchFundsFromExtracted,
@@ -8,14 +9,20 @@ import {
 import {
   claimNextElementExtractJob,
   countQueuedElementExtractJobs,
+  createElementExtractJobFromBuffer,
   getElementExtractJobById,
   listAppliedExtractJobsByBeiAns,
+  listExtractJobsForRerun,
   listNeedsReviewExtractJobs,
   readElementExtractJobFile,
+  requeueExtractJobs,
   updateElementExtractJob,
   type ElementExtractJobRow,
 } from "@/lib/server/fund-element-extract-jobs"
-import { saveFundContractMaterialFromBuffer } from "@/lib/server/fund-contract-materials"
+import {
+  readFundContractMaterialFile,
+  saveFundContractMaterialFromBuffer,
+} from "@/lib/server/fund-contract-materials"
 import {
   appliedFieldKeys,
   writeFillEmptyElementsAcrossShareClasses,
@@ -228,10 +235,18 @@ async function processOneJob(
       throw new Error("要素提取结果为空")
     }
     const extracted = sanitizeExtractedForDocument(job.original_filename, result.extracted)
-    const match = pickHighConfidenceFundMatch(extracted, result.matched_funds, {
-      fileName: job.original_filename,
-    })
-    if (!match) {
+    const matched =
+      pickHighConfidenceFundMatch(extracted, result.matched_funds, {
+        fileName: job.original_filename,
+      }) ??
+      (job.beian_hao
+        ? {
+            beian_hao: job.beian_hao,
+            product_name: job.product_name || extracted.fund_name || job.beian_hao,
+            short_name: null,
+          }
+        : null)
+    if (!matched) {
       await updateElementExtractJob(job.id, {
         status: "needs_review",
         extracted_json: extracted,
@@ -251,8 +266,8 @@ async function processOneJob(
         extracted_json: extracted,
         matched_funds: result.matched_funds,
         text_preview: result.text_preview,
-        beian_hao: match.beian_hao,
-        product_name: match.product_name,
+        beian_hao: matched.beian_hao,
+        product_name: matched.product_name,
         error_message: "已匹配产品，但未能从文件提取要素（扫描件请确认清晰后重试）",
       })
       return "needs_review"
@@ -260,8 +275,8 @@ async function processOneJob(
     return await attachContractAndApply(
       job,
       buffer,
-      match.beian_hao,
-      match.product_name,
+      matched.beian_hao,
+      matched.product_name,
       extracted,
       result.matched_funds,
       result.text_preview,
@@ -305,6 +320,75 @@ export async function rematchNeedsReviewExtractJobs(options?: {
 
   result.remaining = await countQueuedElementExtractJobs()
   return result
+}
+
+export async function enqueueOrphanContractMaterialJobs(): Promise<number> {
+  let materials: Array<{
+    id: number
+    beian_hao: string
+    original_filename: string
+    uploaded_by: string | null
+    title: string | null
+  }> = []
+  try {
+    materials = await query<{
+      id: number
+      beian_hao: string
+      original_filename: string
+      uploaded_by: string | null
+      title: string | null
+    }>(
+      `SELECT m.id, m.beian_hao, m.original_filename, m.uploaded_by, COALESCE(m.title, '') AS title
+       FROM ops_fund_contract_materials m
+       WHERE (
+         m.original_filename ~ '合同'
+         OR COALESCE(m.title, '') ~ '合同'
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM ops_element_extract_jobs j
+         WHERE j.contract_material_id = m.id
+            OR (
+              UPPER(BTRIM(COALESCE(j.beian_hao, ''))) = UPPER(BTRIM(m.beian_hao))
+              AND j.original_filename = m.original_filename
+            )
+       )
+       ORDER BY m.id ASC
+       LIMIT 200`,
+    )
+  } catch (err) {
+    console.error("[contract-extract] list orphan materials failed", err)
+    return 0
+  }
+
+  let created = 0
+  for (const material of materials) {
+    const file = await readFundContractMaterialFile(material.id)
+    if (!file) continue
+    try {
+      await createElementExtractJobFromBuffer({
+        buffer: file.buffer,
+        originalFilename: material.original_filename,
+        uploaded_by: material.uploaded_by || "",
+        beian_hao: material.beian_hao,
+        product_name: material.title || null,
+        contract_material_id: material.id,
+      })
+      created += 1
+    } catch (err) {
+      console.error(`[contract-extract] enqueue material ${material.id} failed:`, err)
+    }
+  }
+  return created
+}
+
+export async function requeueIncompleteContractExtractJobs(): Promise<{
+  queued: number
+  fromMaterials: number
+}> {
+  const jobs = await listExtractJobsForRerun()
+  const queued = await requeueExtractJobs(jobs.map((job) => job.id))
+  const fromMaterials = await enqueueOrphanContractMaterialJobs()
+  return { queued, fromMaterials }
 }
 
 export async function processContractExtractQueue(options?: {

@@ -5,7 +5,8 @@ import {
   sqlExcludeFofUnderlyingProduct,
   sqlFofUnderlyingFundClassFilter,
 } from "@/lib/server/fund-holding-code"
-import { fundDisplayNamesMatch, shareClassProductNamesMatch } from "@/lib/server/fund-name-match"
+import { sqlHasUsableFundElements } from "@/lib/server/fund-elements-lookup"
+import { fundDisplayNamesMatch } from "@/lib/server/fund-name-match"
 import {
   ensureFofOverviewListCachePopulated,
 } from "@/lib/server/fof-overview-list-cache-pg"
@@ -41,7 +42,7 @@ export type FofContractCoverageResult = {
   total: number
 }
 
-type ContractSource = {
+type CoverageSource = {
   familyKey: string | null
   name: string
 }
@@ -53,24 +54,17 @@ function nameCoversFofHolding(
 ): boolean {
   const src = (sourceName ?? "").trim()
   if (!src) return false
-  const srcIsParent = !/[ABC]类/u.test(src)
+  // Parent / A / B / C share the same 合同 and 要素.
+  const strippedSrc = src.replace(/[ABC]类/gu, "")
   const targets = [productName, shortName].filter((value): value is string => Boolean(value?.trim()))
   for (const target of targets) {
-    if (srcIsParent) {
-      const strippedSrc = src.replace(/[ABC]类/gu, "")
-      const strippedTarget = target.replace(/[ABC]类/gu, "")
-      if (fundDisplayNamesMatch(strippedSrc, strippedTarget)) return true
-      continue
-    }
-    if (
-      shareClassProductNamesMatch(src, target)
-      && fundDisplayNamesMatch(src, target)
-    ) return true
+    const strippedTarget = target.replace(/[ABC]类/gu, "")
+    if (fundDisplayNamesMatch(strippedSrc, strippedTarget)) return true
   }
   return false
 }
 
-function contractCoversRow(row: FofContractCoverageRow, sources: ContractSource[]): boolean {
+function sourceCoversRow(row: FofContractCoverageRow, sources: CoverageSource[]): boolean {
   const rowKey = beianFamilyKey(row.beian_hao)
   for (const source of sources) {
     if (rowKey && source.familyKey && rowKey === source.familyKey) return true
@@ -87,7 +81,7 @@ function rowMatchesFilter(row: FofContractCoverageRow, filter: FofContractCovera
   return true
 }
 
-async function loadContractSources(): Promise<ContractSource[]> {
+async function loadContractSources(): Promise<CoverageSource[]> {
   const [materials, jobs] = await Promise.all([
     query<{ beian_hao: string; title: string }>(
       `SELECT beian_hao, COALESCE(title, '') AS title
@@ -99,7 +93,7 @@ async function loadContractSources(): Promise<ContractSource[]> {
        WHERE status = 'applied'`,
     ),
   ])
-  const sources: ContractSource[] = []
+  const sources: CoverageSource[] = []
   for (const row of materials) {
     sources.push({
       familyKey: beianFamilyKey(row.beian_hao),
@@ -111,6 +105,36 @@ async function loadContractSources(): Promise<ContractSource[]> {
       familyKey: beianFamilyKey(row.beian_hao),
       name: row.product_name ?? "",
     })
+  }
+  return sources
+}
+
+async function loadElementSources(): Promise<CoverageSource[]> {
+  const rows = await query<{
+    register_number: string | null
+    record_key: string | null
+    fund_name: string | null
+    fund_short_name: string | null
+  }>(
+    `SELECT register_number, record_key, fund_name, fund_short_name
+     FROM basicinfo_bfl_track
+     WHERE ${sqlHasUsableFundElements()}`,
+  ).catch(() => [] as Array<{
+    register_number: string | null
+    record_key: string | null
+    fund_name: string | null
+    fund_short_name: string | null
+  }>)
+  const sources: CoverageSource[] = []
+  for (const row of rows) {
+    const familyKey = beianFamilyKey(row.register_number) || beianFamilyKey(row.record_key)
+    if (row.fund_name) sources.push({ familyKey, name: row.fund_name })
+    if (row.fund_short_name && row.fund_short_name !== row.fund_name) {
+      sources.push({ familyKey, name: row.fund_short_name })
+    }
+    if (!row.fund_name && !row.fund_short_name) {
+      sources.push({ familyKey, name: "" })
+    }
   }
   return sources
 }
@@ -175,17 +199,11 @@ export async function loadFofContractCoverage(input?: {
        ) AS has_contract,
        EXISTS (
          SELECT 1 FROM basicinfo_bfl_track t
-         WHERE NULLIF(BTRIM(cache.beian_hao), '') IS NOT NULL
+         WHERE ${sqlHasUsableFundElements("t")}
+           AND NULLIF(BTRIM(cache.beian_hao), '') IS NOT NULL
            AND (
              UPPER(BTRIM(t.register_number)) = UPPER(BTRIM(cache.beian_hao))
              OR UPPER(BTRIM(t.record_key)) = UPPER(BTRIM(cache.beian_hao))
-           )
-           AND (
-             NULLIF(BTRIM(COALESCE(t.open_day, '')), '') IS NOT NULL
-             OR NULLIF(BTRIM(COALESCE(t.fee_purchase, '')), '') IS NOT NULL
-             OR NULLIF(BTRIM(COALESCE(t.fee_redeem, '')), '') IS NOT NULL
-             OR NULLIF(BTRIM(COALESCE(t.mandator_name, '')), '') IS NOT NULL
-             OR t.fee_manage_rate IS NOT NULL
            )
        ) AS has_elements
      FROM fof_underlying_summary f
@@ -199,7 +217,10 @@ export async function loadFofContractCoverage(input?: {
     [...params, 500],
   )
 
-  const sources = await loadContractSources()
+  const [contractSources, elementSources] = await Promise.all([
+    loadContractSources(),
+    loadElementSources(),
+  ])
   const allRows: FofContractCoverageRow[] = rawRows.map((r) => {
     const product_name = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
     const short_name = r.short_name
@@ -214,8 +235,11 @@ export async function loadFofContractCoverage(input?: {
       has_elements: Boolean(r.has_elements),
       missing_beian: Boolean(r.missing_beian),
     }
-    if (!row.has_contract && contractCoversRow(row, sources)) {
+    if (!row.has_contract && sourceCoversRow(row, contractSources)) {
       row.has_contract = true
+    }
+    if (!row.has_elements && sourceCoversRow(row, elementSources)) {
+      row.has_elements = true
     }
     return row
   })

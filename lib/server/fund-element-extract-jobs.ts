@@ -131,44 +131,71 @@ export function extractJobFilePath(storageFilename: string): string {
   return getServerStoragePath("fund-elements", "jobs", storageFilename)
 }
 
-export async function createElementExtractJob(input: {
-  file: File
+const INCOMPLETE_EXTRACT_KEYS: Array<keyof ExtractedFundElements> = [
+  "fee_manage_rate",
+  "fee_trust",
+  "fee_manage",
+  "fee_pay",
+  "fee_admin_service",
+  "open_day",
+]
+
+export function extractedLooksIncomplete(
+  extracted: ExtractedFundElements | null | undefined,
+): boolean {
+  if (!extracted) return true
+  const filled = INCOMPLETE_EXTRACT_KEYS.filter((key) => {
+    const value = extracted[key]
+    return typeof value === "string" && Boolean(value.trim())
+  }).length
+  return filled < 3
+}
+
+export async function createElementExtractJobFromBuffer(input: {
+  buffer: Buffer
+  originalFilename: string
   uploaded_by?: string
+  beian_hao?: string | null
+  product_name?: string | null
+  contract_material_id?: number | null
 }): Promise<ElementExtractJobRow> {
   await ensureElementExtractJobsTable()
 
-  const originalFilename = sanitizeFilename(input.file.name || "contract.pdf")
+  const originalFilename = sanitizeFilename(input.originalFilename || "contract.pdf")
   const ext = getExtension(originalFilename)
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new Error(
       "仅支持 PDF、Word (.doc/.docx)、Excel (.xls/.xlsx)、图片 (.png/.jpg/.jpeg/.gif/.webp/.bmp) 格式",
     )
   }
-  if (input.file.size > EXTRACT_JOB_MAX_FILE_BYTES) {
+  if (input.buffer.byteLength > EXTRACT_JOB_MAX_FILE_BYTES) {
     throw new Error("文件大小不能超过 20MB")
   }
 
-  const buffer = Buffer.from(await input.file.arrayBuffer())
-  const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
+  const hash = createHash("sha256").update(input.buffer).digest("hex").slice(0, 16)
   const storageFilename = `${Date.now()}_${hash}${ext}`
   const storageDir = getServerStoragePath("fund-elements", "jobs")
   const storagePath = path.join(storageDir, storageFilename)
 
   await fs.mkdir(storageDir, { recursive: true })
-  await fs.writeFile(storagePath, buffer)
+  await fs.writeFile(storagePath, input.buffer)
 
   try {
     const rows = await query<ElementExtractJobRow>(
       `INSERT INTO ops_element_extract_jobs
-         (original_filename, storage_filename, file_size, mime_type, uploaded_by, status)
-       VALUES ($1, $2, $3, $4, $5, 'queued')
+         (original_filename, storage_filename, file_size, mime_type, uploaded_by, status,
+          beian_hao, product_name, contract_material_id)
+       VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8)
        RETURNING ${JOB_SELECT_COLS}`,
       [
         originalFilename,
         storageFilename,
-        buffer.byteLength,
+        input.buffer.byteLength,
         mimeTypeForFilename(originalFilename),
         input.uploaded_by?.trim() || "",
+        input.beian_hao?.trim() || null,
+        input.product_name?.trim() || null,
+        input.contract_material_id ?? null,
       ],
     )
     const row = rows[0]
@@ -178,6 +205,18 @@ export async function createElementExtractJob(input: {
     await fs.unlink(storagePath).catch(() => undefined)
     throw err
   }
+}
+
+export async function createElementExtractJob(input: {
+  file: File
+  uploaded_by?: string
+}): Promise<ElementExtractJobRow> {
+  const buffer = Buffer.from(await input.file.arrayBuffer())
+  return createElementExtractJobFromBuffer({
+    buffer,
+    originalFilename: input.file.name || "contract.pdf",
+    uploaded_by: input.uploaded_by,
+  })
 }
 
 export async function listElementExtractJobs(input?: {
@@ -394,11 +433,40 @@ export async function requeueElementExtractJob(id: number): Promise<ElementExtra
   const rows = await query<ElementExtractJobRow>(
     `UPDATE ops_element_extract_jobs
      SET status = 'queued', error_message = NULL, processed_at = NULL
-     WHERE id = $1 AND status IN ('failed', 'needs_review', 'queued')
+     WHERE id = $1 AND status IN ('failed', 'needs_review', 'queued', 'applied')
      RETURNING ${JOB_SELECT_COLS}`,
     [id],
   )
   return rows[0] ? mapJobRow(rows[0]) : null
+}
+
+export async function listExtractJobsForRerun(): Promise<ElementExtractJobRow[]> {
+  await ensureElementExtractJobsTable()
+  const rows = await query<ElementExtractJobRow>(
+    `SELECT ${JOB_SELECT_COLS}
+     FROM ops_element_extract_jobs
+     WHERE status IN ('applied', 'needs_review', 'failed')
+     ORDER BY id ASC`,
+  )
+  return rows.map(mapJobRow).filter((job) => {
+    if (job.status === "failed" || job.status === "needs_review") return true
+    return extractedLooksIncomplete(job.extracted_json)
+  })
+}
+
+export async function requeueExtractJobs(ids: number[]): Promise<number> {
+  await ensureElementExtractJobsTable()
+  const jobIds = [...new Set(ids.filter((id) => Number.isFinite(id)))]
+  if (!jobIds.length) return 0
+  const rows = await query<{ id: number }>(
+    `UPDATE ops_element_extract_jobs
+     SET status = 'queued', error_message = NULL, processed_at = NULL
+     WHERE id = ANY($1::int[])
+       AND status IN ('failed', 'needs_review', 'queued', 'applied')
+     RETURNING id`,
+    [jobIds],
+  )
+  return rows.length
 }
 
 export async function countQueuedElementExtractJobs(): Promise<number> {

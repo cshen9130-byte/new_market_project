@@ -70,7 +70,10 @@ export async function readPdfTextWithCmaps(buffer: Buffer): Promise<string> {
     } catch {
       tableText = ""
     }
-    const body = String(parsed.text || "").replace(/\s+/g, " ").trim()
+    const body = String(parsed.text || "")
+      .replace(/[^\S\n]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
     return [body, tableText].filter(Boolean).join("\n\n").trim()
   } finally {
     await parser.destroy().catch(() => undefined)

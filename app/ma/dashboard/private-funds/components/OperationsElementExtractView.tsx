@@ -25,6 +25,9 @@ type ExtractedFundElements = {
   fee_manage: string | null
   fee_admin_service: string | null
   fee_pay: string | null
+  risk_level: string | null
+  lock_period_desc: string | null
+  fee_pay_formula: string | null
 }
 
 type FundMatchCandidate = {
@@ -81,6 +84,9 @@ const SUBSCRIPTION_KEYS: ElementKey[] = [
   "fee_manage",
   "fee_admin_service",
   "fee_pay",
+  "risk_level",
+  "lock_period_desc",
+  "fee_pay_formula",
 ]
 
 const FIELD_LABELS: Record<ElementKey, string> = {
@@ -104,6 +110,9 @@ const FIELD_LABELS: Record<ElementKey, string> = {
   fee_manage: "管理费说明",
   fee_admin_service: "外包费",
   fee_pay: "业绩报酬说明",
+  risk_level: "风险等级",
+  lock_period_desc: "锁定期说明",
+  fee_pay_formula: "业绩报酬公式",
 }
 
 const ACCEPTED_EXTENSIONS = [
@@ -205,9 +214,12 @@ const LONG_TEXT_KEYS = new Set<ElementKey>([
   "fee_redeem",
   "fee_manage",
   "fee_pay",
+  "fee_pay_formula",
+  "lock_period_desc",
   "closed_period",
   "is_temporary_open",
   "fee_admin_service",
+  "fee_trust",
 ])
 
 function FieldCompareRow({

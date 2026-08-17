@@ -7,11 +7,13 @@ import {
 import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import {
   loadBasicinfoTrackByBeianKeys,
+  loadFundElementExtraFields,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
 import {
   FUND_ELEMENT_BASIC_KEYS,
   FUND_ELEMENT_SUBSCRIPTION_KEYS,
+  type ExtractedFundElementTextKey,
   type ExtractedFundElements,
 } from "@/lib/server/fund-contract-element-extract"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
@@ -329,7 +331,7 @@ export async function loadExtractedElementDisplayValues(
   if (!raw) return null
   const keys = await resolveFundElementsBeianKeys(raw, product_name || null)
 
-  const [elementRows, pfiRows] = await Promise.all([
+  const [elementRows, extra, pfiRows] = await Promise.all([
     loadBasicinfoTrackByBeianKeys<BasicinfoTrackRow>(
       keys,
       `SELECT fund_name, register_number, advisor,
@@ -341,6 +343,7 @@ export async function loadExtractedElementDisplayValues(
               fee_admin_service, fee_pay
        FROM basicinfo_bfl_track`,
     ).catch(() => [] as BasicinfoTrackRow[]),
+    loadFundElementExtraFields(keys),
     query<{ manager: string | null }>(
       `SELECT manager FROM private_fund_info WHERE beian_hao = ANY($1::text[]) LIMIT 1`,
       [keys],
@@ -370,6 +373,9 @@ export async function loadExtractedElementDisplayValues(
       fee_manage: null,
       fee_admin_service: null,
       fee_pay: null,
+      risk_level: null,
+      lock_period_desc: null,
+      fee_pay_formula: null,
     }
   }
 
@@ -407,6 +413,9 @@ export async function loadExtractedElementDisplayValues(
     fee_manage: el?.fee_manage ?? null,
     fee_admin_service: el?.fee_admin_service ?? null,
     fee_pay: el?.fee_pay ?? null,
+    risk_level: extra.risk_level,
+    lock_period_desc: extra.lock_period_desc,
+    fee_pay_formula: extra.fee_pay_formula,
   }
 }
 
@@ -414,6 +423,23 @@ const WRITE_KEYS = [...FUND_ELEMENT_BASIC_KEYS, ...FUND_ELEMENT_SUBSCRIPTION_KEY
 
 function hasText(value: string | null | undefined): boolean {
   return Boolean(value?.trim())
+}
+
+function textField(extracted: ExtractedFundElements, key: ExtractedFundElementTextKey): string | null {
+  const value = extracted[key]
+  return typeof value === "string" ? value.trim() || null : null
+}
+
+function attachFormulaConfig(
+  body: FundElementWriteBody,
+  extracted: ExtractedFundElements,
+  current: ExtractedFundElements | null,
+  mode: "fill-empty" | "overwrite",
+) {
+  const next = extracted.fee_pay_formula_config
+  if (!next) return
+  if (mode === "fill-empty" && (current?.fee_pay_formula_config || hasText(current?.fee_pay_formula))) return
+  body.fee_pay_formula_config = next
 }
 
 /** Build a PATCH-style body that only fills currently empty destination fields. */
@@ -427,11 +453,12 @@ export function buildFillEmptyWriteBody(
   const body: FundElementWriteBody = { beian_hao }
   for (const key of WRITE_KEYS) {
     if (key === "register_number" || skip.has(key)) continue
-    const next = extracted[key]?.trim()
+    const next = textField(extracted, key)
     if (!next) continue
-    if (hasText(current?.[key])) continue
+    if (hasText(current?.[key] as string | null | undefined)) continue
     body[key] = next
   }
+  attachFormulaConfig(body, extracted, current, "fill-empty")
   return Object.keys(body).length > 1 ? body : null
 }
 
@@ -494,8 +521,9 @@ function mergeAmendmentIntoCurrent(
   if (!current) return extracted
   const skip = new Set(skipKeys)
   const out = { ...extracted }
-  const mergeKeys: Array<keyof ExtractedFundElements> = [
+  const mergeKeys: ExtractedFundElementTextKey[] = [
     "fee_pay",
+    "fee_pay_formula",
     "fee_manage",
     "fee_redeem",
     "fee_purchase",
@@ -504,17 +532,21 @@ function mergeAmendmentIntoCurrent(
     "add_amount",
     "fee_trust",
     "fee_admin_service",
+    "lock_period_desc",
   ]
   for (const key of mergeKeys) {
     if (skip.has(key)) continue
-    const add = extracted[key]?.trim()
-    const prev = current[key]?.trim()
+    const add = textField(extracted, key)
+    const prev = textField(current, key)
     if (!add || !prev) continue
     if (prev.includes(add) || add.includes(prev)) {
       out[key] = add.length >= prev.length ? add : prev
       continue
     }
     out[key] = `${prev}；${add}`
+  }
+  if (!out.fee_pay_formula_config && extracted.fee_pay_formula_config) {
+    out.fee_pay_formula_config = extracted.fee_pay_formula_config
   }
   return out
 }
@@ -528,10 +560,11 @@ function buildOverwriteNonEmptyWriteBody(
   const body: FundElementWriteBody = { beian_hao }
   for (const key of WRITE_KEYS) {
     if (key === "register_number" || skip.has(key)) continue
-    const next = extracted[key]?.trim()
+    const next = textField(extracted, key)
     if (!next) continue
     body[key] = next
   }
+  attachFormulaConfig(body, extracted, null, "overwrite")
   return Object.keys(body).length > 1 ? body : null
 }
 

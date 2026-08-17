@@ -7,12 +7,14 @@
  * Direct:
  *   npx tsx scripts/ma/contract_extract_etl.ts [--retry-failed]
  *   npx tsx scripts/ma/contract_extract_etl.ts --rematch-review
+ *   npx tsx scripts/ma/contract_extract_etl.ts --reextract-incomplete
  */
 
 import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
 import {
   processContractExtractQueue,
   rematchNeedsReviewExtractJobs,
+  requeueIncompleteContractExtractJobs,
 } from "@/lib/server/fund-contract-extract-job"
 
 ensureScriptDatabaseEnv()
@@ -21,6 +23,8 @@ configureEtlDbTimeout()
 async function main() {
   const retryFailed = process.argv.includes("--retry-failed") || process.argv.includes("--retryFailed")
   const rematchReview = process.argv.includes("--rematch-review") || process.argv.includes("--rematchReview")
+  const reextractIncomplete =
+    process.argv.includes("--reextract-incomplete") || process.argv.includes("--reextractIncomplete")
   try {
     if (rematchReview) {
       console.error("[contract_extract_etl] rematching needs_review jobs (reuse extracted JSON)…")
@@ -32,12 +36,19 @@ async function main() {
       console.log(JSON.stringify({ ok: true, rematch: true, ...result }))
       process.exit(0)
     }
+    if (reextractIncomplete) {
+      console.error("[contract_extract_etl] requeueing incomplete/failed contract extract jobs…")
+      const queued = await requeueIncompleteContractExtractJobs()
+      console.error(
+        `[contract_extract_etl] queued=${queued.queued} from_materials=${queued.fromMaterials}`,
+      )
+    }
     console.error(
-      `[contract_extract_etl] draining extract jobs${retryFailed ? " (including failed retries)" : ""}…`,
+      `[contract_extract_etl] draining extract jobs${retryFailed ? " (including failed retries)" : ""}${reextractIncomplete ? " (after incomplete requeue)" : ""}…`,
     )
     const result = await processContractExtractQueue({
       retryFailed,
-      maxJobs: 200,
+      maxJobs: reextractIncomplete ? 400 : 200,
       maxMs: 50 * 60 * 1000,
       yieldToUserTraffic: false,
     })
@@ -45,7 +56,7 @@ async function main() {
       `[contract_extract_etl] done: processed=${result.processed} applied=${result.applied} ` +
         `needs_review=${result.needsReview} failed=${result.failed} remaining=${result.remaining}`,
     )
-    console.log(JSON.stringify({ ok: true, ...result }))
+    console.log(JSON.stringify({ ok: true, reextractIncomplete, ...result }))
     process.exit(0)
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)

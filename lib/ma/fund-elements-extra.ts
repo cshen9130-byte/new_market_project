@@ -66,15 +66,23 @@ export function parseFeePayFormulaConfig(value: unknown): FeePayFormulaConfig | 
   }
 }
 
+function formatGradientTiers(gradients: PerfFeeGradient[]): string {
+  return gradients
+    .map((g) => {
+      if (g.toPct) return `${g.fromPct}%≤年化收益<${g.toPct}% * 计提比例${g.ratePct}%`
+      return `${g.fromPct}%≤年化收益 * 计提比例${g.ratePct}%`
+    })
+    .join("；")
+}
+
 export function formatFeePayFormula(config: FeePayFormulaConfig | null | undefined): string | null {
   if (!config?.mode) return null
   if (config.mode === "none") return "无"
   if (config.mode === "annual_gradient" && config.gradients?.length) {
-    const tiers = config.gradients.map((g) => {
-      if (g.toPct) return `${g.fromPct}%≤年化收益<${g.toPct}% * 计提比例${g.ratePct}%`
-      return `${g.fromPct}%≤年化收益 * 计提比例${g.ratePct}%`
-    })
-    return `按年化收益梯度计提：${tiers.join("；")}`
+    return `按年化收益梯度计提：${formatGradientTiers(config.gradients)}`
+  }
+  if (config.mode === "excess_gradient" && config.gradients?.length) {
+    return `按超额年化收益梯度计提：${formatGradientTiers(config.gradients)}`
   }
   return PERF_FEE_LABELS[config.mode] ?? config.mode
 }
