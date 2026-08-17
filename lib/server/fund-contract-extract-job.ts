@@ -224,6 +224,9 @@ async function processOneJob(
           buffer,
           fileName: job.original_filename,
         })
+    if (!result.extracted) {
+      throw new Error("要素提取结果为空")
+    }
     const extracted = sanitizeExtractedForDocument(job.original_filename, result.extracted)
     const match = pickHighConfidenceFundMatch(extracted, result.matched_funds, {
       fileName: job.original_filename,
