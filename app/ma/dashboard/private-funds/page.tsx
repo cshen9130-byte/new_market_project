@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSPr
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
 import Link from "next/link"
+import dynamic from "next/dynamic"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical, SlidersHorizontal, UserRound } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
@@ -14,27 +15,8 @@ import { ManagerSearchInput, ProductKeywordSearchInput } from "@/components/ma/p
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { CopyableInlineText, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { DueDiligenceCalendarView } from "./components/DueDiligenceCalendarView"
-import { DueDiligenceTableView } from "./components/DueDiligenceTableView"
-import { DueDiligenceReportView } from "./components/DueDiligenceReportView"
-import { InvestmentNotesView } from "./components/InvestmentNotesView"
-import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
-import { InvestmentFundCompareView } from "./components/InvestmentFundCompareView"
-import { InvestmentDirectProductsView } from "./components/InvestmentDirectProductsView"
-import { InvestmentDirectPortfoliosView } from "./components/InvestmentDirectPortfoliosView"
-import { CustomFundsView } from "./components/CustomFundsView"
-import { CustomIndicesView } from "./components/CustomIndicesView"
-import { OperationsLedgerView } from "./components/OperationsLedgerView"
-import { OperationsElementExtractView } from "./components/OperationsElementExtractView"
-import { StrategyObservationView } from "./components/StrategyObservationView"
-import { PeIndexView } from "./components/PeIndexView"
-import { PeIndustryView } from "./components/PeIndustryView"
-import { FuturesStyleView } from "./components/FuturesStyleView"
-import { EquityStyleView } from "./components/EquityStyleView"
-import { ReportsManagementView } from "./components/ReportsManagementView"
-import { ReportTemplateManagementView } from "./components/ReportTemplateManagementView"
-import { InstructionsSection } from "./components/InstructionsSection"
 import { DEFAULT_INSTRUCTION_SIDE, INSTRUCTION_SIDE_ITEMS } from "./components/instructions-nav"
+import { InvestmentNotesView } from "./components/InvestmentNotesView"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -63,6 +45,64 @@ import {
 import { ProductElementsDialogContent } from "./components/ProductElementsDialogContent"
 import { ProductFieldConfigDialog } from "./components/ProductFieldConfigDialog"
 import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./components/product-field-config-table"
+
+const DueDiligenceCalendarView = dynamic(() =>
+  import("./components/DueDiligenceCalendarView").then((m) => ({ default: m.DueDiligenceCalendarView })),
+)
+const DueDiligenceTableView = dynamic(() =>
+  import("./components/DueDiligenceTableView").then((m) => ({ default: m.DueDiligenceTableView })),
+)
+const DueDiligenceReportView = dynamic(() =>
+  import("./components/DueDiligenceReportView").then((m) => ({ default: m.DueDiligenceReportView })),
+)
+const InvestmentOverviewView = dynamic(() =>
+  import("./components/InvestmentOverviewView").then((m) => ({ default: m.InvestmentOverviewView })),
+)
+const InvestmentFundCompareView = dynamic(() =>
+  import("./components/InvestmentFundCompareView").then((m) => ({ default: m.InvestmentFundCompareView })),
+)
+const InvestmentDirectProductsView = dynamic(() =>
+  import("./components/InvestmentDirectProductsView").then((m) => ({ default: m.InvestmentDirectProductsView })),
+)
+const InvestmentDirectPortfoliosView = dynamic(() =>
+  import("./components/InvestmentDirectPortfoliosView").then((m) => ({ default: m.InvestmentDirectPortfoliosView })),
+)
+const CustomFundsView = dynamic(() =>
+  import("./components/CustomFundsView").then((m) => ({ default: m.CustomFundsView })),
+)
+const CustomIndicesView = dynamic(() =>
+  import("./components/CustomIndicesView").then((m) => ({ default: m.CustomIndicesView })),
+)
+const OperationsLedgerView = dynamic(() =>
+  import("./components/OperationsLedgerView").then((m) => ({ default: m.OperationsLedgerView })),
+)
+const OperationsElementExtractView = dynamic(() =>
+  import("./components/OperationsElementExtractView").then((m) => ({ default: m.OperationsElementExtractView })),
+)
+const StrategyObservationView = dynamic(() =>
+  import("./components/StrategyObservationView").then((m) => ({ default: m.StrategyObservationView })),
+)
+const PeIndexView = dynamic(() =>
+  import("./components/PeIndexView").then((m) => ({ default: m.PeIndexView })),
+)
+const PeIndustryView = dynamic(() =>
+  import("./components/PeIndustryView").then((m) => ({ default: m.PeIndustryView })),
+)
+const FuturesStyleView = dynamic(() =>
+  import("./components/FuturesStyleView").then((m) => ({ default: m.FuturesStyleView })),
+)
+const EquityStyleView = dynamic(() =>
+  import("./components/EquityStyleView").then((m) => ({ default: m.EquityStyleView })),
+)
+const ReportsManagementView = dynamic(() =>
+  import("./components/ReportsManagementView").then((m) => ({ default: m.ReportsManagementView })),
+)
+const ReportTemplateManagementView = dynamic(() =>
+  import("./components/ReportTemplateManagementView").then((m) => ({ default: m.ReportTemplateManagementView })),
+)
+const InstructionsSection = dynamic(() =>
+  import("./components/InstructionsSection").then((m) => ({ default: m.InstructionsSection })),
+)
 
 /** Asia/Shanghai calendar date YYYY-MM-DD (not UTC — avoids midnight false "historical" cutoffs). */
 function shanghaiTodayIsoDateClient(): string {

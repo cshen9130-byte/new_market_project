@@ -21,6 +21,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
+  getInvestmentNote,
   investmentNoteDeepLink,
   listInvestmentNotesLinkedToProduct,
   type ProductLinkedInvestmentNote,
@@ -165,6 +166,24 @@ export function FundMaterialsPanel({
       cancelled = true
     }
   }, [beian_hao, product_name])
+
+  useEffect(() => {
+    if (!previewNote?.contentPending) return
+    const id = previewNote.id
+    const scope = previewNote.scope
+    let cancelled = false
+    void getInvestmentNote(id).then((full) => {
+      if (cancelled || !full) return
+      setPreviewNote((prev) =>
+        prev && prev.id === id
+          ? { ...prev, ...full, scope, contentPending: false }
+          : prev,
+      )
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [previewNote])
 
   useEffect(() => {
     if (!materialIdParam || loading || rows.length === 0) return

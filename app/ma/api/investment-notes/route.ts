@@ -4,6 +4,7 @@ import {
   backfillTeamNotesToKnowledgeBase,
   createServerInvestmentNoteWithKbSync,
   deleteServerInvestmentNoteWithKbSync,
+  getServerInvestmentNote,
   listServerInvestmentNotes,
   updateServerInvestmentNoteWithKbSync,
 } from "@/lib/server/investment-notes"
@@ -24,7 +25,17 @@ export async function GET(req: Request) {
     }
 
     const { searchParams } = new URL(req.url)
+    const id = String(searchParams.get("id") || "").trim()
+    if (id) {
+      const note = getServerInvestmentNote(id, user.id)
+      if (!note) {
+        return NextResponse.json({ ok: false, error: "笔记不存在" }, { status: 404 })
+      }
+      return NextResponse.json({ ok: true, note })
+    }
+
     const scope = searchParams.get("scope") === "mine" ? "mine" : "team"
+    const hydrateId = String(searchParams.get("hydrateId") || "").trim()
 
     // Lazy backfill in background so listing notes stays fast
     if (scope === "team") {
@@ -37,7 +48,9 @@ export async function GET(req: Request) {
       })
     }
 
-    const notes = listServerInvestmentNotes(scope, user.id)
+    const notes = listServerInvestmentNotes(scope, user.id, {
+      hydrateId: hydrateId || undefined,
+    })
     return NextResponse.json({ ok: true, notes })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)

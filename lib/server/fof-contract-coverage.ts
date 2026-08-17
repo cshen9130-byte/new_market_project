@@ -1,12 +1,15 @@
 import { query } from "@/lib/db"
+import { ensureElementExtractJobsTable } from "@/lib/server/fund-element-extract-jobs"
 import { ensureFundContractMaterialsTable } from "@/lib/server/fund-contract-materials"
 import {
   sqlExcludeFofUnderlyingProduct,
   sqlFofUnderlyingFundClassFilter,
 } from "@/lib/server/fund-holding-code"
+import { fundDisplayNamesMatch, shareClassProductNamesMatch } from "@/lib/server/fund-name-match"
 import {
   ensureFofOverviewListCachePopulated,
 } from "@/lib/server/fof-overview-list-cache-pg"
+import { beianFamilyKey } from "@/lib/server/share-class-product"
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
 export type FofContractCoverageFilter =
@@ -38,8 +41,78 @@ export type FofContractCoverageResult = {
   total: number
 }
 
-async function ensureContractTable(): Promise<void> {
-  await ensureFundContractMaterialsTable()
+type ContractSource = {
+  familyKey: string | null
+  name: string
+}
+
+function nameCoversFofHolding(
+  sourceName: string | null | undefined,
+  productName: string,
+  shortName: string | null,
+): boolean {
+  const src = (sourceName ?? "").trim()
+  if (!src) return false
+  const srcIsParent = !/[ABC]类/u.test(src)
+  const targets = [productName, shortName].filter((value): value is string => Boolean(value?.trim()))
+  for (const target of targets) {
+    if (srcIsParent) {
+      const strippedSrc = src.replace(/[ABC]类/gu, "")
+      const strippedTarget = target.replace(/[ABC]类/gu, "")
+      if (fundDisplayNamesMatch(strippedSrc, strippedTarget)) return true
+      continue
+    }
+    if (
+      shareClassProductNamesMatch(src, target)
+      && fundDisplayNamesMatch(src, target)
+    ) return true
+  }
+  return false
+}
+
+function contractCoversRow(row: FofContractCoverageRow, sources: ContractSource[]): boolean {
+  const rowKey = beianFamilyKey(row.beian_hao)
+  for (const source of sources) {
+    if (rowKey && source.familyKey && rowKey === source.familyKey) return true
+    if (nameCoversFofHolding(source.name, row.product_name, row.short_name)) return true
+  }
+  return false
+}
+
+function rowMatchesFilter(row: FofContractCoverageRow, filter: FofContractCoverageFilter): boolean {
+  if (filter === "missing_contract") return !row.missing_beian && !row.has_contract
+  if (filter === "has_contract") return row.has_contract
+  if (filter === "missing_beian") return row.missing_beian
+  if (filter === "missing_elements") return !row.has_elements
+  return true
+}
+
+async function loadContractSources(): Promise<ContractSource[]> {
+  const [materials, jobs] = await Promise.all([
+    query<{ beian_hao: string; title: string }>(
+      `SELECT beian_hao, COALESCE(title, '') AS title
+       FROM ops_fund_contract_materials`,
+    ),
+    query<{ beian_hao: string | null; product_name: string | null }>(
+      `SELECT beian_hao, product_name
+       FROM ops_element_extract_jobs
+       WHERE status = 'applied'`,
+    ),
+  ])
+  const sources: ContractSource[] = []
+  for (const row of materials) {
+    sources.push({
+      familyKey: beianFamilyKey(row.beian_hao),
+      name: row.title,
+    })
+  }
+  for (const row of jobs) {
+    sources.push({
+      familyKey: beianFamilyKey(row.beian_hao),
+      name: row.product_name ?? "",
+    })
+  }
+  return sources
 }
 
 export async function loadFofContractCoverage(input?: {
@@ -50,7 +123,10 @@ export async function loadFofContractCoverage(input?: {
   offset?: number
 }): Promise<FofContractCoverageResult> {
   await ensureFofOverviewListCachePopulated()
-  await ensureContractTable()
+  await Promise.all([
+    ensureFundContractMaterialsTable(),
+    ensureElementExtractJobsTable(),
+  ])
 
   const filter = input?.filter ?? "all"
   const q = input?.q?.trim() ?? ""
@@ -77,72 +153,7 @@ export async function loadFofContractCoverage(input?: {
 
   const where = conditions.join(" AND ")
   const dedupeKey = `COALESCE(UPPER(BTRIM(cache.beian_hao)), 'id:' || f.id::text)`
-  const baseSql = `
-    SELECT DISTINCT ON (${dedupeKey})
-      f.id::text AS id,
-      f.product_name,
-      COALESCE(cache.short_name, f.product_name) AS short_name,
-      NULLIF(BTRIM(cache.beian_hao), '') AS beian_hao,
-      (NULLIF(BTRIM(cache.beian_hao), '') IS NULL) AS missing_beian,
-      EXISTS (
-        SELECT 1 FROM ops_fund_contract_materials m
-        WHERE NULLIF(BTRIM(cache.beian_hao), '') IS NOT NULL
-          AND UPPER(BTRIM(m.beian_hao)) = UPPER(BTRIM(cache.beian_hao))
-      ) AS has_contract,
-      EXISTS (
-        SELECT 1 FROM basicinfo_bfl_track t
-        WHERE NULLIF(BTRIM(cache.beian_hao), '') IS NOT NULL
-          AND (
-            UPPER(BTRIM(t.register_number)) = UPPER(BTRIM(cache.beian_hao))
-            OR UPPER(BTRIM(t.record_key)) = UPPER(BTRIM(cache.beian_hao))
-          )
-          AND (
-            NULLIF(BTRIM(COALESCE(t.open_day, '')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(t.fee_purchase, '')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(t.fee_redeem, '')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(t.mandator_name, '')), '') IS NOT NULL
-            OR t.fee_manage_rate IS NOT NULL
-          )
-      ) AS has_elements
-    FROM fof_underlying_summary f
-    LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
-    WHERE ${where}
-    ORDER BY ${dedupeKey},
-      CASE WHEN f.product_name LIKE '场外%' THEN 1 ELSE 0 END,
-      length(f.product_name) ASC,
-      f.id
-  `
-
-  const countRows = await query<{
-    total: string
-    has_contract: string
-    missing_contract: string
-    missing_beian: string
-    missing_elements: string
-  }>(
-    `SELECT
-       COUNT(*)::text AS total,
-       COUNT(*) FILTER (WHERE cov.has_contract)::text AS has_contract,
-       COUNT(*) FILTER (WHERE NOT cov.missing_beian AND NOT cov.has_contract)::text AS missing_contract,
-       COUNT(*) FILTER (WHERE cov.missing_beian)::text AS missing_beian,
-       COUNT(*) FILTER (WHERE NOT cov.has_elements)::text AS missing_elements
-     FROM (${baseSql}) cov`,
-    params,
-  )
-
-  const filterClause =
-    filter === "missing_contract"
-      ? "AND NOT cov.missing_beian AND NOT cov.has_contract"
-      : filter === "has_contract"
-        ? "AND cov.has_contract"
-        : filter === "missing_beian"
-          ? "AND cov.missing_beian"
-          : filter === "missing_elements"
-            ? "AND NOT cov.has_elements"
-            : ""
-
-  const listParams = [...params, limit, offset]
-  const rows = await query<{
+  const rawRows = await query<{
     id: string
     product_name: string
     short_name: string | null
@@ -151,52 +162,75 @@ export async function loadFofContractCoverage(input?: {
     has_contract: boolean
     has_elements: boolean
   }>(
-    `SELECT
-       cov.id,
-       cov.product_name,
-       cov.short_name,
-       cov.beian_hao,
-       cov.missing_beian,
-       cov.has_contract,
-       cov.has_elements
-     FROM (${baseSql}) cov
-     WHERE TRUE ${filterClause}
-     ORDER BY cov.has_contract ASC, cov.missing_beian DESC, cov.product_name ASC
-     LIMIT $${i} OFFSET $${i + 1}`,
-    listParams,
+    `SELECT DISTINCT ON (${dedupeKey})
+       f.id::text AS id,
+       f.product_name,
+       COALESCE(cache.short_name, f.product_name) AS short_name,
+       NULLIF(BTRIM(cache.beian_hao), '') AS beian_hao,
+       (NULLIF(BTRIM(cache.beian_hao), '') IS NULL) AS missing_beian,
+       EXISTS (
+         SELECT 1 FROM ops_fund_contract_materials m
+         WHERE NULLIF(BTRIM(cache.beian_hao), '') IS NOT NULL
+           AND UPPER(BTRIM(m.beian_hao)) = UPPER(BTRIM(cache.beian_hao))
+       ) AS has_contract,
+       EXISTS (
+         SELECT 1 FROM basicinfo_bfl_track t
+         WHERE NULLIF(BTRIM(cache.beian_hao), '') IS NOT NULL
+           AND (
+             UPPER(BTRIM(t.register_number)) = UPPER(BTRIM(cache.beian_hao))
+             OR UPPER(BTRIM(t.record_key)) = UPPER(BTRIM(cache.beian_hao))
+           )
+           AND (
+             NULLIF(BTRIM(COALESCE(t.open_day, '')), '') IS NOT NULL
+             OR NULLIF(BTRIM(COALESCE(t.fee_purchase, '')), '') IS NOT NULL
+             OR NULLIF(BTRIM(COALESCE(t.fee_redeem, '')), '') IS NOT NULL
+             OR NULLIF(BTRIM(COALESCE(t.mandator_name, '')), '') IS NOT NULL
+             OR t.fee_manage_rate IS NOT NULL
+           )
+       ) AS has_elements
+     FROM fof_underlying_summary f
+     LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
+     WHERE ${where}
+     ORDER BY ${dedupeKey},
+       CASE WHEN f.product_name LIKE '场外%' THEN 1 ELSE 0 END,
+       length(f.product_name) ASC,
+       f.id
+     LIMIT $${i}`,
+    [...params, 500],
   )
 
-  const filteredCount = await query<{ n: string }>(
-    `SELECT COUNT(*)::text AS n
-     FROM (${baseSql}) cov
-     WHERE TRUE ${filterClause}`,
-    params,
-  )
+  const sources = await loadContractSources()
+  const allRows: FofContractCoverageRow[] = rawRows.map((r) => {
+    const product_name = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
+    const short_name = r.short_name
+      ? (stripValuationSubjectPathPrefix(r.short_name) || r.short_name)
+      : null
+    const row: FofContractCoverageRow = {
+      id: r.id,
+      product_name,
+      beian_hao: r.beian_hao,
+      short_name,
+      has_contract: Boolean(r.has_contract),
+      has_elements: Boolean(r.has_elements),
+      missing_beian: Boolean(r.missing_beian),
+    }
+    if (!row.has_contract && contractCoversRow(row, sources)) {
+      row.has_contract = true
+    }
+    return row
+  })
 
-  const c = countRows[0]
+  const counts = {
+    total: allRows.length,
+    has_contract: allRows.filter((row) => row.has_contract).length,
+    missing_contract: allRows.filter((row) => !row.missing_beian && !row.has_contract).length,
+    missing_beian: allRows.filter((row) => row.missing_beian).length,
+    missing_elements: allRows.filter((row) => !row.has_elements).length,
+  }
+  const filtered = allRows.filter((row) => rowMatchesFilter(row, filter))
   return {
-    counts: {
-      total: parseInt(c?.total || "0", 10),
-      has_contract: parseInt(c?.has_contract || "0", 10),
-      missing_contract: parseInt(c?.missing_contract || "0", 10),
-      missing_beian: parseInt(c?.missing_beian || "0", 10),
-      missing_elements: parseInt(c?.missing_elements || "0", 10),
-    },
-    rows: rows.map((r) => {
-      const product_name = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
-      const short_name = r.short_name
-        ? (stripValuationSubjectPathPrefix(r.short_name) || r.short_name)
-        : null
-      return {
-        id: r.id,
-        product_name,
-        beian_hao: r.beian_hao,
-        short_name,
-        has_contract: Boolean(r.has_contract),
-        has_elements: Boolean(r.has_elements),
-        missing_beian: Boolean(r.missing_beian),
-      }
-    }),
-    total: parseInt(filteredCount[0]?.n || "0", 10),
+    counts,
+    rows: filtered.slice(offset, offset + limit),
+    total: filtered.length,
   }
 }

@@ -204,6 +204,28 @@ function statusClass(status: ExtractJobStatus) {
   return "bg-muted/40 text-muted-foreground border-border"
 }
 
+function isAbortError(err: unknown) {
+  return err instanceof Error && err.name === "AbortError"
+}
+
+function rowMatchesQuery(row: CoverageRow, q: string) {
+  if (!q) return true
+  const needle = q.toLowerCase()
+  return (
+    row.product_name.toLowerCase().includes(needle) ||
+    (row.beian_hao || "").toLowerCase().includes(needle) ||
+    (row.short_name || "").toLowerCase().includes(needle)
+  )
+}
+
+function rowMatchesFilter(row: CoverageRow, filter: CoverageFilter) {
+  if (filter === "missing_contract") return !row.missing_beian && !row.has_contract
+  if (filter === "has_contract") return row.has_contract
+  if (filter === "missing_beian") return row.missing_beian
+  if (filter === "missing_elements") return !row.has_elements
+  return true
+}
+
 function userHeaders(): HeadersInit {
   try {
     const raw = localStorage.getItem("currentUser")
@@ -276,15 +298,14 @@ export function OperationsElementExtractBatchPanel() {
     }
   }, [jobStatus, jobQuery])
 
-  const loadCoverage = useCallback(async () => {
+  const loadCoverage = useCallback(async (signal?: AbortSignal) => {
     setCoverageLoading(true)
     try {
       const params = new URLSearchParams()
-      params.set("filter", coverageFilter)
+      params.set("filter", "all")
       params.set("holding", coverageHolding ? "1" : "0")
-      params.set("limit", "200")
-      if (coverageQuery.trim()) params.set("q", coverageQuery.trim())
-      const res = await fetch(`/ma/api/ops/fund-elements/fof-coverage?${params}`)
+      params.set("limit", "500")
+      const res = await fetch(`/ma/api/ops/fund-elements/fof-coverage?${params}`, { signal })
       const json = await res.json()
       if (!res.ok || json.error) throw new Error(json.error || "加载覆盖失败")
       setCoverage({
@@ -293,18 +314,44 @@ export function OperationsElementExtractBatchPanel() {
         total: Number(json.total) || 0,
       })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) return
       console.error(err)
     } finally {
-      setCoverageLoading(false)
+      if (!signal?.aborted) setCoverageLoading(false)
     }
-  }, [coverageFilter, coverageHolding, coverageQuery])
+  }, [coverageHolding])
+
+  const searchedRows = useMemo(() => {
+    const q = coverageQuery.trim()
+    const rows = coverage?.rows ?? []
+    if (!q) return rows
+    return rows.filter((row) => rowMatchesQuery(row, q))
+  }, [coverage?.rows, coverageQuery])
+
+  const counts = useMemo(() => {
+    if (!coverage) return undefined
+    return {
+      total: searchedRows.length,
+      has_contract: searchedRows.filter((row) => row.has_contract).length,
+      missing_contract: searchedRows.filter((row) => !row.missing_beian && !row.has_contract).length,
+      missing_beian: searchedRows.filter((row) => row.missing_beian).length,
+      missing_elements: searchedRows.filter((row) => !row.has_elements).length,
+    }
+  }, [coverage, searchedRows])
+
+  const visibleRows = useMemo(
+    () => searchedRows.filter((row) => rowMatchesFilter(row, coverageFilter)),
+    [searchedRows, coverageFilter],
+  )
 
   useEffect(() => {
     void loadJobs()
   }, [loadJobs])
 
   useEffect(() => {
-    void loadCoverage()
+    const ac = new AbortController()
+    void loadCoverage(ac.signal)
+    return () => ac.abort()
   }, [loadCoverage])
 
   useEffect(() => {
@@ -466,7 +513,6 @@ export function OperationsElementExtractBatchPanel() {
     }
   }
 
-  const counts = coverage?.counts
   const selectedCount = [...BASIC_KEYS, ...SUBSCRIPTION_KEYS].filter(
     (key) => selectedFields[key] && activeJob?.extracted_json?.[key]?.trim(),
   ).length
@@ -577,7 +623,7 @@ export function OperationsElementExtractBatchPanel() {
           placeholder="搜索产品名称 / 备案号"
           className="w-full max-w-md border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
         />
-        <div className="rounded-lg border max-h-64 overflow-y-auto">
+        <div className={`rounded-lg border max-h-64 overflow-y-auto ${coverageLoading && coverage ? "opacity-60" : ""}`}>
           {coverageLoading && !coverage ? (
             <div className="px-3 py-6 text-sm text-muted-foreground text-center">加载覆盖情况…</div>
           ) : (
@@ -591,7 +637,7 @@ export function OperationsElementExtractBatchPanel() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {(coverage?.rows ?? []).map((row, index) => (
+                {visibleRows.map((row, index) => (
                   <tr key={row.id || `${row.beian_hao || row.product_name}-${index}`}>
                     <td className="px-3 py-2">{row.short_name || row.product_name}</td>
                     <td className="px-3 py-2 text-muted-foreground">{row.beian_hao || "—"}</td>
@@ -613,7 +659,7 @@ export function OperationsElementExtractBatchPanel() {
                     </td>
                   </tr>
                 ))}
-                {!coverageLoading && (coverage?.rows.length ?? 0) === 0 && (
+                {!coverageLoading && visibleRows.length === 0 && (
                   <tr>
                     <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
                       当前筛选下没有产品
@@ -624,7 +670,7 @@ export function OperationsElementExtractBatchPanel() {
             </table>
           )}
         </div>
-        {coverage && coverage.total > (coverage.rows.length) && (
+        {coverage && coverage.total > coverage.rows.length && (
           <p className="text-xs text-muted-foreground">显示前 {coverage.rows.length} 条，共 {coverage.total} 条</p>
         )}
       </div>

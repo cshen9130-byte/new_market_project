@@ -250,6 +250,10 @@ export type InvestmentNote = {
   lastModifiedBy: string
   modifiedDate: string
   createdDate: string
+  /** List payloads omit HTML; fetch the note by id before editing or merging. */
+  contentPending?: boolean
+  /** True when stored body is non-empty (even if `content` was omitted). */
+  hasBody?: boolean
 }
 
 export const INVESTMENT_NOTE_INTEGRATION_TITLE_MARK = "路演整合"
@@ -260,9 +264,13 @@ export function isIntegratedInvestmentNote(note: Pick<InvestmentNote, "title" | 
   return (note.tags ?? []).includes("整合")
 }
 
-export function isEmptyDraftInvestmentNote(note: Pick<InvestmentNote, "title" | "content">): boolean {
+export function isEmptyDraftInvestmentNote(
+  note: Pick<InvestmentNote, "title" | "content"> & Pick<InvestmentNote, "contentPending" | "hasBody">,
+): boolean {
   const title = (note.title ?? "").trim()
-  return (!title || title === "无标题") && !(note.content ?? "").trim()
+  if (title && title !== "无标题") return false
+  if (note.contentPending) return !note.hasBody
+  return !(note.content ?? "").trim()
 }
 
 /** Flattened text used by the notes list search (title, body, products, roadshows). */
@@ -280,7 +288,9 @@ export function investmentNoteSearchText(note: InvestmentNote): string {
     item.representativeProduct,
     item.ddDate,
   ])
-  const strippedContent = (note.content ?? "").replace(/<[^>]+>/g, " ")
+  const strippedContent = note.contentPending
+    ? ""
+    : (note.content ?? "").replace(/<[^>]+>/g, " ")
   return [
     note.title,
     note.preview,
@@ -427,11 +437,107 @@ async function apiFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   return data as T
 }
 
-export async function listInvestmentNotes(scope: "team" | "mine"): Promise<InvestmentNote[]> {
+type NotesScope = "team" | "mine"
+
+const NOTES_SESSION_PREFIX = "investment-notes-list:v1:"
+const listMemCache = new Map<NotesScope, InvestmentNote[]>()
+const fullNoteCache = new Map<string, InvestmentNote>()
+
+function rememberFullNote(note: InvestmentNote) {
+  if (note.contentPending) return
+  fullNoteCache.set(note.id, note)
+}
+
+function mergeListedNotes(listed: InvestmentNote[]): InvestmentNote[] {
+  return listed.map((note) => {
+    if (!note.contentPending) {
+      rememberFullNote(note)
+      return note
+    }
+    const cached = fullNoteCache.get(note.id)
+    if (!cached || cached.contentPending) return note
+    return { ...note, ...cached, contentPending: false }
+  })
+}
+
+function persistNotesList(scope: NotesScope, notes: InvestmentNote[]) {
+  listMemCache.set(scope, notes)
+  if (typeof window === "undefined") return
+  try {
+    const lite = notes.map((note) =>
+      note.contentPending
+        ? note
+        : {
+            ...note,
+            content: "",
+            contentPending: true,
+            hasBody: note.hasBody ?? Boolean(note.content.trim()),
+          },
+    )
+    sessionStorage.setItem(`${NOTES_SESSION_PREFIX}${scope}`, JSON.stringify(lite))
+  } catch {
+    // quota / private mode
+  }
+}
+
+export function peekInvestmentNotesCache(scope: NotesScope): InvestmentNote[] | null {
+  const mem = listMemCache.get(scope)
+  if (mem) return mem
+  if (typeof window === "undefined") return null
+  try {
+    const raw = sessionStorage.getItem(`${NOTES_SESSION_PREFIX}${scope}`)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return null
+    const notes = mergeListedNotes(parsed as InvestmentNote[])
+    listMemCache.set(scope, notes)
+    return notes
+  } catch {
+    return null
+  }
+}
+
+export function invalidateInvestmentNotesCache(id?: string) {
+  if (id) fullNoteCache.delete(id)
+  else fullNoteCache.clear()
+  listMemCache.clear()
+  try {
+    sessionStorage.removeItem(`${NOTES_SESSION_PREFIX}team`)
+    sessionStorage.removeItem(`${NOTES_SESSION_PREFIX}mine`)
+  } catch {
+    // ignore
+  }
+}
+
+export async function listInvestmentNotes(
+  scope: NotesScope,
+  options?: { hydrateId?: string },
+): Promise<InvestmentNote[]> {
+  const params = new URLSearchParams({ scope })
+  if (options?.hydrateId) params.set("hydrateId", options.hydrateId)
   const data = await apiFetch<{ ok: true; notes: InvestmentNote[] }>(
-    `/ma/api/investment-notes?scope=${scope}`,
+    `/ma/api/investment-notes?${params}`,
   )
-  return data.notes
+  const notes = mergeListedNotes(data.notes)
+  persistNotesList(scope, notes)
+  return notes
+}
+
+export async function getInvestmentNote(id: string): Promise<InvestmentNote | null> {
+  const safeId = String(id || "").trim()
+  if (!safeId) return null
+  const cached = fullNoteCache.get(safeId)
+  if (cached && !cached.contentPending) return cached
+  try {
+    const data = await apiFetch<{ ok: true; note: InvestmentNote }>(
+      `/ma/api/investment-notes?id=${encodeURIComponent(safeId)}`,
+    )
+    const note = { ...data.note, contentPending: false, hasBody: Boolean(data.note.content?.trim()) }
+    rememberFullNote(note)
+    return note
+  } catch {
+    return null
+  }
 }
 
 export async function createInvestmentNote(
@@ -443,7 +549,10 @@ export async function createInvestmentNote(
     method: "POST",
     body: JSON.stringify(partial ?? {}),
   })
-  return data.note
+  invalidateInvestmentNotesCache()
+  const note = { ...data.note, contentPending: false, hasBody: Boolean(data.note.content?.trim()) }
+  rememberFullNote(note)
+  return note
 }
 
 export async function updateInvestmentNote(
@@ -468,13 +577,18 @@ export async function updateInvestmentNote(
     method: "PUT",
     body: JSON.stringify({ id, ...patch }),
   })
-  return data.note
+  invalidateInvestmentNotesCache(id)
+  if (!data.note) return null
+  const note = { ...data.note, contentPending: false, hasBody: Boolean(data.note.content?.trim()) }
+  rememberFullNote(note)
+  return note
 }
 
 export async function deleteInvestmentNote(id: string): Promise<void> {
   await apiFetch<{ ok: true }>(`/ma/api/investment-notes?id=${encodeURIComponent(id)}`, {
     method: "DELETE",
   })
+  invalidateInvestmentNotesCache(id)
 }
 
 export async function setInvestmentNoteTeamShared(

@@ -98,6 +98,41 @@ export function sqlCanonicalShareClassBeian(codeExpr: string): string {
   END`
 }
 
+/**
+ * Collapse parent / share-class / mistaken S-prefix codes to one family key
+ * so SALF51, ALF51 and ALF51B all match.
+ */
+export function beianFamilyKey(code: string | null | undefined): string | null {
+  const raw = String(code ?? "").trim().toUpperCase()
+  if (!raw) return null
+  let base = raw.replace(/[ABC]$/u, "")
+  if (base.startsWith("S") && base.length > 1) {
+    const withoutS = base.slice(1)
+    if (/^[A-Z][A-Z0-9]{4,7}$/u.test(withoutS)) {
+      base = withoutS
+    }
+  }
+  return base || null
+}
+
+/** SQL: same normalization as beianFamilyKey. */
+export function sqlBeianFamilyKey(codeExpr: string): string {
+  const base = `regexp_replace(UPPER(BTRIM(${codeExpr})), '[ABC]$', '')`
+  return `NULLIF(
+    CASE
+      WHEN ${base} ~ '^S[A-Z][A-Z0-9]{4,7}$' THEN substring(${base} from 2)
+      ELSE ${base}
+    END
+  , '')`
+}
+
+export function sqlBeianFamilyMatch(leftExpr: string, rightExpr: string): string {
+  return `(
+    ${sqlBeianFamilyKey(leftExpr)} IS NOT NULL
+    AND ${sqlBeianFamilyKey(leftExpr)} = ${sqlBeianFamilyKey(rightExpr)}
+  )`
+}
+
 async function loadMainProduct(beianHao: string): Promise<{
   beian_hao: string
   product_name: string

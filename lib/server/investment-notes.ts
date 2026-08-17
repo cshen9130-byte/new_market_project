@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs"
 import path from "path"
 import { getServerStoragePath } from "@/lib/server/storage"
 import {
@@ -136,24 +136,57 @@ function normalizeRoadshowAssociations(value: unknown): InvestmentNoteRoadshowAs
   return result
 }
 
-function readAllNotes(): Array<InvestmentNote & { creatorId: string }> {
+type StoredNote = InvestmentNote & { creatorId: string }
+
+let notesFileCache: { mtimeMs: number; notes: StoredNote[] } | null = null
+
+function toPublicNote(note: StoredNote): InvestmentNote {
+  const { creatorId: _creatorId, ...result } = note
+  return result
+}
+
+function toLiteNote(note: InvestmentNote): InvestmentNote {
+  return {
+    ...note,
+    content: "",
+    contentPending: true,
+    hasBody: Boolean((note.content ?? "").trim()),
+  }
+}
+
+function readAllNotes(): StoredNote[] {
   ensureStorageDir()
   const file = storageFile()
-  if (!existsSync(file)) return []
+  if (!existsSync(file)) {
+    notesFileCache = null
+    return []
+  }
 
   try {
+    const mtimeMs = statSync(file).mtimeMs
+    if (notesFileCache && notesFileCache.mtimeMs === mtimeMs) {
+      return notesFileCache.notes
+    }
     const raw = readFileSync(file, "utf-8")
     const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.map(normalizeNote)
+    const notes = Array.isArray(parsed) ? parsed.map(normalizeNote) : []
+    notesFileCache = { mtimeMs, notes }
+    return notes
   } catch {
+    notesFileCache = null
     return []
   }
 }
 
-function writeAllNotes(notes: Array<InvestmentNote & { creatorId: string }>) {
+function writeAllNotes(notes: StoredNote[]) {
   ensureStorageDir()
-  writeFileSync(storageFile(), JSON.stringify(notes, null, 2), "utf-8")
+  const file = storageFile()
+  writeFileSync(file, JSON.stringify(notes), "utf-8")
+  try {
+    notesFileCache = { mtimeMs: statSync(file).mtimeMs, notes }
+  } catch {
+    notesFileCache = { mtimeMs: Date.now(), notes }
+  }
 }
 
 function isoDate(): string {
@@ -168,9 +201,24 @@ function canModifyNote(
   return note.creatorId === userId
 }
 
+export function getServerInvestmentNote(
+  id: string,
+  userId: string,
+): InvestmentNote | null {
+  const safeId = String(id || "").trim()
+  const safeUserId = String(userId || "").trim()
+  if (!safeId || !safeUserId) return null
+
+  const note = readAllNotes().find((n) => n.id === safeId)
+  if (!note) return null
+  if (!note.teamShared && note.creatorId !== safeUserId) return null
+  return { ...toPublicNote(note), contentPending: false, hasBody: Boolean(note.content.trim()) }
+}
+
 export function listServerInvestmentNotes(
   scope: "team" | "mine",
   userId: string,
+  options?: { hydrateId?: string; includeContent?: boolean },
 ): InvestmentNote[] {
   const safeUserId = String(userId || "").trim()
   if (!safeUserId) return []
@@ -181,7 +229,13 @@ export function listServerInvestmentNotes(
       ? notes.filter((n) => n.teamShared)
       : notes.filter((n) => n.creatorId === safeUserId)
 
-  return filtered.map(({ creatorId: _creatorId, ...note }) => note)
+  const publicNotes = filtered.map(toPublicNote)
+  if (options?.includeContent) return publicNotes
+
+  const hydrateId = String(options?.hydrateId || "").trim()
+  if (!hydrateId) return publicNotes.map(toLiteNote)
+
+  return publicNotes.map((note) => (note.id === hydrateId ? note : toLiteNote(note)))
 }
 
 function applyKbRelativePath(id: string, kbRelativePath: string | null) {

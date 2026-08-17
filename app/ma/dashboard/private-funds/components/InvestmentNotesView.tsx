@@ -49,6 +49,8 @@ import {
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
   listInvestmentNotes,
+  getInvestmentNote,
+  peekInvestmentNotesCache,
   noteMatchesKeyword,
   openInvestmentNoteMaterial,
   proofreadInvestmentNoteWithRoadshow,
@@ -89,7 +91,9 @@ function displayNoteTitle(title: string): string {
 }
 
 function isDraftNote(note: InvestmentNote): boolean {
-  return displayNoteTitle(note.title) === "无标题" && !note.content.trim()
+  return displayNoteTitle(note.title) === "无标题" && (
+    note.contentPending ? !note.hasBody : !note.content.trim()
+  )
 }
 
 function AnalysisChart() {
@@ -240,7 +244,9 @@ function NoteContentBody({
           <h1 className="mb-6 text-xl font-semibold text-zinc-800">{displayNoteTitle(note.title)}</h1>
         )}
         {isAnalysis && <AnalysisChart />}
-        {note.content.trim() ? (
+        {note.contentPending ? (
+          <div className="py-10 text-sm text-zinc-400">加载正文...</div>
+        ) : note.content.trim() ? (
           isRichHtmlContent(note.content) ? (
             <div
               className="investment-note-rich text-sm leading-7 text-zinc-700"
@@ -291,7 +297,10 @@ export function InvestmentNotesView() {
   const [activeTab, setActiveTab] = useState<NotesTab>(() =>
     deepLinkNoteId ? deepLinkScope : "team",
   )
-  const [notes, setNotes] = useState<InvestmentNote[]>([])
+  const initialScope: "team" | "mine" = deepLinkNoteId ? deepLinkScope : "team"
+  const [notes, setNotes] = useState<InvestmentNote[]>(
+    () => peekInvestmentNotesCache(initialScope) ?? [],
+  )
   const [selectedId, setSelectedId] = useState<string | null>(() => deepLinkNoteId || null)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -311,7 +320,7 @@ export function InvestmentNotesView() {
   const [linkedMaterials, setLinkedMaterials] = useState<InvestmentNoteMaterial[]>([])
   const [ddRowsById, setDdRowsById] = useState<Map<string, DueDiligenceTableRow>>(new Map())
   const [materialsIndex, setMaterialsIndex] = useState<DdMaterialsFolderIndex | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => peekInvestmentNotesCache(initialScope) == null)
   const [proofreading, setProofreading] = useState(false)
   const [integrating, setIntegrating] = useState(false)
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
@@ -327,11 +336,14 @@ export function InvestmentNotesView() {
   }, [deepLinkNoteId, deepLinkScope])
 
   const notesScope: "team" | "mine" = activeTab === "mine" ? "mine" : "team"
+  const selectedIdRef = useRef(selectedId)
+  selectedIdRef.current = selectedId
 
   const reloadNotes = useCallback(async () => {
     if (activeTab === "uploads") return
     try {
-      const items = await listInvestmentNotes(notesScope)
+      const hydrateId = pendingDeepLinkRef.current || selectedIdRef.current || undefined
+      const items = await listInvestmentNotes(notesScope, { hydrateId })
       setNotes(items)
       setSelectedId((prev) => {
         const pending = pendingDeepLinkRef.current
@@ -368,11 +380,17 @@ export function InvestmentNotesView() {
       setLoading(false)
       return
     }
-    setLoading(true)
+    const cached = peekInvestmentNotesCache(notesScope)
+    if (cached != null) {
+      setNotes(cached)
+      setLoading(false)
+    } else {
+      setNotes([])
+      setLoading(true)
+    }
     void reloadNotes()
     function onRefresh() {
       void reloadNotes()
-      void reloadLinkedMaterials(selectedId)
     }
     window.addEventListener("focus", onRefresh)
     document.addEventListener("visibilitychange", onRefresh)
@@ -382,7 +400,7 @@ export function InvestmentNotesView() {
       document.removeEventListener("visibilitychange", onRefresh)
       window.clearInterval(timer)
     }
-  }, [activeTab, reloadNotes, reloadLinkedMaterials, selectedId])
+  }, [activeTab, notesScope, reloadNotes])
 
   useEffect(() => {
     if (activeTab === "uploads") return
@@ -403,6 +421,21 @@ export function InvestmentNotesView() {
     () => notes.find((n) => n.id === selectedId) ?? filteredNotes.find((n) => n.id === selectedId) ?? null,
     [notes, filteredNotes, selectedId],
   )
+
+  useEffect(() => {
+    if (!selectedId) return
+    if (selectedNote && !selectedNote.contentPending) return
+    let cancelled = false
+    void getInvestmentNote(selectedId).then((full) => {
+      if (cancelled || !full) return
+      setNotes((prev) =>
+        prev.map((n) => (n.id === full.id ? { ...n, ...full, contentPending: false } : n)),
+      )
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedId, selectedNote])
 
   const roadshowRowIds = useMemo(
     () =>
@@ -615,8 +648,8 @@ export function InvestmentNotesView() {
       })
       return
     }
-    const sources = selectNotesForIntegration(filteredNotes)
-    if (sources.length < 2) {
+    const liteSources = selectNotesForIntegration(filteredNotes)
+    if (liteSources.length < 2) {
       toast({
         title: "无法整合",
         description: "当前搜索结果不足 2 条可整合笔记（空草稿和已整合笔记不会计入）",
@@ -625,18 +658,24 @@ export function InvestmentNotesView() {
       return
     }
 
-    const draft = buildIntegratedInvestmentNoteDraft(sources, q)
-    if (draft.content.length > MAX_INVESTMENT_NOTE_CONTENT_CHARS) {
-      toast({
-        title: "无法整合",
-        description: `合并后内容过长，请控制在 ${MAX_INVESTMENT_NOTE_CONTENT_CHARS.toLocaleString("zh-CN")} 字符以内（含格式代码，当前 ${draft.content.length.toLocaleString("zh-CN")}）`,
-        variant: "destructive",
-      })
-      return
-    }
-
     setIntegrating(true)
     try {
+      const sources = await Promise.all(
+        liteSources.map(async (note) => {
+          if (!note.contentPending) return note
+          return (await getInvestmentNote(note.id)) ?? note
+        }),
+      )
+      const draft = buildIntegratedInvestmentNoteDraft(sources, q)
+      if (draft.content.length > MAX_INVESTMENT_NOTE_CONTENT_CHARS) {
+        toast({
+          title: "无法整合",
+          description: `合并后内容过长，请控制在 ${MAX_INVESTMENT_NOTE_CONTENT_CHARS.toLocaleString("zh-CN")} 字符以内（含格式代码，当前 ${draft.content.length.toLocaleString("zh-CN")}）`,
+          variant: "destructive",
+        })
+        return
+      }
+
       const note = await createInvestmentNote({
         title: draft.title,
         content: draft.content,
@@ -665,11 +704,17 @@ export function InvestmentNotesView() {
     }
   }
 
-  function handleEdit() {
+  async function handleEdit() {
     if (!selectedNote) return
-    setDraftTitle(selectedNote.title)
-    setDraftContent(selectedNote.content)
-    setDraftAttachments(selectedNote.attachments)
+    let note = selectedNote
+    if (note.contentPending) {
+      note = (await getInvestmentNote(note.id)) ?? note
+      if (note.contentPending) return
+      setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, ...note, contentPending: false } : n)))
+    }
+    setDraftTitle(note.title)
+    setDraftContent(note.content)
+    setDraftAttachments(note.attachments)
     setEditing(true)
   }
 
@@ -946,7 +991,7 @@ export function InvestmentNotesView() {
             </div>
           </div>
           <div className="flex-1 overflow-auto">
-            {loading ? (
+            {loading && filteredNotes.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-zinc-400">加载中...</div>
             ) : filteredNotes.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-zinc-400">暂无笔记</div>
