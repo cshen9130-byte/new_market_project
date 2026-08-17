@@ -39,12 +39,39 @@ export function pdfParseLoadOptions(buffer: Buffer) {
   }
 }
 
-/** CID/Chinese PDFs need CMaps; without them pdf.js often returns only page markers. */
+function formatPdfTables(table: {
+  pages?: Array<{ tables?: string[][][] }>
+  mergedTables?: string[][][]
+}): string {
+  const grids = [
+    ...(table.pages ?? []).flatMap((page) => page.tables ?? []),
+    ...(table.mergedTables ?? []),
+  ]
+  const parts: string[] = []
+  for (const grid of grids) {
+    if (!grid?.length) continue
+    parts.push(
+      grid
+        .map((row) => row.map((cell) => String(cell ?? "").replace(/\s+/g, " ").trim()).join("\t"))
+        .join("\n"),
+    )
+  }
+  return parts.join("\n\n").trim()
+}
+
+/** CID/Chinese PDFs need CMaps; form/table PDFs often have no usable getText() output. */
 export async function readPdfTextWithCmaps(buffer: Buffer): Promise<string> {
   const parser = new PDFParse(pdfParseLoadOptions(buffer))
   try {
     const parsed = await parser.getText()
-    return String(parsed.text || "").replace(/\s+/g, " ").trim()
+    let tableText = ""
+    try {
+      tableText = formatPdfTables(await parser.getTable())
+    } catch {
+      tableText = ""
+    }
+    const body = String(parsed.text || "").replace(/\s+/g, " ").trim()
+    return [body, tableText].filter(Boolean).join("\n\n").trim()
   } finally {
     await parser.destroy().catch(() => undefined)
   }
