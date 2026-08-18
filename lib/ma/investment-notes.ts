@@ -58,6 +58,8 @@ export const ASSOCIATION_CATEGORY_SHORT: Record<string, string> = {
 }
 
 export function associationDisplayLabel(item: InvestmentNoteAssociation): string {
+  // 私募 is the default product type on this page; skip the redundant suffix.
+  if (item.category === "私募基金") return item.name
   const short = ASSOCIATION_CATEGORY_SHORT[item.category] ?? item.category
   return `${item.name}(${short})`
 }

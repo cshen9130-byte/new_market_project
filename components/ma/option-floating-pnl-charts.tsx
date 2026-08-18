@@ -4,10 +4,31 @@ import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
+type DirectionFilter = "买方" | "卖方"
+
 type OptionRow = {
   account: string
   contract: string
   floatingPnl: number
+  longLots?: number
+  shortLots?: number
+  buyPrice?: number
+  sellPrice?: number
+  todaySettle?: number
+  multiplier?: number
+  longFloatingPnl?: number
+  shortFloatingPnl?: number
+}
+
+function directionalPnl(r: OptionRow, dir: DirectionFilter): number | null {
+  if (dir === "买方") {
+    if ((r.longLots ?? 0) <= 0) return null
+    if (typeof r.longFloatingPnl === "number") return r.longFloatingPnl
+    return Math.round(((r.todaySettle ?? 0) - (r.buyPrice ?? 0)) * (r.longLots ?? 0) * (r.multiplier ?? 0))
+  }
+  if ((r.shortLots ?? 0) <= 0) return null
+  if (typeof r.shortFloatingPnl === "number") return r.shortFloatingPnl
+  return Math.round(((r.sellPrice ?? 0) - (r.todaySettle ?? 0)) * (r.shortLots ?? 0) * (r.multiplier ?? 0))
 }
 
 function buildPnlBarOption(
@@ -76,6 +97,7 @@ export default function OptionFloatingPnlCharts({
   const [rows, setRows] = useState<OptionRow[]>([])
   const [date, setDate] = useState("")
   const [loading, setLoading] = useState(true)
+  const [dirFilter, setDirFilter] = useState<DirectionFilter>("卖方")
 
   useEffect(() => {
     setLoading(true)
@@ -94,23 +116,27 @@ export default function OptionFloatingPnlCharts({
   const accountPnlBars = useMemo(() => {
     const map = new Map<string, number>()
     for (const r of rows) {
-      map.set(r.account, (map.get(r.account) ?? 0) + r.floatingPnl)
+      const pnl = directionalPnl(r, dirFilter)
+      if (pnl == null) continue
+      map.set(r.account, (map.get(r.account) ?? 0) + pnl)
     }
     return Array.from(map.entries())
       .map(([key, pnl]) => ({ key, pnl }))
       .sort((a, b) => b.pnl - a.pnl)
-  }, [rows])
+  }, [rows, dirFilter])
 
   const productPnlBars = useMemo(() => {
     const map = new Map<string, number>()
     for (const r of rows) {
+      const pnl = directionalPnl(r, dirFilter)
+      if (pnl == null) continue
       const prod = r.contract.match(/^[A-Za-z]+/)?.[0]?.toUpperCase() ?? "未知"
-      map.set(prod, (map.get(prod) ?? 0) + r.floatingPnl)
+      map.set(prod, (map.get(prod) ?? 0) + pnl)
     }
     return Array.from(map.entries())
       .map(([key, pnl]) => ({ key, pnl }))
       .sort((a, b) => b.pnl - a.pnl)
-  }, [rows])
+  }, [rows, dirFilter])
 
   const accountPnlTotal = useMemo(
     () => accountPnlBars.reduce((s, d) => s + d.pnl, 0),
@@ -135,13 +161,40 @@ export default function OptionFloatingPnlCharts({
 
   const fmt = (v: number) => v.toLocaleString("zh-CN")
 
+  const dirToggle = (
+    <div className="inline-flex items-center gap-1.5">
+      <span className="text-xs text-muted-foreground">方向</span>
+      <div className="inline-flex rounded border border-border overflow-hidden">
+        {(["买方", "卖方"] as const).map((d) => (
+          <button
+            key={d}
+            type="button"
+            onClick={() => setDirFilter(d)}
+            className={`px-2.5 py-0.5 text-xs transition-colors ${
+              dirFilter === d
+                ? "bg-[#1a3a5c] text-white font-medium"
+                : "bg-background text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            {d}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+
   return (
-    <div className={`flex gap-4 ${className}`}>
+    <div className={className}>
+      <div className="flex items-center justify-end mb-2">
+        {dirToggle}
+      </div>
+      <div className="flex gap-4">
       <Card className="w-1/2 min-w-0">
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="text-sm">
               账户期权浮动盈亏
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">{dirFilter}</span>
               {date && <span className="ml-2 text-xs font-normal text-muted-foreground">{date}</span>}
             </CardTitle>
             {!loading && accountPnlBars.length > 0 && (
@@ -172,6 +225,7 @@ export default function OptionFloatingPnlCharts({
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="text-sm">
               品种期权浮动盈亏
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">{dirFilter}</span>
               {date && <span className="ml-2 text-xs font-normal text-muted-foreground">{date}</span>}
             </CardTitle>
             {!loading && productPnlBars.length > 0 && (
@@ -196,6 +250,7 @@ export default function OptionFloatingPnlCharts({
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }

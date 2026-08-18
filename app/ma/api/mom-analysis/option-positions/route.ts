@@ -77,11 +77,16 @@ async function _GET() {
       }
 
       // Cost: long paid (+), short received (-)
-      const cost = Math.round((buyPrice * longLots - sellPrice * shortLots) * multiplier)
+      const longCost = Math.round(buyPrice * longLots * multiplier)
+      const shortCost = Math.round(-sellPrice * shortLots * multiplier)
+      const cost = longCost + shortCost
       // Market value: long positive, short negative
-      const marketValue = Math.round(longMv - shortMv)
-      // Floating P&L
-      const floatingPnl = Math.round(marketValue - cost)
+      const longMarketValue = Math.round(longMv)
+      const shortMarketValue = Math.round(-shortMv)
+      const marketValue = longMarketValue + shortMarketValue
+      const longFloatingPnl = longMarketValue - longCost
+      const shortFloatingPnl = shortMarketValue - shortCost
+      const floatingPnl = longFloatingPnl + shortFloatingPnl
 
       return {
         account:      r.account,
@@ -101,6 +106,8 @@ async function _GET() {
         cost,
         marketValue,
         floatingPnl,
+        longFloatingPnl,
+        shortFloatingPnl,
         optionType:   getOptionType(r.contract ?? ""),
       }
     })
