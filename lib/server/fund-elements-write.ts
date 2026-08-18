@@ -28,6 +28,7 @@ import {
   isWeakRiskLevel,
   isWeakShortFee,
   isWeakTemporaryOpen,
+  type ShareClassFeeOverrides,
 } from "@/lib/server/fund-contract-element-keywords"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode, listFundFamilyProducts } from "@/lib/server/share-class-product"
@@ -493,9 +494,25 @@ export function buildFillEmptyWriteBody(
   for (const key of WRITE_KEYS) {
     if (key === "register_number" || skip.has(key)) continue
     const next = textField(extracted, key)
-    if (!next) continue
     if (!currentNeedsFill(key, current)) continue
-    body[key] = next
+    if (next) {
+      body[key] = next
+      continue
+    }
+    const prev = current?.[key]
+    if (
+      (key === "fee_pay_formula" || key === "fee_manage" || key === "add_amount" || key === "fee_pay")
+      && typeof prev === "string"
+      && prev.trim().length > 80
+    ) {
+      body[key] = ""
+    } else if (
+      (key === "fee_trust" || key === "fee_admin_service")
+      && isWeakShortFee(typeof prev === "string" ? prev : null)
+      && hasText(typeof prev === "string" ? prev : null)
+    ) {
+      body[key] = ""
+    }
   }
   attachFormulaConfig(body, extracted, current, "fill-empty")
   return Object.keys(body).length > 1 ? body : null
@@ -511,8 +528,15 @@ export async function writeFillEmptyElementsAcrossShareClasses(
   beian_hao: string,
   product_name: string,
   extracted: ExtractedFundElements,
+  options?: { shareClassOverrides?: ShareClassFeeOverrides },
 ): Promise<string[]> {
-  return writeExtractedElementsAcrossShareClasses(beian_hao, product_name, extracted, "fill-empty")
+  return writeExtractedElementsAcrossShareClasses(
+    beian_hao,
+    product_name,
+    extracted,
+    "fill-empty",
+    options?.shareClassOverrides,
+  )
 }
 
 export async function writeOverwriteElementsAcrossShareClasses(
@@ -523,11 +547,57 @@ export async function writeOverwriteElementsAcrossShareClasses(
   return writeExtractedElementsAcrossShareClasses(beian_hao, product_name, extracted, "overwrite")
 }
 
+/** Return the A/B/C share class letter from a beian code, or null if not a share class. */
+function shareClassLetterFromBeian(beian: string): "A" | "B" | "C" | null {
+  const upper = (beian ?? "").trim().toUpperCase()
+  const last = upper.slice(-1)
+  if (last === "A" || last === "B" || last === "C") return last
+  return null
+}
+
+/**
+ * If the base fee_pay looks like a combined "A...;B..." multi-class string,
+ * extract the portion that belongs to `cls`.  Returns null if not applicable.
+ */
+function splitClassFeePay(feePay: string | null | undefined, cls: string): string | null {
+  if (!feePay) return null
+  const s = feePay.trim()
+  // Only act on values that look like multi-class combined strings (>= 2 class segments)
+  if (!/[;；][A-C](?:类|份额|份)/.test(s)) return null
+  const parts = s.split(/[;；]/)
+  if (parts.length < 2) return null
+  const clsPart = parts.find((p) => new RegExp(`^${cls}(?:类|份额|份)`).test(p.trim()))
+  return clsPart?.trim() ?? null
+}
+
+/** Merge class-specific fee overrides into the extracted object before writing. */
+function applyShareClassOverride(
+  extracted: ExtractedFundElements,
+  overrides: ShareClassFeeOverrides,
+  beian: string,
+): ExtractedFundElements {
+  const cls = shareClassLetterFromBeian(beian)
+  if (!cls) return extracted
+  const override = overrides[cls] ?? {}
+  // If no contract-text override for fee_pay, try to split from combined parent value
+  const fee_pay =
+    override.fee_pay ??
+    splitClassFeePay(typeof extracted.fee_pay === "string" ? extracted.fee_pay : null, cls)
+  if (!Object.keys(override).length && !fee_pay) return extracted
+  return {
+    ...extracted,
+    ...(override.fee_manage_rate !== undefined ? { fee_manage_rate: override.fee_manage_rate } : {}),
+    ...(override.fee_manage !== undefined ? { fee_manage: override.fee_manage } : {}),
+    ...(fee_pay !== undefined && fee_pay !== null ? { fee_pay } : {}),
+  }
+}
+
 async function writeExtractedElementsAcrossShareClasses(
   beian_hao: string,
   product_name: string,
   extracted: ExtractedFundElements,
   mode: "fill-empty" | "overwrite",
+  shareClassOverrides?: ShareClassFeeOverrides,
 ): Promise<string[]> {
   const family = await listFundFamilyProducts(beian_hao)
   const targets = family.length ? family : [{ beian_hao, product_name }]
@@ -540,16 +610,56 @@ async function writeExtractedElementsAcrossShareClasses(
       exactBeian: true,
     })
     const skipKeys: Array<keyof ExtractedFundElements> = isPrimary ? [] : ["fund_name"]
+    // Apply per-class overrides if provided
+    const effectiveExtracted = shareClassOverrides
+      ? applyShareClassOverride(extracted, shareClassOverrides, target.beian_hao)
+      : extracted
     const body = mode === "overwrite"
       ? buildOverwriteNonEmptyWriteBody(
           target.beian_hao,
-          mergeAmendmentIntoCurrent(extracted, current, skipKeys),
+          mergeAmendmentIntoCurrent(effectiveExtracted, current, skipKeys),
           skipKeys,
         )
-      : buildFillEmptyWriteBody(target.beian_hao, extracted, current, { skipKeys })
-    if (!body) continue
-    await writeFundElementsFromBody(body)
-    for (const key of appliedFieldKeys(body)) written.add(key)
+      : buildFillEmptyWriteBody(target.beian_hao, effectiveExtracted, current, { skipKeys })
+    if (body) {
+      await writeFundElementsFromBody(body)
+      for (const key of appliedFieldKeys(body)) written.add(key)
+    }
+
+    // Class-specific overrides are authoritative — write them even when current value is non-empty,
+    // provided they are more specific than the current value (not just null/empty).
+    if (shareClassOverrides && mode === "fill-empty") {
+      const cls = shareClassLetterFromBeian(target.beian_hao)
+      const override = cls ? shareClassOverrides[cls] : undefined
+      if (override || cls) {
+        const overrideBody: FundElementWriteBody = { beian_hao: target.beian_hao }
+        const cur = current ?? {}
+        // fee_manage_rate: write if override differs from current
+        if (
+          override?.fee_manage_rate &&
+          encodeManageRate(override.fee_manage_rate) !== encodeManageRate(String(cur.fee_manage_rate ?? ""))
+        ) {
+          overrideBody.fee_manage_rate = override.fee_manage_rate
+        }
+        // fee_manage: write if override is different from current (class-specific is more precise)
+        if (override?.fee_manage && override.fee_manage !== (cur.fee_manage ?? "")) {
+          overrideBody.fee_manage = override.fee_manage
+        }
+        // fee_pay: write class-specific or split-from-combined value if different/better
+        const splitPay = splitClassFeePay(
+          typeof extracted.fee_pay === "string" ? extracted.fee_pay : null,
+          cls ?? "",
+        )
+        const targetFeePay = override?.fee_pay ?? splitPay
+        if (targetFeePay && targetFeePay !== (cur.fee_pay ?? "")) {
+          overrideBody.fee_pay = targetFeePay
+        }
+        if (appliedFieldKeys(overrideBody).length) {
+          await writeFundElementsFromBody(overrideBody)
+          for (const key of appliedFieldKeys(overrideBody)) written.add(key)
+        }
+      }
+    }
   }
   return [...written]
 }

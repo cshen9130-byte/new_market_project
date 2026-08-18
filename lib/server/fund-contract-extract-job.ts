@@ -11,6 +11,7 @@ import {
   readFundContractText,
   softenWeakExtractedFields,
 } from "@/lib/server/fund-contract-element-extract"
+import { extractShareClassFeeOverrides } from "@/lib/server/fund-contract-element-keywords"
 import {
   claimNextElementExtractJob,
   countQueuedElementExtractJobs,
@@ -36,7 +37,7 @@ import {
   writeFundElementsAcrossShareClasses,
   writeOverwriteElementsAcrossShareClasses,
 } from "@/lib/server/fund-elements-write"
-import { ensureShareClassBeianProduct, listFundFamilyProducts } from "@/lib/server/share-class-product"
+import { beianFamilyKey, ensureShareClassBeianProduct, listFundFamilyProducts } from "@/lib/server/share-class-product"
 import {
   compareContractDocumentRecency,
   contractDocumentRecency,
@@ -69,6 +70,7 @@ export type ContractExtractJobStatus = {
 
 const JOB_KEY = "__contractExtract"
 const YIELD_POLL_MS = 3_000
+const execFileAsync = promisify(execFile)
 
 function extractedHasContent(
   extracted: ElementExtractJobRow["extracted_json"] | null | undefined,
@@ -353,40 +355,126 @@ function latestJobPerBeian(jobs: ElementExtractJobRow[]): ElementExtractJobRow[]
   return Array.from(latest.values())
 }
 
-const execFileAsync = promisify(execFile)
+function remoteStorageRoot(): string {
+  const jobsDir = process.env.CONTRACT_EXTRACT_REMOTE_JOBS_DIR?.trim()
+  if (jobsDir) return jobsDir.replace(/\/fund-elements\/jobs\/?$/, "")
+  return "/root/market_dashboard_storage"
+}
+
+async function sshCatRemoteFile(remotePath: string): Promise<Buffer> {
+  const host = process.env.CONTRACT_EXTRACT_SSH_HOST?.trim()
+  if (!host) throw new Error("未配置远程读取")
+  const keyPath = path.join(process.env.USERPROFILE ?? process.env.HOME ?? "", ".ssh", "id_ed25519_server")
+  const args = ["-o", "StrictHostKeyChecking=accept-new", host, `cat ${JSON.stringify(remotePath)}`]
+  if (fs.existsSync(keyPath)) args.unshift("-i", keyPath)
+  const { stdout } = await execFileAsync("ssh", args, {
+    encoding: "buffer",
+    maxBuffer: 25 * 1024 * 1024,
+    windowsHide: true,
+  })
+  if (!stdout?.length) throw new Error("远程文件为空")
+  return Buffer.from(stdout)
+}
+
+async function readBeianMaterialCorpus(beian: string, seenFilenames: Set<string>): Promise<string> {
+  const wanted = beian.trim()
+  if (!wanted) return ""
+  let rows: Array<{ id: number; beian_hao: string; original_filename: string; storage_filename: string }> = []
+  try {
+    rows = await query<{ original_filename: string; storage_filename: string; beian_hao: string; id: number }>(
+      `SELECT id, beian_hao, original_filename, storage_filename
+       FROM ops_fund_contract_materials
+       WHERE upper(btrim(beian_hao)) = upper(btrim($1))
+       ORDER BY
+         CASE
+           WHEN original_filename ~ '要素表|产品介绍|产品资料概要|风险揭示' THEN 0
+           ELSE 1
+         END,
+         id DESC`,
+      [wanted],
+    )
+  } catch {
+    return ""
+  }
+
+  const parts: string[] = []
+  for (const row of rows) {
+    const name = row.original_filename || ""
+    if (seenFilenames.has(name)) continue
+    seenFilenames.add(name)
+    try {
+      let buffer: Buffer | null = null
+      try {
+        const file = await readFundContractMaterialFile(row.id)
+        buffer = file?.buffer ?? null
+      } catch {
+        buffer = null
+      }
+      if (!buffer?.length) {
+        const safeName = path.posix.basename(row.storage_filename.replace(/\\/g, "/"))
+        if (!safeName || safeName !== row.storage_filename) continue
+        buffer = await sshCatRemoteFile(
+          `${remoteStorageRoot()}/fund-contracts/${row.beian_hao}/${safeName}`,
+        )
+      }
+      const text = await readFundContractText(buffer, name)
+      if (text.trim()) parts.push(text)
+    } catch {
+      // Skip unreadable 要素表 / 产品介绍; contract text is still used.
+    }
+  }
+  return parts.join("\n")
+}
+
+async function readBeianContractCorpus(beian: string, jobs: ElementExtractJobRow[]): Promise<string> {
+  const wanted = beian.trim().toUpperCase()
+  const parts: string[] = []
+  const seenFilenames = new Set<string>()
+  for (const job of jobs) {
+    if ((job.beian_hao ?? "").trim().toUpperCase() !== wanted) continue
+    try {
+      const buffer = await readStoredContractBuffer(job)
+      parts.push(await readFundContractText(buffer, job.original_filename))
+      if (job.original_filename) seenFilenames.add(job.original_filename)
+    } catch {
+      // Skip unreadable siblings; the latest job is still tried below via other files.
+    }
+  }
+  const extras = await readBeianMaterialCorpus(beian, seenFilenames)
+  if (extras.trim()) parts.push(extras)
+  return parts.join("\n")
+}
 
 export async function readStoredContractBuffer(job: ElementExtractJobRow): Promise<Buffer> {
   try {
     return await readElementExtractJobFile(job)
   } catch {
-    const host = process.env.CONTRACT_EXTRACT_SSH_HOST?.trim()
     const remoteDir = process.env.CONTRACT_EXTRACT_REMOTE_JOBS_DIR?.trim()
-    if (!host || !remoteDir) throw new Error("合同文件不在本地，且未配置远程读取")
+    if (!remoteDir) throw new Error("合同文件不在本地，且未配置远程读取")
     const safeName = path.basename(job.storage_filename)
     if (!safeName || safeName !== job.storage_filename) {
       throw new Error("合同存储文件名无效")
     }
-    const remotePath = `${remoteDir.replace(/\/+$/, "")}/${safeName}`
-    const keyPath = path.join(process.env.USERPROFILE ?? process.env.HOME ?? "", ".ssh", "id_ed25519_server")
-    const args = ["-o", "StrictHostKeyChecking=accept-new", host, `cat ${JSON.stringify(remotePath)}`]
-    if (fs.existsSync(keyPath)) args.unshift("-i", keyPath)
-    const { stdout } = await execFileAsync("ssh", args, {
-      encoding: "buffer",
-      maxBuffer: 25 * 1024 * 1024,
-      windowsHide: true,
-    })
-    if (!stdout?.length) throw new Error("远程合同文件为空")
-    return Buffer.from(stdout)
+    return sshCatRemoteFile(`${remoteDir.replace(/\/+$/, "")}/${safeName}`)
   }
 }
 
 /** Re-read stored contracts and fill empty/weak 要素 from keyword windows (no LLM). */
 export async function backfillKeywordFieldsFromStoredContracts(options?: {
   maxJobs?: number
+  beianHao?: string
 }): Promise<KeywordBackfillResult> {
   const maxJobs = Math.max(1, options?.maxJobs ?? 2000)
+  const want = (options?.beianHao ?? "").trim().toUpperCase()
   const result: KeywordBackfillResult = { processed: 0, filled: 0, skipped: 0, failed: 0 }
-  const jobs = latestJobPerBeian(await listAppliedElementExtractJobs()).slice(0, maxJobs)
+  const allJobs = await listAppliedElementExtractJobs()
+  const jobs = latestJobPerBeian(allJobs)
+    .filter((job) => {
+      if (!want) return true
+      const code = (job.beian_hao ?? "").trim().toUpperCase()
+      return code === want || beianFamilyKey(code) === beianFamilyKey(want)
+    })
+    .slice(0, maxJobs)
 
   for (const job of jobs) {
     result.processed += 1
@@ -396,18 +484,23 @@ export async function backfillKeywordFieldsFromStoredContracts(options?: {
       continue
     }
     try {
-      const buffer = await readStoredContractBuffer(job)
-      const text = await readFundContractText(buffer, job.original_filename)
+      const text = await readBeianContractCorpus(beian, allJobs)
+      if (!text.trim()) {
+        result.skipped += 1
+        continue
+      }
       const productName = job.product_name || job.extracted_json?.fund_name || beian
       const current = await loadExtractedElementDisplayValues(beian, productName)
       const extracted = applyContractKeywordFallbacks(text, {
         ...(job.extracted_json ?? {}),
         fee_manage_rate: job.extracted_json?.fee_manage_rate || current?.fee_manage_rate,
       })
+      const shareClassOverrides = extractShareClassFeeOverrides(text)
       const fields = await writeFillEmptyElementsAcrossShareClasses(
         beian,
         extracted.fund_name || productName,
         extracted,
+        { shareClassOverrides },
       )
       await updateElementExtractJob(job.id, {
         extracted_json: extracted,
@@ -438,7 +531,8 @@ export async function fanoutAppliedElementsToShareClasses(options?: {
 }): Promise<KeywordBackfillResult> {
   const maxJobs = Math.max(1, options?.maxJobs ?? 2000)
   const result: KeywordBackfillResult = { processed: 0, filled: 0, skipped: 0, failed: 0 }
-  const jobs = latestJobPerBeian(await listAppliedElementExtractJobs()).slice(0, maxJobs)
+  const allJobs = await listAppliedElementExtractJobs()
+  const jobs = latestJobPerBeian(allJobs).slice(0, maxJobs)
 
   for (const job of jobs) {
     result.processed += 1
@@ -454,10 +548,18 @@ export async function fanoutAppliedElementsToShareClasses(options?: {
         result.skipped += 1
         continue
       }
+      let shareClassOverrides = {}
+      try {
+        const corpus = await readBeianContractCorpus(beian, allJobs)
+        if (corpus.trim()) shareClassOverrides = extractShareClassFeeOverrides(corpus)
+      } catch {
+        // corpus may not be available; proceed without overrides
+      }
       const fields = await writeFillEmptyElementsAcrossShareClasses(
         beian,
         productName,
         softenWeakExtractedFields(source),
+        { shareClassOverrides },
       )
       if (fields.length) result.filled += 1
       else result.skipped += 1

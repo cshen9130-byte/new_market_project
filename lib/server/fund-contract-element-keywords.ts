@@ -101,6 +101,9 @@ export function isWeakFormula(value: string | null | undefined): boolean {
   if (!s) return true
   if (/^详见|^见合同|^同上|^—+$/.test(s)) return true
   if (/与基金运作有关的费用|基金的管理费；|费用的种类|托管费年费率/.test(s)) return true
+  if (/业绩报酬的计提基准日|申购和赎回的金额限制|私募基金合同\s*\d/.test(s) && s.length > 80) return true
+  if (/PFij：|其中：E 为应计提|单个基金份额持有人单笔/.test(s) && s.length > 140) return true
+  if (/其中[:：]/.test(s) && /应计提的业绩报酬|本计提日/.test(s) && s.length > 100) return true
   if (/^(商解决|划款|账册记录)/.test(s)) return true
   if (s.length < 12 && !/[=＝]/.test(s) && !/计提|提取|公式/.test(s)) return true
   return isDumpText(s, FORMULA_MAX)
@@ -108,13 +111,15 @@ export function isWeakFormula(value: string | null | undefined): boolean {
 
 export function isWeakFeePay(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
-  if (!s || s === "—" || /^详见/.test(s)) return true
+  if (!s || s === "—" || /^-+$/.test(s) || /^详见/.test(s)) return true
+  // LLM-generated generic "couldn't extract" statements
+  if (/未明确(?:说明|规定|披露)|按(?:基金)?合同约定收取/.test(s) && s.length < 60) return true
   return isDumpText(s, 90)
 }
 
 export function isWeakFeeManage(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
-  if (!s || s === "—" || /^详见/.test(s)) return true
+  if (!s || s === "—" || /^-+$/.test(s) || /^详见/.test(s)) return true
   return isDumpText(s, FEE_DESC_MAX)
 }
 
@@ -135,53 +140,126 @@ export function isWeakAddAmount(value: string | null | undefined): boolean {
 export function isWeakShortFee(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
   if (!s || s === "—" || s === "无" || /^详见/.test(s)) return true
+  const high = s.match(/年(?:托管|运营服务|外包|基金服务)费率\s*([\d.]+)\s*%/)
+  if (high?.[1] && parseFloat(high[1]) >= 3) return true
   return isDumpText(s, SHORT_MAX)
 }
 
-export function isWeakTemporaryOpen(value: string | null | undefined): boolean {
-  const s = (value ?? "").trim()
+export function isWeakTemporaryOpen(value: string | number | null | undefined): boolean {
+  const s = String(value ?? "").trim()
   if (!s) return true
-  return /^-?\d+$/.test(s)
+  return /^-?\d+(?:\.0+)?$/.test(s)
+}
+
+function formatRiskGrade(grade: string, label?: string): string | null {
+  const g = grade.toUpperCase()
+  if (!/^R[1-5]$/.test(g)) return null
+  const lab = (label ?? "").replace(/[（）()\s]/g, "") || RISK_LABEL[g]
+  return lab ? `${g}（${lab}）` : g
+}
+
+function skipRiskMatch(source: string, index: number): boolean {
+  if (looksLikeToc(source, index)) return true
+  const ctx = nearby(source, index, 36, 36)
+  if (/洗钱|身份识别|可疑交易|反洗钱|客户洗钱风险等级/.test(ctx)) return true
+  if (/高于本基金的?风险等级|标的产品风险等级|投资标的的风险等级/.test(ctx)) return true
+  const productHit = /本基金|本产品|管理人评定|风险收益特征|基金产品/.test(nearby(source, index, 48, 20))
+  if (!productHit && /期货是一种高风险|私募基金风险评级标准/.test(ctx)) return true
+  return false
+}
+
+function classifyMandateScope(scope: string): string | null {
+  const hasDeriv = /商品期货|股指期货|国债期货|期货|期权|收益互换|场外期权|权证/.test(scope)
+  const hasEquity = /股票|存托凭证|融资融券/.test(scope)
+  if (hasEquity || hasDeriv) return formatRiskGrade("R4")
+  if (/债券|同业存单|逆回购/.test(scope) && !hasEquity && !hasDeriv) return formatRiskGrade("R3")
+  if (/货币|现金管理|银行存款/.test(scope) && !hasEquity && !hasDeriv) return formatRiskGrade("R2")
+  return null
+}
+
+/** Last resort: AMAC-style grade from the 投资范围 clause, not TOC pointers. */
+export function inferRiskLevelFromMandate(text: string): string | null {
+  const source = flatten(text)
+  const re = /投资范围[：:]?\s*/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(source)) !== null) {
+    const window = source.slice(match.index, match.index + 900)
+    if (
+      /具体详见|详见本合|详见本基金|详见“私募基金的投资”|同本基金合同|同本合同|约定的投资目标/.test(
+        window.slice(0, 120),
+      )
+    ) {
+      continue
+    }
+    if (/风险揭示章节|一般风险揭示|期货是一种高风险/.test(window.slice(0, 200))) continue
+    if (!/(?:股票|债券|期货|期权|同业存单|收益互换)/.test(window)) continue
+    const grade = classifyMandateScope(window)
+    if (grade) return grade
+  }
+  return null
 }
 
 export function extractRiskLevelFromText(text: string): string | null {
   const source = flatten(text)
+    .replace(/[Ｒｒ]/g, "R")
+    .replace(/[１]/g, "1")
+    .replace(/[２]/g, "2")
+    .replace(/[３]/g, "3")
+    .replace(/[４]/g, "4")
+    .replace(/[５]/g, "5")
+    .replace(/R\s*([1-5])/g, "R$1")
   const patterns: Array<{ re: RegExp; grade: number; label?: number }> = [
+    { re: /经管理人评定.{0,48}风险等级为\s*[\[【（(]?\s*(R[1-5])/g, grade: 1 },
+    { re: /本基金风险收益特征.{0,80}风险等级为\s*[\[【（(]?\s*(R[1-5])/g, grade: 1 },
+    { re: /本基金的?风险等级为\s*[\[【（(]?\s*(R[1-5])/g, grade: 1 },
+    { re: /本产品的?风险等级为\s*[\[【（(]?\s*(R[1-5])/g, grade: 1 },
+    { re: /本基金属于\s*[\[【（(]?\s*(R[1-5])\s*[\]】）)]?\s*级/g, grade: 1 },
     { re: /本基金属于\s*(R[1-5])\s*[（(]([^)）]{1,16})[)）]/g, grade: 1, label: 2 },
     { re: /属于\s*(R[1-5])\s*[（(]([^)）]{0,16}风险[^)）]*)[)）]/g, grade: 1, label: 2 },
-    { re: /风险等级为\s*[\[【（(]?\s*(R[1-5])\s*[\]】）)]?/gi, grade: 1 },
+    { re: /风险等级为\s*[\[【（(]?\s*(R[1-5])\s*[\]】）)]?\s*级?/gi, grade: 1 },
     { re: /风险等级[为是：:\s]*[（(\[【]?(R[1-5])[)）\]】]?/g, grade: 1 },
     { re: /风险评级[为是：:\s]*[\[【（(]?(R[1-5])[\]】）)]?/g, grade: 1 },
     { re: /(R[1-5])\s*级\s*[（(](中高风险|中低风险|高风险|低风险|中风险)[)）]/g, grade: 1, label: 2 },
     { re: /(R[1-5])\s*[（(](中高风险|中低风险|高风险|低风险|中风险)[)）]/g, grade: 1, label: 2 },
     { re: /本基金.{0,40}?(R[1-5]).{0,16}?投资品种/g, grade: 1 },
-    { re: /(?:本基金为|本基金风险为)\s*(R[1-5])/g, grade: 1 },
+    { re: /(?:本基金为|本基金风险为)\s*[\[【（(]?\s*(R[1-5])/g, grade: 1 },
+    { re: /[【\[]\s*(R[1-5])\s*[】\]]\s*级(?:私募|基金产品|产品)/g, grade: 1 },
   ]
 
   for (const pattern of patterns) {
     const re = new RegExp(pattern.re.source, "gi")
     let match: RegExpExecArray | null
     while ((match = re.exec(source)) !== null) {
-      if (looksLikeToc(source, match.index)) continue
-      const ctx = nearby(source, match.index, 40, 40)
-      if (/期货是一种高风险|私募基金风险评级标准|洗钱|身份识别|可疑交易|反洗钱|投资者适当性/.test(ctx)) continue
-      const grade = (match[pattern.grade] ?? "").toUpperCase()
-      if (!/^R[1-5]$/.test(grade)) continue
-      const rawLabel = pattern.label ? (match[pattern.label] ?? "").trim() : ""
-      const label = rawLabel.replace(/[（）()\s]/g, "") || RISK_LABEL[grade]
-      return label ? `${grade}（${label}）` : grade
+      if (skipRiskMatch(source, match.index)) continue
+      const formatted = formatRiskGrade(
+        match[pattern.grade] ?? "",
+        pattern.label ? match[pattern.label] : undefined,
+      )
+      if (formatted) return formatted
     }
   }
 
-  const named = source.match(/本基金属于\s*(中高风险|中低风险|高风险|低风险|中风险)/)
+  const named = source.match(/本基金的?风险等级为\s*[\[【（(]?(中高风险|中低风险|高风险|低风险|中风险)/)
+    || source.match(/本基金属于\s*(中高风险|中低风险|高风险|低风险|中风险)/)
     || source.match(/本基金为\s*(中高风险|中低风险|高风险|低风险|中风险)\s*投资/)
-    || source.match(/本基金的?风险等级为\s*(中高风险|中低风险|高风险|低风险|中风险)/)
+    || source.match(/本基金风险收益特征[：:].{0,60}?(中高风险|中低风险|高风险|低风险|中风险)/)
+    || source.match(/(?<!洗钱)风险等级[为是：:\s]*[\[【]?(中高风险|中低风险|高风险|低风险|中风险)/)
   if (named?.[1]) {
     const label = named[1]
     const grade = RISK_GRADE_FROM_LABEL[label]
-    return grade ? `${grade}（${label}）` : label
+    const idx = named.index ?? source.indexOf(named[0])
+    if (!skipRiskMatch(source, idx) && grade) return `${grade}（${label}）`
   }
-  return null
+
+  const suitability = source.match(
+    /(?:本基金|本产品).{0,80}?适合.{0,40}?风险承受能力为\s*[\[【]?\s*C([1-5])/,
+  )
+  if (suitability?.[1]) {
+    const formatted = formatRiskGrade(`R${suitability[1]}`)
+    if (formatted) return formatted
+  }
+
+  return inferRiskLevelFromMandate(source)
 }
 
 export function extractLockPeriodFromText(text: string): string | null {
@@ -239,36 +317,56 @@ function formulaBenchRate(scope: string): { bench: string | null; rate: string |
 }
 
 function cleanEquation(eq: string): string | null {
-  const s = collapseWs(eq).replace(/％/g, "%")
+  const s = collapseWs(eq).replace(/％/g, "%").replace(/＝/g, "=")
   if (!s || /[\uFFFD]/.test(s)) return null
-  if (s.length > 80) return null
-  if (!/[=＝]/.test(s)) return null
+  if (s.length > 96) return null
+  if (!/=/.test(s)) return null
   const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length
-  if (cjk > 4) return null
-  if (/实际业绩报酬提取值|计算方法如下/.test(s)) return null
+  if (cjk > 6) return null
+  if (/实际业绩报酬提取值|计算方法如下|托管费|管理费年|费用的种类/.test(s)) return null
+  if (/^R\s*=\s*[\d.]+\s*%$/.test(s.replace(/\s/g, ""))) return null
   return s
 }
 
-function firstEquation(scope: string, pattern: RegExp): string | null {
+function pickEquation(scope: string, pattern: RegExp): string | null {
   const m = scope.match(pattern)
   if (!m) return null
-  return cleanEquation(m[0].split(/其中/)[0])
+  return cleanEquation(m[0].split(/其中|PFij[:：]|∆Sij|ΔSij/)[0])
 }
 
 function formulaEquations(scope: string): string | null {
   const s = flatten(scope)
+  if (
+    /基金费用的种类|（一）基金费用/.test(s.slice(0, 180))
+    && !/PFij|NAVn|HWMij|年化收益率/.test(s.slice(0, 500))
+  ) {
+    return null
+  }
   const parts: string[] = []
-  const cleanR = firstEquation(s, /R\s*[=＝]\s*[^。；;]{8,72}/)
-  const cleanY = firstEquation(s, /Y\s*[=＝]\s*[^。；;]{8,72}/)
-  const cleanE = firstEquation(s, /E\s*[=＝]\s*K[^。；;]{0,72}/)
-  if (cleanR && !/托管费|管理费|运营服务费/.test(cleanR)) parts.push(cleanR)
-  if (cleanY) parts.push(cleanY)
-  if (cleanE) parts.push(cleanE)
+  const patterns = [
+    /PFij\s*[=＝]\s*Fij\s*[×x*]\s*[（(][^)）]{3,48}[)）]\s*[×x*]\s*[\d.]+\s*%/,
+    /H\s*[=＝]\s*F\s*[×x*]\s*[（(]NAV1[^)）]{0,28}[)）]\s*[×x*]\s*[\d.]+\s*%/,
+    /E\s*[=＝]\s*[（(]\s*NAVn\s*[-－]\s*NAVh\s*[)）]\s*[×x*]\s*S\s*[×x*]\s*(?:R|[\d.]+\s*%)/,
+    /E\s*[=＝]\s*N\s*[×x*]\s*[（(]P1\s*[-－]\s*P0[)）]\s*[×x*]\s*[\d.]+\s*%/,
+    /E\s*[=＝]\s*K[^。；;]{0,72}/,
+    /Y\s*[=＝]\s*F\s*[×x*][^。；;]{8,72}/,
+    /R\s*[=＝]\s*[（(][^。；;]{8,72}/,
+  ]
+  for (const re of patterns) {
+    const got = pickEquation(s, re)
+    if (got && !parts.some((p) => p.replace(/\s/g, "") === got.replace(/\s/g, ""))) parts.push(got)
+  }
 
   const { bench, rate } = formulaBenchRate(s)
+  const hwRate =
+    rate
+    || (s.match(/PFij\s*[=＝][^。]{0,80}[×x*]\s*([\d.]+)\s*%/)?.[1]
+      ? pct(s.match(/PFij\s*[=＝][^。]{0,80}[×x*]\s*([\d.]+)\s*%/)![1])
+      : null)
+    || (s.match(/提取\s*([\d.]+)\s*%的业绩报酬/)?.[1] ? pct(s.match(/提取\s*([\d.]+)\s*%的业绩报酬/)![1]) : null)
   const head: string[] = []
   if (bench) head.push(`基准${bench}`)
-  if (rate) head.push(`超额计提${rate}`)
+  if (hwRate) head.push(`超额计提${hwRate}`)
   const summary = [...head, ...parts].filter(Boolean)
   if (!summary.length) return null
   return summary.join("；").slice(0, FORMULA_MAX)
@@ -302,7 +400,9 @@ export function extractFeePayFormulaFromText(text: string): string | null {
     return [x ? `提取比例${x[1]}%` : null, collapseWs(y[0])].filter(Boolean).join("；")
   }
 
-  const fallbackIdx = s.search(/年化收益率\s*R|Y\s*[=＝]\s*F|E\s*[=＝]\s*K/)
+  const fallbackIdx = s.search(
+    /年化收益率\s*R|Y\s*[=＝]\s*F|E\s*[=＝]\s*K|PFij\s*[=＝]|H\s*[=＝]\s*F|NAVn\s*[-－]\s*NAVh/,
+  )
   if (fallbackIdx >= 0) {
     const compact = formulaEquations(s.slice(Math.max(0, fallbackIdx - 240), fallbackIdx + 900))
     if (compact) return compact
@@ -313,13 +413,149 @@ export function extractFeePayFormulaFromText(text: string): string | null {
 function shareClassManageRates(text: string): string | null {
   const s = flatten(text)
   const parts: string[] = []
-  const re = /([ABC])类[^。；;]{0,48}?年(?:化)?管理费率\s*([\d.]+)\s*%/g
-  let match: RegExpExecArray | null
-  while ((match = re.exec(s)) !== null) {
-    const line = `${match[1]}类年管理费率${pct(match[2])}`
-    if (!parts.includes(line)) parts.push(line)
+  for (const cls of ["A", "B", "C", "D"]) {
+    if (new RegExp(`${cls}\\s*类份额不计提管理费`).test(s)) {
+      parts.push(`${cls}类不计提`)
+      continue
+    }
+    const found =
+      s.match(new RegExp(`${cls}\\s*类年(?:化)?管理费率\\s*([\\d.]+)\\s*%`))
+      || s.match(new RegExp(`${cls}\\s*类份额[^。]{0,90}?([\\d.]+)\\s*%的年费率`))
+      || s.match(new RegExp(`${cls}\\s*类份额\\s+([\\d.]+)\\s*%`))
+    if (found?.[1] && parseFloat(found[1]) <= 5) {
+      const line = `${cls}类年管理费率${pct(found[1])}`
+      if (!parts.includes(line)) parts.push(line)
+    }
   }
-  return parts.length ? `${parts.join("；")}` : null
+  return parts.length ? parts.join("；") : null
+}
+
+/** Per-class fee overrides extracted from a multi-share-class contract. */
+export type ShareClassLetterKey = "A" | "B" | "C"
+
+export type ShareClassFeeFields = {
+  /** Percentage string, e.g. "1%" — written via encodeManageRate which handles % → decimal. */
+  fee_manage_rate?: string
+  /** Compact fee description, e.g. "年管理费率1%，每日计提，按自然季度支付。" */
+  fee_manage?: string
+  /** Performance fee short description specific to this class, e.g. "超额计提30%" */
+  fee_pay?: string
+}
+
+export type ShareClassFeeOverrides = Partial<Record<ShareClassLetterKey, ShareClassFeeFields>>
+
+/**
+ * Search text for segments that start with the class letter and contain "管理费率" within a short
+ * window that cannot cross another class-letter boundary.
+ * Using [^A-C。%]{0,20} prevents matching across "A类...B类..." boundaries.
+ */
+function perClassManageInfo(
+  text: string,
+  cls: string,
+): { ratePct: string; rateN: number } | "exempt" | null {
+  // Exempt check: "A类不计提管理费"
+  if (new RegExp(`${cls}\\s*类(?:份额)?不计提管理费|${cls}\\s*类不收取管理费`).test(text)) {
+    return "exempt"
+  }
+  // Patterns ordered from most to least specific.
+  // [^A-C。%]{0,20} keeps the gap short and prevents crossing another share-class header.
+  const found =
+    text.match(new RegExp(`${cls}\\s*类年(?:化)?管理费率\\s*([\\d.]+)\\s*%`))
+    || text.match(new RegExp(`${cls}\\s*类(?:份额)?[^A-C。%]{0,20}年(?:化)?管理费率[为：:\\s]*([\\d.]+)\\s*%`))
+    || text.match(new RegExp(`${cls}\\s*类(?:份额)[^A-C。%]{0,90}?([\\d.]+)\\s*%的年费率`))
+    || text.match(new RegExp(`${cls}\\s*类份额\\s+([\\d.]+)\\s*%`))
+  if (!found?.[1]) return null
+  const n = parseFloat(found[1])
+  if (!Number.isFinite(n) || n < 0 || n > 8) return null
+  return { ratePct: `${n}%`, rateN: n }
+}
+
+function perClassFeePayText(text: string, cls: string): string | null {
+  // Find a segment starting with the class letter and containing performance fee terms.
+  const re = new RegExp(
+    `${cls}(?:类|份额|份)[^;；。\\n]{3,200}(?:业绩报酬|超额计提|计提比例|超额收益|收益率)[^;；。\\n]{0,100}`,
+    "i",
+  )
+  const m = re.exec(text)
+  if (m?.[0]) {
+    return m[0].trim().slice(0, 80)
+  }
+  // Fallback: class letter followed directly by a high percentage (≥10%) indicating carry rate
+  // (deliberately excludes management-fee-sized rates which are ≤8%)
+  const simple = text.match(new RegExp(`${cls}(?:类|份额)[^;；。%\\n]{0,8}([\\d.]+)\\s*%`))
+  if (simple?.[1]) {
+    const n = parseFloat(simple[1])
+    if (Number.isFinite(n) && n >= 10 && n <= 100) {
+      return `${cls}类超额计提${n}%`
+    }
+  }
+  return null
+}
+
+/**
+ * Extracts per-share-class fee overrides from a fund contract.
+ * Returns non-empty only when A/B/C classes have detectably different rates/terms.
+ */
+export function extractShareClassFeeOverrides(text: string): ShareClassFeeOverrides {
+  const s = flatten(text.slice(0, 200_000))
+
+  // Only proceed if there are clear multi-class markers
+  if (!/[AB]类(?:份额|年管理|份)/.test(s)) return {}
+
+  // Collect per-class manage rates
+  type ManageInfo = { ratePct: string; rateN: number } | "exempt"
+  const manageMap: Partial<Record<ShareClassLetterKey, ManageInfo>> = {}
+  for (const cls of ["A", "B", "C"] as const) {
+    const info = perClassManageInfo(s, cls)
+    if (info) manageMap[cls] = info
+  }
+
+  // Only generate overrides if the detected classes have DIFFERENT rates
+  const rateKeys = (Object.values(manageMap) as ManageInfo[]).map((v) =>
+    v === "exempt" ? "0%" : v.ratePct,
+  )
+  const allSameManage = rateKeys.length < 2 || new Set(rateKeys).size === 1
+
+  // Collect per-class fee_pay
+  const payMap: Partial<Record<ShareClassLetterKey, string>> = {}
+  for (const cls of ["A", "B", "C"] as const) {
+    const t = perClassFeePayText(s, cls)
+    if (t) payMap[cls] = t
+  }
+  const payValues = Object.values(payMap)
+  const allSamePay = payValues.length < 2 || new Set(payValues).size === 1
+
+  const result: ShareClassFeeOverrides = {}
+
+  for (const cls of ["A", "B", "C"] as const) {
+    const override: ShareClassFeeFields = {}
+
+    if (!allSameManage && cls in manageMap) {
+      const info = manageMap[cls]!
+      if (info === "exempt") {
+        override.fee_manage_rate = "0%"
+        const bits = ["年管理费率0%，不计提"]
+        override.fee_manage = `${bits.join("，")}。`.slice(0, FEE_DESC_MAX)
+      } else {
+        override.fee_manage_rate = info.ratePct
+        const bits = [`年管理费率${info.ratePct}`]
+        if (/每日计提/.test(s)) bits.push("每日计提")
+        const pay = payPhrase(s)
+        if (pay) bits.push(pay)
+        override.fee_manage = `${bits.join("，")}。`.slice(0, FEE_DESC_MAX)
+      }
+    }
+
+    if (!allSamePay && cls in payMap) {
+      override.fee_pay = payMap[cls]
+    }
+
+    if (Object.keys(override).length) {
+      result[cls] = override
+    }
+  }
+
+  return result
 }
 
 function rateFromHint(hint: string | null | undefined): string | null {
@@ -358,33 +594,57 @@ export function extractFeeManageDescFromText(text: string): string | null {
   return summarizeFeeManageDesc(text)
 }
 
-function matchAnnualFeeRate(text: string, names: string[]): { raw: string; index: number; matched: string } | null {
+function eachMatch(re: RegExp, source: string): RegExpExecArray[] {
+  const global = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`)
+  const out: RegExpExecArray[] = []
+  let m: RegExpExecArray | null
+  while ((m = global.exec(source))) {
+    out.push(m)
+    if (!m[0]) global.lastIndex += 1
+  }
+  return out
+}
+
+function matchAnnualFeeRate(
+  text: string,
+  names: string[],
+  maxPct = 8,
+): { raw: string; index: number; matched: string } | null {
   const s = flatten(text)
   const num = `[【\\[［]?\\s*([\\d.]+)\\s*[】\\]］]?\\s*%`
   for (const name of names) {
     const patterns = [
       new RegExp(`年(?:化)?${name}率[为是：:\\s]*${num}`),
       new RegExp(`${name}年费率[为是：:\\s]*${num}`),
+      new RegExp(`${name}的年费率[为是：:\\s]*${num}`),
       new RegExp(`${name}率为年费率\\s*${num}`),
       new RegExp(`${name}按基金资产净值的\\s*${num}`),
+      new RegExp(`${name}按前一[日天][^\\d%]{0,48}${num}的年费率`),
+      new RegExp(`${name}[^。\\d%]{0,48}${num}的年费率`),
     ]
     for (const re of patterns) {
-      const m = re.exec(s)
-      if (m?.[1]) return { raw: m[1], index: m.index ?? 0, matched: m[0] }
+      for (const m of eachMatch(re, s)) {
+        if (!m[1]) continue
+        const n = parseFloat(m[1])
+        if (!Number.isFinite(n) || n <= 0 || n > maxPct) continue
+        const around = nearby(s, m.index ?? 0, 36, 36)
+        if (/权利|义务|不承担|业绩报酬|违约金/.test(around)) continue
+        return { raw: m[1], index: m.index ?? 0, matched: m[0] }
+      }
     }
   }
   return null
 }
 
 export function extractFeeTrustFromText(text: string): string | null {
-  const m = matchAnnualFeeRate(text, ["托管费"])
+  const m = matchAnnualFeeRate(text, ["基金托管费", "托管费"], 2)
   if (!m) return null
   const scope = flatten(text).slice(Math.max(0, m.index), m.index + 1200)
   return compactFeeLine("年托管费率", m.raw, scope)
 }
 
 export function extractFeeAdminFromText(text: string): string | null {
-  const m = matchAnnualFeeRate(text, ["运营服务费", "外包服务费", "外包费", "行政服务费", "基金服务费"])
+  const m = matchAnnualFeeRate(text, ["运营服务费", "外包服务费", "外包费", "行政服务费", "基金服务费"], 2)
   if (!m) return null
   const scope = flatten(text).slice(Math.max(0, m.index), m.index + 1200)
   const label = /外包/.test(m.matched)
@@ -437,16 +697,23 @@ export function extractClosedPeriodFromText(text: string): string | null {
 }
 
 export function extractAddAmountFromText(text: string): string | null {
-  const first = text.match(/首次净(?:申购|认购)金额应不低于\s*([\d.]+)\s*万元/)
-  const append = text.match(/每次追加(?:认购|申购)金额[^。]{0,24}不少于\s*([\d.]+)\s*万元/)
-    || text.match(/追加(?:申购)?(?:金额)?[^。]{0,24}不低于\s*([\d.]+)\s*万元/)
-    || text.match(/每次(?:追加)?申购金额应不低于\s*([\d.]+)\s*万元/)
-  const remain = text.match(/赎回后持有的基金资产净值不得低于\s*([\d.]+)\s*万元/)
+  const s = flatten(text)
+  const first =
+    s.match(/首次净(?:申购|认购)(?:该类份额的)?金额(?:应)?不低于\s*([\d.]+)\s*万元/)
+    || s.match(/首次(?:净)?申购该类份额的金额不低于\s*([\d.]+)\s*万元/)
+    || s.match(/首次申购本基金的金额不低于\s*([\d.]+)\s*万元/)
+    || s.match(/首次净申购金额应不低于\s*([\d.]+)\s*万元/)
+  const append =
+    s.match(/每次追加(?:净)?(?:认购|申购)(?:该类份额的)?金额(?:应当)?不少于\s*([\d.]+)\s*万元/)
+    || s.match(/追加(?:申购)?(?:金额)?[^。]{0,24}不低于\s*([\d.]+)\s*万元/)
+    || s.match(/每次(?:追加)?申购金额应不低于\s*([\d.]+)\s*万元/)
+  const remain = s.match(/赎回后持有的基金资产净值不得低于\s*([\d.]+)\s*万元/)
   const parts: string[] = []
   if (first) parts.push(`首次净申购不低于${first[1]}万元`)
   if (append) parts.push(`追加不低于${append[1]}万元`)
+  else if (/追加(?:净)?申购该类份额的金额不设限制|每次追加.{0,12}不设限制/.test(s)) parts.push("追加不设限制")
   if (remain) parts.push(`赎回后持有净值不得低于${remain[1]}万元`)
-  if (parts.length) return `${parts.join("；")}。`
+  if (parts.length) return `${parts.join("；")}。`.slice(0, 120)
   return null
 }
 
@@ -476,9 +743,10 @@ function preferCompact<T extends string>(
   next: string | null,
   isWeak: (v: string | null | undefined) => boolean,
 ): string | null | undefined {
-  if (isWeak(current)) return next ?? null
-  if (!next) return current
-  if ((current ?? "").length > next.length + 20 && !isDumpText(next, next.length + 1)) return next
+  const compact = next && !isWeak(next) ? next : null
+  if (isWeak(current)) return compact
+  if (!compact) return current
+  if ((current ?? "").length > compact.length + 20) return compact
   return current
 }
 
