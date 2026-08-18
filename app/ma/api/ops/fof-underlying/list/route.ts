@@ -8,6 +8,8 @@ import {
   buildFofUnderlyingSummaryFrom,
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
+  sqlFofUnderlyingIdentityKey,
+  sqlFofUnderlyingIdentityTiebreak,
 } from "@/lib/server/fof-underlying-query"
 import {
   ensureFofOverviewListCachePopulated,
@@ -111,7 +113,6 @@ export async function GET(req: Request) {
         ? "cache.platform_strategy_l1"
         : "cache.company_strategy_l1"
       const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
-      const sortCol = sortKey === "sequence_no" ? "f.sequence_no" : ALLOWED_SORT[sortKey]
 
       const conditions: string[] = [
         "f.product_name <> '合计'",
@@ -154,9 +155,33 @@ export async function GET(req: Request) {
         FROM fof_underlying_summary f
         LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
       `
+      const identityKey = sqlFofUnderlyingIdentityKey("cache.beian_hao", "f.id")
+      const identityTie = sqlFofUnderlyingIdentityTiebreak("f.product_name", "f.id")
+      const outerSort =
+        sortKey === "sequence_no" ? "sequence_no"
+          : sortKey === "product_name" ? "product_name"
+            : sortKey === "latest_nav" ? "latest_unit_nav"
+              : sortKey === "latest_nav_date" ? "latest_nav_date"
+                : sortKey === "latest_price_change" ? "latest_return_pct"
+                  : "sequence_no"
+      const dedupedSelect = `
+        SELECT DISTINCT ON (${identityKey})
+           f.id::text                           AS id,
+           f.sequence_no,
+           cache.beian_hao,
+           f.product_name,
+           COALESCE(cache.short_name, f.product_name) AS short_name,
+           ${stratCol}                          AS strategy_l1,
+           COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
+           COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
+           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct
+         ${baseFrom}
+         WHERE ${where}
+         ORDER BY ${identityKey}, ${identityTie}
+      `
 
       const countRows = await query<{ n: string }>(
-        `SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`,
+        `SELECT COUNT(*)::text AS n FROM (${dedupedSelect}) x`,
         params,
       )
       const total = parseInt(countRows[0]?.n || "0", 10)
@@ -183,18 +208,17 @@ export async function GET(req: Request) {
         sequence_no: number | null
       }>(
         `SELECT
-           f.id::text                           AS id,
-           f.sequence_no,
-           cache.beian_hao,
-           f.product_name,
-           COALESCE(cache.short_name, f.product_name) AS short_name,
-           ${stratCol}                          AS strategy_l1,
-           COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
-           COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
-           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct
-         ${baseFrom}
-         WHERE ${where}
-         ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC
+           id,
+           sequence_no,
+           beian_hao,
+           product_name,
+           short_name,
+           strategy_l1,
+           latest_unit_nav,
+           latest_nav_date,
+           latest_return_pct
+         FROM (${dedupedSelect}) rows
+         ORDER BY ${outerSort} ${sortDir} NULLS LAST, sequence_no ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
         [...params, pageSize, offset],
       )
@@ -212,7 +236,11 @@ export async function GET(req: Request) {
     const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "sequence_no"
-    const sortCol = sortKey === "sequence_no" ? "f.sequence_no" : ALLOWED_SORT_SLOW[sortKey]
+    const sortCol = sortKey === "sequence_no" ? "sequence_no"
+      : sortKey === "latest_nav" ? "latest_unit_nav"
+        : sortKey === "latest_nav_date" ? "latest_nav_date"
+          : sortKey === "latest_price_change" ? "latest_return_pct"
+            : "product_name"
 
     const conditions: string[] = [
       "f.product_name <> '合计'",
@@ -254,9 +282,16 @@ export async function GET(req: Request) {
 
     const where = conditions.join(" AND ")
     const baseFrom = buildFofUnderlyingSummaryFrom(PRODUCT_EXPR)
+    const identityKey = sqlFofUnderlyingIdentityKey(BEIAN_EXPR, "f.id")
+    const identityTie = sqlFofUnderlyingIdentityTiebreak("f.product_name", "f.id")
 
     const countRows = await query<{ n: string }>(
-      `SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`,
+      `SELECT COUNT(*)::text AS n FROM (
+         SELECT DISTINCT ON (${identityKey}) f.id
+         ${baseFrom}
+         WHERE ${where}
+         ORDER BY ${identityKey}, ${identityTie}
+       ) x`,
       params,
     )
     const total = parseInt(countRows[0]?.n || "0", 10)
@@ -284,19 +319,23 @@ export async function GET(req: Request) {
       latest_nav_date: string | Date | null
       latest_return_pct: string | null
     }>(
-      `SELECT
-         f.id::text AS id,
-         ${BEIAN_EXPR} AS beian_hao,
-         f.product_name,
-         COALESCE(b.short_name, o.fund_short_name, f.product_name) AS short_name,
-         ${strategyExpr} AS strategy_l1,
-         (${currentNavExpr})::text AS latest_unit_nav,
-         ${currentDateExpr} AS latest_nav_date,
-         (${currentPctExpr})::text AS latest_return_pct
-       ${baseFrom}
-       ${emailNavJoins}
-       WHERE ${where}
-       ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC
+      `SELECT * FROM (
+         SELECT DISTINCT ON (${identityKey})
+           f.id::text AS id,
+           f.sequence_no,
+           ${BEIAN_EXPR} AS beian_hao,
+           f.product_name,
+           COALESCE(b.short_name, o.fund_short_name, f.product_name) AS short_name,
+           ${strategyExpr} AS strategy_l1,
+           (${currentNavExpr})::text AS latest_unit_nav,
+           ${currentDateExpr} AS latest_nav_date,
+           (${currentPctExpr})::text AS latest_return_pct
+         ${baseFrom}
+         ${emailNavJoins}
+         WHERE ${where}
+         ORDER BY ${identityKey}, ${identityTie}
+       ) rows
+       ORDER BY ${sortCol} ${sortDir} NULLS LAST, sequence_no ASC
        LIMIT $${listParams.length + 1} OFFSET $${listParams.length + 2}`,
       [...listParams, pageSize, offset],
     )

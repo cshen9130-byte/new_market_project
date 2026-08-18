@@ -255,13 +255,15 @@ function formatValuationDate(value: string | null | undefined): string {
 }
 
 /** Map fund-elements temporary-open text to 是/否 for the instruction form. */
-function formatTemporaryOpen(value: string | null | undefined): string {
+function formatTemporaryOpen(value: string | number | null | undefined): string {
+  if (value === 0 || value === "0") return "否"
   if (!value) return "—"
-  if (value === "0" || value === "否") return "否"
-  if (value === "1" || value === "是") return "是"
-  if (value.includes("不可")) return "否"
-  if (value.includes("可")) return "是"
-  return value
+  if (value === "否") return "否"
+  if (value === 1 || value === "1" || value === "是") return "是"
+  const s = String(value)
+  if (s.includes("不可")) return "否"
+  if (s.includes("可")) return "是"
+  return s
 }
 
 const RECENT_COLUMNS = [

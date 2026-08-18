@@ -10,6 +10,10 @@ import { fundDisplayNamesMatch } from "@/lib/server/fund-name-match"
 import {
   ensureFofOverviewListCachePopulated,
 } from "@/lib/server/fof-overview-list-cache-pg"
+import {
+  sqlFofUnderlyingIdentityKey,
+  sqlFofUnderlyingIdentityTiebreak,
+} from "@/lib/server/fof-underlying-query"
 import { beianFamilyKey } from "@/lib/server/share-class-product"
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
@@ -176,7 +180,8 @@ export async function loadFofContractCoverage(input?: {
   }
 
   const where = conditions.join(" AND ")
-  const dedupeKey = `COALESCE(UPPER(BTRIM(cache.beian_hao)), 'id:' || f.id::text)`
+  const dedupeKey = sqlFofUnderlyingIdentityKey("cache.beian_hao", "f.id")
+  const identityTie = sqlFofUnderlyingIdentityTiebreak("f.product_name", "f.id")
   const rawRows = await query<{
     id: string
     product_name: string
@@ -209,10 +214,7 @@ export async function loadFofContractCoverage(input?: {
      FROM fof_underlying_summary f
      LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
      WHERE ${where}
-     ORDER BY ${dedupeKey},
-       CASE WHEN f.product_name LIKE '场外%' THEN 1 ELSE 0 END,
-       length(f.product_name) ASC,
-       f.id
+     ORDER BY ${dedupeKey}, ${identityTie}
      LIMIT $${i}`,
     [...params, 500],
   )

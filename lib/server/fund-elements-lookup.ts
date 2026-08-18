@@ -268,7 +268,7 @@ export async function loadBasicinfoTrackByBeianKeys<T extends Record<string, unk
     ? [...new Set(keys.flatMap((key) => exactBeianWriteKeys(key)))]
     : expandBeianLookupKeys(keys)
   if (expanded.length === 0) return []
-  return query<T>(
+  const rows = await query<T>(
     `${selectSql}
      WHERE register_number = ANY($1::text[])
         OR record_key = ANY($1::text[])
@@ -281,7 +281,42 @@ export async function loadBasicinfoTrackByBeianKeys<T extends Record<string, unk
        ),
        updated_at DESC NULLS LAST,
        id DESC
-     LIMIT 1`,
+     LIMIT 8`,
     [expanded],
   )
+  return mergeFamilyTrackRows(rows)
+}
+
+const FAMILY_FILL_KEYS = [
+  "risk_level",
+  "lock_period_desc",
+  "fee_pay_formula",
+  "fee_trust",
+  "fee_admin_service",
+  "fee_manage",
+  "fee_pay",
+  "fee_redeem",
+  "open_day",
+] as const
+
+function trackFieldEmpty(value: unknown): boolean {
+  const s = String(value ?? "").trim()
+  if (!s || s === "—" || s === "无" || /^-+$/.test(s)) return true
+  if (/年(?:托管|运营服务|外包|基金服务)费率\s*([3-9]\d*(?:\.\d+)?|[1-9]\d+)\s*%/.test(s)) return true
+  if (s.length > 400) return true
+  return false
+}
+
+function mergeFamilyTrackRows<T extends Record<string, unknown>>(rows: T[]): T[] {
+  if (rows.length <= 1) return rows
+  const out = { ...rows[0] } as T
+  for (const row of rows.slice(1)) {
+    for (const key of FAMILY_FILL_KEYS) {
+      if (!(key in out) && !(key in row)) continue
+      if (trackFieldEmpty(out[key]) && !trackFieldEmpty(row[key])) {
+        ;(out as Record<string, unknown>)[key] = row[key]
+      }
+    }
+  }
+  return [out]
 }

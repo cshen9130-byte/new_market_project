@@ -111,16 +111,17 @@ const TEMP_OPEN_LABELS: Record<number, string> = {
 }
 
 export function formatTemporaryOpen(value: unknown): string | null {
+  if (value === false) return "否"
+  if (value === true) return "可临开"
   if (value == null) return null
-  if (typeof value === "boolean") return value ? "可临开" : "否"
   const s = String(value).trim()
   if (!s) return null
-  if (/^-?\d+$/.test(s)) {
-    const n = Number(s)
-    return TEMP_OPEN_LABELS[n] ?? null
+  if (/^-?\d+(?:\.0+)?$/.test(s)) {
+    const code = Math.trunc(Number(s))
+    return TEMP_OPEN_LABELS[code] ?? "否"
   }
-  if (s === "可") return "可临开"
-  if (s === "不可") return "否"
+  if (s === "可" || s === "是") return "可临开"
+  if (s === "不可" || s === "无") return "否"
   return s
 }
 

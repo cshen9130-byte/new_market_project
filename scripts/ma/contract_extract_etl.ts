@@ -42,6 +42,7 @@ async function main() {
     process.argv.includes("--backfill-keywords") || process.argv.includes("--backfillKeywords")
   const fanoutShareClasses =
     process.argv.includes("--fanout-share-classes") || process.argv.includes("--fanoutShareClasses")
+  const beianHao = (process.argv.find((arg) => arg.startsWith("--beian=")) ?? "").slice("--beian=".length)
   try {
     if (rematchReview) {
       console.error("[contract_extract_etl] rematching needs_review jobs (reuse extracted JSON)…")
@@ -65,7 +66,9 @@ async function main() {
     }
     if (backfillKeywords || reextractIncomplete) {
       console.error("[contract_extract_etl] backfilling keyword fields from stored contracts…")
-      const backfill = await backfillKeywordFieldsFromStoredContracts()
+      const backfill = await backfillKeywordFieldsFromStoredContracts(
+        beianHao ? { beianHao } : undefined,
+      )
       console.error(
         `[contract_extract_etl] keyword backfill: processed=${backfill.processed} filled=${backfill.filled} ` +
           `skipped=${backfill.skipped} failed=${backfill.failed}`,

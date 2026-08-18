@@ -9,6 +9,8 @@ import {
   buildFofUnderlyingSummaryFrom,
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
+  sqlFofUnderlyingIdentityKey,
+  sqlFofUnderlyingIdentityTiebreak,
 } from "@/lib/server/fof-underlying-query"
 import {
   ensureFofOverviewListCachePopulated,
@@ -217,11 +219,6 @@ export async function GET(req: Request) {
       const stratL3Col = `cache.${stratPrefix}_strategy_l3`
       const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
       const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
-      const sortCol = sortKey === "sequence_no"
-        ? "f.sequence_no"
-        : sortKey === "market_value"
-          ? marketValueExpr
-          : ALLOWED_SORT[sortKey]
 
       const conditions: string[] = [
         "f.product_name <> '合计'",
@@ -289,16 +286,49 @@ export async function GET(req: Request) {
         FROM fof_underlying_summary f
         LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
       `
+      const identityKey = sqlFofUnderlyingIdentityKey("cache.beian_hao", "f.id")
+      const identityTie = sqlFofUnderlyingIdentityTiebreak("f.product_name", "f.id")
+      const dedupedSelect = `
+        SELECT DISTINCT ON (${identityKey})
+           f.id::text                           AS id,
+           f.sequence_no,
+           cache.beian_hao,
+           f.product_name,
+           ${displayNameExpr}                     AS short_name,
+           ${stratCol}                          AS strategy_l1,
+           ${stratL2Col}                        AS strategy_l2,
+           ${stratL3Col}                        AS strategy_l3,
+           COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
+           COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
+           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct,
+           ${marketValueExpr}                   AS market_value_num,
+           cache.ret_1w::text                   AS ret_1w,
+           cache.ret_1m::text                   AS ret_1m,
+           cache.ret_3m::text                   AS ret_3m,
+           cache.ret_6m::text                   AS ret_6m,
+           cache.ret_1y::text                   AS ret_1y,
+           cache.sharpe_1y::text                AS sharpe_1y,
+           cache.calmar_1y::text                AS calmar_1y
+         ${baseFrom}
+         WHERE ${where}
+         ORDER BY ${identityKey}, ${identityTie}
+      `
+      const outerSort =
+        sortKey === "sequence_no" ? "sequence_no"
+          : sortKey === "market_value" ? "market_value_num"
+            : sortKey === "product_name" ? "product_name"
+              : sortKey === "latest_nav" ? "latest_unit_nav"
+                : sortKey === "latest_nav_date" ? "latest_nav_date"
+                  : sortKey === "latest_price_change" ? "latest_return_pct"
+                    : sortKey
 
-      const [countRows, totalMvRows] = await Promise.all([
-        query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
-        query<{ total_mv: string }>(
-          `SELECT COALESCE(SUM(${marketValueExpr}), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
-          params,
-        ),
-      ])
-      const total = parseInt(countRows[0]?.n || "0", 10)
-      const totalMarketValue = totalMvRows[0]?.total_mv ?? "0"
+      const aggRows = await query<{ n: string; total_mv: string }>(
+        `SELECT COUNT(*)::text AS n, COALESCE(SUM(market_value_num), 0)::text AS total_mv
+         FROM (${dedupedSelect}) x`,
+        params,
+      )
+      const total = parseInt(aggRows[0]?.n || "0", 10)
+      const totalMarketValue = aggRows[0]?.total_mv ?? "0"
 
       if (total === 0) {
         return NextResponse.json({
@@ -333,28 +363,27 @@ export async function GET(req: Request) {
         calmar_1y: string | null
       }>(
         `SELECT
-           f.id::text                           AS id,
-           f.sequence_no,
-           cache.beian_hao,
-           f.product_name,
-           ${displayNameExpr}                     AS short_name,
-           ${stratCol}                          AS strategy_l1,
-           ${stratL2Col}                        AS strategy_l2,
-           ${stratL3Col}                        AS strategy_l3,
-           COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
-           COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
-           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct,
-           ${marketValueExpr}::text             AS market_value,
-           cache.ret_1w::text,
-           cache.ret_1m::text,
-           cache.ret_3m::text,
-           cache.ret_6m::text,
-           cache.ret_1y::text,
-           cache.sharpe_1y::text,
-           cache.calmar_1y::text
-         ${baseFrom}
-         WHERE ${where}
-         ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC
+           id,
+           sequence_no,
+           beian_hao,
+           product_name,
+           short_name,
+           strategy_l1,
+           strategy_l2,
+           strategy_l3,
+           latest_unit_nav,
+           latest_nav_date,
+           latest_return_pct,
+           market_value_num::text AS market_value,
+           ret_1w,
+           ret_1m,
+           ret_3m,
+           ret_6m,
+           ret_1y,
+           sharpe_1y,
+           calmar_1y
+         FROM (${dedupedSelect}) rows
+         ORDER BY ${outerSort} ${sortDir} NULLS LAST, sequence_no ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
         [...params, pageSize, offset],
       )
@@ -460,16 +489,21 @@ export async function GET(req: Request) {
       ${buildFofUnderlyingSummaryFrom(PRODUCT_EXPR)}
       LEFT JOIN private_fund_info pinfo ON pinfo.beian_hao = ${BEIAN_EXPR}
     `
+    const identityKey = sqlFofUnderlyingIdentityKey(BEIAN_EXPR, "f.id")
+    const identityTie = sqlFofUnderlyingIdentityTiebreak("f.product_name", "f.id")
 
-    const [countRows, totalMvRows] = await Promise.all([
-      query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
-      query<{ total_mv: string }>(
-        `SELECT COALESCE(SUM(${marketValueExpr}), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
-        params,
-      ),
-    ])
-    const total = parseInt(countRows[0]?.n || "0", 10)
-    const totalMarketValue = totalMvRows[0]?.total_mv ?? "0"
+    const aggRows = await query<{ n: string; total_mv: string }>(
+      `SELECT COUNT(*)::text AS n, COALESCE(SUM(mv), 0)::text AS total_mv
+       FROM (
+         SELECT DISTINCT ON (${identityKey}) ${marketValueExpr} AS mv
+         ${baseFrom}
+         WHERE ${where}
+         ORDER BY ${identityKey}, ${identityTie}
+       ) x`,
+      params,
+    )
+    const total = parseInt(aggRows[0]?.n || "0", 10)
+    const totalMarketValue = aggRows[0]?.total_mv ?? "0"
 
     if (total === 0) {
       return NextResponse.json({
@@ -524,7 +558,7 @@ export async function GET(req: Request) {
       calmar_1y: string | null
     }>(
       `SELECT * FROM (
-         SELECT
+         SELECT DISTINCT ON (${identityKey})
            f.id::text AS id,
            f.sequence_no,
            ${BEIAN_EXPR} AS beian_hao,
@@ -553,6 +587,7 @@ export async function GET(req: Request) {
          ${emailNavJoins}
          ${histJoins}
          WHERE ${where}
+         ORDER BY ${identityKey}, ${identityTie}
        ) rows
        ORDER BY ${sortCol} ${sortDir} NULLS LAST, sequence_no ASC
        LIMIT $${listParams.length + 1} OFFSET $${listParams.length + 2}`,

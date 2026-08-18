@@ -154,6 +154,19 @@ export function fofUnderlyingShortExpr(productNameExpr: string): string {
   END`
 }
 
+/**
+ * Collapse FOF底层 catalog rows that resolve to the same 备案号.
+ * Empty/null codes stay unique per summary id so unresolved products are not merged.
+ */
+export function sqlFofUnderlyingIdentityKey(beianExpr: string, idExpr: string): string {
+  return `COALESCE(NULLIF(UPPER(BTRIM(${beianExpr})), ''), 'id:' || ${idExpr}::text)`
+}
+
+/** Prefer the original spreadsheet name over a 估值表 场外_… alias. */
+export function sqlFofUnderlyingIdentityTiebreak(productNameExpr: string, idExpr: string): string {
+  return `CASE WHEN ${productNameExpr} LIKE '场外%' THEN 1 ELSE 0 END, length(${productNameExpr}) ASC, ${idExpr} ASC`
+}
+
 /** FROM clause for fof_underlying_summary with beian resolution joins. */
 export function buildFofUnderlyingSummaryFrom(productNameExpr: string): string {
   return `

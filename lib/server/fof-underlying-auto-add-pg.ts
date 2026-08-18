@@ -21,21 +21,96 @@ export type FofUnderlyingAutoAddResult = {
 }
 
 /**
- * Normalize a fund name for duplicate detection by stripping common legal suffixes
- * (e.g. "私募证券投资基金", "私募股权投资基金") so that
- * "天戈钻选CTA1号私募证券投资基金B类" and "天戈钻选CTA1号B类" match.
+ * Drop 估值表 subject-path prefixes (场外_已上市_开放式_私募_成本.XXX → XXX)
+ * so catalog matching uses the real fund name.
  */
-const NORMALIZE_NAME_SQL = `
-  LOWER(TRIM(REGEXP_REPLACE(
-    $NAME$,
-    '(私募证券投资基金|私募股权投资基金|私募基金|证券投资基金)',
-    '',
-    'g'
-  )))
-`
+function sqlCatalogFundName(col: string): string {
+  return `COALESCE(NULLIF(BTRIM(
+    CASE
+      WHEN ${col} LIKE '场外%' AND STRPOS(${col}, '.') > 0
+        THEN SUBSTRING(${col} FROM '([^.]+)$')
+      WHEN ${col} LIKE '场外%'
+        THEN REGEXP_REPLACE(${col}, '^场外[_/[:space:].]+', '')
+      ELSE ${col}
+    END
+  ), ''), ${col})`
+}
 
+/**
+ * Normalize a fund name for duplicate detection:
+ * strip 场外_ paths, legal suffixes, and treat trailing "A" as "A类"
+ * so "天戈钻选CTA1号私募证券投资基金B类" and "天戈钻选CTA1号B类" match,
+ * and "场外_…成本.特夫郁金香全量化" matches "特夫郁金香全量化".
+ */
 function normExpr(col: string): string {
-  return NORMALIZE_NAME_SQL.replace(/\$NAME\$/g, col)
+  const catalog = sqlCatalogFundName(col)
+  return `LOWER(BTRIM(
+    REGEXP_REPLACE(
+      REGEXP_REPLACE(
+        ${catalog},
+        '(私募证券投资基金|私募股权投资基金|私募基金|证券投资基金)',
+        '',
+        'g'
+      ),
+      '([A-Za-z])类?$',
+      '\\1类'
+    )
+  ))`
+}
+
+/**
+ * Remove 估值表 场外_… / email_valuation_auto aliases that duplicate an existing
+ * FOF底层汇总 row (same 备案号 or same normalized name).
+ */
+export async function removeFofUnderlyingSummaryAliases(): Promise<number> {
+  const doomed = await query<{ id: number; product_name: string }>(
+    `WITH keepers AS (
+       SELECT
+         f.id,
+         NULLIF(UPPER(BTRIM(c.beian_hao)), '') AS beian,
+         ${normExpr("f.product_name")} AS norm_name
+       FROM fof_underlying_summary f
+       LEFT JOIN ops_fof_overview_list_cache c ON c.fof_underlying_id = f.id
+       WHERE f.product_name <> '合计'
+         AND f.product_name NOT LIKE '场外%'
+     ),
+     aliases AS (
+       SELECT
+         f.id,
+         f.product_name,
+         NULLIF(UPPER(BTRIM(c.beian_hao)), '') AS beian,
+         ${normExpr("f.product_name")} AS norm_name
+       FROM fof_underlying_summary f
+       LEFT JOIN ops_fof_overview_list_cache c ON c.fof_underlying_id = f.id
+       WHERE f.product_name <> '合计'
+         AND f.product_name LIKE '场外%'
+     )
+     SELECT a.id, a.product_name
+     FROM aliases a
+     WHERE EXISTS (
+       SELECT 1 FROM keepers k
+       WHERE (a.beian IS NOT NULL AND k.beian IS NOT NULL AND a.beian = k.beian)
+          OR a.norm_name = k.norm_name
+     )`,
+  )
+  if (doomed.length === 0) return 0
+
+  console.warn(
+    `[fof-underlying-auto-add] removed ${doomed.length} alias duplicate(s): ${doomed
+      .map((r) => `id=${r.id} ${r.product_name}`)
+      .join("; ")}`,
+  )
+
+  const ids = doomed.map((r) => r.id)
+  await query(
+    `DELETE FROM ops_fof_overview_list_cache WHERE fof_underlying_id = ANY($1::int[])`,
+    [ids],
+  )
+  await query(
+    `DELETE FROM fof_underlying_summary WHERE id = ANY($1::int[])`,
+    [ids],
+  )
+  return doomed.length
 }
 
 /**
@@ -43,19 +118,23 @@ function normExpr(col: string): string {
  *  1. Add to fof_underlying_summary if not already present (normalised name match).
  *  2. Add to fof_underlying_detail if the (fof_fund_name, product_name) pair is absent.
  *
- * Existing rows are never modified — this is an ADD-only operation.
+ * Existing catalog rows are kept. Valuation-table 场外_ aliases that duplicate an
+ * existing product are removed before new rows are inserted.
  */
 export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoAddResult> {
   await ensureManagedFofUnderlyingTable()
+  await removeFofUnderlyingSummaryAliases()
 
   const normUnderlyingCol = normExpr("underlying_name")
   const normUnderlyingFromN = normExpr("n.underlying_name")
   const normSummary    = normExpr("f.product_name")
+  const catalogUnderlying = sqlCatalogFundName("a.underlying_name")
   const normFofEmail   = normExpr("fof_product_name")
   const normDetailFof  = normExpr("d.fof_fund_name")
   const normDetailProd = normExpr("d.product_name")
   const normEmailProd  = normExpr("a.product_name")
   const normEmailFof   = normExpr("a.fof_fund_name")
+  const catalogDetailProd = sqlCatalogFundName("a.product_name")
 
   // ── 1. fof_underlying_summary (运维 FOF底层 + 投资 FOF底层 overview) ──────────
   const summaryRows = await query<{ n: string }>(
@@ -84,15 +163,27 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
          SELECT 1 FROM fof_underlying_summary f
          WHERE ${normSummary} = ${normUnderlyingFromN}
        )
+         AND NOT EXISTS (
+           SELECT 1 FROM ops_fof_overview_list_cache c
+           WHERE n.underlying_product_code IS NOT NULL
+             AND NULLIF(BTRIM(c.beian_hao), '') IS NOT NULL
+             AND UPPER(BTRIM(c.beian_hao)) = n.underlying_product_code
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM fof_underlying_detail d
+           WHERE n.underlying_product_code IS NOT NULL
+             AND NULLIF(BTRIM(d.beian_hao), '') IS NOT NULL
+             AND UPPER(BTRIM(d.beian_hao)) = n.underlying_product_code
+         )
      ),
      inserted AS (
        INSERT INTO fof_underlying_summary (product_name, sequence_no, source_row_number, source_file, row_hash)
        SELECT
-         a.underlying_name,
+         ${catalogUnderlying},
          (SELECT seq     FROM max_seq) + a.rn,
          (SELECT src_row FROM max_seq) + a.rn,
          'email_valuation_auto',
-         MD5(a.underlying_name || ':email_valuation_auto:' || ((SELECT src_row FROM max_seq) + a.rn)::text)
+         MD5(${catalogUnderlying} || ':email_valuation_auto:' || ((SELECT src_row FROM max_seq) + a.rn)::text)
        FROM to_add a
        RETURNING 1
      )
@@ -116,14 +207,21 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        INSERT INTO fof_underlying_detail (fof_fund_name, product_name, beian_hao, source_file)
        SELECT
          a.fof_fund_name,
-         a.product_name,
+         ${catalogDetailProd},
          a.beian_hao,
          'email_valuation_auto'
        FROM to_add a
        WHERE NOT EXISTS (
          SELECT 1 FROM fof_underlying_detail d
          WHERE ${normDetailFof}  = ${normEmailFof}
-           AND ${normDetailProd} = ${normEmailProd}
+           AND (
+             ${normDetailProd} = ${normEmailProd}
+             OR (
+               a.beian_hao IS NOT NULL
+               AND NULLIF(BTRIM(d.beian_hao), '') IS NOT NULL
+               AND UPPER(BTRIM(d.beian_hao)) = UPPER(BTRIM(a.beian_hao))
+             )
+           )
        )
        ON CONFLICT (fof_fund_name, product_name) DO NOTHING
        RETURNING 1

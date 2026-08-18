@@ -14,6 +14,7 @@ import {
 import { writeFundElementsAcrossShareClasses, writeFundElementsFromBody } from "@/lib/server/fund-elements-write"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
+import { isWeakShortFee } from "@/lib/server/fund-contract-element-keywords"
 
 export const dynamic = "force-dynamic"
 
@@ -201,15 +202,15 @@ export async function GET(req: Request) {
     fee_purchase: el?.fee_purchase ?? null,
     add_amount: el?.add_amount ?? null,
     fee_redeem: el?.fee_redeem ?? null,
-    risk_level: extra.risk_level,
+    risk_level: extra.risk_level || null,
     precautious_line: el?.precautious_line ?? null,
     closed_period: el?.closed_period ?? null,
     stop_line: el?.stop_line ?? null,
     lock_period_desc: extra.lock_period_desc,
     fee_manage_rate,
-    fee_trust: el?.fee_trust ?? null,
+    fee_trust: isWeakShortFee(el?.fee_trust) ? null : el?.fee_trust ?? null,
     fee_manage: el?.fee_manage ?? null,
-    fee_admin_service: el?.fee_admin_service ?? null,
+    fee_admin_service: isWeakShortFee(el?.fee_admin_service) ? null : el?.fee_admin_service ?? null,
     fee_pay: el?.fee_pay ?? null,
     fee_pay_formula: extra.fee_pay_formula,
     fee_pay_formula_config: extra.fee_pay_formula_config,

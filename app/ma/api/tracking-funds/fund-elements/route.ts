@@ -3,6 +3,7 @@ import { query } from "@/lib/db"
 import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import { extraFieldsFromTrackRow, loadBasicinfoTrackByBeianKeys, resolveFundElementsBeianKeys } from "@/lib/server/fund-elements-lookup"
 import { formatTemporaryOpen } from "@/lib/ma/fund-elements-extra"
+import { isWeakShortFee } from "@/lib/server/fund-contract-element-keywords"
 
 export const dynamic = "force-dynamic"
 
@@ -110,11 +111,11 @@ export async function GET(req: Request) {
     closed_period: row.closed_period || null,
     stop_line: row.stop_line || null,
     fee_manage_rate: row.fee_manage_rate ? `${(parseFloat(row.fee_manage_rate) * 100).toFixed(2)}%` : null,
-    fee_trust: row.fee_trust || null,
+    fee_trust: isWeakShortFee(row.fee_trust) ? null : row.fee_trust || null,
     fee_manage: row.fee_manage || null,
-    fee_admin_service: row.fee_admin_service || null,
+    fee_admin_service: isWeakShortFee(row.fee_admin_service) ? null : row.fee_admin_service || null,
     fee_pay: row.fee_pay || null,
-    risk_level: extra.risk_level,
+    risk_level: extra.risk_level || row.risk_level || null,
     lock_period_desc: extra.lock_period_desc,
     fee_pay_formula: extra.fee_pay_formula,
     updated_at: row.updated_at ? row.updated_at.slice(0, 10) : null,
