@@ -12,7 +12,6 @@ import {
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
 import { managedProductsResolvedBeianSqlExpr } from "@/lib/server/managed-product-beian"
-import { sqlValuationMetricsMatch } from "@/lib/server/managed-products-nav-query"
 import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
 
 export type EmailValuationSyncResult = {
@@ -34,18 +33,54 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
        ${buildManagedProductsFrom("m.product_name")}
        WHERE m.product_name <> '合计'
      ),
+     latest AS (
+       SELECT DISTINCT ON (UPPER(BTRIM(r.product_code)))
+         BTRIM(r.product_code) AS product_code,
+         r.custody_balance,
+         CASE
+           WHEN r.paid_in_capital > 1000 AND r.unit_nav > 0.05
+                AND raw_nav IS NOT NULL
+                AND raw_nav > r.paid_in_capital * r.unit_nav * 2.5
+           THEN r.paid_in_capital * r.unit_nav
+           ELSE COALESCE(
+             raw_nav,
+             CASE
+               WHEN r.paid_in_capital > 1000 AND r.unit_nav > 0.05
+               THEN r.paid_in_capital * r.unit_nav
+             END
+           )
+         END AS net_asset_value
+       FROM (
+         SELECT
+           r.product_code,
+           r.custody_balance,
+           r.paid_in_capital,
+           r.unit_nav,
+           r.valuation_date,
+           r.id,
+           COALESCE(
+             NULLIF(r.net_asset_value, 0),
+             NULLIF(r.net_asset, 0),
+             CASE
+               WHEN r.total_asset > 1000
+               THEN r.total_asset - COALESCE(r.total_liability, 0)
+             END,
+             CASE
+               WHEN (r.summary->>'nav') ~ '^[0-9.]+$'
+                 AND (r.summary->>'nav')::numeric > 1000
+               THEN (r.summary->>'nav')::numeric
+             END
+           ) AS raw_nav
+         FROM ops_email_valuation_records r
+         WHERE NULLIF(BTRIM(r.product_code), '') IS NOT NULL
+       ) r
+       ORDER BY UPPER(BTRIM(r.product_code)), r.valuation_date DESC, r.id DESC
+     ),
      best AS (
-       SELECT DISTINCT ON (mp.id)
-         mp.id,
-         v.custody_balance,
-         v.net_asset_value
+       SELECT mp.id, v.custody_balance, v.net_asset_value
        FROM mp
-       INNER JOIN ops_email_valuation_fund_metrics_latest v
-         ON ${sqlValuationMetricsMatch("mp.beian_hao", "mp.product_name")}
-       ORDER BY
-         mp.id,
-         CASE WHEN v.product_code = mp.beian_hao THEN 0 ELSE 1 END,
-         v.valuation_date DESC
+       INNER JOIN latest v ON UPPER(BTRIM(v.product_code)) = UPPER(BTRIM(mp.beian_hao))
+       WHERE v.custody_balance IS NOT NULL OR v.net_asset_value IS NOT NULL
      ),
      updated AS (
        UPDATE managed_products m

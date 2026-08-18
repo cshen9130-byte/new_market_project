@@ -40,6 +40,48 @@ function emptyMetrics(): EmailFundMetricsRow {
   }
 }
 
+function parseAmount(raw: string | number | null | undefined): number | null {
+  if (raw == null || raw === "") return null
+  const n = typeof raw === "number" ? raw : parseFloat(String(raw))
+  return Number.isFinite(n) ? n : null
+}
+
+/** Fund-level 资产净值 — never a unit NAV (0.05–500). */
+function parseFundNavAmount(raw: string | number | null | undefined): number | null {
+  const n = parseAmount(raw)
+  if (n == null || n < 1000) return null
+  return n
+}
+
+export function deriveNetAssetValue(row: {
+  net_asset_value?: string | null
+  net_asset?: string | null
+  total_asset?: string | null
+  total_liability?: string | null
+  paid_in_capital?: string | null
+  unit_nav?: string | null
+  summary_nav?: string | null
+}): number | null {
+  const unitNav = parseAmount(row.unit_nav)
+  const paidIn = parseFundNavAmount(row.paid_in_capital)
+  const implied =
+    unitNav != null && unitNav > 0.05 && paidIn != null ? unitNav * paidIn : null
+
+  const fromColumns = parseFundNavAmount(row.net_asset_value)
+    ?? parseFundNavAmount(row.net_asset)
+    ?? parseFundNavAmount(row.summary_nav)
+    ?? (() => {
+      const assets = parseFundNavAmount(row.total_asset)
+      const liab = parseAmount(row.total_liability) ?? 0
+      return assets != null ? assets - liab : null
+    })()
+
+  if (implied != null && implied >= 1000) {
+    if (fromColumns == null || fromColumns > implied * 2.5) return implied
+  }
+  return fromColumns
+}
+
 /** True when a 估值表 row's product_code is this managed product (or a known alias). */
 export function valuationMetricsCodeBelongsToBeian(
   productCode: string | null | undefined,
@@ -73,33 +115,46 @@ export async function loadEmailFundMetricsLookup(): Promise<{
   byFundName: Map<string, EmailFundMetricsRow>
 }> {
   await ensureEmailValuationMetricsTables()
+  // Latest 估值表 per product_code from records. metrics_latest is keyed by
+  // fund_name, so SBKM53 (fund_name=金舆锡泰一号) can hide SCQ403.
   const rows = await query<{
     product_code: string | null
     fund_name: string
     custody_balance: string | null
     net_asset_value: string | null
+    net_asset: string | null
+    total_asset: string | null
+    total_liability: string | null
+    paid_in_capital: string | null
     unit_nav: string | null
     valuation_date: string | null
-  }>(`SELECT product_code, fund_name,
-            custody_balance::text, net_asset_value::text,
-            unit_nav::text, valuation_date::text
-      FROM ops_email_valuation_fund_metrics_latest`)
+    summary_nav: string | null
+  }>(`SELECT DISTINCT ON (UPPER(BTRIM(product_code)))
+            product_code, fund_name,
+            custody_balance::text, net_asset_value::text, net_asset::text,
+            total_asset::text, total_liability::text, paid_in_capital::text,
+            unit_nav::text, valuation_date::text,
+            summary->>'nav' AS summary_nav
+      FROM ops_email_valuation_records
+      WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+      ORDER BY UPPER(BTRIM(product_code)), valuation_date DESC, id DESC`)
 
   const byProductCode = new Map<string, EmailFundMetricsRow>()
   const byFundName = new Map<string, EmailFundMetricsRow>()
 
   for (const row of rows) {
-    const unitNav = row.unit_nav != null ? parseFloat(row.unit_nav) : null
+    const unitNav = parseAmount(row.unit_nav)
     const productCode = row.product_code?.trim() || null
+    const custody = parseAmount(row.custody_balance)
     const metrics: EmailFundMetricsRow = {
       product_code: productCode,
-      custody_balance: row.custody_balance != null ? parseFloat(row.custody_balance) : null,
-      net_asset_value: row.net_asset_value != null ? parseFloat(row.net_asset_value) : null,
-      unit_nav: unitNav != null && Number.isFinite(unitNav) && unitNav > 0 ? unitNav : null,
+      custody_balance: custody != null && custody > 0 ? custody : null,
+      net_asset_value: deriveNetAssetValue(row),
+      unit_nav: unitNav != null && unitNav > 0 ? unitNav : null,
       valuation_date: row.valuation_date?.slice(0, 10) ?? null,
     }
     if (productCode) {
-      byProductCode.set(productCode, metrics)
+      byProductCode.set(productCode.toUpperCase(), metrics)
     }
     if (shouldIndexValuationMetricsByFundName(row.fund_name, productCode)) {
       byFundName.set(row.fund_name.trim(), metrics)
@@ -120,20 +175,22 @@ export function resolveEmailFundMetrics(
     resolveManagedProductBeian(productName, beianHao)?.trim()
     || beianHao?.trim()
     || ""
-  if (resolved && lookup.byProductCode.has(resolved)) {
-    return lookup.byProductCode.get(resolved)!
+  const resolvedKey = resolved.toUpperCase()
+  if (resolvedKey && lookup.byProductCode.has(resolvedKey)) {
+    return lookup.byProductCode.get(resolvedKey)!
   }
   const beian = beianHao?.trim()
+  const beianKey = beian?.toUpperCase() ?? ""
   // Only follow known aliases (SBVC25→SCN504). Auto-resolved underlying codes
   // like SBKM53 for 金舆锡泰一号 must not supply 资产净值.
   if (
-    beian
-    && resolved
-    && beian !== resolved
+    beianKey
+    && resolvedKey
+    && beianKey !== resolvedKey
     && valuationMetricsCodeBelongsToBeian(beian, resolved)
-    && lookup.byProductCode.has(beian)
+    && lookup.byProductCode.has(beianKey)
   ) {
-    return lookup.byProductCode.get(beian)!
+    return lookup.byProductCode.get(beianKey)!
   }
   const exact = lookup.byFundName.get(productName.trim())
   if (exact && (!resolved || valuationMetricsCodeBelongsToBeian(exact.product_code, resolved))) {

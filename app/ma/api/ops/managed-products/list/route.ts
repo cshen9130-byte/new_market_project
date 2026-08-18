@@ -34,13 +34,20 @@ import {
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+/** Prefer list-cache AUM/custody even when null — COALESCE to managed_products
+ *  restored stale SBKM53 资产净值 after 金舆锡泰一号 name-match was rejected. */
+const CACHE_AUM_EXPR =
+  "CASE WHEN cache.managed_product_id IS NOT NULL THEN cache.net_asset_value ELSE m.net_asset_value END"
+const CACHE_CUSTODY_EXPR =
+  "CASE WHEN cache.managed_product_id IS NOT NULL THEN cache.custody_balance ELSE m.custody_account_balance END"
+
 const ALLOWED_SORT: Record<string, string> = {
   product_name: "m.product_name",
   latest_nav: "cache.unit_nav",
   latest_nav_date: "cache.nav_date",
   latest_price_change: "cache.return_pct",
-  custody_balance: "COALESCE(cache.custody_balance, m.custody_account_balance)",
-  net_asset_value: "COALESCE(cache.net_asset_value, m.net_asset_value)",
+  custody_balance: CACHE_CUSTODY_EXPR,
+  net_asset_value: CACHE_AUM_EXPR,
   ret_1w: "cache.ret_1w",
   ret_1m: "cache.ret_1m",
   ret_3m: "cache.ret_3m",
@@ -380,9 +387,9 @@ export async function GET(req: Request) {
       }
 
       if (runStatus === "running") {
-        conditions.push(`(COALESCE(cache.net_asset_value, m.net_asset_value) IS NULL OR COALESCE(cache.net_asset_value, m.net_asset_value) > 0)`)
+        conditions.push(`(${CACHE_AUM_EXPR} IS NULL OR ${CACHE_AUM_EXPR} > 0)`)
       } else if (runStatus === "liquidated") {
-        conditions.push(`(COALESCE(cache.net_asset_value, m.net_asset_value) IS NOT NULL AND COALESCE(cache.net_asset_value, m.net_asset_value) <= 0)`)
+        conditions.push(`(${CACHE_AUM_EXPR} IS NOT NULL AND ${CACHE_AUM_EXPR} <= 0)`)
       }
 
       if (teamTags.length > 0) {
@@ -408,7 +415,7 @@ export async function GET(req: Request) {
 
       const [countRow, navRow] = await Promise.all([
         query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
-        query<{ t: string }>(`SELECT COALESCE(SUM(COALESCE(cache.net_asset_value, m.net_asset_value)), 0)::text AS t ${baseFrom} WHERE ${where}`, params),
+        query<{ t: string }>(`SELECT COALESCE(SUM(${CACHE_AUM_EXPR}), 0)::text AS t ${baseFrom} WHERE ${where}`, params),
       ])
       const total             = parseInt(countRow[0]?.n || "0", 10)
       const totalNetAssetValue = navRow[0]?.t ?? "0"
@@ -449,8 +456,8 @@ export async function GET(req: Request) {
            cache.unit_nav::text                 AS latest_unit_nav,
            cache.nav_date::text                 AS latest_nav_date,
            cache.return_pct::text               AS latest_return_pct,
-           COALESCE(cache.custody_balance, m.custody_account_balance)::text AS custody_account_balance,
-           COALESCE(cache.net_asset_value, m.net_asset_value)::text AS net_asset_value,
+           ${CACHE_CUSTODY_EXPR}::text AS custody_account_balance,
+           ${CACHE_AUM_EXPR}::text AS net_asset_value,
            cache.ret_1w::text,
            cache.ret_1m::text,
            cache.ret_3m::text,

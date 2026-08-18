@@ -20,7 +20,7 @@ import {
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
-import { resolveEmailFundMetrics } from "../lib/server/email-valuation-cache-enrich.ts"
+import { deriveNetAssetValue, resolveEmailFundMetrics } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
   extractNavTableFromBuffer,
   selectNavTableAttachments,
@@ -2156,6 +2156,13 @@ if (fs.existsSync(excelPath)) {
     byFundName: lookup.byFundName,
   })
   assert("锡泰 name-match rejects SBKM53 metrics", nameOnly.net_asset_value == null)
+
+  const derived = deriveNetAssetValue({
+    net_asset_value: "207135317.39",
+    paid_in_capital: "51951118.25",
+    unit_nav: "0.9991",
+  })
+  assert("锡泰 stored 207M AUM yields 实收资本×单位净值", Math.abs((derived ?? 0) - 51951118.25 * 0.9991) < 1)
 
   const wb = XLSX.utils.book_new()
   const sheet = XLSX.utils.aoa_to_sheet([

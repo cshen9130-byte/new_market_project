@@ -12,8 +12,11 @@
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --managed-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --tracking-only
  *
- * `--cache-only` skips valuation/holdings backfills and rebuilds list caches only
- * (use for nightly investment_pool_metrics — full --refresh-only can exceed 60 min).
+ * `--cache-only` skips valuation/holdings JSONB backfills and rebuilds list caches.
+ * It still syncs latest 估值表 资产净值 into managed_products so the list does not
+ * keep stale AUM (COALESCE to managed_products). `--managed-only` skips the
+ * investment-overview rebuild (that query can statement-timeout after the list
+ * cache already succeeded).
  *
  * Loads `.env.local` / `.env` from the project root automatically (same as nightly_etl.py).
  * Prints JSON to stdout for nightly_etl.py to consume.
@@ -78,9 +81,6 @@ async function main() {
           console.warn("[email_nav_etl] CMS NAV day-shift heal skipped:", err)
         }
       } else {
-      const { syncEmailValuationToProductTables } = await import(
-        "@/lib/server/email-valuation-sync-pg"
-      )
       console.error("[email_nav_etl] refresh-only: backfilling custody 估值表 NAV into ops_email_nav_records…")
       try {
         const { backfillCustodyValuationNavFromRecords } = await import(
@@ -165,9 +165,14 @@ async function main() {
         }
       }
 
-      if (!fofOnly) {
-        console.error("[email_nav_etl] refresh-only: syncing valuation metrics to product tables…")
+      }
+
+      if (refreshManaged) {
+        console.error("[email_nav_etl] syncing valuation metrics to product tables…")
         try {
+          const { syncEmailValuationToProductTables } = await import(
+            "@/lib/server/email-valuation-sync-pg"
+          )
           const sync = await syncEmailValuationToProductTables()
           managedProductsValuationSynced = sync.managedProductsUpdated
           fofUnderlyingMarketSynced = sync.fofUnderlyingUpdated
@@ -177,7 +182,6 @@ async function main() {
         } catch (err) {
           console.warn("[email_nav_etl] valuation sync skipped (will enrich list caches instead):", err)
         }
-      }
       }
 
       if (refreshManaged) {
@@ -201,13 +205,22 @@ async function main() {
         console.error(`[email_nav_etl] tracking funds cache done (${trackingFundsListCache} rows)`)
       }
 
-      if (refreshManaged) {
+      if (refreshManaged && !managedOnly) {
         console.error("[email_nav_etl] refresh-only: rebuilding investment overview cache…")
-        const { refreshInvestmentOverviewCache } = await import("@/lib/server/investment-overview-cache-pg")
-        investmentOverviewCache = await refreshInvestmentOverviewCache()
-        console.error(
-          `[email_nav_etl] investment overview cache done (products=${investmentOverviewCache.products}, nav=${investmentOverviewCache.navRows}, underlying=${investmentOverviewCache.underlyingRows})`,
-        )
+        try {
+          const { refreshInvestmentOverviewCache } = await import("@/lib/server/investment-overview-cache-pg")
+          investmentOverviewCache = await refreshInvestmentOverviewCache()
+          console.error(
+            `[email_nav_etl] investment overview cache done (products=${investmentOverviewCache.products}, nav=${investmentOverviewCache.navRows}, underlying=${investmentOverviewCache.underlyingRows})`,
+          )
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          console.warn(
+            `[email_nav_etl] investment overview cache skipped after list cache succeeded: ${message}`,
+          )
+        }
+      } else if (managedOnly) {
+        console.error("[email_nav_etl] --managed-only: skipping investment overview cache")
       }
 
       console.log(JSON.stringify({
