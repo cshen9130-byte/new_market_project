@@ -215,6 +215,15 @@ function resolveCustodyBalance(rows: ValuationRow[]): number {
 function resolvePaidInCapital(rows: ValuationRow[], netAssetValue: number, unitNav: number): number {
   const implied =
     netAssetValue > 1000 && unitNav > 0.05 ? netAssetValue / unitNav : 0
+  const underlyingQty = new Set<number>()
+  for (const row of rows) {
+    if (!isFofUnderlyingHolding(row)) continue
+    const qty = parseAmount(row.quantity ?? row.position ?? row.volume)
+    if (qty > 1000) underlyingQty.add(qty)
+  }
+  const matchesUnderlying = (value: number) =>
+    [...underlyingQty].some((qty) => Math.abs(qty - value) / value < 0.01)
+
   const candidates: number[] = []
   for (const row of rows) {
     const name = normalizeText(row.name)
@@ -226,7 +235,7 @@ function resolvePaidInCapital(rows: ValuationRow[], netAssetValue: number, unitN
     const cost = parseAmount(row.cost ?? row.signed_cost)
     const mv = pickRowMarketValue(row) || pickRowCost(row)
     const value = qty > 0 ? qty : cost > 0 ? cost : mv
-    if (value > 1000) candidates.push(value)
+    if (value > 1000 && !matchesUnderlying(value)) candidates.push(value)
   }
 
   if (implied > 1000) {
@@ -264,13 +273,12 @@ function resolveTotalsFromRows(rows: ValuationRow[]): { totalAsset: number; tota
 function deriveNetAssetValueFromHoldings(rows: ValuationRow[]): number {
   const LIABILITY_KINDS = new Set(["payable"])
   const SKIP_KINDS = new Set(["paid_in_capital"])
-  let assets = 0
+  const assetAmounts: number[] = []
   let liabilities = 0
 
   for (const row of rows) {
     const kind = String(row.row_kind ?? "other")
     if (SKIP_KINDS.has(kind)) continue
-    // Prefer leaf rows; parent aggregates double-count children.
     if (row.is_leaf === false) continue
     const amount = pickRowMarketValue(row) || pickRowCost(row)
     if (amount <= 0) continue
@@ -278,7 +286,17 @@ function deriveNetAssetValueFromHoldings(rows: ValuationRow[]): number {
       liabilities += amount
       continue
     }
-    assets += amount
+    assetAmounts.push(amount)
+  }
+
+  if (assetAmounts.length === 0) return 0
+  let assets = assetAmounts.reduce((sum, n) => sum + n, 0)
+  // One leaf 市值 at the underlying fund's full AUM (锡和鑫安 ~207M) must not
+  // be treated as this FOF's assets.
+  if (assetAmounts.length >= 2) {
+    const max = Math.max(...assetAmounts)
+    const rest = assets - max
+    if (rest > 1000 && max > rest * 2.5) assets = rest
   }
 
   const derived = assets - liabilities
@@ -310,13 +328,17 @@ function resolveNetAssetValue(summary: ValuationAnalysis["summary"], rows: Valua
   const fromSummary =
     summary.nav > 1000 && !isPlausibleUnitNav(summary.nav) ? summary.nav : 0
   const fromHoldings = deriveNetAssetValueFromHoldings(rows)
-  const parsed = footer || fromTotals || fromSummary
 
-  // Huatai 金舆锡泰一号: footer 资产净值/实收资本 can be the underlying fund's
-  // ~207M, while leaf holdings are the FOF's ~52M.
-  if (fromHoldings > 1000 && parsed > fromHoldings * 2.5) return fromHoldings
-  if (parsed > 1000) return parsed
-  return fromHoldings
+  const consistentWithHoldings = (nav: number) =>
+    nav > 1000 && (fromHoldings < 1000 || nav <= fromHoldings * 2.5)
+
+  // Footer 资产净值 can be the underlying's AUM. Prefer 资产合计−负债合计 when
+  // that matches this fund's own holdings; otherwise holdings.
+  if (consistentWithHoldings(footer)) return footer
+  if (consistentWithHoldings(fromTotals)) return fromTotals
+  if (consistentWithHoldings(fromSummary)) return fromSummary
+  if (fromHoldings > 1000) return fromHoldings
+  return footer || fromTotals || fromSummary || 0
 }
 
 /** Extract product code like TA891A (uppercase, with share class) from underlying fund holding. */

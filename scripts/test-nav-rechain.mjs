@@ -2185,4 +2185,27 @@ if (fs.existsSync(excelPath)) {
   assert("Huatai 锡泰 unit NAV 0.9991", parsed?.unitNav === 0.9991)
   assert("Huatai 锡泰 资产净值 ~51.95M not 207M", parsed?.netAssetValue != null && Math.abs(parsed.netAssetValue - 51954300.55) < 1)
   assert("Huatai 锡泰 date 2026-08-17", parsed?.valuationDate === "2026-08-17")
+
+  const poisoned = XLSX.utils.book_new()
+  const poisonedSheet = XLSX.utils.aoa_to_sheet([
+    ["SCQ403 金舆锡泰一号私募证券投资基金 产品估值表 日报 20260817"],
+    ["华泰证券股份有限公司_金舆锡泰一号私募证券投资基金_专用表"],
+    ["日期: 2026-08-17", "单位净值:0.9991"],
+    ["科目代码", "科目名称", "币种", "汇率", "数量", "单位成本", "成本", "", "", "行情", "市值", "", "", "估值增值", ""],
+    ["", "", "", "", "", "", "原币", "本币", "成本占比", "", "原币", "本币", "市值占比", "原币", "本币"],
+    ["1002", "银行存款", "CNY", 1, "", "", 9999600, 0, "", "", 9999600, 0, "", "", ""],
+    ["1108", "基金投资", "CNY", 1, 207321907.11, 1, 41954700.54, 0, "", "", 41954700.54, 0, "", "", ""],
+    ["", "资产合计", "CNY", 1, "", "", 52000300.54, 0, "", "", 52000300.54, 0, "", "", ""],
+    ["", "负债合计", "CNY", 1, "", "", 45999.99, 0, "", "", 45999.99, 0, "", "", ""],
+    ["", "资产净值", "CNY", 1, "", "", 207135317.39, 0, "", "", 207135317.39, 0, "", "", ""],
+    ["4001", "实收资本", "CNY", 1, 207321907.11, 1, 207321907.11, 0, "", "", 207321907.11, 0, "", "", ""],
+    ["", "单位净值", "CNY", 1, "", "", "", "", "", "", 0.9991, 0, "", "", ""],
+  ])
+  XLSX.utils.book_append_sheet(poisoned, poisonedSheet, "Sheet1")
+  const poisonedBuf = XLSX.write(poisoned, { type: "buffer", bookType: "xls" })
+  const poisonedParsed = extractValuationFromBuffer(Buffer.from(poisonedBuf), filename, subject)
+  assert(
+    "Huatai 锡泰 rejects underlying 207M footer AUM",
+    poisonedParsed?.netAssetValue != null && Math.abs(poisonedParsed.netAssetValue - 51954300.55) < 1,
+  )
 }
