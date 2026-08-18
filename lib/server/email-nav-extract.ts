@@ -471,6 +471,18 @@ function parseValuationTableSubject(text: string): { code: string; fundName: str
   )
   if (tail) return { code: tail[1], fundName: normalizeFundDisplayName(tail[2]) }
 
+  // 华泰: SCQ403_金舆锡泰一号私募证券投资基金_产品估值表_日报_20260817.xls
+  const huataiDaily = text.match(
+    /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_产品估值表_日报_(20\d{6})/u,
+  )
+  if (huataiDaily) return { code: huataiDaily[1], fundName: normalizeFundDisplayName(huataiDaily[2]) }
+
+  // 华泰: SCQ403_金舆锡泰一号私募证券投资基金估值表20260817 (no underscore before 估值表/date)
+  const huataiGlued = text.match(
+    /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)估值表(20\d{6})/u,
+  )
+  if (huataiGlued) return { code: huataiGlued[1], fundName: normalizeFundDisplayName(huataiGlued[2]) }
+
   // 【估值表】SCU622 金舆稳健增长1号FOF私募证券投资基金_20260730
   const bracket = text.match(
     /【估值表】\s*([A-Z0-9]{4,10})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})/u,

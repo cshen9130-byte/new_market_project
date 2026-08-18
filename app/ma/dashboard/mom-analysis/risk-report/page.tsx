@@ -7279,6 +7279,7 @@ export default function RiskReportNewPage() {
   const [briefingSandboxProdMcr, setBriefingSandboxProdMcr] = useState<{ name: string; value: number }[]>([])
   const briefingSandboxDataRef = useRef<SandboxExportData | null>(null)
   const [briefingSubAccountCount, setBriefingSubAccountCount] = useState<number | null>(null)
+  const [briefingEmptyAccountCount, setBriefingEmptyAccountCount] = useState<number | null>(null)
   const [briefingPdfDownloading, setBriefingPdfDownloading] = useState(false)
   const [briefingImageDownloading, setBriefingImageDownloading] = useState(false)
   const [briefingHtmlDownloading, setBriefingHtmlDownloading] = useState(false)
@@ -7324,17 +7325,31 @@ export default function RiskReportNewPage() {
     if (activeTab !== "briefing") return
     if (briefingSubAccountCount !== null) return
 
+    const applyCounts = (j: { subAccountCount?: number; emptyAccountCount?: number; accountData?: Record<string, unknown> }) => {
+      if (typeof j.subAccountCount === "number") {
+        setBriefingSubAccountCount(j.subAccountCount)
+      } else {
+        setBriefingSubAccountCount(Object.keys(j.accountData ?? {}).length)
+      }
+      if (typeof j.emptyAccountCount === "number") {
+        setBriefingEmptyAccountCount(j.emptyAccountCount)
+      }
+    }
+
     fetch("/ma/api/mom-analysis/account-daily-pnl")
       .then((r) => r.json())
       .then((j) => {
-        if (typeof j.subAccountCount === "number") {
-          setBriefingSubAccountCount(j.subAccountCount)
-        } else {
-          const accountData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = j.accountData ?? {}
-          setBriefingSubAccountCount(Object.keys(accountData).length)
+        applyCounts(j)
+        if (typeof j.emptyAccountCount !== "number") {
+          return fetch("/ma/api/mom-analysis/account-daily-pnl?nocache=1")
+            .then((r) => r.json())
+            .then(applyCounts)
         }
       })
-      .catch(() => setBriefingSubAccountCount(0))
+      .catch(() => {
+        setBriefingSubAccountCount(0)
+        setBriefingEmptyAccountCount(0)
+      })
   }, [activeTab, briefingSubAccountCount])
 
   const briefingSummary = useMemo(() => {
@@ -9256,6 +9271,8 @@ export default function RiskReportNewPage() {
                     <p className="text-sm leading-7 text-[#2a3a4a] mb-4 pl-1 border-l-4 border-[#c8a84b] bg-[#faf7ef] py-2 px-3 rounded-r">
                       当前组合的子层操作账户数为
                       <span className="font-bold text-[#1a3a5c]"> {briefingSubAccountCount ?? "—"} </span>
+                      个，其中空仓账户
+                      <span className="font-bold text-[#1a3a5c]"> {briefingEmptyAccountCount ?? "—"} </span>
                       个
                     </p>
                     <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4"

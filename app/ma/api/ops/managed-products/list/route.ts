@@ -591,7 +591,7 @@ export async function GET(req: Request) {
       pctExpr: metricSql.currentPctExpr,
     }
     const emailNavJoins = metricSql.emailNavJoins
-    const valuationJoin = managedValuationMetricsJoin(BEIAN_EXPR, PRODUCT_EXPR)
+    const valuationJoin = managedValuationMetricsJoin(metricSql.beianExpr, PRODUCT_EXPR)
     const histJoins = [7, 30, 90, 180, 365]
       .map((days, i) => managedNavAtOffsetJoin(["h1w","h1m","h3m","h6m","h1y"][i], BEIAN_EXPR, PRODUCT_EXPR, SHORT_EXPR, days, cutoffExpr))
       .join("\n")
@@ -619,7 +619,7 @@ export async function GET(req: Request) {
          SELECT
            m.id::text AS id,
            m.sequence_no,
-           ${BEIAN_EXPR} AS beian_hao,
+           ${metricSql.beianExpr} AS beian_hao,
            m.product_name,
            ${SHORT_EXPR} AS short_name,
            ${strategyExpr} AS strategy_l1,

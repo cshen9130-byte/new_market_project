@@ -114,14 +114,25 @@ export function isGuotaiValuationSubject(subject: string, filename: string): boo
   return /_(20\d{6})估值表/u.test(`${subject}\0${filename}`)
 }
 
+/** 华泰 产品估值表_日报 / CODE_NAME估值表YYYYMMDD — filename date is the NAV date. */
+export function isHuataiDailyValuationSubject(subject: string, filename: string): boolean {
+  const text = `${subject}\0${filename}`
+  return /产品估值表_日报_(20\d{6})/u.test(text)
+    || /私募证券投资基金估值表(20\d{6})/u.test(text)
+}
+
 function valuationSubjectSendDate(subject: string, filename: string): string | null {
   const text = `${subject}${filename}`
+  const huataiDaily = text.match(/产品估值表_日报_(20\d{6})/u)
+  if (huataiDaily) return normaliseDate(huataiDaily[1])
   const afterTable = text.match(/估值表_(20\d{6})/u)
   if (afterTable) return normaliseDate(afterTable[1])
   const beforeTable = text.match(/_(20\d{6})_估值表/u)
   if (beforeTable) return normaliseDate(beforeTable[1])
   const guotai = text.match(/_(20\d{6})估值表/u)
   if (guotai) return normaliseDate(guotai[1])
+  const glued = text.match(/估值表(20\d{6})/u)
+  if (glued) return normaliseDate(glued[1])
   return subjectOrFilenameDate(subject, filename)
 }
 
@@ -330,10 +341,12 @@ function resolveValuationTableNavDate(
   const summary = summaryDate ? normaliseDate(summaryDate) : null
   const custodySend = subjectDate != null && isCustodySendDateValuationSubject(subject, filename)
   const guotai = subjectDate != null && isGuotaiValuationSubject(subject, filename)
+  const huataiDaily = subjectDate != null && isHuataiDailyValuationSubject(subject, filename)
 
-  // 国泰海通 `_YYYYMMDD估值表` — subject date is the valuation/NAV date. Reject header
-  // false positives (e.g. holdings「到期日」parsed as 日期) that land far earlier.
-  if (guotai && subjectDate) {
+  // 国泰海通 `_YYYYMMDD估值表` / 华泰 `产品估值表_日报_YYYYMMDD` — subject date is
+  // the valuation/NAV date. Reject header false positives (e.g. holdings「到期日」)
+  // that land far earlier.
+  if ((guotai || huataiDaily) && subjectDate) {
     if (header && calendarDaysBetween(header, subjectDate) <= 1) return header
     if (summary && calendarDaysBetween(summary, subjectDate) <= 1) return summary
     return subjectDate

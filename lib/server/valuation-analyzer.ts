@@ -454,6 +454,8 @@ function extractFundName(rows: unknown[][], headerRowIndex: number, filename: st
 
   const filePatterns = [
     /【基金估值表】([A-Z0-9]+)_([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/u,
+    /([A-Z0-9]+)_([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_产品估值表/u,
+    /([A-Z0-9]+)_([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)估值表(20\d{6})/u,
     /([A-Z0-9]+)_([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(?:资产)?估值表/u,
     /([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)每日(?:产品)?(?:三|四)?级估值表/u,
     /(?:^|_)([^_]*基金[^_]*)_/u,
@@ -492,8 +494,10 @@ function extractSummary(rows: unknown[][], headerRowIndex: number, columns: Colu
     const label = name || normalizeText(code)
     const costCol = costColumnIndex(columns)
     const marketCol = marketValueColumnIndex(columns)
-    const cost = costCol >= 0 ? parseNumber(row[costCol]) : rowLocalizedAmount(row, columns, "cost")
-    const marketValue = marketCol >= 0 ? parseNumber(row[marketCol]) : rowLocalizedAmount(row, columns, "market_value")
+    const cost = (costCol >= 0 ? parseNumber(row[costCol]) : 0)
+      || rowLocalizedAmount(row, columns, "cost")
+    const marketValue = (marketCol >= 0 ? parseNumber(row[marketCol]) : 0)
+      || rowLocalizedAmount(row, columns, "market_value")
     const value = marketValue || cost
 
     if (!label) {
@@ -685,6 +689,7 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
         case "cost":
           // Keep 本币 when both 本币/原币 columns exist; allow 原币 to fill when 本币 is empty.
           if (/原币/.test(col.label) && obj.cost != null && Number(obj.cost) !== 0) break
+          if (numberValue === 0 && obj.cost != null && Number(obj.cost) !== 0) break
           obj.cost = Math.abs(numberValue)
           obj.signed_cost = numberValue
           break
@@ -697,6 +702,7 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
           break
         case "market_value":
           if (/原币/.test(col.label) && obj.market_value != null && Number(obj.market_value) !== 0) break
+          if (numberValue === 0 && obj.market_value != null && Number(obj.market_value) !== 0) break
           obj.market_value = Math.abs(numberValue)
           obj.notional_value = Math.abs(numberValue)
           obj.signed_market_value = numberValue

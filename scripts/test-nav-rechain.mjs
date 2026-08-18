@@ -13,11 +13,14 @@ import { lookupFundNavCorrectionRule, applyFundNavCorrectionToLegacyRows } from 
 import {
   isGuotaiValuationSubject,
   isCustodySendDateValuationSubject,
+  isHuataiDailyValuationSubject,
   extractNavFromValuationBuffer,
+  extractValuationFromBuffer,
 } from "../lib/server/email-valuation-attachment.ts"
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
+import { resolveEmailFundMetrics } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
   extractNavTableFromBuffer,
   selectNavTableAttachments,
@@ -2104,4 +2107,75 @@ if (fs.existsSync(excelPath)) {
   )
   assert("CMS extractNav uses header 0.9884 not 昨日/body 0.9846", cmsNav?.nav === 0.9884)
   assert("CMS extractNav date 2026-08-05", cmsNav?.navDate === "2026-08-05")
+}
+
+// 华泰 金舆锡泰一号: custody 估值表 is SCQ403, not the TA-virtual underlying SBKM53.
+{
+  const subject = "SCQ403_金舆锡泰一号私募证券投资基金估值表20260817"
+  const filename = "SCQ403_金舆锡泰一号私募证券投资基金_产品估值表_日报_20260817.xls"
+  const meta = extractNavMetadata(subject, "")
+  assert("Huatai 锡泰 subject code SCQ403", meta.productCode === "SCQ403")
+  assert("Huatai 锡泰 subject name 金舆锡泰一号", meta.fundName === "金舆锡泰一号")
+  const fileMeta = extractNavMetadata(filename, "")
+  assert("Huatai 锡泰 filename code SCQ403", fileMeta.productCode === "SCQ403")
+  assert("Huatai daily filename is NAV date", isHuataiDailyValuationSubject(subject, filename) === true)
+
+  const lookup = {
+    byProductCode: new Map([
+      ["SCQ403", {
+        product_code: "SCQ403",
+        custody_balance: 9999600,
+        net_asset_value: 51954300.54,
+        unit_nav: 0.9991,
+        valuation_date: "2026-08-17",
+      }],
+      ["SBKM53", {
+        product_code: "SBKM53",
+        custody_balance: 50000000,
+        net_asset_value: 207135317.39,
+        unit_nav: 1.0123,
+        valuation_date: "2026-08-17",
+      }],
+    ]),
+    byFundName: new Map([
+      ["金舆锡泰一号", {
+        product_code: "SBKM53",
+        custody_balance: 50000000,
+        net_asset_value: 207135317.39,
+        unit_nav: 1.0123,
+        valuation_date: "2026-08-17",
+      }],
+    ]),
+  }
+  const fromCode = resolveEmailFundMetrics("金舆锡泰一号", "SCQ403", lookup)
+  assert("锡泰 资产净值 from SCQ403 not SBKM53", fromCode.net_asset_value === 51954300.54)
+  const fromWrongAuto = resolveEmailFundMetrics("金舆锡泰一号", "SBKM53", lookup)
+  assert("锡泰 ignores auto-resolved SBKM53 AUM", fromWrongAuto.net_asset_value === 51954300.54)
+  const nameOnly = resolveEmailFundMetrics("金舆锡泰一号", "SCQ403", {
+    byProductCode: new Map(),
+    byFundName: lookup.byFundName,
+  })
+  assert("锡泰 name-match rejects SBKM53 metrics", nameOnly.net_asset_value == null)
+
+  const wb = XLSX.utils.book_new()
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ["SCQ403 金舆锡泰一号私募证券投资基金 产品估值表 日报 20260817"],
+    ["华泰证券股份有限公司_金舆锡泰一号私募证券投资基金_专用表"],
+    ["日期: 2026-08-17", "单位净值:0.9991"],
+    ["科目代码", "科目名称", "币种", "汇率", "数量", "单位成本", "成本", "", "", "行情", "市值", "", "", "估值增值", ""],
+    ["", "", "", "", "", "", "原币", "本币", "成本占比", "", "原币", "本币", "市值占比", "原币", "本币"],
+    ["1002", "银行存款", "CNY", 1, "", "", 9999600, 0, "", "", 9999600, 0, "", "", ""],
+    ["1108", "基金投资", "CNY", 1, "", "", 41954700.54, 0, "", "", 41954700.54, 0, "", "", ""],
+    ["", "资产合计", "CNY", 1, "", "", 52000300.54, 0, "", "", 52000300.54, 0, "", "", ""],
+    ["", "负债合计", "CNY", 1, "", "", 45999.99, 0, "", "", 45999.99, 0, "", "", ""],
+    ["", "资产净值", "CNY", 1, "", "", 51954300.55, 0, "", "", 51954300.55, 0, "", "", ""],
+    ["3003", "实收资本", "CNY", 1, 51998118.25, 1, 51998118.25, 0, "", "", 51998118.25, 0, "", "", ""],
+    ["", "单位净值", "CNY", 1, "", "", "", "", "", "", 0.9991, 0, "", "", ""],
+  ])
+  XLSX.utils.book_append_sheet(wb, sheet, "Sheet1")
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xls" })
+  const parsed = extractValuationFromBuffer(Buffer.from(buf), filename, subject)
+  assert("Huatai 锡泰 unit NAV 0.9991", parsed?.unitNav === 0.9991)
+  assert("Huatai 锡泰 资产净值 ~51.95M not 207M", parsed?.netAssetValue != null && Math.abs(parsed.netAssetValue - 51954300.55) < 1)
+  assert("Huatai 锡泰 date 2026-08-17", parsed?.valuationDate === "2026-08-17")
 }

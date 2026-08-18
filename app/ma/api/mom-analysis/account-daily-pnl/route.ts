@@ -40,9 +40,16 @@ async function _GET() {
       prev.push({ date: row.date, pnl, cumPnl })
     }
 
-    // Count sub-accounts on the latest trading date from daily reports (operational source of truth)
-    const countRow = await query<{ cnt: string }>(
-      `SELECT COUNT(DISTINCT "账户") AS cnt
+    // Count sub-accounts on the latest trading date from daily reports (operational source of truth).
+    // 空仓: no margin occupied and no option market value remaining at settlement.
+    const countRow = await query<{ cnt: string; empty_cnt: string }>(
+      `SELECT
+         COUNT(DISTINCT "账户") AS cnt,
+         COUNT(DISTINCT "账户") FILTER (
+           WHERE ${numExpr("保证金占用")} = 0
+             AND ${numExpr("多头期权市値")} = 0
+             AND ${numExpr("空头期权市値")} = 0
+         ) AS empty_cnt
        FROM mom_daily_reports
        WHERE "交易日期" = (SELECT MAX("交易日期") FROM mom_daily_reports)
          AND COALESCE(TRIM("账户"::text), '') <> ''
@@ -52,8 +59,9 @@ async function _GET() {
          AND TRIM("账户"::text) <> '665300200077'`,
     )
     const subAccountCount = parseInt(countRow[0]?.cnt ?? String(Object.keys(accountMap).length), 10)
+    const emptyAccountCount = parseInt(countRow[0]?.empty_cnt ?? "0", 10)
 
-    return NextResponse.json({ ok: true, accountData: accountMap, subAccountCount })
+    return NextResponse.json({ ok: true, accountData: accountMap, subAccountCount, emptyAccountCount })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {

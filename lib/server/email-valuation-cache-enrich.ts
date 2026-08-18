@@ -4,9 +4,14 @@
 
 import { query } from "@/lib/db"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
-import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import {
+  remapManagedProductBeianCode,
+  resolveManagedProductBeian,
+  resolveManagedProductBeianIgnoringShareClass,
+} from "@/lib/server/managed-product-beian"
 
 export type EmailFundMetricsRow = {
+  product_code: string | null
   custody_balance: number | null
   net_asset_value: number | null
   /** Latest 估值表 unit NAV — used when email/type6 NAV series is missing (e.g. SCN504). */
@@ -23,6 +28,44 @@ function normalizeFundKey(name: string): string {
     .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
     .replace(/[ABC]类$/u, "")
     .trim()
+}
+
+function emptyMetrics(): EmailFundMetricsRow {
+  return {
+    product_code: null,
+    custody_balance: null,
+    net_asset_value: null,
+    unit_nav: null,
+    valuation_date: null,
+  }
+}
+
+/** True when a 估值表 row's product_code is this managed product (or a known alias). */
+export function valuationMetricsCodeBelongsToBeian(
+  productCode: string | null | undefined,
+  canonicalBeian: string,
+): boolean {
+  const code = (productCode ?? "").trim()
+  const target = canonicalBeian.trim()
+  if (!code || !target) return !code
+  if (code.toUpperCase() === target.toUpperCase()) return true
+  const remapped = remapManagedProductBeianCode(code)
+  return remapped != null && remapped.toUpperCase() === target.toUpperCase()
+}
+
+/**
+ * TA虚拟净值 mails store the underlying code with the 在管 product's fund_name
+ * (SBKM53 + 金舆锡泰一号). Never index those under the managed-product name.
+ */
+function shouldIndexValuationMetricsByFundName(
+  fundName: string,
+  productCode: string | null,
+): boolean {
+  const override =
+    resolveManagedProductBeian(fundName)
+    ?? resolveManagedProductBeianIgnoringShareClass(fundName)
+  if (!override) return true
+  return valuationMetricsCodeBelongsToBeian(productCode, override)
 }
 
 export async function loadEmailFundMetricsLookup(): Promise<{
@@ -47,17 +90,21 @@ export async function loadEmailFundMetricsLookup(): Promise<{
 
   for (const row of rows) {
     const unitNav = row.unit_nav != null ? parseFloat(row.unit_nav) : null
+    const productCode = row.product_code?.trim() || null
     const metrics: EmailFundMetricsRow = {
+      product_code: productCode,
       custody_balance: row.custody_balance != null ? parseFloat(row.custody_balance) : null,
       net_asset_value: row.net_asset_value != null ? parseFloat(row.net_asset_value) : null,
       unit_nav: unitNav != null && Number.isFinite(unitNav) && unitNav > 0 ? unitNav : null,
       valuation_date: row.valuation_date?.slice(0, 10) ?? null,
     }
-    if (row.product_code?.trim()) {
-      byProductCode.set(row.product_code.trim(), metrics)
+    if (productCode) {
+      byProductCode.set(productCode, metrics)
     }
-    byFundName.set(row.fund_name.trim(), metrics)
-    byFundName.set(normalizeFundKey(row.fund_name), metrics)
+    if (shouldIndexValuationMetricsByFundName(row.fund_name, productCode)) {
+      byFundName.set(row.fund_name.trim(), metrics)
+      byFundName.set(normalizeFundKey(row.fund_name), metrics)
+    }
   }
 
   return { byProductCode, byFundName }
@@ -68,12 +115,7 @@ export function resolveEmailFundMetrics(
   beianHao: string | null,
   lookup: Awaited<ReturnType<typeof loadEmailFundMetricsLookup>>,
 ): EmailFundMetricsRow {
-  const empty: EmailFundMetricsRow = {
-    custody_balance: null,
-    net_asset_value: null,
-    unit_nav: null,
-    valuation_date: null,
-  }
+  const empty = emptyMetrics()
   const resolved =
     resolveManagedProductBeian(productName, beianHao)?.trim()
     || beianHao?.trim()
@@ -82,13 +124,28 @@ export function resolveEmailFundMetrics(
     return lookup.byProductCode.get(resolved)!
   }
   const beian = beianHao?.trim()
-  if (beian && beian !== resolved && lookup.byProductCode.has(beian)) {
+  // Only follow known aliases (SBVC25→SCN504). Auto-resolved underlying codes
+  // like SBKM53 for 金舆锡泰一号 must not supply 资产净值.
+  if (
+    beian
+    && resolved
+    && beian !== resolved
+    && valuationMetricsCodeBelongsToBeian(beian, resolved)
+    && lookup.byProductCode.has(beian)
+  ) {
     return lookup.byProductCode.get(beian)!
   }
   const exact = lookup.byFundName.get(productName.trim())
-  if (exact) return exact
+  if (exact && (!resolved || valuationMetricsCodeBelongsToBeian(exact.product_code, resolved))) {
+    return exact
+  }
   const normalized = lookup.byFundName.get(normalizeFundKey(productName))
-  if (normalized) return normalized
+  if (
+    normalized
+    && (!resolved || valuationMetricsCodeBelongsToBeian(normalized.product_code, resolved))
+  ) {
+    return normalized
+  }
   return empty
 }
 

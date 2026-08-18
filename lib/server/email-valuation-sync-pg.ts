@@ -11,7 +11,8 @@ import {
   buildManagedProductsFrom,
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
-import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import { managedProductsResolvedBeianSqlExpr } from "@/lib/server/managed-product-beian"
+import { sqlValuationMetricsMatch } from "@/lib/server/managed-products-nav-query"
 import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
 
 export type EmailValuationSyncResult = {
@@ -29,7 +30,7 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
        SELECT
          m.id,
          m.product_name,
-         ${fofUnderlyingBeianExpr("m.product_name")} AS beian_hao
+         ${managedProductsResolvedBeianSqlExpr("m.product_name", fofUnderlyingBeianExpr("m.product_name"))} AS beian_hao
        ${buildManagedProductsFrom("m.product_name")}
        WHERE m.product_name <> '合计'
      ),
@@ -39,12 +40,12 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
          v.custody_balance,
          v.net_asset_value
        FROM mp
-       INNER JOIN ops_email_valuation_fund_metrics_latest v ON (
-         (NULLIF(TRIM(v.product_code), '') IS NOT NULL AND v.product_code = mp.beian_hao)
-         OR TRIM(v.fund_name) = TRIM(mp.product_name)
-         OR ${sqlFundNameMatch("v.fund_name", "mp.product_name")}
-       )
-       ORDER BY mp.id, v.valuation_date DESC
+       INNER JOIN ops_email_valuation_fund_metrics_latest v
+         ON ${sqlValuationMetricsMatch("mp.beian_hao", "mp.product_name")}
+       ORDER BY
+         mp.id,
+         CASE WHEN v.product_code = mp.beian_hao THEN 0 ELSE 1 END,
+         v.valuation_date DESC
      ),
      updated AS (
        UPDATE managed_products m

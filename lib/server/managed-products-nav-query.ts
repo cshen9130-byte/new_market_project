@@ -15,6 +15,24 @@ export const MANAGED_BEIAN_EXPR = fofUnderlyingBeianExpr("m.product_name")
 /** True when displayed NAV comes from team email ingestion (not legacy/platform fallback). */
 export const MANAGED_NAV_IS_TEAM_EXPR = "(COALESCE(en.nav, en_val.nav) IS NOT NULL)"
 
+/**
+ * Bind 估值表 metrics to a managed product by canonical 备案号 only.
+ * Name match is allowed solely when product_code is empty — TA虚拟净值 rows
+ * store the underlying code (SBKM53) with the 在管 fund_name (金舆锡泰一号).
+ */
+export function sqlValuationMetricsMatch(beianExpr: string, productExpr: string): string {
+  return `(
+        (NULLIF(BTRIM(v.product_code), '') IS NOT NULL AND v.product_code = ${beianExpr})
+        OR (
+          NULLIF(BTRIM(v.product_code), '') IS NULL
+          AND (
+            TRIM(v.fund_name) = TRIM(${productExpr})
+            OR ${sqlFundNameMatch("v.fund_name", productExpr)}
+          )
+        )
+      )`
+}
+
 export function managedValuationMetricsJoin(
   beianExpr: string,
   productExpr: string,
@@ -23,12 +41,10 @@ export function managedValuationMetricsJoin(
     LEFT JOIN LATERAL (
       SELECT v.valuation_date::text AS valuation_date
       FROM ops_email_valuation_fund_metrics_latest v
-      WHERE (
-        (NULLIF(BTRIM(v.product_code), '') IS NOT NULL AND v.product_code = ${beianExpr})
-        OR TRIM(v.fund_name) = TRIM(${productExpr})
-        OR ${sqlFundNameMatch("v.fund_name", productExpr)}
-      )
-      ORDER BY v.valuation_date DESC
+      WHERE ${sqlValuationMetricsMatch(beianExpr, productExpr)}
+      ORDER BY
+        CASE WHEN v.product_code = ${beianExpr} THEN 0 ELSE 1 END,
+        v.valuation_date DESC
       LIMIT 1
     ) vm ON true
   `
