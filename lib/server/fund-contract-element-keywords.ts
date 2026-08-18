@@ -766,6 +766,14 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
     summarizeFeeManageDesc(source, out.fee_manage, out.fee_manage_rate),
     isWeakFeeManage,
   )
+  // Derive fee_manage_rate from fee_manage text when the rate field is missing
+  if (!out.fee_manage_rate || parseFloat(String(out.fee_manage_rate)) === 0) {
+    const rateMatch = (out.fee_manage ?? "").match(/年管理费率(\d+\.?\d*)\s*%/)
+    if (rateMatch?.[1]) {
+      const n = parseFloat(rateMatch[1])
+      if (Number.isFinite(n) && n > 0 && n <= 10) out.fee_manage_rate = `${n}%`
+    }
+  }
   out.fee_pay = preferCompact(out.fee_pay, summarizeFeePayDesc(source), isWeakFeePay)
   out.add_amount = preferCompact(out.add_amount, extractAddAmountFromText(source), isWeakAddAmount)
   out.fee_redeem = preferCompact(out.fee_redeem, extractFeeRedeemFromText(source), isWeakShortFee)
