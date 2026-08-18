@@ -140,8 +140,9 @@ export function isWeakAddAmount(value: string | null | undefined): boolean {
 export function isWeakShortFee(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
   if (!s || s === "—" || s === "无" || /^详见/.test(s)) return true
+  // Custody/admin fees are normally 0.05%-0.3%; ≥0.5% signals garbled extraction
   const high = s.match(/年(?:托管|运营服务|外包|基金服务)费率\s*([\d.]+)\s*%/)
-  if (high?.[1] && parseFloat(high[1]) >= 3) return true
+  if (high?.[1] && parseFloat(high[1]) >= 0.5) return true
   return isDumpText(s, SHORT_MAX)
 }
 
