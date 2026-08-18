@@ -260,7 +260,12 @@ export async function refreshManagedProductsListCache(
 
   logProgress(`found ${products.length} products — preloading NAV history…`)
 
-  const emailFundMetrics = await loadEmailFundMetricsLookup()
+  const emailFundMetrics = await loadEmailFundMetricsLookup(
+    products.flatMap((p) => [
+      resolveManagedProductBeian(p.product_name, p.beian_hao),
+      p.beian_hao,
+    ].filter((code): code is string => Boolean(code?.trim()))),
+  )
 
   const identities = products.map((p) => ({
     beian_hao: resolveManagedProductBeian(p.product_name, p.beian_hao),

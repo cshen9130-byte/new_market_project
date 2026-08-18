@@ -213,23 +213,32 @@ function resolveCustodyBalance(rows: ValuationRow[]): number {
 }
 
 function resolvePaidInCapital(rows: ValuationRow[], netAssetValue: number, unitNav: number): number {
-  let bestValue = 0
+  const implied =
+    netAssetValue > 1000 && unitNav > 0.05 ? netAssetValue / unitNav : 0
+  const candidates: number[] = []
   for (const row of rows) {
     const name = normalizeText(row.name)
-    if (!/实收资本/.test(name)) continue
+    const code = String(row.original_code ?? row.code ?? "").replace(/[\s.]/g, "")
+    // Exact 实收资本 / 4001 only. Nested holding names and max() across rows
+    // picked 锡和鑫安's ~207M shares as 金舆锡泰一号 实收资本.
+    if (!/^实收资本$/.test(name) && !/^4001/.test(code)) continue
     const qty = parseAmount(row.quantity ?? row.position ?? row.volume)
     const cost = parseAmount(row.cost ?? row.signed_cost)
     const mv = pickRowMarketValue(row) || pickRowCost(row)
     const value = qty > 0 ? qty : cost > 0 ? cost : mv
-    if (value > bestValue) bestValue = value
+    if (value > 1000) candidates.push(value)
   }
 
-  if (bestValue <= 0 && netAssetValue > 0 && unitNav > 0.05) {
-    const inferred = netAssetValue / unitNav
-    if (inferred > 1000) return inferred
+  if (implied > 1000) {
+    const close = candidates.filter((value) => value <= implied * 2.5 && implied <= value * 2.5)
+    if (close.length > 0) {
+      return close.reduce((best, value) =>
+        Math.abs(value - implied) < Math.abs(best - implied) ? value : best)
+    }
+    return implied
   }
 
-  return bestValue
+  return candidates.length > 0 ? Math.min(...candidates) : 0
 }
 
 function resolveTotalsFromRows(rows: ValuationRow[]): { totalAsset: number; totalLiability: number } {
@@ -277,29 +286,37 @@ function deriveNetAssetValueFromHoldings(rows: ValuationRow[]): number {
 }
 
 function resolveNetAssetValue(summary: ValuationAnalysis["summary"], rows: ValuationRow[]): number {
+  let footer = 0
   for (const row of rows) {
     const name = normalizeText(row.name)
     if (!/^(基金)?资产净值$/.test(name) && !/^净资产$/.test(name)) continue
     const amount = pickRowMarketValue(row) || pickRowCost(row)
-    if (amount > 1000 && !isPlausibleUnitNav(amount)) return amount
+    if (amount > 1000 && !isPlausibleUnitNav(amount)) footer = amount
   }
 
+  let fromTotals = 0
   if (summary.total_asset > 0 && summary.total_liability >= 0) {
     const derived = summary.total_asset - summary.total_liability
-    if (derived > 1000) return derived
+    if (derived > 1000) fromTotals = derived
+  }
+  if (fromTotals <= 0) {
+    const rowTotals = resolveTotalsFromRows(rows)
+    if (rowTotals.totalAsset > 0) {
+      const derived = rowTotals.totalAsset - rowTotals.totalLiability
+      if (derived > 1000) fromTotals = derived
+    }
   }
 
-  const fromRows = resolveTotalsFromRows(rows)
-  if (fromRows.totalAsset > 0) {
-    const derived = fromRows.totalAsset - fromRows.totalLiability
-    if (derived > 1000) return derived
-  }
+  const fromSummary =
+    summary.nav > 1000 && !isPlausibleUnitNav(summary.nav) ? summary.nav : 0
+  const fromHoldings = deriveNetAssetValueFromHoldings(rows)
+  const parsed = footer || fromTotals || fromSummary
 
-  if (summary.nav > 1000 && !isPlausibleUnitNav(summary.nav)) {
-    return summary.nav
-  }
-
-  return deriveNetAssetValueFromHoldings(rows)
+  // Huatai 金舆锡泰一号: footer 资产净值/实收资本 can be the underlying fund's
+  // ~207M, while leaf holdings are the FOF's ~52M.
+  if (fromHoldings > 1000 && parsed > fromHoldings * 2.5) return fromHoldings
+  if (parsed > 1000) return parsed
+  return fromHoldings
 }
 
 /** Extract product code like TA891A (uppercase, with share class) from underlying fund holding. */

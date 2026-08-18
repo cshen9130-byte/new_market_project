@@ -2,7 +2,7 @@
  * Load email 估值表 metrics for list-cache enrichment during ETL refresh.
  */
 
-import { query } from "@/lib/db"
+import { query, queryUnbounded } from "@/lib/db"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import {
   remapManagedProductBeianCode,
@@ -110,14 +110,44 @@ function shouldIndexValuationMetricsByFundName(
   return valuationMetricsCodeBelongsToBeian(productCode, override)
 }
 
-export async function loadEmailFundMetricsLookup(): Promise<{
+/** Prefer 托管行估值表 over TA虚拟净值 when several rows share a 备案号. */
+export function sqlCustodyValuationPreference(alias = ""): string {
+  const p = alias ? `${alias}.` : ""
+  return `CASE
+    WHEN COALESCE(${p}subject, '') ILIKE '%虚拟净值%'
+      OR COALESCE(${p}subject, '') ILIKE '%TA虚拟%'
+      OR COALESCE(${p}attachment_filename, '') ILIKE '%虚拟净值%'
+    THEN 2
+    WHEN COALESCE(${p}sender_email, '') ILIKE '%htsc%'
+      OR COALESCE(${p}subject, '') ILIKE '%产品估值表%'
+      OR COALESCE(${p}attachment_filename, '') ILIKE '%产品估值表%'
+      OR COALESCE(${p}attachment_filename, '') ILIKE '%估值表_日报%'
+    THEN 0
+    ELSE 1
+  END`
+}
+
+export async function loadEmailFundMetricsLookup(
+  productCodes?: string[],
+): Promise<{
   byProductCode: Map<string, EmailFundMetricsRow>
   byFundName: Map<string, EmailFundMetricsRow>
 }> {
   await ensureEmailValuationMetricsTables()
-  // Latest 估值表 per product_code from records. metrics_latest is keyed by
+  // Latest 托管估值表 per product_code from records. metrics_latest is keyed by
   // fund_name, so SBKM53 (fund_name=金舆锡泰一号) can hide SCQ403.
-  const rows = await query<{
+  const codes = [...new Set(
+    (productCodes ?? [])
+      .map((code) => code.trim().toUpperCase())
+      .filter(Boolean),
+  )]
+  const params: unknown[] = []
+  let codeFilter = "NULLIF(BTRIM(product_code), '') IS NOT NULL"
+  if (codes.length > 0) {
+    params.push(codes)
+    codeFilter = `UPPER(BTRIM(product_code)) = ANY($1::text[])`
+  }
+  const rows = await queryUnbounded<{
     product_code: string | null
     fund_name: string
     custody_balance: string | null
@@ -136,8 +166,10 @@ export async function loadEmailFundMetricsLookup(): Promise<{
             unit_nav::text, valuation_date::text,
             summary->>'nav' AS summary_nav
       FROM ops_email_valuation_records
-      WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
-      ORDER BY UPPER(BTRIM(product_code)), valuation_date DESC, id DESC`)
+      WHERE ${codeFilter}
+      ORDER BY UPPER(BTRIM(product_code)),
+               ${sqlCustodyValuationPreference()},
+               valuation_date DESC, id DESC`, params)
 
   const byProductCode = new Map<string, EmailFundMetricsRow>()
   const byFundName = new Map<string, EmailFundMetricsRow>()

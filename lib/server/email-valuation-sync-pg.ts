@@ -4,13 +4,14 @@
  * - fof_underlying_summary.market_value                         ← FOF底层
  */
 
-import { query } from "@/lib/db"
+import { queryUnbounded } from "@/lib/db"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import {
   buildFofUnderlyingSummaryFrom,
   buildManagedProductsFrom,
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
+import { sqlCustodyValuationPreference } from "@/lib/server/email-valuation-cache-enrich"
 import { managedProductsResolvedBeianSqlExpr } from "@/lib/server/managed-product-beian"
 import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
 
@@ -24,7 +25,7 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
   await ensureEmailValuationMetricsTables()
   await ensureManagedFofUnderlyingTable()
 
-  const managedRows = await query<{ n: string }>(
+  const managedRows = await queryUnbounded<{ n: string }>(
     `WITH mp AS (
        SELECT
          m.id,
@@ -58,6 +59,9 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
            r.unit_nav,
            r.valuation_date,
            r.id,
+           r.subject,
+           r.sender_email,
+           r.attachment_filename,
            COALESCE(
              NULLIF(r.net_asset_value, 0),
              NULLIF(r.net_asset, 0),
@@ -73,8 +77,14 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
            ) AS raw_nav
          FROM ops_email_valuation_records r
          WHERE NULLIF(BTRIM(r.product_code), '') IS NOT NULL
+           AND UPPER(BTRIM(r.product_code)) IN (
+             SELECT UPPER(BTRIM(mp.beian_hao)) FROM mp
+             WHERE NULLIF(BTRIM(mp.beian_hao), '') IS NOT NULL
+           )
        ) r
-       ORDER BY UPPER(BTRIM(r.product_code)), r.valuation_date DESC, r.id DESC
+       ORDER BY UPPER(BTRIM(r.product_code)),
+                ${sqlCustodyValuationPreference("r")},
+                r.valuation_date DESC, r.id DESC
      ),
      best AS (
        SELECT mp.id, v.custody_balance, v.net_asset_value
@@ -95,7 +105,9 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
      SELECT COUNT(*)::text AS n FROM updated`,
   )
 
-  const fofRows = await query<{ n: string }>(
+  let fofUnderlyingUpdated = 0
+  try {
+  const fofRows = await queryUnbounded<{ n: string }>(
     `WITH fof AS (
        SELECT
          f.id,
@@ -133,9 +145,13 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
      )
      SELECT COUNT(*)::text AS n FROM updated`,
   )
+  fofUnderlyingUpdated = parseInt(fofRows[0]?.n ?? "0", 10)
+  } catch (err) {
+    console.warn("[email-valuation-sync] FOF underlying market sync skipped:", err)
+  }
 
   return {
     managedProductsUpdated: parseInt(managedRows[0]?.n ?? "0", 10),
-    fofUnderlyingUpdated: parseInt(fofRows[0]?.n ?? "0", 10),
+    fofUnderlyingUpdated,
   }
 }
