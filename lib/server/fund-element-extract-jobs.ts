@@ -138,6 +138,9 @@ const INCOMPLETE_EXTRACT_KEYS: Array<keyof ExtractedFundElements> = [
   "fee_pay",
   "fee_admin_service",
   "open_day",
+  "risk_level",
+  "lock_period_desc",
+  "fee_pay_formula",
 ]
 
 export function extractedLooksIncomplete(
@@ -148,7 +151,12 @@ export function extractedLooksIncomplete(
     const value = extracted[key]
     return typeof value === "string" && Boolean(value.trim())
   }).length
-  return filled < 3
+  if (filled < 3) return true
+  const keywordFilled = (["risk_level", "lock_period_desc", "fee_pay_formula"] as const).filter((key) => {
+    const value = extracted[key]
+    return typeof value === "string" && Boolean(value.trim())
+  }).length
+  return keywordFilled < 3
 }
 
 export async function createElementExtractJobFromBuffer(input: {
@@ -271,6 +279,17 @@ export async function listNeedsReviewExtractJobs(): Promise<ElementExtractJobRow
      FROM ops_element_extract_jobs
      WHERE status = 'needs_review'
      ORDER BY id ASC`,
+  )
+  return rows.map(mapJobRow)
+}
+
+export async function listAppliedElementExtractJobs(): Promise<ElementExtractJobRow[]> {
+  await ensureElementExtractJobsTable()
+  const rows = await query<ElementExtractJobRow>(
+    `SELECT ${JOB_SELECT_COLS}
+     FROM ops_element_extract_jobs
+     WHERE status = 'applied' AND NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NOT NULL
+     ORDER BY uploaded_at ASC, id ASC`,
   )
   return rows.map(mapJobRow)
 }

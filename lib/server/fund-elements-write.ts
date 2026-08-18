@@ -2,10 +2,13 @@ import { createHash } from "crypto"
 import { query } from "@/lib/db"
 import {
   buildFeePayFormulaConfig,
+  encodeTemporaryOpen,
   formatFeePayFormula,
+  formatTemporaryOpen,
 } from "@/lib/ma/fund-elements-extra"
 import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import {
+  exactBeianWriteKeys,
   loadBasicinfoTrackByBeianKeys,
   loadFundElementExtraFields,
   resolveFundElementsBeianKeys,
@@ -16,16 +19,20 @@ import {
   type ExtractedFundElementTextKey,
   type ExtractedFundElements,
 } from "@/lib/server/fund-contract-element-extract"
+import {
+  isWeakAddAmount,
+  isWeakFeeManage,
+  isWeakFeePay,
+  isWeakFormula,
+  isWeakLockPeriod,
+  isWeakRiskLevel,
+  isWeakShortFee,
+  isWeakTemporaryOpen,
+} from "@/lib/server/fund-contract-element-keywords"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode, listFundFamilyProducts } from "@/lib/server/share-class-product"
 
 const ELEMENTS_SOURCE = "ops/fund-elements"
-
-const TEMP_OPEN_MAP: Record<number, string> = {
-  1: "可",
-  2: "不可临开",
-  3: "可临开回",
-}
 
 const OPTIONAL_TRACK_COLUMNS = new Set([
   "operation_date",
@@ -34,6 +41,23 @@ const OPTIONAL_TRACK_COLUMNS = new Set([
   "fee_pay_formula",
   "fee_pay_formula_json",
 ])
+
+let extraElementColumnsEnsured = false
+
+async function ensureExtraElementColumns(): Promise<void> {
+  if (extraElementColumnsEnsured) return
+  extraElementColumnsEnsured = true
+  const cols = await query<{ column_name: string }>(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_name = 'basicinfo_bfl_track'
+       AND column_name IN ('risk_level', 'lock_period_desc', 'fee_pay_formula', 'fee_pay_formula_json')`,
+  ).catch(() => [] as { column_name: string }[])
+  if (cols.length >= 4) return
+  console.error(
+    "[fund-elements-write] extra 要素 columns missing on basicinfo_bfl_track; apply scripts/db/018_basicinfo_bfl_track_extra_elements.sql",
+  )
+}
 
 type BasicinfoTrackRow = {
   fund_name: string | null
@@ -71,17 +95,6 @@ function normalizeOptionalString(value: unknown): string | null | undefined {
   if (value == null) return null
   const s = String(value).trim()
   return s || null
-}
-
-function encodeTemporaryOpen(value: unknown): number | null | undefined {
-  if (value === undefined) return undefined
-  if (value == null) return null
-  const s = String(value).trim()
-  if (!s) return null
-  if (s.includes("不可")) return 2
-  if (s.includes("回")) return 3
-  if (s.includes("可")) return 1
-  return null
 }
 
 function encodeManageRate(value: unknown): string | null | undefined {
@@ -183,7 +196,7 @@ async function upsertBasicinfoTrack(
 
   if (setClauses.length === 0) return
 
-  const lookupKeys = await resolveFundElementsBeianKeys(beian_hao)
+  const lookupKeys = exactBeianWriteKeys(beian_hao)
   const existing = await query<{ id: number }>(
     `SELECT id FROM basicinfo_bfl_track
      WHERE register_number = ANY($1::text[]) OR record_key = ANY($1::text[])
@@ -251,6 +264,7 @@ export async function writeFundElementsFromBody(body: FundElementWriteBody): Pro
   const rawBeian = String(body?.beian_hao ?? "").trim()
   if (!rawBeian) throw new Error("missing beian_hao")
   const beian_hao = canonicalizeShareClassBeianCode(rawBeian) || rawBeian
+  await ensureExtraElementColumns()
 
   const formulaRaw = body.fee_pay_formula_config as
     | { mode?: unknown; gradients?: unknown }
@@ -326,10 +340,14 @@ export async function writeFundElementsFromBody(body: FundElementWriteBody): Pro
 export async function loadExtractedElementDisplayValues(
   beian_hao: string,
   product_name?: string | null,
+  options?: { exactBeian?: boolean },
 ): Promise<ExtractedFundElements | null> {
   const raw = beian_hao.trim()
   if (!raw) return null
-  const keys = await resolveFundElementsBeianKeys(raw, product_name || null)
+  const keys = options?.exactBeian
+    ? exactBeianWriteKeys(raw)
+    : await resolveFundElementsBeianKeys(raw, product_name || null)
+  const trackOpts = options?.exactBeian ? { expandFamily: false as const } : undefined
 
   const [elementRows, extra, pfiRows] = await Promise.all([
     loadBasicinfoTrackByBeianKeys<BasicinfoTrackRow>(
@@ -342,8 +360,9 @@ export async function loadExtractedElementDisplayValues(
               fee_manage_rate::text, fee_trust, fee_manage,
               fee_admin_service, fee_pay
        FROM basicinfo_bfl_track`,
+      trackOpts,
     ).catch(() => [] as BasicinfoTrackRow[]),
-    loadFundElementExtraFields(keys),
+    loadFundElementExtraFields(keys, trackOpts),
     query<{ manager: string | null }>(
       `SELECT manager FROM private_fund_info WHERE beian_hao = ANY($1::text[]) LIMIT 1`,
       [keys],
@@ -379,10 +398,7 @@ export async function loadExtractedElementDisplayValues(
     }
   }
 
-  const is_temporary_open =
-    el?.is_temporary_open != null
-      ? (TEMP_OPEN_MAP[el.is_temporary_open] ?? String(el.is_temporary_open))
-      : null
+  const is_temporary_open = formatTemporaryOpen(el?.is_temporary_open)
   const fee_manage_rate =
     el?.fee_manage_rate != null
       ? `${(parseFloat(el.fee_manage_rate) * 100).toFixed(2)}%`
@@ -425,6 +441,29 @@ function hasText(value: string | null | undefined): boolean {
   return Boolean(value?.trim())
 }
 
+function currentNeedsFill(
+  key: ExtractedFundElementTextKey,
+  current: ExtractedFundElements | null,
+): boolean {
+  const value = current?.[key] as string | null | undefined
+  if (key === "risk_level") return isWeakRiskLevel(value)
+  if (key === "lock_period_desc") return isWeakLockPeriod(value)
+  if (key === "fee_pay_formula") return isWeakFormula(value)
+  if (key === "is_temporary_open") return isWeakTemporaryOpen(value)
+  if (key === "fee_manage") return isWeakFeeManage(value)
+  if (key === "fee_pay") return isWeakFeePay(value)
+  if (key === "add_amount") return isWeakAddAmount(value)
+  if (key === "fee_redeem" || key === "closed_period" || key === "fee_trust" || key === "fee_admin_service") {
+    return isWeakShortFee(value)
+  }
+  if (key === "fee_manage_rate") {
+    if (!hasText(value)) return true
+    const n = parseFloat(String(value).replace(/%/g, ""))
+    return !Number.isFinite(n) || n === 0
+  }
+  return !hasText(value)
+}
+
 function textField(extracted: ExtractedFundElements, key: ExtractedFundElementTextKey): string | null {
   const value = extracted[key]
   return typeof value === "string" ? value.trim() || null : null
@@ -438,7 +477,7 @@ function attachFormulaConfig(
 ) {
   const next = extracted.fee_pay_formula_config
   if (!next) return
-  if (mode === "fill-empty" && (current?.fee_pay_formula_config || hasText(current?.fee_pay_formula))) return
+  if (mode === "fill-empty" && current?.fee_pay_formula_config && !isWeakFormula(current.fee_pay_formula)) return
   body.fee_pay_formula_config = next
 }
 
@@ -455,7 +494,7 @@ export function buildFillEmptyWriteBody(
     if (key === "register_number" || skip.has(key)) continue
     const next = textField(extracted, key)
     if (!next) continue
-    if (hasText(current?.[key] as string | null | undefined)) continue
+    if (!currentNeedsFill(key, current)) continue
     body[key] = next
   }
   attachFormulaConfig(body, extracted, current, "fill-empty")
@@ -493,11 +532,13 @@ async function writeExtractedElementsAcrossShareClasses(
   const family = await listFundFamilyProducts(beian_hao)
   const targets = family.length ? family : [{ beian_hao, product_name }]
   const primary = beian_hao.trim().toUpperCase()
-  let primaryFields: string[] = []
+  const written = new Set<string>()
 
   for (const target of targets) {
     const isPrimary = target.beian_hao.trim().toUpperCase() === primary
-    const current = await loadExtractedElementDisplayValues(target.beian_hao, target.product_name)
+    const current = await loadExtractedElementDisplayValues(target.beian_hao, target.product_name, {
+      exactBeian: true,
+    })
     const skipKeys: Array<keyof ExtractedFundElements> = isPrimary ? [] : ["fund_name"]
     const body = mode === "overwrite"
       ? buildOverwriteNonEmptyWriteBody(
@@ -508,9 +549,9 @@ async function writeExtractedElementsAcrossShareClasses(
       : buildFillEmptyWriteBody(target.beian_hao, extracted, current, { skipKeys })
     if (!body) continue
     await writeFundElementsFromBody(body)
-    if (isPrimary) primaryFields = appliedFieldKeys(body)
+    for (const key of appliedFieldKeys(body)) written.add(key)
   }
-  return primaryFields
+  return [...written]
 }
 
 function mergeAmendmentIntoCurrent(

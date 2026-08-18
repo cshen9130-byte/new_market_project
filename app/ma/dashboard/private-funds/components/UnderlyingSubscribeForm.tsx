@@ -257,6 +257,8 @@ function formatValuationDate(value: string | null | undefined): string {
 /** Map fund-elements temporary-open text to 是/否 for the instruction form. */
 function formatTemporaryOpen(value: string | null | undefined): string {
   if (!value) return "—"
+  if (value === "0" || value === "否") return "否"
+  if (value === "1" || value === "是") return "是"
   if (value.includes("不可")) return "否"
   if (value.includes("可")) return "是"
   return value

@@ -1,19 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
-import {
-  loadBasicinfoTrackByBeianKeys,
-  loadFundElementExtraFields,
-  resolveFundElementsBeianKeys,
-} from "@/lib/server/fund-elements-lookup"
+import { extraFieldsFromTrackRow, loadBasicinfoTrackByBeianKeys, resolveFundElementsBeianKeys } from "@/lib/server/fund-elements-lookup"
+import { formatTemporaryOpen } from "@/lib/ma/fund-elements-extra"
 
 export const dynamic = "force-dynamic"
-
-const TEMP_OPEN_MAP: Record<number, string> = {
-  1: "可",
-  2: "不可临开",
-  3: "可临开回",
-}
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
@@ -23,34 +14,37 @@ export async function GET(req: Request) {
 
   const keys = await resolveFundElementsBeianKeys(beian_hao, product_name || null)
 
-  const [rows, extra] = await Promise.all([
-    loadBasicinfoTrackByBeianKeys<{
-      fund_name: string | null
-      fund_short_name: string | null
-      register_number: string | null
-      advisor: string | null
-      advisor2: string | null
-      inception_date: string | null
-      puton_date: string | null
-      mandator_name: string | null
-      manager_names: string | null
-      open_day: string | null
-      is_temporary_open: number | null
-      fee_purchase: string | null
-      add_amount: string | null
-      fee_redeem: string | null
-      precautious_line: string | null
-      closed_period: string | null
-      stop_line: string | null
-      fee_manage_rate: string | null
-      fee_trust: string | null
-      fee_manage: string | null
-      fee_admin_service: string | null
-      fee_pay: string | null
-      updated_at: string | null
-    }>(
-      keys,
-      `SELECT fund_name, fund_short_name, register_number,
+  type TrackRow = {
+    fund_name: string | null
+    fund_short_name: string | null
+    register_number: string | null
+    advisor: string | null
+    advisor2: string | null
+    inception_date: string | null
+    puton_date: string | null
+    mandator_name: string | null
+    manager_names: string | null
+    open_day: string | null
+    is_temporary_open: number | null
+    fee_purchase: string | null
+    add_amount: string | null
+    fee_redeem: string | null
+    precautious_line: string | null
+    closed_period: string | null
+    stop_line: string | null
+    fee_manage_rate: string | null
+    fee_trust: string | null
+    fee_manage: string | null
+    fee_admin_service: string | null
+    fee_pay: string | null
+    updated_at: string | null
+    risk_level?: string | null
+    lock_period_desc?: string | null
+    fee_pay_formula?: string | null
+    fee_pay_formula_json?: unknown
+  }
+
+  const baseSelect = `SELECT fund_name, fund_short_name, register_number,
               advisor, advisor2, inception_date::text, puton_date::text,
               mandator_name, manager_names,
               open_day, is_temporary_open,
@@ -59,10 +53,31 @@ export async function GET(req: Request) {
               fee_manage_rate::text, fee_trust, fee_manage,
               fee_admin_service, fee_pay,
               updated_at::text
-       FROM basicinfo_bfl_track`,
+       FROM basicinfo_bfl_track`
+  const extraSelect = `SELECT fund_name, fund_short_name, register_number,
+              advisor, advisor2, inception_date::text, puton_date::text,
+              mandator_name, manager_names,
+              open_day, is_temporary_open,
+              fee_purchase, add_amount, fee_redeem,
+              precautious_line, closed_period, stop_line,
+              fee_manage_rate::text, fee_trust, fee_manage,
+              fee_admin_service, fee_pay,
+              updated_at::text,
+              risk_level, lock_period_desc, fee_pay_formula, fee_pay_formula_json
+       FROM basicinfo_bfl_track`
+
+  const [rows, pfiRows] = await Promise.all([
+    loadBasicinfoTrackByBeianKeys<TrackRow>(keys, extraSelect).catch(
+      () => loadBasicinfoTrackByBeianKeys<TrackRow>(keys, baseSelect),
     ),
-    loadFundElementExtraFields(keys),
+    query<{ manager: string | null }>(
+      `SELECT manager FROM private_fund_info
+       WHERE beian_hao = ANY($1::text[])
+       LIMIT 1`,
+      [keys],
+    ).catch(() => [] as { manager: string | null }[]),
   ])
+  const extra = extraFieldsFromTrackRow(rows[0])
 
   if (!rows[0]) {
     return NextResponse.json({ error: "not found" }, { status: 404 })
@@ -71,18 +86,7 @@ export async function GET(req: Request) {
   const row = rows[0]
   const resolvedBeian = (row.register_number || keys[0] || beian_hao).trim()
 
-  // Try to get fund manager from private_fund_info (try all candidate keys)
-  const pfiRows = await query<{ manager: string | null }>(
-    `SELECT manager FROM private_fund_info
-     WHERE beian_hao = ANY($1::text[])
-     LIMIT 1`,
-    [keys],
-  ).catch(() => [] as { manager: string | null }[])
-
-  const is_temporary_open_text =
-    row.is_temporary_open != null
-      ? (TEMP_OPEN_MAP[row.is_temporary_open] ?? String(row.is_temporary_open))
-      : null
+  const is_temporary_open_text = formatTemporaryOpen(row.is_temporary_open)
 
   const custodian =
     row.mandator_name?.trim() ||

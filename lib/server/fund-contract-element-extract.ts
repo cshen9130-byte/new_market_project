@@ -21,9 +21,21 @@ import { getServerStoragePath } from "@/lib/server/storage"
 import { pdfParseLoadOptions, readPdfTextWithCmaps } from "@/lib/server/pdf-text"
 import {
   formatFeePayFormula,
+  formatTemporaryOpen,
   parseFeePayFormulaConfig,
   type FeePayFormulaConfig,
 } from "@/lib/ma/fund-elements-extra"
+import {
+  fillMissingElementsFromKeywords,
+  isWeakAddAmount,
+  isWeakFeeManage,
+  isWeakFeePay,
+  isWeakFormula,
+  isWeakLockPeriod,
+  isWeakRiskLevel,
+  isWeakShortFee,
+  isWeakTemporaryOpen,
+} from "@/lib/server/fund-contract-element-keywords"
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_TEXT_CHARS = 160_000
@@ -250,8 +262,12 @@ async function readPdfTextWithOcrFallback(buffer: Buffer, fileName: string): Pro
     text = ""
   }
   if (!isSparsePdfText(text)) return text.slice(0, MAX_TEXT_CHARS)
-  const ocr = await ocrPdfPages(buffer)
-  if (ocr && !isSparsePdfText(ocr)) return ocr.slice(0, MAX_TEXT_CHARS)
+  try {
+    const ocr = await ocrPdfPages(buffer)
+    if (ocr && !isSparsePdfText(ocr)) return ocr.slice(0, MAX_TEXT_CHARS)
+  } catch (err) {
+    console.error("[fund-contract-element-extract] pdf ocr fallback failed", err)
+  }
   if (text.trim()) return text.slice(0, MAX_TEXT_CHARS)
   throw new Error(`未能从文件「${fileName}」读取文字，请确认文件未加密且内容可读`)
 }
@@ -273,7 +289,7 @@ function stringifyModelContent(content: unknown) {
 
 function normalizeNullableString(value: unknown): string | null {
   if (value == null) return null
-  const s = String(value).trim()
+  const s = String(value).replace(/\u0000/g, "").trim()
   return s || null
 }
 
@@ -299,6 +315,10 @@ function normalizeElements(raw: Record<string, unknown>): ExtractedFundElements 
       out[key] = normalizeRegisterCode(normalizeNullableString(raw[key]))
       continue
     }
+    if (key === "is_temporary_open") {
+      out[key] = formatTemporaryOpen(raw[key])
+      continue
+    }
     out[key] = normalizeNullableString(raw[key])
   }
   const config = parseFeePayFormulaConfig(
@@ -314,29 +334,62 @@ function normalizeElements(raw: Record<string, unknown>): ExtractedFundElements 
   return out
 }
 
+type ContractSectionGroup = "fees" | "perf" | "lock" | "risk" | "subscription"
+
 type ContractSectionWindow = {
   re: RegExp
   before: number
   after: number
   priority: number
+  group?: ContractSectionGroup
 }
 
 const CONTRACT_SECTION_WINDOWS: ContractSectionWindow[] = [
-  { re: /管理费/g, before: 240, after: 3200, priority: 10 },
-  { re: /托管费/g, before: 200, after: 2400, priority: 10 },
-  { re: /运营服务费|外包费|行政服务费|销售服务费/g, before: 180, after: 2200, priority: 9 },
-  { re: /业绩报酬|业绩提成/g, before: 500, after: 4200, priority: 10 },
-  { re: /年化收益率|计提比例/g, before: 300, after: 2800, priority: 9 },
-  { re: /申购费|赎回费/g, before: 180, after: 1800, priority: 8 },
-  { re: /开放日|临时开放|临开/g, before: 180, after: 2000, priority: 8 },
-  { re: /封闭期|锁定期|份额锁定/g, before: 180, after: 2000, priority: 8 },
-  { re: /预警线|止损线|平仓线/g, before: 120, after: 1400, priority: 8 },
-  { re: /风险等级|风险评级/g, before: 80, after: 900, priority: 6 },
-  { re: /追加申购|最低追加|追加金额/g, before: 80, after: 900, priority: 6 },
-  { re: /是否可赎回|赎回申请/g, before: 80, after: 900, priority: 5 },
+  { re: /管理费/g, before: 240, after: 3200, priority: 10, group: "fees" },
+  { re: /托管费/g, before: 200, after: 2400, priority: 10, group: "fees" },
+  { re: /运营服务费|外包费|行政服务费|销售服务费/g, before: 180, after: 2200, priority: 9, group: "fees" },
+  { re: /业绩报酬的?计算?公式|计提公式/g, before: 200, after: 2800, priority: 12, group: "perf" },
+  { re: /业绩报酬|业绩提成|提取比例|高水位/g, before: 500, after: 4200, priority: 10, group: "perf" },
+  { re: /年化收益率|计提比例/g, before: 300, after: 2800, priority: 9, group: "perf" },
+  { re: /申购费|赎回费/g, before: 180, after: 1800, priority: 8, group: "subscription" },
+  { re: /开放日|临时开放|临开/g, before: 180, after: 2000, priority: 8, group: "subscription" },
+  { re: /封闭期|锁定期|份额锁定|不满.{0,12}不得赎回/g, before: 180, after: 2200, priority: 11, group: "lock" },
+  { re: /预警线|止损线|平仓线/g, before: 120, after: 1400, priority: 8, group: "subscription" },
+  { re: /风险等级|风险评级|本基金属于\s*R[1-5]|R[1-5]\s*[（(][^)）]{0,16}风险|中高风险|中低风险/g, before: 80, after: 900, priority: 11, group: "risk" },
+  { re: /追加申购|最低追加|追加金额/g, before: 80, after: 900, priority: 6, group: "subscription" },
+  { re: /是否可赎回|赎回申请/g, before: 80, after: 900, priority: 5, group: "subscription" },
 ]
 
-type TextRange = { start: number; end: number; priority: number }
+const KEYWORD_FALLBACK_KEYS: ExtractedFundElementTextKey[] = [
+  "risk_level",
+  "lock_period_desc",
+  "fee_pay",
+  "fee_pay_formula",
+  "fee_manage",
+  "add_amount",
+  "fee_redeem",
+  "closed_period",
+  "fee_trust",
+  "fee_admin_service",
+  "is_temporary_open",
+]
+
+const MISSING_FIELD_GROUPS: Partial<Record<ExtractedFundElementTextKey, ContractSectionGroup>> = {
+  risk_level: "risk",
+  lock_period_desc: "lock",
+  closed_period: "lock",
+  fee_pay_formula: "perf",
+  fee_pay: "perf",
+  fee_manage: "fees",
+  add_amount: "subscription",
+  fee_redeem: "subscription",
+  fee_trust: "fees",
+  fee_admin_service: "fees",
+  fee_manage_rate: "fees",
+  is_temporary_open: "subscription",
+}
+
+type TextRange = { start: number; end: number; priority: number; group?: ContractSectionGroup }
 
 function findAllIndices(text: string, pattern: RegExp): number[] {
   const re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`)
@@ -357,7 +410,10 @@ function mergeTextRanges(ranges: TextRange[]): TextRange[] {
     const last = merged[merged.length - 1]
     if (range.start <= last.end + CONTRACT_WINDOW_GAP) {
       last.end = Math.max(last.end, range.end)
-      last.priority = Math.max(last.priority, range.priority)
+      if (range.priority >= last.priority) {
+        last.priority = range.priority
+        if (range.group) last.group = range.group
+      }
     } else {
       merged.push({ ...range })
     }
@@ -368,37 +424,56 @@ function mergeTextRanges(ranges: TextRange[]): TextRange[] {
 function clipRangesToBudget(ranges: TextRange[], budget: number): TextRange[] {
   const total = ranges.reduce((sum, range) => sum + (range.end - range.start), 0)
   if (total <= budget) return ranges
-  const ranked = [...ranges].sort((a, b) => b.priority - a.priority || (b.end - b.start) - (a.end - a.start))
+
+  const reservedGroups = new Set<ContractSectionGroup>(["risk", "lock", "perf"])
+  const reserved: TextRange[] = []
+  const general: TextRange[] = []
+  for (const range of ranges) {
+    if (range.group && reservedGroups.has(range.group)) reserved.push(range)
+    else general.push(range)
+  }
+
   const kept: TextRange[] = []
   let used = 0
-  for (const range of ranked) {
-    const size = range.end - range.start
-    if (used + size > budget && kept.length > 0) continue
-    kept.push(range)
-    used += size
-    if (used >= budget) break
+  const take = (pool: TextRange[]) => {
+    const ranked = [...pool].sort(
+      (a, b) => b.priority - a.priority || (b.end - b.start) - (a.end - a.start),
+    )
+    for (const range of ranked) {
+      const size = range.end - range.start
+      if (used + size > budget && kept.length > 0) continue
+      kept.push(range)
+      used += size
+      if (used >= budget) break
+    }
   }
+  take(reserved)
+  if (used < budget) take(general)
   return kept.sort((a, b) => a.start - b.start)
 }
 
 export function selectContractTextForExtraction(
   text: string,
-  options?: { feeOnly?: boolean; maxChars?: number },
+  options?: { feeOnly?: boolean; maxChars?: number; groups?: ContractSectionGroup[]; headChars?: number },
 ): string {
   const maxChars = options?.maxChars ?? LLM_TEXT_CHARS
   const source = text.slice(0, MAX_TEXT_CHARS)
-  if (source.length <= maxChars) return source
+  if (source.length <= maxChars && !options?.groups) return source
 
-  const headChars = options?.feeOnly ? 1_500 : CONTRACT_HEAD_CHARS
+  const headChars = options?.headChars ?? (options?.feeOnly ? 1_500 : CONTRACT_HEAD_CHARS)
   const head = source.slice(0, Math.min(headChars, source.length))
   const budget = Math.max(4_000, maxChars - head.length - 400)
+  const windows = options?.groups?.length
+    ? CONTRACT_SECTION_WINDOWS.filter((window) => window.group && options.groups?.includes(window.group))
+    : CONTRACT_SECTION_WINDOWS
   const ranges: TextRange[] = []
-  for (const window of CONTRACT_SECTION_WINDOWS) {
+  for (const window of windows) {
     for (const index of findAllIndices(source, window.re)) {
       ranges.push({
         start: Math.max(0, index - window.before),
         end: Math.min(source.length, index + window.after),
         priority: window.priority,
+        group: window.group,
       })
     }
   }
@@ -444,34 +519,39 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 - inception_date: 成立日期 (YYYY-MM-DD)
 - puton_date: 备案日期 (YYYY-MM-DD)
 - custodian: 托管人/托管券商
-- open_day: 开放日规则描述
-- is_temporary_open: 临开信息，取值为 "可"、"不可临开"、"可临开回" 之一；无法判断填 null
-- fee_purchase: 申购费
-- add_amount: 追加申购限制/最低追加金额
-- fee_redeem: 赎回费
+- open_day: 开放日，一两句。不要把锁定期、赎回费写进本字段。
+- is_temporary_open: "可临开"、"否"、"不可临开"、"可临开回" 之一；不要填 0、1、2。
+- fee_purchase: 申购费率，如 "0%"。
+- add_amount: 追加/申购金额限制，一两句，如「首次净申购不低于100万元」。
+- fee_redeem: 赎回费，尽量写成「持有不足90天0.5%，满90天0%」或「0%」。不要摘录计算过程。
 - precautious_line: 预警线；无则填 "不设置预警线"
-- closed_period: 封闭期
+- closed_period: 封闭期，如「不设置」或「6个月」。不要摘录释义。
 - stop_line: 平仓线/止损线；无则填 "不设置平仓线"
-- risk_level: 风险等级/风险评级
-- lock_period_desc: 锁定期说明（份额锁定、到期赎回限制等）
-- fee_manage_rate: 年化管理费率，带百分号，如 "1.00%"。0.01% 这类低费率也必须提取，不要当成缺失。
-- fee_trust: 托管费，写明年化费率与计提/支付方式
-- fee_manage: 管理费说明，含费率、计提基数、支付频率
-- fee_admin_service: 外包费/行政服务费/运营服务费，写明年化费率与计提/支付方式
-- fee_pay: 业绩报酬说明，必须覆盖 A/B/C 类（如有）的计提条件、比例、高水位、计提时点
-- fee_pay_formula: 各类份额业绩报酬计算公式的完整文字，保留合同中的 H/R/C/F/N 公式，不要只写“详见合同”
+- risk_level: 产品风险等级，如 "R5（高风险）"。合同可能写成「本基金风险等级为[R5]」。不要把 C5 投资者适当性或期货工具风险当成产品风险等级。
+- lock_period_desc: 锁定期，最多一句。表格「不设置」就填「不设置」；「不满6个月不得赎回」就填该句。禁止摘录释义第43条、不可抗力、形式监督。
+- fee_manage_rate: 年化管理费率，如 "1.00%"。
+- fee_trust: 托管费，最多一句，如「年托管费率0.015%，每日计提，按自然季度支付。」禁止 H＝E 公式和划款流程。
+- fee_manage: 管理费说明，最多一句，如「年管理费率1%，每日计提，按自然季度支付。」禁止 H＝E 公式、费用种类清单、划款流程。
+- fee_admin_service: 外包费/运营服务费，最多一句，如「年运营服务费率0.015%，每日计提，按自然季度支付。」
+- fee_pay: 业绩报酬说明，一两句：基准、计提比例、计提时点。不要整章费用与税收。
+- fee_pay_formula: 只保留公式本身，一两行，如「R>6%时提取40%。R=(A-B)/C×365/N；E=K×T1×(R-B)×T/365×40%。」禁止费用种类清单、管理费/托管费公式、页码。
 - fee_pay_formula_config: 若能归纳为单一主份额公式则输出对象，否则 null。格式：
   {"mode":"annual_gradient"|"excess_gradient"|"fixed"|"none","gradients":[{"fromPct":"0","toPct":"6","ratePct":"20"}]}
 
-无法从合同中确定的字段填 null。只输出 JSON 对象。文本可能用“……”省略无关章节，费用、申赎、业绩报酬仍完整出现在摘录中，必须提取，不要因为不在文首就填 null。
+无法从合同中确定的字段填 null。只输出 JSON 对象。文本可能用“……”省略无关章节，费用、申赎、锁定期、风险等级、业绩报酬仍完整出现在摘录中，必须提取，不要因为不在文首或标题用词不完全一致就填 null。
+
+字段定位提示：
+- 标题可能是「业绩报酬的计算公式」而不是「业绩报酬公式」；可能是「基金份额的锁定期」而不是「锁定期说明」。按关键词搜索并阅读前后段落。
+- 风险等级可能嵌在句子里（「属于 R4（中高风险）投资品种」），不要只在表格或「风险等级：」标签后查找。
 
 份额类别（重要）：
-合同常对 A/B/C 类份额规定不同的管理费、业绩报酬、申购赎回或封闭期。遇到这种情况时：
-- fee_manage、fee_pay、fee_pay_formula、fee_redeem、fee_purchase、closed_period、add_amount、open_day、lock_period_desc 必须写成覆盖全部分额的完整说明，按 A/B/C 逐条写明规则，不要只提取其中一类。
-- 示例（管理费说明）：「A类（机构/产品类合格投资者）：年化管理费率1%，每日计提、按季支付；B类（个人合格投资者）：年化管理费率0.2%，每日计提、按季支付；C类：年化管理费率1%，每日计提、按季支付。」
-- 示例（托管费）：「年化托管费率0.01%，按基金资产净值每日计提，按自然季度支付，下一自然季度前10个工作日内自动支付。」
-- 示例（业绩报酬说明）：「按每个投资者账户年化收益率R计提。A类：R≤0不计提；0<R≤6%按20%计提；R>6%时6%以内按20%、超出部分按25%计提。B类：R≤6%不计提；R>6%时超出6%部分按50%计提。财产分配前从分配金额中扣除。」
-- 示例（业绩报酬公式）：「A类：R≤0时H=0；0<R≤6%时H=R×20%×C×F×N/365；R>6%时H=[6%×20%+(R-6%)×25%]×C×F×N/365。B类：R≤6%时H=0；R>6%时H=(R-6%)×50%×C×F×N/365。」
+合同常对 A/B/C 类份额规定不同费率。遇到这种情况时：
+- 用短句按类别列出，如「A类年管理费率1%；B类1.5%」。禁止摘录整章、H＝E 公式、划款流程、页码。
+- 示例（管理费说明）：「年管理费率1%，每日计提，按季支付。」
+- 示例（托管费）：「年托管费率0.015%，每日计提，按自然季度支付。」
+- 示例（外包费）：「年运营服务费率0.015%，每日计提，按自然季度支付。」
+- 示例（业绩报酬说明）：「按业绩基准计提，业绩基准6%，计提比例40%。」
+- 示例（业绩报酬公式）：「基准6%；超额计提40%；R=(A-B)/C×365/N。」
 - fee_manage_rate：各类相同则填该年化费率（如 "1.00%"）；各类不同时填 A 类或主份额费率，细节仍须写在 fee_manage 中。
 
 若文本是补充协议、修订协议、合同变更，或业绩报酬减免说明函、费率调整说明等非合同文件：这些文件同样会影响产品要素。请提取 fund_name、register_number，以及本文件明确变更或重申的最新规则（尤其是 fee_pay、fee_manage）；未提及的字段填 null。
@@ -509,20 +589,88 @@ async function invokeElementExtraction(selectedText: string): Promise<ExtractedF
   }
 }
 
+export function softenWeakExtractedFields(extracted: ExtractedFundElements): ExtractedFundElements {
+  return {
+    ...extracted,
+    risk_level: isWeakRiskLevel(extracted.risk_level) ? null : extracted.risk_level,
+    lock_period_desc: isWeakLockPeriod(extracted.lock_period_desc) ? null : extracted.lock_period_desc,
+    fee_pay_formula: isWeakFormula(extracted.fee_pay_formula) ? null : extracted.fee_pay_formula,
+    fee_manage: isWeakFeeManage(extracted.fee_manage) ? null : extracted.fee_manage,
+    fee_pay: isWeakFeePay(extracted.fee_pay) ? null : extracted.fee_pay,
+    add_amount: isWeakAddAmount(extracted.add_amount) ? null : extracted.add_amount,
+    fee_redeem: isWeakShortFee(extracted.fee_redeem) ? null : extracted.fee_redeem,
+    closed_period: isWeakShortFee(extracted.closed_period) ? null : extracted.closed_period,
+    fee_trust: isWeakShortFee(extracted.fee_trust) ? null : extracted.fee_trust,
+    fee_admin_service: isWeakShortFee(extracted.fee_admin_service) ? null : extracted.fee_admin_service,
+    is_temporary_open: isWeakTemporaryOpen(extracted.is_temporary_open) ? null : extracted.is_temporary_open,
+  }
+}
+
+export function applyContractKeywordFallbacks(
+  text: string,
+  extracted?: ExtractedFundElements | null,
+): ExtractedFundElements {
+  const filled = fillMissingElementsFromKeywords(text, softenWeakExtractedFields({
+    ...EMPTY_ELEMENTS,
+    ...(extracted ?? {}),
+  }))
+  const out: ExtractedFundElements = {
+    ...filled,
+    is_temporary_open: formatTemporaryOpen(filled.is_temporary_open) ?? filled.is_temporary_open,
+  }
+  for (const key of ELEMENT_KEYS) {
+    const value = out[key]
+    if (typeof value === "string") out[key] = value.replace(/\u0000/g, "")
+  }
+  return out
+}
+
+function missingKeywordFields(extracted: ExtractedFundElements): ExtractedFundElementTextKey[] {
+  return KEYWORD_FALLBACK_KEYS.filter((key) => !extracted[key]?.trim())
+}
+
 async function extractElementsWithLlm(text: string): Promise<ExtractedFundElements> {
   const selected = selectContractTextForExtraction(text)
   console.log(
     `[fund-contract-element-extract] contract chars=${text.length} selected chars=${selected.length}`,
   )
-  const extracted = await invokeElementExtraction(selected)
+  let extracted = await invokeElementExtraction(selected)
   const feeKeywordsPresent = /管理费|托管费|业绩报酬|运营服务费/.test(selected)
   if (feeKeywordsPresent && filledFieldCount(extracted, FEE_AND_SUBSCRIPTION_KEYS) < 4) {
     const feeOnly = selectContractTextForExtraction(text, { feeOnly: true })
     try {
       const feeExtracted = await invokeElementExtraction(feeOnly)
-      return mergeExtractedElements(extracted, feeExtracted)
+      extracted = mergeExtractedElements(extracted, feeExtracted)
     } catch (err) {
       console.error("[fund-contract-element-extract] fee fallback failed", err)
+    }
+  }
+
+  extracted = applyContractKeywordFallbacks(text, extracted)
+  const stillMissing = missingKeywordFields(extracted)
+  if (stillMissing.length) {
+    const groups = Array.from(
+      new Set(
+        stillMissing
+          .map((key) => MISSING_FIELD_GROUPS[key])
+          .filter((group): group is ContractSectionGroup => Boolean(group)),
+      ),
+    )
+    const focused = selectContractTextForExtraction(text, {
+      groups,
+      maxChars: 16_000,
+      headChars: 400,
+    })
+    if (focused.length > 120) {
+      try {
+        const extra = await invokeElementExtraction(focused)
+        extracted = applyContractKeywordFallbacks(
+          text,
+          mergeExtractedElements(extracted, extra),
+        )
+      } catch (err) {
+        console.error("[fund-contract-element-extract] keyword fallback failed", err)
+      }
     }
   }
   return extracted

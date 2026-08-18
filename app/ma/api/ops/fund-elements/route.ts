@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import {
   formatFeePayFormula,
+  formatTemporaryOpen,
   parseFeePayFormulaConfig,
   type FeePayFormulaConfig,
 } from "@/lib/ma/fund-elements-extra"
@@ -15,12 +16,6 @@ import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 
 export const dynamic = "force-dynamic"
-
-const TEMP_OPEN_MAP: Record<number, string> = {
-  1: "可",
-  2: "不可临开",
-  3: "可临开回",
-}
 
 type BasicinfoTrackRow = {
   fund_name: string | null
@@ -173,10 +168,7 @@ export async function GET(req: Request) {
   const benchmark = pfi?.benchmark || bflRows[0]?.benchmark_index || null
   const fund_manager = pfi?.manager || el?.advisor || null
 
-  const is_temporary_open =
-    el?.is_temporary_open != null
-      ? (TEMP_OPEN_MAP[el.is_temporary_open] ?? String(el.is_temporary_open))
-      : null
+  const is_temporary_open = formatTemporaryOpen(el?.is_temporary_open)
 
   const fee_manage_rate =
     el?.fee_manage_rate != null

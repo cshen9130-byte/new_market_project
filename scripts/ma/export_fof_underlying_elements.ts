@@ -15,6 +15,7 @@ import path from "path"
 import { spawn, type ChildProcess } from "child_process"
 import * as XLSX from "xlsx"
 import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
+import { formatTemporaryOpen } from "@/lib/ma/fund-elements-extra"
 
 ensureScriptDatabaseEnv()
 configureEtlDbTimeout()
@@ -23,12 +24,6 @@ const SSH_HOST = "root@8.154.33.143"
 const LOCAL_PORT = 5433
 const REMOTE_DB = "127.0.0.1:5432"
 const DEFAULT_DB_URL = `postgresql://market_user:2026SmartDashboard%21@127.0.0.1:${LOCAL_PORT}/market_data`
-
-const TEMP_OPEN_MAP: Record<number, string> = {
-  1: "可",
-  2: "不可临开",
-  3: "可临开回",
-}
 
 const HEADERS = [
   "列表产品名称",
@@ -222,10 +217,7 @@ async function main() {
         const rate = row.fee_manage_rate
           ? `${(parseFloat(row.fee_manage_rate) * 100).toFixed(2)}%`
           : null
-        const tempOpen =
-          row.is_temporary_open != null
-            ? (TEMP_OPEN_MAP[row.is_temporary_open] ?? String(row.is_temporary_open))
-            : null
+        const tempOpen = formatTemporaryOpen(row.is_temporary_open)
         const payload = {
           fund_name: row.fund_name,
           register_number: row.register_number,

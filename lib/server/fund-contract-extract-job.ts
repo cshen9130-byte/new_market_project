@@ -1,16 +1,22 @@
 import fs from "fs"
 import path from "path"
+import { execFile } from "child_process"
+import { promisify } from "util"
 import { query } from "@/lib/db"
 import {
+  applyContractKeywordFallbacks,
   extractFundContractElements,
   matchFundsFromExtracted,
   pickHighConfidenceFundMatch,
+  readFundContractText,
+  softenWeakExtractedFields,
 } from "@/lib/server/fund-contract-element-extract"
 import {
   claimNextElementExtractJob,
   countQueuedElementExtractJobs,
   createElementExtractJobFromBuffer,
   getElementExtractJobById,
+  listAppliedElementExtractJobs,
   listAppliedExtractJobsByBeiAns,
   listExtractJobsForRerun,
   listNeedsReviewExtractJobs,
@@ -25,12 +31,14 @@ import {
 } from "@/lib/server/fund-contract-materials"
 import {
   appliedFieldKeys,
+  loadExtractedElementDisplayValues,
   writeFillEmptyElementsAcrossShareClasses,
   writeFundElementsAcrossShareClasses,
   writeOverwriteElementsAcrossShareClasses,
 } from "@/lib/server/fund-elements-write"
 import { ensureShareClassBeianProduct, listFundFamilyProducts } from "@/lib/server/share-class-product"
 import {
+  compareContractDocumentRecency,
   contractDocumentRecency,
   isLatestContractDocument,
 } from "@/lib/server/contract-document-recency"
@@ -42,6 +50,13 @@ export type ContractExtractRunResult = {
   needsReview: number
   failed: number
   remaining: number
+}
+
+export type KeywordBackfillResult = {
+  processed: number
+  filled: number
+  skipped: number
+  failed: number
 }
 
 export type ContractExtractJobStatus = {
@@ -319,6 +334,143 @@ export async function rematchNeedsReviewExtractJobs(options?: {
   }
 
   result.remaining = await countQueuedElementExtractJobs()
+  return result
+}
+
+function latestJobPerBeian(jobs: ElementExtractJobRow[]): ElementExtractJobRow[] {
+  const ranked = [...jobs].sort((a, b) =>
+    compareContractDocumentRecency(
+      contractDocumentRecency({ fileName: a.original_filename, uploadedAt: a.uploaded_at }),
+      contractDocumentRecency({ fileName: b.original_filename, uploadedAt: b.uploaded_at }),
+    ) || a.id - b.id,
+  )
+  const latest = new Map<string, ElementExtractJobRow>()
+  for (const job of ranked) {
+    const key = (job.beian_hao ?? "").trim().toUpperCase()
+    if (!key) continue
+    latest.set(key, job)
+  }
+  return Array.from(latest.values())
+}
+
+const execFileAsync = promisify(execFile)
+
+export async function readStoredContractBuffer(job: ElementExtractJobRow): Promise<Buffer> {
+  try {
+    return await readElementExtractJobFile(job)
+  } catch {
+    const host = process.env.CONTRACT_EXTRACT_SSH_HOST?.trim()
+    const remoteDir = process.env.CONTRACT_EXTRACT_REMOTE_JOBS_DIR?.trim()
+    if (!host || !remoteDir) throw new Error("合同文件不在本地，且未配置远程读取")
+    const safeName = path.basename(job.storage_filename)
+    if (!safeName || safeName !== job.storage_filename) {
+      throw new Error("合同存储文件名无效")
+    }
+    const remotePath = `${remoteDir.replace(/\/+$/, "")}/${safeName}`
+    const keyPath = path.join(process.env.USERPROFILE ?? process.env.HOME ?? "", ".ssh", "id_ed25519_server")
+    const args = ["-o", "StrictHostKeyChecking=accept-new", host, `cat ${JSON.stringify(remotePath)}`]
+    if (fs.existsSync(keyPath)) args.unshift("-i", keyPath)
+    const { stdout } = await execFileAsync("ssh", args, {
+      encoding: "buffer",
+      maxBuffer: 25 * 1024 * 1024,
+      windowsHide: true,
+    })
+    if (!stdout?.length) throw new Error("远程合同文件为空")
+    return Buffer.from(stdout)
+  }
+}
+
+/** Re-read stored contracts and fill empty/weak 要素 from keyword windows (no LLM). */
+export async function backfillKeywordFieldsFromStoredContracts(options?: {
+  maxJobs?: number
+}): Promise<KeywordBackfillResult> {
+  const maxJobs = Math.max(1, options?.maxJobs ?? 2000)
+  const result: KeywordBackfillResult = { processed: 0, filled: 0, skipped: 0, failed: 0 }
+  const jobs = latestJobPerBeian(await listAppliedElementExtractJobs()).slice(0, maxJobs)
+
+  for (const job of jobs) {
+    result.processed += 1
+    const beian = (job.beian_hao ?? "").trim()
+    if (!beian) {
+      result.skipped += 1
+      continue
+    }
+    try {
+      const buffer = await readStoredContractBuffer(job)
+      const text = await readFundContractText(buffer, job.original_filename)
+      const productName = job.product_name || job.extracted_json?.fund_name || beian
+      const current = await loadExtractedElementDisplayValues(beian, productName)
+      const extracted = applyContractKeywordFallbacks(text, {
+        ...(job.extracted_json ?? {}),
+        fee_manage_rate: job.extracted_json?.fee_manage_rate || current?.fee_manage_rate,
+      })
+      const fields = await writeFillEmptyElementsAcrossShareClasses(
+        beian,
+        extracted.fund_name || productName,
+        extracted,
+      )
+      await updateElementExtractJob(job.id, {
+        extracted_json: extracted,
+        applied_fields: fields.length ? fields : job.applied_fields,
+        error_message: job.error_message,
+      })
+      if (fields.length) result.filled += 1
+      else result.skipped += 1
+      if (result.processed % 5 === 0 || fields.length) {
+        console.error(
+          `[contract-extract] keyword backfill ${result.processed}/${jobs.length} job=${job.id} ${beian} fields=${fields.join(",") || "none"}`,
+        )
+      }
+    } catch (err) {
+      result.failed += 1
+      console.error(`[contract-extract] keyword backfill job ${job.id} failed:`, err)
+    }
+  }
+  return result
+}
+
+/**
+ * Copy already-written 申赎要素 onto empty A/B/C and FOF底层 share-class rows
+ * (e.g. parent SBLE72 extracted, FOF row BLE72A still a stub).
+ */
+export async function fanoutAppliedElementsToShareClasses(options?: {
+  maxJobs?: number
+}): Promise<KeywordBackfillResult> {
+  const maxJobs = Math.max(1, options?.maxJobs ?? 2000)
+  const result: KeywordBackfillResult = { processed: 0, filled: 0, skipped: 0, failed: 0 }
+  const jobs = latestJobPerBeian(await listAppliedElementExtractJobs()).slice(0, maxJobs)
+
+  for (const job of jobs) {
+    result.processed += 1
+    const beian = (job.beian_hao ?? "").trim()
+    if (!beian) {
+      result.skipped += 1
+      continue
+    }
+    try {
+      const productName = job.product_name || beian
+      const source = await loadExtractedElementDisplayValues(beian, productName)
+      if (!source) {
+        result.skipped += 1
+        continue
+      }
+      const fields = await writeFillEmptyElementsAcrossShareClasses(
+        beian,
+        productName,
+        softenWeakExtractedFields(source),
+      )
+      if (fields.length) result.filled += 1
+      else result.skipped += 1
+      if (result.processed % 20 === 0 || fields.length) {
+        console.error(
+          `[contract-extract] share-class fanout ${result.processed}/${jobs.length} ${beian} fields=${fields.join(",") || "none"}`,
+        )
+      }
+    } catch (err) {
+      result.failed += 1
+      console.error(`[contract-extract] share-class fanout ${beian} failed:`, err)
+    }
+  }
   return result
 }
 

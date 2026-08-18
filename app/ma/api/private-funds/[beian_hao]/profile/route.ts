@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { formatFeePayFormula, parseFeePayFormulaConfig } from "@/lib/ma/fund-elements-extra"
+import { formatFeePayFormula, formatTemporaryOpen, parseFeePayFormulaConfig } from "@/lib/ma/fund-elements-extra"
 import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import {
   loadBasicinfoTrackByBeianKeys,
@@ -12,12 +12,6 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 // Profile data: basicinfo_bfl_track + private_fund_info_bfl + private_fund_info
-
-const TEMP_OPEN_MAP: Record<number, string> = {
-  1: "可",
-  2: "不可临开",
-  3: "可临开回",
-}
 
 type PfiRow = {
   product_name: string | null
@@ -207,10 +201,7 @@ export async function GET(
         ? `${(parseFloat(track.fee_manage_rate) * 100).toFixed(2)}%`
         : null
 
-    const isTemporaryOpen =
-      track?.is_temporary_open != null
-        ? (TEMP_OPEN_MAP[track.is_temporary_open] ?? String(track.is_temporary_open))
-        : null
+    const isTemporaryOpen = formatTemporaryOpen(track?.is_temporary_open)
 
     const custodian =
       (track?.mandator_name?.trim() || null) ??

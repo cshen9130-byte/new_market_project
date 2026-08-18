@@ -116,6 +116,8 @@ function parseFundOptions(json: unknown): FundOption[] {
 
 function formatTemporaryOpen(value: string | null | undefined): string {
   if (!value) return "—"
+  if (value === "0" || value === "否") return "否"
+  if (value === "1" || value === "是") return "是"
   if (value.includes("不可")) return "否"
   if (value.includes("可")) return "是"
   return value

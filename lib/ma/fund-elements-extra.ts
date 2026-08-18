@@ -101,3 +101,41 @@ export function buildFeePayFormulaConfig(
         : undefined,
   }
 }
+
+/** DB codes: 0=否, 1=可临开, 2=不可临开, 3=可临开回 */
+const TEMP_OPEN_LABELS: Record<number, string> = {
+  0: "否",
+  1: "可临开",
+  2: "不可临开",
+  3: "可临开回",
+}
+
+export function formatTemporaryOpen(value: unknown): string | null {
+  if (value == null) return null
+  if (typeof value === "boolean") return value ? "可临开" : "否"
+  const s = String(value).trim()
+  if (!s) return null
+  if (/^-?\d+$/.test(s)) {
+    const n = Number(s)
+    return TEMP_OPEN_LABELS[n] ?? null
+  }
+  if (s === "可") return "可临开"
+  if (s === "不可") return "否"
+  return s
+}
+
+export function encodeTemporaryOpen(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s) return null
+  if (/^-?\d+$/.test(s)) {
+    const n = Number(s)
+    if (n === 0 || n === 1 || n === 2 || n === 3) return n
+  }
+  if (/^(否|不可|false)$/i.test(s) || /不[设设置定]+\s*临时开放|无临时开放/.test(s)) return 0
+  if (s.includes("不可")) return 2
+  if (s.includes("回")) return 3
+  if (s.includes("可") || s === "是" || /^true$/i.test(s)) return 1
+  return null
+}

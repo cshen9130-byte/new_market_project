@@ -1,5 +1,7 @@
 "use client"
 
+import { formatTemporaryOpen } from "@/lib/ma/fund-elements-extra"
+
 export type ProductElementsData = Record<string, string | null | undefined>
 
 function display(v: string | null | undefined) {
@@ -82,7 +84,7 @@ export function ProductElementsDialogContent({ data }: { data: ProductElementsDa
       </div>
       <table className="w-full border border-border rounded-lg overflow-hidden text-sm">
         <tbody>
-          <Row2 l1="开放日" v1={data.open_day} l2="是否可临开" v2={data.is_temporary_open} />
+          <Row2 l1="开放日" v1={data.open_day} l2="是否可临开" v2={formatTemporaryOpen(data.is_temporary_open) ?? data.is_temporary_open} />
           <Row2 l1="申购费" v1={data.fee_purchase} l2="追加限制" v2={data.add_amount} />
           <Row2 l1="赎回费" v1={data.fee_redeem} l2="风险等级" v2={data.risk_level} multiline />
           <Row2 l1="预警线" v1={data.precautious_line} l2="封闭期" v2={data.closed_period} />

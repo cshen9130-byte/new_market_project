@@ -9285,14 +9285,14 @@ function OpsEditElementsDialog({
         setFeeAdminService(d.fee_admin_service ?? "")
         setFeeTrust(d.fee_trust ?? "")
         const tempText = d.is_temporary_open ?? ""
-        if (tempText.includes("不可")) {
+        if (tempText === "0" || tempText === "否" || tempText.includes("不可")) {
           setTempOpenMode("no")
           setTempOpenPurchase(false)
           setTempOpenRedeem(false)
-        } else if (tempText.includes("可")) {
+        } else if (tempText.includes("可") || tempText === "是" || tempText === "1") {
           setTempOpenMode("yes")
           setTempOpenPurchase(!tempText.includes("回"))
-          setTempOpenRedeem(tempText.includes("回") || tempText === "可")
+          setTempOpenRedeem(tempText.includes("回") || tempText === "可" || tempText === "可临开" || tempText === "是")
         } else {
           setTempOpenMode("no")
           setTempOpenPurchase(false)

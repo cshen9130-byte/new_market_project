@@ -210,35 +210,59 @@ export async function listFundFamilyProducts(beianHao: string): Promise<Array<{
   if (!code) return []
   const current = await loadMainProduct(code)
   const name = current?.product_name?.trim()
-  if (!name) return [{ beian_hao: code, product_name: code }]
-
-  const rows = await query<{ beian_hao: string; product_name: string }>(
-    `SELECT beian_hao, product_name
-     FROM (
-       SELECT beian_hao, product_name
-       FROM private_fund_info_bfl
-       WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
-       UNION
-       SELECT beian_hao, product_name
-       FROM private_fund_info
-       WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
-     ) t
-     ORDER BY
-       CASE WHEN product_name ~ '[ABC]类' THEN 1 ELSE 0 END,
-       product_name ASC`,
-    [name],
-  )
   const seen = new Set<string>()
   const out: Array<{ beian_hao: string; product_name: string }> = []
-  for (const row of rows) {
-    const beian = row.beian_hao.trim()
-    if (!beian || seen.has(beian.toUpperCase())) continue
-    seen.add(beian.toUpperCase())
-    out.push({ beian_hao: beian, product_name: row.product_name })
+
+  if (name) {
+    const rows = await query<{ beian_hao: string; product_name: string }>(
+      `SELECT beian_hao, product_name
+       FROM (
+         SELECT beian_hao, product_name
+         FROM private_fund_info_bfl
+         WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
+         UNION
+         SELECT beian_hao, product_name
+         FROM private_fund_info
+         WHERE ${sqlFundNameBase("product_name")} = ${sqlFundNameBase("$1")}
+       ) t
+       ORDER BY
+         CASE WHEN product_name ~ '[ABC]类' THEN 1 ELSE 0 END,
+         product_name ASC`,
+      [name],
+    )
+    for (const row of rows) {
+      const beian = row.beian_hao.trim()
+      if (!beian || seen.has(beian.toUpperCase())) continue
+      seen.add(beian.toUpperCase())
+      out.push({ beian_hao: beian, product_name: row.product_name })
+    }
   }
+
   if (!seen.has(code.toUpperCase())) {
-    out.unshift({ beian_hao: code, product_name: name })
+    out.unshift({ beian_hao: code, product_name: name || code })
   }
+
+  try {
+    const family = beianFamilyKey(code)
+    if (family) {
+      const fofRows = await query<{ beian_hao: string; product_name: string }>(
+        `SELECT DISTINCT beian_hao, COALESCE(NULLIF(BTRIM(product_name), ''), beian_hao) AS product_name
+         FROM ops_fof_overview_list_cache
+         WHERE ${sqlBeianFamilyKey("beian_hao")} = $1
+           AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL`,
+        [family],
+      )
+      for (const row of fofRows) {
+        const beian = row.beian_hao.trim()
+        if (!beian || seen.has(beian.toUpperCase())) continue
+        seen.add(beian.toUpperCase())
+        out.push({ beian_hao: beian, product_name: row.product_name })
+      }
+    }
+  } catch {
+    // FOF cache may be unavailable
+  }
+
   return out
 }
 
