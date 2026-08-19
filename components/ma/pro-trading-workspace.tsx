@@ -78,9 +78,9 @@ export function ProTradingWorkspace({
   }, [open, onClose])
 
   const product = productOfSymbol(symbol)
-  const { candles: tfCandles } = useSymbolKline(symbol || null, interval, candles[symbol] || [])
-  const meta = INDEX_FUTURES.find((item) => item.product === product)
   const quote = quotes[symbol]
+  const { candles: tfCandles } = useSymbolKline(symbol || null, interval, candles[symbol] || [], quote)
+  const meta = INDEX_FUTURES.find((item) => item.product === product)
   const last = quote?.last ?? candles[symbol]?.at(-1)?.close ?? null
   const base = quote?.pre_settlement || quote?.pre_close || null
   const diff = last != null && base ? last - base : null

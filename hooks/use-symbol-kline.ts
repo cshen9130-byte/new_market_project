@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react"
 
-import type { CtpCandle } from "@/lib/client/ctp-market"
-import { mergeHistoryAndLive, type TimeframeId } from "@/lib/client/timeframes"
+import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
+import { applySessionQuote, mergeHistoryAndLive, type TimeframeId } from "@/lib/client/timeframes"
 
-export function useSymbolKline(symbol: string | null, interval: TimeframeId, live1m: CtpCandle[]) {
+export function useSymbolKline(symbol: string | null, interval: TimeframeId, live1m: CtpCandle[], quote?: CtpTick) {
   const [history, setHistory] = useState<CtpCandle[]>([])
   const [error, setError] = useState<string | null>(null)
 
@@ -46,8 +46,8 @@ export function useSymbolKline(symbol: string | null, interval: TimeframeId, liv
   }, [symbol, interval])
 
   const candles = useMemo(
-    () => mergeHistoryAndLive(history, live1m, interval),
-    [history, live1m, interval],
+    () => applySessionQuote(mergeHistoryAndLive(history, live1m, interval), quote, interval),
+    [history, live1m, interval, quote],
   )
 
   return { candles, error }

@@ -63,14 +63,94 @@ export function aggregateCandles(src: CtpCandle[], id: TimeframeId): CtpCandle[]
   return out
 }
 
+export function shanghaiWallUnix(now = new Date()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(now)
+      .map((part) => [part.type, part.value]),
+  )
+  return Math.floor(
+    Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      0,
+    ) / 1000,
+  )
+}
+
 export function mergeHistoryAndLive(history: CtpCandle[], live1m: CtpCandle[], id: TimeframeId) {
   const live = aggregateCandles(live1m, id)
-  if (!history.length) return live
+  const higherTf = id === "1d" || id === "1w" || id === "1M"
+  if (!history.length) return higherTf ? [] : live
   if (!live.length) return history
   const map = new Map<number, CtpCandle>()
   for (const bar of history) map.set(bar.time, bar)
-  for (const bar of live) map.set(bar.time, bar)
+  for (const bar of live) {
+    const prev = map.get(bar.time)
+    if (!prev) {
+      // Incomplete CTP 1m history must not invent a daily/weekly/monthly bar.
+      if (!higherTf) map.set(bar.time, bar)
+      continue
+    }
+    map.set(bar.time, {
+      time: prev.time,
+      open: prev.open,
+      high: Math.max(prev.high, bar.high),
+      low: Math.min(prev.low, bar.low),
+      close: bar.close,
+      volume: Math.max(prev.volume, bar.volume),
+    })
+  }
   return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+export function applySessionQuote(
+  bars: CtpCandle[],
+  quote:
+    | {
+        open?: number | null
+        high?: number | null
+        low?: number | null
+        last?: number | null
+        volume?: number | null
+      }
+    | undefined,
+  id: TimeframeId,
+) {
+  if (!quote || (id !== "1d" && id !== "1w" && id !== "1M")) return bars
+  const open = quote.open
+  const last = quote.last
+  if (open == null || last == null || !(open > 0) || !(last > 0)) return bars
+  const time = bucketTime(shanghaiWallUnix(), id)
+  const high = quote.high != null && quote.high > 0 ? quote.high : Math.max(open, last)
+  const low = quote.low != null && quote.low > 0 ? quote.low : Math.min(open, last)
+  const volume = quote.volume ?? 0
+  const next = bars.slice()
+  const idx = next.findIndex((bar) => bar.time === time)
+  if (idx < 0) {
+    next.push({ time, open, high, low, close: last, volume })
+    return next.sort((a, b) => a.time - b.time)
+  }
+  next[idx] = {
+    time,
+    open: id === "1d" ? open : next[idx].open || open,
+    high: Math.max(next[idx].high, high),
+    low: Math.min(next[idx].low, low),
+    close: last,
+    volume: Math.max(next[idx].volume, volume),
+  }
+  return next
 }
 
 export function formatCandleTime(unix: number, id: TimeframeId = "1m") {

@@ -39,7 +39,7 @@ export function IndexFuturesCandleChart({
   onSymbolChange,
 }: Props) {
   const [interval, setInterval] = useState<TimeframeId>("1m")
-  const { candles: tfCandles, error: klineError } = useSymbolKline(symbol, interval, candles)
+  const { candles: tfCandles, error: klineError } = useSymbolKline(symbol, interval, candles, quote)
   const lastCandle = tfCandles.at(-1)
   const last = quote?.last ?? lastCandle?.close ?? null
   const base = quote?.pre_settlement || quote?.pre_close || null

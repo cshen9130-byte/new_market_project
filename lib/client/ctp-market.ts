@@ -25,6 +25,9 @@ export type CtpTick = {
   open_interest: number | null
   pre_close: number | null
   pre_settlement: number | null
+  open?: number | null
+  high?: number | null
+  low?: number | null
   update_time: string | null
   update_millis: number | null
 }

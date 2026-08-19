@@ -1,5 +1,5 @@
 import type { CtpCandle } from "@/lib/client/ctp-market"
-import { aggregateCandles, type TimeframeId } from "@/lib/client/timeframes"
+import { aggregateCandles, bucketTime, type TimeframeId } from "@/lib/client/timeframes"
 import { chinaWallToUnix, sinaGet } from "@/lib/server/sina-fetch"
 
 function num(value: unknown) {
@@ -102,6 +102,50 @@ function sortUnique(bars: CtpCandle[]) {
   return [...map.values()].sort((a, b) => a.time - b.time)
 }
 
+async function fetchSessionHq(symbol: string) {
+  try {
+    const text = await sinaGet(
+      `https://hq.sinajs.cn/list=nf_${encodeURIComponent(symbol)}`,
+      `https://finance.sina.com.cn/futures/quotes/${symbol}.shtml`,
+    )
+    const match = text.match(new RegExp(`var hq_str_nf_${symbol}="([^"]*)";`, "i"))
+    if (!match) return null
+    const parts = match[1].split(",")
+    const dateMatch = match[1].match(/(\d{4}-\d{2}-\d{2})/)
+    const open = num(parts[0])
+    const high = num(parts[1])
+    const low = num(parts[2])
+    const last = num(parts[3])
+    if (open == null || last == null || !(open > 0) || !(last > 0)) return null
+    const date = dateMatch?.[1] || shanghaiToday()
+    const time = chinaWallToUnix(`${date} 00:00:00`)
+    if (time == null) return null
+    return toCandle(time, open, high, low, last, num(parts[4]))
+  } catch {
+    return null
+  }
+}
+
+function applySessionHq(bars: CtpCandle[], session: CtpCandle | null, interval: TimeframeId) {
+  if (!session) return bars
+  const time = bucketTime(session.time, interval)
+  const next = bars.slice()
+  const idx = next.findIndex((bar) => bar.time === time)
+  if (idx < 0) {
+    next.push({ ...session, time })
+    return sortUnique(next)
+  }
+  next[idx] = {
+    time,
+    open: interval === "1d" ? session.open : next[idx].open || session.open,
+    high: Math.max(next[idx].high, session.high),
+    low: Math.min(next[idx].low, session.low),
+    close: session.close,
+    volume: Math.max(next[idx].volume, session.volume),
+  }
+  return next
+}
+
 const cache = new Map<string, { at: number; data: CtpCandle[] }>()
 
 export async function getCffexKline(symbol: string, interval: TimeframeId) {
@@ -124,7 +168,9 @@ export async function getCffexKline(symbol: string, interval: TimeframeId) {
     data = aggregateCandles(hourly.length ? hourly : await fetchDaily(symbol), "4h")
   } else {
     const daily = await fetchDaily(symbol)
-    data = interval === "1d" ? daily : aggregateCandles(daily, interval)
+    const session = await fetchSessionHq(symbol)
+    const withToday = applySessionHq(daily, session, "1d")
+    data = interval === "1d" ? withToday : aggregateCandles(withToday, interval)
   }
 
   data = sortUnique(data)

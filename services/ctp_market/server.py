@@ -153,6 +153,9 @@ async def live() -> dict:
                 "open_interest": tick.get("open_interest"),
                 "pre_close": tick.get("pre_close"),
                 "pre_settlement": tick.get("pre_settlement"),
+                "open": tick.get("open"),
+                "high": tick.get("high"),
+                "low": tick.get("low"),
                 "update_time": tick.get("update_time"),
                 "update_millis": tick.get("update_millis"),
             }
