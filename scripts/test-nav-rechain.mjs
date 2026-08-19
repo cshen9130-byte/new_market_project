@@ -2208,4 +2208,38 @@ if (fs.existsSync(excelPath)) {
     "Huatai 锡泰 rejects underlying 207M footer AUM",
     poisonedParsed?.netAssetValue != null && Math.abs(poisonedParsed.netAssetValue - 51954300.55) < 1,
   )
+
+  // 8/18-style: footer 资产净值 includes 债券期货合约名义本金 (~240M).
+  const futures = XLSX.utils.book_new()
+  const futuresSheet = XLSX.utils.aoa_to_sheet([
+    ["SCQ403 金舆锡泰一号私募证券投资基金 产品估值表 日报 20260818"],
+    ["华泰证券股份有限公司_金舆锡泰一号私募证券投资基金_专用表"],
+    ["日期: 2026-08-18", "单位净值:1.0026"],
+    ["科目代码", "科目名称", "币种", "汇率", "数量", "单位成本", "成本", "", "", "行情", "市值", "", "", "估值增值", ""],
+    ["", "", "", "", "", "", "原币", "本币", "成本占比", "", "原币", "本币", "市值占比", "原币", "本币"],
+    ["10020101", "银行存款_活期.华泰托管金舆锡泰一号私募证券投资基金", "CNY", 1, "", "", 5999600, 0, "", "", 5999600, 0, "", "", ""],
+    ["1108", "其他交易性金融资产投资", "CNY", 1, "", "", 33007036.33, 0, "", "", 33007036.33, 0, "", "", ""],
+    ["102102BFJ_0011", "结算备付金_期货期权备付金.华泰期货", "CNY", 1, "", "", 6675931.6, 0, "", "", 6675931.6, 0, "", "", ""],
+    ["31021201TF2612CFX", "中金所_投机_卖方_债券期货_成本.国债2612", "CNY", 1, 80, "", 85284000, 0, "", "", 85284000, 0, "", "", ""],
+    ["31021001TL2612CFX", "中金所_投机_买方_债券期货_成本.30年期国债2612", "CNY", 1, 60, "", 70128000, 0, "", "", 70128000, 0, "", "", ""],
+    ["31021201T2609CFX", "中金所_投机_卖方_债券期货_成本.10年期国债2609", "CNY", 1, 30, "", 32881500, 0, "", "", 32881500, 0, "", "", ""],
+    ["", "资产合计", "CNY", 1, "", "", 240501512.31, 0, "", "", 240501512.31, 0, "", "", ""],
+    ["", "资产净值", "CNY", 1, "", "", 240501512.31, 0, "", "", 240501512.31, 0, "", "", ""],
+    ["", "单位净值", "CNY", 1, "", "", "", "", "", "", 1.0026, 0, "", "", ""],
+  ])
+  XLSX.utils.book_append_sheet(futures, futuresSheet, "Sheet1")
+  const futuresBuf = XLSX.write(futures, { type: "buffer", bookType: "xls" })
+  const futuresParsed = extractValuationFromBuffer(
+    Buffer.from(futuresBuf),
+    "SCQ403_金舆锡泰一号私募证券投资基金_产品估值表_日报_20260818.xls",
+    "SCQ403_金舆锡泰一号私募证券投资基金估值表20260818",
+  )
+  const expectedExFutures = 5999600 + 33007036.33 + 6675931.6
+  assert("Huatai 锡泰 unit NAV 1.0026 with futures rows", futuresParsed?.unitNav === 1.0026)
+  assert(
+    "Huatai 锡泰 AUM excludes bond-futures notionals",
+    futuresParsed?.netAssetValue != null
+      && futuresParsed.netAssetValue < 100_000_000
+      && Math.abs(futuresParsed.netAssetValue - expectedExFutures) < 1,
+  )
 }

@@ -1,6 +1,7 @@
 /**
- * One-shot: write 金舆锡泰一号 资产净值 from Huatai SCQ403 估值表, not SBKM53.
- * Run on the app host: npx tsx scripts/ma/_fix_scq403_aum.ts
+ * Re-extract 金舆锡泰一号 资产净值 from Huatai SCQ403 估值表 holdings,
+ * excluding 债券期货合约名义本金. Run on the app host:
+ *   npx tsx scripts/ma/_fix_scq403_aum.ts
  */
 import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-project-env"
 
@@ -10,15 +11,23 @@ process.env.DB_STATEMENT_TIMEOUT = "0"
 
 const PRODUCT = "金舆锡泰一号"
 const BEIAN = "SCQ403"
-const HUATAI_AUM_FALLBACK = 51954300.54
 
 async function main() {
   const { queryUnbounded } = await import("@/lib/db")
+  const { backfillValuationMetricsFromRecords } = await import(
+    "@/lib/server/email-valuation-metrics-backfill"
+  )
   const {
     deriveNetAssetValue,
     loadEmailFundMetricsLookup,
     resolveEmailFundMetrics,
   } = await import("@/lib/server/email-valuation-cache-enrich")
+  const { refreshManagedProductsListCache } = await import(
+    "@/lib/server/managed-products-list-cache-pg"
+  )
+
+  const backfill = await backfillValuationMetricsFromRecords({ productCodes: [BEIAN] })
+  console.error(`[fix_scq403] metrics backfill records=${backfill.recordsUpdated}`)
 
   const rec = await queryUnbounded<{
     id: string
@@ -45,28 +54,21 @@ async function main() {
             total_asset::text, total_liability::text, paid_in_capital::text,
             unit_nav::text, summary->>'nav' AS summary_nav
      FROM ops_email_valuation_records
-     WHERE UPPER(BTRIM(product_code)) IN ('SCQ403', 'SBKM53')
-        OR fund_name ILIKE '%锡泰%'
+     WHERE UPPER(BTRIM(product_code)) = $1
      ORDER BY valuation_date DESC, id DESC
-     LIMIT 20`,
+     LIMIT 10`,
+    [BEIAN],
   )
-  console.error(`[fix_scq403] records=${rec.length}`)
   for (const row of rec) {
-    const derived = deriveNetAssetValue(row)
-    console.error(
-      JSON.stringify({
-        id: row.id,
-        code: row.product_code,
-        date: row.valuation_date,
-        sender: row.sender_email,
-        file: row.attachment_filename,
-        stored_aum: row.net_asset_value,
-        derived_aum: derived,
-        paid_in: row.paid_in_capital,
-        unit_nav: row.unit_nav,
-        custody: row.custody_balance,
-      }),
-    )
+    console.error(JSON.stringify({
+      id: row.id,
+      date: row.valuation_date,
+      stored_aum: row.net_asset_value,
+      derived_aum: deriveNetAssetValue(row),
+      paid_in: row.paid_in_capital,
+      unit_nav: row.unit_nav,
+      custody: row.custody_balance,
+    }))
   }
 
   const lookup = await loadEmailFundMetricsLookup([BEIAN])
@@ -76,19 +78,15 @@ async function main() {
   let aum = metrics.net_asset_value
   const custody = metrics.custody_balance
   if (aum == null || aum >= 100_000_000) {
-    const huatai = rec.find((row) => {
-      const blob = `${row.sender_email ?? ""} ${row.subject ?? ""} ${row.attachment_filename ?? ""}`
-      return (
-        (row.product_code ?? "").toUpperCase() === BEIAN
-        && /htsc|产品估值表|估值表_日报/i.test(blob)
-        && !/虚拟净值|TA虚拟/i.test(blob)
-      )
+    const previous = rec.find((row) => {
+      const derived = deriveNetAssetValue(row)
+      return derived != null && derived >= 1000 && derived < 100_000_000
     })
-    aum = huatai ? deriveNetAssetValue(huatai) : aum
+    aum = previous ? deriveNetAssetValue(previous) : aum
+    console.error("[fix_scq403] latest AUM still inflated, using prior Huatai row", aum)
   }
   if (aum == null || aum >= 100_000_000) {
-    console.error("[fix_scq403] forcing Huatai fallback AUM", HUATAI_AUM_FALLBACK)
-    aum = HUATAI_AUM_FALLBACK
+    throw new Error("SCQ403 AUM still inflated after holdings re-extract")
   }
 
   const mp = await queryUnbounded<{ n: string }>(
@@ -103,18 +101,9 @@ async function main() {
      SELECT COUNT(*)::text AS n FROM updated`,
     [aum, custody],
   )
-  const cache = await queryUnbounded<{ n: string }>(
-    `WITH updated AS (
-       UPDATE ops_managed_products_list_cache
-       SET net_asset_value = $1,
-           custody_balance = COALESCE($2::numeric, custody_balance)
-       WHERE beian_hao = 'SCQ403'
-          OR product_name LIKE '%金舆锡泰一号%'
-       RETURNING 1
-     )
-     SELECT COUNT(*)::text AS n FROM updated`,
-    [aum, custody],
-  )
+
+  const cacheRows = await refreshManagedProductsListCache({ reuseResolvedIdentities: true })
+  console.error(`[fix_scq403] list cache refreshed rows=${cacheRows}`)
 
   const after = await queryUnbounded<{
     src: string
@@ -122,14 +111,18 @@ async function main() {
     beian: string | null
     net_asset_value: string | null
     custody: string | null
+    unit_nav: string | null
+    nav_date: string | null
   }>(
     `SELECT 'mp' AS src, product_name, NULL::text AS beian,
-            net_asset_value::text, custody_account_balance::text AS custody
+            net_asset_value::text, custody_account_balance::text AS custody,
+            NULL::text AS unit_nav, NULL::text AS nav_date
      FROM managed_products
      WHERE product_name LIKE '%锡泰%'
      UNION ALL
      SELECT 'cache', product_name, beian_hao,
-            net_asset_value::text, custody_balance::text
+            net_asset_value::text, custody_balance::text,
+            unit_nav::text, nav_date::text
      FROM ops_managed_products_list_cache
      WHERE product_name LIKE '%锡泰%' OR beian_hao = 'SCQ403'`,
   )
@@ -139,7 +132,7 @@ async function main() {
     aum,
     custody,
     managedUpdated: parseInt(mp[0]?.n ?? "0", 10),
-    cacheUpdated: parseInt(cache[0]?.n ?? "0", 10),
+    cacheRows,
     after,
   }, null, 2))
 }

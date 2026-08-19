@@ -76,8 +76,22 @@ export async function backfillValuationCustodianFromRecords(): Promise<{ records
   return { recordsUpdated, recordsCleared: recordsCleared + recordsStripped }
 }
 
-export async function backfillValuationMetricsFromRecords(): Promise<{ recordsUpdated: number }> {
+export async function backfillValuationMetricsFromRecords(options?: {
+  productCodes?: string[]
+}): Promise<{ recordsUpdated: number }> {
   await ensureEmailValuationTable()
+
+  const codes = [...new Set(
+    (options?.productCodes ?? [])
+      .map((code) => code.trim().toUpperCase())
+      .filter(Boolean),
+  )]
+  const params: unknown[] = []
+  let codeFilter = ""
+  if (codes.length > 0) {
+    params.push(codes)
+    codeFilter = " AND UPPER(BTRIM(product_code)) = ANY($1::text[])"
+  }
 
   const records = await query<{
     id: string
@@ -90,7 +104,8 @@ export async function backfillValuationMetricsFromRecords(): Promise<{ recordsUp
   }>(
     `SELECT id, sender_email, subject, attachment_filename, holdings, summary, unit_nav::text
      FROM ops_email_valuation_records
-     WHERE jsonb_array_length(holdings) > 0`,
+     WHERE jsonb_array_length(holdings) > 0${codeFilter}`,
+    params,
   )
 
   let recordsUpdated = 0

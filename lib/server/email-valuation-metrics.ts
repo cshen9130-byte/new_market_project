@@ -282,19 +282,29 @@ function resolveTotalsFromRows(rows: ValuationRow[]): { totalAsset: number; tota
   return { totalAsset, totalLiability }
 }
 
+/** Futures/options 成本/市值 is contract notional, not fund NAV (保证金 already sits in 结算备付金). */
+function isDerivativeNotionalRow(row: ValuationRow): boolean {
+  const kind = String(row.row_kind ?? "")
+  if (kind === "derivative" || kind === "option") return true
+  const code = String(row.original_code ?? row.code ?? "").replace(/[\s.]/g, "")
+  if (code.startsWith("3102") || code.startsWith("3103")) return true
+  const name = String(row.name ?? "")
+  return /债券期货|股指期货|商品期货|国债期货|股指期权|商品期权/.test(name)
+}
+
 /**
  * When 估值表 footer rows (资产净值 / 资产类合计) were not kept in portfolio_data —
  * common for 华泰 merged-header .xls — derive NAV from leaf asset − liability amounts.
  */
 function deriveNetAssetValueFromHoldings(rows: ValuationRow[]): number {
   const LIABILITY_KINDS = new Set(["payable"])
-  const SKIP_KINDS = new Set(["paid_in_capital"])
+  const SKIP_KINDS = new Set(["paid_in_capital", "derivative", "option"])
   const assetAmounts: number[] = []
   let liabilities = 0
 
   for (const row of rows) {
     const kind = String(row.row_kind ?? "other")
-    if (SKIP_KINDS.has(kind)) continue
+    if (SKIP_KINDS.has(kind) || isDerivativeNotionalRow(row)) continue
     if (row.is_leaf === false) continue
     const amount = pickRowMarketValue(row) || pickRowCost(row)
     if (amount <= 0) continue
@@ -307,12 +317,13 @@ function deriveNetAssetValueFromHoldings(rows: ValuationRow[]): number {
 
   if (assetAmounts.length === 0) return 0
   let assets = assetAmounts.reduce((sum, n) => sum + n, 0)
-  // One leaf 市值 at the underlying fund's full AUM (锡和鑫安 ~207M) must not
-  // be treated as this FOF's assets.
+  // One leaf 市值 at another fund's full AUM (锡和鑫安 ~207M) must not
+  // be treated as this FOF's assets. Do not drop a concentrated holding
+  // like 基金投资 33M vs cash+保证金 13M.
   if (assetAmounts.length >= 2) {
     const max = Math.max(...assetAmounts)
     const rest = assets - max
-    if (rest > 1000 && max > rest * 2.5) assets = rest
+    if (rest > 1000 && max >= 100_000_000 && max > rest * 2.5) assets = rest
   }
 
   const derived = assets - liabilities
