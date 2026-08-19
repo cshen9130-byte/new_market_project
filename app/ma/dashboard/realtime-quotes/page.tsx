@@ -1,13 +1,44 @@
 "use client"
 
+import { useEffect, useMemo, useState } from "react"
+
 import { IndexFuturesCandleChart } from "@/components/ma/index-futures-candle-chart"
-import { useCffexIndexRealtimeFeed } from "@/hooks/use-cffex-index-realtime-feed"
-import { INDEX_FUTURES } from "@/lib/client/ctp-market"
+import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
+import {
+  INDEX_FUTURES,
+  contractsForProduct,
+  pickMostActiveContract,
+} from "@/lib/client/ctp-market"
 import { cn } from "@/lib/utils"
 
 export default function RealtimeQuotesPage() {
-  const { error, source, updatedAt, quotes, candles, productSymbol } = useCffexIndexRealtimeFeed()
-  const live = !error && Object.keys(candles).length > 0
+  const { status, error, symbols, quotes, candles } = useCtpIndexFuturesFeed()
+  const [selected, setSelected] = useState<Record<string, string>>({})
+  const [manual, setManual] = useState<Record<string, true>>({})
+
+  const indexSymbols = useMemo(() => {
+    const fromStatus = status?.index_symbols || []
+    const merged = new Set([...fromStatus, ...symbols, ...Object.keys(candles), ...Object.keys(quotes)])
+    return [...merged]
+  }, [status?.index_symbols, symbols, candles, quotes])
+
+  useEffect(() => {
+    setSelected((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const item of INDEX_FUTURES) {
+        if (manual[item.product] && next[item.product] && indexSymbols.includes(next[item.product])) continue
+        const picked = pickMostActiveContract(indexSymbols, item.product, quotes)
+        if (picked && next[item.product] !== picked) {
+          next[item.product] = picked
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [indexSymbols, quotes, manual])
+
+  const live = !!status?.logged_in && !error
 
   return (
     <div className="space-y-6 pt-6">
@@ -15,7 +46,7 @@ export default function RealtimeQuotesPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">实时行情</h1>
           <p className="mt-2 text-muted-foreground">
-            股指期货主力连续 1 分钟 K 线（IH / IF / IC / IM）。OpenCTP 7×24 回放尚未到股指日盘，因此这里用新浪实时行情驱动图表。
+            股指期货 1 分钟 K 线（IH / IF / IC / IM），数据来自 SimNow CTP（ctp_market）。
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -28,26 +59,30 @@ export default function RealtimeQuotesPage() {
           <span className="max-w-xl text-right">
             {error
               ? error
-              : live
-                ? `已连接 · ${source === "sina" ? "新浪主力连续" : source}${updatedAt ? ` · ${updatedAt}` : ""}`
-                : "连接中…"}
+              : status?.logged_in
+                ? `已连接 · ${status.profile || "ctp"} · ${status.message || "live"}`
+                : status?.message || "连接中…"}
+            {status?.tick_count != null ? ` · ${status.tick_count} ticks` : ""}
           </span>
         </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
         {INDEX_FUTURES.map((item) => {
-          const symbol = productSymbol[item.product] || `${item.product}0`
+          const symbol = selected[item.product] || null
           return (
             <IndexFuturesCandleChart
               key={item.product}
               title={item.name}
               product={item.product}
               symbol={symbol}
-              symbols={[symbol]}
-              candles={candles[symbol] || []}
-              quote={quotes[symbol]}
-              onSymbolChange={() => {}}
+              symbols={contractsForProduct(indexSymbols, item.product)}
+              candles={symbol ? candles[symbol] || [] : []}
+              quote={symbol ? quotes[symbol] : undefined}
+              onSymbolChange={(value) => {
+                setManual((prev) => ({ ...prev, [item.product]: true }))
+                setSelected((prev) => ({ ...prev, [item.product]: value }))
+              }}
             />
           )
         })}

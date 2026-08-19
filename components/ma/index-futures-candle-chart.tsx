@@ -148,7 +148,7 @@ export function IndexFuturesCandleChart({
                 ))}
               </select>
             ) : (
-              <span className="text-xs text-muted-foreground">{symbol} 主力连续</span>
+              <span className="text-xs text-muted-foreground">{symbol}</span>
             )}
           </div>
           <div className="mt-1 flex flex-wrap items-baseline gap-2">
@@ -172,9 +172,6 @@ export function IndexFuturesCandleChart({
                 ? formatBarTime(lastCandle.time)
                 : "等待行情"}
           </div>
-          {quote && (quote.volume === 0 || quote.volume == null) && quote.bid == null && quote.ask == null ? (
-            <div>静态报价（无盘口）</div>
-          ) : null}
         </div>
       </div>
       <div className="min-h-0 flex-1 px-1 pb-1">
