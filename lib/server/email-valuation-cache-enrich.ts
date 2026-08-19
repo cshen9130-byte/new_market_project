@@ -53,15 +53,39 @@ function parseFundNavAmount(raw: string | number | null | undefined): number | n
   return n
 }
 
-export function deriveNetAssetValue(row: {
-  net_asset_value?: string | null
-  net_asset?: string | null
-  total_asset?: string | null
-  total_liability?: string | null
-  paid_in_capital?: string | null
-  unit_nav?: string | null
-  summary_nav?: string | null
-}): number | null {
+/**
+ * True when latest 资产净值 looks like 期货合约名义本金 got folded in
+ * (e.g. SCQ403 52M → 240M) rather than a real subscription.
+ */
+export function isImplausibleAumJump(
+  latest: number | null | undefined,
+  prior: number | null | undefined,
+): boolean {
+  if (latest == null || prior == null) return false
+  if (!(prior >= 1000) || !(latest >= 1000)) return false
+  return latest > prior * 2.5 && latest > prior + 80_000_000
+}
+
+export function sqlImplausibleAumJump(latestExpr: string, priorExpr: string): string {
+  return `(
+    ${priorExpr} > 1000
+    AND ${latestExpr} > ${priorExpr} * 2.5
+    AND ${latestExpr} > ${priorExpr} + 80000000
+  )`
+}
+
+export function deriveNetAssetValue(
+  row: {
+    net_asset_value?: string | null
+    net_asset?: string | null
+    total_asset?: string | null
+    total_liability?: string | null
+    paid_in_capital?: string | null
+    unit_nav?: string | null
+    summary_nav?: string | null
+  },
+  priorAum?: number | null,
+): number | null {
   const unitNav = parseAmount(row.unit_nav)
   const paidIn = parseFundNavAmount(row.paid_in_capital)
   const implied =
@@ -76,10 +100,12 @@ export function deriveNetAssetValue(row: {
       return assets != null ? assets - liab : null
     })()
 
+  let aum = fromColumns
   if (implied != null && implied >= 1000) {
-    if (fromColumns == null || fromColumns > implied * 2.5) return implied
+    if (fromColumns == null || fromColumns > implied * 2.5) aum = implied
   }
-  return fromColumns
+  if (isImplausibleAumJump(aum, priorAum)) return priorAum ?? null
+  return aum
 }
 
 /** True when a 估值表 row's product_code is this managed product (or a known alias). */
@@ -159,17 +185,41 @@ export async function loadEmailFundMetricsLookup(
     unit_nav: string | null
     valuation_date: string | null
     summary_nav: string | null
-  }>(`SELECT DISTINCT ON (UPPER(BTRIM(product_code)))
-            product_code, fund_name,
-            custody_balance::text, net_asset_value::text, net_asset::text,
-            total_asset::text, total_liability::text, paid_in_capital::text,
-            unit_nav::text, valuation_date::text,
-            summary->>'nav' AS summary_nav
-      FROM ops_email_valuation_records
-      WHERE ${codeFilter}
-      ORDER BY UPPER(BTRIM(product_code)),
-               ${sqlCustodyValuationPreference()},
-               valuation_date DESC, id DESC`, params)
+    prior_nav: string | null
+  }>(`WITH ranked AS (
+        SELECT
+          product_code, fund_name, custody_balance, net_asset_value, net_asset,
+          total_asset, total_liability, paid_in_capital, unit_nav, valuation_date,
+          summary->>'nav' AS summary_nav,
+          ROW_NUMBER() OVER (
+            PARTITION BY UPPER(BTRIM(product_code))
+            ORDER BY ${sqlCustodyValuationPreference()}, valuation_date DESC, id DESC
+          ) AS rn
+        FROM ops_email_valuation_records
+        WHERE ${codeFilter}
+      ),
+      latest AS (
+        SELECT * FROM ranked WHERE rn = 1
+      ),
+      prior AS (
+        SELECT DISTINCT ON (UPPER(BTRIM(r.product_code)))
+          UPPER(BTRIM(r.product_code)) AS product_code_key,
+          r.net_asset_value AS prior_nav
+        FROM ops_email_valuation_records r
+        INNER JOIN latest l
+          ON UPPER(BTRIM(r.product_code)) = UPPER(BTRIM(l.product_code))
+         AND r.valuation_date < l.valuation_date
+        ORDER BY UPPER(BTRIM(r.product_code)),
+                 ${sqlCustodyValuationPreference("r")},
+                 r.valuation_date DESC, r.id DESC
+      )
+      SELECT l.product_code, l.fund_name,
+             l.custody_balance::text, l.net_asset_value::text, l.net_asset::text,
+             l.total_asset::text, l.total_liability::text, l.paid_in_capital::text,
+             l.unit_nav::text, l.valuation_date::text, l.summary_nav,
+             p.prior_nav::text
+      FROM latest l
+      LEFT JOIN prior p ON UPPER(BTRIM(l.product_code)) = p.product_code_key`, params)
 
   const byProductCode = new Map<string, EmailFundMetricsRow>()
   const byFundName = new Map<string, EmailFundMetricsRow>()
@@ -181,7 +231,7 @@ export async function loadEmailFundMetricsLookup(
     const metrics: EmailFundMetricsRow = {
       product_code: productCode,
       custody_balance: custody != null && custody > 0 ? custody : null,
-      net_asset_value: deriveNetAssetValue(row),
+      net_asset_value: deriveNetAssetValue(row, parseFundNavAmount(row.prior_nav)),
       unit_nav: unitNav != null && unitNav > 0 ? unitNav : null,
       valuation_date: row.valuation_date?.slice(0, 10) ?? null,
     }

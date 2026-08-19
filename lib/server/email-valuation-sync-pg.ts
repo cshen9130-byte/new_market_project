@@ -11,7 +11,7 @@ import {
   buildManagedProductsFrom,
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
-import { sqlCustodyValuationPreference } from "@/lib/server/email-valuation-cache-enrich"
+import { sqlCustodyValuationPreference, sqlImplausibleAumJump } from "@/lib/server/email-valuation-cache-enrich"
 import { managedProductsResolvedBeianSqlExpr } from "@/lib/server/managed-product-beian"
 import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
 
@@ -34,10 +34,11 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
        ${buildManagedProductsFrom("m.product_name")}
        WHERE m.product_name <> '合计'
      ),
-     latest AS (
-       SELECT DISTINCT ON (UPPER(BTRIM(r.product_code)))
+     ranked AS (
+       SELECT
          BTRIM(r.product_code) AS product_code,
          r.custody_balance,
+         r.valuation_date,
          CASE
            WHEN r.paid_in_capital > 1000 AND r.unit_nav > 0.05
                 AND raw_nav IS NOT NULL
@@ -50,7 +51,11 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
                THEN r.paid_in_capital * r.unit_nav
              END
            )
-         END AS net_asset_value
+         END AS computed_nav,
+         ROW_NUMBER() OVER (
+           PARTITION BY UPPER(BTRIM(r.product_code))
+           ORDER BY ${sqlCustodyValuationPreference("r")}, r.valuation_date DESC, r.id DESC
+         ) AS rn
        FROM (
          SELECT
            r.product_code,
@@ -82,9 +87,33 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
              WHERE NULLIF(BTRIM(mp.beian_hao), '') IS NOT NULL
            )
        ) r
+     ),
+     latest_row AS (
+       SELECT * FROM ranked WHERE rn = 1
+     ),
+     prior AS (
+       SELECT DISTINCT ON (UPPER(BTRIM(r.product_code)))
+         UPPER(BTRIM(r.product_code)) AS product_code_key,
+         COALESCE(NULLIF(r.net_asset_value, 0), NULLIF(r.net_asset, 0)) AS prior_nav
+       FROM ops_email_valuation_records r
+       INNER JOIN latest_row l
+         ON UPPER(BTRIM(r.product_code)) = UPPER(BTRIM(l.product_code))
+        AND r.valuation_date < l.valuation_date
        ORDER BY UPPER(BTRIM(r.product_code)),
                 ${sqlCustodyValuationPreference("r")},
                 r.valuation_date DESC, r.id DESC
+     ),
+     latest AS (
+       SELECT
+         l.product_code,
+         l.custody_balance,
+         CASE
+           WHEN ${sqlImplausibleAumJump("l.computed_nav", "p.prior_nav")}
+           THEN p.prior_nav
+           ELSE l.computed_nav
+         END AS net_asset_value
+       FROM latest_row l
+       LEFT JOIN prior p ON UPPER(BTRIM(l.product_code)) = p.product_code_key
      ),
      best AS (
        SELECT mp.id, v.custody_balance, v.net_asset_value

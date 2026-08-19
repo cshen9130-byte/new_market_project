@@ -20,7 +20,7 @@ import {
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
-import { deriveNetAssetValue, resolveEmailFundMetrics } from "../lib/server/email-valuation-cache-enrich.ts"
+import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
   extractNavTableFromBuffer,
   selectNavTableAttachments,
@@ -2163,6 +2163,16 @@ if (fs.existsSync(excelPath)) {
     unit_nav: "0.9991",
   })
   assert("锡泰 stored 207M AUM yields 实收资本×单位净值", Math.abs((derived ?? 0) - 51951118.25 * 0.9991) < 1)
+  assert("锡泰 52M→240M is an implausible AUM jump", isImplausibleAumJump(240501512.31, 52208012.31) === true)
+  assert("锡泰 40M→110M subscription is not an AUM jump", isImplausibleAumJump(110_000_000, 40_000_000) === false)
+  assert(
+    "锡泰 cache lookup keeps prior AUM when both columns are inflated",
+    deriveNetAssetValue({
+      net_asset_value: "240501512.31",
+      paid_in_capital: "239877829.95",
+      unit_nav: "1.0026",
+    }, 52208012.31) === 52208012.31,
+  )
 
   const wb = XLSX.utils.book_new()
   const sheet = XLSX.utils.aoa_to_sheet([
