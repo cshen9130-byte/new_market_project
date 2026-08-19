@@ -582,7 +582,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
             )}
           </div>
           {profileError && (
-            <div className="text-xs text-destructive">{profileError}</div>
+            <div className="text-xs text-destructive max-w-full break-all">{profileError}</div>
           )}
           {profiling && !profileError && (
             <div className="text-xs text-muted-foreground">正在生成侧写报告，大约需要 20–40 秒…</div>

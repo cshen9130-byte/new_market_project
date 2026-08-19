@@ -1,4 +1,26 @@
 require("dotenv").config()
+const fs = require("fs")
+const path = require("path")
+
+function resolvePythonExe() {
+  const candidates = [
+    process.env.PYTHON_EXE,
+    path.join(__dirname, ".venv/bin/python3"),
+    path.join(__dirname, ".venv/bin/python"),
+    "/root/new_market_project/.venv/bin/python3",
+    "/root/new_market_project/.venv/bin/python",
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate
+    } catch {
+      // ignore
+    }
+  }
+  return "python3"
+}
+
+const pythonExe = resolvePythonExe()
 
 const sharedEnv = {
   // EmQuant credentials and options
@@ -7,7 +29,7 @@ const sharedEnv = {
   EMQ_OPTIONS_EXTRA: process.env.EMQ_OPTIONS_EXTRA || "LoginType=2",
 
   // Ensure Python uses the project venv on server
-  PYTHON_EXE: process.env.PYTHON_EXE || "/root/new_market_project/.venv/bin/python3",
+  PYTHON_EXE: pythonExe,
 
   // Chinese font for FOF weekly report charts (installed by setup-haitai-week-report.sh)
   FOF_REPORT_FONT_PATH:
@@ -107,14 +129,19 @@ module.exports = {
     },
     {
       name: "ctp_market",
-      cwd: "services/ctp_market",
-      script: "server.py",
-      interpreter: process.env.PYTHON_EXE || "/root/new_market_project/.venv/bin/python3",
+      cwd: path.join(__dirname, "services/ctp_market"),
+      script: path.join(__dirname, "services/ctp_market/run.sh"),
+      interpreter: "bash",
       exec_mode: "fork",
       instances: 1,
+      autorestart: true,
       max_memory_restart: "400M",
       env: {
         ...sharedEnv,
+        LANG: "C",
+        LC_ALL: "C",
+        LC_CTYPE: "C",
+        PYTHONUNBUFFERED: "1",
       },
     },
   ],

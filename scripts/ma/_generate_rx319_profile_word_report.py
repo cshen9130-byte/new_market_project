@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sys
+import warnings
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -111,21 +112,39 @@ def configure_matplotlib() -> None:
     plt.rcParams["axes.unicode_minus"] = False
     plt.rcParams["figure.facecolor"] = "white"
     plt.rcParams["axes.facecolor"] = "white"
-    for path in [
+    candidates = [
+        os.environ.get("FOF_REPORT_FONT_PATH") or "",
         r"C:\Windows\Fonts\msyh.ttc",
         r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\simsun.ttc",
-    ]:
-        if os.path.isfile(path):
-            try:
-                fontManager.addfont(path)
-                _CN_FONT = FontProperties(fname=path)
-                plt.rcParams["font.family"] = "sans-serif"
-                plt.rcParams["font.sans-serif"] = [_CN_FONT.get_name(), "Microsoft YaHei", "SimHei"]
-                return
-            except Exception:
-                continue
-    _CN_FONT = FontProperties(family="Microsoft YaHei")
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
+        "/root/new_market_project/haitai_week_report/fonts/NotoSansSC-Regular.otf",
+        str(ROOT / "haitai_week_report" / "fonts" / "NotoSansSC-Regular.otf"),
+    ]
+    seen: set[str] = set()
+    for raw in candidates:
+        if not raw:
+            continue
+        path = os.path.realpath(raw)
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        try:
+            fontManager.addfont(path)
+        except Exception:
+            pass
+        try:
+            font = FontProperties(fname=path)
+            name = font.get_name()
+        except Exception:
+            continue
+        _CN_FONT = font
+        plt.rcParams["font.family"] = "sans-serif"
+        plt.rcParams["font.sans-serif"] = [name, "Noto Sans CJK SC", "Microsoft YaHei", "SimHei", "DejaVu Sans"]
+        return
+    _CN_FONT = None
 
 
 def fp() -> dict:
@@ -232,7 +251,9 @@ def num_sql(col: str) -> str:
 
 
 def read_sql(conn, sql: str, params=None) -> pd.DataFrame:
-    return pd.read_sql(sql, conn, params=params)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return pd.read_sql(sql, conn, params=params)
 
 
 def max_drawdown(cum: np.ndarray) -> float:
@@ -372,7 +393,7 @@ def add_table(doc, headers, rows, highlight_rows=None, red_cols=None, green_cols
     return table
 
 
-def add_chart(doc, path: Path, width=6.5):
+def add_chart(doc, path: Path | None, width=6.5):
     if path and path.is_file():
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1301,6 +1322,12 @@ def chart_hour(profile) -> Path:
 
 def chart_session(profile) -> Path:
     rows = profile["sess_pnl"]
+    if not rows:
+        fig, ax = plt.subplots(figsize=(7.2, 3.8))
+        ax.text(0.5, 0.5, "无平仓时段数据", ha="center", va="center", **fp())
+        ax.set_axis_off()
+        fig.tight_layout()
+        return savefig(fig, "session.png")
     labels = [r["session"] for r in rows]
     pnls = [r["pnl"] / 10000 for r in rows]
     colors = [C_GREEN if v >= 0 else C_RED for v in pnls]
@@ -1318,16 +1345,29 @@ def chart_session(profile) -> Path:
 
 def chart_after(after_df) -> Path:
     fig, ax = plt.subplots(figsize=(8.6, 4.2))
-    data, labels, colors = [], [], [C_GREEN, C_RED]
+    if after_df is None or after_df.empty or "bucket" not in after_df.columns:
+        ax.text(0.5, 0.5, "样本不足，无法比较盈亏后行为", ha="center", va="center", **fp())
+        ax.set_axis_off()
+        fig.tight_layout()
+        return savefig(fig, "after_behavior.png")
+    data, labels = [], []
     for b, lab in (("win", "赚钱次日"), ("loss", "亏钱次日")):
         sub = after_df[after_df["bucket"] == b]["margin_chg"] * 100
         data.append(sub.dropna().to_numpy())
         labels.append(lab)
-    ax.boxplot(data, tick_labels=labels, patch_artist=True,
-               boxprops=dict(facecolor="#EDF2F7", edgecolor=C_NAVY),
-               medianprops=dict(color=C_GOLD, lw=1.6),
-               whiskerprops=dict(color=C_NAVY), capprops=dict(color=C_NAVY),
-               flierprops=dict(marker="o", markersize=3, alpha=0.35))
+    kw = dict(
+        patch_artist=True,
+        boxprops=dict(facecolor="#EDF2F7", edgecolor=C_NAVY),
+        medianprops=dict(color=C_GOLD, lw=1.6),
+        whiskerprops=dict(color=C_NAVY),
+        capprops=dict(color=C_NAVY),
+        flierprops=dict(marker="o", markersize=3, alpha=0.35),
+    )
+    data = [np.asarray(x) if len(x) else np.array([0.0]) for x in data]
+    try:
+        ax.boxplot(data, tick_labels=labels, **kw)
+    except TypeError:
+        ax.boxplot(data, labels=labels, **kw)
     ax.axhline(0, color="#A0AEC0", lw=0.8)
     ax.set_ylabel("次日保证金比例变化（百分点）", **fp())
     ax.set_title("亏钱之后 / 赚钱之后：杠杆怎么变", **fp())
@@ -1533,13 +1573,13 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
     add_table(doc, ["指标", "数值", "指标", "数值"], kpi)
     caption(doc, "表2  账户层风险收益。收益按「当日盈亏/上日结存」复利，剔除单日±25%异常跳动。")
 
-    add_chart(doc, charts["equity"])
+    add_chart(doc, charts.get("equity"))
     caption(doc, f"图1  {acc} 累计收益与南华商品指数。若两条线几乎不一起走，说明他不是在赌商品大盘。")
-    add_chart(doc, charts["dd"])
+    add_chart(doc, charts.get("dd"))
     caption(doc, "图2  回撤。浅而频繁的锯齿，符合低杠杆、高分散；没有一次把杠杆打满去翻本的深坑。")
-    add_chart(doc, charts["margin"])
+    add_chart(doc, charts.get("margin"))
     caption(doc, "图3  保证金/权益。真正的风控签名是这条线平不平：波动目标会把杠杆钉在窄带里。")
-    add_chart(doc, charts["monthly"])
+    add_chart(doc, charts.get("monthly"))
     caption(doc, "图4  分月盈亏。看他是稳定小赚，还是靠某一个月吃饭、其余时间亏回来。")
 
     if nh:
@@ -1569,7 +1609,7 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         "侧写的第二问：他在什么场子里得手，在什么场子里失手。品种盈亏 = 成交「平仓盈亏」+ 持仓「持仓盈亏」，再扣品种手续费只作参考。"
         "适合他的市场：有夜盘、流动性好、能做多空、截面差异大的工业品与能化；不适合他的：流动性差、季节性噪声大、或他没有优势因子的品种。",
     )
-    add_chart(doc, charts["sector"])
+    add_chart(doc, charts.get("sector"))
     caption(doc, "图5  板块贡献。正贡献是他的舒适区，负贡献是他的结构性短板。")
 
     sec_rows = []
@@ -1585,7 +1625,7 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
     add_table(doc, ["板块", "累计盈亏", "品种数", "品种-日胜率", "日均保证金", "盈亏/均保证金"], sec_rows)
     caption(doc, "表3  板块适配。盈亏/均保证金衡量「同样风险预算下谁在赚钱」。")
 
-    add_chart(doc, charts["product"])
+    add_chart(doc, charts.get("product"))
     caption(doc, "图6  品种两极。侧写要看两端：他真正会的名字，和他反复交学费的名字。")
 
     top_rows = []
@@ -1638,7 +1678,7 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         "犯罪侧写里最有用的一章往往是压力反应：得手之后会不会收手，失手之后会不会升级。交易员同样。"
         "这里用「次日保证金占用变化」作为加减仓代理，再用「昨日亏损品种今日手数是否增加」看他会不会摊平。",
     )
-    add_chart(doc, charts["after"])
+    add_chart(doc, charts.get("after"))
     caption(doc, "图7  赚钱次日 vs 亏钱次日的杠杆变化。箱子越贴近零，说明他越不拿昨天的盈亏当今天的仓位指令。")
 
     aw, al = p["after_win"], p["after_loss"]
@@ -1699,7 +1739,7 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         "第三问：他靠什么赚钱——经常小赢，还是偶尔大赢？日层和逐笔平仓层要分开看。"
         "日层被几十个品种对冲后会显得更「均」；逐笔层才是策略的原始盈亏比。",
     )
-    add_chart(doc, charts["rr"])
+    add_chart(doc, charts.get("rr"))
     caption(doc, "图8  逐笔平仓盈亏分布。高峰贴着零、左右大致对称，是广度策略；若右尾极长左尾被砍，才是趋势跟踪。")
 
     rr_tbl = [
@@ -1728,9 +1768,9 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         f"同一品种不同合约多空对开占 {fmt_pct(p['calendar_share'], 1)}，有日历价差/移仓痕迹；"
         f"真正的主结构是板块内截面：同一板块多空对开占 {fmt_pct(p['sector_xs_share'], 0)}。",
     )
-    add_chart(doc, charts["hedge"])
+    add_chart(doc, charts.get("hedge"))
     caption(doc, "图9  对冲度与空头占比。对冲度长期高位 = 净敞口被压住；若某段突然掉到接近 0，那是在改成单边。")
-    add_chart(doc, charts["ls"])
+    add_chart(doc, charts.get("ls"))
     caption(doc, "图10  多头累计 vs 空头累计。一边显著强，说明因子或执行有方向偏误。")
     para(
         doc,
@@ -1747,9 +1787,9 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         "第四问：他是日盘动物还是夜盘动物。成交时间是最硬的证据。实现盈亏用平仓单的「平仓盈亏」按成交时段归集；"
         "隔夜持仓的盯市记在结算日，所以夜盘的经济贡献会被低估——但下单时钟不会撒谎。",
     )
-    add_chart(doc, charts["hour"])
+    add_chart(doc, charts.get("hour"))
     caption(doc, "图11  成交小时分布。21 点附近的尖峰是系统单，不是有人在夜盘盯盘。")
-    add_chart(doc, charts["session"])
+    add_chart(doc, charts.get("session"))
     caption(doc, "图12  平仓实现盈亏的日夜拆分。")
 
     sess_rows = []
@@ -1790,7 +1830,7 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         "第五问：他会不会把亏损扛着、把利润提前兑现。平仓明细有开仓日期，持仓交易日 = 平仓日 − 开仓日（按账户有日报的交易日计）。"
         "主观盘手常见处置效应（亏的拿更久）；系统化策略往往时间对称，或故意让赢单跑得更久。",
     )
-    add_chart(doc, charts["hold"])
+    add_chart(doc, charts.get("hold"))
     caption(doc, "图13  持仓天数分布。两团若重叠，退出规则与盈亏无关；若红色右移，就是在扛亏损。")
     hold_tbl = [
         ["赢单", fmt_num(p["med_hold_win"], 1), fmt_num(p["mean_hold_win"], 1), fmt_num(p["med_hold_win_cal"], 1)],
@@ -1926,21 +1966,26 @@ def main() -> None:
     )
 
     print("charts…")
-    charts = {
-        "equity": chart_equity(profile, nh),
-        "dd": chart_dd(profile),
-        "margin": chart_margin(profile),
-        "monthly": chart_monthly(profile),
-        "sector": chart_sector(sec_sum),
-        "product": chart_product(prod_sum),
-        "hold": chart_hold(profile),
-        "hour": chart_hour(profile),
-        "session": chart_session(profile),
-        "after": chart_after(after_df),
-        "hedge": chart_hedge(profile),
-        "rr": chart_rr_hist(profile),
-        "ls": chart_ls(profile),
-    }
+    charts: dict[str, Path] = {}
+    for key, fn in [
+        ("equity", lambda: chart_equity(profile, nh)),
+        ("dd", lambda: chart_dd(profile)),
+        ("margin", lambda: chart_margin(profile)),
+        ("monthly", lambda: chart_monthly(profile)),
+        ("sector", lambda: chart_sector(sec_sum)),
+        ("product", lambda: chart_product(prod_sum)),
+        ("hold", lambda: chart_hold(profile)),
+        ("hour", lambda: chart_hour(profile)),
+        ("session", lambda: chart_session(profile)),
+        ("after", lambda: chart_after(after_df)),
+        ("hedge", lambda: chart_hedge(profile)),
+        ("rr", lambda: chart_rr_hist(profile)),
+        ("ls", lambda: chart_ls(profile)),
+    ]:
+        try:
+            charts[key] = fn()
+        except Exception as exc:
+            print(f"chart {key} failed: {exc}")
     out_docx = Path(args.output) if args.output else (work / f"{account.upper()}_trader_profile.docx")
     ascii_path = None if args.output else REPORT_PATH_ASCII
     print("word…")

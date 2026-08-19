@@ -5,8 +5,11 @@ from collections.abc import Callable
 from threading import Lock
 from typing import Any
 
+import locale_fix
 from candles import valid_price
 from config import FLOW_DIR, settings
+
+locale_fix.apply("C")
 
 
 def _ctp_text(value: Any) -> str:

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import locale_fix
+
+locale_fix.apply("C")
+
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -78,7 +82,13 @@ async def lifespan(_app: FastAPI):
     event_queue = asyncio.Queue()
     pump_task = asyncio.create_task(pump())
     md_client = MarketClient(emit)
-    md_client.start()
+    try:
+        md_client.start()
+    except Exception as exc:
+        import traceback
+
+        traceback.print_exc()
+        md_client._set_status(message=f"CTP start failed: {exc}")
     try:
         yield
     finally:

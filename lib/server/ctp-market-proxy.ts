@@ -16,11 +16,12 @@ export async function proxyCtpMarket(path: string) {
     }
     const data = await res.json()
     return NextResponse.json({ ok: true, ...data })
-  } catch {
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "connection failed"
     return NextResponse.json(
       {
         ok: false,
-        error: "CTP 行情服务未启动。请在 ctp_market 目录运行 python server.py（默认 http://127.0.0.1:8000）",
+        error: `CTP 行情服务不可用（${url}）：${detail}。请确认 pm2 中 ctp_market 在线（pm2 logs ctp_market）`,
       },
       { status: 503 },
     )

@@ -1,13 +1,15 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 
+import { TimeframeSelect } from "@/components/ma/timeframe-select"
+import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import {
   type CtpCandle,
   type CtpTick,
-  formatBarTime,
 } from "@/lib/client/ctp-market"
+import { formatCandleTime, type TimeframeId } from "@/lib/client/timeframes"
 
 type Props = {
   title: string
@@ -36,7 +38,9 @@ export function IndexFuturesCandleChart({
   quote,
   onSymbolChange,
 }: Props) {
-  const lastCandle = candles.at(-1)
+  const [interval, setInterval] = useState<TimeframeId>("1m")
+  const { candles: tfCandles, error: klineError } = useSymbolKline(symbol, interval, candles)
+  const lastCandle = tfCandles.at(-1)
   const last = quote?.last ?? lastCandle?.close ?? null
   const base = quote?.pre_settlement || quote?.pre_close || null
   const diff = last != null && base ? last - base : null
@@ -46,9 +50,9 @@ export function IndexFuturesCandleChart({
     up == null ? "text-muted-foreground" : up ? "text-red-500" : "text-emerald-600"
 
   const option = useMemo(() => {
-    const times = candles.map((c) => formatBarTime(c.time))
-    const ohlcv = candles.map((c) => [c.open, c.close, c.low, c.high])
-    const volumes = candles.map((c) => ({
+    const times = tfCandles.map((c) => formatCandleTime(c.time, interval))
+    const ohlcv = tfCandles.map((c) => [c.open, c.close, c.low, c.high])
+    const volumes = tfCandles.map((c) => ({
       value: c.volume,
       itemStyle: { color: c.close >= c.open ? "#ef4444" : "#22c55e" },
     }))
@@ -124,7 +128,7 @@ export function IndexFuturesCandleChart({
         },
       ],
     }
-  }, [candles, product, symbol])
+  }, [tfCandles, product, symbol, interval])
 
   return (
     <div className="flex min-h-[360px] flex-col rounded-xl border bg-card">
@@ -151,6 +155,7 @@ export function IndexFuturesCandleChart({
               <span className="text-xs text-muted-foreground">{symbol}</span>
             )}
           </div>
+          <TimeframeSelect value={interval} onChange={setInterval} className="mt-1.5" />
           <div className="mt-1 flex flex-wrap items-baseline gap-2">
             <span className={`text-2xl font-semibold tabular-nums ${changeClass}`}>
               {fmt(last)}
@@ -169,17 +174,19 @@ export function IndexFuturesCandleChart({
             {quote?.update_time
               ? `${quote.update_time}.${String(quote.update_millis || 0).padStart(3, "0")}`
               : lastCandle
-                ? formatBarTime(lastCandle.time)
+                ? formatCandleTime(lastCandle.time, interval)
                 : "等待行情"}
           </div>
         </div>
       </div>
       <div className="min-h-0 flex-1 px-1 pb-1">
-        {symbol && candles.length > 0 ? (
+        {symbol && tfCandles.length > 0 ? (
           <ReactECharts option={option} style={{ height: 280 }} lazyUpdate />
         ) : (
           <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
-            {symbol ? "等待 1 分钟 K 线…" : `未订阅 ${product}，请在 ctp_market 的 CTP_INSTRUMENTS 中加入合约`}
+            {symbol
+              ? klineError || "等待 K 线…"
+              : `未订阅 ${product}，请在 ctp_market 的 CTP_INSTRUMENTS 中加入合约`}
           </div>
         )}
       </div>
