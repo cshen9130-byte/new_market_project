@@ -2,22 +2,27 @@
 set -euo pipefail
 
 # Choice EmQuant API setup script (Linux server)
-# Usage:
+# Every continued line except the last MUST end with a backslash.
+# If you add --ctp-user-id after --build-debug-interval-sec 30 without a
+# trailing \ on that previous line, bash prints: --ctp-user-id: command not found
+#
 #   bash scripts/deploy/setup-choice-emquant.sh \
 #     --project-root /root/new_market_project \
 #     --emq-username "<EMQ_USERNAME>" \
 #     --emq-password "<EMQ_PASSWORD>" \
 #     --tushare-token "<TUSHARE_TOKEN>" \
-#     --database-url "postgresql://user:pass@host:5432/dbname"
-# Optional:
-#   --python-exe /root/new_market_project/.venv/bin/python3
-#   --login-type 2
-#   --pm2-app-name new_market_project
-#   --mom-report-url /mom_report/report.html
-#   --dashscope-api-key "<key>"   # AI 知识库 + vision chat
-#   --deepseek-api-key "<key>"    # AI 助手 text chat
-#   --ctp-user-id "<id>"          # SimNow investor id for 实时行情
-#   --ctp-password "<password>"   # quote with single quotes if it contains !
+#     --dashscope-api-key "<key>" \
+#     --deepseek-api-key "<key>" \
+#     --database-url "postgresql://user:pass@host:5432/dbname" \
+#     --mom-report-url /mom_report/report.html \
+#     --pm2-app-name new_market_project \
+#     --ctp-user-id "<id>" \
+#     --ctp-password '<password>' \
+#     --debug-build \
+#     --build-debug-interval-sec 30
+#
+# After the first successful run, CTP_USER_ID / CTP_PASSWORD live in .env
+# and can be omitted. Password: single quotes if it contains !
 
 PROJECT_ROOT="${PWD}"
 EMQ_USERNAME=""
@@ -78,6 +83,20 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+# Reuse SimNow / optional secrets already stored in .env so later deploys
+# do not need --ctp-user-id on the command line.
+_env_get() {
+  local key="$1" file="$2"
+  [[ -f "$file" ]] || return 0
+  sed -n "s/^${key}=//p" "$file" | tail -n 1 | tr -d '\r'
+}
+
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  [[ -z "$CTP_USER_ID" ]] && CTP_USER_ID="$(_env_get CTP_USER_ID "$PROJECT_ROOT/.env")"
+  [[ -z "$CTP_PASSWORD" ]] && CTP_PASSWORD="$(_env_get CTP_PASSWORD "$PROJECT_ROOT/.env")"
+  [[ -z "$DATABASE_URL" ]] && DATABASE_URL="$(_env_get DATABASE_URL "$PROJECT_ROOT/.env")"
+fi
 
 if [[ -z "$EMQ_USERNAME" || -z "$EMQ_PASSWORD" ]]; then
   echo "EMQ_USERNAME/EMQ_PASSWORD are required."

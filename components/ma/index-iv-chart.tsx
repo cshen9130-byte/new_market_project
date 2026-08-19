@@ -36,9 +36,14 @@ function formatIvAxisTime(unix: number, daily: boolean) {
 
 function niceRange(lo: number, hi: number) {
   const pad = Math.max((hi - lo) * 0.08, 0.4)
-  const min = Math.floor((lo - pad) * 10) / 10
-  const max = Math.ceil((hi + pad) * 10) / 10
-  return { min, max: max <= min ? min + 1 : max }
+  let min = Math.floor(lo - pad)
+  let max = Math.ceil(hi + pad)
+  if (max <= min) max = min + 1
+  const span = max - min
+  const interval = span <= 6 ? 1 : span <= 12 ? 2 : 5
+  min = Math.floor(min / interval) * interval
+  max = Math.ceil(max / interval) * interval
+  return { min, max, interval }
 }
 
 export function IndexIvChart({ title, product, iv, variant = "default" }: Props) {
@@ -56,7 +61,7 @@ export function IndexIvChart({ title, product, iv, variant = "default" }: Props)
     const sparse = bars.length < 8
     const lo = values.length ? Math.min(...values) : 0
     const hi = values.length ? Math.max(...values) : 1
-    const { min, max } = niceRange(lo, hi)
+    const { min, max, interval } = niceRange(lo, hi)
     return {
       animation: false,
       backgroundColor: "transparent",
@@ -80,6 +85,7 @@ export function IndexIvChart({ title, product, iv, variant = "default" }: Props)
         type: "value",
         min,
         max,
+        interval,
         scale: true,
         axisLabel: { color: "#94a3b8", fontSize: 10, formatter: (v: number) => Number(v).toFixed(1) },
         splitLine: { lineStyle: { color: variant === "pro" ? "#1e222d" : "#f1f5f9" } },
@@ -132,7 +138,7 @@ export function IndexIvChart({ title, product, iv, variant = "default" }: Props)
       </div>
       <div className="min-h-0 flex-1 px-1 pb-1">
         {iv?.bars && iv.bars.length > 0 ? (
-          <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} lazyUpdate />
+          <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} notMerge lazyUpdate />
         ) : (
           <div className={pro ? "flex h-full items-center justify-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center text-sm text-muted-foreground"}>
             {last != null ? "暂无分钟线，仅有最新值" : "等待 QVIX 分钟线…"}

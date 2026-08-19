@@ -52,6 +52,17 @@ function trimOpeningSpikes(points: { time: number; value: number }[]) {
   return points.filter((p, i) => i >= 3 || Math.abs(p.value - median) <= cap)
 }
 
+function nicePercentAxis(rawMin: number, rawMax: number) {
+  let min = Math.floor(rawMin)
+  let max = Math.ceil(rawMax)
+  if (max <= min) max = min + 1
+  const span = max - min
+  const interval = span <= 8 ? 2 : span <= 20 ? 5 : 10
+  min = Math.floor(min / interval) * interval
+  max = Math.ceil(max / interval) * interval
+  return { yMin: min, yMax: max, yInterval: interval }
+}
+
 export function IndexBasisRateChart({ title, product, symbol, candles, quote, spot, variant = "default" }: Props) {
   const days = symbol ? daysToCffexExpiry(symbol) : null
   const nearExpiry = symbol ? isNearCffexExpiry(symbol) : false
@@ -103,10 +114,11 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
   const color = INDEX_CHART_COLOR[product]
   const option = useMemo(() => {
     const times = series.map((p) => formatBarTime(p.time))
-    const values = series.map((p) => p.value)
+    const values = series.map((p) => Number(p.value.toFixed(2)))
     const minV = values.length ? Math.min(0, ...values) : -1
     const maxV = values.length ? Math.max(0, ...values) : 1
     const pad = Math.max(1, (maxV - minV) * 0.12)
+    const { yMin, yMax, yInterval } = nicePercentAxis(minV - pad, maxV + pad)
     const dark = variant === "pro"
     return {
       animation: false,
@@ -129,9 +141,14 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
       },
       yAxis: {
         type: "value",
-        min: minV - pad,
-        max: maxV + pad,
-        axisLabel: { color: "#94a3b8", fontSize: 10, formatter: (v: number) => `${v}` },
+        min: yMin,
+        max: yMax,
+        interval: yInterval,
+        axisLabel: {
+          color: "#94a3b8",
+          fontSize: 10,
+          formatter: (v: number) => Math.round(Number(v)).toString(),
+        },
         splitLine: { lineStyle: { color: dark ? "#1e222d" : "#f1f5f9" } },
       },
       series: [
@@ -177,7 +194,8 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
             </div>
           ) : (
             <div className="mt-0.5 text-[11px] text-[#787b86]">
-              {spot?.name || ""}{days != null ? ` · ${days}D` : ""}
+              {spot?.name || ""}
+              {days != null ? ` · 剩余 ${days} 天${continuous ? "（主力）" : ""}` : ""}
             </div>
           )}
         </div>
@@ -194,7 +212,7 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
       </div>
       <div className="min-h-0 flex-1 px-1 pb-1">
         {series.length > 0 ? (
-          <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} lazyUpdate />
+          <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} notMerge lazyUpdate />
         ) : (
           <div className={pro ? "flex h-full items-center justify-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center text-sm text-muted-foreground"}>
             {symbol ? (spot ? "等待现货与期货 1 分钟对齐…" : "现货分钟线未返回") : `未订阅 ${product}`}

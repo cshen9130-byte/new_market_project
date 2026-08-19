@@ -91,8 +91,7 @@ export default function RealtimeQuotesPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">实时行情</h1>
           <p className="mt-2 text-muted-foreground">
-            股指期货 1 分钟 K 线、年化基差率、隐含波动率（IH / IF / IC / IM）。盘中期货优先服务端
-            SimNow CTP；盘后或 CTP 未登录时用新浪分钟线。现货与 QVIX 为实时行情。
+            股指期货 1 分钟 K 线、年化基差率、隐含波动率（IH / IF / IC / IM）。
           </p>
         </div>
         <div className="flex items-center gap-3">

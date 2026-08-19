@@ -61,8 +61,8 @@ export function IndexFuturesCandleChart({
     const lo = lows.length ? Math.min(...lows) : 0
     const hi = highs.length ? Math.max(...highs) : 1
     const pad = Math.max((hi - lo) * 0.08, hi * 0.002)
-    const priceMin = lo - pad
-    const priceMax = hi + pad
+    const priceMin = Math.floor(lo - pad)
+    const priceMax = Math.max(priceMin + 1, Math.ceil(hi + pad))
     return {
       animation: false,
       backgroundColor: "transparent",
@@ -103,7 +103,12 @@ export function IndexFuturesCandleChart({
           min: priceMin,
           max: priceMax,
           gridIndex: 0,
-          axisLabel: { fontSize: 10, color: "#64748b" },
+          axisLabel: {
+            fontSize: 10,
+            color: "#64748b",
+            formatter: (v: number) =>
+              Math.round(v).toLocaleString("zh-CN", { maximumFractionDigits: 0 }),
+          },
           splitLine: { lineStyle: { opacity: 0.2 } },
         },
         {
