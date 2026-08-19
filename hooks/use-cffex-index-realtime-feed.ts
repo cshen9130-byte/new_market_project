@@ -81,5 +81,5 @@ export function useCffexIndexRealtimeFeed() {
     if (match) productSymbol[item.product] = match
   }
 
-  return { error, source, updatedAt, quotes, candles, productSymbol }
+  return { error, source, updatedAt, quotes, candles, symbols, productSymbol }
 }

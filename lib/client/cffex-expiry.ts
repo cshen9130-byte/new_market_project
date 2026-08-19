@@ -21,17 +21,75 @@ function shanghaiYmd(now = new Date()) {
   }).format(now)
 }
 
+function shanghaiTodayUtc(now = new Date()) {
+  const [y, m, d] = shanghaiYmd(now).split("-").map(Number)
+  return Date.UTC(y, m - 1, d)
+}
+
+function daysUntil(expiry: Date, now = new Date()) {
+  return Math.round((expiry.getTime() - shanghaiTodayUtc(now)) / 86_400_000)
+}
+
+export function nextCffexMonth(year: number, month: number) {
+  if (month >= 12) return { year: year + 1, month: 1 }
+  return { year, month: month + 1 }
+}
+
+/** Calendar expiry still listed (today <= 3rd Friday). */
+export function nearestCffexExpiry(now = new Date()) {
+  const todayUtc = shanghaiTodayUtc(now)
+  const [y, m] = shanghaiYmd(now).split("-").map(Number)
+  let year = y
+  let month = m
+  for (let i = 0; i < 4; i++) {
+    const expiry = cffexThirdFriday(year, month)
+    if (expiry.getTime() >= todayUtc) return expiry
+    const next = nextCffexMonth(year, month)
+    year = next.year
+    month = next.month
+  }
+  return cffexThirdFriday(y, m)
+}
+
+/**
+ * Sina/CTP continuous (*0) follows max-OI. CFFEX index futures roll in the
+ * expiry week, so using the literal next 3rd Friday (often 1–3 days) makes
+ * annualized basis explode. Use the next month once inside the roll window.
+ */
+export const CFFEX_ROLL_DAYS = 7
+
+export function dominantCffexExpiry(now = new Date()) {
+  const front = nearestCffexExpiry(now)
+  if (daysUntil(front, now) > CFFEX_ROLL_DAYS) return front
+  const [y, m] = shanghaiYmd(front).split("-").map(Number)
+  const next = nextCffexMonth(y, m)
+  return cffexThirdFriday(next.year, next.month)
+}
+
 export function daysToCffexExpiry(symbol: string, now = new Date()): number | null {
   const parsed = parseIndexFuturesMonth(symbol)
-  if (!parsed) return null
-  const expiry = cffexThirdFriday(parsed.year, parsed.month)
-  const today = shanghaiYmd(now)
-  const [y, m, d] = today.split("-").map(Number)
-  const todayUtc = Date.UTC(y, m - 1, d)
-  return Math.max(1, Math.round((expiry.getTime() - todayUtc) / 86_400_000))
+  const expiry = parsed
+    ? cffexThirdFriday(parsed.year, parsed.month)
+    : /^(IH|IF|IC|IM)0$/i.test(symbol.trim())
+      ? dominantCffexExpiry(now)
+      : null
+  if (!expiry) return null
+  return Math.max(1, daysUntil(expiry, now))
+}
+
+export function isNearCffexExpiry(symbol: string, now = new Date()) {
+  const parsed = parseIndexFuturesMonth(symbol)
+  if (!parsed) return false
+  const days = daysToCffexExpiry(symbol, now)
+  return days != null && days <= CFFEX_ROLL_DAYS
 }
 
 export function annualizedBasisPct(futures: number, spot: number, days: number) {
   if (!(futures > 0) || !(spot > 0) || !(days > 0)) return null
   return ((futures - spot) / spot / days) * 365 * 100
+}
+
+export function basisPoints(futures: number, spot: number) {
+  if (!(futures > 0) || !(spot > 0)) return null
+  return futures - spot
 }

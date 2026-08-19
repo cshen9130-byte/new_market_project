@@ -14,11 +14,6 @@ export function useSymbolKline(symbol: string | null, interval: TimeframeId, liv
       setHistory([])
       return
     }
-    if (interval === "1m") {
-      setHistory([])
-      setError(null)
-      return
-    }
     let cancelled = false
     setHistory([])
     async function load() {
@@ -38,7 +33,10 @@ export function useSymbolKline(symbol: string | null, interval: TimeframeId, liv
       }
     }
     void load()
-    const timer = window.setInterval(() => void load(), interval === "1d" || interval === "1w" || interval === "1M" ? 60_000 : 20_000)
+    const timer = window.setInterval(
+      () => void load(),
+      interval === "1d" || interval === "1w" || interval === "1M" ? 60_000 : 20_000,
+    )
     return () => {
       cancelled = true
       window.clearInterval(timer)

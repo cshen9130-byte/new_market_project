@@ -7,6 +7,7 @@ locale_fix.apply("C")
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
+import time
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,6 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from candles import MinuteAggregator
 from config import settings
 from ctp_md import MarketClient
+
+LOGIN_WAIT_S = 12
+FAILOVER_RETRY_S = 20
+WATCHDOG_OK_S = 30
 
 INDEX_PRODUCTS = ("IH", "IF", "IC", "IM")
 
@@ -75,6 +80,43 @@ async def pump() -> None:
         await broadcast(payload)
 
 
+def _restart_md(front: str) -> None:
+    global md_client
+    if md_client is None:
+        md_client = MarketClient(emit)
+    print(f"CTP reconnect {settings.md_front} -> {front}")
+    md_client.stop()
+    time.sleep(0.4)
+    settings.use_front(front)
+    md_client.start()
+
+
+async def watchdog() -> None:
+    """SimNow 仿真 30011 is dead outside CFFEX hours; fail over to 7x24 40011."""
+    await asyncio.sleep(LOGIN_WAIT_S)
+    tried_failover = False
+    while True:
+        client = md_client
+        if client is not None and client.logged_in:
+            tried_failover = False
+            await asyncio.sleep(WATCHDOG_OK_S)
+            continue
+        alt = settings.fallback_md_front
+        if not tried_failover and alt != settings.md_front:
+            try:
+                _restart_md(alt)
+            except Exception as exc:
+                import traceback
+
+                traceback.print_exc()
+                if client is not None:
+                    client._set_status(message=f"CTP failover failed: {exc}")
+            tried_failover = True
+            await asyncio.sleep(FAILOVER_RETRY_S)
+            continue
+        await asyncio.sleep(WATCHDOG_OK_S)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global event_queue, loop, md_client
@@ -89,9 +131,11 @@ async def lifespan(_app: FastAPI):
 
         traceback.print_exc()
         md_client._set_status(message=f"CTP start failed: {exc}")
+    watch_task = asyncio.create_task(watchdog())
     try:
         yield
     finally:
+        watch_task.cancel()
         pump_task.cancel()
         if md_client is not None:
             md_client.stop()

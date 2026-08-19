@@ -70,6 +70,7 @@ const sharedEnv = {
   DATABASE_URL: process.env.DATABASE_URL || "",
 
   // SimNow CTP sidecar (services/ctp_market, bound to loopback)
+  // 30011 = 仿真（交易时段）；盘后 sidecar 自动切到 40011 7x24
   CTP_MARKET_URL: process.env.CTP_MARKET_URL || "http://127.0.0.1:8000",
   CTP_PROFILE: process.env.CTP_PROFILE || "simnow",
   CTP_BROKER_ID: process.env.CTP_BROKER_ID || "9999",

@@ -10,7 +10,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url)
   const symbol = (url.searchParams.get("symbol") || "").trim().toUpperCase()
   const interval = url.searchParams.get("interval") || "1m"
-  if (!/^(IH|IF|IC|IM)\d{4}$/.test(symbol)) {
+  if (!/^(IH|IF|IC|IM)(\d{4}|0)$/.test(symbol)) {
     return NextResponse.json({ ok: false, error: "invalid symbol" }, { status: 400 })
   }
   if (!isTimeframeId(interval)) {

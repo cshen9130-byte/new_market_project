@@ -43,29 +43,27 @@ class MarketClient:
         self.spi = None
         self.mdapi = None
         self._req_id = 0
+        self.generation = 0
 
     def start(self) -> None:
         FLOW_DIR.mkdir(parents=True, exist_ok=True)
-        flow = str(FLOW_DIR / f"{settings.profile}_md")
+        self.generation += 1
+        port = settings.md_front.rsplit(":", 1)[-1]
+        flow = str(FLOW_DIR / f"{settings.profile}_md_{port}")
         self.mdapi = load_mdapi(settings.profile)
         self.api = self.mdapi.CThostFtdcMdApi.CreateFtdcMdApi(flow)
         self.spi = _make_spi(self.mdapi, self)
         self.api.RegisterSpi(self.spi)
         self.api.RegisterFront(settings.md_front)
-        self._emit(
-            {
-                "type": "status",
-                "connected": False,
-                "logged_in": False,
-                "profile": settings.profile,
-                "front": settings.md_front,
-                "symbols": settings.instruments,
-                "message": f"Connecting {settings.profile} @ {settings.md_front}",
-            }
+        self._set_status(
+            connected=False,
+            logged_in=False,
+            message=f"Connecting {settings.profile} @ {settings.md_front}",
         )
         self.api.Init()
 
     def stop(self) -> None:
+        self.generation += 1
         api = self.api
         self.api = None
         if api is not None:
@@ -131,11 +129,18 @@ class MarketClient:
 
 
 def _make_spi(mdapi, client: MarketClient):
+    generation = client.generation
+
     class MdSpi(mdapi.CThostFtdcMdSpi):
         def __init__(self) -> None:
             super().__init__()
 
+        def _alive(self) -> bool:
+            return client.generation == generation and client.api is not None
+
         def OnFrontConnected(self) -> None:
+            if not self._alive():
+                return
             print("CTP MdApi connected")
             client._set_status(connected=True, message="Front connected, logging in")
             req = client.mdapi.CThostFtdcReqUserLoginField()
@@ -147,6 +152,8 @@ def _make_spi(mdapi, client: MarketClient):
                 client._set_status(message=f"ReqUserLogin failed: {ret}")
 
         def OnFrontDisconnected(self, reason: int) -> None:
+            if not self._alive():
+                return
             print(f"CTP MdApi disconnected: {reason}")
             client.subscribed = []
             client._set_status(
@@ -156,6 +163,8 @@ def _make_spi(mdapi, client: MarketClient):
             )
 
         def OnRspUserLogin(self, pRspUserLogin, pRspInfo, nRequestID, bIsLast) -> None:
+            if not self._alive():
+                return
             error_id = getattr(pRspInfo, "ErrorID", 0) if pRspInfo else 0
             error_msg = _ctp_text(getattr(pRspInfo, "ErrorMsg", "")) if pRspInfo else ""
             if error_id:
@@ -168,6 +177,8 @@ def _make_spi(mdapi, client: MarketClient):
             client.subscribe(settings.instruments)
 
         def OnRspSubMarketData(self, pSpecificInstrument, pRspInfo, nRequestID, bIsLast) -> None:
+            if not self._alive():
+                return
             error_id = getattr(pRspInfo, "ErrorID", 0) if pRspInfo else 0
             error_msg = _ctp_text(getattr(pRspInfo, "ErrorMsg", "")) if pRspInfo else ""
             symbol = _ctp_text(getattr(pSpecificInstrument, "InstrumentID", "")) if pSpecificInstrument else ""
@@ -181,7 +192,7 @@ def _make_spi(mdapi, client: MarketClient):
             client._set_status(message=f"Subscribed {', '.join(client.subscribed)}")
 
         def OnRtnDepthMarketData(self, tick) -> None:
-            if tick is None:
+            if not self._alive() or tick is None:
                 return
             symbol = _ctp_text(getattr(tick, "InstrumentID", ""))
             last = float(getattr(tick, "LastPrice", 0) or 0)

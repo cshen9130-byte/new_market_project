@@ -56,6 +56,13 @@ export function IndexFuturesCandleChart({
       value: c.volume,
       itemStyle: { color: c.close >= c.open ? "#ef4444" : "#22c55e" },
     }))
+    const lows = tfCandles.map((c) => Math.min(c.open, c.close, c.low)).filter((n) => n > 0)
+    const highs = tfCandles.map((c) => Math.max(c.open, c.close, c.high)).filter((n) => n > 0)
+    const lo = lows.length ? Math.min(...lows) : 0
+    const hi = highs.length ? Math.max(...highs) : 1
+    const pad = Math.max((hi - lo) * 0.08, hi * 0.002)
+    const priceMin = lo - pad
+    const priceMax = hi + pad
     return {
       animation: false,
       backgroundColor: "transparent",
@@ -93,6 +100,8 @@ export function IndexFuturesCandleChart({
       yAxis: [
         {
           scale: true,
+          min: priceMin,
+          max: priceMax,
           gridIndex: 0,
           axisLabel: { fontSize: 10, color: "#64748b" },
           splitLine: { lineStyle: { opacity: 0.2 } },

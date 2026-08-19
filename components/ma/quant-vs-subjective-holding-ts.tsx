@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
+import { ArrowLeftRight } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import type { ExposureMetric } from "@/lib/ma/quant-vs-subjective-signals"
+import { HelpCandle, HelpHoldingBar } from "@/components/ma/quant-vs-subjective-help"
 
 export interface HoldingProduct {
   code: string
@@ -245,6 +247,7 @@ export default function QuantVsSubjectiveHoldingTs({
   const [prod, setProd] = useState("全部")
   const [candles, setCandles] = useState<CandleRow[]>([])
   const [candleLoading, setCandleLoading] = useState(false)
+  const [swapped, setSwapped] = useState(false)
 
   const products = holdingTs?.products ?? []
   const dates = holdingTs?.dates ?? []
@@ -456,11 +459,104 @@ export default function QuantVsSubjectiveHoldingTs({
   const unit = metric === "risk" ? "风险敞口 σ×市值" : "持仓市值"
   const filterKey = `${metric}-${cat}-${sector}-${subSector}-${prod}`
 
+  const quantHoldingCard = (
+    <Card>
+      <CardHeader className="pb-1">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-sm font-medium">量化 · 多空持仓</CardTitle>
+          <HelpHoldingBar metric={metric} sleeve="量化" />
+        </div>
+      </CardHeader>
+      <CardContent className="p-0 pb-2">
+        {!holdingTs || !dates.length ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无持仓数据</p>
+        ) : (
+          <ReactECharts key={`q-${filterKey}`} option={qOption} style={{ height: 360 }} notMerge />
+        )}
+      </CardContent>
+    </Card>
+  )
+  const subjHoldingCard = (
+    <Card>
+      <CardHeader className="pb-1">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-sm font-medium">主观 · 多空持仓</CardTitle>
+          <HelpHoldingBar metric={metric} sleeve="主观" />
+        </div>
+      </CardHeader>
+      <CardContent className="p-0 pb-2">
+        {!holdingTs || !dates.length ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无持仓数据</p>
+        ) : (
+          <ReactECharts key={`s-${filterKey}`} option={sOption} style={{ height: 360 }} notMerge />
+        )}
+      </CardContent>
+    </Card>
+  )
+  const quantCandleCard = (
+    <Card>
+      <CardHeader className="pb-1">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-sm font-medium">
+              量化 · {candleLabel ? `${candleLabel} K线与累计盈亏` : "K线与累计盈亏"}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。
+            </p>
+          </div>
+          <HelpCandle sleeve="量化" />
+        </div>
+      </CardHeader>
+      <CardContent className="p-0 pb-2">
+        {!candleKey ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">请选择板块或品种以查看K线与量化累计盈亏</p>
+        ) : candleLoading && !candles.length ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">加载K线…</p>
+        ) : !candles.length ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无K线数据</p>
+        ) : (
+          <ReactECharts key={`qc-${candleKey}`} option={candleOption} style={{ height: 320 }} notMerge />
+        )}
+      </CardContent>
+    </Card>
+  )
+  const subjCandleCard = (
+    <Card>
+      <CardHeader className="pb-1">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-sm font-medium">
+              主观 · {candleLabel ? `${candleLabel} K线与累计盈亏` : "K线与累计盈亏"}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。
+            </p>
+          </div>
+          <HelpCandle sleeve="主观" />
+        </div>
+      </CardHeader>
+      <CardContent className="p-0 pb-2">
+        {!candleKey ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">请选择板块或品种以查看K线与主观累计盈亏</p>
+        ) : candleLoading && !candles.length ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">加载K线…</p>
+        ) : !candles.length ? (
+          <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无K线数据</p>
+        ) : (
+          <ReactECharts key={`sc-${candleKey}`} option={subjCandleOption} style={{ height: 320 }} notMerge />
+        )}
+      </CardContent>
+    </Card>
+  )
+
   return (
     <div id="section-holding-ts" className="space-y-2 scroll-mt-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">多空持仓时序</span>
-        <span className="text-xs text-muted-foreground">{unit} · 左量化 右主观 · 与风控页同一套多空柱 + 净持仓线</span>
+        <span className="text-xs text-muted-foreground">
+          {unit} · {swapped ? "左多空持仓 右K线盈亏" : "左量化 右主观"} · 与风控页同一套多空柱 + 净持仓线
+        </span>
         <div className="flex flex-wrap items-center gap-2 ml-auto text-xs">
           <select
             className="border rounded px-2 py-0.5 bg-background"
@@ -496,79 +592,26 @@ export default function QuantVsSubjectiveHoldingTs({
             <option value="全部">全部品种</option>
             {prodOptions.map((p) => <option key={p.code} value={p.code}>{p.code} {p.name}</option>)}
           </select>
+          <button
+            type="button"
+            onClick={() => setSwapped((v) => !v)}
+            className={`inline-flex items-center gap-1 border rounded px-2 py-0.5 ${
+              swapped
+                ? "border-primary bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:text-foreground"
+            }`}
+            title="互换「主观 · 多空持仓」与「量化 · K线」位置"
+          >
+            <ArrowLeftRight className="h-3 w-3" />
+            {swapped ? "恢复布局" : "互换位置"}
+          </button>
         </div>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-sm font-medium">量化 · 多空持仓</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0 pb-2">
-              {!holdingTs || !dates.length ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无持仓数据</p>
-              ) : (
-                <ReactECharts key={`q-${filterKey}`} option={qOption} style={{ height: 360 }} notMerge />
-              )}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-sm font-medium">
-                量化 · {candleLabel ? `${candleLabel} K线与累计盈亏` : "K线与累计盈亏"}
-              </CardTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。
-              </p>
-            </CardHeader>
-            <CardContent className="p-0 pb-2">
-              {!candleKey ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">请选择板块或品种以查看K线与量化累计盈亏</p>
-              ) : candleLoading && !candles.length ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">加载K线…</p>
-              ) : !candles.length ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无K线数据</p>
-              ) : (
-                <ReactECharts key={`qc-${candleKey}`} option={candleOption} style={{ height: 320 }} notMerge />
-              )}
-            </CardContent>
-          </Card>
-        </div>
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-sm font-medium">主观 · 多空持仓</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0 pb-2">
-              {!holdingTs || !dates.length ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无持仓数据</p>
-              ) : (
-                <ReactECharts key={`s-${filterKey}`} option={sOption} style={{ height: 360 }} notMerge />
-              )}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-sm font-medium">
-                主观 · {candleLabel ? `${candleLabel} K线与累计盈亏` : "K线与累计盈亏"}
-              </CardTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。
-              </p>
-            </CardHeader>
-            <CardContent className="p-0 pb-2">
-              {!candleKey ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">请选择板块或品种以查看K线与主观累计盈亏</p>
-              ) : candleLoading && !candles.length ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">加载K线…</p>
-              ) : !candles.length ? (
-                <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无K线数据</p>
-              ) : (
-                <ReactECharts key={`sc-${candleKey}`} option={subjCandleOption} style={{ height: 320 }} notMerge />
-              )}
-            </CardContent>
-          </Card>
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        {quantHoldingCard}
+        {swapped ? quantCandleCard : subjHoldingCard}
+        {swapped ? subjHoldingCard : quantCandleCard}
+        {subjCandleCard}
       </div>
     </div>
   )

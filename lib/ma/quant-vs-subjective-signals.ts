@@ -93,8 +93,8 @@ export function buildMomSignals(
   subjCount: number,
 ): MomSignal[] {
   const out: MomSignal[] = []
-  const budget = metric === "risk" ? "风险预算" : "权益"
-  const expName = metric === "risk" ? "风险敞口" : "权益敞口"
+  const budget = metric === "risk" ? "风险预算" : "保证金"
+  const expName = metric === "risk" ? "风险敞口" : "保证金敞口"
 
   for (const row of [...sectors, ...products]) {
     const { signal } = classifyExposure(row.quant, row.subjective, metric)
@@ -164,15 +164,15 @@ export function buildMomSignals(
     if (quantShare + 8 < countShare) {
       out.push({
         level: "allocation", key: "aum", name: "资金配置", type: "allocation", action: "扩容",
-        title: "量化侧权益占比偏低",
-        detail: `量化 ${quantCount} 户、权益占比 ${quantShare.toFixed(1)}%；主观 ${subjCount} 户。账户数占比高于资金占比，量化容量偏紧。新资金可优先考虑量化账户扩容。`,
+        title: "量化侧保证金占比偏低",
+        detail: `量化 ${quantCount} 户、保证金占比 ${quantShare.toFixed(1)}%；主观 ${subjCount} 户。账户数占比高于资金占比，量化容量偏紧。新资金可优先考虑量化账户扩容。`,
         strength: Math.min(100, round1(countShare - quantShare + 20)),
       })
     } else if (quantShare > countShare + 15) {
       out.push({
         level: "allocation", key: "aum", name: "资金配置", type: "allocation", action: "扩容",
         title: "量化侧资金已偏集中",
-        detail: `量化权益占比 ${quantShare.toFixed(1)}%，高于账户数占比。继续加钱前先看量化内部是否已在共识板块拥挤；新顾问更宜补主观空白板块。`,
+        detail: `量化保证金占比 ${quantShare.toFixed(1)}%，高于账户数占比。继续加钱前先看量化内部是否已在共识板块拥挤；新顾问更宜补主观空白板块。`,
         strength: Math.min(100, round1(quantShare - countShare)),
       })
     }

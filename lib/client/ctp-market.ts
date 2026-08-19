@@ -1,3 +1,5 @@
+import { isNearCffexExpiry } from "@/lib/client/cffex-expiry"
+
 export const INDEX_FUTURES = [
   { product: "IH", name: "上证50" },
   { product: "IF", name: "沪深300" },
@@ -44,16 +46,25 @@ export type CtpStatus = {
 }
 
 export function contractsForProduct(symbols: string[], product: string) {
-  const re = new RegExp(`^${product}\\d{4}$`, "i")
-  return symbols.filter((s) => re.test(s)).sort()
+  const re = new RegExp(`^${product}(\\d{4}|0)$`, "i")
+  return symbols
+    .filter((s) => re.test(s))
+    .sort((a, b) => {
+      const aDated = /\d{4}$/.test(a)
+      const bDated = /\d{4}$/.test(b)
+      if (aDated !== bDated) return aDated ? -1 : 1
+      return a.localeCompare(b)
+    })
 }
 
 export function pickMainContract(symbols: string[], product: string) {
   const matches = contractsForProduct(symbols, product)
   if (!matches.length) return null
-  const now = new Date()
-  const yymm = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}`
-  return matches.find((s) => s.slice(-4) >= yymm) ?? matches[matches.length - 1]
+  const dated = matches.filter((s) => /\d{4}$/.test(s)).sort()
+  const live = dated.filter((s) => !isNearCffexExpiry(s))
+  const pool = live.length ? live : dated
+  if (pool.length) return pool[0]
+  return matches.find((s) => /^[A-Z]+0$/i.test(s)) ?? matches[matches.length - 1]
 }
 
 export function pickMostActiveContract(
@@ -63,7 +74,9 @@ export function pickMostActiveContract(
 ) {
   const matches = contractsForProduct(symbols, product)
   if (!matches.length) return null
-  const ranked = matches
+  const live = matches.filter((s) => !/\d{4}$/.test(s) || !isNearCffexExpiry(s))
+  const pool = live.length ? live : matches
+  const ranked = pool
     .map((symbol) => ({
       symbol,
       oi: quotes[symbol]?.open_interest || 0,

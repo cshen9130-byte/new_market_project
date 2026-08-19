@@ -8,10 +8,10 @@ export const INDEX_SPOT = {
 } as const satisfies Record<IndexProduct, { sina: string; name: string }>
 
 export const INDEX_IV = {
-  IH: { key: "50index", fallback: "50etf", option: "HO", name: "上证50股指期权 QVIX" },
-  IF: { key: "300index", fallback: "300etf", option: "IO", name: "沪深300股指期权 QVIX" },
+  IH: { key: "50etf", fallback: "50index", option: "HO", name: "上证50期权 QVIX" },
+  IF: { key: "300etf", fallback: "300index", option: "IO", name: "沪深300期权 QVIX" },
   IC: { key: "500etf", fallback: "500etf", option: "510500", name: "中证500ETF期权 QVIX" },
-  IM: { key: "1000index", fallback: "1000index", option: "MO", name: "中证1000股指期权 QVIX" },
+  IM: { key: "1000index", fallback: "1000etf", option: "MO", name: "中证1000股指期权 QVIX" },
 } as const satisfies Record<
   IndexProduct,
   { key: string; fallback: string; option: string; name: string }

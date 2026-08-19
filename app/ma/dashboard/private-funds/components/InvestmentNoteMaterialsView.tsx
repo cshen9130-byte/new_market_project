@@ -1,13 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import {
   Check,
   ChevronsUpDown,
   CloudUpload,
   ExternalLink,
   FileText,
-  Link2,
   Loader2,
   Search,
   Trash2,
@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils"
 import type { InvestmentNote, InvestmentNoteMaterial } from "@/lib/ma/investment-notes"
 import {
   deleteInvestmentNoteMaterial,
+  generateInvestmentNoteFromMaterials,
   investmentNoteDeepLink,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
@@ -185,8 +186,9 @@ export function InvestmentNoteMaterialsView() {
   const [defaultNoteId, setDefaultNoteId] = useState("")
   const [linkingId, setLinkingId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [batchNoteId, setBatchNoteId] = useState("")
-  const [batchLinking, setBatchLinking] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [panelMounted, setPanelMounted] = useState(false)
+  const [panelCollapsed, setPanelCollapsed] = useState(false)
   const userId = useMemo(() => currentUserId(), [])
 
   const reload = useCallback(async () => {
@@ -238,6 +240,10 @@ export function InvestmentNoteMaterialsView() {
     void reload()
   }, [reload])
 
+  useEffect(() => {
+    setPanelMounted(true)
+  }, [])
+
   const filtered = useMemo(() => {
     const q = keyword.trim().toLowerCase()
     if (!q) return materials
@@ -255,6 +261,14 @@ export function InvestmentNoteMaterialsView() {
   const someFilteredSelected =
     filteredIds.some((id) => selectedIds.has(id)) && !allFilteredSelected
   const selectedCount = selectedIds.size
+  const selectedItems = useMemo(
+    () => materials.filter((m) => selectedIds.has(m.id)),
+    [materials, selectedIds],
+  )
+
+  useEffect(() => {
+    if (selectedCount === 0) setPanelCollapsed(false)
+  }, [selectedCount])
 
   async function uploadFiles(files: FileList | File[]) {
     const list = Array.from(files)
@@ -296,39 +310,66 @@ export function InvestmentNoteMaterialsView() {
     }
   }
 
-  async function handleBatchLink() {
+  async function handleGenerateNote() {
     const ids = Array.from(selectedIds)
-    if (ids.length === 0) return
-    if (!batchNoteId) {
+    if (ids.length === 0 || generating) return
+    if (ids.length > 8) {
       toast({
-        title: "请先选择笔记",
-        description: "搜索并选择要关联的投资笔记",
+        title: "请减少所选文件",
+        description: "一次最多根据 8 个文件生成笔记",
         variant: "destructive",
       })
       return
     }
-    setBatchLinking(true)
+    setGenerating(true)
     try {
-      const updates = await Promise.all(
-        ids.map((id) => linkInvestmentNoteMaterial(id, batchNoteId)),
-      )
-      const byId = new Map(updates.map((m) => [m.id, m]))
+      const result = await generateInvestmentNoteFromMaterials(ids)
+      const byId = new Map(result.materials.map((m) => [m.id, m]))
       setMaterials((prev) => prev.map((m) => byId.get(m.id) ?? m))
       setSelectedIds(new Set())
+      const createdTitle = result.note.title.trim() || "无标题"
+      setNoteOptions((prev) => {
+        if (prev.some((n) => n.id === result.note.id)) return prev
+        return [{ id: result.note.id, title: createdTitle, scope: "team" as const }, ...prev]
+      })
+      const skippedHint =
+        result.skipped.length > 0 ? `；${result.skipped.length} 个文件未能提取文字` : ""
       toast({
-        title: "批量关联成功",
-        description: `已将 ${ids.length} 个文件关联到同一笔记`,
+        title: "已生成笔记",
+        description: (
+          <span>
+            已保存「{createdTitle}」并关联 {ids.length} 个文件{skippedHint}。{" "}
+            <a
+              href={investmentNoteDeepLink({
+                id: result.note.id,
+                title: createdTitle,
+                scope: "team",
+              })}
+              className="underline"
+            >
+              查看笔记
+            </a>
+          </span>
+        ),
       })
     } catch (err) {
       toast({
-        title: "批量关联失败",
+        title: "生成笔记失败",
         description: err instanceof Error ? err.message : "请稍后重试",
         variant: "destructive",
       })
-      await reload()
     } finally {
-      setBatchLinking(false)
+      setGenerating(false)
     }
+  }
+
+  function removeSelected(id: string) {
+    setSelectedIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
   }
 
   async function handleDelete(material: InvestmentNoteMaterial) {
@@ -453,47 +494,76 @@ export function InvestmentNoteMaterialsView() {
         </button>
       </div>
 
-      {selectedCount > 0 ? (
-        <div className="flex flex-wrap items-center gap-3 border-b bg-red-50/50 px-6 py-2.5">
-          <span className="text-sm text-zinc-700">
-            已选 <span className="font-medium text-red-600">{selectedCount}</span> 个文件
-          </span>
-          <div className="flex min-w-[260px] flex-1 items-center gap-2">
-            <span className="shrink-0 text-sm text-zinc-600">批量关联到</span>
-            <NoteSearchPicker
-              notes={noteOptions}
-              value={batchNoteId}
-              onChange={setBatchNoteId}
-              placeholder="搜索要关联的笔记..."
-              allowClear={false}
-              disabled={batchLinking}
-              buttonClassName="h-9 text-sm"
-            />
-          </div>
-          <button
-            type="button"
-            disabled={batchLinking || !batchNoteId}
-            onClick={() => void handleBatchLink()}
-            className="inline-flex h-9 items-center gap-1.5 rounded bg-red-500 px-3 text-sm font-medium text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {batchLinking ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      {panelMounted && selectedCount > 0
+        ? createPortal(
+            panelCollapsed ? (
+              <button
+                type="button"
+                onClick={() => setPanelCollapsed(false)}
+                className="fixed bottom-6 right-6 z-[60] rounded-lg border bg-background px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-muted/50 transition-colors"
+              >
+                {generating ? "生成中..." : `已选 (${selectedCount})`}
+              </button>
             ) : (
-              <Link2 className="h-3.5 w-3.5" />
-            )}
-            关联选中
-          </button>
-          <button
-            type="button"
-            disabled={batchLinking}
-            onClick={() => setSelectedIds(new Set())}
-            className="inline-flex h-9 items-center gap-1 rounded border border-zinc-200 bg-white px-2.5 text-sm text-zinc-600 hover:bg-zinc-50"
-          >
-            <X className="h-3.5 w-3.5" />
-            取消选择
-          </button>
-        </div>
-      ) : null}
+              <div className="fixed bottom-6 right-6 z-[60] w-80 rounded-lg border bg-background shadow-xl flex flex-col max-h-[min(420px,calc(100vh-3rem))]">
+                <div className="flex items-center justify-between px-4 py-3 border-b flex-shrink-0">
+                  <span className="text-sm font-medium">已选 ({selectedCount})</span>
+                  <button
+                    type="button"
+                    disabled={generating}
+                    onClick={() => setPanelCollapsed(true)}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                  >
+                    收起
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1 min-h-0">
+                  {selectedItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-muted/50 group"
+                    >
+                      <span className="text-sm truncate" title={item.name}>
+                        {item.name}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={generating}
+                        onClick={() => removeSelected(item.id)}
+                        className="text-muted-foreground hover:text-foreground shrink-0 opacity-60 group-hover:opacity-100 transition-opacity disabled:opacity-40"
+                        aria-label={`移除 ${item.name}`}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-between px-4 py-3 border-t flex-shrink-0">
+                  <button
+                    type="button"
+                    disabled={generating}
+                    onClick={() => setSelectedIds(new Set())}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                  >
+                    清空
+                  </button>
+                  <button
+                    type="button"
+                    disabled={generating}
+                    onClick={() => void handleGenerateNote()}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                    {generating ? "生成中..." : "生成笔记"}
+                  </button>
+                </div>
+              </div>
+            ),
+            document.body,
+          )
+        : null}
 
       <div className="flex-1 overflow-auto">
         {loading ? (
@@ -571,7 +641,7 @@ export function InvestmentNoteMaterialsView() {
                             onChange={(noteId) => void handleLink(material.id, noteId)}
                             placeholder="未关联"
                             clearLabel="未关联"
-                            disabled={linkingId === material.id || batchLinking}
+                            disabled={linkingId === material.id || generating}
                           />
                         </div>
                         {material.noteId ? (

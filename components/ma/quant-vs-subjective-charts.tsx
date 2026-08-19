@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
 import { RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -15,6 +15,20 @@ import {
 } from "@/lib/ma/quant-vs-subjective-signals"
 import QuantVsSubjectiveHoldingTs, { type HoldingFocus, type HoldingTs } from "@/components/ma/quant-vs-subjective-holding-ts"
 import { QUANT_ACCOUNT_IDS, accountNumericId } from "@/lib/ma/quant-accounts"
+import {
+  HelpConsensusKpi,
+  HelpDivKpi,
+  HelpPie,
+  HelpProductBar,
+  HelpProductTable,
+  HelpQuantMargin,
+  HelpScatter,
+  HelpSectorBar,
+  HelpSectorTable,
+  HelpSignals,
+  HelpSubjMargin,
+  HelpTs,
+} from "@/components/ma/quant-vs-subjective-help"
 
 const QUANT_COLOR = "#3b82f6"
 const SUBJ_COLOR = "#f59e0b"
@@ -54,6 +68,7 @@ interface ApiData {
   missingQuantIds: number[]
   groups: { quant: GroupInfo; subjective: GroupInfo } | null
   bookEquity: number
+  bookMargin?: number
   quantShare: number
   volDays?: number
   sectors: CompareRow[]
@@ -136,7 +151,7 @@ function buildConsensusScatterOption(
   )
   if (!filtered.length) return {}
   const pts = filtered.map((r) => {
-    const signal = classifyExposure(r.quant, r.subjective, metric).signal
+    const signal = classifyExposure(r.quant, r.subjective, "risk").signal
     const { label, tooltip } = names(r)
     return {
       value: [
@@ -152,22 +167,27 @@ function buildConsensusScatterOption(
   })
   const xs = pts.map((p) => p.value[0])
   const ys = pts.map((p) => p.value[1])
-  const lim = Math.max(8, ...xs.map(Math.abs), ...ys.map(Math.abs)) * 1.15
+  const maxAbs = Math.max(8, ...xs.map(Math.abs), ...ys.map(Math.abs)) * 1.15
+  const signed = metric === "risk"
+  const axisMin = signed ? -maxAbs : 0
+  const pctFmt = signed
+    ? (v: number) => fmtPct(v)
+    : (v: number) => fmtPct(v, false)
   return {
     grid: { left: 52, right: 16, top: 36, bottom: 40 },
     tooltip: {
       formatter: (p: { data: { name: string; value: number[]; signal: string } }) =>
-        `<b>${p.data.name}</b><br/>量化 ${fmtPct(p.data.value[0])}<br/>主观 ${fmtPct(p.data.value[1])}<br/>${signalLabel(p.data.signal)}`,
+        `<b>${p.data.name}</b><br/>量化 ${pctFmt(p.data.value[0])}<br/>主观 ${pctFmt(p.data.value[1])}<br/>方向：${signalLabel(p.data.signal)}`,
     },
     xAxis: {
-      type: "value", min: -lim, max: lim, name: `量化${unitHint}`, nameLocation: "middle", nameGap: 24,
+      type: "value", min: axisMin, max: maxAbs, name: `量化${unitHint}`, nameLocation: "middle", nameGap: 24,
       nameTextStyle: { fontSize: 10 },
       axisLabel: { fontSize: 10, formatter: axisPct },
       splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
       axisLine: { lineStyle: { color: "#94a3b8" } },
     },
     yAxis: {
-      type: "value", min: -lim, max: lim, name: `主观${unitHint}`, nameLocation: "middle", nameGap: 36,
+      type: "value", min: axisMin, max: maxAbs, name: `主观${unitHint}`, nameLocation: "middle", nameGap: 36,
       nameTextStyle: { fontSize: 10 },
       axisLabel: { fontSize: 10, formatter: axisPct },
       splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
@@ -182,12 +202,18 @@ function buildConsensusScatterOption(
         labelLayout: { hideOverlap: true },
       },
     ],
-    graphic: [
-      { type: "text", left: "62%", top: "18%", style: { text: "共识做多", fill: "#ef444480", fontSize: 12 } },
-      { type: "text", left: "18%", top: "72%", style: { text: "共识做空", fill: "#22c55e80", fontSize: 12 } },
-      { type: "text", left: "18%", top: "18%", style: { text: "分歧", fill: "#8b5cf680", fontSize: 12 } },
-      { type: "text", left: "68%", top: "72%", style: { text: "分歧", fill: "#8b5cf680", fontSize: 12 } },
-    ],
+    graphic: signed
+      ? [
+          { type: "text", left: "62%", top: "18%", style: { text: "共识做多", fill: "#ef444480", fontSize: 12 } },
+          { type: "text", left: "18%", top: "72%", style: { text: "共识做空", fill: "#22c55e80", fontSize: 12 } },
+          { type: "text", left: "18%", top: "18%", style: { text: "分歧", fill: "#8b5cf680", fontSize: 12 } },
+          { type: "text", left: "68%", top: "72%", style: { text: "分歧", fill: "#8b5cf680", fontSize: 12 } },
+        ]
+      : [
+          { type: "text", left: "58%", top: "22%", style: { text: "两边都配", fill: "#64748b80", fontSize: 12 } },
+          { type: "text", left: "22%", top: "22%", style: { text: "仅主观", fill: "#f59e0b80", fontSize: 12 } },
+          { type: "text", left: "58%", top: "68%", style: { text: "仅量化", fill: "#3b82f680", fontSize: 12 } },
+        ],
   }
 }
 
@@ -206,7 +232,10 @@ function buildExposureTsOption(rows: TsPoint[], metric: Metric, axisName: string
   return {
     grid: { left: 48, right: 16, top: 36, bottom: 48 },
     legend: { top: 4, right: 8, textStyle: { fontSize: 11 }, data: ["量化", "主观"] },
-    tooltip: { trigger: "axis" },
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: (v: number) => `${Number(v).toFixed(1)}%`,
+    },
     dataZoom: [{ type: "inside" }, { type: "slider", height: 14, bottom: 6, textStyle: { fontSize: 9 } }],
     xAxis: { type: "category", data: rows.map((r) => r.date.slice(5)), axisLabel: { fontSize: 10 } },
     yAxis: {
@@ -308,16 +337,16 @@ export default function QuantVsSubjectiveCharts() {
       ? buildMomSignals(
           sectors,
           products.slice(0, 40),
-          metric,
+          "risk",
           data.quantShare,
           data.groups?.quant.nAccounts ?? 0,
           data.groups?.subjective.nAccounts ?? 0,
         )
       : [],
-    [data, sectors, products, metric],
+    [data, sectors, products],
   )
   const signals = allSignals.filter((s) => signalFilter === "all" || s.action === signalFilter)
-  const rowSignal = (row: CompareRow) => classifyExposure(row.quant, row.subjective, metric).signal
+  const rowSignal = (row: CompareRow) => classifyExposure(row.quant, row.subjective, "risk").signal
   const tsSectors = useMemo(
     () => [...new Set((data?.sectorTs ?? []).map((x) => x.sector))],
     [data?.sectorTs],
@@ -332,8 +361,17 @@ export default function QuantVsSubjectiveCharts() {
     const rest = codes.filter((c) => !ranked.includes(c)).sort()
     return [...ranked, ...rest].map((code) => ({ code, name: nameOf(code) }))
   }, [data?.productTs, data?.holdingTs, products])
-  const axisName = metric === "risk" ? "占本组风险预算 %" : "占本组权益 %"
-  const unitHint = metric === "risk" ? "风险敞口占比" : "权益占比"
+  const axisName = metric === "risk" ? "占本组风险预算 %" : "占本组保证金占用 %"
+  const unitHint = metric === "risk" ? "风险敞口占比" : "保证金占用占比"
+  const barHint = metric === "risk"
+    ? `${axisName} · 正=净多 负=净空 · 截面 ${data?.date ?? ""}`
+    : `${axisName} · 各板块合计约 100% · 截面 ${data?.date ?? ""}`
+  const scatterHint = metric === "risk"
+    ? `横轴量化、纵轴主观（${unitHint}）；第一/三象限为共识，二/四象限为分歧。`
+    : `横轴量化、纵轴主观（${unitHint}）；右上=两边都配。点颜色仍按风险方向。`
+  const tsHint = metric === "risk"
+    ? `近 45 日 · ${unitHint} · 两边曲线贴在一起且远离 0 线 = 持续共识；交叉变号 = 共识破裂`
+    : `近 45 日 · ${unitHint} · 各板块占用合计约 100%，曲线表示该板块占本组的份额`
 
   const sectorBarOption = useMemo(() => {
     if (!sectors.length) return {}
@@ -353,8 +391,8 @@ export default function QuantVsSubjectiveCharts() {
           if (!row) return ""
           return [
             `<b>${row.name}</b>`,
-            `量化风险 ${fmtPct(row.quant.riskPctGroup)}　权益 ${fmtPct(row.quant.equityPctGroup)}`,
-            `主观风险 ${fmtPct(row.subjective.riskPctGroup)}　权益 ${fmtPct(row.subjective.equityPctGroup)}`,
+            `量化风险 ${fmtPct(row.quant.riskPctGroup)}　保证金 ${fmtPct(row.quant.equityPctGroup, false)}`,
+            `主观风险 ${fmtPct(row.subjective.riskPctGroup)}　保证金 ${fmtPct(row.subjective.equityPctGroup, false)}`,
             `信号：${signalLabel(rowSignal(row))}`,
           ].join("<br/>")
         },
@@ -396,8 +434,8 @@ export default function QuantVsSubjectiveCharts() {
           const vol = row.volAnnPct != null ? `　年化波动 ${row.volAnnPct.toFixed(1)}%` : ""
           return [
             `<b>${row.name} (${row.key})</b>　${row.sector ?? ""}${vol}`,
-            `量化风险 ${fmtPct(row.quant.riskPctGroup)}　权益 ${fmtPct(row.quant.equityPctGroup)}`,
-            `主观风险 ${fmtPct(row.subjective.riskPctGroup)}　权益 ${fmtPct(row.subjective.equityPctGroup)}`,
+            `量化风险 ${fmtPct(row.quant.riskPctGroup)}　保证金 ${fmtPct(row.quant.equityPctGroup, false)}`,
+            `主观风险 ${fmtPct(row.subjective.riskPctGroup)}　保证金 ${fmtPct(row.subjective.equityPctGroup, false)}`,
             `信号：${signalLabel(rowSignal(row))}`,
           ].join("<br/>")
         },
@@ -462,8 +500,8 @@ export default function QuantVsSubjectiveCharts() {
         center: ["50%", "48%"],
         label: { formatter: "{b}\n{d}%", fontSize: 11 },
         data: [
-          { name: "量化", value: g.quant.equity, itemStyle: { color: QUANT_COLOR } },
-          { name: "主观", value: g.subjective.equity, itemStyle: { color: SUBJ_COLOR } },
+          { name: "量化", value: g.quant.margin, itemStyle: { color: QUANT_COLOR } },
+          { name: "主观", value: g.subjective.margin, itemStyle: { color: SUBJ_COLOR } },
         ],
       }],
     }
@@ -478,7 +516,7 @@ export default function QuantVsSubjectiveCharts() {
         <div>
           <p className="text-sm text-muted-foreground">
             拖动右侧账户可划分量化 / 主观，本页全部图表会按新口径重算。风险敞口 = 净名义市值 × 近{data?.volDays ?? 20}日品种波动率，占比为占本组风险预算（|σ×净市值| 之和）。
-            国债等高权益、低波动品种的风险占比会明显低于权益占比。切换「风险敞口 / 权益」会重算图表、对照表和决策信号。
+            保证金% = 该板块（或品种）持仓保证金 / 本组持仓保证金合计，量化、主观各自加总约 100%。国债等名义市值大、波动低的品种，风险占比会明显低于保证金占比。切换「风险敞口 / 保证金」会重算图表和对照表；决策信号始终按风险口径。资金分配按账户保证金占用（开仓实际占用），不以客户权益（名义资本）计。
           </p>
           {data?.date && (
             <p className="text-xs text-muted-foreground mt-1">持仓截面 {data.date}{data.missingQuantIds?.length ? `　未找到量化账户：${data.missingQuantIds.join("、")}` : ""}</p>
@@ -498,7 +536,7 @@ export default function QuantVsSubjectiveCharts() {
               onClick={() => setMetric("equity")}
               className={`px-2.5 py-1 border-l border-input ${metric === "equity" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
-              权益
+              保证金
             </button>
           </div>
           <Button size="sm" variant="outline" onClick={load} disabled={loading}>
@@ -511,10 +549,10 @@ export default function QuantVsSubjectiveCharts() {
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi title="量化权益" value={data ? fmtYi(data.groups?.quant.equity ?? 0) : "—"} hint={data ? `${data.groups?.quant.nAccounts ?? 0} 户 · 占比 ${fmtPct(data.quantShare, false)}` : ""} accent={QUANT_COLOR} />
-        <Kpi title="主观权益" value={data ? fmtYi(data.groups?.subjective.equity ?? 0) : "—"} hint={data ? `${data.groups?.subjective.nAccounts ?? 0} 户 · 占比 ${fmtPct(100 - (data.quantShare ?? 0), false)}` : ""} accent={SUBJ_COLOR} />
-        <Kpi title="共识加码信号" value={loading ? "…" : String(nConsensus)} hint="两边同向，可考虑加 beta" />
-        <Kpi title="方向分歧信号" value={loading ? "…" : String(nDiv)} hint="暂不加该方向 beta" />
+        <Kpi title="量化保证金" value={data ? fmtYi(data.groups?.quant.margin ?? 0) : "—"} hint={data ? `${data.groups?.quant.nAccounts ?? 0} 户 · 占比 ${fmtPct(data.quantShare, false)}` : ""} accent={QUANT_COLOR} help={<HelpQuantMargin />} />
+        <Kpi title="主观保证金" value={data ? fmtYi(data.groups?.subjective.margin ?? 0) : "—"} hint={data ? `${data.groups?.subjective.nAccounts ?? 0} 户 · 占比 ${fmtPct(100 - (data.quantShare ?? 0), false)}` : ""} accent={SUBJ_COLOR} help={<HelpSubjMargin />} />
+        <Kpi title="共识加码信号" value={loading ? "…" : String(nConsensus)} hint="两边同向，可考虑加 beta" help={<HelpConsensusKpi />} />
+        <Kpi title="方向分歧信号" value={loading ? "…" : String(nDiv)} hint="暂不加该方向 beta" help={<HelpDivKpi />} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
@@ -522,8 +560,11 @@ export default function QuantVsSubjectiveCharts() {
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <CardTitle className="text-sm font-medium">MOM 决策信号</CardTitle>
-                <p className="text-xs text-muted-foreground mt-0.5">当前按{unitHint}生成。点击信号可筛选下方多空持仓图。</p>
+                <div className="flex items-center gap-1.5">
+                  <CardTitle className="text-sm font-medium">MOM 决策信号</CardTitle>
+                  <HelpSignals />
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">当前按风险口径生成。点击信号可筛选下方多空持仓图。</p>
               </div>
               <div className="flex flex-wrap gap-1">
                 {(["all", "加码", "观望", "补风格", "控拥挤", "扩容"] as const).map((k) => (
@@ -580,8 +621,11 @@ export default function QuantVsSubjectiveCharts() {
           <Card className="flex-1 flex flex-col min-h-0">
             <CardHeader className="pb-1 flex flex-row items-start justify-between gap-2">
               <div>
-                <CardTitle className="text-sm font-medium">资金在量化 / 主观之间的分配</CardTitle>
-                <p className="text-xs text-muted-foreground mt-0.5">客户权益合计 · {data?.date ?? ""}</p>
+                <div className="flex items-center gap-1.5">
+                  <CardTitle className="text-sm font-medium">资金在量化 / 主观之间的分配</CardTitle>
+                  <HelpPie />
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">保证金占用合计 · {data?.date ?? ""}</p>
               </div>
               <button
                 type="button"
@@ -623,8 +667,13 @@ export default function QuantVsSubjectiveCharts() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
           <CardHeader className="pb-1">
-            <CardTitle className="text-sm font-medium">板块风险敞口：量化 vs 主观</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">{axisName} · 正=净多 负=净空 · 截面 {data?.date ?? ""}</p>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium">板块风险敞口：量化 vs 主观</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{barHint}</p>
+              </div>
+              <HelpSectorBar metric={metric} volDays={data?.volDays ?? 20} />
+            </div>
           </CardHeader>
           <CardContent className="pt-1">
             {loading && !sectors.length ? (
@@ -636,8 +685,13 @@ export default function QuantVsSubjectiveCharts() {
         </Card>
         <Card>
           <CardHeader className="pb-1">
-            <CardTitle className="text-sm font-medium">板块方向共识散点</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">横轴量化、纵轴主观（{unitHint}）；第一/三象限为共识，二/四象限为分歧。</p>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium">板块方向共识散点</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{scatterHint}</p>
+              </div>
+              <HelpScatter metric={metric} volDays={data?.volDays ?? 20} level="板块" />
+            </div>
           </CardHeader>
           <CardContent className="pt-1">
             <ReactECharts key={`sector-scatter-${metric}`} option={sectorScatterOption} style={{ height: 360, width: "100%" }} notMerge />
@@ -649,8 +703,15 @@ export default function QuantVsSubjectiveCharts() {
         <Card>
           <CardHeader className="pb-1 flex flex-row items-center justify-between gap-2">
             <div>
-              <CardTitle className="text-sm font-medium">品种风险敞口对比</CardTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">按当前口径 |量化%| + |主观%| 排序 · 同向且都大 → 共识加码；反向 → 观望</p>
+              <div className="flex items-center gap-1.5">
+                <CardTitle className="text-sm font-medium">品种风险敞口对比</CardTitle>
+                <HelpProductBar metric={metric} volDays={data?.volDays ?? 20} />
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {metric === "risk"
+                  ? "按当前口径 |量化%| + |主观%| 排序 · 同向且都大 → 共识加码；反向 → 观望"
+                  : "按当前口径 量化% + 主观% 排序 · 保证金占用占比，各组合计约 100%"}
+              </p>
             </div>
             <div className="flex items-center gap-1 text-xs shrink-0">
               {[12, 16, 24].map((n) => (
@@ -670,8 +731,13 @@ export default function QuantVsSubjectiveCharts() {
         </Card>
         <Card>
           <CardHeader className="pb-1">
-            <CardTitle className="text-sm font-medium">品种方向共识散点</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">横轴量化、纵轴主观（{unitHint}）；第一/三象限为共识，二/四象限为分歧。</p>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium">品种方向共识散点</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{scatterHint}</p>
+              </div>
+              <HelpScatter metric={metric} volDays={data?.volDays ?? 20} level="品种" />
+            </div>
           </CardHeader>
           <CardContent className="pt-1">
             <ReactECharts key={`prod-scatter-${metric}`} option={productScatterOption} style={{ height: 360, width: "100%" }} notMerge />
@@ -684,15 +750,18 @@ export default function QuantVsSubjectiveCharts() {
           <CardHeader className="pb-1 flex flex-row items-center justify-between gap-2">
             <div>
               <CardTitle className="text-sm font-medium">板块风险敞口时序</CardTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">近 45 日 · {unitHint} · 两边曲线贴在一起且远离 0 线 = 持续共识；交叉变号 = 共识破裂</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{tsHint}</p>
             </div>
-            <select
-              value={tsSector}
-              onChange={(e) => setTsSector(e.target.value)}
-              className="rounded-md border border-input bg-background px-2 py-1 text-xs shrink-0"
-            >
-              {tsSectors.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <select
+                value={tsSector}
+                onChange={(e) => setTsSector(e.target.value)}
+                className="rounded-md border border-input bg-background px-2 py-1 text-xs"
+              >
+                {tsSectors.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <HelpTs metric={metric} volDays={data?.volDays ?? 20} level="板块" />
+            </div>
           </CardHeader>
           <CardContent className="pt-1">
             <ReactECharts key={`ts-${metric}-${tsSector}`} option={tsOption} style={{ height: 280, width: "100%" }} notMerge />
@@ -702,15 +771,18 @@ export default function QuantVsSubjectiveCharts() {
           <CardHeader className="pb-1 flex flex-row items-center justify-between gap-2">
             <div>
               <CardTitle className="text-sm font-medium">品种风险敞口时序</CardTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">近 45 日 · {unitHint} · 两边曲线贴在一起且远离 0 线 = 持续共识；交叉变号 = 共识破裂</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{tsHint}</p>
             </div>
-            <select
-              value={tsProd}
-              onChange={(e) => setTsProd(e.target.value)}
-              className="rounded-md border border-input bg-background px-2 py-1 text-xs shrink-0 max-w-[160px]"
-            >
-              {tsProds.map((p) => <option key={p.code} value={p.code}>{p.name}({p.code})</option>)}
-            </select>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <select
+                value={tsProd}
+                onChange={(e) => setTsProd(e.target.value)}
+                className="rounded-md border border-input bg-background px-2 py-1 text-xs max-w-[160px]"
+              >
+                {tsProds.map((p) => <option key={p.code} value={p.code}>{p.name}({p.code})</option>)}
+              </select>
+              <HelpTs metric={metric} volDays={data?.volDays ?? 20} level="品种" />
+            </div>
           </CardHeader>
           <CardContent className="pt-1">
             <ReactECharts key={`prod-ts-${metric}-${tsProd}`} option={prodTsOption} style={{ height: 280, width: "100%" }} notMerge />
@@ -721,8 +793,13 @@ export default function QuantVsSubjectiveCharts() {
       {sectors.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">板块对照表</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">风险% = 占本组风险预算；权益% = 净市值 / 本组权益。解读按风险口径。</p>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium">板块对照表</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">风险% = 占本组风险预算；保证金% = 该板块持仓保证金 / 本组持仓保证金合计（各自约 100%）。解读按风险口径。</p>
+              </div>
+              <HelpSectorTable volDays={data?.volDays ?? 20} />
+            </div>
           </CardHeader>
           <CardContent className="pt-0 overflow-x-auto">
             <table className="w-full text-xs">
@@ -731,8 +808,8 @@ export default function QuantVsSubjectiveCharts() {
                   <th className="text-left py-2 font-medium">板块</th>
                   <th className="text-right py-2 font-medium">量化风险%</th>
                   <th className="text-right py-2 font-medium">主观风险%</th>
-                  <th className="text-right py-2 font-medium">量化权益%</th>
-                  <th className="text-right py-2 font-medium">主观权益%</th>
+                  <th className="text-right py-2 font-medium">量化保证金%</th>
+                  <th className="text-right py-2 font-medium">主观保证金%</th>
                   <th className="text-left py-2 pl-3 font-medium">解读</th>
                 </tr>
               </thead>
@@ -742,8 +819,8 @@ export default function QuantVsSubjectiveCharts() {
                     <td className="py-1.5 font-medium">{r.name}</td>
                     <td className={`py-1.5 text-right tabular-nums ${pctClass(r.quant.riskPctGroup)}`}>{fmtPct(r.quant.riskPctGroup)}</td>
                     <td className={`py-1.5 text-right tabular-nums ${pctClass(r.subjective.riskPctGroup)}`}>{fmtPct(r.subjective.riskPctGroup)}</td>
-                    <td className={`py-1.5 text-right tabular-nums ${pctClass(r.quant.equityPctGroup)}`}>{fmtPct(r.quant.equityPctGroup)}</td>
-                    <td className={`py-1.5 text-right tabular-nums ${pctClass(r.subjective.equityPctGroup)}`}>{fmtPct(r.subjective.equityPctGroup)}</td>
+                    <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtPct(r.quant.equityPctGroup, false)}</td>
+                    <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtPct(r.subjective.equityPctGroup, false)}</td>
                     <td className="py-1.5 pl-3 text-muted-foreground">{signalLabel(rowSignal(r))}</td>
                   </tr>
                 ))}
@@ -756,8 +833,13 @@ export default function QuantVsSubjectiveCharts() {
       {products.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">品种对照表</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">年化波动 = 近{data?.volDays ?? 20}日收益标准差 × √252。国债波动低，同样权益占比对应更小风险。</p>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium">品种对照表</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">年化波动 = 近{data?.volDays ?? 20}日收益标准差 × √252。国债波动低，同样保证金占比对应更小风险。</p>
+              </div>
+              <HelpProductTable volDays={data?.volDays ?? 20} />
+            </div>
           </CardHeader>
           <CardContent className="pt-0 overflow-x-auto">
             <table className="w-full text-xs">
@@ -768,8 +850,8 @@ export default function QuantVsSubjectiveCharts() {
                   <th className="text-right py-2 font-medium">年化波动</th>
                   <th className="text-right py-2 font-medium">量化风险%</th>
                   <th className="text-right py-2 font-medium">主观风险%</th>
-                  <th className="text-right py-2 font-medium">量化权益%</th>
-                  <th className="text-right py-2 font-medium">主观权益%</th>
+                  <th className="text-right py-2 font-medium">量化保证金%</th>
+                  <th className="text-right py-2 font-medium">主观保证金%</th>
                   <th className="text-left py-2 pl-3 font-medium">解读</th>
                 </tr>
               </thead>
@@ -781,8 +863,8 @@ export default function QuantVsSubjectiveCharts() {
                     <td className="py-1.5 text-right tabular-nums text-muted-foreground">{r.volAnnPct != null ? `${r.volAnnPct.toFixed(1)}%` : "—"}</td>
                     <td className={`py-1.5 text-right tabular-nums ${pctClass(r.quant.riskPctGroup)}`}>{fmtPct(r.quant.riskPctGroup)}</td>
                     <td className={`py-1.5 text-right tabular-nums ${pctClass(r.subjective.riskPctGroup)}`}>{fmtPct(r.subjective.riskPctGroup)}</td>
-                    <td className={`py-1.5 text-right tabular-nums ${pctClass(r.quant.equityPctGroup)}`}>{fmtPct(r.quant.equityPctGroup)}</td>
-                    <td className={`py-1.5 text-right tabular-nums ${pctClass(r.subjective.equityPctGroup)}`}>{fmtPct(r.subjective.equityPctGroup)}</td>
+                    <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtPct(r.quant.equityPctGroup, false)}</td>
+                    <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtPct(r.subjective.equityPctGroup, false)}</td>
                     <td className="py-1.5 pl-3 text-muted-foreground">{signalLabel(rowSignal(r))}</td>
                   </tr>
                 ))}
@@ -875,11 +957,14 @@ function pctClass(n: number): string {
   return "text-muted-foreground"
 }
 
-function Kpi({ title, value, hint, accent }: { title: string; value: string; hint: string; accent?: string }) {
+function Kpi({ title, value, hint, accent, help }: { title: string; value: string; hint: string; accent?: string; help?: React.ReactNode }) {
   return (
     <Card>
       <CardHeader className="pb-1">
-        <CardTitle className="text-xs font-medium text-muted-foreground">{title}</CardTitle>
+        <div className="flex items-start justify-between gap-1">
+          <CardTitle className="text-xs font-medium text-muted-foreground">{title}</CardTitle>
+          {help}
+        </div>
       </CardHeader>
       <CardContent className="pt-0">
         <div className="text-xl font-semibold tabular-nums" style={accent ? { color: accent } : undefined}>{value}</div>

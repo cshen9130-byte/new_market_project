@@ -227,6 +227,21 @@ export async function saveInvestmentNoteMaterial(input: {
   return toPublic(row)
 }
 
+export function getInvestmentNoteMaterialsByIds(ids: string[]): InvestmentNoteMaterial[] {
+  const all = readAll()
+  const byId = new Map(all.map((row) => [row.id, row]))
+  const out: InvestmentNoteMaterial[] = []
+  const seen = new Set<string>()
+  for (const raw of ids) {
+    const id = String(raw || "").trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const row = byId.get(id)
+    if (row) out.push(toPublic(row))
+  }
+  return out
+}
+
 export function linkInvestmentNoteMaterial(
   id: string,
   noteId: string | null,
@@ -247,6 +262,32 @@ export function linkInvestmentNoteMaterial(
   }
   writeAll(all)
   return toPublic(all[idx])
+}
+
+export function linkInvestmentNoteMaterials(
+  ids: string[],
+  noteId: string,
+  userId: string,
+): InvestmentNoteMaterial[] {
+  const wanted = new Set(
+    ids.map((id) => String(id || "").trim()).filter(Boolean),
+  )
+  if (wanted.size === 0) return []
+
+  const link = resolveNoteForUser(noteId, userId)
+  const all = readAll()
+  const updated: InvestmentNoteMaterial[] = []
+  for (let i = 0; i < all.length; i++) {
+    if (!wanted.has(all[i].id)) continue
+    all[i] = {
+      ...all[i],
+      noteId: link.noteId,
+      noteTitle: link.noteTitle,
+    }
+    updated.push(toPublic(all[i]))
+  }
+  writeAll(all)
+  return updated
 }
 
 export function deleteInvestmentNoteMaterial(id: string, userId: string): boolean {

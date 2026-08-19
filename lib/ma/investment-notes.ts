@@ -820,6 +820,39 @@ export async function deleteInvestmentNoteMaterial(id: string): Promise<void> {
   )
 }
 
+export type GeneratedInvestmentNoteFromMaterials = {
+  note: InvestmentNote
+  materials: InvestmentNoteMaterial[]
+  skipped: string[]
+}
+
+/** Generate, save, and link an investment note from selected「上传资料」files. */
+export async function generateInvestmentNoteFromMaterials(
+  materialIds: string[],
+): Promise<GeneratedInvestmentNoteFromMaterials> {
+  const data = await apiFetch<{
+    ok: true
+    note: InvestmentNote
+    materials: InvestmentNoteMaterial[]
+    skipped?: string[]
+  }>("/ma/api/investment-notes/generate-from-materials", {
+    method: "POST",
+    body: JSON.stringify({ materialIds }),
+  })
+  invalidateInvestmentNotesCache()
+  const note = {
+    ...data.note,
+    contentPending: false,
+    hasBody: Boolean(data.note.content?.trim()),
+  }
+  rememberFullNote(note)
+  return {
+    note,
+    materials: Array.isArray(data.materials) ? data.materials : [],
+    skipped: Array.isArray(data.skipped) ? data.skipped : [],
+  }
+}
+
 export function investmentNoteMaterialFileUrl(id: string): string {
   return `/ma/api/investment-notes/materials/${encodeURIComponent(id)}/file`
 }

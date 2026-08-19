@@ -210,8 +210,9 @@ function buildSleeve(
   shortMv: number,
   longRisk: number,
   shortRisk: number,
-  groupEq: number,
-  bookEq: number,
+  posMargin: number,
+  groupMargin: number,
+  bookMargin: number,
   groupGrossRisk: number,
   bookGrossRisk: number,
 ): SleeveMv {
@@ -222,9 +223,9 @@ function buildSleeve(
     longMv: round0(longMv),
     shortMv: round0(shortMv),
     netMv: round0(netMv),
-    equityPctGroup: groupEq > 0 ? round1((netMv / groupEq) * 100) : 0,
-    equityPctBook: bookEq > 0 ? round1((netMv / bookEq) * 100) : 0,
-    grossPctGroup: groupEq > 0 ? round1((gross / groupEq) * 100) : 0,
+    equityPctGroup: groupMargin > 0 ? round1((posMargin / groupMargin) * 100) : 0,
+    equityPctBook: bookMargin > 0 ? round1((posMargin / bookMargin) * 100) : 0,
+    grossPctGroup: groupMargin > 0 ? round1((gross / groupMargin) * 100) : 0,
     riskPctGroup: groupGrossRisk > 0 ? round1((netRisk / groupGrossRisk) * 100) : 0,
     riskPctBook: bookGrossRisk > 0 ? round1((netRisk / bookGrossRisk) * 100) : 0,
   }
@@ -255,13 +256,14 @@ async function _GET(req: Request) {
       " AND UPPER(TRIM(\"合约\")) !~ '" + optionRe + "'" +
       " AND TRIM(\"合约\") NOT LIKE '%-%-%'"
 
-    const [posRows, eqRows, tsPosRows, tsEqRows, pctRows] = await Promise.all([
-      query<{ account: string; contract: string; long_mv: string; short_mv: string }>(
+    const [posRows, eqRows, tsPosRows, pctRows] = await Promise.all([
+      query<{ account: string; contract: string; long_mv: string; short_mv: string; margin: string }>(
         `SELECT
            TRIM("账户") AS account,
            UPPER(TRIM("合约")) AS contract,
            SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS long_mv,
-           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv
+           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv,
+           SUM(${numExpr("保证金")})::text AS margin
          FROM mom_position_details
          WHERE "交易日期"::date = $1::date
            AND "合约" IS NOT NULL
@@ -280,13 +282,14 @@ async function _GET(req: Request) {
            AND ${ACCOUNT_EXCL}`,
         [date],
       ),
-      query<{ date: string; sleeve: string; contract: string; long_mv: string; short_mv: string }>(
+      query<{ date: string; sleeve: string; contract: string; long_mv: string; short_mv: string; margin: string }>(
         `SELECT
            "交易日期"::date::text AS date,
            ${SLEEVE_EXPR} AS sleeve,
            UPPER(TRIM("合约")) AS contract,
            SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS long_mv,
-           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv
+           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv,
+           SUM(${numExpr("保证金")})::text AS margin
          FROM mom_position_details
          WHERE "交易日期"::date > $1::date - INTERVAL '400 days'
            AND "交易日期"::date <= $1::date
@@ -294,17 +297,6 @@ async function _GET(req: Request) {
            AND ${ACCOUNT_EXCL}
            ${optionExcl}
          GROUP BY "交易日期"::date, ${SLEEVE_EXPR}, UPPER(TRIM("合约"))`,
-        [date],
-      ),
-      query<{ date: string; account: string; equity: string }>(
-        `SELECT
-           "交易日期"::date::text AS date,
-           TRIM("账户") AS account,
-           ${numExpr("客户权益")}::text AS equity
-         FROM mom_daily_reports
-         WHERE "交易日期"::date > $1::date - INTERVAL '400 days'
-           AND "交易日期"::date <= $1::date
-           AND ${ACCOUNT_EXCL}`,
         [date],
       ),
       query<{ date: string; code: string; pct: string }>(
@@ -352,16 +344,18 @@ async function _GET(req: Request) {
     groups.subjective.margin = round0(groups.subjective.margin)
 
     const bookEq = groups.quant.equity + groups.subjective.equity
+    const bookMargin = groups.quant.margin + groups.subjective.margin
     const presentQuantIds = new Set(groups.quant.accounts.map((a) => accountNumericId(a)))
     const missingQuantIds = quantIds.filter((id) => !presentQuantIds.has(String(id)))
 
-    type Bucket = { long: number; short: number }
+    type Bucket = { long: number; short: number; margin: number }
     const sectorBuckets: Record<Sleeve, Record<string, Bucket>> = { quant: {}, subjective: {} }
     const prodBuckets: Record<Sleeve, Record<string, Bucket>> = { quant: {}, subjective: {} }
-    const add = (map: Record<string, Bucket>, key: string, longMv: number, shortMv: number) => {
-      if (!map[key]) map[key] = { long: 0, short: 0 }
+    const add = (map: Record<string, Bucket>, key: string, longMv: number, shortMv: number, margin: number) => {
+      if (!map[key]) map[key] = { long: 0, short: 0, margin: 0 }
       map[key].long += longMv
       map[key].short += shortMv
+      map[key].margin += margin
     }
 
     for (const r of posRows) {
@@ -371,9 +365,10 @@ async function _GET(req: Request) {
       if (!prefix) continue
       const longMv = toNum(r.long_mv)
       const shortMv = toNum(r.short_mv)
-      if (longMv === 0 && shortMv === 0) continue
-      add(sectorBuckets[group], getSector(prefix), longMv, shortMv)
-      add(prodBuckets[group], prefix, longMv, shortMv)
+      const margin = toNum(r.margin)
+      if (longMv === 0 && shortMv === 0 && margin === 0) continue
+      add(sectorBuckets[group], getSector(prefix), longMv, shortMv, margin)
+      add(prodBuckets[group], prefix, longMv, shortMv, margin)
     }
 
     const pctMap = new Map<string, Map<string, number>>()
@@ -416,14 +411,19 @@ async function _GET(req: Request) {
     const prodKeys = new Set([...Object.keys(prodBuckets.quant), ...Object.keys(prodBuckets.subjective)])
     let qGrossRisk = 0
     let sGrossRisk = 0
+    let qPosMargin = 0
+    let sPosMargin = 0
     for (const p of prodKeys) {
       const sig = sigmaOf(p)
       const qNet = (prodBuckets.quant[p]?.long ?? 0) - (prodBuckets.quant[p]?.short ?? 0)
       const sNet = (prodBuckets.subjective[p]?.long ?? 0) - (prodBuckets.subjective[p]?.short ?? 0)
       qGrossRisk += Math.abs(sig * qNet)
       sGrossRisk += Math.abs(sig * sNet)
+      qPosMargin += prodBuckets.quant[p]?.margin ?? 0
+      sPosMargin += prodBuckets.subjective[p]?.margin ?? 0
     }
     const bookGrossRisk = qGrossRisk + sGrossRisk
+    const bookPosMargin = qPosMargin + sPosMargin
 
     const toRow = (
       key: string,
@@ -435,8 +435,8 @@ async function _GET(req: Request) {
     ): CompareRow => {
       const qr = riskOf(qb, sigma)
       const sr = riskOf(sb, sigma)
-      const quant = buildSleeve(qb?.long ?? 0, qb?.short ?? 0, qr.long, qr.short, groups.quant.equity, bookEq, qGrossRisk, bookGrossRisk)
-      const subjective = buildSleeve(sb?.long ?? 0, sb?.short ?? 0, sr.long, sr.short, groups.subjective.equity, bookEq, sGrossRisk, bookGrossRisk)
+      const quant = buildSleeve(qb?.long ?? 0, qb?.short ?? 0, qr.long, qr.short, qb?.margin ?? 0, qPosMargin, bookPosMargin, qGrossRisk, bookGrossRisk)
+      const subjective = buildSleeve(sb?.long ?? 0, sb?.short ?? 0, sr.long, sr.short, sb?.margin ?? 0, sPosMargin, bookPosMargin, sGrossRisk, bookGrossRisk)
       const { signal, consensusScore } = classifyExposure(quant, subjective, "risk")
       return {
         key, name, sector, quant, subjective, signal, consensusScore,
@@ -450,8 +450,8 @@ async function _GET(req: Request) {
       const sec = getSector(p)
       const q = prodBuckets.quant[p]
       const s = prodBuckets.subjective[p]
-      if (q) add(sectorRiskBuckets.quant, sec, q.long * sig, q.short * sig)
-      if (s) add(sectorRiskBuckets.subjective, sec, s.long * sig, s.short * sig)
+      if (q) add(sectorRiskBuckets.quant, sec, q.long * sig, q.short * sig, 0)
+      if (s) add(sectorRiskBuckets.subjective, sec, s.long * sig, s.short * sig, 0)
     }
 
     const sectors: CompareRow[] = SECTORS.map((sec) => {
@@ -459,8 +459,8 @@ async function _GET(req: Request) {
       const sb = sectorBuckets.subjective[sec]
       const qr = sectorRiskBuckets.quant[sec]
       const sr = sectorRiskBuckets.subjective[sec]
-      const quant = buildSleeve(qb?.long ?? 0, qb?.short ?? 0, qr?.long ?? 0, qr?.short ?? 0, groups.quant.equity, bookEq, qGrossRisk, bookGrossRisk)
-      const subjective = buildSleeve(sb?.long ?? 0, sb?.short ?? 0, sr?.long ?? 0, sr?.short ?? 0, groups.subjective.equity, bookEq, sGrossRisk, bookGrossRisk)
+      const quant = buildSleeve(qb?.long ?? 0, qb?.short ?? 0, qr?.long ?? 0, qr?.short ?? 0, qb?.margin ?? 0, qPosMargin, bookPosMargin, qGrossRisk, bookGrossRisk)
+      const subjective = buildSleeve(sb?.long ?? 0, sb?.short ?? 0, sr?.long ?? 0, sr?.short ?? 0, sb?.margin ?? 0, sPosMargin, bookPosMargin, sGrossRisk, bookGrossRisk)
       const { signal, consensusScore } = classifyExposure(quant, subjective, "risk")
       return { key: sec, name: sec, quant, subjective, signal, consensusScore }
     }).filter((r) => r.quant.grossPctGroup !== 0 || r.subjective.grossPctGroup !== 0)
@@ -474,20 +474,13 @@ async function _GET(req: Request) {
         (Math.abs(a.quant.riskPctGroup) + Math.abs(a.subjective.riskPctGroup)),
       )
 
-    const quantShare = bookEq > 0 ? (groups.quant.equity / bookEq) * 100 : 0
+    const quantShare = bookMargin > 0 ? (groups.quant.margin / bookMargin) * 100 : 0
     const signals = buildMomSignals(sectors, products.slice(0, 40), "risk", quantShare, groups.quant.nAccounts, groups.subjective.nAccounts)
 
     const tsRisk = new Map<string, { quant: Record<string, number>; subjective: Record<string, number>; qAbs: number; sAbs: number }>()
     const tsEq = new Map<string, { quant: Record<string, number>; subjective: Record<string, number>; qEq: number; sEq: number }>()
     const tsProdRisk = new Map<string, { quant: Record<string, number>; subjective: Record<string, number> }>()
     const tsProdMv = new Map<string, { quant: Record<string, number>; subjective: Record<string, number> }>()
-    for (const r of tsEqRows) {
-      const group: Sleeve = inQuant(r.account) ? "quant" : "subjective"
-      if (!tsEq.has(r.date)) tsEq.set(r.date, { quant: {}, subjective: {}, qEq: 0, sEq: 0 })
-      const e = tsEq.get(r.date)!
-      if (group === "quant") e.qEq += toNum(r.equity)
-      else e.sEq += toNum(r.equity)
-    }
     for (const r of tsPosRows) {
       const prefix = getPrefix(r.contract)
       if (!prefix) continue
@@ -495,20 +488,31 @@ async function _GET(req: Request) {
       const group: Sleeve = r.sleeve === "quant" ? "quant" : "subjective"
       const net = toNum(r.long_mv) - toNum(r.short_mv)
       const risk = sigmaOf(prefix, r.date) * net
+      const margin = toNum(r.margin)
       if (!tsRisk.has(r.date)) tsRisk.set(r.date, { quant: {}, subjective: {}, qAbs: 0, sAbs: 0 })
       const entry = tsRisk.get(r.date)!
       entry[group][sector] = (entry[group][sector] ?? 0) + risk
-      if (group === "quant") entry.qAbs += Math.abs(risk)
-      else entry.sAbs += Math.abs(risk)
       if (!tsEq.has(r.date)) tsEq.set(r.date, { quant: {}, subjective: {}, qEq: 0, sEq: 0 })
       const eqE = tsEq.get(r.date)!
-      eqE[group][sector] = (eqE[group][sector] ?? 0) + net
+      eqE[group][sector] = (eqE[group][sector] ?? 0) + margin
+      if (group === "quant") eqE.qEq += margin
+      else eqE.sEq += margin
       if (!tsProdRisk.has(r.date)) tsProdRisk.set(r.date, { quant: {}, subjective: {} })
       if (!tsProdMv.has(r.date)) tsProdMv.set(r.date, { quant: {}, subjective: {} })
       const pr = tsProdRisk.get(r.date)!
       const pm = tsProdMv.get(r.date)!
       pr[group][prefix] = (pr[group][prefix] ?? 0) + risk
-      pm[group][prefix] = (pm[group][prefix] ?? 0) + net
+      pm[group][prefix] = (pm[group][prefix] ?? 0) + margin
+    }
+    // Risk budget = Σ_product |σ × net|, matching the snapshot charts.
+    // Abs at contract level would inflate the denominator on calendar spreads.
+    for (const [d, pr] of tsProdRisk) {
+      const entry = tsRisk.get(d)
+      if (!entry) continue
+      entry.qAbs = 0
+      entry.sAbs = 0
+      for (const v of Object.values(pr.quant)) entry.qAbs += Math.abs(v)
+      for (const v of Object.values(pr.subjective)) entry.sAbs += Math.abs(v)
     }
     const sectorTs = Array.from(tsRisk.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
@@ -620,6 +624,7 @@ async function _GET(req: Request) {
       missingQuantIds,
       groups,
       bookEquity: round0(bookEq),
+      bookMargin: round0(bookMargin),
       quantShare: round1(quantShare),
       sectors,
       products,
@@ -634,4 +639,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("quant-vs-subjective-v5", _GET)
+export const GET = withMomCache("quant-vs-subjective-v8", _GET)

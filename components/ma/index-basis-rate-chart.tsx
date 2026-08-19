@@ -3,7 +3,12 @@
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
 
-import { annualizedBasisPct, daysToCffexExpiry } from "@/lib/client/cffex-expiry"
+import {
+  annualizedBasisPct,
+  basisPoints,
+  daysToCffexExpiry,
+  isNearCffexExpiry,
+} from "@/lib/client/cffex-expiry"
 import {
   type CtpCandle,
   type CtpTick,
@@ -11,6 +16,7 @@ import {
   formatBarTime,
 } from "@/lib/client/ctp-market"
 import { INDEX_CHART_COLOR, type SpotSnapshot } from "@/lib/client/realtime-overlay"
+import { HelpAnnualizedBasis } from "@/components/ma/realtime-chart-help"
 
 type Props = {
   title: string
@@ -30,26 +36,52 @@ function fmt(n: number | null | undefined, digits = 2) {
   })
 }
 
+function shanghaiDayKey(unix: number) {
+  const d = new Date(unix * 1000)
+  return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`
+}
+
+function trimOpeningSpikes(points: { time: number; value: number }[]) {
+  if (points.length < 16) return points
+  const body = points.slice(8).map((p) => p.value)
+  const sorted = body.slice().sort((a, b) => a - b)
+  const median = sorted[Math.floor(sorted.length / 2)]
+  const dev = body.map((v) => Math.abs(v - median)).sort((a, b) => a - b)
+  const mad = dev[Math.floor(dev.length / 2)] || 1
+  const cap = Math.max(mad * 6, 8)
+  return points.filter((p, i) => i >= 3 || Math.abs(p.value - median) <= cap)
+}
+
 export function IndexBasisRateChart({ title, product, symbol, candles, quote, spot, variant = "default" }: Props) {
   const days = symbol ? daysToCffexExpiry(symbol) : null
+  const nearExpiry = symbol ? isNearCffexExpiry(symbol) : false
   const lastFut = quote?.last ?? candles.at(-1)?.close ?? null
   const lastSpot = spot?.price ?? spot?.bars.at(-1)?.close ?? null
+  const lastPts = lastFut != null && lastSpot != null ? basisPoints(lastFut, lastSpot) : null
+  const lastRawPct = lastPts != null && lastSpot ? (lastPts / lastSpot) * 100 : null
   const lastBasis = lastFut != null && lastSpot != null && days != null
     ? annualizedBasisPct(lastFut, lastSpot, days)
     : null
   const up = lastBasis == null ? null : lastBasis >= 0
 
   const series = useMemo(() => {
-    if (!days || !spot?.bars.length) return []
-    const spotByTime = new Map(spot.bars.map((bar) => [bar.time, bar.close]))
+    if (!days) return []
+    const spotTimes = [...(spot?.bars || [])].sort((a, b) => a.time - b.time)
+    if (!spotTimes.length && lastSpot == null) return []
+    const spotByTime = new Map(spotTimes.map((bar) => [bar.time, bar.close]))
     let lastKnown: number | null = null
-    const spotTimes = [...spot.bars].sort((a, b) => a.time - b.time)
+    let lastKnownTime = 0
     let si = 0
     const points: { time: number; value: number }[] = []
     for (const candle of candles) {
       while (si < spotTimes.length && spotTimes[si].time <= candle.time) {
         lastKnown = spotTimes[si].close
+        lastKnownTime = spotTimes[si].time
         si += 1
+      }
+      // Index 1m often starts at 09:31; do not pair 09:30 futures with yesterday's close.
+      if (lastKnown != null && shanghaiDayKey(lastKnownTime) !== shanghaiDayKey(candle.time)) {
+        lastKnown = null
       }
       const spotPx = spotByTime.get(candle.time) ?? lastKnown
       if (spotPx == null) continue
@@ -58,22 +90,23 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
       points.push({ time: candle.time, value })
     }
     if (lastFut != null && lastSpot != null && lastBasis != null) {
-      const t = candles.at(-1)?.time ?? spot.bars.at(-1)?.time
+      const t = candles.at(-1)?.time ?? spotTimes.at(-1)?.time
       if (t != null && (!points.length || points[points.length - 1].time !== t)) {
         points.push({ time: t, value: lastBasis })
       } else if (points.length) {
         points[points.length - 1].value = lastBasis
       }
     }
-    return points
+    return trimOpeningSpikes(points)
   }, [candles, days, lastBasis, lastFut, lastSpot, spot])
 
   const color = INDEX_CHART_COLOR[product]
   const option = useMemo(() => {
     const times = series.map((p) => formatBarTime(p.time))
     const values = series.map((p) => p.value)
-    const absMax = values.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
-    const pad = Math.max(2, Math.ceil(absMax * 1.2 * 10) / 10)
+    const minV = values.length ? Math.min(0, ...values) : -1
+    const maxV = values.length ? Math.max(0, ...values) : 1
+    const pad = Math.max(1, (maxV - minV) * 0.12)
     const dark = variant === "pro"
     return {
       animation: false,
@@ -96,8 +129,8 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
       },
       yAxis: {
         type: "value",
-        min: -pad,
-        max: pad,
+        min: minV - pad,
+        max: maxV + pad,
         axisLabel: { color: "#94a3b8", fontSize: 10, formatter: (v: number) => `${v}` },
         splitLine: { lineStyle: { color: dark ? "#1e222d" : "#f1f5f9" } },
       },
@@ -106,10 +139,10 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
           type: "line",
           data: values,
           showSymbol: false,
-          smooth: 0.15,
+          smooth: 0.1,
           lineStyle: { width: 1.8, color },
           itemStyle: { color },
-          areaStyle: { color: `${color}22` },
+          areaStyle: { color: `${color}22`, origin: 0 },
           markLine: {
             silent: true,
             symbol: "none",
@@ -123,18 +156,23 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
   }, [color, series, variant])
 
   const pro = variant === "pro"
+  const continuous = !!symbol && /0$/i.test(symbol) && !/\d{4}$/.test(symbol)
   return (
     <div className={pro ? "flex h-full min-h-0 flex-col bg-[#131722] text-[#d1d4dc]" : "flex min-h-[320px] flex-col rounded-xl border bg-card"}>
       <div className={pro ? "flex items-start justify-between gap-3 px-3 py-2" : "flex items-start justify-between gap-3 px-4 py-3"}>
         <div>
-          <div className="text-sm font-semibold">
-            {title} 年化基差率
-            {symbol ? <span className="ml-2 font-mono text-xs text-muted-foreground">{symbol}</span> : null}
+          <div className="flex items-center gap-1.5">
+            <div className="text-sm font-semibold">
+              {title} 年化基差率
+              {symbol ? <span className="ml-2 font-mono text-xs text-muted-foreground">{symbol}</span> : null}
+            </div>
+            <HelpAnnualizedBasis product={title} />
           </div>
           {!pro ? (
             <div className="mt-1 text-[11px] text-muted-foreground">
               (期货 − 现货) / 现货 / 剩余天数 × 365
-              {days != null ? ` · 剩余 ${days} 天` : ""}
+              {days != null ? ` · 剩余 ${days} 天${continuous ? "（按主力）" : ""}` : ""}
+              {nearExpiry ? " · 临近到期，年化不稳定" : ""}
               {spot?.name ? ` · 现货 ${spot.name}` : ""}
             </div>
           ) : (
@@ -149,6 +187,8 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
           </div>
           <div className="text-[11px] text-muted-foreground tabular-nums">
             F {fmt(lastFut, 1)} / S {fmt(lastSpot, 1)}
+            {lastPts != null ? ` · 基差 ${lastPts >= 0 ? "+" : ""}${fmt(lastPts, 1)}点` : ""}
+            {lastRawPct != null ? ` (${lastRawPct >= 0 ? "+" : ""}${fmt(lastRawPct, 2)}%)` : ""}
           </div>
         </div>
       </div>
@@ -157,7 +197,7 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
           <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} lazyUpdate />
         ) : (
           <div className={pro ? "flex h-full items-center justify-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center text-sm text-muted-foreground"}>
-            {symbol ? "等待现货与期货 1 分钟对齐…" : `未订阅 ${product}`}
+            {symbol ? (spot ? "等待现货与期货 1 分钟对齐…" : "现货分钟线未返回") : `未订阅 ${product}`}
           </div>
         )}
       </div>
