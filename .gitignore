@@ -58,6 +58,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# CTP sidecar runtime
+services/ctp_market/flow/
+
 # Large data files
 nav_csv/
 20260515以来更新净值的私募证券基金（10800只）.xlsx

@@ -46,7 +46,7 @@ export default function RealtimeQuotesPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">实时行情</h1>
           <p className="mt-2 text-muted-foreground">
-            股指期货 1 分钟 K 线（IH / IF / IC / IM），数据来自 SimNow CTP（ctp_market）。
+            股指期货 1 分钟 K 线（IH / IF / IC / IM），数据来自服务端 SimNow CTP。
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">

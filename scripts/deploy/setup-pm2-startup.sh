@@ -132,6 +132,8 @@ if [[ "$SKIP_APP_START" == "0" && -n "$PROJECT_ROOT" ]]; then
     # Delete web app first so ecosystem instances/exec_mode (cluster ×2) always
     # apply. plain `pm2 start` after an old single-fork dump can leave 1 process.
     "$PM2_BIN" delete "$PM2_APP_NAME" 2>/dev/null || true
+    "$PM2_BIN" delete new_market_project_worker 2>/dev/null || true
+    "$PM2_BIN" delete ctp_market 2>/dev/null || true
     "$PM2_BIN" start ecosystem.config.js --update-env
 
     WEB_N="$("$PM2_BIN" jlist | python3 -c 'import sys,json; print(sum(1 for a in json.load(sys.stdin) if a.get("name")=="'"$PM2_APP_NAME"'"))' 2>/dev/null || echo 0)"

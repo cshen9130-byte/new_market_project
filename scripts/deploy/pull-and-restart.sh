@@ -27,6 +27,8 @@ echo "==> pm2 restart (web cluster + background worker)"
 # startOrReload alone can leave an old single-fork next-server after switching
 # ecosystem to cluster mode — delete+start the web app so instances=2 always applies.
 pm2 delete new_market_project 2>/dev/null || true
+pm2 delete new_market_project_worker 2>/dev/null || true
+pm2 delete ctp_market 2>/dev/null || true
 pm2 start ecosystem.config.js --update-env
 pm2 save
 

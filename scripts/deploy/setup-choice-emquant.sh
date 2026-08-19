@@ -16,6 +16,8 @@ set -euo pipefail
 #   --mom-report-url /mom_report/report.html
 #   --dashscope-api-key "<key>"   # AI 知识库 + vision chat
 #   --deepseek-api-key "<key>"    # AI 助手 text chat
+#   --ctp-user-id "<id>"          # SimNow investor id for 实时行情
+#   --ctp-password "<password>"   # quote with single quotes if it contains !
 
 PROJECT_ROOT="${PWD}"
 EMQ_USERNAME=""
@@ -32,6 +34,15 @@ DASHSCOPE_EMBEDDING_MODEL="${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}"
 DASHSCOPE_VISION_MODEL="${DASHSCOPE_VISION_MODEL:-qwen-vl-plus}"
 DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
 DATABASE_URL="${DATABASE_URL:-}"
+CTP_PROFILE="${CTP_PROFILE:-simnow}"
+CTP_BROKER_ID="${CTP_BROKER_ID:-9999}"
+CTP_USER_ID="${CTP_USER_ID:-}"
+CTP_PASSWORD="${CTP_PASSWORD:-}"
+CTP_INSTRUMENTS="${CTP_INSTRUMENTS:-IM2609,IM2608,IF2609,IF2608,IH2609,IH2608,IC2609,IC2608}"
+SIMNOW_MD_FRONT="${SIMNOW_MD_FRONT:-tcp://182.254.243.31:30011}"
+CTP_MARKET_URL="${CTP_MARKET_URL:-http://127.0.0.1:8000}"
+CHART_HOST="${CHART_HOST:-127.0.0.1}"
+CHART_PORT="${CHART_PORT:-8000}"
 BUILD_MEMORY_MB="1024"
 BUILD_MEMORY_USER_SET="0"
 TEMP_SWAP_GB="4"
@@ -54,6 +65,11 @@ while [[ $# -gt 0 ]]; do
     --dashscope-embedding-model) DASHSCOPE_EMBEDDING_MODEL="$2"; shift 2 ;;
     --dashscope-vision-model) DASHSCOPE_VISION_MODEL="$2"; shift 2 ;;
     --deepseek-api-key) DEEPSEEK_API_KEY="$2"; shift 2 ;;
+    --ctp-user-id) CTP_USER_ID="$2"; shift 2 ;;
+    --ctp-password) CTP_PASSWORD="$2"; shift 2 ;;
+    --ctp-profile) CTP_PROFILE="$2"; shift 2 ;;
+    --ctp-instruments) CTP_INSTRUMENTS="$2"; shift 2 ;;
+    --simnow-md-front) SIMNOW_MD_FRONT="$2"; shift 2 ;;
     --build-memory-mb) BUILD_MEMORY_MB="$2"; BUILD_MEMORY_USER_SET="1"; shift 2 ;;
     --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
     --debug-build) DEBUG_BUILD="1"; shift ;;
@@ -122,6 +138,14 @@ fi
   echo "Failed to install Python data libraries via pip"; exit 1;
 }
 
+CTP_REQ="$PROJECT_ROOT/services/ctp_market/requirements.txt"
+if [[ -f "$CTP_REQ" ]]; then
+  echo "Installing CTP market sidecar Python deps..."
+  "$VENV_PY" -m pip install -r "$CTP_REQ" || {
+    echo "Failed to install services/ctp_market requirements (openctp-ctp / FastAPI)"; exit 1;
+  }
+fi
+
 # 4) Export environment vars to a profile.d file for PM2 and shell logins
 LIB_DIR="$EMQ_DIR/EMQuantAPI_Python/python3/libs/linux/x64"
 PY_PATH="$EMQ_DIR/EMQuantAPI_Python/python3"
@@ -146,6 +170,15 @@ export DASHSCOPE_CHAT_MODEL="$DASHSCOPE_CHAT_MODEL"
 export DASHSCOPE_EMBEDDING_MODEL="$DASHSCOPE_EMBEDDING_MODEL"
 export DASHSCOPE_VISION_MODEL="$DASHSCOPE_VISION_MODEL"
 export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
+export CTP_MARKET_URL="$CTP_MARKET_URL"
+export CTP_PROFILE="$CTP_PROFILE"
+export CTP_BROKER_ID="$CTP_BROKER_ID"
+export CTP_USER_ID="$CTP_USER_ID"
+export CTP_PASSWORD="$CTP_PASSWORD"
+export CTP_INSTRUMENTS="$CTP_INSTRUMENTS"
+export SIMNOW_MD_FRONT="$SIMNOW_MD_FRONT"
+export CHART_HOST="$CHART_HOST"
+export CHART_PORT="$CHART_PORT"
 EOF
 
 # shellcheck disable=SC1091
@@ -162,6 +195,7 @@ fi
 # Stop by name (covers cluster multi-instance) then kill any leftover next procs.
 pm2 stop "$PM2_APP_NAME" 2>/dev/null || true
 pm2 stop new_market_project_worker 2>/dev/null || true
+pm2 stop ctp_market 2>/dev/null || true
 pm2 stop all 2>/dev/null || true
 pkill -f "next build" || true
 pkill -f "pnpm build" || true
@@ -364,6 +398,15 @@ _upsert_env "DASHSCOPE_EMBEDDING_MODEL" "$DASHSCOPE_EMBEDDING_MODEL"
 _upsert_env "DASHSCOPE_VISION_MODEL"    "$DASHSCOPE_VISION_MODEL"
 _upsert_env "DEEPSEEK_API_KEY"          "$DEEPSEEK_API_KEY"
 _upsert_env "PYTHON_EXE"               "$PY_EXE_PATH"
+_upsert_env "CTP_MARKET_URL"           "$CTP_MARKET_URL"
+_upsert_env "CTP_PROFILE"              "$CTP_PROFILE"
+_upsert_env "CTP_BROKER_ID"            "$CTP_BROKER_ID"
+_upsert_env "CTP_USER_ID"              "$CTP_USER_ID"
+_upsert_env "CTP_PASSWORD"             "$CTP_PASSWORD"
+_upsert_env "CTP_INSTRUMENTS"          "$CTP_INSTRUMENTS"
+_upsert_env "SIMNOW_MD_FRONT"          "$SIMNOW_MD_FRONT"
+_upsert_env "CHART_HOST"               "$CHART_HOST"
+_upsert_env "CHART_PORT"               "$CHART_PORT"
 
 echo "Credentials written to $ENV_FILE"
 
@@ -391,6 +434,7 @@ else
   # delete then start so ecosystem cluster mode is applied (stop+start keeps fork)
   pm2 delete "$PM2_APP_NAME" 2>/dev/null || true
   pm2 delete new_market_project_worker 2>/dev/null || true
+  pm2 delete ctp_market 2>/dev/null || true
   pm2 start ecosystem.config.js --update-env
   pm2 save
   echo "WARNING: not running as root; skipped PM2 systemd startup fix."

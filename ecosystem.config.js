@@ -46,6 +46,19 @@ const sharedEnv = {
 
   // PostgreSQL connection string (set by setup_db.sh → .env)
   DATABASE_URL: process.env.DATABASE_URL || "",
+
+  // SimNow CTP sidecar (services/ctp_market, bound to loopback)
+  CTP_MARKET_URL: process.env.CTP_MARKET_URL || "http://127.0.0.1:8000",
+  CTP_PROFILE: process.env.CTP_PROFILE || "simnow",
+  CTP_BROKER_ID: process.env.CTP_BROKER_ID || "9999",
+  CTP_USER_ID: process.env.CTP_USER_ID || "",
+  CTP_PASSWORD: process.env.CTP_PASSWORD || "",
+  CTP_INSTRUMENTS:
+    process.env.CTP_INSTRUMENTS ||
+    "IM2609,IM2608,IF2609,IF2608,IH2609,IH2608,IC2609,IC2608",
+  SIMNOW_MD_FRONT: process.env.SIMNOW_MD_FRONT || "tcp://182.254.243.31:30011",
+  CHART_HOST: process.env.CHART_HOST || "127.0.0.1",
+  CHART_PORT: process.env.CHART_PORT || "8000",
 }
 
 // Prefer clustering next binary directly — clustering `pnpm start` only forks the
@@ -90,6 +103,18 @@ module.exports = {
         // and leave 在管产品 list waiting on "timeout exceeded when trying to connect".
         DB_POOL_MAX: process.env.DB_POOL_MAX_WORKER || "4",
         DB_STATEMENT_TIMEOUT: process.env.DB_STATEMENT_TIMEOUT_WORKER || "120000",
+      },
+    },
+    {
+      name: "ctp_market",
+      cwd: "services/ctp_market",
+      script: "server.py",
+      interpreter: process.env.PYTHON_EXE || "/root/new_market_project/.venv/bin/python3",
+      exec_mode: "fork",
+      instances: 1,
+      max_memory_restart: "400M",
+      env: {
+        ...sharedEnv,
       },
     },
   ],
