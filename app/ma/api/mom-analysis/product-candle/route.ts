@@ -31,69 +31,156 @@ type CandleRow = {
   volume: number
 }
 
+type AkRow = CandleRow & { code: string }
+
+function parseProductCodes(raw: string): string[] {
+  const seen = new Set<string>()
+  for (const part of raw.split(",")) {
+    const code = part.toUpperCase().trim()
+    if (/^[A-Z]{1,4}$/.test(code)) seen.add(code)
+    if (seen.size >= 24) break
+  }
+  return [...seen]
+}
+
+function mean(xs: number[]): number {
+  return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0
+}
+
+function buildEqualWeightIndex(rows: AkRow[]): CandleRow[] {
+  const byDate = new Map<string, AkRow[]>()
+  for (const r of rows) {
+    const list = byDate.get(r.date)
+    if (list) list.push(r)
+    else byDate.set(r.date, [r])
+  }
+  const dates = [...byDate.keys()].sort()
+  const prevClose = new Map<string, number>()
+  const out: CandleRow[] = []
+  let index = 1000
+  for (const date of dates) {
+    const day = byDate.get(date) ?? []
+    const oRets: number[] = []
+    const hRets: number[] = []
+    const lRets: number[] = []
+    const cRets: number[] = []
+    let vol = 0
+    for (const r of day) {
+      vol += r.volume
+      const pc = prevClose.get(r.code)
+      if (pc && pc > 0) {
+        oRets.push(r.open / pc - 1)
+        hRets.push(r.high / pc - 1)
+        lRets.push(r.low / pc - 1)
+        cRets.push(r.close / pc - 1)
+      }
+      prevClose.set(r.code, r.close)
+    }
+    if (!cRets.length) continue
+    const open = index * (1 + mean(oRets))
+    const high = index * (1 + mean(hRets))
+    const low = index * (1 + mean(lRets))
+    const close = index * (1 + mean(cRets))
+    index = close
+    out.push({
+      date,
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
+      close,
+      volume: vol,
+    })
+  }
+  return out
+}
+
+async function loadSingleProduct(product: string, from: string, to: string): Promise<CandleRow[]> {
+  let rows: CandleRow[] = await query<CandleRow>(
+    `WITH ranked AS (
+       SELECT trade_date::text          AS date,
+              CAST(open   AS float8)    AS open,
+              CAST(high   AS float8)    AS high,
+              CAST(low    AS float8)    AS low,
+              CAST(close  AS float8)    AS close,
+              CAST(COALESCE(volume, 0) AS float8) AS volume,
+              ROW_NUMBER() OVER (
+                PARTITION BY trade_date
+                ORDER BY COALESCE(hqoi, 0) DESC, COALESCE(volume, 0) DESC
+              ) AS rn
+       FROM raw_futures_contracts_daily
+       WHERE UPPER(contract) ~ ('^' || $1 || '[0-9]')
+         AND trade_date BETWEEN $2 AND $3
+     )
+     SELECT date, open, high, low, close, volume
+     FROM ranked WHERE rn = 1 AND close > 0
+     ORDER BY date`,
+    [product, from, to],
+  ).catch(() => [] as CandleRow[])
+
+  const akCode = AKSHARE_CODE[product]
+  if (akCode) {
+    const akRows = await query<CandleRow>(
+      `SELECT trade_date::text                    AS date,
+              CAST(open   AS float8)              AS open,
+              CAST(high   AS float8)              AS high,
+              CAST(low    AS float8)              AS low,
+              CAST(close  AS float8)              AS close,
+              CAST(COALESCE(volume, 0) AS float8) AS volume
+       FROM raw_akshare_futures_daily
+       WHERE code = $1 AND trade_date BETWEEN $2 AND $3
+         AND CAST(close AS float8) > 0
+       ORDER BY trade_date`,
+      [akCode, from, to],
+    ).catch(() => [] as CandleRow[])
+
+    if (rows.length === 0) {
+      rows = akRows
+    } else if (akRows.length > 0) {
+      const primaryDates = new Set(rows.map(r => r.date))
+      const supplement = akRows.filter(r => !primaryDates.has(r.date))
+      if (supplement.length > 0) {
+        rows = [...rows, ...supplement].sort((a, b) => a.date.localeCompare(b.date))
+      }
+    }
+  }
+  return rows
+}
+
+async function loadBasketIndex(products: string[], from: string, to: string): Promise<CandleRow[]> {
+  const akCodes = products.map((p) => AKSHARE_CODE[p]).filter(Boolean)
+  if (!akCodes.length) return []
+  const rows = await query<AkRow>(
+    `SELECT trade_date::text                    AS date,
+            code,
+            CAST(open   AS float8)              AS open,
+            CAST(high   AS float8)              AS high,
+            CAST(low    AS float8)              AS low,
+            CAST(close  AS float8)              AS close,
+            CAST(COALESCE(volume, 0) AS float8) AS volume
+     FROM raw_akshare_futures_daily
+     WHERE code = ANY($1) AND trade_date BETWEEN $2 AND $3
+       AND CAST(close AS float8) > 0
+     ORDER BY trade_date, code`,
+    [akCodes, from, to],
+  ).catch(() => [] as AkRow[])
+  return buildEqualWeightIndex(rows)
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
-    const rawProduct = (searchParams.get("product") || "AU").toUpperCase().trim()
-    const product    = /^[A-Z]{1,4}$/.test(rawProduct) ? rawProduct : "AU"
-    const from       = searchParams.get("from") || "2025-01-01"
-    const to         = searchParams.get("to")   || new Date().toISOString().slice(0, 10)
+    const from = searchParams.get("from") || "2025-01-01"
+    const to = searchParams.get("to") || new Date().toISOString().slice(0, 10)
+    const basket = parseProductCodes(searchParams.get("products") || "")
 
-    // Primary: dominant contract per day (highest OI) from raw_futures_contracts_daily
-    let rows: CandleRow[] = await query<CandleRow>(
-      `WITH ranked AS (
-         SELECT trade_date::text          AS date,
-                CAST(open   AS float8)    AS open,
-                CAST(high   AS float8)    AS high,
-                CAST(low    AS float8)    AS low,
-                CAST(close  AS float8)    AS close,
-                CAST(COALESCE(volume, 0) AS float8) AS volume,
-                ROW_NUMBER() OVER (
-                  PARTITION BY trade_date
-                  ORDER BY COALESCE(hqoi, 0) DESC, COALESCE(volume, 0) DESC
-                ) AS rn
-         FROM raw_futures_contracts_daily
-         WHERE UPPER(contract) ~ ('^' || $1 || '[0-9]')
-           AND trade_date BETWEEN $2 AND $3
-       )
-       SELECT date, open, high, low, close, volume
-       FROM ranked WHERE rn = 1 AND close > 0
-       ORDER BY date`,
-      [product, from, to],
-    ).catch(() => [] as CandleRow[])
-
-    // Supplement / fallback: akshare continuous contract
-    // Always attempt AkShare so recent dates missing from raw_futures_contracts_daily
-    // (e.g. close=0 rows filtered by close>0) are filled in from AkShare.
-    const akCode = AKSHARE_CODE[product]
-    if (akCode) {
-      const akRows = await query<CandleRow>(
-        `SELECT trade_date::text                    AS date,
-                CAST(open   AS float8)              AS open,
-                CAST(high   AS float8)              AS high,
-                CAST(low    AS float8)              AS low,
-                CAST(close  AS float8)              AS close,
-                CAST(COALESCE(volume, 0) AS float8) AS volume
-         FROM raw_akshare_futures_daily
-         WHERE code = $1 AND trade_date BETWEEN $2 AND $3
-           AND CAST(close AS float8) > 0
-         ORDER BY trade_date`,
-        [akCode, from, to],
-      ).catch(() => [] as CandleRow[])
-
-      if (rows.length === 0) {
-        // Primary returned nothing — use AkShare entirely
-        rows = akRows
-      } else if (akRows.length > 0) {
-        // Primary has historical data but may be missing recent dates — supplement
-        const primaryDates = new Set(rows.map(r => r.date))
-        const supplement = akRows.filter(r => !primaryDates.has(r.date))
-        if (supplement.length > 0) {
-          rows = [...rows, ...supplement].sort((a, b) => a.date.localeCompare(b.date))
-        }
-      }
+    if (basket.length > 1) {
+      const rows = await loadBasketIndex(basket, from, to)
+      return NextResponse.json({ ok: true, data: rows, product: basket.join(","), products: basket })
     }
 
+    const rawProduct = (searchParams.get("product") || basket[0] || "AU").toUpperCase().trim()
+    const product = /^[A-Z]{1,4}$/.test(rawProduct) ? rawProduct : "AU"
+    const rows = await loadSingleProduct(product, from, to)
     return NextResponse.json({ ok: true, data: rows, product })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)

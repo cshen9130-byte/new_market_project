@@ -48,6 +48,8 @@ function getPageContext(path: string): string {
     return "当前页面：【股票市场分析】。展示 A 股拥挤度、Top 5% 成交额占比、主题成交额占比 vs 全A拥挤度、板块资金流向、全市场板块表现（全部行业/概念涨跌与净流入散点及完整排名）、交易所板块成交额占比、个股 Top15、热点板块 Top15 与持续性。"
   if (path.includes("/options-market"))
     return "当前页面：【期权市场分析】。目前展示：隐含波动率 vs 已实现波动率走势、期权 Put/Call 比率、期权到期持仓分布。（数据部分为示例占位数据，实际功能开发中）"
+  if (path.includes("/realtime-quotes"))
+    return "当前页面：【实时行情】。展示股指期货 IH/IF/IC/IM 主力连续 1 分钟 K 线。因 OpenCTP 7x24 回放常停在商品夜盘/早盘、股指只有静态结算价，本页使用新浪财经实时行情与分时 1 分钟线，约每 2 秒刷新。"
   if (path.includes("/private-funds"))
     return "当前页面：【私募基金 / 尽调表格】。功能：管理私募产品尽调记录，包含代表产品、尽调材料（可拖入 AI 助手问答）、策略标签等字段。支持导出 Excel、添加记录。页面 AI 助手已接入团队策略标签体系，可在阅读路演/尽调文档后询问基金应归入哪一类团队策略（一级/二级/三级）。"
   if (path.includes("/ai-knowledge"))

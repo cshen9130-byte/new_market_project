@@ -81,6 +81,10 @@ export default function DashboardPage() {
               <h3 className="font-semibold mb-2">期权市场</h3>
               <p className="text-sm text-muted-foreground">分析期权链、波动率与希腊值</p>
             </Link>
+            <Link href="/ma/dashboard/realtime-quotes" className="border rounded-lg p-4 hover:bg-muted/50 transition-colors">
+              <h3 className="font-semibold mb-2">实时行情</h3>
+              <p className="text-sm text-muted-foreground">股指期货 IM/IF/IH/IC 实时 1 分钟 K 线</p>
+            </Link>
             <Link href="/ma/dashboard/private-funds" className="border rounded-lg p-4 hover:bg-muted/50 transition-colors">
               <h3 className="font-semibold mb-2">私募基金</h3>
               <p className="text-sm text-muted-foreground">私募基金净值与绩效跟踪</p>

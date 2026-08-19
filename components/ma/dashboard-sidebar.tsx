@@ -4,7 +4,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X, FlaskConical } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X, FlaskConical, Activity } from "lucide-react"
 import type React from "react"
 import { authService } from "@/lib/auth"
 import { canAccessAiKnowledge, canAccessAiResearcher } from "@/lib/permissions"
@@ -15,6 +15,7 @@ const baseNavigation = [
   { name: "股票市场", href: "/ma/dashboard/stock-market", icon: LineChart },
   { name: "期货市场", href: "/ma/dashboard/futures-market", icon: Rocket },
   { name: "期权市场", href: "/ma/dashboard/options-market", icon: Target },
+  { name: "实时行情", href: "/ma/dashboard/realtime-quotes", icon: Activity },
   { name: "私募基金", href: "/ma/dashboard/private-funds", icon: Briefcase },
   { name: "MOM分析", href: "/ma/dashboard/mom-analysis", icon: BarChart2, permKey: "mom" as const },
   { name: "小工具", href: "/ma/dashboard/tools", icon: Wrench },

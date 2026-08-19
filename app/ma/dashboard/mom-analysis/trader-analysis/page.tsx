@@ -9,7 +9,9 @@ const NhciCandleChart      = dynamic(() => import("@/components/ma/nhci-candle-c
 const AuTradingChart       = dynamic(() => import("@/components/ma/au-trading-chart"),         { ssr: false })
 const CrossAccountChart    = dynamic(() => import("@/components/ma/cross-account-chart"),      { ssr: false })
 const ProductCandleChart   = dynamic(() => import("@/components/ma/product-candle-chart"),     { ssr: false })
-const EquityCurveChart     = dynamic(() => import("@/components/ma/equity-curve-chart"),       { ssr: false })
+const EquityCurveChart           = dynamic(() => import("@/components/ma/equity-curve-chart"),             { ssr: false })
+const QuantVsSubjectiveCharts    = dynamic(() => import("@/components/ma/quant-vs-subjective-charts"),     { ssr: false })
+const QuantStrategyCharts        = dynamic(() => import("@/components/ma/quant-strategy-charts"),          { ssr: false })
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -188,7 +190,7 @@ export default function TraderAnalysisPage() {
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>("netPnl")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
-  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review" | "equity-curve">("pnl-rank")
+  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review" | "equity-curve" | "quant-vs-subjective" | "quant-strategy">("pnl-rank")
 
   // ── equity curve state ────────────────────────────────────────────────────
   type EquityPoint = { date: string; cumPnl: number }
@@ -367,9 +369,11 @@ export default function TraderAnalysisPage() {
       {/* tab bar */}
       <div className="flex gap-1 border-b border-border">
         {([
-          { key: "pnl-rank",       label: "盈亏排名" },
-          { key: "variety-review", label: "品种交易回顾" },
-          { key: "equity-curve",   label: "盘手收益曲线" },
+          { key: "pnl-rank",            label: "盈亏排名" },
+          { key: "variety-review",      label: "品种交易回顾" },
+          { key: "equity-curve",        label: "盘手收益曲线" },
+          { key: "quant-vs-subjective", label: "量化vs主观" },
+          { key: "quant-strategy",      label: "量化策略分析" },
         ] as const).map((tab) => (
           <button
             key={tab.key}
@@ -577,6 +581,16 @@ export default function TraderAnalysisPage() {
             height={480}
           />
         </div>
+      )}
+
+      {/* 量化vs主观 */}
+      {activeTab === "quant-vs-subjective" && (
+        <QuantVsSubjectiveCharts />
+      )}
+
+      {/* 量化策略分析 */}
+      {activeTab === "quant-strategy" && (
+        <QuantStrategyCharts />
       )}
 
       {/* 盈亏排名 */}

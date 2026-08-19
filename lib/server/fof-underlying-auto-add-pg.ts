@@ -12,6 +12,7 @@
 import { query } from "@/lib/db"
 import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
 import { SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF } from "@/lib/server/fund-holding-code"
+import { sqlStripValuationSubjectPathPrefix } from "@/lib/server/fund-name-match"
 
 export type FofUnderlyingAutoAddResult = {
   /** Rows added to fof_underlying_summary (新增到运维/投资 FOF底层汇总表) */
@@ -25,15 +26,7 @@ export type FofUnderlyingAutoAddResult = {
  * so catalog matching uses the real fund name.
  */
 function sqlCatalogFundName(col: string): string {
-  return `COALESCE(NULLIF(BTRIM(
-    CASE
-      WHEN ${col} LIKE '场外%' AND STRPOS(${col}, '.') > 0
-        THEN SUBSTRING(${col} FROM '([^.]+)$')
-      WHEN ${col} LIKE '场外%'
-        THEN REGEXP_REPLACE(${col}, '^场外[_/[:space:].]+', '')
-      ELSE ${col}
-    END
-  ), ''), ${col})`
+  return sqlStripValuationSubjectPathPrefix(col)
 }
 
 /**

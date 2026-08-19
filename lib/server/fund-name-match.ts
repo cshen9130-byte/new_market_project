@@ -3,6 +3,24 @@
  * (e.g. 木莲安澜1号A类 vs 木莲安澜1号私募证券投资基金A类).
  */
 
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
+
+/**
+ * Drop 估值表 subject-path prefixes so matching uses the real fund name.
+ * 场外_已上市_开放式_私募_成本.交睿宏观配置1号… → 交睿宏观配置1号…
+ */
+export function sqlStripValuationSubjectPathPrefix(nameExpr: string): string {
+  return `COALESCE(NULLIF(BTRIM(
+    CASE
+      WHEN ${nameExpr} LIKE '场外%' AND STRPOS(${nameExpr}, '.') > 0
+        THEN SUBSTRING(${nameExpr} FROM '([^.]+)$')
+      WHEN ${nameExpr} LIKE '场外%'
+        THEN REGEXP_REPLACE(${nameExpr}, '^场外[_/[:space:].]+', '')
+      ELSE ${nameExpr}
+    END
+  ), ''), ${nameExpr})`
+}
+
 /** Strip common fund suffixes and share-class suffix for fuzzy comparison. */
 export function sqlFundNameBase(nameExpr: string): string {
   return `NULLIF(regexp_replace(
@@ -28,11 +46,13 @@ export function sqlFundSerialMatchGuard(columnExpr: string, targetExpr: string):
 
 /** True when two fund name columns refer to the same product (flexible match). */
 export function sqlFundNameMatch(columnExpr: string, targetExpr: string): string {
-  const col = `BTRIM(${columnExpr})`
-  const tgt = `BTRIM(${targetExpr})`
-  const colBase = sqlFundNameBase(columnExpr)
-  const tgtBase = sqlFundNameBase(targetExpr)
-  const serialGuard = sqlFundSerialMatchGuard(columnExpr, targetExpr)
+  const colExpr = sqlStripValuationSubjectPathPrefix(columnExpr)
+  const tgtExpr = sqlStripValuationSubjectPathPrefix(targetExpr)
+  const col = `BTRIM(${colExpr})`
+  const tgt = `BTRIM(${tgtExpr})`
+  const colBase = sqlFundNameBase(colExpr)
+  const tgtBase = sqlFundNameBase(tgtExpr)
+  const serialGuard = sqlFundSerialMatchGuard(colExpr, tgtExpr)
   return `(
     ${col} <> '' AND ${tgt} <> '' AND (
       ${col} = ${tgt}
@@ -49,8 +69,8 @@ export function sqlFundNameMatch(columnExpr: string, targetExpr: string): string
 
 /** ORDER BY fragment: prefer exact / prefix matches over fuzzy base matches. */
 export function sqlFundNameMatchPriority(columnExpr: string, targetExpr: string): string {
-  const col = `BTRIM(${columnExpr})`
-  const tgt = `BTRIM(${targetExpr})`
+  const col = `BTRIM(${sqlStripValuationSubjectPathPrefix(columnExpr)})`
+  const tgt = `BTRIM(${sqlStripValuationSubjectPathPrefix(targetExpr)})`
   return `CASE
     WHEN ${col} = ${tgt} THEN 0
     WHEN ${col} ILIKE ${tgt} || '%' THEN 1
@@ -233,8 +253,10 @@ function jsFundSerialMatch(a: string, b: string): boolean {
 
 /** JS equivalent of sqlFundNameMatch with strict A/B/C share-class guard. */
 export function fundDisplayNamesMatch(columnName: string, targetName: string): boolean {
-  const a = String(columnName ?? "").trim()
-  const b = String(targetName ?? "").trim()
+  const aRaw = String(columnName ?? "").trim()
+  const bRaw = String(targetName ?? "").trim()
+  const a = stripValuationSubjectPathPrefix(aRaw) || aRaw
+  const b = stripValuationSubjectPathPrefix(bRaw) || bRaw
   if (!a || !b) return false
   if (!shareClassProductNamesMatch(a, b)) return false
 

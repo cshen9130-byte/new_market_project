@@ -6,6 +6,7 @@
 import { query } from "@/lib/db"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
 function compactSubjectCode(code: string | null | undefined): string {
   return String(code ?? "")
@@ -76,6 +77,7 @@ const FUND_NAME_CODE_OVERRIDES: Record<string, string> = {
   "棕榈滩泰来":                         "AVF39",
   "棕榈滩泰来三号":                     "BVC41",
   "乾上泉对冲一号":                     "ALF51",
+  "交睿宏观配置1号":                    "JX860B",
 }
 
 /** 估值表 subject code (often S-prefix / no share-class suffix) → canonical 备案号. */
@@ -93,6 +95,9 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   STA891A: "TA891A",
   SZG868: "ZG868A",
   SBTH74B: "BTH74B",
+  // 金舆锡泰一号 估值表 uses custodian ticker JRHG02 / JRHG02B for the same B类.
+  JRHG02: "JX860B",
+  JRHG02B: "JX860B",
 }
 
 export function resolveFofValuationCodeAlias(code: string | null | undefined): string | null {
@@ -416,7 +421,8 @@ export function listedFundCodeToTickers(code: string): string[] {
 }
 
 function normalizeFundNameForLookup(name: string): string {
-  return name
+  const stripped = stripValuationSubjectPathPrefix(name) || name
+  return stripped
     .replace(/私募证券投资基金|私募基金|证券投资基金|投资基金/g, "")
     .replace(/[ABC]类$/g, "")
     .trim()

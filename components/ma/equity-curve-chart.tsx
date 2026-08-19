@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { RefreshCw } from "lucide-react"
+import { FileDown, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface EquityPoint { date: string; cumPnl: number }
@@ -105,6 +105,8 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const [selectedBenchmark, setSelectedBenchmark] = useState("NHCI.NH")
   const [benchmarkData, setBenchmarkData] = useState<Array<{ date: string; close: number }>>([])  
   const [loadingBenchmark, setLoadingBenchmark] = useState(false)
+  const [profiling, setProfiling] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
 
   const load = useCallback(async (f: string, t: string) => {
     setLoading(true)
@@ -179,6 +181,38 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     }
     const partial = sortedAccounts.find(s => s.account.toLowerCase().includes(q))
     if (partial) setCompareAccount(partial.account)
+  }
+
+  const downloadProfile = async () => {
+    if (!selectedAccount || selectedAccount === "全部") {
+      setProfileError("请先选择一个账户")
+      return
+    }
+    setProfiling(true)
+    setProfileError(null)
+    try {
+      const params = new URLSearchParams({ account: selectedAccount })
+      if (from) params.set("from", from)
+      if (to) params.set("to", to)
+      const res = await fetch(`/ma/api/mom-analysis/trader-profile?${params}`)
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({} as { error?: string; detail?: string }))
+        throw new Error(json.error || json.detail || `生成失败（${res.status}）`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `${selectedAccount.toUpperCase()}_盘手侧写.docx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setProfileError(e instanceof Error ? e.message : "侧写报告生成失败")
+    } finally {
+      setProfiling(false)
+    }
   }
 
   const showAll = selectedAccount === "全部"
@@ -457,6 +491,16 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
                   <option key={s.account} value={s.account}>{s.account.toUpperCase()}</option>
                 ))}
               </select>
+              <button
+                type="button"
+                onClick={downloadProfile}
+                disabled={profiling || selectedAccount === "全部"}
+                title={selectedAccount === "全部" ? "请先选择单个账户" : "下载当前账户的盘手侧写 Word 报告"}
+                className="inline-flex items-center gap-1 rounded border border-input bg-background px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+              >
+                <FileDown className={`h-3.5 w-3.5 ${profiling ? "animate-pulse" : ""}`} />
+                {profiling ? "生成中…" : "盘手侧写"}
+              </button>
               {/* Quick ranges */}
               {QUICK_RANGES.map(r => {
                 const isActive = from === r.from() && to === r.to()
@@ -537,6 +581,12 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
               </>
             )}
           </div>
+          {profileError && (
+            <div className="text-xs text-destructive">{profileError}</div>
+          )}
+          {profiling && !profileError && (
+            <div className="text-xs text-muted-foreground">正在生成侧写报告，大约需要 20–40 秒…</div>
+          )}
         </div>
       </CardHeader>
       <CardContent className="px-4 pb-4 flex-1 min-h-0">

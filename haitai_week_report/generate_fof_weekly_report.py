@@ -707,9 +707,12 @@ def build_highlights(
     if we >= 0:
         line3 = f"• 市场环境：{benchmark_label}{period_name}{wb * 100:+.2f}%，"
         line4 = f"  策略跑赢基准{we * 100:.2f}个百分点，超额能力突出。"
-    else:
+    elif wb >= 0:
         line3 = f"• 市场环境：{benchmark_label}{period_name}强势+{wb * 100:.2f}%，"
         line4 = f"  产品低beta特征显现，稳健参与上涨，控制波动。"
+    else:
+        line3 = f"• 市场环境：{benchmark_label}{period_name}下跌{abs(wb) * 100:.2f}%，"
+        line4 = f"  产品回撤大于基准，继续控制波动。"
 
     line5 = f"• 运作情况：运作以来累计{tr * 100:+.2f}%，最大回撤"
     line6 = f"  {md * 100:.2f}%，强势股策略持续稳健运作。"

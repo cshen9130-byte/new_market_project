@@ -167,6 +167,12 @@ function custodyRowPriority(code: string, name: string): number {
   return 0
 }
 
+/** Parent 1002 银行存款 only — not 1002.01 活期 / 定期 sub-accounts. */
+function isParentBankDepositRow(code: string, name: string): boolean {
+  if (normalizeText(name) !== "银行存款") return false
+  return normalizeCode(code) === "1002"
+}
+
 function resolveCustodyBalance(rows: ValuationRow[]): number {
   // Policy: 托管账户余额 always comes from 活期存款 市值 when present.
   const demandRows = rows.filter((row) =>
@@ -208,8 +214,18 @@ function resolveCustodyBalance(rows: ValuationRow[]): number {
       bestValue = amount
     }
   }
+  if (bestValue > 0) return bestValue
 
-  return bestValue
+  // CMS omits 0 活期 sub-accounts; leftover cash stays on parent 1002 银行存款.
+  let parentBank = 0
+  for (const row of rows) {
+    const code = String(row.original_code ?? row.code ?? "")
+    const name = String(row.name ?? "")
+    if (!isParentBankDepositRow(code, name)) continue
+    const amount = pickRowMarketValue(row) || pickRowCost(row)
+    if (amount > parentBank) parentBank = amount
+  }
+  return parentBank
 }
 
 function resolvePaidInCapital(rows: ValuationRow[], netAssetValue: number, unitNav: number): number {
