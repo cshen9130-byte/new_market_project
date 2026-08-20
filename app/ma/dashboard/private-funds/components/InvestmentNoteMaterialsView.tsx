@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   CloudUpload,
   ExternalLink,
+  FileSearch,
   FileText,
   Loader2,
   Search,
@@ -25,9 +26,16 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
+import {
+  fundElementSourceKindLabel,
+  isFundElementExtractableFile,
+} from "@/lib/ma/fund-element-source-file"
 import type { InvestmentNote, InvestmentNoteMaterial } from "@/lib/ma/investment-notes"
 import {
+  INVESTMENT_NOTE_MATERIAL_MAX_BYTES,
+  INVESTMENT_NOTE_MATERIAL_MAX_MB,
   deleteInvestmentNoteMaterial,
+  extractInvestmentNoteMaterialElements,
   generateInvestmentNoteFromMaterials,
   investmentNoteDeepLink,
   linkInvestmentNoteMaterial,
@@ -36,6 +44,11 @@ import {
   openInvestmentNoteMaterial,
   uploadInvestmentNoteMaterial,
 } from "@/lib/ma/investment-notes"
+import {
+  InvestmentNoteElementExtractPanel,
+  parseExtractJob,
+  type InvestmentNoteExtractJob,
+} from "./InvestmentNoteElementExtractPanel"
 
 function formatBytes(size: number): string {
   if (!Number.isFinite(size) || size <= 0) return "0 B"
@@ -189,7 +202,20 @@ export function InvestmentNoteMaterialsView() {
   const [generating, setGenerating] = useState(false)
   const [panelMounted, setPanelMounted] = useState(false)
   const [panelCollapsed, setPanelCollapsed] = useState(false)
+  const [extractJobs, setExtractJobs] = useState<InvestmentNoteExtractJob[]>([])
+  const [extractingMaterialId, setExtractingMaterialId] = useState<string | null>(null)
   const userId = useMemo(() => currentUserId(), [])
+
+  function rememberExtractJob(raw: unknown) {
+    const job = parseExtractJob(raw)
+    if (!job) return
+    setExtractJobs((prev) => {
+      if (prev.some((item) => item.id === job.id)) {
+        return prev.map((item) => (item.id === job.id ? job : item))
+      }
+      return [job, ...prev]
+    })
+  }
 
   const reload = useCallback(async () => {
     try {
@@ -273,15 +299,38 @@ export function InvestmentNoteMaterialsView() {
   async function uploadFiles(files: FileList | File[]) {
     const list = Array.from(files)
     if (list.length === 0) return
+    const oversized = list.filter((file) => file.size > INVESTMENT_NOTE_MATERIAL_MAX_BYTES)
+    if (oversized.length > 0) {
+      toast({
+        title: "上传失败",
+        description: `单文件不超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB：${oversized.map((f) => f.name).join("、")}`,
+        variant: "destructive",
+      })
+      return
+    }
     setUploading(true)
     try {
+      const skipReasons: string[] = []
+      let extractQueued = 0
       for (const file of list) {
-        await uploadInvestmentNoteMaterial(file, defaultNoteId || null)
+        const result = await uploadInvestmentNoteMaterial(file, defaultNoteId || null)
+        rememberExtractJob(result.extractJob)
+        if (result.extractJob) extractQueued += 1
+        if (result.extractSkipReason) skipReasons.push(result.extractSkipReason)
       }
       toast({
         title: "上传成功",
-        description: `已上传 ${list.length} 个文件`,
+        description:
+          extractQueued > 0
+            ? `已上传 ${list.length} 个文件，其中 ${extractQueued} 个识别为一页通/要素表，正在提取产品要素`
+            : `已上传 ${list.length} 个文件`,
       })
+      if (skipReasons.length) {
+        toast({
+          title: "部分文件未自动提取",
+          description: skipReasons.join("；"),
+        })
+      }
       await reload()
     } catch (err) {
       toast({
@@ -370,6 +419,27 @@ export function InvestmentNoteMaterialsView() {
       next.delete(id)
       return next
     })
+  }
+
+  async function handleExtractElements(material: InvestmentNoteMaterial) {
+    if (extractingMaterialId) return
+    setExtractingMaterialId(material.id)
+    try {
+      const job = await extractInvestmentNoteMaterialElements(material.id)
+      rememberExtractJob(job)
+      toast({
+        title: "已开始提取产品要素",
+        description: material.name,
+      })
+    } catch (err) {
+      toast({
+        title: "提取失败",
+        description: err instanceof Error ? err.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setExtractingMaterialId(null)
+    }
   }
 
   async function handleDelete(material: InvestmentNoteMaterial) {
@@ -489,9 +559,11 @@ export function InvestmentNoteMaterialsView() {
             {uploading ? "正在上传..." : "拖拽文件到此处，或点击选择文件"}
           </div>
           <div className="text-xs text-zinc-400">
-            支持 PDF / Office / 图片 / TXT / CSV / ZIP，单文件不超过 50MB
+            支持 PDF / PPT / Word / Excel / 图片 / TXT / CSV / ZIP，单文件不超过 {INVESTMENT_NOTE_MATERIAL_MAX_MB}MB。识别到一页通、要素表、产品介绍时会自动提取产品要素。
           </div>
         </button>
+
+        <InvestmentNoteElementExtractPanel jobs={extractJobs} onJobsChange={setExtractJobs} />
       </div>
 
       {panelMounted && selectedCount > 0
@@ -592,13 +664,18 @@ export function InvestmentNoteMaterialsView() {
                 <th className="px-4 py-3 font-medium w-[120px]">大小</th>
                 <th className="px-4 py-3 font-medium w-[140px]">上传人</th>
                 <th className="px-4 py-3 font-medium w-[150px]">上传时间</th>
-                <th className="px-4 py-3 font-medium w-[80px]" />
+                <th className="px-4 py-3 font-medium w-[140px]" />
               </tr>
             </thead>
             <tbody>
               {filtered.map((material) => {
                 const canDelete = !material.uploadedBy || material.uploadedBy === userId
                 const checked = selectedIds.has(material.id)
+                const kindLabel = fundElementSourceKindLabel(material.name)
+                const canExtract = isFundElementExtractableFile({
+                  name: material.name,
+                  size: material.size,
+                })
                 return (
                   <tr
                     key={material.id}
@@ -615,22 +692,29 @@ export function InvestmentNoteMaterialsView() {
                       />
                     </td>
                     <td className="px-2 py-3">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void openInvestmentNoteMaterial(material.id).catch((err) => {
-                            toast({
-                              title: "打开失败",
-                              description: err instanceof Error ? err.message : "无法打开文件",
-                              variant: "destructive",
+                      <div className="flex min-w-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void openInvestmentNoteMaterial(material.id).catch((err) => {
+                              toast({
+                                title: "打开失败",
+                                description: err instanceof Error ? err.message : "无法打开文件",
+                                variant: "destructive",
+                              })
                             })
-                          })
-                        }}
-                        className="inline-flex max-w-full items-center gap-2 text-left text-sky-600 hover:underline"
-                      >
-                        <FileText className="h-4 w-4 shrink-0 text-zinc-400" />
-                        <span className="truncate">{material.name}</span>
-                      </button>
+                          }}
+                          className="inline-flex min-w-0 max-w-full items-center gap-2 text-left text-sky-600 hover:underline"
+                        >
+                          <FileText className="h-4 w-4 shrink-0 text-zinc-400" />
+                          <span className="truncate">{material.name}</span>
+                        </button>
+                        {kindLabel ? (
+                          <span className="shrink-0 rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600">
+                            {kindLabel}
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
@@ -663,16 +747,34 @@ export function InvestmentNoteMaterialsView() {
                     <td className="px-4 py-3 text-zinc-500">{material.uploadedByName || "-"}</td>
                     <td className="px-4 py-3 text-zinc-500">{formatDateTime(material.createdAt)}</td>
                     <td className="px-4 py-3 text-right">
-                      {canDelete ? (
-                        <button
-                          type="button"
-                          onClick={() => void handleDelete(material)}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-500"
-                          aria-label="删除"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      ) : null}
+                      <div className="inline-flex items-center justify-end gap-1">
+                        {canExtract ? (
+                          <button
+                            type="button"
+                            disabled={extractingMaterialId === material.id}
+                            onClick={() => void handleExtractElements(material)}
+                            className="inline-flex h-8 items-center gap-1 rounded px-2 text-xs text-zinc-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                            title="提取产品要素"
+                          >
+                            {extractingMaterialId === material.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <FileSearch className="h-3.5 w-3.5" />
+                            )}
+                            提取要素
+                          </button>
+                        ) : null}
+                        {canDelete ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleDelete(material)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-500"
+                            aria-label="删除"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 )

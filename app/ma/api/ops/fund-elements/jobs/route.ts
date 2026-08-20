@@ -31,9 +31,13 @@ export async function GET(req: Request) {
       ? (statusRaw as ExtractJobStatus)
       : "all"
     const q = (searchParams.get("q") || "").trim()
+    const ids = (searchParams.get("ids") || "")
+      .split(",")
+      .map((value) => parseInt(value, 10))
+      .filter((id) => Number.isFinite(id) && id > 0)
     const limit = parseInt(searchParams.get("limit") || "50", 10)
     const offset = parseInt(searchParams.get("offset") || "0", 10)
-    const result = await listElementExtractJobs({ status, q, limit, offset })
+    const result = await listElementExtractJobs({ status, q, ids, limit, offset })
     return NextResponse.json({ ok: true, ...result })
   } catch (err) {
     console.error("[ops/fund-elements/jobs GET]", err)

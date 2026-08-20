@@ -230,6 +230,7 @@ export async function createElementExtractJob(input: {
 export async function listElementExtractJobs(input?: {
   status?: ExtractJobStatus | "all"
   q?: string
+  ids?: number[]
   limit?: number
   offset?: number
 }): Promise<{ rows: ElementExtractJobRow[]; total: number }> {
@@ -241,6 +242,11 @@ export async function listElementExtractJobs(input?: {
   if (input?.status && input.status !== "all") {
     conditions.push(`status = $${i++}`)
     params.push(input.status)
+  }
+  const ids = (input?.ids ?? []).filter((id) => Number.isFinite(id) && id > 0)
+  if (ids.length) {
+    conditions.push(`id = ANY($${i++}::int[])`)
+    params.push(ids)
   }
   const q = input?.q?.trim()
   if (q) {

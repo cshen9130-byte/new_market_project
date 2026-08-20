@@ -2,6 +2,11 @@
 export const MAX_INVESTMENT_NOTE_CONTENT_CHARS = 10_000_000
 export const MAX_INVESTMENT_NOTE_TITLE_CHARS = 200
 
+/** Single-file cap for 投资笔记「上传资料」. */
+export const INVESTMENT_NOTE_MATERIAL_MAX_MB = 150
+export const INVESTMENT_NOTE_MATERIAL_MAX_BYTES =
+  INVESTMENT_NOTE_MATERIAL_MAX_MB * 1024 * 1024
+
 /**
  * Shrink pasted rich HTML (e.g. WeChat articles / Word) by dropping scripts,
  * classes, data-* attrs, and bulky inline styles while keeping structure,
@@ -777,10 +782,20 @@ export async function listInvestmentNoteMaterials(): Promise<InvestmentNoteMater
   return data.materials
 }
 
+export type InvestmentNoteMaterialUploadResult = {
+  material: InvestmentNoteMaterial
+  extractJob?: unknown | null
+  extractSkipReason?: string | null
+}
+
 export async function uploadInvestmentNoteMaterial(
   file: File,
   noteId?: string | null,
-): Promise<InvestmentNoteMaterial> {
+): Promise<InvestmentNoteMaterialUploadResult> {
+  if (file.size > INVESTMENT_NOTE_MATERIAL_MAX_BYTES) {
+    throw new Error(`文件大小不能超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB`)
+  }
+
   const form = new FormData()
   form.set("file", file)
   if (noteId) form.set("noteId", noteId)
@@ -793,10 +808,25 @@ export async function uploadInvestmentNoteMaterial(
     body: form,
   })
   const data = await res.json().catch(() => ({}))
+  if (res.status === 413) {
+    throw new Error(`文件过大，单文件不超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB`)
+  }
   if (!res.ok || data?.ok === false) {
     throw new Error(data?.error || res.statusText || "上传失败")
   }
-  return data.material as InvestmentNoteMaterial
+  return {
+    material: data.material as InvestmentNoteMaterial,
+    extractJob: data.extractJob ?? null,
+    extractSkipReason: data.extractSkipReason ?? null,
+  }
+}
+
+export async function extractInvestmentNoteMaterialElements(id: string): Promise<unknown> {
+  const data = await apiFetch<{ ok: true; extractJob: unknown }>(
+    `/ma/api/investment-notes/materials/${encodeURIComponent(id)}/extract-elements`,
+    { method: "POST", body: "{}" },
+  )
+  return data.extractJob
 }
 
 export async function linkInvestmentNoteMaterial(

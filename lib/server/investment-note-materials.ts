@@ -7,6 +7,7 @@ import { createHash } from "crypto"
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs"
 import { promises as fs } from "fs"
 import path from "path"
+import { INVESTMENT_NOTE_MATERIAL_MAX_BYTES, INVESTMENT_NOTE_MATERIAL_MAX_MB } from "@/lib/ma/investment-notes"
 import { getServerStoragePath } from "@/lib/server/storage"
 import { listServerInvestmentNotes } from "@/lib/server/investment-notes"
 
@@ -26,7 +27,7 @@ type StoredMaterial = InvestmentNoteMaterial & {
   storageFilename: string
 }
 
-const MAX_FILE_BYTES = 50 * 1024 * 1024
+const MAX_FILE_BYTES = INVESTMENT_NOTE_MATERIAL_MAX_BYTES
 const ALLOWED_EXTENSIONS = new Set([
   ".pdf",
   ".doc",
@@ -35,6 +36,13 @@ const ALLOWED_EXTENSIONS = new Set([
   ".xlsx",
   ".ppt",
   ".pptx",
+  ".pptm",
+  ".pps",
+  ".ppsx",
+  ".ppsm",
+  ".pot",
+  ".potx",
+  ".potm",
   ".png",
   ".jpg",
   ".jpeg",
@@ -46,6 +54,33 @@ const ALLOWED_EXTENSIONS = new Set([
   ".zip",
 ])
 
+const MIME_TO_EXTENSION: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/bmp": ".bmp",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.ms-powerpoint": ".ppt",
+  "application/mspowerpoint": ".ppt",
+  "application/powerpoint": ".ppt",
+  "application/x-mspowerpoint": ".ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+  "application/vnd.ms-powerpoint.presentation.macroenabled.12": ".pptm",
+  "application/vnd.openxmlformats-officedocument.presentationml.slideshow": ".ppsx",
+  "application/vnd.ms-powerpoint.slideshow.macroenabled.12": ".ppsm",
+  "application/vnd.openxmlformats-officedocument.presentationml.template": ".potx",
+  "application/vnd.ms-powerpoint.template.macroenabled.12": ".potm",
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "application/zip": ".zip",
+  "application/x-zip-compressed": ".zip",
+}
+
 function sanitizeFilename(name: string): string {
   return (
     name.replace(/[^\w\u4e00-\u9fff.\-()+（）\s]/g, "_").replace(/\s+/g, " ").trim() ||
@@ -55,6 +90,27 @@ function sanitizeFilename(name: string): string {
 
 function getExtension(filename: string): string {
   return path.extname(filename).toLowerCase()
+}
+
+function extensionForMime(mimeType?: string): string {
+  const key = (mimeType || "").trim().toLowerCase().split(";")[0]
+  return MIME_TO_EXTENSION[key] || ""
+}
+
+function resolveMaterialExtension(file: File): string {
+  const fromName = getExtension(file.name || "")
+  if (ALLOWED_EXTENSIONS.has(fromName)) return fromName
+  const fromMime = extensionForMime(file.type)
+  if (ALLOWED_EXTENSIONS.has(fromMime)) return fromMime
+  return fromName
+}
+
+function displayNameWithExtension(fileName: string, ext: string): string {
+  const sanitized = sanitizeFilename(fileName || "material.bin")
+  const currentExt = getExtension(sanitized)
+  if (currentExt === ext) return sanitized
+  const base = (currentExt ? sanitized.slice(0, -currentExt.length) : sanitized).replace(/\.+$/, "")
+  return `${base || "material"}${ext}`
 }
 
 function mimeTypeForFilename(fileName: string, fallback?: string): string {
@@ -73,6 +129,13 @@ function mimeTypeForFilename(fileName: string, fallback?: string): string {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+    ".pps": "application/vnd.ms-powerpoint",
+    ".ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+    ".ppsm": "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
+    ".pot": "application/vnd.ms-powerpoint",
+    ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template",
+    ".potm": "application/vnd.ms-powerpoint.template.macroEnabled.12",
     ".txt": "text/plain",
     ".csv": "text/csv",
     ".zip": "application/zip",
@@ -187,17 +250,17 @@ export async function saveInvestmentNoteMaterial(input: {
   uploadedByName: string
   noteId?: string | null
 }): Promise<InvestmentNoteMaterial> {
-  const originalFilename = sanitizeFilename(input.file.name || "material.bin")
-  const ext = getExtension(originalFilename)
+  const ext = resolveMaterialExtension(input.file)
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new Error(
-      "仅支持 PDF、Office、图片、TXT/CSV、ZIP 等常见格式",
+      "仅支持 PDF、PPT/PPTX、Word、Excel、图片、TXT/CSV、ZIP 等常见格式",
     )
   }
   if (input.file.size > MAX_FILE_BYTES) {
-    throw new Error("文件大小不能超过 50MB")
+    throw new Error(`文件大小不能超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB`)
   }
 
+  const originalFilename = displayNameWithExtension(input.file.name || "material.bin", ext)
   const link = resolveNoteForUser(input.noteId, input.uploadedBy)
   const buffer = Buffer.from(await input.file.arrayBuffer())
   const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
