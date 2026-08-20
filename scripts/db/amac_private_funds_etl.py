@@ -13,8 +13,8 @@ Usage:
     python scripts/db/amac_private_funds_etl.py --step amac_private_funds --dry-run
 
 Env:
-    AMAC_ETL_INCREMENTAL_MAX_PAGES   — max pages per incremental run (default 50)
-    AMAC_ETL_INCREMENTAL_MIN_PAGES   — minimum pages to refresh recent records (default 10)
+    AMAC_ETL_INCREMENTAL_MAX_PAGES   — max pages per incremental run (default 80)
+    AMAC_ETL_INCREMENTAL_MIN_PAGES   — minimum pages to refresh recent records (default 40)
     AMAC_ETL_FULL_SYNC_DOW           — day-of-week for automatic full sync, 0=Mon..6=Sun (default 6)
     AMAC_ETL_SYNC_PRIVATE_FUND_INFO  — sync new rows into private_fund_info (default 1)
 """
@@ -274,13 +274,13 @@ def run_etl(
     from psycopg2.extras import execute_values
 
     try:
-        incremental_max_pages = int(os.environ.get("AMAC_ETL_INCREMENTAL_MAX_PAGES", "50"))
+        incremental_max_pages = int(os.environ.get("AMAC_ETL_INCREMENTAL_MAX_PAGES", "80"))
     except ValueError:
-        incremental_max_pages = 50
+        incremental_max_pages = 80
     try:
-        incremental_min_pages = int(os.environ.get("AMAC_ETL_INCREMENTAL_MIN_PAGES", "10"))
+        incremental_min_pages = int(os.environ.get("AMAC_ETL_INCREMENTAL_MIN_PAGES", "40"))
     except ValueError:
-        incremental_min_pages = 10
+        incremental_min_pages = 40
     try:
         full_sync_dow = int(os.environ.get("AMAC_ETL_FULL_SYNC_DOW", "6"))
     except ValueError:
@@ -363,6 +363,11 @@ def run_etl(
                         execute_values(cur, UPSERT_SQL, batch, page_size=1000)
                         rows_upserted += len(batch)
                     pages_fetched += 1
+                    # Commit in chunks so a 40-minute full sync does not hold one
+                    # transaction (and table lock) for the entire run.
+                    if pages_fetched % 20 == 0:
+                        conn.commit()
+                        print(f"  committed {pages_fetched} page(s), upserted={rows_upserted:,}")
 
                     if (
                         mode == "incremental"
@@ -370,6 +375,8 @@ def run_etl(
                         and pages_fetched >= incremental_pages_limit
                     ):
                         break
+
+                conn.commit()
 
                 cur.execute("ANALYZE amac_private_funds")
                 db_after = _get_db_count(cur)

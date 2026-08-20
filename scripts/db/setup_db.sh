@@ -145,9 +145,15 @@ chmod +x "$NIGHTLY_LAUNCHER" "$MOM_LAUNCHER" 2>/dev/null || true
 touch "$FUTURES_LOG"
 chmod 644 "$FUTURES_LOG"
 
-CRON_CMD="$CRON_MIN $CRON_HOUR * * * $NIGHTLY_LAUNCHER >> $ETL_LOG 2>&1"
-MOM_CRON_CMD="$MOM_CRON_MIN $MOM_CRON_HOUR * * * $MOM_LAUNCHER >> $MOM_ETL_LOG 2>&1"
-FUTURES_CRON_CMD="15 3 * * * $NIGHTLY_LAUNCHER --group futures >> $FUTURES_LOG 2>&1"
+# Invoke via /bin/bash so a missing execute bit (git 100644 after Windows
+# deploy) cannot silently kill the 01:00 job with "Permission denied".
+CRON_CMD="$CRON_MIN $CRON_HOUR * * * /bin/bash $NIGHTLY_LAUNCHER >> $ETL_LOG 2>&1"
+MOM_CRON_CMD="$MOM_CRON_MIN $MOM_CRON_HOUR * * * /bin/bash $MOM_LAUNCHER >> $MOM_ETL_LOG 2>&1"
+FUTURES_CRON_CMD="15 3 * * * /bin/bash $NIGHTLY_LAUNCHER --group futures >> $FUTURES_LOG 2>&1"
+AMAC_LOG="${AMAC_ETL_LOG:-/var/log/market_amac_etl.log}"
+touch "$AMAC_LOG"
+chmod 644 "$AMAC_LOG"
+AMAC_CRON_CMD="45 4 * * * /bin/bash $NIGHTLY_LAUNCHER --group amac >> $AMAC_LOG 2>&1"
 
 EXISTING="$(crontab -l 2>/dev/null || true)"
 FILTERED="$(printf '%s\n' "$EXISTING" \
@@ -160,10 +166,12 @@ FILTERED="$(printf '%s\n' "$EXISTING" \
   printf '%s\n' "$FILTERED"
   printf '%s\n' "$CRON_CMD"
   printf '%s\n' "$FUTURES_CRON_CMD"
+  printf '%s\n' "$AMAC_CRON_CMD"
   printf '%s\n' "$MOM_CRON_CMD"
 } | crontab -
 echo "[setup_db] Cron job set: $CRON_CMD"
 echo "[setup_db] Futures/options cron job set: $FUTURES_CRON_CMD"
+echo "[setup_db] AMAC fund-list cron job set: $AMAC_CRON_CMD"
 echo "[setup_db] MOM cron job set: $MOM_CRON_CMD"
 
 # ---- Summary -----------------------------------------------------------
@@ -175,9 +183,10 @@ echo ""
 echo " Database : $DB_NAME"
 echo " User     : $DB_USER"
 echo " Port     : $DB_PORT"
-echo " Cron     : daily at ${CRON_HOUR}:$(printf '%02d' $CRON_MIN) -> $NIGHTLY_LAUNCHER"
-echo " Cron     : daily at 03:15 -> $NIGHTLY_LAUNCHER --group futures"
-echo " Cron     : daily at ${MOM_CRON_HOUR}:$(printf '%02d' $MOM_CRON_MIN) -> $MOM_LAUNCHER"
+echo " Cron     : daily at ${CRON_HOUR}:$(printf '%02d' $CRON_MIN) -> /bin/bash $NIGHTLY_LAUNCHER"
+echo " Cron     : daily at 03:15 -> /bin/bash $NIGHTLY_LAUNCHER --group futures"
+echo " Cron     : daily at 04:45 -> /bin/bash $NIGHTLY_LAUNCHER --group amac"
+echo " Cron     : daily at ${MOM_CRON_HOUR}:$(printf '%02d' $MOM_CRON_MIN) -> /bin/bash $MOM_LAUNCHER"
 echo " Log      : $ETL_LOG"
 echo " Log      : $FUTURES_LOG"
 echo " Log      : $MOM_ETL_LOG"

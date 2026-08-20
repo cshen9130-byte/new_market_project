@@ -29,6 +29,20 @@ export async function registerBackgroundJobs(): Promise<void> {
     })()
   })
 
+  // Daily at 04:45: AMAC private-fund list → amac_private_funds + private_fund_info.
+  // Independent of the 01:00 full linux cron so newly filed products stay searchable
+  // even when that launcher is missing +x / a vanished .venv / hung later steps.
+  cron.schedule("45 4 * * *", () => {
+    void (async () => {
+      try {
+        const { runScheduledAmacPrivateFundsEtl } = await import("./amac-private-funds-etl-job")
+        runScheduledAmacPrivateFundsEtl()
+      } catch (e) {
+        console.error("[amac-private-funds-etl] scheduler error:", e)
+      }
+    })()
+  })
+
   // Daily at 03:00: refresh stock-market chart data (A-share crowding, board share, top stocks).
   // Runs after macro ETL; ashare_daily incremental uses fast spot mode once caught up.
   cron.schedule("0 3 * * *", () => {

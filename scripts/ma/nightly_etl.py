@@ -16,14 +16,15 @@ Usage
   python scripts/ma/nightly_etl.py --step dd_materials_links
   python scripts/ma/nightly_etl.py --group macro   # macro-market charts only
   python scripts/ma/nightly_etl.py --group stock   # stock-market charts only (A-share crowding)
+  python scripts/ma/nightly_etl.py --group amac    # AMAC fund list → amac_private_funds + private_fund_info
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
   EMAIL_NAV_ETL_DAYS                    — explicit backfill lookback when --days=N is passed (default 400)
   EMAIL_NAV_ETL_INITIAL_DAYS            — first-time mailbox scan window (default 400)
   EMAIL_NAV_ETL_OVERLAP_DAYS            — incremental scan overlap before last parsed mail (default 2)
-  AMAC_ETL_INCREMENTAL_MAX_PAGES        — AMAC nightly incremental page cap (default 50)
-  AMAC_ETL_INCREMENTAL_MIN_PAGES        — minimum AMAC pages refreshed nightly (default 10)
+  AMAC_ETL_INCREMENTAL_MAX_PAGES        — AMAC nightly incremental page cap (default 80)
+  AMAC_ETL_INCREMENTAL_MIN_PAGES        — minimum AMAC pages refreshed nightly (default 40)
   AMAC_ETL_FULL_SYNC_DOW                — weekday for weekly full AMAC sync, 0=Mon..6=Sun (default 6)
   AMAC_EXTRA_ETL_DETAIL_BATCH_SIZE      — nightly stale manager-detail refresh batch (default 300)
   AMAC_EXTRA_ETL_REQUEST_DELAY          — delay between AMAC extra requests (default 0.3)
@@ -117,11 +118,20 @@ PCA_ETF_TICKERS = [
 ]
 
 
+def _python_path_ok(exe: str) -> bool:
+    if exe in ("py", "python", "python3"):
+        return True
+    try:
+        return Path(exe).is_file()
+    except OSError:
+        return False
+
+
 def _resolve_python_exe() -> str:
     """Resolve interpreter for child scripts.
 
     Prefer, in order:
-      1. Explicit PYTHON_EXE path
+      1. Explicit PYTHON_EXE path (if the file still exists)
       2. The interpreter currently running this ETL (sys.executable)
       3. Project .venv
       4. Platform default
@@ -133,10 +143,12 @@ def _resolve_python_exe() -> str:
     """
     env_exe = (os.environ.get("PYTHON_EXE") or "").strip()
     if env_exe and env_exe not in ("py", "python", "python3"):
-        return env_exe
+        if _python_path_ok(env_exe):
+            return env_exe
+        log.warning("PYTHON_EXE=%s is missing; falling back", env_exe)
 
     # Same interpreter that is already running nightly_etl.py (has working deps).
-    if sys.executable:
+    if sys.executable and _python_path_ok(sys.executable):
         return sys.executable
 
     if sys.platform == "win32":
@@ -155,9 +167,15 @@ def _resolve_python_exe() -> str:
         if cand.is_file():
             return str(cand)
 
-    if env_exe:
+    if env_exe and env_exe in ("py", "python", "python3"):
         return env_exe
     return "py" if sys.platform == "win32" else "python3"
+
+
+def _python_cmd(*args: str) -> list[str]:
+    python_exe = _resolve_python_exe()
+    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
+    return prefix + [str(a) for a in args]
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
@@ -4679,13 +4697,7 @@ def step_amac_extra(force_full: bool = False) -> int:
     """Fetch AMAC manager/personnel data and upsert amac_* extra tables."""
     project_root = SCRIPT_DIR.parent.parent
     script_path = project_root / "scripts" / "db" / "amac_extra_etl.py"
-    python_exe = os.environ.get("PYTHON_EXE") or (
-        "py" if sys.platform == "win32" else "python3"
-    )
-    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
-    cmd = prefix + [str(script_path)]
-    if force_full:
-        cmd.append("--full")
+    cmd = _python_cmd(str(script_path), *(["--full"] if force_full else []))
 
     try:
         full_sync_dow = int(os.environ.get("AMAC_ETL_FULL_SYNC_DOW", "6"))
@@ -4802,11 +4814,7 @@ def step_sync_amac_fund_metadata() -> int:
     """Sync 备案日期 / 公司管理规模 from amac_* tables into basicinfo_bfl_track."""
     project_root = SCRIPT_DIR.parent.parent
     script_path = project_root / "scripts" / "db" / "sync_amac_fund_metadata.py"
-    python_exe = os.environ.get("PYTHON_EXE") or (
-        "py" if sys.platform == "win32" else "python3"
-    )
-    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
-    cmd = prefix + [str(script_path), "--backfill-rows"]
+    cmd = _python_cmd(str(script_path), "--backfill-rows")
 
     log.info("sync_amac_fund_metadata: running sync_amac_fund_metadata.py …")
     result = subprocess.run(
@@ -4856,13 +4864,7 @@ def step_amac_private_funds(force_full: bool = False) -> int:
     """Fetch AMAC private fund list and upsert amac_private_funds (+ new private_fund_info rows)."""
     project_root = SCRIPT_DIR.parent.parent
     script_path = project_root / "scripts" / "db" / "amac_private_funds_etl.py"
-    python_exe = os.environ.get("PYTHON_EXE") or (
-        "py" if sys.platform == "win32" else "python3"
-    )
-    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
-    cmd = prefix + [str(script_path)]
-    if force_full:
-        cmd.append("--full")
+    cmd = _python_cmd(str(script_path), *(["--full"] if force_full else []))
 
     try:
         full_sync_dow = int(os.environ.get("AMAC_ETL_FULL_SYNC_DOW", "6"))
@@ -4964,6 +4966,14 @@ MACRO_STEPS = [
     "regime_similarity",
     "shibor_3m",
     "money_credit",
+]
+
+# AMAC fund-list sync. Scheduled separately so a broken 01:00 full nightly
+# (missing +x on the launcher, vanished venv, hung option_iv, etc.) cannot
+# stall private-fund search for newly filed products.
+AMAC_STEPS = [
+    "amac_private_funds",
+    "sync_amac_fund_metadata",
 ]
 
 # Chart-critical 期货/期权 steps. Scheduled separately so a broken 01:00 full
@@ -5106,8 +5116,8 @@ def main():
     parser.add_argument("--step", choices=ORDERED_STEPS, help="Run a single step only")
     parser.add_argument(
         "--group",
-        choices=["macro", "stock", "futures"],
-        help="Run a predefined step group (macro / stock / futures+options charts)",
+        choices=["macro", "stock", "futures", "amac"],
+        help="Run a predefined step group (macro / stock / futures+options / AMAC funds)",
     )
     parser.add_argument("--backfill", action="store_true", help="Force full history reload")
     parser.add_argument("--force", action="store_true", help="Re-fetch even if data already in DB")
@@ -5211,6 +5221,9 @@ def main():
     elif args.group == "futures":
         steps_to_run = FUTURES_STEPS
         log.info("Running futures/options step group (%d steps)", len(steps_to_run))
+    elif args.group == "amac":
+        steps_to_run = AMAC_STEPS
+        log.info("Running AMAC fund-list step group (%d steps)", len(steps_to_run))
     else:
         steps_to_run = ORDERED_STEPS
     errors = []
