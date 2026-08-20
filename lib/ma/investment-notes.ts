@@ -10,6 +10,29 @@ export const INVESTMENT_NOTE_MATERIAL_MAX_BYTES =
 const MATERIAL_CHUNK_THRESHOLD_BYTES = 4 * 1024 * 1024
 const MATERIAL_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
 
+/** UUID without crypto.randomUUID() — that API is missing on plain HTTP (8.154.33.143). */
+function createMaterialUploadSessionId(): string {
+  if (typeof globalThis !== "undefined" && globalThis.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16)
+    globalThis.crypto.getRandomValues(bytes)
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
+    return [
+      hex.slice(0, 4).join(""),
+      hex.slice(4, 6).join(""),
+      hex.slice(6, 8).join(""),
+      hex.slice(8, 10).join(""),
+      hex.slice(10, 16).join(""),
+    ].join("-")
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+    const r = Math.floor(Math.random() * 16)
+    const v = ch === "x" ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
+
 /**
  * Shrink pasted rich HTML (e.g. WeChat articles / Word) by dropping scripts,
  * classes, data-* attrs, and bulky inline styles while keeping structure,
@@ -841,7 +864,7 @@ async function uploadMaterialInChunks(
   noteId?: string | null,
 ): Promise<Record<string, any>> {
   const totalChunks = Math.max(1, Math.ceil(file.size / MATERIAL_CHUNK_SIZE_BYTES))
-  const sessionId = crypto.randomUUID()
+  const sessionId = createMaterialUploadSessionId()
   let last: Record<string, any> = {}
 
   for (let i = 0; i < totalChunks; i++) {
