@@ -77,7 +77,10 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
 
   const series = useMemo(() => {
     if (!days) return []
-    const spotTimes = [...(spot?.bars || [])].sort((a, b) => a.time - b.time)
+    const sessionDay = candles.length ? shanghaiDayKey(candles[candles.length - 1].time) : null
+    const spotTimes = [...(spot?.bars || [])]
+      .filter((bar) => !sessionDay || shanghaiDayKey(bar.time) === sessionDay)
+      .sort((a, b) => a.time - b.time)
     if (!spotTimes.length && lastSpot == null) return []
     const spotByTime = new Map(spotTimes.map((bar) => [bar.time, bar.close]))
     let lastKnown: number | null = null
@@ -85,6 +88,7 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
     let si = 0
     const points: { time: number; value: number }[] = []
     for (const candle of candles) {
+      if (sessionDay && shanghaiDayKey(candle.time) !== sessionDay) continue
       while (si < spotTimes.length && spotTimes[si].time <= candle.time) {
         lastKnown = spotTimes[si].close
         lastKnownTime = spotTimes[si].time

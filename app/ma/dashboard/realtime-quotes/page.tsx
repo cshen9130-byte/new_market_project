@@ -14,6 +14,7 @@ import {
   type CtpCandle,
   type CtpTick,
   contractsForProduct,
+  mergeCandleSeries,
   pickMostActiveContract,
 } from "@/lib/client/ctp-market"
 import { cn } from "@/lib/utils"
@@ -35,7 +36,7 @@ export default function RealtimeQuotesPage() {
   const candles = useMemo(() => {
     const next: Record<string, CtpCandle[]> = { ...cffex.candles }
     for (const [symbol, rows] of Object.entries(ctp.candles)) {
-      if (rows.length) next[symbol] = rows
+      next[symbol] = mergeCandleSeries(next[symbol], rows)
     }
     return next
   }, [ctp.candles, cffex.candles])

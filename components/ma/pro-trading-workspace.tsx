@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Maximize2, Minimize2 } from "lucide-react"
 
@@ -56,11 +56,17 @@ export function ProTradingWorkspace({
 
   useEffect(() => setMounted(true), [])
 
+  const openedRef = useRef(false)
   useEffect(() => {
-    if (!open) return
-    const next = initialSymbol || ""
-    setSymbol(next)
-    setQuery(next)
+    if (!open) {
+      openedRef.current = false
+      return
+    }
+    if (openedRef.current) return
+    if (!initialSymbol) return
+    openedRef.current = true
+    setSymbol(initialSymbol)
+    setQuery(initialSymbol)
   }, [open, initialSymbol])
 
   useEffect(() => {
@@ -79,7 +85,8 @@ export function ProTradingWorkspace({
 
   const product = productOfSymbol(symbol)
   const quote = quotes[symbol]
-  const { candles: tfCandles } = useSymbolKline(symbol || null, interval, candles[symbol] || [], quote)
+  const live1m = candles[symbol] || []
+  const { candles: tfCandles } = useSymbolKline(symbol || null, interval, live1m, quote)
   const meta = INDEX_FUTURES.find((item) => item.product === product)
   const last = quote?.last ?? candles[symbol]?.at(-1)?.close ?? null
   const base = quote?.pre_settlement || quote?.pre_close || null
@@ -176,7 +183,7 @@ export function ProTradingWorkspace({
                     title={meta?.name || product}
                     product={product}
                     symbol={symbol}
-                    candles={candles[symbol] || []}
+                    candles={interval === "1m" ? tfCandles : live1m}
                     quote={quote}
                     spot={spots[product]}
                   />

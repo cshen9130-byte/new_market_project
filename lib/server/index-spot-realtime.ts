@@ -55,6 +55,7 @@ async function fetchMinBars(sina: string) {
 
 let inflight: Promise<Record<IndexProduct, SpotSnapshot>> | null = null
 let cached: { at: number; data: Record<IndexProduct, SpotSnapshot> } | null = null
+const lastGoodBars = new Map<IndexProduct, SpotSnapshot["bars"]>()
 const TTL_MS = 2000
 
 export async function getIndexSpotRealtime() {
@@ -75,10 +76,15 @@ export async function getIndexSpotRealtime() {
           bars = []
         }
         const lastBar = bars.at(-1)
-        const price = quote?.last ?? lastBar?.close ?? null
+        const price = quote?.last ?? lastBar?.close ?? lastGoodBars.get(item.product)?.at(-1)?.close ?? null
         const preClose = quote?.preClose ?? null
         const change = price != null && preClose != null ? price - preClose : null
         const pct = change != null && preClose ? (change / preClose) * 100 : null
+        if (bars.length >= 8) lastGoodBars.set(item.product, bars)
+        else {
+          const kept = lastGoodBars.get(item.product)
+          if (kept?.length) bars = kept.slice()
+        }
         if (quote?.date && quote.time && price != null) {
           const time = chinaWallToUnix(`${quote.date} ${quote.time.slice(0, 5)}`)
           if (time != null) {

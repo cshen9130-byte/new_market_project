@@ -58,3 +58,54 @@ export type LiveOverlayResponse = {
 }
 
 export const INDEX_PRODUCTS = INDEX_FUTURES.map((item) => item.product)
+
+function barSpan(bars: OverlayPoint[]) {
+  if (bars.length < 2) return 0
+  return bars[bars.length - 1].time - bars[0].time
+}
+
+export function isDailyOverlayBars(bars: OverlayPoint[], source?: string | null) {
+  return !!source?.startsWith("db:") || !!source?.startsWith("optbbs-pre:") || barSpan(bars) > 36 * 3600
+}
+
+function unionOverlayBars(prev: OverlayPoint[], incoming: OverlayPoint[]) {
+  const map = new Map<number, OverlayPoint>()
+  for (const bar of prev) map.set(bar.time, bar)
+  for (const bar of incoming) map.set(bar.time, bar)
+  return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+/** Keep last good minute series when a poll returns empty, short, or daily fallback. */
+export function stabilizeOverlay(
+  prev: LiveOverlayResponse | null,
+  next: LiveOverlayResponse,
+): LiveOverlayResponse {
+  if (!prev) return next
+  const spots = { ...(next.spots || {}) }
+  const iv = { ...(next.iv || {}) }
+  for (const product of INDEX_PRODUCTS) {
+    const prevSpot = prev.spots?.[product]
+    const nextSpot = spots[product]
+    if (prevSpot?.bars?.length && nextSpot) {
+      if ((nextSpot.bars?.length || 0) < 8) {
+        spots[product] = { ...nextSpot, bars: prevSpot.bars }
+      } else if (prevSpot.bars.length > nextSpot.bars.length * 1.4) {
+        spots[product] = { ...nextSpot, bars: unionOverlayBars(prevSpot.bars, nextSpot.bars) }
+      }
+    }
+    const prevIv = prev.iv?.[product]
+    const nextIv = iv[product]
+    if (prevIv?.bars?.length && nextIv) {
+      const prevIntraday = !isDailyOverlayBars(prevIv.bars, prevIv.source)
+      const nextDaily = isDailyOverlayBars(nextIv.bars, nextIv.source)
+      if (prevIntraday && nextDaily) {
+        iv[product] = { ...prevIv, value: prevIv.value, change: prevIv.change, pct: prevIv.pct }
+      } else if (prevIntraday && (nextIv.bars?.length || 0) < 8) {
+        iv[product] = { ...nextIv, bars: prevIv.bars, source: prevIv.source }
+      } else if (prevIntraday && prevIv.bars.length > (nextIv.bars?.length || 0) * 1.4) {
+        iv[product] = { ...nextIv, bars: unionOverlayBars(prevIv.bars, nextIv.bars), source: nextIv.source || prevIv.source }
+      }
+    }
+  }
+  return { ...next, spots, iv }
+}

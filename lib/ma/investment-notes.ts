@@ -6,6 +6,9 @@ export const MAX_INVESTMENT_NOTE_TITLE_CHARS = 200
 export const INVESTMENT_NOTE_MATERIAL_MAX_MB = 150
 export const INVESTMENT_NOTE_MATERIAL_MAX_BYTES =
   INVESTMENT_NOTE_MATERIAL_MAX_MB * 1024 * 1024
+/** Split large PPT/Office files so each request stays under Next.js/nginx body limits. */
+const MATERIAL_CHUNK_THRESHOLD_BYTES = 4 * 1024 * 1024
+const MATERIAL_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
 
 /**
  * Shrink pasted rich HTML (e.g. WeChat articles / Word) by dropping scripts,
@@ -788,18 +791,7 @@ export type InvestmentNoteMaterialUploadResult = {
   extractSkipReason?: string | null
 }
 
-export async function uploadInvestmentNoteMaterial(
-  file: File,
-  noteId?: string | null,
-): Promise<InvestmentNoteMaterialUploadResult> {
-  if (file.size > INVESTMENT_NOTE_MATERIAL_MAX_BYTES) {
-    throw new Error(`文件大小不能超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB`)
-  }
-
-  const form = new FormData()
-  form.set("file", file)
-  if (noteId) form.set("noteId", noteId)
-
+async function postMaterialForm(form: FormData): Promise<Record<string, any>> {
   const res = await fetch("/ma/api/investment-notes/materials", {
     method: "POST",
     headers: {
@@ -809,16 +801,70 @@ export async function uploadInvestmentNoteMaterial(
   })
   const data = await res.json().catch(() => ({}))
   if (res.status === 413) {
-    throw new Error(`文件过大，单文件不超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB`)
+    throw new Error(`上传被网关拦截（413），请稍后重试或联系管理员检查 nginx 请求体限制`)
   }
   if (!res.ok || data?.ok === false) {
     throw new Error(data?.error || res.statusText || "上传失败")
   }
+  return data
+}
+
+export async function uploadInvestmentNoteMaterial(
+  file: File,
+  noteId?: string | null,
+): Promise<InvestmentNoteMaterialUploadResult> {
+  if (file.size > INVESTMENT_NOTE_MATERIAL_MAX_BYTES) {
+    throw new Error(`文件大小不能超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB`)
+  }
+
+  const data =
+    file.size > MATERIAL_CHUNK_THRESHOLD_BYTES
+      ? await uploadMaterialInChunks(file, noteId)
+      : await postMaterialForm(buildMaterialForm(file, noteId))
+
   return {
     material: data.material as InvestmentNoteMaterial,
     extractJob: data.extractJob ?? null,
     extractSkipReason: data.extractSkipReason ?? null,
   }
+}
+
+function buildMaterialForm(file: File, noteId?: string | null): FormData {
+  const form = new FormData()
+  form.set("file", file)
+  if (noteId) form.set("noteId", noteId)
+  return form
+}
+
+async function uploadMaterialInChunks(
+  file: File,
+  noteId?: string | null,
+): Promise<Record<string, any>> {
+  const totalChunks = Math.max(1, Math.ceil(file.size / MATERIAL_CHUNK_SIZE_BYTES))
+  const sessionId = crypto.randomUUID()
+  let last: Record<string, any> = {}
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * MATERIAL_CHUNK_SIZE_BYTES
+    const end = Math.min(start + MATERIAL_CHUNK_SIZE_BYTES, file.size)
+    const chunk = new File([file.slice(start, end)], file.name, {
+      type: file.type || "application/octet-stream",
+    })
+    const form = new FormData()
+    form.set("file", chunk)
+    form.set("chunkSessionId", sessionId)
+    form.set("chunkIndex", String(i))
+    form.set("totalChunks", String(totalChunks))
+    form.set("originalFileName", file.name)
+    form.set("originalFileSize", String(file.size))
+    if (noteId) form.set("noteId", noteId)
+    last = await postMaterialForm(form)
+  }
+
+  if (!last?.material) {
+    throw new Error("上传失败：服务器未返回文件信息")
+  }
+  return last
 }
 
 export async function extractInvestmentNoteMaterialElements(id: string): Promise<unknown> {

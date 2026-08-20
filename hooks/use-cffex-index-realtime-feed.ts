@@ -6,6 +6,7 @@ import {
   INDEX_FUTURES,
   type CtpCandle,
   type CtpTick,
+  mergeCandleSeries,
 } from "@/lib/client/ctp-market"
 
 type ProductRow = {
@@ -54,7 +55,16 @@ export function useCffexIndexRealtimeFeed() {
           nextCandles[row.symbol] = row.candles
         }
         setQuotes(nextQuotes)
-        setCandles(nextCandles)
+        setCandles((prev) => {
+          const merged = { ...nextCandles }
+          for (const [symbol, rows] of Object.entries(merged)) {
+            const old = prev[symbol]
+            if (old?.length >= 16 && rows.length < old.length * 0.6) {
+              merged[symbol] = mergeCandleSeries(old, rows)
+            }
+          }
+          return merged
+        })
         setSymbols(nextSymbols)
         setSource(json.source || "sina")
         const times = (json.products || []).map((row) => row.quote.update_time).filter(Boolean)

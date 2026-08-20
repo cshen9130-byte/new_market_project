@@ -6,6 +6,7 @@ import {
   type CtpCandle,
   type CtpStatus,
   type CtpTick,
+  mergeCandleSeries,
   upsertCandle,
 } from "@/lib/client/ctp-market"
 
@@ -86,7 +87,7 @@ export function useCtpIndexFuturesFeed() {
       const history = bars.candles || {}
       const merged = { ...candlesRef.current }
       for (const [symbol, rows] of Object.entries(history)) {
-        merged[symbol] = rows
+        merged[symbol] = mergeCandleSeries(merged[symbol], rows)
       }
       candlesRef.current = merged
       setCandles(merged)

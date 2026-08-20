@@ -104,6 +104,17 @@ export function upsertCandle(history: CtpCandle[] | undefined, candle: CtpCandle
   return rows
 }
 
+/** Union two series by timestamp. Never drop bars the other side still has. */
+export function mergeCandleSeries(prev: CtpCandle[] | undefined, incoming: CtpCandle[] | undefined): CtpCandle[] {
+  if (!incoming?.length) return prev?.length ? prev : []
+  if (!prev?.length) return incoming
+  const map = new Map<number, CtpCandle>()
+  for (const bar of prev) map.set(bar.time, bar)
+  for (const bar of incoming) map.set(bar.time, bar)
+  const out = [...map.values()].sort((a, b) => a.time - b.time)
+  return out.length > 1500 ? out.slice(out.length - 1500) : out
+}
+
 export function formatBarTime(unix: number) {
   const d = new Date(unix * 1000)
   const pad = (n: number) => String(n).padStart(2, "0")

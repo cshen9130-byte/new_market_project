@@ -275,14 +275,30 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
 
 let inflight: Promise<Record<IndexProduct, IvSnapshot>> | null = null
 let cached: { at: number; data: Record<IndexProduct, IvSnapshot> } | null = null
+const lastGoodMinute = new Map<IndexProduct, { at: number; snap: IvSnapshot }>()
 const TTL_MS = 3000
+const KEEP_MINUTE_MS = 120_000
+
+function isMinuteIv(snap: IvSnapshot) {
+  return !!snap.source && (snap.source.startsWith("optbbs:") || snap.source === "sina") && snap.bars.length >= 8
+}
 
 export async function getQvixRealtime() {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.data
   if (inflight) return inflight
   inflight = (async () => {
     const rows = await Promise.all(INDEX_FUTURES.map((item) => loadIv(item.product)))
-    return Object.fromEntries(rows.map((row) => [row.product, row])) as Record<IndexProduct, IvSnapshot>
+    const now = Date.now()
+    const sticky = rows.map((row) => {
+      if (isMinuteIv(row)) {
+        lastGoodMinute.set(row.product, { at: now, snap: row })
+        return row
+      }
+      const kept = lastGoodMinute.get(row.product)
+      if (kept && now - kept.at < KEEP_MINUTE_MS) return kept.snap
+      return row
+    })
+    return Object.fromEntries(sticky.map((row) => [row.product, row])) as Record<IndexProduct, IvSnapshot>
   })().finally(() => {
     inflight = null
   })

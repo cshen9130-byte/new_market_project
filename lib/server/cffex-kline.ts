@@ -210,6 +210,7 @@ export async function getCffexKline(symbol: string, interval: TimeframeId) {
   }
 
   data = sortUnique(data)
-  cache.set(key, { at: Date.now(), data })
+  if (data.length >= 8 || !hit?.data.length) cache.set(key, { at: Date.now(), data })
+  else data = hit.data
   return data
 }

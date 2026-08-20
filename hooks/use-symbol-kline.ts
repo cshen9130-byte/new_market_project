@@ -24,10 +24,18 @@ export function useSymbolKline(symbol: string | null, interval: TimeframeId, liv
         )
         const json = (await res.json()) as { ok?: boolean; error?: string; candles?: CtpCandle[] }
         if (!res.ok || json.ok === false) throw new Error(json.error || `请求失败 ${res.status}`)
-        if (!cancelled) {
-          setHistory(json.candles || [])
-          setError(null)
-        }
+        if (cancelled) return
+        const incoming = json.candles || []
+        setHistory((prev) => {
+          if (!incoming.length) return prev
+          // Sina min-line sometimes returns only the current session (e.g. afternoon).
+          // Keep the longer series so the chart does not collapse to a handful of bars.
+          if (prev.length >= 16 && incoming.length < prev.length * 0.6) {
+            return mergeHistoryAndLive(prev, incoming, interval)
+          }
+          return incoming
+        })
+        setError(null)
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "K线获取失败")
       }

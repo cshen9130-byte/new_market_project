@@ -79,15 +79,14 @@ class MinuteAggregator:
         volume = max(int(cum_volume or 0), 0)
 
         with self._lock:
-            prev_cum = self._last_cum_volume.get(symbol)
-            delta = 0 if prev_cum is None else max(volume - prev_cum, 0)
-            self._last_cum_volume[symbol] = volume
-
             current = self._current.get(symbol)
             history = self._history.setdefault(symbol, [])
             if current is not None and t < current.time:
-                history.clear()
-                current = None
+                return None
+
+            prev_cum = self._last_cum_volume.get(symbol)
+            delta = 0 if prev_cum is None else max(volume - prev_cum, 0)
+            self._last_cum_volume[symbol] = volume
             if current is None or current.time != t:
                 candle = Candle(t, price, price, price, price, float(delta))
                 if history and history[-1].time == t:

@@ -83,12 +83,21 @@ type Props = {
   onTool: (id: string) => void
 }
 
+type AppliedSeries = { first: number; last: number; len: number }
+
 export function KlineProChart({ symbol, interval, candles, activeTool, onTool }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<Chart | null>(null)
   const candlesRef = useRef(candles)
+  const symbolRef = useRef(symbol)
+  const intervalRef = useRef(interval)
   const subRef = useRef<((bar: KLineData) => void) | null>(null)
+  const appliedRef = useRef<AppliedSeries | null>(null)
+  const appliedSymbolRef = useRef<string | null>(null)
+  const appliedIntervalRef = useRef<TimeframeId | null>(null)
   candlesRef.current = candles
+  symbolRef.current = symbol
+  intervalRef.current = interval
 
   useEffect(() => {
     const el = hostRef.current
@@ -106,10 +115,28 @@ export function KlineProChart({ symbol, interval, candles, activeTool, onTool }:
       })
       if (!chart) return
       chartRef.current = chart
-      chart.setPeriod(klinePeriod(interval))
+      chart.setPeriod(klinePeriod(intervalRef.current))
       chart.setDataLoader({
-        getBars: ({ callback }) => {
-          callback(candlesRef.current.map(toBar))
+        getBars: (params: {
+          type?: string
+          timestamp?: number | null
+          callback: (data: KLineData[], more?: boolean) => void
+        }) => {
+          const { type, timestamp, callback } = params
+          const bars = candlesRef.current.map(toBar)
+          // Always tell the chart this in-memory series is complete. Returning the
+          // full list on `forward` prepends duplicates and leaves a blank left gap.
+          if (type === "forward") {
+            const older = timestamp != null ? bars.filter((bar) => bar.timestamp < timestamp) : []
+            callback(older, false)
+            return
+          }
+          if (type === "backward") {
+            const newer = timestamp != null ? bars.filter((bar) => bar.timestamp > timestamp) : []
+            callback(newer, false)
+            return
+          }
+          callback(bars, false)
         },
         subscribeBar: ({ callback }) => {
           subRef.current = callback
@@ -118,7 +145,9 @@ export function KlineProChart({ symbol, interval, candles, activeTool, onTool }:
           subRef.current = null
         },
       })
-      chart.setSymbol({ ticker: symbol, pricePrecision: 1, volumePrecision: 0 })
+      chart.setSymbol({ ticker: symbolRef.current, pricePrecision: 1, volumePrecision: 0 })
+      appliedSymbolRef.current = symbolRef.current
+      appliedIntervalRef.current = intervalRef.current
       chart.createIndicator({ name: "MA", calcParams: [5, 10, 20] }, true)
       chart.createIndicator("VOL")
       chart.createIndicator("MACD")
@@ -130,35 +159,45 @@ export function KlineProChart({ symbol, interval, candles, activeTool, onTool }:
       disposed = true
       ro?.disconnect()
       subRef.current = null
+      appliedRef.current = null
       if (chart) {
         void import("klinecharts").then(({ dispose }) => dispose(chart!))
       }
       chartRef.current = null
     }
-    // Recreate only when the host mounts. Symbol changes use setSymbol below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
-    const current = chart.getSymbol()?.ticker
-    const period = klinePeriod(interval)
-    chart.setPeriod(period)
-    if (current !== symbol) {
-      chart.setSymbol({ ticker: symbol, pricePrecision: 1, volumePrecision: 0 })
+    if (appliedIntervalRef.current !== interval) {
+      chart.setPeriod(klinePeriod(interval))
+      appliedIntervalRef.current = interval
     }
-    chart.resetData()
+    if (appliedSymbolRef.current !== symbol) {
+      chart.setSymbol({ ticker: symbol, pricePrecision: 1, volumePrecision: 0 })
+      appliedSymbolRef.current = symbol
+    }
+    appliedRef.current = null
+    // setSymbol/setPeriod already reload via getBars(init). Extra resetData flashes the pane.
   }, [symbol, interval])
 
   useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
     const last = candles.at(-1)
-    if (!chartRef.current) return
-    if (candles.length > 1 && !chartRef.current.getDataList().length) {
-      chartRef.current.resetData()
+    if (!last) return
+    const first = candles[0].time
+    const prev = appliedRef.current
+    const chartLen = chart.getDataList()?.length || 0
+    const historyExtended = !!prev && first < prev.first - 30 && candles.length > prev.len
+    const needInit = chartLen === 0 && candles.length > 1
+    appliedRef.current = { first, last: last.time, len: candles.length }
+    if (needInit || historyExtended) {
+      chart.resetData()
       return
     }
-    if (last && subRef.current) subRef.current(toBar(last))
+    if (subRef.current) subRef.current(toBar(last))
   }, [candles])
 
   return (

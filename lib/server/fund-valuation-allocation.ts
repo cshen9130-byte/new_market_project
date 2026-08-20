@@ -574,6 +574,44 @@ function isOptionHolding(h: HoldingRow): boolean {
   return looksLikeOptionContract(code, name, h.symbol)
 }
 
+/** Futures/options 市值 is contract notional, not fund NAV (保证金 already sits in 结算备付金). */
+function isDerivativeNotionalHolding(h: HoldingRow): boolean {
+  const kind = h.row_kind ?? ""
+  if (kind === "derivative" || kind === "option") return true
+  if (isOptionHolding(h)) return true
+  const code = String(h.original_subject_code ?? h.subject_code ?? "").replace(/[\s.]/g, "")
+  if (code.startsWith("3102") || code.startsWith("3103")) return true
+  const name = String(h.subject_name ?? "")
+  return /债券期货|股指期货|商品期货|国债期货|股指期权|商品期权/.test(name)
+}
+
+function derivativeNotionalAbs(holdings: HoldingRow[]): number {
+  return holdings
+    .filter((h) => h.include_in_detail !== false && isDerivativeNotionalHolding(h))
+    .reduce((sum, h) => sum + Math.abs(rowMarketValue(h)), 0)
+}
+
+/** Undo 资产净值 that folded in 期货/期权名义本金 (e.g. SCQ403 52M + 188M → 240M). */
+function stripDerivativeNotionalFromNav(nav: number, holdings: HoldingRow[]): number {
+  const notional = derivativeNotionalAbs(holdings)
+  if (!(nav > 0) || !(notional > 0)) return nav
+  const stripped = nav - notional
+  if (stripped >= 1000 && nav > stripped * 2.5) return stripped
+  return nav
+}
+
+function alignPaidInToNav(
+  paidIn: number | null,
+  nav: number,
+  unitNav: number | null,
+): number | null {
+  if (paidIn == null || paidIn <= 0) return paidIn
+  if (!(nav > 0) || unitNav == null || !(unitNav > 0.05)) return paidIn
+  const implied = nav / unitNav
+  if (implied >= 1000 && paidIn > implied * 2.5) return implied
+  return paidIn
+}
+
 function extractValuationCode(h: HoldingRow): string {
   const fromContract = extractOptionContractFromText(
     h.symbol,
@@ -1085,6 +1123,7 @@ function aggregateFofAllocation(
   for (const h of holdings) {
     const kind = h.row_kind ?? "other"
     if (CASH_ROW_KINDS.has(kind) || isFundHoldingRow(h)) continue
+    if (isDerivativeNotionalHolding(h)) continue
     if (h.include_in_detail === false) continue
     const mv = rowMarketValue(h)
     if (mv <= 0) continue
@@ -1611,6 +1650,7 @@ function buildOtherHoldings(holdings: HoldingRow[], netAssetValue: number): Othe
     .filter((h) => {
       const kind = h.row_kind ?? "other"
       if (CASH_ROW_KINDS.has(kind) || isFundHoldingRow(h)) return false
+      if (isDerivativeNotionalHolding(h)) return false
       if (h.include_in_detail === false) return false
       return rowMarketValue(h) > 0
     })
@@ -1944,7 +1984,10 @@ export async function getFundValuationAllocation(
 
   const custody_balance = metrics ? parseNum(metrics.custody_balance) : 0
   const valuation_unit_nav = metrics ? parseNum(metrics.unit_nav) : 0
-  let net_asset_value = metrics ? parseNum(metrics.net_asset_value) : 0
+  let net_asset_value = stripDerivativeNotionalFromNav(
+    metrics ? parseNum(metrics.net_asset_value) : 0,
+    holdings,
+  )
   const total_asset = metrics ? parseNum(metrics.total_asset) : 0
   const valuation_date = metrics?.valuation_date ?? holdings[0]?.valuation_date ?? null
 
@@ -2076,6 +2119,7 @@ export async function getFundValuationAllocation(
   if (unit_nav == null && net_asset_value > 0 && paid_in_capital != null && paid_in_capital > 0) {
     unit_nav = net_asset_value / paid_in_capital
   }
+  paid_in_capital = alignPaidInToNav(paid_in_capital, net_asset_value, unit_nav)
   if (unit_nav_date == null) unit_nav_date = valuation_date?.slice(0, 10) ?? null
 
   const managedOverride = lookupManagedProductOverride(beian_hao)
@@ -2149,7 +2193,7 @@ export async function getFundValuationAllocation(
   const sanitized = sanitizeAllocationDisplayNames(result)
 
   if (mode === "major" && !includeReturnCurves && sanitized.has_data) {
-    void cacheFreshValuationSnapshot(rawBeianHao, sanitized)
+    await cacheFreshValuationSnapshot(rawBeianHao, sanitized)
   }
 
   return sanitized
@@ -2318,7 +2362,7 @@ function computeSnapshotAllocation(
     sums.set("bank_deposit", custodyBalance)
   }
 
-  let nav = netAssetValue
+  let nav = stripDerivativeNotionalFromNav(netAssetValue, holdings)
   if (nav <= 0) {
     nav = [...sums.values()].reduce((s, v) => s + v, 0)
   }

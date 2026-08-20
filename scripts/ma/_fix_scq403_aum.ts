@@ -1,6 +1,7 @@
 /**
  * Re-extract 金舆锡泰一号 资产净值 from Huatai SCQ403 估值表 holdings,
- * excluding 债券期货合约名义本金. Run on the app host:
+ * excluding 债券期货合约名义本金, then refresh metrics_latest + 估值表 page cache.
+ * Run on the app host:
  *   npx tsx scripts/ma/_fix_scq403_aum.ts
  */
 import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-project-env"
@@ -24,6 +25,12 @@ async function main() {
   } = await import("@/lib/server/email-valuation-cache-enrich")
   const { refreshManagedProductsListCache } = await import(
     "@/lib/server/managed-products-list-cache-pg"
+  )
+  const { upsertMetricsLatestForProductCodes, invalidateValuationCache } = await import(
+    "@/lib/server/valuation-cache-refresh"
+  )
+  const { getFundValuationAllocation } = await import(
+    "@/lib/server/fund-valuation-allocation"
   )
 
   const backfill = await backfillValuationMetricsFromRecords({ productCodes: [BEIAN] })
@@ -105,6 +112,14 @@ async function main() {
   const cacheRows = await refreshManagedProductsListCache({ reuseResolvedIdentities: true })
   console.error(`[fix_scq403] list cache refreshed rows=${cacheRows}`)
 
+  const metricsUpserted = await upsertMetricsLatestForProductCodes([BEIAN])
+  await invalidateValuationCache([BEIAN])
+  const snapshot = await getFundValuationAllocation(BEIAN)
+  console.error(
+    `[fix_scq403] metrics_latest upserted=${metricsUpserted} snapshot_nav=${snapshot.net_asset_value} paid_in=${snapshot.paid_in_capital}`,
+  )
+  console.error("[fix_scq403] snapshot allocation", snapshot.allocation)
+
   const after = await queryUnbounded<{
     src: string
     product_name: string
@@ -133,6 +148,10 @@ async function main() {
     custody,
     managedUpdated: parseInt(mp[0]?.n ?? "0", 10),
     cacheRows,
+    metricsUpserted,
+    snapshotNav: snapshot.net_asset_value,
+    snapshotPaidIn: snapshot.paid_in_capital,
+    snapshotAllocation: snapshot.allocation,
     after,
   }, null, 2))
 }

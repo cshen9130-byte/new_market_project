@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 
-import type { LiveOverlayResponse } from "@/lib/client/realtime-overlay"
+import { stabilizeOverlay, type LiveOverlayResponse } from "@/lib/client/realtime-overlay"
 
 const POLL_MS = 2000
 
@@ -23,7 +23,7 @@ export function useRealtimeOverlayFeed() {
           throw new Error(json.error || `请求失败 ${res.status}`)
         }
         if (!cancelled) {
-          setData(json)
+          setData((prev) => stabilizeOverlay(prev, json))
           setError(null)
         }
       } catch (err) {

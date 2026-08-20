@@ -12,11 +12,8 @@ const nextConfig = {
     cpus: isLowMemBuild ? 1 : undefined,
     workerThreads: isLowMemBuild ? false : undefined,
     webpackMemoryOptimizations: isLowMemBuild ? true : undefined,
-    // Next.js 16 default is 10MB; 投资笔记 uploads allow 150MB files (+ multipart overhead).
-    proxyClientMaxBodySize: "160mb",
-    serverActions: {
-      bodySizeLimit: "160mb",
-    },
+    // Next.js 16 default is 10MB (10485760). Use bytes so the limit is not ignored.
+    proxyClientMaxBodySize: 160 * 1024 * 1024,
   },
   typescript: {
     ignoreBuildErrors: true,
