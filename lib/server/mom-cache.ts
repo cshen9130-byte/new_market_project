@@ -7,6 +7,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { join } from "path"
 import { NextResponse } from "next/server"
+import { ensureAccountRiskSchema } from "@/lib/db"
+import { parseSourceFromRequest, riskSourceAls } from "@/lib/server/risk-data-source"
 
 const CACHE_DIR = join(process.cwd(), "data", "mom-cache")
 
@@ -72,30 +74,37 @@ export function withMomCache(
   }
 
   return async (req: Request) => {
-    const url = new URL(req.url)
-    const noCache = url.searchParams.get("nocache") === "1"
-    const key = routeKey + paramKey(url.searchParams)
-
-    if (!noCache) {
-      const cached = readCache(key)
-      if (cached !== null) {
-        // no-cache: browser always revalidates; ETag/304 handled by Next.js
-        return NextResponse.json(cached, { headers: cacheHeaders })
+    const source = parseSourceFromRequest(req)
+    return riskSourceAls.run(source, async () => {
+      if (source === "account") {
+        await ensureAccountRiskSchema()
       }
-    }
 
-    const resp = await handler(req)
+      const url = new URL(req.url)
+      const noCache = url.searchParams.get("nocache") === "1"
+      const key = routeKey + paramKey(url.searchParams)
 
-    // Only cache 200 responses
-    if (resp.status === 200) {
-      try {
-        const body = await resp.json()
-        writeCache(key, body)
-        return NextResponse.json(body, { headers: cacheHeaders })
-      } catch {
-        // couldn't parse — return original
+      if (!noCache) {
+        const cached = readCache(key)
+        if (cached !== null) {
+          // no-cache: browser always revalidates; ETag/304 handled by Next.js
+          return NextResponse.json(cached, { headers: cacheHeaders })
+        }
       }
-    }
-    return resp
+
+      const resp = await handler(req)
+
+      // Only cache 200 responses
+      if (resp.status === 200) {
+        try {
+          const body = await resp.json()
+          writeCache(key, body)
+          return NextResponse.json(body, { headers: cacheHeaders })
+        } catch {
+          // couldn't parse — return original
+        }
+      }
+      return resp
+    })
   }
 }

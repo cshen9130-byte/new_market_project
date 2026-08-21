@@ -9,6 +9,7 @@ import { ProTradingEnterButton, ProTradingWorkspace } from "@/components/ma/pro-
 import { useCffexIndexRealtimeFeed } from "@/hooks/use-cffex-index-realtime-feed"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { useRealtimeOverlayFeed } from "@/hooks/use-realtime-overlay-feed"
+import { allListedCffexIndexContracts } from "@/lib/client/cffex-expiry"
 import {
   INDEX_FUTURES,
   type CtpCandle,
@@ -44,6 +45,7 @@ export default function RealtimeQuotesPage() {
   const indexSymbols = useMemo(() => {
     const fromStatus = ctp.status?.index_symbols || []
     const merged = new Set([
+      ...allListedCffexIndexContracts(),
       ...fromStatus,
       ...ctp.symbols,
       ...cffex.symbols,
@@ -145,7 +147,7 @@ export default function RealtimeQuotesPage() {
       <div>
         <h2 className="text-lg font-semibold tracking-tight">年化基差率</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          所选期货合约对现货指数的年化基差。连续合约按主力到期日（到期周切换下月），避免临近到期把年化放大到几百。
+          所选期货合约对现货指数的年化基差。可切换 1 分 / 5 分 / 日线等周期。连续合约按主力到期日（到期周切换下月），避免临近到期把年化放大到几百。
         </p>
       </div>
       <div className="grid gap-4 xl:grid-cols-2">

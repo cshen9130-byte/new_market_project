@@ -36,10 +36,12 @@ function getPageContext(path: string): string {
     return "当前页面：【业绩报酬测算】。根据最新交易日累计盈亏，计算母层与子层业绩报酬及私募基金净业绩报酬。"
   if (path.includes("/mom-analysis/trader-analysis"))
     return "当前页面：【盘手历史交易复盘】。基于客户交易核算日报，按账户汇总期间盈亏、手续费、权益等绩效指标，做盘手绩效评估。"
+  if (path.includes("/mom-analysis/account-risk-report"))
+    return "当前页面：【单账户每日风控】。与 MOM 每日风控相同的风控看板，数据来自独立的单账户数据源。数据导入支持三种方式：①拖入 xls/xlsx 文件；②按日程从邮箱拉取附件；③登录中国期货市场监控中心（investorservice.cfmmc.com）按账户列表在设定时间自动下载客户交易结算日报。"
   if (path.includes("/mom-analysis/data-import"))
     return "当前页面：【数据导入】。上传逐日核算 ZIP 包，自动解压、标准化命名并检查交易日覆盖情况。"
   if (path.includes("/mom-analysis"))
-    return "当前页面：【MOM分析】总览。包含四个子功能入口：①MOM 每日风控（在线浏览）；②数据导入（上传逐日核算 ZIP 包）；③盘手历史交易复盘（按账户汇总绩效指标）；④业绩报酬测算（计算母/子层报酬）。"
+    return "当前页面：【MOM分析】总览。包含五个子功能入口：①MOM 每日风控（在线浏览）；②单账户每日风控；③数据导入（上传逐日核算 ZIP 包）；④盘手历史交易复盘（按账户汇总绩效指标）；⑤业绩报酬测算（计算母/子层报酬）。"
   if (path.includes("/futures-market"))
     return "当前页面：【期货市场分析】。主要图表与模块：①南华商品指数走势图；②南华板块指数走势（农产品/金属/能化/软商品等板块）；③南华板块指数滚动波动率；④南华板块截面波动率柱状图；⑤南华板块滚动相关性矩阵（热力图）；⑥南华板块滚动相关性走势折线图；⑦【商品期货波动率 vs 南华商品指数相关性】散点图（可选板块、波动率/相关性窗口，每个点代表一个品种，横轴为波动率、纵轴为与 NHCI 的滚动相关性，气泡大小代表成交量，还有相关性分布直方图和滚动相关性走势面板）。"
   if (path.includes("/macro-market"))

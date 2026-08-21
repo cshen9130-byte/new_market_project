@@ -97,6 +97,8 @@ interface Skill {
   noFundRequired?: boolean
   /** When true, require a free-text employer/background keyword (no fund picker) */
   keywordRequired?: boolean
+  /** When true, require a private fund manager company name input */
+  managerProfileRequired?: boolean
   /** API route path (relative to /ma/api/ai-researcher/) */
   apiPath?: string
 }
@@ -108,6 +110,14 @@ const TEAM_BACKGROUND_CHIPS = [
   { label: "中金", keyword: "中金" },
   { label: "Two Sigma", keyword: "Two Sigma" },
   { label: "Jump", keyword: "Jump" },
+] as const
+
+const MANAGER_PROFILE_CHIPS = [
+  { label: "砥俊资产", keyword: "上海砥俊资产管理中心（有限合伙）" },
+  { label: "幻方量化", keyword: "杭州幻方科技" },
+  { label: "九坤投资", keyword: "九坤投资" },
+  { label: "鸣石投资", keyword: "鸣石投资" },
+  { label: "衍复投资", keyword: "上海衍复投资管理有限公司" },
 ] as const
 
 // ── Skills catalog ─────────────────────────────────────────────────────────────
@@ -209,15 +219,23 @@ const SKILLS: Skill[] = [
   {
     id: "manager-profile",
     name: "管理人深度画像",
-    description: "对指定私募管理人进行全方位尽职调查，生成管理人画像报告。",
+    description: "输入任意私募管理人名称，AI 自动从 AMAC 数据库提取登记信息、高管履历、产品备案、净值业绩，生成结构化深度调研报告。",
     icon: <Users className="h-5 w-5" />,
-    locked: true,
+    badge: "可用",
     colors: {
-      bg: "linear-gradient(to bottom right, rgb(139 92 246 / 0.08), rgb(168 85 247 / 0.08))",
-      border: "rgb(139 92 246 / 0.18)",
+      bg: "linear-gradient(to bottom right, rgb(139 92 246 / 0.16), rgb(168 85 247 / 0.16))",
+      border: "rgb(139 92 246 / 0.35)",
       icon: "#8b5cf6",
     },
-    steps: [],
+    steps: [
+      "检索 AMAC 管理人登记信息",
+      "获取核心团队与履历数据",
+      "获取产品备案与业绩数据",
+      "获取净值历史数据",
+      "AI 生成深度调研报告",
+    ],
+    managerProfileRequired: true,
+    apiPath: "manager-profile",
   },
   {
     id: "portfolio-analysis",
@@ -587,6 +605,7 @@ export function AIResearcherPage() {
   const [kbPath, setKbPath] = useState("")
   const [roadshowBeianHao, setRoadshowBeianHao] = useState("")
   const [backgroundKeyword, setBackgroundKeyword] = useState("")
+  const [managerName, setManagerName] = useState("")
   // ── KB folder browser ────────────────────────────────────────────────────
   const [kbBrowserOpen, setKbBrowserOpen] = useState(false)
   const [kbTree, setKbTree] = useState<KbFolder | null>(null)
@@ -675,6 +694,7 @@ export function AIResearcherPage() {
     setKbPath("")
     setRoadshowBeianHao("")
     setBackgroundKeyword("")
+    setManagerName("")
   }
 
   function handleCancelForm() {
@@ -685,7 +705,9 @@ export function AIResearcherPage() {
   async function handleRunTask() {
     if (!selectedSkillId) return
     const skill = SKILLS.find((s) => s.id === selectedSkillId)!
-    if (skill.keywordRequired) {
+    if (skill.managerProfileRequired) {
+      if (!managerName.trim()) return
+    } else if (skill.keywordRequired) {
       if (!backgroundKeyword.trim()) return
     } else if (skill.noFundRequired) {
       if (!kbPath.trim()) return
@@ -694,11 +716,13 @@ export function AIResearcherPage() {
     }
 
     const taskId = `task-${Date.now()}`
-    const subjects = skill.keywordRequired
-      ? [backgroundKeyword.trim()]
-      : skill.noFundRequired
-        ? [kbPath.trim() || "全部知识库"]
-        : selectedFunds.map((f) => f.product_name)
+    const subjects = skill.managerProfileRequired
+      ? [managerName.trim()]
+      : skill.keywordRequired
+        ? [backgroundKeyword.trim()]
+        : skill.noFundRequired
+          ? [kbPath.trim() || "全部知识库"]
+          : selectedFunds.map((f) => f.product_name)
 
     const initialSteps: TaskStep[] = skill.steps.map((title, i) => ({
       step: i + 1,
@@ -732,13 +756,15 @@ export function AIResearcherPage() {
     abortRef.current = ctrl
 
     const apiPath = skill.apiPath ?? "compare-analysis"
-    const payload = skill.keywordRequired
-      ? { keyword: backgroundKeyword.trim(), kbPath: kbPath.trim() }
-      : skill.noFundRequired
-        ? { kbPath: kbPath.trim(), beianHao: roadshowBeianHao.trim() }
-        : skill.singleFund
-          ? { subject: subjects[0], kbPath }
-          : { subjects, kbPath }
+    const payload = skill.managerProfileRequired
+      ? { managerName: managerName.trim(), kbPath: kbPath.trim() }
+      : skill.keywordRequired
+        ? { keyword: backgroundKeyword.trim(), kbPath: kbPath.trim() }
+        : skill.noFundRequired
+          ? { kbPath: kbPath.trim(), beianHao: roadshowBeianHao.trim() }
+          : skill.singleFund
+            ? { subject: subjects[0], kbPath }
+            : { subjects, kbPath }
 
     try {
       const res = await fetch(`/ma/api/ai-researcher/${apiPath}`, {
@@ -837,6 +863,7 @@ export function AIResearcherPage() {
       activeTask?.skillId === "opposite-fund" ? "相反基金分析" :
       activeTask?.skillId === "team-background" ? "团队背景筛选" :
       activeTask?.skillId === "roadshow-analysis" ? "路演漏洞扫描" :
+      activeTask?.skillId === "manager-profile" ? "管理人深度画像" :
       "对比分析报告"
     const subjectPart = (activeTask?.subjects.slice(0, 2).join("_") ?? "报告")
       .replace(/[\\/:*?"<>|]+/g, "_")
@@ -854,7 +881,9 @@ export function AIResearcherPage() {
     const title =
       activeTask.skillId === "team-background"
         ? `团队有「${activeTask.subjects[0] ?? ""}」背景的私募筛选报告`
-        : activeTask.subjects.join("、") + (activeTask.skillName || "研究报告")
+        : activeTask.skillId === "manager-profile"
+          ? `${activeTask.subjects[0] ?? ""}深度调研报告`
+          : activeTask.subjects.join("、") + (activeTask.skillName || "研究报告")
     const dateStr = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })
     const subjectLine = activeTask.subjects.join(" · ")
     const bodyHtml = mdToWordHtml(activeTask.reportText)
@@ -1238,7 +1267,49 @@ export function AIResearcherPage() {
               </div>
 
               <div className="space-y-4">
-                {selectedSkill.keywordRequired ? (
+                {selectedSkill.managerProfileRequired ? (
+                  <div>
+                    <label className="text-sm font-medium mb-1.5 block">
+                      管理人名称
+                      <span className="text-destructive ml-1">*</span>
+                      <span className="text-xs text-muted-foreground ml-2 font-normal">
+                        输入私募管理人全称或简称，AI 将自动匹配 AMAC 数据库中的机构
+                      </span>
+                    </label>
+                    <div className="relative">
+                      <Users className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                      <Input
+                        value={managerName}
+                        onChange={(e) => setManagerName(e.target.value)}
+                        placeholder="例：上海砥俊资产管理中心（有限合伙）或 砥俊"
+                        className="pl-9"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && managerName.trim()) handleRunTask()
+                        }}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {MANAGER_PROFILE_CHIPS.map((chip) => (
+                        <button
+                          key={chip.keyword}
+                          type="button"
+                          onClick={() => setManagerName(chip.keyword)}
+                          className={cn(
+                            "rounded-md border px-2 py-0.5 text-xs transition-colors",
+                            managerName === chip.keyword
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-border bg-muted/40 text-muted-foreground hover:bg-muted",
+                          )}
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      支持模糊匹配 — 输入简称（如「砥俊」）或全称均可；报告将包含登记信息、团队履历、产品备案、净值业绩等。
+                    </p>
+                  </div>
+                ) : selectedSkill.keywordRequired ? (
                   <>
                     <div>
                       <label className="text-sm font-medium mb-1.5 block">
@@ -1390,16 +1461,23 @@ export function AIResearcherPage() {
                   <Button
                     onClick={handleRunTask}
                     disabled={
-                      selectedSkill.keywordRequired
-                        ? !backgroundKeyword.trim()
-                        : selectedSkill.noFundRequired
-                          ? !kbPath.trim()
-                          : selectedFunds.length === 0
+                      selectedSkill.managerProfileRequired
+                        ? !managerName.trim()
+                        : selectedSkill.keywordRequired
+                          ? !backgroundKeyword.trim()
+                          : selectedSkill.noFundRequired
+                            ? !kbPath.trim()
+                            : selectedFunds.length === 0
                     }
                     className="gap-2"
                   >
                     <Sparkles className="h-4 w-4" />
                     开始分析
+                    {selectedSkill.managerProfileRequired && managerName.trim() && (
+                      <Badge variant="secondary" className="ml-1 text-xs">
+                        {managerName.trim().length > 10 ? managerName.trim().slice(0, 10) + "…" : managerName.trim()}
+                      </Badge>
+                    )}
                     {selectedSkill.keywordRequired && backgroundKeyword.trim() && (
                       <Badge variant="secondary" className="ml-1 text-xs">
                         {backgroundKeyword.trim()}

@@ -1,4 +1,4 @@
-import { isNearCffexExpiry } from "@/lib/client/cffex-expiry"
+import { isNearCffexExpiry, listedCffexIndexContracts } from "@/lib/client/cffex-expiry"
 
 export const INDEX_FUTURES = [
   { product: "IH", name: "上证50" },
@@ -47,14 +47,13 @@ export type CtpStatus = {
 
 export function contractsForProduct(symbols: string[], product: string) {
   const re = new RegExp(`^${product}(\\d{4}|0)$`, "i")
-  return symbols
-    .filter((s) => re.test(s))
-    .sort((a, b) => {
-      const aDated = /\d{4}$/.test(a)
-      const bDated = /\d{4}$/.test(b)
-      if (aDated !== bDated) return aDated ? -1 : 1
-      return a.localeCompare(b)
-    })
+  const listed = /^(IH|IF|IC|IM)$/i.test(product) ? listedCffexIndexContracts(product) : []
+  return [...new Set([...listed, ...symbols.filter((s) => re.test(s))])].sort((a, b) => {
+    const aDated = /\d{4}$/.test(a)
+    const bDated = /\d{4}$/.test(b)
+    if (aDated !== bDated) return aDated ? -1 : 1
+    return a.localeCompare(b)
+  })
 }
 
 export function pickMainContract(symbols: string[], product: string) {

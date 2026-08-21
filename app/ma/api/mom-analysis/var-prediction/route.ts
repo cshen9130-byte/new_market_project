@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { paramKey, readCache, writeCache } from "@/lib/server/mom-cache"
 import { getPrefix } from "@/lib/server/prod-utils"
+import { withRiskSource } from "@/lib/server/risk-data-source"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -338,7 +339,7 @@ async function _GET(req: Request) {
  * cache can freeze VaR=0 on the latest point even after market data catches up.
  * Recompute (and overwrite) those bad entries instead of serving them.
  */
-export async function GET(req: Request) {
+export const GET = withRiskSource(async function GET(req: Request) {
   const url = new URL(req.url)
   const noCache = url.searchParams.get("nocache") === "1"
   const key = "var-prediction" + paramKey(url.searchParams)
@@ -370,4 +371,4 @@ export async function GET(req: Request) {
     }
   }
   return resp
-}
+})

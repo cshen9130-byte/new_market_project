@@ -6,12 +6,15 @@
 export async function registerBackgroundJobs(): Promise<void> {
   const { runDueSetups } = await import("./email-dispatch")
   const { runDueSettlementFetch } = await import("./settlement-email")
+  const { runDueAccountRiskEmailFetch, runDueCfmmcFetch } = await import("./account-risk-import")
   const cron = (await import("node-cron")).default
 
   // Check every minute whether any dispatch setup is due
   cron.schedule("* * * * *", () => {
     runDueSetups().catch((e) => console.error("[email-dispatch] scheduler error:", e))
     runDueSettlementFetch().catch((e) => console.error("[settlement-email] scheduler error:", e))
+    runDueAccountRiskEmailFetch().catch((e) => console.error("[account-risk-email] scheduler error:", e))
+    runDueCfmmcFetch().catch((e) => console.error("[account-risk-cfmmc] scheduler error:", e))
   })
 
   // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit)

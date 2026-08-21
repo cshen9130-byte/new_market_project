@@ -35,6 +35,54 @@ export function nextCffexMonth(year: number, month: number) {
   return { year, month: month + 1 }
 }
 
+export const CFFEX_INDEX_PRODUCTS = ["IH", "IF", "IC", "IM"] as const
+
+function ymCode(year: number, month: number) {
+  return `${String(year % 100).padStart(2, "0")}${String(month).padStart(2, "0")}`
+}
+
+/** CFFEX stock-index futures: current month, next month, next two quarter months. */
+export function listedCffexIndexYms(now = new Date()): Array<[number, number]> {
+  const [y, m, d] = shanghaiYmd(now).split("-").map(Number)
+  return listedCffexIndexYmsForDate(y, m, d)
+}
+
+export function listedCffexIndexYmsForDate(
+  year: number,
+  month: number,
+  day: number,
+): Array<[number, number]> {
+  let y = year
+  let m = month
+  if (Date.UTC(year, month - 1, day) > cffexThirdFriday(y, m).getTime()) {
+    const rolled = nextCffexMonth(y, m)
+    y = rolled.year
+    m = rolled.month
+  }
+  const near: [number, number] = [y, m]
+  const nxtMonth = nextCffexMonth(y, m)
+  const nxt: [number, number] = [nxtMonth.year, nxtMonth.month]
+  const quarterly: Array<[number, number]> = []
+  let yy = nxt[0]
+  let mm = nxt[1]
+  while (quarterly.length < 2) {
+    const step = nextCffexMonth(yy, mm)
+    yy = step.year
+    mm = step.month
+    if (mm === 3 || mm === 6 || mm === 9 || mm === 12) quarterly.push([yy, mm])
+  }
+  return [near, nxt, quarterly[0], quarterly[1]]
+}
+
+export function listedCffexIndexContracts(product: string, now = new Date()): string[] {
+  const code = product.trim().toUpperCase()
+  return listedCffexIndexYms(now).map(([year, month]) => `${code}${ymCode(year, month)}`)
+}
+
+export function allListedCffexIndexContracts(now = new Date()): string[] {
+  return CFFEX_INDEX_PRODUCTS.flatMap((product) => listedCffexIndexContracts(product, now))
+}
+
 /** Calendar expiry still listed (today <= 3rd Friday). */
 export function nearestCffexExpiry(now = new Date()) {
   const todayUtc = shanghaiTodayUtc(now)

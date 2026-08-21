@@ -1,8 +1,12 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 
+import { TimeframeSelect } from "@/components/ma/timeframe-select"
+import { HelpAnnualizedBasis } from "@/components/ma/realtime-chart-help"
+import { useSpotKline } from "@/hooks/use-spot-kline"
+import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import {
   annualizedBasisPct,
   basisPoints,
@@ -13,10 +17,9 @@ import {
   type CtpCandle,
   type CtpTick,
   type IndexProduct,
-  formatBarTime,
 } from "@/lib/client/ctp-market"
 import { INDEX_CHART_COLOR, type SpotSnapshot } from "@/lib/client/realtime-overlay"
-import { HelpAnnualizedBasis } from "@/components/ma/realtime-chart-help"
+import { formatCandleTime, getTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 
 type Props = {
   title: string
@@ -64,21 +67,26 @@ function nicePercentAxis(rawMin: number, rawMax: number) {
 }
 
 export function IndexBasisRateChart({ title, product, symbol, candles, quote, spot, variant = "default" }: Props) {
+  const [interval, setInterval] = useState<TimeframeId>("1m")
+  const { candles: tfCandles, error: klineError } = useSymbolKline(symbol, interval, candles, quote)
+  const { bars: spotBars, error: spotError } = useSpotKline(product, interval, spot)
   const days = symbol ? daysToCffexExpiry(symbol) : null
   const nearExpiry = symbol ? isNearCffexExpiry(symbol) : false
-  const lastFut = quote?.last ?? candles.at(-1)?.close ?? null
-  const lastSpot = spot?.price ?? spot?.bars.at(-1)?.close ?? null
+  const lastFut = quote?.last ?? tfCandles.at(-1)?.close ?? candles.at(-1)?.close ?? null
+  const lastSpot = spot?.price ?? spotBars.at(-1)?.close ?? spot?.bars.at(-1)?.close ?? null
   const lastPts = lastFut != null && lastSpot != null ? basisPoints(lastFut, lastSpot) : null
   const lastRawPct = lastPts != null && lastSpot ? (lastPts / lastSpot) * 100 : null
   const lastBasis = lastFut != null && lastSpot != null && days != null
     ? annualizedBasisPct(lastFut, lastSpot, days)
     : null
   const up = lastBasis == null ? null : lastBasis >= 0
+  const sessionOnly = interval === "1m"
+  const higherTf = interval === "1d" || interval === "1w" || interval === "1M"
 
   const series = useMemo(() => {
-    if (!days) return []
-    const sessionDay = candles.length ? shanghaiDayKey(candles[candles.length - 1].time) : null
-    const spotTimes = [...(spot?.bars || [])]
+    if (!symbol) return []
+    const sessionDay = sessionOnly && tfCandles.length ? shanghaiDayKey(tfCandles[tfCandles.length - 1].time) : null
+    const spotTimes = [...spotBars]
       .filter((bar) => !sessionDay || shanghaiDayKey(bar.time) === sessionDay)
       .sort((a, b) => a.time - b.time)
     if (!spotTimes.length && lastSpot == null) return []
@@ -87,37 +95,38 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
     let lastKnownTime = 0
     let si = 0
     const points: { time: number; value: number }[] = []
-    for (const candle of candles) {
+    for (const candle of tfCandles) {
       if (sessionDay && shanghaiDayKey(candle.time) !== sessionDay) continue
       while (si < spotTimes.length && spotTimes[si].time <= candle.time) {
         lastKnown = spotTimes[si].close
         lastKnownTime = spotTimes[si].time
         si += 1
       }
-      // Index 1m often starts at 09:31; do not pair 09:30 futures with yesterday's close.
-      if (lastKnown != null && shanghaiDayKey(lastKnownTime) !== shanghaiDayKey(candle.time)) {
+      if (!higherTf && lastKnown != null && shanghaiDayKey(lastKnownTime) !== shanghaiDayKey(candle.time)) {
         lastKnown = null
       }
       const spotPx = spotByTime.get(candle.time) ?? lastKnown
       if (spotPx == null) continue
-      const value = annualizedBasisPct(candle.close, spotPx, days)
+      const barDays = daysToCffexExpiry(symbol, new Date(candle.time * 1000))
+      if (barDays == null) continue
+      const value = annualizedBasisPct(candle.close, spotPx, barDays)
       if (value == null) continue
       points.push({ time: candle.time, value })
     }
     if (lastFut != null && lastSpot != null && lastBasis != null) {
-      const t = candles.at(-1)?.time ?? spotTimes.at(-1)?.time
+      const t = tfCandles.at(-1)?.time ?? spotTimes.at(-1)?.time
       if (t != null && (!points.length || points[points.length - 1].time !== t)) {
         points.push({ time: t, value: lastBasis })
       } else if (points.length) {
         points[points.length - 1].value = lastBasis
       }
     }
-    return trimOpeningSpikes(points)
-  }, [candles, days, lastBasis, lastFut, lastSpot, spot])
+    return sessionOnly ? trimOpeningSpikes(points) : points
+  }, [higherTf, lastBasis, lastFut, lastSpot, sessionOnly, spotBars, symbol, tfCandles])
 
   const color = INDEX_CHART_COLOR[product]
   const option = useMemo(() => {
-    const times = series.map((p) => formatBarTime(p.time))
+    const times = series.map((p) => formatCandleTime(p.time, interval))
     const values = series.map((p) => Number(p.value.toFixed(2)))
     const minV = values.length ? Math.min(0, ...values) : -1
     const maxV = values.length ? Math.max(0, ...values) : 1
@@ -160,7 +169,7 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
           type: "line",
           data: values,
           showSymbol: false,
-          smooth: 0.1,
+          smooth: interval === "1m" ? 0.1 : 0,
           lineStyle: { width: 1.8, color },
           itemStyle: { color },
           areaStyle: { color: `${color}22`, origin: 0 },
@@ -174,10 +183,16 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
         },
       ],
     }
-  }, [color, series, variant])
+  }, [color, interval, series, variant])
 
   const pro = variant === "pro"
   const continuous = !!symbol && /0$/i.test(symbol) && !/\d{4}$/.test(symbol)
+  const waitText = klineError || spotError
+    || (symbol
+      ? (spot || spotBars.length
+        ? `等待现货与期货 ${getTimeframe(interval).label} 对齐…`
+        : "现货分钟线未返回")
+      : `未订阅 ${product}`)
   return (
     <div className={pro ? "flex h-full min-h-0 flex-col bg-[#131722] text-[#d1d4dc]" : "flex min-h-[320px] flex-col rounded-xl border bg-card"}>
       <div className={pro ? "flex items-start justify-between gap-3 px-3 py-2" : "flex items-start justify-between gap-3 px-4 py-3"}>
@@ -189,6 +204,7 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
             </div>
             <HelpAnnualizedBasis product={title} />
           </div>
+          <TimeframeSelect value={interval} onChange={setInterval} dark={pro} className="mt-1.5" />
           {!pro ? (
             <div className="mt-1 text-[11px] text-muted-foreground">
               (期货 − 现货) / 现货 / 剩余天数 × 365
@@ -219,7 +235,7 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
           <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} notMerge lazyUpdate />
         ) : (
           <div className={pro ? "flex h-full items-center justify-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center text-sm text-muted-foreground"}>
-            {symbol ? (spot ? "等待现货与期货 1 分钟对齐…" : "现货分钟线未返回") : `未订阅 ${product}`}
+            {waitText}
           </div>
         )}
       </div>

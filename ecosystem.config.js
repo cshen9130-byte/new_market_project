@@ -22,6 +22,74 @@ function resolvePythonExe() {
 
 const pythonExe = resolvePythonExe()
 
+function listedCffexIndexInstruments(now = new Date()) {
+  const [y, m, d] = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .format(now)
+    .split("-")
+    .map(Number)
+  const thirdFriday = (year, month) => {
+    const first = new Date(Date.UTC(year, month - 1, 1))
+    const mondayBased = (first.getUTCDay() + 6) % 7
+    const daysToFirstFri = (4 - mondayBased + 7) % 7
+    return new Date(Date.UTC(year, month - 1, 1 + daysToFirstFri + 14))
+  }
+  let year = y
+  let month = m
+  if (Date.UTC(y, m - 1, d) > thirdFriday(year, month).getTime()) {
+    month += 1
+    if (month > 12) {
+      month = 1
+      year += 1
+    }
+  }
+  const months = [[year, month]]
+  let y2 = year
+  let m2 = month + 1
+  if (m2 > 12) {
+    m2 = 1
+    y2 += 1
+  }
+  months.push([y2, m2])
+  let yy = y2
+  let mm = m2
+  while (months.length < 4) {
+    mm += 1
+    if (mm > 12) {
+      mm = 1
+      yy += 1
+    }
+    if (mm === 3 || mm === 6 || mm === 9 || mm === 12) months.push([yy, mm])
+  }
+  const parts = []
+  for (const product of ["IM", "IF", "IH", "IC"]) {
+    for (const [yearNum, monthNum] of months) {
+      parts.push(`${product}${String(yearNum).slice(2)}${String(monthNum).padStart(2, "0")}`)
+    }
+  }
+  return parts
+}
+
+function mergeCtpInstruments(raw) {
+  const extra = String(raw || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const seen = new Set()
+  const out = []
+  for (const symbol of [...listedCffexIndexInstruments(), ...extra]) {
+    const key = symbol.toUpperCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(symbol)
+  }
+  return out.join(",")
+}
+
 const sharedEnv = {
   // EmQuant credentials and options
   EMQ_USERNAME: process.env.EMQ_USERNAME || "",
@@ -76,9 +144,7 @@ const sharedEnv = {
   CTP_BROKER_ID: process.env.CTP_BROKER_ID || "9999",
   CTP_USER_ID: process.env.CTP_USER_ID || "",
   CTP_PASSWORD: process.env.CTP_PASSWORD || "",
-  CTP_INSTRUMENTS:
-    process.env.CTP_INSTRUMENTS ||
-    "IM2609,IM2608,IF2609,IF2608,IH2609,IH2608,IC2609,IC2608",
+  CTP_INSTRUMENTS: mergeCtpInstruments(process.env.CTP_INSTRUMENTS),
   SIMNOW_MD_FRONT: process.env.SIMNOW_MD_FRONT || "tcp://182.254.243.31:30011",
   CHART_HOST: process.env.CHART_HOST || "127.0.0.1",
   CHART_PORT: process.env.CHART_PORT || "8000",

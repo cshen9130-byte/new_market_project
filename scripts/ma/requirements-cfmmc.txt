@@ -1,0 +1,5 @@
+# Optional deps for 单账户每日风控 → 监控中心自动获取
+#   pip install -r scripts/ma/requirements-cfmmc.txt
+#   python -m playwright install chromium
+playwright>=1.40
+ddddocr>=1.4

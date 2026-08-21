@@ -106,6 +106,7 @@ FOF底层明细.xlsx
 # Settlement email config (contains credentials)
 data/settlement_email_config.json
 data/yinhe_settlement_email_config.json
+data/account-risk/
 
 # MOM API cache files
 data/mom-cache/

@@ -63,6 +63,28 @@ export function aggregateCandles(src: CtpCandle[], id: TimeframeId): CtpCandle[]
   return out
 }
 
+export function aggregateCloseSeries(
+  src: { time: number; close: number }[],
+  id: TimeframeId,
+): { time: number; close: number }[] {
+  if (id === "1m" || !src.length) return src
+  const out: { time: number; close: number }[] = []
+  let current: { time: number; close: number } | null = null
+  let bucket = Number.NaN
+  for (const bar of src) {
+    const nextBucket = bucketTime(bar.time, id)
+    if (current && nextBucket === bucket) {
+      current = { time: nextBucket, close: bar.close }
+    } else {
+      if (current) out.push(current)
+      bucket = nextBucket
+      current = { time: nextBucket, close: bar.close }
+    }
+  }
+  if (current) out.push(current)
+  return out
+}
+
 export function shanghaiWallUnix(now = new Date()) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-GB", {

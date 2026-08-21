@@ -1,4 +1,5 @@
-import { Pool, types } from "pg"
+import { Pool, types, type PoolClient } from "pg"
+import { getRiskSource, type RiskDataSource } from "@/lib/server/risk-data-source"
 
 // DATE columns (OID 1082) come back from pg as JavaScript Date objects set to local
 // midnight. On UTC+8 servers this shifts every date back one day when .toISOString()
@@ -34,16 +35,99 @@ function makePool(): Pool {
 
 const pool: Pool = global._pgPool ?? (global._pgPool = makePool())
 
+async function resolveSource(): Promise<RiskDataSource> {
+  if (getRiskSource() === "account") return "account"
+  try {
+    const { headers } = await import("next/headers")
+    const h = await headers()
+    if (h.get("x-risk-source") === "account") return "account"
+  } catch {
+    // not in a Next.js request (scripts, workers)
+  }
+  return "mom"
+}
+
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, "\"\"")}"`
+}
+
+let accountRiskSchemaReady = false
+
+/** Clone empty `mom_*` tables into `account_risk` so search_path does not fall through to MOM data. */
+export async function ensureAccountRiskSchema(): Promise<void> {
+  if (accountRiskSchemaReady) return
+  await pool.query("CREATE SCHEMA IF NOT EXISTS account_risk")
+  const tables = await pool.query<{ tablename: string }>(
+    `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'mom_%'`,
+  )
+  for (const { tablename } of tables.rows) {
+    const ident = quoteIdent(tablename)
+    try {
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS account_risk.${ident} (LIKE public.${ident} INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES)`,
+      )
+    } catch {
+      // skip tables whose LIKE clone is unsupported; queries will error until import
+    }
+  }
+  accountRiskSchemaReady = true
+}
+
+async function withSearchPathClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  if ((await resolveSource()) !== "account") {
+    const client = await pool.connect()
+    try {
+      return await fn(client)
+    } finally {
+      client.release()
+    }
+  }
+  await ensureAccountRiskSchema()
+  const client = await pool.connect()
+  try {
+    await client.query("SET search_path TO account_risk, public")
+    return await fn(client)
+  } finally {
+    try {
+      await client.query("RESET search_path")
+    } catch {
+      // ignore
+    }
+    client.release()
+  }
+}
+
 export async function query<T = Record<string, unknown>>(
   sql: string,
   params?: unknown[],
 ): Promise<T[]> {
-  const res = await pool.query(sql, params)
-  return res.rows as T[]
+  if ((await resolveSource()) !== "account") {
+    const res = await pool.query(sql, params)
+    return res.rows as T[]
+  }
+  return withSearchPathClient(async (client) => {
+    const res = await client.query(sql, params)
+    return res.rows as T[]
+  })
 }
 
 /** Like query() but returns the full QueryResult (rows, fields, rowCount, command). */
 export async function rawQuery(
+  sql: string,
+  params?: unknown[],
+) {
+  if ((await resolveSource()) !== "account") {
+    return pool.query(sql, params)
+  }
+  return withSearchPathClient((client) => client.query(sql, params))
+}
+
+/**
+ * Run a query directly against the pool, ALWAYS in the public schema.
+ * Use this for DDL and DML that must never be affected by search_path overrides
+ * (e.g. the CFMMC ETL which should always read/write public.cfmmc_* tables).
+ */
+export async function publicQuery(
   sql: string,
   params?: unknown[],
 ) {
@@ -60,10 +144,20 @@ export async function queryUnbounded<T = Record<string, unknown>>(
 ): Promise<T[]> {
   const client = await pool.connect()
   try {
+    if ((await resolveSource()) === "account") {
+      await ensureAccountRiskSchema()
+      await client.query("SET search_path TO account_risk, public")
+    }
     await client.query("SET statement_timeout = 0")
     const res = await client.query(sql, params)
     return res.rows as T[]
   } finally {
+    try {
+      await client.query("RESET search_path")
+      await client.query("RESET statement_timeout")
+    } catch {
+      // ignore
+    }
     client.release()
   }
 }
@@ -82,6 +176,10 @@ export async function withTransaction<T>(
   }) as typeof query
   try {
     await client.query("BEGIN")
+    if ((await resolveSource()) === "account") {
+      await ensureAccountRiskSchema()
+      await client.query("SET LOCAL search_path TO account_risk, public")
+    }
     const result = await fn(txQuery)
     await client.query("COMMIT")
     return result
@@ -93,6 +191,11 @@ export async function withTransaction<T>(
     }
     throw err
   } finally {
+    try {
+      await client.query("RESET search_path")
+    } catch {
+      // ignore
+    }
     client.release()
   }
 }

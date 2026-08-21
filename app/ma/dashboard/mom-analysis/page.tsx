@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Download, FileText, Upload, Users, Calculator } from "lucide-react"
+import { Download, FileText, Shield, Upload, Users, Calculator } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 
@@ -10,6 +10,14 @@ const functions = [
     href: "/ma/dashboard/mom-analysis/risk-report",
     downloadHref: null,
     icon: FileText,
+    openInNewTab: false,
+  },
+  {
+    title: "单账户每日风控",
+    description: "查看单账户每日风控报告。",
+    href: "/ma/dashboard/mom-analysis/account-risk-report",
+    downloadHref: null,
+    icon: Shield,
     openInNewTab: false,
   },
   {
