@@ -13,6 +13,20 @@ export type CfmmcAccountOption = {
   imported: boolean
   linked: boolean
   kind?: "account" | "book"
+  source?: "upload" | "email" | "cfmmc"
+  cfmmcUserId?: string | null
+}
+
+const SOURCE_GROUPS: { source: NonNullable<CfmmcAccountOption["source"]>; label: string }[] = [
+  { source: "upload", label: "拖入文件" },
+  { source: "email", label: "邮箱获取" },
+  { source: "cfmmc", label: "监控中心" },
+]
+
+function optionLabel(a: CfmmcAccountOption) {
+  if (a.source === "cfmmc") return a.label.replace(/^监控中心\s+/, "")
+  if (a.source === "email") return a.label.replace(/^邮箱\s*/, "")
+  return a.label
 }
 
 export type CfmmcAccountScope = {
@@ -84,7 +98,6 @@ export function AccountRiskAccountSwitcher({
   const current = accounts.find((a) => a.accountNo === selected)
   return (
     <label className={compact ? "flex items-center gap-2 min-w-0" : "flex flex-col gap-1 min-w-0"}>
-      <span className="text-[10px] text-muted-foreground shrink-0">账户</span>
       <select
         value={selected}
         onChange={(e) => onChange(e.target.value)}
@@ -92,25 +105,19 @@ export function AccountRiskAccountSwitcher({
         title={current ? `${current.label} ${current.accountNo}` : "全部账户"}
       >
         {accounts.length > 1 && <option value="all">全部账户（汇总）</option>}
-        {accounts.some((a) => a.kind === "book") && (
-          <optgroup label="命名账户">
-            {accounts.filter((a) => a.kind === "book").map((a) => (
-              <option key={a.accountNo} value={a.accountNo} disabled={!a.imported}>
-                {a.label}{a.imported ? "" : "（未导入）"}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {accounts.some((a) => a.kind !== "book") && (
-          <optgroup label="资金账号">
-            {accounts.filter((a) => a.kind !== "book").map((a) => (
-              <option key={a.accountNo} value={a.accountNo} disabled={!a.imported}>
-                {`${a.label}${a.label !== a.accountNo ? ` · ${a.accountNo}` : ""}`}
-                {a.imported ? "" : "（未导入）"}
-              </option>
-            ))}
-          </optgroup>
-        )}
+        {SOURCE_GROUPS.map((g) => {
+          const rows = accounts.filter((a) => (a.source ?? "upload") === g.source)
+          if (rows.length === 0) return null
+          return (
+            <optgroup key={g.source} label={g.label}>
+              {rows.map((a) => (
+                <option key={a.accountNo} value={a.accountNo}>
+                  {optionLabel(a)}
+                </option>
+              ))}
+            </optgroup>
+          )
+        })}
       </select>
     </label>
   )

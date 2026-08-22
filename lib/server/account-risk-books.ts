@@ -63,6 +63,23 @@ export function listImportBooks(): ImportBook[] {
   return readRaw().books
 }
 
+/** Drop book entries whose files were deleted from disk. */
+export function pruneMissingBookFiles(importRoot: string): void {
+  const data = readRaw()
+  let changed = false
+  for (const b of data.books) {
+    const next = b.files.filter((f) => {
+      const resolved = safeResolveRel(importRoot, f)
+      return !!resolved && existsSync(resolved) && statSync(resolved).isFile()
+    })
+    if (next.length !== b.files.length) {
+      b.files = next
+      changed = true
+    }
+  }
+  if (changed) writeRaw(data)
+}
+
 /** Drop empty leftover books that were never tagged as a source. */
 export function pruneEmptyLegacyBooks(): void {
   const data = readRaw()

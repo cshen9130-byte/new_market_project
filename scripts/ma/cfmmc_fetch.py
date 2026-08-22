@@ -2,22 +2,27 @@
 Log in to CFMMC investor query (https://investorservice.cfmmc.com/) and download
 the daily 客户交易结算日报 xls.
 
+Login uses Playwright + OCR. History download is sequential HTTP, same as
+C:/coding/auto_login/login.py: POST setParameter.do (switch date) then GET
+the Excel URL. A file is kept only when its inner 交易日期 matches the
+requested day — CFMMC otherwise returns the latest report for empty dates.
+
 Credentials come from env CFMMC_USER / CFMMC_PASSWORD (never argv).
 Prints a single JSON object to stdout; logs go to stderr.
-
-Adapted from D:/coding/auto_login/login.py
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
 import sys
 import time
-from datetime import date, timedelta
+import urllib.request
 from pathlib import Path
+from urllib.parse import unquote
 
 try:
     from playwright.sync_api import Error as PlaywrightError
@@ -36,11 +41,39 @@ except ModuleNotFoundError:
     sys.stdout.flush()
     raise SystemExit(1)
 
+try:
+    import requests as req_lib
+except ModuleNotFoundError:
+    sys.stdout.write(
+        json.dumps(
+            {
+                "ok": False,
+                "error": "未安装 requests。请执行：.venv\\Scripts\\python.exe -m pip install -r scripts/ma/requirements-cfmmc.txt",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    sys.stdout.flush()
+    raise SystemExit(1)
+
 LOGIN_URL = "https://investorservice.cfmmc.com/"
-SET_PARAM_URL = "https://investorservice.cfmmc.com/customer/setParameter.do"
+BASE_URL = "https://investorservice.cfmmc.com"
+SET_PARAM_URL = BASE_URL + "/customer/setParameter.do"
+EXCEL_DAILY_URL = BASE_URL + "/customer/setupViewCustomerDetailFromCompanyWithExcel.do"
+TRADE_DATE_LIST_URL = BASE_URL + "/script/tradeDateList.js"
 MAX_CAPTCHA_TRIES = 8
-# 监控中心日报通常只开放近两个月；多走几天以覆盖节假日。
-DEFAULT_HISTORY_DAYS = 90
+# CFMMC keeps at most the past 2 calendar months of daily reports.
+AVAILABLE_DAYS_BACK = 65
+
+_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": BASE_URL + "/",
+}
 
 
 def emit(payload: dict, exit_code: int) -> int:
@@ -75,130 +108,272 @@ def still_on_login(page) -> bool:
     return page.locator("form[name=loginForm] input[name=userID]").count() > 0
 
 
-def xls_download_locator(page):
-    for loc in (
-        page.get_by_role("link", name=re.compile(r"xls\s*下载")),
-        page.get_by_text(re.compile(r"xls\s*下载")),
-        page.locator("a[href*='Excel'], a[href*='excel']"),
-    ):
-        if loc.count() > 0:
-            return loc.first
-    return page.locator("a", has_text=re.compile(r"下载")).last
-
-
 def safe_user_id(user_id: str) -> str:
     return re.sub(r"[^\w.-]+", "_", user_id).strip("_") or "account"
 
 
-def existing_dates(dest_dir: Path, user_id: str) -> set[str]:
-    """Dates already saved for this 资金账号 (import root + one book subfolder)."""
-    found: set[str] = set()
-    if not dest_dir.exists():
-        return found
-    needle = user_id
-    for p in dest_dir.iterdir():
-        if p.is_file() and needle in p.name:
-            m = re.search(r"(20\d{2}-\d{2}-\d{2})", p.name)
-            if m:
-                found.add(m.group(1))
-        elif p.is_dir():
-            for f in p.iterdir():
-                if f.is_file() and needle in f.name:
-                    m = re.search(r"(20\d{2}-\d{2}-\d{2})", f.name)
-                    if m:
-                        found.add(m.group(1))
-    return found
-
-
-def weekday_dates(days_back: int) -> list[str]:
-    today = date.today()
-    out: list[str] = []
-    for i in range(days_back + 1):
-        d = today - timedelta(days=i)
-        if d.weekday() >= 5:
-            continue
-        out.append(d.isoformat())
-    return out
-
-
-def page_has_settlement(page) -> bool:
-    body = ""
+def fetch_disabled_dates() -> set[str]:
+    """Non-trading dates (YYYY-MM-DD) published by CFMMC."""
     try:
-        body = page.locator("body").inner_text(timeout=5000) or ""
-    except Exception:
-        return False
-    if any(s in body for s in ("没有结算", "无结算单", "查无此", "不存在结算", "无符合条件")):
-        return False
-    return "客户交易结算日报" in body or page.locator("text=xls").count() > 0
-
-
-def query_trade_date(page, ymd: str) -> None:
-    loc = page.locator("input[name='tradeDate'], input#tradeDate, input[id*='tradeDate' i]")
-    if loc.count() > 0:
-        box = loc.first
-        box.click()
-        box.fill("")
-        box.fill(ymd)
-        btn = page.locator(
-            "input[type=submit][value*='查询'], button:has-text('查询'), a:has-text('查询'), input[value='查询']"
-        )
-        if btn.count() > 0:
-            btn.first.click()
-        else:
-            box.press("Enter")
-        page.wait_for_load_state("domcontentloaded", timeout=30000)
-        time.sleep(0.5)
-        return
-    try:
-        page.request.post(SET_PARAM_URL, form={"tradeDate": ymd, "byType": "trade"}, timeout=30000)
-        page.goto(SET_PARAM_URL, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(0.4)
+        req = urllib.request.Request(TRADE_DATE_LIST_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            js_text = resp.read().decode("utf-8", errors="replace")
+        dates = re.findall(r"'(\d{4}-\d{2}-\d{2})'", js_text)
+        log(f"Fetched {len(dates)} non-trading dates from CFMMC.")
+        return set(dates)
     except Exception as exc:  # noqa: BLE001
-        log(f"setParameter fallback failed for {ymd}: {exc}")
+        log(f"Could not fetch tradeDateList.js ({exc}). Using weekends only.")
+        return set()
 
 
-def click_xls_download(page, dest_dir: Path, user_id: str, ymd: str | None = None) -> Path:
+def trading_days_in_range(start: dt.date, end: dt.date, disabled: set[str]) -> list[dt.date]:
+    days: list[dt.date] = []
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5 and cur.strftime("%Y-%m-%d") not in disabled:
+            days.append(cur)
+        cur += dt.timedelta(days=1)
+    return days
+
+
+def official_fetch_path(dest_dir: Path, user_id: str, day: dt.date) -> Path | None:
+    """Return this 资金账号's official fetch file for `day` if it exists."""
+    if not dest_dir.exists():
+        return None
+    uid = safe_user_id(user_id)
+    date = day.strftime("%Y-%m-%d")
+    names = (
+        f"{uid}_{date}.xls",
+        f"{uid}_{date}.xlsx",
+        f"{uid}_{uid}_{date}.xls",
+        f"{uid}_{uid}_{date}.xlsx",
+    )
+    for name in names:
+        p = dest_dir / name
+        if p.is_file() and p.stat().st_size > 0:
+            return p
+    return None
+
+
+def normalize_trade_date(value: object, datemode: int = 0) -> str | None:
+    if isinstance(value, float):
+        try:
+            import xlrd
+
+            y, m, d = xlrd.xldate_as_tuple(value, datemode)[:3]
+            return f"{y:04d}-{m:02d}-{d:02d}"
+        except Exception:
+            return None
+    text = str(value or "").strip().replace("/", "-").split(" ")[0]
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if not m:
+        return None
+    return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+
+def extract_xls_trade_date(path: Path) -> str | None:
+    """Read 交易日期 from the first sheet of a 客户交易结算日报 xls."""
+    try:
+        import xlrd
+    except ModuleNotFoundError:
+        return None
+    try:
+        wb = xlrd.open_workbook(str(path), formatting_info=False)
+        sh = wb.sheet_by_index(0)
+    except Exception:
+        return None
+    for r in range(min(sh.nrows, 25)):
+        for c in range(min(sh.ncols, 12)):
+            label = str(sh.cell_value(r, c) or "").strip()
+            if "交易日期" not in label:
+                continue
+            for dc in range(c + 1, min(sh.ncols, c + 4)):
+                got = normalize_trade_date(sh.cell_value(r, dc), wb.datemode)
+                if got:
+                    return got
+    return None
+
+
+def official_name_date(user_id: str, name: str) -> str | None:
+    uid = safe_user_id(user_id)
+    m = re.match(
+        rf"^{re.escape(uid)}(?:_{re.escape(uid)})?_(\d{{4}}-\d{{2}}-\d{{2}})\.(xls|xlsx|xlsm)$",
+        name,
+        re.IGNORECASE,
+    )
+    return m.group(1) if m else None
+
+
+def purge_mismatched_official_files(dest_dir: Path, user_id: str) -> int:
+    """Delete official-named files whose inner 交易日期 does not match the filename."""
+    if not dest_dir.exists():
+        return 0
+    uid = safe_user_id(user_id)
+    removed = 0
+    for p in dest_dir.glob(f"{uid}_*.xls*"):
+        if p.name.startswith("~$"):
+            continue
+        want = official_name_date(user_id, p.name)
+        if not want:
+            continue
+        got = extract_xls_trade_date(p)
+        if got and got != want:
+            log(f"  remove mismatch {p.name} (inside {got}, name {want})")
+            p.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def already_downloaded(dest_dir: Path, user_id: str, day: dt.date) -> bool:
+    """Skip only when this 资金账号 already has a file whose inner date matches."""
+    p = official_fetch_path(dest_dir, user_id, day)
+    if p is None:
+        return False
+    want = day.strftime("%Y-%m-%d")
+    got = extract_xls_trade_date(p)
+    if got is None:
+        return True
+    if got == want:
+        return True
+    log(f"  replace mismatch {p.name} (inside {got})")
+    p.unlink(missing_ok=True)
+    return False
+
+
+def extract_struts_token(html: str) -> str | None:
+    m = re.search(
+        r'<input[^>]+name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]+value="([^"]+)"',
+        html,
+        re.IGNORECASE,
+    )
+    return m.group(1) if m else None
+
+
+def build_http_session(playwright_page) -> req_lib.Session:
+    ss = req_lib.Session()
+    ss.headers.update(_HTTP_HEADERS)
+    for ck in playwright_page.context.cookies():
+        ss.cookies.set(
+            ck["name"],
+            ck["value"],
+            domain=ck.get("domain") or "investorservice.cfmmc.com",
+            path=ck.get("path") or "/",
+        )
+    return ss
+
+
+def is_xls_bytes(content: bytes, content_type: str) -> bool:
+    if not content or len(content) < 8:
+        return False
+    lowered = content_type.lower()
+    if "text/html" in lowered or "text/plain" in lowered:
+        return False
+    head = content[:16]
+    if head.startswith(b"<!DOCTYPE") or head.startswith(b"<html") or head.startswith(b"<HTML"):
+        return False
+    # OLE Compound File (.xls) or ZIP (.xlsx)
+    return head.startswith(b"\xd0\xcf\x11\xe0") or head.startswith(b"PK")
+
+
+def save_excel_response(dest_dir: Path, user_id: str, date_str: str, excel_resp: req_lib.Response) -> Path | None:
+    content_type = excel_resp.headers.get("Content-Type", "")
+    content = excel_resp.content
+    if not is_xls_bytes(content, content_type):
+        return None
+    cd = excel_resp.headers.get("Content-Disposition", "")
+    fname_m = re.search(r"filename\*?=['\"]?(?:UTF-8'')?([^'\";\r\n]+)", cd, re.IGNORECASE)
+    suffix = ".xls"
+    if fname_m:
+        fname = unquote(fname_m.group(1).strip().strip("\"'"))
+        suffix = Path(fname).suffix or ".xls"
+    target = dest_dir / f"{safe_user_id(user_id)}_{date_str}{suffix}"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    page.wait_for_selector("text=客户交易结算日报", timeout=30000)
-    time.sleep(0.4)
-    button = xls_download_locator(page)
-    button.wait_for(state="visible", timeout=15000)
-    log(f"Clicking xls download{f' for {ymd}' if ymd else ''}...")
-    with page.expect_download(timeout=60000) as download_info:
-        button.click()
-    download = download_info.value
-    suggested = download.suggested_filename or "cfmmc.xls"
-    suffix = Path(suggested).suffix or ".xls"
-    match = re.search(r"(20\d{2}-\d{2}-\d{2})", suggested)
-    date_part = ymd or (match.group(1) if match else Path(suggested).stem)
-    target = dest_dir / f"{safe_user_id(user_id)}_{date_part}{suffix}"
-    download.save_as(str(target))
-    log(f"Saved download to {target}")
+    target.write_bytes(content)
     return target
 
 
-def download_history(page, dest_dir: Path, user_id: str, days_back: int) -> tuple[list[Path], int]:
-    already = existing_dates(dest_dir, user_id)
-    saved: list[Path] = []
-    skipped = 0
-    for ymd in weekday_dates(days_back):
-        if ymd in already:
-            skipped += 1
-            log(f"Skip {ymd}: already on disk")
-            continue
-        log(f"Query settlement {ymd}...")
+def session_from_cookies(cookies: list[dict]) -> req_lib.Session:
+    ss = req_lib.Session()
+    ss.headers.update(_HTTP_HEADERS)
+    for ck in cookies:
+        ss.cookies.set(
+            ck["name"],
+            ck["value"],
+            domain=ck.get("domain") or "investorservice.cfmmc.com",
+            path=ck.get("path") or "/",
+        )
+    return ss
+
+
+def switch_trade_date(ss: req_lib.Session, date_str: str, token: str | None) -> str | None:
+    """POST setParameter.do so the session's active settlement date changes."""
+    post_data: dict[str, str] = {"tradeDate": date_str, "byType": "trade"}
+    if token:
+        post_data["org.apache.struts.taglib.html.TOKEN"] = token
+    resp = ss.post(SET_PARAM_URL, data=post_data, timeout=20)
+    return extract_struts_token(resp.text) or token
+
+
+def download_all_dates(
+    cookies: list[dict],
+    user_id: str,
+    dest_dir: Path,
+    days_back: int,
+    latest_only: bool,
+    token: str | None = None,
+    home_url: str | None = None,
+) -> tuple[list[Path], int, int]:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    purged = purge_mismatched_official_files(dest_dir, user_id)
+    if purged:
+        log(f"Removed {purged} official files whose inner 交易日期 did not match the filename.")
+
+    today = dt.date.today()
+    end_date = today - dt.timedelta(days=1)
+    start_date = today - dt.timedelta(days=max(1, days_back))
+    disabled = fetch_disabled_dates()
+    days = trading_days_in_range(start_date, end_date, disabled)
+    if latest_only:
+        days = days[-1:] if days else []
+    pending = [d for d in days if not already_downloaded(dest_dir, user_id, d)]
+    skipped = len(days) - len(pending)
+    log(f"Trading days: {len(days)}  pending={len(pending)}  skipped={skipped}  ({start_date} → {end_date})")
+    if not pending:
+        return [], skipped, purged
+
+    ss = session_from_cookies(cookies)
+    if not token and home_url:
         try:
-            query_trade_date(page, ymd)
-            if not page_has_settlement(page):
-                log(f"No settlement for {ymd}")
-                continue
-            path = click_xls_download(page, dest_dir, user_id, ymd)
-            saved.append(path)
-            already.add(ymd)
+            token = extract_struts_token(ss.get(home_url, timeout=15).text)
         except Exception as exc:  # noqa: BLE001
-            log(f"Failed {ymd}: {exc}")
+            log(f"Could not refresh Struts token ({exc}).")
+    log(f"Excel mode=setParameter  sequential  token={'yes' if token else 'no'}")
+
+    saved: list[Path] = []
+    discarded = 0
+    for i, day in enumerate(pending, 1):
+        date_str = day.strftime("%Y-%m-%d")
+        try:
+            token = switch_trade_date(ss, date_str, token)
+            resp = ss.get(EXCEL_DAILY_URL, timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  [{i:>2}/{len(pending)}] {date_str}  error: {exc}")
+            discarded += 1
             continue
-    return saved, skipped
+        path = save_excel_response(dest_dir, user_id, date_str, resp)
+        if path is None:
+            log(f"  [{i:>2}/{len(pending)}] {date_str}  no xls")
+            discarded += 1
+            continue
+        got = extract_xls_trade_date(path)
+        if got and got != date_str:
+            log(f"  [{i:>2}/{len(pending)}] {date_str}  discarded (inside {got})")
+            path.unlink(missing_ok=True)
+            discarded += 1
+            continue
+        log(f"  [{i:>2}/{len(pending)}] {date_str}  saved {path.name} ({path.stat().st_size:,} B)")
+        saved.append(path)
+    return saved, skipped, discarded + purged
 
 
 def launch_browser(playwright, headless: bool):
@@ -231,7 +406,7 @@ def login(page, user_id: str, password: str) -> None:
 
         captcha_img = page.locator("#imgVeriCode")
         captcha_img.wait_for(state="visible", timeout=15000)
-        time.sleep(0.4)
+        time.sleep(0.2)
         image_bytes = captcha_img.screenshot()
         code = recognize_captcha(ocr, image_bytes)
         log(f"[try {attempt}/{MAX_CAPTCHA_TRIES}] captcha OCR: {code!r}")
@@ -239,13 +414,13 @@ def login(page, user_id: str, password: str) -> None:
         if len(code) != 6:
             log("OCR not 6 chars, refreshing captcha")
             page.locator(".login-form-refresh-captcha-btn").click()
-            time.sleep(0.6)
+            time.sleep(0.4)
             continue
 
         page.fill("input[name=vericode]", code)
         page.click("input[type=submit]")
         page.wait_for_load_state("domcontentloaded", timeout=30000)
-        time.sleep(1.0)
+        time.sleep(0.4)
 
         if not still_on_login(page):
             log("Login succeeded.")
@@ -255,7 +430,7 @@ def login(page, user_id: str, password: str) -> None:
         log(f"Still on login page. {err or 'No error text.'}")
         if "验证码" in err or "verif" in err.lower() or not err:
             page.locator(".login-form-refresh-captcha-btn").click()
-            time.sleep(0.6)
+            time.sleep(0.4)
             continue
         raise RuntimeError(err or "登录被拒绝（非验证码原因）")
 
@@ -269,22 +444,34 @@ def fetch_reports(
     headless: bool,
     history: bool,
     days_back: int,
-) -> tuple[list[Path], int]:
+) -> tuple[list[Path], int, int]:
+    cookies: list[dict] = []
+    token: str | None = None
+    home_url = LOGIN_URL
     with sync_playwright() as p:
         browser = launch_browser(p, headless)
         try:
             context = browser.new_context(locale="zh-CN", accept_downloads=True)
             page = context.new_page()
             login(page, user_id, password)
-            if history:
-                return download_history(page, dest_dir, user_id, days_back)
-            path = click_xls_download(page, dest_dir, user_id)
-            return [path], 0
+            cookies = page.context.cookies()
+            home_url = page.url or LOGIN_URL
+            token = extract_struts_token(page.content())
+            log("Login cookies captured; closing browser before HTTP download.")
         finally:
             try:
                 browser.close()
             except PlaywrightError:
                 pass
+    return download_all_dates(
+        cookies,
+        user_id,
+        dest_dir,
+        days_back=days_back,
+        latest_only=not history,
+        token=token,
+        home_url=home_url,
+    )
 
 
 def main() -> int:
@@ -292,7 +479,7 @@ def main() -> int:
     parser.add_argument("--out-dir", required=True, help="Directory to save the xls")
     parser.add_argument("--headed", action="store_true", help="Show the browser window")
     parser.add_argument("--history", action="store_true", help="Download all available history dates")
-    parser.add_argument("--days", type=int, default=DEFAULT_HISTORY_DAYS, help="Calendar days to walk back")
+    parser.add_argument("--days", type=int, default=AVAILABLE_DAYS_BACK, help="Calendar days to walk back")
     args = parser.parse_args()
 
     user_id = (os.environ.get("CFMMC_USER") or "").strip()
@@ -303,7 +490,7 @@ def main() -> int:
     dest_dir = Path(args.out_dir)
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
-        paths, skipped = fetch_reports(
+        paths, skipped, discarded = fetch_reports(
             user_id,
             password,
             dest_dir,
@@ -311,7 +498,7 @@ def main() -> int:
             history=args.history,
             days_back=max(1, args.days),
         )
-        if not paths and skipped == 0:
+        if not paths and skipped == 0 and discarded == 0:
             return emit({"ok": False, "error": "未下载到结算日报（可能该区间没有数据）"}, 1)
         last = paths[-1] if paths else None
         return emit(
@@ -322,6 +509,7 @@ def main() -> int:
                 "files": [p.name for p in paths],
                 "downloaded": len(paths),
                 "skipped": skipped,
+                "discarded": discarded,
             },
             0,
         )

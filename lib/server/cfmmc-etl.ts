@@ -19,6 +19,7 @@ import { accountRiskImportDir } from "@/lib/server/account-risk-import"
 import { bookSource, getImportBook, listImportBooks, listSpreadsheetRelPaths, sourceFilesForBook, type ImportBookSource } from "@/lib/server/account-risk-books"
 import { getFuturesMultiplier } from "@/lib/server/futures-multipliers"
 import { clearAccountSourceCache } from "@/lib/server/mom-cache"
+import { appendJobLog } from "@/lib/server/account-risk-job-log"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -972,32 +973,41 @@ const SUMMARY_UPSERT = `
   RETURNING (xmax = 0) AS is_insert
 `
 
-const PRODUCT_UPSERT = `
-  INSERT INTO public.cfmmc_product_pnl
+/** Multi-row INSERT … ON CONFLICT. MOM ETL uses execute_values; one round-trip per row was the 重算 hang. */
+async function batchUpsert(intoSql: string, conflictSql: string, rows: unknown[][], chunkSize = 80): Promise<void> {
+  if (rows.length === 0) return
+  const width = rows[0].length
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize)
+    const params: unknown[] = []
+    const tuples = chunk.map((row, ri) => {
+      const base = ri * width
+      params.push(...row)
+      return `(${row.map((_, c) => `$${base + c + 1}`).join(",")},NOW())`
+    })
+    await publicQuery(`${intoSql} VALUES ${tuples.join(",")}\n${conflictSql}`, params)
+  }
+}
+
+const PRODUCT_INTO = `INSERT INTO public.cfmmc_product_pnl
     (account_no, trade_date, source_file, row_num, product_code,
-     volume, turnover, commission, realized_pl, updated_at)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-  ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
+     volume, turnover, commission, realized_pl, updated_at)`
+const PRODUCT_CONFLICT = `ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
     source_file  = EXCLUDED.source_file,
     product_code = EXCLUDED.product_code,
     volume       = EXCLUDED.volume,
     turnover     = EXCLUDED.turnover,
     commission   = EXCLUDED.commission,
     realized_pl  = EXCLUDED.realized_pl,
-    updated_at   = NOW()
-  RETURNING (xmax = 0) AS is_insert
-`
+    updated_at   = NOW()`
 
-const POSITION_UPSERT = `
-  INSERT INTO public.cfmmc_positions
+const POSITION_INTO = `INSERT INTO public.cfmmc_positions
     (account_no, trade_date, source_file, row_num,
      instrument, trade_no, bs, open_price, lots,
      latest_price, settl_price, floating_pl, sh,
      buy_lots, buy_price, sell_lots, sell_price, prev_settle, trade_code, actual_date,
-     notional_mv, allocated_margin,
-     updated_at)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
-  ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
+     notional_mv, allocated_margin, updated_at)`
+const POSITION_CONFLICT = `ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
     source_file       = EXCLUDED.source_file,
     instrument        = EXCLUDED.instrument,
     trade_no          = EXCLUDED.trade_no,
@@ -1017,32 +1027,25 @@ const POSITION_UPSERT = `
     actual_date       = EXCLUDED.actual_date,
     notional_mv       = EXCLUDED.notional_mv,
     allocated_margin  = EXCLUDED.allocated_margin,
-    updated_at        = NOW()
-  RETURNING (xmax = 0) AS is_insert
-`
+    updated_at        = NOW()`
 
-const CASH_FLOW_UPSERT = `
-  INSERT INTO public.cfmmc_cash_flows
+const CASH_INTO = `INSERT INTO public.cfmmc_cash_flows
     (account_no, trade_date, source_file, row_num,
-     occur_date, deposit, withdrawal, method, memo, updated_at)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-  ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
+     occur_date, deposit, withdrawal, method, memo, updated_at)`
+const CASH_CONFLICT = `ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
     source_file = EXCLUDED.source_file,
     occur_date  = EXCLUDED.occur_date,
     deposit     = EXCLUDED.deposit,
     withdrawal  = EXCLUDED.withdrawal,
     method      = EXCLUDED.method,
     memo        = EXCLUDED.memo,
-    updated_at  = NOW()
-`
+    updated_at  = NOW()`
 
-const OPTION_TRADE_UPSERT = `
-  INSERT INTO public.cfmmc_option_trades
+const OPTION_INTO = `INSERT INTO public.cfmmc_option_trades
     (account_no, trade_date, source_file, row_num,
      instrument, trade_no, trade_time, bs, premium_px, volume, premium,
-     covered, commission, actual_date, updated_at)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
-  ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
+     covered, commission, actual_date, updated_at)`
+const OPTION_CONFLICT = `ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
     source_file = EXCLUDED.source_file,
     instrument  = EXCLUDED.instrument,
     trade_no    = EXCLUDED.trade_no,
@@ -1054,15 +1057,12 @@ const OPTION_TRADE_UPSERT = `
     covered     = EXCLUDED.covered,
     commission  = EXCLUDED.commission,
     actual_date = EXCLUDED.actual_date,
-    updated_at  = NOW()
-`
+    updated_at  = NOW()`
 
-const SECURITY_UPSERT = `
-  INSERT INTO public.cfmmc_securities
+const SECURITY_INTO = `INSERT INTO public.cfmmc_securities
     (account_no, trade_date, source_file, row_num,
-     code, name, change_type, bs, trade_no, trade_time, price, qty, amount, commission, updated_at)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
-  ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
+     code, name, change_type, bs, trade_no, trade_time, price, qty, amount, commission, updated_at)`
+const SECURITY_CONFLICT = `ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
     source_file = EXCLUDED.source_file,
     code        = EXCLUDED.code,
     name        = EXCLUDED.name,
@@ -1074,16 +1074,13 @@ const SECURITY_UPSERT = `
     qty         = EXCLUDED.qty,
     amount      = EXCLUDED.amount,
     commission  = EXCLUDED.commission,
-    updated_at  = NOW()
-`
+    updated_at  = NOW()`
 
-const TRADE_UPSERT = `
-  INSERT INTO public.cfmmc_trades
+const TRADE_INTO = `INSERT INTO public.cfmmc_trades
     (account_no, trade_date, source_file, row_num,
      instrument, trade_no, trade_time, bs, sh, price, lots, turnover, oc,
-     commission, realized_pl, actual_date, updated_at)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
-  ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
+     commission, realized_pl, actual_date, updated_at)`
+const TRADE_CONFLICT = `ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
     source_file  = EXCLUDED.source_file,
     instrument   = EXCLUDED.instrument,
     trade_no     = EXCLUDED.trade_no,
@@ -1097,16 +1094,13 @@ const TRADE_UPSERT = `
     commission   = EXCLUDED.commission,
     realized_pl  = EXCLUDED.realized_pl,
     actual_date  = EXCLUDED.actual_date,
-    updated_at   = NOW()
-`
+    updated_at   = NOW()`
 
-const CLOSE_UPSERT = `
-  INSERT INTO public.cfmmc_closes
+const CLOSE_INTO = `INSERT INTO public.cfmmc_closes
     (account_no, trade_date, source_file, row_num,
      instrument, trade_no, bs, price, open_price, lots, prev_settle,
-     realized_pl, orig_trade_no, actual_date, updated_at)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
-  ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
+     realized_pl, orig_trade_no, actual_date, updated_at)`
+const CLOSE_CONFLICT = `ON CONFLICT (account_no, trade_date, row_num) DO UPDATE SET
     source_file   = EXCLUDED.source_file,
     instrument    = EXCLUDED.instrument,
     trade_no      = EXCLUDED.trade_no,
@@ -1118,8 +1112,7 @@ const CLOSE_UPSERT = `
     realized_pl   = EXCLUDED.realized_pl,
     orig_trade_no = EXCLUDED.orig_trade_no,
     actual_date   = EXCLUDED.actual_date,
-    updated_at    = NOW()
-`
+    updated_at    = NOW()`
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
@@ -1240,7 +1233,11 @@ export async function runCfmmcETL(
   )
 
   const result: CfmmcETLResult = { processed: 0, inserted: 0, updated: 0, skipped: 0, errors: [] }
-  if (allFiles.length === 0) return result
+  appendJobLog("etl", `${mode === "full" ? "全量重算" : "增量计算"}：${allFiles.length} 个文件`)
+  if (allFiles.length === 0) {
+    appendJobLog("etl", "没有可计算的文件")
+    return result
+  }
 
   let processedFiles = new Set<string>()
   if (mode === "incremental") {
@@ -1257,13 +1254,16 @@ export async function runCfmmcETL(
     await clearCfmmcExtractedData()
   }
 
+  let fileIndex = 0
   for (const fileName of allFiles) {
+    fileIndex++
     if (mode === "incremental" && (processedFiles.has(fileName) || processedFiles.has(path.basename(fileName)))) {
       result.skipped++
       continue
     }
 
     try {
+      appendJobLog("etl", `[${fileIndex}/${allFiles.length}] ${path.basename(fileName)}`)
       const buf = fs.readFileSync(path.join(dir, fileName))
       const wb  = XLSX.read(buf, { type: "buffer", cellDates: false })
 
@@ -1294,86 +1294,99 @@ export async function runCfmmcETL(
       const prodSheet = sheetByName(wb, "品种汇总") ?? (wb.SheetNames.length > 1 ? wb.Sheets[wb.SheetNames[1]] : undefined)
       if (prodSheet) {
         const products = parseProductSheet(prodSheet, summary.accountNo, summary.tradeDate, fileName)
-        for (const p of products) {
-          await publicQuery(PRODUCT_UPSERT, [
-            p.accountNo, p.tradeDate, p.sourceFile, p.rowNum, p.productCode,
-            p.volume, p.turnover, p.commission, p.realizedPl,
-          ])
-        }
+        await batchUpsert(PRODUCT_INTO, PRODUCT_CONFLICT, products.map((p) => [
+          p.accountNo, p.tradeDate, p.sourceFile, p.rowNum, p.productCode,
+          p.volume, p.turnover, p.commission, p.realizedPl,
+        ]))
       }
 
       const posSheet = sheetByName(wb, "持仓明细") ?? sheetByName(wb, "仓位明细")
       if (posSheet) {
         const positions = parsePositionSheet(posSheet, summary.accountNo, summary.tradeDate, fileName)
         derivePositionEconomics(positions, summary.marginOccupied)
-        for (const p of positions) {
-          await publicQuery(POSITION_UPSERT, [
-            p.accountNo, p.tradeDate, p.sourceFile, p.rowNum,
-            p.instrument, p.tradeNo, p.bs, p.openPrice, p.lots,
-            p.latestPrice, p.settlPrice, p.floatingPl, p.sh,
-            p.buyLots, p.buyPrice, p.sellLots, p.sellPrice, p.prevSettle, p.tradeCode, p.actualDate,
-            p.notionalMv, p.allocatedMargin,
-          ])
-        }
+        await batchUpsert(POSITION_INTO, POSITION_CONFLICT, positions.map((p) => [
+          p.accountNo, p.tradeDate, p.sourceFile, p.rowNum,
+          p.instrument, p.tradeNo, p.bs, p.openPrice, p.lots,
+          p.latestPrice, p.settlPrice, p.floatingPl, p.sh,
+          p.buyLots, p.buyPrice, p.sellLots, p.sellPrice, p.prevSettle, p.tradeCode, p.actualDate,
+          p.notionalMv, p.allocatedMargin,
+        ]))
       }
 
-      for (const flow of parseCashFlows(ws0, summary.accountNo, summary.tradeDate, fileName)) {
-        await publicQuery(CASH_FLOW_UPSERT, [
+      await batchUpsert(CASH_INTO, CASH_CONFLICT,
+        parseCashFlows(ws0, summary.accountNo, summary.tradeDate, fileName).map((flow) => [
           flow.accountNo, flow.tradeDate, flow.sourceFile, flow.rowNum,
           flow.occurDate, flow.deposit, flow.withdrawal, flow.method, flow.memo,
-        ])
-      }
+        ]))
 
       const optSheet = sheetByName(wb, "期权成交明细")
       if (optSheet) {
-        for (const t of parseOptionTradeSheet(optSheet, summary.accountNo, summary.tradeDate, fileName)) {
-          await publicQuery(OPTION_TRADE_UPSERT, [
+        await batchUpsert(OPTION_INTO, OPTION_CONFLICT,
+          parseOptionTradeSheet(optSheet, summary.accountNo, summary.tradeDate, fileName).map((t) => [
             t.accountNo, t.tradeDate, t.sourceFile, t.rowNum,
             t.instrument, t.tradeNo, t.tradeTime, t.bs, t.premiumPx, t.volume, t.premium,
             t.covered, t.commission, t.actualDate,
-          ])
-        }
+          ]))
       }
 
       const secSheet = sheetByName(wb, "证券成交明细")
       if (secSheet) {
-        for (const s of parseSecuritiesSheet(secSheet, summary.accountNo, summary.tradeDate, fileName)) {
-          await publicQuery(SECURITY_UPSERT, [
+        await batchUpsert(SECURITY_INTO, SECURITY_CONFLICT,
+          parseSecuritiesSheet(secSheet, summary.accountNo, summary.tradeDate, fileName).map((s) => [
             s.accountNo, s.tradeDate, s.sourceFile, s.rowNum,
             s.code, s.name, s.changeType, s.bs, s.tradeNo, s.tradeTime, s.price, s.qty, s.amount, s.commission,
-          ])
-        }
+          ]))
       }
 
-      const tradeSheet = wb.SheetNames.find((n) => n === "成交明细" || (n.includes("成交明细") && !n.includes("期权") && !n.includes("证券")))
-        ? wb.Sheets[wb.SheetNames.find((n) => n === "成交明细" || (n.includes("成交明细") && !n.includes("期权") && !n.includes("证券")))!]
-        : undefined
-      if (tradeSheet) {
-        const trades = parseTradeSheet(tradeSheet, summary.accountNo, summary.tradeDate, fileName)
-        for (const t of trades) {
-          await publicQuery(TRADE_UPSERT, [
-            t.accountNo, t.tradeDate, t.sourceFile, t.rowNum,
-            t.instrument, t.tradeNo, t.tradeTime, t.bs, t.sh, t.price, t.lots, t.turnover, t.oc,
-            t.commission, t.realizedPl, t.actualDate,
-          ])
-        }
+      const tradeSheetName = wb.SheetNames.find((n) => n === "成交明细" || (n.includes("成交明细") && !n.includes("期权") && !n.includes("证券")))
+      if (tradeSheetName) {
+        const trades = parseTradeSheet(wb.Sheets[tradeSheetName], summary.accountNo, summary.tradeDate, fileName)
+        await batchUpsert(TRADE_INTO, TRADE_CONFLICT, trades.map((t) => [
+          t.accountNo, t.tradeDate, t.sourceFile, t.rowNum,
+          t.instrument, t.tradeNo, t.tradeTime, t.bs, t.sh, t.price, t.lots, t.turnover, t.oc,
+          t.commission, t.realizedPl, t.actualDate,
+        ]))
       }
 
       const closeSheet = sheetByName(wb, "平仓明细")
       if (closeSheet) {
         const closes = parseCloseSheet(closeSheet, summary.accountNo, summary.tradeDate, fileName)
-        for (const c of closes) {
-          await publicQuery(CLOSE_UPSERT, [
-            c.accountNo, c.tradeDate, c.sourceFile, c.rowNum,
-            c.instrument, c.tradeNo, c.bs, c.price, c.openPrice, c.lots, c.prevSettle,
-            c.realizedPl, c.origTradeNo, c.actualDate,
-          ])
-        }
+        await batchUpsert(CLOSE_INTO, CLOSE_CONFLICT, closes.map((c) => [
+          c.accountNo, c.tradeDate, c.sourceFile, c.rowNum,
+          c.instrument, c.tradeNo, c.bs, c.price, c.openPrice, c.lots, c.prevSettle,
+          c.realizedPl, c.origTradeNo, c.actualDate,
+        ]))
       }
 
       result.processed++
     } catch (e) {
       result.errors.push(`${fileName}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  if (allFiles.length >= 5) {
+    try {
+      const names = allFiles.flatMap((f) => {
+        const n = f.replace(/\\/g, "/")
+        return [n, path.basename(n)]
+      })
+      const dateRes = await publicQuery(`
+        SELECT COUNT(DISTINCT trade_date)::int AS days
+        FROM public.cfmmc_daily_summary
+        WHERE source_file = ANY($1::text[])
+           OR account_no = ANY($2::text[])
+      `, [
+        names,
+        [...new Set(allFiles.map((f) => path.basename(f).split("_")[0]).filter((id) => /^\d{6,}$/.test(id)))],
+      ])
+      const days = Number((dateRes.rows[0] as { days?: number } | undefined)?.days ?? 0)
+      if (days > 0 && days <= Math.max(1, Math.floor(allFiles.length / 5))) {
+        result.errors.push(
+          `本页有 ${allFiles.length} 个文件但库里只有 ${days} 个交易日。监控中心历史获取没有切到对应日期，文件名上的日期不可信。请清空本页文件后重新「立即获取」，再全量重算。`,
+        )
+      }
+    } catch {
+      // non-fatal
     }
   }
 
@@ -1396,95 +1409,13 @@ export async function runCfmmcETL(
     result.errors.push(`daily_pnl: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  try {
-    await deriveAllPositionEconomics()
-  } catch (e) {
-    result.errors.push(`notional_mv: ${e instanceof Error ? e.message : String(e)}`)
-  }
-
-  // Sync parsed CFMMC data into the account_risk schema so leftover clones stay consistent
-  if (result.processed > 0 || mode === "full") {
-    try {
-      const sync = await syncCfmmcToAccountRisk()
-      result.syncedDaily     = sync.daily
-      result.syncedPositions = sync.positions
-    } catch (e) {
-      result.errors.push(`sync: ${e instanceof Error ? e.message : String(e)}`)
-    }
-  }
+  // notional_mv is written at insert time. Charts read public.cfmmc_* directly,
+  // so skip the old all-row UPDATE + account_risk.mom_* clone rebuild.
 
   clearAccountSourceCache()
+  appendJobLog("etl", `完成：处理 ${result.processed}，新增 ${result.inserted}，更新 ${result.updated}，跳过 ${result.skipped}`)
 
   return result
-}
-
-async function deriveAllPositionEconomics(): Promise<void> {
-  const posRes = await publicQuery(`
-    SELECT id, instrument, buy_lots, sell_lots, lots, bs, settl_price, latest_price,
-           account_no, trade_date::text AS trade_date
-    FROM public.cfmmc_positions
-  `)
-  const marginRes = await publicQuery(`
-    SELECT account_no, trade_date::text AS trade_date, COALESCE(margin_occupied, 0) AS margin_occupied
-    FROM public.cfmmc_daily_summary
-  `)
-  const marginMap = new Map<string, number>()
-  for (const r of marginRes.rows as { account_no: string; trade_date: string; margin_occupied: number | string }[]) {
-    marginMap.set(`${r.account_no}|${r.trade_date}`, Number(r.margin_occupied) || 0)
-  }
-
-  type PosRow = {
-    id: number
-    instrument: string
-    buy_lots: number | string | null
-    sell_lots: number | string | null
-    lots: number | string | null
-    bs: string | null
-    settl_price: number | string | null
-    latest_price: number | string | null
-    account_no: string
-    trade_date: string
-  }
-  const byDay = new Map<string, PosRow[]>()
-  for (const r of posRes.rows as PosRow[]) {
-    const key = `${r.account_no}|${r.trade_date}`
-    if (!byDay.has(key)) byDay.set(key, [])
-    byDay.get(key)!.push(r)
-  }
-
-  for (const [key, rows] of byDay) {
-    const stub: CfmmcPosition[] = rows.map((r) => ({
-      accountNo: r.account_no,
-      tradeDate: r.trade_date,
-      sourceFile: "",
-      rowNum: 0,
-      instrument: r.instrument,
-      tradeNo: null,
-      bs: r.bs,
-      openPrice: null,
-      lots: r.lots == null ? null : Number(r.lots),
-      buyLots: r.buy_lots == null ? null : Number(r.buy_lots),
-      buyPrice: null,
-      sellLots: r.sell_lots == null ? null : Number(r.sell_lots),
-      sellPrice: null,
-      latestPrice: r.latest_price == null ? null : Number(r.latest_price),
-      prevSettle: null,
-      settlPrice: r.settl_price == null ? null : Number(r.settl_price),
-      floatingPl: null,
-      sh: null,
-      tradeCode: null,
-      actualDate: null,
-      notionalMv: null,
-      allocatedMargin: null,
-    }))
-    derivePositionEconomics(stub, marginMap.get(key) ?? 0)
-    for (let i = 0; i < rows.length; i++) {
-      await publicQuery(
-        `UPDATE public.cfmmc_positions SET notional_mv = $1, allocated_margin = $2 WHERE id = $3`,
-        [stub[i].notionalMv, stub[i].allocatedMargin, rows[i].id],
-      )
-    }
-  }
 }
 
 // ─── Chart data queries ───────────────────────────────────────────────────────

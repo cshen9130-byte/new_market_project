@@ -13,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Terminal,
   Trash2,
   UploadCloud,
 } from "lucide-react"
@@ -100,6 +101,8 @@ const EMAIL_PRESETS: Record<string, { imapHost: string; imapPort: number }> = {
 
 const API = "/ma/api/mom-analysis/account-risk-import"
 
+type JobLogLine = { t: string; src: "fetch" | "etl" | "job"; msg: string }
+
 function readError(payload: unknown, fallback: string) {
   if (payload && typeof payload === "object" && "error" in payload) {
     return String((payload as { error: unknown }).error)
@@ -158,6 +161,8 @@ export default function AccountRiskDataImport() {
   type Section = "upload" | "email" | "cfmmc"
   const [activeSection, setActiveSection] = useState<Section>("upload")
 
+  const [jobLines, setJobLines] = useState<JobLogLine[]>([])
+  const jobLogRef = useRef<HTMLDivElement | null>(null)
   const [runningEtlKey, setRunningEtlKey] = useState<string | null>(null)
   const [etlResult, setEtlResult] = useState<{
     processed: number; inserted: number; updated: number; skipped: number
@@ -216,6 +221,25 @@ export default function AccountRiskDataImport() {
     void loadEmailConfig()
     void loadCfmmc()
   }, [loadFiles, loadEmailConfig, loadCfmmc])
+
+  useEffect(() => {
+    let stop = false
+    const tick = async () => {
+      try {
+        const res = await fetch(`${API}/job-log`, { cache: "no-store" })
+        const data = await res.json() as { lines?: JobLogLine[] }
+        if (!stop && Array.isArray(data.lines)) setJobLines(data.lines.slice(-400))
+      } catch { /* ignore */ }
+    }
+    void tick()
+    const id = window.setInterval(() => { void tick() }, 800)
+    return () => { stop = true; window.clearInterval(id) }
+  }, [])
+
+  useEffect(() => {
+    const el = jobLogRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [jobLines])
 
   function addDroppedFiles(list: FileList | File[]) {
     const incoming = Array.from(list).filter((f) => /\.(xlsx|xls|xlsm)$/i.test(f.name))
@@ -319,7 +343,8 @@ export default function AccountRiskDataImport() {
       setEtlResult(next)
       toast({
         title: mode === "full" ? `「${next.label}」全量计算完成` : `「${next.label}」计算完成`,
-        description: `处理 ${next.processed} 个文件。`,
+        description: next.errors[0] ? next.errors[0] : `处理 ${next.processed} 个文件。`,
+        variant: next.errors.length > 0 ? "destructive" : undefined,
       })
     } catch (e) {
       toast({ title: "计算失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
@@ -481,7 +506,7 @@ export default function AccountRiskDataImport() {
       if (!res.ok) throw new Error(readError(data, "获取失败"))
       const results = (data.results ?? []) as {
         ok: boolean; label: string; userId: string; filename?: string
-        downloaded?: number; skipped?: number; etlProcessed?: number; etlError?: string; error?: string
+        downloaded?: number; skipped?: number; discarded?: number; etlProcessed?: number; etlError?: string; error?: string
       }[]
       const okCount = results.filter((r) => r.ok).length
       const fail = results.filter((r) => !r.ok)
@@ -490,6 +515,7 @@ export default function AccountRiskDataImport() {
         .map((r) => {
           const bits = [`新下载 ${r.downloaded ?? 0} 个`]
           if (r.skipped) bits.push(`跳过已有 ${r.skipped}`)
+          if (r.discarded) bits.push(`无结算 ${r.discarded}`)
           if (r.etlProcessed != null) bits.push(`已计算 ${r.etlProcessed} 个文件`)
           if (r.etlError) bits.push(`计算失败: ${r.etlError}`)
           return `${r.label || r.userId}: ${bits.join("，")}`
@@ -889,8 +915,8 @@ export default function AccountRiskDataImport() {
                 中国期货市场监控中心投资者查询服务系统
               </a>
               ，自动识别验证码并下载「客户交易结算日报」xls。
-              点击「立即获取」会补齐监控中心可查的历史日报（约最近两个月，已有文件会跳过）；每天定时任务只拉最新一天。
-              需安装 <span className="font-mono">playwright</span>、<span className="font-mono">ddddocr</span>
+              点击「立即获取」会按日切换监控中心结算日期再下载。只保留文件内「交易日期」与文件名一致的日报；没有结算单的日期不会保存。已有正确文件会跳过。每天定时任务只拉最新一天。
+              需安装 <span className="font-mono">playwright</span>、<span className="font-mono">ddddocr</span>、<span className="font-mono">requests</span>
               （<span className="font-mono">pip install -r scripts/ma/requirements-cfmmc.txt</span> 后执行
               <span className="font-mono"> python -m playwright install chromium</span>）。
             </p>
@@ -1244,6 +1270,44 @@ export default function AccountRiskDataImport() {
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-amber-500" />
+            运行日志
+            {(isFetchingAllCfmmc || fetchingAccountId || runningEtlKey) && (
+              <span className="text-[11px] font-normal text-amber-600">运行中…</span>
+            )}
+            <button
+              type="button"
+              className="ml-auto text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                setJobLines([])
+                void fetch(`${API}/job-log`, { method: "DELETE" })
+              }}
+            >
+              清空
+            </button>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div
+            ref={jobLogRef}
+            className="h-56 overflow-auto rounded-md bg-zinc-950 px-3 py-2 font-mono text-[11px] leading-5 text-zinc-200"
+          >
+            {jobLines.length === 0 ? (
+              <p className="text-zinc-500">点击「立即获取」或「计算」后，这里会实时显示命令状态。</p>
+            ) : jobLines.map((line, i) => (
+              <div key={`${line.t}-${i}`} className="whitespace-pre-wrap break-all">
+                <span className="text-zinc-500">{new Date(line.t).toLocaleTimeString("zh-CN")} </span>
+                <span className={line.src === "etl" ? "text-sky-400" : "text-emerald-400"}>[{line.src}]</span>
+                {" "}{line.msg}
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
 

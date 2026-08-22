@@ -1,6 +1,6 @@
 /**
  * account-risk/accounts
- * Imported 资金账号 plus 监控中心 linked logins.
+ * Imported books grouped by 拖入文件 / 邮箱获取 / 监控中心.
  */
 import { NextResponse } from "next/server"
 import { listCfmmcAccounts } from "@/lib/server/account-risk-scope"

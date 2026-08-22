@@ -3,3 +3,5 @@
 #   python -m playwright install chromium
 playwright>=1.40
 ddddocr>=1.4
+requests>=2.31
+xlrd>=2.0

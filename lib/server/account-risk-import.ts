@@ -1,8 +1,8 @@
 import { randomUUID } from "crypto"
-import { execFile } from "child_process"
+import { spawn } from "child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs"
 import path from "path"
-import { promisify } from "util"
+import * as XLSX from "xlsx"
 
 import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import {
@@ -16,6 +16,7 @@ import {
   getImportBook,
   listImportBooks,
   pruneEmptyLegacyBooks,
+  pruneMissingBookFiles,
   reassignFilesToBook,
   reassignFilesToExistingBook,
   listSpreadsheetRelPaths,
@@ -25,8 +26,45 @@ import {
   type ImportBook,
   type ImportBookSource,
 } from "@/lib/server/account-risk-books"
+import { appendJobLog } from "@/lib/server/account-risk-job-log"
 
-const execFileAsync = promisify(execFile)
+function runPythonLogged(
+  python: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, args, { env, windowsHide: true })
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      fn()
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(() => reject(new Error("获取超时")))
+    }, timeoutMs)
+    child.stdout.on("data", (buf: Buffer) => { stdout += buf.toString("utf8") })
+    child.stderr.on("data", (buf: Buffer) => {
+      const text = buf.toString("utf8")
+      stderr += text
+      for (const line of text.split(/\r?\n/)) {
+        const msg = line.trim()
+        if (msg) appendJobLog("fetch", msg)
+      }
+    })
+    child.on("error", (err) => finish(() => reject(err)))
+    child.on("close", (code) => {
+      if (code === 0 || stdout.trim()) finish(() => resolve({ stdout, stderr }))
+      else finish(() => reject(new Error(stderr.trim().slice(0, 800) || `exit ${code}`)))
+    })
+  })
+}
 
 export type AccountRiskEmailConfig = {
   email: string
@@ -325,10 +363,91 @@ function fileBelongsToUser(rel: string, userId: string): boolean {
   return base.startsWith(`${userId}_`) || base.startsWith(`${userId}.`)
 }
 
-/** Older fetch saved `{uid}_{uid}_{date}.xls`; never treat those as 拖入命名账户. */
+/** Official 监控中心 fetch names: `{uid}_{YYYY-MM-DD}.xls` or `{uid}_{uid}_{date}.xls`. */
 function isCfmmcFetchFilename(rel: string, userId: string): boolean {
+  return officialFetchDate(rel, userId) != null
+}
+
+function officialFetchDate(rel: string, userId: string): string | null {
   const base = path.basename(rel.replace(/\\/g, "/"))
-  return base.startsWith(`${userId}_${userId}_`)
+  const escaped = userId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const double = new RegExp(`^${escaped}_${escaped}_(\\d{4}-\\d{2}-\\d{2})\\.(xls|xlsx|xlsm)$`, "i").exec(base)
+  if (double) return double[1]
+  const single = new RegExp(`^${escaped}_(\\d{4}-\\d{2}-\\d{2})\\.(xls|xlsx|xlsm)$`, "i").exec(base)
+  return single?.[1] ?? null
+}
+
+function normalizeYmd(raw: string): string | null {
+  const m = raw.replace(/\//g, "-").split(" ")[0].match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (!m) return null
+  return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`
+}
+
+function readInnerTradeDate(filePath: string): string | null {
+  try {
+    const buf = readFileSync(filePath)
+    const utf16 = buf.toString("utf16le")
+    const idx = utf16.indexOf("交易日期")
+    if (idx >= 0) {
+      const nearby = normalizeYmd(utf16.slice(idx, idx + 48))
+      if (nearby) return nearby
+    }
+  } catch {
+    // fall through to xlsx
+  }
+  try {
+    const wb = XLSX.readFile(filePath, { cellDates: true })
+    const ws = wb.Sheets[wb.SheetNames[0] ?? ""]
+    if (!ws?.["!ref"]) return null
+    const range = XLSX.utils.decode_range(ws["!ref"])
+    for (let r = 0; r <= Math.min(range.e.r, 20); r++) {
+      for (let c = 0; c <= Math.min(range.e.c, 11); c++) {
+        const label = String(ws[XLSX.utils.encode_cell({ r, c })]?.v ?? "").trim()
+        if (!label.includes("交易日期")) continue
+        for (let dc = c + 1; dc <= Math.min(range.e.c, c + 3); dc++) {
+          const cell = ws[XLSX.utils.encode_cell({ r, dc })]
+          if (cell?.v == null || cell.v === "") continue
+          if (cell.v instanceof Date) {
+            const d = cell.v
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+          }
+          const got = normalizeYmd(String(cell.v))
+          if (got) return got
+        }
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+/** Drop official fetch files whose inner 交易日期 does not match the filename. */
+function purgeMismatchedCfmmcFetchFiles(folder: string): number {
+  let removed = 0
+  for (const account of readCfmmcConfig().accounts) {
+    const uid = account.userId.trim()
+    if (!uid) continue
+    for (const rel of listSpreadsheetRelPaths(folder)) {
+      const want = officialFetchDate(rel, uid)
+      if (!want) continue
+      const resolved = safeResolveRel(folder, rel)
+      if (!resolved) continue
+      const got = readInnerTradeDate(resolved)
+      if (!got || got === want) continue
+      try {
+        unlinkSync(resolved)
+        removeFileFromBooks(rel)
+        removed += 1
+      } catch {
+        // keep listing
+      }
+    }
+  }
+  if (removed > 0) {
+    appendJobLog("fetch", `已删除 ${removed} 个文件名与文件内交易日期不符的重复日报`)
+  }
+  return removed
 }
 
 function bookOwningRel(rel: string): ImportBook | undefined {
@@ -391,7 +510,9 @@ function repairCfmmcBooks() {
 
 export function listImportedFiles(): { files: ListedImportFile[]; folder: string; books: ImportBook[] } {
   const folder = accountRiskImportDir()
+  purgeMismatchedCfmmcFetchFiles(folder)
   ensureUngroupedBook(folder)
+  pruneMissingBookFiles(folder)
   repairCfmmcBooks()
   pruneEmptyLegacyBooks()
   const books = listImportBooks()
@@ -626,6 +747,7 @@ function parseJsonLine(stdout: string): {
   files?: string[]
   downloaded?: number
   skipped?: number
+  discarded?: number
   error?: string
 } {
   const lines = stdout.trim().split(/\r?\n/).filter(Boolean)
@@ -638,6 +760,7 @@ function parseJsonLine(stdout: string): {
       files?: string[]
       downloaded?: number
       skipped?: number
+      discarded?: number
       error?: string
     }
   } catch {
@@ -650,8 +773,12 @@ function attachFetchedFiles(account: CfmmcAccount, filenames: string[]) {
 }
 
 async function runEtlAfterFetch(bookId?: string, userId?: string) {
+  appendJobLog("etl", "开始增量计算刚获取的文件…")
   const { runCfmmcETL } = await import("@/lib/server/cfmmc-etl")
-  return runCfmmcETL("incremental", { bookId, userId })
+  const result = await runCfmmcETL("incremental", { bookId, userId })
+  appendJobLog("etl", `计算完成：处理 ${result.processed}，新增 ${result.inserted}，更新 ${result.updated}，跳过 ${result.skipped}`)
+  for (const err of result.errors) appendJobLog("etl", err)
+  return result
 }
 
 export async function fetchCfmmcAccount(
@@ -662,6 +789,7 @@ export async function fetchCfmmcAccount(
   filename?: string
   downloaded?: number
   skipped?: number
+  discarded?: number
   bookId?: string
   etlProcessed?: number
   etlError?: string
@@ -683,6 +811,7 @@ export async function fetchCfmmcAccount(
     files?: string[]
     downloaded?: number
     skipped?: number
+    discarded?: number
     error?: string
   }) => {
     const now = new Date()
@@ -692,6 +821,11 @@ export async function fetchCfmmcAccount(
     if (result.ok) {
       const book = attachFetchedFiles(account, result.files ?? (result.filename ? [result.filename] : []))
       bookId = book?.id
+      const discardedBit = result.discarded ? `，无结算/日期不符 ${result.discarded}` : ""
+      appendJobLog(
+        "fetch",
+        `账户「${account.label || account.userId}」现有 ${book?.files.length ?? 0} 个文件（新下载 ${result.downloaded ?? result.files?.length ?? 0}，磁盘已有 ${result.skipped ?? 0}${discardedBit}）`,
+      )
     }
     if (idx >= 0) {
       next.accounts[idx] = {
@@ -710,6 +844,7 @@ export async function fetchCfmmcAccount(
           filename: result.filename,
           downloaded: result.downloaded ?? result.files?.length ?? (result.filename ? 1 : 0),
           skipped: result.skipped ?? 0,
+          discarded: result.discarded ?? 0,
           bookId,
         }
       : { ok: false as const, error: result.error || "获取失败" }
@@ -724,12 +859,13 @@ export async function fetchCfmmcAccount(
     }
   }
   const args = [script, "--out-dir", outDir]
-  if (mode === "history") args.push("--history", "--days", "90")
+  if (mode === "history") args.push("--history", "--days", "65")
+  appendJobLog("fetch", `开始获取 ${account.label || account.userId}（${mode === "history" ? "全部历史" : "最新一天"}）…`)
   try {
-    const { stdout, stderr } = await execFileAsync(python, args, {
-      timeout: mode === "history" ? 1_200_000 : 180_000,
-      maxBuffer: 4 * 1024 * 1024,
-      env: {
+    const { stdout } = await runPythonLogged(
+      python,
+      args,
+      {
         ...process.env,
         CFMMC_USER: account.userId,
         CFMMC_PASSWORD: account.password,
@@ -741,8 +877,8 @@ export async function fetchCfmmcAccount(
           return process.env.PLAYWRIGHT_BROWSERS_PATH || userDir
         })(),
       },
-    })
-    if (stderr?.trim()) console.warn(`[cfmmc-fetch ${account.userId}] ${stderr.trim().slice(0, 2000)}`)
+      mode === "history" ? 1_200_000 : 180_000,
+    )
     return finish(applyResult(parseJsonLine(stdout)))
   } catch (e) {
     const err = e as { stderr?: string; stdout?: string; message?: string }
@@ -759,6 +895,7 @@ export async function fetchCfmmcAccount(
         : e instanceof Error
           ? e.message
           : String(e)
+    appendJobLog("fetch", `失败: ${message}`)
     return finish(applyResult({ ok: false, error: message }))
   }
 }
@@ -772,6 +909,7 @@ export async function fetchCfmmcAccounts(accountId?: string): Promise<{
     filename?: string
     downloaded?: number
     skipped?: number
+    discarded?: number
     bookId?: string
     etlProcessed?: number
     etlError?: string
@@ -797,6 +935,7 @@ export async function fetchCfmmcAccounts(accountId?: string): Promise<{
         filename: r.filename,
         downloaded: r.downloaded,
         skipped: r.skipped,
+        discarded: r.discarded,
         bookId: r.bookId,
         etlProcessed: r.etlProcessed,
         etlError: r.etlError,

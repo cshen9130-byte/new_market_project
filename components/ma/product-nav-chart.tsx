@@ -83,13 +83,24 @@ const QUICK_RANGES = [
   { label: "全部",     from: () => "2020-01-01"        },
 ]
 
+interface AccountElements {
+  productName: string
+  openDate: string
+  shareClass: string
+  feeStructure: string
+  redemptionFee: string
+}
+
 interface Props {
   productCode?: string
   height?: number
   navCurveOnly?: boolean
+  variant?: "mom" | "account"
+  accountKey?: string
 }
 
-export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false }: Props) {
+export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false, variant = "mom", accountKey = "" }: Props) {
+  const isAccount = variant === "account"
   const [allData, setAllData] = useState<NavPoint[]>([])
   const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
   const [turnoverSeries, setTurnoverSeries] = useState<TurnoverPoint[]>([])
@@ -99,11 +110,26 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
   const [error, setError] = useState<string | null>(null)
   const [rangeFrom, setRangeFrom] = useState("2020-01-01")
   const [showBenchmark, setShowBenchmark] = useState(true)
-  const [productName, setProductName] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_productName") ?? "" : "")
-  const [openDate, setOpenDate] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_openDate") ?? "" : "")
-  const [shareClass, setShareClass] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_shareClass") ?? "" : "")
-  const [feeStructure, setFeeStructure] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_feeStructure") ?? "" : "")
-  const [redemptionFee, setRedemptionFee] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_redemptionFee") ?? "" : "")
+  const [productName, setProductName] = useState(() => {
+    if (variant === "account") return ""
+    return typeof window !== "undefined" ? localStorage.getItem("pf_productName") ?? "" : ""
+  })
+  const [openDate, setOpenDate] = useState(() => {
+    if (variant === "account") return ""
+    return typeof window !== "undefined" ? localStorage.getItem("pf_openDate") ?? "" : ""
+  })
+  const [shareClass, setShareClass] = useState(() => {
+    if (variant === "account") return ""
+    return typeof window !== "undefined" ? localStorage.getItem("pf_shareClass") ?? "" : ""
+  })
+  const [feeStructure, setFeeStructure] = useState(() => {
+    if (variant === "account") return ""
+    return typeof window !== "undefined" ? localStorage.getItem("pf_feeStructure") ?? "" : ""
+  })
+  const [redemptionFee, setRedemptionFee] = useState(() => {
+    if (variant === "account") return ""
+    return typeof window !== "undefined" ? localStorage.getItem("pf_redemptionFee") ?? "" : ""
+  })
   const [editingProduct, setEditingProduct] = useState(false)
   const [distFit, setDistFit] = useState<"normal" | "t" | "laplace" | "logistic" | "kde">("normal")
   const [showDistStats, setShowDistStats] = useState(false)
@@ -188,12 +214,51 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
   useEffect(() => { load() }, [load])
   useEffect(() => { loadCategoryPnl() }, [loadCategoryPnl])
 
-  // Persist product element fields to localStorage
-  useEffect(() => { localStorage.setItem("pf_productName", productName) }, [productName])
-  useEffect(() => { localStorage.setItem("pf_openDate", openDate) }, [openDate])
-  useEffect(() => { localStorage.setItem("pf_shareClass", shareClass) }, [shareClass])
-  useEffect(() => { localStorage.setItem("pf_feeStructure", feeStructure) }, [feeStructure])
-  useEffect(() => { localStorage.setItem("pf_redemptionFee", redemptionFee) }, [redemptionFee])
+  useEffect(() => {
+    if (!isAccount) return
+    let stop = false
+    fetch("/ma/api/account-risk/product-elements")
+      .then((r) => r.json())
+      .then((j: Partial<AccountElements>) => {
+        if (stop) return
+        setProductName(j.productName ?? "")
+        setOpenDate(j.openDate ?? "")
+        setShareClass(j.shareClass ?? "")
+        setFeeStructure(j.feeStructure ?? "")
+        setRedemptionFee(j.redemptionFee ?? "")
+      })
+      .catch(() => {
+        if (stop) return
+        setProductName("")
+        setOpenDate("")
+        setShareClass("")
+        setFeeStructure("")
+        setRedemptionFee("")
+      })
+    return () => { stop = true }
+  }, [isAccount, accountKey])
+
+  // MOM keeps its own draft. 单账户 reads the database and does not reuse that draft.
+  useEffect(() => {
+    if (isAccount) return
+    localStorage.setItem("pf_productName", productName)
+  }, [isAccount, productName])
+  useEffect(() => {
+    if (isAccount) return
+    localStorage.setItem("pf_openDate", openDate)
+  }, [isAccount, openDate])
+  useEffect(() => {
+    if (isAccount) return
+    localStorage.setItem("pf_shareClass", shareClass)
+  }, [isAccount, shareClass])
+  useEffect(() => {
+    if (isAccount) return
+    localStorage.setItem("pf_feeStructure", feeStructure)
+  }, [isAccount, feeStructure])
+  useEffect(() => {
+    if (isAccount) return
+    localStorage.setItem("pf_redemptionFee", redemptionFee)
+  }, [isAccount, redemptionFee])
 
   useEffect(() => {
     if (allData.length === 0) {

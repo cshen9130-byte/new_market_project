@@ -725,11 +725,11 @@ function AdvisorContent() {
   )
 }
 
-function OverviewContent() {
+function OverviewContent({ variant, accountKey }: { variant: "mom" | "account"; accountKey: string }) {
   return (
     <div className="space-y-4">
       <div className="w-full">
-        <ProductNavChart height={380} />
+        <ProductNavChart height={380} variant={variant} accountKey={accountKey} />
       </div>
     </div>
   )
@@ -7286,7 +7286,6 @@ function RiskReportAppCore({
   const isAccount = variant === "account"
   const briefingName = isAccount ? "单账户简报" : "MOM 简报"
   const reportTitle = isAccount ? "单账户每日风控" : "MOM 风控报告"
-  const briefingFilePrefix = isAccount ? "单账户风控简报" : "MOM风控简报"
   const subNavItems = [
     ...baseSubNavItems
       .filter((item) => !(isAccount && item.key === "advisor"))
@@ -7328,6 +7327,57 @@ function RiskReportAppCore({
   const [briefingPrintableHeight, setBriefingPrintableHeight] = useState(1123)
   const briefingScrollRef = useRef<HTMLDivElement>(null)
   const briefingPrintableRef = useRef<HTMLDivElement>(null)
+  const [briefingProductName, setBriefingProductName] = useState("")
+  const [briefingAccountNo, setBriefingAccountNo] = useState("")
+
+  useEffect(() => {
+    if (!isAccount) {
+      setBriefingProductName("")
+      setBriefingAccountNo("")
+      return
+    }
+    let stop = false
+    setBriefingProductName("")
+    setBriefingAccountNo("")
+    fetch("/ma/api/account-risk/product-elements")
+      .then((r) => r.json())
+      .then((j: { productName?: string; accountNo?: string }) => {
+        if (stop) return
+        setBriefingProductName((j.productName ?? "").trim())
+        setBriefingAccountNo((j.accountNo ?? "").trim())
+      })
+      .catch(() => {
+        if (stop) return
+        setBriefingProductName("")
+        setBriefingAccountNo("")
+      })
+    return () => { stop = true }
+  }, [isAccount, accountScopeKey])
+
+  const briefingAccountTitle = (() => {
+    if (!isAccount) return "MOM"
+    if (briefingProductName) return briefingProductName
+    if (!cfmmcScope.selected || cfmmcScope.selected === "all") return "全部账户"
+    const selected = cfmmcScope.accounts.find((a) => a.accountNo === cfmmcScope.selected)
+    const label = (selected?.label ?? "").replace(/^监控中心\s+/, "").replace(/^邮箱\s*/, "").trim()
+    return label || "单账户"
+  })()
+  const briefingDisplayAccountNo = (() => {
+    if (!isAccount) return ""
+    if (briefingAccountNo) return briefingAccountNo
+    if (!cfmmcScope.selected || cfmmcScope.selected === "all") return ""
+    const selected = cfmmcScope.accounts.find((a) => a.accountNo === cfmmcScope.selected)
+    const fromLogin = (selected?.cfmmcUserId ?? "").trim()
+    if (fromLogin) return fromLogin
+    const label = (selected?.label ?? "").replace(/^监控中心\s+/, "").replace(/^邮箱\s*/, "").trim()
+    return /^[A-Za-z0-9_-]{4,32}$/.test(label) ? label : ""
+  })()
+  const briefingFileName = isAccount
+    ? ["单账户风控简报", briefingAccountTitle, briefingDisplayAccountNo !== briefingAccountTitle ? briefingDisplayAccountNo : ""]
+        .filter(Boolean)
+        .join("-")
+        .replace(/[\\/:*?"<>|]/g, "_")
+    : "MOM风控简报"
 
   // Scale the A4 sheet to fit the container using CSS transform (not zoom).
   // transform correctly updates getBoundingClientRect() on all browsers incl. iOS Safari,
@@ -7754,7 +7804,7 @@ function RiskReportAppCore({
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${briefingFilePrefix}-${dateStr}</title>
+  <title>${briefingFileName}-${dateStr}</title>
   <style>
     html, body { margin: 0; padding: 0; }
     body {
@@ -8070,7 +8120,7 @@ function RiskReportAppCore({
           var url = URL.createObjectURL(blob);
           var a = document.createElement('a');
           a.href = url;
-          a.download = '${briefingFilePrefix}-' + (reportData.reportDate || 'standalone') + '.html';
+          a.download = '${briefingFileName}-' + (reportData.reportDate || 'standalone') + '.html';
           a.click();
           URL.revokeObjectURL(url);
         });
@@ -8755,7 +8805,7 @@ function RiskReportAppCore({
 </html>`
 
     return htmlContent
-  }, [briefingSandboxDataRef, setSectorChartCapturing, sectorChartCapturing, briefingFilePrefix])
+  }, [briefingSandboxDataRef, setSectorChartCapturing, sectorChartCapturing, briefingFileName])
 
   const handleBriefingDownload = useCallback(async () => {
     if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
@@ -8778,13 +8828,13 @@ function RiskReportAppCore({
       pdf.addImage(imgData, "PNG", 0, 0, a4Width, imgHeight, undefined, "FAST")
 
       const dateStr = briefingSummary?.date ?? new Date().toISOString().slice(0, 10)
-      pdf.save(`${briefingFilePrefix}-${dateStr}.pdf`)
+      pdf.save(`${briefingFileName}-${dateStr}.pdf`)
     } catch (e) {
       console.error("[briefing-pdf-download]", e)
     } finally {
       setBriefingPdfDownloading(false)
     }
-  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, captureBriefingCanvas, briefingFilePrefix])
+  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, captureBriefingCanvas, briefingFileName])
 
   const handleBriefingImageDownload = useCallback(async () => {
     if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
@@ -8802,7 +8852,7 @@ function RiskReportAppCore({
       }
 
       const dateStr = briefingSummary?.date ?? new Date().toISOString().slice(0, 10)
-      const filename = `${briefingFilePrefix}-${dateStr}.png`
+      const filename = `${briefingFileName}-${dateStr}.png`
 
       // toBlob is far more reliable than toDataURL for very tall canvases on
       // mobile browsers (toDataURL can silently return an empty string on iOS).
@@ -8844,7 +8894,7 @@ function RiskReportAppCore({
     } finally {
       setBriefingImageDownloading(false)
     }
-  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, captureBriefingCanvas, briefingFilePrefix])
+  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, captureBriefingCanvas, briefingFileName])
 
   const handleBriefingHtmlDownload = useCallback(async () => {
     if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
@@ -8859,7 +8909,7 @@ function RiskReportAppCore({
       const url = URL.createObjectURL(blob)
       const link = document.createElement("a")
       link.href = url
-      link.download = `${briefingFilePrefix}-${dateStr}.html`
+      link.download = `${briefingFileName}-${dateStr}.html`
       link.click()
       URL.revokeObjectURL(url)
     } catch (e) {
@@ -8867,7 +8917,7 @@ function RiskReportAppCore({
     } finally {
       setBriefingHtmlDownloading(false)
     }
-  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, buildStandaloneBriefingHtml, briefingFilePrefix])
+  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, buildStandaloneBriefingHtml, briefingFileName])
 
   return (
     <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
@@ -8875,7 +8925,6 @@ function RiskReportAppCore({
       <aside className={cn("w-44 shrink-0 border-r bg-card flex flex-col", activeTab === "briefing" && "hidden")}>
         <div className="p-4 border-b space-y-2">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{reportTitle}</p>
-          <p className="text-[11px] text-muted-foreground/60">新版</p>
           {isAccount && (
             <AccountRiskAccountSwitcher
               accounts={cfmmcScope.accounts}
@@ -9031,7 +9080,7 @@ function RiskReportAppCore({
           )}
         </div>
         <div key={accountScopeKey}>
-        {activeTab === "overview" && <OverviewContent />}
+        {activeTab === "overview" && <OverviewContent variant={variant} accountKey={accountScopeKey} />}
         {activeTab === "intraday" && <IntradayContent singleAccount={isAccount} />}
         {activeTab === "position" && <PositionContent sectorChartCapturing={sectorChartCapturing} setSectorChartCapturing={setSectorChartCapturing} hideAccountOptionPnl={isAccount} defaultVarWeightView={isAccount ? "var" : "weight"} defaultGroupMode={isAccount ? "板块" : "大类"} />}
         {activeTab === "advisor" && <AdvisorContent />}
@@ -9114,19 +9163,27 @@ function RiskReportAppCore({
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] tracking-[0.35em] text-[#5a6a7a] uppercase mb-1">{isAccount ? "Single Account Risk" : "MOM Portfolio Management"}</p>
-                    <h1 className="text-4xl font-black tracking-tight text-[#1a3a5c]"
+                    <h1 className="font-black tracking-tight text-[#1a3a5c]"
                         style={{
                           fontFamily: "'Noto Serif SC','SimHei',serif",
                           letterSpacing: "-0.01em",
-                          display: "flex",
-                          flexDirection: "row",
-                          alignItems: "baseline",
-                          gap: "0.4rem",
-                          whiteSpace: "nowrap",
-                          flexWrap: "nowrap",
                         }}>
-                      <span style={{ whiteSpace: "nowrap" }}>{isAccount ? "单账户" : "MOM"}</span>
-                      <span style={{ whiteSpace: "nowrap" }}>风控简报</span>
+                      {isAccount ? (
+                        <>
+                          <span className="block text-xl leading-snug">{briefingAccountTitle}</span>
+                          {briefingDisplayAccountNo ? (
+                            <span className="block text-sm font-semibold tracking-wide text-[#5a6a7a] mt-0.5">
+                              资金账号 {briefingDisplayAccountNo}
+                            </span>
+                          ) : null}
+                          <span className="block text-4xl mt-0.5">风控简报</span>
+                        </>
+                      ) : (
+                        <span className="flex items-baseline gap-1.5 text-4xl whitespace-nowrap">
+                          <span>MOM</span>
+                          <span>风控简报</span>
+                        </span>
+                      )}
                     </h1>
                     <p className="text-sm text-[#5a6a7a] mt-0.5 tracking-wide">
                       每日风险与业绩速览
