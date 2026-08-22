@@ -231,16 +231,27 @@ function findPython(): string {
   return withPlaywright || candidates[0] || (process.platform === "win32" ? "python" : "python3")
 }
 
+function playwrightDirHasBrowser(dir: string): boolean {
+  if (!dir || !path.isAbsolute(dir) || !existsSync(dir)) return false
+  try {
+    return readdirSync(dir).some((name) => name.startsWith("chromium"))
+  } catch {
+    return false
+  }
+}
+
 function resolvePlaywrightBrowsersPath(): string | undefined {
-  if (process.env.PLAYWRIGHT_BROWSERS_PATH) return process.env.PLAYWRIGHT_BROWSERS_PATH
-  const candidates =
+  const candidates = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
     process.platform === "win32"
-      ? [
-          path.join(process.env.LOCALAPPDATA || "", "ms-playwright"),
-          path.join(process.env.USERPROFILE || "", "ms-playwright"),
-        ]
-      : [path.join(process.env.HOME || "", ".cache", "ms-playwright")]
-  return candidates.find((dir) => dir && path.isAbsolute(dir) && existsSync(dir))
+      ? path.join(process.env.LOCALAPPDATA || "", "ms-playwright")
+      : "",
+    process.platform === "win32"
+      ? path.join(process.env.USERPROFILE || "", "ms-playwright")
+      : path.join(process.env.HOME || "", ".cache", "ms-playwright"),
+    path.join(process.cwd(), "ms-playwright"),
+  ]
+  return candidates.find((dir) => !!dir && playwrightDirHasBrowser(dir))
 }
 
 function cfmmcFetchEnv(account: CfmmcAccount): NodeJS.ProcessEnv {

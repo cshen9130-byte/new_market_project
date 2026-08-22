@@ -21,9 +21,13 @@ fi
 
 echo "Using Python: $PY"
 "$PY" -m pip install -r "$ROOT/scripts/ma/requirements-cfmmc.txt"
+# Default cache (~/.cache/ms-playwright) plus the project folder the live app
+# currently looks at when PLAYWRIGHT_BROWSERS_PATH is unset on Linux.
 "$PY" -m playwright install chromium
+PLAYWRIGHT_BROWSERS_PATH="$ROOT/ms-playwright" "$PY" -m playwright install chromium
 if [[ "$(uname -s)" == "Linux" ]]; then
   "$PY" -m playwright install-deps chromium || true
 fi
 "$PY" -c "from playwright.sync_api import sync_playwright; import ddddocr, requests, xlrd; print('CFMMC fetch deps OK')"
+echo "Browsers: $HOME/.cache/ms-playwright and $ROOT/ms-playwright"
 echo "Done. Restart PM2 (pm2 restart new_market_project new_market_project_worker) then retry 立即获取."
