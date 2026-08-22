@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto"
-import { spawn } from "child_process"
+import { spawn, spawnSync } from "child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs"
 import path from "path"
 import * as XLSX from "xlsx"
@@ -192,11 +192,25 @@ function isSpreadsheetName(name: string): boolean {
   return SPREADSHEET_EXT.has(ext) && !name.startsWith("~$")
 }
 
-function findPython(): string {
-  if (process.env.PYTHON_EXECUTABLE) return process.env.PYTHON_EXECUTABLE
-  if (process.env.PYTHON_EXE) return process.env.PYTHON_EXE
+function pythonHasModule(python: string, moduleName: string): boolean {
+  try {
+    const r = spawnSync(python, ["-c", `import ${moduleName}`], {
+      timeout: 8000,
+      windowsHide: true,
+      encoding: "utf8",
+    })
+    return r.status === 0
+  } catch {
+    return false
+  }
+}
+
+function pythonCandidates(): string[] {
   const cwd = process.cwd()
-  const candidates =
+  const preferred = [process.env.PYTHON_EXECUTABLE, process.env.PYTHON_EXE].filter(
+    (p): p is string => !!p && p.trim().length > 0,
+  )
+  const local =
     process.platform === "win32"
       ? [
           path.join(cwd, ".venv", "Scripts", "python.exe"),
@@ -207,10 +221,40 @@ function findPython(): string {
           path.join(cwd, ".venv", "bin", "python3"),
           path.join(cwd, ".venv", "bin", "python"),
         ]
-  for (const p of candidates) {
-    if (existsSync(p)) return p
+  const fallback = process.platform === "win32" ? "python" : "python3"
+  return [...new Set([...preferred, ...local.filter((p) => existsSync(p)), fallback])]
+}
+
+function findPython(): string {
+  const candidates = pythonCandidates()
+  const withPlaywright = candidates.find((p) => pythonHasModule(p, "playwright"))
+  return withPlaywright || candidates[0] || (process.platform === "win32" ? "python" : "python3")
+}
+
+function resolvePlaywrightBrowsersPath(): string | undefined {
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH) return process.env.PLAYWRIGHT_BROWSERS_PATH
+  const candidates =
+    process.platform === "win32"
+      ? [
+          path.join(process.env.LOCALAPPDATA || "", "ms-playwright"),
+          path.join(process.env.USERPROFILE || "", "ms-playwright"),
+        ]
+      : [path.join(process.env.HOME || "", ".cache", "ms-playwright")]
+  return candidates.find((dir) => dir && path.isAbsolute(dir) && existsSync(dir))
+}
+
+function cfmmcFetchEnv(account: CfmmcAccount): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CFMMC_USER: account.userId,
+    CFMMC_PASSWORD: account.password,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
   }
-  return process.platform === "win32" ? "python" : "python3"
+  const browsers = resolvePlaywrightBrowsersPath()
+  if (browsers) env.PLAYWRIGHT_BROWSERS_PATH = browsers
+  else delete env.PLAYWRIGHT_BROWSERS_PATH
+  return env
 }
 
 // ── email config ──────────────────────────────────────────────────────────────
@@ -860,23 +904,12 @@ export async function fetchCfmmcAccount(
   }
   const args = [script, "--out-dir", outDir]
   if (mode === "history") args.push("--history", "--days", "65")
-  appendJobLog("fetch", `开始获取 ${account.label || account.userId}（${mode === "history" ? "全部历史" : "最新一天"}）…`)
+  appendJobLog("fetch", `开始获取 ${account.label || account.userId}（${mode === "history" ? "全部历史" : "最新一天"}，Python ${python}）…`)
   try {
     const { stdout } = await runPythonLogged(
       python,
       args,
-      {
-        ...process.env,
-        CFMMC_USER: account.userId,
-        CFMMC_PASSWORD: account.password,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        PLAYWRIGHT_BROWSERS_PATH: (() => {
-          const userDir = path.join(process.env.LOCALAPPDATA || process.env.USERPROFILE || "", "ms-playwright")
-          if (existsSync(path.join(userDir, "chromium-1234")) || existsSync(userDir)) return userDir
-          return process.env.PLAYWRIGHT_BROWSERS_PATH || userDir
-        })(),
-      },
+      cfmmcFetchEnv(account),
       mode === "history" ? 1_200_000 : 180_000,
     )
     return finish(applyResult(parseJsonLine(stdout)))

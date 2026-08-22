@@ -916,9 +916,9 @@ export default function AccountRiskDataImport() {
               </a>
               ，自动识别验证码并下载「客户交易结算日报」xls。
               点击「立即获取」会按日切换监控中心结算日期再下载。只保留文件内「交易日期」与文件名一致的日报；没有结算单的日期不会保存。已有正确文件会跳过。每天定时任务只拉最新一天。
-              需安装 <span className="font-mono">playwright</span>、<span className="font-mono">ddddocr</span>、<span className="font-mono">requests</span>
-              （<span className="font-mono">pip install -r scripts/ma/requirements-cfmmc.txt</span> 后执行
-              <span className="font-mono"> python -m playwright install chromium</span>）。
+              需在<strong>运行网站的那台机器</strong>安装 Playwright（Linux 服务器执行
+              <span className="font-mono"> bash scripts/deploy/setup-cfmmc-fetch.sh</span>，
+              然后 <span className="font-mono">pm2 restart new_market_project new_market_project_worker</span>）。
             </p>
 
             <div className="flex flex-wrap items-end gap-3">

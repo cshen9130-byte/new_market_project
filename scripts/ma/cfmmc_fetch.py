@@ -24,15 +24,19 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import unquote
 
-try:
-    from playwright.sync_api import Error as PlaywrightError
-    from playwright.sync_api import sync_playwright
-except ModuleNotFoundError:
+def _missing_dep_error(package: str) -> None:
+    exe = sys.executable
+    hint = (
+        f"{exe} -m pip install -r scripts/ma/requirements-cfmmc.txt"
+        f" && {exe} -m playwright install chromium"
+    )
+    if sys.platform.startswith("linux"):
+        hint += f" && {exe} -m playwright install-deps chromium"
     sys.stdout.write(
         json.dumps(
             {
                 "ok": False,
-                "error": "未安装 Playwright。请在项目目录执行：.venv\\Scripts\\python.exe -m pip install -r scripts/ma/requirements-cfmmc.txt && .venv\\Scripts\\python.exe -m playwright install chromium",
+                "error": f"未安装 {package}（当前 Python: {exe}）。请在服务器项目目录执行：{hint}",
             },
             ensure_ascii=False,
         )
@@ -41,21 +45,17 @@ except ModuleNotFoundError:
     sys.stdout.flush()
     raise SystemExit(1)
 
+
+try:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError:
+    _missing_dep_error("Playwright")
+
 try:
     import requests as req_lib
 except ModuleNotFoundError:
-    sys.stdout.write(
-        json.dumps(
-            {
-                "ok": False,
-                "error": "未安装 requests。请执行：.venv\\Scripts\\python.exe -m pip install -r scripts/ma/requirements-cfmmc.txt",
-            },
-            ensure_ascii=False,
-        )
-        + "\n"
-    )
-    sys.stdout.flush()
-    raise SystemExit(1)
+    _missing_dep_error("requests")
 
 LOGIN_URL = "https://investorservice.cfmmc.com/"
 BASE_URL = "https://investorservice.cfmmc.com"
