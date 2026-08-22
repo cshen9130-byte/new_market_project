@@ -4,7 +4,7 @@
  * and are automatically ignored on a different calendar day.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs"
 import { join } from "path"
 import { NextResponse } from "next/server"
 import { ensureAccountRiskSchema } from "@/lib/db"
@@ -51,9 +51,25 @@ export function writeCache(key: string, data: unknown): void {
  * Normalise a URLSearchParams into a stable cache-key suffix.
  */
 export function paramKey(params: URLSearchParams): string {
-  const entries = [...params.entries()].filter(([k]) => k !== "nocache")
+  const entries = [...params.entries()].filter(([k]) => k !== "nocache" && k !== "source")
   if (entries.length === 0) return ""
   return "_" + entries.sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `${k}=${v}`).join("&")
+}
+
+/** Drop today's cached account-risk (source=account) responses so charts pick up a fresh ETL. */
+export function clearAccountSourceCache(): void {
+  try {
+    ensureDir()
+    const prefix = `${todayStr()}_`
+    for (const f of readdirSync(CACHE_DIR)) {
+      if (!f.startsWith(prefix)) continue
+      if (f.includes("account__") || f.includes("source=account")) {
+        try { unlinkSync(join(CACHE_DIR, f)) } catch { /* ignore */ }
+      }
+    }
+  } catch {
+    // non-fatal
+  }
 }
 
 /**
@@ -82,7 +98,7 @@ export function withMomCache(
 
       const url = new URL(req.url)
       const noCache = url.searchParams.get("nocache") === "1"
-      const key = routeKey + paramKey(url.searchParams)
+      const key = `${source}__${routeKey}${paramKey(url.searchParams)}`
 
       if (!noCache) {
         const cached = readCache(key)

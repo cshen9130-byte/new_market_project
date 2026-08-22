@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Download,
   FileSpreadsheet,
+  FolderOpen,
   Globe,
   Mail,
   Play,
@@ -22,7 +23,32 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
-type DownloadedFile = { name: string; size: number; mtime: string }
+type DownloadedFile = { name: string; size: number; mtime: string; rel?: string; bookId?: string | null; bookName?: string | null }
+
+type ImportBookSource = "upload" | "email" | "cfmmc"
+
+type ImportBook = {
+  id: string
+  name: string
+  createdAt: string
+  files: string[]
+  source?: ImportBookSource
+  cfmmcUserId?: string
+}
+
+function bookSource(b: ImportBook): ImportBookSource {
+  if (b.source === "cfmmc" || !!b.cfmmcUserId || /^监控中心\s/.test(b.name)) return "cfmmc"
+  if (b.source === "email" || /^邮箱/.test(b.name)) return "email"
+  return "upload"
+}
+
+const NEW_BOOK = "__new__"
+const UPLOAD_BOOK_KEY = "account-risk-upload-book"
+
+function fileLabel(f: DownloadedFile) {
+  const rel = f.rel || f.name
+  return rel.includes("/") ? rel.split("/").pop()! : rel
+}
 
 type EmailConfig = {
   email: string
@@ -90,8 +116,15 @@ export default function AccountRiskDataImport() {
   const [isUploading, setIsUploading] = useState(false)
 
   const [files, setFiles] = useState<DownloadedFile[]>([])
+  const [books, setBooks] = useState<ImportBook[]>([])
   const [folder, setFolder] = useState("")
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
+  const [isClearingFiles, setIsClearingFiles] = useState(false)
+  const [uploadBookId, setUploadBookId] = useState(NEW_BOOK)
+  const [newBookName, setNewBookName] = useState("")
+  const [assignName, setAssignName] = useState("")
+  const [isAssigning, setIsAssigning] = useState(false)
+  const [listFilter, setListFilter] = useState("all")
 
   const [emailCfg, setEmailCfg] = useState<EmailConfig>({
     email: "",
@@ -125,10 +158,11 @@ export default function AccountRiskDataImport() {
   type Section = "upload" | "email" | "cfmmc"
   const [activeSection, setActiveSection] = useState<Section>("upload")
 
-  const [isRunningEtl, setIsRunningEtl] = useState(false)
+  const [runningEtlKey, setRunningEtlKey] = useState<string | null>(null)
   const [etlResult, setEtlResult] = useState<{
     processed: number; inserted: number; updated: number; skipped: number
     syncedDaily?: number; syncedPositions?: number; errors: string[]
+    label?: string
   } | null>(null)
 
   const loadFiles = useCallback(async () => {
@@ -137,8 +171,19 @@ export default function AccountRiskDataImport() {
       const res = await fetch(`${API}/files`, { cache: "no-store" })
       const data = await res.json()
       if (!res.ok) throw new Error(readError(data, "加载失败"))
+      const nextBooks = (data.books ?? []) as ImportBook[]
       setFiles(data.files ?? [])
+      setBooks(nextBooks)
       setFolder(data.folder ?? "")
+      setUploadBookId((prev) => {
+        const isUpload = (id: string) => nextBooks.some((b) => b.id === id && bookSource(b) === "upload")
+        if (prev !== NEW_BOOK && isUpload(prev)) return prev
+        try {
+          const saved = sessionStorage.getItem(UPLOAD_BOOK_KEY)
+          if (saved && saved !== NEW_BOOK && isUpload(saved)) return saved
+        } catch { /* ignore */ }
+        return NEW_BOOK
+      })
     } catch (e) {
       toast({ title: "加载文件失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
     } finally {
@@ -181,19 +226,43 @@ export default function AccountRiskDataImport() {
     setPendingFiles((prev) => [...prev, ...incoming])
   }
 
+  function resolveUploadBook(): { bookId?: string; bookName?: string; label: string } | null {
+    if (uploadBookId !== NEW_BOOK) {
+      const existing = books.find((b) => b.id === uploadBookId)
+      if (!existing) return null
+      return { bookId: existing.id, label: existing.name }
+    }
+    const name = newBookName.trim()
+    if (!name) return null
+    return { bookName: name, label: name }
+  }
+
   async function uploadPending() {
     if (pendingFiles.length === 0) {
       toast({ title: "请先选择文件", variant: "destructive" })
+      return
+    }
+    const target = resolveUploadBook()
+    if (!target) {
+      toast({ title: "请填写账户名称", description: "这批文件会保存到该账户，之后可在报表页切换查看。", variant: "destructive" })
       return
     }
     setIsUploading(true)
     try {
       const fd = new FormData()
       for (const f of pendingFiles) fd.append("files", f)
+      if (target.bookId) fd.append("bookId", target.bookId)
+      if (target.bookName) fd.append("bookName", target.bookName)
       const res = await fetch(`${API}/upload`, { method: "POST", body: fd })
       const data = await res.json()
       if (!res.ok) throw new Error(readError(data, "上传失败"))
-      toast({ title: data.message ?? "上传成功" })
+      const savedBook = data.book as ImportBook | undefined
+      if (savedBook?.id) {
+        setUploadBookId(savedBook.id)
+        setNewBookName("")
+        try { sessionStorage.setItem(UPLOAD_BOOK_KEY, savedBook.id) } catch { /* ignore */ }
+      }
+      toast({ title: data.message ?? `已保存到「${target.label}」` })
       setPendingFiles([])
       if (fileInputRef.current) fileInputRef.current.value = ""
       await loadFiles()
@@ -204,6 +273,89 @@ export default function AccountRiskDataImport() {
     }
   }
 
+  async function assignExistingFiles(rels: string[], nameHint?: string) {
+    const name = ((nameHint ?? assignName) || newBookName).trim()
+    if (!name) {
+      toast({ title: "请填写账户名称", description: "给这批已导入文件起一个名字，之后可在报表页切换查看。", variant: "destructive" })
+      return
+    }
+    setIsAssigning(true)
+    try {
+      const res = await fetch(`${API}/assign-book`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, files: rels }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(readError(data, "命名失败"))
+      const savedBook = data.book as ImportBook | undefined
+      if (savedBook?.id) {
+        setUploadBookId(savedBook.id)
+        setAssignName("")
+        try { sessionStorage.setItem(UPLOAD_BOOK_KEY, savedBook.id) } catch { /* ignore */ }
+      }
+      toast({ title: data.message ?? `已归到「${name}」` })
+      await loadFiles()
+    } catch (e) {
+      toast({ title: "命名失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
+    } finally {
+      setIsAssigning(false)
+    }
+  }
+
+  async function runEtlFor(mode: "incremental" | "full", bookId?: string, label?: string) {
+    const key = `${bookId ?? "all"}:${mode}`
+    setRunningEtlKey(key)
+    setEtlResult(null)
+    try {
+      const res = await fetch("/ma/api/account-risk/run-etl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bookId ? { mode, bookId } : { mode, source: activeSection }),
+      })
+      const data = await res.json() as { ok: boolean; result?: typeof etlResult; error?: string }
+      if (!res.ok || !data.ok) throw new Error(data.error ?? "运行失败")
+      const next = { ...(data.result ?? { processed: 0, inserted: 0, updated: 0, skipped: 0, errors: [] }), label: label ?? "全部账户" }
+      setEtlResult(next)
+      toast({
+        title: mode === "full" ? `「${next.label}」全量计算完成` : `「${next.label}」计算完成`,
+        description: `处理 ${next.processed} 个文件。`,
+      })
+    } catch (e) {
+      toast({ title: "计算失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
+    } finally {
+      setRunningEtlKey(null)
+    }
+  }
+
+  async function deleteOneFile(rel: string) {
+    try {
+      const res = await fetch(`${API}/delete?file=${encodeURIComponent(rel)}`, { method: "DELETE" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(readError(data, "删除失败"))
+      await loadFiles()
+    } catch (e) {
+      toast({ title: "删除失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
+    }
+  }
+
+  async function clearAllFiles() {
+    if (sectionFiles.length === 0) return
+    if (!confirm(`确认删除本页 ${sectionFiles.length} 个文件？只清空当前导入方式，不影响其他页。`)) return
+    setIsClearingFiles(true)
+    try {
+      const res = await fetch(`${API}/delete?all=1&source=${encodeURIComponent(activeSection)}`, { method: "DELETE" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(readError(data, "清空失败"))
+      const n = Array.isArray(data.deleted) ? data.deleted.length : sectionFiles.length
+      toast({ title: `已删除 ${n} 个文件`, description: "只删除了当前页的文件。" })
+      await loadFiles()
+    } catch (e) {
+      toast({ title: "清空失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
+    } finally {
+      setIsClearingFiles(false)
+    }
+  }
   async function saveEmail() {
     setIsSavingEmail(true)
     try {
@@ -327,12 +479,27 @@ export default function AccountRiskDataImport() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(readError(data, "获取失败"))
-      const results = (data.results ?? []) as { ok: boolean; label: string; userId: string; filename?: string; error?: string }[]
+      const results = (data.results ?? []) as {
+        ok: boolean; label: string; userId: string; filename?: string
+        downloaded?: number; skipped?: number; etlProcessed?: number; etlError?: string; error?: string
+      }[]
       const okCount = results.filter((r) => r.ok).length
       const fail = results.filter((r) => !r.ok)
+      const okDesc = results
+        .filter((r) => r.ok)
+        .map((r) => {
+          const bits = [`新下载 ${r.downloaded ?? 0} 个`]
+          if (r.skipped) bits.push(`跳过已有 ${r.skipped}`)
+          if (r.etlProcessed != null) bits.push(`已计算 ${r.etlProcessed} 个文件`)
+          if (r.etlError) bits.push(`计算失败: ${r.etlError}`)
+          return `${r.label || r.userId}: ${bits.join("，")}`
+        })
+        .join("；")
       toast({
         title: `监控中心获取完成（成功 ${okCount}/${results.length}）`,
-        description: fail.length > 0 ? fail.map((r) => `${r.label || r.userId}: ${r.error}`).join("；") : undefined,
+        description: [okDesc, fail.length > 0 ? fail.map((r) => `${r.label || r.userId}: ${r.error}`).join("；") : ""]
+          .filter(Boolean)
+          .join("；") || undefined,
         variant: fail.length > 0 && okCount === 0 ? "destructive" : "default",
       })
       await loadCfmmc()
@@ -342,6 +509,35 @@ export default function AccountRiskDataImport() {
     } finally {
       setFetchingAccountId(null)
       setIsFetchingAllCfmmc(false)
+    }
+  }
+
+  const uploadBooks = books.filter((b) => b.id !== "ungrouped" && bookSource(b) === "upload")
+  const sectionBooks = books.filter((b) => b.files.length > 0 && bookSource(b) === activeSection)
+  const sectionFiles = files.filter((f) => {
+    const book = books.find((b) => b.id === (f.bookId ?? "ungrouped"))
+    if (!book) return activeSection === "upload"
+    return bookSource(book) === activeSection
+  })
+  const emptyHint =
+    activeSection === "email"
+      ? "暂无邮箱获取的文件"
+      : activeSection === "cfmmc"
+        ? "暂无监控中心获取的文件"
+        : "暂无拖入文件"
+  const visibleFiles = listFilter === "all" ? sectionFiles : sectionFiles.filter((f) => (f.bookId ?? "ungrouped") === listFilter)
+  const fileGroups: { id: string; name: string; files: DownloadedFile[] }[] = []
+  {
+    const seen = new Map<string, DownloadedFile[]>()
+    for (const f of visibleFiles) {
+      const id = f.bookId ?? "ungrouped"
+      const name = f.bookName ?? "未分组"
+      const list = seen.get(id)
+      if (list) list.push(f)
+      else {
+        seen.set(id, [f])
+        fileGroups.push({ id, name, files: seen.get(id)! })
+      }
     }
   }
 
@@ -369,7 +565,10 @@ export default function AccountRiskDataImport() {
         {tabs.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => setActiveSection(tab.key)}
+            onClick={() => {
+              setActiveSection(tab.key)
+              setListFilter("all")
+            }}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
               activeSection === tab.key
                 ? "bg-background text-foreground shadow-sm"
@@ -398,8 +597,44 @@ export default function AccountRiskDataImport() {
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              直接拖放或点击选择 .xls / .xlsx 文件（如监控中心「客户交易结算日报」），上传后保存到导入目录。
+              先给这批文件起一个账户名称，再拖入 .xls / .xlsx（如监控中心「客户交易结算日报」）。
+              之后可在报表页的账户下拉框切换查看。
             </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">保存到账户</label>
+                <Select
+                  value={uploadBookId}
+                  onValueChange={(v) => {
+                    setUploadBookId(v)
+                    try { sessionStorage.setItem(UPLOAD_BOOK_KEY, v) } catch { /* ignore */ }
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="选择或新建账户" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NEW_BOOK} className="text-xs">＋ 新建账户</SelectItem>
+                    {uploadBooks.map((b) => (
+                      <SelectItem key={b.id} value={b.id} className="text-xs">
+                        {b.name}（{b.files.length} 个文件）
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {uploadBookId === NEW_BOOK && (
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">账户名称</label>
+                  <Input
+                    className="h-8 text-xs"
+                    placeholder="例如 荣熙恒盈2号"
+                    value={newBookName}
+                    onChange={(e) => setNewBookName(e.target.value)}
+                  />
+                </div>
+              )}
+            </div>
             <div
               className={`relative rounded-lg border-2 border-dashed transition-colors ${
                 isDragOver ? "border-primary bg-primary/5" : "border-border/60 hover:border-border"
@@ -448,10 +683,14 @@ export default function AccountRiskDataImport() {
                     </div>
                   ))}
                 </div>
-                <Button size="sm" disabled={isUploading} onClick={() => void uploadPending()}>
+                <Button
+                  size="sm"
+                  disabled={isUploading || !resolveUploadBook()}
+                  onClick={() => void uploadPending()}
+                >
                   {isUploading
                     ? <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />上传中…</>
-                    : <>上传 {pendingFiles.length} 个文件</>}
+                    : <>上传 {pendingFiles.length} 个文件到「{resolveUploadBook()?.label ?? "…"}」</>}
                 </Button>
               </div>
             )}
@@ -650,7 +889,7 @@ export default function AccountRiskDataImport() {
                 中国期货市场监控中心投资者查询服务系统
               </a>
               ，自动识别验证码并下载「客户交易结算日报」xls。
-              添加要拉取的账户后，每天在设定时间依次登录获取。
+              点击「立即获取」会补齐监控中心可查的历史日报（约最近两个月，已有文件会跳过）；每天定时任务只拉最新一天。
               需安装 <span className="font-mono">playwright</span>、<span className="font-mono">ddddocr</span>
               （<span className="font-mono">pip install -r scripts/ma/requirements-cfmmc.txt</span> 后执行
               <span className="font-mono"> python -m playwright install chromium</span>）。
@@ -797,66 +1036,80 @@ export default function AccountRiskDataImport() {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            文件导入后点击此按钮，解析结算日报并更新图表数据。
+            只计算当前页的文件。拖入、邮箱、监控中心互不影响。
           </p>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              disabled={isRunningEtl}
-              onClick={async () => {
-                setIsRunningEtl(true)
-                setEtlResult(null)
-                try {
-                  const res = await fetch("/ma/api/account-risk/run-etl", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ mode: "incremental" }),
-                  })
-                  const data = await res.json() as { ok: boolean; result?: typeof etlResult; error?: string }
-                  if (!res.ok || !data.ok) throw new Error(data.error ?? "运行失败")
-                  setEtlResult(data.result ?? null)
-                  toast({ title: "计算完成", description: `处理 ${data.result?.processed ?? 0} 个文件，切换到图表查看结果。` })
-                } catch (e) {
-                  toast({ title: "计算失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
-                } finally {
-                  setIsRunningEtl(false)
-                }
-              }}
-            >
-              {isRunningEtl
-                ? <><RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />计算中…</>
-                : <><Play className="mr-1.5 h-3.5 w-3.5" />增量计算</>}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={isRunningEtl}
-              onClick={async () => {
-                setIsRunningEtl(true)
-                setEtlResult(null)
-                try {
-                  const res = await fetch("/ma/api/account-risk/run-etl", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ mode: "full" }),
-                  })
-                  const data = await res.json() as { ok: boolean; result?: typeof etlResult; error?: string }
-                  if (!res.ok || !data.ok) throw new Error(data.error ?? "运行失败")
-                  setEtlResult(data.result ?? null)
-                  toast({ title: "全量计算完成", description: `处理 ${data.result?.processed ?? 0} 个文件。` })
-                } catch (e) {
-                  toast({ title: "计算失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
-                } finally {
-                  setIsRunningEtl(false)
-                }
-              }}
-            >
-              全量重算
-            </Button>
+          <div className="divide-y divide-border/40 rounded-lg border border-border/60">
+            {sectionBooks.length === 0 ? (
+              <p className="px-3 py-4 text-xs text-muted-foreground">{emptyHint}</p>
+            ) : sectionBooks.map((b) => (
+              <div key={b.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium truncate">{b.name}</p>
+                  <p className="text-xs text-muted-foreground">{b.files.length} 个文件</p>
+                </div>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={runningEtlKey !== null}
+                  onClick={() => void runEtlFor("incremental", b.id, b.name)}
+                >
+                  {runningEtlKey === `${b.id}:incremental`
+                    ? <><RefreshCw className="mr-1 h-3 w-3 animate-spin" />计算中…</>
+                    : <><Play className="mr-1 h-3 w-3" />增量计算</>}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={runningEtlKey !== null}
+                  onClick={() => {
+                    if (!confirm(`全量重算「${b.name}」？只刷新该账户的图表数据。`)) return
+                    void runEtlFor("full", b.id, b.name)
+                  }}
+                >
+                  {runningEtlKey === `${b.id}:full`
+                    ? <><RefreshCw className="mr-1 h-3 w-3 animate-spin" />重算中…</>
+                    : "全量重算"}
+                </Button>
+              </div>
+            ))}
+            {sectionBooks.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm bg-muted/20">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">全部账户</p>
+                  <p className="text-xs text-muted-foreground">一次处理本页全部文件</p>
+                </div>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={runningEtlKey !== null}
+                  onClick={() => void runEtlFor("incremental", undefined, "本页全部")}
+                >
+                  {runningEtlKey === "all:incremental"
+                    ? <><RefreshCw className="mr-1 h-3 w-3 animate-spin" />计算中…</>
+                    : <><Play className="mr-1 h-3 w-3" />增量计算</>}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={runningEtlKey !== null}
+                  onClick={() => {
+                    if (!confirm("全量重算本页全部文件？不影响其他导入方式。")) return
+                    void runEtlFor("full", undefined, "本页全部")
+                  }}
+                >
+                  {runningEtlKey === "all:full"
+                    ? <><RefreshCw className="mr-1 h-3 w-3 animate-spin" />重算中…</>
+                    : "全量重算"}
+                </Button>
+              </div>
+            )}
           </div>
           {etlResult && (
             <div className="rounded-md border border-border/60 bg-muted/40 p-3 space-y-1 text-xs">
               <div className="flex flex-wrap gap-4 text-muted-foreground">
+                {etlResult.label && <span>账户 <strong className="text-foreground">{etlResult.label}</strong></span>}
                 <span>处理 <strong className="text-foreground">{etlResult.processed}</strong> 文件</span>
                 <span>新增 <strong className="text-foreground">{etlResult.inserted}</strong></span>
                 <span>更新 <strong className="text-foreground">{etlResult.updated}</strong></span>
@@ -893,12 +1146,41 @@ export default function AccountRiskDataImport() {
             )}
             <button
               className="ml-auto text-muted-foreground hover:text-foreground disabled:opacity-50"
-              disabled={isLoadingFiles}
+              disabled={isLoadingFiles || isClearingFiles}
               onClick={() => void loadFiles()}
               title="刷新"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isLoadingFiles ? "animate-spin" : ""}`} />
             </button>
+            {sectionBooks.length > 0 && (
+              <Select
+                value={sectionBooks.some((b) => b.id === listFilter) ? listFilter : "all"}
+                onValueChange={setListFilter}
+              >
+                <SelectTrigger className="h-7 w-40 text-xs">
+                  <SelectValue placeholder="全部账户" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">全部账户</SelectItem>
+                  {sectionBooks.map((b) => (
+                    <SelectItem key={b.id} value={b.id} className="text-xs">{b.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {sectionFiles.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs text-destructive hover:text-destructive"
+                disabled={isLoadingFiles || isClearingFiles}
+                onClick={() => void clearAllFiles()}
+              >
+                {isClearingFiles
+                  ? <><RefreshCw className="mr-1 h-3.5 w-3.5 animate-spin" />清空中…</>
+                  : <><Trash2 className="mr-1 h-3.5 w-3.5" />清空全部</>}
+              </Button>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -906,27 +1188,58 @@ export default function AccountRiskDataImport() {
             <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
               <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> 加载中…
             </div>
-          ) : files.length === 0 ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">暂无文件</div>
+          ) : visibleFiles.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">{emptyHint}</div>
           ) : (
             <div className="divide-y divide-border/40">
-              {files.map((f) => (
-                <div key={f.name} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                  <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-600" />
-                  <span className="flex-1 font-mono text-xs truncate">{f.name}</span>
-                  <span className="text-xs text-muted-foreground tabular-nums">{(f.size / 1024).toFixed(1)} KB</span>
-                  <span className="text-xs text-muted-foreground">{new Date(f.mtime).toLocaleString("zh-CN")}</span>
-                  <button
-                    className="text-muted-foreground hover:text-destructive"
-                    title="删除"
-                    onClick={async () => {
-                      if (!confirm(`确认删除 ${f.name}？`)) return
-                      await fetch(`${API}/delete?file=${encodeURIComponent(f.name)}`, { method: "DELETE" })
-                      void loadFiles()
-                    }}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+              {fileGroups.map((g) => (
+                <div key={g.id}>
+                  <div className="flex flex-wrap items-center gap-2 px-4 py-1.5 bg-muted/40 text-xs font-medium text-muted-foreground">
+                    <FolderOpen className="h-3.5 w-3.5" />
+                    {g.name}
+                    <span className="font-normal">· {g.files.length} 个文件</span>
+                    {g.id === "ungrouped" && activeSection === "upload" && (
+                      <div className="ml-auto flex items-center gap-2 font-normal">
+                        <Input
+                          className="h-7 w-40 text-xs"
+                          placeholder="账户名称"
+                          value={assignName}
+                          onChange={(e) => setAssignName(e.target.value)}
+                        />
+                        <Button
+                          size="sm"
+                          className="h-7 text-xs"
+                          disabled={isAssigning || (!assignName.trim() && !newBookName.trim())}
+                          onClick={() => void assignExistingFiles(g.files.map((f) => f.rel || f.name))}
+                        >
+                          {isAssigning
+                            ? <><RefreshCw className="mr-1 h-3 w-3 animate-spin" />保存中…</>
+                            : "设为账户"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  {g.files.map((f) => {
+                    const rel = f.rel || f.name
+                    return (
+                      <div key={rel} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                        <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-600" />
+                        <span className="flex-1 font-mono text-xs truncate" title={rel}>{fileLabel(f)}</span>
+                        <span className="text-xs text-muted-foreground tabular-nums">{(f.size / 1024).toFixed(1)} KB</span>
+                        <span className="text-xs text-muted-foreground">{f.mtime ? new Date(f.mtime).toLocaleString("zh-CN") : ""}</span>
+                        <button
+                          className="text-muted-foreground hover:text-destructive"
+                          title="删除"
+                          onClick={() => {
+                            if (!confirm(`确认删除 ${fileLabel(f)}？`)) return
+                            void deleteOneFile(rel)
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )
+                  })}
                 </div>
               ))}
             </div>

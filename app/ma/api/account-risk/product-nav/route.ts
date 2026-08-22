@@ -5,12 +5,14 @@
  */
 import { NextResponse } from "next/server"
 import { publicQuery } from "@/lib/db"
+import { scopeWhere, withCfmmcAccount } from "@/lib/server/account-risk-scope"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+export const GET = withCfmmcAccount(async function GET() {
   try {
+    const params: unknown[] = []
     const rows = await publicQuery(`
       SELECT
         trade_date::text AS date,
@@ -19,8 +21,9 @@ export async function GET() {
         COALESCE(daily_pnl,       0) AS daily_pnl,
         COALESCE(deposit_wd,      0) AS deposit_wd
       FROM public.cfmmc_daily_summary
+      WHERE ${scopeWhere(params)}
       ORDER BY trade_date ASC, account_no ASC
-    `)
+    `, params)
 
     if (rows.rows.length === 0) {
       return NextResponse.json({ ok: true, data: [], turnoverSeries: [], holdingSeries: [] })
@@ -51,24 +54,31 @@ export async function GET() {
     }
 
     const dates = Array.from(dateMap.keys()).sort()
+    // Keep every file date, including leading equity=0 (e.g. Aug 17 empty account).
     let nav = 1.0
-    let cumCapital = 0
+    let prevEquity = 0
+    let cumPnl = 0
 
     const data = dates.map((date) => {
       const { equity, pnl, flow } = dateMap.get(date)!
       const netFlow = flow
-      const dailyReturn = cumCapital > 0 ? pnl / cumCapital : 0
+      const economicPnl = prevEquity > 0 || equity !== 0 || netFlow !== 0
+        ? equity - prevEquity - netFlow
+        : pnl
+      const dailyReturn = prevEquity > 0 ? economicPnl / prevEquity : 0
       nav = nav * (1 + dailyReturn)
-      cumCapital = cumCapital === 0
-        ? equity          // bootstrap: use first day's equity as capital
-        : cumCapital + netFlow + pnl
+      // First snapshot is the capital base; do not treat starting 客户权益 as today's profit.
+      const countedPnl = prevEquity > 0 ? economicPnl : 0
+      cumPnl += countedPnl
+      prevEquity = equity
       return {
         date,
         nav:         Math.round(nav * 1e6) / 1e6,
-        cumCapital:  Math.round(cumCapital),
+        cumCapital:  Math.round(equity),
         dailyReturn: Math.round(dailyReturn * 1e6) / 1e6,
         netFlow:     Math.round(netFlow),
-        pnl:         Math.round(pnl),
+        pnl:         Math.round(countedPnl),
+        cumPnl:      Math.round(cumPnl),
       }
     })
 
@@ -77,4 +87,4 @@ export async function GET() {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
-}
+})

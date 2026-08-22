@@ -12,6 +12,7 @@ interface NavPoint {
   dailyReturn: number
   netFlow: number
   pnl: number
+  cumPnl?: number
 }
 
 interface BenchmarkPoint {
@@ -276,6 +277,11 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
   const performanceColor = getChinaMarketColor(totalReturn)
   const benchmarkLastPoint = normalizedBenchmarkData[normalizedBenchmarkData.length - 1]
   const showBenchmarkSeries = showBenchmark && normalizedBenchmarkData.length > 0
+  const sharpeWindows = [20, 60, 120] as const
+  const sharpeWindowFits = (w: number) => normalizedData.length > w
+  const effectiveSharpeWindow = sharpeWindowFits(sharpeWindow)
+    ? sharpeWindow
+    : (sharpeWindows.filter(sharpeWindowFits).at(-1) ?? 20)
 
   const option = {
     animation: false,
@@ -305,13 +311,17 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
         const dailyRet = pt ? fmtPct(pt.dailyReturn) : "—"
         const capital = pt ? fmtMoney(pt.cumCapital) : "—"
         const pnl = pt ? fmtMoney(pt.pnl) : "—"
+        const cumPnlLine = pt && pt.cumPnl != null
+          ? `<br/>累计盈亏 ${fmtMoney(pt.cumPnl)}`
+          : ""
+        const capitalLabel = pt && pt.cumPnl != null ? "客户权益" : "累计规模"
         const flow = pt && pt.netFlow !== 0 ? `<br/>资金流入 ${fmtMoney(pt.netFlow)}` : ""
         const returnColor = getChinaMarketColor(retPct)
         const dailyReturnColor = pt ? getChinaMarketColor(pt.dailyReturn) : "#64748b"
         const benchmarkLine = benchmarkPoint && showBenchmarkSeries
           ? `<br/>南华商品指数 <span style="color:#f59e0b">${benchmarkPoint.returnPct >= 0 ? "+" : ""}${benchmarkPoint.returnPct.toFixed(2)}%</span>`
           : ""
-        return `<b>${date}</b><br/>收益率 <span style="color:${returnColor}">${retPct >= 0 ? "+" : ""}${retPct.toFixed(2)}%</span>${benchmarkLine}<br/>当日收益 <span style="color:${dailyReturnColor}">${dailyRet}</span><br/>当日盈亏 ${pnl}<br/>累计规模 ${capital}${flow}`
+        return `<b>${date}</b><br/>收益率 <span style="color:${returnColor}">${retPct >= 0 ? "+" : ""}${retPct.toFixed(2)}%</span>${benchmarkLine}<br/>当日收益 <span style="color:${dailyReturnColor}">${dailyRet}</span><br/>当日盈亏 ${pnl}${cumPnlLine}<br/>${capitalLabel} ${capital}${flow}`
       },
     },
     grid: { left: 60, right: 20, top: showBenchmarkSeries ? 48 : 30, bottom: 50 },
@@ -1480,26 +1490,33 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
           </CardContent>
         </Card>
 
-        {/* 滚动夏普比率 */}
-        {normalizedData.length > sharpeWindow && (
-          <Card>
+        {/* 滚动夏普比率 — keep the card even when the series is shorter than 60/120 */}
+        <Card>
             <CardHeader className="pb-2 pt-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-sm">{sharpeWindow}日滚动夏普比率</CardTitle>
+                <CardTitle className="text-sm">{effectiveSharpeWindow}日滚动夏普比率</CardTitle>
                 <div className="flex gap-1">
-                  {([20, 60, 120] as const).map((w) => (
-                    <button key={w} onClick={() => setSharpeWindow(w)}
+                  {sharpeWindows.map((w) => {
+                    const disabled = !sharpeWindowFits(w)
+                    return (
+                    <button key={w} disabled={disabled} onClick={() => setSharpeWindow(w)}
+                      title={disabled ? `需要至少 ${w + 1} 个交易日` : undefined}
                       className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                        sharpeWindow === w ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground hover:bg-muted"
+                        disabled
+                          ? "cursor-not-allowed border border-border text-muted-foreground/40"
+                          : sharpeWindow === w || (!sharpeWindowFits(sharpeWindow) && w === effectiveSharpeWindow)
+                            ? "bg-primary text-primary-foreground"
+                            : "border border-border text-muted-foreground hover:bg-muted"
                       }`}>{w}日</button>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             </CardHeader>
             <CardContent className="pt-0">
               <ReactECharts
                 option={(() => {
-                  const W = sharpeWindow
+                  const W = effectiveSharpeWindow
                   const ANN = Math.sqrt(252)
                   const sharpeData: [string, number][] = []
                   for (let i = W; i < normalizedData.length; i++) {
@@ -1533,7 +1550,6 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
               />
             </CardContent>
           </Card>
-        )}
       </div>
     )}
 

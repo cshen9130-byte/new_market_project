@@ -226,25 +226,36 @@ export default function SectorPositionCharts({ height = 300, capturing = false }
     : varView === "margvol" ? mvChartOption
     : cvarChartOption
 
-  // latest day VaR pct per sector (matches table mode)
+  const pickDateIdx = (dates: string[]) => {
+    if (dates.length === 0) return -1
+    if (date) {
+      const exact = dates.indexOf(date)
+      if (exact >= 0) return exact
+      let best = -1
+      for (let i = 0; i < dates.length; i++) if (dates[i] <= date) best = i
+      if (best >= 0) return best
+    }
+    return dates.length - 1
+  }
+
+  // VaR / weighted-vol pct per sector for the selected table date
   const varLatestMap = useMemo<Record<string, number>>(() => {
     const rd = mode === "大类" ? varCatData : mode === "板块" ? varSecData : varSubData
-    if (varDates.length === 0) return {}
-    const lastIdx = varDates.length - 1
+    const idx = pickDateIdx(varDates)
+    if (idx < 0) return {}
     const result: Record<string, number> = {}
-    for (const [sector, vals] of Object.entries(rd)) result[sector] = vals[lastIdx] ?? 0
+    for (const [sector, vals] of Object.entries(rd)) result[sector] = vals[idx] ?? 0
     return result
-  }, [mode, varDates, varCatData, varSecData, varSubData])
+  }, [mode, date, varDates, varCatData, varSecData, varSubData])
 
-  // latest day marginal vol pct per sector (matches table mode)
   const mvLatestMap = useMemo<Record<string, number>>(() => {
     const rd = mode === "大类" ? mvCatData : mode === "板块" ? mvSecData : mvSubData
-    if (mvDates.length === 0) return {}
-    const lastIdx = mvDates.length - 1
+    const idx = pickDateIdx(mvDates)
+    if (idx < 0) return {}
     const result: Record<string, number> = {}
-    for (const [sector, vals] of Object.entries(rd)) result[sector] = vals[lastIdx] ?? 0
+    for (const [sector, vals] of Object.entries(rd)) result[sector] = vals[idx] ?? 0
     return result
-  }, [mode, mvDates, mvCatData, mvSecData, mvSubData])
+  }, [mode, date, mvDates, mvCatData, mvSecData, mvSubData])
 
   const rows = useMemo<SectorBarRow[]>(() => {
     let row: ExposureRow | undefined

@@ -89,10 +89,12 @@ export default function OptionFloatingPnlCharts({
   height = 280,
   prodNameMap = {},
   className = "",
+  hideAccountChart = false,
 }: {
   height?: number
   prodNameMap?: Record<string, string>
   className?: string
+  hideAccountChart?: boolean
 }) {
   const [rows, setRows] = useState<OptionRow[]>([])
   const [date, setDate] = useState("")
@@ -189,6 +191,7 @@ export default function OptionFloatingPnlCharts({
         {dirToggle}
       </div>
       <div className="flex gap-4">
+      {!hideAccountChart && (
       <Card className="w-1/2 min-w-0">
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between gap-2">
@@ -219,8 +222,9 @@ export default function OptionFloatingPnlCharts({
           )}
         </CardContent>
       </Card>
+      )}
 
-      <Card className="w-1/2 min-w-0">
+      <Card className={hideAccountChart ? "w-full min-w-0" : "w-1/2 min-w-0"}>
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="text-sm">

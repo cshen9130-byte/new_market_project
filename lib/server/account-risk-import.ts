@@ -5,6 +5,26 @@ import path from "path"
 import { promisify } from "util"
 
 import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
+import {
+  addFilesToBook,
+  bookDir,
+  bookSource,
+  adoptLegacyCfmmcFiles,
+  createCfmmcImportBook,
+  createEmailImportBook,
+  ensureUngroupedBook,
+  getImportBook,
+  listImportBooks,
+  pruneEmptyLegacyBooks,
+  reassignFilesToBook,
+  reassignFilesToExistingBook,
+  listSpreadsheetRelPaths,
+  removeFileFromBooks,
+  safeResolveRel,
+  statRelFile,
+  type ImportBook,
+  type ImportBookSource,
+} from "@/lib/server/account-risk-books"
 
 const execFileAsync = promisify(execFile)
 
@@ -298,29 +318,161 @@ export function deleteCfmmcAccount(id: string): void {
 
 // ── files ─────────────────────────────────────────────────────────────────────
 
-export function listImportedFiles(): { files: DownloadedFile[]; folder: string } {
+export type ListedImportFile = DownloadedFile & { rel: string; bookId: string | null; bookName: string | null }
+
+function fileBelongsToUser(rel: string, userId: string): boolean {
+  const base = path.basename(rel.replace(/\\/g, "/"))
+  return base.startsWith(`${userId}_`) || base.startsWith(`${userId}.`)
+}
+
+/** Older fetch saved `{uid}_{uid}_{date}.xls`; never treat those as 拖入命名账户. */
+function isCfmmcFetchFilename(rel: string, userId: string): boolean {
+  const base = path.basename(rel.replace(/\\/g, "/"))
+  return base.startsWith(`${userId}_${userId}_`)
+}
+
+function bookOwningRel(rel: string): ImportBook | undefined {
+  const n = rel.replace(/\\/g, "/")
+  const base = path.basename(n)
+  return listImportBooks().find((b) => b.files.some((f) => {
+    const fn = f.replace(/\\/g, "/")
+    return fn === n || fn === base || path.basename(fn) === base
+  }))
+}
+
+function groupFilesForCfmmcAccount(account: CfmmcAccount, extraRels: string[] = []): ImportBook | null {
+  const uid = account.userId.trim()
+  if (!uid) return null
   const folder = accountRiskImportDir()
-  const files: DownloadedFile[] = readdirSync(folder, { withFileTypes: true })
-    .filter((e) => e.isFile() && isSpreadsheetName(e.name))
-    .map((e) => {
-      const stat = statSync(path.join(folder, e.name))
-      return { name: e.name, size: stat.size, mtime: stat.mtime.toISOString() }
-    })
-    .sort((a, b) => b.mtime.localeCompare(a.mtime))
-  return { files, folder }
+  const book = createCfmmcImportBook(uid, account.label)
+  const rels = new Set<string>()
+  for (const raw of extraRels) {
+    const n = raw.replace(/\\/g, "/").replace(/^\/+/, "")
+    if (n) rels.add(path.basename(n))
+  }
+  for (const rel of listSpreadsheetRelPaths(folder)) {
+    if (!fileBelongsToUser(rel, uid)) continue
+    if (isCfmmcFetchFilename(rel, uid)) {
+      rels.add(rel)
+      continue
+    }
+    const owner = bookOwningRel(rel)
+    if (owner && bookSource(owner) === "email") continue
+    if (owner && bookSource(owner) === "upload" && owner.id !== "ungrouped") continue
+    if (
+      !owner ||
+      owner.id === "ungrouped" ||
+      bookSource(owner) === "cfmmc" ||
+      owner.name === uid ||
+      owner.name === `监控中心 ${uid}`
+    ) {
+      rels.add(rel)
+    }
+  }
+  if (rels.size === 0) return book
+  return reassignFilesToExistingBook(book.id, [...rels])
+}
+
+/** Split 监控中心 downloads out of 拖入命名账户; never steal 拖入 files. */
+function repairCfmmcBooks() {
+  const cfg = readCfmmcConfig()
+  for (const account of cfg.accounts) {
+    try {
+      const uid = account.userId.trim()
+      if (!uid) continue
+      const book = createCfmmcImportBook(uid, account.label)
+      adoptLegacyCfmmcFiles(uid, book.id)
+      groupFilesForCfmmcAccount(account)
+    } catch {
+      // keep listing
+    }
+  }
+}
+
+export function listImportedFiles(): { files: ListedImportFile[]; folder: string; books: ImportBook[] } {
+  const folder = accountRiskImportDir()
+  ensureUngroupedBook(folder)
+  repairCfmmcBooks()
+  pruneEmptyLegacyBooks()
+  const books = listImportBooks()
+  const bookByRel = new Map<string, ImportBook>()
+  const namedLast = [...books.filter((b) => b.id === "ungrouped"), ...books.filter((b) => b.id !== "ungrouped")]
+  for (const b of namedLast) {
+    for (const f of b.files) bookByRel.set(f.replace(/\\/g, "/"), b)
+  }
+  const files: ListedImportFile[] = listSpreadsheetRelPaths(folder).map((rel) => {
+    const st = statRelFile(folder, rel)
+    const book = bookByRel.get(rel) ?? (rel.includes("/") ? getImportBook(rel.split("/")[0]) : getImportBook("ungrouped"))
+    return {
+      name: rel,
+      rel,
+      size: st?.size ?? 0,
+      mtime: st?.mtime ?? "",
+      bookId: book?.id ?? null,
+      bookName: book?.name ?? null,
+    }
+  }).sort((a, b) => (b.mtime || "").localeCompare(a.mtime || ""))
+  return { files, folder, books }
+}
+
+export function assignImportedFilesToBook(opts: {
+  name?: string
+  bookId?: string
+  files?: string[]
+}): { book: ImportBook; assigned: number } {
+  const { files } = listImportedFiles()
+  const ungrouped = files.filter((f) => (f.bookId ?? "ungrouped") === "ungrouped")
+  const requested = opts.files?.length
+    ? files.filter((f) => opts.files!.includes(f.rel) || opts.files!.includes(path.basename(f.rel)))
+    : ungrouped
+  if (requested.length === 0) throw new Error("没有可命名的文件")
+  const fromId = opts.bookId?.trim()
+  const name = (opts.name ?? "").trim() || (fromId ? getImportBook(fromId)?.name ?? "" : "")
+  if (!name) throw new Error("请填写账户名称")
+  const book = reassignFilesToBook(requested.map((f) => f.rel), name)
+  return { book, assigned: requested.length }
 }
 
 export function deleteImportedFile(file: string): string {
   const folder = accountRiskImportDir()
-  const filePath = safeResolveInDir(folder, file)
+  const filePath = safeResolveRel(folder, file) ?? safeResolveInDir(folder, file)
   if (!filePath) throw new Error("非法路径")
   if (!existsSync(filePath) || !statSync(filePath).isFile()) throw new Error("文件不存在")
   unlinkSync(filePath)
-  return path.basename(filePath)
+  const rel = path.relative(folder, filePath).replace(/\\/g, "/")
+  removeFileFromBooks(rel)
+  return rel
 }
 
-export async function saveUploadedFiles(files: File[]): Promise<{ saved: string[]; errors: string[]; skipped: string[] }> {
+/** Delete every spreadsheet in the 单账户 import dir. Never touches MOM folders. */
+export function deleteAllImportedFiles(): string[] {
+  const { files } = listImportedFiles()
+  const deleted: string[] = []
+  for (const f of files) {
+    deleted.push(deleteImportedFile(f.rel))
+  }
+  return deleted
+}
+
+/** Delete only files that belong to one import source (拖入 / 邮箱 / 监控中心). */
+export function deleteImportedFilesForSource(source: ImportBookSource): string[] {
+  const { files, books } = listImportedFiles()
+  const deleted: string[] = []
+  for (const f of files) {
+    const book = books.find((b) => b.id === (f.bookId ?? "ungrouped"))
+    const belongs = book ? bookSource(book) === source : source === "upload"
+    if (!belongs) continue
+    deleted.push(deleteImportedFile(f.rel))
+  }
+  return deleted
+}
+
+export async function saveUploadedFiles(
+  files: File[],
+  book: ImportBook,
+): Promise<{ saved: string[]; errors: string[]; skipped: string[]; book: ImportBook }> {
   const folder = accountRiskImportDir()
+  const destDir = bookDir(folder, book.id)
   const saved: string[] = []
   const errors: string[] = []
   const skipped: string[] = []
@@ -331,14 +483,15 @@ export async function saveUploadedFiles(files: File[]): Promise<{ saved: string[
       continue
     }
     try {
-      const target = path.join(folder, safeName)
-      writeFileSync(target, Buffer.from(await file.arrayBuffer()))
-      saved.push(safeName)
+      const rel = `${book.id}/${safeName}`
+      writeFileSync(path.join(destDir, safeName), Buffer.from(await file.arrayBuffer()))
+      saved.push(rel)
     } catch (e) {
       errors.push(`${file.name}: ${e instanceof Error ? e.message : "写入失败"}`)
     }
   }
-  return { saved, errors, skipped }
+  const updated = addFilesToBook(book.id, saved)
+  return { saved, errors, skipped, book: updated }
 }
 
 // ── email fetch ───────────────────────────────────────────────────────────────
@@ -374,7 +527,9 @@ export async function fetchAccountRiskEmails(): Promise<FetchResult> {
   const cfg = readEmailConfig()
   if (!cfg.email || !cfg.pass) throw new Error("未配置邮箱账号或密码")
 
-  const dlDir = accountRiskImportDir()
+  const book = createEmailImportBook(cfg.email)
+  const folder = accountRiskImportDir()
+  const dlDir = bookDir(folder, book.id)
   const client = createSafeImapFlow({
     host: cfg.imapHost || "imap.163.com",
     port: cfg.imapPort || 993,
@@ -442,6 +597,10 @@ export async function fetchAccountRiskEmails(): Promise<FetchResult> {
     await closeImapFlow(client)
   }
 
+  if (downloaded.length > 0) {
+    addFilesToBook(book.id, downloaded.map((name) => `${book.id}/${path.basename(name)}`))
+  }
+
   const now = new Date()
   writeEmailConfig({
     ...cfg,
@@ -460,17 +619,54 @@ export async function runDueAccountRiskEmailFetch(): Promise<void> {
 
 // ── CFMMC fetch ───────────────────────────────────────────────────────────────
 
-function parseJsonLine(stdout: string): { ok: boolean; file?: string; filename?: string; error?: string } {
+function parseJsonLine(stdout: string): {
+  ok: boolean
+  file?: string
+  filename?: string
+  files?: string[]
+  downloaded?: number
+  skipped?: number
+  error?: string
+} {
   const lines = stdout.trim().split(/\r?\n/).filter(Boolean)
   const last = lines[lines.length - 1] ?? ""
   try {
-    return JSON.parse(last) as { ok: boolean; file?: string; filename?: string; error?: string }
+    return JSON.parse(last) as {
+      ok: boolean
+      file?: string
+      filename?: string
+      files?: string[]
+      downloaded?: number
+      skipped?: number
+      error?: string
+    }
   } catch {
     throw new Error(stdout.trim() || "监控中心脚本无输出")
   }
 }
 
-export async function fetchCfmmcAccount(accountId: string): Promise<{ ok: boolean; filename?: string; error?: string }> {
+function attachFetchedFiles(account: CfmmcAccount, filenames: string[]) {
+  return groupFilesForCfmmcAccount(account, filenames)
+}
+
+async function runEtlAfterFetch(bookId?: string, userId?: string) {
+  const { runCfmmcETL } = await import("@/lib/server/cfmmc-etl")
+  return runCfmmcETL("incremental", { bookId, userId })
+}
+
+export async function fetchCfmmcAccount(
+  accountId: string,
+  mode: "history" | "latest" = "history",
+): Promise<{
+  ok: boolean
+  filename?: string
+  downloaded?: number
+  skipped?: number
+  bookId?: string
+  etlProcessed?: number
+  etlError?: string
+  error?: string
+}> {
   const cfg = readCfmmcConfig()
   const account = cfg.accounts.find((a) => a.id === accountId)
   if (!account) throw new Error("账户不存在")
@@ -481,28 +677,57 @@ export async function fetchCfmmcAccount(accountId: string): Promise<{ ok: boolea
 
   const python = findPython()
   const outDir = accountRiskImportDir()
-  const applyResult = (result: { ok: boolean; filename?: string; error?: string }) => {
+  const applyResult = (result: {
+    ok: boolean
+    filename?: string
+    files?: string[]
+    downloaded?: number
+    skipped?: number
+    error?: string
+  }) => {
     const now = new Date()
     const next = readCfmmcConfig()
     const idx = next.accounts.findIndex((a) => a.id === accountId)
+    let bookId: string | undefined
+    if (result.ok) {
+      const book = attachFetchedFiles(account, result.files ?? (result.filename ? [result.filename] : []))
+      bookId = book?.id
+    }
     if (idx >= 0) {
       next.accounts[idx] = {
         ...next.accounts[idx],
         lastFetchAt: now.toISOString(),
         lastFetchDate: result.ok ? formatLocalDate(now) : next.accounts[idx].lastFetchDate,
         lastError: result.ok ? null : (result.error || "获取失败"),
-        lastFile: result.ok ? (result.filename || null) : next.accounts[idx].lastFile,
+        lastFile: result.ok ? (result.filename || next.accounts[idx].lastFile) : next.accounts[idx].lastFile,
       }
       next.lastRunAt = now.toISOString()
       writeCfmmcConfig(next)
     }
     return result.ok
-      ? { ok: true as const, filename: result.filename }
+      ? {
+          ok: true as const,
+          filename: result.filename,
+          downloaded: result.downloaded ?? result.files?.length ?? (result.filename ? 1 : 0),
+          skipped: result.skipped ?? 0,
+          bookId,
+        }
       : { ok: false as const, error: result.error || "获取失败" }
   }
+  const finish = async (base: Awaited<ReturnType<typeof applyResult>>) => {
+    if (!base.ok) return base
+    try {
+      const etl = await runEtlAfterFetch(base.bookId, account.userId)
+      return { ...base, etlProcessed: etl.processed }
+    } catch (e) {
+      return { ...base, etlError: e instanceof Error ? e.message : String(e) }
+    }
+  }
+  const args = [script, "--out-dir", outDir]
+  if (mode === "history") args.push("--history", "--days", "90")
   try {
-    const { stdout, stderr } = await execFileAsync(python, [script, "--out-dir", outDir], {
-      timeout: 180_000,
+    const { stdout, stderr } = await execFileAsync(python, args, {
+      timeout: mode === "history" ? 1_200_000 : 180_000,
       maxBuffer: 4 * 1024 * 1024,
       env: {
         ...process.env,
@@ -510,15 +735,20 @@ export async function fetchCfmmcAccount(accountId: string): Promise<{ ok: boolea
         CFMMC_PASSWORD: account.password,
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
+        PLAYWRIGHT_BROWSERS_PATH: (() => {
+          const userDir = path.join(process.env.LOCALAPPDATA || process.env.USERPROFILE || "", "ms-playwright")
+          if (existsSync(path.join(userDir, "chromium-1234")) || existsSync(userDir)) return userDir
+          return process.env.PLAYWRIGHT_BROWSERS_PATH || userDir
+        })(),
       },
     })
     if (stderr?.trim()) console.warn(`[cfmmc-fetch ${account.userId}] ${stderr.trim().slice(0, 2000)}`)
-    return applyResult(parseJsonLine(stdout))
+    return finish(applyResult(parseJsonLine(stdout)))
   } catch (e) {
     const err = e as { stderr?: string; stdout?: string; message?: string }
     if (typeof err.stdout === "string" && err.stdout.trim()) {
       try {
-        return applyResult(parseJsonLine(err.stdout))
+        return finish(applyResult(parseJsonLine(err.stdout)))
       } catch {
         // fall through to generic error
       }
@@ -529,12 +759,24 @@ export async function fetchCfmmcAccount(accountId: string): Promise<{ ok: boolea
         : e instanceof Error
           ? e.message
           : String(e)
-    return applyResult({ ok: false, error: message })
+    return finish(applyResult({ ok: false, error: message }))
   }
 }
 
 export async function fetchCfmmcAccounts(accountId?: string): Promise<{
-  results: { id: string; label: string; userId: string; ok: boolean; filename?: string; error?: string }[]
+  results: {
+    id: string
+    label: string
+    userId: string
+    ok: boolean
+    filename?: string
+    downloaded?: number
+    skipped?: number
+    bookId?: string
+    etlProcessed?: number
+    etlError?: string
+    error?: string
+  }[]
 }> {
   if (cfmmcFetchRunning) throw new Error("监控中心获取正在进行中，请稍后再试")
   cfmmcFetchRunning = true
@@ -546,13 +788,18 @@ export async function fetchCfmmcAccounts(accountId?: string): Promise<{
     if (targets.length === 0) throw new Error(accountId ? "账户不存在" : "没有已启用的账户")
     const results = []
     for (const account of targets) {
-      const r = await fetchCfmmcAccount(account.id)
+      const r = await fetchCfmmcAccount(account.id, "history")
       results.push({
         id: account.id,
         label: account.label,
         userId: account.userId,
         ok: r.ok,
         filename: r.filename,
+        downloaded: r.downloaded,
+        skipped: r.skipped,
+        bookId: r.bookId,
+        etlProcessed: r.etlProcessed,
+        etlError: r.etlError,
         error: r.error,
       })
     }
@@ -573,7 +820,7 @@ export async function runDueCfmmcFetch(): Promise<void> {
   cfmmcFetchRunning = true
   try {
     for (const account of due) {
-      await fetchCfmmcAccount(account.id)
+      await fetchCfmmcAccount(account.id, account.lastFetchDate ? "latest" : "history")
     }
   } finally {
     cfmmcFetchRunning = false

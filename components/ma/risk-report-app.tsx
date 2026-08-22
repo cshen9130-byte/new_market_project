@@ -7,7 +7,8 @@ import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, Alert
 import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
+import { getActiveCfmmcAccount, useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
+import { AccountRiskAccountSwitcher, IDLE_CFMMC_SCOPE, useCfmmcAccountScope, type CfmmcAccountScope } from "@/components/ma/account-risk-account-switcher"
 
 const ProductNavChart           = dynamic(() => import("@/components/ma/product-nav-chart"),            { ssr: false })
 const VarPredictionChart        = dynamic(() => import("@/components/ma/var-prediction-chart"),         { ssr: false })
@@ -45,23 +46,24 @@ const jsonResponseCache = new Map<string, unknown>()
 const inflightJsonRequests = new Map<string, Promise<unknown>>()
 
 function fetchJsonCached(url: string): Promise<any> {
-  if (jsonResponseCache.has(url)) {
-    return Promise.resolve(jsonResponseCache.get(url))
+  const cacheKey = `${url}#${getActiveCfmmcAccount()}`
+  if (jsonResponseCache.has(cacheKey)) {
+    return Promise.resolve(jsonResponseCache.get(cacheKey))
   }
-  const inflight = inflightJsonRequests.get(url)
+  const inflight = inflightJsonRequests.get(cacheKey)
   if (inflight) {
     return inflight
   }
   const request = fetch(url)
     .then((r) => r.json())
     .then((json) => {
-      jsonResponseCache.set(url, json)
+      jsonResponseCache.set(cacheKey, json)
       return json
     })
     .finally(() => {
-      inflightJsonRequests.delete(url)
+      inflightJsonRequests.delete(cacheKey)
     })
-  inflightJsonRequests.set(url, request)
+  inflightJsonRequests.set(cacheKey, request)
   return request
 }
 
@@ -1665,7 +1667,7 @@ function VarSandboxContent({
   )
 }
 
-function IntradayContent() {
+function IntradayContent({ singleAccount = false }: { singleAccount?: boolean }) {
   const [pnlData, setPnlData] = useState<{ date: string; pnl: number }[]>([])
   const [sectorLatest, setSectorLatest] = useState<{ sector: string; pnl: number }[]>([])
   const [prodLatest, setProdLatest] = useState<{ key: string; pnl: number }[]>([])
@@ -1788,8 +1790,9 @@ function IntradayContent() {
           if (r.pnl !== 0) dateNonZeroCount.set(r.date, (dateNonZeroCount.get(r.date) ?? 0) + 1)
         }
       }
+      const minActive = singleAccount ? 1 : 2
       const latestActiveDate = [...dateNonZeroCount.entries()]
-        .filter(([, count]) => count >= 2)
+        .filter(([, count]) => count >= minActive)
         .sort(([a], [b]) => b.localeCompare(a))
         [0]?.[0] ?? null
 
@@ -1826,8 +1829,9 @@ function IntradayContent() {
           if (r.pnl !== 0) acctDateCount.set(r.date, (acctDateCount.get(r.date) ?? 0) + 1)
         }
       }
+      const minAcctActive = singleAccount ? 1 : 2
       const latestAcctDate = [...acctDateCount.entries()]
-        .filter(([, count]) => count >= 2)
+        .filter(([, count]) => count >= minAcctActive)
         .sort(([a], [b]) => b.localeCompare(a))
         [0]?.[0] ?? null
       const acctList = Object.entries(accountData)
@@ -1865,7 +1869,7 @@ function IntradayContent() {
         if (varJson.breachRate != null) setVarBreachRate(varJson.breachRate)
       })
       .catch(() => {})
-  }, [])
+  }, [singleAccount])
 
   const barOption = {
     tooltip: {
@@ -2572,7 +2576,7 @@ function IntradayContent() {
           )
         })()}
         {!loading && varData.length === 0 && (
-          <p className="text-sm text-muted-foreground">数据不足（需至少 22 个交易日）</p>
+          <p className="text-sm text-muted-foreground">数据不足（次日预测 / VaR 需至少 22 个交易日的持仓与行情；净值与盈亏图表不依赖该窗口）</p>
         )}
 
         {!loading && (volBarData.length > 0 || (corrMatrixData && corrMatrixData.prods.length > 1)) && (
@@ -3798,7 +3802,7 @@ function PositionChangeVarMiniCard() {
   )
 }
 
-function OptionHoldingContent() {
+function OptionHoldingContent({ hideAccountChart = false }: { hideAccountChart?: boolean }) {
   const [rows, setRows] = useState<OptionRow[]>([])
   const [date, setDate] = useState<string>("")
   const [loading, setLoading] = useState(true)
@@ -3989,7 +3993,7 @@ function OptionHoldingContent() {
       )}
     </Card>
 
-    <OptionFloatingPnlCharts className="mt-4" prodNameMap={PROD_NAMES} />
+    <OptionFloatingPnlCharts className="mt-4" prodNameMap={PROD_NAMES} hideAccountChart={hideAccountChart} />
     </>
   )
 }
@@ -4528,9 +4532,12 @@ function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRan
   )
 }
 
-function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
+function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAccountOptionPnl = false, defaultVarWeightView = "weight", defaultGroupMode = "大类" }: {
   sectorChartCapturing: boolean
   setSectorChartCapturing: React.Dispatch<React.SetStateAction<boolean>>
+  hideAccountOptionPnl?: boolean
+  defaultVarWeightView?: "weight" | "var" | "pnl" | "margvol" | "cvar"
+  defaultGroupMode?: "大类" | "板块" | "细分"
 }) {
   const [series, setSeries] = useState<ExposureRow[]>([])
   const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
@@ -4550,10 +4557,10 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
   const [pcYesterday, setPcYesterday] = useState<string>("")
   const [pcSectorFilter, setPcSectorFilter]     = useState<ExposureSector>("全部")
   const [pcSubSectorFilter, setPcSubSectorFilter] = useState<ExposureSubSector>("全部")
-  const [weightMode, setWeightMode] = useState<"大类" | "板块" | "细分">("大类")
+  const [weightMode, setWeightMode] = useState<"大类" | "板块" | "细分">(defaultGroupMode)
   const [weightCalcMode, setWeightCalcMode] = useState<"gross" | "net">("net")
   const [sectorBarSort, setSectorBarSort] = useState<{ col: "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"; dir: "asc" | "desc" } | null>({ col: "longMv", dir: "desc" })
-  const [sectorBarMode, setSectorBarMode] = useState<"大类" | "板块" | "细分">("大类")
+  const [sectorBarMode, setSectorBarMode] = useState<"大类" | "板块" | "细分">(defaultGroupMode)
   const [sectorBarDate, setSectorBarDate] = useState<string>("")
   const [scatterDim, setScatterDim] = useState<"大类" | "板块" | "细分">("大类")
 
@@ -4575,7 +4582,7 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
   const [varBDeltaMvMap, setVarBDeltaMvMap] = useState<Map<string, number>>(new Map())
 
   // VaR weight timeseries state
-  const [varWeightView, setVarWeightView] = useState<"weight" | "var" | "pnl" | "margvol" | "cvar">("weight")
+  const [varWeightView, setVarWeightView] = useState<"weight" | "var" | "pnl" | "margvol" | "cvar">(defaultVarWeightView)
   const [varChartHelpOpen, setVarChartHelpOpen] = useState(false)
   const [varSectorDates, setVarSectorDates]               = useState<string[]>([])
   const [varSectorCatData, setVarSectorCatData]           = useState<Record<string, number[]>>({})
@@ -6169,7 +6176,7 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
         </div>
       </section>
 
-      <OptionHoldingContent />
+      <OptionHoldingContent hideAccountChart={hideAccountOptionPnl} />
 
       <section id="section-pos-change-area" className="mt-6">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -7259,15 +7266,33 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
 `
 
 export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
+  if (variant === "account") return <RiskReportAppAccount />
+  return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} />
+}
+
+function RiskReportAppAccount() {
+  const cfmmcScope = useCfmmcAccountScope()
+  return <RiskReportAppCore variant="account" cfmmcScope={cfmmcScope} />
+}
+
+function RiskReportAppCore({
+  variant,
+  cfmmcScope,
+}: {
+  variant: RiskReportVariant
+  cfmmcScope: CfmmcAccountScope
+}) {
   useRiskSourceFetch(variant)
   const isAccount = variant === "account"
   const briefingName = isAccount ? "单账户简报" : "MOM 简报"
   const reportTitle = isAccount ? "单账户每日风控" : "MOM 风控报告"
   const briefingFilePrefix = isAccount ? "单账户风控简报" : "MOM风控简报"
   const subNavItems = [
-    ...baseSubNavItems.map((item) =>
-      item.key === "briefing" ? { ...item, name: briefingName } : item,
-    ),
+    ...baseSubNavItems
+      .filter((item) => !(isAccount && item.key === "advisor"))
+      .map((item) =>
+        item.key === "briefing" ? { ...item, name: briefingName } : item,
+      ),
     ...(isAccount ? [{ key: "import" as const, name: "数据导入", icon: Upload }] : []),
   ]
 
@@ -7285,6 +7310,7 @@ export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
   }
 
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
+  const accountScopeKey = isAccount ? (cfmmcScope.selected || "all") : "mom"
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
 
   // Briefing: latest daily return + YTD return from product-nav API
@@ -8847,9 +8873,16 @@ export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
     <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
       {/* Secondary sidebar — hidden on briefing tab to maximise screen width */}
       <aside className={cn("w-44 shrink-0 border-r bg-card flex flex-col", activeTab === "briefing" && "hidden")}>
-        <div className="p-4 border-b">
+        <div className="p-4 border-b space-y-2">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{reportTitle}</p>
-          <p className="text-[11px] text-muted-foreground/60 mt-0.5">新版</p>
+          <p className="text-[11px] text-muted-foreground/60">新版</p>
+          {isAccount && (
+            <AccountRiskAccountSwitcher
+              accounts={cfmmcScope.accounts}
+              selected={cfmmcScope.selected}
+              onChange={cfmmcScope.onChange}
+            />
+          )}
         </div>
         <nav className="flex-1 p-2 space-y-0.5">
           {subNavItems.map((item) => {
@@ -8986,10 +9019,21 @@ export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
           </div>
         )}
 
-        <h1 id="section-top" className="text-2xl font-semibold tracking-tight pt-6 mb-4">{activeItem.name}</h1>
+        <div id="section-top" className="flex items-end justify-between gap-4 pt-6 mb-4">
+          <h1 className="text-2xl font-semibold tracking-tight">{activeItem.name}</h1>
+          {isAccount && cfmmcScope.accounts.length > 0 && (
+            <AccountRiskAccountSwitcher
+              accounts={cfmmcScope.accounts}
+              selected={cfmmcScope.selected}
+              onChange={cfmmcScope.onChange}
+              compact
+            />
+          )}
+        </div>
+        <div key={accountScopeKey}>
         {activeTab === "overview" && <OverviewContent />}
-        {activeTab === "intraday" && <IntradayContent />}
-        {activeTab === "position" && <PositionContent sectorChartCapturing={sectorChartCapturing} setSectorChartCapturing={setSectorChartCapturing} />}
+        {activeTab === "intraday" && <IntradayContent singleAccount={isAccount} />}
+        {activeTab === "position" && <PositionContent sectorChartCapturing={sectorChartCapturing} setSectorChartCapturing={setSectorChartCapturing} hideAccountOptionPnl={isAccount} defaultVarWeightView={isAccount ? "var" : "weight"} defaultGroupMode={isAccount ? "板块" : "大类"} />}
         {activeTab === "advisor" && <AdvisorContent />}
         {activeTab === "anomaly" && <AnomalyContent />}
         {activeTab === "import" && <AccountRiskDataImport />}
@@ -9274,7 +9318,9 @@ export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
                       </div>
                     </div>
 
-                    {/* Section: 投顾分析 */}
+                    {!isAccount && (
+                    <>
+                    {/* Section: 投顾分析 — MOM only */}
                     <div className="flex items-center gap-3 mt-5 mb-3">
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
@@ -9306,19 +9352,21 @@ export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
                          style={{ background: "#ffffff" }}>
                       <AdvisorCorrTimeseries height={380} />
                     </div>
+                    </>
+                    )}
 
                     {/* Section: 期权浮动盈亏 */}
                     <div className="flex items-center gap-3 mt-5 mb-3">
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        五、期权浮动盈亏
+                        {isAccount ? "四、期权浮动盈亏" : "五、期权浮动盈亏"}
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>
                     <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4 p-2"
                          style={{ background: "#ffffff" }}>
-                      <OptionFloatingPnlCharts height={260} prodNameMap={PROD_NAMES} />
+                      <OptionFloatingPnlCharts height={260} prodNameMap={PROD_NAMES} hideAccountChart={isAccount} />
                     </div>
                   </>
                 ) : (
@@ -9345,6 +9393,7 @@ export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   )

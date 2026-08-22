@@ -1,0 +1,17 @@
+---
+description: Keep MOM 每日风控 (stable) and 单账户每日风控 (in development) fully isolated — DB, ETL, files, cache, parsers. Read docs/mom-vs-account-risk-isolation.md first.
+alwaysApply: true
+---
+
+# MOM vs 单账户每日风控 isolation
+
+Before any change to risk-report, account-risk, CFMMC/国投 `.xls` import, `mom_*` tables, or `mom_data_etl.py`:
+
+1. **Read** [`docs/mom-vs-account-risk-isolation.md`](../../docs/mom-vs-account-risk-isolation.md).
+2. MOM 每日风控 is **stable**. Do not modify its ETL, `public.mom_*` data, or `/ma/api/mom-analysis/*` default behaviour in order to support 单账户.
+3. 单账户每日风控 has a **different settlement file format**. Parse from the sample 国投/监控中心 workbook (`客户交易结算日报(逐笔对冲)` under `data/account-risk/imports/`). Do **not** reuse MOM cell refs (`D13` 当日盈亏, sheet `客户交易核算日报`) or fork `scripts/ma/mom_data_etl.py`.
+4. 单账户 writes only `public.cfmmc_*` and/or `account_risk.*`. Never `INSERT`/`UPDATE`/`DELETE` `public.mom_*`. Do not use `search_path` `account_risk, public` in a way that missing 单账户 tables fall through to MOM.
+5. Separate import dirs and cache keys. Clearing 单账户 cache must not delete MOM `data/mom-cache` files.
+6. New 单账户 APIs go under `/ma/api/account-risk/`. Do not make MOM routes dual-purpose.
+
+If a task seems to need one shared table or one shared ETL, stop and split the work instead.

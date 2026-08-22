@@ -5,9 +5,9 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET() {
-  const { files, folder } = listImportedFiles()
+  const { files, folder, books } = listImportedFiles()
   return NextResponse.json(
-    { files, folder },
+    { files, folder, books },
     { headers: { "Cache-Control": "no-store, max-age=0" } },
   )
 }
