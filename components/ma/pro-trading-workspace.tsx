@@ -14,6 +14,7 @@ import {
 } from "@/components/ma/paper-trading-panels"
 import { Button } from "@/components/ui/button"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
+import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
 import { usePaperTrading } from "@/hooks/use-paper-trading"
 import {
   INDEX_FUTURES,
@@ -23,6 +24,12 @@ import {
 } from "@/lib/client/ctp-market"
 import { TimeframeSelect } from "@/components/ma/timeframe-select"
 import { useSymbolKline } from "@/hooks/use-symbol-kline"
+import {
+  marksFromAllWeatherTrades,
+  marksFromPositions,
+  mergeOrderMarks,
+} from "@/lib/client/chart-order-marks"
+import { ALL_WEATHER_PORTFOLIO_ID } from "@/lib/client/paper-trading"
 import { productOfSymbol, resolveSymbolInput } from "@/lib/client/pro-trading"
 import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
 import type { TimeframeId } from "@/lib/client/timeframes"
@@ -66,6 +73,10 @@ export function ProTradingWorkspace({
   const [mounted, setMounted] = useState(false)
   const paper = usePaperTrading(quotes, candles)
   const awBootRef = useRef(false)
+  const awSymbols = paper.state.products
+    .filter((item) => item.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
+    .map((item) => item.symbol)
+  useAllWeatherCtpWatch(open && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID, awSymbols)
 
   useEffect(() => setMounted(true), [])
 
@@ -126,6 +137,16 @@ export function ProTradingWorkspace({
     const extra = paper.state.products.map((p) => p.symbol)
     return [...new Set([...symbols, ...extra])]
   }, [symbols, paper.state.products])
+
+  const orderMarks = useMemo(() => {
+    if (!symbol) return []
+    const fromPaper = marksFromPositions(paper.state.positions, symbol, paper.selectedPortfolioId)
+    const fromAw =
+      paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID
+        ? marksFromAllWeatherTrades(paper.awMeta?.trades, symbol)
+        : []
+    return mergeOrderMarks(fromAw, fromPaper)
+  }, [symbol, paper.state.positions, paper.selectedPortfolioId, paper.awMeta?.trades])
 
   const suggestions = useMemo(() => {
     const q = query.trim().toUpperCase()
@@ -223,7 +244,7 @@ export function ProTradingWorkspace({
           <ResizablePanelGroup direction="horizontal">
             <ResizablePanel defaultSize={74} minSize={48}>
               {symbol ? (
-                <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} activeTool={tool} onTool={setTool} />
+                <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} />
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
               )}
@@ -274,7 +295,7 @@ export function ProTradingWorkspace({
                 <ResizableHandle className="w-1 bg-[#2a2e39]" />
                 <ResizablePanel defaultSize={53} minSize={32}>
                   {symbol ? (
-                    <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} activeTool={tool} onTool={setTool} />
+                    <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} />
                   ) : (
                     <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
                   )}

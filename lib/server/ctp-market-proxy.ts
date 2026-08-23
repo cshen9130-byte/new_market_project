@@ -4,10 +4,10 @@ export function ctpMarketBaseUrl() {
   return (process.env.CTP_MARKET_URL || "http://127.0.0.1:8000").replace(/\/$/, "")
 }
 
-export async function proxyCtpMarket(path: string) {
+export async function proxyCtpMarket(path: string, init?: RequestInit) {
   const url = `${ctpMarketBaseUrl()}${path}`
   try {
-    const res = await fetch(url, { cache: "no-store" })
+    const res = await fetch(url, { cache: "no-store", ...init })
     if (!res.ok) {
       return NextResponse.json(
         { ok: false, error: `CTP 行情服务返回 ${res.status}` },

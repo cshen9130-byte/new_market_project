@@ -44,6 +44,7 @@ export type CtpStatus = {
   tick_count?: number
   symbols?: string[]
   index_symbols?: string[]
+  extra_symbols?: string[]
 }
 
 export function contractsForProduct(symbols: string[], product: string) {

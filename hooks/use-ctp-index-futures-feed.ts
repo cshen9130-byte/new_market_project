@@ -51,7 +51,9 @@ export function useCtpIndexFuturesFeed() {
     }
 
     function applyLive(json: LiveResponse) {
-      const list = json.index_symbols || json.symbols || []
+      const indexList = json.index_symbols || []
+      const extraList = json.extra_symbols || []
+      const list = [...new Set([...(json.symbols || []), ...indexList, ...extraList])]
       setStatus({
         connected: json.connected,
         logged_in: json.logged_in,
@@ -60,16 +62,18 @@ export function useCtpIndexFuturesFeed() {
         message: json.message,
         tick_count: json.tick_count,
         symbols: list,
-        index_symbols: json.index_symbols || list,
+        index_symbols: indexList.length ? indexList : list,
+        extra_symbols: extraList,
       })
       if (list.length) setSymbols(list)
       const nextQuotes = { ...quotesRef.current }
       const nextCandles = { ...candlesRef.current }
       let candlesChanged = false
       for (const [symbol, item] of Object.entries(json.items || {})) {
-        if (item.tick) nextQuotes[symbol] = item.tick
+        const key = symbol.toUpperCase()
+        if (item.tick) nextQuotes[key] = { ...item.tick, symbol: key }
         if (item.candle) {
-          nextCandles[symbol] = upsertCandle(nextCandles[symbol], item.candle)
+          nextCandles[key] = upsertCandle(nextCandles[key], item.candle)
           candlesChanged = true
         }
       }

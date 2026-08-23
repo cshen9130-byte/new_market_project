@@ -23,7 +23,10 @@ import {
   ServerCog,
   X,
 } from "lucide-react"
+import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
+import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { authService } from "@/lib/auth"
+import type { CtpTick } from "@/lib/client/ctp-market"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
 import { displayListedName, SLEEVE_COLORS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { Button } from "@/components/ui/button"
@@ -55,6 +58,7 @@ type Position = {
   sleeve: SleeveKey
   lots: number
   price: number
+  prevPrice?: number
   multiplier: number
   marginRate: number
   targetWeight: number
@@ -186,6 +190,19 @@ function pnlClass(n: number): string {
   return "text-slate-600"
 }
 
+function liveMark(contract: string | undefined, quotes: Record<string, CtpTick>, fallback: number) {
+  if (!contract) return fallback
+  const tick = quotes[contract.toUpperCase()] || quotes[contract]
+  return tick?.last != null && tick.last > 0 ? tick.last : fallback
+}
+
+function liveDailyPnl(p: Position, quotes: Record<string, CtpTick>) {
+  const prev = p.prevPrice && p.prevPrice > 0 ? p.prevPrice : p.price
+  const mark = liveMark(p.contract, quotes, p.price)
+  if (!p.lots || !p.multiplier || !prev) return p.dailyPnl
+  return (mark - prev) * p.lots * p.multiplier
+}
+
 const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
 const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"]
 
@@ -214,6 +231,8 @@ export function AllWeatherApp() {
   const [extraFiles, setExtraFiles] = useState<File[]>([])
   const [dragOver, setDragOver] = useState(false)
   const extraFileInputRef = useRef<HTMLInputElement>(null)
+  useAllWeatherCtpWatch(authorized === true)
+  const ctp = useCtpIndexFuturesFeed()
 
   const extraBytes = extraFiles.reduce((sum, f) => sum + f.size, 0)
 
@@ -408,6 +427,30 @@ export function AllWeatherApp() {
     [overview],
   )
 
+  const live = useMemo(() => {
+    if (!overview) return null
+    const quotes = ctp.quotes
+    const productPnl = new Map<string, number>()
+    const sleevePnl: Record<SleeveKey, number> = { Equity: 0, Bonds: 0, Gold: 0, Commodity: 0 }
+    let daily = 0
+    let liveCount = 0
+    for (const p of overview.book.positions) {
+      const hasTick = Boolean(p.contract && (quotes[p.contract.toUpperCase()]?.last || quotes[p.contract]?.last))
+      if (hasTick) liveCount += 1
+      const pnl = liveDailyPnl(p, quotes)
+      productPnl.set(p.asset, pnl)
+      sleevePnl[p.sleeve] += pnl
+      daily += pnl
+    }
+    return {
+      daily,
+      sleevePnl,
+      productPnl,
+      liveCount,
+      equity: overview.book.equity - overview.book.dailyPnl + daily,
+    }
+  }, [overview, ctp.quotes])
+
   if (authorized === null) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500">
@@ -485,8 +528,8 @@ export function AllWeatherApp() {
         ) : (
           <>
             <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Kpi title="模拟净值" value={yuan(overview.book.equity)} hint={`起始 ${yuan(overview.book.initialCapital)} · ${overview.book.asOf}`} />
-              <Kpi title="当日盈亏" value={yuan(overview.book.dailyPnl)} hint="按持仓手数盯市" className={pnlClass(overview.book.dailyPnl)} />
+              <Kpi title="模拟净值" value={yuan(live?.equity ?? overview.book.equity)} hint={`起始 ${yuan(overview.book.initialCapital)} · ${overview.book.asOf}${live?.liveCount ? " · 实时" : ""}`} />
+              <Kpi title="当日盈亏" value={yuan(live?.daily ?? overview.book.dailyPnl)} hint={live?.liveCount ? `实时盯市 · ${live.liveCount} 个合约有行情` : "按持仓手数盯市"} className={pnlClass(live?.daily ?? overview.book.dailyPnl)} />
               <Kpi title="累计盈亏" value={`${yuan(overview.book.cumPnl)}  (${pct(overview.book.cumPnl / overview.book.initialCapital)})`} hint={`自 ${overview.book.startedAt} 起跟踪`} className={pnlClass(overview.book.cumPnl)} />
               <Kpi title="保证金占用" value={`${yuan(overview.totals.margin)}  ·  ${pct(overview.totals.marginUtil)}`} hint={`开仓 ${overview.totals.lots} 手 · ${(overview.settings?.contractTenor ?? "current") === "following" ? "下季/次主力" : "当月/主力"} · 行情 ${overview.book.priceSource === "sina" ? "新浪" : "回测快照"}`} />
             </section>
@@ -507,7 +550,9 @@ export function AllWeatherApp() {
                   <div key={key} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
                     <div className="text-xs text-slate-500">{SLEEVE_LABELS[key]} 风险预算</div>
                     <div className="text-lg font-semibold" style={{ color: SLEEVE_COLORS[key] }}>{pct(overview.strategy.lastBudget[key])}</div>
-                    <div className="text-[11px] text-slate-400">目标中枢 25%</div>
+                    <div className={`text-[11px] font-medium ${pnlClass(live?.sleevePnl[key] ?? 0)}`}>
+                      实时 {yuan(live?.sleevePnl[key] ?? 0)}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -589,7 +634,7 @@ export function AllWeatherApp() {
                           <TableCell className="text-right">{yuan(s.notional)}</TableCell>
                           <TableCell className="text-right">{yuan(s.margin)}</TableCell>
                           <TableCell className="text-right">{pct(s.riskShare)}</TableCell>
-                          <TableCell className={`text-right ${pnlClass(s.dailyPnl)}`}>{yuan(s.dailyPnl)}</TableCell>
+                          <TableCell className={`text-right ${pnlClass(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}`}>{yuan(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}</TableCell>
                           <TableCell className={`text-right ${pnlClass(s.cumPnl)}`}>{yuan(s.cumPnl)}</TableCell>
                         </TableRow>
                       ))}
@@ -599,7 +644,12 @@ export function AllWeatherApp() {
 
                 {overview.sleeves.map((s) => (
                   <Card key={s.sleeve} className="border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="mb-3 text-sm font-medium">{s.label} · 品种明细</div>
+                    <div className="mb-3 flex items-center justify-between">
+                      <div className="text-sm font-medium">{s.label} · 品种明细</div>
+                      <div className={`text-sm font-medium ${pnlClass(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}`}>
+                        实时 {yuan(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}
+                      </div>
+                    </div>
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -629,7 +679,7 @@ export function AllWeatherApp() {
                                 <div className="text-[10px] font-normal text-slate-400">目标 {pct(p.targetRiskShare ?? 0)} · 不足一手</div>
                               )}
                             </TableCell>
-                            <TableCell className={`text-right ${pnlClass(p.dailyPnl)}`}>{yuan(p.dailyPnl)}</TableCell>
+                            <TableCell className={`text-right ${pnlClass(live?.productPnl.get(p.asset) ?? p.dailyPnl)}`}>{yuan(live?.productPnl.get(p.asset) ?? p.dailyPnl)}</TableCell>
                             <TableCell className={`text-right ${pnlClass(p.cumPnl)}`}>{yuan(p.cumPnl)}</TableCell>
                           </TableRow>
                         ))}

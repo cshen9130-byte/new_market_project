@@ -127,6 +127,14 @@ class MarketClient:
         if ret != 0:
             self._set_status(message=f"SubscribeMarketData failed: {ret}")
 
+    def unsubscribe(self, instruments: list[str]) -> None:
+        if not self.api or not instruments:
+            return
+        encoded = [s.encode("utf-8") for s in instruments]
+        ret = self.api.UnSubscribeMarketData(encoded, len(encoded))
+        if ret != 0:
+            self._set_status(message=f"UnSubscribeMarketData failed: {ret}")
+
 
 def _make_spi(mdapi, client: MarketClient):
     generation = client.generation
@@ -189,6 +197,21 @@ def _make_spi(mdapi, client: MarketClient):
             if symbol and symbol not in client.subscribed:
                 client.subscribed.append(symbol)
             print(f"Subscribed: {symbol}")
+            client._set_status(message=f"Subscribed {', '.join(client.subscribed)}")
+
+        def OnRspUnSubMarketData(self, pSpecificInstrument, pRspInfo, nRequestID, bIsLast) -> None:
+            if not self._alive():
+                return
+            error_id = getattr(pRspInfo, "ErrorID", 0) if pRspInfo else 0
+            error_msg = _ctp_text(getattr(pRspInfo, "ErrorMsg", "")) if pRspInfo else ""
+            symbol = _ctp_text(getattr(pSpecificInstrument, "InstrumentID", "")) if pSpecificInstrument else ""
+            if error_id:
+                print(f"Unsubscribe failed {symbol}: {error_id} {error_msg}")
+                client._set_status(message=f"Unsubscribe {symbol} failed: {error_msg or error_id}")
+                return
+            if symbol and symbol in client.subscribed:
+                client.subscribed.remove(symbol)
+            print(f"Unsubscribed: {symbol}")
             client._set_status(message=f"Subscribed {', '.join(client.subscribed)}")
 
         def OnRtnDepthMarketData(self, tick) -> None:

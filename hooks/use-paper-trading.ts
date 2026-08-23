@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { ContractTenor } from "@/lib/all-weather/setup"
+import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import {
@@ -381,6 +382,24 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     }
   }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio])
 
+  const sleevePnl = useMemo(() => {
+    const out = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, { unrealized: 0, realized: 0, live: 0 }])) as Record<
+      SleeveKey,
+      { unrealized: number; realized: number; live: number }
+    >
+    for (const pos of state.positions) {
+      if (selectedPortfolio && pos.portfolioId !== selectedPortfolio.id) continue
+      if (!pos.sleeve || !isSleeveKey(pos.sleeve)) continue
+      const mark = markPrice(pos.symbol, quotes, candles, extraMarks)
+      const pnl = positionPnl(pos, mark)
+      if (pnl == null) continue
+      if (pos.status === "open") out[pos.sleeve].unrealized += pnl
+      else out[pos.sleeve].realized += pnl
+      out[pos.sleeve].live = out[pos.sleeve].unrealized + out[pos.sleeve].realized
+    }
+    return out
+  }, [state.positions, quotes, candles, extraMarks, selectedPortfolio])
+
   return {
     ready,
     state,
@@ -407,6 +426,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     rows,
     openPositions,
     summary,
+    sleevePnl,
   }
 }
 

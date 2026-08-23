@@ -14,14 +14,17 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from candles import MinuteAggregator
 from config import settings
 from ctp_md import MarketClient
+from watchers import WatchBook
 
 LOGIN_WAIT_S = 12
 FAILOVER_RETRY_S = 20
 WATCHDOG_OK_S = 30
+WATCH_SWEEP_S = 8
 
 INDEX_PRODUCTS = ("IH", "IF", "IC", "IM")
 
@@ -32,16 +35,81 @@ clients: set[WebSocket] = set()
 event_queue: asyncio.Queue | None = None
 loop: asyncio.AbstractEventLoop | None = None
 md_client: MarketClient | None = None
+watch_book = WatchBook()
 
 
 def _index_symbols() -> list[str]:
     return [s for s in settings.instruments if s[:2].upper() in INDEX_PRODUCTS]
 
 
+def _extra_symbols() -> list[str]:
+    return watch_book.wanted()
+
+
+def _live_symbols() -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for symbol in [*_index_symbols(), *_extra_symbols()]:
+        key = str(symbol or "").upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _tick_for(symbol: str) -> dict | None:
+    return latest_ticks.get(symbol) or latest_ticks.get(symbol.upper())
+
+
+def _pack_tick(tick: dict | None) -> dict | None:
+    if not tick:
+        return None
+    return {
+        "symbol": tick.get("symbol"),
+        "last": tick.get("last"),
+        "bid": tick.get("bid"),
+        "ask": tick.get("ask"),
+        "volume": tick.get("volume"),
+        "open_interest": tick.get("open_interest"),
+        "pre_close": tick.get("pre_close"),
+        "pre_settlement": tick.get("pre_settlement"),
+        "open": tick.get("open"),
+        "high": tick.get("high"),
+        "low": tick.get("low"),
+        "update_time": tick.get("update_time"),
+        "update_millis": tick.get("update_millis"),
+    }
+
+
+def sync_subscriptions() -> None:
+    client = md_client
+    wanted = watch_book.subscribe_ids(settings.instruments)
+    if client is None or not client.logged_in:
+        return
+    subscribed_u = {item.upper() for item in client.subscribed}
+    base_u = {item.upper() for item in settings.instruments}
+    wanted_u = {item.upper() for item in wanted}
+    to_add = [item for item in wanted if item.upper() not in subscribed_u]
+    to_drop = [
+        item
+        for item in client.subscribed
+        if item.upper() not in base_u and item.upper() not in wanted_u
+    ]
+    if to_add:
+        print(f"CTP watch subscribe {', '.join(to_add)}")
+        client.subscribe(to_add)
+    if to_drop:
+        print(f"CTP watch unsubscribe {', '.join(to_drop)}")
+        client.unsubscribe(to_drop)
+
+
 def emit(payload: dict) -> None:
     if payload.get("type") == "tick":
-        symbol = str(payload.get("symbol") or "")
+        raw = str(payload.get("symbol") or "")
+        symbol = watch_book.canonical(raw) if raw else ""
         if symbol:
+            payload["symbol"] = symbol
             latest_ticks[symbol] = payload
         candle = aggregator.on_tick(
             payload["symbol"],
@@ -117,6 +185,14 @@ async def watchdog() -> None:
         await asyncio.sleep(WATCHDOG_OK_S)
 
 
+async def sweep_watchers() -> None:
+    while True:
+        await asyncio.sleep(WATCH_SWEEP_S)
+        changed = watch_book.expire()
+        if changed or watch_book.watcher_count():
+            sync_subscriptions()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global event_queue, loop, md_client
@@ -132,9 +208,11 @@ async def lifespan(_app: FastAPI):
         traceback.print_exc()
         md_client._set_status(message=f"CTP start failed: {exc}")
     watch_task = asyncio.create_task(watchdog())
+    sweep_task = asyncio.create_task(sweep_watchers())
     try:
         yield
     finally:
+        sweep_task.cancel()
         watch_task.cancel()
         pump_task.cancel()
         if md_client is not None:
@@ -169,45 +247,71 @@ async def state() -> dict:
         **status,
         "default_symbol": symbol,
         "candles": aggregator.history(symbol),
-        "candle_counts": {s: len(aggregator.history(s)) for s in settings.instruments},
+        "candle_counts": {s: len(aggregator.history(s)) for s in _live_symbols()},
         "index_symbols": _index_symbols(),
+        "extra_symbols": _extra_symbols(),
+        "watchers": watch_book.watcher_count(),
     }
 
 
 @app.get("/api/bars")
 async def bars(symbol: str | None = None) -> dict:
     if symbol:
-        return {"symbol": symbol, "candles": aggregator.history(symbol)}
-    return {"candles": {s: aggregator.history(s) for s in _index_symbols()}}
+        key = watch_book.canonical(symbol)
+        return {"symbol": key, "candles": aggregator.history(key) or aggregator.history(symbol)}
+    return {"candles": {s: aggregator.history(s) for s in _live_symbols()}}
 
 
 @app.get("/api/live")
 async def live() -> dict:
     status = md_client.snapshot() if md_client else {}
+    extras = _extra_symbols()
     items: dict[str, dict] = {}
-    for symbol in _index_symbols():
-        tick = latest_ticks.get(symbol)
+    for symbol in _live_symbols():
         items[symbol] = {
-            "tick": {
-                "symbol": tick.get("symbol"),
-                "last": tick.get("last"),
-                "bid": tick.get("bid"),
-                "ask": tick.get("ask"),
-                "volume": tick.get("volume"),
-                "open_interest": tick.get("open_interest"),
-                "pre_close": tick.get("pre_close"),
-                "pre_settlement": tick.get("pre_settlement"),
-                "open": tick.get("open"),
-                "high": tick.get("high"),
-                "low": tick.get("low"),
-                "update_time": tick.get("update_time"),
-                "update_millis": tick.get("update_millis"),
-            }
-            if tick
-            else None,
+            "tick": _pack_tick(_tick_for(symbol)),
             "candle": aggregator.current(symbol),
         }
-    return {**status, "items": items}
+    return {
+        **status,
+        "index_symbols": _index_symbols(),
+        "extra_symbols": extras,
+        "symbols": _live_symbols(),
+        "watchers": watch_book.watcher_count(),
+        "items": items,
+    }
+
+
+class WatchRequest(BaseModel):
+    watcher_id: str = Field(default="")
+    symbols: list[str] = Field(default_factory=list)
+
+
+class UnwatchRequest(BaseModel):
+    watcher_id: str = Field(default="")
+
+
+@app.post("/api/watch")
+async def watch(payload: WatchRequest):
+    watcher_id = payload.watcher_id.strip()
+    if not watcher_id:
+        return JSONResponse({"ok": False, "error": "missing watcher_id"}, status_code=400)
+    symbols = watch_book.touch(watcher_id, payload.symbols)
+    sync_subscriptions()
+    return {
+        "ok": True,
+        "watchers": watch_book.watcher_count(),
+        "extra_symbols": symbols,
+    }
+
+
+@app.post("/api/unwatch")
+async def unwatch(payload: UnwatchRequest):
+    watcher_id = payload.watcher_id.strip()
+    if watcher_id:
+        watch_book.drop(watcher_id)
+        sync_subscriptions()
+    return {"ok": True, "watchers": watch_book.watcher_count(), "extra_symbols": _extra_symbols()}
 
 
 @app.websocket("/ws")

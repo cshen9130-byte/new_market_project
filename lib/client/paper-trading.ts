@@ -98,6 +98,7 @@ export type AllWeatherHolding = {
   price: number
   prevPrice: number
   multiplier: number
+  openedAt?: number
 }
 
 const MULTIPLIER: Record<IndexProduct, number> = {
@@ -245,7 +246,7 @@ export function applyAllWeatherBook(state: PaperState, holdings: AllWeatherHoldi
     side: "long",
     lots: h.lots,
     entryPrice: h.prevPrice > 0 ? h.prevPrice : h.price,
-    entryTime: now,
+    entryTime: h.openedAt || now,
     status: "open",
     multiplier: h.multiplier,
     sleeve: h.sleeve,

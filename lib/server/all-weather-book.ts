@@ -338,6 +338,28 @@ export function readPaperBook(): PaperBook | null {
   }
 }
 
+const ALWAYS_ON_INDEX = new Set(["IF", "IH", "IC", "IM"])
+
+/** Held 全天候 contracts that are not on the always-on 股指 CTP feed. */
+export function allWeatherWatchContracts(extra: string[] = []): string[] {
+  const book = readPaperBook()
+  const merged = [
+    ...(book?.positions ?? [])
+      .filter((p) => (p.lots || 0) > 0 && p.contract)
+      .map((p) => String(p.contract).replace(/[^a-zA-Z0-9]/g, "").toUpperCase()),
+    ...extra.map((s) => String(s || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase()),
+  ]
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const symbol of merged) {
+    if (!/^[A-Z]{1,3}\d{3,4}$/.test(symbol) || seen.has(symbol)) continue
+    if (ALWAYS_ON_INDEX.has(symbol.replace(/\d+$/, ""))) continue
+    seen.add(symbol)
+    out.push(symbol)
+  }
+  return out
+}
+
 function writePaperBook(book: PaperBook) {
   ensureDir()
   fs.writeFileSync(BOOK_FILE, JSON.stringify(book, null, 2), "utf-8")

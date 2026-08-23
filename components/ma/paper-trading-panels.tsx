@@ -5,7 +5,7 @@ import { Plus, Trash2 } from "lucide-react"
 
 import type { PaperTradingApi } from "@/hooks/use-paper-trading"
 import { CONTRACT_TENORS } from "@/lib/all-weather/setup"
-import { SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
+import { isSleeveKey, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { type CtpTick } from "@/lib/client/ctp-market"
 import { ALL_WEATHER_PORTFOLIO_ID } from "@/lib/client/paper-trading"
 import {
@@ -465,13 +465,18 @@ export function PaperPortfolioPanel({
         </div>
       </div>
       {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
-        <div className="flex flex-wrap gap-1 border-b border-[#2a2e39] px-3 py-1.5 text-[10px] text-[#adb3bd]">
+        <div className="grid grid-cols-2 gap-1 border-b border-[#2a2e39] px-3 py-1.5">
           {SLEEVE_KEYS.map((key) => {
             const v = paper.awMeta?.lastBudget?.[key]
+            const pnl = paper.sleevePnl[key]?.live ?? 0
             return (
-              <span key={key} className="rounded bg-[#131722] px-1.5 py-0.5">
-                {SLEEVE_LABELS[key]} {v != null ? `${(v * 100).toFixed(1)}%` : "--"}
-              </span>
+              <div key={key} className="rounded bg-[#131722] px-1.5 py-1">
+                <div className="flex items-center justify-between text-[10px] text-[#adb3bd]">
+                  <span style={{ color: SLEEVE_COLORS[key] }}>{SLEEVE_LABELS[key]}</span>
+                  <span>{v != null ? `${(v * 100).toFixed(1)}%` : "--"}</span>
+                </div>
+                <div className={cn("font-mono text-[11px]", pnlClass(pnl))}>{fmtMoney(pnl)}</div>
+              </div>
             )
           })}
         </div>
@@ -525,8 +530,11 @@ export function PaperPortfolioPanel({
                 <Fragment key={block.sleeve || "other"}>
                   {block.sleeve ? (
                     <tr className="border-t border-[#2a2e39] bg-[#181c27]">
-                      <td colSpan={3} className="px-3 py-1 text-[10px] text-[#787b86]">
+                      <td colSpan={2} className="px-3 py-1 text-[10px] text-[#787b86]">
                         {SLEEVE_LABELS[block.sleeve as SleeveKey] || block.sleeve}
+                      </td>
+                      <td className={cn("px-3 py-1 text-right font-mono text-[10px]", pnlClass(isSleeveKey(block.sleeve) ? paper.sleevePnl[block.sleeve]?.live : null))}>
+                        {isSleeveKey(block.sleeve) ? fmtMoney(paper.sleevePnl[block.sleeve]?.live ?? 0) : ""}
                       </td>
                     </tr>
                   ) : null}
@@ -628,11 +636,16 @@ export function PaperPositionsBar({
         {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
           <>
             <span className="text-[#787b86]">
-              权益 <span className="font-mono text-[#d1d4dc]">{fmtMoney(paper.awMeta.equity).replace("+", "")}</span>
+              净值 <span className="font-mono text-[#d1d4dc]">{fmtMoney(paper.awMeta.equity).replace("+", "")}</span>
             </span>
-            <span className="text-[#787b86]">
-              账面当日 <span className={cn("font-mono", pnlClass(paper.awMeta.dailyPnl))}>{fmtMoney(paper.awMeta.dailyPnl)}</span>
-            </span>
+            {SLEEVE_KEYS.map((key) => {
+              const pnl = paper.sleevePnl[key]?.live ?? 0
+              return (
+                <span key={key} className="text-[#787b86]">
+                  {SLEEVE_LABELS[key]} <span className={cn("font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</span>
+                </span>
+              )
+            })}
           </>
         ) : null}
         <span className="ml-auto text-[#adb3bd]">持仓 {paper.summary.openCount}</span>
