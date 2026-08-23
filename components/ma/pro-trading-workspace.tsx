@@ -29,7 +29,7 @@ import {
   marksFromPositions,
   mergeOrderMarks,
 } from "@/lib/client/chart-order-marks"
-import { ALL_WEATHER_PORTFOLIO_ID } from "@/lib/client/paper-trading"
+import { ALL_WEATHER_PORTFOLIO_ID, markPrice } from "@/lib/client/paper-trading"
 import { productOfSymbol, resolveSymbolInput } from "@/lib/client/pro-trading"
 import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
 import type { TimeframeId } from "@/lib/client/timeframes"
@@ -101,7 +101,7 @@ export function ProTradingWorkspace({
     }
     if (awBootRef.current) return
     awBootRef.current = true
-    void paper.loadAllWeather().then((sym) => {
+    void paper.loadAllWeather(false).then((sym) => {
       if (sym) {
         setSymbol(sym)
         setQuery(sym)
@@ -128,7 +128,7 @@ export function ProTradingWorkspace({
   const live1m = candles[symbol] || []
   const { candles: tfCandles } = useSymbolKline(symbol || null, interval, live1m, quote)
   const meta = INDEX_FUTURES.find((item) => item.product === product)
-  const last = quote?.last ?? paper.extraMarks[symbol] ?? candles[symbol]?.at(-1)?.close ?? null
+  const last = markPrice(symbol, quotes, candles, paper.extraMarks)
   const base = quote?.pre_settlement || quote?.pre_close || null
   const diff = last != null && base ? last - base : null
   const pct = diff != null && base ? (diff / base) * 100 : null

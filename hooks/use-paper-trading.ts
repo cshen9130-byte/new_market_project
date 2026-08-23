@@ -6,6 +6,7 @@ import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
+import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
   applyAllWeatherBook,
@@ -55,7 +56,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     setState((prev) => evaluatePaperTrading(prev, quotes, candles, prevMarks.current, extraMarks))
     const nextMarks = { ...prevMarks.current }
     for (const [symbol, tick] of Object.entries(quotes)) {
-      if (tick.last != null) nextMarks[symbol] = tick.last
+      if (tick.last != null && isLiveSessionFor(symbol)) nextMarks[symbol] = tick.last
     }
     for (const [symbol, px] of Object.entries(extraMarks)) {
       if (px > 0) nextMarks[symbol] = px
@@ -66,15 +67,16 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   useEffect(() => {
     if (!ready) return
     let cancelled = false
-    const timer = window.setInterval(() => {
-      void fetchAllWeatherOverview(true)
+    const pull = () =>
+      fetchAllWeatherOverview(false)
         .then(({ marks, meta }) => {
           if (cancelled) return
-          setExtraMarks(marks)
+          setExtraMarks((prev) => mergeClosedMarks(prev, marks))
           setAwMeta(meta)
         })
         .catch(() => {})
-    }, 45_000)
+    void pull()
+    const timer = window.setInterval(() => void pull(), 45_000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
@@ -173,10 +175,10 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     setError(null)
   }, [selectedPortfolio, quotes, candles, extraMarks])
 
-  const loadAllWeather = useCallback(async () => {
+  const loadAllWeather = useCallback(async (refresh = true) => {
     setAwLoading(true)
     try {
-      const { holdings, marks, meta } = await fetchAllWeatherOverview(true)
+      const { holdings, marks, meta } = await fetchAllWeatherOverview(refresh)
       if (!holdings.length) {
         setError("全天候策略暂无持仓")
         return null
@@ -324,7 +326,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       .map((product) => {
         const position = state.positions.find((pos) => pos.productId === product.id && pos.status === "open") || null
         const mark = markPrice(product.symbol, quotes, candles, extraMarks)
-        const quote = quotes[product.symbol]
+        const quote = quotes[product.symbol] || quotes[product.symbol.toUpperCase()]
         const base = quote?.pre_settlement || quote?.pre_close || extraMarks[product.symbol] || null
         const prev = position?.entryPrice ?? null
         const diff = mark != null && (quote?.pre_settlement || quote?.pre_close) != null

@@ -1,5 +1,6 @@
 import { multiplierForContract } from "@/lib/all-weather/universe"
 import type { CtpCandle, CtpTick, IndexProduct } from "@/lib/client/ctp-market"
+import { isLiveSessionFor, quoteOf, validMark } from "@/lib/client/market-hours"
 import { productOfSymbol } from "@/lib/client/pro-trading"
 
 export const PAPER_STORAGE_KEY = "ma_index_paper_trading_v1"
@@ -149,6 +150,14 @@ export function savePaperState(state: PaperState) {
   }
 }
 
+export function priceDigits(symbol: string) {
+  const asset = (symbol.replace(/\d+$/i, "") || symbol).toUpperCase()
+  if (asset === "T" || asset === "TF" || asset === "TS" || asset === "TL") return 3
+  if (asset === "AU" || asset === "AG") return 2
+  if (asset === "IF" || asset === "IH" || asset === "IC" || asset === "IM") return 1
+  return null
+}
+
 export function contractMultiplier(symbol: string, override?: number | null) {
   if (override && override > 0) return override
   const product = productOfSymbol(symbol)
@@ -162,7 +171,16 @@ export function markPrice(
   candles: Record<string, CtpCandle[]>,
   extraMarks?: Record<string, number>,
 ) {
-  return quotes[symbol]?.last ?? extraMarks?.[symbol] ?? candles[symbol]?.at(-1)?.close ?? null
+  const key = symbol.toUpperCase()
+  const quote = quoteOf(quotes, key)
+  const live = validMark(quote?.last)
+  const extra = validMark(extraMarks?.[key] ?? extraMarks?.[symbol])
+  const hist = validMark(candles[key]?.at(-1)?.close ?? candles[symbol]?.at(-1)?.close)
+  const settle = validMark(quote?.pre_settlement) ?? validMark(quote?.pre_close)
+  // Closed session: ignore live last. SimNow / 新浪 still print on Sunday and that
+  // made 现价 look unchanged (rounding) while 浮动盈亏 hopped between sources.
+  if (!isLiveSessionFor(key)) return extra ?? settle ?? hist
+  return live ?? extra ?? hist ?? settle
 }
 
 export function positionPnl(pos: PaperPosition, mark: number | null) {

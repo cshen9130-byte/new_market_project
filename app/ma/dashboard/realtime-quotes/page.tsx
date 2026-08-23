@@ -37,6 +37,7 @@ import {
   mergeCandleSeries,
   pickMostActiveContract,
 } from "@/lib/client/ctp-market"
+import { isCffexProduct, isCffexSession } from "@/lib/client/market-hours"
 import { type TimeframeId } from "@/lib/client/timeframes"
 import { cn } from "@/lib/utils"
 
@@ -105,8 +106,28 @@ export default function RealtimeQuotesPage() {
   }
 
   const quotes = useMemo(() => {
-    const next: Record<string, CtpTick> = { ...listed.quotes, ...cffex.quotes }
-    for (const [symbol, tick] of Object.entries(ctp.quotes)) next[symbol] = tick
+    const next: Record<string, CtpTick> = {}
+    for (const src of [listed.quotes, cffex.quotes, ctp.quotes]) {
+      for (const [symbol, tick] of Object.entries(src)) {
+        const key = symbol.toUpperCase()
+        const prev = next[key]
+        if (!prev) {
+          next[key] = { ...tick, symbol: key }
+          continue
+        }
+        const incomingLast = tick.last != null && tick.last > 0 ? tick.last : null
+        const prevLast = prev.last != null && prev.last > 0 ? prev.last : null
+        const cffexClosed = isCffexProduct(key) && !isCffexSession()
+        next[key] = {
+          ...prev,
+          ...tick,
+          symbol: key,
+          last: cffexClosed ? prevLast ?? incomingLast : incomingLast ?? prevLast,
+          pre_settlement: tick.pre_settlement ?? prev.pre_settlement,
+          pre_close: tick.pre_close ?? prev.pre_close,
+        }
+      }
+    }
     return next
   }, [ctp.quotes, cffex.quotes, listed.quotes])
 

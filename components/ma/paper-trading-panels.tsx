@@ -7,9 +7,11 @@ import type { PaperTradingApi } from "@/hooks/use-paper-trading"
 import { CONTRACT_TENORS } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { type CtpTick } from "@/lib/client/ctp-market"
-import { ALL_WEATHER_PORTFOLIO_ID } from "@/lib/client/paper-trading"
 import {
+  ALL_WEATHER_PORTFOLIO_ID,
   fmtMoney,
+  markPrice,
+  priceDigits,
   positionPnl,
   sideLabel,
   strategyStatusLabel,
@@ -29,9 +31,9 @@ function pnlClass(n: number | null | undefined) {
   return "text-[#787b86]"
 }
 
-function fmtPx(n: number | null | undefined, digits?: number) {
+function fmtPx(n: number | null | undefined, symbol?: string) {
   if (n == null || Number.isNaN(n)) return "--"
-  const d = digits ?? (Math.abs(n) < 200 ? 3 : Math.abs(n) < 5000 ? 1 : 0)
+  const d = (symbol && priceDigits(symbol)) ?? (Math.abs(n) < 200 ? 3 : Math.abs(n) < 5000 ? 1 : 1)
   return n.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
@@ -91,7 +93,7 @@ export function PaperStrategyBuilder({
   function markOf(raw: string) {
     const resolved = resolve(raw)
     if (!resolved) return null
-    return quotes[resolved]?.last ?? paper.extraMarks[resolved] ?? lastPrice
+    return markPrice(resolved, quotes, {}, paper.extraMarks) ?? lastPrice
   }
 
   function submitOrder() {
@@ -214,7 +216,7 @@ export function PaperStrategyBuilder({
             <input
               value={orderType === "market" ? "" : price}
               onChange={(e) => setPrice(e.target.value)}
-              placeholder={orderType === "market" ? `市价 ${fmtPx(markOf(symbol))}` : "限价"}
+              placeholder={orderType === "market" ? `市价 ${fmtPx(markOf(symbol), symbol)}` : "限价"}
               disabled={orderType === "market"}
               className={cn(fieldClass, "mt-1 disabled:opacity-60")}
             />
@@ -333,7 +335,7 @@ export function PaperPortfolioPanel({
       paper.setError("无法识别合约")
       return
     }
-    const mark = quotes[resolved]?.last ?? paper.extraMarks[resolved]
+    const mark = markPrice(resolved, quotes, {}, paper.extraMarks)
     if (mark == null) {
       paper.setError("请等待行情")
       return
@@ -509,7 +511,7 @@ export function PaperPortfolioPanel({
                     {sideLabel(position.side)} {position.lots}
                   </span>
                   <span className={cn("font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</span>
-                  <span className="text-[#787b86]">{fmtPx(mark)}</span>
+                  <span className="text-[#787b86]">{fmtPx(mark, position.symbol)}</span>
                 </button>
               ))
             )}
@@ -551,7 +553,7 @@ export function PaperPortfolioPanel({
                         <div className="font-mono text-white">{row.product.symbol}</div>
                         <div className="text-[10px] text-[#787b86]">{row.product.label || row.position?.label || ""}</div>
                       </td>
-                      <td className={cn("px-1 font-mono", pnlClass(row.diff))}>{fmtPx(row.mark)}</td>
+                      <td className={cn("px-1 font-mono", pnlClass(row.diff))}>{fmtPx(row.mark, row.product.symbol)}</td>
                       <td className="px-3 text-right text-[#adb3bd]">
                         {row.position ? `${sideLabel(row.position.side)} ${row.position.lots}` : "—"}
                       </td>
@@ -672,8 +674,8 @@ export function PaperPositionsBar({
                     <td className="px-3 py-1.5 font-mono text-white">{position.symbol}</td>
                     <td className={position.side === "long" ? "px-2 text-[#ef5350]" : "px-2 text-[#26a69a]"}>{sideLabel(position.side)}</td>
                     <td className="px-2">{position.lots}</td>
-                    <td className="px-2 font-mono">{fmtPx(position.entryPrice)}</td>
-                    <td className="px-2 font-mono">{fmtPx(position.exitPrice)}</td>
+                    <td className="px-2 font-mono">{fmtPx(position.entryPrice, position.symbol)}</td>
+                    <td className="px-2 font-mono">{fmtPx(position.exitPrice, position.symbol)}</td>
                     <td className={cn("px-3 text-right font-mono", pnlClass(positionPnl(position, position.exitPrice ?? null)))}>
                       {fmtMoney(positionPnl(position, position.exitPrice ?? null))}
                     </td>
@@ -716,8 +718,8 @@ export function PaperPositionsBar({
                     {sideLabel(position.side)}
                   </td>
                   <td className="px-2 tabular-nums">{position.lots}</td>
-                  <td className="px-2 font-mono">{fmtPx(position.entryPrice)}</td>
-                  <td className="px-2 font-mono">{fmtPx(mark)}</td>
+                  <td className="px-2 font-mono">{fmtPx(position.entryPrice, position.symbol)}</td>
+                  <td className="px-2 font-mono">{fmtPx(mark, position.symbol)}</td>
                   <td className="max-w-[160px] truncate px-2 text-[#adb3bd]">{strategy?.name || "手动"}</td>
                   <td className={cn("px-2 text-right font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</td>
                   <td className="px-3 text-right">

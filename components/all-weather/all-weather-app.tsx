@@ -27,6 +27,7 @@ import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { authService } from "@/lib/auth"
 import type { CtpTick } from "@/lib/client/ctp-market"
+import { isLiveSessionFor } from "@/lib/client/market-hours"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
 import { displayListedName, SLEEVE_COLORS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { Button } from "@/components/ui/button"
@@ -192,6 +193,7 @@ function pnlClass(n: number): string {
 
 function liveMark(contract: string | undefined, quotes: Record<string, CtpTick>, fallback: number) {
   if (!contract) return fallback
+  if (!isLiveSessionFor(contract)) return fallback
   const tick = quotes[contract.toUpperCase()] || quotes[contract]
   return tick?.last != null && tick.last > 0 ? tick.last : fallback
 }

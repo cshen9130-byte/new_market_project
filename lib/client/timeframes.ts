@@ -143,6 +143,11 @@ function tradeDateUnix(ymd: string | null | undefined) {
   return Math.floor(Date.UTC(year, month - 1, date, 12, 0, 0) / 1000)
 }
 
+function isWeekendUnix(unix: number) {
+  const day = new Date(unix * 1000).getUTCDay()
+  return day === 0 || day === 6
+}
+
 export function applySessionQuote(
   bars: CtpCandle[],
   quote:
@@ -161,7 +166,13 @@ export function applySessionQuote(
   const open = quote.open
   const last = quote.last
   if (open == null || last == null || !(open > 0) || !(last > 0)) return bars
-  const time = bucketTime(tradeDateUnix(quote.trade_date) ?? shanghaiWallUnix(), id)
+  const dated = tradeDateUnix(quote.trade_date)
+  // Closed-weekend polls have no session. Do not stamp Sunday/Saturday onto 日线
+  // (that last bar then "ticks" every 800ms as quotes refresh).
+  const raw = dated ?? (isWeekendUnix(shanghaiWallUnix()) ? null : shanghaiWallUnix())
+  if (raw == null) return bars
+  const time = bucketTime(raw, id)
+  if (!dated && isWeekendUnix(time)) return bars
   const high = quote.high != null && quote.high > 0 ? quote.high : Math.max(open, last)
   const low = quote.low != null && quote.low > 0 ? quote.low : Math.min(open, last)
   const volume = quote.volume ?? 0
@@ -171,6 +182,7 @@ export function applySessionQuote(
     // A lone session print is not a daily series — charting it stretches one
     // candle across the whole pane (the 日线 "giant bar" bug).
     if (!next.length) return bars
+    if (isWeekendUnix(time)) return bars
     next.push({ time, open, high, low, close: last, volume })
     return next.sort((a, b) => a.time - b.time)
   }

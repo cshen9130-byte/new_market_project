@@ -170,7 +170,11 @@ function applyOrderMarks(
   )
 }
 
-type AppliedSeries = { first: number; last: number; len: number }
+type AppliedSeries = { first: number; last: number; len: number; fingerprint?: string }
+
+function barFingerprint(bar: CtpCandle) {
+  return `${bar.time}:${bar.open}:${bar.high}:${bar.low}:${bar.close}:${bar.volume}`
+}
 
 export function KlineProChart({ symbol, interval, candles, marks, activeTool, onTool }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -288,15 +292,17 @@ export function KlineProChart({ symbol, interval, candles, marks, activeTool, on
     const first = candles[0].time
     const prev = appliedRef.current
     const chartLen = chart.getDataList()?.length || 0
+    const fingerprint = barFingerprint(last)
     const seriesReplaced = !prev || first !== prev.first || candles.length + 8 < (prev.len || 0)
     const historyExtended = !!prev && first < prev.first - 30 && candles.length > prev.len
     const needInit = chartLen === 0 && candles.length > 1
-    appliedRef.current = { first, last: last.time, len: candles.length }
+    appliedRef.current = { first, last: last.time, len: candles.length, fingerprint }
     if (needInit || historyExtended || seriesReplaced) {
       chart.resetData()
       applyOrderMarks(chart, marksRef.current, candles, interval)
       return
     }
+    if (prev?.fingerprint === fingerprint) return
     if (subRef.current) subRef.current(toBar(last))
   }, [candles, symbol, interval])
 
