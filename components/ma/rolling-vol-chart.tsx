@@ -39,21 +39,27 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
   }, [])
 
   const option = (() => {
-    const WINDOW = volWindow
+    const WINDOW = Math.min(volWindow, Math.max(2, navData.length - 1))
+    const start = navData.length <= volWindow ? 2 : WINDOW
     const ANN = Math.sqrt(252)
 
     const fundVol: [string, number][] = []
-    for (let i = WINDOW; i < navData.length; i++) {
-      const slice = navData.slice(i - WINDOW, i).map((p) => p.dailyReturn)
-      const mu  = slice.reduce((s, r) => s + r, 0) / WINDOW
-      const vol = Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (WINDOW - 1)) * ANN
+    for (let i = start; i < navData.length; i++) {
+      const w = Math.min(WINDOW, i)
+      const slice = navData.slice(i - w, i).map((p) => p.dailyReturn)
+      const mu  = slice.reduce((s, r) => s + r, 0) / w
+      const vol = w > 1
+        ? Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (w - 1)) * ANN
+        : 0
       fundVol.push([navData[i].date, parseFloat((vol * 100).toFixed(4))])
     }
 
     const bmVol: [string, number][] = []
-    if (bmData.length > WINDOW) {
-      for (let i = WINDOW; i < bmData.length; i++) {
-        const slice  = bmData.slice(i - WINDOW, i + 1)
+    if (bmData.length > 2) {
+      const bmStart = bmData.length <= volWindow ? 2 : WINDOW
+      for (let i = bmStart; i < bmData.length; i++) {
+        const w = Math.min(WINDOW, i)
+        const slice  = bmData.slice(i - w, i + 1)
         const bmRets = slice.slice(1).map((p, j) => (p.close - slice[j].close) / slice[j].close)
         const mu  = bmRets.reduce((s, r) => s + r, 0) / bmRets.length
         const vol = Math.sqrt(bmRets.reduce((s, r) => s + (r - mu) ** 2, 0) / (bmRets.length - 1)) * ANN

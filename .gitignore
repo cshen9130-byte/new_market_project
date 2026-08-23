@@ -107,6 +107,7 @@ FOF底层明细.xlsx
 data/settlement_email_config.json
 data/yinhe_settlement_email_config.json
 data/account-risk/
+data/all-weather/
 
 # MOM API cache files
 data/mom-cache/

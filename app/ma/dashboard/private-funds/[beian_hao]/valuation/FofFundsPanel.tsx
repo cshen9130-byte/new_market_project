@@ -7,12 +7,16 @@ import {
   isValuationCashHoldingName,
   stripValuationSubjectPathPrefix,
 } from "@/lib/valuation-holding-display-name"
+import { FofStrategyPiesPanel, type StrategyPieSelection } from "./FofStrategyPiesPanel"
 
 export type FundHoldingRow = {
   index: number
   fundName: string
   valuationCode: string | null
   fundStrategy: string | null
+  strategyL1?: string | null
+  strategyL2?: string | null
+  strategyL3?: string | null
   navDate: string | null
   virtualUnitNav: number | null
   unitNav: number | null
@@ -324,8 +328,32 @@ function StockSortTh({
   )
 }
 
+function holdingMatchesPie(row: FundHoldingRow, selection: StrategyPieSelection): boolean {
+  if (!selection.l1) return true
+  const fromPath = (row.fundStrategy ?? "")
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const l1 = row.strategyL1?.trim() || fromPath[0] || "未配置"
+  const l2 = row.strategyL2?.trim() || fromPath[1] || "未配置"
+  const l3s = (row.strategyL3 ?? "")
+    .split(/[，,、]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const l3Labels = l3s.length > 0 ? l3s : ["未配置"]
+  if (l1 !== selection.l1) return false
+  if (selection.l2 && l2 !== selection.l2) return false
+  if (selection.l3) {
+    if (l3Labels.includes(selection.l3)) return true
+    if (l3Labels.length === 1 && l3Labels[0] === "未配置" && row.fundName === selection.l3) return true
+    return false
+  }
+  return true
+}
+
 export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
   const [strategyTab, setStrategyTab] = useState<string>("全部")
+  const [pieSelection, setPieSelection] = useState<StrategyPieSelection>({ l1: null, l2: null, l3: null })
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [sortKey, setSortKey] = useState<SortKey | null>("marketValue")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
@@ -350,6 +378,9 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
     } else if (strategyTab !== "全部") {
       list = list.filter((r) => r.fundStrategy === strategyTab)
     }
+    if (pieSelection.l1) {
+      list = list.filter((r) => holdingMatchesPie(r, pieSelection))
+    }
     if (sortKey) {
       list = [...list].sort((a, b) => {
         const av = a[sortKey] ?? 0
@@ -358,7 +389,7 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
       })
     }
     return list.map((row, i) => ({ ...row, index: i + 1 }))
-  }, [fundOnlyRows, strategyTab, sortKey, sortDir])
+  }, [fundOnlyRows, strategyTab, pieSelection, sortKey, sortDir])
 
   const totalMarketValue = filtered.reduce((s, r) => s + r.marketValue, 0)
   const totalMarketPct = filtered.reduce((s, r) => s + r.marketPct, 0)
@@ -461,6 +492,14 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
 
   return (
   <>
+    <FofStrategyPiesPanel
+      rows={fundOnlyRows}
+      selection={pieSelection}
+      onSelectionChange={(next) => {
+        setPieSelection(next)
+        if (next.l1) setStrategyTab("全部")
+      }}
+    />
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-3 pb-2">
         <div>
@@ -495,7 +534,10 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
           <button
             key={tab}
             type="button"
-            onClick={() => setStrategyTab(tab)}
+            onClick={() => {
+              setStrategyTab(tab)
+              setPieSelection({ l1: null, l2: null, l3: null })
+            }}
             className={[
               "px-2.5 py-1 rounded text-xs border transition-colors whitespace-nowrap",
               strategyTab === tab

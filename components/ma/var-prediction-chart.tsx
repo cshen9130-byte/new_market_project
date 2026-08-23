@@ -14,7 +14,7 @@ export default function VarPredictionChart({ height = 320 }: { height?: number }
   const [varVolDays, setVarVolDays]       = useState("20")
   const [varCorrDays, setVarCorrDays]     = useState("252")
   const [varDistModel, setVarDistModel]   = useState("normal")
-  const [varZoom, setVarZoom]             = useState({ start: 60, end: 100 })
+  const [varZoom, setVarZoom]             = useState({ start: 0, end: 100 })
 
   const fetchVar = (confidence: string, volDays: string, corrDays: string, distModel: string) => {
     setVarLoading(true)
@@ -22,7 +22,9 @@ export default function VarPredictionChart({ height = 320 }: { height?: number }
     fetch(`/ma/api/mom-analysis/var-prediction?${params}`)
       .then((r) => r.json())
       .then((j) => {
-        setVarData(j.data ?? [])
+        const rows: VarPoint[] = j.data ?? []
+        setVarData(rows)
+        setVarZoom({ start: rows.length < 40 ? 0 : 60, end: 100 })
         if (j.breachRate != null) setVarBreachRate(j.breachRate)
       })
       .catch(() => {})

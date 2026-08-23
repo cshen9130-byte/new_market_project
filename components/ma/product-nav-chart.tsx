@@ -419,7 +419,8 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
         name: "收益率",
         type: "line",
         data: normalizedData.map((p) => [p.date, Math.round((p.navNorm - 1) * 10000) / 100]),
-        symbol: "none",
+        symbol: normalizedData.length < 20 ? "circle" : "none",
+        symbolSize: 6,
         lineStyle: { color: performanceColor, width: 2 },
         itemStyle: { color: performanceColor },
         areaStyle: {
@@ -1479,7 +1480,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
     )}
 
     {/* ── 滚动波动率 + 滚动夏普 ────────────────────────── */}
-    {normalizedData.length > volWindow && (
+    {normalizedData.length > 2 && (
       <div className="mt-3 grid grid-cols-2 gap-3">
         {/* 滚动波动率 */}
         <Card>
@@ -1499,19 +1500,25 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
           <CardContent className="pt-0">
             <ReactECharts
               option={(() => {
-                const WINDOW = volWindow
+                const WINDOW = Math.min(volWindow, Math.max(2, normalizedData.length - 1))
+                const start = normalizedData.length <= volWindow ? 2 : WINDOW
                 const ANN = Math.sqrt(252)
                 const fundVol: [string, number][] = []
-                for (let i = WINDOW; i < normalizedData.length; i++) {
-                  const slice = normalizedData.slice(i - WINDOW, i).map((p) => p.dailyReturn)
-                  const mu = slice.reduce((s, r) => s + r, 0) / WINDOW
-                  const vol = Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (WINDOW - 1)) * ANN
+                for (let i = start; i < normalizedData.length; i++) {
+                  const w = Math.min(WINDOW, i)
+                  const slice = normalizedData.slice(i - w, i).map((p) => p.dailyReturn)
+                  const mu = slice.reduce((s, r) => s + r, 0) / w
+                  const vol = w > 1
+                    ? Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (w - 1)) * ANN
+                    : 0
                   fundVol.push([normalizedData[i].date, parseFloat((vol * 100).toFixed(4))])
                 }
                 const bmVol: [string, number][] = []
-                if (normalizedBenchmarkData.length > WINDOW) {
-                  for (let i = WINDOW; i < normalizedBenchmarkData.length; i++) {
-                    const slice = normalizedBenchmarkData.slice(i - WINDOW, i + 1)
+                if (normalizedBenchmarkData.length > 2) {
+                  const bmStart = normalizedBenchmarkData.length <= volWindow ? 2 : WINDOW
+                  for (let i = bmStart; i < normalizedBenchmarkData.length; i++) {
+                    const w = Math.min(WINDOW, i)
+                    const slice = normalizedBenchmarkData.slice(i - w, i + 1)
                     const bmRets = slice.slice(1).map((p, j) => (p.close - slice[j].close) / slice[j].close)
                     const mu = bmRets.reduce((s, r) => s + r, 0) / bmRets.length
                     const vol = Math.sqrt(bmRets.reduce((s, r) => s + (r - mu) ** 2, 0) / (bmRets.length - 1)) * ANN

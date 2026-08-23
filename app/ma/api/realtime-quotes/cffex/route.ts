@@ -7,8 +7,8 @@ export const dynamic = "force-dynamic"
 
 export async function GET() {
   try {
-    const products = await getCffexIndexRealtime()
-    return NextResponse.json({ ok: true, source: "sina", products })
+    const { products, quotes } = await getCffexIndexRealtime()
+    return NextResponse.json({ ok: true, source: "sina", products, quotes })
   } catch (err) {
     return NextResponse.json(
       {

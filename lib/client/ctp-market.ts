@@ -32,6 +32,7 @@ export type CtpTick = {
   low?: number | null
   update_time: string | null
   update_millis: number | null
+  trade_date?: string | null
 }
 
 export type CtpStatus = {

@@ -137,6 +137,12 @@ export function mergeHistoryAndLive(history: CtpCandle[], live1m: CtpCandle[], i
   return [...map.values()].sort((a, b) => a.time - b.time)
 }
 
+function tradeDateUnix(ymd: string | null | undefined) {
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null
+  const [year, month, date] = ymd.split("-").map(Number)
+  return Math.floor(Date.UTC(year, month - 1, date, 12, 0, 0) / 1000)
+}
+
 export function applySessionQuote(
   bars: CtpCandle[],
   quote:
@@ -146,6 +152,7 @@ export function applySessionQuote(
         low?: number | null
         last?: number | null
         volume?: number | null
+        trade_date?: string | null
       }
     | undefined,
   id: TimeframeId,
@@ -154,13 +161,16 @@ export function applySessionQuote(
   const open = quote.open
   const last = quote.last
   if (open == null || last == null || !(open > 0) || !(last > 0)) return bars
-  const time = bucketTime(shanghaiWallUnix(), id)
+  const time = bucketTime(tradeDateUnix(quote.trade_date) ?? shanghaiWallUnix(), id)
   const high = quote.high != null && quote.high > 0 ? quote.high : Math.max(open, last)
   const low = quote.low != null && quote.low > 0 ? quote.low : Math.min(open, last)
   const volume = quote.volume ?? 0
   const next = bars.slice()
   const idx = next.findIndex((bar) => bar.time === time)
   if (idx < 0) {
+    // A lone session print is not a daily series — charting it stretches one
+    // candle across the whole pane (the 日线 "giant bar" bug).
+    if (!next.length) return bars
     next.push({ time, open, high, low, close: last, volume })
     return next.sort((a, b) => a.time - b.time)
   }

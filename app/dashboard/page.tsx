@@ -6,7 +6,7 @@ import { authService } from "@/lib/auth"
 import { canAccessAiKnowledge } from "@/lib/permissions"
 import { NeuralNetwork3D } from "@/components/neural-network-3d"
 import { Button } from "@/components/ui/button"
-import { BrainCircuit, LogOut } from "lucide-react"
+import { BrainCircuit, CloudSun, LogOut } from "lucide-react"
 
 export default function DashboardPage() {
   const router = useRouter()
@@ -54,6 +54,16 @@ export default function DashboardPage() {
       <div className="absolute top-4 left-4 z-10 text-cyan-400 text-lg font-mono">欢迎，{user.name}</div>
 
       <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
+        {user.name === "cshen" && (
+        <Button
+          onClick={() => router.push("/ma/dashboard/all-weather")}
+          variant="outline"
+          className="border-amber-500/40 bg-white/90 text-amber-800 hover:bg-amber-50"
+        >
+          <CloudSun className="w-4 h-4 sm:mr-2" />
+          <span className="hidden sm:inline">全天候跟踪</span>
+        </Button>
+        )}
         {showAiKnowledge && (
         <Button
           onClick={() => router.push("/dashboard/ai-knowledge")}

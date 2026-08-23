@@ -2,13 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Maximize2, Minimize2 } from "lucide-react"
+import { Bot, Maximize2, Minimize2 } from "lucide-react"
 
 import { IndexBasisRateChart } from "@/components/ma/index-basis-rate-chart"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
 import { KlineProChart } from "@/components/ma/kline-pro-chart"
+import {
+  PaperPortfolioPanel,
+  PaperPositionsBar,
+  PaperStrategyBuilder,
+} from "@/components/ma/paper-trading-panels"
 import { Button } from "@/components/ui/button"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
+import { usePaperTrading } from "@/hooks/use-paper-trading"
 import {
   INDEX_FUTURES,
   type CtpCandle,
@@ -22,6 +28,8 @@ import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
 import type { TimeframeId } from "@/lib/client/timeframes"
 import { cn } from "@/lib/utils"
 
+export type ProTradingLayout = "market" | "paper"
+
 type Props = {
   open: boolean
   onClose: () => void
@@ -31,6 +39,7 @@ type Props = {
   spots: Record<string, SpotSnapshot>
   iv: Record<string, IvSnapshot>
   initialSymbol: string | null
+  initialLayout?: ProTradingLayout
 }
 
 function fmt(n: number | null | undefined, digits = 1) {
@@ -47,12 +56,16 @@ export function ProTradingWorkspace({
   spots,
   iv,
   initialSymbol,
+  initialLayout = "market",
 }: Props) {
   const [symbol, setSymbol] = useState(initialSymbol || "")
   const [query, setQuery] = useState(initialSymbol || "")
   const [tool, setTool] = useState("cross")
   const [interval, setInterval] = useState<TimeframeId>("1m")
+  const [layout, setLayout] = useState<ProTradingLayout>(initialLayout)
   const [mounted, setMounted] = useState(false)
+  const paper = usePaperTrading(quotes, candles)
+  const awBootRef = useRef(false)
 
   useEffect(() => setMounted(true), [])
 
@@ -63,11 +76,27 @@ export function ProTradingWorkspace({
       return
     }
     if (openedRef.current) return
-    if (!initialSymbol) return
     openedRef.current = true
+    setLayout(initialLayout)
+    if (!initialSymbol) return
     setSymbol(initialSymbol)
     setQuery(initialSymbol)
-  }, [open, initialSymbol])
+  }, [open, initialSymbol, initialLayout])
+
+  useEffect(() => {
+    if (!open || layout !== "paper") {
+      if (!open) awBootRef.current = false
+      return
+    }
+    if (awBootRef.current) return
+    awBootRef.current = true
+    void paper.loadAllWeather().then((sym) => {
+      if (sym) {
+        setSymbol(sym)
+        setQuery(sym)
+      }
+    })
+  }, [open, layout, paper.loadAllWeather])
 
   useEffect(() => {
     if (!open) return
@@ -88,19 +117,24 @@ export function ProTradingWorkspace({
   const live1m = candles[symbol] || []
   const { candles: tfCandles } = useSymbolKline(symbol || null, interval, live1m, quote)
   const meta = INDEX_FUTURES.find((item) => item.product === product)
-  const last = quote?.last ?? candles[symbol]?.at(-1)?.close ?? null
+  const last = quote?.last ?? paper.extraMarks[symbol] ?? candles[symbol]?.at(-1)?.close ?? null
   const base = quote?.pre_settlement || quote?.pre_close || null
   const diff = last != null && base ? last - base : null
   const pct = diff != null && base ? (diff / base) * 100 : null
 
+  const listedSymbols = useMemo(() => {
+    const extra = paper.state.products.map((p) => p.symbol)
+    return [...new Set([...symbols, ...extra])]
+  }, [symbols, paper.state.products])
+
   const suggestions = useMemo(() => {
     const q = query.trim().toUpperCase()
-    if (!q) return symbols.slice(0, 12)
-    return symbols.filter((s) => s.toUpperCase().includes(q)).slice(0, 12)
-  }, [query, symbols])
+    if (!q) return listedSymbols.slice(0, 16)
+    return listedSymbols.filter((s) => s.toUpperCase().includes(q)).slice(0, 16)
+  }, [query, listedSymbols])
 
   function commit(raw: string) {
-    const resolved = resolveSymbolInput(raw, symbols, quotes)
+    const resolved = resolveSymbolInput(raw, listedSymbols, quotes)
     if (!resolved) return
     setSymbol(resolved)
     setQuery(resolved)
@@ -159,49 +193,110 @@ export function ProTradingWorkspace({
             {diff == null ? "" : `${diff >= 0 ? "+" : ""}${fmt(diff)} ${pct != null ? `${pct >= 0 ? "+" : ""}${fmt(pct, 2)}%` : ""}`}
           </span>
         </div>
+        <div className="flex shrink-0 rounded border border-[#2a2e39] p-0.5">
+          {(
+            [
+              ["market", "行情分析"],
+              ["paper", "策略模拟"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setLayout(id)}
+              className={cn(
+                "rounded px-2.5 py-1 text-xs",
+                layout === id ? "bg-[#4c84ff] text-white" : "text-[#adb3bd] hover:text-white",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <Button size="sm" variant="outline" className="border-[#2a2e39] bg-[#1e222d] text-[#d1d4dc] hover:bg-[#2a2e39]" onClick={onClose}>
           <Minimize2 className="size-3.5" />
           退出专业交易
         </Button>
       </header>
       <div className="min-h-0 flex-1">
-        <ResizablePanelGroup direction="horizontal">
-          <ResizablePanel defaultSize={74} minSize={48}>
-            {symbol ? (
-              <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} activeTool={tool} onTool={setTool} />
-            ) : (
-              <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
-            )}
-          </ResizablePanel>
-          <ResizableHandle className="w-1 bg-[#2a2e39]" />
-          <ResizablePanel defaultSize={26} minSize={18}>
-            <ResizablePanelGroup direction="vertical">
-              <ResizablePanel defaultSize={50} minSize={22}>
-                {product ? (
-                  <IndexBasisRateChart
-                    variant="pro"
-                    title={meta?.name || product}
-                    product={product}
-                    symbol={symbol}
-                    candles={interval === "1m" ? tfCandles : live1m}
-                    quote={quote}
-                    spot={spots[product]}
+        {layout === "market" ? (
+          <ResizablePanelGroup direction="horizontal">
+            <ResizablePanel defaultSize={74} minSize={48}>
+              {symbol ? (
+                <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} activeTool={tool} onTool={setTool} />
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
+              )}
+            </ResizablePanel>
+            <ResizableHandle className="w-1 bg-[#2a2e39]" />
+            <ResizablePanel defaultSize={26} minSize={18}>
+              <ResizablePanelGroup direction="vertical">
+                <ResizablePanel defaultSize={50} minSize={22}>
+                  {product ? (
+                    <IndexBasisRateChart
+                      variant="pro"
+                      title={meta?.name || product}
+                      product={product}
+                      symbol={symbol}
+                      candles={interval === "1m" ? tfCandles : live1m}
+                      quote={quote}
+                      spot={spots[product]}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-[#787b86]">基差率</div>
+                  )}
+                </ResizablePanel>
+                <ResizableHandle className="h-1 bg-[#2a2e39]" />
+                <ResizablePanel defaultSize={50} minSize={22}>
+                  {product ? (
+                    <IndexIvChart variant="pro" title={meta?.name || product} product={product} iv={iv[product]} />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-[#787b86]">隐含波动率</div>
+                  )}
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        ) : (
+          <ResizablePanelGroup direction="vertical">
+            <ResizablePanel defaultSize={76} minSize={48}>
+              <ResizablePanelGroup direction="horizontal">
+                <ResizablePanel defaultSize={22} minSize={16}>
+                  <PaperStrategyBuilder
+                    paper={paper}
+                    symbols={listedSymbols}
+                    quotes={quotes}
+                    chartSymbol={symbol}
+                    lastPrice={last}
+                    onSelectSymbol={commit}
                   />
-                ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-[#787b86]">基差率</div>
-                )}
-              </ResizablePanel>
-              <ResizableHandle className="h-1 bg-[#2a2e39]" />
-              <ResizablePanel defaultSize={50} minSize={22}>
-                {product ? (
-                  <IndexIvChart variant="pro" title={meta?.name || product} product={product} iv={iv[product]} />
-                ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-[#787b86]">隐含波动率</div>
-                )}
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+                </ResizablePanel>
+                <ResizableHandle className="w-1 bg-[#2a2e39]" />
+                <ResizablePanel defaultSize={53} minSize={32}>
+                  {symbol ? (
+                    <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} activeTool={tool} onTool={setTool} />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
+                  )}
+                </ResizablePanel>
+                <ResizableHandle className="w-1 bg-[#2a2e39]" />
+                <ResizablePanel defaultSize={25} minSize={16}>
+                  <PaperPortfolioPanel
+                    paper={paper}
+                    symbols={listedSymbols}
+                    quotes={quotes}
+                    chartSymbol={symbol}
+                    onSelectSymbol={commit}
+                  />
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </ResizablePanel>
+            <ResizableHandle className="h-1 bg-[#2a2e39]" />
+            <ResizablePanel defaultSize={24} minSize={12}>
+              <PaperPositionsBar paper={paper} chartSymbol={symbol} onSelectSymbol={commit} />
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        )}
       </div>
     </div>,
     document.body,
@@ -213,6 +308,15 @@ export function ProTradingEnterButton({ onClick }: { onClick: () => void }) {
     <Button size="sm" variant="outline" onClick={onClick}>
       <Maximize2 className="size-3.5" />
       专业交易模式
+    </Button>
+  )
+}
+
+export function PaperTradingEnterButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Button size="sm" variant="outline" onClick={onClick}>
+      <Bot className="size-3.5" />
+      策略模拟
     </Button>
   )
 }

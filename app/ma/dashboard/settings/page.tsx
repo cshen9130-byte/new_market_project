@@ -28,6 +28,7 @@ import {
   type InstructionRoleKey,
   type InstructionTypeOption,
 } from "@/lib/ma/instruction-roles"
+import { LoginHistoryPanel } from "./login-history-panel"
 
 // ─── localStorage keys ───────────────────────────────────────────────────────
 const METRIC_TEMPLATES_KEY = "tracking_metric_templates"
@@ -2366,6 +2367,10 @@ export default function SettingsPage() {
         ) : activeLeft === "直投设置" ? (
           <div className="p-8">
             <DirectInvestSettingsPanel />
+          </div>
+        ) : activeLeft === "登录设置" ? (
+          <div className="p-8">
+            <LoginHistoryPanel />
           </div>
         ) : activeLeft !== "个人配置" ? (
           <div className="p-8">

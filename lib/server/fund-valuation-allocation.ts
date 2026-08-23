@@ -135,6 +135,9 @@ export type FundHoldingRow = {
   fundName: string
   valuationCode: string | null
   fundStrategy: string | null
+  strategyL1: string | null
+  strategyL2: string | null
+  strategyL3: string | null
   navDate: string | null
   virtualUnitNav: number | null
   unitNav: number | null
@@ -1198,7 +1201,7 @@ function extractSettlementStatus(extra: Record<string, unknown>, hasPrice: boole
   return hasPrice ? "【正常交易】" : "【无行情】"
 }
 
-type CompanyStrategyRow = { key: string; l1: string | null; l2: string | null }
+type CompanyStrategyRow = { key: string; l1: string | null; l2: string | null; l3: string | null }
 
 async function loadCompanyStrategyBatch(
   beianCodes: string[],
@@ -1207,28 +1210,30 @@ async function loadCompanyStrategyBatch(
   const out = new Map<string, CompanyStrategyRow>()
   const codes = [...new Set(beianCodes.map((c) => c.trim()).filter(Boolean))]
   if (codes.length > 0) {
-    const rows = await query<{ register_number: string; l1: string | null; l2: string | null }>(
+    const rows = await query<{ register_number: string; l1: string | null; l2: string | null; l3: string | null }>(
       `SELECT DISTINCT ON (register_number)
          register_number,
          NULLIF(BTRIM(company_strategy_one), '') AS l1,
-         NULLIF(BTRIM(company_strategy_two), '') AS l2
+         NULLIF(BTRIM(company_strategy_two), '') AS l2,
+         NULLIF(BTRIM(company_strategy_three), '') AS l3
        FROM type6_ops_team_full
        WHERE register_number = ANY($1::text[])
        ORDER BY register_number, updated_at DESC NULLS LAST, id DESC`,
       [codes],
     )
     for (const r of rows) {
-      out.set(r.register_number, { key: r.register_number, l1: r.l1, l2: r.l2 })
+      out.set(r.register_number, { key: r.register_number, l1: r.l1, l2: r.l2, l3: r.l3 })
     }
   }
 
   const names = [...new Set(productNames.map((n) => n.trim()).filter(Boolean))]
   if (names.length > 0) {
-    const rows = await query<{ product_name: string; l1: string | null; l2: string | null }>(
+    const rows = await query<{ product_name: string; l1: string | null; l2: string | null; l3: string | null }>(
       `SELECT DISTINCT ON (n.name)
          n.name AS product_name,
          NULLIF(BTRIM(o.company_strategy_one), '') AS l1,
-         NULLIF(BTRIM(o.company_strategy_two), '') AS l2
+         NULLIF(BTRIM(o.company_strategy_two), '') AS l2,
+         NULLIF(BTRIM(o.company_strategy_three), '') AS l3
        FROM unnest($1::text[]) AS n(name)
        JOIN type6_ops_team_full o ON (
          ${sqlFundNameMatch("o.fund_name", "n.name")}
@@ -1239,7 +1244,7 @@ async function loadCompanyStrategyBatch(
     )
     for (const r of rows) {
       if (!out.has(r.product_name)) {
-        out.set(r.product_name, { key: r.product_name, l1: r.l1, l2: r.l2 })
+        out.set(r.product_name, { key: r.product_name, l1: r.l1, l2: r.l2, l3: r.l3 })
       }
     }
   }
@@ -1607,6 +1612,9 @@ async function buildFundHoldings(
     const strategyRow = (navKey ? strategyMap.get(navKey) : null)
       ?? strategyMap.get(row.fundName)
     const fundStrategy = formatFundStrategy(strategyRow?.l1, strategyRow?.l2)
+    const strategyL1 = strategyRow?.l1?.trim() || null
+    const strategyL2 = strategyRow?.l2?.trim() || null
+    const strategyL3 = strategyRow?.l3?.trim() || null
 
     const hasOfficialNav = officialNav?.unitNav != null
       || (unitNav != null && unitNav !== row.virtualUnitNav)
@@ -1626,6 +1634,9 @@ async function buildFundHoldings(
       fundName: row.fundName,
       valuationCode,
       fundStrategy,
+      strategyL1,
+      strategyL2,
+      strategyL3,
       navDate,
       virtualUnitNav: row.virtualUnitNav,
       unitNav,
@@ -1816,6 +1827,12 @@ function resolveSnapshotNavPoints(
   return best
 }
 
+function curvesHaveUsableNavHistory(curves: ReturnCurveSeries[]): boolean {
+  if (curves.length === 0) return false
+  const longEnough = curves.filter((s) => (s.points?.length ?? 0) >= 20).length
+  return longEnough >= Math.max(1, Math.ceil(curves.length * 0.35))
+}
+
 async function buildUnderlyingReturnCurves(
   rawBeianHao: string,
   fundHoldings: FundHoldingRow[],
@@ -1849,21 +1866,14 @@ async function buildUnderlyingReturnCurves(
 
   const tasks = fundHoldings.map(async (holding) => {
     const displayName = normalizeFundDisplayName(holding.fundName)
-    let navPoints = resolveSnapshotNavPoints(holding, pointsByKey)
-
-    if (navPoints.length < 2) {
-      const emailFallback = await loadEmailNavSeriesForHolding(holding, from, to)
-      if (emailFallback.length >= navPoints.length) {
-        navPoints = emailFallback
-      }
-    }
-
-    if (navPoints.length < 2) {
-      const fallback = await loadNavSeriesForHolding(holding, from, to)
-      if (fallback.length >= navPoints.length) {
-        navPoints = dedupeNavPointsByDate(fallback)
-      }
-    }
+    const snapshotPoints = resolveSnapshotNavPoints(holding, pointsByKey)
+    const [emailFallback, officialFallback] = await Promise.all([
+      loadEmailNavSeriesForHolding(holding, from, to),
+      loadNavSeriesForHolding(holding, from, to),
+    ])
+    const navPoints = [officialFallback, emailFallback, snapshotPoints]
+      .map((points) => dedupeNavPointsByDate(points))
+      .sort((a, b) => b.length - a.length)[0] ?? []
 
     const baseNav = navPoints[0]?.nav ?? 0
     const points: ReturnCurvePoint[] = navPoints.map((p) => ({
@@ -1900,7 +1910,7 @@ export async function getFundValuationAllocation(
         rawBeianHao,
         "snapshot",
       )
-      if (cached) return sanitizeAllocationDisplayNames(cached)
+      if (cached) return enrichCachedFundStrategies(sanitizeAllocationDisplayNames(cached))
     } else if (curvesFrom && curvesTo) {
       // Curves request: try combining cached snapshot + cached curves
       const [snapshot, curves] = await Promise.all([
@@ -1910,10 +1920,9 @@ export async function getFundValuationAllocation(
           toDate: curvesTo,
         }),
       ])
-      if (snapshot && curves) {
-        return sanitizeAllocationDisplayNames({ ...snapshot, return_curves: curves })
+      if (snapshot && curves && curvesHaveUsableNavHistory(curves)) {
+        return enrichCachedFundStrategies(sanitizeAllocationDisplayNames({ ...snapshot, return_curves: curves }))
       }
-      if (snapshot) return sanitizeAllocationDisplayNames(snapshot)
     }
   }
 
@@ -2719,6 +2728,41 @@ function sanitizeAllocationDisplayNames(
       const fundName = stripValuationSubjectPathPrefix(h.fundName) || h.fundName
       return { ...h, index: i + 1, fundName }
     })
+  return { ...result, fund_holdings }
+}
+
+async function enrichCachedFundStrategies(
+  result: FundValuationAllocationResult,
+): Promise<FundValuationAllocationResult> {
+  const rows = result.fund_holdings ?? []
+  if (rows.length === 0) return result
+  const needsLookup = rows.some((row) => !("strategyL1" in row) || !("strategyL3" in row))
+  if (!needsLookup) return result
+
+  const beianCodes = rows
+    .map((row) => row.beianHao ?? row.valuationCode)
+    .filter((v): v is string => Boolean(v))
+  const names = rows.map((row) => row.fundName).filter(Boolean)
+  const strategyMap = await loadCompanyStrategyBatch(beianCodes, names)
+
+  const fund_holdings = rows.map((row) => {
+    const navKey = row.valuationCode ?? row.beianHao
+    const strategyRow = (navKey ? strategyMap.get(navKey) : null) ?? strategyMap.get(row.fundName)
+    const fromPath = (row.fundStrategy ?? "")
+      .split("/")
+      .map((part) => part.trim())
+      .filter(Boolean)
+    const strategyL1 = strategyRow?.l1?.trim() || row.strategyL1 || fromPath[0] || null
+    const strategyL2 = strategyRow?.l2?.trim() || row.strategyL2 || fromPath[1] || null
+    const strategyL3 = strategyRow?.l3?.trim() || row.strategyL3 || null
+    return {
+      ...row,
+      strategyL1,
+      strategyL2,
+      strategyL3,
+      fundStrategy: row.fundStrategy ?? formatFundStrategy(strategyL1, strategyL2),
+    }
+  })
   return { ...result, fund_holdings }
 }
 

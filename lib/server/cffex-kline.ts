@@ -8,10 +8,22 @@ function num(value: unknown) {
 }
 
 function parseJsonp(text: string): unknown {
-  const start = text.indexOf("(")
+  const marked = text.indexOf("_=(")
+  const start = marked >= 0 ? marked + 2 : text.indexOf("(")
   const end = text.lastIndexOf(")")
   if (start < 0 || end <= start) throw new Error("unexpected sina kline jsonp")
   return JSON.parse(text.slice(start + 1, end))
+}
+
+function asRows(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw
+  if (raw && typeof raw === "object") {
+    const rec = raw as Record<string, unknown>
+    for (const key of ["data", "result", "kline", "klines"]) {
+      if (Array.isArray(rec[key])) return rec[key]
+    }
+  }
+  return []
 }
 
 function shanghaiToday() {
@@ -100,7 +112,7 @@ async function fetchMinLine(symbol: string) {
     `https://stock2.finance.sina.com.cn/futures/api/jsonp.php/_=/InnerFuturesNewService.getMinLine?symbol=${symbol}`,
     symbol,
   )
-  const rows = Array.isArray(raw) ? raw : []
+  const rows = asRows(raw)
   const date = shanghaiToday()
   const candles: CtpCandle[] = []
   let prev: number | null = null
@@ -118,24 +130,55 @@ async function fetchFewMin(symbol: string, type: 5 | 15 | 30 | 60) {
     `https://stock2.finance.sina.com.cn/futures/api/jsonp.php/_=/InnerFuturesNewService.getFewMinLine?symbol=${encodeURIComponent(symbol)}&type=${type}`,
     symbol,
   )
-  const rows = Array.isArray(raw) ? raw : []
+  const rows = asRows(raw)
   const date = shanghaiToday()
   return rows.map((row) => parseRow(row, date)).filter((c): c is CtpCandle => !!c)
 }
 
 async function fetchDaily(symbol: string) {
-  const raw = await fetchJsonp(
+  const urls = [
     `https://stock2.finance.sina.com.cn/futures/api/jsonp.php/_=/InnerFuturesNewService.getDailyKLine?symbol=${encodeURIComponent(symbol)}`,
-    symbol,
-  )
-  const rows = Array.isArray(raw) ? raw : []
-  return rows.map((row) => parseRow(row, shanghaiToday())).filter((c): c is CtpCandle => !!c)
+    `https://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesDailyKLine?symbol=${encodeURIComponent(symbol)}`,
+  ]
+  for (const url of urls) {
+    try {
+      const raw = url.includes("jsonp.php")
+        ? await fetchJsonp(url, symbol)
+        : JSON.parse(await sinaGet(url, `https://finance.sina.com.cn/futures/quotes/${symbol}.shtml`))
+      const candles = asRows(raw)
+        .map((row) => parseRow(row, shanghaiToday()))
+        .filter((c): c is CtpCandle => !!c)
+      if (candles.length) return candles
+    } catch {
+      // try the next daily source
+    }
+  }
+  return []
 }
 
 function sortUnique(bars: CtpCandle[]) {
   const map = new Map<number, CtpCandle>()
   for (const bar of bars) map.set(bar.time, bar)
   return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+function parseHqOhlc(parts: string[]) {
+  const first = num(parts[0])
+  const commodity = first == null || first <= 0
+  if (commodity) {
+    const last = num(parts[8]) ?? num(parts[7]) ?? num(parts[6])
+    const open = num(parts[2]) ?? last
+    const high = num(parts[3]) ?? Math.max(open ?? 0, last ?? 0)
+    const low = num(parts[4]) ?? Math.min(open ?? Infinity, last ?? Infinity)
+    return { open, high, low, last, volume: num(parts[14]) ?? num(parts[10]) ?? 0 }
+  }
+  return {
+    open: num(parts[0]),
+    high: num(parts[1]),
+    low: num(parts[2]),
+    last: num(parts[3]),
+    volume: num(parts[4]) ?? 0,
+  }
 }
 
 async function fetchSessionHq(symbol: string) {
@@ -148,18 +191,24 @@ async function fetchSessionHq(symbol: string) {
     if (!match) return null
     const parts = match[1].split(",")
     const dateMatch = match[1].match(/(\d{4}-\d{2}-\d{2})/)
-    const open = num(parts[0])
-    const high = num(parts[1])
-    const low = num(parts[2])
-    const last = num(parts[3])
+    const { open, high, low, last, volume } = parseHqOhlc(parts)
     if (open == null || last == null || !(open > 0) || !(last > 0)) return null
+    if (high != null && low != null && (high < last * 0.2 || low > last * 5)) return null
     const date = dateMatch?.[1] || shanghaiToday()
     const time = chinaWallToUnix(`${date} 00:00:00`)
     if (time == null) return null
-    return toCandle(time, open, high, low, last, num(parts[4]))
+    return toCandle(time, open, high, low, last, volume)
   } catch {
     return null
   }
+}
+
+function dropScaleOutliers(rows: CtpCandle[]) {
+  if (rows.length < 8) return rows
+  const closes = rows.map((c) => c.close).sort((a, b) => a - b)
+  const median = closes[Math.floor(closes.length / 2)]
+  if (!(median > 0)) return rows
+  return rows.filter((c) => c.close > median * 0.25 && c.close < median * 4 && c.high > 0 && c.low > 0)
 }
 
 function applySessionHq(bars: CtpCandle[], session: CtpCandle | null, interval: TimeframeId) {
@@ -209,8 +258,9 @@ export async function getCffexKline(symbol: string, interval: TimeframeId) {
     data = interval === "1d" ? withToday : aggregateCandles(withToday, interval)
   }
 
-  data = sortUnique(data)
-  if (data.length >= 8 || !hit?.data.length) cache.set(key, { at: Date.now(), data })
-  else data = hit.data
+  data = dropScaleOutliers(sortUnique(data))
+  if (data.length >= 8) cache.set(key, { at: Date.now(), data })
+  else if (hit?.data.length) data = hit.data
+  else if (data.length) cache.set(key, { at: Date.now(), data })
   return data
 }

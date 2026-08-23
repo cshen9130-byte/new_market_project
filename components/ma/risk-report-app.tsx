@@ -9300,7 +9300,7 @@ function RiskReportAppCore({
                     {/* Nav chart — full width, light background override */}
                     <div className="rounded border border-[#d4c9a8] overflow-hidden"
                          style={{ background: "#ffffff" }}>
-                      <ProductNavChart height={340} navCurveOnly />
+                      <ProductNavChart height={340} navCurveOnly variant={isAccount ? "account" : "mom"} />
                     </div>
 
                     {/* VaR chart */}

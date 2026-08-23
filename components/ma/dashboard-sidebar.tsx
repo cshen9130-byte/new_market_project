@@ -4,7 +4,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X, FlaskConical, Activity } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X, FlaskConical, Activity, CloudSun } from "lucide-react"
 import type React from "react"
 import { authService } from "@/lib/auth"
 import { canAccessAiKnowledge, canAccessAiResearcher } from "@/lib/permissions"
@@ -125,6 +125,23 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
             </Link>
           )
         })}
+        {currentUser?.name === "cshen" && (
+          <Link
+            href="/ma/dashboard/all-weather"
+            title={isCollapsed ? "全天候跟踪" : undefined}
+            className={cn(
+              "rounded-lg text-sm font-medium transition-colors",
+              isCollapsed ? "flex justify-center px-2 py-3" : "flex items-center gap-3 px-3 py-2",
+              pathname === "/ma/dashboard/all-weather"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+            onClick={onMobileClose}
+          >
+            <CloudSun className="h-4 w-4" />
+            {!isCollapsed && "全天候跟踪"}
+          </Link>
+        )}
       </nav>
       <div className={cn("border-t p-2", isCollapsed ? "flex justify-center" : "flex justify-end")}>
         <button
@@ -187,6 +204,21 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
                   </Link>
                 )
               })}
+              {currentUser?.name === "cshen" && (
+                <Link
+                  href="/ma/dashboard/all-weather"
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                    pathname === "/ma/dashboard/all-weather"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                  onClick={onMobileClose}
+                >
+                  <CloudSun className="h-4 w-4" />
+                  全天候跟踪
+                </Link>
+              )}
             </nav>
           </div>
         </div>

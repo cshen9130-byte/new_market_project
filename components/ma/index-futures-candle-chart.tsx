@@ -11,6 +11,8 @@ import {
 } from "@/lib/client/ctp-market"
 import { formatCandleTime, type TimeframeId } from "@/lib/client/timeframes"
 
+export type ChartZoomRange = { start: number; end: number }
+
 type Props = {
   title: string
   product: string
@@ -19,6 +21,12 @@ type Props = {
   candles: CtpCandle[]
   quote?: CtpTick
   onSymbolChange: (symbol: string) => void
+  interval?: TimeframeId
+  onIntervalChange?: (id: TimeframeId) => void
+  hideTimeframe?: boolean
+  hideSymbolSelect?: boolean
+  zoom?: ChartZoomRange
+  onZoomChange?: (zoom: ChartZoomRange) => void
 }
 
 function fmt(n: number | null | undefined, digits = 1) {
@@ -37,9 +45,17 @@ export function IndexFuturesCandleChart({
   candles,
   quote,
   onSymbolChange,
+  interval: controlledInterval,
+  onIntervalChange,
+  hideTimeframe = false,
+  hideSymbolSelect = false,
+  zoom,
+  onZoomChange,
 }: Props) {
-  const [interval, setInterval] = useState<TimeframeId>("1m")
-  const { candles: tfCandles, error: klineError } = useSymbolKline(symbol, interval, candles, quote)
+  const [localInterval, setLocalInterval] = useState<TimeframeId>("1m")
+  const interval = controlledInterval ?? localInterval
+  const setInterval = onIntervalChange ?? setLocalInterval
+  const { candles: tfCandles, error: klineError, loading } = useSymbolKline(symbol, interval, candles, quote)
   const lastCandle = tfCandles.at(-1)
   const last = quote?.last ?? lastCandle?.close ?? null
   const base = quote?.pre_settlement || quote?.pre_close || null
@@ -118,7 +134,14 @@ export function IndexFuturesCandleChart({
           scale: true,
         },
       ],
-      dataZoom: [{ type: "inside", xAxisIndex: [0, 1] }],
+      dataZoom: [
+        {
+          type: "inside",
+          xAxisIndex: [0, 1],
+          start: zoom?.start ?? 0,
+          end: zoom?.end ?? 100,
+        },
+      ],
       series: [
         {
           name: symbol || product,
@@ -126,6 +149,7 @@ export function IndexFuturesCandleChart({
           xAxisIndex: 0,
           yAxisIndex: 0,
           data: ohlcv,
+          barMaxWidth: 12,
           itemStyle: {
             color: "#ef4444",
             color0: "#22c55e",
@@ -139,10 +163,11 @@ export function IndexFuturesCandleChart({
           xAxisIndex: 1,
           yAxisIndex: 1,
           data: volumes,
+          barMaxWidth: 12,
         },
       ],
     }
-  }, [tfCandles, product, symbol, interval])
+  }, [tfCandles, product, symbol, interval, zoom?.start, zoom?.end])
 
   return (
     <div className="flex min-h-[360px] flex-col rounded-xl border bg-card">
@@ -153,7 +178,9 @@ export function IndexFuturesCandleChart({
               {title}
               <span className="ml-1.5 text-muted-foreground">({product})</span>
             </h3>
-            {symbols.length > 1 ? (
+            {hideSymbolSelect ? (
+              <span className="font-mono text-xs text-muted-foreground">{symbol}</span>
+            ) : symbols.length > 1 ? (
               <select
                 className="rounded-md border bg-background px-1.5 py-0.5 text-xs"
                 value={symbol || ""}
@@ -169,7 +196,9 @@ export function IndexFuturesCandleChart({
               <span className="text-xs text-muted-foreground">{symbol}</span>
             )}
           </div>
-          <TimeframeSelect value={interval} onChange={setInterval} className="mt-1.5" />
+          {hideTimeframe ? null : (
+            <TimeframeSelect value={interval} onChange={setInterval} className="mt-1.5" />
+          )}
           <div className="mt-1 flex flex-wrap items-baseline gap-2">
             <span className={`text-2xl font-semibold tabular-nums ${changeClass}`}>
               {fmt(last)}
@@ -195,11 +224,30 @@ export function IndexFuturesCandleChart({
       </div>
       <div className="min-h-0 flex-1 px-1 pb-1">
         {symbol && tfCandles.length > 0 ? (
-          <ReactECharts option={option} style={{ height: 280 }} lazyUpdate />
+          <ReactECharts
+            option={option}
+            style={{ height: 280 }}
+            notMerge
+            lazyUpdate={false}
+            onEvents={
+              onZoomChange
+                ? {
+                    dataZoom: (params: { start?: number; end?: number; batch?: Array<{ start?: number; end?: number }> }) => {
+                      const batch = params.batch?.[0] ?? params
+                      if (typeof batch.start === "number" && typeof batch.end === "number") {
+                        onZoomChange({ start: batch.start, end: batch.end })
+                      }
+                    },
+                  }
+                : undefined
+            }
+          />
         ) : (
           <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
             {symbol
-              ? klineError || "等待 K 线…"
+              ? loading
+                ? "加载 K 线…"
+                : klineError || "暂无 K 线数据"
               : `未订阅 ${product}，请在 ctp_market 的 CTP_INSTRUMENTS 中加入合约`}
           </div>
         )}

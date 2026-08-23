@@ -20,6 +20,14 @@ const TOOLS: Array<{ id: string; overlay?: string; label: string }> = [
   { id: "parallel", overlay: "parallelStraightLine", label: "平行" },
 ]
 
+function pricePrecisionOf(symbol: string) {
+  const asset = symbol.replace(/\d+$/i, "").toUpperCase()
+  if (asset === "TL" || asset === "T" || asset === "TF" || asset === "TS") return 3
+  if (asset === "AU" || asset === "SC") return 2
+  if (asset === "IF" || asset === "IH" || asset === "IC" || asset === "IM") return 1
+  return 0
+}
+
 function toBar(c: CtpCandle): KLineData {
   return {
     timestamp: c.time * 1000,
@@ -145,7 +153,7 @@ export function KlineProChart({ symbol, interval, candles, activeTool, onTool }:
           subRef.current = null
         },
       })
-      chart.setSymbol({ ticker: symbolRef.current, pricePrecision: 1, volumePrecision: 0 })
+      chart.setSymbol({ ticker: symbolRef.current, pricePrecision: pricePrecisionOf(symbolRef.current), volumePrecision: 0 })
       appliedSymbolRef.current = symbolRef.current
       appliedIntervalRef.current = intervalRef.current
       chart.createIndicator({ name: "MA", calcParams: [5, 10, 20] }, true)
@@ -170,35 +178,43 @@ export function KlineProChart({ symbol, interval, candles, activeTool, onTool }:
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
+    let changed = false
     if (appliedIntervalRef.current !== interval) {
       chart.setPeriod(klinePeriod(interval))
       appliedIntervalRef.current = interval
+      changed = true
     }
     if (appliedSymbolRef.current !== symbol) {
-      chart.setSymbol({ ticker: symbol, pricePrecision: 1, volumePrecision: 0 })
+      chart.setSymbol({ ticker: symbol, pricePrecision: pricePrecisionOf(symbol), volumePrecision: 0 })
       appliedSymbolRef.current = symbol
+      changed = true
     }
-    appliedRef.current = null
-    // setSymbol/setPeriod already reload via getBars(init). Extra resetData flashes the pane.
+    if (changed) appliedRef.current = null
   }, [symbol, interval])
 
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
+    if (appliedSymbolRef.current !== symbol || appliedIntervalRef.current !== interval) return
     const last = candles.at(-1)
-    if (!last) return
+    if (!last) {
+      if (chart.getDataList()?.length) chart.resetData()
+      appliedRef.current = null
+      return
+    }
     const first = candles[0].time
     const prev = appliedRef.current
     const chartLen = chart.getDataList()?.length || 0
+    const seriesReplaced = !prev || first !== prev.first || candles.length + 8 < (prev.len || 0)
     const historyExtended = !!prev && first < prev.first - 30 && candles.length > prev.len
     const needInit = chartLen === 0 && candles.length > 1
     appliedRef.current = { first, last: last.time, len: candles.length }
-    if (needInit || historyExtended) {
+    if (needInit || historyExtended || seriesReplaced) {
       chart.resetData()
       return
     }
     if (subRef.current) subRef.current(toBar(last))
-  }, [candles])
+  }, [candles, symbol, interval])
 
   return (
     <div className="flex h-full min-h-0">

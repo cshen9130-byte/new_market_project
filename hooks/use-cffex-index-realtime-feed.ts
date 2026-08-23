@@ -22,6 +22,7 @@ type ApiResponse = {
   error?: string
   source?: string
   products?: ProductRow[]
+  quotes?: Record<string, CtpTick>
 }
 
 const POLL_MS = 2000
@@ -46,7 +47,7 @@ export function useCffexIndexRealtimeFeed() {
           throw new Error(json.error || `请求失败 ${res.status}`)
         }
         if (cancelled) return
-        const nextQuotes: Record<string, CtpTick> = {}
+        const nextQuotes: Record<string, CtpTick> = { ...(json.quotes || {}) }
         const nextCandles: Record<string, CtpCandle[]> = {}
         const nextSymbols: string[] = []
         for (const row of json.products || []) {

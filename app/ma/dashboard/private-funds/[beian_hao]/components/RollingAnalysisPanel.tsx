@@ -32,6 +32,7 @@ const EXTRA_METRICS: RollingMetricKey[] = [
 ]
 
 const ROLLING_WINDOW_OPTIONS = [
+  { days: 20, label: "20天" },
   { days: 90, label: "三个月" },
   { days: 182, label: "六个月" },
   { days: 365, label: "一年" },
@@ -110,7 +111,7 @@ export const RollingAnalysisPanel = memo(function RollingAnalysisPanel({
   hasBenchmark: boolean
 }) {
   const [metric, setMetric] = useState<RollingMetricKey>("periodRet")
-  const [windowDays, setWindowDays] = useState(365)
+  const [windowDays, setWindowDays] = useState(20)
   const [chartMode, setChartMode] = useState<"line" | "fit">("line")
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [lightboxHeight, setLightboxHeight] = useState(420)
@@ -217,9 +218,27 @@ export const RollingAnalysisPanel = memo(function RollingAnalysisPanel({
             formatter={(value: number, name: string) => [formatMetricValue(value, metric), name]}
             contentStyle={{ fontSize: 12 }}
           />
-          <SimpleLine type="monotone" dataKey="fund" name={productName} stroke={RED} strokeWidth={2} dot={false} connectNulls />
+          <SimpleLine
+            type="linear"
+            dataKey="fund"
+            name={productName}
+            stroke={RED}
+            strokeWidth={1.75}
+            dot={false}
+            connectNulls
+            isAnimationActive={false}
+          />
           {hasBenchmark && metric !== "correlation" && (
-            <SimpleLine type="monotone" dataKey="bench" name={`${benchmarkLabel}（基准）`} stroke="#2563eb" strokeWidth={2} dot={false} connectNulls />
+            <SimpleLine
+              type="linear"
+              dataKey="bench"
+              name={`${benchmarkLabel}（基准）`}
+              stroke="#2563eb"
+              strokeWidth={1.75}
+              dot={false}
+              connectNulls
+              isAnimationActive={false}
+            />
           )}
         </LineChart>
       </ResponsiveContainer>

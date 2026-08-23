@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 
+import { type ChartZoomRange } from "@/components/ma/index-futures-candle-chart"
 import { TimeframeSelect } from "@/components/ma/timeframe-select"
 import { HelpAnnualizedBasis } from "@/components/ma/realtime-chart-help"
 import { useSpotKline } from "@/hooks/use-spot-kline"
@@ -29,6 +30,11 @@ type Props = {
   quote?: CtpTick
   spot?: SpotSnapshot
   variant?: "default" | "pro"
+  interval?: TimeframeId
+  onIntervalChange?: (id: TimeframeId) => void
+  hideTimeframe?: boolean
+  zoom?: ChartZoomRange
+  onZoomChange?: (zoom: ChartZoomRange) => void
 }
 
 function fmt(n: number | null | undefined, digits = 2) {
@@ -66,8 +72,23 @@ function nicePercentAxis(rawMin: number, rawMax: number) {
   return { yMin: min, yMax: max, yInterval: interval }
 }
 
-export function IndexBasisRateChart({ title, product, symbol, candles, quote, spot, variant = "default" }: Props) {
-  const [interval, setInterval] = useState<TimeframeId>("1m")
+export function IndexBasisRateChart({
+  title,
+  product,
+  symbol,
+  candles,
+  quote,
+  spot,
+  variant = "default",
+  interval: controlledInterval,
+  onIntervalChange,
+  hideTimeframe = false,
+  zoom,
+  onZoomChange,
+}: Props) {
+  const [localInterval, setLocalInterval] = useState<TimeframeId>("1m")
+  const interval = controlledInterval ?? localInterval
+  const setInterval = onIntervalChange ?? setLocalInterval
   const { candles: tfCandles, error: klineError } = useSymbolKline(symbol, interval, candles, quote)
   const { bars: spotBars, error: spotError } = useSpotKline(product, interval, spot)
   const days = symbol ? daysToCffexExpiry(symbol) : null
@@ -145,6 +166,13 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
         valueFormatter: (v: number) => (typeof v === "number" ? `${v.toFixed(2)}%` : "--"),
       },
       grid: { left: 52, right: 16, top: 12, bottom: 24 },
+      dataZoom: [
+        {
+          type: "inside",
+          start: zoom?.start ?? 0,
+          end: zoom?.end ?? 100,
+        },
+      ],
       xAxis: {
         type: "category",
         data: times,
@@ -183,7 +211,7 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
         },
       ],
     }
-  }, [color, interval, series, variant])
+  }, [color, interval, series, variant, zoom?.start, zoom?.end])
 
   const pro = variant === "pro"
   const continuous = !!symbol && /0$/i.test(symbol) && !/\d{4}$/.test(symbol)
@@ -204,7 +232,9 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
             </div>
             <HelpAnnualizedBasis product={title} />
           </div>
-          <TimeframeSelect value={interval} onChange={setInterval} dark={pro} className="mt-1.5" />
+          {hideTimeframe ? null : (
+            <TimeframeSelect value={interval} onChange={setInterval} dark={pro} className="mt-1.5" />
+          )}
           {!pro ? (
             <div className="mt-1 text-[11px] text-muted-foreground">
               (期货 − 现货) / 现货 / 剩余天数 × 365
@@ -232,7 +262,24 @@ export function IndexBasisRateChart({ title, product, symbol, candles, quote, sp
       </div>
       <div className="min-h-0 flex-1 px-1 pb-1">
         {series.length > 0 ? (
-          <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} notMerge lazyUpdate />
+          <ReactECharts
+            option={option}
+            style={{ height: pro ? "100%" : 240 }}
+            notMerge
+            lazyUpdate
+            onEvents={
+              onZoomChange
+                ? {
+                    dataZoom: (params: { start?: number; end?: number; batch?: Array<{ start?: number; end?: number }> }) => {
+                      const batch = params.batch?.[0] ?? params
+                      if (typeof batch.start === "number" && typeof batch.end === "number") {
+                        onZoomChange({ start: batch.start, end: batch.end })
+                      }
+                    },
+                  }
+                : undefined
+            }
+          />
         ) : (
           <div className={pro ? "flex h-full items-center justify-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center text-sm text-muted-foreground"}>
             {waitText}

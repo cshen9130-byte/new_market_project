@@ -25,8 +25,8 @@ export const dynamic = "force-dynamic"
 export const GET = withCfmmcAccount(async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const confidence = searchParams.get("confidence") ?? "95"
-  const volDays = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays") ?? "20", 10)))
-  const corrDays = Math.max(5, Math.min(756, parseInt(searchParams.get("corrDays") ?? "252", 10)))
+  const volDays = Math.max(2, Math.min(120, parseInt(searchParams.get("volDays") ?? "20", 10)))
+  const corrDays = Math.max(2, Math.min(756, parseInt(searchParams.get("corrDays") ?? "252", 10)))
   const distModel = searchParams.get("distModel") ?? "normal"
   const prodsParam = searchParams.get("prods")
   const prodsFilter = prodsParam
@@ -178,9 +178,11 @@ export const GET = withCfmmcAccount(async function GET(req: Request) {
       ...[...totalPnlMap.keys()],
     ])].sort()
 
-    if (tradingDates.length < VOL_WINDOW + 2) {
+    if (tradingDates.length < 2) {
       return NextResponse.json({ ok: true, data: [], notEnoughData: true, breachRate: null })
     }
+
+    const VOL_USED = Math.min(VOL_WINDOW, Math.max(2, tradingDates.length - 1))
 
     const lastBookDate = tradingDates[tradingDates.length - 1]
     const { pctMap, allMktDates, cleanPctByCode } = await loadVarMarketReturns(allProds, lastBookDate)
@@ -197,8 +199,8 @@ export const GET = withCfmmcAccount(async function GET(req: Request) {
         const mvD = prodMvMap.get(prod)?.get(day) ?? 0
         if (Math.abs(mvD) < 1000) return 0
         const cleanRets = lookupClean(cleanPctByCode, prod)
-        const rets = (mi >= VOL_WINDOW
-          ? cleanRets.slice(mi - VOL_WINDOW, mi)
+        const rets = (mi >= VOL_USED
+          ? cleanRets.slice(mi - VOL_USED, mi)
           : cleanRets.slice(0, mi)).filter(r => r !== 0)
         return stdDev(rets) * mvD
       })
@@ -215,7 +217,8 @@ export const GET = withCfmmcAccount(async function GET(req: Request) {
     }
 
     const results: { date: string; var: number; actual: number }[] = []
-    for (let di = VOL_WINDOW; di < tradingDates.length - 1; di++) {
+    const startDi = tradingDates.length <= VOL_WINDOW + 1 ? 0 : VOL_USED
+    for (let di = startDi; di < tradingDates.length - 1; di++) {
       const d = tradingDates[di]
       const dNext = tradingDates[di + 1]
       let varValue: number
@@ -224,7 +227,7 @@ export const GET = withCfmmcAccount(async function GET(req: Request) {
           .slice(Math.max(0, di - CORR_WINDOW), di)
           .map(dt => totalPnlMap.get(dt) ?? 0)
           .sort((a, b) => a - b)
-        if (histPnl.length < 5) continue
+        if (histPnl.length < 2) continue
         const alpha = 1 - parseInt(confidence, 10) / 100
         const idx = Math.max(0, Math.floor(alpha * histPnl.length) - 1)
         varValue = Math.abs(Math.round(histPnl[idx] ?? 0))
@@ -248,7 +251,7 @@ export const GET = withCfmmcAccount(async function GET(req: Request) {
       data: results.slice(-180),
       nextDayVar,
       breachRate: Math.round(breachRate * 1000) / 10,
-      params: { confidence, volDays: VOL_WINDOW, corrDays: CORR_WINDOW, distModel },
+      params: { confidence, volDays: VOL_USED, corrDays: CORR_WINDOW, distModel, requestedVolDays: VOL_WINDOW },
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -14,6 +14,7 @@ import { OptionsPanel, type OptionRow } from "./OptionsPanel"
 import { GreeksPanel, TermAnalysisPanel, type GreekLetterRow, type TermAnalysisRow } from "./GreeksTermPanel"
 import { FofFundsPanel, type FundHoldingRow } from "./FofFundsPanel"
 import { FofReturnCurvePanel, type ReturnCurveSeries } from "./FofReturnCurvePanel"
+import { FofVolatilityAnalysisPanel } from "./FofVolatilityAnalysisPanel"
 import { FofReturnAnalysisPanel } from "./FofReturnAnalysisPanel"
 import { ValuationEmptyAnalysis } from "./ValuationEmptyAnalysis"
 import { FofTransactionAnalysisPanel } from "./FofTransactionAnalysisPanel"
@@ -301,6 +302,7 @@ export default function FundValuationAnalysisPage() {
     setLoading(true)
     setError(null)
     setReturnCurves([])
+    setCurvesLoading(true)
     const qs = mode === "major" ? "mode=major" : "mode=all"
     fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation?${qs}`)
       .then(async (r) => {
@@ -318,6 +320,7 @@ export default function FundValuationAnalysisPage() {
           setFilterFrom(from)
           setFilterTo(to)
         }
+        if (d.layout_type !== "fof" || !d.has_data) setCurvesLoading(false)
       })
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
       .finally(() => setLoading(false))
@@ -1203,6 +1206,15 @@ export default function FundValuationAnalysisPage() {
               rows={data.fund_holdings ?? []}
               valuationDate={data.valuation_date}
               displayName={displayName}
+            />
+            <FofVolatilityAnalysisPanel
+              series={returnCurves.length > 0 ? returnCurves : (data.return_curves ?? [])}
+              fundHoldings={data.fund_holdings ?? []}
+              loading={curvesLoading}
+              displayName={displayName}
+              fromDate={filterFrom}
+              toDate={filterTo}
+              netAssetValue={data.net_asset_value}
             />
             <FofReturnCurvePanel
               series={returnCurves.length > 0 ? returnCurves : (data.return_curves ?? [])}
