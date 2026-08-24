@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     const resolvedPort = Number(imapPort || 993)
 
     if (!resolvedPass && typeof id === "string" && id) {
-      const existing = getCrawlEmailById(id)
+      const existing = await getCrawlEmailById(id)
       if (!existing) return NextResponse.json({ error: "记录不存在" }, { status: 404 })
       if (!resolvedAccount) resolvedAccount = existing.account
       resolvedPass = existing.pass

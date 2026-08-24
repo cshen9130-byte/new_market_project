@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { ChevronDown, Inbox, Search, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { ChevronDown, ChevronRight, Inbox, Search, X } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -39,6 +39,12 @@ export function InvestmentNoteAssociationDialog({
   const [selected, setSelected] = useState<InvestmentNoteAssociation[]>([])
   const [fundRows, setFundRows] = useState<FundRow[]>([])
   const [loading, setLoading] = useState(false)
+  /** A/B/C share-class children keyed by parent beian_hao */
+  const [shareClassMap, setShareClassMap] = useState<Record<string, FundRow[]>>({})
+  /** Which parent rows are expanded to show A/B/C children */
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set())
+
+  const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -46,30 +52,68 @@ export function InvestmentNoteAssociationDialog({
     setKeyword("")
     setSearchKeyword("")
     setSelected(initialAssociations.map((item) => ({ ...item })))
+    setShareClassMap({})
+    setExpandedParents(new Set())
   }, [open, initialAssociations])
 
-  const loadFunds = useCallback(async (q: string) => {
-    if (category !== "私募基金") {
-      setFundRows([])
-      return
-    }
-    setLoading(true)
-    try {
-      const res = await fetch(
-        `/ma/api/private-funds/list?page=1&pageSize=50&keyword=${encodeURIComponent(q)}`,
-      )
-      if (!res.ok) {
+  const loadFunds = useCallback(
+    async (q: string) => {
+      if (category !== "私募基金") {
         setFundRows([])
+        setShareClassMap({})
+        setExpandedParents(new Set())
         return
       }
-      const payload = (await res.json()) as { data?: FundRow[] }
-      setFundRows(Array.isArray(payload.data) ? payload.data : [])
-    } catch {
-      setFundRows([])
-    } finally {
-      setLoading(false)
-    }
-  }, [category])
+
+      // Cancel any in-flight request
+      abortRef.current?.abort()
+      const controller = new AbortController()
+      abortRef.current = controller
+
+      setLoading(true)
+      try {
+        const res = await fetch(
+          `/ma/api/private-funds/list?page=1&pageSize=50&keyword=${encodeURIComponent(q)}`,
+          { signal: controller.signal },
+        )
+        if (controller.signal.aborted) return
+        if (!res.ok) {
+          setFundRows([])
+          setShareClassMap({})
+          return
+        }
+        const payload = (await res.json()) as { data?: FundRow[] }
+        if (controller.signal.aborted) return
+        const rows = Array.isArray(payload.data) ? payload.data : []
+        setFundRows(rows)
+        setExpandedParents(new Set())
+
+        // Fetch A/B/C share-class children for all returned products
+        if (rows.length > 0) {
+          const parents = rows.map((r) => r.beian_hao).join(",")
+          const scRes = await fetch(
+            `/ma/api/private-funds/share-classes?parents=${encodeURIComponent(parents)}`,
+            { signal: controller.signal },
+          )
+          if (!controller.signal.aborted && scRes.ok) {
+            const scPayload = (await scRes.json()) as {
+              data?: Record<string, FundRow[]>
+            }
+            setShareClassMap(scPayload.data ?? {})
+          }
+        } else {
+          setShareClassMap({})
+        }
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return
+        setFundRows([])
+        setShareClassMap({})
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    },
+    [category],
+  )
 
   useEffect(() => {
     if (!open) return
@@ -78,13 +122,23 @@ export function InvestmentNoteAssociationDialog({
 
   const selectedKeys = useMemo(() => new Set(selected.map(associationKey)), [selected])
 
+  /** All visible rows (parents + any expanded children) */
+  const allVisibleItems = useMemo<InvestmentNoteAssociation[]>(() => {
+    const items: InvestmentNoteAssociation[] = []
+    for (const row of fundRows) {
+      items.push({ category, name: row.product_name, recordNo: row.beian_hao })
+      if (expandedParents.has(row.beian_hao)) {
+        for (const child of shareClassMap[row.beian_hao] ?? []) {
+          items.push({ category, name: child.product_name, recordNo: child.beian_hao })
+        }
+      }
+    }
+    return items
+  }, [fundRows, shareClassMap, expandedParents, category])
+
   const allVisibleSelected = useMemo(
-    () => fundRows.length > 0 && fundRows.every((row) => selectedKeys.has(associationKey({
-      category,
-      name: row.product_name,
-      recordNo: row.beian_hao,
-    }))),
-    [fundRows, selectedKeys, category],
+    () => allVisibleItems.length > 0 && allVisibleItems.every((item) => selectedKeys.has(associationKey(item))),
+    [allVisibleItems, selectedKeys],
   )
 
   function toggleRow(row: FundRow, checked: boolean) {
@@ -105,16 +159,13 @@ export function InvestmentNoteAssociationDialog({
 
   function toggleAllVisible(checked: boolean) {
     if (!checked) {
-      const visibleKeys = new Set(
-        fundRows.map((row) => associationKey({ category, name: row.product_name, recordNo: row.beian_hao })),
-      )
+      const visibleKeys = new Set(allVisibleItems.map(associationKey))
       setSelected((prev) => prev.filter((entry) => !visibleKeys.has(associationKey(entry))))
       return
     }
     setSelected((prev) => {
       const next = [...prev]
-      for (const row of fundRows) {
-        const item = { category, name: row.product_name, recordNo: row.beian_hao }
+      for (const item of allVisibleItems) {
         const key = associationKey(item)
         if (!next.some((entry) => associationKey(entry) === key)) next.push(item)
       }
@@ -125,6 +176,15 @@ export function InvestmentNoteAssociationDialog({
   function removeSelected(item: InvestmentNoteAssociation) {
     const key = associationKey(item)
     setSelected((prev) => prev.filter((entry) => associationKey(entry) !== key))
+  }
+
+  function toggleExpand(beianHao: string) {
+    setExpandedParents((prev) => {
+      const next = new Set(prev)
+      if (next.has(beianHao)) next.delete(beianHao)
+      else next.add(beianHao)
+      return next
+    })
   }
 
   function handleSearchSubmit() {
@@ -180,7 +240,8 @@ export function InvestmentNoteAssociationDialog({
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto">
+            {/* Keep rows visible while loading (no flash); only show spinner when truly empty */}
+            <div className={`min-h-0 flex-1 overflow-auto transition-opacity duration-150 ${loading && fundRows.length > 0 ? "opacity-50 pointer-events-none" : ""}`}>
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-zinc-50">
                   <tr className="border-b border-zinc-200 text-xs text-zinc-500">
@@ -188,7 +249,7 @@ export function InvestmentNoteAssociationDialog({
                       <Checkbox
                         checked={allVisibleSelected}
                         onCheckedChange={(checked) => toggleAllVisible(checked === true)}
-                        disabled={fundRows.length === 0 || category !== "私募基金"}
+                        disabled={allVisibleItems.length === 0 || category !== "私募基金"}
                       />
                     </th>
                     <th className="px-3 py-2 text-left font-medium">产品名称</th>
@@ -205,7 +266,7 @@ export function InvestmentNoteAssociationDialog({
                         </div>
                       </td>
                     </tr>
-                  ) : loading ? (
+                  ) : loading && fundRows.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="h-56 text-center text-sm text-zinc-400">加载中...</td>
                     </tr>
@@ -220,30 +281,88 @@ export function InvestmentNoteAssociationDialog({
                     </tr>
                   ) : (
                     fundRows.map((row) => {
-                      const item = { category, name: row.product_name, recordNo: row.beian_hao }
+                      const item: InvestmentNoteAssociation = { category, name: row.product_name, recordNo: row.beian_hao }
                       const checked = selectedKeys.has(associationKey(item))
+                      const children = shareClassMap[row.beian_hao] ?? []
+                      const hasChildren = children.length > 0
+                      const isExpanded = expandedParents.has(row.beian_hao)
+
                       return (
-                        <tr key={row.beian_hao} className="border-b border-zinc-100 hover:bg-zinc-50/80">
-                          <td className="px-3 py-2.5">
-                            <Checkbox
-                              checked={checked}
-                              onCheckedChange={(value) => toggleRow(row, value === true)}
-                            />
-                          </td>
-                          <td className="px-3 py-2.5 text-zinc-700">
-                            <a
-                              href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-sky-600 hover:underline"
-                              title={row.product_name}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              {row.product_name}
-                            </a>
-                          </td>
-                          <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{row.beian_hao}</td>
-                        </tr>
+                        <>
+                          <tr key={row.beian_hao} className="border-b border-zinc-100 hover:bg-zinc-50/80">
+                            <td className="px-3 py-2.5">
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(value) => toggleRow(row, value === true)}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 text-zinc-700">
+                              <div className="flex items-center gap-1">
+                                {hasChildren ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleExpand(row.beian_hao)}
+                                    className="shrink-0 rounded p-0.5 text-zinc-400 hover:text-zinc-600"
+                                    aria-label={isExpanded ? "收起分级" : "展开分级"}
+                                  >
+                                    <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                                  </button>
+                                ) : (
+                                  <span className="w-5 shrink-0" />
+                                )}
+                                <a
+                                  href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sky-600 hover:underline"
+                                  title={row.product_name}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {row.product_name}
+                                </a>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{row.beian_hao}</td>
+                          </tr>
+
+                          {/* A/B/C share-class child rows */}
+                          {hasChildren && isExpanded && children.map((child) => {
+                            const childItem: InvestmentNoteAssociation = {
+                              category,
+                              name: child.product_name,
+                              recordNo: child.beian_hao,
+                            }
+                            const childChecked = selectedKeys.has(associationKey(childItem))
+                            return (
+                              <tr key={child.beian_hao} className="border-b border-zinc-100 bg-sky-50/40 hover:bg-sky-50/70">
+                                <td className="px-3 py-2">
+                                  <div className="flex justify-center">
+                                    <Checkbox
+                                      checked={childChecked}
+                                      onCheckedChange={(value) => toggleRow(child, value === true)}
+                                    />
+                                  </div>
+                                </td>
+                                <td className="py-2 pr-3 pl-8 text-zinc-600">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="shrink-0 text-xs text-zinc-300">└</span>
+                                    <a
+                                      href={`/ma/dashboard/private-funds/${encodeURIComponent(child.beian_hao)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-sky-600 hover:underline"
+                                      title={child.product_name}
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {child.product_name}
+                                    </a>
+                                  </div>
+                                </td>
+                                <td className="py-2 pr-3 text-zinc-500 tabular-nums">{child.beian_hao}</td>
+                              </tr>
+                            )
+                          })}
+                        </>
                       )
                     })
                   )}

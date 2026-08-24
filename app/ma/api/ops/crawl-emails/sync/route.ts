@@ -16,7 +16,7 @@ export async function POST(req: Request) {
     }
 
     const imported = await importConfiguredEmails(accounts)
-    const total = listCrawlEmails().length
+    const total = (await listCrawlEmails()).length
 
     if (imported === 0) {
       return NextResponse.json({

@@ -91,7 +91,7 @@ export async function GET(req: Request) {
     const out: InvestorRow[] = []
     const seen = new Set<string>()
 
-    for (const row of listCrawlEmails()) {
+    for (const row of await listCrawlEmails()) {
       push(out, seen, row.account, row.id)
     }
 

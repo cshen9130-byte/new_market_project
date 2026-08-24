@@ -440,12 +440,12 @@ async function startSshTunnel(): Promise<ChildProcess> {
   return child
 }
 
-function resolveAccounts(): CrawlEmailAccount[] {
+async function resolveAccounts(): Promise<CrawlEmailAccount[]> {
   const accounts: CrawlEmailAccount[] = []
   const missing: string[] = []
 
   for (const account of TARGET_ACCOUNTS) {
-    const row = getCrawlEmailByAccount(account)
+    const row = await getCrawlEmailByAccount(account)
     if (!row) {
       missing.push(account)
       continue
@@ -463,7 +463,7 @@ function resolveAccounts(): CrawlEmailAccount[] {
   }
 
   if (accounts.length === 0) {
-    throw new Error("No crawl email accounts available. Check data/ops_crawl_emails.json.")
+    throw new Error("No crawl email accounts available. Check the 邮箱同步 settings in the dashboard.")
   }
 
   return accounts
@@ -594,7 +594,7 @@ async function main() {
       `  ${ctx.motherNames.size} mother funds, ${ctx.underlyingToMother.size} underlying mappings, ${ctx.managedNames.size} managed products`,
     )
 
-    const accounts = resolveAccounts()
+    const accounts = await resolveAccounts()
     console.log(`Scanning ${accounts.length} mailbox(es) …`)
 
     const allRows: CsvRow[] = []

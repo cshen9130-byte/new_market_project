@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic"
 
 export async function GET() {
   const cfg = readYinheEmailConfig()
-  const crawlAccounts = listCrawlEmails().map((a) => ({
+  const crawlAccounts = (await listCrawlEmails()).map((a) => ({
     account: a.account,
     emailType: a.emailType,
     imapHost: a.imapHost,
@@ -27,7 +27,7 @@ export async function GET() {
   let crawlStatus: string | null = null
   let resolveError: string | null = null
   try {
-    const resolved = resolveYinheMailbox(cfg)
+    const resolved = await resolveYinheMailbox(cfg)
     mailboxReady = true
     mailboxSource = resolved.source
     crawlStatus = resolved.crawlStatus ?? null
@@ -62,7 +62,7 @@ export async function POST(req: Request) {
         : prev.email || YINHE_DEFAULT_MAILBOX
 
     // Sync IMAP host from crawl-email list when possible
-    const crawlMatch = listCrawlEmails().find(
+    const crawlMatch = (await listCrawlEmails()).find(
       (a) => a.account.trim().toLowerCase() === email.toLowerCase(),
     )
 

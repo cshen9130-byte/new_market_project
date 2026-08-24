@@ -29,7 +29,8 @@ async function downloadPart(client: ImapFlow, uid: string, part: string): Promis
 }
 
 async function main() {
-  const account = getCrawlEmailByAccount(listCrawlEmails()[0]!.account)!
+  const crawlPubs = await listCrawlEmails()
+  const account = (await getCrawlEmailByAccount(crawlPubs[0]!.account))!
   const since = new Date("2025-06-01T00:00:00Z")
   const client = createSafeImapFlow({
     host: account.imapHost,

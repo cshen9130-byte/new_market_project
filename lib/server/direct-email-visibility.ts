@@ -27,7 +27,7 @@ function isMailboxAccount(account: string): boolean {
  * in a concurrent write) while their products remain in the pool.
  */
 async function listKnownCrawlEmailAccounts(): Promise<string[]> {
-  const fromConfig = listCrawlEmails()
+  const fromConfig = (await listCrawlEmails())
     .map((e) => e.account.trim().toLowerCase())
     .filter(isMailboxAccount)
 

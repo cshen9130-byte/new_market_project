@@ -108,12 +108,20 @@ export async function GET(req: Request) {
 
     const baseFrom = `
       FROM (
-        SELECT DISTINCT ON (UPPER(BTRIM(p.register_number)))
-          p.register_number AS beian_hao,
-          p.product_name
-        FROM user_custom_pool p
-        WHERE p.pool_key = $1 AND p.register_number IS NOT NULL
-        ORDER BY UPPER(BTRIM(p.register_number)), p.updated_at DESC NULLS LAST, p.id DESC
+        SELECT DISTINCT ON (LOWER(BTRIM(u.product_name)))
+          u.beian_hao,
+          u.product_name
+        FROM (
+          SELECT DISTINCT ON (UPPER(BTRIM(p.register_number)))
+            p.register_number AS beian_hao,
+            p.product_name
+          FROM user_custom_pool p
+          WHERE p.pool_key = $1 AND p.register_number IS NOT NULL
+          ORDER BY UPPER(BTRIM(p.register_number)), p.updated_at DESC NULLS LAST, p.id DESC
+        ) u
+        ORDER BY LOWER(BTRIM(u.product_name)),
+          CASE WHEN u.beian_hao ~* '^S[A-Z][0-9]{4}$' THEN 0 ELSE 1 END,
+          u.beian_hao
       ) i
       LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao
     `

@@ -106,6 +106,9 @@ FOF底层明细.xlsx
 # Settlement email config (contains credentials)
 data/settlement_email_config.json
 data/yinhe_settlement_email_config.json
+data/ops_crawl_emails.json
+data/ops_crawl_emails.json.bak
+data/ops_crawl_emails.json.tmp
 data/account-risk/
 data/all-weather/
 

@@ -9,7 +9,7 @@ export const maxDuration = 30
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
-    const account = getCrawlEmailById(id)
+    const account = await getCrawlEmailById(id)
     if (!account) return NextResponse.json({ error: "记录不存在" }, { status: 404 })
     if (!account.pass?.trim()) return NextResponse.json({ error: "未配置授权码" }, { status: 400 })
 

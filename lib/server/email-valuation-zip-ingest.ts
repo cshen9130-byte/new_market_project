@@ -165,9 +165,9 @@ export async function ingestZipValuationBatchEmails(options?: {
     since.setDate(since.getDate() - resolveEmailParseLookbackDays(options?.days))
   }
 
-  const accounts = listCrawlEmails()
-    .map((p) => getCrawlEmailByAccount(p.account))
-    .filter((a): a is NonNullable<typeof a> => !!a?.pass?.trim())
+  const allPubs = await listCrawlEmails()
+  const accountsWithPass = await Promise.all(allPubs.map((p) => getCrawlEmailByAccount(p.account)))
+  const accounts = accountsWithPass.filter((a): a is NonNullable<typeof a> => !!a?.pass?.trim())
 
   const allInserts: EmailValuationInsert[] = []
   for (const account of accounts) {

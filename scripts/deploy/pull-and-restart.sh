@@ -6,6 +6,24 @@ PROJECT_ROOT="${1:-/root/new_market_project}"
 cd "$PROJECT_ROOT"
 
 echo "==> git sync"
+# Crawl-email credentials live in a tracked JSON file. Preserve/restore via
+# EXIT trap so a mid-script `git reset --hard` cannot drop UI-added mailboxes.
+CRAWL_EMAIL_JSON="data/ops_crawl_emails.json"
+CRAWL_EMAIL_PRESERVE="/tmp/ops_crawl_emails.json.preserve"
+restore_crawl_emails() {
+  if [ -f "$CRAWL_EMAIL_PRESERVE" ]; then
+    mkdir -p data
+    cp -a "$CRAWL_EMAIL_PRESERVE" "$CRAWL_EMAIL_JSON"
+    git update-index --skip-worktree "$CRAWL_EMAIL_JSON" 2>/dev/null || true
+    echo "    restored $CRAWL_EMAIL_JSON"
+  fi
+}
+if [ -f "$CRAWL_EMAIL_JSON" ]; then
+  cp -a "$CRAWL_EMAIL_JSON" "$CRAWL_EMAIL_PRESERVE"
+  echo "    preserved $CRAWL_EMAIL_JSON"
+fi
+trap restore_crawl_emails EXIT
+
 git fetch origin main
 # Production should match GitHub exactly — discard lockfile drift and any hotfix edits.
 if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
@@ -13,6 +31,7 @@ if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; th
   git reset --hard HEAD
 fi
 git reset --hard origin/main
+restore_crawl_emails
 
 echo "==> pnpm install"
 pnpm install --frozen-lockfile

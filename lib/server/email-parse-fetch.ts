@@ -719,18 +719,18 @@ export async function fetchEmailParseRecords(options?: {
 
   const accounts: CrawlEmailAccount[] = []
   if (options?.crawlEmailId) {
-    const one = getCrawlEmailById(options.crawlEmailId)
+    const one = await getCrawlEmailById(options.crawlEmailId)
     if (!one) throw new Error("抓取邮箱不存在")
     accounts.push(one)
   } else {
-    for (const pub of listCrawlEmails()) {
-      const full = getCrawlEmailByAccount(pub.account)
+    for (const pub of await listCrawlEmails()) {
+      const full = await getCrawlEmailByAccount(pub.account)
       if (full?.pass?.trim()) accounts.push(full)
     }
   }
 
   if (accounts.length === 0) {
-    const configured = listCrawlEmails()
+    const configured = await listCrawlEmails()
     if (configured.length === 0) {
       throw new Error("请先在「抓取邮箱设置」中添加抓取邮箱")
     }
@@ -986,7 +986,7 @@ export async function backfillSenderEmails(options?: {
   }
 
   for (const [accountName, uids] of byAccount) {
-    const account = getCrawlEmailByAccount(accountName)
+    const account = await getCrawlEmailByAccount(accountName)
     if (!account?.pass?.trim()) {
       errors.push(`${accountName}: 未配置授权码，无法补全发件邮箱`)
       continue

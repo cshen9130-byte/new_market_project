@@ -55,7 +55,7 @@ export async function fetchValuationAttachmentFromEmail(input: {
     return { buffer: extracted.buffer, filename: extracted.filename }
   }
 
-  const account = getCrawlEmailByAccount(input.crawlEmailAccount)
+  const account = await getCrawlEmailByAccount(input.crawlEmailAccount)
   if (!account?.pass?.trim()) return null
   if (!input.attachmentFilename?.trim()) return null
 

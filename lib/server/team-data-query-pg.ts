@@ -828,7 +828,10 @@ function upgradePoolRegisterNumber(fund: EmailPoolFund, indexes: IdentityIndexes
 
 function isParentFundRegisterNumber(reg: string): boolean {
   const u = reg.trim().toUpperCase()
-  return isFundCodeRegisterNumber(u) && !/[ABC]$/.test(u)
+  if (!isFundCodeRegisterNumber(u) || /[ABC]$/.test(u)) return false
+  // C + 5 digits is a share-class / 产品代码 (e.g. C41303), not the parent 备案号.
+  if (/^C\d{5}$/.test(u)) return false
+  return true
 }
 
 /** Stable display name per 备案号 — parent SBAH99 must not inherit A/C类 labels from email rows. */

@@ -110,7 +110,11 @@ async function _runEnsure(): Promise<void> {
   const hasConstraint = schemaCheck[0]?.has_constraint === true
 
   if (colCount >= 2 && hasConstraint) {
-    // Schema is already fully migrated — skip all DDL.
+    // New unique key can exist alongside the old 4-column key. The leftover
+    // constraint rejects same-email multi-product NAV rows (CMS/招商 净值表).
+    await query(
+      `ALTER TABLE ops_email_nav_records DROP CONSTRAINT IF EXISTS uq_email_nav_record_date`,
+    ).catch(() => {})
     tableEnsured = true
     return
   }

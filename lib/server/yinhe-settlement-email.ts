@@ -60,10 +60,10 @@ const DEFAULT_CONFIG: YinheEmailConfig = {
 /**
  * Resolve IMAP auth: prefer ops crawl-email credentials for the selected account.
  */
-export function resolveYinheMailbox(cfg?: YinheEmailConfig): YinheResolvedMailbox {
+export async function resolveYinheMailbox(cfg?: YinheEmailConfig): Promise<YinheResolvedMailbox> {
   const base = cfg ?? readYinheEmailConfig()
   const email = (base.email || YINHE_DEFAULT_MAILBOX).trim()
-  const crawl = getCrawlEmailByAccount(email)
+  const crawl = await getCrawlEmailByAccount(email)
   if (crawl?.pass) {
     return {
       email: crawl.account,
@@ -235,7 +235,7 @@ export async function fetchYinheSettlementEmails(
   options?: { lookbackDays?: number },
 ): Promise<YinheFetchResult> {
   const cfg = readYinheEmailConfig()
-  const mailbox = resolveYinheMailbox(cfg)
+  const mailbox = await resolveYinheMailbox(cfg)
 
   const dlDir = getYinheDownloadDir()
   if (!fs.existsSync(dlDir)) fs.mkdirSync(dlDir, { recursive: true })
