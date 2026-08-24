@@ -150,6 +150,14 @@ function ensureDataRoot() {
   if (!existsSync(DATA_ROOT)) mkdirSync(DATA_ROOT, { recursive: true })
 }
 
+function shanghaiWeekday(now = new Date()): number {
+  const wd = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    weekday: "short",
+  }).format(now)
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(wd)
+}
+
 function shanghaiParts(now = new Date()) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-GB", {
@@ -841,6 +849,8 @@ function parseJsonLine(stdout: string): {
   downloaded?: number
   skipped?: number
   discarded?: number
+  haveToday?: boolean
+  today?: string
   error?: string
 } {
   const lines = stdout.trim().split(/\r?\n/).filter(Boolean)
@@ -854,6 +864,8 @@ function parseJsonLine(stdout: string): {
       downloaded?: number
       skipped?: number
       discarded?: number
+      haveToday?: boolean
+      today?: string
       error?: string
     }
   } catch {
@@ -905,6 +917,7 @@ export async function fetchCfmmcAccount(
     downloaded?: number
     skipped?: number
     discarded?: number
+    haveToday?: boolean
     error?: string
   }) => {
     const now = new Date()
@@ -921,11 +934,20 @@ export async function fetchCfmmcAccount(
       )
     }
     if (idx >= 0) {
+      const todayIso = latestCfmmcFileDate(account.userId)
+      const shanghaiToday = (() => {
+        const { dateKey } = shanghaiParts(now)
+        return `${dateKey.slice(0, 4)}-${dateKey.slice(4, 6)}-${dateKey.slice(6, 8)}`
+      })()
+      const haveToday = result.haveToday === true || todayIso === shanghaiToday
+      const expectToday = shanghaiWeekday(now) >= 1 && shanghaiWeekday(now) <= 5
       next.accounts[idx] = {
         ...next.accounts[idx],
         lastFetchAt: now.toISOString(),
-        lastFetchDate: result.ok ? formatLocalDate(now) : next.accounts[idx].lastFetchDate,
-        lastError: result.ok ? null : (result.error || "获取失败"),
+        lastFetchDate: result.ok && (haveToday || !expectToday) ? formatLocalDate(now) : next.accounts[idx].lastFetchDate,
+        lastError: result.ok
+          ? (expectToday && !haveToday ? `未拿到 ${shanghaiToday} 结算日报` : null)
+          : (result.error || "获取失败"),
         lastFile: result.ok ? (result.filename || next.accounts[idx].lastFile) : next.accounts[idx].lastFile,
       }
       next.lastRunAt = now.toISOString()

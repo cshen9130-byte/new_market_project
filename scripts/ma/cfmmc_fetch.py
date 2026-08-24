@@ -67,6 +67,7 @@ MAX_CAPTCHA_TRIES = 8
 AVAILABLE_DAYS_BACK = 65
 # Daily auto-fetch: catch up a short gap (weekend / missed run), never the full archive.
 INCREMENTAL_DAYS_BACK = 10
+_SHANGHAI = dt.timezone(dt.timedelta(hours=8))
 
 _HTTP_HEADERS = {
     "User-Agent": (
@@ -187,6 +188,10 @@ def last_downloaded_date(dest_dir: Path, user_id: str) -> dt.date | None:
             except ValueError:
                 pass
     return max(dates) if dates else None
+
+
+def shanghai_today() -> dt.date:
+    return dt.datetime.now(_SHANGHAI).date()
 
 
 def parse_iso_date(raw: str | None) -> dt.date | None:
@@ -368,8 +373,11 @@ def plan_fetch_days(
     incremental: bool,
     since: str | None,
 ) -> tuple[dt.date, dt.date, list[dt.date], list[dt.date]]:
-    today = dt.date.today()
-    end_date = today - dt.timedelta(days=1)
+    today = shanghai_today()
+    # Include today: 监控中心 often publishes 当日结算 shortly after close
+    # (the 17:00 job). If it is not ready yet, inner 交易日期 will not match
+    # and the file is discarded.
+    end_date = today
     if incremental:
         last = last_downloaded_date(dest_dir, user_id)
         parsed = parse_iso_date(since)
@@ -607,6 +615,10 @@ def main() -> int:
         if not paths and skipped == 0 and discarded == 0 and not incremental:
             return emit({"ok": False, "error": "未下载到结算日报（可能该区间没有数据）"}, 1)
         last = paths[-1] if paths else None
+        today = shanghai_today()
+        have_today = already_downloaded(dest_dir, user_id, today)
+        if not have_today and today.weekday() < 5:
+            log(f"Today {today.isoformat()} is not on disk yet (settlement may still be unpublished, or download was discarded).")
         return emit(
             {
                 "ok": True,
@@ -616,6 +628,8 @@ def main() -> int:
                 "downloaded": len(paths),
                 "skipped": skipped,
                 "discarded": discarded,
+                "haveToday": have_today,
+                "today": today.isoformat(),
             },
             0,
         )

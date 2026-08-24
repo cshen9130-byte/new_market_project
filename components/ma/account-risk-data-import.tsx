@@ -917,7 +917,7 @@ export default function AccountRiskDataImport() {
                 中国期货市场监控中心投资者查询服务系统
               </a>
               ，自动识别验证码并下载「客户交易结算日报」xls。
-              点击「立即获取」会按日切换监控中心结算日期再下载全部可取历史（已有文件会跳过）。只保留文件内「交易日期」与文件名一致的日报；没有结算单的日期不会保存。每天定时任务按<strong>北京时间</strong>只增量补齐本地尚未入库的结算日，不会重拉全部历史。当天触发时间前的手动获取不会取消定时任务。
+              点击「立即获取」会按日切换监控中心结算日期再下载全部可取历史（已有文件会跳过）。只保留文件内「交易日期」与文件名一致的日报；没有结算单的日期不会保存。每天定时任务按<strong>北京时间</strong>增量补齐本地尚未入库的结算日（含当天盘后已公布的当日日报），不会重拉全部历史。当天触发时间前的手动获取不会取消定时任务。
               需在<strong>运行网站的那台机器</strong>安装 Playwright（Linux 服务器执行
               <span className="font-mono"> bash scripts/deploy/setup-cfmmc-fetch.sh</span>，
               然后 <span className="font-mono">pm2 restart new_market_project new_market_project_worker</span>）。
