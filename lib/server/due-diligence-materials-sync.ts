@@ -1,5 +1,6 @@
 import type { DueDiligenceTableRow } from "@/lib/ma/due-diligence-table"
 import {
+  DD_MATERIALS_AUTO_LINK_ENABLED,
   buildDdMaterialsAutoFillPatch,
   buildDdMaterialsFolderIndex,
 } from "@/lib/ma/due-diligence-materials"
@@ -32,6 +33,19 @@ export async function syncDueDiligenceMaterialsLinks(opts?: {
 }): Promise<DdMaterialsLinkSyncResult> {
   const updatedBy = opts?.updatedBy?.trim() || "dd_materials_link_etl"
   const dryRun = Boolean(opts?.dryRun)
+
+  if (!DD_MATERIALS_AUTO_LINK_ENABLED) {
+    return {
+      ok: true,
+      totalRows: 0,
+      changedRows: 0,
+      linkedRows: 0,
+      clearedRows: 0,
+      kbFolderCount: 0,
+      changes: [],
+      saved: false,
+    }
+  }
 
   const snapshot = await getServerDueDiligenceTable()
   const tree = await listKnowledgeBaseTree(undefined, true)

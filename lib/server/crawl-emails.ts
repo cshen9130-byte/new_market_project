@@ -429,6 +429,40 @@ export async function updateCrawlEmail(
   return toPublic(rowToAccount(rows[0] as DbRow))
 }
 
+/**
+ * Upsert a crawl-email account into the DB, including its password.
+ * Called after every successful mailbox fetch so that credentials added on any
+ * machine are automatically persisted to the shared DB for all other machines.
+ * Uses ON CONFLICT (account) DO UPDATE so it is safe to call repeatedly.
+ */
+export async function persistCrawlEmailAccount(account: CrawlEmailAccount): Promise<void> {
+  await ensureTable()
+  await publicQuery(
+    `INSERT INTO ops_crawl_email_accounts
+       (id, email_type, account, pass, imap_host, imap_port, imap_folders,
+        crawl_status, remark, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'成功',$8,$9,NOW())
+     ON CONFLICT (account) DO UPDATE SET
+       pass         = EXCLUDED.pass,
+       imap_host    = EXCLUDED.imap_host,
+       imap_port    = EXCLUDED.imap_port,
+       imap_folders = EXCLUDED.imap_folders,
+       crawl_status = '成功',
+       updated_at   = NOW()`,
+    [
+      account.id,
+      account.emailType,
+      account.account.trim(),
+      account.pass.trim(),
+      account.imapHost.trim(),
+      account.imapPort || 993,
+      account.imapFolders?.length ? account.imapFolders : ["INBOX"],
+      account.remark,
+      account.createdAt,
+    ],
+  )
+}
+
 export async function deleteCrawlEmail(id: string): Promise<boolean> {
   await ensureTable()
   const res = await publicQuery(

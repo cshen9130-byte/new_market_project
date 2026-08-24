@@ -4,6 +4,7 @@ import {
   getCrawlEmailByAccount,
   getCrawlEmailById,
   listCrawlEmails,
+  persistCrawlEmailAccount,
   type CrawlEmailAccount,
 } from "@/lib/server/crawl-emails"
 import {
@@ -378,6 +379,7 @@ export async function fetchTaAccountsFromEmails(crawlEmailId?: string): Promise<
   for (const account of accounts) {
     try {
       const result = await fetchMailbox(account, log, errors)
+      persistCrawlEmailAccount(account).catch(() => {})
       emailsScanned += result.emailsScanned
       recordsFound += result.parsed.length
       log.push(`${account.account}: 解析到 ${result.parsed.length} 条 TA 记录`)

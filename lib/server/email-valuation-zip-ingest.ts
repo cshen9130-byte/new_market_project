@@ -2,7 +2,7 @@
  * Fast path: ingest 估值表 batch .zip emails without scanning the full mailbox body.
  */
 import type { ImapFlow } from "imapflow"
-import { getCrawlEmailByAccount, getImapFolders, listCrawlEmails, type CrawlEmailAccount } from "@/lib/server/crawl-emails"
+import { getCrawlEmailByAccount, getImapFolders, listCrawlEmails, persistCrawlEmailAccount, type CrawlEmailAccount } from "@/lib/server/crawl-emails"
 import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import { extractValuationFromBuffer, selectValuationAttachments } from "@/lib/server/email-valuation-attachment"
 import { upsertEmailValuationRecords, type EmailValuationInsert } from "@/lib/server/email-valuation-pg"
@@ -173,6 +173,7 @@ export async function ingestZipValuationBatchEmails(options?: {
   for (const account of accounts) {
     try {
       const rows = await ingestZipValuationsForAccount(account, since, errors)
+      if (rows.length > 0) persistCrawlEmailAccount(account).catch(() => {})
       allInserts.push(...rows)
     } catch (e) {
       errors.push(`${account.account}: ${e instanceof Error ? e.message : String(e)}`)

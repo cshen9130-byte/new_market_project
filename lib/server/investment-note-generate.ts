@@ -10,9 +10,9 @@ import {
 import { readFundContractText } from "@/lib/server/fund-contract-element-extract"
 import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
 import {
-  getInvestmentNoteMaterialsByIds,
   linkInvestmentNoteMaterials,
   readInvestmentNoteMaterialFile,
+  resolveInvestmentNoteMaterials,
   type InvestmentNoteMaterial,
 } from "@/lib/server/investment-note-materials"
 import { createServerInvestmentNoteWithKbSync } from "@/lib/server/investment-notes"
@@ -211,7 +211,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
     throw new Error(`一次最多根据 ${MAX_MATERIALS} 个文件生成笔记`)
   }
 
-  const materials = getInvestmentNoteMaterialsByIds(ids)
+  const materials = await resolveInvestmentNoteMaterials(ids, input.userId)
   if (materials.length === 0) throw new Error("未找到所选文件")
 
   const extracted: Array<{ name: string; text: string }> = []
@@ -280,11 +280,12 @@ export async function generateInvestmentNoteFromMaterials(input: {
     },
   )
 
-  const linked = linkInvestmentNoteMaterials(
-    materials.map((m) => m.id),
-    note.id,
-    input.userId,
-  )
+  const storedIds = materials
+    .filter((item) => item.source !== "dd-table")
+    .map((item) => item.id)
+  const linked = linkInvestmentNoteMaterials(storedIds, note.id, input.userId)
+  const byId = new Map(linked.map((item) => [item.id, item]))
+  const nextMaterials = materials.map((item) => byId.get(item.id) ?? item)
 
-  return { note, materials: linked, skipped }
+  return { note, materials: nextMaterials, skipped }
 }

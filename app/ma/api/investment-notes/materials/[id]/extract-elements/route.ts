@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
 import { enqueueElementExtractForInvestmentNoteMaterial } from "@/lib/server/investment-note-element-extract"
-import { getInvestmentNoteMaterialsByIds } from "@/lib/server/investment-note-materials"
+import { resolveInvestmentNoteMaterials } from "@/lib/server/investment-note-materials"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -22,7 +22,7 @@ export async function POST(
     }
 
     const { id } = await context.params
-    const material = getInvestmentNoteMaterialsByIds([id])[0]
+    const material = (await resolveInvestmentNoteMaterials([id], user.id))[0]
     if (!material) {
       return NextResponse.json({ ok: false, error: "文件不存在" }, { status: 404 })
     }

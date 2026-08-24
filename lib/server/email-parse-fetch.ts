@@ -4,6 +4,7 @@ import {
   getCrawlEmailById,
   getImapFolders,
   listCrawlEmails,
+  persistCrawlEmailAccount,
   type CrawlEmailAccount,
 } from "@/lib/server/crawl-emails"
 import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
@@ -785,6 +786,9 @@ export async function fetchEmailParseRecords(options?: {
       allNavRecords.push(...navRecords)
       allValuationRecords.push(...valuationRecords)
       allConfirmRecords.push(...confirmRecords)
+      // Persist credentials to shared DB after every successful scan so that
+      // accounts added on any machine are automatically saved for all others.
+      persistCrawlEmailAccount(account).catch(() => {})
 
       let maxSentAt: Date | null = null
       for (const row of parseRecords) {

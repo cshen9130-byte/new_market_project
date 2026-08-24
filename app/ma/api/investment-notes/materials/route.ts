@@ -11,7 +11,7 @@ import { getUserById } from "@/lib/server/users"
 import {
   deleteInvestmentNoteMaterial,
   linkInvestmentNoteMaterial,
-  listInvestmentNoteMaterials,
+  listInvestmentNoteMaterialsForViewer,
   saveInvestmentNoteMaterial,
   type InvestmentNoteMaterial,
 } from "@/lib/server/investment-note-materials"
@@ -79,7 +79,7 @@ export async function GET(req: Request) {
     if (!user) {
       return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 })
     }
-    const materials = listInvestmentNoteMaterials()
+    const materials = await listInvestmentNoteMaterialsForViewer(user.id)
     return NextResponse.json({ ok: true, materials })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)

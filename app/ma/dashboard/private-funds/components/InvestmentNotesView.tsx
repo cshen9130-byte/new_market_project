@@ -369,7 +369,7 @@ export function InvestmentNotesView() {
     }
     try {
       const items = await listInvestmentNoteMaterials()
-      setLinkedMaterials(items.filter((m) => m.noteId === noteId))
+      setLinkedMaterials(items.filter((m) => m.noteId === noteId && m.source !== "dd-table"))
     } catch {
       setLinkedMaterials([])
     }

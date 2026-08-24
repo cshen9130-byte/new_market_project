@@ -4613,7 +4613,7 @@ def step_email_nav_parse(days: int | None = None) -> int:
 
 
 def step_dd_materials_links() -> int:
-    """Auto-link 尽调表格 rows to 「内部尽调资料」 knowledge-base folders."""
+    """Refresh 尽调表格 ↔ 「内部尽调资料」 links. Auto-matching is currently off."""
     log.info("dd_materials_links: syncing due diligence material folder links …")
     result = run_node_script("dd_materials_link_etl.ts", timeout=600)
     if not result:
@@ -5055,7 +5055,7 @@ ORDERED_STEPS = [
     "pe_industry_stats",             # 私募行业 dashboard aggregates from amac_* tables
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
-    "dd_materials_links",            # 尽调表格 ↔ 内部尽调资料 knowledge-base folder links
+    "dd_materials_links",            # 尽调表格 links (auto-matching currently off)
     "contract_extract",              # queued fund-contract LLM extract → 产品要素 + 合同附件
     "dd_table_daily_backup",         # 尽调表格 daily snapshot (rolling keep last 3)
     "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)

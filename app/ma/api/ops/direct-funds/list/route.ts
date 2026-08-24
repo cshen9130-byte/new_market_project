@@ -108,7 +108,7 @@ export async function GET(req: Request) {
 
     const baseFrom = `
       FROM (
-        SELECT DISTINCT ON (LOWER(BTRIM(u.product_name)))
+        SELECT DISTINCT ON (LOWER(regexp_replace(BTRIM(u.product_name), '[ABC]类$', '')))
           u.beian_hao,
           u.product_name
         FROM (
@@ -119,8 +119,9 @@ export async function GET(req: Request) {
           WHERE p.pool_key = $1 AND p.register_number IS NOT NULL
           ORDER BY UPPER(BTRIM(p.register_number)), p.updated_at DESC NULLS LAST, p.id DESC
         ) u
-        ORDER BY LOWER(BTRIM(u.product_name)),
+        ORDER BY LOWER(regexp_replace(BTRIM(u.product_name), '[ABC]类$', '')),
           CASE WHEN u.beian_hao ~* '^S[A-Z][0-9]{4}$' THEN 0 ELSE 1 END,
+          CASE WHEN u.beian_hao ~* '^C[0-9]{5}$' THEN 2 ELSE 1 END,
           u.beian_hao
       ) i
       LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao

@@ -893,15 +893,27 @@ function emailPoolRowIdentityScore(
   return score
 }
 
-/** One pool row per display name — prefer 备案号/product code over Chinese name keys. */
+/** One pool row per product — prefer parent 备案号 (S****) over share-class codes / A类 aliases. */
 function dedupeEmailPoolFundsByDisplayName(funds: EmailPoolFund[]): EmailPoolFund[] {
-  const coded = funds.filter((f) => isFundCodeRegisterNumber(f.register_number))
-  const nameOnly = funds.filter((f) => !isFundCodeRegisterNumber(f.register_number))
-  const codedNames = new Set(coded.map((f) => f.product_name.trim().toLowerCase()))
-  return [
-    ...coded,
-    ...nameOnly.filter((f) => !codedNames.has(f.product_name.trim().toLowerCase())),
-  ]
+  const rank = (reg: string): number => {
+    const u = reg.trim().toUpperCase()
+    if (/^S[A-Z][0-9]{4}$/.test(u)) return 0
+    if (/^C\d{5}$/.test(u) || /[ABC]$/.test(u)) return 3
+    if (isFundCodeRegisterNumber(u)) return 1
+    return 2
+  }
+  const nameKey = (name: string): string =>
+    (fundNameBase(name) || name).trim().toLowerCase()
+  const byName = new Map<string, EmailPoolFund>()
+  for (const fund of funds) {
+    const key = nameKey(fund.product_name)
+    if (!key) continue
+    const prev = byName.get(key)
+    if (!prev || rank(fund.register_number) < rank(prev.register_number)) {
+      byName.set(key, fund)
+    }
+  }
+  return [...byName.values()]
 }
 
 /** Every fund discovered from email NAV, valuation, or parse subjects — for 邮箱运维池 sync. */

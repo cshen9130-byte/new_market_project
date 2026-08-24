@@ -1,8 +1,9 @@
 /**
- * Nightly due diligence materials auto-link ETL.
+ * Nightly due diligence materials link ETL.
  *
- * Matches 尽调表格 rows to folders under 「内部尽调资料」 in the AI knowledge base,
- * updates ddMaterials / ddMaterialsKbPath, and clears stale wrong links.
+ * Auto-matching is disabled (`DD_MATERIALS_AUTO_LINK_ENABLED = false`).
+ * Rows are linked only from the 尽调表格 UI. This script is a no-op unless
+ * that flag is turned back on.
  *
  * Usage (via nightly_etl.py):
  *   npx tsx scripts/ma/dd_materials_link_etl.ts
@@ -11,6 +12,7 @@
  *   npx tsx scripts/ma/dd_materials_link_etl.ts [--dry-run]
  */
 
+import { DD_MATERIALS_AUTO_LINK_ENABLED } from "@/lib/ma/due-diligence-materials"
 import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-project-env"
 import { syncDueDiligenceMaterialsLinks } from "@/lib/server/due-diligence-materials-sync"
 
@@ -24,6 +26,9 @@ async function main() {
     console.error(
       `[dd_materials_link_etl] syncing due diligence material links${dryRun ? " (dry run)" : ""}…`,
     )
+    if (!DD_MATERIALS_AUTO_LINK_ENABLED) {
+      console.error("[dd_materials_link_etl] auto-link disabled; skipping")
+    }
     const result = await syncDueDiligenceMaterialsLinks({
       updatedBy: "nightly_etl",
       dryRun,

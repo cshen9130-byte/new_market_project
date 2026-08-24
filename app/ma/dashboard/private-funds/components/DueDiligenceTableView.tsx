@@ -157,6 +157,7 @@ import {
   strategyLevel3FromDatabase,
 } from "@/lib/ma/strategy-level3"
 import {
+  DD_MATERIALS_AUTO_LINK_ENABLED,
   buildDdMaterialsAutoFillPatch,
   buildDdMaterialsFolderIndex,
   buildDdMaterialsRowPresentation,
@@ -1293,7 +1294,7 @@ export function DueDiligenceTableView() {
   }, [materialsIndex, rows])
 
   useEffect(() => {
-    if (!hydrated || !materialsIndex) return
+    if (!DD_MATERIALS_AUTO_LINK_ENABLED || !hydrated || !materialsIndex) return
 
     let changed = false
     const nextRows = rows.map((row) => {

@@ -3,6 +3,9 @@ import type { DueDiligenceTableRow, DdMaterialsLinkStatus } from "./due-diligenc
 /** Root folder in AI knowledge base for internal due diligence uploads. */
 export const DD_MATERIALS_KB_ROOT = "内部尽调资料"
 
+/** Matching by date / fund company is off; rows are linked only by hand. */
+export const DD_MATERIALS_AUTO_LINK_ENABLED = false
+
 export function isDdMaterialsLinkLocked(
   row: Pick<DueDiligenceTableRow, "ddMaterialsLinkStatus">,
 ): boolean {
@@ -22,9 +25,9 @@ export function ddMaterialsLinkStatusLabel(status: DdMaterialsLinkStatus | undef
     case "manual":
       return "手动关联"
     case "rejected":
-      return "已排除自动关联"
+      return "已排除"
     default:
-      return "自动关联"
+      return "已关联"
   }
 }
 
@@ -40,7 +43,7 @@ export function ddMaterialsFileLinkStatusLabel(
     return { label: "已确认", tone: "approved" }
   }
   if (rowLinkStatus === "rejected") return { label: "已排除", tone: "rejected" }
-  return { label: "自动", tone: "auto" }
+  return { label: "已关联", tone: "auto" }
 }
 
 export function applyDdMaterialsFileLinkFilters(
@@ -911,6 +914,12 @@ export function resolveDdMaterialsFolderPath(
   >,
   index: DdMaterialsFolderIndex,
 ): string | null {
+  if (!DD_MATERIALS_AUTO_LINK_ENABLED) {
+    const explicit = row.ddMaterialsKbPath?.trim()
+    if (explicit && isDdMaterialsLinkLocked(row)) return explicit
+    return explicit && index.folders.has(explicit) ? explicit : null
+  }
+
   if (isDdMaterialsAutoLinkDisabled(row)) {
     const explicit = row.ddMaterialsKbPath?.trim()
     return explicit && index.folders.has(explicit) ? explicit : null
@@ -1318,6 +1327,30 @@ export function parseRoadshowDdMaterialAttachmentId(id: string): string | null {
   return relativePath || null
 }
 
+/** Virtual 上传资料 id for a 尽调表格 file mirrored onto a note. */
+export const DD_SYNCED_MATERIAL_ID_PREFIX = "dd-sync:"
+
+export function ddSyncedMaterialId(noteId: string, relativePath: string): string {
+  return `${DD_SYNCED_MATERIAL_ID_PREFIX}${noteId}::${relativePath.replace(/\//g, "|")}`
+}
+
+export function parseDdSyncedMaterialId(
+  id: string,
+): { noteId: string; relativePath: string } | null {
+  if (!id.startsWith(DD_SYNCED_MATERIAL_ID_PREFIX)) return null
+  const rest = id.slice(DD_SYNCED_MATERIAL_ID_PREFIX.length)
+  const sep = rest.indexOf("::")
+  if (sep <= 0) return null
+  const noteId = rest.slice(0, sep).trim()
+  const relativePath = rest.slice(sep + 2).replace(/\|/g, "/").trim()
+  if (!noteId || !relativePath) return null
+  return { noteId, relativePath }
+}
+
+export function isDdSyncedMaterialId(id: string): boolean {
+  return parseDdSyncedMaterialId(id) !== null
+}
+
 /** Unique 尽调材料 documents for the given 尽调表格 rows (linked roadshows). */
 export function collectDdMaterialsDocumentsForRows(
   rows: Array<Parameters<typeof getDdMaterialsDocumentsForRow>[0]>,
@@ -1365,6 +1398,8 @@ export function buildDdMaterialsAutoFillPatch(
   row: DueDiligenceTableRow,
   index: DdMaterialsFolderIndex,
 ): Partial<DueDiligenceTableRow> | null {
+  if (!DD_MATERIALS_AUTO_LINK_ENABLED) return null
+
   const storedPath = row.ddMaterialsKbPath?.trim() || null
   const storedDocuments = storedPath ? getDdMaterialsDocuments(storedPath, index) : []
 

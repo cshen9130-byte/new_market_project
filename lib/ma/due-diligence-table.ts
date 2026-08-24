@@ -1,6 +1,6 @@
 import seedRows from "./due-diligence-table-seed.json"
 
-/** How the 尽调材料 KB link was set and whether auto-link may change it. */
+/** How the 尽调材料 KB link was set. Auto-matching is off; new links are manual. */
 export type DdMaterialsLinkStatus = "auto" | "approved" | "manual" | "rejected"
 
 export type DueDiligenceTableRowData = {
@@ -33,7 +33,7 @@ export type DueDiligenceTableRow = DueDiligenceTableRowData & {
   representativeProductBeianHao?: string
   /** Linked AI knowledge base folder for 尽调材料, e.g. 内部尽调资料/2026.6.26-标准定律 */
   ddMaterialsKbPath?: string
-  /** User override for auto-linking: approved/manual locks path; rejected skips auto-link. */
+  /** Link source: approved/manual locks path; rejected excludes the row. */
   ddMaterialsLinkStatus?: DdMaterialsLinkStatus
   /** Per-file link overrides keyed by KB relativePath. */
   ddMaterialsFileLinks?: Partial<Record<string, "approved" | "rejected">>

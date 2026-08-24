@@ -799,6 +799,14 @@ export type InvestmentNoteMaterial = {
   uploadedBy: string
   uploadedByName: string
   createdAt: string
+  /** `dd-table` = mirrored from a linked 尽调表格 folder; not stored under 上传资料. */
+  source?: "upload" | "dd-table"
+}
+
+export function isDdSyncedInvestmentNoteMaterial(
+  material: Pick<InvestmentNoteMaterial, "id" | "source">,
+): boolean {
+  return material.source === "dd-table" || material.id.startsWith("dd-sync:")
 }
 
 export async function listInvestmentNoteMaterials(): Promise<InvestmentNoteMaterial[]> {

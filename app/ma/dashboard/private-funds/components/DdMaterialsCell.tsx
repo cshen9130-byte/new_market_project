@@ -649,7 +649,7 @@ export function DdMaterialsCell({
                     尽调资料
                   </h2>
                   <p className="text-xs text-muted-foreground mt-1 truncate">
-                    {folderName || folderPath || "未匹配到知识库文件夹"}
+                    {folderName || folderPath || "尚未关联知识库文件夹"}
                   </p>
                   {canManageLink && linkMode && (
                     <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -885,7 +885,7 @@ export function DdMaterialsCell({
                     </p>
                   ) : (
                     <p className="text-sm text-muted-foreground">
-                      未能根据尽调日期和基金公司匹配到知识库文件夹。请确认资料已上传至「内部尽调资料」。
+                      尚未关联知识库文件夹。请点击「关联」后选择「手动关联」，或拖入文件上传。
                     </p>
                   )}
                 </div>

@@ -7,9 +7,17 @@ import { createHash } from "crypto"
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs"
 import { promises as fs } from "fs"
 import path from "path"
+import {
+  buildDdMaterialsFolderIndex,
+  collectDdMaterialsDocumentsForRows,
+  ddSyncedMaterialId,
+  parseDdSyncedMaterialId,
+} from "@/lib/ma/due-diligence-materials"
 import { INVESTMENT_NOTE_MATERIAL_MAX_BYTES, INVESTMENT_NOTE_MATERIAL_MAX_MB } from "@/lib/ma/investment-notes"
+import { getServerDueDiligenceTable } from "@/lib/server/due-diligence-table"
+import { getServerInvestmentNote, listServerInvestmentNotes } from "@/lib/server/investment-notes"
+import { getKnowledgeBaseFile, listKnowledgeBaseTree } from "@/lib/server/knowledge-base"
 import { getServerStoragePath } from "@/lib/server/storage"
-import { listServerInvestmentNotes } from "@/lib/server/investment-notes"
 
 export type InvestmentNoteMaterial = {
   id: string
@@ -21,6 +29,7 @@ export type InvestmentNoteMaterial = {
   uploadedBy: string
   uploadedByName: string
   createdAt: string
+  source?: "upload" | "dd-table"
 }
 
 type StoredMaterial = InvestmentNoteMaterial & {
@@ -178,7 +187,75 @@ function toPublic(row: StoredMaterial): InvestmentNoteMaterial {
     uploadedBy: row.uploadedBy,
     uploadedByName: row.uploadedByName,
     createdAt: row.createdAt,
+    source: "upload",
   }
+}
+
+function listVisibleNotes(userId: string) {
+  const seen = new Set<string>()
+  const notes = [
+    ...listServerInvestmentNotes("mine", userId),
+    ...listServerInvestmentNotes("team", userId),
+  ]
+  return notes.filter((note) => {
+    if (seen.has(note.id)) return false
+    seen.add(note.id)
+    return true
+  })
+}
+
+function noteMaterialKey(noteId: string, fileName: string): string {
+  return `${noteId}::${fileName.trim().toLowerCase()}`
+}
+
+async function collectDdSyncedMaterials(
+  userId: string,
+  stored: InvestmentNoteMaterial[],
+): Promise<InvestmentNoteMaterial[]> {
+  const notes = listVisibleNotes(userId).filter(
+    (note) => (note.roadshowAssociations?.length ?? 0) > 0,
+  )
+  if (notes.length === 0) return []
+
+  const snapshot = await getServerDueDiligenceTable()
+  const rowById = new Map(snapshot.rows.map((row) => [row.id, row]))
+  const tree = await listKnowledgeBaseTree(userId)
+  const index = buildDdMaterialsFolderIndex(tree)
+
+  const existing = new Set(
+    stored
+      .filter((row) => row.noteId)
+      .map((row) => noteMaterialKey(row.noteId!, row.name)),
+  )
+  const seen = new Set<string>()
+  const out: InvestmentNoteMaterial[] = []
+
+  for (const note of notes) {
+    const rows = (note.roadshowAssociations ?? [])
+      .map((item) => rowById.get(item.rowId))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+    if (rows.length === 0) continue
+
+    for (const doc of collectDdMaterialsDocumentsForRows(rows, index)) {
+      const key = noteMaterialKey(note.id, doc.name)
+      if (existing.has(key) || seen.has(key)) continue
+      seen.add(key)
+      out.push({
+        id: ddSyncedMaterialId(note.id, doc.relativePath),
+        name: doc.name,
+        size: doc.size,
+        mimeType: mimeTypeForFilename(doc.name),
+        noteId: note.id,
+        noteTitle: note.title.trim() || "无标题",
+        uploadedBy: "dd-table",
+        uploadedByName: "尽调表格",
+        createdAt: doc.updatedAt || note.createdDate || new Date().toISOString(),
+        source: "dd-table",
+      })
+    }
+  }
+
+  return out
 }
 
 function readAll(): StoredMaterial[] {
@@ -244,6 +321,15 @@ export function listInvestmentNoteMaterials(): InvestmentNoteMaterial[] {
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
 }
 
+/** Stored uploads plus 尽调表格 files already attached to visible notes. */
+export async function listInvestmentNoteMaterialsForViewer(
+  userId: string,
+): Promise<InvestmentNoteMaterial[]> {
+  const stored = listInvestmentNoteMaterials()
+  const synced = await collectDdSyncedMaterials(userId, stored)
+  return [...synced, ...stored].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+}
+
 export async function saveInvestmentNoteMaterial(input: {
   file: File
   uploadedBy: string
@@ -290,6 +376,11 @@ export async function saveInvestmentNoteMaterial(input: {
   return toPublic(row)
 }
 
+function storedMaterialById(id: string): InvestmentNoteMaterial | null {
+  const row = readAll().find((item) => item.id === id)
+  return row ? toPublic(row) : null
+}
+
 export function getInvestmentNoteMaterialsByIds(ids: string[]): InvestmentNoteMaterial[] {
   const all = readAll()
   const byId = new Map(all.map((row) => [row.id, row]))
@@ -305,6 +396,57 @@ export function getInvestmentNoteMaterialsByIds(ids: string[]): InvestmentNoteMa
   return out
 }
 
+async function resolveDdSyncedMaterial(
+  id: string,
+  userId?: string,
+): Promise<InvestmentNoteMaterial | null> {
+  const parsed = parseDdSyncedMaterialId(id)
+  if (!parsed) return null
+
+  const note = userId ? getServerInvestmentNote(parsed.noteId, userId) : null
+  if (userId && !note) return null
+  const title = note?.title.trim() || "无标题"
+
+  try {
+    const file = await getKnowledgeBaseFile(parsed.relativePath)
+    return {
+      id,
+      name: file.name,
+      size: file.size,
+      mimeType: file.mimeType || mimeTypeForFilename(file.name),
+      noteId: parsed.noteId,
+      noteTitle: title,
+      uploadedBy: "dd-table",
+      uploadedByName: "尽调表格",
+      createdAt: file.updatedAt,
+      source: "dd-table",
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function resolveInvestmentNoteMaterials(
+  ids: string[],
+  userId?: string,
+): Promise<InvestmentNoteMaterial[]> {
+  const out: InvestmentNoteMaterial[] = []
+  const seen = new Set<string>()
+  for (const raw of ids) {
+    const id = String(raw || "").trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const stored = storedMaterialById(id)
+    if (stored) {
+      out.push(stored)
+      continue
+    }
+    const synced = await resolveDdSyncedMaterial(id, userId)
+    if (synced) out.push(synced)
+  }
+  return out
+}
+
 export function linkInvestmentNoteMaterial(
   id: string,
   noteId: string | null,
@@ -312,6 +454,9 @@ export function linkInvestmentNoteMaterial(
 ): InvestmentNoteMaterial {
   const safeId = String(id || "").trim()
   if (!safeId) throw new Error("缺少资料 ID")
+  if (parseDdSyncedMaterialId(safeId)) {
+    throw new Error("尽调表格同步的资料请在尽调表格中管理关联")
+  }
 
   const all = readAll()
   const idx = all.findIndex((row) => row.id === safeId)
@@ -356,6 +501,9 @@ export function linkInvestmentNoteMaterials(
 export function deleteInvestmentNoteMaterial(id: string, userId: string): boolean {
   const safeId = String(id || "").trim()
   if (!safeId) return false
+  if (parseDdSyncedMaterialId(safeId)) {
+    throw new Error("尽调表格同步的资料请在尽调表格中删除")
+  }
   const all = readAll()
   const idx = all.findIndex((row) => row.id === safeId)
   if (idx < 0) return false
@@ -380,6 +528,22 @@ export async function readInvestmentNoteMaterialFile(
 ): Promise<{ buffer: Buffer; filename: string; mimeType: string } | null> {
   const safeId = String(id || "").trim()
   if (!safeId) return null
+
+  const synced = parseDdSyncedMaterialId(safeId)
+  if (synced) {
+    try {
+      const file = await getKnowledgeBaseFile(synced.relativePath)
+      const buffer = await fs.readFile(file.absolutePath)
+      return {
+        buffer,
+        filename: file.name,
+        mimeType: file.mimeType || mimeTypeForFilename(file.name),
+      }
+    } catch {
+      return null
+    }
+  }
+
   const row = readAll().find((item) => item.id === safeId)
   if (!row) return null
   try {

@@ -38,6 +38,7 @@ import {
   extractInvestmentNoteMaterialElements,
   generateInvestmentNoteFromMaterials,
   investmentNoteDeepLink,
+  isDdSyncedInvestmentNoteMaterial,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
   listInvestmentNotes,
@@ -277,7 +278,8 @@ export function InvestmentNoteMaterialsView() {
       (m) =>
         m.name.toLowerCase().includes(q) ||
         (m.noteTitle || "").toLowerCase().includes(q) ||
-        m.uploadedByName.toLowerCase().includes(q),
+        m.uploadedByName.toLowerCase().includes(q) ||
+        (m.source === "dd-table" && "尽调材料".includes(q)),
     )
   }, [materials, keyword])
 
@@ -669,7 +671,9 @@ export function InvestmentNoteMaterialsView() {
             </thead>
             <tbody>
               {filtered.map((material) => {
-                const canDelete = !material.uploadedBy || material.uploadedBy === userId
+                const syncedFromDd = isDdSyncedInvestmentNoteMaterial(material)
+                const canDelete =
+                  !syncedFromDd && (!material.uploadedBy || material.uploadedBy === userId)
                 const checked = selectedIds.has(material.id)
                 const kindLabel = fundElementSourceKindLabel(material.name)
                 const canExtract = isFundElementExtractableFile({
@@ -709,6 +713,11 @@ export function InvestmentNoteMaterialsView() {
                           <FileText className="h-4 w-4 shrink-0 text-zinc-400" />
                           <span className="truncate">{material.name}</span>
                         </button>
+                        {syncedFromDd ? (
+                          <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] text-zinc-600">
+                            尽调材料
+                          </span>
+                        ) : null}
                         {kindLabel ? (
                           <span className="shrink-0 rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600">
                             {kindLabel}
@@ -719,14 +728,27 @@ export function InvestmentNoteMaterialsView() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
                         <div className="min-w-0 flex-1">
-                          <NoteSearchPicker
-                            notes={noteOptions}
-                            value={material.noteId || ""}
-                            onChange={(noteId) => void handleLink(material.id, noteId)}
-                            placeholder="未关联"
-                            clearLabel="未关联"
-                            disabled={linkingId === material.id || generating}
-                          />
+                          {syncedFromDd ? (
+                            <div
+                              className="flex h-8 items-center rounded border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700"
+                              title="来自尽调表格，随笔记路演关联自动同步"
+                            >
+                              <span className="truncate">
+                                {material.noteTitle
+                                  ? `${material.noteTitle}（${noteScopeFor(material.noteId) === "mine" ? "我的" : "团队"}）`
+                                  : "未关联"}
+                              </span>
+                            </div>
+                          ) : (
+                            <NoteSearchPicker
+                              notes={noteOptions}
+                              value={material.noteId || ""}
+                              onChange={(noteId) => void handleLink(material.id, noteId)}
+                              placeholder="未关联"
+                              clearLabel="未关联"
+                              disabled={linkingId === material.id || generating}
+                            />
+                          )}
                         </div>
                         {material.noteId ? (
                           <a
