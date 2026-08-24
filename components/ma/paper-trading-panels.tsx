@@ -11,11 +11,16 @@ import {
   ALL_WEATHER_PORTFOLIO_ID,
   accountKind,
   accountKindLabel,
+  DEFAULT_PAPER_CAPITAL,
   fmtMoney,
+  fmtNav,
+  fmtPct,
   fmtYuan,
   markPrice,
+  parsePaperCapital,
   priceDigits,
   positionPnl,
+  positionReturn,
   sideLabel,
   strategyStatusLabel,
   type PaperAccountKind,
@@ -335,14 +340,23 @@ export function PaperPortfolioPanel({
   onSelectSymbol: (symbol: string) => void
 }) {
   const [newName, setNewName] = useState("")
+  const [newCapital, setNewCapital] = useState(String(DEFAULT_PAPER_CAPITAL))
   const [newKind, setNewKind] = useState<Exclude<PaperAccountKind, "all-weather">>("manual")
   const [addSymbol, setAddSymbol] = useState("")
   const selectedKind = accountKind(paper.selectedPortfolio)
   const awSelected = selectedKind === "all-weather"
 
   function createAccount() {
-    paper.createPortfolio(newName, newKind)
-    setNewName("")
+    const capital = parsePaperCapital(newCapital)
+    if (capital == null) {
+      paper.setError("请填写有效的总资金")
+      return
+    }
+    const id = paper.createPortfolio(newName, newKind, capital)
+    if (id) {
+      setNewName("")
+      setNewCapital(String(DEFAULT_PAPER_CAPITAL))
+    }
   }
 
   function resolve(raw: string) {
@@ -373,6 +387,17 @@ export function PaperPortfolioPanel({
             {paper.selectedPortfolio?.name || "--"}
             <span className="ml-1 text-[#787b86]">{accountKindLabel(selectedKind)}</span>
           </span>
+        </div>
+        <div className="flex items-center justify-between text-[11px] text-[#787b86]">
+          <span>
+            净值 <span className="font-mono text-[#d1d4dc]">{fmtNav(paper.summary.nav)}</span>
+          </span>
+          <span>
+            收益率 <span className={cn("font-mono", pnlClass(paper.summary.ret))}>{fmtPct(paper.summary.ret)}</span>
+          </span>
+        </div>
+        <div className="text-[11px] text-[#787b86]">
+          总资金 <span className="font-mono text-[#adb3bd]">{fmtNav(paper.summary.initialCapital)}</span>
         </div>
         <div className="flex flex-wrap gap-1">
           {paper.state.portfolios.map((pf) => {
@@ -425,6 +450,19 @@ export function PaperPortfolioPanel({
             <option value="manual">手动</option>
             <option value="strategy">策略</option>
           </select>
+        </div>
+        <div className="flex gap-1">
+          <input
+            value={newCapital}
+            onChange={(e) => setNewCapital(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") createAccount()
+            }}
+            inputMode="decimal"
+            placeholder={`总资金 ${DEFAULT_PAPER_CAPITAL.toLocaleString("zh-CN")}`}
+            title="新建账户的总资金（元）"
+            className={cn(fieldClass, "font-mono")}
+          />
           <button
             type="button"
             title="新建账户"
@@ -434,6 +472,7 @@ export function PaperPortfolioPanel({
             <Plus className="size-3.5" />
           </button>
         </div>
+        {paper.error ? <p className="text-[11px] text-[#ef5350]">{paper.error}</p> : null}
         {awSelected ? (
           <>
             <div className="flex rounded border border-[#2a2e39] bg-[#131722] p-0.5">
@@ -615,6 +654,12 @@ export function PaperPositionsBar({
           ))}
         </div>
         <span className="text-[#787b86]">
+          净值 <span className="font-mono text-[#d1d4dc]">{fmtNav(paper.summary.nav)}</span>
+        </span>
+        <span className="text-[#787b86]">
+          收益率 <span className={cn("font-mono", pnlClass(paper.summary.ret))}>{fmtPct(paper.summary.ret)}</span>
+        </span>
+        <span className="text-[#787b86]">
           浮动 <span className={cn("font-mono", pnlClass(paper.summary.unrealized))}>{fmtMoney(paper.summary.unrealized)}</span>
         </span>
         <span className="text-[#787b86]">
@@ -625,12 +670,6 @@ export function PaperPositionsBar({
         </span>
         {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
           <>
-            <span className="text-[#787b86]">
-              净值{" "}
-              <span className="font-mono text-[#d1d4dc]">
-                {fmtMoney((paper.awMeta.initialCapital || 0) + paper.summary.unrealized + paper.summary.realized).replace("+", "")}
-              </span>
-            </span>
             {SLEEVE_KEYS.map((key) => {
               const pnl = paper.sleevePnl[key]?.live ?? 0
               return (
@@ -664,6 +703,7 @@ export function PaperPositionsBar({
                   <th className="px-2 py-1 font-normal">开仓</th>
                   <th className="px-2 py-1 font-normal">平仓</th>
                   <th className="px-3 py-1 text-right font-normal">盈亏</th>
+                  <th className="px-3 py-1 text-right font-normal">收益率</th>
                 </tr>
               </thead>
               <tbody>
@@ -676,6 +716,9 @@ export function PaperPositionsBar({
                     <td className="px-2 font-mono">{fmtPx(position.exitPrice, position.symbol)}</td>
                     <td className={cn("px-3 text-right font-mono", pnlClass(positionPnl(position, position.exitPrice ?? null)))}>
                       {fmtMoney(positionPnl(position, position.exitPrice ?? null))}
+                    </td>
+                    <td className={cn("px-3 text-right font-mono", pnlClass(positionReturn(position, position.exitPrice ?? null)))}>
+                      {fmtPct(positionReturn(position, position.exitPrice ?? null))}
                     </td>
                   </tr>
                 ))}
@@ -695,6 +738,7 @@ export function PaperPositionsBar({
                 <th className="px-2 py-1 font-normal">现价</th>
                 <th className="px-2 py-1 font-normal">策略</th>
                 <th className="px-2 py-1 text-right font-normal">浮动盈亏</th>
+                <th className="px-2 py-1 text-right font-normal">收益率</th>
                 <th className="px-2 py-1 text-right font-normal">保证金占用</th>
                 <th className="px-3 py-1" />
               </tr>
@@ -724,6 +768,9 @@ export function PaperPositionsBar({
                       (position.source === "all-weather" ? "全天候" : position.source === "strategy" ? "策略" : "手动")}
                   </td>
                   <td className={cn("px-2 text-right font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</td>
+                  <td className={cn("px-2 text-right font-mono", pnlClass(positionReturn(position, mark)))}>
+                    {fmtPct(positionReturn(position, mark))}
+                  </td>
                   <td className="px-2 text-right font-mono text-[#d1d4dc]">{fmtYuan(margin)}</td>
                   <td className="px-3 text-right">
                     <button

@@ -16,6 +16,7 @@ import { productOfSymbol } from "@/lib/client/pro-trading"
 export const PAPER_STORAGE_KEY = "ma_index_paper_trading_v1"
 export const ALL_WEATHER_PORTFOLIO_ID = "all-weather"
 export const ALL_WEATHER_STRATEGY_ID = "stg-all-weather"
+export const DEFAULT_PAPER_CAPITAL = 10_000_000
 
 export type PaperSide = "long" | "short"
 export type PaperEntryMode = "market" | "breakout" | "ma_cross"
@@ -28,6 +29,8 @@ export type PaperPortfolio = {
   name: string
   createdAt: number
   kind?: PaperAccountKind
+  /** Starting capital in yuan. NAV = initialCapital + realized + unrealized. */
+  initialCapital?: number
 }
 
 export type PaperProduct = {
@@ -149,6 +152,27 @@ export function allWeatherHoldingsKey(rows: Array<{ contract?: string; symbol?: 
     .join("|")
 }
 
+export function parsePaperCapital(raw: string, fallback = DEFAULT_PAPER_CAPITAL): number | null {
+  const n = Number(String(raw).replace(/[,，\s]/g, ""))
+  if (Number.isFinite(n) && n > 0) return n
+  if (!String(raw).trim()) return fallback
+  return null
+}
+
+export function paperNav(initialCapital: number, realized: number, unrealized: number) {
+  return initialCapital + realized + unrealized
+}
+
+export function paperReturn(initialCapital: number, realized: number, unrealized: number) {
+  if (!(initialCapital > 0)) return null
+  return (realized + unrealized) / initialCapital
+}
+
+export function fmtNav(n: number | null | undefined) {
+  if (n == null || Number.isNaN(n)) return "--"
+  return `¥${n.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`
+}
+
 function migratePortfolio(raw: Partial<PaperPortfolio> & { id?: string; name?: string; createdAt?: number }): PaperPortfolio | null {
   if (!raw.id) return null
   const id = String(raw.id)
@@ -164,12 +188,14 @@ function migratePortfolio(raw: Partial<PaperPortfolio> & { id?: string; name?: s
       : id === "default" && (!raw.name || raw.name === "默认组合")
         ? "手动账户"
         : String(raw.name || "模拟账户")
-  return { id, name, createdAt: Number(raw.createdAt) || 0, kind }
+  const capital = Number(raw.initialCapital)
+  const initialCapital = Number.isFinite(capital) && capital > 0 ? capital : DEFAULT_PAPER_CAPITAL
+  return { id, name, createdAt: Number(raw.createdAt) || 0, kind, initialCapital }
 }
 
 export function emptyPaperState(): PaperState {
   return {
-    portfolios: [{ id: "default", name: "手动账户", kind: "manual", createdAt: 0 }],
+    portfolios: [{ id: "default", name: "手动账户", kind: "manual", createdAt: 0, initialCapital: DEFAULT_PAPER_CAPITAL }],
     products: [],
     positions: [],
     strategies: [],
@@ -244,6 +270,14 @@ export function positionPnl(pos: PaperPosition, mark: number | null) {
   if (px == null) return null
   const dir = pos.side === "long" ? 1 : -1
   return (px - pos.entryPrice) * pos.lots * contractMultiplier(pos.symbol, pos.multiplier) * dir
+}
+
+/** Price return: (mark - entry) / entry * direction. */
+export function positionReturn(pos: PaperPosition, mark: number | null) {
+  const px = pos.status === "closed" && pos.exitPrice != null ? pos.exitPrice : mark
+  if (px == null || !(pos.entryPrice > 0)) return null
+  const dir = pos.side === "long" ? 1 : -1
+  return ((px - pos.entryPrice) / pos.entryPrice) * dir
 }
 
 /** 保证金占用 = 现价 × 手数 × 乘数 × 保证金率 × 券商保证金系数 */
@@ -359,6 +393,15 @@ export function fmtMoney(n: number | null | undefined) {
   return `¥${abs}`
 }
 
+export function fmtPct(n: number | null | undefined, digits = 2) {
+  if (n == null || Number.isNaN(n)) return "--"
+  const pct = n * 100
+  const abs = Math.abs(pct).toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })
+  if (pct > 0) return `+${abs}%`
+  if (pct < 0) return `-${abs}%`
+  return `${abs}%`
+}
+
 export function sideLabel(side: PaperSide) {
   return side === "long" ? "多" : "空"
 }
@@ -409,13 +452,20 @@ export function applyAllWeatherBook(
   holdings: AllWeatherHolding[],
   now = Date.now(),
   marks?: Record<string, number>,
+  initialCapital?: number,
 ): PaperState {
   const live = holdings.filter((h) => h.lots > 0)
+  const existingAw = state.portfolios.find((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)
+  const capital =
+    initialCapital != null && initialCapital > 0
+      ? initialCapital
+      : existingAw?.initialCapital
   const awAccount: PaperPortfolio = {
     id: ALL_WEATHER_PORTFOLIO_ID,
     name: "全天候策略",
     kind: "all-weather",
-    createdAt: state.portfolios.find((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)?.createdAt || now,
+    createdAt: existingAw?.createdAt || now,
+    initialCapital: capital,
   }
   const portfolios = state.portfolios.some((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)
     ? state.portfolios.map((p) => (p.id === ALL_WEATHER_PORTFOLIO_ID ? { ...p, ...awAccount } : p))

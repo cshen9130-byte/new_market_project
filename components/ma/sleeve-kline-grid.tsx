@@ -1,8 +1,8 @@
 "use client"
 
-import { useMemo } from "react"
+import { useImperativeHandle, useMemo, type Ref } from "react"
 
-import { KlineProChart } from "@/components/ma/kline-pro-chart"
+import { KlineProChart, type KlineChartHandle } from "@/components/ma/kline-pro-chart"
 import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import { SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import {
@@ -33,6 +33,7 @@ function SleeveMiniChart({
   paper,
   selected,
   onSelect,
+  chartRef,
 }: {
   sleeve: SleeveKey
   symbol: string | null
@@ -45,6 +46,7 @@ function SleeveMiniChart({
   paper: PaperTradingApi
   selected: boolean
   onSelect: (symbol: string) => void
+  chartRef?: Ref<KlineChartHandle | null>
 }) {
   const { candles } = useSymbolKline(symbol, interval, live1m, quote)
   const marks = useMemo(() => {
@@ -91,7 +93,7 @@ function SleeveMiniChart({
       </button>
       <div className="min-h-0 flex-1">
         {symbol ? (
-          <KlineProChart symbol={symbol} interval={interval} candles={candles} marks={marks} compact />
+          <KlineProChart ref={chartRef} symbol={symbol} interval={interval} candles={candles} marks={marks} compact />
         ) : (
           <div className="flex h-full items-center justify-center text-[11px] text-[#787b86]">加载策略后显示最大持仓品种</div>
         )}
@@ -107,6 +109,7 @@ export function SleeveKlineGrid({
   interval,
   selectedSymbol,
   onSelectSymbol,
+  ref,
 }: {
   paper: PaperTradingApi
   quotes: Record<string, CtpTick>
@@ -114,7 +117,19 @@ export function SleeveKlineGrid({
   interval: TimeframeId
   selectedSymbol: string
   onSelectSymbol: (symbol: string) => void
+  ref?: Ref<KlineChartHandle | null>
 }) {
+  const chartRefs = useMemo(() => SLEEVE_KEYS.map(() => ({ current: null as KlineChartHandle | null })), [])
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      zoomIn: () => chartRefs.forEach((item) => item.current?.zoomIn()),
+      zoomOut: () => chartRefs.forEach((item) => item.current?.zoomOut()),
+      resetZoom: () => chartRefs.forEach((item) => item.current?.resetZoom()),
+    }),
+    [chartRefs],
+  )
   const leads = useMemo(
     () =>
       sleeveLeadPositions(paper.openPositions, {
@@ -125,7 +140,7 @@ export function SleeveKlineGrid({
 
   return (
     <div className="grid h-full min-h-0 grid-cols-2 grid-rows-2 [&>*]:border-r [&>*]:border-b [&>*:nth-child(2n)]:border-r-0 [&>*:nth-last-child(-n+2)]:border-b-0">
-      {SLEEVE_KEYS.map((sleeve) => {
+      {SLEEVE_KEYS.map((sleeve, index) => {
         const lead = leads[sleeve]
         const symbol = lead?.position.symbol || null
         const quote = symbol ? quotes[symbol] || quotes[symbol.toUpperCase()] : undefined
@@ -143,6 +158,7 @@ export function SleeveKlineGrid({
             paper={paper}
             selected={!!symbol && symbol === selectedSymbol}
             onSelect={onSelectSymbol}
+            chartRef={chartRefs[index]}
           />
         )
       })}

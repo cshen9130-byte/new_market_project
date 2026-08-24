@@ -1,12 +1,35 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useCallback, useEffect, useImperativeHandle, useRef, type Ref } from "react"
 import type { Chart, KLineData } from "klinecharts"
 
 import { isBuyMark, snapOrderMarks, type ChartOrderMark } from "@/lib/client/chart-order-marks"
 import type { CtpCandle } from "@/lib/client/ctp-market"
 import { klinePeriod, type TimeframeId } from "@/lib/client/timeframes"
 import { cn } from "@/lib/utils"
+
+const DEFAULT_BAR_SPACE = 6
+const ZOOM_IN_SCALE = 1.25
+const ZOOM_OUT_SCALE = 0.8
+
+export type KlineChartHandle = {
+  zoomIn: () => void
+  zoomOut: () => void
+  resetZoom: () => void
+}
+
+function zoomKline(chart: Chart | null, direction: "in" | "out") {
+  if (!chart) return
+  const data = chart.getDataList()
+  const last = Math.max(0, (data?.length || 1) - 1)
+  chart.zoomAtDataIndex(direction === "in" ? ZOOM_IN_SCALE : ZOOM_OUT_SCALE, last)
+}
+
+function resetKlineZoom(chart: Chart | null, barSpace: number) {
+  if (!chart) return
+  chart.setBarSpace(barSpace)
+  chart.scrollToRealTime()
+}
 
 const ORDER_GROUP = "strategy-orders"
 const DRAW_GROUP = "drawings"
@@ -96,6 +119,7 @@ type Props = {
   compact?: boolean
   activeTool?: string
   onTool?: (id: string) => void
+  ref?: Ref<KlineChartHandle | null>
 }
 
 function registerOrderOverlay(registerOverlay: (overlay: Record<string, unknown>) => void) {
@@ -177,7 +201,7 @@ function barFingerprint(bar: CtpCandle) {
   return `${bar.time}:${bar.open}:${bar.high}:${bar.low}:${bar.close}:${bar.volume}`
 }
 
-export function KlineProChart({ symbol, interval, candles, marks, compact, activeTool = "cross", onTool }: Props) {
+export function KlineProChart({ symbol, interval, candles, marks, compact, activeTool = "cross", onTool, ref }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<Chart | null>(null)
   const candlesRef = useRef(candles)
@@ -188,10 +212,17 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
   const appliedSymbolRef = useRef<string | null>(null)
   const appliedIntervalRef = useRef<TimeframeId | null>(null)
   const marksRef = useRef(marks)
+  const defaultBarSpaceRef = useRef(DEFAULT_BAR_SPACE)
   candlesRef.current = candles
   symbolRef.current = symbol
   intervalRef.current = interval
   marksRef.current = marks
+
+  const zoomIn = useCallback(() => zoomKline(chartRef.current, "in"), [])
+  const zoomOut = useCallback(() => zoomKline(chartRef.current, "out"), [])
+  const resetZoom = useCallback(() => resetKlineZoom(chartRef.current, defaultBarSpaceRef.current), [])
+
+  useImperativeHandle(ref, () => ({ zoomIn, zoomOut, resetZoom }), [zoomIn, zoomOut, resetZoom])
 
   useEffect(() => {
     const el = hostRef.current
@@ -210,6 +241,7 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
       })
       if (!chart) return
       chartRef.current = chart
+      defaultBarSpaceRef.current = chart.getBarSpace()?.bar || DEFAULT_BAR_SPACE
       chart.setPeriod(klinePeriod(intervalRef.current))
       chart.setDataLoader({
         getBars: (params: {
@@ -340,6 +372,30 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
           ))}
           <button
             type="button"
+            title="放大"
+            onClick={zoomIn}
+            className="px-0.5 py-1.5 text-[10px] leading-tight text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+          >
+            放大
+          </button>
+          <button
+            type="button"
+            title="缩小"
+            onClick={zoomOut}
+            className="px-0.5 py-1.5 text-[10px] leading-tight text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+          >
+            缩小
+          </button>
+          <button
+            type="button"
+            title="复位"
+            onClick={resetZoom}
+            className="px-0.5 py-1.5 text-[10px] leading-tight text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+          >
+            复位
+          </button>
+          <button
+            type="button"
             title="清除画线"
             onClick={() => {
               chartRef.current?.removeOverlay({ groupId: DRAW_GROUP })
@@ -351,7 +407,35 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
           </button>
         </div>
       )}
-      <div ref={hostRef} className="min-h-0 min-w-0 flex-1" />
+      <div className="relative min-h-0 min-w-0 flex-1">
+        <div ref={hostRef} className="h-full min-h-0 min-w-0" />
+        {compact ? (
+          <div className="absolute right-1 top-1 z-10 flex overflow-hidden rounded border border-[#2a2e39] bg-[#1e222d]/90">
+            <button
+              type="button"
+              title="放大"
+              onClick={(e) => {
+                e.stopPropagation()
+                zoomIn()
+              }}
+              className="px-1.5 py-0.5 text-[10px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              title="缩小"
+              onClick={(e) => {
+                e.stopPropagation()
+                zoomOut()
+              }}
+              className="border-l border-[#2a2e39] px-1.5 py-0.5 text-[10px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+            >
+              −
+            </button>
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }

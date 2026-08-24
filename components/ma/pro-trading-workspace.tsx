@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Bot, LayoutGrid, Maximize2, Minimize2 } from "lucide-react"
+import { Bot, LayoutGrid, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
 
 import { IndexBasisRateChart } from "@/components/ma/index-basis-rate-chart"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
-import { KlineProChart } from "@/components/ma/kline-pro-chart"
+import { KlineProChart, type KlineChartHandle } from "@/components/ma/kline-pro-chart"
 import {
   PaperAllWeatherOrderDialog,
   PaperPortfolioPanel,
@@ -75,6 +75,7 @@ export function ProTradingWorkspace({
   const [layout, setLayout] = useState<ProTradingLayout>(initialLayout)
   const [chartMode, setChartMode] = useState<"sleeves" | "single">("sleeves")
   const [mounted, setMounted] = useState(false)
+  const klineRef = useRef<KlineChartHandle>(null)
   const paper = usePaperTrading(quotes, candles)
   const awBootRef = useRef(false)
   const awSymbols = paper.state.products
@@ -222,6 +223,35 @@ export function ProTradingWorkspace({
           ))}
         </div>
         <TimeframeSelect value={interval} onChange={setInterval} dark className="max-w-[420px]" />
+        <div className="flex shrink-0 items-center overflow-hidden rounded border border-[#2a2e39]">
+          <button
+            type="button"
+            title="放大"
+            onClick={() => klineRef.current?.zoomIn()}
+            className="inline-flex h-7 items-center gap-1 px-2 text-[11px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+          >
+            <ZoomIn className="size-3.5" />
+            放大
+          </button>
+          <button
+            type="button"
+            title="缩小"
+            onClick={() => klineRef.current?.zoomOut()}
+            className="inline-flex h-7 items-center gap-1 border-l border-[#2a2e39] px-2 text-[11px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+          >
+            <ZoomOut className="size-3.5" />
+            缩小
+          </button>
+          <button
+            type="button"
+            title="复位"
+            onClick={() => klineRef.current?.resetZoom()}
+            className="inline-flex h-7 items-center gap-1 border-l border-[#2a2e39] px-2 text-[11px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+          >
+            <RotateCcw className="size-3.5" />
+            复位
+          </button>
+        </div>
         {layout === "paper" ? (
           <button
             type="button"
@@ -280,7 +310,7 @@ export function ProTradingWorkspace({
           <ResizablePanelGroup direction="horizontal">
             <ResizablePanel defaultSize={74} minSize={48}>
               {symbol ? (
-                <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} />
+                <KlineProChart ref={klineRef} symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} />
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
               )}
@@ -353,6 +383,7 @@ export function ProTradingWorkspace({
                       </div>
                       <div className="min-h-0 flex-1">
                         <KlineProChart
+                          ref={klineRef}
                           symbol={symbol}
                           interval={interval}
                           candles={tfCandles}
@@ -364,6 +395,7 @@ export function ProTradingWorkspace({
                     </div>
                   ) : (
                     <SleeveKlineGrid
+                      ref={klineRef}
                       paper={paper}
                       quotes={quotes}
                       candles={candles}

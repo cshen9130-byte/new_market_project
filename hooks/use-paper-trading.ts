@@ -12,6 +12,7 @@ import {
   allWeatherHoldingsKey,
   applyAllWeatherBook,
   closePosition,
+  DEFAULT_PAPER_CAPITAL,
   emptyPaperState,
   evaluatePaperTrading,
   isAllWeatherAccount,
@@ -19,6 +20,8 @@ import {
   markPrice,
   nid,
   openPosition,
+  paperNav,
+  paperReturn,
   positionMargin,
   positionPnl,
   savePaperState,
@@ -90,7 +93,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
               prev.positions.filter((p) => p.portfolioId === ALL_WEATHER_PORTFOLIO_ID && p.status === "open"),
             )
             if (nextKey === curKey) return prev
-            return applyAllWeatherBook(prev, holdings, Date.now(), marks)
+            return applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital)
           })
         })
         .catch(() => {})
@@ -120,21 +123,29 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     setAwConfirm({ action, run })
   }, [])
 
-  const createPortfolio = useCallback((name: string, kind: Exclude<PaperAccountKind, "all-weather"> = "manual") => {
-    const id = nid("pf-")
-    setState((prev) => {
-      const trimmed = name.trim()
-      const count = prev.portfolios.filter((p) => (p.kind || "manual") === kind).length + 1
-      const resolved = trimmed || (kind === "strategy" ? `策略账户 ${count}` : `手动账户 ${count}`)
-      return {
-        ...prev,
-        portfolios: [...prev.portfolios, { id, name: resolved, kind, createdAt: Date.now() }],
+  const createPortfolio = useCallback(
+    (name: string, kind: Exclude<PaperAccountKind, "all-weather"> = "manual", initialCapital = DEFAULT_PAPER_CAPITAL) => {
+      const capital = Number(initialCapital)
+      if (!Number.isFinite(capital) || capital <= 0) {
+        setError("总资金必须大于 0")
+        return null
       }
-    })
-    setSelectedPortfolioId(id)
-    setError(null)
-    return id
-  }, [])
+      const id = nid("pf-")
+      setState((prev) => {
+        const trimmed = name.trim()
+        const count = prev.portfolios.filter((p) => (p.kind || "manual") === kind).length + 1
+        const resolved = trimmed || (kind === "strategy" ? `策略账户 ${count}` : `手动账户 ${count}`)
+        return {
+          ...prev,
+          portfolios: [...prev.portfolios, { id, name: resolved, kind, createdAt: Date.now(), initialCapital: capital }],
+        }
+      })
+      setSelectedPortfolioId(id)
+      setError(null)
+      return id
+    },
+    [],
+  )
 
   const deletePortfolio = useCallback((id: string) => {
     if (id === ALL_WEATHER_PORTFOLIO_ID) {
@@ -236,7 +247,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
         setError("全天候策略暂无持仓")
         return null
       }
-      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks))
+      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital))
       setSelectedPortfolioId(ALL_WEATHER_PORTFOLIO_ID)
       setExtraMarks(marks)
       setAwMeta(meta)
@@ -263,7 +274,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
         setError("全天候策略暂无持仓")
         return null
       }
-      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks))
+      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital))
       setSelectedPortfolioId(ALL_WEATHER_PORTFOLIO_ID)
       setExtraMarks(marks)
       setAwMeta(meta)
@@ -440,15 +451,22 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
         if (margin != null) marginOccupied += margin
       }
     }
+    const initialCapital =
+      selectedPortfolio?.id === ALL_WEATHER_PORTFOLIO_ID
+        ? awMeta?.initialCapital || selectedPortfolio.initialCapital || DEFAULT_PAPER_CAPITAL
+        : selectedPortfolio?.initialCapital || DEFAULT_PAPER_CAPITAL
     return {
       unrealized,
       realized,
       total: unrealized + realized,
       marginOccupied,
+      initialCapital,
+      nav: paperNav(initialCapital, realized, unrealized),
+      ret: paperReturn(initialCapital, realized, unrealized),
       openCount: openPositions.length,
       productCount: selectedPortfolio ? state.products.filter((p) => p.portfolioId === selectedPortfolio.id).length : 0,
     }
-  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio])
+  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio, awMeta?.initialCapital])
 
   const sleevePnl = useMemo(() => {
     const out = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, { unrealized: 0, realized: 0, live: 0 }])) as Record<
