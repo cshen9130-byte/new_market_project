@@ -17,7 +17,11 @@ import {
   type EmailParseRecord,
   type ParseStepStatus,
 } from "@/lib/server/email-parse-records"
-import { extractNavData, extractNavHistoryFromBody } from "@/lib/server/email-nav-extract"
+import {
+  extractNavData,
+  extractNavHistoryFromBody,
+  isCmsMultiProductNavIncomplete,
+} from "@/lib/server/email-nav-extract"
 import {
   extractNavTableFromBuffer,
   isNavTableZipFilename,
@@ -291,12 +295,38 @@ function processedEmailKey(uid: string, subject: string): string {
 async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>> {
   const known = new Set<string>()
   const { query } = await import("@/lib/db")
-  const rows = await query<{ email_uid: string; subject: string | null }>(
+  const navRows = await query<{
+    email_uid: string
+    subject: string | null
+    n_codes: string | number
+  }>(
+    `SELECT email_uid, subject,
+            COUNT(DISTINCT NULLIF(BTRIM(product_code), '')) AS n_codes
+     FROM ops_email_nav_records
+     WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
+       AND NULLIF(BTRIM(email_uid), '') IS NOT NULL
+     GROUP BY email_uid, subject`,
+    [account],
+  ).catch(() => [] as { email_uid: string; subject: string | null; n_codes: string | number }[])
+
+  const incomplete = new Set<string>()
+  for (const row of navRows) {
+    const uid = String(row.email_uid).trim()
+    if (!uid) continue
+    const key = processedEmailKey(uid, row.subject ?? "")
+    const nCodes = Number(row.n_codes ?? 0)
+    // 等N个产品 mails ingested under the old single-product unique key must be
+    // re-downloaded until every product_code is stored.
+    if (isCmsMultiProductNavIncomplete(row.subject ?? "", nCodes)) {
+      incomplete.add(key)
+      continue
+    }
+    known.add(key)
+  }
+
+  const otherRows = await query<{ email_uid: string; subject: string | null }>(
     `SELECT email_uid, subject
      FROM (
-       SELECT email_uid, subject FROM ops_email_nav_records
-       WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
-       UNION
        SELECT email_uid, subject FROM ops_email_valuation_records
        WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
        UNION
@@ -306,24 +336,19 @@ async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>
      WHERE NULLIF(BTRIM(email_uid), '') IS NOT NULL`,
     [account],
   ).catch(async () => {
-    // Confirm table may not exist yet on first light poll before ensure runs.
     return query<{ email_uid: string; subject: string | null }>(
-      `SELECT email_uid, subject
-       FROM (
-         SELECT email_uid, subject FROM ops_email_nav_records
-         WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
-         UNION
-         SELECT email_uid, subject FROM ops_email_valuation_records
-         WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
-       ) t
-       WHERE NULLIF(BTRIM(email_uid), '') IS NOT NULL`,
+      `SELECT email_uid, subject FROM ops_email_valuation_records
+       WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
+         AND NULLIF(BTRIM(email_uid), '') IS NOT NULL`,
       [account],
-    )
+    ).catch(() => [] as { email_uid: string; subject: string | null }[])
   })
-  for (const row of rows) {
+  for (const row of otherRows) {
     const uid = String(row.email_uid).trim()
     if (!uid) continue
-    known.add(processedEmailKey(uid, row.subject ?? ""))
+    const key = processedEmailKey(uid, row.subject ?? "")
+    if (incomplete.has(key)) continue
+    known.add(key)
   }
   return known
 }

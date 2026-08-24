@@ -725,11 +725,11 @@ function AdvisorContent() {
   )
 }
 
-function OverviewContent({ variant, accountKey }: { variant: "mom" | "account"; accountKey: string }) {
+function OverviewContent({ variant, accountKey, allAccounts }: { variant: "mom" | "account"; accountKey: string; allAccounts?: boolean }) {
   return (
     <div className="space-y-4">
       <div className="w-full">
-        <ProductNavChart height={380} variant={variant} accountKey={accountKey} />
+        <ProductNavChart height={380} variant={variant} accountKey={accountKey} allAccounts={allAccounts} />
       </div>
     </div>
   )
@@ -7284,14 +7284,17 @@ function RiskReportAppCore({
 }) {
   useRiskSourceFetch(variant)
   const isAccount = variant === "account"
+  const isAllAccountsOverview = isAccount && cfmmcScope.selected === "all"
   const briefingName = isAccount ? "单账户简报" : "MOM 简报"
   const reportTitle = isAccount ? "单账户每日风控" : "MOM 风控报告"
   const subNavItems = [
     ...baseSubNavItems
       .filter((item) => !(isAccount && item.key === "advisor"))
-      .map((item) =>
-        item.key === "briefing" ? { ...item, name: briefingName } : item,
-      ),
+      .map((item) => {
+        if (item.key === "briefing") return { ...item, name: briefingName }
+        if (item.key === "overview" && isAllAccountsOverview) return { ...item, name: "单账户总览" }
+        return item
+      }),
     ...(isAccount ? [{ key: "import" as const, name: "数据导入", icon: Upload }] : []),
   ]
 
@@ -9018,7 +9021,7 @@ function RiskReportAppCore({
               onClick={() => document.getElementById("section-product")?.scrollIntoView({ behavior: "smooth" })}
               className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >
-              产品要素 ↓
+              {isAllAccountsOverview ? "账户明细 ↓" : "产品要素 ↓"}
             </button>
             <button
               onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })}
@@ -9080,7 +9083,7 @@ function RiskReportAppCore({
           )}
         </div>
         <div key={accountScopeKey}>
-        {activeTab === "overview" && <OverviewContent variant={variant} accountKey={accountScopeKey} />}
+        {activeTab === "overview" && <OverviewContent variant={variant} accountKey={accountScopeKey} allAccounts={isAllAccountsOverview} />}
         {activeTab === "intraday" && <IntradayContent singleAccount={isAccount} />}
         {activeTab === "position" && <PositionContent sectorChartCapturing={sectorChartCapturing} setSectorChartCapturing={setSectorChartCapturing} hideAccountOptionPnl={isAccount} defaultVarWeightView={isAccount ? "var" : "weight"} defaultGroupMode={isAccount ? "板块" : "大类"} />}
         {activeTab === "advisor" && <AdvisorContent />}

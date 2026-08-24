@@ -18,21 +18,33 @@ export type CtpCandle = {
   volume: number
 }
 
+export type CtpBookLevel = {
+  price: number | null
+  volume: number | null
+}
+
 export type CtpTick = {
   symbol: string
   last: number | null
   bid: number | null
   ask: number | null
+  bid_volume?: number | null
+  ask_volume?: number | null
   volume: number | null
   open_interest: number | null
   pre_close: number | null
   pre_settlement: number | null
+  pre_open_interest?: number | null
+  average?: number | null
+  turnover?: number | null
   open?: number | null
   high?: number | null
   low?: number | null
   update_time: string | null
   update_millis: number | null
   trade_date?: string | null
+  bids?: CtpBookLevel[]
+  asks?: CtpBookLevel[]
 }
 
 export type CtpStatus = {
@@ -114,6 +126,40 @@ export function mergeCandleSeries(prev: CtpCandle[] | undefined, incoming: CtpCa
   for (const bar of incoming) map.set(bar.time, bar)
   const out = [...map.values()].sort((a, b) => a.time - b.time)
   return out.length > 1500 ? out.slice(out.length - 1500) : out
+}
+
+export function bookLevelCount(levels?: CtpBookLevel[] | null) {
+  return (levels || []).filter((row) => row.price != null && row.price > 0).length
+}
+
+export function pickBook(a?: CtpBookLevel[] | null, b?: CtpBookLevel[] | null) {
+  return bookLevelCount(b) > bookLevelCount(a) ? b || [] : a || []
+}
+
+export function levelsFromTick(tick: CtpTick | undefined, side: "bid" | "ask"): CtpBookLevel[] {
+  const book = side === "bid" ? tick?.bids : tick?.asks
+  const filled = (book || []).filter((row) => row.price != null && row.price > 0)
+  if (filled.length) return filled
+  const price = side === "bid" ? tick?.bid : tick?.ask
+  const volume = side === "bid" ? tick?.bid_volume : tick?.ask_volume
+  return price != null && price > 0 ? [{ price, volume: volume ?? null }] : []
+}
+
+export function mergeQuoteTicks(prev: CtpTick, incoming: CtpTick): CtpTick {
+  return {
+    ...prev,
+    ...incoming,
+    bids: pickBook(prev.bids, incoming.bids),
+    asks: pickBook(prev.asks, incoming.asks),
+    bid: incoming.bid ?? prev.bid,
+    ask: incoming.ask ?? prev.ask,
+    bid_volume: incoming.bid_volume ?? prev.bid_volume,
+    ask_volume: incoming.ask_volume ?? prev.ask_volume,
+    pre_settlement: incoming.pre_settlement ?? prev.pre_settlement,
+    pre_close: incoming.pre_close ?? prev.pre_close,
+    pre_open_interest: incoming.pre_open_interest ?? prev.pre_open_interest,
+    average: incoming.average ?? prev.average,
+  }
 }
 
 export function formatBarTime(unix: number) {

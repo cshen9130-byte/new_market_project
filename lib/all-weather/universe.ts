@@ -38,6 +38,17 @@ export function isSleeveKey(value: string): value is SleeveKey {
   return (SLEEVE_KEYS as readonly string[]).includes(value)
 }
 
+export function sleeveFromContract(symbol: string): SleeveKey | null {
+  const asset = assetFromContract(symbol)
+  if (!asset) return null
+  if (asset === "IF" || asset === "IH" || asset === "IC" || asset === "IM") return "Equity"
+  if (asset === "AU") return "Gold"
+  if (asset === "T" || asset === "TF" || asset === "TS" || asset === "TL") return "Bonds"
+  const pos = snapshot.positions.find((item) => item.asset === asset)
+  if (pos && isSleeveKey(pos.sleeve)) return pos.sleeve
+  return "Commodity"
+}
+
 const ASSETS_BY_LEN = [...new Set([...snapshot.specs.map((s) => s.asset), IM_SPEC.asset])].sort(
   (a, b) => b.length - a.length,
 )
@@ -58,6 +69,26 @@ export function multiplierForContract(symbol: string) {
   const asset = assetFromContract(symbol)
   const spec = asset ? specForAsset(asset) : null
   return spec?.multiplier ?? null
+}
+
+const INDEX_MARGIN_FALLBACK: Record<string, number> = {
+  IF: 0.12,
+  IH: 0.12,
+  IC: 0.12,
+  IM: 0.12,
+}
+
+export function marginRateForContract(symbol: string) {
+  const asset = assetFromContract(symbol)
+  const spec = asset ? specForAsset(asset) : null
+  if (spec?.marginRate && spec.marginRate > 0) return spec.marginRate
+  const prefix = (symbol.replace(/\d+$/i, "") || symbol).toUpperCase()
+  return INDEX_MARGIN_FALLBACK[prefix] ?? null
+}
+
+export function brokerMarginMultiplier() {
+  const n = snapshot.brokerMarginMult
+  return typeof n === "number" && n > 0 ? n : 1
 }
 
 /** 黄金 AU + AU2610 → 黄金 AU2610 */

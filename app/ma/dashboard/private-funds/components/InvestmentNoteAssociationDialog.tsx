@@ -22,6 +22,13 @@ type FundRow = {
   product_name: string
 }
 
+type ShareClassRow = {
+  beian_hao: string
+  product_name: string
+  /** True when this entry was synthesized from the parent beian code — not yet a real DB row. */
+  synthetic: boolean
+}
+
 export function InvestmentNoteAssociationDialog({
   open,
   onOpenChange,
@@ -40,7 +47,7 @@ export function InvestmentNoteAssociationDialog({
   const [fundRows, setFundRows] = useState<FundRow[]>([])
   const [loading, setLoading] = useState(false)
   /** A/B/C share-class children keyed by parent beian_hao */
-  const [shareClassMap, setShareClassMap] = useState<Record<string, FundRow[]>>({})
+  const [shareClassMap, setShareClassMap] = useState<Record<string, ShareClassRow[]>>({})
   /** Which parent rows are expanded to show A/B/C children */
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set())
 
@@ -97,7 +104,7 @@ export function InvestmentNoteAssociationDialog({
           )
           if (!controller.signal.aborted && scRes.ok) {
             const scPayload = (await scRes.json()) as {
-              data?: Record<string, FundRow[]>
+              data?: Record<string, ShareClassRow[]>
             }
             setShareClassMap(scPayload.data ?? {})
           }
@@ -318,7 +325,7 @@ export function InvestmentNoteAssociationDialog({
                                   title={row.product_name}
                                   onClick={(e) => e.stopPropagation()}
                                 >
-                                  {row.product_name}
+                                  {associationDisplayLabel(item)}
                                 </a>
                               </div>
                             </td>
@@ -334,7 +341,7 @@ export function InvestmentNoteAssociationDialog({
                             }
                             const childChecked = selectedKeys.has(associationKey(childItem))
                             return (
-                              <tr key={child.beian_hao} className="border-b border-zinc-100 bg-sky-50/40 hover:bg-sky-50/70">
+                              <tr key={child.beian_hao} className={`border-b border-zinc-100 hover:bg-sky-50/70 ${child.synthetic ? "bg-zinc-50/60" : "bg-sky-50/40"}`}>
                                 <td className="px-3 py-2">
                                   <div className="flex justify-center">
                                     <Checkbox
@@ -343,22 +350,30 @@ export function InvestmentNoteAssociationDialog({
                                     />
                                   </div>
                                 </td>
-                                <td className="py-2 pr-3 pl-8 text-zinc-600">
+                                <td className="py-2 pr-3 pl-8">
                                   <div className="flex items-center gap-1.5">
                                     <span className="shrink-0 text-xs text-zinc-300">└</span>
-                                    <a
-                                      href={`/ma/dashboard/private-funds/${encodeURIComponent(child.beian_hao)}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-sky-600 hover:underline"
-                                      title={child.product_name}
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      {child.product_name}
-                                    </a>
+                                    {child.synthetic ? (
+                                      <span className="italic text-zinc-500" title={child.product_name}>
+                                        {child.product_name}
+                                      </span>
+                                    ) : (
+                                      <a
+                                        href={`/ma/dashboard/private-funds/${encodeURIComponent(child.beian_hao)}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-sky-600 hover:underline"
+                                        title={child.product_name}
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        {child.product_name}
+                                      </a>
+                                    )}
                                   </div>
                                 </td>
-                                <td className="py-2 pr-3 text-zinc-500 tabular-nums">{child.beian_hao}</td>
+                                <td className={`py-2 pr-3 tabular-nums ${child.synthetic ? "italic text-zinc-400" : "text-zinc-500"}`}>
+                                  {child.beian_hao}
+                                </td>
                               </tr>
                             )
                           })}
@@ -395,7 +410,7 @@ export function InvestmentNoteAssociationDialog({
                               target="_blank"
                               rel="noopener noreferrer"
                               className="block truncate text-sm text-sky-600 hover:underline"
-                              title={label}
+                              title={item.name}
                             >
                               {label}
                             </a>

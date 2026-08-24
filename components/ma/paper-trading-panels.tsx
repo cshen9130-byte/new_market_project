@@ -10,6 +10,7 @@ import { type CtpTick } from "@/lib/client/ctp-market"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
   fmtMoney,
+  fmtYuan,
   markPrice,
   priceDigits,
   positionPnl,
@@ -158,7 +159,7 @@ export function PaperStrategyBuilder({
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
         <label className="block text-[11px] text-[#787b86]">
           合约
           <input
@@ -309,10 +310,8 @@ export function PaperPortfolioPanel({
   chartSymbol: string
   onSelectSymbol: (symbol: string) => void
 }) {
-  const [listTab, setListTab] = useState<"book" | "pos">("book")
   const [newName, setNewName] = useState("")
   const [addSymbol, setAddSymbol] = useState("")
-  const [lots, setLots] = useState("1")
 
   function resolve(raw: string) {
     return resolveSymbolInput(raw, symbols, quotes)
@@ -329,47 +328,10 @@ export function PaperPortfolioPanel({
     setAddSymbol("")
   }
 
-  function open(side: PaperSide) {
-    const resolved = resolve(addSymbol || chartSymbol)
-    if (!resolved) {
-      paper.setError("无法识别合约")
-      return
-    }
-    const mark = markPrice(resolved, quotes, {}, paper.extraMarks)
-    if (mark == null) {
-      paper.setError("请等待行情")
-      return
-    }
-    const err = paper.openManual(paper.selectedPortfolioId, resolved, side, Number(lots) || 0, mark)
-    if (!err) {
-      paper.addProduct(paper.selectedPortfolioId, resolved)
-      onSelectSymbol(resolved)
-    }
-  }
-
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#1e222d]">
       <div className="flex shrink-0 items-center justify-between border-b border-[#2a2e39] px-2 py-1">
-        <div className="flex">
-          {(
-            [
-              ["book", "组合"],
-              ["pos", "持仓"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setListTab(id)}
-              className={cn(
-                "rounded px-2 py-0.5 text-[11px]",
-                listTab === id ? "bg-[#2a2e39] text-white" : "text-[#787b86] hover:text-[#d1d4dc]",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <span className="px-1 text-[11px] text-white">品种</span>
         <span className={cn("pr-1 font-mono text-[11px]", pnlClass(paper.summary.unrealized))}>{fmtMoney(paper.summary.unrealized)}</span>
       </div>
       <div className="shrink-0 space-y-2 border-b border-[#2a2e39] px-3 py-2">
@@ -484,39 +446,7 @@ export function PaperPortfolioPanel({
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
-        {listTab === "pos" ? (
-          <div className="p-2">
-            <button
-              type="button"
-              onClick={() => paper.flattenAll()}
-              className="mb-2 h-8 w-full rounded bg-[#4c84ff] text-[12px] text-white hover:bg-[#3d74ee]"
-            >
-              一键全平仓
-            </button>
-            {paper.openPositions.length === 0 ? (
-              <p className="px-1 py-4 text-center text-[11px] text-[#787b86]">暂无持仓</p>
-            ) : (
-              paper.openPositions.map(({ position, mark, pnl }) => (
-                <button
-                  key={position.id}
-                  type="button"
-                  onClick={() => onSelectSymbol(position.symbol)}
-                  className={cn(
-                    "flex w-full items-center justify-between border-b border-[#2a2e39] px-2 py-1.5 text-left text-[11px] hover:bg-[#262b38]",
-                    chartSymbol === position.symbol && "bg-[#262b38]",
-                  )}
-                >
-                  <span className="font-mono text-white">{position.symbol}</span>
-                  <span className={position.side === "long" ? "text-[#ef5350]" : "text-[#26a69a]"}>
-                    {sideLabel(position.side)} {position.lots}
-                  </span>
-                  <span className={cn("font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</span>
-                  <span className="text-[#787b86]">{fmtPx(mark, position.symbol)}</span>
-                </button>
-              ))
-            )}
-          </div>
-        ) : paper.rows.length === 0 ? (
+        {paper.rows.length === 0 ? (
           <p className="px-3 py-6 text-center text-[11px] text-[#787b86]">加载策略或添加品种后，点击行即可切换主图。</p>
         ) : (
           <table className="w-full text-left text-[11px]">
@@ -566,25 +496,18 @@ export function PaperPortfolioPanel({
         )}
       </div>
       <div className="shrink-0 space-y-1.5 border-t border-[#2a2e39] px-3 py-2">
-        <input
-          value={addSymbol}
-          onChange={(e) => setAddSymbol(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addProduct()
-          }}
-          placeholder="添加品种 TA2701 / AU"
-          className={cn(fieldClass, "font-mono")}
-        />
         <div className="flex gap-1.5">
-          <input value={lots} onChange={(e) => setLots(e.target.value)} placeholder="手数" className={cn(fieldClass, "w-16")} />
-          <button type="button" onClick={addProduct} className="h-8 flex-1 rounded bg-[#131722] text-[11px] text-[#adb3bd] hover:text-white">
-            添加品种
-          </button>
-          <button type="button" onClick={() => open("long")} className="h-8 flex-1 rounded bg-[#ef5350] text-[11px] text-white">
-            买入
-          </button>
-          <button type="button" onClick={() => open("short")} className="h-8 flex-1 rounded bg-[#26a69a] text-[11px] text-white">
-            卖出
+          <input
+            value={addSymbol}
+            onChange={(e) => setAddSymbol(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addProduct()
+            }}
+            placeholder="添加品种 TA2701 / AU"
+            className={cn(fieldClass, "font-mono")}
+          />
+          <button type="button" onClick={addProduct} className="h-8 shrink-0 rounded bg-[#131722] px-2 text-[11px] text-[#adb3bd] hover:text-white">
+            添加
           </button>
         </div>
       </div>
@@ -635,6 +558,9 @@ export function PaperPositionsBar({
         <span className="text-[#787b86]">
           已实现 <span className={cn("font-mono", pnlClass(paper.summary.realized))}>{fmtMoney(paper.summary.realized)}</span>
         </span>
+        <span className="text-[#787b86]">
+          保证金占用 <span className="font-mono text-[#d1d4dc]">{fmtYuan(paper.summary.marginOccupied)}</span>
+        </span>
         {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
           <>
             <span className="text-[#787b86]">
@@ -650,7 +576,14 @@ export function PaperPositionsBar({
             })}
           </>
         ) : null}
-        <span className="ml-auto text-[#adb3bd]">持仓 {paper.summary.openCount}</span>
+        <button
+          type="button"
+          onClick={() => paper.flattenAll()}
+          className="ml-auto rounded px-2 py-0.5 text-[11px] text-[#adb3bd] hover:text-white"
+        >
+          全平
+        </button>
+        <span className="text-[#adb3bd]">持仓 {paper.summary.openCount}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === "closed" ? (
@@ -685,7 +618,7 @@ export function PaperPositionsBar({
             </table>
           )
         ) : paper.openPositions.length === 0 ? (
-          <p className="px-3 py-4 text-[11px] text-[#787b86]">暂无持仓。左侧下单或右侧买入后，点击合约可切到主图。</p>
+          <p className="px-3 py-4 text-[11px] text-[#787b86]">暂无持仓。在左侧下单后，点击合约可切到主图。</p>
         ) : (
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-[#1e222d] text-[#787b86]">
@@ -697,11 +630,12 @@ export function PaperPositionsBar({
                 <th className="px-2 py-1 font-normal">现价</th>
                 <th className="px-2 py-1 font-normal">策略</th>
                 <th className="px-2 py-1 text-right font-normal">浮动盈亏</th>
+                <th className="px-2 py-1 text-right font-normal">保证金占用</th>
                 <th className="px-3 py-1" />
               </tr>
             </thead>
             <tbody>
-              {paper.openPositions.map(({ position, mark, pnl, strategy }) => (
+              {paper.openPositions.map(({ position, mark, pnl, margin, strategy }) => (
                 <tr
                   key={position.id}
                   onClick={() => onSelectSymbol(position.symbol)}
@@ -722,6 +656,7 @@ export function PaperPositionsBar({
                   <td className="px-2 font-mono">{fmtPx(mark, position.symbol)}</td>
                   <td className="max-w-[160px] truncate px-2 text-[#adb3bd]">{strategy?.name || "手动"}</td>
                   <td className={cn("px-2 text-right font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</td>
+                  <td className="px-2 text-right font-mono text-[#d1d4dc]">{fmtYuan(margin)}</td>
                   <td className="px-3 text-right">
                     <button
                       type="button"

@@ -158,7 +158,7 @@ function NoteAssociations({
                 target="_blank"
                 rel="noopener noreferrer"
                 className={`${className} hover:bg-red-100 hover:underline`}
-                title={label}
+                title={item.name}
               >
                 {label}
               </a>

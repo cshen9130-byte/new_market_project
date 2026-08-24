@@ -19,7 +19,7 @@ import {
 } from "../lib/server/email-valuation-attachment.ts"
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
-import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
+import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete } from "../lib/server/email-nav-extract.ts"
 import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
   extractNavTableFromBuffer,
@@ -1038,6 +1038,94 @@ const cmsMultiAnalysis = analyzeNavWorkbook(cmsMultiBuf, "每日净值表.xls")
 assert(
   "cms multi-product workbook dedupes by date+code",
   cmsMultiAnalysis.rows.filter((r) => r.date === "2026-07-23").length === 2,
+)
+
+const shanxinAug21Subject =
+  '【净值表】杭州麓山山信私募基金管理有限公司管理人旗下“山信至诚一号私募证券投资基金-SBA005”等2个产品净值表发送20260821'
+const shanxinAug21Body =
+  "日期 产品代码 产品名称 单位净值 累计单位净值\n" +
+  "2026年08月21日 SBA005 山信至诚一号私募证券投资基金 1.0351 1.1898\n" +
+  "2026年08月21日 SBCK34 山信平诚一号私募证券投资基金 1.0104 1.0851\n"
+const shanxinAug21History = extractNavHistoryFromBody(shanxinAug21Subject, shanxinAug21Body)
+assert(
+  "shanxin 20260821 body keeps SBA005 山信至诚 and SBCK34 山信平诚",
+  shanxinAug21History.some((r) => r.productCode === "SBA005" && r.nav === 1.0351 && r.fundName?.includes("山信至诚"))
+    && shanxinAug21History.some((r) => r.productCode === "SBCK34" && r.nav === 1.0104 && r.fundName?.includes("山信平诚")),
+)
+const shanxinNoCountSubject =
+  '【净值表】杭州麓山山信私募基金管理有限公司管理人旗下“山信至诚一号私募证券投资基金-SBA005”净值表发送20260821'
+const shanxinNoCountHistory = extractNavHistoryFromBody(shanxinNoCountSubject, shanxinAug21Body)
+assert(
+  "shanxin body with two codes keeps both even without 等N个产品",
+  shanxinNoCountHistory.filter((r) => r.navDate === "2026-08-21").length === 2
+    && shanxinNoCountHistory.some((r) => r.productCode === "SBCK34"),
+)
+const shanxinSpacedBody =
+  "2026年 08月 21日 SBA005 山信至诚一号私募证券投资基金 1.0351 1.1898\n" +
+  "2026年 08月 21日 SBCK34 山信平诚一号私募证券投资基金 1.0104 1.0851"
+assert(
+  "shanxin spaced 年月日 rows still extract both products",
+  extractNavHistoryFromBody(shanxinAug21Subject, shanxinSpacedBody).filter((r) => r.navDate === "2026-08-21").length === 2,
+)
+assert(
+  "cms 等2个产品 with one stored code is incomplete",
+  isCmsMultiProductNavIncomplete(shanxinAug21Subject, 1) === true
+    && isCmsMultiProductNavIncomplete(shanxinAug21Subject, 2) === false,
+)
+assert(
+  "SBCK34 page matches email row by product_code even when email names 山信平诚",
+  emailRowMatchesFund(
+    {
+      product_code: "SBCK34",
+      fund_name: "山信平诚一号",
+      nav_date: "2026-08-21",
+      nav: "1.010400",
+      cumulative_nav: "1.085100",
+      adjusted_nav: null,
+      source: "body_table",
+      subject: shanxinAug21Subject,
+      attachment_filename: "集合计划每日净值表.xls",
+    },
+    "SBCK34",
+    ["山信至诚一号", "山信至诚一号私募证券投资基金"],
+  ),
+)
+assert(
+  "SBCK34 page does not take SBA005 山信至诚 row from the same CMS mail",
+  emailRowMatchesFund(
+    {
+      product_code: "SBA005",
+      fund_name: "山信至诚一号",
+      nav_date: "2026-08-21",
+      nav: "1.035100",
+      cumulative_nav: "1.189800",
+      adjusted_nav: null,
+      source: "body_table",
+      subject: shanxinAug21Subject,
+      attachment_filename: "集合计划每日净值表.xls",
+    },
+    "SBCK34",
+    ["山信至诚一号", "山信至诚一号私募证券投资基金"],
+  ) === false,
+)
+const shanxinUnlabeledSheet = XLSX.utils.aoa_to_sheet([
+  ["集合计划每日净值表"],
+  ["2026-08-21", "SBA005", "山信至诚一号私募证券投资基金", 1.0351, 1.1898],
+  ["2026-08-21", "SBCK34", "山信平诚一号私募证券投资基金", 1.0104, 1.0851],
+])
+const shanxinUnlabeledBook = XLSX.utils.book_new()
+XLSX.utils.book_append_sheet(shanxinUnlabeledBook, shanxinUnlabeledSheet, "Sheet1")
+const shanxinUnlabeledBuf = XLSX.write(shanxinUnlabeledBook, { type: "buffer", bookType: "xlsx" })
+const shanxinUnlabeled = extractNavTableFromBuffer(
+  shanxinUnlabeledBuf,
+  "集合计划每日净值表.xls",
+  shanxinAug21Subject,
+)
+assert(
+  "cms unlabeled product-code column still keeps both same-date funds",
+  shanxinUnlabeled.filter((r) => r.navDate === "2026-08-21").length === 2
+    && shanxinUnlabeled.some((r) => r.productCode === "SBA005")
+    && shanxinUnlabeled.some((r) => r.productCode === "SBCK34"),
 )
 
 const jinyuZhuiTaSubject =

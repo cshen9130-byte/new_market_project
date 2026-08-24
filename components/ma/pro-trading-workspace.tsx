@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Bot, Maximize2, Minimize2 } from "lucide-react"
+import { Bot, LayoutGrid, Maximize2, Minimize2 } from "lucide-react"
 
 import { IndexBasisRateChart } from "@/components/ma/index-basis-rate-chart"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
@@ -12,6 +12,8 @@ import {
   PaperPositionsBar,
   PaperStrategyBuilder,
 } from "@/components/ma/paper-trading-panels"
+import { QuoteBoard } from "@/components/ma/quote-board"
+import { SleeveKlineGrid } from "@/components/ma/sleeve-kline-grid"
 import { Button } from "@/components/ui/button"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
@@ -70,6 +72,7 @@ export function ProTradingWorkspace({
   const [tool, setTool] = useState("cross")
   const [interval, setInterval] = useState<TimeframeId>("1m")
   const [layout, setLayout] = useState<ProTradingLayout>(initialLayout)
+  const [chartMode, setChartMode] = useState<"sleeves" | "single">("sleeves")
   const [mounted, setMounted] = useState(false)
   const paper = usePaperTrading(quotes, candles)
   const awBootRef = useRef(false)
@@ -89,6 +92,7 @@ export function ProTradingWorkspace({
     if (openedRef.current) return
     openedRef.current = true
     setLayout(initialLayout)
+    setChartMode("sleeves")
     if (!initialSymbol) return
     setSymbol(initialSymbol)
     setQuery(initialSymbol)
@@ -161,6 +165,11 @@ export function ProTradingWorkspace({
     setQuery(resolved)
   }
 
+  function focusChart(raw: string) {
+    commit(raw)
+    setChartMode("single")
+  }
+
   if (!open || !mounted) return null
 
   return createPortal(
@@ -171,7 +180,9 @@ export function ProTradingWorkspace({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") commit(query)
+              if (e.key !== "Enter") return
+              if (layout === "paper") focusChart(query)
+              else commit(query)
             }}
             placeholder="输入合约 IH2609 / IF / 上证50"
             list="pro-trading-symbols"
@@ -190,7 +201,10 @@ export function ProTradingWorkspace({
               type="button"
               onClick={() => {
                 const picked = pickMostActiveContract(symbols, item.product, quotes)
-                if (picked) commit(picked)
+                if (picked) {
+                  if (layout === "paper") focusChart(picked)
+                  else commit(picked)
+                }
               }}
               className={cn(
                 "rounded px-2 py-1 text-xs",
@@ -202,6 +216,22 @@ export function ProTradingWorkspace({
           ))}
         </div>
         <TimeframeSelect value={interval} onChange={setInterval} dark className="max-w-[420px]" />
+        {layout === "paper" ? (
+          <button
+            type="button"
+            title={chartMode === "sleeves" ? "当前四图，点击品种可放大单图" : "返回袖套四图"}
+            onClick={() => setChartMode((mode) => (mode === "sleeves" ? "single" : "sleeves"))}
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-[11px]",
+              chartMode === "sleeves"
+                ? "border-[#4c84ff] bg-[#4c84ff] text-white"
+                : "border-[#2a2e39] bg-[#1e222d] text-[#adb3bd] hover:text-white",
+            )}
+          >
+            <LayoutGrid className="size-3.5" />
+            {chartMode === "sleeves" ? "四图" : "单图"}
+          </button>
+        ) : null}
         <div className="min-w-0 flex-1 font-medium">
           <span className="font-mono text-white">{symbol || "--"}</span>
           {meta ? <span className="ml-2 text-xs text-[#787b86]">{meta.name}</span> : null}
@@ -281,40 +311,77 @@ export function ProTradingWorkspace({
         ) : (
           <ResizablePanelGroup direction="vertical">
             <ResizablePanel defaultSize={76} minSize={48}>
-              <ResizablePanelGroup direction="horizontal">
-                <ResizablePanel defaultSize={22} minSize={16}>
-                  <PaperStrategyBuilder
-                    paper={paper}
-                    symbols={listedSymbols}
-                    quotes={quotes}
-                    chartSymbol={symbol}
-                    lastPrice={last}
-                    onSelectSymbol={commit}
-                  />
+              <ResizablePanelGroup direction="horizontal" autoSaveId="paper-charts-v2">
+                <ResizablePanel defaultSize={16} minSize={12}>
+                  <ResizablePanelGroup direction="vertical">
+                    <ResizablePanel defaultSize={56} minSize={28}>
+                      <QuoteBoard symbol={symbol} quote={quote} lastPrice={last} />
+                    </ResizablePanel>
+                    <ResizableHandle className="h-1 bg-[#2a2e39]" />
+                    <ResizablePanel defaultSize={44} minSize={26}>
+                      <PaperStrategyBuilder
+                        paper={paper}
+                        symbols={listedSymbols}
+                        quotes={quotes}
+                        chartSymbol={symbol}
+                        lastPrice={last}
+                        onSelectSymbol={commit}
+                      />
+                    </ResizablePanel>
+                  </ResizablePanelGroup>
                 </ResizablePanel>
                 <ResizableHandle className="w-1 bg-[#2a2e39]" />
-                <ResizablePanel defaultSize={53} minSize={32}>
-                  {symbol ? (
-                    <KlineProChart symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} />
+                <ResizablePanel defaultSize={62} minSize={40}>
+                  {chartMode === "single" && symbol ? (
+                    <div className="flex h-full min-h-0 flex-col">
+                      <div className="flex shrink-0 items-center justify-between border-b border-[#2a2e39] bg-[#1e222d] px-2 py-1">
+                        <span className="font-mono text-[11px] text-white">{symbol}</span>
+                        <button
+                          type="button"
+                          onClick={() => setChartMode("sleeves")}
+                          className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
+                        >
+                          <LayoutGrid className="size-3.5" />
+                          返回四图
+                        </button>
+                      </div>
+                      <div className="min-h-0 flex-1">
+                        <KlineProChart
+                          symbol={symbol}
+                          interval={interval}
+                          candles={tfCandles}
+                          marks={orderMarks}
+                          activeTool={tool}
+                          onTool={setTool}
+                        />
+                      </div>
+                    </div>
                   ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
+                    <SleeveKlineGrid
+                      paper={paper}
+                      quotes={quotes}
+                      candles={candles}
+                      interval={interval}
+                      selectedSymbol={symbol}
+                      onSelectSymbol={focusChart}
+                    />
                   )}
                 </ResizablePanel>
                 <ResizableHandle className="w-1 bg-[#2a2e39]" />
-                <ResizablePanel defaultSize={25} minSize={16}>
+                <ResizablePanel defaultSize={22} minSize={16}>
                   <PaperPortfolioPanel
                     paper={paper}
                     symbols={listedSymbols}
                     quotes={quotes}
                     chartSymbol={symbol}
-                    onSelectSymbol={commit}
+                    onSelectSymbol={focusChart}
                   />
                 </ResizablePanel>
               </ResizablePanelGroup>
             </ResizablePanel>
             <ResizableHandle className="h-1 bg-[#2a2e39]" />
             <ResizablePanel defaultSize={24} minSize={12}>
-              <PaperPositionsBar paper={paper} chartSymbol={symbol} onSelectSymbol={commit} />
+              <PaperPositionsBar paper={paper} chartSymbol={symbol} onSelectSymbol={focusChart} />
             </ResizablePanel>
           </ResizablePanelGroup>
         )}

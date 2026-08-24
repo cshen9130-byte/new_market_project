@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { RefreshCw } from "lucide-react"
+import { AccountOverviewTable } from "@/components/ma/account-overview-table"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface NavPoint {
@@ -97,9 +98,10 @@ interface Props {
   navCurveOnly?: boolean
   variant?: "mom" | "account"
   accountKey?: string
+  allAccounts?: boolean
 }
 
-export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false, variant = "mom", accountKey = "" }: Props) {
+export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false, variant = "mom", accountKey = "", allAccounts = false }: Props) {
   const isAccount = variant === "account"
   const [allData, setAllData] = useState<NavPoint[]>([])
   const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
@@ -215,7 +217,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
   useEffect(() => { loadCategoryPnl() }, [loadCategoryPnl])
 
   useEffect(() => {
-    if (!isAccount) return
+    if (!isAccount || allAccounts) return
     let stop = false
     fetch("/ma/api/account-risk/product-elements")
       .then((r) => r.json())
@@ -236,7 +238,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
         setRedemptionFee("")
       })
     return () => { stop = true }
-  }, [isAccount, accountKey])
+  }, [isAccount, accountKey, allAccounts])
 
   // MOM keeps its own draft. 单账户 reads the database and does not reuse that draft.
   useEffect(() => {
@@ -811,7 +813,11 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
 
   return (
   <>
-    {/* ══ 产品要素 ══════════════════════════════════════════════════════ */}
+    {/* ══ 产品要素 / 账户明细 ═══════════════════════════════════════════ */}
+    {allAccounts ? (
+      <AccountOverviewTable />
+    ) : (
+    <>
     <div id="section-product" className="flex items-center gap-2 mb-3" style={{ scrollMarginTop: "3rem" }}>
       <h2 className="text-sm font-semibold whitespace-nowrap">产品要素</h2>
       <div className="h-px flex-1 bg-border" />
@@ -912,6 +918,8 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
         </div>
       </CardContent>
     </Card>
+    </>
+    )}
 
     {/* ══ 业绩指标 ══════════════════════════════════════════════════════ */}
     <div id="section-performance" className="mt-5 flex items-center gap-2 mb-3" style={{ scrollMarginTop: "3rem" }}>

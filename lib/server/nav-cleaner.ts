@@ -46,12 +46,14 @@ type DateOrder = "ymd" | "mdy" | "dmy"
 const TEMPLATE_PATH = path.join(process.cwd(), "NAV_template", "上传净值模版.xlsx")
 
 const PRODUCT_CODE_HEADER_PATTERNS = [
-  /^产品代码$|^基金代码$|^证券代码$|^备案编号$|productcode|fundcode|beian/i,
+  /产品代码|基金代码|证券代码|备案编号|产品编号|基金编号|productcode|fundcode|beian/i,
 ]
 
 const PRODUCT_NAME_HEADER_PATTERNS = [
-  /^产品名称$|^基金名称$|^证券名称$|productname|fundname/i,
+  /产品名称|基金名称|证券名称|productname|fundname/i,
 ]
+
+const PRODUCT_CODE_VALUE_RE = /^[A-Z]{1,6}\d{2,6}[A-Z]?$/
 
 const DATE_HEADER_PATTERNS = [
   /日期|净值日期|估值日期|业务日期|date|tradedate|navdate|valuationdate|asof/i,
@@ -510,6 +512,25 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
     }
     if (productNameIndex == null && matchHeaderScore(normalized, PRODUCT_NAME_HEADER_PATTERNS) > 0) {
       productNameIndex = index
+    }
+  }
+
+  // CMS 集合计划每日净值表 sometimes omits a recognizable 产品代码 header.
+  // Infer from cell values that look like AMAC 备案号 (SBCK34 / SBA005).
+  if (productCodeIndex == null) {
+    for (let index = 0; index < columnCount; index += 1) {
+      if (index === dateIndex || index === unitIndex || index === cumulativeIndex || index === adjustedIndex) {
+        continue
+      }
+      const values = sampleRows
+        .map((row) => stringifyCell(row[index]).trim().toUpperCase())
+        .filter(Boolean)
+      if (values.length === 0) continue
+      const codeCount = values.filter((value) => PRODUCT_CODE_VALUE_RE.test(value)).length
+      if (codeCount / values.length >= 0.8) {
+        productCodeIndex = index
+        break
+      }
     }
   }
 

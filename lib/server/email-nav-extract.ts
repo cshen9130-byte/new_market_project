@@ -938,8 +938,9 @@ export function extractNavData(
 
   // ── 3. Body: CMS/招商 净值表 table row ────────────────────────────────────
   // 2026年06月08日 SBNX55 荣熙共赢私募证券投资基金 1.0065 1.0065
+  // Use the row's own code/name — subject only names the first of 等N个产品.
   const cmsRowM = bodyText.match(
-    /(\d{4})年(\d{1,2})月(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/u,
+    /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/u,
   )
   if (cmsRowM) {
     return {
@@ -947,8 +948,8 @@ export function extractNavData(
       navDate: normaliseDate(`${cmsRowM[1]}-${cmsRowM[2]}-${cmsRowM[3]}`),
       cumulativeNav: parseFloat(cmsRowM[7]),
       adjustedNav: null,
-      productCode: shared.productCode ?? cmsRowM[4],
-      fundName: shared.fundName ?? normalizeFundDisplayName(cmsRowM[5]),
+      productCode: cmsRowM[4].toUpperCase(),
+      fundName: normalizeFundDisplayName(cmsRowM[5]) || shared.fundName,
       source: "body_table",
     }
   }
@@ -1068,7 +1069,25 @@ const HISTORY_TABLE_ROW_DATE_FIRST_RE =
 
 /** CMS/招商 净值表: 2026年07月24日 CODE NAME unit cum. */
 const HISTORY_TABLE_ROW_CMS_RE =
-  /(\d{4})年(\d{1,2})月(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/gu
+  /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/gu
+
+/** `等N个产品` in CMS/招商 【净值表】 subjects. */
+export function cmsMultiProductCountFromSubject(subject: string): number | null {
+  const m = subject.match(/等\s*(\d+)\s*个产品/u)
+  if (!m) return null
+  const n = parseInt(m[1], 10)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** True when a 等N个产品 mail was stored with fewer distinct product_code values than N. */
+export function isCmsMultiProductNavIncomplete(
+  subject: string,
+  distinctProductCodes: number,
+): boolean {
+  const expected = cmsMultiProductCountFromSubject(subject)
+  if (expected == null) return false
+  return distinctProductCodes < expected
+}
 
 /**
  * Batch 补发 tables sometimes put code/name only in the header/subject and
@@ -1077,6 +1096,8 @@ const HISTORY_TABLE_ROW_CMS_RE =
 const HISTORY_TABLE_ROW_DATE_NAV_RE =
   /^(\d{4}-\d{2}-\d{2})\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s*$/gm
 
+const CMS_CHINESE_DATE_RE = /\d{4}年\s*\d{1,2}月\s*\d{1,2}日/u
+
 function hasNavHistoryTable(bodyText: string, subject: string): boolean {
   return (
     /产品代码\s+产品名称\s+净值日期/u.test(bodyText) ||
@@ -1084,72 +1105,71 @@ function hasNavHistoryTable(bodyText: string, subject: string): boolean {
     /产品代码\s+产品名称\s+日期/u.test(bodyText) ||
     /批量补发/u.test(subject) ||
     /资产净值公告/u.test(subject) ||
-    (/管理人旗下/u.test(subject) && /\d{4}年\d{1,2}月\d{1,2}日/u.test(bodyText)) ||
-    (/等\d+个产品/u.test(subject) && /\d{4}年\d{1,2}月\d{1,2}日/u.test(bodyText))
+    (/管理人旗下/u.test(subject) && CMS_CHINESE_DATE_RE.test(bodyText)) ||
+    (cmsMultiProductCountFromSubject(subject) != null && CMS_CHINESE_DATE_RE.test(bodyText))
   )
+}
+
+type HistoryRowCandidate = {
+  code: string
+  fundNameRaw: string
+  navDate: string
+  nav: number
+  cumulativeNav: number
 }
 
 /**
  * Extract all historical NAV rows from a multi-row body table (e.g. 资产净值公告).
  * Single-product mails keep only the subject product code; CMS multi-product
- * subjects (`等N个产品`) keep every code in the table.
+ * subjects (`等N个产品`) and tables with multiple codes keep every fund.
  */
 export function extractNavHistoryFromBody(
   subject: string,
   bodyText: string,
 ): ExtractedNavData[] {
-  if (!hasNavHistoryTable(bodyText, subject)) return []
-
   const shared = extractNavMetadata(subject, bodyText)
   const expectedCode = shared.productCode?.toUpperCase()
-  const multiProduct = /等\d+个产品/u.test(subject)
+  const candidates: HistoryRowCandidate[] = []
+  const seenRaw = new Set<string>()
 
-  const rows: ExtractedNavData[] = []
-  const seenKeys = new Set<string>()
-
-  const pushRow = (
+  const addCandidate = (
     code: string,
     fundNameRaw: string,
     navDate: string,
     nav: number,
     cumulativeNav: number,
   ) => {
-    if (!multiProduct && expectedCode && code !== expectedCode) return
     const key = `${code}|${navDate}`
-    if (seenKeys.has(key)) return
-    seenKeys.add(key)
-    const rowName = normalizeFundDisplayName(fundNameRaw)
-    const fundName =
-      !multiProduct || !expectedCode || code === expectedCode
-        ? shared.fundName ?? rowName
-        : rowName || shared.fundName
-    rows.push({
-      nav,
-      navDate,
-      cumulativeNav,
-      adjustedNav: null,
-      productCode: code,
-      fundName,
-      source: "body_table",
-    })
+    if (seenRaw.has(key)) return
+    seenRaw.add(key)
+    candidates.push({ code, fundNameRaw, navDate, nav, cumulativeNav })
   }
 
-  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_RE)) {
-    pushRow(m[1].toUpperCase(), m[2], m[3], parseFloat(m[4]), parseFloat(m[5]))
-  }
-  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_DATE_FIRST_RE)) {
-    pushRow(m[2].toUpperCase(), m[3], m[1], parseFloat(m[4]), parseFloat(m[5]))
-  }
+  // CMS 年月日 rows are enough to identify 等N个产品 tables even when the
+  // subject/header gate would miss them (split cells, missing 等N个产品).
   for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_CMS_RE)) {
     const navDate = normaliseDate(`${m[1]}-${m[2]}-${m[3]}`)
     if (!navDate) continue
-    pushRow(m[4].toUpperCase(), m[5], navDate, parseFloat(m[6]), parseFloat(m[7]))
+    addCandidate(m[4].toUpperCase(), m[5], navDate, parseFloat(m[6]), parseFloat(m[7]))
   }
 
-  // Date/NAV-only rows: require a resolved product code from subject/body metadata.
-  if (expectedCode) {
+  if (hasNavHistoryTable(bodyText, subject)) {
+    for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_RE)) {
+      addCandidate(m[1].toUpperCase(), m[2], m[3], parseFloat(m[4]), parseFloat(m[5]))
+    }
+    for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_DATE_FIRST_RE)) {
+      addCandidate(m[2].toUpperCase(), m[3], m[1], parseFloat(m[4]), parseFloat(m[5]))
+    }
+  }
+
+  const distinctCodes = new Set(candidates.map((row) => row.code))
+  const multiProduct =
+    cmsMultiProductCountFromSubject(subject) != null || distinctCodes.size > 1
+
+  // Date/NAV-only rows belong to single-product 补发 mails, not CMS multi-product tables.
+  if (expectedCode && !multiProduct && hasNavHistoryTable(bodyText, subject)) {
     for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_DATE_NAV_RE)) {
-      pushRow(
+      addCandidate(
         expectedCode,
         shared.fundName ?? "",
         m[1],
@@ -1159,5 +1179,29 @@ export function extractNavHistoryFromBody(
     }
   }
 
+  if (candidates.length === 0) return []
+
+  const rows: ExtractedNavData[] = []
+  const seenKeys = new Set<string>()
+  for (const c of candidates) {
+    if (!multiProduct && expectedCode && c.code !== expectedCode) continue
+    const key = `${c.code}|${c.navDate}`
+    if (seenKeys.has(key)) continue
+    seenKeys.add(key)
+    const rowName = normalizeFundDisplayName(c.fundNameRaw)
+    const fundName =
+      !multiProduct || !expectedCode || c.code === expectedCode
+        ? shared.fundName ?? rowName
+        : rowName || shared.fundName
+    rows.push({
+      nav: c.nav,
+      navDate: c.navDate,
+      cumulativeNav: c.cumulativeNav,
+      adjustedNav: null,
+      productCode: c.code,
+      fundName,
+      source: "body_table",
+    })
+  }
   return rows
 }

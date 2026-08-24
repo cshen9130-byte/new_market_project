@@ -41,7 +41,7 @@ function looksLikeFundName(name: string): boolean {
 const COMPANY_PREFIX_RE =
   /^.+?(?:私募基金管理有限公司|基金管理有限公司|资产管理有限公司|股份有限公司|有限责任公司|有限公司)/u
 
-function productNameFromClientLabel(raw: string): string {
+export function productNameFromClientLabel(raw: string): string {
   const s = raw.trim()
   if (!s) return ""
   const afterCompany = s.replace(COMPANY_PREFIX_RE, "").trim()

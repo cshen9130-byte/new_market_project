@@ -1,4 +1,14 @@
-import { multiplierForContract } from "@/lib/all-weather/universe"
+import {
+  brokerMarginMultiplier,
+  isSleeveKey,
+  loadStrategySnapshot,
+  marginRateForContract,
+  multiplierForContract,
+  sleeveFromContract,
+  specForAsset,
+  SLEEVE_KEYS,
+  type SleeveKey,
+} from "@/lib/all-weather/universe"
 import type { CtpCandle, CtpTick, IndexProduct } from "@/lib/client/ctp-market"
 import { isLiveSessionFor, quoteOf, validMark } from "@/lib/client/market-hours"
 import { productOfSymbol } from "@/lib/client/pro-trading"
@@ -188,6 +198,108 @@ export function positionPnl(pos: PaperPosition, mark: number | null) {
   if (px == null) return null
   const dir = pos.side === "long" ? 1 : -1
   return (px - pos.entryPrice) * pos.lots * contractMultiplier(pos.symbol, pos.multiplier) * dir
+}
+
+/** 保证金占用 = 现价 × 手数 × 乘数 × 保证金率 × 券商保证金系数 */
+export function positionMargin(pos: Pick<PaperPosition, "symbol" | "lots" | "multiplier" | "entryPrice">, mark: number | null) {
+  const px = mark != null && mark > 0 ? mark : pos.entryPrice
+  if (px == null || px <= 0 || pos.lots <= 0) return null
+  const rate = marginRateForContract(pos.symbol)
+  if (rate == null) return null
+  return px * pos.lots * contractMultiplier(pos.symbol, pos.multiplier) * rate * brokerMarginMultiplier()
+}
+
+export function positionNotional(
+  pos: Pick<PaperPosition, "symbol" | "lots" | "multiplier" | "entryPrice">,
+  mark: number | null,
+) {
+  const px = mark != null && mark > 0 ? mark : pos.entryPrice
+  if (px == null || px <= 0 || pos.lots <= 0) return null
+  return px * pos.lots * contractMultiplier(pos.symbol, pos.multiplier)
+}
+
+function resolveSleeve(pos: PaperPosition): SleeveKey | null {
+  if (pos.sleeve && isSleeveKey(pos.sleeve)) return pos.sleeve
+  return sleeveFromContract(pos.symbol)
+}
+
+export function sleeveLeadPositions(
+  rows: Array<{ position: PaperPosition; mark: number | null }>,
+): Record<SleeveKey, { position: PaperPosition; mark: number | null; notional: number } | null> {
+  const out = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, null])) as Record<
+    SleeveKey,
+    { position: PaperPosition; mark: number | null; notional: number } | null
+  >
+  for (const row of rows) {
+    if (row.position.status !== "open") continue
+    const sleeve = resolveSleeve(row.position)
+    if (!sleeve) continue
+    const notional = positionNotional(row.position, row.mark)
+    if (notional == null) continue
+    const cur = out[sleeve]
+    if (!cur || notional > cur.notional) out[sleeve] = { ...row, notional }
+  }
+  for (const sleeve of SLEEVE_KEYS) {
+    if (out[sleeve]) continue
+    const fallback = snapshotSleeveLead(sleeve)
+    if (fallback) out[sleeve] = fallback
+  }
+  return out
+}
+
+function snapshotSleeveLead(sleeve: SleeveKey): { position: PaperPosition; mark: number | null; notional: number } | null {
+  const snap = loadStrategySnapshot()
+  const candidates = snap.positions.filter((item) => item.sleeve === sleeve && item.lots > 0)
+  if (!candidates.length) {
+    if (sleeve !== "Equity") return null
+    const spec = specForAsset("IF")
+    if (!spec) return null
+    const symbol = spec.refContract.toUpperCase()
+    return {
+      position: {
+        id: "lead-IF",
+        portfolioId: ALL_WEATHER_PORTFOLIO_ID,
+        productId: "lead-IF",
+        symbol,
+        side: "long",
+        lots: 1,
+        entryPrice: spec.refPrice,
+        entryTime: 0,
+        status: "open",
+        multiplier: spec.multiplier,
+        sleeve: "Equity",
+        label: "沪深300 IF",
+      },
+      mark: spec.refPrice,
+      notional: spec.refPrice * spec.multiplier,
+    }
+  }
+  const best = candidates.reduce((a, b) => (b.lots * b.price * b.multiplier > a.lots * a.price * a.multiplier ? b : a))
+  const spec = specForAsset(best.asset)
+  const symbol = (spec?.refContract || best.asset).toUpperCase()
+  return {
+    position: {
+      id: `lead-${best.asset}`,
+      portfolioId: ALL_WEATHER_PORTFOLIO_ID,
+      productId: `lead-${best.asset}`,
+      symbol,
+      side: "long",
+      lots: best.lots,
+      entryPrice: best.price,
+      entryTime: 0,
+      status: "open",
+      multiplier: best.multiplier,
+      sleeve,
+      label: best.label,
+    },
+    mark: best.price,
+    notional: best.lots * best.price * best.multiplier,
+  }
+}
+
+export function fmtYuan(n: number | null | undefined) {
+  if (n == null || Number.isNaN(n)) return "--"
+  return `¥${Math.abs(n).toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`
 }
 
 export function fmtMoney(n: number | null | undefined) {

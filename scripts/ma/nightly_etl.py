@@ -11,12 +11,13 @@ Usage
   python scripts/ma/nightly_etl.py --step nhci   # run single step only
   python scripts/ma/nightly_etl.py --step email_nav_parse
   python scripts/ma/nightly_etl.py --step amac_private_funds
+  python scripts/ma/nightly_etl.py --step amac_futures
   python scripts/ma/nightly_etl.py --step amac_extra
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
   python scripts/ma/nightly_etl.py --step dd_materials_links
   python scripts/ma/nightly_etl.py --group macro   # macro-market charts only
   python scripts/ma/nightly_etl.py --group stock   # stock-market charts only (A-share crowding)
-  python scripts/ma/nightly_etl.py --group amac    # AMAC fund list → amac_private_funds + private_fund_info
+  python scripts/ma/nightly_etl.py --group amac    # AMAC fund + futures 资管 lists → private_fund_info
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
@@ -4921,6 +4922,58 @@ def step_amac_private_funds(force_full: bool = False) -> int:
     return 0
 
 
+def step_amac_futures(force_full: bool = False) -> int:
+    """Fetch AMAC 期货公司集合资管 list and upsert into private_fund_info."""
+    _ = force_full
+    project_root = SCRIPT_DIR.parent.parent
+    script_path = project_root / "scripts" / "db" / "amac_futures_etl.py"
+    cmd = _python_cmd(str(script_path))
+    timeout = 1800
+
+    log.info("amac_futures: running amac_futures_etl.py (timeout=%ds) …", timeout)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env={**os.environ},
+        cwd=str(project_root),
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout:
+        for line in stdout.splitlines():
+            log.info(line)
+    if stderr:
+        for line in stderr.splitlines():
+            log.info(line)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"amac_futures_etl.py failed (exit {result.returncode}): "
+            f"{stderr or stdout or 'no output'}"
+        )
+
+    summary = None
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                summary = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+
+    if summary and summary.get("ok"):
+        return int(summary.get("rows_upserted") or 0)
+
+    match = re.search(r"upserted=([\d,]+)", stdout)
+    if match:
+        return int(match.group(1).replace(",", ""))
+    return 0
+
+
 def step_warm_mom_cache() -> int:
     """Call the /ma/api/mom-analysis/warm-cache endpoint to pre-compute all chart data."""
     import urllib.request
@@ -4973,6 +5026,7 @@ MACRO_STEPS = [
 # stall private-fund search for newly filed products.
 AMAC_STEPS = [
     "amac_private_funds",
+    "amac_futures",
     "sync_amac_fund_metadata",
 ]
 
@@ -5050,6 +5104,7 @@ ORDERED_STEPS = [
     "money_credit",                  # money+credit cycle calculation
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
     "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
+    "amac_futures",                  # AMAC 期货公司集合资管 → amac_futures_products (+ new private_fund_info)
     "amac_extra",                    # AMAC managers / personnel / executive details → amac_* tables
     "sync_amac_fund_metadata",       # 备案日期 / 公司管理规模 → basicinfo_bfl_track
     "pe_industry_stats",             # 私募行业 dashboard aggregates from amac_* tables
@@ -5196,6 +5251,7 @@ def main():
         "money_credit":                    lambda: step_money_credit(conn),
         "email_nav_parse":                 lambda: step_email_nav_parse(),
         "amac_private_funds":              lambda: step_amac_private_funds(force_full=force),
+        "amac_futures":                    lambda: step_amac_futures(force_full=force),
         "amac_extra":                      lambda: step_amac_extra(force_full=force),
         "sync_amac_fund_metadata":         lambda: step_sync_amac_fund_metadata(),
         "pe_industry_stats":               lambda: step_pe_industry_stats(),

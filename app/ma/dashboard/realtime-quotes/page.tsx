@@ -35,6 +35,7 @@ import {
   type CtpTick,
   contractsForProduct,
   mergeCandleSeries,
+  mergeQuoteTicks,
   pickMostActiveContract,
 } from "@/lib/client/ctp-market"
 import { isCffexProduct, isCffexSession } from "@/lib/client/market-hours"
@@ -119,12 +120,8 @@ export default function RealtimeQuotesPage() {
         const prevLast = prev.last != null && prev.last > 0 ? prev.last : null
         const cffexClosed = isCffexProduct(key) && !isCffexSession()
         next[key] = {
-          ...prev,
-          ...tick,
-          symbol: key,
+          ...mergeQuoteTicks(prev, { ...tick, symbol: key }),
           last: cffexClosed ? prevLast ?? incomingLast : incomingLast ?? prevLast,
-          pre_settlement: tick.pre_settlement ?? prev.pre_settlement,
-          pre_close: tick.pre_close ?? prev.pre_close,
         }
       }
     }

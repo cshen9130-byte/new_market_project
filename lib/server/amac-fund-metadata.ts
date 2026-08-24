@@ -37,7 +37,17 @@ export async function lookupAmacMandatorName(beianHao: string): Promise<string |
        LIMIT 1`,
       [code, base],
     )
-    return rows[0]?.mandator_name ?? null
+    if (rows[0]) return rows[0].mandator_name
+
+    const futures = await query<{ mandator_name: string | null }>(
+      `SELECT NULLIF(BTRIM(mandator_name), '') AS mandator_name
+       FROM amac_futures_products
+       WHERE UPPER(fund_no) IN (UPPER($1), UPPER($2))
+       ORDER BY CASE WHEN UPPER(fund_no) = UPPER($1) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [code, base],
+    )
+    return futures[0]?.mandator_name ?? null
   } catch {
     // amac tables may not exist in some environments
     return null
@@ -328,6 +338,35 @@ export async function lookupAmacFundMetadata(
         put_on_record_date: fmtDate(row.put_on_record_date),
         mgmt_scale: row.mgmt_scale?.trim() || null,
         registration_no: row.registration_no?.trim() || null,
+      }
+    }
+
+    const futuresRows = await query<{
+      manager_name: string | null
+      mandator_name: string | null
+      establish_date: string | null
+      put_on_record_date: string | null
+    }>(
+      `SELECT
+         manager_name,
+         NULLIF(BTRIM(mandator_name), '') AS mandator_name,
+         establish_date::text AS establish_date,
+         put_on_record_date::text AS put_on_record_date
+       FROM amac_futures_products
+       WHERE UPPER(fund_no) IN (UPPER($1), UPPER($2))
+       ORDER BY CASE WHEN UPPER(fund_no) = UPPER($1) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [code, base],
+    )
+    if (futuresRows[0]) {
+      const row = futuresRows[0]
+      return {
+        manager_name: row.manager_name?.trim() || null,
+        mandator_name: row.mandator_name?.trim() || null,
+        establish_date: fmtDate(row.establish_date),
+        put_on_record_date: fmtDate(row.put_on_record_date),
+        mgmt_scale: null,
+        registration_no: null,
       }
     }
   } catch {

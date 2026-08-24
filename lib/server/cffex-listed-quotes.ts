@@ -2,6 +2,7 @@ import { cffexQuoteSymbolsToFetch } from "@/lib/client/cffex-expiry"
 import type { CtpTick } from "@/lib/client/ctp-market"
 import { getCffexKline } from "@/lib/server/cffex-kline"
 import { sinaGet } from "@/lib/server/sina-fetch"
+import { parseSinaFuturesHq } from "@/lib/server/sina-futures-hq"
 
 const EM_UT = "b2884a393a59ad64002292a3e90d46a5"
 const EM_UA =
@@ -29,35 +30,7 @@ function ymdFromUnix(unix: number) {
 }
 
 function parseHq(text: string) {
-  const quotes = new Map<string, CtpTick>()
-  const re = /var hq_str_nf_([A-Z0-9]+)="([^"]*)";/gi
-  let match: RegExpExecArray | null
-  while ((match = re.exec(text))) {
-    if (!match[2].trim()) continue
-    const symbol = match[1].toUpperCase()
-    const parts = match[2].split(",")
-    const dateMatch = match[2].match(/(\d{4}-\d{2}-\d{2}),(\d{2}:\d{2}:\d{2})/)
-    const last = num(parts[3])
-    const preClose = num(parts[14])
-    if (last == null && preClose == null) continue
-    quotes.set(symbol, {
-      symbol,
-      last,
-      bid: num(parts[16]),
-      ask: num(parts[26]),
-      volume: num(parts[4]),
-      open_interest: num(parts[6]),
-      pre_settlement: num(parts[13]),
-      pre_close: preClose,
-      open: num(parts[0]),
-      high: num(parts[1]),
-      low: num(parts[2]),
-      update_time: dateMatch?.[2] ?? null,
-      update_millis: 0,
-      trade_date: dateMatch?.[1] ?? null,
-    })
-  }
-  return quotes
+  return parseSinaFuturesHq(text)
 }
 
 async function fetchHq(symbols: string[], referer: string) {

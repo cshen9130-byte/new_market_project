@@ -93,8 +93,9 @@ type Props = {
   interval: TimeframeId
   candles: CtpCandle[]
   marks?: ChartOrderMark[]
-  activeTool: string
-  onTool: (id: string) => void
+  compact?: boolean
+  activeTool?: string
+  onTool?: (id: string) => void
 }
 
 function registerOrderOverlay(registerOverlay: (overlay: Record<string, unknown>) => void) {
@@ -176,7 +177,7 @@ function barFingerprint(bar: CtpCandle) {
   return `${bar.time}:${bar.open}:${bar.high}:${bar.low}:${bar.close}:${bar.volume}`
 }
 
-export function KlineProChart({ symbol, interval, candles, marks, activeTool, onTool }: Props) {
+export function KlineProChart({ symbol, interval, candles, marks, compact, activeTool = "cross", onTool }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<Chart | null>(null)
   const candlesRef = useRef(candles)
@@ -242,9 +243,9 @@ export function KlineProChart({ symbol, interval, candles, marks, activeTool, on
       chart.setSymbol({ ticker: symbolRef.current, pricePrecision: pricePrecisionOf(symbolRef.current), volumePrecision: 0 })
       appliedSymbolRef.current = symbolRef.current
       appliedIntervalRef.current = intervalRef.current
-      chart.createIndicator({ name: "MA", calcParams: [5, 10, 20] }, true)
+      chart.createIndicator({ name: "MA", calcParams: compact ? [5, 20] : [5, 10, 20] }, true)
       chart.createIndicator("VOL")
-      chart.createIndicator("MACD")
+      if (!compact) chart.createIndicator("MACD")
       applyOrderMarks(chart, marksRef.current, candlesRef.current, intervalRef.current)
       ro = new ResizeObserver(() => chart?.resize())
       ro.observe(hostRef.current)
@@ -317,37 +318,39 @@ export function KlineProChart({ symbol, interval, candles, marks, activeTool, on
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="flex w-11 shrink-0 flex-col gap-0.5 border-r border-[#2a2e39] bg-[#1e222d] py-1">
-        {TOOLS.map((tool) => (
+      {compact ? null : (
+        <div className="flex w-11 shrink-0 flex-col gap-0.5 border-r border-[#2a2e39] bg-[#1e222d] py-1">
+          {TOOLS.map((tool) => (
+            <button
+              key={tool.id}
+              type="button"
+              title={tool.label}
+              onClick={() => {
+                onTool?.(tool.id)
+                const chart = chartRef.current
+                if (tool.overlay && chart) chart.createOverlay({ name: tool.overlay, groupId: DRAW_GROUP })
+              }}
+              className={cn(
+                "px-0.5 py-1.5 text-[10px] leading-tight text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white",
+                activeTool === tool.id && "bg-[#2a2e39] text-white",
+              )}
+            >
+              {tool.label}
+            </button>
+          ))}
           <button
-            key={tool.id}
             type="button"
-            title={tool.label}
+            title="清除画线"
             onClick={() => {
-              onTool(tool.id)
-              const chart = chartRef.current
-              if (tool.overlay && chart) chart.createOverlay({ name: tool.overlay, groupId: DRAW_GROUP })
+              chartRef.current?.removeOverlay({ groupId: DRAW_GROUP })
+              onTool?.("cross")
             }}
-            className={cn(
-              "px-0.5 py-1.5 text-[10px] leading-tight text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white",
-              activeTool === tool.id && "bg-[#2a2e39] text-white",
-            )}
+            className="mt-auto px-0.5 py-1.5 text-[10px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
           >
-            {tool.label}
+            清除
           </button>
-        ))}
-        <button
-          type="button"
-          title="清除画线"
-          onClick={() => {
-            chartRef.current?.removeOverlay({ groupId: DRAW_GROUP })
-            onTool("cross")
-          }}
-          className="mt-auto px-0.5 py-1.5 text-[10px] text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white"
-        >
-          清除
-        </button>
-      </div>
+        </div>
+      )}
       <div ref={hostRef} className="min-h-0 min-w-0 flex-1" />
     </div>
   )

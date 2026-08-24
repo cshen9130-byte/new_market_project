@@ -75,8 +75,9 @@ function pct(n: number): string {
 }
 
 function pnlColor(n: number): string {
-  if (n > 0) return "#15803d"
-  if (n < 0) return "#b91c1c"
+  // China market convention: red = gain, green = loss
+  if (n > 0) return "#b91c1c"
+  if (n < 0) return "#15803d"
   return "#334155"
 }
 

@@ -237,11 +237,16 @@ def _make_spi(mdapi, client: MarketClient):
                     "ask_volume": int(getattr(tick, "AskVolume1", 0) or 0),
                     "volume": int(getattr(tick, "Volume", 0) or 0),
                     "open_interest": float(getattr(tick, "OpenInterest", 0) or 0),
+                    "pre_open_interest": float(getattr(tick, "PreOpenInterest", 0) or 0),
                     "pre_close": _opt_price(getattr(tick, "PreClosePrice", 0)),
                     "pre_settlement": _opt_price(getattr(tick, "PreSettlementPrice", 0)),
+                    "average": _opt_price(getattr(tick, "AveragePrice", 0)),
+                    "turnover": float(getattr(tick, "Turnover", 0) or 0),
                     "open": _opt_price(getattr(tick, "OpenPrice", 0)),
                     "high": _opt_price(getattr(tick, "HighestPrice", 0)),
                     "low": _opt_price(getattr(tick, "LowestPrice", 0)),
+                    "bids": _book_side(tick, "Bid"),
+                    "asks": _book_side(tick, "Ask"),
                     "action_day": _ctp_text(getattr(tick, "ActionDay", "")),
                     "trading_day": _ctp_text(getattr(tick, "TradingDay", "")),
                     "update_time": _ctp_text(getattr(tick, "UpdateTime", "")),
@@ -250,6 +255,43 @@ def _make_spi(mdapi, client: MarketClient):
             )
 
     return MdSpi()
+
+
+def _tick_attr(tick: Any, *names: str) -> Any:
+    for name in names:
+        if not hasattr(tick, name):
+            continue
+        value = getattr(tick, name)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        return value
+    return None
+
+
+def _book_side(tick: Any, prefix: str) -> list[dict[str, float | int | None]]:
+    rows: list[dict[str, float | int | None]] = []
+    seq_price = _tick_attr(tick, f"{prefix}Price", f"{prefix.lower()}_price")
+    seq_vol = _tick_attr(tick, f"{prefix}Volume", f"{prefix.lower()}_volume")
+    for i in range(1, 6):
+        price = _opt_price(
+            _tick_attr(tick, f"{prefix}Price{i}", f"{prefix}Price_{i}", f"{prefix.lower()}Price{i}")
+        )
+        if price is None and isinstance(seq_price, (list, tuple)) and len(seq_price) >= i:
+            price = _opt_price(seq_price[i - 1])
+        raw_vol = _tick_attr(tick, f"{prefix}Volume{i}", f"{prefix}Volume_{i}", f"{prefix.lower()}Volume{i}")
+        if raw_vol is None and isinstance(seq_vol, (list, tuple)) and len(seq_vol) >= i:
+            raw_vol = seq_vol[i - 1]
+        try:
+            volume = int(raw_vol or 0)
+        except (TypeError, ValueError):
+            volume = 0
+        if price is None and volume <= 0:
+            continue
+        rows.append({"price": price, "volume": volume})
+    return rows
 
 
 def _opt_price(value: Any) -> float | None:

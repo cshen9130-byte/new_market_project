@@ -139,6 +139,10 @@ async function _runEnsure(): Promise<void> {
  *
  * @returns Number of rows inserted or updated.
  */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err != null && (err as { code?: string }).code === "23505"
+}
+
 export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<number> {
   if (records.length === 0) return 0
   await ensureEmailNavTable()
@@ -146,6 +150,7 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
   // Custody 净值表 often forward-fills Fri onto Sat/Sun — never persist those as NAV dates.
   const { isChinaTradingDay } = await import("@/lib/server/china-trading-calendar")
 
+  let droppedLegacyUnique = false
   let count = 0
   for (const r of records) {
     const navDate = String(r.navDate ?? "").slice(0, 10)
@@ -157,8 +162,22 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
         r.fundName,
         r.subject,
       ) ?? ""
-    await query(
-      `INSERT INTO ops_email_nav_records
+    const params = [
+      r.crawlEmailAccount,
+      r.emailUid,
+      r.sentAt,
+      r.subject,
+      r.senderEmail,
+      navDate,
+      r.nav,
+      r.cumulativeNav,
+      r.adjustedNav,
+      productCode,
+      r.fundName,
+      r.source,
+      r.attachmentFilename ?? "",
+    ]
+    const insertSql = `INSERT INTO ops_email_nav_records
          (crawl_email_account, email_uid, sent_at, subject, sender_email,
           nav_date, nav, cumulative_nav, adjusted_nav, product_code, fund_name, source, attachment_filename)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
@@ -170,24 +189,20 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
          cumulative_nav = EXCLUDED.cumulative_nav,
          adjusted_nav   = EXCLUDED.adjusted_nav,
          fund_name      = EXCLUDED.fund_name,
-         source         = EXCLUDED.source`,
-      [
-        r.crawlEmailAccount,
-        r.emailUid,
-        r.sentAt,
-        r.subject,
-        r.senderEmail,
-        navDate,
-        r.nav,
-        r.cumulativeNav,
-        r.adjustedNav,
-        productCode,
-        r.fundName,
-        r.source,
-        r.attachmentFilename ?? "",
-      ],
-    )
-    count++
+         source         = EXCLUDED.source`
+    try {
+      await query(insertSql, params)
+      count++
+    } catch (err) {
+      if (!isUniqueViolation(err) || droppedLegacyUnique) throw err
+      // Leftover 4-column unique key still rejects same-email multi-product rows.
+      await query(
+        `ALTER TABLE ops_email_nav_records DROP CONSTRAINT IF EXISTS uq_email_nav_record_date`,
+      ).catch(() => {})
+      droppedLegacyUnique = true
+      await query(insertSql, params)
+      count++
+    }
   }
   return count
 }

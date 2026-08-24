@@ -1,5 +1,6 @@
 import { allListedCffexIndexContracts } from "@/lib/client/cffex-expiry"
 import { INDEX_FUTURES, type CtpCandle, type CtpTick } from "@/lib/client/ctp-market"
+import { parseSinaFuturesHq } from "@/lib/server/sina-futures-hq"
 
 const SINA_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -52,35 +53,7 @@ async function sinaGet(url: string, referer: string) {
 }
 
 function parseHq(text: string) {
-  const quotes = new Map<
-    string,
-    CtpTick & { open: number | null; high: number | null; low: number | null; date: string | null }
-  >()
-  const re = /var hq_str_nf_([A-Z0-9]+)="([^"]*)";/gi
-  let match: RegExpExecArray | null
-  while ((match = re.exec(text))) {
-    if (!match[2].trim()) continue
-    const symbol = match[1].toUpperCase()
-    const parts = match[2].split(",")
-    const dateMatch = match[2].match(/(\d{4}-\d{2}-\d{2}),(\d{2}:\d{2}:\d{2})/)
-    quotes.set(symbol, {
-      symbol,
-      open: num(parts[0]),
-      high: num(parts[1]),
-      low: num(parts[2]),
-      last: num(parts[3]),
-      volume: num(parts[4]),
-      open_interest: num(parts[6]),
-      pre_settlement: num(parts[13]),
-      pre_close: num(parts[14]),
-      bid: num(parts[16]),
-      ask: num(parts[26]),
-      update_time: dateMatch?.[2] ?? null,
-      update_millis: 0,
-      date: dateMatch?.[1] ?? null,
-    })
-  }
-  return quotes
+  return parseSinaFuturesHq(text)
 }
 
 function candlesFromMinLine(rows: string[][], fallbackDate: string) {
@@ -145,24 +118,14 @@ async function fetchProduct(product: ProductCode, name: string, quotes: ReturnTy
     `https://finance.sina.com.cn/futures/quotes/${symbol}.shtml`,
   )
   const rows = parseJsonp(text)
-  const date = quote?.date || rows[0]?.[6] || new Date().toISOString().slice(0, 10)
+  const date = quote?.trade_date || rows[0]?.[6] || new Date().toISOString().slice(0, 10)
   let candles = candlesFromMinLine(rows, date)
   const tick: CtpTick = quote
     ? {
+        ...quote,
         symbol,
-        last: quote.last,
-        bid: quote.bid,
-        ask: quote.ask,
-        volume: quote.volume,
-        open_interest: quote.open_interest,
-        pre_close: quote.pre_close,
-        pre_settlement: quote.pre_settlement,
-        open: quote.open,
-        high: quote.high,
-        low: quote.low,
-        update_time: quote.update_time,
-        update_millis: 0,
-        trade_date: quote.date,
+        update_millis: quote.update_millis ?? 0,
+        trade_date: quote.trade_date,
       }
     : {
         symbol,
@@ -176,26 +139,15 @@ async function fetchProduct(product: ProductCode, name: string, quotes: ReturnTy
         update_time: null,
         update_millis: 0,
       }
-  if (quote) candles = mergeLiveBar(candles, tick, quote.date)
+  if (quote) candles = mergeLiveBar(candles, tick, quote.trade_date ?? null)
   return { product, name, symbol, candles, quote: tick }
 }
 
-function toTick(quote: CtpTick & { date?: string | null }): CtpTick {
+function toTick(quote: CtpTick): CtpTick {
   return {
-    symbol: quote.symbol,
-    last: quote.last,
-    bid: quote.bid,
-    ask: quote.ask,
-    volume: quote.volume,
-    open_interest: quote.open_interest,
-    pre_close: quote.pre_close,
-    pre_settlement: quote.pre_settlement,
-    open: quote.open,
-    high: quote.high,
-    low: quote.low,
-    update_time: quote.update_time,
-    update_millis: 0,
-    trade_date: quote.date ?? quote.trade_date ?? null,
+    ...quote,
+    update_millis: quote.update_millis ?? 0,
+    trade_date: quote.trade_date ?? null,
   }
 }
 

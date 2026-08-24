@@ -1,3 +1,5 @@
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
+
 /** Max stored note HTML length (includes markup, not just visible text). */
 export const MAX_INVESTMENT_NOTE_CONTENT_CHARS = 10_000_000
 export const MAX_INVESTMENT_NOTE_TITLE_CHARS = 200
@@ -89,10 +91,14 @@ export const ASSOCIATION_CATEGORY_SHORT: Record<string, string> = {
 }
 
 export function associationDisplayLabel(item: InvestmentNoteAssociation): string {
-  // 私募 is the default product type on this page; skip the redundant suffix.
-  if (item.category === "私募基金") return item.name
+  const name =
+    item.category === "私募基金"
+      ? normalizeFundDisplayName(item.name) || item.name
+      : item.name
+  // 私募 is the default product type on this page; skip the redundant category suffix.
+  if (item.category === "私募基金") return name
   const short = ASSOCIATION_CATEGORY_SHORT[item.category] ?? item.category
-  return `${item.name}(${short})`
+  return `${name}(${short})`
 }
 
 export function associationKey(item: InvestmentNoteAssociation): string {

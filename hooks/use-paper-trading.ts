@@ -17,6 +17,7 @@ import {
   markPrice,
   nid,
   openPosition,
+  positionMargin,
   positionPnl,
   savePaperState,
   type PaperSide,
@@ -344,6 +345,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
           diff,
           pct,
           pnl: position ? positionPnl(position, mark) : null,
+          margin: position ? positionMargin(position, mark) : null,
         }
       })
   }, [selectedPortfolio?.id, state.products, state.positions, quotes, candles, extraMarks])
@@ -358,6 +360,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
             position,
             mark,
             pnl: positionPnl(position, mark),
+            margin: positionMargin(position, mark),
             strategy: state.strategies.find((s) => s.id === position.strategyId) || null,
           }
         }),
@@ -367,18 +370,25 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   const summary = useMemo(() => {
     let unrealized = 0
     let realized = 0
+    let marginOccupied = 0
     for (const pos of state.positions) {
       if (selectedPortfolio && pos.portfolioId !== selectedPortfolio.id) continue
       const mark = markPrice(pos.symbol, quotes, candles, extraMarks)
       const pnl = positionPnl(pos, mark)
-      if (pnl == null) continue
-      if (pos.status === "open") unrealized += pnl
-      else realized += pnl
+      if (pnl != null) {
+        if (pos.status === "open") unrealized += pnl
+        else realized += pnl
+      }
+      if (pos.status === "open") {
+        const margin = positionMargin(pos, mark)
+        if (margin != null) marginOccupied += margin
+      }
     }
     return {
       unrealized,
       realized,
       total: unrealized + realized,
+      marginOccupied,
       openCount: openPositions.length,
       productCount: selectedPortfolio ? state.products.filter((p) => p.portfolioId === selectedPortfolio.id).length : 0,
     }
