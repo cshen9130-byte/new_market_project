@@ -53,15 +53,26 @@ export function InvestmentNoteAssociationDialog({
 
   const abortRef = useRef<AbortController | null>(null)
 
+  /**
+   * Keep a ref that always holds the latest initialAssociations without adding it
+   * as a dep on the open-effect. This prevents the effect from re-running (and
+   * wiping the search keyword) whenever the parent re-renders with a fresh array
+   * reference while the dialog is already open.
+   */
+  const initialAssociationsRef = useRef(initialAssociations)
+  useEffect(() => { initialAssociationsRef.current = initialAssociations })
+
+  // Reset dialog state only when it transitions from closed → open.
   useEffect(() => {
     if (!open) return
     setCategory("私募基金")
     setKeyword("")
     setSearchKeyword("")
-    setSelected(initialAssociations.map((item) => ({ ...item })))
+    setSelected(initialAssociationsRef.current.map((item) => ({ ...item })))
     setShareClassMap({})
     setExpandedParents(new Set())
-  }, [open, initialAssociations])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const loadFunds = useCallback(
     async (q: string) => {

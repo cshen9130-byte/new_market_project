@@ -22,6 +22,7 @@ type ValuationNavRow = {
   sent_at: string | null
   subject: string | null
   sender_email: string | null
+  receiver_email?: string | null
   attachment_filename: string | null
   product_code: string | null
   fund_name: string | null
@@ -119,6 +120,7 @@ function valuationRowToNavInsert(row: ValuationNavRow, unitNav: number): EmailNa
     sentAt: row.sent_at,
     subject: row.subject ?? "",
     senderEmail: row.sender_email ?? "",
+    receiverEmail: row.receiver_email ?? "",
     attachmentFilename: row.attachment_filename ?? "",
     navDate: row.valuation_date.slice(0, 10),
     nav: unitNav,

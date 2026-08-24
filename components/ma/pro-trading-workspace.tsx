@@ -8,6 +8,7 @@ import { IndexBasisRateChart } from "@/components/ma/index-basis-rate-chart"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
 import { KlineProChart } from "@/components/ma/kline-pro-chart"
 import {
+  PaperAllWeatherOrderDialog,
   PaperPortfolioPanel,
   PaperPositionsBar,
   PaperStrategyBuilder,
@@ -116,7 +117,12 @@ export function ProTradingWorkspace({
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key !== "Escape") return
+      if (paper.awConfirm) {
+        paper.dismissAwConfirm()
+        return
+      }
+      onClose()
     }
     window.addEventListener("keydown", onKey)
     const prev = document.body.style.overflow
@@ -125,7 +131,7 @@ export function ProTradingWorkspace({
       window.removeEventListener("keydown", onKey)
       document.body.style.overflow = prev
     }
-  }, [open, onClose])
+  }, [open, onClose, paper.awConfirm, paper.dismissAwConfirm])
 
   const product = productOfSymbol(symbol)
   const quote = quotes[symbol]
@@ -386,6 +392,7 @@ export function ProTradingWorkspace({
           </ResizablePanelGroup>
         )}
       </div>
+      <PaperAllWeatherOrderDialog paper={paper} />
     </div>,
     document.body,
   )

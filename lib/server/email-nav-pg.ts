@@ -12,6 +12,8 @@ export type EmailNavInsert = ExtractedNavData & {
   sentAt: string | null
   subject: string
   senderEmail: string
+  /** Envelope To/Cc/Bcc, comma-separated and lowercased. */
+  receiverEmail?: string
   attachmentFilename?: string
 }
 
@@ -115,6 +117,7 @@ async function _runEnsure(): Promise<void> {
     await query(
       `ALTER TABLE ops_email_nav_records DROP CONSTRAINT IF EXISTS uq_email_nav_record_date`,
     ).catch(() => {})
+    await ensureReceiverEmailColumn()
     tableEnsured = true
     return
   }
@@ -126,6 +129,7 @@ async function _runEnsure(): Promise<void> {
   try {
     await query(CREATE_TABLE_SQL)
     await query(MIGRATE_TABLE_SQL)
+    await ensureReceiverEmailColumn()
     tableEnsured = true
   } catch (err) {
     console.error("[ensureEmailNavTable] DDL failed:", err)
@@ -141,6 +145,26 @@ async function _runEnsure(): Promise<void> {
  */
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err != null && (err as { code?: string }).code === "23505"
+}
+
+async function ensureReceiverEmailColumn(): Promise<void> {
+  const cols = await query<{ exists: boolean }>(`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'ops_email_nav_records'
+        AND column_name = 'receiver_email'
+    ) AS exists
+  `)
+  if (cols[0]?.exists) return
+  await query(
+    `ALTER TABLE ops_email_nav_records
+       ADD COLUMN IF NOT EXISTS receiver_email TEXT NOT NULL DEFAULT ''`,
+  )
+}
+
+function receiverEmailValue(r: EmailNavInsert): string {
+  return String(r.receiverEmail ?? "").trim().toLowerCase()
 }
 
 export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<number> {
@@ -168,6 +192,7 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
       r.sentAt,
       r.subject,
       r.senderEmail,
+      receiverEmailValue(r),
       navDate,
       r.nav,
       r.cumulativeNav,
@@ -178,18 +203,19 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
       r.attachmentFilename ?? "",
     ]
     const insertSql = `INSERT INTO ops_email_nav_records
-         (crawl_email_account, email_uid, sent_at, subject, sender_email,
+         (crawl_email_account, email_uid, sent_at, subject, sender_email, receiver_email,
           nav_date, nav, cumulative_nav, adjusted_nav, product_code, fund_name, source, attachment_filename)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        ON CONFLICT (crawl_email_account, email_uid, nav_date, attachment_filename, product_code) DO UPDATE SET
-         sent_at        = EXCLUDED.sent_at,
-         subject        = EXCLUDED.subject,
-         sender_email   = EXCLUDED.sender_email,
-         nav            = EXCLUDED.nav,
-         cumulative_nav = EXCLUDED.cumulative_nav,
-         adjusted_nav   = EXCLUDED.adjusted_nav,
-         fund_name      = EXCLUDED.fund_name,
-         source         = EXCLUDED.source`
+         sent_at         = EXCLUDED.sent_at,
+         subject         = EXCLUDED.subject,
+         sender_email    = EXCLUDED.sender_email,
+         receiver_email  = COALESCE(NULLIF(EXCLUDED.receiver_email, ''), ops_email_nav_records.receiver_email),
+         nav             = EXCLUDED.nav,
+         cumulative_nav  = EXCLUDED.cumulative_nav,
+         adjusted_nav    = EXCLUDED.adjusted_nav,
+         fund_name       = EXCLUDED.fund_name,
+         source          = EXCLUDED.source`
     try {
       await query(insertSql, params)
       count++

@@ -21,6 +21,10 @@ export type AllWeatherEmailConfig = {
   enabled: boolean
   lastSentDate: string | null
   lastSentAt: string | null
+  /** Calendar day (YYYYMMDD, Asia/Shanghai) of the last *scheduled* send. */
+  lastScheduledDate: string | null
+  lastError: string | null
+  lastErrorAt: string | null
 }
 
 const DEFAULT_CONFIG: AllWeatherEmailConfig = {
@@ -30,6 +34,39 @@ const DEFAULT_CONFIG: AllWeatherEmailConfig = {
   enabled: false,
   lastSentDate: null,
   lastSentAt: null,
+  lastScheduledDate: null,
+  lastError: null,
+  lastErrorAt: null,
+}
+
+function shanghaiParts(now = new Date()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(now)
+      .filter((p) => p.type !== "literal")
+      .map((p) => [p.type, p.value]),
+  )
+  return {
+    dateKey: `${parts.year}${parts.month}${parts.day}`,
+    hhmm: `${String(parts.hour ?? "").padStart(2, "0")}:${String(parts.minute ?? "").padStart(2, "0")}`,
+  }
+}
+
+/** True when auto-send should fire: enabled, past today's HH:MM (Beijing), and no scheduled send yet today. */
+export function isScheduledSendDue(config: AllWeatherEmailConfig = readEmailConfig(), now = new Date()): boolean {
+  if (!config.enabled) return false
+  if (!/^\d{2}:\d{2}$/.test(config.scheduleTime || "")) return false
+  const { dateKey, hhmm } = shanghaiParts(now)
+  if (config.lastScheduledDate === dateKey) return false
+  return hhmm >= config.scheduleTime
 }
 
 function ensureDir() {
@@ -351,22 +388,31 @@ export function buildTradeDetailAttachments(overview: OverviewPayload): Array<{
 }
 
 function resolveSmtp(config: AllWeatherEmailConfig) {
-  if (config.sender?.host && config.sender.user && config.sender.pass) {
-    return config.sender
-  }
-  const host = process.env.SMTP_HOST ?? ""
-  const user = process.env.SMTP_USER ?? ""
-  const pass = process.env.SMTP_PASS ?? ""
-  if (!host || !user || !pass) {
-    throw new Error("请先配置发件邮箱，或在服务器环境变量中设置 SMTP_HOST / SMTP_USER / SMTP_PASS。")
-  }
+  const raw = (() => {
+    if (config.sender?.host && config.sender.user && config.sender.pass) {
+      return config.sender
+    }
+    const host = process.env.SMTP_HOST ?? ""
+    const user = process.env.SMTP_USER ?? ""
+    const pass = process.env.SMTP_PASS ?? ""
+    if (!host || !user || !pass) {
+      throw new Error("请先配置发件邮箱，或在服务器环境变量中设置 SMTP_HOST / SMTP_USER / SMTP_PASS。")
+    }
+    return {
+      name: "env",
+      host,
+      port: Number(process.env.SMTP_PORT ?? 465),
+      user,
+      pass,
+      secure: process.env.SMTP_SECURE !== "false",
+    }
+  })()
+  const port = Number(raw.port || 465)
   return {
-    name: "env",
-    host,
-    port: Number(process.env.SMTP_PORT ?? 465),
-    user,
-    pass,
-    secure: process.env.SMTP_SECURE !== "false",
+    ...raw,
+    port,
+    // Port 465 is implicit TLS; STARTTLS (secure:false) will hang or fail.
+    secure: port === 465 ? true : Boolean(raw.secure),
   }
 }
 
@@ -379,6 +425,7 @@ export type ExtraEmailAttachment = {
 export async function sendAllWeatherEmail(opts?: {
   overview?: OverviewPayload
   extraAttachments?: ExtraEmailAttachment[]
+  source?: "manual" | "scheduled"
 }): Promise<{ messageId: string }> {
   const config = readEmailConfig()
   if (config.receivers.length === 0) throw new Error("请先填写收件邮箱。")
@@ -404,10 +451,14 @@ export async function sendAllWeatherEmail(opts?: {
     attachments: [...buildTradeDetailAttachments(overview), ...extras],
   })
   const now = new Date()
+  const dateKey = shanghaiParts(now).dateKey
   writeEmailConfig({
     ...config,
-    lastSentDate: `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`,
+    lastSentDate: dateKey,
     lastSentAt: now.toISOString(),
+    lastScheduledDate: opts?.source === "scheduled" ? dateKey : config.lastScheduledDate,
+    lastError: null,
+    lastErrorAt: null,
   })
   return { messageId: String(info.messageId ?? "") }
 }
@@ -425,15 +476,16 @@ export async function testSenderConnection(config = readEmailConfig()): Promise<
 
 export async function runDueAllWeatherEmails(): Promise<void> {
   const config = readEmailConfig()
-  if (!config.enabled) return
-  const now = new Date()
-  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`
-  if (config.scheduleTime !== hhmm) return
-  const today = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
-  if (config.lastSentDate === today) return
+  if (!isScheduledSendDue(config)) return
   try {
-    await sendAllWeatherEmail()
+    await sendAllWeatherEmail({ source: "scheduled" })
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
     console.error("[all-weather-email] scheduled send failed:", e)
+    writeEmailConfig({
+      ...readEmailConfig(),
+      lastError: message,
+      lastErrorAt: new Date().toISOString(),
+    })
   }
 }

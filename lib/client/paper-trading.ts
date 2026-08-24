@@ -21,11 +21,13 @@ export type PaperSide = "long" | "short"
 export type PaperEntryMode = "market" | "breakout" | "ma_cross"
 export type PaperStrategyStatus = "armed" | "filled" | "stopped" | "disabled"
 export type PaperPositionStatus = "open" | "closed"
+export type PaperAccountKind = "manual" | "strategy" | "all-weather"
 
 export type PaperPortfolio = {
   id: string
   name: string
   createdAt: number
+  kind?: PaperAccountKind
 }
 
 export type PaperProduct = {
@@ -53,7 +55,7 @@ export type PaperPosition = {
   multiplier?: number
   sleeve?: string
   label?: string
-  source?: "manual" | "all-weather"
+  source?: "manual" | "strategy" | "all-weather"
 }
 
 export type PaperStrategy = {
@@ -123,9 +125,51 @@ export function nid(prefix = "") {
   return `${prefix}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+export function accountKind(portfolio: PaperPortfolio | null | undefined): PaperAccountKind {
+  if (!portfolio) return "manual"
+  if (portfolio.id === ALL_WEATHER_PORTFOLIO_ID || portfolio.kind === "all-weather") return "all-weather"
+  return portfolio.kind === "strategy" ? "strategy" : "manual"
+}
+
+export function accountKindLabel(kind: PaperAccountKind) {
+  if (kind === "all-weather") return "自动"
+  if (kind === "strategy") return "策略"
+  return "手动"
+}
+
+export function isAllWeatherAccount(portfolioId: string | null | undefined) {
+  return portfolioId === ALL_WEATHER_PORTFOLIO_ID
+}
+
+export function allWeatherHoldingsKey(rows: Array<{ contract?: string; symbol?: string; lots: number }>) {
+  return rows
+    .filter((row) => row.lots > 0)
+    .map((row) => `${String(row.contract || row.symbol || "").toUpperCase()}:${row.lots}`)
+    .sort()
+    .join("|")
+}
+
+function migratePortfolio(raw: Partial<PaperPortfolio> & { id?: string; name?: string; createdAt?: number }): PaperPortfolio | null {
+  if (!raw.id) return null
+  const id = String(raw.id)
+  const kind: PaperAccountKind =
+    id === ALL_WEATHER_PORTFOLIO_ID || raw.kind === "all-weather"
+      ? "all-weather"
+      : raw.kind === "strategy"
+        ? "strategy"
+        : "manual"
+  const name =
+    id === ALL_WEATHER_PORTFOLIO_ID
+      ? "全天候策略"
+      : id === "default" && (!raw.name || raw.name === "默认组合")
+        ? "手动账户"
+        : String(raw.name || "模拟账户")
+  return { id, name, createdAt: Number(raw.createdAt) || 0, kind }
+}
+
 export function emptyPaperState(): PaperState {
   return {
-    portfolios: [{ id: "default", name: "默认组合", createdAt: 0 }],
+    portfolios: [{ id: "default", name: "手动账户", kind: "manual", createdAt: 0 }],
     products: [],
     positions: [],
     strategies: [],
@@ -139,7 +183,9 @@ export function loadPaperState(): PaperState {
     if (!raw) return emptyPaperState()
     const parsed = JSON.parse(raw) as Partial<PaperState>
     const state: PaperState = {
-      portfolios: Array.isArray(parsed.portfolios) ? parsed.portfolios : [],
+      portfolios: Array.isArray(parsed.portfolios)
+        ? parsed.portfolios.map((item) => migratePortfolio(item)).filter((item): item is PaperPortfolio => !!item)
+        : [],
       products: Array.isArray(parsed.products) ? parsed.products : [],
       positions: Array.isArray(parsed.positions) ? parsed.positions : [],
       strategies: Array.isArray(parsed.strategies) ? parsed.strategies : [],
@@ -225,6 +271,7 @@ function resolveSleeve(pos: PaperPosition): SleeveKey | null {
 
 export function sleeveLeadPositions(
   rows: Array<{ position: PaperPosition; mark: number | null }>,
+  opts?: { snapshotFallback?: boolean },
 ): Record<SleeveKey, { position: PaperPosition; mark: number | null; notional: number } | null> {
   const out = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, null])) as Record<
     SleeveKey,
@@ -239,10 +286,12 @@ export function sleeveLeadPositions(
     const cur = out[sleeve]
     if (!cur || notional > cur.notional) out[sleeve] = { ...row, notional }
   }
-  for (const sleeve of SLEEVE_KEYS) {
-    if (out[sleeve]) continue
-    const fallback = snapshotSleeveLead(sleeve)
-    if (fallback) out[sleeve] = fallback
+  if (opts?.snapshotFallback) {
+    for (const sleeve of SLEEVE_KEYS) {
+      if (out[sleeve]) continue
+      const fallback = snapshotSleeveLead(sleeve)
+      if (fallback) out[sleeve] = fallback
+    }
   }
   return out
 }
@@ -355,35 +404,100 @@ export function ensureProduct(state: PaperState, portfolioId: string, symbol: st
   return { state: { ...state, products: [...state.products, product] }, product }
 }
 
-export function applyAllWeatherBook(state: PaperState, holdings: AllWeatherHolding[], now = Date.now()): PaperState {
+export function applyAllWeatherBook(
+  state: PaperState,
+  holdings: AllWeatherHolding[],
+  now = Date.now(),
+  marks?: Record<string, number>,
+): PaperState {
   const live = holdings.filter((h) => h.lots > 0)
+  const awAccount: PaperPortfolio = {
+    id: ALL_WEATHER_PORTFOLIO_ID,
+    name: "全天候策略",
+    kind: "all-weather",
+    createdAt: state.portfolios.find((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)?.createdAt || now,
+  }
   const portfolios = state.portfolios.some((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)
-    ? state.portfolios.map((p) => (p.id === ALL_WEATHER_PORTFOLIO_ID ? { ...p, name: "全天候策略" } : p))
-    : [...state.portfolios, { id: ALL_WEATHER_PORTFOLIO_ID, name: "全天候策略", createdAt: now }]
-  const products: PaperProduct[] = live.map((h) => ({
-    id: nid("prd-"),
-    portfolioId: ALL_WEATHER_PORTFOLIO_ID,
-    symbol: h.contract,
-    label: h.label,
-    sleeve: h.sleeve,
-  }))
-  const positions: PaperPosition[] = live.map((h, i) => ({
-    id: nid("pos-"),
-    portfolioId: ALL_WEATHER_PORTFOLIO_ID,
-    productId: products[i].id,
-    strategyId: ALL_WEATHER_STRATEGY_ID,
-    symbol: h.contract,
-    side: "long",
-    lots: h.lots,
-    entryPrice: h.prevPrice > 0 ? h.prevPrice : h.price,
-    entryTime: h.openedAt || now,
-    status: "open",
-    multiplier: h.multiplier,
-    sleeve: h.sleeve,
-    label: h.label,
-    source: "all-weather",
-  }))
+    ? state.portfolios.map((p) => (p.id === ALL_WEATHER_PORTFOLIO_ID ? { ...p, ...awAccount } : p))
+    : [awAccount, ...state.portfolios]
+
+  const oldProducts = state.products.filter((p) => p.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
+  const products: PaperProduct[] = live.map((h) => {
+    const old = oldProducts.find((p) => p.symbol === h.contract)
+    return {
+      id: old?.id || nid("prd-"),
+      portfolioId: ALL_WEATHER_PORTFOLIO_ID,
+      symbol: h.contract,
+      label: h.label,
+      sleeve: h.sleeve,
+    }
+  })
+  const productIdOf = (symbol: string) => products.find((p) => p.symbol === symbol)?.id || nid("prd-")
+
+  const existingOpen = state.positions.filter((p) => p.portfolioId === ALL_WEATHER_PORTFOLIO_ID && p.status === "open")
+  const existingBySymbol = new Map(existingOpen.map((p) => [p.symbol, p]))
+  const liveByContract = new Map(live.map((h) => [h.contract, h]))
+
+  const nextOpen: PaperPosition[] = live.map((h) => {
+    const prev = existingBySymbol.get(h.contract)
+    if (prev) {
+      return {
+        ...prev,
+        productId: productIdOf(h.contract),
+        lots: h.lots,
+        multiplier: h.multiplier,
+        sleeve: h.sleeve,
+        label: h.label,
+        source: "all-weather",
+        strategyId: ALL_WEATHER_STRATEGY_ID,
+      }
+    }
+    return {
+      id: nid("pos-"),
+      portfolioId: ALL_WEATHER_PORTFOLIO_ID,
+      productId: productIdOf(h.contract),
+      strategyId: ALL_WEATHER_STRATEGY_ID,
+      symbol: h.contract,
+      side: "long" as const,
+      lots: h.lots,
+      entryPrice: h.prevPrice > 0 ? h.prevPrice : h.price,
+      entryTime: h.openedAt || now,
+      status: "open" as const,
+      multiplier: h.multiplier,
+      sleeve: h.sleeve,
+      label: h.label,
+      source: "all-weather" as const,
+    }
+  })
+
+  const newlyClosed: PaperPosition[] = existingOpen
+    .filter((prev) => !liveByContract.has(prev.symbol))
+    .map((prev) => {
+      const exit = marks?.[prev.symbol] ?? marks?.[prev.symbol.toUpperCase()] ?? prev.entryPrice
+      return {
+        ...prev,
+        status: "closed" as const,
+        exitPrice: exit,
+        exitTime: now,
+        closeReason: "策略自动平仓",
+      }
+    })
+
+  const history = state.positions.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID || p.status === "closed")
   const focus = live.find((h) => h.asset === "IF") || live.find((h) => h.asset === "IC") || live[0]
+  const opened = live.filter((h) => !existingBySymbol.has(h.contract)).length
+  const closed = newlyClosed.length
+  const resized = live.filter((h) => {
+    const prev = existingBySymbol.get(h.contract)
+    return prev != null && prev.lots !== h.lots
+  }).length
+  const note =
+    opened || closed || resized
+      ? `策略自动执行 · 开${opened} 平${closed} 调${resized}`
+      : live.length
+        ? `策略自动执行 · ${live.length} 个品种`
+        : "无持仓"
+
   const strategy: PaperStrategy = {
     id: ALL_WEATHER_STRATEGY_ID,
     portfolioId: ALL_WEATHER_PORTFOLIO_ID,
@@ -396,12 +510,12 @@ export function applyAllWeatherBook(state: PaperState, holdings: AllWeatherHoldi
     maSlow: 20,
     status: live.length ? "filled" : "disabled",
     createdAt: now,
-    lastNote: live.length ? `已加载 ${live.length} 个品种` : "无持仓",
+    lastNote: note,
   }
   return {
     portfolios,
     products: [...state.products.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID), ...products],
-    positions: [...state.positions.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID), ...positions],
+    positions: [...history, ...newlyClosed, ...nextOpen],
     strategies: [...state.strategies.filter((s) => s.portfolioId !== ALL_WEATHER_PORTFOLIO_ID), strategy],
   }
 }
@@ -442,7 +556,7 @@ export function openPosition(
     multiplier: args.multiplier ?? contractMultiplier(args.symbol),
     sleeve: args.sleeve,
     label: args.label,
-    source: args.source,
+    source: args.source ?? (args.strategyId ? "strategy" : "manual"),
   }
   return {
     state: { ...ensured.state, positions: [...ensured.state.positions, pos] },
@@ -478,6 +592,7 @@ export function evaluatePaperTrading(
   let changed = false
 
   for (const strategy of next.strategies) {
+    if (strategy.id === ALL_WEATHER_STRATEGY_ID) continue
     if (strategy.status !== "armed") continue
     const mark = markPrice(strategy.symbol, quotes, candles, extraMarks)
     if (mark == null) continue
@@ -519,6 +634,7 @@ export function evaluatePaperTrading(
   }
 
   for (const strategy of next.strategies) {
+    if (strategy.id === ALL_WEATHER_STRATEGY_ID) continue
     if (strategy.status !== "filled" || !strategy.positionId) continue
     const pos = next.positions.find((p) => p.id === strategy.positionId && p.status === "open")
     if (!pos) continue

@@ -9,10 +9,12 @@ import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
+  allWeatherHoldingsKey,
   applyAllWeatherBook,
   closePosition,
   emptyPaperState,
   evaluatePaperTrading,
+  isAllWeatherAccount,
   loadPaperState,
   markPrice,
   nid,
@@ -20,10 +22,16 @@ import {
   positionMargin,
   positionPnl,
   savePaperState,
+  type PaperAccountKind,
   type PaperSide,
   type PaperState,
   type PaperStrategyDraft,
 } from "@/lib/client/paper-trading"
+
+export type AwOrderConfirm = {
+  action: string
+  run: () => void
+}
 
 export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record<string, CtpCandle[]>) {
   const [state, setState] = useState<PaperState>(emptyPaperState)
@@ -33,6 +41,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   const [extraMarks, setExtraMarks] = useState<Record<string, number>>({})
   const [awMeta, setAwMeta] = useState<AllWeatherBookMeta | null>(null)
   const [awLoading, setAwLoading] = useState(false)
+  const [awConfirm, setAwConfirm] = useState<AwOrderConfirm | null>(null)
   const prevMarks = useRef<Record<string, number>>({})
   const skipSave = useRef(true)
 
@@ -70,10 +79,19 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     let cancelled = false
     const pull = () =>
       fetchAllWeatherOverview(false)
-        .then(({ marks, meta }) => {
+        .then(({ holdings, marks, meta }) => {
           if (cancelled) return
           setExtraMarks((prev) => mergeClosedMarks(prev, marks))
           setAwMeta(meta)
+          setState((prev) => {
+            if (!prev.portfolios.some((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)) return prev
+            const nextKey = allWeatherHoldingsKey(holdings)
+            const curKey = allWeatherHoldingsKey(
+              prev.positions.filter((p) => p.portfolioId === ALL_WEATHER_PORTFOLIO_ID && p.status === "open"),
+            )
+            if (nextKey === curKey) return prev
+            return applyAllWeatherBook(prev, holdings, Date.now(), marks)
+          })
         })
         .catch(() => {})
     void pull()
@@ -86,14 +104,33 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
 
   const selectedPortfolio = state.portfolios.find((p) => p.id === selectedPortfolioId) || state.portfolios[0] || null
 
-  const createPortfolio = useCallback((name: string) => {
-    const trimmed = name.trim()
-    if (!trimmed) {
-      setError("请输入组合名称")
-      return null
+  const dismissAwConfirm = useCallback(() => setAwConfirm(null), [])
+
+  const confirmAwAction = useCallback(() => {
+    const pending = awConfirm
+    setAwConfirm(null)
+    pending?.run()
+  }, [awConfirm])
+
+  const guardAwOrder = useCallback((portfolioId: string, action: string, run: () => void) => {
+    if (!isAllWeatherAccount(portfolioId)) {
+      run()
+      return
     }
+    setAwConfirm({ action, run })
+  }, [])
+
+  const createPortfolio = useCallback((name: string, kind: Exclude<PaperAccountKind, "all-weather"> = "manual") => {
     const id = nid("pf-")
-    setState((prev) => ({ ...prev, portfolios: [...prev.portfolios, { id, name: trimmed, createdAt: Date.now() }] }))
+    setState((prev) => {
+      const trimmed = name.trim()
+      const count = prev.portfolios.filter((p) => (p.kind || "manual") === kind).length + 1
+      const resolved = trimmed || (kind === "strategy" ? `策略账户 ${count}` : `手动账户 ${count}`)
+      return {
+        ...prev,
+        portfolios: [...prev.portfolios, { id, name: resolved, kind, createdAt: Date.now() }],
+      }
+    })
     setSelectedPortfolioId(id)
     setError(null)
     return id
@@ -101,7 +138,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
 
   const deletePortfolio = useCallback((id: string) => {
     if (id === ALL_WEATHER_PORTFOLIO_ID) {
-      setError("全天候组合请用同步覆盖，不能直接删除")
+      setError("全天候账户由策略自动执行，不能删除")
       return
     }
     setState((prev) => {
@@ -135,46 +172,61 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   const openManual = useCallback(
     (portfolioId: string, symbol: string, side: PaperSide, lots: number, entryPrice: number) => {
       let err: string | null = null
-      setState((prev) => {
-        const opened = openPosition(prev, { portfolioId, symbol, side, lots, entryPrice })
-        err = opened.error
-        return opened.state
-      })
-      setError(err)
+      const execute = () => {
+        setState((prev) => {
+          const opened = openPosition(prev, { portfolioId, symbol, side, lots, entryPrice, source: "manual" })
+          err = opened.error
+          return opened.state
+        })
+        setError(err)
+      }
+      guardAwOrder(portfolioId, "开仓", execute)
       return err
     },
-    [],
+    [guardAwOrder],
   )
 
   const flatten = useCallback(
     (positionId: string) => {
       const pos = state.positions.find((p) => p.id === positionId)
       if (!pos) return
-      const mark = markPrice(pos.symbol, quotes, candles, extraMarks)
-      if (mark == null) {
-        setError("暂无行情，无法平仓")
-        return
+      const execute = () => {
+        const current = state.positions.find((p) => p.id === positionId)
+        const mark = markPrice(current?.symbol || pos.symbol, quotes, candles, extraMarks)
+        if (mark == null) {
+          setError("暂无行情，无法平仓")
+          return
+        }
+        setState((prev) => closePosition(prev, positionId, mark, "手动平仓"))
+        setError(null)
       }
-      setState((prev) => closePosition(prev, positionId, mark, "手动平仓"))
-      setError(null)
+      guardAwOrder(pos.portfolioId, "平仓", execute)
     },
-    [state.positions, quotes, candles, extraMarks],
+    [state.positions, quotes, candles, extraMarks, guardAwOrder],
   )
 
   const flattenAll = useCallback(() => {
-    setState((prev) => {
-      let next = prev
-      for (const pos of prev.positions) {
-        if (pos.status !== "open") continue
-        if (selectedPortfolio && pos.portfolioId !== selectedPortfolio.id) continue
-        const mark = markPrice(pos.symbol, quotes, candles, extraMarks)
-        if (mark == null) continue
-        next = closePosition(next, pos.id, mark, "一键全平")
-      }
-      return next
-    })
-    setError(null)
-  }, [selectedPortfolio, quotes, candles, extraMarks])
+    const portfolioId = selectedPortfolio?.id || ""
+    const hasOpen = state.positions.some(
+      (p) => p.status === "open" && (!selectedPortfolio || p.portfolioId === selectedPortfolio.id),
+    )
+    if (!hasOpen) return
+    const execute = () => {
+      setState((prev) => {
+        let next = prev
+        for (const pos of prev.positions) {
+          if (pos.status !== "open") continue
+          if (selectedPortfolio && pos.portfolioId !== selectedPortfolio.id) continue
+          const mark = markPrice(pos.symbol, quotes, candles, extraMarks)
+          if (mark == null) continue
+          next = closePosition(next, pos.id, mark, "一键全平")
+        }
+        return next
+      })
+      setError(null)
+    }
+    guardAwOrder(portfolioId, "全平", execute)
+  }, [selectedPortfolio, state.positions, quotes, candles, extraMarks, guardAwOrder])
 
   const loadAllWeather = useCallback(async (refresh = true) => {
     setAwLoading(true)
@@ -184,7 +236,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
         setError("全天候策略暂无持仓")
         return null
       }
-      setState((prev) => applyAllWeatherBook(prev, holdings))
+      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks))
       setSelectedPortfolioId(ALL_WEATHER_PORTFOLIO_ID)
       setExtraMarks(marks)
       setAwMeta(meta)
@@ -211,7 +263,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
         setError("全天候策略暂无持仓")
         return null
       }
-      setState((prev) => applyAllWeatherBook(prev, holdings))
+      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks))
       setSelectedPortfolioId(ALL_WEATHER_PORTFOLIO_ID)
       setExtraMarks(marks)
       setAwMeta(meta)
@@ -251,61 +303,65 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       const id = nid("stg-")
       const mark = markPrice(draft.symbol, quotes, candles, extraMarks)
       let err: string | null = null
-      setState((prev) => {
-        let next: PaperState = {
-          ...prev,
-          strategies: [
-            ...prev.strategies,
-            {
-              id,
+      const execute = () => {
+        setState((prev) => {
+          let next: PaperState = {
+            ...prev,
+            strategies: [
+              ...prev.strategies,
+              {
+                id,
+                portfolioId: draft.portfolioId,
+                name,
+                symbol: draft.symbol,
+                side: draft.side,
+                lots: draft.lots,
+                entryMode: draft.entryMode,
+                entryLevel: draft.entryLevel,
+                entryCompare: draft.entryCompare ?? "above",
+                maFast: fast,
+                maSlow: slow,
+                stopLossPts: draft.stopLossPts || null,
+                takeProfitPts: draft.takeProfitPts || null,
+                status: draft.entryMode === "market" ? "filled" : "armed",
+                createdAt: Date.now(),
+                lastNote: draft.entryMode === "market" ? "市价开仓" : "等待入场",
+              },
+            ],
+          }
+          if (draft.entryMode === "market") {
+            if (mark == null) {
+              err = "暂无行情，无法市价开仓"
+              return prev
+            }
+            const opened = openPosition(next, {
               portfolioId: draft.portfolioId,
-              name,
               symbol: draft.symbol,
               side: draft.side,
               lots: draft.lots,
-              entryMode: draft.entryMode,
-              entryLevel: draft.entryLevel,
-              entryCompare: draft.entryCompare ?? "above",
-              maFast: fast,
-              maSlow: slow,
-              stopLossPts: draft.stopLossPts || null,
-              takeProfitPts: draft.takeProfitPts || null,
-              status: draft.entryMode === "market" ? "filled" : "armed",
-              createdAt: Date.now(),
-              lastNote: draft.entryMode === "market" ? "市价开仓" : "等待入场",
-            },
-          ],
-        }
-        if (draft.entryMode === "market") {
-          if (mark == null) {
-            err = "暂无行情，无法市价开仓"
-            return prev
+              entryPrice: mark,
+              strategyId: id,
+              source: "strategy",
+            })
+            if (opened.error || !opened.position) {
+              err = opened.error
+              return prev
+            }
+            next = {
+              ...opened.state,
+              strategies: opened.state.strategies.map((s) =>
+                s.id === id ? { ...s, positionId: opened.position!.id, filledAt: Date.now() } : s,
+              ),
+            }
           }
-          const opened = openPosition(next, {
-            portfolioId: draft.portfolioId,
-            symbol: draft.symbol,
-            side: draft.side,
-            lots: draft.lots,
-            entryPrice: mark,
-            strategyId: id,
-          })
-          if (opened.error || !opened.position) {
-            err = opened.error
-            return prev
-          }
-          next = {
-            ...opened.state,
-            strategies: opened.state.strategies.map((s) =>
-              s.id === id ? { ...s, positionId: opened.position!.id, filledAt: Date.now() } : s,
-            ),
-          }
-        }
-        return next
-      })
-      setError(err)
+          return next
+        })
+        setError(err)
+      }
+      guardAwOrder(draft.portfolioId, draft.entryMode === "market" ? "开仓" : "启动策略", execute)
       return err ? null : id
     },
-    [quotes, candles, extraMarks],
+    [quotes, candles, extraMarks, guardAwOrder],
   )
 
   const disableStrategy = useCallback((id: string) => {
@@ -435,6 +491,9 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     createAndArmStrategy,
     disableStrategy,
     deleteStrategy,
+    awConfirm,
+    confirmAwAction,
+    dismissAwConfirm,
     rows,
     openPositions,
     summary,

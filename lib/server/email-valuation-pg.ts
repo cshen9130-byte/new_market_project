@@ -16,6 +16,8 @@ export type EmailValuationInsert = {
   sentAt: string | null
   subject: string
   senderEmail: string
+  /** Envelope To/Cc/Bcc, comma-separated and lowercased. */
+  receiverEmail?: string
   attachmentFilename: string
   productCode: string | null
   fundName: string | null
@@ -102,6 +104,10 @@ export async function ensureEmailValuationTable(): Promise<void> {
   await query(CREATE_TABLE_SQL)
   await query(MIGRATE_METRICS_COLUMNS_SQL)
   await query(MIGRATE_TABLE_SQL)
+  await query(
+    `ALTER TABLE ops_email_valuation_records
+       ADD COLUMN IF NOT EXISTS receiver_email TEXT NOT NULL DEFAULT ''`,
+  )
   tableEnsured = true
 }
 
@@ -129,16 +135,17 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
 
     const inserted = await query<{ id: string }>(
       `INSERT INTO ops_email_valuation_records
-         (crawl_email_account, email_uid, sent_at, subject, sender_email,
+         (crawl_email_account, email_uid, sent_at, subject, sender_email, receiver_email,
           attachment_filename, product_code, fund_name, valuation_date,
           unit_nav, cumulative_nav, total_asset, total_liability, net_asset,
           custody_balance, net_asset_value, paid_in_capital, custodian,
           holdings_count, source, summary, holdings)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        ON CONFLICT (crawl_email_account, email_uid, attachment_filename, valuation_date) DO UPDATE SET
          sent_at           = EXCLUDED.sent_at,
          subject           = EXCLUDED.subject,
          sender_email      = EXCLUDED.sender_email,
+         receiver_email    = COALESCE(NULLIF(EXCLUDED.receiver_email, ''), ops_email_valuation_records.receiver_email),
          product_code      = EXCLUDED.product_code,
          fund_name         = EXCLUDED.fund_name,
          unit_nav          = EXCLUDED.unit_nav,
@@ -161,6 +168,7 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
         r.sentAt,
         r.subject,
         r.senderEmail,
+        String(r.receiverEmail ?? "").trim().toLowerCase(),
         r.attachmentFilename ?? "",
         r.productCode,
         r.fundName,

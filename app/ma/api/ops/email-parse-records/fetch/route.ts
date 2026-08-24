@@ -24,11 +24,13 @@ export async function POST(req: Request) {
     const normalizedDays =
       Number.isFinite(days) && (days as number) > 0 ? (days as number) : undefined
 
-    // Ops "重新解析" is incremental parse + upsert (same as 2h cron), not the nightly full rebuild.
+    // Manual ops "重新解析" with an explicit day window must re-download that
+    // window. Light skip would keep half-parsed 等N个产品 CMS mails stuck.
+    // The 5-minute cron still calls startEmailParseFetchJob({ light: true }) with no days.
     const started = startEmailParseFetchJob({
       crawlEmailId,
       days: normalizedDays,
-      light: true,
+      light: normalizedDays == null,
     })
 
     if (!started.ok) {

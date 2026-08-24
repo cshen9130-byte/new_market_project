@@ -20,6 +20,17 @@ function isMailboxAccount(account: string): boolean {
   return a.includes("@") && !a.includes(" ")
 }
 
+const CRAWL_OR_RECEIVER_MATCH = `
+  (
+    lower(BTRIM(crawl_email_account)) = ANY($1::text[])
+    OR EXISTS (
+      SELECT 1 FROM unnest($1::text[]) sel
+      WHERE NULLIF(btrim(sel), '') IS NOT NULL
+        AND position(lower(btrim(sel)) in lower(COALESCE(receiver_email, ''))) > 0
+    )
+  )
+`
+
 /**
  * Crawl mailboxes known to the system: configured IMAP accounts plus any
  * address that has already produced NAV / valuation rows. Config-only reads
@@ -225,19 +236,21 @@ export async function resolveEmailPoolRegistersForCrawlEmails(
   if (emails.length === 0) return []
 
   // Match pool membership against email NAV / valuation provenance (code or fund name).
+  // A filter chip can be the IMAP mailbox (crawl_email_account) or a To/Cc address
+  // on mail that landed in another crawled mailbox (e.g. cwsj@hengyifund.cn in ch_c7h8).
   const sql = `
     WITH email_keys AS (
       SELECT
         NULLIF(UPPER(BTRIM(product_code)), '') AS code,
         NULLIF(BTRIM(fund_name), '') AS fund_name
       FROM ops_email_nav_records
-      WHERE lower(BTRIM(crawl_email_account)) = ANY($1::text[])
+      WHERE ${CRAWL_OR_RECEIVER_MATCH}
       UNION
       SELECT
         NULLIF(UPPER(BTRIM(product_code)), '') AS code,
         NULLIF(BTRIM(fund_name), '') AS fund_name
       FROM ops_email_valuation_records
-      WHERE lower(BTRIM(crawl_email_account)) = ANY($1::text[])
+      WHERE ${CRAWL_OR_RECEIVER_MATCH}
     )
     SELECT DISTINCT p.register_number
     FROM user_custom_pool p
@@ -253,6 +266,27 @@ export async function resolveEmailPoolRegistersForCrawlEmails(
       )`
 
   const navOnlySql = `
+    WITH email_keys AS (
+      SELECT
+        NULLIF(UPPER(BTRIM(product_code)), '') AS code,
+        NULLIF(BTRIM(fund_name), '') AS fund_name
+      FROM ops_email_nav_records
+      WHERE ${CRAWL_OR_RECEIVER_MATCH}
+    )
+    SELECT DISTINCT p.register_number
+    FROM user_custom_pool p
+    WHERE p.pool_key = $2
+      AND p.register_number IS NOT NULL
+      AND (
+        UPPER(BTRIM(p.register_number)) IN (SELECT code FROM email_keys WHERE code IS NOT NULL)
+        OR EXISTS (
+          SELECT 1 FROM email_keys e
+          WHERE e.fund_name IS NOT NULL
+            AND e.fund_name = p.product_name
+        )
+      )`
+
+  const crawlOnlySql = `
     WITH email_keys AS (
       SELECT
         NULLIF(UPPER(BTRIM(product_code)), '') AS code,
@@ -274,7 +308,10 @@ export async function resolveEmailPoolRegistersForCrawlEmails(
       )`
 
   const rows = await query<{ register_number: string }>(sql, [emails, EMAIL_OPS_POOL_KEY]).catch(
-    () => query<{ register_number: string }>(navOnlySql, [emails, EMAIL_OPS_POOL_KEY]),
+    () =>
+      query<{ register_number: string }>(navOnlySql, [emails, EMAIL_OPS_POOL_KEY]).catch(() =>
+        query<{ register_number: string }>(crawlOnlySql, [emails, EMAIL_OPS_POOL_KEY]),
+      ),
   )
 
   return rows.map((r) => r.register_number)

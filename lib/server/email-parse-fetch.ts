@@ -9,6 +9,11 @@ import {
 } from "@/lib/server/crawl-emails"
 import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import {
+  formatReceiverEmail,
+  formatSenderEmail,
+  type EnvelopeAddress,
+} from "@/lib/server/email-envelope"
+import {
   countRecordsMissingSender,
   getRecordsNeedingSender,
   maxSentAtByCrawlAccount,
@@ -235,16 +240,6 @@ function statusFor(predicate: boolean, relevant: boolean): ParseStepStatus {
   return predicate ? "成功" : "失败"
 }
 
-type EnvelopeAddress = { name?: string; address?: string; mailbox?: string; host?: string }
-
-function formatSenderEmail(from: EnvelopeAddress[] | undefined): string {
-  const first = from?.[0]
-  if (!first) return ""
-  if (first.address?.trim()) return first.address.trim()
-  if (first.mailbox && first.host) return `${first.mailbox}@${first.host}`.trim()
-  return (first.name ?? "").trim()
-}
-
 function parseEmailRecord(
   account: CrawlEmailAccount,
   uid: string,
@@ -416,6 +411,7 @@ async function fetchMailbox(
         subject: string
         sentAt: Date
         senderEmail: string
+        receiverEmail: string
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         structure: any
         attachments: AttachmentInfo[]
@@ -429,10 +425,18 @@ async function fetchMailbox(
         { uid: true },
       )) {
         const envelope = (msg as {
-          envelope?: { subject?: string; date?: Date; from?: EnvelopeAddress[] }
+          envelope?: {
+            subject?: string
+            date?: Date
+            from?: EnvelopeAddress[]
+            to?: EnvelopeAddress[]
+            cc?: EnvelopeAddress[]
+            bcc?: EnvelopeAddress[]
+          }
         }).envelope
         const subject = envelope?.subject ?? ""
         const senderEmail = formatSenderEmail(envelope?.from)
+        const receiverEmail = formatReceiverEmail(envelope)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const structure = (msg as any).bodyStructure
         if (!structure) continue
@@ -444,13 +448,22 @@ async function fetchMailbox(
         const sentAt = (msg as { internalDate?: Date }).internalDate ?? envelope?.date ?? new Date()
         const uid = (msg as { uid?: number }).uid ?? 0
 
-        candidates.push({ uid, subject, sentAt, senderEmail, structure, attachments, textParts })
+        candidates.push({
+          uid,
+          subject,
+          sentAt,
+          senderEmail,
+          receiverEmail,
+          structure,
+          attachments,
+          textParts,
+        })
       }
 
       // ── Step 2: download body/attachments only for NEW fund-related emails ──
       // Known UIDs already have NAV/估值表 rows; keep envelope scan for discovery but
       // skip the expensive download so empty 5-minute polls finish in seconds.
-      for (const { uid, subject, sentAt, senderEmail, attachments, textParts } of candidates) {
+      for (const { uid, subject, sentAt, senderEmail, receiverEmail, attachments, textParts } of candidates) {
         throwIfAborted(signal)
         if (knownEmailKeys.has(processedEmailKey(String(uid), subject))) {
           skippedKnown++
@@ -482,6 +495,7 @@ async function fetchMailbox(
           sentAt: sentAt.toISOString(),
           subject,
           senderEmail,
+          receiverEmail,
         }
 
         const navKeysFromAttachments = new Set<string>()

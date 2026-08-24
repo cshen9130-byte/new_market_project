@@ -110,6 +110,7 @@ const sharedEnv = {
     "/root/new_market_project/EMQuantAPI_Python/EMQuantAPI_Python/python3/libs/linux/x64",
 
   NODE_ENV: process.env.NODE_ENV || "production",
+  TZ: process.env.TZ || "Asia/Shanghai",
 
   // Tushare token for Python data fetchers
   TUSHARE_TOKEN: process.env.TUSHARE_TOKEN || "",

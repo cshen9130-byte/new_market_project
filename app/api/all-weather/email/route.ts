@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { requireCshen } from "@/lib/server/require-cshen"
 import {
+  isScheduledSendDue,
   publicEmailConfig,
   readEmailConfig,
   sendAllWeatherEmail,
@@ -47,7 +48,7 @@ export async function PUT(req: Request) {
         port: Number(body.sender.port || 465),
         user: String(body.sender.user || "").trim(),
         pass: nextPass || current.sender?.pass || "",
-        secure: body.sender.secure !== false,
+        secure: Number(body.sender.port || 465) === 465 ? true : body.sender.secure !== false,
       }
       if (!sender.host || !sender.user) {
         return NextResponse.json({ error: "请填写发件 SMTP 服务器和登录邮箱。" }, { status: 400 })
@@ -60,14 +61,35 @@ export async function PUT(req: Request) {
     }
 
     const saved = writeEmailConfig({
+      ...current,
       sender,
       receivers,
       scheduleTime,
       enabled: Boolean(body.enabled),
-      lastSentDate: current.lastSentDate,
-      lastSentAt: current.lastSentAt,
     })
-    return NextResponse.json({ ok: true, config: publicEmailConfig(saved) })
+
+    let catchUpSent = false
+    let sendError: string | null = null
+    if (isScheduledSendDue(saved)) {
+      try {
+        await sendAllWeatherEmail({ source: "scheduled" })
+        catchUpSent = true
+      } catch (e) {
+        sendError = e instanceof Error ? e.message : "补发失败"
+        writeEmailConfig({
+          ...readEmailConfig(),
+          lastError: sendError,
+          lastErrorAt: new Date().toISOString(),
+        })
+      }
+    }
+
+    return NextResponse.json({
+      ok: true,
+      config: publicEmailConfig(readEmailConfig()),
+      catchUpSent,
+      sendError,
+    })
   } catch (e) {
     const message = e instanceof Error ? e.message : "保存失败"
     return NextResponse.json({ error: message }, { status: 500 })

@@ -122,6 +122,7 @@ type3_团队跟踪_全量.csv
 basicinfo_bfl_track/
 
 # Local scratch / monitor / generated reports
+tmp/
 data/tmp/
 data/runtime/
 data/hw_monitor_*

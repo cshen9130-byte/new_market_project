@@ -7,6 +7,7 @@ import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import { extractValuationFromBuffer, selectValuationAttachments } from "@/lib/server/email-valuation-attachment"
 import { upsertEmailValuationRecords, type EmailValuationInsert } from "@/lib/server/email-valuation-pg"
 import { expandValuationZipBuffer, isValuationZipFilename, zipInnerAttachmentKey } from "@/lib/server/email-valuation-zip"
+import { formatReceiverEmail, formatSenderEmail, type EnvelopeAddress } from "@/lib/server/email-envelope"
 
 type AttachmentInfo = { filename: string; part: string }
 
@@ -30,14 +31,6 @@ function collectAttachments(
     })
   }
   return out
-}
-
-function formatSenderEmail(from: Array<{ address?: string; mailbox?: string; host?: string }> | undefined): string {
-  const first = from?.[0]
-  if (!first) return ""
-  if (first.address?.trim()) return first.address.trim()
-  if (first.mailbox && first.host) return `${first.mailbox}@${first.host}`.trim()
-  return ""
 }
 
 async function downloadPart(client: ImapFlow, uid: string, part: string): Promise<Buffer> {
@@ -75,6 +68,7 @@ async function ingestZipValuationsForAccount(
         subject: string
         sentAt: Date
         senderEmail: string
+        receiverEmail: string
         attachments: AttachmentInfo[]
       }
       const candidates: Candidate[] = []
@@ -84,7 +78,18 @@ async function ingestZipValuationsForAccount(
         { uid: true, envelope: true, bodyStructure: true, internalDate: true },
         { uid: true },
       )) {
-        const envelope = (msg as { envelope?: { subject?: string; date?: Date; from?: unknown[] } }).envelope
+        const envelope = (
+          msg as {
+            envelope?: {
+              subject?: string
+              date?: Date
+              from?: EnvelopeAddress[]
+              to?: EnvelopeAddress[]
+              cc?: EnvelopeAddress[]
+              bcc?: EnvelopeAddress[]
+            }
+          }
+        ).envelope
         const subject = envelope?.subject ?? ""
         const structure = (msg as { bodyStructure?: unknown }).bodyStructure
         if (!structure) continue
@@ -98,7 +103,8 @@ async function ingestZipValuationsForAccount(
           uid: (msg as { uid?: number }).uid ?? 0,
           subject,
           sentAt,
-          senderEmail: formatSenderEmail(envelope?.from as Parameters<typeof formatSenderEmail>[0]),
+          senderEmail: formatSenderEmail(envelope?.from),
+          receiverEmail: formatReceiverEmail(envelope),
           attachments: zipAttachments,
         })
       }
@@ -110,6 +116,7 @@ async function ingestZipValuationsForAccount(
           sentAt: c.sentAt.toISOString(),
           subject: c.subject,
           senderEmail: c.senderEmail,
+          receiverEmail: c.receiverEmail,
         }
         for (const att of c.attachments) {
           try {

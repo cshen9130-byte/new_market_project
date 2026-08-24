@@ -147,6 +147,9 @@ type EmailConfig = {
   enabled: boolean
   lastSentDate: string | null
   lastSentAt: string | null
+  lastScheduledDate?: string | null
+  lastError?: string | null
+  lastErrorAt?: string | null
   hasPassword?: boolean
 }
 
@@ -282,9 +285,10 @@ export function AllWeatherApp() {
     setEnabled(Boolean(cfg.enabled))
   }
 
-  async function saveEmail(silent = false): Promise<boolean> {
+  async function saveEmail(silent = false, patch?: { enabled?: boolean }): Promise<boolean> {
     setEmailBusy(true)
     setEmailMsg(null)
+    const nextEnabled = patch?.enabled ?? enabled
     try {
       const res = await fetch("/api/all-weather/email", {
         method: "PUT",
@@ -293,14 +297,18 @@ export function AllWeatherApp() {
           sender: { name: senderName, host: senderHost, port: Number(senderPort), user: senderUser, pass: senderPass, secure: senderSecure },
           receiversText,
           scheduleTime: `${scheduleHour}:${scheduleMinute}`,
-          enabled,
+          enabled: nextEnabled,
         }),
       })
       const data = await res.json()
       if (!res.ok || !data?.ok) throw new Error(data?.error || "保存失败")
       applyEmail(data.config)
       setSenderPass("")
-      if (!silent) setEmailMsg("邮件配置已保存")
+      if (!silent) {
+        if (data.catchUpSent) setEmailMsg("配置已保存，今日定时邮件已补发")
+        else if (data.sendError) setEmailMsg(`配置已保存，但补发失败：${data.sendError}`)
+        else setEmailMsg("邮件配置已保存")
+      }
       return true
     } catch (e) {
       setEmailMsg(e instanceof Error ? e.message : "保存失败")
@@ -789,7 +797,7 @@ export function AllWeatherApp() {
                     自动邮件
                   </div>
                   <p className="mb-5 text-sm text-slate-500">
-                    每天定时发送当前各袖套 / 品种的开仓手数、保证金、风险贡献，以及组合、袖套、品种盈亏；并附带持仓/交易明细、袖套汇总、每日盈亏 CSV。月末再平衡日会额外展示调仓前后手数，并附上调仓变动 CSV。默认建议 09:00。
+                    每天按北京时间定时发送当前各袖套 / 品种的开仓手数、保证金、风险贡献，以及组合、袖套、品种盈亏；并附带持仓/交易明细、袖套汇总、每日盈亏 CSV。月末再平衡日会额外展示调仓前后手数，并附上调仓变动 CSV。到达或超过设定时间后会自动补发；「立即发送」不占用当日定时额度。默认建议 09:00。
                   </p>
 
                   <div className="grid gap-6 lg:grid-cols-2">
@@ -826,7 +834,14 @@ export function AllWeatherApp() {
                         </div>
                         <div className="space-y-2">
                           <Label>端口</Label>
-                          <Input value={senderPort} onChange={(e) => setSenderPort(e.target.value)} />
+                          <Input
+                            value={senderPort}
+                            onChange={(e) => {
+                              const port = e.target.value
+                              setSenderPort(port)
+                              if (port === "465") setSenderSecure(true)
+                            }}
+                          />
                         </div>
                       </div>
                       <div className="space-y-2">
@@ -868,11 +883,22 @@ export function AllWeatherApp() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Switch checked={enabled} onCheckedChange={setEnabled} />
+                        <Switch
+                          checked={enabled}
+                          onCheckedChange={(v) => {
+                            setEnabled(v)
+                            void saveEmail(false, { enabled: v })
+                          }}
+                        />
                         <Label>启用自动发送</Label>
                       </div>
                       {email?.lastSentAt && (
                         <p className="text-xs text-slate-500">上次发送：{new Date(email.lastSentAt).toLocaleString("zh-CN")}</p>
+                      )}
+                      {email?.lastError && (
+                        <p className="text-xs text-red-600">
+                          上次失败{email.lastErrorAt ? `（${new Date(email.lastErrorAt).toLocaleString("zh-CN")}）` : ""}：{email.lastError}
+                        </p>
                       )}
                     </div>
                   </div>

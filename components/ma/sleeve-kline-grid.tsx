@@ -115,7 +115,13 @@ export function SleeveKlineGrid({
   selectedSymbol: string
   onSelectSymbol: (symbol: string) => void
 }) {
-  const leads = useMemo(() => sleeveLeadPositions(paper.openPositions), [paper.openPositions])
+  const leads = useMemo(
+    () =>
+      sleeveLeadPositions(paper.openPositions, {
+        snapshotFallback: paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID,
+      }),
+    [paper.openPositions, paper.selectedPortfolioId],
+  )
 
   return (
     <div className="grid h-full min-h-0 grid-cols-2 grid-rows-2 [&>*]:border-r [&>*]:border-b [&>*:nth-child(2n)]:border-r-0 [&>*:nth-last-child(-n+2)]:border-b-0">

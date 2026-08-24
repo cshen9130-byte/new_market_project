@@ -9,6 +9,8 @@ import { isSleeveKey, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey 
 import { type CtpTick } from "@/lib/client/ctp-market"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
+  accountKind,
+  accountKindLabel,
   fmtMoney,
   fmtYuan,
   markPrice,
@@ -16,6 +18,7 @@ import {
   positionPnl,
   sideLabel,
   strategyStatusLabel,
+  type PaperAccountKind,
   type PaperEntryMode,
   type PaperSide,
 } from "@/lib/client/paper-trading"
@@ -82,10 +85,16 @@ export function PaperStrategyBuilder({
   const [entryMode, setEntryMode] = useState<PaperEntryMode>("ma_cross")
   const [stopLoss, setStopLoss] = useState("")
   const [takeProfit, setTakeProfit] = useState("")
+  const kind = accountKind(paper.selectedPortfolio)
+  const awAccount = kind === "all-weather"
 
   useEffect(() => {
     if (chartSymbol) setSymbol(chartSymbol)
   }, [chartSymbol])
+
+  useEffect(() => {
+    setTab(kind === "strategy" ? "algo" : "order")
+  }, [kind, paper.selectedPortfolioId])
 
   function resolve(raw: string) {
     return resolveSymbolInput(raw, symbols, quotes)
@@ -159,6 +168,19 @@ export function PaperStrategyBuilder({
           </button>
         ))}
       </div>
+      {awAccount ? (
+        <div className="shrink-0 border-b border-[#2a2e39] bg-[#2a2218] px-3 py-1.5 text-[11px] leading-snug text-[#e0b56a]">
+          全天候账户由策略自动调仓。不建议在此组合手动开平仓。
+        </div>
+      ) : kind === "strategy" ? (
+        <div className="shrink-0 border-b border-[#2a2e39] px-3 py-1.5 text-[11px] leading-snug text-[#787b86]">
+          该账户以策略成交为主：入场条件满足后会自动下单。也可切到期货交易手动买卖。
+        </div>
+      ) : (
+        <div className="shrink-0 border-b border-[#2a2e39] px-3 py-1.5 text-[11px] leading-snug text-[#787b86]">
+          该账户可手动买卖，也可挂双均 / 突破策略自动成交。
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
         <label className="block text-[11px] text-[#787b86]">
           合约
@@ -290,7 +312,9 @@ export function PaperStrategyBuilder({
             </div>
           </button>
         ) : (
-          <p className="mt-1 text-[11px] text-[#787b86]">加载全天候或启动策略后显示在这里。</p>
+          <p className="mt-1 text-[11px] text-[#787b86]">
+            {awAccount ? "全天候持仓由系统自动执行。" : "启动策略或手动下单后显示在这里。"}
+          </p>
         )}
       </div>
     </div>
@@ -311,7 +335,15 @@ export function PaperPortfolioPanel({
   onSelectSymbol: (symbol: string) => void
 }) {
   const [newName, setNewName] = useState("")
+  const [newKind, setNewKind] = useState<Exclude<PaperAccountKind, "all-weather">>("manual")
   const [addSymbol, setAddSymbol] = useState("")
+  const selectedKind = accountKind(paper.selectedPortfolio)
+  const awSelected = selectedKind === "all-weather"
+
+  function createAccount() {
+    paper.createPortfolio(newName, newKind)
+    setNewName("")
+  }
 
   function resolve(raw: string) {
     return resolveSymbolInput(raw, symbols, quotes)
@@ -336,90 +368,37 @@ export function PaperPortfolioPanel({
       </div>
       <div className="shrink-0 space-y-2 border-b border-[#2a2e39] px-3 py-2">
         <div className="flex items-center justify-between text-xs text-white">
-          <span>当前组合</span>
-          <span className="text-[11px] text-[#adb3bd]">{paper.selectedPortfolio?.name || "--"}</span>
+          <span>模拟账户</span>
+          <span className="text-[11px] text-[#adb3bd]">
+            {paper.selectedPortfolio?.name || "--"}
+            <span className="ml-1 text-[#787b86]">{accountKindLabel(selectedKind)}</span>
+          </span>
         </div>
-        <div className="flex rounded border border-[#2a2e39] bg-[#131722] p-0.5">
-          {CONTRACT_TENORS.map((item) => {
-            const active = (paper.awMeta?.contractTenor ?? "current") === item.id
+        <div className="flex flex-wrap gap-1">
+          {paper.state.portfolios.map((pf) => {
+            const kind = accountKind(pf)
+            const active = paper.selectedPortfolioId === pf.id
             return (
               <button
-                key={item.id}
+                key={pf.id}
                 type="button"
-                disabled={paper.awLoading}
-                title={item.hint}
-                onClick={() => {
-                  if ((paper.awMeta?.contractTenor ?? "current") === item.id) return
-                  if (!window.confirm("切换合约月份会按新合约重建全天候模拟盘。")) return
-                  void paper.setContractTenor(item.id).then((sym) => {
-                    if (sym) onSelectSymbol(sym)
-                  })
-                }}
+                onClick={() => paper.setSelectedPortfolioId(pf.id)}
                 className={cn(
-                  "flex-1 rounded px-1.5 py-1 text-[10px]",
-                  active ? "bg-[#4c84ff] text-white" : "text-[#adb3bd] hover:text-white",
+                  "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]",
+                  active ? "bg-[#4c84ff] text-white" : "bg-[#131722] text-[#adb3bd] hover:text-white",
                 )}
               >
-                {item.label}
+                {pf.name}
+                <span className={cn("text-[10px]", active ? "text-white/80" : "text-[#787b86]")}>
+                  {accountKindLabel(kind)}
+                </span>
               </button>
             )
           })}
-        </div>
-        <button
-          type="button"
-          disabled={paper.awLoading}
-          onClick={() => {
-            void paper.loadAllWeather().then((sym) => {
-              if (sym) onSelectSymbol(sym)
-            })
-          }}
-          className="h-8 w-full rounded bg-[#4c84ff] text-[12px] text-white hover:bg-[#3d74ee] disabled:opacity-60"
-        >
-          {paper.awLoading ? "同步全天候…" : "加载全天候策略"}
-        </button>
-        <div className="flex gap-1">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                paper.createPortfolio(newName)
-                setNewName("")
-              }
-            }}
-            placeholder="添加个性化组合"
-            className={fieldClass}
-          />
-          <button
-            type="button"
-            title="新建组合"
-            onClick={() => {
-              paper.createPortfolio(newName)
-              setNewName("")
-            }}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-[#2a2e39] text-[#adb3bd] hover:text-white"
-          >
-            <Plus className="size-3.5" />
-          </button>
-        </div>
-        <div className="flex flex-wrap gap-1">
-          {paper.state.portfolios.map((pf) => (
-            <button
-              key={pf.id}
-              type="button"
-              onClick={() => paper.setSelectedPortfolioId(pf.id)}
-              className={cn(
-                "rounded px-2 py-0.5 text-[11px]",
-                paper.selectedPortfolioId === pf.id ? "bg-[#4c84ff] text-white" : "bg-[#131722] text-[#adb3bd] hover:text-white",
-              )}
-            >
-              {pf.name}
-            </button>
-          ))}
-          {paper.state.portfolios.length > 1 && paper.selectedPortfolioId !== ALL_WEATHER_PORTFOLIO_ID ? (
+          {paper.state.portfolios.length > 1 && !awSelected ? (
             <button
               type="button"
-              title="删除当前组合"
+              title="删除当前账户"
               onClick={() => paper.deletePortfolio(paper.selectedPortfolioId)}
               className="rounded px-1.5 py-0.5 text-[#787b86] hover:text-[#ef5350]"
             >
@@ -427,6 +406,89 @@ export function PaperPortfolioPanel({
             </button>
           ) : null}
         </div>
+        <div className="flex gap-1">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") createAccount()
+            }}
+            placeholder="账户名称，可留空"
+            className={fieldClass}
+          />
+          <select
+            value={newKind}
+            onChange={(e) => setNewKind(e.target.value as Exclude<PaperAccountKind, "all-weather">)}
+            className={cn(fieldClass, "w-[4.5rem] shrink-0 px-1")}
+            title="账户类型"
+          >
+            <option value="manual">手动</option>
+            <option value="strategy">策略</option>
+          </select>
+          <button
+            type="button"
+            title="新建账户"
+            onClick={createAccount}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-[#2a2e39] text-[#adb3bd] hover:text-white"
+          >
+            <Plus className="size-3.5" />
+          </button>
+        </div>
+        {awSelected ? (
+          <>
+            <div className="flex rounded border border-[#2a2e39] bg-[#131722] p-0.5">
+              {CONTRACT_TENORS.map((item) => {
+                const active = (paper.awMeta?.contractTenor ?? "current") === item.id
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={paper.awLoading}
+                    title={item.hint}
+                    onClick={() => {
+                      if ((paper.awMeta?.contractTenor ?? "current") === item.id) return
+                      if (!window.confirm("切换合约月份会按新合约重建全天候模拟盘。")) return
+                      void paper.setContractTenor(item.id).then((sym) => {
+                        if (sym) onSelectSymbol(sym)
+                      })
+                    }}
+                    className={cn(
+                      "flex-1 rounded px-1.5 py-1 text-[10px]",
+                      active ? "bg-[#4c84ff] text-white" : "text-[#adb3bd] hover:text-white",
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                )
+              })}
+            </div>
+            <button
+              type="button"
+              disabled={paper.awLoading}
+              onClick={() => {
+                void paper.loadAllWeather().then((sym) => {
+                  if (sym) onSelectSymbol(sym)
+                })
+              }}
+              className="h-8 w-full rounded bg-[#4c84ff] text-[12px] text-white hover:bg-[#3d74ee] disabled:opacity-60"
+            >
+              {paper.awLoading ? "同步全天候…" : "立即同步持仓"}
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            disabled={paper.awLoading}
+            onClick={() => {
+              void paper.loadAllWeather().then((sym) => {
+                if (sym) onSelectSymbol(sym)
+              })
+            }}
+            className="h-8 w-full rounded border border-[#2a2e39] text-[12px] text-[#adb3bd] hover:text-white disabled:opacity-60"
+          >
+            {paper.awLoading ? "同步全天候…" : "打开全天候自动账户"}
+          </button>
+        )}
       </div>
       {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
         <div className="grid grid-cols-2 gap-1 border-b border-[#2a2e39] px-3 py-1.5">
@@ -654,7 +716,10 @@ export function PaperPositionsBar({
                   <td className="px-2 tabular-nums">{position.lots}</td>
                   <td className="px-2 font-mono">{fmtPx(position.entryPrice, position.symbol)}</td>
                   <td className="px-2 font-mono">{fmtPx(mark, position.symbol)}</td>
-                  <td className="max-w-[160px] truncate px-2 text-[#adb3bd]">{strategy?.name || "手动"}</td>
+                  <td className="max-w-[160px] truncate px-2 text-[#adb3bd]">
+                    {strategy?.name ||
+                      (position.source === "all-weather" ? "全天候" : position.source === "strategy" ? "策略" : "手动")}
+                  </td>
                   <td className={cn("px-2 text-right font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</td>
                   <td className="px-2 text-right font-mono text-[#d1d4dc]">{fmtYuan(margin)}</td>
                   <td className="px-3 text-right">
@@ -674,6 +739,43 @@ export function PaperPositionsBar({
             </tbody>
           </table>
         )}
+      </div>
+    </div>
+  )
+}
+
+export function PaperAllWeatherOrderDialog({ paper }: { paper: PaperTradingApi }) {
+  if (!paper.awConfirm) return null
+  return (
+    <div
+      className="absolute inset-0 z-[90] flex items-center justify-center bg-black/60 px-4"
+      onClick={paper.dismissAwConfirm}
+    >
+      <div
+        className="w-full max-w-[420px] rounded-lg border border-[#2a2e39] bg-[#1e222d] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-[15px] font-medium text-white">不建议在本组合手动下单</div>
+        <p className="mt-2 text-[13px] leading-relaxed text-[#adb3bd]">
+          全天候策略账户由系统自动执行调仓。我们不建议在此组合中自行开仓或平仓，手动下单会偏离风险平价目标，可能影响模拟净值。
+        </p>
+        <p className="mt-2 text-[12px] text-[#787b86]">当前操作：{paper.awConfirm.action}</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={paper.dismissAwConfirm}
+            className="h-8 rounded border border-[#2a2e39] px-3 text-[12px] text-[#d1d4dc] hover:bg-[#2a2e39]"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={paper.confirmAwAction}
+            className="h-8 rounded bg-[#ef5350] px-3 text-[12px] text-white hover:bg-[#d44848]"
+          >
+            仍要{paper.awConfirm.action}
+          </button>
+        </div>
       </div>
     </div>
   )

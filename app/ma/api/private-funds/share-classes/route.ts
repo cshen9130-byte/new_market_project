@@ -10,7 +10,6 @@ const SHARE_CLASS_LETTERS = ["A", "B", "C"] as const
 /**
  * SQL: collapse a beian/product-code to its "family key" (strip trailing A/B/C
  * and the leading S on AMAC codes) so SBLF14, BLF14A, BLF14C all resolve to BLF14.
- * Mirror of sqlBeianFamilyKey in share-class-product.ts (inlined — that file imports db).
  */
 function sqlFamilyKey(expr: string): string {
   const base = `regexp_replace(UPPER(BTRIM(${expr})), '[ABC]$', '')`
@@ -42,15 +41,15 @@ function isShareClassCode(code: string): boolean {
 type ChildRow = { beian_hao: string; product_name: string }
 
 /**
- * Given parent beian_hao codes, return A/B/C share-class children grouped by parent.
+ * Return A/B/C share-class children for a set of parent beian_hao codes.
  *
- * Checks three sources (in priority order for name resolution):
+ * Checks four sources (later sources fill gaps not covered by earlier ones):
  *   1. private_fund_info_bfl  — name-base match
- *   2. ops_team_data_products — beian family-key match (manual / 分级 additions)
- *   3. ops_email_nav_records  — beian family-key match (email-discovered funds)
+ *   2. ops_team_data_products — beian family-key match
+ *   3. ops_email_nav_records  — product_code family-key match (code ends in A/B/C)
+ *   4. ops_email_nav_records  — fund_name match (name ends in A类/B类/C类, no code)
  *
- * For parents with no real children in any source, synthesizes A/B/C entries from
- * the parent beian code so the user can still link to a specific class.
+ * If none of the above find children, synthesizes A/B/C from the parent beian code.
  *
  * GET /ma/api/private-funds/share-classes?parents=SAEC67,SBLF14,...
  */
@@ -66,110 +65,137 @@ export async function GET(req: Request) {
   const eligibleCodes = parentCodes.filter((c) => !isShareClassCode(c))
   if (eligibleCodes.length === 0) return NextResponse.json({ data: {} })
 
+  // Inline parent subquery (reused in several JOINs below)
+  const parentSrc = `(
+    SELECT beian_hao, product_name FROM private_fund_info     WHERE beian_hao = ANY($1::text[])
+    UNION
+    SELECT beian_hao, product_name FROM private_fund_info_bfl WHERE beian_hao = ANY($1::text[])
+  ) p`
+
+  const parentSrcCodeOnly = `(
+    SELECT beian_hao FROM private_fund_info     WHERE beian_hao = ANY($1::text[])
+    UNION
+    SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = ANY($1::text[])
+  ) p`
+
   try {
-    // ── Source 0: parent names (for synthesis fallback) ──────────────────────
+    // ── Step 0: parent names (for synthesis fallback) ─────────────────────────
     const parentRows = await query<{ beian_hao: string; product_name: string }>(
-      `SELECT beian_hao, product_name
-       FROM (
-         SELECT beian_hao, product_name FROM private_fund_info     WHERE beian_hao = ANY($1::text[])
-         UNION
-         SELECT beian_hao, product_name FROM private_fund_info_bfl WHERE beian_hao = ANY($1::text[])
-       ) t`,
+      `SELECT beian_hao, product_name FROM ${parentSrc}`,
       [eligibleCodes],
     )
     const parentNameMap: Record<string, string> = {}
     for (const row of parentRows) parentNameMap[row.beian_hao] = row.product_name
 
-    // ── Source 1: private_fund_info_bfl (name-base match) ────────────────────
-    const nameBase = sqlFundNameBase("p.product_name")
-    const childBase = sqlFundNameBase("c.product_name")
-    const bflRows = await query<{
-      parent_beian_hao: string; beian_hao: string; product_name: string
-    }>(
+    // ── Source 1: private_fund_info_bfl — name-base match ────────────────────
+    const nameBaseP = sqlFundNameBase("p.product_name")
+    const nameBaseC = sqlFundNameBase("c.product_name")
+    const bflRows = await query<{ parent_beian_hao: string; beian_hao: string; product_name: string }>(
       `SELECT p.beian_hao AS parent_beian_hao, c.beian_hao, c.product_name
-       FROM (
-         SELECT beian_hao, product_name FROM private_fund_info     WHERE beian_hao = ANY($1::text[])
-         UNION
-         SELECT beian_hao, product_name FROM private_fund_info_bfl WHERE beian_hao = ANY($1::text[])
-       ) p
+       FROM ${parentSrc}
        JOIN private_fund_info_bfl c ON
-         ${childBase} IS NOT NULL AND ${nameBase} IS NOT NULL
-         AND ${childBase} = ${nameBase}
+         ${nameBaseC} IS NOT NULL AND ${nameBaseP} IS NOT NULL
+         AND ${nameBaseC} = ${nameBaseP}
          AND c.product_name ~ '[ABC]类$'
          AND c.beian_hao <> p.beian_hao
        ORDER BY p.beian_hao, c.product_name ASC`,
       [eligibleCodes],
     )
 
-    // ── Source 2: ops_team_data_products (family-key match) ──────────────────
-    const fkeyParent = sqlFamilyKey("p.beian_hao")
-    const fkeyChild  = sqlFamilyKey("t.beian_hao")
-    const teamRows = await query<{
-      parent_beian_hao: string; beian_hao: string; product_name: string
-    }>(
+    // ── Source 2: ops_team_data_products — beian family-key match ────────────
+    const fkP = sqlFamilyKey("p.beian_hao")
+    const fkT = sqlFamilyKey("t.beian_hao")
+    const teamRows = await query<{ parent_beian_hao: string; beian_hao: string; product_name: string }>(
       `SELECT p.beian_hao AS parent_beian_hao,
               UPPER(BTRIM(t.beian_hao)) AS beian_hao,
               t.product_name
-       FROM (
-         SELECT beian_hao FROM private_fund_info     WHERE beian_hao = ANY($1::text[])
-         UNION
-         SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = ANY($1::text[])
-       ) p
+       FROM ${parentSrcCodeOnly}
        JOIN ops_team_data_products t ON
-         ${fkeyChild} IS NOT NULL
-         AND ${fkeyChild} = ${fkeyParent}
+         ${fkT} IS NOT NULL AND ${fkP} IS NOT NULL
+         AND ${fkT} = ${fkP}
          AND UPPER(BTRIM(t.beian_hao)) ~ '[ABC]$'
          AND UPPER(BTRIM(t.beian_hao)) <> UPPER(BTRIM(p.beian_hao))
        ORDER BY p.beian_hao, t.product_name ASC`,
       [eligibleCodes],
     )
 
-    // ── Source 3: ops_email_nav_records (family-key match, most-recent name) ─
-    const fkeyEmail = sqlFamilyKey("e.product_code")
-    const emailRows = await query<{
-      parent_beian_hao: string; beian_hao: string; product_name: string
-    }>(
+    // ── Source 3: ops_email_nav_records — product_code family-key match ───────
+    const fkE = sqlFamilyKey("e.product_code")
+    const emailCodeRows = await query<{ parent_beian_hao: string; beian_hao: string; product_name: string }>(
       `SELECT DISTINCT ON (p.beian_hao, UPPER(BTRIM(e.product_code)))
          p.beian_hao AS parent_beian_hao,
          UPPER(BTRIM(e.product_code)) AS beian_hao,
          e.fund_name AS product_name
-       FROM (
-         SELECT beian_hao FROM private_fund_info     WHERE beian_hao = ANY($1::text[])
-         UNION
-         SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = ANY($1::text[])
-       ) p
+       FROM ${parentSrcCodeOnly}
        JOIN ops_email_nav_records e ON
          e.product_code IS NOT NULL
          AND NULLIF(BTRIM(e.product_code), '') IS NOT NULL
          AND UPPER(BTRIM(e.product_code)) ~ '[ABC]$'
-         AND ${fkeyEmail} IS NOT NULL
-         AND ${fkeyEmail} = ${fkeyParent}
+         AND ${fkE} IS NOT NULL AND ${fkP} IS NOT NULL
+         AND ${fkE} = ${fkP}
          AND UPPER(BTRIM(e.product_code)) <> UPPER(BTRIM(p.beian_hao))
        ORDER BY p.beian_hao, UPPER(BTRIM(e.product_code)), e.nav_date DESC NULLS LAST`,
       [eligibleCodes],
     )
 
-    // ── Merge: BFL name wins over team wins over email; dedup by beian_hao ───
+    // ── Source 4: ops_email_nav_records — fund_name match ────────────────────
+    // Handles emails where product_code is blank/parent-only but fund_name carries
+    // the share class (e.g. "众量资产聚宝10号C类").
+    const nameBaseE = sqlFundNameBase("e.fund_name")
+    const emailNameRows = await query<{ parent_beian_hao: string; letter: string; product_name: string }>(
+      `SELECT DISTINCT ON (p.beian_hao,
+           CASE WHEN e.fund_name ~ 'A类$' THEN 'A' WHEN e.fund_name ~ 'B类$' THEN 'B' ELSE 'C' END)
+         p.beian_hao AS parent_beian_hao,
+         CASE WHEN e.fund_name ~ 'A类$' THEN 'A' WHEN e.fund_name ~ 'B类$' THEN 'B' ELSE 'C' END AS letter,
+         e.fund_name AS product_name
+       FROM ${parentSrc}
+       JOIN ops_email_nav_records e ON
+         (e.fund_name ~ 'A类$' OR e.fund_name ~ 'B类$' OR e.fund_name ~ 'C类$')
+         AND ${nameBaseE} IS NOT NULL AND ${nameBaseP} IS NOT NULL
+         AND ${nameBaseE} = ${nameBaseP}
+       ORDER BY p.beian_hao,
+         CASE WHEN e.fund_name ~ 'A类$' THEN 'A' WHEN e.fund_name ~ 'B类$' THEN 'B' ELSE 'C' END,
+         e.nav_date DESC NULLS LAST`,
+      [eligibleCodes],
+    )
+
+    // ── Merge all sources; BFL name wins, dedup by (parent, child beian) ──────
     const realChildren: Record<string, Map<string, ChildRow>> = {}
 
-    function addChild(rows: typeof bflRows) {
+    function addRows(rows: Array<{ parent_beian_hao: string; beian_hao: string; product_name: string }>) {
       for (const row of rows) {
-        const key = UPPER(row.beian_hao)
-        if (!realChildren[row.parent_beian_hao]) realChildren[row.parent_beian_hao] = new Map()
-        if (!realChildren[row.parent_beian_hao].has(key)) {
-          realChildren[row.parent_beian_hao].set(key, {
-            beian_hao: row.beian_hao,
-            product_name: row.product_name || row.beian_hao,
+        const key = (row.beian_hao ?? "").trim().toUpperCase()
+        if (!key) continue
+        const map = realChildren[row.parent_beian_hao] ??= new Map()
+        if (!map.has(key)) {
+          map.set(key, {
+            beian_hao: row.beian_hao.trim().toUpperCase(),
+            product_name: (row.product_name || row.beian_hao).trim(),
           })
         }
       }
     }
 
-    addChild(bflRows)
-    addChild(teamRows)
-    addChild(emailRows)
+    // Add in priority order (first writer wins for names)
+    addRows(bflRows)
+    addRows(teamRows)
+    addRows(emailCodeRows)
 
-    // ── Build final result, synthesizing for parents still with no children ──
+    // Source 4: name-based — compute beian from parent + letter
+    for (const row of emailNameRows) {
+      if (!row.letter || !row.parent_beian_hao) continue
+      const beian = tieredBeianCode(row.parent_beian_hao, row.letter)
+      const key = beian.toUpperCase()
+      const map = realChildren[row.parent_beian_hao] ??= new Map()
+      if (!map.has(key)) {
+        map.set(key, {
+          beian_hao: beian,
+          product_name: (row.product_name || beian).trim(),
+        })
+      }
+    }
+
+    // ── Build result; synthesize A/B/C for parents with no real children ─────
     const data: Record<string, Array<ChildRow & { synthetic: boolean }>> = {}
 
     for (const code of eligibleCodes) {
@@ -196,8 +222,4 @@ export async function GET(req: Request) {
     const message = e instanceof Error ? e.message : "Failed to load share classes"
     return NextResponse.json({ error: message }, { status: 500 })
   }
-}
-
-function UPPER(s: string) {
-  return (s ?? "").trim().toUpperCase()
 }
