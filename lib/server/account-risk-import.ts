@@ -150,8 +150,29 @@ function ensureDataRoot() {
   if (!existsSync(DATA_ROOT)) mkdirSync(DATA_ROOT, { recursive: true })
 }
 
+function shanghaiParts(now = new Date()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(now)
+      .filter((p) => p.type !== "literal")
+      .map((p) => [p.type, p.value]),
+  )
+  return {
+    dateKey: `${parts.year}${parts.month}${parts.day}`,
+    hhmm: `${String(parts.hour ?? "").padStart(2, "0")}:${String(parts.minute ?? "").padStart(2, "0")}`,
+  }
+}
+
 function formatLocalDate(date: Date): string {
-  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
+  return shanghaiParts(date).dateKey
 }
 
 function isMaskedSecret(value: string | undefined): boolean {
@@ -169,13 +190,19 @@ function normalizeScheduleTime(time: string): string {
 }
 
 function isDue(now: Date, scheduleTime: string, lastFetchDate: string | null, lastFetchAt: string | null): boolean {
-  const { h, m } = parseSchedule(scheduleTime)
-  const todayStr = formatLocalDate(now)
-  if (lastFetchDate === todayStr) return false
-  if (now.getHours() < h || (now.getHours() === h && now.getMinutes() < m)) return false
+  const sched = normalizeScheduleTime(scheduleTime)
+  const { dateKey, hhmm } = shanghaiParts(now)
+  if (hhmm < sched) return false
+
   const lastAt = lastFetchAt ? new Date(lastFetchAt) : null
-  if (lastAt && !Number.isNaN(lastAt.getTime()) && formatLocalDate(lastAt) === todayStr) {
-    if (now.getTime() - lastAt.getTime() < AUTO_FETCH_RETRY_INTERVAL_MS) return false
+  if (lastAt && !Number.isNaN(lastAt.getTime())) {
+    const last = shanghaiParts(lastAt)
+    // A morning 立即获取 must not cancel the 17:00 job. Only a run at/after
+    // today's scheduled time counts as "already done today".
+    if (last.dateKey === dateKey && last.hhmm >= sched) {
+      if (lastFetchDate === dateKey) return false
+      if (now.getTime() - lastAt.getTime() < AUTO_FETCH_RETRY_INTERVAL_MS) return false
+    }
   }
   return true
 }
@@ -430,6 +457,17 @@ function officialFetchDate(rel: string, userId: string): string | null {
   if (double) return double[1]
   const single = new RegExp(`^${escaped}_(\\d{4}-\\d{2}-\\d{2})\\.(xls|xlsx|xlsm)$`, "i").exec(base)
   return single?.[1] ?? null
+}
+
+function latestCfmmcFileDate(userId: string): string | null {
+  const uid = userId.trim()
+  if (!uid) return null
+  let latest: string | null = null
+  for (const rel of listSpreadsheetRelPaths(accountRiskImportDir())) {
+    const d = officialFetchDate(rel, uid)
+    if (d && (!latest || d > latest)) latest = d
+  }
+  return latest
 }
 
 function normalizeYmd(raw: string): string | null {
@@ -838,7 +876,7 @@ async function runEtlAfterFetch(bookId?: string, userId?: string) {
 
 export async function fetchCfmmcAccount(
   accountId: string,
-  mode: "history" | "latest" = "history",
+  mode: "history" | "incremental" | "latest" = "history",
 ): Promise<{
   ok: boolean
   filename?: string
@@ -914,14 +952,21 @@ export async function fetchCfmmcAccount(
     }
   }
   const args = [script, "--out-dir", outDir]
-  if (mode === "history") args.push("--history", "--days", "65")
-  appendJobLog("fetch", `开始获取 ${account.label || account.userId}（${mode === "history" ? "全部历史" : "最新一天"}，Python ${python}）…`)
+  const incremental = mode !== "history"
+  if (mode === "history") {
+    args.push("--history", "--days", "65")
+  } else {
+    args.push("--incremental", "--days", "10")
+    const since = latestCfmmcFileDate(account.userId)
+    if (since) args.push("--since", since)
+  }
+  appendJobLog("fetch", `开始获取 ${account.label || account.userId}（${incremental ? "增量" : "全部历史"}，Python ${python}）…`)
   try {
     const { stdout } = await runPythonLogged(
       python,
       args,
       cfmmcFetchEnv(account),
-      mode === "history" ? 1_200_000 : 180_000,
+      mode === "history" ? 1_200_000 : 600_000,
     )
     return finish(applyResult(parseJsonLine(stdout)))
   } catch (e) {
@@ -1000,10 +1045,13 @@ export async function runDueCfmmcFetch(): Promise<void> {
     (a) => a.enabled && a.userId && a.password && isDue(now, cfg.scheduleTime, a.lastFetchDate, a.lastFetchAt),
   )
   if (due.length === 0) return
+  const names = due.map((a) => a.label || a.userId).join("、")
+  console.log(`[account-risk-cfmmc] scheduled ${cfg.scheduleTime} fetch starting for ${due.length} account(s)`)
+  appendJobLog("fetch", `定时任务触发（北京时间 ${cfg.scheduleTime}），增量获取 ${names}`)
   cfmmcFetchRunning = true
   try {
     for (const account of due) {
-      await fetchCfmmcAccount(account.id, account.lastFetchDate ? "latest" : "history")
+      await fetchCfmmcAccount(account.id, "incremental")
     }
   } finally {
     cfmmcFetchRunning = false

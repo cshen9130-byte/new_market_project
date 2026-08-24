@@ -65,6 +65,8 @@ TRADE_DATE_LIST_URL = BASE_URL + "/script/tradeDateList.js"
 MAX_CAPTCHA_TRIES = 8
 # CFMMC keeps at most the past 2 calendar months of daily reports.
 AVAILABLE_DAYS_BACK = 65
+# Daily auto-fetch: catch up a short gap (weekend / missed run), never the full archive.
+INCREMENTAL_DAYS_BACK = 10
 
 _HTTP_HEADERS = {
     "User-Agent": (
@@ -136,10 +138,20 @@ def trading_days_in_range(start: dt.date, end: dt.date, disabled: set[str]) -> l
     return days
 
 
+def iter_account_dirs(dest_dir: Path) -> list[Path]:
+    """Import root plus one book-id level (files may live in either)."""
+    if not dest_dir.exists():
+        return []
+    out = [dest_dir]
+    try:
+        out.extend(p for p in dest_dir.iterdir() if p.is_dir())
+    except OSError:
+        pass
+    return out
+
+
 def official_fetch_path(dest_dir: Path, user_id: str, day: dt.date) -> Path | None:
     """Return this 资金账号's official fetch file for `day` if it exists."""
-    if not dest_dir.exists():
-        return None
     uid = safe_user_id(user_id)
     date = day.strftime("%Y-%m-%d")
     names = (
@@ -148,11 +160,42 @@ def official_fetch_path(dest_dir: Path, user_id: str, day: dt.date) -> Path | No
         f"{uid}_{uid}_{date}.xls",
         f"{uid}_{uid}_{date}.xlsx",
     )
-    for name in names:
-        p = dest_dir / name
-        if p.is_file() and p.stat().st_size > 0:
-            return p
+    for folder in iter_account_dirs(dest_dir):
+        for name in names:
+            p = folder / name
+            if p.is_file() and p.stat().st_size > 0:
+                return p
     return None
+
+
+def last_downloaded_date(dest_dir: Path, user_id: str) -> dt.date | None:
+    dates: list[dt.date] = []
+    uid = safe_user_id(user_id)
+    for folder in iter_account_dirs(dest_dir):
+        try:
+            files = folder.glob(f"{uid}_*.xls*")
+        except OSError:
+            continue
+        for p in files:
+            if p.name.startswith("~$") or not p.is_file():
+                continue
+            raw = official_name_date(user_id, p.name)
+            if not raw:
+                continue
+            try:
+                dates.append(dt.date.fromisoformat(raw))
+            except ValueError:
+                pass
+    return max(dates) if dates else None
+
+
+def parse_iso_date(raw: str | None) -> dt.date | None:
+    if not raw:
+        return None
+    try:
+        return dt.date.fromisoformat(raw.strip()[:10])
+    except ValueError:
+        return None
 
 
 def normalize_trade_date(value: object, datemode: int = 0) -> str | None:
@@ -206,21 +249,24 @@ def official_name_date(user_id: str, name: str) -> str | None:
 
 def purge_mismatched_official_files(dest_dir: Path, user_id: str) -> int:
     """Delete official-named files whose inner 交易日期 does not match the filename."""
-    if not dest_dir.exists():
-        return 0
     uid = safe_user_id(user_id)
     removed = 0
-    for p in dest_dir.glob(f"{uid}_*.xls*"):
-        if p.name.startswith("~$"):
+    for folder in iter_account_dirs(dest_dir):
+        try:
+            files = folder.glob(f"{uid}_*.xls*")
+        except OSError:
             continue
-        want = official_name_date(user_id, p.name)
-        if not want:
-            continue
-        got = extract_xls_trade_date(p)
-        if got and got != want:
-            log(f"  remove mismatch {p.name} (inside {got}, name {want})")
-            p.unlink(missing_ok=True)
-            removed += 1
+        for p in files:
+            if p.name.startswith("~$"):
+                continue
+            want = official_name_date(user_id, p.name)
+            if not want:
+                continue
+            got = extract_xls_trade_date(p)
+            if got and got != want:
+                log(f"  remove mismatch {p.name} (inside {got}, name {want})")
+                p.unlink(missing_ok=True)
+                removed += 1
     return removed
 
 
@@ -314,6 +360,41 @@ def switch_trade_date(ss: req_lib.Session, date_str: str, token: str | None) -> 
     return extract_struts_token(resp.text) or token
 
 
+def plan_fetch_days(
+    dest_dir: Path,
+    user_id: str,
+    days_back: int,
+    latest_only: bool,
+    incremental: bool,
+    since: str | None,
+) -> tuple[dt.date, dt.date, list[dt.date], list[dt.date]]:
+    today = dt.date.today()
+    end_date = today - dt.timedelta(days=1)
+    if incremental:
+        last = last_downloaded_date(dest_dir, user_id)
+        parsed = parse_iso_date(since)
+        if last and parsed:
+            last = max(last, parsed)
+        elif parsed:
+            last = parsed
+        if last:
+            start_date = last + dt.timedelta(days=1)
+            log(f"Incremental after last local file {last.isoformat()}")
+        else:
+            start_date = today - dt.timedelta(days=max(1, min(days_back, INCREMENTAL_DAYS_BACK)))
+            log(f"Incremental with no local files; look back to {start_date.isoformat()}")
+    else:
+        start_date = today - dt.timedelta(days=max(1, days_back))
+    if start_date > end_date:
+        start_date = end_date
+    disabled = fetch_disabled_dates()
+    days = trading_days_in_range(start_date, end_date, disabled)
+    if latest_only and not incremental:
+        days = days[-1:] if days else []
+    pending = [d for d in days if not already_downloaded(dest_dir, user_id, d)]
+    return start_date, end_date, days, pending
+
+
 def download_all_dates(
     cookies: list[dict],
     user_id: str,
@@ -322,20 +403,17 @@ def download_all_dates(
     latest_only: bool,
     token: str | None = None,
     home_url: str | None = None,
+    incremental: bool = False,
+    since: str | None = None,
 ) -> tuple[list[Path], int, int]:
     dest_dir.mkdir(parents=True, exist_ok=True)
     purged = purge_mismatched_official_files(dest_dir, user_id)
     if purged:
         log(f"Removed {purged} official files whose inner 交易日期 did not match the filename.")
 
-    today = dt.date.today()
-    end_date = today - dt.timedelta(days=1)
-    start_date = today - dt.timedelta(days=max(1, days_back))
-    disabled = fetch_disabled_dates()
-    days = trading_days_in_range(start_date, end_date, disabled)
-    if latest_only:
-        days = days[-1:] if days else []
-    pending = [d for d in days if not already_downloaded(dest_dir, user_id, d)]
+    start_date, end_date, days, pending = plan_fetch_days(
+        dest_dir, user_id, days_back, latest_only, incremental, since,
+    )
     skipped = len(days) - len(pending)
     log(f"Trading days: {len(days)}  pending={len(pending)}  skipped={skipped}  ({start_date} → {end_date})")
     if not pending:
@@ -444,7 +522,24 @@ def fetch_reports(
     headless: bool,
     history: bool,
     days_back: int,
+    incremental: bool = False,
+    since: str | None = None,
 ) -> tuple[list[Path], int, int]:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    purged = purge_mismatched_official_files(dest_dir, user_id)
+    if purged:
+        log(f"Removed {purged} official files whose inner 交易日期 did not match the filename.")
+
+    latest_only = not history and not incremental
+    start_date, end_date, days, pending = plan_fetch_days(
+        dest_dir, user_id, days_back, latest_only, incremental, since,
+    )
+    skipped = len(days) - len(pending)
+    log(f"Trading days: {len(days)}  pending={len(pending)}  skipped={skipped}  ({start_date} → {end_date})")
+    if not pending:
+        log("Nothing new to download; skipping login.")
+        return [], skipped, purged
+
     cookies: list[dict] = []
     token: str | None = None
     home_url = LOGIN_URL
@@ -468,7 +563,9 @@ def fetch_reports(
         user_id,
         dest_dir,
         days_back=days_back,
-        latest_only=not history,
+        latest_only=latest_only,
+        incremental=incremental,
+        since=since,
         token=token,
         home_url=home_url,
     )
@@ -479,6 +576,12 @@ def main() -> int:
     parser.add_argument("--out-dir", required=True, help="Directory to save the xls")
     parser.add_argument("--headed", action="store_true", help="Show the browser window")
     parser.add_argument("--history", action="store_true", help="Download all available history dates")
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Download only days after the latest local file (daily auto-fetch)",
+    )
+    parser.add_argument("--since", metavar="YYYY-MM-DD", help="Inclusive start date for incremental fetch")
     parser.add_argument("--days", type=int, default=AVAILABLE_DAYS_BACK, help="Calendar days to walk back")
     args = parser.parse_args()
 
@@ -488,6 +591,7 @@ def main() -> int:
         return emit({"ok": False, "error": "缺少 CFMMC_USER / CFMMC_PASSWORD"}, 1)
 
     dest_dir = Path(args.out_dir)
+    incremental = bool(args.incremental or args.since) and not args.history
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
         paths, skipped, discarded = fetch_reports(
@@ -497,8 +601,10 @@ def main() -> int:
             headless=not args.headed,
             history=args.history,
             days_back=max(1, args.days),
+            incremental=incremental,
+            since=args.since,
         )
-        if not paths and skipped == 0 and discarded == 0:
+        if not paths and skipped == 0 and discarded == 0 and not incremental:
             return emit({"ok": False, "error": "未下载到结算日报（可能该区间没有数据）"}, 1)
         last = paths[-1] if paths else None
         return emit(

@@ -626,7 +626,10 @@ export function PaperPositionsBar({
         {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
           <>
             <span className="text-[#787b86]">
-              净值 <span className="font-mono text-[#d1d4dc]">{fmtMoney(paper.awMeta.equity + paper.summary.unrealized).replace("+", "")}</span>
+              净值{" "}
+              <span className="font-mono text-[#d1d4dc]">
+                {fmtMoney((paper.awMeta.initialCapital || 0) + paper.summary.unrealized + paper.summary.realized).replace("+", "")}
+              </span>
             </span>
             {SLEEVE_KEYS.map((key) => {
               const pnl = paper.sleevePnl[key]?.live ?? 0

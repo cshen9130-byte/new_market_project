@@ -17,7 +17,7 @@ export async function registerBackgroundJobs(): Promise<void> {
     runDueAccountRiskEmailFetch().catch((e) => console.error("[account-risk-email] scheduler error:", e))
     runDueCfmmcFetch().catch((e) => console.error("[account-risk-cfmmc] scheduler error:", e))
     runDueAllWeatherEmails().catch((e) => console.error("[all-weather-email] scheduler error:", e))
-  })
+  }, { timezone: "Asia/Shanghai" })
 
   // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit)
   // plus 期货市场 Nanhua / vol-corr / 成交额 tables. Frontend charts poll
