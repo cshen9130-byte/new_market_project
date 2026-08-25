@@ -94,6 +94,9 @@ const FuturesStyleView = dynamic(() =>
 const EquityStyleView = dynamic(() =>
   import("./components/EquityStyleView").then((m) => ({ default: m.EquityStyleView })),
 )
+const StockMarketView = dynamic(() =>
+  import("./components/StockMarketView").then((m) => ({ default: m.StockMarketView })),
+)
 const ReportsManagementView = dynamic(() =>
   import("./components/ReportsManagementView").then((m) => ({ default: m.ReportsManagementView })),
 )
@@ -244,6 +247,12 @@ const portfolioSidebarGroups: SidebarGroup[] = [
 ]
 
 const marketSidebarGroups: SidebarGroup[] = [
+  {
+    label: "市场观察",
+    items: [
+      { key: "stock-market", label: "股票市场" },
+    ],
+  },
   {
     label: "风格因子",
     items: [
@@ -24107,7 +24116,8 @@ function PrivateFundsPageContent() {
           {activeTab === "market" && activeSideItem === "pe-industry" && <PeIndustryView />}
           {activeTab === "market" && activeSideItem === "futures-style" && <FuturesStyleView />}
           {activeTab === "market" && activeSideItem === "equity-style" && <EquityStyleView />}
-          {activeTab === "market" && activeSideItem !== "strategy-observation" && activeSideItem !== "pe-index" && activeSideItem !== "pe-industry" && activeSideItem !== "futures-style" && activeSideItem !== "equity-style" && (
+          {activeTab === "market" && activeSideItem === "stock-market" && <StockMarketView />}
+          {activeTab === "market" && activeSideItem !== "strategy-observation" && activeSideItem !== "pe-index" && activeSideItem !== "pe-industry" && activeSideItem !== "futures-style" && activeSideItem !== "equity-style" && activeSideItem !== "stock-market" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

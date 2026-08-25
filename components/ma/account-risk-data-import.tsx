@@ -1025,13 +1025,14 @@ export default function AccountRiskDataImport() {
                     <button
                       type="button"
                       onClick={() => void toggleAccount(account)}
+                      title={account.enabled ? "点击后不再参与每日自动获取" : "点击后参与每日自动获取"}
                       className={`h-7 px-2 rounded text-[11px] font-medium border ${
                         account.enabled
                           ? "bg-emerald-600 text-white border-emerald-600"
                           : "border-border text-muted-foreground"
                       }`}
                     >
-                      {account.enabled ? "启用" : "停用"}
+                      {account.enabled ? "参与每日获取" : "未参与每日获取"}
                     </button>
                     <Button
                       size="sm"

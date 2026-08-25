@@ -138,6 +138,7 @@ const AUTO_FETCH_RETRY_INTERVAL_MS = 60 * 60 * 1000
 const SPREADSHEET_EXT = new Set([".xls", ".xlsx", ".xlsm"])
 
 let cfmmcFetchRunning = false
+let lastCfmmcSkipLogAt = 0
 
 export function accountRiskImportDir(): string {
   const fromEnv = process.env.ACCOUNT_RISK_DATA_DIR?.trim()
@@ -390,7 +391,16 @@ export function publicCfmmcConfig(): CfmmcConfig {
 
 export function saveCfmmcSettings(body: { enabled?: boolean; scheduleTime?: string }): CfmmcConfig {
   const current = readCfmmcConfig()
-  if (typeof body.enabled === "boolean") current.enabled = body.enabled
+  if (typeof body.enabled === "boolean") {
+    current.enabled = body.enabled
+    // Global 每日自动获取 is what operators actually toggle. If it is on and
+    // every account was left 停用, the 17:00 job would silently no-op.
+    if (body.enabled) {
+      for (const account of current.accounts) {
+        if (account.userId && account.password) account.enabled = true
+      }
+    }
+  }
   if (typeof body.scheduleTime === "string" && body.scheduleTime.trim()) {
     current.scheduleTime = normalizeScheduleTime(body.scheduleTime)
   }
@@ -1063,9 +1073,16 @@ export async function runDueCfmmcFetch(): Promise<void> {
   const cfg = readCfmmcConfig()
   if (!cfg.enabled || cfmmcFetchRunning) return
   const now = new Date()
-  const due = cfg.accounts.filter(
-    (a) => a.enabled && a.userId && a.password && isDue(now, cfg.scheduleTime, a.lastFetchDate, a.lastFetchAt),
-  )
+  const withCreds = cfg.accounts.filter((a) => a.userId && a.password)
+  const enabledAccounts = withCreds.filter((a) => a.enabled)
+  // Daily switch on + every account 停用 is a UI footgun (clicking 启用 toggles it off).
+  const pool = enabledAccounts.length > 0 ? enabledAccounts : withCreds
+  if (enabledAccounts.length === 0 && withCreds.length > 0 && now.getTime() - lastCfmmcSkipLogAt > 30 * 60 * 1000) {
+    lastCfmmcSkipLogAt = now.getTime()
+    console.warn("[account-risk-cfmmc] daily fetch is on but every account is disabled; running all credentialed accounts")
+    appendJobLog("fetch", "每日自动获取已开启，但账户均为停用，仍按全部账户执行")
+  }
+  const due = pool.filter((a) => isDue(now, cfg.scheduleTime, a.lastFetchDate, a.lastFetchAt))
   if (due.length === 0) return
   const names = due.map((a) => a.label || a.userId).join("、")
   console.log(`[account-risk-cfmmc] scheduled ${cfg.scheduleTime} fetch starting for ${due.length} account(s)`)

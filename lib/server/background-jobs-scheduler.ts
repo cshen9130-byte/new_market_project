@@ -19,6 +19,12 @@ export async function registerBackgroundJobs(): Promise<void> {
     runDueAllWeatherEmails().catch((e) => console.error("[all-weather-email] scheduler error:", e))
   }, { timezone: "Asia/Shanghai" })
 
+  // Dedicated 17:00 Beijing tick so a blocked FOF/cache minute does not drop
+  // the whole CFMMC window. isDue still no-ops if the minute poll already ran it.
+  cron.schedule("0 17 * * 1-5", () => {
+    runDueCfmmcFetch().catch((e) => console.error("[account-risk-cfmmc] 17:00 scheduler error:", e))
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit)
   // plus 期货市场 Nanhua / vol-corr / 成交额 tables. Frontend charts poll
   // APIs every minute; this job updates the underlying DB.

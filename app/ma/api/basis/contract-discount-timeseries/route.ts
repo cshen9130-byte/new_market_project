@@ -132,9 +132,9 @@ export async function GET() {
       if (!td || spot == null || !(spot > 0) || settle == null) continue
 
       const expiry = thirdFriday(parsed.year, parsed.month)
-      const days = Math.max(1, Math.round((expiry.getTime() - td.getTime()) / 86400000))
-      // Skip expired / near-expiry noise (days<=0 already clamped; drop expiry day spikes)
-      if (expiry.getTime() < td.getTime()) continue
+      const days = Math.round((expiry.getTime() - td.getTime()) / 86400000)
+      // Skip expired and expiry-day points — T<=1 makes 365/T explode.
+      if (days <= 1) continue
 
       const ann = ((spot - settle) / spot / days) * 365 * 100
       if (!Number.isFinite(ann)) continue
@@ -158,6 +158,35 @@ export async function GET() {
     )
     if (!endDate) {
       return NextResponse.json({ error: "No data" }, { status: 404 })
+    }
+
+    // Continuous 近月/次月/当季/下季: each day uses that day's listed contracts.
+    const roles: Record<string, Record<string, Point[]>> = {}
+    for (const sym of SYMBOLS) {
+      const roots = bySymbolRoot[sym] || {}
+      const byRootDate: Record<string, Map<string, Point>> = {}
+      const dateSet = new Set<string>()
+      for (const [root, pts] of Object.entries(roots)) {
+        const map = new Map<string, Point>()
+        for (const p of pts) {
+          map.set(p.date, p)
+          dateSet.add(p.date)
+        }
+        byRootDate[root] = map
+      }
+      const roleSeries: Record<string, Point[]> = {}
+      for (const role of ROLE_NAMES) roleSeries[role] = []
+      for (const dateStr of [...dateSet].sort()) {
+        const td = parseDate(dateStr)
+        if (!td) continue
+        listedYms(td).forEach(([y, m], idx) => {
+          const pt = byRootDate[`${sym}${ymCode(y, m)}`]?.get(dateStr)
+          if (pt) roleSeries[ROLE_NAMES[idx]].push(pt)
+        })
+      }
+      if (ROLE_NAMES.some((role) => roleSeries[role].length > 0)) {
+        roles[sym] = roleSeries
+      }
     }
 
     // Only currently listed / not-yet-expired month contracts (产品窗口).
@@ -213,6 +242,7 @@ export async function GET() {
       end_date: endYmd,
       data,
       meta,
+      roles,
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
