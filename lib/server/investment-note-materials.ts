@@ -13,9 +13,15 @@ import {
   ddSyncedMaterialId,
   parseDdSyncedMaterialId,
 } from "@/lib/ma/due-diligence-materials"
+import {
+  cleanMaterialDisplayName,
+  materialNameFromNoteTitle,
+  needsContentBasedMaterialRename,
+} from "@/lib/ma/investment-note-material-filename"
 import { INVESTMENT_NOTE_MATERIAL_MAX_BYTES, INVESTMENT_NOTE_MATERIAL_MAX_MB } from "@/lib/ma/investment-notes"
 import { getServerDueDiligenceTable } from "@/lib/server/due-diligence-table"
 import { getServerInvestmentNote, listServerInvestmentNotes } from "@/lib/server/investment-notes"
+import { resolveInvestmentNoteMaterialDisplayName } from "@/lib/server/investment-note-material-rename"
 import { getKnowledgeBaseFile, listKnowledgeBaseTree } from "@/lib/server/knowledge-base"
 import { getServerStoragePath } from "@/lib/server/storage"
 
@@ -34,6 +40,8 @@ export type InvestmentNoteMaterial = {
 
 type StoredMaterial = InvestmentNoteMaterial & {
   storageFilename: string
+  /** True after suffix cleanup and any content-based rename attempt. */
+  nameResolved?: boolean
 }
 
 const MAX_FILE_BYTES = INVESTMENT_NOTE_MATERIAL_MAX_BYTES
@@ -90,13 +98,6 @@ const MIME_TO_EXTENSION: Record<string, string> = {
   "application/x-zip-compressed": ".zip",
 }
 
-function sanitizeFilename(name: string): string {
-  return (
-    name.replace(/[^\w\u4e00-\u9fff.\-()+（）\s]/g, "_").replace(/\s+/g, " ").trim() ||
-    "material.bin"
-  )
-}
-
 function getExtension(filename: string): string {
   return path.extname(filename).toLowerCase()
 }
@@ -115,11 +116,7 @@ function resolveMaterialExtension(file: File): string {
 }
 
 function displayNameWithExtension(fileName: string, ext: string): string {
-  const sanitized = sanitizeFilename(fileName || "material.bin")
-  const currentExt = getExtension(sanitized)
-  if (currentExt === ext) return sanitized
-  const base = (currentExt ? sanitized.slice(0, -currentExt.length) : sanitized).replace(/\.+$/, "")
-  return `${base || "material"}${ext}`
+  return cleanMaterialDisplayName(fileName || "material.bin", ext)
 }
 
 function mimeTypeForFilename(fileName: string, fallback?: string): string {
@@ -296,7 +293,27 @@ function normalizeStored(raw: unknown): StoredMaterial | null {
     uploadedBy: typeof row.uploadedBy === "string" ? row.uploadedBy : "",
     uploadedByName: typeof row.uploadedByName === "string" ? row.uploadedByName : "",
     createdAt: typeof row.createdAt === "string" ? row.createdAt : new Date().toISOString(),
+    nameResolved: row.nameResolved === true,
   }
+}
+
+function applyLinkedNoteToMaterial(
+  row: StoredMaterial,
+  link: { noteId: string | null; noteTitle: string | null },
+): StoredMaterial {
+  const next: StoredMaterial = {
+    ...row,
+    noteId: link.noteId,
+    noteTitle: link.noteTitle,
+  }
+  if (link.noteTitle && needsContentBasedMaterialRename(next.name)) {
+    const fromNote = materialNameFromNoteTitle(
+      link.noteTitle,
+      getExtension(next.name) || getExtension(next.storageFilename),
+    )
+    if (fromNote) next.name = fromNote
+  }
+  return next
 }
 
 function resolveNoteForUser(
@@ -349,17 +366,23 @@ export async function saveInvestmentNoteMaterial(input: {
   const originalFilename = displayNameWithExtension(input.file.name || "material.bin", ext)
   const link = resolveNoteForUser(input.noteId, input.uploadedBy)
   const buffer = Buffer.from(await input.file.arrayBuffer())
+  const display = await resolveInvestmentNoteMaterialDisplayName({
+    originalName: originalFilename,
+    ext,
+    buffer,
+    noteTitle: link.noteTitle,
+  })
   const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
   const id = createMaterialId()
   const storageFilename = `${id}_${hash}${ext}`
-  const mimeType = mimeTypeForFilename(originalFilename, input.file.type)
+  const mimeType = mimeTypeForFilename(display.name, input.file.type)
 
   ensureDirs()
   await fs.writeFile(storagePathFor(storageFilename), buffer)
 
   const row: StoredMaterial = {
     id,
-    name: originalFilename,
+    name: display.name,
     size: buffer.length,
     mimeType,
     storageFilename,
@@ -368,6 +391,7 @@ export async function saveInvestmentNoteMaterial(input: {
     uploadedBy: input.uploadedBy,
     uploadedByName: input.uploadedByName,
     createdAt: new Date().toISOString(),
+    nameResolved: display.resolved,
   }
 
   const all = readAll()
@@ -463,11 +487,7 @@ export function linkInvestmentNoteMaterial(
   if (idx < 0) throw new Error("资料不存在")
 
   const link = resolveNoteForUser(noteId, userId)
-  all[idx] = {
-    ...all[idx],
-    noteId: link.noteId,
-    noteTitle: link.noteTitle,
-  }
+  all[idx] = applyLinkedNoteToMaterial(all[idx], link)
   writeAll(all)
   return toPublic(all[idx])
 }
@@ -487,11 +507,7 @@ export function linkInvestmentNoteMaterials(
   const updated: InvestmentNoteMaterial[] = []
   for (let i = 0; i < all.length; i++) {
     if (!wanted.has(all[i].id)) continue
-    all[i] = {
-      ...all[i],
-      noteId: link.noteId,
-      noteTitle: link.noteTitle,
-    }
+    all[i] = applyLinkedNoteToMaterial(all[i], link)
     updated.push(toPublic(all[i]))
   }
   writeAll(all)
@@ -521,6 +537,66 @@ export function deleteInvestmentNoteMaterial(id: string, userId: string): boolea
     // ignore missing file on disk
   }
   return true
+}
+
+/** Persist cheap suffix cleanup such as `(1)(2)` / `-v1` on stored display names. */
+export function cleanupInvestmentNoteMaterialDisplayNames(): InvestmentNoteMaterial[] {
+  const all = readAll()
+  const updated: InvestmentNoteMaterial[] = []
+  let changed = false
+  for (let i = 0; i < all.length; i++) {
+    const ext = getExtension(all[i].name) || getExtension(all[i].storageFilename)
+    const cleaned = displayNameWithExtension(all[i].name, ext)
+    if (cleaned === all[i].name) continue
+    all[i] = { ...all[i], name: cleaned }
+    updated.push(toPublic(all[i]))
+    changed = true
+  }
+  if (changed) writeAll(all)
+  return updated
+}
+
+const AUTO_RENAME_BATCH = 8
+
+/** Replace hash-like display names using file contents (or linked note title). */
+export async function autoRenameOpaqueInvestmentNoteMaterials(): Promise<{
+  materials: InvestmentNoteMaterial[]
+  remaining: number
+}> {
+  const all = readAll()
+  const pending = all
+    .map((row, idx) => ({ row, idx }))
+    .filter(({ row }) => !row.nameResolved && needsContentBasedMaterialRename(row.name))
+    .slice(0, AUTO_RENAME_BATCH)
+
+  const updated: InvestmentNoteMaterial[] = []
+  for (const { row, idx } of pending) {
+    try {
+      const buffer = await fs.readFile(storagePathFor(row.storageFilename))
+      const ext = getExtension(row.name) || getExtension(row.storageFilename)
+      const display = await resolveInvestmentNoteMaterialDisplayName({
+        originalName: row.name,
+        ext,
+        buffer,
+        noteTitle: row.noteTitle,
+      })
+      all[idx] = {
+        ...all[idx],
+        name: display.name,
+        nameResolved: true,
+      }
+      updated.push(toPublic(all[idx]))
+    } catch (err) {
+      console.error("[investment-note-materials] auto-rename", row.id, err)
+      all[idx] = { ...all[idx], nameResolved: true }
+    }
+  }
+  if (pending.length > 0) writeAll(all)
+
+  const remaining = all.filter(
+    (row) => !row.nameResolved && needsContentBasedMaterialRename(row.name),
+  ).length
+  return { materials: updated, remaining }
 }
 
 export async function readInvestmentNoteMaterialFile(

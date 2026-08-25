@@ -30,10 +30,12 @@ import {
   fundElementSourceKindLabel,
   isFundElementExtractableFile,
 } from "@/lib/ma/fund-element-source-file"
+import { needsContentBasedMaterialRename } from "@/lib/ma/investment-note-material-filename"
 import type { InvestmentNote, InvestmentNoteMaterial } from "@/lib/ma/investment-notes"
 import {
   INVESTMENT_NOTE_MATERIAL_MAX_BYTES,
   INVESTMENT_NOTE_MATERIAL_MAX_MB,
+  autoRenameInvestmentNoteMaterials,
   deleteInvestmentNoteMaterial,
   extractInvestmentNoteMaterialElements,
   generateInvestmentNoteFromMaterials,
@@ -270,6 +272,42 @@ export function InvestmentNoteMaterialsView() {
   useEffect(() => {
     setPanelMounted(true)
   }, [])
+
+  useEffect(() => {
+    if (loading) return
+    const hasOpaque = materials.some(
+      (item) =>
+        !isDdSyncedInvestmentNoteMaterial(item) && needsContentBasedMaterialRename(item.name),
+    )
+    if (!hasOpaque) return
+    let cancelled = false
+    void (async () => {
+      let renamed = 0
+      for (let i = 0; i < 6; i += 1) {
+        try {
+          const result = await autoRenameInvestmentNoteMaterials()
+          if (cancelled) return
+          if (result.materials.length > 0) {
+            renamed += result.materials.length
+            const byId = new Map(result.materials.map((item) => [item.id, item]))
+            setMaterials((prev) => prev.map((item) => byId.get(item.id) ?? item))
+          }
+          if (result.remaining <= 0) break
+        } catch {
+          break
+        }
+      }
+      if (!cancelled && renamed > 0) {
+        toast({
+          title: "已自动整理文件名",
+          description: `已根据内容或去掉重复后缀更新 ${renamed} 个文件`,
+        })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [loading, toast])
 
   const filtered = useMemo(() => {
     const q = keyword.trim().toLowerCase()
@@ -561,7 +599,7 @@ export function InvestmentNoteMaterialsView() {
             {uploading ? "正在上传..." : "拖拽文件到此处，或点击选择文件"}
           </div>
           <div className="text-xs text-zinc-400">
-            支持 PDF / PPT / Word / Excel / 图片 / TXT / CSV / ZIP，单文件不超过 {INVESTMENT_NOTE_MATERIAL_MAX_MB}MB。识别到一页通、要素表、产品介绍时会自动提取产品要素。
+            支持 PDF / PPT / Word / Excel / 图片 / TXT / CSV / ZIP，单文件不超过 {INVESTMENT_NOTE_MATERIAL_MAX_MB}MB。上传后会自动去掉 (1)(2)、-v1 等后缀；无意义文件名会按内容重命名。识别到一页通、要素表、产品介绍时会自动提取产品要素。
           </div>
         </button>
 

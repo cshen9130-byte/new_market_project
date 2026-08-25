@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronRight, Inbox, Search, X } from "lucide-react"
 import {
   Dialog,
@@ -90,23 +90,57 @@ export function InvestmentNoteAssociationDialog({
 
       setLoading(true)
       try {
-        const res = await fetch(
-          `/ma/api/private-funds/list?page=1&pageSize=50&keyword=${encodeURIComponent(q)}`,
-          { signal: controller.signal },
-        )
+        // Run both searches in parallel: AMAC/BFL list + team data (which resolves
+        // email-discovered A/B/C class products like BLF14C via its proven name-matching engine).
+        const [res, tdRes] = await Promise.all([
+          fetch(
+            `/ma/api/private-funds/list?page=1&pageSize=50&keyword=${encodeURIComponent(q)}`,
+            { signal: controller.signal },
+          ),
+          // Only search team data when there is an explicit keyword (avoids flooding
+          // the default empty-keyword view with all 14+ team-data products).
+          q.trim()
+            ? fetch(
+                `/ma/api/ops/team-data/list?keyword=${encodeURIComponent(q)}&pageSize=100`,
+                { signal: controller.signal },
+              )
+            : Promise.resolve(null),
+        ])
+
         if (controller.signal.aborted) return
+
         if (!res.ok) {
           setFundRows([])
           setShareClassMap({})
           return
         }
+
         const payload = (await res.json()) as { data?: FundRow[] }
         if (controller.signal.aborted) return
-        const rows = Array.isArray(payload.data) ? payload.data : []
+
+        const rows: FundRow[] = Array.isArray(payload.data) ? [...payload.data] : []
+
+        // Merge in team-data results — adds email-discovered A/B/C class products
+        // (e.g. BLF14C) that the AMAC/BFL search would miss.
+        if (tdRes?.ok) {
+          const tdPayload = (await tdRes.json()) as {
+            data?: Array<{ beian_hao: string | null; product_name: string }>
+          }
+          if (!controller.signal.aborted && Array.isArray(tdPayload.data)) {
+            const seen = new Set(rows.map((r) => r.beian_hao.toUpperCase()))
+            for (const td of tdPayload.data) {
+              const beian = (td.beian_hao ?? "").trim()
+              if (!beian || seen.has(beian.toUpperCase())) continue
+              seen.add(beian.toUpperCase())
+              rows.push({ beian_hao: beian, product_name: td.product_name || beian })
+            }
+          }
+        }
+
         setFundRows(rows)
         setExpandedParents(new Set())
 
-        // Fetch A/B/C share-class children for all returned products
+        // Fetch A/B/C share-class children (from BFL / team-data-products / email)
         if (rows.length > 0) {
           const parents = rows.map((r) => r.beian_hao).join(",")
           const scRes = await fetch(
@@ -306,8 +340,8 @@ export function InvestmentNoteAssociationDialog({
                       const isExpanded = expandedParents.has(row.beian_hao)
 
                       return (
-                        <>
-                          <tr key={row.beian_hao} className="border-b border-zinc-100 hover:bg-zinc-50/80">
+                        <Fragment key={row.beian_hao}>
+                          <tr className="border-b border-zinc-100 hover:bg-zinc-50/80">
                             <td className="px-3 py-2.5">
                               <Checkbox
                                 checked={checked}
@@ -388,7 +422,7 @@ export function InvestmentNoteAssociationDialog({
                               </tr>
                             )
                           })}
-                        </>
+                        </Fragment>
                       )
                     })
                   )}

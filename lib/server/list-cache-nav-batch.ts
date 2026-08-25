@@ -1854,17 +1854,25 @@ function needsNavMetricsRecompute(
   asOfDate: string,
   mode: EnrichNavMode = "full",
 ): boolean {
-  if (!row.latest_nav) return true
   const rule = lookupFundNavCorrectionRule(row.beian_hao, row.product_name, row.short_name)
   if (rule?.preserve_high_nav_scale) return false
+
+  // next-server list path: trust the precomputed cache. Missing NAV is an ETL
+  // gap (show "—"), not a reason to run BatchNavResolver on 50 funds and hang
+  // 跟踪产品 for a minute. Only recompute clearly corrupt daily returns.
+  if (mode === "corrupt-only") {
+    if (!row.latest_nav) return false
+    const nav = parseFloat(row.latest_nav)
+    if (!Number.isFinite(nav)) return false
+    const change = parseFloat(row.latest_price_change ?? "")
+    return Number.isFinite(change) && Math.abs(change) > 100
+  }
+
+  if (!row.latest_nav) return true
   const nav = parseFloat(row.latest_nav)
   if (!Number.isFinite(nav)) return true
   const change = parseFloat(row.latest_price_change ?? "")
   if (Number.isFinite(change) && Math.abs(change) > 100) return true
-
-  // next-server list path: trust nightly cache. Recomputing "stale" / high-NAV /
-  // volatile-week rows here pegs CPU (thousands of private funds report monthly).
-  if (mode === "corrupt-only") return false
 
   if (nav > 2.5) return true
   // Contaminated period base (e.g. SAVW72 近一周 −11.89% with daily ~0.1%).

@@ -216,6 +216,7 @@ export function AllWeatherApp() {
   const pathname = usePathname()
   const homeHref = pathname.startsWith("/ma/") ? "/ma/dashboard" : "/dashboard"
   const [authorized, setAuthorized] = useState<boolean | null>(null)
+  const [canManage, setCanManage] = useState(false)
   const [overview, setOverview] = useState<Overview | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -243,10 +244,11 @@ export function AllWeatherApp() {
 
   useEffect(() => {
     const user = authService.getCurrentUser()
-    if (!user || user.name !== "cshen") {
+    if (!user) {
       setAuthorized(false)
       return
     }
+    setCanManage(user.name === "cshen")
     setAuthorized(true)
     void loadAll()
   }, [])
@@ -255,15 +257,18 @@ export function AllWeatherApp() {
     setLoading(true)
     setError(null)
     try {
-      const [ovRes, emRes] = await Promise.all([
-        fetch(`/api/all-weather${refresh ? "?refresh=1" : ""}`, { headers: headers(), cache: "no-store" }),
-        fetch("/api/all-weather/email", { headers: headers(), cache: "no-store" }),
-      ])
+      const ovRes = await fetch(`/api/all-weather${refresh ? "?refresh=1" : ""}`, {
+        headers: headers(),
+        cache: "no-store",
+      })
       const ov = await ovRes.json()
-      const em = await emRes.json()
       if (!ovRes.ok || !ov?.ok) throw new Error(ov?.error || "策略数据加载失败")
       setOverview(ov)
-      if (emRes.ok && em?.ok) applyEmail(em.config)
+      if (authService.getCurrentUser()?.name === "cshen") {
+        const emRes = await fetch("/api/all-weather/email", { headers: headers(), cache: "no-store" })
+        const em = await emRes.json()
+        if (emRes.ok && em?.ok) applyEmail(em.config)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败")
     } finally {
@@ -474,8 +479,8 @@ export function AllWeatherApp() {
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <Card className="w-80 border-slate-200 bg-white p-8 text-center shadow-sm">
           <AlertCircle className="mx-auto mb-4 h-10 w-10 text-rose-500" />
-          <p className="mb-2 text-lg font-semibold text-slate-900">无权限访问</p>
-          <p className="mb-4 text-sm text-slate-500">此页面仅限 cshen 访问。</p>
+          <p className="mb-2 text-lg font-semibold text-slate-900">请先登录</p>
+          <p className="mb-4 text-sm text-slate-500">登录后即可查看全天候策略。</p>
           <div className="flex justify-center gap-2">
             <Button variant="outline" onClick={() => router.push(homeHref)}>返回仪表盘</Button>
             <Button onClick={() => router.push("/login")}>前往登录</Button>
@@ -504,9 +509,12 @@ export function AllWeatherApp() {
                   <button
                     key={item.id}
                     type="button"
-                    disabled={loading}
-                    title={item.hint}
-                    onClick={() => void setupTenor(item.id)}
+                    disabled={loading || !canManage}
+                    title={canManage ? item.hint : "合约月份由管理员设置"}
+                    onClick={() => {
+                      if (!canManage) return
+                      void setupTenor(item.id)
+                    }}
                     className={`rounded px-2.5 py-1 text-xs ${
                       active ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
                     }`}
@@ -573,7 +581,7 @@ export function AllWeatherApp() {
                 <TabsTrigger value="live">当前持仓</TabsTrigger>
                 <TabsTrigger value="pnl">盈亏轨迹</TabsTrigger>
                 <TabsTrigger value="backtest">回测摘要</TabsTrigger>
-                <TabsTrigger value="email">邮件推送</TabsTrigger>
+                {canManage ? <TabsTrigger value="email">邮件推送</TabsTrigger> : null}
               </TabsList>
 
               <TabsContent value="live" className="space-y-4">
@@ -703,7 +711,9 @@ export function AllWeatherApp() {
                 <Card className="border-slate-200 bg-white p-5 shadow-sm">
                   <div className="mb-3 flex items-center justify-between">
                     <div className="text-sm font-medium">模拟净值</div>
-                    <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
+                    {canManage ? (
+                      <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
+                    ) : null}
                   </div>
                   <div className="h-64">
                     {chartData.length < 2 ? (
@@ -790,6 +800,7 @@ export function AllWeatherApp() {
                 </Card>
               </TabsContent>
 
+              {canManage ? (
               <TabsContent value="email">
                 <Card className="border-slate-200 bg-white p-5 shadow-sm">
                   <div className="mb-1 flex items-center gap-2 text-sm font-medium">
@@ -990,6 +1001,7 @@ export function AllWeatherApp() {
                   </div>
                 </Card>
               </TabsContent>
+              ) : null}
             </Tabs>
           </>
         )}

@@ -904,6 +904,24 @@ async function uploadMaterialInChunks(
   return last
 }
 
+export async function autoRenameInvestmentNoteMaterials(): Promise<{
+  materials: InvestmentNoteMaterial[]
+  remaining: number
+}> {
+  const data = await apiFetch<{
+    ok: true
+    materials?: InvestmentNoteMaterial[]
+    remaining?: number
+  }>("/ma/api/investment-notes/materials/auto-rename", {
+    method: "POST",
+    body: "{}",
+  })
+  return {
+    materials: Array.isArray(data.materials) ? data.materials : [],
+    remaining: typeof data.remaining === "number" ? data.remaining : 0,
+  }
+}
+
 export async function extractInvestmentNoteMaterialElements(id: string): Promise<unknown> {
   const data = await apiFetch<{ ok: true; extractJob: unknown }>(
     `/ma/api/investment-notes/materials/${encodeURIComponent(id)}/extract-elements`,

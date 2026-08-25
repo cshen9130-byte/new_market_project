@@ -76,7 +76,7 @@ function navFromRow(row: FundNavRow): number | null {
 
 function seriesLooksThin(series: ReturnCurveSeries[], holdingCount: number): boolean {
   if (series.length === 0) return true
-  const rich = series.filter((s) => (s.points?.length ?? 0) >= 20).length
+  const rich = series.filter((s) => (s.points?.length ?? 0) >= 9).length
   return rich < Math.max(1, Math.ceil(Math.max(holdingCount, series.length) * 0.35))
 }
 
@@ -96,11 +96,17 @@ export function FofVolatilityAnalysisPanel({
   const [overrides, setOverrides] = useState<Record<string, FofGapAction>>({})
   const [assumeVolDraft, setAssumeVolDraft] = useState("10")
   const [assumeCorrDraft, setAssumeCorrDraft] = useState("0.30")
+  const [gapChoiceMade, setGapChoiceMade] = useState(false)
 
   const holdings = useMemo(
     () => fundHoldings.filter((r) => !isStockRow(r) && !isCashOrNonFundRow(r) && r.marketValue > 0),
     [fundHoldings],
   )
+
+  useEffect(() => {
+    setOverrides({})
+    setGapChoiceMade(false)
+  }, [fromDate, toDate])
 
   useEffect(() => {
     if (holdings.length === 0 || !seriesLooksThin(series, holdings.length)) {
@@ -169,7 +175,9 @@ export function FofVolatilityAnalysisPanel({
 
   const activeSeries = useMemo(() => {
     if (!seriesLooksThin(series, holdings.length)) return series
-    if (fetchedSeries.length > 0) return fetchedSeries
+    const parentRich = series.filter((s) => (s.points?.length ?? 0) >= 9).length
+    const fetchedRich = fetchedSeries.filter((s) => (s.points?.length ?? 0) >= 9).length
+    if (fetchedRich > parentRich) return fetchedSeries
     return series
   }, [series, fetchedSeries, holdings.length])
 
@@ -324,14 +332,17 @@ export function FofVolatilityAnalysisPanel({
   }
 
   function setGapAction(key: string, action: FofGapAction) {
+    setGapChoiceMade(true)
     setOverrides((prev) => ({ ...prev, [key]: action }))
   }
 
   function applyAllIgnore() {
+    setGapChoiceMade(true)
     setOverrides(Object.fromEntries(gaps.map((g) => [g.key, { kind: "ignore" as const }])))
   }
 
   function applyAllProxy() {
+    setGapChoiceMade(true)
     setOverrides(Object.fromEntries(gaps.map((g) => {
       const proxyKey = g.suggestedProxies[0]?.key
       return [g.key, proxyKey ? { kind: "proxy" as const, proxyKey } : { kind: "ignore" as const }]
@@ -339,6 +350,7 @@ export function FofVolatilityAnalysisPanel({
   }
 
   function applyAllAssume() {
+    setGapChoiceMade(true)
     const annVolPct = Number(assumeVolDraft) || defaultAssumeVol
     const corr = Number(assumeCorrDraft)
     setOverrides(Object.fromEntries(gaps.map((g) => [g.key, {
@@ -455,6 +467,8 @@ export function FofVolatilityAnalysisPanel({
         <div className="h-[240px] flex items-center justify-center text-sm text-zinc-400 px-4 text-center">
           {holdings.length === 0
             ? "暂无基金持仓，无法计算组合波动"
+            : gapChoiceMade && gaps.length > 0
+              ? "已按所选方式处理净值不足基金，但剩余样本仍不足以估计组合 VaR。请改用同类基金代替，或假设波动率。"
             : gaps.length > 0
               ? "上表基金净值不足。可忽略、用同类基金代替，或假设波动率后再计算 VaR。"
               : activeSeries.length === 0

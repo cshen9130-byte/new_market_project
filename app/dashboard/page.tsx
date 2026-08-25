@@ -54,7 +54,6 @@ export default function DashboardPage() {
       <div className="absolute top-4 left-4 z-10 text-cyan-400 text-lg font-mono">欢迎，{user.name}</div>
 
       <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-        {user.name === "cshen" && (
         <Button
           onClick={() => router.push("/ma/dashboard/all-weather")}
           variant="outline"
@@ -63,7 +62,6 @@ export default function DashboardPage() {
           <CloudSun className="w-4 h-4 sm:mr-2" />
           <span className="hidden sm:inline">全天候跟踪</span>
         </Button>
-        )}
         {showAiKnowledge && (
         <Button
           onClick={() => router.push("/dashboard/ai-knowledge")}

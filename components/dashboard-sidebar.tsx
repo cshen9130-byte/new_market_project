@@ -47,6 +47,20 @@ export function DashboardSidebar() {
             </Link>
           )
         })}
+        {currentUser && (
+          <Link
+            href="/ma/dashboard/all-weather"
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              pathname === "/ma/dashboard/all-weather"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <CloudSun className="h-4 w-4" />
+            全天候跟踪
+          </Link>
+        )}
         {isCshen && (
           <>
             <div className="pt-2 pb-1">
@@ -63,18 +77,6 @@ export function DashboardSidebar() {
             >
               <Database className="h-4 w-4" />
               DB 浏览器
-            </Link>
-            <Link
-              href="/ma/dashboard/all-weather"
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                pathname === "/ma/dashboard/all-weather"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-            >
-              <CloudSun className="h-4 w-4" />
-              全天候跟踪
             </Link>
           </>
         )}

@@ -111,6 +111,7 @@ data/ops_crawl_emails.json.bak
 data/ops_crawl_emails.json.tmp
 data/account-risk/
 data/all-weather/
+data/paper-trading/
 
 # MOM API cache files
 data/mom-cache/

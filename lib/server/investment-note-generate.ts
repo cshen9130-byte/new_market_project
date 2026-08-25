@@ -1,4 +1,5 @@
 import path from "path"
+import mammoth from "mammoth"
 import { ChatOpenAI } from "@langchain/openai"
 import { HumanMessage, SystemMessage } from "@langchain/core/messages"
 import {
@@ -6,6 +7,8 @@ import {
   MAX_INVESTMENT_NOTE_CONTENT_CHARS,
   MAX_INVESTMENT_NOTE_TITLE_CHARS,
   type InvestmentNote,
+  type InvestmentNoteAssociation,
+  type InvestmentNoteRoadshowAssociation,
 } from "@/lib/ma/investment-notes"
 import { readFundContractText } from "@/lib/server/fund-contract-element-extract"
 import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
@@ -15,7 +18,10 @@ import {
   resolveInvestmentNoteMaterials,
   type InvestmentNoteMaterial,
 } from "@/lib/server/investment-note-materials"
-import { createServerInvestmentNoteWithKbSync } from "@/lib/server/investment-notes"
+import {
+  createServerInvestmentNoteWithKbSync,
+  type CreateServerInvestmentNoteOptions,
+} from "@/lib/server/investment-notes"
 import type { InvestmentNoteKbOwner } from "@/lib/server/investment-notes-kb-sync"
 
 const MAX_MATERIALS = 8
@@ -152,6 +158,7 @@ function fallbackContent(extracted: Array<{ name: string; text: string }>): stri
 async function summarizeWithAi(input: {
   fileNames: string[]
   extracted: Array<{ name: string; text: string }>
+  roadshowPlainText?: string
 }): Promise<{ title: string; content: string }> {
   const chunks: string[] = []
   let used = 0
@@ -168,21 +175,25 @@ async function summarizeWithAi(input: {
     [
       "你是私募投资研究助手，负责把路演材料、尽调资料、合同或研究报告整理成投资笔记。",
       "要求：",
-      "1. 只依据提供的文件内容整理，不要编造文件中没有的事实、数据或结论。",
+      "1. 只依据提供的文件内容和路演信息整理，不要编造其中没有的事实、数据或结论。",
       "2. 用中文撰写，结构清晰，突出要点、关键数据和风险。",
       "3. 严格输出 JSON：{\"title\":\"笔记标题\",\"content\":\"HTML正文\"}",
       "4. title 简洁，不超过 80 字，可包含管理人、产品或主题。",
       "5. content 使用简单 HTML（div、b、p、ul、li、table），不要使用 markdown，不要用代码块包裹。",
       "6. 若多份文件主题不同，按文件分节；主题相同则合并去重。",
+      "7. 若提供了路演信息，把它作为背景写入笔记（日期、对象、策略等），不要重复成空表格。",
     ].join("\n"),
   )
   const human = new HumanMessage(
     [
       `共 ${input.fileNames.length} 份资料：${input.fileNames.join("、")}`,
+      input.roadshowPlainText?.trim() ? `\n【路演信息】\n${input.roadshowPlainText.trim()}` : "",
       "",
       "【文件内容】",
       chunks.join("\n\n"),
-    ].join("\n"),
+    ]
+      .filter(Boolean)
+      .join("\n"),
   )
 
   const aiResult = await model.invoke([system, human])
@@ -199,11 +210,107 @@ async function summarizeWithAi(input: {
   }
 }
 
+function stripOuterHtmlDocument(html: string): string {
+  return html
+    .replace(/<head[\s\S]*?<\/head>/gi, "")
+    .replace(/<\/?(?:html|body)[^>]*>/gi, "")
+    .trim()
+}
+
+/** Convert a DD-material / upload file into note HTML (Word keeps formatting). */
+export async function convertFileBufferToNoteHtml(
+  buffer: Buffer,
+  fileName: string,
+): Promise<string> {
+  const ext = getExtension(fileName)
+  if (ext === ".html" || ext === ".htm") {
+    const html = compactRichNoteHtml(stripOuterHtmlDocument(buffer.toString("utf8")))
+    if (html.replace(/<[^>]+>/g, "").trim()) return html
+  }
+  if (ext === ".docx" || ext === ".doc") {
+    try {
+      const parsed = await mammoth.convertToHtml({ buffer })
+      const html = compactRichNoteHtml(stripOuterHtmlDocument(parsed.value || ""))
+      if (html.replace(/<[^>]+>/g, "").trim()) return html
+    } catch {
+      // fall through to text extraction
+    }
+  }
+  const text = await extractMaterialText(buffer, fileName)
+  return toNoteHtml(text)
+}
+
+export type ComposedNoteFromFiles = {
+  title: string
+  body: string
+  extractedNames: string[]
+  skipped: string[]
+}
+
+export async function composeInvestmentNoteFromFileBuffers(input: {
+  files: Array<{ name: string; buffer: Buffer }>
+  roadshowPlainText?: string
+  fallbackTitle?: string
+}): Promise<ComposedNoteFromFiles> {
+  const extracted: Array<{ name: string; text: string }> = []
+  const skipped: string[] = []
+
+  for (const file of input.files) {
+    try {
+      const text = await extractMaterialText(file.buffer, file.name)
+      if (!text.trim()) {
+        skipped.push(`${file.name}（无文字内容）`)
+        continue
+      }
+      extracted.push({ name: file.name, text: text.trim() })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "无法提取文字"
+      skipped.push(`${file.name}（${reason}）`)
+    }
+  }
+
+  if (extracted.length === 0) {
+    return {
+      title: (input.fallbackTitle || "资料笔记").slice(0, MAX_INVESTMENT_NOTE_TITLE_CHARS),
+      body: "",
+      extractedNames: [],
+      skipped,
+    }
+  }
+
+  const fileNames = input.files.map((item) => item.name)
+  let title = input.fallbackTitle?.trim() || fallbackTitle(fileNames)
+  let body = fallbackContent(extracted)
+  try {
+    const generated = await summarizeWithAi({
+      fileNames,
+      extracted,
+      roadshowPlainText: input.roadshowPlainText,
+    })
+    title = generated.title
+    body = generated.content
+  } catch (err) {
+    console.error("[investment-note-generate] AI summarize failed, using extracted text", err)
+  }
+
+  return {
+    title: title.slice(0, MAX_INVESTMENT_NOTE_TITLE_CHARS),
+    body,
+    extractedNames: extracted.map((item) => item.name),
+    skipped,
+  }
+}
+
 export async function generateInvestmentNoteFromMaterials(input: {
   materialIds: string[]
   userId: string
   userName: string
   owner: InvestmentNoteKbOwner
+  roadshowAssociations?: InvestmentNoteRoadshowAssociation[]
+  associations?: InvestmentNoteAssociation[]
+  roadshowPlainText?: string
+  fallbackTitle?: string
+  createOptions?: CreateServerInvestmentNoteOptions
 }): Promise<GeneratedNoteFromMaterials> {
   const ids = input.materialIds.map((id) => String(id || "").trim()).filter(Boolean)
   if (ids.length === 0) throw new Error("请先选择文件")
@@ -245,10 +352,14 @@ export async function generateInvestmentNoteFromMaterials(input: {
   }
 
   const fileNames = materials.map((m) => m.name)
-  let title = fallbackTitle(fileNames)
+  let title = input.fallbackTitle?.trim() || fallbackTitle(fileNames)
   let body = fallbackContent(extracted)
   try {
-    const generated = await summarizeWithAi({ fileNames, extracted })
+    const generated = await summarizeWithAi({
+      fileNames,
+      extracted,
+      roadshowPlainText: input.roadshowPlainText,
+    })
     title = generated.title
     body = generated.content
   } catch (err) {
@@ -277,7 +388,10 @@ export async function generateInvestmentNoteFromMaterials(input: {
       title,
       content,
       teamShared: true,
+      ...(input.roadshowAssociations ? { roadshowAssociations: input.roadshowAssociations } : {}),
+      ...(input.associations ? { associations: input.associations } : {}),
     },
+    input.createOptions,
   )
 
   const storedIds = materials

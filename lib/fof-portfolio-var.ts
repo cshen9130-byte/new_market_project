@@ -303,10 +303,18 @@ function selectAnalysisUniverse(funds: PreparedFund[]): PreparedFund[] {
   return best
 }
 
+type AlignPeriod = "week" | "month"
+
 function isoWeekStart(date: string): string {
   const d = new Date(`${date.slice(0, 10)}T12:00:00`)
   const dow = d.getDay()
   d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
+  return d.toISOString().slice(0, 10)
+}
+
+function monthEnd(yearMonth: string): string {
+  const [year, month] = yearMonth.split("-").map(Number)
+  const d = new Date(Date.UTC(year, month, 0))
   return d.toISOString().slice(0, 10)
 }
 
@@ -320,25 +328,47 @@ function lastNavByWeek(points: FofNavPoint[]): FofNavPoint[] {
     .map(([date, nav]) => ({ date, nav }))
 }
 
-function alignReturns(funds: PreparedFund[]): { dates: string[]; returns: number[][] } | null {
-  const weekly = funds.map((f) => ({
-    ...f,
-    points: lastNavByWeek(f.points),
-    actualDates: new Set(lastNavByWeek(f.points).map((p) => p.date)),
-  }))
+function lastNavByMonth(points: FofNavPoint[]): FofNavPoint[] {
+  const byMonth = new Map<string, number>()
+  for (const p of [...points].sort((a, b) => a.date.localeCompare(b.date))) {
+    byMonth.set(p.date.slice(0, 7), p.nav)
+  }
+  return [...byMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, nav]) => ({ date: monthEnd(month), nav }))
+}
+
+function bucketPoints(points: FofNavPoint[], period: AlignPeriod): FofNavPoint[] {
+  return period === "month" ? lastNavByMonth(points) : lastNavByWeek(points)
+}
+
+function preferredAlignPeriods(funds: PreparedFund[]): AlignPeriod[] {
+  const gaps = funds.map((f) => medianGap(f.points.map((p) => p.date))).sort((a, b) => a - b)
+  const med = gaps[Math.floor(gaps.length / 2)] ?? 7
+  return med > 10 ? ["month", "week"] : ["week", "month"]
+}
+
+function alignReturnsOn(
+  funds: PreparedFund[],
+  period: AlignPeriod,
+): { dates: string[]; returns: number[][] } | null {
+  const bucketed = funds.map((f) => {
+    const points = bucketPoints(f.points, period)
+    return { ...f, points, actualDates: new Set(points.map((p) => p.date)) }
+  })
   const dateSet = new Set<string>()
-  for (const f of weekly) {
+  for (const f of bucketed) {
     for (const p of f.points) dateSet.add(p.date)
   }
   const allDates = [...dateSet].sort()
   if (allDates.length < 3) return null
 
-  const actualCount = allDates.map((d) => weekly.filter((f) => f.actualDates.has(d)).length)
-  const minCover = Math.max(1, Math.ceil(weekly.length * COVERAGE))
+  const actualCount = allDates.map((d) => bucketed.filter((f) => f.actualDates.has(d)).length)
+  const minCover = Math.max(1, Math.ceil(bucketed.length * COVERAGE))
   const grid = allDates.filter((_, i) => actualCount[i] >= minCover)
   if (grid.length < 3) return null
 
-  const navs = weekly.map((f) => {
+  const navs = bucketed.map((f) => {
     const byDate = new Map(f.points.map((p) => [p.date, p.nav]))
     let last: number | null = null
     return grid.map((d) => {
@@ -355,7 +385,7 @@ function alignReturns(funds: PreparedFund[]): { dates: string[]; returns: number
   const dates: string[] = []
   const returns: number[][] = funds.map(() => [])
   for (let t = start + 1; t < grid.length; t++) {
-    const period: number[] = []
+    const periodRets: number[] = []
     let ok = true
     for (let i = 0; i < funds.length; i++) {
       const prev = navs[i][t - 1]
@@ -364,15 +394,41 @@ function alignReturns(funds: PreparedFund[]): { dates: string[]; returns: number
         ok = false
         break
       }
-      period.push(curr / prev - 1)
+      periodRets.push(curr / prev - 1)
     }
     if (!ok) continue
     dates.push(grid[t])
-    for (let i = 0; i < funds.length; i++) returns[i].push(period[i])
+    for (let i = 0; i < funds.length; i++) returns[i].push(periodRets[i])
   }
 
   if (dates.length < MIN_RETURNS) return null
   return { dates, returns }
+}
+
+function alignReturns(funds: PreparedFund[]): { dates: string[]; returns: number[][] } | null {
+  if (funds.length === 0) return null
+  for (const period of preferredAlignPeriods(funds)) {
+    const hit = alignReturnsOn(funds, period)
+    if (hit) return hit
+  }
+  return null
+}
+
+function selectAlignableUniverse(funds: PreparedFund[]): PreparedFund[] {
+  const core = selectAnalysisUniverse(funds)
+  if (funds.length === 0) return core
+  if (alignReturns(core)) return core
+
+  const ranked = [...core].sort((a, b) => {
+    const byStart = firstDate(a).localeCompare(firstDate(b))
+    if (byStart !== 0) return byStart
+    return b.points.length - a.points.length
+  })
+  for (let keep = ranked.length - 1; keep >= 1; keep--) {
+    const subset = ranked.slice(0, keep)
+    if (alignReturns(subset)) return subset
+  }
+  return core
 }
 
 function suggestProxies(
@@ -523,7 +579,7 @@ export function computeFofPortfolioVar(input: {
     pending.push(item)
   }
 
-  const universeCore = selectAnalysisUniverse(prepared)
+  const universeCore = selectAlignableUniverse(prepared)
   const lateDropped = prepared.filter((f) => !universeCore.includes(f))
   let universe = [...universeCore]
 

@@ -125,7 +125,7 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
             </Link>
           )
         })}
-        {currentUser?.name === "cshen" && (
+        {currentUser && (
           <Link
             href="/ma/dashboard/all-weather"
             title={isCollapsed ? "全天候跟踪" : undefined}
@@ -204,7 +204,7 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
                   </Link>
                 )
               })}
-              {currentUser?.name === "cshen" && (
+              {currentUser && (
                 <Link
                   href="/ma/dashboard/all-weather"
                   className={cn(

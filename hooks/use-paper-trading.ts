@@ -11,25 +11,33 @@ import {
   ALL_WEATHER_PORTFOLIO_ID,
   allWeatherHoldingsKey,
   applyAllWeatherBook,
+  attachAllWeatherSlice,
   closePosition,
   DEFAULT_PAPER_CAPITAL,
   emptyPaperState,
   evaluatePaperTrading,
+  hydratePaperState,
   isAllWeatherAccount,
   loadPaperState,
   markPrice,
+  mergePaperStates,
   nid,
   openPosition,
   paperNav,
   paperReturn,
+  paperSliceHasUserData,
   positionMargin,
   positionPnl,
   savePaperState,
+  splitPaperState,
+  unionPaperSlice,
   type PaperAccountKind,
+  type PaperScope,
   type PaperSide,
   type PaperState,
   type PaperStrategyDraft,
 } from "@/lib/client/paper-trading"
+import { fetchPaperTradingSlices, savePaperTradingSlice } from "@/lib/client/paper-trading-sync"
 
 export type AwOrderConfirm = {
   action: string
@@ -37,7 +45,7 @@ export type AwOrderConfirm = {
 }
 
 export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record<string, CtpCandle[]>) {
-  const [state, setState] = useState<PaperState>(emptyPaperState)
+  const [state, setState] = useState<PaperState>(() => hydratePaperState(emptyPaperState()))
   const [ready, setReady] = useState(false)
   const [selectedPortfolioId, setSelectedPortfolioId] = useState("default")
   const [error, setError] = useState<string | null>(null)
@@ -47,12 +55,93 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   const [awConfirm, setAwConfirm] = useState<AwOrderConfirm | null>(null)
   const prevMarks = useRef<Record<string, number>>({})
   const skipSave = useRef(true)
+  const hydrated = useRef(false)
+  const lastSaved = useRef({ team: "", mine: "" })
+  const saveTimer = useRef<number | null>(null)
+  const stateRef = useRef(state)
+  const pendingSlices = useRef<{ team: PaperState; mine: PaperState; teamJson: string; mineJson: string } | null>(null)
+  stateRef.current = state
 
   useEffect(() => {
+    let cancelled = false
     const loaded = loadPaperState()
-    setState(loaded)
+    setState(hydratePaperState(loaded))
     setSelectedPortfolioId(loaded.portfolios[0]?.id || "default")
     setReady(true)
+
+    void fetchPaperTradingSlices()
+      .then((remote) => {
+        if (cancelled) return
+        const prev = stateRef.current
+        const localSlices = splitPaperState(prev)
+        const mine = paperSliceHasUserData(remote.mine)
+          ? unionPaperSlice(remote.mine, localSlices.mine)
+          : localSlices.mine
+        const team = paperSliceHasUserData(remote.team)
+          ? unionPaperSlice(remote.team, localSlices.team)
+          : localSlices.team
+        const merged = attachAllWeatherSlice(mergePaperStates(team, mine), prev)
+        const mergedSlices = splitPaperState(merged)
+        const teamJson = JSON.stringify(mergedSlices.team)
+        const mineJson = JSON.stringify(mergedSlices.mine)
+        lastSaved.current = { team: teamJson, mine: mineJson }
+        setState(merged)
+        setSelectedPortfolioId((cur) =>
+          merged.portfolios.some((p) => p.id === cur) ? cur : merged.portfolios[0]?.id || "default",
+        )
+        if (remote.userId) {
+          if (mineJson !== JSON.stringify(remote.mine)) {
+            void savePaperTradingSlice("mine", mergedSlices.mine).catch(() => {})
+          }
+          if (teamJson !== JSON.stringify(remote.team)) {
+            void savePaperTradingSlice(
+              "team",
+              mergedSlices.team,
+              mergedSlices.team.portfolios.map((p) => p.id),
+            ).catch(() => {})
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) hydrated.current = true
+      })
+
+    const poll = window.setInterval(() => {
+      if (!hydrated.current) return
+      void fetchPaperTradingSlices()
+        .then((remote) => {
+          if (cancelled) return
+          setState((prev) => {
+            const local = splitPaperState(prev)
+            const remoteTeamJson = JSON.stringify(remote.team)
+            const localTeamJson = JSON.stringify(local.team)
+            if (remoteTeamJson === lastSaved.current.team || remoteTeamJson === localTeamJson) return prev
+            if (localTeamJson !== lastSaved.current.team) return prev
+            lastSaved.current.team = remoteTeamJson
+            return attachAllWeatherSlice(mergePaperStates(remote.team, local.mine), prev)
+          })
+        })
+        .catch(() => {})
+    }, 45_000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(poll)
+      const pending = pendingSlices.current
+      if (pending) {
+        if (pending.teamJson !== lastSaved.current.team) {
+          void savePaperTradingSlice(
+            "team",
+            pending.team,
+            pending.team.portfolios.map((p) => p.id),
+          ).catch(() => {})
+        }
+        if (pending.mineJson !== lastSaved.current.mine) {
+          void savePaperTradingSlice("mine", pending.mine).catch(() => {})
+        }
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -62,6 +151,31 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       return
     }
     savePaperState(state)
+    if (!hydrated.current) return
+    const slices = splitPaperState(state)
+    const teamJson = JSON.stringify(slices.team)
+    const mineJson = JSON.stringify(slices.mine)
+    pendingSlices.current = { team: slices.team, mine: slices.mine, teamJson, mineJson }
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    saveTimer.current = window.setTimeout(() => {
+      const pending = pendingSlices.current
+      if (!pending) return
+      if (pending.teamJson !== lastSaved.current.team) {
+        lastSaved.current.team = pending.teamJson
+        void savePaperTradingSlice(
+          "team",
+          pending.team,
+          pending.team.portfolios.map((p) => p.id),
+        ).catch(() => {})
+      }
+      if (pending.mineJson !== lastSaved.current.mine) {
+        lastSaved.current.mine = pending.mineJson
+        void savePaperTradingSlice("mine", pending.mine).catch(() => {})
+      }
+    }, 800)
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    }
   }, [ready, state])
 
   useEffect(() => {
@@ -124,20 +238,37 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   }, [])
 
   const createPortfolio = useCallback(
-    (name: string, kind: Exclude<PaperAccountKind, "all-weather"> = "manual", initialCapital = DEFAULT_PAPER_CAPITAL) => {
+    (
+      name: string,
+      kind: Exclude<PaperAccountKind, "all-weather"> = "manual",
+      initialCapital = DEFAULT_PAPER_CAPITAL,
+      scope: PaperScope = "mine",
+    ) => {
       const capital = Number(initialCapital)
       if (!Number.isFinite(capital) || capital <= 0) {
         setError("总资金必须大于 0")
         return null
       }
       const id = nid("pf-")
+      const resolvedScope: PaperScope = scope === "team" ? "team" : "mine"
       setState((prev) => {
         const trimmed = name.trim()
-        const count = prev.portfolios.filter((p) => (p.kind || "manual") === kind).length + 1
-        const resolved = trimmed || (kind === "strategy" ? `策略账户 ${count}` : `手动账户 ${count}`)
+        const count = prev.portfolios.filter((p) => (p.kind || "manual") === kind && (p.scope || "mine") === resolvedScope).length + 1
+        const resolved =
+          trimmed ||
+          (resolvedScope === "team"
+            ? kind === "strategy"
+              ? `团队策略 ${count}`
+              : `团队账户 ${count}`
+            : kind === "strategy"
+              ? `策略账户 ${count}`
+              : `手动账户 ${count}`)
         return {
           ...prev,
-          portfolios: [...prev.portfolios, { id, name: resolved, kind, createdAt: Date.now(), initialCapital: capital }],
+          portfolios: [
+            ...prev.portfolios,
+            { id, name: resolved, kind, scope: resolvedScope, createdAt: Date.now(), initialCapital: capital },
+          ],
         }
       })
       setSelectedPortfolioId(id)

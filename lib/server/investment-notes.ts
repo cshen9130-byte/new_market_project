@@ -269,12 +269,18 @@ async function mirrorNoteToKnowledgeBase(
   }
 }
 
+export type CreateServerInvestmentNoteOptions = {
+  /** Default prepends (newest first). Append puts the note at the end of 团队笔记. */
+  append?: boolean
+}
+
 export function createServerInvestmentNote(
   userId: string,
   userName: string,
   partial?: Partial<
     Pick<InvestmentNote, "title" | "content" | "teamShared" | "associations" | "roadshowAssociations">
   >,
+  options?: CreateServerInvestmentNoteOptions,
 ): InvestmentNote {
   const safeUserId = String(userId || "").trim()
   if (!safeUserId) throw new Error("用户未登录")
@@ -314,7 +320,8 @@ export function createServerInvestmentNote(
   }
 
   const notes = readAllNotes()
-  notes.unshift(note)
+  if (options?.append) notes.push(note)
+  else notes.unshift(note)
   writeAllNotes(notes)
 
   const { creatorId: _creatorId, ...result } = note
@@ -328,10 +335,23 @@ export async function createServerInvestmentNoteWithKbSync(
   partial?: Partial<
     Pick<InvestmentNote, "title" | "content" | "teamShared" | "associations" | "roadshowAssociations">
   >,
+  options?: CreateServerInvestmentNoteOptions,
 ): Promise<InvestmentNote> {
-  const note = createServerInvestmentNote(userId, userName, partial)
+  const note = createServerInvestmentNote(userId, userName, partial, options)
   if (!note.teamShared) return note
   return mirrorNoteToKnowledgeBase({ ...note, creatorId: userId }, owner, null)
+}
+
+/** All 尽调表格 row ids already linked from any investment note. */
+export function collectInvestmentNoteRoadshowRowIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const note of readAllNotes()) {
+    for (const assoc of note.roadshowAssociations ?? []) {
+      const rowId = assoc.rowId?.trim()
+      if (rowId) ids.add(rowId)
+    }
+  }
+  return ids
 }
 
 export function updateServerInvestmentNote(

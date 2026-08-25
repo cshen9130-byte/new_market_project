@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { isContractTenor } from "@/lib/all-weather/setup"
-import { requireCshen } from "@/lib/server/require-cshen"
+import { requireCshen, requireLoggedIn } from "@/lib/server/require-cshen"
 import { getOverview, refreshPaperBook, resetPaperBook } from "@/lib/server/all-weather-book"
 import { writeAllWeatherSettings } from "@/lib/server/all-weather-settings"
 
@@ -8,8 +8,8 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(req: Request) {
-  const user = await requireCshen(req)
-  if (!user) return NextResponse.json({ error: "无权限" }, { status: 403 })
+  const user = await requireLoggedIn(req)
+  if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 })
   try {
     const url = new URL(req.url)
     const refresh = url.searchParams.get("refresh") === "1"

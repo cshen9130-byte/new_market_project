@@ -9,6 +9,7 @@ import {
 import { enqueueElementExtractForInvestmentNoteMaterial } from "@/lib/server/investment-note-element-extract"
 import { getUserById } from "@/lib/server/users"
 import {
+  cleanupInvestmentNoteMaterialDisplayNames,
   deleteInvestmentNoteMaterial,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterialsForViewer,
@@ -79,6 +80,7 @@ export async function GET(req: Request) {
     if (!user) {
       return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 })
     }
+    cleanupInvestmentNoteMaterialDisplayNames()
     const materials = await listInvestmentNoteMaterialsForViewer(user.id)
     return NextResponse.json({ ok: true, materials })
   } catch (e: unknown) {

@@ -15,8 +15,13 @@ import {
 } from "@/lib/server/email-nav-query"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
+import { expandBeiansWithShareClassFamily } from "@/lib/server/list-cache-nav-batch"
 import { shareClassProductCodesMatch, sqlFundNameMatch } from "@/lib/server/fund-name-match"
-import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import {
+  alternateBeianCodesFor,
+  remapManagedProductBeianCode,
+  resolveManagedProductBeian,
+} from "@/lib/server/managed-product-beian"
 import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
 /**
@@ -1276,6 +1281,112 @@ function mergeLatestTeamNav(
   return { team_nav_date: bestDate, team_nav: bestNav }
 }
 
+/** S-prefix / alias variants of one 备案号, keeping the same A/B/C suffix. */
+function beianCodeAliases(code: string): string[] {
+  const u = code.trim().toUpperCase()
+  if (!u) return []
+  const seeds = new Set<string>([u])
+  const remapped = remapManagedProductBeianCode(u)
+  if (remapped) seeds.add(remapped.toUpperCase())
+  for (const alt of alternateBeianCodesFor(u)) seeds.add(alt.toUpperCase())
+  const out = new Set<string>()
+  for (const seed of seeds) {
+    out.add(seed)
+    if (seed.startsWith("S") && seed.length > 5) out.add(seed.slice(1))
+    if (!seed.startsWith("S")) out.add(`S${seed}`)
+    else if (!seed.startsWith("SS")) out.add(`S${seed}`)
+  }
+  return [...out]
+}
+
+function emailTipFitsRow(
+  tip: { code: string; fund_name: string | null },
+  row: ResolvedFund,
+): boolean {
+  const beian = row.beian_hao?.trim() || ""
+  if (!beian) return false
+  const aliases = new Set(beianCodeAliases(beian))
+  if (!shareClassProductCodesMatch(tip.code, beian) && !aliases.has(tip.code)) return false
+  const rowCls = shareClassFromFundName(row.product_name)
+  const tipCls = shareClassFromFundName(tip.fund_name || "")
+  if (rowCls && tipCls && rowCls !== tipCls) return false
+  return true
+}
+
+/**
+ * Emails often store a parent 备案号 with an A/B/C 类 name (or the S-prefixed twin).
+ * Overlay by the share-class / S-prefix family so every 团队数据 row gets the latest 团队净值,
+ * not only the name-resolved share-class row.
+ */
+async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
+  const beians = [...new Set(
+    rows.map((r) => r.beian_hao?.trim().toUpperCase()).filter(Boolean) as string[],
+  )]
+  if (beians.length === 0) return rows
+  const lookupCodes = expandBeiansWithShareClassFamily(beians)
+  await ensureEmailNavTable()
+  const emailRows = await query<{
+    code: string
+    fund_name: string | null
+    team_nav_date: string
+    team_nav: string
+    updated_at: string | null
+  }>(
+    `SELECT DISTINCT ON (code)
+       code,
+       fund_name,
+       nav_date::text AS team_nav_date,
+       nav::text AS team_nav,
+       created_at::text AS updated_at
+     FROM (
+       SELECT
+         UPPER(BTRIM(e.product_code)) AS code,
+         e.fund_name,
+         e.nav_date,
+         e.nav,
+         e.created_at,
+         e.subject,
+         e.source,
+         e.id
+       FROM ops_email_nav_records e
+       WHERE UPPER(BTRIM(e.product_code)) = ANY($1::text[])
+         AND e.nav IS NOT NULL
+         AND e.nav_date IS NOT NULL
+     ) e
+     ORDER BY
+       code,
+       nav_date DESC,
+       CASE WHEN ${sqlPostInvestmentVirtualNavExpr("e.subject")} THEN 0 ELSE 1 END,
+       ${EMAIL_NAV_SOURCE_PRIORITY},
+       e.id DESC`,
+    [lookupCodes],
+  ).catch(() => [] as Array<{
+    code: string
+    fund_name: string | null
+    team_nav_date: string
+    team_nav: string
+    updated_at: string | null
+  }>)
+  if (emailRows.length === 0) return rows
+  return rows.map((row) => {
+    const fits = emailRows.filter((tip) => emailTipFitsRow(tip, row))
+    if (fits.length === 0) return row
+    let best = fits[0]
+    for (const tip of fits.slice(1)) {
+      if (isoDay(tip.team_nav_date).localeCompare(isoDay(best.team_nav_date)) > 0) best = tip
+    }
+    const merged = mergeLatestTeamNav(row.team_nav_date, row.team_nav, [{
+      nav_date: isoDay(best.team_nav_date),
+      unit_nav: best.team_nav,
+    }])
+    return {
+      ...row,
+      ...merged,
+      updated_at: maxIsoTimestamp(row.updated_at, best.updated_at),
+    }
+  })
+}
+
 async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
   const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
   if (beians.length === 0) return rows
@@ -1306,6 +1417,143 @@ async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[
   })
 }
 
+type PlatformNavTip = { nav: string; price_date: string; code?: string }
+
+/** Same threshold as fund-detail: only lead 平台净值 with FOF 估值表 市价 when official NAV lags. */
+const PLATFORM_VALUATION_LEAD_MIN_DAYS = 5
+
+function isoDay(raw: string | null | undefined): string {
+  return (raw ?? "").trim().slice(0, 10)
+}
+
+function platformNavDaysBetween(later: string, earlier: string): number {
+  const a = Date.parse(`${isoDay(later)}T00:00:00Z`)
+  const b = Date.parse(`${isoDay(earlier)}T00:00:00Z`)
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0
+  return Math.round((a - b) / 86_400_000)
+}
+
+function pickLatestPlatformTip(tips: Array<PlatformNavTip | undefined>): PlatformNavTip | undefined {
+  let best: PlatformNavTip | undefined
+  for (const tip of tips) {
+    if (!tip?.nav || !tip.price_date) continue
+    if (!best || tip.price_date.localeCompare(best.price_date) > 0) best = tip
+  }
+  return best
+}
+
+function mergeOfficialWithValuationNav(
+  official: PlatformNavTip | undefined,
+  valuation: PlatformNavTip | undefined,
+): PlatformNavTip | undefined {
+  if (!valuation) return official
+  if (!official) return valuation
+  if (valuation.price_date <= official.price_date) return official
+  if (platformNavDaysBetween(valuation.price_date, official.price_date) >= PLATFORM_VALUATION_LEAD_MIN_DAYS) {
+    return valuation
+  }
+  return official
+}
+
+function indexPlatformTips(
+  rows: Array<{ beian_hao: string; nav: string; price_date: string }>,
+): Map<string, PlatformNavTip> {
+  const out = new Map<string, PlatformNavTip>()
+  for (const row of rows) {
+    const code = row.beian_hao?.trim().toUpperCase()
+    const price_date = isoDay(row.price_date)
+    const nav = row.nav?.trim()
+    if (!code || !price_date || !nav) continue
+    const tip = { nav, price_date, code }
+    const prev = out.get(code)
+    if (!prev || price_date.localeCompare(prev.price_date) > 0) out.set(code, tip)
+  }
+  return out
+}
+
+function officialTipForRow(
+  beian: string,
+  officialByCode: Map<string, PlatformNavTip>,
+): PlatformNavTip | undefined {
+  return pickLatestPlatformTip(beianCodeAliases(beian).map((code) => officialByCode.get(code)))
+}
+
+function valuationTipForRow(
+  beian: string,
+  valuationByCode: Map<string, PlatformNavTip>,
+): PlatformNavTip | undefined {
+  const u = beian.trim().toUpperCase()
+  if (!u) return undefined
+  const aliases = new Set(beianCodeAliases(u))
+  const rowCls = u.match(/[ABC]$/u)?.[0] ?? ""
+  const tips: PlatformNavTip[] = []
+  for (const [code, tip] of valuationByCode) {
+    if (aliases.has(code)) {
+      tips.push(tip)
+      continue
+    }
+    if (!shareClassProductCodesMatch(code, u)) continue
+    const tipCls = code.match(/[ABC]$/u)?.[0] ?? ""
+    if (rowCls && tipCls && rowCls !== tipCls) continue
+    tips.push(tip)
+  }
+  return pickLatestPlatformTip(tips)
+}
+
+async function loadOfficialPlatformNavTips(codes: string[]): Promise<Map<string, PlatformNavTip>> {
+  if (codes.length === 0) return new Map()
+  const unionRows = await query<{ beian_hao: string; nav: string; price_date: string }>(
+    `SELECT DISTINCT ON (UPPER(BTRIM(beian_hao)))
+       BTRIM(beian_hao) AS beian_hao, nav::text AS nav, price_date::text AS price_date
+     FROM (
+       SELECT beian_hao, nav, price_date, 0 AS pri
+         FROM private_fund_nav_group_type6
+        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION ALL
+       SELECT beian_hao, nav, price_date, 1
+         FROM private_fund_nav_group
+        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION ALL
+       SELECT beian_hao, nav, price_date, 2
+         FROM private_fund_nav_group_hy
+        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION ALL
+       SELECT beian_hao, nav, price_date, 3
+         FROM private_fund_nav
+        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+     ) u
+     ORDER BY UPPER(BTRIM(beian_hao)), price_date DESC, pri ASC`,
+    [codes.map((c) => c.trim().toUpperCase())],
+  ).catch(() =>
+    query<{ beian_hao: string; nav: string; price_date: string }>(
+      `SELECT DISTINCT ON (beian_hao)
+         beian_hao, nav::text, price_date::text
+       FROM private_fund_nav_group_type6
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+       ORDER BY beian_hao, price_date DESC`,
+      [codes],
+    ).catch(() => [] as Array<{ beian_hao: string; nav: string; price_date: string }>),
+  )
+  return indexPlatformTips(unionRows)
+}
+
+async function loadValuationPlatformNavTips(codes: string[]): Promise<Map<string, PlatformNavTip>> {
+  if (codes.length === 0) return new Map()
+  const rows = await query<{ beian_hao: string; nav: string; price_date: string }>(
+    `SELECT DISTINCT ON (UPPER(BTRIM(beian_hao)))
+       BTRIM(beian_hao) AS beian_hao,
+       unit_nav::text AS nav,
+       nav_date::text AS price_date
+     FROM ops_fof_underlying_valuation_nav_history
+     WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       AND unit_nav IS NOT NULL
+       AND nav_date <= CURRENT_DATE
+     ORDER BY UPPER(BTRIM(beian_hao)), nav_date DESC`,
+    [codes.map((c) => c.trim().toUpperCase())],
+  ).catch(() => [] as Array<{ beian_hao: string; nav: string; price_date: string }>)
+  return indexPlatformTips(rows)
+}
+
 async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> {
   if (rows.length === 0) return []
   try {
@@ -1315,32 +1563,41 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
   }
 
   const beians = rows.map((r) => r.beian_hao).filter(Boolean) as string[]
-  const [platRows, vmRows] = await Promise.all([
-    beians.length > 0
-      ? query<{ beian_hao: string; nav: string; price_date: string }>(
-          `SELECT DISTINCT ON (beian_hao)
-             beian_hao, nav::text, price_date::text
-           FROM private_fund_nav_group_type6
-           WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
-           ORDER BY beian_hao, price_date DESC`,
-          [beians],
-        )
-      : Promise.resolve([]),
+  const officialCodes = [...new Set(beians.flatMap((b) => beianCodeAliases(b)))]
+  const valuationCodes = expandBeiansWithShareClassFamily(beians)
+  const [officialByCode, valuationByCode, vmRows] = await Promise.all([
+    loadOfficialPlatformNavTips(officialCodes),
+    loadValuationPlatformNavTips(valuationCodes),
     beians.length > 0
       ? query<{ product_code: string; valuation_date: string }>(
           `SELECT product_code, valuation_date::text
            FROM ops_email_valuation_fund_metrics_latest
-           WHERE product_code = ANY($1::text[])`,
-          [beians],
-        )
-      : Promise.resolve([]),
+           WHERE UPPER(BTRIM(product_code)) = ANY($1::text[])`,
+          [valuationCodes],
+        ).catch(() => [] as Array<{ product_code: string; valuation_date: string }>)
+      : Promise.resolve([] as Array<{ product_code: string; valuation_date: string }>),
   ])
 
-  const platByBeian = new Map(platRows.map((r) => [r.beian_hao, r]))
-  const vmByCode = new Map(vmRows.map((r) => [r.product_code, r.valuation_date]))
+  const vmByCode = new Map<string, string>()
+  for (const row of vmRows) {
+    const code = row.product_code?.trim().toUpperCase()
+    const date = isoDay(row.valuation_date)
+    if (!code || !date) continue
+    const prev = vmByCode.get(code)
+    if (!prev || date.localeCompare(prev) > 0) vmByCode.set(code, date)
+  }
 
   return rows.map((row) => {
-    const plat = row.beian_hao ? platByBeian.get(row.beian_hao) : undefined
+    const beian = row.beian_hao?.trim() || ""
+    const official = officialTipForRow(beian, officialByCode)
+    const valuation = valuationTipForRow(beian, valuationByCode)
+    const plat = mergeOfficialWithValuationNav(official, valuation)
+    const ownValuationDate = pickLatestPlatformTip(
+      beianCodeAliases(beian).map((code) => {
+        const date = vmByCode.get(code)
+        return date ? { nav: "1", price_date: date, code } : undefined
+      }),
+    )?.price_date ?? null
     const teamNav = row.team_nav?.trim() || null
     const teamNavDate = row.team_nav_date?.trim() || null
     return {
@@ -1351,7 +1608,7 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
       platform_nav_date: plat?.price_date ?? null,
       team_nav: teamNav,
       team_nav_date: teamNavDate,
-      valuation_date: row.beian_hao ? (vmByCode.get(row.beian_hao) ?? null) : null,
+      valuation_date: ownValuationDate ?? valuation?.price_date ?? null,
       product_source: row.product_source,
       strategy_l1: row.strategy_l1,
       updated_at: row.updated_at?.trim() || null,
@@ -1435,6 +1692,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   let resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
   resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
   resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
+  resolved = await overlayEmailNavByProductCode(resolved)
   resolved = await overlayManualTeamNav(resolved)
 
   if (keyword) {

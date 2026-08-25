@@ -23,6 +23,7 @@ export type PaperEntryMode = "market" | "breakout" | "ma_cross"
 export type PaperStrategyStatus = "armed" | "filled" | "stopped" | "disabled"
 export type PaperPositionStatus = "open" | "closed"
 export type PaperAccountKind = "manual" | "strategy" | "all-weather"
+export type PaperScope = "team" | "mine"
 
 export type PaperPortfolio = {
   id: string
@@ -31,6 +32,8 @@ export type PaperPortfolio = {
   kind?: PaperAccountKind
   /** Starting capital in yuan. NAV = initialCapital + realized + unrealized. */
   initialCapital?: number
+  /** team = shared for every login; mine = this user only, synced across their computers. */
+  scope?: PaperScope
 }
 
 export type PaperProduct = {
@@ -134,6 +137,114 @@ export function accountKind(portfolio: PaperPortfolio | null | undefined): Paper
   return portfolio.kind === "strategy" ? "strategy" : "manual"
 }
 
+export function portfolioScope(portfolio: PaperPortfolio | null | undefined): PaperScope {
+  if (!portfolio) return "mine"
+  if (portfolio.id === ALL_WEATHER_PORTFOLIO_ID || portfolio.kind === "all-weather") return "team"
+  return portfolio.scope === "team" ? "team" : "mine"
+}
+
+function filterStateByPortfolioIds(state: PaperState, ids: Set<string>): PaperState {
+  return {
+    portfolios: state.portfolios.filter((p) => ids.has(p.id)),
+    products: state.products.filter((p) => ids.has(p.portfolioId)),
+    positions: state.positions.filter((p) => ids.has(p.portfolioId)),
+    strategies: state.strategies.filter((s) => ids.has(s.portfolioId)),
+  }
+}
+
+export function splitPaperState(state: PaperState): { team: PaperState; mine: PaperState } {
+  const teamIds = new Set(
+    state.portfolios.filter((p) => portfolioScope(p) === "team" && p.id !== ALL_WEATHER_PORTFOLIO_ID).map((p) => p.id),
+  )
+  const mineIds = new Set(state.portfolios.filter((p) => portfolioScope(p) === "mine").map((p) => p.id))
+  return {
+    team: filterStateByPortfolioIds(state, teamIds),
+    mine: filterStateByPortfolioIds(state, mineIds),
+  }
+}
+
+export function mergePaperStates(team: PaperState, mine: PaperState): PaperState {
+  const mineIds = new Set(mine.portfolios.map((p) => p.id))
+  const teamPortfolios = team.portfolios.filter(
+    (p) => p.id !== ALL_WEATHER_PORTFOLIO_ID && portfolioScope(p) === "team" && !mineIds.has(p.id),
+  )
+  return {
+    portfolios: [...teamPortfolios, ...mine.portfolios.filter((p) => p.id !== ALL_WEATHER_PORTFOLIO_ID)],
+    products: [
+      ...team.products.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID && !mineIds.has(p.portfolioId)),
+      ...mine.products.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID),
+    ],
+    positions: [
+      ...team.positions.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID && !mineIds.has(p.portfolioId)),
+      ...mine.positions.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID),
+    ],
+    strategies: [
+      ...team.strategies.filter((s) => s.portfolioId !== ALL_WEATHER_PORTFOLIO_ID && !mineIds.has(s.portfolioId)),
+      ...mine.strategies.filter((s) => s.portfolioId !== ALL_WEATHER_PORTFOLIO_ID),
+    ],
+  }
+}
+
+export function unionPaperSlice(base: PaperState, extra: PaperState): PaperState {
+  const ids = new Set(base.portfolios.map((p) => p.id))
+  const extraPfs = extra.portfolios.filter((p) => !ids.has(p.id) && p.id !== ALL_WEATHER_PORTFOLIO_ID)
+  if (!extraPfs.length) return base
+  const extraIds = new Set(extraPfs.map((p) => p.id))
+  return {
+    portfolios: [...base.portfolios, ...extraPfs],
+    products: [...base.products, ...extra.products.filter((p) => extraIds.has(p.portfolioId))],
+    positions: [...base.positions, ...extra.positions.filter((p) => extraIds.has(p.portfolioId))],
+    strategies: [...base.strategies, ...extra.strategies.filter((s) => extraIds.has(s.portfolioId))],
+  }
+}
+
+export function ensureAllWeatherPortfolio(state: PaperState, now = Date.now()): PaperState {
+  const existing = state.portfolios.find((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)
+  const aw: PaperPortfolio = {
+    id: ALL_WEATHER_PORTFOLIO_ID,
+    name: "全天候策略",
+    kind: "all-weather",
+    scope: "team",
+    createdAt: existing?.createdAt || now,
+    initialCapital: existing?.initialCapital || DEFAULT_PAPER_CAPITAL,
+  }
+  if (!existing) {
+    return { ...state, portfolios: [aw, ...state.portfolios] }
+  }
+  return {
+    ...state,
+    portfolios: state.portfolios.map((p) => (p.id === ALL_WEATHER_PORTFOLIO_ID ? { ...p, ...aw } : p)),
+  }
+}
+
+export function paperSliceHasUserData(state: PaperState) {
+  return (
+    state.portfolios.some((p) => p.id !== "default" && p.id !== ALL_WEATHER_PORTFOLIO_ID) ||
+    state.products.length > 0 ||
+    state.positions.length > 0 ||
+    state.strategies.some((s) => s.id !== ALL_WEATHER_STRATEGY_ID)
+  )
+}
+
+export function attachAllWeatherSlice(target: PaperState, source: PaperState): PaperState {
+  const hydrated = hydratePaperState(target)
+  return {
+    portfolios: hydrated.portfolios,
+    products: [
+      ...source.products.filter((p) => p.portfolioId === ALL_WEATHER_PORTFOLIO_ID),
+      ...hydrated.products.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID),
+    ],
+    positions: [
+      ...source.positions.filter((p) => p.portfolioId === ALL_WEATHER_PORTFOLIO_ID),
+      ...hydrated.positions.filter((p) => p.portfolioId !== ALL_WEATHER_PORTFOLIO_ID),
+    ],
+    strategies: [
+      ...source.strategies.filter((s) => s.portfolioId === ALL_WEATHER_PORTFOLIO_ID),
+      ...hydrated.strategies.filter((s) => s.portfolioId !== ALL_WEATHER_PORTFOLIO_ID),
+    ],
+  }
+}
+
 export function accountKindLabel(kind: PaperAccountKind) {
   if (kind === "all-weather") return "自动"
   if (kind === "strategy") return "策略"
@@ -173,6 +284,10 @@ export function fmtNav(n: number | null | undefined) {
   return `¥${n.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`
 }
 
+function defaultMinePortfolio(): PaperPortfolio {
+  return { id: "default", name: "手动账户", kind: "manual", scope: "mine", createdAt: 0, initialCapital: DEFAULT_PAPER_CAPITAL }
+}
+
 function migratePortfolio(raw: Partial<PaperPortfolio> & { id?: string; name?: string; createdAt?: number }): PaperPortfolio | null {
   if (!raw.id) return null
   const id = String(raw.id)
@@ -190,36 +305,47 @@ function migratePortfolio(raw: Partial<PaperPortfolio> & { id?: string; name?: s
         : String(raw.name || "模拟账户")
   const capital = Number(raw.initialCapital)
   const initialCapital = Number.isFinite(capital) && capital > 0 ? capital : DEFAULT_PAPER_CAPITAL
-  return { id, name, createdAt: Number(raw.createdAt) || 0, kind, initialCapital }
+  const scope: PaperScope = kind === "all-weather" || raw.scope === "team" ? "team" : "mine"
+  return { id, name, createdAt: Number(raw.createdAt) || 0, kind, initialCapital, scope }
 }
 
 export function emptyPaperState(): PaperState {
   return {
-    portfolios: [{ id: "default", name: "手动账户", kind: "manual", createdAt: 0, initialCapital: DEFAULT_PAPER_CAPITAL }],
+    portfolios: [defaultMinePortfolio()],
     products: [],
     positions: [],
     strategies: [],
   }
 }
 
+export function parsePaperState(raw: unknown): PaperState {
+  const parsed = raw && typeof raw === "object" ? (raw as Partial<PaperState>) : {}
+  return {
+    portfolios: Array.isArray(parsed.portfolios)
+      ? parsed.portfolios.map((item) => migratePortfolio(item)).filter((item): item is PaperPortfolio => !!item)
+      : [],
+    products: Array.isArray(parsed.products) ? parsed.products : [],
+    positions: Array.isArray(parsed.positions) ? parsed.positions : [],
+    strategies: Array.isArray(parsed.strategies) ? parsed.strategies : [],
+  }
+}
+
+export function hydratePaperState(state: PaperState): PaperState {
+  let next = ensureAllWeatherPortfolio(state)
+  if (!next.portfolios.some((p) => portfolioScope(p) === "mine")) {
+    next = { ...next, portfolios: [...next.portfolios, defaultMinePortfolio()] }
+  }
+  return next
+}
+
 export function loadPaperState(): PaperState {
-  if (typeof window === "undefined") return emptyPaperState()
+  if (typeof window === "undefined") return hydratePaperState(emptyPaperState())
   try {
     const raw = localStorage.getItem(PAPER_STORAGE_KEY)
-    if (!raw) return emptyPaperState()
-    const parsed = JSON.parse(raw) as Partial<PaperState>
-    const state: PaperState = {
-      portfolios: Array.isArray(parsed.portfolios)
-        ? parsed.portfolios.map((item) => migratePortfolio(item)).filter((item): item is PaperPortfolio => !!item)
-        : [],
-      products: Array.isArray(parsed.products) ? parsed.products : [],
-      positions: Array.isArray(parsed.positions) ? parsed.positions : [],
-      strategies: Array.isArray(parsed.strategies) ? parsed.strategies : [],
-    }
-    if (!state.portfolios.length) state.portfolios = emptyPaperState().portfolios
-    return state
+    if (!raw) return hydratePaperState(emptyPaperState())
+    return hydratePaperState(parsePaperState(JSON.parse(raw)))
   } catch {
-    return emptyPaperState()
+    return hydratePaperState(emptyPaperState())
   }
 }
 
@@ -464,6 +590,7 @@ export function applyAllWeatherBook(
     id: ALL_WEATHER_PORTFOLIO_ID,
     name: "全天候策略",
     kind: "all-weather",
+    scope: "team",
     createdAt: existingAw?.createdAt || now,
     initialCapital: capital,
   }

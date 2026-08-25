@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from "react"
 import { Plus, Trash2 } from "lucide-react"
 
 import type { PaperTradingApi } from "@/hooks/use-paper-trading"
+import { authService } from "@/lib/auth"
 import { CONTRACT_TENORS } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { type CtpTick } from "@/lib/client/ctp-market"
@@ -18,6 +19,7 @@ import {
   fmtYuan,
   markPrice,
   parsePaperCapital,
+  portfolioScope,
   priceDigits,
   positionPnl,
   positionReturn,
@@ -25,6 +27,7 @@ import {
   strategyStatusLabel,
   type PaperAccountKind,
   type PaperEntryMode,
+  type PaperScope,
   type PaperSide,
 } from "@/lib/client/paper-trading"
 import { resolveSymbolInput } from "@/lib/client/pro-trading"
@@ -342,9 +345,13 @@ export function PaperPortfolioPanel({
   const [newName, setNewName] = useState("")
   const [newCapital, setNewCapital] = useState(String(DEFAULT_PAPER_CAPITAL))
   const [newKind, setNewKind] = useState<Exclude<PaperAccountKind, "all-weather">>("manual")
+  const [newScope, setNewScope] = useState<PaperScope>("mine")
   const [addSymbol, setAddSymbol] = useState("")
   const selectedKind = accountKind(paper.selectedPortfolio)
   const awSelected = selectedKind === "all-weather"
+  const canManageAw = authService.getCurrentUser()?.name === "cshen"
+  const teamPortfolios = paper.state.portfolios.filter((pf) => portfolioScope(pf) === "team")
+  const minePortfolios = paper.state.portfolios.filter((pf) => portfolioScope(pf) === "mine")
 
   function createAccount() {
     const capital = parsePaperCapital(newCapital)
@@ -352,7 +359,7 @@ export function PaperPortfolioPanel({
       paper.setError("请填写有效的总资金")
       return
     }
-    const id = paper.createPortfolio(newName, newKind, capital)
+    const id = paper.createPortfolio(newName, newKind, capital, newScope)
     if (id) {
       setNewName("")
       setNewCapital(String(DEFAULT_PAPER_CAPITAL))
@@ -399,37 +406,70 @@ export function PaperPortfolioPanel({
         <div className="text-[11px] text-[#787b86]">
           总资金 <span className="font-mono text-[#adb3bd]">{fmtNav(paper.summary.initialCapital)}</span>
         </div>
-        <div className="flex flex-wrap gap-1">
-          {paper.state.portfolios.map((pf) => {
-            const kind = accountKind(pf)
-            const active = paper.selectedPortfolioId === pf.id
-            return (
-              <button
-                key={pf.id}
-                type="button"
-                onClick={() => paper.setSelectedPortfolioId(pf.id)}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]",
-                  active ? "bg-[#4c84ff] text-white" : "bg-[#131722] text-[#adb3bd] hover:text-white",
-                )}
-              >
-                {pf.name}
-                <span className={cn("text-[10px]", active ? "text-white/80" : "text-[#787b86]")}>
-                  {accountKindLabel(kind)}
-                </span>
-              </button>
-            )
-          })}
-          {paper.state.portfolios.length > 1 && !awSelected ? (
-            <button
-              type="button"
-              title="删除当前账户"
-              onClick={() => paper.deletePortfolio(paper.selectedPortfolioId)}
-              className="rounded px-1.5 py-0.5 text-[#787b86] hover:text-[#ef5350]"
-            >
-              <Trash2 className="size-3" />
-            </button>
-          ) : null}
+        <div className="space-y-2">
+          <div>
+            <div className="text-[10px] text-[#787b86]">团队策略 · 全员可见</div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {teamPortfolios.map((pf) => {
+                const kind = accountKind(pf)
+                const active = paper.selectedPortfolioId === pf.id
+                return (
+                  <button
+                    key={pf.id}
+                    type="button"
+                    onClick={() => paper.setSelectedPortfolioId(pf.id)}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]",
+                      active ? "bg-[#4c84ff] text-white" : "bg-[#131722] text-[#adb3bd] hover:text-white",
+                    )}
+                  >
+                    {pf.name}
+                    <span className={cn("text-[10px]", active ? "text-white/80" : "text-[#787b86]")}>
+                      {accountKindLabel(kind)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-[#787b86]">我的策略 · 仅自己可见，多设备同步</div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {minePortfolios.map((pf) => {
+                const kind = accountKind(pf)
+                const active = paper.selectedPortfolioId === pf.id
+                return (
+                  <button
+                    key={pf.id}
+                    type="button"
+                    onClick={() => paper.setSelectedPortfolioId(pf.id)}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]",
+                      active ? "bg-[#4c84ff] text-white" : "bg-[#131722] text-[#adb3bd] hover:text-white",
+                    )}
+                  >
+                    {pf.name}
+                    <span className={cn("text-[10px]", active ? "text-white/80" : "text-[#787b86]")}>
+                      {accountKindLabel(kind)}
+                    </span>
+                  </button>
+                )
+              })}
+              {minePortfolios.length === 0 ? (
+                <span className="text-[10px] text-[#787b86]">还没有个人策略，新建后会同步到你的其他电脑</span>
+              ) : null}
+              {paper.state.portfolios.length > 1 && !awSelected ? (
+                <button
+                  type="button"
+                  title="删除当前账户"
+                  onClick={() => paper.deletePortfolio(paper.selectedPortfolioId)}
+                  className="rounded px-1.5 py-0.5 text-[#787b86] hover:text-[#ef5350]"
+                >
+                  <Trash2 className="size-3" />
+                </button>
+              ) : null}
+            </div>
+          </div>
         </div>
         <div className="flex gap-1">
           <input
@@ -452,6 +492,15 @@ export function PaperPortfolioPanel({
           </select>
         </div>
         <div className="flex gap-1">
+          <select
+            value={newScope}
+            onChange={(e) => setNewScope(e.target.value as PaperScope)}
+            className={cn(fieldClass, "w-[6.5rem] shrink-0 px-1")}
+            title="可见范围"
+          >
+            <option value="mine">我的策略</option>
+            <option value="team">团队策略</option>
+          </select>
           <input
             value={newCapital}
             onChange={(e) => setNewCapital(e.target.value)}
@@ -482,9 +531,10 @@ export function PaperPortfolioPanel({
                   <button
                     key={item.id}
                     type="button"
-                    disabled={paper.awLoading}
-                    title={item.hint}
+                    disabled={paper.awLoading || !canManageAw}
+                    title={canManageAw ? item.hint : "合约月份由管理员设置"}
                     onClick={() => {
+                      if (!canManageAw) return
                       if ((paper.awMeta?.contractTenor ?? "current") === item.id) return
                       if (!window.confirm("切换合约月份会按新合约重建全天候模拟盘。")) return
                       void paper.setContractTenor(item.id).then((sym) => {

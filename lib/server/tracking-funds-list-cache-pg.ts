@@ -369,147 +369,7 @@ export async function upsertTrackingFundListCacheEntry(
   }
 }
 
-/** Rebuild precomputed list cache for all tracked funds (as of CURRENT_DATE). */
-export async function refreshTrackingFundsListCache(): Promise<number> {
-  await ensureEmailNavTable()
-  await ensureTrackingFundsListCacheTable()
-
-  const asOfDate = new Date().toISOString().slice(0, 10)
-  logProgress("loading fund identities…")
-
-  const funds = await query<BaseFundRow>(IDENTITY_SQL)
-  logProgress(`found ${funds.length} funds — preloading NAV history…`)
-
-  const identities = funds.map((f) => ({
-    beian_hao: f.beian_hao,
-    product_name: f.product_name,
-    short_name: f.short_name,
-  }))
-  const navResolver = await BatchNavResolver.create(identities, asOfDate)
-
-  const beianHaos = funds.map((f) => f.beian_hao)
-  logProgress("loading strategy & risk metadata…")
-  const [riskFromInfo, opsStrategyMap, teamNavBatch] = await Promise.all([
-    loadPrivateFundRiskMetrics(beianHaos),
-    loadOpsFullStrategy(beianHaos),
-    import("@/lib/server/team-nav-manage-pg").then(({ loadManagedProductTeamNavBatch }) =>
-      loadManagedProductTeamNavBatch(identities),
-    ),
-  ])
-  const { resolveTeamSeriesListNavAt } = await import("@/lib/server/managed-product-nav-seed")
-  const teamNavByBeian = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
-  for (const [code, series] of teamNavBatch) {
-    teamNavByBeian.set(code.trim().toUpperCase(), series)
-  }
-
-  if (funds.length === 0) return 0
-
-  const values: unknown[] = []
-  const placeholders: string[] = []
-  let pi = 1
-
-  for (let i = 0; i < funds.length; i++) {
-    const row = funds[i]
-    if (i === 0 || (i + 1) % 100 === 0 || i + 1 === funds.length) {
-      logProgress(`computing metrics [${i + 1}/${funds.length}]`)
-    }
-
-    const identity = identities[i]
-    const latest = navResolver.resolveAt(identity, asOfDate)
-    let unitNav = latest?.nav ?? null
-    let navDate = latest?.nav_date ?? null
-    // Manual/email team series must win when newer — otherwise nightly rebuild
-    // regresses tips like SZJ909 (upload through 2026-07-31 → stuck at platform 05-22).
-    const teamPoint = resolveTeamSeriesListNavAt(
-      teamNavByBeian.get(row.beian_hao.trim().toUpperCase()) ?? [],
-      asOfDate,
-    )
-    if (teamPoint && (!navDate || teamPoint.nav_date >= navDate)) {
-      unitNav = parseFloat(teamPoint.nav)
-      if (!Number.isFinite(unitNav)) unitNav = latest?.nav ?? null
-      else navDate = teamPoint.nav_date
-    }
-
-    let returnPct: number | null = null
-    if (unitNav != null && navDate) {
-      if (teamPoint && navDate === teamPoint.nav_date && teamPoint.prev_nav != null) {
-        const prev = parseFloat(teamPoint.prev_nav)
-        if (Number.isFinite(prev) && prev !== 0) returnPct = unitNav / prev - 1
-      } else {
-        returnPct = navResolver.calcDailyReturnPct(identity, unitNav, navDate, null)
-      }
-    }
-
-    const returns =
-      unitNav != null && navDate
-        ? navResolver.calcPeriodReturns(identity, unitNav, navDate)
-        : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
-
-    let sharpe_1y: number | null = null
-    let calmar_1y: number | null = null
-    const fromInfo = riskFromInfo.get(row.beian_hao)
-    if (
-      isPlausibleRiskRatio(fromInfo?.sharpe_1y)
-      && isPlausibleRiskRatio(fromInfo?.calmar_1y)
-    ) {
-      sharpe_1y = fromInfo!.sharpe_1y
-      calmar_1y = fromInfo!.calmar_1y
-    } else if (navDate) {
-      const risk = computeOneYearRiskMetrics(
-        navDate,
-        navResolver.mergedHistoryForRiskMetrics(
-          identity,
-          addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS),
-        ),
-      )
-      sharpe_1y = isPlausibleRiskRatio(risk.sharpe_1y) ? risk.sharpe_1y : null
-      calmar_1y = isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null
-    }
-
-    const ops = opsStrategyMap.get(row.beian_hao)
-    const rawStrategyJson = parseRawStrategyJson(row.raw_strategy)
-    const teamTags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
-    const companyL1 = ops?.company_strategy_l1 ?? strategyFromRawJson(rawStrategyJson, "company", "one")
-    const companyL2 = ops?.company_strategy_l2 ?? strategyFromRawJson(rawStrategyJson, "company", "two")
-    const companyL3 = ops?.company_strategy_l3 ?? strategyFromRawJson(rawStrategyJson, "company", "three")
-    const platformL1 = ops?.platform_strategy_l1 ?? strategyFromRawJson(rawStrategyJson, "platform", "one")
-    const platformL2 = ops?.platform_strategy_l2 ?? strategyFromRawJson(rawStrategyJson, "platform", "two")
-    const platformL3 = ops?.platform_strategy_l3 ?? strategyFromRawJson(rawStrategyJson, "platform", "three")
-
-    placeholders.push(
-      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}, $${pi + 17}, $${pi + 18}, $${pi + 19}::jsonb, $${pi + 20}::jsonb, $${pi + 21}::date, NOW())`,
-    )
-    values.push(
-      row.beian_hao,
-      row.product_name,
-      row.short_name,
-      clampPgNumeric(unitNav, 16, 6),
-      navDate,
-      clampPgNumeric(returnPct, 16, 8),
-      clampPgNumeric(returns.ret_1w, 16, 8),
-      clampPgNumeric(returns.ret_1m, 16, 8),
-      clampPgNumeric(returns.ret_3m, 16, 8),
-      clampPgNumeric(returns.ret_6m, 16, 8),
-      clampPgNumeric(returns.ret_1y, 16, 8),
-      clampPgNumeric(sharpe_1y, 16, 6),
-      clampPgNumeric(calmar_1y, 16, 6),
-      companyL1,
-      companyL2,
-      companyL3,
-      platformL1,
-      platformL2,
-      platformL3,
-      rawStrategyJson != null ? JSON.stringify(rawStrategyJson) : null,
-      teamTags,
-      asOfDate,
-    )
-    pi += 22
-  }
-
-  logProgress("writing cache table…")
-  await query(`DELETE FROM ops_tracking_funds_list_cache`)
-  await chunkedInsert(
-    `INSERT INTO ops_tracking_funds_list_cache (
+const TRACKING_CACHE_INSERT_SQL = `INSERT INTO ops_tracking_funds_list_cache (
        beian_hao, product_name, short_name,
        unit_nav, nav_date, return_pct,
        ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
@@ -518,17 +378,175 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
        platform_strategy_l1, platform_strategy_l2, platform_strategy_l3,
        raw_strategy_json, team_tags,
        as_of_date, refreshed_at
-     ) VALUES`,
-    "",
-    placeholders,
-    values,
-    22,
-  )
+     ) VALUES`
 
-  // Some funds stopped reporting years ago; their latest NAV falls outside the
-  // default history window and lands as null above. Backfill them from the
-  // wider (stale) history now so the request path never has to resolve NAV live
-  // (which otherwise costs ~0.5s per null row on every list load).
+const TRACKING_CACHE_UPSERT_SQL = `ON CONFLICT (beian_hao) DO UPDATE SET
+       product_name = EXCLUDED.product_name,
+       short_name = EXCLUDED.short_name,
+       unit_nav = EXCLUDED.unit_nav,
+       nav_date = EXCLUDED.nav_date,
+       return_pct = EXCLUDED.return_pct,
+       ret_1w = EXCLUDED.ret_1w,
+       ret_1m = EXCLUDED.ret_1m,
+       ret_3m = EXCLUDED.ret_3m,
+       ret_6m = EXCLUDED.ret_6m,
+       ret_1y = EXCLUDED.ret_1y,
+       sharpe_1y = EXCLUDED.sharpe_1y,
+       calmar_1y = EXCLUDED.calmar_1y,
+       company_strategy_l1 = EXCLUDED.company_strategy_l1,
+       company_strategy_l2 = EXCLUDED.company_strategy_l2,
+       company_strategy_l3 = EXCLUDED.company_strategy_l3,
+       platform_strategy_l1 = EXCLUDED.platform_strategy_l1,
+       platform_strategy_l2 = EXCLUDED.platform_strategy_l2,
+       platform_strategy_l3 = EXCLUDED.platform_strategy_l3,
+       raw_strategy_json = EXCLUDED.raw_strategy_json,
+       team_tags = EXCLUDED.team_tags,
+       as_of_date = EXCLUDED.as_of_date,
+       refreshed_at = NOW()`
+
+const TRACKING_CACHE_BATCH = 50
+
+/** Rebuild precomputed list cache for all tracked funds (as of CURRENT_DATE). */
+export async function refreshTrackingFundsListCache(): Promise<number> {
+  await ensureEmailNavTable()
+  await ensureTrackingFundsListCacheTable()
+
+  const asOfDate = new Date().toISOString().slice(0, 10)
+  logProgress("loading fund identities…")
+
+  const funds = await query<BaseFundRow>(`${IDENTITY_SQL.trim()} ORDER BY product_name`)
+  logProgress(`found ${funds.length} funds — upserting in batches of ${TRACKING_CACHE_BATCH}…`)
+
+  if (funds.length === 0) return 0
+
+  const { resolveTeamSeriesListNavAt } = await import("@/lib/server/managed-product-nav-seed")
+  const { loadManagedProductTeamNavBatch } = await import("@/lib/server/team-nav-manage-pg")
+
+  for (let start = 0; start < funds.length; start += TRACKING_CACHE_BATCH) {
+    const batch = funds.slice(start, start + TRACKING_CACHE_BATCH)
+    const identities = batch.map((f) => ({
+      beian_hao: f.beian_hao,
+      product_name: f.product_name,
+      short_name: f.short_name,
+    }))
+    const navResolver = await BatchNavResolver.create(identities, asOfDate)
+    const beianHaos = batch.map((f) => f.beian_hao)
+    const [riskFromInfo, opsStrategyMap, teamNavBatch] = await Promise.all([
+      loadPrivateFundRiskMetrics(beianHaos),
+      loadOpsFullStrategy(beianHaos),
+      loadManagedProductTeamNavBatch(identities),
+    ])
+    const teamNavByBeian = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+    for (const [code, series] of teamNavBatch) {
+      teamNavByBeian.set(code.trim().toUpperCase(), series)
+    }
+
+    const values: unknown[] = []
+    const placeholders: string[] = []
+    let pi = 1
+
+    for (let i = 0; i < batch.length; i++) {
+      const row = batch[i]
+      const identity = identities[i]
+      const latest = navResolver.resolveAt(identity, asOfDate)
+      let unitNav = latest?.nav ?? null
+      let navDate = latest?.nav_date ?? null
+      const teamPoint = resolveTeamSeriesListNavAt(
+        teamNavByBeian.get(row.beian_hao.trim().toUpperCase()) ?? [],
+        asOfDate,
+      )
+      if (teamPoint && (!navDate || teamPoint.nav_date >= navDate)) {
+        unitNav = parseFloat(teamPoint.nav)
+        if (!Number.isFinite(unitNav)) unitNav = latest?.nav ?? null
+        else navDate = teamPoint.nav_date
+      }
+
+      let returnPct: number | null = null
+      if (unitNav != null && navDate) {
+        if (teamPoint && navDate === teamPoint.nav_date && teamPoint.prev_nav != null) {
+          const prev = parseFloat(teamPoint.prev_nav)
+          if (Number.isFinite(prev) && prev !== 0) returnPct = unitNav / prev - 1
+        } else {
+          returnPct = navResolver.calcDailyReturnPct(identity, unitNav, navDate, null)
+        }
+      }
+
+      const returns =
+        unitNav != null && navDate
+          ? navResolver.calcPeriodReturns(identity, unitNav, navDate)
+          : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
+
+      let sharpe_1y: number | null = null
+      let calmar_1y: number | null = null
+      const fromInfo = riskFromInfo.get(row.beian_hao)
+      if (
+        isPlausibleRiskRatio(fromInfo?.sharpe_1y)
+        && isPlausibleRiskRatio(fromInfo?.calmar_1y)
+      ) {
+        sharpe_1y = fromInfo!.sharpe_1y
+        calmar_1y = fromInfo!.calmar_1y
+      } else if (navDate) {
+        const risk = computeOneYearRiskMetrics(
+          navDate,
+          navResolver.mergedHistoryForRiskMetrics(
+            identity,
+            addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS),
+          ),
+        )
+        sharpe_1y = isPlausibleRiskRatio(risk.sharpe_1y) ? risk.sharpe_1y : null
+        calmar_1y = isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null
+      }
+
+      const ops = opsStrategyMap.get(row.beian_hao)
+      const rawStrategyJson = parseRawStrategyJson(row.raw_strategy)
+      const teamTags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
+      const companyL1 = ops?.company_strategy_l1 ?? strategyFromRawJson(rawStrategyJson, "company", "one")
+      const companyL2 = ops?.company_strategy_l2 ?? strategyFromRawJson(rawStrategyJson, "company", "two")
+      const companyL3 = ops?.company_strategy_l3 ?? strategyFromRawJson(rawStrategyJson, "company", "three")
+      const platformL1 = ops?.platform_strategy_l1 ?? strategyFromRawJson(rawStrategyJson, "platform", "one")
+      const platformL2 = ops?.platform_strategy_l2 ?? strategyFromRawJson(rawStrategyJson, "platform", "two")
+      const platformL3 = ops?.platform_strategy_l3 ?? strategyFromRawJson(rawStrategyJson, "platform", "three")
+
+      placeholders.push(
+        `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}, $${pi + 17}, $${pi + 18}, $${pi + 19}::jsonb, $${pi + 20}::jsonb, $${pi + 21}::date, NOW())`,
+      )
+      values.push(
+        row.beian_hao,
+        row.product_name,
+        row.short_name,
+        clampPgNumeric(unitNav, 16, 6),
+        navDate,
+        clampPgNumeric(returnPct, 16, 8),
+        clampPgNumeric(returns.ret_1w, 16, 8),
+        clampPgNumeric(returns.ret_1m, 16, 8),
+        clampPgNumeric(returns.ret_3m, 16, 8),
+        clampPgNumeric(returns.ret_6m, 16, 8),
+        clampPgNumeric(returns.ret_1y, 16, 8),
+        clampPgNumeric(sharpe_1y, 16, 6),
+        clampPgNumeric(calmar_1y, 16, 6),
+        companyL1,
+        companyL2,
+        companyL3,
+        platformL1,
+        platformL2,
+        platformL3,
+        rawStrategyJson != null ? JSON.stringify(rawStrategyJson) : null,
+        teamTags,
+        asOfDate,
+      )
+      pi += 22
+    }
+
+    await chunkedInsert(
+      TRACKING_CACHE_INSERT_SQL,
+      TRACKING_CACHE_UPSERT_SQL,
+      placeholders,
+      values,
+      22,
+    )
+    logProgress(`upserted [${Math.min(start + batch.length, funds.length)}/${funds.length}]`)
+  }
+
   logProgress("backfilling null-NAV rows from wider history…")
   const patched = await patchTrackingFundsCacheNullNav(asOfDate)
   logProgress("refreshing detail NAV series cache…")

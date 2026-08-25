@@ -17,6 +17,7 @@ import {
 import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 import { resolveVisibleEmailPoolRegistersForUser } from "@/lib/server/direct-email-visibility"
 import { getUserById } from "@/lib/server/users"
+import { recordInteractiveUserTraffic } from "@/lib/server/user-activity-priority"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -830,6 +831,7 @@ async function handleBflOpsList(opts: {
 }
 
 export async function GET(req: Request) {
+  recordInteractiveUserTraffic("/ma/api/tracking-funds/list", "GET")
   const { searchParams } = new URL(req.url)
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
   const requestedPool = searchParams.get("pool")
