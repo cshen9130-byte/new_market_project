@@ -36,12 +36,27 @@ export type InvestmentNoteMaterial = {
   uploadedByName: string
   createdAt: string
   source?: "upload" | "dd-table"
+  /** Linked 产品要素 extract job, if auto-extract was queued for this file. */
+  extractJobId?: number | null
 }
 
 type StoredMaterial = InvestmentNoteMaterial & {
   storageFilename: string
   /** True after suffix cleanup and any content-based rename attempt. */
   nameResolved?: boolean
+}
+
+export type InvestmentNoteMaterialExtractLink = {
+  id: string
+  name: string
+  size: number
+  extractJobId: number | null
+  contentHash: string | null
+}
+
+export function contentHashFromMaterialStorageFilename(storageFilename: string): string | null {
+  const match = String(storageFilename || "").trim().match(/_([0-9a-f]{16})(?:\.[^.]+)?$/i)
+  return match?.[1]?.toLowerCase() ?? null
 }
 
 const MAX_FILE_BYTES = INVESTMENT_NOTE_MATERIAL_MAX_BYTES
@@ -185,6 +200,7 @@ function toPublic(row: StoredMaterial): InvestmentNoteMaterial {
     uploadedByName: row.uploadedByName,
     createdAt: row.createdAt,
     source: "upload",
+    extractJobId: row.extractJobId ?? null,
   }
 }
 
@@ -294,6 +310,10 @@ function normalizeStored(raw: unknown): StoredMaterial | null {
     uploadedByName: typeof row.uploadedByName === "string" ? row.uploadedByName : "",
     createdAt: typeof row.createdAt === "string" ? row.createdAt : new Date().toISOString(),
     nameResolved: row.nameResolved === true,
+    extractJobId:
+      typeof row.extractJobId === "number" && Number.isFinite(row.extractJobId) && row.extractJobId > 0
+        ? row.extractJobId
+        : null,
   }
 }
 
@@ -330,6 +350,40 @@ function resolveNoteForUser(
   }
   const title = note.title.trim() || "无标题"
   return { noteId: note.id, noteTitle: title }
+}
+
+export function setInvestmentNoteMaterialExtractJobId(
+  id: string,
+  extractJobId: number | null,
+): InvestmentNoteMaterial | null {
+  const safeId = String(id || "").trim()
+  if (!safeId) return null
+  const all = readAll()
+  const idx = all.findIndex((row) => row.id === safeId)
+  if (idx < 0) return null
+  all[idx] = {
+    ...all[idx],
+    extractJobId:
+      typeof extractJobId === "number" && Number.isFinite(extractJobId) && extractJobId > 0
+        ? extractJobId
+        : null,
+  }
+  writeAll(all)
+  return toPublic(all[idx])
+}
+
+export function listInvestmentNoteMaterialExtractLinks(noteId: string): InvestmentNoteMaterialExtractLink[] {
+  const id = String(noteId || "").trim()
+  if (!id) return []
+  return readAll()
+    .filter((row) => row.noteId === id)
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      size: row.size,
+      extractJobId: row.extractJobId ?? null,
+      contentHash: contentHashFromMaterialStorageFilename(row.storageFilename),
+    }))
 }
 
 export function listInvestmentNoteMaterials(): InvestmentNoteMaterial[] {

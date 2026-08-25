@@ -12,7 +12,8 @@
  *   npx tsx scripts/ma/backfill_investment_notes_from_dd.ts --dry-run
  *   npx tsx scripts/ma/backfill_investment_notes_from_dd.ts
  *   npx tsx scripts/ma/backfill_investment_notes_from_dd.ts --limit=5
- *   npx tsx scripts/ma/backfill_investment_notes_from_dd.ts --row=<rowId>
+ *   npx tsx scripts/ma/backfill_investment_notes_from_dd.ts --sync-products --dry-run
+ *   npx tsx scripts/ma/backfill_investment_notes_from_dd.ts --sync-products
  */
 
 import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
@@ -36,14 +37,38 @@ function parseRowId(argv: string[]): string | undefined {
 
 async function main() {
   const dryRun = process.argv.includes("--dry-run")
+  const syncProducts = process.argv.includes("--sync-products")
   const limit = parseLimit(process.argv)
   const rowId = parseRowId(process.argv)
 
-  const { backfillInvestmentNotesFromDdMaterials } = await import(
-    "@/lib/server/investment-note-dd-backfill"
-  )
+  const {
+    backfillInvestmentNotesFromDdMaterials,
+    syncAutoNoteProductsFromLinkedRoadshows,
+  } = await import("@/lib/server/investment-note-dd-backfill")
 
   try {
+    if (syncProducts) {
+      console.error(
+        `[dd_note_backfill] syncing 关联产品 from linked roadshows${dryRun ? " (dry run)" : ""}…`,
+      )
+      const result = await syncAutoNoteProductsFromLinkedRoadshows({ dryRun })
+      for (const item of result.items) {
+        if (item.action === "skip-unchanged") continue
+        const extra = item.productName
+          ? ` ${item.productName}${item.recordNo ? ` (${item.recordNo})` : ""}`
+          : ""
+        console.error(
+          `[dd_note_backfill] ${item.action.padEnd(16)} ${item.title} (${item.rowId})` + extra,
+        )
+      }
+      console.error(
+        `[dd_note_backfill] product sync done: scanned=${result.scanned} updated=${result.updated} ` +
+          `noProduct=${result.skippedNoProduct} unchanged=${result.skippedUnchanged}` +
+          (dryRun ? " dry-run" : ""),
+      )
+      console.log(JSON.stringify({ ok: true, ...result }))
+      process.exit(0)
+    }
     console.error(
       `[dd_note_backfill] scanning 尽调表格${dryRun ? " (dry run)" : ""}` +
         `${limit ? ` limit=${limit}` : ""}` +

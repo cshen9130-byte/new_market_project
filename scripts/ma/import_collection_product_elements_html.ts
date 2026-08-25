@@ -5,7 +5,10 @@
  *   npx tsx scripts/ma/import_collection_product_elements_html.ts "<html-path>" --dry-run
  *   npx tsx scripts/ma/import_collection_product_elements_html.ts "<html-path>"
  *
- * Only writes fields that are currently empty / weak. Existing values are left alone.
+ * Only writes empty fields, except 开放日: the sheet overwrites a generic「每个交易日」
+ * when it has weekday / 预约 detail.
+ *
+ *   --open-day-only   only reconcile 开放日 from the sheet
  */
 import fs from "fs"
 import net from "net"
@@ -236,16 +239,43 @@ function isStrictlyEmpty(value: string | null | undefined): boolean {
   return !s || s === "—" || /^-+$/.test(s)
 }
 
+function compactOpenDay(value: string): string {
+  return value.replace(/\s+/g, "")
+}
+
+function isGenericDailyOpenDay(value: string): boolean {
+  return /^(每个交易日|每日开放(申赎)?|每个交易日开放申赎)$/u.test(compactOpenDay(value))
+}
+
+/** Sheet 开放日 wins when current is empty, generic daily, or missing 预约/周频. */
+function openDayShouldReplace(current: string | null | undefined, next: string): boolean {
+  if (!next.trim()) return false
+  if (isStrictlyEmpty(current)) return true
+  const cur = compactOpenDay(String(current))
+  const nxt = compactOpenDay(next)
+  if (cur === nxt) return false
+  if (nxt.includes(cur) && nxt.length > cur.length) return true
+  if (isGenericDailyOpenDay(String(current)) && !isGenericDailyOpenDay(next)) return true
+  if (/预约|周一|周二|每周/u.test(next) && !/预约|周一|周二|每周/u.test(String(current))) return true
+  return false
+}
+
 function buildStrictFillBody(
   beian_hao: string,
   extracted: Record<(typeof FILL_KEYS)[number], string | null>,
   current: Record<string, string | null | undefined> | null,
+  options?: { openDayOnly?: boolean },
 ): Record<string, string> & { beian_hao: string } {
   const body: Record<string, string> & { beian_hao: string } = { beian_hao }
-  for (const key of FILL_KEYS) {
+  const keys = options?.openDayOnly ? (["open_day"] as const) : FILL_KEYS
+  for (const key of keys) {
     const next = extracted[key]?.trim() || ""
     if (!next) continue
-    if (!isStrictlyEmpty(current?.[key] as string | null | undefined)) continue
+    if (key === "open_day") {
+      if (!openDayShouldReplace(current?.open_day, next)) continue
+    } else if (!isStrictlyEmpty(current?.[key] as string | null | undefined)) {
+      continue
+    }
     body[key] = next
   }
   return body
@@ -254,6 +284,7 @@ function buildStrictFillBody(
 async function main() {
   const dryRun = process.argv.includes("--dry-run")
   const noTunnel = process.argv.includes("--no-tunnel")
+  const openDayOnly = process.argv.includes("--open-day-only")
   const htmlPath = htmlPathFromArgv()
   if (!fs.existsSync(htmlPath)) throw new Error(`File not found: ${htmlPath}`)
 
@@ -292,7 +323,21 @@ async function main() {
     } = await import("@/lib/server/fund-elements-write")
     const { listFundFamilyProducts } = await import("@/lib/server/share-class-product")
 
+    const pansongRows = await query<{ beian_hao: string; product_name: string }>(
+      `SELECT beian_hao, product_name FROM private_fund_info WHERE product_name ILIKE '%磐松%'
+       UNION
+       SELECT register_number, fund_name FROM basicinfo_bfl_track WHERE fund_name ILIKE '%磐松%'`,
+    ).catch(() => [] as { beian_hao: string; product_name: string }[])
+
     async function matchProduct(name: string, extracted: ExtractedFundElements) {
+      const localHits = pansongRows.filter(
+        (row) =>
+          row.product_name.includes(name) ||
+          name.includes(row.product_name.replace(/(私募证券投资基金|私募基金)$/u, "").trim()),
+      )
+      const localHit = pickHighConfidenceFundMatch(extracted, localHits)
+      if (localHit) return localHit
+      if (openDayOnly) return null
       const candidates = await searchTrackingFunds(name, 10)
       const hit = pickHighConfidenceFundMatch(extracted, candidates)
       if (hit) return hit
@@ -367,11 +412,15 @@ async function main() {
         const family = await listFundFamilyProducts(hit.beian_hao)
         const targets = family.length ? family : [{ beian_hao: hit.beian_hao, product_name: hit.product_name }]
         const writtenKeys = new Set<string>()
+        let previousOpenDay: string | null = null
 
         for (const target of targets) {
           const current = await loadExtractedElementDisplayValues(target.beian_hao, target.product_name, {
             exactBeian: true,
           })
+          if (target.beian_hao.trim().toUpperCase() === hit.beian_hao.trim().toUpperCase()) {
+            previousOpenDay = current?.open_day ?? null
+          }
           const nextExtracted = { ...extracted }
           const currentRate = parseFloat(String(current?.fee_manage_rate ?? "").replace(/%/g, ""))
           if (
@@ -381,7 +430,7 @@ async function main() {
           ) {
             nextExtracted.fee_manage = null
           }
-          const body = buildStrictFillBody(target.beian_hao, nextExtracted, current)
+          const body = buildStrictFillBody(target.beian_hao, nextExtracted, current, { openDayOnly })
           const fields = appliedFieldKeys(body)
           if (!fields.length) continue
           for (const key of fields) writtenKeys.add(key)
@@ -396,7 +445,8 @@ async function main() {
 
         filled += 1
         console.log(
-          `${dryRun ? "DRY FILL" : "FILLED"}     ${name}  ${hit.beian_hao}  ${hit.product_name}  +${[...writtenKeys].join(",")}`,
+          `${dryRun ? "DRY FILL" : "FILLED"}     ${name}  ${hit.beian_hao}  ${hit.product_name}  +${[...writtenKeys].join(",")}` +
+            (writtenKeys.has("open_day") ? `  [${previousOpenDay || "—"} → ${extracted.open_day}]` : ""),
         )
       }
     }

@@ -19,6 +19,8 @@ export function DateInput({
   inputClassName,
   displayClassName,
   disabled,
+  min,
+  max,
   id,
   name,
 }: {
@@ -29,6 +31,8 @@ export function DateInput({
   inputClassName?: string
   displayClassName?: string
   disabled?: boolean
+  min?: string
+  max?: string
   id?: string
   name?: string
 }) {
@@ -42,6 +46,8 @@ export function DateInput({
         name={name}
         type="date"
         value={value}
+        min={min}
+        max={max}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         onClick={() => {

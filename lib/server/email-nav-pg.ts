@@ -40,6 +40,8 @@ const CREATE_TABLE_SQL = `
     ON ops_email_nav_records (fund_name);
   CREATE INDEX IF NOT EXISTS idx_email_nav_records_product_code
     ON ops_email_nav_records (product_code);
+  CREATE INDEX IF NOT EXISTS idx_email_nav_records_product_code_date
+    ON ops_email_nav_records (product_code, nav_date DESC, id DESC);
 `
 
 const MIGRATE_TABLE_SQL = `

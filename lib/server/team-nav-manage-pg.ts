@@ -36,7 +36,10 @@ type ManualNavRow = {
   adjusted_nav: string | null
 }
 
+let teamNavManualTableReady = false
+
 async function ensureTeamNavManualTable(): Promise<void> {
+  if (teamNavManualTableReady) return
   await query(`
     CREATE TABLE IF NOT EXISTS ops_team_nav_manual (
       id             SERIAL PRIMARY KEY,
@@ -63,6 +66,80 @@ async function ensureTeamNavManualTable(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_ops_team_nav_manual_beian_date
       ON ops_team_nav_manual (beian_hao, nav_date DESC)
   `)
+  teamNavManualTableReady = true
+}
+
+const TEAM_NAV_TIP_DATES = 10
+
+/** Latest team/email NAV points only — for list overlays (not full history). */
+export async function loadManagedProductTeamNavTips(
+  items: Array<{ beian_hao: string; product_name: string; short_name?: string | null }>,
+  asOfDate: string,
+): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
+  const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  if (items.length === 0) return out
+
+  const codes = [...new Set(items.map((item) => item.beian_hao.trim()).filter(Boolean))]
+  if (codes.length === 0) return out
+
+  const cutoff = /^\d{4}-\d{2}-\d{2}$/.test(asOfDate)
+    ? asOfDate
+    : new Date().toISOString().slice(0, 10)
+
+  const [manualMap, emailRows] = await Promise.all([
+    loadManualTeamNavBatch(codes),
+    query<{ code: string; nav_date: string; nav: string }>(
+      `SELECT code, nav_date::text AS nav_date, nav::text AS nav
+       FROM (
+         SELECT
+           product_code AS code,
+           nav_date,
+           nav,
+           ROW_NUMBER() OVER (
+             PARTITION BY product_code
+             ORDER BY nav_date DESC, id DESC
+           ) AS rn
+         FROM ops_email_nav_records
+         WHERE product_code = ANY($1::text[])
+           AND nav_date <= $2::date
+           AND nav IS NOT NULL
+           AND nav > 0
+       ) t
+       WHERE rn <= $3
+       ORDER BY code, nav_date ASC`,
+      [codes, cutoff, TEAM_NAV_TIP_DATES],
+    ).catch((err) => {
+      console.warn("[team-nav-tips] email load failed:", err)
+      return [] as Array<{ code: string; nav_date: string; nav: string }>
+    }),
+  ])
+
+  const emailByCode = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  for (const row of emailRows) {
+    const code = (row.code ?? "").trim()
+    if (!code) continue
+    const list = emailByCode.get(code) ?? []
+    list.push({ nav_date: row.nav_date.slice(0, 10), unit_nav: row.nav })
+    emailByCode.set(code, list)
+  }
+
+  for (const code of codes) {
+    const byDate = new Map<string, string>()
+    for (const point of emailByCode.get(code) ?? []) {
+      byDate.set(point.nav_date, point.unit_nav)
+    }
+    for (const point of manualMap.get(code) ?? []) {
+      const navDate = point.nav_date.slice(0, 10)
+      if (navDate > cutoff) continue
+      byDate.set(navDate, point.unit_nav)
+    }
+    const series = [...byDate.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([nav_date, unit_nav]) => ({ nav_date, unit_nav }))
+    if (series.length > 0) out.set(code, series)
+  }
+
+  return out
 }
 
 /** Batch-load manual team NAV for list-cache / managed-product list overlays. */

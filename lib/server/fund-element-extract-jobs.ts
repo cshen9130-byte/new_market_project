@@ -227,6 +227,56 @@ export async function createElementExtractJob(input: {
   })
 }
 
+export async function findElementExtractJobsForMaterials(input: {
+  jobIds?: number[]
+  contentHashes?: string[]
+  filenames?: string[]
+}): Promise<ElementExtractJobRow[]> {
+  await ensureElementExtractJobsTable()
+  const jobIds = [...new Set((input.jobIds ?? []).filter((id) => Number.isFinite(id) && id > 0))]
+  const hashes = [
+    ...new Set(
+      (input.contentHashes ?? [])
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter((value) => /^[0-9a-f]{16}$/.test(value)),
+    ),
+  ]
+  const filenames = [
+    ...new Set(
+      (input.filenames ?? [])
+        .map((value) => sanitizeFilename(String(value || "").trim()))
+        .filter(Boolean),
+    ),
+  ]
+  if (!jobIds.length && !hashes.length && !filenames.length) return []
+
+  const conditions: string[] = []
+  const params: unknown[] = []
+  let i = 1
+  if (jobIds.length) {
+    conditions.push(`id = ANY($${i++}::int[])`)
+    params.push(jobIds)
+  }
+  if (hashes.length) {
+    conditions.push(`lower(right(split_part(storage_filename, '.', 1), 16)) = ANY($${i++}::text[])`)
+    params.push(hashes)
+  }
+  if (filenames.length) {
+    conditions.push(`original_filename = ANY($${i++}::text[])`)
+    params.push(filenames)
+  }
+
+  const rows = await query<ElementExtractJobRow>(
+    `SELECT ${JOB_SELECT_COLS}
+     FROM ops_element_extract_jobs
+     WHERE ${conditions.join(" OR ")}
+     ORDER BY uploaded_at DESC, id DESC
+     LIMIT 200`,
+    params,
+  )
+  return rows.map(mapJobRow)
+}
+
 export async function listElementExtractJobs(input?: {
   status?: ExtractJobStatus | "all"
   q?: string

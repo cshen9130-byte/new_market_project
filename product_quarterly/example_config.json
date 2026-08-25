@@ -1,0 +1,21 @@
+{
+  "product_name": "示例稳健配置私募证券投资基金",
+  "short_name": "示例稳健配置",
+  "brand_name": "示例资本",
+  "watermark": "示例资本",
+  "end_date": "2026-06-30",
+  "period_begin": "2026-04-01",
+  "inception_date": "2024.3.18",
+  "bench1_label": "上证指数",
+  "bench2_label": "沪深300",
+  "commentary": "",
+  "report_heading": "2026年 第2季度 投资报告",
+  "overview": {
+    "manager": "示例资本私募基金管理有限公司",
+    "investment_manager": "张某某",
+    "custodian": "某某证券",
+    "inception_date": "2024.3.18",
+    "product_type": "私募证券投资基金",
+    "strategy": "股票多头 / 量化对冲"
+  }
+}

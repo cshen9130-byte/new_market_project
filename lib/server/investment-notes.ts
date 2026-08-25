@@ -9,6 +9,7 @@ import {
   type InvestmentNoteAssociation,
   type InvestmentNoteAttachment,
   type InvestmentNoteContentVariant,
+  type InvestmentNoteExtractedProduct,
   type InvestmentNoteRoadshowAssociation,
 } from "@/lib/ma/investment-notes"
 import {
@@ -71,6 +72,9 @@ function normalizeNote(raw: unknown): InvestmentNote & { creatorId: string } {
         : null,
     tags: Array.isArray(note.tags) ? note.tags.filter((t): t is string => typeof t === "string") : [],
     associations: normalizeAssociations(note.associations),
+    extractedProducts: normalizeExtractedProducts(
+      (note as { extractedProducts?: unknown }).extractedProducts,
+    ),
     roadshowAssociations: normalizeRoadshowAssociations(note.roadshowAssociations),
     attachments: Array.isArray(note.attachments)
       ? (note.attachments as InvestmentNoteAttachment[])
@@ -98,6 +102,34 @@ function normalizeAssociations(value: unknown): InvestmentNoteAssociation[] {
       recordNo: row.recordNo ?? "",
     }
   })
+}
+
+function normalizeExtractedProducts(value: unknown): InvestmentNoteExtractedProduct[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const result: InvestmentNoteExtractedProduct[] = []
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue
+    const row = item as Partial<InvestmentNoteExtractedProduct>
+    const name = typeof row.name === "string" ? row.name.trim() : ""
+    const recordNo = typeof row.recordNo === "string" ? row.recordNo.trim() : ""
+    if (!name && !recordNo) continue
+    const key = `${recordNo.toUpperCase()}::${name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const sourceFile = typeof row.sourceFile === "string" ? row.sourceFile.trim() : ""
+    const confidence =
+      row.confidence === "applied" || row.confidence === "matched" || row.confidence === "extracted"
+        ? row.confidence
+        : "extracted"
+    result.push({
+      name: name || recordNo,
+      recordNo,
+      ...(sourceFile ? { sourceFile } : {}),
+      confidence,
+    })
+  }
+  return result
 }
 
 function optionalTrimmedString(value: unknown): string | undefined {
@@ -278,7 +310,10 @@ export function createServerInvestmentNote(
   userId: string,
   userName: string,
   partial?: Partial<
-    Pick<InvestmentNote, "title" | "content" | "teamShared" | "associations" | "roadshowAssociations">
+    Pick<
+      InvestmentNote,
+      "title" | "content" | "teamShared" | "associations" | "extractedProducts" | "roadshowAssociations"
+    >
   >,
   options?: CreateServerInvestmentNoteOptions,
 ): InvestmentNote {
@@ -307,6 +342,10 @@ export function createServerInvestmentNote(
       partial?.associations !== undefined
         ? normalizeAssociations(partial.associations)
         : [],
+    extractedProducts:
+      partial?.extractedProducts !== undefined
+        ? normalizeExtractedProducts(partial.extractedProducts)
+        : [],
     roadshowAssociations:
       partial?.roadshowAssociations !== undefined
         ? normalizeRoadshowAssociations(partial.roadshowAssociations)
@@ -333,7 +372,10 @@ export async function createServerInvestmentNoteWithKbSync(
   userName: string,
   owner: InvestmentNoteKbOwner,
   partial?: Partial<
-    Pick<InvestmentNote, "title" | "content" | "teamShared" | "associations" | "roadshowAssociations">
+    Pick<
+      InvestmentNote,
+      "title" | "content" | "teamShared" | "associations" | "extractedProducts" | "roadshowAssociations"
+    >
   >,
   options?: CreateServerInvestmentNoteOptions,
 ): Promise<InvestmentNote> {
@@ -367,6 +409,7 @@ export function updateServerInvestmentNote(
       | "teamShared"
       | "tags"
       | "associations"
+      | "extractedProducts"
       | "roadshowAssociations"
       | "attachments"
     >
@@ -411,6 +454,10 @@ export function updateServerInvestmentNote(
       patch.associations !== undefined
         ? normalizeAssociations(patch.associations)
         : existing.associations,
+    extractedProducts:
+      patch.extractedProducts !== undefined
+        ? normalizeExtractedProducts(patch.extractedProducts)
+        : existing.extractedProducts,
     roadshowAssociations:
       patch.roadshowAssociations !== undefined
         ? normalizeRoadshowAssociations(patch.roadshowAssociations)
@@ -440,6 +487,7 @@ export async function updateServerInvestmentNoteWithKbSync(
       | "teamShared"
       | "tags"
       | "associations"
+      | "extractedProducts"
       | "roadshowAssociations"
       | "attachments"
     >

@@ -5,6 +5,8 @@ export const FOF_WEEKLY_BENCHMARKS = {
   IC: { label: "中证500", source: "spot", symbol: "IC" },
   IM: { label: "中证1000", source: "spot", symbol: "IM" },
   IH: { label: "上证50", source: "spot", symbol: "IH" },
+  "000001.SH": { label: "上证指数", source: "ashare", tsCode: "000001.SH" },
+  "000300.SH": { label: "沪深300指数", source: "ashare", tsCode: "000300.SH" },
   "511010.SH": { label: "国债ETF", source: "etf", ticker: "511010.SH" },
   "518880.SH": { label: "黄金ETF", source: "etf", ticker: "518880.SH" },
   "510300.SH": { label: "沪深300ETF", source: "etf", ticker: "510300.SH" },
@@ -14,10 +16,12 @@ export const FOF_WEEKLY_BENCHMARKS = {
 export type FofWeeklyBenchmarkKey = keyof typeof FOF_WEEKLY_BENCHMARKS
 
 export function listFofWeeklyBenchmarkOptions(): Array<{ key: FofWeeklyBenchmarkKey; label: string }> {
-  return Object.entries(FOF_WEEKLY_BENCHMARKS).map(([key, meta]) => ({
-    key: key as FofWeeklyBenchmarkKey,
-    label: meta.label,
-  }))
+  return Object.entries(FOF_WEEKLY_BENCHMARKS)
+    .filter(([, meta]) => meta.source !== "ashare")
+    .map(([key, meta]) => ({
+      key: key as FofWeeklyBenchmarkKey,
+      label: meta.label,
+    }))
 }
 
 export function resolveFofWeeklyBenchmark(
@@ -77,6 +81,25 @@ export async function loadFofWeeklyBenchmarkPrices(
     )
     for (const row of rows) {
       const value = n(row.value)
+      if (value != null) out.set(fmtIso(row.trade_date), value)
+    }
+    return out
+  }
+
+  if (meta.source === "ashare") {
+    const rows = await query<{ trade_date: Date | string; close: string | number | null }>(
+      `SELECT trade_date, close
+       FROM raw_ashare_index_daily
+       WHERE ts_code = $1
+         AND trade_date >= $2::date
+         AND trade_date <= $3::date
+         AND close IS NOT NULL
+         AND close > 0
+       ORDER BY trade_date ASC`,
+      [meta.tsCode, from, to],
+    )
+    for (const row of rows) {
+      const value = n(row.close)
       if (value != null) out.set(fmtIso(row.trade_date), value)
     }
     return out

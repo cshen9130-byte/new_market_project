@@ -8,9 +8,11 @@ import {
   MAX_INVESTMENT_NOTE_TITLE_CHARS,
   type InvestmentNote,
   type InvestmentNoteAssociation,
+  type InvestmentNoteExtractedProduct,
   type InvestmentNoteRoadshowAssociation,
 } from "@/lib/ma/investment-notes"
 import { readFundContractText } from "@/lib/server/fund-contract-element-extract"
+import { resolveExtractedProductCandidates } from "@/lib/server/investment-note-extracted-products"
 import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
 import {
   linkInvestmentNoteMaterials,
@@ -159,7 +161,7 @@ async function summarizeWithAi(input: {
   fileNames: string[]
   extracted: Array<{ name: string; text: string }>
   roadshowPlainText?: string
-}): Promise<{ title: string; content: string }> {
+}): Promise<{ title: string; content: string; products: Array<{ name: string; recordNo: string }> }> {
   const chunks: string[] = []
   let used = 0
   for (const item of input.extracted) {
@@ -177,11 +179,12 @@ async function summarizeWithAi(input: {
       "要求：",
       "1. 只依据提供的文件内容和路演信息整理，不要编造其中没有的事实、数据或结论。",
       "2. 用中文撰写，结构清晰，突出要点、关键数据和风险。",
-      "3. 严格输出 JSON：{\"title\":\"笔记标题\",\"content\":\"HTML正文\"}",
+      "3. 严格输出 JSON：{\"title\":\"笔记标题\",\"content\":\"HTML正文\",\"products\":[{\"name\":\"产品全称\",\"recordNo\":\"备案号\"}]}",
       "4. title 简洁，不超过 80 字，可包含管理人、产品或主题。",
       "5. content 使用简单 HTML（div、b、p、ul、li、table），不要使用 markdown，不要用代码块包裹。",
       "6. 若多份文件主题不同，按文件分节；主题相同则合并去重。",
       "7. 若提供了路演信息，把它作为背景写入笔记（日期、对象、策略等），不要重复成空表格。",
+      "8. products 列出文件中明确出现的基金产品。name 用全称；备案号未知则 recordNo 为空字符串。没有产品则 []。不要编造产品。",
     ].join("\n"),
   )
   const human = new HumanMessage(
@@ -198,7 +201,11 @@ async function summarizeWithAi(input: {
 
   const aiResult = await model.invoke([system, human])
   const rawText = stringifyModelContent(aiResult.content)
-  const parsed = extractJsonObject(rawText) as { title?: unknown; content?: unknown }
+  const parsed = extractJsonObject(rawText) as {
+    title?: unknown
+    content?: unknown
+    products?: unknown
+  }
   const title = String(parsed.title ?? "").trim().slice(0, MAX_INVESTMENT_NOTE_TITLE_CHARS)
   const content = toNoteHtml(String(parsed.content ?? ""))
   if (!content.replace(/<[^>]+>/g, "").trim()) {
@@ -207,7 +214,26 @@ async function summarizeWithAi(input: {
   return {
     title: title || fallbackTitle(input.fileNames),
     content,
+    products: parseAiProducts(parsed.products),
   }
+}
+
+function parseAiProducts(value: unknown): Array<{ name: string; recordNo: string }> {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const out: Array<{ name: string; recordNo: string }> = []
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue
+    const row = item as { name?: unknown; recordNo?: unknown; register_number?: unknown }
+    const name = String(row.name ?? "").trim()
+    const recordNo = String(row.recordNo ?? row.register_number ?? "").trim()
+    if (!name && !recordNo) continue
+    const key = `${recordNo.toUpperCase()}::${name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ name: name || recordNo, recordNo })
+  }
+  return out
 }
 
 function stripOuterHtmlDocument(html: string): string {
@@ -354,6 +380,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
   const fileNames = materials.map((m) => m.name)
   let title = input.fallbackTitle?.trim() || fallbackTitle(fileNames)
   let body = fallbackContent(extracted)
+  let aiProducts: Array<{ name: string; recordNo: string }> = []
   try {
     const generated = await summarizeWithAi({
       fileNames,
@@ -362,6 +389,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
     })
     title = generated.title
     body = generated.content
+    aiProducts = generated.products
   } catch (err) {
     console.error("[investment-note-generate] AI summarize failed, using extracted text", err)
   }
@@ -380,6 +408,24 @@ export async function generateInvestmentNoteFromMaterials(input: {
     throw new Error("生成的笔记过长，请减少所选文件后再试")
   }
 
+  let extractedProducts: InvestmentNoteExtractedProduct[] = []
+  if (aiProducts.length > 0) {
+    try {
+      extractedProducts = await resolveExtractedProductCandidates(
+        aiProducts,
+        extracted.map((item) => item.name).join("、"),
+      )
+    } catch (err) {
+      console.error("[investment-note-generate] resolve extracted products failed", err)
+      extractedProducts = aiProducts.map((item) => ({
+        name: item.name,
+        recordNo: item.recordNo,
+        sourceFile: extracted.map((file) => file.name).join("、"),
+        confidence: "extracted" as const,
+      }))
+    }
+  }
+
   const note = await createServerInvestmentNoteWithKbSync(
     input.userId,
     input.userName,
@@ -390,6 +436,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
       teamShared: true,
       ...(input.roadshowAssociations ? { roadshowAssociations: input.roadshowAssociations } : {}),
       ...(input.associations ? { associations: input.associations } : {}),
+      ...(extractedProducts.length ? { extractedProducts } : {}),
     },
     input.createOptions,
   )

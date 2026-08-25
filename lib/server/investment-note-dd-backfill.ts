@@ -12,6 +12,7 @@ import {
   buildRoadshowAssociationFromDdRow,
   compactRichNoteHtml,
   MAX_INVESTMENT_NOTE_CONTENT_CHARS,
+  type InvestmentNoteAssociation,
 } from "@/lib/ma/investment-notes"
 import { getServerDueDiligenceTable } from "@/lib/server/due-diligence-table"
 import {
@@ -21,8 +22,11 @@ import {
 import {
   collectInvestmentNoteRoadshowRowIds,
   createServerInvestmentNoteWithKbSync,
+  listServerInvestmentNotes,
+  updateServerInvestmentNoteWithKbSync,
 } from "@/lib/server/investment-notes"
 import { getKnowledgeBaseFile, listKnowledgeBaseTree } from "@/lib/server/knowledge-base"
+import { searchTrackingFunds } from "@/lib/server/fund-picker-search"
 
 export const AUTO_INVESTMENT_NOTE_AUTHOR = "auto"
 
@@ -88,6 +92,64 @@ function rowLabel(row: DueDiligenceTableRow): string {
     row.ddTarget ||
     row.id
   )
+}
+
+function compactProductName(value: string): string {
+  return value.replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, "").toLowerCase()
+}
+
+function productNamesMatch(a: string, b: string): boolean {
+  const left = compactProductName(a)
+  const right = compactProductName(b)
+  if (!left || !right) return false
+  if (left.length < 4 || right.length < 4) return left === right
+  return left === right || left.includes(right) || right.includes(left)
+}
+
+async function resolveRoadshowProductAssociation(
+  row: DueDiligenceTableRow,
+): Promise<InvestmentNoteAssociation | null> {
+  const base = buildProductAssociationFromDdRow(row)
+  if (!base) return null
+  if (base.recordNo) return base
+  try {
+    const hits = await searchTrackingFunds(base.name, 8)
+    const matched = hits.filter(
+      (hit) =>
+        productNamesMatch(base.name, hit.product_name) ||
+        productNamesMatch(base.name, hit.short_name || ""),
+    )
+    const unique = matched.length === 1 ? matched[0] : null
+    const exact =
+      unique ??
+      hits.find((hit) => compactProductName(hit.product_name) === compactProductName(base.name))
+    if (exact?.beian_hao) {
+      return {
+        category: "私募基金",
+        name: exact.product_name || base.name,
+        recordNo: exact.beian_hao,
+      }
+    }
+  } catch (err) {
+    console.error("[dd_note_backfill] product lookup failed", err)
+  }
+  return base
+}
+
+function shouldApplyRoadshowProduct(
+  existing: InvestmentNoteAssociation[],
+  next: InvestmentNoteAssociation,
+): boolean {
+  if (existing.length === 0) return true
+  if (existing.length !== 1) return false
+  const current = existing[0]
+  if (current.category !== "私募基金") return false
+  const sameBeian = Boolean(current.recordNo) && current.recordNo === next.recordNo
+  const sameName = productNamesMatch(current.name, next.name)
+  if (sameBeian && current.name === next.name) return false
+  if (sameName && current.recordNo !== next.recordNo && next.recordNo) return true
+  if (sameBeian && current.name !== next.name) return true
+  return false
 }
 
 function roadshowPlainTextFromRow(row: DueDiligenceTableRow): string {
@@ -264,7 +326,7 @@ export async function backfillInvestmentNotesFromDdMaterials(opts?: {
     const action: Exclude<DdNoteBackfillAction, "skip-linked" | "skip-no-materials" | "fail"> =
       existingNoteDoc ? "import" : "generate"
     const fallbackTitle = buildInvestmentNoteTitleFromDdRow(row)
-    const product = buildProductAssociationFromDdRow(row)
+    const product = await resolveRoadshowProductAssociation(row)
     const roadshowAssociations = [buildRoadshowAssociationFromDdRow(row)]
 
     if (dryRun) {
@@ -371,6 +433,107 @@ export async function backfillInvestmentNotesFromDdMaterials(opts?: {
         error: err instanceof Error ? err.message : String(err),
       })
     }
+  }
+
+  return result
+}
+
+export type AutoNoteProductSyncItem = {
+  noteId: string
+  title: string
+  rowId: string
+  action: "set" | "fill-beian" | "skip-no-product" | "skip-unchanged"
+  productName?: string
+  recordNo?: string
+}
+
+export type AutoNoteProductSyncResult = {
+  dryRun: boolean
+  scanned: number
+  updated: number
+  skippedNoProduct: number
+  skippedUnchanged: number
+  items: AutoNoteProductSyncItem[]
+}
+
+/** Copy 尽调表格 代表产品 onto auto notes that are already linked to that roadshow. */
+export async function syncAutoNoteProductsFromLinkedRoadshows(opts?: {
+  dryRun?: boolean
+}): Promise<AutoNoteProductSyncResult> {
+  const dryRun = Boolean(opts?.dryRun)
+  const snapshot = await getServerDueDiligenceTable()
+  const rowById = new Map(snapshot.rows.map((row) => [row.id, row]))
+  const notes = listServerInvestmentNotes("team", AUTO_INVESTMENT_NOTE_AUTHOR).filter(
+    (note) => note.creator === AUTO_INVESTMENT_NOTE_AUTHOR,
+  )
+  const owner = { id: AUTO_INVESTMENT_NOTE_AUTHOR, name: AUTO_INVESTMENT_NOTE_AUTHOR }
+  const result: AutoNoteProductSyncResult = {
+    dryRun,
+    scanned: notes.length,
+    updated: 0,
+    skippedNoProduct: 0,
+    skippedUnchanged: 0,
+    items: [],
+  }
+
+  for (const note of notes) {
+    const rowId = (note.roadshowAssociations ?? [])[0]?.rowId?.trim() || ""
+    const row = rowId ? rowById.get(rowId) : undefined
+    if (!row) {
+      result.skippedNoProduct += 1
+      result.items.push({
+        noteId: note.id,
+        title: note.title,
+        rowId,
+        action: "skip-no-product",
+      })
+      continue
+    }
+
+    const product = await resolveRoadshowProductAssociation(row)
+    if (!product) {
+      result.skippedNoProduct += 1
+      result.items.push({
+        noteId: note.id,
+        title: note.title,
+        rowId,
+        action: "skip-no-product",
+      })
+      continue
+    }
+
+    if (!shouldApplyRoadshowProduct(note.associations ?? [], product)) {
+      result.skippedUnchanged += 1
+      result.items.push({
+        noteId: note.id,
+        title: note.title,
+        rowId,
+        action: "skip-unchanged",
+        productName: product.name,
+        recordNo: product.recordNo,
+      })
+      continue
+    }
+
+    const fillingBeian = (note.associations?.length ?? 0) > 0
+    if (!dryRun) {
+      await updateServerInvestmentNoteWithKbSync(
+        note.id,
+        AUTO_INVESTMENT_NOTE_AUTHOR,
+        AUTO_INVESTMENT_NOTE_AUTHOR,
+        owner,
+        { associations: [product] },
+      )
+    }
+    result.updated += 1
+    result.items.push({
+      noteId: note.id,
+      title: note.title,
+      rowId,
+      action: fillingBeian ? "fill-beian" : "set",
+      productName: product.name,
+      recordNo: product.recordNo,
+    })
   }
 
   return result

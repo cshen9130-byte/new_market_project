@@ -38,6 +38,11 @@ const CRAWL_OR_RECEIVER_MATCH = `
  * in a concurrent write) while their products remain in the pool.
  */
 async function listKnownCrawlEmailAccounts(): Promise<string[]> {
+  const cached = global._knownCrawlEmailsCache
+  if (cached && Date.now() - cached.at < KNOWN_CRAWL_EMAILS_TTL_MS) {
+    return cached.value
+  }
+
   const fromConfig = (await listCrawlEmails())
     .map((e) => e.account.trim().toLowerCase())
     .filter(isMailboxAccount)
@@ -69,7 +74,9 @@ async function listKnownCrawlEmailAccounts(): Promise<string[]> {
     const a = String(row.account || "").trim().toLowerCase()
     if (isMailboxAccount(a)) set.add(a)
   }
-  return Array.from(set).sort((a, b) => a.localeCompare(b))
+  const value = Array.from(set).sort((a, b) => a.localeCompare(b))
+  global._knownCrawlEmailsCache = { at: Date.now(), value }
+  return value
 }
 
 export type DirectEmailVisibilityMapping = {
@@ -89,6 +96,16 @@ type Store = {
 
 const DATA_FILE = path.join(process.cwd(), "data", "ops_direct_email_visibility.json")
 const BACKUP_FILE = DATA_FILE + ".bak"
+
+const KNOWN_CRAWL_EMAILS_TTL_MS = 60_000
+const VISIBLE_REGISTERS_TTL_MS = 60_000
+
+declare global {
+  // eslint-disable-next-line no-var
+  var _knownCrawlEmailsCache: { at: number; value: string[] } | undefined
+  // eslint-disable-next-line no-var
+  var _emailPoolVisibilityCache: Map<string, { at: number; value: string[] | null }> | undefined
+}
 
 function emptyStore(): Store {
   return { mappings: [], updatedAt: null }
@@ -189,6 +206,8 @@ export async function saveDirectEmailVisibilityMappings(
     updatedAt: now,
   }
   writeStore(store)
+  global._knownCrawlEmailsCache = undefined
+  global._emailPoolVisibilityCache = undefined
   return listDirectEmailVisibilityRows()
 }
 
@@ -325,6 +344,11 @@ export async function resolveVisibleEmailPoolRegistersForUser(opts: {
   userId: string
   isAdmin?: boolean
 }): Promise<string[] | null> {
+  const cacheKey = `${opts.userId}\u0000${opts.isAdmin === undefined ? "?" : opts.isAdmin ? "1" : "0"}`
+  const visCache = global._emailPoolVisibilityCache ?? (global._emailPoolVisibilityCache = new Map())
+  const hit = visCache.get(cacheKey)
+  if (hit && Date.now() - hit.at < VISIBLE_REGISTERS_TTL_MS) return hit.value
+
   let isAdmin = opts.isAdmin
   if (isAdmin === undefined) {
     const user = await getUserById(opts.userId)
@@ -334,9 +358,14 @@ export async function resolveVisibleEmailPoolRegistersForUser(opts: {
     userId: opts.userId,
     isAdmin: !!isAdmin,
   })
-  if (allowedEmails === null) return null
-  if (allowedEmails.length === 0) return []
-  return resolveEmailPoolRegistersForCrawlEmails(allowedEmails)
+  const value =
+    allowedEmails === null
+      ? null
+      : allowedEmails.length === 0
+        ? []
+        : await resolveEmailPoolRegistersForCrawlEmails(allowedEmails)
+  visCache.set(cacheKey, { at: Date.now(), value })
+  return value
 }
 
 export async function requireAdminUser(req: Request): Promise<

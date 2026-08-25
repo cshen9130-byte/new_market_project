@@ -16,6 +16,8 @@ import {
 } from "@/lib/fof-portfolio-var"
 import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
 import type { FundHoldingRow } from "./FofFundsPanel"
+import { FofVolControlCharts } from "./FofVolControlCharts"
+import { getNavFieldValue, type NavRow } from "../components/shared"
 
 type Props = {
   series: ReturnCurveSeries[]
@@ -25,6 +27,8 @@ type Props = {
   toDate?: string
   netAssetValue?: number | null
   loading?: boolean
+  navRows?: NavRow[]
+  navType?: string
 }
 
 type FundNavRow = {
@@ -88,6 +92,8 @@ export function FofVolatilityAnalysisPanel({
   toDate,
   netAssetValue,
   loading,
+  navRows = [],
+  navType = "复权净值",
 }: Props) {
   const [confidence, setConfidence] = useState<FofVarConfidence>(95)
   const [method, setMethod] = useState<FofVarMethod>("parametric")
@@ -365,8 +371,21 @@ export function FofVolatilityAnalysisPanel({
     ? (result.nextPeriodVar / netAssetValue) * 100
     : null
   const chartHeight = Math.max(260, okFunds.length * 22 + 56)
+  const productNav = useMemo(
+    () => navRows
+      .map((row) => {
+        const nav = getNavFieldValue(row, navType)
+        const date = row.price_date?.slice(0, 10)
+        if (!date || !Number.isFinite(nav) || nav <= 0) return null
+        return { date, nav }
+      })
+      .filter((p): p is { date: string; nav: number } => p != null)
+      .sort((a, b) => a.date.localeCompare(b.date)),
+    [navRows, navType],
+  )
 
   return (
+    <>
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-4 pb-2">
         <div>
@@ -581,6 +600,8 @@ export function FofVolatilityAnalysisPanel({
         </>
       )}
     </div>
+    <FofVolControlCharts result={result} productNav={productNav} />
+    </>
   )
 }
 

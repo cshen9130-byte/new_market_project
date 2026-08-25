@@ -1991,15 +1991,16 @@ export async function overlayTeamNavOnTrackRows<T extends TrackFundMetricsFields
   if (rows.length === 0) return rows
 
   try {
-    const { loadManagedProductTeamNavBatch } = await import("@/lib/server/team-nav-manage-pg")
+    const { loadManagedProductTeamNavTips } = await import("@/lib/server/team-nav-manage-pg")
     const { resolveTeamSeriesListNavAt } = await import("@/lib/server/managed-product-nav-seed")
 
-    const teamBatch = await loadManagedProductTeamNavBatch(
+    const teamBatch = await loadManagedProductTeamNavTips(
       rows.map((row) => ({
         beian_hao: row.beian_hao,
         product_name: row.product_name,
         short_name: row.short_name,
       })),
+      asOfDate,
     )
     // Case-insensitive lookup — upload keys may differ in casing from list rows.
     const byBeian = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()

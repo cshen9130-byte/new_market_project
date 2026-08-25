@@ -18,6 +18,8 @@ import { FofVolatilityAnalysisPanel } from "./FofVolatilityAnalysisPanel"
 import { FofReturnAnalysisPanel } from "./FofReturnAnalysisPanel"
 import { ValuationEmptyAnalysis } from "./ValuationEmptyAnalysis"
 import { FofTransactionAnalysisPanel } from "./FofTransactionAnalysisPanel"
+import { FofAllocationRiskCharts } from "./FofAllocationRiskCharts"
+import { FofRegimeAttributionPanel } from "./FofRegimeAttributionPanel"
 import { OtherHoldingsPanel, type OtherHoldingRow } from "./OtherHoldingsPanel"
 import { EquityValuationPanel, type ValuationHoldingDetailRow, type StockRiskExposure } from "./EquityValuationPanel"
 import {
@@ -445,7 +447,11 @@ export default function FundValuationAnalysisPage() {
   }, [beian_hao, filterFrom, filterTo, filterBench])
 
   useEffect(() => {
-    const needsNav = activeTab === "产品表现" || activeTab === "业绩指标"
+    const needsNav =
+      activeTab === "产品表现"
+      || activeTab === "业绩指标"
+      || activeTab === "持仓要素"
+      || activeTab === "归因分析"
     if (!needsNav || !beian_hao || !filterFrom || !filterTo) return
     void loadProductPerformance()
   }, [activeTab, beian_hao, filterFrom, filterTo, filterBench, loadProductPerformance])
@@ -469,7 +475,12 @@ export default function FundValuationAnalysisPage() {
 
   useEffect(() => {
     if (!beian_hao || loading || error || data?.layout_type !== "fof" || !data.has_data) return
-    if (activeTab !== "收益分析" && activeTab !== "持仓要素") return
+    if (
+      activeTab !== "收益分析"
+      && activeTab !== "持仓要素"
+      && activeTab !== "归因分析"
+      && activeTab !== "持仓分析"
+    ) return
     if (!filterFrom || !filterTo) return
     void loadReturnCurves()
   }, [beian_hao, configMode, loading, error, data?.layout_type, data?.has_data, activeTab, filterFrom, filterTo, loadReturnCurves])
@@ -608,10 +619,15 @@ export default function FundValuationAnalysisPage() {
     if (activeTab === "持仓分析") {
       void loadTrendData()
     }
-    if (activeTab === "收益分析" || activeTab === "持仓要素") {
+    if (activeTab === "收益分析" || activeTab === "持仓要素" || activeTab === "归因分析" || activeTab === "持仓分析") {
       void loadReturnCurves()
     }
-    if (activeTab === "产品表现" || activeTab === "业绩指标") {
+    if (
+      activeTab === "产品表现"
+      || activeTab === "业绩指标"
+      || activeTab === "持仓要素"
+      || activeTab === "归因分析"
+    ) {
       void loadProductPerformance()
     }
   }
@@ -853,6 +869,7 @@ export default function FundValuationAnalysisPage() {
             || tab === "产品表现"
             || tab === "业绩指标"
             || tab === "交易分析"
+            || tab === "归因分析"
           return (
           <button
             key={tab}
@@ -1010,6 +1027,24 @@ export default function FundValuationAnalysisPage() {
         />
       )}
 
+      {!loading && !error && activeTab === "归因分析" && (
+        showReturnAnalysis ? (
+          <FofRegimeAttributionPanel
+            displayName={displayName}
+            navRows={navRows}
+            navType={filterNavType}
+            fromDate={filterFrom}
+            toDate={filterTo}
+            series={returnCurves.length > 0 ? returnCurves : (data?.return_curves ?? [])}
+            fundHoldings={data?.fund_holdings ?? []}
+            navLoading={navLoading}
+            curvesLoading={curvesLoading}
+          />
+        ) : (
+          <ValuationEmptyAnalysis message="【当前产品没有基金持仓，不支持该类分析】" />
+        )
+      )}
+
       {!loading && !error && activeTab === "持仓分析" && (
         <>
           {trendError && (
@@ -1075,6 +1110,14 @@ export default function FundValuationAnalysisPage() {
                 exportLabel="月末时点策略配置"
                 showStrategySelect
                 minPoints={1}
+              />
+              <FofAllocationRiskCharts
+                series={returnCurves.length > 0 ? returnCurves : (data?.return_curves ?? [])}
+                fundHoldings={data?.fund_holdings ?? []}
+                fromDate={filterFrom}
+                toDate={filterTo}
+                strategyTrend={trendData?.fof_trend?.strategy_trend ?? null}
+                loading={trendLoading || curvesLoading}
               />
             </>
           ) : (
@@ -1215,6 +1258,8 @@ export default function FundValuationAnalysisPage() {
               fromDate={filterFrom}
               toDate={filterTo}
               netAssetValue={data.net_asset_value}
+              navRows={navRows}
+              navType={filterNavType}
             />
             <FofReturnCurvePanel
               series={returnCurves.length > 0 ? returnCurves : (data.return_curves ?? [])}

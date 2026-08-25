@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { DateInput } from "@/components/ui/date-input"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -507,11 +508,11 @@ export function FundMaterialsPanel({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="material-chart-date">关联净值日期（可选）</Label>
-              <Input
+              <DateInput
                 id="material-chart-date"
-                type="date"
                 value={uploadChartDate}
-                onChange={(e) => setUploadChartDate(e.target.value)}
+                onChange={setUploadChartDate}
+                placeholder="请选择日期"
               />
               <p className="text-xs text-muted-foreground">
                 设置后将在业绩指标净值图上标注该日期
@@ -570,11 +571,11 @@ export function FundMaterialsPanel({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="edit-material-chart-date">关联净值日期</Label>
-              <Input
+              <DateInput
                 id="edit-material-chart-date"
-                type="date"
                 value={editChartDate}
-                onChange={(e) => setEditChartDate(e.target.value)}
+                onChange={setEditChartDate}
+                placeholder="请选择日期"
               />
               <p className="text-xs text-muted-foreground">清空日期即可取消图表标注</p>
             </div>

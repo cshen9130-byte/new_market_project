@@ -14,11 +14,12 @@ import { FofWeeklyReportDialog } from "./FofWeeklyReportDialog"
 import { FofMonthlyReportDialog } from "./FofMonthlyReportDialog"
 import { ProductMonthlyReportDialog } from "./ProductMonthlyReportDialog"
 import { FundOfficialMonthlyReportDialog } from "./FundOfficialMonthlyReportDialog"
+import { ProductQuarterlyReportDialog } from "./ProductQuarterlyReportDialog"
 import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
 import { CustomReportGenerateDialog, CustomTemplateCard } from "./CustomReportGenerateDialog"
 
-type TemplateCategory = "weekly" | "monthly" | "custom" | "other"
-type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "fund-official-monthly" | "custom-report"
+type TemplateCategory = "weekly" | "monthly" | "quarterly" | "custom" | "other"
+type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "fund-official-monthly" | "product-quarterly" | "custom-report"
 type FofMonthlyLayout = "curve" | "review"
 
 interface ReportTemplate {
@@ -34,11 +35,12 @@ interface ReportTemplate {
 const TEMPLATE_CATEGORIES: { key: TemplateCategory; label: string }[] = [
   { key: "weekly", label: "产品周报" },
   { key: "monthly", label: "产品月报" },
+  { key: "quarterly", label: "产品季报" },
   { key: "custom", label: "自定义报告" },
   { key: "other", label: "其他" },
 ]
 
-const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "other", ReportTemplate[]> = {
+const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "quarterly" | "other", ReportTemplate[]> = {
   weekly: [
     {
       id: "weekly-track-curve",
@@ -104,6 +106,16 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "other", ReportTempla
       badgeLabel: "月报",
       exampleUrl: "/ma/api/reports/fund-official-monthly/example",
       exampleCaption: "单产品官方投资月报版式示例",
+    },
+  ],
+  quarterly: [
+    {
+      id: "quarterly-institutional",
+      title: "机构投资者持有期季报",
+      description: "一页正式季报 · 持有期收益/年化/回撤 · 上证指数与沪深300对比",
+      badgeLabel: "季报",
+      exampleUrl: "/ma/api/reports/product-quarterly/example",
+      exampleCaption: "上市公司 / 机构投资者 · 持有满三个月季度投资报告",
     },
   ],
   other: [],
@@ -194,7 +206,7 @@ export function NewReportDialog({
     }
   }, [open])
 
-  const officialTemplates = category === "custom" ? [] : TEMPLATES_BY_CATEGORY[category as "weekly" | "monthly" | "other"]
+  const officialTemplates = category === "custom" ? [] : TEMPLATES_BY_CATEGORY[category as "weekly" | "monthly" | "quarterly" | "other"]
 
   function handleUseOfficialTemplate(template: ReportTemplate) {
     if (template.id === "weekly-track-curve") {
@@ -217,6 +229,10 @@ export function NewReportDialog({
     }
     if (template.id === "monthly-fund-official") {
       setStep("fund-official-monthly")
+      return
+    }
+    if (template.id === "quarterly-institutional") {
+      setStep("product-quarterly")
     }
   }
 
@@ -340,6 +356,9 @@ export function NewReportDialog({
         )}
         {step === "fund-official-monthly" && (
           <FundOfficialMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+        )}
+        {step === "product-quarterly" && (
+          <ProductQuarterlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
         )}
         {step === "custom-report" && selectedCustom && (
           <CustomReportGenerateDialog

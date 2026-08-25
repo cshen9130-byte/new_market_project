@@ -96,6 +96,16 @@ export type FofPortfolioVarResult = {
   oneDayVarPct: number
   funds: FofVarFundRow[]
   gaps: FofNavGap[]
+  alignedDates: string[]
+  portPeriodReturns: number[]
+  fundReturns: Array<{
+    key: string
+    name: string
+    strategy: string | null
+    weightPct: number
+    returns: number[]
+  }>
+  corrMatrix: number[][]
 }
 
 const Z_SCORE: Record<FofVarConfidence, number> = {
@@ -500,6 +510,10 @@ function emptyResult(
     oneDayVarPct: 0,
     funds: insufficient,
     gaps,
+    alignedDates: [],
+    portPeriodReturns: [],
+    fundReturns: [],
+    corrMatrix: [],
   }
 }
 
@@ -799,6 +813,21 @@ export function computeFofPortfolioVar(input: {
   const weightedStandVol = weights.reduce((s, w, i) => s + w * standaloneVols[i], 0)
   const diversificationRatio = portVol > 1e-12 ? weightedStandVol / portVol : null
 
+  const corrMatrix: number[][] = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (__, j) => {
+      const rho = pearson(returns[i], returns[j])
+      return rho != null && Number.isFinite(rho) ? rho : (i === j ? 1 : 0)
+    }),
+  )
+
+  const fundReturns = universe.map((f, i) => ({
+    key: f.key,
+    name: f.name,
+    strategy: f.holding.fundStrategy,
+    weightPct: weights[i] * 100,
+    returns: returns[i],
+  }))
+
   const okRows: FofVarFundRow[] = universe.map((f, i) => {
     const riskContribPct = portVar > 1e-16
       ? (weights[i] * sigmaW[i] / portVar) * 100
@@ -850,5 +879,9 @@ export function computeFofPortfolioVar(input: {
     oneDayVarPct: coveredMv > 0 ? (oneDayVar / coveredMv) * 100 : 0,
     funds,
     gaps,
+    alignedDates: dates,
+    portPeriodReturns: portRets,
+    fundReturns,
+    corrMatrix,
   }
 }

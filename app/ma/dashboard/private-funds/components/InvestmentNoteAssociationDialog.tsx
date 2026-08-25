@@ -13,8 +13,10 @@ import {
   ASSOCIATION_CATEGORIES,
   type AssociationCategory,
   type InvestmentNoteAssociation,
+  type InvestmentNoteExtractedProduct,
   associationDisplayLabel,
   associationKey,
+  listInvestmentNoteExtractedProducts,
 } from "@/lib/ma/investment-notes"
 
 type FundRow = {
@@ -29,18 +31,29 @@ type ShareClassRow = {
   synthetic: boolean
 }
 
+const EXTRACTED_SOURCE = "资料提取" as const
+type ListSource = AssociationCategory | typeof EXTRACTED_SOURCE
+
+const CONFIDENCE_LABEL: Record<NonNullable<InvestmentNoteExtractedProduct["confidence"]>, string> = {
+  applied: "已写入要素",
+  matched: "已匹配产品",
+  extracted: "文件提取",
+}
+
 export function InvestmentNoteAssociationDialog({
   open,
   onOpenChange,
   initialAssociations,
   onConfirm,
+  noteId,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialAssociations: InvestmentNoteAssociation[]
   onConfirm: (associations: InvestmentNoteAssociation[]) => void
+  noteId?: string | null
 }) {
-  const [category, setCategory] = useState<AssociationCategory>("私募基金")
+  const [category, setCategory] = useState<ListSource>("私募基金")
   const [keyword, setKeyword] = useState("")
   const [searchKeyword, setSearchKeyword] = useState("")
   const [selected, setSelected] = useState<InvestmentNoteAssociation[]>([])
@@ -50,6 +63,9 @@ export function InvestmentNoteAssociationDialog({
   const [shareClassMap, setShareClassMap] = useState<Record<string, ShareClassRow[]>>({})
   /** Which parent rows are expanded to show A/B/C children */
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set())
+  const [extractedProducts, setExtractedProducts] = useState<InvestmentNoteExtractedProduct[]>([])
+  const [extractedPending, setExtractedPending] = useState(0)
+  const [extractedLoading, setExtractedLoading] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
 
@@ -71,8 +87,54 @@ export function InvestmentNoteAssociationDialog({
     setSelected(initialAssociationsRef.current.map((item) => ({ ...item })))
     setShareClassMap({})
     setExpandedParents(new Set())
+    setExtractedProducts([])
+    setExtractedPending(0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
+
+  const extractedPendingRef = useRef(0)
+  extractedPendingRef.current = extractedPending
+
+  useEffect(() => {
+    if (!open) return
+    const id = (noteId || "").trim()
+    if (!id) {
+      setExtractedLoading(false)
+      return
+    }
+    let cancelled = false
+
+    async function loadExtracted(initial: boolean) {
+      if (initial) setExtractedLoading(true)
+      try {
+        const result = await listInvestmentNoteExtractedProducts(id)
+        if (cancelled) return
+        setExtractedProducts(result.products)
+        setExtractedPending(result.pendingCount)
+        if (initial && (result.products.length > 0 || result.pendingCount > 0)) {
+          setCategory(EXTRACTED_SOURCE)
+        }
+      } catch {
+        if (cancelled) return
+        if (initial) {
+          setExtractedProducts([])
+          setExtractedPending(0)
+        }
+      } finally {
+        if (!cancelled && initial) setExtractedLoading(false)
+      }
+    }
+
+    void loadExtracted(true)
+    const timer = window.setInterval(() => {
+      if (cancelled || extractedPendingRef.current <= 0) return
+      void loadExtracted(false)
+    }, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [open, noteId])
 
   const loadFunds = useCallback(
     async (q: string) => {
@@ -174,8 +236,35 @@ export function InvestmentNoteAssociationDialog({
 
   const selectedKeys = useMemo(() => new Set(selected.map(associationKey)), [selected])
 
-  /** All visible rows (parents + any expanded children) */
+  const filteredExtracted = useMemo(() => {
+    const q = searchKeyword.trim().toLowerCase()
+    if (!q) return extractedProducts
+    return extractedProducts.filter((item) =>
+      [item.name, item.recordNo, item.sourceFile]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(q),
+    )
+  }, [extractedProducts, searchKeyword])
+
+  function associationFromExtracted(item: InvestmentNoteExtractedProduct): InvestmentNoteAssociation {
+    return {
+      category: "私募基金",
+      name: item.name.trim() || item.recordNo,
+      recordNo: (item.recordNo || "").trim(),
+    }
+  }
+
+  /** All visible rows (parents + any expanded children, or 资料提取 results) */
   const allVisibleItems = useMemo<InvestmentNoteAssociation[]>(() => {
+    if (category === EXTRACTED_SOURCE) {
+      return filteredExtracted.map((item) => ({
+        category: "私募基金",
+        name: item.name.trim() || item.recordNo,
+        recordNo: (item.recordNo || "").trim(),
+      }))
+    }
     const items: InvestmentNoteAssociation[] = []
     for (const row of fundRows) {
       items.push({ category, name: row.product_name, recordNo: row.beian_hao })
@@ -186,19 +275,14 @@ export function InvestmentNoteAssociationDialog({
       }
     }
     return items
-  }, [fundRows, shareClassMap, expandedParents, category])
+  }, [category, filteredExtracted, fundRows, shareClassMap, expandedParents])
 
   const allVisibleSelected = useMemo(
     () => allVisibleItems.length > 0 && allVisibleItems.every((item) => selectedKeys.has(associationKey(item))),
     [allVisibleItems, selectedKeys],
   )
 
-  function toggleRow(row: FundRow, checked: boolean) {
-    const item: InvestmentNoteAssociation = {
-      category,
-      name: row.product_name,
-      recordNo: row.beian_hao,
-    }
+  function toggleItem(item: InvestmentNoteAssociation, checked: boolean) {
     const key = associationKey(item)
     setSelected((prev) => {
       if (checked) {
@@ -207,6 +291,17 @@ export function InvestmentNoteAssociationDialog({
       }
       return prev.filter((entry) => associationKey(entry) !== key)
     })
+  }
+
+  function toggleRow(row: FundRow, checked: boolean) {
+    toggleItem(
+      {
+        category: category === EXTRACTED_SOURCE ? "私募基金" : category,
+        name: row.product_name,
+        recordNo: row.beian_hao,
+      },
+      checked,
+    )
   }
 
   function toggleAllVisible(checked: boolean) {
@@ -258,12 +353,16 @@ export function InvestmentNoteAssociationDialog({
         <div className="grid min-h-0 flex-1 grid-cols-[1fr_280px]">
           <div className="flex min-h-0 flex-col border-r">
             <div className="flex items-center gap-3 border-b px-4 py-3">
-              <div className="relative w-36 shrink-0">
+              <div className="relative w-40 shrink-0">
                 <select
                   value={category}
-                  onChange={(e) => setCategory(e.target.value as AssociationCategory)}
+                  onChange={(e) => setCategory(e.target.value as ListSource)}
                   className="h-9 w-full appearance-none rounded border border-zinc-200 bg-white pl-3 pr-8 text-sm text-zinc-700 focus:border-red-400 focus:outline-none focus:ring-1 focus:ring-red-200"
                 >
+                  <option value={EXTRACTED_SOURCE}>
+                    {EXTRACTED_SOURCE}
+                    {extractedProducts.length > 0 ? ` (${extractedProducts.length})` : ""}
+                  </option>
                   {ASSOCIATION_CATEGORIES.map((item) => (
                     <option key={item} value={item}>{item}</option>
                   ))}
@@ -292,6 +391,12 @@ export function InvestmentNoteAssociationDialog({
               </div>
             </div>
 
+            {category === EXTRACTED_SOURCE && extractedPending > 0 && extractedProducts.length > 0 ? (
+              <div className="border-b bg-amber-50 px-4 py-1.5 text-xs text-amber-800">
+                另有 {extractedPending} 个文件仍在提取
+              </div>
+            ) : null}
+
             {/* Keep rows visible while loading (no flash); only show spinner when truly empty */}
             <div className={`min-h-0 flex-1 overflow-auto transition-opacity duration-150 ${loading && fundRows.length > 0 ? "opacity-50 pointer-events-none" : ""}`}>
               <table className="w-full text-sm">
@@ -301,7 +406,10 @@ export function InvestmentNoteAssociationDialog({
                       <Checkbox
                         checked={allVisibleSelected}
                         onCheckedChange={(checked) => toggleAllVisible(checked === true)}
-                        disabled={allVisibleItems.length === 0 || category !== "私募基金"}
+                        disabled={
+                          allVisibleItems.length === 0
+                          || (category !== "私募基金" && category !== EXTRACTED_SOURCE)
+                        }
                       />
                     </th>
                     <th className="px-3 py-2 text-left font-medium">产品名称</th>
@@ -309,7 +417,71 @@ export function InvestmentNoteAssociationDialog({
                   </tr>
                 </thead>
                 <tbody>
-                  {category !== "私募基金" ? (
+                  {category === EXTRACTED_SOURCE ? (
+                    extractedLoading ? (
+                      <tr>
+                        <td colSpan={3} className="h-56 text-center text-sm text-zinc-400">正在读取资料提取结果...</td>
+                      </tr>
+                    ) : filteredExtracted.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="h-56">
+                          <div className="flex flex-col items-center justify-center text-zinc-400 gap-2 px-6 text-center">
+                            <Inbox className="h-10 w-10 text-zinc-300" strokeWidth={1} />
+                            <span className="text-sm">
+                              {extractedPending > 0
+                                ? `资料仍在提取中（${extractedPending}）`
+                                : extractedProducts.length > 0
+                                  ? "没有匹配的提取产品"
+                                  : "未从资料中识别到产品"}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredExtracted.map((row, index) => {
+                        const item = associationFromExtracted(row)
+                        const checked = selectedKeys.has(associationKey(item))
+                        const recordNo = item.recordNo
+                        const confidence = row.confidence && CONFIDENCE_LABEL[row.confidence]
+                        return (
+                          <tr
+                            key={`${associationKey(item)}-${row.sourceFile || index}`}
+                            className="border-b border-zinc-100 bg-amber-50/40 hover:bg-amber-50/80"
+                          >
+                            <td className="px-3 py-2.5">
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(value) => toggleItem(item, value === true)}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 text-zinc-700">
+                              <div className="min-w-0">
+                                {recordNo ? (
+                                  <a
+                                    href={`/ma/dashboard/private-funds/${encodeURIComponent(recordNo)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-sky-600 hover:underline"
+                                    title={item.name}
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    {associationDisplayLabel(item)}
+                                  </a>
+                                ) : (
+                                  <span title={item.name}>{associationDisplayLabel(item)}</span>
+                                )}
+                                <div className="mt-0.5 text-[11px] text-zinc-400">
+                                  {confidence || "文件提取"}
+                                  {row.sourceFile ? ` · ${row.sourceFile}` : ""}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{recordNo || "—"}</td>
+                          </tr>
+                        )
+                      })
+                    )
+                  ) : category !== "私募基金" ? (
                     <tr>
                       <td colSpan={3} className="h-56">
                         <div className="flex flex-col items-center justify-center text-zinc-400 gap-2">

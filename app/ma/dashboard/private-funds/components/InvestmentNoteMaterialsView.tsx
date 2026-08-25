@@ -123,12 +123,13 @@ function NoteSearchPicker({
         <button
           type="button"
           disabled={disabled}
+          title={selected ? noteLabel(selected) : undefined}
           className={cn(
             "inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded border border-zinc-200 bg-white px-2 text-left text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
             buttonClassName,
           )}
         >
-          <span className={cn("truncate", !selected && "text-zinc-400")}>
+          <span className={cn("min-w-0 truncate", !selected && "text-zinc-400")}>
             {selected ? noteLabel(selected) : placeholder}
           </span>
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
@@ -529,7 +530,7 @@ export function InvestmentNoteMaterialsView() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col bg-white">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
       <input
         ref={fileInputRef}
         type="file"
@@ -677,13 +678,13 @@ export function InvestmentNoteMaterialsView() {
           )
         : null}
 
-      <div className="flex-1 overflow-auto">
+      <div className="min-w-0 flex-1 overflow-auto">
         {loading ? (
           <div className="px-6 py-16 text-center text-sm text-zinc-400">加载中...</div>
         ) : filtered.length === 0 ? (
           <div className="px-6 py-16 text-center text-sm text-zinc-400">暂无上传资料</div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full table-fixed text-sm">
             <thead className="sticky top-0 bg-zinc-50 text-left text-xs text-zinc-500">
               <tr className="border-b">
                 <th className="w-10 px-4 py-3">
@@ -699,12 +700,12 @@ export function InvestmentNoteMaterialsView() {
                     aria-label="全选当前列表"
                   />
                 </th>
-                <th className="px-2 py-3 font-medium">文件</th>
-                <th className="px-4 py-3 font-medium w-[300px]">关联投资笔记</th>
-                <th className="px-4 py-3 font-medium w-[120px]">大小</th>
-                <th className="px-4 py-3 font-medium w-[140px]">上传人</th>
-                <th className="px-4 py-3 font-medium w-[150px]">上传时间</th>
-                <th className="px-4 py-3 font-medium w-[140px]" />
+                <th className="min-w-0 px-2 py-3 font-medium">文件</th>
+                <th className="w-[280px] px-4 py-3 font-medium">关联投资笔记</th>
+                <th className="w-[96px] px-4 py-3 font-medium">大小</th>
+                <th className="w-[112px] px-4 py-3 font-medium">上传人</th>
+                <th className="w-[150px] px-4 py-3 font-medium">上传时间</th>
+                <th className="w-[140px] px-4 py-3 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -733,7 +734,7 @@ export function InvestmentNoteMaterialsView() {
                         aria-label={`选择 ${material.name}`}
                       />
                     </td>
-                    <td className="px-2 py-3">
+                    <td className="min-w-0 overflow-hidden px-2 py-3">
                       <div className="flex min-w-0 items-center gap-2">
                         <button
                           type="button"
@@ -746,10 +747,11 @@ export function InvestmentNoteMaterialsView() {
                               })
                             })
                           }}
-                          className="inline-flex min-w-0 max-w-full items-center gap-2 text-left text-sky-600 hover:underline"
+                          title={material.name}
+                          className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-left text-sky-600 hover:underline"
                         >
                           <FileText className="h-4 w-4 shrink-0 text-zinc-400" />
-                          <span className="truncate">{material.name}</span>
+                          <span className="min-w-0 truncate">{material.name}</span>
                         </button>
                         {syncedFromDd ? (
                           <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] text-zinc-600">
@@ -763,13 +765,17 @@ export function InvestmentNoteMaterialsView() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <div className="min-w-0 flex-1">
+                    <td className="overflow-hidden px-4 py-3">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <div className="min-w-0 flex-1 overflow-hidden">
                           {syncedFromDd ? (
                             <div
-                              className="flex h-8 items-center rounded border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700"
-                              title="来自尽调表格，随笔记路演关联自动同步"
+                              className="flex h-8 min-w-0 items-center rounded border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700"
+                              title={
+                                material.noteTitle
+                                  ? `${material.noteTitle}（来自尽调表格，随笔记路演关联自动同步）`
+                                  : "来自尽调表格，随笔记路演关联自动同步"
+                              }
                             >
                               <span className="truncate">
                                 {material.noteTitle
@@ -803,9 +809,11 @@ export function InvestmentNoteMaterialsView() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-zinc-500">{formatBytes(material.size)}</td>
-                    <td className="px-4 py-3 text-zinc-500">{material.uploadedByName || "-"}</td>
-                    <td className="px-4 py-3 text-zinc-500">{formatDateTime(material.createdAt)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-zinc-500">{formatBytes(material.size)}</td>
+                    <td className="truncate px-4 py-3 text-zinc-500" title={material.uploadedByName || undefined}>
+                      {material.uploadedByName || "-"}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-zinc-500">{formatDateTime(material.createdAt)}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center justify-end gap-1">
                         {canExtract ? (

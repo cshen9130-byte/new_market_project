@@ -8,7 +8,10 @@ import {
   createElementExtractJobFromBuffer,
   type ElementExtractJobRow,
 } from "@/lib/server/fund-element-extract-jobs"
-import { readInvestmentNoteMaterialFile } from "@/lib/server/investment-note-materials"
+import {
+  readInvestmentNoteMaterialFile,
+  setInvestmentNoteMaterialExtractJobId,
+} from "@/lib/server/investment-note-materials"
 
 export type EnqueuedElementExtract = {
   job: ElementExtractJobRow | null
@@ -47,6 +50,7 @@ export async function enqueueElementExtractForInvestmentNoteMaterial(input: {
     originalFilename: file.filename || input.fileName,
     uploaded_by: input.uploadedBy,
   })
+  setInvestmentNoteMaterialExtractJobId(input.materialId, job.id)
   startContractExtractJob()
   return { job, skipReason: null }
 }

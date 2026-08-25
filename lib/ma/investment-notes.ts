@@ -105,6 +105,14 @@ export function associationKey(item: InvestmentNoteAssociation): string {
   return `${item.category}::${item.recordNo || item.name}`
 }
 
+/** Products auto-fetched from uploaded files / 要素提取, shown in 关联管理 → 资料提取. */
+export type InvestmentNoteExtractedProduct = {
+  name: string
+  recordNo: string
+  sourceFile?: string
+  confidence?: "applied" | "matched" | "extracted"
+}
+
 /** Link from an investment note to a 尽调表格 row (treated as a roadshow record). */
 export type InvestmentNoteRoadshowAssociation = {
   rowId: string
@@ -282,6 +290,8 @@ export type InvestmentNote = {
   kbRelativePath?: string | null
   tags: string[]
   associations: InvestmentNoteAssociation[]
+  /** Products identified from 资料来源 files; suggestions only until the user confirms 关联. */
+  extractedProducts?: InvestmentNoteExtractedProduct[]
   /** Linked 尽调表格 rows (路演). */
   roadshowAssociations: InvestmentNoteRoadshowAssociation[]
   attachments: InvestmentNoteAttachment[]
@@ -655,6 +665,23 @@ export async function setInvestmentNoteRoadshowAssociations(
   return updateInvestmentNote(id, { roadshowAssociations })
 }
 
+export async function listInvestmentNoteExtractedProducts(noteId: string): Promise<{
+  products: InvestmentNoteExtractedProduct[]
+  pendingCount: number
+}> {
+  const safeId = noteId.trim()
+  if (!safeId) return { products: [], pendingCount: 0 }
+  const data = await apiFetch<{
+    ok: true
+    products?: InvestmentNoteExtractedProduct[]
+    pendingCount?: number
+  }>(`/ma/api/investment-notes/extracted-products?noteId=${encodeURIComponent(safeId)}`)
+  return {
+    products: Array.isArray(data.products) ? data.products : [],
+    pendingCount: typeof data.pendingCount === "number" ? data.pendingCount : 0,
+  }
+}
+
 /** Linked investment note for a 尽调表格 / roadshow row. */
 export type LinkedInvestmentNoteRef = {
   id: string
@@ -807,6 +834,7 @@ export type InvestmentNoteMaterial = {
   createdAt: string
   /** `dd-table` = mirrored from a linked 尽调表格 folder; not stored under 上传资料. */
   source?: "upload" | "dd-table"
+  extractJobId?: number | null
 }
 
 export function isDdSyncedInvestmentNoteMaterial(

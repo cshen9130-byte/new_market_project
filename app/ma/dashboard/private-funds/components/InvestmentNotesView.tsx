@@ -1268,6 +1268,7 @@ export function InvestmentNotesView() {
         onOpenChange={setAssociationOpen}
         initialAssociations={selectedNote?.associations ?? []}
         onConfirm={confirmAssociations}
+        noteId={selectedNote?.id}
       />
 
       <InvestmentNoteRoadshowAssociationDialog

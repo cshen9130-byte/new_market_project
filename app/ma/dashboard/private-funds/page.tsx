@@ -2019,6 +2019,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
   const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastTrackListScopeRef = useRef("")
   const [addMetricPeriod, setAddMetricPeriod] = useState("近一月")
   const [addMetricDraftItems, setAddMetricDraftItems] = useState<{period: string; metric: string}[]>([])
   const [addMetricApplied, setAddMetricApplied] = useState<{period: string; metric: string}[]>([])
@@ -2672,13 +2673,18 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     // Include user id for team pools too — 邮箱运维池 visibility is per-account.
     const cacheKey = `${isMineTab ? "mine" : "team"}\u0000${currentUserId()}\u0000${params.toString()}`
     const cached = readListCache(cacheKey)
+    const scopeKey = `${isMineTab ? "mine" : "team"}\u0000${listPool}`
+    const scopeChanged = lastTrackListScopeRef.current !== "" && lastTrackListScopeRef.current !== scopeKey
+    lastTrackListScopeRef.current = scopeKey
     if (cached) {
       setData(cached.data)
       setTotal(cached.total)
       setLoading(false)
     } else {
-      setData([])
-      setTotal(0)
+      if (scopeChanged) {
+        setData([])
+        setTotal(0)
+      }
       setLoading(true)
     }
 
@@ -2693,17 +2699,37 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       .then((d) => {
         if (cancelled) return
         if (d?.error) {
-          if (!cached) { setData([]); setTotal(0) }
+          if (!cached && scopeChanged) { setData([]); setTotal(0) }
           return
         }
         const entry: ListCacheEntry = { data: d.data ?? [], total: d.total ?? 0 }
         writeListCache(cacheKey, entry)
         setData(entry.data)
         setTotal(entry.total)
+
+        const totalPagesNow = Math.max(1, Math.ceil((entry.total ?? 0) / 50))
+        const nextPage = page + 1
+        if (nextPage <= totalPagesNow) {
+          const nextParams = new URLSearchParams(params)
+          nextParams.set("page", String(nextPage))
+          const nextKey = `${isMineTab ? "mine" : "team"}\u0000${currentUserId()}\u0000${nextParams.toString()}`
+          if (!readListCache(nextKey)) {
+            fetch(`/ma/api/tracking-funds/list?${nextParams}`, {
+              headers: userFetchHeaders(),
+              signal: ac.signal,
+            })
+              .then((r) => r.json())
+              .then((next) => {
+                if (cancelled || next?.error) return
+                writeListCache(nextKey, { data: next.data ?? [], total: next.total ?? 0 })
+              })
+              .catch((err) => { if (!isAbortError(err)) return })
+          }
+        }
       })
       .catch((err) => {
         if (cancelled || isAbortError(err)) return
-        if (!cached) { setData([]); setTotal(0) }
+        if (!cached && scopeChanged) { setData([]); setTotal(0) }
       })
       .finally(() => { if (!cancelled) setLoading(false) })
 
@@ -3098,9 +3124,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   placeholder="输入产品/产品备案号，回车搜索"
                   value={kwInput}
                   onChange={(e) => setKwInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { setKeyword(kwInput); setPage(1) } }}
                 />
-                <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <button onClick={() => { setKeyword(kwInput); setPage(1) }} className="text-muted-foreground hover:text-foreground transition-colors">
                   <Search className="h-3 w-3" />
                 </button>
               </div>
@@ -3123,7 +3149,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 placeholder="请输入产品/产品备案号，按回车搜索"
                 value={kwInput}
                 onChange={(e) => setKwInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+                onKeyDown={(e) => { if (e.key === "Enter") { setKeyword(kwInput); setPage(1) } }}
               />
             </div>
             <div className="flex items-center gap-3 text-xs text-zinc-600 flex-shrink-0">
@@ -3373,7 +3399,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
+                {loading && data.length === 0 ? (
                   <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isSupportedPool ? (
                   <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
@@ -3480,7 +3506,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
+                {loading && data.length === 0 ? (
                   <tr><td colSpan={teamConfigColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isSupportedPool ? (
                   <tr><td colSpan={teamConfigColSpan} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
@@ -3603,7 +3629,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           {/* Pagination */}
           {isSupportedPool && (
             <div className="flex items-center justify-between pt-3 flex-shrink-0">
-              <span className="text-sm text-zinc-500">共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 只基金</span>
+              <span className="text-sm text-zinc-500">共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 只基金{loading ? <span className="ml-2 text-xs text-muted-foreground">加载中…</span> : null}</span>
               <div className="flex items-center gap-1">
                 <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
                   className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
@@ -3972,7 +3998,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
+                {loading && data.length === 0 ? (
                   <tr><td colSpan={mineConfigColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isMyPoolSupported ? (
                   <tr><td colSpan={mineConfigColSpan} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
@@ -4083,7 +4109,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           </div>
           {isMyPoolSupported && (
             <div className="flex items-center justify-between pt-3 flex-shrink-0">
-              <span className="text-sm text-zinc-500">共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 只基金</span>
+              <span className="text-sm text-zinc-500">共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 只基金{loading ? <span className="ml-2 text-xs text-muted-foreground">加载中…</span> : null}</span>
               <div className="flex items-center gap-1">
                 <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
                   className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
