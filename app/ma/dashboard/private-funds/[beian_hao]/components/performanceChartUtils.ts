@@ -1,4 +1,4 @@
-import { getNavFieldValue, type NavRow, type BenchmarkPoint } from "./shared"
+import { getNavFieldValue, filterNavRowsByFrequency, type NavRow, type BenchmarkPoint } from "./shared"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
 import type { IntervalMetricValues } from "./IntervalMetricsTable"
 
@@ -16,6 +16,7 @@ export function formatReturnTooltipLabel(
 
 export type NavChartPoint = {
   date: string
+  ts: number
   value: number
   benchmarkValue: number | null
   periodReturn: number | null
@@ -113,6 +114,93 @@ export function downsample(rows: NavRow[], maxPoints = 500): NavRow[] {
   const out: NavRow[] = []
   for (let i = 0; i < rows.length; i += step) out.push(rows[i])
   if (out[out.length - 1] !== rows[rows.length - 1]) out.push(rows[rows.length - 1])
+  return out
+}
+
+/** Keep ~even calendar spacing so daily years do not dominate mixed-frequency NAV. */
+export function downsampleByTime(rows: NavRow[], maxPoints = 720): NavRow[] {
+  if (rows.length <= maxPoints) return rows
+  const start = dateToUtcTs(rows[0].price_date)
+  const end = dateToUtcTs(rows[rows.length - 1].price_date)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return downsample(rows, maxPoints)
+  }
+  const step = (end - start) / (maxPoints - 1)
+  const out: NavRow[] = [rows[0]]
+  let nextTs = start + step
+  for (let i = 1; i < rows.length - 1; i++) {
+    const ts = dateToUtcTs(rows[i].price_date)
+    if (!Number.isFinite(ts) || ts < nextTs) continue
+    out.push(rows[i])
+    nextTs += step
+  }
+  const last = rows[rows.length - 1]
+  if (out[out.length - 1]?.price_date !== last.price_date) out.push(last)
+  return out
+}
+
+const MS_DAY = 86400000
+
+/**
+ * Long mixed daily/weekly NAV looks like a scribble if every observation is plotted.
+ * For spans over ~5 months, chart the last point in each week (table still uses raw rows).
+ */
+export function resampleNavRowsForChart(
+  rows: NavRow[],
+  options?: { forceDaily?: boolean },
+): NavRow[] {
+  const prepared = prepareNavRowsForChart(rows)
+  if (prepared.length <= 2) return prepared
+  const span = chartDateSpanDays(prepared.map((row) => row.price_date))
+  const sampled = !options?.forceDaily && span > 150
+    ? filterNavRowsByFrequency(prepared, "周频")
+    : prepared
+  return downsampleByTime(sampled)
+}
+
+export function chartGapBreakMs(timestamps: number[]): number {
+  const gaps: number[] = []
+  for (let i = 1; i < timestamps.length; i++) {
+    const gap = timestamps[i] - timestamps[i - 1]
+    if (Number.isFinite(gap) && gap > 0) gaps.push(gap)
+  }
+  if (!gaps.length) return 24 * MS_DAY
+  gaps.sort((a, b) => a - b)
+  const median = gaps[Math.floor(gaps.length / 2)]
+  return Math.max(24 * MS_DAY, median * 3)
+}
+
+export type GappedLinePoint = {
+  value: [number, number | null]
+  date?: string
+  periodReturn?: number | null
+  showDot?: boolean
+}
+
+/** Insert a null so ECharts does not draw a fake trend across missing NAV weeks. */
+export function toGappedLinePoints(
+  points: Array<{ ts: number; y: number | null; date?: string; periodReturn?: number | null }>,
+  showDots: boolean,
+): GappedLinePoint[] {
+  if (!points.length) return []
+  const breakMs = chartGapBreakMs(points.map((point) => point.ts))
+  const isolated = points.map((point, i) => {
+    const prevGap = i > 0 && point.ts - points[i - 1].ts > breakMs
+    const nextGap = i < points.length - 1 && points[i + 1].ts - point.ts > breakMs
+    return prevGap || nextGap
+  })
+  const out: GappedLinePoint[] = []
+  for (let i = 0; i < points.length; i++) {
+    if (i > 0 && points[i].ts - points[i - 1].ts > breakMs) {
+      out.push({ value: [points[i - 1].ts + MS_DAY, null] })
+    }
+    out.push({
+      value: [points[i].ts, points[i].y],
+      date: points[i].date,
+      periodReturn: points[i].periodReturn,
+      showDot: showDots || isolated[i],
+    })
+  }
   return out
 }
 
@@ -261,6 +349,108 @@ export function formatDateRange(startTs: number, endTs: number): string {
   return `${new Date(startTs).toISOString().slice(0, 10)} ~ ${new Date(endTs).toISOString().slice(0, 10)}`
 }
 
+/** Parse `YYYY-MM-DD` as UTC midnight so the NAV chart can use a real time scale. */
+export function dateToUtcTs(dateStr: string): number {
+  const key = dateStr.slice(0, 10)
+  const y = Number(key.slice(0, 4))
+  const m = Number(key.slice(5, 7))
+  const d = Number(key.slice(8, 10))
+  if (!y || !m || !d) return NaN
+  return Date.UTC(y, m - 1, d)
+}
+
+export function formatIsoDateFromTs(ts: number): string {
+  if (!Number.isFinite(ts)) return ""
+  return new Date(ts).toISOString().slice(0, 10)
+}
+
+export function chartTooltipDateLabel(
+  payloadDate: string | undefined,
+  label: string | number | undefined,
+): string {
+  if (payloadDate) return payloadDate.slice(0, 10)
+  if (typeof label === "number") return formatIsoDateFromTs(label)
+  if (typeof label === "string" && /^\d+$/.test(label)) return formatIsoDateFromTs(Number(label))
+  return label ? String(label).slice(0, 10) : ""
+}
+
+export type TimeAxisConfig = {
+  ticks: number[]
+  domain: [number, number]
+  tickFormatter: (ts: number) => string
+}
+
+/**
+ * Calendar-spaced ticks for a time-scale x-axis.
+ * Ticks sit on actual dates (year/month starts), not on NAV observation indices,
+ * so mixed daily/weekly series keep real calendar width.
+ */
+export function buildTimeAxisConfig(dates: string[]): TimeAxisConfig {
+  const tsList = dates
+    .map(dateToUtcTs)
+    .filter((ts) => Number.isFinite(ts))
+    .sort((a, b) => a - b)
+  if (!tsList.length) {
+    return {
+      ticks: [],
+      domain: [0, 1],
+      tickFormatter: () => "",
+    }
+  }
+
+  const minTs = tsList[0]
+  const maxTs = tsList[tsList.length - 1]
+  const spanDays = Math.max(1, Math.round((maxTs - minTs) / 86400000))
+  const monthStep = pickMonthStep(spanDays)
+  const tickLabels = new Map<number, string>()
+  const ticks: number[] = []
+
+  function addTick(ts: number, label: string) {
+    if (!Number.isFinite(ts) || ts < minTs || ts > maxTs) return
+    if (tickLabels.has(ts)) {
+      if (/^\d{4}$/.test(label)) tickLabels.set(ts, label)
+      return
+    }
+    ticks.push(ts)
+    tickLabels.set(ts, label)
+  }
+
+  const startYear = new Date(minTs).getUTCFullYear()
+  const endYear = new Date(maxTs).getUTCFullYear()
+  const startMonth = new Date(minTs).getUTCMonth() + 1
+  const endMonth = new Date(maxTs).getUTCMonth() + 1
+
+  if (monthStep >= 12) {
+    for (let y = startYear; y <= endYear; y++) {
+      const jan = Date.UTC(y, 0, 1)
+      if (jan < minTs) addTick(minTs, String(y))
+      else addTick(jan, String(y))
+    }
+  } else {
+    let y = startYear
+    let m = startMonth
+    while (y < endYear || (y === endYear && m <= endMonth)) {
+      const ts = Date.UTC(y, m - 1, 1)
+      const label = m === 1 ? String(y) : formatMonthTargetLabel(y, m, spanDays)
+      if (ts < minTs) addTick(minTs, label)
+      else addTick(ts, label)
+      m += monthStep
+      while (m > 12) {
+        m -= 12
+        y += 1
+      }
+    }
+  }
+
+  ticks.sort((a, b) => a - b)
+  return {
+    ticks,
+    domain: [minTs, maxTs],
+    tickFormatter: (ts: number) =>
+      tickLabels.get(ts) ?? formatChartAxisDateLabel(formatIsoDateFromTs(ts), spanDays),
+  }
+}
+
 export function buildNavChartData(
   rows: NavRow[],
   chartMode: "nav" | "return",
@@ -269,7 +459,7 @@ export function buildNavChartData(
   benchmarkSeries: BenchmarkPoint[],
 ): NavChartPoint[] {
   if (!rows.length) return []
-  const sampled = downsample(rows)
+  const sampled = resampleNavRowsForChart(rows)
   const benchmarkValues = hasBenchmark
     ? buildAlignedBenchmarkValues(sampled, benchmarkSeries, chartMode, navType)
     : sampled.map(() => null)
@@ -285,6 +475,7 @@ export function buildNavChartData(
     const navValue = fundNavValues[index]
     return {
       date: row.price_date,
+      ts: dateToUtcTs(row.price_date),
       value: chartMode === "return"
         ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
         : navValue,
@@ -318,6 +509,7 @@ export function computeNavChartYDomain(
 
 export type DrawdownChartPoint = {
   date: string
+  ts: number
   fundDD: number
   benchDD: number | null
   excessDD: number | null
@@ -351,7 +543,7 @@ export function buildDrawdownChartData(
   const prepared = prepareNavRowsForChart(rows)
   if (!prepared.length) return []
 
-  const sampled = downsample(prepared)
+  const sampled = resampleNavRowsForChart(prepared)
   const fundValues = sampled.map((r) => getNavFieldValue(r, navType))
   const fundDD = computeDrawdownSeries(fundValues)
 
@@ -392,6 +584,7 @@ export function buildDrawdownChartData(
 
   return sampled.map((row, i) => ({
     date: row.price_date,
+    ts: dateToUtcTs(row.price_date),
     fundDD: fundDD[i],
     benchDD: benchDD[i],
     excessDD: excessDD[i],

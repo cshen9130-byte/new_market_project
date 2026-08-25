@@ -1,4 +1,5 @@
 import type { CtpBookLevel, CtpTick } from "@/lib/client/ctp-market"
+import { sinaGet } from "@/lib/server/sina-fetch"
 
 function num(value: string | number | undefined | null) {
   if (value == null || value === "" || value === "-" || value === "--") return null
@@ -45,6 +46,24 @@ function isCffexHq(parts: string[]) {
   return px(parts[0]) != null && px(parts[16]) != null
 }
 
+function parseHqClock(parts: string[], raw: string) {
+  const date =
+    raw.match(/(\d{4}-\d{2}-\d{2})/)?.[1] || parts.find((part) => /^\d{4}-\d{2}-\d{2}$/.test(part)) || null
+  const colon = raw.match(/(\d{4}-\d{2}-\d{2}),(\d{2}:\d{2}:\d{2})/)
+  if (colon) return { date: colon[1], time: colon[2] }
+  const digits = String(parts[1] || "").replace(/\D/g, "")
+  if (digits.length === 5 || digits.length === 6) {
+    const s = digits.padStart(6, "0")
+    const hh = Number(s.slice(0, 2))
+    const mm = Number(s.slice(2, 4))
+    const ss = Number(s.slice(4, 6))
+    if (hh <= 23 && mm <= 59 && ss <= 59) {
+      return { date, time: `${s.slice(0, 2)}:${s.slice(2, 4)}:${s.slice(4, 6)}` }
+    }
+  }
+  return { date, time: null as string | null }
+}
+
 export function parseSinaFuturesHq(text: string) {
   const quotes = new Map<string, CtpTick>()
   const re = /var hq_str_(?:nf_|CFF_RE_)?([A-Z]{1,3}\d{3,4}|[A-Z]{1,3}0)="([^"]*)";/gi
@@ -53,7 +72,7 @@ export function parseSinaFuturesHq(text: string) {
     if (!match[2].trim()) continue
     const symbol = match[1].toUpperCase()
     const parts = match[2].split(",")
-    const dateMatch = match[2].match(/(\d{4}-\d{2}-\d{2}),(\d{2}:\d{2}:\d{2})/)
+    const clock = parseHqClock(parts, match[2])
     const cffex = isCffexHq(parts)
     const book = cffex ? parseCffexBook(parts) : parseCommodityBook(parts)
     const last = cffex ? px(parts[3]) : px(parts[8])
@@ -76,10 +95,42 @@ export function parseSinaFuturesHq(text: string) {
       average: px(parts.at(-2)),
       bids: book.bids,
       asks: book.asks,
-      update_time: dateMatch?.[2] ?? null,
+      update_time: clock.time,
       update_millis: 0,
-      trade_date: dateMatch?.[1] ?? null,
+      trade_date: clock.date,
     })
   }
   return quotes
+}
+
+export function hqSymbolAliases(symbol: string) {
+  const u = symbol.trim().toUpperCase()
+  const m = u.match(/^([A-Z]{1,3})(\d{3,4})$/)
+  if (!m) return u ? [u] : []
+  if (m[2].length === 3) return [u, `${m[1]}2${m[2]}`]
+  if (m[2].length === 4 && m[2].startsWith("2")) return [u, `${m[1]}${m[2].slice(1)}`]
+  return [u]
+}
+
+export async function fetchSinaFuturesQuotes(symbols: string[]) {
+  const requested = symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)
+  const unique = [...new Set(requested.flatMap(hqSymbolAliases))]
+  if (!unique.length) return new Map<string, CtpTick>()
+  const text = await sinaGet(
+    `https://hq.sinajs.cn/list=${unique.map((symbol) => `nf_${symbol}`).join(",")}`,
+    "https://finance.sina.com.cn",
+  )
+  const parsed = parseSinaFuturesHq(text)
+  const out = new Map(parsed)
+  for (const raw of requested) {
+    if (out.has(raw)) continue
+    for (const alt of hqSymbolAliases(raw)) {
+      const quote = parsed.get(alt)
+      if (quote?.last) {
+        out.set(raw, { ...quote, symbol: raw })
+        break
+      }
+    }
+  }
+  return out
 }

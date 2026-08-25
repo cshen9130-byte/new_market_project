@@ -2,7 +2,7 @@
 
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
-import type { DrawdownChartPoint } from "./performanceChartUtils"
+import { dateToUtcTs, formatIsoDateFromTs, toGappedLinePoints, type DrawdownChartPoint } from "./performanceChartUtils"
 import type { DrawdownEpisodeMark } from "./DrawdownEpisodesTable"
 
 function monthAxisLabel(dateStr: string, lastDate: string): string {
@@ -43,17 +43,30 @@ export function DynamicDrawdownChart({
   const lastDate = dates.at(-1) ?? ""
 
   const option = useMemo(() => {
-    const fundData = data.map((d) => (showExcess ? d.excessDD : d.fundDD))
-    const benchData = showExcess ? [] : data.map((d) => d.benchDD)
-    const yMin = drawdownYMin([...fundData, ...benchData])
     const showDots = data.length <= 40
+    const fundPoints = toGappedLinePoints(
+      data.map((d) => ({ ts: d.ts, y: showExcess ? d.excessDD : d.fundDD, date: d.date })),
+      showDots,
+    )
+    const benchPoints = showExcess
+      ? []
+      : toGappedLinePoints(
+          data.map((d) => ({ ts: d.ts, y: d.benchDD, date: d.date })),
+          showDots,
+        )
+    const minTs = data[0]?.ts
+    const maxTs = data[data.length - 1]?.ts
+    const yMin = drawdownYMin([
+      ...fundPoints.map((p) => p.value[1]),
+      ...benchPoints.map((p) => p.value[1]),
+    ])
 
     const episodeMarkPoint = episodeMarks.length
       ? {
           symbol: "circle",
           symbolSize: 26,
           data: episodeMarks.map((mark) => ({
-            coord: [mark.date, mark.y],
+            coord: [dateToUtcTs(mark.date), mark.y],
             value: mark.no,
             itemStyle: { color: "#ffffff", borderColor: "#dc2626", borderWidth: 2.5 },
             label: {
@@ -74,9 +87,9 @@ export function DynamicDrawdownChart({
         name: "超额回撤",
         type: "line",
         smooth: false,
-        showSymbol: showDots,
+        showSymbol: true,
         symbol: "circle",
-        symbolSize: 5,
+        symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
         connectNulls: false,
         lineStyle: { width: 2, color: "#ef4444" },
         itemStyle: { color: "#ef4444" },
@@ -90,7 +103,7 @@ export function DynamicDrawdownChart({
             ],
           },
         },
-        data: fundData,
+        data: fundPoints,
         markPoint: episodeMarkPoint,
         markLine: maxFundDrawdown !== null ? {
           silent: true,
@@ -105,9 +118,10 @@ export function DynamicDrawdownChart({
         name: productName,
         type: "line",
         smooth: false,
-        showSymbol: showDots,
+        showSymbol: true,
         symbol: "circle",
-        symbolSize: 5,
+        symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
+        connectNulls: false,
         lineStyle: { width: 2, color: "#ef4444" },
         itemStyle: { color: "#ef4444" },
         areaStyle: {
@@ -120,7 +134,7 @@ export function DynamicDrawdownChart({
             ],
           },
         },
-        data: fundData,
+        data: fundPoints,
         markPoint: episodeMarkPoint,
         markLine: maxFundDrawdown !== null ? {
           silent: true,
@@ -136,9 +150,9 @@ export function DynamicDrawdownChart({
           name: `${benchmarkLabel}（基准）`,
           type: "line",
           smooth: false,
-          showSymbol: showDots,
+          showSymbol: true,
           symbol: "circle",
-          symbolSize: 4,
+          symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 4 : 0),
           connectNulls: false,
           lineStyle: { width: 1.75, color: "#2563eb", type: "dashed" },
           itemStyle: { color: "#2563eb" },
@@ -152,7 +166,7 @@ export function DynamicDrawdownChart({
               ],
             },
           },
-          data: benchData,
+          data: benchPoints,
         })
       }
     }
@@ -160,6 +174,7 @@ export function DynamicDrawdownChart({
     return {
       backgroundColor: "transparent",
       animation: false,
+      useUTC: true,
       tooltip: {
         trigger: "axis" as const,
         valueFormatter: (v: number) => (v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(2)}%`),
@@ -167,13 +182,15 @@ export function DynamicDrawdownChart({
       legend: { show: false },
       grid: { left: 56, right: 20, top: 12, bottom: 28 },
       xAxis: {
-        type: "category" as const,
-        data: dates,
+        type: "time" as const,
+        min: minTs,
+        max: maxTs,
         boundaryGap: false,
         axisLabel: {
           fontSize: 11,
           color: "#71717a",
-          formatter: (v: string) => monthAxisLabel(v, lastDate),
+          hideOverlap: true,
+          formatter: (value: number) => monthAxisLabel(formatIsoDateFromTs(value), lastDate),
         },
         axisLine: { show: false },
         axisTick: { show: false },

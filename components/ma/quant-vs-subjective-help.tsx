@@ -208,6 +208,36 @@ export function HelpProductTable({ volDays }: { volDays: number }) {
   )
 }
 
+export function HelpBriefingMomSignals({ volDays = 20 }: { volDays?: number }) {
+  return (
+    <ChartHelp title="决策信号怎么算">
+      <p>简报始终按<strong className="text-foreground">风险口径</strong>，量化 / 主观用默认账户划分。期权不计入。</p>
+      <SharedDefs volDays={volDays} />
+      <p>板块净风险 = 该板块内各品种净风险相加（板块内多空可以对冲）。量化、主观各自有一组风险预算，两边的%不能加总。</p>
+      <Formula>本组风险预算 = Σ |品种净风险|</Formula>
+      <Formula>风险% = 该板块净风险 / 本组风险预算　（正=净多，负=净空）</Formula>
+      <p>决策信号阈值（q = |量化风险%|，s = |主观风险%|）：</p>
+      <ul className="list-disc pl-4 space-y-1">
+        <li>加码：同向，且 q、s 都 ≥ 3%</li>
+        <li>观望：反向，且 q、s 都 ≥ 3%</li>
+        <li>补风格：一侧 ≥ 8%，另一侧 &lt; 1.5%</li>
+        <li>控拥挤：同向且 q + s ≥ 25%</li>
+        <li>中性：其余</li>
+        <li>扩容：量化户数占比与量化保证金占比差得太大（只出现在下方列表）</li>
+      </ul>
+      <p>信号强弱分数（封顶 100）。book = 该板块占全书量化风险%绝对值 + 占全书主观风险%绝对值。</p>
+      <Formula>控拥挤：q + s + book</Formula>
+      <Formula>加码（两边都 ≥ 8%）：2 × min(q, s) + book</Formula>
+      <Formula>加码（弱共识）：min(q, s) + 0.5 × book</Formula>
+      <Formula>观望：1.5 × min(q, s) + book</Formula>
+      <Formula>补风格：重仓一侧的 |风险%| + book</Formula>
+      <Formula>中性：max(q, s)</Formula>
+      <p>档位：分数 ≥ 20 为<strong className="text-foreground">强</strong>，≥ 8 为<strong className="text-foreground">中</strong>，其余为<strong className="text-foreground">弱</strong>。表上数字是这个分数取整。</p>
+      <p>解读列：共识做多 / 共识做空 / 方向分歧 / 仅量化 / 仅主观 / 共识但拥挤 / 中性。</p>
+    </ChartHelp>
+  )
+}
+
 export function HelpHoldingBar({ metric, sleeve }: { metric: ExposureMetric; sleeve: "量化" | "主观" }) {
   return (
     <ChartHelp title={`${sleeve} · 多空持仓`}>

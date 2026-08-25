@@ -18,6 +18,12 @@ export type AllWeatherTradeMark = {
   lots: number
 }
 
+export type AllWeatherDailyNav = {
+  date: string
+  equity: number
+  dailyPnl: number
+}
+
 export type AllWeatherBookMeta = {
   name: string
   asOf: string
@@ -29,6 +35,7 @@ export type AllWeatherBookMeta = {
   lastBudget: Record<string, number>
   contractTenor: ContractTenor
   trades: AllWeatherTradeMark[]
+  daily: AllWeatherDailyNav[]
 }
 
 type AwPosition = {
@@ -55,6 +62,7 @@ type AwResponse = {
     cumPnl?: number
     initialCapital?: number
     positions?: AwPosition[]
+    daily?: Array<{ date?: string; equity?: number; dailyPnl?: number }>
   }
   rebalanceTrades?: Array<{
     date?: string
@@ -121,6 +129,13 @@ export async function fetchAllWeatherOverview(refresh = false) {
     lastBudget: data.strategy?.lastBudget || {},
     contractTenor: data.settings?.contractTenor === "following" ? "following" : "current",
     trades,
+    daily: (data.book?.daily || [])
+      .filter((row) => row.date && Number.isFinite(Number(row.equity)))
+      .map((row) => ({
+        date: String(row.date),
+        equity: Number(row.equity),
+        dailyPnl: Number(row.dailyPnl) || 0,
+      })),
   }
   return { holdings, marks, meta }
 }

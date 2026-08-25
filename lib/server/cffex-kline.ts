@@ -1,6 +1,8 @@
 import type { CtpCandle } from "@/lib/client/ctp-market"
+import { futuresTradeDateYmd, isNightHqPrint, isNightWallClock } from "@/lib/client/market-hours"
 import { aggregateCandles, bucketTime, type TimeframeId } from "@/lib/client/timeframes"
 import { chinaWallToUnix, sinaGet } from "@/lib/server/sina-fetch"
+import { fetchSinaFuturesQuotes } from "@/lib/server/sina-futures-hq"
 
 function num(value: unknown) {
   const n = Number(value)
@@ -162,42 +164,23 @@ function sortUnique(bars: CtpCandle[]) {
   return [...map.values()].sort((a, b) => a.time - b.time)
 }
 
-function parseHqOhlc(parts: string[]) {
-  const first = num(parts[0])
-  const commodity = first == null || first <= 0
-  if (commodity) {
-    const last = num(parts[8]) ?? num(parts[7]) ?? num(parts[6])
-    const open = num(parts[2]) ?? last
-    const high = num(parts[3]) ?? Math.max(open ?? 0, last ?? 0)
-    const low = num(parts[4]) ?? Math.min(open ?? Infinity, last ?? Infinity)
-    return { open, high, low, last, volume: num(parts[14]) ?? num(parts[10]) ?? 0 }
-  }
-  return {
-    open: num(parts[0]),
-    high: num(parts[1]),
-    low: num(parts[2]),
-    last: num(parts[3]),
-    volume: num(parts[4]) ?? 0,
-  }
-}
-
 async function fetchSessionHq(symbol: string) {
   try {
-    const text = await sinaGet(
-      `https://hq.sinajs.cn/list=nf_${encodeURIComponent(symbol)}`,
-      `https://finance.sina.com.cn/futures/quotes/${symbol}.shtml`,
-    )
-    const match = text.match(new RegExp(`var hq_str_nf_${symbol}="([^"]*)";`, "i"))
-    if (!match) return null
-    const parts = match[1].split(",")
-    const dateMatch = match[1].match(/(\d{4}-\d{2}-\d{2})/)
-    const { open, high, low, last, volume } = parseHqOhlc(parts)
+    const tick = (await fetchSinaFuturesQuotes([symbol])).get(symbol.toUpperCase())
+    const open = tick?.open
+    const last = tick?.last
     if (open == null || last == null || !(open > 0) || !(last > 0)) return null
-    if (high != null && low != null && (high < last * 0.2 || low > last * 5)) return null
-    const date = dateMatch?.[1] || shanghaiToday()
+    const high = tick.high != null && tick.high > 0 ? tick.high : Math.max(open, last)
+    const low = tick.low != null && tick.low > 0 ? tick.low : Math.min(open, last)
+    if (high < last * 0.2 || low > last * 5) return null
+    const nightNow = isNightWallClock(new Date(), symbol)
+    const date =
+      nightNow && isNightHqPrint(symbol, tick)
+        ? futuresTradeDateYmd(symbol)
+        : tick.trade_date || shanghaiToday()
     const time = chinaWallToUnix(`${date} 00:00:00`)
     if (time == null) return null
-    return toCandle(time, open, high, low, last, volume)
+    return toCandle(time, open, high, low, last, tick.volume ?? 0)
   } catch {
     return null
   }

@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Bot, LayoutGrid, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
+import { Bot, LayoutGrid, LineChart, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
 
 import { IndexBasisRateChart } from "@/components/ma/index-basis-rate-chart"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
 import { KlineProChart, type KlineChartHandle } from "@/components/ma/kline-pro-chart"
+import { PaperNavChart } from "@/components/ma/paper-nav-chart"
 import {
   PaperAllWeatherOrderDialog,
   PaperPortfolioPanel,
@@ -33,6 +34,7 @@ import {
   mergeOrderMarks,
 } from "@/lib/client/chart-order-marks"
 import { ALL_WEATHER_PORTFOLIO_ID, markPrice } from "@/lib/client/paper-trading"
+import { overlaySinaQuote } from "@/lib/client/market-hours"
 import { productOfSymbol, resolveSymbolInput } from "@/lib/client/pro-trading"
 import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
 import type { TimeframeId } from "@/lib/client/timeframes"
@@ -50,6 +52,7 @@ type Props = {
   iv: Record<string, IvSnapshot>
   initialSymbol: string | null
   initialLayout?: ProTradingLayout
+  onWatchSymbols?: (symbols: string[]) => void
 }
 
 function fmt(n: number | null | undefined, digits = 1) {
@@ -67,6 +70,7 @@ export function ProTradingWorkspace({
   iv,
   initialSymbol,
   initialLayout = "market",
+  onWatchSymbols,
 }: Props) {
   const [symbol, setSymbol] = useState(initialSymbol || "")
   const [query, setQuery] = useState(initialSymbol || "")
@@ -74,6 +78,7 @@ export function ProTradingWorkspace({
   const [interval, setInterval] = useState<TimeframeId>("1m")
   const [layout, setLayout] = useState<ProTradingLayout>(initialLayout)
   const [chartMode, setChartMode] = useState<"sleeves" | "single">("sleeves")
+  const [showNavChart, setShowNavChart] = useState(false)
   const [mounted, setMounted] = useState(false)
   const klineRef = useRef<KlineChartHandle>(null)
   const paper = usePaperTrading(quotes, candles)
@@ -95,10 +100,15 @@ export function ProTradingWorkspace({
     openedRef.current = true
     setLayout(initialLayout)
     setChartMode("sleeves")
+    setShowNavChart(false)
     if (!initialSymbol) return
     setSymbol(initialSymbol)
     setQuery(initialSymbol)
   }, [open, initialSymbol, initialLayout])
+
+  useEffect(() => {
+    if (layout !== "paper") setShowNavChart(false)
+  }, [layout])
 
   useEffect(() => {
     if (!open || layout !== "paper") {
@@ -123,6 +133,10 @@ export function ProTradingWorkspace({
         paper.dismissAwConfirm()
         return
       }
+      if (showNavChart) {
+        setShowNavChart(false)
+        return
+      }
       onClose()
     }
     window.addEventListener("keydown", onKey)
@@ -132,14 +146,44 @@ export function ProTradingWorkspace({
       window.removeEventListener("keydown", onKey)
       document.body.style.overflow = prev
     }
-  }, [open, onClose, paper.awConfirm, paper.dismissAwConfirm])
+  }, [open, onClose, paper.awConfirm, paper.dismissAwConfirm, showNavChart])
+
+  const watchKeyRef = useRef("")
+  useEffect(() => {
+    if (!onWatchSymbols) return
+    if (!open) {
+      if (watchKeyRef.current) {
+        watchKeyRef.current = ""
+        onWatchSymbols([])
+      }
+      return
+    }
+    const next = [
+      ...paper.state.products.map((item) => item.symbol),
+      ...paper.state.positions.filter((item) => item.status === "open").map((item) => item.symbol),
+      symbol,
+    ]
+      .map((item) => String(item || "").toUpperCase())
+      .filter((item) => /^[A-Z]{1,3}\d{3,4}$/.test(item))
+    const unique = [...new Set(next)]
+    const key = unique.slice().sort().join(",")
+    if (key === watchKeyRef.current) return
+    watchKeyRef.current = key
+    onWatchSymbols(unique)
+  }, [open, onWatchSymbols, paper.state.products, paper.state.positions, symbol])
 
   const product = productOfSymbol(symbol)
-  const quote = quotes[symbol]
   const live1m = candles[symbol] || []
-  const { candles: tfCandles } = useSymbolKline(symbol || null, interval, live1m, quote)
+  const { candles: tfCandles, quote: klineQuote } = useSymbolKline(symbol || null, interval, live1m, quotes[symbol])
+  const quote = klineQuote || quotes[symbol]
   const meta = INDEX_FUTURES.find((item) => item.product === product)
-  const last = markPrice(symbol, quotes, candles, paper.extraMarks)
+  const quotesForMark = useMemo(() => {
+    if (!symbol || !klineQuote) return quotes
+    const overlaid = overlaySinaQuote(symbol, quotes[symbol], klineQuote)
+    if (!overlaid || overlaid === quotes[symbol]) return quotes
+    return { ...quotes, [symbol]: overlaid }
+  }, [symbol, quotes, klineQuote])
+  const last = markPrice(symbol, quotesForMark, candles, paper.extraMarks)
   const base = quote?.pre_settlement || quote?.pre_close || null
   const diff = last != null && base ? last - base : null
   const pct = diff != null && base ? (diff / base) * 100 : null
@@ -253,13 +297,21 @@ export function ProTradingWorkspace({
           </button>
         </div>
         {layout === "paper" ? (
+          <>
           <button
             type="button"
             title={chartMode === "sleeves" ? "当前四图，点击品种可放大单图" : "返回袖套四图"}
-            onClick={() => setChartMode((mode) => (mode === "sleeves" ? "single" : "sleeves"))}
+            onClick={() => {
+              if (showNavChart) {
+                setShowNavChart(false)
+                setChartMode("sleeves")
+                return
+              }
+              setChartMode((mode) => (mode === "sleeves" ? "single" : "sleeves"))
+            }}
             className={cn(
               "inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-[11px]",
-              chartMode === "sleeves"
+              chartMode === "sleeves" && !showNavChart
                 ? "border-[#4c84ff] bg-[#4c84ff] text-white"
                 : "border-[#2a2e39] bg-[#1e222d] text-[#adb3bd] hover:text-white",
             )}
@@ -267,6 +319,21 @@ export function ProTradingWorkspace({
             <LayoutGrid className="size-3.5" />
             {chartMode === "sleeves" ? "四图" : "单图"}
           </button>
+          <button
+            type="button"
+            title={showNavChart ? "返回K线" : "显示净值曲线"}
+            onClick={() => setShowNavChart((open) => !open)}
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-[11px]",
+              showNavChart
+                ? "border-[#4c84ff] bg-[#4c84ff] text-white"
+                : "border-[#2a2e39] bg-[#1e222d] text-[#adb3bd] hover:text-white",
+            )}
+          >
+            <LineChart className="size-3.5" />
+            净值曲线
+          </button>
+          </>
         ) : null}
         <div className="min-w-0 flex-1 font-medium">
           <span className="font-mono text-white">{symbol || "--"}</span>
@@ -358,7 +425,7 @@ export function ProTradingWorkspace({
                       <PaperStrategyBuilder
                         paper={paper}
                         symbols={listedSymbols}
-                        quotes={quotes}
+                        quotes={quotesForMark}
                         chartSymbol={symbol}
                         lastPrice={last}
                         onSelectSymbol={commit}
@@ -368,7 +435,9 @@ export function ProTradingWorkspace({
                 </ResizablePanel>
                 <ResizableHandle className="w-1 bg-[#2a2e39]" />
                 <ResizablePanel defaultSize={62} minSize={40}>
-                  {chartMode === "single" && symbol ? (
+                  {showNavChart ? (
+                    <PaperNavChart paper={paper} onClose={() => setShowNavChart(false)} />
+                  ) : chartMode === "single" && symbol ? (
                     <div className="flex h-full min-h-0 flex-col">
                       <div className="flex shrink-0 items-center justify-between border-b border-[#2a2e39] bg-[#1e222d] px-2 py-1">
                         <span className="font-mono text-[11px] text-white">{symbol}</span>
@@ -397,7 +466,7 @@ export function ProTradingWorkspace({
                     <SleeveKlineGrid
                       ref={klineRef}
                       paper={paper}
-                      quotes={quotes}
+                        quotes={quotesForMark}
                       candles={candles}
                       interval={interval}
                       selectedSymbol={symbol}
@@ -410,16 +479,24 @@ export function ProTradingWorkspace({
                   <PaperPortfolioPanel
                     paper={paper}
                     symbols={listedSymbols}
-                    quotes={quotes}
+                        quotes={quotesForMark}
                     chartSymbol={symbol}
                     onSelectSymbol={focusChart}
+                    showNavChart={showNavChart}
+                    onToggleNavChart={() => setShowNavChart((open) => !open)}
                   />
                 </ResizablePanel>
               </ResizablePanelGroup>
             </ResizablePanel>
             <ResizableHandle className="h-1 bg-[#2a2e39]" />
             <ResizablePanel defaultSize={24} minSize={12}>
-              <PaperPositionsBar paper={paper} chartSymbol={symbol} onSelectSymbol={focusChart} />
+              <PaperPositionsBar
+                paper={paper}
+                chartSymbol={symbol}
+                onSelectSymbol={focusChart}
+                showNavChart={showNavChart}
+                onToggleNavChart={() => setShowNavChart((open) => !open)}
+              />
             </ResizablePanel>
           </ResizablePanelGroup>
         )}

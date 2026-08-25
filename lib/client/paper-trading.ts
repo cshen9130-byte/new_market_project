@@ -284,6 +284,62 @@ export function fmtNav(n: number | null | undefined) {
   return `¥${n.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`
 }
 
+export type PaperNavPoint = { date: string; nav: number }
+
+function beijingYmd(ms = Date.now()) {
+  return new Date(ms).toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })
+}
+
+function beijingChartLabel(ms: number) {
+  return new Date(ms)
+    .toLocaleString("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    })
+    .replace(/\//g, "-")
+}
+
+export function paperNavCurve(opts: {
+  initialCapital: number
+  liveNav: number
+  startedAt?: number
+  positions?: PaperPosition[]
+  daily?: Array<{ date: string; equity: number }>
+}): PaperNavPoint[] {
+  if (opts.daily && opts.daily.length > 0) {
+    const today = beijingYmd()
+    const points = opts.daily.map((row) => ({ date: row.date.slice(5), nav: row.equity }))
+    const last = opts.daily[opts.daily.length - 1]
+    if (last.date === today) points[points.length - 1] = { date: last.date.slice(5), nav: opts.liveNav }
+    else points.push({ date: today.slice(5), nav: opts.liveNav })
+    if (points.length === 1) {
+      points.unshift({
+        date: beijingChartLabel(opts.startedAt && opts.startedAt > 0 ? opts.startedAt : Date.now()),
+        nav: opts.initialCapital,
+      })
+    }
+    return points
+  }
+
+  const closes = (opts.positions || [])
+    .filter((p) => p.status === "closed" && p.exitTime)
+    .map((p) => ({ t: p.exitTime!, pnl: positionPnl(p, p.exitPrice ?? null) ?? 0 }))
+    .sort((a, b) => a.t - b.t)
+  const start = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : closes[0]?.t || Date.now()
+  const points: PaperNavPoint[] = [{ date: beijingChartLabel(start), nav: opts.initialCapital }]
+  let nav = opts.initialCapital
+  for (const close of closes) {
+    nav += close.pnl
+    points.push({ date: beijingChartLabel(close.t), nav })
+  }
+  points.push({ date: beijingChartLabel(Date.now()), nav: opts.liveNav })
+  return points
+}
+
 function defaultMinePortfolio(): PaperPortfolio {
   return { id: "default", name: "手动账户", kind: "manual", scope: "mine", createdAt: 0, initialCapital: DEFAULT_PAPER_CAPITAL }
 }

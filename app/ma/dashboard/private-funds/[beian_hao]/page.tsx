@@ -3,18 +3,6 @@
 import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
 import type React from "react"
 import { useParams, useSearchParams } from "next/navigation"
-import {
-  Area,
-  Line,
-  ComposedChart,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-  ReferenceDot,
-} from "recharts"
 import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Send, Siren, X } from "lucide-react"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
@@ -34,7 +22,7 @@ import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequ
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
 import { WinRateAnalysisPanel } from "./components/WinRateAnalysisPanel"
-import { DrawdownEpisodesTable, buildDrawdownEpisodeRows, buildDrawdownEpisodeMarks, DrawdownEpisodeMarkLabel, findNearestDrawdownPoint } from "./components/DrawdownEpisodesTable"
+import { DrawdownEpisodesTable, buildDrawdownEpisodeRows, buildDrawdownEpisodeMarks, findNearestDrawdownPoint } from "./components/DrawdownEpisodesTable"
 import { MonthlyReturnsCalendar } from "./components/MonthlyReturnsCalendar"
 import { RankPercentileTrendChart } from "./components/RankPercentileTrendChart"
 import { AnnualMetricsTable } from "./components/AnnualMetricsTable"
@@ -47,7 +35,9 @@ import { FundProfilePanel } from "./components/FundProfilePanel"
 import { FundMaterialsPanel } from "./components/FundMaterialsPanel"
 import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
-import { formatReturnTooltipLabel, buildBenchmarkPctChangesByDate, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
+import { buildBenchmarkPctChangesByDate, dateToUtcTs, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
+import { NavPerformanceEChart } from "./components/NavPerformanceEChart"
+import { DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 
 const menuItems = [
@@ -391,162 +381,12 @@ function getInitialFilterPeriod(data: DetailData): string {
   return data.info.operation_date?.slice(0, 10) ? "运作以来" : "成立以来"
 }
 
-function downsample(rows: NavRow[], maxPoints = 500): NavRow[] {
-  if (rows.length <= maxPoints) return rows
-  const step = Math.ceil(rows.length / maxPoints)
-  const out: NavRow[] = []
-  for (let i = 0; i < rows.length; i += step) out.push(rows[i])
-  if (out[out.length - 1] !== rows[rows.length - 1]) out.push(rows[rows.length - 1])
-  return out
-}
-
 function computeDrawdownSeries(values: number[]): number[] {
   let peak = values[0] ?? 0
   return values.map((v) => {
     if (v > peak) peak = v
     return peak > 0 ? +(((v - peak) / peak) * 100).toFixed(4) : 0
   })
-}
-
-function chartDateSpanDays(dates: string[]): number {
-  if (dates.length < 2) return 1
-  const start = new Date(dates[0]).getTime()
-  const end = new Date(dates[dates.length - 1]).getTime()
-  return Math.max(1, Math.round((end - start) / 86400000))
-}
-
-function pickMonthStep(spanDays: number): number {
-  if (spanDays <= 45) return 1
-  if (spanDays <= 150) return 1
-  if (spanDays <= 450) return 2
-  if (spanDays <= 900) return 3
-  if (spanDays <= 1800) return 6
-  return 12
-}
-
-function formatChartAxisDateLabel(dateStr: string, spanDays: number): string {
-  const year = dateStr.slice(0, 4)
-  const month = parseInt(dateStr.slice(5, 7), 10)
-  const day = parseInt(dateStr.slice(8, 10), 10)
-  if (!year || isNaN(month)) return dateStr.slice(0, 10)
-
-  if (spanDays <= 45 && !isNaN(day)) {
-    return `${month}/${day}`
-  }
-  if (month === 1) return year
-  return `${month}月`
-}
-
-function nearestDateInSeries(target: Date, dates: string[]): string {
-  const targetTs = target.getTime()
-  let best = dates[0]
-  let bestDiff = Math.abs(new Date(best).getTime() - targetTs)
-  for (let i = 1; i < dates.length; i++) {
-    const diff = Math.abs(new Date(dates[i]).getTime() - targetTs)
-    if (diff < bestDiff) {
-      bestDiff = diff
-      best = dates[i]
-    }
-  }
-  return best
-}
-
-function formatMonthTargetLabel(year: number, month: number, spanDays: number): string {
-  if (spanDays <= 45) return `${month}/${year}`
-  if (month === 1) return String(year)
-  return `${month}月`
-}
-
-function dateForMonthTarget(year: number, month: number, dates: string[]): string {
-  const mm = String(month).padStart(2, "0")
-  const inMonth = dates.filter((d) => d.startsWith(`${year}-${mm}`))
-  if (inMonth.length) return inMonth[Math.floor(inMonth.length / 2)]
-
-  if (month === 1) {
-    const inYear = dates.filter((d) => d.startsWith(String(year)))
-    if (inYear.length) return inYear[0]
-  }
-
-  return nearestDateInSeries(new Date(year, month - 1, 15), dates)
-}
-
-function buildChartDateAxisConfig(dates: string[]) {
-  if (!dates.length) {
-    return {
-      ticks: [] as string[],
-      tickFormatter: (val: string) => val,
-    }
-  }
-  if (dates.length === 1) {
-    const spanDays = 1
-    return {
-      ticks: dates,
-      tickFormatter: (val: string) => formatChartAxisDateLabel(val, spanDays),
-    }
-  }
-
-  const spanDays = chartDateSpanDays(dates)
-  const monthStep = pickMonthStep(spanDays)
-  const start = new Date(dates[0])
-  const end = new Date(dates[dates.length - 1])
-
-  let curYear = start.getFullYear()
-  let curMonth = start.getMonth() + 1 + (start.getDate() > 15 ? 1 : 0)
-  while (curMonth > 12) {
-    curMonth -= 12
-    curYear += 1
-  }
-
-  const endYear = end.getFullYear()
-  const endMonth = end.getMonth() + 1
-  const targets: Array<{ year: number; month: number }> = []
-  const seenTargets = new Set<string>()
-
-  function addTarget(year: number, month: number) {
-    const key = `${year}-${month}`
-    if (seenTargets.has(key)) return
-    seenTargets.add(key)
-    targets.push({ year, month })
-  }
-
-  while (curYear < endYear || (curYear === endYear && curMonth <= endMonth)) {
-    addTarget(curYear, curMonth)
-    curMonth += monthStep
-    while (curMonth > 12) {
-      curMonth -= 12
-      curYear += 1
-    }
-  }
-
-  for (let y = start.getFullYear(); y <= end.getFullYear(); y++) {
-    const janStart = new Date(y, 0, 1)
-    const janEnd = new Date(y, 0, 31)
-    if (janEnd >= start && janStart <= end) addTarget(y, 1)
-  }
-
-  targets.sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month))
-
-  const tickLabels = new Map<string, string>()
-  const ticks: string[] = []
-
-  for (const target of targets) {
-    const date = dateForMonthTarget(target.year, target.month, dates)
-    const label = formatMonthTargetLabel(target.year, target.month, spanDays)
-    if (tickLabels.has(date)) {
-      if (target.month === 1) tickLabels.set(date, label)
-      continue
-    }
-    ticks.push(date)
-    tickLabels.set(date, label)
-  }
-
-  ticks.sort((a, b) => a.localeCompare(b))
-  if (!ticks.length) ticks.push(dates[0])
-
-  return {
-    ticks,
-    tickFormatter: (val: string) => tickLabels.get(val) ?? formatChartAxisDateLabel(val, spanDays),
-  }
 }
 
 function formatDateRange(startTs: number, endTs: number): string {
@@ -740,104 +580,6 @@ function NavTable({
   )
 }
 
-// ─── Custom Tooltip ───────────────────────────────────────────────────────────
-
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  mode,
-  returnLabelMode = "cumulative",
-}: {
-  active?: boolean
-  payload?: Array<{ value?: number; name?: string; color?: string; dataKey?: string; payload?: NavChartPoint }>
-  label?: string
-  mode?: "nav" | "return"
-  returnLabelMode?: ReturnLabelMode
-}) {
-  if (!active || !payload?.length) return null
-  const visibleItems = payload.filter((item) => {
-    if (mode === "return" && returnLabelMode === "period") {
-      const point = item.payload
-      const periodVal = item.dataKey === "benchmarkValue"
-        ? point?.benchmarkPeriodReturn
-        : point?.periodReturn
-      return typeof periodVal === "number"
-    }
-    return typeof item.value === "number"
-  })
-  if (!visibleItems.length) return null
-
-  function resolveValue(item: (typeof visibleItems)[number]): number | null {
-    if (mode === "return" && returnLabelMode === "period") {
-      const point = item.payload
-      const periodVal = item.dataKey === "benchmarkValue"
-        ? point?.benchmarkPeriodReturn
-        : point?.periodReturn
-      return typeof periodVal === "number" ? periodVal : null
-    }
-    return typeof item.value === "number" ? item.value : null
-  }
-
-  function formatValue(value: number): string {
-    return mode === "return"
-      ? (value >= 0 ? "+" : "") + value.toFixed(2) + "%"
-      : value.toFixed(4)
-  }
-
-  function formatSeriesLabel(item: (typeof visibleItems)[number]): string {
-    if (mode !== "return") return item.name ?? ""
-    return formatReturnTooltipLabel(
-      item.name,
-      returnLabelMode,
-      item.dataKey === "benchmarkValue",
-    )
-  }
-
-  return (
-    <div className="bg-white border border-zinc-100 shadow-md rounded-lg px-3 py-2 text-xs">
-      <div className="text-zinc-500 mb-1">{label}</div>
-      <div className="space-y-1">
-        {visibleItems.map((item) => {
-          const resolved = resolveValue(item)
-          if (resolved === null) return null
-          return (
-            <div key={item.name} className="font-semibold text-zinc-900" style={item.color ? { color: item.color } : undefined}>
-              {formatSeriesLabel(item)}: {formatValue(resolved)}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function DrawdownTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean
-  payload?: Array<{ value?: number; name?: string; color?: string }>
-  label?: string
-}) {
-  if (!active || !payload?.length) return null
-  const visibleItems = payload.filter((item) => typeof item.value === "number")
-  if (!visibleItems.length) return null
-  return (
-    <div className="bg-white border border-zinc-100 shadow-md rounded-lg px-3 py-2 text-xs">
-      <div className="text-zinc-500 mb-1">{label}</div>
-      <div className="space-y-1">
-        {visibleItems.map((item) => (
-          <div key={item.name} className="font-semibold tabular-nums" style={item.color ? { color: item.color } : undefined}>
-            {item.name}: {(item.value as number).toFixed(2)}%
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 type MaterialChartMark = {
   id: number
   date: string
@@ -845,195 +587,6 @@ type MaterialChartMark = {
   y: number
   label: string
   filename: string
-}
-
-function MaterialMarkShape({
-  cx,
-  cy,
-  mark,
-  shadowId,
-  onClick,
-}: {
-  cx?: number
-  cy?: number
-  mark: MaterialChartMark
-  shadowId: string
-  onClick?: (mark: MaterialChartMark) => void
-}) {
-  const [hovered, setHovered] = useState(false)
-  if (cx == null || cy == null || !Number.isFinite(cx) || !Number.isFinite(cy)) return null
-
-  const tipWidth = 176
-  const tipHeight = 52
-  const tipX = cx + 10 + tipWidth > 420 ? -tipWidth - 10 : 10
-  const tipY = cy - tipHeight - 8 < 0 ? 10 : -tipHeight - 8
-
-  return (
-    <g
-      transform={`translate(${cx}, ${cy})`}
-      style={{ cursor: "pointer" }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick?.(mark)
-      }}
-    >
-      <line x1={0} y1={0} x2={0} y2={-14} stroke="#d97706" strokeWidth={1.5} />
-      <circle r={5.5} fill="#f59e0b" stroke="#ffffff" strokeWidth={2} />
-      <circle r={12} fill="transparent" />
-      {hovered && (
-        <g transform={`translate(${tipX}, ${tipY})`} style={{ pointerEvents: "none" }}>
-          <rect
-            width={tipWidth}
-            height={tipHeight}
-            rx={6}
-            fill="#ffffff"
-            stroke="#e4e4e7"
-            strokeWidth={1}
-            filter={`url(#${shadowId})`}
-          />
-          <text x={10} y={18} fontSize={11} fontWeight={600} fill="#18181b">
-            {(mark.label.length > 18 ? `${mark.label.slice(0, 18)}…` : mark.label)}
-          </text>
-          <text x={10} y={36} fontSize={10} fill="#71717a">
-            {`净值日期 ${mark.chartDate} · 点击查看`}
-          </text>
-        </g>
-      )}
-    </g>
-  )
-}
-
-function NavPerformanceChart({
-  data,
-  chartMode,
-  navTypeLabel,
-  yDomain,
-  xAxis,
-  showDots,
-  showBench,
-  benchmarkLabel,
-  height = "100%",
-  gradientId = "navGrad",
-  returnLabelMode = "cumulative",
-  episodeMarks = [],
-  materialMarks = [],
-  onMaterialMarkClick,
-}: {
-  data: NavChartPoint[]
-  chartMode: "nav" | "return"
-  navTypeLabel: string
-  yDomain: [number, number] | [string, string]
-  xAxis: ReturnType<typeof buildChartDateAxisConfig>
-  showDots: boolean
-  showBench: boolean
-  benchmarkLabel: string
-  height?: number | string
-  gradientId?: string
-  returnLabelMode?: ReturnLabelMode
-  episodeMarks?: Array<{ date: string; y: number; no: number }>
-  materialMarks?: MaterialChartMark[]
-  onMaterialMarkClick?: (mark: MaterialChartMark) => void
-}) {
-  const markShadowId = `${gradientId}-materialMarkShadow`
-  return (
-    <ResponsiveContainer width="100%" height={height} debounce={1}>
-      <ComposedChart data={data} margin={{ top: 12, right: 12, left: 4, bottom: 4 }}>
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ef4444" stopOpacity={0.12} />
-            <stop offset="100%" stopColor="#ef4444" stopOpacity={0.01} />
-          </linearGradient>
-          <filter id={markShadowId} x="-20%" y="-20%" width="140%" height="140%">
-            <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#000000" floodOpacity="0.08" />
-          </filter>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f2" vertical={false} />
-        <XAxis
-          dataKey="date"
-          ticks={xAxis.ticks}
-          tick={{ fontSize: 11, fill: "#71717a" }}
-          tickFormatter={xAxis.tickFormatter}
-          interval={0}
-          axisLine={false}
-          tickLine={false}
-        />
-        <YAxis
-          domain={yDomain}
-          tick={{ fontSize: 11, fill: "#71717a" }}
-          width={chartMode === "return" ? 52 : 60}
-          tickFormatter={(v: number) =>
-            chartMode === "return"
-              ? (v > 0 ? "+" : "") + v.toFixed(0) + "%"
-              : v.toFixed(2)
-          }
-          axisLine={false}
-          tickLine={false}
-        />
-        <Tooltip content={(props) => (
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          <ChartTooltip {...(props as any)} mode={chartMode} returnLabelMode={returnLabelMode} />
-        )} />
-        {chartMode === "return" && (
-          <ReferenceLine y={0} stroke="#d4d4d8" strokeWidth={1} />
-        )}
-        {showBench && (
-          <Line
-            type="linear"
-            dataKey="benchmarkValue"
-            name={benchmarkLabel}
-            stroke="#2563eb"
-            strokeWidth={1.75}
-            strokeDasharray="6 3"
-            dot={showDots ? { r: 2, fill: "#2563eb", strokeWidth: 0 } : false}
-            connectNulls={false}
-            activeDot={{ r: 3.5, fill: "#2563eb", stroke: "#fff", strokeWidth: 1.5 }}
-            isAnimationActive={false}
-          />
-        )}
-        <Area
-          type="linear"
-          dataKey="value"
-          name={chartMode === "return" ? "基金收益率" : navTypeLabel}
-          stroke={RED}
-          strokeWidth={2}
-          fill={`url(#${gradientId})`}
-          dot={showDots ? { r: 2.5, fill: RED, strokeWidth: 0 } : false}
-          activeDot={{ r: 4.5, fill: RED, stroke: "#fff", strokeWidth: 1.5 }}
-          isAnimationActive={false}
-        />
-        {episodeMarks.map((mark) => (
-          <ReferenceDot
-            key={`nav-ep-${mark.no}-${mark.date}`}
-            x={mark.date}
-            y={mark.y}
-            r={0}
-            ifOverflow="extendDomain"
-            label={<DrawdownEpisodeMarkLabel value={mark.no} />}
-          />
-        ))}
-        {materialMarks.map((mark) => (
-          <ReferenceDot
-            key={`nav-mat-${mark.id}-${mark.date}`}
-            x={mark.date}
-            y={mark.y}
-            r={0}
-            ifOverflow="extendDomain"
-            shape={(props) => (
-              <MaterialMarkShape
-                cx={props.cx}
-                cy={props.cy}
-                mark={mark}
-                shadowId={markShadowId}
-                onClick={onMaterialMarkClick}
-              />
-            )}
-          />
-        ))}
-      </ComposedChart>
-    </ResponsiveContainer>
-  )
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -1537,7 +1090,7 @@ export default function PrivateFundDetailPage() {
 
   const activeChartData = useMemo(() => {
     if (!filteredNavRows.length) return []
-    const rows = downsample(filteredNavRows)
+    const rows = resampleNavRowsForChart(filteredNavRows, { forceDaily: appliedFreq === "日频" })
     const benchmarkValues = appliedBench
       ? buildAlignedBenchmarkValues(rows, benchmarkData, chartMode, filterNavType)
       : rows.map(() => null)
@@ -1562,6 +1115,7 @@ export default function PrivateFundDetailPage() {
 
       return {
         date: row.price_date,
+        ts: dateToUtcTs(row.price_date),
         value: chartMode === "return"
           ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
           : navValue,
@@ -1570,11 +1124,11 @@ export default function PrivateFundDetailPage() {
         benchmarkPeriodReturn,
       }
     })
-  }, [appliedBench, benchmarkData, chartMode, filterNavType, filteredNavRows])
+  }, [appliedBench, appliedFreq, benchmarkData, chartMode, filterNavType, filteredNavRows])
 
   const drawdownChartData = useMemo(() => {
     if (!filteredNavRows.length) return []
-    const rows = downsample(filteredNavRows)
+    const rows = resampleNavRowsForChart(filteredNavRows, { forceDaily: appliedFreq === "日频" })
     const fundValues = rows.map((r) => getNavFieldValue(r, filterNavType))
     const fundDD = computeDrawdownSeries(fundValues)
 
@@ -1591,22 +1145,12 @@ export default function PrivateFundDetailPage() {
 
     return rows.map((row, i) => ({
       date: row.price_date,
+      ts: dateToUtcTs(row.price_date),
       fundDD: fundDD[i],
       benchDD: benchDD[i],
+      excessDD: null,
     }))
-  }, [filteredNavRows, filterNavType, appliedBench, benchmarkData])
-
-  const drawdownYDomain = useMemo((): [number, number] => {
-    if (!drawdownChartData.length) return [-10, 0]
-    const vals = drawdownChartData.flatMap((d) => {
-      const out = [d.fundDD]
-      if (d.benchDD !== null) out.push(d.benchDD)
-      return out
-    })
-    const min = Math.min(...vals)
-    const pad = Math.abs(min) * 0.08
-    return [+(min - pad).toFixed(2), 0]
-  }, [drawdownChartData])
+  }, [filteredNavRows, filterNavType, appliedBench, appliedFreq, benchmarkData])
 
   const maxFundDrawdown = useMemo(() => {
     if (!drawdownChartData.length) return null
@@ -2010,14 +1554,6 @@ export default function PrivateFundDetailPage() {
 
   const navChartPointCount = activeChartData.length
   const navChartShowDots = navChartPointCount <= 40
-  const navChartXAxis = useMemo(
-    () => buildChartDateAxisConfig(activeChartData.map((d) => d.date)),
-    [activeChartData],
-  )
-  const drawdownChartXAxis = useMemo(
-    () => buildChartDateAxisConfig(drawdownChartData.map((d) => d.date)),
-    [drawdownChartData],
-  )
 
   const navChartExportName = useMemo(() => {
     const product = data?.info.product_name ?? "chart"
@@ -2673,16 +2209,14 @@ export default function PrivateFundDetailPage() {
             </div>
           </div>
           <div className="flex-1 min-h-0">
-            <NavPerformanceChart
+            <NavPerformanceEChart
               data={activeChartData}
               chartMode={chartMode}
               navTypeLabel={filterNavType}
               yDomain={yDomain}
-              xAxis={navChartXAxis}
               showDots={navChartShowDots}
               showBench={!!appliedBench}
               benchmarkLabel={benchmarkLabel}
-              gradientId="navGradMain"
               returnLabelMode={returnLabelMode}
               materialMarks={materialChartMarks}
               onMaterialMarkClick={handleMaterialMarkClick}
@@ -3052,16 +2586,14 @@ export default function PrivateFundDetailPage() {
             </div>
           </div>
           <div className="flex-1 min-h-0">
-            <NavPerformanceChart
+            <NavPerformanceEChart
               data={activeChartData}
               chartMode={chartMode}
               navTypeLabel={filterNavType}
               yDomain={yDomain}
-              xAxis={navChartXAxis}
               showDots={navChartShowDots}
               showBench={!!appliedBench}
               benchmarkLabel={benchmarkLabel}
-              gradientId="navGradAboveDd"
               returnLabelMode={returnLabelMode}
               episodeMarks={returnChartEpisodeMarks}
               materialMarks={materialChartMarks}
@@ -3164,83 +2696,16 @@ export default function PrivateFundDetailPage() {
               </div>
             </div>
             <div className="flex-1 min-h-0">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={drawdownChartData} margin={{ top: 12, right: 16, left: 0, bottom: 4 }}>
-                  <defs>
-                    <linearGradient id="fundDdGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#ef4444" stopOpacity={0.05} />
-                      <stop offset="100%" stopColor="#ef4444" stopOpacity={0.25} />
-                    </linearGradient>
-                    <linearGradient id="benchDdGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#2563eb" stopOpacity={0.05} />
-                      <stop offset="100%" stopColor="#2563eb" stopOpacity={0.2} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                  <XAxis
-                    dataKey="date"
-                    ticks={drawdownChartXAxis.ticks}
-                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                    tickFormatter={drawdownChartXAxis.tickFormatter}
-                    interval={0}
-                  />
-                  <YAxis
-                    domain={drawdownYDomain}
-                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                    width={52}
-                    tickFormatter={(v: number) => v.toFixed(0) + "%"}
-                    label={{ value: "回撤值(%)", angle: -90, position: "insideLeft", offset: 8, style: { fontSize: 11, fill: "#a1a1aa" } }}
-                  />
-                  <Tooltip content={(props) => (
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    <DrawdownTooltip {...(props as any)} />
-                  )} />
-                  {maxFundDrawdown !== null && (
-                    <ReferenceLine
-                      y={maxFundDrawdown}
-                      stroke="#ef4444"
-                      strokeDasharray="4 4"
-                      strokeOpacity={0.6}
-                    />
-                  )}
-                  {drawdownEpisodeMarks.map((mark) => (
-                    <ReferenceDot
-                      key={`ep-${mark.no}-${mark.date}`}
-                      x={mark.date}
-                      y={mark.y}
-                      r={0}
-                      ifOverflow="extendDomain"
-                      label={<DrawdownEpisodeMarkLabel value={mark.no} />}
-                    />
-                  ))}
-                  {appliedBench && (
-                    <Area
-                      type="linear"
-                      dataKey="benchDD"
-                      name={`${benchmarkLabel}（基准）`}
-                      stroke="#2563eb"
-                      strokeWidth={1.75}
-                      strokeDasharray="6 3"
-                      fill="url(#benchDdGrad)"
-                      dot={drawdownChartData.length <= 40 ? { r: 2, fill: "#2563eb", strokeWidth: 0 } : false}
-                      connectNulls={false}
-                      activeDot={{ r: 3.5, fill: "#2563eb", stroke: "#fff", strokeWidth: 1.5 }}
-                      isAnimationActive={false}
-                    />
-                  )}
-                  <Area
-                    type="linear"
-                    dataKey="fundDD"
-                    name={displayName}
-                    stroke="#ef4444"
-                    strokeWidth={2}
-                    fill="url(#fundDdGrad)"
-                    dot={drawdownChartData.length <= 40 ? { r: 2.5, fill: "#ef4444", strokeWidth: 0 } : false}
-                    activeDot={{ r: 4.5, fill: "#ef4444", stroke: "#fff", strokeWidth: 1.5 }}
-                    isAnimationActive={false}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
+              <DynamicDrawdownChart
+                data={drawdownChartData}
+                productName={displayName}
+                benchmarkLabel={benchmarkLabel}
+                hasBenchmark={!!appliedBench}
+                showExcess={false}
+                maxFundDrawdown={maxFundDrawdown}
+                height="100%"
+                episodeMarks={drawdownEpisodeMarks}
+              />
             </div>
           </div>
 
@@ -3431,17 +2896,15 @@ export default function PrivateFundDetailPage() {
           </div>
           <div ref={navChartLightboxRef} className="w-full h-[70vh] min-h-[420px]">
             {lightboxChartHeight > 0 && (
-              <NavPerformanceChart
+              <NavPerformanceEChart
                 data={activeChartData}
                 chartMode={chartMode}
                 navTypeLabel={filterNavType}
                 yDomain={yDomain}
-                xAxis={navChartXAxis}
                 showDots={navChartShowDots}
                 showBench={!!appliedBench}
                 benchmarkLabel={benchmarkLabel}
                 height={lightboxChartHeight}
-                gradientId="navGradLightbox"
                 returnLabelMode={returnLabelMode}
                 materialMarks={materialChartMarks}
                 onMaterialMarkClick={handleMaterialMarkClick}

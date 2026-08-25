@@ -5,7 +5,7 @@ import ReactECharts from "echarts-for-react"
 import { FileDown, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
-interface EquityPoint { date: string; cumPnl: number }
+interface EquityPoint { date: string; cumPnl: number; margin?: number; equity?: number }
 interface EquitySeries { account: string; data: EquityPoint[] }
 
 function isoToday() { return new Date().toISOString().slice(0, 10) }
@@ -30,6 +30,8 @@ const LINE_COLORS = [
 const LINE_COLOR = "#3b82f6"
 const COMPARE_COLOR = "#8b5cf6"
 const BENCHMARK_COLOR = "#f97316"
+const MARGIN_YIELD_COLOR = "#0d9488"
+const MARGIN_UTIL_COLOR = "#d97706"
 const INITIAL_CAPITAL = 10_000_000 // 1000万
 
 type DisplayMode = "return" | "pnl"
@@ -60,6 +62,32 @@ function fmtDateLabel(v: string | number): string {
   return String(v)
 }
 
+function FillChart({
+  option,
+  loading,
+  empty = "数据不足",
+  spinnerSize = "h-4 w-4",
+}: {
+  option: object | null
+  loading?: boolean
+  empty?: string
+  spinnerSize?: string
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center text-muted-foreground">
+        <RefreshCw className={`${spinnerSize} animate-spin`} />
+      </div>
+    )
+  }
+  if (!option) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{empty}</div>
+    )
+  }
+  return <ReactECharts option={option} style={{ height: "100%", width: "100%" }} notMerge />
+}
+
 /** 20-day rolling annualised volatility (%) from cumPnl series */
 function computeVolatility(data: EquityPoint[], win = 20): Array<[string, number]> {
   const result: Array<[string, number]> = []
@@ -80,6 +108,35 @@ function computeDrawdown(data: EquityPoint[]): Array<[string, number]> {
     const val = INITIAL_CAPITAL + pt.cumPnl
     if (val > peak) peak = val
     return [pt.date, ((val - peak) / peak) * 100] as [string, number]
+  })
+}
+
+/** Capital efficiency (%): cumulative PnL / average margin occupied to date. Sign matches NAV. */
+function computeMarginYield(data: EquityPoint[]): Array<[string, number]> {
+  if (!data.some(pt => (pt.margin ?? 0) > 0)) return []
+  let marginSum = 0
+  let marginDays = 0
+  const result: Array<[string, number]> = []
+  for (const pt of data) {
+    const m = pt.margin ?? 0
+    if (m > 0) {
+      marginSum += m
+      marginDays++
+    }
+    const avgMargin = marginDays > 0 ? marginSum / marginDays : 0
+    result.push([pt.date, avgMargin > 0 ? (pt.cumPnl / avgMargin) * 100 : 0])
+  }
+  return result
+}
+
+/** Daily margin utilization (%): 保证金占用 / 客户权益, else 占用 / 名义资本. */
+function computeMarginUtil(data: EquityPoint[]): Array<[string, number]> {
+  if (data.length === 0) return []
+  return data.map(pt => {
+    const m = Number(pt.margin) || 0
+    const e = Number(pt.equity) || 0
+    const denom = e > 0 ? e : INITIAL_CAPITAL
+    return [pt.date, denom > 0 ? (m / denom) * 100 : 0] as [string, number]
   })
 }
 
@@ -115,7 +172,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       const params = new URLSearchParams()
       if (f) params.set("from", f)
       if (t) params.set("to", t)
-      const res = await fetch(`/ma/api/mom-analysis/equity-curve?${params}`)
+      const res = await fetch(`/ma/api/mom-analysis/equity-curve?${params}`, { cache: "no-store" })
       const json = await res.json()
       if (!res.ok || !json.ok) throw new Error(json.error || "请求失败")
       setAllSeries(json.series ?? [])
@@ -269,9 +326,6 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const benchmarkName = BENCHMARK_OPTIONS.find(b => b.code === selectedBenchmark)?.name ?? selectedBenchmark
   const showLegend = showAll || benchmarkReturnSeries.length > 0
 
-  // Right-side charts — computed from visible series
-  const smallChartHeight = 220
-
   const volSeries = visibleSeries.map((s, i) => ({
     name: s.account,
     type: "line" as const,
@@ -289,6 +343,46 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
     },
     data: computeVolatility(s.data),
+  }))
+
+  const marginYieldSeries = visibleSeries.map((s, i) => ({
+    name: s.account,
+    type: "line" as const,
+    smooth: false,
+    symbol: "none",
+    lineStyle: {
+      width: showAll ? 1.5 : 1.8,
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : MARGIN_YIELD_COLOR),
+    },
+    itemStyle: {
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : MARGIN_YIELD_COLOR),
+    },
+    ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: MARGIN_YIELD_COLOR, opacity: 0.08 } }),
+    data: computeMarginYield(s.data),
+  }))
+
+  const marginUtilSeries = visibleSeries.map((s, i) => ({
+    name: s.account,
+    type: "line" as const,
+    smooth: false,
+    symbol: "none",
+    lineStyle: {
+      width: showAll ? 1.5 : 1.8,
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : MARGIN_UTIL_COLOR),
+    },
+    itemStyle: {
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : MARGIN_UTIL_COLOR),
+    },
+    ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: MARGIN_UTIL_COLOR, opacity: 0.08 } }),
+    data: computeMarginUtil(s.data),
   }))
 
   const ddSeries = visibleSeries.map((s, i) => ({
@@ -351,6 +445,62 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     yAxis: { type: "value" as const, axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(0) + "%" }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } } },
     dataZoom: smallDataZoom,
     series: volSeries,
+  } : null
+
+  const marginYieldOption = marginYieldSeries.some(s => s.data.length > 0) ? {
+    animation: false,
+    grid: { top: 16, right: 24, bottom: showAll ? 56 : 56, left: 80 },
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: Array<{ axisValue: string | number; seriesName: string; value: [string | number, number]; color: string }>) => {
+        if (!params.length) return ""
+        const date = fmtDateLabel(params[0].value?.[0] ?? params[0].axisValue)
+        const uniq = new Map<string, { seriesName: string; value: [string | number, number]; color: string }>()
+        for (const p of params) {
+          const key = `${p.seriesName}__${fmtDateLabel(p.value?.[0] ?? p.axisValue)}`
+          if (!uniq.has(key)) uniq.set(key, p)
+        }
+        return date + "<br/>" + Array.from(uniq.values()).map(p =>
+          `<span style="display:inline-block;margin-right:4px;border-radius:2px;width:8px;height:8px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${fmtReturn(p.value?.[1] ?? 0)}</b>`
+        ).join("<br/>")
+      },
+    },
+    xAxis: { type: "time" as const, axisLabel: { fontSize: 11, formatter: (v: string | number) => fmtDateLabel(v) }, splitLine: { show: false } },
+    yAxis: { type: "value" as const, axisLabel: { fontSize: 11, formatter: (v: number) => v.toFixed(1) + "%" }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } } },
+    legend: showAll ? { type: "scroll" as const, bottom: 4, textStyle: { fontSize: 10 } } : undefined,
+    dataZoom: [
+      { type: "inside" as const, start: 0, end: 100 },
+      { type: "slider", bottom: showAll ? 28 : 28, height: 18, start: 0, end: 100 },
+    ],
+    series: marginYieldSeries,
+  } : null
+
+  const marginUtilOption = marginUtilSeries.some(s => s.data.length > 0) ? {
+    animation: false,
+    grid: { top: 16, right: 24, bottom: showAll ? 56 : 56, left: 80 },
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: Array<{ axisValue: string | number; seriesName: string; value: [string | number, number]; color: string }>) => {
+        if (!params.length) return ""
+        const date = fmtDateLabel(params[0].value?.[0] ?? params[0].axisValue)
+        const uniq = new Map<string, { seriesName: string; value: [string | number, number]; color: string }>()
+        for (const p of params) {
+          const key = `${p.seriesName}__${fmtDateLabel(p.value?.[0] ?? p.axisValue)}`
+          if (!uniq.has(key)) uniq.set(key, p)
+        }
+        return date + "<br/>" + Array.from(uniq.values()).map(p =>
+          `<span style="display:inline-block;margin-right:4px;border-radius:2px;width:8px;height:8px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${(p.value?.[1] ?? 0).toFixed(2)}%</b>`
+        ).join("<br/>")
+      },
+    },
+    xAxis: { type: "time" as const, axisLabel: { fontSize: 11, formatter: (v: string | number) => fmtDateLabel(v) }, splitLine: { show: false } },
+    yAxis: { type: "value" as const, min: 0, axisLabel: { fontSize: 11, formatter: (v: number) => v.toFixed(1) + "%" }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } } },
+    legend: showAll ? { type: "scroll" as const, bottom: 4, textStyle: { fontSize: 10 } } : undefined,
+    dataZoom: [
+      { type: "inside" as const, start: 0, end: 100 },
+      { type: "slider", bottom: showAll ? 28 : 28, height: 18, start: 0, end: 100 },
+    ],
+    series: marginUtilSeries,
   } : null
 
   const ddOption = ddSeriesWithBenchmark.some(s => s.data.length > 0) ? {
@@ -449,11 +599,11 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   } : null
 
   return (
-    <div className="flex gap-3 items-stretch">
-    {/* Left: main equity curve */}
-    <div className="w-1/2 min-w-0 flex flex-col">
-    <Card className="flex flex-col h-full">
-      <CardHeader className="pb-2 shrink-0">
+    <div className="flex flex-col gap-3">
+    <div className="grid grid-cols-2 items-stretch gap-3">
+    {/* Left: main equity curve — row height drives the right stack */}
+    <Card className="flex h-full min-h-0 flex-col gap-2 py-4">
+      <CardHeader className="shrink-0 px-4 pb-0 pt-0">
         <div className="flex flex-col gap-1.5">
           {/* Row 1: title + mode toggle + account selector + quick ranges + dates + refresh */}
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -589,50 +739,78 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
           )}
         </div>
       </CardHeader>
-      <CardContent className="px-4 pb-4 flex-1 min-h-0">
-        {loading && (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            <RefreshCw className="h-5 w-5 animate-spin" />
-          </div>
-        )}
-        {!loading && error && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
-        {!loading && !error && !option && (
-          <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-            所选日期范围内无数据。
-          </div>
-        )}
-        {!loading && !error && option && (
-          <ReactECharts option={option} style={{ height: "100%" }} notMerge />
-        )}
+      <CardContent className="relative flex-1 px-4 pb-4 pt-0" style={{ minHeight: height }}>
+        <div className="absolute inset-x-4 bottom-4 top-0">
+          {error ? (
+            <div className="flex h-full items-center">
+              <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
+                {error}
+              </div>
+            </div>
+          ) : (
+            <FillChart
+              option={option}
+              loading={loading}
+              empty="所选日期范围内无数据。"
+              spinnerSize="h-5 w-5"
+            />
+          )}
+        </div>
       </CardContent>
     </Card>
-    </div>
 
-    {/* Right: volatility + drawdown stacked */}
-    {visibleSeries.length > 0 && (
-      <div className="w-1/2 flex flex-col gap-3">
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
+    {/* Right: volatility + drawdown fill the same row height */}
+    {visibleSeries.length > 0 ? (
+      <div className="flex h-full min-h-0 flex-col gap-3">
+        <Card className="flex min-h-0 flex-1 flex-col gap-1 py-3">
+          <CardHeader className="shrink-0 px-4 pb-0 pt-0">
             <CardTitle className="text-xs font-medium text-muted-foreground">滚动波动率（20日年化）</CardTitle>
           </CardHeader>
-          <CardContent className="px-2 pb-2">
-            {volOption
-              ? <ReactECharts option={volOption} style={{ height: smallChartHeight }} notMerge />
-              : <div className="flex items-center justify-center text-xs text-muted-foreground" style={{ height: smallChartHeight }}>数据不足</div>}
+          <CardContent className="relative min-h-[140px] flex-1 px-2 pb-2 pt-0">
+            <div className="absolute inset-x-2 bottom-2 top-0">
+              <FillChart option={volOption} />
+            </div>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
+        <Card className="flex min-h-0 flex-1 flex-col gap-1 py-3">
+          <CardHeader className="shrink-0 px-4 pb-0 pt-0">
             <CardTitle className="text-xs font-medium text-muted-foreground">最大回撤曲线</CardTitle>
           </CardHeader>
-          <CardContent className="px-2 pb-2">
-            {ddOption
-              ? <ReactECharts option={ddOption} style={{ height: smallChartHeight }} notMerge />
-              : <div className="flex items-center justify-center text-xs text-muted-foreground" style={{ height: smallChartHeight }}>数据不足</div>}
+          <CardContent className="relative min-h-[140px] flex-1 px-2 pb-2 pt-0">
+            <div className="absolute inset-x-2 bottom-2 top-0">
+              <FillChart option={ddOption} />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    ) : (
+      <div />
+    )}
+    </div>
+    {visibleSeries.length > 0 && (
+      <div className="grid grid-cols-2 items-stretch gap-3">
+        <Card className="flex h-full flex-col gap-2 py-4">
+          <CardHeader className="shrink-0 px-4 pb-0 pt-0">
+            <CardTitle className="text-sm font-medium">
+              保证金收益率（累计盈亏 / 日均占用）（{showAll ? "全部" : selectedAccount.toUpperCase()}）
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="relative flex-1 px-4 pb-4 pt-0" style={{ minHeight: height }}>
+            <div className="absolute inset-x-4 bottom-4 top-0">
+              <FillChart option={marginYieldOption} empty="数据不足" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="flex h-full flex-col gap-2 py-4">
+          <CardHeader className="shrink-0 px-4 pb-0 pt-0">
+            <CardTitle className="text-sm font-medium">
+              保证金使用率（占用 / 权益）（{showAll ? "全部" : selectedAccount.toUpperCase()}）
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="relative flex-1 px-4 pb-4 pt-0" style={{ minHeight: height }}>
+            <div className="absolute inset-x-4 bottom-4 top-0">
+              <FillChart option={marginUtilOption} empty="数据不足" />
+            </div>
           </CardContent>
         </Card>
       </div>

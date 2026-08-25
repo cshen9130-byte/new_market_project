@@ -2,18 +2,6 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
-import {
-  Area,
-  Line,
-  ComposedChart,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-  ReferenceDot,
-} from "recharts"
 import { Download, Menu, X } from "lucide-react"
 import {
   DropdownMenu,
@@ -30,19 +18,18 @@ import {
   type BenchmarkPoint,
 } from "./shared"
 import { computePeriodStats } from "./computePeriodStats"
-import { DrawdownEpisodesTable, useDrawdownEpisodeRows, buildDrawdownEpisodeMarks, DrawdownEpisodeMarkLabel } from "./DrawdownEpisodesTable"
+import { DrawdownEpisodesTable, useDrawdownEpisodeRows, buildDrawdownEpisodeMarks } from "./DrawdownEpisodesTable"
 import { DynamicDrawdownChart } from "./DynamicDrawdownChart"
 import { DrawdownCalcHelpButton } from "./DrawdownCalcHelpButton"
 import {
-  buildChartDateAxisConfig,
   buildNavChartData,
   buildDrawdownChartData,
   computeNavChartYDomain,
   type NavChartPoint,
   type ReturnLabelMode,
-  formatReturnTooltipLabel,
   buildBenchmarkPctChangesByDate,
 } from "./performanceChartUtils"
+import { NavPerformanceEChart } from "./NavPerformanceEChart"
 
 function fmt(v: string | null, decimals = 4): string {
   if (v === null || v === undefined) return "—"
@@ -258,181 +245,6 @@ function exportDrawdownCsv(
   a.download = filename
   a.click()
   URL.revokeObjectURL(url)
-}
-
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  mode,
-  returnLabelMode = "cumulative",
-}: {
-  active?: boolean
-  payload?: Array<{ value?: number; name?: string; color?: string; dataKey?: string; payload?: NavChartPoint }>
-  label?: string
-  mode?: "nav" | "return"
-  returnLabelMode?: ReturnLabelMode
-}) {
-  if (!active || !payload?.length) return null
-  const visibleItems = payload.filter((item) => {
-    if (mode === "return" && returnLabelMode === "period") {
-      const point = item.payload
-      const periodVal = item.dataKey === "benchmarkValue"
-        ? point?.benchmarkPeriodReturn
-        : point?.periodReturn
-      return typeof periodVal === "number"
-    }
-    return typeof item.value === "number"
-  })
-  if (!visibleItems.length) return null
-
-  function resolveValue(item: (typeof visibleItems)[number]): number | null {
-    if (mode === "return" && returnLabelMode === "period") {
-      const point = item.payload
-      const periodVal = item.dataKey === "benchmarkValue"
-        ? point?.benchmarkPeriodReturn
-        : point?.periodReturn
-      return typeof periodVal === "number" ? periodVal : null
-    }
-    return typeof item.value === "number" ? item.value : null
-  }
-
-  function formatValue(value: number): string {
-    return mode === "return"
-      ? (value >= 0 ? "+" : "") + value.toFixed(2) + "%"
-      : value.toFixed(4)
-  }
-
-  function formatSeriesLabel(item: (typeof visibleItems)[number]): string {
-    if (mode !== "return") return item.name ?? ""
-    return formatReturnTooltipLabel(
-      item.name,
-      returnLabelMode,
-      item.dataKey === "benchmarkValue",
-    )
-  }
-
-  return (
-    <div className="bg-white border border-zinc-100 shadow-md rounded-lg px-3 py-2 text-xs">
-      <div className="text-zinc-500 mb-1">{label}</div>
-      <div className="space-y-1">
-        {visibleItems.map((item) => {
-          const resolved = resolveValue(item)
-          if (resolved === null) return null
-          return (
-            <div key={item.name} className="font-semibold text-zinc-900" style={item.color ? { color: item.color } : undefined}>
-              {formatSeriesLabel(item)}: {formatValue(resolved)}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function NavPerformanceChart({
-  data,
-  chartMode,
-  navTypeLabel,
-  yDomain,
-  xAxis,
-  showDots,
-  showBench,
-  benchmarkLabel,
-  height = "100%",
-  gradientId = "navGrad",
-  returnLabelMode = "cumulative",
-  episodeMarks = [],
-}: {
-  data: NavChartPoint[]
-  chartMode: "nav" | "return"
-  navTypeLabel: string
-  yDomain: [number, number] | [string, string]
-  xAxis: ReturnType<typeof buildChartDateAxisConfig>
-  showDots: boolean
-  showBench: boolean
-  benchmarkLabel: string
-  height?: number | string
-  gradientId?: string
-  returnLabelMode?: ReturnLabelMode
-  episodeMarks?: Array<{ date: string; y: number; no: number }>
-}) {
-  return (
-    <ResponsiveContainer width="100%" height={height} debounce={1}>
-      <ComposedChart data={data} margin={{ top: 12, right: 12, left: 4, bottom: 4 }}>
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ef4444" stopOpacity={0.12} />
-            <stop offset="100%" stopColor="#ef4444" stopOpacity={0.01} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f2" vertical={false} />
-        <XAxis
-          dataKey="date"
-          ticks={xAxis.ticks}
-          tick={{ fontSize: 11, fill: "#71717a" }}
-          tickFormatter={xAxis.tickFormatter}
-          interval={0}
-          axisLine={false}
-          tickLine={false}
-        />
-        <YAxis
-          domain={yDomain}
-          tick={{ fontSize: 11, fill: "#71717a" }}
-          width={chartMode === "return" ? 52 : 60}
-          tickFormatter={(v: number) =>
-            chartMode === "return"
-              ? (v > 0 ? "+" : "") + v.toFixed(0) + "%"
-              : v.toFixed(2)
-          }
-          axisLine={false}
-          tickLine={false}
-        />
-        <Tooltip content={(props) => (
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          <ChartTooltip {...(props as any)} mode={chartMode} returnLabelMode={returnLabelMode} />
-        )} />
-        {chartMode === "return" && (
-          <ReferenceLine y={0} stroke="#d4d4d8" strokeWidth={1} />
-        )}
-        {showBench && (
-          <Line
-            type="linear"
-            dataKey="benchmarkValue"
-            name={benchmarkLabel}
-            stroke="#2563eb"
-            strokeWidth={1.75}
-            strokeDasharray="6 3"
-            dot={showDots ? { r: 2, fill: "#2563eb", strokeWidth: 0 } : false}
-            connectNulls={false}
-            activeDot={{ r: 3.5, fill: "#2563eb", stroke: "#fff", strokeWidth: 1.5 }}
-            isAnimationActive={false}
-          />
-        )}
-        <Area
-          type="linear"
-          dataKey="value"
-          name={chartMode === "return" ? "基金收益率" : navTypeLabel}
-          stroke={RED}
-          strokeWidth={2}
-          fill={`url(#${gradientId})`}
-          dot={showDots ? { r: 2.5, fill: RED, strokeWidth: 0 } : false}
-          activeDot={{ r: 4.5, fill: RED, stroke: "#fff", strokeWidth: 1.5 }}
-          isAnimationActive={false}
-        />
-        {episodeMarks.map((mark) => (
-          <ReferenceDot
-            key={`nav-ep-${mark.no}-${mark.date}`}
-            x={mark.date}
-            y={mark.y}
-            r={0}
-            ifOverflow="extendDomain"
-            label={<DrawdownEpisodeMarkLabel value={mark.no} />}
-          />
-        ))}
-      </ComposedChart>
-    </ResponsiveContainer>
-  )
 }
 
 function PeriodStatisticsTable({
@@ -697,10 +509,6 @@ export function FundPerformanceIndicatorsPanel({
     if (!hasBenchmark || !benchmarkSeries.length || !rows.length) return undefined
     return buildBenchmarkPctChangesByDate(rows, benchmarkSeries)
   }, [hasBenchmark, benchmarkSeries, rows])
-  const navChartXAxis = useMemo(
-    () => buildChartDateAxisConfig(activeChartData.map((d) => d.date)),
-    [activeChartData],
-  )
 
   const periodStats = useMemo(
     () => computePeriodStats(rows, navType, benchmarkSeries, hasBenchmark, excessByDivision),
@@ -900,16 +708,14 @@ export function FundPerformanceIndicatorsPanel({
                 </div>
               </div>
               <div className="flex-1 min-h-0">
-                <NavPerformanceChart
+                <NavPerformanceEChart
                   data={activeChartData}
                   chartMode={chartMode}
                   navTypeLabel={navType}
                   yDomain={yDomain}
-                  xAxis={navChartXAxis}
                   showDots={navChartShowDots}
                   showBench={hasBenchmark}
                   benchmarkLabel={benchmarkLabel}
-                  gradientId="navGradMain"
                   returnLabelMode={returnLabelMode}
                 />
               </div>
@@ -1079,16 +885,14 @@ export function FundPerformanceIndicatorsPanel({
                 </div>
               </div>
               <div className="flex-1 min-h-0">
-                <NavPerformanceChart
+                <NavPerformanceEChart
                   data={activeChartData}
                   chartMode={chartMode}
                   navTypeLabel={navType}
                   yDomain={yDomain}
-                  xAxis={navChartXAxis}
                   showDots={navChartShowDots}
                   showBench={hasBenchmark}
                   benchmarkLabel={benchmarkLabel}
-                  gradientId="navGradAboveDd"
                   returnLabelMode={returnLabelMode}
                   episodeMarks={returnChartEpisodeMarks}
                 />
@@ -1259,16 +1063,14 @@ export function FundPerformanceIndicatorsPanel({
               {chartMode === "nav" ? `净值走势（${navType}）` : `收益曲线（${navType}）`}
             </div>
             <div ref={navChartLightboxRef} style={{ height: lightboxChartHeight || 480 }}>
-              <NavPerformanceChart
+              <NavPerformanceEChart
                 data={activeChartData}
                 chartMode={chartMode}
                 navTypeLabel={navType}
                 yDomain={yDomain}
-                xAxis={navChartXAxis}
                 showDots={navChartShowDots}
                 showBench={hasBenchmark}
                 benchmarkLabel={benchmarkLabel}
-                gradientId="navGradLightbox"
                 height={lightboxChartHeight || 480}
                 returnLabelMode={returnLabelMode}
               />

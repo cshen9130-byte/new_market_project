@@ -33,6 +33,19 @@ export function normalizeListedContract(raw: string | null | undefined, asset: s
   return `${m[1]}${digits}`
 }
 
+export function allWeatherHqSymbols(): string[] {
+  const snapshot = loadLiveStrategySnapshot()
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const spec of snapshot.specs) {
+    const c = normalizeListedContract(spec.refContract, spec.asset)
+    if (!c || seen.has(c)) continue
+    seen.add(c)
+    out.push(c)
+  }
+  return out
+}
+
 function snapshotContracts(): Record<string, string> {
   const snapshot = loadLiveStrategySnapshot()
   const out: Record<string, string> = {}

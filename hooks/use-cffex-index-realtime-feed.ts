@@ -27,13 +27,18 @@ type ApiResponse = {
 
 const POLL_MS = 2000
 
-export function useCffexIndexRealtimeFeed() {
+export function useCffexIndexRealtimeFeed(extraSymbols: string[] = []) {
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<string>("")
   const [updatedAt, setUpdatedAt] = useState<string>("")
   const [quotes, setQuotes] = useState<Record<string, CtpTick>>({})
   const [candles, setCandles] = useState<Record<string, CtpCandle[]>>({})
   const [symbols, setSymbols] = useState<string[]>([])
+  const extraKey = extraSymbols
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean)
+    .sort()
+    .join(",")
 
   useEffect(() => {
     let cancelled = false
@@ -41,7 +46,8 @@ export function useCffexIndexRealtimeFeed() {
 
     async function load() {
       try {
-        const res = await fetch("/ma/api/realtime-quotes/cffex", { cache: "no-store" })
+        const qs = extraKey ? `?symbols=${encodeURIComponent(extraKey)}` : ""
+        const res = await fetch(`/ma/api/realtime-quotes/cffex${qs}`, { cache: "no-store" })
         const json = (await res.json()) as ApiResponse
         if (!res.ok || json.ok === false) {
           throw new Error(json.error || `请求失败 ${res.status}`)
@@ -84,7 +90,7 @@ export function useCffexIndexRealtimeFeed() {
       cancelled = true
       if (timer) window.clearTimeout(timer)
     }
-  }, [])
+  }, [extraKey])
 
   const productSymbol: Record<string, string> = {}
   for (const item of INDEX_FUTURES) {

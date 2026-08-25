@@ -31,11 +31,22 @@ export async function GET(req: Request) {
 
     const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : ""
 
-    const rows = await query<{ account: string; trade_date: string; daily_pnl: string | null }>(
+    const rows = await query<{
+      account: string
+      trade_date: string
+      daily_pnl: string | null
+      margin: string | null
+      equity: string | null
+    }>(
       `SELECT
          "账户"         AS account,
          "交易日期"::text AS trade_date,
-         NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏", ''), ',', ''), ' ', ''), '') AS daily_pnl
+         NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏", ''), ',', ''), ' ', ''), '') AS daily_pnl,
+         NULLIF(REPLACE(REPLACE(COALESCE("保证金占用"::text, ''), ',', ''), ' ', ''), '') AS margin,
+         COALESCE(
+           NULLIF(REPLACE(REPLACE(COALESCE("客户权益"::text, ''), ',', ''), ' ', ''), ''),
+           NULLIF(REPLACE(REPLACE(COALESCE("当日结存"::text, ''), ',', ''), ' ', ''), '')
+         ) AS equity
        FROM mom_daily_reports
        ${where}
        ORDER BY "交易日期" ASC, "账户" ASC`,
@@ -43,19 +54,21 @@ export async function GET(req: Request) {
     )
 
     // group rows by account
-    const accountMap = new Map<string, Array<{ date: string; pnl: number }>>()
+    const accountMap = new Map<string, Array<{ date: string; pnl: number; margin: number; equity: number }>>()
     for (const row of rows) {
       const pnl = parseNum(row.daily_pnl) ?? 0
+      const margin = parseNum(row.margin) ?? 0
+      const equity = parseNum(row.equity) ?? 0
       if (!accountMap.has(row.account)) accountMap.set(row.account, [])
-      accountMap.get(row.account)!.push({ date: row.trade_date, pnl })
+      accountMap.get(row.account)!.push({ date: row.trade_date, pnl, margin, equity })
     }
 
     // compute cumulative PnL per account
     const series = Array.from(accountMap.entries()).map(([account, days]) => {
       let cum = 0
-      const data = days.map(({ date, pnl }) => {
+      const data = days.map(({ date, pnl, margin, equity }) => {
         cum += pnl
-        return { date, cumPnl: cum }
+        return { date, cumPnl: cum, margin, equity }
       })
       return { account, data }
     })

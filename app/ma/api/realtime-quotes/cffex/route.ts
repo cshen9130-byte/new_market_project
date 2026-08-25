@@ -5,9 +5,10 @@ import { getCffexIndexRealtime } from "@/lib/server/cffex-index-realtime"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const { products, quotes } = await getCffexIndexRealtime()
+    const extra = new URL(req.url).searchParams.get("symbols") || ""
+    const { products, quotes } = await getCffexIndexRealtime(extra)
     return NextResponse.json({ ok: true, source: "sina", products, quotes })
   } catch (err) {
     return NextResponse.json(

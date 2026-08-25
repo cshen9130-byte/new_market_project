@@ -38,13 +38,14 @@ import {
   mergeQuoteTicks,
   pickMostActiveContract,
 } from "@/lib/client/ctp-market"
-import { isCffexProduct, isCffexSession } from "@/lib/client/market-hours"
+import { isCffexProduct, isCffexSession, overlaySinaQuote } from "@/lib/client/market-hours"
 import { type TimeframeId } from "@/lib/client/timeframes"
 import { cn } from "@/lib/utils"
 
 export default function RealtimeQuotesPage() {
+  const [hqExtra, setHqExtra] = useState<string[]>([])
   const ctp = useCtpIndexFuturesFeed()
-  const cffex = useCffexIndexRealtimeFeed()
+  const cffex = useCffexIndexRealtimeFeed(hqExtra)
   const listed = useCffexListedQuotes()
   const overlay = useRealtimeOverlayFeed()
   const [selected, setSelected] = useState<Record<string, string>>({})
@@ -124,6 +125,11 @@ export default function RealtimeQuotesPage() {
           last: cffexClosed ? prevLast ?? incomingLast : incomingLast ?? prevLast,
         }
       }
+    }
+    for (const [symbol, tick] of Object.entries(cffex.quotes)) {
+      const key = symbol.toUpperCase()
+      const overlaid = overlaySinaQuote(key, next[key], tick)
+      if (overlaid) next[key] = overlaid
     }
     return next
   }, [ctp.quotes, cffex.quotes, listed.quotes])
@@ -436,6 +442,7 @@ export default function RealtimeQuotesPage() {
         candles={candles}
         spots={overlay.spots}
         iv={overlay.iv}
+        onWatchSymbols={setHqExtra}
         initialLayout={proLayout}
         initialSymbol={
           selected.IF ||

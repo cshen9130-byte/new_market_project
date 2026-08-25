@@ -186,7 +186,8 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       if (tick.last != null && isLiveSessionFor(symbol)) nextMarks[symbol] = tick.last
     }
     for (const [symbol, px] of Object.entries(extraMarks)) {
-      if (px > 0) nextMarks[symbol] = px
+      if (!(px > 0)) continue
+      if (nextMarks[symbol] == null) nextMarks[symbol] = px
     }
     prevMarks.current = nextMarks
   }, [ready, quotes, candles, extraMarks])

@@ -1,7 +1,7 @@
 "use client"
 
 import { Fragment, useEffect, useState } from "react"
-import { Plus, Trash2 } from "lucide-react"
+import { LineChart, Plus, Trash2 } from "lucide-react"
 
 import type { PaperTradingApi } from "@/hooks/use-paper-trading"
 import { authService } from "@/lib/auth"
@@ -335,12 +335,16 @@ export function PaperPortfolioPanel({
   quotes,
   chartSymbol,
   onSelectSymbol,
+  showNavChart,
+  onToggleNavChart,
 }: {
   paper: PaperTradingApi
   symbols: string[]
   quotes: Record<string, CtpTick>
   chartSymbol: string
   onSelectSymbol: (symbol: string) => void
+  showNavChart?: boolean
+  onToggleNavChart?: () => void
 }) {
   const [newName, setNewName] = useState("")
   const [newCapital, setNewCapital] = useState(String(DEFAULT_PAPER_CAPITAL))
@@ -403,6 +407,19 @@ export function PaperPortfolioPanel({
             收益率 <span className={cn("font-mono", pnlClass(paper.summary.ret))}>{fmtPct(paper.summary.ret)}</span>
           </span>
         </div>
+        {onToggleNavChart ? (
+          <button
+            type="button"
+            onClick={onToggleNavChart}
+            className={cn(
+              "inline-flex h-8 w-full items-center justify-center gap-1 rounded text-[12px]",
+              showNavChart ? "bg-[#4c84ff] text-white" : "border border-[#2a2e39] text-[#adb3bd] hover:text-white",
+            )}
+          >
+            <LineChart className="size-3.5" />
+            {showNavChart ? "隐藏净值曲线" : "显示净值曲线"}
+          </button>
+        ) : null}
         <div className="text-[11px] text-[#787b86]">
           总资金 <span className="font-mono text-[#adb3bd]">{fmtNav(paper.summary.initialCapital)}</span>
         </div>
@@ -670,10 +687,14 @@ export function PaperPositionsBar({
   paper,
   chartSymbol,
   onSelectSymbol,
+  showNavChart,
+  onToggleNavChart,
 }: {
   paper: PaperTradingApi
   chartSymbol: string
   onSelectSymbol: (symbol: string) => void
+  showNavChart?: boolean
+  onToggleNavChart?: () => void
 }) {
   const [tab, setTab] = useState<"pos" | "closed">("pos")
   const closed = paper.state.positions.filter(
@@ -706,6 +727,19 @@ export function PaperPositionsBar({
         <span className="text-[#787b86]">
           净值 <span className="font-mono text-[#d1d4dc]">{fmtNav(paper.summary.nav)}</span>
         </span>
+        {onToggleNavChart ? (
+          <button
+            type="button"
+            onClick={onToggleNavChart}
+            className={cn(
+              "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]",
+              showNavChart ? "bg-[#4c84ff] text-white" : "text-[#adb3bd] hover:text-white",
+            )}
+          >
+            <LineChart className="size-3" />
+            净值曲线
+          </button>
+        ) : null}
         <span className="text-[#787b86]">
           收益率 <span className={cn("font-mono", pnlClass(paper.summary.ret))}>{fmtPct(paper.summary.ret)}</span>
         </span>

@@ -9,6 +9,7 @@ import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { getActiveCfmmcAccount, useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
 import { AccountRiskAccountSwitcher, IDLE_CFMMC_SCOPE, useCfmmcAccountScope, type CfmmcAccountScope } from "@/components/ma/account-risk-account-switcher"
+import { HelpBriefingMomSignals } from "@/components/ma/quant-vs-subjective-help"
 
 const ProductNavChart           = dynamic(() => import("@/components/ma/product-nav-chart"),            { ssr: false })
 const VarPredictionChart        = dynamic(() => import("@/components/ma/var-prediction-chart"),         { ssr: false })
@@ -30,6 +31,7 @@ const AdvisorSectorLeverageHeatmap  = dynamic(() => import("@/components/ma/advi
 const AdvisorSectorExposureStack   = dynamic(() => import("@/components/ma/advisor-sector-exposure-stack"),   { ssr: false })
 const OptionFloatingPnlCharts  = dynamic(() => import("@/components/ma/option-floating-pnl-charts"),  { ssr: false })
 const AccountRiskDataImport    = dynamic(() => import("@/components/ma/account-risk-data-import"),    { ssr: false })
+const BriefingMomSignals       = dynamic(() => import("@/components/ma/briefing-mom-signals"),        { ssr: false })
 
 const baseSubNavItems = [
   { key: "overview",  name: "产品总览", icon: BarChart2 },
@@ -9318,12 +9320,30 @@ function RiskReportAppCore({
                       <RollingVolChart height={260} />
                     </div>
 
+                    {!isAccount && (
+                    <>
+                    {/* Section: 决策信号 — MOM only */}
+                    <div className="flex items-center gap-3 mt-5 mb-3">
+                      <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
+                      <h2 className="text-base font-bold tracking-wide text-[#1a3a5c] flex items-center gap-1.5"
+                          style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
+                        二、决策信号
+                        <span className="no-print inline-flex font-sans font-normal">
+                          <HelpBriefingMomSignals />
+                        </span>
+                      </h2>
+                      <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
+                    </div>
+                    <BriefingMomSignals />
+                    </>
+                    )}
+
                     {/* Section: 板块持仓分析 */}
                     <div className="flex items-center gap-3 mt-5 mb-3">
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        二、板块持仓分析
+                        {isAccount ? "二、板块持仓分析" : "三、板块持仓分析"}
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>
@@ -9343,7 +9363,7 @@ function RiskReportAppCore({
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        三、品种持仓分析
+                        {isAccount ? "三、品种持仓分析" : "四、品种持仓分析"}
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>
@@ -9385,7 +9405,7 @@ function RiskReportAppCore({
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        四、投顾分析
+                        五、投顾分析
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>
@@ -9420,7 +9440,7 @@ function RiskReportAppCore({
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        {isAccount ? "四、期权浮动盈亏" : "五、期权浮动盈亏"}
+                        {isAccount ? "四、期权浮动盈亏" : "六、期权浮动盈亏"}
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>

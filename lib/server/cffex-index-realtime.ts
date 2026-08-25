@@ -1,6 +1,7 @@
 import { allListedCffexIndexContracts } from "@/lib/client/cffex-expiry"
 import { INDEX_FUTURES, type CtpCandle, type CtpTick } from "@/lib/client/ctp-market"
-import { parseSinaFuturesHq } from "@/lib/server/sina-futures-hq"
+import { allWeatherHqSymbols } from "@/lib/server/all-weather-prices"
+import { fetchSinaFuturesQuotes, parseSinaFuturesHq } from "@/lib/server/sina-futures-hq"
 
 const SINA_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -160,14 +161,27 @@ let inflight: Promise<CffexRealtimeBundle> | null = null
 let cached: { at: number; data: CffexRealtimeBundle } | null = null
 const TTL_MS = 1500
 
-export async function getCffexIndexRealtime() {
+function parseExtraSymbols(raw: string[] | string | null | undefined) {
+  const parts = Array.isArray(raw) ? raw : String(raw || "").split(",")
+  return [
+    ...new Set(
+      parts
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => /^[A-Z]{1,3}\d{3,4}$/.test(s)),
+    ),
+  ].slice(0, 40)
+}
+
+async function loadBaseBundle(): Promise<CffexRealtimeBundle> {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.data
   if (inflight) return inflight
   inflight = (async () => {
     const listed = allListedCffexIndexContracts()
+    const extraSymbols = allWeatherHqSymbols()
     const hqIds = [
       ...INDEX_FUTURES.map((item) => `nf_${SINA_SYMBOL[item.product]}`),
       ...listed.map((symbol) => `nf_${symbol}`),
+      ...extraSymbols.map((symbol) => `nf_${symbol}`),
     ]
     const hqText = await sinaGet(`https://hq.sinajs.cn/list=${hqIds.join(",")}`, "https://finance.sina.com.cn")
     const quotes = parseHq(hqText)
@@ -181,4 +195,14 @@ export async function getCffexIndexRealtime() {
   const data = await inflight
   cached = { at: Date.now(), data }
   return data
+}
+
+export async function getCffexIndexRealtime(extraSymbols: string[] | string = []) {
+  const base = await loadBaseBundle()
+  const extra = parseExtraSymbols(extraSymbols).filter((symbol) => !base.quotes[symbol])
+  if (!extra.length) return base
+  const more = await fetchSinaFuturesQuotes(extra)
+  const quotes = { ...base.quotes }
+  for (const [symbol, quote] of more) quotes[symbol] = toTick(quote)
+  return { ...base, quotes }
 }

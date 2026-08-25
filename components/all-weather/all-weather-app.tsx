@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import {
   Area,
@@ -15,6 +15,7 @@ import {
   AlertCircle,
   ArrowLeft,
   CloudSun,
+  LineChart,
   Loader2,
   Mail,
   Paperclip,
@@ -189,8 +190,8 @@ function pct(n: number, digits = 2): string {
 }
 
 function pnlClass(n: number): string {
-  if (n > 0) return "text-emerald-700"
-  if (n < 0) return "text-rose-700"
+  if (n > 0) return "text-red-600"
+  if (n < 0) return "text-emerald-600"
   return "text-slate-600"
 }
 
@@ -236,6 +237,7 @@ export function AllWeatherApp() {
   const [emailBusy, setEmailBusy] = useState(false)
   const [extraFiles, setExtraFiles] = useState<File[]>([])
   const [dragOver, setDragOver] = useState(false)
+  const [showNavChart, setShowNavChart] = useState(false)
   const extraFileInputRef = useRef<HTMLInputElement>(null)
   useAllWeatherCtpWatch(authorized === true)
   const ctp = useCtpIndexFuturesFeed()
@@ -437,11 +439,6 @@ export function AllWeatherApp() {
     }
   }
 
-  const chartData = useMemo(
-    () => overview?.book.daily.map((r) => ({ date: r.date.slice(5), equity: r.equity, pnl: r.dailyPnl })) ?? [],
-    [overview],
-  )
-
   const live = useMemo(() => {
     if (!overview) return null
     const quotes = ctp.quotes
@@ -465,6 +462,28 @@ export function AllWeatherApp() {
       equity: overview.book.equity - overview.book.dailyPnl + daily,
     }
   }, [overview, ctp.quotes])
+
+  const chartData = useMemo(() => {
+    if (!overview) return []
+    const rows = overview.book.daily.map((r) => ({ date: r.date.slice(5), equity: r.equity, pnl: r.dailyPnl }))
+    if (rows.length === 0) {
+      rows.push({
+        date: overview.book.startedAt.slice(5) || overview.book.asOf.slice(5),
+        equity: overview.book.initialCapital,
+        pnl: 0,
+      })
+    }
+    const liveEquity = live?.equity ?? overview.book.equity
+    const livePnl = live?.daily ?? overview.book.dailyPnl
+    const today = overview.book.asOf.slice(5)
+    const last = rows[rows.length - 1]
+    if (last && last.date === today) {
+      rows[rows.length - 1] = { date: today, equity: liveEquity, pnl: livePnl }
+    } else {
+      rows.push({ date: today || "实时", equity: liveEquity, pnl: livePnl })
+    }
+    return rows
+  }, [overview, live])
 
   if (authorized === null) {
     return (
@@ -546,11 +565,39 @@ export function AllWeatherApp() {
         ) : (
           <>
             <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Kpi title="模拟净值" value={yuan(live?.equity ?? overview.book.equity)} hint={`起始 ${yuan(overview.book.initialCapital)} · ${overview.book.asOf}${live?.liveCount ? " · 实时" : ""}`} />
+              <Kpi
+                title="模拟净值"
+                value={yuan(live?.equity ?? overview.book.equity)}
+                hint={`起始 ${yuan(overview.book.initialCapital)} · ${overview.book.asOf}${live?.liveCount ? " · 实时" : ""}`}
+                action={
+                  <button
+                    type="button"
+                    onClick={() => setShowNavChart((open) => !open)}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] ${
+                      showNavChart
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900"
+                    }`}
+                  >
+                    <LineChart className="h-3.5 w-3.5" />
+                    {showNavChart ? "隐藏曲线" : "净值曲线"}
+                  </button>
+                }
+              />
               <Kpi title="当日盈亏" value={yuan(live?.daily ?? overview.book.dailyPnl)} hint={live?.liveCount ? `实时盯市 · ${live.liveCount} 个合约有行情` : "按持仓手数盯市"} className={pnlClass(live?.daily ?? overview.book.dailyPnl)} />
               <Kpi title="累计盈亏" value={`${yuan(overview.book.cumPnl)}  (${pct(overview.book.cumPnl / overview.book.initialCapital)})`} hint={`自 ${overview.book.startedAt} 起跟踪`} className={pnlClass(overview.book.cumPnl)} />
               <Kpi title="保证金占用" value={`${yuan(overview.totals.margin)}  ·  ${pct(overview.totals.marginUtil)}`} hint={`开仓 ${overview.totals.lots} 手 · ${(overview.settings?.contractTenor ?? "current") === "following" ? "下季/次主力" : "当月/主力"} · 行情 ${overview.book.priceSource === "sina" ? "新浪" : "回测快照"}`} />
             </section>
+
+            {showNavChart ? (
+              <Card className="border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-sm font-medium">净值曲线</div>
+                  <div className="font-mono text-sm text-slate-700">{yuan(live?.equity ?? overview.book.equity)}</div>
+                </div>
+                <NavEquityChart data={chartData} />
+              </Card>
+            ) : null}
 
             <Card className="border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-3 text-sm font-medium text-slate-800">策略说明</div>
@@ -579,6 +626,7 @@ export function AllWeatherApp() {
             <Tabs defaultValue="live">
               <TabsList className="bg-white">
                 <TabsTrigger value="live">当前持仓</TabsTrigger>
+                <TabsTrigger value="nav">净值曲线</TabsTrigger>
                 <TabsTrigger value="pnl">盈亏轨迹</TabsTrigger>
                 <TabsTrigger value="backtest">回测摘要</TabsTrigger>
                 {canManage ? <TabsTrigger value="email">邮件推送</TabsTrigger> : null}
@@ -619,7 +667,7 @@ export function AllWeatherApp() {
                             <TableCell>{t.side}</TableCell>
                             <TableCell className="text-right">{t.prevLots}</TableCell>
                             <TableCell className="text-right font-medium">{t.newLots}</TableCell>
-                            <TableCell className={`text-right ${t.delta > 0 ? "text-emerald-700" : t.delta < 0 ? "text-rose-700" : "text-slate-500"}`}>
+                            <TableCell className={`text-right ${pnlClass(t.delta)}`}>
                               {t.delta > 0 ? `+${t.delta}` : t.delta}
                             </TableCell>
                             <TableCell className="text-right">{t.price.toLocaleString("zh-CN")}</TableCell>
@@ -707,6 +755,18 @@ export function AllWeatherApp() {
                 ))}
               </TabsContent>
 
+              <TabsContent value="nav" className="space-y-4">
+                <Card className="border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-sm font-medium">模拟净值</div>
+                    {canManage ? (
+                      <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
+                    ) : null}
+                  </div>
+                  <NavEquityChart data={chartData} />
+                </Card>
+              </TabsContent>
+
               <TabsContent value="pnl" className="space-y-4">
                 <Card className="border-slate-200 bg-white p-5 shadow-sm">
                   <div className="mb-3 flex items-center justify-between">
@@ -715,23 +775,7 @@ export function AllWeatherApp() {
                       <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
                     ) : null}
                   </div>
-                  <div className="h-64">
-                    {chartData.length < 2 ? (
-                      <div className="flex h-full items-center justify-center text-sm text-slate-400">
-                        跟踪刚开始，次日刷新后会画出净值曲线。
-                      </div>
-                    ) : (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={chartData}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                          <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                          <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 10000)}万`} />
-                          <Tooltip formatter={(v: number) => yuan(v)} />
-                          <Area type="monotone" dataKey="equity" stroke="#0f766e" fill="#ccfbf1" />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    )}
-                  </div>
+                  <NavEquityChart data={chartData} />
                 </Card>
                 <Card className="border-slate-200 bg-white p-5 shadow-sm">
                   <div className="mb-3 text-sm font-medium">每日盈亏</div>
@@ -768,8 +812,8 @@ export function AllWeatherApp() {
                 <Card className="border-slate-200 bg-white p-5 shadow-sm">
                   <div className="mb-3 text-sm font-medium">回测绩效（2019-04-30 至 2026-08-07）</div>
                   <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-                    <MiniStat label="累计收益" value={pct(overview.strategy.summary.cumulativeReturn)} />
-                    <MiniStat label="CAGR" value={pct(overview.strategy.summary.cagr)} />
+                    <MiniStat label="累计收益" value={pct(overview.strategy.summary.cumulativeReturn)} className={pnlClass(overview.strategy.summary.cumulativeReturn)} />
+                    <MiniStat label="CAGR" value={pct(overview.strategy.summary.cagr)} className={pnlClass(overview.strategy.summary.cagr)} />
                     <MiniStat label="年化波动" value={pct(overview.strategy.summary.annVol)} />
                     <MiniStat label="Sharpe" value={overview.strategy.summary.sharpe.toFixed(2)} />
                     <MiniStat label="最大回撤" value={pct(overview.strategy.summary.maxDrawdown)} />
@@ -789,7 +833,7 @@ export function AllWeatherApp() {
                       {overview.strategy.sleeveBacktest.map((s) => (
                         <TableRow key={s.sleeve}>
                           <TableCell>{s.label}</TableCell>
-                          <TableCell className="text-right">{s.cagr}</TableCell>
+                          <TableCell className={`text-right ${pnlClass(Number.parseFloat(s.cagr))}`}>{s.cagr}</TableCell>
                           <TableCell className="text-right">{s.vol}</TableCell>
                           <TableCell className="text-right">{s.sharpe}</TableCell>
                           <TableCell className="text-right">{s.maxDd}</TableCell>
@@ -1010,21 +1054,64 @@ export function AllWeatherApp() {
   )
 }
 
-function Kpi({ title, value, hint, className }: { title: string; value: string; hint: string; className?: string }) {
+function Kpi({
+  title,
+  value,
+  hint,
+  className,
+  action,
+}: {
+  title: string
+  value: string
+  hint: string
+  className?: string
+  action?: ReactNode
+}) {
   return (
     <Card className="border-slate-200 bg-white p-4 shadow-sm">
-      <div className="text-xs text-slate-500">{title}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-xs text-slate-500">{title}</div>
+        {action}
+      </div>
       <div className={`mt-1 text-xl font-semibold ${className ?? "text-slate-900"}`}>{value}</div>
       <div className="mt-1 text-[11px] text-slate-400">{hint}</div>
     </Card>
   )
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
+function NavEquityChart({ data }: { data: Array<{ date: string; equity: number; pnl: number }> }) {
+  if (data.length < 2) {
+    return (
+      <div className="flex h-64 items-center justify-center text-sm text-slate-400">
+        跟踪刚开始，次日刷新后会画出净值曲线。
+      </div>
+    )
+  }
+  return (
+    <div className="h-64">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+          <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 10000)}万`} />
+          <Tooltip
+            formatter={(value, name) => [
+              yuan(Number(value)),
+              name === "equity" ? "净值" : "当日盈亏",
+            ]}
+          />
+          <Area type="monotone" dataKey="equity" stroke="#b91c1c" fill="#fecaca" />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function MiniStat({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
     <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
       <div className="text-[11px] text-slate-500">{label}</div>
-      <div className="text-base font-semibold">{value}</div>
+      <div className={`text-base font-semibold ${className ?? ""}`}>{value}</div>
     </div>
   )
 }

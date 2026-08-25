@@ -1,4 +1,12 @@
 import type { CtpCandle } from "@/lib/client/ctp-market"
+import {
+  futuresTradeDateYmd,
+  hasNightSession,
+  isCffexProduct,
+  isLiveSessionFor,
+  isNightHqPrint,
+  isNightWallClock,
+} from "@/lib/client/market-hours"
 
 export const TIMEFRAMES = [
   { id: "1m", label: "1分", seconds: 60 },
@@ -158,21 +166,45 @@ export function applySessionQuote(
         last?: number | null
         volume?: number | null
         trade_date?: string | null
+        update_time?: string | null
       }
     | undefined,
   id: TimeframeId,
+  symbol?: string | null,
 ) {
   if (!quote || (id !== "1d" && id !== "1w" && id !== "1M")) return bars
   const open = quote.open
   const last = quote.last
   if (open == null || last == null || !(open > 0) || !(last > 0)) return bars
-  const dated = tradeDateUnix(quote.trade_date)
-  // Closed-weekend polls have no session. Do not stamp Sunday/Saturday onto 日线
-  // (that last bar then "ticks" every 800ms as quotes refresh).
+  const nightNow = !!symbol && isNightWallClock(new Date(), symbol)
+  const rollNight = nightNow && isNightHqPrint(symbol!, quote)
+  let sessionYmd: string | null = quote.trade_date || null
+  if (symbol && rollNight) sessionYmd = futuresTradeDateYmd(symbol)
+  else if (symbol && nightNow && hasNightSession(symbol) && !rollNight) sessionYmd = quote.trade_date || null
+  else if (symbol && !isCffexProduct(symbol) && !nightNow) sessionYmd = quote.trade_date || futuresTradeDateYmd(symbol)
+  const dated = tradeDateUnix(sessionYmd)
   const raw = dated ?? (isWeekendUnix(shanghaiWallUnix()) ? null : shanghaiWallUnix())
   if (raw == null) return bars
   const time = bucketTime(raw, id)
   if (!dated && isWeekendUnix(time)) return bars
+  return applySessionOhlc(bars, quote, id, time)
+}
+
+function applySessionOhlc(
+  bars: CtpCandle[],
+  quote: {
+    open?: number | null
+    high?: number | null
+    low?: number | null
+    last?: number | null
+    volume?: number | null
+  },
+  id: TimeframeId,
+  time: number,
+) {
+  const open = quote.open
+  const last = quote.last
+  if (open == null || last == null || !(open > 0) || !(last > 0)) return bars
   const high = quote.high != null && quote.high > 0 ? quote.high : Math.max(open, last)
   const low = quote.low != null && quote.low > 0 ? quote.low : Math.min(open, last)
   const volume = quote.volume ?? 0
@@ -193,6 +225,65 @@ export function applySessionQuote(
     low: Math.min(next[idx].low, low),
     close: last,
     volume: Math.max(next[idx].volume, volume),
+  }
+  return next
+}
+
+function quoteBarUnix(quote: { trade_date?: string | null; update_time?: string | null }) {
+  const ymd = quote.trade_date
+  const clock = quote.update_time
+  if (!ymd || !clock || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null
+  const [hour, minute] = clock.split(":").map(Number)
+  if (![hour, minute].every((n) => Number.isFinite(n))) return null
+  const [year, month, date] = ymd.split("-").map(Number)
+  return Math.floor(Date.UTC(year, month - 1, date, hour, minute, 0) / 1000)
+}
+
+/** Stamp last onto the current 1m/5m/… bar while the product is actually in session. */
+export function applyLiveQuoteBar(
+  bars: CtpCandle[],
+  quote:
+    | {
+        last?: number | null
+        volume?: number | null
+        trade_date?: string | null
+        update_time?: string | null
+      }
+    | undefined,
+  id: TimeframeId,
+  symbol?: string | null,
+) {
+  if (id === "1d" || id === "1w" || id === "1M") return applySessionQuote(bars, quote, id, symbol)
+  if (!symbol || !quote || !isLiveSessionFor(symbol)) return bars
+  if (isNightWallClock(new Date(), symbol) && !isNightHqPrint(symbol, quote)) return bars
+  const last = quote.last
+  if (last == null || !(last > 0)) return bars
+  const unix = quoteBarUnix(quote)
+  if (unix == null) return bars
+  const time = bucketTime(unix, id)
+  if (!bars.length) return bars
+  const next = bars.slice()
+  const idx = next.findIndex((bar) => bar.time === time)
+  if (idx < 0) {
+    const prev = next[next.length - 1]
+    if (time <= prev.time) return bars
+    next.push({
+      time,
+      open: prev.close,
+      high: Math.max(prev.close, last),
+      low: Math.min(prev.close, last),
+      close: last,
+      volume: quote.volume ?? 0,
+    })
+    return next
+  }
+  const cur = next[idx]
+  next[idx] = {
+    ...cur,
+    high: Math.max(cur.high, last),
+    low: Math.min(cur.low, last),
+    close: last,
+    volume: Math.max(cur.volume, quote.volume ?? 0),
   }
   return next
 }
