@@ -490,7 +490,7 @@ function toOverview(book: PaperBook): OverviewPayload {
 }
 
 function bookNeedsRebuild(book: PaperBook, snapshot: StrategySnapshot, tenor: ContractTenor): boolean {
-  if ((book.universeVersion ?? 0) !== LIVE_UNIVERSE_VERSION) return true
+  if (book.universeVersion != null && book.universeVersion !== LIVE_UNIVERSE_VERSION) return true
   if (book.contractTenor && book.contractTenor !== tenor) return true
   return universeKey(book.positions) !== universeKey(snapshot.positions)
 }

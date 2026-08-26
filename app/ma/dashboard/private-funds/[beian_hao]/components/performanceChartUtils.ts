@@ -141,6 +141,9 @@ export function downsampleByTime(rows: NavRow[], maxPoints = 720): NavRow[] {
 
 const MS_DAY = 86400000
 
+/** Calendar gap large enough to treat a NAV point as isolated (still draw the line). */
+const ISOLATED_GAP_FLOOR_MS = 45 * MS_DAY
+
 /**
  * Long mixed daily/weekly NAV looks like a scribble if every observation is plotted.
  * For spans over ~5 months, chart the last point in each week (table still uses raw rows).
@@ -164,10 +167,10 @@ export function chartGapBreakMs(timestamps: number[]): number {
     const gap = timestamps[i] - timestamps[i - 1]
     if (Number.isFinite(gap) && gap > 0) gaps.push(gap)
   }
-  if (!gaps.length) return 24 * MS_DAY
+  if (!gaps.length) return ISOLATED_GAP_FLOOR_MS
   gaps.sort((a, b) => a - b)
   const median = gaps[Math.floor(gaps.length / 2)]
-  return Math.max(24 * MS_DAY, median * 3)
+  return Math.max(ISOLATED_GAP_FLOOR_MS, median * 6)
 }
 
 export type GappedLinePoint = {
@@ -177,31 +180,23 @@ export type GappedLinePoint = {
   showDot?: boolean
 }
 
-/** Insert a null so ECharts does not draw a fake trend across missing NAV weeks. */
+/** Map NAV points onto a time axis. Connect across missing reports; mark isolated observations. */
 export function toGappedLinePoints(
   points: Array<{ ts: number; y: number | null; date?: string; periodReturn?: number | null }>,
   showDots: boolean,
 ): GappedLinePoint[] {
   if (!points.length) return []
   const breakMs = chartGapBreakMs(points.map((point) => point.ts))
-  const isolated = points.map((point, i) => {
+  return points.map((point, i) => {
     const prevGap = i > 0 && point.ts - points[i - 1].ts > breakMs
     const nextGap = i < points.length - 1 && points[i + 1].ts - point.ts > breakMs
-    return prevGap || nextGap
-  })
-  const out: GappedLinePoint[] = []
-  for (let i = 0; i < points.length; i++) {
-    if (i > 0 && points[i].ts - points[i - 1].ts > breakMs) {
-      out.push({ value: [points[i - 1].ts + MS_DAY, null] })
+    return {
+      value: [point.ts, point.y],
+      date: point.date,
+      periodReturn: point.periodReturn,
+      showDot: showDots || prevGap || nextGap,
     }
-    out.push({
-      value: [points[i].ts, points[i].y],
-      date: points[i].date,
-      periodReturn: points[i].periodReturn,
-      showDot: showDots || isolated[i],
-    })
-  }
-  return out
+  })
 }
 
 export function chartDateSpanDays(dates: string[]): number {
@@ -448,6 +443,39 @@ export function buildTimeAxisConfig(dates: string[]): TimeAxisConfig {
     domain: [minTs, maxTs],
     tickFormatter: (ts: number) =>
       tickLabels.get(ts) ?? formatChartAxisDateLabel(formatIsoDateFromTs(ts), spanDays),
+  }
+}
+
+/** Shared ECharts time x-axis: one unique month (or year) label, not auto bi-weekly duplicates. */
+export function echartsTimeXAxis(dates: string[]): Record<string, unknown> {
+  const axis = buildTimeAxisConfig(dates)
+  const spanDays = chartDateSpanDays(dates)
+  const monthTicks = spanDays > 45
+  return {
+    type: "time",
+    min: axis.domain[0],
+    max: axis.domain[1],
+    boundaryGap: false,
+    minInterval: monthTicks ? pickMonthStep(spanDays) * 28 * MS_DAY : undefined,
+    axisLabel: {
+      fontSize: 11,
+      color: "#71717a",
+      hideOverlap: true,
+      showMinLabel: true,
+      showMaxLabel: !monthTicks,
+      customValues: monthTicks ? axis.ticks : undefined,
+      formatter: (value: number) => {
+        if (monthTicks) return axis.tickFormatter(value)
+        const iso = formatIsoDateFromTs(value)
+        if (!iso) return ""
+        const month = parseInt(iso.slice(5, 7), 10)
+        const day = parseInt(iso.slice(8, 10), 10)
+        return `${month}/${day}`
+      },
+    },
+    axisLine: { show: false },
+    axisTick: { show: false },
+    splitLine: { show: false },
   }
 }
 

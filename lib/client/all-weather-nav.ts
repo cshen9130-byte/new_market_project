@@ -1,5 +1,3 @@
-import { shanghaiYmd } from "@/lib/client/market-hours"
-
 /** Yesterday's close + today's live P/L. Not initial capital + today's P/L. */
 export function allWeatherLiveNav(bookEquity: number, bookDailyPnl: number, liveDailyPnl: number) {
   return bookEquity - bookDailyPnl + liveDailyPnl
@@ -13,10 +11,27 @@ export type AllWeatherLiveRow = {
   price: number
   dailyPnl?: number
   sleeve?: string
+  asset?: string
+  bookDaily?: number
+  bookCum?: number
 }
 
-export function allWeatherAnchorRows<T extends AllWeatherLiveRow>(rows: T[], asOf: string, today = shanghaiYmd()) {
-  const stale = Boolean(asOf) && asOf < today
+function todayYmd(now = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now)
+}
+
+function asOfYmd(asOf: string) {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(asOf || ""))
+  return m ? m[1] : asOf
+}
+
+export function allWeatherAnchorRows<T extends AllWeatherLiveRow>(rows: T[], asOf: string, today = todayYmd()) {
+  const stale = Boolean(asOf) && asOfYmd(asOf) < today
   return {
     stale,
     rows: rows.map((row) => ({
@@ -26,25 +41,22 @@ export function allWeatherAnchorRows<T extends AllWeatherLiveRow>(rows: T[], asO
   }
 }
 
+export function allWeatherPositionDailyPnl(
+  row: AllWeatherLiveRow,
+  markOf: (symbol: string | undefined, fallback: number) => number,
+) {
+  if (!row.lots || !row.multiplier) return 0
+  const prev = row.prevPrice > 0 ? row.prevPrice : row.price
+  if (!(prev > 0)) return 0
+  const mark = markOf(row.symbol, row.price)
+  return (mark - prev) * row.lots * row.multiplier
+}
+
 export function allWeatherLiveDailyPnl(
   rows: AllWeatherLiveRow[],
   markOf: (symbol: string | undefined, fallback: number) => number,
 ): number {
-  let daily = 0
-  for (const row of rows) {
-    if (!row.lots || !row.multiplier) {
-      daily += row.dailyPnl ?? 0
-      continue
-    }
-    const prev = row.prevPrice > 0 ? row.prevPrice : row.price
-    if (!(prev > 0)) {
-      daily += row.dailyPnl ?? 0
-      continue
-    }
-    const mark = markOf(row.symbol, row.price)
-    daily += (mark - prev) * row.lots * row.multiplier
-  }
-  return daily
+  return rows.reduce((sum, row) => sum + allWeatherPositionDailyPnl(row, markOf), 0)
 }
 
 /**
@@ -60,11 +72,52 @@ export function allWeatherMarkedEquity(opts: {
   markOf: (symbol: string | undefined, fallback: number) => number
   today?: string
 }) {
-  const today = opts.today ?? shanghaiYmd()
+  const breakdown = allWeatherLiveBreakdown({ ...opts, initialCapital: 0 })
+  return { liveDaily: breakdown.daily, equity: breakdown.equity }
+}
+
+export function allWeatherLiveBreakdown(opts: {
+  asOf: string
+  equity: number
+  dailyPnl: number
+  initialCapital?: number
+  rows: AllWeatherLiveRow[]
+  markOf: (symbol: string | undefined, fallback: number) => number
+  today?: string
+}) {
+  const today = opts.today ?? todayYmd()
   const { stale, rows } = allWeatherAnchorRows(opts.rows, opts.asOf, today)
-  const liveDaily = allWeatherLiveDailyPnl(rows, opts.markOf)
+  const sleevePnl: Record<string, number> = {}
+  const sleeveCum: Record<string, number> = {}
+  const productPnl: Record<string, number> = {}
+  const productCum: Record<string, number> = {}
+  let daily = 0
+  for (const row of rows) {
+    const liveDaily = allWeatherPositionDailyPnl(row, opts.markOf)
+    daily += liveDaily
+    const bookDaily = row.bookDaily ?? row.dailyPnl ?? 0
+    const bookCum = row.bookCum ?? 0
+    const cum = stale ? bookCum + liveDaily : bookCum - bookDaily + liveDaily
+    const productKey = row.asset || row.symbol
+    if (productKey) {
+      productPnl[productKey] = (productPnl[productKey] ?? 0) + liveDaily
+      productCum[productKey] = (productCum[productKey] ?? 0) + cum
+    }
+    if (row.sleeve) {
+      sleevePnl[row.sleeve] = (sleevePnl[row.sleeve] ?? 0) + liveDaily
+      sleeveCum[row.sleeve] = (sleeveCum[row.sleeve] ?? 0) + cum
+    }
+  }
+  const equity = stale ? opts.equity + daily : allWeatherLiveNav(opts.equity, opts.dailyPnl, daily)
+  const initialCapital = opts.initialCapital ?? 0
   return {
-    liveDaily,
-    equity: stale ? opts.equity + liveDaily : allWeatherLiveNav(opts.equity, opts.dailyPnl, liveDaily),
+    stale,
+    daily,
+    equity,
+    cum: equity - initialCapital,
+    sleevePnl,
+    sleeveCum,
+    productPnl,
+    productCum,
   }
 }

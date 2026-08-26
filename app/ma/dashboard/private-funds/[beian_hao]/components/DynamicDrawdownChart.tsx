@@ -2,15 +2,8 @@
 
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
-import { dateToUtcTs, formatIsoDateFromTs, toGappedLinePoints, type DrawdownChartPoint } from "./performanceChartUtils"
+import { dateToUtcTs, echartsTimeXAxis, toGappedLinePoints, type DrawdownChartPoint } from "./performanceChartUtils"
 import type { DrawdownEpisodeMark } from "./DrawdownEpisodesTable"
-
-function monthAxisLabel(dateStr: string, lastDate: string): string {
-  const month = parseInt(dateStr.slice(5, 7), 10)
-  const year = dateStr.slice(0, 4)
-  if (month === 1 || dateStr.slice(0, 4) !== lastDate.slice(0, 4)) return year
-  return `${month}月`
-}
 
 function drawdownYMin(values: (number | null)[]): number {
   const nums = values.filter((v): v is number => v !== null && Number.isFinite(v))
@@ -39,9 +32,6 @@ export function DynamicDrawdownChart({
   height?: number | string
   episodeMarks?: DrawdownEpisodeMark[]
 }) {
-  const dates = useMemo(() => data.map((d) => d.date), [data])
-  const lastDate = dates.at(-1) ?? ""
-
   const option = useMemo(() => {
     const showDots = data.length <= 40
     const fundPoints = toGappedLinePoints(
@@ -54,8 +44,6 @@ export function DynamicDrawdownChart({
           data.map((d) => ({ ts: d.ts, y: d.benchDD, date: d.date })),
           showDots,
         )
-    const minTs = data[0]?.ts
-    const maxTs = data[data.length - 1]?.ts
     const yMin = drawdownYMin([
       ...fundPoints.map((p) => p.value[1]),
       ...benchPoints.map((p) => p.value[1]),
@@ -181,20 +169,7 @@ export function DynamicDrawdownChart({
       },
       legend: { show: false },
       grid: { left: 56, right: 20, top: 12, bottom: 28 },
-      xAxis: {
-        type: "time" as const,
-        min: minTs,
-        max: maxTs,
-        boundaryGap: false,
-        axisLabel: {
-          fontSize: 11,
-          color: "#71717a",
-          hideOverlap: true,
-          formatter: (value: number) => monthAxisLabel(formatIsoDateFromTs(value), lastDate),
-        },
-        axisLine: { show: false },
-        axisTick: { show: false },
-      },
+      xAxis: echartsTimeXAxis(data.map((d) => d.date)),
       yAxis: {
         type: "value" as const,
         name: "回撤值(%)",
@@ -210,7 +185,7 @@ export function DynamicDrawdownChart({
       },
       series,
     }
-  }, [data, dates, lastDate, productName, benchmarkLabel, hasBenchmark, showExcess, maxFundDrawdown, episodeMarks])
+  }, [data, productName, benchmarkLabel, hasBenchmark, showExcess, maxFundDrawdown, episodeMarks])
 
   if (!data.length) return null
 

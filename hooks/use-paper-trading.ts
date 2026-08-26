@@ -5,9 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
-import { allWeatherAnchorRows, allWeatherLiveDailyPnl, allWeatherMarkedEquity } from "@/lib/client/all-weather-nav"
+import { allWeatherLiveBreakdown } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
-import { isLiveSessionFor, mergeClosedMarks, shanghaiYmd } from "@/lib/client/market-hours"
+import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
   allWeatherHoldingsKey,
@@ -567,6 +567,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     const rows = state.positions
       .filter((pos) => pos.status === "open" && pos.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
       .map((pos) => {
+        const book = awMeta.positions?.[pos.symbol] || awMeta.positions?.[pos.symbol.toUpperCase()]
         const prev = prevMarks[pos.symbol] ?? prevMarks[pos.symbol.toUpperCase()] ?? 0
         return {
           symbol: pos.symbol,
@@ -575,40 +576,37 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
           prevPrice: prev,
           price: extraMarks[pos.symbol] || extraMarks[pos.symbol.toUpperCase()] || pos.entryPrice,
           sleeve: pos.sleeve,
-          dailyPnl: awMeta.positions?.[pos.symbol]?.dailyPnl ?? awMeta.positions?.[pos.symbol.toUpperCase()]?.dailyPnl ?? 0,
+          asset: pos.symbol,
+          dailyPnl: book?.dailyPnl ?? 0,
+          bookDaily: book?.dailyPnl ?? 0,
+          bookCum: book?.cumPnl ?? 0,
         }
       })
-    const marked = allWeatherMarkedEquity({
+    const breakdown = allWeatherLiveBreakdown({
       asOf: awMeta.asOf,
       equity: awMeta.equity,
       dailyPnl: awMeta.dailyPnl,
+      initialCapital: awMeta.initialCapital,
       rows,
       markOf: awTickMark,
     })
-    const { stale, rows: anchored } = allWeatherAnchorRows(rows, awMeta.asOf, shanghaiYmd())
     const bySleeve = Object.fromEntries(
       SLEEVE_KEYS.map((key) => {
-        const book = awMeta.sleeves?.[key] || { dailyPnl: 0, cumPnl: 0 }
-        const daily = allWeatherLiveDailyPnl(
-          anchored.filter((row) => row.sleeve === key),
-          awTickMark,
-        )
-        const cum = stale ? book.cumPnl + daily : book.cumPnl - book.dailyPnl + daily
+        const daily = breakdown.sleevePnl[key] ?? 0
+        const cum = breakdown.sleeveCum[key] ?? 0
         return [key, { daily, cum, unrealized: daily, realized: 0, live: daily }]
       }),
     ) as Record<SleeveKey, { daily: number; cum: number; unrealized: number; realized: number; live: number }>
     const bySymbol: Record<string, { daily: number; cum: number }> = {}
-    for (const row of anchored) {
+    for (const row of rows) {
       const symbol = String(row.symbol || "")
       if (!symbol) continue
-      const daily = allWeatherLiveDailyPnl([row], awTickMark)
-      const book = awMeta.positions?.[symbol] || awMeta.positions?.[symbol.toUpperCase()] || { dailyPnl: 0, cumPnl: 0 }
       bySymbol[symbol] = {
-        daily,
-        cum: stale ? book.cumPnl + daily : book.cumPnl - book.dailyPnl + daily,
+        daily: breakdown.productPnl[symbol] ?? breakdown.productPnl[symbol.toUpperCase()] ?? 0,
+        cum: breakdown.productCum[symbol] ?? breakdown.productCum[symbol.toUpperCase()] ?? 0,
       }
     }
-    return { nav: marked.equity, liveDaily: marked.liveDaily, bySleeve, bySymbol }
+    return { nav: breakdown.equity, liveDaily: breakdown.daily, bySleeve, bySymbol }
   }, [awMeta, selectedPortfolio?.id, state.positions, extraMarks, awTickMark])
 
   const openPositions = useMemo(

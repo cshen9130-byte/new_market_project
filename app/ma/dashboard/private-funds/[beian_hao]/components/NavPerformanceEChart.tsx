@@ -5,6 +5,7 @@ import ReactECharts from "echarts-for-react"
 import { RED } from "./shared"
 import {
   dateToUtcTs,
+  echartsTimeXAxis,
   formatIsoDateFromTs,
   formatReturnTooltipLabel,
   toGappedLinePoints,
@@ -62,12 +63,6 @@ export function NavPerformanceEChart({
     const numericDomain = Array.isArray(yDomain) && typeof yDomain[0] === "number"
       ? yDomain as [number, number]
       : null
-    const minTs = data[0]?.ts
-    const maxTs = data[data.length - 1]?.ts
-    const spanDays = Number.isFinite(minTs) && Number.isFinite(maxTs)
-      ? Math.max(1, Math.round((maxTs - minTs) / 86400000))
-      : 1
-
     const fundPoints = toGappedLinePoints(
       data.map((d) => ({ ts: d.ts, y: d.value, date: d.date, periodReturn: d.periodReturn })),
       showDots,
@@ -205,32 +200,7 @@ export function NavPerformanceEChart({
         },
       },
       grid: { left: 52, right: 16, top: 16, bottom: 28 },
-      xAxis: {
-        type: "time" as const,
-        min: minTs,
-        max: maxTs,
-        boundaryGap: false,
-        axisLabel: {
-          fontSize: 11,
-          color: "#71717a",
-          hideOverlap: true,
-          formatter: (value: number) => {
-            const iso = formatIsoDateFromTs(value)
-            if (!iso) return ""
-            if (spanDays <= 45) {
-              const m = parseInt(iso.slice(5, 7), 10)
-              const d = parseInt(iso.slice(8, 10), 10)
-              return `${m}/${d}`
-            }
-            if (spanDays > 1800) return iso.slice(0, 4)
-            const month = parseInt(iso.slice(5, 7), 10)
-            return month === 1 ? iso.slice(0, 4) : `${month}月`
-          },
-        },
-        axisLine: { show: false },
-        axisTick: { show: false },
-        splitLine: { show: false },
-      },
+      xAxis: echartsTimeXAxis(data.map((d) => d.date)),
       yAxis: {
         type: "value" as const,
         min: numericDomain ? numericDomain[0] : undefined,

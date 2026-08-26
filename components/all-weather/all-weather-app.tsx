@@ -1,11 +1,14 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import {
   Area,
   AreaChart,
   CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -15,7 +18,6 @@ import {
   AlertCircle,
   ArrowLeft,
   CloudSun,
-  LineChart,
   Loader2,
   Mail,
   Paperclip,
@@ -28,9 +30,10 @@ import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { authService } from "@/lib/auth"
 import type { CtpTick } from "@/lib/client/ctp-market"
-import { allWeatherLiveDailyPnl, allWeatherMarkedEquity } from "@/lib/client/all-weather-nav"
+import { allWeatherLiveBreakdown } from "@/lib/client/all-weather-nav"
+import { shanghaiYmd } from "@/lib/client/market-hours"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
-import { displayListedName, SLEEVE_COLORS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
+import { displayListedName, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -201,22 +204,6 @@ function liveMark(contract: string | undefined, quotes: Record<string, CtpTick>,
   return tick?.last != null && tick.last > 0 ? tick.last : fallback
 }
 
-function liveDailyPnl(p: Position, quotes: Record<string, CtpTick>) {
-  return allWeatherLiveDailyPnl(
-    [
-      {
-        symbol: p.contract,
-        lots: p.lots,
-        multiplier: p.multiplier,
-        prevPrice: p.prevPrice ?? 0,
-        price: p.price,
-        dailyPnl: p.dailyPnl,
-      },
-    ],
-    (symbol, fallback) => liveMark(symbol, quotes, fallback),
-  )
-}
-
 const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
 const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"]
 
@@ -245,7 +232,6 @@ export function AllWeatherApp() {
   const [emailBusy, setEmailBusy] = useState(false)
   const [extraFiles, setExtraFiles] = useState<File[]>([])
   const [dragOver, setDragOver] = useState(false)
-  const [showNavChart, setShowNavChart] = useState(false)
   const extraFileInputRef = useRef<HTMLInputElement>(null)
   useAllWeatherCtpWatch(authorized === true)
   const ctp = useCtpIndexFuturesFeed()
@@ -450,39 +436,58 @@ export function AllWeatherApp() {
   const live = useMemo(() => {
     if (!overview) return null
     const quotes = ctp.quotes
-    const productPnl = new Map<string, number>()
-    const sleevePnl: Record<SleeveKey, number> = { Equity: 0, Bonds: 0, Gold: 0, Commodity: 0 }
-    let liveCount = 0
-    const rows = overview.book.positions.map((p) => ({
-      symbol: p.contract,
-      lots: p.lots,
-      multiplier: p.multiplier,
-      prevPrice: p.prevPrice ?? 0,
-      price: p.price,
-      dailyPnl: p.dailyPnl,
-    }))
-    for (const p of overview.book.positions) {
-      const hasTick = Boolean(p.contract && (quotes[p.contract.toUpperCase()]?.last || quotes[p.contract]?.last))
-      if (hasTick) liveCount += 1
-      const pnl = liveDailyPnl(p, quotes)
-      productPnl.set(p.asset, pnl)
-      sleevePnl[p.sleeve] += pnl
-    }
-    const marked = allWeatherMarkedEquity({
+    const markOf = (symbol: string | undefined, fallback: number) => liveMark(symbol, quotes, fallback)
+    const breakdown = allWeatherLiveBreakdown({
       asOf: overview.book.asOf,
       equity: overview.book.equity,
       dailyPnl: overview.book.dailyPnl,
-      rows,
-      markOf: (symbol, fallback) => liveMark(symbol, quotes, fallback),
+      initialCapital: overview.book.initialCapital,
+      rows: overview.book.positions.map((p) => ({
+        symbol: p.contract,
+        lots: p.lots,
+        multiplier: p.multiplier,
+        prevPrice: p.prevPrice ?? 0,
+        price: p.price,
+        dailyPnl: p.dailyPnl,
+        sleeve: p.sleeve,
+        asset: p.asset,
+        bookDaily: p.dailyPnl,
+        bookCum: p.cumPnl,
+      })),
+      markOf,
     })
-    return {
-      daily: marked.liveDaily,
-      sleevePnl,
-      productPnl,
-      liveCount,
-      equity: marked.equity,
+    let liveCount = 0
+    for (const p of overview.book.positions) {
+      if (p.contract && (quotes[p.contract.toUpperCase()]?.last || quotes[p.contract]?.last)) liveCount += 1
     }
+    return { ...breakdown, liveCount }
   }, [overview, ctp.quotes])
+
+  const sleeves = useMemo(() => {
+    if (!overview) return []
+    return overview.sleeves.map((s) => {
+      const daily = live ? (live.sleevePnl[s.sleeve] ?? 0) : s.dailyPnl
+      const cum = live ? (live.sleeveCum[s.sleeve] ?? 0) : s.cumPnl
+      return {
+        ...s,
+        dailyPnl: daily,
+        cumPnl: cum,
+        products: s.products.map((p) => ({
+          ...p,
+          dailyPnl: live ? (live.productPnl[p.asset] ?? 0) : p.dailyPnl,
+          cumPnl: live ? (live.productCum[p.asset] ?? 0) : p.cumPnl,
+        })),
+      }
+    })
+  }, [overview, live])
+
+  const sleeveTotals = useMemo(
+    () => ({
+      daily: sleeves.reduce((n, s) => n + s.dailyPnl, 0),
+      cum: sleeves.reduce((n, s) => n + s.cumPnl, 0),
+    }),
+    [sleeves],
+  )
 
   const chartData = useMemo(() => {
     if (!overview) return []
@@ -494,15 +499,52 @@ export function AllWeatherApp() {
         pnl: 0,
       })
     }
-    const liveEquity = live?.equity ?? overview.book.equity
+    const liveEquity = overview.book.initialCapital + (live?.cum ?? overview.book.equity - overview.book.initialCapital)
     const livePnl = live?.daily ?? overview.book.dailyPnl
-    const today = overview.book.asOf.slice(5)
+    const today = shanghaiYmd().slice(5)
     const last = rows[rows.length - 1]
     if (last && last.date === today) {
       rows[rows.length - 1] = { date: today, equity: liveEquity, pnl: livePnl }
     } else {
       rows.push({ date: today || "实时", equity: liveEquity, pnl: livePnl })
     }
+    return rows
+  }, [overview, live])
+
+  const sleeveChartData = useMemo(() => {
+    if (!overview) return []
+    const sleeveCapital = overview.book.initialCapital / SLEEVE_KEYS.length
+    const running: Record<SleeveKey, number> = { Equity: 0, Bonds: 0, Gold: 0, Commodity: 0 }
+    const rows: Array<{ date: string } & Record<SleeveKey, number>> = overview.book.daily.map((r) => {
+      for (const key of SLEEVE_KEYS) running[key] += r.sleevePnl[key] ?? 0
+      return {
+        date: r.date.slice(5),
+        Equity: sleeveCapital + running.Equity,
+        Bonds: sleeveCapital + running.Bonds,
+        Gold: sleeveCapital + running.Gold,
+        Commodity: sleeveCapital + running.Commodity,
+      }
+    })
+    const today = shanghaiYmd().slice(5)
+    const livePoint = {
+      date: today || "实时",
+      Equity: sleeveCapital + (live?.sleeveCum.Equity ?? running.Equity),
+      Bonds: sleeveCapital + (live?.sleeveCum.Bonds ?? running.Bonds),
+      Gold: sleeveCapital + (live?.sleeveCum.Gold ?? running.Gold),
+      Commodity: sleeveCapital + (live?.sleeveCum.Commodity ?? running.Commodity),
+    }
+    if (rows.length === 0) {
+      rows.push({
+        date: overview.book.startedAt.slice(5) || overview.book.asOf.slice(5),
+        Equity: sleeveCapital,
+        Bonds: sleeveCapital,
+        Gold: sleeveCapital,
+        Commodity: sleeveCapital,
+      })
+    }
+    const last = rows[rows.length - 1]
+    if (last && last.date === livePoint.date) rows[rows.length - 1] = livePoint
+    else rows.push(livePoint)
     return rows
   }, [overview, live])
 
@@ -588,42 +630,18 @@ export function AllWeatherApp() {
             <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Kpi
                 title="模拟净值"
-                value={yuan(live?.equity ?? overview.book.equity)}
+                value={yuan(overview.book.initialCapital + sleeveTotals.cum)}
                 hint={`起始 ${yuan(overview.book.initialCapital)} · ${overview.book.asOf}${live?.liveCount ? " · 实时" : ""}`}
-                action={
-                  <button
-                    type="button"
-                    onClick={() => setShowNavChart((open) => !open)}
-                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] ${
-                      showNavChart
-                        ? "border-slate-900 bg-slate-900 text-white"
-                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900"
-                    }`}
-                  >
-                    <LineChart className="h-3.5 w-3.5" />
-                    {showNavChart ? "隐藏曲线" : "净值曲线"}
-                  </button>
-                }
               />
-              <Kpi title="当日盈亏" value={yuan(live?.daily ?? overview.book.dailyPnl)} hint={live?.liveCount ? `实时盯市 · ${live.liveCount} 个合约有行情` : "按持仓手数盯市"} className={pnlClass(live?.daily ?? overview.book.dailyPnl)} />
+              <Kpi title="当日盈亏" value={yuan(sleeveTotals.daily)} hint={live?.liveCount ? `实时盯市 · ${live.liveCount} 个合约有行情` : "按持仓手数盯市"} className={pnlClass(sleeveTotals.daily)} />
               <Kpi
                 title="累计盈亏"
-                value={`${yuan((live?.equity ?? overview.book.equity) - overview.book.initialCapital)}  (${pct(((live?.equity ?? overview.book.equity) - overview.book.initialCapital) / overview.book.initialCapital)})`}
+                value={`${yuan(sleeveTotals.cum)}  (${pct(sleeveTotals.cum / overview.book.initialCapital)})`}
                 hint={`自 ${overview.book.startedAt} 起跟踪`}
-                className={pnlClass((live?.equity ?? overview.book.equity) - overview.book.initialCapital)}
+                className={pnlClass(sleeveTotals.cum)}
               />
               <Kpi title="保证金占用" value={`${yuan(overview.totals.margin)}  ·  ${pct(overview.totals.marginUtil)}`} hint={`开仓 ${overview.totals.lots} 手 · ${(overview.settings?.contractTenor ?? "current") === "following" ? "下季/次主力" : "当月/主力"} · 行情 ${overview.book.priceSource === "sina" ? "新浪" : "回测快照"}`} />
             </section>
-
-            {showNavChart ? (
-              <Card className="border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="text-sm font-medium">净值曲线</div>
-                  <div className="font-mono text-sm text-slate-700">{yuan(live?.equity ?? overview.book.equity)}</div>
-                </div>
-                <NavEquityChart data={chartData} />
-              </Card>
-            ) : null}
 
             <Card className="border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-3 text-sm font-medium text-slate-800">策略说明</div>
@@ -637,22 +655,44 @@ export function AllWeatherApp() {
                 CAGR {pct(overview.strategy.summary.cagr)}，Sharpe {overview.strategy.summary.sharpe.toFixed(2)}，最大回撤 {pct(overview.strategy.summary.maxDrawdown)}。
               </p>
               <div className="mt-4 grid gap-3 sm:grid-cols-4">
-                {(Object.keys(overview.strategy.lastBudget) as SleeveKey[]).map((key) => (
-                  <div key={key} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                    <div className="text-xs text-slate-500">{SLEEVE_LABELS[key]} 风险预算</div>
-                    <div className="text-lg font-semibold" style={{ color: SLEEVE_COLORS[key] }}>{pct(overview.strategy.lastBudget[key])}</div>
-                    <div className={`text-[11px] font-medium ${pnlClass(live?.sleevePnl[key] ?? 0)}`}>
-                      实时 {yuan(live?.sleevePnl[key] ?? 0)}
+                {sleeves.map((s) => (
+                  <div key={s.sleeve} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                    <div className="text-xs text-slate-500">{s.label} 风险预算</div>
+                    <div className="text-lg font-semibold" style={{ color: SLEEVE_COLORS[s.sleeve] }}>{pct(overview.strategy.lastBudget[s.sleeve])}</div>
+                    <div className={`text-[11px] font-medium ${pnlClass(s.dailyPnl)}`}>
+                      当日 {yuan(s.dailyPnl)}
+                    </div>
+                    <div className={`text-[11px] font-medium ${pnlClass(s.cumPnl)}`}>
+                      累计 {yuan(s.cumPnl)}
                     </div>
                   </div>
                 ))}
               </div>
             </Card>
 
+            <Card className="border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-sm font-medium">模拟净值</div>
+                {canManage ? (
+                  <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
+                ) : null}
+              </div>
+              <NavEquityChart data={chartData} />
+            </Card>
+
+            <Card className="border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-sm font-medium">袖套净值</div>
+                <div className="text-[11px] text-slate-400">
+                  各袖套等权起始 {yuan(overview.book.initialCapital / SLEEVE_KEYS.length)}
+                </div>
+              </div>
+              <SleeveNavChart data={sleeveChartData} />
+            </Card>
+
             <Tabs defaultValue="live">
               <TabsList className="bg-white">
                 <TabsTrigger value="live">当前持仓</TabsTrigger>
-                <TabsTrigger value="nav">净值曲线</TabsTrigger>
                 <TabsTrigger value="pnl">盈亏轨迹</TabsTrigger>
                 <TabsTrigger value="backtest">回测摘要</TabsTrigger>
                 {canManage ? <TabsTrigger value="email">邮件推送</TabsTrigger> : null}
@@ -719,29 +759,40 @@ export function AllWeatherApp() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {overview.sleeves.map((s) => (
+                      {sleeves.map((s) => (
                         <TableRow key={s.sleeve}>
                           <TableCell className="font-medium" style={{ color: SLEEVE_COLORS[s.sleeve] }}>{s.label}</TableCell>
                           <TableCell className="text-right">{s.lots}</TableCell>
                           <TableCell className="text-right">{yuan(s.notional)}</TableCell>
                           <TableCell className="text-right">{yuan(s.margin)}</TableCell>
                           <TableCell className="text-right">{pct(s.riskShare)}</TableCell>
-                          <TableCell className={`text-right ${pnlClass(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}`}>{yuan(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}</TableCell>
-                          <TableCell className={`text-right ${pnlClass(s.cumPnl - s.dailyPnl + (live?.sleevePnl[s.sleeve] ?? s.dailyPnl))}`}>
-                            {yuan(s.cumPnl - s.dailyPnl + (live?.sleevePnl[s.sleeve] ?? s.dailyPnl))}
-                          </TableCell>
+                          <TableCell className={`text-right ${pnlClass(s.dailyPnl)}`}>{yuan(s.dailyPnl)}</TableCell>
+                          <TableCell className={`text-right ${pnlClass(s.cumPnl)}`}>{yuan(s.cumPnl)}</TableCell>
                         </TableRow>
                       ))}
+                      <TableRow className="font-medium">
+                        <TableCell>合计</TableCell>
+                        <TableCell className="text-right">{sleeves.reduce((n, s) => n + s.lots, 0)}</TableCell>
+                        <TableCell className="text-right">{yuan(sleeves.reduce((n, s) => n + s.notional, 0))}</TableCell>
+                        <TableCell className="text-right">{yuan(sleeves.reduce((n, s) => n + s.margin, 0))}</TableCell>
+                        <TableCell className="text-right">{pct(sleeves.reduce((n, s) => n + s.riskShare, 0))}</TableCell>
+                        <TableCell className={`text-right ${pnlClass(sleeveTotals.daily)}`}>
+                          {yuan(sleeveTotals.daily)}
+                        </TableCell>
+                        <TableCell className={`text-right ${pnlClass(sleeveTotals.cum)}`}>
+                          {yuan(sleeveTotals.cum)}
+                        </TableCell>
+                      </TableRow>
                     </TableBody>
                   </Table>
                 </Card>
 
-                {overview.sleeves.map((s) => (
+                {sleeves.map((s) => (
                   <Card key={s.sleeve} className="border-slate-200 bg-white p-5 shadow-sm">
                     <div className="mb-3 flex items-center justify-between">
                       <div className="text-sm font-medium">{s.label} · 品种明细</div>
-                      <div className={`text-sm font-medium ${pnlClass(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}`}>
-                        实时 {yuan(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}
+                      <div className={`text-sm font-medium ${pnlClass(s.dailyPnl)}`}>
+                        当日 {yuan(s.dailyPnl)} · 累计 {yuan(s.cumPnl)}
                       </div>
                     </div>
                     <Table>
@@ -773,9 +824,9 @@ export function AllWeatherApp() {
                                 <div className="text-[10px] font-normal text-slate-400">目标 {pct(p.targetRiskShare ?? 0)} · 不足一手</div>
                               )}
                             </TableCell>
-                            <TableCell className={`text-right ${pnlClass(live?.productPnl.get(p.asset) ?? p.dailyPnl)}`}>{yuan(live?.productPnl.get(p.asset) ?? p.dailyPnl)}</TableCell>
-                            <TableCell className={`text-right ${pnlClass(p.cumPnl - p.dailyPnl + (live?.productPnl.get(p.asset) ?? p.dailyPnl))}`}>
-                              {yuan(p.cumPnl - p.dailyPnl + (live?.productPnl.get(p.asset) ?? p.dailyPnl))}
+                            <TableCell className={`text-right ${pnlClass(p.dailyPnl)}`}>{yuan(p.dailyPnl)}</TableCell>
+                            <TableCell className={`text-right ${pnlClass(p.cumPnl)}`}>
+                              {yuan(p.cumPnl)}
                             </TableCell>
                           </TableRow>
                         ))}
@@ -785,28 +836,7 @@ export function AllWeatherApp() {
                 ))}
               </TabsContent>
 
-              <TabsContent value="nav" className="space-y-4">
-                <Card className="border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm font-medium">模拟净值</div>
-                    {canManage ? (
-                      <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
-                    ) : null}
-                  </div>
-                  <NavEquityChart data={chartData} />
-                </Card>
-              </TabsContent>
-
               <TabsContent value="pnl" className="space-y-4">
-                <Card className="border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm font-medium">模拟净值</div>
-                    {canManage ? (
-                      <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
-                    ) : null}
-                  </div>
-                  <NavEquityChart data={chartData} />
-                </Card>
                 <Card className="border-slate-200 bg-white p-5 shadow-sm">
                   <div className="mb-3 text-sm font-medium">每日盈亏</div>
                   <Table>
@@ -1089,24 +1119,34 @@ function Kpi({
   value,
   hint,
   className,
-  action,
 }: {
   title: string
   value: string
   hint: string
   className?: string
-  action?: ReactNode
 }) {
   return (
     <Card className="border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-xs text-slate-500">{title}</div>
-        {action}
-      </div>
+      <div className="text-xs text-slate-500">{title}</div>
       <div className={`mt-1 text-xl font-semibold ${className ?? "text-slate-900"}`}>{value}</div>
       <div className="mt-1 text-[11px] text-slate-400">{hint}</div>
     </Card>
   )
+}
+
+function equityAxisDomain(values: number[]): [number, number] {
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const mid = (min + max) / 2 || 1
+  const span = Math.max(max - min, Math.abs(mid) * 0.004, 10_000)
+  const pad = span * 0.2
+  return [min - pad, max + pad]
+}
+
+function formatWan(v: number): string {
+  const wan = v / 10_000
+  if (Math.abs(wan) >= 100) return `${wan.toFixed(0)}万`
+  return `${wan.toFixed(1)}万`
 }
 
 function NavEquityChart({ data }: { data: Array<{ date: string; equity: number; pnl: number }> }) {
@@ -1117,21 +1157,72 @@ function NavEquityChart({ data }: { data: Array<{ date: string; equity: number; 
       </div>
     )
   }
+  const yDomain = equityAxisDomain(data.map((d) => d.equity))
   return (
     <div className="h-64">
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data}>
+        <AreaChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-          <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 10000)}万`} />
+          <YAxis
+            tick={{ fontSize: 11 }}
+            width={52}
+            domain={yDomain}
+            tickFormatter={formatWan}
+            allowDataOverflow
+          />
           <Tooltip
             formatter={(value, name) => [
               yuan(Number(value)),
               name === "equity" ? "净值" : "当日盈亏",
             ]}
           />
-          <Area type="monotone" dataKey="equity" stroke="#b91c1c" fill="#fecaca" />
+          <Area type="linear" dataKey="equity" stroke="#b91c1c" fill="#fecaca" baseValue="dataMin" />
         </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function SleeveNavChart({ data }: { data: Array<{ date: string } & Record<SleeveKey, number>> }) {
+  if (data.length < 2) {
+    return (
+      <div className="flex h-64 items-center justify-center text-sm text-slate-400">
+        跟踪刚开始，次日刷新后会画出净值曲线。
+      </div>
+    )
+  }
+  const yDomain = equityAxisDomain(data.flatMap((d) => SLEEVE_KEYS.map((key) => d[key])))
+  return (
+    <div className="h-64">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 24, right: 8, left: 4, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+          <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+          <YAxis
+            tick={{ fontSize: 11 }}
+            width={52}
+            domain={yDomain}
+            tickFormatter={formatWan}
+            allowDataOverflow
+          />
+          <Tooltip
+            formatter={(value, name) => [yuan(Number(value)), String(name)]}
+          />
+          <Legend verticalAlign="top" iconType="plainline" wrapperStyle={{ fontSize: 12 }} />
+          {SLEEVE_KEYS.map((key) => (
+            <Line
+              key={key}
+              type="linear"
+              dataKey={key}
+              name={SLEEVE_LABELS[key]}
+              stroke={SLEEVE_COLORS[key]}
+              strokeWidth={2}
+              dot={false}
+              isAnimationActive={false}
+            />
+          ))}
+        </LineChart>
       </ResponsiveContainer>
     </div>
   )
