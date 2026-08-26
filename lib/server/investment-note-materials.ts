@@ -15,6 +15,7 @@ import {
 } from "@/lib/ma/due-diligence-materials"
 import {
   cleanMaterialDisplayName,
+  materialDuplicateKey,
   materialNameFromNoteTitle,
   needsContentBasedMaterialRename,
 } from "@/lib/ma/investment-note-material-filename"
@@ -401,12 +402,31 @@ export async function listInvestmentNoteMaterialsForViewer(
   return [...synced, ...stored].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
 }
 
+export type SaveInvestmentNoteMaterialResult = {
+  material: InvestmentNoteMaterial
+  duplicate: boolean
+}
+
+function findStoredDuplicate(
+  all: StoredMaterial[],
+  hash: string,
+  name: string,
+  size: number,
+): StoredMaterial | undefined {
+  const byHash = all.find(
+    (row) => contentHashFromMaterialStorageFilename(row.storageFilename) === hash,
+  )
+  if (byHash) return byHash
+  const key = materialDuplicateKey(name, size)
+  return all.find((row) => materialDuplicateKey(row.name, row.size) === key)
+}
+
 export async function saveInvestmentNoteMaterial(input: {
   file: File
   uploadedBy: string
   uploadedByName: string
   noteId?: string | null
-}): Promise<InvestmentNoteMaterial> {
+}): Promise<SaveInvestmentNoteMaterialResult> {
   const ext = resolveMaterialExtension(input.file)
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new Error(
@@ -420,13 +440,19 @@ export async function saveInvestmentNoteMaterial(input: {
   const originalFilename = displayNameWithExtension(input.file.name || "material.bin", ext)
   const link = resolveNoteForUser(input.noteId, input.uploadedBy)
   const buffer = Buffer.from(await input.file.arrayBuffer())
+  const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
+  const all = readAll()
+  const existing = findStoredDuplicate(all, hash, originalFilename, buffer.length)
+  if (existing) {
+    return { material: toPublic(existing), duplicate: true }
+  }
+
   const display = await resolveInvestmentNoteMaterialDisplayName({
     originalName: originalFilename,
     ext,
     buffer,
     noteTitle: link.noteTitle,
   })
-  const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
   const id = createMaterialId()
   const storageFilename = `${id}_${hash}${ext}`
   const mimeType = mimeTypeForFilename(display.name, input.file.type)
@@ -448,10 +474,9 @@ export async function saveInvestmentNoteMaterial(input: {
     nameResolved: display.resolved,
   }
 
-  const all = readAll()
   all.unshift(row)
   writeAll(all)
-  return toPublic(row)
+  return { material: toPublic(row), duplicate: false }
 }
 
 function storedMaterialById(id: string): InvestmentNoteMaterial | null {

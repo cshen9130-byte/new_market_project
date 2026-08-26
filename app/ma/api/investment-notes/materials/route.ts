@@ -45,23 +45,33 @@ async function saveUploadedMaterial(input: {
   noteId: string | null
 }): Promise<{
   material: InvestmentNoteMaterial
+  duplicate: boolean
   extractJob: unknown
   extractSkipReason: string | null
 }> {
-  const material = await saveInvestmentNoteMaterial({
+  const saved = await saveInvestmentNoteMaterial({
     file: input.file,
     uploadedBy: input.userId,
     uploadedByName: input.userName,
     noteId: input.noteId,
   })
 
+  if (saved.duplicate) {
+    return {
+      material: saved.material,
+      duplicate: true,
+      extractJob: null,
+      extractSkipReason: null,
+    }
+  }
+
   let extractJob = null
   let extractSkipReason: string | null = null
   try {
     const queued = await enqueueElementExtractForInvestmentNoteMaterial({
-      materialId: material.id,
-      fileName: material.name,
-      fileSize: material.size,
+      materialId: saved.material.id,
+      fileName: saved.material.name,
+      fileSize: saved.material.size,
       uploadedBy: input.userName || input.userId,
     })
     extractJob = queued.job
@@ -71,7 +81,12 @@ async function saveUploadedMaterial(input: {
     console.error("[investment-notes/materials POST] element extract", err)
   }
 
-  return { material, extractJob, extractSkipReason }
+  return {
+    material: saved.material,
+    duplicate: false,
+    extractJob,
+    extractSkipReason,
+  }
 }
 
 export async function GET(req: Request) {

@@ -117,3 +117,27 @@ export function materialNameFromExtractedText(text: string, ext: string): string
 export function needsContentBasedMaterialRename(filename: string): boolean {
   return isOpaqueMaterialFilename(cleanMaterialDisplayName(filename))
 }
+
+/** Same cleaned display name + size — used to catch re-uploads before hashing. */
+export function materialDuplicateKey(name: string, size: number): string {
+  return `${cleanMaterialDisplayName(name).trim().toLowerCase()}::${size}`
+}
+
+export function partitionDuplicateMaterialFiles<T extends { name: string; size: number }>(
+  files: T[],
+  existing: { name: string; size: number }[],
+): { unique: T[]; duplicates: T[] } {
+  const seen = new Set(existing.map((item) => materialDuplicateKey(item.name, item.size)))
+  const unique: T[] = []
+  const duplicates: T[] = []
+  for (const file of files) {
+    const key = materialDuplicateKey(file.name, file.size)
+    if (seen.has(key)) {
+      duplicates.push(file)
+      continue
+    }
+    seen.add(key)
+    unique.push(file)
+  }
+  return { unique, duplicates }
+}

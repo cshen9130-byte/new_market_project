@@ -30,7 +30,7 @@ import {
   fundElementSourceKindLabel,
   isFundElementExtractableFile,
 } from "@/lib/ma/fund-element-source-file"
-import { needsContentBasedMaterialRename } from "@/lib/ma/investment-note-material-filename"
+import { needsContentBasedMaterialRename, partitionDuplicateMaterialFiles } from "@/lib/ma/investment-note-material-filename"
 import type { InvestmentNote, InvestmentNoteMaterial } from "@/lib/ma/investment-notes"
 import {
   INVESTMENT_NOTE_MATERIAL_MAX_BYTES,
@@ -69,6 +69,15 @@ function formatDateTime(iso: string): string {
   const hh = String(d.getHours()).padStart(2, "0")
   const mm = String(d.getMinutes()).padStart(2, "0")
   return `${y}/${m}/${day} ${hh}:${mm}`
+}
+
+function formatFileNameList(names: string[], limit = 5): string {
+  const preview = names.filter(Boolean).slice(0, limit)
+  if (preview.length === 0) return ""
+  if (names.length > preview.length) {
+    return `${preview.join("、")} 等 ${names.length} 个`
+  }
+  return preview.join("、")
 }
 
 type NoteOption = {
@@ -349,30 +358,57 @@ export function InvestmentNoteMaterialsView() {
       })
       return
     }
+
+    const { unique, duplicates: localDuplicates } = partitionDuplicateMaterialFiles(list, materials)
+    const skippedNames = localDuplicates.map((file) => file.name)
+    if (unique.length === 0) {
+      toast({
+        title: "文件已存在",
+        description: `未重复上传：${formatFileNameList(skippedNames)}`,
+      })
+      return
+    }
+
     setUploading(true)
     try {
       const skipReasons: string[] = []
       let extractQueued = 0
-      for (const file of list) {
+      let uploaded = 0
+      for (const file of unique) {
         const result = await uploadInvestmentNoteMaterial(file, defaultNoteId || null)
+        if (result.duplicate) {
+          skippedNames.push(result.material.name || file.name)
+          continue
+        }
+        uploaded += 1
         rememberExtractJob(result.extractJob)
         if (result.extractJob) extractQueued += 1
         if (result.extractSkipReason) skipReasons.push(result.extractSkipReason)
       }
-      toast({
-        title: "上传成功",
-        description:
-          extractQueued > 0
-            ? `已上传 ${list.length} 个文件，其中 ${extractQueued} 个识别为一页通/要素表，正在提取产品要素`
-            : `已上传 ${list.length} 个文件`,
-      })
+
+      const skippedHint =
+        skippedNames.length > 0 ? `；${skippedNames.length} 个重复文件已跳过：${formatFileNameList(skippedNames)}` : ""
+      if (uploaded > 0) {
+        toast({
+          title: skippedNames.length > 0 ? "部分文件已存在" : "上传成功",
+          description:
+            extractQueued > 0
+              ? `已上传 ${uploaded} 个文件，其中 ${extractQueued} 个识别为一页通/要素表，正在提取产品要素${skippedHint}`
+              : `已上传 ${uploaded} 个文件${skippedHint}`,
+        })
+      } else {
+        toast({
+          title: "文件已存在",
+          description: `未重复上传：${formatFileNameList(skippedNames)}`,
+        })
+      }
       if (skipReasons.length) {
         toast({
           title: "部分文件未自动提取",
           description: skipReasons.join("；"),
         })
       }
-      await reload()
+      if (uploaded > 0) await reload()
     } catch (err) {
       toast({
         title: "上传失败",

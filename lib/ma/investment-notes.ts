@@ -852,6 +852,7 @@ export async function listInvestmentNoteMaterials(): Promise<InvestmentNoteMater
 
 export type InvestmentNoteMaterialUploadResult = {
   material: InvestmentNoteMaterial
+  duplicate?: boolean
   extractJob?: unknown | null
   extractSkipReason?: string | null
 }
@@ -889,6 +890,7 @@ export async function uploadInvestmentNoteMaterial(
 
   return {
     material: data.material as InvestmentNoteMaterial,
+    duplicate: data.duplicate === true,
     extractJob: data.extractJob ?? null,
     extractSkipReason: data.extractSkipReason ?? null,
   }

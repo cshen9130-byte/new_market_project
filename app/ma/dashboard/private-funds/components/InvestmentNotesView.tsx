@@ -73,6 +73,7 @@ import {
   parseRoadshowDdMaterialAttachmentId,
   roadshowDdMaterialAttachmentId,
 } from "@/lib/ma/due-diligence-materials"
+import { partitionDuplicateMaterialFiles } from "@/lib/ma/investment-note-material-filename"
 import { AssociatedProductHoverCard } from "./AssociatedProductHoverCard"
 import { InvestmentNoteAssociationDialog } from "./InvestmentNoteAssociationDialog"
 import { InvestmentNoteMaterialsView } from "./InvestmentNoteMaterialsView"
@@ -545,15 +546,39 @@ export function InvestmentNotesView() {
 
   async function handleUploadFiles(files: FileList) {
     if (!selectedNote || files.length === 0) return
+    const list = Array.from(files)
+    const { unique, duplicates: localDuplicates } = partitionDuplicateMaterialFiles(
+      list,
+      activeAttachments,
+    )
+    const skippedNames = localDuplicates.map((file) => file.name)
+    if (unique.length === 0) {
+      toast({
+        title: "文件已存在",
+        description: `该笔记已有相同附件，未重复上传：${skippedNames.join("、")}`,
+      })
+      return
+    }
     setUploadingAttachments(true)
     try {
-      for (const file of Array.from(files)) {
-        await uploadInvestmentNoteMaterial(file, selectedNote.id)
+      let uploaded = 0
+      for (const file of unique) {
+        const result = await uploadInvestmentNoteMaterial(file, selectedNote.id)
+        if (result.duplicate) {
+          skippedNames.push(result.material.name || file.name)
+          continue
+        }
+        uploaded += 1
       }
-      await reloadLinkedMaterials(selectedNote.id)
+      if (uploaded > 0) await reloadLinkedMaterials(selectedNote.id)
+      const skippedHint =
+        skippedNames.length > 0 ? `；${skippedNames.length} 个重复文件已跳过：${skippedNames.join("、")}` : ""
       toast({
-        title: "上传成功",
-        description: `已添加 ${files.length} 个附件`,
+        title: uploaded === 0 ? "文件已存在" : skippedNames.length > 0 ? "部分文件已存在" : "上传成功",
+        description:
+          uploaded === 0
+            ? `未重复上传：${skippedNames.join("、")}`
+            : `已添加 ${uploaded} 个附件${skippedHint}`,
       })
     } catch (err) {
       toast({
