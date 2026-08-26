@@ -241,6 +241,33 @@ export function FofAllocationRiskCharts({
       <FofAnalysisChartCard
         title="策略市值权重 vs 风险贡献"
         hint="资本配置与风险配置是否一致。风险柱明显高于灰色权重，说明该策略在用更少的钱承担更多波动。"
+        calcHelp={{
+          heading: "策略市值权重 vs 风险贡献 · 计算说明",
+          blocks: [
+            {
+              title: "市值权重",
+              paragraphs: [
+                "把当前估值日纳入 VaR 的底层基金，按一级策略加总其分析权重。分析权重 = 该基金市值 / 纳入基金市值合计。",
+              ],
+              formula: "市值权重_策略 = Σ 基金市值_i / 纳入基金市值",
+            },
+            {
+              title: "风险贡献",
+              paragraphs: [
+                "用底层基金共同窗口收益估计协方差 Σ，组合方差 σ_p² = w'Σw。单只基金欧拉分解后再按一级策略加总。",
+              ],
+              formula: "CRC_i = w_i × (Σw)_i / σ_p²\n风险贡献_策略 = Σ CRC_i",
+            },
+            {
+              title: "怎么读",
+              bullets: [
+                "灰柱是钱的配置，彩柱是波动的配置。",
+                "彩柱明显高于灰柱：该策略用更少资本承担更多组合风险。",
+                "彩柱可为负：该策略与组合负相关，起对冲作用。",
+              ],
+            },
+          ],
+        }}
       >
         {mix.length === 0 ? (
           <EmptyChart text="暂无足够净值估计策略风险贡献" />
@@ -252,6 +279,25 @@ export function FofAllocationRiskCharts({
       <FofAnalysisChartCard
         title="策略有效个数走势"
         hint="按各期策略市值权重计算。下行表示配置向少数策略集中。"
+        calcHelp={{
+          heading: "策略有效个数 · 计算说明",
+          blocks: [
+            {
+              title: "有效个数（ENB）",
+              paragraphs: [
+                "把当期一级策略市值权重归一化后算赫芬达尔指数的倒数。配置越分散，有效个数越接近策略只数；越集中，越接近 1。",
+              ],
+              formula: "w̃_i = w_i / Σ w\nENB = 1 / Σ w̃_i²",
+            },
+            {
+              title: "上方两张卡片",
+              bullets: [
+                "资本有效个数：对当前市值权重复用同一公式。",
+                "风险有效个数：把风险贡献 CRC 当作权重（负值截为 0）再算。",
+              ],
+            },
+          ],
+        }}
       >
         {enbSeries.filter((p) => p.capital != null).length < 2 ? (
           <EmptyChart text="策略配置走势样本不足" />
@@ -263,6 +309,34 @@ export function FofAllocationRiskCharts({
       <FofAnalysisChartCard
         title="策略配置 vs 政策带"
         hint="黄条为一级策略的默认政策区间（股票对冲 15–45%、期货 10–40% 等）。绿点在带内，红点偏离。可按产品目标自行解读，并非合同约束。"
+        calcHelp={{
+          heading: "策略配置 vs 政策带 · 计算说明",
+          blocks: [
+            {
+              title: "当前权重",
+              paragraphs: [
+                "取策略配置走势最后一个估值日，各一级策略市值 / 资产净值。权重 ≤ 0.05% 的策略不画。",
+              ],
+            },
+            {
+              title: "政策带（观察带，非合同）",
+              bullets: [
+                "股票对冲 15–45%",
+                "期货策略 10–40%",
+                "套利策略 5–25%",
+                "债券策略 0–20%、多资产 0–25%、股票多头 0–25%",
+                "期权 0–15%、组合策略 0–30%、其他/未配置 0–15%",
+                "未列出的策略：下沿 0%，上沿 max(20%, 当前权重×1.5)",
+              ],
+            },
+            {
+              title: "颜色",
+              paragraphs: [
+                "绿点：当前权重在 [min−0.5%, max+0.5%] 内；红点：低于下沿或高于上沿。",
+              ],
+            },
+          ],
+        }}
       >
         {policyRows.length === 0 ? (
           <EmptyChart text="暂无策略配置时点数据" />

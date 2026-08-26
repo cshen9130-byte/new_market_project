@@ -46,6 +46,7 @@ import {
   compactRichNoteHtml,
   createInvestmentNote,
   deleteInvestmentNote,
+  deleteInvestmentNoteMaterial,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
   listInvestmentNotes,
@@ -519,7 +520,6 @@ export function InvestmentNotesView() {
       name: doc.name,
       size: doc.size,
       openable: true,
-      removable: false,
       sourceLabel: "尽调材料",
     }))
     const materialItems: NoteAttachmentListItem[] = linkedMaterials.map((m) => ({
@@ -592,16 +592,72 @@ export function InvestmentNotesView() {
   }
 
   async function handleRemoveAttachment(id: string) {
-    if (parseRoadshowDdMaterialAttachmentId(id)) return
+    const file = activeAttachments.find((item) => item.id === id)
+    const label = file?.name?.trim() || "该附件"
+    const kbPath = parseRoadshowDdMaterialAttachmentId(id)
+    const confirmText = kbPath
+      ? `确定删除尽调材料「${label}」？文件将从知识库中删除。`
+      : `确定删除「${label}」？`
+    if (!window.confirm(confirmText)) return
+
+    if (kbPath) {
+      try {
+        const headers: Record<string, string> = {}
+        try {
+          const raw = localStorage.getItem("currentUser")
+          if (raw) {
+            const user = JSON.parse(raw) as { id?: string }
+            if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+          }
+        } catch {
+          // ignore
+        }
+        const res = await fetch(buildDdMaterialsFileUrl(kbPath), {
+          method: "DELETE",
+          headers,
+        })
+        const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+        if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+        setMaterialsIndex((prev) => {
+          if (!prev) return prev
+          const folders = new Map(prev.folders)
+          for (const [key, folder] of folders) {
+            const documents = folder.documents.filter((doc) => doc.relativePath !== kbPath)
+            if (documents.length === folder.documents.length) continue
+            if (documents.length === 0) folders.delete(key)
+            else folders.set(key, { ...folder, documents })
+          }
+          return { folders }
+        })
+      } catch (err) {
+        toast({
+          title: "删除失败",
+          description: err instanceof Error ? err.message : "请稍后重试",
+          variant: "destructive",
+        })
+      }
+      return
+    }
+
     const isMaterial = linkedMaterials.some((m) => m.id === id)
     if (isMaterial) {
       try {
-        await linkInvestmentNoteMaterial(id, null)
+        await deleteInvestmentNoteMaterial(id)
         setLinkedMaterials((prev) => prev.filter((m) => m.id !== id))
       } catch (err) {
+        const message = err instanceof Error ? err.message : ""
+        if (message.includes("只能删除")) {
+          try {
+            await linkInvestmentNoteMaterial(id, null)
+            setLinkedMaterials((prev) => prev.filter((m) => m.id !== id))
+            return
+          } catch {
+            // fall through to the original error
+          }
+        }
         toast({
-          title: "移除失败",
-          description: err instanceof Error ? err.message : "请稍后重试",
+          title: "删除失败",
+          description: message || "请稍后重试",
           variant: "destructive",
         })
       }
@@ -610,8 +666,17 @@ export function InvestmentNotesView() {
     const next = legacyAttachments.filter((item) => item.id !== id)
     setDraftAttachments(next)
     if (selectedNote && !editing) {
-      await updateInvestmentNote(selectedNote.id, { attachments: next })
-      await reloadNotes()
+      try {
+        await updateInvestmentNote(selectedNote.id, { attachments: next })
+        await reloadNotes()
+      } catch (err) {
+        setDraftAttachments(legacyAttachments)
+        toast({
+          title: "删除失败",
+          description: err instanceof Error ? err.message : "请稍后重试",
+          variant: "destructive",
+        })
+      }
     }
   }
 

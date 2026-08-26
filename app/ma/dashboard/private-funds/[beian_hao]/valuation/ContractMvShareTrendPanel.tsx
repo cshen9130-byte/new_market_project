@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download, Info, Menu } from "lucide-react"
+import { Download, Menu } from "lucide-react"
 import { numericMax } from "./chart-numeric-bounds"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type ContractMvShareSeries = {
   contract: string
@@ -197,7 +198,18 @@ export function ContractMvShareTrendPanel({
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-50 gap-3">
         <div className="flex items-center gap-1.5 min-w-0">
           <div className="text-sm font-medium text-zinc-800 shrink-0">品种市值占比</div>
-          <Info className="h-3.5 w-3.5 text-zinc-300 shrink-0" />
+          <ChartCalcHelpButton
+            heading="品种市值占比 · 计算说明"
+            blocks={[
+              {
+                title: "每个点",
+                paragraphs: [
+                  "每个估值日，按合约名称加总市值绝对值，再除以当日资产净值。「指数」只保留股指类，「全期」为全部期货合约。",
+                ],
+                formula: "占比 = |该合约市值| / 资产净值 × 100",
+              },
+            ]}
+          />
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <label className="inline-flex items-center gap-1.5 text-xs text-zinc-600 cursor-pointer">

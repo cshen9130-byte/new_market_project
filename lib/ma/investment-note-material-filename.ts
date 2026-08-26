@@ -123,6 +123,51 @@ export function materialDuplicateKey(name: string, size: number): string {
   return `${cleanMaterialDisplayName(name).trim().toLowerCase()}::${size}`
 }
 
+/**
+ * Keep one copy per linked note; drop 未关联 extras when a linked copy exists.
+ * Among copies of the same note (or all-unlinked), prefer extract jobs, then newest.
+ */
+export function selectKeptDuplicateMaterialIds<
+  T extends {
+    id: string
+    noteId: string | null
+    extractJobId?: number | null
+    createdAt: string
+  },
+>(group: T[]): Set<string> {
+  if (group.length <= 1) return new Set(group.map((row) => row.id))
+
+  const better = (a: T, b: T): T => {
+    const aExtract = a.extractJobId ? 1 : 0
+    const bExtract = b.extractJobId ? 1 : 0
+    if (aExtract !== bExtract) return aExtract > bExtract ? a : b
+    if (a.createdAt !== b.createdAt) return a.createdAt >= b.createdAt ? a : b
+    return a.id <= b.id ? a : b
+  }
+
+  const byNote = new Map<string, T[]>()
+  const unlinked: T[] = []
+  for (const row of group) {
+    const noteId = (row.noteId || "").trim()
+    if (!noteId) {
+      unlinked.push(row)
+      continue
+    }
+    const copies = byNote.get(noteId) ?? []
+    copies.push(row)
+    byNote.set(noteId, copies)
+  }
+
+  const kept = new Set<string>()
+  for (const copies of byNote.values()) {
+    kept.add(copies.reduce(better).id)
+  }
+  if (kept.size === 0 && unlinked.length > 0) {
+    kept.add(unlinked.reduce(better).id)
+  }
+  return kept
+}
+
 export function partitionDuplicateMaterialFiles<T extends { name: string; size: number }>(
   files: T[],
   existing: { name: string; size: number }[],

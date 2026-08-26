@@ -405,7 +405,7 @@ export function NoteRichTextEditor({
 export type NoteAttachmentListItem = InvestmentNoteAttachment & {
   /** Real file from「上传资料」or linked 尽调材料 that can be opened */
   openable?: boolean
-  /** Linked 尽调材料 cannot be unlinked from the note itself. */
+  /** When false, the row has no delete control. Defaults to removable. */
   removable?: boolean
   sourceLabel?: string
 }
@@ -478,7 +478,7 @@ export function NoteAttachmentPopover({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-80 p-0"
+        className="w-80 overflow-hidden p-0"
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -519,15 +519,15 @@ export function NoteAttachmentPopover({
               <span className="mt-1 text-xs text-zinc-300">拖拽文件到此处，或点击上传</span>
             </button>
           ) : (
-            <div className="max-h-56 overflow-auto px-2 py-2">
+            <div className="max-h-56 overflow-y-auto overflow-x-hidden px-2 py-2">
               {attachments.map((file) => {
                 const removable = file.removable !== false
                 return (
                   <div
                     key={file.id}
-                    className="flex items-center justify-between gap-2 rounded px-2 py-2 hover:bg-zinc-50"
+                    className="flex items-center gap-1 rounded px-2 py-2 hover:bg-zinc-50"
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1 overflow-hidden">
                       {file.openable && onOpen ? (
                         <button
                           type="button"
@@ -538,9 +538,11 @@ export function NoteAttachmentPopover({
                           {file.name}
                         </button>
                       ) : (
-                        <div className="truncate text-sm text-zinc-700">{file.name}</div>
+                        <div className="truncate text-sm text-zinc-700" title={file.name}>
+                          {file.name}
+                        </div>
                       )}
-                      <div className="text-xs text-zinc-400">
+                      <div className="truncate text-xs text-zinc-400">
                         {file.sourceLabel ? `${file.sourceLabel} · ` : ""}
                         {formatFileSize(file.size)}
                       </div>
@@ -549,8 +551,9 @@ export function NoteAttachmentPopover({
                       <button
                         type="button"
                         onClick={() => onRemove(file.id)}
-                        className="shrink-0 rounded p-1 text-zinc-400 hover:text-red-500"
-                        aria-label="移除附件"
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-500"
+                        aria-label={`删除 ${file.name}`}
+                        title="删除附件"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>

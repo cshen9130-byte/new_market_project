@@ -1318,6 +1318,18 @@ function beianCodeAliases(code: string): string[] {
   return [...out]
 }
 
+function shareClassFromCode(code: string): string {
+  const m = code.trim().toUpperCase().match(/[ABC]$/u)
+  return m ? m[0] : ""
+}
+
+/** Parent + S-prefix + A/B/C family used when overlaying latest 团队净值 onto a list row. */
+function teamNavFamilyLookupCodes(beian: string): string[] {
+  const u = beian.trim().toUpperCase()
+  if (!u) return []
+  return [...new Set([...beianCodeAliases(u), ...expandBeiansWithShareClassFamily([u])])]
+}
+
 function emailTipFitsRow(
   tip: { code: string; fund_name: string | null },
   row: ResolvedFund,
@@ -1325,17 +1337,33 @@ function emailTipFitsRow(
   const beian = row.beian_hao?.trim() || ""
   if (!beian) return false
   const aliases = new Set(beianCodeAliases(beian))
-  if (!shareClassProductCodesMatch(tip.code, beian) && !aliases.has(tip.code)) return false
-  const rowCls = shareClassFromFundName(row.product_name)
-  const tipCls = shareClassFromFundName(tip.fund_name || "")
+  if (!shareClassProductCodesMatch(tip.code, beian) && !aliases.has(tip.code.trim().toUpperCase())) {
+    return false
+  }
+  const rowCls = shareClassFromFundName(row.product_name) || shareClassFromCode(beian)
+  const tipCls = shareClassFromFundName(tip.fund_name || "") || shareClassFromCode(tip.code)
   if (rowCls && tipCls && rowCls !== tipCls) return false
   return true
 }
 
+function pickLatestFittingTip<T extends { code: string; fund_name: string | null; team_nav_date: string }>(
+  row: ResolvedFund,
+  tips: T[],
+): T | null {
+  let best: T | null = null
+  for (const tip of tips) {
+    if (!emailTipFitsRow(tip, row)) continue
+    if (!best || isoDay(tip.team_nav_date).localeCompare(isoDay(best.team_nav_date)) > 0) {
+      best = tip
+    }
+  }
+  return best
+}
+
 /**
- * Emails often store a parent 备案号 with an A/B/C 类 name (or the S-prefixed twin).
- * Overlay by the share-class / S-prefix family so every 团队数据 row gets the latest 团队净值,
- * not only the name-resolved share-class row.
+ * Emails often store an A/B/C share-class code (ASX73A) while the list row keeps
+ * the parent 备案号 (SASX73). Load the whole family, then attach the newest tip
+ * that matches the row — not only S-prefix aliases of the parent code.
  */
 async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
   const beians = [...new Set(
@@ -1370,28 +1398,10 @@ async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<Resol
     updated_at: string | null
   }>)
   if (emailRows.length === 0) return rows
-  const tipsByCode = new Map<string, typeof emailRows>()
-  for (const tip of emailRows) {
-    const code = tip.code.trim().toUpperCase()
-    if (!code) continue
-    const list = tipsByCode.get(code)
-    if (list) list.push(tip)
-    else tipsByCode.set(code, [tip])
-  }
   return rows.map((row) => {
-    const beian = row.beian_hao?.trim() || ""
-    if (!beian) return row
-    const fits: typeof emailRows = []
-    for (const alias of beianCodeAliases(beian)) {
-      for (const tip of tipsByCode.get(alias) ?? []) {
-        if (emailTipFitsRow(tip, row)) fits.push(tip)
-      }
-    }
-    if (fits.length === 0) return row
-    let best = fits[0]
-    for (const tip of fits.slice(1)) {
-      if (isoDay(tip.team_nav_date).localeCompare(isoDay(best.team_nav_date)) > 0) best = tip
-    }
+    if (!row.beian_hao?.trim()) return row
+    const best = pickLatestFittingTip(row, emailRows)
+    if (!best) return row
     const merged = mergeLatestTeamNav(row.team_nav_date, row.team_nav, [{
       nav_date: isoDay(best.team_nav_date),
       unit_nav: best.team_nav,
@@ -1407,34 +1417,46 @@ async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<Resol
 async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
   const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
   if (beians.length === 0) return rows
+  const lookupCodes = expandBeiansWithShareClassFamily(beians)
   const [manualLatest, manualEditRows] = await Promise.all([
     query<{ beian_hao: string; nav_date: string; unit_nav: string }>(
       `SELECT DISTINCT ON (beian_hao)
-         beian_hao, nav_date::text AS nav_date, unit_nav::text AS unit_nav
+         UPPER(BTRIM(beian_hao)) AS beian_hao,
+         nav_date::text AS nav_date,
+         unit_nav::text AS unit_nav
        FROM ops_team_nav_manual
        WHERE beian_hao = ANY($1::text[]) AND nav_type = 'pre_fee'
        ORDER BY beian_hao, nav_date DESC`,
-      [beians],
+      [lookupCodes],
     ).catch(() => [] as Array<{ beian_hao: string; nav_date: string; unit_nav: string }>),
     query<{ beian_hao: string; updated_at: string }>(
-      `SELECT beian_hao, MAX(created_at)::text AS updated_at
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, MAX(created_at)::text AS updated_at
        FROM ops_team_nav_manual
        WHERE beian_hao = ANY($1::text[])
-       GROUP BY beian_hao`,
-      [beians],
+       GROUP BY UPPER(BTRIM(beian_hao))`,
+      [lookupCodes],
     ).catch(() => [] as Array<{ beian_hao: string; updated_at: string }>),
   ])
-  const manualByBeian = new Map(manualLatest.map((row) => [row.beian_hao.trim(), [row]]))
-  const manualEditByBeian = new Map(
-    manualEditRows.map((r) => [r.beian_hao.trim(), r.updated_at]),
-  )
-  if (manualByBeian.size === 0 && manualEditByBeian.size === 0) return rows
+  if (manualLatest.length === 0 && manualEditRows.length === 0) return rows
   return rows.map((row) => {
     if (!row.beian_hao) return row
-    const manual = manualByBeian.get(row.beian_hao)
-    const manualEdit = manualEditByBeian.get(row.beian_hao)
+    const family = new Set(teamNavFamilyLookupCodes(row.beian_hao))
+    const rowCls = shareClassFromFundName(row.product_name) || shareClassFromCode(row.beian_hao)
+    const manual = manualLatest.filter((tip) => {
+      const code = tip.beian_hao.trim().toUpperCase()
+      if (!family.has(code) && !shareClassProductCodesMatch(code, row.beian_hao!)) return false
+      const codeCls = shareClassFromCode(code)
+      if (rowCls && codeCls && rowCls !== codeCls) return false
+      return true
+    })
+    const manualEdit = manualEditRows
+      .filter((tip) => {
+        const code = tip.beian_hao.trim().toUpperCase()
+        return family.has(code) || shareClassProductCodesMatch(code, row.beian_hao!)
+      })
+      .reduce((best, tip) => maxIsoTimestamp(best, tip.updated_at), "")
     const updated_at = maxIsoTimestamp(row.updated_at, manualEdit)
-    if (!manual?.length) {
+    if (manual.length === 0) {
       return updated_at === row.updated_at ? row : { ...row, updated_at }
     }
     const merged = mergeLatestTeamNav(row.team_nav_date, row.team_nav, manual)

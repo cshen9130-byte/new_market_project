@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useEffect } from "react"
 import { ChevronDown, Download } from "lucide-react"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
 import type { FundHoldingRow } from "./FofFundsPanel"
 
@@ -210,7 +211,26 @@ export function FofReturnAnalysisPanel({
   return (
     <div className="bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="px-4 pt-4 pb-2">
-        <div className="text-red-500 font-semibold text-sm">基金收益</div>
+        <div className="flex items-center gap-1">
+          <div className="text-red-500 font-semibold text-sm">基金收益</div>
+          <ChartCalcHelpButton
+            heading="基金收益 · 计算说明"
+            blocks={[
+              {
+                title: "涨跌幅",
+                paragraphs: [
+                  "相邻两个净值日：涨跌幅 = NAV_t / NAV_{t-1} − 1，再 ×100。",
+                ],
+              },
+              {
+                title: "费后复权净值",
+                paragraphs: [
+                  "直接展示底层基金净值序列（已按所选区间裁剪），不做再基。",
+                ],
+              },
+            ]}
+          />
+        </div>
         <div className="text-xs text-zinc-500 mt-0.5">基金表现</div>
       </div>
 

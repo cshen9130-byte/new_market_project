@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Download, Menu } from "lucide-react"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type DerivativeSectorShareRow = {
   sector: string
@@ -188,7 +189,21 @@ export function SectorMarketSharePanel({ rows, displayName, valuationDate }: Pro
   return (
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 pt-4 pb-2">
-        <div className="text-red-500 font-semibold text-sm">期货板块市值占比</div>
+        <div className="flex items-center gap-1">
+          <div className="text-red-500 font-semibold text-sm">期货板块市值占比</div>
+          <ChartCalcHelpButton
+            heading="期货板块市值占比 · 计算说明"
+            blocks={[
+              {
+                title: "多头 / 空头柱",
+                paragraphs: [
+                  "把期货合约按板块加总。多头市值占比、空头市值占比都是相对资产净值。「投机」用全部合约，「套期」只保留股指、国债。",
+                ],
+                formula: "多头% = 该板块多头市值 / 净值 × 100\n空头% = 该板块空头市值 / 净值 × 100\n轧差市值 = 多头市值 − 空头市值",
+              },
+            ]}
+          />
+        </div>
         <div className="flex items-center gap-2 text-xs">
           <button
             type="button"

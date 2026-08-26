@@ -844,10 +844,23 @@ export function isDdSyncedInvestmentNoteMaterial(
 }
 
 export async function listInvestmentNoteMaterials(): Promise<InvestmentNoteMaterial[]> {
-  const data = await apiFetch<{ ok: true; materials: InvestmentNoteMaterial[] }>(
-    "/ma/api/investment-notes/materials",
-  )
-  return data.materials
+  const { materials } = await listInvestmentNoteMaterialsResult()
+  return materials
+}
+
+export async function listInvestmentNoteMaterialsResult(): Promise<{
+  materials: InvestmentNoteMaterial[]
+  dedupDeleted: number
+}> {
+  const data = await apiFetch<{
+    ok: true
+    materials: InvestmentNoteMaterial[]
+    dedupDeleted?: number
+  }>("/ma/api/investment-notes/materials")
+  return {
+    materials: data.materials,
+    dedupDeleted: typeof data.dedupDeleted === "number" ? data.dedupDeleted : 0,
+  }
 }
 
 export type InvestmentNoteMaterialUploadResult = {
@@ -937,11 +950,13 @@ async function uploadMaterialInChunks(
 export async function autoRenameInvestmentNoteMaterials(): Promise<{
   materials: InvestmentNoteMaterial[]
   remaining: number
+  deletedIds: string[]
 }> {
   const data = await apiFetch<{
     ok: true
     materials?: InvestmentNoteMaterial[]
     remaining?: number
+    deletedIds?: string[]
   }>("/ma/api/investment-notes/materials/auto-rename", {
     method: "POST",
     body: "{}",
@@ -949,6 +964,7 @@ export async function autoRenameInvestmentNoteMaterials(): Promise<{
   return {
     materials: Array.isArray(data.materials) ? data.materials : [],
     remaining: typeof data.remaining === "number" ? data.remaining : 0,
+    deletedIds: Array.isArray(data.deletedIds) ? data.deletedIds : [],
   }
 }
 

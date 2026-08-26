@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Download } from "lucide-react"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type ReturnCurvePoint = {
   date: string
@@ -295,7 +296,27 @@ export function FofReturnCurvePanel({ series, displayName, fromDate, toDate, ben
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-4 pb-2">
         <div>
-          <div className="text-red-500 font-semibold text-sm">收益曲线</div>
+          <div className="flex items-center gap-1">
+            <div className="text-red-500 font-semibold text-sm">收益曲线</div>
+            <ChartCalcHelpButton
+              heading="收益曲线 · 计算说明"
+              blocks={[
+                {
+                  title: "底层基金",
+                  paragraphs: [
+                    "每条线是一只底层基金在所选区间内相对区间首日净值的累计收益。",
+                  ],
+                  formula: "累计收益_t = NAV_t / NAV_区间首日 − 1",
+                },
+                {
+                  title: "基准",
+                  paragraphs: [
+                    "勾选后，基准点位对齐到同一日期轴，同样相对区间首日点位再基。",
+                  ],
+                },
+              ]}
+            />
+          </div>
           {rangeLabel && (
             <div className="text-xs text-zinc-400 mt-1 tabular-nums">统计区间: {rangeLabel}</div>
           )}

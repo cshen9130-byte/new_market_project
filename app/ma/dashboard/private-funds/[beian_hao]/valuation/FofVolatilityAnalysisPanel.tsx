@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download, Info } from "lucide-react"
-import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
+import { Download } from "lucide-react"
 import { isValuationCashHoldingName, stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 import {
   computeFofPortfolioVar,
@@ -18,6 +17,7 @@ import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
 import type { FundHoldingRow } from "./FofFundsPanel"
 import { FofVolControlCharts } from "./FofVolControlCharts"
 import { FofStockHedgeChart } from "./FofStockHedgeChart"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 import { getNavFieldValue, type NavRow } from "../components/shared"
 import type { OtherHoldingRow } from "./OtherHoldingsPanel"
 import type { FofShareTrendData } from "./FofShareTrendPanel"
@@ -404,20 +404,43 @@ export function FofVolatilityAnalysisPanel({
         <div>
           <div className="flex items-center gap-1.5">
             <div className="text-red-500 font-semibold text-sm">波动分析</div>
-            <UiTooltip>
-              <TooltipTrigger asChild>
-                <button type="button" className="text-zinc-400 hover:text-zinc-600" aria-label="计算说明">
-                  <Info className="h-3.5 w-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent
-                side="bottom"
-                className="max-w-xs bg-zinc-800 text-white border-0 px-2.5 py-1.5 text-xs leading-5 shadow-md [&>svg]:fill-zinc-800 [&>svg]:bg-zinc-800"
-              >
-                用底层基金历史净值收益与当前市值权重估计组合下一净值日 VaR。
-                风险贡献为协方差欧拉分解：CRC_i = w_i (Σw)_i / σ_p。
-              </TooltipContent>
-            </UiTooltip>
+            <ChartCalcHelpButton
+              heading="波动分析 · 计算说明"
+              blocks={[
+                {
+                  title: "下一净值日 VaR",
+                  paragraphs: [
+                    "用底层基金共同窗口收益与当前市值权重估计组合波动 σ_p。参数法假设正态；历史模拟取经验分位。金额按纳入基金市值计。",
+                  ],
+                  formula: "参数法：VaR = z × σ_p × 纳入基金市值\n历史模拟：VaR = −分位_{1−c}(组合收益) × 纳入基金市值\n占净值% = VaR / 资产净值；占基金市值% = VaR / 纳入基金市值",
+                },
+                {
+                  title: "折算 1 日 VaR",
+                  paragraphs: [
+                    "按底层净值中位间隔天数 √缩放：1日 VaR = 下一净值日 VaR / √gapDays。",
+                  ],
+                },
+                {
+                  title: "组合年化波动",
+                  paragraphs: [
+                    "σ_p 按观察频率年化（周频 ×√52，日频 ×√252 等），再 ×100。",
+                  ],
+                },
+                {
+                  title: "分散化比率",
+                  formula: "分散化比率 = Σ w_i σ_i / σ_p",
+                  paragraphs: [
+                    "大于 1 表示相关不满 1、分散化有效。分母越小或分子越大，比率越高。",
+                  ],
+                },
+                {
+                  title: "风险贡献柱",
+                  paragraphs: [
+                    "欧拉分解 CRC_i = w_i (Σw)_i / σ_p²，合计 100%。贡献 VaR = CRC_i × 下一净值日 VaR。红色表示 CRC 高于分析权重。",
+                  ],
+                },
+              ]}
+            />
           </div>
           {rangeLabel && (
             <div className="text-xs text-zinc-400 mt-1 tabular-nums">统计区间: {rangeLabel}</div>

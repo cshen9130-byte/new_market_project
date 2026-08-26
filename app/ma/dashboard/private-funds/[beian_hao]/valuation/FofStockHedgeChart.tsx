@@ -11,6 +11,7 @@ import type { FundHoldingRow } from "./FofFundsPanel"
 import type { OtherHoldingRow } from "./OtherHoldingsPanel"
 import type { FofShareTrendData } from "./FofShareTrendPanel"
 import { FofAnalysisChartCard } from "./FofAnalysisChartCard"
+import type { ChartCalcHelp } from "./ChartCalcHelpButton"
 
 type Props = {
   fundHoldings: FundHoldingRow[]
@@ -239,12 +240,94 @@ export function FofStockHedgeChart({
     </span>
   )
 
+  const snapshotHelp: ChartCalcHelp = useMemo(() => {
+    const navLabel = netAssetValue && netAssetValue > 0 ? fmtWan(netAssetValue) : "资产净值"
+    const directPct = snapshot.directStockPct + snapshot.etfPct
+    return {
+      heading: "股票单边敞口 · 计算说明",
+      blocks: [
+        {
+          title: "单边敞口",
+          paragraphs: [
+            "各分项市值占资产净值的代数和。净多头时母基金可用股指期货开空自行对冲，净空头则开多。绝对值小于 0.05% NAV 视为无需额外对冲。",
+          ],
+          formula: `单边敞口 = 股票多头 + 对冲基金净敞口 + 直持股票/ETF + 已有股指对冲
+${fmtPct(snapshot.netExposurePct)} = ${fmtPct(snapshot.longOnlyPct)} + ${fmtPct(snapshot.lsNetPct)} + ${fmtPct(directPct)} + ${fmtPct(snapshot.existingHedgePct)}
+市值 ${fmtWan(snapshot.netExposureMv)} = ${navLabel} × ${fmtPct(snapshot.netExposurePct)}`,
+        },
+        {
+          title: "建议对冲名义",
+          paragraphs: [
+            `等于单边敞口市值的绝对值 ${fmtWan(snapshot.hedgeNotionalMv)}。${hedgeSideLabel(snapshot.hedgeSide)}。`,
+          ],
+        },
+        {
+          title: "股票多头",
+          paragraphs: [
+            "一级策略为「股票多头」或「股票策略」的子基金市值合计（不含直持个股与 ETF），按满仓 100% 计入。",
+          ],
+          formula: `${fmtPct(snapshot.longOnlyPct)} = ${fmtWan(snapshot.longOnlyMv)} / ${navLabel}`,
+        },
+        {
+          title: "对冲基金净敞口",
+          paragraphs: [
+            "一级策略为「股票对冲」的子基金先取资本市值，再乘右侧净敞口假设（默认 20%）。该假设可改。",
+          ],
+          formula: `${fmtPct(snapshot.lsNetPct)} = ${fmtWan(snapshot.lsGrossMv)} × ${lsNetPct}% / ${navLabel}`,
+        },
+        {
+          title: "直持股票 / ETF",
+          paragraphs: [
+            "估值表中识别为个股（6 位代码或 rowKind=stock）或名称含 ETF 的持仓。瀑布图把两项加总为一根柱。",
+          ],
+          formula: `${fmtPct(directPct)} = (${fmtWan(snapshot.directStockMv)} + ${fmtWan(snapshot.etfMv)}) / ${navLabel}`,
+        },
+        {
+          title: "已有股指对冲",
+          bullets: [
+            "其他持仓名称含「股指期货」或 IF/IH/IC/IM 合约代码的市值。",
+            "空头为负，会减少单边敞口；多头为正，会增加。",
+            `本期 ${fmtPct(snapshot.existingHedgePct)}（${fmtWan(snapshot.existingHedgeMv)}）。`,
+          ],
+        },
+        {
+          title: "瀑布图",
+          paragraphs: [
+            "横轴各柱为上述分项占净值百分比，红柱增加、绿柱减少，最后一根深蓝柱为单边敞口合计。",
+          ],
+        },
+      ],
+    }
+  }, [snapshot, lsNetPct, netAssetValue])
+
+  const trendHelp: ChartCalcHelp = {
+    heading: "股票单边敞口走势 · 计算说明",
+    blocks: [
+      {
+        title: "时序口径",
+        paragraphs: [
+          "对策略配置走势的每一个估值日，用当期一级策略市值权重重算股票方向敞口。不含直持股票、ETF 与已有股指期货（这些项没有完整时序）。",
+        ],
+        formula: `单边敞口_t = 股票多头权重_t + 股票对冲权重_t × ${lsNetPct}%`,
+      },
+      {
+        title: "各条线",
+        bullets: [
+          "股票多头：一级策略为「股票多头」或「股票策略」的市值权重，按 100% 计入。",
+          `对冲基金净敞口：一级策略为「股票对冲」的市值权重 × ${lsNetPct}%（与上方输入框相同）。`,
+          "单边敞口：前两项之和，不堆叠到面积上，单独画一条线。",
+        ],
+      },
+    ],
+  }
+
   return (
     <>
       <FofAnalysisChartCard
         title="股票单边敞口"
         hint="股票多头按满仓计，股票对冲按右侧净敞口假设计，再加直持股票/ETF、减去已有股指期货。得到的净敞口即母基金可用股指期货反向开仓自行对冲的名义。"
         extra={extra}
+        calcHelp={snapshotHelp}
       >
         {!snapshot.hasEquityBook ? (
           <EmptyChart text="当前持仓未识别到股票多头、股票对冲或直持股票，单边敞口按 0 计" />
@@ -290,6 +373,7 @@ export function FofStockHedgeChart({
       <FofAnalysisChartCard
         title="股票单边敞口走势"
         hint="按各期一级策略市值权重重算：股票多头 100% + 股票对冲 × 净敞口假设。不含直持股票与已有股指期货。"
+        calcHelp={trendHelp}
       >
         {seriesPoints.filter((p) => Math.abs(p.netPct) > 0.05).length < 2 ? (
           <EmptyChart text="策略配置时序不足，无法绘制单边敞口走势" />

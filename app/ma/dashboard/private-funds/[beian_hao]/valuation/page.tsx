@@ -27,6 +27,7 @@ import { buildFundIntervalMetricsFromNav } from "../components/performanceChartU
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
 import { getNavFieldValue, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "../components/shared"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false })
 const FofVolatilityAnalysisPanel = dynamic(
@@ -1213,7 +1214,21 @@ export default function FundValuationAnalysisPage() {
         <>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-1 bg-white rounded-lg border border-zinc-100 p-4 shadow-sm">
-            <div className="text-red-500 font-semibold text-sm mb-0.5">资产配置</div>
+            <div className="flex items-center gap-1 mb-0.5">
+              <div className="text-red-500 font-semibold text-sm">资产配置</div>
+              <ChartCalcHelpButton
+                heading="资产配置 · 计算说明"
+                blocks={[
+                  {
+                    title: "切片",
+                    paragraphs: [
+                      "最新估值日各大类持仓市值。环上百分比与右侧表格「市值占比」都是市值 / 资产净值。",
+                    ],
+                    formula: "市值占比 = 该大类市值 / 资产净值 × 100",
+                  },
+                ]}
+              />
+            </div>
             <div className="text-zinc-400 text-xs mb-2">
               规模统计 {data.valuation_date?.slice(0, 10) ?? "—"}
             </div>

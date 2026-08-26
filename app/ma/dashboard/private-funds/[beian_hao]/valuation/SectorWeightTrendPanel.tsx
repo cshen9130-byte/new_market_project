@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download, Info, Menu } from "lucide-react"
+import { Download, Menu } from "lucide-react"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type SectorWeightTrendSeries = {
   sector: string
@@ -173,7 +174,24 @@ export function SectorWeightTrendPanel({
       <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-50">
         <div className="flex items-center gap-1.5">
           <div className="text-sm font-medium text-zinc-800">板块持仓权重走势</div>
-          <Info className="h-3.5 w-3.5 text-zinc-300" />
+          <ChartCalcHelpButton
+            heading="板块持仓权重走势 · 计算说明"
+            blocks={[
+              {
+                title: "投机",
+                paragraphs: [
+                  "每个估值日，把期货按板块（有色、黑色、能化、农产、股指、国债）加总 |多头市值| + |空头市值|，再除以当日全部板块合计，得到板块内结构权重。",
+                ],
+                formula: "权重 = 该板块多空市值绝对值合计 / 全部板块合计 × 100",
+              },
+              {
+                title: "套期",
+                paragraphs: [
+                  "改用轧差市值绝对值 |净市值|，仍按板块占当日合计的比例。",
+                ],
+              },
+            ]}
+          />
         </div>
         <div className="flex items-center gap-1">
           <button

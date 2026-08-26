@@ -3,6 +3,7 @@
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
 import { Download } from "lucide-react"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type AllocationTrendSeries = {
   category: string
@@ -150,7 +151,25 @@ export function AllocationTrendPanel({
     <div className="bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-50">
         <div>
-          <div className="text-red-500 font-semibold text-sm">资产配置走势</div>
+          <div className="flex items-center gap-1">
+            <div className="text-red-500 font-semibold text-sm">资产配置走势</div>
+            <ChartCalcHelpButton
+              heading="资产配置走势 · 计算说明"
+              blocks={[
+                {
+                  title: "每个点",
+                  paragraphs: [
+                    "每个历史估值日，把持仓按大类（私募基金、现金、股票、衍生品等）加总市值，再除以当日资产净值。",
+                  ],
+                  formula: "占比 = 该大类市值 / 资产净值 × 100",
+                },
+                {
+                  title: "图",
+                  paragraphs: ["堆叠面积。需要至少两个估值日才能绘制。"],
+                },
+              ]}
+            />
+          </div>
           {fromDate && toDate && (
             <div className="text-zinc-400 text-xs mt-0.5">
               {fromDate} ～ {toDate}

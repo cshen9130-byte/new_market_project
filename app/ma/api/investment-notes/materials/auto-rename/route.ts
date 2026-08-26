@@ -19,6 +19,7 @@ export async function POST(req: Request) {
       ok: true,
       materials: result.materials,
       remaining: result.remaining,
+      deletedIds: result.deletedIds,
     })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)

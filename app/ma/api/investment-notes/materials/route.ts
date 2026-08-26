@@ -10,6 +10,7 @@ import { enqueueElementExtractForInvestmentNoteMaterial } from "@/lib/server/inv
 import { getUserById } from "@/lib/server/users"
 import {
   cleanupInvestmentNoteMaterialDisplayNames,
+  deduplicateInvestmentNoteMaterials,
   deleteInvestmentNoteMaterial,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterialsForViewer,
@@ -96,8 +97,13 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "请先登录" }, { status: 401 })
     }
     cleanupInvestmentNoteMaterialDisplayNames()
+    const deleted = deduplicateInvestmentNoteMaterials()
     const materials = await listInvestmentNoteMaterialsForViewer(user.id)
-    return NextResponse.json({ ok: true, materials })
+    return NextResponse.json({
+      ok: true,
+      materials,
+      dedupDeleted: deleted.length,
+    })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ ok: false, error: message }, { status: 500 })

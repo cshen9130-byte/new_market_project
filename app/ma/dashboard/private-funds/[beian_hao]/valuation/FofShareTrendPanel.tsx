@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download, Info, Menu } from "lucide-react"
+import { Download, Menu } from "lucide-react"
+import { ChartCalcHelpButton, type ChartCalcHelpBlock } from "./ChartCalcHelpButton"
 
 export type FofShareTrendSeries = {
   name: string
@@ -48,6 +49,59 @@ function fmtPct(n: number): string {
 
 function colorForIndex(index: number): string {
   return PALETTE[index % PALETTE.length]
+}
+
+const SHARE_TREND_HELP: Record<string, { heading: string; blocks: ChartCalcHelpBlock[] }> = {
+  底层配置走势: {
+    heading: "底层配置走势 · 计算说明",
+    blocks: [
+      {
+        title: "每个点",
+        paragraphs: [
+          "每个估值日，把去重后的基金持仓按底层产品名称加总市值，再除以当日资产净值。",
+        ],
+        formula: "权重 = 该底层基金市值 / 资产净值 × 100",
+      },
+      {
+        title: "图",
+        paragraphs: ["堆叠面积。各层之和通常小于 100%，差额是现金、直持证券等非基金资产。"],
+      },
+    ],
+  },
+  策略配置走势: {
+    heading: "策略配置走势 · 计算说明",
+    blocks: [
+      {
+        title: "每个点",
+        paragraphs: [
+          "每个估值日，用团队策略库把底层基金映射到一级/二级策略，按策略加总市值后除以当日资产净值。未匹配记为「未配置」。",
+        ],
+        formula: "权重 = 该策略下基金市值合计 / 资产净值 × 100",
+      },
+    ],
+  },
+  月末时点底层配置: {
+    heading: "月末时点底层配置 · 计算说明",
+    blocks: [
+      {
+        title: "时点",
+        paragraphs: [
+          "每个自然月只保留该月最后一个估值日，柱高仍是底层基金市值 / 当日资产净值。",
+        ],
+      },
+    ],
+  },
+  月末时点策略配置: {
+    heading: "月末时点策略配置 · 计算说明",
+    blocks: [
+      {
+        title: "时点",
+        paragraphs: [
+          "每个自然月只保留该月最后一个估值日，柱高是一级/二级策略市值 / 当日资产净值。",
+        ],
+      },
+    ],
+  },
 }
 
 export function FofShareTrendPanel({
@@ -191,13 +245,23 @@ export function FofShareTrendPanel({
   }
 
   const showChart = dates.length >= minPoints && sourceSeries.length > 0
+  const calcHelp = SHARE_TREND_HELP[title] ?? {
+    heading: `${title} · 计算说明`,
+    blocks: [
+      {
+        title: "口径",
+        paragraphs: ["各序列为对应持仓市值占当日资产净值的百分比。"],
+        formula: "权重 = 市值 / 资产净值 × 100",
+      },
+    ],
+  }
 
   return (
     <div className="bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden mt-4">
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-50 gap-3">
         <div className="flex items-center gap-1.5 min-w-0">
           <div className="text-sm font-medium text-zinc-800 shrink-0">{title}</div>
-          <Info className="h-3.5 w-3.5 text-zinc-300 shrink-0" />
+          <ChartCalcHelpButton heading={calcHelp.heading} blocks={calcHelp.blocks} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {showStrategySelect && (

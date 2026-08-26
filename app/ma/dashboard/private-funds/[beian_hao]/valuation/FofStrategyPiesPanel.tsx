@@ -3,6 +3,7 @@
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
 import type { FundHoldingRow } from "./FofFundsPanel"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 const UNCONFIGURED = "未配置"
 
@@ -195,7 +196,27 @@ function StrategyPie({
   return (
     <div className="min-w-0">
       <div className="px-1 mb-1">
-        <div className="text-sm font-semibold text-zinc-800">{title}</div>
+        <div className="flex items-center gap-1">
+          <div className="text-sm font-semibold text-zinc-800">{title}</div>
+          <ChartCalcHelpButton
+            heading={`${title} · 计算说明`}
+            blocks={[
+              {
+                title: "切片大小",
+                paragraphs: [
+                  "按当前下钻范围内的基金持仓加总市值。饼图占比是该层各切片市值占本层合计的比例；提示里的「市值占比」是占母基金资产净值。",
+                ],
+                formula: "饼图占比 = 切片市值 / 本层合计市值\n市值占比 = 切片市值 / 资产净值",
+              },
+              {
+                title: "三级拆分",
+                paragraphs: [
+                  "一只基金若有多个三级标签，市值在标签间等权拆分。若该二级下没有三级标签，则改按底层基金名称出饼。",
+                ],
+              },
+            ]}
+          />
+        </div>
         <div className="text-[11px] text-zinc-400 truncate" title={hint}>{hint}</div>
       </div>
       {slices.length > 0 ? (
@@ -306,7 +327,26 @@ export function FofStrategyPiesPanel({ rows, selection, onSelectionChange }: Pro
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-3 pb-2">
         <div>
-          <div className="text-red-500 font-semibold text-sm leading-tight">团队策略</div>
+          <div className="flex items-center gap-1">
+            <div className="text-red-500 font-semibold text-sm leading-tight">团队策略</div>
+            <ChartCalcHelpButton
+              heading="团队策略饼图 · 计算说明"
+              blocks={[
+                {
+                  title: "分类",
+                  paragraphs: [
+                    "底层基金的一级/二级/三级来自团队策略库；缺失时回退估值表策略路径，再记为「未配置」。",
+                  ],
+                },
+                {
+                  title: "下钻",
+                  paragraphs: [
+                    "点一级切片筛选二级、三级；点二级再筛三级。重置回到全部。",
+                  ],
+                },
+              ]}
+            />
+          </div>
           <div className="text-xs text-zinc-400 mt-0.5">
             按一级 / 二级 / 三级分类，点击饼图下钻
           </div>

@@ -224,6 +224,30 @@ export function FofVolControlCharts({ result, productNav }: Props) {
       <FofAnalysisChartCard
         title="滚动波动 vs 风控带"
         hint="产品自身净值的 13 / 26 周年化波动。默认 8%–12% 为观察带，突破上沿表示波动放大、控制变弱。"
+        calcHelp={{
+          heading: "滚动波动 vs 风控带 · 计算说明",
+          blocks: [
+            {
+              title: "周收益",
+              paragraphs: [
+                "把产品净值按自然周取最后一个点，再算相邻周收益 r_t = NAV_t / NAV_{t-1} − 1。",
+              ],
+            },
+            {
+              title: "年化波动",
+              paragraphs: [
+                "对过去 13 周或 26 周收益算样本标准差，再乘 √52 换成百分数。窗口不足时该点为空。",
+              ],
+              formula: "σ_ann = stdev(r_{t−w+1} … r_t) × √52 × 100",
+            },
+            {
+              title: "风控带",
+              paragraphs: [
+                `黄虚线为右侧输入的观察带（当前 ${low}%–${high}%），不是合同止损线。13 周线穿出上沿表示近期波动放大。`,
+              ],
+            },
+          ],
+        }}
         extra={(
           <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500">
             带
@@ -258,6 +282,30 @@ export function FofVolControlCharts({ result, productNav }: Props) {
       <FofAnalysisChartCard
         title="预测 VaR vs 实现损失"
         hint={`用过去 ${12} 个共同窗口收益估计下一期 VaR，再与当期实际损失比较。红柱为突破次数 ${backtest.exceptionCount}/${backtest.obsCount || "—"}。`}
+        calcHelp={{
+          heading: "预测 VaR vs 实现损失 · 计算说明",
+          blocks: [
+            {
+              title: "预测 VaR",
+              paragraphs: [
+                "在每个共同窗口 t，用过去 12 期组合收益的样本标准差 σ，乘当前置信度对应的 z（95%→1.65，99%→2.33）。",
+              ],
+              formula: "预测 VaR_t = z × σ_{t−12…t−1} × 100",
+            },
+            {
+              title: "实现损失",
+              paragraphs: [
+                "当期组合收益取负：实现损失_t = −r_t × 100。收益为正时损失为负（盈利）。",
+              ],
+            },
+            {
+              title: "突破",
+              paragraphs: [
+                `红柱表示实现损失 > 预测 VaR（且预测 VaR > 0）。本期 ${backtest.exceptionCount}/${backtest.obsCount || 0} 次。`,
+              ],
+            },
+          ],
+        }}
       >
         {backtest.points.length < 4 ? (
           <EmptyChart text="共同窗口不足，无法回测 VaR" />
@@ -269,6 +317,25 @@ export function FofVolControlCharts({ result, productNav }: Props) {
       <FofAnalysisChartCard
         title="风险贡献走势"
         hint="按当前市值权重、滚动 12 期协方差做欧拉分解。观察是否有单只基金风险贡献持续抬升。"
+        calcHelp={{
+          heading: "风险贡献走势 · 计算说明",
+          blocks: [
+            {
+              title: "权重固定、协方差滚动",
+              paragraphs: [
+                "每期用当前估值日的市值权重 w，对过去 12 个共同窗口收益重估协方差 Σ_t，再做欧拉分解。只画最新风险贡献最高的 8 只，其余并入「其他」。",
+              ],
+              formula: "CRC_i,t = w_i × (Σ_t w)_i / (w' Σ_t w) × 100",
+            },
+            {
+              title: "怎么读",
+              bullets: [
+                "某只基金 CRC 持续抬升：它对组合波动的贡献在变大。",
+                "权重未变而 CRC 上升，通常是它与组合的相关/波动变高。",
+              ],
+            },
+          ],
+        }}
       >
         {crcArea.rows.length < 3 ? (
           <EmptyChart text="样本不足，无法展开风险贡献走势" />
@@ -280,6 +347,25 @@ export function FofVolControlCharts({ result, productNav }: Props) {
       <FofAnalysisChartCard
         title="底层基金相关矩阵"
         hint="市值最大的 12 只纳入基金两两相关。大面积红色表示分散化偏弱，组合更像少数几个因子。"
+        calcHelp={{
+          heading: "底层基金相关矩阵 · 计算说明",
+          blocks: [
+            {
+              title: "样本",
+              paragraphs: [
+                "在共同窗口收益上，按 |市值权重| 取最大的 12 只已纳入基金，计算两两 Pearson 相关系数。",
+              ],
+              formula: "ρ_ij = Cov(r_i, r_j) / (σ_i σ_j)",
+            },
+            {
+              title: "颜色",
+              bullets: [
+                "红：正相关，蓝：负相关，白：接近 0。",
+                "对角线恒为 1。大面积深红说明底层挤在同一方向。",
+              ],
+            },
+          ],
+        }}
       >
         {!heatmap || heatmap.names.length < 2 ? (
           <EmptyChart text="纳入基金不足，无法绘制相关矩阵" />

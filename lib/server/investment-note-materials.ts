@@ -18,6 +18,7 @@ import {
   materialDuplicateKey,
   materialNameFromNoteTitle,
   needsContentBasedMaterialRename,
+  selectKeptDuplicateMaterialIds,
 } from "@/lib/ma/investment-note-material-filename"
 import { INVESTMENT_NOTE_MATERIAL_MAX_BYTES, INVESTMENT_NOTE_MATERIAL_MAX_MB } from "@/lib/ma/investment-notes"
 import { getServerDueDiligenceTable } from "@/lib/server/due-diligence-table"
@@ -407,18 +408,78 @@ export type SaveInvestmentNoteMaterialResult = {
   duplicate: boolean
 }
 
+function pickKeptStoredMaterial(group: StoredMaterial[]): StoredMaterial | undefined {
+  if (group.length === 0) return undefined
+  const keep = selectKeptDuplicateMaterialIds(group)
+  return group.find((row) => keep.has(row.id)) ?? group[0]
+}
+
 function findStoredDuplicate(
   all: StoredMaterial[],
   hash: string,
   name: string,
   size: number,
 ): StoredMaterial | undefined {
-  const byHash = all.find(
+  const byHash = all.filter(
     (row) => contentHashFromMaterialStorageFilename(row.storageFilename) === hash,
   )
-  if (byHash) return byHash
+  if (byHash.length > 0) return pickKeptStoredMaterial(byHash)
   const key = materialDuplicateKey(name, size)
-  return all.find((row) => materialDuplicateKey(row.name, row.size) === key)
+  return pickKeptStoredMaterial(
+    all.filter((row) => materialDuplicateKey(row.name, row.size) === key),
+  )
+}
+
+function removeStoredMaterialFiles(rows: StoredMaterial[], stillReferenced: Set<string>) {
+  for (const row of rows) {
+    if (stillReferenced.has(row.storageFilename)) continue
+    try {
+      unlinkSync(storagePathFor(row.storageFilename))
+    } catch {
+      // ignore missing file on disk
+    }
+  }
+}
+
+/** Drop extra copies of the same file (same hash or same cleaned name+size). */
+export function deduplicateInvestmentNoteMaterials(): InvestmentNoteMaterial[] {
+  const all = readAll()
+  if (all.length < 2) return []
+
+  const doomed = new Set<string>()
+  const markExtras = (group: StoredMaterial[]) => {
+    const visible = group.filter((row) => !doomed.has(row.id))
+    if (visible.length <= 1) return
+    const keep = selectKeptDuplicateMaterialIds(visible)
+    for (const row of visible) {
+      if (!keep.has(row.id)) doomed.add(row.id)
+    }
+  }
+
+  const byHash = new Map<string, StoredMaterial[]>()
+  const byNameSize = new Map<string, StoredMaterial[]>()
+  for (const row of all) {
+    const hash = contentHashFromMaterialStorageFilename(row.storageFilename)
+    if (hash) {
+      const hashed = byHash.get(hash) ?? []
+      hashed.push(row)
+      byHash.set(hash, hashed)
+    }
+    const key = materialDuplicateKey(row.name, row.size)
+    const named = byNameSize.get(key) ?? []
+    named.push(row)
+    byNameSize.set(key, named)
+  }
+  for (const group of byHash.values()) markExtras(group)
+  for (const group of byNameSize.values()) markExtras(group)
+  if (doomed.size === 0) return []
+
+  const deleted = all.filter((row) => doomed.has(row.id))
+  const next = all.filter((row) => !doomed.has(row.id))
+  const stillReferenced = new Set(next.map((row) => row.storageFilename))
+  writeAll(next)
+  removeStoredMaterialFiles(deleted, stillReferenced)
+  return deleted.map(toPublic)
 }
 
 export async function saveInvestmentNoteMaterial(input: {
@@ -444,6 +505,14 @@ export async function saveInvestmentNoteMaterial(input: {
   const all = readAll()
   const existing = findStoredDuplicate(all, hash, originalFilename, buffer.length)
   if (existing) {
+    if (link.noteId && !existing.noteId) {
+      const idx = all.findIndex((row) => row.id === existing.id)
+      if (idx >= 0) {
+        all[idx] = applyLinkedNoteToMaterial(all[idx], link)
+        writeAll(all)
+        return { material: toPublic(all[idx]), duplicate: true }
+      }
+    }
     return { material: toPublic(existing), duplicate: true }
   }
 
@@ -610,11 +679,8 @@ export function deleteInvestmentNoteMaterial(id: string, userId: string): boolea
 
   all.splice(idx, 1)
   writeAll(all)
-  try {
-    unlinkSync(storagePathFor(row.storageFilename))
-  } catch {
-    // ignore missing file on disk
-  }
+  const stillReferenced = new Set(all.map((item) => item.storageFilename))
+  removeStoredMaterialFiles([row], stillReferenced)
   return true
 }
 
@@ -641,6 +707,7 @@ const AUTO_RENAME_BATCH = 8
 export async function autoRenameOpaqueInvestmentNoteMaterials(): Promise<{
   materials: InvestmentNoteMaterial[]
   remaining: number
+  deletedIds: string[]
 }> {
   const all = readAll()
   const pending = all
@@ -671,11 +738,17 @@ export async function autoRenameOpaqueInvestmentNoteMaterials(): Promise<{
     }
   }
   if (pending.length > 0) writeAll(all)
+  const deleted = deduplicateInvestmentNoteMaterials()
+  const deletedIds = new Set(deleted.map((row) => row.id))
 
-  const remaining = all.filter(
+  const remaining = readAll().filter(
     (row) => !row.nameResolved && needsContentBasedMaterialRename(row.name),
   ).length
-  return { materials: updated, remaining }
+  return {
+    materials: updated.filter((row) => !deletedIds.has(row.id)),
+    remaining,
+    deletedIds: deleted.map((row) => row.id),
+  }
 }
 
 export async function readInvestmentNoteMaterialFile(

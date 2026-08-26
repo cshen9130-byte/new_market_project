@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download, Info, Menu } from "lucide-react"
+import { Download, Menu } from "lucide-react"
 import type { ContractMvShareSeries } from "./ContractMvShareTrendPanel"
 import { numericMax, numericMin } from "./chart-numeric-bounds"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type ContractEquityTrendData = {
   dates: string[]
@@ -190,7 +191,18 @@ export function ContractEquityTrendPanel({
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-50 gap-3">
         <div className="flex items-center gap-1.5 min-w-0">
           <div className="text-sm font-medium text-zinc-800 shrink-0">品种权益走势</div>
-          <Info className="h-3.5 w-3.5 text-zinc-300 shrink-0" />
+          <ChartCalcHelpButton
+            heading="品种权益走势 · 计算说明"
+            blocks={[
+              {
+                title: "每个点",
+                paragraphs: [
+                  "每个估值日，按合约把带符号市值加总后除以当日资产净值。多头为正、空头为负。「投机」用全部合约，「套期」只保留股指、国债。",
+                ],
+                formula: "权益% = 该合约带符号市值 / 资产净值 × 100",
+              },
+            ]}
+          />
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <label className="inline-flex items-center gap-1.5 text-xs text-zinc-600 cursor-pointer">

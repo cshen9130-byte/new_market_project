@@ -3,6 +3,7 @@
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
 import { AssetHoldingsTable, type AssetHoldingTableRow } from "./AssetHoldingsTable"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type ValuationHoldingDetailRow = AssetHoldingTableRow
 
@@ -137,7 +138,43 @@ function StockRiskExposurePanel({ exposure }: { exposure: StockRiskExposure }) {
   return (
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="px-4 pt-3 pb-2 border-b border-zinc-100">
-        <div className="text-red-500 font-semibold text-sm">股票风险敞口</div>
+        <div className="flex items-center gap-1">
+          <div className="text-red-500 font-semibold text-sm">股票风险敞口</div>
+          <ChartCalcHelpButton
+            heading="股票风险敞口 · 计算说明"
+            blocks={[
+              {
+                title: "分项市值",
+                bullets: [
+                  "股票多头/空头：估值表识别为个股的带符号市值，空头取绝对值。",
+                  "ETF 多头：名称含 ETF 且市值为正。",
+                  "股指多头/空头：衍生品代码以 IF/IH/IC/IM 开头的带符号市值。",
+                  "占比 = 分项市值 / 资产净值 × 100。",
+                ],
+              },
+              {
+                title: "单边敞口（瀑布图）",
+                paragraphs: [
+                  "把多头加总、空头减去。净多头时建议开空股指期货，净空头开多。绝对值 < 0.05% NAV 视为无需额外对冲。",
+                ],
+                formula: `单边敞口 = 股票多头 + ETF多头 + 股指多头 − 股票空头 − 股指空头
+${fmtPct(netPct)} = ${fmtPct(exposure.stockLongPct)} + ${fmtPct(exposure.etfLongPct)} + ${fmtPct(exposure.indexLongPct)} − ${fmtPct(exposure.stockShortPct)} − ${fmtPct(exposure.indexShortPct)}
+市值 ${fmtWan(netMv)}`,
+              },
+              {
+                title: "表中「敞口合计」",
+                paragraphs: [
+                  "仅股票多头 − 股票空头 + ETF 多头，不含股指期货。与瀑布图单边敞口口径不同。",
+                ],
+                formula: `敞口合计 ${fmtPct(exposure.totalExposurePct)}`,
+              },
+              {
+                title: "建议对冲名义",
+                paragraphs: [`|单边敞口市值| = ${fmtWan(Math.abs(netMv))}。`],
+              },
+            ]}
+          />
+        </div>
         <div className="text-[11px] text-zinc-400 mt-0.5">
           单边敞口 = 股票/ETF/股指多头 − 股票/股指空头。净多头时可用股指期货开空自行对冲。
         </div>

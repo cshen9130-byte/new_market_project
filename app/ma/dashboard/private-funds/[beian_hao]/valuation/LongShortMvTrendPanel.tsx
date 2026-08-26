@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download, Info, Menu } from "lucide-react"
+import { Download, Menu } from "lucide-react"
 import { numericMax, numericMin } from "./chart-numeric-bounds"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 export type LongShortMvTrendPoint = {
   longPct: number
@@ -169,7 +170,18 @@ export function LongShortMvTrendPanel({
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-50">
         <div className="flex items-center gap-1.5">
           <div className="text-sm font-medium text-zinc-800">多空市值占比走势</div>
-          <Info className="h-3.5 w-3.5 text-zinc-300" />
+          <ChartCalcHelpButton
+            heading="多空市值占比走势 · 计算说明"
+            blocks={[
+              {
+                title: "口径",
+                paragraphs: [
+                  "每个估值日，期货及衍生品按多头/空头加总市值绝对值，再除以当日资产净值。「投机」用全部合约；「套期」只保留股指、国债。",
+                ],
+                formula: "多头% = 多头市值 / 净值 × 100\n空头% = 空头市值 / 净值 × 100（图上画成负向）\n净敞口% = 多头% − 空头%",
+              },
+            ]}
+          />
         </div>
         <div className="flex items-center gap-2">
           <div className="inline-flex rounded border border-zinc-200 overflow-hidden text-xs">

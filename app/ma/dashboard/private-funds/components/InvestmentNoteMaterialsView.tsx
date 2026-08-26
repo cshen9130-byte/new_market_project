@@ -42,7 +42,7 @@ import {
   investmentNoteDeepLink,
   isDdSyncedInvestmentNoteMaterial,
   linkInvestmentNoteMaterial,
-  listInvestmentNoteMaterials,
+  listInvestmentNoteMaterialsResult,
   listInvestmentNotes,
   openInvestmentNoteMaterial,
   uploadInvestmentNoteMaterial,
@@ -209,6 +209,7 @@ export function InvestmentNoteMaterialsView() {
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [keyword, setKeyword] = useState("")
+  const [unlinkedOnly, setUnlinkedOnly] = useState(false)
   const [defaultNoteId, setDefaultNoteId] = useState("")
   const [linkingId, setLinkingId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -232,11 +233,12 @@ export function InvestmentNoteMaterialsView() {
 
   const reload = useCallback(async () => {
     try {
-      const [items, teamNotes, mineNotes] = await Promise.all([
-        listInvestmentNoteMaterials(),
+      const [result, teamNotes, mineNotes] = await Promise.all([
+        listInvestmentNoteMaterialsResult(),
         listInvestmentNotes("team"),
         listInvestmentNotes("mine"),
       ])
+      const items = result.materials
       setMaterials(items)
       const options: NoteOption[] = []
       const seen = new Set<string>()
@@ -262,6 +264,12 @@ export function InvestmentNoteMaterialsView() {
         }
         return next
       })
+      if (result.dedupDeleted > 0) {
+        toast({
+          title: "已自动删除重复文件",
+          description: `保留已关联笔记的副本，删除了 ${result.dedupDeleted} 个重复项`,
+        })
+      }
     } catch (err) {
       setMaterials([])
       toast({
@@ -300,7 +308,13 @@ export function InvestmentNoteMaterialsView() {
           if (result.materials.length > 0) {
             renamed += result.materials.length
             const byId = new Map(result.materials.map((item) => [item.id, item]))
-            setMaterials((prev) => prev.map((item) => byId.get(item.id) ?? item))
+            setMaterials((prev) =>
+              prev
+                .filter((item) => !result.deletedIds.includes(item.id))
+                .map((item) => byId.get(item.id) ?? item),
+            )
+          } else if (result.deletedIds.length > 0) {
+            setMaterials((prev) => prev.filter((item) => !result.deletedIds.includes(item.id)))
           }
           if (result.remaining <= 0) break
         } catch {
@@ -319,17 +333,24 @@ export function InvestmentNoteMaterialsView() {
     }
   }, [loading, toast])
 
+  const unlinkedCount = useMemo(
+    () => materials.filter((m) => !m.noteId).length,
+    [materials],
+  )
+
   const filtered = useMemo(() => {
     const q = keyword.trim().toLowerCase()
-    if (!q) return materials
-    return materials.filter(
-      (m) =>
+    return materials.filter((m) => {
+      if (unlinkedOnly && m.noteId) return false
+      if (!q) return true
+      return (
         m.name.toLowerCase().includes(q) ||
         (m.noteTitle || "").toLowerCase().includes(q) ||
         m.uploadedByName.toLowerCase().includes(q) ||
-        (m.source === "dd-table" && "尽调材料".includes(q)),
-    )
-  }, [materials, keyword])
+        (m.source === "dd-table" && "尽调材料".includes(q))
+      )
+    })
+  }, [materials, keyword, unlinkedOnly])
 
   const filteredIds = useMemo(() => filtered.map((m) => m.id), [filtered])
   const allFilteredSelected =
@@ -393,7 +414,7 @@ export function InvestmentNoteMaterialsView() {
           title: skippedNames.length > 0 ? "部分文件已存在" : "上传成功",
           description:
             extractQueued > 0
-              ? `已上传 ${uploaded} 个文件，其中 ${extractQueued} 个识别为一页通/要素表，正在提取产品要素${skippedHint}`
+              ? `已上传 ${uploaded} 个文件，其中 ${extractQueued} 个识别为一页通/要素表/基金合同，正在提取产品要素${skippedHint}`
               : `已上传 ${uploaded} 个文件${skippedHint}`,
         })
       } else {
@@ -590,6 +611,30 @@ export function InvestmentNoteMaterialsView() {
               className="h-9 w-full rounded border border-zinc-200 bg-white pl-9 pr-3 text-sm placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
+          <button
+            type="button"
+            aria-pressed={unlinkedOnly}
+            onClick={() => setUnlinkedOnly((v) => !v)}
+            title="只显示尚未关联投资笔记的文件"
+            className={cn(
+              "inline-flex h-9 shrink-0 items-center gap-1.5 rounded border px-3 text-sm transition-colors",
+              unlinkedOnly
+                ? "border-red-200 bg-red-50 text-red-600"
+                : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50",
+            )}
+          >
+            未关联笔记
+            {unlinkedCount > 0 ? (
+              <span
+                className={cn(
+                  "tabular-nums",
+                  unlinkedOnly ? "text-red-500" : "text-zinc-400",
+                )}
+              >
+                {unlinkedCount}
+              </span>
+            ) : null}
+          </button>
           <div className="flex items-center gap-2 text-sm text-zinc-600">
             <span className="shrink-0">默认关联笔记</span>
             <div className="min-w-[220px]">
@@ -636,7 +681,7 @@ export function InvestmentNoteMaterialsView() {
             {uploading ? "正在上传..." : "拖拽文件到此处，或点击选择文件"}
           </div>
           <div className="text-xs text-zinc-400">
-            支持 PDF / PPT / Word / Excel / 图片 / TXT / CSV / ZIP，单文件不超过 {INVESTMENT_NOTE_MATERIAL_MAX_MB}MB。上传后会自动去掉 (1)(2)、-v1 等后缀；无意义文件名会按内容重命名。识别到一页通、要素表、产品介绍时会自动提取产品要素。
+            支持 PDF / PPT / Word / Excel / 图片 / TXT / CSV / ZIP，单文件不超过 {INVESTMENT_NOTE_MATERIAL_MAX_MB}MB。上传后会自动去掉 (1)(2)、-v1 等后缀；无意义文件名会按内容重命名。识别到一页通、要素表、产品介绍、基金合同时会自动提取产品要素。
           </div>
         </button>
 
@@ -718,7 +763,13 @@ export function InvestmentNoteMaterialsView() {
         {loading ? (
           <div className="px-6 py-16 text-center text-sm text-zinc-400">加载中...</div>
         ) : filtered.length === 0 ? (
-          <div className="px-6 py-16 text-center text-sm text-zinc-400">暂无上传资料</div>
+          <div className="px-6 py-16 text-center text-sm text-zinc-400">
+            {materials.length === 0
+              ? "暂无上传资料"
+              : unlinkedOnly
+                ? "暂无未关联笔记的资料"
+                : "暂无匹配资料"}
+          </div>
         ) : (
           <table className="w-full table-fixed text-sm">
             <thead className="sticky top-0 bg-zinc-50 text-left text-xs text-zinc-500">
