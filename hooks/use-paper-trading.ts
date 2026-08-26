@@ -5,9 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
-import { allWeatherMarkedEquity } from "@/lib/client/all-weather-nav"
+import { allWeatherAnchorRows, allWeatherLiveDailyPnl, allWeatherMarkedEquity } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
-import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
+import { isLiveSessionFor, mergeClosedMarks, shanghaiYmd } from "@/lib/client/market-hours"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
   allWeatherHoldingsKey,
@@ -551,21 +551,84 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       })
   }, [selectedPortfolio?.id, state.products, state.positions, quotes, candles, extraMarks])
 
+  const awTickMark = useCallback((symbol: string | undefined, fallback: number) => {
+    if (!symbol) return fallback
+    const key = symbol.toUpperCase()
+    const tick = quotes[key] || quotes[symbol]
+    if (tick?.last != null && tick.last > 0) return tick.last
+    const hist = candles[key]?.at(-1)?.close ?? candles[symbol]?.at(-1)?.close
+    if (hist != null && hist > 0) return hist
+    return fallback
+  }, [quotes, candles])
+
+  const awLive = useMemo(() => {
+    if (!awMeta || selectedPortfolio?.id !== ALL_WEATHER_PORTFOLIO_ID) return null
+    const prevMarks = awMeta.prevMarks || {}
+    const rows = state.positions
+      .filter((pos) => pos.status === "open" && pos.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
+      .map((pos) => {
+        const prev = prevMarks[pos.symbol] ?? prevMarks[pos.symbol.toUpperCase()] ?? 0
+        return {
+          symbol: pos.symbol,
+          lots: pos.lots,
+          multiplier: contractMultiplier(pos.symbol, pos.multiplier),
+          prevPrice: prev,
+          price: extraMarks[pos.symbol] || extraMarks[pos.symbol.toUpperCase()] || pos.entryPrice,
+          sleeve: pos.sleeve,
+          dailyPnl: awMeta.positions?.[pos.symbol]?.dailyPnl ?? awMeta.positions?.[pos.symbol.toUpperCase()]?.dailyPnl ?? 0,
+        }
+      })
+    const marked = allWeatherMarkedEquity({
+      asOf: awMeta.asOf,
+      equity: awMeta.equity,
+      dailyPnl: awMeta.dailyPnl,
+      rows,
+      markOf: awTickMark,
+    })
+    const { stale, rows: anchored } = allWeatherAnchorRows(rows, awMeta.asOf, shanghaiYmd())
+    const bySleeve = Object.fromEntries(
+      SLEEVE_KEYS.map((key) => {
+        const book = awMeta.sleeves?.[key] || { dailyPnl: 0, cumPnl: 0 }
+        const daily = allWeatherLiveDailyPnl(
+          anchored.filter((row) => row.sleeve === key),
+          awTickMark,
+        )
+        const cum = stale ? book.cumPnl + daily : book.cumPnl - book.dailyPnl + daily
+        return [key, { daily, cum, unrealized: daily, realized: 0, live: daily }]
+      }),
+    ) as Record<SleeveKey, { daily: number; cum: number; unrealized: number; realized: number; live: number }>
+    const bySymbol: Record<string, { daily: number; cum: number }> = {}
+    for (const row of anchored) {
+      const symbol = String(row.symbol || "")
+      if (!symbol) continue
+      const daily = allWeatherLiveDailyPnl([row], awTickMark)
+      const book = awMeta.positions?.[symbol] || awMeta.positions?.[symbol.toUpperCase()] || { dailyPnl: 0, cumPnl: 0 }
+      bySymbol[symbol] = {
+        daily,
+        cum: stale ? book.cumPnl + daily : book.cumPnl - book.dailyPnl + daily,
+      }
+    }
+    return { nav: marked.equity, liveDaily: marked.liveDaily, bySleeve, bySymbol }
+  }, [awMeta, selectedPortfolio?.id, state.positions, extraMarks, awTickMark])
+
   const openPositions = useMemo(
     () =>
       state.positions
         .filter((p) => p.status === "open" && (!selectedPortfolio || p.portfolioId === selectedPortfolio.id))
         .map((position) => {
           const mark = markPrice(position.symbol, quotes, candles, extraMarks)
+          const aw = awLive?.bySymbol[position.symbol] || awLive?.bySymbol[position.symbol.toUpperCase()]
           return {
             position,
             mark,
             pnl: positionPnl(position, mark),
+            dailyPnl: aw?.daily ?? null,
+            cumPnl: aw?.cum ?? null,
             margin: positionMargin(position, mark),
             strategy: state.strategies.find((s) => s.id === position.strategyId) || null,
           }
         }),
-    [state.positions, state.strategies, quotes, candles, extraMarks, selectedPortfolio],
+    [state.positions, state.strategies, quotes, candles, extraMarks, selectedPortfolio, awLive],
   )
 
   const summary = useMemo(() => {
@@ -589,46 +652,16 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       selectedPortfolio?.id === ALL_WEATHER_PORTFOLIO_ID
         ? awMeta?.initialCapital || selectedPortfolio.initialCapital || DEFAULT_PAPER_CAPITAL
         : selectedPortfolio?.initialCapital || DEFAULT_PAPER_CAPITAL
-    const awBook = selectedPortfolio?.id === ALL_WEATHER_PORTFOLIO_ID ? awMeta : null
-    const prevMarks = awBook?.prevMarks || {}
-    const awRows = awBook
-      ? state.positions
-          .filter((pos) => pos.status === "open" && pos.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
-          .map((pos) => {
-            const prev = prevMarks[pos.symbol] ?? prevMarks[pos.symbol.toUpperCase()] ?? 0
-            return {
-              symbol: pos.symbol,
-              lots: pos.lots,
-              multiplier: contractMultiplier(pos.symbol, pos.multiplier),
-              prevPrice: prev,
-              price: extraMarks[pos.symbol] || extraMarks[pos.symbol.toUpperCase()] || pos.entryPrice,
-            }
-          })
-      : []
-    const nav = awBook
-      ? allWeatherMarkedEquity({
-          asOf: awBook.asOf,
-          equity: awBook.equity,
-          dailyPnl: awBook.dailyPnl,
-          rows: awRows,
-          markOf: (symbol, fallback) => {
-            if (!symbol) return fallback
-            const key = symbol.toUpperCase()
-            const tick = quotes[key] || quotes[symbol]
-            if (tick?.last != null && tick.last > 0) return tick.last
-            const hist = candles[key]?.at(-1)?.close ?? candles[symbol]?.at(-1)?.close
-            if (hist != null && hist > 0) return hist
-            return fallback
-          },
-        }).equity
-      : paperNav(initialCapital, realized, unrealized)
-    const ret = awBook
-      ? paperReturn(initialCapital, nav - initialCapital, 0)
-      : paperReturn(initialCapital, realized, unrealized)
+    const nav = awLive ? awLive.nav : paperNav(initialCapital, realized, unrealized)
+    const dailyPnl = awLive ? awLive.liveDaily : unrealized
+    const cumPnl = awLive ? nav - initialCapital : unrealized + realized
+    const ret = paperReturn(initialCapital, awLive ? cumPnl : realized, awLive ? 0 : unrealized)
     return {
       unrealized,
       realized,
-      total: unrealized + realized,
+      dailyPnl,
+      cumPnl,
+      total: cumPnl,
       marginOccupied,
       initialCapital,
       nav,
@@ -636,12 +669,13 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       openCount: openPositions.length,
       productCount: selectedPortfolio ? state.products.filter((p) => p.portfolioId === selectedPortfolio.id).length : 0,
     }
-  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio, awMeta])
+  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio, awMeta, awLive])
 
   const sleevePnl = useMemo(() => {
-    const out = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, { unrealized: 0, realized: 0, live: 0 }])) as Record<
+    if (awLive) return awLive.bySleeve
+    const out = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, { daily: 0, cum: 0, unrealized: 0, realized: 0, live: 0 }])) as Record<
       SleeveKey,
-      { unrealized: number; realized: number; live: number }
+      { daily: number; cum: number; unrealized: number; realized: number; live: number }
     >
     for (const pos of state.positions) {
       if (selectedPortfolio && pos.portfolioId !== selectedPortfolio.id) continue
@@ -652,9 +686,11 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       if (pos.status === "open") out[pos.sleeve].unrealized += pnl
       else out[pos.sleeve].realized += pnl
       out[pos.sleeve].live = out[pos.sleeve].unrealized + out[pos.sleeve].realized
+      out[pos.sleeve].daily = out[pos.sleeve].unrealized
+      out[pos.sleeve].cum = out[pos.sleeve].live
     }
     return out
-  }, [state.positions, quotes, candles, extraMarks, selectedPortfolio])
+  }, [state.positions, quotes, candles, extraMarks, selectedPortfolio, awLive])
 
   return {
     ready,

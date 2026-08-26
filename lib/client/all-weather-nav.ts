@@ -12,6 +12,18 @@ export type AllWeatherLiveRow = {
   prevPrice: number
   price: number
   dailyPnl?: number
+  sleeve?: string
+}
+
+export function allWeatherAnchorRows<T extends AllWeatherLiveRow>(rows: T[], asOf: string, today = shanghaiYmd()) {
+  const stale = Boolean(asOf) && asOf < today
+  return {
+    stale,
+    rows: rows.map((row) => ({
+      ...row,
+      prevPrice: stale ? (row.price > 0 ? row.price : row.prevPrice) : row.prevPrice > 0 ? row.prevPrice : row.price,
+    })),
+  }
 }
 
 export function allWeatherLiveDailyPnl(
@@ -49,11 +61,7 @@ export function allWeatherMarkedEquity(opts: {
   today?: string
 }) {
   const today = opts.today ?? shanghaiYmd()
-  const stale = Boolean(opts.asOf) && opts.asOf < today
-  const rows = opts.rows.map((row) => ({
-    ...row,
-    prevPrice: stale ? (row.price > 0 ? row.price : row.prevPrice) : row.prevPrice > 0 ? row.prevPrice : row.price,
-  }))
+  const { stale, rows } = allWeatherAnchorRows(opts.rows, opts.asOf, today)
   const liveDaily = allWeatherLiveDailyPnl(rows, opts.markOf)
   return {
     liveDaily,

@@ -1,4 +1,5 @@
 import type { ContractTenor } from "@/lib/all-weather/setup"
+import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { authService } from "@/lib/auth"
 import type { AllWeatherHolding } from "@/lib/client/paper-trading"
 
@@ -24,6 +25,11 @@ export type AllWeatherDailyNav = {
   dailyPnl: number
 }
 
+export type AllWeatherSleevePnl = {
+  dailyPnl: number
+  cumPnl: number
+}
+
 export type AllWeatherBookMeta = {
   name: string
   asOf: string
@@ -38,6 +44,8 @@ export type AllWeatherBookMeta = {
   daily: AllWeatherDailyNav[]
   /** Yesterday's settlement (or book prevPrice) per contract, for live daily P/L. */
   prevMarks: Record<string, number>
+  sleeves: Record<SleeveKey, AllWeatherSleevePnl>
+  positions: Record<string, AllWeatherSleevePnl & { sleeve: string }>
 }
 
 type AwPosition = {
@@ -49,6 +57,8 @@ type AwPosition = {
   price?: number
   prevPrice?: number
   multiplier?: number
+  dailyPnl?: number
+  cumPnl?: number
 }
 
 type AwResponse = {
@@ -66,6 +76,7 @@ type AwResponse = {
     positions?: AwPosition[]
     daily?: Array<{ date?: string; equity?: number; dailyPnl?: number }>
   }
+  sleeves?: Array<{ sleeve?: string; dailyPnl?: number; cumPnl?: number }>
   rebalanceTrades?: Array<{
     date?: string
     contract?: string
@@ -116,13 +127,36 @@ export async function fetchAllWeatherOverview(refresh = false) {
         prevPrice: Number(p.prevPrice || p.price),
         multiplier: Number(p.multiplier) || 0,
         openedAt: openedAtMs(openTrade?.date || startedAt),
+        dailyPnl: Number(p.dailyPnl) || 0,
+        cumPnl: Number(p.cumPnl) || 0,
       }
     })
   const marks: Record<string, number> = {}
   const prevMarks: Record<string, number> = {}
+  const positionBooks: AllWeatherBookMeta["positions"] = {}
   for (const h of holdings) {
     marks[h.contract] = h.price
     prevMarks[h.contract] = h.prevPrice > 0 ? h.prevPrice : h.price
+    positionBooks[h.contract] = {
+      sleeve: h.sleeve,
+      dailyPnl: h.dailyPnl ?? 0,
+      cumPnl: h.cumPnl ?? 0,
+    }
+  }
+  const sleeves = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, { dailyPnl: 0, cumPnl: 0 }])) as Record<
+    SleeveKey,
+    AllWeatherSleevePnl
+  >
+  for (const row of data.sleeves || []) {
+    if (!isSleeveKey(row.sleeve)) continue
+    sleeves[row.sleeve] = { dailyPnl: Number(row.dailyPnl) || 0, cumPnl: Number(row.cumPnl) || 0 }
+  }
+  if (!data.sleeves?.length) {
+    for (const h of holdings) {
+      if (!isSleeveKey(h.sleeve)) continue
+      sleeves[h.sleeve].dailyPnl += h.dailyPnl ?? 0
+      sleeves[h.sleeve].cumPnl += h.cumPnl ?? 0
+    }
   }
   const meta: AllWeatherBookMeta = {
     name: data.strategy?.name || "全天候策略",
@@ -143,6 +177,8 @@ export async function fetchAllWeatherOverview(refresh = false) {
         dailyPnl: Number(row.dailyPnl) || 0,
       })),
     prevMarks,
+    sleeves,
+    positions: positionBooks,
   }
   return { holdings, marks, meta }
 }

@@ -727,7 +727,9 @@ export function AllWeatherApp() {
                           <TableCell className="text-right">{yuan(s.margin)}</TableCell>
                           <TableCell className="text-right">{pct(s.riskShare)}</TableCell>
                           <TableCell className={`text-right ${pnlClass(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}`}>{yuan(live?.sleevePnl[s.sleeve] ?? s.dailyPnl)}</TableCell>
-                          <TableCell className={`text-right ${pnlClass(s.cumPnl)}`}>{yuan(s.cumPnl)}</TableCell>
+                          <TableCell className={`text-right ${pnlClass(s.cumPnl - s.dailyPnl + (live?.sleevePnl[s.sleeve] ?? s.dailyPnl))}`}>
+                            {yuan(s.cumPnl - s.dailyPnl + (live?.sleevePnl[s.sleeve] ?? s.dailyPnl))}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -772,7 +774,9 @@ export function AllWeatherApp() {
                               )}
                             </TableCell>
                             <TableCell className={`text-right ${pnlClass(live?.productPnl.get(p.asset) ?? p.dailyPnl)}`}>{yuan(live?.productPnl.get(p.asset) ?? p.dailyPnl)}</TableCell>
-                            <TableCell className={`text-right ${pnlClass(p.cumPnl)}`}>{yuan(p.cumPnl)}</TableCell>
+                            <TableCell className={`text-right ${pnlClass(p.cumPnl - p.dailyPnl + (live?.productPnl.get(p.asset) ?? p.dailyPnl))}`}>
+                              {yuan(p.cumPnl - p.dailyPnl + (live?.productPnl.get(p.asset) ?? p.dailyPnl))}
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

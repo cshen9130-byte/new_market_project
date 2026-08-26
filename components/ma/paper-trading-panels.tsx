@@ -389,7 +389,9 @@ export function PaperPortfolioPanel({
     <div className="flex h-full min-h-0 flex-col bg-[#1e222d]">
       <div className="flex shrink-0 items-center justify-between border-b border-[#2a2e39] px-2 py-1">
         <span className="px-1 text-[11px] text-white">品种</span>
-        <span className={cn("pr-1 font-mono text-[11px]", pnlClass(paper.summary.unrealized))}>{fmtMoney(paper.summary.unrealized)}</span>
+        <span className={cn("pr-1 font-mono text-[11px]", pnlClass(awSelected ? paper.summary.dailyPnl : paper.summary.unrealized))}>
+          {fmtMoney(awSelected ? paper.summary.dailyPnl : paper.summary.unrealized)}
+        </span>
       </div>
       <div className="shrink-0 space-y-2 border-b border-[#2a2e39] px-3 py-2">
         <div className="flex items-center justify-between text-xs text-white">
@@ -407,6 +409,16 @@ export function PaperPortfolioPanel({
             收益率 <span className={cn("font-mono", pnlClass(paper.summary.ret))}>{fmtPct(paper.summary.ret)}</span>
           </span>
         </div>
+        {awSelected ? (
+          <div className="flex items-center justify-between text-[11px] text-[#787b86]">
+            <span>
+              当日浮动 <span className={cn("font-mono", pnlClass(paper.summary.dailyPnl))}>{fmtMoney(paper.summary.dailyPnl)}</span>
+            </span>
+            <span>
+              累计浮动 <span className={cn("font-mono", pnlClass(paper.summary.cumPnl))}>{fmtMoney(paper.summary.cumPnl)}</span>
+            </span>
+          </div>
+        ) : null}
         {onToggleNavChart ? (
           <button
             type="button"
@@ -600,14 +612,22 @@ export function PaperPortfolioPanel({
         <div className="grid grid-cols-2 gap-1 border-b border-[#2a2e39] px-3 py-1.5">
           {SLEEVE_KEYS.map((key) => {
             const v = paper.awMeta?.lastBudget?.[key]
-            const pnl = paper.sleevePnl[key]?.live ?? 0
+            const daily = paper.sleevePnl[key]?.daily ?? paper.sleevePnl[key]?.live ?? 0
+            const cum = paper.sleevePnl[key]?.cum ?? 0
             return (
               <div key={key} className="rounded bg-[#131722] px-1.5 py-1">
                 <div className="flex items-center justify-between text-[10px] text-[#adb3bd]">
                   <span style={{ color: SLEEVE_COLORS[key] }}>{SLEEVE_LABELS[key]}</span>
                   <span>{v != null ? `${(v * 100).toFixed(1)}%` : "--"}</span>
                 </div>
-                <div className={cn("font-mono text-[11px]", pnlClass(pnl))}>{fmtMoney(pnl)}</div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className={cn("font-mono text-[11px]", pnlClass(daily))}>{fmtMoney(daily)}</span>
+                  <span className={cn("font-mono text-[10px]", pnlClass(cum))}>{fmtMoney(cum)}</span>
+                </div>
+                <div className="flex justify-between text-[9px] text-[#787b86]">
+                  <span>当日浮动</span>
+                  <span>累计浮动</span>
+                </div>
               </div>
             )
           })}
@@ -633,8 +653,8 @@ export function PaperPortfolioPanel({
                       <td colSpan={2} className="px-3 py-1 text-[10px] text-[#787b86]">
                         {SLEEVE_LABELS[block.sleeve as SleeveKey] || block.sleeve}
                       </td>
-                      <td className={cn("px-3 py-1 text-right font-mono text-[10px]", pnlClass(isSleeveKey(block.sleeve) ? paper.sleevePnl[block.sleeve]?.live : null))}>
-                        {isSleeveKey(block.sleeve) ? fmtMoney(paper.sleevePnl[block.sleeve]?.live ?? 0) : ""}
+                      <td className={cn("px-3 py-1 text-right font-mono text-[10px]", pnlClass(isSleeveKey(block.sleeve) ? paper.sleevePnl[block.sleeve]?.daily ?? paper.sleevePnl[block.sleeve]?.live : null))}>
+                        {isSleeveKey(block.sleeve) ? fmtMoney(paper.sleevePnl[block.sleeve]?.daily ?? paper.sleevePnl[block.sleeve]?.live ?? 0) : ""}
                       </td>
                     </tr>
                   ) : null}
@@ -697,6 +717,7 @@ export function PaperPositionsBar({
   onToggleNavChart?: () => void
 }) {
   const [tab, setTab] = useState<"pos" | "closed">("pos")
+  const awSelected = paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID
   const closed = paper.state.positions.filter(
     (p) => p.status === "closed" && (!paper.selectedPortfolio || p.portfolioId === paper.selectedPortfolio.id),
   )
@@ -743,22 +764,39 @@ export function PaperPositionsBar({
         <span className="text-[#787b86]">
           收益率 <span className={cn("font-mono", pnlClass(paper.summary.ret))}>{fmtPct(paper.summary.ret)}</span>
         </span>
-        <span className="text-[#787b86]">
-          浮动 <span className={cn("font-mono", pnlClass(paper.summary.unrealized))}>{fmtMoney(paper.summary.unrealized)}</span>
-        </span>
-        <span className="text-[#787b86]">
-          已实现 <span className={cn("font-mono", pnlClass(paper.summary.realized))}>{fmtMoney(paper.summary.realized)}</span>
-        </span>
+        {awSelected ? (
+          <>
+            <span className="text-[#787b86]">
+              当日浮动 <span className={cn("font-mono", pnlClass(paper.summary.dailyPnl))}>{fmtMoney(paper.summary.dailyPnl)}</span>
+            </span>
+            <span className="text-[#787b86]">
+              累计浮动 <span className={cn("font-mono", pnlClass(paper.summary.cumPnl))}>{fmtMoney(paper.summary.cumPnl)}</span>
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="text-[#787b86]">
+              浮动 <span className={cn("font-mono", pnlClass(paper.summary.unrealized))}>{fmtMoney(paper.summary.unrealized)}</span>
+            </span>
+            <span className="text-[#787b86]">
+              已实现 <span className={cn("font-mono", pnlClass(paper.summary.realized))}>{fmtMoney(paper.summary.realized)}</span>
+            </span>
+          </>
+        )}
         <span className="text-[#787b86]">
           保证金占用 <span className="font-mono text-[#d1d4dc]">{fmtYuan(paper.summary.marginOccupied)}</span>
         </span>
         {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
           <>
             {SLEEVE_KEYS.map((key) => {
-              const pnl = paper.sleevePnl[key]?.live ?? 0
+              const daily = paper.sleevePnl[key]?.daily ?? paper.sleevePnl[key]?.live ?? 0
+              const cum = paper.sleevePnl[key]?.cum ?? 0
               return (
                 <span key={key} className="text-[#787b86]">
-                  {SLEEVE_LABELS[key]} <span className={cn("font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</span>
+                  {SLEEVE_LABELS[key]}{" "}
+                  <span className={cn("font-mono", pnlClass(daily))}>{fmtMoney(daily)}</span>
+                  <span className="mx-0.5 text-[#4a4e5a]">/</span>
+                  <span className={cn("font-mono", pnlClass(cum))}>{fmtMoney(cum)}</span>
                 </span>
               )
             })}
@@ -821,14 +859,21 @@ export function PaperPositionsBar({
                 <th className="px-2 py-1 font-normal">开仓</th>
                 <th className="px-2 py-1 font-normal">现价</th>
                 <th className="px-2 py-1 font-normal">策略</th>
-                <th className="px-2 py-1 text-right font-normal">浮动盈亏</th>
+                {awSelected ? (
+                  <>
+                    <th className="px-2 py-1 text-right font-normal">当日浮动</th>
+                    <th className="px-2 py-1 text-right font-normal">累计浮动</th>
+                  </>
+                ) : (
+                  <th className="px-2 py-1 text-right font-normal">浮动盈亏</th>
+                )}
                 <th className="px-2 py-1 text-right font-normal">收益率</th>
                 <th className="px-2 py-1 text-right font-normal">保证金占用</th>
                 <th className="px-3 py-1" />
               </tr>
             </thead>
             <tbody>
-              {paper.openPositions.map(({ position, mark, pnl, margin, strategy }) => (
+              {paper.openPositions.map(({ position, mark, pnl, dailyPnl, cumPnl, margin, strategy }) => (
                 <tr
                   key={position.id}
                   onClick={() => onSelectSymbol(position.symbol)}
@@ -851,7 +896,12 @@ export function PaperPositionsBar({
                     {strategy?.name ||
                       (position.source === "all-weather" ? "全天候" : position.source === "strategy" ? "策略" : "手动")}
                   </td>
-                  <td className={cn("px-2 text-right font-mono", pnlClass(pnl))}>{fmtMoney(pnl)}</td>
+                  <td className={cn("px-2 text-right font-mono", pnlClass(awSelected ? dailyPnl : pnl))}>
+                    {fmtMoney(awSelected ? dailyPnl : pnl)}
+                  </td>
+                  {awSelected ? (
+                    <td className={cn("px-2 text-right font-mono", pnlClass(cumPnl))}>{fmtMoney(cumPnl)}</td>
+                  ) : null}
                   <td className={cn("px-2 text-right font-mono", pnlClass(positionReturn(position, mark)))}>
                     {fmtPct(positionReturn(position, mark))}
                   </td>

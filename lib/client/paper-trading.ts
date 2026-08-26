@@ -125,6 +125,8 @@ export type AllWeatherHolding = {
   prevPrice: number
   multiplier: number
   openedAt?: number
+  dailyPnl?: number
+  cumPnl?: number
 }
 
 const MULTIPLIER: Record<IndexProduct, number> = {
