@@ -61,6 +61,7 @@ export function NavPerformanceEChart({
 
   const option = useMemo(() => {
     const numericDomain = Array.isArray(yDomain) && typeof yDomain[0] === "number"
+      && Number.isFinite(yDomain[0]) && Number.isFinite(yDomain[1])
       ? yDomain as [number, number]
       : null
     const fundPoints = toGappedLinePoints(

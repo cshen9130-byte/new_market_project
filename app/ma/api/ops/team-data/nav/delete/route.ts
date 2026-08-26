@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
+import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { deleteTeamNavRow } from "@/lib/server/team-nav-manage-pg"
+import { invalidateTeamDataListCaches } from "@/lib/server/team-data-query-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -34,6 +36,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "not_found" }, { status: 404 })
     }
 
+    invalidateTeamDataListCaches()
+    invalidateListResponseCache("ops-team-data")
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[team-data/nav/delete]", err)

@@ -5,12 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
-import { allWeatherLiveBreakdown } from "@/lib/client/all-weather-nav"
+import { allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
-  allWeatherHoldingsKey,
   applyAllWeatherBook,
   attachAllWeatherSlice,
   closePosition,
@@ -38,6 +37,7 @@ import {
   type PaperSide,
   type PaperState,
   type PaperStrategyDraft,
+  type PaperPosition,
 } from "@/lib/client/paper-trading"
 import { fetchPaperTradingSlices, savePaperTradingSlice } from "@/lib/client/paper-trading-sync"
 
@@ -194,34 +194,6 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     prevMarks.current = nextMarks
   }, [ready, quotes, candles, extraMarks])
 
-  useEffect(() => {
-    if (!ready) return
-    let cancelled = false
-    const pull = () =>
-      fetchAllWeatherOverview(false)
-        .then(({ holdings, marks, meta }) => {
-          if (cancelled) return
-          setExtraMarks((prev) => mergeClosedMarks(prev, marks))
-          setAwMeta(meta)
-          setState((prev) => {
-            if (!prev.portfolios.some((p) => p.id === ALL_WEATHER_PORTFOLIO_ID)) return prev
-            const nextKey = allWeatherHoldingsKey(holdings)
-            const curKey = allWeatherHoldingsKey(
-              prev.positions.filter((p) => p.portfolioId === ALL_WEATHER_PORTFOLIO_ID && p.status === "open"),
-            )
-            if (nextKey === curKey) return prev
-            return applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital)
-          })
-        })
-        .catch(() => {})
-    void pull()
-    const timer = window.setInterval(() => void pull(), 45_000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [ready])
-
   const selectedPortfolio = state.portfolios.find((p) => p.id === selectedPortfolioId) || state.portfolios[0] || null
 
   const dismissAwConfirm = useCallback(() => setAwConfirm(null), [])
@@ -373,7 +345,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     guardAwOrder(portfolioId, "全平", execute)
   }, [selectedPortfolio, state.positions, quotes, candles, extraMarks, guardAwOrder])
 
-  const loadAllWeather = useCallback(async (refresh = true) => {
+  const loadAllWeather = useCallback(async (refresh = false) => {
     setAwLoading(true)
     try {
       const { holdings, marks, meta } = await fetchAllWeatherOverview(refresh)
@@ -520,6 +492,12 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     setState((prev) => ({ ...prev, strategies: prev.strategies.filter((s) => s.id !== id) }))
   }, [])
 
+  const marginOf = useCallback((pos: PaperPosition, liveMark: number | null) => {
+    if (pos.portfolioId !== ALL_WEATHER_PORTFOLIO_ID) return positionMargin(pos, liveMark)
+    const bookPx = awMeta?.bookMarks?.[pos.symbol] || awMeta?.bookMarks?.[pos.symbol.toUpperCase()] || 0
+    return positionMargin(pos, bookPx > 0 ? bookPx : null)
+  }, [awMeta])
+
   const rows = useMemo(() => {
     const portfolioId = selectedPortfolio?.id
     if (!portfolioId) return []
@@ -546,35 +524,31 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
           diff,
           pct,
           pnl: position ? positionPnl(position, mark) : null,
-          margin: position ? positionMargin(position, mark) : null,
+          margin: position ? marginOf(position, mark) : null,
         }
       })
-  }, [selectedPortfolio?.id, state.products, state.positions, quotes, candles, extraMarks])
+  }, [selectedPortfolio?.id, state.products, state.positions, quotes, candles, extraMarks, marginOf])
 
   const awTickMark = useCallback((symbol: string | undefined, fallback: number) => {
-    if (!symbol) return fallback
-    const key = symbol.toUpperCase()
-    const tick = quotes[key] || quotes[symbol]
-    if (tick?.last != null && tick.last > 0) return tick.last
-    const hist = candles[key]?.at(-1)?.close ?? candles[symbol]?.at(-1)?.close
-    if (hist != null && hist > 0) return hist
-    return fallback
-  }, [quotes, candles])
+    return allWeatherLiveMark(symbol, quotes, fallback)
+  }, [quotes])
 
   const awLive = useMemo(() => {
     if (!awMeta || selectedPortfolio?.id !== ALL_WEATHER_PORTFOLIO_ID) return null
     const prevMarks = awMeta.prevMarks || {}
+    const bookMarks = awMeta.bookMarks || {}
     const rows = state.positions
       .filter((pos) => pos.status === "open" && pos.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
       .map((pos) => {
         const book = awMeta.positions?.[pos.symbol] || awMeta.positions?.[pos.symbol.toUpperCase()]
+        const bookPx = bookMarks[pos.symbol] || bookMarks[pos.symbol.toUpperCase()] || 0
         const prev = prevMarks[pos.symbol] ?? prevMarks[pos.symbol.toUpperCase()] ?? 0
         return {
           symbol: pos.symbol,
           lots: pos.lots,
           multiplier: contractMultiplier(pos.symbol, pos.multiplier),
           prevPrice: prev,
-          price: extraMarks[pos.symbol] || extraMarks[pos.symbol.toUpperCase()] || pos.entryPrice,
+          price: bookPx > 0 ? bookPx : pos.entryPrice,
           sleeve: pos.sleeve,
           asset: pos.symbol,
           dailyPnl: book?.dailyPnl ?? 0,
@@ -607,7 +581,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       }
     }
     return { nav: breakdown.equity, liveDaily: breakdown.daily, bySleeve, bySymbol }
-  }, [awMeta, selectedPortfolio?.id, state.positions, extraMarks, awTickMark])
+  }, [awMeta, selectedPortfolio?.id, state.positions, awTickMark])
 
   const openPositions = useMemo(
     () =>
@@ -622,11 +596,11 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
             pnl: positionPnl(position, mark),
             dailyPnl: aw?.daily ?? null,
             cumPnl: aw?.cum ?? null,
-            margin: positionMargin(position, mark),
+            margin: marginOf(position, mark),
             strategy: state.strategies.find((s) => s.id === position.strategyId) || null,
           }
         }),
-    [state.positions, state.strategies, quotes, candles, extraMarks, selectedPortfolio, awLive],
+    [state.positions, state.strategies, quotes, candles, extraMarks, selectedPortfolio, awLive, marginOf],
   )
 
   const summary = useMemo(() => {
@@ -642,7 +616,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
         else realized += pnl
       }
       if (pos.status === "open") {
-        const margin = positionMargin(pos, mark)
+        const margin = marginOf(pos, mark)
         if (margin != null) marginOccupied += margin
       }
     }
@@ -667,7 +641,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       openCount: openPositions.length,
       productCount: selectedPortfolio ? state.products.filter((p) => p.portfolioId === selectedPortfolio.id).length : 0,
     }
-  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio, awMeta, awLive])
+  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio, awMeta, awLive, marginOf])
 
   const sleevePnl = useMemo(() => {
     if (awLive) return awLive.bySleeve

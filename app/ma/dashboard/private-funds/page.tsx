@@ -14385,6 +14385,63 @@ interface TeamDataRow {
   strategy_l1: string | null
 }
 
+type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
+const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache:"
+const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
+
+function isTeamDataListRow(row: unknown): row is TeamDataRow {
+  if (!row || typeof row !== "object") return false
+  const r = row as TeamDataRow
+  return typeof r.id === "string" && typeof r.product_name === "string"
+}
+
+function readTeamDataListCache(key: string): TeamDataListCacheEntry | null {
+  const mem = teamDataListMemCache.get(key)
+  if (mem) return mem
+  if (typeof window === "undefined") return null
+  try {
+    const raw = localStorage.getItem(TEAM_DATA_LIST_CACHE_PREFIX + key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as TeamDataListCacheEntry
+    if (parsed.ts && Date.now() - parsed.ts > TEAM_DATA_LIST_CACHE_TTL_MS) {
+      localStorage.removeItem(TEAM_DATA_LIST_CACHE_PREFIX + key)
+      return null
+    }
+    if (!Array.isArray(parsed.data)) {
+      localStorage.removeItem(TEAM_DATA_LIST_CACHE_PREFIX + key)
+      return null
+    }
+    const data = parsed.data.filter(isTeamDataListRow)
+    const entry: TeamDataListCacheEntry = {
+      data,
+      total: typeof parsed.total === "number" ? parsed.total : data.length,
+      ts: parsed.ts,
+    }
+    teamDataListMemCache.set(key, entry)
+    return entry
+  } catch {
+    try { localStorage.removeItem(TEAM_DATA_LIST_CACHE_PREFIX + key) } catch { /* ignore */ }
+    return null
+  }
+}
+
+function writeTeamDataListCache(key: string, entry: TeamDataListCacheEntry): void {
+  const stamped: TeamDataListCacheEntry = { ...entry, ts: Date.now() }
+  teamDataListMemCache.set(key, stamped)
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(TEAM_DATA_LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
+  } catch {
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith(TEAM_DATA_LIST_CACHE_PREFIX)) localStorage.removeItem(k)
+      }
+      localStorage.setItem(TEAM_DATA_LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
+    } catch { /* in-memory cache still works */ }
+  }
+}
+
 function OperationsTeamDataView() {
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -14435,7 +14492,7 @@ function OperationsTeamDataView() {
   const [pageSize, setPageSize] = useState(50)
   const [data, setData] = useState<TeamDataRow[]>([])
   const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showAuditLog, setShowAuditLog] = useState(false)
   const [teamNoteDialog, setTeamNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -14516,7 +14573,6 @@ function OperationsTeamDataView() {
   }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, productSourceFilter, keyword, pageSize])
 
   useEffect(() => {
-    setLoading(true)
     const params = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
@@ -14532,18 +14588,53 @@ function OperationsTeamDataView() {
     if (elementsFilter !== "all") params.set("elements", elementsFilter)
     if (navLagFilter !== "all") params.set("nav_lag", navLagFilter)
     if (productSourceFilter !== "all") params.set("product_source", productSourceFilter)
-    fetch(`/ma/api/ops/team-data/list?${params}`)
+
+    const cacheKey = params.toString()
+    const cached = readTeamDataListCache(cacheKey)
+    if (cached) {
+      setData(cached.data)
+      setTotal(cached.total)
+      setLoading(false)
+    } else {
+      setLoading(true)
+    }
+
+    let cancelled = false
+    const ac = new AbortController()
+    fetch(`/ma/api/ops/team-data/list?${params}`, { signal: ac.signal })
       .then((r) => r.json())
       .then((json) => {
-        setData(Array.isArray(json.data) ? json.data : [])
-        setTotal(json.total ?? 0)
+        if (cancelled) return
+        if (json?.error || !Array.isArray(json.data)) {
+          if (!cached) {
+            setData([])
+            setTotal(0)
+          }
+          return
+        }
+        const next: TeamDataListCacheEntry = {
+          data: json.data.filter(isTeamDataListRow),
+          total: json.total ?? 0,
+        }
+        writeTeamDataListCache(cacheKey, next)
+        setData(next.data)
+        setTotal(next.total)
         setSelected(new Set())
       })
-      .catch(() => {
-        setData([])
-        setTotal(0)
+      .catch((err) => {
+        if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return
+        if (!cached) {
+          setData([])
+          setTotal(0)
+        }
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+      ac.abort()
+    }
   }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, productSourceFilter, keyword, sortKey, sortDir, teamDataReloadKey])
 
   useEffect(() => {
@@ -15251,7 +15342,7 @@ function OperationsTeamDataView() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {loading && data.length === 0 ? (
               <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
             ) : data.length === 0 ? (
               <tr>

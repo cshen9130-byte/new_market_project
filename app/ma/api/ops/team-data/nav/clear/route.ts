@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
+import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { clearAllTeamNavRows } from "@/lib/server/team-nav-manage-pg"
+import { invalidateTeamDataListCaches } from "@/lib/server/team-data-query-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -29,6 +31,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "missing_fields" }, { status: 400 })
     }
 
+    invalidateTeamDataListCaches()
+    invalidateListResponseCache("ops-team-data")
     return NextResponse.json({ ok: true, count: result.count })
   } catch (err) {
     console.error("[team-data/nav/clear]", err)

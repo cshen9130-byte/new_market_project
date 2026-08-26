@@ -30,6 +30,26 @@ function asOfYmd(asOf: string) {
   return m ? m[1] : asOf
 }
 
+function tickPx(n: number | null | undefined) {
+  return n != null && Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** Last trade, else live bid/ask, else the book's last close. Do not use 1m candles. */
+export function allWeatherLiveMark(
+  symbol: string | undefined,
+  quotes: Record<string, { last?: number | null; bid?: number | null; ask?: number | null }>,
+  fallback: number,
+) {
+  if (!symbol) return fallback
+  const tick = quotes[symbol.toUpperCase()] || quotes[symbol]
+  const last = tickPx(tick?.last)
+  if (last != null) return last
+  const bid = tickPx(tick?.bid)
+  const ask = tickPx(tick?.ask)
+  if (bid != null && ask != null) return (bid + ask) / 2
+  return bid ?? ask ?? fallback
+}
+
 export function allWeatherAnchorRows<T extends AllWeatherLiveRow>(rows: T[], asOf: string, today = todayYmd()) {
   const stale = Boolean(asOf) && asOfYmd(asOf) < today
   return {

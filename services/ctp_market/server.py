@@ -115,12 +115,16 @@ def emit(payload: dict) -> None:
     if payload.get("type") == "tick":
         raw = str(payload.get("symbol") or "")
         symbol = watch_book.canonical(raw) if raw else ""
+        orig_last = payload.get("last")
         if symbol:
             payload["symbol"] = symbol
+            prev = latest_ticks.get(symbol)
+            if orig_last is None and prev and prev.get("last"):
+                payload["last"] = prev["last"]
             latest_ticks[symbol] = payload
         candle = aggregator.on_tick(
             payload["symbol"],
-            payload.get("last") or 0,
+            orig_last or 0,
             payload.get("volume") or 0,
             payload.get("action_day") or payload.get("trading_day") or "",
             payload.get("update_time") or "",

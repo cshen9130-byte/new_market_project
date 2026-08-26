@@ -30,7 +30,7 @@ import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { authService } from "@/lib/auth"
 import type { CtpTick } from "@/lib/client/ctp-market"
-import { allWeatherLiveBreakdown } from "@/lib/client/all-weather-nav"
+import { allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
 import { shanghaiYmd } from "@/lib/client/market-hours"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
 import { displayListedName, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
@@ -199,9 +199,7 @@ function pnlClass(n: number): string {
 }
 
 function liveMark(contract: string | undefined, quotes: Record<string, CtpTick>, fallback: number) {
-  if (!contract) return fallback
-  const tick = quotes[contract.toUpperCase()] || quotes[contract]
-  return tick?.last != null && tick.last > 0 ? tick.last : fallback
+  return allWeatherLiveMark(contract, quotes, fallback)
 }
 
 const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
@@ -216,6 +214,7 @@ export function AllWeatherApp() {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [navChartMode, setNavChartMode] = useState<"current" | "return">("current")
 
   const [email, setEmail] = useState<EmailConfig | null>(null)
   const [senderName, setSenderName] = useState("")
@@ -414,25 +413,6 @@ export function AllWeatherApp() {
     }
   }
 
-  async function resetBook() {
-    if (!window.confirm("确认按当前价格与目标权重，将模拟盘重置为 2000 万？历史盈亏会被清空。")) return
-    setLoading(true)
-    try {
-      const res = await fetch("/api/all-weather", {
-        method: "POST",
-        headers: headers(),
-        body: JSON.stringify({ action: "reset" }),
-      })
-      const data = await res.json()
-      if (!res.ok || !data?.ok) throw new Error(data?.error || "重置失败")
-      setOverview(data)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "重置失败")
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const live = useMemo(() => {
     if (!overview) return null
     const quotes = ctp.quotes
@@ -491,23 +471,29 @@ export function AllWeatherApp() {
 
   const chartData = useMemo(() => {
     if (!overview) return []
-    const rows = overview.book.daily.map((r) => ({ date: r.date.slice(5), equity: r.equity, pnl: r.dailyPnl }))
+    const capital = overview.book.initialCapital
+    const toRet = (equity: number) => (capital > 0 ? equity / capital - 1 : 0)
+    const rows = overview.book.daily.map((r) => ({
+      date: r.date.slice(5),
+      equity: r.equity,
+      pnl: r.dailyPnl,
+      ret: toRet(r.equity),
+    }))
     if (rows.length === 0) {
       rows.push({
         date: overview.book.startedAt.slice(5) || overview.book.asOf.slice(5),
-        equity: overview.book.initialCapital,
+        equity: capital,
         pnl: 0,
+        ret: 0,
       })
     }
-    const liveEquity = overview.book.initialCapital + (live?.cum ?? overview.book.equity - overview.book.initialCapital)
+    const liveEquity = capital + (live?.cum ?? overview.book.equity - capital)
     const livePnl = live?.daily ?? overview.book.dailyPnl
     const today = shanghaiYmd().slice(5)
     const last = rows[rows.length - 1]
-    if (last && last.date === today) {
-      rows[rows.length - 1] = { date: today, equity: liveEquity, pnl: livePnl }
-    } else {
-      rows.push({ date: today || "实时", equity: liveEquity, pnl: livePnl })
-    }
+    const livePoint = { date: today || "实时", equity: liveEquity, pnl: livePnl, ret: toRet(liveEquity) }
+    if (last && last.date === livePoint.date) rows[rows.length - 1] = livePoint
+    else rows.push(livePoint)
     return rows
   }, [overview, live])
 
@@ -672,12 +658,28 @@ export function AllWeatherApp() {
 
             <Card className="border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
-                <div className="text-sm font-medium">模拟净值</div>
-                {canManage ? (
-                  <Button variant="outline" size="sm" onClick={() => void resetBook()}>重置为 2000 万</Button>
-                ) : null}
+                <div className="text-sm font-medium">{navChartMode === "return" ? "累计收益" : "模拟净值"}</div>
+                <div className="flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
+                  {([
+                    { id: "current" as const, label: "净值" },
+                    { id: "return" as const, label: "收益" },
+                  ]).map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setNavChartMode(item.id)}
+                      className={`rounded px-2.5 py-1 text-xs ${
+                        navChartMode === item.id
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <NavEquityChart data={chartData} />
+              <NavEquityChart data={chartData} mode={navChartMode} />
             </Card>
 
             <Card className="border-slate-200 bg-white p-5 shadow-sm">
@@ -1143,13 +1145,31 @@ function equityAxisDomain(values: number[]): [number, number] {
   return [min - pad, max + pad]
 }
 
+function returnAxisDomain(values: number[]): [number, number] {
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = Math.max(max - min, 0.002)
+  const pad = span * 0.2
+  return [min - pad, max + pad]
+}
+
 function formatWan(v: number): string {
   const wan = v / 10_000
   if (Math.abs(wan) >= 100) return `${wan.toFixed(0)}万`
   return `${wan.toFixed(1)}万`
 }
 
-function NavEquityChart({ data }: { data: Array<{ date: string; equity: number; pnl: number }> }) {
+function formatPctTick(v: number): string {
+  return `${(v * 100).toFixed(1)}%`
+}
+
+function NavEquityChart({
+  data,
+  mode,
+}: {
+  data: Array<{ date: string; equity: number; pnl: number; ret: number }>
+  mode: "current" | "return"
+}) {
   if (data.length < 2) {
     return (
       <div className="flex h-64 items-center justify-center text-sm text-slate-400">
@@ -1157,7 +1177,10 @@ function NavEquityChart({ data }: { data: Array<{ date: string; equity: number; 
       </div>
     )
   }
-  const yDomain = equityAxisDomain(data.map((d) => d.equity))
+  const isReturn = mode === "return"
+  const yDomain = isReturn
+    ? returnAxisDomain(data.map((d) => d.ret))
+    : equityAxisDomain(data.map((d) => d.equity))
   return (
     <div className="h-64">
       <ResponsiveContainer width="100%" height="100%">
@@ -1166,18 +1189,24 @@ function NavEquityChart({ data }: { data: Array<{ date: string; equity: number; 
           <XAxis dataKey="date" tick={{ fontSize: 11 }} />
           <YAxis
             tick={{ fontSize: 11 }}
-            width={52}
+            width={isReturn ? 56 : 52}
             domain={yDomain}
-            tickFormatter={formatWan}
+            tickFormatter={isReturn ? formatPctTick : formatWan}
             allowDataOverflow
           />
           <Tooltip
-            formatter={(value, name) => [
-              yuan(Number(value)),
-              name === "equity" ? "净值" : "当日盈亏",
+            formatter={(value) => [
+              isReturn ? pct(Number(value)) : yuan(Number(value)),
+              isReturn ? "累计收益" : "净值",
             ]}
           />
-          <Area type="linear" dataKey="equity" stroke="#b91c1c" fill="#fecaca" baseValue="dataMin" />
+          <Area
+            type="linear"
+            dataKey={isReturn ? "ret" : "equity"}
+            stroke="#b91c1c"
+            fill="#fecaca"
+            baseValue="dataMin"
+          />
         </AreaChart>
       </ResponsiveContainer>
     </div>

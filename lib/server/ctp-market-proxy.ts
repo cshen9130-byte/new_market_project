@@ -4,6 +4,10 @@ export function ctpMarketBaseUrl() {
   return (process.env.CTP_MARKET_URL || "http://127.0.0.1:8000").replace(/\/$/, "")
 }
 
+export function ctpMarketWsUrl() {
+  return `${ctpMarketBaseUrl().replace(/^http/i, "ws")}/ws`
+}
+
 export async function proxyCtpMarket(path: string, init?: RequestInit) {
   const url = `${ctpMarketBaseUrl()}${path}`
   try {

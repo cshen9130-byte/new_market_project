@@ -1,4 +1,5 @@
 import {
+  assetFromContract,
   brokerMarginMultiplier,
   isSleeveKey,
   loadStrategySnapshot,
@@ -553,6 +554,480 @@ export function paperNavCurve(opts: {
   }
 
   return toNavPoints(resampleNav(backbone, interval), interval)
+}
+
+export type PaperSleeveDaily = { date: string; sleevePnl?: Partial<Record<SleeveKey, number>> | Record<string, number> }
+export type PaperSleeveNavPoint = { date: string } & Record<SleeveKey, number>
+
+function emptySleeveNav(capital: number): Record<SleeveKey, number> {
+  return Object.fromEntries(SLEEVE_KEYS.map((key) => [key, capital])) as Record<SleeveKey, number>
+}
+
+function sleevePnlOf(row: PaperSleeveDaily | undefined, key: SleeveKey) {
+  return Number(row?.sleevePnl?.[key]) || 0
+}
+
+function sleeveEquityBefore(daily: PaperSleeveDaily[], ymd: string, sleeveCapital: number): Record<SleeveKey, number> {
+  const running = emptySleeveNav(0)
+  for (const row of daily) {
+    if (row.date >= ymd) break
+    for (const key of SLEEVE_KEYS) running[key] += sleevePnlOf(row, key)
+  }
+  return Object.fromEntries(SLEEVE_KEYS.map((key) => [key, sleeveCapital + running[key]])) as Record<SleeveKey, number>
+}
+
+function toSleeveNavPoints(
+  series: Array<{ time: number } & Record<SleeveKey, number>>,
+  interval: TimeframeId,
+): PaperSleeveNavPoint[] {
+  return series.map((row) => {
+    const point = { date: navAxisLabel(row.time, interval) } as PaperSleeveNavPoint
+    for (const key of SLEEVE_KEYS) point[key] = row[key]
+    return point
+  })
+}
+
+function resampleSleeveNav(
+  series: Array<{ time: number } & Record<SleeveKey, number>>,
+  interval: TimeframeId,
+  sleeveCapital: number,
+): Array<{ time: number } & Record<SleeveKey, number>> {
+  if (!series.length || interval === "1d" || isIntradayTimeframe(interval)) return series
+  const byKey = Object.fromEntries(
+    SLEEVE_KEYS.map((key) => [key, resampleNav(series.map((row) => ({ time: row.time, close: row[key] })), interval)]),
+  ) as Record<SleeveKey, Array<{ time: number; close: number }>>
+  const times = new Set<number>()
+  for (const key of SLEEVE_KEYS) for (const row of byKey[key]) times.add(row.time)
+  return [...times]
+    .sort((a, b) => a - b)
+    .map((time) => {
+      const row = { time } as { time: number } & Record<SleeveKey, number>
+      for (const key of SLEEVE_KEYS) {
+        row[key] = lastCloseAtOrBefore(byKey[key], time) ?? sleeveCapital
+      }
+      return row
+    })
+}
+
+function dailySleeveSeries(opts: {
+  initialCapital: number
+  liveSleeveNav: Record<SleeveKey, number>
+  startedAt?: number
+  daily: PaperSleeveDaily[]
+}): Array<{ time: number } & Record<SleeveKey, number>> {
+  const sleeveCapital = opts.initialCapital / SLEEVE_KEYS.length
+  const today = beijingYmd()
+  const running = emptySleeveNav(0)
+  const series: Array<{ time: number } & Record<SleeveKey, number>> = []
+  for (const row of opts.daily) {
+    const time = ymdToUnix(row.date)
+    if (time == null) continue
+    for (const key of SLEEVE_KEYS) running[key] += sleevePnlOf(row, key)
+    const navs = Object.fromEntries(
+      SLEEVE_KEYS.map((key) => [key, row.date === today ? opts.liveSleeveNav[key] : sleeveCapital + running[key]]),
+    ) as Record<SleeveKey, number>
+    series.push({ time, ...navs })
+  }
+  const last = opts.daily[opts.daily.length - 1]
+  if (last && last.date !== today) {
+    const time = ymdToUnix(today)
+    if (time != null) series.push({ time, ...opts.liveSleeveNav })
+  }
+  if (series.length === 1) {
+    const startMs = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : Date.now()
+    series.unshift({ time: msToWallUnix(startMs), ...emptySleeveNav(sleeveCapital) })
+  }
+  return series
+}
+
+function eventSleeveSeries(opts: {
+  initialCapital: number
+  liveSleeveNav: Record<SleeveKey, number>
+  startedAt?: number
+  positions?: PaperPosition[]
+}): Array<{ time: number } & Record<SleeveKey, number>> {
+  const sleeveCapital = opts.initialCapital / SLEEVE_KEYS.length
+  const start = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : Date.now()
+  return [
+    { time: msToWallUnix(start), ...emptySleeveNav(sleeveCapital) },
+    { time: msToWallUnix(Date.now()), ...opts.liveSleeveNav },
+  ]
+}
+
+function intradaySleeveSeries(opts: {
+  initialCapital: number
+  liveSleeveNav: Record<SleeveKey, number>
+  positions: PaperPosition[]
+  daily?: PaperSleeveDaily[]
+  marksBySymbol: Record<string, Array<{ time: number; close: number; open?: number }>>
+  prevMarks?: Record<string, number>
+}): Array<{ time: number } & Record<SleeveKey, number>> | null {
+  const times = new Set<number>()
+  const barsOf = new Map<string, Array<{ time: number; close: number }>>()
+  for (const [symbol, bars] of Object.entries(opts.marksBySymbol)) {
+    const key = symbol.toUpperCase()
+    const sorted = bars.filter((bar) => bar.time > 0 && bar.close > 0).sort((a, b) => a.time - b.time)
+    if (!sorted.length) continue
+    barsOf.set(key, sorted)
+    for (const bar of sorted) times.add(bar.time)
+  }
+  const timeline = [...times].sort((a, b) => a - b)
+  if (timeline.length < 2) return null
+
+  const sleeveCapital = opts.initialCapital / SLEEVE_KEYS.length
+  const today = beijingYmd()
+  const daily = opts.daily || []
+  const useBook = daily.length > 0
+  const series: Array<{ time: number } & Record<SleeveKey, number>> = []
+  let lastYmd = ""
+  let baseNav = emptySleeveNav(sleeveCapital)
+  const anchors = new Map<string, number>()
+
+  for (const t of timeline) {
+    const ymd = unixWallYmd(t)
+    if (ymd !== lastYmd) {
+      lastYmd = ymd
+      anchors.clear()
+      baseNav = useBook ? sleeveEquityBefore(daily, ymd, sleeveCapital) : emptySleeveNav(sleeveCapital)
+      for (const pos of opts.positions) {
+        const key = pos.symbol.toUpperCase()
+        const bars = barsOf.get(key)
+        let anchor: number | null = null
+        if (ymd === today) {
+          const prev = opts.prevMarks?.[key] ?? opts.prevMarks?.[pos.symbol]
+          if (prev != null && prev > 0) anchor = prev
+        }
+        if (anchor == null && bars) {
+          const first = firstBarOn(bars, ymd)
+          if (first) anchor = first.open && first.open > 0 ? first.open : first.close
+        }
+        if (anchor == null || !(anchor > 0)) anchor = pos.entryPrice
+        anchors.set(pos.id, anchor)
+      }
+    }
+
+    const mtm = emptySleeveNav(0)
+    for (const pos of opts.positions) {
+      const sleeve = resolveSleeve(pos)
+      if (!sleeve) continue
+      const key = pos.symbol.toUpperCase()
+      if (useBook) {
+        if (pos.status === "closed" && pos.exitTime && pos.exitTime <= t * 1000) continue
+        if (pos.entryTime > t * 1000) continue
+        const mark = lastCloseAtOrBefore(barsOf.get(key) || [], t)
+        const anchor = anchors.get(pos.id)
+        if (mark == null || anchor == null) continue
+        const pnl = positionPnl({ ...pos, status: "open", entryPrice: anchor, exitPrice: undefined }, mark)
+        if (pnl != null) mtm[sleeve] += pnl
+        continue
+      }
+      const mark = lastCloseAtOrBefore(barsOf.get(key) || [], t)
+      if (pos.status === "closed" && pos.exitTime && pos.exitTime <= t * 1000) {
+        mtm[sleeve] += positionPnl(pos, pos.exitPrice ?? null) ?? 0
+        continue
+      }
+      if (pos.entryTime > t * 1000) continue
+      const pnl = positionPnl({ ...pos, status: "open", exitPrice: undefined }, mark)
+      if (pnl != null) mtm[sleeve] += pnl
+    }
+    const row = { time: t } as { time: number } & Record<SleeveKey, number>
+    for (const key of SLEEVE_KEYS) row[key] = baseNav[key] + mtm[key]
+    series.push(row)
+  }
+
+  if (series.length) {
+    series[series.length - 1] = { time: series[series.length - 1].time, ...opts.liveSleeveNav }
+  }
+  return series
+}
+
+export function paperSleeveNavCurve(opts: {
+  initialCapital: number
+  liveSleeveNav: Record<SleeveKey, number>
+  startedAt?: number
+  positions?: PaperPosition[]
+  daily?: PaperSleeveDaily[]
+  interval?: TimeframeId
+  marksBySymbol?: Record<string, Array<{ time: number; close: number; open?: number }>>
+  prevMarks?: Record<string, number>
+}): PaperSleeveNavPoint[] {
+  const interval = opts.interval || "1d"
+  const sleeveCapital = opts.initialCapital / SLEEVE_KEYS.length
+  const daily = (opts.daily || []).filter((row) => row.date)
+  const backbone =
+    daily.length > 0
+      ? dailySleeveSeries({
+          initialCapital: opts.initialCapital,
+          liveSleeveNav: opts.liveSleeveNav,
+          startedAt: opts.startedAt,
+          daily,
+        })
+      : eventSleeveSeries({
+          initialCapital: opts.initialCapital,
+          liveSleeveNav: opts.liveSleeveNav,
+          startedAt: opts.startedAt,
+          positions: opts.positions,
+        })
+
+  if (isIntradayTimeframe(interval) && opts.marksBySymbol) {
+    const intra = intradaySleeveSeries({
+      initialCapital: opts.initialCapital,
+      liveSleeveNav: opts.liveSleeveNav,
+      positions: opts.positions || [],
+      daily,
+      marksBySymbol: opts.marksBySymbol,
+      prevMarks: opts.prevMarks,
+    })
+    if (intra && intra.length >= 2) return toSleeveNavPoints(intra, interval)
+  }
+
+  return toSleeveNavPoints(resampleSleeveNav(backbone, interval, sleeveCapital), interval)
+}
+
+export type PaperProductDaily = { date: string; productPnl?: Record<string, number> }
+export type PaperProductNavPoint = { date: string } & Record<string, number>
+
+function emptyKeyed(keys: string[], value: number): Record<string, number> {
+  return Object.fromEntries(keys.map((key) => [key, value]))
+}
+
+function productPnlOf(row: PaperProductDaily | undefined, key: string) {
+  if (!row?.productPnl) return 0
+  return Number(row.productPnl[key] ?? row.productPnl[key.toUpperCase()]) || 0
+}
+
+function productEquityBefore(
+  keys: string[],
+  daily: PaperProductDaily[],
+  ymd: string,
+  capitalOf: (key: string) => number,
+): Record<string, number> {
+  const running = emptyKeyed(keys, 0)
+  for (const row of daily) {
+    if (row.date >= ymd) break
+    for (const key of keys) running[key] += productPnlOf(row, key)
+  }
+  return Object.fromEntries(keys.map((key) => [key, capitalOf(key) + running[key]]))
+}
+
+function toProductNavPoints(
+  series: Array<{ time: number } & Record<string, number>>,
+  keys: string[],
+  interval: TimeframeId,
+): PaperProductNavPoint[] {
+  return series.map((row) => {
+    const point: PaperProductNavPoint = { date: navAxisLabel(row.time, interval) }
+    for (const key of keys) point[key] = row[key] ?? 0
+    return point
+  })
+}
+
+function resampleProductNav(
+  series: Array<{ time: number } & Record<string, number>>,
+  keys: string[],
+  interval: TimeframeId,
+  capitalOf: (key: string) => number,
+): Array<{ time: number } & Record<string, number>> {
+  if (!series.length || interval === "1d" || isIntradayTimeframe(interval)) return series
+  const byKey = Object.fromEntries(
+    keys.map((key) => [key, resampleNav(series.map((row) => ({ time: row.time, close: row[key] ?? capitalOf(key) })), interval)]),
+  ) as Record<string, Array<{ time: number; close: number }>>
+  const times = new Set<number>()
+  for (const key of keys) for (const row of byKey[key] || []) times.add(row.time)
+  return [...times]
+    .sort((a, b) => a - b)
+    .map((time) => {
+      const row: { time: number } & Record<string, number> = { time }
+      for (const key of keys) row[key] = lastCloseAtOrBefore(byKey[key] || [], time) ?? capitalOf(key)
+      return row
+    })
+}
+
+function dailyProductSeries(opts: {
+  keys: string[]
+  capitalOf: (key: string) => number
+  liveNav: Record<string, number>
+  startedAt?: number
+  daily: PaperProductDaily[]
+}): Array<{ time: number } & Record<string, number>> {
+  const today = beijingYmd()
+  const running = emptyKeyed(opts.keys, 0)
+  const series: Array<{ time: number } & Record<string, number>> = []
+  for (const row of opts.daily) {
+    const time = ymdToUnix(row.date)
+    if (time == null) continue
+    for (const key of opts.keys) running[key] += productPnlOf(row, key)
+    const navs: { time: number } & Record<string, number> = { time }
+    for (const key of opts.keys) {
+      navs[key] = row.date === today ? opts.liveNav[key] ?? opts.capitalOf(key) + running[key] : opts.capitalOf(key) + running[key]
+    }
+    series.push(navs)
+  }
+  const last = opts.daily[opts.daily.length - 1]
+  if (last && last.date !== today) {
+    const time = ymdToUnix(today)
+    if (time != null) series.push({ time, ...opts.liveNav })
+  }
+  if (series.length === 1) {
+    const startMs = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : Date.now()
+    const start: { time: number } & Record<string, number> = { time: msToWallUnix(startMs) }
+    for (const key of opts.keys) start[key] = opts.capitalOf(key)
+    series.unshift(start)
+  }
+  return series
+}
+
+function eventProductSeries(opts: {
+  keys: string[]
+  capitalOf: (key: string) => number
+  liveNav: Record<string, number>
+  startedAt?: number
+}): Array<{ time: number } & Record<string, number>> {
+  const start = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : Date.now()
+  const open: { time: number } & Record<string, number> = { time: msToWallUnix(start) }
+  for (const key of opts.keys) open[key] = opts.capitalOf(key)
+  return [open, { time: msToWallUnix(Date.now()), ...opts.liveNav }]
+}
+
+function positionAssetKey(pos: PaperPosition) {
+  return assetFromContract(pos.symbol) || pos.symbol.replace(/\d+$/i, "").toUpperCase() || null
+}
+
+function intradayProductSeries(opts: {
+  keys: string[]
+  capitalOf: (key: string) => number
+  liveNav: Record<string, number>
+  positions: PaperPosition[]
+  daily?: PaperProductDaily[]
+  marksBySymbol: Record<string, Array<{ time: number; close: number; open?: number }>>
+  prevMarks?: Record<string, number>
+}): Array<{ time: number } & Record<string, number>> | null {
+  const keySet = new Set(opts.keys)
+  const times = new Set<number>()
+  const barsOf = new Map<string, Array<{ time: number; close: number }>>()
+  for (const [symbol, bars] of Object.entries(opts.marksBySymbol)) {
+    const key = symbol.toUpperCase()
+    const sorted = bars.filter((bar) => bar.time > 0 && bar.close > 0).sort((a, b) => a.time - b.time)
+    if (!sorted.length) continue
+    barsOf.set(key, sorted)
+    for (const bar of sorted) times.add(bar.time)
+  }
+  const timeline = [...times].sort((a, b) => a - b)
+  if (timeline.length < 2) return null
+
+  const today = beijingYmd()
+  const daily = opts.daily || []
+  const useBook = daily.length > 0
+  const series: Array<{ time: number } & Record<string, number>> = []
+  let lastYmd = ""
+  let baseNav = emptyKeyed(opts.keys, 0)
+  const anchors = new Map<string, number>()
+
+  for (const t of timeline) {
+    const ymd = unixWallYmd(t)
+    if (ymd !== lastYmd) {
+      lastYmd = ymd
+      anchors.clear()
+      baseNav = useBook
+        ? productEquityBefore(opts.keys, daily, ymd, opts.capitalOf)
+        : Object.fromEntries(opts.keys.map((key) => [key, opts.capitalOf(key)]))
+      for (const pos of opts.positions) {
+        const asset = positionAssetKey(pos)
+        if (!asset || !keySet.has(asset)) continue
+        const key = pos.symbol.toUpperCase()
+        const bars = barsOf.get(key)
+        let anchor: number | null = null
+        if (ymd === today) {
+          const prev = opts.prevMarks?.[key] ?? opts.prevMarks?.[pos.symbol]
+          if (prev != null && prev > 0) anchor = prev
+        }
+        if (anchor == null && bars) {
+          const first = firstBarOn(bars, ymd)
+          if (first) anchor = first.open && first.open > 0 ? first.open : first.close
+        }
+        if (anchor == null || !(anchor > 0)) anchor = pos.entryPrice
+        anchors.set(pos.id, anchor)
+      }
+    }
+
+    const mtm = emptyKeyed(opts.keys, 0)
+    for (const pos of opts.positions) {
+      const asset = positionAssetKey(pos)
+      if (!asset || !keySet.has(asset)) continue
+      const key = pos.symbol.toUpperCase()
+      if (useBook) {
+        if (pos.status === "closed" && pos.exitTime && pos.exitTime <= t * 1000) continue
+        if (pos.entryTime > t * 1000) continue
+        const mark = lastCloseAtOrBefore(barsOf.get(key) || [], t)
+        const anchor = anchors.get(pos.id)
+        if (mark == null || anchor == null) continue
+        const pnl = positionPnl({ ...pos, status: "open", entryPrice: anchor, exitPrice: undefined }, mark)
+        if (pnl != null) mtm[asset] += pnl
+        continue
+      }
+      const mark = lastCloseAtOrBefore(barsOf.get(key) || [], t)
+      if (pos.status === "closed" && pos.exitTime && pos.exitTime <= t * 1000) {
+        mtm[asset] += positionPnl(pos, pos.exitPrice ?? null) ?? 0
+        continue
+      }
+      if (pos.entryTime > t * 1000) continue
+      const pnl = positionPnl({ ...pos, status: "open", exitPrice: undefined }, mark)
+      if (pnl != null) mtm[asset] += pnl
+    }
+    const row: { time: number } & Record<string, number> = { time: t }
+    for (const key of opts.keys) row[key] = (baseNav[key] ?? opts.capitalOf(key)) + (mtm[key] ?? 0)
+    series.push(row)
+  }
+
+  if (series.length) series[series.length - 1] = { time: series[series.length - 1].time, ...opts.liveNav }
+  return series
+}
+
+export function paperProductNavCurve(opts: {
+  keys: string[]
+  capitalOf: (key: string) => number
+  liveNav: Record<string, number>
+  startedAt?: number
+  positions?: PaperPosition[]
+  daily?: PaperProductDaily[]
+  interval?: TimeframeId
+  marksBySymbol?: Record<string, Array<{ time: number; close: number; open?: number }>>
+  prevMarks?: Record<string, number>
+}): PaperProductNavPoint[] {
+  const keys = opts.keys.filter(Boolean)
+  if (!keys.length) return []
+  const interval = opts.interval || "1d"
+  const daily = (opts.daily || []).filter((row) => row.date)
+  const backbone =
+    daily.length > 0
+      ? dailyProductSeries({
+          keys,
+          capitalOf: opts.capitalOf,
+          liveNav: opts.liveNav,
+          startedAt: opts.startedAt,
+          daily,
+        })
+      : eventProductSeries({
+          keys,
+          capitalOf: opts.capitalOf,
+          liveNav: opts.liveNav,
+          startedAt: opts.startedAt,
+        })
+
+  if (isIntradayTimeframe(interval) && opts.marksBySymbol) {
+    const intra = intradayProductSeries({
+      keys,
+      capitalOf: opts.capitalOf,
+      liveNav: opts.liveNav,
+      positions: opts.positions || [],
+      daily,
+      marksBySymbol: opts.marksBySymbol,
+      prevMarks: opts.prevMarks,
+    })
+    if (intra && intra.length >= 2) return toProductNavPoints(intra, keys, interval)
+  }
+
+  return toProductNavPoints(resampleProductNav(backbone, keys, interval, opts.capitalOf), keys, interval)
 }
 
 function defaultMinePortfolio(): PaperPortfolio {

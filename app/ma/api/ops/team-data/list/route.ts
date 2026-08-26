@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server"
+import { withListResponseCache } from "@/lib/server/list-response-cache"
 import { listTeamData } from "@/lib/server/team-data-query-pg"
 
 export const runtime = "nodejs"
+
 export const dynamic = "force-dynamic"
 
 export async function GET(req: Request) {
@@ -26,7 +28,8 @@ export async function GET(req: Request) {
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
-    const { data, total } = await listTeamData({
+    const cacheKey = JSON.stringify({
+      pool: "ops-team-data",
       page,
       pageSize,
       keyword,
@@ -41,13 +44,31 @@ export async function GET(req: Request) {
       sortDir,
     })
 
-    return NextResponse.json({
-      data,
-      total,
-      page,
-      pageSize,
-      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    const body = await withListResponseCache(cacheKey, async () => {
+      const { data, total } = await listTeamData({
+        page,
+        pageSize,
+        keyword,
+        strategySource,
+        strategyL1,
+        strategyL2,
+        strategyL3,
+        elementsFilter,
+        navLagFilter,
+        productSourceFilter,
+        sort,
+        sortDir,
+      })
+      return {
+        data,
+        total,
+        page,
+        pageSize,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      }
     })
+
+    return NextResponse.json(body)
   } catch (err) {
     console.error("[team-data/list]", err)
     return NextResponse.json({ error: "Failed to load team data" }, { status: 500 })

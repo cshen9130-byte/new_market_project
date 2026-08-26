@@ -470,3 +470,190 @@ export function computeSleeveEquityRegimes(
   }
   return out.sort((a, b) => a.strategy.localeCompare(b.strategy))
 }
+
+/** L1 strategies treated as ~100% long A-share beta. */
+export const STOCK_LONG_ONLY_L1 = new Set(["股票多头", "股票策略"])
+/** L1 strategies with a smaller net long after the fund's own hedge. */
+export const STOCK_HEDGE_L1 = new Set(["股票对冲"])
+/** Default net-long ratio applied to 股票对冲 capital when the fund does not disclose exposure. */
+export const DEFAULT_LS_NET_EXPOSURE_PCT = 20
+
+export type FofHedgeHolding = {
+  fundName: string
+  fundStrategy?: string | null
+  strategyL1?: string | null
+  marketValue: number
+  marketPct: number
+  rowKind?: string
+  valuationCode?: string | null
+  beianHao?: string | null
+}
+
+export type FofHedgeOtherHolding = {
+  assetName: string
+  category?: string
+  marketValue: number
+}
+
+export type FofStockHedgeSnapshot = {
+  longOnlyMv: number
+  longOnlyPct: number
+  lsGrossMv: number
+  lsNetMv: number
+  lsNetPct: number
+  directStockMv: number
+  directStockPct: number
+  etfMv: number
+  etfPct: number
+  existingHedgeMv: number
+  existingHedgePct: number
+  grossLongMv: number
+  grossLongPct: number
+  netExposureMv: number
+  netExposurePct: number
+  hedgeNotionalMv: number
+  hedgeSide: "short_futures" | "long_futures" | "none"
+  lsNetAssumptionPct: number
+  hasEquityBook: boolean
+}
+
+export type FofStockHedgePoint = {
+  date: string
+  longOnlyPct: number
+  lsNetPct: number
+  netPct: number
+}
+
+function holdingL1(h: FofHedgeHolding): string {
+  return (h.strategyL1?.trim() || strategyHead(h.fundStrategy) || "")
+}
+
+function holdingStrategyText(h: FofHedgeHolding): string {
+  return [h.strategyL1, h.fundStrategy].filter(Boolean).join("/")
+}
+
+function isLongOnlyStrategy(l1: string, text: string): boolean {
+  if (STOCK_HEDGE_L1.has(l1) || /股票对冲/.test(text)) return false
+  if (STOCK_LONG_ONLY_L1.has(l1)) return true
+  return /股票多头/.test(text)
+}
+
+function isHedgeStrategy(l1: string, text: string): boolean {
+  return STOCK_HEDGE_L1.has(l1) || /股票对冲/.test(text)
+}
+
+export function isDirectEquityHolding(h: FofHedgeHolding): boolean {
+  if (/ETF/u.test(h.fundName)) return false
+  if (h.rowKind === "stock") return true
+  if (h.rowKind === "fund_or_stock") {
+    const code = (h.valuationCode ?? "").replace(/\.(SZ|SH|BJ)$/i, "").trim()
+    if (/^\d{6}$/.test(code)) return true
+    if (!h.valuationCode && !h.beianHao) return true
+  }
+  return false
+}
+
+export function isEquityEtfHolding(h: FofHedgeHolding): boolean {
+  return /ETF/u.test(h.fundName)
+}
+
+function isIndexFuturesName(name: string, category?: string): boolean {
+  const text = `${name} ${category ?? ""}`
+  return /股指期货|(^|[^A-Za-z])(IF|IH|IC|IM)\d{3,4}/i.test(text)
+}
+
+export function computeFofStockHedgeSnapshot(
+  holdings: FofHedgeHolding[],
+  netAssetValue: number,
+  lsNetAssumptionPct = DEFAULT_LS_NET_EXPOSURE_PCT,
+  otherHoldings: FofHedgeOtherHolding[] = [],
+): FofStockHedgeSnapshot {
+  const nav = netAssetValue > 0 ? netAssetValue : 0
+  const pct = (mv: number) => (nav > 0 ? (mv / nav) * 100 : 0)
+  const lsFactor = Math.max(0, lsNetAssumptionPct) / 100
+
+  let longOnlyMv = 0
+  let lsGrossMv = 0
+  let directStockMv = 0
+  let etfMv = 0
+
+  for (const h of holdings) {
+    const mv = h.marketValue
+    if (!Number.isFinite(mv) || mv === 0) continue
+    if (isDirectEquityHolding(h)) {
+      directStockMv += mv
+      continue
+    }
+    if (isEquityEtfHolding(h)) {
+      etfMv += mv
+      continue
+    }
+    const l1 = holdingL1(h)
+    const text = holdingStrategyText(h)
+    if (isLongOnlyStrategy(l1, text)) longOnlyMv += mv
+    else if (isHedgeStrategy(l1, text)) lsGrossMv += mv
+  }
+
+  let existingHedgeMv = 0
+  for (const o of otherHoldings) {
+    if (isIndexFuturesName(o.assetName, o.category)) existingHedgeMv += o.marketValue
+  }
+
+  const lsNetMv = lsGrossMv * lsFactor
+  const grossLongMv = longOnlyMv + lsNetMv + directStockMv + etfMv
+  const netExposureMv = grossLongMv + existingHedgeMv
+  const netExposurePct = pct(netExposureMv)
+  const hedgeSide: FofStockHedgeSnapshot["hedgeSide"] =
+    Math.abs(netExposurePct) < 0.05
+      ? "none"
+      : netExposureMv > 0
+        ? "short_futures"
+        : "long_futures"
+
+  return {
+    longOnlyMv,
+    longOnlyPct: pct(longOnlyMv),
+    lsGrossMv,
+    lsNetMv,
+    lsNetPct: pct(lsNetMv),
+    directStockMv,
+    directStockPct: pct(directStockMv),
+    etfMv,
+    etfPct: pct(etfMv),
+    existingHedgeMv,
+    existingHedgePct: pct(existingHedgeMv),
+    grossLongMv,
+    grossLongPct: pct(grossLongMv),
+    netExposureMv,
+    netExposurePct,
+    hedgeNotionalMv: Math.abs(netExposureMv),
+    hedgeSide,
+    lsNetAssumptionPct,
+    hasEquityBook: Math.abs(grossLongMv) + Math.abs(existingHedgeMv) + Math.abs(lsGrossMv) > 1,
+  }
+}
+
+export function computeFofStockHedgeSeries(
+  dates: string[],
+  series: Array<{ name: string; values: number[] }>,
+  lsNetAssumptionPct = DEFAULT_LS_NET_EXPOSURE_PCT,
+): FofStockHedgePoint[] {
+  const lsFactor = Math.max(0, lsNetAssumptionPct) / 100
+  return dates.map((date, i) => {
+    let longOnlyPct = 0
+    let lsGrossPct = 0
+    for (const s of series) {
+      const l1 = strategyHead(s.name)
+      const v = s.values[i] ?? 0
+      if (isHedgeStrategy(l1, s.name)) lsGrossPct += v
+      else if (isLongOnlyStrategy(l1, s.name)) longOnlyPct += v
+    }
+    const lsNetPct = lsGrossPct * lsFactor
+    return {
+      date,
+      longOnlyPct: +longOnlyPct.toFixed(2),
+      lsNetPct: +lsNetPct.toFixed(2),
+      netPct: +(longOnlyPct + lsNetPct).toFixed(2),
+    }
+  })
+}

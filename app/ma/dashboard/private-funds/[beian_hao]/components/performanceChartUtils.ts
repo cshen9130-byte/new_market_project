@@ -446,7 +446,11 @@ export function buildTimeAxisConfig(dates: string[]): TimeAxisConfig {
   }
 }
 
-/** Shared ECharts time x-axis: one unique month (or year) label, not auto bi-weekly duplicates. */
+/**
+ * Shared ECharts time x-axis.
+ * Space ticks with minInterval instead of axisLabel.customValues: ECharts 6.0.0
+ * throws on customValues + a function formatter (`tick.time.level`) and paints a blank chart.
+ */
 export function echartsTimeXAxis(dates: string[]): Record<string, unknown> {
   const axis = buildTimeAxisConfig(dates)
   const spanDays = chartDateSpanDays(dates)
@@ -463,11 +467,10 @@ export function echartsTimeXAxis(dates: string[]): Record<string, unknown> {
       hideOverlap: true,
       showMinLabel: true,
       showMaxLabel: !monthTicks,
-      customValues: monthTicks ? axis.ticks : undefined,
       formatter: (value: number) => {
-        if (monthTicks) return axis.tickFormatter(value)
         const iso = formatIsoDateFromTs(value)
         if (!iso) return ""
+        if (monthTicks) return formatChartAxisDateLabel(iso, spanDays)
         const month = parseInt(iso.slice(5, 7), 10)
         const day = parseInt(iso.slice(8, 10), 10)
         return `${month}/${day}`
@@ -523,7 +526,8 @@ export function computeNavChartYDomain(
     const out = [d.value]
     if (typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
     return out
-  })
+  }).filter((v) => Number.isFinite(v))
+  if (!vals.length) return ["auto", "auto"]
   let min = Math.min(...vals)
   let max = Math.max(...vals)
   if (chartMode === "return") {

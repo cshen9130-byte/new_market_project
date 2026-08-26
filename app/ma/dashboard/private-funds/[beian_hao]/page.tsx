@@ -1540,7 +1540,8 @@ export default function PrivateFundDetailPage() {
       const out = [d.value]
       if (typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
       return out
-    })
+    }).filter((v) => Number.isFinite(v))
+    if (!vals.length) return ["auto", "auto"] as [string, string]
     let min = Math.min(...vals)
     let max = Math.max(...vals)
     if (chartMode === "return") {

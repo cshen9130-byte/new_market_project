@@ -146,6 +146,25 @@ export function quoteClockHhmm(quote?: { update_time?: string | null } | null) {
   return null
 }
 
+/** Exchange clock including seconds + millis, for picking the fresher last. */
+export function quoteClockMs(quote?: { update_time?: string | null; update_millis?: number | null } | null) {
+  const raw = String(quote?.update_time || "").trim()
+  if (!raw) return null
+  const colon = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/)
+  const millis = Number(quote?.update_millis) || 0
+  if (colon) {
+    const hh = Number(colon[1])
+    const mm = Number(colon[2])
+    const ss = Number(colon[3] || 0)
+    return ((hh * 3600 + mm * 60 + ss) * 1000) + millis
+  }
+  const hhmm = quoteClockHhmm(quote)
+  if (hhmm == null) return null
+  const hh = Math.floor(hhmm / 100)
+  const mm = hhmm % 100
+  return ((hh * 3600 + mm * 60) * 1000) + millis
+}
+
 /** 夜盘时段里，行情时间仍停在 15:00 说明该合约今晚没成交，不能当成新交易日 K 线。 */
 export function isNightHqPrint(symbol: string, quote?: { update_time?: string | null } | null) {
   if (!hasNightSession(symbol)) return false
@@ -160,29 +179,45 @@ export function validMark(n: number | null | undefined) {
   return n != null && Number.isFinite(n) && n > 0 ? n : null
 }
 
-/** SimNow 商品/夜盘常停在日盘；用新浪 last / 昨结算覆盖，与 Choice 对齐。 */
+/** Keep live CTP last. Sina only fills a gap or a frozen SimNow clock. */
 export function overlaySinaQuote(
   symbol: string,
   prev?: CtpTick | null,
   sina?: CtpTick | null,
 ): CtpTick | undefined {
   const key = symbol.toUpperCase()
+  const ctpLast = validMark(prev?.last)
   const sinaLast = validMark(sina?.last)
   if (sinaLast == null) return prev ?? sina ?? undefined
-  const tick: CtpTick = { ...sina!, symbol: key, last: sinaLast }
-  if (!prev) return tick
+  const sinaTick: CtpTick = { ...sina!, symbol: key, last: sinaLast }
+  if (!prev) return sinaTick
+
+  const live = isLiveSessionFor(key)
+  const ctpMs = quoteClockMs(prev)
+  const sinaMs = quoteClockMs(sina)
+  const ctpFresh = live && ctpLast != null && (sinaMs == null || ctpMs == null || ctpMs >= sinaMs)
+  if (ctpFresh) {
+    return {
+      ...prev,
+      symbol: key,
+      last: ctpLast,
+      pre_settlement: prev.pre_settlement ?? sina.pre_settlement,
+      pre_close: prev.pre_close ?? sina.pre_close,
+    }
+  }
+
   return {
-    ...mergeQuoteTicks(prev, tick),
+    ...mergeQuoteTicks(prev, sinaTick),
     last: sinaLast,
-    open: tick.open ?? prev.open,
-    high: tick.high ?? prev.high,
-    low: tick.low ?? prev.low,
-    volume: tick.volume ?? prev.volume,
-    open_interest: tick.open_interest ?? prev.open_interest,
-    pre_settlement: tick.pre_settlement ?? prev.pre_settlement,
-    pre_close: tick.pre_close ?? prev.pre_close,
-    trade_date: tick.trade_date ?? prev.trade_date,
-    update_time: tick.update_time ?? prev.update_time,
+    open: sinaTick.open ?? prev.open,
+    high: sinaTick.high ?? prev.high,
+    low: sinaTick.low ?? prev.low,
+    volume: sinaTick.volume ?? prev.volume,
+    open_interest: sinaTick.open_interest ?? prev.open_interest,
+    pre_settlement: sinaTick.pre_settlement ?? prev.pre_settlement,
+    pre_close: sinaTick.pre_close ?? prev.pre_close,
+    trade_date: sinaTick.trade_date ?? prev.trade_date,
+    update_time: sinaTick.update_time ?? prev.update_time,
   }
 }
 

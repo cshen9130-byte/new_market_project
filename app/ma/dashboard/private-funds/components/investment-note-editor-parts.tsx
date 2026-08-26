@@ -415,12 +415,56 @@ export function NoteAttachmentPopover({
   onTriggerUpload,
   onRemove,
   onOpen,
+  onDropFiles,
+  uploading,
 }: {
   attachments: NoteAttachmentListItem[]
   onTriggerUpload: () => void
   onRemove: (id: string) => void
   onOpen?: (id: string) => void
+  onDropFiles?: (files: FileList) => void
+  uploading?: boolean
 }) {
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepthRef = useRef(0)
+
+  function hasDraggedFiles(e: DragEvent<HTMLElement>): boolean {
+    return [...e.dataTransfer.types].includes("Files")
+  }
+
+  function handleDragEnter(e: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(e)) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current += 1
+    if (!dragOver) setDragOver(true)
+  }
+
+  function handleDragOver(e: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(e)) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = "copy"
+  }
+
+  function handleDragLeave(e: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(e)) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragOver(false)
+  }
+
+  function handleDrop(e: DragEvent<HTMLElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current = 0
+    setDragOver(false)
+    if (uploading) return
+    const files = e.dataTransfer.files
+    if (files && files.length > 0) onDropFiles?.(files)
+  }
+
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -432,23 +476,48 @@ export function NoteAttachmentPopover({
           {attachments.length}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-0">
+      <PopoverContent
+        align="end"
+        className="w-80 p-0"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         <div className="flex items-center justify-between border-b px-4 py-3">
           <span className="text-sm font-medium text-sky-600">附件列表</span>
           <button
             type="button"
             onClick={onTriggerUpload}
-            className="inline-flex items-center gap-1 text-sm text-sky-600 hover:text-sky-700"
+            disabled={uploading}
+            className="inline-flex items-center gap-1 text-sm text-sky-600 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Upload className="h-3.5 w-3.5" />
-            上传附件
+            {uploading ? "上传中..." : dragOver ? "松开以上传" : "上传附件"}
           </button>
         </div>
-          {attachments.length === 0 ? (
-            <div className="flex flex-col items-center justify-center px-4 py-10 text-zinc-400">
-              <FolderOpen className="h-10 w-10 text-zinc-300 mb-2" strokeWidth={1} />
-              <span className="text-sm">暂无附件</span>
+        <div
+          className={[
+            "relative min-h-[140px] transition-colors",
+            dragOver ? "bg-sky-50" : "",
+          ].join(" ")}
+        >
+          {dragOver && (
+            <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-md border-2 border-dashed border-sky-400 bg-sky-50/90">
+              <span className="text-sm text-sky-600">松开以上传附件</span>
             </div>
+          )}
+          {attachments.length === 0 ? (
+            <button
+              type="button"
+              onClick={onTriggerUpload}
+              disabled={uploading}
+              className="m-3 flex w-[calc(100%-1.5rem)] flex-col items-center justify-center rounded-md border border-dashed border-zinc-200 px-4 py-10 text-zinc-400 hover:border-sky-300 hover:bg-sky-50/50 disabled:cursor-not-allowed"
+            >
+              <FolderOpen className="mb-2 h-10 w-10 text-zinc-300" strokeWidth={1} />
+              <span className="text-sm">{uploading ? "上传中..." : "暂无附件"}</span>
+              <span className="mt-1 text-xs text-zinc-300">拖拽文件到此处，或点击上传</span>
+            </button>
           ) : (
             <div className="max-h-56 overflow-auto px-2 py-2">
               {attachments.map((file) => {
@@ -491,8 +560,9 @@ export function NoteAttachmentPopover({
               })}
             </div>
           )}
-        </PopoverContent>
-      </Popover>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 

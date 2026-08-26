@@ -17,7 +17,10 @@ import {
 import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
 import type { FundHoldingRow } from "./FofFundsPanel"
 import { FofVolControlCharts } from "./FofVolControlCharts"
+import { FofStockHedgeChart } from "./FofStockHedgeChart"
 import { getNavFieldValue, type NavRow } from "../components/shared"
+import type { OtherHoldingRow } from "./OtherHoldingsPanel"
+import type { FofShareTrendData } from "./FofShareTrendPanel"
 
 type Props = {
   series: ReturnCurveSeries[]
@@ -29,6 +32,8 @@ type Props = {
   loading?: boolean
   navRows?: NavRow[]
   navType?: string
+  otherHoldings?: OtherHoldingRow[]
+  strategyTrend?: FofShareTrendData | null
 }
 
 type FundNavRow = {
@@ -94,6 +99,8 @@ export function FofVolatilityAnalysisPanel({
   loading,
   navRows = [],
   navType = "复权净值",
+  otherHoldings = [],
+  strategyTrend = null,
 }: Props) {
   const [confidence, setConfidence] = useState<FofVarConfidence>(95)
   const [method, setMethod] = useState<FofVarMethod>("parametric")
@@ -386,6 +393,12 @@ export function FofVolatilityAnalysisPanel({
 
   return (
     <>
+    <FofStockHedgeChart
+      fundHoldings={fundHoldings}
+      otherHoldings={otherHoldings}
+      netAssetValue={netAssetValue}
+      strategyTrend={strategyTrend}
+    />
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-4 pb-2">
         <div>

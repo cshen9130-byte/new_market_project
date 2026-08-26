@@ -145,10 +145,15 @@ export function levelsFromTick(tick: CtpTick | undefined, side: "bid" | "ask"): 
   return price != null && price > 0 ? [{ price, volume: volume ?? null }] : []
 }
 
+export function validTickPrice(n: number | null | undefined): n is number {
+  return n != null && Number.isFinite(n) && n > 0
+}
+
 export function mergeQuoteTicks(prev: CtpTick, incoming: CtpTick): CtpTick {
   return {
     ...prev,
     ...incoming,
+    last: validTickPrice(incoming.last) ? incoming.last : prev.last,
     bids: pickBook(prev.bids, incoming.bids),
     asks: pickBook(prev.asks, incoming.asks),
     bid: incoming.bid ?? prev.bid,

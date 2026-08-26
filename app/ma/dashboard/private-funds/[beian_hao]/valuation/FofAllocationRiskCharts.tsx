@@ -13,8 +13,10 @@ import {
 } from "@/lib/fof-deeper-analysis"
 import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
 import type { FundHoldingRow } from "./FofFundsPanel"
+import type { OtherHoldingRow } from "./OtherHoldingsPanel"
 import type { FofShareTrendData } from "./FofShareTrendPanel"
 import { FofAnalysisChartCard } from "./FofAnalysisChartCard"
+import { FofStockHedgeChart } from "./FofStockHedgeChart"
 
 type Props = {
   series: ReturnCurveSeries[]
@@ -23,6 +25,8 @@ type Props = {
   toDate?: string
   strategyTrend: FofShareTrendData | null
   loading?: boolean
+  netAssetValue?: number | null
+  otherHoldings?: OtherHoldingRow[]
 }
 
 function isStockRow(row: FundHoldingRow): boolean {
@@ -50,6 +54,8 @@ export function FofAllocationRiskCharts({
   toDate,
   strategyTrend,
   loading,
+  netAssetValue,
+  otherHoldings = [],
 }: Props) {
   const holdings = useMemo(
     () => fundHoldings.filter((r) => !isStockRow(r) && !isCashOrNonFundRow(r) && r.marketValue > 0),
@@ -212,6 +218,13 @@ export function FofAllocationRiskCharts({
 
   return (
     <>
+      <FofStockHedgeChart
+        fundHoldings={fundHoldings}
+        otherHoldings={otherHoldings}
+        netAssetValue={netAssetValue}
+        strategyTrend={strategyTrend}
+      />
+
       <div className="mt-4 grid grid-cols-2 gap-3">
         <Metric
           label="资本有效个数"

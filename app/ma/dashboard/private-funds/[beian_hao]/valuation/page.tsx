@@ -2,59 +2,125 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
+import dynamic from "next/dynamic"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import ReactECharts from "echarts-for-react"
 import { ArrowLeft, BarChart2, Camera, Download } from "lucide-react"
 import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
-import { DerivativesPanel, type DerivativeRow } from "./DerivativesPanel"
-import { SectorMarketSharePanel, type DerivativeSectorShareRow } from "./SectorMarketSharePanel"
-import { OptionsPanel, type OptionRow } from "./OptionsPanel"
-import { GreeksPanel, TermAnalysisPanel, type GreekLetterRow, type TermAnalysisRow } from "./GreeksTermPanel"
+import type { DerivativeRow } from "./DerivativesPanel"
+import type { DerivativeSectorShareRow } from "./SectorMarketSharePanel"
+import type { OptionRow } from "./OptionsPanel"
+import type { GreekLetterRow, TermAnalysisRow } from "./GreeksTermPanel"
 import { FofFundsPanel, type FundHoldingRow } from "./FofFundsPanel"
-import { FofReturnCurvePanel, type ReturnCurveSeries } from "./FofReturnCurvePanel"
-import { FofVolatilityAnalysisPanel } from "./FofVolatilityAnalysisPanel"
-import { FofReturnAnalysisPanel } from "./FofReturnAnalysisPanel"
-import { ValuationEmptyAnalysis } from "./ValuationEmptyAnalysis"
-import { FofTransactionAnalysisPanel } from "./FofTransactionAnalysisPanel"
-import { FofAllocationRiskCharts } from "./FofAllocationRiskCharts"
-import { FofRegimeAttributionPanel } from "./FofRegimeAttributionPanel"
+import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
 import { OtherHoldingsPanel, type OtherHoldingRow } from "./OtherHoldingsPanel"
-import { EquityValuationPanel, type ValuationHoldingDetailRow, type StockRiskExposure } from "./EquityValuationPanel"
-import {
-  AllocationTrendPanel,
-  type AllocationTrendSeries,
-} from "./AllocationTrendPanel"
-import {
-  SectorWeightTrendPanel,
-  type SectorWeightTrendData,
-} from "./SectorWeightTrendPanel"
-import {
-  LongShortMvTrendPanel,
-  type LongShortMvTrendData,
-} from "./LongShortMvTrendPanel"
-import {
-  ContractMvShareTrendPanel,
-  type ContractMvShareTrendData,
-} from "./ContractMvShareTrendPanel"
-import {
-  ContractEquityTrendPanel,
-  type ContractEquityTrendData,
-} from "./ContractEquityTrendPanel"
-import {
-  FofShareTrendPanel,
-  type FofTrendAnalysisData,
-} from "./FofShareTrendPanel"
-import { WinRateAnalysisPanel } from "../components/WinRateAnalysisPanel"
-import { FundPerformanceIndicatorsPanel } from "../components/FundPerformanceIndicatorsPanel"
+import type { ValuationHoldingDetailRow, StockRiskExposure } from "./EquityValuationPanel"
+import type { AllocationTrendSeries } from "./AllocationTrendPanel"
+import type { SectorWeightTrendData } from "./SectorWeightTrendPanel"
+import type { LongShortMvTrendData } from "./LongShortMvTrendPanel"
+import type { ContractMvShareTrendData } from "./ContractMvShareTrendPanel"
+import type { ContractEquityTrendData } from "./ContractEquityTrendPanel"
+import type { FofTrendAnalysisData } from "./FofShareTrendPanel"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "../components/IntervalMetricsTable"
-import { MonthlyReturnsCalendar } from "../components/MonthlyReturnsCalendar"
-import { AnnualMetricsTable } from "../components/AnnualMetricsTable"
 import { buildFundIntervalMetricsFromNav } from "../components/performanceChartUtils"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
 import { getNavFieldValue, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "../components/shared"
+
+const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false })
+const FofVolatilityAnalysisPanel = dynamic(
+  () => import("./FofVolatilityAnalysisPanel").then((m) => m.FofVolatilityAnalysisPanel),
+  { ssr: false },
+)
+const FofReturnCurvePanel = dynamic(
+  () => import("./FofReturnCurvePanel").then((m) => m.FofReturnCurvePanel),
+  { ssr: false },
+)
+const FofReturnAnalysisPanel = dynamic(
+  () => import("./FofReturnAnalysisPanel").then((m) => m.FofReturnAnalysisPanel),
+  { ssr: false },
+)
+const ValuationEmptyAnalysis = dynamic(
+  () => import("./ValuationEmptyAnalysis").then((m) => m.ValuationEmptyAnalysis),
+  { ssr: false },
+)
+const FofTransactionAnalysisPanel = dynamic(
+  () => import("./FofTransactionAnalysisPanel").then((m) => m.FofTransactionAnalysisPanel),
+  { ssr: false },
+)
+const FofAllocationRiskCharts = dynamic(
+  () => import("./FofAllocationRiskCharts").then((m) => m.FofAllocationRiskCharts),
+  { ssr: false },
+)
+const FofRegimeAttributionPanel = dynamic(
+  () => import("./FofRegimeAttributionPanel").then((m) => m.FofRegimeAttributionPanel),
+  { ssr: false },
+)
+const EquityValuationPanel = dynamic(
+  () => import("./EquityValuationPanel").then((m) => m.EquityValuationPanel),
+  { ssr: false },
+)
+const DerivativesPanel = dynamic(
+  () => import("./DerivativesPanel").then((m) => m.DerivativesPanel),
+  { ssr: false },
+)
+const SectorMarketSharePanel = dynamic(
+  () => import("./SectorMarketSharePanel").then((m) => m.SectorMarketSharePanel),
+  { ssr: false },
+)
+const OptionsPanel = dynamic(
+  () => import("./OptionsPanel").then((m) => m.OptionsPanel),
+  { ssr: false },
+)
+const GreeksPanel = dynamic(
+  () => import("./GreeksTermPanel").then((m) => m.GreeksPanel),
+  { ssr: false },
+)
+const TermAnalysisPanel = dynamic(
+  () => import("./GreeksTermPanel").then((m) => m.TermAnalysisPanel),
+  { ssr: false },
+)
+const AllocationTrendPanel = dynamic(
+  () => import("./AllocationTrendPanel").then((m) => m.AllocationTrendPanel),
+  { ssr: false },
+)
+const SectorWeightTrendPanel = dynamic(
+  () => import("./SectorWeightTrendPanel").then((m) => m.SectorWeightTrendPanel),
+  { ssr: false },
+)
+const LongShortMvTrendPanel = dynamic(
+  () => import("./LongShortMvTrendPanel").then((m) => m.LongShortMvTrendPanel),
+  { ssr: false },
+)
+const ContractMvShareTrendPanel = dynamic(
+  () => import("./ContractMvShareTrendPanel").then((m) => m.ContractMvShareTrendPanel),
+  { ssr: false },
+)
+const ContractEquityTrendPanel = dynamic(
+  () => import("./ContractEquityTrendPanel").then((m) => m.ContractEquityTrendPanel),
+  { ssr: false },
+)
+const FofShareTrendPanel = dynamic(
+  () => import("./FofShareTrendPanel").then((m) => m.FofShareTrendPanel),
+  { ssr: false },
+)
+const WinRateAnalysisPanel = dynamic(
+  () => import("../components/WinRateAnalysisPanel").then((m) => m.WinRateAnalysisPanel),
+  { ssr: false },
+)
+const FundPerformanceIndicatorsPanel = dynamic(
+  () => import("../components/FundPerformanceIndicatorsPanel").then((m) => m.FundPerformanceIndicatorsPanel),
+  { ssr: false },
+)
+const MonthlyReturnsCalendar = dynamic(
+  () => import("../components/MonthlyReturnsCalendar").then((m) => m.MonthlyReturnsCalendar),
+  { ssr: false },
+)
+const AnnualMetricsTable = dynamic(
+  () => import("../components/AnnualMetricsTable").then((m) => m.AnnualMetricsTable),
+  { ssr: false },
+)
 
 type AllocationRow = {
   index: number
@@ -304,7 +370,6 @@ export default function FundValuationAnalysisPage() {
     setLoading(true)
     setError(null)
     setReturnCurves([])
-    setCurvesLoading(true)
     const qs = mode === "major" ? "mode=major" : "mode=all"
     fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation?${qs}`)
       .then(async (r) => {
@@ -322,7 +387,6 @@ export default function FundValuationAnalysisPage() {
           setFilterFrom(from)
           setFilterTo(to)
         }
-        if (d.layout_type !== "fof" || !d.has_data) setCurvesLoading(false)
       })
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
       .finally(() => setLoading(false))
@@ -416,6 +480,8 @@ export default function FundValuationAnalysisPage() {
       setNavRows(series)
       setFundStrategy(json.info?.strategy_l1 ?? json.info?.strategy_l2 ?? null)
       const info = json.info
+      const nextBench = info?.benchmark ? normalizeBenchmarkLabel(info.benchmark) : filterBench
+      if (info?.benchmark) setFilterBench(nextBench)
       setFundInfoMetrics(info ? {
         ret_1w:    info.ret_1w    ? parseFloat(info.ret_1w)    : null,
         ret_1m:    info.ret_1m    ? parseFloat(info.ret_1m)    : null,
@@ -426,7 +492,7 @@ export default function FundValuationAnalysisPage() {
         calmar_1y: info.calmar_1y ? parseFloat(info.calmar_1y) : null,
       } : null)
 
-      const benchKey = benchmarkKeyFromLabel(filterBench)
+      const benchKey = benchmarkKeyFromLabel(nextBench)
       if (!benchKey || series.length < 2) {
         setBenchmarkData([])
         return
@@ -450,7 +516,6 @@ export default function FundValuationAnalysisPage() {
     const needsNav =
       activeTab === "产品表现"
       || activeTab === "业绩指标"
-      || activeTab === "持仓要素"
       || activeTab === "归因分析"
     if (!needsNav || !beian_hao || !filterFrom || !filterTo) return
     void loadProductPerformance()
@@ -625,7 +690,6 @@ export default function FundValuationAnalysisPage() {
     if (
       activeTab === "产品表现"
       || activeTab === "业绩指标"
-      || activeTab === "持仓要素"
       || activeTab === "归因分析"
     ) {
       void loadProductPerformance()
@@ -645,18 +709,6 @@ export default function FundValuationAnalysisPage() {
     setFilterNavType("复权净值")
     setConfigMode("major")
   }
-
-  useEffect(() => {
-    if (!data?.beian_hao) return
-    fetch(`/ma/api/private-funds/${encodeURIComponent(data.beian_hao)}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json: { info?: { benchmark?: string | null } } | null) => {
-        if (json?.info?.benchmark) {
-          setFilterBench(normalizeBenchmarkLabel(json.info.benchmark))
-        }
-      })
-      .catch(() => {})
-  }, [data?.beian_hao])
 
   function handleExportCsv() {
     if (!data?.allocation.length) return
@@ -1118,6 +1170,8 @@ export default function FundValuationAnalysisPage() {
                 toDate={filterTo}
                 strategyTrend={trendData?.fof_trend?.strategy_trend ?? null}
                 loading={trendLoading || curvesLoading}
+                netAssetValue={data?.net_asset_value}
+                otherHoldings={data?.other_holdings ?? []}
               />
             </>
           ) : (
@@ -1260,6 +1314,8 @@ export default function FundValuationAnalysisPage() {
               netAssetValue={data.net_asset_value}
               navRows={navRows}
               navType={filterNavType}
+              otherHoldings={data.other_holdings ?? []}
+              strategyTrend={trendData?.fof_trend?.strategy_trend ?? null}
             />
             <FofReturnCurvePanel
               series={returnCurves.length > 0 ? returnCurves : (data.return_curves ?? [])}

@@ -25,7 +25,6 @@ import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 import { listFundMetricsLatest } from "@/lib/server/email-valuation-metrics-pg"
 import { lookupAmacMandatorName } from "@/lib/server/amac-fund-metadata"
 import { resolveValuationCustodian, normalizeRegistrationCustodian } from "@/lib/server/email-valuation-custodian"
-import { fetchListedFundNavBatch } from "@/lib/server/listed-fund-eastmoney-nav"
 import {
   extractListedFundCodeFromName,
   isListedFundCode,
@@ -45,6 +44,7 @@ import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { lookupManagedProductOverride, lookupManagedProductCustodian, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import {
+  cacheFreshValuationCurves,
   cacheFreshValuationSnapshot,
   readValuationCacheIfFresh,
 } from "@/lib/server/valuation-cache-refresh"
@@ -322,33 +322,40 @@ async function resolveFundMeta(
   } | undefined
 
   try {
-    const rows = await query<{
-      product_name: string
-      manager: string | null
-      inception_date: string | null
-    }>(
-      `SELECT product_name, manager, inception_date::text AS inception_date
-       FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
-      [beian_hao],
-    )
-    pfi = rows[0]
-  } catch {
-    // optional
-  }
-
-  try {
-    const rows = await query<{
-      product_name: string | null
-      short_name: string | null
-      custodian: string | null
-      inception_date: string | null
-      registration_date: string | null
-    }>(
-      `SELECT product_name, short_name, custodian, inception_date::text, registration_date::text
-       FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
-      [beian_hao],
-    )
-    bfl = rows[0]
+    const [pfiRows, bflRows] = await Promise.all([
+      query<{
+        product_name: string
+        manager: string | null
+        inception_date: string | null
+      }>(
+        `SELECT product_name, manager, inception_date::text AS inception_date
+         FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
+        [beian_hao],
+      ).catch(() => [] as Array<{
+        product_name: string
+        manager: string | null
+        inception_date: string | null
+      }>),
+      query<{
+        product_name: string | null
+        short_name: string | null
+        custodian: string | null
+        inception_date: string | null
+        registration_date: string | null
+      }>(
+        `SELECT product_name, short_name, custodian, inception_date::text, registration_date::text
+         FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
+        [beian_hao],
+      ).catch(() => [] as Array<{
+        product_name: string | null
+        short_name: string | null
+        custodian: string | null
+        inception_date: string | null
+        registration_date: string | null
+      }>),
+    ])
+    pfi = pfiRows[0]
+    bfl = bflRows[0]
   } catch {
     // optional
   }
@@ -1336,14 +1343,6 @@ async function loadListedFundMarketNavBatch(
     })
   }
 
-  const missing = listedCodes.filter((code) => !out.has(code))
-  if (missing.length > 0) {
-    const fetched = await fetchListedFundNavBatch(missing, asOfDate)
-    for (const [code, detail] of fetched) {
-      out.set(code, detail)
-    }
-  }
-
   return out
 }
 
@@ -1514,8 +1513,8 @@ async function buildFundHoldings(
         .map((row) => row.fundName)
         .filter(Boolean),
     ),
-  ].slice(0, 20)
-  const CODE_LOOKUP_CONCURRENCY = 4
+  ].slice(0, 8)
+  const CODE_LOOKUP_CONCURRENCY = 8
   for (let i = 0; i < missingNames.length; i += CODE_LOOKUP_CONCURRENCY) {
     const chunk = missingNames.slice(i, i + CODE_LOOKUP_CONCURRENCY)
     await Promise.all(
@@ -1683,6 +1682,54 @@ function buildOtherHoldings(holdings: HoldingRow[], netAssetValue: number): Othe
   return rows.map((row, i) => ({ index: i + 1, ...row }))
 }
 
+async function loadEmailNavSeriesForCodes(
+  codes: string[],
+  from: string,
+  to: string,
+): Promise<Map<string, Array<{ date: string; nav: number }>>> {
+  const out = new Map<string, Array<{ date: string; nav: number }>>()
+  const cleaned = [...new Set(codes.map((c) => c.trim()).filter(Boolean))]
+  if (cleaned.length === 0) return out
+
+  const rows = await query<{ product_code: string; nav_date: string; nav: string }>(
+    `SELECT BTRIM(product_code) AS product_code, nav_date::text AS nav_date, nav::text AS nav
+     FROM ops_email_nav_records
+     WHERE BTRIM(product_code) = ANY($1::text[])
+       AND nav_date >= $2::date
+       AND nav_date <= $3::date
+       AND nav IS NOT NULL
+     ORDER BY product_code, nav_date ASC, id DESC`,
+    [cleaned, from, to],
+  )
+
+  const byCode = new Map<string, Array<{ date: string; nav: number }>>()
+  for (const row of rows) {
+    const nav = parsePlausibleNav(row.nav)
+    if (nav == null) continue
+    const list = byCode.get(row.product_code) ?? []
+    list.push({ date: row.nav_date.slice(0, 10), nav })
+    byCode.set(row.product_code, list)
+  }
+  for (const [code, points] of byCode) {
+    out.set(code, dedupeNavPointsByDate(points))
+  }
+  return out
+}
+
+function emailNavSeriesForHolding(
+  holding: FundHoldingRow,
+  byCode: Map<string, Array<{ date: string; nav: number }>>,
+): Array<{ date: string; nav: number }> {
+  let best: Array<{ date: string; nav: number }> = []
+  for (const code of [holding.beianHao, holding.valuationCode]) {
+    const key = code?.trim()
+    if (!key) continue
+    const points = byCode.get(key) ?? byCode.get(key.toUpperCase())
+    if (points && points.length > best.length) best = points
+  }
+  return best
+}
+
 async function loadEmailNavSeriesForHolding(
   holding: FundHoldingRow,
   from: string,
@@ -1848,9 +1895,17 @@ async function buildUnderlyingReturnCurves(
   defaultFrom.setFullYear(defaultFrom.getFullYear() - 1)
   const from = fromDate?.slice(0, 10) ?? defaultFrom.toISOString().slice(0, 10)
 
-  const snapshots = await loadFundValuationTrendSnapshots(rawBeianHao, from, to)
-  const pointsByKey = new Map<string, Array<{ date: string; nav: number }>>()
+  const allCodes = fundHoldings.flatMap((h) => [h.beianHao, h.valuationCode]).filter((c): c is string => Boolean(c))
+  const emailByCode = await loadEmailNavSeriesForCodes(allCodes, from, to)
 
+  const emailCovered = fundHoldings.filter(
+    (h) => emailNavSeriesForHolding(h, emailByCode).length >= 20,
+  ).length
+  const snapshots = emailCovered >= Math.ceil(fundHoldings.length * 0.6)
+    ? []
+    : await loadFundValuationTrendSnapshots(rawBeianHao, from, to)
+
+  const pointsByKey = new Map<string, Array<{ date: string; nav: number }>>()
   for (const snapshot of snapshots) {
     for (const h of dedupeFundHoldings(snapshot.holdings)) {
       const nav = extractNavFromFundHolding(h)
@@ -1864,34 +1919,50 @@ async function buildUnderlyingReturnCurves(
     }
   }
 
-  const tasks = fundHoldings.map(async (holding) => {
-    const displayName = normalizeFundDisplayName(holding.fundName)
+  const MIN_POINTS = 20
+  const needOfficial: FundHoldingRow[] = []
+  const seriesInputs = fundHoldings.map((holding) => {
+    const emailFallback = emailNavSeriesForHolding(holding, emailByCode)
     const snapshotPoints = resolveSnapshotNavPoints(holding, pointsByKey)
-    const [emailFallback, officialFallback] = await Promise.all([
-      loadEmailNavSeriesForHolding(holding, from, to),
-      loadNavSeriesForHolding(holding, from, to),
-    ])
-    const navPoints = [officialFallback, emailFallback, snapshotPoints]
+    const bestKnown = [emailFallback, snapshotPoints]
       .map((points) => dedupeNavPointsByDate(points))
       .sort((a, b) => b.length - a.length)[0] ?? []
+    if (bestKnown.length < MIN_POINTS) needOfficial.push(holding)
+    return { holding, bestKnown }
+  })
 
+  const officialByName = new Map<string, Array<{ date: string; nav: number }>>()
+  const OFFICIAL_CONCURRENCY = 3
+  for (let i = 0; i < needOfficial.length; i += OFFICIAL_CONCURRENCY) {
+    const chunk = needOfficial.slice(i, i + OFFICIAL_CONCURRENCY)
+    await Promise.all(chunk.map(async (holding) => {
+      try {
+        officialByName.set(holding.fundName, await loadNavSeriesForHolding(holding, from, to))
+      } catch {
+        officialByName.set(holding.fundName, [])
+      }
+    }))
+  }
+
+  return seriesInputs.map(({ holding, bestKnown }) => {
+    const officialFallback = officialByName.get(holding.fundName) ?? []
+    const navPoints = [officialFallback, bestKnown]
+      .map((points) => dedupeNavPointsByDate(points))
+      .sort((a, b) => b.length - a.length)[0] ?? []
     const baseNav = navPoints[0]?.nav ?? 0
     const points: ReturnCurvePoint[] = navPoints.map((p) => ({
       date: p.date,
       nav: p.nav,
       returnPct: baseNav > 0 ? (p.nav / baseNav - 1) * 100 : 0,
     }))
-
     return {
       fundName: holding.fundName,
-      displayName,
+      displayName: normalizeFundDisplayName(holding.fundName),
       beianHao: holding.beianHao,
       valuationCode: holding.valuationCode,
       points,
     } satisfies ReturnCurveSeries
   })
-
-  return Promise.all(tasks)
 }
 
 export async function getFundValuationAllocation(
@@ -1912,7 +1983,6 @@ export async function getFundValuationAllocation(
       )
       if (cached) return enrichCachedFundStrategies(sanitizeAllocationDisplayNames(cached))
     } else if (curvesFrom && curvesTo) {
-      // Curves request: try combining cached snapshot + cached curves
       const [snapshot, curves] = await Promise.all([
         readValuationCacheIfFresh<FundValuationAllocationResult>(rawBeianHao, "snapshot"),
         readValuationCacheIfFresh<ReturnCurveSeries[]>(rawBeianHao, "curves", {
@@ -1923,11 +1993,20 @@ export async function getFundValuationAllocation(
       if (snapshot && curves && curvesHaveUsableNavHistory(curves)) {
         return enrichCachedFundStrategies(sanitizeAllocationDisplayNames({ ...snapshot, return_curves: curves }))
       }
+      if (snapshot) {
+        const built = await buildUnderlyingReturnCurves(
+          rawBeianHao,
+          snapshot.fund_holdings ?? [],
+          curvesFrom,
+          curvesTo,
+        )
+        void cacheFreshValuationCurves(rawBeianHao, built, { fromDate: curvesFrom, toDate: curvesTo })
+        return enrichCachedFundStrategies(sanitizeAllocationDisplayNames({ ...snapshot, return_curves: built }))
+      }
     }
   }
 
   const beian_hao = await resolveRouteFundIdFast(rawBeianHao)
-  const product_name = await resolveFundName(beian_hao)
 
   const candidateCodes = new Set<string>([beian_hao])
   const remapped = remapManagedProductBeianCode(beian_hao)
@@ -1935,7 +2014,28 @@ export async function getFundValuationAllocation(
   const override = lookupManagedProductOverride(beian_hao)
   if (override?.beian_hao) candidateCodes.add(override.beian_hao)
 
-  const fundMetaPromise = resolveFundMeta(beian_hao, product_name, { includeLatestNav: false })
+  const [product_name, candidateHits, fundMetaEarly] = await Promise.all([
+    resolveFundName(beian_hao),
+    Promise.all(
+      [...candidateCodes].map(async (code) => {
+        const [mRows, hResult] = await Promise.all([
+          listFundMetricsLatest({ productCode: code }),
+          listFundLatestValuationHoldings({
+            productCode: code,
+            includeAnalysisOnly: false,
+            limit: 2000,
+            skipTotal: true,
+          }),
+        ])
+        return {
+          code,
+          metrics: mRows[0] ?? null,
+          holdings: hResult.holdings,
+        }
+      }),
+    ),
+    resolveFundMeta(beian_hao, null, { includeLatestNav: false }),
+  ])
 
   let metrics: Awaited<ReturnType<typeof listFundMetricsLatest>>[number] | null = null
   let holdings: Awaited<ReturnType<typeof listFundLatestValuationHoldings>>["holdings"] = []
@@ -1943,24 +2043,6 @@ export async function getFundValuationAllocation(
   let matchedCode: string | null = null
   let matchedFundName: string | null = null
 
-  const candidateHits = await Promise.all(
-    [...candidateCodes].map(async (code) => {
-      const [mRows, hResult] = await Promise.all([
-        listFundMetricsLatest({ productCode: code }),
-        listFundLatestValuationHoldings({
-          productCode: code,
-          includeAnalysisOnly: false,
-          limit: 2000,
-          skipTotal: true,
-        }),
-      ])
-      return {
-        code,
-        metrics: mRows[0] ?? null,
-        holdings: hResult.holdings,
-      }
-    }),
-  )
   const codeHit = candidateHits.find((hit) => hit.metrics || hit.holdings.length > 0)
   if (codeHit) {
     metrics = codeHit.metrics
@@ -1989,7 +2071,7 @@ export async function getFundValuationAllocation(
     }
   }
 
-  const fundMeta = await fundMetaPromise
+  const fundMeta = fundMetaEarly
 
   const custody_balance = metrics ? parseNum(metrics.custody_balance) : 0
   const valuation_unit_nav = metrics ? parseNum(metrics.unit_nav) : 0
@@ -2137,8 +2219,12 @@ export async function getFundValuationAllocation(
     beian_hao,
   )
 
+  const metricsCustodian = metrics?.custodian
+    ? (resolveValuationCustodian(metrics.custodian) ?? normalizeRegistrationCustodian(metrics.custodian))
+    : null
+
   let emailCustodian: string | null = null
-  if (!managedCustodian) {
+  if (!managedCustodian && !metricsCustodian && !fundMeta.custodian) {
     emailCustodian =
       (await lookupValuationCustodianByRecordId(holdings[0]?.valuation_record_id))
       ?? (await lookupValuationCustodianByRecordId(metrics?.valuation_record_id))
@@ -2149,10 +2235,6 @@ export async function getFundValuationAllocation(
       })
     }
   }
-
-  const metricsCustodian = metrics?.custodian
-    ? (resolveValuationCustodian(metrics.custodian) ?? normalizeRegistrationCustodian(metrics.custodian))
-    : null
 
   const result = {
     beian_hao,
@@ -2201,8 +2283,15 @@ export async function getFundValuationAllocation(
 
   const sanitized = sanitizeAllocationDisplayNames(result)
 
-  if (mode === "major" && !includeReturnCurves && sanitized.has_data) {
-    await cacheFreshValuationSnapshot(rawBeianHao, sanitized)
+  if (mode === "major" && sanitized.has_data) {
+    const snapshotForCache = { ...sanitized, return_curves: [] as ReturnCurveSeries[] }
+    void cacheFreshValuationSnapshot(rawBeianHao, snapshotForCache)
+    if (includeReturnCurves && curvesFrom && curvesTo && sanitized.return_curves.length > 0) {
+      void cacheFreshValuationCurves(rawBeianHao, sanitized.return_curves, {
+        fromDate: curvesFrom,
+        toDate: curvesTo,
+      })
+    }
   }
 
   return sanitized
@@ -2742,7 +2831,7 @@ async function enrichCachedFundStrategies(
   const beianCodes = rows
     .map((row) => row.beianHao ?? row.valuationCode)
     .filter((v): v is string => Boolean(v))
-  const names = rows.map((row) => row.fundName).filter(Boolean)
+  const names = rows.map((row) => row.fundName).filter(Boolean).slice(0, 12)
   const strategyMap = await loadCompanyStrategyBatch(beianCodes, names)
 
   const fund_holdings = rows.map((row) => {
@@ -2946,7 +3035,6 @@ async function loadFundValuationTrendSnapshots(
     valuation_date: string
     custody_balance: string | null
     net_asset_value: string | null
-    holdings: ValuationRow[]
   }>(
     `SELECT DISTINCT ON (valuation_date)
        id,
@@ -2954,8 +3042,7 @@ async function loadFundValuationTrendSnapshots(
        fund_name,
        valuation_date::text AS valuation_date,
        custody_balance::text AS custody_balance,
-       net_asset_value::text AS net_asset_value,
-       holdings
+       net_asset_value::text AS net_asset_value
      FROM ops_email_valuation_records
      WHERE (product_code = ANY($1::text[]) ${nameClause})
        AND valuation_date >= $${recordParams.length - 1}::date
@@ -2973,7 +3060,6 @@ async function loadFundValuationTrendSnapshots(
       valuation_date: string
       custody_balance: string | null
       net_asset_value: string | null
-      holdings: ValuationRow[]
     }>(
       `SELECT DISTINCT ON (valuation_date)
          id,
@@ -2981,8 +3067,7 @@ async function loadFundValuationTrendSnapshots(
          fund_name,
          valuation_date::text AS valuation_date,
          custody_balance::text AS custody_balance,
-         net_asset_value::text AS net_asset_value,
-         holdings
+         net_asset_value::text AS net_asset_value
        FROM ops_email_valuation_records
        WHERE fund_name ILIKE $1
          AND valuation_date >= $2::date
@@ -3014,17 +3099,31 @@ async function loadFundValuationTrendSnapshots(
     else holdingsByRecord.set(id, [row])
   }
 
-  const snapshots: ValuationTrendSnapshot[] = []
-  for (const record of records) {
-    const recordId = parseInt(record.id, 10)
-    let holdings = holdingsByRecord.get(recordId) ?? []
-    if (holdings.length === 0) {
-      holdings = jsonHoldingsToRows(recordId, {
+  const missingIds = recordIds.filter((id) => (holdingsByRecord.get(id)?.length ?? 0) === 0)
+  if (missingIds.length > 0) {
+    const jsonbRows = await query<{ id: string; holdings: ValuationRow[] }>(
+      `SELECT id, holdings
+       FROM ops_email_valuation_records
+       WHERE id = ANY($1::bigint[])`,
+      [missingIds],
+    )
+    for (const row of jsonbRows) {
+      const recordId = parseInt(row.id, 10)
+      const record = records.find((r) => parseInt(r.id, 10) === recordId)
+      if (!record) continue
+      const parsed = jsonHoldingsToRows(recordId, {
         productCode: record.product_code,
         fundName: record.fund_name,
         valuationDate: record.valuation_date.slice(0, 10),
-      }, Array.isArray(record.holdings) ? record.holdings : [])
+      }, Array.isArray(row.holdings) ? row.holdings : [])
+      if (parsed.length > 0) holdingsByRecord.set(recordId, parsed)
     }
+  }
+
+  const snapshots: ValuationTrendSnapshot[] = []
+  for (const record of records) {
+    const recordId = parseInt(record.id, 10)
+    const holdings = holdingsByRecord.get(recordId) ?? []
     if (holdings.length === 0) continue
 
     snapshots.push({

@@ -1133,6 +1133,8 @@ export function InvestmentNotesView() {
                   <NoteAttachmentPopover
                     attachments={activeAttachments}
                     onTriggerUpload={triggerUpload}
+                    onDropFiles={(files) => void handleUploadFiles(files)}
+                    uploading={uploadingAttachments}
                     onRemove={(id) => void handleRemoveAttachment(id)}
                     onOpen={(id) => void handleOpenAttachment(id)}
                   />

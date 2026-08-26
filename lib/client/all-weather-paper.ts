@@ -23,6 +23,8 @@ export type AllWeatherDailyNav = {
   date: string
   equity: number
   dailyPnl: number
+  sleevePnl: Record<SleeveKey, number>
+  productPnl: Record<string, number>
 }
 
 export type AllWeatherSleevePnl = {
@@ -44,6 +46,8 @@ export type AllWeatherBookMeta = {
   daily: AllWeatherDailyNav[]
   /** Yesterday's settlement (or book prevPrice) per contract, for live daily P/L. */
   prevMarks: Record<string, number>
+  /** Book's last close per contract. Not the live extraMarks cache. */
+  bookMarks: Record<string, number>
   sleeves: Record<SleeveKey, AllWeatherSleevePnl>
   positions: Record<string, AllWeatherSleevePnl & { sleeve: string }>
 }
@@ -74,7 +78,13 @@ type AwResponse = {
     cumPnl?: number
     initialCapital?: number
     positions?: AwPosition[]
-    daily?: Array<{ date?: string; equity?: number; dailyPnl?: number }>
+    daily?: Array<{
+      date?: string
+      equity?: number
+      dailyPnl?: number
+      sleevePnl?: Record<string, number>
+      productPnl?: Record<string, number>
+    }>
   }
   sleeves?: Array<{ sleeve?: string; dailyPnl?: number; cumPnl?: number }>
   rebalanceTrades?: Array<{
@@ -175,8 +185,15 @@ export async function fetchAllWeatherOverview(refresh = false) {
         date: String(row.date),
         equity: Number(row.equity),
         dailyPnl: Number(row.dailyPnl) || 0,
+        sleevePnl: Object.fromEntries(
+          SLEEVE_KEYS.map((key) => [key, Number(row.sleevePnl?.[key]) || 0]),
+        ) as Record<SleeveKey, number>,
+        productPnl: Object.fromEntries(
+          Object.entries(row.productPnl || {}).map(([asset, pnl]) => [String(asset).toUpperCase(), Number(pnl) || 0]),
+        ),
       })),
     prevMarks,
+    bookMarks: marks,
     sleeves,
     positions: positionBooks,
   }

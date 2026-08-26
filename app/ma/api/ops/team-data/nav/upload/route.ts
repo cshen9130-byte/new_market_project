@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { refreshManagedProductsListCache } from "@/lib/server/managed-products-list-cache-pg"
+import { invalidateTeamDataListCaches } from "@/lib/server/team-data-query-pg"
 import { uploadTeamNavRows } from "@/lib/server/team-nav-manage-pg"
 
 export const runtime = "nodejs"
@@ -47,8 +48,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "invalid_rows" }, { status: 400 })
     }
 
-    // Bust tracking list response cache so the next list fetch overlays fresh manual NAV.
+    // Bust tracking + 团队数据 list caches so the next fetch overlays fresh manual NAV.
     invalidateListResponseCache()
+    invalidateTeamDataListCaches()
 
     const beian = (beian_hao ?? "").trim().toUpperCase()
     let productName = (bodyProductName ?? "").trim() || beian

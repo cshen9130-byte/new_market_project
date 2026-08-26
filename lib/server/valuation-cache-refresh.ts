@@ -14,6 +14,52 @@ export type TouchedValuationFund = {
   fundName: string
 }
 
+const MEM_TTL_MS = 20_000
+const MEM_CACHE_MAX = 80
+const valuationMemCache = new Map<string, { at: number; data: unknown }>()
+
+function memCacheKey(
+  beianHao: string,
+  cacheKey: string,
+  options?: { fromDate?: string; toDate?: string },
+): string {
+  return [
+    beianHao.trim().toUpperCase(),
+    cacheKey,
+    options?.fromDate?.slice(0, 10) ?? "",
+    options?.toDate?.slice(0, 10) ?? "",
+  ].join("|")
+}
+
+function readValuationMemoryCache<T>(key: string): T | null {
+  const hit = valuationMemCache.get(key)
+  if (!hit) return null
+  if (Date.now() - hit.at >= MEM_TTL_MS) {
+    valuationMemCache.delete(key)
+    return null
+  }
+  return hit.data as T
+}
+
+function rememberValuationMemoryCache(key: string, data: unknown): void {
+  valuationMemCache.set(key, { at: Date.now(), data })
+  if (valuationMemCache.size <= MEM_CACHE_MAX) return
+  const oldest = valuationMemCache.keys().next().value
+  if (oldest != null) valuationMemCache.delete(oldest)
+}
+
+function dropValuationMemoryCache(beianHaos: string[]): void {
+  const codes = new Set(beianHaos.map((c) => c.trim().toUpperCase()).filter(Boolean))
+  if (codes.size === 0) {
+    valuationMemCache.clear()
+    return
+  }
+  for (const key of [...valuationMemCache.keys()]) {
+    const code = key.split("|")[0]
+    if (code && codes.has(code)) valuationMemCache.delete(key)
+  }
+}
+
 /** Latest 估值表 date for a fund — raw records win when metrics_latest lags. */
 export async function lookupLatestValuationDateForBeian(beianHao: string): Promise<string | null> {
   const code = beianHao.trim().toUpperCase()
@@ -40,35 +86,32 @@ export async function readValuationCacheIfFresh<T>(
   cacheKey: string,
   options?: { fromDate?: string; toDate?: string; maxAgeHours?: number },
 ): Promise<T | null> {
-  const cached = await readValuationCache<T>(beianHao, cacheKey, options)
+  const key = memCacheKey(beianHao, cacheKey, options)
+  const memHit = readValuationMemoryCache<T>(key)
+  if (memHit) return memHit
+
+  const [cached, latestDate] = await Promise.all([
+    readValuationCache<T>(beianHao, cacheKey, options),
+    lookupLatestValuationDateForBeian(beianHao),
+  ])
   if (!cached) return null
 
-  const latestDate = await lookupLatestValuationDateForBeian(beianHao)
-  if (!latestDate) return cached
-
-  if (cacheKey === "snapshot") {
-    const cacheDate = cacheValuationDate(cached)
-    if (cacheDate && cacheDate < latestDate) return null
-    return cached
+  if (latestDate) {
+    if (cacheKey === "snapshot") {
+      const cacheDate = cacheValuationDate(cached)
+      if (cacheDate && cacheDate < latestDate) return null
+    } else if ((cacheKey === "trend" || cacheKey === "curves") && options?.toDate) {
+      if (options.toDate.slice(0, 10) < latestDate) return null
+    }
   }
 
-  if (cacheKey === "trend" && options?.toDate) {
-    const toDay = options.toDate.slice(0, 10)
-    if (toDay < latestDate) return null
-    return cached
-  }
-
-  if (cacheKey === "curves" && options?.toDate) {
-    const toDay = options.toDate.slice(0, 10)
-    if (toDay < latestDate) return null
-    return cached
-  }
-
+  rememberValuationMemoryCache(key, cached)
   return cached
 }
 
 export async function invalidateValuationCache(beianHaos: string[]): Promise<void> {
   const codes = [...new Set(beianHaos.map((c) => c.trim().toUpperCase()).filter(Boolean))]
+  dropValuationMemoryCache(codes)
   if (codes.length === 0) return
   await query(
     `DELETE FROM ops_valuation_precomputed_cache WHERE beian_hao = ANY($1::text[])`,
@@ -153,9 +196,23 @@ export async function cacheFreshValuationSnapshot(
   beianHao: string,
   snapshot: unknown,
 ): Promise<void> {
+  rememberValuationMemoryCache(memCacheKey(beianHao, "snapshot"), snapshot)
   try {
     await writeValuationCache(beianHao, "snapshot", snapshot)
   } catch (err) {
     console.warn("[valuation-cache-refresh] snapshot write failed:", beianHao, err)
+  }
+}
+
+export async function cacheFreshValuationCurves(
+  beianHao: string,
+  curves: unknown,
+  range: { fromDate: string; toDate: string },
+): Promise<void> {
+  rememberValuationMemoryCache(memCacheKey(beianHao, "curves", range), curves)
+  try {
+    await writeValuationCache(beianHao, "curves", curves, range)
+  } catch (err) {
+    console.warn("[valuation-cache-refresh] curves write failed:", beianHao, err)
   }
 }

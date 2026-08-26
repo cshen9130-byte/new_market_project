@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { addTeamDataProduct } from "@/lib/server/team-data-query-pg"
 
 export const runtime = "nodejs"
@@ -27,6 +28,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "already_exists" }, { status: 409 })
     }
 
+    invalidateListResponseCache("ops-team-data")
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[team-data/add]", err)

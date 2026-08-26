@@ -584,13 +584,13 @@ export function PaperPortfolioPanel({
               type="button"
               disabled={paper.awLoading}
               onClick={() => {
-                void paper.loadAllWeather().then((sym) => {
+                void paper.loadAllWeather(true).then((sym) => {
                   if (sym) onSelectSymbol(sym)
                 })
               }}
               className="h-8 w-full rounded bg-[#4c84ff] text-[12px] text-white hover:bg-[#3d74ee] disabled:opacity-60"
             >
-              {paper.awLoading ? "同步全天候…" : "立即同步持仓"}
+              {paper.awLoading ? "刷新行情…" : "刷新行情"}
             </button>
           </>
         ) : (
@@ -598,7 +598,7 @@ export function PaperPortfolioPanel({
             type="button"
             disabled={paper.awLoading}
             onClick={() => {
-              void paper.loadAllWeather().then((sym) => {
+              void paper.loadAllWeather(false).then((sym) => {
                 if (sym) onSelectSymbol(sym)
               })
             }}

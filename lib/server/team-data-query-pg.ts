@@ -1,7 +1,7 @@
 /**
  * Team data list — one row per fund discovered in ops_email_nav_records.
  * Share-class naming and deduplication mirror 投资 FOF底层.
- * Identity tables are loaded once per request; matching runs in memory.
+ * Identity tables are loaded once per process and reused across list requests.
  */
 
 import { query } from "@/lib/db"
@@ -13,7 +13,6 @@ import {
   EMAIL_NAV_SOURCE_PRIORITY,
   sqlPostInvestmentVirtualNavExpr,
 } from "@/lib/server/email-nav-query"
-import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
 import { expandBeiansWithShareClassFamily } from "@/lib/server/list-cache-nav-batch"
 import { shareClassProductCodesMatch, sqlFundNameMatch } from "@/lib/server/fund-name-match"
@@ -22,7 +21,6 @@ import {
   remapManagedProductBeianCode,
   resolveManagedProductBeian,
 } from "@/lib/server/managed-product-beian"
-import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
 /**
  * Explicit 备案号 for team-data rows when email product_code is missing on some
@@ -175,9 +173,16 @@ type IdentityIndexes = {
 
 const IDENTITY_CACHE_TTL_MS = 5 * 60 * 1000
 const EMAIL_FUNDS_CACHE_TTL_MS = 60 * 1000
+const RESOLVED_LIST_CACHE_TTL_MS = 60 * 1000
 
 let identityCache: { tables: IdentityTables; indexes: IdentityIndexes; at: number } | null = null
 let emailFundsCache: { rows: RawEmailFund[]; at: number } | null = null
+let resolvedListCache: {
+  strategySource: "company" | "platform"
+  rows: ResolvedFund[]
+  at: number
+} | null = null
+let teamDataProductsTableReady = false
 
 type ManualTeamDataProduct = {
   beian_hao: string
@@ -196,6 +201,7 @@ function maxIsoTimestamp(a: string | null | undefined, b: string | null | undefi
 export function invalidateTeamDataListCaches(): void {
   emailFundsCache = null
   identityCache = null
+  resolvedListCache = null
 }
 
 /** Resolve manually added 团队数据 products for fund detail API fallback. */
@@ -253,6 +259,7 @@ export async function lookupTeamDataProductFundInfo(identifier: string): Promise
 }
 
 async function ensureTeamDataProductsTable(): Promise<void> {
+  if (teamDataProductsTableReady) return
   await query(`
     CREATE TABLE IF NOT EXISTS ops_team_data_products (
       id           SERIAL PRIMARY KEY,
@@ -267,6 +274,7 @@ async function ensureTeamDataProductsTable(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_ops_team_data_products_beian
       ON ops_team_data_products (beian_hao)
   `)
+  teamDataProductsTableReady = true
 }
 
 async function loadManualTeamDataProducts(): Promise<ManualTeamDataProduct[]> {
@@ -999,7 +1007,6 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
   if (emailFundsCache && Date.now() - emailFundsCache.at < EMAIL_FUNDS_CACHE_TTL_MS) {
     return emailFundsCache.rows
   }
-  await ensureEmailNavTable()
   const rows = await query<RawEmailFund & { subject?: string | null }>(
     `WITH email_ranked AS (
        SELECT
@@ -1336,7 +1343,6 @@ async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<Resol
   )]
   if (beians.length === 0) return rows
   const lookupCodes = expandBeiansWithShareClassFamily(beians)
-  await ensureEmailNavTable()
   const emailRows = await query<{
     code: string
     fund_name: string | null
@@ -1344,33 +1350,17 @@ async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<Resol
     team_nav: string
     updated_at: string | null
   }>(
-    `SELECT DISTINCT ON (code)
-       code,
+    `SELECT DISTINCT ON (product_code)
+       UPPER(BTRIM(product_code)) AS code,
        fund_name,
        nav_date::text AS team_nav_date,
        nav::text AS team_nav,
        created_at::text AS updated_at
-     FROM (
-       SELECT
-         UPPER(BTRIM(e.product_code)) AS code,
-         e.fund_name,
-         e.nav_date,
-         e.nav,
-         e.created_at,
-         e.subject,
-         e.source,
-         e.id
-       FROM ops_email_nav_records e
-       WHERE UPPER(BTRIM(e.product_code)) = ANY($1::text[])
-         AND e.nav IS NOT NULL
-         AND e.nav_date IS NOT NULL
-     ) e
-     ORDER BY
-       code,
-       nav_date DESC,
-       CASE WHEN ${sqlPostInvestmentVirtualNavExpr("e.subject")} THEN 0 ELSE 1 END,
-       ${EMAIL_NAV_SOURCE_PRIORITY},
-       e.id DESC`,
+     FROM ops_email_nav_records
+     WHERE product_code = ANY($1::text[])
+       AND nav IS NOT NULL
+       AND nav_date IS NOT NULL
+     ORDER BY product_code, nav_date DESC, id DESC`,
     [lookupCodes],
   ).catch(() => [] as Array<{
     code: string
@@ -1380,8 +1370,23 @@ async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<Resol
     updated_at: string | null
   }>)
   if (emailRows.length === 0) return rows
+  const tipsByCode = new Map<string, typeof emailRows>()
+  for (const tip of emailRows) {
+    const code = tip.code.trim().toUpperCase()
+    if (!code) continue
+    const list = tipsByCode.get(code)
+    if (list) list.push(tip)
+    else tipsByCode.set(code, [tip])
+  }
   return rows.map((row) => {
-    const fits = emailRows.filter((tip) => emailTipFitsRow(tip, row))
+    const beian = row.beian_hao?.trim() || ""
+    if (!beian) return row
+    const fits: typeof emailRows = []
+    for (const alias of beianCodeAliases(beian)) {
+      for (const tip of tipsByCode.get(alias) ?? []) {
+        if (emailTipFitsRow(tip, row)) fits.push(tip)
+      }
+    }
     if (fits.length === 0) return row
     let best = fits[0]
     for (const tip of fits.slice(1)) {
@@ -1402,8 +1407,15 @@ async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<Resol
 async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
   const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
   if (beians.length === 0) return rows
-  const [manualByBeian, manualEditRows] = await Promise.all([
-    loadManualTeamNavBatch(beians),
+  const [manualLatest, manualEditRows] = await Promise.all([
+    query<{ beian_hao: string; nav_date: string; unit_nav: string }>(
+      `SELECT DISTINCT ON (beian_hao)
+         beian_hao, nav_date::text AS nav_date, unit_nav::text AS unit_nav
+       FROM ops_team_nav_manual
+       WHERE beian_hao = ANY($1::text[]) AND nav_type = 'pre_fee'
+       ORDER BY beian_hao, nav_date DESC`,
+      [beians],
+    ).catch(() => [] as Array<{ beian_hao: string; nav_date: string; unit_nav: string }>),
     query<{ beian_hao: string; updated_at: string }>(
       `SELECT beian_hao, MAX(created_at)::text AS updated_at
        FROM ops_team_nav_manual
@@ -1412,6 +1424,7 @@ async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[
       [beians],
     ).catch(() => [] as Array<{ beian_hao: string; updated_at: string }>),
   ])
+  const manualByBeian = new Map(manualLatest.map((row) => [row.beian_hao.trim(), [row]]))
   const manualEditByBeian = new Map(
     manualEditRows.map((r) => [r.beian_hao.trim(), r.updated_at]),
   )
@@ -1529,67 +1542,67 @@ function valuationTipForRow(
   return pickLatestPlatformTip(tips)
 }
 
+async function loadLatestNavTipsFromTable(
+  table:
+    | "private_fund_nav_group_type6"
+    | "private_fund_nav_group"
+    | "private_fund_nav_group_hy"
+    | "private_fund_nav",
+  codes: string[],
+): Promise<Array<{ beian_hao: string; nav: string; price_date: string }>> {
+  if (codes.length === 0) return []
+  return query<{ beian_hao: string; nav: string; price_date: string }>(
+    `SELECT DISTINCT ON (beian_hao)
+       beian_hao, nav::text AS nav, price_date::text AS price_date
+     FROM ${table}
+     WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+     ORDER BY beian_hao, price_date DESC`,
+    [codes],
+  ).catch(() => [] as Array<{ beian_hao: string; nav: string; price_date: string }>)
+}
+
 async function loadOfficialPlatformNavTips(codes: string[]): Promise<Map<string, PlatformNavTip>> {
   if (codes.length === 0) return new Map()
-  const unionRows = await query<{ beian_hao: string; nav: string; price_date: string }>(
-    `SELECT DISTINCT ON (UPPER(BTRIM(beian_hao)))
-       BTRIM(beian_hao) AS beian_hao, nav::text AS nav, price_date::text AS price_date
-     FROM (
-       SELECT beian_hao, nav, price_date, 0 AS pri
-         FROM private_fund_nav_group_type6
-        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
-       UNION ALL
-       SELECT beian_hao, nav, price_date, 1
-         FROM private_fund_nav_group
-        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
-       UNION ALL
-       SELECT beian_hao, nav, price_date, 2
-         FROM private_fund_nav_group_hy
-        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
-       UNION ALL
-       SELECT beian_hao, nav, price_date, 3
-         FROM private_fund_nav
-        WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
-     ) u
-     ORDER BY UPPER(BTRIM(beian_hao)), price_date DESC, pri ASC`,
-    [codes.map((c) => c.trim().toUpperCase())],
-  ).catch(() =>
-    query<{ beian_hao: string; nav: string; price_date: string }>(
-      `SELECT DISTINCT ON (beian_hao)
-         beian_hao, nav::text, price_date::text
-       FROM private_fund_nav_group_type6
-       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
-       ORDER BY beian_hao, price_date DESC`,
-      [codes],
-    ).catch(() => [] as Array<{ beian_hao: string; nav: string; price_date: string }>),
+  const lookup = [...new Set(codes.map((c) => c.trim().toUpperCase()).filter(Boolean))]
+  // Equality (not UPPER/BTRIM) so idx_*_beian can be used. Scan order is pri:
+  // type6, group, hy — same-date ties keep the first tip.
+  // Skip private_fund_nav (3.7M rows) unless the grouped tables miss a code;
+  // that fallback is what made this list take multiple seconds.
+  const [type6, group, hy] = await Promise.all([
+    loadLatestNavTipsFromTable("private_fund_nav_group_type6", lookup),
+    loadLatestNavTipsFromTable("private_fund_nav_group", lookup),
+    loadLatestNavTipsFromTable("private_fund_nav_group_hy", lookup),
+  ])
+  const found = new Set(
+    [...type6, ...group, ...hy].map((row) => row.beian_hao.trim().toUpperCase()).filter(Boolean),
   )
-  return indexPlatformTips(unionRows)
+  const missing = lookup.filter((code) => !found.has(code))
+  const pfn = missing.length > 0
+    ? await loadLatestNavTipsFromTable("private_fund_nav", missing)
+    : []
+  return indexPlatformTips([...type6, ...group, ...hy, ...pfn])
 }
 
 async function loadValuationPlatformNavTips(codes: string[]): Promise<Map<string, PlatformNavTip>> {
   if (codes.length === 0) return new Map()
+  const lookup = [...new Set(codes.map((c) => c.trim().toUpperCase()).filter(Boolean))]
   const rows = await query<{ beian_hao: string; nav: string; price_date: string }>(
-    `SELECT DISTINCT ON (UPPER(BTRIM(beian_hao)))
-       BTRIM(beian_hao) AS beian_hao,
+    `SELECT DISTINCT ON (beian_hao)
+       beian_hao,
        unit_nav::text AS nav,
        nav_date::text AS price_date
      FROM ops_fof_underlying_valuation_nav_history
-     WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+     WHERE beian_hao = ANY($1::text[])
        AND unit_nav IS NOT NULL
        AND nav_date <= CURRENT_DATE
-     ORDER BY UPPER(BTRIM(beian_hao)), nav_date DESC`,
-    [codes.map((c) => c.trim().toUpperCase())],
+     ORDER BY beian_hao, nav_date DESC`,
+    [lookup],
   ).catch(() => [] as Array<{ beian_hao: string; nav: string; price_date: string }>)
   return indexPlatformTips(rows)
 }
 
 async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> {
   if (rows.length === 0) return []
-  try {
-    await ensureEmailValuationMetricsTables()
-  } catch {
-    // optional
-  }
 
   const beians = rows.map((r) => r.beian_hao).filter(Boolean) as string[]
   const officialCodes = [...new Set(beians.flatMap((b) => beianCodeAliases(b)))]
@@ -1601,7 +1614,7 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
       ? query<{ product_code: string; valuation_date: string }>(
           `SELECT product_code, valuation_date::text
            FROM ops_email_valuation_fund_metrics_latest
-           WHERE UPPER(BTRIM(product_code)) = ANY($1::text[])`,
+           WHERE product_code = ANY($1::text[])`,
           [valuationCodes],
         ).catch(() => [] as Array<{ product_code: string; valuation_date: string }>)
       : Promise.resolve([] as Array<{ product_code: string; valuation_date: string }>),
@@ -1714,17 +1727,26 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     sortDir,
   } = params
 
-  const [rawRows, manualProducts, { indexes }] = await Promise.all([
-    loadRawEmailFunds().then(dedupeRawFunds),
-    loadManualTeamDataProducts(),
-    loadIdentityTables(),
-  ])
-
-  let resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
-  resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
-  resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
-  resolved = await overlayEmailNavByProductCode(resolved)
-  resolved = await overlayManualTeamNav(resolved)
+  let resolved: ResolvedFund[]
+  if (
+    resolvedListCache
+    && resolvedListCache.strategySource === strategySource
+    && Date.now() - resolvedListCache.at < RESOLVED_LIST_CACHE_TTL_MS
+  ) {
+    resolved = resolvedListCache.rows
+  } else {
+    const [rawRows, manualProducts, { indexes }] = await Promise.all([
+      loadRawEmailFunds().then(dedupeRawFunds),
+      loadManualTeamDataProducts(),
+      loadIdentityTables(),
+    ])
+    resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
+    resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
+    resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
+    resolved = await overlayEmailNavByProductCode(resolved)
+    resolved = await overlayManualTeamNav(resolved)
+    resolvedListCache = { strategySource, rows: resolved, at: Date.now() }
+  }
 
   if (keyword) {
     const kw = keyword.toLowerCase()

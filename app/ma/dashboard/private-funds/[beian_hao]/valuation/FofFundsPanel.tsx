@@ -1,13 +1,19 @@
 "use client"
 
 import { useMemo, useState, type ReactNode } from "react"
+import dynamic from "next/dynamic"
 import { ChevronDown, Clock, Download, Info, Search, SquarePen } from "lucide-react"
 import { ProductSelectionPanel } from "@/components/ma/product-selection-panel"
 import {
   isValuationCashHoldingName,
   stripValuationSubjectPathPrefix,
 } from "@/lib/valuation-holding-display-name"
-import { FofStrategyPiesPanel, type StrategyPieSelection } from "./FofStrategyPiesPanel"
+import type { StrategyPieSelection } from "./FofStrategyPiesPanel"
+
+const FofStrategyPiesPanel = dynamic(
+  () => import("./FofStrategyPiesPanel").then((m) => m.FofStrategyPiesPanel),
+  { ssr: false },
+)
 
 export type FundHoldingRow = {
   index: number
