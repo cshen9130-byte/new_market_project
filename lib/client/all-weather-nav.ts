@@ -1,3 +1,5 @@
+import { isLiveSessionFor, mergeClosedMarks, validMark } from "@/lib/client/market-hours"
+
 /** Yesterday's close + today's live P/L. Not initial capital + today's P/L. */
 export function allWeatherLiveNav(bookEquity: number, bookDailyPnl: number, liveDailyPnl: number) {
   return bookEquity - bookDailyPnl + liveDailyPnl
@@ -41,6 +43,8 @@ export function allWeatherLiveMark(
   fallback: number,
 ) {
   if (!symbol) return fallback
+  // SimNow / 新浪 still print after the bell. Closed-session last is not a new trade.
+  if (!isLiveSessionFor(symbol)) return fallback
   const tick = quotes[symbol.toUpperCase()] || quotes[symbol]
   const last = tickPx(tick?.last)
   if (last != null) return last
@@ -48,6 +52,21 @@ export function allWeatherLiveMark(
   const ask = tickPx(tick?.ask)
   if (bid != null && ask != null) return (bid + ask) / 2
   return bid ?? ask ?? fallback
+}
+
+/** Keep the last in-session print. After close, ignore SimNow/Sina jitter. */
+export function allWeatherFrozenMarks(
+  prev: Record<string, number>,
+  rows: Array<{ symbol?: string; price: number }>,
+  quotes: Record<string, { last?: number | null; bid?: number | null; ask?: number | null }>,
+) {
+  const incoming: Record<string, number> = {}
+  for (const row of rows) {
+    if (!row.symbol) continue
+    const px = allWeatherLiveMark(row.symbol, quotes, row.price)
+    if (validMark(px)) incoming[row.symbol.toUpperCase()] = px
+  }
+  return mergeClosedMarks(prev, incoming)
 }
 
 export function allWeatherAnchorRows<T extends AllWeatherLiveRow>(rows: T[], asOf: string, today = todayYmd()) {

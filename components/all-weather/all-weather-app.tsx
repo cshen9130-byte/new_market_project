@@ -30,8 +30,8 @@ import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { authService } from "@/lib/auth"
 import type { CtpTick } from "@/lib/client/ctp-market"
-import { allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
-import { shanghaiYmd } from "@/lib/client/market-hours"
+import { allWeatherFrozenMarks, allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
+import { isLiveSessionFor, shanghaiYmd, validMark } from "@/lib/client/market-hours"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
 import { displayListedName, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { Button } from "@/components/ui/button"
@@ -234,6 +234,8 @@ export function AllWeatherApp() {
   const extraFileInputRef = useRef<HTMLInputElement>(null)
   useAllWeatherCtpWatch(authorized === true)
   const ctp = useCtpIndexFuturesFeed()
+  const frozenMarksRef = useRef<Record<string, number>>({})
+  const bookFingerprintRef = useRef("")
 
   const extraBytes = extraFiles.reduce((sum, f) => sum + f.size, 0)
 
@@ -416,31 +418,51 @@ export function AllWeatherApp() {
   const live = useMemo(() => {
     if (!overview) return null
     const quotes = ctp.quotes
-    const markOf = (symbol: string | undefined, fallback: number) => liveMark(symbol, quotes, fallback)
+    const rows = overview.book.positions.map((p) => ({
+      symbol: p.contract,
+      lots: p.lots,
+      multiplier: p.multiplier,
+      prevPrice: p.prevPrice ?? 0,
+      price: p.price,
+      dailyPnl: p.dailyPnl,
+      sleeve: p.sleeve,
+      asset: p.asset,
+      bookDaily: p.dailyPnl,
+      bookCum: p.cumPnl,
+    }))
+    const bookFp = rows.map((p) => `${p.symbol}:${p.price}`).join("|")
+    if (bookFp !== bookFingerprintRef.current) {
+      bookFingerprintRef.current = bookFp
+      frozenMarksRef.current = {}
+    }
+    frozenMarksRef.current = allWeatherFrozenMarks(frozenMarksRef.current, rows, quotes)
+    const marks = frozenMarksRef.current
+    const markOf = (symbol: string | undefined, fallback: number) => {
+      if (!symbol) return fallback
+      return validMark(marks[symbol.toUpperCase()]) ?? liveMark(symbol, quotes, fallback)
+    }
     const breakdown = allWeatherLiveBreakdown({
       asOf: overview.book.asOf,
       equity: overview.book.equity,
       dailyPnl: overview.book.dailyPnl,
       initialCapital: overview.book.initialCapital,
-      rows: overview.book.positions.map((p) => ({
-        symbol: p.contract,
-        lots: p.lots,
-        multiplier: p.multiplier,
-        prevPrice: p.prevPrice ?? 0,
-        price: p.price,
-        dailyPnl: p.dailyPnl,
-        sleeve: p.sleeve,
-        asset: p.asset,
-        bookDaily: p.dailyPnl,
-        bookCum: p.cumPnl,
-      })),
+      rows,
       markOf,
     })
+    const marksByAsset: Record<string, number> = {}
     let liveCount = 0
     for (const p of overview.book.positions) {
-      if (p.contract && (quotes[p.contract.toUpperCase()]?.last || quotes[p.contract]?.last)) liveCount += 1
+      const mark = markOf(p.contract, p.price)
+      if (p.asset) marksByAsset[p.asset] = mark
+      if (
+        p.contract &&
+        isLiveSessionFor(p.contract) &&
+        (quotes[p.contract.toUpperCase()]?.last || quotes[p.contract]?.last)
+      ) {
+        liveCount += 1
+      }
     }
-    return { ...breakdown, liveCount }
+    return { ...breakdown, liveCount, marksByAsset }
   }, [overview, ctp.quotes])
 
   const sleeves = useMemo(() => {
@@ -454,6 +476,7 @@ export function AllWeatherApp() {
         cumPnl: cum,
         products: s.products.map((p) => ({
           ...p,
+          price: live?.marksByAsset[p.asset] ?? p.price,
           dailyPnl: live ? (live.productPnl[p.asset] ?? 0) : p.dailyPnl,
           cumPnl: live ? (live.productCum[p.asset] ?? 0) : p.cumPnl,
         })),
@@ -478,6 +501,7 @@ export function AllWeatherApp() {
       equity: r.equity,
       pnl: r.dailyPnl,
       ret: toRet(r.equity),
+      dailyRet: 0,
     }))
     if (rows.length === 0) {
       rows.push({
@@ -485,16 +509,20 @@ export function AllWeatherApp() {
         equity: capital,
         pnl: 0,
         ret: 0,
+        dailyRet: 0,
       })
     }
     const liveEquity = capital + (live?.cum ?? overview.book.equity - capital)
     const livePnl = live?.daily ?? overview.book.dailyPnl
     const today = shanghaiYmd().slice(5)
     const last = rows[rows.length - 1]
-    const livePoint = { date: today || "实时", equity: liveEquity, pnl: livePnl, ret: toRet(liveEquity) }
+    const livePoint = { date: today || "实时", equity: liveEquity, pnl: livePnl, ret: toRet(liveEquity), dailyRet: 0 }
     if (last && last.date === livePoint.date) rows[rows.length - 1] = livePoint
     else rows.push(livePoint)
-    return rows
+    return rows.map((r, i, all) => {
+      const prevEquity = i > 0 ? all[i - 1].equity : capital
+      return { ...r, dailyRet: prevEquity > 0 ? r.pnl / prevEquity : 0 }
+    })
   }, [overview, live])
 
   const sleeveChartData = useMemo(() => {
@@ -1163,11 +1191,41 @@ function formatPctTick(v: number): string {
   return `${(v * 100).toFixed(1)}%`
 }
 
+type NavChartPoint = {
+  date: string
+  equity: number
+  pnl: number
+  ret: number
+  dailyRet: number
+}
+
+function NavChartTooltip({
+  active,
+  payload,
+  mode,
+}: {
+  active?: boolean
+  payload?: Array<{ payload: NavChartPoint }>
+  mode: "current" | "return"
+}) {
+  if (!active || !payload?.length) return null
+  const row = payload[0].payload
+  const isReturn = mode === "return"
+  return (
+    <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-sm">
+      <div className="mb-1 font-medium text-slate-700">{row.date}</div>
+      <div>{isReturn ? "累计收益" : "净值"} : {isReturn ? pct(row.ret) : yuan(row.equity)}</div>
+      <div className={pnlClass(row.pnl)}>当日盈亏 : {yuan(row.pnl)}</div>
+      <div className={pnlClass(row.dailyRet)}>当日收益 : {pct(row.dailyRet)}</div>
+    </div>
+  )
+}
+
 function NavEquityChart({
   data,
   mode,
 }: {
-  data: Array<{ date: string; equity: number; pnl: number; ret: number }>
+  data: NavChartPoint[]
   mode: "current" | "return"
 }) {
   if (data.length < 2) {
@@ -1194,12 +1252,7 @@ function NavEquityChart({
             tickFormatter={isReturn ? formatPctTick : formatWan}
             allowDataOverflow
           />
-          <Tooltip
-            formatter={(value) => [
-              isReturn ? pct(Number(value)) : yuan(Number(value)),
-              isReturn ? "累计收益" : "净值",
-            ]}
-          />
+          <Tooltip content={<NavChartTooltip mode={mode} />} />
           <Area
             type="linear"
             dataKey={isReturn ? "ret" : "equity"}

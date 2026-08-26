@@ -7,7 +7,7 @@ import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/univ
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
 import { allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
-import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
+import { isLiveSessionFor, validMark } from "@/lib/client/market-hours"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
   applyAllWeatherBook,
@@ -530,8 +530,18 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   }, [selectedPortfolio?.id, state.products, state.positions, quotes, candles, extraMarks, marginOf])
 
   const awTickMark = useCallback((symbol: string | undefined, fallback: number) => {
+    if (symbol && !isLiveSessionFor(symbol)) {
+      const key = symbol.toUpperCase()
+      return (
+        validMark(prevMarks.current[key]) ??
+        validMark(prevMarks.current[symbol]) ??
+        validMark(extraMarks[key]) ??
+        validMark(extraMarks[symbol]) ??
+        fallback
+      )
+    }
     return allWeatherLiveMark(symbol, quotes, fallback)
-  }, [quotes])
+  }, [quotes, extraMarks])
 
   const awLive = useMemo(() => {
     if (!awMeta || selectedPortfolio?.id !== ALL_WEATHER_PORTFOLIO_ID) return null
