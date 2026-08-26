@@ -70,6 +70,14 @@ function productNameDedupeKey(productName: string): string {
 }
 
 export type TeamDataElementsFilter = "all" | "missing" | "present"
+export type TeamDataNavLagFilter = "all" | "behind_2w" | "within_2w"
+export type TeamDataProductSourceFilter = "all" | "manual" | "email"
+
+const TEAM_NAV_LAG_DAYS = 14
+const TEAM_DATA_PRODUCT_SOURCE: Record<Exclude<TeamDataProductSourceFilter, "all">, string> = {
+  manual: "手动添加",
+  email: "邮箱同步",
+}
 
 export type TeamDataListParams = {
   page: number
@@ -81,6 +89,10 @@ export type TeamDataListParams = {
   strategyL3: string
   /** Filter by whether 产品要素 (申赎字段) exist in basicinfo_bfl_track. */
   elementsFilter?: TeamDataElementsFilter
+  /** Filter by 团队净值日期 lag vs Asia/Shanghai today. Missing NAV counts as behind. */
+  navLagFilter?: TeamDataNavLagFilter
+  /** Filter by 产品来源 (手动添加 / 邮箱同步). */
+  productSourceFilter?: TeamDataProductSourceFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
@@ -1433,6 +1445,23 @@ function platformNavDaysBetween(later: string, earlier: string): number {
   return Math.round((a - b) / 86_400_000)
 }
 
+function shanghaiToday(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })
+}
+
+function teamNavLagDays(navDate: string, today: string): number | null {
+  const day = isoDay(navDate)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null
+  return platformNavDaysBetween(today, day)
+}
+
+function matchesNavLagFilter(navDate: string, filter: TeamDataNavLagFilter, today: string): boolean {
+  if (filter === "all") return true
+  const lag = teamNavLagDays(navDate, today)
+  if (filter === "behind_2w") return lag == null || lag > TEAM_NAV_LAG_DAYS
+  return lag != null && lag <= TEAM_NAV_LAG_DAYS
+}
+
 function pickLatestPlatformTip(tips: Array<PlatformNavTip | undefined>): PlatformNavTip | undefined {
   let best: PlatformNavTip | undefined
   for (const tip of tips) {
@@ -1679,6 +1708,8 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     strategyL2,
     strategyL3,
     elementsFilter = "all",
+    navLagFilter = "all",
+    productSourceFilter = "all",
     sort,
     sortDir,
   } = params
@@ -1724,6 +1755,16 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
       const has = !!beian && withElements.has(beian)
       return elementsFilter === "present" ? has : !has
     })
+  }
+
+  if (navLagFilter === "behind_2w" || navLagFilter === "within_2w") {
+    const today = shanghaiToday()
+    resolved = resolved.filter((r) => matchesNavLagFilter(r.team_nav_date, navLagFilter, today))
+  }
+
+  if (productSourceFilter === "manual" || productSourceFilter === "email") {
+    const wanted = TEAM_DATA_PRODUCT_SOURCE[productSourceFilter]
+    resolved = resolved.filter((r) => r.product_source === wanted)
   }
 
   const effectiveSort = sort || "updated_at"

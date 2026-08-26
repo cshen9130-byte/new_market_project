@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
+import { allWeatherLiveDailyPnl, allWeatherLiveNav } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
 import {
@@ -13,6 +14,7 @@ import {
   applyAllWeatherBook,
   attachAllWeatherSlice,
   closePosition,
+  contractMultiplier,
   DEFAULT_PAPER_CAPITAL,
   emptyPaperState,
   evaluatePaperTrading,
@@ -587,18 +589,47 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       selectedPortfolio?.id === ALL_WEATHER_PORTFOLIO_ID
         ? awMeta?.initialCapital || selectedPortfolio.initialCapital || DEFAULT_PAPER_CAPITAL
         : selectedPortfolio?.initialCapital || DEFAULT_PAPER_CAPITAL
+    const awBook = selectedPortfolio?.id === ALL_WEATHER_PORTFOLIO_ID ? awMeta : null
+    const prevMarks = awBook?.prevMarks || {}
+    const awRows = awBook
+      ? state.positions
+          .filter((pos) => pos.status === "open" && pos.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
+          .map((pos) => {
+            const prev = prevMarks[pos.symbol] ?? prevMarks[pos.symbol.toUpperCase()] ?? 0
+            return {
+              symbol: pos.symbol,
+              lots: pos.lots,
+              multiplier: contractMultiplier(pos.symbol, pos.multiplier),
+              prevPrice: prev,
+              price: extraMarks[pos.symbol] || extraMarks[pos.symbol.toUpperCase()] || pos.entryPrice,
+            }
+          })
+      : []
+    const liveDaily =
+      awBook && Object.keys(prevMarks).length > 0
+        ? allWeatherLiveDailyPnl(awRows, (symbol, fallback) => {
+            if (!symbol) return fallback
+            return markPrice(symbol, quotes, candles, extraMarks) ?? fallback
+          })
+        : awBook?.dailyPnl ?? 0
+    const nav = awBook
+      ? allWeatherLiveNav(awBook.equity, awBook.dailyPnl, liveDaily)
+      : paperNav(initialCapital, realized, unrealized)
+    const ret = awBook
+      ? paperReturn(initialCapital, nav - initialCapital, 0)
+      : paperReturn(initialCapital, realized, unrealized)
     return {
       unrealized,
       realized,
       total: unrealized + realized,
       marginOccupied,
       initialCapital,
-      nav: paperNav(initialCapital, realized, unrealized),
-      ret: paperReturn(initialCapital, realized, unrealized),
+      nav,
+      ret,
       openCount: openPositions.length,
       productCount: selectedPortfolio ? state.products.filter((p) => p.portfolioId === selectedPortfolio.id).length : 0,
     }
-  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio, awMeta?.initialCapital])
+  }, [state.positions, state.products, quotes, candles, extraMarks, openPositions.length, selectedPortfolio, awMeta])
 
   const sleevePnl = useMemo(() => {
     const out = Object.fromEntries(SLEEVE_KEYS.map((key) => [key, { unrealized: 0, realized: 0, live: 0 }])) as Record<

@@ -436,7 +436,13 @@ export function ProTradingWorkspace({
                 <ResizableHandle className="w-1 bg-[#2a2e39]" />
                 <ResizablePanel defaultSize={62} minSize={40}>
                   {showNavChart ? (
-                    <PaperNavChart paper={paper} onClose={() => setShowNavChart(false)} />
+                    <PaperNavChart
+                      paper={paper}
+                      interval={interval}
+                      quotes={quotesForMark}
+                      candles={candles}
+                      onClose={() => setShowNavChart(false)}
+                    />
                   ) : chartMode === "single" && symbol ? (
                     <div className="flex h-full min-h-0 flex-col">
                       <div className="flex shrink-0 items-center justify-between border-b border-[#2a2e39] bg-[#1e222d] px-2 py-1">

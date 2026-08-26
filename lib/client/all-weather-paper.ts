@@ -36,6 +36,8 @@ export type AllWeatherBookMeta = {
   contractTenor: ContractTenor
   trades: AllWeatherTradeMark[]
   daily: AllWeatherDailyNav[]
+  /** Yesterday's settlement (or book prevPrice) per contract, for live daily P/L. */
+  prevMarks: Record<string, number>
 }
 
 type AwPosition = {
@@ -117,7 +119,11 @@ export async function fetchAllWeatherOverview(refresh = false) {
       }
     })
   const marks: Record<string, number> = {}
-  for (const h of holdings) marks[h.contract] = h.price
+  const prevMarks: Record<string, number> = {}
+  for (const h of holdings) {
+    marks[h.contract] = h.price
+    prevMarks[h.contract] = h.prevPrice > 0 ? h.prevPrice : h.price
+  }
   const meta: AllWeatherBookMeta = {
     name: data.strategy?.name || "全天候策略",
     asOf: data.book?.asOf || "",
@@ -136,6 +142,7 @@ export async function fetchAllWeatherOverview(refresh = false) {
         equity: Number(row.equity),
         dailyPnl: Number(row.dailyPnl) || 0,
       })),
+    prevMarks,
   }
   return { holdings, marks, meta }
 }

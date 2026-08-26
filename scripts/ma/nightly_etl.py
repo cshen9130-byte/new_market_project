@@ -379,6 +379,40 @@ def far_expiry(from_date: date) -> date:
     return third_friday(y, m)
 
 
+_CFFEX_INDEX_PRODUCTS = ("IH", "IF", "IC", "IM")
+
+
+def listed_cffex_index_yms(as_of: date) -> list[tuple[int, int]]:
+    """CFFEX index futures window: 当月 / 次月 / 当季 / 下季."""
+    y, m = as_of.year, as_of.month
+    if as_of > third_friday(y, m):
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    near = (y, m)
+    y2, m2 = y, m + 1
+    if m2 > 12:
+        m2, y2 = 1, y2 + 1
+    nxt = (y2, m2)
+    quarterly: list[tuple[int, int]] = []
+    yy, mm = y2, m2
+    while len(quarterly) < 2:
+        mm += 1
+        if mm > 12:
+            mm, yy = 1, yy + 1
+        if mm in (3, 6, 9, 12):
+            quarterly.append((yy, mm))
+    return [near, nxt, quarterly[0], quarterly[1]]
+
+
+def listed_cffex_index_roots(as_of: date) -> list[str]:
+    return [
+        f"{base}{y % 100:02d}{m:02d}"
+        for base in _CFFEX_INDEX_PRODUCTS
+        for y, m in listed_cffex_index_yms(as_of)
+    ]
+
+
 def parse_expiry_from_ts_code(ts_code: str) -> date | None:
     """IF2506.CFX  →  third Friday of 2025-06."""
     import re
@@ -1812,23 +1846,39 @@ def step_akshare_exchange_daily(conn, *, force: bool = False) -> int:
 def step_cffex_index_month_contracts(conn, *, force: bool = False) -> int:
     """Refresh IH/IF/IC/IM month contracts for 合约年化基差率时序 via Sina/AkShare.
 
-    raw_futures_contracts_daily is shared with commodity contracts, so the
-    table-wide max date can look current while CFFEX index months are stale.
+    Do not use a single MAX(trade_date) across all index months. After a
+    CFFEX roll the new 次月 / 下季 contracts can be missing while 当月 / 当季
+    (often MOM-traded) still look current, which froze the 下季 chart line.
     """
     today = date.today()
+    listed = listed_cffex_index_roots(today)
+    cutoff = today - timedelta(days=1)
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT MAX(trade_date) FROM raw_futures_contracts_daily
-            WHERE contract ~* '^(IH|IF|IC|IM)[0-9]{4}'
+            SELECT UPPER(SPLIT_PART(contract, '.', 1)) AS root, MAX(trade_date)
+            FROM raw_futures_contracts_daily
+            WHERE UPPER(SPLIT_PART(contract, '.', 1)) = ANY(%s)
               AND COALESCE(NULLIF(clear, 0), NULLIF(close, 0)) IS NOT NULL
-            """
+            GROUP BY 1
+            """,
+            [listed],
         )
-        row = cur.fetchone()
-    cur_max = row[0] if (row and row[0]) else None
-    if not force and cur_max and cur_max >= today - timedelta(days=1):
-        log.info("CFFEX index month contracts up-to-date (%s), skipping.", cur_max)
+        last_by_root = {r[0]: r[1] for r in cur.fetchall()}
+    stale = [
+        root
+        for root in listed
+        if last_by_root.get(root) is None or last_by_root[root] < cutoff
+    ]
+    if not force and not stale:
+        newest = max(last_by_root[root] for root in listed)
+        log.info("CFFEX index month contracts up-to-date (%s), skipping.", newest)
         return 0
+    if stale:
+        log.info(
+            "CFFEX index month contracts stale: %s",
+            ", ".join(f"{root}={last_by_root.get(root)}" for root in stale),
+        )
 
     log.info("Fetching CFFEX index month contracts (IH/IF/IC/IM) …")
     out = run_script(

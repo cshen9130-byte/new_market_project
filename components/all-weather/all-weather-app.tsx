@@ -28,6 +28,7 @@ import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { authService } from "@/lib/auth"
 import type { CtpTick } from "@/lib/client/ctp-market"
+import { allWeatherLiveDailyPnl, allWeatherLiveNav } from "@/lib/client/all-weather-nav"
 import { isLiveSessionFor } from "@/lib/client/market-hours"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
 import { displayListedName, SLEEVE_COLORS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
@@ -203,10 +204,19 @@ function liveMark(contract: string | undefined, quotes: Record<string, CtpTick>,
 }
 
 function liveDailyPnl(p: Position, quotes: Record<string, CtpTick>) {
-  const prev = p.prevPrice && p.prevPrice > 0 ? p.prevPrice : p.price
-  const mark = liveMark(p.contract, quotes, p.price)
-  if (!p.lots || !p.multiplier || !prev) return p.dailyPnl
-  return (mark - prev) * p.lots * p.multiplier
+  return allWeatherLiveDailyPnl(
+    [
+      {
+        symbol: p.contract,
+        lots: p.lots,
+        multiplier: p.multiplier,
+        prevPrice: p.prevPrice ?? 0,
+        price: p.price,
+        dailyPnl: p.dailyPnl,
+      },
+    ],
+    (symbol, fallback) => liveMark(symbol, quotes, fallback),
+  )
 }
 
 const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
@@ -459,7 +469,7 @@ export function AllWeatherApp() {
       sleevePnl,
       productPnl,
       liveCount,
-      equity: overview.book.equity - overview.book.dailyPnl + daily,
+      equity: allWeatherLiveNav(overview.book.equity, overview.book.dailyPnl, daily),
     }
   }, [overview, ctp.quotes])
 
@@ -585,7 +595,12 @@ export function AllWeatherApp() {
                 }
               />
               <Kpi title="当日盈亏" value={yuan(live?.daily ?? overview.book.dailyPnl)} hint={live?.liveCount ? `实时盯市 · ${live.liveCount} 个合约有行情` : "按持仓手数盯市"} className={pnlClass(live?.daily ?? overview.book.dailyPnl)} />
-              <Kpi title="累计盈亏" value={`${yuan(overview.book.cumPnl)}  (${pct(overview.book.cumPnl / overview.book.initialCapital)})`} hint={`自 ${overview.book.startedAt} 起跟踪`} className={pnlClass(overview.book.cumPnl)} />
+              <Kpi
+                title="累计盈亏"
+                value={`${yuan((live?.equity ?? overview.book.equity) - overview.book.initialCapital)}  (${pct(((live?.equity ?? overview.book.equity) - overview.book.initialCapital) / overview.book.initialCapital)})`}
+                hint={`自 ${overview.book.startedAt} 起跟踪`}
+                className={pnlClass((live?.equity ?? overview.book.equity) - overview.book.initialCapital)}
+              />
               <Kpi title="保证金占用" value={`${yuan(overview.totals.margin)}  ·  ${pct(overview.totals.marginUtil)}`} hint={`开仓 ${overview.totals.lots} 手 · ${(overview.settings?.contractTenor ?? "current") === "following" ? "下季/次主力" : "当月/主力"} · 行情 ${overview.book.priceSource === "sina" ? "新浪" : "回测快照"}`} />
             </section>
 

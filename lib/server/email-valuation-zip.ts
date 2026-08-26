@@ -48,6 +48,31 @@ export function expandValuationZipBuffer(buffer: Buffer, archiveFilename: string
   return out
 }
 
+/** Prefer 历史净值 / NAV workbooks inside a manager 产品材料 zip. */
+export function preferNavHistoryZipEntries(entries: ZipSpreadsheetEntry[]): ZipSpreadsheetEntry[] {
+  const preferred = entries.filter((e) => /净值|nav/i.test(e.filename))
+  return preferred.length > 0 ? preferred : entries
+}
+
+/** Citics 【净值公告】 zips pack weekly 资产净值公告 PDFs (and occasionally xlsx). */
+export function expandNavTableZipBuffer(buffer: Buffer, archiveFilename: string): ZipSpreadsheetEntry[] {
+  const sheets = expandValuationZipBuffer(buffer, archiveFilename)
+  const zip = new AdmZip(buffer)
+  const pdfs: ZipSpreadsheetEntry[] = []
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory) continue
+    if (!/\.pdf$/i.test(entry.entryName)) continue
+    const filename = entry.entryName.split(/[/\\]/).pop() ?? entry.entryName
+    if (!/净值公告|资产净值公告|净值序列|历史净值/i.test(`${archiveFilename}\n${filename}`)) continue
+    pdfs.push({
+      entryName: entry.entryName,
+      filename,
+      buffer: entry.getData(),
+    })
+  }
+  return preferNavHistoryZipEntries([...sheets, ...pdfs])
+}
+
 export function extractSpreadsheetFromZipBuffer(
   zipBuffer: Buffer,
   innerFilename: string,

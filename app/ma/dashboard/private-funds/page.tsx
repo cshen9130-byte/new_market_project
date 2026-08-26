@@ -14425,6 +14425,8 @@ function OperationsTeamDataView() {
   const [strategyL2, setStrategyL2] = useState("")
   const [strategyL3, setStrategyL3] = useState("")
   const [elementsFilter, setElementsFilter] = useState<"all" | "missing" | "present">("all")
+  const [navLagFilter, setNavLagFilter] = useState<"all" | "behind_2w" | "within_2w">("all")
+  const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email">("all")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<TeamDataSortKey | "">("")
@@ -14511,7 +14513,7 @@ function OperationsTeamDataView() {
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, productSourceFilter, keyword, pageSize])
 
   useEffect(() => {
     setLoading(true)
@@ -14528,6 +14530,8 @@ function OperationsTeamDataView() {
     if (strategyL2) params.set("strategy_l2", strategyL2)
     if (strategyL3) params.set("strategy_l3", strategyL3)
     if (elementsFilter !== "all") params.set("elements", elementsFilter)
+    if (navLagFilter !== "all") params.set("nav_lag", navLagFilter)
+    if (productSourceFilter !== "all") params.set("product_source", productSourceFilter)
     fetch(`/ma/api/ops/team-data/list?${params}`)
       .then((r) => r.json())
       .then((json) => {
@@ -14540,7 +14544,7 @@ function OperationsTeamDataView() {
         setTotal(0)
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, keyword, sortKey, sortDir, teamDataReloadKey])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, productSourceFilter, keyword, sortKey, sortDir, teamDataReloadKey])
 
   useEffect(() => {
     if (!showTeamDataAddDialog) return
@@ -15036,6 +15040,52 @@ function OperationsTeamDataView() {
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                   elementsFilter === key
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队净值：</span>
+          <div className="flex items-center gap-1">
+            {([
+              ["all", "不限"],
+              ["behind_2w", "滞后超2周"],
+              ["within_2w", "2周内"],
+            ] as const).map(([key, label]) => (
+              <span
+                key={key}
+                onClick={() => { setNavLagFilter(key); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  navLagFilter === key
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品来源：</span>
+          <div className="flex items-center gap-1">
+            {([
+              ["all", "不限"],
+              ["manual", "手动添加"],
+              ["email", "邮箱同步"],
+            ] as const).map(([key, label]) => (
+              <span
+                key={key}
+                onClick={() => { setProductSourceFilter(key); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  productSourceFilter === key
                     ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
                     : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
                 ].join(" ")}

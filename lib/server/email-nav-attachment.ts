@@ -18,11 +18,14 @@ import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
 export type NavTableAttachmentInfo = { filename: string; part: string }
 
 const NAV_TABLE_SUBJECT_RE =
-  /净值波动表|净值表|每日净值表|虚拟计提净值表|资产净值公告|批量补发|【基金净值】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算表/u
+  /净值波动表|净值表|每日净值表|虚拟计提净值表|资产净值公告|净值公告|批量补发|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算表/u
+/** Manager DD packs: 代表性产品材料 + company.zip containing 历史净值序列. */
+const PRODUCT_MATERIAL_SUBJECT_RE =
+  /产品材料|代表性产品|净值序列|历史净值/u
 const NAV_TABLE_FILENAME_RE =
-  /净值波动表|净值表|每日净值|资产净值公告|【基金净值】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|^虚拟净值-|业绩报酬试算|净值试算结果|试算结果/u
+  /净值波动表|净值表|每日净值|资产净值公告|净值公告|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|^虚拟净值-|业绩报酬试算|净值试算结果|试算结果/u
 const NAV_TABLE_ZIP_FILENAME_RE =
-  /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值波动表|净值表/i
+  /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值波动表|净值表|净值序列|历史净值/i
 
 /** Pure 业绩报酬 ledgers stay excluded; Xingye 业绩报酬试算表 / 试算结果 are NAV sources. */
 function isExcludedNavAttachment(filename: string, subject = ""): boolean {
@@ -33,10 +36,16 @@ function isExcludedNavAttachment(filename: string, subject = ""): boolean {
 }
 
 export function isNavTableSubject(subject: string): boolean {
-  return NAV_TABLE_SUBJECT_RE.test(subject) && !/估值表/u.test(subject)
+  return (
+    (NAV_TABLE_SUBJECT_RE.test(subject) || PRODUCT_MATERIAL_SUBJECT_RE.test(subject))
+    && !/估值表/u.test(subject)
+  )
 }
 
 export function isNavTableAttachmentFilename(filename: string): boolean {
+  if (/\.pdf$/i.test(filename)) {
+    return /净值公告|资产净值公告/i.test(filename) && !/估值表/i.test(filename)
+  }
   if (!/\.xlsx?$/i.test(filename)) return false
   if (/估值表/i.test(filename)) return false
   return NAV_TABLE_FILENAME_RE.test(filename)
@@ -61,7 +70,11 @@ export function selectNavTableAttachments(
   const spreadsheets = attachments.filter(
     (a) => /\.xlsx?$/i.test(a.filename) && !isExcludedNavAttachment(a.filename, subject),
   )
-  const explicit = spreadsheets.filter((a) => isNavTableAttachmentFilename(a.filename))
+  const pdfs = attachments.filter((a) => isNavTableAttachmentFilename(a.filename) && /\.pdf$/i.test(a.filename))
+  const explicit = [
+    ...spreadsheets.filter((a) => isNavTableAttachmentFilename(a.filename)),
+    ...pdfs,
+  ]
   if (explicit.length > 0 || zips.length > 0) return [...explicit, ...zips]
   if (
     isNavTableSubject(subject)
@@ -181,6 +194,100 @@ function extractCscAssetNavFormFromBuffer(
   } catch {
     return null
   }
+}
+
+/**
+ * Citics 资产净值公告 PDF / text:
+ *   截至2021-02-10,以下基金资产净值如下：
+ *   基金名称 协会代码 基金资产净值 基金资产份额 基金份额净值 基金份额累计净值
+ *   量锐28号私募证券投资基金 SGC823 97,427,057.48 90,804,317.72 1.0729 1.0729
+ * Later PDFs add share classes: SGC823(总) / SGC823(A类) / T07895(B类).
+ */
+export function extractNavRowsFromCiticsAnnouncementText(
+  text: string,
+  filename: string,
+  subject: string,
+): ExtractedNavData[] {
+  const blob = `${filename}\n${subject}\n${text}`
+  if (!/净值公告|资产净值公告/u.test(blob)) return []
+
+  const asOf = text.match(/截至\s*(20\d{2}-\d{2}-\d{2})/u)
+  let navDate = asOf?.[1] ?? null
+  if (!navDate) {
+    const compact = filename.match(/(20\d{6})(?:\.\w+)?$/i)
+    if (compact) {
+      const s = compact[1]
+      navDate = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
+    }
+  }
+  if (!navDate) return []
+
+  const meta = extractNavMetadata(subject, `${filename}\n${text}`)
+  const rowRe =
+    /([^\n\t]+?)\s+([A-Z0-9]{4,10})(?:\((总|[ABC]类)\))?\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+(\d+\.\d{2,8})\s+(\d+\.\d{2,8})/gu
+  const parsed: {
+    rawName: string
+    baseCode: string
+    share: string
+    unitNav: number
+    cumulativeNav: number
+  }[] = []
+  let match: RegExpExecArray | null
+  while ((match = rowRe.exec(text)) !== null) {
+    const rawName = match[1].replace(/基金名称|协会代码/g, "").trim()
+    if (!rawName || /基金管理人|托管人|声明/.test(rawName)) continue
+    const unitNav = parseFloat(match[6])
+    const cumulativeNav = parseFloat(match[7])
+    if (!Number.isFinite(unitNav) || unitNav <= 0) continue
+    parsed.push({
+      rawName,
+      baseCode: match[2].trim().toUpperCase(),
+      share: (match[3] ?? "").trim(),
+      unitNav,
+      cumulativeNav: Number.isFinite(cumulativeNav) ? cumulativeNav : unitNav,
+    })
+  }
+
+  const parentCode = parsed.find((row) => row.share === "总")?.baseCode ?? null
+  const rows: ExtractedNavData[] = []
+  for (const row of parsed) {
+    let productCode = row.baseCode
+    if (row.share === "A类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}A`
+    else if (row.share === "B类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}B`
+    else if (row.share === "C类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}C`
+
+    rows.push({
+      nav: row.unitNav,
+      navDate,
+      cumulativeNav: row.cumulativeNav,
+      adjustedNav: null,
+      productCode: productCode || meta.productCode,
+      fundName: normalizeFundDisplayName(row.rawName) || meta.fundName || null,
+      source: "attachment_nav_table",
+    })
+  }
+  return rows
+}
+
+export function extractNavFromCiticsAnnouncementText(
+  text: string,
+  filename: string,
+  subject: string,
+): ExtractedNavData | null {
+  const rows = extractNavRowsFromCiticsAnnouncementText(text, filename, subject)
+  if (rows.length === 0) return null
+  const parent = rows.find((row) => row.productCode && !/[ABC]$/i.test(row.productCode))
+  return parent ?? rows[0] ?? null
+}
+
+export async function extractNavFromCiticsAnnouncementPdf(
+  buffer: Buffer,
+  filename: string,
+  subject: string,
+): Promise<ExtractedNavData[]> {
+  const { readPdfTextWithCmaps } = await import("@/lib/server/pdf-text")
+  const text = await readPdfTextWithCmaps(buffer)
+  return extractNavRowsFromCiticsAnnouncementText(text, filename, subject)
 }
 
 /** Parse all historical NAV rows from a 净值表 workbook buffer. */

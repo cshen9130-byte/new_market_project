@@ -22,9 +22,12 @@ import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete } from "../lib/server/email-nav-extract.ts"
 import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
+  extractNavFromCiticsAnnouncementText,
   extractNavTableFromBuffer,
+  isNavTableZipFilename,
   selectNavTableAttachments,
 } from "../lib/server/email-nav-attachment.ts"
+import { preferNavHistoryZipEntries } from "../lib/server/email-valuation-zip.ts"
 import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
@@ -1222,6 +1225,66 @@ assert(
   zy084aAtts.length === 1,
 )
 
+// Citics Auto-Disclosure 【净值公告】 (量锐28号 / SGC823) — same family as 【基金净值】.
+const sgc823Subject =
+  "【净值公告】SGC823_量锐28号私募证券投资基金_净值公告_20190304-20260824"
+const sgc823Meta = extractNavMetadata(sgc823Subject, "")
+assert(
+  "SGC823 Citics 净值公告 subject extracts code/name",
+  sgc823Meta.productCode === "SGC823"
+    && sgc823Meta.fundName?.includes("量锐28号") === true,
+)
+const sgc823Atts = selectNavTableAttachments(sgc823Subject, [
+  {
+    filename: "【净值公告】SGC823_量锐28号私募证券投资基金_净值公告_20190304-20260824.xlsx",
+    part: "2",
+  },
+])
+assert("SGC823 Citics 净值公告 xlsx is selected as NAV attachment", sgc823Atts.length === 1)
+const sgc823FileMeta = extractNavMetadata(
+  "SGC823_量锐28号私募证券投资基金_净值公告_20190304-20260824.xlsx",
+  "",
+)
+assert(
+  "SGC823 untagged 净值公告 filename extracts code/name",
+  sgc823FileMeta.productCode === "SGC823"
+    && sgc823FileMeta.fundName?.includes("量锐28号") === true,
+)
+const sgc823PdfText =
+  "资产净值公告\n截至2021-02-10,以下基金资产净值如下：\n" +
+  "基金名称 协会代码 基金资产净值 基金资产份额 基金份额净值 基金份额累计净值\n" +
+  "量锐28号私募证券投资基金 SGC823 97,427,057.48 90,804,317.72 1.0729 1.0729"
+const sgc823PdfNav = extractNavFromCiticsAnnouncementText(
+  sgc823PdfText,
+  "净值公告_SGC823_量锐28号私募证券投资基金_20210210.pdf",
+  sgc823Subject,
+)
+assert(
+  "SGC823 Citics 净值公告 PDF text stores unit 1.0729 not AUM",
+  sgc823PdfNav?.navDate === "2021-02-10"
+    && sgc823PdfNav?.nav === 1.0729
+    && sgc823PdfNav?.cumulativeNav === 1.0729
+    && sgc823PdfNav?.productCode === "SGC823"
+    && sgc823PdfNav?.fundName?.includes("量锐28号") === true,
+)
+const sgc823ClassText =
+  "截至2026-08-21,以下基金资产净值如下：\n" +
+  "基金名称 协会代码 基金资产净值 基金资产份额 基金份额净值 基金份额累计净值\n" +
+  "量锐28号私募证券投资基金 SGC823(总) 51,986,091.79 30,428,862.72 1.7084 1.7084\n" +
+  "量锐28号私募证券投资基金 SGC823(A类) 24,695,495.41 14,309,070.82 1.7259 1.7259\n" +
+  "量锐28号私募证券投资基金B类 T07895(B类) 998,661.91 590,911.78 1.6900 1.6900"
+const sgc823ClassNav = extractNavFromCiticsAnnouncementText(
+  sgc823ClassText,
+  "净值公告_SGC823_量锐28号私募证券投资基金_20260821.pdf",
+  sgc823Subject,
+)
+assert(
+  "SGC823 share-class 净值公告 prefers parent 总 NAV 1.7084",
+  sgc823ClassNav?.navDate === "2026-08-21"
+    && sgc823ClassNav?.nav === 1.7084
+    && sgc823ClassNav?.productCode === "SGC823",
+)
+
 // Weekly team/manual + collapsed legacy mid-weeks must not intercalate (SZJ909 sawtooth).
 {
   const weeklyTeam = mergeNavSeriesWithEmail([], [
@@ -1423,6 +1486,29 @@ const svp460VirtualAtts = selectNavTableAttachments(svp460VirtualSubject, [
   { filename: svp460VirtualFilename, part: "2" },
 ])
 assert("SVP460 CSC 虚拟净值数据 xlsx is selected as NAV attachment", svp460VirtualAtts.length === 1)
+
+{
+  const jinsongSubject = "磐松代表性产品材料"
+  const jinsongZip = [{ filename: "金舆资产.zip", part: "2" }]
+  assert(
+    "Pinestone 产品材料 zip is treated as a NAV source",
+    isNavTableZipFilename("金舆资产.zip", jinsongSubject) === true,
+  )
+  const jinsongAtts = selectNavTableAttachments(jinsongSubject, jinsongZip)
+  assert(
+    "Pinestone 产品材料 zip is selected for NAV extract",
+    jinsongAtts.length === 1 && jinsongAtts[0]?.filename === "金舆资产.zip",
+  )
+  const inner = preferNavHistoryZipEntries([
+    { entryName: "产品要素表.xlsx", filename: "产品要素表.xlsx", buffer: Buffer.alloc(0) },
+    { entryName: "历史净值序列.xlsx", filename: "历史净值序列.xlsx", buffer: Buffer.alloc(0) },
+    { entryName: "公司介绍.pdf", filename: "公司介绍.pdf", buffer: Buffer.alloc(0) },
+  ])
+  assert(
+    "产品材料 zip prefers 历史净值序列 over 要素表",
+    inner.length === 1 && inner[0]?.filename === "历史净值序列.xlsx",
+  )
+}
 
 {
   // CSC 资产净值公告 label/value form (no date column table).

@@ -26,6 +26,10 @@ export function getTimeframe(id: TimeframeId) {
   return TIMEFRAMES.find((item) => item.id === id) || TIMEFRAMES[0]
 }
 
+export function isIntradayTimeframe(id: TimeframeId) {
+  return id !== "1d" && id !== "1w" && id !== "1M"
+}
+
 export function isTimeframeId(value: string): value is TimeframeId {
   return TIMEFRAMES.some((item) => item.id === value)
 }

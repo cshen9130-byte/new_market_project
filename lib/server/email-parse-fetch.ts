@@ -28,6 +28,7 @@ import {
   isCmsMultiProductNavIncomplete,
 } from "@/lib/server/email-nav-extract"
 import {
+  extractNavFromCiticsAnnouncementPdf,
   extractNavTableFromBuffer,
   isNavTableZipFilename,
   selectNavTableAttachments,
@@ -39,6 +40,7 @@ import {
   selectValuationAttachments,
 } from "@/lib/server/email-valuation-attachment"
 import {
+  expandNavTableZipBuffer,
   expandValuationZipBuffer,
   isValuationZipFilename,
   zipInnerAttachmentKey,
@@ -100,7 +102,7 @@ export type EmailParseFetchResult = {
 }
 
 const FUND_EMAIL_RE =
-  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金|确认单|确认函|交易确认|成交确认|申购确认|赎回确认|认购确认|基金成立/u
+  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金|确认单|确认函|交易确认|成交确认|申购确认|赎回确认|认购确认|基金成立|产品材料|代表性产品|净值序列|历史净值/u
 
 // ImapFlow defaults (connectionTimeout=90s, greetingTimeout=16s, socketTimeout=300s)
 // let a single slow/unresponsive mail server block this call for minutes per
@@ -109,7 +111,8 @@ const FUND_EMAIL_RE =
 // with no automatic recovery. Fail faster instead.
 const IMAP_CONNECTION_TIMEOUT_MS = 20_000
 const IMAP_GREETING_TIMEOUT_MS = 10_000
-const IMAP_SOCKET_TIMEOUT_MS = 60_000
+// Citics 【净值公告】 zips can be multi-year NAV histories; 60s idle killed SGC823.
+const IMAP_SOCKET_TIMEOUT_MS = 180_000
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -188,9 +191,11 @@ function isFundRelated(subject: string, attachments: AttachmentInfo[]): boolean 
   if (hasConfirmAttachment(subject, attachments)) return true
   return attachments.some((a) => {
     const lower = a.filename.toLowerCase()
+    const nameHit = FUND_EMAIL_RE.test(a.filename)
     return (
-      ((lower.endsWith(".xlsx") || lower.endsWith(".xls")) && FUND_EMAIL_RE.test(a.filename))
-      || (lower.endsWith(".pdf") && FUND_EMAIL_RE.test(a.filename))
+      ((lower.endsWith(".xlsx") || lower.endsWith(".xls")) && nameHit)
+      || (lower.endsWith(".pdf") && nameHit)
+      || (lower.endsWith(".zip") && (nameHit || isNavTableZipFilename(a.filename, subject)))
     )
   })
 }
@@ -349,10 +354,28 @@ async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>
 }
 
 async function downloadPart(client: ImapFlow, uid: string, part: string): Promise<Buffer> {
-  const dl = await client.download(uid, part, { uid: true })
-  const bufs: Buffer[] = []
-  for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
-  return Buffer.concat(bufs)
+  // Tencent Exmail hangs on ImapFlow streaming download() for ~2MB 净值公告 zips.
+  // fetchOne BODY[part] returns the wire bytes (often still base64).
+  const msg = await client.fetchOne(
+    String(uid),
+    { uid: true, bodyParts: [part] },
+    { uid: true },
+  )
+  const parts = (msg as { bodyParts?: Map<string, Buffer> }).bodyParts
+  const raw = parts?.get(part) ?? parts?.get(String(part))
+  if (!raw?.length) throw new Error(`empty IMAP part ${part}`)
+  return decodeFetchedImapPart(raw)
+}
+
+function decodeFetchedImapPart(buf: Buffer): Buffer {
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b) return buf
+  if (buf.length >= 8 && buf[0] === 0xd0 && buf[1] === 0xcf) return buf
+  if (buf.length >= 5 && buf.subarray(0, 5).toString("ascii") === "%PDF-") return buf
+  const head = buf.subarray(0, Math.min(buf.length, 80)).toString("ascii").replace(/\s+/g, "")
+  if (/^(?:UEsDB|JVBERi|0M8R4K)/.test(head)) {
+    return Buffer.from(buf.toString("ascii").replace(/\s+/g, ""), "base64")
+  }
+  return buf
 }
 
 async function fetchMailbox(
@@ -509,7 +532,7 @@ async function fetchMailbox(
             const buf = await downloadPart(client, String(uid), att.part)
             const payloads: Array<{ storedFilename: string; parseFilename: string; buffer: Buffer }> =
               isNavTableZipFilename(att.filename, subject)
-                ? expandValuationZipBuffer(buf, att.filename).map((inner) => ({
+                ? expandNavTableZipBuffer(buf, att.filename).map((inner) => ({
                     storedFilename: zipInnerAttachmentKey(att.filename, inner.filename),
                     parseFilename: inner.filename,
                     buffer: inner.buffer,
@@ -524,11 +547,17 @@ async function fetchMailbox(
             for (const payload of payloads) {
               // Skip valuation workbooks accidentally packed into a 补发 zip.
               if (/估值表/i.test(payload.parseFilename)) continue
-              const rows = extractNavTableFromBuffer(
-                payload.buffer,
-                payload.parseFilename,
-                subject,
-              )
+              const rows = /\.pdf$/i.test(payload.parseFilename)
+                ? await extractNavFromCiticsAnnouncementPdf(
+                    payload.buffer,
+                    payload.parseFilename,
+                    subject,
+                  )
+                : extractNavTableFromBuffer(
+                    payload.buffer,
+                    payload.parseFilename,
+                    subject,
+                  )
               for (const row of rows) {
                 if (!row.navDate) continue
                 navDatesFromAttachments.add(row.navDate)

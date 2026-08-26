@@ -12,6 +12,13 @@ import {
 import type { CtpCandle, CtpTick, IndexProduct } from "@/lib/client/ctp-market"
 import { isLiveSessionFor, quoteOf, validMark } from "@/lib/client/market-hours"
 import { productOfSymbol } from "@/lib/client/pro-trading"
+import {
+  aggregateCloseSeries,
+  formatCandleTime,
+  isIntradayTimeframe,
+  shanghaiWallUnix,
+  type TimeframeId,
+} from "@/lib/client/timeframes"
 
 export const PAPER_STORAGE_KEY = "ma_index_paper_trading_v1"
 export const ALL_WEATHER_PORTFOLIO_ID = "all-weather"
@@ -279,6 +286,8 @@ export function paperReturn(initialCapital: number, realized: number, unrealized
   return (realized + unrealized) / initialCapital
 }
 
+export { allWeatherLiveNav } from "@/lib/client/all-weather-nav"
+
 export function fmtNav(n: number | null | undefined) {
   if (n == null || Number.isNaN(n)) return "--"
   return `¥${n.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`
@@ -290,17 +299,212 @@ function beijingYmd(ms = Date.now()) {
   return new Date(ms).toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })
 }
 
-function beijingChartLabel(ms: number) {
-  return new Date(ms)
-    .toLocaleString("zh-CN", {
-      timeZone: "Asia/Shanghai",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    })
-    .replace(/\//g, "-")
+function pad2(n: number) {
+  return String(n).padStart(2, "0")
+}
+
+function ymdToUnix(ymd: string) {
+  const [y, m, d] = String(ymd || "").split("-").map(Number)
+  if (!y || !m || !d) return null
+  return Math.floor(Date.UTC(y, m - 1, d) / 1000)
+}
+
+function unixWallYmd(unix: number) {
+  const d = new Date(unix * 1000)
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
+}
+
+function msToWallUnix(ms: number) {
+  return shanghaiWallUnix(new Date(ms))
+}
+
+function navAxisLabel(unix: number, id: TimeframeId) {
+  const d = new Date(unix * 1000)
+  if (id === "1M") return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}`
+  if (id === "1d" || id === "1w") return `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
+  return formatCandleTime(unix, id)
+}
+
+function toNavPoints(series: Array<{ time: number; close: number }>, interval: TimeframeId): PaperNavPoint[] {
+  return series.map((row) => ({ date: navAxisLabel(row.time, interval), nav: row.close }))
+}
+
+function resampleNav(
+  series: Array<{ time: number; close: number }>,
+  interval: TimeframeId,
+): Array<{ time: number; close: number }> {
+  if (!series.length || interval === "1d" || isIntradayTimeframe(interval)) return series
+  const aggregated = aggregateCloseSeries(series, interval)
+  if (aggregated.length === 1 && series.length > 1) return [series[0], aggregated[0]]
+  return aggregated
+}
+
+function lastCloseAtOrBefore(bars: Array<{ time: number; close: number }>, t: number) {
+  let lo = 0
+  let hi = bars.length - 1
+  let ans = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (bars[mid].time <= t) {
+      ans = mid
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  return ans >= 0 ? bars[ans].close : null
+}
+
+function firstBarOn(bars: Array<{ time: number; close: number; open?: number }>, ymd: string) {
+  return bars.find((bar) => unixWallYmd(bar.time) === ymd) ?? null
+}
+
+function equityBefore(daily: Array<{ date: string; equity: number }>, ymd: string, fallback: number) {
+  let best: number | null = null
+  for (const row of daily) {
+    if (row.date < ymd) best = row.equity
+  }
+  return best ?? fallback
+}
+
+function dailyNavSeries(opts: {
+  initialCapital: number
+  liveNav: number
+  startedAt?: number
+  daily: Array<{ date: string; equity: number }>
+}): Array<{ time: number; close: number }> {
+  const today = beijingYmd()
+  const series: Array<{ time: number; close: number }> = []
+  for (const row of opts.daily) {
+    const time = ymdToUnix(row.date)
+    if (time == null) continue
+    series.push({ time, close: row.date === today ? opts.liveNav : row.equity })
+  }
+  const last = opts.daily[opts.daily.length - 1]
+  if (last && last.date !== today) {
+    const time = ymdToUnix(today)
+    if (time != null) series.push({ time, close: opts.liveNav })
+  }
+  if (series.length === 1) {
+    const startMs = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : Date.now()
+    series.unshift({ time: msToWallUnix(startMs), close: opts.initialCapital })
+  }
+  return series
+}
+
+function eventNavSeries(opts: {
+  initialCapital: number
+  liveNav: number
+  startedAt?: number
+  positions?: PaperPosition[]
+}): Array<{ time: number; close: number }> {
+  const closes = (opts.positions || [])
+    .filter((p) => p.status === "closed" && p.exitTime)
+    .map((p) => ({ t: p.exitTime!, pnl: positionPnl(p, p.exitPrice ?? null) ?? 0 }))
+    .sort((a, b) => a.t - b.t)
+  const start = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : closes[0]?.t || Date.now()
+  const series: Array<{ time: number; close: number }> = [{ time: msToWallUnix(start), close: opts.initialCapital }]
+  let nav = opts.initialCapital
+  for (const close of closes) {
+    nav += close.pnl
+    series.push({ time: msToWallUnix(close.t), close: nav })
+  }
+  series.push({ time: msToWallUnix(Date.now()), close: opts.liveNav })
+  return series
+}
+
+function intradayNavSeries(opts: {
+  initialCapital: number
+  liveNav: number
+  positions: PaperPosition[]
+  daily?: Array<{ date: string; equity: number }>
+  marksBySymbol: Record<string, Array<{ time: number; close: number; open?: number }>>
+  prevMarks?: Record<string, number>
+  bookEquity?: number
+  bookDailyPnl?: number
+}): Array<{ time: number; close: number }> | null {
+  const times = new Set<number>()
+  const barsOf = new Map<string, Array<{ time: number; close: number }>>()
+  for (const [symbol, bars] of Object.entries(opts.marksBySymbol)) {
+    const key = symbol.toUpperCase()
+    const sorted = bars.filter((bar) => bar.time > 0 && bar.close > 0).sort((a, b) => a.time - b.time)
+    if (!sorted.length) continue
+    barsOf.set(key, sorted)
+    for (const bar of sorted) times.add(bar.time)
+  }
+  const timeline = [...times].sort((a, b) => a - b)
+  if (timeline.length < 2) return null
+
+  const today = beijingYmd()
+  const daily = opts.daily || []
+  const useBook = daily.length > 0
+  const series: Array<{ time: number; close: number }> = []
+  let lastYmd = ""
+  let baseNav = opts.initialCapital
+  const anchors = new Map<string, number>()
+
+  for (const t of timeline) {
+    const ymd = unixWallYmd(t)
+    if (ymd !== lastYmd) {
+      lastYmd = ymd
+      anchors.clear()
+      if (useBook) {
+        baseNav =
+          ymd === today && opts.bookEquity != null && opts.bookDailyPnl != null
+            ? opts.bookEquity - opts.bookDailyPnl
+            : equityBefore(daily, ymd, opts.initialCapital)
+      }
+      for (const pos of opts.positions) {
+        const key = pos.symbol.toUpperCase()
+        const bars = barsOf.get(key)
+        let anchor: number | null = null
+        if (ymd === today) {
+          const prev = opts.prevMarks?.[key] ?? opts.prevMarks?.[pos.symbol]
+          if (prev != null && prev > 0) anchor = prev
+        }
+        if (anchor == null && bars) {
+          const first = firstBarOn(bars, ymd)
+          if (first) anchor = first.open && first.open > 0 ? first.open : first.close
+        }
+        if (anchor == null || !(anchor > 0)) anchor = pos.entryPrice
+        anchors.set(pos.id, anchor)
+      }
+    }
+
+    let mtm = 0
+    if (useBook) {
+      for (const pos of opts.positions) {
+        if (pos.status === "closed" && pos.exitTime && pos.exitTime <= t * 1000) continue
+        if (pos.entryTime > t * 1000) continue
+        const key = pos.symbol.toUpperCase()
+        const mark = lastCloseAtOrBefore(barsOf.get(key) || [], t)
+        const anchor = anchors.get(pos.id)
+        if (mark == null || anchor == null) continue
+        const pnl = positionPnl({ ...pos, status: "open", entryPrice: anchor, exitPrice: undefined }, mark)
+        if (pnl != null) mtm += pnl
+      }
+      series.push({ time: t, close: baseNav + mtm })
+      continue
+    }
+
+    for (const pos of opts.positions) {
+      const key = pos.symbol.toUpperCase()
+      const mark = lastCloseAtOrBefore(barsOf.get(key) || [], t)
+      if (pos.status === "closed" && pos.exitTime && pos.exitTime <= t * 1000) {
+        mtm += positionPnl(pos, pos.exitPrice ?? null) ?? 0
+        continue
+      }
+      if (pos.entryTime > t * 1000) continue
+      const pnl = positionPnl({ ...pos, status: "open", exitPrice: undefined }, mark)
+      if (pnl != null) mtm += pnl
+    }
+    series.push({ time: t, close: opts.initialCapital + mtm })
+  }
+
+  if (series.length && Number.isFinite(opts.liveNav)) {
+    series[series.length - 1] = { time: series[series.length - 1].time, close: opts.liveNav }
+  }
+  return series
 }
 
 export function paperNavCurve(opts: {
@@ -309,35 +513,44 @@ export function paperNavCurve(opts: {
   startedAt?: number
   positions?: PaperPosition[]
   daily?: Array<{ date: string; equity: number }>
+  interval?: TimeframeId
+  marksBySymbol?: Record<string, Array<{ time: number; close: number; open?: number }>>
+  prevMarks?: Record<string, number>
+  bookEquity?: number
+  bookDailyPnl?: number
 }): PaperNavPoint[] {
-  if (opts.daily && opts.daily.length > 0) {
-    const today = beijingYmd()
-    const points = opts.daily.map((row) => ({ date: row.date.slice(5), nav: row.equity }))
-    const last = opts.daily[opts.daily.length - 1]
-    if (last.date === today) points[points.length - 1] = { date: last.date.slice(5), nav: opts.liveNav }
-    else points.push({ date: today.slice(5), nav: opts.liveNav })
-    if (points.length === 1) {
-      points.unshift({
-        date: beijingChartLabel(opts.startedAt && opts.startedAt > 0 ? opts.startedAt : Date.now()),
-        nav: opts.initialCapital,
-      })
-    }
-    return points
+  const interval = opts.interval || "1d"
+  const daily = (opts.daily || []).filter((row) => row.date && Number.isFinite(row.equity))
+  const backbone =
+    daily.length > 0
+      ? dailyNavSeries({
+          initialCapital: opts.initialCapital,
+          liveNav: opts.liveNav,
+          startedAt: opts.startedAt,
+          daily,
+        })
+      : eventNavSeries({
+          initialCapital: opts.initialCapital,
+          liveNav: opts.liveNav,
+          startedAt: opts.startedAt,
+          positions: opts.positions,
+        })
+
+  if (isIntradayTimeframe(interval) && opts.marksBySymbol) {
+    const intra = intradayNavSeries({
+      initialCapital: opts.initialCapital,
+      liveNav: opts.liveNav,
+      positions: opts.positions || [],
+      daily,
+      marksBySymbol: opts.marksBySymbol,
+      prevMarks: opts.prevMarks,
+      bookEquity: opts.bookEquity,
+      bookDailyPnl: opts.bookDailyPnl,
+    })
+    if (intra && intra.length >= 2) return toNavPoints(intra, interval)
   }
 
-  const closes = (opts.positions || [])
-    .filter((p) => p.status === "closed" && p.exitTime)
-    .map((p) => ({ t: p.exitTime!, pnl: positionPnl(p, p.exitPrice ?? null) ?? 0 }))
-    .sort((a, b) => a.t - b.t)
-  const start = opts.startedAt && opts.startedAt > 0 ? opts.startedAt : closes[0]?.t || Date.now()
-  const points: PaperNavPoint[] = [{ date: beijingChartLabel(start), nav: opts.initialCapital }]
-  let nav = opts.initialCapital
-  for (const close of closes) {
-    nav += close.pnl
-    points.push({ date: beijingChartLabel(close.t), nav })
-  }
-  points.push({ date: beijingChartLabel(Date.now()), nav: opts.liveNav })
-  return points
+  return toNavPoints(resampleNav(backbone, interval), interval)
 }
 
 function defaultMinePortfolio(): PaperPortfolio {

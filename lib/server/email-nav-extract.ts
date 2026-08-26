@@ -191,15 +191,31 @@ function parseAssetNavAnnouncementSubject(text: string): { code: string; fundNam
   return null
 }
 
-/** Citics Auto-Disclosure: 【基金净值】SBDF95(总)_产品名_YYYYMMDD-YYYYMMDD */
+/**
+ * Citics Auto-Disclosure:
+ *   【基金净值】SBDF95(总)_产品名_YYYYMMDD-YYYYMMDD
+ *   【净值公告】SGC823_量锐28号私募证券投资基金_净值公告_20190304-20260824
+ */
 function parseCiticsFundNavSubject(text: string): { code: string; fundName: string } | null {
-  const m = text.match(
-    new RegExp(`【基金净值】([A-Z0-9]+)(?:\\([总]\\))?_(?:${FUND_NAME_RE.source})_`),
+  const bracket = text.match(
+    new RegExp(`【(?:基金净值|净值公告)】([A-Z0-9]+)(?:\\([^)]*\\))?_(?:${FUND_NAME_RE.source})_`),
   )
-  if (!m) return null
-  const fundName = pickBestFundNameMatch(text)
+  if (bracket) {
+    const fundName = pickBestFundNameMatch(text)
+    if (fundName) return { code: bracket[1], fundName }
+  }
+
+  // Filename / untagged subject: SGC823_量锐28号私募证券投资基金_净值公告_20190304-20260824
+  const underscored = text.match(
+    new RegExp(
+      `(?:^|[^A-Z0-9])([A-Z0-9]{4,10})_(${FUND_NAME_RE.source})_净值公告_(20\\d{6})`,
+      "u",
+    ),
+  )
+  if (!underscored) return null
+  const fundName = finalizeExtractedFundName(underscored[2])
   if (!fundName) return null
-  return { code: m[1], fundName }
+  return { code: underscored[1], fundName }
 }
 
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
