@@ -9,6 +9,12 @@
 import fs from "fs"
 import path from "path"
 
+export type RecentUserHit = {
+  userId: string
+  lastAt: number
+  lastPath: string
+}
+
 type ActivityState = {
   /** Last user-facing GET/navigation. */
   lastBrowseAt: number
@@ -16,6 +22,8 @@ type ActivityState = {
   lastMutatingAt: number
   /** Rolling timestamps for burst detection. */
   recentHits: number[]
+  /** Last seen logged-in users (from x-market-user-id / presence). */
+  recentUsers: RecentUserHit[]
 }
 
 const BROWSE_WINDOW_MS = parseInt(process.env.USER_PRIORITY_BROWSE_MS || "30000", 10)
@@ -24,6 +32,8 @@ const BURST_WINDOW_MS = 15_000
 const BURST_MIN_HITS = 3
 const FILE_WRITE_THROTTLE_MS = 500
 const FILE_READ_THROTTLE_MS = 500
+const RECENT_USER_WINDOW_MS = 60 * 60_000
+const USER_ID_RE = /^[A-Za-z0-9._:-]{1,80}$/
 
 declare global {
   // eslint-disable-next-line no-var
@@ -42,7 +52,11 @@ function state(): ActivityState {
       lastBrowseAt: 0,
       lastMutatingAt: 0,
       recentHits: [],
+      recentUsers: [],
     }
+  }
+  if (!Array.isArray(globalThis.__userActivityPriority.recentUsers)) {
+    globalThis.__userActivityPriority.recentUsers = []
   }
   return globalThis.__userActivityPriority
 }
@@ -66,6 +80,8 @@ function isInteractivePath(pathname: string): boolean {
   if (pathname.includes("/mom-analysis/data-import/etl-status")) return false
   // Admin deploy-readiness polling should not look like live user traffic.
   if (pathname.includes("/api/admin/deploy-status")) return false
+  if (pathname.includes("/api/presence")) return false
+  if (pathname.startsWith("/dashboard/admin")) return false
   return (
     pathname.startsWith("/api/") ||
     pathname.startsWith("/ma/api/") ||
@@ -83,6 +99,7 @@ function writeActivityFile(s: ActivityState): void {
       lastBrowseAt: s.lastBrowseAt,
       lastMutatingAt: s.lastMutatingAt,
       recentHits: s.recentHits.slice(-20),
+      recentUsers: pruneRecentUsers(s.recentUsers),
       updatedAt: Date.now(),
     })
     const target = activityFilePath()
@@ -91,6 +108,44 @@ function writeActivityFile(s: ActivityState): void {
     fs.renameSync(tmp, target)
   } catch {
     // never block requests for activity tracking
+  }
+}
+
+function parseRecentUsers(raw: unknown): RecentUserHit[] {
+  if (!Array.isArray(raw)) return []
+  const out: RecentUserHit[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue
+    const userId = typeof (item as RecentUserHit).userId === "string"
+      ? (item as RecentUserHit).userId.trim()
+      : ""
+    const lastAt = (item as RecentUserHit).lastAt
+    const lastPath = typeof (item as RecentUserHit).lastPath === "string"
+      ? (item as RecentUserHit).lastPath
+      : ""
+    if (!USER_ID_RE.test(userId) || typeof lastAt !== "number" || !Number.isFinite(lastAt)) continue
+    out.push({ userId, lastAt, lastPath })
+  }
+  return pruneRecentUsers(out)
+}
+
+function pruneRecentUsers(users: RecentUserHit[]): RecentUserHit[] {
+  const cutoff = Date.now() - RECENT_USER_WINDOW_MS
+  const map = new Map<string, RecentUserHit>()
+  for (const u of users) {
+    if (u.lastAt < cutoff) continue
+    const prev = map.get(u.userId)
+    if (!prev || u.lastAt > prev.lastAt) map.set(u.userId, u)
+  }
+  return [...map.values()].sort((a, b) => b.lastAt - a.lastAt).slice(0, 50)
+}
+
+function emptyActivity(): ActivityState {
+  return {
+    lastBrowseAt: 0,
+    lastMutatingAt: 0,
+    recentHits: [],
+    recentUsers: [],
   }
 }
 
@@ -104,6 +159,7 @@ function readActivityFile(): ActivityState | null {
       recentHits: Array.isArray(parsed.recentHits)
         ? parsed.recentHits.filter((t): t is number => typeof t === "number")
         : [],
+      recentUsers: parseRecentUsers(parsed.recentUsers),
     }
   } catch {
     return null
@@ -119,6 +175,7 @@ function mergeActivity(a: ActivityState, b: ActivityState): ActivityState {
     lastBrowseAt: Math.max(a.lastBrowseAt, b.lastBrowseAt),
     lastMutatingAt: Math.max(a.lastMutatingAt, b.lastMutatingAt),
     recentHits: recentHits.filter((t) => t >= cutoff).slice(-40),
+    recentUsers: pruneRecentUsers([...(a.recentUsers || []), ...(b.recentUsers || [])]),
   }
 }
 
@@ -128,35 +185,55 @@ function resolvedActivity(): ActivityState {
   const lastRead = globalThis.__userActivityPriorityLastReadAt ?? 0
   if (now - lastRead >= FILE_READ_THROTTLE_MS || !globalThis.__userActivityPriorityFileCache) {
     globalThis.__userActivityPriorityLastReadAt = now
-    globalThis.__userActivityPriorityFileCache = readActivityFile() ?? {
-      lastBrowseAt: 0,
-      lastMutatingAt: 0,
-      recentHits: [],
-    }
+    globalThis.__userActivityPriorityFileCache = readActivityFile() ?? emptyActivity()
   }
   return mergeActivity(local, globalThis.__userActivityPriorityFileCache)
 }
 
-/** Called from the edge proxy on each interactive request. */
-export function recordInteractiveUserTraffic(pathname: string, method: string): void {
-  if (!isInteractivePath(pathname)) return
+function upsertRecentUser(s: ActivityState, userId: string | null | undefined, pathname: string, at: number): void {
+  const id = userId?.trim() || ""
+  if (!USER_ID_RE.test(id)) return
+  const hit: RecentUserHit = { userId: id, lastAt: at, lastPath: pathname || "/" }
+  const idx = s.recentUsers.findIndex((u) => u.userId === id)
+  if (idx >= 0) s.recentUsers[idx] = hit
+  else s.recentUsers.push(hit)
+  s.recentUsers = pruneRecentUsers(s.recentUsers)
+}
+
+/** Called from the edge proxy / presence ping on each interactive request. */
+export function recordInteractiveUserTraffic(
+  pathname: string,
+  method: string,
+  userId?: string | null,
+): void {
+  const interactive = isInteractivePath(pathname)
+  const id = userId?.trim() || ""
+  if (!interactive && !USER_ID_RE.test(id)) return
   const now = Date.now()
   const s = state()
-  s.recentHits.push(now)
-  const cutoff = now - BURST_WINDOW_MS
-  s.recentHits = s.recentHits.filter((t) => t >= cutoff)
-  s.lastBrowseAt = now
-  const m = method.toUpperCase()
-  if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") {
-    s.lastMutatingAt = now
+  if (interactive) {
+    s.recentHits.push(now)
+    const cutoff = now - BURST_WINDOW_MS
+    s.recentHits = s.recentHits.filter((t) => t >= cutoff)
+    s.lastBrowseAt = now
+    const m = method.toUpperCase()
+    if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") {
+      s.lastMutatingAt = now
+    }
   }
+  upsertRecentUser(s, id, pathname, now)
 
   const lastWrite = globalThis.__userActivityPriorityLastWriteAt ?? 0
-  const forceWrite = s.lastMutatingAt === now
+  const forceWrite = s.lastMutatingAt === now || Boolean(id)
   if (forceWrite || now - lastWrite >= FILE_WRITE_THROTTLE_MS) {
     globalThis.__userActivityPriorityLastWriteAt = now
     writeActivityFile(s)
   }
+}
+
+export function getRecentUserHits(sinceMs = RECENT_USER_WINDOW_MS): RecentUserHit[] {
+  const cutoff = Date.now() - sinceMs
+  return pruneRecentUsers(resolvedActivity().recentUsers || []).filter((u) => u.lastAt >= cutoff)
 }
 
 /** True when background cron work should defer or abort in favour of users. */

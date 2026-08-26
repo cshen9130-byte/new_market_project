@@ -831,7 +831,8 @@ async function handleBflOpsList(opts: {
 }
 
 export async function GET(req: Request) {
-  recordInteractiveUserTraffic("/ma/api/tracking-funds/list", "GET")
+  const userId = String(req.headers.get("x-market-user-id") || "").trim()
+  recordInteractiveUserTraffic("/ma/api/tracking-funds/list", "GET", userId)
   const { searchParams } = new URL(req.url)
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
   const requestedPool = searchParams.get("pool")

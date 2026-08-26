@@ -28,8 +28,7 @@ import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
 import { authService } from "@/lib/auth"
 import type { CtpTick } from "@/lib/client/ctp-market"
-import { allWeatherLiveDailyPnl, allWeatherLiveNav } from "@/lib/client/all-weather-nav"
-import { isLiveSessionFor } from "@/lib/client/market-hours"
+import { allWeatherLiveDailyPnl, allWeatherMarkedEquity } from "@/lib/client/all-weather-nav"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
 import { displayListedName, SLEEVE_COLORS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { Button } from "@/components/ui/button"
@@ -198,7 +197,6 @@ function pnlClass(n: number): string {
 
 function liveMark(contract: string | undefined, quotes: Record<string, CtpTick>, fallback: number) {
   if (!contract) return fallback
-  if (!isLiveSessionFor(contract)) return fallback
   const tick = quotes[contract.toUpperCase()] || quotes[contract]
   return tick?.last != null && tick.last > 0 ? tick.last : fallback
 }
@@ -454,22 +452,35 @@ export function AllWeatherApp() {
     const quotes = ctp.quotes
     const productPnl = new Map<string, number>()
     const sleevePnl: Record<SleeveKey, number> = { Equity: 0, Bonds: 0, Gold: 0, Commodity: 0 }
-    let daily = 0
     let liveCount = 0
+    const rows = overview.book.positions.map((p) => ({
+      symbol: p.contract,
+      lots: p.lots,
+      multiplier: p.multiplier,
+      prevPrice: p.prevPrice ?? 0,
+      price: p.price,
+      dailyPnl: p.dailyPnl,
+    }))
     for (const p of overview.book.positions) {
       const hasTick = Boolean(p.contract && (quotes[p.contract.toUpperCase()]?.last || quotes[p.contract]?.last))
       if (hasTick) liveCount += 1
       const pnl = liveDailyPnl(p, quotes)
       productPnl.set(p.asset, pnl)
       sleevePnl[p.sleeve] += pnl
-      daily += pnl
     }
+    const marked = allWeatherMarkedEquity({
+      asOf: overview.book.asOf,
+      equity: overview.book.equity,
+      dailyPnl: overview.book.dailyPnl,
+      rows,
+      markOf: (symbol, fallback) => liveMark(symbol, quotes, fallback),
+    })
     return {
-      daily,
+      daily: marked.liveDaily,
       sleevePnl,
       productPnl,
       liveCount,
-      equity: allWeatherLiveNav(overview.book.equity, overview.book.dailyPnl, daily),
+      equity: marked.equity,
     }
   }, [overview, ctp.quotes])
 

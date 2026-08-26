@@ -4,12 +4,17 @@
 
 import fs from "fs"
 import path from "path"
-import { shouldYieldBackgroundWorkToUsers } from "@/lib/server/user-activity-priority"
+import {
+  getRecentUserHits,
+  shouldYieldBackgroundWorkToUsers,
+  type RecentUserHit,
+} from "@/lib/server/user-activity-priority"
 
 export type DeployTrafficWindow = {
   minutes: number
   label: string
   requests: number
+  productRequests: number
   uniqueIps: string[]
 }
 
@@ -19,6 +24,12 @@ export type DeployLastRequest = {
   method: string
   path: string
   status: number
+}
+
+export type DeployActiveUser = {
+  userId: string
+  lastPath: string
+  agoSec: number
 }
 
 export type DeployReadiness = {
@@ -43,6 +54,9 @@ export type DeployReadiness = {
   }
   viewerIp: string | null
   otherActiveIps5m: string[]
+  otherActiveUsers5m: DeployActiveUser[]
+  productHits5m: number
+  productHits15m: number
 }
 
 const NGINX_TIME_RE = /^(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) ([^"]*) HTTP\/[^"]*" (\d+)/
@@ -70,7 +84,27 @@ function isIgnoredPath(urlPath: string): boolean {
   if (!urlPath || urlPath.startsWith("/_next/")) return true
   if (STATIC_EXT_RE.test(urlPath)) return true
   if (urlPath.includes("/api/admin/deploy-status")) return true
+  if (urlPath.includes("/api/presence")) return true
   return false
+}
+
+/** Admin checking this page — not "someone using the product". */
+function isAdminSelfPath(urlPath: string): boolean {
+  if (urlPath.startsWith("/dashboard/admin")) return true
+  if (urlPath.startsWith("/api/admin/")) return true
+  if (urlPath.includes("/api/presence")) return true
+  return false
+}
+
+/** Logged-in product usage that should block a casual deploy. */
+function isProductHit(urlPath: string): boolean {
+  if (isIgnoredPath(urlPath) || isAdminSelfPath(urlPath)) return false
+  if (urlPath === "/login") return false
+  return (
+    urlPath.startsWith("/ma/") ||
+    urlPath.startsWith("/dashboard") ||
+    urlPath.startsWith("/api/")
+  )
 }
 
 function parseNginxTime(ts: string): Date | null {
@@ -143,6 +177,7 @@ function windowStats(hits: ParsedHit[], minutes: number): DeployTrafficWindow {
     minutes,
     label: `${minutes}m`,
     requests: subset.length,
+    productRequests: subset.filter((h) => isProductHit(h.path)).length,
     uniqueIps: ips,
   }
 }
@@ -180,41 +215,92 @@ function readActivitySnapshot(): DeployReadiness["activity"] {
   }
 }
 
+function usersInWindow(users: RecentUserHit[], minutes: number, viewerUserId: string | null): DeployActiveUser[] {
+  const cutoff = Date.now() - minutes * 60_000
+  const now = Date.now()
+  return users
+    .filter((u) => u.lastAt >= cutoff && (!viewerUserId || u.userId !== viewerUserId))
+    .map((u) => ({
+      userId: u.userId,
+      lastPath: u.lastPath,
+      agoSec: Math.max(0, (now - u.lastAt) / 1000),
+    }))
+}
+
 function decideLevel(args: {
   nginxReadable: boolean
   otherIps5m: string[]
   otherIps15m: string[]
+  otherUsers5m: DeployActiveUser[]
+  otherUsers15m: DeployActiveUser[]
+  productHits5m: number
+  productHits15m: number
   activity: DeployReadiness["activity"]
 }): Pick<DeployReadiness, "goodToDeploy" | "level" | "reason"> {
-  const { nginxReadable, otherIps5m, otherIps15m, activity } = args
+  const {
+    nginxReadable,
+    otherIps5m,
+    otherIps15m,
+    otherUsers5m,
+    otherUsers15m,
+    productHits5m,
+    productHits15m,
+    activity,
+  } = args
 
   if (nginxReadable) {
-    if (otherIps5m.length === 0 && otherIps15m.length === 0) {
+    if (otherUsers5m.length > 0) {
       return {
-        goodToDeploy: true,
-        level: "good",
-        reason: "近 15 分钟无其他用户访问，适合部署",
+        goodToDeploy: false,
+        level: "busy",
+        reason: `近 5 分钟有 ${otherUsers5m.length} 位已登录同事在使用，不建议现在部署`,
       }
     }
-    if (otherIps5m.length === 0) {
+    if (productHits5m > 0) {
+      return {
+        goodToDeploy: false,
+        level: "busy",
+        reason:
+          `近 5 分钟仍有 ${productHits5m} 次业务访问。同一出口 IP 下的同事不会被算作「其他 IP」，不建议现在部署`,
+      }
+    }
+    if (otherIps5m.length > 0) {
+      return {
+        goodToDeploy: false,
+        level: "busy",
+        reason: `近 5 分钟有 ${otherIps5m.length} 个其他 IP 在访问，不建议现在部署`,
+      }
+    }
+    if (otherUsers15m.length > 0 || productHits15m > 0 || otherIps15m.length > 0) {
+      const bits: string[] = []
+      if (otherUsers15m.length > 0) bits.push(`${otherUsers15m.length} 位同事`)
+      if (otherIps15m.length > 0) bits.push(`${otherIps15m.length} 个其他 IP`)
+      if (productHits15m > 0) bits.push(`${productHits15m} 次业务访问`)
       return {
         goodToDeploy: true,
         level: "caution",
-        reason: `近 5 分钟空闲，但 15 分钟内有 ${otherIps15m.length} 个其他 IP 访问过，可部署但留意`,
+        reason: `近 5 分钟空闲，但 15 分钟内有 ${bits.join("、")}，可部署但留意`,
       }
     }
     return {
-      goodToDeploy: false,
-      level: "busy",
-      reason: `近 5 分钟有 ${otherIps5m.length} 个其他 IP 在访问，不建议现在部署`,
+      goodToDeploy: true,
+      level: "good",
+      reason: "近 15 分钟无业务访问（不含本页检查），适合部署",
     }
   }
 
   // Fallback: in-app activity file only (e.g. local/dev without nginx log access)
-  if (activity.available) {
+  if (activity.available || otherUsers5m.length > 0 || otherUsers15m.length > 0) {
+    if (otherUsers5m.length > 0) {
+      return {
+        goodToDeploy: false,
+        level: "busy",
+        reason: `近 5 分钟有 ${otherUsers5m.length} 位已登录同事在使用，不建议现在部署`,
+      }
+    }
     const browseOk = activity.browseAgoSec == null || activity.browseAgoSec >= 300
     const mutateOk = activity.mutateAgoSec == null || activity.mutateAgoSec >= 300
-    if (browseOk && mutateOk && !activity.yieldingBackgroundWork) {
+    if (browseOk && mutateOk && !activity.yieldingBackgroundWork && otherUsers15m.length === 0) {
       return {
         goodToDeploy: true,
         level: "good",
@@ -242,10 +328,11 @@ function decideLevel(args: {
   }
 }
 
-export function getDeployReadiness(viewerIp?: string | null): DeployReadiness {
+export function getDeployReadiness(viewerIp?: string | null, viewerUserId?: string | null): DeployReadiness {
   const checkedAt = new Date().toISOString()
   const activity = readActivitySnapshot()
   const viewer = viewerIp?.trim() || null
+  const viewerUser = viewerUserId?.trim() || null
 
   let nginxPath: string | null = null
   let nginxReadable = false
@@ -271,12 +358,19 @@ export function getDeployReadiness(viewerIp?: string | null): DeployReadiness {
   const w15 = windows.find((w) => w.minutes === 15)!
   const otherActiveIps5m = w5.uniqueIps.filter((ip) => !viewer || ip !== viewer)
   const otherActiveIps15m = w15.uniqueIps.filter((ip) => !viewer || ip !== viewer)
+  const productHits5m = w5.productRequests
+  const productHits15m = w15.productRequests
+
+  const recentUsers = getRecentUserHits(60 * 60_000)
+  const otherActiveUsers5m = usersInWindow(recentUsers, 5, viewerUser)
+  const otherActiveUsers15m = usersInWindow(recentUsers, 15, viewerUser)
 
   const last = hits.length > 0 ? hits[hits.length - 1] : null
   const topMap = new Map<string, number>()
   const cutoff5 = Date.now() - 5 * 60_000
   for (const h of hits) {
     if (h.at.getTime() < cutoff5) continue
+    if (isAdminSelfPath(h.path)) continue
     topMap.set(h.path, (topMap.get(h.path) || 0) + 1)
   }
   const topPaths5m = [...topMap.entries()]
@@ -288,6 +382,10 @@ export function getDeployReadiness(viewerIp?: string | null): DeployReadiness {
     nginxReadable,
     otherIps5m: otherActiveIps5m,
     otherIps15m: otherActiveIps15m,
+    otherUsers5m: otherActiveUsers5m,
+    otherUsers15m: otherActiveUsers15m,
+    productHits5m,
+    productHits15m,
     activity,
   })
 
@@ -313,6 +411,9 @@ export function getDeployReadiness(viewerIp?: string | null): DeployReadiness {
     },
     viewerIp: viewer,
     otherActiveIps5m,
+    otherActiveUsers5m,
+    productHits5m,
+    productHits15m,
   }
 }
 

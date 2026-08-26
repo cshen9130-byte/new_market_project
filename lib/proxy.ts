@@ -6,7 +6,7 @@ export default async function proxy(request: Request) {
   try {
     const url = new URL(request.url)
     const method = request.method
-    recordInteractiveUserTraffic(url.pathname, method)
+    recordInteractiveUserTraffic(url.pathname, method, request.headers.get("x-market-user-id"))
     const m = method.toUpperCase()
     if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") {
       abortScheduledEmailParseForUserPriority()

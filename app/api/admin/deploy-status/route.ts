@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getUserById } from "@/lib/server/users"
+import { getUserById, listUsers } from "@/lib/server/users"
 import {
   clientIpFromRequest,
   getDeployReadiness,
@@ -16,8 +16,13 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "无权限" }, { status: 403 })
     }
 
-    const status = getDeployReadiness(clientIpFromRequest(req))
-    return NextResponse.json({ ok: true, ...status })
+    const status = getDeployReadiness(clientIpFromRequest(req), user.id)
+    const names = new Map((await listUsers()).map((u) => [u.id, u.name]))
+    const otherActiveUsers5m = status.otherActiveUsers5m.map((u) => ({
+      ...u,
+      name: names.get(u.userId) || u.userId,
+    }))
+    return NextResponse.json({ ok: true, ...status, otherActiveUsers5m })
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message || "服务器错误" },

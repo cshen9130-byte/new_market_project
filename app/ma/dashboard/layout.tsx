@@ -10,6 +10,7 @@ import { ChatBotWidget } from "@/components/chat-bot-widget"
 import { authService, type User } from "@/lib/auth"
 import { MA_CHAT_VISIBLE_EVENT } from "@/lib/ma/chat-documents"
 import { canAccessAiKnowledge } from "@/lib/permissions"
+import { usePresenceHeartbeat } from "@/hooks/use-presence-heartbeat"
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
@@ -20,6 +21,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [user, setUser] = useState<User | null>(null)
   const [chatVisible, setChatVisible] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  usePresenceHeartbeat(user?.id, pathname)
 
   useEffect(() => {
     function onChatVisible(event: Event) {

@@ -38,7 +38,15 @@ type DeployWindow = {
   minutes: number
   label: string
   requests: number
+  productRequests?: number
   uniqueIps: string[]
+}
+
+type DeployActiveUser = {
+  userId: string
+  name?: string
+  lastPath: string
+  agoSec: number
 }
 
 type DeployStatus = {
@@ -65,6 +73,9 @@ type DeployStatus = {
   nginx: { path: string | null; readable: boolean; error?: string }
   viewerIp: string | null
   otherActiveIps5m: string[]
+  otherActiveUsers5m?: DeployActiveUser[]
+  productHits5m?: number
+  productHits15m?: number
 }
 
 function formatAgo(sec: number | null | undefined): string {
@@ -361,11 +372,35 @@ export default function AdminAccountsPage() {
                     <div className="text-xs text-cyan-500/80 mt-1">
                       独立 IP · {w.requests} 次请求
                     </div>
+                    <div className="text-xs text-cyan-600 mt-0.5">
+                      业务 {w.productRequests ?? 0} 次
+                    </div>
                   </div>
                 ))}
               </div>
+              <div className="text-xs text-cyan-600 mb-4">
+                办公室共用同一出口 IP 时，「独立 IP」无法区分同事。部署判断改为看业务路径和已登录用户。
+              </div>
 
               <div className="grid gap-2 text-sm text-cyan-400/90">
+                <div>
+                  近 5 分钟业务访问：{" "}
+                  <span className="text-cyan-200">{deployStatus.productHits5m ?? 0} 次</span>
+                  {" · "}
+                  近 15 分钟：{" "}
+                  <span className="text-cyan-200">{deployStatus.productHits15m ?? 0} 次</span>
+                </div>
+                <div>
+                  近 5 分钟其他登录用户：{" "}
+                  <span className="text-cyan-200">
+                    {(deployStatus.otherActiveUsers5m?.length ?? 0) > 0
+                      ? deployStatus.otherActiveUsers5m!.map((u) => {
+                          const who = u.name || u.userId
+                          return `${who}（${formatAgo(u.agoSec)} · ${u.lastPath}）`
+                        }).join("；")
+                      : "无"}
+                  </span>
+                </div>
                 <div>
                   近 5 分钟其他活跃 IP：{" "}
                   <span className="text-cyan-200">
@@ -407,7 +442,7 @@ export default function AdminAccountsPage() {
 
               {deployStatus.topPaths5m.length > 0 && (
                 <div className="mt-4">
-                  <div className="text-xs text-cyan-500 mb-2">近 5 分钟热门路径</div>
+                  <div className="text-xs text-cyan-500 mb-2">近 5 分钟热门业务路径</div>
                   <div className="space-y-1">
                     {deployStatus.topPaths5m.map((p) => (
                       <div key={p.path} className="flex justify-between gap-3 text-xs text-cyan-300/90">

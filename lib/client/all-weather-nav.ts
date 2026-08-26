@@ -1,4 +1,6 @@
-/** Prior close + today's live P/L. Not initial capital + today's P/L. */
+import { shanghaiYmd } from "@/lib/client/market-hours"
+
+/** Yesterday's close + today's live P/L. Not initial capital + today's P/L. */
 export function allWeatherLiveNav(bookEquity: number, bookDailyPnl: number, liveDailyPnl: number) {
   return bookEquity - bookDailyPnl + liveDailyPnl
 }
@@ -31,4 +33,30 @@ export function allWeatherLiveDailyPnl(
     daily += (mark - prev) * row.lots * row.multiplier
   }
   return daily
+}
+
+/**
+ * Running NAV: last closed book equity, plus live marks vs the right anchor.
+ * If the book is already as-of today, anchor is yesterday's settle (prevPrice).
+ * If the book is still yesterday, keep that close and mark vs the book's last price.
+ */
+export function allWeatherMarkedEquity(opts: {
+  asOf: string
+  equity: number
+  dailyPnl: number
+  rows: AllWeatherLiveRow[]
+  markOf: (symbol: string | undefined, fallback: number) => number
+  today?: string
+}) {
+  const today = opts.today ?? shanghaiYmd()
+  const stale = Boolean(opts.asOf) && opts.asOf < today
+  const rows = opts.rows.map((row) => ({
+    ...row,
+    prevPrice: stale ? (row.price > 0 ? row.price : row.prevPrice) : row.prevPrice > 0 ? row.prevPrice : row.price,
+  }))
+  const liveDaily = allWeatherLiveDailyPnl(rows, opts.markOf)
+  return {
+    liveDaily,
+    equity: stale ? opts.equity + liveDaily : allWeatherLiveNav(opts.equity, opts.dailyPnl, liveDaily),
+  }
 }

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
-import { allWeatherLiveDailyPnl, allWeatherLiveNav } from "@/lib/client/all-weather-nav"
+import { allWeatherMarkedEquity } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import { isLiveSessionFor, mergeClosedMarks } from "@/lib/client/market-hours"
 import {
@@ -605,15 +605,22 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
             }
           })
       : []
-    const liveDaily =
-      awBook && Object.keys(prevMarks).length > 0
-        ? allWeatherLiveDailyPnl(awRows, (symbol, fallback) => {
-            if (!symbol) return fallback
-            return markPrice(symbol, quotes, candles, extraMarks) ?? fallback
-          })
-        : awBook?.dailyPnl ?? 0
     const nav = awBook
-      ? allWeatherLiveNav(awBook.equity, awBook.dailyPnl, liveDaily)
+      ? allWeatherMarkedEquity({
+          asOf: awBook.asOf,
+          equity: awBook.equity,
+          dailyPnl: awBook.dailyPnl,
+          rows: awRows,
+          markOf: (symbol, fallback) => {
+            if (!symbol) return fallback
+            const key = symbol.toUpperCase()
+            const tick = quotes[key] || quotes[symbol]
+            if (tick?.last != null && tick.last > 0) return tick.last
+            const hist = candles[key]?.at(-1)?.close ?? candles[symbol]?.at(-1)?.close
+            if (hist != null && hist > 0) return hist
+            return fallback
+          },
+        }).equity
       : paperNav(initialCapital, realized, unrealized)
     const ret = awBook
       ? paperReturn(initialCapital, nav - initialCapital, 0)
