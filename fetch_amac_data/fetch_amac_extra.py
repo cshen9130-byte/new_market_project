@@ -9,8 +9,8 @@ Outputs (default folder: amac_extra/):
   manager_details.csv    - manager detail page fields (管理规模区间, staff, etc.)
   manager_executives.csv - 高管信息 (one row per executive)
   manager_executive_resume.csv - 高管工作履历 (one row per resume entry)
-  personnel.csv          - every person under every institution (personList)
-  personnel_cert_history.csv - certificate status history per person
+  personnel.csv          - every person (personList + personDetail.html)
+  personnel_cert_history.csv - 证书状态变更记录 from the person detail page
 
 Each stage supports resume via .progress_<stage>.json in the output folder.
 Re-run the same command to continue after interruption.
@@ -52,6 +52,7 @@ HEADERS = {
 }
 PERSON_ORG_REFERER = f"{BASE}/res/pof/person/personOrgList.html"
 PERSON_LIST_REFERER = f"{BASE}/res/pof/person/personList.html"
+PERSON_DETAIL_PAGE = f"{BASE}/res/pof/person/personDetail.html"
 MANAGER_LIST_REFERER = f"{BASE}/res/pof/manager/managerList.html"
 # personOrg / person APIs reject size other than 20 with HTTP 400.
 PERSON_API_PAGE_SIZE = 20
@@ -159,6 +160,7 @@ PERSONNEL_COLUMNS = [
     "机构名称",
     "所属机构名称",
     "从业资格类别",
+    "学历代码",
     "学历",
     "证书取得日期",
     "证书到期日期",
@@ -169,7 +171,11 @@ PERSONNEL_COLUMNS = [
     "在职状态",
     "是否注销",
     "业务ID",
+    "申请ID",
+    "申请状态",
     "异常标记",
+    "详情链接",
+    "是否有照片",
 ]
 
 PERSONNEL_CERT_HISTORY_COLUMNS = [
@@ -184,7 +190,7 @@ PERSONNEL_CERT_HISTORY_COLUMNS = [
     "证书到期日期",
     "证书状态",
     "证书状态名称",
-    "创建时间",
+    "变更日期",
     "资格ID",
 ]
 
@@ -250,6 +256,26 @@ def as_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def person_detail_url(account_id: str, org_user_id: str = "") -> str:
+    account_id = as_text(account_id)
+    if not account_id:
+        return ""
+    url = f"{PERSON_DETAIL_PAGE}?accountId={account_id}"
+    org_user_id = as_text(org_user_id)
+    if org_user_id:
+        url += f"&userId={org_user_id}"
+    return url
+
+
+def photo_present(value: Any) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text.lower() in {"null", "none", "undefined"}:
+        return False
+    return len(text) > 200
 
 
 def api_headers(api_path: str) -> dict[str, str]:
@@ -353,6 +379,80 @@ def get_html(session: requests.Session, url: str, progress: FetchProgress | None
                 print(msg)
             time.sleep(wait)
     raise RuntimeError(f"Failed GET {url}") from last_error
+
+
+def get_json(
+    session: requests.Session,
+    api_path: str,
+    *,
+    params: dict | None = None,
+    referer: str | None = None,
+    progress: FetchProgress | None = None,
+) -> dict:
+    url = f"{BASE}{api_path}"
+    headers = api_headers(api_path)
+    if referer:
+        headers["Referer"] = referer
+    query = dict(params or {})
+    query.setdefault("rand", str(random.random()))
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = session.get(
+                url,
+                params=query,
+                headers=headers,
+                verify=False,
+                timeout=90,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+            raise ValueError(f"Expected JSON object from {api_path}")
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            wait = RETRY_BACKOFF * attempt
+            msg = f"  [RETRY {attempt}/{MAX_RETRIES}] GET {api_path}: {exc}; wait {wait:.1f}s"
+            if progress:
+                progress.message(msg)
+            else:
+                print(msg)
+            time.sleep(wait)
+    raise RuntimeError(f"Failed GET {api_path}") from last_error
+
+
+def fetch_person_detail(
+    session: requests.Session,
+    account_id: str,
+    org_user_id: str = "",
+    progress: FetchProgress | None = None,
+) -> dict | None:
+    account_id = as_text(account_id)
+    if not account_id:
+        return None
+    return get_json(
+        session,
+        f"/api/pof/person/{account_id}",
+        referer=person_detail_url(account_id, org_user_id),
+        progress=progress,
+    )
+
+
+def merge_personnel_item(list_item: dict, detail: dict | None) -> dict:
+    merged = dict(list_item)
+    if not detail:
+        return merged
+    history = detail.get("personCertHistoryList") or list_item.get("personCertHistoryList")
+    for key, value in detail.items():
+        if key == "personCertHistoryList":
+            continue
+        if value in (None, ""):
+            continue
+        merged[key] = value
+    if history:
+        merged["personCertHistoryList"] = history
+    return merged
 
 
 def paginated_fetch(
@@ -504,15 +604,18 @@ def person_org_row(item: dict) -> dict:
 
 
 def personnel_row(item: dict) -> dict:
+    account_id = as_text(item.get("accountId"))
+    org_user_id = as_text(item.get("userId"))
     return {
-        "机构用户ID": as_text(item.get("userId")),
-        "账号ID": as_text(item.get("accountId")),
+        "机构用户ID": org_user_id,
+        "账号ID": account_id,
         "姓名": item.get("userName", item.get("name", "")) or "",
         "性别": item.get("sex", item.get("gender", "")) or "",
         "证书编号": item.get("certCode", "") or "",
         "机构名称": item.get("orgName", "") or "",
         "所属机构名称": item.get("ownOrgName", "") or "",
         "从业资格类别": item.get("certName", item.get("certType", "")) or "",
+        "学历代码": as_text(item.get("education")),
         "学历": item.get("educationName", "") or "",
         "证书取得日期": ms_to_date(item.get("certObtainDate") or item.get("certDate")),
         "证书到期日期": ms_to_date(item.get("certEndDate")),
@@ -523,7 +626,11 @@ def personnel_row(item: dict) -> dict:
         "在职状态": item.get("officeState", ""),
         "是否注销": item.get("removed", "") or "",
         "业务ID": as_text(item.get("bizId")),
+        "申请ID": as_text(item.get("applyId")),
+        "申请状态": as_text(item.get("applyStatus")),
         "异常标记": item.get("flag", ""),
+        "详情链接": person_detail_url(account_id, org_user_id),
+        "是否有照片": "是" if photo_present(item.get("personPhotoBase64")) else "否",
     }
 
 
@@ -538,6 +645,7 @@ def personnel_cert_history_rows(item: dict) -> list[dict]:
     for entry in history:
         if not isinstance(entry, dict):
             continue
+        change_date = ms_to_date(entry.get("creationDate") or entry.get("certObtainDate"))
         rows.append(
             {
                 "机构用户ID": org_user_id or as_text(entry.get("userId")),
@@ -551,7 +659,7 @@ def personnel_cert_history_rows(item: dict) -> list[dict]:
                 "证书到期日期": ms_to_date(entry.get("certEndDate")),
                 "证书状态": entry.get("status", ""),
                 "证书状态名称": entry.get("statusName", "") or "",
-                "创建时间": ms_to_date(entry.get("creationDate")),
+                "变更日期": change_date,
                 "资格ID": as_text(entry.get("qlfId")),
             }
         )
@@ -732,10 +840,12 @@ def iter_personnel_for_org(
     page_size: int = PERSON_API_PAGE_SIZE,
     delay: float = REQUEST_DELAY,
     progress: FetchProgress | None = None,
+    fetch_details: bool = True,
 ) -> tuple[list[dict], list[dict]]:
-    """Fetch every person (and cert history) for one institution userId."""
+    """Fetch every person for one institution, then overlay personDetail.html fields."""
     people: list[dict] = []
     history: list[dict] = []
+    detail_cache: dict[str, dict | None] = {}
     page = 0
     while True:
         data = post_json(
@@ -752,8 +862,25 @@ def iter_personnel_for_org(
                 continue
             if not item.get("userId"):
                 item["userId"] = org_user_id
-            people.append(personnel_row(item))
-            history.extend(personnel_cert_history_rows(item))
+            account_id = as_text(item.get("accountId"))
+            detail = None
+            if fetch_details and account_id:
+                if account_id not in detail_cache:
+                    try:
+                        detail_cache[account_id] = fetch_person_detail(
+                            session, account_id, org_user_id, progress
+                        )
+                    except Exception as exc:
+                        if progress:
+                            progress.message(f"  personDetail skip {account_id}: {exc}")
+                        else:
+                            print(f"  personDetail skip {account_id}: {exc}")
+                        detail_cache[account_id] = None
+                    time.sleep(delay)
+                detail = detail_cache[account_id]
+            merged = merge_personnel_item(item, detail)
+            people.append(personnel_row(merged))
+            history.extend(personnel_cert_history_rows(merged))
         total_pages = int(data.get("totalPages") or 0)
         page += 1
         if not items or page >= total_pages:
@@ -773,6 +900,12 @@ def fetch_personnel(session: requests.Session, output_dir: Path, args: argparse.
     try:
         session.get(
             PERSON_LIST_REFERER,
+            headers={"User-Agent": HEADERS["User-Agent"]},
+            verify=False,
+            timeout=60,
+        )
+        session.get(
+            PERSON_DETAIL_PAGE,
             headers={"User-Agent": HEADERS["User-Agent"]},
             verify=False,
             timeout=60,

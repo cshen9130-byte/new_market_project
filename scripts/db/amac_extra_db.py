@@ -47,6 +47,19 @@ def parse_int(val) -> int | None:
         return None
 
 
+def parse_bool(val) -> bool | None:
+    if val is None or val == "":
+        return None
+    if isinstance(val, bool):
+        return val
+    s = str(val).strip().lower()
+    if s in {"是", "true", "t", "1", "yes", "y"}:
+        return True
+    if s in {"否", "false", "f", "0", "no", "n"}:
+        return False
+    return None
+
+
 DDL = """
 CREATE TABLE IF NOT EXISTS amac_managers (
     id                    SERIAL PRIMARY KEY,
@@ -92,6 +105,7 @@ CREATE TABLE IF NOT EXISTS amac_person_org_stats (
     external_investment_manager_count     INTEGER,
     external_fund_manager_count           INTEGER,
     personnel_fetched_at                  TIMESTAMPTZ,
+    personnel_details_fetched_at          TIMESTAMPTZ,
     source_file                           TEXT NOT NULL DEFAULT 'person_org_stats.csv',
     updated_at                            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT amac_person_org_stats_org_name_uq UNIQUE (org_name)
@@ -183,6 +197,7 @@ CREATE TABLE IF NOT EXISTS amac_personnel (
     org_name                    TEXT,
     own_org_name                TEXT,
     cert_name                   TEXT,
+    education_code              TEXT,
     education_name              TEXT,
     cert_obtain_date            DATE,
     cert_end_date               DATE,
@@ -193,7 +208,11 @@ CREATE TABLE IF NOT EXISTS amac_personnel (
     office_state                INTEGER,
     removed                     TEXT,
     biz_id                      TEXT,
+    apply_id                    TEXT,
+    apply_status                TEXT,
     exception_flag              TEXT,
+    detail_url                  TEXT,
+    has_photo                   BOOLEAN,
     source_file                 TEXT NOT NULL DEFAULT 'personnel.csv',
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT amac_personnel_uq UNIQUE (org_user_id, cert_code)
@@ -280,6 +299,12 @@ SCHEMA_MIGRATIONS = [
     "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS org_code TEXT",
     "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS org_name_spell TEXT",
     "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS personnel_fetched_at TIMESTAMPTZ",
+    "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS personnel_details_fetched_at TIMESTAMPTZ",
+    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS education_code TEXT",
+    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS apply_id TEXT",
+    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS apply_status TEXT",
+    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS detail_url TEXT",
+    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS has_photo BOOLEAN",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_upserted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_orgs_fetched INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_certs_upserted INTEGER NOT NULL DEFAULT 0",
@@ -423,9 +448,10 @@ ON CONFLICT (
 UPSERT_PERSONNEL = """
 INSERT INTO amac_personnel (
     org_user_id, account_id, person_name, sex, cert_code, org_name, own_org_name,
-    cert_name, education_name, cert_obtain_date, cert_end_date, cert_status_change_times,
-    credit_record_num, cert_status, cert_status_name, office_state, removed, biz_id,
-    exception_flag, source_file
+    cert_name, education_code, education_name, cert_obtain_date, cert_end_date,
+    cert_status_change_times, credit_record_num, cert_status, cert_status_name,
+    office_state, removed, biz_id, apply_id, apply_status, exception_flag,
+    detail_url, has_photo, source_file
 ) VALUES %s
 ON CONFLICT (org_user_id, cert_code) DO UPDATE SET
     account_id               = EXCLUDED.account_id,
@@ -434,7 +460,8 @@ ON CONFLICT (org_user_id, cert_code) DO UPDATE SET
     org_name                 = EXCLUDED.org_name,
     own_org_name             = EXCLUDED.own_org_name,
     cert_name                = EXCLUDED.cert_name,
-    education_name           = EXCLUDED.education_name,
+    education_code           = COALESCE(EXCLUDED.education_code, amac_personnel.education_code),
+    education_name           = COALESCE(EXCLUDED.education_name, amac_personnel.education_name),
     cert_obtain_date         = EXCLUDED.cert_obtain_date,
     cert_end_date            = EXCLUDED.cert_end_date,
     cert_status_change_times = COALESCE(EXCLUDED.cert_status_change_times, amac_personnel.cert_status_change_times),
@@ -444,7 +471,11 @@ ON CONFLICT (org_user_id, cert_code) DO UPDATE SET
     office_state             = EXCLUDED.office_state,
     removed                  = EXCLUDED.removed,
     biz_id                   = EXCLUDED.biz_id,
+    apply_id                 = EXCLUDED.apply_id,
+    apply_status             = EXCLUDED.apply_status,
     exception_flag           = EXCLUDED.exception_flag,
+    detail_url               = COALESCE(EXCLUDED.detail_url, amac_personnel.detail_url),
+    has_photo                = COALESCE(EXCLUDED.has_photo, amac_personnel.has_photo),
     source_file              = EXCLUDED.source_file,
     updated_at               = NOW()
 """
@@ -476,17 +507,23 @@ DELETE_PERSONNEL_FOR_ORG = "DELETE FROM amac_personnel WHERE org_user_id = %s"
 DELETE_PERSONNEL_HISTORY_FOR_ORG = "DELETE FROM amac_personnel_cert_history WHERE org_user_id = %s"
 MARK_PERSONNEL_FETCHED = """
 UPDATE amac_person_org_stats
-SET personnel_fetched_at = NOW()
+SET personnel_fetched_at = NOW(),
+    personnel_details_fetched_at = NOW()
 WHERE org_user_id = %s
 """
 
 SELECT_PERSONNEL_TARGETS = """
-SELECT org_user_id, org_name, staff_count, personnel_fetched_at
+SELECT org_user_id, org_name, staff_count, personnel_fetched_at, personnel_details_fetched_at
 FROM amac_person_org_stats
 WHERE org_user_id IS NOT NULL AND org_user_id <> ''
 ORDER BY
-    CASE WHEN personnel_fetched_at IS NULL THEN 0 ELSE 1 END,
+    CASE
+        WHEN personnel_fetched_at IS NULL THEN 0
+        WHEN personnel_details_fetched_at IS NULL THEN 1
+        ELSE 2
+    END,
     personnel_fetched_at ASC NULLS FIRST,
+    personnel_details_fetched_at ASC NULLS FIRST,
     COALESCE(staff_count, 0) DESC,
     org_name
 """
@@ -634,6 +671,7 @@ def personnel_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> tuple 
         dash_to_none(row.get("机构名称")),
         dash_to_none(row.get("所属机构名称")),
         dash_to_none(row.get("从业资格类别")),
+        dash_to_none(row.get("学历代码")),
         dash_to_none(row.get("学历")),
         parse_date(row.get("证书取得日期")),
         parse_date(row.get("证书到期日期")),
@@ -644,7 +682,11 @@ def personnel_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> tuple 
         parse_int(row.get("在职状态")),
         dash_to_none(row.get("是否注销")),
         dash_to_none(row.get("业务ID")),
+        dash_to_none(row.get("申请ID")),
+        dash_to_none(row.get("申请状态")),
         dash_to_none(row.get("异常标记")),
+        dash_to_none(row.get("详情链接")),
+        parse_bool(row.get("是否有照片")),
         source,
     )
 
@@ -666,7 +708,7 @@ def personnel_cert_history_csv_row_to_tuple(row: dict, *, source: str = SOURCE_A
         parse_date(row.get("证书到期日期")),
         parse_int(row.get("证书状态")),
         dash_to_none(row.get("证书状态名称")),
-        parse_date(row.get("创建时间")),
+        parse_date(row.get("变更日期") or row.get("创建时间")),
         dash_to_none(row.get("资格ID")),
         source,
     )

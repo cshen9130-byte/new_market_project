@@ -12,7 +12,7 @@ Tables: amac_managers, amac_person_org_stats, amac_manager_details,
 Nightly incremental (default):
   - Full refresh of manager list + every institution's person-org stats
   - Manager detail pages for new managers + a rotating stale batch
-  - Personnel for orgs not yet fetched, plus a rotating stale batch
+  - Personnel for orgs not yet fetched (list + personDetail.html), plus a rotating stale batch
 
 Weekly full sync (default Sunday, AMAC_ETL_FULL_SYNC_DOW=6):
   - Re-fetch all manager detail pages (~19k HTML requests)
@@ -50,6 +50,7 @@ from fetch_amac_extra import (  # noqa: E402
     HEADERS,
     PAGE_SIZE,
     PERSON_API_PAGE_SIZE,
+    PERSON_DETAIL_PAGE,
     PERSON_LIST_REFERER,
     PERSON_ORG_ALL_BODY,
     PERSON_ORG_REFERER,
@@ -483,19 +484,19 @@ def _select_personnel_targets(
     stale_size: int,
 ) -> list[tuple[str, str]]:
     cur.execute(SELECT_PERSONNEL_TARGETS)
-    rows = [(as_text(r[0]), as_text(r[1]), r[2], r[3]) for r in cur.fetchall() if as_text(r[0])]
+    rows = [(as_text(r[0]), as_text(r[1]), r[2], r[3], r[4]) for r in cur.fetchall() if as_text(r[0])]
     if full_sync:
-        return [(org_user_id, org_name) for org_user_id, org_name, _staff, _fetched in rows]
+        return [(org_user_id, org_name) for org_user_id, org_name, _staff, _fetched, _details in rows]
 
     missing = [
         (org_user_id, org_name)
-        for org_user_id, org_name, _staff, fetched_at in rows
-        if fetched_at is None
+        for org_user_id, org_name, _staff, fetched_at, details_at in rows
+        if fetched_at is None or details_at is None
     ]
     stale = [
         (org_user_id, org_name)
-        for org_user_id, org_name, _staff, fetched_at in rows
-        if fetched_at is not None
+        for org_user_id, org_name, _staff, fetched_at, details_at in rows
+        if fetched_at is not None and details_at is not None
     ]
     targets = missing + stale[: max(0, stale_size)]
     if batch_size > 0:
@@ -519,6 +520,12 @@ def _upsert_personnel(
     try:
         session.get(
             PERSON_LIST_REFERER,
+            headers={"User-Agent": HEADERS["User-Agent"]},
+            verify=False,
+            timeout=60,
+        )
+        session.get(
+            PERSON_DETAIL_PAGE,
             headers={"User-Agent": HEADERS["User-Agent"]},
             verify=False,
             timeout=60,
