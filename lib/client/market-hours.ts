@@ -1,6 +1,6 @@
 import { assetFromContract } from "@/lib/all-weather/universe"
 import { CFFEX_BOND_PRODUCTS, CFFEX_INDEX_PRODUCTS } from "@/lib/client/cffex-expiry"
-import { mergeQuoteTicks, type CtpTick } from "@/lib/client/ctp-market"
+import { applyDeeperBook, mergeQuoteTicks, type CtpTick } from "@/lib/client/ctp-market"
 
 const CFFEX = new Set<string>([...CFFEX_INDEX_PRODUCTS, ...CFFEX_BOND_PRODUCTS])
 
@@ -197,28 +197,34 @@ export function overlaySinaQuote(
   const sinaMs = quoteClockMs(sina)
   const ctpFresh = live && ctpLast != null && (sinaMs == null || ctpMs == null || ctpMs >= sinaMs)
   if (ctpFresh) {
-    return {
-      ...prev,
-      symbol: key,
-      last: ctpLast,
-      pre_settlement: prev.pre_settlement ?? sina.pre_settlement,
-      pre_close: prev.pre_close ?? sina.pre_close,
-    }
+    return applyDeeperBook(
+      {
+        ...prev,
+        symbol: key,
+        last: ctpLast,
+        pre_settlement: prev.pre_settlement ?? sina.pre_settlement,
+        pre_close: prev.pre_close ?? sina.pre_close,
+      },
+      sinaTick,
+    )
   }
 
-  return {
-    ...mergeQuoteTicks(prev, sinaTick),
-    last: sinaLast,
-    open: sinaTick.open ?? prev.open,
-    high: sinaTick.high ?? prev.high,
-    low: sinaTick.low ?? prev.low,
-    volume: sinaTick.volume ?? prev.volume,
-    open_interest: sinaTick.open_interest ?? prev.open_interest,
-    pre_settlement: sinaTick.pre_settlement ?? prev.pre_settlement,
-    pre_close: sinaTick.pre_close ?? prev.pre_close,
-    trade_date: sinaTick.trade_date ?? prev.trade_date,
-    update_time: sinaTick.update_time ?? prev.update_time,
-  }
+  return applyDeeperBook(
+    {
+      ...mergeQuoteTicks(prev, sinaTick),
+      last: sinaLast,
+      open: sinaTick.open ?? prev.open,
+      high: sinaTick.high ?? prev.high,
+      low: sinaTick.low ?? prev.low,
+      volume: sinaTick.volume ?? prev.volume,
+      open_interest: sinaTick.open_interest ?? prev.open_interest,
+      pre_settlement: sinaTick.pre_settlement ?? prev.pre_settlement,
+      pre_close: sinaTick.pre_close ?? prev.pre_close,
+      trade_date: sinaTick.trade_date ?? prev.trade_date,
+      update_time: sinaTick.update_time ?? prev.update_time,
+    },
+    sinaTick,
+  )
 }
 
 /** @deprecated use overlaySinaQuote — SimNow is stale for commodities and often for CFFEX too. */

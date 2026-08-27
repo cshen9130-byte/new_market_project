@@ -132,5 +132,7 @@ export async function fetchSinaFuturesQuotes(symbols: string[]) {
       }
     }
   }
+  const { attachEastmoneyBooks } = await import("@/lib/server/eastmoney-futures-book")
+  await attachEastmoneyBooks(out, requested)
   return out
 }

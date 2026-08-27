@@ -6,6 +6,7 @@ import { getOverview, type OverviewPayload, type SleeveView } from "@/lib/server
 
 const DATA_DIR = path.join(process.cwd(), "data", "all-weather")
 const CONFIG_FILE = path.join(DATA_DIR, "email.json")
+const SEND_LOCK_FILE = path.join(DATA_DIR, "email-send.lock")
 
 export type AllWeatherEmailConfig = {
   sender: {
@@ -71,6 +72,58 @@ export function isScheduledSendDue(config: AllWeatherEmailConfig = readEmailConf
 
 function ensureDir() {
   fs.mkdirSync(DATA_DIR, { recursive: true })
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function readLockPid(): number | null {
+  try {
+    const pid = parseInt(fs.readFileSync(SEND_LOCK_FILE, "utf-8").trim(), 10)
+    return Number.isFinite(pid) ? pid : null
+  } catch {
+    return null
+  }
+}
+
+/** Cross-process lock so cron + save-config + a second Node process cannot send twice. */
+function tryAcquireSendLock(): boolean {
+  ensureDir()
+  const writeLock = (): boolean => {
+    try {
+      const fd = fs.openSync(SEND_LOCK_FILE, "wx")
+      fs.writeFileSync(fd, String(process.pid), "utf-8")
+      fs.closeSync(fd)
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (writeLock()) return true
+  const pid = readLockPid()
+  if (pid != null && pid !== process.pid && pidIsAlive(pid)) return false
+  try {
+    fs.unlinkSync(SEND_LOCK_FILE)
+  } catch {
+    // ignore stale cleanup races
+  }
+  return writeLock()
+}
+
+function releaseSendLock(): void {
+  try {
+    const pid = readLockPid()
+    if (pid == null || pid === process.pid) fs.unlinkSync(SEND_LOCK_FILE)
+  } catch {
+    // ignore
+  }
 }
 
 export function readEmailConfig(): AllWeatherEmailConfig {
@@ -452,11 +505,12 @@ export async function sendAllWeatherEmail(opts?: {
   })
   const now = new Date()
   const dateKey = shanghaiParts(now).dateKey
+  const latest = readEmailConfig()
   writeEmailConfig({
-    ...config,
+    ...latest,
     lastSentDate: dateKey,
     lastSentAt: now.toISOString(),
-    lastScheduledDate: opts?.source === "scheduled" ? dateKey : config.lastScheduledDate,
+    lastScheduledDate: opts?.source === "scheduled" ? dateKey : latest.lastScheduledDate,
     lastError: null,
     lastErrorAt: null,
   })
@@ -474,18 +528,31 @@ export async function testSenderConnection(config = readEmailConfig()): Promise<
   await transporter.verify()
 }
 
-export async function runDueAllWeatherEmails(): Promise<void> {
-  const config = readEmailConfig()
-  if (!isScheduledSendDue(config)) return
+export async function runDueAllWeatherEmails(): Promise<{ sent: boolean; error: string | null }> {
+  if (!tryAcquireSendLock()) return { sent: false, error: null }
   try {
-    await sendAllWeatherEmail({ source: "scheduled" })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    console.error("[all-weather-email] scheduled send failed:", e)
-    writeEmailConfig({
-      ...readEmailConfig(),
-      lastError: message,
-      lastErrorAt: new Date().toISOString(),
-    })
+    const config = readEmailConfig()
+    if (!isScheduledSendDue(config)) return { sent: false, error: null }
+    const dateKey = shanghaiParts().dateKey
+    // Claim the daily slot before SMTP so a concurrent cron/save cannot also send.
+    writeEmailConfig({ ...readEmailConfig(), lastScheduledDate: dateKey })
+    try {
+      await sendAllWeatherEmail({ source: "scheduled" })
+      return { sent: true, error: null }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error("[all-weather-email] scheduled send failed:", e)
+      const latest = readEmailConfig()
+      writeEmailConfig({
+        ...latest,
+        lastScheduledDate:
+          latest.lastScheduledDate === dateKey ? config.lastScheduledDate : latest.lastScheduledDate,
+        lastError: message,
+        lastErrorAt: new Date().toISOString(),
+      })
+      return { sent: false, error: message }
+    }
+  } finally {
+    releaseSendLock()
   }
 }

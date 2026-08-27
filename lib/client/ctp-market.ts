@@ -136,6 +136,25 @@ export function pickBook(a?: CtpBookLevel[] | null, b?: CtpBookLevel[] | null) {
   return bookLevelCount(b) > bookLevelCount(a) ? b || [] : a || []
 }
 
+/** Keep last/OHLC from `base`, but take the deeper bid/ask book if `other` has more levels. */
+export function applyDeeperBook(base: CtpTick, other?: CtpTick | null): CtpTick {
+  if (!other) return base
+  const bids = pickBook(base.bids, other.bids)
+  const asks = pickBook(base.asks, other.asks)
+  if (bookLevelCount(bids) <= bookLevelCount(base.bids) && bookLevelCount(asks) <= bookLevelCount(base.asks)) {
+    return base
+  }
+  return {
+    ...base,
+    bids,
+    asks,
+    bid: bids[0]?.price ?? base.bid,
+    ask: asks[0]?.price ?? base.ask,
+    bid_volume: bids[0]?.volume ?? base.bid_volume,
+    ask_volume: asks[0]?.volume ?? base.ask_volume,
+  }
+}
+
 export function levelsFromTick(tick: CtpTick | undefined, side: "bid" | "ask"): CtpBookLevel[] {
   const book = side === "bid" ? tick?.bids : tick?.asks
   const filled = (book || []).filter((row) => row.price != null && row.price > 0)

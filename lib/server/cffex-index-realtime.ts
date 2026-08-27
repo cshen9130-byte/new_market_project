@@ -1,6 +1,7 @@
 import { allListedCffexIndexContracts } from "@/lib/client/cffex-expiry"
 import { INDEX_FUTURES, type CtpCandle, type CtpTick } from "@/lib/client/ctp-market"
 import { allWeatherHqSymbols } from "@/lib/server/all-weather-prices"
+import { attachEastmoneyBooks } from "@/lib/server/eastmoney-futures-book"
 import { fetchSinaFuturesQuotes, parseSinaFuturesHq } from "@/lib/server/sina-futures-hq"
 
 const SINA_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -199,10 +200,13 @@ async function loadBaseBundle(): Promise<CffexRealtimeBundle> {
 
 export async function getCffexIndexRealtime(extraSymbols: string[] | string = []) {
   const base = await loadBaseBundle()
-  const extra = parseExtraSymbols(extraSymbols).filter((symbol) => !base.quotes[symbol])
-  if (!extra.length) return base
-  const more = await fetchSinaFuturesQuotes(extra)
+  const watched = parseExtraSymbols(extraSymbols)
+  const extra = watched.filter((symbol) => !base.quotes[symbol])
   const quotes = { ...base.quotes }
-  for (const [symbol, quote] of more) quotes[symbol] = toTick(quote)
+  if (extra.length) {
+    const more = await fetchSinaFuturesQuotes(extra)
+    for (const [symbol, quote] of more) quotes[symbol] = toTick(quote)
+  }
+  await attachEastmoneyBooks(quotes, watched)
   return { ...base, quotes }
 }

@@ -3,7 +3,18 @@
  * Used by Next instrumentation (legacy / local) and the dedicated PM2 worker.
  */
 
+declare global {
+  // eslint-disable-next-line no-var
+  var __backgroundJobsRegistered: boolean | undefined
+}
+
 export async function registerBackgroundJobs(): Promise<void> {
+  if (globalThis.__backgroundJobsRegistered) {
+    console.log("[background-jobs] cron schedules already registered in this process — skip")
+    return
+  }
+  globalThis.__backgroundJobsRegistered = true
+
   const { runDueSetups } = await import("./email-dispatch")
   const { runDueSettlementFetch } = await import("./settlement-email")
   const { runDueAccountRiskEmailFetch, runDueCfmmcFetch } = await import("./account-risk-import")

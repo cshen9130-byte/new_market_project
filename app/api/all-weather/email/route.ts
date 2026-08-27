@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server"
 import { requireCshen } from "@/lib/server/require-cshen"
 import {
-  isScheduledSendDue,
   publicEmailConfig,
   readEmailConfig,
+  runDueAllWeatherEmails,
   sendAllWeatherEmail,
   testSenderConnection,
   writeEmailConfig,
@@ -60,29 +60,18 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "发送时间格式应为 HH:MM。" }, { status: 400 })
     }
 
-    const saved = writeEmailConfig({
-      ...current,
+    writeEmailConfig({
+      ...readEmailConfig(),
       sender,
       receivers,
       scheduleTime,
       enabled: Boolean(body.enabled),
     })
 
-    let catchUpSent = false
-    let sendError: string | null = null
-    if (isScheduledSendDue(saved)) {
-      try {
-        await sendAllWeatherEmail({ source: "scheduled" })
-        catchUpSent = true
-      } catch (e) {
-        sendError = e instanceof Error ? e.message : "补发失败"
-        writeEmailConfig({
-          ...readEmailConfig(),
-          lastError: sendError,
-          lastErrorAt: new Date().toISOString(),
-        })
-      }
-    }
+    // Same locked path as the minute cron: catch up at most once if still due.
+    const due = await runDueAllWeatherEmails()
+    const catchUpSent = due.sent
+    const sendError = due.error
 
     return NextResponse.json({
       ok: true,
