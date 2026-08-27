@@ -308,6 +308,18 @@ function pickNavNumberFromRow(row: ValuationRow): number | null {
   return null
 }
 
+/** 国信 subjects omit 备案号; zip inner files are `SCP742…估值表20260825.xlsx`. */
+function mergeValuationNavMetadata(subject: string, filename: string) {
+  const fromSubject = extractNavMetadata(subject, "")
+  if (fromSubject.productCode) return fromSubject
+  if (!filename.trim()) return fromSubject
+  const fromFile = extractNavMetadata(filename, "")
+  return {
+    productCode: fromFile.productCode,
+    fundName: fromSubject.fundName ?? fromFile.fundName,
+  }
+}
+
 function countMeaningfulHoldings(rows: ValuationRow[]): number {
   const detail = rows.filter((row) => row.include_in_detail)
   if (detail.length > 0) return detail.length
@@ -388,7 +400,7 @@ function buildExtractedValuation(
   const { summary: enriched, underlyingHoldings } = enrichValuationMetrics(analysis)
   analysis = { ...analysis, summary: enriched }
 
-  const shared = extractNavMetadata(subject, "")
+  const shared = mergeValuationNavMetadata(subject, filename)
   const portfolioScan = scanPortfolioNav(analysis.portfolio_data)
 
   const valuationDate = resolveValuationTableNavDate(
@@ -571,7 +583,7 @@ export function extractNavFromValuationBuffer(
     const headerScan = scanWorkbookNav(buffer)
     const analysis = parseValuationWorkbook(buffer, filename)
     const portfolioScan = scanPortfolioNav(analysis.portfolio_data)
-    const shared = extractNavMetadata(subject, "")
+    const shared = mergeValuationNavMetadata(subject, filename)
 
     const nav = headerScan.unit ?? portfolioScan.unit
     if (nav == null || !isPlausibleUnitNav(nav)) return null

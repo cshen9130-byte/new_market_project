@@ -2,6 +2,7 @@ import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuati
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
+  calcPeriodReturnsFromHistory,
   MAX_DAILY_RETURN_LOOKBACK_DAYS,
   capPeriodReturnByDrawdown,
   calcReturn,
@@ -2427,3 +2428,90 @@ if (fs.existsSync(excelPath)) {
       && Math.abs(futuresParsed.netAssetValue - expectedExFutures) < 1,
   )
 }
+
+// 国信 金舆木盛那平江1号: subject has no 备案号; zip inner filename starts with SCP742.
+{
+  const guosenSubject = "金舆木盛那平江1号私募证券投资基金估值表（日期：2026-08-25）【国信托管】"
+  const guosenFile = "SCP742金舆木盛那平江1号私募证券投资基金估值表20260825.xlsx"
+  const guosenZip =
+    "上海金舆资产管理有限公司估值表.zip::SCP742金舆木盛那平江1号私募证券投资基金估值表20260825.xlsx"
+  const guosenShare =
+    "SCP742金舆木盛那平江1号私募证券投资基金估值表20260825CP742A.xlsx"
+  const subjectMeta = extractNavMetadata(guosenSubject, "")
+  assert("Guosen 那平江 subject has no product code", !subjectMeta.productCode)
+  assert(
+    "Guosen 那平江 subject still extracts fund name",
+    subjectMeta.fundName === "金舆木盛那平江1号",
+  )
+  const fileMeta = extractNavMetadata(guosenFile, "")
+  assert("Guosen 那平江 filename code SCP742", fileMeta.productCode === "SCP742")
+  assert("Guosen 那平江 filename name 金舆木盛那平江1号", fileMeta.fundName === "金舆木盛那平江1号")
+  assert(
+    "Guosen 那平江 zip-inner path code SCP742",
+    extractNavMetadata(guosenZip, "").productCode === "SCP742",
+  )
+  assert(
+    "Guosen 那平江 share-class file still uses parent SCP742",
+    extractNavMetadata(guosenShare, "").productCode === "SCP742",
+  )
+
+  const wb = XLSX.utils.book_new()
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ["估值日期", "2026-08-25"],
+    ["单位净值", 0.9995],
+    ["科目代码", "科目名称", "市值"],
+    ["1002.01", "银行存款_活期", 12000000],
+    ["", "资产合计", 21992629.28],
+    ["", "资产净值", 21988384.76],
+    ["", "实收资本", 21999384.45],
+  ])
+  XLSX.utils.book_append_sheet(wb, sheet, "Sheet1")
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" })
+  const parsed = extractValuationFromBuffer(Buffer.from(buf), guosenFile, guosenSubject)
+  assert("Guosen 那平江 valuation productCode from filename", parsed?.productCode === "SCP742")
+  assert("Guosen 那平江 valuation date 2026-08-25", parsed?.valuationDate === "2026-08-25")
+  assert(
+    "Guosen 那平江 valuation AUM from 资产净值",
+    parsed?.netAssetValue != null && Math.abs(parsed.netAssetValue - 21988384.76) < 1,
+  )
+}
+
+// 荣熙恒盈2号A类: 复权 ~1.10 → ~1.55 over a year (incl. May 分红 dropping unit NAV).
+// The ±15% share-class band used to pick a Jan-2026 point and report ~11% 近一年.
+{
+  const hx = [
+    { nav_date: "2025-07-31", nav: 1.0231 },
+    { nav_date: "2025-08-26", nav: 1.1044 },
+    { nav_date: "2025-08-29", nav: 1.1044 },
+    { nav_date: "2025-09-30", nav: 1.0781 },
+    { nav_date: "2025-10-31", nav: 1.0595 },
+    { nav_date: "2025-11-28", nav: 1.0478 },
+    { nav_date: "2025-12-31", nav: 1.1604 },
+    { nav_date: "2026-01-30", nav: 1.4208 },
+    { nav_date: "2026-02-27", nav: 1.4311 },
+    { nav_date: "2026-03-31", nav: 1.4582 },
+    { nav_date: "2026-04-30", nav: 1.5764 },
+    { nav_date: "2026-05-29", nav: 1.3314, return_nav: 1.5414 },
+    { nav_date: "2026-06-30", nav: 1.2871, return_nav: 1.4971 },
+    { nav_date: "2026-07-31", nav: 1.2791, return_nav: 1.4891 },
+    { nav_date: "2026-08-26", nav: 1.344, return_nav: 1.554 },
+  ]
+  const latest = hx[hx.length - 1]
+  const rets = calcPeriodReturnsFromHistory(hx, latest.nav, latest.nav_date, latest)
+  const expected1y = 1.554 / 1.1044 - 1
+  assert("BAH99A 近一年 uses year-ago 复权, not ±15% band", rets.ret_1y != null && Math.abs(rets.ret_1y - expected1y) < 0.0001)
+  assert("BAH99A 近一年 is ~40% not ~11%", rets.ret_1y != null && rets.ret_1y > 0.35)
+  const expected6m = 1.554 / 1.4311 - 1
+  assert("BAH99A 近六月 still ~8.6%", rets.ret_6m != null && Math.abs(rets.ret_6m - expected6m) < 0.0001)
+}
+
+{
+  const contaminated = [
+    { nav_date: "2026-07-19", nav: 1.10 },
+    { nav_date: "2026-07-26", nav: 0.97 },
+  ]
+  const latest = contaminated[1]
+  const rets = calcPeriodReturnsFromHistory(contaminated, latest.nav, latest.nav_date, latest)
+  assert("1w still rejects ~13% scale jump (SAVW72)", rets.ret_1w == null || Math.abs(rets.ret_1w) < 0.06)
+}
+

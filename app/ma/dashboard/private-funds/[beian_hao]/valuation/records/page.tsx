@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight, CloudDownload, FileSearch } from "lucide-react"
+import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight, CloudDownload, FileSearch, Loader2 } from "lucide-react"
 import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
@@ -94,7 +94,7 @@ function ActionTip({
       <TooltipContent
         side="top"
         sideOffset={6}
-        className="bg-zinc-800 text-white border-0 px-2.5 py-1 text-xs shadow-md [&>svg]:fill-zinc-800 [&>svg]:bg-zinc-800"
+        className="pointer-events-none bg-zinc-800 text-white border-0 px-2.5 py-1 text-xs shadow-md [&>svg]:fill-zinc-800 [&>svg]:bg-zinc-800"
       >
         {label}
       </TooltipContent>
@@ -106,23 +106,26 @@ function CalendarDayCell({
   day,
   entry,
   onViewParse,
+  onExportNotice,
 }: {
   day: number
   entry: CalendarEntry
   onViewParse: (recordId: number) => void
+  onExportNotice: (message: string | null, kind?: "info" | "error") => void
 }) {
   const [exporting, setExporting] = useState(false)
-  const [exportError, setExportError] = useState<string | null>(null)
 
   async function handleExport(e: React.MouseEvent) {
+    e.preventDefault()
     e.stopPropagation()
     if (exporting) return
     setExporting(true)
-    setExportError(null)
+    onExportNotice("正在导出估值表…", "info")
     try {
       await downloadValuationAttachment(entry.id, entry.attachmentFilename)
+      onExportNotice(null)
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : "下载失败")
+      onExportNotice(err instanceof Error ? err.message : "下载失败", "error")
     } finally {
       setExporting(false)
     }
@@ -136,16 +139,21 @@ function CalendarDayCell({
         </span>
       </div>
 
-      <div className="absolute bottom-2 left-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        <ActionTip label="导出估值表">
+      <div
+        className={[
+          "absolute bottom-2 left-2 z-10 flex items-center gap-1.5 transition-opacity",
+          exporting ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        ].join(" ")}
+      >
+        <ActionTip label={exporting ? "正在导出…" : "导出估值表"}>
           <button
             type="button"
             onClick={(e) => { void handleExport(e) }}
             disabled={exporting}
-            className="p-0.5 text-[#4a90d9] hover:text-[#3a7bc8] disabled:opacity-50 transition-colors"
-            title={exportError ?? undefined}
+            aria-label="导出估值表"
+            className="p-0.5 text-[#4a90d9] hover:text-[#3a7bc8] disabled:opacity-70 transition-colors"
           >
-            <CloudDownload className="h-4 w-4" />
+            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
           </button>
         </ActionTip>
         <ActionTip label="查看解析">
@@ -179,7 +187,12 @@ export default function ValuationRecordsCalendarPage() {
   const [parseRecordId, setParseRecordId] = useState<number | null>(null)
   const [syncingHistory, setSyncingHistory] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [exportNotice, setExportNotice] = useState<{ message: string; kind: "info" | "error" } | null>(null)
   const backfillAttemptedRef = useRef(false)
+
+  const handleExportNotice = useCallback((message: string | null, kind: "info" | "error" = "info") => {
+    setExportNotice(message ? { message, kind } : null)
+  }, [])
 
   const loadCalendar = useCallback(async () => {
     const res = await fetch(
@@ -323,6 +336,11 @@ export default function ValuationRecordsCalendarPage() {
                   {syncMessage ?? "正在从邮箱同步历史估值表…"}
                 </p>
               )}
+              {exportNotice && (
+                <p className={`text-xs mt-1 ${exportNotice.kind === "error" ? "text-red-600" : "text-zinc-500"}`}>
+                  {exportNotice.message}
+                </p>
+              )}
             </div>
 
             <div className="flex items-center gap-1 border border-zinc-200 rounded bg-white">
@@ -386,6 +404,7 @@ export default function ValuationRecordsCalendarPage() {
                         day={cell.day}
                         entry={entry}
                         onViewParse={setParseRecordId}
+                        onExportNotice={handleExportNotice}
                       />
                     )
                   }

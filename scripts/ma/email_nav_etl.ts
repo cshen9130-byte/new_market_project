@@ -168,6 +168,19 @@ async function main() {
       }
 
       if (refreshManaged) {
+        console.error("[email_nav_etl] backfilling 估值表 product_code from zip inner filenames…")
+        try {
+          const { backfillValuationProductCodeFromFilename } = await import(
+            "@/lib/server/email-valuation-nav-backfill"
+          )
+          const filled = await backfillValuationProductCodeFromFilename()
+          console.error(
+            `[email_nav_etl] valuation product_code backfill done (valuation=${filled.valuationUpdated}, nav=${filled.navUpdated})`,
+          )
+        } catch (err) {
+          console.warn("[email_nav_etl] valuation product_code backfill skipped:", err)
+        }
+
         console.error("[email_nav_etl] syncing valuation metrics to product tables…")
         try {
           const { syncEmailValuationToProductTables } = await import(

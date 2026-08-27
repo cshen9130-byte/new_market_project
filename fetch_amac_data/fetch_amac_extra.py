@@ -5,11 +5,12 @@ Fetch additional AMAC (中国基金业协会) data and save to CSV files.
 
 Outputs (default folder: amac_extra/):
   managers.csv           - private fund manager list (~19k)
-  person_org_stats.csv   - per-org personnel counts (基金经理/投资经理 counts)
+  person_org_stats.csv   - every AMAC institution (all 机构类型) + staff counts
   manager_details.csv    - manager detail page fields (管理规模区间, staff, etc.)
   manager_executives.csv - 高管信息 (one row per executive)
   manager_executive_resume.csv - 高管工作履历 (one row per resume entry)
-  personnel.csv          - individual personnel records (if API available)
+  personnel.csv          - every person under every institution (personList)
+  personnel_cert_history.csv - certificate status history per person
 
 Each stage supports resume via .progress_<stage>.json in the output folder.
 Re-run the same command to continue after interruption.
@@ -46,7 +47,16 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
     ),
     "Content-Type": "application/json",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Origin": "https://gs.amac.org.cn",
 }
+PERSON_ORG_REFERER = f"{BASE}/res/pof/person/personOrgList.html"
+PERSON_LIST_REFERER = f"{BASE}/res/pof/person/personList.html"
+MANAGER_LIST_REFERER = f"{BASE}/res/pof/manager/managerList.html"
+# personOrg / person APIs reject size other than 20 with HTTP 400.
+PERSON_API_PAGE_SIZE = 20
+# Empty orgType = 全部 on personOrgList.html (every institution type).
+PERSON_ORG_ALL_BODY = {"orgType": None, "orgName": None, "page": 1}
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "amac_extra"
 REQUEST_DELAY = 0.3
@@ -77,6 +87,9 @@ MANAGER_COLUMNS = [
 
 PERSON_ORG_COLUMNS = [
     "机构名称",
+    "机构用户ID",
+    "组织机构代码",
+    "机构名称拼音",
     "机构类型",
     "员工人数",
     "基金从业资格",
@@ -138,14 +151,41 @@ EXECUTIVE_RESUME_COLUMNS = [
 ]
 
 PERSONNEL_COLUMNS = [
+    "机构用户ID",
+    "账号ID",
     "姓名",
     "性别",
     "证书编号",
     "机构名称",
+    "所属机构名称",
+    "从业资格类别",
+    "学历",
+    "证书取得日期",
+    "证书到期日期",
+    "证书状态变更次数",
+    "诚信记录数",
+    "证书状态",
+    "证书状态名称",
+    "在职状态",
+    "是否注销",
+    "业务ID",
+    "异常标记",
+]
+
+PERSONNEL_CERT_HISTORY_COLUMNS = [
+    "机构用户ID",
+    "账号ID",
+    "姓名",
+    "历史记录ID",
+    "机构名称",
+    "证书编号",
     "从业资格类别",
     "证书取得日期",
-    "证书状态变更记录",
-    "诚信记录",
+    "证书到期日期",
+    "证书状态",
+    "证书状态名称",
+    "创建时间",
+    "资格ID",
 ]
 
 # AMAC 详情页字段标签 -> CSV 列名（与 MANAGER_DETAIL_COLUMNS 一致）
@@ -206,6 +246,25 @@ class FetchProgress:
         print(f"\n{text}")
 
 
+def as_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def api_headers(api_path: str) -> dict[str, str]:
+    headers = dict(HEADERS)
+    if api_path.startswith("/api/pof/personOrg"):
+        headers["Referer"] = PERSON_ORG_REFERER
+        headers["Content-Type"] = "application/json;charset=UTF-8"
+    elif api_path.startswith("/api/pof/person"):
+        headers["Referer"] = PERSON_LIST_REFERER
+        headers["Content-Type"] = "application/json;charset=UTF-8"
+    elif api_path.startswith("/api/pof/manager"):
+        headers["Referer"] = MANAGER_LIST_REFERER
+    return headers
+
+
 def ms_to_date(ms: Any) -> str:
     if ms in (None, "", 0):
         return ""
@@ -253,7 +312,7 @@ def post_json(
                 url,
                 params=params,
                 json=body if body is not None else {},
-                headers=HEADERS,
+                headers=api_headers(api_path),
                 verify=False,
                 timeout=90,
             )
@@ -426,8 +485,11 @@ def manager_row(item: dict) -> dict:
 
 def person_org_row(item: dict) -> dict:
     return {
-        "机构名称": item.get("orgName", ""),
-        "机构类型": item.get("orgType", ""),
+        "机构名称": item.get("orgName", "") or "",
+        "机构用户ID": as_text(item.get("userId")),
+        "组织机构代码": as_text(item.get("orgCode")),
+        "机构名称拼音": item.get("orgNameChineseSpell", "") or "",
+        "机构类型": item.get("orgType", "") or "",
         "员工人数": item.get("workerTotalNum", ""),
         "基金从业资格": item.get("operNum", ""),
         "基金销售业务资格": item.get("salesmanNum", ""),
@@ -443,15 +505,57 @@ def person_org_row(item: dict) -> dict:
 
 def personnel_row(item: dict) -> dict:
     return {
-        "姓名": item.get("userName", item.get("name", "")),
-        "性别": item.get("sex", item.get("gender", "")),
-        "证书编号": item.get("certCode", ""),
-        "机构名称": item.get("orgName", ""),
-        "从业资格类别": item.get("certName", item.get("certType", "")),
-        "证书取得日期": ms_to_date(item.get("certDate")),
-        "证书状态变更记录": item.get("certState", ""),
-        "诚信记录": item.get("creditRecord", ""),
+        "机构用户ID": as_text(item.get("userId")),
+        "账号ID": as_text(item.get("accountId")),
+        "姓名": item.get("userName", item.get("name", "")) or "",
+        "性别": item.get("sex", item.get("gender", "")) or "",
+        "证书编号": item.get("certCode", "") or "",
+        "机构名称": item.get("orgName", "") or "",
+        "所属机构名称": item.get("ownOrgName", "") or "",
+        "从业资格类别": item.get("certName", item.get("certType", "")) or "",
+        "学历": item.get("educationName", "") or "",
+        "证书取得日期": ms_to_date(item.get("certObtainDate") or item.get("certDate")),
+        "证书到期日期": ms_to_date(item.get("certEndDate")),
+        "证书状态变更次数": item.get("certStatusChangeTimes", item.get("certState", "")),
+        "诚信记录数": item.get("creditRecordNum", item.get("creditRecord", "")),
+        "证书状态": item.get("status", ""),
+        "证书状态名称": item.get("statusName", "") or "",
+        "在职状态": item.get("officeState", ""),
+        "是否注销": item.get("removed", "") or "",
+        "业务ID": as_text(item.get("bizId")),
+        "异常标记": item.get("flag", ""),
     }
+
+
+def personnel_cert_history_rows(item: dict) -> list[dict]:
+    account_id = as_text(item.get("accountId"))
+    org_user_id = as_text(item.get("userId"))
+    person_name = item.get("userName", "") or ""
+    rows: list[dict] = []
+    history = item.get("personCertHistoryList") or []
+    if not isinstance(history, list):
+        return rows
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            {
+                "机构用户ID": org_user_id or as_text(entry.get("userId")),
+                "账号ID": account_id,
+                "姓名": person_name,
+                "历史记录ID": as_text(entry.get("id")),
+                "机构名称": entry.get("orgName", "") or "",
+                "证书编号": entry.get("certCode", "") or "",
+                "从业资格类别": entry.get("certName", "") or "",
+                "证书取得日期": ms_to_date(entry.get("certObtainDate")),
+                "证书到期日期": ms_to_date(entry.get("certEndDate")),
+                "证书状态": entry.get("status", ""),
+                "证书状态名称": entry.get("statusName", "") or "",
+                "创建时间": ms_to_date(entry.get("creationDate")),
+                "资格ID": as_text(entry.get("qlfId")),
+            }
+        )
+    return rows
 
 
 def extract_section_html(html: str, section_title: str) -> str:
@@ -597,14 +701,14 @@ def fetch_managers(session: requests.Session, output_dir: Path, args: argparse.N
 def fetch_person_org(session: requests.Session, output_dir: Path, args: argparse.Namespace) -> None:
     try:
         session.get(
-            f"{BASE}/res/pof/person/personOrgList.html",
+            PERSON_ORG_REFERER,
             headers={"User-Agent": HEADERS["User-Agent"]},
             verify=False,
             timeout=60,
         )
     except requests.RequestException:
         pass
-    page_size = min(args.page_size, 20)
+    page_size = min(args.page_size, PERSON_API_PAGE_SIZE)
     paginated_fetch(
         session,
         "person_org",
@@ -613,7 +717,7 @@ def fetch_person_org(session: requests.Session, output_dir: Path, args: argparse
         PERSON_ORG_COLUMNS,
         "/api/pof/personOrg",
         person_org_row,
-        json_body={"orgType": "smjjglr", "page": "1"},
+        json_body=dict(PERSON_ORG_ALL_BODY),
         page_size=page_size,
         max_pages=args.max_pages,
         fresh=args.fresh,
@@ -621,45 +725,137 @@ def fetch_person_org(session: requests.Session, output_dir: Path, args: argparse
     )
 
 
+def iter_personnel_for_org(
+    session: requests.Session,
+    org_user_id: str,
+    *,
+    page_size: int = PERSON_API_PAGE_SIZE,
+    delay: float = REQUEST_DELAY,
+    progress: FetchProgress | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Fetch every person (and cert history) for one institution userId."""
+    people: list[dict] = []
+    history: list[dict] = []
+    page = 0
+    while True:
+        data = post_json(
+            session,
+            "/api/pof/person",
+            page,
+            page_size,
+            {"userId": org_user_id, "page": 1},
+            progress,
+        )
+        items = data.get("content") or []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("userId"):
+                item["userId"] = org_user_id
+            people.append(personnel_row(item))
+            history.extend(personnel_cert_history_rows(item))
+        total_pages = int(data.get("totalPages") or 0)
+        page += 1
+        if not items or page >= total_pages:
+            break
+        time.sleep(delay)
+    return people, history
+
+
 def fetch_personnel(session: requests.Session, output_dir: Path, args: argparse.Namespace) -> None:
+    person_org_csv = output_dir / "person_org_stats.csv"
+    if not person_org_csv.exists():
+        raise SystemExit(
+            f"{person_org_csv} not found. Run --stage person_org first "
+            "(or place person_org_stats.csv in output dir)."
+        )
+
     try:
         session.get(
-            f"{BASE}/res/pof/person/personList.html",
+            PERSON_LIST_REFERER,
             headers={"User-Agent": HEADERS["User-Agent"]},
             verify=False,
             timeout=60,
         )
     except requests.RequestException:
         pass
-    page_size = min(args.page_size, 40)
-    bodies = [
-        {"userName": None, "certCode": None, "certName": None, "userId": None, "page": 1},
-        {"userId": None, "page": 1},
-    ]
-    for body in bodies:
-        try:
-            post_json(session, "/api/pof/person", 0, min(page_size, 3), body)
-            paginated_fetch(
-                session,
-                "personnel",
-                output_dir,
-                "personnel.csv",
-                PERSONNEL_COLUMNS,
-                "/api/pof/person",
-                personnel_row,
-                json_body=body,
-                page_size=page_size,
-                max_pages=args.max_pages,
-                fresh=args.fresh,
-                delay=args.delay,
+
+    with person_org_csv.open(encoding="utf-8-sig", newline="") as fh:
+        orgs = [row for row in csv.DictReader(fh) if as_text(row.get("机构用户ID"))]
+
+    csv_path = output_dir / "personnel.csv"
+    hist_path = output_dir / "personnel_cert_history.csv"
+    prog_path = progress_path(output_dir, "personnel")
+
+    start_idx = 0
+    people_fetched = 0
+    hist_fetched = 0
+    append_mode = False
+    if args.fresh:
+        csv_path.unlink(missing_ok=True)
+        hist_path.unlink(missing_ok=True)
+        prog_path.unlink(missing_ok=True)
+    elif prog_path.exists() and csv_path.exists():
+        prog = load_progress(prog_path)
+        if prog:
+            start_idx = prog.get("next_index", 0)
+            people_fetched = prog.get("fetched", 0)
+            hist_fetched = prog.get("history_fetched", 0)
+            append_mode = True
+            print(f"[personnel] Resuming from org {start_idx:,}/{len(orgs):,} ({people_fetched:,} people saved)")
+
+    end_idx = len(orgs)
+    if args.max_pages > 0:
+        end_idx = min(start_idx + args.max_pages * args.page_size, len(orgs))
+
+    page_size = min(args.page_size, PERSON_API_PAGE_SIZE)
+    bar = FetchProgress("personnel", len(orgs), start_idx)
+    mode = "a" if append_mode else "w"
+    hist_mode = "a" if append_mode and hist_path.exists() else "w"
+
+    with csv_path.open(mode, newline="", encoding="utf-8-sig") as pfh, hist_path.open(
+        hist_mode, newline="", encoding="utf-8-sig"
+    ) as hfh:
+        pw = csv.DictWriter(pfh, fieldnames=PERSONNEL_COLUMNS, extrasaction="ignore")
+        hw = csv.DictWriter(hfh, fieldnames=PERSONNEL_CERT_HISTORY_COLUMNS, extrasaction="ignore")
+        if not append_mode:
+            pw.writeheader()
+        if hist_mode == "w":
+            hw.writeheader()
+
+        for idx in range(start_idx, end_idx):
+            org = orgs[idx]
+            org_user_id = as_text(org.get("机构用户ID"))
+            people, history = iter_personnel_for_org(
+                session, org_user_id, page_size=page_size, delay=args.delay, progress=bar
             )
-            return
-        except RuntimeError:
-            continue
-    print(
-        "[personnel] Skipped: AMAC personnel API unavailable (400). "
-        "Use person_org_stats.csv for org-level 基金经理/投资经理 counts."
-    )
+            if people:
+                pw.writerows(people)
+                people_fetched += len(people)
+            if history:
+                hw.writerows(history)
+                hist_fetched += len(history)
+            save_progress(
+                prog_path,
+                {
+                    "next_index": idx + 1,
+                    "total": len(orgs),
+                    "fetched": people_fetched,
+                    "history_fetched": hist_fetched,
+                },
+            )
+            bar.update(idx + 1)
+            time.sleep(args.delay)
+
+    if end_idx >= len(orgs):
+        prog_path.unlink(missing_ok=True)
+        bar.finish(
+            f"[personnel] Done. {people_fetched:,} people, {hist_fetched:,} cert-history rows "
+            f"from {end_idx:,} orgs -> {csv_path.name}, {hist_path.name}"
+        )
+    else:
+        bar.finish(f"[personnel] Stopped early at {end_idx:,}/{len(orgs):,} orgs")
+        print("[personnel] Progress saved; re-run to continue.")
 
 
 def fetch_manager_details(session: requests.Session, output_dir: Path, args: argparse.Namespace) -> None:
@@ -787,7 +983,7 @@ def parse_args() -> argparse.Namespace:
         "--max-pages",
         type=int,
         default=0,
-        help="Stop after N API pages (0 = all). manager_details: N * page-size managers.",
+        help="Stop after N API pages (0 = all). manager_details/personnel: N * page-size orgs.",
     )
     parser.add_argument("--fresh", action="store_true", help="Ignore progress and overwrite CSVs for selected stage(s)")
     return parser.parse_args()

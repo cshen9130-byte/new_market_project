@@ -107,9 +107,23 @@ export function sqlShareClassCodeGuard(codeCol: string, productNameExpr: string)
   )`
 }
 
+/**
+ * Citics 基金净值 workbook codes: `SX4966(总)` / `SX4966(A类)` / `SX4966（B）`.
+ * Parent `(总)` → base code; share-class parens → trailing A/B/C.
+ */
+export function canonicalizeEmailProductCode(code: string): string {
+  const raw = String(code ?? "").trim().toUpperCase()
+  if (!raw) return ""
+  const paren = raw.match(/^([A-Z0-9]+)[\(（](总|[ABC]类?)[\)）]$/u)
+  if (!paren) return raw
+  const base = paren[1]
+  const tag = paren[2]
+  return tag === "总" ? base : `${base}${tag.charAt(0)}`
+}
+
 /** Strip trailing A/B/C share-class suffix from a product / beian code. */
 export function stripShareClassFromProductCode(code: string): string {
-  return String(code ?? "").trim().toUpperCase().replace(/[ABC]$/u, "")
+  return canonicalizeEmailProductCode(code).replace(/[ABC]$/u, "")
 }
 
 /** True when email product_code matches beian, including parent codes without share-class suffix. */

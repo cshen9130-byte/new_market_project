@@ -147,22 +147,40 @@ export async function downloadValuationAttachment(
   recordId: number,
   fallbackFilename?: string | null,
 ): Promise<void> {
-  const res = await fetch(`/ma/api/ops/email-valuation-records/${recordId}/attachment`)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({} as { error?: string }))
-    throw new Error(body.error ?? `HTTP ${res.status}`)
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 90_000)
+  try {
+    const res = await fetch(`/ma/api/ops/email-valuation-records/${recordId}/attachment`, {
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({} as { error?: string }))
+      throw new Error(body.error ?? `下载失败（HTTP ${res.status}）`)
+    }
+    const blob = await res.blob()
+    if (!blob.size) throw new Error("下载内容为空")
+    const filename = parseAttachmentFilename(
+      res.headers.get("Content-Disposition"),
+      fallbackFilename?.trim() || `valuation_${recordId}.xlsx`,
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    a.rel = "noopener"
+    a.style.display = "none"
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 2_000)
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("下载超时，请稍后重试")
+    }
+    throw err
+  } finally {
+    window.clearTimeout(timer)
   }
-  const blob = await res.blob()
-  const filename = parseAttachmentFilename(
-    res.headers.get("Content-Disposition"),
-    fallbackFilename?.trim() || `valuation_${recordId}.xls`,
-  )
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
 }
 
 export function ValuationParseDialog({ open, onClose, recordId, displayName }: Props) {

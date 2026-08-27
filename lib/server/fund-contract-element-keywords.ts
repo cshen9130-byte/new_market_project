@@ -106,6 +106,8 @@ export function isWeakFormula(value: string | null | undefined): boolean {
   if (/其中[:：]/.test(s) && /应计提的业绩报酬|本计提日/.test(s) && s.length > 100) return true
   if (/^(商解决|划款|账册记录)/.test(s)) return true
   if (s.length < 12 && !/[=＝]/.test(s) && !/计提|提取|公式/.test(s)) return true
+  // "基准0%" with no carry rate is a failed parse of R>0% excess sharing (A/B 20%/30%).
+  if (isZeroBenchmarkWithoutCarry(s) && !/[×x*]\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return true
   return isDumpText(s, FORMULA_MAX)
 }
 
@@ -114,7 +116,16 @@ export function isWeakFeePay(value: string | null | undefined): boolean {
   if (!s || s === "—" || /^-+$/.test(s) || /^详见/.test(s)) return true
   // LLM-generated generic "couldn't extract" statements
   if (/未明确(?:说明|规定|披露)|按(?:基金)?合同约定收取/.test(s) && s.length < 60) return true
+  if (isZeroBenchmarkWithoutCarry(s)) return true
   return isDumpText(s, 90)
+}
+
+/** R>0% / 业绩基准0% without a 10%+ carry rate — not a real 业绩基准 clause. */
+function isZeroBenchmarkWithoutCarry(s: string): boolean {
+  if (!/业绩基准\s*0\s*%|^基准\s*0\s*%|基准\s*0\s*%[；;]/.test(s)) return false
+  if (/(?:计提比例|超额计提)\s*[【[]?\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return false
+  if (/[ABC]类(?:超额)?计提\s*[1-9]/.test(s)) return false
+  return true
 }
 
 export function isWeakFeeManage(value: string | null | undefined): boolean {
@@ -124,6 +135,11 @@ export function isWeakFeeManage(value: string | null | undefined): boolean {
 }
 
 export function summarizeFeePayDesc(text: string): string | null {
+  const classBits = extractShareClassPerfFees(text).map(formatClassPerfPayLine)
+  if (classBits.length) {
+    const prefix = classBits.length > 1 ? "按实际收益率计提，" : "按超额收益计提，"
+    return `${prefix}${classBits.join("；")}。`.slice(0, 90)
+  }
   const { bench, rate } = formulaBenchRate(text)
   if (!bench && !rate) return null
   const bits = ["按业绩基准计提"]
@@ -296,25 +312,143 @@ export function extractLockPeriodFromText(text: string): string | null {
   return null
 }
 
+function parseCarryPct(raw: string | undefined): string | null {
+  if (!raw) return null
+  const n = parseFloat(raw)
+  if (!Number.isFinite(n) || n < 10 || n > 100) return null
+  return pct(raw)
+}
+
 function formulaBenchRate(scope: string): { bench: string | null; rate: string | null } {
   const s = flatten(scope)
-  const bench =
+  const explicit =
     s.match(/计提基准为年化\s*([\d.]+)\s*%/)
     || s.match(/业绩(?:报酬)?(?:计提)?基准[为是：:]\s*([\d.]+)\s*%/)
-    || s.match(/年化收益率\s*R\s*(?:小于或等于|小于等于|不高于|不超过|≤|<=|<)\s*([\d.]+)\s*%/)
+  const hurdle =
+    s.match(/年化收益率\s*R\s*(?:小于或等于|小于等于|不高于|不超过|≤|<=|<)\s*([\d.]+)\s*%/)
     || s.match(/R\s*(?:小于或等于|小于等于|≤|<=)\s*([\d.]+)\s*%/)
-    || s.match(/R\s*>\s*([\d.]+)\s*%/)
+    || s.match(/R\s*(?:大于|高于|>)\s*([\d.]+)\s*%/)
+  const hurdleN = hurdle?.[1] ? parseFloat(hurdle[1]) : NaN
+  // R>0% / R≤0% is the excess-sharing trigger, not a 业绩基准. Keep R>6% as 基准.
+  const benchRaw = explicit?.[1] ?? (Number.isFinite(hurdleN) && hurdleN > 0 ? hurdle![1] : null)
   const rate =
-    s.match(/(?:提取比例|计提比例)\s*[（(]?\s*X?\s*[)）]?\s*[为是：:]*\s*[【[]?\s*([\d.]+)\s*[】]]?\s*%/)
+    s.match(/(?:超过|高出)\s*[\d.]+%\s*部分的\s*([\d.]+)\s*%/)
+    || s.match(/(?:收取|提取)[^。]{0,40}?([\d.]+)\s*%\s*作为业绩报酬/)
+    || s.match(/部分的\s*([\d.]+)\s*%\s*(?:作为)?业绩报酬/)
+    || s.match(/H\s*[=＝][^。;；]{0,60}[×x*]\s*([\d.]+)\s*%\s*[×x*]\s*C/)
+    || s.match(/(?:提取比例|计提比例)\s*[（(]?\s*X?\s*[)）]?\s*[为是：:]*\s*[【[]?\s*([\d.]+)\s*[】]]?\s*%/)
     || s.match(/差额收益按\s*[【[]?\s*([\d.]+)\s*[】]]?\s*%/)
     || s.match(/按\s*[【[]?\s*([\d.]+)\s*[】]]?\s*%\s*比例/)
     || s.match(/(?:超额|正收益|全部正收益)[^。]{0,12}提取\s*[【[]?\s*([\d.]+)\s*[】]]?\s*%/)
     || s.match(/提取\s*[【[]?\s*([\d.]+)\s*[】]]?\s*%/)
     || s.match(/全部正收益提取\s*([\d.]+)/)
   return {
-    bench: bench?.[1] ? pct(bench[1]) : null,
-    rate: rate?.[1] ? pct(rate[1]) : null,
+    bench: benchRaw ? pct(benchRaw) : null,
+    rate: parseCarryPct(rate?.[1]),
   }
+}
+
+type ClassPerfFee = {
+  cls: "A" | "B" | "C"
+  exempt: boolean
+  ratePct: string | null
+  hurdlePct: string | null
+  formula: string | null
+}
+
+function classSectionWindow(text: string, cls: string): string | null {
+  const re = new RegExp(`${cls}\\s*类(?:基金)?份额|${cls}\\s*份额(?!持有)`, "g")
+  const others = ["A", "B", "C"].filter((x) => x !== cls).join("")
+  const boundaryRe = new RegExp(
+    `[${others}]\\s*类(?:基金)?份额|[${others}]\\s*份额(?!持有)|业绩报酬的支付`,
+  )
+  let fallback: string | null = null
+  let match: RegExpExecArray | null
+  while ((match = re.exec(text)) !== null) {
+    if (looksLikeToc(text, match.index) || looksLikeGlossary(text, match.index)) continue
+    const start = match.index
+    const rest = text.slice(start + match[0].length)
+    const boundary = rest.search(boundaryRe)
+    const span = boundary >= 0 ? match[0].length + boundary : Math.min(rest.length, 1800)
+    const window = text.slice(start, Math.min(start + span, start + 2000))
+    if (/业绩报酬|计提比例|作为业绩报酬|超额收益|收益率\s*R|H\s*[=＝]/.test(window)) return window
+    if (!fallback) fallback = window
+  }
+  return fallback
+}
+
+function carryRatesFromWindow(window: string): string[] {
+  const found: string[] = []
+  const patterns = [
+    /(?:超过|高出)\s*[\d.]+%\s*部分的\s*([\d.]+)\s*%/g,
+    /(?:收取|提取)[^。]{0,40}?([\d.]+)\s*%\s*作为业绩报酬/g,
+    /部分的\s*([\d.]+)\s*%\s*(?:作为)?业绩报酬/g,
+    /超额收益的\s*([\d.]+)\s*%/g,
+    /H\s*[=＝][^。;；]{0,60}[×x*]\s*([\d.]+)\s*%\s*[×x*]\s*C/g,
+  ]
+  for (const re of patterns) {
+    const global = new RegExp(re.source, "g")
+    let m: RegExpExecArray | null
+    while ((m = global.exec(window)) !== null) {
+      const p = parseCarryPct(m[1])
+      if (p && !found.includes(p)) found.push(p)
+    }
+  }
+  return found
+}
+
+function hurdleFromWindow(window: string): string | null {
+  const m =
+    window.match(/超过\s*([\d.]+)\s*%\s*部分/)
+    || window.match(/R\s*(?:>|大于)\s*([\d.]+)\s*%/)
+  if (m?.[1]) return pct(m[1])
+  if (/0%\s*<\s*R|R\s*>\s*0\s*%/.test(window)) return "0%"
+  return null
+}
+
+function hFormulaFromWindow(window: string): string | null {
+  const m = window.match(
+    /H\s*[=＝]\s*[（(]?\s*R\s*[-－]\s*[\d.]+%\s*[)）]?\s*[×x*]\s*[\d.]+%\s*[×x*]\s*C(?:\s*[×x*]\s*F)?/,
+  )
+  return m ? cleanEquation(m[0]) : null
+}
+
+function extractShareClassPerfFees(text: string): ClassPerfFee[] {
+  const s = flatten(text)
+  const out: ClassPerfFee[] = []
+  const seen = new Set<string>()
+  const push = (fee: ClassPerfFee) => {
+    if (seen.has(fee.cls)) return
+    seen.add(fee.cls)
+    out.push(fee)
+  }
+  for (const cls of ["A", "B", "C"] as const) {
+    const window = classSectionWindow(s, cls)
+    if (!window) continue
+    const rates = carryRatesFromWindow(window)
+    const exempt = !rates.length && /不收取业绩报酬|不计提业绩报酬|不提取业绩报酬/.test(window)
+    if (!exempt && !rates.length) continue
+    push({
+      cls,
+      exempt,
+      ratePct: exempt ? null : rates[0] ?? null,
+      hurdlePct: exempt ? null : hurdleFromWindow(window),
+      formula: exempt ? null : hFormulaFromWindow(window),
+    })
+  }
+  if (
+    !seen.has("C")
+    && /[对将]?\s*C\s*类(?:基金)?份额不(?:收取|计提|提取)业绩报酬/.test(s)
+  ) {
+    push({ cls: "C", exempt: true, ratePct: null, hurdlePct: null, formula: null })
+  }
+  return out
+}
+
+function formatClassPerfPayLine(fee: ClassPerfFee): string {
+  if (fee.exempt) return `${fee.cls}类不收取`
+  if (fee.ratePct) return `${fee.cls}类超额计提${fee.ratePct}`
+  return `${fee.cls}类`
 }
 
 function cleanEquation(eq: string): string | null {
@@ -335,46 +469,64 @@ function pickEquation(scope: string, pattern: RegExp): string | null {
   return cleanEquation(m[0].split(/其中|PFij[:：]|∆Sij|ΔSij/)[0])
 }
 
-function formulaEquations(scope: string): string | null {
+const PERF_EQUATION_PATTERNS = [
+  /PFij\s*[=＝]\s*Fij\s*[×x*]\s*[（(][^)）]{3,48}[)）]\s*[×x*]\s*[\d.]+\s*%/,
+  /H\s*[=＝]\s*[（(]?\s*R\s*[-－]\s*[\d.]+%\s*[)）]?\s*[×x*]\s*[\d.]+%\s*[×x*]\s*C(?:\s*[×x*]\s*F)?/,
+  /H\s*[=＝]\s*F\s*[×x*]\s*[（(]NAV1[^)）]{0,28}[)）]\s*[×x*]\s*[\d.]+\s*%/,
+  /E\s*[=＝]\s*[（(]\s*NAVn\s*[-－]\s*NAVh\s*[)）]\s*[×x*]\s*S\s*[×x*]\s*(?:R|[\d.]+\s*%)/,
+  /E\s*[=＝]\s*N\s*[×x*]\s*[（(]P1\s*[-－]\s*P0[)）]\s*[×x*]\s*[\d.]+\s*%/,
+  /E\s*[=＝]\s*K[^。；;]{0,72}/,
+  /Y\s*[=＝]\s*F\s*[×x*][^。；;]{8,72}/,
+  /R\s*[=＝]\s*[（(][^。；;\u4e00-\u9fff]{6,64}100\s*%/,
+]
+
+function collectEquations(scope: string): string[] {
   const s = flatten(scope)
-  if (
-    /基金费用的种类|（一）基金费用/.test(s.slice(0, 180))
-    && !/PFij|NAVn|HWMij|年化收益率/.test(s.slice(0, 500))
-  ) {
-    return null
-  }
   const parts: string[] = []
-  const patterns = [
-    /PFij\s*[=＝]\s*Fij\s*[×x*]\s*[（(][^)）]{3,48}[)）]\s*[×x*]\s*[\d.]+\s*%/,
-    /H\s*[=＝]\s*F\s*[×x*]\s*[（(]NAV1[^)）]{0,28}[)）]\s*[×x*]\s*[\d.]+\s*%/,
-    /E\s*[=＝]\s*[（(]\s*NAVn\s*[-－]\s*NAVh\s*[)）]\s*[×x*]\s*S\s*[×x*]\s*(?:R|[\d.]+\s*%)/,
-    /E\s*[=＝]\s*N\s*[×x*]\s*[（(]P1\s*[-－]\s*P0[)）]\s*[×x*]\s*[\d.]+\s*%/,
-    /E\s*[=＝]\s*K[^。；;]{0,72}/,
-    /Y\s*[=＝]\s*F\s*[×x*][^。；;]{8,72}/,
-    /R\s*[=＝]\s*[（(][^。；;]{8,72}/,
-  ]
-  for (const re of patterns) {
+  for (const re of PERF_EQUATION_PATTERNS) {
     const got = pickEquation(s, re)
     if (got && !parts.some((p) => p.replace(/\s/g, "") === got.replace(/\s/g, ""))) parts.push(got)
   }
+  return parts
+}
 
+function formulaHeadFromScope(scope: string): string[] {
+  const s = flatten(scope)
   const { bench, rate } = formulaBenchRate(s)
   const hwRate =
     rate
-    || (s.match(/PFij\s*[=＝][^。]{0,80}[×x*]\s*([\d.]+)\s*%/)?.[1]
-      ? pct(s.match(/PFij\s*[=＝][^。]{0,80}[×x*]\s*([\d.]+)\s*%/)![1])
-      : null)
-    || (s.match(/提取\s*([\d.]+)\s*%的业绩报酬/)?.[1] ? pct(s.match(/提取\s*([\d.]+)\s*%的业绩报酬/)![1]) : null)
+    || parseCarryPct(s.match(/PFij\s*[=＝][^。]{0,80}[×x*]\s*([\d.]+)\s*%/)?.[1])
+    || parseCarryPct(s.match(/提取\s*([\d.]+)\s*%的业绩报酬/)?.[1])
   const head: string[] = []
   if (bench) head.push(`基准${bench}`)
   if (hwRate) head.push(`超额计提${hwRate}`)
-  const summary = [...head, ...parts].filter(Boolean)
-  if (!summary.length) return null
-  return summary.join("；").slice(0, FORMULA_MAX)
+  return head
+}
+
+function composePerfFormula(eqParts: string[], classFees: ClassPerfFee[], benchHead: string[]): string | null {
+  const classHead = classFees.map(formatClassPerfPayLine)
+  const hForms = classFees.map((f) => f.formula).filter((x): x is string => Boolean(x))
+  const parts: string[] = []
+  const seen = new Set<string>()
+  const push = (item: string | null | undefined) => {
+    const v = (item ?? "").trim()
+    if (!v) return
+    const key = v.replace(/\s/g, "")
+    if (seen.has(key)) return
+    seen.add(key)
+    parts.push(v)
+  }
+  if (classHead.length) classHead.forEach(push)
+  else benchHead.forEach(push)
+  eqParts.forEach(push)
+  hForms.forEach(push)
+  if (!parts.length) return null
+  return parts.join("；").slice(0, FORMULA_MAX)
 }
 
 export function extractFeePayFormulaFromText(text: string): string | null {
   const s = flatten(text)
+  const classFees = extractShareClassPerfFees(s)
   const starts: number[] = []
   const re = /业绩报酬计提方法|业绩报酬的计算|业绩报酬的?计算公式|业绩报酬计提基准为|基金的业绩报酬(?!；)/g
   let match: RegExpExecArray | null
@@ -384,31 +536,50 @@ export function extractFeePayFormulaFromText(text: string): string | null {
     if (/临时开放|费用的种类|基金的管理费；/.test(ctx)) continue
     starts.push(match.index)
   }
+
+  let eqParts: string[] = []
+  let benchHead: string[] = []
   for (const start of starts) {
-    const scope = s.slice(start, start + 1800)
+    const scope = s.slice(start, start + 4800)
     if (/托管费年费率|运营服务费年费率/.test(scope.slice(0, 120)) && !/年化收益率/.test(scope.slice(0, 400))) {
       continue
     }
     const cut = scope.split(/业绩报酬的支付|5[、.]\s*本基金的证券账户/)[0]
-    const compact = formulaEquations(cut)
-    if (compact) return compact
+    if (
+      /基金费用的种类|（一）基金费用/.test(cut.slice(0, 180))
+      && !/PFij|NAVn|HWMij|年化收益率|实际收益率/.test(cut.slice(0, 500))
+    ) {
+      continue
+    }
+    const eqs = collectEquations(cut)
+    const head = formulaHeadFromScope(cut)
+    if (eqs.length || head.length) {
+      eqParts = eqs
+      benchHead = head
+      break
+    }
   }
 
-  const y = s.match(/Y\s*[=＝]\s*F\s*[×x*]\s*\([^)]{3,40}\)\s*[×x*]\s*W/)
-  if (y) {
-    const around = nearby(s, y.index ?? 0, 80, 120)
-    const x = around.match(/提取比例[^。]{0,12}[【\[]?(\d+)[】\]]?\s*%/)
-    return [x ? `提取比例${x[1]}%` : null, collapseWs(y[0])].filter(Boolean).join("；")
+  if (!eqParts.length && !benchHead.length) {
+    const y = s.match(/Y\s*[=＝]\s*F\s*[×x*]\s*\([^)]{3,40}\)\s*[×x*]\s*W/)
+    if (y) {
+      const around = nearby(s, y.index ?? 0, 80, 120)
+      const x = around.match(/提取比例[^。]{0,12}[【\[]?(\d+)[】\]]?\s*%/)
+      eqParts = [collapseWs(y[0])]
+      if (x?.[1]) benchHead = [`提取比例${x[1]}%`]
+    } else {
+      const fallbackIdx = s.search(
+        /年化收益率\s*R|Y\s*[=＝]\s*F|E\s*[=＝]\s*K|PFij\s*[=＝]|H\s*[=＝]\s*F|H\s*[=＝]\s*[（(]?\s*R|NAVn\s*[-－]\s*NAVh/,
+      )
+      if (fallbackIdx >= 0) {
+        const window = s.slice(Math.max(0, fallbackIdx - 240), fallbackIdx + 1600)
+        eqParts = collectEquations(window)
+        benchHead = formulaHeadFromScope(window)
+      }
+    }
   }
 
-  const fallbackIdx = s.search(
-    /年化收益率\s*R|Y\s*[=＝]\s*F|E\s*[=＝]\s*K|PFij\s*[=＝]|H\s*[=＝]\s*F|NAVn\s*[-－]\s*NAVh/,
-  )
-  if (fallbackIdx >= 0) {
-    const compact = formulaEquations(s.slice(Math.max(0, fallbackIdx - 240), fallbackIdx + 900))
-    if (compact) return compact
-  }
-  return null
+  return composePerfFormula(eqParts, classFees, benchHead)
 }
 
 function shareClassManageRates(text: string): string | null {
@@ -472,6 +643,8 @@ function perClassManageInfo(
 }
 
 function perClassFeePayText(text: string, cls: string): string | null {
+  const fromTable = extractShareClassPerfFees(text).find((f) => f.cls === cls)
+  if (fromTable) return formatClassPerfPayLine(fromTable)
   // Find a segment starting with the class letter and containing performance fee terms.
   const re = new RegExp(
     `${cls}(?:类|份额|份)[^;；。\\n]{3,200}(?:业绩报酬|超额计提|计提比例|超额收益|收益率)[^;；。\\n]{0,100}`,
@@ -500,8 +673,8 @@ function perClassFeePayText(text: string, cls: string): string | null {
 export function extractShareClassFeeOverrides(text: string): ShareClassFeeOverrides {
   const s = flatten(text.slice(0, 200_000))
 
-  // Only proceed if there are clear multi-class markers
-  if (!/[AB]类(?:份额|年管理|份)/.test(s)) return {}
+  // Only proceed if there are clear multi-class markers (A类份额 / A类基金份额 / A类年管理)
+  if (!/[AB]类(?:基金)?(?:份额|年管理|份)/.test(s)) return {}
 
   // Collect per-class manage rates
   type ManageInfo = { ratePct: string; rateN: number } | "exempt"

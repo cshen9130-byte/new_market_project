@@ -45,6 +45,13 @@ import {
 import { ProductElementsDialogContent } from "./components/ProductElementsDialogContent"
 import { ProductFieldConfigDialog } from "./components/ProductFieldConfigDialog"
 import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./components/product-field-config-table"
+import {
+  filterInvestmentNotesLinkedToProduct,
+  investmentNoteDeepLink,
+  listInvestmentNotes,
+  type InvestmentNote,
+  type ProductLinkedInvestmentNote,
+} from "@/lib/ma/investment-notes"
 
 const DueDiligenceCalendarView = dynamic(() =>
   import("./components/DueDiligenceCalendarView").then((m) => ({ default: m.DueDiligenceCalendarView })),
@@ -1717,6 +1724,7 @@ interface TrackFundRow {
   company_strategy_l3: string | null
   manager: string | null
   inception_date: string | null
+  first_added_at: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -2565,12 +2573,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       headers: userFetchHeaders(),
     }).then((r) => r.json())
     const rows: TrackFundRow[] = json.data ?? []
-    const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)"]
+    const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "首次入表日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)"]
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => [
         escape(r.beian_hao), escape(r.product_name), escape(r.short_name),
         escape(r.strategy_l1), escape(r.strategy_l2), escape(r.manager), escape(r.inception_date),
+        escape(r.first_added_at?.slice(0, 10)),
         escape(r.latest_nav), escape(r.latest_nav_date), escape(r.latest_price_change),
         escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
         escape(r.sharpe_1y), escape(r.calmar_1y),
@@ -3400,6 +3409,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   </th>
                   <th className={`${thBase} w-10`}>序号</th>
                   <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
+                  <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
                   <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("beian_hao")}>备案编码<SortIco col="beian_hao" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("latest_nav")}>团队单位净值<SortIco col="latest_nav" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("latest_nav_date")}>团队净值日期<SortIco col="latest_nav_date" /></th>
@@ -3409,11 +3419,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               </thead>
               <tbody>
                 {loading && data.length === 0 ? (
-                  <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isSupportedPool ? (
-                  <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
+                  <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
                 ) : data.length === 0 ? (
-                  <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
+                  <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
                   const isSelected = selected.has(row.beian_hao)
                   const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
@@ -3448,6 +3458,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           ) : null
                         })()}
                       </td>
+                      <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
                       <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao}</td>
                       <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
                       <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
@@ -3486,6 +3497,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   </th>
                   <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted dark:bg-zinc-900`}>序号</th>
                   <th className={`${thSort} min-w-[200px] sticky left-[72px] z-30 bg-muted dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-700`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
+                  <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
                   {fieldConfigSelected.map(renderFieldConfigHeader)}
                   <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
                     <div>近一周收益<SortIco col="ret_1w" /></div>
@@ -3557,6 +3569,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           ) : null
                         })()}
                       </td>
+                      <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -3982,6 +3995,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-8 px-2`}><input type="checkbox" className="rounded h-3 w-3" /></th>
                   <th className={`${thBase} w-10`}>序号</th>
                   <th className={`${thBase} min-w-[200px]`}>产品名称</th>
+                  <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
                   {fieldConfigSelected.map((label) => (
                     <th key={label} className={`${thBase} min-w-[100px]`}>{label}</th>
                   ))}
@@ -4054,6 +4068,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           ) : null
                         })()}
                       </td>
+                      <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -14371,6 +14386,7 @@ type TeamDataSortKey =
   | "product_name" | "beian_hao"
   | "platform_nav" | "platform_nav_date"
   | "team_nav" | "team_nav_date" | "valuation_date"
+  | "first_entry_date"
 
 interface TeamDataRow {
   id: string
@@ -14381,13 +14397,28 @@ interface TeamDataRow {
   team_nav: string | null
   team_nav_date: string | null
   valuation_date: string | null
+  has_valuation?: boolean
   product_source: string
   strategy_l1: string | null
+  first_entry_date?: string | null
+}
+
+function teamDataLinkedInvestmentNote(
+  row: Pick<TeamDataRow, "beian_hao" | "product_name">,
+  teamNotes: InvestmentNote[],
+  mineNotes: InvestmentNote[],
+): ProductLinkedInvestmentNote | null {
+  return filterInvestmentNotesLinkedToProduct(
+    teamNotes,
+    mineNotes,
+    row.beian_hao ?? "",
+    row.product_name,
+  )[0] ?? null
 }
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v3:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -14486,7 +14517,7 @@ function OperationsTeamDataView() {
   const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email">("all")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
-  const [sortKey, setSortKey] = useState<TeamDataSortKey | "">("")
+  const [sortKey, setSortKey] = useState<TeamDataSortKey>("first_entry_date")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -14544,6 +14575,9 @@ function OperationsTeamDataView() {
   const [showTeamDataBatchTrackingDialog, setShowTeamDataBatchTrackingDialog] = useState(false)
   const [teamDataBatchTrackingPool, setTeamDataBatchTrackingPool] = useState("")
   const [showTeamDataBatchMissingSettingsDialog, setShowTeamDataBatchMissingSettingsDialog] = useState(false)
+  const [teamInvestmentNotes, setTeamInvestmentNotes] = useState<InvestmentNote[]>([])
+  const [mineInvestmentNotes, setMineInvestmentNotes] = useState<InvestmentNote[]>([])
+  const [investmentNotesReady, setInvestmentNotesReady] = useState(false)
 
   const selectedRows = data.filter((r) => selected.has(r.id))
   const selectedBeianHaos = selectedRows.map((r) => r.beian_hao).filter((bh): bh is string => !!bh)
@@ -14636,6 +14670,36 @@ function OperationsTeamDataView() {
       ac.abort()
     }
   }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, productSourceFilter, keyword, sortKey, sortDir, teamDataReloadKey])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([listInvestmentNotes("team"), listInvestmentNotes("mine")])
+      .then(([team, mine]) => {
+        if (cancelled) return
+        setTeamInvestmentNotes(team)
+        setMineInvestmentNotes(mine)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setTeamInvestmentNotes([])
+        setMineInvestmentNotes([])
+      })
+      .finally(() => {
+        if (!cancelled) setInvestmentNotesReady(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const linkedNoteByRowId = useMemo(() => {
+    const map = new Map<string, ProductLinkedInvestmentNote>()
+    for (const row of data) {
+      const note = teamDataLinkedInvestmentNote(row, teamInvestmentNotes, mineInvestmentNotes)
+      if (note) map.set(row.id, note)
+    }
+    return map
+  }, [data, teamInvestmentNotes, mineInvestmentNotes])
 
   useEffect(() => {
     if (!showTeamDataAddDialog) return
@@ -14866,7 +14930,7 @@ function OperationsTeamDataView() {
   }
 
   function handleExport() {
-    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "产品来源"]
+    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "有无估值表", "产品来源", "关联笔记", "首次入表日期"]
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
     const lines = [headers.join(",")]
     for (const row of data) {
@@ -14878,7 +14942,10 @@ function OperationsTeamDataView() {
         escape(row.team_nav ?? ""),
         escape(row.team_nav_date ?? ""),
         escape(row.valuation_date ?? ""),
+        escape(row.has_valuation ? "有" : "无"),
         escape(row.product_source),
+        escape(linkedNoteByRowId.has(row.id) ? "已关联" : "未关联"),
+        escape(row.first_entry_date ?? ""),
       ].join(","))
     }
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" })
@@ -15323,7 +15390,7 @@ function OperationsTeamDataView() {
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1200 }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -15337,16 +15404,19 @@ function OperationsTeamDataView() {
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav")}>团队单位净值<TeamSortIcon col="team_nav" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav_date")}>团队净值日期<TeamSortIcon col="team_nav_date" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("valuation_date")}>估值表日期<TeamSortIcon col="valuation_date" /></th>
+              <th className={`${thBase} min-w-[80px]`}>有无估值表</th>
               <th className={`${thBase} min-w-[90px]`}>产品来源</th>
+              <th className={`${thBase} min-w-[80px]`}>关联笔记</th>
+              <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_entry_date")}>首次入表日期<TeamSortIcon col="first_entry_date" /></th>
               <th className={`${thBase} text-center w-20`}>操作</th>
             </tr>
           </thead>
           <tbody>
             {loading && data.length === 0 ? (
-              <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+              <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
             ) : data.length === 0 ? (
               <tr>
-                <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                <td colSpan={14} className="py-20 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-2">
                     <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
                     <span>暂无邮箱同步产品</span>
@@ -15388,7 +15458,45 @@ function OperationsTeamDataView() {
                   </td>
                   <td className={`${cell} tabular-nums`}>{row.team_nav_date ?? "—"}</td>
                   <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
+                  <td className={cell}>
+                    {row.has_valuation ? (
+                      row.beian_hao ? (
+                        <button
+                          type="button"
+                          title="打开估值表管理"
+                          onClick={() => openOpsValuationManage("ops-team-data", row.beian_hao!, row.product_name)}
+                          className="text-emerald-600 hover:text-emerald-700 hover:underline"
+                        >
+                          有
+                        </button>
+                      ) : (
+                        <span className="text-emerald-600">有</span>
+                      )
+                    ) : (
+                      <span className="text-zinc-400">无</span>
+                    )}
+                  </td>
                   <td className={`${cell} text-zinc-600`}>{row.product_source}</td>
+                  <td className={cell}>
+                    {!investmentNotesReady ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : linkedNoteByRowId.has(row.id) ? (
+                      <button
+                        type="button"
+                        title={linkedNoteByRowId.get(row.id)?.title || "打开关联投资笔记"}
+                        onClick={() => {
+                          const note = linkedNoteByRowId.get(row.id)
+                          if (note) window.open(investmentNoteDeepLink(note), "_blank")
+                        }}
+                        className="text-emerald-600 hover:text-emerald-700 hover:underline"
+                      >
+                        已关联
+                      </button>
+                    ) : (
+                      <span className="text-zinc-400">未关联</span>
+                    )}
+                  </td>
+                  <td className={`${cell} tabular-nums`}>{row.first_entry_date ?? "—"}</td>
                   <td className={`${cell} text-center`}>
                     <div className="flex items-center justify-center gap-4">
                       {row.beian_hao && (

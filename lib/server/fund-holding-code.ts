@@ -98,6 +98,8 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   // 金舆锡泰一号 估值表 uses custodian ticker JRHG02 / JRHG02B for the same B类.
   JRHG02: "JX860B",
   JRHG02B: "JX860B",
+  // 六妙星九紫一号: some FOF 估值表科目 use TA/custodian code ABCX2; AMAC 备案号 is SBPC20.
+  ABCX2: "SBPC20",
 }
 
 export function resolveFofValuationCodeAlias(code: string | null | undefined): string | null {

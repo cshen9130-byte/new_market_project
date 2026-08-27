@@ -38,6 +38,7 @@ import {
 } from "@/lib/server/email-nav-query"
 import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
 
 export type ListCacheFundHeader = {
   source: "fof" | "managed" | "tracking"
@@ -198,6 +199,9 @@ export async function lookupListCacheFundHeader(
 export async function resolveRouteFundIdFast(rawId: string): Promise<string> {
   const id = rawId.trim()
   if (!id) return id
+
+  const aliased = resolveFofValuationCodeAlias(id)
+  if (aliased) return aliased
 
   const override =
     lookupManagedProductOverride(id)

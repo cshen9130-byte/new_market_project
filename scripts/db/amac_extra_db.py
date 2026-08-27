@@ -77,6 +77,9 @@ CREATE INDEX IF NOT EXISTS idx_amac_managers_manager_name
 CREATE TABLE IF NOT EXISTS amac_person_org_stats (
     id                                    SERIAL PRIMARY KEY,
     org_name                              TEXT NOT NULL,
+    org_user_id                           TEXT,
+    org_code                              TEXT,
+    org_name_spell                        TEXT,
     org_type                              TEXT,
     staff_count                           INTEGER,
     fund_qualification_count              INTEGER,
@@ -88,6 +91,7 @@ CREATE TABLE IF NOT EXISTS amac_person_org_stats (
     external_fund_sales_qualification_count INTEGER,
     external_investment_manager_count     INTEGER,
     external_fund_manager_count           INTEGER,
+    personnel_fetched_at                  TIMESTAMPTZ,
     source_file                           TEXT NOT NULL DEFAULT 'person_org_stats.csv',
     updated_at                            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT amac_person_org_stats_org_name_uq UNIQUE (org_name)
@@ -95,6 +99,9 @@ CREATE TABLE IF NOT EXISTS amac_person_org_stats (
 
 CREATE INDEX IF NOT EXISTS idx_amac_person_org_stats_org_type
     ON amac_person_org_stats (org_type);
+
+CREATE INDEX IF NOT EXISTS idx_amac_person_org_stats_org_user_id
+    ON amac_person_org_stats (org_user_id);
 
 CREATE TABLE IF NOT EXISTS amac_manager_details (
     id                                      SERIAL PRIMARY KEY,
@@ -166,16 +173,83 @@ CREATE TABLE IF NOT EXISTS amac_manager_executive_resume (
 CREATE INDEX IF NOT EXISTS idx_amac_manager_executive_resume_registration_no
     ON amac_manager_executive_resume (registration_no);
 
+CREATE TABLE IF NOT EXISTS amac_personnel (
+    id                          SERIAL PRIMARY KEY,
+    org_user_id                 TEXT NOT NULL,
+    account_id                  TEXT,
+    person_name                 TEXT NOT NULL,
+    sex                         TEXT,
+    cert_code                   TEXT NOT NULL,
+    org_name                    TEXT,
+    own_org_name                TEXT,
+    cert_name                   TEXT,
+    education_name              TEXT,
+    cert_obtain_date            DATE,
+    cert_end_date               DATE,
+    cert_status_change_times    INTEGER,
+    credit_record_num           INTEGER,
+    cert_status                 INTEGER,
+    cert_status_name            TEXT,
+    office_state                INTEGER,
+    removed                     TEXT,
+    biz_id                      TEXT,
+    exception_flag              TEXT,
+    source_file                 TEXT NOT NULL DEFAULT 'personnel.csv',
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT amac_personnel_uq UNIQUE (org_user_id, cert_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_amac_personnel_org_user_id
+    ON amac_personnel (org_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_amac_personnel_org_name
+    ON amac_personnel (org_name);
+
+CREATE INDEX IF NOT EXISTS idx_amac_personnel_person_name
+    ON amac_personnel (person_name);
+
+CREATE INDEX IF NOT EXISTS idx_amac_personnel_account_id
+    ON amac_personnel (account_id);
+
+CREATE TABLE IF NOT EXISTS amac_personnel_cert_history (
+    id                  SERIAL PRIMARY KEY,
+    org_user_id         TEXT NOT NULL,
+    account_id          TEXT,
+    person_name         TEXT,
+    history_id          TEXT NOT NULL,
+    org_name            TEXT,
+    cert_code           TEXT,
+    cert_name           TEXT,
+    cert_obtain_date    DATE,
+    cert_end_date       DATE,
+    cert_status         INTEGER,
+    cert_status_name    TEXT,
+    created_on          DATE,
+    qlf_id              TEXT,
+    source_file         TEXT NOT NULL DEFAULT 'personnel_cert_history.csv',
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT amac_personnel_cert_history_uq UNIQUE (history_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_amac_personnel_cert_history_org_user_id
+    ON amac_personnel_cert_history (org_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_amac_personnel_cert_history_account_id
+    ON amac_personnel_cert_history (account_id);
+
 CREATE TABLE IF NOT EXISTS amac_extra_sync_state (
-    id                          TEXT PRIMARY KEY DEFAULT 'default',
-    last_managers_upserted      INTEGER NOT NULL DEFAULT 0,
-    last_person_org_upserted    INTEGER NOT NULL DEFAULT 0,
-    last_details_fetched        INTEGER NOT NULL DEFAULT 0,
-    last_executives_upserted    INTEGER NOT NULL DEFAULT 0,
-    last_resumes_upserted       INTEGER NOT NULL DEFAULT 0,
-    last_full_details_sync_at   TIMESTAMPTZ,
-    last_incremental_sync_at  TIMESTAMPTZ,
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                              TEXT PRIMARY KEY DEFAULT 'default',
+    last_managers_upserted          INTEGER NOT NULL DEFAULT 0,
+    last_person_org_upserted        INTEGER NOT NULL DEFAULT 0,
+    last_details_fetched            INTEGER NOT NULL DEFAULT 0,
+    last_executives_upserted        INTEGER NOT NULL DEFAULT 0,
+    last_resumes_upserted           INTEGER NOT NULL DEFAULT 0,
+    last_personnel_upserted         INTEGER NOT NULL DEFAULT 0,
+    last_personnel_orgs_fetched     INTEGER NOT NULL DEFAULT 0,
+    last_personnel_certs_upserted   INTEGER NOT NULL DEFAULT 0,
+    last_full_details_sync_at       TIMESTAMPTZ,
+    last_incremental_sync_at        TIMESTAMPTZ,
+    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS amac_manager_metrics_history (
@@ -200,6 +274,35 @@ CREATE INDEX IF NOT EXISTS idx_amac_manager_metrics_history_reg_captured
 CREATE INDEX IF NOT EXISTS idx_amac_manager_metrics_history_snapshot_date
     ON amac_manager_metrics_history (snapshot_date DESC, registration_no);
 """
+
+SCHEMA_MIGRATIONS = [
+    "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS org_user_id TEXT",
+    "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS org_code TEXT",
+    "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS org_name_spell TEXT",
+    "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS personnel_fetched_at TIMESTAMPTZ",
+    "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_upserted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_orgs_fetched INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_certs_upserted INTEGER NOT NULL DEFAULT 0",
+]
+
+
+def ensure_schema(cur) -> None:
+    cur.execute(DDL)
+    for stmt in SCHEMA_MIGRATIONS:
+        cur.execute(stmt)
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_amac_person_org_stats_org_user_id
+            ON amac_person_org_stats (org_user_id)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_amac_person_org_stats_personnel_fetched
+            ON amac_person_org_stats (personnel_fetched_at NULLS FIRST)
+        """
+    )
+
 
 UPSERT_MANAGERS = """
 INSERT INTO amac_managers (
@@ -229,13 +332,16 @@ ON CONFLICT (registration_no) DO UPDATE SET
 
 UPSERT_PERSON_ORG = """
 INSERT INTO amac_person_org_stats (
-    org_name, org_type, staff_count, fund_qualification_count,
+    org_name, org_user_id, org_code, org_name_spell, org_type, staff_count, fund_qualification_count,
     fund_sales_qualification_count, investment_manager_count, fund_manager_count,
     external_staff_count, external_fund_qualification_count,
     external_fund_sales_qualification_count, external_investment_manager_count,
     external_fund_manager_count, source_file
 ) VALUES %s
 ON CONFLICT (org_name) DO UPDATE SET
+    org_user_id                           = COALESCE(EXCLUDED.org_user_id, amac_person_org_stats.org_user_id),
+    org_code                              = COALESCE(EXCLUDED.org_code, amac_person_org_stats.org_code),
+    org_name_spell                        = COALESCE(EXCLUDED.org_name_spell, amac_person_org_stats.org_name_spell),
     org_type                              = EXCLUDED.org_type,
     staff_count                           = COALESCE(EXCLUDED.staff_count, amac_person_org_stats.staff_count),
     fund_qualification_count              = COALESCE(EXCLUDED.fund_qualification_count, amac_person_org_stats.fund_qualification_count),
@@ -314,6 +420,77 @@ ON CONFLICT (
     updated_at   = NOW()
 """
 
+UPSERT_PERSONNEL = """
+INSERT INTO amac_personnel (
+    org_user_id, account_id, person_name, sex, cert_code, org_name, own_org_name,
+    cert_name, education_name, cert_obtain_date, cert_end_date, cert_status_change_times,
+    credit_record_num, cert_status, cert_status_name, office_state, removed, biz_id,
+    exception_flag, source_file
+) VALUES %s
+ON CONFLICT (org_user_id, cert_code) DO UPDATE SET
+    account_id               = EXCLUDED.account_id,
+    person_name              = EXCLUDED.person_name,
+    sex                      = EXCLUDED.sex,
+    org_name                 = EXCLUDED.org_name,
+    own_org_name             = EXCLUDED.own_org_name,
+    cert_name                = EXCLUDED.cert_name,
+    education_name           = EXCLUDED.education_name,
+    cert_obtain_date         = EXCLUDED.cert_obtain_date,
+    cert_end_date            = EXCLUDED.cert_end_date,
+    cert_status_change_times = COALESCE(EXCLUDED.cert_status_change_times, amac_personnel.cert_status_change_times),
+    credit_record_num        = COALESCE(EXCLUDED.credit_record_num, amac_personnel.credit_record_num),
+    cert_status              = EXCLUDED.cert_status,
+    cert_status_name         = EXCLUDED.cert_status_name,
+    office_state             = EXCLUDED.office_state,
+    removed                  = EXCLUDED.removed,
+    biz_id                   = EXCLUDED.biz_id,
+    exception_flag           = EXCLUDED.exception_flag,
+    source_file              = EXCLUDED.source_file,
+    updated_at               = NOW()
+"""
+
+UPSERT_PERSONNEL_CERT_HISTORY = """
+INSERT INTO amac_personnel_cert_history (
+    org_user_id, account_id, person_name, history_id, org_name, cert_code, cert_name,
+    cert_obtain_date, cert_end_date, cert_status, cert_status_name, created_on, qlf_id,
+    source_file
+) VALUES %s
+ON CONFLICT (history_id) DO UPDATE SET
+    org_user_id      = EXCLUDED.org_user_id,
+    account_id       = EXCLUDED.account_id,
+    person_name      = EXCLUDED.person_name,
+    org_name         = EXCLUDED.org_name,
+    cert_code        = EXCLUDED.cert_code,
+    cert_name        = EXCLUDED.cert_name,
+    cert_obtain_date = EXCLUDED.cert_obtain_date,
+    cert_end_date    = EXCLUDED.cert_end_date,
+    cert_status      = EXCLUDED.cert_status,
+    cert_status_name = EXCLUDED.cert_status_name,
+    created_on       = EXCLUDED.created_on,
+    qlf_id           = EXCLUDED.qlf_id,
+    source_file      = EXCLUDED.source_file,
+    updated_at       = NOW()
+"""
+
+DELETE_PERSONNEL_FOR_ORG = "DELETE FROM amac_personnel WHERE org_user_id = %s"
+DELETE_PERSONNEL_HISTORY_FOR_ORG = "DELETE FROM amac_personnel_cert_history WHERE org_user_id = %s"
+MARK_PERSONNEL_FETCHED = """
+UPDATE amac_person_org_stats
+SET personnel_fetched_at = NOW()
+WHERE org_user_id = %s
+"""
+
+SELECT_PERSONNEL_TARGETS = """
+SELECT org_user_id, org_name, staff_count, personnel_fetched_at
+FROM amac_person_org_stats
+WHERE org_user_id IS NOT NULL AND org_user_id <> ''
+ORDER BY
+    CASE WHEN personnel_fetched_at IS NULL THEN 0 ELSE 1 END,
+    personnel_fetched_at ASC NULLS FIRST,
+    COALESCE(staff_count, 0) DESC,
+    org_name
+"""
+
 SOURCE_API = "amac_api"
 
 
@@ -349,6 +526,9 @@ def person_org_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> tuple
         return None
     return (
         org_name,
+        dash_to_none(row.get("机构用户ID")),
+        dash_to_none(row.get("组织机构代码")),
+        dash_to_none(row.get("机构名称拼音")),
         dash_to_none(row.get("机构类型")),
         parse_int(row.get("员工人数")),
         parse_int(row.get("基金从业资格")),
@@ -433,6 +613,65 @@ def executive_resume_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) ->
     )
 
 
+def personnel_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> tuple | None:
+    org_user_id = dash_to_none(row.get("机构用户ID"))
+    person_name = dash_to_none(row.get("姓名"))
+    cert_code = dash_to_none(row.get("证书编号"))
+    if not org_user_id or not person_name:
+        return None
+    if not cert_code:
+        account_id = dash_to_none(row.get("账号ID")) or ""
+        cert_name = dash_to_none(row.get("从业资格类别")) or ""
+        cert_code = f"{account_id}:{cert_name}".strip(":") or None
+    if not cert_code:
+        return None
+    return (
+        org_user_id,
+        dash_to_none(row.get("账号ID")),
+        person_name,
+        dash_to_none(row.get("性别")),
+        cert_code,
+        dash_to_none(row.get("机构名称")),
+        dash_to_none(row.get("所属机构名称")),
+        dash_to_none(row.get("从业资格类别")),
+        dash_to_none(row.get("学历")),
+        parse_date(row.get("证书取得日期")),
+        parse_date(row.get("证书到期日期")),
+        parse_int(row.get("证书状态变更次数")),
+        parse_int(row.get("诚信记录数")),
+        parse_int(row.get("证书状态")),
+        dash_to_none(row.get("证书状态名称")),
+        parse_int(row.get("在职状态")),
+        dash_to_none(row.get("是否注销")),
+        dash_to_none(row.get("业务ID")),
+        dash_to_none(row.get("异常标记")),
+        source,
+    )
+
+
+def personnel_cert_history_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> tuple | None:
+    org_user_id = dash_to_none(row.get("机构用户ID"))
+    history_id = dash_to_none(row.get("历史记录ID"))
+    if not org_user_id or not history_id:
+        return None
+    return (
+        org_user_id,
+        dash_to_none(row.get("账号ID")),
+        dash_to_none(row.get("姓名")),
+        history_id,
+        dash_to_none(row.get("机构名称")),
+        dash_to_none(row.get("证书编号")),
+        dash_to_none(row.get("从业资格类别")),
+        parse_date(row.get("证书取得日期")),
+        parse_date(row.get("证书到期日期")),
+        parse_int(row.get("证书状态")),
+        dash_to_none(row.get("证书状态名称")),
+        parse_date(row.get("创建时间")),
+        dash_to_none(row.get("资格ID")),
+        source,
+    )
+
+
 def dedupe_tuples(rows: list[tuple], key_fn) -> list[tuple]:
     seen: set = set()
     out: list[tuple] = []
@@ -484,6 +723,26 @@ def load_manager_executive_resume_from_csv(csv_dir: Path = DEFAULT_CSV_DIR) -> l
         [t for t in tuples if t],
         lambda r: (r[0], r[2], r[3], r[4], r[5], r[6], r[7]),
     )
+
+
+def load_personnel_from_csv(csv_dir: Path = DEFAULT_CSV_DIR) -> list[tuple]:
+    path = csv_dir / "personnel.csv"
+    if not path.exists():
+        return []
+    rows = read_csv("personnel.csv", csv_dir)
+    tuples = [personnel_csv_row_to_tuple(row, source="personnel.csv") for row in rows]
+    return dedupe_tuples([t for t in tuples if t], lambda r: (r[0], r[4]))
+
+
+def load_personnel_cert_history_from_csv(csv_dir: Path = DEFAULT_CSV_DIR) -> list[tuple]:
+    path = csv_dir / "personnel_cert_history.csv"
+    if not path.exists():
+        return []
+    rows = read_csv("personnel_cert_history.csv", csv_dir)
+    tuples = [
+        personnel_cert_history_csv_row_to_tuple(row, source="personnel_cert_history.csv") for row in rows
+    ]
+    return dedupe_tuples([t for t in tuples if t], lambda r: r[3])
 
 
 SNAPSHOT_MANAGER_METRICS_SQL = """

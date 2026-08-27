@@ -31,6 +31,7 @@ import {
   isValuationClearingSubjectCode,
   listedFundCodeToTickers,
   lookupFundCodeByProductName,
+  resolveFofValuationCodeAlias,
   resolveFundHoldingCode,
 } from "@/lib/server/fund-holding-code"
 import {
@@ -1493,7 +1494,7 @@ async function buildFundHoldings(
         shares: qty > 0 ? qty : null,
         cost: signedCost !== 0 ? signedCost : null,
         unrealizedPnl: parseNum(h.unrealized_pnl) || null,
-        beianHao: valuationCode,
+        beianHao: resolveFofValuationCodeAlias(valuationCode) ?? valuationCode,
         rowKind: h.row_kind ?? "other",
         extra: h.extra ?? {},
       }

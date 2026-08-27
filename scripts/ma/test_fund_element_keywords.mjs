@@ -11,8 +11,11 @@ import {
   extractShareClassFeeOverrides,
   extractTemporaryOpenFromText,
   fillMissingElementsFromKeywords,
+  isWeakFeePay,
+  isWeakFormula,
   isWeakRiskLevel,
   summarizeFeeManageDesc,
+  summarizeFeePayDesc,
 } from "../../lib/server/fund-contract-element-keywords.ts"
 import { formatTemporaryOpen } from "../../lib/ma/fund-elements-extra.ts"
 
@@ -293,5 +296,72 @@ assert.ok(!scSingle.A && !scSingle.B, "same rate should not generate overrides")
 const oneClassContract = `本基金年管理费率为1%，每日计提。`
 const scOne = extractShareClassFeeOverrides(oneClassContract)
 assert.ok(Object.keys(scOne).length === 0, "single-class contract should not generate overrides")
+
+// 金时信星际风云一号：R>0% is the excess trigger, not 业绩基准0%。A 30% / B 20% / C 不收取。
+const azh88 = `
+4、业绩报酬
+本基金对 C 类基金份额不收取业绩报酬。其他类别基金份额将按照如下约定计提业绩报酬。
+
+（1）业绩报酬计提原则
+当条件满足时，以赎回申请日、基金清算日或财产分配权益登记日为业绩报酬计提日，采用实际收益率方法计提。同一基金份额连续两次计提日间隔不得少于 6 个月，赎回、清算或合同另有约定除外。
+
+（2）业绩报酬计提方法
+基金份额累计净值。计提期间实际收益率 R 的计算公式为：
+R = (A - B) / C × 100%
+A 为本次业绩报酬计提日的基金份额累计净值；
+B 为上次业绩报酬计提日（若无则为份额参与本基金之日）的基金份额累计净值；
+C 为上次业绩报酬计提日（若无则为份额参与本基金之日）的基金份额净值。
+计提基准日为赎回申请日、基金清算日或财产分配权益登记日。
+
+A类基金份额：
+若 R ≤ 0%，不计提业绩报酬。
+若 R > 0%，基金管理人提取超过 0% 部分的 30% 作为业绩报酬。
+实际收益率（R） 计提比例 业绩报酬（H）计算方法
+R ≤ 0% 0 H = 0
+0% < R 30% H = (R - 0%) × 30% × C × F
+
+B类基金份额：
+若 R ≤ 0%，不计提业绩报酬。
+若 R > 0%，基金管理人提取超过 0% 部分的 20% 作为业绩报酬。
+实际收益率（R） 计提比例 业绩报酬（H）计算方法
+R ≤ 0% 0 H = 0
+0% < R 20% H = (R - 0%) × 20% × C × F
+
+F 为基准日投资者持有份额（清算或分配）或退出份额（赎回）。
+
+（3）业绩报酬的支付
+管理人或受托服务机构计算，管理人复核后通知托管人于 5 个工作日内支付。
+`
+
+assert.ok(isWeakFeePay("按业绩基准计提，业绩基准0%"))
+assert.ok(isWeakFormula("基准0%"))
+
+const azhPay = summarizeFeePayDesc(azh88)
+assert.ok(azhPay && azhPay.includes("30%"), azhPay)
+assert.ok(azhPay && azhPay.includes("20%"), azhPay)
+assert.ok(azhPay && /C类不收取/.test(azhPay), azhPay)
+assert.ok(azhPay && !azhPay.includes("业绩基准0%"), azhPay)
+
+const azhFormula = extractFeePayFormulaFromText(azh88)
+assert.ok(azhFormula && azhFormula.includes("30%"), azhFormula)
+assert.ok(azhFormula && azhFormula.includes("20%"), azhFormula)
+assert.ok(azhFormula && /C类不收取/.test(azhFormula), azhFormula)
+assert.ok(azhFormula && /R\s*=/.test(azhFormula), azhFormula)
+assert.ok(azhFormula && !azhFormula.includes("基准0%"), azhFormula)
+
+const azhFilled = fillMissingElementsFromKeywords(azh88, {
+  fee_pay: "按业绩基准计提，业绩基准0%",
+  fee_pay_formula: "基准0%",
+})
+assert.ok(azhFilled.fee_pay?.includes("20%"), azhFilled.fee_pay)
+assert.ok(azhFilled.fee_pay?.includes("30%"), azhFilled.fee_pay)
+assert.ok(!azhFilled.fee_pay?.includes("业绩基准0%"), azhFilled.fee_pay)
+assert.ok(azhFilled.fee_pay_formula?.includes("20%"), azhFilled.fee_pay_formula)
+assert.ok(azhFilled.fee_pay_formula?.includes("30%"), azhFilled.fee_pay_formula)
+
+const azhSc = extractShareClassFeeOverrides(azh88)
+assert.ok(azhSc.A?.fee_pay?.includes("30%"), azhSc.A?.fee_pay)
+assert.ok(azhSc.B?.fee_pay?.includes("20%"), azhSc.B?.fee_pay)
+assert.ok(azhSc.C?.fee_pay?.includes("不收取"), azhSc.C?.fee_pay)
 
 console.log("fund-contract-element-keywords: ok")

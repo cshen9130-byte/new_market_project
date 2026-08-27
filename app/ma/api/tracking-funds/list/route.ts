@@ -181,6 +181,7 @@ function buildNavJoinConfig(pool: string, cutoffExpr: string): NavJoinConfig {
     fallbackPctExpr,
     allowedSort: {
       product_name: "i.product_name",
+      first_added_at: "i.first_added_at",
       latest_nav: `COALESCE(en.nav, ${fallbackNavExpr})::numeric`,
       latest_nav_date: `COALESCE(en.nav_date, ${fallbackDateExpr})`,
       latest_price_change: `CASE WHEN en.nav IS NOT NULL AND en_prev.nav IS NOT NULL AND en_prev.nav <> 0 THEN (en.nav / en_prev.nav - 1) ELSE ${fallbackPctExpr}::numeric END`,
@@ -221,6 +222,7 @@ interface TrackRow {
   company_strategy_l3: string | null
   manager: string | null
   inception_date: string | null
+  first_added_at: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -267,12 +269,15 @@ function rawStrategyJsonExpr(alias: string): string {
   `.trim()
 }
 
+const SHANGHAI_DATE_EXPR = (col: string) => `(${col} AT TIME ZONE 'Asia/Shanghai')::date`
+
 const BFL_OPS_SOURCE_CTE = `
 WITH source AS (
   SELECT DISTINCT ON (o.register_number)
     o.register_number AS beian_hao,
     COALESCE(o.fund_short_name, o.fund_name) AS product_name,
     o.fund_name AS short_name,
+    MIN(${SHANGHAI_DATE_EXPR("o.imported_at")}) OVER (PARTITION BY o.register_number) AS first_added_at,
     tag_data.strategy_company,
     o.company_strategy_one,
     o.company_strategy_two,
@@ -325,6 +330,7 @@ function bflOpsNavPctExpr(): string {
 
 const CACHE_ALLOWED_SORT: Record<string, string> = {
   product_name: "i.product_name",
+  first_added_at: "i.first_added_at",
   latest_nav: "cache.unit_nav",
   latest_nav_date: "cache.nav_date",
   latest_price_change: "cache.return_pct",
@@ -429,18 +435,22 @@ function buildCachedFromClause(
 ): string {
   if (pool === "all") {
     return `FROM (
-      SELECT DISTINCT ON (beian_hao) beian_hao, product_name
+      SELECT
+        f.beian_hao,
+        (ARRAY_AGG(f.product_name ORDER BY f.priority ASC))[1] AS product_name,
+        ${SHANGHAI_DATE_EXPR("MIN(f.added_at)")} AS first_added_at
       FROM (
-        SELECT beian_hao, product_name, 1 AS priority FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 2 FROM tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 3 FROM selected_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 4 FROM core_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 5 FROM hy_tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 6 FROM fof_mom_tracking WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 7 FROM user_custom_pool
+        SELECT beian_hao, product_name, 1 AS priority, NULL::timestamptz AS added_at
+          FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 2, imported_at FROM tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 3, imported_at FROM selected_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 4, imported_at FROM core_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 5, imported_at FROM hy_tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 6, imported_at FROM fof_mom_tracking WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 7, imported_at FROM user_custom_pool
           WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
       ) f
-      ORDER BY beian_hao, priority ASC
+      GROUP BY f.beian_hao
     ) i
     INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
@@ -450,7 +460,8 @@ function buildCachedFromClause(
     return `FROM (
       SELECT DISTINCT ON (t.register_number)
         t.register_number AS beian_hao,
-        COALESCE(t.fund_short_name, t.fund_name) AS product_name
+        COALESCE(t.fund_short_name, t.fund_name) AS product_name,
+        MIN(${SHANGHAI_DATE_EXPR("t.imported_at")}) OVER (PARTITION BY t.register_number) AS first_added_at
       FROM type6_ops_team_full t
       WHERE t.register_number IS NOT NULL
       ORDER BY t.register_number, t.updated_at DESC NULLS LAST, t.id DESC
@@ -458,7 +469,9 @@ function buildCachedFromClause(
     LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (pool === "bfl") {
-    return `FROM private_fund_info_bfl i
+    return `FROM (
+      SELECT i0.*, NULL::date AS first_added_at FROM private_fund_info_bfl i0
+    ) i
     LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (isCustomPool) {
@@ -468,7 +481,8 @@ function buildCachedFromClause(
     return `FROM (
       SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
         p.register_number AS beian_hao,
-        p.product_name
+        p.product_name,
+        MIN(${SHANGHAI_DATE_EXPR("p.imported_at")}) OVER (PARTITION BY UPPER(BTRIM(register_number))) AS first_added_at
       FROM user_custom_pool p
       WHERE p.register_number IS NOT NULL ${poolFilter}
       ORDER BY UPPER(BTRIM(register_number)), p.updated_at DESC NULLS LAST, p.id DESC
@@ -483,9 +497,11 @@ function buildCachedFromClause(
     : pool === "jy" || pool === "tracking" ? "tracking_pool"
     : "tracking_pool"
   return `FROM (
-    SELECT p.register_number AS beian_hao, p.product_name
+    SELECT p.register_number AS beian_hao, p.product_name,
+      MIN(${SHANGHAI_DATE_EXPR("p.imported_at")}) AS first_added_at
     FROM ${sourceTable} p
     WHERE p.register_number IS NOT NULL
+    GROUP BY p.register_number, p.product_name
   ) i
   LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
 }
@@ -601,8 +617,10 @@ async function handleCachedTrackingList(opts: {
       const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
       const pLimit = filterParams.length + 1
       const pOffset = filterParams.length + 2
-      const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.product_name"
-      const orderSql = `${orderCol} ${sortDir} NULLS LAST`
+      const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.first_added_at"
+      const orderSql = sortKey === "first_added_at" || !CACHE_ALLOWED_SORT[sortKey]
+        ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
+        : `${orderCol} ${sortDir} NULLS LAST`
       const baseFrom = buildCachedFromClause(pool, isCustomPool, isMineAllPool)
 
       if (personalTags.length > 0) {
@@ -634,6 +652,7 @@ async function handleCachedTrackingList(opts: {
              ${indepStrategy.company_l3} AS company_strategy_l3,
              NULL::text AS manager,
              NULL::text AS inception_date,
+             i.first_added_at::text AS first_added_at,
              cache.unit_nav::text AS latest_nav,
              cache.nav_date::text AS latest_nav_date,
              cache.return_pct::text AS latest_price_change,
@@ -754,6 +773,7 @@ async function handleBflOpsList(opts: {
 
   const allowedSort: Record<string, string> = {
     product_name: "i.product_name",
+    first_added_at: "i.first_added_at",
     latest_nav: `${bflOpsNavExpr()}::numeric`,
     latest_nav_date: bflOpsNavDateExpr(),
     latest_price_change: `${bflOpsNavPctExpr()}::numeric`,
@@ -763,8 +783,10 @@ async function handleBflOpsList(opts: {
     ret_6m: "ret_6m",
     ret_1y: "ret_1y",
   }
-  const orderCol = allowedSort[sortKey] ?? "i.product_name"
-  const orderSql = `${orderCol} ${sortDir} NULLS LAST`
+  const orderCol = allowedSort[sortKey] ?? "i.first_added_at"
+  const orderSql = sortKey === "first_added_at" || !allowedSort[sortKey]
+    ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
+    : `${orderCol} ${sortDir} NULLS LAST`
   const sourceWithNav = `${BFL_OPS_SOURCE_CTE}${BFL_OPS_TYPE6_LATEST_CTES(cutoffExpr)}`
 
   try {
@@ -785,6 +807,7 @@ async function handleBflOpsList(opts: {
            NULLIF(BTRIM(i.company_strategy_three), '') AS company_strategy_l3,
            NULL::text AS manager,
            NULL::text AS inception_date,
+           i.first_added_at::text AS first_added_at,
            ${bflOpsNavExpr()}::text AS latest_nav,
            ${bflOpsNavDateExpr()}::text AS latest_nav_date,
            ${bflOpsNavPctExpr()}::text AS latest_price_change,
@@ -852,8 +875,11 @@ export async function GET(req: Request) {
   const isExport = searchParams.get("export") === "1"
   const pageSize = isExport ? 100000 : 50
   const offset   = isExport ? 0 : (page - 1) * pageSize
-  const sortKey  = searchParams.get("sort") || "product_name"
-  const sortDir  = searchParams.get("dir") === "desc" ? "DESC" : "ASC"
+  const rawSort = searchParams.get("sort")
+  const sortKey  = rawSort || "first_added_at"
+  const sortDir  = searchParams.get("dir") === "desc" ? "DESC"
+    : searchParams.get("dir") === "asc" ? "ASC"
+    : rawSort ? "ASC" : "DESC"
   const keyword    = (searchParams.get("keyword") || "").trim()
   const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
   const strategyL2 = (searchParams.get("strategy_l2") || "").trim()
@@ -933,7 +959,7 @@ export async function GET(req: Request) {
   }
 
   const navConfig = buildNavJoinConfig(pool, cutoffExpr)
-  const orderCol = navConfig.allowedSort[sortKey] ?? "i.product_name"
+  const orderCol = navConfig.allowedSort[sortKey] ?? "i.first_added_at"
 
   const sourceJsonExpr = rawStrategyJsonExpr("i")
   const isExternalPool = pool === "jy" || pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || isCustomPool
@@ -958,25 +984,28 @@ export async function GET(req: Request) {
 
   const sourceCte = pool === "all"
     ? `WITH all_funds AS (
-        SELECT beian_hao, product_name, 1 AS priority FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
+        SELECT beian_hao, product_name, 1 AS priority, NULL::timestamptz AS added_at FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
         UNION ALL
-        SELECT register_number AS beian_hao, product_name, 2 AS priority FROM tracking_pool WHERE register_number IS NOT NULL
+        SELECT register_number AS beian_hao, product_name, 2 AS priority, imported_at FROM tracking_pool WHERE register_number IS NOT NULL
         UNION ALL
-        SELECT register_number AS beian_hao, product_name, 3 AS priority FROM selected_pool WHERE register_number IS NOT NULL
+        SELECT register_number AS beian_hao, product_name, 3 AS priority, imported_at FROM selected_pool WHERE register_number IS NOT NULL
         UNION ALL
-        SELECT register_number AS beian_hao, product_name, 4 AS priority FROM core_pool WHERE register_number IS NOT NULL
+        SELECT register_number AS beian_hao, product_name, 4 AS priority, imported_at FROM core_pool WHERE register_number IS NOT NULL
         UNION ALL
-        SELECT register_number AS beian_hao, product_name, 5 AS priority FROM hy_tracking_pool WHERE register_number IS NOT NULL
+        SELECT register_number AS beian_hao, product_name, 5 AS priority, imported_at FROM hy_tracking_pool WHERE register_number IS NOT NULL
         UNION ALL
-        SELECT register_number AS beian_hao, product_name, 6 AS priority FROM fof_mom_tracking WHERE register_number IS NOT NULL
+        SELECT register_number AS beian_hao, product_name, 6 AS priority, imported_at FROM fof_mom_tracking WHERE register_number IS NOT NULL
         UNION ALL
-        SELECT register_number AS beian_hao, product_name, 7 AS priority FROM user_custom_pool
+        SELECT register_number AS beian_hao, product_name, 7 AS priority, imported_at FROM user_custom_pool
           WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
       ),
       deduped AS (
         SELECT DISTINCT ON (beian_hao) beian_hao, product_name
         FROM all_funds
         ORDER BY beian_hao, priority ASC
+      ),
+      first_added AS (
+        SELECT beian_hao, MIN(added_at) AS added_at FROM all_funds GROUP BY beian_hao
       ),
       source AS (
         SELECT
@@ -990,8 +1019,10 @@ export async function GET(req: Request) {
           o.company_strategy_three,
           o.platform_strategy_one,
           o.platform_strategy_two,
-          o.platform_strategy_three
+          o.platform_strategy_three,
+          ${SHANGHAI_DATE_EXPR("fa.added_at")} AS first_added_at
         FROM deduped d
+        LEFT JOIN first_added fa ON fa.beian_hao = d.beian_hao
         LEFT JOIN LATERAL (
           SELECT * FROM type6_ops_team_full o
           WHERE o.register_number = d.beian_hao
@@ -1028,7 +1059,8 @@ export async function GET(req: Request) {
           o.company_strategy_three,
           o.platform_strategy_one,
           o.platform_strategy_two,
-          o.platform_strategy_three
+          o.platform_strategy_three,
+          MIN(${SHANGHAI_DATE_EXPR("o.imported_at")}) OVER (PARTITION BY o.register_number) AS first_added_at
         FROM type6_ops_team_full o
         CROSS JOIN LATERAL (
           SELECT CASE
@@ -1056,7 +1088,8 @@ export async function GET(req: Request) {
           o.company_strategy_three,
           o.platform_strategy_one,
           o.platform_strategy_two,
-          o.platform_strategy_three
+          o.platform_strategy_three,
+          ${SHANGHAI_DATE_EXPR("p.imported_at")} AS first_added_at
         FROM ${sourceTable} p
         LEFT JOIN LATERAL (
           SELECT * FROM type6_ops_team_full o
@@ -1095,7 +1128,8 @@ export async function GET(req: Request) {
           NULL::text AS company_strategy_three,
           NULL::text AS platform_strategy_one,
           NULL::text AS platform_strategy_two,
-          NULL::text AS platform_strategy_three
+          NULL::text AS platform_strategy_three,
+          NULL::date AS first_added_at
         FROM private_fund_info_bfl
       )`
 
@@ -1159,7 +1193,9 @@ export async function GET(req: Request) {
   const pLimit  = filterParams.length + 1
   const pOffset = filterParams.length + 2
 
-  const orderSql = `${orderCol} ${sortDir} NULLS LAST`
+  const orderSql = sortKey === "first_added_at" || !navConfig.allowedSort[sortKey]
+    ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
+    : `${orderCol} ${sortDir} NULLS LAST`
 
   const { latestNavJoin, fallbackNavExpr, fallbackDateExpr, fallbackPctExpr } = navConfig
   const emailNavJoins = buildEmailNavLatestJoins("i.beian_hao", "i.product_name", "i.short_name", cutoffExpr)
@@ -1204,6 +1240,7 @@ export async function GET(req: Request) {
            ${indepStrategy.company_l3}                    AS company_strategy_l3,
            NULL::text                                    AS manager,
            NULL::text                                    AS inception_date,
+           i.first_added_at::text                          AS first_added_at,
            ${currentNavExpr}::text                         AS latest_nav,
            ${currentDateExpr}::text                        AS latest_nav_date,
            ${currentPctExpr}::text                         AS latest_price_change,

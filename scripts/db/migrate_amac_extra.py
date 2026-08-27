@@ -21,18 +21,22 @@ CSV_DIR = ROOT / "fetch_amac_data" / "amac_extra"
 
 sys.path.insert(0, str(ROOT / "scripts" / "db"))
 from amac_extra_db import (  # noqa: E402
-    append_manager_metrics_history,
-    DDL,
     UPSERT_EXECUTIVE_RESUME,
     UPSERT_EXECUTIVES,
     UPSERT_MANAGER_DETAILS,
     UPSERT_MANAGERS,
     UPSERT_PERSON_ORG,
+    UPSERT_PERSONNEL,
+    UPSERT_PERSONNEL_CERT_HISTORY,
+    append_manager_metrics_history,
+    ensure_schema,
     load_manager_details_from_csv,
     load_manager_executive_resume_from_csv,
     load_manager_executives_from_csv,
     load_managers_from_csv,
     load_person_org_stats_from_csv,
+    load_personnel_cert_history_from_csv,
+    load_personnel_from_csv,
 )
 
 
@@ -87,16 +91,25 @@ def main() -> None:
             lambda: load_manager_executive_resume_from_csv(CSV_DIR),
             UPSERT_EXECUTIVE_RESUME,
         ),
+        ("amac_personnel", lambda: load_personnel_from_csv(CSV_DIR), UPSERT_PERSONNEL),
+        (
+            "amac_personnel_cert_history",
+            lambda: load_personnel_cert_history_from_csv(CSV_DIR),
+            UPSERT_PERSONNEL_CERT_HISTORY,
+        ),
     ]
 
     with conn:
         with conn.cursor() as cur:
-            cur.execute(DDL)
+            ensure_schema(cur)
             print("Tables ready.")
 
             for table, loader, upsert_sql in loaders:
                 print(f"Loading {table} …")
                 rows = loader()
+                if not rows:
+                    print(f"  No rows (skipped {table})")
+                    continue
                 execute_values(cur, upsert_sql, rows, page_size=2000)
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
                 total = cur.fetchone()[0]

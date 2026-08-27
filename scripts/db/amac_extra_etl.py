@@ -6,14 +6,17 @@ Fetch AMAC manager / personnel data and upsert into PostgreSQL.
 
 Tables: amac_managers, amac_person_org_stats, amac_manager_details,
         amac_manager_executives, amac_manager_executive_resume,
+        amac_personnel, amac_personnel_cert_history,
         amac_manager_metrics_history (append-only metric snapshots)
 
 Nightly incremental (default):
-  - Full refresh of manager list + person-org stats (paginated APIs, ~minutes)
+  - Full refresh of manager list + every institution's person-org stats
   - Manager detail pages for new managers + a rotating stale batch
+  - Personnel for orgs not yet fetched, plus a rotating stale batch
 
 Weekly full sync (default Sunday, AMAC_ETL_FULL_SYNC_DOW=6):
   - Re-fetch all manager detail pages (~19k HTML requests)
+  - Re-fetch personnel for every institution
 
 Usage:
     python scripts/db/amac_extra_etl.py
@@ -23,6 +26,8 @@ Usage:
 Env:
     AMAC_ETL_FULL_SYNC_DOW              — weekday for weekly full detail sync (default 6)
     AMAC_EXTRA_ETL_DETAIL_BATCH_SIZE    — stale managers refreshed nightly (default 300)
+    AMAC_EXTRA_ETL_PERSONNEL_BATCH_SIZE — max orgs whose people lists to fetch (0 = all missing + stale)
+    AMAC_EXTRA_ETL_PERSONNEL_STALE_SIZE — already-fetched orgs to refresh nightly (default 300)
     AMAC_EXTRA_ETL_REQUEST_DELAY        — delay between AMAC requests (default 0.3)
     AMAC_EXTRA_ETL_PAGE_SIZE            — API page size (default 100)
 """
@@ -44,28 +49,41 @@ sys.path.insert(0, str(ROOT / "scripts" / "db"))
 from fetch_amac_extra import (  # noqa: E402
     HEADERS,
     PAGE_SIZE,
+    PERSON_API_PAGE_SIZE,
+    PERSON_LIST_REFERER,
+    PERSON_ORG_ALL_BODY,
+    PERSON_ORG_REFERER,
     REQUEST_DELAY,
+    as_text,
     get_html,
+    iter_personnel_for_org,
     manager_row,
     parse_manager_detail,
     person_org_row,
     post_json,
 )
 from amac_extra_db import (  # noqa: E402
-    append_manager_metrics_history,
-    DDL,
-    SOURCE_API,
+    DELETE_PERSONNEL_FOR_ORG,
+    DELETE_PERSONNEL_HISTORY_FOR_ORG,
+    MARK_PERSONNEL_FETCHED,
+    SELECT_PERSONNEL_TARGETS,
     UPSERT_EXECUTIVE_RESUME,
     UPSERT_EXECUTIVES,
     UPSERT_MANAGER_DETAILS,
     UPSERT_MANAGERS,
     UPSERT_PERSON_ORG,
+    UPSERT_PERSONNEL,
+    UPSERT_PERSONNEL_CERT_HISTORY,
+    append_manager_metrics_history,
     dedupe_tuples,
+    ensure_schema,
     executive_csv_row_to_tuple,
     executive_resume_csv_row_to_tuple,
     manager_csv_row_to_tuple,
     manager_detail_csv_row_to_tuple,
     person_org_csv_row_to_tuple,
+    personnel_cert_history_csv_row_to_tuple,
+    personnel_csv_row_to_tuple,
 )
 
 
@@ -113,6 +131,9 @@ def _save_sync_state(
     details_fetched: int,
     executives_upserted: int,
     resumes_upserted: int,
+    personnel_upserted: int,
+    personnel_orgs_fetched: int,
+    personnel_certs_upserted: int,
     full_details_sync: bool,
 ) -> None:
     now = datetime.now(timezone.utc)
@@ -121,17 +142,21 @@ def _save_sync_state(
         INSERT INTO amac_extra_sync_state (
             id, last_managers_upserted, last_person_org_upserted,
             last_details_fetched, last_executives_upserted, last_resumes_upserted,
+            last_personnel_upserted, last_personnel_orgs_fetched, last_personnel_certs_upserted,
             last_full_details_sync_at, last_incremental_sync_at, updated_at
         ) VALUES (
-            'default', %s, %s, %s, %s, %s, %s, %s, %s
+            'default', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (id) DO UPDATE SET
-            last_managers_upserted     = EXCLUDED.last_managers_upserted,
-            last_person_org_upserted   = EXCLUDED.last_person_org_upserted,
-            last_details_fetched       = EXCLUDED.last_details_fetched,
-            last_executives_upserted   = EXCLUDED.last_executives_upserted,
-            last_resumes_upserted      = EXCLUDED.last_resumes_upserted,
-            last_full_details_sync_at  = CASE
+            last_managers_upserted       = EXCLUDED.last_managers_upserted,
+            last_person_org_upserted     = EXCLUDED.last_person_org_upserted,
+            last_details_fetched         = EXCLUDED.last_details_fetched,
+            last_executives_upserted     = EXCLUDED.last_executives_upserted,
+            last_resumes_upserted        = EXCLUDED.last_resumes_upserted,
+            last_personnel_upserted      = EXCLUDED.last_personnel_upserted,
+            last_personnel_orgs_fetched  = EXCLUDED.last_personnel_orgs_fetched,
+            last_personnel_certs_upserted = EXCLUDED.last_personnel_certs_upserted,
+            last_full_details_sync_at    = CASE
                 WHEN %s THEN EXCLUDED.last_full_details_sync_at
                 ELSE amac_extra_sync_state.last_full_details_sync_at
             END,
@@ -147,6 +172,9 @@ def _save_sync_state(
             details_fetched,
             executives_upserted,
             resumes_upserted,
+            personnel_upserted,
+            personnel_orgs_fetched,
+            personnel_certs_upserted,
             now if full_details_sync else None,
             now if not full_details_sync else None,
             now,
@@ -230,7 +258,7 @@ def _upsert_person_org(session, cur, execute_values, *, page_size: int, delay: f
 
     try:
         session.get(
-            "https://gs.amac.org.cn/amac-infodisc/res/pof/person/personOrgList.html",
+            PERSON_ORG_REFERER,
             headers={"User-Agent": HEADERS["User-Agent"]},
             verify=False,
             timeout=60,
@@ -240,13 +268,13 @@ def _upsert_person_org(session, cur, execute_values, *, page_size: int, delay: f
 
     upserted = 0
     total_elements = 0
-    person_page_size = min(page_size, 20)
+    person_page_size = min(page_size, PERSON_API_PAGE_SIZE)
 
     for page_idx, rows, total, _total_pages in _iter_api_pages(
         session,
         "/api/pof/personOrg",
         person_org_row,
-        json_body={"orgType": "smjjglr", "page": "1"},
+        json_body=dict(PERSON_ORG_ALL_BODY),
         page_size=person_page_size,
         delay=delay,
     ):
@@ -447,6 +475,121 @@ def _upsert_manager_details(
     return details_fetched, executives_upserted, resumes_upserted
 
 
+def _select_personnel_targets(
+    cur,
+    *,
+    full_sync: bool,
+    batch_size: int,
+    stale_size: int,
+) -> list[tuple[str, str]]:
+    cur.execute(SELECT_PERSONNEL_TARGETS)
+    rows = [(as_text(r[0]), as_text(r[1]), r[2], r[3]) for r in cur.fetchall() if as_text(r[0])]
+    if full_sync:
+        return [(org_user_id, org_name) for org_user_id, org_name, _staff, _fetched in rows]
+
+    missing = [
+        (org_user_id, org_name)
+        for org_user_id, org_name, _staff, fetched_at in rows
+        if fetched_at is None
+    ]
+    stale = [
+        (org_user_id, org_name)
+        for org_user_id, org_name, _staff, fetched_at in rows
+        if fetched_at is not None
+    ]
+    targets = missing + stale[: max(0, stale_size)]
+    if batch_size > 0:
+        targets = targets[:batch_size]
+    return targets
+
+
+def _upsert_personnel(
+    session,
+    cur,
+    execute_values,
+    conn,
+    *,
+    full_sync: bool,
+    batch_size: int,
+    stale_size: int,
+    delay: float,
+) -> tuple[int, int, int]:
+    import requests
+
+    try:
+        session.get(
+            PERSON_LIST_REFERER,
+            headers={"User-Agent": HEADERS["User-Agent"]},
+            verify=False,
+            timeout=60,
+        )
+    except requests.RequestException:
+        pass
+
+    targets = _select_personnel_targets(
+        cur, full_sync=full_sync, batch_size=batch_size, stale_size=stale_size
+    )
+    if not targets:
+        print("  No personnel org lists to fetch.")
+        return 0, 0, 0
+
+    mode = "full" if full_sync else "incremental"
+    print(f"  Fetching personnel ({mode}): {len(targets):,} orgs …")
+
+    people_upserted = 0
+    certs_upserted = 0
+    orgs_fetched = 0
+    page_size = PERSON_API_PAGE_SIZE
+
+    for idx, (org_user_id, org_name) in enumerate(targets, start=1):
+        try:
+            people_rows, history_rows = iter_personnel_for_org(
+                session, org_user_id, page_size=page_size, delay=delay
+            )
+        except Exception as exc:
+            print(f"    skip {org_name} ({org_user_id}): {exc}")
+            time.sleep(delay)
+            continue
+        people = dedupe_tuples(
+            [t for t in (personnel_csv_row_to_tuple(r) for r in people_rows) if t],
+            lambda r: (r[0], r[4]),
+        )
+        history = dedupe_tuples(
+            [t for t in (personnel_cert_history_csv_row_to_tuple(r) for r in history_rows) if t],
+            lambda r: r[3],
+        )
+
+        cur.execute(DELETE_PERSONNEL_HISTORY_FOR_ORG, (org_user_id,))
+        cur.execute(DELETE_PERSONNEL_FOR_ORG, (org_user_id,))
+        if people:
+            execute_values(cur, UPSERT_PERSONNEL, people, page_size=500)
+            people_upserted += len(people)
+        if history:
+            execute_values(cur, UPSERT_PERSONNEL_CERT_HISTORY, history, page_size=500)
+            certs_upserted += len(history)
+        cur.execute(MARK_PERSONNEL_FETCHED, (org_user_id,))
+        orgs_fetched += 1
+
+        if idx % 20 == 0:
+            conn.commit()
+        if idx % 100 == 0 or idx == len(targets):
+            print(
+                f"    personnel progress: {idx:,}/{len(targets):,} "
+                f"orgs people={people_upserted:,} certs={certs_upserted:,}"
+                f"  last={org_name}"
+            )
+        time.sleep(delay)
+
+    conn.commit()
+    cur.execute("ANALYZE amac_personnel")
+    cur.execute("ANALYZE amac_personnel_cert_history")
+    print(
+        f"  Personnel orgs={orgs_fetched:,} people={people_upserted:,} "
+        f"cert_history={certs_upserted:,}"
+    )
+    return people_upserted, orgs_fetched, certs_upserted
+
+
 def run_etl(
     *,
     force_full: bool = False,
@@ -454,6 +597,8 @@ def run_etl(
     page_size: int = PAGE_SIZE,
     request_delay: float = REQUEST_DELAY,
     detail_batch_size: int | None = None,
+    personnel_batch_size: int | None = None,
+    personnel_stale_size: int | None = None,
 ) -> dict:
     import requests
     from psycopg2.extras import execute_values
@@ -467,32 +612,53 @@ def run_etl(
             detail_batch_size = int(os.environ.get("AMAC_EXTRA_ETL_DETAIL_BATCH_SIZE", "300"))
         except ValueError:
             detail_batch_size = 300
+    if personnel_batch_size is None:
+        try:
+            personnel_batch_size = int(os.environ.get("AMAC_EXTRA_ETL_PERSONNEL_BATCH_SIZE", "0"))
+        except ValueError:
+            personnel_batch_size = 0
+    if personnel_stale_size is None:
+        try:
+            personnel_stale_size = int(os.environ.get("AMAC_EXTRA_ETL_PERSONNEL_STALE_SIZE", "300"))
+        except ValueError:
+            personnel_stale_size = 300
 
     conn = _connect()
     session = requests.Session()
 
     with conn:
         with conn.cursor() as cur:
-            cur.execute(DDL)
+            ensure_schema(cur)
             cur.execute("SELECT COUNT(*) FROM amac_manager_details")
             details_count = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM amac_personnel")
+            personnel_count = int(cur.fetchone()[0])
             full_details_sync = _should_run_full_sync(force_full, full_sync_dow) or details_count == 0
             mode = "full" if full_details_sync else "incremental"
 
             print(
                 f"amac_extra_etl: mode={mode} details_in_db={details_count:,} "
-                f"detail_batch_size={detail_batch_size if not full_details_sync else 'all'}"
+                f"personnel_in_db={personnel_count:,} "
+                f"detail_batch_size={detail_batch_size if not full_details_sync else 'all'} "
+                f"personnel_batch_size={personnel_batch_size if not full_details_sync else 'all'}"
             )
 
             if dry_run:
                 first = post_json(session, "/api/pof/manager", 0, min(page_size, 10), {})
-                total = int(first.get("totalElements", 0))
+                person_org = post_json(
+                    session,
+                    "/api/pof/personOrg",
+                    0,
+                    PERSON_API_PAGE_SIZE,
+                    dict(PERSON_ORG_ALL_BODY),
+                )
                 summary = {
                     "ok": True,
                     "dry_run": True,
                     "mode": mode,
                     "full_details_sync": full_details_sync,
-                    "managers_api_total": total,
+                    "managers_api_total": int(first.get("totalElements", 0)),
+                    "person_org_api_total": int(person_org.get("totalElements", 0)),
                     "rows_upserted": len(first.get("content", [])),
                 }
                 print(json.dumps(summary, ensure_ascii=False))
@@ -501,9 +667,11 @@ def run_etl(
             managers_upserted, manager_rows = _upsert_managers(
                 session, cur, execute_values, page_size=page_size, delay=request_delay
             )
+            conn.commit()
             person_org_upserted = _upsert_person_org(
                 session, cur, execute_values, page_size=page_size, delay=request_delay
             )
+            conn.commit()
             details_fetched, executives_upserted, resumes_upserted = _upsert_manager_details(
                 session,
                 cur,
@@ -511,6 +679,17 @@ def run_etl(
                 manager_rows,
                 full_sync=full_details_sync,
                 batch_size=0 if full_details_sync else detail_batch_size,
+                delay=request_delay,
+            )
+            conn.commit()
+            personnel_upserted, personnel_orgs_fetched, personnel_certs_upserted = _upsert_personnel(
+                session,
+                cur,
+                execute_values,
+                conn,
+                full_sync=full_details_sync,
+                batch_size=0 if full_details_sync else personnel_batch_size,
+                stale_size=0 if full_details_sync else personnel_stale_size,
                 delay=request_delay,
             )
 
@@ -521,6 +700,9 @@ def run_etl(
                 details_fetched=details_fetched,
                 executives_upserted=executives_upserted,
                 resumes_upserted=resumes_upserted,
+                personnel_upserted=personnel_upserted,
+                personnel_orgs_fetched=personnel_orgs_fetched,
+                personnel_certs_upserted=personnel_certs_upserted,
                 full_details_sync=full_details_sync,
             )
 
@@ -528,7 +710,13 @@ def run_etl(
 
     conn.close()
     rows_upserted = (
-        managers_upserted + person_org_upserted + details_fetched + executives_upserted + resumes_upserted
+        managers_upserted
+        + person_org_upserted
+        + details_fetched
+        + executives_upserted
+        + resumes_upserted
+        + personnel_upserted
+        + personnel_certs_upserted
     )
     summary = {
         "ok": True,
@@ -539,6 +727,9 @@ def run_etl(
         "details_fetched": details_fetched,
         "executives_upserted": executives_upserted,
         "resumes_upserted": resumes_upserted,
+        "personnel_upserted": personnel_upserted,
+        "personnel_orgs_fetched": personnel_orgs_fetched,
+        "personnel_certs_upserted": personnel_certs_upserted,
         "metrics_history_appended": metrics_history_appended,
         "rows_upserted": rows_upserted,
         "dry_run": False,
@@ -547,14 +738,15 @@ def run_etl(
     print(
         f"Done. mode={mode} managers={managers_upserted:,} person_org={person_org_upserted:,} "
         f"details={details_fetched:,} executives={executives_upserted:,} resumes={resumes_upserted:,} "
-        f"history+={metrics_history_appended:,}"
+        f"personnel_orgs={personnel_orgs_fetched:,} people={personnel_upserted:,} "
+        f"certs={personnel_certs_upserted:,} history+={metrics_history_appended:,}"
     )
     return summary
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch AMAC extra data into PostgreSQL.")
-    parser.add_argument("--full", action="store_true", help="Full manager-detail refresh (all ~19k pages).")
+    parser.add_argument("--full", action="store_true", help="Full manager-detail + personnel refresh.")
     parser.add_argument("--dry-run", action="store_true", help="Probe AMAC API only; do not write.")
     parser.add_argument("--page-size", type=int, default=PAGE_SIZE)
     parser.add_argument("--delay", type=float, default=REQUEST_DELAY)
@@ -564,11 +756,18 @@ def main() -> int:
         default=0,
         help="Stale managers to refresh nightly (0 = use env AMAC_EXTRA_ETL_DETAIL_BATCH_SIZE).",
     )
+    parser.add_argument(
+        "--personnel-batch-size",
+        type=int,
+        default=-1,
+        help="Max orgs to fetch people for (0 = all missing+stale, -1 = env AMAC_EXTRA_ETL_PERSONNEL_BATCH_SIZE).",
+    )
     args = parser.parse_args()
 
     _load_env()
 
     batch_size = args.detail_batch_size if args.detail_batch_size > 0 else None
+    personnel_batch = None if args.personnel_batch_size < 0 else args.personnel_batch_size
 
     try:
         run_etl(
@@ -577,6 +776,7 @@ def main() -> int:
             page_size=args.page_size,
             request_delay=args.delay,
             detail_batch_size=batch_size,
+            personnel_batch_size=personnel_batch,
         )
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))

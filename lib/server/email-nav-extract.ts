@@ -7,6 +7,7 @@
  */
 
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
+import { canonicalizeEmailProductCode } from "@/lib/server/fund-name-match"
 import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 import {
   lookupManagedProductOverride,
@@ -475,29 +476,43 @@ function parseFofBracketVirtualNavSubject(text: string): { code: string; fundNam
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
 }
 
+/** Basename of a zip-inner 估值表 path (`archive.zip::SCP742….xlsx`). */
+function valuationFilenameBase(text: string): string {
+  const inner = text.includes("::") ? text.slice(text.lastIndexOf("::") + 2) : text
+  return inner.split(/[/\\]/).pop() ?? inner
+}
+
 /** Parse CODE_FUNDNAME_4级科目估值表_YYYYMMDD (Guotai Junan etc.). */
 function parseValuationTableSubject(text: string): { code: string; fundName: string } | null {
-  const m = text.match(
+  const file = valuationFilenameBase(text)
+  const m = file.match(
     /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(?:\d级科目)?估值表_(20\d{6})/u,
   )
   if (m) return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
 
-  const tail = text.match(
+  const tail = file.match(
     /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})_估值表/u,
   )
   if (tail) return { code: tail[1], fundName: normalizeFundDisplayName(tail[2]) }
 
   // 华泰: SCQ403_金舆锡泰一号私募证券投资基金_产品估值表_日报_20260817.xls
-  const huataiDaily = text.match(
+  const huataiDaily = file.match(
     /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_产品估值表_日报_(20\d{6})/u,
   )
   if (huataiDaily) return { code: huataiDaily[1], fundName: normalizeFundDisplayName(huataiDaily[2]) }
 
   // 华泰: SCQ403_金舆锡泰一号私募证券投资基金估值表20260817 (no underscore before 估值表/date)
-  const huataiGlued = text.match(
+  const huataiGlued = file.match(
     /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)估值表(20\d{6})/u,
   )
   if (huataiGlued) return { code: huataiGlued[1], fundName: normalizeFundDisplayName(huataiGlued[2]) }
+
+  // 国信 zip inner (no underscore after code):
+  // SCP742金舆木盛那平江1号私募证券投资基金估值表20260825.xlsx
+  const guosenGlued = file.match(
+    /^([A-Z0-9]{4,8})([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)估值表(?:（日期[：:]\s*)?(20\d{2}-\d{2}-\d{2}|20\d{6})/u,
+  )
+  if (guosenGlued) return { code: guosenGlued[1], fundName: normalizeFundDisplayName(guosenGlued[2]) }
 
   // 【估值表】SCU622 金舆稳健增长1号FOF私募证券投资基金_20260730
   const bracket = text.match(
@@ -609,7 +624,7 @@ export function applyEmailProductCodeOverride(
   if (/宁苑沛华稳定增长一号/u.test(blob)) {
     return "TG733C"
   }
-  const code = productCode?.trim().toUpperCase()
+  const code = canonicalizeEmailProductCode(productCode?.trim().toUpperCase() ?? "")
   if (!code) return null
   return remapManagedProductBeianCode(code) ?? code
 }

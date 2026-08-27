@@ -6,6 +6,7 @@ import { query } from "@/lib/db"
 import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
+  canonicalizeEmailProductCode,
   shareClassProductCodesMatch,
   sqlFundNameMatch,
   sqlShareClassParentCodeMatch,
@@ -195,9 +196,9 @@ function productCodeMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
 
 function productCodeExactlyMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
   if (!beian) return false
-  const productCode = (row.product_code ?? "").trim().toUpperCase()
-  const target = beian.trim().toUpperCase()
-  if (productCode === target) return true
+  const productCode = canonicalizeEmailProductCode((row.product_code ?? "").trim().toUpperCase())
+  const target = canonicalizeEmailProductCode(beian.trim().toUpperCase())
+  if (productCode && productCode === target) return true
   const remapped = remapManagedProductBeianCode(productCode)
   return remapped != null && remapped === target
 }

@@ -109,7 +109,7 @@ function PctCell({ value }: { value: number | null }) {
 }
 
 function fundDetailHref(row: FundHoldingRow): string {
-  const id = row.beianHao || row.fundName
+  const id = row.beianHao || row.valuationCode || row.fundName
   return `/ma/dashboard/private-funds/${encodeURIComponent(id)}`
 }
 

@@ -25,6 +25,7 @@ import {
 import { lookupManagedProductOverride, alternateBeianCodesFor, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import {
+  canonicalizeEmailProductCode,
   shareClassProductCodesMatch,
   sqlEmailNavShareClassGuard,
   sqlFundNameBase,
@@ -164,6 +165,43 @@ export function capPeriodReturnByDrawdown(
   return ret
 }
 
+/** Consecutive published-NAV jump treated as a share-class / unit-vs-复权 splice. */
+const MAX_CONTINUOUS_NAV_STEP = 1.35
+
+function lastNavOnOrBefore(
+  historyAsc: NavPoint[],
+  beforeDate: string,
+  navDate: string,
+): NavPoint | null {
+  let result: NavPoint | null = null
+  for (const p of historyAsc) {
+    if (p.nav_date >= navDate) break
+    if (p.nav_date <= beforeDate && navForReturn(p) != null) result = p
+  }
+  return result
+}
+
+function navSeriesHasDiscontinuity(
+  historyAsc: NavPoint[],
+  fromDate: string,
+  toDate: string,
+): boolean {
+  const window: NavPoint[] = []
+  for (const p of historyAsc) {
+    if (p.nav_date < fromDate) continue
+    if (p.nav_date > toDate) break
+    if (navForReturn(p) != null) window.push(p)
+  }
+  for (let i = 1; i < window.length; i++) {
+    const prev = navForReturn(window[i - 1])
+    const next = navForReturn(window[i])
+    if (prev == null || next == null || prev <= 0 || next <= 0) continue
+    const ratio = next / prev
+    if (ratio > MAX_CONTINUOUS_NAV_STEP || ratio < 1 / MAX_CONTINUOUS_NAV_STEP) return true
+  }
+  return false
+}
+
 function resolvePeriodBaseFromHistory(
   historyAsc: NavPoint[],
   navDate: string,
@@ -171,6 +209,24 @@ function resolvePeriodBaseFromHistory(
   latestReturnNav: number,
 ): NavPoint | null {
   const targetDate = addDays(navDate, periodDays)
+  // Match fund-detail 近一年: last NAV on or before (as-of − period). Do not let the
+  // ±15% share-class band replace a real compounded gain with a much later NAV
+  // (荣熙恒盈2号A类 1y was 11.37% vs ~40% 复权).
+  const atTarget = lastNavOnOrBefore(historyAsc, targetDate, navDate)
+  if (atTarget && !isStalePeriodBase(navDate, atTarget.nav_date, periodDays)) {
+    const baseNav = navForReturn(atTarget)
+    // 1w/1m keep the tight ±6%/±10% band (SAVW72 / ASX73A). Longer windows may
+    // compound far past ±15%; use the true lookback when the path is continuous.
+    const allowCompoundedLookback =
+      periodDays > 31 && !navSeriesHasDiscontinuity(historyAsc, atTarget.nav_date, navDate)
+    if (
+      baseNav != null
+      && (allowCompoundedLookback || isSameShareClassNavLevel(latestReturnNav, baseNav, periodDays))
+    ) {
+      return atTarget
+    }
+  }
+
   const targetMs = new Date(`${targetDate}T00:00:00Z`).getTime()
   let best: NavPoint | null = null
   let bestScore = Number.POSITIVE_INFINITY
@@ -576,8 +632,11 @@ export function expandBeiansWithShareClassFamily(codes: string[]): string[] {
     for (const base of [baseNoS, baseWithS]) {
       if (!base) continue
       out.add(base)
+      // Citics 基金净值 workbooks store `SX4966(总)` / `SX4966(A类)` as product_code.
+      out.add(`${base}(总)`)
       for (const letter of ["A", "B", "C"] as const) {
         out.add(`${base}${letter}`)
+        out.add(`${base}(${letter}类)`)
       }
     }
   }
@@ -681,6 +740,7 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
   }
 
   for (const [code, codeRows] of rowsByCode) {
+    const lookupCode = canonicalizeEmailProductCode(code) || code
     const aliases = collectFundNameAliases(
       codeRows[0]?.fund_name ?? "",
       null,
@@ -699,7 +759,7 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
         source: row.source,
         id: row.id,
       })),
-      code,
+      lookupCode,
       aliases,
     )
 
@@ -727,7 +787,7 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
             && String(r.nav) === String(row.nav)
             && (r.subject ?? "") === (row.subject ?? ""),
         ) ?? codeRows.find((r) => r.nav_date.slice(0, 10) === row.nav_date)
-      if (batchRow && !filterEmailBatchRow(batchRow, code, aliases)) continue
+      if (batchRow && !filterEmailBatchRow(batchRow, lookupCode, aliases)) continue
       corrected.push({
         nav_date: row.nav_date.slice(0, 10),
         nav: String(+nav.toFixed(6)),
@@ -736,10 +796,11 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
         subject: row.subject,
       })
     }
-    for (const point of navPointsFromEmailSeries(corrected, { beian_hao: code })) {
-      const canonical = remapManagedProductBeianCode(code) ?? code
+    for (const point of navPointsFromEmailSeries(corrected, { beian_hao: lookupCode })) {
+      const canonical = remapManagedProductBeianCode(lookupCode) ?? lookupCode
       pushNavPoint(out, canonical, point)
-      if (canonical !== code) pushNavPoint(out, code, point)
+      if (lookupCode !== canonical) pushNavPoint(out, lookupCode, point)
+      if (code !== canonical && code !== lookupCode) pushNavPoint(out, code, point)
     }
   }
   for (const [code, points] of out) {
@@ -1576,41 +1637,13 @@ export class BatchNavResolver {
     periodDays: number,
     latestReturnNav: number,
   ): NavPoint | null {
-    const targetDate = addDays(navDate, periodDays)
-    const primary = this.resolveAt(identity, targetDate)
-    if (primary && !isStalePeriodBase(navDate, primary.nav_date, periodDays)) {
-      const baseNav = navForReturn(primary)
-      if (baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav, periodDays)) {
-        return primary
-      }
-    }
-
-    const sinceDate = addDays(navDate, periodDays * 2)
-    const history = this.mergedHistory(identity, sinceDate)
-      .filter((p) => p.nav_date < navDate)
-      .sort((a, b) => b.nav_date.localeCompare(a.nav_date))
-
-    const sameClass = history.filter((p) => {
-      const baseNav = navForReturn(p)
-      return baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav, periodDays)
-    })
-    if (sameClass.length === 0) return null
-
-    const targetMs = new Date(`${targetDate}T00:00:00Z`).getTime()
-    let best: NavPoint | null = null
-    let bestScore = Number.POSITIVE_INFINITY
-    for (const p of sameClass) {
-      const gap = calendarDaysBetween(navDate, p.nav_date)
-      if (gap > periodDays * 2) continue
-      if (isStalePeriodBase(navDate, p.nav_date, periodDays)) continue
-      const dist = Math.abs(new Date(`${p.nav_date}T00:00:00Z`).getTime() - targetMs)
-      const score = dist + Math.max(0, periodDays - gap) * 86_400_000 * 0.001
-      if (score < bestScore) {
-        bestScore = score
-        best = p
-      }
-    }
-    return best
+    const historyAsc = enrichReturnNavSeries(
+      this.mergedHistoryForRiskMetrics(
+        identity,
+        addDays(navDate, Math.max(NAV_HISTORY_LOOKBACK_DAYS, periodDays * 2)),
+      ),
+    )
+    return resolvePeriodBaseFromHistory(historyAsc, navDate, periodDays, latestReturnNav)
   }
 
   mergedHistory(identity: ProductNavIdentity, sinceDate: string): NavPoint[] {

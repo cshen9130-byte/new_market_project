@@ -4755,8 +4755,8 @@ def step_amac_extra(force_full: bool = False) -> int:
     except ValueError:
         full_sync_dow = 6
     weekly_full = datetime.now().weekday() == full_sync_dow
-    # Full manager-detail sync (~19k HTML pages) can take several hours.
-    timeout = 21600 if force_full or weekly_full else 7200
+    # Full manager-detail (~19k HTML) + every org's personnel list can take many hours.
+    timeout = 43200 if force_full or weekly_full else 14400
 
     log.info(
         "amac_extra: running amac_extra_etl.py (timeout=%ds%s) …",
@@ -5155,7 +5155,7 @@ ORDERED_STEPS = [
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
     "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
     "amac_futures",                  # AMAC 期货公司集合资管 → amac_futures_products (+ new private_fund_info)
-    "amac_extra",                    # AMAC managers / personnel / executive details → amac_* tables
+    "amac_extra",                    # AMAC managers / all orgs / every person + executives → amac_* tables
     "sync_amac_fund_metadata",       # 备案日期 / 公司管理规模 → basicinfo_bfl_track
     "pe_industry_stats",             # 私募行业 dashboard aggregates from amac_* tables
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV

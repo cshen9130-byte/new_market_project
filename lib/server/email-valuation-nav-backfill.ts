@@ -345,3 +345,89 @@ export async function loadCustodyValuationNavHistory(sinceDate: string): Promise
 
   return { byCode, byName }
 }
+
+/**
+ * 国信 zip inner files start with 备案号 (`SCP742…估值表20260825.xlsx`) while the
+ * email subject has only the fund name. Fill blank product_code so list 资产净值
+ * can join 在管产品 beian.
+ */
+export async function backfillValuationProductCodeFromFilename(): Promise<{
+  valuationUpdated: number
+  navUpdated: number
+}> {
+  await ensureEmailValuationTable()
+  await ensureEmailNavTable()
+
+  const valuation = await query<{ n: string }>(
+    `WITH extracted AS (
+       SELECT
+         id,
+         upper(substring(
+           regexp_replace(attachment_filename, '^.*::', ''),
+           '^([A-Z]{1,6}[0-9]{2,6}[A-Z]?)'
+         )) AS code
+       FROM ops_email_valuation_records
+       WHERE NULLIF(BTRIM(COALESCE(product_code, '')), '') IS NULL
+         AND NULLIF(BTRIM(attachment_filename), '') IS NOT NULL
+     ),
+     updated AS (
+       UPDATE ops_email_valuation_records r
+       SET product_code = e.code
+       FROM extracted e
+       WHERE r.id = e.id
+         AND e.code IS NOT NULL
+         AND e.code !~ '^[ABC](19|20)[0-9]{2}$'
+       RETURNING r.id
+     )
+     SELECT COUNT(*)::text AS n FROM updated`,
+  )
+
+  let navUpdated = 0
+  try {
+    const nav = await query<{ n: string }>(
+      `WITH extracted AS (
+         SELECT DISTINCT ON (n.crawl_email_account, n.email_uid, n.nav_date, n.attachment_filename)
+           n.id,
+           upper(substring(
+             regexp_replace(n.attachment_filename, '^.*::', ''),
+             '^([A-Z]{1,6}[0-9]{2,6}[A-Z]?)'
+           )) AS code
+         FROM ops_email_nav_records n
+         WHERE NULLIF(BTRIM(COALESCE(n.product_code, '')), '') IS NULL
+           AND NULLIF(BTRIM(n.attachment_filename), '') IS NOT NULL
+         ORDER BY n.crawl_email_account, n.email_uid, n.nav_date, n.attachment_filename, n.id DESC
+       ),
+       updated AS (
+         UPDATE ops_email_nav_records n
+         SET product_code = e.code
+         FROM extracted e
+         WHERE n.id = e.id
+           AND e.code IS NOT NULL
+           AND e.code !~ '^[ABC](19|20)[0-9]{2}$'
+           AND NOT EXISTS (
+             SELECT 1
+             FROM ops_email_nav_records x
+             WHERE x.crawl_email_account = n.crawl_email_account
+               AND x.email_uid = n.email_uid
+               AND x.nav_date IS NOT DISTINCT FROM n.nav_date
+               AND x.attachment_filename = n.attachment_filename
+               AND UPPER(BTRIM(COALESCE(x.product_code, ''))) = e.code
+               AND x.id <> n.id
+           )
+         RETURNING n.id
+       )
+       SELECT COUNT(*)::text AS n FROM updated`,
+    )
+    navUpdated = Number(nav[0]?.n ?? 0)
+  } catch (err) {
+    console.warn(
+      "[valuation-product-code] nav backfill skipped:",
+      err instanceof Error ? err.message : err,
+    )
+  }
+
+  return {
+    valuationUpdated: Number(valuation[0]?.n ?? 0),
+    navUpdated,
+  }
+}

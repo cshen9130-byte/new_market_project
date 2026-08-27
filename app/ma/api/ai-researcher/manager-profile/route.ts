@@ -1,6 +1,8 @@
 import { ChatOpenAI } from "@langchain/openai"
 import { HumanMessage, SystemMessage } from "@langchain/core/messages"
 import { query } from "@/lib/db"
+import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
+import { loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -134,6 +136,136 @@ interface PrivateFundInfoRow {
   calmar_1y: string | null
   latest_nav: string | null
   latest_nav_date: Date | null
+  max_dd?: string | null
+  nav_points?: number
+}
+
+const NAV_LOOKBACK_MONTHS = 24
+const NAV_FUND_LIMIT = 15
+const NAV_RECENT_POINTS = 12
+
+interface NavLevelPoint {
+  price_date: string
+  nav: number
+}
+
+function lookbackReturnPct(points: NavLevelPoint[], days: number): string | null {
+  if (points.length < 2) return null
+  const last = points[points.length - 1]
+  const lastTs = Date.parse(last.price_date)
+  if (!Number.isFinite(lastTs) || last.nav <= 0) return null
+  const targetTs = lastTs - days * 86_400_000
+  const earliestTs = Date.parse(points[0].price_date)
+  if (!Number.isFinite(earliestTs) || earliestTs > targetTs) return null
+  let prev = points[0]
+  for (const p of points) {
+    const ts = Date.parse(p.price_date)
+    if (Number.isFinite(ts) && ts <= targetTs) prev = p
+    else break
+  }
+  if (prev.nav <= 0 || prev.price_date === last.price_date) return null
+  return ((last.nav / prev.nav - 1) * 100).toFixed(2)
+}
+
+function missingText(value: string | null | undefined): boolean {
+  return value == null || value === ""
+}
+
+function overlayPerfFromNav(row: PrivateFundInfoRow, levels: NavLevelPoint[]): PrivateFundInfoRow {
+  if (levels.length === 0) return row
+  const last = levels[levels.length - 1]
+  const next: PrivateFundInfoRow = { ...row, nav_points: levels.length }
+  if (missingText(next.latest_nav)) {
+    next.latest_nav = String(last.nav)
+    next.latest_nav_date = last.price_date as unknown as Date
+  }
+  if (missingText(next.ret_1w)) next.ret_1w = lookbackReturnPct(levels, 7)
+  if (missingText(next.ret_1m)) next.ret_1m = lookbackReturnPct(levels, 30)
+  if (missingText(next.ret_3m)) next.ret_3m = lookbackReturnPct(levels, 90)
+  if (missingText(next.ret_6m)) next.ret_6m = lookbackReturnPct(levels, 180)
+  if (missingText(next.ret_1y)) next.ret_1y = lookbackReturnPct(levels, 365)
+
+  const fullMetrics = computeFundNavMetrics({
+    dates: levels.map((p) => p.price_date),
+    values: levels.map((p) => p.nav),
+  })
+  if (fullMetrics && missingText(next.max_dd) && Number.isFinite(fullMetrics.maxDD) && fullMetrics.maxDD > 0) {
+    next.max_dd = (fullMetrics.maxDD * 100).toFixed(2)
+  }
+
+  const yearAgo = Date.parse(last.price_date) - 365 * 86_400_000
+  const yearSlice = Number.isFinite(yearAgo)
+    ? levels.filter((p) => Date.parse(p.price_date) >= yearAgo)
+    : []
+  const yearSpanDays =
+    yearSlice.length >= 2
+      ? (Date.parse(yearSlice[yearSlice.length - 1].price_date) - Date.parse(yearSlice[0].price_date)) / 86_400_000
+      : 0
+  if (yearSlice.length >= 8 && yearSpanDays >= 300) {
+    const yearMetrics = computeFundNavMetrics({
+      dates: yearSlice.map((p) => p.price_date),
+      values: yearSlice.map((p) => p.nav),
+    })
+    if (yearMetrics) {
+      if (missingText(next.sharpe_1y) && isPlausibleRiskRatio(yearMetrics.sharpe)) {
+        next.sharpe_1y = yearMetrics.sharpe.toFixed(3)
+      }
+      if (missingText(next.calmar_1y) && isPlausibleRiskRatio(yearMetrics.calmar)) {
+        next.calmar_1y = yearMetrics.calmar.toFixed(3)
+      }
+    }
+  }
+  return next
+}
+
+/** Same merged NAV path as 在管产品 / fund detail (type6 + legacy + email + team). */
+async function loadManagerNavByFund(
+  products: { beian_hao: string; product_name: string }[],
+): Promise<Map<string, { points: NavRow[]; levels: NavLevelPoint[] }>> {
+  const result = new Map<string, { points: NavRow[]; levels: NavLevelPoint[] }>()
+  if (products.length === 0) return result
+
+  const from = new Date()
+  from.setMonth(from.getMonth() - NAV_LOOKBACK_MONTHS)
+  const fromStr = from.toISOString().slice(0, 10)
+  const toStr = new Date().toISOString().slice(0, 10)
+  const concurrency = 6
+  let cursor = 0
+
+  async function worker() {
+    while (cursor < products.length) {
+      const p = products[cursor++]
+      try {
+        const names = await resolveFundNames(p.beian_hao, p.product_name)
+        const series = await loadFundNavSeries(
+          p.beian_hao,
+          names.product_name || p.product_name,
+          names.short_name ?? "",
+          { from: fromStr, to: toStr },
+        )
+        const levels = series
+          .map((s) => ({ price_date: s.price_date, nav: parseFloat(s.level) }))
+          .filter((s) => Number.isFinite(s.nav) && s.nav > 0)
+        if (levels.length === 0) continue
+        const points: NavRow[] = levels
+          .slice(-NAV_RECENT_POINTS)
+          .reverse()
+          .map((s) => ({
+            beian_hao: p.beian_hao,
+            product_name: p.product_name,
+            price_date: s.price_date as unknown as Date,
+            nav: String(s.nav),
+            cumulative_nav: String(s.nav),
+          }))
+        result.set(p.beian_hao, { points, levels })
+      } catch (err) {
+        console.error(`[manager-profile] nav ${p.beian_hao}`, err)
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, products.length) }, () => worker()))
+  return result
 }
 
 async function fetchManagerData(managerName: string) {
@@ -228,25 +360,85 @@ async function fetchManagerData(managerName: string) {
     [] as PrivateFundInfoRow[],
   )
 
-  const fundNosWithPerf = perfInfo
-    .filter((f) => f.latest_nav !== null)
-    .map((f) => f.beian_hao)
-    .slice(0, 5)
+  const fundNos = funds.map((f) => f.fund_no).filter((n): n is string => !!n)
+  const managedRows = fundNos.length
+    ? await withTimeout(
+        query<{ register_number: string }>(
+          `SELECT DISTINCT register_number
+           FROM type6_ops_team_full
+           WHERE register_number = ANY($1)`,
+          [fundNos],
+        ).catch(() => [] as { register_number: string }[]),
+        4000,
+        [] as { register_number: string }[],
+      )
+    : []
+  const managedSet = new Set(managedRows.map((r) => r.register_number))
 
-  let navHistory: NavRow[] = []
-  if (fundNosWithPerf.length > 0) {
-    navHistory = await withTimeout(
-      query<NavRow>(
-        `SELECT beian_hao, product_name, price_date, nav, cumulative_nav
-         FROM private_fund_nav
-         WHERE beian_hao = ANY($1)
-         ORDER BY beian_hao, price_date DESC
-         LIMIT 200`,
-        [fundNosWithPerf],
-      ),
-      10000,
-      [] as NavRow[],
-    )
+  const navCandidates: { beian_hao: string; product_name: string; rank: number }[] = []
+  const seenNavCodes = new Set<string>()
+  for (const f of funds) {
+    if (!f.fund_no || seenNavCodes.has(f.fund_no)) continue
+    seenNavCodes.add(f.fund_no)
+    navCandidates.push({
+      beian_hao: f.fund_no,
+      product_name: f.fund_name,
+      rank: (managedSet.has(f.fund_no) ? 0 : 2) + (f.working_state === "正在运作" ? 0 : 1),
+    })
+  }
+  for (const pf of perfInfo) {
+    if (!pf.beian_hao || seenNavCodes.has(pf.beian_hao)) continue
+    seenNavCodes.add(pf.beian_hao)
+    navCandidates.push({
+      beian_hao: pf.beian_hao,
+      product_name: pf.product_name ?? pf.beian_hao,
+      rank: managedSet.has(pf.beian_hao) ? 0 : 3,
+    })
+  }
+  navCandidates.sort((a, b) => a.rank - b.rank)
+
+  const navByFund = await withTimeout(
+    loadManagerNavByFund(navCandidates.slice(0, NAV_FUND_LIMIT)),
+    18_000,
+    new Map<string, { points: NavRow[]; levels: NavLevelPoint[] }>(),
+  )
+
+  const perfByCode = new Map(perfInfo.map((p) => [p.beian_hao, p]))
+  for (const [code, bundle] of navByFund) {
+    const existing = perfByCode.get(code)
+    const candidate = navCandidates.find((c) => c.beian_hao === code)
+    const base: PrivateFundInfoRow = existing ?? {
+      beian_hao: code,
+      product_name: candidate?.product_name ?? code,
+      strategy_l1: null,
+      strategy_l2: null,
+      inception_date: null,
+      benchmark: null,
+      ret_1w: null,
+      ret_1m: null,
+      ret_3m: null,
+      ret_6m: null,
+      ret_1y: null,
+      sharpe_1y: null,
+      calmar_1y: null,
+      latest_nav: null,
+      latest_nav_date: null,
+      max_dd: null,
+      nav_points: 0,
+    }
+    perfByCode.set(code, overlayPerfFromNav(base, bundle.levels))
+  }
+
+  const mergedPerf = Array.from(perfByCode.values()).sort((a, b) => {
+    const aNav = a.latest_nav_date ? String(a.latest_nav_date) : ""
+    const bNav = b.latest_nav_date ? String(b.latest_nav_date) : ""
+    if (aNav !== bNav) return bNav.localeCompare(aNav)
+    return (b.nav_points ?? 0) - (a.nav_points ?? 0)
+  })
+
+  const navHistory: NavRow[] = []
+  for (const bundle of navByFund.values()) {
+    navHistory.push(...bundle.points)
   }
 
   const metrics = regNo
@@ -276,7 +468,7 @@ async function fetchManagerData(managerName: string) {
     [] as PersonOrgRow[],
   )
 
-  return { managers, details, executives, resumes, funds, perfInfo, navHistory, metrics, personOrg }
+  return { managers, details, executives, resumes, funds, perfInfo: mergedPerf, navHistory, metrics, personOrg }
 }
 
 // ── Format data for LLM prompt ───────────────────────────────────────────────
@@ -373,6 +565,8 @@ function buildDataContext(
         `产品：${pf.product_name ?? pf.beian_hao}`,
         pf.strategy_l1 ? `策略：${pf.strategy_l1}${pf.strategy_l2 ? "/" + pf.strategy_l2 : ""}` : null,
         pf.latest_nav ? `最新净值：${pf.latest_nav}（${fmt(pf.latest_nav_date)}）` : null,
+        pf.nav_points ? `净值记录：${pf.nav_points} 条` : null,
+        pf.max_dd ? `最大回撤：${pf.max_dd}%` : null,
         pf.ret_1w ? `近1周：${pf.ret_1w}%` : null,
         pf.ret_1m ? `近1月：${pf.ret_1m}%` : null,
         pf.ret_3m ? `近3月：${pf.ret_3m}%` : null,
@@ -407,7 +601,7 @@ function buildDataContext(
 function buildReportPrompt(managerName: string, dataContext: string): string {
   return `你是一位专业私募基金研究员，请基于以下从数据库中提取的结构化数据，撰写一份关于「${managerName}」的深度调研报告。
 
-【数据来源】中国基金业协会（AMAC）公开登记信息、内部净值数据库（截至最新同步日期）。
+【数据来源】中国基金业协会（AMAC）公开登记信息、内部净值数据库（含在管产品邮件/估值净值，截至最新同步日期）。净值与收益以内部序列为准；快照字段为空不代表无净值。
 
 【原始数据】
 ${dataContext}
@@ -448,6 +642,7 @@ ${dataContext}
 **要求：**
 - 只使用数据库提供的事实数据，不编造任何未提供的信息
 - 对于数据库中没有的信息，明确标注"数据暂缺"或"未披露"
+- 若「基金业绩指标」或「净值历史」中已有最新净值/区间收益，必须写入第四章，不得因年化 Sharpe/Calmar 缺失而写「数据暂缺」
 - 保持语言专业简洁，适合投研内部传阅
 - 表格优先，数字精确，避免模糊表述`
 }
@@ -505,7 +700,7 @@ export async function POST(req: Request) {
       emit({ type: "step_start", step: 1, title: "检索 AMAC 管理人登记信息" })
       let data: Awaited<ReturnType<typeof fetchManagerData>> | null = null
       try {
-        data = await withTimeout(fetchManagerData(managerName), 30_000, null)
+        data = await withTimeout(fetchManagerData(managerName), 50_000, null)
         if (!data) {
           emit({ type: "step_done", step: 1, summary: "数据库查询超时" })
           emit({ type: "error", message: "数据库查询超时，请稍后重试" })
@@ -566,7 +761,9 @@ export async function POST(req: Request) {
         const reportStream = await reportModel.stream([
           new SystemMessage(
             "你是专业私募基金研究员，请输出规范的 Markdown 调研报告。"
-            + "只使用提供的数据，不编造未提供的信息。数据暂缺时明确标注。",
+            + "只使用提供的数据，不编造未提供的信息。"
+            + "已提供最新净值或区间收益时，第四章必须引用，不得写「数据暂缺」。"
+            + "仅当对应章节确实没有任何数字时才标注数据暂缺。",
           ),
           new HumanMessage(buildReportPrompt(managerName, dataContext)),
         ])

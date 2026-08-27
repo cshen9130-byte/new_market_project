@@ -104,10 +104,14 @@ export type TeamDataListRow = {
   team_nav: string | null
   team_nav_date: string | null
   valuation_date: string | null
+  /** True when a 估值表 was fetched for this product (email/upload), not merely FOF-underlying NAV. */
+  has_valuation: boolean
   product_source: string
   strategy_l1: string | null
-  /** Last edit / sync time — used for default newest-first ordering. */
+  /** Last edit / sync time. */
   updated_at: string | null
+  /** Calendar date the product first appeared in 团队数据 (stable; NAV updates do not change it). */
+  first_entry_date: string | null
 }
 
 type RawEmailFund = {
@@ -117,6 +121,7 @@ type RawEmailFund = {
   team_nav_date: string
   team_nav: string
   updated_at: string
+  first_entry_date: string
 }
 
 type ResolvedFund = {
@@ -130,6 +135,7 @@ type ResolvedFund = {
   strategy_l3: string | null
   product_source: string
   updated_at: string
+  first_entry_date: string
 }
 
 type BflRow = {
@@ -196,6 +202,14 @@ function maxIsoTimestamp(a: string | null | undefined, b: string | null | undefi
   if (!left) return right
   if (!right) return left
   return left.localeCompare(right) >= 0 ? left : right
+}
+
+function minIsoDay(a: string | null | undefined, b: string | null | undefined): string {
+  const left = (a ?? "").trim().slice(0, 10)
+  const right = (b ?? "").trim().slice(0, 10)
+  if (!left) return right
+  if (!right) return left
+  return left.localeCompare(right) <= 0 ? left : right
 }
 
 export function invalidateTeamDataListCaches(): void {
@@ -382,6 +396,7 @@ function resolveManualProduct(
     strategy_l3: strategies.l3,
     product_source: "手动添加",
     updated_at: manual.created_at?.trim() || "",
+    first_entry_date: isoDay(manual.created_at),
   }
 }
 
@@ -415,6 +430,7 @@ const EMAIL_FUNDS_SORT: Record<string, string> = {
   platform_nav_date: "platform_nav_date",
   valuation_date: "valuation_date",
   updated_at: "updated_at",
+  first_entry_date: "first_entry_date",
 }
 
 function fundNameBase(name: string): string {
@@ -666,22 +682,30 @@ async function loadRawEmailFundsFromValuation(): Promise<RawEmailFund[]> {
          NULLIF(BTRIM(fund_name), '') AS fund_name,
          valuation_date,
          unit_nav,
+         created_at,
          COALESCE(
            NULLIF(BTRIM(product_code), ''),
            NULLIF(BTRIM(fund_name), '')
          ) AS fund_key
        FROM ops_email_valuation_records
        WHERE unit_nav IS NOT NULL AND valuation_date IS NOT NULL
+     ),
+     first_seen AS (
+       SELECT fund_key, MIN(created_at) AS first_seen_at
+       FROM val_ranked
+       GROUP BY fund_key
      )
-     SELECT DISTINCT ON (fund_key)
-       fund_key,
-       product_code,
-       fund_name,
-       valuation_date::text AS team_nav_date,
-       unit_nav::text AS team_nav
-     FROM val_ranked
-     WHERE fund_key IS NOT NULL
-     ORDER BY fund_key, valuation_date DESC`,
+     SELECT DISTINCT ON (v.fund_key)
+       v.fund_key,
+       v.product_code,
+       v.fund_name,
+       v.valuation_date::text AS team_nav_date,
+       v.unit_nav::text AS team_nav,
+       f.first_seen_at::text AS first_entry_date
+     FROM val_ranked v
+     JOIN first_seen f USING (fund_key)
+     WHERE v.fund_key IS NOT NULL
+     ORDER BY v.fund_key, v.valuation_date DESC`,
   )
 }
 
@@ -727,6 +751,8 @@ async function loadRawEmailFundsFromSubjects(): Promise<RawEmailFund[]> {
       fund_name: fundName,
       team_nav_date: "",
       team_nav: "",
+      updated_at: "",
+      first_entry_date: "",
     })
   }
   return out
@@ -1026,7 +1052,7 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
        WHERE e.nav IS NOT NULL AND e.nav_date IS NOT NULL
      ),
      latest_edit AS (
-       SELECT fund_key, MAX(created_at) AS updated_at
+       SELECT fund_key, MAX(created_at) AS updated_at, MIN(created_at) AS first_seen_at
        FROM email_ranked
        GROUP BY fund_key
      ),
@@ -1057,7 +1083,8 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
        n.subject,
        n.nav_date::text AS team_nav_date,
        n.nav::text AS team_nav,
-       e.updated_at::text AS updated_at
+       e.updated_at::text AS updated_at,
+       e.first_seen_at::text AS first_entry_date
      FROM latest_nav n
      JOIN latest_edit e USING (fund_key)`,
   )
@@ -1097,6 +1124,7 @@ function dedupeRawFunds(rows: RawEmailFund[]): RawEmailFund[] {
         team_nav_date: row.team_nav_date || prev.team_nav_date,
         team_nav: row.team_nav || prev.team_nav,
         updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+        first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
       })
       continue
     }
@@ -1108,11 +1136,13 @@ function dedupeRawFunds(rows: RawEmailFund[]): RawEmailFund[] {
           team_nav: row.team_nav || prev.team_nav,
           product_code: prev.product_code || row.product_code,
           updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+          first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
         })
       } else {
         byKey.set(key, {
           ...prev,
           updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+          first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
         })
       }
       continue
@@ -1121,16 +1151,19 @@ function dedupeRawFunds(rows: RawEmailFund[]): RawEmailFund[] {
       byKey.set(key, {
         ...row,
         updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+        first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
       })
     } else if (row.team_nav_date === prev.team_nav_date && row.product_code && !prev.product_code) {
       byKey.set(key, {
         ...row,
         updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+        first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
       })
     } else {
       byKey.set(key, {
         ...prev,
         updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+        first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
       })
     }
   }
@@ -1160,11 +1193,13 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
       byBeian.set(key, {
         ...row,
         updated_at: maxIsoTimestamp(row.updated_at, prev?.updated_at),
+        first_entry_date: minIsoDay(row.first_entry_date, prev?.first_entry_date),
       })
     } else {
       byBeian.set(key, {
         ...prev,
         updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+        first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
       })
     }
   }
@@ -1187,6 +1222,7 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
     byName.set(nameKey, {
       ...winner,
       updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
+      first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
     })
   }
 
@@ -1279,6 +1315,7 @@ function resolveFund(
     strategy_l3: strategies.l3,
     product_source: "邮箱同步",
     updated_at: row.updated_at?.trim() || "",
+    first_entry_date: isoDay(row.first_entry_date),
   }
 }
 
@@ -1464,6 +1501,65 @@ async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[
   })
 }
 
+/**
+ * Attach the earliest ingest date (email / valuation / 手动添加). NAV updates never
+ * move this date — it is MIN(created_at), not latest nav_date.
+ */
+async function overlayFirstEntryDate(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
+  const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
+  if (beians.length === 0) {
+    return rows.map((row) => ({ ...row, first_entry_date: isoDay(row.first_entry_date) }))
+  }
+  const lookupCodes = expandBeiansWithShareClassFamily(beians)
+  const [emailFirst, valFirst, manualFirst] = await Promise.all([
+    query<{ code: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(product_code)) AS code, MIN(created_at)::text AS first_seen_at
+       FROM ops_email_nav_records
+       WHERE product_code = ANY($1::text[])
+       GROUP BY UPPER(BTRIM(product_code))`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
+    query<{ code: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(product_code)) AS code, MIN(created_at)::text AS first_seen_at
+       FROM ops_email_valuation_records
+       WHERE product_code = ANY($1::text[])
+       GROUP BY UPPER(BTRIM(product_code))`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
+    query<{ beian_hao: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, created_at::text AS first_seen_at
+       FROM ops_team_data_products
+       WHERE beian_hao = ANY($1::text[])`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ beian_hao: string; first_seen_at: string }>),
+  ])
+
+  const byCode = new Map<string, string>()
+  const take = (code: string, date: string) => {
+    const key = code.trim().toUpperCase()
+    const day = isoDay(date)
+    if (!key || !day) return
+    byCode.set(key, minIsoDay(byCode.get(key), day))
+  }
+  for (const row of emailFirst) take(row.code, row.first_seen_at)
+  for (const row of valFirst) take(row.code, row.first_seen_at)
+  for (const row of manualFirst) take(row.beian_hao, row.first_seen_at)
+
+  return rows.map((row) => {
+    let first = isoDay(row.first_entry_date)
+    const beian = row.beian_hao?.trim()
+    if (beian) {
+      const rowCls = shareClassFromFundName(row.product_name) || shareClassFromCode(beian)
+      for (const code of teamNavFamilyLookupCodes(beian)) {
+        const codeCls = shareClassFromCode(code)
+        if (rowCls && codeCls && rowCls !== codeCls) continue
+        first = minIsoDay(first, byCode.get(code))
+      }
+    }
+    return first === row.first_entry_date ? row : { ...row, first_entry_date: first }
+  })
+}
+
 type PlatformNavTip = { nav: string; price_date: string; code?: string }
 
 /** Same threshold as fund-detail: only lead 平台净值 with FOF 估值表 市价 when official NAV lags. */
@@ -1627,19 +1723,21 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
   if (rows.length === 0) return []
 
   const beians = rows.map((r) => r.beian_hao).filter(Boolean) as string[]
+  const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
   const officialCodes = [...new Set(beians.flatMap((b) => beianCodeAliases(b)))]
   const valuationCodes = expandBeiansWithShareClassFamily(beians)
   const [officialByCode, valuationByCode, vmRows] = await Promise.all([
     loadOfficialPlatformNavTips(officialCodes),
     loadValuationPlatformNavTips(valuationCodes),
-    beians.length > 0
-      ? query<{ product_code: string; valuation_date: string }>(
-          `SELECT product_code, valuation_date::text
+    valuationCodes.length > 0 || names.length > 0
+      ? query<{ product_code: string | null; valuation_date: string; fund_name: string | null }>(
+          `SELECT product_code, valuation_date::text, fund_name
            FROM ops_email_valuation_fund_metrics_latest
-           WHERE product_code = ANY($1::text[])`,
-          [valuationCodes],
-        ).catch(() => [] as Array<{ product_code: string; valuation_date: string }>)
-      : Promise.resolve([] as Array<{ product_code: string; valuation_date: string }>),
+           WHERE (cardinality($1::text[]) > 0 AND product_code = ANY($1::text[]))
+              OR (cardinality($2::text[]) > 0 AND fund_name = ANY($2::text[]))`,
+          [valuationCodes, names],
+        ).catch(() => [] as Array<{ product_code: string | null; valuation_date: string; fund_name: string | null }>)
+      : Promise.resolve([] as Array<{ product_code: string | null; valuation_date: string; fund_name: string | null }>),
   ])
 
   const vmByCode = new Map<string, string>()
@@ -1662,6 +1760,12 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
         return date ? { nav: "1", price_date: date, code } : undefined
       }),
     )?.price_date ?? null
+    const rowCls = shareClassFromFundName(row.product_name)
+    const hasValuationByName = vmRows.some((vm) => {
+      const name = vm.fund_name?.trim()
+      if (!name || !fundNamesMatch(name, row.product_name)) return false
+      return shareClassFromFundName(name) === rowCls
+    })
     const teamNav = row.team_nav?.trim() || null
     const teamNavDate = row.team_nav_date?.trim() || null
     return {
@@ -1673,15 +1777,17 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
       team_nav: teamNav,
       team_nav_date: teamNavDate,
       valuation_date: ownValuationDate ?? valuation?.price_date ?? null,
+      has_valuation: Boolean(ownValuationDate) || hasValuationByName,
       product_source: row.product_source,
       strategy_l1: row.strategy_l1,
       updated_at: row.updated_at?.trim() || null,
+      first_entry_date: isoDay(row.first_entry_date) || null,
     }
   })
 }
 
 function compareRows(a: TeamDataListRow, b: TeamDataListRow, sort: string, dir: "ASC" | "DESC"): number {
-  const col = EMAIL_FUNDS_SORT[sort] ?? "updated_at"
+  const col = EMAIL_FUNDS_SORT[sort] ?? "first_entry_date"
   const av = a[col as keyof TeamDataListRow]
   const bv = b[col as keyof TeamDataListRow]
   const mul = dir === "ASC" ? 1 : -1
@@ -1767,6 +1873,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
     resolved = await overlayEmailNavByProductCode(resolved)
     resolved = await overlayManualTeamNav(resolved)
+    resolved = await overlayFirstEntryDate(resolved)
     resolvedListCache = { strategySource, rows: resolved, at: Date.now() }
   }
 
@@ -1811,12 +1918,12 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     resolved = resolved.filter((r) => r.product_source === wanted)
   }
 
-  const effectiveSort = sort || "updated_at"
+  const effectiveSort = sort || "first_entry_date"
   const effectiveDir = sort ? sortDir : "DESC"
   const sorted = [...resolved].sort((a, b) =>
     compareRows(
-      { ...a, platform_nav: null, platform_nav_date: null, valuation_date: null },
-      { ...b, platform_nav: null, platform_nav_date: null, valuation_date: null },
+      { ...a, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: a.first_entry_date || null },
+      { ...b, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: b.first_entry_date || null },
       effectiveSort,
       effectiveDir,
     ),

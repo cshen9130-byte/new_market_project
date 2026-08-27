@@ -390,6 +390,110 @@ async function lookupFundInfoByBeianCode(beianHao: string): Promise<FundInfoLook
   return bflRows[0] ?? null
 }
 
+async function lookupFofHoldingByProductCode(code: string): Promise<{
+  underlying_name: string
+  underlying_product_code: string | null
+} | null> {
+  const c = code.trim().toUpperCase()
+  if (!c) return null
+
+  try {
+    const managed = await query<{ underlying_name: string; underlying_product_code: string | null }>(
+      `SELECT TRIM(underlying_name) AS underlying_name,
+              NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code
+       FROM ops_managed_fof_underlying
+       WHERE UPPER(TRIM(COALESCE(underlying_product_code, ''))) = $1
+       ORDER BY CASE WHEN COALESCE(market_value, 0) > 0 THEN 0 ELSE 1 END,
+                COALESCE(market_value, 0) DESC NULLS LAST
+       LIMIT 1`,
+      [c],
+    )
+    if (managed[0]?.underlying_name) return managed[0]
+  } catch {
+    // table may not exist
+  }
+
+  try {
+    const valuation = await query<{ underlying_name: string; underlying_product_code: string | null }>(
+      `SELECT TRIM(underlying_name) AS underlying_name,
+              NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code
+       FROM ops_email_valuation_fof_underlying_latest
+       WHERE UPPER(TRIM(COALESCE(underlying_product_code, ''))) = $1
+       ORDER BY valuation_date DESC NULLS LAST
+       LIMIT 1`,
+      [c],
+    )
+    if (valuation[0]?.underlying_name) return valuation[0]
+  } catch {
+    // table may not exist
+  }
+
+  try {
+    const market = await query<{ underlying_name: string; underlying_product_code: string | null }>(
+      `SELECT TRIM(underlying_name) AS underlying_name,
+              NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code
+       FROM ops_email_valuation_underlying_market_latest
+       WHERE UPPER(TRIM(COALESCE(underlying_product_code, ''))) = $1
+       LIMIT 1`,
+      [c],
+    )
+    if (market[0]?.underlying_name) return market[0]
+  } catch {
+    // table may not exist
+  }
+
+  return null
+}
+
+async function lookupFundInfoByHoldingName(holdingName: string): Promise<FundInfoLookupRow | null> {
+  const name = holdingName.trim()
+  if (!name) return null
+
+  try {
+    const nameRows = await query<{ beian_hao: string | null }>(
+      `SELECT ${buildFundNameLookupSql("$1")} AS beian_hao`,
+      [name],
+    )
+    const resolved = nameRows[0]?.beian_hao?.trim()
+    if (resolved) {
+      const fromCode = await lookupFundInfoByBeianCode(resolved)
+      if (fromCode) return { ...fromCode, ...EMPTY_FUND_METRICS }
+    }
+  } catch {
+    // lookup tables may be unavailable
+  }
+
+  try {
+    const bflByName = await query<FundInfoLookupRow>(
+      `SELECT beian_hao, product_name, short_name,
+              strategy_one AS strategy_l1,
+              strategy_two AS strategy_l2,
+              strategy_three AS strategy_l3,
+              ''::text AS manager,
+              NULL::text AS inception_date,
+              NULL::text AS benchmark,
+              NULL::text AS ret_1w, NULL::text AS ret_1m, NULL::text AS ret_3m,
+              NULL::text AS ret_6m, NULL::text AS ret_1y,
+              NULL::text AS sharpe_1y, NULL::text AS calmar_1y
+       FROM private_fund_info_bfl bfl
+       WHERE (${sqlFundNameMatch("bfl.product_name", "$1")}
+          OR ${sqlFundNameMatch("bfl.short_name", "$1")})
+         AND ${sqlShareClassProductNameGuard("bfl.product_name", "$1")}
+       ORDER BY LEAST(
+         ${sqlFundNameMatchPriority("bfl.product_name", "$1")},
+         ${sqlFundNameMatchPriority("bfl.short_name", "$1")}
+       )
+       LIMIT 1`,
+      [name],
+    )
+    if (bflByName[0]) return { ...bflByName[0], ...EMPTY_FUND_METRICS }
+  } catch {
+    // table may not exist
+  }
+
+  return null
+}
+
 /** Resolve fund metadata from FOF底层 pool when absent from main fund tables. */
 async function lookupFofUnderlyingFundInfo(identifier: string): Promise<FundInfoLookupRow | null> {
   const id = decodeFundIdentifier(identifier)
@@ -436,52 +540,27 @@ async function lookupFofUnderlyingFundInfo(identifier: string): Promise<FundInfo
     // cache table may not exist yet
   }
 
-  try {
-    const holdingRows = await query<{ underlying_name: string; underlying_product_code: string | null }>(
-      `SELECT DISTINCT TRIM(underlying_name) AS underlying_name,
-              NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code
-       FROM ops_managed_fof_underlying
-       WHERE COALESCE(market_value, 0) > 0
-         AND UPPER(TRIM(COALESCE(underlying_product_code, ''))) = UPPER(BTRIM($1))
-       LIMIT 1`,
-      [id],
-    )
-    if (holdingRows[0]) {
-      const holdingName = holdingRows[0].underlying_name
-      const canonical =
-        resolveFofValuationCodeAlias(holdingRows[0].underlying_product_code)
-        ?? resolveFofValuationCodeAlias(id)
-        ?? (await resolveFundBeianViaParentCode(id))
-      if (canonical) {
-        const fromBfl = await lookupFundInfoByBeianCode(canonical)
-        if (fromBfl) return { ...fromBfl, ...EMPTY_FUND_METRICS }
-      }
-      const bflByName = await query<FundInfoLookupRow>(
-        `SELECT beian_hao, product_name, short_name,
-                strategy_one AS strategy_l1,
-                strategy_two AS strategy_l2,
-                strategy_three AS strategy_l3,
-                ''::text AS manager,
-                NULL::text AS inception_date,
-                NULL::text AS benchmark,
-                NULL::text AS ret_1w, NULL::text AS ret_1m, NULL::text AS ret_3m,
-                NULL::text AS ret_6m, NULL::text AS ret_1y,
-                NULL::text AS sharpe_1y, NULL::text AS calmar_1y
-         FROM private_fund_info_bfl bfl
-         WHERE (${sqlFundNameMatch("bfl.product_name", "$1")}
-            OR ${sqlFundNameMatch("bfl.short_name", "$1")})
-           AND ${sqlShareClassProductNameGuard("bfl.product_name", "$1")}
-         ORDER BY LEAST(
-           ${sqlFundNameMatchPriority("bfl.product_name", "$1")},
-           ${sqlFundNameMatchPriority("bfl.short_name", "$1")}
-         )
-         LIMIT 1`,
-        [holdingName],
-      )
-      if (bflByName[0]) return { ...bflByName[0], ...EMPTY_FUND_METRICS }
+  const holding = await lookupFofHoldingByProductCode(id)
+  if (holding) {
+    const canonical =
+      resolveFofValuationCodeAlias(holding.underlying_product_code)
+      ?? resolveFofValuationCodeAlias(id)
+      ?? (await resolveFundBeianViaParentCode(id))
+    if (canonical) {
+      const fromBfl = await lookupFundInfoByBeianCode(canonical)
+      if (fromBfl) return { ...fromBfl, ...EMPTY_FUND_METRICS }
     }
-  } catch {
-    // managed table may not exist
+    const fromName = await lookupFundInfoByHoldingName(holding.underlying_name)
+    if (fromName) return fromName
+    return {
+      beian_hao: canonical ?? holding.underlying_product_code ?? id,
+      product_name: holding.underlying_name,
+      short_name: holding.underlying_name,
+      strategy_l1: null,
+      strategy_l2: null,
+      strategy_l3: null,
+      ...EMPTY_FUND_METRICS,
+    }
   }
 
   return null
