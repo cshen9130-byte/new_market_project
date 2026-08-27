@@ -112,6 +112,8 @@ export type TeamDataListRow = {
   updated_at: string | null
   /** Calendar date the product first appeared in 团队数据 (stable; NAV updates do not change it). */
   first_entry_date: string | null
+  /** FOF底层汇总 has this product, but latest 估值表 no longer holds it. */
+  redeemed: boolean
 }
 
 type RawEmailFund = {
@@ -1360,6 +1362,71 @@ function shareClassFromCode(code: string): string {
   return m ? m[0] : ""
 }
 
+type UnderlyingRef = { name: string; code: string | null }
+
+function teamRowAliases(beian: string): Set<string> {
+  if (!beian) return new Set()
+  return new Set(
+    expandBeiansWithShareClassFamily(beianCodeAliases(beian)).map((c) => c.toUpperCase()),
+  )
+}
+
+function teamMatchesUnderlying(
+  rowName: string,
+  rowBeian: string,
+  rowAliases: Set<string>,
+  und: UnderlyingRef,
+): boolean {
+  const undCode = (und.code || "").trim().toUpperCase()
+  const rowCls = shareClassFromFundName(rowName) || shareClassFromCode(rowBeian)
+  const undCls = shareClassFromFundName(und.name) || shareClassFromCode(undCode)
+  if (rowCls && undCls && rowCls !== undCls) return false
+  if (undCode && rowAliases.has(undCode)) return true
+  return fundNamesMatch(rowName, und.name)
+}
+
+async function loadFofUnderlyingRedeemRefs(): Promise<{
+  catalog: UnderlyingRef[]
+  held: UnderlyingRef[]
+}> {
+  const empty = { catalog: [] as UnderlyingRef[], held: [] as UnderlyingRef[] }
+  try {
+    const [catalog, latest, market] = await Promise.all([
+      query<{ name: string; code: string | null }>(
+        `SELECT f.product_name AS name, NULLIF(BTRIM(c.beian_hao), '') AS code
+         FROM fof_underlying_summary f
+         LEFT JOIN ops_fof_overview_list_cache c ON c.fof_underlying_id = f.id
+         WHERE f.product_name <> '合计'`,
+      ).catch(() => [] as Array<{ name: string; code: string | null }>),
+      query<{ name: string; code: string | null }>(
+        `SELECT underlying_name AS name, NULLIF(BTRIM(underlying_product_code), '') AS code
+         FROM ops_email_valuation_fof_underlying_latest
+         WHERE COALESCE(quantity, 0) > 0 OR COALESCE(market_value, 0) > 0`,
+      ).catch(() => [] as Array<{ name: string; code: string | null }>),
+      query<{ name: string; code: string | null }>(
+        `SELECT underlying_name AS name, NULLIF(BTRIM(underlying_product_code), '') AS code
+         FROM ops_email_valuation_underlying_market_latest
+         WHERE COALESCE(quantity, 0) > 0 OR COALESCE(market_value, 0) > 0`,
+      ).catch(() => [] as Array<{ name: string; code: string | null }>),
+    ])
+    return { catalog, held: [...latest, ...market] }
+  } catch {
+    return empty
+  }
+}
+
+function isRedeemedFofUnderlying(
+  rowName: string,
+  rowBeian: string,
+  catalog: UnderlyingRef[],
+  held: UnderlyingRef[],
+): boolean {
+  const aliases = teamRowAliases(rowBeian)
+  const onCatalog = catalog.some((und) => teamMatchesUnderlying(rowName, rowBeian, aliases, und))
+  if (!onCatalog) return false
+  return !held.some((und) => teamMatchesUnderlying(rowName, rowBeian, aliases, und))
+}
+
 /** Parent + S-prefix + A/B/C family used when overlaying latest 团队净值 onto a list row. */
 function teamNavFamilyLookupCodes(beian: string): string[] {
   const u = beian.trim().toUpperCase()
@@ -1726,7 +1793,7 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
   const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
   const officialCodes = [...new Set(beians.flatMap((b) => beianCodeAliases(b)))]
   const valuationCodes = expandBeiansWithShareClassFamily(beians)
-  const [officialByCode, valuationByCode, vmRows] = await Promise.all([
+  const [officialByCode, valuationByCode, vmRows, redeemRefs] = await Promise.all([
     loadOfficialPlatformNavTips(officialCodes),
     loadValuationPlatformNavTips(valuationCodes),
     valuationCodes.length > 0 || names.length > 0
@@ -1738,6 +1805,7 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
           [valuationCodes, names],
         ).catch(() => [] as Array<{ product_code: string | null; valuation_date: string; fund_name: string | null }>)
       : Promise.resolve([] as Array<{ product_code: string | null; valuation_date: string; fund_name: string | null }>),
+    loadFofUnderlyingRedeemRefs(),
   ])
 
   const vmByCode = new Map<string, string>()
@@ -1782,6 +1850,12 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
       strategy_l1: row.strategy_l1,
       updated_at: row.updated_at?.trim() || null,
       first_entry_date: isoDay(row.first_entry_date) || null,
+      redeemed: isRedeemedFofUnderlying(
+        row.product_name,
+        beian,
+        redeemRefs.catalog,
+        redeemRefs.held,
+      ),
     }
   })
 }
@@ -1922,8 +1996,8 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   const effectiveDir = sort ? sortDir : "DESC"
   const sorted = [...resolved].sort((a, b) =>
     compareRows(
-      { ...a, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: a.first_entry_date || null },
-      { ...b, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: b.first_entry_date || null },
+      { ...a, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: a.first_entry_date || null, redeemed: false },
+      { ...b, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: b.first_entry_date || null, redeemed: false },
       effectiveSort,
       effectiveDir,
     ),

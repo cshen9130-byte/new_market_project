@@ -14401,6 +14401,7 @@ interface TeamDataRow {
   product_source: string
   strategy_l1: string | null
   first_entry_date?: string | null
+  redeemed?: boolean
 }
 
 function teamDataLinkedInvestmentNote(
@@ -14418,7 +14419,7 @@ function teamDataLinkedInvestmentNote(
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v3:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v4:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -14930,7 +14931,7 @@ function OperationsTeamDataView() {
   }
 
   function handleExport() {
-    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "有无估值表", "产品来源", "关联笔记", "首次入表日期"]
+    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "有无估值表", "产品来源", "关联笔记", "首次入表日期", "已赎回"]
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
     const lines = [headers.join(",")]
     for (const row of data) {
@@ -14946,6 +14947,7 @@ function OperationsTeamDataView() {
         escape(row.product_source),
         escape(linkedNoteByRowId.has(row.id) ? "已关联" : "未关联"),
         escape(row.first_entry_date ?? ""),
+        escape(row.redeemed ? "是" : "否"),
       ].join(","))
     }
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" })
@@ -15438,7 +15440,17 @@ function OperationsTeamDataView() {
                   </td>
                   <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
                   <td className={cell}>
-                    <FundProductNameLink beian_hao={row.beian_hao} product_name={row.product_name} />
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <FundProductNameLink beian_hao={row.beian_hao} product_name={row.product_name} />
+                      {row.redeemed && (
+                        <span
+                          title="FOF底层汇总有记录，但最新估值表已无持仓"
+                          className="inline-block px-1 py-0.5 rounded text-[10px] bg-rose-100 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-400 dark:border-rose-800 shrink-0"
+                        >
+                          已赎回
+                        </span>
+                      )}
+                    </div>
                     {row.strategy_l1 && (
                       <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-zinc-300/80 text-zinc-600 bg-zinc-50 dark:bg-zinc-800/50 dark:text-zinc-400">
                         {row.strategy_l1}
