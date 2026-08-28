@@ -132,6 +132,7 @@ export async function upsertMetricsLatestForProductCodes(productCodes: string[])
          r.total_asset, r.total_liability, r.custodian
        FROM ops_email_valuation_records r
        WHERE r.product_code = ANY($1::text[])
+         AND NULLIF(BTRIM(r.fund_name), '') IS NOT NULL
        ORDER BY r.product_code, r.valuation_date DESC, r.id DESC
      ),
      inserted AS (

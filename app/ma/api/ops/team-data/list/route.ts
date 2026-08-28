@@ -30,7 +30,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-team-data",
-      v: "redeemed_tag",
+      v: "has_valuation_records",
       page,
       pageSize,
       keyword,

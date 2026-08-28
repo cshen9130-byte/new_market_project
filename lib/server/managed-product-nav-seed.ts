@@ -22,7 +22,15 @@ type ManagedNavSeedFile = {
   rows: LegacyNavRow[]
 }
 
-export type NavHistoryPoint = { nav_date: string; nav: number }
+export type NavHistoryPoint = { nav_date: string; nav: number; return_nav?: number }
+
+/** Team/email list overlay — unit NAV plus optional 累计 / 复权 when the source has them. */
+export type TeamNavListPoint = {
+  nav_date: string
+  unit_nav: string
+  cumulative_nav?: string | null
+  adjusted_nav?: string | null
+}
 
 const seedCache = new Map<string, LegacyNavRow[]>()
 const MIN_RISK_POINTS = 20
@@ -80,7 +88,7 @@ export type ManagedListNavPoint = {
 
 /** Latest NAV on or before asOfDate from team/email rows (no xlsx seed). */
 export function resolveTeamSeriesListNavAt(
-  rows: Array<{ nav_date: string; unit_nav: string }>,
+  rows: TeamNavListPoint[],
   asOfDate: string,
 ): ManagedListNavPoint | null {
   const merged = rows
@@ -95,52 +103,87 @@ export function resolveTeamSeriesListNavAt(
   return { nav: best.nav, nav_date: best.nav_date, prev_nav: prev }
 }
 
+function parsePositiveNav(value: string | null | undefined): number | null {
+  if (value == null || value === "") return null
+  const n = parseFloat(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function legacyRowToListNavPoint(row: LegacyNavRow): NavHistoryPoint | null {
+  const nav_date = row.price_date.slice(0, 10)
+  if (!isChinaTradingDay(nav_date)) return null
+  const nav = parsePositiveNav(row.nav)
+  if (nav == null) return null
+  const adj = parsePositiveNav(row.cumulative_nav)
+  return { nav_date, nav, return_nav: adj ?? nav }
+}
+
+function teamPointsToEmailOverlay(rows: TeamNavListPoint[]): EmailNavPoint[] {
+  const out: EmailNavPoint[] = []
+  for (const row of rows) {
+    const nav_date = row.nav_date.slice(0, 10)
+    if (!isChinaTradingDay(nav_date)) continue
+    const nav = parsePositiveNav(row.unit_nav)
+    if (nav == null) continue
+    out.push({
+      price_date: nav_date,
+      nav: row.unit_nav,
+      cumulative_nav: row.cumulative_nav ?? null,
+      adjusted_nav: row.adjusted_nav ?? null,
+    })
+  }
+  return out
+}
+
 /**
- * Unit-NAV history used for 在管产品 list period returns — same series as list latest NAV
+ * NAV history used for 在管产品 list period returns — same dates as list latest NAV
  * (seed through last verified date, then team/email extensions; or full team series when no seed).
+ * Period returns use 复权净值 (`return_nav`); unit NAV is kept for the listed 单位净值.
  */
 export function buildManagedProductListNavHistory(
   beianHao: string,
-  postSeedTeamNav: Array<{ nav_date: string; unit_nav: string }> = [],
-  fullTeamNav: Array<{ nav_date: string; unit_nav: string }> = [],
+  postSeedTeamNav: TeamNavListPoint[] = [],
+  fullTeamNav: TeamNavListPoint[] = [],
 ): NavHistoryPoint[] {
   const seed = loadManagedProductNavSeed(beianHao)
-  const byDate = new Map<string, NavHistoryPoint>()
 
   if (seed.length > 0) {
     const seedLatest = seed[seed.length - 1].price_date
-    for (const row of seed) {
-      const nav_date = row.price_date.slice(0, 10)
-      if (!isChinaTradingDay(nav_date)) continue
-      const nav = parseFloat(row.nav)
-      if (!Number.isFinite(nav) || nav <= 0) continue
-      byDate.set(nav_date, { nav_date, nav })
-    }
-    for (const row of postSeedTeamNav) {
-      const nav_date = row.nav_date.slice(0, 10)
-      if (nav_date <= seedLatest || !isChinaTradingDay(nav_date)) continue
-      const nav = parseFloat(row.unit_nav)
-      if (!Number.isFinite(nav) || nav <= 0) continue
-      byDate.set(nav_date, { nav_date, nav })
-    }
-  } else {
-    for (const row of fullTeamNav) {
-      const nav_date = row.nav_date.slice(0, 10)
-      if (!isChinaTradingDay(nav_date)) continue
-      const nav = parseFloat(row.unit_nav)
-      if (!Number.isFinite(nav) || nav <= 0) continue
-      byDate.set(nav_date, { nav_date, nav })
-    }
+    const overlay = postSeedTeamNav
+      .filter((row) => {
+        const nav_date = row.nav_date.slice(0, 10)
+        return nav_date > seedLatest && isChinaTradingDay(nav_date)
+      })
+      .map((row) => ({
+        price_date: row.nav_date.slice(0, 10),
+        nav: row.unit_nav,
+        cumulative_nav: null,
+        adjusted_nav: null,
+      }))
+    // Rechain 复权 onto post-seed unit points (SBAH99 May 分红: unit dropped, 复权 did not).
+    const merged = mergeNavSeriesWithEmail(seed, overlay)
+    return merged
+      .map(legacyRowToListNavPoint)
+      .filter((p): p is NavHistoryPoint => p != null)
+      .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
   }
 
-  return [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+  const overlay = teamPointsToEmailOverlay(fullTeamNav)
+  if (overlay.length === 0) return []
+  // No seed: still compute 复权 from email/manual 累计+adjusted so 分红 products
+  // (not just SBAH99) are not stuck on 单位净值 period returns.
+  const merged = mergeNavSeriesWithEmail([], overlay)
+  return merged
+    .map(legacyRowToListNavPoint)
+    .filter((p): p is NavHistoryPoint => p != null)
+    .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
 }
 
 /** Latest NAV on or before asOfDate — seed through its last date, then team/manual extensions. */
 export function resolveManagedProductListNavAt(
   beianHao: string,
   asOfDate: string,
-  postSeedTeamNav: Array<{ nav_date: string; unit_nav: string }> = [],
+  postSeedTeamNav: TeamNavListPoint[] = [],
 ): ManagedListNavPoint | null {
   const seed = loadManagedProductNavSeed(beianHao)
   if (seed.length === 0) return null

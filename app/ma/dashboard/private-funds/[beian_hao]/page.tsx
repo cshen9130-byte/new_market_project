@@ -35,7 +35,7 @@ import { FundProfilePanel } from "./components/FundProfilePanel"
 import { FundMaterialsPanel } from "./components/FundMaterialsPanel"
 import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
-import { buildBenchmarkPctChangesByDate, dateToUtcTs, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
+import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
 import { NavPerformanceEChart } from "./components/NavPerformanceEChart"
 import { DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
@@ -379,14 +379,6 @@ function getOperationFilterRange(data: DetailData, todayStr: string): { from: st
 
 function getInitialFilterPeriod(data: DetailData): string {
   return data.info.operation_date?.slice(0, 10) ? "运作以来" : "成立以来"
-}
-
-function computeDrawdownSeries(values: number[]): number[] {
-  let peak = values[0] ?? 0
-  return values.map((v) => {
-    if (v > peak) peak = v
-    return peak > 0 ? +(((v - peak) / peak) * 100).toFixed(4) : 0
-  })
 }
 
 function formatDateRange(startTs: number, endTs: number): string {
@@ -1126,31 +1118,10 @@ export default function PrivateFundDetailPage() {
     })
   }, [appliedBench, appliedFreq, benchmarkData, chartMode, filterNavType, filteredNavRows])
 
-  const drawdownChartData = useMemo(() => {
-    if (!filteredNavRows.length) return []
-    const rows = resampleNavRowsForChart(filteredNavRows, { forceDaily: appliedFreq === "日频" })
-    const fundValues = rows.map((r) => getNavFieldValue(r, filterNavType))
-    const fundDD = computeDrawdownSeries(fundValues)
-
-    const benchValues = appliedBench && benchmarkData.length
-      ? buildAlignedBenchmarkValues(rows, benchmarkData, "nav", filterNavType)
-      : rows.map(() => null)
-
-    let benchPeak = NaN
-    const benchDD = benchValues.map((v) => {
-      if (v === null || !isFinite(v)) return null
-      if (!isFinite(benchPeak) || v > benchPeak) benchPeak = v
-      return benchPeak > 0 ? +(((v - benchPeak) / benchPeak) * 100).toFixed(4) : 0
-    })
-
-    return rows.map((row, i) => ({
-      date: row.price_date,
-      ts: dateToUtcTs(row.price_date),
-      fundDD: fundDD[i],
-      benchDD: benchDD[i],
-      excessDD: null,
-    }))
-  }, [filteredNavRows, filterNavType, appliedBench, appliedFreq, benchmarkData])
+  const drawdownChartData = useMemo(
+    () => buildDrawdownChartData(filteredNavRows, filterNavType, !!appliedBench, benchmarkData),
+    [filteredNavRows, filterNavType, appliedBench, benchmarkData],
+  )
 
   const maxFundDrawdown = useMemo(() => {
     if (!drawdownChartData.length) return null

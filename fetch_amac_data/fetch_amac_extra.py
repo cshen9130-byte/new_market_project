@@ -356,6 +356,15 @@ def post_json(
     raise RuntimeError(f"Failed {api_path} page {page}") from last_error
 
 
+class AmacPageGone(RuntimeError):
+    """AMAC HTML page is gone (HTTP 404/410). Do not retry; skip this manager."""
+
+    def __init__(self, url: str, status: int) -> None:
+        self.url = url
+        self.status = status
+        super().__init__(f"HTTP {status} {url}")
+
+
 def get_html(session: requests.Session, url: str, progress: FetchProgress | None = None) -> str:
     last_error: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -366,9 +375,13 @@ def get_html(session: requests.Session, url: str, progress: FetchProgress | None
                 verify=False,
                 timeout=90,
             )
+            if resp.status_code in (404, 410):
+                raise AmacPageGone(url, resp.status_code)
             resp.raise_for_status()
             resp.encoding = resp.apparent_encoding or "utf-8"
             return resp.text
+        except AmacPageGone:
+            raise
         except requests.RequestException as exc:
             last_error = exc
             wait = RETRY_BACKOFF * attempt
@@ -1053,7 +1066,26 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
             if not url:
                 bar.update(idx + 1)
                 continue
-            html = get_html(session, url, bar)
+            try:
+                html = get_html(session, url, bar)
+            except AmacPageGone as exc:
+                print(f"  skip HTTP {exc.status} {url}")
+                save_progress(
+                    prog_path,
+                    {"next_index": idx + 1, "total": len(managers), "fetched": idx + 1},
+                )
+                bar.update(idx + 1)
+                time.sleep(args.delay)
+                continue
+            except Exception as exc:
+                print(f"  skip {url}: {exc}")
+                save_progress(
+                    prog_path,
+                    {"next_index": idx + 1, "total": len(managers), "fetched": idx + 1},
+                )
+                bar.update(idx + 1)
+                time.sleep(args.delay)
+                continue
             detail_row, exec_rows, resume_rows = parse_manager_detail(html, url)
             if not detail_row.get("登记编号"):
                 detail_row["登记编号"] = mgr.get("登记编号", "")

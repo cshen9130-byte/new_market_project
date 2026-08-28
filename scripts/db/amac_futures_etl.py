@@ -28,11 +28,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "fetch_amac_data"))
+sys.path.insert(0, str(ROOT / "scripts" / "db"))
 
 from amac_client import (  # noqa: E402
     DEFAULT_REQUEST_DELAY,
     FUTURES_PAGE_SIZE,
     iter_futures_pages,
+)
+from amac_etl_lock import (  # noqa: E402
+    AMAC_LIST_LOCK_KEY,
+    acquire_advisory_lock,
+    execute_values_retry,
+    release_advisory_lock,
 )
 
 SOURCE_NAME = "amac_futures_api"
@@ -206,8 +213,6 @@ def run_etl(
     request_delay: float = DEFAULT_REQUEST_DELAY,
     max_pages_override: int | None = None,
 ) -> dict:
-    from psycopg2.extras import execute_values
-
     conn = _connect()
     pages_fetched = 0
     rows_upserted = 0
@@ -215,91 +220,98 @@ def run_etl(
     db_count = 0
     db_after = 0
     private_fund_info_inserted = 0
+    mode = "full"
 
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(DDL)
-            cur.execute("SELECT COUNT(*) FROM amac_futures_products")
-            db_count = int(cur.fetchone()[0])
-            pages_limit = max_pages_override if max_pages_override and max_pages_override > 0 else None
-            mode = "limited" if pages_limit is not None else "full"
-
-            print(
-                f"amac_futures_etl: mode={mode} db_count={db_count:,} "
-                f"pages_limit={pages_limit if pages_limit is not None else 'all'}"
-            )
-
-            def on_page(page: int, row_count: int, total: int) -> None:
-                nonlocal total_elements
-                total_elements = total
-                if page == 0 and total > 0:
-                    print(f"  AMAC futures total={total:,} products on record")
-
-            if dry_run:
-                first_meta = None
-                for page_idx, rows, meta in iter_futures_pages(
-                    page_size=page_size,
-                    start_page=0,
-                    end_page=1,
-                    request_delay=request_delay,
-                    on_page=on_page,
-                ):
-                    _ = page_idx
-                    first_meta = meta
-                    rows_upserted += len(rows)
-                pages_fetched = 1
-                total_elements = int((first_meta or {}).get("total_elements", 0) or 0)
-                db_after = db_count
-            else:
-                for page_idx, rows, meta in iter_futures_pages(
-                    page_size=page_size,
-                    start_page=0,
-                    end_page=pages_limit,
-                    request_delay=request_delay,
-                    on_page=on_page,
-                ):
-                    _ = page_idx
-                    total_elements = int(meta.get("total_elements", 0) or 0)
-                    batch = _rows_to_tuples(rows)
-                    if batch:
-                        execute_values(cur, UPSERT_SQL, batch, page_size=1000)
-                        rows_upserted += len(batch)
-                    pages_fetched += 1
-                    if pages_fetched % 20 == 0:
-                        conn.commit()
-                        print(f"  committed {pages_fetched} page(s), upserted={rows_upserted:,}")
-
-                conn.commit()
-                cur.execute("ANALYZE amac_futures_products")
+    try:
+        acquire_advisory_lock(conn, AMAC_LIST_LOCK_KEY)
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(DDL)
                 cur.execute("SELECT COUNT(*) FROM amac_futures_products")
-                db_after = int(cur.fetchone()[0])
-                now = datetime.now(timezone.utc)
-                cur.execute(
-                    """
-                    INSERT INTO amac_futures_products_sync_state (
-                        id, last_total_elements, last_db_count, last_pages_fetched,
-                        last_rows_upserted, last_full_sync_at, updated_at
-                    ) VALUES (
-                        'default', %s, %s, %s, %s, %s, %s
-                    )
-                    ON CONFLICT (id) DO UPDATE SET
-                        last_total_elements = EXCLUDED.last_total_elements,
-                        last_db_count       = EXCLUDED.last_db_count,
-                        last_pages_fetched  = EXCLUDED.last_pages_fetched,
-                        last_rows_upserted  = EXCLUDED.last_rows_upserted,
-                        last_full_sync_at   = EXCLUDED.last_full_sync_at,
-                        updated_at          = EXCLUDED.updated_at
-                    """,
-                    (total_elements, db_after, pages_fetched, rows_upserted, now, now),
+                db_count = int(cur.fetchone()[0])
+                pages_limit = max_pages_override if max_pages_override and max_pages_override > 0 else None
+                mode = "limited" if pages_limit is not None else "full"
+
+                print(
+                    f"amac_futures_etl: mode={mode} db_count={db_count:,} "
+                    f"pages_limit={pages_limit if pages_limit is not None else 'all'}"
                 )
 
-                if sync_private_fund_info:
-                    cur.execute("SELECT to_regclass('public.private_fund_info')")
-                    if cur.fetchone()[0] is not None:
-                        cur.execute(INSERT_PRIVATE_FUND_INFO_SQL)
-                        private_fund_info_inserted = cur.rowcount
+                def on_page(page: int, row_count: int, total: int) -> None:
+                    nonlocal total_elements
+                    total_elements = total
+                    if page == 0 and total > 0:
+                        print(f"  AMAC futures total={total:,} products on record")
 
-    conn.close()
+                if dry_run:
+                    first_meta = None
+                    for page_idx, rows, meta in iter_futures_pages(
+                        page_size=page_size,
+                        start_page=0,
+                        end_page=1,
+                        request_delay=request_delay,
+                        on_page=on_page,
+                    ):
+                        _ = page_idx
+                        first_meta = meta
+                        rows_upserted += len(rows)
+                    pages_fetched = 1
+                    total_elements = int((first_meta or {}).get("total_elements", 0) or 0)
+                    db_after = db_count
+                else:
+                    for page_idx, rows, meta in iter_futures_pages(
+                        page_size=page_size,
+                        start_page=0,
+                        end_page=pages_limit,
+                        request_delay=request_delay,
+                        on_page=on_page,
+                    ):
+                        _ = page_idx
+                        total_elements = int(meta.get("total_elements", 0) or 0)
+                        batch = _rows_to_tuples(rows)
+                        if batch:
+                            execute_values_retry(cur, UPSERT_SQL, batch, page_size=1000)
+                            rows_upserted += len(batch)
+                        pages_fetched += 1
+                        if pages_fetched % 20 == 0:
+                            conn.commit()
+                            print(f"  committed {pages_fetched} page(s), upserted={rows_upserted:,}")
+
+                    conn.commit()
+                    cur.execute("ANALYZE amac_futures_products")
+                    cur.execute("SELECT COUNT(*) FROM amac_futures_products")
+                    db_after = int(cur.fetchone()[0])
+                    now = datetime.now(timezone.utc)
+                    cur.execute(
+                        """
+                        INSERT INTO amac_futures_products_sync_state (
+                            id, last_total_elements, last_db_count, last_pages_fetched,
+                            last_rows_upserted, last_full_sync_at, updated_at
+                        ) VALUES (
+                            'default', %s, %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (id) DO UPDATE SET
+                            last_total_elements = EXCLUDED.last_total_elements,
+                            last_db_count       = EXCLUDED.last_db_count,
+                            last_pages_fetched  = EXCLUDED.last_pages_fetched,
+                            last_rows_upserted  = EXCLUDED.last_rows_upserted,
+                            last_full_sync_at   = EXCLUDED.last_full_sync_at,
+                            updated_at          = EXCLUDED.updated_at
+                        """,
+                        (total_elements, db_after, pages_fetched, rows_upserted, now, now),
+                    )
+
+                    if sync_private_fund_info:
+                        cur.execute("SELECT to_regclass('public.private_fund_info')")
+                        if cur.fetchone()[0] is not None:
+                            cur.execute(INSERT_PRIVATE_FUND_INFO_SQL)
+                            private_fund_info_inserted = cur.rowcount
+    finally:
+        try:
+            release_advisory_lock(conn, AMAC_LIST_LOCK_KEY)
+        except Exception:
+            pass
+        conn.close()
 
     summary = {
         "ok": True,

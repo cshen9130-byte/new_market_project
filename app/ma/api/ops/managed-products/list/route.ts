@@ -216,6 +216,7 @@ function applyManagedSeedNavOverride(
 
   // Period returns must use the same team/seed series as list NAV — not the
   // contaminated BatchNavResolver merge that produced SAVW72 近一周 −11.89%.
+  // Seed products (SBAH99) carry 复权净值 so 近一年 is not the post-分红 unit NAV.
   const history = buildManagedProductListNavHistory(override.beian_hao, postSeed, fullTeam)
   const period =
     Number.isFinite(unitNav) && history.length > 0

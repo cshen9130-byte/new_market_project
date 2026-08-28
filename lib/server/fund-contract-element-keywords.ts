@@ -108,7 +108,20 @@ export function isWeakFormula(value: string | null | undefined): boolean {
   if (s.length < 12 && !/[=＝]/.test(s) && !/计提|提取|公式/.test(s)) return true
   // "基准0%" with no carry rate is a failed parse of R>0% excess sharing (A/B 20%/30%).
   if (isZeroBenchmarkWithoutCarry(s) && !/[×x*]\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return true
+  // Mixed leftover: 基准0% glued onto a different hurdle such as H=(R-6%)×30%.
+  if (/基准\s*0\s*%/.test(s) && /R\s*[-－]\s*[1-9]/.test(s)) return true
   return isDumpText(s, FORMULA_MAX)
+}
+
+function shareClassLabelCount(s: string): number {
+  return new Set(s.match(/[ABC]类/g) ?? []).size
+}
+
+function isUnlabeledMultiRuleFeePay(s: string): boolean {
+  if (shareClassLabelCount(s) >= 2) return false
+  if ((s.match(/按(?:超额|业绩基准)计提/g) || []).length >= 2) return true
+  const benches = [...s.matchAll(/业绩基准\s*([\d.]+)\s*%/g)].map((m) => m[1])
+  return new Set(benches).size >= 2
 }
 
 export function isWeakFeePay(value: string | null | undefined): boolean {
@@ -117,6 +130,7 @@ export function isWeakFeePay(value: string | null | undefined): boolean {
   // LLM-generated generic "couldn't extract" statements
   if (/未明确(?:说明|规定|披露)|按(?:基金)?合同约定收取/.test(s) && s.length < 60) return true
   if (isZeroBenchmarkWithoutCarry(s)) return true
+  if (isUnlabeledMultiRuleFeePay(s)) return true
   return isDumpText(s, 90)
 }
 
@@ -924,6 +938,17 @@ function preferCompact<T extends string>(
   return current
 }
 
+/** Prefer the text that actually names A/B/C when both sides are otherwise usable. */
+function preferClassLabeled(
+  current: string | null | undefined,
+  next: string | null,
+  isWeak: (v: string | null | undefined) => boolean,
+): string | null | undefined {
+  const compact = next && !isWeak(next) ? next : null
+  if (compact && shareClassLabelCount(compact) > shareClassLabelCount(current ?? "")) return compact
+  return preferCompact(current, next, isWeak)
+}
+
 export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
   text: string,
   extracted: T,
@@ -934,7 +959,7 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
   out.risk_level = preferCompact(out.risk_level, extractRiskLevelFromText(source), isWeakRiskLevel)
   out.lock_period_desc = preferCompact(out.lock_period_desc, extractLockPeriodFromText(source), isWeakLockPeriod)
   if (isWeakLockPeriod(out.lock_period_desc)) out.lock_period_desc = "不设置"
-  out.fee_pay_formula = preferCompact(out.fee_pay_formula, extractFeePayFormulaFromText(source), isWeakFormula)
+  out.fee_pay_formula = preferClassLabeled(out.fee_pay_formula, extractFeePayFormulaFromText(source), isWeakFormula)
   out.fee_manage = preferCompact(
     out.fee_manage,
     summarizeFeeManageDesc(source, out.fee_manage, out.fee_manage_rate),
@@ -948,7 +973,7 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
       if (Number.isFinite(n) && n > 0 && n <= 10) out.fee_manage_rate = `${n}%`
     }
   }
-  out.fee_pay = preferCompact(out.fee_pay, summarizeFeePayDesc(source), isWeakFeePay)
+  out.fee_pay = preferClassLabeled(out.fee_pay, summarizeFeePayDesc(source), isWeakFeePay)
   out.add_amount = preferCompact(out.add_amount, extractAddAmountFromText(source), isWeakAddAmount)
   out.fee_redeem = preferCompact(out.fee_redeem, extractFeeRedeemFromText(source), isWeakShortFee)
   out.closed_period = preferCompact(out.closed_period, extractClosedPeriodFromText(source), isWeakShortFee)

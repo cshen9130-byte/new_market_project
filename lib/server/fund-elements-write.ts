@@ -555,6 +555,10 @@ function shareClassLetterFromBeian(beian: string): "A" | "B" | "C" | null {
   return null
 }
 
+function shareClassLabelCount(s: string | null | undefined): number {
+  return new Set(String(s ?? "").match(/[ABC]类/g) ?? []).size
+}
+
 /**
  * If the base fee_pay looks like a combined "A...;B..." multi-class string,
  * extract the portion that belongs to `cls`.  Returns null if not applicable.
@@ -579,10 +583,12 @@ function applyShareClassOverride(
   const cls = shareClassLetterFromBeian(beian)
   if (!cls) return extracted
   const override = overrides[cls] ?? {}
-  // If no contract-text override for fee_pay, try to split from combined parent value
-  const fee_pay =
-    override.fee_pay ??
-    splitClassFeePay(typeof extracted.fee_pay === "string" ? extracted.fee_pay : null, cls)
+  const combinedPay = typeof extracted.fee_pay === "string" ? extracted.fee_pay : null
+  // If the shared 说明 already maps A/B/C, keep it on every share class (same as 管理费).
+  const keepCombinedPay = shareClassLabelCount(combinedPay) >= 2
+  const fee_pay = keepCombinedPay
+    ? combinedPay
+    : (override.fee_pay ?? splitClassFeePay(combinedPay, cls))
   if (!Object.keys(override).length && !fee_pay) return extracted
   return {
     ...extracted,
@@ -645,12 +651,13 @@ async function writeExtractedElementsAcrossShareClasses(
         if (override?.fee_manage && override.fee_manage !== (cur.fee_manage ?? "")) {
           overrideBody.fee_manage = override.fee_manage
         }
-        // fee_pay: write class-specific or split-from-combined value if different/better
-        const splitPay = splitClassFeePay(
-          typeof extracted.fee_pay === "string" ? extracted.fee_pay : null,
-          cls ?? "",
-        )
-        const targetFeePay = override?.fee_pay ?? splitPay
+        // fee_pay: prefer the full A/B/C map; otherwise the class-specific line.
+        const combinedPay = typeof extracted.fee_pay === "string" ? extracted.fee_pay : null
+        const splitPay = splitClassFeePay(combinedPay, cls ?? "")
+        const targetFeePay =
+          shareClassLabelCount(combinedPay) >= 2
+            ? combinedPay
+            : (override?.fee_pay ?? splitPay)
         if (targetFeePay && targetFeePay !== (cur.fee_pay ?? "")) {
           overrideBody.fee_pay = targetFeePay
         }
@@ -690,6 +697,25 @@ function mergeAmendmentIntoCurrent(
     const add = textField(extracted, key)
     const prev = textField(current, key)
     if (!add || !prev) continue
+    if (key === "fee_pay" || key === "fee_pay_formula") {
+      const addWeak = key === "fee_pay" ? isWeakFeePay(add) : isWeakFormula(add)
+      const prevWeak = key === "fee_pay" ? isWeakFeePay(prev) : isWeakFormula(prev)
+      if (shareClassLabelCount(add) > shareClassLabelCount(prev)) {
+        out[key] = add
+        continue
+      }
+      if (prevWeak && !addWeak) {
+        out[key] = add
+        continue
+      }
+      if (addWeak && !prevWeak) {
+        out[key] = prev
+        continue
+      }
+      // Do not glue "基准0%" onto "基准6%/40%" — conflicting 业绩报酬 rules replace, they don't stack.
+      out[key] = add
+      continue
+    }
     if (prev.includes(add) || add.includes(prev)) {
       out[key] = add.length >= prev.length ? add : prev
       continue

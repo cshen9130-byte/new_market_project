@@ -162,6 +162,12 @@ export async function registerBackgroundJobs(): Promise<void> {
   cron.schedule("*/10 * * * *", () => {
     void (async () => {
       try {
+        // Local `next dev` often tunnels to production Postgres. Contract files live on
+        // the Linux server; claiming those jobs here writes ENOENT failures into prod.
+        if (process.platform === "win32" && (process.env.DATABASE_URL || "").includes(":5433/")) {
+          console.log("[contract-extract-10m] skipped: Windows next against tunneled production DB")
+          return
+        }
         const { shouldYieldBackgroundWorkToUsers } = await import("./user-activity-priority")
         if (shouldYieldBackgroundWorkToUsers()) {
           console.log("[contract-extract-10m] deferred: interactive users active")

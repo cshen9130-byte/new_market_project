@@ -334,11 +334,13 @@ F 为基准日投资者持有份额（清算或分配）或退出份额（赎回
 `
 
 assert.ok(isWeakFeePay("按业绩基准计提，业绩基准0%"))
+assert.ok(isWeakFeePay("按超额计提，业绩基准0%；按超额计提，业绩基准6%，计提比例40%。"))
 assert.ok(isWeakFormula("基准0%"))
+assert.ok(isWeakFormula("基准0%；C类不收取；H=(R-6%)×30%×C×F"))
 
 const azhPay = summarizeFeePayDesc(azh88)
-assert.ok(azhPay && azhPay.includes("30%"), azhPay)
-assert.ok(azhPay && azhPay.includes("20%"), azhPay)
+assert.ok(azhPay && azhPay.includes("A类") && azhPay.includes("30%"), azhPay)
+assert.ok(azhPay && azhPay.includes("B类") && azhPay.includes("20%"), azhPay)
 assert.ok(azhPay && /C类不收取/.test(azhPay), azhPay)
 assert.ok(azhPay && !azhPay.includes("业绩基准0%"), azhPay)
 
@@ -358,6 +360,16 @@ assert.ok(azhFilled.fee_pay?.includes("30%"), azhFilled.fee_pay)
 assert.ok(!azhFilled.fee_pay?.includes("业绩基准0%"), azhFilled.fee_pay)
 assert.ok(azhFilled.fee_pay_formula?.includes("20%"), azhFilled.fee_pay_formula)
 assert.ok(azhFilled.fee_pay_formula?.includes("30%"), azhFilled.fee_pay_formula)
+
+const azhGlued = fillMissingElementsFromKeywords(azh88, {
+  fee_pay: "按超额计提，业绩基准0%；按超额计提，业绩基准6%，计提比例40%。",
+  fee_pay_formula: "基准0%；C类不收取；H=(R-6%)×30%×C×F",
+})
+assert.ok(azhGlued.fee_pay?.includes("A类") && azhGlued.fee_pay.includes("B类"), azhGlued.fee_pay)
+assert.ok(azhGlued.fee_pay?.includes("C类"), azhGlued.fee_pay)
+assert.ok(!azhGlued.fee_pay?.includes("业绩基准6%"), azhGlued.fee_pay)
+assert.ok(azhGlued.fee_pay_formula?.includes("A类") && azhGlued.fee_pay_formula.includes("B类"), azhGlued.fee_pay_formula)
+assert.ok(!azhGlued.fee_pay_formula?.includes("基准0%"), azhGlued.fee_pay_formula)
 
 const azhSc = extractShareClassFeeOverrides(azh88)
 assert.ok(azhSc.A?.fee_pay?.includes("30%"), azhSc.A?.fee_pay)

@@ -114,8 +114,10 @@ export function sqlShareClassCodeGuard(codeCol: string, productNameExpr: string)
 export function canonicalizeEmailProductCode(code: string): string {
   const raw = String(code ?? "").trim().toUpperCase()
   if (!raw) return ""
-  const paren = raw.match(/^([A-Z0-9]+)[\(（](总|[ABC]类?)[\)）]$/u)
-  if (!paren) return raw
+  // CSC 资产净值公告 workbooks tag the parent series: SAHZ51_总层面
+  const withoutLayer = raw.replace(/[_\-\s]*(总层面|总级)$/u, "")
+  const paren = withoutLayer.match(/^([A-Z0-9]+)[\(（](总|[ABC]类?)[\)）]$/u)
+  if (!paren) return withoutLayer
   const base = paren[1]
   const tag = paren[2]
   return tag === "总" ? base : `${base}${tag.charAt(0)}`

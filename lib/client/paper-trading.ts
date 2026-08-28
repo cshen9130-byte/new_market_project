@@ -11,7 +11,7 @@ import {
   type SleeveKey,
 } from "@/lib/all-weather/universe"
 import type { CtpCandle, CtpTick, IndexProduct } from "@/lib/client/ctp-market"
-import { isLiveSessionFor, quoteOf, validMark } from "@/lib/client/market-hours"
+import { isLiveSessionFor, quoteOf, validMark, weekdayClosedLast } from "@/lib/client/market-hours"
 import { productOfSymbol } from "@/lib/client/pro-trading"
 import {
   aggregateCloseSeries,
@@ -1133,7 +1133,8 @@ export function markPrice(
   const settle = validMark(quote?.pre_settlement) ?? validMark(quote?.pre_close)
   // Closed session: ignore live last. SimNow / 新浪 still print on Sunday and that
   // made 现价 look unchanged (rounding) while 浮动盈亏 hopped between sources.
-  if (!isLiveSessionFor(key)) return extra ?? settle ?? hist
+  // Weekday lunch / tea is different: last is this morning (or last night), not settle.
+  if (!isLiveSessionFor(key)) return weekdayClosedLast(key, quote) ?? extra ?? settle ?? hist
   return live ?? extra ?? hist ?? settle
 }
 

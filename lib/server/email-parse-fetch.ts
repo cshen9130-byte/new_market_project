@@ -26,6 +26,7 @@ import {
   extractNavData,
   extractNavHistoryFromBody,
   isCmsMultiProductNavIncomplete,
+  isCscBatchNavIncomplete,
 } from "@/lib/server/email-nav-extract"
 import {
   extractNavFromCiticsAnnouncementPdf,
@@ -177,7 +178,7 @@ function stripHtml(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/tr>/gi, "\n")
-    .replace(/<\/td>/gi, " ")
+    .replace(/<\/t[dh]>/gi, " ")
     .replace(/<\/p>/gi, "\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
@@ -299,15 +300,22 @@ async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>
     email_uid: string
     subject: string | null
     n_codes: string | number
+    n_dates: string | number
   }>(
     `SELECT email_uid, subject,
-            COUNT(DISTINCT NULLIF(BTRIM(product_code), '')) AS n_codes
+            COUNT(DISTINCT NULLIF(BTRIM(product_code), '')) AS n_codes,
+            COUNT(DISTINCT nav_date) AS n_dates
      FROM ops_email_nav_records
      WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
        AND NULLIF(BTRIM(email_uid), '') IS NOT NULL
      GROUP BY email_uid, subject`,
     [account],
-  ).catch(() => [] as { email_uid: string; subject: string | null; n_codes: string | number }[])
+  ).catch(() => [] as {
+    email_uid: string
+    subject: string | null
+    n_codes: string | number
+    n_dates: string | number
+  }[])
 
   const incomplete = new Set<string>()
   for (const row of navRows) {
@@ -315,9 +323,15 @@ async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>
     if (!uid) continue
     const key = processedEmailKey(uid, row.subject ?? "")
     const nCodes = Number(row.n_codes ?? 0)
+    const nDates = Number(row.n_dates ?? 0)
     // 等N个产品 mails ingested under the old single-product unique key must be
     // re-downloaded until every product_code is stored.
     if (isCmsMultiProductNavIncomplete(row.subject ?? "", nCodes)) {
+      incomplete.add(key)
+      continue
+    }
+    // CSC 批量补发 HTML tables were dropped when fund names contained CTA/FOF.
+    if (isCscBatchNavIncomplete(row.subject ?? "", nDates)) {
       incomplete.add(key)
       continue
     }
@@ -348,6 +362,8 @@ async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>
     if (!uid) continue
     const key = processedEmailKey(uid, row.subject ?? "")
     if (incomplete.has(key)) continue
+    // Valuation-only ingest must not freeze a 批量补发 mail that still has no NAV history.
+    if (/批量补发/u.test(row.subject ?? "") && !known.has(key)) continue
     known.add(key)
   }
   return known
@@ -356,6 +372,8 @@ async function loadKnownProcessedEmailKeys(account: string): Promise<Set<string>
 async function downloadPart(client: ImapFlow, uid: string, part: string): Promise<Buffer> {
   // Tencent Exmail hangs on ImapFlow streaming download() for ~2MB 净值公告 zips.
   // fetchOne BODY[part] returns the wire bytes (often still base64).
+  // 12MB+ CMS 每日净值信息 zips sometimes come back empty from fetchOne — fall back
+  // to streaming so the attachment is not silently skipped.
   const msg = await client.fetchOne(
     String(uid),
     { uid: true, bodyParts: [part] },
@@ -363,8 +381,14 @@ async function downloadPart(client: ImapFlow, uid: string, part: string): Promis
   )
   const parts = (msg as { bodyParts?: Map<string, Buffer> }).bodyParts
   const raw = parts?.get(part) ?? parts?.get(String(part))
-  if (!raw?.length) throw new Error(`empty IMAP part ${part}`)
-  return decodeFetchedImapPart(raw)
+  if (raw?.length) return decodeFetchedImapPart(raw)
+
+  const dl = await client.download(String(uid), part, { uid: true })
+  const bufs: Buffer[] = []
+  for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
+  const streamed = Buffer.concat(bufs)
+  if (!streamed.length) throw new Error(`empty IMAP part ${part}`)
+  return decodeFetchedImapPart(streamed)
 }
 
 function decodeFetchedImapPart(buf: Buffer): Buffer {
@@ -527,7 +551,6 @@ async function fetchMailbox(
         const attachmentNavKey = (productCode: string | null | undefined, navDate: string) =>
           `${(productCode ?? "").trim().toUpperCase()}|${navDate}`
         for (const att of selectNavTableAttachments(subject, attachments)) {
-          hasNavTableAttachment = true
           try {
             const buf = await downloadPart(client, String(uid), att.part)
             const payloads: Array<{ storedFilename: string; parseFilename: string; buffer: Buffer }> =
@@ -560,6 +583,7 @@ async function fetchMailbox(
                   )
               for (const row of rows) {
                 if (!row.navDate) continue
+                hasNavTableAttachment = true
                 navDatesFromAttachments.add(row.navDate)
                 navKeysFromAttachments.add(attachmentNavKey(row.productCode, row.navDate))
                 navRecords.push({

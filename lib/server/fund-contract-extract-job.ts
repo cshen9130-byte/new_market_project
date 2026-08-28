@@ -20,6 +20,7 @@ import {
   listAppliedElementExtractJobs,
   listAppliedExtractJobsByBeiAns,
   listExtractJobsForRerun,
+  extractJobFilePath,
   listNeedsReviewExtractJobs,
   readElementExtractJobFile,
   requeueExtractJobs,
@@ -232,7 +233,7 @@ async function processOneJob(
   options?: { reuseExtracted?: boolean },
 ): Promise<"applied" | "needs_review" | "failed"> {
   try {
-    const buffer = await readElementExtractJobFile(job)
+    const buffer = await readStoredContractBuffer(job)
     const hints = {
       fileName: job.original_filename,
       contractText: job.text_preview ?? undefined,
@@ -355,13 +356,41 @@ function latestJobPerBeian(jobs: ElementExtractJobRow[]): ElementExtractJobRow[]
   return Array.from(latest.values())
 }
 
+const DEFAULT_SSH_HOST = "root@8.154.33.143"
+const DEFAULT_REMOTE_JOBS_DIR = "/root/market_dashboard_storage/fund-elements/jobs"
+
+function ensureRemoteJobReadEnv() {
+  if (process.platform !== "win32") return
+  process.env.CONTRACT_EXTRACT_SSH_HOST ||= DEFAULT_SSH_HOST
+  process.env.CONTRACT_EXTRACT_REMOTE_JOBS_DIR ||= DEFAULT_REMOTE_JOBS_DIR
+}
+
+function isEnoent(err: unknown): boolean {
+  return Boolean(err && typeof err === "object" && "code" in err && (err as { code?: string }).code === "ENOENT")
+}
+
+function jobFileMissingMessage(job: ElementExtractJobRow, err: unknown): string {
+  if (isEnoent(err)) {
+    return `合同文件不在当前机器（${job.storage_filename}）。请在服务器上重试提取，或确认 MARKET_DASHBOARD_STORAGE_DIR`
+  }
+  return err instanceof Error ? err.message : "无法读取合同文件"
+}
+
 function remoteStorageRoot(): string {
+  ensureRemoteJobReadEnv()
   const jobsDir = process.env.CONTRACT_EXTRACT_REMOTE_JOBS_DIR?.trim()
   if (jobsDir) return jobsDir.replace(/\/fund-elements\/jobs\/?$/, "")
   return "/root/market_dashboard_storage"
 }
 
+function cacheJobFileLocally(storageFilename: string, buffer: Buffer) {
+  const dest = extractJobFilePath(storageFilename)
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+  fs.writeFileSync(dest, buffer)
+}
+
 async function sshCatRemoteFile(remotePath: string): Promise<Buffer> {
+  ensureRemoteJobReadEnv()
   const host = process.env.CONTRACT_EXTRACT_SSH_HOST?.trim()
   if (!host) throw new Error("未配置远程读取")
   const keyPath = path.join(process.env.USERPROFILE ?? process.env.HOME ?? "", ".ssh", "id_ed25519_server")
@@ -446,16 +475,28 @@ async function readBeianContractCorpus(beian: string, jobs: ElementExtractJobRow
 }
 
 export async function readStoredContractBuffer(job: ElementExtractJobRow): Promise<Buffer> {
+  ensureRemoteJobReadEnv()
   try {
     return await readElementExtractJobFile(job)
-  } catch {
+  } catch (localErr) {
     const remoteDir = process.env.CONTRACT_EXTRACT_REMOTE_JOBS_DIR?.trim()
-    if (!remoteDir) throw new Error("合同文件不在本地，且未配置远程读取")
+    if (!remoteDir) throw new Error(jobFileMissingMessage(job, localErr))
     const safeName = path.basename(job.storage_filename)
     if (!safeName || safeName !== job.storage_filename) {
       throw new Error("合同存储文件名无效")
     }
-    return sshCatRemoteFile(`${remoteDir.replace(/\/+$/, "")}/${safeName}`)
+    try {
+      const buffer = await sshCatRemoteFile(`${remoteDir.replace(/\/+$/, "")}/${safeName}`)
+      try {
+        cacheJobFileLocally(job.storage_filename, buffer)
+      } catch {
+        // Extraction can continue from the remote bytes even if the local cache write fails.
+      }
+      return buffer
+    } catch (remoteErr) {
+      const remoteMsg = remoteErr instanceof Error ? remoteErr.message : String(remoteErr)
+      throw new Error(`${jobFileMissingMessage(job, localErr)}；远程读取失败：${remoteMsg}`)
+    }
   }
 }
 
@@ -688,6 +729,10 @@ export function startContractExtractJob(options?: {
   maxJobs?: number
   maxMs?: number
 }): { ok: true } | { ok: false; reason: "already_running" } {
+  if (process.platform === "win32" && (process.env.DATABASE_URL || "").includes(":5433/")) {
+    console.warn("[contract-extract] skipped: Windows next against tunneled production DB")
+    return { ok: false, reason: "already_running" }
+  }
   const jobs = getJobMap()
   const existing = jobs.get(JOB_KEY)
   if (existing && (existing.status === "queued" || existing.status === "running")) {
@@ -764,7 +809,7 @@ export async function applyElementExtractJobManually(input: {
   const resolvedBeian = ensured?.beian_hao || input.beian_hao.trim()
   const productName = input.product_name?.trim() || job.product_name || resolvedBeian
 
-  const buffer = await readElementExtractJobFile(job)
+  const buffer = await readStoredContractBuffer(job)
   let contractId = job.contract_material_id
   if (!contractId) {
     const material = await saveFundContractMaterialFromBuffer({

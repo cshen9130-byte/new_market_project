@@ -566,6 +566,44 @@ export function computeDrawdownSeries(values: number[]): number[] {
   })
 }
 
+/** Downsample drawdown points after HWM math. Keep each bucket's deepest trough. */
+export function downsampleDrawdownChartPoints(
+  points: DrawdownChartPoint[],
+  maxPoints = 720,
+): DrawdownChartPoint[] {
+  if (points.length <= maxPoints) return points
+  const start = points[0].ts
+  const end = points[points.length - 1].ts
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return points
+
+  const step = (end - start) / (maxPoints - 1)
+  const out: DrawdownChartPoint[] = [points[0]]
+  let nextTs = start + step
+  let best: DrawdownChartPoint | null = null
+  const flush = () => {
+    if (!best) return
+    if (out[out.length - 1]?.date !== best.date) out.push(best)
+    best = null
+  }
+  for (let i = 1; i < points.length - 1; i++) {
+    const p = points[i]
+    if (!Number.isFinite(p.ts)) continue
+    if (p.ts < nextTs) {
+      if (!best || p.fundDD < best.fundDD) best = p
+      continue
+    }
+    flush()
+    best = p
+    nextTs += step
+    while (p.ts >= nextTs) nextTs += step
+  }
+  flush()
+  const last = points[points.length - 1]
+  if (out[out.length - 1]?.date !== last.date) out.push(last)
+  return out
+}
+
+/** Running HWM on full NAV. Do not weekly-resample NAV before this — that misses mid-week peaks and understates MDD. */
 export function buildDrawdownChartData(
   rows: NavRow[],
   navType: string,
@@ -575,13 +613,12 @@ export function buildDrawdownChartData(
   const prepared = prepareNavRowsForChart(rows)
   if (!prepared.length) return []
 
-  const sampled = resampleNavRowsForChart(prepared)
-  const fundValues = sampled.map((r) => getNavFieldValue(r, navType))
+  const fundValues = prepared.map((r) => getNavFieldValue(r, navType))
   const fundDD = computeDrawdownSeries(fundValues)
 
   const benchValues = hasBenchmark && benchmarkSeries.length
-    ? buildAlignedBenchmarkValues(sampled, benchmarkSeries, "nav", navType)
-    : sampled.map(() => null)
+    ? buildAlignedBenchmarkValues(prepared, benchmarkSeries, "nav", navType)
+    : prepared.map(() => null)
 
   let benchPeak = NaN
   const benchDD = benchValues.map((v) => {
@@ -595,7 +632,7 @@ export function buildDrawdownChartData(
   const baseBench = baseBenchIdx >= 0 ? benchValues[baseBenchIdx] : null
   const baseFundAtBench = baseBenchIdx >= 0 ? fundValues[baseBenchIdx] : firstFund
 
-  const excessValues = sampled.map((_, i) => {
+  const excessValues = prepared.map((_, i) => {
     const bench = benchValues[i]
     if (bench === null || !isFinite(bench) || bench <= 0 || baseBench === null || baseBench <= 0) return null
     const fundRet = firstFund > 0 ? fundValues[i] / firstFund : 1
@@ -614,13 +651,14 @@ export function buildDrawdownChartData(
     })
   })()
 
-  return sampled.map((row, i) => ({
+  const points = prepared.map((row, i) => ({
     date: row.price_date,
     ts: dateToUtcTs(row.price_date),
     fundDD: fundDD[i],
     benchDD: benchDD[i],
     excessDD: excessDD[i],
   }))
+  return downsampleDrawdownChartPoints(points)
 }
 
 export function computeDrawdownYDomain(

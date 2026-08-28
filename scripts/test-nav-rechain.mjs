@@ -3,6 +3,7 @@ import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
   calcPeriodReturnsFromHistory,
+  attachAlignedReturnNav,
   MAX_DAILY_RETURN_LOOKBACK_DAYS,
   capPeriodReturnByDrawdown,
   calcReturn,
@@ -17,10 +18,11 @@ import {
   isHuataiDailyValuationSubject,
   extractNavFromValuationBuffer,
   extractValuationFromBuffer,
+  selectValuationAttachments,
 } from "../lib/server/email-valuation-attachment.ts"
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
-import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
-import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete } from "../lib/server/email-nav-extract.ts"
+import { dedupeShareClassDisplayFunds, canonicalizeEmailProductCode } from "../lib/server/fund-name-match.ts"
+import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete } from "../lib/server/email-nav-extract.ts"
 import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
   extractNavFromCiticsAnnouncementText,
@@ -994,6 +996,70 @@ assert(
     && cscBatchDateOnly[2]?.navDate === "2026-06-05",
 )
 
+const mingshiCtaSubject = "鸣石CTA套利1号量化私募证券投资基金_SAHZ51批量首次发送资产净值公告"
+const mingshiCtaBody =
+  "日期 产品代码 产品名称 基金份额净值 基金份额累计净值\n" +
+  "2026-08-27 SAHZ51 鸣石CTA套利1号量化私募证券投资基金 1.1443 1.2283"
+const mingshiCtaMeta = extractNavMetadata(mingshiCtaSubject, mingshiCtaBody)
+assert(
+  "csc CTA 资产净值公告 subject extracts SAHZ51 / 鸣石CTA套利1号量化",
+  mingshiCtaMeta.productCode === "SAHZ51"
+    && mingshiCtaMeta.fundName?.includes("鸣石CTA套利"),
+)
+const mingshiCtaHistory = extractNavHistoryFromBody(mingshiCtaSubject, mingshiCtaBody)
+assert(
+  "csc CTA fund-name history extracts SAHZ51 2026-08-27",
+  mingshiCtaHistory.length === 1
+    && mingshiCtaHistory[0]?.productCode === "SAHZ51"
+    && mingshiCtaHistory[0]?.navDate === "2026-08-27"
+    && mingshiCtaHistory[0]?.nav === 1.1443
+    && mingshiCtaHistory[0]?.cumulativeNav === 1.2283,
+)
+const mingshiCtaNav = extractNavData(mingshiCtaSubject, mingshiCtaBody)
+assert(
+  "csc CTA body table extracts unit NAV 1.1443",
+  mingshiCtaNav?.navDate === "2026-08-27"
+    && mingshiCtaNav?.nav === 1.1443
+    && mingshiCtaNav?.productCode === "SAHZ51",
+)
+
+const mingshiBatchSubject = "明石CTA套利1号量化私募证券投资基金_SAHZ51批量补发 资产净值公告"
+const mingshiBatchBody =
+  "日期 产品代码 产品名称 基金份额净值 基金份额累计净值\n" +
+  "2024-03-20 SAHZ51 鸣石CTA套利1号量化私募证券投资基金 1.0000 1.0000\n" +
+  "2024-03-21 SAHZ51 鸣石CTA套利1号量化私募证券投资基金 1.0000 1.0000\n" +
+  "2024-03-31 SAHZ51 鸣石CTA套利1号量化私募证券投资基金 1.0000 1.0000\n"
+const mingshiBatchHistory = extractNavHistoryFromBody(mingshiBatchSubject, mingshiBatchBody)
+assert(
+  "csc CTA 批量补发 history extracts multi-day SAHZ51 rows",
+  mingshiBatchHistory.length === 3
+    && mingshiBatchHistory[0]?.navDate === "2024-03-20"
+    && mingshiBatchHistory.at(-1)?.navDate === "2024-03-31"
+    && mingshiBatchHistory.every((r) => r.productCode === "SAHZ51"),
+)
+assert("csc 批量补发 with 1 stored date is incomplete", isCscBatchNavIncomplete(mingshiBatchSubject, 1) === true)
+assert("csc 批量补发 with history is complete", isCscBatchNavIncomplete(mingshiBatchSubject, 3) === false)
+
+const mingshiValZip = "2024-03-20至2024-08-27估值报表补发文件.zip"
+assert(
+  "csc 估值报表补发 zip is not treated as a NAV zip",
+  isNavTableZipFilename(mingshiValZip, mingshiBatchSubject) === false,
+)
+assert(
+  "csc 估值报表补发 zip is not selected as NAV attachment",
+  selectNavTableAttachments(mingshiBatchSubject, [{ filename: mingshiValZip, part: "2" }]).length === 0,
+)
+assert(
+  "csc 估值报表补发 zip is selected as valuation even when subject is 资产净值公告",
+  selectValuationAttachments(mingshiBatchSubject, [{ filename: mingshiValZip, part: "2" }]).length === 1,
+)
+assert("csc SAHZ51_总层面 canonicalizes to SAHZ51", canonicalizeEmailProductCode("SAHZ51_总层面") === "SAHZ51")
+assert("csc SX4966(总) canonicalizes to SX4966", canonicalizeEmailProductCode("SX4966(总)") === "SX4966")
+assert(
+  "csc CTA 资产净值公告 override strips 总层面 from product code",
+  applyEmailProductCodeOverride("SAHZ51_总层面", "鸣石CTA套利1号量化", mingshiCtaSubject) === "SAHZ51",
+)
+
 // CMS/招商 multi-product 【净值表】: subject names first fund, body/attachment has two codes.
 const cmsMultiSubject =
   '【净值表】杭州山信私募基金管理有限公司管理人旗下"山信至诚一号私募证券投资基金-SBAD05"等2个产品净值表发送20250620_20260724'
@@ -1075,6 +1141,44 @@ assert(
   "cms 等2个产品 with one stored code is incomplete",
   isCmsMultiProductNavIncomplete(shanxinAug21Subject, 1) === true
     && isCmsMultiProductNavIncomplete(shanxinAug21Subject, 2) === false,
+)
+
+const mingshiPioneerSubject =
+  '【净值表】上海鸣石私募基金管理有限公司管理人旗下"鸣石CTA先锋进取A号私募证券投资基金-SQS859"等5个产品净值表发送20180801_20260826'
+const mingshiPioneerMeta = extractNavMetadata(mingshiPioneerSubject, "")
+assert(
+  "cms 鸣石CTA先锋 subject extracts SQS859",
+  mingshiPioneerMeta.productCode === "SQS859"
+    && mingshiPioneerMeta.fundName?.includes("鸣石CTA先锋进取A号"),
+)
+const mingshiPioneerBody =
+  "日期 产品代码 产品名称 单位净值 累计单位净值\n" +
+  "2026年08月26日 SQS859 鸣石 CTA先锋进取A号私募证券投资基金 1.2388 1.4814\n" +
+  "2026年08月26日 SEA228 鸣石春天29号私募证券投资基金 1.0000 1.0000\n" +
+  "2026年08月26日 SJC016 鸣石春天28号私募证券投资基金 2.9588 2.9588\n" +
+  "2026年08月26日 SLP308 鸣石金选18号1期私募证券投资基金 3.0648 3.0648\n" +
+  "2026年08月26日 SNV347 鸣石傲华15号1期私募证券投资基金 1.5595 1.5595\n"
+const mingshiPioneerHistory = extractNavHistoryFromBody(mingshiPioneerSubject, mingshiPioneerBody)
+assert(
+  "cms 鸣石CTA先锋 HTML-spaced CTA name is kept with the other 4 products",
+  mingshiPioneerHistory.length === 5
+    && mingshiPioneerHistory.some(
+      (r) => r.productCode === "SQS859" && r.fundName?.includes("鸣石CTA先锋") && r.nav === 1.2388,
+    )
+    && mingshiPioneerHistory.some((r) => r.productCode === "SEA228")
+    && mingshiPioneerHistory.some((r) => r.productCode === "SNV347"),
+)
+assert(
+  "cms 发送每日净值信息.zip is a NAV zip on 净值表 subjects",
+  isNavTableZipFilename("发送每日净值信息.zip", mingshiPioneerSubject) === true
+    && selectNavTableAttachments(mingshiPioneerSubject, [
+      { filename: "发送每日净值信息.zip", part: "2" },
+    ]).length === 1,
+)
+assert(
+  "cms 等5个产品 with 4 stored codes is incomplete",
+  isCmsMultiProductNavIncomplete(mingshiPioneerSubject, 4) === true
+    && isCmsMultiProductNavIncomplete(mingshiPioneerSubject, 5) === false,
 )
 assert(
   "SBCK34 page matches email row by product_code even when email names 山信平诚",
@@ -2503,6 +2607,102 @@ if (fs.existsSync(excelPath)) {
   assert("BAH99A 近一年 is ~40% not ~11%", rets.ret_1y != null && rets.ret_1y > 0.35)
   const expected6m = 1.554 / 1.4311 - 1
   assert("BAH99A 近六月 still ~8.6%", rets.ret_6m != null && Math.abs(rets.ret_6m - expected6m) < 0.0001)
+}
+
+// 荣熙恒盈2号 (SBAH99): 在管产品 list used 单位净值 for 近一年 (~23%) after the May 分红
+// dropped unit while 复权 kept compounding (~43% on the fund-detail 区间指标 page).
+{
+  const hist = buildManagedProductListNavHistory("SBAH99")
+  const asOf = hist.filter((p) => p.nav_date <= "2026-06-23").at(-1)
+  const yearAgo = hist.filter((p) => p.nav_date <= "2025-06-23").at(-1)
+  assert("SBAH99 list history loaded", !!asOf && !!yearAgo)
+  assert(
+    "SBAH99 seed 复权 is above unit after 分红",
+    asOf.return_nav != null && asOf.return_nav > asOf.nav + 0.1,
+  )
+  const rets = calcPeriodReturnsFromHistory(hist, asOf.nav, asOf.nav_date, asOf)
+  const unit1y = asOf.nav / yearAgo.nav - 1
+  const adj1y = (asOf.return_nav ?? asOf.nav) / (yearAgo.return_nav ?? yearAgo.nav) - 1
+  assert("SBAH99 近一年 matches 复权", rets.ret_1y != null && Math.abs(rets.ret_1y - adj1y) < 0.0001)
+  assert("SBAH99 近一年 is not unit-NAV ~27%", Math.abs(rets.ret_1y - unit1y) > 0.1)
+  assert("SBAH99 近一年 is ~40%+ not ~23%", rets.ret_1y != null && rets.ret_1y > 0.35)
+
+  const post = [{ nav_date: "2026-08-27", unit_nav: "1.3517" }]
+  const histPost = buildManagedProductListNavHistory("SBAH99", post)
+  const latest = histPost.at(-1)
+  assert("SBAH99 post-seed point kept", latest?.nav_date === "2026-08-27")
+  assert(
+    "SBAH99 post-seed 复权 rechained above unit",
+    latest.return_nav != null && latest.return_nav > latest.nav + 0.1,
+  )
+  const retsPost = calcPeriodReturnsFromHistory(histPost, latest.nav, latest.nav_date, latest)
+  const unit1yPost = latest.nav / 1.0981 - 1
+  assert("SBAH99 post-seed unit 1y is the bogus ~23%", Math.abs(unit1yPost - 0.2309) < 0.001)
+  assert("SBAH99 post-seed 近一年 is not that ~23%", retsPost.ret_1y != null && Math.abs(retsPost.ret_1y - unit1yPost) > 0.1)
+  assert("SBAH99 post-seed 近一年 is ~40%+", retsPost.ret_1y != null && retsPost.ret_1y > 0.35)
+}
+
+// Same unit-vs-复权 list bug on other seeded 在管产品 (抱朴 / ABG50B).
+{
+  const hist = buildManagedProductListNavHistory("SSG947")
+  const asOf = hist.filter((p) => p.nav_date <= "2026-06-22").at(-1)
+  const yearAgo = hist.filter((p) => p.nav_date <= "2025-06-22").at(-1)
+  assert("SSG947 list history loaded", !!asOf && !!yearAgo)
+  assert("SSG947 seed 复权 is above unit after 分红", asOf.return_nav != null && asOf.return_nav > asOf.nav + 0.3)
+  const rets = calcPeriodReturnsFromHistory(hist, asOf.nav, asOf.nav_date, asOf)
+  const unit1y = asOf.nav / yearAgo.nav - 1
+  const adj1y = (asOf.return_nav ?? asOf.nav) / (yearAgo.return_nav ?? yearAgo.nav) - 1
+  assert("SSG947 近一年 matches 复权", rets.ret_1y != null && Math.abs(rets.ret_1y - adj1y) < 0.0001)
+  assert("SSG947 近一年 is not unit-NAV (unit is negative)", unit1y < 0 && rets.ret_1y > 0.15)
+}
+
+{
+  const hist = buildManagedProductListNavHistory("ABG50B")
+  const asOf = hist.filter((p) => p.nav_date <= "2026-07-31").at(-1)
+  const yearAgo = hist.filter((p) => p.nav_date <= "2025-07-31").at(-1)
+  assert("ABG50B list history loaded", !!asOf && !!yearAgo)
+  assert("ABG50B seed 复权 is above unit", asOf.return_nav != null && asOf.return_nav > asOf.nav + 0.1)
+  const rets = calcPeriodReturnsFromHistory(hist, asOf.nav, asOf.nav_date, asOf)
+  const unit1y = asOf.nav / yearAgo.nav - 1
+  assert("ABG50B 近一年 is 复权 not unit", rets.ret_1y != null && rets.ret_1y > 0 && unit1y < 0)
+}
+
+// Non-seed 在管产品: email/manual 累计+复权 must drive 近一年, not 单位净值.
+{
+  const team = [
+    { nav_date: "2025-08-27", unit_nav: "1.0981", cumulative_nav: "1.0981", adjusted_nav: "1.0981" },
+    { nav_date: "2026-01-30", unit_nav: "1.4208", cumulative_nav: "1.4208", adjusted_nav: "1.4208" },
+    { nav_date: "2026-05-06", unit_nav: "1.3705", cumulative_nav: "1.5805", adjusted_nav: "1.5805" },
+    { nav_date: "2026-08-27", unit_nav: "1.3517", cumulative_nav: "1.5617", adjusted_nav: "1.5765" },
+  ]
+  const hist = buildManagedProductListNavHistory("", [], team)
+  const latest = hist.at(-1)
+  assert("no-seed 分红 series kept latest", latest?.nav_date === "2026-08-27")
+  assert("no-seed 分红 series has 复权", latest.return_nav != null && latest.return_nav > latest.nav + 0.1)
+  const rets = calcPeriodReturnsFromHistory(hist, latest.nav, latest.nav_date, latest)
+  const unit1y = latest.nav / 1.0981 - 1
+  const adj1y = latest.return_nav / 1.0981 - 1
+  assert("no-seed 近一年 matches 复权", rets.ret_1y != null && Math.abs(rets.ret_1y - adj1y) < 0.0001)
+  assert("no-seed 近一年 is not unit ~23%", Math.abs(rets.ret_1y - unit1y) > 0.1)
+}
+
+{
+  const list = [
+    { nav_date: "2025-08-27", nav: 1.0981 },
+    { nav_date: "2026-08-27", nav: 1.3517 },
+  ]
+  const risk = [
+    { nav_date: "2025-08-27", nav: 1.0981, return_nav: 1.0981 },
+    { nav_date: "2026-08-27", nav: 1.3517, return_nav: 1.5765 },
+    { nav_date: "2026-08-26", nav: 0.97, return_nav: 1.10 },
+  ]
+  const aligned = attachAlignedReturnNav(list, risk)
+  assert("aligned 复权 copied when unit matches", Math.abs(aligned[1].return_nav - 1.5765) < 0.0001)
+  const skipped = attachAlignedReturnNav(
+    [{ nav_date: "2026-08-26", nav: 1.35 }],
+    [{ nav_date: "2026-08-26", nav: 0.97, return_nav: 1.10 }],
+  )
+  assert("aligned 复权 skipped when unit mismatches (SAVW72)", skipped[0].return_nav == null)
 }
 
 {

@@ -66,11 +66,18 @@ function normaliseDate(raw: string): string | null {
 const FUND_LEGAL_SUFFIX =
   "(?:私募证券投资基金|私募基金(?!管理)|证券投资基金|投资基金)"
 
-/** Allow ASCII letters in names (e.g. 衡颐承和FOF1号). */
+/** Allow ASCII letters in names (e.g. 衡颐承和FOF1号 / 鸣石CTA先锋). */
 const FUND_NAME_RE = new RegExp(
   `[\\u4e00-\\u9fffA-Za-z0-9]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?`,
   "u",
 )
+
+/**
+ * HTML tables from Tencent/CMS often wrap ASCII runs (CTA/FOF) in extra tags,
+ * which strip to spaces: `鸣石 CTA先锋进取A号私募证券投资基金`.
+ */
+const FUND_NAME_IN_TABLE =
+  `[\\u4e00-\\u9fffA-Za-z0-9]+(?:\\s+[\\u4e00-\\u9fffA-Za-z0-9]+)*${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?`
 
 const MANAGER_COMPANY_PREFIX_SOURCE =
   "[\\u4e00-\\u9fffA-Za-z0-9]*?(?:私募)?基金管理(?:（[^）]*）|\\([^)]*\\))?有限公司"
@@ -88,6 +95,7 @@ function finalizeExtractedFundName(raw: string | null | undefined): string | nul
   s = stripManagerCompanyPrefixes(s)
   s = s.replace(/^有限公司/u, "")
   s = s.replace(/^管理有限公司/u, "")
+  s = s.replace(/\s+/g, "")
   const normalized = normalizeFundDisplayName(s)
   if (!normalized) return null
   if (/管理有限公司|基金管理有限公司/u.test(normalized)) return null
@@ -134,7 +142,7 @@ function pickBestFundNameMatch(text: string): string | null {
 function parseCmsCustodyNavSubject(text: string): { code: string; fundName: string } | null {
   const quoted = text.match(
     new RegExp(
-      `管理人旗下[""''\\u201c\\u201d]([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)-([A-Z0-9]+)[""''\\u201c\\u201d]`,
+      `管理人旗下[""''\\u201c\\u201d](${FUND_NAME_RE.source})-([A-Z0-9]+)[""''\\u201c\\u201d]`,
       "u",
     ),
   )
@@ -146,7 +154,7 @@ function parseCmsCustodyNavSubject(text: string): { code: string; fundName: stri
   // Unquoted: 管理人旗下 山信至诚一号证券投资基金-SBA005等2个产品…
   const unquoted = text.match(
     new RegExp(
-      `管理人旗下\\s*([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)-([A-Z0-9]+)`,
+      `管理人旗下\\s*(${FUND_NAME_RE.source})-([A-Z0-9]+)`,
       "u",
     ),
   )
@@ -160,7 +168,7 @@ function parseCmsCustodyNavSubject(text: string): { code: string; fundName: stri
 function parseAssetNavAnnouncementSubject(text: string): { code: string; fundName: string } | null {
   const underscored = text.match(
     new RegExp(
-      `资产净值公告_([A-Z0-9]+)_([\\u4e00-\\u9fff\\d]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)_`,
+      `资产净值公告_([A-Z0-9]+)_([\\u4e00-\\u9fffA-Za-z0-9]+${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)_`,
       "u",
     ),
   )
@@ -519,6 +527,13 @@ function parseValuationTableSubject(text: string): { code: string; fundName: str
     /【估值表】\s*([A-Z0-9]{4,10})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})/u,
   )
   if (bracket) return { code: bracket[1], fundName: normalizeFundDisplayName(bracket[2]) }
+
+  // Manager-sent: 证券投资基金估值表_特夫郁金香全量化私募证券投资基金_20260826
+  // No 备案号 in the subject; caller fills product_code from NAV history.
+  const noCode = file.match(
+    /^(?:证券投资基金)?估值表_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})/u,
+  )
+  if (noCode) return { code: "", fundName: normalizeFundDisplayName(noCode[1]) }
   return null
 }
 
@@ -531,7 +546,7 @@ export function extractProductCodeFromText(text: string): string | null {
 
   const firstLine = text.split("\n")[0] ?? text
   const structured = resolveFromStructuredSubject(firstLine)
-  if (structured) return structured.code
+  if (structured?.code) return structured.code
 
   const assetNavSubj = text.match(/资产净值公告_([A-Z0-9]+)_/i)
   if (assetNavSubj) return assetNavSubj[1]
@@ -716,7 +731,7 @@ function matchCumulativeUnitNav(bodyText: string): RegExpMatchArray | null {
 
 function parseVirtualBracketSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
-    /【虚拟净值】([A-Z0-9]+)[\s_]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/u,
+    /【虚拟净值】([A-Z0-9]+)[\s_]([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/u,
   )
   if (!m) return null
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
@@ -801,7 +816,7 @@ export function extractNavData(
   // 净值日期 产品代码 产品名称 客户名称 单位净值 累计单位净值 虚拟单位净值 …
   if (/TA虚拟净值/u.test(subject) && /净值日期/.test(bodyText)) {
     const cfscRowM = bodyText.match(
-      /(\d{4}-\d{2}-\d{2})\s+([A-Z0-9]{4,10})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+[\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})(?:\s+(\d+\.\d{3,8}))?/u,
+      /(\d{4}-\d{2}-\d{2})\s+([A-Z0-9]{4,10})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+[\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})(?:\s+(\d+\.\d{3,8}))?/u,
     )
     if (cfscRowM) {
       return {
@@ -819,7 +834,7 @@ export function extractNavData(
   // ── 2a. Body: 【虚拟净值】GJDF table (单位净值 + 累计单位净值 + 虚拟单位净值) ─
   if (/【虚拟净值】/.test(subject) && /净值日期/.test(bodyText)) {
     const bracketRowM = bodyText.match(
-      /(\d{4}-\d{2}-\d{2})\s+[\s\S]*?\b([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))\s+[\d,]+(?:\.\d+)?\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s+[\d,.]+\s+(\d+\.\d{3,8})/u,
+      /(\d{4}-\d{2}-\d{2})\s+[\s\S]*?\b([A-Z0-9]{4,8})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))\s+[\d,]+(?:\.\d+)?\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s+[\d,.]+\s+(\d+\.\d{3,8})/u,
     )
     if (bracketRowM) {
       return {
@@ -946,7 +961,7 @@ export function extractNavData(
     && (/虚拟业绩报酬/.test(subject) || /虚拟单位净值/.test(bodyText))
   ) {
     const perfRowM = bodyText.match(
-      /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{8})\s+S[A-Z0-9]+\s+(.+?)\s+([\d,]+(?:\.\d+)?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
+      /([A-Z0-9]{4,8})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{8})\s+S[A-Z0-9]+\s+(.+?)\s+([\d,]+(?:\.\d+)?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
     )
     if (perfRowM) {
       const resolved = resolveHuataiPerfFeeNavTriple(
@@ -971,7 +986,10 @@ export function extractNavData(
   // 2026年06月08日 SBNX55 荣熙共赢私募证券投资基金 1.0065 1.0065
   // Use the row's own code/name — subject only names the first of 等N个产品.
   const cmsRowM = bodyText.match(
-    /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/u,
+    new RegExp(
+      `(\\d{4})年\\s*(\\d{1,2})月\\s*(\\d{1,2})日\\s*([A-Z0-9]{4,8})\\s*(${FUND_NAME_IN_TABLE})\\s+(\\d+\\.\\d+)\\s+(\\d+\\.\\d+)`,
+      "u",
+    ),
   )
   if (cmsRowM) {
     return {
@@ -980,7 +998,7 @@ export function extractNavData(
       cumulativeNav: parseFloat(cmsRowM[7]),
       adjustedNav: null,
       productCode: cmsRowM[4].toUpperCase(),
-      fundName: normalizeFundDisplayName(cmsRowM[5]) || shared.fundName,
+      fundName: normalizeFundDisplayName(cmsRowM[5].replace(/\s+/g, "")) || shared.fundName,
       source: "body_table",
     }
   }
@@ -988,7 +1006,7 @@ export function extractNavData(
   // ── 3c. Body: Guosen/国信托管 table row ───────────────────────────────────
   // 1 SAUV26 邦客鼎成精选私募证券投资基金 2026-07-09 未授权 未授权 1.3014 1.3014
   const guosenRowM = bodyText.match(
-    /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(20\d{2}-\d{2}-\d{2})\s+(?:\S+\s+)*?(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/u,
+    /([A-Z0-9]{4,8})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(20\d{2}-\d{2}-\d{2})\s+(?:\S+\s+)*?(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/u,
   )
   if (guosenRowM) {
     return {
@@ -1005,7 +1023,7 @@ export function extractNavData(
   // ── 3c2. Body: CSC/中信建投 资产净值公告 (DATE CODE NAME UNIT CUM) ─────────
   // 2026-07-24 SADE15 汉鸿景明1号私募证券投资基金 1.0007 1.0007
   const cscRowM = bodyText.match(
-    /(20\d{2}-\d{2}-\d{2})\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/u,
+    /(20\d{2}-\d{2}-\d{2})\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/u,
   )
   if (cscRowM) {
     return {
@@ -1023,7 +1041,7 @@ export function extractNavData(
   // 2026-07-09 2026-07-10 SB969A 铸锋太阿3号...A类 ... 1.0000 1 1 1000000.00
   if (/^虚拟净值-/u.test(subject) || /试算后单位净值/u.test(bodyText)) {
     const cjRowM = bodyText.match(
-      /(\d{4}-\d{2}-\d{2})\s+\d{4}-\d{2}-\d{2}\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)[\s\S]*?(\d+\.\d{2,8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+[\d,]+\.[\d]+/u,
+      /(\d{4}-\d{2}-\d{2})\s+\d{4}-\d{2}-\d{2}\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)[\s\S]*?(\d+\.\d{2,8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+[\d,]+\.[\d]+/u,
     )
     if (cjRowM) {
       return {
@@ -1091,16 +1109,22 @@ export function extractNavData(
 }
 
 /** Full fund-name segment in 资产净值公告 body tables (code name date unit cum). */
-const HISTORY_TABLE_ROW_RE =
-  /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{4}-\d{2}-\d{2})\s+(\d+\.\d+)\s+(\d+\.\d+)/g
+const HISTORY_TABLE_ROW_RE = new RegExp(
+  `([A-Z0-9]{4,8})\\s*(${FUND_NAME_IN_TABLE})\\s+(\\d{4}-\\d{2}-\\d{2})\\s+(\\d+\\.\\d+)\\s+(\\d+\\.\\d+)`,
+  "gu",
+)
 
 /** CSC/中信建投 资产净值公告: date code name unit cum. */
-const HISTORY_TABLE_ROW_DATE_FIRST_RE =
-  /(\d{4}-\d{2}-\d{2})\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/g
+const HISTORY_TABLE_ROW_DATE_FIRST_RE = new RegExp(
+  `(\\d{4}-\\d{2}-\\d{2})\\s+([A-Z0-9]{4,8})\\s*(${FUND_NAME_IN_TABLE})\\s+(\\d+\\.\\d+)\\s+(\\d+\\.\\d+)`,
+  "gu",
+)
 
 /** CMS/招商 净值表: 2026年07月24日 CODE NAME unit cum. */
-const HISTORY_TABLE_ROW_CMS_RE =
-  /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/gu
+const HISTORY_TABLE_ROW_CMS_RE = new RegExp(
+  `(\\d{4})年\\s*(\\d{1,2})月\\s*(\\d{1,2})日\\s*([A-Z0-9]{4,8})\\s*(${FUND_NAME_IN_TABLE})\\s+(\\d+\\.\\d+)\\s+(\\d+\\.\\d+)`,
+  "gu",
+)
 
 /** `等N个产品` in CMS/招商 【净值表】 subjects. */
 export function cmsMultiProductCountFromSubject(subject: string): number | null {
@@ -1121,6 +1145,15 @@ export function isCmsMultiProductNavIncomplete(
 }
 
 /**
+ * CSC 批量补发 HTML tables can span months. A single stored NAV date means the
+ * extractor missed the history (e.g. CTA/FOF/ETF ASCII in the fund name).
+ */
+export function isCscBatchNavIncomplete(subject: string, distinctNavDates: number): boolean {
+  if (!/批量补发/u.test(subject)) return false
+  return distinctNavDates < 2
+}
+
+/**
  * Batch 补发 tables sometimes put code/name only in the header/subject and
  * emit one `日期 单位净值 累计净值` row per line.
  */
@@ -1137,7 +1170,7 @@ function hasNavHistoryTable(bodyText: string, subject: string): boolean {
     /批量补发/u.test(subject) ||
     /资产净值公告/u.test(subject) ||
     (/管理人旗下/u.test(subject) && CMS_CHINESE_DATE_RE.test(bodyText)) ||
-    (cmsMultiProductCountFromSubject(subject) != null && CMS_CHINESE_DATE_RE.test(bodyText))
+    cmsMultiProductCountFromSubject(subject) != null
   )
 }
 
@@ -1219,7 +1252,7 @@ export function extractNavHistoryFromBody(
     const key = `${c.code}|${c.navDate}`
     if (seenKeys.has(key)) continue
     seenKeys.add(key)
-    const rowName = normalizeFundDisplayName(c.fundNameRaw)
+    const rowName = normalizeFundDisplayName(c.fundNameRaw.replace(/\s+/g, ""))
     const fundName =
       !multiProduct || !expectedCode || c.code === expectedCode
         ? shared.fundName ?? rowName

@@ -31,11 +31,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "fetch_amac_data"))
+sys.path.insert(0, str(ROOT / "scripts" / "db"))
 
 from amac_client import (  # noqa: E402
     DEFAULT_PAGE_SIZE,
     DEFAULT_REQUEST_DELAY,
     iter_fund_pages,
+)
+from amac_etl_lock import (  # noqa: E402
+    AMAC_LIST_LOCK_KEY,
+    acquire_advisory_lock,
+    execute_values_retry,
+    release_advisory_lock,
 )
 
 SOURCE_NAME = "amac_api"
@@ -271,8 +278,6 @@ def run_etl(
     request_delay: float = DEFAULT_REQUEST_DELAY,
     max_pages_override: int | None = None,
 ) -> dict:
-    from psycopg2.extras import execute_values
-
     try:
         incremental_max_pages = int(os.environ.get("AMAC_ETL_INCREMENTAL_MAX_PAGES", "80"))
     except ValueError:
@@ -291,112 +296,122 @@ def run_etl(
     rows_upserted = 0
     total_elements = 0
     full_sync = False
+    db_after = 0
+    private_fund_info_inserted = 0
+    mode = "incremental"
+    db_count = 0
 
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(DDL)
-            db_count = _get_db_count(cur)
-            full_sync = _should_run_full_sync(force_full, full_sync_dow) or db_count == 0
+    try:
+        acquire_advisory_lock(conn, AMAC_LIST_LOCK_KEY)
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(DDL)
+                db_count = _get_db_count(cur)
+                full_sync = _should_run_full_sync(force_full, full_sync_dow) or db_count == 0
 
-            if max_pages_override is not None and max_pages_override > 0:
-                pages_limit = max_pages_override
-                mode = "limited"
-            elif full_sync:
-                pages_limit = None
-                mode = "full"
-            else:
-                pages_limit = None
-                mode = "incremental"
+                if max_pages_override is not None and max_pages_override > 0:
+                    pages_limit = max_pages_override
+                    mode = "limited"
+                elif full_sync:
+                    pages_limit = None
+                    mode = "full"
+                else:
+                    pages_limit = None
+                    mode = "incremental"
 
-            print(
-                f"amac_private_funds_etl: mode={mode} db_count={db_count:,} "
-                f"pages_limit={pages_limit if pages_limit is not None else 'all'}"
-            )
-
-            def on_page(page: int, row_count: int, total: int) -> None:
-                nonlocal total_elements
-                total_elements = total
-                if page == 0 and total > 0:
-                    print(f"  AMAC total={total:,} funds on record")
-
-            if dry_run:
-                first_meta = None
-                for page_idx, rows, meta in iter_fund_pages(
-                    page_size=page_size,
-                    start_page=0,
-                    end_page=1,
-                    request_delay=request_delay,
-                    on_page=on_page,
-                ):
-                    _ = page_idx
-                    first_meta = meta
-                    rows_upserted += len(rows)
-                pages_fetched = 1
-                total_elements = int((first_meta or {}).get("total_elements", 0) or 0)
-                db_after = db_count
-                private_fund_info_inserted = 0
-            else:
-                incremental_pages_limit = pages_limit
-                for page_idx, rows, meta in iter_fund_pages(
-                    page_size=page_size,
-                    start_page=0,
-                    end_page=pages_limit if mode != "incremental" else None,
-                    request_delay=request_delay,
-                    on_page=on_page,
-                ):
-                    if mode == "incremental" and incremental_pages_limit is None:
-                        total_elements = int(meta.get("total_elements", 0) or 0)
-                        incremental_pages_limit = _pages_for_incremental(
-                            total_elements=total_elements,
-                            db_count=db_count,
-                            page_size=page_size,
-                            min_pages=incremental_min_pages,
-                            max_pages=incremental_max_pages,
-                        )
-                        print(
-                            f"  Incremental sync: fetching first {incremental_pages_limit} page(s)"
-                        )
-
-                    total_elements = int(meta.get("total_elements", 0) or 0)
-                    batch = _rows_to_tuples(rows)
-                    if batch:
-                        execute_values(cur, UPSERT_SQL, batch, page_size=1000)
-                        rows_upserted += len(batch)
-                    pages_fetched += 1
-                    # Commit in chunks so a 40-minute full sync does not hold one
-                    # transaction (and table lock) for the entire run.
-                    if pages_fetched % 20 == 0:
-                        conn.commit()
-                        print(f"  committed {pages_fetched} page(s), upserted={rows_upserted:,}")
-
-                    if (
-                        mode == "incremental"
-                        and incremental_pages_limit is not None
-                        and pages_fetched >= incremental_pages_limit
-                    ):
-                        break
-
-                conn.commit()
-
-                cur.execute("ANALYZE amac_private_funds")
-                db_after = _get_db_count(cur)
-                _save_sync_state(
-                    cur,
-                    total_elements=total_elements,
-                    db_count=db_after,
-                    pages_fetched=pages_fetched,
-                    rows_upserted=rows_upserted,
-                    full_sync=full_sync,
+                print(
+                    f"amac_private_funds_etl: mode={mode} db_count={db_count:,} "
+                    f"pages_limit={pages_limit if pages_limit is not None else 'all'}"
                 )
 
-                private_fund_info_inserted = 0
-                if sync_private_fund_info:
-                    cur.execute("SELECT to_regclass('public.private_fund_info')")
-                    if cur.fetchone()[0] is not None:
-                        cur.execute(INSERT_PRIVATE_FUND_INFO_SQL)
-                        private_fund_info_inserted = cur.rowcount
+                def on_page(page: int, row_count: int, total: int) -> None:
+                    nonlocal total_elements
+                    total_elements = total
+                    if page == 0 and total > 0:
+                        print(f"  AMAC total={total:,} funds on record")
 
-    conn.close()
+                if dry_run:
+                    first_meta = None
+                    for page_idx, rows, meta in iter_fund_pages(
+                        page_size=page_size,
+                        start_page=0,
+                        end_page=1,
+                        request_delay=request_delay,
+                        on_page=on_page,
+                    ):
+                        _ = page_idx
+                        first_meta = meta
+                        rows_upserted += len(rows)
+                    pages_fetched = 1
+                    total_elements = int((first_meta or {}).get("total_elements", 0) or 0)
+                    db_after = db_count
+                    private_fund_info_inserted = 0
+                else:
+                    incremental_pages_limit = pages_limit
+                    for page_idx, rows, meta in iter_fund_pages(
+                        page_size=page_size,
+                        start_page=0,
+                        end_page=pages_limit if mode != "incremental" else None,
+                        request_delay=request_delay,
+                        on_page=on_page,
+                    ):
+                        if mode == "incremental" and incremental_pages_limit is None:
+                            total_elements = int(meta.get("total_elements", 0) or 0)
+                            incremental_pages_limit = _pages_for_incremental(
+                                total_elements=total_elements,
+                                db_count=db_count,
+                                page_size=page_size,
+                                min_pages=incremental_min_pages,
+                                max_pages=incremental_max_pages,
+                            )
+                            print(
+                                f"  Incremental sync: fetching first {incremental_pages_limit} page(s)"
+                            )
+
+                        total_elements = int(meta.get("total_elements", 0) or 0)
+                        batch = _rows_to_tuples(rows)
+                        if batch:
+                            execute_values_retry(cur, UPSERT_SQL, batch, page_size=1000)
+                            rows_upserted += len(batch)
+                        pages_fetched += 1
+                        # Commit in chunks so a 40-minute full sync does not hold one
+                        # transaction (and table lock) for the entire run.
+                        if pages_fetched % 20 == 0:
+                            conn.commit()
+                            print(f"  committed {pages_fetched} page(s), upserted={rows_upserted:,}")
+
+                        if (
+                            mode == "incremental"
+                            and incremental_pages_limit is not None
+                            and pages_fetched >= incremental_pages_limit
+                        ):
+                            break
+
+                    conn.commit()
+
+                    cur.execute("ANALYZE amac_private_funds")
+                    db_after = _get_db_count(cur)
+                    _save_sync_state(
+                        cur,
+                        total_elements=total_elements,
+                        db_count=db_after,
+                        pages_fetched=pages_fetched,
+                        rows_upserted=rows_upserted,
+                        full_sync=full_sync,
+                    )
+
+                    private_fund_info_inserted = 0
+                    if sync_private_fund_info:
+                        cur.execute("SELECT to_regclass('public.private_fund_info')")
+                        if cur.fetchone()[0] is not None:
+                            cur.execute(INSERT_PRIVATE_FUND_INFO_SQL)
+                            private_fund_info_inserted = cur.rowcount
+    finally:
+        try:
+            release_advisory_lock(conn, AMAC_LIST_LOCK_KEY)
+        except Exception:
+            pass
+        conn.close()
 
     summary = {
         "ok": True,

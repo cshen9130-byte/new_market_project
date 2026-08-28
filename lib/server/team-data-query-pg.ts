@@ -15,7 +15,11 @@ import {
 } from "@/lib/server/email-nav-query"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
 import { expandBeiansWithShareClassFamily } from "@/lib/server/list-cache-nav-batch"
-import { shareClassProductCodesMatch, sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import {
+  canonicalizeEmailProductCode,
+  shareClassProductCodesMatch,
+  sqlFundNameMatch,
+} from "@/lib/server/fund-name-match"
 import {
   alternateBeianCodesFor,
   remapManagedProductBeianCode,
@@ -43,7 +47,7 @@ const TEAM_DATA_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
 
 /** Reject email product_codes that are clearly not 备案号 (e.g. C2026 = C + year). */
 function isPlausibleEmailProductCode(code: string | null | undefined): boolean {
-  const c = (code ?? "").trim().toUpperCase()
+  const c = canonicalizeEmailProductCode(code ?? "")
   if (!c) return false
   if (/^[ABC](?:19|20)\d{2}$/.test(c)) return false
   return /^[A-Z0-9]{4,10}$/.test(c)
@@ -1273,13 +1277,13 @@ function resolveFund(
   strategySource: "company" | "platform",
 ): ResolvedFund {
   const candidate = nameCandidate(row)
+  const code = canonicalizeEmailProductCode(row.product_code?.trim() || "") || null
   const fd = bestNamedMatch(indexes.fofDetailByNameBase, candidate)
   const track = bestNamedMatch(indexes.fofTrackByNameBase, candidate)
-  const bfl = bestBflMatch(indexes, candidate, row.product_code)
-  const t6 = bestT6Match(indexes, candidate, row.product_code)
+  const bfl = bestBflMatch(indexes, candidate, code)
+  const t6 = bestT6Match(indexes, candidate, code)
 
   const autoBeian = (() => {
-    const code = row.product_code?.trim() || null
     if (code && isPlausibleEmailProductCode(code) && codeMatchesShareClass(code, candidate)) {
       return code
     }
@@ -1798,7 +1802,14 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
     loadValuationPlatformNavTips(valuationCodes),
     valuationCodes.length > 0 || names.length > 0
       ? query<{ product_code: string | null; valuation_date: string; fund_name: string | null }>(
+          // Raw 估值表 records are the source of truth. metrics_latest is a
+          // snapshot that can lag (light IMAP polls abort before the rebuild).
           `SELECT product_code, valuation_date::text, fund_name
+           FROM ops_email_valuation_records
+           WHERE (cardinality($1::text[]) > 0 AND product_code = ANY($1::text[]))
+              OR (cardinality($2::text[]) > 0 AND fund_name = ANY($2::text[]))
+           UNION ALL
+           SELECT product_code, valuation_date::text, fund_name
            FROM ops_email_valuation_fund_metrics_latest
            WHERE (cardinality($1::text[]) > 0 AND product_code = ANY($1::text[]))
               OR (cardinality($2::text[]) > 0 AND fund_name = ANY($2::text[]))`,

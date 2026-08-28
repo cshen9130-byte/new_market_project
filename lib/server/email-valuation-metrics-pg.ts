@@ -156,6 +156,47 @@ export async function upsertValuationMetricsForRecord(data: EmailValuationMetric
      WHERE id = $1`,
     [data.valuationRecordId, data.custodyBalance, data.netAssetValue, data.paidInCapital],
   )
+
+  const fundName = (data.fundName ?? "").trim() || (data.productCode ?? "").trim()
+  if (!fundName || data.valuationRecordId <= 0) return
+
+  // Keep the list-page snapshot in sync even when the light IMAP job aborts
+  // before refreshValuationPipelineForTouchedFunds.
+  await query(
+    `INSERT INTO ops_email_valuation_fund_metrics_latest (
+       product_code, fund_name, valuation_date, valuation_record_id,
+       unit_nav, cumulative_nav, custody_balance, net_asset_value, paid_in_capital,
+       total_asset, total_liability, refreshed_at
+     )
+     VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+     ON CONFLICT (fund_name) DO UPDATE SET
+       product_code = EXCLUDED.product_code,
+       valuation_date = EXCLUDED.valuation_date,
+       valuation_record_id = EXCLUDED.valuation_record_id,
+       unit_nav = EXCLUDED.unit_nav,
+       cumulative_nav = EXCLUDED.cumulative_nav,
+       custody_balance = EXCLUDED.custody_balance,
+       net_asset_value = EXCLUDED.net_asset_value,
+       paid_in_capital = EXCLUDED.paid_in_capital,
+       total_asset = EXCLUDED.total_asset,
+       total_liability = EXCLUDED.total_liability,
+       refreshed_at = NOW()
+     WHERE ops_email_valuation_fund_metrics_latest.valuation_date IS NULL
+        OR EXCLUDED.valuation_date >= ops_email_valuation_fund_metrics_latest.valuation_date`,
+    [
+      data.productCode?.trim() || null,
+      fundName,
+      data.valuationDate,
+      data.valuationRecordId,
+      data.unitNav,
+      data.cumulativeNav,
+      data.custodyBalance,
+      data.netAssetValue,
+      data.paidInCapital,
+      data.totalAsset,
+      data.totalLiability,
+    ],
+  )
 }
 
 /** Rebuild latest fund metrics (在管产品) and FOF underlying 市值 (FOF底层). */
@@ -231,6 +272,20 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
          unit_nav, cumulative_nav, custody_balance, net_asset_value, paid_in_capital,
          total_asset, total_liability, custodian
        FROM latest_records
+       WHERE NULLIF(BTRIM(fund_name), '') IS NOT NULL
+       ON CONFLICT (fund_name) DO UPDATE SET
+         product_code = EXCLUDED.product_code,
+         valuation_date = EXCLUDED.valuation_date,
+         valuation_record_id = EXCLUDED.valuation_record_id,
+         unit_nav = EXCLUDED.unit_nav,
+         cumulative_nav = EXCLUDED.cumulative_nav,
+         custody_balance = EXCLUDED.custody_balance,
+         net_asset_value = EXCLUDED.net_asset_value,
+         paid_in_capital = EXCLUDED.paid_in_capital,
+         total_asset = EXCLUDED.total_asset,
+         total_liability = EXCLUDED.total_liability,
+         custodian = EXCLUDED.custodian,
+         refreshed_at = NOW()
        RETURNING 1
      )
      SELECT COUNT(*)::text AS n FROM inserted`,

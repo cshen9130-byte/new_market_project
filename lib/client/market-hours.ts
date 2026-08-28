@@ -115,6 +115,27 @@ export function isLiveSessionFor(symbol: string, now = new Date()) {
   return isCffexProduct(symbol) ? isCffexSession(now) : isCommoditySession(now, symbol)
 }
 
+function isShanghaiWeekday(now = new Date()) {
+  const { weekday } = shanghaiParts(now)
+  return weekday >= 1 && weekday <= 5
+}
+
+/**
+ * Last print to hold while a weekday session is between periods (tea / lunch /
+ * after night, before the next open). SimNow / 新浪 still tick then; we must not
+ * follow those prints live, but we also must not fall back to yesterday's settle
+ * or 当日浮动 goes to 0 for 黄金/商品 at lunch while 股指 already restarted.
+ * Weekend remains blocked so Sunday SimNow cannot hop 现价.
+ */
+export function weekdayClosedLast(
+  symbol: string,
+  quote?: { last?: number | null } | null,
+  now = new Date(),
+) {
+  if (isLiveSessionFor(symbol, now) || !isShanghaiWeekday(now)) return null
+  return validMark(quote?.last)
+}
+
 /**
  * 商品日线交易日：仅对有夜盘的品种，夜盘起算下一交易日（周五夜盘→下周一）。
  * 股指/国债/无夜盘品种返回上海日历日。

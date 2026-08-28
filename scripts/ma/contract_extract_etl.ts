@@ -20,7 +20,7 @@ configureEtlDbTimeout()
 const LOCAL_PORT = 5433
 const DEFAULT_TUNNEL_DB_URL = `postgresql://market_user:2026SmartDashboard%21@127.0.0.1:${LOCAL_PORT}/market_data`
 
-if (!process.env.DATABASE_URL?.includes(`:${LOCAL_PORT}/`)) {
+if (process.platform === "win32" && !process.env.DATABASE_URL?.includes(`:${LOCAL_PORT}/`)) {
   process.env.DATABASE_URL = DEFAULT_TUNNEL_DB_URL
 }
 process.env.CONTRACT_EXTRACT_SSH_HOST ||= "root@8.154.33.143"

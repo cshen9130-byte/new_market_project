@@ -114,9 +114,6 @@ CREATE TABLE IF NOT EXISTS amac_person_org_stats (
 CREATE INDEX IF NOT EXISTS idx_amac_person_org_stats_org_type
     ON amac_person_org_stats (org_type);
 
-CREATE INDEX IF NOT EXISTS idx_amac_person_org_stats_org_user_id
-    ON amac_person_org_stats (org_user_id);
-
 CREATE TABLE IF NOT EXISTS amac_manager_details (
     id                                      SERIAL PRIMARY KEY,
     registration_no                         TEXT NOT NULL,
@@ -300,11 +297,11 @@ SCHEMA_MIGRATIONS = [
     "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS org_name_spell TEXT",
     "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS personnel_fetched_at TIMESTAMPTZ",
     "ALTER TABLE amac_person_org_stats ADD COLUMN IF NOT EXISTS personnel_details_fetched_at TIMESTAMPTZ",
-    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS education_code TEXT",
-    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS apply_id TEXT",
-    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS apply_status TEXT",
-    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS detail_url TEXT",
-    "ALTER TABLE amac_personnel ADD COLUMN IF NOT EXISTS has_photo BOOLEAN",
+    "ALTER TABLE IF EXISTS amac_personnel ADD COLUMN IF NOT EXISTS education_code TEXT",
+    "ALTER TABLE IF EXISTS amac_personnel ADD COLUMN IF NOT EXISTS apply_id TEXT",
+    "ALTER TABLE IF EXISTS amac_personnel ADD COLUMN IF NOT EXISTS apply_status TEXT",
+    "ALTER TABLE IF EXISTS amac_personnel ADD COLUMN IF NOT EXISTS detail_url TEXT",
+    "ALTER TABLE IF EXISTS amac_personnel ADD COLUMN IF NOT EXISTS has_photo BOOLEAN",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_upserted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_orgs_fetched INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_certs_upserted INTEGER NOT NULL DEFAULT 0",

@@ -9,6 +9,7 @@ import { resolveCustodianFromValuationRecord } from "@/lib/server/email-valuatio
 import { replaceValuationHoldings } from "@/lib/server/email-valuation-holdings-pg"
 import { upsertValuationMetricsForRecord } from "@/lib/server/email-valuation-metrics-pg"
 import type { FofUnderlyingMetric } from "@/lib/server/email-valuation-metrics"
+import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 
 export type EmailValuationInsert = {
   crawlEmailAccount: string
@@ -111,6 +112,22 @@ export async function ensureEmailValuationTable(): Promise<void> {
   tableEnsured = true
 }
 
+async function lookupProductCodeByFundName(fundName: string): Promise<string | null> {
+  const name = fundName.trim()
+  if (!name) return null
+  const rows = await query<{ product_code: string }>(
+    `SELECT product_code
+     FROM ops_email_nav_records
+     WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+       AND ${sqlFundNameMatch("fund_name", "$1")}
+     ORDER BY nav_date DESC NULLS LAST, id DESC
+     LIMIT 1`,
+    [name],
+  ).catch(() => [] as Array<{ product_code: string }>)
+  const code = rows[0]?.product_code?.trim().toUpperCase() || ""
+  return /^[A-Z0-9]{4,10}$/.test(code) ? code : null
+}
+
 export async function upsertEmailValuationRecords(records: EmailValuationInsert[]): Promise<{
   recordsSaved: number
   holdingsSaved: number
@@ -121,6 +138,9 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
   let recordsSaved = 0
   let holdingsSaved = 0
   for (const r of records) {
+    if (!r.productCode?.trim() && r.fundName?.trim()) {
+      r.productCode = await lookupProductCodeByFundName(r.fundName)
+    }
     const custodian = resolveCustodianFromValuationRecord({
       custodian: r.custodian,
       summaryCustodian: r.summary?.custodian ?? null,
@@ -146,7 +166,7 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
          subject           = EXCLUDED.subject,
          sender_email      = EXCLUDED.sender_email,
          receiver_email    = COALESCE(NULLIF(EXCLUDED.receiver_email, ''), ops_email_valuation_records.receiver_email),
-         product_code      = EXCLUDED.product_code,
+         product_code      = COALESCE(NULLIF(BTRIM(EXCLUDED.product_code), ''), ops_email_valuation_records.product_code),
          fund_name         = EXCLUDED.fund_name,
          unit_nav          = EXCLUDED.unit_nav,
          cumulative_nav    = EXCLUDED.cumulative_nav,

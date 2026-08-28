@@ -1,4 +1,4 @@
-import { isLiveSessionFor, mergeClosedMarks, validMark } from "@/lib/client/market-hours"
+import { isLiveSessionFor, mergeClosedMarks, validMark, weekdayClosedLast } from "@/lib/client/market-hours"
 
 /** Yesterday's close + today's live P/L. Not initial capital + today's P/L. */
 export function allWeatherLiveNav(bookEquity: number, bookDailyPnl: number, liveDailyPnl: number) {
@@ -36,16 +36,25 @@ function tickPx(n: number | null | undefined) {
   return n != null && Number.isFinite(n) && n > 0 ? n : null
 }
 
+type LiveQuote = { last?: number | null; bid?: number | null; ask?: number | null }
+
+function quoteOf(quotes: Record<string, LiveQuote>, symbol: string) {
+  return quotes[symbol.toUpperCase()] || quotes[symbol]
+}
+
 /** Last trade, else live bid/ask, else the book's last close. Do not use 1m candles. */
 export function allWeatherLiveMark(
   symbol: string | undefined,
-  quotes: Record<string, { last?: number | null; bid?: number | null; ask?: number | null }>,
+  quotes: Record<string, LiveQuote>,
   fallback: number,
+  now = new Date(),
 ) {
   if (!symbol) return fallback
-  // SimNow / 新浪 still print after the bell. Closed-session last is not a new trade.
-  if (!isLiveSessionFor(symbol)) return fallback
-  const tick = quotes[symbol.toUpperCase()] || quotes[symbol]
+  const tick = quoteOf(quotes, symbol)
+  if (!isLiveSessionFor(symbol, now)) {
+    // Weekday lunch / tea: keep this morning (or last night) last. Do not pin to settle.
+    return weekdayClosedLast(symbol, tick, now) ?? fallback
+  }
   const last = tickPx(tick?.last)
   if (last != null) return last
   const bid = tickPx(tick?.bid)
@@ -58,12 +67,20 @@ export function allWeatherLiveMark(
 export function allWeatherFrozenMarks(
   prev: Record<string, number>,
   rows: Array<{ symbol?: string; price: number }>,
-  quotes: Record<string, { last?: number | null; bid?: number | null; ask?: number | null }>,
+  quotes: Record<string, LiveQuote>,
+  now = new Date(),
 ) {
   const incoming: Record<string, number> = {}
   for (const row of rows) {
     if (!row.symbol) continue
-    const px = allWeatherLiveMark(row.symbol, quotes, row.price)
+    const tick = quoteOf(quotes, row.symbol)
+    if (!isLiveSessionFor(row.symbol, now)) {
+      const closed = weekdayClosedLast(row.symbol, tick, now)
+      // Don't freeze the book fallback before a quote arrives, or lunch stays at yesterday.
+      if (closed != null) incoming[row.symbol.toUpperCase()] = closed
+      continue
+    }
+    const px = allWeatherLiveMark(row.symbol, quotes, row.price, now)
     if (validMark(px)) incoming[row.symbol.toUpperCase()] = px
   }
   return mergeClosedMarks(prev, incoming)

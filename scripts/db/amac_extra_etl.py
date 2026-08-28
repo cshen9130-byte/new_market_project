@@ -55,6 +55,7 @@ from fetch_amac_extra import (  # noqa: E402
     PERSON_ORG_ALL_BODY,
     PERSON_ORG_REFERER,
     REQUEST_DELAY,
+    AmacPageGone,
     as_text,
     get_html,
     iter_personnel_for_org,
@@ -62,6 +63,11 @@ from fetch_amac_extra import (  # noqa: E402
     parse_manager_detail,
     person_org_row,
     post_json,
+)
+from amac_etl_lock import (  # noqa: E402
+    AMAC_EXTRA_LOCK_KEY,
+    acquire_advisory_lock,
+    release_advisory_lock,
 )
 from amac_extra_db import (  # noqa: E402
     DELETE_PERSONNEL_FOR_ORG,
@@ -370,6 +376,24 @@ def _select_detail_targets(cur, manager_rows: list[dict], *, full_sync: bool, ba
     return list(targets_by_reg.values())
 
 
+def _touch_manager_detail(cur, mgr: dict, url: str, reason: str) -> None:
+    """Keep dead/failing detail pages from blocking the stale-refresh queue."""
+    reg = str(mgr.get("登记编号") or "").strip()
+    if not reg:
+        return
+    name = str(mgr.get("私募基金管理人名称") or "").strip() or None
+    cur.execute(
+        """
+        INSERT INTO amac_manager_details (
+            registration_no, manager_name_cn, detail_url, source_file
+        ) VALUES (%s, %s, %s, %s)
+        ON CONFLICT (registration_no) DO UPDATE SET
+            updated_at = NOW()
+        """,
+        (reg, name, url, reason),
+    )
+
+
 def _upsert_manager_details(
     session,
     cur,
@@ -391,6 +415,7 @@ def _upsert_manager_details(
     details_fetched = 0
     executives_upserted = 0
     resumes_upserted = 0
+    skipped = 0
     detail_batch: list[tuple] = []
     exec_batch: list[tuple] = []
     resume_batch: list[tuple] = []
@@ -433,8 +458,23 @@ def _upsert_manager_details(
         if not url:
             continue
 
-        html = get_html(session, url)
-        detail_row, exec_rows, resume_rows = parse_manager_detail(html, url)
+        try:
+            html = get_html(session, url)
+            detail_row, exec_rows, resume_rows = parse_manager_detail(html, url)
+        except AmacPageGone as exc:
+            skipped += 1
+            print(f"    skip HTTP {exc.status} {url}")
+            _touch_manager_detail(cur, mgr, url, f"http_{exc.status}")
+            cur.connection.commit()
+            time.sleep(delay)
+            continue
+        except Exception as exc:
+            skipped += 1
+            print(f"    skip {url}: {exc}")
+            _touch_manager_detail(cur, mgr, url, "fetch_error")
+            cur.connection.commit()
+            time.sleep(delay)
+            continue
         if not detail_row.get("登记编号"):
             detail_row["登记编号"] = mgr.get("登记编号", "")
         if not detail_row.get("基金管理人全称(中文)"):
@@ -471,7 +511,7 @@ def _upsert_manager_details(
     cur.execute("ANALYZE amac_manager_executive_resume")
     print(
         f"  Details upserted={details_fetched:,} executives={executives_upserted:,} "
-        f"resumes={resumes_upserted:,}"
+        f"resumes={resumes_upserted:,} skipped={skipped:,}"
     )
     return details_fetched, executives_upserted, resumes_upserted
 
@@ -632,90 +672,107 @@ def run_etl(
 
     conn = _connect()
     session = requests.Session()
+    managers_upserted = 0
+    person_org_upserted = 0
+    details_fetched = 0
+    executives_upserted = 0
+    resumes_upserted = 0
+    personnel_upserted = 0
+    personnel_orgs_fetched = 0
+    personnel_certs_upserted = 0
+    metrics_history_appended = 0
+    full_details_sync = False
+    mode = "incremental"
 
-    with conn:
-        with conn.cursor() as cur:
-            ensure_schema(cur)
-            cur.execute("SELECT COUNT(*) FROM amac_manager_details")
-            details_count = int(cur.fetchone()[0])
-            cur.execute("SELECT COUNT(*) FROM amac_personnel")
-            personnel_count = int(cur.fetchone()[0])
-            full_details_sync = _should_run_full_sync(force_full, full_sync_dow) or details_count == 0
-            mode = "full" if full_details_sync else "incremental"
+    try:
+        acquire_advisory_lock(conn, AMAC_EXTRA_LOCK_KEY)
+        with conn:
+            with conn.cursor() as cur:
+                ensure_schema(cur)
+                cur.execute("SELECT COUNT(*) FROM amac_manager_details")
+                details_count = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM amac_personnel")
+                personnel_count = int(cur.fetchone()[0])
+                full_details_sync = _should_run_full_sync(force_full, full_sync_dow) or details_count == 0
+                mode = "full" if full_details_sync else "incremental"
 
-            print(
-                f"amac_extra_etl: mode={mode} details_in_db={details_count:,} "
-                f"personnel_in_db={personnel_count:,} "
-                f"detail_batch_size={detail_batch_size if not full_details_sync else 'all'} "
-                f"personnel_batch_size={personnel_batch_size if not full_details_sync else 'all'}"
-            )
-
-            if dry_run:
-                first = post_json(session, "/api/pof/manager", 0, min(page_size, 10), {})
-                person_org = post_json(
-                    session,
-                    "/api/pof/personOrg",
-                    0,
-                    PERSON_API_PAGE_SIZE,
-                    dict(PERSON_ORG_ALL_BODY),
+                print(
+                    f"amac_extra_etl: mode={mode} details_in_db={details_count:,} "
+                    f"personnel_in_db={personnel_count:,} "
+                    f"detail_batch_size={detail_batch_size if not full_details_sync else 'all'} "
+                    f"personnel_batch_size={personnel_batch_size if not full_details_sync else 'all'}"
                 )
-                summary = {
-                    "ok": True,
-                    "dry_run": True,
-                    "mode": mode,
-                    "full_details_sync": full_details_sync,
-                    "managers_api_total": int(first.get("totalElements", 0)),
-                    "person_org_api_total": int(person_org.get("totalElements", 0)),
-                    "rows_upserted": len(first.get("content", [])),
-                }
-                print(json.dumps(summary, ensure_ascii=False))
-                return summary
 
-            managers_upserted, manager_rows = _upsert_managers(
-                session, cur, execute_values, page_size=page_size, delay=request_delay
-            )
-            conn.commit()
-            person_org_upserted = _upsert_person_org(
-                session, cur, execute_values, page_size=page_size, delay=request_delay
-            )
-            conn.commit()
-            details_fetched, executives_upserted, resumes_upserted = _upsert_manager_details(
-                session,
-                cur,
-                execute_values,
-                manager_rows,
-                full_sync=full_details_sync,
-                batch_size=0 if full_details_sync else detail_batch_size,
-                delay=request_delay,
-            )
-            conn.commit()
-            personnel_upserted, personnel_orgs_fetched, personnel_certs_upserted = _upsert_personnel(
-                session,
-                cur,
-                execute_values,
-                conn,
-                full_sync=full_details_sync,
-                batch_size=0 if full_details_sync else personnel_batch_size,
-                stale_size=0 if full_details_sync else personnel_stale_size,
-                delay=request_delay,
-            )
+                if dry_run:
+                    first = post_json(session, "/api/pof/manager", 0, min(page_size, 10), {})
+                    person_org = post_json(
+                        session,
+                        "/api/pof/personOrg",
+                        0,
+                        PERSON_API_PAGE_SIZE,
+                        dict(PERSON_ORG_ALL_BODY),
+                    )
+                    summary = {
+                        "ok": True,
+                        "dry_run": True,
+                        "mode": mode,
+                        "full_details_sync": full_details_sync,
+                        "managers_api_total": int(first.get("totalElements", 0)),
+                        "person_org_api_total": int(person_org.get("totalElements", 0)),
+                        "rows_upserted": len(first.get("content", [])),
+                    }
+                    print(json.dumps(summary, ensure_ascii=False))
+                    return summary
 
-            _save_sync_state(
-                cur,
-                managers_upserted=managers_upserted,
-                person_org_upserted=person_org_upserted,
-                details_fetched=details_fetched,
-                executives_upserted=executives_upserted,
-                resumes_upserted=resumes_upserted,
-                personnel_upserted=personnel_upserted,
-                personnel_orgs_fetched=personnel_orgs_fetched,
-                personnel_certs_upserted=personnel_certs_upserted,
-                full_details_sync=full_details_sync,
-            )
+                managers_upserted, manager_rows = _upsert_managers(
+                    session, cur, execute_values, page_size=page_size, delay=request_delay
+                )
+                conn.commit()
+                person_org_upserted = _upsert_person_org(
+                    session, cur, execute_values, page_size=page_size, delay=request_delay
+                )
+                conn.commit()
+                details_fetched, executives_upserted, resumes_upserted = _upsert_manager_details(
+                    session,
+                    cur,
+                    execute_values,
+                    manager_rows,
+                    full_sync=full_details_sync,
+                    batch_size=0 if full_details_sync else detail_batch_size,
+                    delay=request_delay,
+                )
+                conn.commit()
+                personnel_upserted, personnel_orgs_fetched, personnel_certs_upserted = _upsert_personnel(
+                    session,
+                    cur,
+                    execute_values,
+                    conn,
+                    full_sync=full_details_sync,
+                    batch_size=0 if full_details_sync else personnel_batch_size,
+                    stale_size=0 if full_details_sync else personnel_stale_size,
+                    delay=request_delay,
+                )
 
-            metrics_history_appended = append_manager_metrics_history(cur)
+                _save_sync_state(
+                    cur,
+                    managers_upserted=managers_upserted,
+                    person_org_upserted=person_org_upserted,
+                    details_fetched=details_fetched,
+                    executives_upserted=executives_upserted,
+                    resumes_upserted=resumes_upserted,
+                    personnel_upserted=personnel_upserted,
+                    personnel_orgs_fetched=personnel_orgs_fetched,
+                    personnel_certs_upserted=personnel_certs_upserted,
+                    full_details_sync=full_details_sync,
+                )
 
-    conn.close()
+                metrics_history_appended = append_manager_metrics_history(cur)
+    finally:
+        try:
+            release_advisory_lock(conn, AMAC_EXTRA_LOCK_KEY)
+        except Exception:
+            pass
+        conn.close()
     rows_upserted = (
         managers_upserted
         + person_org_upserted

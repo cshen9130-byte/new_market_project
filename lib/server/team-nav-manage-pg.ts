@@ -7,7 +7,10 @@ import {
   type EmailNavPoint,
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
-import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import {
+  loadManagedProductNavSeed,
+  type TeamNavListPoint,
+} from "@/lib/server/managed-product-nav-seed"
 
 export type TeamNavManageRow = {
   id: string
@@ -146,14 +149,24 @@ export async function loadManagedProductTeamNavTips(
 export async function loadManualTeamNavBatch(
   beianHaos: string[],
   nav_type: "pre_fee" | "virtual" = "pre_fee",
-): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
+): Promise<Map<string, TeamNavListPoint[]>> {
   await ensureTeamNavManualTable()
   const codes = [...new Set(beianHaos.map((b) => b.trim()).filter(Boolean))]
-  const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  const out = new Map<string, TeamNavListPoint[]>()
   if (codes.length === 0) return out
 
-  const rows = await query<{ beian_hao: string; nav_date: string; unit_nav: string }>(
-    `SELECT beian_hao, nav_date::text AS nav_date, unit_nav::text AS unit_nav
+  const rows = await query<{
+    beian_hao: string
+    nav_date: string
+    unit_nav: string
+    cumulative_nav: string | null
+    adjusted_nav: string | null
+  }>(
+    `SELECT beian_hao,
+            nav_date::text AS nav_date,
+            unit_nav::text AS unit_nav,
+            cumulative_nav::text AS cumulative_nav,
+            adjusted_nav::text AS adjusted_nav
      FROM ops_team_nav_manual
      WHERE beian_hao = ANY($1::text[]) AND nav_type = $2
      ORDER BY beian_hao, nav_date ASC`,
@@ -161,10 +174,30 @@ export async function loadManualTeamNavBatch(
   )
   for (const row of rows) {
     const list = out.get(row.beian_hao) ?? []
-    list.push({ nav_date: row.nav_date, unit_nav: row.unit_nav })
+    list.push({
+      nav_date: row.nav_date,
+      unit_nav: row.unit_nav,
+      cumulative_nav: row.cumulative_nav,
+      adjusted_nav: row.adjusted_nav,
+    })
     out.set(row.beian_hao, list)
   }
   return out
+}
+
+function upsertTeamNavPoint(
+  byDate: Map<string, TeamNavListPoint>,
+  point: TeamNavListPoint,
+  overwriteUnit: boolean,
+): void {
+  const nav_date = point.nav_date.slice(0, 10)
+  const prev = byDate.get(nav_date)
+  byDate.set(nav_date, {
+    nav_date,
+    unit_nav: overwriteUnit || !prev ? point.unit_nav : prev.unit_nav,
+    cumulative_nav: point.cumulative_nav ?? prev?.cumulative_nav ?? null,
+    adjusted_nav: point.adjusted_nav ?? prev?.adjusted_nav ?? null,
+  })
 }
 
 /**
@@ -176,8 +209,8 @@ export async function loadManualTeamNavBatch(
  */
 export async function loadManagedProductTeamNavBatch(
   items: Array<{ beian_hao: string; product_name: string; short_name?: string | null }>,
-): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
-  const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+): Promise<Map<string, TeamNavListPoint[]>> {
+  const out = new Map<string, TeamNavListPoint[]>()
   if (items.length === 0) return out
 
   const codes = [...new Set(items.map((item) => item.beian_hao.trim()).filter(Boolean))]
@@ -185,11 +218,19 @@ export async function loadManagedProductTeamNavBatch(
 
   const [manualMap, emailRows] = await Promise.all([
     loadManualTeamNavBatch(codes),
-    query<{ code: string; nav_date: string; nav: string }>(
+    query<{
+      code: string
+      nav_date: string
+      nav: string
+      cumulative_nav: string | null
+      adjusted_nav: string | null
+    }>(
       `SELECT DISTINCT ON (BTRIM(product_code), nav_date)
               BTRIM(product_code) AS code,
               nav_date::text AS nav_date,
-              nav::text AS nav
+              nav::text AS nav,
+              cumulative_nav::text AS cumulative_nav,
+              adjusted_nav::text AS adjusted_nav
        FROM ops_email_nav_records
        WHERE BTRIM(product_code) = ANY($1::text[])
          AND nav IS NOT NULL
@@ -198,31 +239,40 @@ export async function loadManagedProductTeamNavBatch(
       [codes],
     ).catch((err) => {
       console.warn("[team-nav-batch] email load failed:", err)
-      return [] as Array<{ code: string; nav_date: string; nav: string }>
+      return [] as Array<{
+        code: string
+        nav_date: string
+        nav: string
+        cumulative_nav: string | null
+        adjusted_nav: string | null
+      }>
     }),
   ])
 
-  const emailByCode = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  const emailByCode = new Map<string, TeamNavListPoint[]>()
   for (const row of emailRows) {
     const code = (row.code ?? "").trim()
     if (!code) continue
     const list = emailByCode.get(code) ?? []
-    list.push({ nav_date: row.nav_date.slice(0, 10), unit_nav: row.nav })
+    list.push({
+      nav_date: row.nav_date.slice(0, 10),
+      unit_nav: row.nav,
+      cumulative_nav: row.cumulative_nav,
+      adjusted_nav: row.adjusted_nav,
+    })
     emailByCode.set(code, list)
   }
 
   for (const code of codes) {
-    const byDate = new Map<string, string>()
+    const byDate = new Map<string, TeamNavListPoint>()
     for (const point of emailByCode.get(code) ?? []) {
-      byDate.set(point.nav_date, point.unit_nav)
+      upsertTeamNavPoint(byDate, point, true)
     }
-    // Manual upload wins on the same date (matches loadManagedProductEmailPoints).
+    // Manual upload wins unit on the same date (matches loadManagedProductEmailPoints).
     for (const point of manualMap.get(code) ?? []) {
-      byDate.set(point.nav_date.slice(0, 10), point.unit_nav)
+      upsertTeamNavPoint(byDate, { ...point, nav_date: point.nav_date.slice(0, 10) }, true)
     }
-    const series = [...byDate.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([nav_date, unit_nav]) => ({ nav_date, unit_nav }))
+    const series = [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
     out.set(code, series)
   }
 
@@ -232,9 +282,9 @@ export async function loadManagedProductTeamNavBatch(
 /** Post-seed NAV extensions for managed-product overrides (email + manual team). */
 export async function loadManagedProductPostSeedExtensions(
   beianHaos: string[],
-): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
+): Promise<Map<string, TeamNavListPoint[]>> {
   const codes = [...new Set(beianHaos.map((b) => b.trim()).filter(Boolean))]
-  const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  const out = new Map<string, TeamNavListPoint[]>()
   if (codes.length === 0) return out
 
   const seedLatestByBeian = new Map<string, string>()
@@ -248,11 +298,19 @@ export async function loadManagedProductPostSeedExtensions(
   const minSeedLatest = [...seedLatestByBeian.values()].sort()[0]
   const [teamMap, emailRows] = await Promise.all([
     loadManualTeamNavBatch(codes),
-    query<{ code: string; nav_date: string; nav: string }>(
+    query<{
+      code: string
+      nav_date: string
+      nav: string
+      cumulative_nav: string | null
+      adjusted_nav: string | null
+    }>(
       `SELECT DISTINCT ON (BTRIM(product_code), nav_date)
               BTRIM(product_code) AS code,
               nav_date::text AS nav_date,
-              nav::text AS nav
+              nav::text AS nav,
+              cumulative_nav::text AS cumulative_nav,
+              adjusted_nav::text AS adjusted_nav
        FROM ops_email_nav_records
        WHERE BTRIM(product_code) = ANY($1::text[])
          AND nav_date > $2::date
@@ -265,17 +323,22 @@ export async function loadManagedProductPostSeedExtensions(
   for (const code of codes) {
     const seedLatest = seedLatestByBeian.get(code)
     if (!seedLatest) continue
-    const byDate = new Map<string, { nav_date: string; unit_nav: string }>()
+    const byDate = new Map<string, TeamNavListPoint>()
     for (const row of emailRows) {
       const nav_date = row.nav_date.slice(0, 10)
       if (row.code !== code || nav_date <= seedLatest) continue
       if (!isChinaTradingDay(nav_date)) continue
-      byDate.set(nav_date, { nav_date, unit_nav: row.nav })
+      upsertTeamNavPoint(byDate, {
+        nav_date,
+        unit_nav: row.nav,
+        cumulative_nav: row.cumulative_nav,
+        adjusted_nav: row.adjusted_nav,
+      }, true)
     }
     for (const row of teamMap.get(code) ?? []) {
       const nav_date = row.nav_date.slice(0, 10)
       if (nav_date <= seedLatest || !isChinaTradingDay(nav_date)) continue
-      byDate.set(nav_date, { nav_date, unit_nav: row.unit_nav })
+      upsertTeamNavPoint(byDate, { ...row, nav_date }, true)
     }
     out.set(
       code,

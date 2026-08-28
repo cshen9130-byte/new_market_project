@@ -13,6 +13,7 @@ import {
 } from "@/lib/server/fof-underlying-query"
 import {
   addDays,
+  attachAlignedReturnNav,
   BatchNavResolver,
   calcPeriodReturnsFromHistory,
   chunkedInsert,
@@ -22,6 +23,7 @@ import {
   loadBflStrategies,
   loadOpsStrategyAndTags,
   loadPrivateFundRiskMetrics,
+  NAV_HISTORY_LOOKBACK_DAYS,
 } from "@/lib/server/list-cache-nav-batch"
 import { resolveManagedProductBeian, lookupManagedProductOverride, MANAGED_PRODUCT_BEIAN_OVERRIDES } from "@/lib/server/managed-product-beian"
 import {
@@ -409,10 +411,11 @@ export async function refreshManagedProductsListCache(
         ? navResolver.calcPeriodReturns(identity, unitNav, navDate)
         : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
 
-    // Prefer the same team/seed unit series used for list NAV (avoids contaminated
+    // Prefer the same team/seed series used for list NAV (avoids contaminated
     // email/legacy merges, e.g. 金舆基石一号 近一周 −11.89% vs max DD −6.35%).
+    // Period returns use 复权净值 on that series (SBAH99 近一年 was unit ~23% vs 复权 ~43%).
     if (unitNav != null && navDate) {
-      const listHistory = buildManagedProductListNavHistory(
+      let listHistory = buildManagedProductListNavHistory(
         beian || managedOverride?.beian_hao || "",
         managedOverride
           ? (postSeedByBeian.get(managedOverride.beian_hao) ?? [])
@@ -420,6 +423,13 @@ export async function refreshManagedProductsListCache(
         fullTeamByBeian.get(beian || managedOverride?.beian_hao || "") ?? [],
       )
       if (listHistory.length >= 2) {
+        listHistory = attachAlignedReturnNav(
+          listHistory,
+          navResolver.mergedHistoryForRiskMetrics(
+            identity,
+            addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS),
+          ),
+        )
         returns = calcPeriodReturnsFromHistory(listHistory, unitNav, navDate)
       }
     }

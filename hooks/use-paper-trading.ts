@@ -7,7 +7,7 @@ import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/univ
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
 import { allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
-import { isLiveSessionFor, validMark } from "@/lib/client/market-hours"
+import { isLiveSessionFor, validMark, weekdayClosedLast } from "@/lib/client/market-hours"
 import {
   ALL_WEATHER_PORTFOLIO_ID,
   applyAllWeatherBook,
@@ -56,6 +56,8 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   const [awLoading, setAwLoading] = useState(false)
   const [awConfirm, setAwConfirm] = useState<AwOrderConfirm | null>(null)
   const prevMarks = useRef<Record<string, number>>({})
+  /** First weekday lunch/tea last, so SimNow cannot hop 当日浮动 after we capture it. */
+  const closedHolds = useRef<Record<string, number>>({})
   const skipSave = useRef(true)
   const hydrated = useRef(false)
   const lastSaved = useRef({ team: "", mine: "" })
@@ -530,8 +532,17 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   }, [selectedPortfolio?.id, state.products, state.positions, quotes, candles, extraMarks, marginOf])
 
   const awTickMark = useCallback((symbol: string | undefined, fallback: number) => {
-    if (symbol && !isLiveSessionFor(symbol)) {
-      const key = symbol.toUpperCase()
+    if (!symbol) return fallback
+    const key = symbol.toUpperCase()
+    if (!isLiveSessionFor(symbol)) {
+      const held = validMark(closedHolds.current[key])
+      if (held) return held
+      const quote = quotes[key] || quotes[symbol]
+      const closed = weekdayClosedLast(symbol, quote)
+      if (closed != null) {
+        closedHolds.current[key] = closed
+        return closed
+      }
       return (
         validMark(prevMarks.current[key]) ??
         validMark(prevMarks.current[symbol]) ??
@@ -540,6 +551,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
         fallback
       )
     }
+    if (closedHolds.current[key] != null) delete closedHolds.current[key]
     return allWeatherLiveMark(symbol, quotes, fallback)
   }, [quotes, extraMarks])
 

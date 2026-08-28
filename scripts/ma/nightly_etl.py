@@ -2957,6 +2957,62 @@ def _to_ts_code(code: str) -> str:
     return f"{c}.SZ"
 
 
+def _ashare_name_records_from_df(df) -> list[tuple[str, str]]:
+    if df is None or getattr(df, "empty", True):
+        return []
+    cols = {str(c): c for c in df.columns}
+    code_col = cols.get("code") or cols.get("代码") or list(df.columns)[0]
+    name_col = cols.get("name") or cols.get("名称")
+    if name_col is None:
+        return []
+    records: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for _, row in df.iterrows():
+        raw = str(row.get(code_col, "")).strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) < 6:
+            continue
+        name = str(row.get(name_col, "")).strip()
+        if not name:
+            continue
+        ts_code = _to_ts_code(digits[-6:])
+        if ts_code in seen:
+            continue
+        seen.add(ts_code)
+        records.append((ts_code, name[:100]))
+    return records
+
+
+def _fetch_ashare_stock_name_records() -> list[tuple[str, str]]:
+    """East Money name list is often RemoteDisconnected; fall back to Sina spot."""
+    import time
+
+    import akshare as ak
+
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            df = ak.stock_info_a_code_name()
+            records = _ashare_name_records_from_df(df)
+            if len(records) >= 3000:
+                return records
+            last_exc = RuntimeError(f"stock_info_a_code_name returned only {len(records)} rows")
+            log.warning("A-share stock names: %s (attempt %d/3)", last_exc, attempt)
+        except Exception as exc:
+            last_exc = exc
+            log.warning("A-share stock names: AkShare failed (attempt %d/3): %s", attempt, exc)
+        time.sleep(1.5 * attempt)
+
+    log.warning("A-share stock names: falling back to Sina spot codes (%s)", last_exc)
+    df = ak.stock_zh_a_spot()
+    records = _ashare_name_records_from_df(df)
+    if len(records) < 3000:
+        raise RuntimeError(
+            f"A-share stock names: Sina spot too small ({len(records)} rows); last error={last_exc}"
+        )
+    return records
+
+
 def step_ashare_stock_names(conn, *, force: bool = False) -> int:
     """Sync A-share ts_code → Chinese name from AkShare stock_info_a_code_name().
 
@@ -3021,24 +3077,17 @@ def step_ashare_stock_names(conn, *, force: bool = False) -> int:
                 log.info("A-share stock names: %d missing codes on latest day — refreshing.", missing)
 
     try:
-        import akshare as ak
+        import akshare
     except ImportError:
         log.warning("A-share stock names: akshare not installed, skipping.")
         return 0
 
     log.info("A-share stock names: fetching from AkShare …")
-    df = ak.stock_info_a_code_name()
-    if df is None or df.empty:
-        log.warning("A-share stock names: empty response.")
+    try:
+        records = _fetch_ashare_stock_name_records()
+    except Exception as exc:
+        log.warning("A-share stock names: skipped — %s", exc)
         return 0
-
-    records: list[tuple[str, str]] = []
-    for _, row in df.iterrows():
-        code = str(row.get("code", "")).strip()
-        name = str(row.get("name", "")).strip()
-        if not code or not name:
-            continue
-        records.append((_to_ts_code(code), name[:100]))
 
     if not records:
         return 0

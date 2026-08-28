@@ -1750,6 +1750,33 @@ export class BatchNavResolver {
   }
 }
 
+/**
+ * Copy 复权 from the detail/risk series onto list points whose unit NAV matches
+ * that date. Skips mismatched units so SAVW72-style contaminated merges cannot
+ * overwrite the list series.
+ */
+export function attachAlignedReturnNav<T extends { nav_date: string; nav: number; return_nav?: number }>(
+  listHistory: T[],
+  riskHistory: Array<{ nav_date: string; nav: number; return_nav?: number }>,
+): T[] {
+  if (listHistory.length === 0 || riskHistory.length === 0) return listHistory
+  const riskByDate = new Map<string, { nav: number; return_nav?: number }>()
+  for (const p of riskHistory) riskByDate.set(p.nav_date, p)
+  return listHistory.map((p) => {
+    const existing = p.return_nav
+    if (existing != null && Number.isFinite(existing) && existing > 0 && Math.abs(existing / p.nav - 1) > 0.02) {
+      return p
+    }
+    const risk = riskByDate.get(p.nav_date)
+    if (!risk || !(risk.nav > 0)) return p
+    const unitRatio = p.nav / risk.nav
+    if (unitRatio < 0.995 || unitRatio > 1.005) return p
+    const adj = risk.return_nav ?? risk.nav
+    if (!(adj > 0)) return p
+    return { ...p, return_nav: adj }
+  })
+}
+
 /** Period returns from a pre-built ascending NAV history (team/seed series for 在管产品). */
 export function calcPeriodReturnsFromHistory(
   historyAsc: NavPoint[],
@@ -1757,9 +1784,10 @@ export function calcPeriodReturnsFromHistory(
   navDate: string,
   latestPoint?: NavPoint | null,
 ): Record<(typeof RETURN_OFFSETS)[number]["key"], number | null> {
+  const history = enrichReturnNavSeries(historyAsc)
   const latest =
-    latestPoint
-    ?? historyAsc.filter((p) => p.nav_date <= navDate).at(-1)
+    history.filter((p) => p.nav_date <= navDate).at(-1)
+    ?? latestPoint
     ?? null
   const latestReturnNav = navForReturn(latest, unitNav)
   const out = {} as Record<(typeof RETURN_OFFSETS)[number]["key"], number | null>
@@ -1769,13 +1797,13 @@ export function calcPeriodReturnsFromHistory(
   }
   for (const { key, days } of RETURN_OFFSETS) {
     const base = resolvePeriodBaseFromHistory(
-      historyAsc,
+      history,
       navDate,
       days,
       latestReturnNav,
     )
     let ret = calcReturn(latestReturnNav, navForReturn(base))
-    ret = capPeriodReturnByDrawdown(ret, historyAsc, navDate, days)
+    ret = capPeriodReturnByDrawdown(ret, history, navDate, days)
     out[key] = ret
   }
   return out

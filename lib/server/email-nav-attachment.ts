@@ -25,7 +25,7 @@ const PRODUCT_MATERIAL_SUBJECT_RE =
 const NAV_TABLE_FILENAME_RE =
   /净值波动表|净值表|每日净值|资产净值公告|净值公告|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|^虚拟净值-|业绩报酬试算|净值试算结果|试算结果/u
 const NAV_TABLE_ZIP_FILENAME_RE =
-  /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值波动表|净值表|净值序列|历史净值/i
+  /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值波动表|净值表|净值序列|历史净值|每日净值|净值信息/i
 
 /** Pure 业绩报酬 ledgers stay excluded; Xingye 业绩报酬试算表 / 试算结果 are NAV sources. */
 function isExcludedNavAttachment(filename: string, subject = ""): boolean {
@@ -54,6 +54,12 @@ export function isNavTableAttachmentFilename(filename: string): boolean {
 /** Batch 补发 zips of 资产净值公告 spreadsheets (CSC 信报报表补发文件.zip). */
 export function isNavTableZipFilename(filename: string, subject = ""): boolean {
   if (!/\.zip$/i.test(filename.trim())) return false
+  // `…估值报表补发文件.zip` packs 估值表 workbooks, not 资产净值公告 sheets.
+  // Must run before the subject fallback: CSC 批量补发 mails often say 资产净值公告
+  // while attaching a valuation zip.
+  if (/估值报表|估值表/i.test(filename) && !/资产净值|净值公告|净值波动表|净值表|净值序列|历史净值/i.test(filename)) {
+    return false
+  }
   if (isExcludedNavAttachment(filename, subject) && !NAV_TABLE_ZIP_FILENAME_RE.test(filename)) {
     return false
   }

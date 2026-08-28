@@ -530,6 +530,9 @@ export function selectValuationAttachments(
   )
   const explicit = spreadsheets.filter((a) => isValuationAttachmentFilename(a.filename))
   if (explicit.length > 0) return explicit
+  // CSC 批量补发 subjects say 资产净值公告 but attach `估值报表补发文件.zip`.
+  const valuationNamedZips = zips.filter((a) => /估值表|估值报表/i.test(a.filename))
+  if (valuationNamedZips.length > 0) return valuationNamedZips
   if (valuationSubject) {
     return spreadsheets.filter((a) => !/净值波动表|净值表|每日净值|资产净值公告|净值公告/i.test(a.filename))
   }
