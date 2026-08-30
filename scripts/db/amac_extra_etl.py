@@ -11,16 +11,18 @@ Tables: amac_managers, amac_person_org_stats, amac_manager_details,
 
 Nightly incremental (default):
   - Full refresh of manager list + every institution's person-org stats
+  - Personnel lists for 私募 orgs not yet fetched (no per-person detail on first fill)
   - Manager detail pages for new managers + a rotating stale batch
-  - Personnel for orgs not yet fetched (list + personDetail.html), plus a rotating stale batch
+  - personDetail.html for a rotating batch of already-listed 私募 orgs
 
 Weekly full sync (default Sunday, AMAC_ETL_FULL_SYNC_DOW=6):
-  - Re-fetch all manager detail pages (~19k HTML requests)
-  - Re-fetch personnel for every institution
+  - Re-fetch all manager detail pages (~19k HTML requests), unless personnel is still empty
+  - Re-fetch personnel lists for every 私募 institution (not banks / brokers)
 
 Usage:
     python scripts/db/amac_extra_etl.py
     python scripts/db/amac_extra_etl.py --full
+    python scripts/db/amac_extra_etl.py --skip-details
     python scripts/db/amac_extra_etl.py --dry-run
 
 Env:
@@ -28,6 +30,8 @@ Env:
     AMAC_EXTRA_ETL_DETAIL_BATCH_SIZE    — stale managers refreshed nightly (default 300)
     AMAC_EXTRA_ETL_PERSONNEL_BATCH_SIZE — max orgs whose people lists to fetch (0 = all missing + stale)
     AMAC_EXTRA_ETL_PERSONNEL_STALE_SIZE — already-fetched orgs to refresh nightly (default 300)
+    AMAC_EXTRA_ETL_PERSONNEL_ORG_TYPE   — keep orgs whose 机构类型 contains this (default 私募; empty = all)
+    AMAC_EXTRA_ETL_PERSONNEL_MAX_STAFF  — skip orgs above this staff_count (default 2000; 0 = no cap)
     AMAC_EXTRA_ETL_REQUEST_DELAY        — delay between AMAC requests (default 0.3)
     AMAC_EXTRA_ETL_PAGE_SIZE            — API page size (default 100)
 """
@@ -73,6 +77,7 @@ from amac_extra_db import (  # noqa: E402
     DELETE_PERSONNEL_FOR_ORG,
     DELETE_PERSONNEL_HISTORY_FOR_ORG,
     MARK_PERSONNEL_FETCHED,
+    MARK_PERSONNEL_LIST_FETCHED,
     SELECT_PERSONNEL_TARGETS,
     UPSERT_EXECUTIVE_RESUME,
     UPSERT_EXECUTIVES,
@@ -516,29 +521,94 @@ def _upsert_manager_details(
     return details_fetched, executives_upserted, resumes_upserted
 
 
+DEFAULT_PERSONNEL_ORG_TYPE = "私募"
+DEFAULT_PERSONNEL_MAX_STAFF = 2000
+
+
+def _personnel_filter_settings() -> tuple[str, int]:
+    org_type = os.environ.get("AMAC_EXTRA_ETL_PERSONNEL_ORG_TYPE", DEFAULT_PERSONNEL_ORG_TYPE).strip()
+    try:
+        max_staff = int(os.environ.get("AMAC_EXTRA_ETL_PERSONNEL_MAX_STAFF", str(DEFAULT_PERSONNEL_MAX_STAFF)))
+    except ValueError:
+        max_staff = DEFAULT_PERSONNEL_MAX_STAFF
+    return org_type, max_staff
+
+
+def _keep_personnel_org(
+    org_type: str | None,
+    staff_count: int | None,
+    *,
+    org_type_substr: str,
+    max_staff: int,
+) -> bool:
+    if org_type_substr and org_type_substr not in (org_type or ""):
+        return False
+    if max_staff > 0 and int(staff_count or 0) > max_staff:
+        return False
+    return True
+
+
 def _select_personnel_targets(
     cur,
     *,
     full_sync: bool,
     batch_size: int,
     stale_size: int,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, bool]]:
+    org_type_substr, max_staff = _personnel_filter_settings()
     cur.execute(SELECT_PERSONNEL_TARGETS)
-    rows = [(as_text(r[0]), as_text(r[1]), r[2], r[3], r[4]) for r in cur.fetchall() if as_text(r[0])]
-    if full_sync:
-        return [(org_user_id, org_name) for org_user_id, org_name, _staff, _fetched, _details in rows]
+    raw_rows = cur.fetchall()
+    kept: list[tuple[str, str, int | None, object, object]] = []
+    skipped_type = 0
+    skipped_staff = 0
+    for row in raw_rows:
+        org_user_id = as_text(row[0])
+        if not org_user_id:
+            continue
+        org_name = as_text(row[1])
+        staff_count = row[2]
+        fetched_at = row[3]
+        details_at = row[4]
+        org_type = as_text(row[5]) if len(row) > 5 else ""
+        if not _keep_personnel_org(
+            org_type,
+            staff_count,
+            org_type_substr=org_type_substr,
+            max_staff=max_staff,
+        ):
+            if org_type_substr and org_type_substr not in (org_type or ""):
+                skipped_type += 1
+            else:
+                skipped_staff += 1
+            continue
+        kept.append((org_user_id, org_name, staff_count, fetched_at, details_at))
 
-    missing = [
-        (org_user_id, org_name)
-        for org_user_id, org_name, _staff, fetched_at, details_at in rows
-        if fetched_at is None or details_at is None
+    print(
+        f"  personnel filter: keep={len(kept):,} skip_type={skipped_type:,} "
+        f"skip_staff={skipped_staff:,} type~{org_type_substr!r} max_staff={max_staff}",
+        flush=True,
+    )
+
+    if full_sync:
+        return [(org_user_id, org_name, False) for org_user_id, org_name, _s, _f, _d in kept]
+
+    detail_cap = stale_size if stale_size > 0 else 300
+    missing_list = [
+        (org_user_id, org_name, False)
+        for org_user_id, org_name, _s, fetched_at, _d in kept
+        if fetched_at is None
     ]
+    need_details = [
+        (org_user_id, org_name, True)
+        for org_user_id, org_name, _s, fetched_at, details_at in kept
+        if fetched_at is not None and details_at is None
+    ][:detail_cap]
     stale = [
-        (org_user_id, org_name)
-        for org_user_id, org_name, _staff, fetched_at, details_at in rows
+        (org_user_id, org_name, True)
+        for org_user_id, org_name, _s, fetched_at, details_at in kept
         if fetched_at is not None and details_at is not None
-    ]
-    targets = missing + stale[: max(0, stale_size)]
+    ][:detail_cap]
+    targets = missing_list + need_details + stale
     if batch_size > 0:
         targets = targets[:batch_size]
     return targets
@@ -577,24 +647,33 @@ def _upsert_personnel(
         cur, full_sync=full_sync, batch_size=batch_size, stale_size=stale_size
     )
     if not targets:
-        print("  No personnel org lists to fetch.")
+        print("  No personnel org lists to fetch.", flush=True)
         return 0, 0, 0
 
-    mode = "full" if full_sync else "incremental"
-    print(f"  Fetching personnel ({mode}): {len(targets):,} orgs …")
+    mode = "full-list" if full_sync else "incremental"
+    detail_orgs = sum(1 for _uid, _name, fetch_details in targets if fetch_details)
+    print(
+        f"  Fetching personnel ({mode}): {len(targets):,} orgs "
+        f"(list-only={len(targets) - detail_orgs:,} details={detail_orgs:,}) …",
+        flush=True,
+    )
 
     people_upserted = 0
     certs_upserted = 0
     orgs_fetched = 0
     page_size = PERSON_API_PAGE_SIZE
 
-    for idx, (org_user_id, org_name) in enumerate(targets, start=1):
+    for idx, (org_user_id, org_name, fetch_details) in enumerate(targets, start=1):
         try:
             people_rows, history_rows = iter_personnel_for_org(
-                session, org_user_id, page_size=page_size, delay=delay
+                session,
+                org_user_id,
+                page_size=page_size,
+                delay=delay,
+                fetch_details=fetch_details,
             )
         except Exception as exc:
-            print(f"    skip {org_name} ({org_user_id}): {exc}")
+            print(f"    skip {org_name} ({org_user_id}): {exc}", flush=True)
             time.sleep(delay)
             continue
         people = dedupe_tuples(
@@ -614,25 +693,29 @@ def _upsert_personnel(
         if history:
             execute_values(cur, UPSERT_PERSONNEL_CERT_HISTORY, history, page_size=500)
             certs_upserted += len(history)
-        cur.execute(MARK_PERSONNEL_FETCHED, (org_user_id,))
+        cur.execute(
+            MARK_PERSONNEL_FETCHED if fetch_details else MARK_PERSONNEL_LIST_FETCHED,
+            (org_user_id,),
+        )
         orgs_fetched += 1
+        conn.commit()
 
-        if idx % 20 == 0:
-            conn.commit()
-        if idx % 100 == 0 or idx == len(targets):
+        if idx <= 5 or idx % 20 == 0 or idx == len(targets):
+            kind = "detail" if fetch_details else "list"
             print(
                 f"    personnel progress: {idx:,}/{len(targets):,} "
-                f"orgs people={people_upserted:,} certs={certs_upserted:,}"
-                f"  last={org_name}"
+                f"orgs people={people_upserted:,} certs={certs_upserted:,} "
+                f"last={org_name} ({kind})",
+                flush=True,
             )
         time.sleep(delay)
 
-    conn.commit()
     cur.execute("ANALYZE amac_personnel")
     cur.execute("ANALYZE amac_personnel_cert_history")
     print(
         f"  Personnel orgs={orgs_fetched:,} people={people_upserted:,} "
-        f"cert_history={certs_upserted:,}"
+        f"cert_history={certs_upserted:,}",
+        flush=True,
     )
     return people_upserted, orgs_fetched, certs_upserted
 
@@ -641,6 +724,7 @@ def run_etl(
     *,
     force_full: bool = False,
     dry_run: bool = False,
+    skip_details: bool = False,
     page_size: int = PAGE_SIZE,
     request_delay: float = REQUEST_DELAY,
     detail_batch_size: int | None = None,
@@ -649,6 +733,11 @@ def run_etl(
 ) -> dict:
     import requests
     from psycopg2.extras import execute_values
+
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
 
     try:
         full_sync_dow = int(os.environ.get("AMAC_ETL_FULL_SYNC_DOW", "6"))
@@ -682,6 +771,7 @@ def run_etl(
     personnel_certs_upserted = 0
     metrics_history_appended = 0
     full_details_sync = False
+    full_personnel_sync = False
     mode = "incremental"
 
     try:
@@ -693,14 +783,27 @@ def run_etl(
                 details_count = int(cur.fetchone()[0])
                 cur.execute("SELECT COUNT(*) FROM amac_personnel")
                 personnel_count = int(cur.fetchone()[0])
-                full_details_sync = _should_run_full_sync(force_full, full_sync_dow) or details_count == 0
-                mode = "full" if full_details_sync else "incremental"
+                personnel_backfill = personnel_count == 0
+                want_weekly_full = _should_run_full_sync(force_full, full_sync_dow)
+                # Empty people table wins over Sunday's 19k manager-detail scrape.
+                full_details_sync = (
+                    (want_weekly_full or details_count == 0)
+                    and not personnel_backfill
+                    and not skip_details
+                )
+                full_personnel_sync = want_weekly_full or personnel_backfill
+                mode = "full" if full_details_sync else (
+                    "personnel-backfill" if personnel_backfill else "incremental"
+                )
 
                 print(
                     f"amac_extra_etl: mode={mode} details_in_db={details_count:,} "
                     f"personnel_in_db={personnel_count:,} "
+                    f"full_details={full_details_sync} full_personnel={full_personnel_sync} "
+                    f"skip_details={skip_details} "
                     f"detail_batch_size={detail_batch_size if not full_details_sync else 'all'} "
-                    f"personnel_batch_size={personnel_batch_size if not full_details_sync else 'all'}"
+                    f"personnel_batch_size={personnel_batch_size if not full_personnel_sync else 'all'}",
+                    flush=True,
                 )
 
                 if dry_run:
@@ -732,26 +835,30 @@ def run_etl(
                     session, cur, execute_values, page_size=page_size, delay=request_delay
                 )
                 conn.commit()
-                details_fetched, executives_upserted, resumes_upserted = _upsert_manager_details(
-                    session,
-                    cur,
-                    execute_values,
-                    manager_rows,
-                    full_sync=full_details_sync,
-                    batch_size=0 if full_details_sync else detail_batch_size,
-                    delay=request_delay,
-                )
-                conn.commit()
                 personnel_upserted, personnel_orgs_fetched, personnel_certs_upserted = _upsert_personnel(
                     session,
                     cur,
                     execute_values,
                     conn,
-                    full_sync=full_details_sync,
-                    batch_size=0 if full_details_sync else personnel_batch_size,
-                    stale_size=0 if full_details_sync else personnel_stale_size,
+                    full_sync=full_personnel_sync,
+                    batch_size=0 if full_personnel_sync else personnel_batch_size,
+                    stale_size=0 if full_personnel_sync else personnel_stale_size,
                     delay=request_delay,
                 )
+                conn.commit()
+                if skip_details:
+                    print("  Skipping manager detail pages (--skip-details).", flush=True)
+                else:
+                    details_fetched, executives_upserted, resumes_upserted = _upsert_manager_details(
+                        session,
+                        cur,
+                        execute_values,
+                        manager_rows,
+                        full_sync=full_details_sync,
+                        batch_size=0 if full_details_sync else detail_batch_size,
+                        delay=request_delay,
+                    )
+                    conn.commit()
 
                 _save_sync_state(
                     cur,
@@ -811,6 +918,11 @@ def run_etl(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch AMAC extra data into PostgreSQL.")
     parser.add_argument("--full", action="store_true", help="Full manager-detail + personnel refresh.")
+    parser.add_argument(
+        "--skip-details",
+        action="store_true",
+        help="Skip manager-detail HTML pages; still fetch manager list + personnel.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Probe AMAC API only; do not write.")
     parser.add_argument("--page-size", type=int, default=PAGE_SIZE)
     parser.add_argument("--delay", type=float, default=REQUEST_DELAY)
@@ -837,6 +949,7 @@ def main() -> int:
         run_etl(
             force_full=args.full,
             dry_run=args.dry_run,
+            skip_details=args.skip_details,
             page_size=args.page_size,
             request_delay=args.delay,
             detail_batch_size=batch_size,

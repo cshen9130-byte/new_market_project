@@ -502,6 +502,12 @@ ON CONFLICT (history_id) DO UPDATE SET
 
 DELETE_PERSONNEL_FOR_ORG = "DELETE FROM amac_personnel WHERE org_user_id = %s"
 DELETE_PERSONNEL_HISTORY_FOR_ORG = "DELETE FROM amac_personnel_cert_history WHERE org_user_id = %s"
+MARK_PERSONNEL_LIST_FETCHED = """
+UPDATE amac_person_org_stats
+SET personnel_fetched_at = NOW()
+WHERE org_user_id = %s
+"""
+
 MARK_PERSONNEL_FETCHED = """
 UPDATE amac_person_org_stats
 SET personnel_fetched_at = NOW(),
@@ -510,7 +516,8 @@ WHERE org_user_id = %s
 """
 
 SELECT_PERSONNEL_TARGETS = """
-SELECT org_user_id, org_name, staff_count, personnel_fetched_at, personnel_details_fetched_at
+SELECT org_user_id, org_name, staff_count, personnel_fetched_at,
+       personnel_details_fetched_at, org_type
 FROM amac_person_org_stats
 WHERE org_user_id IS NOT NULL AND org_user_id <> ''
 ORDER BY
@@ -519,9 +526,7 @@ ORDER BY
         WHEN personnel_details_fetched_at IS NULL THEN 1
         ELSE 2
     END,
-    personnel_fetched_at ASC NULLS FIRST,
-    personnel_details_fetched_at ASC NULLS FIRST,
-    COALESCE(staff_count, 0) DESC,
+    COALESCE(staff_count, 0) ASC,
     org_name
 """
 

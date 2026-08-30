@@ -46,6 +46,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -4812,28 +4813,38 @@ def step_amac_extra(force_full: bool = False) -> int:
         timeout,
         ", full detail sync" if force_full or weekly_full else ", incremental",
     )
-    result = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout,
-        env={**os.environ},
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
         cwd=str(project_root),
     )
-    stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
-    if stdout:
-        for line in stdout.splitlines():
-            log.info(line)
-    if stderr:
-        for line in stderr.splitlines():
-            log.info(line)
-    if result.returncode != 0:
+    stdout_lines: list[str] = []
+    assert proc.stdout is not None
+
+    def _pump_amac_extra_output() -> None:
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            if line:
+                log.info(line)
+                stdout_lines.append(line)
+
+    pump = threading.Thread(target=_pump_amac_extra_output, daemon=True)
+    pump.start()
+    pump.join(timeout)
+    if pump.is_alive():
+        proc.kill()
+        raise RuntimeError(f"amac_extra_etl.py timed out after {timeout}s")
+    proc.wait()
+    stdout = "\n".join(stdout_lines).strip()
+    if proc.returncode != 0:
         raise RuntimeError(
-            f"amac_extra_etl.py failed (exit {result.returncode}): "
-            f"{stderr or stdout or 'no output'}"
+            f"amac_extra_etl.py failed (exit {proc.returncode}): "
+            f"{stdout or 'no output'}"
         )
 
     summary = None

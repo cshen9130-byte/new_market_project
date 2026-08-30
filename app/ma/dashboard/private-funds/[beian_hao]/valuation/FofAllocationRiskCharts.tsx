@@ -27,6 +27,7 @@ type Props = {
   loading?: boolean
   netAssetValue?: number | null
   otherHoldings?: OtherHoldingRow[]
+  weightStorageKey?: string
 }
 
 function isStockRow(row: FundHoldingRow): boolean {
@@ -56,6 +57,7 @@ export function FofAllocationRiskCharts({
   loading,
   netAssetValue,
   otherHoldings = [],
+  weightStorageKey,
 }: Props) {
   const holdings = useMemo(
     () => fundHoldings.filter((r) => !isStockRow(r) && !isCashOrNonFundRow(r) && r.marketValue > 0),
@@ -223,6 +225,7 @@ export function FofAllocationRiskCharts({
         otherHoldings={otherHoldings}
         netAssetValue={netAssetValue}
         strategyTrend={strategyTrend}
+        weightStorageKey={weightStorageKey}
       />
 
       <div className="mt-4 grid grid-cols-2 gap-3">

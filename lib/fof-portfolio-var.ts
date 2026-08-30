@@ -71,7 +71,7 @@ export type FofNavGap = {
 
 export type FofGapAction =
   | { kind: "ignore" }
-  | { kind: "proxy"; proxyKey: string }
+  | { kind: "proxy"; proxyKey: string; proxyName?: string }
   | { kind: "assume"; annVolPct: number; corr: number }
 
 export type FofPortfolioVarResult = {
@@ -458,6 +458,57 @@ function suggestProxies(
     .map((c) => ({ key: c.key, name: c.name, strategy: c.strategy }))
 }
 
+function seriesMatchesProxyKey(series: FofVarSeries, proxyKey: string): boolean {
+  const key = proxyKey.trim().toUpperCase()
+  if (!key) return false
+  if ((series.beianHao?.trim() || "").toUpperCase() === key) return true
+  if ((series.valuationCode?.trim() || "").toUpperCase() === key) return true
+  if (fofHoldingKey({
+    fundName: series.fundName,
+    beianHao: series.beianHao,
+    valuationCode: series.valuationCode,
+  }) === key) return true
+  return nameKeys(series.fundName).some((k) => k.toUpperCase() === key)
+    || nameKeys(series.displayName).some((k) => k.toUpperCase() === key)
+}
+
+function resolveProxySource(
+  proxyKey: string,
+  classified: Array<{
+    key: string
+    name: string
+    points: FofNavPoint[]
+    nativeAnnVol: number | null
+    ready: boolean
+  }>,
+  extraSeries: FofVarSeries[],
+  fromDate?: string,
+  toDate?: string,
+): { name: string; points: FofNavPoint[]; nativeAnnVol: number | null } | null {
+  const fromHolding = classified.find((c) => c.key === proxyKey && c.ready)
+  if (fromHolding) {
+    return {
+      name: fromHolding.name,
+      points: fromHolding.points,
+      nativeAnnVol: fromHolding.nativeAnnVol,
+    }
+  }
+
+  const extra = extraSeries.find((s) => seriesMatchesProxyKey(s, proxyKey))
+  if (!extra) return null
+  const points = slicePoints(extra.points, fromDate, toDate)
+  const rets = nativeReturns(points)
+  if (rets.length < MIN_RETURNS || points.length < MIN_RETURNS + 1) return null
+  const gap = medianGap(points.map((p) => p.date))
+  const { ppy } = periodsPerYear(gap)
+  const nativeAnnVol = rets.length >= 2 ? sampleStd(rets) * Math.sqrt(ppy) : null
+  return {
+    name: extra.displayName || normalizeFofDisplayName(extra.fundName),
+    points,
+    nativeAnnVol,
+  }
+}
+
 function synthesizeReturns(
   length: number,
   annVol: number,
@@ -525,11 +576,13 @@ export function computeFofPortfolioVar(input: {
   confidence?: FofVarConfidence
   method?: FofVarMethod
   overrides?: Record<string, FofGapAction>
+  proxySeries?: FofVarSeries[]
 }): FofPortfolioVarResult | null {
   const confidence = input.confidence ?? 95
   const method = input.method ?? "parametric"
   const zScore = Z_SCORE[confidence]
   const overrides = input.overrides ?? {}
+  const proxySeries = input.proxySeries ?? []
   const totalMv = input.holdings.reduce((s, h) => s + Math.max(h.marketValue, 0), 0)
   if (totalMv <= 0 || input.holdings.length === 0) return null
 
@@ -636,23 +689,26 @@ export function computeFofPortfolioVar(input: {
     }
   }
 
+  function applyProxy(item: Classified, proxyKey: string): boolean {
+    const proxy = resolveProxySource(proxyKey, classified, proxySeries, input.fromDate, input.toDate)
+    if (!proxy) return false
+    universe.push({
+      key: item.key,
+      holding: item.holding,
+      name: item.name,
+      points: proxy.points,
+      nativeAnnVol: proxy.nativeAnnVol,
+      actualDates: new Set(proxy.points.map((p) => p.date)),
+      fill: "proxy",
+      fillNote: `代理 ${proxy.name}`,
+    })
+    return true
+  }
+
   for (const item of pending) {
     const action = overrides[item.key] ?? { kind: "ignore" }
-    if (action.kind === "proxy") {
-      const proxy = classified.find((c) => c.key === action.proxyKey && c.ready)
-      if (proxy) {
-        universe.push({
-          key: item.key,
-          holding: item.holding,
-          name: item.name,
-          points: proxy.points,
-          nativeAnnVol: proxy.nativeAnnVol,
-          actualDates: new Set(proxy.points.map((p) => p.date)),
-          fill: "proxy",
-          fillNote: `代理 ${proxy.name}`,
-        })
-        continue
-      }
+    if (action.kind === "proxy" && applyProxy(item, action.proxyKey)) {
+      continue
     }
     if (action.kind === "assume") {
       continue
@@ -665,21 +721,8 @@ export function computeFofPortfolioVar(input: {
     const item = classified.find((c) => c.key === f.key)
     if (!item) continue
     const action = overrides[item.key] ?? { kind: "ignore" }
-    if (action.kind === "proxy") {
-      const proxy = classified.find((c) => c.key === action.proxyKey && c.ready)
-      if (proxy) {
-        universe.push({
-          key: item.key,
-          holding: item.holding,
-          name: item.name,
-          points: proxy.points,
-          nativeAnnVol: proxy.nativeAnnVol,
-          actualDates: new Set(proxy.points.map((p) => p.date)),
-          fill: "proxy",
-          fillNote: `代理 ${proxy.name}`,
-        })
-        continue
-      }
+    if (action.kind === "proxy" && applyProxy(item, action.proxyKey)) {
+      continue
     }
     if (action.kind === "assume") continue
     pushGap(item, "late_start")

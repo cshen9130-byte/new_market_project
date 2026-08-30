@@ -215,7 +215,11 @@ export type FundValuationAllocationResult = {
   term_analysis: TermAnalysisRow[]
   has_data: boolean
   match_method: string | null
+  /** Bump when snapshot payload shape/filters change so stale cache is skipped. */
+  cache_schema?: number
 }
+
+const ALLOCATION_CACHE_SCHEMA = 2
 
 const ROW_KIND_LABELS: Record<string, string> = {
   bank_deposit: "托管户现金",
@@ -223,6 +227,7 @@ const ROW_KIND_LABELS: Record<string, string> = {
   margin_deposit: "存出保证金",
   clearing: "证券清算款",
   derivative: "衍生品",
+  option: "期权",
   stock: "股票",
   bond: "债券",
   private_fund: "私募基金",
@@ -865,7 +870,7 @@ function mapHoldingToDetailRow(h: HoldingRow, netAssetValue: number): Omit<Valua
   return {
     assetName: String(h.subject_name ?? h.symbol ?? "").trim(),
     valuationCode: resolveHoldingValuationCode(h),
-    category: labelForRowKind(h.row_kind ?? "other"),
+    category: otherHoldingCategory(h),
     quantity: (() => {
       const qty = parseNum(h.quantity)
       return qty > 0 ? qty : null
@@ -886,7 +891,7 @@ function buildEquityDetailHoldings(
 ): ValuationHoldingDetailRow[] {
   return holdings
     .filter((h) => h.include_in_detail !== false && filter(h))
-    .filter((h) => Math.abs(rowMarketValue(h)) > 0)
+    .filter((h) => Math.abs(rowMarketValue(h)) > 0 || isDerivativeNotionalHolding(h))
     .map((h) => mapHoldingToDetailRow(h, netAssetValue))
     .filter((r) => r.assetName)
     .sort((a, b) => Math.abs(b.marketValue) - Math.abs(a.marketValue))
@@ -999,12 +1004,19 @@ function aggregateEquityAllocation(
   }))
 }
 
+function otherHoldingCategory(h: HoldingRow): string {
+  const kind = h.row_kind ?? "other"
+  if (kind === "option" || isOptionHolding(h)) return "期权"
+  if (kind === "derivative" || isDerivativeNotionalHolding(h)) return "衍生品"
+  return labelForRowKind(kind)
+}
+
 function isEquityOtherHolding(h: HoldingRow): boolean {
+  if (isDerivativeNotionalHolding(h)) return hasEconomicHoldingValue(h)
   const kind = h.row_kind ?? "other"
   if (CASH_ROW_KINDS.has(kind)) return false
   if (isDirectEquityStock(h) || isBondHoldingRow(h) || isWealthHolding(h)) return false
   if (isUnderlyingFundInvestment(h)) return false
-  if (kind === "derivative" || kind === "option") return false
   return Math.abs(rowMarketValue(h)) > 0
 }
 
@@ -1659,18 +1671,17 @@ async function buildFundHoldings(
 function buildOtherHoldings(holdings: HoldingRow[], netAssetValue: number): OtherHoldingRow[] {
   const rows = holdings
     .filter((h) => {
+      if (h.include_in_detail === false) return false
+      if (isDerivativeNotionalHolding(h)) return hasEconomicHoldingValue(h)
       const kind = h.row_kind ?? "other"
       if (CASH_ROW_KINDS.has(kind) || isFundHoldingRow(h)) return false
-      if (isDerivativeNotionalHolding(h)) return false
-      if (h.include_in_detail === false) return false
       return rowMarketValue(h) > 0
     })
     .map((h) => {
       const signedMv = parseNum(h.signed_market_value) || parseNum(h.market_value)
-      const kind = h.row_kind ?? "other"
       return {
         assetName: String(h.subject_name ?? h.symbol ?? "").trim(),
-        category: labelForRowKind(kind),
+        category: otherHoldingCategory(h),
         marketValue: signedMv,
         marketPct: normalizeMarketWeightPct(parseNum(h.market_weight), signedMv, netAssetValue),
         quantity: parseNum(h.quantity) || null,
@@ -1982,7 +1993,9 @@ export async function getFundValuationAllocation(
         rawBeianHao,
         "snapshot",
       )
-      if (cached) return enrichCachedFundStrategies(sanitizeAllocationDisplayNames(cached))
+      if (cached && (cached.cache_schema ?? 0) >= ALLOCATION_CACHE_SCHEMA) {
+        return enrichCachedFundStrategies(sanitizeAllocationDisplayNames(cached))
+      }
     } else if (curvesFrom && curvesTo) {
       const [snapshot, curves] = await Promise.all([
         readValuationCacheIfFresh<FundValuationAllocationResult>(rawBeianHao, "snapshot"),
@@ -1991,18 +2004,21 @@ export async function getFundValuationAllocation(
           toDate: curvesTo,
         }),
       ])
-      if (snapshot && curves && curvesHaveUsableNavHistory(curves)) {
-        return enrichCachedFundStrategies(sanitizeAllocationDisplayNames({ ...snapshot, return_curves: curves }))
+      const snapshotFresh = snapshot && (snapshot.cache_schema ?? 0) >= ALLOCATION_CACHE_SCHEMA
+        ? snapshot
+        : null
+      if (snapshotFresh && curves && curvesHaveUsableNavHistory(curves)) {
+        return enrichCachedFundStrategies(sanitizeAllocationDisplayNames({ ...snapshotFresh, return_curves: curves }))
       }
-      if (snapshot) {
+      if (snapshotFresh) {
         const built = await buildUnderlyingReturnCurves(
           rawBeianHao,
-          snapshot.fund_holdings ?? [],
+          snapshotFresh.fund_holdings ?? [],
           curvesFrom,
           curvesTo,
         )
         void cacheFreshValuationCurves(rawBeianHao, built, { fromDate: curvesFrom, toDate: curvesTo })
-        return enrichCachedFundStrategies(sanitizeAllocationDisplayNames({ ...snapshot, return_curves: built }))
+        return enrichCachedFundStrategies(sanitizeAllocationDisplayNames({ ...snapshotFresh, return_curves: built }))
       }
     }
   }
@@ -2280,6 +2296,7 @@ export async function getFundValuationAllocation(
       || stock_holdings.length > 0
       || derivatives.length > 0,
     match_method,
+    cache_schema: ALLOCATION_CACHE_SCHEMA,
   }
 
   const sanitized = sanitizeAllocationDisplayNames(result)

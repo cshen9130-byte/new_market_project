@@ -31,7 +31,7 @@ import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false })
 const FofVolatilityAnalysisPanel = dynamic(
-  () => import("./FofVolatilityAnalysisPanel").then((m) => m.FofVolatilityAnalysisPanel),
+  () => import("./FofVolatilityAnalysisPanel").then((m) => ({ default: m.FofVolatilityAnalysisPanel })),
   { ssr: false },
 )
 const FofReturnCurvePanel = dynamic(
@@ -51,7 +51,7 @@ const FofTransactionAnalysisPanel = dynamic(
   { ssr: false },
 )
 const FofAllocationRiskCharts = dynamic(
-  () => import("./FofAllocationRiskCharts").then((m) => m.FofAllocationRiskCharts),
+  () => import("./FofAllocationRiskCharts").then((m) => ({ default: m.FofAllocationRiskCharts })),
   { ssr: false },
 )
 const FofRegimeAttributionPanel = dynamic(
@@ -1173,6 +1173,7 @@ export default function FundValuationAnalysisPage() {
                 loading={trendLoading || curvesLoading}
                 netAssetValue={data?.net_asset_value}
                 otherHoldings={data?.other_holdings ?? []}
+                weightStorageKey={beian_hao}
               />
             </>
           ) : (
@@ -1331,6 +1332,7 @@ export default function FundValuationAnalysisPage() {
               navType={filterNavType}
               otherHoldings={data.other_holdings ?? []}
               strategyTrend={trendData?.fof_trend?.strategy_trend ?? null}
+              weightStorageKey={beian_hao}
             />
             <FofReturnCurvePanel
               series={returnCurves.length > 0 ? returnCurves : (data.return_curves ?? [])}

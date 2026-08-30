@@ -7,10 +7,8 @@ import Link from "next/link"
 import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight, CloudDownload, FileSearch, Loader2 } from "lucide-react"
 import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
-import {
-  ValuationParseDialog,
-  downloadValuationAttachment,
-} from "./ValuationParseDialog"
+import { ValuationParseDialog } from "./ValuationParseDialog"
+import { downloadValuationAttachment } from "./valuation-record-fetch"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 
 type CalendarEntry = {

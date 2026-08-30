@@ -1,18 +1,21 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download } from "lucide-react"
+import { Download, FolderOpen, Save, Search, Trash2 } from "lucide-react"
 import { isValuationCashHoldingName, stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 import {
   computeFofPortfolioVar,
+  fofHoldingKey,
   gapReasonLabel,
   normalizeFofDisplayName,
   type FofGapAction,
   type FofNavGap,
+  type FofProxyOption,
   type FofVarConfidence,
   type FofVarMethod,
 } from "@/lib/fof-portfolio-var"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
 import type { FundHoldingRow } from "./FofFundsPanel"
 import { FofVolControlCharts } from "./FofVolControlCharts"
@@ -34,6 +37,7 @@ type Props = {
   navType?: string
   otherHoldings?: OtherHoldingRow[]
   strategyTrend?: FofShareTrendData | null
+  weightStorageKey?: string
 }
 
 type FundNavRow = {
@@ -101,6 +105,7 @@ export function FofVolatilityAnalysisPanel({
   navType = "复权净值",
   otherHoldings = [],
   strategyTrend = null,
+  weightStorageKey,
 }: Props) {
   const [confidence, setConfidence] = useState<FofVarConfidence>(95)
   const [method, setMethod] = useState<FofVarMethod>("parametric")
@@ -110,6 +115,8 @@ export function FofVolatilityAnalysisPanel({
   const [assumeVolDraft, setAssumeVolDraft] = useState("10")
   const [assumeCorrDraft, setAssumeCorrDraft] = useState("0.30")
   const [gapChoiceMade, setGapChoiceMade] = useState(false)
+  const [proxySeries, setProxySeries] = useState<ReturnCurveSeries[]>([])
+  const [proxyLoadingKeys, setProxyLoadingKeys] = useState<string[]>([])
 
   const holdings = useMemo(
     () => fundHoldings.filter((r) => !isStockRow(r) && !isCashOrNonFundRow(r) && r.marketValue > 0),
@@ -119,6 +126,8 @@ export function FofVolatilityAnalysisPanel({
   useEffect(() => {
     setOverrides({})
     setGapChoiceMade(false)
+    setProxySeries([])
+    setProxyLoadingKeys([])
   }, [fromDate, toDate])
 
   useEffect(() => {
@@ -186,6 +195,96 @@ export function FofVolatilityAnalysisPanel({
     }
   }, [holdings, series, fromDate, toDate])
 
+  const holdingKeys = useMemo(
+    () => new Set(holdings.map((h) => fofHoldingKey(h))),
+    [holdings],
+  )
+
+  const externalProxyKeys = useMemo(() => {
+    const keys = new Set<string>()
+    for (const action of Object.values(overrides)) {
+      if (action.kind !== "proxy") continue
+      const key = action.proxyKey.trim()
+      if (!key || holdingKeys.has(key.toUpperCase())) continue
+      keys.add(key)
+    }
+    return [...keys]
+  }, [overrides, holdingKeys])
+  const externalProxyKeySig = externalProxyKeys.slice().sort().join("|")
+
+  useEffect(() => {
+    const keys = externalProxyKeySig ? externalProxyKeySig.split("|") : []
+    if (keys.length === 0) {
+      setProxySeries([])
+      setProxyLoadingKeys([])
+      return
+    }
+
+    const controller = new AbortController()
+    let cancelled = false
+    setProxyLoadingKeys(keys)
+
+    const worker = async () => {
+      const collected: ReturnCurveSeries[] = []
+      for (const id of keys) {
+        if (cancelled) return
+        try {
+          const r = await fetch(`/ma/api/private-funds/${encodeURIComponent(id)}`, {
+            signal: controller.signal,
+          })
+          if (!r.ok) {
+            collected.push({
+              fundName: id,
+              displayName: id,
+              beianHao: id,
+              valuationCode: null,
+              points: [],
+            })
+            continue
+          }
+          const d = await r.json() as { nav_series?: FundNavRow[]; info?: { product_name?: string } }
+          let points = (d.nav_series ?? [])
+            .map((row) => {
+              const nav = navFromRow(row)
+              const date = row.price_date?.slice(0, 10)
+              if (nav == null || !date) return null
+              return { date, nav, returnPct: 0 }
+            })
+            .filter((p): p is { date: string; nav: number; returnPct: number } => p != null)
+          if (fromDate) points = points.filter((p) => p.date >= fromDate.slice(0, 10))
+          if (toDate) points = points.filter((p) => p.date <= toDate.slice(0, 10))
+          const rawName = d.info?.product_name?.trim() || id
+          collected.push({
+            fundName: rawName,
+            displayName: normalizeFofDisplayName(rawName),
+            beianHao: id,
+            valuationCode: null,
+            points,
+          })
+        } catch {
+          if (controller.signal.aborted) return
+          collected.push({
+            fundName: id,
+            displayName: id,
+            beianHao: id,
+            valuationCode: null,
+            points: [],
+          })
+        }
+      }
+      if (!cancelled) setProxySeries(collected)
+    }
+
+    void worker().finally(() => {
+      if (!cancelled) setProxyLoadingKeys([])
+    })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [externalProxyKeySig, fromDate, toDate])
+
   const activeSeries = useMemo(() => {
     if (!seriesLooksThin(series, holdings.length)) return series
     const parentRich = series.filter((s) => (s.points?.length ?? 0) >= 9).length
@@ -215,11 +314,37 @@ export function FofVolatilityAnalysisPanel({
       confidence,
       method,
       overrides,
+      proxySeries,
     }),
-    [holdings, activeSeries, fromDate, toDate, confidence, method, overrides],
+    [holdings, activeSeries, fromDate, toDate, confidence, method, overrides, proxySeries],
   )
   const busy = fetchLoading || (Boolean(loading) && seriesLooksThin(series, holdings.length) && (result?.includedCount ?? 0) === 0)
   const gaps = diagnosed?.gaps ?? []
+  const portfolioProxies = useMemo(() => {
+    const map = new Map<string, FofProxyOption>()
+    for (const f of diagnosed?.funds ?? []) {
+      if (f.status === "ok") map.set(f.key, { key: f.key, name: f.name, strategy: f.strategy })
+    }
+    for (const g of gaps) {
+      for (const p of g.suggestedProxies) map.set(p.key, p)
+    }
+    return [...map.values()]
+  }, [diagnosed, gaps])
+  const proxyReadyKeys = useMemo(() => {
+    const keys = new Set<string>()
+    for (const s of proxySeries) {
+      if ((s.points?.length ?? 0) >= 9) {
+        const key = (s.beianHao?.trim() || s.valuationCode?.trim() || s.fundName).toUpperCase()
+        keys.add(key)
+      }
+    }
+    return keys
+  }, [proxySeries])
+  const derivedProxyLoadingKeys = useMemo(() => {
+    const have = new Set(proxySeries.map((s) => (s.beianHao?.trim() || "").toUpperCase()))
+    const pending = externalProxyKeys.filter((k) => !have.has(k.toUpperCase()))
+    return [...new Set([...proxyLoadingKeys, ...pending])]
+  }, [proxyLoadingKeys, externalProxyKeys, proxySeries])
   const defaultAssumeVol = useMemo(() => {
     const vols = (diagnosed?.funds ?? [])
       .filter((f) => f.status === "ok" && f.annVolPct != null && f.annVolPct > 0)
@@ -357,8 +482,10 @@ export function FofVolatilityAnalysisPanel({
   function applyAllProxy() {
     setGapChoiceMade(true)
     setOverrides(Object.fromEntries(gaps.map((g) => {
-      const proxyKey = g.suggestedProxies[0]?.key
-      return [g.key, proxyKey ? { kind: "proxy" as const, proxyKey } : { kind: "ignore" as const }]
+      const proxy = g.suggestedProxies[0]
+      return [g.key, proxy
+        ? { kind: "proxy" as const, proxyKey: proxy.key, proxyName: proxy.name }
+        : { kind: "ignore" as const }]
     })))
   }
 
@@ -398,6 +525,7 @@ export function FofVolatilityAnalysisPanel({
       otherHoldings={otherHoldings}
       netAssetValue={netAssetValue}
       strategyTrend={strategyTrend}
+      weightStorageKey={weightStorageKey}
     />
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-4 pb-2">
@@ -505,12 +633,22 @@ export function FofVolatilityAnalysisPanel({
           assumeVolDraft={assumeVolDraft}
           assumeCorrDraft={assumeCorrDraft}
           defaultAssumeVol={defaultAssumeVol}
+          portfolioProxies={portfolioProxies}
+          proxyLoadingKeys={derivedProxyLoadingKeys}
+          proxyReadyKeys={proxyReadyKeys}
+          parentBeian={weightStorageKey}
           onAssumeVolDraft={setAssumeVolDraft}
           onAssumeCorrDraft={setAssumeCorrDraft}
           onChange={setGapAction}
           onIgnoreAll={applyAllIgnore}
           onProxyAll={applyAllProxy}
           onAssumeAll={applyAllAssume}
+          onApplyPreset={(preset) => {
+            setAssumeVolDraft(String(preset.assumeVolPct))
+            setAssumeCorrDraft(String(preset.assumeCorr))
+            setOverrides(preset.overrides)
+            setGapChoiceMade(true)
+          }}
         />
       )}
 
@@ -665,24 +803,34 @@ function GapFillPanel({
   assumeVolDraft,
   assumeCorrDraft,
   defaultAssumeVol,
+  portfolioProxies,
+  proxyLoadingKeys,
+  proxyReadyKeys,
   onAssumeVolDraft,
   onAssumeCorrDraft,
   onChange,
   onIgnoreAll,
   onProxyAll,
   onAssumeAll,
+  parentBeian,
+  onApplyPreset,
 }: {
   gaps: FofNavGap[]
   overrides: Record<string, FofGapAction>
   assumeVolDraft: string
   assumeCorrDraft: string
   defaultAssumeVol: number
+  portfolioProxies: FofProxyOption[]
+  proxyLoadingKeys: string[]
+  proxyReadyKeys: Set<string>
   onAssumeVolDraft: (v: string) => void
   onAssumeCorrDraft: (v: string) => void
   onChange: (key: string, action: FofGapAction) => void
   onIgnoreAll: () => void
   onProxyAll: () => void
   onAssumeAll: () => void
+  parentBeian?: string
+  onApplyPreset: (preset: { assumeVolPct: number; assumeCorr: number; overrides: Record<string, FofGapAction> }) => void
 }) {
   const missingMv = gaps.reduce((s, g) => s + g.marketPct, 0)
   return (
@@ -733,6 +881,14 @@ function GapFillPanel({
         </div>
       </div>
 
+      <VarGapPresetBar
+        parentBeian={parentBeian}
+        assumeVolDraft={assumeVolDraft}
+        assumeCorrDraft={assumeCorrDraft}
+        overrides={overrides}
+        onApply={onApplyPreset}
+      />
+
       <div className="mt-2 overflow-x-auto">
         <table className="w-full text-[11px]">
           <thead>
@@ -747,9 +903,17 @@ function GapFillPanel({
           <tbody>
             {gaps.map((gap) => {
               const action = overrides[gap.key] ?? { kind: "ignore" as const }
-              const proxyKey = action.kind === "proxy"
-                ? action.proxyKey
-                : gap.suggestedProxies[0]?.key ?? ""
+              const selectedProxy = action.kind === "proxy"
+                ? {
+                    key: action.proxyKey,
+                    name: action.proxyName
+                      || gap.suggestedProxies.find((p) => p.key === action.proxyKey)?.name
+                      || portfolioProxies.find((p) => p.key === action.proxyKey)?.name
+                      || action.proxyKey,
+                  }
+                : gap.suggestedProxies[0]
+                  ? { key: gap.suggestedProxies[0].key, name: gap.suggestedProxies[0].name }
+                  : null
               const vol = action.kind === "assume" ? String(action.annVolPct) : assumeVolDraft
               const corr = action.kind === "assume" ? String(action.corr) : assumeCorrDraft
               return (
@@ -777,25 +941,32 @@ function GapFillPanel({
                           type="radio"
                           name={`gap-${gap.key}`}
                           checked={action.kind === "proxy"}
-                          disabled={gap.suggestedProxies.length === 0}
                           onChange={() => {
-                            if (!proxyKey) return
-                            onChange(gap.key, { kind: "proxy", proxyKey })
+                            if (!selectedProxy) return
+                            onChange(gap.key, {
+                              kind: "proxy",
+                              proxyKey: selectedProxy.key,
+                              proxyName: selectedProxy.name,
+                            })
                           }}
                         />
                         用
                       </label>
-                      <select
-                        value={action.kind === "proxy" ? action.proxyKey : proxyKey}
-                        disabled={gap.suggestedProxies.length === 0}
-                        onChange={(e) => onChange(gap.key, { kind: "proxy", proxyKey: e.target.value })}
-                        className="h-6 max-w-[140px] rounded border border-amber-300 bg-white px-1 disabled:opacity-40"
-                      >
-                        {gap.suggestedProxies.length === 0 && <option value="">无同类基金</option>}
-                        {gap.suggestedProxies.map((p) => (
-                          <option key={p.key} value={p.key}>{p.name}</option>
-                        ))}
-                      </select>
+                      <ProxyFundPicker
+                        gapKey={gap.key}
+                        selected={action.kind === "proxy" ? selectedProxy : null}
+                        portfolioProxies={portfolioProxies.filter((p) => p.key !== gap.key)}
+                        loading={Boolean(selectedProxy && proxyLoadingKeys.some((k) => k.toUpperCase() === selectedProxy.key.toUpperCase()))}
+                        ready={selectedProxy
+                          ? proxyReadyKeys.has(selectedProxy.key.toUpperCase())
+                            || portfolioProxies.some((p) => p.key === selectedProxy.key)
+                          : false}
+                        onPick={(opt) => onChange(gap.key, {
+                          kind: "proxy",
+                          proxyKey: opt.key,
+                          proxyName: opt.name,
+                        })}
+                      />
                       <span>代替</span>
                       <label className="inline-flex items-center gap-1 cursor-pointer ml-1">
                         <input
@@ -832,5 +1003,513 @@ function GapFillPanel({
         </table>
       </div>
     </div>
+  )
+}
+
+type VarGapScope = "team" | "mine"
+
+type VarGapPreset = {
+  id: string
+  scope: VarGapScope
+  name: string
+  assumeVolPct: number
+  assumeCorr: number
+  overrides: Record<string, FofGapAction>
+  createdByName?: string
+}
+
+function readCurrentUser(): { id: string; name: string } | null {
+  try {
+    const raw = window.localStorage.getItem("currentUser")
+    const user = raw ? JSON.parse(raw) as { id?: string; name?: string; email?: string } : null
+    const id = String(user?.id ?? "").trim()
+    if (!id) return null
+    return { id, name: String(user?.name || user?.email || "").trim() }
+  } catch {
+    return null
+  }
+}
+
+function authHeaders(): HeadersInit {
+  const user = readCurrentUser()
+  return user ? { "x-market-user-id": user.id } : {}
+}
+
+function parseGapAction(raw: unknown): FofGapAction | null {
+  if (!raw || typeof raw !== "object") return null
+  const v = raw as Record<string, unknown>
+  if (v.kind === "ignore") return { kind: "ignore" }
+  if (v.kind === "proxy") {
+    const proxyKey = String(v.proxyKey ?? "").trim()
+    if (!proxyKey) return null
+    return {
+      kind: "proxy",
+      proxyKey,
+      proxyName: typeof v.proxyName === "string" ? v.proxyName : undefined,
+    }
+  }
+  if (v.kind === "assume") {
+    const vol = Number(v.annVolPct)
+    const corr = Number(v.corr)
+    return {
+      kind: "assume",
+      annVolPct: Number.isFinite(vol) && vol >= 0 ? vol : 10,
+      corr: Number.isFinite(corr) ? corr : 0.3,
+    }
+  }
+  return null
+}
+
+function parseVarGapPresets(raw: unknown): VarGapPreset[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((item): VarGapPreset | null => {
+      if (!item || typeof item !== "object") return null
+      const row = item as Record<string, unknown>
+      const id = String(row.id ?? "").trim()
+      const name = String(row.name ?? "").trim()
+      if (!id || !name) return null
+      const overrides: Record<string, FofGapAction> = {}
+      if (row.overrides && typeof row.overrides === "object") {
+        for (const [key, value] of Object.entries(row.overrides as Record<string, unknown>)) {
+          const action = parseGapAction(value)
+          if (action) overrides[key] = action
+        }
+      }
+      const vol = Number(row.assumeVolPct)
+      const corr = Number(row.assumeCorr)
+      return {
+        id,
+        scope: row.scope === "mine" ? "mine" : "team",
+        name,
+        assumeVolPct: Number.isFinite(vol) && vol >= 0 ? vol : 10,
+        assumeCorr: Number.isFinite(corr) ? corr : 0.3,
+        overrides,
+        createdByName: typeof row.createdByName === "string" ? row.createdByName : "",
+      }
+    })
+    .filter((item): item is VarGapPreset => item != null)
+}
+
+function VarGapPresetBar({
+  parentBeian,
+  assumeVolDraft,
+  assumeCorrDraft,
+  overrides,
+  onApply,
+}: {
+  parentBeian?: string
+  assumeVolDraft: string
+  assumeCorrDraft: string
+  overrides: Record<string, FofGapAction>
+  onApply: (preset: { assumeVolPct: number; assumeCorr: number; overrides: Record<string, FofGapAction> }) => void
+}) {
+  const [presetScope, setPresetScope] = useState<VarGapScope>("team")
+  const [teamPresets, setTeamPresets] = useState<VarGapPreset[]>([])
+  const [minePresets, setMinePresets] = useState<VarGapPreset[]>([])
+  const [presetName, setPresetName] = useState("")
+  const [selectedPresetId, setSelectedPresetId] = useState("")
+  const [presetStatus, setPresetStatus] = useState("")
+  const [presetBusy, setPresetBusy] = useState(false)
+  const presets = presetScope === "team" ? teamPresets : minePresets
+
+  useEffect(() => {
+    if (!presetStatus) return
+    const timer = window.setTimeout(() => setPresetStatus(""), 2400)
+    return () => window.clearTimeout(timer)
+  }, [presetStatus])
+
+  useEffect(() => {
+    if (!parentBeian) return
+    const beian = parentBeian
+    let cancelled = false
+    void fetch(
+      `/ma/api/private-funds/${encodeURIComponent(beian)}/valuation/var-gap-presets`,
+      { headers: authHeaders(), cache: "no-store" },
+    )
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}))
+        if (cancelled) return
+        if (!res.ok || !json?.ok) {
+          setPresetStatus(json?.error || "无法读取已保存方案，请先登录")
+          return
+        }
+        setTeamPresets(parseVarGapPresets(json.team))
+        setMinePresets(parseVarGapPresets(json.mine))
+      })
+      .catch(() => {
+        if (!cancelled) setPresetStatus("无法读取已保存方案")
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [parentBeian])
+
+  async function handleSave() {
+    const name = presetName.trim() || `方案 ${new Date().toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}`
+    if (!parentBeian) {
+      setPresetStatus("当前页面无法保存方案")
+      return
+    }
+    if (!readCurrentUser()) {
+      setPresetStatus("请先登录后再保存")
+      return
+    }
+    setPresetBusy(true)
+    try {
+      const res = await fetch(
+        `/ma/api/private-funds/${encodeURIComponent(parentBeian)}/valuation/var-gap-presets`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({
+            scope: presetScope,
+            name,
+            assumeVolPct: Number(assumeVolDraft),
+            assumeCorr: Number(assumeCorrDraft),
+            overrides,
+          }),
+        },
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json?.ok) {
+        setPresetStatus(json?.error || "保存失败")
+        return
+      }
+      setTeamPresets(parseVarGapPresets(json.team))
+      setMinePresets(parseVarGapPresets(json.mine))
+      setPresetName(name)
+      if (json.preset?.id) setSelectedPresetId(String(json.preset.id))
+      setPresetStatus(`已保存到${presetScope === "team" ? "团队" : "我的"}「${name}」`)
+    } catch {
+      setPresetStatus("保存失败")
+    } finally {
+      setPresetBusy(false)
+    }
+  }
+
+  function handleLoad() {
+    const preset = presets.find((p) => p.id === selectedPresetId)
+      || presets.find((p) => p.name === presetName.trim())
+    if (!preset) {
+      setPresetStatus(presets.length ? "请先选择要载入的方案" : `还没有${presetScope === "team" ? "团队" : "我的"}方案`)
+      return
+    }
+    onApply({
+      assumeVolPct: preset.assumeVolPct,
+      assumeCorr: preset.assumeCorr,
+      overrides: preset.overrides,
+    })
+    setPresetName(preset.name)
+    setSelectedPresetId(preset.id)
+    setPresetStatus(`已载入${preset.scope === "team" ? "团队" : "我的"}「${preset.name}」`)
+  }
+
+  async function handleDelete() {
+    const preset = presets.find((p) => p.id === selectedPresetId)
+      || presets.find((p) => p.name === presetName.trim())
+    if (!parentBeian || !preset) {
+      setPresetStatus("请先选择要删除的方案")
+      return
+    }
+    if (!readCurrentUser()) {
+      setPresetStatus("请先登录后再删除")
+      return
+    }
+    setPresetBusy(true)
+    try {
+      const res = await fetch(
+        `/ma/api/private-funds/${encodeURIComponent(parentBeian)}/valuation/var-gap-presets?id=${encodeURIComponent(preset.id)}`,
+        { method: "DELETE", headers: authHeaders() },
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json?.ok) {
+        setPresetStatus(json?.error || "删除失败")
+        return
+      }
+      setTeamPresets(parseVarGapPresets(json.team))
+      setMinePresets(parseVarGapPresets(json.mine))
+      if (selectedPresetId === preset.id) setSelectedPresetId("")
+      if (presetName.trim() === preset.name) setPresetName("")
+      setPresetStatus(`已删除「${preset.name}」`)
+    } catch {
+      setPresetStatus("删除失败")
+    } finally {
+      setPresetBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="inline-flex rounded border border-amber-300 overflow-hidden text-[11px]">
+        {([
+          ["team", "团队"],
+          ["mine", "我的"],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => {
+              setPresetScope(key)
+              setSelectedPresetId("")
+            }}
+            className={[
+              "px-2.5 h-7 transition-colors",
+              presetScope === key
+                ? "bg-amber-600 text-white font-medium"
+                : "bg-white text-amber-800 hover:bg-amber-100",
+              key === "mine" ? "border-l border-amber-300" : "",
+            ].join(" ")}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <input
+        type="text"
+        value={presetName}
+        onChange={(e) => setPresetName(e.target.value)}
+        placeholder="方案名称"
+        className="h-7 w-36 rounded border border-amber-300 bg-white px-2 text-xs text-amber-900 focus:outline-none"
+      />
+      <button
+        type="button"
+        onClick={() => void handleSave()}
+        disabled={presetBusy}
+        className="inline-flex h-7 items-center gap-1 rounded border border-amber-300 bg-white px-2 text-[11px] text-amber-800 hover:bg-amber-100 disabled:opacity-40"
+      >
+        <Save className="h-3 w-3" />
+        保存到{presetScope === "team" ? "团队" : "我的"}
+      </button>
+      <select
+        value={selectedPresetId}
+        onChange={(e) => {
+          const id = e.target.value
+          setSelectedPresetId(id)
+          const hit = presets.find((p) => p.id === id)
+          if (hit) setPresetName(hit.name)
+        }}
+        className="h-7 min-w-[9rem] rounded border border-amber-300 bg-white px-2 text-xs text-amber-900 focus:outline-none"
+      >
+        <option value="">{presetScope === "team" ? "团队方案" : "我的方案"}</option>
+        {presets.map((preset) => (
+          <option key={preset.id} value={preset.id}>
+            {preset.scope === "team" && preset.createdByName
+              ? `${preset.name}（${preset.createdByName}）`
+              : preset.name}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={handleLoad}
+        disabled={presets.length === 0 || presetBusy}
+        className="inline-flex h-7 items-center gap-1 rounded border border-amber-300 bg-white px-2 text-[11px] text-amber-800 hover:bg-amber-100 disabled:opacity-30"
+      >
+        <FolderOpen className="h-3 w-3" />
+        载入
+      </button>
+      <button
+        type="button"
+        onClick={() => void handleDelete()}
+        disabled={presets.length === 0 || presetBusy}
+        className="inline-flex h-7 items-center gap-1 rounded border border-amber-300 bg-white px-2 text-[11px] text-amber-800 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
+      >
+        <Trash2 className="h-3 w-3" />
+        删除
+      </button>
+      {presetStatus && (
+        <span className="text-[11px] text-amber-800">{presetStatus}</span>
+      )}
+    </div>
+  )
+}
+
+type FundSearchHit = {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  strategy_one?: string | null
+}
+
+function ProxyFundPicker({
+  gapKey,
+  selected,
+  portfolioProxies,
+  loading,
+  ready,
+  onPick,
+}: {
+  gapKey: string
+  selected: { key: string; name: string } | null
+  portfolioProxies: FofProxyOption[]
+  loading: boolean
+  ready: boolean
+  onPick: (opt: { key: string; name: string }) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [hits, setHits] = useState<FundSearchHit[]>([])
+  const [searching, setSearching] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("")
+      setHits([])
+      setSearching(false)
+      abortRef.current?.abort()
+      return
+    }
+    const q = query.trim()
+    if (q.length < 1) {
+      setHits([])
+      setSearching(false)
+      abortRef.current?.abort()
+      return
+    }
+    const timer = window.setTimeout(async () => {
+      abortRef.current?.abort()
+      const controller = new AbortController()
+      abortRef.current = controller
+      setSearching(true)
+      try {
+        const res = await fetch(
+          `/ma/api/private-funds/products/search?q=${encodeURIComponent(q)}&format=picker`,
+          { signal: controller.signal },
+        )
+        const json = await res.json()
+        if (controller.signal.aborted) return
+        setHits(Array.isArray(json) ? json : [])
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return
+        setHits([])
+      } finally {
+        if (!controller.signal.aborted) setSearching(false)
+      }
+    }, 180)
+    return () => window.clearTimeout(timer)
+  }, [open, query])
+
+  const q = query.trim().toLowerCase()
+  const localMatches = q
+    ? portfolioProxies.filter((p) =>
+      p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q),
+    )
+    : portfolioProxies
+  const localKeys = new Set(localMatches.map((p) => p.key.toUpperCase()))
+  const remoteHits = hits.filter((h) => {
+    const key = (h.beian_hao || "").trim().toUpperCase()
+    return key && !localKeys.has(key)
+  })
+
+  function pickLocal(opt: FofProxyOption) {
+    onPick({ key: opt.key, name: opt.name })
+    setOpen(false)
+  }
+
+  function pickRemote(hit: FundSearchHit) {
+    const key = hit.beian_hao.trim().toUpperCase()
+    const local = portfolioProxies.find((p) => p.key === key)
+    onPick({
+      key: local?.key ?? key,
+      name: local?.name ?? (hit.short_name?.trim() || hit.product_name),
+    })
+    setOpen(false)
+  }
+
+  const hint = loading
+    ? "加载净值…"
+    : selected && !ready
+      ? "该基金净值不足"
+      : null
+
+  return (
+    <span className="inline-flex items-center gap-1">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-6 max-w-[180px] items-center gap-1 rounded border border-amber-300 bg-white px-1.5 text-left text-[11px] text-zinc-700 hover:bg-amber-50"
+          title={selected?.name}
+        >
+          <span className="min-w-0 truncate">
+            {selected?.name || "搜索基金"}
+          </span>
+          {loading ? (
+            <span className="h-2.5 w-2.5 shrink-0 animate-spin rounded-full border border-amber-500 border-t-transparent" />
+          ) : (
+            <Search className="h-3 w-3 shrink-0 text-amber-700/70" />
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-72 p-2"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        <input
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索任意基金名称或备案号"
+          className="h-7 w-full rounded border border-zinc-200 px-2 text-xs outline-none focus:border-amber-400"
+        />
+        <div className="mt-1.5 max-h-56 overflow-y-auto">
+          {localMatches.length > 0 && (
+            <div className="px-1.5 pb-1 text-[10px] text-zinc-400">本组合底层</div>
+          )}
+          {localMatches.map((p) => (
+            <button
+              key={`${gapKey}-local-${p.key}`}
+              type="button"
+              onClick={() => pickLocal(p)}
+              className={[
+                "block w-full rounded px-1.5 py-1 text-left hover:bg-amber-50",
+                selected?.key === p.key ? "bg-amber-50" : "",
+              ].join(" ")}
+            >
+              <div className="truncate text-xs text-zinc-800">{p.name}</div>
+              {p.strategy && <div className="truncate text-[10px] text-zinc-400">{p.strategy}</div>}
+            </button>
+          ))}
+          {q.length > 0 && (
+            <>
+              {remoteHits.length > 0 && (
+                <div className="px-1.5 pt-1.5 pb-1 text-[10px] text-zinc-400">全部基金</div>
+              )}
+              {searching && hits.length === 0 && (
+                <div className="px-1.5 py-2 text-xs text-zinc-400">搜索中…</div>
+              )}
+              {!searching && localMatches.length === 0 && remoteHits.length === 0 && (
+                <div className="px-1.5 py-2 text-xs text-zinc-400">未找到匹配基金</div>
+              )}
+              {remoteHits.map((hit) => (
+                <button
+                  key={`${gapKey}-remote-${hit.beian_hao}`}
+                  type="button"
+                  onClick={() => pickRemote(hit)}
+                  className="block w-full rounded px-1.5 py-1 text-left hover:bg-amber-50"
+                >
+                  <div className="truncate text-xs text-zinc-800">
+                    {hit.short_name?.trim() || hit.product_name}
+                  </div>
+                  <div className="truncate text-[10px] text-zinc-400">
+                    {[hit.product_name !== hit.short_name ? hit.product_name : null, hit.beian_hao, hit.strategy_one]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
+          {q.length === 0 && localMatches.length === 0 && (
+            <div className="px-1.5 py-2 text-xs text-zinc-400">输入关键字搜索全部基金</div>
+          )}
+        </div>
+      </PopoverContent>
+      </Popover>
+      {hint && <span className="text-[10px] text-amber-700/80 whitespace-nowrap">{hint}</span>}
+    </span>
   )
 }
