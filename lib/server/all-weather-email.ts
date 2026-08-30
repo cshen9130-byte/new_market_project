@@ -3,6 +3,7 @@ import path from "path"
 import nodemailer from "nodemailer"
 import { displayListedName, SLEEVE_LABELS } from "@/lib/all-weather/universe"
 import { getOverview, type OverviewPayload, type SleeveView } from "@/lib/server/all-weather-book"
+import { isChinaWeekendOrPublicHoliday, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 
 const DATA_DIR = path.join(process.cwd(), "data", "all-weather")
 const CONFIG_FILE = path.join(DATA_DIR, "email.json")
@@ -61,10 +62,11 @@ function shanghaiParts(now = new Date()) {
   }
 }
 
-/** True when auto-send should fire: enabled, past today's HH:MM (Beijing), and no scheduled send yet today. */
+/** True when auto-send should fire: enabled, trading day, past today's HH:MM (Beijing), and no scheduled send yet today. */
 export function isScheduledSendDue(config: AllWeatherEmailConfig = readEmailConfig(), now = new Date()): boolean {
   if (!config.enabled) return false
   if (!/^\d{2}:\d{2}$/.test(config.scheduleTime || "")) return false
+  if (isChinaWeekendOrPublicHoliday(shanghaiTodayIsoDate(now))) return false
   const { dateKey, hhmm } = shanghaiParts(now)
   if (config.lastScheduledDate === dateKey) return false
   return hhmm >= config.scheduleTime

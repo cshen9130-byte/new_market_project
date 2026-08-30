@@ -942,7 +942,7 @@ export function AllWeatherApp() {
                     自动邮件
                   </div>
                   <p className="mb-5 text-sm text-slate-500">
-                    每天按北京时间定时发送当前各袖套 / 品种的开仓手数、保证金、风险贡献，以及组合、袖套、品种盈亏；并附带持仓/交易明细、袖套汇总、每日盈亏 CSV。月末再平衡日会额外展示调仓前后手数，并附上调仓变动 CSV。到达或超过设定时间后会自动补发；「立即发送」不占用当日定时额度。默认建议 09:00。
+                    每个交易日按北京时间定时发送当前各袖套 / 品种的开仓手数、保证金、风险贡献，以及组合、袖套、品种盈亏；并附带持仓/交易明细、袖套汇总、每日盈亏 CSV。周末和中国法定节假日不发送。月末再平衡日会额外展示调仓前后手数，并附上调仓变动 CSV。到达或超过设定时间后会自动补发；「立即发送」不占用当日定时额度，周末和节假日也可手动发送。默认建议 09:00。
                   </p>
 
                   <div className="grid gap-6 lg:grid-cols-2">
@@ -1010,7 +1010,7 @@ export function AllWeatherApp() {
                         <Input value={receiversText} onChange={(e) => setReceiversText(e.target.value)} placeholder="a@x.com, b@y.com" />
                       </div>
                       <div className="space-y-2">
-                        <Label>每日发送时间</Label>
+                        <Label>交易日发送时间</Label>
                         <div className="flex items-center gap-2">
                           <Select value={scheduleHour} onValueChange={setScheduleHour}>
                             <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
@@ -1026,6 +1026,7 @@ export function AllWeatherApp() {
                             </SelectContent>
                           </Select>
                         </div>
+                        <p className="text-xs text-slate-500">仅交易日发送；周末和中国法定节假日自动跳过。</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <Switch
