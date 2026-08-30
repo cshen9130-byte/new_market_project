@@ -1,5 +1,6 @@
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
+import { parseAllWeatherVariantId, type AllWeatherVariantId } from "@/lib/all-weather/variants"
 import { authService } from "@/lib/auth"
 import type { AllWeatherHolding } from "@/lib/client/paper-trading"
 
@@ -104,8 +105,15 @@ function headers(): Record<string, string> {
   return user ? { "x-market-user-id": user.id, "Content-Type": "application/json" } : { "Content-Type": "application/json" }
 }
 
-export async function fetchAllWeatherOverview(refresh = false) {
-  const res = await fetch(`/api/all-weather${refresh ? "?refresh=1" : ""}`, {
+function variantQuery(variantId?: AllWeatherVariantId | null, refresh = false) {
+  const params = new URLSearchParams()
+  params.set("variant", parseAllWeatherVariantId(variantId))
+  if (refresh) params.set("refresh", "1")
+  return `?${params.toString()}`
+}
+
+export async function fetchAllWeatherOverview(refresh = false, variantId?: AllWeatherVariantId | null) {
+  const res = await fetch(`/api/all-weather${variantQuery(variantId, refresh)}`, {
     headers: headers(),
     cache: "no-store",
   })
@@ -200,13 +208,17 @@ export async function fetchAllWeatherOverview(refresh = false) {
   return { holdings, marks, meta }
 }
 
-export async function saveAllWeatherSetup(contractTenor: ContractTenor) {
+export async function saveAllWeatherSetup(
+  contractTenor: ContractTenor,
+  variantId?: AllWeatherVariantId | null,
+) {
+  const resolved = parseAllWeatherVariantId(variantId)
   const res = await fetch("/api/all-weather", {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ action: "setup", contractTenor }),
+    body: JSON.stringify({ action: "setup", contractTenor, variant: resolved }),
   })
   const data = (await res.json()) as AwResponse
   if (!res.ok || data.ok === false) throw new Error(data.error || `设置失败 ${res.status}`)
-  return fetchAllWeatherOverview()
+  return fetchAllWeatherOverview(false, resolved)
 }

@@ -29,7 +29,7 @@ import {
 } from "@/lib/all-weather/universe"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import {
-  ALL_WEATHER_PORTFOLIO_ID,
+  isAllWeatherAccount,
   fmtNav,
   fmtPct,
   paperNavCurve,
@@ -96,7 +96,7 @@ export function PaperNavChart({
   candles: Record<string, CtpCandle[]>
   onClose: () => void
 }) {
-  const aw = paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID
+  const aw = isAllWeatherAccount(paper.selectedPortfolioId)
   const startedAt = aw && paper.awMeta?.startedAt ? Date.parse(`${paper.awMeta.startedAt}T09:00:00+08:00`) : paper.selectedPortfolio?.createdAt
   const positions = useMemo(
     () => paper.state.positions.filter((p) => !paper.selectedPortfolio || p.portfolioId === paper.selectedPortfolio.id),

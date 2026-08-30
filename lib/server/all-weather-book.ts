@@ -6,14 +6,29 @@ import {
   SLEEVE_KEYS,
   SLEEVE_LABELS,
   type SleeveKey,
-  loadStrategySnapshot,
   type StrategySnapshot,
 } from "@/lib/all-weather/universe"
+import {
+  ALL_WEATHER_VARIANT_IDS,
+  getAllWeatherVariant,
+  isDefaultAllWeatherVariant,
+  loadVariantSnapshot,
+  parseAllWeatherVariantId,
+  variantEnforcesSleeveFloor,
+  type AllWeatherVariantId,
+} from "@/lib/all-weather/variants"
 import { fetchLiveFuturesPrices, normalizeListedContract } from "@/lib/server/all-weather-prices"
 import { readAllWeatherSettings, type AllWeatherSettings } from "@/lib/server/all-weather-settings"
 
-const DATA_DIR = path.join(process.cwd(), "data", "all-weather")
-const BOOK_FILE = path.join(DATA_DIR, "book.json")
+const DATA_ROOT = path.join(process.cwd(), "data", "all-weather")
+
+function bookDir(variantId: AllWeatherVariantId) {
+  return isDefaultAllWeatherVariant(variantId) ? DATA_ROOT : path.join(DATA_ROOT, variantId)
+}
+
+function bookFile(variantId: AllWeatherVariantId) {
+  return path.join(bookDir(variantId), "book.json")
+}
 
 export type BookPosition = {
   asset: string
@@ -82,8 +97,8 @@ export type PaperBook = {
   universeVersion?: number
 }
 
-function ensureDir() {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
+function ensureDir(variantId: AllWeatherVariantId) {
+  fs.mkdirSync(bookDir(variantId), { recursive: true })
 }
 
 function todayStamp(d = new Date()): string {
@@ -134,6 +149,7 @@ function applyMonthEndRebalance(
   prices: Record<string, number>,
   contracts: Record<string, string> | undefined,
   asOf: string,
+  enforceSleeveFloor = false,
 ): PaperBook {
   if (book.lastRebalanceDate == null) {
     book = {
@@ -150,30 +166,12 @@ function applyMonthEndRebalance(
     return { ...book, isRebalanceDay: false }
   }
 
-  const trades: RebalanceTrade[] = []
-  const positions = book.positions.map((p) => {
+  let positions = book.positions.map((p) => {
     const src = snapshot.positions.find((s) => s.asset === p.asset)
     const price = prices[p.asset] ?? p.price
     const targetWeight = src?.targetWeight ?? p.targetWeight
     const newLots = sizeLots(targetWeight, book.equity, price, p.multiplier)
     const newContract = contracts?.[p.asset] || p.contract
-    const side = rebalanceSide(p.lots, newLots, Boolean(newContract && p.contract && newContract !== p.contract))
-    if (side) {
-      trades.push({
-        date: asOf,
-        asset: p.asset,
-        label: p.label,
-        sleeve: p.sleeve,
-        prevContract: p.contract,
-        contract: newContract,
-        prevLots: p.lots,
-        newLots,
-        delta: newLots - p.lots,
-        side,
-        price,
-        tradeNotional: Math.abs(newLots - p.lots) * price * p.multiplier,
-      })
-    }
     const targetRiskShare = src?.riskShare ?? p.targetRiskShare
     return markPosition(
       {
@@ -189,6 +187,40 @@ function applyMonthEndRebalance(
       snapshot.brokerMarginMult,
     )
   })
+  if (enforceSleeveFloor) {
+    positions = applySleeveFloors(
+      positions,
+      book.equity,
+      snapshot.brokerMarginMult,
+      snapshot.budgetLo,
+      snapshot.budgetHi,
+    )
+  }
+
+  const trades: RebalanceTrade[] = []
+  for (const p of positions) {
+    const prev = book.positions.find((item) => item.asset === p.asset)
+    const side = rebalanceSide(
+      prev?.lots ?? 0,
+      p.lots,
+      Boolean(p.contract && prev?.contract && p.contract !== prev.contract),
+    )
+    if (!side) continue
+    trades.push({
+      date: asOf,
+      asset: p.asset,
+      label: p.label,
+      sleeve: p.sleeve,
+      prevContract: prev?.contract ?? "",
+      contract: p.contract,
+      prevLots: prev?.lots ?? 0,
+      newLots: p.lots,
+      delta: p.lots - (prev?.lots ?? 0),
+      side,
+      price: p.price,
+      tradeNotional: Math.abs(p.lots - (prev?.lots ?? 0)) * p.price * p.multiplier,
+    })
+  }
 
   return {
     ...book,
@@ -202,6 +234,96 @@ function applyMonthEndRebalance(
 function sizeLots(targetWeight: number, capital: number, price: number, multiplier: number): number {
   if (!price || !multiplier || !Number.isFinite(targetWeight)) return 0
   return Math.max(0, Math.round((targetWeight * capital) / (price * multiplier)))
+}
+
+const SLEEVE_FLOOR_EPS = 1e-9
+
+function clampSleeveRisk(value: number, lo: number, hi: number) {
+  if (!Number.isFinite(value) || value <= 0) return lo
+  return Math.min(hi, Math.max(lo, value))
+}
+
+function sleeveMembers(positions: BookPosition[], sleeve: SleeveKey) {
+  return positions
+    .map((pos, index) => ({ pos, index }))
+    .filter((item) => item.pos.sleeve === sleeve)
+}
+
+function sleeveFloorViolated(positions: BookPosition[], lo = 0.1): boolean {
+  return SLEEVE_KEYS.some((sleeve) => {
+    const members = positions.filter((p) => p.sleeve === sleeve)
+    if (!members.length) return true
+    const lots = members.reduce((sum, p) => sum + p.lots, 0)
+    const risk = members.reduce((sum, p) => sum + p.riskShare, 0)
+    return lots <= 0 || risk + SLEEVE_FLOOR_EPS < lo
+  })
+}
+
+function pickSleeveLead(members: BookPosition[]): BookPosition {
+  return [...members].sort((a, b) => {
+    const notionalA = a.price * a.multiplier
+    const notionalB = b.price * b.multiplier
+    const rawA = notionalA > 0 ? a.targetWeight / notionalA : 0
+    const rawB = notionalB > 0 ? b.targetWeight / notionalB : 0
+    if (rawB !== rawA) return rawB - rawA
+    return notionalA - notionalB
+  })[0]
+}
+
+/** Keep every sleeve open and inside the 10%–40% risk-budget band. */
+function applySleeveFloors(
+  positions: BookPosition[],
+  capital: number,
+  brokerMarginMult: number,
+  lo = 0.1,
+  hi = 0.4,
+): BookPosition[] {
+  const next = positions.map((p) => ({ ...p }))
+  for (const sleeve of SLEEVE_KEYS) {
+    const members = sleeveMembers(next, sleeve)
+    if (!members.length) continue
+    const lots = members.reduce((sum, item) => sum + item.pos.lots, 0)
+    const risk = members.reduce((sum, item) => sum + item.pos.riskShare, 0)
+    if (lots > 0 && risk + SLEEVE_FLOOR_EPS >= lo) continue
+
+    const lead = pickSleeveLead(members.map((item) => item.pos))
+    const sleeveWeight = members.reduce((sum, item) => sum + item.pos.targetWeight, 0)
+    const sleeveRisk = clampSleeveRisk(
+      members.reduce((sum, item) => sum + item.pos.targetRiskShare, 0),
+      lo,
+      hi,
+    )
+    const leadLots = Math.max(1, sizeLots(sleeveWeight, capital, lead.price, lead.multiplier))
+
+    for (const { pos, index } of members) {
+      if (pos.asset === lead.asset) {
+        next[index] = markPosition(
+          {
+            ...pos,
+            lots: leadLots,
+            rawLots: leadLots,
+            targetWeight: sleeveWeight,
+            targetRiskShare: sleeveRisk,
+            riskShare: sleeveRisk,
+            dailyPnl: leadLots * (pos.price - pos.prevPrice) * pos.multiplier,
+          },
+          brokerMarginMult,
+        )
+        continue
+      }
+      next[index] = markPosition(
+        {
+          ...pos,
+          lots: 0,
+          rawLots: 0,
+          riskShare: 0,
+          dailyPnl: 0,
+        },
+        brokerMarginMult,
+      )
+    }
+  }
+  return next
 }
 
 function markPosition(
@@ -293,14 +415,33 @@ function applyDay(book: PaperBook, positions: BookPosition[], asOf: string, pric
   }
 }
 
-function initBook(snapshot: StrategySnapshot, prices: Record<string, number>, asOf: string, priceSource: PaperBook["priceSource"], fetchedAt: string, missing: string[], contracts?: Record<string, string>, tenor?: ContractTenor): PaperBook {
+function initBook(
+  snapshot: StrategySnapshot,
+  prices: Record<string, number>,
+  asOf: string,
+  priceSource: PaperBook["priceSource"],
+  fetchedAt: string,
+  missing: string[],
+  contracts?: Record<string, string>,
+  tenor?: ContractTenor,
+  enforceSleeveFloor = false,
+): PaperBook {
   const capital = snapshot.initialCapital
-  const positions = buildPositions(snapshot, prices, capital, undefined, contracts).map((p) => ({
+  let positions = buildPositions(snapshot, prices, capital, undefined, contracts).map((p) => ({
     ...p,
     prevPrice: p.price,
     dailyPnl: 0,
     cumPnl: 0,
   }))
+  if (enforceSleeveFloor) {
+    positions = applySleeveFloors(
+      positions,
+      capital,
+      snapshot.brokerMarginMult,
+      snapshot.budgetLo,
+      snapshot.budgetHi,
+    ).map((p) => ({ ...p, prevPrice: p.price, dailyPnl: 0, cumPnl: 0 }))
+  }
   return {
     startedAt: asOf,
     asOf,
@@ -329,10 +470,11 @@ function initBook(snapshot: StrategySnapshot, prices: Record<string, number>, as
   }
 }
 
-export function readPaperBook(): PaperBook | null {
-  if (!fs.existsSync(BOOK_FILE)) return null
+export function readPaperBook(variantId?: AllWeatherVariantId | null): PaperBook | null {
+  const file = bookFile(parseAllWeatherVariantId(variantId))
+  if (!fs.existsSync(file)) return null
   try {
-    return JSON.parse(fs.readFileSync(BOOK_FILE, "utf-8")) as PaperBook
+    return JSON.parse(fs.readFileSync(file, "utf-8")) as PaperBook
   } catch {
     return null
   }
@@ -342,9 +484,9 @@ const ALWAYS_ON_INDEX = new Set(["IF", "IH", "IC", "IM"])
 
 /** Held 全天候 contracts that are not on the always-on 股指 CTP feed. */
 export function allWeatherWatchContracts(extra: string[] = []): string[] {
-  const book = readPaperBook()
+  const held = ALL_WEATHER_VARIANT_IDS.flatMap((id) => readPaperBook(id)?.positions ?? [])
   const merged = [
-    ...(book?.positions ?? [])
+    ...held
       .filter((p) => (p.lots || 0) > 0 && p.contract)
       .map((p) => String(p.contract).replace(/[^a-zA-Z0-9]/g, "").toUpperCase()),
     ...extra.map((s) => String(s || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase()),
@@ -360,9 +502,9 @@ export function allWeatherWatchContracts(extra: string[] = []): string[] {
   return out
 }
 
-function writePaperBook(book: PaperBook) {
-  ensureDir()
-  fs.writeFileSync(BOOK_FILE, JSON.stringify(book, null, 2), "utf-8")
+function writePaperBook(book: PaperBook, variantId: AllWeatherVariantId) {
+  ensureDir(variantId)
+  fs.writeFileSync(bookFile(variantId), JSON.stringify(book, null, 2), "utf-8")
 }
 
 export type SleeveView = {
@@ -378,6 +520,13 @@ export type SleeveView = {
 }
 
 export type OverviewPayload = {
+  variant: {
+    id: AllWeatherVariantId
+    label: string
+    hint: string
+    initialCapital: number
+    volTarget: number
+  }
   strategy: {
     name: string
     method: string
@@ -394,7 +543,7 @@ export type OverviewPayload = {
     sleeveBacktest: StrategySnapshot["sleeveBacktest"]
     lastBudget: StrategySnapshot["lastBudget"]
   }
-  settings: AllWeatherSettings
+  settings: AllWeatherSettings & { variantId: AllWeatherVariantId }
   book: PaperBook
   isRebalanceDay: boolean
   rebalanceTrades: RebalanceTrade[]
@@ -440,10 +589,11 @@ function sleeveViews(positions: BookPosition[]): SleeveView[] {
   })
 }
 
-function toOverview(book: PaperBook): OverviewPayload {
-  const snapshot = loadStrategySnapshot()
-  const live = loadLiveStrategySnapshot()
-  const settings = readAllWeatherSettings()
+function toOverview(book: PaperBook, variantId: AllWeatherVariantId): OverviewPayload {
+  const variant = getAllWeatherVariant(variantId)
+  const snapshot = loadVariantSnapshot(variantId)
+  const live = loadLiveStrategySnapshot(variantId)
+  const settings = readAllWeatherSettings(variantId)
   if (book.lastRebalanceDate == null && book.startedAt === book.asOf) {
     book = {
       ...book,
@@ -458,6 +608,13 @@ function toOverview(book: PaperBook): OverviewPayload {
   const notional = book.positions.reduce((s, p) => s + p.notional, 0)
   const margin = book.positions.reduce((s, p) => s + p.margin, 0)
   return {
+    variant: {
+      id: variant.id,
+      label: variant.label,
+      hint: variant.hint,
+      initialCapital: variant.initialCapital,
+      volTarget: variant.volTarget,
+    },
     strategy: {
       name: snapshot.name,
       method: snapshot.method,
@@ -474,7 +631,7 @@ function toOverview(book: PaperBook): OverviewPayload {
       sleeveBacktest: snapshot.sleeveBacktest,
       lastBudget: live.lastBudget,
     },
-    settings,
+    settings: { ...settings, variantId },
     book,
     isRebalanceDay: Boolean(book.isRebalanceDay && book.lastRebalanceDate === book.asOf),
     rebalanceTrades: book.rebalanceTrades ?? [],
@@ -489,20 +646,31 @@ function toOverview(book: PaperBook): OverviewPayload {
   }
 }
 
-function bookNeedsRebuild(book: PaperBook, snapshot: StrategySnapshot, tenor: ContractTenor): boolean {
+function bookNeedsRebuild(
+  book: PaperBook,
+  snapshot: StrategySnapshot,
+  tenor: ContractTenor,
+  variantId?: AllWeatherVariantId | null,
+): boolean {
   if (book.universeVersion != null && book.universeVersion !== LIVE_UNIVERSE_VERSION) return true
   if (book.contractTenor && book.contractTenor !== tenor) return true
-  return universeKey(book.positions) !== universeKey(snapshot.positions)
+  if (universeKey(book.positions) !== universeKey(snapshot.positions)) return true
+  return variantEnforcesSleeveFloor(variantId) && sleeveFloorViolated(book.positions, snapshot.budgetLo)
 }
 
-export async function refreshPaperBook(opts?: { reset?: boolean }): Promise<OverviewPayload> {
-  const snapshot = loadLiveStrategySnapshot()
-  const settings = readAllWeatherSettings()
+export async function refreshPaperBook(opts?: {
+  reset?: boolean
+  variantId?: AllWeatherVariantId | null
+}): Promise<OverviewPayload> {
+  const variantId = parseAllWeatherVariantId(opts?.variantId)
+  const snapshot = loadLiveStrategySnapshot(variantId)
+  const settings = readAllWeatherSettings(variantId)
   const assets = snapshot.positions.map((p) => p.asset)
   const quotes = await fetchLiveFuturesPrices(assets, settings.contractTenor)
   const asOf = todayStamp()
-  const existing = opts?.reset ? null : readPaperBook()
-  const stale = existing && bookNeedsRebuild(existing, snapshot, settings.contractTenor)
+  const enforceSleeveFloor = variantEnforcesSleeveFloor(variantId)
+  const existing = opts?.reset ? null : readPaperBook(variantId)
+  const stale = existing && bookNeedsRebuild(existing, snapshot, settings.contractTenor, variantId)
 
   let book: PaperBook
   if (!existing || stale) {
@@ -515,10 +683,21 @@ export async function refreshPaperBook(opts?: { reset?: boolean }): Promise<Over
       quotes.missing,
       quotes.contracts,
       settings.contractTenor,
+      enforceSleeveFloor,
     )
   } else if (existing.asOf === asOf) {
     const prevMap = new Map(existing.positions.map((p) => [p.asset, p]))
-    const positions = buildPositions(snapshot, quotes.prices, existing.initialCapital, prevMap, quotes.contracts).map((p) => {
+    let sized = buildPositions(snapshot, quotes.prices, existing.initialCapital, prevMap, quotes.contracts)
+    if (enforceSleeveFloor) {
+      sized = applySleeveFloors(
+        sized,
+        existing.initialCapital,
+        snapshot.brokerMarginMult,
+        snapshot.budgetLo,
+        snapshot.budgetHi,
+      )
+    }
+    const positions = sized.map((p) => {
       const prev = prevMap.get(p.asset)
       const base = prev?.prevPrice ?? p.prevPrice
       const dailyPnl = p.lots * (p.price - base) * p.multiplier
@@ -561,32 +740,46 @@ export async function refreshPaperBook(opts?: { reset?: boolean }): Promise<Over
     }
   } else {
     const prevMap = new Map(existing.positions.map((p) => [p.asset, p]))
-    const positions = buildPositions(snapshot, quotes.prices, existing.initialCapital, prevMap, quotes.contracts)
+    let positions = buildPositions(snapshot, quotes.prices, existing.initialCapital, prevMap, quotes.contracts)
+    if (enforceSleeveFloor) {
+      positions = applySleeveFloors(
+        positions,
+        existing.initialCapital,
+        snapshot.brokerMarginMult,
+        snapshot.budgetLo,
+        snapshot.budgetHi,
+      )
+    }
     book = applyDay(existing, positions, asOf, quotes.source, quotes.fetchedAt, quotes.missing)
     book.contractTenor = settings.contractTenor
     book.universeVersion = LIVE_UNIVERSE_VERSION
   }
 
-  book = applyMonthEndRebalance(book, snapshot, quotes.prices, quotes.contracts, asOf)
-  writePaperBook(book)
-  return toOverview(book)
+  book = applyMonthEndRebalance(book, snapshot, quotes.prices, quotes.contracts, asOf, enforceSleeveFloor)
+  writePaperBook(book, variantId)
+  return toOverview(book, variantId)
 }
 
-export async function getOverview(refresh = false): Promise<OverviewPayload> {
-  const book = readPaperBook()
-  const live = loadLiveStrategySnapshot()
-  const settings = readAllWeatherSettings()
+export async function getOverview(
+  refresh = false,
+  variantId?: AllWeatherVariantId | null,
+): Promise<OverviewPayload> {
+  const id = parseAllWeatherVariantId(variantId)
+  const book = readPaperBook(id)
+  const live = loadLiveStrategySnapshot(id)
+  const settings = readAllWeatherSettings(id)
   if (
     refresh ||
     !book ||
     book.positions.some((p) => !p.contract) ||
-    bookNeedsRebuild(book, live, settings.contractTenor)
+    bookNeedsRebuild(book, live, settings.contractTenor, id)
   ) {
-    return refreshPaperBook()
+    return refreshPaperBook({ variantId: id })
   }
-  return toOverview(book)
+  return toOverview(book, id)
 }
 
-export function resetPaperBook(): void {
-  if (fs.existsSync(BOOK_FILE)) fs.unlinkSync(BOOK_FILE)
+export function resetPaperBook(variantId?: AllWeatherVariantId | null): void {
+  const file = bookFile(parseAllWeatherVariantId(variantId))
+  if (fs.existsSync(file)) fs.unlinkSync(file)
 }

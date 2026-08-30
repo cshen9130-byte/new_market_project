@@ -33,7 +33,8 @@ import {
   marksFromPositions,
   mergeOrderMarks,
 } from "@/lib/client/chart-order-marks"
-import { ALL_WEATHER_PORTFOLIO_ID, markPrice } from "@/lib/client/paper-trading"
+import { DEFAULT_ALL_WEATHER_VARIANT_ID } from "@/lib/all-weather/variants"
+import { isAllWeatherAccount, markPrice } from "@/lib/client/paper-trading"
 import { overlaySinaQuote } from "@/lib/client/market-hours"
 import { productOfSymbol, resolveSymbolInput } from "@/lib/client/pro-trading"
 import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
@@ -84,9 +85,9 @@ export function ProTradingWorkspace({
   const paper = usePaperTrading(quotes, candles)
   const awBootRef = useRef(false)
   const awSymbols = paper.state.products
-    .filter((item) => item.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
+    .filter((item) => isAllWeatherAccount(item.portfolioId))
     .map((item) => item.symbol)
-  useAllWeatherCtpWatch(open && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID, awSymbols)
+  useAllWeatherCtpWatch(open && isAllWeatherAccount(paper.selectedPortfolioId), awSymbols)
 
   useEffect(() => setMounted(true), [])
 
@@ -117,11 +118,12 @@ export function ProTradingWorkspace({
     }
     if (awBootRef.current) return
     awBootRef.current = true
-    void paper.loadAllWeather(false).then((sym) => {
+    void paper.loadAllWeather(false, DEFAULT_ALL_WEATHER_VARIANT_ID).then((sym) => {
       if (sym) {
         setSymbol(sym)
         setQuery(sym)
       }
+      void paper.loadAllWeather(false, "vol5-10m", { select: false })
     })
   }, [open, layout, paper.loadAllWeather])
 
@@ -197,7 +199,7 @@ export function ProTradingWorkspace({
     if (!symbol) return []
     const fromPaper = marksFromPositions(paper.state.positions, symbol, paper.selectedPortfolioId)
     const fromAw =
-      paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID
+      isAllWeatherAccount(paper.selectedPortfolioId)
         ? marksFromAllWeatherTrades(paper.awMeta?.trades, symbol)
         : []
     return mergeOrderMarks(fromAw, fromPaper)

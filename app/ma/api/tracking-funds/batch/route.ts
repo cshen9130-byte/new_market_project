@@ -3,6 +3,7 @@ import { query } from "@/lib/db"
 import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
+import { isCodeLikeProductName, resolveTrackingProductName } from "@/lib/server/tracking-product-name"
 import {
   addFundToTrackingPool,
   invalidateTrackingPoolListCaches,
@@ -31,18 +32,19 @@ async function ensureFundTagsTable() {
 }
 
 async function getProductName(pool: string, bh: string): Promise<string> {
+  let stored: string | undefined
   if (isCustomTrackingPool(pool)) {
     const rows = await query<{ product_name: string }>(
       `SELECT product_name FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2 LIMIT 1`,
       [pool, bh]
     )
-    if (rows[0]?.product_name) return rows[0].product_name
+    stored = rows[0]?.product_name
   } else if (pool === "bfl") {
     const rows = await query<{ product_name: string }>(
       `SELECT product_name FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
       [bh]
     )
-    if (rows[0]?.product_name) return rows[0].product_name
+    stored = rows[0]?.product_name
   } else {
     const table = POOL_TABLE[pool]
     if (table) {
@@ -50,15 +52,11 @@ async function getProductName(pool: string, bh: string): Promise<string> {
         `SELECT product_name FROM ${table} WHERE register_number = $1 LIMIT 1`,
         [bh]
       )
-      if (rows[0]?.product_name) return rows[0].product_name
+      stored = rows[0]?.product_name
     }
   }
-  // Fallback: look up from the master fund table (uses fund_name, not product_name)
-  const fallback = await query<{ fund_name: string }>(
-    `SELECT fund_name FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
-    [bh]
-  )
-  return fallback[0]?.fund_name ?? bh
+  if (stored && !isCodeLikeProductName(stored, bh)) return stored
+  return resolveTrackingProductName(bh, stored || bh)
 }
 
 export async function POST(req: Request) {

@@ -20,6 +20,7 @@ import {
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
+import { isCodeLikeProductName, resolveTrackingProductName } from "@/lib/server/tracking-product-name"
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_tracking_funds_list_cache (
@@ -206,8 +207,12 @@ export async function upsertTrackingFundListCacheEntry(
   await ensureTrackingFundsListCacheTable()
 
   const asOfDate = new Date().toISOString().slice(0, 10)
-  const bflRows = await query<{ short_name: string | null; raw_strategy: string | null }>(
-    `SELECT short_name, raw_strategy
+  const bflRows = await query<{
+    product_name: string | null
+    short_name: string | null
+    raw_strategy: string | null
+  }>(
+    `SELECT product_name, short_name, raw_strategy
      FROM private_fund_info_bfl
      WHERE beian_hao = $1
      LIMIT 1`,
@@ -219,10 +224,14 @@ export async function upsertTrackingFundListCacheEntry(
      LIMIT 1`,
     [beian_hao],
   )
+  const poolName = poolRows[0]?.product_name ?? product_name
+  const resolvedName = isCodeLikeProductName(poolName, beian_hao)
+    ? await resolveTrackingProductName(beian_hao, poolName)
+    : poolName
   const row: BaseFundRow = {
     beian_hao,
-    product_name: poolRows[0]?.product_name ?? product_name,
-    short_name: bflRows[0]?.short_name ?? poolRows[0]?.product_name ?? null,
+    product_name: resolvedName,
+    short_name: bflRows[0]?.short_name ?? (isCodeLikeProductName(poolName, beian_hao) ? null : poolName),
     raw_strategy: bflRows[0]?.raw_strategy ?? null,
   }
 

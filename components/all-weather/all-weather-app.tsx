@@ -34,6 +34,14 @@ import { allWeatherFrozenMarks, allWeatherLiveBreakdown, allWeatherLiveMark } fr
 import { isLiveSessionFor, shanghaiYmd, validMark } from "@/lib/client/market-hours"
 import { CONTRACT_TENORS, type ContractTenor } from "@/lib/all-weather/setup"
 import { displayListedName, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
+import {
+  ALL_WEATHER_VARIANTS,
+  DEFAULT_ALL_WEATHER_VARIANT_ID,
+  formatCapitalWan,
+  getAllWeatherVariant,
+  parseAllWeatherVariantId,
+  type AllWeatherVariantId,
+} from "@/lib/all-weather/variants"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -88,6 +96,13 @@ type SleeveView = {
 }
 
 type Overview = {
+  variant?: {
+    id: AllWeatherVariantId
+    label: string
+    hint: string
+    initialCapital: number
+    volTarget: number
+  }
   strategy: {
     name: string
     method: string
@@ -110,7 +125,7 @@ type Overview = {
     sleeveBacktest: Array<{ sleeve: string; label: string; cagr: string; vol: string; sharpe: string; maxDd: string }>
     lastBudget: Record<SleeveKey, number>
   }
-  settings?: { contractTenor?: ContractTenor }
+  settings?: { contractTenor?: ContractTenor; variantId?: AllWeatherVariantId }
   book: {
     startedAt: string
     asOf: string
@@ -192,6 +207,18 @@ function pct(n: number, digits = 2): string {
   return `${(n * 100).toFixed(digits)}%`
 }
 
+function volLabel(n: number) {
+  const x = n * 100
+  return Number.isInteger(x) ? `${x}%` : `${x.toFixed(1)}%`
+}
+
+const VARIANT_STORAGE_KEY = "all-weather.active-variant"
+
+function readStoredVariant(): AllWeatherVariantId {
+  if (typeof window === "undefined") return DEFAULT_ALL_WEATHER_VARIANT_ID
+  return parseAllWeatherVariantId(window.localStorage.getItem(VARIANT_STORAGE_KEY))
+}
+
 function pnlClass(n: number): string {
   if (n > 0) return "text-red-600"
   if (n < 0) return "text-emerald-600"
@@ -211,6 +238,7 @@ export function AllWeatherApp() {
   const homeHref = pathname.startsWith("/ma/") ? "/ma/dashboard" : "/dashboard"
   const [authorized, setAuthorized] = useState<boolean | null>(null)
   const [canManage, setCanManage] = useState(false)
+  const [variantId, setVariantId] = useState<AllWeatherVariantId>(DEFAULT_ALL_WEATHER_VARIANT_ID)
   const [overview, setOverview] = useState<Overview | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -247,14 +275,23 @@ export function AllWeatherApp() {
     }
     setCanManage(user.name === "cshen")
     setAuthorized(true)
-    void loadAll()
+    const stored = readStoredVariant()
+    setVariantId(stored)
+    void loadAll(false, stored)
   }, [])
 
-  async function loadAll(refresh = false) {
+  function variantQuery(id: AllWeatherVariantId, refresh = false) {
+    const params = new URLSearchParams()
+    params.set("variant", id)
+    if (refresh) params.set("refresh", "1")
+    return `?${params.toString()}`
+  }
+
+  async function loadAll(refresh = false, id = variantId) {
     setLoading(true)
     setError(null)
     try {
-      const ovRes = await fetch(`/api/all-weather${refresh ? "?refresh=1" : ""}`, {
+      const ovRes = await fetch(`/api/all-weather${variantQuery(id, refresh)}`, {
         headers: headers(),
         cache: "no-store",
       })
@@ -394,16 +431,27 @@ export function AllWeatherApp() {
     }
   }
 
+  async function switchVariant(id: AllWeatherVariantId) {
+    if (id === variantId && overview) return
+    setVariantId(id)
+    window.localStorage.setItem(VARIANT_STORAGE_KEY, id)
+    frozenMarksRef.current = {}
+    bookFingerprintRef.current = ""
+    setOverview(null)
+    await loadAll(false, id)
+  }
+
   async function setupTenor(tenor: ContractTenor) {
     if (overview?.settings?.contractTenor === tenor) return
-    if (!window.confirm("切换合约月份会按新合约重建模拟盘，净值重置为 2000 万。")) return
+    const capitalLabel = formatCapitalWan(overview?.book.initialCapital ?? getAllWeatherVariant(variantId).initialCapital)
+    if (!window.confirm(`切换合约月份会按新合约重建当前策略的模拟盘，净值重置为 ${capitalLabel}。另一条策略不受影响。`)) return
     setLoading(true)
     setError(null)
     try {
       const res = await fetch("/api/all-weather", {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ action: "setup", contractTenor: tenor }),
+        body: JSON.stringify({ action: "setup", contractTenor: tenor, variant: variantId }),
       })
       const data = await res.json()
       if (!res.ok || !data?.ok) throw new Error(data?.error || "切换失败")
@@ -586,6 +634,10 @@ export function AllWeatherApp() {
     )
   }
 
+  const selectedVariant = getAllWeatherVariant(variantId)
+  const headerCapital = overview?.book.initialCapital ?? selectedVariant.initialCapital
+  const headerVol = overview?.strategy.volTarget ?? selectedVariant.volTarget
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
@@ -594,10 +646,31 @@ export function AllWeatherApp() {
             <CloudSun className="h-6 w-6 text-amber-600" />
             <div>
               <div className="text-lg font-semibold">全天候策略跟踪</div>
-              <div className="text-xs text-slate-500">四袖套等权 25 · 风险预算浮动 10%–40% · 模拟实盘 2000 万</div>
+              <div className="text-xs text-slate-500">
+                四袖套等权 25 · 风险预算浮动 10%–40% · 模拟实盘 {formatCapitalWan(headerCapital)} · 波动目标 {volLabel(headerVol)}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className="mr-1 flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
+              {ALL_WEATHER_VARIANTS.map((item) => {
+                const active = variantId === item.id
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={loading}
+                    title={item.hint}
+                    onClick={() => void switchVariant(item.id)}
+                    className={`rounded px-2.5 py-1 text-xs ${
+                      active ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                )
+              })}
+            </div>
             <div className="mr-1 flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
               {CONTRACT_TENORS.map((item) => {
                 const active = (overview?.settings?.contractTenor ?? "current") === item.id
@@ -660,12 +733,16 @@ export function AllWeatherApp() {
             <Card className="border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-3 text-sm font-medium text-slate-800">策略说明</div>
               <p className="text-sm leading-6 text-slate-600">
-                本页跟踪《全天候策略 · 四袖套等权 25 浮动 10–40》回测报告中的配置，作为可对照的模拟实盘基准。
+                本页跟踪《{overview.strategy.name}》回测报告中的配置，作为可对照的模拟实盘基准。
                 袖套为权益 / 债券 / 黄金 / 商品，战略风险预算各 25%，再平衡时按袖套自身波动在 10%–40% 内浮动；
-                袖套之间 ERC，袖套内 CAIV，月末再平衡，事前波动目标 9%、约束 10%。原油 SC 计入商品袖套。
+                袖套之间 ERC，袖套内 CAIV，月末再平衡，事前波动目标 {volLabel(overview.strategy.volTarget)}、约束 {volLabel(overview.strategy.volMandate)}。原油 SC 计入商品袖套。
                 实盘品种：债券仅用 10 年国债 T；权益为沪深300 IF、中证500 IC、中证1000 IM。
                 合约可选手动切换：当前合约（股指当月 / 国债当季 / 商品主力）或下季合约（股指下季 / 国债下季 / 商品次主力）。
-                当前手数按 {overview.strategy.lastRebalance} 目标权重缩放至 2000 万元，再四舍五入到整数手；单手名义过大的品种（如原油 SC、锡 SN）可能不足一手，开仓为 0，实际风险贡献也为 0。回测区间 {overview.strategy.backtestStart} 至 {overview.strategy.backtestEnd}，
+                当前手数按 {overview.strategy.lastRebalance} 目标权重缩放至 {formatCapitalWan(overview.book.initialCapital)}元，再四舍五入到整数手。
+                {variantId !== DEFAULT_ALL_WEATHER_VARIANT_ID
+                  ? " 本账户按 5% 目标等比例缩放杠杆，与 2000 万账户独立记账。单手名义过大时，该袖套权重并入最接近一手的合约并至少开 1 手，保证四袖套均有持仓、风险预算不低于 10%、不超过 40%。"
+                  : " 单手名义过大的品种（如原油 SC、锡 SN）可能不足一手，开仓为 0，实际风险贡献也为 0。"}
+                回测区间 {overview.strategy.backtestStart} 至 {overview.strategy.backtestEnd}，
                 CAGR {pct(overview.strategy.summary.cagr)}，Sharpe {overview.strategy.summary.sharpe.toFixed(2)}，最大回撤 {pct(overview.strategy.summary.maxDrawdown)}。
               </p>
               <div className="mt-4 grid gap-3 sm:grid-cols-4">
@@ -736,7 +813,7 @@ export function AllWeatherApp() {
                     </div>
                     <p className="mb-3 text-xs text-amber-800/80">
                       {overview.book.startedAt === overview.book.asOf
-                        ? "今日建仓：按目标权重 × 2000 万开出整数手。"
+                        ? `今日建仓：按目标权重 × ${formatCapitalWan(overview.book.initialCapital)} 开出整数手。`
                         : "月末再平衡：按目标权重 × 当前净值重算手数，下表为调仓前后对比。"}
                     </p>
                     <Table>

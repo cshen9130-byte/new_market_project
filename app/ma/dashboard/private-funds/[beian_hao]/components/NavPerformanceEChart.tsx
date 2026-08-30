@@ -122,6 +122,7 @@ export function NavPerformanceEChart({
         symbol: "circle",
         symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
         connectNulls: false,
+        clip: false,
         lineStyle: { width: 1.75, color: "#2563eb", type: "dashed" },
         itemStyle: { color: "#2563eb" },
         data: benchPoints,
@@ -134,6 +135,7 @@ export function NavPerformanceEChart({
       symbol: "circle",
       symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
       connectNulls: false,
+      clip: false,
       lineStyle: { width: 2, color: RED },
       itemStyle: { color: RED },
       areaStyle: {

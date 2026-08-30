@@ -1,6 +1,7 @@
 import { createHash } from "crypto"
 import { query } from "@/lib/db"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
+import { resolveTrackingProductName } from "@/lib/server/tracking-product-name"
 
 /** Standard register-number pool tables keyed by pool id. */
 export const REGISTER_POOL_TABLE: Record<string, string> = {
@@ -40,6 +41,7 @@ export async function addFundToTrackingPool(
   beian_hao: string,
   product_name: string,
 ): Promise<{ created: boolean }> {
+  product_name = await resolveTrackingProductName(beian_hao, product_name)
   if (isCustomTrackingPool(pool)) {
     const hash = rowHash(pool, beian_hao, product_name)
     const rows = await query<{ id: number }>(

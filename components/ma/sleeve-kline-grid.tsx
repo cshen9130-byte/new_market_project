@@ -12,7 +12,7 @@ import {
 } from "@/lib/client/chart-order-marks"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import {
-  ALL_WEATHER_PORTFOLIO_ID,
+  isAllWeatherAccount,
   priceDigits,
   sideLabel,
   sleeveLeadPositions,
@@ -53,7 +53,7 @@ function SleeveMiniChart({
     if (!symbol) return []
     const fromPaper = marksFromPositions(paper.state.positions, symbol, paper.selectedPortfolioId)
     const fromAw =
-      paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID
+      isAllWeatherAccount(paper.selectedPortfolioId)
         ? marksFromAllWeatherTrades(paper.awMeta?.trades, symbol)
         : []
     return mergeOrderMarks(fromAw, fromPaper)
@@ -133,7 +133,7 @@ export function SleeveKlineGrid({
   const leads = useMemo(
     () =>
       sleeveLeadPositions(paper.openPositions, {
-        snapshotFallback: paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID,
+        snapshotFallback: isAllWeatherAccount(paper.selectedPortfolioId),
       }),
     [paper.openPositions, paper.selectedPortfolioId],
   )

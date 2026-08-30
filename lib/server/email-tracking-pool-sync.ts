@@ -11,6 +11,7 @@ import { query } from "@/lib/db"
 import { invalidateTrackingPoolListCaches } from "@/lib/server/tracking-pool-membership"
 import { loadEmailPoolFunds } from "@/lib/server/team-data-query-pg"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
+import { repairCodeLikeCustomPoolProductNames } from "@/lib/server/tracking-product-name"
 
 export const EMAIL_OPS_POOL_KEY = "custom_email_nav"
 export const EMAIL_OPS_POOL_LABEL = "邮箱运维池"
@@ -133,6 +134,9 @@ export async function syncEmailTrackingPool(): Promise<EmailTrackingPoolSyncResu
     )
     removed = parseInt(del[0]?.n ?? "0", 10)
   }
+
+  const repaired = await repairCodeLikeCustomPoolProductNames(EMAIL_OPS_POOL_KEY)
+  updated += repaired
 
   const countRows = await query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM user_custom_pool WHERE pool_key = $1`,

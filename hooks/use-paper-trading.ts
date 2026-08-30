@@ -4,12 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_KEYS, type SleeveKey } from "@/lib/all-weather/universe"
+import { parseAllWeatherVariantId, type AllWeatherVariantId } from "@/lib/all-weather/variants"
 import { fetchAllWeatherOverview, saveAllWeatherSetup, type AllWeatherBookMeta } from "@/lib/client/all-weather-paper"
 import { allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
 import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import { isLiveSessionFor, validMark, weekdayClosedLast } from "@/lib/client/market-hours"
 import {
-  ALL_WEATHER_PORTFOLIO_ID,
+  allWeatherAccountByPortfolio,
+  allWeatherPaperAccount,
   applyAllWeatherBook,
   attachAllWeatherSlice,
   closePosition,
@@ -52,7 +54,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   const [selectedPortfolioId, setSelectedPortfolioId] = useState("default")
   const [error, setError] = useState<string | null>(null)
   const [extraMarks, setExtraMarks] = useState<Record<string, number>>({})
-  const [awMeta, setAwMeta] = useState<AllWeatherBookMeta | null>(null)
+  const [awMetaById, setAwMetaById] = useState<Record<string, AllWeatherBookMeta>>({})
   const [awLoading, setAwLoading] = useState(false)
   const [awConfirm, setAwConfirm] = useState<AwOrderConfirm | null>(null)
   const prevMarks = useRef<Record<string, number>>({})
@@ -197,6 +199,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   }, [ready, quotes, candles, extraMarks])
 
   const selectedPortfolio = state.portfolios.find((p) => p.id === selectedPortfolioId) || state.portfolios[0] || null
+  const awMeta = selectedPortfolio ? awMetaById[selectedPortfolio.id] ?? null : null
 
   const dismissAwConfirm = useCallback(() => setAwConfirm(null), [])
 
@@ -256,7 +259,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   )
 
   const deletePortfolio = useCallback((id: string) => {
-    if (id === ALL_WEATHER_PORTFOLIO_ID) {
+    if (isAllWeatherAccount(id)) {
       setError("全天候账户由策略自动执行，不能删除")
       return
     }
@@ -347,45 +350,52 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     guardAwOrder(portfolioId, "全平", execute)
   }, [selectedPortfolio, state.positions, quotes, candles, extraMarks, guardAwOrder])
 
-  const loadAllWeather = useCallback(async (refresh = false) => {
-    setAwLoading(true)
-    try {
-      const { holdings, marks, meta } = await fetchAllWeatherOverview(refresh)
-      if (!holdings.length) {
-        setError("全天候策略暂无持仓")
+  const loadAllWeather = useCallback(
+    async (refresh = false, variantId?: AllWeatherVariantId | null, opts?: { select?: boolean }) => {
+      const account = allWeatherPaperAccount(parseAllWeatherVariantId(variantId))
+      setAwLoading(true)
+      try {
+        const { holdings, marks, meta } = await fetchAllWeatherOverview(refresh, account.variantId)
+        if (!holdings.length) {
+          setError("全天候策略暂无持仓")
+          return null
+        }
+        setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital, account))
+        if (opts?.select !== false) setSelectedPortfolioId(account.portfolioId)
+        setExtraMarks((prev) => ({ ...prev, ...marks }))
+        setAwMetaById((prev) => ({ ...prev, [account.portfolioId]: meta }))
+        setError(null)
+        const focus =
+          holdings.find((h) => h.asset === "IF") ||
+          holdings.find((h) => h.asset === "IC") ||
+          holdings.find((h) => h.asset === "IM") ||
+          holdings[0]
+        return focus.contract
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "加载全天候失败")
         return null
+      } finally {
+        setAwLoading(false)
       }
-      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital))
-      setSelectedPortfolioId(ALL_WEATHER_PORTFOLIO_ID)
-      setExtraMarks(marks)
-      setAwMeta(meta)
-      setError(null)
-      const focus =
-        holdings.find((h) => h.asset === "IF") ||
-        holdings.find((h) => h.asset === "IC") ||
-        holdings.find((h) => h.asset === "IM") ||
-        holdings[0]
-      return focus.contract
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载全天候失败")
-      return null
-    } finally {
-      setAwLoading(false)
-    }
-  }, [])
+    },
+    [],
+  )
 
-  const setContractTenor = useCallback(async (tenor: ContractTenor) => {
+  const setContractTenor = useCallback(async (tenor: ContractTenor, variantId?: AllWeatherVariantId | null) => {
+    const account = allWeatherPaperAccount(
+      variantId ?? allWeatherAccountByPortfolio(stateRef.current.portfolios.find((p) => p.id === selectedPortfolioId)?.id)?.variantId,
+    )
     setAwLoading(true)
     try {
-      const { holdings, marks, meta } = await saveAllWeatherSetup(tenor)
+      const { holdings, marks, meta } = await saveAllWeatherSetup(tenor, account.variantId)
       if (!holdings.length) {
         setError("全天候策略暂无持仓")
         return null
       }
-      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital))
-      setSelectedPortfolioId(ALL_WEATHER_PORTFOLIO_ID)
-      setExtraMarks(marks)
-      setAwMeta(meta)
+      setState((prev) => applyAllWeatherBook(prev, holdings, Date.now(), marks, meta.initialCapital, account))
+      setSelectedPortfolioId(account.portfolioId)
+      setExtraMarks((prev) => ({ ...prev, ...marks }))
+      setAwMetaById((prev) => ({ ...prev, [account.portfolioId]: meta }))
       setError(null)
       const focus =
         holdings.find((h) => h.asset === "IF") ||
@@ -399,7 +409,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
     } finally {
       setAwLoading(false)
     }
-  }, [])
+  }, [selectedPortfolioId])
 
   const createAndArmStrategy = useCallback(
     (draft: PaperStrategyDraft) => {
@@ -495,7 +505,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   }, [])
 
   const marginOf = useCallback((pos: PaperPosition, liveMark: number | null) => {
-    if (pos.portfolioId !== ALL_WEATHER_PORTFOLIO_ID) return positionMargin(pos, liveMark)
+    if (!isAllWeatherAccount(pos.portfolioId)) return positionMargin(pos, liveMark)
     const bookPx = awMeta?.bookMarks?.[pos.symbol] || awMeta?.bookMarks?.[pos.symbol.toUpperCase()] || 0
     return positionMargin(pos, bookPx > 0 ? bookPx : null)
   }, [awMeta])
@@ -556,11 +566,11 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
   }, [quotes, extraMarks])
 
   const awLive = useMemo(() => {
-    if (!awMeta || selectedPortfolio?.id !== ALL_WEATHER_PORTFOLIO_ID) return null
+    if (!awMeta || !isAllWeatherAccount(selectedPortfolio?.id)) return null
     const prevMarks = awMeta.prevMarks || {}
     const bookMarks = awMeta.bookMarks || {}
     const rows = state.positions
-      .filter((pos) => pos.status === "open" && pos.portfolioId === ALL_WEATHER_PORTFOLIO_ID)
+      .filter((pos) => pos.status === "open" && pos.portfolioId === selectedPortfolio?.id)
       .map((pos) => {
         const book = awMeta.positions?.[pos.symbol] || awMeta.positions?.[pos.symbol.toUpperCase()]
         const bookPx = bookMarks[pos.symbol] || bookMarks[pos.symbol.toUpperCase()] || 0
@@ -643,7 +653,7 @@ export function usePaperTrading(quotes: Record<string, CtpTick>, candles: Record
       }
     }
     const initialCapital =
-      selectedPortfolio?.id === ALL_WEATHER_PORTFOLIO_ID
+      isAllWeatherAccount(selectedPortfolio?.id)
         ? awMeta?.initialCapital || selectedPortfolio.initialCapital || DEFAULT_PAPER_CAPITAL
         : selectedPortfolio?.initialCapital || DEFAULT_PAPER_CAPITAL
     const nav = awLive ? awLive.nav : paperNav(initialCapital, realized, unrealized)

@@ -1,4 +1,5 @@
-import snapshot from "./strategy-snapshot.json"
+import type { AllWeatherVariantId } from "./variants"
+import { loadVariantSnapshot } from "./variants"
 import type { SnapshotPosition, StrategySnapshot } from "./universe"
 import { IM_SPEC } from "./universe"
 
@@ -72,8 +73,8 @@ export function applyLiveUniverse(src: StrategySnapshot): StrategySnapshot {
   }
 }
 
-export function loadLiveStrategySnapshot(): StrategySnapshot {
-  return applyLiveUniverse(snapshot as StrategySnapshot)
+export function loadLiveStrategySnapshot(variantId?: AllWeatherVariantId | null): StrategySnapshot {
+  return applyLiveUniverse(loadVariantSnapshot(variantId))
 }
 
 export function universeKey(positions: Array<{ asset: string }>) {

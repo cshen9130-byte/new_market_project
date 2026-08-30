@@ -328,8 +328,23 @@ function bflOpsNavPctExpr(): string {
   return "COALESCE(lbc.price_change, lbn.price_change, lbs.price_change)"
 }
 
+/** Prefer BFL/cache name when the pool stored the 备案号 as product_name. */
+function resolvedCachedProductNameExpr(): string {
+  return `CASE
+    WHEN i.product_name ~ '^[A-Za-z0-9]{4,10}$'
+      OR UPPER(BTRIM(i.product_name)) = UPPER(BTRIM(i.beian_hao))
+    THEN COALESCE(
+      CASE WHEN cache.product_name ~ '[ABC]类' THEN NULLIF(BTRIM(cache.product_name), '') END,
+      NULLIF(BTRIM(cache.short_name), ''),
+      NULLIF(BTRIM(cache.product_name), ''),
+      i.product_name
+    )
+    ELSE i.product_name
+  END`
+}
+
 const CACHE_ALLOWED_SORT: Record<string, string> = {
-  product_name: "i.product_name",
+  product_name: resolvedCachedProductNameExpr(),
   first_added_at: "i.first_added_at",
   latest_nav: "cache.unit_nav",
   latest_nav_date: "cache.nav_date",
@@ -437,7 +452,14 @@ function buildCachedFromClause(
     return `FROM (
       SELECT
         f.beian_hao,
-        (ARRAY_AGG(f.product_name ORDER BY f.priority ASC))[1] AS product_name,
+        (ARRAY_AGG(f.product_name ORDER BY
+          CASE
+            WHEN UPPER(BTRIM(f.product_name)) = UPPER(BTRIM(f.beian_hao)) THEN 2
+            WHEN f.product_name ~ '^[A-Za-z0-9]{4,10}$' THEN 1
+            ELSE 0
+          END,
+          f.priority ASC
+        ))[1] AS product_name,
         ${SHANGHAI_DATE_EXPR("MIN(f.added_at)")} AS first_added_at
       FROM (
         SELECT beian_hao, product_name, 1 AS priority, NULL::timestamptz AS added_at
@@ -572,7 +594,7 @@ async function handleCachedTrackingList(opts: {
       }
       if (keyword) {
         filterParams.push(`%${keyword}%`)
-        where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+        where.push(`(${resolvedCachedProductNameExpr()} ILIKE $${filterParams.length} OR i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length} OR cache.product_name ILIKE $${filterParams.length} OR cache.short_name ILIKE $${filterParams.length})`)
       }
       if (teamTags.length > 0) {
         filterParams.push(teamTags)
@@ -619,7 +641,7 @@ async function handleCachedTrackingList(opts: {
       const pOffset = filterParams.length + 2
       const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.first_added_at"
       const orderSql = sortKey === "first_added_at" || !CACHE_ALLOWED_SORT[sortKey]
-        ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
+        ? `${orderCol} ${sortDir} NULLS LAST, ${resolvedCachedProductNameExpr()} ASC`
         : `${orderCol} ${sortDir} NULLS LAST`
       const baseFrom = buildCachedFromClause(pool, isCustomPool, isMineAllPool)
 
@@ -640,7 +662,7 @@ async function handleCachedTrackingList(opts: {
         query<TrackRow>(
           `SELECT
              i.beian_hao,
-             i.product_name,
+             ${resolvedCachedProductNameExpr()} AS product_name,
              cache.short_name,
              ${strategyL1Expr} AS strategy_l1,
              ${strategyL2Expr} AS strategy_l2,
@@ -1079,7 +1101,18 @@ export async function GET(req: Request) {
     ? `WITH source AS (
         SELECT
           p.register_number AS beian_hao,
-          p.product_name,
+          CASE
+            WHEN p.product_name ~ '^[A-Za-z0-9]{4,10}$'
+              OR UPPER(BTRIM(p.product_name)) = UPPER(BTRIM(p.register_number))
+            THEN COALESCE(
+              CASE WHEN o.fund_name ~ '[ABC]类' THEN NULLIF(BTRIM(o.fund_name), '') END,
+              NULLIF(BTRIM(o.fund_short_name), ''),
+              NULLIF(BTRIM(o.fund_name), ''),
+              NULLIF(BTRIM(b.fund_short_name), ''),
+              p.product_name
+            )
+            ELSE p.product_name
+          END AS product_name,
           COALESCE(o.fund_short_name, b.fund_short_name) AS short_name,
           NULL::text AS raw_strategy,
           tag_data.strategy_company,

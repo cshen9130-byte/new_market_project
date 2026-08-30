@@ -9,9 +9,11 @@ import { CONTRACT_TENORS } from "@/lib/all-weather/setup"
 import { isSleeveKey, SLEEVE_COLORS, SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { type CtpTick } from "@/lib/client/ctp-market"
 import {
-  ALL_WEATHER_PORTFOLIO_ID,
+  ALL_WEATHER_PAPER_ACCOUNTS,
+  allWeatherAccountByPortfolio,
   accountKind,
   accountKindLabel,
+  isAllWeatherAccount,
   DEFAULT_PAPER_CAPITAL,
   fmtMoney,
   fmtNav,
@@ -446,7 +448,15 @@ export function PaperPortfolioPanel({
                   <button
                     key={pf.id}
                     type="button"
-                    onClick={() => paper.setSelectedPortfolioId(pf.id)}
+                    onClick={() => {
+                      paper.setSelectedPortfolioId(pf.id)
+                      const aw = allWeatherAccountByPortfolio(pf.id)
+                      if (aw) {
+                        void paper.loadAllWeather(false, aw.variantId).then((sym) => {
+                          if (sym) onSelectSymbol(sym)
+                        })
+                      }
+                    }}
                     className={cn(
                       "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]",
                       active ? "bg-[#4c84ff] text-white" : "bg-[#131722] text-[#adb3bd] hover:text-white",
@@ -584,7 +594,8 @@ export function PaperPortfolioPanel({
               type="button"
               disabled={paper.awLoading}
               onClick={() => {
-                void paper.loadAllWeather(true).then((sym) => {
+                const aw = allWeatherAccountByPortfolio(paper.selectedPortfolioId)
+                void paper.loadAllWeather(true, aw?.variantId).then((sym) => {
                   if (sym) onSelectSymbol(sym)
                 })
               }}
@@ -594,21 +605,26 @@ export function PaperPortfolioPanel({
             </button>
           </>
         ) : (
-          <button
-            type="button"
-            disabled={paper.awLoading}
-            onClick={() => {
-              void paper.loadAllWeather(false).then((sym) => {
-                if (sym) onSelectSymbol(sym)
-              })
-            }}
-            className="h-8 w-full rounded border border-[#2a2e39] text-[12px] text-[#adb3bd] hover:text-white disabled:opacity-60"
-          >
-            {paper.awLoading ? "同步全天候…" : "打开全天候自动账户"}
-          </button>
+          <div className="space-y-1">
+            {ALL_WEATHER_PAPER_ACCOUNTS.map((account) => (
+              <button
+                key={account.portfolioId}
+                type="button"
+                disabled={paper.awLoading}
+                onClick={() => {
+                  void paper.loadAllWeather(false, account.variantId).then((sym) => {
+                    if (sym) onSelectSymbol(sym)
+                  })
+                }}
+                className="h-8 w-full rounded border border-[#2a2e39] text-[12px] text-[#adb3bd] hover:text-white disabled:opacity-60"
+              >
+                {paper.awLoading ? "同步全天候…" : `打开${account.name}`}
+              </button>
+            ))}
+          </div>
         )}
       </div>
-      {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
+      {paper.awMeta && isAllWeatherAccount(paper.selectedPortfolioId) ? (
         <div className="grid grid-cols-2 gap-1 border-b border-[#2a2e39] px-3 py-1.5">
           {SLEEVE_KEYS.map((key) => {
             const v = paper.awMeta?.lastBudget?.[key]
@@ -717,7 +733,7 @@ export function PaperPositionsBar({
   onToggleNavChart?: () => void
 }) {
   const [tab, setTab] = useState<"pos" | "closed">("pos")
-  const awSelected = paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID
+  const awSelected = isAllWeatherAccount(paper.selectedPortfolioId)
   const closed = paper.state.positions.filter(
     (p) => p.status === "closed" && (!paper.selectedPortfolio || p.portfolioId === paper.selectedPortfolio.id),
   )
@@ -786,7 +802,7 @@ export function PaperPositionsBar({
         <span className="text-[#787b86]">
           保证金占用 <span className="font-mono text-[#d1d4dc]">{fmtYuan(paper.summary.marginOccupied)}</span>
         </span>
-        {paper.awMeta && paper.selectedPortfolioId === ALL_WEATHER_PORTFOLIO_ID ? (
+        {paper.awMeta && isAllWeatherAccount(paper.selectedPortfolioId) ? (
           <>
             {SLEEVE_KEYS.map((key) => {
               const daily = paper.sleevePnl[key]?.daily ?? paper.sleevePnl[key]?.live ?? 0

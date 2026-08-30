@@ -903,7 +903,10 @@ function canonicalEmailPoolProductName(
   const bfl = indexes.bflByBeian.get(reg) ?? indexes.bflByBeian.get(upper)
   const t6 = indexes.t6ByRegister.get(reg) ?? indexes.t6ByRegister.get(upper)
   const emailName = emailNameByCode?.trim() ?? ""
-  if (emailName && bfl?.product_name?.trim()) {
+  const emailNameIsCode =
+    isFundCodeRegisterNumber(emailName) &&
+    (emailName.toUpperCase() === upper || !/[\u4e00-\u9fff]/u.test(emailName))
+  if (emailName && !emailNameIsCode && bfl?.product_name?.trim()) {
     const bflDisplay = displayProductName(bfl.product_name, bfl.short_name, bfl.product_name)
     if (!fundNamesMatch(bflDisplay, emailName) && !fundNamesMatch(bfl.product_name, emailName)) {
       return normalizeFundDisplayName(emailName) ?? emailName
@@ -985,7 +988,7 @@ export async function loadEmailPoolFunds(): Promise<EmailPoolFund[]> {
   for (const row of rawRows) {
     const resolved = resolveFund(row, indexes, "company")
     const register_number = emailPoolRegisterNumber(resolved, row)
-    if (!register_number || !isPlausibleEmailPoolFund(resolved.product_name, register_number)) continue
+    if (!register_number) continue
     const candidate = nameCandidate(row)
     const identityScore = emailPoolRowIdentityScore(row, register_number, candidate)
     const code = row.product_code?.trim().toUpperCase() ?? ""
@@ -1022,14 +1025,16 @@ export async function loadEmailPoolFunds(): Promise<EmailPoolFund[]> {
   const merged = new Map<string, EmailPoolFund>()
   for (const { register_number, product_name } of byRegister.values()) {
     const upgraded = upgradePoolRegisterNumber({ register_number, product_name }, indexes)
+    const displayName = canonicalEmailPoolProductName(
+      upgraded.register_number,
+      upgraded.product_name,
+      indexes,
+      emailNameByRegister.get(upgraded.register_number.trim().toUpperCase())?.name,
+    )
+    if (!isPlausibleEmailPoolFund(displayName, upgraded.register_number)) continue
     merged.set(upgraded.register_number, {
       register_number: upgraded.register_number,
-      product_name: canonicalEmailPoolProductName(
-        upgraded.register_number,
-        upgraded.product_name,
-        indexes,
-        emailNameByRegister.get(upgraded.register_number.trim().toUpperCase())?.name,
-      ),
+      product_name: displayName,
     })
   }
   return dedupeEmailPoolFundsByDisplayName(Array.from(merged.values()))

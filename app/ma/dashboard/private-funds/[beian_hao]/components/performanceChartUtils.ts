@@ -437,6 +437,14 @@ export function buildTimeAxisConfig(dates: string[]): TimeAxisConfig {
     }
   }
 
+  // monthStep can skip the last month (e.g. 8/27 after a 7月 tick). Keep a tail label
+  // so the chart does not look like it stopped a month early.
+  const lastMonthTs = Date.UTC(endYear, endMonth - 1, 1)
+  addTick(
+    lastMonthTs < minTs ? minTs : lastMonthTs,
+    endMonth === 1 ? String(endYear) : formatMonthTargetLabel(endYear, endMonth, spanDays),
+  )
+
   ticks.sort((a, b) => a - b)
   return {
     ticks,
@@ -447,37 +455,60 @@ export function buildTimeAxisConfig(dates: string[]): TimeAxisConfig {
 }
 
 /**
- * Shared ECharts time x-axis.
- * Space ticks with minInterval instead of axisLabel.customValues: ECharts 6.0.0
- * throws on customValues + a function formatter (`tick.time.level`) and paints a blank chart.
+ * Shared NAV x-axis.
+ * Long ranges use a value axis + calendar ticks: ECharts 6.0.0 time-axis
+ * `customValues` + function formatter throws (`tick.time.level`) and paints a blank chart,
+ * and `minInterval` + `showMaxLabel: false` hid the last month (e.g. 8/27 labeled as 7月).
  */
 export function echartsTimeXAxis(dates: string[]): Record<string, unknown> {
   const axis = buildTimeAxisConfig(dates)
   const spanDays = chartDateSpanDays(dates)
   const monthTicks = spanDays > 45
-  return {
-    type: "time",
-    min: axis.domain[0],
-    max: axis.domain[1],
-    boundaryGap: false,
-    minInterval: monthTicks ? pickMonthStep(spanDays) * 28 * MS_DAY : undefined,
-    axisLabel: {
-      fontSize: 11,
-      color: "#71717a",
-      hideOverlap: true,
-      showMinLabel: true,
-      showMaxLabel: !monthTicks,
-      formatter: (value: number) => {
-        const iso = formatIsoDateFromTs(value)
-        if (!iso) return ""
-        if (monthTicks) return formatChartAxisDateLabel(iso, spanDays)
-        const month = parseInt(iso.slice(5, 7), 10)
-        const day = parseInt(iso.slice(8, 10), 10)
-        return `${month}/${day}`
+  const minTs = axis.domain[0]
+  const lastTs = axis.domain[1]
+  // One extra day so the last NAV point is inside the plot, not on the clip edge.
+  const maxTs = Number.isFinite(lastTs) ? lastTs + MS_DAY : lastTs
+  const labelStyle = {
+    fontSize: 11,
+    color: "#71717a",
+    hideOverlap: true,
+    showMinLabel: true,
+  }
+  if (!monthTicks) {
+    return {
+      type: "time",
+      min: minTs,
+      max: maxTs,
+      boundaryGap: false,
+      axisLabel: {
+        ...labelStyle,
+        showMaxLabel: true,
+        formatter: (value: number) => {
+          const iso = formatIsoDateFromTs(value)
+          if (!iso) return ""
+          const month = parseInt(iso.slice(5, 7), 10)
+          const day = parseInt(iso.slice(8, 10), 10)
+          return `${month}/${day}`
+        },
       },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { show: false },
+    }
+  }
+  return {
+    type: "value",
+    min: minTs,
+    max: maxTs,
+    boundaryGap: false,
+    axisLabel: {
+      ...labelStyle,
+      showMaxLabel: false,
+      customValues: axis.ticks,
+      formatter: (value: number) => axis.tickFormatter(value),
     },
-    axisLine: { show: false },
     axisTick: { show: false },
+    axisLine: { show: false },
     splitLine: { show: false },
   }
 }

@@ -79,6 +79,7 @@ export function DynamicDrawdownChart({
         symbol: "circle",
         symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
         connectNulls: false,
+        clip: false,
         lineStyle: { width: 2, color: "#ef4444" },
         itemStyle: { color: "#ef4444" },
         areaStyle: {
@@ -110,6 +111,7 @@ export function DynamicDrawdownChart({
         symbol: "circle",
         symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
         connectNulls: false,
+        clip: false,
         lineStyle: { width: 2, color: "#ef4444" },
         itemStyle: { color: "#ef4444" },
         areaStyle: {
@@ -142,6 +144,7 @@ export function DynamicDrawdownChart({
           symbol: "circle",
           symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 4 : 0),
           connectNulls: false,
+          clip: false,
           lineStyle: { width: 1.75, color: "#2563eb", type: "dashed" },
           itemStyle: { color: "#2563eb" },
           areaStyle: {
