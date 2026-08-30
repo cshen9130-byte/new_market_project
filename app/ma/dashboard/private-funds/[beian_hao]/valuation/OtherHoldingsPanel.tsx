@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { Clock, Download, Search } from "lucide-react"
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
 export type OtherHoldingRow = {
   index: number
@@ -35,7 +36,10 @@ export function OtherHoldingsPanel({ rows, valuationDate, displayName }: Props) 
 
   const filtered = useMemo(() => {
     const q = keyword.trim().toLowerCase()
-    let list = rows
+    let list = rows.map((row) => ({
+      ...row,
+      assetName: stripValuationSubjectPathPrefix(row.assetName) || row.assetName,
+    }))
     if (q) {
       list = list.filter((r) =>
         r.assetName.toLowerCase().includes(q)

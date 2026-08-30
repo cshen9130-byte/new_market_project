@@ -202,7 +202,7 @@ export function NavPerformanceEChart({
           return lines.join("<br/>")
         },
       },
-      grid: { left: 52, right: 16, top: 16, bottom: 28 },
+      grid: { left: 52, right: 28, top: 16, bottom: 28 },
       xAxis: echartsTimeXAxis(data.map((d) => d.date)),
       yAxis: {
         type: "value" as const,

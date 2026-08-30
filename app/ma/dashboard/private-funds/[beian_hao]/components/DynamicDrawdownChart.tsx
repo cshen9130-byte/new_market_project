@@ -171,7 +171,7 @@ export function DynamicDrawdownChart({
         valueFormatter: (v: number) => (v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(2)}%`),
       },
       legend: { show: false },
-      grid: { left: 56, right: 20, top: 12, bottom: 28 },
+      grid: { left: 56, right: 28, top: 12, bottom: 28 },
       xAxis: echartsTimeXAxis(data.map((d) => d.date)),
       yAxis: {
         type: "value" as const,

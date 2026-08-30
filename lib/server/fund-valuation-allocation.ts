@@ -219,7 +219,7 @@ export type FundValuationAllocationResult = {
   cache_schema?: number
 }
 
-const ALLOCATION_CACHE_SCHEMA = 2
+const ALLOCATION_CACHE_SCHEMA = 3
 
 const ROW_KIND_LABELS: Record<string, string> = {
   bank_deposit: "托管户现金",
@@ -674,7 +674,8 @@ function buildDerivatives(holdings: HoldingRow[], netAssetValue: number): Deriva
             : 0
 
       return {
-        contractName: String(h.subject_name ?? h.symbol ?? "").trim(),
+        contractName: stripValuationSubjectPathPrefix(String(h.subject_name ?? h.symbol ?? "").trim())
+          || String(h.subject_name ?? h.symbol ?? "").trim(),
         symbol: h.symbol,
         sector: inferDerivativeSector(h.symbol, String(h.subject_name ?? ""), h.asset_class),
         direction,
@@ -868,7 +869,8 @@ function mapHoldingToDetailRow(h: HoldingRow, netAssetValue: number): Omit<Valua
   const price = parseNum(h.price) || null
   const extra = h.extra ?? {}
   return {
-    assetName: String(h.subject_name ?? h.symbol ?? "").trim(),
+    assetName: stripValuationSubjectPathPrefix(String(h.subject_name ?? h.symbol ?? "").trim())
+      || String(h.subject_name ?? h.symbol ?? "").trim(),
     valuationCode: resolveHoldingValuationCode(h),
     category: otherHoldingCategory(h),
     quantity: (() => {
@@ -1680,7 +1682,8 @@ function buildOtherHoldings(holdings: HoldingRow[], netAssetValue: number): Othe
     .map((h) => {
       const signedMv = parseNum(h.signed_market_value) || parseNum(h.market_value)
       return {
-        assetName: String(h.subject_name ?? h.symbol ?? "").trim(),
+        assetName: stripValuationSubjectPathPrefix(String(h.subject_name ?? h.symbol ?? "").trim())
+          || String(h.subject_name ?? h.symbol ?? "").trim(),
         category: otherHoldingCategory(h),
         marketValue: signedMv,
         marketPct: normalizeMarketWeightPct(parseNum(h.market_weight), signedMv, netAssetValue),
@@ -2825,17 +2828,36 @@ function fundHoldingDisplayName(h: HoldingRow): string {
   return stripValuationSubjectPathPrefix(String(h.subject_name ?? h.symbol ?? ""))
 }
 
+function sanitizeHoldingDisplayName(name: string): string {
+  return stripValuationSubjectPathPrefix(name) || name
+}
+
 function sanitizeAllocationDisplayNames(
   result: FundValuationAllocationResult,
 ): FundValuationAllocationResult {
-  if (!result.fund_holdings?.length) return result
-  const fund_holdings = result.fund_holdings
-    .filter((h) => !isCashLikeHoldingKind(h.rowKind) && !isValuationCashHoldingName(h.fundName))
-    .map((h, i) => {
-      const fundName = stripValuationSubjectPathPrefix(h.fundName) || h.fundName
-      return { ...h, index: i + 1, fundName }
-    })
-  return { ...result, fund_holdings }
+  const fund_holdings = result.fund_holdings?.length
+    ? result.fund_holdings
+      .filter((h) => !isCashLikeHoldingKind(h.rowKind) && !isValuationCashHoldingName(h.fundName))
+      .map((h, i) => {
+        const fundName = sanitizeHoldingDisplayName(h.fundName)
+        return { ...h, index: i + 1, fundName }
+      })
+    : result.fund_holdings
+  const other_holdings = (result.other_holdings ?? []).map((row, i) => ({
+    ...row,
+    index: i + 1,
+    assetName: sanitizeHoldingDisplayName(row.assetName),
+  }))
+  const equity_other_holdings = (result.equity_other_holdings ?? []).map((row, i) => ({
+    ...row,
+    index: i + 1,
+    assetName: sanitizeHoldingDisplayName(row.assetName),
+  }))
+  const derivatives = (result.derivatives ?? []).map((row) => ({
+    ...row,
+    contractName: sanitizeHoldingDisplayName(row.contractName),
+  }))
+  return { ...result, fund_holdings, other_holdings, equity_other_holdings, derivatives }
 }
 
 async function enrichCachedFundStrategies(

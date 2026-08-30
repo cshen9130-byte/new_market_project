@@ -145,8 +145,8 @@ const MS_DAY = 86400000
 const ISOLATED_GAP_FLOOR_MS = 45 * MS_DAY
 
 /**
- * Long mixed daily/weekly NAV looks like a scribble if every observation is plotted.
- * For spans over ~5 months, chart the last point in each week (table still uses raw rows).
+ * Plot every NAV point when the series already fits. Only weekly-bucket very
+ * long mixed daily/weekly histories (the table still uses raw rows).
  */
 export function resampleNavRowsForChart(
   rows: NavRow[],
@@ -155,7 +155,7 @@ export function resampleNavRowsForChart(
   const prepared = prepareNavRowsForChart(rows)
   if (prepared.length <= 2) return prepared
   const span = chartDateSpanDays(prepared.map((row) => row.price_date))
-  const sampled = !options?.forceDaily && span > 150
+  const sampled = !options?.forceDaily && span > 150 && prepared.length > 720
     ? filterNavRowsByFrequency(prepared, "周频")
     : prepared
   return downsampleByTime(sampled)
@@ -454,11 +454,20 @@ export function buildTimeAxisConfig(dates: string[]): TimeAxisConfig {
   }
 }
 
+function timeAxisIntervalMs(spanDays: number): { minInterval?: number; maxInterval?: number } {
+  if (spanDays <= 45) return {}
+  // ECharts defaults to ~10 ticks. On a 2y NAV series that is a quarter
+  // (2月 → 5月), so 6–8月 vanish and the line looks cut off. Pin ~2.5y
+  // charts to monthly ticks; longer ranges stay quarterly / yearly.
+  if (spanDays <= 900) return { minInterval: 28 * MS_DAY, maxInterval: 32 * MS_DAY }
+  if (spanDays <= 1800) return { minInterval: 85 * MS_DAY, maxInterval: 100 * MS_DAY }
+  return { minInterval: 360 * MS_DAY }
+}
+
 /**
- * Shared NAV x-axis.
- * Long ranges use a value axis + calendar ticks: ECharts 6.0.0 time-axis
- * `customValues` + function formatter throws (`tick.time.level`) and paints a blank chart,
- * and `minInterval` + `showMaxLabel: false` hid the last month (e.g. 8/27 labeled as 7月).
+ * Shared NAV x-axis. Always `type: "time"` so points keep calendar width.
+ * Do not pass axisLabel.customValues — ECharts 6.0.0 throws on customValues +
+ * a function formatter (`tick.time.level`) and paints a blank chart.
  */
 export function echartsTimeXAxis(dates: string[]): Record<string, unknown> {
   const axis = buildTimeAxisConfig(dates)
@@ -466,49 +475,32 @@ export function echartsTimeXAxis(dates: string[]): Record<string, unknown> {
   const monthTicks = spanDays > 45
   const minTs = axis.domain[0]
   const lastTs = axis.domain[1]
-  // One extra day so the last NAV point is inside the plot, not on the clip edge.
   const maxTs = Number.isFinite(lastTs) ? lastTs + MS_DAY : lastTs
-  const labelStyle = {
-    fontSize: 11,
-    color: "#71717a",
-    hideOverlap: true,
-    showMinLabel: true,
-  }
-  if (!monthTicks) {
-    return {
-      type: "time",
-      min: minTs,
-      max: maxTs,
-      boundaryGap: false,
-      axisLabel: {
-        ...labelStyle,
-        showMaxLabel: true,
-        formatter: (value: number) => {
-          const iso = formatIsoDateFromTs(value)
-          if (!iso) return ""
-          const month = parseInt(iso.slice(5, 7), 10)
-          const day = parseInt(iso.slice(8, 10), 10)
-          return `${month}/${day}`
-        },
-      },
-      axisLine: { show: false },
-      axisTick: { show: false },
-      splitLine: { show: false },
-    }
-  }
   return {
-    type: "value",
+    type: "time",
     min: minTs,
     max: maxTs,
     boundaryGap: false,
+    ...timeAxisIntervalMs(spanDays),
     axisLabel: {
-      ...labelStyle,
-      showMaxLabel: false,
-      customValues: axis.ticks,
-      formatter: (value: number) => axis.tickFormatter(value),
+      fontSize: 11,
+      color: "#71717a",
+      hideOverlap: true,
+      showMinLabel: true,
+      showMaxLabel: true,
+      formatter: (value: number) => {
+        const iso = formatIsoDateFromTs(value)
+        if (!iso) return ""
+        if (!monthTicks) {
+          const month = parseInt(iso.slice(5, 7), 10)
+          const day = parseInt(iso.slice(8, 10), 10)
+          return `${month}/${day}`
+        }
+        return formatChartAxisDateLabel(iso, spanDays)
+      },
     },
-    axisTick: { show: false },
     axisLine: { show: false },
+    axisTick: { show: false },
     splitLine: { show: false },
   }
 }

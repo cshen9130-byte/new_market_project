@@ -13,6 +13,18 @@ const LEADING_PATH_TOKENS_RE = new RegExp(`^(?:${SUBJECT_PATH_TOKEN}[_/\\s.]*)+`
 // Allow glued custody exports (no separator between 私募 and 证券投资基金).
 const OTC_PATH_RE = new RegExp(`^场外(?:[_/\\s]*${SUBJECT_PATH_TOKEN})+[._/\\s]*`, "u")
 
+/** 中金所_投机_买方_债券期货_成本.30年期国债2412 → 30年期国债2412 */
+const DERIVATIVE_EXCHANGE =
+  "(?:中国金融期货交易所|上海国际能源交易中心|上海期货交易所|大连商品交易所|郑州商品交易所|广州期货交易所|中金所|上期所|大商所|郑商所|广期所|能源中心|CFFEX|SHFE|INE|DCE|CZCE|GFEX)"
+const DERIVATIVE_SUBJECT_PATH_RE = new RegExp(
+  `^${DERIVATIVE_EXCHANGE}[_/\\s.]*` +
+    `(?:投机|套期保值|套保|套利)[_/\\s.]*` +
+    `(?:买方|卖方)[_/\\s.]*` +
+    `(?:债券期货|股指期货|商品期货|国债期货|股指期权|商品期权)[_/\\s.]*` +
+    `(?:成本|市价)[._/\\s]*`,
+  "u",
+)
+
 /** True for custody cash / reserve subject labels that must not appear as FOF 基金. */
 export function isValuationCashHoldingName(name: string): boolean {
   return CASH_NAME_RE.test(String(name ?? "").trim())
@@ -36,6 +48,7 @@ export function stripValuationSubjectPathPrefix(name: string): string {
 
   // Broad chop: 场外 + any run of classification tokens (已上市/开放式/私募/成本…).
   raw = raw
+    .replace(DERIVATIVE_SUBJECT_PATH_RE, "")
     .replace(OTC_PATH_RE, "")
     .replace(
       /^场外[_/\s]*已上市[_/\s]*开放式[_/\s]*私募(?:证券投资基金|股权投资基金|基金)?[_/\s]*(?:成本|市价)?[._/\s]*/u,
