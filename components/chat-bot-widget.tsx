@@ -1,8 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { usePathname, useSearchParams } from "next/navigation"
-import { BookOpen, Bot, Camera, ChevronDown, Crosshair, FileText, Loader2, PanelLeftClose, PanelLeftOpen, Send, Square, Trash2, X } from "lucide-react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { ArrowUpRight, BookOpen, Bot, Camera, ChevronDown, Crosshair, FileText, Loader2, PanelLeftClose, PanelLeftOpen, Send, Square, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ChatBotDocPanel } from "@/components/chat-bot-doc-panel"
 import { CHAT_DOC_READER_WIDTH, computeMaChatOpenLayout, getChatDocPanelWidth, MA_CHAT_OPEN_DOCUMENTS_EVENT, consumePendingMaChatDocuments, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
@@ -11,14 +11,16 @@ import { authService } from "@/lib/auth"
 import {
   ensureKnowledgeConversation,
   formatKnowledgeScopeLabel,
+  getKnowledgeBaseAuthHeaders,
   resolveKnowledgeChatScope,
   streamKnowledgeBaseChat,
 } from "@/lib/knowledge-base-chat-client"
+import { isSafeChatHref, listAccessibleChatPages } from "@/lib/ma/chat-site-map"
 import { canAccessAiKnowledge } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 
 // ── Page context mapping ──────────────────────────────────────────────────────
-function getPageContext(path: string): string {
+function getPageContext(path: string, search = ""): string {
   // ── sub-pages first (most specific) ──────────────────────────────────────
   if (path.includes("/tools/send-email"))
     return "当前页面：【自动发邮件】小工具。功能：为每位投顾配置定时发送任务，每天自动将最新逐日核算单 xlsx 附件发送至指定邮箱。支持多发送配置管理（可分别配置收件人、发送时间、邮件主题/正文、附件占位符[日期]/[投顾代码]/[文件名]）以及 SMTP 发件账号管理（支持腾讯企业邮箱/QQ/163/126/Gmail/Outlook 等）。"
@@ -34,14 +36,28 @@ function getPageContext(path: string): string {
     return "当前页面：【小工具集合】。包含：①自动发邮件（定时将投顾逐日核算单 xlsx 发送给指定收件人）；②NAV 净值清洗（上传并标准化基金净值数据）；③估值分析（上传估值表并输出持仓结构分析）；④结算单分析（上传结算单并输出持仓与策略分析）；⑤估值表分析（搜索产品后上传估值表解析入库）。"
   if (path.includes("/mom-analysis/carry-calc"))
     return "当前页面：【业绩报酬测算】。根据最新交易日累计盈亏，计算母层与子层业绩报酬及私募基金净业绩报酬。"
-  if (path.includes("/mom-analysis/trader-analysis"))
-    return "当前页面：【盘手历史交易复盘】。基于客户交易核算日报，按账户汇总期间盈亏、手续费、权益等绩效指标，做盘手绩效评估。"
+  if (path.includes("/mom-analysis/trader-analysis")) {
+    const tab = new URLSearchParams(search).get("tab")
+    if (tab === "quant-vs-subjective")
+      return "当前页面：【量化vs主观】（位于 MOM分析 → 盘手历史交易复盘）。对比量化账户与主观账户的持仓与风险敞口。"
+    if (tab === "quant-strategy")
+      return "当前页面：【量化策略分析】（位于 MOM分析 → 盘手历史交易复盘）。"
+    if (tab === "equity-curve")
+      return "当前页面：【盘手收益曲线】（位于 MOM分析 → 盘手历史交易复盘）。"
+    if (tab === "variety-review")
+      return "当前页面：【品种交易回顾】（位于 MOM分析 → 盘手历史交易复盘）。"
+    if (tab === "pnl-rank")
+      return "当前页面：【盈亏排名】（位于 MOM分析 → 盘手历史交易复盘）。"
+    return "当前页面：【盘手历史交易复盘】。基于客户交易核算日报，按账户汇总期间盈亏、手续费、权益等绩效指标。子标签：盈亏排名、品种交易回顾、盘手收益曲线、量化vs主观、量化策略分析。"
+  }
   if (path.includes("/mom-analysis/account-risk-report"))
     return "当前页面：【单账户每日风控】。与 MOM 每日风控相同的风控看板，数据来自独立的单账户数据源。数据导入支持三种方式：①拖入 xls/xlsx 文件；②按日程从邮箱拉取附件；③登录中国期货市场监控中心（investorservice.cfmmc.com）按账户列表在设定时间自动下载客户交易结算日报。"
+  if (path.includes("/mom-analysis/anomaly-detection"))
+    return "当前页面：【异常监测】。监测 MOM 账户异常交易与风险信号。"
   if (path.includes("/mom-analysis/data-import"))
     return "当前页面：【数据导入】。上传逐日核算 ZIP 包，自动解压、标准化命名并检查交易日覆盖情况。"
   if (path.includes("/mom-analysis"))
-    return "当前页面：【MOM分析】总览。包含五个子功能入口：①MOM 每日风控（在线浏览）；②单账户每日风控；③数据导入（上传逐日核算 ZIP 包）；④盘手历史交易复盘（按账户汇总绩效指标）；⑤业绩报酬测算（计算母/子层报酬）。"
+    return "当前页面：【MOM分析】总览。包含：①MOM 每日风控；②单账户每日风控；③数据导入；④盘手历史交易复盘（含盈亏排名、品种交易回顾、盘手收益曲线、量化vs主观、量化策略分析）；⑤业绩报酬测算；⑥异常监测。"
   if (path.includes("/futures-market"))
     return "当前页面：【期货市场分析】。主要图表与模块：①南华商品指数走势图；②南华板块指数走势（农产品/金属/能化/软商品等板块）；③南华板块指数滚动波动率；④南华板块截面波动率柱状图；⑤南华板块滚动相关性矩阵（热力图）；⑥南华板块滚动相关性走势折线图；⑦【商品期货波动率 vs 南华商品指数相关性】散点图（可选板块、波动率/相关性窗口，每个点代表一个品种，横轴为波动率、纵轴为与 NHCI 的滚动相关性，气泡大小代表成交量，还有相关性分布直方图和滚动相关性走势面板）。"
   if (path.includes("/macro-market"))
@@ -89,7 +105,7 @@ function identifyElementAt(x: number, y: number): { label: string; el: HTMLEleme
   return { label, el: container }
 }
 // ── Types ─────────────────────────────────────────────────────────────────────
-type Message = { role: "user" | "assistant"; content: string; sources?: string[] }
+type Message = { role: "user" | "assistant"; content: string; sources?: string[]; navigate?: { href: string; title: string; trail?: string } }
 type AiMode = "assistant" | "knowledge"
 type Pos = { x: number; y: number }
 
@@ -102,6 +118,14 @@ interface ChatBotWidgetProps {
 export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const router = useRouter()
+  const navigateIfAllowed = useCallback((href: string) => {
+    if (!isSafeChatHref(href)) return false
+    const allowed = listAccessibleChatPages(authService.getCurrentUser())
+    if (!allowed.some((page) => page.href === href)) return false
+    router.push(href)
+    return true
+  }, [router])
   const [mode, setMode] = useState<"ball" | "chat">("ball")
   const [aiMode, setAiMode] = useState<AiMode>("assistant")
   const [canUseKnowledge, setCanUseKnowledge] = useState(false)
@@ -519,15 +543,15 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     setPinnedTarget(null)
 
     const pageCtx = pinLabel
-      ? `${getPageContext(pathname)}。用户正在指向页面中的【${pinLabel}】`
-      : getPageContext(pathname)
+      ? `${getPageContext(pathname, searchParams.toString())}。用户正在指向页面中的【${pinLabel}】`
+      : getPageContext(pathname, searchParams.toString())
 
     const documentContext = getActiveDocumentContext(documents, activeDocId)
 
     try {
       const res = await fetch("/ma/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getKnowledgeBaseAuthHeaders() },
         body: JSON.stringify({
           messages: nextMessages,
           pageContext: pageCtx,
@@ -550,29 +574,50 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       accumulated = ""
+      let sseBuf = ""
+      let pendingNav: Message["navigate"]
+
+      const applyNavigate = (nav: { href?: string; title?: string; trail?: string }) => {
+        if (!nav.href || !navigateIfAllowed(nav.href)) return
+        pendingNav = { href: nav.href, title: nav.title || "打开页面", trail: nav.trail }
+      }
+
+      const consumeSseLine = (line: string) => {
+        if (!line.startsWith("data: ")) return
+        const data = line.slice(6).trim()
+        if (!data || data === "[DONE]") return
+        try {
+          const parsed = JSON.parse(data) as {
+            choices?: Array<{ delta?: { content?: string } }>
+            navigate?: { href?: string; title?: string; trail?: string }
+          }
+          if (parsed.navigate) applyNavigate(parsed.navigate)
+          const delta = parsed.choices?.[0]?.delta?.content
+          if (delta) {
+            accumulated += delta
+            setStreamContent(accumulated)
+          }
+        } catch {
+          // skip malformed SSE line
+        }
+      }
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
         if (abort.signal.aborted) break
-        const chunk = decoder.decode(value, { stream: true })
-        for (const line of chunk.split("\n")) {
-          if (!line.startsWith("data: ")) continue
-          const data = line.slice(6).trim()
-          if (data === "[DONE]") continue
-          try {
-            const delta = JSON.parse(data).choices?.[0]?.delta?.content
-            if (delta) {
-              accumulated += delta
-              setStreamContent(accumulated)
-            }
-          } catch {
-            // skip malformed SSE line
-          }
-        }
+        sseBuf += decoder.decode(value, { stream: true })
+        const lines = sseBuf.split("\n")
+        sseBuf = lines.pop() ?? ""
+        for (const line of lines) consumeSseLine(line)
       }
+      if (sseBuf) consumeSseLine(sseBuf)
 
-      setMessages([...nextMessages, { role: "assistant", content: accumulated }])
+      const fallback = pendingNav ? `已打开「${pendingNav.title}」。` : ""
+      setMessages([
+        ...nextMessages,
+        { role: "assistant", content: accumulated || fallback, navigate: pendingNav },
+      ])
       setStreamContent("")
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -824,7 +869,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
           <p className="mt-10 text-center text-xs text-muted-foreground px-4">
             {aiMode === "knowledge"
               ? "知识库模式：基于 AI 知识库资料检索作答，对话会同步保存到知识库历史。"
-              : "你好！有关于当前页面数据或市场分析的问题，随时问我。"}
+              : "你好！可以问当前页面的数据，也可以问某个功能页面在哪，我会帮你打开。"}
           </p>
         )}
 
@@ -845,6 +890,17 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
                 来源：{m.sources.slice(0, 3).map((s) => s.split("/").pop() || s).join("、")}
                 {m.sources.length > 3 ? ` 等 ${m.sources.length} 个文件` : ""}
               </div>
+            )}
+            {m.role === "assistant" && m.navigate && isSafeChatHref(m.navigate.href) && (
+              <button
+                type="button"
+                onClick={() => navigateIfAllowed(m.navigate!.href)}
+                className="max-w-[85%] inline-flex items-center gap-1 rounded-lg border border-indigo-300 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+              >
+                <ArrowUpRight className="h-3 w-3" />
+                打开 {m.navigate.title}
+                {m.navigate.trail ? `（${m.navigate.trail}）` : ""}
+              </button>
             )}
           </div>
         ))}

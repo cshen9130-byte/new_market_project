@@ -58,7 +58,10 @@ function lastNavByWeek(points: NavPoint[]): NavPoint[] {
     const d = new Date(`${p.date.slice(0, 10)}T12:00:00`)
     const dow = d.getDay()
     d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
-    byWeek.set(d.toISOString().slice(0, 10), p.nav)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, "0")
+    const day = String(d.getDate()).padStart(2, "0")
+    byWeek.set(`${y}-${m}-${day}`, p.nav)
   }
   return [...byWeek.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, nav]) => ({ date, nav }))
 }
@@ -93,23 +96,69 @@ function alignOnDates(points: NavPoint[], dates: string[]): Array<number | null>
   })
 }
 
-export function computeRollingVolSeries(
-  navPoints: NavPoint[],
-  windows: number[] = [13, 26],
-): { dates: string[]; series: Array<{ window: number; values: Array<number | null> }> } {
-  const weekly = lastNavByWeek(navPoints)
-  const rets = periodReturns(weekly)
+export function pickRollingVolWindows(returnCount: number): number[] {
+  if (returnCount >= 26) return [13, 26]
+  if (returnCount >= 13) return [8, 13]
+  if (returnCount >= 8) return [8]
+  if (returnCount >= 4) return [4]
+  return []
+}
+
+function rollingVolFromReturns(
+  rets: Array<{ date: string; ret: number }>,
+  ppy: number,
+  windows?: number[],
+): {
+  dates: string[]
+  series: Array<{ window: number; values: Array<number | null> }>
+  windows: number[]
+  ppy: number
+} {
+  const chosen = windows?.length ? windows : pickRollingVolWindows(rets.length)
   const dates = rets.map((r) => r.date)
-  const series = windows.map((window) => ({
+  const series = chosen.map((window) => ({
     window,
     values: rets.map((_, i) => {
       if (i + 1 < window) return null
       const slice = rets.slice(i + 1 - window, i + 1).map((r) => r.ret)
-      const vol = sampleStd(slice) * Math.sqrt(52) * 100
+      const vol = sampleStd(slice) * Math.sqrt(ppy) * 100
       return Number.isFinite(vol) ? +vol.toFixed(2) : null
     }),
   }))
-  return { dates, series }
+  return { dates, series, windows: chosen, ppy }
+}
+
+export function computeRollingVolSeries(
+  navPoints: NavPoint[],
+  windows?: number[],
+): {
+  dates: string[]
+  series: Array<{ window: number; values: Array<number | null> }>
+  windows: number[]
+  ppy: number
+} {
+  const weekly = lastNavByWeek(navPoints)
+  return rollingVolFromReturns(periodReturns(weekly), 52, windows)
+}
+
+export function computeRollingVolFromPortfolio(
+  result: FofPortfolioVarResult | null,
+  windows?: number[],
+): {
+  dates: string[]
+  series: Array<{ window: number; values: Array<number | null> }>
+  windows: number[]
+  ppy: number
+} {
+  if (!result || result.portPeriodReturns.length < 4) {
+    return { dates: [], series: [], windows: [], ppy: 52 }
+  }
+  const ppy = result.periodsPerYear > 0 ? result.periodsPerYear : 52
+  const rets = result.alignedDates.map((date, i) => ({
+    date,
+    ret: result.portPeriodReturns[i] ?? 0,
+  })).filter((r) => r.date)
+  return rollingVolFromReturns(rets, ppy, windows)
 }
 
 export type VarBacktestPoint = {

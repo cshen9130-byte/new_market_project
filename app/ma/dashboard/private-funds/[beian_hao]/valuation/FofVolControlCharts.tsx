@@ -4,6 +4,7 @@ import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import type { FofPortfolioVarResult } from "@/lib/fof-portfolio-var"
 import {
+  computeRollingVolFromPortfolio,
   computeRollingVolSeries,
   computeTrailingCrcArea,
   computeVarBacktest,
@@ -21,13 +22,41 @@ type Props = {
   productNav: NavPoint[]
 }
 
-export function FofVolControlCharts({ result, productNav }: Props) {
-  const [bandLow, setBandLow] = useState("8")
-  const [bandHigh, setBandHigh] = useState("12")
-  const low = Number(bandLow) || 8
-  const high = Number(bandHigh) || 12
+function roundHalf(n: number): number {
+  return Math.round(n * 2) / 2
+}
 
-  const rolling = useMemo(() => computeRollingVolSeries(productNav), [productNav])
+function suggestVolBand(values: Array<number | null>): { low: number; high: number } | null {
+  const vols = values
+    .filter((v): v is number => v != null && Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b)
+  if (vols.length < 2) return null
+  const mid = vols[Math.floor(vols.length / 2)]
+  const p90 = vols[Math.min(vols.length - 1, Math.floor(vols.length * 0.9))]
+  const low = Math.max(0, roundHalf(mid * 0.55))
+  const high = Math.max(low + 1, roundHalf(Math.max(mid * 1.75, p90 * 1.2)))
+  return { low, high }
+}
+
+export function FofVolControlCharts({ result, productNav }: Props) {
+  const [customLow, setCustomLow] = useState<string | null>(null)
+  const [customHigh, setCustomHigh] = useState<string | null>(null)
+
+  const productRolling = useMemo(() => computeRollingVolSeries(productNav), [productNav])
+  const portRolling = useMemo(() => computeRollingVolFromPortfolio(result), [result])
+  const rollingSource = productRolling.dates.length >= 8 ? "product" as const : "portfolio" as const
+  const rolling = rollingSource === "product" ? productRolling : portRolling
+  const hasRollingVol = rolling.series.some((s) => s.values.some((v) => v != null))
+  const suggestedBand = useMemo(
+    () => suggestVolBand(rolling.series.flatMap((s) => s.values)),
+    [rolling],
+  )
+  const parsedLow = customLow != null ? Number(customLow) : NaN
+  const parsedHigh = customHigh != null ? Number(customHigh) : NaN
+  const low = Number.isFinite(parsedLow) ? parsedLow : (suggestedBand?.low ?? 8)
+  const high = Number.isFinite(parsedHigh) ? parsedHigh : (suggestedBand?.high ?? 12)
+  const bandLo = Math.min(low, high)
+  const bandHi = Math.max(low, high)
   const backtest = useMemo(() => computeVarBacktest(result), [result])
   const crcArea = useMemo(() => computeTrailingCrcArea(result), [result])
   const heatmap = useMemo(() => {
@@ -47,8 +76,25 @@ export function FofVolControlCharts({ result, productNav }: Props) {
   }, [result])
 
   const volOption = useMemo(() => {
-    const w13 = rolling.series.find((s) => s.window === 13)?.values ?? []
-    const w26 = rolling.series.find((s) => s.window === 26)?.values ?? []
+    const ppy = rolling.ppy || 52
+    const unit = ppy >= 200 ? "日" : ppy >= 40 ? "周" : ppy >= 20 ? "双周" : "期"
+    const lineColors = ["#ef4444", "#3b82f6", "#8b5cf6"]
+    const vols = rolling.series.flatMap((s) => s.values).filter((v): v is number => v != null)
+    const dataMax = vols.length ? Math.max(...vols) : bandHi
+    const yMax = Math.max(bandHi, dataMax, 1) * 1.15
+    const volSeries = rolling.series.map((s, i) => ({
+      name: `${s.window}${unit}波动`,
+      type: "line" as const,
+      data: s.values,
+      showSymbol: false,
+      lineStyle: { width: 1.6, color: lineColors[i % lineColors.length] },
+      itemStyle: { color: lineColors[i % lineColors.length] },
+      markArea: i === 0 ? {
+        silent: true,
+        itemStyle: { color: "rgba(245,158,11,0.10)" },
+        data: [[{ yAxis: bandLo }, { yAxis: bandHi }]],
+      } : undefined,
+    }))
     return {
       grid: { left: 48, right: 20, top: 36, bottom: 28 },
       legend: { top: 4, right: 8, textStyle: { fontSize: 11 } },
@@ -61,46 +107,32 @@ export function FofVolControlCharts({ result, productNav }: Props) {
       yAxis: {
         type: "value",
         name: "%",
+        min: 0,
+        max: +yMax.toFixed(1),
         axisLabel: { fontSize: 10, color: "#71717a", formatter: (v: number) => `${v}` },
         splitLine: { lineStyle: { color: "#f4f4f5" } },
       },
       series: [
-        {
-          name: "13周波动",
-          type: "line",
-          data: w13,
-          showSymbol: false,
-          lineStyle: { width: 1.6, color: "#ef4444" },
-          itemStyle: { color: "#ef4444" },
-        },
-        {
-          name: "26周波动",
-          type: "line",
-          data: w26,
-          showSymbol: false,
-          lineStyle: { width: 1.6, color: "#3b82f6" },
-          itemStyle: { color: "#3b82f6" },
-        },
+        ...volSeries,
         {
           name: "风控上沿",
-          type: "line",
-          data: rolling.dates.map(() => high),
+          type: "line" as const,
+          data: rolling.dates.map(() => bandHi),
           showSymbol: false,
           lineStyle: { width: 1, type: "dashed", color: "#f59e0b" },
           itemStyle: { color: "#f59e0b" },
         },
         {
           name: "风控下沿",
-          type: "line",
-          data: rolling.dates.map(() => low),
+          type: "line" as const,
+          data: rolling.dates.map(() => bandLo),
           showSymbol: false,
-          areaStyle: { color: "rgba(245,158,11,0.08)" },
           lineStyle: { width: 1, type: "dashed", color: "#f59e0b" },
           itemStyle: { color: "#f59e0b" },
         },
       ],
     }
-  }, [rolling, low, high])
+  }, [rolling, bandLo, bandHi])
 
   const backtestOption = useMemo(() => ({
     grid: { left: 52, right: 20, top: 36, bottom: 36 },
@@ -223,27 +255,31 @@ export function FofVolControlCharts({ result, productNav }: Props) {
     <>
       <FofAnalysisChartCard
         title="滚动波动 vs 风控带"
-        hint="产品自身净值的 13 / 26 周年化波动。默认 8%–12% 为观察带，突破上沿表示波动放大、控制变弱。"
+        hint={
+          rollingSource === "product"
+            ? `产品自身净值的 ${rolling.windows.join(" / ")} 期年化波动。黄带为观察区间（当前 ${bandLo}%–${bandHi}%），默认按滚动波动自动框住曲线。`
+            : `产品净值点过少，改用底层组合共同窗口收益的 ${rolling.windows.join(" / ")} 期年化波动（与下方 VaR 回测同一套样本）。黄带 ${bandLo}%–${bandHi}% 按当前波动自动框住。`
+        }
         calcHelp={{
           heading: "滚动波动 vs 风控带 · 计算说明",
           blocks: [
             {
-              title: "周收益",
-              paragraphs: [
-                "把产品净值按自然周取最后一个点，再算相邻周收益 r_t = NAV_t / NAV_{t-1} − 1。",
-              ],
+              title: "收益序列",
+              paragraphs: rollingSource === "product"
+                ? ["优先用产品自身净值：按自然周取最后一个点，再算周收益 r_t = NAV_t / NAV_{t-1} − 1。"]
+                : ["当前产品净值周样本不足 8 期，改用波动分析里底层基金共同窗口的组合收益（与「预测 VaR vs 实现损失」同一序列）。"],
             },
             {
-              title: "年化波动",
+              title: "滚动窗口",
               paragraphs: [
-                "对过去 13 周或 26 周收益算样本标准差，再乘 √52 换成百分数。窗口不足时该点为空。",
+                "样本够长时用 13 与 26 期；不够则自动缩短为 8 / 13 或 8 期，避免整张图空白。",
               ],
-              formula: "σ_ann = stdev(r_{t−w+1} … r_t) × √52 × 100",
+              formula: `σ_ann = stdev(r_{t−w+1} … r_t) × √${rolling.ppy || 52} × 100；当前窗口 ${rolling.windows.join("、") || "—"} 期`,
             },
             {
               title: "风控带",
               paragraphs: [
-                `黄虚线为右侧输入的观察带（当前 ${low}%–${high}%），不是合同止损线。13 周线穿出上沿表示近期波动放大。`,
+                `黄虚线为观察带（当前 ${bandLo}%–${bandHi}%），默认按滚动波动中位值自动框住曲线，也可手改。不是合同止损线。曲线穿出上沿表示近期波动放大。`,
               ],
             },
           ],
@@ -255,8 +291,8 @@ export function FofVolControlCharts({ result, productNav }: Props) {
               type="number"
               min={0}
               step={0.5}
-              value={bandLow}
-              onChange={(e) => setBandLow(e.target.value)}
+              value={customLow ?? String(bandLo)}
+              onChange={(e) => setCustomLow(e.target.value)}
               className="w-12 h-6 rounded border border-zinc-200 px-1 text-right tabular-nums"
             />
             –
@@ -264,18 +300,30 @@ export function FofVolControlCharts({ result, productNav }: Props) {
               type="number"
               min={0}
               step={0.5}
-              value={bandHigh}
-              onChange={(e) => setBandHigh(e.target.value)}
+              value={customHigh ?? String(bandHi)}
+              onChange={(e) => setCustomHigh(e.target.value)}
               className="w-12 h-6 rounded border border-zinc-200 px-1 text-right tabular-nums"
             />
             %
+            {customLow != null || customHigh != null ? (
+              <button
+                type="button"
+                className="ml-1 text-zinc-400 hover:text-zinc-600"
+                onClick={() => {
+                  setCustomLow(null)
+                  setCustomHigh(null)
+                }}
+              >
+                自动
+              </button>
+            ) : null}
           </span>
         )}
       >
-        {rolling.dates.length < 8 ? (
-          <EmptyChart text="产品净值样本不足，无法计算滚动波动" />
-        ) : (
+        {hasRollingVol ? (
           <ReactECharts option={volOption} style={{ height: 280 }} notMerge />
+        ) : (
+          <EmptyChart text="产品净值与组合收益样本均不足，无法计算滚动波动" />
         )}
       </FofAnalysisChartCard>
 

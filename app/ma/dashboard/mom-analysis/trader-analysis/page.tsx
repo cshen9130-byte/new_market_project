@@ -2,7 +2,8 @@
 
 import Link from "next/link"
 import dynamic from "next/dynamic"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, Suspense } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, Maximize2, Minimize2, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
 
 const NhciCandleChart      = dynamic(() => import("@/components/ma/nhci-candle-chart"),       { ssr: false })
@@ -178,10 +179,20 @@ interface ApiResponse {
   error?: string
 }
 
+const TRADER_TABS = ["pnl-rank", "variety-review", "equity-curve", "quant-vs-subjective", "quant-strategy"] as const
+type TraderTab = (typeof TRADER_TABS)[number]
+
+function isTraderTab(value: string | null): value is TraderTab {
+  return (TRADER_TABS as readonly string[]).includes(value ?? "")
+}
+
 // ── component ────────────────────────────────────────────────────────────────
 
-export default function TraderAnalysisPage() {
+function TraderAnalysisPageInner() {
   const range = defaultRange()
+  const pathname = usePathname()
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [fromDate, setFromDate] = useState(range.from)
   const [toDate, setToDate] = useState(range.to)
   const [traders, setTraders] = useState<Trader[]>([])
@@ -190,7 +201,14 @@ export default function TraderAnalysisPage() {
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>("netPnl")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
-  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review" | "equity-curve" | "quant-vs-subjective" | "quant-strategy">("pnl-rank")
+  const tabParam = searchParams.get("tab")
+  const activeTab: TraderTab = isTraderTab(tabParam) ? tabParam : "pnl-rank"
+
+  const setActiveTab = useCallback((key: TraderTab) => {
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("tab", key)
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }, [pathname, router, searchParams])
 
   // ── equity curve state ────────────────────────────────────────────────────
   type EquityPoint = { date: string; cumPnl: number }
@@ -831,5 +849,13 @@ export default function TraderAnalysisPage() {
         </>
       )}
     </div>
+  )
+}
+
+export default function TraderAnalysisPage() {
+  return (
+    <Suspense fallback={null}>
+      <TraderAnalysisPageInner />
+    </Suspense>
   )
 }

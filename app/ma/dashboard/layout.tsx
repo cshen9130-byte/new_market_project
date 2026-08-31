@@ -1,15 +1,16 @@
 "use client"
 
 import type React from "react"
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { DashboardSidebar } from "@/components/ma/dashboard-sidebar"
 import { cn } from "@/lib/utils"
 import { DashboardHeader } from "@/components/dashboard-header"
 import { ChatBotWidget } from "@/components/chat-bot-widget"
+import { PageVisitTracker } from "@/components/ma/page-visit-tracker"
 import { authService, type User } from "@/lib/auth"
 import { MA_CHAT_VISIBLE_EVENT } from "@/lib/ma/chat-documents"
-import { canAccessAiKnowledge } from "@/lib/permissions"
+import { canAccessAiKnowledge, canAccessAiResearcher } from "@/lib/permissions"
 import { usePresenceHeartbeat } from "@/hooks/use-presence-heartbeat"
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -54,6 +55,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         router.replace("/ma/dashboard")
         return
       }
+      if (
+        pathname.startsWith("/ma/dashboard/ai-researcher") &&
+        !canAccessAiResearcher(current)
+      ) {
+        router.replace("/ma/dashboard")
+        return
+      }
       setUser(current)
     }
     loadUser()
@@ -64,14 +72,26 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (!user) return null
 
+  const visitTracker = (
+    <Suspense fallback={null}>
+      <PageVisitTracker userId={user.id} />
+    </Suspense>
+  )
+
   if (isSettingsPage || isAllWeatherPage || isNhciIndexPage) {
-    return <>{children}</>
+    return (
+      <>
+        {visitTracker}
+        {children}
+      </>
+    )
   }
 
   const headerUser = { email: user.email, full_name: user.name }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
+      {visitTracker}
       <DashboardSidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
       <div className="flex min-w-0 flex-col flex-1 overflow-hidden">
         <DashboardHeader user={headerUser} onChatToggle={() => setChatVisible((v) => !v)} onMenuToggle={() => setMobileSidebarOpen((v) => !v)} />

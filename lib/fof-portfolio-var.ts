@@ -29,6 +29,8 @@ export type FofVarHolding = {
 
 export type FofVarConfidence = 95 | 99
 export type FofVarMethod = "parametric" | "historical"
+/** How to pick the shared return window across holdings. */
+export type FofWindowMethod = "recent" | "longest"
 
 export type FofVarFill = "proxy" | "assume"
 
@@ -50,7 +52,7 @@ export type FofVarFundRow = {
   fillNote?: string | null
 }
 
-export type FofNavGapReason = "no_nav" | "too_short" | "late_start" | "flat_window"
+export type FofNavGapReason = "no_nav" | "too_short" | "late_start" | "stale_end" | "flat_window"
 
 export type FofProxyOption = {
   key: string
@@ -77,6 +79,7 @@ export type FofGapAction =
 export type FofPortfolioVarResult = {
   method: FofVarMethod
   confidence: FofVarConfidence
+  windowMethod: FofWindowMethod
   zScore: number
   obsCount: number
   dateFrom: string | null
@@ -115,6 +118,8 @@ const Z_SCORE: Record<FofVarConfidence, number> = {
 
 const MIN_RETURNS = 8
 const COVERAGE = 0.5
+/** A fund still counts as "has recent data" if its last NAV is within this of the latest date. */
+const RECENT_END_SLACK_DAYS = 62
 
 export function normalizeFofDisplayName(fundName: string): string {
   return fundName
@@ -165,14 +170,28 @@ export function matchHoldingSeries<T extends FofVarSeries>(
 }
 
 function slicePoints(points: FofNavPoint[], fromDate?: string, toDate?: string): FofNavPoint[] {
-  let sliced = points.filter((p) => Number.isFinite(p.nav) && p.nav > 0)
-  if (fromDate) sliced = sliced.filter((p) => p.date >= fromDate.slice(0, 10))
-  if (toDate) sliced = sliced.filter((p) => p.date <= toDate.slice(0, 10))
+  const valid = points.filter((p) => Number.isFinite(p.nav) && p.nav > 0)
   const byDate = new Map<string, number>()
-  for (const p of sliced) byDate.set(p.date.slice(0, 10), p.nav)
-  return [...byDate.entries()]
+  for (const p of valid) byDate.set(p.date.slice(0, 10), p.nav)
+  const all = [...byDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, nav]) => ({ date, nav }))
+  const from = fromDate?.slice(0, 10)
+  const to = toDate?.slice(0, 10)
+  let inRange = all
+  let carry: FofNavPoint | undefined
+  if (from) {
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i].date < from) {
+        carry = all[i]
+        break
+      }
+    }
+    inRange = inRange.filter((p) => p.date >= from)
+  }
+  if (to) inRange = inRange.filter((p) => p.date <= to)
+  if (carry && inRange[0]?.date !== carry.date) return [carry, ...inRange]
+  return inRange
 }
 
 function nativeReturns(points: FofNavPoint[]): number[] {
@@ -260,6 +279,7 @@ export function gapReasonLabel(reason: FofNavGapReason): string {
   if (reason === "no_nav") return "无净值序列"
   if (reason === "too_short") return "净值点过少"
   if (reason === "flat_window") return "共同窗口内净值几乎不变，无法估计相关"
+  if (reason === "stale_end") return "缺少近期净值，未进入共同窗口"
   return "起始过晚，未进入共同窗口"
 }
 
@@ -287,45 +307,66 @@ function lastDate(fund: PreparedFund): string {
   return fund.points[fund.points.length - 1]?.date ?? ""
 }
 
-/** Keep funds whose histories overlap long enough to cover most of current MV. */
-function selectAnalysisUniverse(funds: PreparedFund[]): PreparedFund[] {
-  if (funds.length <= 1) return funds
-  const totalMv = funds.reduce((s, f) => s + Math.max(f.holding.marketValue, 0), 0)
-  const last = funds.reduce((m, f) => (lastDate(f) > m ? lastDate(f) : m), "")
-  const starts = [...new Set(funds.map(firstDate).filter(Boolean))].sort()
+function daysBetween(from: string, to: string): number {
+  return (
+    (new Date(`${to}T12:00:00`).getTime() - new Date(`${from}T12:00:00`).getTime()) / 86400000
+  )
+}
 
-  let best = funds
-  let bestScore = -1
-  for (const start of starts) {
-    const included = funds.filter((f) => firstDate(f) <= start && lastDate(f) >= start)
-    const mv = included.reduce((s, f) => s + Math.max(f.holding.marketValue, 0), 0)
-    if (included.length < 1 || mv < totalMv * 0.7) continue
-    const days = Math.max(
-      1,
-      (new Date(`${last}T12:00:00`).getTime() - new Date(`${start}T12:00:00`).getTime()) / 86400000,
-    )
-    const score = days * mv
-    if (score > bestScore) {
-      best = included
-      bestScore = score
-    }
+/**
+ * Common window is the recent overlap: end = latest NAV date, then look backwards.
+ * Funds with current data stay in even if they started later; a shorter shared
+ * tail is preferred over dropping them to lengthen history.
+ */
+function selectRecentUniverse(funds: PreparedFund[]): {
+  recent: PreparedFund[]
+  stale: PreparedFund[]
+} {
+  if (funds.length <= 1) return { recent: funds, stale: [] }
+  const end = funds.reduce((m, f) => (lastDate(f) > m ? lastDate(f) : m), "")
+  if (!end) return { recent: funds, stale: [] }
+  const recent: PreparedFund[] = []
+  const stale: PreparedFund[] = []
+  for (const f of funds) {
+    const last = lastDate(f)
+    if (!last || daysBetween(last, end) > RECENT_END_SLACK_DAYS) stale.push(f)
+    else recent.push(f)
   }
-  return best
+  if (recent.length === 0) return { recent: funds, stale: [] }
+  return { recent, stale }
 }
 
 type AlignPeriod = "week" | "month"
+
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+function shiftDate(date: string, days: number): string {
+  const d = new Date(`${date.slice(0, 10)}T12:00:00`)
+  d.setDate(d.getDate() + days)
+  return formatLocalDate(d)
+}
 
 function isoWeekStart(date: string): string {
   const d = new Date(`${date.slice(0, 10)}T12:00:00`)
   const dow = d.getDay()
   d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
-  return d.toISOString().slice(0, 10)
+  return formatLocalDate(d)
 }
 
 function monthEnd(yearMonth: string): string {
   const [year, month] = yearMonth.split("-").map(Number)
-  const d = new Date(Date.UTC(year, month, 0))
-  return d.toISOString().slice(0, 10)
+  const d = new Date(year, month, 0, 12, 0, 0)
+  return formatLocalDate(d)
+}
+
+function nextMonth(yearMonth: string): string {
+  const [year, month] = yearMonth.split("-").map(Number)
+  return month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, "0")}`
 }
 
 function lastNavByWeek(points: FofNavPoint[]): FofNavPoint[] {
@@ -355,31 +396,111 @@ function bucketPoints(points: FofNavPoint[], period: AlignPeriod): FofNavPoint[]
 function preferredAlignPeriods(funds: PreparedFund[]): AlignPeriod[] {
   const gaps = funds.map((f) => medianGap(f.points.map((p) => p.date))).sort((a, b) => a - b)
   const med = gaps[Math.floor(gaps.length / 2)] ?? 7
-  return med > 10 ? ["month", "week"] : ["week", "month"]
+  // Daily + weekly holdings share a weekly grid; monthly-heavy books try month first.
+  return med > 20 ? ["month", "week"] : ["week", "month"]
+}
+
+function buildRegularGrid(from: string, to: string, period: AlignPeriod): string[] {
+  if (period === "month") {
+    const dates: string[] = []
+    let ym = from.slice(0, 7)
+    const endYm = to.slice(0, 7)
+    while (ym <= endYm) {
+      dates.push(monthEnd(ym))
+      ym = nextMonth(ym)
+    }
+    return dates
+  }
+  const dates: string[] = []
+  let w = isoWeekStart(from)
+  const end = isoWeekStart(to)
+  while (w <= end) {
+    dates.push(w)
+    w = shiftDate(w, 7)
+  }
+  return dates
+}
+
+function meanReturn(points: FofNavPoint[]): number {
+  const rets = nativeReturns(points)
+  return rets.length ? mean(rets) : 0
+}
+
+/** Interpolate interior holes; fill leading/trailing with this fund's average return. */
+function fillNavRow(
+  grid: string[],
+  byDate: Map<string, number>,
+  avgRet: number,
+): number[] {
+  const row: Array<number | null> = grid.map((d) => {
+    const v = byDate.get(d)
+    return v != null && v > 0 ? v : null
+  })
+  let i = 0
+  while (i < row.length) {
+    if (row[i] != null) {
+      i += 1
+      continue
+    }
+    const prev = i - 1
+    let next = i + 1
+    while (next < row.length && row[next] == null) next += 1
+    if (prev >= 0 && row[prev] != null && next < row.length && row[next] != null) {
+      const a = Math.log(row[prev] as number)
+      const b = Math.log(row[next] as number)
+      const span = next - prev
+      for (let k = prev + 1; k < next; k++) {
+        const t = (k - prev) / span
+        row[k] = Math.exp(a * (1 - t) + b * t)
+      }
+      i = next
+      continue
+    }
+    i += 1
+  }
+  const mu = Number.isFinite(avgRet) ? avgRet : 0
+  const first = row.findIndex((v) => v != null)
+  if (first < 0) return row.map(() => 0)
+  for (let k = first - 1; k >= 0; k--) {
+    row[k] = (row[k + 1] as number) / Math.max(1e-12, 1 + mu)
+  }
+  for (let k = first + 1; k < row.length; k++) {
+    if (row[k] == null) row[k] = (row[k - 1] as number) * (1 + mu)
+  }
+  return row.map((v) => (v != null && v > 0 ? v : 0))
 }
 
 function alignReturnsOn(
   funds: PreparedFund[],
   period: AlignPeriod,
+  windowMethod: FofWindowMethod,
+  fromDate?: string,
+  toDate?: string,
 ): { dates: string[]; returns: number[][] } | null {
   const bucketed = funds.map((f) => {
     const points = bucketPoints(f.points, period)
     return { ...f, points, actualDates: new Set(points.map((p) => p.date)) }
   })
-  const dateSet = new Set<string>()
-  for (const f of bucketed) {
-    for (const p of f.points) dateSet.add(p.date)
-  }
-  const allDates = [...dateSet].sort()
-  if (allDates.length < 3) return null
 
-  const actualCount = allDates.map((d) => bucketed.filter((f) => f.actualDates.has(d)).length)
-  const minCover = Math.max(1, Math.ceil(bucketed.length * COVERAGE))
-  const grid = allDates.filter((_, i) => actualCount[i] >= minCover)
+  const dataFrom = bucketed.reduce((m, f) => {
+    const d = f.points[0]?.date
+    return d && (m === "" || d < m) ? d : m
+  }, "")
+  const dataTo = bucketed.reduce((m, f) => {
+    const d = f.points[f.points.length - 1]?.date
+    return d && d > m ? d : m
+  }, "")
+  const from = fromDate?.slice(0, 10) || dataFrom
+  const to = toDate?.slice(0, 10) || dataTo
+  if (!from || !to) return null
+
+  const grid = buildRegularGrid(from, to, period)
   if (grid.length < 3) return null
 
+  const fillHoles = windowMethod === "recent"
   const navs = bucketed.map((f) => {
     const byDate = new Map(f.points.map((p) => [p.date, p.nav]))
+    if (fillHoles) return fillNavRow(grid, byDate, meanReturn(f.points))
     let last: number | null = null
     return grid.map((d) => {
       const v = byDate.get(d)
@@ -389,18 +510,26 @@ function alignReturnsOn(
   })
 
   let start = 0
-  while (start < grid.length && navs.some((row) => row[start] == null)) start += 1
-  if (grid.length - start < 3) return null
+  let end = grid.length - 1
+  if (!fillHoles) {
+    const actualCount = grid.map((d) => bucketed.filter((f) => f.actualDates.has(d)).length)
+    const minCover = Math.max(1, Math.ceil(bucketed.length * COVERAGE))
+    const covered = grid.map((_, i) => actualCount[i] >= minCover)
+    while (start < grid.length && (navs.some((row) => row[start] == null) || !covered[start])) start += 1
+    while (end > start && !covered[end]) end -= 1
+  }
+
+  if (end - start < 2) return null
 
   const dates: string[] = []
   const returns: number[][] = funds.map(() => [])
-  for (let t = start + 1; t < grid.length; t++) {
+  for (let t = start + 1; t <= end; t++) {
     const periodRets: number[] = []
     let ok = true
     for (let i = 0; i < funds.length; i++) {
       const prev = navs[i][t - 1]
       const curr = navs[i][t]
-      if (prev == null || curr == null || prev <= 0) {
+      if (prev == null || curr == null || prev <= 0 || curr <= 0) {
         ok = false
         break
       }
@@ -415,30 +544,104 @@ function alignReturnsOn(
   return { dates, returns }
 }
 
-function alignReturns(funds: PreparedFund[]): { dates: string[]; returns: number[][] } | null {
+function alignReturns(
+  funds: PreparedFund[],
+  windowMethod: FofWindowMethod = "recent",
+  fromDate?: string,
+  toDate?: string,
+): { dates: string[]; returns: number[][] } | null {
   if (funds.length === 0) return null
   for (const period of preferredAlignPeriods(funds)) {
-    const hit = alignReturnsOn(funds, period)
+    const hit = alignReturnsOn(funds, period, windowMethod, fromDate, toDate)
     if (hit) return hit
   }
   return null
 }
 
-function selectAlignableUniverse(funds: PreparedFund[]): PreparedFund[] {
-  const core = selectAnalysisUniverse(funds)
-  if (funds.length === 0) return core
-  if (alignReturns(core)) return core
+/** Old rule: lengthen history by dropping late starters when days × MV is higher. */
+function selectLongestUniverse(funds: PreparedFund[]): PreparedFund[] {
+  if (funds.length <= 1) return funds
+  const totalMv = funds.reduce((s, f) => s + Math.max(f.holding.marketValue, 0), 0)
+  const last = funds.reduce((m, f) => (lastDate(f) > m ? lastDate(f) : m), "")
+  const starts = [...new Set(funds.map(firstDate).filter(Boolean))].sort()
 
-  const ranked = [...core].sort((a, b) => {
+  let best = funds
+  let bestScore = -1
+  for (const start of starts) {
+    const included = funds.filter((f) => firstDate(f) <= start && lastDate(f) >= start)
+    const mv = included.reduce((s, f) => s + Math.max(f.holding.marketValue, 0), 0)
+    if (included.length < 1 || mv < totalMv * 0.7) continue
+    const days = Math.max(1, daysBetween(start, last))
+    const score = days * mv
+    if (score > bestScore) {
+      best = included
+      bestScore = score
+    }
+  }
+  return best
+}
+
+function dropLatestStarters(
+  funds: PreparedFund[],
+  windowMethod: FofWindowMethod,
+  fromDate?: string,
+  toDate?: string,
+): PreparedFund[] | null {
+  const ranked = [...funds].sort((a, b) => {
     const byStart = firstDate(a).localeCompare(firstDate(b))
     if (byStart !== 0) return byStart
     return b.points.length - a.points.length
   })
   for (let keep = ranked.length - 1; keep >= 1; keep--) {
     const subset = ranked.slice(0, keep)
-    if (alignReturns(subset)) return subset
+    if (alignReturns(subset, windowMethod, fromDate, toDate)) return subset
   }
-  return core
+  return null
+}
+
+function selectAlignableUniverse(
+  funds: PreparedFund[],
+  windowMethod: FofWindowMethod,
+  fromDate?: string,
+  toDate?: string,
+): {
+  included: PreparedFund[]
+  stale: PreparedFund[]
+  tooLate: PreparedFund[]
+} {
+  if (windowMethod === "longest") {
+    const core = selectLongestUniverse(funds)
+    const droppedEarly = funds.filter((f) => !core.includes(f))
+    if (alignReturns(core, "longest", fromDate, toDate)) {
+      return { included: core, stale: [], tooLate: droppedEarly }
+    }
+    const subset = dropLatestStarters(core, "longest", fromDate, toDate)
+    if (subset) {
+      const kept = new Set(subset)
+      return {
+        included: subset,
+        stale: [],
+        tooLate: [...droppedEarly, ...core.filter((f) => !kept.has(f))],
+      }
+    }
+    return { included: core, stale: [], tooLate: droppedEarly }
+  }
+
+  const { recent, stale } = selectRecentUniverse(funds)
+  if (recent.length === 0) return { included: [], stale, tooLate: [] }
+  if (alignReturns(recent, "recent", fromDate, toDate)) {
+    return { included: recent, stale, tooLate: [] }
+  }
+  const subset = dropLatestStarters(recent, "recent", fromDate, toDate)
+  if (subset) {
+    const kept = new Set(subset)
+    return {
+      included: subset,
+      stale,
+      tooLate: recent.filter((f) => !kept.has(f)),
+    }
+  }
+  return { included: recent, stale, tooLate: [] }
 }
 
 function suggestProxies(
@@ -531,6 +734,7 @@ function emptyResult(
   input: {
     method: FofVarMethod
     confidence: FofVarConfidence
+    windowMethod: FofWindowMethod
     zScore: number
     fromDate?: string
     toDate?: string
@@ -542,6 +746,7 @@ function emptyResult(
   return {
     method: input.method,
     confidence: input.confidence,
+    windowMethod: input.windowMethod,
     zScore: input.zScore,
     obsCount: 0,
     dateFrom: input.fromDate?.slice(0, 10) ?? null,
@@ -575,11 +780,13 @@ export function computeFofPortfolioVar(input: {
   toDate?: string
   confidence?: FofVarConfidence
   method?: FofVarMethod
+  windowMethod?: FofWindowMethod
   overrides?: Record<string, FofGapAction>
   proxySeries?: FofVarSeries[]
 }): FofPortfolioVarResult | null {
   const confidence = input.confidence ?? 95
   const method = input.method ?? "parametric"
+  const windowMethod = input.windowMethod ?? "recent"
   const zScore = Z_SCORE[confidence]
   const overrides = input.overrides ?? {}
   const proxySeries = input.proxySeries ?? []
@@ -646,8 +853,12 @@ export function computeFofPortfolioVar(input: {
     pending.push(item)
   }
 
-  const universeCore = selectAlignableUniverse(prepared)
-  const lateDropped = prepared.filter((f) => !universeCore.includes(f))
+  const { included: universeCore, stale, tooLate } = selectAlignableUniverse(
+    prepared,
+    windowMethod,
+    input.fromDate,
+    input.toDate,
+  )
   let universe = [...universeCore]
 
   const gaps: FofNavGap[] = []
@@ -717,22 +928,29 @@ export function computeFofPortfolioVar(input: {
     insufficient.push(insufficientRow(item))
   }
 
-  for (const f of lateDropped) {
-    const item = classified.find((c) => c.key === f.key)
-    if (!item) continue
-    const action = overrides[item.key] ?? { kind: "ignore" }
-    if (action.kind === "proxy" && applyProxy(item, action.proxyKey)) {
-      continue
+  function dropPrepared(funds: PreparedFund[], reason: FofNavGapReason) {
+    for (const f of funds) {
+      const item = classified.find((c) => c.key === f.key)
+      if (!item) continue
+      const action = overrides[item.key] ?? { kind: "ignore" }
+      if (action.kind === "proxy" && applyProxy(item, action.proxyKey)) {
+        continue
+      }
+      if (action.kind === "assume") continue
+      pushGap(item, reason)
+      insufficient.push(insufficientRow(item))
     }
-    if (action.kind === "assume") continue
-    pushGap(item, "late_start")
-    insufficient.push(insufficientRow(item))
   }
+
+  dropPrepared(stale, "stale_end")
+  dropPrepared(tooLate, "late_start")
 
   const assumeItems = classified.filter((item) => overrides[item.key]?.kind === "assume")
     .filter((item) => !universe.some((u) => u.key === item.key))
 
-  let aligned = universe.length > 0 ? alignReturns(universe) : null
+  let aligned = universe.length > 0
+    ? alignReturns(universe, windowMethod, input.fromDate, input.toDate)
+    : null
   if (aligned && universe.length > 0) {
     const liveIdx: number[] = []
     const flatIdx: number[] = []
@@ -749,7 +967,7 @@ export function computeFofPortfolioVar(input: {
     }
     if (flatIdx.length > 0 && liveIdx.length > 0) {
       universe = liveIdx.map((i) => universe[i])
-      aligned = alignReturns(universe)
+      aligned = alignReturns(universe, windowMethod, input.fromDate, input.toDate)
     } else if (liveIdx.length === 0) {
       aligned = null
     }
@@ -764,7 +982,7 @@ export function computeFofPortfolioVar(input: {
       actualDates: new Set(c.points.map((p) => p.date)),
     }))
     universe = fallback
-    aligned = alignReturns(fallback)
+    aligned = alignReturns(fallback, windowMethod, input.fromDate, input.toDate)
   }
 
   if (!aligned || universe.length === 0) {
@@ -773,7 +991,7 @@ export function computeFofPortfolioVar(input: {
       insufficient.push(insufficientRow(item))
     }
     if (insufficient.length === 0 && gaps.length === 0) return null
-    return emptyResult({ method, confidence, zScore, fromDate: input.fromDate, toDate: input.toDate }, totalMv, insufficient, gaps)
+    return emptyResult({ method, confidence, windowMethod, zScore, fromDate: input.fromDate, toDate: input.toDate }, totalMv, insufficient, gaps)
   }
 
   let { dates, returns } = aligned
@@ -903,6 +1121,7 @@ export function computeFofPortfolioVar(input: {
   return {
     method,
     confidence,
+    windowMethod,
     zScore,
     obsCount: tCount,
     dateFrom: dates[0] ?? null,

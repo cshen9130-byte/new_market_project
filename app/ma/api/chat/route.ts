@@ -1,7 +1,15 @@
 import { NextRequest } from "next/server"
 import { query } from "@/lib/db"
+import {
+  formatAccessiblePagesForPrompt,
+  listAccessibleChatPages,
+  resolveChatNavigateTarget,
+  type ChatNavigateTarget,
+} from "@/lib/ma/chat-site-map"
 import { formatTeamStrategyTreeForPrompt } from "@/lib/ma/team-strategy-tree"
 import { loadMergedTeamStrategyTree } from "@/lib/server/team-strategy-tree"
+import { getUserById } from "@/lib/server/users"
+import type { User } from "@/lib/auth"
 
 export const runtime = "nodejs"
 
@@ -56,7 +64,7 @@ const SCHEMA_NOTE = `
 
 查询规范：只用 SELECT，必须含 LIMIT（建议≤100行，时间序列可到500行），日期格式 'YYYY-MM-DD'。
 
-**【强制规则】** ①需要数据时：工具调用必须是响应的**第一个且唯一的动作**，禁止在调用前输出任何文字。②需要多次查询时：在同一轮响应中一次性发起所有工具调用，不要分多轮。③纯概念/功能说明时：直接文字回答，不调用工具。`
+**【强制规则】** ①需要数据时：工具调用必须是响应的**第一个且唯一的动作**，禁止在调用前输出任何文字。②需要多次查询时：在同一轮响应中一次性发起所有工具调用，不要分多轮。③查找/打开页面时：调用 navigate_to_page，不要用 query_database。④纯概念/功能说明时：直接文字回答，不调用工具。`
 
 // ── Tool definition ────────────────────────────────────────────────────────────
 const DB_QUERY_TOOL = {
@@ -79,12 +87,37 @@ const DB_QUERY_TOOL = {
   },
 }
 
+const NAVIGATE_TOOL = {
+  type: "function",
+  function: {
+    name: "navigate_to_page",
+    description:
+      "打开系统内页面并带用户跳转。当用户询问某功能/页面在哪里、或要求打开某页面时调用。pageId 必须来自系统页面目录；不确定时把用户原话放入 query。只会跳转当前账号有权限的页面。",
+    parameters: {
+      type: "object",
+      properties: {
+        pageId: {
+          type: "string",
+          description: "系统页面目录中的 id",
+        },
+        query: {
+          type: "string",
+          description: "用户原话或页面名称，用于在有权限的页面中检索",
+        },
+      },
+    },
+  },
+}
+
+const CHAT_TOOLS = [DB_QUERY_TOOL, NAVIGATE_TOOL]
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function buildSystemContent(teamStrategyNote?: string) {
+function buildSystemContent(teamStrategyNote?: string, pagesNote?: string) {
   return [
     "你是一个金融市场分析助手，专门帮助市场监控系统（MOM管理系统、期货市场看板）的用户理解数据、解读图表、回答分析问题。",
     "请用简洁专业的中文回答。如果问题超出金融市场范畴，也可以正常回答。",
     "用户的每条消息末尾会附带 [当前页面：...] 标记，以说明用户发送该消息时所在的页面，请据此回答与页面功能相关的问题。",
+    pagesNote,
     teamStrategyNote,
     SCHEMA_NOTE,
   ]
@@ -119,6 +152,11 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "messages must be an array" }, { status: 400 })
   }
 
+  const userId = String(req.headers.get("x-market-user-id") || "").trim()
+  const user = (userId ? await getUserById(userId).catch(() => null) : null) as User | null
+  const accessiblePages = listAccessibleChatPages(user)
+  const pagesNote = formatAccessiblePagesForPrompt(accessiblePages)
+
   let teamStrategyNote = ""
   try {
     const teamTree = await loadMergedTeamStrategyTree()
@@ -127,7 +165,7 @@ export async function POST(req: NextRequest) {
     // Non-fatal: chat works without strategy taxonomy
   }
 
-  const systemContent = buildSystemContent(teamStrategyNote)
+  const systemContent = buildSystemContent(teamStrategyNote, pagesNote)
   const systemMsg = { role: "system", content: systemContent }
 
   // Stamp the page context directly onto the last user message so it stays
@@ -242,9 +280,51 @@ export async function POST(req: NextRequest) {
   // ── Execute a list of tool calls, returns tool result messages ────────────────
   type ToolCall = { id: string; type?: string; function: { name: string; arguments: string } }
 
-  async function runToolCalls(toolCalls: ToolCall[]) {
+  type ToolResult = {
+    id: string
+    rows: number
+    content: string
+    navigate?: ChatNavigateTarget
+  }
+
+  async function runToolCalls(toolCalls: ToolCall[]): Promise<ToolResult[]> {
     return Promise.all(
-      toolCalls.map(async (tc) => {
+      toolCalls.map(async (tc): Promise<ToolResult> => {
+        if (tc.function.name === "navigate_to_page") {
+          let args: { pageId?: string; query?: string } = {}
+          try {
+            args = JSON.parse(tc.function.arguments) as { pageId?: string; query?: string }
+          } catch {
+            return { id: tc.id, rows: 0, content: JSON.stringify({ ok: false, error: "参数解析失败" }) }
+          }
+          const result = resolveChatNavigateTarget(args, user)
+          if (!result.ok) {
+            return {
+              id: tc.id,
+              rows: 0,
+              content: JSON.stringify({
+                ok: false,
+                error: result.message,
+                candidates: result.candidates,
+              }),
+            }
+          }
+          return {
+            id: tc.id,
+            rows: 0,
+            content: JSON.stringify({
+              ok: true,
+              title: result.page.title,
+              trail: result.page.trail,
+              note: "已触发前端跳转。请用一两句话告诉用户页面位置，不要再调用 navigate_to_page。",
+            }),
+            navigate: {
+              href: result.page.href,
+              title: result.page.title,
+              trail: result.page.trail,
+            },
+          }
+        }
         if (tc.function.name !== "query_database") {
           return { id: tc.id, rows: 0, content: JSON.stringify({ error: `未知工具：${tc.function.name}` }) }
         }
@@ -298,7 +378,7 @@ export async function POST(req: NextRequest) {
             body: JSON.stringify({
               model: DEEPSEEK_MODEL,
               messages: loopMessages,
-              tools: [DB_QUERY_TOOL],
+              tools: CHAT_TOOLS,
               tool_choice: "auto",
               stream: true,   // ← always streaming for live TTFB
             }),
@@ -401,9 +481,14 @@ export async function POST(req: NextRequest) {
 
           // Execute all tool calls in parallel
           const results = await runToolCalls(toolCallsToRun)
-          totalQueries += toolCallsToRun.length
+          totalQueries += toolCallsToRun.filter((tc) => tc.function.name === "query_database").length
           totalRows += results.reduce((s, r) => s + r.rows, 0)
-          prevRoundHadTools = true
+          prevRoundHadTools = toolCallsToRun.some((tc) => tc.function.name === "query_database")
+          for (const r of results) {
+            if (!r.navigate) continue
+            emit(`*[正在打开：${r.navigate.title}]*\n\n`)
+            controller.enqueue(enc.encode(`data: ${JSON.stringify({ navigate: r.navigate })}\n\n`))
+          }
 
           // Append assistant + tool result messages for next round
           loopMessages.push({

@@ -8,12 +8,14 @@ import {
   computeFofPortfolioVar,
   fofHoldingKey,
   gapReasonLabel,
+  matchHoldingSeries,
   normalizeFofDisplayName,
   type FofGapAction,
   type FofNavGap,
   type FofProxyOption,
   type FofVarConfidence,
   type FofVarMethod,
+  type FofWindowMethod,
 } from "@/lib/fof-portfolio-var"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
@@ -93,6 +95,14 @@ function seriesLooksThin(series: ReturnCurveSeries[], holdingCount: number): boo
   return rich < Math.max(1, Math.ceil(Math.max(holdingCount, series.length) * 0.35))
 }
 
+const THIN_HOLDING_POINTS = 40
+const THIN_WINDOW_POINTS = 24
+
+const WINDOW_METHODS: Array<{ key: FofWindowMethod; label: string }> = [
+  { key: "recent", label: "近期回溯" },
+  { key: "longest", label: "最长历史" },
+]
+
 export function FofVolatilityAnalysisPanel({
   series,
   fundHoldings,
@@ -109,6 +119,7 @@ export function FofVolatilityAnalysisPanel({
 }: Props) {
   const [confidence, setConfidence] = useState<FofVarConfidence>(95)
   const [method, setMethod] = useState<FofVarMethod>("parametric")
+  const [windowMethod, setWindowMethod] = useState<FofWindowMethod>("recent")
   const [fetchedSeries, setFetchedSeries] = useState<ReturnCurveSeries[]>([])
   const [fetchLoading, setFetchLoading] = useState(false)
   const [overrides, setOverrides] = useState<Record<string, FofGapAction>>({})
@@ -131,7 +142,18 @@ export function FofVolatilityAnalysisPanel({
   }, [fromDate, toDate])
 
   useEffect(() => {
-    if (holdings.length === 0 || !seriesLooksThin(series, holdings.length)) {
+    const thin = holdings.filter((holding) => {
+      const matched = matchHoldingSeries(holding, series)
+      const all = matched?.points ?? []
+      if (all.length < THIN_HOLDING_POINTS) return true
+      const inWindow = all.filter((p) => {
+        if (fromDate && p.date < fromDate.slice(0, 10)) return false
+        if (toDate && p.date > toDate.slice(0, 10)) return false
+        return true
+      })
+      return inWindow.length < THIN_WINDOW_POINTS
+    })
+    if (thin.length === 0) {
       setFetchedSeries([])
       setFetchLoading(false)
       return
@@ -141,47 +163,57 @@ export function FofVolatilityAnalysisPanel({
     let cancelled = false
     setFetchLoading(true)
 
-    const queue = [...holdings]
+    const queue = [...thin]
     const collected: ReturnCurveSeries[] = []
+
+    const fetchPoints = async (id: string): Promise<Array<{ date: string; nav: number; returnPct: number }>> => {
+      const r = await fetch(`/ma/api/private-funds/${encodeURIComponent(id)}`, {
+        signal: controller.signal,
+      })
+      if (!r.ok) return []
+      const d = await r.json() as { nav_series?: FundNavRow[] }
+      return (d.nav_series ?? [])
+        .map((row) => {
+          const nav = navFromRow(row)
+          const date = row.price_date?.slice(0, 10)
+          if (nav == null || !date) return null
+          return { date, nav, returnPct: 0 }
+        })
+        .filter((p): p is { date: string; nav: number; returnPct: number } => p != null)
+    }
 
     const worker = async () => {
       while (queue.length > 0 && !cancelled) {
         const holding = queue.shift()
         if (!holding) break
-        const id = holding.beianHao || holding.valuationCode || holding.fundName
-        try {
-          const r = await fetch(`/ma/api/private-funds/${encodeURIComponent(id)}`, {
-            signal: controller.signal,
-          })
-          if (!r.ok) continue
-          const d = await r.json() as { nav_series?: FundNavRow[] }
-          let points = (d.nav_series ?? [])
-            .map((row) => {
-              const nav = navFromRow(row)
-              const date = row.price_date?.slice(0, 10)
-              if (nav == null || !date) return null
-              return { date, nav, returnPct: 0 }
-            })
-            .filter((p): p is { date: string; nav: number; returnPct: number } => p != null)
-          if (fromDate) points = points.filter((p) => p.date >= fromDate.slice(0, 10))
-          if (toDate) points = points.filter((p) => p.date <= toDate.slice(0, 10))
-          const name = normalizeFofDisplayName(
-            stripValuationSubjectPathPrefix(holding.fundName) || holding.fundName,
-          )
-          collected.push({
-            fundName: holding.fundName,
-            displayName: name,
-            beianHao: holding.beianHao,
-            valuationCode: holding.valuationCode,
-            points,
-          })
-        } catch {
-          if (controller.signal.aborted) return
+        const ids = [...new Set(
+          [holding.beianHao, holding.valuationCode]
+            .map((v) => v?.trim())
+            .filter((v): v is string => Boolean(v)),
+        )]
+        let points: Array<{ date: string; nav: number; returnPct: number }> = []
+        for (const id of ids) {
+          try {
+            const next = await fetchPoints(id)
+            if (next.length > points.length) points = next
+          } catch {
+            if (controller.signal.aborted) return
+          }
         }
+        const name = normalizeFofDisplayName(
+          stripValuationSubjectPathPrefix(holding.fundName) || holding.fundName,
+        )
+        collected.push({
+          fundName: holding.fundName,
+          displayName: name,
+          beianHao: holding.beianHao,
+          valuationCode: holding.valuationCode,
+          points,
+        })
       }
     }
 
-    void Promise.all(Array.from({ length: Math.min(6, holdings.length) }, () => worker()))
+    void Promise.all(Array.from({ length: Math.min(6, thin.length) }, () => worker()))
       .then(() => {
         if (!cancelled) setFetchedSeries(collected)
       })
@@ -286,12 +318,24 @@ export function FofVolatilityAnalysisPanel({
   }, [externalProxyKeySig, fromDate, toDate])
 
   const activeSeries = useMemo(() => {
-    if (!seriesLooksThin(series, holdings.length)) return series
-    const parentRich = series.filter((s) => (s.points?.length ?? 0) >= 9).length
-    const fetchedRich = fetchedSeries.filter((s) => (s.points?.length ?? 0) >= 9).length
-    if (fetchedRich > parentRich) return fetchedSeries
-    return series
-  }, [series, fetchedSeries, holdings.length])
+    return holdings.map((holding) => {
+      const parent = matchHoldingSeries(holding, series)
+      const fetched = matchHoldingSeries(holding, fetchedSeries)
+      const best = [parent, fetched]
+        .filter((s): s is ReturnCurveSeries => s != null)
+        .sort((a, b) => (b.points?.length ?? 0) - (a.points?.length ?? 0))[0]
+      const name = normalizeFofDisplayName(
+        stripValuationSubjectPathPrefix(holding.fundName) || holding.fundName,
+      )
+      return {
+        fundName: holding.fundName,
+        displayName: name,
+        beianHao: holding.beianHao,
+        valuationCode: holding.valuationCode,
+        points: best?.points ?? [],
+      }
+    })
+  }, [holdings, series, fetchedSeries])
 
   const diagnosed = useMemo(
     () => computeFofPortfolioVar({
@@ -301,8 +345,9 @@ export function FofVolatilityAnalysisPanel({
       toDate,
       confidence,
       method,
+      windowMethod,
     }),
-    [holdings, activeSeries, fromDate, toDate, confidence, method],
+    [holdings, activeSeries, fromDate, toDate, confidence, method, windowMethod],
   )
 
   const result = useMemo(
@@ -313,10 +358,11 @@ export function FofVolatilityAnalysisPanel({
       toDate,
       confidence,
       method,
+      windowMethod,
       overrides,
       proxySeries,
     }),
-    [holdings, activeSeries, fromDate, toDate, confidence, method, overrides, proxySeries],
+    [holdings, activeSeries, fromDate, toDate, confidence, method, windowMethod, overrides, proxySeries],
   )
   const busy = fetchLoading || (Boolean(loading) && seriesLooksThin(series, holdings.length) && (result?.includedCount ?? 0) === 0)
   const gaps = diagnosed?.gaps ?? []
@@ -543,6 +589,13 @@ export function FofVolatilityAnalysisPanel({
                   formula: "参数法：VaR = z × σ_p × 纳入基金市值\n历史模拟：VaR = −分位_{1−c}(组合收益) × 纳入基金市值\n占净值% = VaR / 资产净值；占基金市值% = VaR / 纳入基金市值",
                 },
                 {
+                  title: "共同窗口",
+                  paragraphs: [
+                    "近期回溯（默认）：从各基金最近净值日往回铺周/月网格。日频与周频都映射到同一网格；中间缺口按净值插值，两端缺口用该基金平均收益填补。不要求每只基金在每一天都有原始点，以便尽量纳入持仓。",
+                    "最长历史：优先拉长真实重叠样本，可能把起始较晚的基金排除出协方差。",
+                  ],
+                },
+                {
                   title: "折算 1 日 VaR",
                   paragraphs: [
                     "按底层净值中位间隔天数 √缩放：1日 VaR = 下一净值日 VaR / √gapDays。",
@@ -573,8 +626,32 @@ export function FofVolatilityAnalysisPanel({
           {rangeLabel && (
             <div className="text-xs text-zinc-400 mt-1 tabular-nums">统计区间: {rangeLabel}</div>
           )}
+          {result?.dateFrom && result.dateTo && (
+            <div className="text-xs text-zinc-400 mt-0.5 tabular-nums">
+              共同窗口: {result.dateFrom} ~ {result.dateTo}
+              {result.obsCount > 0 ? ` · ${result.obsCount} 期` : ""}
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded border border-zinc-200 overflow-hidden text-xs">
+            {WINDOW_METHODS.map(({ key, label }, idx) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setWindowMethod(key)}
+                className={[
+                  "px-2.5 py-1 transition-colors",
+                  windowMethod === key
+                    ? "bg-red-50 text-red-500 font-medium"
+                    : "text-zinc-600 hover:bg-zinc-50",
+                  idx > 0 ? "border-l border-zinc-200" : "",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="inline-flex rounded border border-zinc-200 overflow-hidden text-xs">
             {([95, 99] as const).map((c) => (
               <button
@@ -766,7 +843,7 @@ export function FofVolatilityAnalysisPanel({
               ? `参数法假设收益近似正态，下一净值日 VaR = z(${result.confidence}%) × σ_p × 基金市值，z=${result.zScore}。`
               : `历史模拟取当前权重下组合收益的 ${(100 - result.confidence).toFixed(0)}% 分位损失。`}
             {" "}风险贡献按协方差欧拉分解，合计为 100%，对冲品种可为负；红色表示风险贡献高于分析权重。
-            {result.excludedCount > 0 ? ` ${result.excludedCount} 只基金因净值样本不足或起始过晚未纳入协方差。` : ""}
+            {result.excludedCount > 0 ? ` ${result.excludedCount} 只基金因净值样本不足、缺少近期净值或共同窗口过短未纳入协方差。` : ""}
             {result.coveredMv < result.totalMv * 0.999
               ? ` 覆盖基金市值 ${fmtMoney(result.coveredMv)} / ${fmtMoney(result.totalMv)}。`
               : ""}
