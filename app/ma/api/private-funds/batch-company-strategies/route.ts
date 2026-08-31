@@ -46,9 +46,33 @@ export async function POST(req: Request) {
       const placeholders = ids.map((_, i) => `$${i + 1}`).join(", ")
       const rows = await query<StrategyRow>(
         `SELECT register_number,
-                NULLIF(BTRIM(company_strategy_one), '')   AS strategy_l1,
-                NULLIF(BTRIM(company_strategy_two), '')   AS strategy_l2,
-                NULLIF(BTRIM(company_strategy_three), '') AS strategy_l3
+                CASE
+                  WHEN COALESCE(
+                    NULLIF(BTRIM(company_strategy_one), ''),
+                    NULLIF(BTRIM(company_strategy_two), ''),
+                    NULLIF(BTRIM(company_strategy_three), '')
+                  ) IS NOT NULL
+                    THEN NULLIF(BTRIM(company_strategy_one), '')
+                  ELSE NULLIF(BTRIM(platform_strategy_one), '')
+                END AS strategy_l1,
+                CASE
+                  WHEN COALESCE(
+                    NULLIF(BTRIM(company_strategy_one), ''),
+                    NULLIF(BTRIM(company_strategy_two), ''),
+                    NULLIF(BTRIM(company_strategy_three), '')
+                  ) IS NOT NULL
+                    THEN NULLIF(BTRIM(company_strategy_two), '')
+                  ELSE NULLIF(BTRIM(platform_strategy_two), '')
+                END AS strategy_l2,
+                CASE
+                  WHEN COALESCE(
+                    NULLIF(BTRIM(company_strategy_one), ''),
+                    NULLIF(BTRIM(company_strategy_two), ''),
+                    NULLIF(BTRIM(company_strategy_three), '')
+                  ) IS NOT NULL
+                    THEN NULLIF(BTRIM(company_strategy_three), '')
+                  ELSE NULLIF(BTRIM(platform_strategy_three), '')
+                END AS strategy_l3
          FROM type6_ops_team_full
          WHERE register_number IN (${placeholders})`,
         ids,

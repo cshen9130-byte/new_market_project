@@ -8,7 +8,7 @@ interface IndexCatalogItem {
   code: string
   name: string
   category: string
-  source: "spot" | "etf" | "nanhua"
+  source: "spot" | "etf" | "nanhua" | "ccidx"
   symbol?: string
   ticker?: string
   inception_date?: string | null
@@ -26,6 +26,7 @@ const BENCHMARK_INDEX_CATALOG: IndexCatalogItem[] = [
   { code: "511010.SH", name: "国债ETF", category: "债券", source: "etf", ticker: "511010.SH" },
   { code: "518880.SH", name: "黄金ETF", category: "商品", source: "etf", ticker: "518880.SH" },
   { code: "NHCI.NH", name: "南华商品指数", category: "南华商品", source: "nanhua", inception_date: "2004-06-01" },
+  { code: "100001.CCI", name: "中证商品指数", category: "商品", source: "ccidx", inception_date: "2010-07-12" },
   { code: "NHAI.NH", name: "南华农产品指数", category: "南华商品", source: "nanhua", inception_date: "2004-06-01" },
   { code: "NHECI.NH", name: "南华能化指数", category: "南华商品", source: "nanhua", inception_date: "2004-06-01" },
   { code: "NHFI.NH", name: "南华黑色指数", category: "南华商品", source: "nanhua", inception_date: "2004-06-01" },
@@ -62,6 +63,20 @@ async function latestEtfPoint(ticker: string) {
   return { date: fmtIso(row.trade_date), point: n(row.value) }
 }
 
+async function latestCcidxPoint(code: string) {
+  const rows = await query<{ trade_date: Date | string; close: string | number | null }>(
+    `SELECT trade_date, close
+     FROM raw_ashare_index_daily
+     WHERE ts_code = $1 AND close IS NOT NULL AND close > 0
+     ORDER BY trade_date DESC
+     LIMIT 1`,
+    [code],
+  )
+  const row = rows[0]
+  if (!row) return null
+  return { date: fmtIso(row.trade_date), point: n(row.close) }
+}
+
 async function latestNanhuaPoint(code: string) {
   const rows = await query<{ trade_date: Date | string; close: string | number | null }>(
     `SELECT trade_date, close
@@ -82,6 +97,7 @@ async function enrichIndex(item: IndexCatalogItem) {
     if (item.source === "spot" && item.symbol) latest = await latestSpotPoint(item.symbol)
     else if (item.source === "etf" && item.ticker) latest = await latestEtfPoint(item.ticker)
     else if (item.source === "nanhua") latest = await latestNanhuaPoint(item.code)
+    else if (item.source === "ccidx") latest = await latestCcidxPoint(item.code)
   } catch {
     latest = null
   }

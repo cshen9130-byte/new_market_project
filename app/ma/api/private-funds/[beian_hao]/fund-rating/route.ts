@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { fmtIso, n, query } from "@/lib/db"
+import {
+  CCIDX_COMMODITY_INDEX_LABEL,
+  loadCcidxCommodityIndexPrices,
+} from "@/lib/server/ccidx-commodity-index"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 import {
   buildDefaultPeriodSpecs,
@@ -18,6 +22,7 @@ const BENCHMARKS = {
   "511010.SH": { label: "国债ETF", source: "etf", ticker: "511010.SH" },
   "518880.SH": { label: "黄金ETF", source: "etf", ticker: "518880.SH" },
   "NHCI.NH": { label: "南华商品指数", source: "nanhua", code: "NHCI.NH" },
+  "100001.CCI": { label: CCIDX_COMMODITY_INDEX_LABEL, source: "ccidx" },
 } as const
 
 type BenchmarkKey = keyof typeof BENCHMARKS
@@ -167,6 +172,12 @@ async function loadBenchmarkRows(
       return rows
         .map((row) => ({ price_date: fmtIso(row.trade_date), nav: n(row.close) }))
         .filter((row): row is { price_date: string; nav: number } => row.nav !== null)
+    }
+    if (meta.source === "ccidx") {
+      return (await loadCcidxCommodityIndexPrices(from, to)).map((row) => ({
+        price_date: row.date,
+        nav: row.value,
+      }))
     }
     if (meta.source === "etf") {
       const rows = await query<{ trade_date: Date | string; value: string | number | null }>(

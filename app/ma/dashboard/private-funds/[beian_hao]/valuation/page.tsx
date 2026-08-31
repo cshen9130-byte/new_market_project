@@ -24,6 +24,7 @@ import type { ContractEquityTrendData } from "./ContractEquityTrendPanel"
 import type { FofTrendAnalysisData } from "./FofShareTrendPanel"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "../components/IntervalMetricsTable"
 import { buildFundIntervalMetricsFromNav } from "../components/performanceChartUtils"
+import { resolveDefaultBenchmarkKey } from "@/lib/ma/team-benchmark"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
 import { getNavFieldValue, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "../components/shared"
@@ -219,6 +220,7 @@ const BENCHMARK_OPTIONS = [
   { label: "中证1000", key: "IM" },
   { label: "上证50", key: "IH" },
   { label: "南华商品指数", key: "NHCI.NH" },
+  { label: "中证商品指数", key: "100001.CCI" },
   { label: "国债ETF", key: "511010.SH" },
   { label: "黄金ETF", key: "518880.SH" },
 ] as const
@@ -231,6 +233,7 @@ function benchmarkKeyFromLabel(label: string): string {
   if (text.includes("中证500")) return "IC"
   if (text.includes("沪深300")) return "IF"
   if (text.includes("上证50")) return "IH"
+  if (text.includes("中证商品")) return "100001.CCI"
   if (text.includes("南华商品")) return "NHCI.NH"
   if (text.includes("国债")) return "511010.SH"
   if (text.includes("黄金")) return "518880.SH"
@@ -466,6 +469,7 @@ export default function FundValuationAnalysisPage() {
           strategy_l1?: string | null
           strategy_l2?: string | null
           benchmark?: string | null
+          team_benchmark?: string | null
           ret_1w?: string | null
           ret_1m?: string | null
           ret_3m?: string | null
@@ -481,8 +485,17 @@ export default function FundValuationAnalysisPage() {
       setNavRows(series)
       setFundStrategy(json.info?.strategy_l1 ?? json.info?.strategy_l2 ?? null)
       const info = json.info
-      const nextBench = info?.benchmark ? normalizeBenchmarkLabel(info.benchmark) : filterBench
-      if (info?.benchmark) setFilterBench(nextBench)
+      const resolvedKey = resolveDefaultBenchmarkKey({
+        teamBenchmark: info?.team_benchmark,
+        strategyL1: info?.strategy_l1,
+        strategyL2: info?.strategy_l2,
+      })
+      const nextBench = resolvedKey
+        ? benchmarkLabelFromKey(resolvedKey)
+        : info?.benchmark
+          ? normalizeBenchmarkLabel(info.benchmark)
+          : filterBench
+      if (resolvedKey || info?.benchmark) setFilterBench(nextBench)
       setFundInfoMetrics(info ? {
         ret_1w:    info.ret_1w    ? parseFloat(info.ret_1w)    : null,
         ret_1m:    info.ret_1m    ? parseFloat(info.ret_1m)    : null,

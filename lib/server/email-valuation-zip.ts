@@ -48,10 +48,13 @@ export function expandValuationZipBuffer(buffer: Buffer, archiveFilename: string
   return out
 }
 
-/** Prefer 历史净值 / NAV workbooks inside a manager 产品材料 zip. */
+/** Prefer 历史净值 / NAV workbooks inside a manager 产品材料 / 尽调材料 zip. */
 export function preferNavHistoryZipEntries(entries: ZipSpreadsheetEntry[]): ZipSpreadsheetEntry[] {
-  const preferred = entries.filter((e) => /净值|nav/i.test(e.filename))
-  return preferred.length > 0 ? preferred : entries
+  const blob = (e: ZipSpreadsheetEntry) => `${e.entryName}\n${e.filename}`
+  const preferred = entries.filter((e) => /净值|nav/i.test(blob(e)))
+  if (preferred.length > 0) return preferred
+  // Do not fall back to 要素表 / 合同 / 公司介绍 when the pack has no NAV sheets.
+  return entries.filter((e) => !/要素表|产品要素|一页通|基金合同|产品合同|公司介绍|公司简介/.test(blob(e)))
 }
 
 /** Citics 【净值公告】 zips pack weekly 资产净值公告 PDFs (and occasionally xlsx). */

@@ -38,6 +38,7 @@ const BENCHMARK_OPTIONS = [
   { key: "511010.SH", label: "国债ETF" },
   { key: "518880.SH", label: "黄金ETF" },
   { key: "NHCI.NH", label: "南华商品指数" },
+  { key: "100001.CCI", label: "中证商品指数" },
 ] as const
 
 const NAV_FREQUENCY_OPTIONS = [

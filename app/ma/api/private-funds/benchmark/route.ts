@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { fmtIso, n, query } from "@/lib/db"
+import {
+  CCIDX_COMMODITY_INDEX_LABEL,
+  loadCcidxCommodityIndexPrices,
+} from "@/lib/server/ccidx-commodity-index"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -12,6 +16,7 @@ const BENCHMARKS = {
   "511010.SH": { label: "国债ETF", source: "etf", ticker: "511010.SH" },
   "518880.SH": { label: "黄金ETF", source: "etf", ticker: "518880.SH" },
   "NHCI.NH": { label: "南华商品指数", source: "nanhua", code: "NHCI.NH" },
+  "100001.CCI": { label: CCIDX_COMMODITY_INDEX_LABEL, source: "ccidx" },
 } as const
 
 type BenchmarkKey = keyof typeof BENCHMARKS
@@ -49,6 +54,16 @@ export async function GET(req: Request) {
         data: rows
           .map((row) => ({ date: fmtIso(row.trade_date), value: n(row.close) }))
           .filter((row): row is { date: string; value: number } => row.value !== null),
+      })
+    }
+
+    if (meta.source === "ccidx") {
+      const data = await loadCcidxCommodityIndexPrices(from, to)
+      return NextResponse.json({
+        ok: true,
+        key,
+        label: meta.label,
+        data,
       })
     }
 

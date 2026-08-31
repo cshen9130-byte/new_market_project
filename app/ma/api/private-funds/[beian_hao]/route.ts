@@ -8,6 +8,7 @@ import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
+import { preferOfficialManagerName } from "@/lib/server/manager-name-canonical"
 import { ensureShareClassBeianProduct } from "@/lib/server/share-class-product"
 import {
   buildDetailHeaderFromListCache,
@@ -26,6 +27,7 @@ import {
   getDetailResponseMemoryCache,
   rememberDetailResponseMemoryCache,
 } from "@/lib/server/fund-detail-response-memory-cache"
+import { loadTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
 
 export const dynamic = "force-dynamic"
 
@@ -237,7 +239,15 @@ export async function GET(
     const cacheKey = beian_hao || rawId
     const cachedDetail = getDetailResponseMemoryCache(cacheKey)
     if (cachedDetail) {
-      return NextResponse.json(sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0]))
+      const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
+      const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
+      if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
+        return NextResponse.json({
+          ...body,
+          info: { ...body.info, team_benchmark: teamBenchmark ?? (body.info as { team_benchmark?: string | null }).team_benchmark ?? null },
+        })
+      }
+      return NextResponse.json(body)
     }
 
     const infoRows = await query<InfoRow>(
@@ -310,7 +320,20 @@ export async function GET(
       const ownerUserId = String(req.headers.get("x-market-user-id") || "").trim() || undefined
       const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
         ?? (rawId !== beian_hao ? tryGetCustomFundPrivateDetail(beian_hao, ownerUserId) : null)
-      if (customDetail) return NextResponse.json(customDetail)
+      if (customDetail) {
+        const teamBenchmark = await loadTeamBenchmark([
+          customDetail.info.beian_hao,
+          rawId,
+          beian_hao,
+        ].filter(Boolean)).catch(() => null)
+        return NextResponse.json({
+          ...customDetail,
+          info: {
+            ...customDetail.info,
+            team_benchmark: teamBenchmark || customDetail.info.benchmark || null,
+          },
+        })
+      }
 
       // Element-extract / picker may link to a synthesized share-class code (e.g. AJD58B)
       // before the tier row exists. Materialize it from the main product (SAJD58).
@@ -424,7 +447,7 @@ export async function GET(
     const pgCacheHit =
       pgCached != null && isDetailNavCacheFresh(pgCached, listHeader)
 
-    const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved] = await Promise.all([
+    const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved, teamBenchmark] = await Promise.all([
       strategy_l3
         ? Promise.resolve([] as { l3: string | null }[])
         : query<{ l3: string | null }>(
@@ -474,6 +497,7 @@ export async function GET(
         managerHint: trackAdvisor || info.manager?.trim() || null,
         registerCode: bflTrack?.register_code ?? null,
       }),
+      loadTeamBenchmark([routeBeianHao, beian_hao, rawId].filter(Boolean)).catch(() => null),
     ])
     const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
 
@@ -606,7 +630,12 @@ export async function GET(
           amacResolved?.establish_date ??
           null,
         operation_date: trackOperationDate,
-        manager: info.manager?.trim() || trackAdvisor || amacResolved?.manager_name || info.manager,
+        team_benchmark: teamBenchmark,
+        manager:
+          preferOfficialManagerName(
+            info.manager?.trim() || trackAdvisor,
+            amacResolved?.manager_name,
+          ) || info.manager,
         manager_registration_no: amacResolved?.registration_no ?? null,
         ret_1w: info.ret_1w ?? pctFromCache(listHeader?.ret_1w) ?? null,
         ret_1m: info.ret_1m ?? pctFromCache(listHeader?.ret_1m) ?? null,

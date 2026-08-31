@@ -12,9 +12,12 @@ import {
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
 import { writeFundElementsAcrossShareClasses, writeFundElementsFromBody } from "@/lib/server/fund-elements-write"
+import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
+import { loadTeamBenchmark, upsertTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 import { isWeakShortFee } from "@/lib/server/fund-contract-element-keywords"
+import { loadResolvedFundStrategies } from "@/lib/server/fund-strategy-resolve"
 
 export const dynamic = "force-dynamic"
 
@@ -122,27 +125,9 @@ export async function GET(req: Request) {
 
   const keys = await resolveFundElementsBeianKeys(beian_hao, product_name || null)
 
-  const [elementsRows, teamRows, pfiRows, bflRows, operation_date, extra] = await Promise.all([
+  const [elementsRows, resolvedStrategy, pfiRows, bflRows, operation_date, extra, team_benchmark] = await Promise.all([
     loadBasicinfoTrack(keys),
-
-    query<{
-      platform_strategy_one: string | null
-      platform_strategy_two: string | null
-      platform_strategy_three: string | null
-      company_strategy_one: string | null
-      company_strategy_two: string | null
-      company_strategy_three: string | null
-    }>(
-      `SELECT platform_strategy_one, platform_strategy_two, platform_strategy_three,
-              company_strategy_one, company_strategy_two, company_strategy_three
-       FROM type6_ops_team_full
-       WHERE register_number = ANY($1::text[])
-       ORDER BY
-         CASE WHEN UPPER(BTRIM(register_number)) = UPPER(BTRIM($2)) THEN 0 ELSE 1 END,
-         updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [keys, keys[0]]
-    ).catch(() => []),
+    loadResolvedFundStrategies(beian_hao, keys),
 
     query<{ manager: string | null; benchmark: string | null }>(
       `SELECT manager, benchmark FROM private_fund_info
@@ -161,10 +146,10 @@ export async function GET(req: Request) {
 
     loadOperationDate(keys),
     loadExtraElementFields(keys),
+    loadTeamBenchmark(keys).catch(() => null),
   ])
 
   const el = elementsRows[0]
-  const team = teamRows[0]
   const pfi = pfiRows[0]
   const benchmark = pfi?.benchmark || bflRows[0]?.benchmark_index || null
   const fund_manager = pfi?.manager || el?.advisor || null
@@ -189,13 +174,14 @@ export async function GET(req: Request) {
     operation_date,
     puton_date: toIsoDateInputValue(el?.puton_date) || null,
     custodian,
-    platform_l1: team?.platform_strategy_one ?? null,
-    platform_l2: team?.platform_strategy_two ?? null,
-    platform_l3: team?.platform_strategy_three ?? null,
-    company_l1: team?.company_strategy_one ?? null,
-    company_l2: team?.company_strategy_two ?? null,
-    company_l3: team?.company_strategy_three ?? null,
+    platform_l1: resolvedStrategy.platform.l1,
+    platform_l2: resolvedStrategy.platform.l2,
+    platform_l3: resolvedStrategy.platform.l3,
+    company_l1: resolvedStrategy.team.l1,
+    company_l2: resolvedStrategy.team.l2,
+    company_l3: resolvedStrategy.team.l3,
     benchmark,
+    team_benchmark,
     strategy_confirmed: bflRows[0]?.strategy_confirmed === 1,
     open_day: el?.open_day ?? null,
     is_temporary_open,
@@ -227,6 +213,11 @@ export async function PATCH(req: Request) {
       await writeFundElementsAcrossShareClasses(body)
     } else {
       await writeFundElementsFromBody(body)
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "team_benchmark")) {
+      const value = body.team_benchmark
+      await upsertTeamBenchmark(rawBeian, value == null ? null : String(value))
+      invalidateDetailResponseMemoryCache([rawBeian])
     }
     return NextResponse.json({ ok: true })
   } catch (err) {

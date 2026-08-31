@@ -30,6 +30,7 @@ const BENCHMARK_OPTIONS = [
   { key: "IM", label: "中证1000" },
   { key: "IH", label: "上证50" },
   { key: "NHCI.NH", label: "南华商品指数" },
+  { key: "100001.CCI", label: "中证商品指数" },
 ] as const
 
 function userFetchHeaders(): Record<string, string> {

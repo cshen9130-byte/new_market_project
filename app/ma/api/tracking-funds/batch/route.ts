@@ -4,6 +4,7 @@ import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 import { isCodeLikeProductName, resolveTrackingProductName } from "@/lib/server/tracking-product-name"
+import { upsertTeamBenchmarks } from "@/lib/server/ops-team-benchmarks"
 import {
   addFundToTrackingPool,
   invalidateTrackingPoolListCaches,
@@ -29,6 +30,12 @@ async function ensureFundTagsTable() {
       UNIQUE (beian_hao, tag_name)
     )
   `)
+}
+
+function trimOrNull(value: unknown): string | null {
+  if (value == null) return null
+  const s = String(value).trim()
+  return s ? s : null
 }
 
 async function getProductName(pool: string, bh: string): Promise<string> {
@@ -72,6 +79,8 @@ export async function POST(req: Request) {
     strategy_l1,
     strategy_l2,
     strategy_l3,
+    benchmark,
+    mode,
   } = body as Record<string, unknown>
 
   if (!action || !Array.isArray(beian_haos) || beian_haos.length === 0) {
@@ -113,27 +122,46 @@ export async function POST(req: Request) {
 
       // ── Strategy ──────────────────────────────────────────────────────────
       case "set_strategy": {
-        const ph = ids.map((_, i) => `$${i + 1}`).join(", ")
-        const l1 = strategy_l1 ?? null
-        const l2 = strategy_l2 ?? null
-        const l3 = strategy_l3 ?? null
-        await query(
-          `UPDATE type6_ops_team_full
-           SET company_strategy_one   = $${ids.length + 1},
-               company_strategy_two   = $${ids.length + 2},
-               company_strategy_three = $${ids.length + 3},
-               updated_at = NOW()
-           WHERE register_number IN (${ph})`,
-          [...ids, l1, l2, l3]
-        )
-        await syncCompanyStrategyCaches(
-          ids.map((beian_hao) => ({
-            beian_hao,
-            strategy_l1: l1,
-            strategy_l2: l2,
-            strategy_l3: l3,
-          })),
-        )
+        const writeMode = mode === "benchmark" || mode === "strategy" || mode === "both" ? mode : "strategy"
+        const writeStrategy = writeMode !== "benchmark"
+        const writeBenchmark = writeMode !== "strategy"
+        const l1 = trimOrNull(strategy_l1)
+        const l2 = trimOrNull(strategy_l2)
+        const l3 = trimOrNull(strategy_l3)
+        const bench = trimOrNull(benchmark)
+
+        if (writeStrategy && !l1) {
+          return NextResponse.json({ error: "missing_strategy" }, { status: 400 })
+        }
+        if (writeBenchmark && !bench) {
+          return NextResponse.json({ error: "missing_benchmark" }, { status: 400 })
+        }
+
+        if (writeStrategy) {
+          const ph = ids.map((_, i) => `$${i + 1}`).join(", ")
+          await query(
+            `UPDATE type6_ops_team_full
+             SET company_strategy_one   = $${ids.length + 1},
+                 company_strategy_two   = $${ids.length + 2},
+                 company_strategy_three = $${ids.length + 3},
+                 updated_at = NOW()
+             WHERE register_number IN (${ph})`,
+            [...ids, l1, l2, l3]
+          )
+          await syncCompanyStrategyCaches(
+            ids.map((beian_hao) => ({
+              beian_hao,
+              strategy_l1: l1,
+              strategy_l2: l2,
+              strategy_l3: l3,
+            })),
+          )
+        }
+
+        if (writeBenchmark && bench) {
+          await upsertTeamBenchmarks(ids, bench)
+        }
+
         return NextResponse.json({ ok: true, count: ids.length })
       }
 

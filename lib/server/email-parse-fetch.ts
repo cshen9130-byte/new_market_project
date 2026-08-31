@@ -62,6 +62,13 @@ import {
   type EmailValuationInsert,
 } from "@/lib/server/email-valuation-pg"
 import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
+import { isFundElementSourceFilename } from "@/lib/ma/fund-element-source-file"
+import {
+  enqueueElementExtractFromEmailAttachment,
+  enqueueElementExtractFromEmailZip,
+  isFundElementEmailZip,
+  startEmailElementExtractJobs,
+} from "@/lib/server/email-element-extract"
 import {
   markAccountScanCompleted,
   bootstrapEmailParseCursorIfMissing,
@@ -81,6 +88,8 @@ export type EmailParseFetchResult = {
   valuationHoldingsSaved: number
   /** 确认单/确认函 PDFs saved */
   confirmSaved: number
+  /** 尽调/产品材料 zip 内要素表 queued for 产品要素 extract */
+  elementExtractQueued: number
   /** 估值表 unit NAV copied into ops_email_nav_records */
   custodyValuationNavBackfilled: number
   valuationLatestHoldingsRefreshed: number
@@ -103,7 +112,7 @@ export type EmailParseFetchResult = {
 }
 
 const FUND_EMAIL_RE =
-  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金|确认单|确认函|交易确认|成交确认|申购确认|赎回确认|认购确认|基金成立|产品材料|代表性产品|净值序列|历史净值/u
+  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金|确认单|确认函|交易确认|成交确认|申购确认|赎回确认|认购确认|基金成立|产品材料|代表性产品|代表产品|尽调材料|尽调资料|净值序列|历史净值/u
 
 // ImapFlow defaults (connectionTimeout=90s, greetingTimeout=16s, socketTimeout=300s)
 // let a single slow/unresponsive mail server block this call for minutes per
@@ -232,7 +241,10 @@ function hasValuation(subject: string, attachments: AttachmentInfo[]): boolean {
   if (!/虚拟净值表现估[算值]/u.test(subject) && /估值表|估值/i.test(subject)) return true
   return attachments.some((a) => {
     if (/虚拟净值表现估[算值]/u.test(a.filename)) return false
-    return /估值表|估值|专用表/i.test(a.filename) || /\.zip$/i.test(a.filename)
+    if (/估值表|估值|专用表/i.test(a.filename)) return true
+    // Manager 尽调/产品材料 zips are NAV + 要素 sources, not custody 估值表.
+    if (/\.zip$/i.test(a.filename) && !isNavTableZipFilename(a.filename, subject)) return true
+    return false
   })
 }
 
@@ -281,6 +293,7 @@ type FetchMailboxResult = {
   confirmRecords: EmailConfirmInsert[]
   skippedKnown: number
   downloaded: number
+  elementExtractQueued: number
 }
 
 /** Stable key so IMAP UID reuse (new mail, same uid) is not skipped as "already parsed". */
@@ -419,6 +432,7 @@ async function fetchMailbox(
       confirmRecords: [],
       skippedKnown: 0,
       downloaded: 0,
+      elementExtractQueued: 0,
     }
   }
 
@@ -440,6 +454,7 @@ async function fetchMailbox(
   const confirmRecords: EmailConfirmInsert[] = []
   let skippedKnown = 0
   let downloaded = 0
+  let elementExtractQueued = 0
 
   const folders = getImapFolders(account)
 
@@ -548,11 +563,30 @@ async function fetchMailbox(
         const navKeysFromAttachments = new Set<string>()
         const navDatesFromAttachments = new Set<string>()
         let hasNavTableAttachment = false
+        const queuedElementParts = new Set<string>()
         const attachmentNavKey = (productCode: string | null | undefined, navDate: string) =>
           `${(productCode ?? "").trim().toUpperCase()}|${navDate}`
         for (const att of selectNavTableAttachments(subject, attachments)) {
           try {
             const buf = await downloadPart(client, String(uid), att.part)
+            if (isNavTableZipFilename(att.filename, subject) || isFundElementEmailZip(att.filename, subject)) {
+              try {
+                const elementResult = await enqueueElementExtractFromEmailZip({
+                  buffer: buf,
+                  archiveFilename: att.filename,
+                  uploadedBy: `email:${account.account}`,
+                })
+                elementExtractQueued += elementResult.queued
+                queuedElementParts.add(att.part)
+                for (const err of elementResult.errors) {
+                  errors.push(`${account.account} UID ${uid} element ${err}`)
+                }
+              } catch (e) {
+                errors.push(
+                  `${account.account} UID ${uid} element ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+                )
+              }
+            }
             const payloads: Array<{ storedFilename: string; parseFilename: string; buffer: Buffer }> =
               isNavTableZipFilename(att.filename, subject)
                 ? expandNavTableZipBuffer(buf, att.filename).map((inner) => ({
@@ -596,6 +630,36 @@ async function fetchMailbox(
           } catch (e) {
             errors.push(
               `${account.account} UID ${uid} attachment ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+            )
+          }
+        }
+
+        for (const att of attachments) {
+          if (queuedElementParts.has(att.part)) continue
+          const zipElement = isFundElementEmailZip(att.filename, subject)
+          const looseElement = isFundElementSourceFilename(att.filename)
+          if (!zipElement && !looseElement) continue
+          try {
+            const buf = await downloadPart(client, String(uid), att.part)
+            const elementResult = zipElement
+              ? await enqueueElementExtractFromEmailZip({
+                  buffer: buf,
+                  archiveFilename: att.filename,
+                  uploadedBy: `email:${account.account}`,
+                })
+              : await enqueueElementExtractFromEmailAttachment({
+                  buffer: buf,
+                  filename: att.filename,
+                  uploadedBy: `email:${account.account}`,
+                })
+            elementExtractQueued += elementResult.queued
+            queuedElementParts.add(att.part)
+            for (const err of elementResult.errors) {
+              errors.push(`${account.account} UID ${uid} element ${err}`)
+            }
+          } catch (e) {
+            errors.push(
+              `${account.account} UID ${uid} element ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
             )
           }
         }
@@ -779,7 +843,15 @@ async function fetchMailbox(
     await closeImapFlow(client, { force: Boolean(signal?.aborted) })
   }
 
-  return { parseRecords, navRecords, valuationRecords, confirmRecords, skippedKnown, downloaded }
+  return {
+    parseRecords,
+    navRecords,
+    valuationRecords,
+    confirmRecords,
+    skippedKnown,
+    downloaded,
+    elementExtractQueued,
+  }
 }
 
 export async function fetchEmailParseRecords(options?: {
@@ -837,6 +909,7 @@ export async function fetchEmailParseRecords(options?: {
   let emailsScanned = 0
   let emailsSkippedKnown = 0
   let emailsDownloaded = 0
+  let elementExtractQueued = 0
   // Track every account we attempted so records from un-attempted accounts
   // are preserved even if this run errors out for a particular mailbox.
   const scannedAccounts: string[] = accounts.map((a) => a.account)
@@ -869,11 +942,19 @@ export async function fetchEmailParseRecords(options?: {
       const knownEmailKeys = light
         ? await loadKnownProcessedEmailKeys(account.account)
         : new Set<string>()
-      const { parseRecords, navRecords, valuationRecords, confirmRecords, skippedKnown, downloaded } =
-        await fetchMailbox(account, since, errors, signal, knownEmailKeys)
+      const {
+        parseRecords,
+        navRecords,
+        valuationRecords,
+        confirmRecords,
+        skippedKnown,
+        downloaded,
+        elementExtractQueued: mailboxElements,
+      } = await fetchMailbox(account, since, errors, signal, knownEmailKeys)
       emailsScanned += skippedKnown + downloaded
       emailsSkippedKnown += skippedKnown
       emailsDownloaded += downloaded
+      elementExtractQueued += mailboxElements
       allParseRecords.push(...parseRecords)
       allNavRecords.push(...navRecords)
       allValuationRecords.push(...valuationRecords)
@@ -1022,6 +1103,10 @@ export async function fetchEmailParseRecords(options?: {
     }
   }
 
+  if (elementExtractQueued > 0) {
+    startEmailElementExtractJobs()
+  }
+
   const touchedByCode = new Map<string, { productCode: string; fundName: string }>()
   for (const row of [...allNavRecords, ...allValuationRecords]) {
     const productCode = (row.productCode ?? "").trim().toUpperCase()
@@ -1042,6 +1127,7 @@ export async function fetchEmailParseRecords(options?: {
     valuationSaved,
     valuationHoldingsSaved,
     confirmSaved,
+    elementExtractQueued,
     custodyValuationNavBackfilled,
     valuationLatestHoldingsRefreshed,
     valuationMetricsRefreshed,

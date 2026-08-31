@@ -2,12 +2,29 @@ import fs from "fs"
 import path from "path"
 import nodemailer from "nodemailer"
 import { displayListedName, SLEEVE_LABELS } from "@/lib/all-weather/universe"
+import {
+  ALL_WEATHER_VARIANT_IDS,
+  DEFAULT_ALL_WEATHER_VARIANT_ID,
+  getAllWeatherVariant,
+  parseAllWeatherVariantId,
+  type AllWeatherVariantId,
+} from "@/lib/all-weather/variants"
 import { getOverview, type OverviewPayload, type SleeveView } from "@/lib/server/all-weather-book"
 import { isChinaWeekendOrPublicHoliday, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 
 const DATA_DIR = path.join(process.cwd(), "data", "all-weather")
 const CONFIG_FILE = path.join(DATA_DIR, "email.json")
 const SEND_LOCK_FILE = path.join(DATA_DIR, "email-send.lock")
+
+export type VariantEmailState = {
+  enabled: boolean
+  lastSentDate: string | null
+  lastSentAt: string | null
+  /** Calendar day (YYYYMMDD, Asia/Shanghai) of the last *scheduled* send. */
+  lastScheduledDate: string | null
+  lastError: string | null
+  lastErrorAt: string | null
+}
 
 export type AllWeatherEmailConfig = {
   sender: {
@@ -20,13 +37,23 @@ export type AllWeatherEmailConfig = {
   } | null
   receivers: string[]
   scheduleTime: string
+  /** @deprecated Legacy mirror of the default variant. Prefer `variants`. */
   enabled: boolean
   lastSentDate: string | null
   lastSentAt: string | null
-  /** Calendar day (YYYYMMDD, Asia/Shanghai) of the last *scheduled* send. */
   lastScheduledDate: string | null
   lastError: string | null
   lastErrorAt: string | null
+  variants: Record<AllWeatherVariantId, VariantEmailState>
+}
+
+const DEFAULT_VARIANT_STATE: VariantEmailState = {
+  enabled: false,
+  lastSentDate: null,
+  lastSentAt: null,
+  lastScheduledDate: null,
+  lastError: null,
+  lastErrorAt: null,
 }
 
 const DEFAULT_CONFIG: AllWeatherEmailConfig = {
@@ -39,6 +66,10 @@ const DEFAULT_CONFIG: AllWeatherEmailConfig = {
   lastScheduledDate: null,
   lastError: null,
   lastErrorAt: null,
+  variants: Object.fromEntries(ALL_WEATHER_VARIANT_IDS.map((id) => [id, { ...DEFAULT_VARIANT_STATE }])) as Record<
+    AllWeatherVariantId,
+    VariantEmailState
+  >,
 }
 
 function shanghaiParts(now = new Date()) {
@@ -62,13 +93,89 @@ function shanghaiParts(now = new Date()) {
   }
 }
 
-/** True when auto-send should fire: enabled, trading day, past today's HH:MM (Beijing), and no scheduled send yet today. */
-export function isScheduledSendDue(config: AllWeatherEmailConfig = readEmailConfig(), now = new Date()): boolean {
-  if (!config.enabled) return false
+export function variantEmailState(
+  config: AllWeatherEmailConfig,
+  variantId?: AllWeatherVariantId | null,
+): VariantEmailState {
+  const id = parseAllWeatherVariantId(variantId)
+  return { ...DEFAULT_VARIANT_STATE, ...(config.variants?.[id] ?? {}) }
+}
+
+function withVariantState(
+  config: AllWeatherEmailConfig,
+  variantId: AllWeatherVariantId,
+  patch: Partial<VariantEmailState>,
+): AllWeatherEmailConfig {
+  const nextState = { ...variantEmailState(config, variantId), ...patch }
+  const variants = { ...config.variants, [variantId]: nextState }
+  const def = variants[DEFAULT_ALL_WEATHER_VARIANT_ID] ?? DEFAULT_VARIANT_STATE
+  return {
+    ...config,
+    variants,
+    enabled: def.enabled,
+    lastSentDate: def.lastSentDate,
+    lastSentAt: def.lastSentAt,
+    lastScheduledDate: def.lastScheduledDate,
+    lastError: def.lastError,
+    lastErrorAt: def.lastErrorAt,
+  }
+}
+
+function emptyVariantStates(): Record<AllWeatherVariantId, VariantEmailState> {
+  return Object.fromEntries(ALL_WEATHER_VARIANT_IDS.map((id) => [id, { ...DEFAULT_VARIANT_STATE }])) as Record<
+    AllWeatherVariantId,
+    VariantEmailState
+  >
+}
+
+function normalizeEmailConfig(raw: Partial<AllWeatherEmailConfig> | null | undefined): AllWeatherEmailConfig {
+  const merged: AllWeatherEmailConfig = {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    variants: emptyVariantStates(),
+  }
+  const rawVariants = raw?.variants ?? {}
+  const hasPersistedVariants = Object.keys(rawVariants).length > 0
+  for (const id of ALL_WEATHER_VARIANT_IDS) {
+    const persisted = rawVariants[id]
+    if (persisted) {
+      merged.variants[id] = { ...DEFAULT_VARIANT_STATE, ...persisted }
+      continue
+    }
+    // First load of a pre-variant file: keep the old switch on the default strategy only.
+    if (!hasPersistedVariants && id === DEFAULT_ALL_WEATHER_VARIANT_ID) {
+      merged.variants[id] = {
+        enabled: Boolean(raw?.enabled),
+        lastSentDate: raw?.lastSentDate ?? null,
+        lastSentAt: raw?.lastSentAt ?? null,
+        lastScheduledDate: raw?.lastScheduledDate ?? null,
+        lastError: raw?.lastError ?? null,
+        lastErrorAt: raw?.lastErrorAt ?? null,
+      }
+    }
+  }
+  const def = merged.variants[DEFAULT_ALL_WEATHER_VARIANT_ID]
+  merged.enabled = def.enabled
+  merged.lastSentDate = def.lastSentDate
+  merged.lastSentAt = def.lastSentAt
+  merged.lastScheduledDate = def.lastScheduledDate
+  merged.lastError = def.lastError
+  merged.lastErrorAt = def.lastErrorAt
+  return merged
+}
+
+/** True when auto-send should fire for this strategy: enabled, trading day, past today's HH:MM (Beijing), and no scheduled send yet today. */
+export function isScheduledSendDue(
+  config: AllWeatherEmailConfig = readEmailConfig(),
+  now = new Date(),
+  variantId?: AllWeatherVariantId | null,
+): boolean {
+  const state = variantEmailState(config, variantId)
+  if (!state.enabled) return false
   if (!/^\d{2}:\d{2}$/.test(config.scheduleTime || "")) return false
   if (isChinaWeekendOrPublicHoliday(shanghaiTodayIsoDate(now))) return false
   const { dateKey, hhmm } = shanghaiParts(now)
-  if (config.lastScheduledDate === dateKey) return false
+  if (state.lastScheduledDate === dateKey) return false
   return hhmm >= config.scheduleTime
 }
 
@@ -129,27 +236,38 @@ function releaseSendLock(): void {
 }
 
 export function readEmailConfig(): AllWeatherEmailConfig {
-  if (!fs.existsSync(CONFIG_FILE)) return { ...DEFAULT_CONFIG }
+  if (!fs.existsSync(CONFIG_FILE)) return normalizeEmailConfig(DEFAULT_CONFIG)
   try {
-    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8")) }
+    return normalizeEmailConfig(JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8")) as Partial<AllWeatherEmailConfig>)
   } catch {
-    return { ...DEFAULT_CONFIG }
+    return normalizeEmailConfig(DEFAULT_CONFIG)
   }
 }
 
 export function writeEmailConfig(config: AllWeatherEmailConfig): AllWeatherEmailConfig {
   ensureDir()
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8")
-  return config
+  const next = normalizeEmailConfig(config)
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2), "utf-8")
+  return next
 }
 
-export function publicEmailConfig(config: AllWeatherEmailConfig) {
+export function publicEmailConfig(config: AllWeatherEmailConfig, variantId?: AllWeatherVariantId | null) {
+  const id = parseAllWeatherVariantId(variantId)
+  const state = variantEmailState(config, id)
   return {
-    ...config,
     sender: config.sender
       ? { name: config.sender.name, host: config.sender.host, port: config.sender.port, user: config.sender.user, secure: config.sender.secure }
       : null,
+    receivers: config.receivers,
+    scheduleTime: config.scheduleTime,
     hasPassword: Boolean(config.sender?.pass),
+    variantId: id,
+    enabled: state.enabled,
+    lastSentDate: state.lastSentDate,
+    lastSentAt: state.lastSentAt,
+    lastScheduledDate: state.lastScheduledDate,
+    lastError: state.lastError,
+    lastErrorAt: state.lastErrorAt,
   }
 }
 
@@ -329,6 +447,7 @@ export function buildTradeDetailAttachments(overview: OverviewPayload): Array<{
 }> {
   const { book, sleeves } = overview
   const date = book.asOf
+  const tag = overview.variant?.id ?? DEFAULT_ALL_WEATHER_VARIANT_ID
   const products = [...book.positions].sort((a, b) => a.sleeve.localeCompare(b.sleeve) || b.margin - a.margin)
 
   const tradeRows = products.map((p) => [
@@ -375,7 +494,7 @@ export function buildTradeDetailAttachments(overview: OverviewPayload): Array<{
   const type = "text/csv; charset=utf-8"
   const files = [
     {
-      filename: `allweather_trade_details_${date}.csv`,
+      filename: `allweather_${tag}_trade_details_${date}.csv`,
       contentType: type,
       content: toCsv(
         [
@@ -400,7 +519,7 @@ export function buildTradeDetailAttachments(overview: OverviewPayload): Array<{
       ),
     },
     {
-      filename: `allweather_sleeves_${date}.csv`,
+      filename: `allweather_${tag}_sleeves_${date}.csv`,
       contentType: type,
       content: toCsv(
         ["日期", "袖套", "手数", "名义价值", "保证金", "风险贡献", "当日盈亏", "累计盈亏"],
@@ -408,7 +527,7 @@ export function buildTradeDetailAttachments(overview: OverviewPayload): Array<{
       ),
     },
     {
-      filename: `allweather_daily_pnl_${date}.csv`,
+      filename: `allweather_${tag}_daily_pnl_${date}.csv`,
       contentType: type,
       content: toCsv(
         ["日期", "净值", "当日盈亏", "累计盈亏", "权益盈亏", "债券盈亏", "黄金盈亏", "商品盈亏"],
@@ -419,7 +538,7 @@ export function buildTradeDetailAttachments(overview: OverviewPayload): Array<{
   const rebalance = overview.rebalanceTrades ?? []
   if (overview.isRebalanceDay && rebalance.length) {
     files.push({
-      filename: `allweather_rebalance_${date}.csv`,
+      filename: `allweather_${tag}_rebalance_${date}.csv`,
       contentType: type,
       content: toCsv(
         ["日期", "袖套", "品种", "调前合约", "调后合约", "方向", "调前手数", "调后手数", "变动手数", "价格", "成交名义"],
@@ -481,12 +600,15 @@ export async function sendAllWeatherEmail(opts?: {
   overview?: OverviewPayload
   extraAttachments?: ExtraEmailAttachment[]
   source?: "manual" | "scheduled"
+  variantId?: AllWeatherVariantId | null
 }): Promise<{ messageId: string }> {
+  const variantId = parseAllWeatherVariantId(opts?.variantId ?? opts?.overview?.variant?.id)
   const config = readEmailConfig()
   if (config.receivers.length === 0) throw new Error("请先填写收件邮箱。")
   const smtp = resolveSmtp(config)
-  const overview = opts?.overview ?? (await getOverview(true))
-  const subject = `${overview.isRebalanceDay ? "【调仓】" : ""}全天候策略跟踪 ${overview.book.asOf}  净值 ${overview.book.equity.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`
+  const overview = opts?.overview ?? (await getOverview(true, variantId))
+  const variantLabel = overview.variant?.label ?? getAllWeatherVariant(variantId).label
+  const subject = `${overview.isRebalanceDay ? "【调仓】" : ""}全天候策略跟踪 · ${variantLabel} ${overview.book.asOf}  净值 ${overview.book.equity.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`
   const transporter = nodemailer.createTransport({
     host: smtp.host,
     port: smtp.port,
@@ -508,14 +630,15 @@ export async function sendAllWeatherEmail(opts?: {
   const now = new Date()
   const dateKey = shanghaiParts(now).dateKey
   const latest = readEmailConfig()
-  writeEmailConfig({
-    ...latest,
-    lastSentDate: dateKey,
-    lastSentAt: now.toISOString(),
-    lastScheduledDate: opts?.source === "scheduled" ? dateKey : latest.lastScheduledDate,
-    lastError: null,
-    lastErrorAt: null,
-  })
+  writeEmailConfig(
+    withVariantState(latest, variantId, {
+      lastSentDate: dateKey,
+      lastSentAt: now.toISOString(),
+      lastScheduledDate: opts?.source === "scheduled" ? dateKey : variantEmailState(latest, variantId).lastScheduledDate,
+      lastError: null,
+      lastErrorAt: null,
+    }),
+  )
   return { messageId: String(info.messageId ?? "") }
 }
 
@@ -530,30 +653,43 @@ export async function testSenderConnection(config = readEmailConfig()): Promise<
   await transporter.verify()
 }
 
-export async function runDueAllWeatherEmails(): Promise<{ sent: boolean; error: string | null }> {
-  if (!tryAcquireSendLock()) return { sent: false, error: null }
+export async function runDueAllWeatherEmails(): Promise<{ sent: boolean; error: string | null; sentCount: number }> {
+  if (!tryAcquireSendLock()) return { sent: false, error: null, sentCount: 0 }
   try {
+    const now = new Date()
     const config = readEmailConfig()
-    if (!isScheduledSendDue(config)) return { sent: false, error: null }
-    const dateKey = shanghaiParts().dateKey
-    // Claim the daily slot before SMTP so a concurrent cron/save cannot also send.
-    writeEmailConfig({ ...readEmailConfig(), lastScheduledDate: dateKey })
-    try {
-      await sendAllWeatherEmail({ source: "scheduled" })
-      return { sent: true, error: null }
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
-      console.error("[all-weather-email] scheduled send failed:", e)
-      const latest = readEmailConfig()
-      writeEmailConfig({
-        ...latest,
-        lastScheduledDate:
-          latest.lastScheduledDate === dateKey ? config.lastScheduledDate : latest.lastScheduledDate,
-        lastError: message,
-        lastErrorAt: new Date().toISOString(),
-      })
-      return { sent: false, error: message }
+    const dueIds = ALL_WEATHER_VARIANT_IDS.filter((id) => isScheduledSendDue(config, now, id))
+    if (dueIds.length === 0) return { sent: false, error: null, sentCount: 0 }
+    const dateKey = shanghaiParts(now).dateKey
+    // Claim each due strategy's daily slot before SMTP so a concurrent cron/save cannot also send it.
+    let claimed = readEmailConfig()
+    for (const id of dueIds) {
+      claimed = withVariantState(claimed, id, { lastScheduledDate: dateKey })
     }
+    writeEmailConfig(claimed)
+
+    const errors: string[] = []
+    let sentCount = 0
+    for (const id of dueIds) {
+      try {
+        await sendAllWeatherEmail({ source: "scheduled", variantId: id })
+        sentCount += 1
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        console.error(`[all-weather-email] scheduled send failed (${id}):`, e)
+        const latest = readEmailConfig()
+        const previous = variantEmailState(config, id).lastScheduledDate
+        writeEmailConfig(
+          withVariantState(latest, id, {
+            lastScheduledDate: variantEmailState(latest, id).lastScheduledDate === dateKey ? previous : variantEmailState(latest, id).lastScheduledDate,
+            lastError: message,
+            lastErrorAt: new Date().toISOString(),
+          }),
+        )
+        errors.push(`${getAllWeatherVariant(id).label}: ${message}`)
+      }
+    }
+    return { sent: sentCount > 0, error: errors.length ? errors.join("；") : null, sentCount }
   } finally {
     releaseSendLock()
   }

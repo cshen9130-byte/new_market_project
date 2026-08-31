@@ -1,4 +1,5 @@
 import { allWeatherWatchContracts } from "@/lib/server/all-weather-book"
+import { nhciIndexWatchContracts } from "@/lib/server/nhci-index-book"
 import { proxyCtpMarket } from "@/lib/server/ctp-market-proxy"
 import { requireLoggedIn } from "@/lib/server/require-cshen"
 import { NextResponse } from "next/server"
@@ -12,7 +13,8 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { watcherId?: string; watcher_id?: string; symbols?: string[] }
   const watcherId = String(body.watcherId || body.watcher_id || "").trim()
   if (!watcherId) return NextResponse.json({ error: "missing watcher" }, { status: 400 })
-  const symbols = allWeatherWatchContracts(Array.isArray(body.symbols) ? body.symbols : [])
+  const extra = Array.isArray(body.symbols) ? body.symbols : []
+  const symbols = allWeatherWatchContracts([...extra, ...nhciIndexWatchContracts()])
   return proxyCtpMarket("/api/watch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

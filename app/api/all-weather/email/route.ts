@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { isAllWeatherVariantId, parseAllWeatherVariantId, type AllWeatherVariantId } from "@/lib/all-weather/variants"
 import { requireCshen } from "@/lib/server/require-cshen"
 import {
   publicEmailConfig,
@@ -15,10 +16,23 @@ export const dynamic = "force-dynamic"
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
+function variantFromRaw(raw: unknown): AllWeatherVariantId | null {
+  if (raw == null || raw === "") return parseAllWeatherVariantId(undefined)
+  if (!isAllWeatherVariantId(raw)) return null
+  return raw
+}
+
+function variantFromRequest(req: Request, body?: Record<string, unknown> | null) {
+  const url = new URL(req.url)
+  return variantFromRaw(body?.variant ?? url.searchParams.get("variant"))
+}
+
 export async function GET(req: Request) {
   const user = await requireCshen(req)
   if (!user) return NextResponse.json({ error: "无权限" }, { status: 403 })
-  return NextResponse.json({ ok: true, config: publicEmailConfig(readEmailConfig()) })
+  const variantId = variantFromRequest(req)
+  if (!variantId) return NextResponse.json({ error: "策略版本无效" }, { status: 400 })
+  return NextResponse.json({ ok: true, config: publicEmailConfig(readEmailConfig(), variantId) })
 }
 
 export async function PUT(req: Request) {
@@ -26,6 +40,8 @@ export async function PUT(req: Request) {
   if (!user) return NextResponse.json({ error: "无权限" }, { status: 403 })
   try {
     const body = await req.json()
+    const variantId = variantFromRequest(req, body)
+    if (!variantId) return NextResponse.json({ error: "策略版本无效" }, { status: 400 })
     const current = readEmailConfig()
     const receivers = Array.isArray(body.receivers)
       ? body.receivers.map((s: unknown) => String(s).trim()).filter(Boolean)
@@ -60,12 +76,19 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "发送时间格式应为 HH:MM。" }, { status: 400 })
     }
 
+    const latest = readEmailConfig()
     writeEmailConfig({
-      ...readEmailConfig(),
+      ...latest,
       sender,
       receivers,
       scheduleTime,
-      enabled: Boolean(body.enabled),
+      variants: {
+        ...latest.variants,
+        [variantId]: {
+          ...latest.variants[variantId],
+          enabled: Boolean(body.enabled),
+        },
+      },
     })
 
     // Same locked path as the minute cron: catch up at most once if still due.
@@ -75,7 +98,7 @@ export async function PUT(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      config: publicEmailConfig(readEmailConfig()),
+      config: publicEmailConfig(readEmailConfig(), variantId),
       catchUpSent,
       sendError,
     })
@@ -100,6 +123,8 @@ export async function POST(req: Request) {
     const contentType = req.headers.get("content-type") || ""
     if (contentType.includes("multipart/form-data")) {
       const form = await req.formData()
+      const variantId = variantFromRaw(form.get("variant"))
+      if (!variantId) return NextResponse.json({ error: "策略版本无效" }, { status: 400 })
       if (String(form.get("action") || "send") === "test") {
         await testSenderConnection()
         return NextResponse.json({ ok: true })
@@ -121,17 +146,19 @@ export async function POST(req: Request) {
           contentType: item.type || "application/octet-stream",
         })
       }
-      const result = await sendAllWeatherEmail({ extraAttachments: extras })
-      return NextResponse.json({ ok: true, ...result, config: publicEmailConfig(readEmailConfig()) })
+      const result = await sendAllWeatherEmail({ extraAttachments: extras, variantId })
+      return NextResponse.json({ ok: true, ...result, config: publicEmailConfig(readEmailConfig(), variantId) })
     }
 
     const body = await req.json().catch(() => ({}))
+    const variantId = variantFromRequest(req, body)
+    if (!variantId) return NextResponse.json({ error: "策略版本无效" }, { status: 400 })
     if (body?.action === "test") {
       await testSenderConnection()
       return NextResponse.json({ ok: true })
     }
-    const result = await sendAllWeatherEmail()
-    return NextResponse.json({ ok: true, ...result, config: publicEmailConfig(readEmailConfig()) })
+    const result = await sendAllWeatherEmail({ variantId })
+    return NextResponse.json({ ok: true, ...result, config: publicEmailConfig(readEmailConfig(), variantId) })
   } catch (e) {
     const message = e instanceof Error ? e.message : "发送失败"
     return NextResponse.json({ error: message }, { status: 500 })

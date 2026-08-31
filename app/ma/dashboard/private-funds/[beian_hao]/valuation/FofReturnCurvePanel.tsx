@@ -36,6 +36,7 @@ function benchmarkKeyFromFilter(label: string | undefined): string | null {
   if (label.includes("中证500")) return "IC"
   if (label.includes("中证1000")) return "IM"
   if (label.includes("上证50")) return "IH"
+  if (label.includes("中证商品")) return "100001.CCI"
   if (label.includes("南华商品")) return "NHCI.NH"
   if (label.includes("国债")) return "511010.SH"
   if (label.includes("黄金")) return "518880.SH"

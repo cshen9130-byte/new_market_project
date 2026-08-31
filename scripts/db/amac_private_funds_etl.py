@@ -180,6 +180,29 @@ WHERE NOT EXISTS (
 ON CONFLICT (beian_hao) DO NOTHING
 """
 
+# Replace abbreviated manager spellings (上海量派投资) with the AMAC legal name
+# when the stored value is a prefix of the official name. Do not overwrite
+# multi-advisor FOF strings or unrelated manual edits.
+SYNC_PRIVATE_FUND_INFO_MANAGER_SQL = """
+UPDATE private_fund_info i
+SET manager = a.manager_name
+FROM amac_private_funds a
+WHERE a.fund_no = i.beian_hao
+  AND i.manager IS DISTINCT FROM a.manager_name
+  AND COALESCE(BTRIM(a.manager_name), '') <> ''
+  AND a.manager_name NOT LIKE '%；%'
+  AND a.manager_name NOT LIKE '%;%'
+  AND (
+    COALESCE(BTRIM(i.manager), '') = ''
+    OR (
+      i.manager NOT LIKE '%；%'
+      AND i.manager NOT LIKE '%;%'
+      AND LENGTH(BTRIM(i.manager)) >= 6
+      AND a.manager_name LIKE BTRIM(i.manager) || '%'
+    )
+  )
+"""
+
 
 def _rows_to_tuples(rows: list[dict]) -> list[tuple]:
     out = []
@@ -298,6 +321,7 @@ def run_etl(
     full_sync = False
     db_after = 0
     private_fund_info_inserted = 0
+    private_fund_info_manager_updated = 0
     mode = "incremental"
     db_count = 0
 
@@ -346,6 +370,7 @@ def run_etl(
                     total_elements = int((first_meta or {}).get("total_elements", 0) or 0)
                     db_after = db_count
                     private_fund_info_inserted = 0
+                    private_fund_info_manager_updated = 0
                 else:
                     incremental_pages_limit = pages_limit
                     for page_idx, rows, meta in iter_fund_pages(
@@ -401,11 +426,14 @@ def run_etl(
                     )
 
                     private_fund_info_inserted = 0
+                    private_fund_info_manager_updated = 0
                     if sync_private_fund_info:
                         cur.execute("SELECT to_regclass('public.private_fund_info')")
                         if cur.fetchone()[0] is not None:
                             cur.execute(INSERT_PRIVATE_FUND_INFO_SQL)
                             private_fund_info_inserted = cur.rowcount
+                            cur.execute(SYNC_PRIVATE_FUND_INFO_MANAGER_SQL)
+                            private_fund_info_manager_updated = cur.rowcount
     finally:
         try:
             release_advisory_lock(conn, AMAC_LIST_LOCK_KEY)
@@ -423,12 +451,14 @@ def run_etl(
         "db_count_before": db_count,
         "db_count_after": db_after,
         "private_fund_info_inserted": private_fund_info_inserted,
+        "private_fund_info_manager_updated": private_fund_info_manager_updated,
         "dry_run": dry_run,
     }
     print(json.dumps(summary, ensure_ascii=False))
     print(
         f"Done. mode={mode} pages={pages_fetched} upserted={rows_upserted:,} "
-        f"db={db_count:,}->{db_after:,} private_fund_info+={private_fund_info_inserted:,}"
+        f"db={db_count:,}->{db_after:,} private_fund_info+={private_fund_info_inserted:,} "
+        f"manager_updated={private_fund_info_manager_updated:,}"
     )
     return summary
 

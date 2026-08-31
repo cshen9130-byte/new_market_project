@@ -18,7 +18,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const isAdminRoute =
       pathname === "/dashboard/admin" ||
       pathname === "/dashboard/db-explorer" ||
-      pathname === "/dashboard/all-weather"
+      pathname === "/dashboard/all-weather" ||
+      pathname === "/dashboard/nhci-index"
     if (!current && !isAdminRoute) {
       router.replace("/login")
     }

@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import {
+  applyCanonicalManagerNames,
+  expandManagerFilterNames,
+  mapCanonicalManagerNames,
+} from "@/lib/server/manager-name-canonical"
 import { enrichPrivateFundListMetrics } from "@/lib/server/private-fund-list-metrics"
 
 export const runtime = "nodejs"
@@ -238,8 +243,9 @@ export async function GET(req: Request) {
     where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
   }
   if (manager) {
-    filterParams.push(manager)
-    where.push(`i.manager = $${filterParams.length}`)
+    const aliases = await expandManagerFilterNames(manager)
+    filterParams.push(aliases.length > 0 ? aliases : [manager])
+    where.push(`i.manager = ANY($${filterParams.length})`)
   }
   if (inceptionPeriod && inceptionPeriod !== "不限" && inceptionPeriod !== "自定义") {
     const INCEPTION_SQL: Record<string, string> = {
@@ -453,6 +459,8 @@ export async function GET(req: Request) {
       payload = await fetchList(false)
     }
     payload.data = await enrichPrivateFundListMetrics(payload.data, cutoffDate)
+    const canonicalMap = await mapCanonicalManagerNames(payload.data.map((row) => row.manager))
+    payload.data = applyCanonicalManagerNames(payload.data, canonicalMap)
     return NextResponse.json(payload)
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to load private funds"

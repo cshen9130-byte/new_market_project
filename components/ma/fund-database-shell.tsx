@@ -2,6 +2,7 @@
 
 import type React from "react"
 import { Database } from "lucide-react"
+import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 
 const menuItems = [
   { key: "market", label: "市场" },
@@ -43,22 +44,25 @@ export function FundDatabaseShell({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-50">
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
-        <nav className="flex items-center gap-1 px-6 h-12">
-          {menuItems.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => item.key !== "funds" && onNavigate(item.key)}
-              className={[
-                "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
-                item.key === "funds"
-                  ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
-                  : "text-muted-foreground hover:text-foreground",
-              ].join(" ")}
-            >
-              {item.label}
-            </button>
-          ))}
+        <nav className="flex items-center gap-3 px-6 h-12">
+          <div className="flex items-center gap-1 h-full min-w-0 flex-1 overflow-x-auto">
+            {menuItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => item.key !== "funds" && onNavigate(item.key)}
+                className={[
+                  "relative shrink-0 px-4 h-full text-sm font-medium transition-colors focus:outline-none",
+                  item.key === "funds"
+                    ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
+                    : "text-muted-foreground hover:text-foreground",
+                ].join(" ")}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <HeaderGlobalSearch />
         </nav>
       </div>
       <div className="flex flex-1 min-h-0">

@@ -1,4 +1,8 @@
 import { fmtIso, n, query } from "@/lib/db"
+import {
+  CCIDX_COMMODITY_INDEX_LABEL,
+  loadCcidxCommodityIndexPrices,
+} from "@/lib/server/ccidx-commodity-index"
 
 export const FOF_WEEKLY_BENCHMARKS = {
   IF: { label: "沪深300", source: "spot", symbol: "IF" },
@@ -11,6 +15,7 @@ export const FOF_WEEKLY_BENCHMARKS = {
   "518880.SH": { label: "黄金ETF", source: "etf", ticker: "518880.SH" },
   "510300.SH": { label: "沪深300ETF", source: "etf", ticker: "510300.SH" },
   "NHCI.NH": { label: "南华商品指数", source: "nanhua", code: "NHCI.NH" },
+  "100001.CCI": { label: CCIDX_COMMODITY_INDEX_LABEL, source: "ccidx" },
 } as const
 
 export type FofWeeklyBenchmarkKey = keyof typeof FOF_WEEKLY_BENCHMARKS
@@ -83,6 +88,12 @@ export async function loadFofWeeklyBenchmarkPrices(
       const value = n(row.value)
       if (value != null) out.set(fmtIso(row.trade_date), value)
     }
+    return out
+  }
+
+  if (meta.source === "ccidx") {
+    const rows = await loadCcidxCommodityIndexPrices(from, to)
+    for (const row of rows) out.set(row.date, row.value)
     return out
   }
 

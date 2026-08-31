@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { mapCanonicalManagerNames } from "@/lib/server/manager-name-canonical"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -18,10 +19,22 @@ export async function GET(req: Request) {
        WHERE TRIM(manager) <> ''
          AND manager ILIKE $1
        ORDER BY manager_name ASC
-       LIMIT 20`,
+       LIMIT 40`,
       [`${q}%`],
     )
-    return NextResponse.json(rows.map((r) => r.manager_name).filter(Boolean))
+    const canonicalMap = await mapCanonicalManagerNames(rows.map((r) => r.manager_name))
+    const seen = new Set<string>()
+    const names: string[] = []
+    for (const row of rows) {
+      const raw = row.manager_name?.trim()
+      if (!raw) continue
+      const name = canonicalMap.get(raw) ?? raw
+      if (seen.has(name)) continue
+      seen.add(name)
+      names.push(name)
+      if (names.length >= 20) break
+    }
+    return NextResponse.json(names)
   } catch (err) {
     console.error("[private-funds/managers/search]", err)
     return NextResponse.json({ error: "db_error" }, { status: 500 })

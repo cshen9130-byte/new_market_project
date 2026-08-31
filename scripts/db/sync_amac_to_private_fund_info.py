@@ -73,6 +73,26 @@ WHERE NOT EXISTS (
 )
 """
 
+SYNC_MANAGER_SQL = """
+UPDATE private_fund_info i
+SET manager = a.manager_name
+FROM amac_private_funds a
+WHERE a.fund_no = i.beian_hao
+  AND i.manager IS DISTINCT FROM a.manager_name
+  AND COALESCE(BTRIM(a.manager_name), '') <> ''
+  AND a.manager_name NOT LIKE '%；%'
+  AND a.manager_name NOT LIKE '%;%'
+  AND (
+    COALESCE(BTRIM(i.manager), '') = ''
+    OR (
+      i.manager NOT LIKE '%；%'
+      AND i.manager NOT LIKE '%;%'
+      AND LENGTH(BTRIM(i.manager)) >= 6
+      AND a.manager_name LIKE BTRIM(i.manager) || '%'
+    )
+  )
+"""
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync AMAC funds into private_fund_info.")
@@ -111,20 +131,24 @@ def main() -> None:
             print(f"Candidates to add:  {candidates:,}")
 
             if args.dry_run:
-                print("Dry run — no rows inserted.")
+                print("Dry run — no rows written.")
                 return
 
-            if candidates == 0:
-                print("Nothing to insert.")
-                return
+            inserted = 0
+            if candidates > 0:
+                cur.execute(INSERT_SQL)
+                inserted = cur.rowcount
 
-            cur.execute(INSERT_SQL)
-            inserted = cur.rowcount
+            cur.execute(SYNC_MANAGER_SQL)
+            manager_updated = cur.rowcount
             cur.execute("SELECT COUNT(*) FROM private_fund_info")
             info_after = cur.fetchone()[0]
 
     conn.close()
-    print(f"Inserted {inserted:,} new funds into private_fund_info ({info_after:,} rows total).")
+    print(
+        f"Inserted {inserted:,} new funds into private_fund_info "
+        f"({info_after:,} rows total); updated {manager_updated:,} abbreviated manager names."
+    )
 
 
 if __name__ == "__main__":

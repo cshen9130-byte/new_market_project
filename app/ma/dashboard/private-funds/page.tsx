@@ -12,6 +12,7 @@ import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { ManagerSearchInput, ProductKeywordSearchInput } from "@/components/ma/private-fund-filter-search"
+import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { CopyableInlineText, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -43,6 +44,9 @@ import {
   writeProductFieldConfig,
 } from "@/lib/ma/product-field-config"
 import { ProductElementsDialogContent } from "./components/ProductElementsDialogContent"
+import { BatchAddStrategyDialog, TEAM_BENCHMARK_OPTIONS } from "./components/BatchAddStrategyDialog"
+import { StrategyL3MultiSelect } from "./components/StrategyL3MultiSelect"
+import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
 import { ProductFieldConfigDialog } from "./components/ProductFieldConfigDialog"
 import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./components/product-field-config-table"
 import {
@@ -1774,7 +1778,8 @@ function formatStrategyTagLabel(
   l2?: string | null,
   l3?: string | null,
 ): string {
-  return [l1, l2, l3].map((v) => (v || "").trim()).filter(Boolean).join(" · ")
+  const l3Label = parseStrategyLevel3(l3 ?? "").join("、")
+  return [l1, l2, l3Label].map((v) => (v || "").trim()).filter(Boolean).join(" · ")
 }
 
 function TrackPctCell({ value }: { value: string | null }) {
@@ -1995,16 +2000,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [editPersonalTagOptions, setEditPersonalTagOptions] = useState<string[]>([])
   const [editPersonalTagSaving, setEditPersonalTagSaving] = useState(false)
   const [showBatchStrategyDialog, setShowBatchStrategyDialog] = useState(false)
-  const [batchStrategyL1, setBatchStrategyL1] = useState("")
-  const [batchStrategyL2, setBatchStrategyL2] = useState("")
-  const [batchStrategyL3, setBatchStrategyL3] = useState("")
   // Single-fund strategy edit dialog
   const [showEditStrategyDialog, setShowEditStrategyDialog] = useState(false)
   const [editStrategyBeianHao, setEditStrategyBeianHao] = useState<string | null>(null)
   const [editStrategyName, setEditStrategyName] = useState("")
   const [editStrategyL1, setEditStrategyL1] = useState("")
   const [editStrategyL2, setEditStrategyL2] = useState("")
-  const [editStrategyL3, setEditStrategyL3] = useState("")
+  const [editStrategyL3, setEditStrategyL3] = useState<string[]>([])
   const [editStrategySaving, setEditStrategySaving] = useState(false)
   // Note dialog
   const [showNoteDialog, setShowNoteDialog] = useState(false)
@@ -2505,14 +2507,18 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     setEditStrategyName(product_name)
     setEditStrategyL1("")
     setEditStrategyL2("")
-    setEditStrategyL3("")
+    setEditStrategyL3([])
     setShowEditStrategyDialog(true)
     try {
       const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
-      if (d?.strategy_l1) setEditStrategyL1(d.strategy_l1)
-      if (d?.strategy_l2) setEditStrategyL2(d.strategy_l2)
-      if (d?.strategy_l3) setEditStrategyL3(d.strategy_l3)
+      const hasTeam = Boolean(d?.strategy_l1 || d?.strategy_l2 || d?.strategy_l3)
+      const l1 = hasTeam ? (d.strategy_l1 || "") : (d?.platform_l1 || "")
+      const l2 = hasTeam ? (d.strategy_l2 || "") : (d?.platform_l2 || "")
+      const l3 = hasTeam ? (d.strategy_l3 || "") : (d?.platform_l3 || "")
+      if (l1) setEditStrategyL1(l1)
+      if (l2) setEditStrategyL2(l2)
+      if (l3) setEditStrategyL3(parseStrategyLevel3(l3))
     } catch { /* ignore */ }
   }
 
@@ -3210,7 +3216,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <div className="fixed inset-0 z-30" onClick={() => setShowTeamBatchMenu(false)} />
                     <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
                       <button onClick={() => openBatchPoolChangeDialog(() => setShowTeamBatchMenu(false))} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">变更产品池</button>
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
@@ -3332,7 +3338,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <div className="fixed inset-0 z-30" onClick={() => setShowTeamBatchMenu(false)} />
                     <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
                       <button onClick={() => openBatchPoolChangeDialog(() => setShowTeamBatchMenu(false))} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">变更产品池</button>
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
@@ -3925,7 +3931,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <div className="fixed inset-0 z-30" onClick={() => setShowMineBatchMenu(false)} />
                     <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
-                      <button onClick={() => { setShowMineBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
+                      <button onClick={() => { setShowMineBatchMenu(false); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
                       <button onClick={() => openBatchPoolChangeDialog(() => setShowMineBatchMenu(false))} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">变更产品池</button>
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
@@ -4420,7 +4426,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <div className="relative flex-1">
                     <select
                       value={editStrategyL1}
-                      onChange={(e) => { setEditStrategyL1(e.target.value); setEditStrategyL2(""); setEditStrategyL3("") }}
+                      onChange={(e) => { setEditStrategyL1(e.target.value); setEditStrategyL2(""); setEditStrategyL3([]) }}
                       className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300">
                       <option value="">请选择一级策略</option>
                       {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
@@ -4434,7 +4440,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <div className="relative flex-1">
                     <select
                       value={editStrategyL2}
-                      onChange={(e) => { setEditStrategyL2(e.target.value); setEditStrategyL3("") }}
+                      onChange={(e) => { setEditStrategyL2(e.target.value); setEditStrategyL3([]) }}
                       disabled={editL2Opts.length === 0}
                       className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
                       <option value="">{editStrategyL1 ? "请选择二级策略" : "请先选择一级策略"}</option>
@@ -4444,18 +4450,16 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   </div>
                 </div>
                 {/* 三级策略 */}
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
-                  <div className="relative flex-1">
-                    <select
+                <div className="flex items-start gap-3">
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap pt-2">三级策略：</span>
+                  <div className="flex-1">
+                    <StrategyL3MultiSelect
                       value={editStrategyL3}
-                      onChange={(e) => setEditStrategyL3(e.target.value)}
+                      onChange={setEditStrategyL3}
+                      options={editL3Opts}
+                      placeholder={editStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}
                       disabled={editL3Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
-                      <option value="">{editStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}</option>
-                      {editL3Opts.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                    />
                   </div>
                 </div>
               </div>
@@ -4474,7 +4478,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         body: JSON.stringify({
                           strategy_l1: editStrategyL1 || null,
                           strategy_l2: editStrategyL2 || null,
-                          strategy_l3: editStrategyL3 || null,
+                          strategy_l3: editStrategyL3.length ? editStrategyL3.join(",") : null,
                           product_name: editStrategyName || null,
                         }),
                       })
@@ -4498,88 +4502,16 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         )
       })()}
 
-      {/* Batch add strategy dialog */}
-      {showBatchStrategyDialog && (() => {
-        const batchL2Opts = batchStrategyL1 ? (strategyHierarchy.find((n) => n.l1 === batchStrategyL1)?.l2s ?? []) : []
-        const batchL3Opts = batchStrategyL2 ? (batchL2Opts.find((n) => n.l2 === batchStrategyL2)?.l3s ?? []) : []
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowBatchStrategyDialog(false)}>
-            <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
-                <span className="font-semibold text-base">批量添加策略</span>
-                <button onClick={() => setShowBatchStrategyDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
-              </div>
-              <div className="px-6 py-5 flex flex-col gap-4">
-                <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-                  对已选产品批量添加团队策略，策略团队内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
-                </div>
-                {/* 一级策略 */}
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">
-                    <span className="text-red-500 mr-0.5">*</span>一级策略：
-                  </span>
-                  <div className="relative flex-1">
-                    <select
-                      value={batchStrategyL1}
-                      onChange={(e) => { setBatchStrategyL1(e.target.value); setBatchStrategyL2(""); setBatchStrategyL3("") }}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300">
-                      <option value="">请选择一级策略</option>
-                      {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-                {/* 二级策略 */}
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">二级策略：</span>
-                  <div className="relative flex-1">
-                    <select
-                      value={batchStrategyL2}
-                      onChange={(e) => { setBatchStrategyL2(e.target.value); setBatchStrategyL3("") }}
-                      disabled={batchL2Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
-                      <option value="">请选择二级策略</option>
-                      {batchL2Opts.map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-                {/* 三级策略 */}
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
-                  <div className="relative flex-1">
-                    <select
-                      value={batchStrategyL3}
-                      onChange={(e) => setBatchStrategyL3(e.target.value)}
-                      disabled={batchL3Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
-                      <option value="">请选择三级策略</option>
-                      {batchL3Opts.map((v) => <option key={v} value={v}>{v}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
-                <button onClick={() => setShowBatchStrategyDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
-                <button
-                  disabled={!batchStrategyL1 || batchSubmitting}
-                  onClick={async () => {
-                    await handleBatchOp("set_strategy", {
-                      strategy_l1: batchStrategyL1 || null,
-                      strategy_l2: batchStrategyL2 || null,
-                      strategy_l3: batchStrategyL3 || null,
-                    })
-                    setShowBatchStrategyDialog(false)
-                  }}
-                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                  {batchSubmitting ? "处理中…" : "确 定"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
+      <BatchAddStrategyDialog
+        open={showBatchStrategyDialog}
+        strategyHierarchy={strategyHierarchy}
+        submitting={batchSubmitting}
+        onClose={() => setShowBatchStrategyDialog(false)}
+        onConfirm={async (payload) => {
+          await handleBatchOp("set_strategy", payload)
+          setShowBatchStrategyDialog(false)
+        }}
+      />
 
       {/* ── 个人编辑产品标签 Dialog ── */}
       {showPersonalEditTagDialog && (
@@ -9123,6 +9055,7 @@ interface OpsFundElementsData {
   company_l2: string | null
   company_l3: string | null
   benchmark: string | null
+  team_benchmark: string | null
   open_day: string | null
   is_temporary_open: string | null
   fee_purchase: string | null
@@ -9153,7 +9086,7 @@ const OPS_ELEMENTS_TABS: { key: OpsElementsTab; label: string }[] = [
   { key: "team", label: "团队策略" },
 ]
 
-const OPS_BENCHMARK_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数"]
+const OPS_BENCHMARK_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数", "中证商品指数"]
 
 const DEFAULT_PERF_GRADIENTS: PerfFeeGradient[] = [
   { fromPct: "0", toPct: "6", ratePct: "0" },
@@ -9245,6 +9178,7 @@ function OpsEditElementsDialog({
   const [teamL1, setTeamL1] = useState("")
   const [teamL2, setTeamL2] = useState("")
   const [teamL3s, setTeamL3s] = useState<string[]>([])
+  const [teamBenchmark, setTeamBenchmark] = useState("")
 
   const [openDay, setOpenDay] = useState("")
   const [feePurchase, setFeePurchase] = useState("")
@@ -9275,6 +9209,7 @@ function OpsEditElementsDialog({
     setInceptionDate("")
     setOperationDate("")
     setFilingDate("")
+    setTeamBenchmark("")
     setLoading(true)
     const productQuery = product_name.trim()
       ? `&product_name=${encodeURIComponent(product_name.trim())}`
@@ -9300,17 +9235,24 @@ function OpsEditElementsDialog({
         setOperationDate(toIsoDateInputValue(d.operation_date))
         setFilingDate(toIsoDateInputValue(d.puton_date))
         setCustodian(d.custodian ?? "")
-        setPlatformL1(d.platform_l1 ?? "")
-        setPlatformL2(d.platform_l2 ?? "")
-        setPlatformL3s(d.platform_l3 ? d.platform_l3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
+        const resolvedPlatformL1 = d.platform_l1 || companyStrategy?.platform_l1 || ""
+        const resolvedPlatformL2 = d.platform_l2 || companyStrategy?.platform_l2 || ""
+        const resolvedPlatformL3 = d.platform_l3 || companyStrategy?.platform_l3 || ""
+        setPlatformL1(resolvedPlatformL1)
+        setPlatformL2(resolvedPlatformL2)
+        setPlatformL3s(resolvedPlatformL3 ? resolvedPlatformL3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
         setBenchmark(d.benchmark ?? "")
-        // Prefer dedicated strategy endpoint so 运维编辑要素 stays aligned with table/detail editors.
-        const companyL1 = companyStrategy?.strategy_l1 ?? d.company_l1 ?? ""
-        const companyL2 = companyStrategy?.strategy_l2 ?? d.company_l2 ?? ""
-        const companyL3 = companyStrategy?.strategy_l3 ?? d.company_l3 ?? ""
+        const apiTeamL1 = companyStrategy?.strategy_l1 ?? d.company_l1 ?? ""
+        const apiTeamL2 = companyStrategy?.strategy_l2 ?? d.company_l2 ?? ""
+        const apiTeamL3 = companyStrategy?.strategy_l3 ?? d.company_l3 ?? ""
+        const hasTeam = Boolean(apiTeamL1 || apiTeamL2 || apiTeamL3)
+        const companyL1 = hasTeam ? apiTeamL1 : resolvedPlatformL1
+        const companyL2 = hasTeam ? apiTeamL2 : resolvedPlatformL2
+        const companyL3 = hasTeam ? apiTeamL3 : resolvedPlatformL3
         setTeamL1(companyL1)
         setTeamL2(companyL2)
         setTeamL3s(companyL3 ? String(companyL3).split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
+        setTeamBenchmark(d.team_benchmark ?? "")
         setOpenDay(d.open_day ?? "")
         setFeePurchase(d.fee_purchase ?? "")
         setFeeRedeem(d.fee_redeem ?? "")
@@ -9420,6 +9362,7 @@ function OpsEditElementsDialog({
           fee_pay: feePayDesc || null,
           fee_pay_mode: perfFeeMode,
           fee_pay_gradients: perfGradients,
+          team_benchmark: teamBenchmark || null,
         }),
       })
       if (!elementsRes.ok) {
@@ -9787,6 +9730,20 @@ function OpsEditElementsDialog({
             <div className="space-y-4">
               <OpsElementsNotice>团队策略的新增、编辑在【运维-数据维护-团队策略】中。</OpsElementsNotice>
               {renderStrategySelectors(teamTree, teamL1, setTeamL1, teamL2, setTeamL2, teamL3s, setTeamL3s)}
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>团队基准：</OpsElementsFieldLabel>
+                <select
+                  value={teamBenchmark}
+                  onChange={(e) => setTeamBenchmark(e.target.value)}
+                  className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="">请选择团队基准</option>
+                  {TEAM_BENCHMARK_OPTIONS.map((b) => <option key={b} value={b}>{b}</option>)}
+                  {teamBenchmark && !TEAM_BENCHMARK_OPTIONS.includes(teamBenchmark) && (
+                    <option value={teamBenchmark}>{teamBenchmark}</option>
+                  )}
+                </select>
+              </div>
             </div>
           )}
         </div>
@@ -14566,9 +14523,6 @@ function OperationsTeamDataView() {
   const [teamDataBatchTagSelected, setTeamDataBatchTagSelected] = useState<string[]>([])
   const [teamDataBatchTagTeamTags, setTeamDataBatchTagTeamTags] = useState<string[]>([])
   const [showTeamDataBatchStrategyDialog, setShowTeamDataBatchStrategyDialog] = useState(false)
-  const [teamDataBatchStrategyL1, setTeamDataBatchStrategyL1] = useState("")
-  const [teamDataBatchStrategyL2, setTeamDataBatchStrategyL2] = useState("")
-  const [teamDataBatchStrategyL3, setTeamDataBatchStrategyL3] = useState("")
   const [showTeamDataBatchConfirmDialog, setShowTeamDataBatchConfirmDialog] = useState(false)
   const [teamDataBatchConfirmTitle, setTeamDataBatchConfirmTitle] = useState("")
   const [teamDataBatchConfirmMessage, setTeamDataBatchConfirmMessage] = useState("")
@@ -15309,9 +15263,6 @@ function OperationsTeamDataView() {
                   type="button"
                   onClick={() => {
                     setShowTeamDataBatchMenu(false)
-                    setTeamDataBatchStrategyL1("")
-                    setTeamDataBatchStrategyL2("")
-                    setTeamDataBatchStrategyL3("")
                     setShowTeamDataBatchStrategyDialog(true)
                   }}
                   className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
@@ -15696,89 +15647,16 @@ function OperationsTeamDataView() {
         </div>
       )}
 
-      {showTeamDataBatchStrategyDialog && (() => {
-        const batchL2Opts = teamDataBatchStrategyL1 ? (strategyHierarchy.find((n) => n.l1 === teamDataBatchStrategyL1)?.l2s ?? []) : []
-        const batchL3Opts = teamDataBatchStrategyL2 ? (batchL2Opts.find((n) => n.l2 === teamDataBatchStrategyL2)?.l3s ?? []) : []
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowTeamDataBatchStrategyDialog(false)}>
-            <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
-                <span className="font-semibold text-base">批量添加策略</span>
-                <button type="button" onClick={() => setShowTeamDataBatchStrategyDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
-              </div>
-              <div className="px-6 py-5 flex flex-col gap-4">
-                <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-                  对已选产品批量添加团队策略，策略团队内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-[5.5rem] text-right whitespace-nowrap">
-                    <span className="text-red-500 mr-0.5">*</span>一级策略：
-                  </span>
-                  <div className="relative flex-1">
-                    <select
-                      value={teamDataBatchStrategyL1}
-                      onChange={(e) => { setTeamDataBatchStrategyL1(e.target.value); setTeamDataBatchStrategyL2(""); setTeamDataBatchStrategyL3("") }}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300"
-                    >
-                      <option value="">请选择一级策略</option>
-                      {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-[5.5rem] text-right whitespace-nowrap">二级策略：</span>
-                  <div className="relative flex-1">
-                    <select
-                      value={teamDataBatchStrategyL2}
-                      onChange={(e) => { setTeamDataBatchStrategyL2(e.target.value); setTeamDataBatchStrategyL3("") }}
-                      disabled={batchL2Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50"
-                    >
-                      <option value="">请选择二级策略</option>
-                      {batchL2Opts.map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-[5.5rem] text-right whitespace-nowrap">三级策略：</span>
-                  <div className="relative flex-1">
-                    <select
-                      value={teamDataBatchStrategyL3}
-                      onChange={(e) => setTeamDataBatchStrategyL3(e.target.value)}
-                      disabled={batchL3Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50"
-                    >
-                      <option value="">请选择三级策略</option>
-                      {batchL3Opts.map((v) => <option key={v} value={v}>{v}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
-                <button type="button" onClick={() => setShowTeamDataBatchStrategyDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
-                <button
-                  type="button"
-                  disabled={!teamDataBatchStrategyL1 || teamDataBatchSubmitting}
-                  onClick={async () => {
-                    await handleTeamDataBatchOp("set_strategy", {
-                      strategy_l1: teamDataBatchStrategyL1 || null,
-                      strategy_l2: teamDataBatchStrategyL2 || null,
-                      strategy_l3: teamDataBatchStrategyL3 || null,
-                    })
-                    setShowTeamDataBatchStrategyDialog(false)
-                  }}
-                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {teamDataBatchSubmitting ? "处理中…" : "确 定"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
+      <BatchAddStrategyDialog
+        open={showTeamDataBatchStrategyDialog}
+        strategyHierarchy={strategyHierarchy}
+        submitting={teamDataBatchSubmitting}
+        onClose={() => setShowTeamDataBatchStrategyDialog(false)}
+        onConfirm={async (payload) => {
+          await handleTeamDataBatchOp("set_strategy", payload)
+          setShowTeamDataBatchStrategyDialog(false)
+        }}
+      />
 
       {showTeamDataBatchTrackingDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowTeamDataBatchTrackingDialog(false)}>
@@ -17545,7 +17423,7 @@ function InvestmentManagedProductsView() {
   const [invStrategyName, setInvStrategyName] = useState("")
   const [invStrategyL1, setInvStrategyL1] = useState("")
   const [invStrategyL2, setInvStrategyL2] = useState("")
-  const [invStrategyL3, setInvStrategyL3] = useState("")
+  const [invStrategyL3, setInvStrategyL3] = useState<string[]>([])
   const [invStrategySaving, setInvStrategySaving] = useState(false)
   const [showInvNoteDialog, setShowInvNoteDialog] = useState(false)
   const [invNoteBeianHao, setInvNoteBeianHao] = useState<string | null>(null)
@@ -17557,9 +17435,6 @@ function InvestmentManagedProductsView() {
   const [invBatchTagSelected, setInvBatchTagSelected] = useState<string[]>([])
   const [invBatchTagTeamTags, setInvBatchTagTeamTags] = useState<string[]>([])
   const [showInvBatchStrategyDialog, setShowInvBatchStrategyDialog] = useState(false)
-  const [invBatchStrategyL1, setInvBatchStrategyL1] = useState("")
-  const [invBatchStrategyL2, setInvBatchStrategyL2] = useState("")
-  const [invBatchStrategyL3, setInvBatchStrategyL3] = useState("")
   const [showInvBatchConfirmDialog, setShowInvBatchConfirmDialog] = useState(false)
   const [invBatchConfirmTitle, setInvBatchConfirmTitle] = useState("")
   const [invBatchConfirmMessage, setInvBatchConfirmMessage] = useState("")
@@ -17691,14 +17566,18 @@ function InvestmentManagedProductsView() {
     setInvStrategyName(product_name)
     setInvStrategyL1("")
     setInvStrategyL2("")
-    setInvStrategyL3("")
+    setInvStrategyL3([])
     setShowInvStrategyDialog(true)
     try {
       const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
-      if (d?.strategy_l1) setInvStrategyL1(d.strategy_l1)
-      if (d?.strategy_l2) setInvStrategyL2(d.strategy_l2)
-      if (d?.strategy_l3) setInvStrategyL3(d.strategy_l3)
+      const hasTeam = Boolean(d?.strategy_l1 || d?.strategy_l2 || d?.strategy_l3)
+      const l1 = hasTeam ? (d.strategy_l1 || "") : (d?.platform_l1 || "")
+      const l2 = hasTeam ? (d.strategy_l2 || "") : (d?.platform_l2 || "")
+      const l3 = hasTeam ? (d.strategy_l3 || "") : (d?.platform_l3 || "")
+      if (l1) setInvStrategyL1(l1)
+      if (l2) setInvStrategyL2(l2)
+      if (l3) setInvStrategyL3(parseStrategyLevel3(l3))
     } catch { /* ignore */ }
   }
 
@@ -18152,9 +18031,6 @@ function InvestmentManagedProductsView() {
                 <button
                   onClick={() => {
                     setShowInvBatchMenu(false)
-                    setInvBatchStrategyL1("")
-                    setInvBatchStrategyL2("")
-                    setInvBatchStrategyL3("")
                     setShowInvBatchStrategyDialog(true)
                   }}
                   className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
@@ -18558,7 +18434,7 @@ function InvestmentManagedProductsView() {
                   <div className="relative flex-1">
                     <select
                       value={invStrategyL1}
-                      onChange={(e) => { setInvStrategyL1(e.target.value); setInvStrategyL2(""); setInvStrategyL3("") }}
+                      onChange={(e) => { setInvStrategyL1(e.target.value); setInvStrategyL2(""); setInvStrategyL3([]) }}
                       className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
                       <option value="">请选择一级策略</option>
                       {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
@@ -18571,7 +18447,7 @@ function InvestmentManagedProductsView() {
                   <div className="relative flex-1">
                     <select
                       value={invStrategyL2}
-                      onChange={(e) => { setInvStrategyL2(e.target.value); setInvStrategyL3("") }}
+                      onChange={(e) => { setInvStrategyL2(e.target.value); setInvStrategyL3([]) }}
                       disabled={invL2Opts.length === 0}
                       className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50">
                       <option value="">{invStrategyL1 ? "请选择二级策略" : "请先选择一级策略"}</option>
@@ -18580,18 +18456,16 @@ function InvestmentManagedProductsView() {
                     <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
-                  <div className="relative flex-1">
-                    <select
+                <div className="flex items-start gap-3">
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap pt-2">三级策略：</span>
+                  <div className="flex-1">
+                    <StrategyL3MultiSelect
                       value={invStrategyL3}
-                      onChange={(e) => setInvStrategyL3(e.target.value)}
+                      onChange={setInvStrategyL3}
+                      options={invL3Opts}
+                      placeholder={invStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}
                       disabled={invL3Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50">
-                      <option value="">{invStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}</option>
-                      {invL3Opts.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                    />
                   </div>
                 </div>
               </div>
@@ -18609,7 +18483,7 @@ function InvestmentManagedProductsView() {
                         body: JSON.stringify({
                           strategy_l1: invStrategyL1 || null,
                           strategy_l2: invStrategyL2 || null,
-                          strategy_l3: invStrategyL3 || null,
+                          strategy_l3: invStrategyL3.length ? invStrategyL3.join(",") : null,
                           product_name: invStrategyName || null,
                         }),
                       })
@@ -18755,84 +18629,16 @@ function InvestmentManagedProductsView() {
         </div>
       )}
 
-      {showInvBatchStrategyDialog && (() => {
-        const invBatchL2Opts = invBatchStrategyL1 ? (strategyHierarchy.find((n) => n.l1 === invBatchStrategyL1)?.l2s ?? []) : []
-        const invBatchL3Opts = invBatchStrategyL2 ? (invBatchL2Opts.find((n) => n.l2 === invBatchStrategyL2)?.l3s ?? []) : []
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowInvBatchStrategyDialog(false)}>
-            <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
-                <span className="font-semibold text-base">批量添加策略</span>
-                <button onClick={() => setShowInvBatchStrategyDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
-              </div>
-              <div className="px-6 py-5 flex flex-col gap-4">
-                <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-                  对已选产品批量添加团队策略，策略团队内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">
-                    <span className="text-red-500 mr-0.5">*</span>一级策略：
-                  </span>
-                  <div className="relative flex-1">
-                    <select
-                      value={invBatchStrategyL1}
-                      onChange={(e) => { setInvBatchStrategyL1(e.target.value); setInvBatchStrategyL2(""); setInvBatchStrategyL3("") }}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300">
-                      <option value="">请选择一级策略</option>
-                      {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">二级策略：</span>
-                  <div className="relative flex-1">
-                    <select
-                      value={invBatchStrategyL2}
-                      onChange={(e) => { setInvBatchStrategyL2(e.target.value); setInvBatchStrategyL3("") }}
-                      disabled={invBatchL2Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
-                      <option value="">请选择二级策略</option>
-                      {invBatchL2Opts.map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
-                  <div className="relative flex-1">
-                    <select
-                      value={invBatchStrategyL3}
-                      onChange={(e) => setInvBatchStrategyL3(e.target.value)}
-                      disabled={invBatchL3Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
-                      <option value="">请选择三级策略</option>
-                      {invBatchL3Opts.map((v) => <option key={v} value={v}>{v}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
-                <button onClick={() => setShowInvBatchStrategyDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
-                <button
-                  disabled={!invBatchStrategyL1 || invBatchSubmitting}
-                  onClick={async () => {
-                    await handleInvBatchOp("set_strategy", {
-                      strategy_l1: invBatchStrategyL1 || null,
-                      strategy_l2: invBatchStrategyL2 || null,
-                      strategy_l3: invBatchStrategyL3 || null,
-                    })
-                    setShowInvBatchStrategyDialog(false)
-                  }}
-                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                  {invBatchSubmitting ? "处理中…" : "确 定"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
+      <BatchAddStrategyDialog
+        open={showInvBatchStrategyDialog}
+        strategyHierarchy={strategyHierarchy}
+        submitting={invBatchSubmitting}
+        onClose={() => setShowInvBatchStrategyDialog(false)}
+        onConfirm={async (payload) => {
+          await handleInvBatchOp("set_strategy", payload)
+          setShowInvBatchStrategyDialog(false)
+        }}
+      />
 
       {showInvBatchConfirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowInvBatchConfirmDialog(false)}>
@@ -19025,7 +18831,7 @@ function InvestmentFofOverviewView() {
   const [fofStrategyName, setFofStrategyName] = useState("")
   const [fofStrategyL1, setFofStrategyL1] = useState("")
   const [fofStrategyL2, setFofStrategyL2] = useState("")
-  const [fofStrategyL3, setFofStrategyL3] = useState("")
+  const [fofStrategyL3, setFofStrategyL3] = useState<string[]>([])
   const [fofStrategySaving, setFofStrategySaving] = useState(false)
   const [showFofNoteDialog, setShowFofNoteDialog] = useState(false)
   const [fofNoteBeianHao, setFofNoteBeianHao] = useState<string | null>(null)
@@ -19096,14 +18902,18 @@ function InvestmentFofOverviewView() {
     setFofStrategyName(product_name)
     setFofStrategyL1("")
     setFofStrategyL2("")
-    setFofStrategyL3("")
+    setFofStrategyL3([])
     setShowFofStrategyDialog(true)
     try {
       const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
-      if (d?.strategy_l1) setFofStrategyL1(d.strategy_l1)
-      if (d?.strategy_l2) setFofStrategyL2(d.strategy_l2)
-      if (d?.strategy_l3) setFofStrategyL3(d.strategy_l3)
+      const hasTeam = Boolean(d?.strategy_l1 || d?.strategy_l2 || d?.strategy_l3)
+      const l1 = hasTeam ? (d.strategy_l1 || "") : (d?.platform_l1 || "")
+      const l2 = hasTeam ? (d.strategy_l2 || "") : (d?.platform_l2 || "")
+      const l3 = hasTeam ? (d.strategy_l3 || "") : (d?.platform_l3 || "")
+      if (l1) setFofStrategyL1(l1)
+      if (l2) setFofStrategyL2(l2)
+      if (l3) setFofStrategyL3(parseStrategyLevel3(l3))
     } catch { /* ignore */ }
   }
 
@@ -20599,7 +20409,7 @@ function InvestmentFofOverviewView() {
                   <div className="relative flex-1">
                     <select
                       value={fofStrategyL1}
-                      onChange={(e) => { setFofStrategyL1(e.target.value); setFofStrategyL2(""); setFofStrategyL3("") }}
+                      onChange={(e) => { setFofStrategyL1(e.target.value); setFofStrategyL2(""); setFofStrategyL3([]) }}
                       className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
                       <option value="">请选择一级策略</option>
                       {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
@@ -20612,7 +20422,7 @@ function InvestmentFofOverviewView() {
                   <div className="relative flex-1">
                     <select
                       value={fofStrategyL2}
-                      onChange={(e) => { setFofStrategyL2(e.target.value); setFofStrategyL3("") }}
+                      onChange={(e) => { setFofStrategyL2(e.target.value); setFofStrategyL3([]) }}
                       disabled={fofL2Opts.length === 0}
                       className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50">
                       <option value="">{fofStrategyL1 ? "请选择二级策略" : "请先选择一级策略"}</option>
@@ -20621,18 +20431,16 @@ function InvestmentFofOverviewView() {
                     <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
-                  <div className="relative flex-1">
-                    <select
+                <div className="flex items-start gap-3">
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap pt-2">三级策略：</span>
+                  <div className="flex-1">
+                    <StrategyL3MultiSelect
                       value={fofStrategyL3}
-                      onChange={(e) => setFofStrategyL3(e.target.value)}
+                      onChange={setFofStrategyL3}
+                      options={fofL3Opts}
+                      placeholder={fofStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}
                       disabled={fofL3Opts.length === 0}
-                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50">
-                      <option value="">{fofStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}</option>
-                      {fofL3Opts.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                    />
                   </div>
                 </div>
               </div>
@@ -20650,7 +20458,7 @@ function InvestmentFofOverviewView() {
                         body: JSON.stringify({
                           strategy_l1: fofStrategyL1 || null,
                           strategy_l2: fofStrategyL2 || null,
-                          strategy_l3: fofStrategyL3 || null,
+                          strategy_l3: fofStrategyL3.length ? fofStrategyL3.join(",") : null,
                           product_name: fofStrategyName || null,
                         }),
                       })
@@ -24083,6 +23891,7 @@ function PrivateFundsPageContent() {
               </button>
             ))}
           </div>
+          <HeaderGlobalSearch />
           <Link
             href="/ma/dashboard/settings?section=user-center"
             className="shrink-0 inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"

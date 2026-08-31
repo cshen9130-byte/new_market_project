@@ -20,11 +20,21 @@ export const FUND_ELEMENT_EXTRACT_EXTENSIONS = [
 const POSITIVE_RE =
   /一页通|壹页通|一期通|一页纸|要素表|产品要素|产品介绍|基金介绍|产品资料概要|资料概要|介绍[-_.]?\d{2,}|基金合同|产品合同|私募合同/
 
-const NEGATIVE_RE = /估值表|路演纪要|会议纪要|公司简介|管理人简介|策略介绍/
+const NEGATIVE_RE = /估值表|路演纪要|会议纪要|公司简介|公司介绍|管理人简介|策略介绍/
+const NAV_PATH_RE = /净值序列|历史净值|_净值[.\s]|\/净值/
 
 export function isFundElementSourceFilename(fileName: string): boolean {
   const name = (fileName || "").trim()
   if (!name) return false
+  if (NEGATIVE_RE.test(name) || NAV_PATH_RE.test(name)) return false
+  return POSITIVE_RE.test(name)
+}
+
+/** Zip inner path: folder `产品要素表/xxx.pdf` counts even when the basename is only the product. */
+export function isFundElementSourcePath(entryPath: string): boolean {
+  const name = (entryPath || "").replace(/\\/g, "/").trim()
+  if (!name) return false
+  if (NAV_PATH_RE.test(name) || /估值表/.test(name)) return false
   if (NEGATIVE_RE.test(name)) return false
   return POSITIVE_RE.test(name)
 }

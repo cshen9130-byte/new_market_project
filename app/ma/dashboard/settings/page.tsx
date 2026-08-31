@@ -42,7 +42,7 @@ interface CompareTemplate { name: string; indicators: string[] }
 interface CommonBenchmark { type: string; name: string }
 
 const BENCHMARK_TYPE_OPTIONS = ["指数", "私募指数", "自定义"]
-const BENCHMARK_NAME_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数"]
+const BENCHMARK_NAME_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数", "中证商品指数"]
 
 const ADD_METRIC_PERIODS = [
   "本周","本月","近一周","近一月","近三月",

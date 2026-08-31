@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } fro
 import type React from "react"
 import { useParams, useSearchParams } from "next/navigation"
 import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Send, Siren, X } from "lucide-react"
+import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { FundNavCorrectionRulesDialog } from "@/components/ma/fund-nav-correction-rules-dialog"
@@ -16,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
+import { resolveDefaultBenchmarkKey } from "@/lib/ma/team-benchmark"
 import { computeFundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
 import { isWeekendIsoDate } from "@/lib/nav-trading-day"
 import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequency, type NavFrequencyFilter, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
@@ -152,22 +154,25 @@ function FundDetailPageShell({
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
-        <nav className="flex items-center gap-1 px-6 h-12">
-          {menuItems.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => item.key !== "funds" && onNavigateFunds(item.key)}
-              className={[
-                "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
-                item.key === "funds"
-                  ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
-                  : "text-muted-foreground hover:text-foreground",
-              ].join(" ")}
-            >
-              {item.label}
-            </button>
-          ))}
+        <nav className="flex items-center gap-3 px-6 h-12">
+          <div className="flex items-center gap-1 h-full min-w-0 flex-1 overflow-x-auto">
+            {menuItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => item.key !== "funds" && onNavigateFunds(item.key)}
+                className={[
+                  "relative shrink-0 px-4 h-full text-sm font-medium transition-colors focus:outline-none",
+                  item.key === "funds"
+                    ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
+                    : "text-muted-foreground hover:text-foreground",
+                ].join(" ")}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <HeaderGlobalSearch />
         </nav>
       </div>
       <div className="flex flex-1 min-h-0">
@@ -229,6 +234,7 @@ interface FundInfo {
   inception_date: string | null
   operation_date: string | null
   benchmark:      string | null
+  team_benchmark?: string | null
   ret_1w:         string | null
   ret_1m:         string | null
   ret_3m:         string | null
@@ -267,22 +273,10 @@ const BENCHMARK_OPTIONS = [
   { key: "IF", label: "沪深300" },
   { key: "IH", label: "上证50" },
   { key: "NHCI.NH", label: "南华商品指数" },
+  { key: "100001.CCI", label: "中证商品指数" },
   { key: "511010.SH", label: "国债ETF" },
   { key: "518880.SH", label: "黄金ETF" },
 ] as const
-
-function normalizeBenchmarkKey(raw: string | null | undefined): string {
-  const text = (raw ?? "").replace(/\s+/g, "")
-  if (!text) return ""
-  if (text.includes("中证1000")) return "IM"
-  if (text.includes("中证500")) return "IC"
-  if (text.includes("沪深300")) return "IF"
-  if (text.includes("上证50")) return "IH"
-  if (text.includes("南华商品")) return "NHCI.NH"
-  if (text.includes("国债")) return "511010.SH"
-  if (text.includes("黄金")) return "518880.SH"
-  return ""
-}
 
 function getBenchmarkLabel(key: string): string {
   return BENCHMARK_OPTIONS.find((option) => option.key === key)?.label ?? "业绩基准"
@@ -616,31 +610,49 @@ export default function PrivateFundDetailPage() {
   const [editL1, setEditL1] = useState<string>("")
   const [editL2, setEditL2] = useState<string>("")
   const [editL3s, setEditL3s] = useState<string[]>([])
+  const [platformTree, setPlatformTree] = useState<StrategyTree>([])
+  const [platformL1, setPlatformL1] = useState<string>("")
+  const [platformL2, setPlatformL2] = useState<string>("")
+  const [platformL3s, setPlatformL3s] = useState<string[]>([])
   const [savingStrategy, setSavingStrategy] = useState(false)
   const [strategySaveError, setStrategySaveError] = useState<string | null>(null)
 
+  function splitStrategyLevels(raw: string | null | undefined): string[] {
+    return raw ? String(raw).split(/[，,、/]/).map((s) => s.trim()).filter(Boolean) : []
+  }
+
   function openStrategyModal() {
     if (!data) return
-    // Prefill from displayed tags first, then overwrite with raw 团队策略 from type6.
+    // Prefill from the header tag so the dialog is never blank while APIs load.
     setEditL1(data.info.strategy_l1 ?? "")
     setEditL2(data.info.strategy_l2 ?? "")
-    const l3raw = data.info.strategy_l3 ?? ""
-    setEditL3s(l3raw ? l3raw.split(/[，,]/).map(s => s.trim()).filter(Boolean) : [])
+    setEditL3s(splitStrategyLevels(data.info.strategy_l3))
+    setPlatformL1(data.info.strategy_l1 ?? "")
+    setPlatformL2(data.info.strategy_l2 ?? "")
+    setPlatformL3s(splitStrategyLevels(data.info.strategy_l3))
     setStrategyTab("team")
     setStrategySaveError(null)
     setShowStrategyModal(true)
     Promise.all([
       fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all").then((r) => r.json()),
+      fetch("/ma/api/tracking-funds/strategies?strategy_source=platform&pool=all").then((r) => r.json()),
       fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`).then((r) => r.json()),
     ])
-      .then(([tree, company]) => {
+      .then(([tree, pTree, strategy]) => {
         if (Array.isArray(tree)) setStrategyTree(tree)
-        if (company && !company.error) {
-          setEditL1(company.strategy_l1 ?? "")
-          setEditL2(company.strategy_l2 ?? "")
-          const raw = company.strategy_l3 ?? ""
-          setEditL3s(raw ? String(raw).split(/[，,]/).map((s: string) => s.trim()).filter(Boolean) : [])
-        }
+        if (Array.isArray(pTree)) setPlatformTree(pTree)
+        if (!strategy || strategy.error) return
+        const hasApiTeam = Boolean(strategy.strategy_l1 || strategy.strategy_l2 || strategy.strategy_l3)
+        const teamL1 = hasApiTeam ? (strategy.strategy_l1 ?? "") : (data.info.strategy_l1 ?? "")
+        const teamL2 = hasApiTeam ? (strategy.strategy_l2 ?? "") : (data.info.strategy_l2 ?? "")
+        const teamL3 = hasApiTeam ? (strategy.strategy_l3 ?? "") : (data.info.strategy_l3 ?? "")
+        setEditL1(teamL1)
+        setEditL2(teamL2)
+        setEditL3s(splitStrategyLevels(teamL3))
+        const hasApiPlatform = Boolean(strategy.platform_l1 || strategy.platform_l2 || strategy.platform_l3)
+        setPlatformL1(hasApiPlatform ? (strategy.platform_l1 ?? "") : teamL1)
+        setPlatformL2(hasApiPlatform ? (strategy.platform_l2 ?? "") : teamL2)
+        setPlatformL3s(splitStrategyLevels(hasApiPlatform ? strategy.platform_l3 : teamL3))
       })
       .catch(() => {})
   }
@@ -983,7 +995,11 @@ export default function PrivateFundDetailPage() {
     const range = period === "运作以来"
       ? getOperationFilterRange(data, todayStr)
       : getDefaultFilterRange(data, todayStr)
-    const benchmarkKey = normalizeBenchmarkKey(data.info.benchmark)
+    const benchmarkKey = resolveDefaultBenchmarkKey({
+      teamBenchmark: data.info.team_benchmark,
+      strategyL1: data.info.strategy_l1,
+      strategyL2: data.info.strategy_l2,
+    })
     setFilterPeriod(period)
     setFilterFrom(range.from)
     setFilterTo(range.to)
@@ -1053,7 +1069,11 @@ export default function PrivateFundDetailPage() {
     const range = period === "运作以来"
       ? getOperationFilterRange(data, todayStr)
       : getDefaultFilterRange(data, todayStr)
-    const benchmarkKey = normalizeBenchmarkKey(data.info.benchmark)
+    const benchmarkKey = resolveDefaultBenchmarkKey({
+      teamBenchmark: data.info.team_benchmark,
+      strategyL1: data.info.strategy_l1,
+      strategyL2: data.info.strategy_l2,
+    })
     setFilterPeriod(period)
     setFilterFrom(range.from)
     setFilterTo(range.to)
@@ -3032,90 +3052,111 @@ export default function PrivateFundDetailPage() {
 
           {/* Tab content */}
           <div className="flex-1 overflow-y-auto px-5 py-4">
-            {strategyTab === "team" ? (
+            {strategyTab === "team" || strategyTab === "platform" ? (() => {
+              const isPlatform = strategyTab === "platform"
+              const tree = isPlatform ? platformTree : strategyTree
+              const l1 = isPlatform ? platformL1 : editL1
+              const l2 = isPlatform ? platformL2 : editL2
+              const l3s = isPlatform ? platformL3s : editL3s
+              const setL1 = isPlatform ? setPlatformL1 : setEditL1
+              const setL2 = isPlatform ? setPlatformL2 : setEditL2
+              const setL3s = isPlatform ? setPlatformL3s : setEditL3s
+              const selectClass = isPlatform
+                ? "flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-500 bg-zinc-50 cursor-not-allowed"
+                : "flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
+              return (
               <div className="space-y-4">
-                {/* Info notice */}
                 <div className="rounded px-3 py-2.5 text-xs" style={{ backgroundColor: "#fffbeb", color: "#92400e", border: "1px solid #fde68a" }}>
-                  团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+                  {isPlatform
+                    ? "当前策略已确认，无法修改。如有疑问，请联系客服。"
+                    : "团队策略的新增、编辑在【运维-数据维护-团队策略】中。"}
                 </div>
 
-                {/* 一级策略 */}
                 <div className="flex items-center gap-3">
                   <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right">一级策略：</label>
                   <select
-                    value={editL1}
-                    onChange={e => { setEditL1(e.target.value); setEditL2(""); setEditL3s([]); setStrategySaveError(null) }}
-                    className="flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
+                    value={l1}
+                    onChange={e => { setL1(e.target.value); setL2(""); setL3s([]); setStrategySaveError(null) }}
+                    disabled={isPlatform}
+                    className={selectClass}
                   >
                     <option value="">— 请选择 —</option>
-                    {strategyTree.map(n => (
+                    {tree.map(n => (
                       <option key={n.l1} value={n.l1}>{n.l1}</option>
                     ))}
-                    {editL1 && !strategyTree.some(n => n.l1 === editL1) && (
-                      <option value={editL1}>{editL1}</option>
+                    {l1 && !tree.some(n => n.l1 === l1) && (
+                      <option value={l1}>{l1}</option>
                     )}
                   </select>
                 </div>
 
-                {/* 二级策略 */}
                 <div className="flex items-center gap-3">
                   <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right">二级策略：</label>
                   <select
-                    value={editL2}
-                    onChange={e => { setEditL2(e.target.value); setEditL3s([]); setStrategySaveError(null) }}
-                    className="flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
-                    disabled={!editL1}
+                    value={l2}
+                    onChange={e => { setL2(e.target.value); setL3s([]); setStrategySaveError(null) }}
+                    className={selectClass}
+                    disabled={isPlatform || !l1}
                   >
                     <option value="">— 请选择 —</option>
-                    {(strategyTree.find(n => n.l1 === editL1)?.l2s ?? []).map(n => (
+                    {(tree.find(n => n.l1 === l1)?.l2s ?? []).map(n => (
                       <option key={n.l2} value={n.l2}>{n.l2}</option>
                     ))}
-                    {editL2 && !(strategyTree.find(n => n.l1 === editL1)?.l2s ?? []).some(n => n.l2 === editL2) && (
-                      <option value={editL2}>{editL2}</option>
+                    {l2 && !(tree.find(n => n.l1 === l1)?.l2s ?? []).some(n => n.l2 === l2) && (
+                      <option value={l2}>{l2}</option>
                     )}
                   </select>
                 </div>
 
-                {/* 三级策略 (multi-select chips) */}
                 <div className="flex items-start gap-3">
                   <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right pt-1.5">三级策略：</label>
                   <div className="flex-1">
-                    {editL3s.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mb-2">
-                        {editL3s.map(v => (
-                          <span
-                            key={v}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs"
-                            style={{ backgroundColor: "#eff6ff", color: "#2563eb", border: "1px solid #93c5fd" }}
-                          >
-                            {v}
-                            <button
-                              onClick={() => setEditL3s(p => p.filter(x => x !== v))}
-                              className="text-blue-400 hover:text-blue-700"
-                            >×</button>
-                          </span>
-                        ))}
-                      </div>
+                    {isPlatform ? (
+                      <select value={l3s[0] ?? ""} disabled className={selectClass}>
+                        <option value="">{l3s.length ? l3s.join("、") : "—"}</option>
+                        {l3s.slice(1).map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    ) : (
+                      <>
+                        {l3s.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {l3s.map(v => (
+                              <span
+                                key={v}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs"
+                                style={{ backgroundColor: "#eff6ff", color: "#2563eb", border: "1px solid #93c5fd" }}
+                              >
+                                {v}
+                                <button
+                                  onClick={() => setL3s(p => p.filter(x => x !== v))}
+                                  className="text-blue-400 hover:text-blue-700"
+                                >×</button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <select
+                          value=""
+                          onChange={e => { const v = e.target.value; if (v && !l3s.includes(v)) setL3s(p => [...p, v]) }}
+                          className="w-full border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
+                          disabled={!l2}
+                        >
+                          <option value="">— 添加三级策略 —</option>
+                          {(tree.find(n => n.l1 === l1)?.l2s.find(n => n.l2 === l2)?.l3s ?? [])
+                            .filter(v => !l3s.includes(v))
+                            .map(v => (
+                              <option key={v} value={v}>{v}</option>
+                            ))}
+                        </select>
+                      </>
                     )}
-                    <select
-                      value=""
-                      onChange={e => { const v = e.target.value; if (v && !editL3s.includes(v)) setEditL3s(p => [...p, v]) }}
-                      className="w-full border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
-                      disabled={!editL2}
-                    >
-                      <option value="">— 添加三级策略 —</option>
-                      {(strategyTree.find(n => n.l1 === editL1)?.l2s.find(n => n.l2 === editL2)?.l3s ?? [])
-                        .filter(v => !editL3s.includes(v))
-                        .map(v => (
-                          <option key={v} value={v}>{v}</option>
-                        ))}
-                    </select>
                   </div>
                 </div>
               </div>
-            ) : (
+              )
+            })() : (
               <div className="flex items-center justify-center h-24 text-zinc-400 text-sm">
-                {strategyTab === "platform" ? "平台策略" : strategyTab === "subscription" ? "申赎信息" : "要素附件"} 暂无内容
+                {strategyTab === "subscription" ? "申赎信息" : "要素附件"} 暂无内容
               </div>
             )}
           </div>

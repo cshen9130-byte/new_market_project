@@ -3,6 +3,11 @@ import { query } from "@/lib/db"
 import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
+import {
+  isStrategyEmpty,
+  loadResolvedFundStrategies,
+  persistEmptyTeamStrategyFromPlatform,
+} from "@/lib/server/fund-strategy-resolve"
 import { addFundToTrackingPool } from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
@@ -32,7 +37,7 @@ async function updateCompanyStrategy(
   )
 }
 
-/** Return raw 团队策略 fields (not platform fallback) for edit dialogs. */
+/** Return 团队策略 for edit dialogs; fall back to 平台策略 (and persist) when team is empty. */
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ beian_hao: string }> },
@@ -42,26 +47,28 @@ export async function GET(
   if (!beian_hao) return NextResponse.json({ error: "Missing beian_hao" }, { status: 400 })
 
   try {
-    const rows = await query<{
-      strategy_l1: string | null
-      strategy_l2: string | null
-      strategy_l3: string | null
-    }>(
-      `SELECT NULLIF(BTRIM(company_strategy_one), '')   AS strategy_l1,
-              NULLIF(BTRIM(company_strategy_two), '')   AS strategy_l2,
-              NULLIF(BTRIM(company_strategy_three), '') AS strategy_l3
-       FROM type6_ops_team_full
-       WHERE register_number = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [beian_hao],
-    )
-    const row = rows[0]
+    const resolved = await loadResolvedFundStrategies(beian_hao, [rawId])
+    let company = resolved.company
+    if (isStrategyEmpty(company) && !isStrategyEmpty(resolved.platform)) {
+      const wrote = await persistEmptyTeamStrategyFromPlatform(
+        beian_hao,
+        resolved.platform,
+        resolved.product_name,
+      )
+      if (wrote) company = resolved.platform
+    }
+    const team = isStrategyEmpty(company) ? resolved.platform : company
     return NextResponse.json({
       beian_hao,
-      strategy_l1: row?.strategy_l1 ?? null,
-      strategy_l2: row?.strategy_l2 ?? null,
-      strategy_l3: row?.strategy_l3 ?? null,
+      strategy_l1: team.l1,
+      strategy_l2: team.l2,
+      strategy_l3: team.l3,
+      company_l1: company.l1,
+      company_l2: company.l2,
+      company_l3: company.l3,
+      platform_l1: resolved.platform.l1,
+      platform_l2: resolved.platform.l2,
+      platform_l3: resolved.platform.l3,
     })
   } catch (err) {
     console.error("Strategy GET error:", err)

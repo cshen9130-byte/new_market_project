@@ -17,6 +17,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname()
   const isSettingsPage = pathname.startsWith("/ma/dashboard/settings")
   const isAllWeatherPage = pathname.startsWith("/ma/dashboard/all-weather")
+  const isNhciIndexPage = pathname.startsWith("/ma/dashboard/nhci-index")
   const isPrivateFundsSection = pathname.startsWith("/ma/dashboard/private-funds")
   const [user, setUser] = useState<User | null>(null)
   const [chatVisible, setChatVisible] = useState(false)
@@ -63,7 +64,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (!user) return null
 
-  if (isSettingsPage || isAllWeatherPage) {
+  if (isSettingsPage || isAllWeatherPage || isNhciIndexPage) {
     return <>{children}</>
   }
 

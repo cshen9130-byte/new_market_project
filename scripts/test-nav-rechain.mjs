@@ -32,6 +32,14 @@ import {
 } from "../lib/server/email-nav-attachment.ts"
 import { preferNavHistoryZipEntries } from "../lib/server/email-valuation-zip.ts"
 import {
+  isFundElementEmailZip,
+  selectFundElementZipEntries,
+} from "../lib/server/email-element-extract.ts"
+import {
+  isFundElementSourceFilename,
+  isFundElementSourcePath,
+} from "../lib/ma/fund-element-source-file.ts"
+import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
   loadManagedProductNavSeed,
@@ -1612,6 +1620,90 @@ assert("SVP460 CSC 虚拟净值数据 xlsx is selected as NAV attachment", svp46
   assert(
     "产品材料 zip prefers 历史净值序列 over 要素表",
     inner.length === 1 && inner[0]?.filename === "历史净值序列.xlsx",
+  )
+}
+
+{
+  const liangpaiSubject = "量派投资-尽调材料"
+  const liangpaiZip = "量派投资-尽调材料（全策略代表产品）.zip"
+  assert(
+    "量派 尽调材料 subject is a NAV source",
+    isNavTableZipFilename(liangpaiZip, liangpaiSubject) === true,
+  )
+  assert(
+    "量派 尽调材料 zip name is a NAV source without relying on subject",
+    isNavTableZipFilename(liangpaiZip, "") === true,
+  )
+  const liangpaiAtts = selectNavTableAttachments(liangpaiSubject, [
+    { filename: liangpaiZip, part: "2" },
+  ])
+  assert(
+    "量派 尽调材料 zip is selected for NAV extract",
+    liangpaiAtts.length === 1 && liangpaiAtts[0]?.filename === liangpaiZip,
+  )
+  assert("量派 尽调 zip is an element-extract source", isFundElementEmailZip(liangpaiZip, liangpaiSubject))
+  assert(
+    "公司介绍 is not an element source",
+    isFundElementSourceFilename("1、量派公司介绍0821.pdf") === false,
+  )
+  assert(
+    "要素表 pdf is an element source",
+    isFundElementSourceFilename("量派CTA一号私募证券投资基金_A类_要素表.pdf") === true,
+  )
+  assert(
+    "产品要素表 folder path is an element source",
+    isFundElementSourcePath("2-1、产品要素表/量派CTA一号私募证券投资基金_A类_要素表.pdf") === true,
+  )
+  assert(
+    "净值序列 path is not an element source",
+    isFundElementSourcePath("3、产品净值序列/量派CTA一号私募证券投资基金A_净值序列.xlsx") === false,
+  )
+  const liangpaiInner = preferNavHistoryZipEntries([
+    {
+      entryName: "2-1、产品要素表/量派CTA一号私募证券投资基金_A类_要素表.pdf",
+      filename: "量派CTA一号私募证券投资基金_A类_要素表.pdf",
+      buffer: Buffer.alloc(0),
+    },
+    {
+      entryName: "3、产品净值序列/量派CTA一号私募证券投资基金A_净值序列.xlsx",
+      filename: "量派CTA一号私募证券投资基金A_净值序列.xlsx",
+      buffer: Buffer.alloc(0),
+    },
+    {
+      entryName: "1、量派公司介绍0821.pdf",
+      filename: "1、量派公司介绍0821.pdf",
+      buffer: Buffer.alloc(0),
+    },
+  ])
+  assert(
+    "量派 zip prefers 净值序列 over 要素表",
+    liangpaiInner.length === 1 && liangpaiInner[0]?.filename.includes("净值序列"),
+  )
+  const elementInner = selectFundElementZipEntries([
+    {
+      entryName: "2-1、产品要素表/量派CTA一号私募证券投资基金_A类_要素表.pdf",
+      filename: "量派CTA一号私募证券投资基金_A类_要素表.pdf",
+      buffer: Buffer.alloc(10),
+    },
+    {
+      entryName: "2-2、产品基金合同/量派CTA一号私募证券投资基金_合同.docx",
+      filename: "量派CTA一号私募证券投资基金_合同.docx",
+      buffer: Buffer.alloc(10),
+    },
+    {
+      entryName: "3、产品净值序列/量派CTA一号私募证券投资基金A_净值序列.xlsx",
+      filename: "量派CTA一号私募证券投资基金A_净值序列.xlsx",
+      buffer: Buffer.alloc(10),
+    },
+    {
+      entryName: "1、量派公司介绍0821.pdf",
+      filename: "1、量派公司介绍0821.pdf",
+      buffer: Buffer.alloc(10),
+    },
+  ])
+  assert(
+    "量派 zip element extract prefers 要素表 over 合同",
+    elementInner.length === 1 && elementInner[0]?.filename.includes("要素表"),
   )
 }
 
