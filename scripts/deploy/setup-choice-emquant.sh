@@ -335,11 +335,15 @@ monitor_build_progress() {
 # Fall back to --no-frozen-lockfile only if the lockfile is genuinely out of sync.
 # Do NOT put --max-old-space-size in NODE_OPTIONS for the build: jest-worker children
 # inherit NODE_OPTIONS, so parent+worker each get a large heap and exhaust a 3.4G box.
-if ! MALLOC_ARENA_MAX=1 pnpm install --frozen-lockfile; then
+# CI=1 + closed stdin: pnpm 10 can print "Done" then hang forever on a TTY because
+# the ignored-build-scripts reporter keeps the event loop open (epoll_wait).
+echo "Installing Node dependencies (pnpm)..."
+if ! CI=1 MALLOC_ARENA_MAX=1 pnpm install --frozen-lockfile </dev/null; then
   echo "WARNING: --frozen-lockfile failed (lockfile out of sync); retrying with --no-frozen-lockfile."
   echo "         This may pull newer dependency versions and increase build memory."
-  MALLOC_ARENA_MAX=1 pnpm install --no-frozen-lockfile
+  CI=1 MALLOC_ARENA_MAX=1 pnpm install --no-frozen-lockfile </dev/null
 fi
+echo "pnpm install finished; starting Next.js build next."
 
 run_next_build() {
   echo "Starting Next.js build (parent heap=${BUILD_MEMORY_MB}MB via node argv; workers do not inherit)..."

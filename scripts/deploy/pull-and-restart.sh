@@ -34,7 +34,7 @@ git reset --hard origin/main
 restore_crawl_emails
 
 echo "==> pnpm install"
-pnpm install --frozen-lockfile
+CI=1 pnpm install --frozen-lockfile </dev/null
 
 echo "==> build (lowmem)"
 pnpm run build:lowmem
