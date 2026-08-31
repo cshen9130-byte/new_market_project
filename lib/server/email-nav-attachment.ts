@@ -6,6 +6,7 @@
 import * as XLSX from "xlsx"
 import {
   extractNavMetadata,
+  extractNavData,
   normalizeFundDisplayName,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
@@ -14,16 +15,17 @@ import {
   isPlausibleEmailUnitNav,
 } from "@/lib/server/email-nav-query"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
+import {
+  isManagerProductPackSubject,
+  isManagerProductPackZip,
+} from "@/lib/server/email-manager-pack"
 
 export type NavTableAttachmentInfo = { filename: string; part: string }
 
 const NAV_TABLE_SUBJECT_RE =
-  /净值波动表|净值表|每日净值表|虚拟计提净值表|资产净值公告|净值公告|批量补发|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算表/u
-/** Manager DD packs: 代表性产品材料 / 尽调材料 + zip containing 历史净值序列. */
-const PRODUCT_MATERIAL_SUBJECT_RE =
-  /产品材料|代表性产品|代表产品|尽调材料|尽调资料|净值序列|历史净值/u
+  /净值波动表|净值表|净值数据|每日净值表|虚拟计提净值表|资产净值公告|净值公告|净值序列|批量补发|【订阅_产品净值】|【产品净值】|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算表/u
 const NAV_TABLE_FILENAME_RE =
-  /净值波动表|净值表|每日净值|资产净值公告|净值公告|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|^虚拟净值-|业绩报酬试算|净值试算结果|试算结果/u
+  /净值波动表|净值表|净值数据|每日净值|资产净值公告|净值公告|净值序列|【产品净值】|产品净值|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算|净值试算结果|试算结果/u
 const NAV_TABLE_ZIP_FILENAME_RE =
   /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值波动表|净值表|净值序列|历史净值|每日净值|净值信息|尽调材料|尽调资料|产品材料|代表性产品|代表产品/i
 
@@ -37,7 +39,7 @@ function isExcludedNavAttachment(filename: string, subject = ""): boolean {
 
 export function isNavTableSubject(subject: string): boolean {
   return (
-    (NAV_TABLE_SUBJECT_RE.test(subject) || PRODUCT_MATERIAL_SUBJECT_RE.test(subject))
+    (NAV_TABLE_SUBJECT_RE.test(subject) || isManagerProductPackSubject(subject))
     && !/估值表/u.test(subject)
   )
 }
@@ -64,6 +66,7 @@ export function isNavTableZipFilename(filename: string, subject = ""): boolean {
     return false
   }
   if (NAV_TABLE_ZIP_FILENAME_RE.test(filename)) return true
+  if (isManagerProductPackZip(filename, subject)) return true
   return isNavTableSubject(subject)
 }
 
@@ -220,59 +223,68 @@ export function extractNavRowsFromCiticsAnnouncementText(
   const asOf = text.match(/截至\s*(20\d{2}-\d{2}-\d{2})/u)
   let navDate = asOf?.[1] ?? null
   if (!navDate) {
-    const compact = filename.match(/(20\d{6})(?:\.\w+)?$/i)
+    // `…_20260828_单位净值.pdf` (CFSC/华鑫) as well as `…_20210210.pdf`.
+    const compact = filename.match(/(20\d{6})(?:_[^.]*)?(?:\.\w+)?$/i) ?? filename.match(/(20\d{6})/)
     if (compact) {
       const s = compact[1]
       navDate = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
     }
   }
-  if (!navDate) return []
 
   const meta = extractNavMetadata(subject, `${filename}\n${text}`)
-  const rowRe =
-    /([^\n\t]+?)\s+([A-Z0-9]{4,10})(?:\((总|[ABC]类)\))?\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+(\d+\.\d{2,8})\s+(\d+\.\d{2,8})/gu
-  const parsed: {
-    rawName: string
-    baseCode: string
-    share: string
-    unitNav: number
-    cumulativeNav: number
-  }[] = []
-  let match: RegExpExecArray | null
-  while ((match = rowRe.exec(text)) !== null) {
-    const rawName = match[1].replace(/基金名称|协会代码/g, "").trim()
-    if (!rawName || /基金管理人|托管人|声明/.test(rawName)) continue
-    const unitNav = parseFloat(match[6])
-    const cumulativeNav = parseFloat(match[7])
-    if (!Number.isFinite(unitNav) || unitNav <= 0) continue
-    parsed.push({
-      rawName,
-      baseCode: match[2].trim().toUpperCase(),
-      share: (match[3] ?? "").trim(),
-      unitNav,
-      cumulativeNav: Number.isFinite(cumulativeNav) ? cumulativeNav : unitNav,
-    })
-  }
-
-  const parentCode = parsed.find((row) => row.share === "总")?.baseCode ?? null
   const rows: ExtractedNavData[] = []
-  for (const row of parsed) {
-    let productCode = row.baseCode
-    if (row.share === "A类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}A`
-    else if (row.share === "B类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}B`
-    else if (row.share === "C类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}C`
+  if (navDate) {
+    const rowRe =
+      /([^\n\t]+?)\s+([A-Z0-9]{4,10})(?:\((总|[ABC]类)\))?\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+(\d+\.\d{2,8})\s+(\d+\.\d{2,8})/gu
+    const parsed: {
+      rawName: string
+      baseCode: string
+      share: string
+      unitNav: number
+      cumulativeNav: number
+    }[] = []
+    let match: RegExpExecArray | null
+    while ((match = rowRe.exec(text)) !== null) {
+      const rawName = match[1].replace(/基金名称|协会代码/g, "").trim()
+      if (!rawName || /基金管理人|托管人|声明/.test(rawName)) continue
+      const unitNav = parseFloat(match[6])
+      const cumulativeNav = parseFloat(match[7])
+      if (!Number.isFinite(unitNav) || unitNav <= 0) continue
+      parsed.push({
+        rawName,
+        baseCode: match[2].trim().toUpperCase(),
+        share: (match[3] ?? "").trim(),
+        unitNav,
+        cumulativeNav: Number.isFinite(cumulativeNav) ? cumulativeNav : unitNav,
+      })
+    }
 
-    rows.push({
-      nav: row.unitNav,
-      navDate,
-      cumulativeNav: row.cumulativeNav,
-      adjustedNav: null,
-      productCode: productCode || meta.productCode,
-      fundName: normalizeFundDisplayName(row.rawName) || meta.fundName || null,
-      source: "attachment_nav_table",
-    })
+    const parentCode = parsed.find((row) => row.share === "总")?.baseCode ?? null
+    for (const row of parsed) {
+      let productCode = row.baseCode
+      if (row.share === "A类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}A`
+      else if (row.share === "B类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}B`
+      else if (row.share === "C类" && parentCode && row.baseCode === parentCode) productCode = `${row.baseCode}C`
+
+      rows.push({
+        nav: row.unitNav,
+        navDate,
+        cumulativeNav: row.cumulativeNav,
+        adjustedNav: null,
+        productCode: productCode || meta.productCode,
+        fundName: normalizeFundDisplayName(row.rawName) || meta.fundName || null,
+        source: "attachment_nav_table",
+      })
+    }
   }
-  return rows
+  if (rows.length > 0) return rows
+
+  // CFSC/华鑫证券 净值公告 PDF: label/value (净值日期 / 单位净值 (元) / 累计净值 (元)).
+  const labeled = extractNavData(subject, `${filename}\n${text}`)
+  if (labeled?.nav != null && labeled.navDate) {
+    return [{ ...labeled, source: "attachment_nav_table" }]
+  }
+  return []
 }
 
 export function extractNavFromCiticsAnnouncementText(
@@ -343,5 +355,23 @@ export function extractNavTableFromBuffer(
     // fall through to CSC label/value 资产净值公告 form
   }
   const formRow = extractCscAssetNavFormFromBuffer(buffer, filename, subject)
-  return formRow ? [formRow] : []
+  if (formRow) return [formRow]
+
+  // CFSC/华鑫 净值公告 xlsx is a one-row announcement form, not a NAV time series.
+  if (/华鑫证券|净值公告[_-][A-Z0-9]/u.test(`${filename}\n${subject}`)) {
+    try {
+      const wb = XLSX.read(buffer, { type: "buffer", cellDates: true, raw: false })
+      const sheet = wb.Sheets[wb.SheetNames[0] ?? ""]
+      if (sheet) {
+        const csv = XLSX.utils.sheet_to_csv(sheet, { FS: " ", RS: "\n" })
+        const labeled = extractNavData(subject, `${filename}\n${csv}`)
+        if (labeled?.nav != null && labeled.navDate) {
+          return [{ ...labeled, source: "attachment_nav_table" }]
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return []
 }

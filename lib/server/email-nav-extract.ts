@@ -164,6 +164,44 @@ function parseCmsCustodyNavSubject(text: string): { code: string; fundName: stri
   return { code: unquoted[2], fundName }
 }
 
+/**
+ * 广发证券资产托管部 产品净值 subscription:
+ *   【订阅_产品净值】笃熙鼎泰文艺复兴31号私募证券投资基金_2026-08-28_SANK08
+ *   【产品净值】笃熙鼎泰文艺复兴31号私募证券投资基金_2026-08-28.xlsx
+ */
+function parseGfProductNavSubject(text: string): { code: string; fundName: string } | null {
+  if (!/【(?:订阅_)?产品净值】/u.test(text)) return null
+  const m = text.match(
+    new RegExp(
+      `【(?:订阅_)?产品净值】\\s*(${FUND_NAME_RE.source})_(20\\d{2}-\\d{2}-\\d{2}|20\\d{6})(?:_([A-Z0-9]{4,10}))?`,
+      "u",
+    ),
+  )
+  if (!m) return null
+  const fundName = finalizeExtractedFundName(m[1])
+  if (!fundName) return null
+  return { code: (m[3] ?? "").trim().toUpperCase(), fundName }
+}
+
+/**
+ * CFSC/华鑫证券 净值公告 and 净值序列 (hyphen after the product code):
+ *   【华鑫证券】净值公告_SXY802-简文盛京四号斗金私募证券投资基金_2026-08-28
+ *   【华鑫证券】净值序列_SXY802-简文盛京四号斗金私募证券投资基金_2025-03-05~2026-06-16
+ *   净值公告-SXY802-简文盛京四号斗金私募证券投资基金_20260828_单位净值.pdf
+ */
+function parseCfscHuaxinNavSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    new RegExp(
+      `(?:净值公告|净值序列)[_-]([A-Z0-9]{4,10})-(${FUND_NAME_RE.source})`,
+      "u",
+    ),
+  )
+  if (!m) return null
+  const fundName = finalizeExtractedFundName(m[2])
+  if (!fundName) return null
+  return { code: m[1].toUpperCase(), fundName }
+}
+
 /** Parse CODE_FUNDNAME from 资产净值公告 subjects / filenames. */
 function parseAssetNavAnnouncementSubject(text: string): { code: string; fundName: string } | null {
   const underscored = text.match(
@@ -235,6 +273,8 @@ function extractFundNameFromSubject(subject: string): string | null {
     parseZhongtaiVirtualNavSubject,
     parseCscVirtualNavDisclosureSubject,
     parseFofBracketVirtualNavSubject,
+    parseGfProductNavSubject,
+    parseCfscHuaxinNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
     parseVirtualEstSubject,
@@ -360,6 +400,8 @@ function resolveFromStructuredSubject(subject: string): { code: string; fundName
     parseVirtualBracketSubject,
     parseZhongtaiVirtualNavSubject,
     parseFofBracketVirtualNavSubject,
+    parseGfProductNavSubject,
+    parseCfscHuaxinNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
     parseGuosenCustodyNavSubject,
@@ -541,6 +583,12 @@ export function extractProductCodeFromText(text: string): string | null {
   const labeled = text.match(/基金代码\s*[：:]\s*([A-Z0-9]+)/)
   if (labeled) return labeled[1]
 
+  const productCodeLabel = text.match(/产品代码\s*[：:]?\s*([A-Z]{1,6}\d{2,6}[A-Z]?)/)
+  if (productCodeLabel) return productCodeLabel[1]
+
+  const gfBeian = text.match(/协会备案编码\s*[：:]\s*([A-Z0-9]+)/)
+  if (gfBeian) return gfBeian[1]
+
   const productRef = text.match(/请查阅产品\s*([A-Z0-9]+)\s*[（(]/)
   if (productRef) return productRef[1]
 
@@ -570,6 +618,12 @@ export function extractFundNameFromText(text: string): string | null {
   const labeled = text.match(/基金名称\s*[：:]\s*([^\n\r]+)/)
   if (labeled) {
     const fromLabel = finalizeExtractedFundName(labeled[1])
+    if (fromLabel) return fromLabel
+  }
+
+  const productNameLabel = text.match(/产品名称\s*[：:]?\s*([^\n\r]+)/)
+  if (productNameLabel) {
+    const fromLabel = finalizeExtractedFundName(productNameLabel[1])
     if (fromLabel) return fromLabel
   }
 
@@ -680,10 +734,17 @@ export function extractNavMetadata(subject: string, bodyText: string) {
  * Match 单位净值 but not 虚拟单位净值 / 试算单位净值 / 试算后单位净值.
  * Xingye 业绩报酬试算表 lists both official 单位净值 and fee-trial 试算单位净值.
  */
+/** CFSC/华鑫 净值公告: 单位净值 (元) / 累计净值（元）. */
+const NAV_YUAN_UNIT = "(?:\\s*[（(]\\s*元\\s*[）)])?"
+
 function matchActualUnitNav(bodyText: string): RegExpMatchArray | null {
   return (
     // Exclude 累计单位净值 / 虚拟单位净值 / 试算后单位净值 label bleed.
-    bodyText.match(/(?<!累计)(?<!虚拟)(?<!试算)(?<!试算后)单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    bodyText.match(new RegExp(
+      `(?<!累计)(?<!虚拟)(?<!试算)(?<!试算后)单位净值${NAV_YUAN_UNIT}\\s*[：:]?\\s*(\\d+\\.\\d{3,8})`,
+      "u",
+    ))
+    ?? bodyText.match(/(?<!累计)(?<!虚拟)(?<!试算)(?<!试算后)单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/(?<!累计)(?<!虚拟)(?<!试算)(?<!试算后)单位净值\s+(\d+\.\d{3,8})/u)
     // CSC/中信建投 资产净值公告 body labels
     ?? bodyText.match(/基金份额净值\s*[：:]\s*(\d+\.\d{3,8})/u)
@@ -720,8 +781,10 @@ function resolveHuataiPerfFeeNavTriple(
 
 function matchCumulativeUnitNav(bodyText: string): RegExpMatchArray | null {
   return (
-    bodyText.match(/累计单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    bodyText.match(new RegExp(`累计单位净值${NAV_YUAN_UNIT}\\s*[：:]?\\s*(\\d+\\.\\d{3,8})`, "u"))
+    ?? bodyText.match(/累计单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/累计单位净值\s+(\d+\.\d{3,8})/u)
+    ?? bodyText.match(new RegExp(`(?<!虚拟)累计净值${NAV_YUAN_UNIT}\\s*[：:]?\\s*(\\d+\\.\\d{3,8})`, "u"))
     ?? bodyText.match(/(?<!虚拟)累计净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/(?<!虚拟)累计净值\s+(\d+\.\d{3,8})/u)
     ?? bodyText.match(/基金份额累计净值\s*[：:]\s*(\d+\.\d{3,8})/u)
@@ -925,7 +988,35 @@ export function extractNavData(
     }
   }
 
+  // ── 2-huaxin. CFSC/华鑫证券 净值公告: header row + one data row ───────────
+  // 净值日期 管理人名称 产品名称 产品代码 单位净值（元） 累计净值（元）
+  // 2026-08-28 上海简文私募基金管理有限公司 简文盛京四号斗金私募证券投资基金 SXY802 1.0628 1.0628
+  if (
+    /华鑫证券|净值公告[_-][A-Z0-9]/u.test(subject)
+    || /单位净值\s*[（(]\s*元\s*[）)]/u.test(bodyText)
+  ) {
+    const huaxinRowM = bodyText.match(
+      new RegExp(
+        `(\\d{4}-\\d{2}-\\d{2})\\s+[\\u4e00-\\u9fffA-Za-z0-9]+(?:有限公司)?\\s+(${FUND_NAME_RE.source})\\s+([A-Z]{1,6}\\d{2,6}[A-Z]?)\\s+(\\d+\\.\\d{3,8})\\s+(\\d+\\.\\d{3,8})`,
+        "u",
+      ),
+    )
+    if (huaxinRowM) {
+      return {
+        nav: parseFloat(huaxinRowM[4]),
+        navDate: huaxinRowM[1],
+        cumulativeNav: parseFloat(huaxinRowM[5]),
+        adjustedNav: null,
+        productCode: shared.productCode ?? huaxinRowM[3].toUpperCase(),
+        fundName: shared.fundName ?? normalizeFundDisplayName(huaxinRowM[2]),
+        source: "body_table",
+      }
+    }
+  }
+
   // ── 2. Body: colon-label or table-header style ─────────────────────────────
+  // CFSC/华鑫证券 净值公告 is a two-column label/value table:
+  //   净值日期 2026-08-28 / 单位净值 (元) 1.0628 / 累计净值 (元) 1.0628
   const unitNavM = matchActualUnitNav(bodyText)
   const cumNavM = matchCumulativeUnitNav(bodyText)
 
@@ -1037,6 +1128,27 @@ export function extractNavData(
     }
   }
 
+  // ── 3c3. Body: 广发证券 【订阅_产品净值】 (DATE NAME UNIT CUM CODE) ────────
+  // 日期 产品名称 单位净值 累计单位净值 协会备案编码
+  // 2026-08-28 笃熙鼎泰文艺复兴31号私募证券投资基金 1.1552 1.1552 SANK08
+  const gfProductNavRowM = bodyText.match(
+    new RegExp(
+      `(\\d{4}-\\d{2}-\\d{2})\\s+([\\u4e00-\\u9fff](?:[\\u4e00-\\u9fffA-Za-z0-9]|\\s+[\\u4e00-\\u9fffA-Za-z0-9])*${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)\\s+(\\d+\\.\\d{3,8})\\s+(\\d+\\.\\d{3,8})\\s+([A-Z]{1,6}\\d{2,6}[A-Z]?)`,
+      "u",
+    ),
+  )
+  if (gfProductNavRowM) {
+    return {
+      nav: parseFloat(gfProductNavRowM[3]),
+      navDate: gfProductNavRowM[1],
+      cumulativeNav: parseFloat(gfProductNavRowM[4]),
+      adjustedNav: null,
+      productCode: shared.productCode ?? gfProductNavRowM[5].toUpperCase(),
+      fundName: shared.fundName ?? normalizeFundDisplayName(gfProductNavRowM[2].replace(/\s+/g, "")),
+      source: "body_table",
+    }
+  }
+
   // ── 3d. Body: Changjiang 长江证券 虚拟净值 (试算后单位净值 column) ─────────
   // 2026-07-09 2026-07-10 SB969A 铸锋太阿3号...A类 ... 1.0000 1 1 1000000.00
   if (/^虚拟净值-/u.test(subject) || /试算后单位净值/u.test(bodyText)) {
@@ -1126,6 +1238,12 @@ const HISTORY_TABLE_ROW_CMS_RE = new RegExp(
   "gu",
 )
 
+/** 广发证券 产品净值: DATE NAME unit cum 协会备案编码. */
+const HISTORY_TABLE_ROW_GF_PRODUCT_NAV_RE = new RegExp(
+  `(\\d{4}-\\d{2}-\\d{2})\\s+([\\u4e00-\\u9fff](?:[\\u4e00-\\u9fffA-Za-z0-9]|\\s+[\\u4e00-\\u9fffA-Za-z0-9])*${FUND_LEGAL_SUFFIX}(?:[ABC]类|[ABC])?)\\s+(\\d+\\.\\d{3,8})\\s+(\\d+\\.\\d{3,8})\\s+([A-Z]{1,6}\\d{2,6}[A-Z]?)`,
+  "gu",
+)
+
 /** `等N个产品` in CMS/招商 【净值表】 subjects. */
 export function cmsMultiProductCountFromSubject(subject: string): number | null {
   const m = subject.match(/等\s*(\d+)\s*个产品/u)
@@ -1167,6 +1285,9 @@ function hasNavHistoryTable(bodyText: string, subject: string): boolean {
     /产品代码\s+产品名称\s+净值日期/u.test(bodyText) ||
     /日期\s+产品代码\s+产品名称/u.test(bodyText) ||
     /产品代码\s+产品名称\s+日期/u.test(bodyText) ||
+    /日期\s+产品名称\s+单位净值/u.test(bodyText) ||
+    /协会备案编码/u.test(bodyText) ||
+    /【(?:订阅_)?产品净值】/u.test(subject) ||
     /批量补发/u.test(subject) ||
     /资产净值公告/u.test(subject) ||
     (/管理人旗下/u.test(subject) && CMS_CHINESE_DATE_RE.test(bodyText)) ||
@@ -1215,6 +1336,17 @@ export function extractNavHistoryFromBody(
     const navDate = normaliseDate(`${m[1]}-${m[2]}-${m[3]}`)
     if (!navDate) continue
     addCandidate(m[4].toUpperCase(), m[5], navDate, parseFloat(m[6]), parseFloat(m[7]))
+  }
+
+  // 广发 【订阅_产品净值】: DATE NAME unit cum CODE (协会备案编码 last).
+  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_GF_PRODUCT_NAV_RE)) {
+    addCandidate(
+      m[5].toUpperCase(),
+      m[2],
+      m[1],
+      parseFloat(m[3]),
+      parseFloat(m[4]),
+    )
   }
 
   if (hasNavHistoryTable(bodyText, subject)) {

@@ -1,9 +1,22 @@
+import path from "path"
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
 import { readInvestmentNoteMaterialFile } from "@/lib/server/investment-note-materials"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+const POWERPOINT_DOWNLOAD_EXTENSIONS = new Set([
+  ".ppt",
+  ".pptx",
+  ".pptm",
+  ".pps",
+  ".ppsx",
+  ".ppsm",
+  ".pot",
+  ".potx",
+  ".potm",
+])
 
 async function getUser(req: Request) {
   const userId = String(req.headers.get("x-market-user-id") || "").trim()
@@ -27,11 +40,13 @@ export async function GET(
     }
 
     const encoded = encodeURIComponent(file.filename)
+    const ext = path.extname(file.filename || "").toLowerCase()
+    const disposition = POWERPOINT_DOWNLOAD_EXTENSIONS.has(ext) ? "attachment" : "inline"
     return new NextResponse(new Uint8Array(file.buffer), {
       status: 200,
       headers: {
         "Content-Type": file.mimeType,
-        "Content-Disposition": `inline; filename*=UTF-8''${encoded}`,
+        "Content-Disposition": `${disposition}; filename*=UTF-8''${encoded}`,
         "Cache-Control": "private, max-age=0, must-revalidate",
       },
     })

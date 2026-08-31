@@ -109,6 +109,6 @@ export async function queryFundStrategyTree(
 export async function loadMergedTeamStrategyTree(): Promise<TeamStrategyNode[]> {
   const fundTree = await queryFundStrategyTree("company", "all")
   const customTree = await getStoredTeamStrategies()
-  if (!customTree.length) return fundTree
+  if (!customTree.length) return mergeStrategyTrees(fundTree)
   return mergeStrategyTrees(customTree, fundTree)
 }

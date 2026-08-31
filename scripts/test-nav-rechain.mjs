@@ -40,6 +40,12 @@ import {
   isFundElementSourcePath,
 } from "../lib/ma/fund-element-source-file.ts"
 import {
+  isManagerProductPackEmail,
+  isManagerProductPackZip,
+  isRoutineCustodyEmail,
+  zipInnerPathsLookLikeManagerPack,
+} from "../lib/server/email-manager-pack.ts"
+import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
   loadManagedProductNavSeed,
@@ -1708,6 +1714,55 @@ assert("SVP460 CSC 虚拟净值数据 xlsx is selected as NAV attachment", svp46
 }
 
 {
+  assert(
+    "请查收 + manager-named zip is a first-contact pack",
+    isManagerProductPackZip("上海量派投资.zip", "尊敬的合作方您好，材料请查收") === true,
+  )
+  assert(
+    "manager-named zip without 净值/尽调 keywords is still a pack",
+    isManagerProductPackZip("量派投资.zip", "量派投资") === true,
+  )
+  assert(
+    "generic 附件.zip on 请查收 is opened as a pack",
+    isManagerProductPackZip("附件.zip", "请查收") === true,
+  )
+  assert(
+    "first-contact pack email is recognized without 净值 in subject",
+    isManagerProductPackEmail("请查收", [{ filename: "上海量派投资.zip" }]) === true,
+  )
+  assert(
+    "估值报表 zip is not a first-contact pack",
+    isManagerProductPackZip("估值报表补发文件.zip", "请查收估值表") === false,
+  )
+  assert(
+    "routine 估值表 请查收 stays custody mail",
+    isRoutineCustodyEmail("国泰海通证券资产托管估值表发送：SAVW72_金舆基石一号_20260615估值表") === true,
+  )
+  assert(
+    "daily 净值表 subject is not swallowed by pack rules",
+    isNavTableZipFilename("发送每日净值信息.zip", "招商证券【净值表】等5个产品") === true,
+  )
+  assert(
+    "inner 净值序列/要素表 paths confirm a manager pack",
+    zipInnerPathsLookLikeManagerPack([
+      "3、产品净值序列/量派CTA一号_净值序列.xlsx",
+      "2-1、产品要素表/量派CTA一号_要素表.pdf",
+    ]) === true,
+  )
+  const pleaseSeeAtts = selectNavTableAttachments("请查收", [
+    { filename: "上海量派投资.zip", part: "2" },
+  ])
+  assert(
+    "请查收 + manager zip is selected for NAV extract",
+    pleaseSeeAtts.length === 1 && pleaseSeeAtts[0]?.filename === "上海量派投资.zip",
+  )
+  assert(
+    "请查收 + manager zip also queues 产品要素 inspect",
+    isFundElementEmailZip("上海量派投资.zip", "请查收") === true,
+  )
+}
+
+{
   // CSC 资产净值公告 label/value form (no date column table).
   const wb = XLSX.utils.book_new()
   const sheet = XLSX.utils.aoa_to_sheet([
@@ -1830,6 +1885,125 @@ assert(
   "T07998 email product-code override maps to TG733C",
   applyEmailProductCodeOverride("T07998", "宁苑沛华稳定增长一号C类", tg733cValuationSubject) === "TG733C",
 )
+
+{
+  const gfSubject = "【订阅_产品净值】笃熙鼎泰文艺复兴31号私募证券投资基金_2026-08-28_SANK08"
+  const gfFilename = "【产品净值】笃熙鼎泰文艺复兴31号私募证券投资基金_2026-08-28.xlsx"
+  const gfBody =
+    "日期 产品名称 单位净值 累计单位净值 协会备案编码\n" +
+    "2026-08-28 笃熙鼎泰文艺复兴31号私募证券投资基金 1.1552 1.1552 SANK08"
+  const gfMeta = extractNavMetadata(gfSubject, gfBody)
+  assert("GF 产品净值 subject code SANK08", gfMeta.productCode === "SANK08")
+  assert("GF 产品净值 subject name 文艺复兴31号", /文艺复兴31号/.test(gfMeta.fundName ?? ""))
+  const gfNav = extractNavData(gfSubject, gfBody)
+  assert(
+    "GF 产品净值 body NAV 1.1552 on 2026-08-28",
+    gfNav?.nav === 1.1552
+      && gfNav?.cumulativeNav === 1.1552
+      && gfNav?.navDate === "2026-08-28"
+      && gfNav?.productCode === "SANK08",
+  )
+  const gfHist = extractNavHistoryFromBody(gfSubject, gfBody)
+  assert(
+    "GF 产品净值 history row",
+    gfHist.length === 1
+      && gfHist[0].nav === 1.1552
+      && gfHist[0].productCode === "SANK08"
+      && gfHist[0].navDate === "2026-08-28",
+  )
+  const gfAtts = selectNavTableAttachments(gfSubject, [{ filename: gfFilename, part: "2" }])
+  assert("GF 产品净值 xlsx selected from subject+filename", gfAtts.length === 1 && gfAtts[0].filename === gfFilename)
+  const gfFileOnlyAtts = selectNavTableAttachments(" unrelated ", [{ filename: gfFilename, part: "2" }])
+  assert("GF 产品净值 xlsx selected from filename alone", gfFileOnlyAtts.length === 1)
+  const wb = XLSX.utils.book_new()
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["日期", "产品名称", "单位净值", "累计单位净值", "协会备案编码"],
+    ["2026-08-28", "笃熙鼎泰文艺复兴31号私募证券投资基金", 1.1552, 1.1552, "SANK08"],
+  ])
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet1")
+  const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }))
+  const gfRows = extractNavTableFromBuffer(buf, gfFilename, gfSubject)
+  assert(
+    "GF 产品净值 xlsx parsed",
+    gfRows.length === 1
+      && gfRows[0].nav === 1.1552
+      && gfRows[0].navDate === "2026-08-28"
+      && gfRows[0].productCode === "SANK08",
+  )
+}
+
+{
+  // CFSC/华鑫证券 净值公告: two-column 单位净值 (元) table, hyphen after code.
+  const huaxinSubject = "【华鑫证券】净值公告_SXY802-简文盛京四号斗金私募证券投资基金_2026-08-28"
+  const huaxinFilename = "净值公告-SXY802-简文盛京四号斗金私募证券投资基金_20260828_单位净值.pdf"
+  const huaxinBody =
+    "净值日期 2026-08-28\n" +
+    "管理人名称 上海简文私募基金管理有限公司\n" +
+    "产品名称 简文盛京四号斗金私募证券投资基金\n" +
+    "产品代码 SXY802\n" +
+    "单位净值 (元) 1.0628\n" +
+    "累计净值 (元) 1.0628"
+  const huaxinMeta = extractNavMetadata(huaxinSubject, huaxinBody)
+  assert("华鑫证券 净值公告 subject code SXY802", huaxinMeta.productCode === "SXY802")
+  assert("华鑫证券 净值公告 subject name 简文盛京四号斗金", /简文盛京四号斗金/.test(huaxinMeta.fundName ?? ""))
+  const huaxinNav = extractNavData(huaxinSubject, huaxinBody)
+  assert(
+    "华鑫证券 净值公告 body stores 1.0628 on 2026-08-28",
+    huaxinNav?.nav === 1.0628
+      && huaxinNav?.cumulativeNav === 1.0628
+      && huaxinNav?.navDate === "2026-08-28"
+      && huaxinNav?.productCode === "SXY802"
+      && /简文盛京四号斗金/.test(huaxinNav?.fundName ?? ""),
+  )
+  const huaxinHorizontalBody =
+    "净值日期 管理人名称 产品名称 产品代码 单位净值（元） 累计净值（元）\n" +
+    "2026-08-28 上海简文私募基金管理有限公司 简文盛京四号斗金私募证券投资基金 SXY802 1.0628 1.0628"
+  const huaxinHorizontalNav = extractNavData(huaxinSubject, huaxinHorizontalBody)
+  assert(
+    "华鑫证券 净值公告 horizontal table stores 1.0628",
+    huaxinHorizontalNav?.nav === 1.0628
+      && huaxinHorizontalNav?.cumulativeNav === 1.0628
+      && huaxinHorizontalNav?.navDate === "2026-08-28"
+      && huaxinHorizontalNav?.productCode === "SXY802",
+  )
+  const huaxinXlsxName = "净值公告-SXY802-简文盛京四号斗金_20260828_单位净值+累计净值.xlsx"
+  const huaxinWb = XLSX.utils.book_new()
+  const huaxinWs = XLSX.utils.aoa_to_sheet([
+    ["净值日期", "管理人名称", "产品名称", "产品代码", "单位净值（元）", "累计净值（元）"],
+    ["2026-08-28", "上海简文私募基金管理有限公司", "简文盛京四号斗金私募证券投资基金", "SXY802", 1.0628, 1.0628],
+  ])
+  XLSX.utils.book_append_sheet(huaxinWb, huaxinWs, "Sheet1")
+  const huaxinXlsxBuf = Buffer.from(XLSX.write(huaxinWb, { type: "buffer", bookType: "xlsx" }))
+  const huaxinXlsxRows = extractNavTableFromBuffer(huaxinXlsxBuf, huaxinXlsxName, huaxinSubject)
+  assert(
+    "华鑫证券 净值公告 xlsx stores 1.0628",
+    huaxinXlsxRows.some((r) => r.navDate === "2026-08-28" && r.nav === 1.0628 && r.productCode === "SXY802"),
+  )
+  const huaxinPdfText =
+    "净值日期\n2026-08-28\n管理人名称\n上海简文私募基金管理有限公司\n" +
+    "产品名称\n简文盛京四号斗金私募证券投资基金\n产品代码\nSXY802\n" +
+    "单位净值（元）\n1.0628\n累计净值（元）\n1.0628"
+  const huaxinPdfNav = extractNavFromCiticsAnnouncementText(huaxinPdfText, huaxinFilename, huaxinSubject)
+  assert(
+    "华鑫证券 净值公告 PDF label/value stores 1.0628",
+    huaxinPdfNav?.navDate === "2026-08-28"
+      && huaxinPdfNav?.nav === 1.0628
+      && huaxinPdfNav?.cumulativeNav === 1.0628
+      && huaxinPdfNav?.productCode === "SXY802",
+  )
+  const huaxinAtts = selectNavTableAttachments(huaxinSubject, [{ filename: huaxinFilename, part: "2" }])
+  assert("华鑫证券 净值公告 PDF is selected", huaxinAtts.length === 1 && huaxinAtts[0].filename === huaxinFilename)
+  const huaxinSeriesSubject =
+    "【华鑫证券】净值序列_SXY802-简文盛京四号斗金私募证券投资基金_2025-03-05~2026-06-16"
+  const huaxinSeriesFile = "净值序列-SXY802-简文盛京四号斗金私募证券投资基金.xlsx"
+  const huaxinSeriesAtts = selectNavTableAttachments(huaxinSeriesSubject, [
+    { filename: huaxinSeriesFile, part: "2" },
+  ])
+  assert(
+    "华鑫证券 净值序列 xlsx is selected",
+    huaxinSeriesAtts.length === 1 && huaxinSeriesAtts[0].filename === huaxinSeriesFile,
+  )
+}
 
 // SQX078: virtual email cum/unit > 2 must not be stripped; 复权 grows at unit rate on email tail
 const sqx078LegacyTail = [

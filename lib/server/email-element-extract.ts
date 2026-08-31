@@ -16,6 +16,7 @@ import {
   createElementExtractJobFromBuffer,
   findElementExtractJobsForMaterials,
 } from "@/lib/server/fund-element-extract-jobs"
+import { isManagerProductPackZip } from "@/lib/server/email-manager-pack"
 import type { ZipSpreadsheetEntry } from "@/lib/server/email-valuation-zip"
 
 const PREFERRED_ELEMENT_RE = /要素表|产品要素|一页通|壹页通|一期通|一页纸/
@@ -55,10 +56,7 @@ export function expandFundElementZipBuffer(buffer: Buffer): ZipSpreadsheetEntry[
 }
 
 export function isFundElementEmailZip(filename: string, subject = ""): boolean {
-  if (!/\.zip$/i.test(filename.trim())) return false
-  return /尽调材料|尽调资料|产品材料|代表性产品|代表产品|要素表|产品要素/u.test(
-    `${filename}\n${subject}`,
-  )
+  return isManagerProductPackZip(filename, subject)
 }
 
 export type EmailElementEnqueueResult = {

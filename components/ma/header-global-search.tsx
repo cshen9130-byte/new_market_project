@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { useRouter } from "next/navigation"
 import { Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -35,8 +34,15 @@ function HighlightMatch({ text, query }: { text: string; query: string }) {
   )
 }
 
+function resultsHref(q: string) {
+  return `/ma/dashboard/private-funds/search?q=${encodeURIComponent(q)}`
+}
+
+function openInNewTab(href: string) {
+  window.open(href, "_blank", "noopener,noreferrer")
+}
+
 export function HeaderGlobalSearch({ className }: { className?: string }) {
-  const router = useRouter()
   const [query, setQuery] = useState("")
   const [products, setProducts] = useState<ProductHit[]>([])
   const [managers, setManagers] = useState<ManagerHit[]>([])
@@ -152,18 +158,15 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
   function goTo(hit: SearchHit) {
     setOpen(false)
     setFocused(false)
-    setQuery("")
-    router.push(hrefFor(hit))
+    openInNewTab(hrefFor(hit))
   }
 
   function submitSearch() {
     const q = query.trim()
     if (!q) return
-    if (hits.length > 0) {
-      goTo(hits[Math.min(hoverIdx, hits.length - 1)])
-      return
-    }
-    setOpen(true)
+    setOpen(false)
+    setFocused(false)
+    openInNewTab(resultsHref(q))
   }
 
   function onFocus() {

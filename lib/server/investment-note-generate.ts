@@ -13,6 +13,7 @@ import {
 } from "@/lib/ma/investment-notes"
 import { readFundContractText } from "@/lib/server/fund-contract-element-extract"
 import { resolveExtractedProductCandidates } from "@/lib/server/investment-note-extracted-products"
+import { extractPptxText, isPptxOpenXmlExtension } from "@/lib/server/pptx-text"
 import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
 import {
   linkInvestmentNoteMaterials,
@@ -43,6 +44,12 @@ const EXTRACT_EXTENSIONS = new Set([
   ".gif",
   ".webp",
   ".bmp",
+  ".pptx",
+  ".pptm",
+  ".ppsx",
+  ".ppsm",
+  ".potx",
+  ".potm",
 ])
 
 export type GeneratedNoteFromMaterials = {
@@ -129,6 +136,9 @@ async function extractMaterialText(buffer: Buffer, fileName: string): Promise<st
   const ext = getExtension(fileName)
   if (TEXT_EXTENSIONS.has(ext)) {
     return buffer.toString("utf8").replace(/\u0000/g, "").trim()
+  }
+  if (isPptxOpenXmlExtension(ext)) {
+    return extractPptxText(buffer)
   }
   if (ext === ".pdf" && buffer.byteLength > CONTRACT_MAX_BYTES) {
     return (await readPdfTextWithCmaps(buffer)).trim()

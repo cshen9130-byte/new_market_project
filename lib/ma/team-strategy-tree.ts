@@ -1,6 +1,98 @@
+import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
+
 export type TeamStrategyNode = {
   l1: string
   l2s: { l2: string; l3s: string[] }[]
+}
+
+const INDEX_ENHANCEMENT_L2 = "指数增强"
+
+function zhSort(a: string, b: string): number {
+  return a.localeCompare(b, "zh")
+}
+
+/** Parent L2 for a name that was stored as L2 but belongs as L3 (e.g. 500指增 → 指数增强). */
+export function findParentL2ForMisplacedName(
+  tree: TeamStrategyNode[],
+  l1: string,
+  name: string,
+): string | null {
+  const trimmed = name.trim()
+  if (!l1 || !trimmed) return null
+  const node = tree.find((n) => n.l1 === l1)
+  if (!node) return null
+  if (node.l2s.some((l2) => l2.l2 === trimmed)) return null
+  for (const l2 of node.l2s) {
+    if (l2.l3s.includes(trimmed)) return l2.l2
+  }
+  if (/指增$/.test(trimmed) && node.l2s.some((l2) => l2.l2 === INDEX_ENHANCEMENT_L2)) {
+    return INDEX_ENHANCEMENT_L2
+  }
+  return null
+}
+
+/**
+ * Fold L2 nodes that are actually L3 names (500指增, 风格指增, …) under their real parent.
+ * Used after merging the official taxonomy with fund-assigned values.
+ */
+export function reparentMisplacedL2s(tree: TeamStrategyNode[]): TeamStrategyNode[] {
+  return tree.map((l1Node) => {
+    const l3Parent = new Map<string, string>()
+    for (const l2 of l1Node.l2s) {
+      for (const l3 of l2.l3s) {
+        if (l3 && !l3Parent.has(l3)) l3Parent.set(l3, l2.l2)
+      }
+    }
+    const hasIndexEnh = l1Node.l2s.some((l2) => l2.l2 === INDEX_ENHANCEMENT_L2)
+    const extraL3s = new Map<string, string[]>()
+    const keep: TeamStrategyNode["l2s"] = []
+
+    for (const l2 of l1Node.l2s) {
+      let parent = l3Parent.get(l2.l2)
+      if (parent === l2.l2) parent = undefined
+      if (!parent && hasIndexEnh && /指增$/.test(l2.l2) && l2.l2 !== INDEX_ENHANCEMENT_L2) {
+        parent = INDEX_ENHANCEMENT_L2
+      }
+      if (parent) {
+        extraL3s.set(parent, [...(extraL3s.get(parent) ?? []), l2.l2, ...l2.l3s])
+      } else {
+        keep.push(l2)
+      }
+    }
+
+    const l2s = keep
+      .map((l2) => {
+        const extras = extraL3s.get(l2.l2)
+        if (!extras?.length) return l2
+        const seen = new Set(l2.l3s)
+        const l3s = [...l2.l3s]
+        for (const extra of extras) {
+          const name = extra.trim()
+          if (!name || seen.has(name) || name === l2.l2) continue
+          seen.add(name)
+          l3s.push(name)
+        }
+        return { l2: l2.l2, l3s: l3s.sort(zhSort) }
+      })
+      .sort((a, b) => zhSort(a.l2, b.l2))
+
+    return { l1: l1Node.l1, l2s }
+  })
+}
+
+/** Move a stored L2 that is really an L3 under its parent; keep original L3 tags. */
+export function relevelMisplacedTeamStrategy(
+  l1: string,
+  l2: string,
+  l3: string,
+  tree: TeamStrategyNode[],
+): { l1: string; l2: string; l3: string } {
+  const parent = findParentL2ForMisplacedName(tree, l1, l2)
+  if (!parent) return { l1, l2, l3 }
+  const parts = parseStrategyLevel3(l3)
+  const misplaced = l2.trim()
+  if (misplaced && !parts.includes(misplaced)) parts.unshift(misplaced)
+  return { l1, l2: parent, l3: parts.join(",") }
 }
 
 export async function loadTeamStrategyTree(): Promise<TeamStrategyNode[]> {
@@ -145,14 +237,25 @@ export function migrateRowTeamStrategies(
   const l1Options = teamStrategyL1Options(tree)
   const strategyLevel1 = matchNearestTeamStrategyCompound(row.strategyLevel1, l1Options)
 
+  const misplacedL2 = row.strategyLevel2.trim()
+  const parentL2 = findParentL2ForMisplacedName(tree, strategyLevel1, misplacedL2)
   const l2Options = teamStrategyL2Options(tree, strategyLevel1)
-  const strategyLevel2 = strategyLevel1
-    ? matchNearestTeamStrategyCompound(row.strategyLevel2, l2Options)
-    : ""
+  let strategyLevel2: string
+  let l3Input = row.strategyLevel3
+  if (parentL2) {
+    strategyLevel2 = parentL2
+    const parts = parseStrategyLevel3(row.strategyLevel3)
+    if (misplacedL2 && !parts.includes(misplacedL2)) parts.unshift(misplacedL2)
+    l3Input = parts.join("、")
+  } else {
+    strategyLevel2 = strategyLevel1
+      ? matchNearestTeamStrategyCompound(row.strategyLevel2, l2Options)
+      : ""
+  }
 
   const l3Options = teamStrategyL3Options(tree, strategyLevel1, strategyLevel2)
   const strategyLevel3 = strategyLevel1 && strategyLevel2
-    ? migrateStrategyLevel3(row.strategyLevel3, l3Options)
+    ? migrateStrategyLevel3(l3Input, l3Options)
     : ""
 
   return { strategyLevel1, strategyLevel2, strategyLevel3 }

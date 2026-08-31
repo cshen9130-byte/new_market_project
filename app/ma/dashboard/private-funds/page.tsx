@@ -1146,16 +1146,18 @@ function PctCell({ value }: { value: string | null }) {
 }
 
 function CopyableManagerName({ manager }: { manager: string }) {
+  const text = manager?.trim()
+  if (!text) return <span className="text-muted-foreground">—</span>
   return (
     <CopyableInlineText
-      text={manager}
+      text={text}
       copyTitle="复制管理人"
       label={
         <span
           className="truncate min-w-0 text-blue-600 dark:text-blue-400 cursor-pointer hover:underline"
-          title={manager}
+          title={text}
         >
-          {manager}
+          {text}
         </span>
       }
     />
@@ -2851,7 +2853,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     : null
 
   return (
-    <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
+    <div className="flex flex-col min-w-0">
       {isOps ? (
         <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0 overflow-x-auto">
           {pools.map((p) => (
@@ -2889,7 +2891,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       )}
 
       {(isOps || trackTab === "team") && (
-      <div className="flex gap-0 flex-1 min-h-0">
+      <div className="flex gap-0">
         {!isOps && (
         <aside className="w-32 flex-shrink-0 border-r">
           <div className="flex items-center gap-1 px-2 py-2 border-b">
@@ -3402,9 +3404,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           </div>
           )}
 
-          {/* Table */}
+          {/* Table — page scrolls vertically; table wrapper only scrolls horizontally when wide */}
           {isOps ? (
-          <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+          <div className="overflow-x-auto rounded-lg border">
             <table className="text-sm border-collapse w-full">
               <thead className="sticky top-0 z-20">
                 <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
@@ -3492,7 +3494,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             </table>
           </div>
           ) : (
-          <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+          <div className="overflow-x-auto rounded-lg border">
             <table className="text-sm border-collapse w-full" style={{ minWidth: 1400 }}>
               <thead className="sticky top-0 z-20">
                 <tr className="bg-muted dark:bg-zinc-900 border-b">
@@ -3695,7 +3697,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       )}
 
       {!isOps && trackTab === "mine" && (
-      <div className="flex gap-0 flex-1 min-h-0">
+      <div className="flex gap-0">
         {/* Mine sidebar */}
         <aside className="w-32 flex-shrink-0 border-r">
           <div className="flex items-center gap-1 px-2 py-2 border-b">
@@ -3994,7 +3996,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             </div>
           </div>
           {/* Table */}
-          <div className="overflow-x-auto rounded-lg border flex-1">
+          <div className="overflow-x-auto rounded-lg border">
             <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
               <thead className="sticky top-0 z-20">
                 <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">

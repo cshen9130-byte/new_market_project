@@ -19,6 +19,7 @@ export async function registerBackgroundJobs(): Promise<void> {
   const { runDueSettlementFetch } = await import("./settlement-email")
   const { runDueAccountRiskEmailFetch, runDueCfmmcFetch } = await import("./account-risk-import")
   const { runDueAllWeatherEmails } = await import("./all-weather-email")
+  const { runDueNhciIndexEmails } = await import("./nhci-index-email")
   const cron = (await import("node-cron")).default
 
   // Check every minute whether any dispatch setup is due
@@ -28,6 +29,7 @@ export async function registerBackgroundJobs(): Promise<void> {
     runDueAccountRiskEmailFetch().catch((e) => console.error("[account-risk-email] scheduler error:", e))
     runDueCfmmcFetch().catch((e) => console.error("[account-risk-cfmmc] scheduler error:", e))
     runDueAllWeatherEmails().catch((e) => console.error("[all-weather-email] scheduler error:", e))
+    runDueNhciIndexEmails().catch((e) => console.error("[nhci-index-email] scheduler error:", e))
   }, { timezone: "Asia/Shanghai" })
 
   // Dedicated 17:00 Beijing tick so a blocked FOF/cache minute does not drop

@@ -62,6 +62,11 @@ import {
   type EmailValuationInsert,
 } from "@/lib/server/email-valuation-pg"
 import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
+import {
+  isManagerProductPackEmail,
+  isManagerProductPackZip,
+  zipInnerPathsLookLikeManagerPack,
+} from "@/lib/server/email-manager-pack"
 import { isFundElementSourceFilename } from "@/lib/ma/fund-element-source-file"
 import {
   enqueueElementExtractFromEmailAttachment,
@@ -112,7 +117,7 @@ export type EmailParseFetchResult = {
 }
 
 const FUND_EMAIL_RE =
-  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金|确认单|确认函|交易确认|成交确认|申购确认|赎回确认|认购确认|基金成立|产品材料|代表性产品|代表产品|尽调材料|尽调资料|净值序列|历史净值/u
+  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金|确认单|确认函|交易确认|成交确认|申购确认|赎回确认|认购确认|基金成立|产品材料|代表性产品|代表产品|尽调|一页通|要素表|产品资料|产品介绍|净值序列|历史净值/u
 
 // ImapFlow defaults (connectionTimeout=90s, greetingTimeout=16s, socketTimeout=300s)
 // let a single slow/unresponsive mail server block this call for minutes per
@@ -196,8 +201,38 @@ function stripHtml(html: string): string {
     .trim()
 }
 
+/** CFSC/华鑫 HTML bodies often arrive quoted-printable (`=E5=87=80=E5=80=BC`). */
+function looksLikeQuotedPrintable(text: string): boolean {
+  return (text.match(/=[0-9A-F]{2}/gi)?.length ?? 0) >= 8
+}
+
+function decodeQuotedPrintable(raw: string): string {
+  if (!looksLikeQuotedPrintable(raw)) return raw
+  try {
+    const packed = raw.replace(/=\r?\n/g, "")
+    const bytes: number[] = []
+    for (let i = 0; i < packed.length; i++) {
+      if (packed[i] === "=" && /^[0-9A-F]{2}/i.test(packed.slice(i + 1, i + 3))) {
+        bytes.push(parseInt(packed.slice(i + 1, i + 3), 16))
+        i += 2
+      } else {
+        bytes.push(packed.charCodeAt(i) & 0xff)
+      }
+    }
+    return Buffer.from(bytes).toString("utf8")
+  } catch {
+    return raw
+  }
+}
+
+function decodeEmailBodyPart(raw: string, mime: string): string {
+  const decoded = decodeQuotedPrintable(raw)
+  return mime.includes("text/html") ? stripHtml(decoded) : decoded
+}
+
 function isFundRelated(subject: string, attachments: AttachmentInfo[]): boolean {
   if (FUND_EMAIL_RE.test(subject)) return true
+  if (isManagerProductPackEmail(subject, attachments)) return true
   if (hasConfirmAttachment(subject, attachments)) return true
   return attachments.some((a) => {
     const lower = a.filename.toLowerCase()
@@ -224,6 +259,14 @@ function hasTableNav(body: string): boolean {
   }
   // Zhongtai/中泰 虚拟净值: 业务日期 YYYYMMDD + 单位净值 (no 净值日期 label).
   if (/业务日期/u.test(body) && /单位净值/u.test(body) && /20\d{6}/u.test(body)) {
+    return /\d+\.\d{2,8}/.test(text)
+  }
+  // 广发证券 【订阅_产品净值】: 日期 产品名称 单位净值 累计单位净值 协会备案编码
+  if (
+    (/协会备案编码/u.test(body) || /日期\s+产品名称\s+单位净值/u.test(body))
+    && /单位净值/u.test(body)
+    && /20\d{2}-\d{2}-\d{2}/u.test(body)
+  ) {
     return /\d+\.\d{2,8}/.test(text)
   }
   return /单位净值|基金份额净值|资产净值|虚拟净值|虚拟单位净值/.test(text) && /\d+\.\d{2,8}/.test(text) && /<table|┌|│|净值日期/u.test(body)
@@ -539,7 +582,7 @@ async function fetchMailbox(
             const bufs: Buffer[] = []
             for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
             const text = Buffer.concat(bufs).toString("utf-8")
-            chunks.push(mime.includes("text/html") ? stripHtml(text) : text)
+            chunks.push(decodeEmailBodyPart(text, mime))
           } catch (e) {
             errors.push(`${account.account} UID ${uid}: ${e instanceof Error ? e.message : String(e)}`)
           }
@@ -587,17 +630,32 @@ async function fetchMailbox(
                 )
               }
             }
-            const payloads: Array<{ storedFilename: string; parseFilename: string; buffer: Buffer }> =
-              isNavTableZipFilename(att.filename, subject)
-                ? expandNavTableZipBuffer(buf, att.filename).map((inner) => ({
-                    storedFilename: zipInnerAttachmentKey(att.filename, inner.filename),
-                    parseFilename: inner.filename,
-                    buffer: inner.buffer,
-                  }))
-                : [{ storedFilename: att.filename, parseFilename: att.filename, buffer: buf }]
+            const payloads: Array<{ storedFilename: string; parseFilename: string; buffer: Buffer }> = (() => {
+              if (!isNavTableZipFilename(att.filename, subject)) {
+                return [{ storedFilename: att.filename, parseFilename: att.filename, buffer: buf }]
+              }
+              const inners = expandNavTableZipBuffer(buf, att.filename)
+              const packOnly =
+                isManagerProductPackZip(att.filename, subject)
+                && !/净值序列|历史净值|净值表|净值公告|资产净值/i.test(`${att.filename}\n${subject}`)
+              if (
+                packOnly
+                && inners.length > 0
+                && !zipInnerPathsLookLikeManagerPack(inners.map((inner) => inner.entryName))
+              ) {
+                return []
+              }
+              return inners.map((inner) => ({
+                storedFilename: zipInnerAttachmentKey(att.filename, inner.filename),
+                parseFilename: inner.filename,
+                buffer: inner.buffer,
+              }))
+            })()
 
             if (payloads.length === 0 && isNavTableZipFilename(att.filename, subject)) {
-              errors.push(`${account.account} UID ${uid} nav zip ${att.filename}: empty zip`)
+              if (!isManagerProductPackZip(att.filename, subject)) {
+                errors.push(`${account.account} UID ${uid} nav zip ${att.filename}: empty zip`)
+              }
               continue
             }
 

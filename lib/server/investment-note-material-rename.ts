@@ -11,6 +11,7 @@ import {
 } from "@/lib/ma/investment-note-material-filename"
 import { readFileDocumentText } from "@/lib/server/knowledge-base"
 import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
+import { extractPptxText, isPptxOpenXmlExtension } from "@/lib/server/pptx-text"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
@@ -105,6 +106,9 @@ async function extractDocumentText(buffer: Buffer, fileName: string): Promise<st
   }
   if (ext === ".pdf") {
     return (await readPdfTextWithCmaps(buffer)).trim()
+  }
+  if (isPptxOpenXmlExtension(ext)) {
+    return extractPptxText(buffer)
   }
   if (!OFFICE_EXTENSIONS.has(ext)) return ""
 

@@ -33,6 +33,7 @@ import {
 import { needsContentBasedMaterialRename, partitionDuplicateMaterialFiles } from "@/lib/ma/investment-note-material-filename"
 import type { InvestmentNote, InvestmentNoteMaterial } from "@/lib/ma/investment-notes"
 import {
+  INVESTMENT_NOTE_MATERIAL_ACCEPT,
   INVESTMENT_NOTE_MATERIAL_MAX_BYTES,
   INVESTMENT_NOTE_MATERIAL_MAX_MB,
   autoRenameInvestmentNoteMaterials,
@@ -592,6 +593,7 @@ export function InvestmentNoteMaterialsView() {
         ref={fileInputRef}
         type="file"
         multiple
+        accept={INVESTMENT_NOTE_MATERIAL_ACCEPT}
         className="hidden"
         onChange={(e) => {
           if (e.target.files?.length) void uploadFiles(e.target.files)
@@ -681,7 +683,7 @@ export function InvestmentNoteMaterialsView() {
             {uploading ? "正在上传..." : "拖拽文件到此处，或点击选择文件"}
           </div>
           <div className="text-xs text-zinc-400">
-            支持 PDF / PPT / Word / Excel / 图片 / TXT / CSV / ZIP，单文件不超过 {INVESTMENT_NOTE_MATERIAL_MAX_MB}MB。上传后会自动去掉 (1)(2)、-v1 等后缀；无意义文件名会按内容重命名。识别到一页通、要素表、产品介绍、基金合同时会自动提取产品要素。
+            支持 PDF / PPT / PPTX / Word / Excel / 图片 / TXT / CSV / ZIP，单文件不超过 {INVESTMENT_NOTE_MATERIAL_MAX_MB}MB。上传后会自动去掉 (1)(2)、-v1 等后缀；无意义文件名会按内容重命名。识别到一页通、要素表、产品介绍、基金合同时会自动提取产品要素。
           </div>
         </button>
 

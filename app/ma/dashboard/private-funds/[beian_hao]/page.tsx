@@ -988,25 +988,38 @@ export default function PrivateFundDetailPage() {
   const [showDateRange,    setShowDateRange]    = useState(false)
   const [excessByDivision, setExcessByDivision] = useState(false)
 
-  // When data loads, seed benchmark and dates
+  // When data loads, seed dates
   useEffect(() => {
     if (!data) return
     const period = getInitialFilterPeriod(data)
     const range = period === "运作以来"
       ? getOperationFilterRange(data, todayStr)
       : getDefaultFilterRange(data, todayStr)
+    setFilterPeriod(period)
+    setFilterFrom(range.from)
+    setFilterTo(range.to)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+
+  useEffect(() => {
+    if (!data) return
     const benchmarkKey = resolveDefaultBenchmarkKey({
       teamBenchmark: data.info.team_benchmark,
       strategyL1: data.info.strategy_l1,
       strategyL2: data.info.strategy_l2,
+      strategyL3: data.info.strategy_l3,
+      extraHints: fundTags,
     })
-    setFilterPeriod(period)
-    setFilterFrom(range.from)
-    setFilterTo(range.to)
     setFilterBench(benchmarkKey)
     setAppliedBench(benchmarkKey)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data])
+  }, [
+    data,
+    data?.info.team_benchmark,
+    data?.info.strategy_l1,
+    data?.info.strategy_l2,
+    data?.info.strategy_l3,
+    fundTags,
+  ])
 
   useEffect(() => {
     if (!data || !appliedBench) {
@@ -1073,6 +1086,7 @@ export default function PrivateFundDetailPage() {
       teamBenchmark: data.info.team_benchmark,
       strategyL1: data.info.strategy_l1,
       strategyL2: data.info.strategy_l2,
+      strategyL3: data.info.strategy_l3,
     })
     setFilterPeriod(period)
     setFilterFrom(range.from)

@@ -103,6 +103,7 @@ const MIME_TO_EXTENSION: Record<string, string> = {
   "application/mspowerpoint": ".ppt",
   "application/powerpoint": ".ppt",
   "application/x-mspowerpoint": ".ppt",
+  "application/x-pptx": ".pptx",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
   "application/vnd.ms-powerpoint.presentation.macroenabled.12": ".pptm",
   "application/vnd.openxmlformats-officedocument.presentationml.slideshow": ".ppsx",
@@ -130,6 +131,19 @@ function resolveMaterialExtension(file: File): string {
   const fromMime = extensionForMime(file.type)
   if (ALLOWED_EXTENSIONS.has(fromMime)) return fromMime
   return fromName
+}
+
+function looksLikeZipBuffer(buffer: Buffer): boolean {
+  return buffer.length >= 2 && buffer[0] === 0x50 && buffer[1] === 0x4b
+}
+
+/** Browsers often send .pptx as application/vnd.ms-powerpoint (mapped to .ppt). */
+function refinePowerpointExtension(ext: string, buffer: Buffer): string {
+  if (!looksLikeZipBuffer(buffer)) return ext
+  if (ext === ".ppt") return ".pptx"
+  if (ext === ".pps") return ".ppsx"
+  if (ext === ".pot") return ".potx"
+  return ext
 }
 
 function displayNameWithExtension(fileName: string, ext: string): string {
@@ -498,9 +512,10 @@ export async function saveInvestmentNoteMaterial(input: {
     throw new Error(`文件大小不能超过 ${INVESTMENT_NOTE_MATERIAL_MAX_MB}MB`)
   }
 
-  const originalFilename = displayNameWithExtension(input.file.name || "material.bin", ext)
   const link = resolveNoteForUser(input.noteId, input.uploadedBy)
   const buffer = Buffer.from(await input.file.arrayBuffer())
+  const resolvedExt = refinePowerpointExtension(ext, buffer)
+  const originalFilename = displayNameWithExtension(input.file.name || "material.bin", resolvedExt)
   const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
   const all = readAll()
   const existing = findStoredDuplicate(all, hash, originalFilename, buffer.length)
@@ -518,12 +533,12 @@ export async function saveInvestmentNoteMaterial(input: {
 
   const display = await resolveInvestmentNoteMaterialDisplayName({
     originalName: originalFilename,
-    ext,
+    ext: resolvedExt,
     buffer,
     noteTitle: link.noteTitle,
   })
   const id = createMaterialId()
-  const storageFilename = `${id}_${hash}${ext}`
+  const storageFilename = `${id}_${hash}${resolvedExt}`
   const mimeType = mimeTypeForFilename(display.name, input.file.type)
 
   ensureDirs()

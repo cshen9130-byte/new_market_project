@@ -46,7 +46,7 @@ type DateOrder = "ymd" | "mdy" | "dmy"
 const TEMPLATE_PATH = path.join(process.cwd(), "NAV_template", "上传净值模版.xlsx")
 
 const PRODUCT_CODE_HEADER_PATTERNS = [
-  /产品代码|基金代码|证券代码|备案编号|产品编号|基金编号|productcode|fundcode|beian/i,
+  /产品代码|基金代码|证券代码|协会备案编码|备案编码|备案编号|产品编号|基金编号|productcode|fundcode|beian/i,
 ]
 
 const PRODUCT_NAME_HEADER_PATTERNS = [

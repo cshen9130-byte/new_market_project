@@ -1,4 +1,5 @@
 import { query } from "@/lib/db"
+import { reparentMisplacedL2s } from "@/lib/ma/team-strategy-tree"
 
 export interface OpsStrategyL2 {
   l2: string
@@ -50,7 +51,7 @@ export function mergeStrategyTrees(...trees: OpsStrategyL1[]): OpsStrategyL1[] {
     }
   }
 
-  return Array.from(l1Map.entries())
+  const merged = Array.from(l1Map.entries())
     .sort(([a], [b]) => a.localeCompare(b, "zh"))
     .map(([l1, l2Map]) => ({
       l1,
@@ -61,4 +62,6 @@ export function mergeStrategyTrees(...trees: OpsStrategyL1[]): OpsStrategyL1[] {
           l3s: Array.from(l3Set).sort((a, b) => a.localeCompare(b, "zh")),
         })),
     }))
+
+  return reparentMisplacedL2s(merged)
 }

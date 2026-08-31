@@ -9,6 +9,8 @@ import {
   persistEmptyTeamStrategyFromPlatform,
 } from "@/lib/server/fund-strategy-resolve"
 import { addFundToTrackingPool } from "@/lib/server/tracking-pool-membership"
+import { relevelMisplacedTeamStrategy } from "@/lib/ma/team-strategy-tree"
+import { loadMergedTeamStrategyTree } from "@/lib/server/team-strategy-tree"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -58,11 +60,26 @@ export async function GET(
       if (wrote) company = resolved.platform
     }
     const team = isStrategyEmpty(company) ? resolved.platform : company
+    let strategy_l1 = team.l1
+    let strategy_l2 = team.l2
+    let strategy_l3 = team.l3
+    if (!isStrategyEmpty(company)) {
+      const tree = await loadMergedTeamStrategyTree()
+      const releveled = relevelMisplacedTeamStrategy(
+        strategy_l1 ?? "",
+        strategy_l2 ?? "",
+        strategy_l3 ?? "",
+        tree,
+      )
+      strategy_l1 = releveled.l1 || null
+      strategy_l2 = releveled.l2 || null
+      strategy_l3 = releveled.l3 || null
+    }
     return NextResponse.json({
       beian_hao,
-      strategy_l1: team.l1,
-      strategy_l2: team.l2,
-      strategy_l3: team.l3,
+      strategy_l1,
+      strategy_l2,
+      strategy_l3,
       company_l1: company.l1,
       company_l2: company.l2,
       company_l3: company.l3,
@@ -87,10 +104,17 @@ export async function PATCH(
   const body = await req.json().catch(() => null) as Record<string, unknown> | null
   if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
 
-  const strategy_l1 = trimOrNull(body.strategy_l1)
-  const strategy_l2 = trimOrNull(body.strategy_l2)
-  const strategy_l3 = trimOrNull(body.strategy_l3)
   const product_name = trimOrNull(body.product_name) || beian_hao
+  const tree = await loadMergedTeamStrategyTree()
+  const releveled = relevelMisplacedTeamStrategy(
+    trimOrNull(body.strategy_l1) ?? "",
+    trimOrNull(body.strategy_l2) ?? "",
+    trimOrNull(body.strategy_l3) ?? "",
+    tree,
+  )
+  const strategy_l1 = releveled.l1 || null
+  const strategy_l2 = releveled.l2 || null
+  const strategy_l3 = releveled.l3 || null
 
   try {
     let result = await updateCompanyStrategy(beian_hao, strategy_l1, strategy_l2, strategy_l3)

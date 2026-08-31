@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { sqlFundNameBase } from "@/lib/server/fund-name-match"
 import {
   applyCanonicalManagerNames,
   expandManagerFilterNames,
@@ -16,6 +17,7 @@ const AMAC_LIST_SOURCE = `private_fund_info i`
 /**
  * AMAC + BFL-only rows (share-class tiers from 要素提取 / 分级创建).
  * Used for keyword search so AJD58B-style products are findable; browse stays AMAC-only.
+ * BFL-only rows have no stored manager; inheritShareClassParentFields fills it from the parent.
  */
 const SEARCH_LIST_SOURCE = `(
   SELECT
@@ -87,6 +89,93 @@ type FundListRow = {
   calmar_1y: string | null
   latest_nav: string | null
   latest_nav_date: string | null
+}
+
+function shareClassParentCodes(beianHao: string): string[] {
+  const raw = beianHao.trim().toUpperCase()
+  const base = raw.replace(/[ABC]$/u, "")
+  if (!base) return []
+  return [...new Set([`S${base}`, base, base.replace(/^S/u, "")].filter(Boolean))]
+}
+
+function fundNameBaseForParent(name: string): string {
+  return name
+    .trim()
+    .replace(/[ABC]类份额$/u, "")
+    .replace(/[ABC]类$/u, "")
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .trim()
+}
+
+/** BFL-only A/B/C rows store no manager — copy it from the parent AMAC fund. */
+async function inheritShareClassParentFields<T extends FundListRow>(rows: T[]): Promise<T[]> {
+  const missing = rows.filter((row) => !row.manager?.trim())
+  if (missing.length === 0) return rows
+
+  const parentCodes = new Set<string>()
+  const childCandidates = new Map<string, string[]>()
+  for (const row of missing) {
+    const candidates = shareClassParentCodes(row.beian_hao)
+    childCandidates.set(row.beian_hao, candidates)
+    for (const code of candidates) parentCodes.add(code)
+  }
+
+  const byCode = new Map<string, { manager: string; inception_date: string | null }>()
+  if (parentCodes.size > 0) {
+    const parents = await query<{ beian_hao: string; manager: string; inception_date: string | null }>(
+      `SELECT beian_hao, manager, inception_date::text AS inception_date
+       FROM private_fund_info
+       WHERE beian_hao = ANY($1::text[])
+         AND manager IS NOT NULL AND BTRIM(manager) <> ''`,
+      [[...parentCodes]],
+    )
+    for (const parent of parents) {
+      byCode.set(parent.beian_hao.trim().toUpperCase(), {
+        manager: parent.manager.trim(),
+        inception_date: parent.inception_date,
+      })
+    }
+  }
+
+  const stillMissing = missing.filter((row) => {
+    const candidates = childCandidates.get(row.beian_hao) ?? []
+    return !candidates.some((code) => byCode.has(code.toUpperCase()))
+  })
+
+  const byName = new Map<string, { manager: string; inception_date: string | null }>()
+  if (stillMissing.length > 0) {
+    const bases = [...new Set(stillMissing.map((row) => fundNameBaseForParent(row.product_name)).filter((n) => n.length >= 2))]
+    if (bases.length > 0) {
+      const nameParents = await query<{ product_name: string; manager: string; inception_date: string | null }>(
+        `SELECT product_name, manager, inception_date::text AS inception_date
+         FROM private_fund_info
+         WHERE manager IS NOT NULL AND BTRIM(manager) <> ''
+           AND ${sqlFundNameBase("product_name")} = ANY($1::text[])`,
+        [bases],
+      )
+      for (const parent of nameParents) {
+        const key = fundNameBaseForParent(parent.product_name)
+        if (key && !byName.has(key)) {
+          byName.set(key, { manager: parent.manager.trim(), inception_date: parent.inception_date })
+        }
+      }
+    }
+  }
+
+  return rows.map((row) => {
+    if (row.manager?.trim()) return row
+    const fromCode = (childCandidates.get(row.beian_hao) ?? [])
+      .map((code) => byCode.get(code.toUpperCase()))
+      .find(Boolean)
+    const fromName = byName.get(fundNameBaseForParent(row.product_name))
+    const parent = fromCode ?? fromName
+    if (!parent) return row
+    return {
+      ...row,
+      manager: parent.manager,
+      inception_date: row.inception_date ?? parent.inception_date,
+    }
+  })
 }
 
 /** Prefer materialized NAV columns when cutoff is today or later (no NAV table scan). */
@@ -459,6 +548,7 @@ export async function GET(req: Request) {
       payload = await fetchList(false)
     }
     payload.data = await enrichPrivateFundListMetrics(payload.data, cutoffDate)
+    payload.data = await inheritShareClassParentFields(payload.data)
     const canonicalMap = await mapCanonicalManagerNames(payload.data.map((row) => row.manager))
     payload.data = applyCanonicalManagerNames(payload.data, canonicalMap)
     return NextResponse.json(payload)

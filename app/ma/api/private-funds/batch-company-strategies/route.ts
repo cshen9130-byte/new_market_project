@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { relevelMisplacedTeamStrategy } from "@/lib/ma/team-strategy-tree"
 import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 import { addFundToTrackingPool } from "@/lib/server/tracking-pool-membership"
+import { loadMergedTeamStrategyTree } from "@/lib/server/team-strategy-tree"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -78,16 +80,24 @@ export async function POST(req: Request) {
         ids,
       )
 
+      const tree = await loadMergedTeamStrategyTree()
       const strategies: Record<
         string,
         { strategy_l1: string; strategy_l2: string; strategy_l3: string }
       > = {}
       for (const row of rows) {
-        const strategy_l1 = row.strategy_l1 ?? ""
-        const strategy_l2 = row.strategy_l2 ?? ""
-        const strategy_l3 = row.strategy_l3 ?? ""
-        if (!strategy_l1 && !strategy_l2 && !strategy_l3) continue
-        strategies[row.register_number] = { strategy_l1, strategy_l2, strategy_l3 }
+        const releveled = relevelMisplacedTeamStrategy(
+          row.strategy_l1 ?? "",
+          row.strategy_l2 ?? "",
+          row.strategy_l3 ?? "",
+          tree,
+        )
+        if (!releveled.l1 && !releveled.l2 && !releveled.l3) continue
+        strategies[row.register_number] = {
+          strategy_l1: releveled.l1,
+          strategy_l2: releveled.l2,
+          strategy_l3: releveled.l3,
+        }
       }
 
       return NextResponse.json({ strategies })
@@ -121,9 +131,25 @@ export async function POST(req: Request) {
     }
 
     try {
+      const tree = await loadMergedTeamStrategyTree()
+      const releveledUpdates = normalized.map((item) => {
+        const next = relevelMisplacedTeamStrategy(
+          item.strategy_l1 ?? "",
+          item.strategy_l2 ?? "",
+          item.strategy_l3 ?? "",
+          tree,
+        )
+        return {
+          ...item,
+          strategy_l1: next.l1 || null,
+          strategy_l2: next.l2 || null,
+          strategy_l3: next.l3 || null,
+        }
+      })
+
       let updated = 0
-      const synced: Array<typeof normalized[number] & { product_name?: string | null }> = []
-      for (const item of normalized) {
+      const synced: Array<typeof releveledUpdates[number] & { product_name?: string | null }> = []
+      for (const item of releveledUpdates) {
         let result = await query<{ register_number: string }>(
           `UPDATE type6_ops_team_full
            SET company_strategy_one   = $2,

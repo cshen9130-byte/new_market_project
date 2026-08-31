@@ -28,7 +28,7 @@ export async function GET(req: Request) {
 
   const customTree = await getStoredTeamStrategies()
   if (!customTree.length) {
-    return NextResponse.json(fundResult)
+    return NextResponse.json(mergeStrategyTrees(fundResult))
   }
 
   return NextResponse.json(mergeStrategyTrees(customTree, fundResult))

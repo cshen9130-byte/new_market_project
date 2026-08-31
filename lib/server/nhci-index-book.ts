@@ -4,6 +4,7 @@ import type { ContractTenor } from "@/lib/all-weather/setup"
 import { SLEEVE_KEYS, SLEEVE_LABELS, type SleeveKey } from "@/lib/all-weather/universe"
 import { loadNhciSnapshot, type StrategySnapshot } from "@/lib/nhci-index/universe"
 import { fetchLiveFuturesPrices, normalizeListedContract } from "@/lib/server/all-weather-prices"
+import { isChinaWeekendOrPublicHoliday } from "@/lib/server/china-trading-calendar"
 import { readNhciIndexSettings, type NhciIndexSettings } from "@/lib/server/nhci-index-settings"
 
 const DATA_ROOT = path.join(process.cwd(), "data", "nhci-index")
@@ -20,6 +21,8 @@ export type BookPosition = {
   multiplier: number
   marginRate: number
   targetWeight: number
+  weightShare: number
+  riskContrib: number
   targetRiskShare: number
   riskShare: number
   assetVol: number | null
@@ -81,14 +84,8 @@ function todayStamp(d = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
 }
 
-export function isMonthEndTradingDay(dateStr: string): boolean {
-  const [y, m, d] = dateStr.split("-").map(Number)
-  if (!y || !m || !d) return false
-  const last = new Date(y, m, 0)
-  while (last.getDay() === 0 || last.getDay() === 6) {
-    last.setDate(last.getDate() - 1)
-  }
-  return todayStamp(last) === dateStr
+export function isNhciRebalanceDay(dateStr: string): boolean {
+  return !isChinaWeekendOrPublicHoliday(dateStr)
 }
 
 function rebalanceSide(prevLots: number, newLots: number, contractChanged: boolean): RebalanceSide | null {
@@ -156,7 +153,7 @@ function applyMonthEndRebalance(
   if (book.lastRebalanceDate === asOf) {
     return { ...book, isRebalanceDay: (book.rebalanceTrades?.length ?? 0) > 0 }
   }
-  if (!isMonthEndTradingDay(asOf)) {
+  if (!isNhciRebalanceDay(asOf)) {
     return { ...book, isRebalanceDay: false }
   }
 
@@ -175,8 +172,10 @@ function applyMonthEndRebalance(
         contract: newContract,
         price,
         targetWeight,
+        weightShare: src?.weightShare ?? p.weightShare ?? 0,
+        riskContrib: src?.riskContrib ?? p.riskContrib ?? 0,
         targetRiskShare,
-        riskShare: newLots > 0 ? targetRiskShare : 0,
+        riskShare: targetRiskShare,
       },
       snapshot.brokerMarginMult,
     )
@@ -227,7 +226,7 @@ function buildPositions(
     const prev = prevByAsset?.get(src.asset)
     const price = prices[src.asset] ?? src.price ?? 0
     const prevPrice = prev?.price ?? price
-    const rawLots = prev?.rawLots ?? sizeLots(src.targetWeight, capital, price, src.multiplier)
+    const rawLots = prev?.rawLots ?? src.lots
     const lots = prev?.lots ?? rawLots
     const targetRiskShare = src.riskShare ?? 0
     const spec = snapshot.specs.find((s) => s.asset === src.asset)
@@ -248,8 +247,10 @@ function buildPositions(
         multiplier: src.multiplier,
         marginRate: src.marginRate,
         targetWeight: src.targetWeight,
+        weightShare: src.weightShare ?? 0,
+        riskContrib: src.riskContrib ?? 0,
         targetRiskShare,
-        riskShare: lots > 0 ? targetRiskShare : 0,
+        riskShare: targetRiskShare,
         assetVol: src.assetVol ?? null,
         rawLots,
         cumPnl: prev?.cumPnl ?? 0,
@@ -399,6 +400,9 @@ export type OverviewPayload = {
     backtestStart: string
     lastRebalance: string
     backtestEnd: string
+    rebalanceFreq?: string
+    nAssetsUniverse?: number
+    droppedNonNhci?: string[]
     volTarget: number
     volMandate: number
     summary: StrategySnapshot["summary"]
@@ -420,14 +424,19 @@ export type OverviewPayload = {
 }
 
 function normalizePosition(p: BookPosition, snapshot: StrategySnapshot): BookPosition {
-  const targetRiskShare = p.targetRiskShare ?? p.riskShare ?? 0
+  const src = snapshot.positions.find((s) => s.asset === p.asset)
+  const targetRiskShare = src?.riskShare ?? p.targetRiskShare ?? p.riskShare ?? 0
   const spec = snapshot.specs.find((s) => s.asset === p.asset)
   return {
     ...p,
     contract: p.contract || normalizeListedContract(spec?.refContract, p.asset) || p.asset,
     rawLots: p.rawLots ?? p.lots,
+    targetWeight: src?.targetWeight ?? p.targetWeight,
+    weightShare: src?.weightShare ?? p.weightShare ?? 0,
+    riskContrib: src?.riskContrib ?? p.riskContrib ?? 0,
     targetRiskShare,
-    riskShare: p.lots > 0 ? targetRiskShare : 0,
+    // Official report zeros names that did not round to a full lot.
+    riskShare: src?.riskShare ?? targetRiskShare,
     notional: p.lots * p.price * p.multiplier,
     margin: p.lots > 0 ? p.margin : 0,
   }
@@ -482,6 +491,9 @@ function toOverview(book: PaperBook): OverviewPayload {
       backtestStart: snapshot.backtestStart,
       backtestEnd: snapshot.backtestEnd,
       lastRebalance: snapshot.lastRebalance,
+      rebalanceFreq: snapshot.rebalanceFreq,
+      nAssetsUniverse: snapshot.nAssetsUniverse,
+      droppedNonNhci: snapshot.droppedNonNhci,
       volTarget: snapshot.volTarget,
       volMandate: snapshot.volMandate,
       summary: snapshot.summary,

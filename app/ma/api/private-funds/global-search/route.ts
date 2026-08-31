@@ -58,13 +58,16 @@ export async function GET(req: Request) {
     return NextResponse.json({ products: [], managers: [] })
   }
 
+  const parsedLimit = Number.parseInt(searchParams.get("limit") || "8", 10)
+  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 40) : 8
+
   try {
     const [products, managers] = await Promise.all([
-      searchPrivateFundProductsForFastPicker(q, 8).catch((err) => {
+      searchPrivateFundProductsForFastPicker(q, limit).catch((err) => {
         console.error("[private-funds/global-search] products", err)
         return [] as GlobalSearchProduct[]
       }),
-      searchManagers(q, 8),
+      searchManagers(q, limit),
     ])
     return NextResponse.json({ products, managers })
   } catch (err) {

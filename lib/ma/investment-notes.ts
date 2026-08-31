@@ -8,6 +8,38 @@ export const MAX_INVESTMENT_NOTE_TITLE_CHARS = 200
 export const INVESTMENT_NOTE_MATERIAL_MAX_MB = 150
 export const INVESTMENT_NOTE_MATERIAL_MAX_BYTES =
   INVESTMENT_NOTE_MATERIAL_MAX_MB * 1024 * 1024
+/** File-picker filter for「上传资料」(includes .pptx and PowerPoint MIME types). */
+export const INVESTMENT_NOTE_MATERIAL_ACCEPT = [
+  ".pdf",
+  ".ppt",
+  ".pptx",
+  ".pptm",
+  ".pps",
+  ".ppsx",
+  ".ppsm",
+  ".pot",
+  ".potx",
+  ".potm",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".txt",
+  ".csv",
+  ".zip",
+  "application/pdf",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+  "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+  "image/*",
+].join(",")
 /** Split large PPT/Office files so each request stays under Next.js/nginx body limits. */
 const MATERIAL_CHUNK_THRESHOLD_BYTES = 4 * 1024 * 1024
 const MATERIAL_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
@@ -1052,6 +1084,15 @@ export async function openInvestmentNoteMaterial(id: string): Promise<void> {
     ? decodeURIComponent((match[1] || match[2] || "").trim())
     : undefined
   const url = URL.createObjectURL(blob)
+  const downloadOnly = /\.(ppt|pptx|pptm|pps|ppsx|ppsm|pot|potx|potm)$/i.test(filename || "")
+  if (downloadOnly) {
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename || "material.pptx"
+    a.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    return
+  }
   const opened = window.open(url, "_blank")
   if (!opened) {
     const a = document.createElement("a")

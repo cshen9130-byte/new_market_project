@@ -489,6 +489,7 @@ export default function FundValuationAnalysisPage() {
         teamBenchmark: info?.team_benchmark,
         strategyL1: info?.strategy_l1,
         strategyL2: info?.strategy_l2,
+        strategyL3: info?.strategy_l3,
       })
       const nextBench = resolvedKey
         ? benchmarkLabelFromKey(resolvedKey)
