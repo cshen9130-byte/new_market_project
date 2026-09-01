@@ -4,8 +4,69 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { ArrowLeftRight } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import type { ExposureMetric } from "@/lib/ma/quant-vs-subjective-signals"
-import { HelpCandle, HelpHoldingBar } from "@/components/ma/quant-vs-subjective-help"
+import {
+  buFenggeTargetSleeve,
+  classifyRowFlow,
+  decomposeNet,
+  fmtFlowYuan,
+  lookupFlow,
+  pctRowDecision,
+  type ActionKind,
+  type ExposureMetric,
+  type FlowMap,
+  type FlowView,
+  type RowDecision,
+  type TsProductPoint,
+  type TsSectorPoint,
+} from "@/lib/ma/quant-vs-subjective-signals"
+import { HelpCandle, HelpHoldingBar, HelpWaterfall } from "@/components/ma/quant-vs-subjective-help"
+
+const ACTION_HEAT_COLOR: Record<ActionKind, string> = {
+  加码: "#ef4444",
+  暂缓加码: "#64748b",
+  减码准备: "#ec4899",
+  观望: "#8b5cf6",
+  补风格: "#0ea5e9",
+  控拥挤: "#f59e0b",
+  扩容: "#10b981",
+}
+
+const ACTION_HEAT_CODE: Record<Exclude<ActionKind, "扩容">, number> = {
+  加码: 1,
+  观望: 2,
+  补风格: 3,
+  控拥挤: 4,
+  暂缓加码: 6,
+  减码准备: 7,
+}
+
+const MAX_SIGNAL_PROD_ROWS = 8
+const SIGNAL_ROW_H = 36
+
+function signalStripExtraHeight(n: number): number {
+  return n > 0 ? 16 + SIGNAL_ROW_H * n : 0
+}
+
+function SignalLegend() {
+  const items = [
+    ["加码", ACTION_HEAT_COLOR.加码],
+    ["暂缓加码", ACTION_HEAT_COLOR.暂缓加码],
+    ["减码准备", ACTION_HEAT_COLOR.减码准备],
+    ["观望", ACTION_HEAT_COLOR.观望],
+    ["补风格", ACTION_HEAT_COLOR.补风格],
+    ["控拥挤", ACTION_HEAT_COLOR.控拥挤],
+  ] as const
+  return (
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+      {items.map(([label, color]) => (
+        <span key={label} className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-[2px]" style={{ background: color }} />
+          {label}
+        </span>
+      ))}
+    </span>
+  )
+}
 
 export interface HoldingProduct {
   code: string
@@ -20,8 +81,12 @@ export interface HoldingTs {
   products: HoldingProduct[]
   quantLong: number[][]
   quantShort: number[][]
+  quantLongLots?: number[][]
+  quantShortLots?: number[][]
   subjLong: number[][]
   subjShort: number[][]
+  subjLongLots?: number[][]
+  subjShortLots?: number[][]
   sigma: number[][]
 }
 
@@ -47,14 +112,165 @@ function fmtWan(v: number): string {
   return `${v < 0 ? "-" : ""}${body}万`
 }
 
+function lineEndLabel(color: string, formatter: (p: { value: number }) => string) {
+  return {
+    show: true,
+    formatter,
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold" as const,
+    align: "right" as const,
+    verticalAlign: "middle" as const,
+    offset: [-8, 0] as [number, number],
+    backgroundColor: color,
+    padding: [2, 5] as [number, number],
+    borderRadius: 3,
+  }
+}
+
 type CandleRow = { date: string; open: number; high: number; low: number; close: number; volume: number }
+
+type StripDecision = RowDecision & { quantNetPct: number; subjNetPct: number }
+
+type SignalStripRow = { name: string; byDate: Map<string, StripDecision> }
+
+type SignalVerdict = {
+  text: "好信号" | "坏信号" | "持平" | "待验证"
+  pnl: number | null
+  color: string
+  asPct: boolean
+}
+
+function actionsByDate(pts: { date: string; quantNetPct: number; subjNetPct: number }[]): Map<string, StripDecision> {
+  const map = new Map<string, StripDecision>()
+  for (const p of pts) {
+    const d = pctRowDecision(p.quantNetPct, p.subjNetPct)
+    if (d.action === "中性" || d.action === "扩容") continue
+    map.set(p.date, { ...d, quantNetPct: p.quantNetPct, subjNetPct: p.subjNetPct })
+  }
+  return map
+}
+
+function actionOnSleeve(d: RowDecision | undefined, sleeve: "量化" | "主观"): ActionKind | undefined {
+  if (!d || d.action === "中性" || d.action === "扩容") return undefined
+  if (d.action === "补风格") {
+    const target = buFenggeTargetSleeve(d.kind)
+    if (target && target !== sleeve) return undefined
+  }
+  return d.action
+}
+
+function streakEnd(actions: (ActionKind | undefined)[], start: number): number {
+  const a = actions[start]
+  let e = start
+  while (e + 1 < actions.length && actions[e + 1] === a) e++
+  return e
+}
+
+function verdictFromPnl(pnl: number, asPct: boolean, invert = false): SignalVerdict {
+  const score = invert ? -pnl : pnl
+  if (score > 1e-8) return { text: "好信号", pnl, color: "#dc2626", asPct }
+  if (score < -1e-8) return { text: "坏信号", pnl, color: "#16a34a", asPct }
+  return { text: "持平", pnl, color: "#64748b", asPct }
+}
+
+function pendingVerdict(asPct: boolean): SignalVerdict {
+  return { text: "待验证", pnl: null, color: "#64748b", asPct }
+}
+
+function crowdedDir(decision: StripDecision | undefined, netMv: number): number {
+  const fromPct = Math.sign((decision?.quantNetPct ?? 0) + (decision?.subjNetPct ?? 0))
+  if (fromPct !== 0) return fromPct
+  const q = Math.sign(decision?.quantNetPct ?? 0)
+  if (q !== 0) return q
+  return Math.sign(netMv)
+}
+
+/** 加码: hold this sleeve's signed position until the run ends. 补风格: fill in the other sleeve's direction, score with price. 控拥挤: reduce the crowded side; a later move against it is 好信号. */
+function qualityAt(
+  i: number,
+  action: ActionKind | undefined,
+  actions: (ActionKind | undefined)[],
+  candles: CandleRow[],
+  dates: string[],
+  netMvByDate: Map<string, number>,
+  decision: StripDecision | undefined,
+): SignalVerdict | undefined {
+  if (action !== "加码" && action !== "补风格" && action !== "控拥挤") return undefined
+  const asPct = action === "补风格" || action === "控拥挤"
+  const n = candles.length
+  let to = streakEnd(actions, i)
+  if (to <= i) to = i + 1
+  if (to >= n) to = n - 1
+  if (to <= i) return pendingVerdict(asPct)
+  const c0 = candles[i]?.close ?? 0
+  const c1 = candles[to]?.close ?? 0
+  if (c0 <= 0 || c1 <= 0) return pendingVerdict(asPct)
+  const ret = c1 / c0 - 1
+  if (action === "加码") {
+    return verdictFromPnl((netMvByDate.get(dates[i]) ?? 0) * ret, false)
+  }
+  if (action === "控拥挤") {
+    const dir = crowdedDir(decision, netMvByDate.get(dates[i]) ?? 0)
+    if (dir === 0) return pendingVerdict(true)
+    return verdictFromPnl(dir * ret, true, true)
+  }
+  const dir = decision?.kind === "subj_only"
+    ? Math.sign(decision.subjNetPct)
+    : decision?.kind === "quant_only"
+      ? Math.sign(decision.quantNetPct)
+      : 0
+  if (dir === 0) return pendingVerdict(true)
+  return verdictFromPnl(dir * ret, true)
+}
+
+function formatVerdictHtml(action: string, v: SignalVerdict | undefined): string {
+  if (!v) return action
+  const pnlPart = v.pnl == null
+    ? ""
+    : v.asPct
+      ? `　随后该方向 ${v.pnl >= 0 ? "+" : ""}${(v.pnl * 100).toFixed(1)}%`
+      : `　随后盈亏 ${v.pnl > 0 ? "+" : ""}${fmtWan(v.pnl)}`
+  return `${action}　<span style="color:${v.color};font-weight:600">${v.text}</span>${pnlPart}`
+}
+
+function buildFocusSignalRows(
+  products: HoldingProduct[],
+  sector: string,
+  subSector: string,
+  prod: string,
+  sectorTs: TsSectorPoint[],
+  productTs: TsProductPoint[],
+): SignalStripRow[] {
+  if (prod !== "全部") {
+    const p = products.find((x) => x.code === prod)
+    return [{ name: p?.name ?? prod, byDate: actionsByDate(productTs.filter((x) => x.product === prod)) }]
+  }
+  if (subSector !== "全部") {
+    const plist = products.filter((p) => p.subSector === subSector)
+    const seen = new Set<string>()
+    const prodRows = plist.map((p) => {
+      const name = seen.has(p.name) ? `${p.name} ${p.code}` : p.name
+      seen.add(p.name)
+      return { name, byDate: actionsByDate(productTs.filter((x) => x.product === p.code)) }
+    })
+    prodRows.sort((a, b) => b.byDate.size - a.byDate.size)
+    const withSignal = prodRows.filter((r) => r.byDate.size > 0)
+    return (withSignal.length ? withSignal : prodRows).slice(0, MAX_SIGNAL_PROD_ROWS)
+  }
+  if (sector !== "全部") {
+    return [{ name: sector, byDate: actionsByDate(sectorTs.filter((x) => x.sector === sector)) }]
+  }
+  return []
+}
 
 function buildSleeveCandleOption(
   candles: CandleRow[],
   netMvByDate: Map<string, number>,
   priceLabel: string,
-  sleeveName: string,
+  sleeveName: "量化" | "主观",
   lineColor: string,
+  signalRows: SignalStripRow[],
 ) {
   if (!candles.length) return {}
   const dates = candles.map((r) => r.date)
@@ -76,57 +292,184 @@ function buildSleeveCandleOption(
     cumPnl.push(cum)
   }
   const pnlName = `${sleeveName}累计盈亏`
+  const hasSignal = signalRows.length > 0
+  const heatH = hasSignal ? SIGNAL_ROW_H * signalRows.length : 0
+  const heat: [number, number, number][] = []
+  const quality: (SignalVerdict | undefined)[][] = signalRows.map(() => dates.map(() => undefined))
+  if (hasSignal) {
+    signalRows.forEach((row, yi) => {
+      const actions = dates.map((d) => actionOnSleeve(row.byDate.get(d), sleeveName))
+      dates.forEach((d, xi) => {
+        const action = actions[xi]
+        if (!action) return
+        heat.push([xi, yi, ACTION_HEAT_CODE[action as Exclude<ActionKind, "扩容">] ?? 0])
+        quality[yi][xi] = qualityAt(xi, action, actions, candles, dates, netMvByDate, row.byDate.get(d))
+      })
+    })
+  }
+  const codeToAction = (code: number) =>
+    (Object.entries(ACTION_HEAT_CODE).find(([, v]) => v === code)?.[0] ?? "") as string
+
   return {
     tooltip: {
       trigger: "axis" as const,
-      axisPointer: { type: "cross" as const },
+      axisPointer: {
+        type: "cross" as const,
+        label: { fontSize: 10, backgroundColor: "#64748b", padding: [2, 4] },
+      },
       formatter: (params: { seriesName: string; dataIndex: number; marker: string; axisValue: string }[]) => {
         const i = params[0]?.dataIndex ?? 0
         const r = candles[i]
         if (!r) return ""
         const up = r.close >= r.open
-        return [
+        const lines = [
           params[0]?.axisValue,
           `开 ${r.open.toFixed(2)}　高 ${r.high.toFixed(2)}　低 ${r.low.toFixed(2)}　收 ${r.close.toFixed(2)}　${up ? "涨" : "跌"}`,
           `${sleeveName}当日盈亏 ${fmtWan(dayPnl[i] ?? 0)}`,
           `${pnlName} ${fmtWan(cumPnl[i] ?? 0)}`,
-        ].join("<br/>")
+        ]
+        if (hasSignal) {
+          const d = dates[i]
+          for (let yi = 0; yi < signalRows.length; yi++) {
+            const row = signalRows[yi]
+            const action = actionOnSleeve(row.byDate.get(d), sleeveName)
+            lines.push(`${row.name}　${formatVerdictHtml(action ?? "中性", quality[yi]?.[i])}`)
+          }
+        }
+        return lines.join("<br/>")
       },
     },
-    legend: { top: 4, itemWidth: 12, textStyle: { fontSize: 11 }, data: ["K线", pnlName] },
-    grid: { left: 52, right: 64, top: 36, bottom: 48 },
+    legend: { top: 4, left: 8, itemWidth: 12, textStyle: { fontSize: 11 }, data: ["K线", pnlName] },
+    visualMap: hasSignal
+      ? {
+          show: false,
+          type: "piecewise" as const,
+          seriesIndex: 2,
+          dimension: 2,
+          pieces: [
+            { value: 1, color: ACTION_HEAT_COLOR.加码 },
+            { value: 2, color: ACTION_HEAT_COLOR.观望 },
+            { value: 3, color: ACTION_HEAT_COLOR.补风格 },
+            { value: 4, color: ACTION_HEAT_COLOR.控拥挤 },
+            { value: 6, color: ACTION_HEAT_COLOR.暂缓加码 },
+            { value: 7, color: ACTION_HEAT_COLOR.减码准备 },
+          ],
+        }
+      : undefined,
+    grid: hasSignal
+      ? [
+          { left: 72, right: 76, top: 36, bottom: 48 + heatH + 8 },
+          { left: 72, right: 76, height: heatH, bottom: 48 },
+        ]
+      : { left: 52, right: 76, top: 36, bottom: 48 },
     dataZoom: [
-      { type: "inside" as const, start: 0, end: 100 },
-      { type: "slider" as const, height: 16, bottom: 4 },
+      { type: "inside" as const, xAxisIndex: hasSignal ? [0, 1] : 0, start: 0, end: 100 },
+      { type: "slider" as const, xAxisIndex: hasSignal ? [0, 1] : 0, height: 16, bottom: 4 },
     ],
-    xAxis: {
-      type: "category" as const,
-      data: dates,
-      axisLabel: { fontSize: 10, rotate: 30 },
-      boundaryGap: true,
-    },
-    yAxis: [
-      {
-        type: "value" as const,
-        scale: true,
-        name: priceLabel,
-        nameTextStyle: { fontSize: 10 },
-        axisLabel: { fontSize: 10 },
-        splitLine: { lineStyle: { type: "dashed" as const } },
-      },
-      {
-        type: "value" as const,
-        scale: true,
-        name: "累计盈亏",
-        nameTextStyle: { fontSize: 10 },
-        axisLabel: { fontSize: 10, formatter: (v: number) => fmtWan(v) },
-        splitLine: { show: false },
-      },
-    ],
+    xAxis: hasSignal
+      ? [
+          {
+            type: "category" as const,
+            gridIndex: 0,
+            data: dates,
+            axisLabel: { show: false },
+            axisTick: { show: false },
+            boundaryGap: true,
+          },
+          {
+            type: "category" as const,
+            gridIndex: 1,
+            data: dates,
+            axisLabel: {
+              fontSize: 10,
+              rotate: 30,
+              formatter: (v: string) => (v.length >= 10 ? v.slice(5) : v),
+            },
+            boundaryGap: true,
+          },
+        ]
+      : {
+          type: "category" as const,
+          data: dates,
+          axisLabel: {
+            fontSize: 10,
+            rotate: 30,
+            formatter: (v: string) => (v.length >= 10 ? v.slice(5) : v),
+          },
+          boundaryGap: true,
+        },
+    yAxis: hasSignal
+      ? [
+          {
+            type: "value" as const,
+            gridIndex: 0,
+            scale: true,
+            name: priceLabel,
+            nameGap: 8,
+            nameTextStyle: { fontSize: 10 },
+            axisLabel: { fontSize: 10, hideOverlap: true },
+            splitLine: { lineStyle: { type: "dashed" as const } },
+            axisPointer: {
+              label: { formatter: (p: { value: number }) => Number(p.value).toFixed(0) },
+            },
+          },
+          {
+            type: "value" as const,
+            gridIndex: 0,
+            position: "right" as const,
+            scale: true,
+            name: "累计盈亏",
+            nameGap: 10,
+            nameTextStyle: { fontSize: 10 },
+            axisLabel: { fontSize: 10, formatter: (v: number) => fmtWan(v), hideOverlap: true, margin: 8 },
+            splitLine: { show: false },
+            axisPointer: {
+              label: { formatter: (p: { value: number }) => fmtWan(Number(p.value)) },
+            },
+          },
+          {
+            type: "category" as const,
+            gridIndex: 1,
+            data: signalRows.map((r) => r.name),
+            axisLabel: { fontSize: 10 },
+            axisTick: { show: false },
+            splitLine: { show: false },
+            inverse: true,
+          },
+        ]
+      : [
+          {
+            type: "value" as const,
+            scale: true,
+            name: priceLabel,
+            nameGap: 8,
+            nameTextStyle: { fontSize: 10 },
+            axisLabel: { fontSize: 10, hideOverlap: true },
+            splitLine: { lineStyle: { type: "dashed" as const } },
+            axisPointer: {
+              label: { formatter: (p: { value: number }) => Number(p.value).toFixed(0) },
+            },
+          },
+          {
+            type: "value" as const,
+            position: "right" as const,
+            scale: true,
+            name: "累计盈亏",
+            nameGap: 10,
+            nameTextStyle: { fontSize: 10 },
+            axisLabel: { fontSize: 10, formatter: (v: number) => fmtWan(v), hideOverlap: true, margin: 8 },
+            splitLine: { show: false },
+            axisPointer: {
+              label: { formatter: (p: { value: number }) => fmtWan(Number(p.value)) },
+            },
+          },
+        ],
     series: [
       {
         name: "K线",
         type: "candlestick" as const,
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: ohlc,
         itemStyle: {
           color: "#ef4444",
@@ -138,25 +481,136 @@ function buildSleeveCandleOption(
       {
         name: pnlName,
         type: "line" as const,
+        xAxisIndex: 0,
         yAxisIndex: 1,
         data: cumPnl,
         symbol: "none",
         lineStyle: { color: lineColor, width: 2 },
         itemStyle: { color: lineColor },
-        endLabel: {
-          show: true,
-          formatter: (p: { value: number }) => fmtWan(p.value),
-          color: lineColor,
-          fontSize: 11,
-          fontWeight: "bold" as const,
-        },
+        endLabel: lineEndLabel(lineColor, (p) => fmtWan(p.value)),
         z: 10,
       },
+      ...(hasSignal
+        ? [{
+            name: "决策信号",
+            type: "heatmap" as const,
+            xAxisIndex: 1,
+            yAxisIndex: 2,
+            data: heat,
+            itemStyle: { borderColor: "transparent", borderWidth: 0 },
+            tooltip: {
+              formatter: (p: { data: [number, number, number] }) => {
+                const [xi, yi, code] = p.data
+                const action = codeToAction(code)
+                const name = signalRows[yi]?.name ?? ""
+                const q = quality[yi]?.[xi]
+                return `${dates[xi]}<br/>${name}　${formatVerdictHtml(action, q)}`
+              },
+            },
+            label: { show: false },
+            emphasis: {
+              itemStyle: { shadowBlur: 4, shadowColor: "rgba(0,0,0,0.25)" },
+              label: {
+                show: true,
+                formatter: (p: { data: [number, number, number] }) => {
+                  const q = quality[p.data[1]]?.[p.data[0]]
+                  if (!q || q.text === "待验证") return ""
+                  return q.text === "好信号" ? "好" : q.text === "坏信号" ? "坏" : "平"
+                },
+                color: "#fff",
+                fontSize: 10,
+                fontWeight: "bold" as const,
+              },
+            },
+          }]
+        : []),
     ],
   }
 }
 
 type SeriesCfg = { name: string; stack: "long" | "short"; color: string; data: number[] }
+
+function sleeveDecomp(
+  holdingTs: HoldingTs,
+  idxs: number[],
+  sleeve: "quant" | "subj",
+) {
+  const dates = holdingTs.dates
+  const di = dates.length - 1
+  if (di < 1) return null
+  const prevDi = di - 1
+  const long = sleeve === "quant" ? holdingTs.quantLong : holdingTs.subjLong
+  const short = sleeve === "quant" ? holdingTs.quantShort : holdingTs.subjShort
+  const longLots = sleeve === "quant" ? holdingTs.quantLongLots : holdingTs.subjLongLots
+  const shortLots = sleeve === "quant" ? holdingTs.quantShortLots : holdingTs.subjShortLots
+  let prevNet = 0
+  let todayNet = 0
+  let trade = 0
+  let price = 0
+  for (const pi of idxs) {
+    const today = {
+      longMv: long[di]?.[pi] ?? 0,
+      shortMv: short[di]?.[pi] ?? 0,
+      longLots: longLots?.[di]?.[pi] ?? 0,
+      shortLots: shortLots?.[di]?.[pi] ?? 0,
+    }
+    const prev = {
+      longMv: long[prevDi]?.[pi] ?? 0,
+      shortMv: short[prevDi]?.[pi] ?? 0,
+      longLots: longLots?.[prevDi]?.[pi] ?? 0,
+      shortLots: shortLots?.[prevDi]?.[pi] ?? 0,
+    }
+    const d = decomposeNet(prev, today)
+    prevNet += d.prevNet
+    todayNet += d.todayNet
+    trade += d.trade
+    price += d.price
+  }
+  return { prevNet, todayNet, trade, price, delta: todayNet - prevNet, date: dates[di], prevDate: dates[prevDi] }
+}
+
+function buildWaterfallOption(
+  q: NonNullable<ReturnType<typeof sleeveDecomp>>,
+  s: NonNullable<ReturnType<typeof sleeveDecomp>>,
+) {
+  const cats = ["昨净仓", "价格损益", "主动调仓", "今净仓"]
+  const qv = [q.prevNet, q.price, q.trade, q.todayNet]
+  const sv = [s.prevNet, s.price, s.trade, s.todayNet]
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: { seriesName: string; dataIndex: number; marker: string; value: number }[]) => {
+        const i = params[0]?.dataIndex ?? 0
+        return [
+          cats[i],
+          ...params.map((p) => `${p.marker}${p.seriesName} ${fmtYi(p.value)}`),
+        ].join("<br/>")
+      },
+    },
+    legend: { top: 4, right: 8, textStyle: { fontSize: 11 }, data: ["量化", "主观"] },
+    grid: { left: 56, right: 16, top: 32, bottom: 28 },
+    xAxis: { type: "category" as const, data: cats, axisLabel: { fontSize: 11 } },
+    yAxis: {
+      type: "value" as const,
+      axisLabel: { fontSize: 10, formatter: (v: number) => fmtYi(v) },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: [
+      { name: "量化", type: "bar" as const, data: qv, barMaxWidth: 18, itemStyle: { color: "#3b82f6", borderRadius: 2 } },
+      { name: "主观", type: "bar" as const, data: sv, barMaxWidth: 18, itemStyle: { color: "#f59e0b", borderRadius: 2 } },
+    ],
+  }
+}
+
+function deltaLine(
+  label: string,
+  d: NonNullable<ReturnType<typeof sleeveDecomp>>,
+  netDisplay: number,
+  metric: ExposureMetric,
+) {
+  const fmtNet = metric === "risk" ? fmtRisk : fmtYi
+  return `${label}净仓 ${fmtNet(netDisplay)}　市值 Δ ${fmtYi(d.delta)}（主动 ${fmtYi(d.trade)} · 价格 ${fmtYi(d.price)}）`
+}
 
 function buildOption(
   dates: string[],
@@ -236,10 +690,16 @@ export default function QuantVsSubjectiveHoldingTs({
   holdingTs,
   metric,
   focus,
+  sectorTs,
+  productTs,
+  flows,
 }: {
   holdingTs: HoldingTs | null | undefined
   metric: ExposureMetric
   focus?: HoldingFocus | null
+  sectorTs?: TsSectorPoint[]
+  productTs?: TsProductPoint[]
+  flows?: FlowMap
 }) {
   const [cat, setCat] = useState("全部")
   const [sector, setSector] = useState("全部")
@@ -404,6 +864,29 @@ export default function QuantVsSubjectiveHoldingTs({
     return { quant: q.series, subj: s.series, qNet: q.net, sNet: s.net }
   }, [holdingTs, dates, products, selectedIdx, metric, cat, sector, subSector, prod])
 
+  const qDecomp = useMemo(
+    () => (holdingTs && selectedIdx.length ? sleeveDecomp(holdingTs, selectedIdx, "quant") : null),
+    [holdingTs, selectedIdx],
+  )
+  const sDecomp = useMemo(
+    () => (holdingTs && selectedIdx.length ? sleeveDecomp(holdingTs, selectedIdx, "subj") : null),
+    [holdingTs, selectedIdx],
+  )
+  const waterfallOption = useMemo(
+    () => (qDecomp && sDecomp ? buildWaterfallOption(qDecomp, sDecomp) : {}),
+    [qDecomp, sDecomp],
+  )
+  const focusFlow: FlowView | null = useMemo(() => {
+    if (!flows || !focus) return null
+    const row = lookupFlow(flows, focus.level, focus.key)
+    if (!row) return null
+    const lastSec = (sectorTs ?? []).filter((x) => x.sector === focus.key).at(-1)
+    const lastProd = (productTs ?? []).filter((x) => x.product === focus.key).at(-1)
+    const q = focus.level === "sector" ? (lastSec?.quantNetPct ?? 0) : (lastProd?.quantNetPct ?? 0)
+    const s = focus.level === "sector" ? (lastSec?.subjNetPct ?? 0) : (lastProd?.subjNetPct ?? 0)
+    return classifyRowFlow(q, s, row)
+  }, [flows, focus, sectorTs, productTs])
+
   const qOption = useMemo(
     () => buildOption(dates, sleeveSeries.quant, sleeveSeries.qNet, metric),
     [dates, sleeveSeries, metric],
@@ -447,14 +930,20 @@ export default function QuantVsSubjectiveHoldingTs({
         ? sector
         : ""
 
+  const signalRows = useMemo(
+    () => buildFocusSignalRows(products, sector, subSector, prod, sectorTs ?? [], productTs ?? []),
+    [products, sector, subSector, prod, sectorTs, productTs],
+  )
+
   const candleOption = useMemo(
-    () => buildSleeveCandleOption(candles, qNetMvByDate, candleLabel || "价格", "量化", "#2563eb"),
-    [candles, qNetMvByDate, candleLabel],
+    () => buildSleeveCandleOption(candles, qNetMvByDate, candleLabel || "价格", "量化", "#2563eb", signalRows),
+    [candles, qNetMvByDate, candleLabel, signalRows],
   )
   const subjCandleOption = useMemo(
-    () => buildSleeveCandleOption(candles, sNetMvByDate, candleLabel || "价格", "主观", "#d97706"),
-    [candles, sNetMvByDate, candleLabel],
+    () => buildSleeveCandleOption(candles, sNetMvByDate, candleLabel || "价格", "主观", "#d97706", signalRows),
+    [candles, sNetMvByDate, candleLabel, signalRows],
   )
+  const candleChartH = 320 + signalStripExtraHeight(signalRows.length)
 
   const unit = metric === "risk" ? "风险敞口 σ×市值" : "持仓市值"
   const filterKey = `${metric}-${cat}-${sector}-${subSector}-${prod}`
@@ -466,6 +955,11 @@ export default function QuantVsSubjectiveHoldingTs({
           <CardTitle className="text-sm font-medium">量化 · 多空持仓</CardTitle>
           <HelpHoldingBar metric={metric} sleeve="量化" />
         </div>
+        {qDecomp && (
+          <p className="text-[11px] text-muted-foreground mt-1 tabular-nums">
+            {deltaLine("量化", qDecomp, sleeveSeries.qNet[sleeveSeries.qNet.length - 1] ?? 0, metric)}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="p-0 pb-2">
         {!holdingTs || !dates.length ? (
@@ -483,6 +977,11 @@ export default function QuantVsSubjectiveHoldingTs({
           <CardTitle className="text-sm font-medium">主观 · 多空持仓</CardTitle>
           <HelpHoldingBar metric={metric} sleeve="主观" />
         </div>
+        {sDecomp && (
+          <p className="text-[11px] text-muted-foreground mt-1 tabular-nums">
+            {deltaLine("主观", sDecomp, sleeveSeries.sNet[sleeveSeries.sNet.length - 1] ?? 0, metric)}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="p-0 pb-2">
         {!holdingTs || !dates.length ? (
@@ -502,8 +1001,9 @@ export default function QuantVsSubjectiveHoldingTs({
               量化 · {candleLabel ? `${candleLabel} K线与累计盈亏` : "K线与累计盈亏"}
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
-              昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。
+              昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。下方色块为该筛选的 MOM 决策信号，与 K 线日期对齐；补风格只画在空仓一侧。
             </p>
+            {signalRows.length > 0 && <div className="mt-1"><SignalLegend /></div>}
           </div>
           <HelpCandle sleeve="量化" />
         </div>
@@ -516,7 +1016,7 @@ export default function QuantVsSubjectiveHoldingTs({
         ) : !candles.length ? (
           <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无K线数据</p>
         ) : (
-          <ReactECharts key={`qc-${candleKey}`} option={candleOption} style={{ height: 320 }} notMerge />
+          <ReactECharts key={`qc-${candleKey}`} option={candleOption} style={{ height: candleChartH }} notMerge />
         )}
       </CardContent>
     </Card>
@@ -530,8 +1030,9 @@ export default function QuantVsSubjectiveHoldingTs({
               主观 · {candleLabel ? `${candleLabel} K线与累计盈亏` : "K线与累计盈亏"}
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
-              昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。
+              昨日净市值 × 今日涨跌 = 当日盈亏。板块/细分为等权合成指数。下方色块为该筛选的 MOM 决策信号，与 K 线日期对齐；补风格只画在空仓一侧。
             </p>
+            {signalRows.length > 0 && <div className="mt-1"><SignalLegend /></div>}
           </div>
           <HelpCandle sleeve="主观" />
         </div>
@@ -544,7 +1045,7 @@ export default function QuantVsSubjectiveHoldingTs({
         ) : !candles.length ? (
           <p className="text-sm text-muted-foreground px-4 py-10 text-center">暂无K线数据</p>
         ) : (
-          <ReactECharts key={`sc-${candleKey}`} option={subjCandleOption} style={{ height: 320 }} notMerge />
+          <ReactECharts key={`sc-${candleKey}`} option={subjCandleOption} style={{ height: candleChartH }} notMerge />
         )}
       </CardContent>
     </Card>
@@ -613,6 +1114,41 @@ export default function QuantVsSubjectiveHoldingTs({
         {swapped ? subjHoldingCard : quantCandleCard}
         {subjCandleCard}
       </div>
+      {qDecomp && sDecomp && (
+        <Card>
+          <CardHeader className="pb-1">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <CardTitle className="text-sm font-medium">边际拆解 · 昨净仓 → 价格 → 主动调仓 → 今净仓</CardTitle>
+                  <HelpWaterfall />
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  市值口径 · {qDecomp.prevDate} → {qDecomp.date}
+                  {focusFlow && focusFlow.tag !== "变化很小" ? ` · ${focusFlow.tag}${focusFlow.cutPnl ? ` · ${focusFlow.cutPnl}` : ""}` : ""}
+                </p>
+                {focusFlow && focusFlow.quantBreadth.total > 0 && (
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    量化 {focusFlow.quantBreadth.cut}/{focusFlow.quantBreadth.total} 户减多头
+                    {focusFlow.quantCells.length > 0 ? `（${focusFlow.quantCells.filter((c) => c.trade < -5e5).map((c) => c.account).join("、") || "—"}）` : ""}
+                    {focusFlow.subjBreadth.total > 0
+                      ? ` · 主观 ${focusFlow.subjBreadth.add}/${focusFlow.subjBreadth.total} 户加多头`
+                      : ""}
+                  </p>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <ReactECharts option={waterfallOption} style={{ height: 260, width: "100%" }} notMerge />
+            <p className="text-[11px] text-muted-foreground px-1 pb-1">
+              量化主动 {fmtFlowYuan(qDecomp.trade)} / 价格 {fmtFlowYuan(qDecomp.price)}
+              <span className="mx-2">·</span>
+              主观主动 {fmtFlowYuan(sDecomp.trade)} / 价格 {fmtFlowYuan(sDecomp.price)}
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

@@ -10,6 +10,7 @@ import {
   normalizeFundDisplayName,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
+import { canonicalizeEmailProductCode } from "@/lib/server/fund-name-match"
 import {
   extractSubjectUnitNavHint,
   isPlausibleEmailUnitNav,
@@ -23,9 +24,9 @@ import {
 export type NavTableAttachmentInfo = { filename: string; part: string }
 
 const NAV_TABLE_SUBJECT_RE =
-  /净值波动表|净值表|净值数据|每日净值表|虚拟计提净值表|资产净值公告|净值公告|净值序列|批量补发|【订阅_产品净值】|【产品净值】|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算表/u
+  /净值波动表|净值表|净值数据|每日净值表|虚拟计提净值表|资产净值公告|净值公告|净值序列|历史净值|代表产品|批量补发|【订阅_产品净值】|【产品净值】|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算表/u
 const NAV_TABLE_FILENAME_RE =
-  /净值波动表|净值表|净值数据|每日净值|资产净值公告|净值公告|净值序列|【产品净值】|产品净值|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算|净值试算结果|试算结果/u
+  /净值波动表|净值表|净值数据|每日净值|资产净值公告|净值公告|净值序列|历史净值|日净|【产品净值】|产品净值|【基金净值】|【净值公告】|【TA虚拟净值】|【虚拟净值】|TA虚拟净值|_虚拟净值_|虚拟净值提取|虚拟净值查询|虚拟净值数据|虚拟净值_20\d{6}|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-|业绩报酬试算|净值试算结果|试算结果/u
 const NAV_TABLE_ZIP_FILENAME_RE =
   /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值波动表|净值表|净值序列|历史净值|每日净值|净值信息|尽调材料|尽调资料|产品材料|代表性产品|代表产品/i
 
@@ -328,7 +329,7 @@ export function extractNavTableFromBuffer(
         const hinted = extractSubjectUnitNavHint(subject)
         if (hinted != null) unitNav = hinted
       }
-      const rowCode = (row.productCode ?? "").trim().toUpperCase() || null
+      const rowCode = canonicalizeEmailProductCode(row.productCode ?? "") || null
       const rowFundName = row.fundName?.trim()
         ? normalizeFundDisplayName(row.fundName)
         : null

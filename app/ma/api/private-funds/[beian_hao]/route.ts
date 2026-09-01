@@ -225,7 +225,14 @@ export async function GET(
     if (phase === "header") {
       const cached = await lookupListCacheFundHeader(rawId)
       if (cached) {
-        return NextResponse.json(buildDetailHeaderFromListCache(rawId, cached))
+        const payload = buildDetailHeaderFromListCache(rawId, cached)
+        const teamBenchmark = await loadTeamBenchmark(
+          [payload.info.beian_hao, rawId].filter(Boolean),
+        ).catch(() => null)
+        return NextResponse.json({
+          ...payload,
+          info: { ...payload.info, team_benchmark: teamBenchmark },
+        })
       }
       return NextResponse.json({ error: "Header cache miss", partial: true }, { status: 404 })
     }

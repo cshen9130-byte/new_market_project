@@ -1,6 +1,7 @@
 /**
  * Keeps the shared team pool 邮箱运维池 (custom_email_nav) in sync with funds
- * discovered from email NAV parsing — same resolution as 运维 → 团队数据.
+ * discovered from email NAV parsing and FOF底层 估值表 holdings —
+ * same resolution as 运维 → 团队数据.
  *
  * Called after nightly email_nav_parse so 投资 → 跟踪池 shows every email fund
  * without manual seeding.

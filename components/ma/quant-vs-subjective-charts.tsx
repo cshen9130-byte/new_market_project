@@ -2,22 +2,35 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
-import { RefreshCw } from "lucide-react"
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { DateInput } from "@/components/ui/date-input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
   buildMomSignals,
+  buildSignalHistory,
   classifyExposure,
+  classifyRowFlow,
   exposurePct,
+  fmtFlowYuan,
+  lookupFlow,
+  tagSignalsVsPrev,
   type ActionKind,
   type ExposureMetric,
-  type SignalKind,
+  type FlowMap,
+  type FlowView,
+  type MarginTag,
+  type MomSignal,
+  type SignalVsPrev,
 } from "@/lib/ma/quant-vs-subjective-signals"
 import QuantVsSubjectiveHoldingTs, { type HoldingFocus, type HoldingTs } from "@/components/ma/quant-vs-subjective-holding-ts"
 import { QUANT_ACCOUNT_IDS, accountNumericId } from "@/lib/ma/quant-accounts"
 import {
   HelpConsensusKpi,
   HelpDivKpi,
+  HelpFlowScatter,
+  HelpMarginKpi,
   HelpPie,
   HelpProductBar,
   HelpProductTable,
@@ -25,6 +38,7 @@ import {
   HelpScatter,
   HelpSectorBar,
   HelpSectorTable,
+  HelpSignalHistory,
   HelpSignals,
   HelpSubjMargin,
   HelpTs,
@@ -64,6 +78,7 @@ interface GroupInfo {
 interface ApiData {
   ok: boolean
   date: string | null
+  latestDate?: string | null
   quantIds: number[]
   missingQuantIds: number[]
   groups: { quant: GroupInfo; subjective: GroupInfo } | null
@@ -90,16 +105,61 @@ interface ApiData {
     subjEquityPct?: number
   }[]
   holdingTs?: HoldingTs
+  flows?: FlowMap
   error?: string
 }
 
 const ACTION_STYLE: Record<ActionKind, string> = {
   加码: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-900",
+  暂缓加码: "bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-900/50 dark:text-slate-300 dark:border-slate-700",
+  减码准备: "bg-pink-50 text-pink-700 border-pink-200 dark:bg-pink-950/40 dark:text-pink-300 dark:border-pink-900",
   观望: "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-900",
   补风格: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-900",
   控拥挤: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900",
   扩容: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900",
 }
+
+const ACTION_STACK_COLOR: Record<ActionKind, string> = {
+  加码: "#ef4444",
+  暂缓加码: "#64748b",
+  减码准备: "#ec4899",
+  观望: "#8b5cf6",
+  补风格: "#0ea5e9",
+  控拥挤: "#f59e0b",
+  扩容: "#10b981",
+}
+
+const ACTION_HEAT_CODE: Record<ActionKind, number> = {
+  加码: 1,
+  观望: 2,
+  补风格: 3,
+  控拥挤: 4,
+  扩容: 5,
+  暂缓加码: 6,
+  减码准备: 7,
+}
+
+const MARGIN_TAG_STYLE: Record<MarginTag, string> = {
+  同向加仓: "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300",
+  同向减仓: "border-pink-200 bg-pink-50 text-pink-700 dark:border-pink-900 dark:bg-pink-950/40 dark:text-pink-300",
+  边际背离: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300",
+  分歧收敛: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300",
+  分歧加剧: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-300",
+  一侧变动: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300",
+  变化很小: "border-border bg-muted/40 text-muted-foreground",
+}
+
+const FLOW_TAG_COLOR: Record<MarginTag, string> = {
+  同向加仓: "#ef4444",
+  同向减仓: "#ec4899",
+  边际背离: "#64748b",
+  分歧收敛: "#10b981",
+  分歧加剧: "#8b5cf6",
+  一侧变动: "#0ea5e9",
+  变化很小: "#94a3b8",
+}
+
+const SECTOR_ORDER = ["农产", "生鲜", "贵金属", "有色", "新能源", "黑色", "能源化工", "航运", "股指", "国债", "其他"]
 
 const SIGNAL_COLOR: Record<string, string> = {
   consensus_long: "#ef4444",
@@ -217,6 +277,99 @@ function buildConsensusScatterOption(
   }
 }
 
+function flowSrcFromHolding(h: HoldingTs | undefined): import("@/lib/ma/quant-vs-subjective-signals").FlowGridSource | undefined {
+  if (!h?.quantLongLots || !h.quantShortLots || !h.subjLongLots || !h.subjShortLots) return undefined
+  return {
+    dates: h.dates,
+    products: h.products,
+    quantLong: h.quantLong,
+    quantShort: h.quantShort,
+    quantLongLots: h.quantLongLots,
+    quantShortLots: h.quantShortLots,
+    subjLong: h.subjLong,
+    subjShort: h.subjShort,
+    subjLongLots: h.subjLongLots,
+    subjShortLots: h.subjShortLots,
+  }
+}
+
+function buildFlowScatterOption(
+  rows: { name: string; tooltip: string; qStock: number; sStock: number; flow: FlowView | null }[],
+) {
+  const pts = rows.filter((r) => r.flow && (Math.abs(r.flow.q1d) + Math.abs(r.flow.s1d) >= 5e5 || Math.abs(r.qStock) + Math.abs(r.sStock) >= 1))
+  if (!pts.length) return {}
+  const data = pts.map((r) => {
+    const fv = r.flow!
+    return {
+      value: [fv.q1d / 1e4, fv.s1d / 1e4, Math.max(8, Math.abs(r.qStock) + Math.abs(r.sStock))],
+      name: r.tooltip,
+      label: r.name,
+      itemStyle: { color: FLOW_TAG_COLOR[fv.tag] },
+      tag: fv.tag,
+      fv,
+      qStock: r.qStock,
+      sStock: r.sStock,
+    }
+  })
+  const xs = data.map((p) => p.value[0])
+  const ys = data.map((p) => p.value[1])
+  const maxAbs = Math.max(20, ...xs.map(Math.abs), ...ys.map(Math.abs)) * 1.15
+  return {
+    grid: { left: 56, right: 16, top: 36, bottom: 40 },
+    tooltip: {
+      formatter: (p: { data: (typeof data)[number] }) => {
+        const d = p.data
+        if (!d) return ""
+        return [
+          `<b>${d.name}</b>　${d.tag}${d.fv.cutPnl ? ` · ${d.fv.cutPnl}` : ""}`,
+          `存量 量化 ${fmtPct(d.qStock)}　主观 ${fmtPct(d.sStock)}`,
+          `1日主动 量化 ${fmtFlowYuan(d.fv.q1d)}　主观 ${fmtFlowYuan(d.fv.s1d)}`,
+          `5日主动 量化 ${fmtFlowYuan(d.fv.q5d)}　主观 ${fmtFlowYuan(d.fv.s5d)}`,
+        ].join("<br/>")
+      },
+    },
+    xAxis: {
+      type: "value",
+      name: "量化主动调仓（万）",
+      nameLocation: "middle",
+      nameGap: 24,
+      nameTextStyle: { fontSize: 10 },
+      min: -maxAbs,
+      max: maxAbs,
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${v.toFixed(0)}` },
+      splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+    },
+    yAxis: {
+      type: "value",
+      name: "主观主动调仓（万）",
+      nameTextStyle: { fontSize: 10 },
+      min: -maxAbs,
+      max: maxAbs,
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${v.toFixed(0)}` },
+      splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+    },
+    series: [{
+      type: "scatter",
+      symbolSize: (val: number[]) => Math.min(28, 6 + (val[2] ?? 6) * 0.35),
+      data,
+      label: { show: true, formatter: (p: { data: { label: string } }) => p.data.label, fontSize: 9, color: "#64748b" },
+      labelLayout: { hideOverlap: true },
+      markLine: {
+        silent: true,
+        symbol: "none",
+        lineStyle: { type: "dashed", color: "#94a3b8", width: 1 },
+        data: [{ xAxis: 0 }, { yAxis: 0 }],
+      },
+    }],
+    graphic: [
+      { type: "text", left: "62%", top: "18%", style: { text: "两边加多", fill: "#ef444480", fontSize: 11 } },
+      { type: "text", left: "18%", top: "18%", style: { text: "量化减 / 主观加", fill: "#64748b80", fontSize: 11 } },
+      { type: "text", left: "18%", top: "72%", style: { text: "两边减多", fill: "#ec489980", fontSize: 11 } },
+      { type: "text", left: "62%", top: "72%", style: { text: "量化加 / 主观减", fill: "#64748b80", fontSize: 11 } },
+    ],
+  }
+}
+
 type TsPoint = {
   date: string
   quantNetPct: number
@@ -265,6 +418,7 @@ export default function QuantVsSubjectiveCharts() {
   const [quantIds, setQuantIds] = useState<number[] | null>(null)
   const [quantAccs, setQuantAccs] = useState<string[]>([])
   const [subjAccs, setSubjAccs] = useState<string[]>([])
+  const [asOf, setAsOf] = useState("")
 
   useEffect(() => {
     try {
@@ -290,6 +444,7 @@ export default function QuantVsSubjectiveCharts() {
     setLoading(true)
     setError(null)
     const qs = new URLSearchParams({ quantIds: quantIds.join(",") })
+    if (asOf) qs.set("date", asOf)
     fetch(`/ma/api/mom-analysis/quant-vs-subjective?${qs}`)
       .then((r) => r.json())
       .then((j: ApiData) => {
@@ -303,10 +458,11 @@ export default function QuantVsSubjectiveCharts() {
         const ranked = (j.products ?? []).map((p) => p.key).filter((k) => prodCodes.includes(k))
         const pick = ranked[0] ?? prodCodes[0] ?? ""
         setTsProd((prev) => (prev && prodCodes.includes(prev) ? prev : pick))
+        if (asOf && j.date && j.date !== asOf) setAsOf(j.date)
       })
       .catch((e) => setError(e instanceof Error ? e.message : "请求失败"))
       .finally(() => setLoading(false))
-  }, [quantIds])
+  }, [quantIds, asOf])
 
   useEffect(() => { load() }, [load])
 
@@ -341,11 +497,49 @@ export default function QuantVsSubjectiveCharts() {
           data.quantShare,
           data.groups?.quant.nAccounts ?? 0,
           data.groups?.subjective.nAccounts ?? 0,
+          data.flows,
         )
       : [],
     [data, sectors, products],
   )
-  const signals = allSignals.filter((s) => signalFilter === "all" || s.action === signalFilter)
+  const signalHistory = useMemo(
+    () => buildSignalHistory(
+      data?.sectorTs ?? [],
+      data?.productTs ?? [],
+      (code) =>
+        products.find((p) => p.key === code)?.name
+        ?? data?.holdingTs?.products.find((p) => p.code === code)?.name
+        ?? code,
+      flowSrcFromHolding(data?.holdingTs),
+    ),
+    [data?.sectorTs, data?.productTs, data?.holdingTs, products],
+  )
+  const prevDay = useMemo(() => {
+    if (!data?.date || !signalHistory.length) return undefined
+    for (let i = signalHistory.length - 1; i >= 0; i--) {
+      if (signalHistory[i].date < data.date) return signalHistory[i]
+    }
+    return undefined
+  }, [data?.date, signalHistory])
+  const { tagged: taggedSignals, gone: goneSignals } = useMemo(
+    () => tagSignalsVsPrev(allSignals, prevDay?.items),
+    [allSignals, prevDay],
+  )
+  const signals = taggedSignals.filter((s) => signalFilter === "all" || s.action === signalFilter)
+  const goneFiltered = goneSignals.filter((s) => signalFilter === "all" || s.action === signalFilter)
+  const comparable = taggedSignals.filter((s) => s.level !== "allocation")
+  const nNew = comparable.filter((s) => s.vsPrev === "new").length
+  const nChanged = comparable.filter((s) => s.vsPrev === "changed").length
+  const nSame = comparable.filter((s) => s.vsPrev === "same").length
+  const tradingDates = signalHistory.map((d) => d.date)
+  const dateIdx = data?.date ? tradingDates.indexOf(data.date) : -1
+  const latestDate = data?.latestDate ?? data?.date ?? ""
+  const viewingLatest = !asOf || asOf === latestDate
+  const pickDate = (d: string) => {
+    if (!d || d === asOf) return
+    if (!asOf && d === data?.date) return
+    setAsOf(d)
+  }
   const rowSignal = (row: CompareRow) => classifyExposure(row.quant, row.subjective, "risk").signal
   const tsSectors = useMemo(
     () => [...new Set((data?.sectorTs ?? []).map((x) => x.sector))],
@@ -478,6 +672,38 @@ export default function QuantVsSubjectiveCharts() {
     [sectors, metric, unitHint],
   )
 
+  const sectorFlowScatter = useMemo(() => {
+    const flows = data?.flows
+    return buildFlowScatterOption(sectors.map((r) => {
+      const q = r.quant.riskPctGroup
+      const s = r.subjective.riskPctGroup
+      const rowFlow = lookupFlow(flows, "sector", r.key)
+      return {
+        name: r.name,
+        tooltip: r.name,
+        qStock: q,
+        sStock: s,
+        flow: rowFlow ? classifyRowFlow(q, s, rowFlow) : null,
+      }
+    }))
+  }, [sectors, data?.flows])
+
+  const productFlowScatter = useMemo(() => {
+    const flows = data?.flows
+    return buildFlowScatterOption(products.slice(0, 40).map((r) => {
+      const q = r.quant.riskPctGroup
+      const s = r.subjective.riskPctGroup
+      const rowFlow = lookupFlow(flows, "product", r.key)
+      return {
+        name: r.name,
+        tooltip: `${r.name}(${r.key})`,
+        qStock: q,
+        sStock: s,
+        flow: rowFlow ? classifyRowFlow(q, s, rowFlow) : null,
+      }
+    }))
+  }, [products, data?.flows])
+
   const tsOption = useMemo(
     () => buildExposureTsOption((data?.sectorTs ?? []).filter((x) => x.sector === tsSector), metric, axisName),
     [data?.sectorTs, tsSector, metric, axisName],
@@ -509,6 +735,137 @@ export default function QuantVsSubjectiveCharts() {
 
   const nConsensus = allSignals.filter((s) => s.action === "加码").length
   const nDiv = allSignals.filter((s) => s.action === "观望").length
+  const nPause = allSignals.filter((s) => s.action === "暂缓加码").length
+  const nTrim = allSignals.filter((s) => s.action === "减码准备").length
+
+  const countHistoryOption = useMemo(() => {
+    if (!signalHistory.length) return {}
+    const dates = signalHistory.map((d) => d.date)
+    const zoomStart = Math.max(0, 100 - 8000 / Math.max(dates.length, 1))
+    const actions: ActionKind[] = ["加码", "暂缓加码", "减码准备", "观望", "补风格", "控拥挤"]
+    const markIdx = data?.date ? dates.indexOf(data.date) : -1
+    return {
+      grid: { left: 40, right: 16, top: 28, bottom: 48 },
+      legend: { top: 2, right: 8, textStyle: { fontSize: 11 }, data: actions },
+      tooltip: { trigger: "axis" },
+      dataZoom: [
+        { type: "inside", start: zoomStart, end: 100 },
+        { type: "slider", height: 14, bottom: 6, start: zoomStart, end: 100, textStyle: { fontSize: 9 } },
+      ],
+      xAxis: {
+        type: "category",
+        data: dates.map((d) => d.slice(5)),
+        axisLabel: { fontSize: 10 },
+      },
+      yAxis: {
+        type: "value",
+        minInterval: 1,
+        name: "条数",
+        nameTextStyle: { fontSize: 10 },
+        axisLabel: { fontSize: 10 },
+        splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+      },
+      series: actions.map((action) => ({
+        name: action,
+        type: "bar",
+        stack: "sig",
+        barMaxWidth: 10,
+        data: signalHistory.map((d) => d.counts[action]),
+        itemStyle: { color: ACTION_STACK_COLOR[action] },
+        markLine: markIdx >= 0 && action === "加码"
+          ? {
+              symbol: "none",
+              silent: true,
+              label: { formatter: data?.date?.slice(5) ?? "", fontSize: 10 },
+              lineStyle: { color: "#334155", type: "dashed", width: 1.2 },
+              data: [{ xAxis: markIdx }],
+            }
+          : undefined,
+      })),
+    }
+  }, [signalHistory, data?.date])
+
+  const sectorHeatOption = useMemo(() => {
+    if (!signalHistory.length) return {}
+    const dates = signalHistory.map((d) => d.date)
+    const present = new Set<string>()
+    for (const day of signalHistory) {
+      for (const it of day.items) {
+        if (it.level === "sector") present.add(it.key)
+      }
+    }
+    const sectorsY = SECTOR_ORDER.filter((s) => present.has(s))
+    for (const s of present) {
+      if (!sectorsY.includes(s)) sectorsY.push(s)
+    }
+    if (!sectorsY.length) return {}
+    const heat: [number, number, number][] = []
+    signalHistory.forEach((day, xi) => {
+      for (const it of day.items) {
+        if (it.level !== "sector") continue
+        const yi = sectorsY.indexOf(it.key)
+        if (yi < 0) continue
+        heat.push([xi, yi, ACTION_HEAT_CODE[it.action]])
+      }
+    })
+    const zoomStart = Math.max(0, 100 - 8000 / Math.max(dates.length, 1))
+    return {
+      grid: { left: 72, right: 16, top: 36, bottom: 48 },
+      tooltip: {
+        trigger: "item",
+        formatter: (p: unknown) => {
+          const item = (Array.isArray(p) ? p[0] : p) as { data?: unknown; value?: unknown } | undefined
+          const tuple = item?.data ?? item?.value
+          if (!Array.isArray(tuple) || tuple.length < 3) return ""
+          const [xi, yi, code] = tuple as [number, number, number]
+          const date = dates[xi]
+          const sector = sectorsY[yi]
+          if (date == null || sector == null) return ""
+          const action = (Object.entries(ACTION_HEAT_CODE).find(([, v]) => v === code)?.[0] ?? "") as string
+          return `${date}<br/>${sector}　${action}`
+        },
+      },
+      dataZoom: [
+        { type: "inside", xAxisIndex: 0, start: zoomStart, end: 100 },
+        { type: "slider", xAxisIndex: 0, height: 14, bottom: 6, start: zoomStart, end: 100, textStyle: { fontSize: 9 } },
+      ],
+      xAxis: {
+        type: "category",
+        data: dates.map((d) => d.slice(5)),
+        axisLabel: { fontSize: 10 },
+        splitArea: { show: false },
+      },
+      yAxis: {
+        type: "category",
+        data: sectorsY,
+        axisLabel: { fontSize: 10 },
+        inverse: true,
+      },
+      visualMap: {
+        type: "piecewise",
+        orient: "horizontal",
+        left: "center",
+        top: 4,
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { fontSize: 10 },
+        pieces: [
+          { value: 1, label: "加码", color: ACTION_STACK_COLOR.加码 },
+          { value: 6, label: "暂缓加码", color: ACTION_STACK_COLOR.暂缓加码 },
+          { value: 7, label: "减码准备", color: ACTION_STACK_COLOR.减码准备 },
+          { value: 2, label: "观望", color: ACTION_STACK_COLOR.观望 },
+          { value: 3, label: "补风格", color: ACTION_STACK_COLOR.补风格 },
+          { value: 4, label: "控拥挤", color: ACTION_STACK_COLOR.控拥挤 },
+        ],
+      },
+      series: [{
+        type: "heatmap",
+        data: heat,
+        itemStyle: { borderColor: "transparent", borderWidth: 0 },
+        emphasis: { itemStyle: { shadowBlur: 4, shadowColor: "rgba(0,0,0,0.25)" } },
+      }],
+    }
+  }, [signalHistory])
 
   return (
     <div className="space-y-5">
@@ -519,10 +876,51 @@ export default function QuantVsSubjectiveCharts() {
             保证金% = 该板块（或品种）持仓保证金 / 本组持仓保证金合计，量化、主观各自加总约 100%。国债等名义市值大、波动低的品种，风险占比会明显低于保证金占比。切换「风险敞口 / 保证金」会重算图表和对照表；决策信号始终按风险口径。资金分配按账户保证金占用（开仓实际占用），不以客户权益（名义资本）计。
           </p>
           {data?.date && (
-            <p className="text-xs text-muted-foreground mt-1">持仓截面 {data.date}{data.missingQuantIds?.length ? `　未找到量化账户：${data.missingQuantIds.join("、")}` : ""}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              持仓截面 {data.date}{viewingLatest ? "（最新）" : ` · 最新 ${latestDate}`}
+              {data.missingQuantIds?.length ? `　未找到量化账户：${data.missingQuantIds.join("、")}` : ""}
+            </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-label="上一交易日"
+              disabled={dateIdx <= 0 || loading}
+              onClick={() => dateIdx > 0 && pickDate(tradingDates[dateIdx - 1])}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-input text-muted-foreground hover:text-foreground disabled:opacity-40"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <DateInput
+              value={asOf || data?.date || ""}
+              onChange={pickDate}
+              placeholder="请选择日期"
+              min={tradingDates[0]}
+              max={latestDate || undefined}
+              className="w-[148px]"
+              inputClassName="h-8 rounded-md px-2 pr-8 text-xs"
+              displayClassName="left-2 text-xs"
+            />
+            <button
+              type="button"
+              aria-label="下一交易日"
+              disabled={dateIdx < 0 || dateIdx >= tradingDates.length - 1 || loading}
+              onClick={() => dateIdx >= 0 && dateIdx < tradingDates.length - 1 && pickDate(tradingDates[dateIdx + 1])}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-input text-muted-foreground hover:text-foreground disabled:opacity-40"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <Button
+              size="sm"
+              variant={viewingLatest ? "outline" : "default"}
+              disabled={viewingLatest || loading}
+              onClick={() => setAsOf("")}
+            >
+              最新
+            </Button>
+          </div>
           <div className="flex overflow-hidden rounded-md border border-input text-xs">
             <button
               type="button"
@@ -548,26 +946,38 @@ export default function QuantVsSubjectiveCharts() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
         <Kpi title="量化保证金" value={data ? fmtYi(data.groups?.quant.margin ?? 0) : "—"} hint={data ? `${data.groups?.quant.nAccounts ?? 0} 户 · 占比 ${fmtPct(data.quantShare, false)}` : ""} accent={QUANT_COLOR} help={<HelpQuantMargin />} />
         <Kpi title="主观保证金" value={data ? fmtYi(data.groups?.subjective.margin ?? 0) : "—"} hint={data ? `${data.groups?.subjective.nAccounts ?? 0} 户 · 占比 ${fmtPct(100 - (data.quantShare ?? 0), false)}` : ""} accent={SUBJ_COLOR} help={<HelpSubjMargin />} />
-        <Kpi title="共识加码信号" value={loading ? "…" : String(nConsensus)} hint="两边同向，可考虑加 beta" help={<HelpConsensusKpi />} />
-        <Kpi title="方向分歧信号" value={loading ? "…" : String(nDiv)} hint="暂不加该方向 beta" help={<HelpDivKpi />} />
+        <Kpi title="共识加码" value={loading ? "…" : String(nConsensus)} hint="存量同向且边际同向加仓" help={<HelpConsensusKpi />} />
+        <Kpi title="暂缓加码" value={loading ? "…" : String(nPause)} hint="存量同向、边际反向" help={<HelpMarginKpi />} />
+        <Kpi title="减码准备" value={loading ? "…" : String(nTrim)} hint="存量同向、两侧都在减" help={<HelpMarginKpi />} />
+        <Kpi title="方向分歧" value={loading ? "…" : String(nDiv)} hint="暂不加该方向 beta" help={<HelpDivKpi />} />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
-        <Card className="lg:col-span-2 flex flex-col min-h-[520px]">
-          <CardHeader className="pb-2">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="relative min-h-[280px] lg:col-span-2 lg:min-h-0">
+          <Card className="flex h-full max-h-[70vh] flex-col overflow-hidden lg:absolute lg:inset-0 lg:max-h-none">
+            <CardHeader className="pb-2 shrink-0">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <div className="flex items-center gap-1.5">
                   <CardTitle className="text-sm font-medium">MOM 决策信号</CardTitle>
                   <HelpSignals />
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">当前按风险口径生成。点击信号可筛选下方多空持仓图。</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  风险口径 · {data?.date ?? "—"}
+                  {prevDay ? ` · 对比上一交易日 ${prevDay.date}` : ""}
+                  · 悬停看解读
+                </p>
+                {prevDay && (
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    新增 {nNew} · 变化 {nChanged} · 维持 {nSame} · 消失 {goneSignals.length}
+                  </p>
+                )}
               </div>
               <div className="flex flex-wrap gap-1">
-                {(["all", "加码", "观望", "补风格", "控拥挤", "扩容"] as const).map((k) => (
+                {(["all", "加码", "暂缓加码", "减码准备", "观望", "补风格", "控拥挤", "扩容"] as const).map((k) => (
                   <button
                     key={k}
                     onClick={() => setSignalFilter(k)}
@@ -582,43 +992,70 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-0 flex-1 min-h-0 overflow-y-auto">
             {loading && !data ? (
               <p className="text-sm text-muted-foreground py-8 text-center">加载中…</p>
-            ) : !signals.length ? (
+            ) : !signals.length && !goneFiltered.length ? (
               <p className="text-sm text-muted-foreground py-8 text-center">当前截面没有达到阈值的信号。</p>
             ) : (
-              <ul className="divide-y divide-border">
-                {signals.map((s) => {
-                  const clickable = s.level === "product" || s.level === "sector"
-                  const active = clickable && holdingFocus?.level === s.level && holdingFocus.key === s.key
-                  return (
-                    <li key={`${s.level}-${s.key}-${s.type}`}>
-                      <button
-                        type="button"
-                        disabled={!clickable}
-                        onClick={() => {
-                          if (!clickable) return
-                          setHoldingFocus({ level: s.level, key: s.key })
-                          document.getElementById("section-holding-ts")?.scrollIntoView({ behavior: "smooth", block: "start" })
-                        }}
-                        className={`w-full text-left py-3 first:pt-1 ${clickable ? "cursor-pointer rounded-md px-1 -mx-1 hover:bg-muted/60" : "cursor-default"} ${active ? "bg-muted/80" : ""}`}
-                      >
-                        <div className="flex items-start gap-2">
-                          <span className={`mt-0.5 shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium ${ACTION_STYLE[s.action]}`}>{s.action}</span>
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium leading-snug">{s.title}</div>
-                            <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{s.detail}</p>
-                          </div>
-                        </div>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
+              <>
+                <ul className="divide-y divide-border">
+                  {signals.map((s) => {
+                    const clickable = s.level === "product" || s.level === "sector"
+                    const active = clickable && holdingFocus?.level === s.level && holdingFocus.key === s.key
+                    return (
+                      <li key={`${s.level}-${s.key}-${s.type}`}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (s.level !== "product" && s.level !== "sector") return
+                                setHoldingFocus({ level: s.level, key: s.key })
+                                document.getElementById("section-holding-ts")?.scrollIntoView({ behavior: "smooth", block: "start" })
+                              }}
+                              className={`w-full text-left py-1.5 px-1 -mx-1 rounded-md ${clickable ? "cursor-pointer hover:bg-muted/60" : "cursor-default"} ${active ? "bg-muted/80" : ""}`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium ${ACTION_STYLE[s.action]}`}>{s.action}</span>
+                                <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
+                                {s.flow && s.flow.tag !== "变化很小" && (
+                                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${MARGIN_TAG_STYLE[s.flow.tag]}`}>{s.flow.tag}</span>
+                                )}
+                                {prevDay && s.level !== "allocation" && (
+                                  <VsPrevBadge vsPrev={s.vsPrev} prevAction={s.prevAction} action={s.action} />
+                                )}
+                              </div>
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" sideOffset={8} className="max-w-xs text-left leading-relaxed whitespace-normal">
+                            <SignalHoverDetail signal={s} />
+                          </TooltipContent>
+                        </Tooltip>
+                      </li>
+                    )
+                  })}
+                </ul>
+                {goneFiltered.length > 0 && (
+                  <div className="mt-3 rounded-md border border-dashed border-border p-2.5">
+                    <p className="text-[11px] font-medium text-muted-foreground mb-1.5">
+                      上一交易日有、本日已消失 · {goneFiltered.length}
+                    </p>
+                    <ul className="space-y-1">
+                      {goneFiltered.map((s) => (
+                        <li key={`gone-${s.level}-${s.key}`} className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium opacity-70 ${ACTION_STYLE[s.action]}`}>{s.action}</span>
+                          <span className="truncate">{s.name} · 昨日{s.action}，本日未再进入名单</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
-        </Card>
+          </Card>
+        </div>
 
-        <div className="flex flex-col gap-3 min-h-[520px]">
-          <Card className="flex-1 flex flex-col min-h-0">
+        <div className="flex h-full flex-col gap-3">
+          <Card>
             <CardHeader className="pb-1 flex flex-row items-start justify-between gap-2">
               <div>
                 <div className="flex items-center gap-1.5">
@@ -635,11 +1072,11 @@ export default function QuantVsSubjectiveCharts() {
                 恢复默认
               </button>
             </CardHeader>
-            <CardContent className="pt-0 flex-1 min-h-[280px] relative">
+            <CardContent className="pt-0">
               {data?.groups ? (
-                <ReactECharts option={pieOption} style={{ height: "100%", minHeight: 280, width: "100%" }} notMerge />
+                <ReactECharts option={pieOption} style={{ height: 220, width: "100%" }} notMerge />
               ) : (
-                <div className="h-full min-h-[280px]" />
+                <div className="h-[220px]" />
               )}
             </CardContent>
           </Card>
@@ -662,7 +1099,56 @@ export default function QuantVsSubjectiveCharts() {
         </div>
       </div>
 
-      <QuantVsSubjectiveHoldingTs holdingTs={data?.holdingTs} metric={metric} focus={holdingFocus} />
+      {signalHistory.length > 0 && (
+        <Card>
+          <CardHeader className="pb-1">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <CardTitle className="text-sm font-medium">决策信号历史</CardTitle>
+                  <HelpSignalHistory />
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  每日按同一风险阈值重算 · 点击柱或色块切换截面日期
+                </p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-1 space-y-3">
+            <ReactECharts
+              option={countHistoryOption}
+              style={{ height: 240, width: "100%" }}
+              notMerge
+              onEvents={{
+                click: (params: { dataIndex?: number }) => {
+                  const idx = params.dataIndex
+                  if (idx != null && tradingDates[idx]) pickDate(tradingDates[idx])
+                },
+              }}
+            />
+            <ReactECharts
+              option={sectorHeatOption}
+              style={{ height: Math.max(220, 28 + 22 * Math.min(11, SECTOR_ORDER.length)), width: "100%" }}
+              notMerge
+              onEvents={{
+                click: (params: { data?: [number, number, number] }) => {
+                  const idx = params.data?.[0]
+                  if (idx != null && tradingDates[idx]) pickDate(tradingDates[idx])
+                },
+              }}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      <QuantVsSubjectiveHoldingTs
+        holdingTs={data?.holdingTs}
+        metric={metric}
+        focus={holdingFocus}
+        sectorTs={data?.sectorTs}
+        productTs={data?.productTs}
+        flows={data?.flows}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
@@ -695,6 +1181,37 @@ export default function QuantVsSubjectiveCharts() {
           </CardHeader>
           <CardContent className="pt-1">
             <ReactECharts key={`sector-scatter-${metric}`} option={sectorScatterOption} style={{ height: 360, width: "100%" }} notMerge />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader className="pb-1">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium">板块边际散点</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">横轴量化 1 日主动调仓、纵轴主观。第二象限 = 量化减多 / 主观加多（边际背离）。</p>
+              </div>
+              <HelpFlowScatter level="板块" />
+            </div>
+          </CardHeader>
+          <CardContent className="pt-1">
+            <ReactECharts option={sectorFlowScatter} style={{ height: 360, width: "100%" }} notMerge />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-1">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium">品种边际散点</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">点大小按存量风险%；颜色是边际标签。主动调仓 = 手数变化 × 当日价，不含价格涨跌。</p>
+              </div>
+              <HelpFlowScatter level="品种" />
+            </div>
+          </CardHeader>
+          <CardContent className="pt-1">
+            <ReactECharts option={productFlowScatter} style={{ height: 360, width: "100%" }} notMerge />
           </CardContent>
         </Card>
       </div>
@@ -938,7 +1455,34 @@ function AccountLane({
   )
 }
 
-function signalLabel(s: SignalKind): string {
+function SignalHoverDetail({ signal }: { signal: MomSignal }) {
+  const flow = signal.flow
+  const q = flow?.quantBreadth
+  const s = flow?.subjBreadth
+  const qCutPct = q && q.total > 0 ? Math.round((q.cut / q.total) * 100) : null
+  const sAddPct = s && s.total > 0 ? Math.round((s.add / s.total) * 100) : null
+  const breadth = [
+    q && q.total > 0 ? `${q.cut}/${q.total} 量化户减多头（${qCutPct}%）` : null,
+    s && s.total > 0 ? `主观 ${sAddPct}% 户加多头（${s.add}/${s.total}）` : null,
+  ].filter(Boolean).join(" · ")
+  return (
+    <div className="space-y-1.5">
+      <p>{signal.detail}</p>
+      {flow && flow.tag !== "变化很小" && (
+        <p className="tabular-nums opacity-90">
+          {flow.tag}{flow.cutPnl ? ` · ${flow.cutPnl}` : ""}
+          <br />
+          量化 {fmtFlowYuan(flow.q1d)} · 主观 {fmtFlowYuan(flow.s1d)}
+          <br />
+          5日 {fmtFlowYuan(flow.q5d)} / {fmtFlowYuan(flow.s5d)}
+        </p>
+      )}
+      {breadth ? <p className="opacity-90">{breadth}</p> : null}
+    </div>
+  )
+}
+
+function signalLabel(s: string): string {
   switch (s) {
     case "consensus_long": return "共识做多"
     case "consensus_short": return "共识做空"
@@ -955,6 +1499,32 @@ function pctClass(n: number): string {
   if (n > 0.15) return "text-red-600 dark:text-red-400"
   if (n < -0.15) return "text-emerald-600 dark:text-emerald-400"
   return "text-muted-foreground"
+}
+
+function VsPrevBadge({
+  vsPrev,
+  prevAction,
+  action,
+}: {
+  vsPrev: SignalVsPrev
+  prevAction?: ActionKind
+  action: ActionKind
+}) {
+  if (vsPrev === "new") {
+    return (
+      <span className="shrink-0 rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+        新增
+      </span>
+    )
+  }
+  if (vsPrev === "changed" && prevAction) {
+    return (
+      <span className="shrink-0 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+        昨日{prevAction} → {action}
+      </span>
+    )
+  }
+  return null
 }
 
 function Kpi({ title, value, hint, accent, help }: { title: string; value: string; hint: string; accent?: string; help?: React.ReactNode }) {

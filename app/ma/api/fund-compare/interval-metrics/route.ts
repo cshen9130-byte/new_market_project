@@ -21,10 +21,21 @@ export async function POST(req: Request) {
         .filter(Boolean)
         .slice(0, 100)
     : []
+  const products = Array.isArray((body as { products?: unknown }).products)
+    ? ((body as { products: unknown[] }).products as { beian_hao?: unknown; product_name?: unknown }[])
+        .map((item) => ({
+          beian_hao: String(item.beian_hao ?? "").trim(),
+          product_name: String(item.product_name ?? "").trim(),
+        }))
+        .filter((item) => item.beian_hao)
+        .slice(0, 100)
+    : []
+  const ids = products.length > 0 ? products.map((p) => p.beian_hao) : beian_haos
+  const nameById = new Map(products.map((p) => [p.beian_hao, p.product_name || p.beian_hao]))
   const benchmark = String((body as { benchmark?: unknown }).benchmark ?? "").trim()
 
   try {
-    const funds = await loadFundIntervalMetrics(beian_haos)
+    const funds = await loadFundIntervalMetrics(ids, nameById)
     const cutoffDate = funds
       .map((f) => f.metricDate)
       .filter(Boolean)

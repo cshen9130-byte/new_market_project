@@ -127,6 +127,8 @@ basicinfo_bfl_track/
 tmp/
 data/tmp/
 data/runtime/
+scripts/ma/_tmp_*
+scripts/ma/_mom_signal_method_output/
 data/hw_monitor_*
 data/list_perf_*
 yinhe_strategy/report_output/

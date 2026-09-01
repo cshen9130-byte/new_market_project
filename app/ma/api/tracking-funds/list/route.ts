@@ -12,15 +12,25 @@ import {
 import { enrichTrackFundMetricsRows, overlayTeamNavOnTrackRows } from "@/lib/server/list-cache-nav-batch"
 import {
   buildListResponseCacheKey,
+  invalidateListResponseCache,
   withListResponseCache,
 } from "@/lib/server/list-response-cache"
 import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 import { resolveVisibleEmailPoolRegistersForUser } from "@/lib/server/direct-email-visibility"
 import { getUserById } from "@/lib/server/users"
 import { recordInteractiveUserTraffic } from "@/lib/server/user-activity-priority"
+import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+/** 估值表 股票成本_* / 基金成本 parent buckets must never appear as 跟踪产品. */
+const SQL_EXCLUDE_STOCK_COST_BUCKET = `NOT ${sqlSubjectNameIsStockCostBucket("COALESCE(i.product_name, '')")}`
+
+declare global {
+  // One-shot: drop stale list JSON that still contains 股票成本_* rows.
+  var _trackingListStockCostCacheBustV2: boolean | undefined
+}
 
 interface NavJoinConfig {
   latestNavJoin: string
@@ -578,7 +588,7 @@ async function handleCachedTrackingList(opts: {
 
       const filterParams: unknown[] =
         isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
-      const where: string[] = []
+      const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
 
       if (strategyL1) {
         filterParams.push(strategyL1)
@@ -754,7 +764,7 @@ async function handleBflOpsList(opts: {
   const strategyL3Expr = `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_three, '')), '')`
 
   const filterParams: (string | number)[] = []
-  const where: string[] = []
+  const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
 
   if (strategyL1) {
     filterParams.push(strategyL1)
@@ -876,6 +886,10 @@ async function handleBflOpsList(opts: {
 }
 
 export async function GET(req: Request) {
+  if (!global._trackingListStockCostCacheBustV2) {
+    global._trackingListStockCostCacheBustV2 = true
+    invalidateListResponseCache()
+  }
   const userId = String(req.headers.get("x-market-user-id") || "").trim()
   recordInteractiveUserTraffic("/ma/api/tracking-funds/list", "GET", userId)
   const { searchParams } = new URL(req.url)
@@ -920,6 +934,16 @@ export async function GET(req: Request) {
   const asOfDateForNav = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
     ? cutoffRaw
     : new Date().toISOString().slice(0, 10)
+
+  // 邮箱运维池: FOF底层 NAV products must be in the pool, then apply visibility.
+  if (pool === EMAIL_OPS_POOL_KEY) {
+    try {
+      const { ensureFofUnderlyingInEmailPool } = await import("@/lib/server/fof-email-product-sync")
+      await ensureFofUnderlyingInEmailPool()
+    } catch (err) {
+      console.warn("[tracking-funds/list] FOF→邮箱池 sync skipped:", err)
+    }
+  }
 
   // 邮箱运维池: filter products by 直投设置 crawl-email → account visibility.
   let emailVisibilityRegisters: string[] | null = null
@@ -1167,9 +1191,9 @@ export async function GET(req: Request) {
       )`
 
   // For custom pools, pool_key is always the first param ($1) unless listing all mine pools
-  const filterParams: (string | number | string[])[] =
-    isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
-  const where: string[] = []
+      const filterParams: (string | number | string[])[] =
+        isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
+      const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
 
   if (strategyL1) {
     filterParams.push(strategyL1)

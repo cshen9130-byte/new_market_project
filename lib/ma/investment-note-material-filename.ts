@@ -3,7 +3,20 @@
  * Storage filenames stay hashed; only the shown `name` is rewritten.
  */
 
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
+
 export const MATERIAL_DISPLAY_NAME_MAX_CHARS = 60
+/** Compact label for the 上传资料 table; hover still shows the full stored name. */
+export const MATERIAL_LIST_NAME_MAX_CHARS = 22
+
+const DOC_KIND_PHRASE_RE =
+  /基金合同|产品合同|私募合同|产品介绍|基金介绍|一页通|壹页通|一期通|一页纸|要素表|产品要素|产品资料概要|资料概要/gu
+const BOILERPLATE_RE =
+  /仅供(?:机构投资者)?内部[^\s._-]{0,20}|双面版|内部审查使用|内部法务使用|内部使用/gu
+const ANNOUNCEMENT_PREFIX_RE = /第\d+次变更(?:加入)?公告/gu
+const DATE_OR_VERSION_PAREN_RE = /[（(](?:20\d{2,6}|\d+改\d+|日期[^)）]*)[)）]/gu
+const LONG_DIGIT_RUN_RE = /20\d{6,14}/g
+const BEIAN_BEFORE_CJK_RE = /([A-Z]{2,}\d{2,})(?=[\u4e00-\u9fff])/g
 
 const COPY_NUMBER_SUFFIX_RE = /(?:\s*[(（]\d+[)）])+$/u
 const VERSION_SUFFIX_RE = /(?:[\s._-]*[vV]\d+)$/u
@@ -78,6 +91,33 @@ export function cleanMaterialDisplayName(filename: string, ext = ""): string {
   const sanitizedBase = materialBasename(sanitized) || "material"
   const clipped = sanitizedBase.slice(0, MATERIAL_DISPLAY_NAME_MAX_CHARS).trim() || "material"
   return `${clipped}${resolvedExt}`
+}
+
+/** Short product-style label for lists; does not change the stored filename. */
+export function formatMaterialListName(
+  filename: string,
+  maxChars = MATERIAL_LIST_NAME_MAX_CHARS,
+): string {
+  const ext = materialExtension(filename)
+  const rawBase = materialBasename(filename).trim() || "material"
+  let base = rawBase
+    .replace(ANNOUNCEMENT_PREFIX_RE, " ")
+    .replace(DOC_KIND_PHRASE_RE, " ")
+    .replace(BOILERPLATE_RE, " ")
+    .replace(DATE_OR_VERSION_PAREN_RE, " ")
+    .replace(LONG_DIGIT_RUN_RE, " ")
+  const normalized = normalizeFundDisplayName(base)
+  if (normalized) base = normalized
+  base = base
+    .replace(BEIAN_BEFORE_CJK_RE, "$1 ")
+    .replace(/_+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[.\s_-]+|[.\s_-]+$/g, "")
+    .trim()
+  if (!base) base = rawBase
+  const limit = Math.max(8, maxChars)
+  if (base.length > limit) base = `${base.slice(0, limit).trim()}…`
+  return `${base}${ext}`
 }
 
 export function materialNameFromNoteTitle(title: string, ext: string): string | null {

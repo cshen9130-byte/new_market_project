@@ -26,6 +26,10 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   // + fund_name=金舆锡泰一号, so auto-resolution linked 锡泰 → SBKM53 (wrong page).
   // Custody 估值表: SCQ403_金舆锡泰一号…
   金舆锡泰一号: "SCQ403",
+  // Guotai TA虚拟净值: 峰云汇高山一号【金舆木盛那平江1号…】… stores product_code=SBVC85
+  // + fund_name=金舆木盛那平江1号, so auto-resolution linked 那平江 → SBVC85 (wrong page).
+  // Custody 估值表: SCP742金舆木盛那平江1号…
+  金舆木盛那平江1号: "SCP742",
 }
 
 /** Known 托管券商 for 在管产品 when registration tables are incomplete. */
@@ -33,6 +37,7 @@ export const MANAGED_PRODUCT_CUSTODIAN_OVERRIDES: Readonly<Record<string, string
   抱朴聚融祥和一号: "招商证券股份有限公司",
   衡颐海宸1号: "光大证券股份有限公司",
   衡颐承和FOF1号: "国泰海通证券股份有限公司",
+  金舆木盛那平江1号: "国信证券股份有限公司",
 }
 
 /** Alternate 备案号 stored in legacy tables / custody Excel — map to canonical code. */

@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from "react"
 import dynamic from "next/dynamic"
 import { ChevronDown, Clock, Download, Info, Search, SquarePen } from "lucide-react"
 import { ProductSelectionPanel } from "@/components/ma/product-selection-panel"
+import { normalizeFofDisplayName } from "@/lib/fof-portfolio-var"
 import {
   isValuationCashHoldingName,
   stripValuationSubjectPathPrefix,
@@ -63,7 +64,8 @@ function isCashOrNonFundRow(row: FundHoldingRow): boolean {
 }
 
 function displayFundName(row: FundHoldingRow): string {
-  return stripValuationSubjectPathPrefix(row.fundName) || row.fundName
+  const stripped = stripValuationSubjectPathPrefix(row.fundName) || row.fundName
+  return normalizeFofDisplayName(stripped)
 }
 
 type Props = {

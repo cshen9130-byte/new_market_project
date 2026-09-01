@@ -3,9 +3,12 @@
  */
 
 import {
+  fofHoldingKey,
+  normalizeFofDisplayName,
   strategyHead,
   type FofPortfolioVarResult,
 } from "@/lib/fof-portfolio-var"
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
 export type NavPoint = { date: string; nav: number }
 export type BenchPoint = { date: string; value: number }
@@ -203,57 +206,359 @@ export type CrcAreaPoint = {
   values: Record<string, number>
 }
 
+export type CrcFundRef = {
+  key: string
+  name: string
+  strategy: string | null
+}
+
+export type TrailingCrcByFund = {
+  dates: string[]
+  funds: CrcFundRef[]
+  rows: CrcAreaPoint[]
+}
+
+export type CrcLabelFn = (fund: CrcFundRef) => string | string[]
+
+export type CrcStrategyLabels = {
+  l1: string
+  l2: string
+  l3s: string[]
+}
+
+export type CrcHoldingRef = {
+  fundName: string
+  beianHao?: string | null
+  valuationCode?: string | null
+  fundStrategy?: string | null
+  strategyL1?: string | null
+  strategyL2?: string | null
+  strategyL3?: string | null
+}
+
+const CRC_UNCONFIGURED = "未配置"
+
+function splitStrategyPath(strategy: string | null | undefined): string[] {
+  return (strategy ?? "")
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean)
+}
+
+function splitStrategyL3(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  return raw
+    .split(/[，,、]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+}
+
+function addCrcShare(values: Record<string, number>, labels: string | string[], crc: number) {
+  const parts = (Array.isArray(labels) ? labels : [labels]).map((n) => n.trim() || CRC_UNCONFIGURED)
+  const keys = parts.length > 0 ? parts : [CRC_UNCONFIGURED]
+  const share = crc / keys.length
+  for (const key of keys) values[key] = (values[key] ?? 0) + share
+}
+
+export function parseCrcStrategyLabels(h: {
+  fundStrategy?: string | null
+  strategyL1?: string | null
+  strategyL2?: string | null
+  strategyL3?: string | null
+}): CrcStrategyLabels {
+  const fromPath = splitStrategyPath(h.fundStrategy)
+  const l1 = h.strategyL1?.trim() || fromPath[0] || CRC_UNCONFIGURED
+  const l2 = h.strategyL2?.trim() || fromPath[1] || CRC_UNCONFIGURED
+  const l3s = splitStrategyL3(h.strategyL3)
+  return { l1, l2, l3s: l3s.length > 0 ? l3s : [CRC_UNCONFIGURED] }
+}
+
+export function buildCrcStrategyLookup(holdings: CrcHoldingRef[]): Map<string, CrcStrategyLabels> {
+  const map = new Map<string, CrcStrategyLabels>()
+  const set = (key: string | null | undefined, labels: CrcStrategyLabels) => {
+    const k = key?.trim()
+    if (k) map.set(k, labels)
+  }
+  for (const h of holdings) {
+    const labels = parseCrcStrategyLabels(h)
+    set(fofHoldingKey({
+      fundName: h.fundName,
+      beianHao: h.beianHao ?? null,
+      valuationCode: h.valuationCode ?? null,
+    }), labels)
+    set(h.beianHao, labels)
+    set(h.valuationCode?.trim().toUpperCase(), labels)
+    set(h.fundName, labels)
+    const stripped = stripValuationSubjectPathPrefix(h.fundName) || h.fundName
+    set(stripped, labels)
+    set(normalizeFofDisplayName(h.fundName), labels)
+    set(normalizeFofDisplayName(stripped), labels)
+  }
+  return map
+}
+
+export function crcLabelsForFund(
+  fund: CrcFundRef,
+  lookup: Map<string, CrcStrategyLabels>,
+): CrcStrategyLabels {
+  return lookup.get(fund.key)
+    ?? lookup.get(fund.name)
+    ?? lookup.get(normalizeFofDisplayName(fund.key))
+    ?? lookup.get(normalizeFofDisplayName(fund.name))
+    ?? parseCrcStrategyLabels({ fundStrategy: fund.strategy })
+}
+
+export function crcGroupLabel(labels: CrcStrategyLabels, level: 1 | 2 | 3): string | string[] {
+  if (level === 1) return labels.l1
+  if (level === 2) {
+    if (labels.l2 === CRC_UNCONFIGURED) {
+      return labels.l1 === CRC_UNCONFIGURED ? CRC_UNCONFIGURED : `${labels.l1}/${CRC_UNCONFIGURED}`
+    }
+    return `${labels.l1}/${labels.l2}`
+  }
+  if (labels.l3s.length === 1 && labels.l3s[0] === CRC_UNCONFIGURED) return CRC_UNCONFIGURED
+  const prefix = labels.l2 !== CRC_UNCONFIGURED
+    ? `${labels.l1}/${labels.l2}`
+    : labels.l1
+  return labels.l3s.map((l3) => (l3 === CRC_UNCONFIGURED ? CRC_UNCONFIGURED : `${prefix}/${l3}`))
+}
+
+export function shareTrendToCrcByFund(
+  trend: { dates: string[]; series: Array<{ name: string; values: number[] }> } | null | undefined,
+  fromDate?: string,
+  toDate?: string,
+): TrailingCrcByFund {
+  if (!trend || trend.dates.length === 0 || trend.series.length === 0) {
+    return { dates: [], funds: [], rows: [] }
+  }
+  const from = fromDate?.slice(0, 10)
+  const to = toDate?.slice(0, 10)
+  const keep = trend.dates
+    .map((date, i) => ({ date, i }))
+    .filter(({ date }) => {
+      if (from && date < from) return false
+      if (to && date > to) return false
+      return true
+    })
+  if (keep.length === 0) return { dates: [], funds: [], rows: [] }
+  const funds = trend.series.map((s) => ({
+    key: s.name,
+    name: s.name,
+    strategy: s.name.includes("/") ? s.name : null,
+  }))
+  const rows = keep.map(({ date, i }) => {
+    const values: Record<string, number> = {}
+    for (const s of trend.series) values[s.name] = s.values[i] ?? 0
+    return { date, values }
+  })
+  return { dates: rows.map((r) => r.date), funds, rows }
+}
+
+function nameAliases(name: string): string[] {
+  const stripped = stripValuationSubjectPathPrefix(name) || name
+  return [...new Set([
+    name.trim(),
+    stripped.trim(),
+    normalizeFofDisplayName(name),
+    normalizeFofDisplayName(stripped),
+  ].filter(Boolean))]
+}
+
+function matchWeightKeys(
+  funds: Array<{ key: string; name: string }>,
+  weightKeys: string[],
+): Array<string | null> {
+  const byAlias = new Map<string, string>()
+  for (const key of weightKeys) {
+    for (const alias of nameAliases(key)) {
+      if (!byAlias.has(alias)) byAlias.set(alias, key)
+    }
+  }
+  return funds.map((fund) => {
+    for (const alias of [...nameAliases(fund.key), ...nameAliases(fund.name)]) {
+      const hit = byAlias.get(alias)
+      if (hit) return hit
+    }
+    return null
+  })
+}
+
+function sampleCov(slices: number[][]): number[][] {
+  const n = slices.length
+  return Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (__, j) => {
+      const a = slices[i]
+      const b = slices[j]
+      const m = Math.min(a.length, b.length)
+      if (m < 3) return 0
+      const ma = mean(a)
+      const mb = mean(b)
+      let s = 0
+      for (let k = 0; k < m; k++) s += (a[k] - ma) * (b[k] - mb)
+      return s / (m - 1)
+    }),
+  )
+}
+
+export function computeTrailingCrcByFund(
+  result: FofPortfolioVarResult | null,
+  window = 12,
+  historicalWeights: TrailingCrcByFund | null = null,
+): TrailingCrcByFund {
+  if (
+    !result
+    || !historicalWeights
+    || historicalWeights.rows.length < 2
+    || result.fundReturns.length === 0
+    || result.alignedDates.length < window + 1
+  ) {
+    return { dates: [], funds: [], rows: [] }
+  }
+  const funds = result.fundReturns
+  const T = result.alignedDates.length
+  const weightKeys = matchWeightKeys(funds, historicalWeights.funds.map((f) => f.key))
+  if (weightKeys.every((k) => k == null)) {
+    return { dates: [], funds: [], rows: [] }
+  }
+  const rows: CrcAreaPoint[] = []
+  let t = -1
+  for (const snap of historicalWeights.rows) {
+    while (t + 1 < T && result.alignedDates[t + 1] <= snap.date) t++
+    if (t < window) continue
+    const raw = funds.map((_, i) => {
+      const key = weightKeys[i]
+      const v = key ? snap.values[key] ?? 0 : 0
+      return Number.isFinite(v) && v > 0 ? v : 0
+    })
+    const sum = raw.reduce((s, v) => s + v, 0)
+    if (sum < 1e-8) continue
+    const w = raw.map((v) => v / sum)
+    const slices = funds.map((f) => f.returns.slice(t - window, t))
+    const cov = sampleCov(slices)
+    const n = funds.length
+    let portVar = 0
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) portVar += w[i] * w[j] * cov[i][j]
+    }
+    const values: Record<string, number> = {}
+    if (portVar > 1e-16) {
+      for (let i = 0; i < n; i++) {
+        let sigmaW = 0
+        for (let j = 0; j < n; j++) sigmaW += cov[i][j] * w[j]
+        values[funds[i].key] = (w[i] * sigmaW / portVar) * 100
+      }
+    } else {
+      for (const f of funds) values[f.key] = 0
+    }
+    rows.push({ date: snap.date, values })
+  }
+  return {
+    dates: rows.map((r) => r.date),
+    funds: funds.map((f) => ({ key: f.key, name: f.name, strategy: f.strategy })),
+    rows,
+  }
+}
+
+export function filterTrailingCrcByFund(
+  source: TrailingCrcByFund,
+  pred: (fund: CrcFundRef) => boolean,
+): TrailingCrcByFund {
+  const funds = source.funds.filter(pred)
+  return {
+    dates: source.dates,
+    funds,
+    rows: source.rows.map((row) => {
+      const values: Record<string, number> = {}
+      for (const fund of funds) values[fund.key] = row.values[fund.key] ?? 0
+      return { date: row.date, values }
+    }),
+  }
+}
+
+export function groupTrailingCrcArea(
+  source: TrailingCrcByFund,
+  labelOf: CrcLabelFn,
+  topN = 8,
+): { dates: string[]; names: string[]; rows: CrcAreaPoint[] } {
+  if (source.rows.length === 0 || source.funds.length === 0) {
+    return { dates: [], names: [], rows: [] }
+  }
+  const latest = source.rows[source.rows.length - 1]
+  const latestTotals: Record<string, number> = {}
+  for (const fund of source.funds) {
+    addCrcShare(latestTotals, labelOf(fund), latest.values[fund.key] ?? 0)
+  }
+  const names = Object.entries(latestTotals)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, topN)
+    .map(([name]) => name)
+  const nameSet = new Set(names)
+  const rows = source.rows.map((row) => {
+    const values: Record<string, number> = { 其他: 0 }
+    for (const name of names) values[name] = 0
+    for (const fund of source.funds) {
+      const raw = labelOf(fund)
+      const parts = (Array.isArray(raw) ? raw : [raw])
+        .map((n) => n.trim() || CRC_UNCONFIGURED)
+      const keys = parts.length > 0 ? parts : [CRC_UNCONFIGURED]
+      const share = (row.values[fund.key] ?? 0) / keys.length
+      for (const key of keys) {
+        const dest = nameSet.has(key) ? key : "其他"
+        values[dest] = (values[dest] ?? 0) + share
+      }
+    }
+    return { date: row.date, values }
+  })
+  return { dates: source.dates, names: [...names, "其他"], rows }
+}
+
+export function renormalizeCrcArea(area: {
+  dates: string[]
+  names: string[]
+  rows: CrcAreaPoint[]
+}): { dates: string[]; names: string[]; rows: CrcAreaPoint[] } {
+  return {
+    dates: area.dates,
+    names: area.names,
+    rows: area.rows.map((row) => {
+      const sum = Object.values(row.values).reduce((s, v) => s + v, 0)
+      if (Math.abs(sum) < 1e-8) return { date: row.date, values: { ...row.values } }
+      const values: Record<string, number> = {}
+      for (const [key, value] of Object.entries(row.values)) {
+        values[key] = (value / sum) * 100
+      }
+      return { date: row.date, values }
+    }),
+  }
+}
+
+export function renormalizeTrailingByFund(source: TrailingCrcByFund): TrailingCrcByFund {
+  if (source.rows.length === 0) return source
+  return {
+    dates: source.dates,
+    funds: source.funds,
+    rows: source.rows.map((row) => {
+      const sum = Object.values(row.values).reduce((s, v) => s + v, 0)
+      if (Math.abs(sum) < 1e-8) return { date: row.date, values: { ...row.values } }
+      const values: Record<string, number> = {}
+      for (const [key, value] of Object.entries(row.values)) {
+        values[key] = (value / sum) * 100
+      }
+      return { date: row.date, values }
+    }),
+  }
+}
+
 export function computeTrailingCrcArea(
   result: FofPortfolioVarResult | null,
   window = 12,
   topN = 8,
 ): { dates: string[]; names: string[]; rows: CrcAreaPoint[] } {
-  if (!result || result.fundReturns.length === 0 || result.alignedDates.length < window + 1) {
-    return { dates: [], names: [], rows: [] }
-  }
-  const funds = result.fundReturns
-  const T = result.alignedDates.length
-  const w = funds.map((f) => f.weightPct / 100)
-  const latestCrc = result.funds
-    .filter((f) => f.status === "ok")
-    .sort((a, b) => Math.abs(b.riskContribPct ?? 0) - Math.abs(a.riskContribPct ?? 0))
-  const names = latestCrc.slice(0, topN).map((f) => f.name)
-  const nameSet = new Set(names)
-  const rows: CrcAreaPoint[] = []
-  for (let t = window; t < T; t++) {
-    const slices = funds.map((f) => f.returns.slice(t - window, t))
-    const n = funds.length
-    const cov: number[][] = Array.from({ length: n }, (_, i) =>
-      Array.from({ length: n }, (__, j) => {
-        const a = slices[i]
-        const b = slices[j]
-        const m = Math.min(a.length, b.length)
-        if (m < 3) return 0
-        const ma = mean(a)
-        const mb = mean(b)
-        let s = 0
-        for (let k = 0; k < m; k++) s += (a[k] - ma) * (b[k] - mb)
-        return s / (m - 1)
-      }),
-    )
-    let portVar = 0
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) portVar += w[i] * w[j] * cov[i][j]
-    }
-    const values: Record<string, number> = { 其他: 0 }
-    for (const name of names) values[name] = 0
-    if (portVar > 1e-16) {
-      for (let i = 0; i < n; i++) {
-        let sigmaW = 0
-        for (let j = 0; j < n; j++) sigmaW += cov[i][j] * w[j]
-        const crc = (w[i] * sigmaW / portVar) * 100
-        const label = nameSet.has(funds[i].name) ? funds[i].name : "其他"
-        values[label] = (values[label] ?? 0) + crc
-      }
-    }
-    rows.push({ date: result.alignedDates[t], values })
-  }
-  return { dates: rows.map((r) => r.date), names: [...names, "其他"], rows }
+  return groupTrailingCrcArea(
+    computeTrailingCrcByFund(result, window),
+    (fund) => fund.name,
+    topN,
+  )
 }
 
 export type StrategyMixRow = {

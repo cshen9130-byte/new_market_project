@@ -6,7 +6,10 @@
 import { query } from "@/lib/db"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
-import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
+import {
+  isValuationStockCostSubjectName,
+  stripValuationSubjectPathPrefix,
+} from "@/lib/valuation-holding-display-name"
 
 function compactSubjectCode(code: string | null | undefined): string {
   return String(code ?? "")
@@ -177,6 +180,7 @@ export function isDirectEquityOrListedEtfHolding(input: {
   const kind = String(input.rowKind ?? "")
   const compactSubj = compactSubjectCode(input.subjectCode)
 
+  if (isValuationStockCostSubjectName(name)) return true
   if (kind === "private_fund" || /私募/u.test(name)) return false
   if (kind === "stock") return true
 
@@ -206,6 +210,7 @@ export function isDirectEquityOrListedEtfProduct(
   beianHao?: string | null,
 ): boolean {
   const name = String(productName ?? "")
+  if (isValuationStockCostSubjectName(name)) return true
   if (/私募/u.test(name)) return false
 
   const code = String(beianHao ?? "").trim().toUpperCase() || extractListedFundCodeFromName(name) || ""
@@ -258,12 +263,22 @@ export function sqlFofUnderlyingFundClassFilter(
   )`
 }
 
+/** SQL: 估值表 股票成本_* / 基金成本 / 封闭式基金成本 parent buckets, not fund products. */
+export function sqlSubjectNameIsStockCostBucket(nameExpr: string): string {
+  return `(
+    ${nameExpr} ~ '股票成本'
+    OR ${nameExpr} ~ '^基金成本'
+    OR (${nameExpr} ~ '^封闭式基金' AND ${nameExpr} ~ '成本' AND ${nameExpr} !~ '[0-9]+号')
+  )`
+}
+
 /** SQL fragment: true when a summary-row product should be excluded from FOF底层 tables. */
 export function sqlExcludeFofUnderlyingProduct(productNameExpr: string, beianExpr: string): string {
   const beian = `COALESCE(NULLIF(BTRIM(${beianExpr}), ''), '')`
   // "ETF" in a 私募 short name (e.g. 绵烁ETF套利3号A类 / BBZ20A) is not an exchange ETF.
   return `NOT (
-    (
+    ${sqlSubjectNameIsStockCostBucket(productNameExpr)}
+    OR (
       ${productNameExpr} ~* 'ETF'
       AND ${productNameExpr} !~* '私募'
       AND ${beian} ~ '^[0-9]{6}$'
@@ -302,6 +317,7 @@ export function isDirectEquityOrEtfValuationHolding(
   const sym = String(symbol ?? "").trim()
   const compactCode = String(subjectCode ?? "").replace(/\s/g, "").replace(/\./g, "")
 
+  if (isValuationStockCostSubjectName(name)) return true
   if (kind === "private_fund" || /私募/u.test(name)) return false
   if (kind === "stock") return true
   const ticker = sym.replace(/\.(SH|SZ|BJ)$/i, "")
@@ -335,7 +351,8 @@ export function isDirectEquityOrEtfValuationHolding(
 
 /** SQL fragment: true when valuation holding alias should be excluded from FOF底层 extraction. */
 export const SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF = `(
-  (
+  ${sqlSubjectNameIsStockCostBucket("h.subject_name")}
+  OR (
     h.subject_name ~* 'ETF'
     AND h.subject_name !~* '私募'
     AND h.row_kind IS DISTINCT FROM 'private_fund'
@@ -368,7 +385,8 @@ export const SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF = `(
 
 /** Same as above for ops_managed_fof_underlying (alias m). */
 export const SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF = `(
-  (
+  ${sqlSubjectNameIsStockCostBucket("m.underlying_name")}
+  OR (
     m.underlying_name ~* 'ETF'
     AND m.underlying_name !~* '私募'
     AND m.row_kind IS DISTINCT FROM 'private_fund'

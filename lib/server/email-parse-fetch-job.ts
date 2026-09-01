@@ -366,6 +366,14 @@ export function startEmailParseFetchJob(options?: {
                   ` rows=${fofSync.managedRows} summary+=${fofSync.opsFofUnderlyingAdded}` +
                   ` detail+=${fofSync.detailFofUnderlyingAdded}`,
               )
+              try {
+                const { ensureFofUnderlyingInEmailPool } = await import(
+                  "@/lib/server/fof-email-product-sync"
+                )
+                await ensureFofUnderlyingInEmailPool()
+              } catch (syncErr) {
+                console.warn("[email-parse-fetch-job] FOF→邮箱池 sync skipped:", syncErr)
+              }
             } catch (e) {
               if (isAbortError(e)) throw e
               result.errors.push(

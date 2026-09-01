@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { Download, FolderOpen, Save, Search, Trash2 } from "lucide-react"
+import { Download, FolderOpen, Play, Save, Search, Trash2 } from "lucide-react"
 import { isValuationCashHoldingName, stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 import {
   computeFofPortfolioVar,
@@ -39,6 +39,8 @@ type Props = {
   navType?: string
   otherHoldings?: OtherHoldingRow[]
   strategyTrend?: FofShareTrendData | null
+  underlyingTrend?: FofShareTrendData | null
+  beianHao?: string
   weightStorageKey?: string
 }
 
@@ -115,6 +117,8 @@ export function FofVolatilityAnalysisPanel({
   navType = "复权净值",
   otherHoldings = [],
   strategyTrend = null,
+  underlyingTrend = null,
+  beianHao,
   weightStorageKey,
 }: Props) {
   const [confidence, setConfidence] = useState<FofVarConfidence>(95)
@@ -134,12 +138,44 @@ export function FofVolatilityAnalysisPanel({
     [fundHoldings],
   )
 
+  const [fetchedUnderlyingTrend, setFetchedUnderlyingTrend] = useState<FofShareTrendData | null>(null)
+  const [fetchedStrategyTrend, setFetchedStrategyTrend] = useState<FofShareTrendData | null>(null)
+
   useEffect(() => {
     setOverrides({})
     setGapChoiceMade(false)
     setProxySeries([])
     setProxyLoadingKeys([])
   }, [fromDate, toDate])
+
+  useEffect(() => {
+    const propReady = (underlyingTrend?.dates.length ?? 0) >= 2
+    if (propReady || !beianHao || !fromDate || !toDate) return
+    let cancelled = false
+    const qs = new URLSearchParams({
+      trend: "1",
+      from: fromDate.slice(0, 10),
+      to: toDate.slice(0, 10),
+    })
+    void fetch(`/ma/api/private-funds/${encodeURIComponent(beianHao)}/valuation?${qs}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { fof_trend?: { underlying_trend?: FofShareTrendData; strategy_trend?: FofShareTrendData } } | null) => {
+        if (cancelled || !d?.fof_trend) return
+        setFetchedUnderlyingTrend(d.fof_trend.underlying_trend ?? null)
+        setFetchedStrategyTrend(d.fof_trend.strategy_trend ?? null)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [beianHao, fromDate, toDate, underlyingTrend])
+
+  const resolvedUnderlyingTrend = (underlyingTrend?.dates.length ?? 0) >= 2
+    ? underlyingTrend
+    : fetchedUnderlyingTrend
+  const resolvedStrategyTrend = (strategyTrend?.dates.length ?? 0) >= 2
+    ? strategyTrend
+    : fetchedStrategyTrend
 
   useEffect(() => {
     const thin = holdings.filter((holding) => {
@@ -546,6 +582,11 @@ export function FofVolatilityAnalysisPanel({
     }])))
   }
 
+  function applyGapDrafts(next: Record<string, FofGapAction>) {
+    setGapChoiceMade(true)
+    setOverrides(next)
+  }
+
   const rangeLabel = fromDate && toDate ? `${fromDate} ~ ${toDate}` : null
   const navVarPct = result && netAssetValue && netAssetValue > 0
     ? (result.nextPeriodVar / netAssetValue) * 100
@@ -720,6 +761,7 @@ export function FofVolatilityAnalysisPanel({
           onIgnoreAll={applyAllIgnore}
           onProxyAll={applyAllProxy}
           onAssumeAll={applyAllAssume}
+          onApplyDrafts={applyGapDrafts}
           onApplyPreset={(preset) => {
             setAssumeVolDraft(String(preset.assumeVolPct))
             setAssumeCorrDraft(String(preset.assumeCorr))
@@ -851,7 +893,15 @@ export function FofVolatilityAnalysisPanel({
         </>
       )}
     </div>
-    <FofVolControlCharts result={result} productNav={productNav} />
+    <FofVolControlCharts
+      result={result}
+      productNav={productNav}
+      holdings={holdings}
+      shareTrend={resolvedUnderlyingTrend}
+      strategyTrend={resolvedStrategyTrend}
+      fromDate={fromDate}
+      toDate={toDate}
+    />
     </>
   )
 }
@@ -874,6 +924,57 @@ function MetricCard({
   )
 }
 
+type GapRowDraft = {
+  kind: FofGapAction["kind"]
+  vol: string
+  corr: string
+  proxyKey: string
+  proxyName: string
+}
+
+function actionToRowDraft(action: FofGapAction | undefined, vol: string, corr: string): GapRowDraft {
+  if (action?.kind === "proxy") {
+    return {
+      kind: "proxy",
+      vol,
+      corr,
+      proxyKey: action.proxyKey,
+      proxyName: action.proxyName ?? "",
+    }
+  }
+  if (action?.kind === "assume") {
+    return {
+      kind: "assume",
+      vol: String(action.annVolPct),
+      corr: String(action.corr),
+      proxyKey: "",
+      proxyName: "",
+    }
+  }
+  return { kind: "ignore", vol, corr, proxyKey: "", proxyName: "" }
+}
+
+function rowDraftToAction(draft: GapRowDraft, defaultAssumeVol: number): FofGapAction {
+  if (draft.kind === "proxy" && draft.proxyKey) {
+    return {
+      kind: "proxy",
+      proxyKey: draft.proxyKey,
+      proxyName: draft.proxyName || undefined,
+    }
+  }
+  if (draft.kind === "assume") {
+    const rawVol = draft.vol.trim()
+    const annVolPct = rawVol === "" ? defaultAssumeVol : Number(rawVol)
+    const corr = Number(draft.corr)
+    return {
+      kind: "assume",
+      annVolPct: Number.isFinite(annVolPct) && annVolPct >= 0 ? annVolPct : defaultAssumeVol,
+      corr: Number.isFinite(corr) ? corr : 0.3,
+    }
+  }
+  return { kind: "ignore" }
+}
+
 function GapFillPanel({
   gaps,
   overrides,
@@ -889,6 +990,7 @@ function GapFillPanel({
   onIgnoreAll,
   onProxyAll,
   onAssumeAll,
+  onApplyDrafts,
   parentBeian,
   onApplyPreset,
 }: {
@@ -906,10 +1008,62 @@ function GapFillPanel({
   onIgnoreAll: () => void
   onProxyAll: () => void
   onAssumeAll: () => void
+  onApplyDrafts: (next: Record<string, FofGapAction>) => void
   parentBeian?: string
   onApplyPreset: (preset: { assumeVolPct: number; assumeCorr: number; overrides: Record<string, FofGapAction> }) => void
 }) {
+  const [rowDrafts, setRowDrafts] = useState<Record<string, GapRowDraft>>({})
+  const [calcNote, setCalcNote] = useState("")
+  const headerDraftsRef = useRef({ vol: assumeVolDraft, corr: assumeCorrDraft })
+  headerDraftsRef.current = { vol: assumeVolDraft, corr: assumeCorrDraft }
   const missingMv = gaps.reduce((s, g) => s + g.marketPct, 0)
+
+  useEffect(() => {
+    const { vol, corr } = headerDraftsRef.current
+    setRowDrafts((prev) => {
+      const next = { ...prev }
+      for (const [key, action] of Object.entries(overrides)) {
+        next[key] = actionToRowDraft(action, vol, corr)
+      }
+      return next
+    })
+  }, [overrides])
+
+  function draftFor(gap: FofNavGap): GapRowDraft {
+    return rowDrafts[gap.key] ?? actionToRowDraft(overrides[gap.key], assumeVolDraft, assumeCorrDraft)
+  }
+
+  function patchDraft(key: string, patch: Partial<GapRowDraft>) {
+    setRowDrafts((prev) => {
+      const current = prev[key] ?? actionToRowDraft(overrides[key], assumeVolDraft, assumeCorrDraft)
+      return { ...prev, [key]: { ...current, ...patch } }
+    })
+    setCalcNote("")
+  }
+
+  function startRow(gap: FofNavGap, volOverride?: string) {
+    const draft = {
+      ...draftFor(gap),
+      kind: "assume" as const,
+      ...(volOverride != null ? { vol: volOverride } : {}),
+    }
+    const action = rowDraftToAction(draft, defaultAssumeVol)
+    onChange(gap.key, action)
+    setCalcNote(`已按 ${action.kind === "assume" ? action.annVolPct : draft.vol}% 假设波动重算 VaR`)
+  }
+
+  function startAll() {
+    const next: Record<string, FofGapAction> = { ...overrides }
+    for (const gap of gaps) {
+      next[gap.key] = rowDraftToAction(draftFor(gap), defaultAssumeVol)
+    }
+    onApplyDrafts(next)
+    const assumed = gaps.filter((g) => next[g.key]?.kind === "assume").length
+    setCalcNote(assumed > 0
+      ? `已按所选方式重算 VaR（${assumed} 只按假设波动纳入）`
+      : "已按所选方式重算 VaR")
+  }
+
   return (
     <div className="mx-4 mb-3 rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2.5">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -918,7 +1072,7 @@ function GapFillPanel({
             {gaps.length} 只基金净值不足
           </div>
           <div className="text-[11px] text-amber-700/80 mt-0.5">
-            合计市值占比 {missingMv.toFixed(2)}%。可忽略、用同类基金收益代替，或假设年化波动后纳入 VaR。
+            合计市值占比 {missingMv.toFixed(2)}%。选好处理方式并填写假设波动后，点击开始计算以更新下方 VaR。
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -979,20 +1133,19 @@ function GapFillPanel({
           </thead>
           <tbody>
             {gaps.map((gap) => {
-              const action = overrides[gap.key] ?? { kind: "ignore" as const }
-              const selectedProxy = action.kind === "proxy"
+              const draft = draftFor(gap)
+              const selectedProxy = draft.kind === "proxy" && draft.proxyKey
                 ? {
-                    key: action.proxyKey,
-                    name: action.proxyName
-                      || gap.suggestedProxies.find((p) => p.key === action.proxyKey)?.name
-                      || portfolioProxies.find((p) => p.key === action.proxyKey)?.name
-                      || action.proxyKey,
+                    key: draft.proxyKey,
+                    name: draft.proxyName
+                      || gap.suggestedProxies.find((p) => p.key === draft.proxyKey)?.name
+                      || portfolioProxies.find((p) => p.key === draft.proxyKey)?.name
+                      || draft.proxyKey,
                   }
                 : gap.suggestedProxies[0]
                   ? { key: gap.suggestedProxies[0].key, name: gap.suggestedProxies[0].name }
                   : null
-              const vol = action.kind === "assume" ? String(action.annVolPct) : assumeVolDraft
-              const corr = action.kind === "assume" ? String(action.corr) : assumeCorrDraft
+              const vol = draft.vol
               return (
                 <tr key={gap.key} className="border-t border-amber-100">
                   <td className="py-1.5 pr-2 text-zinc-800">
@@ -1008,8 +1161,8 @@ function GapFillPanel({
                         <input
                           type="radio"
                           name={`gap-${gap.key}`}
-                          checked={action.kind === "ignore"}
-                          onChange={() => onChange(gap.key, { kind: "ignore" })}
+                          checked={draft.kind === "ignore"}
+                          onChange={() => patchDraft(gap.key, { kind: "ignore" })}
                         />
                         忽略
                       </label>
@@ -1017,10 +1170,10 @@ function GapFillPanel({
                         <input
                           type="radio"
                           name={`gap-${gap.key}`}
-                          checked={action.kind === "proxy"}
+                          checked={draft.kind === "proxy"}
                           onChange={() => {
                             if (!selectedProxy) return
-                            onChange(gap.key, {
+                            patchDraft(gap.key, {
                               kind: "proxy",
                               proxyKey: selectedProxy.key,
                               proxyName: selectedProxy.name,
@@ -1031,14 +1184,14 @@ function GapFillPanel({
                       </label>
                       <ProxyFundPicker
                         gapKey={gap.key}
-                        selected={action.kind === "proxy" ? selectedProxy : null}
+                        selected={draft.kind === "proxy" ? selectedProxy : null}
                         portfolioProxies={portfolioProxies.filter((p) => p.key !== gap.key)}
                         loading={Boolean(selectedProxy && proxyLoadingKeys.some((k) => k.toUpperCase() === selectedProxy.key.toUpperCase()))}
                         ready={selectedProxy
                           ? proxyReadyKeys.has(selectedProxy.key.toUpperCase())
                             || portfolioProxies.some((p) => p.key === selectedProxy.key)
                           : false}
-                        onPick={(opt) => onChange(gap.key, {
+                        onPick={(opt) => patchDraft(gap.key, {
                           kind: "proxy",
                           proxyKey: opt.key,
                           proxyName: opt.name,
@@ -1049,12 +1202,8 @@ function GapFillPanel({
                         <input
                           type="radio"
                           name={`gap-${gap.key}`}
-                          checked={action.kind === "assume"}
-                          onChange={() => onChange(gap.key, {
-                            kind: "assume",
-                            annVolPct: Number(vol) || defaultAssumeVol,
-                            corr: Number(corr) || 0.3,
-                          })}
+                          checked={draft.kind === "assume"}
+                          onChange={() => patchDraft(gap.key, { kind: "assume" })}
                         />
                         假设
                       </label>
@@ -1063,14 +1212,25 @@ function GapFillPanel({
                         min={0}
                         step={0.5}
                         value={vol}
-                        onChange={(e) => onChange(gap.key, {
-                          kind: "assume",
-                          annVolPct: Number(e.target.value) || 0,
-                          corr: Number(corr) || 0.3,
-                        })}
-                        className="w-14 h-6 rounded border border-amber-300 bg-white px-1 text-right tabular-nums"
+                        onChange={(e) => patchDraft(gap.key, { kind: "assume", vol: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault()
+                            startRow(gap, (e.target as HTMLInputElement).value)
+                          }
+                        }}
+                        className="w-16 h-6 rounded border border-amber-300 bg-white px-1 text-right tabular-nums"
                       />
                       <span>%</span>
+                      <button
+                        type="button"
+                        onClick={() => startRow(gap)}
+                        className="inline-flex h-6 items-center gap-0.5 rounded bg-amber-600 px-1.5 text-[11px] font-medium text-white hover:bg-amber-700"
+                        title="按该行假设波动重算 VaR"
+                      >
+                        <Play className="h-3 w-3 fill-current" />
+                        开始
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -1078,6 +1238,18 @@ function GapFillPanel({
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2">
+        {calcNote && <span className="text-[11px] text-amber-800">{calcNote}</span>}
+        <button
+          type="button"
+          onClick={startAll}
+          className="inline-flex h-8 items-center gap-1 rounded bg-amber-600 px-3 text-xs font-medium text-white hover:bg-amber-700"
+        >
+          <Play className="h-3.5 w-3.5 fill-current" />
+          开始计算
+        </button>
       </div>
     </div>
   )

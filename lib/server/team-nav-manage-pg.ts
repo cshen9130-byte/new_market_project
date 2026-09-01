@@ -454,6 +454,10 @@ export async function deleteTeamNavRow(params: {
     return { error: "missing_fields" }
   }
 
+  if (row_id.startsWith("platform-") || row_id.startsWith("seed-")) {
+    return { error: "not_found" }
+  }
+
   if (row_id.startsWith("manual-")) {
     const manualId = row_id.slice("manual-".length)
     await ensureTeamNavManualTable()
@@ -682,6 +686,30 @@ export async function loadManagedProductNavSeries(params: {
   return mergeNavSeriesWithEmail([], points)
 }
 
+function overlayNavSeriesByDate(base: LegacyNavRow[], overlay: LegacyNavRow[]): LegacyNavRow[] {
+  if (overlay.length === 0) return base
+  if (base.length === 0) return overlay
+  const byDate = new Map<string, LegacyNavRow>()
+  for (const row of base) byDate.set(row.price_date.slice(0, 10), row)
+  for (const row of overlay) byDate.set(row.price_date.slice(0, 10), row)
+  return [...byDate.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
+}
+
+/** Same series the product page / FOF list tip uses (platform + 估值表 extend). */
+async function loadPlatformNavManageSeries(params: {
+  beian_hao: string
+  product_name: string
+}): Promise<LegacyNavRow[]> {
+  const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
+  const { resolveFundNames } = await import("@/lib/server/fund-nav-series")
+  const names = await resolveFundNames(params.beian_hao, params.product_name)
+  return loadDetailNavSeriesFast({
+    beian_hao: params.beian_hao,
+    product_name: names.product_name || params.product_name,
+    short_name: names.short_name || "",
+  })
+}
+
 export async function listTeamNavManageRows(params: {
   beian_hao: string
   product_name: string
@@ -692,32 +720,46 @@ export async function listTeamNavManageRows(params: {
     loadManualTeamNavRows(params.beian_hao, params.nav_type),
   ])
 
-  const merged = await loadManagedProductNavSeries(params)
+  const teamMerged = await loadManagedProductNavSeries(params)
+  let platform: LegacyNavRow[] = []
+  if (params.nav_type === "pre_fee") {
+    try {
+      platform = await loadPlatformNavManageSeries(params)
+    } catch (err) {
+      console.warn("[team-nav-manage] platform series failed:", err)
+    }
+  }
+  const merged = overlayNavSeriesByDate(platform, teamMerged)
+
   const manualDates = new Set(manual.map((row) => row.nav_date))
+  const platformDates = new Set(platform.map((row) => row.price_date.slice(0, 10)))
   const sourceByDate = new Map<string, string>()
+  for (const date of platformDates) sourceByDate.set(date, "平台净值")
   for (const row of raw) {
     if (!manualDates.has(row.nav_date)) sourceByDate.set(row.nav_date, "邮箱抓取")
   }
   for (const row of manual) sourceByDate.set(row.nav_date, "手动上传")
   const idByDate = new Map<string, string>()
+  for (const date of platformDates) idByDate.set(date, `platform-${date}`)
   for (const row of raw) idByDate.set(row.nav_date, row.id)
   for (const row of manual) idByDate.set(row.nav_date, `manual-${row.id}`)
 
   return merged.map((row, i, arr) => {
     const isLatest = i === arr.length - 1
+    const navDate = row.price_date.slice(0, 10)
     // LegacyNavRow: cumulative_nav = 复权, cum_nav_withdrawal = 累计
     const cum = row.cum_nav_withdrawal?.trim() || row.nav?.trim() || null
     const adjusted = row.cumulative_nav?.trim() || row.cum_nav_withdrawal?.trim() || null
     const pct = fmtPct(row.price_change)
     const calculating = isLatest && (!adjusted || !pct)
     return {
-      id: idByDate.get(row.price_date) ?? row.price_date,
-      nav_date: row.price_date,
+      id: idByDate.get(navDate) ?? navDate,
+      nav_date: navDate,
       unit_nav: fmtNav4(row.nav),
       cumulative_nav: fmtNav4(cum),
       adjusted_nav: calculating ? null : fmtNav4(adjusted),
       price_change: calculating ? null : pct,
-      nav_source: sourceByDate.get(row.price_date) ?? "邮箱抓取",
+      nav_source: sourceByDate.get(navDate) ?? (platformDates.has(navDate) ? "平台净值" : "邮箱抓取"),
       calculating,
     }
   }).reverse()

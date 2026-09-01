@@ -1,16 +1,30 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import type { FofPortfolioVarResult } from "@/lib/fof-portfolio-var"
 import {
+  buildCrcStrategyLookup,
   computeRollingVolFromPortfolio,
   computeRollingVolSeries,
-  computeTrailingCrcArea,
+  computeTrailingCrcByFund,
   computeVarBacktest,
+  crcGroupLabel,
+  crcLabelsForFund,
+  filterTrailingCrcByFund,
+  groupTrailingCrcArea,
+  renormalizeCrcArea,
+  renormalizeTrailingByFund,
+  shareTrendToCrcByFund,
+  strategyColor,
+  type CrcFundRef,
+  type CrcHoldingRef,
+  type CrcStrategyLabels,
   type NavPoint,
 } from "@/lib/fof-deeper-analysis"
 import { FofAnalysisChartCard } from "./FofAnalysisChartCard"
+import type { ChartCalcHelp } from "./ChartCalcHelpButton"
+import type { FofShareTrendData } from "./FofShareTrendPanel"
 
 const CRC_COLORS = [
   "#e54d42", "#5b9bd5", "#ed7d31", "#14b8a6", "#8b5cf6",
@@ -20,7 +34,22 @@ const CRC_COLORS = [
 type Props = {
   result: FofPortfolioVarResult | null
   productNav: NavPoint[]
+  holdings?: CrcHoldingRef[]
+  shareTrend?: FofShareTrendData | null
+  strategyTrend?: FofShareTrendData | null
+  fromDate?: string
+  toDate?: string
 }
+
+type CrcMetric = "risk" | "mv"
+
+type CrcSelection = {
+  l1: string | null
+  l2: string | null
+  l3: string | null
+}
+
+const EMPTY_CRC_SEL: CrcSelection = { l1: null, l2: null, l3: null }
 
 function roundHalf(n: number): number {
   return Math.round(n * 2) / 2
@@ -38,9 +67,19 @@ function suggestVolBand(values: Array<number | null>): { low: number; high: numb
   return { low, high }
 }
 
-export function FofVolControlCharts({ result, productNav }: Props) {
+export function FofVolControlCharts({
+  result,
+  productNav,
+  holdings = [],
+  shareTrend = null,
+  strategyTrend = null,
+  fromDate,
+  toDate,
+}: Props) {
   const [customLow, setCustomLow] = useState<string | null>(null)
   const [customHigh, setCustomHigh] = useState<string | null>(null)
+  const [crcSel, setCrcSel] = useState<CrcSelection>(EMPTY_CRC_SEL)
+  const [metric, setMetric] = useState<CrcMetric>("risk")
 
   const productRolling = useMemo(() => computeRollingVolSeries(productNav), [productNav])
   const portRolling = useMemo(() => computeRollingVolFromPortfolio(result), [result])
@@ -58,7 +97,150 @@ export function FofVolControlCharts({ result, productNav }: Props) {
   const bandLo = Math.min(low, high)
   const bandHi = Math.max(low, high)
   const backtest = useMemo(() => computeVarBacktest(result), [result])
-  const crcArea = useMemo(() => computeTrailingCrcArea(result), [result])
+  const strategyLookup = useMemo(() => buildCrcStrategyLookup(holdings), [holdings])
+  const mvUnderlying = useMemo(() => {
+    const inRange = shareTrendToCrcByFund(shareTrend, fromDate, toDate)
+    return inRange.rows.length >= 2 ? inRange : shareTrendToCrcByFund(shareTrend)
+  }, [shareTrend, fromDate, toDate])
+  const mvByFund = useMemo(() => {
+    if (mvUnderlying.rows.length >= 2) return mvUnderlying
+    const inRange = shareTrendToCrcByFund(strategyTrend, fromDate, toDate)
+    return inRange.rows.length >= 2 ? inRange : shareTrendToCrcByFund(strategyTrend)
+  }, [mvUnderlying, strategyTrend, fromDate, toDate])
+  const crcByFund = useMemo(
+    () => computeTrailingCrcByFund(result, 12, mvUnderlying.rows.length >= 2 ? mvUnderlying : null),
+    [result, mvUnderlying],
+  )
+  const source = useMemo(
+    () => (metric === "risk" ? crcByFund : renormalizeTrailingByFund(mvByFund)),
+    [metric, crcByFund, mvByFund],
+  )
+  const metricLabel = metric === "risk" ? "风险贡献" : "市值"
+  const hasMvHistory = mvUnderlying.rows.length >= 2
+  const labelsOf = (fund: CrcFundRef) => crcLabelsForFund(fund, strategyLookup)
+  const crcForL2 = useMemo(
+    () => crcSel.l1
+      ? filterTrailingCrcByFund(source, (f) => labelsOf(f).l1 === crcSel.l1)
+      : source,
+    [source, crcSel.l1, strategyLookup],
+  )
+  const crcForL3 = useMemo(
+    () => filterTrailingCrcByFund(source, (f) => {
+      const labels = labelsOf(f)
+      if (crcSel.l1 && labels.l1 !== crcSel.l1) return false
+      if (crcSel.l2 && labels.l2 !== crcSel.l2) return false
+      return true
+    }),
+    [source, crcSel.l1, crcSel.l2, strategyLookup],
+  )
+  const crcForFunds = useMemo(
+    () => filterTrailingCrcByFund(source, (f) => {
+      const labels = labelsOf(f)
+      if (crcSel.l1 && labels.l1 !== crcSel.l1) return false
+      if (crcSel.l2 && labels.l2 !== crcSel.l2) return false
+      if (crcSel.l3 && !labels.l3s.includes(crcSel.l3)) return false
+      return true
+    }),
+    [source, crcSel.l1, crcSel.l2, crcSel.l3, strategyLookup],
+  )
+  const l1Crc = useMemo(() => {
+    const grouped = groupTrailingCrcArea(source, (f) => crcGroupLabel(labelsOf(f), 1), 12)
+    return metric === "mv" ? renormalizeCrcArea(grouped) : grouped
+  }, [source, strategyLookup, metric])
+  const l2Crc = useMemo(() => {
+    const grouped = groupTrailingCrcArea(
+      crcForL2,
+      (f) => (crcSel.l1 ? labelsOf(f).l2 : crcGroupLabel(labelsOf(f), 2)),
+      10,
+    )
+    return metric === "mv" || crcSel.l1 ? renormalizeCrcArea(grouped) : grouped
+  }, [crcForL2, crcSel.l1, strategyLookup, metric])
+  const l3Crc = useMemo(() => {
+    const grouped = groupTrailingCrcArea(
+      crcForL3,
+      (f) => (crcSel.l2 ? labelsOf(f).l3s : crcGroupLabel(labelsOf(f), 3)),
+      8,
+    )
+    return metric === "mv" || crcSel.l1 || crcSel.l2 ? renormalizeCrcArea(grouped) : grouped
+  }, [crcForL3, crcSel.l1, crcSel.l2, strategyLookup, metric])
+  const fundCrc = useMemo(() => {
+    const grouped = groupTrailingCrcArea(crcForFunds, (f) => f.name, 8)
+    return metric === "mv" || crcSel.l1 || crcSel.l2 || crcSel.l3 ? renormalizeCrcArea(grouped) : grouped
+  }, [crcForFunds, crcSel.l1, crcSel.l2, crcSel.l3, metric])
+
+  function labeledFunds(): Array<{ fund: CrcFundRef; labels: CrcStrategyLabels }> {
+    return source.funds.map((fund) => ({ fund, labels: labelsOf(fund) }))
+  }
+
+  function handleL1Click(name: string) {
+    if (name === "其他") return
+    if (crcSel.l1 === name) {
+      setCrcSel(EMPTY_CRC_SEL)
+      return
+    }
+    setCrcSel({ l1: name, l2: null, l3: null })
+  }
+
+  function handleL2Click(name: string) {
+    if (name === "其他") return
+    const matches = labeledFunds().filter(({ labels }) => {
+      if (crcSel.l1 && labels.l1 !== crcSel.l1) return false
+      const label = crcSel.l1 ? labels.l2 : crcGroupLabel(labels, 2)
+      return label === name || labels.l2 === name
+    })
+    const l1 = crcSel.l1 ?? matches[0]?.labels.l1 ?? null
+    const l2 = matches[0]?.labels.l2 ?? name.split("/").pop() ?? name
+    if (crcSel.l1 === l1 && crcSel.l2 === l2) {
+      setCrcSel({ l1, l2: null, l3: null })
+      return
+    }
+    setCrcSel({ l1, l2, l3: null })
+  }
+
+  function handleL3Click(name: string) {
+    if (name === "其他") return
+    const matches = labeledFunds().filter(({ labels }) => {
+      if (crcSel.l1 && labels.l1 !== crcSel.l1) return false
+      if (crcSel.l2 && labels.l2 !== crcSel.l2) return false
+      const raw = crcSel.l2 ? labels.l3s : crcGroupLabel(labels, 3)
+      const keys = Array.isArray(raw) ? raw : [raw]
+      return keys.includes(name) || labels.l3s.includes(name)
+    })
+    const first = matches[0]?.labels
+    const l1 = crcSel.l1 ?? first?.l1 ?? null
+    const l2 = crcSel.l2 ?? first?.l2 ?? null
+    const l3 = first?.l3s.find((tag) => name === tag || name.endsWith(`/${tag}`))
+      ?? name.split("/").pop()
+      ?? name
+    if (crcSel.l1 === l1 && crcSel.l2 === l2 && crcSel.l3 === l3) {
+      setCrcSel({ l1, l2, l3: null })
+      return
+    }
+    setCrcSel({ l1, l2, l3 })
+  }
+
+  function resetCrcSel(level: 0 | 1 | 2) {
+    if (level === 0) setCrcSel(EMPTY_CRC_SEL)
+    else if (level === 1) setCrcSel({ l1: crcSel.l1, l2: null, l3: null })
+    else setCrcSel({ l1: crcSel.l1, l2: crcSel.l2, l3: null })
+  }
+
+  const crcCrumb = [crcSel.l1, crcSel.l2, crcSel.l3].filter(Boolean) as string[]
+  const l2Hint = crcSel.l1
+    ? `${crcSel.l1} 内${metricLabel}重算为 100% · 再点色块筛三级与底层`
+    : `直接点色块下钻；未选一级时图例为 一级/二级`
+  const l3Hint = crcSel.l2
+    ? `${crcSel.l1} / ${crcSel.l2} 内${metricLabel}重算为 100% · 再点色块筛底层`
+    : crcSel.l1
+      ? `${crcSel.l1} 内全部三级，已重算为 100%`
+      : "直接点色块下钻；一只基金多个三级标签时等权拆分"
+  const fundHint = crcCrumb.length
+    ? `当前范围 ${crcCrumb.join(" / ")} 内${metricLabel}重算为 100%`
+    : metric === "risk"
+      ? (hasMvHistory
+        ? "各估值日当时市值权重 + 滚动 12 期协方差。点上级色块可缩小到底层。"
+        : "没有历史估值市值，不能画底层基金风险贡献走势。")
+      : "各估值日底层基金在纳入基金内的市值占比（合计 100%，不含现金）。点上级色块可缩小到底层。"
   const heatmap = useMemo(() => {
     if (!result || result.corrMatrix.length === 0) return null
     const ranked = [...result.fundReturns]
@@ -182,31 +364,6 @@ export function FofVolControlCharts({ result, productNav }: Props) {
       },
     ],
   }), [backtest, result?.confidence])
-
-  const crcOption = useMemo(() => ({
-    grid: { left: 48, right: 16, top: 36, bottom: 28 },
-    legend: { top: 4, type: "scroll", textStyle: { fontSize: 10 } },
-    tooltip: { trigger: "axis" },
-    xAxis: {
-      type: "category",
-      data: crcArea.dates,
-      axisLabel: { fontSize: 10, color: "#71717a", formatter: (v: string) => v.slice(0, 7) },
-    },
-    yAxis: {
-      type: "value",
-      name: "%",
-      axisLabel: { fontSize: 10, color: "#71717a" },
-      splitLine: { lineStyle: { color: "#f4f4f5" } },
-    },
-    series: crcArea.names.filter((n) => n !== "其他" || crcArea.rows.some((r) => Math.abs(r.values["其他"] ?? 0) > 0.5)).map((name, i) => ({
-      name,
-      type: "line",
-      showSymbol: false,
-      lineStyle: { width: 1.6 },
-      itemStyle: { color: CRC_COLORS[i % CRC_COLORS.length] },
-      data: crcArea.rows.map((r) => +(r.values[name] ?? 0).toFixed(2)),
-    })),
-  }), [crcArea])
 
   const heatHeight = Math.max(280, (heatmap?.names.length ?? 0) * 18 + 80)
   const heatOption = useMemo(() => {
@@ -362,35 +519,136 @@ export function FofVolControlCharts({ result, productNav }: Props) {
         )}
       </FofAnalysisChartCard>
 
-      <FofAnalysisChartCard
-        title="风险贡献走势"
-        hint="按当前市值权重、滚动 12 期协方差做欧拉分解。观察是否有单只基金风险贡献持续抬升。"
-        calcHelp={{
-          heading: "风险贡献走势 · 计算说明",
-          blocks: [
-            {
-              title: "权重固定、协方差滚动",
-              paragraphs: [
-                "每期用当前估值日的市值权重 w，对过去 12 个共同窗口收益重估协方差 Σ_t，再做欧拉分解。只画最新风险贡献最高的 8 只，其余并入「其他」。",
-              ],
-              formula: "CRC_i,t = w_i × (Σ_t w)_i / (w' Σ_t w) × 100",
-            },
-            {
-              title: "怎么读",
-              bullets: [
-                "某只基金 CRC 持续抬升：它对组合波动的贡献在变大。",
-                "权重未变而 CRC 上升，通常是它与组合的相关/波动变高。",
-              ],
-            },
-          ],
-        }}
-      >
-        {crcArea.rows.length < 3 ? (
-          <EmptyChart text="样本不足，无法展开风险贡献走势" />
-        ) : (
-          <ReactECharts option={crcOption} style={{ height: 300 }} notMerge />
-        )}
-      </FofAnalysisChartCard>
+      <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[11px] text-zinc-400">
+            {metric === "mv"
+              ? (mvByFund.rows.length >= 2
+                ? "市值按纳入基金内归一，各层合计 100%（不含现金等非基金资产）。直接点色块下钻，下级仍为 100%。"
+                : "当前区间没有历史估值市值，无法画走势。")
+              : (hasMvHistory
+                ? "风险贡献用各估值日当时的市值权重 + 此前 12 期收益协方差。直接点色块下钻。"
+                : "没有历史估值市值，不能画历史风险贡献（不会用当前权重假装成历史）。")}
+          </div>
+          <div className="flex flex-wrap items-center gap-1 mt-1 text-xs text-zinc-500">
+            <button type="button" className="hover:text-red-500" onClick={() => resetCrcSel(0)}>
+              全部
+            </button>
+            {crcCrumb.map((name, i) => (
+              <span key={`${i}-${name}`} className="inline-flex items-center gap-1">
+                <span className="text-zinc-300">/</span>
+                <button
+                  type="button"
+                  className={i === crcCrumb.length - 1 ? "text-red-500 font-medium" : "hover:text-red-500"}
+                  onClick={() => resetCrcSel((i + 1) as 1 | 2)}
+                >
+                  {name}
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded border border-zinc-200 overflow-hidden text-xs">
+            <button
+              type="button"
+              onClick={() => setMetric("risk")}
+              className={metric === "risk" ? "px-2.5 py-1 bg-red-500 text-white" : "px-2.5 py-1 text-zinc-600 hover:bg-zinc-50"}
+            >
+              风险贡献
+            </button>
+            <button
+              type="button"
+              onClick={() => setMetric("mv")}
+              className={metric === "mv" ? "px-2.5 py-1 bg-red-500 text-white" : "px-2.5 py-1 text-zinc-600 hover:bg-zinc-50"}
+            >
+              市值
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => resetCrcSel(0)}
+            disabled={!crcSel.l1 && !crcSel.l2 && !crcSel.l3}
+            className="px-3 py-1 text-xs rounded border border-zinc-200 text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
+          >
+            重置
+          </button>
+        </div>
+      </div>
+
+      <CrcStackedChart
+        title={`一级策略${metricLabel}走势`}
+        hint={
+          metric === "mv"
+            ? "纳入基金内合计 100%。直接点色块筛选二级、三级与底层。"
+            : "直接点色块筛选二级、三级与底层。下级在该一级内重算为 100%。"
+        }
+        emptyText={
+          metric === "risk" && !hasMvHistory
+            ? "没有历史估值市值，无法展开一级策略风险贡献走势"
+            : metric === "mv" && mvByFund.rows.length < 2
+              ? "没有历史估值市值，无法展开一级策略市值走势"
+              : `样本不足，无法展开一级策略${metricLabel}`
+        }
+        crcArea={l1Crc}
+        colorBy="strategy"
+        selectedName={crcSel.l1}
+        onSeriesClick={handleL1Click}
+        fillToHundred={metric === "mv"}
+        calcHelp={strategyCrcHelp("一级", metric)}
+      />
+
+      <CrcStackedChart
+        title={`二级策略${metricLabel}走势`}
+        hint={l2Hint}
+        emptyText={
+          metric === "risk" && !hasMvHistory
+            ? "没有历史估值市值，无法展开二级策略风险贡献走势"
+            : metric === "mv" && mvByFund.rows.length < 2
+              ? "没有历史估值市值，无法展开二级策略市值走势"
+              : `样本不足，无法展开二级策略${metricLabel}`
+        }
+        crcArea={l2Crc}
+        colorBy="strategy"
+        selectedName={crcSel.l2}
+        onSeriesClick={handleL2Click}
+        fillToHundred={metric === "mv"}
+        calcHelp={strategyCrcHelp("二级", metric)}
+      />
+
+      <CrcStackedChart
+        title={`三级策略${metricLabel}走势`}
+        hint={l3Hint}
+        emptyText={
+          metric === "risk" && !hasMvHistory
+            ? "没有历史估值市值，无法展开三级策略风险贡献走势"
+            : metric === "mv" && mvByFund.rows.length < 2
+              ? "没有历史估值市值，无法展开三级策略市值走势"
+              : `样本不足，无法展开三级策略${metricLabel}`
+        }
+        crcArea={l3Crc}
+        colorBy="strategy"
+        selectedName={crcSel.l3}
+        onSeriesClick={handleL3Click}
+        fillToHundred={metric === "mv"}
+        calcHelp={strategyCrcHelp("三级", metric)}
+      />
+
+      <CrcStackedChart
+        title={`底层基金${metricLabel}走势`}
+        hint={fundHint}
+        emptyText={
+          metric === "risk" && !hasMvHistory
+            ? "没有历史估值市值，无法展开底层基金风险贡献走势"
+            : metric === "mv" && mvByFund.rows.length < 2
+              ? "没有历史估值市值，无法展开底层基金市值走势"
+              : `样本不足，无法展开底层基金${metricLabel}走势`
+        }
+        crcArea={fundCrc}
+        colorBy="series"
+        fillToHundred={metric === "mv"}
+        calcHelp={fundCrcHelp(metric)}
+      />
 
       <FofAnalysisChartCard
         title="底层基金相关矩阵"
@@ -430,5 +688,271 @@ function EmptyChart({ text }: { text: string }) {
     <div className="h-[200px] flex items-center justify-center text-sm text-zinc-400 px-4 text-center">
       {text}
     </div>
+  )
+}
+
+function crcSeriesColor(name: string, index: number, colorBy: "series" | "strategy"): string {
+  if (name === "其他") return "#a1a1aa"
+  if (colorBy === "strategy") return strategyColor(name.split("/")[0], index)
+  return CRC_COLORS[index % CRC_COLORS.length]
+}
+
+function strategyCrcHelp(level: "一级" | "二级" | "三级", metric: CrcMetric): ChartCalcHelp {
+  const noun = metric === "risk" ? "风险贡献" : "市值"
+  return {
+    heading: `${level}策略${noun}走势 · 计算说明`,
+    blocks: [
+      {
+        title: metric === "risk" ? "先分解基金，再按策略加总" : "按估值日市值加总",
+        paragraphs: metric === "risk"
+          ? [
+            "每个估值日用当日市值权重（邮件估值表写入数据库的历史持仓），对截止该日的 12 个共同窗口收益估协方差，再欧拉分解后按策略加总。没有历史估值则不画。",
+          ]
+          : [
+            "用历史估值表里各估值日的底层基金市值，在纳入基金内归一成 100%（现金等非基金资产不进图）。没有历史估值时不画。",
+          ],
+        formula: metric === "risk"
+          ? (level === "三级"
+            ? "CRC_策略,t = Σ (CRC_i,t / 该基金三级标签数)"
+            : "CRC_策略,t = Σ CRC_i,t")
+          : (level === "三级"
+            ? "市值_策略,t = Σ (市值权重_i,t / 该基金三级标签数)"
+            : "市值_策略,t = Σ 市值权重_i,t"),
+      },
+      {
+        title: "怎么读",
+        bullets: [
+          metric === "mv"
+            ? `堆叠合计 100%，是各${level}策略占纳入基金市值的比重。`
+            : `未下钻时堆叠为各${level}策略占组合的${noun}。`,
+          `直接点图里的色块下钻。下级图只保留该范围内的基金，并把它们的${noun}重新归一成 100%。再点一次取消。`,
+          level === "三级"
+            ? "一只基金有多个三级标签时，在标签间等权拆分。"
+            : metric === "risk"
+              ? "面积抬升：该策略当日权重变大，或它与组合的相关/波动变高。"
+              : "某层变厚：该策略在组合里的市值占比上升。",
+          metric === "risk" ? "负面积表示该策略在对冲组合风险。" : "市值权重通常非负。",
+        ],
+      },
+    ],
+  }
+}
+
+function fundCrcHelp(metric: CrcMetric): ChartCalcHelp {
+  if (metric === "mv") {
+    return {
+      heading: "底层基金市值走势 · 计算说明",
+      blocks: [
+        {
+          title: "每个点",
+          paragraphs: [
+            "各估值日该底层基金占纳入基金总市值的比重。只画最新市值最高的 8 只，其余并入「其他」。现金等非基金资产不进图。",
+          ],
+          formula: "市值权重_i,t = 基金市值_i,t / Σ 纳入基金市值_t × 100",
+        },
+        {
+          title: "怎么读",
+          bullets: [
+            "堆叠合计 100%。某层变厚：该基金在纳入基金里的市值占比上升。",
+            "从上级策略点进来后，只保留该范围内的基金并重算为 100%。",
+          ],
+        },
+      ],
+    }
+  }
+  return {
+    heading: "底层基金风险贡献走势 · 计算说明",
+    blocks: [
+      {
+        title: "当日权重、滚动协方差",
+        paragraphs: [
+          "每个估值日用当日市值权重 w_t（纳入基金内归一），对截止该日的 12 个共同窗口收益估 Σ_t，再欧拉分解。没有历史估值市值则不画。只画最新风险贡献最高的 8 只，其余并入「其他」。",
+        ],
+        formula: "CRC_i,t = w_{i,t} × (Σ_t w_t)_i / (w_t' Σ_t w_t) × 100",
+      },
+      {
+        title: "怎么读",
+        bullets: [
+          "堆叠面积之和约为 100%。某层持续变厚：该基金对组合波动的贡献在变大。",
+          "可能是它当日市值权重上升，或与组合的相关/波动变高。负面积表示该基金在对冲组合风险。",
+        ],
+      },
+    ],
+  }
+}
+
+function hitStackedBand(names: string[], values: Record<string, number>, y: number): string | null {
+  if (y >= 0) {
+    let acc = 0
+    for (const name of names) {
+      const v = Math.max(0, values[name] ?? 0)
+      if (v <= 1e-8) continue
+      const next = acc + v
+      if (y >= acc && y <= next + 1e-6) return name
+      acc = next
+    }
+  } else {
+    let acc = 0
+    for (const name of names) {
+      const v = Math.min(0, values[name] ?? 0)
+      if (v >= -1e-8) continue
+      const next = acc + v
+      if (y <= acc && y >= next - 1e-6) return name
+      acc = next
+    }
+  }
+  return null
+}
+
+function CrcStackedChart({
+  title,
+  hint,
+  emptyText,
+  crcArea,
+  colorBy,
+  calcHelp,
+  selectedName = null,
+  onSeriesClick,
+  fillToHundred = false,
+}: {
+  title: string
+  hint: string
+  emptyText: string
+  crcArea: { dates: string[]; names: string[]; rows: Array<{ date: string; values: Record<string, number> }> }
+  colorBy: "series" | "strategy"
+  calcHelp: ChartCalcHelp
+  selectedName?: string | null
+  onSeriesClick?: (name: string) => void
+  fillToHundred?: boolean
+}) {
+  const chartRef = useRef<ReactECharts>(null)
+  const names = crcArea.names.filter(
+    (n) => n !== "其他" || crcArea.rows.some((r) => Math.abs(r.values["其他"] ?? 0) > 0.5),
+  )
+  const clickRef = useRef({ names, rows: crcArea.rows, onSeriesClick })
+  clickRef.current = { names, rows: crcArea.rows, onSeriesClick }
+
+  useEffect(() => {
+    if (!onSeriesClick) return
+    const handler = (e: { offsetX: number; offsetY: number }) => {
+      const chart = chartRef.current?.getEchartsInstance()
+      if (!chart) return
+      const pixel = [e.offsetX, e.offsetY]
+      if (!chart.containPixel({ gridIndex: 0 }, pixel)) return
+      const point = chart.convertFromPixel({ gridIndex: 0 }, pixel)
+      if (!point || point.length < 2) return
+      const { names: bandNames, rows, onSeriesClick: click } = clickRef.current
+      if (!click) return
+      const dataIndex = Math.min(rows.length - 1, Math.max(0, Math.round(point[0])))
+      const name = hitStackedBand(bandNames, rows[dataIndex]?.values ?? {}, point[1])
+      if (name && name !== "其他") click(name)
+    }
+    const bind = () => {
+      const chart = chartRef.current?.getEchartsInstance()
+      chart?.getZr().on("click", handler)
+    }
+    const unbind = () => {
+      const chart = chartRef.current?.getEchartsInstance()
+      chart?.getZr().off("click", handler)
+    }
+    bind()
+    const timer = window.setTimeout(bind, 0)
+    return () => {
+      window.clearTimeout(timer)
+      unbind()
+    }
+  }, [onSeriesClick])
+
+  const option = {
+    grid: { left: 48, right: 16, top: 36, bottom: 28 },
+    legend: {
+      top: 4,
+      type: "scroll",
+      selectedMode: false,
+      textStyle: { fontSize: 10 },
+      data: names,
+    },
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: Array<{ seriesName: string; dataIndex: number; marker: string }>) => {
+        const i = params[0]?.dataIndex
+        if (i == null) return ""
+        const seen = new Set<string>()
+        const lines = [`<b>${crcArea.dates[i]}</b>`]
+        for (const p of params) {
+          if (seen.has(p.seriesName)) continue
+          seen.add(p.seriesName)
+          const v = crcArea.rows[i]?.values[p.seriesName] ?? 0
+          lines.push(`${p.marker}${p.seriesName}　${v.toFixed(1)}%`)
+        }
+        if (fillToHundred) {
+          const total = names.reduce((s, n) => s + (crcArea.rows[i]?.values[n] ?? 0), 0)
+          lines.push(`合计　${total.toFixed(1)}%`)
+        }
+        return lines.join("<br/>")
+      },
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: crcArea.dates,
+      axisLabel: { fontSize: 10, color: "#71717a", formatter: (v: string) => v.slice(0, 7) },
+    },
+    yAxis: {
+      type: "value",
+      name: "%",
+      min: fillToHundred ? 0 : undefined,
+      max: fillToHundred ? 100 : undefined,
+      axisLabel: { fontSize: 10, color: "#71717a" },
+      splitLine: { lineStyle: { color: "#f4f4f5" } },
+    },
+    series: names.flatMap((name, i) => {
+      const color = crcSeriesColor(name, i, colorBy)
+      const values = crcArea.rows.map((r) => +(r.values[name] ?? 0).toFixed(2))
+      const active = !selectedName || selectedName === name
+      const base = {
+        name,
+        type: "line" as const,
+        showSymbol: false,
+        symbol: "none" as const,
+        smooth: false,
+        stackStrategy: "samesign" as const,
+        triggerLineEvent: true,
+        cursor: onSeriesClick && name !== "其他" ? "pointer" : "default",
+        lineStyle: { width: selectedName === name ? 1.4 : 0.5, color },
+        areaStyle: { color, opacity: active ? 0.88 : 0.22 },
+        itemStyle: { color },
+        emphasis: { focus: "series" as const },
+      }
+      return [
+        {
+          ...base,
+          id: `${name}__pos`,
+          stack: "crc-pos",
+          data: values.map((v) => (v > 0 ? v : 0)),
+        },
+        {
+          ...base,
+          id: `${name}__neg`,
+          stack: "crc-neg",
+          data: values.map((v) => (v < 0 ? v : 0)),
+        },
+      ]
+    }),
+  }
+
+  return (
+    <FofAnalysisChartCard title={title} hint={hint} calcHelp={calcHelp}>
+      {crcArea.rows.length < 3 ? (
+        <EmptyChart text={emptyText} />
+      ) : (
+        <ReactECharts
+          ref={chartRef}
+          option={option}
+          style={{ height: 300, cursor: onSeriesClick ? "pointer" : undefined }}
+          notMerge
+        />
+      )}
+    </FofAnalysisChartCard>
   )
 }

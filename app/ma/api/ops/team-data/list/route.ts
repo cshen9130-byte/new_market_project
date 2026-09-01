@@ -28,9 +28,16 @@ export async function GET(req: Request) {
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
+    try {
+      const { ensureFofUnderlyingInEmailPool } = await import("@/lib/server/fof-email-product-sync")
+      await ensureFofUnderlyingInEmailPool()
+    } catch (err) {
+      console.warn("[team-data/list] FOF→邮箱池 sync skipped:", err)
+    }
+
     const cacheKey = JSON.stringify({
       pool: "ops-team-data",
-      v: "has_valuation_records",
+      v: "fof_email_nav",
       page,
       pageSize,
       keyword,

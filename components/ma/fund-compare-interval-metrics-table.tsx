@@ -87,6 +87,10 @@ export function FundCompareIntervalMetricsTable({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         beian_haos: funds.map((f) => f.beian_hao),
+        products: funds.map((f) => ({
+          beian_hao: f.beian_hao,
+          product_name: f.name,
+        })),
         benchmark: benchmarkKey || undefined,
       }),
     })

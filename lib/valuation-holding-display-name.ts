@@ -30,6 +30,26 @@ export function isValuationCashHoldingName(name: string): boolean {
   return CASH_NAME_RE.test(String(name ?? "").trim())
 }
 
+/**
+ * 估值表 parent cost buckets, not fund products.
+ * Examples: 股票成本_上交所, 深港通股票成本, 基金成本, 封闭式基金成本.
+ * Does not match real funds with a 场外_…成本.产品名 path prefix.
+ */
+export function isValuationStockCostSubjectName(name: string): boolean {
+  const n = String(name ?? "").trim()
+  if (!n) return false
+  if (/股票成本/u.test(n)) return true
+  if (/^基金成本/u.test(n)) return true
+  if (/^封闭式基金/u.test(n) && /成本/u.test(n) && !/[0-9]+号/u.test(n)) return true
+  return false
+}
+
+/** Cash, cost-bucket, and similar 估值表 labels that are not a fund product. */
+export function isValuationNonProductHoldingName(name: string): boolean {
+  const n = String(name ?? "").trim()
+  return isValuationCashHoldingName(n) || isValuationStockCostSubjectName(n)
+}
+
 /** 场外_已上市_开放式_私募_成本.百奕传家五号 → 百奕传家五号 */
 export function stripValuationSubjectPathPrefix(name: string): string {
   let raw = String(name ?? "").trim()

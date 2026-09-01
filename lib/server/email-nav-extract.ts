@@ -614,6 +614,29 @@ export function extractProductCodeFromText(text: string): string | null {
   return code
 }
 
+/**
+ * Manager 代表产品 packs often name each workbook `添运1号历史净值.xlsx`
+ * (short nickname, no 私募证券投资基金 suffix / 备案号).
+ */
+export function fundNameFromNavWorkbookFilename(filename: string): string | null {
+  const base = filename
+    .replace(/^.*[/\\]/, "")
+    .replace(/\.(xlsx?|xls|csv)$/i, "")
+    .trim()
+  if (!base) return null
+  const m = base.match(
+    /^(.+?)(?:历史净值(?:序列)?|净值序列|净值数据)(?:[_.\-\s].*)?$/u,
+  )
+  if (!m) return null
+  let name = m[1].replace(/[_.\-\s]+$/u, "").trim()
+  name = name.replace(/^[A-Z0-9]{4,10}_/u, "")
+  if (!name || name.length < 2) return null
+  if (/[【】\[\]]/u.test(name)) return null
+  if (/代表产品|请查收|烦请|附件/u.test(name)) return null
+  if (/^(?:历史)?净值/u.test(name)) return null
+  return finalizeExtractedFundName(name) || name
+}
+
 export function extractFundNameFromText(text: string): string | null {
   const labeled = text.match(/基金名称\s*[：:]\s*([^\n\r]+)/)
   if (labeled) {
@@ -631,7 +654,16 @@ export function extractFundNameFromText(text: string): string | null {
   const fromSubject = extractFundNameFromSubject(firstLine)
   if (fromSubject) return fromSubject
 
-  return pickBestFundNameMatch(text)
+  const fromLegal = pickBestFundNameMatch(text)
+  if (fromLegal) return fromLegal
+
+  const chunks = text.split(/[\n\r]+/).map((s) => s.trim()).filter(Boolean)
+  const fileish = chunks.filter((c) => /\.(xlsx?|xls|csv)$/i.test(c) || /[/\\]/.test(c))
+  for (const chunk of [...fileish, ...chunks]) {
+    const fromFile = fundNameFromNavWorkbookFilename(chunk)
+    if (fromFile) return fromFile
+  }
+  return null
 }
 
 function shareClassFromProductCode(code: string | null): string {

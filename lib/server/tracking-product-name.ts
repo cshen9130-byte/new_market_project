@@ -1,13 +1,7 @@
+import { isCodeLikeProductName } from "@/lib/fund-display-name"
 import { query } from "@/lib/db"
 
-/** True when the stored product name is just a 备案号 / ticker, not a display name. */
-export function isCodeLikeProductName(name: string, beianHao?: string): boolean {
-  const n = name.trim()
-  const code = (beianHao ?? "").trim()
-  if (!n) return true
-  if (code && n.toUpperCase() === code.toUpperCase()) return true
-  return /^[A-Z0-9]{4,10}$/i.test(n) && !/[\u4e00-\u9fff]/u.test(n)
-}
+export { isCodeLikeProductName }
 
 function preferDisplayName(
   full: string | null | undefined,

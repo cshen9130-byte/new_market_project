@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { isCodeLikeProductName, preferNonCodeFundName, resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import type { SavedFundCompareFund } from "@/lib/ma-fund-compare-storage"
 
 export interface FundCompareMeta {
@@ -95,10 +96,16 @@ function fundDetailHref(beianHao: string) {
 }
 
 function mergeRow(fund: SavedFundCompareFund, meta?: FundCompareMeta) {
+  const metaName = meta?.product_name?.trim() || ""
+  const savedName = preferNonCodeFundName(fund.product_name, null, fund.beian_hao)
+  const rawName = isCodeLikeProductName(metaName, fund.beian_hao)
+    ? savedName
+    : (metaName || savedName)
+  const product_name = resolveFundDisplayLabel(null, rawName) || rawName || fund.beian_hao
   return {
     beian_hao: fund.beian_hao,
     fund_type: fund.fund_type,
-    product_name: meta?.product_name ?? fund.product_name,
+    product_name,
     manager: meta?.manager ?? fund.manager,
     manager_scale: meta?.manager_scale ?? null,
     strategy_l1: meta?.strategy_l1 ?? null,
@@ -116,12 +123,18 @@ function mergeRow(fund: SavedFundCompareFund, meta?: FundCompareMeta) {
   }
 }
 
-async function fetchFundMeta(beianHaos: string[]): Promise<Map<string, FundCompareMeta>> {
-  if (beianHaos.length === 0) return new Map()
+async function fetchFundMeta(funds: SavedFundCompareFund[]): Promise<Map<string, FundCompareMeta>> {
+  if (funds.length === 0) return new Map()
   const res = await fetch("/ma/api/fund-compare/fund-meta", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ beian_haos: beianHaos }),
+    body: JSON.stringify({
+      beian_haos: funds.map((f) => f.beian_hao),
+      products: funds.map((f) => ({
+        beian_hao: f.beian_hao,
+        product_name: f.product_name,
+      })),
+    }),
   })
   if (!res.ok) return new Map()
   const json = await res.json() as { data?: FundCompareMeta[] }
@@ -150,16 +163,16 @@ export function FundCompareFundTable({
   const [showFieldConfig, setShowFieldConfig] = useState(false)
 
   const loadMeta = useCallback(async (ids?: string[]) => {
-    const beianHaos = ids ?? funds.map((f) => f.beian_hao)
-    if (beianHaos.length === 0) {
-      setMetaMap(new Map())
+    const target = ids ? funds.filter((f) => ids.includes(f.beian_hao)) : funds
+    if (target.length === 0) {
+      if (!ids) setMetaMap(new Map())
       return
     }
     setLoadingMeta(true)
     try {
-      const map = await fetchFundMeta(beianHaos)
+      const map = await fetchFundMeta(target)
       setMetaMap((prev) => {
-        const next = new Map(prev)
+        const next = ids ? new Map(prev) : new Map()
         for (const [k, v] of map) next.set(k, v)
         return next
       })

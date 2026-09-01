@@ -9,9 +9,11 @@ import {
   rowDecision,
   rowStrength,
   signalKindLabel,
+  signalRowKey,
   strengthTier,
   type ActionKind,
   type DecisionAction,
+  type FlowMap,
   type MomSignal,
   type SignalSourceRow,
   type StrengthTier,
@@ -19,6 +21,8 @@ import {
 
 const ACTION_STYLE: Record<DecisionAction, { bg: string; color: string; border: string }> = {
   加码: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
+  暂缓加码: { bg: "#f1f5f9", color: "#334155", border: "#cbd5e1" },
+  减码准备: { bg: "#fdf2f8", color: "#be185d", border: "#fbcfe8" },
   观望: { bg: "#f5f3ff", color: "#6d28d9", border: "#ddd6fe" },
   补风格: { bg: "#f0f9ff", color: "#0369a1", border: "#bae6fd" },
   控拥挤: { bg: "#fffbeb", color: "#b45309", border: "#fde68a" },
@@ -26,7 +30,7 @@ const ACTION_STYLE: Record<DecisionAction, { bg: string; color: string; border: 
   中性: { bg: "#f8fafc", color: "#64748b", border: "#e2e8f0" },
 }
 
-const ACTION_ORDER: ActionKind[] = ["加码", "观望", "补风格", "控拥挤", "扩容"]
+const ACTION_ORDER: ActionKind[] = ["加码", "暂缓加码", "减码准备", "观望", "补风格", "控拥挤", "扩容"]
 
 interface ApiData {
   ok: boolean
@@ -37,6 +41,7 @@ interface ApiData {
   signals?: MomSignal[]
   groups?: { quant: { nAccounts: number }; subjective: { nAccounts: number } } | null
   volDays?: number
+  flows?: FlowMap
   error?: string
 }
 
@@ -88,6 +93,7 @@ export default function BriefingMomSignals() {
   const [date, setDate] = useState<string | null>(null)
   const [signals, setSignals] = useState<MomSignal[]>([])
   const [sectors, setSectors] = useState<SignalSourceRow[]>([])
+  const [flows, setFlows] = useState<FlowMap | undefined>(undefined)
   const [volDays, setVolDays] = useState(20)
 
   useEffect(() => {
@@ -107,6 +113,7 @@ export default function BriefingMomSignals() {
         }
         setDate(j.date ?? null)
         setSectors(j.sectors ?? [])
+        setFlows(j.flows)
         setVolDays(j.volDays ?? 20)
         const built = buildMomSignals(
           j.sectors ?? [],
@@ -115,6 +122,7 @@ export default function BriefingMomSignals() {
           j.quantShare ?? 0,
           j.groups?.quant.nAccounts ?? 0,
           j.groups?.subjective.nAccounts ?? 0,
+          j.flows,
         )
         setSignals(built.length ? built : (j.signals ?? []))
       })
@@ -137,12 +145,12 @@ export default function BriefingMomSignals() {
       .map((row) => {
         const q = exposurePct(row.quant, "risk")
         const s = exposurePct(row.subjective, "risk")
-        const decision = rowDecision(row.quant, row.subjective, "risk")
-        const strength = rowStrength(row.quant, row.subjective, "risk")
+        const decision = rowDecision(row.quant, row.subjective, "risk", flows?.[signalRowKey("sector", row.key)])
+        const strength = rowStrength(row.quant, row.subjective, "risk", flows?.[signalRowKey("sector", row.key)])
         return { row, q, s, decision, strength, weight: Math.abs(q) + Math.abs(s) }
       })
       .sort((a, b) => b.weight - a.weight)
-  }, [sectors])
+  }, [sectors, flows])
 
   if (loading) {
     return <p className="text-sm text-[#8a9aaa] py-4">加载决策信号…</p>

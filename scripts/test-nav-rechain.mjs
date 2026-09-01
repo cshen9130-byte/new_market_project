@@ -21,8 +21,9 @@ import {
   selectValuationAttachments,
 } from "../lib/server/email-valuation-attachment.ts"
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
-import { dedupeShareClassDisplayFunds, canonicalizeEmailProductCode } from "../lib/server/fund-name-match.ts"
-import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete } from "../lib/server/email-nav-extract.ts"
+import { dedupeShareClassDisplayFunds, canonicalizeEmailProductCode, fundNicknameMatchesFullName } from "../lib/server/fund-name-match.ts"
+import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete, fundNameFromNavWorkbookFilename } from "../lib/server/email-nav-extract.ts"
+import { resolveManagedProductBeian } from "../lib/server/managed-product-beian.ts"
 import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
   extractNavFromCiticsAnnouncementText,
@@ -1069,6 +1070,8 @@ assert(
 )
 assert("csc SAHZ51_总层面 canonicalizes to SAHZ51", canonicalizeEmailProductCode("SAHZ51_总层面") === "SAHZ51")
 assert("csc SX4966(总) canonicalizes to SX4966", canonicalizeEmailProductCode("SX4966(总)") === "SX4966")
+assert("share-class already on code BLF14C(C类) stays BLF14C", canonicalizeEmailProductCode("BLF14C(C类)") === "BLF14C")
+assert("SX4966(A类) canonicalizes to SX4966A", canonicalizeEmailProductCode("SX4966(A类)") === "SX4966A")
 assert(
   "csc CTA 资产净值公告 override strips 总层面 from product code",
   applyEmailProductCodeOverride("SAHZ51_总层面", "鸣石CTA套利1号量化", mingshiCtaSubject) === "SAHZ51",
@@ -1294,6 +1297,21 @@ assert(
     && duxiAvmTaNav?.fundName?.includes("笃熙") === true
     && !duxiAvmTaNav?.fundName?.includes("荣熙")
     && duxiAvmTaNav?.productCode !== "SBNX55",
+)
+
+const napingjiangTaSubject =
+  "国泰海通证券资产托管发送：峰云汇高山一号私募证券投资基金【金舆木盛那平江1号私募证券投资基金】TA虚拟净值_2026-08-25"
+const napingjiangTaMeta = extractNavMetadata(napingjiangTaSubject, "单位净值 1.0681")
+assert(
+  "Guotai TA virtual 那平江 metadata stays on underlying 峰云汇高山, not managed SCP742",
+  napingjiangTaMeta.fundName?.includes("峰云汇高山") === true
+    && !napingjiangTaMeta.fundName?.includes("那平江")
+    && napingjiangTaMeta.productCode !== "SCP742",
+)
+assert(
+  "在管产品 金舆木盛那平江1号 resolves to custody SCP742, not TA-virtual SBVC85",
+  resolveManagedProductBeian("金舆木盛那平江1号", "SBVC85") === "SCP742"
+    && resolveManagedProductBeian("金舆木盛那平江1号私募证券投资基金", "SBVC85") === "SCP742",
 )
 
 const tailai3TaSubject =
@@ -2969,6 +2987,59 @@ if (fs.existsSync(excelPath)) {
     [{ nav_date: "2026-08-26", nav: 0.97, return_nav: 1.10 }],
   )
   assert("aligned 复权 skipped when unit mismatches (SAVW72)", skipped[0].return_nav == null)
+}
+
+{
+  const zhongliangSubject = "【上海众量】代表产品历史净值"
+  const zhongliangAtts = [
+    { filename: "添运1号历史净值.xlsx", part: "2" },
+    { filename: "添运5号历史净值.xlsx", part: "3" },
+    { filename: "聚宝4号历史净值.xlsx", part: "4" },
+    { filename: "SAUR63_众量多元化CTA1号私募证券投资基金净值数据_8.14.xlsx", part: "5" },
+    { filename: "23509b3a42fb03d0179a2c67c10803f0.png", part: "6" },
+  ]
+  const selected = selectNavTableAttachments(zhongliangSubject, zhongliangAtts)
+  assert(
+    "众量 代表产品历史净值 keeps every 历史净值/净值数据 xlsx",
+    selected.length === 4
+      && selected.some((a) => a.filename === "添运1号历史净值.xlsx")
+      && selected.some((a) => a.filename === "添运5号历史净值.xlsx")
+      && selected.some((a) => a.filename === "聚宝4号历史净值.xlsx")
+      && selected.some((a) => a.filename.includes("SAUR63")),
+  )
+  assert(
+    "众量 历史净值 filename is a NAV attachment on its own",
+    selectNavTableAttachments("unrelated", [{ filename: "添运8号历史净值.xlsx", part: "2" }]).length === 1,
+  )
+  assert("添运1号历史净值 filename nickname", fundNameFromNavWorkbookFilename("添运1号历史净值.xlsx") === "添运1号")
+  assert(
+    "CTA 净值数据 filename keeps legal name",
+    /众量多元化CTA1号/.test(
+      fundNameFromNavWorkbookFilename("SAUR63_众量多元化CTA1号私募证券投资基金净值数据_8.14.xlsx") ?? "",
+    ),
+  )
+  const nickMeta = extractNavMetadata(zhongliangSubject, "添运1号历史净值.xlsx")
+  assert("众量 history subject does not become the fund name", nickMeta.fundName === "添运1号")
+  assert("添运1号 nickname maps to 众量资产添运1号", fundNicknameMatchesFullName("添运1号", "众量资产添运1号证券投资私募基金"))
+  assert("添运1号 does not map to 添运进取1号", !fundNicknameMatchesFullName("添运1号", "众量资产添运进取1号私募证券投资基金"))
+  assert("添运1号 does not map to 添运10号", !fundNicknameMatchesFullName("添运1号", "众量资产添运10号私募证券投资基金"))
+
+  const histWb = XLSX.utils.book_new()
+  const histSheet = XLSX.utils.aoa_to_sheet([
+    ["日期", "单位净值", "累计净值"],
+    ["2026-08-14", 1.0123, 1.0123],
+    ["2026-08-21", 1.015, 1.015],
+  ])
+  XLSX.utils.book_append_sheet(histWb, histSheet, "Sheet1")
+  const histBuf = Buffer.from(XLSX.write(histWb, { type: "buffer", bookType: "xlsx" }))
+  const histRows = extractNavTableFromBuffer(histBuf, "添运1号历史净值.xlsx", zhongliangSubject)
+  assert(
+    "众量 历史净值 workbook uses filename nickname",
+    histRows.length === 2
+      && histRows[0]?.fundName === "添运1号"
+      && histRows[0]?.navDate === "2026-08-14"
+      && histRows[0]?.nav === 1.0123,
+  )
 }
 
 {

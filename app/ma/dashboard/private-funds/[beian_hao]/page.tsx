@@ -20,7 +20,7 @@ import { useRouter } from "next/navigation"
 import { resolveDefaultBenchmarkKey } from "@/lib/ma/team-benchmark"
 import { computeFundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
 import { isWeekendIsoDate } from "@/lib/nav-trading-day"
-import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequency, type NavFrequencyFilter, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
+import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequency, computeHeadlineRiskMetrics, type HeadlineRiskFrequency, type NavFrequencyFilter, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
 import { WinRateAnalysisPanel } from "./components/WinRateAnalysisPanel"
@@ -333,6 +333,45 @@ function fmtPct(v: string | null): { text: string; sign: 1 | -1 | 0 } {
   if (isNaN(n)) return { text: "—", sign: 0 }
   const sign = n > 0 ? 1 : n < 0 ? -1 : 0
   return { text: (n > 0 ? "+" : "") + n.toFixed(2) + "%", sign }
+}
+
+const HEADLINE_RISK_FREQS: HeadlineRiskFrequency[] = ["日频", "周频", "月频"]
+
+function HeadlineRiskFreqSwitch({
+  value,
+  onChange,
+}: {
+  value: HeadlineRiskFrequency
+  onChange: (freq: HeadlineRiskFrequency) => void
+}) {
+  return (
+    <div
+      className="inline-flex rounded-md border border-zinc-200 bg-zinc-50 p-0.5"
+      role="group"
+      aria-label="成立以来风险指标净值频率"
+      title="最大回撤与夏普按所选净值频率计算；收益指标仍用完整序列"
+    >
+      {HEADLINE_RISK_FREQS.map((freq) => {
+        const active = value === freq
+        return (
+          <button
+            key={freq}
+            type="button"
+            onClick={() => onChange(freq)}
+            className={[
+              "px-2 py-0.5 text-[10px] @[40rem]:text-xs font-medium rounded transition-colors",
+              active
+                ? "bg-white text-zinc-800 shadow-sm"
+                : "text-zinc-400 hover:text-zinc-600",
+            ].join(" ")}
+            aria-pressed={active}
+          >
+            {freq}
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 function PctSpan({ value, large = false, className }: { value: string | null; large?: boolean; className?: string }) {
@@ -987,6 +1026,26 @@ export default function PrivateFundDetailPage() {
   const [benchmarkData,  setBenchmarkData]  = useState<BenchmarkPoint[]>([])
   const [showDateRange,    setShowDateRange]    = useState(false)
   const [excessByDivision, setExcessByDivision] = useState(false)
+  const [headlineRiskFreq, setHeadlineRiskFreq] = useState<HeadlineRiskFrequency>("周频")
+
+  const headlineRisk = useMemo(() => {
+    const series = data?.nav_series
+    if (series && series.length >= 2) {
+      return computeHeadlineRiskMetrics(series, headlineRiskFreq)
+    }
+    if (headlineRiskFreq === "日频") {
+      return {
+        max_drawdown: data?.metrics.max_drawdown ?? null,
+        sharpe: data?.metrics.sharpe_since_inception ?? null,
+      }
+    }
+    return { max_drawdown: null, sharpe: null }
+  }, [
+    data?.nav_series,
+    data?.metrics.max_drawdown,
+    data?.metrics.sharpe_since_inception,
+    headlineRiskFreq,
+  ])
 
   // When data loads, seed dates
   useEffect(() => {
@@ -1005,20 +1064,25 @@ export default function PrivateFundDetailPage() {
     if (!data) return
     const benchmarkKey = resolveDefaultBenchmarkKey({
       teamBenchmark: data.info.team_benchmark,
+      benchmark: data.info.benchmark,
       strategyL1: data.info.strategy_l1,
       strategyL2: data.info.strategy_l2,
       strategyL3: data.info.strategy_l3,
-      extraHints: fundTags,
+      productName: data.info.product_name,
+      extraHints: [...fundTags, ...fundPools.map((p) => p.pool_label)],
     })
     setFilterBench(benchmarkKey)
     setAppliedBench(benchmarkKey)
   }, [
     data,
     data?.info.team_benchmark,
+    data?.info.benchmark,
     data?.info.strategy_l1,
     data?.info.strategy_l2,
     data?.info.strategy_l3,
+    data?.info.product_name,
     fundTags,
+    fundPools,
   ])
 
   useEffect(() => {
@@ -1084,9 +1148,12 @@ export default function PrivateFundDetailPage() {
       : getDefaultFilterRange(data, todayStr)
     const benchmarkKey = resolveDefaultBenchmarkKey({
       teamBenchmark: data.info.team_benchmark,
+      benchmark: data.info.benchmark,
       strategyL1: data.info.strategy_l1,
       strategyL2: data.info.strategy_l2,
       strategyL3: data.info.strategy_l3,
+      productName: data.info.product_name,
+      extraHints: [...fundTags, ...fundPools.map((p) => p.pool_label)],
     })
     setFilterPeriod(period)
     setFilterFrom(range.from)
@@ -1901,6 +1968,10 @@ export default function PrivateFundDetailPage() {
 
         {/* Performance metrics – grid wraps columns by container width */}
         <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-end gap-2 mb-2">
+            <span className="text-[10px] text-zinc-400">风险口径</span>
+            <HeadlineRiskFreqSwitch value={headlineRiskFreq} onChange={setHeadlineRiskFreq} />
+          </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3 @[36rem]:grid-cols-3 @[56rem]:grid-cols-5">
             <div className="min-w-0 flex flex-col items-start gap-0.5">
               <PctSpan
@@ -1928,28 +1999,28 @@ export default function PrivateFundDetailPage() {
 
             <div className="min-w-0 flex flex-col items-start gap-0.5">
               <span className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight" style={{ color: GREEN }}>
-                {metrics.max_drawdown !== null ? "-" + metrics.max_drawdown + "%" : "—"}
+                {headlineRisk.max_drawdown !== null ? "-" + headlineRisk.max_drawdown + "%" : "—"}
               </span>
               <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来最大回撤</span>
             </div>
 
-            {metrics.sharpe_since_inception && (
-              <div className="min-w-0 flex flex-col items-start gap-0.5">
-                <span
-                  className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
-                  style={{
-                    color: parseFloat(metrics.sharpe_since_inception) > 0
+            <div className="min-w-0 flex flex-col items-start gap-0.5">
+              <span
+                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+                style={{
+                  color: headlineRisk.sharpe == null
+                    ? "#a1a1aa"
+                    : parseFloat(headlineRisk.sharpe) > 0
                       ? RED
-                      : parseFloat(metrics.sharpe_since_inception) < 0
+                      : parseFloat(headlineRisk.sharpe) < 0
                         ? GREEN
                         : "#27272a",
-                  }}
-                >
-                  {metrics.sharpe_since_inception}
-                </span>
-                <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来夏普比率</span>
-              </div>
-            )}
+                }}
+              >
+                {headlineRisk.sharpe ?? "—"}
+              </span>
+              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来夏普比率</span>
+            </div>
           </div>
         </div>
 

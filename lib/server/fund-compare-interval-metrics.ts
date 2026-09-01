@@ -1,5 +1,13 @@
 import { query, fmtIso, n } from "@/lib/db"
 import type { IntervalMetricsRow } from "@/lib/fund-compare-interval-metrics"
+import {
+  addDays,
+  BatchNavResolver,
+  computeOneYearRiskMetrics,
+  NAV_HISTORY_LOOKBACK_DAYS,
+  type ProductNavIdentity,
+} from "@/lib/server/list-cache-nav-batch"
+import { ensureTrackingFundsListCacheTable } from "@/lib/server/tracking-funds-list-cache-pg"
 
 const BENCHMARKS = {
   IF: { label: "沪深300", source: "spot" as const, symbol: "IF" },
@@ -101,59 +109,155 @@ async function loadBenchmarkPrices(key: BenchmarkKey): Promise<{ date: string; v
     .filter((row): row is { date: string; value: number } => row.value != null)
 }
 
-export async function loadFundIntervalMetrics(beianHaos: string[]): Promise<IntervalMetricsRow[]> {
+function fractionToPct(v: number | null): number | null {
+  if (v == null || Number.isNaN(v)) return null
+  return parseFloat((v * 100).toFixed(2))
+}
+
+function pfiReturnToPct(v: number | null): number | null {
+  if (v == null || Number.isNaN(v)) return null
+  // private_fund_info sometimes stores fractions (0.02) and sometimes percent points (2.00).
+  return Math.abs(v) <= 1 ? fractionToPct(v) : parseFloat(v.toFixed(2))
+}
+
+export async function loadFundIntervalMetrics(
+  beianHaos: string[],
+  nameById?: Map<string, string>,
+): Promise<IntervalMetricsRow[]> {
   if (beianHaos.length === 0) return []
 
-  const rows = await query<{
-    beian_hao: string
-    product_name: string | null
-    ret_1w: string | null
-    ret_1m: string | null
-    ret_3m: string | null
-    ret_6m: string | null
-    ret_1y: string | null
-    sharpe_1y: string | null
-    calmar_1y: string | null
-    latest_nav_date: string | null
-  }>(
-    `SELECT
-       beian_hao,
-       product_name,
-       ret_1w::text,
-       ret_1m::text,
-       ret_3m::text,
-       ret_6m::text,
-       ret_1y::text,
-       sharpe_1y::text,
-       calmar_1y::text,
-       latest_nav_date::text
-     FROM private_fund_info
-     WHERE beian_hao = ANY($1::text[])`,
-    [beianHaos],
-  )
+  await ensureTrackingFundsListCacheTable()
 
-  const byId = new Map(rows.map((r) => [r.beian_hao, r]))
+  const [pfiRows, cacheRows] = await Promise.all([
+    query<{
+      beian_hao: string
+      product_name: string | null
+      ret_1w: string | null
+      ret_1m: string | null
+      ret_3m: string | null
+      ret_6m: string | null
+      ret_1y: string | null
+      sharpe_1y: string | null
+      calmar_1y: string | null
+      latest_nav_date: string | null
+    }>(
+      `SELECT
+         beian_hao,
+         product_name,
+         ret_1w::text,
+         ret_1m::text,
+         ret_3m::text,
+         ret_6m::text,
+         ret_1y::text,
+         sharpe_1y::text,
+         calmar_1y::text,
+         latest_nav_date::text
+       FROM private_fund_info
+       WHERE beian_hao = ANY($1::text[])`,
+      [beianHaos],
+    ).catch(() => []),
+    query<{
+      beian_hao: string
+      product_name: string | null
+      short_name: string | null
+      ret_1w: string | null
+      ret_1m: string | null
+      ret_3m: string | null
+      ret_6m: string | null
+      ret_1y: string | null
+      sharpe_1y: string | null
+      calmar_1y: string | null
+      nav_date: string | null
+    }>(
+      `SELECT
+         beian_hao,
+         product_name,
+         short_name,
+         ret_1w::text,
+         ret_1m::text,
+         ret_3m::text,
+         ret_6m::text,
+         ret_1y::text,
+         sharpe_1y::text,
+         calmar_1y::text,
+         nav_date::text
+       FROM ops_tracking_funds_list_cache
+       WHERE beian_hao = ANY($1::text[])`,
+      [beianHaos],
+    ).catch(() => []),
+  ])
 
-  return beianHaos.map((beian_hao) => {
-    const row = byId.get(beian_hao)
+  const pfiById = new Map(pfiRows.map((r) => [r.beian_hao, r]))
+  const cacheById = new Map(cacheRows.map((r) => [r.beian_hao, r]))
+
+  const rows: IntervalMetricsRow[] = beianHaos.map((beian_hao) => {
+    const cache = cacheById.get(beian_hao)
+    const pfi = pfiById.get(beian_hao)
     return {
       key: beian_hao,
-      name: row?.product_name ?? beian_hao,
+      name: nameById?.get(beian_hao) || cache?.product_name || pfi?.product_name || beian_hao,
       isBenchmark: false,
       navFrom: null,
-      navTo: row?.latest_nav_date?.slice(0, 10) ?? null,
-      metricDate: row?.latest_nav_date?.slice(0, 10) ?? null,
+      navTo: (cache?.nav_date ?? pfi?.latest_nav_date)?.slice(0, 10) ?? null,
+      metricDate: (cache?.nav_date ?? pfi?.latest_nav_date)?.slice(0, 10) ?? null,
       metrics: {
-        ret_1w: parseMetric(row?.ret_1w),
-        ret_1m: parseMetric(row?.ret_1m),
-        ret_3m: parseMetric(row?.ret_3m),
-        ret_6m: parseMetric(row?.ret_6m),
-        ret_1y: parseMetric(row?.ret_1y),
-        sharpe_1y: parseMetric(row?.sharpe_1y),
-        calmar_1y: parseMetric(row?.calmar_1y),
+        ret_1w: fractionToPct(parseMetric(cache?.ret_1w)) ?? pfiReturnToPct(parseMetric(pfi?.ret_1w)),
+        ret_1m: fractionToPct(parseMetric(cache?.ret_1m)) ?? pfiReturnToPct(parseMetric(pfi?.ret_1m)),
+        ret_3m: fractionToPct(parseMetric(cache?.ret_3m)) ?? pfiReturnToPct(parseMetric(pfi?.ret_3m)),
+        ret_6m: fractionToPct(parseMetric(cache?.ret_6m)) ?? pfiReturnToPct(parseMetric(pfi?.ret_6m)),
+        ret_1y: fractionToPct(parseMetric(cache?.ret_1y)) ?? pfiReturnToPct(parseMetric(pfi?.ret_1y)),
+        sharpe_1y: parseMetric(cache?.sharpe_1y) ?? parseMetric(pfi?.sharpe_1y),
+        calmar_1y: parseMetric(cache?.calmar_1y) ?? parseMetric(pfi?.calmar_1y),
       },
     }
   })
+
+  const missing = rows.filter((row) =>
+    row.metrics.ret_1w == null
+    || row.metrics.ret_1m == null
+    || row.metrics.ret_3m == null
+    || row.metrics.ret_6m == null
+    || row.metrics.ret_1y == null
+    || row.metrics.sharpe_1y == null
+    || row.metrics.calmar_1y == null
+  )
+  if (missing.length === 0) return rows
+
+  const asOf = new Date().toISOString().slice(0, 10)
+  const identities: ProductNavIdentity[] = missing.map((row) => {
+    const cache = cacheById.get(row.key)
+    return {
+      beian_hao: row.key,
+      product_name: nameById?.get(row.key) || cache?.product_name || row.name,
+      short_name: cache?.short_name ?? null,
+    }
+  })
+  const resolver = await BatchNavResolver.create(identities, asOf)
+
+  for (let i = 0; i < missing.length; i++) {
+    const row = missing[i]
+    const identity = identities[i]
+    const latest = resolver.resolveAt(identity, asOf)
+    if (!latest) continue
+    row.navTo = latest.nav_date
+    row.metricDate = latest.nav_date
+    const returns = resolver.calcPeriodReturns(identity, latest.nav, latest.nav_date)
+    if (row.metrics.ret_1w == null) row.metrics.ret_1w = fractionToPct(returns.ret_1w)
+    if (row.metrics.ret_1m == null) row.metrics.ret_1m = fractionToPct(returns.ret_1m)
+    if (row.metrics.ret_3m == null) row.metrics.ret_3m = fractionToPct(returns.ret_3m)
+    if (row.metrics.ret_6m == null) row.metrics.ret_6m = fractionToPct(returns.ret_6m)
+    if (row.metrics.ret_1y == null) row.metrics.ret_1y = fractionToPct(returns.ret_1y)
+    if (row.metrics.sharpe_1y == null || row.metrics.calmar_1y == null) {
+      const risk = computeOneYearRiskMetrics(
+        latest.nav_date,
+        resolver.mergedHistoryForRiskMetrics(identity, addDays(latest.nav_date, NAV_HISTORY_LOOKBACK_DAYS)),
+      )
+      if (row.metrics.sharpe_1y == null) row.metrics.sharpe_1y = risk.sharpe_1y
+      if (row.metrics.calmar_1y == null) row.metrics.calmar_1y = risk.calmar_1y
+    }
+  }
+
+  return rows
 }
 
 export async function loadBenchmarkIntervalMetrics(key: BenchmarkKey): Promise<IntervalMetricsRow | null> {

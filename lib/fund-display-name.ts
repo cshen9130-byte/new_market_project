@@ -1,5 +1,27 @@
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
+/** True when the stored product name is just a 备案号 / ticker, not a display name. */
+export function isCodeLikeProductName(name: string, beianHao?: string): boolean {
+  const n = name.trim()
+  const code = (beianHao ?? "").trim()
+  if (!n) return true
+  if (code && n.toUpperCase() === code.toUpperCase()) return true
+  return /^[A-Z0-9]{4,10}$/i.test(n) && !/[\u4e00-\u9fff]/u.test(n)
+}
+
+/** Prefer a real Chinese/display name over a 备案号 or ticker such as AWM31C. */
+export function preferNonCodeFundName(
+  primary: string | null | undefined,
+  fallback: string | null | undefined,
+  beianHao?: string,
+): string {
+  const a = (primary ?? "").trim()
+  const b = (fallback ?? "").trim()
+  if (a && !isCodeLikeProductName(a, beianHao)) return a
+  if (b && !isCodeLikeProductName(b, beianHao)) return b
+  return a || b || (beianHao ?? "").trim()
+}
+
 /** Legal fund-type phrases that are redundant in private-fund UI labels. */
 const LEGAL_PHRASES =
   "私募证券投资基金|私募股权投资基金|私募基金|证券投资基金|投资基金"

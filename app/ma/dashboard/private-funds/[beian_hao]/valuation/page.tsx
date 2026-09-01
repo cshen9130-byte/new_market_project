@@ -466,8 +466,10 @@ export default function FundValuationAnalysisPage() {
         nav_series?: NavRow[]
         metrics?: { latest_nav_date?: string | null }
         info?: {
+          product_name?: string | null
           strategy_l1?: string | null
           strategy_l2?: string | null
+          strategy_l3?: string | null
           benchmark?: string | null
           team_benchmark?: string | null
           ret_1w?: string | null
@@ -487,9 +489,11 @@ export default function FundValuationAnalysisPage() {
       const info = json.info
       const resolvedKey = resolveDefaultBenchmarkKey({
         teamBenchmark: info?.team_benchmark,
+        benchmark: info?.benchmark,
         strategyL1: info?.strategy_l1,
         strategyL2: info?.strategy_l2,
         strategyL3: info?.strategy_l3,
+        productName: info?.product_name,
       })
       const nextBench = resolvedKey
         ? benchmarkLabelFromKey(resolvedKey)
@@ -1346,6 +1350,8 @@ export default function FundValuationAnalysisPage() {
               navType={filterNavType}
               otherHoldings={data.other_holdings ?? []}
               strategyTrend={trendData?.fof_trend?.strategy_trend ?? null}
+              underlyingTrend={trendData?.fof_trend?.underlying_trend ?? null}
+              beianHao={beian_hao}
               weightStorageKey={beian_hao}
             />
             <FofReturnCurvePanel

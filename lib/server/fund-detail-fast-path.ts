@@ -244,6 +244,7 @@ export type DetailHeaderPayload = {
     inception_date: string | null
     operation_date: string | null
     benchmark: string | null
+    team_benchmark?: string | null
     ret_1w: string | null
     ret_1m: string | null
     ret_3m: string | null

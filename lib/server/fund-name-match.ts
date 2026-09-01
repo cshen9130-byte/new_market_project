@@ -120,7 +120,10 @@ export function canonicalizeEmailProductCode(code: string): string {
   if (!paren) return withoutLayer
   const base = paren[1]
   const tag = paren[2]
-  return tag === "总" ? base : `${base}${tag.charAt(0)}`
+  if (tag === "总") return base
+  const letter = tag.charAt(0)
+  // `BLF14C(C类)` must stay BLF14C, not BLF14CC.
+  return base.endsWith(letter) ? base : `${base}${letter}`
 }
 
 /** Strip trailing A/B/C share-class suffix from a product / beian code. */
@@ -265,6 +268,33 @@ function jsFundSerialSuffix(name: string): string {
 
 function jsFundSerialMatch(a: string, b: string): boolean {
   return jsFundSerialSuffix(a) === jsFundSerialSuffix(b)
+}
+
+/**
+ * Short workbook nicknames (`添运1号`) vs full legal names
+ * (`众量资产添运1号证券投资私募基金`). Serial suffix must agree so 添运1号
+ * does not collide with 添运10号 / 添运进取1号.
+ */
+export function fundNicknameMatchesFullName(nickname: string, fullName: string): boolean {
+  const nick = String(nickname ?? "").trim()
+  const full = String(fullName ?? "").trim()
+  if (!nick || !full) return false
+  if (!shareClassProductNamesMatch(nick, full)) return false
+  if (fundDisplayNamesMatch(nick, full)) return true
+
+  const strip = (name: string) =>
+    name
+      .replace(/(私募证券投资基金|证券投资私募基金|私募基金|证券投资基金|投资基金)$/u, "")
+      .replace(/[ABC]类$/u, "")
+      .replace(/证券投资$/u, "")
+      .trim()
+  const nb = strip(nick)
+  const fb = strip(full)
+  if (!nb || nb.length < 3 || !fb) return false
+  const nickSerial = nb.match(/[一二三四五六七八九十百千0-9]+号$/u)?.[0] ?? ""
+  const fullSerial = fb.match(/[一二三四五六七八九十百千0-9]+号$/u)?.[0] ?? ""
+  if (nickSerial !== fullSerial) return false
+  return full.includes(nick) || fb.includes(nb) || fb.endsWith(nb) || nb.endsWith(fb)
 }
 
 /** JS equivalent of sqlFundNameMatch with strict A/B/C share-class guard. */

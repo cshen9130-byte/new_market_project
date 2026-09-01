@@ -4,7 +4,7 @@ import {
   getFundValuationAllocation,
 } from "@/lib/server/fund-valuation-allocation"
 import {
-  isValuationCashHoldingName,
+  isValuationNonProductHoldingName,
   stripValuationSubjectPathPrefix,
 } from "@/lib/valuation-holding-display-name"
 
@@ -21,7 +21,7 @@ function sanitizeFundHoldingsPayload<T extends {
       if (["bank_deposit", "settlement_reserve", "margin_deposit", "payable", "clearing"].includes(kind)) {
         return false
       }
-      return !isValuationCashHoldingName(h.fundName)
+      return !isValuationNonProductHoldingName(h.fundName)
     })
     .map((h, i) => ({
       ...h,

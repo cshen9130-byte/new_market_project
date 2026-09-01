@@ -3,8 +3,16 @@ import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
 import { getPrefix } from "@/lib/server/prod-utils"
 import { isQuantAccountIn, parseQuantIdList, accountNumericId } from "@/lib/ma/quant-accounts"
-import { buildMomSignals, classifyExposure } from "@/lib/ma/quant-vs-subjective-signals"
-import type { SignalKind } from "@/lib/ma/quant-vs-subjective-signals"
+import {
+  buildFlowMapFromGrid,
+  buildMomSignals,
+  classifyExposure,
+  decomposeNet,
+  mergeAccountBreadth,
+  type AccountTradeRow,
+  type FlowGridSource,
+  type SignalKind,
+} from "@/lib/ma/quant-vs-subjective-signals"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -240,23 +248,38 @@ async function _GET(req: Request) {
     const inQuant = (acc: string) => isQuantAccountIn(acc, quantIdSet)
     const SLEEVE_EXPR = sleeveSql(quantIds)
 
-    const latestRows = await query<{ date: string }>(
-      `SELECT DISTINCT "交易日期"::date::text AS date
-       FROM mom_position_details
-       WHERE "交易日期" IS NOT NULL AND ${ACCOUNT_EXCL}
-       ORDER BY date DESC LIMIT 1`,
+    const wantDate = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : "9999-12-31"
+    const boundRows = await query<{ latest: string | null; snapped: string | null; prev: string | null }>(
+      `SELECT
+         (SELECT MAX("交易日期"::date)::text FROM mom_position_details
+          WHERE "交易日期" IS NOT NULL AND ${ACCOUNT_EXCL}) AS latest,
+         (SELECT MAX("交易日期"::date)::text FROM mom_position_details
+          WHERE "交易日期" IS NOT NULL AND ${ACCOUNT_EXCL}
+            AND "交易日期"::date <= $1::date) AS snapped,
+         (SELECT MAX("交易日期"::date)::text FROM mom_position_details
+          WHERE "交易日期" IS NOT NULL AND ${ACCOUNT_EXCL}
+            AND "交易日期"::date < (
+              SELECT MAX("交易日期"::date) FROM mom_position_details
+              WHERE "交易日期" IS NOT NULL AND ${ACCOUNT_EXCL}
+                AND "交易日期"::date <= $1::date
+            )) AS prev`,
+      [wantDate],
     )
-    const date = dateParam || latestRows[0]?.date
+    const latestDate = boundRows[0]?.latest ?? null
+    const date = boundRows[0]?.snapped || latestDate
+    const prevDate = boundRows[0]?.prev ?? null
     if (!date) {
-      return NextResponse.json({ ok: true, date: null, groups: null, sectors: [], products: [], signals: [], sectorTs: [], productTs: [] })
+      return NextResponse.json({ ok: true, date: null, latestDate: null, groups: null, sectors: [], products: [], signals: [], sectorTs: [], productTs: [] })
     }
+    const tsEnd = latestDate || date
 
     const optionRe = "[0-9]" + "[CP]" + "[0-9]"
     const optionExcl =
       " AND UPPER(TRIM(\"合约\")) !~ '" + optionRe + "'" +
       " AND TRIM(\"合约\") NOT LIKE '%-%-%'"
 
-    const [posRows, eqRows, tsPosRows, pctRows] = await Promise.all([
+    const accDateParams = prevDate && prevDate !== date ? [date, prevDate] : [date]
+    const [posRows, eqRows, tsPosRows, pctRows, accPosRows] = await Promise.all([
       query<{ account: string; contract: string; long_mv: string; short_mv: string; margin: string }>(
         `SELECT
            TRIM("账户") AS account,
@@ -282,14 +305,16 @@ async function _GET(req: Request) {
            AND ${ACCOUNT_EXCL}`,
         [date],
       ),
-      query<{ date: string; sleeve: string; contract: string; long_mv: string; short_mv: string; margin: string }>(
+      query<{ date: string; sleeve: string; contract: string; long_mv: string; short_mv: string; margin: string; long_lots: string; short_lots: string }>(
         `SELECT
            "交易日期"::date::text AS date,
            ${SLEEVE_EXPR} AS sleeve,
            UPPER(TRIM("合约")) AS contract,
            SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS long_mv,
            SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv,
-           SUM(${numExpr("保证金")})::text AS margin
+           SUM(${numExpr("保证金")})::text AS margin,
+           SUM(${numExpr("买持仓")})::text AS long_lots,
+           SUM(${numExpr("卖持仓")})::text AS short_lots
          FROM mom_position_details
          WHERE "交易日期"::date > $1::date - INTERVAL '400 days'
            AND "交易日期"::date <= $1::date
@@ -297,7 +322,7 @@ async function _GET(req: Request) {
            AND ${ACCOUNT_EXCL}
            ${optionExcl}
          GROUP BY "交易日期"::date, ${SLEEVE_EXPR}, UPPER(TRIM("合约"))`,
-        [date],
+        [tsEnd],
       ),
       query<{ date: string; code: string; pct: string }>(
         `SELECT trade_date::text AS date, code, pct_change::text AS pct
@@ -306,8 +331,25 @@ async function _GET(req: Request) {
            AND trade_date > $2::date - INTERVAL '450 days'
            AND trade_date <= $2::date
          ORDER BY trade_date`,
-        [Object.values(AKSHARE_CODE), date],
+        [Object.values(AKSHARE_CODE), tsEnd],
       ).catch(() => [] as { date: string; code: string; pct: string }[]),
+      query<{ account: string; date: string; contract: string; long_mv: string; short_mv: string; long_lots: string; short_lots: string }>(
+        `SELECT
+           TRIM("账户") AS account,
+           "交易日期"::date::text AS date,
+           UPPER(TRIM("合约")) AS contract,
+           SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS long_mv,
+           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv,
+           SUM(${numExpr("买持仓")})::text AS long_lots,
+           SUM(${numExpr("卖持仓")})::text AS short_lots
+         FROM mom_position_details
+         WHERE "交易日期"::date = ANY($1::date[])
+           AND "合约" IS NOT NULL
+           AND ${ACCOUNT_EXCL}
+           ${optionExcl}
+         GROUP BY TRIM("账户"), "交易日期"::date, UPPER(TRIM("合约"))`,
+        [accDateParams],
+      ).catch(() => [] as { account: string; date: string; contract: string; long_mv: string; short_mv: string; long_lots: string; short_lots: string }[]),
     ])
 
     const equityMap = new Map<string, { equity: number; margin: number; group: Sleeve }>()
@@ -475,7 +517,6 @@ async function _GET(req: Request) {
       )
 
     const quantShare = bookMargin > 0 ? (groups.quant.margin / bookMargin) * 100 : 0
-    const signals = buildMomSignals(sectors, products.slice(0, 40), "risk", quantShare, groups.quant.nAccounts, groups.subjective.nAccounts)
 
     const tsRisk = new Map<string, { quant: Record<string, number>; subjective: Record<string, number>; qAbs: number; sAbs: number }>()
     const tsEq = new Map<string, { quant: Record<string, number>; subjective: Record<string, number>; qEq: number; sEq: number }>()
@@ -568,7 +609,7 @@ async function _GET(req: Request) {
           .filter((x) => x != null)
       })
 
-    const holdingDates = [...new Set(tsPosRows.map((r) => r.date))].sort()
+    const holdingDates = [...new Set(tsPosRows.map((r) => r.date).filter((d) => d <= date))].sort()
     const holdingProdSet = new Set<string>()
     for (const r of tsPosRows) {
       const p = getPrefix(r.contract)
@@ -582,6 +623,10 @@ async function _GET(req: Request) {
     const quantShort = zeros2()
     const subjLong = zeros2()
     const subjShort = zeros2()
+    const quantLongLots = zeros2()
+    const quantShortLots = zeros2()
+    const subjLongLots = zeros2()
+    const subjShortLots = zeros2()
     for (const r of tsPosRows) {
       const prefix = getPrefix(r.contract)
       const di = dIdx.get(r.date)
@@ -589,36 +634,150 @@ async function _GET(req: Request) {
       if (di == null || pi == null) continue
       const long = round0(toNum(r.long_mv))
       const short = round0(toNum(r.short_mv))
+      const longLots = toNum(r.long_lots)
+      const shortLots = toNum(r.short_lots)
       if (r.sleeve === "quant") {
         quantLong[di][pi] += long
         quantShort[di][pi] += short
+        quantLongLots[di][pi] += longLots
+        quantShortLots[di][pi] += shortLots
       } else {
         subjLong[di][pi] += long
         subjShort[di][pi] += short
+        subjLongLots[di][pi] += longLots
+        subjShortLots[di][pi] += shortLots
       }
     }
     const holdingSigma = holdingDates.map((d) =>
       holdingCodes.map((p) => Math.round(sigmaOf(p, d) * 1e6) / 1e6),
     )
+    const holdingProducts = holdingCodes.map((code) => ({
+      code,
+      name: PROD_NAMES[code] ?? code,
+      cat: getCat(code),
+      sector: getSector(code),
+      subSector: getSubSector(code),
+    }))
     const holdingTs = {
       dates: holdingDates,
-      products: holdingCodes.map((code) => ({
-        code,
-        name: PROD_NAMES[code] ?? code,
-        cat: getCat(code),
-        sector: getSector(code),
-        subSector: getSubSector(code),
-      })),
+      products: holdingProducts,
       quantLong,
       quantShort,
+      quantLongLots,
+      quantShortLots,
       subjLong,
       subjShort,
+      subjLongLots,
+      subjShortLots,
       sigma: holdingSigma,
     }
+
+    const flowSrc: FlowGridSource = {
+      dates: holdingDates,
+      products: holdingProducts,
+      quantLong,
+      quantShort,
+      quantLongLots,
+      quantShortLots,
+      subjLong,
+      subjShort,
+      subjLongLots,
+      subjShortLots,
+    }
+    let flows = buildFlowMapFromGrid(flowSrc, date)
+
+    const emptyPos = { longMv: 0, shortMv: 0, longLots: 0, shortLots: 0 }
+    type AccBucket = { longMv: number; shortMv: number; longLots: number; shortLots: number }
+    const accProd = new Map<string, { account: string; sleeve: Sleeve; date: string; prefix: string; pos: AccBucket }>()
+    for (const r of accPosRows) {
+      const acc = r.account?.trim() ?? ""
+      const prefix = getPrefix(r.contract)
+      if (!acc || !prefix) continue
+      const key = `${acc}|${r.date}|${prefix}`
+      const cur = accProd.get(key)
+      const add = {
+        longMv: toNum(r.long_mv),
+        shortMv: toNum(r.short_mv),
+        longLots: toNum(r.long_lots),
+        shortLots: toNum(r.short_lots),
+      }
+      if (cur) {
+        cur.pos.longMv += add.longMv
+        cur.pos.shortMv += add.shortMv
+        cur.pos.longLots += add.longLots
+        cur.pos.shortLots += add.shortLots
+      } else {
+        accProd.set(key, {
+          account: acc,
+          sleeve: inQuant(acc) ? "quant" : "subjective",
+          date: r.date,
+          prefix,
+          pos: add,
+        })
+      }
+    }
+    const accByKey = new Map<string, AccBucket>()
+    const prefixesByAcc = new Map<string, Set<string>>()
+    for (const row of accProd.values()) {
+      accByKey.set(`${row.account}|${row.date}|${row.prefix}`, row.pos)
+      const set = prefixesByAcc.get(row.account)
+      if (set) set.add(row.prefix)
+      else prefixesByAcc.set(row.account, new Set([row.prefix]))
+    }
+    const accTrades: AccountTradeRow[] = []
+    const sectorKeys = new Set(SECTORS as readonly string[])
+    for (const [acc, prefixes] of prefixesByAcc) {
+      const sleeve: Sleeve = inQuant(acc) ? "quant" : "subjective"
+      const sectorAgg = new Map<string, { trade: number; prevNet: number; todayNet: number }>()
+      for (const prefix of prefixes) {
+        const today = accByKey.get(`${acc}|${date}|${prefix}`) ?? emptyPos
+        const prev = prevDate ? (accByKey.get(`${acc}|${prevDate}|${prefix}`) ?? emptyPos) : emptyPos
+        const d = decomposeNet(prev, today)
+        accTrades.push({
+          account: acc,
+          sleeve,
+          level: "product",
+          key: prefix,
+          trade: d.trade,
+          prevNet: d.prevNet,
+          todayNet: d.todayNet,
+        })
+        const sec = getSector(prefix)
+        if (!sectorKeys.has(sec)) continue
+        const agg = sectorAgg.get(sec) ?? { trade: 0, prevNet: 0, todayNet: 0 }
+        agg.trade += d.trade
+        agg.prevNet += d.prevNet
+        agg.todayNet += d.todayNet
+        sectorAgg.set(sec, agg)
+      }
+      for (const [sec, agg] of sectorAgg) {
+        accTrades.push({
+          account: acc,
+          sleeve,
+          level: "sector",
+          key: sec,
+          trade: agg.trade,
+          prevNet: agg.prevNet,
+          todayNet: agg.todayNet,
+        })
+      }
+    }
+    flows = mergeAccountBreadth(flows, accTrades, groups.quant.accounts)
+
+    const signals = buildMomSignals(
+      sectors,
+      products.slice(0, 40),
+      "risk",
+      quantShare,
+      groups.quant.nAccounts,
+      groups.subjective.nAccounts,
+      flows,
+    )
 
     return NextResponse.json({
       ok: true,
       date,
+      latestDate,
       volDays: VOL_DAYS,
       quantIds,
       missingQuantIds,
@@ -632,6 +791,7 @@ async function _GET(req: Request) {
       sectorTs,
       productTs,
       holdingTs,
+      flows,
     })
   } catch (err) {
     console.error("[quant-vs-subjective]", err)
@@ -639,4 +799,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("quant-vs-subjective-v8", _GET)
+export const GET = withMomCache("quant-vs-subjective-v11", _GET)

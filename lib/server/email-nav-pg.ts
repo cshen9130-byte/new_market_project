@@ -5,6 +5,7 @@
 
 import { query } from "@/lib/db"
 import { applyEmailProductCodeOverride, type ExtractedNavData } from "./email-nav-extract"
+import { fundNicknameMatchesFullName } from "@/lib/server/fund-name-match"
 
 export type EmailNavInsert = ExtractedNavData & {
   crawlEmailAccount: string
@@ -169,9 +170,50 @@ function receiverEmailValue(r: EmailNavInsert): string {
   return String(r.receiverEmail ?? "").trim().toLowerCase()
 }
 
+/**
+ * `添运1号历史净值.xlsx` has no 备案号. Reuse a code already stored on a
+ * longer legal name (众量资产添运1号…) so the series lands on the same fund.
+ */
+async function fillMissingEmailNavProductCodes(records: EmailNavInsert[]): Promise<void> {
+  const missingNames = [
+    ...new Set(
+      records
+        .filter((r) => !String(r.productCode ?? "").trim() && String(r.fundName ?? "").trim())
+        .map((r) => String(r.fundName).trim()),
+    ),
+  ]
+  if (missingNames.length === 0) return
+
+  const known = await query<{ product_code: string; fund_name: string }>(
+    `SELECT DISTINCT UPPER(BTRIM(product_code)) AS product_code, BTRIM(fund_name) AS fund_name
+     FROM ops_email_nav_records
+     WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+       AND NULLIF(BTRIM(fund_name), '') IS NOT NULL
+       AND (${missingNames.map((_, i) => `fund_name ILIKE '%' || $${i + 1} || '%'`).join(" OR ")})`,
+    missingNames,
+  )
+  if (known.length === 0) return
+
+  const codeByNickname = new Map<string, string>()
+  for (const nick of missingNames) {
+    const hits = known.filter((row) => fundNicknameMatchesFullName(nick, row.fund_name))
+    const codes = [...new Set(hits.map((row) => row.product_code))]
+    if (codes.length === 1 && codes[0]) codeByNickname.set(nick, codes[0])
+  }
+  if (codeByNickname.size === 0) return
+
+  for (const record of records) {
+    if (String(record.productCode ?? "").trim()) continue
+    const nick = String(record.fundName ?? "").trim()
+    const code = codeByNickname.get(nick)
+    if (code) record.productCode = code
+  }
+}
+
 export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<number> {
   if (records.length === 0) return 0
   await ensureEmailNavTable()
+  await fillMissingEmailNavProductCodes(records)
 
   // Custody 净值表 often forward-fills Fri onto Sat/Sun — never persist those as NAV dates.
   const { isChinaTradingDay } = await import("@/lib/server/china-trading-calendar")

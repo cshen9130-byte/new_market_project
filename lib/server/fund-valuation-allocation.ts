@@ -17,6 +17,7 @@ import { inferDerivativeSector, DERIVATIVE_SECTOR_CHART_ORDER, type DerivativeSe
 import {
   listFundLatestValuationHoldings,
   mapValuationRowsToHoldings,
+  ensureEmailValuationHoldingsTables,
   type FundLatestHoldingRow,
   type ValuationHoldingInsert,
 } from "@/lib/server/email-valuation-holdings-pg"
@@ -50,7 +51,7 @@ import {
   readValuationCacheIfFresh,
 } from "@/lib/server/valuation-cache-refresh"
 import {
-  isValuationCashHoldingName,
+  isValuationNonProductHoldingName,
   stripValuationSubjectPathPrefix,
 } from "@/lib/valuation-holding-display-name"
 
@@ -2837,7 +2838,7 @@ function sanitizeAllocationDisplayNames(
 ): FundValuationAllocationResult {
   const fund_holdings = result.fund_holdings?.length
     ? result.fund_holdings
-      .filter((h) => !isCashLikeHoldingKind(h.rowKind) && !isValuationCashHoldingName(h.fundName))
+      .filter((h) => !isCashLikeHoldingKind(h.rowKind) && !isValuationNonProductHoldingName(h.fundName))
       .map((h, i) => {
         const fundName = sanitizeHoldingDisplayName(h.fundName)
         return { ...h, index: i + 1, fundName }
@@ -3058,6 +3059,7 @@ async function loadFundValuationTrendSnapshots(
 
   const { product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
   await ensureEmailValuationTable()
+  await ensureEmailValuationHoldingsTables()
 
   const namePattern = product_name?.trim() ? `%${product_name.trim()}%` : null
   const recordParams: unknown[] = [candidateCodes]
@@ -3067,15 +3069,26 @@ async function loadFundValuationTrendSnapshots(
     nameClause = `OR fund_name ILIKE $${recordParams.length}`
   }
   recordParams.push(from, to)
+  const fromIdx = recordParams.length - 1
+  const toIdx = recordParams.length
+  const hasHoldingsSql = `(
+       COALESCE(jsonb_array_length(holdings), 0) > 0
+       OR EXISTS (
+         SELECT 1 FROM ops_email_valuation_holdings h
+         WHERE h.valuation_record_id = ops_email_valuation_records.id
+       )
+     )`
 
-  let records = await query<{
+  type TrendRecord = {
     id: string
     product_code: string | null
     fund_name: string | null
     valuation_date: string
     custody_balance: string | null
     net_asset_value: string | null
-  }>(
+  }
+
+  let records = await query<TrendRecord>(
     `SELECT DISTINCT ON (valuation_date)
        id,
        product_code,
@@ -3085,22 +3098,15 @@ async function loadFundValuationTrendSnapshots(
        net_asset_value::text AS net_asset_value
      FROM ops_email_valuation_records
      WHERE (product_code = ANY($1::text[]) ${nameClause})
-       AND valuation_date >= $${recordParams.length - 1}::date
-       AND valuation_date <= $${recordParams.length}::date
-       AND jsonb_array_length(holdings) > 0
+       AND valuation_date >= $${fromIdx}::date
+       AND valuation_date <= $${toIdx}::date
+       AND ${hasHoldingsSql}
      ORDER BY valuation_date ASC, id DESC`,
     recordParams,
   )
 
   if (records.length === 0 && product_name) {
-    records = await query<{
-      id: string
-      product_code: string | null
-      fund_name: string | null
-      valuation_date: string
-      custody_balance: string | null
-      net_asset_value: string | null
-    }>(
+    records = await query<TrendRecord>(
       `SELECT DISTINCT ON (valuation_date)
          id,
          product_code,
@@ -3112,9 +3118,35 @@ async function loadFundValuationTrendSnapshots(
        WHERE fund_name ILIKE $1
          AND valuation_date >= $2::date
          AND valuation_date <= $3::date
-         AND jsonb_array_length(holdings) > 0
+         AND ${hasHoldingsSql}
        ORDER BY valuation_date ASC, id DESC`,
       [`%${product_name.trim()}%`, from, to],
+    )
+  }
+
+  if (records.length === 0) {
+    const holdingParams: unknown[] = [candidateCodes]
+    let holdingNameClause = ""
+    if (namePattern) {
+      holdingParams.push(namePattern)
+      holdingNameClause = `OR h.fund_name ILIKE $${holdingParams.length}`
+    }
+    holdingParams.push(from, to)
+    records = await query<TrendRecord>(
+      `SELECT DISTINCT ON (r.valuation_date)
+         r.id,
+         r.product_code,
+         r.fund_name,
+         r.valuation_date::text AS valuation_date,
+         r.custody_balance::text AS custody_balance,
+         r.net_asset_value::text AS net_asset_value
+       FROM ops_email_valuation_holdings h
+       JOIN ops_email_valuation_records r ON r.id = h.valuation_record_id
+       WHERE (h.product_code = ANY($1::text[]) ${holdingNameClause})
+         AND h.valuation_date >= $${holdingParams.length - 1}::date
+         AND h.valuation_date <= $${holdingParams.length}::date
+       ORDER BY r.valuation_date ASC, r.id DESC`,
+      holdingParams,
     )
   }
 

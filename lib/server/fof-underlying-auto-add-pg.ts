@@ -11,7 +11,7 @@
 
 import { query } from "@/lib/db"
 import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
-import { SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF } from "@/lib/server/fund-holding-code"
+import { SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { sqlStripValuationSubjectPathPrefix } from "@/lib/server/fund-name-match"
 
 export type FofUnderlyingAutoAddResult = {
@@ -107,6 +107,43 @@ export async function removeFofUnderlyingSummaryAliases(): Promise<number> {
 }
 
 /**
+ * Drop 估值表 股票成本_* parent buckets that were auto-added as FOF底层 products.
+ */
+export async function removeFofUnderlyingStockCostBuckets(): Promise<number> {
+  const nameIsBucket = sqlSubjectNameIsStockCostBucket("product_name")
+  const doomed = await query<{ id: number; product_name: string }>(
+    `SELECT id, product_name
+     FROM fof_underlying_summary
+     WHERE ${nameIsBucket}`,
+  )
+  const ids = doomed.map((r) => r.id)
+  if (ids.length > 0) {
+    await query(
+      `DELETE FROM ops_fof_overview_list_cache WHERE fof_underlying_id = ANY($1::int[])`,
+      [ids],
+    )
+    await query(`DELETE FROM fof_underlying_summary WHERE id = ANY($1::int[])`, [ids])
+  }
+  await query(
+    `DELETE FROM ops_fof_overview_list_cache
+     WHERE ${sqlSubjectNameIsStockCostBucket("product_name")}
+        OR ${sqlSubjectNameIsStockCostBucket("COALESCE(short_name, '')")}`,
+  )
+  await query(`DELETE FROM fof_underlying_detail WHERE ${nameIsBucket}`)
+  await query(
+    `DELETE FROM ops_managed_fof_underlying WHERE ${sqlSubjectNameIsStockCostBucket("underlying_name")}`,
+  )
+  if (doomed.length > 0) {
+    console.warn(
+      `[fof-underlying-auto-add] removed ${doomed.length} 股票成本 bucket(s): ${doomed
+        .map((r) => r.product_name)
+        .join("; ")}`,
+    )
+  }
+  return doomed.length
+}
+
+/**
  * For every unique underlying fund in ops_managed_fof_underlying:
  *  1. Add to fof_underlying_summary if not already present (normalised name match).
  *  2. Add to fof_underlying_detail if the (fof_fund_name, product_name) pair is absent.
@@ -117,6 +154,7 @@ export async function removeFofUnderlyingSummaryAliases(): Promise<number> {
 export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoAddResult> {
   await ensureManagedFofUnderlyingTable()
   await removeFofUnderlyingSummaryAliases()
+  await removeFofUnderlyingStockCostBuckets()
 
   const normUnderlyingCol = normExpr("underlying_name")
   const normUnderlyingFromN = normExpr("n.underlying_name")
@@ -222,10 +260,19 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
      SELECT COUNT(*)::text AS n FROM inserted`,
   )
 
-  return {
+  const added = {
     opsFofUnderlyingAdded: parseInt(summaryRows[0]?.n ?? "0", 10),
     detailFofUnderlyingAdded: parseInt(detailRows[0]?.n ?? "0", 10),
   }
+
+  try {
+    const { ensureFofUnderlyingInEmailPool } = await import("@/lib/server/fof-email-product-sync")
+    await ensureFofUnderlyingInEmailPool()
+  } catch (err) {
+    console.warn("[fof-underlying-auto-add] email pool / 团队数据 sync skipped:", err)
+  }
+
+  return added
 }
 
 /**

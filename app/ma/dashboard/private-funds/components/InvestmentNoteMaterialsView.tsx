@@ -30,7 +30,11 @@ import {
   fundElementSourceKindLabel,
   isFundElementExtractableFile,
 } from "@/lib/ma/fund-element-source-file"
-import { needsContentBasedMaterialRename, partitionDuplicateMaterialFiles } from "@/lib/ma/investment-note-material-filename"
+import {
+  formatMaterialListName,
+  needsContentBasedMaterialRename,
+  partitionDuplicateMaterialFiles,
+} from "@/lib/ma/investment-note-material-filename"
 import type { InvestmentNote, InvestmentNoteMaterial } from "@/lib/ma/investment-notes"
 import {
   INVESTMENT_NOTE_MATERIAL_ACCEPT,
@@ -721,7 +725,7 @@ export function InvestmentNoteMaterialsView() {
                       className="flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-muted/50 group"
                     >
                       <span className="text-sm truncate" title={item.name}>
-                        {item.name}
+                        {formatMaterialListName(item.name)}
                       </span>
                       <button
                         type="button"
@@ -837,10 +841,12 @@ export function InvestmentNoteMaterialsView() {
                             })
                           }}
                           title={material.name}
-                          className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-left text-sky-600 hover:underline"
+                          className="flex min-w-0 max-w-[22rem] items-center gap-2 overflow-hidden text-left text-sky-600 hover:underline"
                         >
                           <FileText className="h-4 w-4 shrink-0 text-zinc-400" />
-                          <span className="min-w-0 truncate">{material.name}</span>
+                          <span className="min-w-0 truncate">
+                            {formatMaterialListName(material.name)}
+                          </span>
                         </button>
                         {syncedFromDd ? (
                           <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] text-zinc-600">

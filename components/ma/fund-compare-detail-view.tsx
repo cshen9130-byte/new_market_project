@@ -27,6 +27,19 @@ import {
   type SavedFundCompare,
   type SavedFundCompareFund,
 } from "@/lib/ma-fund-compare-storage"
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
+import { DateInput } from "@/components/ui/date-input"
+import {
+  filterPointsByFrequency,
+  type NavFrequencyFilter,
+} from "@/app/ma/dashboard/private-funds/[beian_hao]/components/shared"
+import {
+  dateToUtcTs,
+  echartsTimeXAxis,
+  formatIsoDateFromTs,
+} from "@/app/ma/dashboard/private-funds/[beian_hao]/components/performanceChartUtils"
+
+const NAV_FREQ_OPTIONS: NavFrequencyFilter[] = ["全部", "日频", "周频", "月频"]
 
 const LINE_COLORS = ["#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#06b6d4", "#ec4899", "#64748b"]
 
@@ -74,11 +87,16 @@ function maxDate(dates: string[]) {
   return dates.filter(Boolean).sort().at(-1) ?? isoToday()
 }
 
+function compareFundDisplayName(fund: SavedFundCompareFund): string {
+  return resolveFundDisplayLabel(null, fund.product_name) || fund.product_name
+}
+
 async function fetchFundSeries(
   fund: SavedFundCompareFund,
   from: string,
   to: string,
 ): Promise<FundSeries> {
+  const displayName = compareFundDisplayName(fund)
   const baseParams = {
     beian_hao: fund.beian_hao,
     product_name: fund.product_name,
@@ -87,7 +105,7 @@ async function fetchFundSeries(
   }
   const empty: FundSeries = {
     beian_hao: fund.beian_hao,
-    name: fund.product_name,
+    name: displayName,
     returnPoints: [],
     navPoints: [],
     lastReturn: null,
@@ -104,7 +122,7 @@ async function fetchFundSeries(
     const navPoints = Array.isArray(navJson.fund) ? navJson.fund : []
     return {
       beian_hao: fund.beian_hao,
-      name: fund.product_name,
+      name: displayName,
       returnPoints,
       navPoints,
       lastReturn: returnPoints.at(-1)?.v ?? null,
@@ -177,21 +195,55 @@ function alignNavSeriesStart(seriesList: FundSeries[], alignStart: boolean): Fun
   })
 }
 
-/** Chart display only: hold last known return/NAV flat until the next report date. */
-function alignCurveToCalendar(pts: CurvePoint[], calendarDates: string[]): (number | null)[] {
-  if (pts.length === 0) return calendarDates.map(() => null)
-  const byDate = new Map(pts.map((p) => [p.d, p.v]))
-  const firstDate = pts[0].d
-  let last: number | null = null
-  return calendarDates.map((d) => {
-    if (d < firstDate) return null
-    const exact = byDate.get(d)
-    if (exact != null) {
-      last = exact
-      return exact
-    }
-    return last
-  })
+function earliestFundStartDate(seriesList: FundSeries[], isNavMode: boolean): string {
+  let min = ""
+  for (const s of seriesList) {
+    const d = (isNavMode ? s.navPoints[0]?.d : s.returnPoints[0]?.d)
+      || s.navPoints[0]?.d
+      || s.returnPoints[0]?.d
+    if (d && (!min || d < min)) min = d
+  }
+  return min
+}
+
+function rebaseReturnFromNav(navPoints: CurvePoint[]): CurvePoint[] {
+  const base = navPoints.find((p) => Number.isFinite(p.v) && p.v > 0)?.v
+  if (base == null) return []
+  return navPoints.map((p) => ({
+    d: p.d,
+    v: parseFloat((((p.v / base) - 1) * 100).toFixed(4)),
+  }))
+}
+
+function clipAndRebaseBenchmark(bench: BenchSeries, startDate: string): BenchSeries {
+  if (!startDate) return bench
+  const navPoints = bench.navPoints.filter((p) => p.d >= startDate)
+  if (navPoints.length > 0) {
+    return { navPoints, returnPoints: rebaseReturnFromNav(navPoints) }
+  }
+  const clipped = bench.returnPoints.filter((p) => p.d >= startDate)
+  const base = clipped[0]
+  if (!base) return { returnPoints: [], navPoints: [] }
+  const denom = 1 + base.v / 100
+  const returnPoints = Number.isFinite(denom) && denom !== 0
+    ? clipped.map((p) => ({
+        d: p.d,
+        v: parseFloat((((1 + p.v / 100) / denom - 1) * 100).toFixed(4)),
+      }))
+    : clipped.map((p) => ({ d: p.d, v: parseFloat((p.v - base.v).toFixed(4)) }))
+  return { returnPoints, navPoints: [] }
+}
+
+function resampleSeries(series: FundSeries, freq: NavFrequencyFilter): FundSeries {
+  const returnPoints = filterPointsByFrequency(series.returnPoints, freq)
+  const navPoints = filterPointsByFrequency(series.navPoints, freq)
+  return {
+    ...series,
+    returnPoints,
+    navPoints,
+    lastReturn: returnPoints.at(-1)?.v ?? null,
+    lastNav: navPoints.at(-1)?.v ?? null,
+  }
 }
 
 export function FundCompareDetailView({
@@ -206,6 +258,7 @@ export function FundCompareDetailView({
   const [filterFrom, setFilterFrom] = useState("")
   const [filterTo, setFilterTo] = useState("")
   const [filterBench, setFilterBench] = useState<(typeof BENCHMARK_OPTIONS)[number]["key"]>("IF")
+  const [filterFreq, setFilterFreq] = useState<NavFrequencyFilter>("日频")
   const [alignStart, setAlignStart] = useState(true)
   const [appliedFrom, setAppliedFrom] = useState("")
   const [appliedTo, setAppliedTo] = useState("")
@@ -270,13 +323,14 @@ export function FundCompareDetailView({
     setAppliedAlignStart(alignStart)
 
     const series = await Promise.all(compare.funds.map((f) => fetchFundSeries(f, from, to)))
-    setFundSeries(
-      alignNavSeriesStart(
-        alignReturnSeriesStart(series, alignStart),
-        alignStart,
-      ),
+    const alignedFunds = alignNavSeriesStart(
+      alignReturnSeriesStart(series, alignStart),
+      alignStart,
     )
-    setBenchSeries(await fetchBenchmarkSeries(from, to, filterBench))
+    setFundSeries(alignedFunds)
+    const rawBench = await fetchBenchmarkSeries(from, to, filterBench)
+    const fundStart = earliestFundStartDate(alignedFunds, false)
+    setBenchSeries(fundStart ? clipAndRebaseBenchmark(rawBench, fundStart) : rawBench)
     setAnalyzed(true)
     setLoading(false)
   }
@@ -286,6 +340,7 @@ export function FundCompareDetailView({
     setFilterFrom(defaultFrom)
     setFilterTo(defaultTo)
     setFilterBench("IF")
+    setFilterFreq("日频")
     setAlignStart(true)
     setAppliedFrom(defaultFrom)
     setAppliedTo(defaultTo)
@@ -338,77 +393,124 @@ export function FundCompareDetailView({
 
   const benchLabel = `${BENCHMARK_OPTIONS.find((b) => b.key === appliedBench)?.label ?? "基准"}(基准)`
 
+  const alignedChartBench = useMemo(() => {
+    const isNavMode = chartMode === "nav"
+    const displaySeries = activeSeries.map((s) => resampleSeries(s, filterFreq))
+    const displayBench = {
+      returnPoints: filterPointsByFrequency(benchSeries.returnPoints, filterFreq),
+      navPoints: filterPointsByFrequency(benchSeries.navPoints, filterFreq),
+    }
+    const fundStart = earliestFundStartDate(displaySeries, isNavMode)
+    return fundStart ? clipAndRebaseBenchmark(displayBench, fundStart) : displayBench
+  }, [activeSeries, benchSeries, chartMode, filterFreq])
+
   const chartOption = useMemo(() => {
     const isNavMode = chartMode === "nav"
+    const displaySeries = activeSeries.map((s) => resampleSeries(s, filterFreq))
+    const alignedBench = alignedChartBench
+
     const dates = new Set<string>()
-    activeSeries.forEach((s) => {
+    displaySeries.forEach((s) => {
       const pts = isNavMode ? s.navPoints : s.returnPoints
       pts.forEach((p) => dates.add(p.d))
     })
     if (appliedBench) {
-      const benchPts = isNavMode ? benchSeries.navPoints : benchSeries.returnPoints
+      const benchPts = isNavMode ? alignedBench.navPoints : alignedBench.returnPoints
       benchPts.forEach((p) => dates.add(p.d))
     }
     const sortedDates = [...dates].sort()
 
-    const fundEchartsSeries = activeSeries.map((s, idx) => {
+    const toLineData = (pts: CurvePoint[]) =>
+      pts
+        .map((p) => {
+          const ts = dateToUtcTs(p.d)
+          return Number.isFinite(ts) ? ([ts, p.v] as [number, number]) : null
+        })
+        .filter((p): p is [number, number] => p != null)
+
+    const fundEchartsSeries = displaySeries.map((s, idx) => {
       const pts = isNavMode ? s.navPoints : s.returnPoints
       const color = LINE_COLORS[idx % LINE_COLORS.length]
       return {
         name: s.name,
         type: "line" as const,
         yAxisIndex: 0,
-        showSymbol: false,
-        smooth: true,
+        showSymbol: pts.length <= 60,
+        symbol: "circle",
+        symbolSize: 4,
+        smooth: false,
         connectNulls: true,
         lineStyle: { width: 2, color },
         itemStyle: { color },
-        data: alignCurveToCalendar(pts, sortedDates),
+        data: toLineData(pts),
       }
     })
 
     const series = [...fundEchartsSeries]
 
-    const benchPts = isNavMode ? benchSeries.navPoints : benchSeries.returnPoints
+    const benchPts = isNavMode ? alignedBench.navPoints : alignedBench.returnPoints
     if (appliedBench && benchPts.length > 0) {
       series.push({
         name: benchLabel,
         type: "line" as const,
         yAxisIndex: isNavMode ? 1 : 0,
-        showSymbol: false,
-        smooth: true,
+        showSymbol: benchPts.length <= 60,
+        symbol: "circle",
+        symbolSize: 4,
+        smooth: false,
         connectNulls: true,
         lineStyle: { width: 2, color: "#60a5fa" },
         itemStyle: { color: "#60a5fa" },
-        data: alignCurveToCalendar(benchPts, sortedDates),
+        data: toLineData(benchPts),
       })
     }
 
     return {
-      grid: { left: 56, right: isNavMode ? 64 : 24, top: 24, bottom: 48 },
+      useUTC: true,
+      animation: false,
+      grid: { left: 56, right: isNavMode ? 64 : 24, top: 24, bottom: 72 },
+      dataZoom: [
+        { type: "inside" as const, xAxisIndex: 0, filterMode: "none" as const },
+        {
+          type: "slider" as const,
+          xAxisIndex: 0,
+          height: 18,
+          bottom: 8,
+          filterMode: "none" as const,
+          borderColor: "transparent",
+          fillerColor: "rgba(239,68,68,0.12)",
+          handleStyle: { color: "#ef4444" },
+          moveHandleStyle: { color: "#fca5a5" },
+          textStyle: { fontSize: 10, color: "#a1a1aa" },
+          dataBackground: {
+            lineStyle: { color: "#94a3b8" },
+            areaStyle: { color: "rgba(148,163,184,0.08)" },
+          },
+        },
+      ],
       tooltip: {
         trigger: "axis",
+        axisPointer: { type: "line", snap: true },
         formatter: (params: unknown) => {
           if (!Array.isArray(params) || params.length === 0) return ""
-          const date = String((params[0] as { axisValue?: string }).axisValue ?? "")
+          const first = params[0] as { axisValue?: string | number; data?: [number, number] }
+          const date = typeof first.axisValue === "number"
+            ? formatIsoDateFromTs(first.axisValue)
+            : String(first.axisValue ?? "").slice(0, 10)
           const lines = params.map((item) => {
-            const p = item as { seriesName?: string; value?: number | null; color?: string }
-            if (p.value == null || !Number.isFinite(p.value)) return `${p.seriesName}: —`
+            const p = item as { seriesName?: string; value?: number | [number, number | null] | null }
+            const raw = Array.isArray(p.value) ? p.value[1] : p.value
+            if (raw == null || !Number.isFinite(raw)) return `${p.seriesName}: —`
             const val = isNavMode
-              ? Number(p.value).toFixed(4)
-              : `${Number(p.value).toFixed(2)}%`
+              ? Number(raw).toFixed(4)
+              : `${Number(raw).toFixed(2)}%`
             return `${p.seriesName}: ${val}`
           })
           return [date, ...lines].join("<br/>")
         },
       },
       legend: { show: false },
-      xAxis: {
-        type: "category",
-        data: sortedDates,
-        axisLabel: { fontSize: 10, color: "#71717a" },
-        axisLine: { lineStyle: { color: "#e4e4e7" } },
-      },
+      xAxis: echartsTimeXAxis(sortedDates),
       yAxis: isNavMode
         ? [
             {
@@ -446,7 +548,7 @@ export function FundCompareDetailView({
           },
       series,
     }
-  }, [activeSeries, benchSeries, appliedBench, chartMode, benchLabel])
+  }, [activeSeries, alignedChartBench, appliedBench, chartMode, benchLabel, filterFreq])
 
   return (
     <div className="flex flex-col min-h-0">
@@ -491,9 +593,33 @@ export function FundCompareDetailView({
             {["近一年", "近六月", "成立以来", "自定义"].map((o) => <option key={o}>{o}</option>)}
           </select>
         </div>
-        <input type="date" value={filterFrom} onChange={(e) => { setFilterFrom(e.target.value); setFilterPeriod("自定义") }} className="border rounded px-2 py-1 bg-white" />
+        <DateInput
+          value={filterFrom}
+          onChange={(value) => { setFilterFrom(value); setFilterPeriod("自定义") }}
+          placeholder="开始日期"
+          className="w-[148px]"
+          inputClassName="h-7 rounded px-2 pr-8 text-xs bg-white"
+          displayClassName="left-2 text-xs"
+        />
         <span className="text-zinc-400">～</span>
-        <input type="date" value={filterTo} onChange={(e) => { setFilterTo(e.target.value); setFilterPeriod("自定义") }} className="border rounded px-2 py-1 bg-white" />
+        <DateInput
+          value={filterTo}
+          onChange={(value) => { setFilterTo(value); setFilterPeriod("自定义") }}
+          placeholder="结束日期"
+          className="w-[148px]"
+          inputClassName="h-7 rounded px-2 pr-8 text-xs bg-white"
+          displayClassName="left-2 text-xs"
+        />
+        <div className="flex items-center gap-1.5">
+          <span className="text-zinc-500">净值频率：</span>
+          <select
+            value={filterFreq}
+            onChange={(e) => setFilterFreq(e.target.value as NavFrequencyFilter)}
+            className="border rounded px-2 py-1 bg-white"
+          >
+            {NAV_FREQ_OPTIONS.map((o) => <option key={o}>{o}</option>)}
+          </select>
+        </div>
         <div className="flex items-center gap-1.5">
           <span className="text-zinc-500">业绩基准：</span>
           <select
@@ -597,17 +723,17 @@ export function FundCompareDetailView({
                 </button>
               )
             })}
-            {appliedBench && (chartMode === "nav" ? benchSeries.navPoints : benchSeries.returnPoints).length > 0 && (
+            {appliedBench && (chartMode === "nav" ? alignedChartBench.navPoints : alignedChartBench.returnPoints).length > 0 && (
               <span className="inline-flex items-center gap-2 text-xs text-zinc-500">
                 <span className="w-3 h-0.5 rounded bg-sky-400" />
                 {benchLabel}
                 {chartMode === "nav" ? (
-                  benchSeries.navPoints.at(-1)?.v != null && (
-                    <span className="tabular-nums">{benchSeries.navPoints.at(-1)!.v.toFixed(4)}</span>
+                  alignedChartBench.navPoints.at(-1)?.v != null && (
+                    <span className="tabular-nums">{alignedChartBench.navPoints.at(-1)!.v.toFixed(4)}</span>
                   )
-                ) : benchSeries.returnPoints.at(-1)?.v != null && (
+                ) : alignedChartBench.returnPoints.at(-1)?.v != null && (
                   <span className="tabular-nums">
-                    {benchSeries.returnPoints.at(-1)!.v >= 0 ? "+" : ""}{benchSeries.returnPoints.at(-1)!.v.toFixed(2)}%
+                    {alignedChartBench.returnPoints.at(-1)!.v >= 0 ? "+" : ""}{alignedChartBench.returnPoints.at(-1)!.v.toFixed(2)}%
                   </span>
                 )}
               </span>
@@ -623,8 +749,8 @@ export function FundCompareDetailView({
               暂无足够净值数据
             </div>
           ) : (
-            <div className="h-[360px] w-full overflow-hidden">
-              <ReactECharts option={chartOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />
+            <div className="h-[392px] w-full overflow-hidden">
+              <ReactECharts option={chartOption} style={{ height: 392, width: "100%" }} notMerge lazyUpdate />
             </div>
           )}
         </div>

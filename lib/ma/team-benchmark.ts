@@ -37,17 +37,22 @@ function strategyDefaultBenchmarkKey(parts: Array<string | null | undefined>): s
 /** Prefer 团队基准; else 股票→沪深300, 商品/期货/CTA→南华商品指数. */
 export function resolveDefaultBenchmarkKey(opts: {
   teamBenchmark?: string | null
+  benchmark?: string | null
   strategyL1?: string | null
   strategyL2?: string | null
   strategyL3?: string | null
+  productName?: string | null
   extraHints?: Array<string | null | undefined>
 }): string {
   const teamKey = normalizeBenchmarkKey(opts.teamBenchmark)
   if (teamKey) return teamKey
-  return strategyDefaultBenchmarkKey([
+  const inferred = strategyDefaultBenchmarkKey([
     opts.strategyL1,
     opts.strategyL2,
     opts.strategyL3,
+    opts.productName,
     ...(opts.extraHints ?? []),
   ])
+  if (inferred) return inferred
+  return normalizeBenchmarkKey(opts.benchmark)
 }

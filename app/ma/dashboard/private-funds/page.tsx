@@ -26,6 +26,7 @@ import {
   isAllowedInvestmentSideItem,
 } from "@/lib/permissions"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import {
   fetchFundTeamTagOptions,
   notifyTeamTagsChanged,
@@ -5846,7 +5847,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         selected={selected}
         setSelected={setSelected}
         getId={(r) => r.beian_hao}
-        getName={(r) => r.short_name || r.product_name}
+        getName={(r) => resolveFundDisplayLabel(r.short_name, r.product_name)}
         getBeianHao={(r) => r.beian_hao}
         getLatestNavDate={(r) => r.latest_nav_date}
       />
@@ -13981,7 +13982,9 @@ function OperationsTeamNavManageView({
                 <td className="px-4 py-2.5 text-center relative z-10">
                   <div className="flex items-center justify-center gap-3">
                     <OpsTeamNavEditButton onClick={() => setEditRow(row)} />
-                    <OpsTeamNavDeleteButton onClick={() => setDeleteRow(row)} />
+                    {!row.id.startsWith("platform-") && (
+                      <OpsTeamNavDeleteButton onClick={() => setDeleteRow(row)} />
+                    )}
                   </div>
                 </td>
               </tr>

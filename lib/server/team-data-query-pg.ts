@@ -1,5 +1,6 @@
 /**
- * Team data list — one row per fund discovered in ops_email_nav_records.
+ * Team data list — one row per fund discovered in ops_email_nav_records
+ * or as an FOF底层 underlying that already has email/估值表 NAV.
  * Share-class naming and deduplication mirror 投资 FOF底层.
  * Identity tables are loaded once per process and reused across list requests.
  */
@@ -25,6 +26,8 @@ import {
   remapManagedProductBeianCode,
   resolveManagedProductBeian,
 } from "@/lib/server/managed-product-beian"
+import { loadFofUnderlyingNavFunds } from "@/lib/server/fof-email-product-sync"
+import { isValuationStockCostSubjectName } from "@/lib/valuation-holding-display-name"
 
 /**
  * Explicit 备案号 for team-data rows when email product_code is missing on some
@@ -764,13 +767,27 @@ async function loadRawEmailFundsFromSubjects(): Promise<RawEmailFund[]> {
   return out
 }
 
+async function loadRawEmailFundsFromFofUnderlying(): Promise<RawEmailFund[]> {
+  const rows = await loadFofUnderlyingNavFunds()
+  return rows.map((row) => ({
+    fund_key: row.fund_key,
+    product_code: row.product_code,
+    fund_name: row.fund_name,
+    team_nav_date: row.team_nav_date || "",
+    team_nav: row.team_nav || "",
+    updated_at: row.updated_at || "",
+    first_entry_date: row.first_entry_date || "",
+  }))
+}
+
 async function loadAllRawEmailFundRows(): Promise<RawEmailFund[]> {
-  const [navRows, valRows, subjectRows] = await Promise.all([
+  const [navRows, valRows, subjectRows, fofRows] = await Promise.all([
     loadRawEmailFunds(),
     loadRawEmailFundsFromValuation(),
     loadRawEmailFundsFromSubjects(),
+    loadRawEmailFundsFromFofUnderlying(),
   ])
-  return dedupeRawFunds([...navRows, ...valRows, ...subjectRows])
+  return dedupeRawFunds([...navRows, ...valRows, ...subjectRows, ...fofRows])
 }
 
 function emailPoolRegisterNumber(resolved: ResolvedFund, raw: RawEmailFund): string | null {
@@ -812,6 +829,7 @@ function isJunkTeamDataProductName(name: string | null | undefined): boolean {
   if (n.length < 3) return true
   if (EMAIL_POOL_JUNK_DENYLIST.has(n.toLowerCase())) return true
   if (/^(?:私募|基金|证券|投资|证券投资)$/u.test(n)) return true
+  if (isValuationStockCostSubjectName(n)) return true
   return false
 }
 
@@ -1954,7 +1972,9 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     resolved = resolvedListCache.rows
   } else {
     const [rawRows, manualProducts, { indexes }] = await Promise.all([
-      loadRawEmailFunds().then(dedupeRawFunds),
+      Promise.all([loadRawEmailFunds(), loadRawEmailFundsFromFofUnderlying()]).then(
+        ([navRows, fofRows]) => dedupeRawFunds([...navRows, ...fofRows]),
+      ),
       loadManualTeamDataProducts(),
       loadIdentityTables(),
     ])

@@ -13,6 +13,7 @@ import { query } from "@/lib/db"
 import { listCrawlEmails } from "@/lib/server/crawl-emails"
 import { getUserById } from "@/lib/server/users"
 import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
+import { SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF } from "@/lib/server/fund-holding-code"
 
 /** True for real mailbox addresses; excludes sentinels like team_manual_upload. */
 function isMailboxAccount(account: string): boolean {
@@ -257,6 +258,25 @@ export async function resolveEmailPoolRegistersForCrawlEmails(
   // Match pool membership against email NAV / valuation provenance (code or fund name).
   // A filter chip can be the IMAP mailbox (crawl_email_account) or a To/Cc address
   // on mail that landed in another crawled mailbox (e.g. cwsj@hengyifund.cn in ch_c7h8).
+  // FOF底层 NAV often comes from the parent FOF 估值表; include those holdings too.
+  const fofHoldingKeysSql = `
+      UNION
+      SELECT
+        NULLIF(UPPER(BTRIM(m.underlying_product_code)), '') AS code,
+        NULLIF(BTRIM(m.underlying_name), '') AS fund_name
+      FROM ops_managed_fof_underlying m
+      JOIN ops_email_valuation_records v ON v.id = m.valuation_record_id
+      WHERE (
+        lower(BTRIM(v.crawl_email_account)) = ANY($1::text[])
+        OR EXISTS (
+          SELECT 1 FROM unnest($1::text[]) sel
+          WHERE NULLIF(btrim(sel), '') IS NOT NULL
+            AND position(lower(btrim(sel)) in lower(COALESCE(v.receiver_email, ''))) > 0
+        )
+      )
+        AND m.unit_nav IS NOT NULL
+        AND NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}`
+
   const sql = `
     WITH email_keys AS (
       SELECT
@@ -270,6 +290,7 @@ export async function resolveEmailPoolRegistersForCrawlEmails(
         NULLIF(BTRIM(fund_name), '') AS fund_name
       FROM ops_email_valuation_records
       WHERE ${CRAWL_OR_RECEIVER_MATCH}
+      ${fofHoldingKeysSql}
     )
     SELECT DISTINCT p.register_number
     FROM user_custom_pool p
@@ -291,6 +312,7 @@ export async function resolveEmailPoolRegistersForCrawlEmails(
         NULLIF(BTRIM(fund_name), '') AS fund_name
       FROM ops_email_nav_records
       WHERE ${CRAWL_OR_RECEIVER_MATCH}
+      ${fofHoldingKeysSql}
     )
     SELECT DISTINCT p.register_number
     FROM user_custom_pool p
