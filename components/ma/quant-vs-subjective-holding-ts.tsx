@@ -112,22 +112,6 @@ function fmtWan(v: number): string {
   return `${v < 0 ? "-" : ""}${body}万`
 }
 
-function lineEndLabel(color: string, formatter: (p: { value: number }) => string) {
-  return {
-    show: true,
-    formatter,
-    color: "#fff",
-    fontSize: 10,
-    fontWeight: "bold" as const,
-    align: "right" as const,
-    verticalAlign: "middle" as const,
-    offset: [-8, 0] as [number, number],
-    backgroundColor: color,
-    padding: [2, 5] as [number, number],
-    borderRadius: 3,
-  }
-}
-
 type CandleRow = { date: string; open: number; high: number; low: number; close: number; volume: number }
 
 type StripDecision = RowDecision & { quantNetPct: number; subjNetPct: number }
@@ -267,7 +251,6 @@ function buildFocusSignalRows(
 function buildSleeveCandleOption(
   candles: CandleRow[],
   netMvByDate: Map<string, number>,
-  priceLabel: string,
   sleeveName: "量化" | "主观",
   lineColor: string,
   signalRows: SignalStripRow[],
@@ -313,10 +296,7 @@ function buildSleeveCandleOption(
   return {
     tooltip: {
       trigger: "axis" as const,
-      axisPointer: {
-        type: "cross" as const,
-        label: { fontSize: 10, backgroundColor: "#64748b", padding: [2, 4] },
-      },
+      axisPointer: { type: "cross" as const },
       formatter: (params: { seriesName: string; dataIndex: number; marker: string; axisValue: string }[]) => {
         const i = params[0]?.dataIndex ?? 0
         const r = candles[i]
@@ -358,10 +338,10 @@ function buildSleeveCandleOption(
       : undefined,
     grid: hasSignal
       ? [
-          { left: 72, right: 76, top: 36, bottom: 48 + heatH + 8 },
-          { left: 72, right: 76, height: heatH, bottom: 48 },
+          { left: 72, right: 64, top: 36, bottom: 48 + heatH + 8 },
+          { left: 72, right: 64, height: heatH, bottom: 48 },
         ]
-      : { left: 52, right: 76, top: 36, bottom: 48 },
+      : { left: 52, right: 64, top: 36, bottom: 48 },
     dataZoom: [
       { type: "inside" as const, xAxisIndex: hasSignal ? [0, 1] : 0, start: 0, end: 100 },
       { type: "slider" as const, xAxisIndex: hasSignal ? [0, 1] : 0, height: 16, bottom: 4 },
@@ -404,28 +384,15 @@ function buildSleeveCandleOption(
             type: "value" as const,
             gridIndex: 0,
             scale: true,
-            name: priceLabel,
-            nameGap: 8,
-            nameTextStyle: { fontSize: 10 },
-            axisLabel: { fontSize: 10, hideOverlap: true },
+            axisLabel: { fontSize: 10 },
             splitLine: { lineStyle: { type: "dashed" as const } },
-            axisPointer: {
-              label: { formatter: (p: { value: number }) => Number(p.value).toFixed(0) },
-            },
           },
           {
             type: "value" as const,
             gridIndex: 0,
-            position: "right" as const,
             scale: true,
-            name: "累计盈亏",
-            nameGap: 10,
-            nameTextStyle: { fontSize: 10 },
-            axisLabel: { fontSize: 10, formatter: (v: number) => fmtWan(v), hideOverlap: true, margin: 8 },
+            axisLabel: { fontSize: 10, formatter: (v: number) => fmtWan(v) },
             splitLine: { show: false },
-            axisPointer: {
-              label: { formatter: (p: { value: number }) => fmtWan(Number(p.value)) },
-            },
           },
           {
             type: "category" as const,
@@ -441,27 +408,14 @@ function buildSleeveCandleOption(
           {
             type: "value" as const,
             scale: true,
-            name: priceLabel,
-            nameGap: 8,
-            nameTextStyle: { fontSize: 10 },
-            axisLabel: { fontSize: 10, hideOverlap: true },
+            axisLabel: { fontSize: 10 },
             splitLine: { lineStyle: { type: "dashed" as const } },
-            axisPointer: {
-              label: { formatter: (p: { value: number }) => Number(p.value).toFixed(0) },
-            },
           },
           {
             type: "value" as const,
-            position: "right" as const,
             scale: true,
-            name: "累计盈亏",
-            nameGap: 10,
-            nameTextStyle: { fontSize: 10 },
-            axisLabel: { fontSize: 10, formatter: (v: number) => fmtWan(v), hideOverlap: true, margin: 8 },
+            axisLabel: { fontSize: 10, formatter: (v: number) => fmtWan(v) },
             splitLine: { show: false },
-            axisPointer: {
-              label: { formatter: (p: { value: number }) => fmtWan(Number(p.value)) },
-            },
           },
         ],
     series: [
@@ -487,7 +441,13 @@ function buildSleeveCandleOption(
         symbol: "none",
         lineStyle: { color: lineColor, width: 2 },
         itemStyle: { color: lineColor },
-        endLabel: lineEndLabel(lineColor, (p) => fmtWan(p.value)),
+        endLabel: {
+          show: true,
+          formatter: (p: { value: number }) => fmtWan(p.value),
+          color: lineColor,
+          fontSize: 11,
+          fontWeight: "bold" as const,
+        },
         z: 10,
       },
       ...(hasSignal
@@ -936,12 +896,12 @@ export default function QuantVsSubjectiveHoldingTs({
   )
 
   const candleOption = useMemo(
-    () => buildSleeveCandleOption(candles, qNetMvByDate, candleLabel || "价格", "量化", "#2563eb", signalRows),
-    [candles, qNetMvByDate, candleLabel, signalRows],
+    () => buildSleeveCandleOption(candles, qNetMvByDate, "量化", "#2563eb", signalRows),
+    [candles, qNetMvByDate, signalRows],
   )
   const subjCandleOption = useMemo(
-    () => buildSleeveCandleOption(candles, sNetMvByDate, candleLabel || "价格", "主观", "#d97706", signalRows),
-    [candles, sNetMvByDate, candleLabel, signalRows],
+    () => buildSleeveCandleOption(candles, sNetMvByDate, "主观", "#d97706", signalRows),
+    [candles, sNetMvByDate, signalRows],
   )
   const candleChartH = 320 + signalStripExtraHeight(signalRows.length)
 
