@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
 import type React from "react"
 import { useParams, useSearchParams } from "next/navigation"
-import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Send, Siren, X } from "lucide-react"
+import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Repeat, Send, Siren, X } from "lucide-react"
 import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
@@ -337,6 +337,10 @@ function fmtPct(v: string | null): { text: string; sign: 1 | -1 | 0 } {
 
 const HEADLINE_RISK_FREQS: HeadlineRiskFrequency[] = ["日频", "周频", "月频"]
 
+/** Sized against the metrics @container, not the full header band. */
+const KPI_VALUE_CLASS = "text-[clamp(0.8125rem,5cqw,1.25rem)] font-bold tabular-nums leading-none whitespace-nowrap"
+const KPI_LABEL_CLASS = "text-[clamp(0.625rem,2.6cqw,0.75rem)] text-zinc-500 mt-0.5 leading-snug"
+
 function HeadlineRiskFreqSwitch({
   value,
   onChange,
@@ -344,33 +348,19 @@ function HeadlineRiskFreqSwitch({
   value: HeadlineRiskFrequency
   onChange: (freq: HeadlineRiskFrequency) => void
 }) {
+  const next = HEADLINE_RISK_FREQS[(HEADLINE_RISK_FREQS.indexOf(value) + 1) % HEADLINE_RISK_FREQS.length]
   return (
-    <div
-      className="inline-flex rounded-md border border-zinc-200 bg-zinc-50 p-0.5"
-      role="group"
-      aria-label="成立以来风险指标净值频率"
-      title="最大回撤与夏普按所选净值频率计算；收益指标仍用完整序列"
-    >
-      {HEADLINE_RISK_FREQS.map((freq) => {
-        const active = value === freq
-        return (
-          <button
-            key={freq}
-            type="button"
-            onClick={() => onChange(freq)}
-            className={[
-              "px-2 py-0.5 text-[10px] @[40rem]:text-xs font-medium rounded transition-colors",
-              active
-                ? "bg-white text-zinc-800 shadow-sm"
-                : "text-zinc-400 hover:text-zinc-600",
-            ].join(" ")}
-            aria-pressed={active}
-          >
-            {freq}
-          </button>
-        )
-      })}
-    </div>
+    <FundHeaderActionTip label={`风险口径 ${value} · 点击切换为${next}`}>
+      <button
+        type="button"
+        onClick={() => onChange(next)}
+        className="inline-flex items-center gap-0.5 p-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+        aria-label={`风险口径 ${value}，点击切换为${next}`}
+      >
+        <Repeat className="h-[14px] w-[14px]" />
+        <span className="text-[11px] font-semibold leading-none tracking-tight">{value.slice(0, 1)}</span>
+      </button>
+    </FundHeaderActionTip>
   )
 }
 
@@ -1841,6 +1831,7 @@ export default function PrivateFundDetailPage() {
 
           {/* Header action icons */}
           <div className="flex items-center gap-0.5 shrink-0 pt-0.5">
+            <HeadlineRiskFreqSwitch value={headlineRiskFreq} onChange={setHeadlineRiskFreq} />
             <FundHeaderActionTip label="估值表分析">
               <button
                 type="button"
@@ -1943,10 +1934,10 @@ export default function PrivateFundDetailPage() {
 
       {/* ── Key info band – stacks on narrow containers, single row on wide ── */}
       <div className="@container py-[clamp(0.625rem,1.2cqw,1rem)] mb-4 border-y border-zinc-100">
-        <div className="flex flex-col gap-4 @[52rem]:flex-row @[52rem]:items-start @[52rem]:gap-x-[clamp(0.5rem,1.5cqw,2rem)]">
+        <div className="flex flex-col gap-4 @[52rem]:flex-row @[52rem]:flex-wrap @[52rem]:items-end @[52rem]:gap-x-[clamp(0.5rem,1.5cqw,2rem)] @[52rem]:gap-y-3">
 
         {/* Nav group: unit + cumulative */}
-        <div className="flex items-start gap-[clamp(0.5rem,1.5cqw,2rem)] shrink-0">
+        <div className="flex items-end gap-[clamp(0.5rem,1.5cqw,2rem)] shrink-0">
           <div className="shrink-0">
             <div className="text-[clamp(1.125rem,3cqw,2rem)] font-bold tabular-nums leading-none" style={{ color: RED }}>
               {fmt(displayLatestNav, 4)}
@@ -1966,47 +1957,43 @@ export default function PrivateFundDetailPage() {
 
         <div className="hidden @[52rem]:block w-px self-stretch bg-zinc-100 shrink-0" />
 
-        {/* Performance metrics – grid wraps columns by container width */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-end gap-2 mb-2">
-            <span className="text-[10px] text-zinc-400">风险口径</span>
-            <HeadlineRiskFreqSwitch value={headlineRiskFreq} onChange={setHeadlineRiskFreq} />
-          </div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3 @[36rem]:grid-cols-3 @[56rem]:grid-cols-5">
-            <div className="min-w-0 flex flex-col items-start gap-0.5">
+        {/* Performance metrics – column count and type size follow this box, not the full band */}
+        <div className="@container min-w-0 flex-1 @[52rem]:basis-[16rem]">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2 @[16rem]:grid-cols-3 @[32rem]:grid-cols-5">
+            <div className="min-w-0 overflow-hidden flex flex-col items-start">
               <PctSpan
                 value={metrics.ret_since_inception}
-                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+                className={KPI_VALUE_CLASS}
               />
-              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来收益</span>
+              <span className={KPI_LABEL_CLASS}>成立以来收益</span>
             </div>
 
-            <div className="min-w-0 flex flex-col items-start gap-0.5">
+            <div className="min-w-0 overflow-hidden flex flex-col items-start">
               <PctSpan
                 value={metrics.ytd_ret}
-                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+                className={KPI_VALUE_CLASS}
               />
-              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">今年以来收益</span>
+              <span className={KPI_LABEL_CLASS}>今年以来收益</span>
             </div>
 
-            <div className="min-w-0 flex flex-col items-start gap-0.5">
+            <div className="min-w-0 overflow-hidden flex flex-col items-start">
               <PctSpan
                 value={metrics.ann_ret}
-                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+                className={KPI_VALUE_CLASS}
               />
-              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来年化</span>
+              <span className={KPI_LABEL_CLASS}>成立以来年化</span>
             </div>
 
-            <div className="min-w-0 flex flex-col items-start gap-0.5">
-              <span className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight" style={{ color: GREEN }}>
+            <div className="min-w-0 overflow-hidden flex flex-col items-start">
+              <span className={KPI_VALUE_CLASS} style={{ color: GREEN }}>
                 {headlineRisk.max_drawdown !== null ? "-" + headlineRisk.max_drawdown + "%" : "—"}
               </span>
-              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来最大回撤</span>
+              <span className={KPI_LABEL_CLASS}>成立以来最大回撤</span>
             </div>
 
-            <div className="min-w-0 flex flex-col items-start gap-0.5">
+            <div className="min-w-0 overflow-hidden flex flex-col items-start">
               <span
-                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+                className={KPI_VALUE_CLASS}
                 style={{
                   color: headlineRisk.sharpe == null
                     ? "#a1a1aa"
@@ -2019,7 +2006,7 @@ export default function PrivateFundDetailPage() {
               >
                 {headlineRisk.sharpe ?? "—"}
               </span>
-              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来夏普比率</span>
+              <span className={KPI_LABEL_CLASS}>成立以来夏普比率</span>
             </div>
           </div>
         </div>
@@ -2027,7 +2014,7 @@ export default function PrivateFundDetailPage() {
         <div className="hidden @[52rem]:block w-px self-stretch bg-zinc-100 shrink-0" />
 
         {/* 备案 / 管理人 info block */}
-        <div className="shrink-0 border-t border-zinc-100 pt-3 @[52rem]:border-t-0 @[52rem]:pt-0 grid grid-cols-2 gap-x-[clamp(0.375rem,1.5cqw,2rem)] @[52rem]:self-center text-[clamp(0.625rem,1cqw,0.75rem)] text-zinc-500">
+        <div className="min-w-0 @[52rem]:max-w-[min(100%,24rem)] border-t border-zinc-100 pt-3 @[52rem]:border-t-0 @[52rem]:pt-0 grid grid-cols-2 gap-x-[clamp(0.375rem,1.5cqw,2rem)] @[52rem]:self-center text-[clamp(0.625rem,1cqw,0.75rem)] text-zinc-500">
           <div className="grid grid-cols-[auto_1fr] gap-x-[clamp(0.25rem,0.8cqw,0.75rem)] gap-y-0.5">
             <span className="whitespace-nowrap">备案编号：</span>
             {info.beian_hao ? (

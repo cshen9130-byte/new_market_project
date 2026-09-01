@@ -297,6 +297,11 @@ const FAMILY_FILL_KEYS = [
   "fee_pay",
   "fee_redeem",
   "open_day",
+  "manager_names",
+  "advisor",
+  "scale",
+  "inception_date",
+  "register_code",
 ] as const
 
 function trackFieldEmpty(value: unknown): boolean {

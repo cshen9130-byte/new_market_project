@@ -11,6 +11,8 @@ import {
   expandBeiansWithShareClassFamily,
   backfillParentEmailFromShareClassSiblings,
 } from "../lib/server/list-cache-nav-batch.ts"
+import { valuationScaleMismatchesSeries } from "../lib/server/valuation-nav-scale.ts"
+import { amacFundNoCandidates } from "../lib/server/amac-fund-metadata.ts"
 import { lookupFundNavCorrectionRule, applyFundNavCorrectionToLegacyRows } from "../lib/server/fund-nav-correction-rules.ts"
 import {
   isGuotaiValuationSubject,
@@ -62,6 +64,13 @@ import fs from "fs"
 function assert(name, ok) {
   if (!ok) throw new Error(name)
   console.log("ok:", name)
+}
+
+{
+  const vn917b = amacFundNoCandidates("VN917B")
+  assert("VN917B AMAC candidates include parent SVN917", vn917b.includes("SVN917") && vn917b.includes("VN917B"))
+  const parent = amacFundNoCandidates("SBAH99")
+  assert("parent AMAC candidates keep S-prefix and bare code", parent.includes("SBAH99") && parent.includes("BAH99"))
 }
 
 const risk = computeManagedProductOneYearRiskMetrics("SBAH99", "2026-06-23")
@@ -2306,6 +2315,32 @@ assert(
   "VN917B valuation-adjacent series matches detail +1.07%",
   vn917bDaily != null && Math.abs(vn917bDaily - 0.010694) < 0.0001,
 )
+
+{
+  const type6Tip = [{ price_date: "2026-06-11", nav: "1.785400" }]
+  const holdings = [
+    { price_date: "2026-06-11", nav: "1.7034" },
+    { price_date: "2026-07-03", nav: "1.7062" },
+    { price_date: "2026-08-31", nav: "1.6153" },
+  ]
+  assert(
+    "VN917B type6 parent vs B-class 虚拟净值 is a scale mismatch",
+    valuationScaleMismatchesSeries(type6Tip, holdings) === true,
+  )
+  const aligned = [
+    { price_date: "2026-07-22", nav: "0.715" },
+    { price_date: "2026-07-27", nav: "0.7241" },
+  ]
+  const alignedVal = [
+    { price_date: "2026-07-22", nav: "0.715" },
+    { price_date: "2026-07-23", nav: "0.7128" },
+    { price_date: "2026-07-27", nav: "0.7241" },
+  ]
+  assert(
+    "same-scale overlap (BSJ74B-style) is not a mismatch",
+    valuationScaleMismatchesSeries(aligned, alignedVal) === false,
+  )
+}
 
 const sbfm35History = [
   {

@@ -11,6 +11,10 @@ import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
 import { preferOfficialManagerName } from "@/lib/server/manager-name-canonical"
 import { ensureShareClassBeianProduct } from "@/lib/server/share-class-product"
 import {
+  loadBasicinfoTrackByBeianKeys,
+  resolveFundElementsBeianKeys,
+} from "@/lib/server/fund-elements-lookup"
+import {
   buildDetailHeaderFromListCache,
   loadDetailNavSeriesFast,
   lookupListCacheFundHeader,
@@ -421,29 +425,27 @@ export async function GET(
       ?? lookupManagedProductOverride(rawId)
 
     // Cheap track row first so AMAC gets proper hints; then NAV + AMAC + strategy in parallel.
-    const bflTrackRows = await query<{
+    // Share-class codes (VN917B) have no AMAC/BFL row — inherit parent SVN917 like 基金档案.
+    const trackKeys = await resolveFundElementsBeianKeys(routeBeianHao, productName)
+    // Keep operation_date out of this SELECT — a missing column would blank
+    // 成立时间 / 管理人 / 规模 the same way it blanks 基金档案 申赎 fields.
+    const bflTrackRows = await loadBasicinfoTrackByBeianKeys<{
       scale: string | null
       manager_names: string | null
       advisor: string | null
       register_code: string | null
       inception_date: string | null
-      operation_date: string | null
     }>(
+      trackKeys,
       `SELECT scale, manager_names, advisor, register_code,
-              inception_date::text AS inception_date,
-              operation_date::text AS operation_date
-       FROM basicinfo_bfl_track
-       WHERE register_number = $1 OR record_key = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [routeBeianHao],
+              inception_date::text AS inception_date
+       FROM basicinfo_bfl_track`,
     ).catch(() => [] as {
       scale: string | null
       manager_names: string | null
       advisor: string | null
       register_code: string | null
       inception_date: string | null
-      operation_date: string | null
     }[])
     const bflTrack = bflTrackRows[0]
     const trackAdvisor = bflTrack?.advisor?.trim() || null
@@ -454,7 +456,7 @@ export async function GET(
     const pgCacheHit =
       pgCached != null && isDetailNavCacheFresh(pgCached, listHeader)
 
-    const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved, teamBenchmark] = await Promise.all([
+    const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved, teamBenchmark, operationDateRows] = await Promise.all([
       strategy_l3
         ? Promise.resolve([] as { l3: string | null }[])
         : query<{ l3: string | null }>(
@@ -505,6 +507,11 @@ export async function GET(
         registerCode: bflTrack?.register_code ?? null,
       }),
       loadTeamBenchmark([routeBeianHao, beian_hao, rawId].filter(Boolean)).catch(() => null),
+      loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
+        trackKeys,
+        `SELECT operation_date::text AS operation_date
+         FROM basicinfo_bfl_track`,
+      ).catch(() => [] as { operation_date: string | null }[]),
     ])
     const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
 
@@ -556,12 +563,12 @@ export async function GET(
     }
 
     const scale = bflTrack?.scale?.trim() || amacResolved?.mgmt_scale || null
-    const manager_names = bflTrack?.manager_names ?? null
+    const manager_names = bflTrack?.manager_names?.trim() || null
     const trackInception =
       bflTrack?.inception_date?.slice(0, 10) ??
       amacResolved?.establish_date ??
       null
-    const trackOperationDate = bflTrack?.operation_date?.slice(0, 10) ?? null
+    const trackOperationDate = operationDateRows[0]?.operation_date?.slice(0, 10) ?? null
 
     const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
     const nav_data_source: "team" | "platform" =

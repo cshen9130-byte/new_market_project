@@ -21,13 +21,7 @@ import {
   type NavPoint,
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
-
-/**
- * Extend 平台数据 with FOF 估值表 holdings only when platform/email lags by this many
- * calendar days. Short 1–2 day 市价 leads (BSJ74B) stay off detail; multi-week
- * holdings-only tips (BGW80A / VN917B) are applied so product pages match FOF底层.
- */
-const VALUATION_EXTEND_MIN_GAP_DAYS = 5
+import { valuationScaleMismatchesSeries } from "@/lib/server/valuation-nav-scale"
 import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 import {
   collectFundNameAliases,
@@ -39,6 +33,15 @@ import {
 import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
+
+/**
+ * Extend 平台数据 with FOF 估值表 holdings only when platform/email lags by this many
+ * calendar days. Short 1–2 day 市价 leads (BSJ74B) stay off detail; multi-week
+ * holdings-only tips (BGW80A / VN917B) are applied so product pages match FOF底层.
+ * When 估值表 and platform overlap at different NAV scales, replace with 估值表
+ * instead of stitching (VN917B parent type6 vs B-class 虚拟净值).
+ */
+const VALUATION_EXTEND_MIN_GAP_DAYS = 5
 
 export type ListCacheFundHeader = {
   source: "fof" | "managed" | "tracking"
@@ -394,6 +397,31 @@ function isSparseGapUnitOnlyCrash(
   return unitNav < tipUnit * 0.95
 }
 
+function shouldReplaceMergedSeriesWithValuation(
+  navSeries: LegacyNavRow[],
+  valuation: EmailNavPoint[],
+): boolean {
+  if (navSeries.length === 0 || valuation.length === 0) return false
+  if (valuationScaleMismatchesSeries(navSeries, valuation)) return true
+  const tipNav = valuation.at(-1)?.nav != null ? parseFloat(String(valuation.at(-1)!.nav)) : NaN
+  return Number.isFinite(tipNav) && isSparseGapUnitOnlyCrash(navSeries, tipNav, null)
+}
+
+function seriesFromValuationPoints(
+  points: EmailNavPoint[],
+  fundContext: { beian_hao: string; product_name: string; short_name: string | null },
+  capDate: string,
+): LegacyNavRow[] {
+  const fallback = capDate
+    ? points.filter((p) => p.price_date.slice(0, 10) <= capDate)
+    : points
+  if (fallback.length === 0) return []
+  return applyFundNavCorrectionToLegacyRows(
+    mergeNavSeriesWithEmail([], fallback, fundContext),
+    fundContext,
+  )
+}
+
 function extendSeriesWithPoints(
   navSeries: LegacyNavRow[],
   fundContext: { beian_hao: string; product_name: string; short_name: string | null },
@@ -550,6 +578,17 @@ export async function loadDetailNavSeriesFast(opts: {
         valuationOpts,
       )
       const valuationTip = valuationTipDate(targetedFallback)
+      // Parent-scale type6/平台 (VN917B 1.7854) vs B-class 虚拟净值 (1.7034) — do not
+      // stitch. The 5% crash filter would keep a handful of close days then freeze
+      // (product page stuck at 2026-07-03 / 1.7062 while FOF底层 has 2026-08-31 / 1.6153).
+      if (shouldReplaceMergedSeriesWithValuation(navSeries, targetedFallback)) {
+        const capDate = [
+          behindCache ? cacheTargetDate : "",
+          valuationTip,
+        ].filter(Boolean).sort().at(-1) ?? valuationTip
+        const replaced = seriesFromValuationPoints(targetedFallback, fundContext, capDate)
+        if (replaced.length > 0) return replaced
+      }
       const staleValuationLead = isStaleValuationLead(latestSeriesDate, valuationTip)
       const targetCandidates = [
         behindCache ? cacheTargetDate : "",

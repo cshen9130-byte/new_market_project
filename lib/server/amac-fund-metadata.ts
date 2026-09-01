@@ -26,26 +26,26 @@ export type AmacFundMetadata = {
 export async function lookupAmacMandatorName(beianHao: string): Promise<string | null> {
   const code = beianHao.trim()
   if (!code) return null
-  const base = beianBaseNo(code)
+  const candidates = amacFundNoCandidates(code)
 
   try {
     const rows = await query<{ mandator_name: string | null }>(
       `SELECT NULLIF(BTRIM(mandator_name), '') AS mandator_name
        FROM amac_private_funds
-       WHERE UPPER(fund_no) IN (UPPER($1), UPPER($2))
-       ORDER BY CASE WHEN UPPER(fund_no) = UPPER($1) THEN 0 ELSE 1 END
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])
+       ORDER BY CASE WHEN UPPER(BTRIM(fund_no)) = UPPER($2) THEN 0 ELSE 1 END
        LIMIT 1`,
-      [code, base],
+      [candidates, code],
     )
     if (rows[0]) return rows[0].mandator_name
 
     const futures = await query<{ mandator_name: string | null }>(
       `SELECT NULLIF(BTRIM(mandator_name), '') AS mandator_name
        FROM amac_futures_products
-       WHERE UPPER(fund_no) IN (UPPER($1), UPPER($2))
-       ORDER BY CASE WHEN UPPER(fund_no) = UPPER($1) THEN 0 ELSE 1 END
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])
+       ORDER BY CASE WHEN UPPER(BTRIM(fund_no)) = UPPER($2) THEN 0 ELSE 1 END
        LIMIT 1`,
-      [code, base],
+      [candidates, code],
     )
     return futures[0]?.mandator_name ?? null
   } catch {
@@ -56,10 +56,28 @@ export async function lookupAmacMandatorName(beianHao: string): Promise<string |
 
 function beianBaseNo(beianHao: string): string {
   const upper = beianHao.trim().toUpperCase()
-  if (/[A-Z]$/.test(upper) && upper.length > 1) {
-    return upper.replace(/[A-Z]$/, "")
+  if (/[ABC]$/u.test(upper) && upper.length > 1) {
+    return upper.replace(/[ABC]$/u, "")
   }
   return upper
+}
+
+/**
+ * AMAC `fund_no` is the parent 备案号 (SVN917), not the share-class code (VN917B).
+ * Include S-prefix / stripped-letter variants so B类 product pages still resolve
+ * 管理人 / 成立日期 / 管理规模.
+ */
+export function amacFundNoCandidates(beianHao: string): string[] {
+  const code = beianHao.trim().toUpperCase()
+  if (!code) return []
+  const out = new Set<string>([code])
+  const stripped = beianBaseNo(code)
+  if (stripped) out.add(stripped)
+  for (const seed of [...out]) {
+    if (seed.startsWith("S") && seed.length > 1) out.add(seed.slice(1))
+    else out.add(`S${seed}`)
+  }
+  return [...out]
 }
 
 function fmtDate(d: string | Date | null | undefined): string | null {
@@ -287,7 +305,7 @@ export async function lookupAmacFundMetadata(
   const code = beianHao.trim()
   if (!code) return null
 
-  const base = beianBaseNo(code)
+  const candidates = amacFundNoCandidates(code)
   const managerHint = options?.managerHint?.trim() || null
   const registerCode = options?.registerCode?.trim() || null
 
@@ -323,10 +341,10 @@ export async function lookupAmacFundMetadata(
          ORDER BY LENGTH(m.manager_name) ASC
          LIMIT 1
        ) d_fuzzy ON TRUE
-       WHERE UPPER(a.fund_no) IN (UPPER($1), UPPER($2))
-       ORDER BY CASE WHEN UPPER(a.fund_no) = UPPER($1) THEN 0 ELSE 1 END
+       WHERE UPPER(BTRIM(a.fund_no)) = ANY($1::text[])
+       ORDER BY CASE WHEN UPPER(BTRIM(a.fund_no)) = UPPER($2) THEN 0 ELSE 1 END
        LIMIT 1`,
-      [code, base, registerCode],
+      [candidates, code, registerCode],
     )
 
     if (fundRows[0]) {
@@ -353,10 +371,10 @@ export async function lookupAmacFundMetadata(
          establish_date::text AS establish_date,
          put_on_record_date::text AS put_on_record_date
        FROM amac_futures_products
-       WHERE UPPER(fund_no) IN (UPPER($1), UPPER($2))
-       ORDER BY CASE WHEN UPPER(fund_no) = UPPER($1) THEN 0 ELSE 1 END
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])
+       ORDER BY CASE WHEN UPPER(BTRIM(fund_no)) = UPPER($2) THEN 0 ELSE 1 END
        LIMIT 1`,
-      [code, base],
+      [candidates, code],
     )
     if (futuresRows[0]) {
       const row = futuresRows[0]
