@@ -1,7 +1,10 @@
 import path from "path"
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
-import { readInvestmentNoteMaterialFile } from "@/lib/server/investment-note-materials"
+import {
+  previewInvestmentNoteMaterialFile,
+  readInvestmentNoteMaterialFile,
+} from "@/lib/server/investment-note-materials"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -23,6 +26,18 @@ async function getUser(req: Request) {
   return userId ? await getUserById(userId) : null
 }
 
+function encodeFileName(fileName: string) {
+  return encodeURIComponent(fileName).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16)}`)
+}
+
+function contentTypeHeader(mimeType: string): string {
+  const base = (mimeType || "").split(";")[0].trim() || "application/octet-stream"
+  if (base.startsWith("text/") || base === "application/json" || base.includes("html")) {
+    return mimeType.includes("charset") ? mimeType : `${base}; charset=utf-8`
+  }
+  return base
+}
+
 export async function GET(
   req: Request,
   context: { params: Promise<{ id: string }> },
@@ -34,19 +49,37 @@ export async function GET(
     }
 
     const { id } = await context.params
+    const { searchParams } = new URL(req.url)
+    const wantPreview = searchParams.get("preview") === "1"
+    const wantDownload = searchParams.get("download") === "1"
+
+    if (wantPreview && !wantDownload) {
+      const preview = await previewInvestmentNoteMaterialFile(id)
+      if (preview?.content) {
+        return new NextResponse(preview.content, {
+          status: 200,
+          headers: {
+            "Content-Type": preview.contentType || "text/html; charset=utf-8",
+            "Content-Disposition": `inline; filename*=UTF-8''${encodeFileName("preview.html")}`,
+            "Cache-Control": "private, max-age=0, must-revalidate",
+          },
+        })
+      }
+    }
+
     const file = await readInvestmentNoteMaterialFile(id)
     if (!file) {
       return NextResponse.json({ ok: false, error: "文件不存在" }, { status: 404 })
     }
 
-    const encoded = encodeURIComponent(file.filename)
     const ext = path.extname(file.filename || "").toLowerCase()
-    const disposition = POWERPOINT_DOWNLOAD_EXTENSIONS.has(ext) ? "attachment" : "inline"
+    const disposition =
+      wantDownload || POWERPOINT_DOWNLOAD_EXTENSIONS.has(ext) ? "attachment" : "inline"
     return new NextResponse(new Uint8Array(file.buffer), {
       status: 200,
       headers: {
-        "Content-Type": file.mimeType,
-        "Content-Disposition": `${disposition}; filename*=UTF-8''${encoded}`,
+        "Content-Type": contentTypeHeader(file.mimeType),
+        "Content-Disposition": `${disposition}; filename*=UTF-8''${encodeFileName(file.filename)}`,
         "Cache-Control": "private, max-age=0, must-revalidate",
       },
     })

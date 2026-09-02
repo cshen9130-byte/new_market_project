@@ -1066,45 +1066,151 @@ export function investmentNoteMaterialFileUrl(id: string): string {
   return `/ma/api/investment-notes/materials/${encodeURIComponent(id)}/file`
 }
 
+function parseFilenameFromDisposition(disposition: string): string | undefined {
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i)
+  if (!match) return undefined
+  const raw = (match[1] || match[2] || "").trim()
+  if (!raw) return undefined
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
+function sniffMimeFromBytes(bytes: Uint8Array): string | null {
+  if (bytes.length >= 5) {
+    const sig = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4])
+    if (sig === "%PDF-") return "application/pdf"
+  }
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png"
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg"
+  }
+  if (bytes.length >= 6) {
+    const gif = String.fromCharCode(bytes[0], bytes[1], bytes[2])
+    if (gif === "GIF") return "image/gif"
+  }
+  return null
+}
+
+function mimeFromFilename(filename?: string): string | null {
+  if (!filename) return null
+  const ext = filename.includes(".") ? `.${filename.split(".").pop()!.toLowerCase()}` : ""
+  const map: Record<string, string> = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".txt": "text/plain;charset=utf-8",
+    ".csv": "text/csv;charset=utf-8",
+    ".html": "text/html;charset=utf-8",
+    ".htm": "text/html;charset=utf-8",
+  }
+  return map[ext] || null
+}
+
+function triggerBrowserDownload(url: string, filename: string) {
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.rel = "noopener"
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+function blobTypeForPreview(headerType: string, filename: string | undefined, bytes: Uint8Array): string {
+  const type = headerType.split(";")[0].trim().toLowerCase()
+  if (type === "text/html" || type.startsWith("text/html")) return "text/html;charset=utf-8"
+  if (type === "application/pdf") return "application/pdf"
+  if (type.startsWith("image/")) return type
+  if (type.startsWith("text/")) return headerType.includes("charset") ? headerType : `${type};charset=utf-8`
+  const sniffed = sniffMimeFromBytes(bytes)
+  if (sniffed) return sniffed
+  if (type && type !== "application/octet-stream") return type
+  return mimeFromFilename(filename) || "application/octet-stream"
+}
+
 /** Open a stored material in a new tab (sends auth header). */
 export async function openInvestmentNoteMaterial(id: string): Promise<void> {
-  const res = await fetch(investmentNoteMaterialFileUrl(id), {
+  const tab = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null
+  try {
+    const res = await fetch(`${investmentNoteMaterialFileUrl(id)}?preview=1`, {
+      headers: {
+        ...authHeaders(),
+      },
+    })
+    if (!res.ok) {
+      tab?.close()
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || res.statusText || "无法打开文件")
+    }
+    const disposition = res.headers.get("Content-Disposition") || ""
+    const filename = parseFilenameFromDisposition(disposition)
+    const headerType = (res.headers.get("Content-Type") || "").trim()
+    const buf = await res.arrayBuffer()
+    const bytes = new Uint8Array(buf)
+    const blob = new Blob([buf], { type: blobTypeForPreview(headerType, filename, bytes) })
+    const url = URL.createObjectURL(blob)
+    const forceDownload =
+      /^\s*attachment\b/i.test(disposition) ||
+      /\.(ppt|pptx|pptm|pps|ppsx|ppsm|pot|potx|potm)$/i.test(filename || "")
+    if (forceDownload) {
+      tab?.close()
+      triggerBrowserDownload(url, filename || "material")
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      return
+    }
+    if (tab && !tab.closed) {
+      tab.location.replace(url)
+      try {
+        tab.opener = null
+      } catch {
+        /* ignore */
+      }
+    } else {
+      const opened = window.open(url, "_blank")
+      if (!opened) triggerBrowserDownload(url, filename || "material")
+      else {
+        try {
+          opened.opener = null
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (err) {
+    tab?.close()
+    throw err
+  }
+}
+
+export async function downloadInvestmentNoteAttachmentsZip(
+  ids: string[],
+  zipName: string,
+): Promise<void> {
+  const res = await fetch("/ma/api/investment-notes/attachments-zip", {
+    method: "POST",
     headers: {
+      "Content-Type": "application/json",
       ...authHeaders(),
     },
+    body: JSON.stringify({ ids, filename: zipName }),
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data?.error || res.statusText || "无法打开文件")
+    throw new Error((data as { error?: string })?.error || res.statusText || "打包失败")
   }
-  const blob = await res.blob()
-  const disposition = res.headers.get("Content-Disposition") || ""
-  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i)
-  const filename = match
-    ? decodeURIComponent((match[1] || match[2] || "").trim())
-    : undefined
-  const url = URL.createObjectURL(blob)
-  const downloadOnly = /\.(ppt|pptx|pptm|pps|ppsx|ppsm|pot|potx|potm)$/i.test(filename || "")
-  if (downloadOnly) {
-    const a = document.createElement("a")
-    a.href = url
-    a.download = filename || "material.pptx"
-    a.click()
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    return
-  }
-  const opened = window.open(url, "_blank")
-  if (!opened) {
-    const a = document.createElement("a")
-    a.href = url
-    a.download = filename || "material"
-    a.click()
-  } else {
-    try {
-      opened.opener = null
-    } catch {
-      /* ignore */
-    }
-  }
+  const buf = await res.arrayBuffer()
+  const url = URL.createObjectURL(new Blob([buf], { type: "application/zip" }))
+  const name = zipName.toLowerCase().endsWith(".zip") ? zipName : `${zipName}.zip`
+  triggerBrowserDownload(url, name)
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }

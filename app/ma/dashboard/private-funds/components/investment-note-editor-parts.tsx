@@ -5,6 +5,7 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  Archive,
   Bold,
   ChevronDown,
   FileText,
@@ -416,14 +417,18 @@ export function NoteAttachmentPopover({
   onRemove,
   onOpen,
   onDropFiles,
+  onDownloadZip,
   uploading,
+  zipping,
 }: {
   attachments: NoteAttachmentListItem[]
   onTriggerUpload: () => void
   onRemove: (id: string) => void
   onOpen?: (id: string) => void
   onDropFiles?: (files: FileList) => void
+  onDownloadZip?: () => void
   uploading?: boolean
+  zipping?: boolean
 }) {
   const [dragOver, setDragOver] = useState(false)
   const dragDepthRef = useRef(0)
@@ -478,23 +483,36 @@ export function NoteAttachmentPopover({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-80 overflow-hidden p-0"
+        className="w-96 overflow-hidden p-0"
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <span className="text-sm font-medium text-sky-600">附件列表</span>
-          <button
-            type="button"
-            onClick={onTriggerUpload}
-            disabled={uploading}
-            className="inline-flex items-center gap-1 text-sm text-sky-600 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            {uploading ? "上传中..." : dragOver ? "松开以上传" : "上传附件"}
-          </button>
+        <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+          <span className="shrink-0 text-sm font-medium text-sky-600">附件列表</span>
+          <div className="flex min-w-0 items-center gap-3">
+            {onDownloadZip && attachments.some((file) => file.openable) ? (
+              <button
+                type="button"
+                onClick={onDownloadZip}
+                disabled={zipping || uploading}
+                className="inline-flex items-center gap-1 text-sm text-sky-600 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Archive className="h-3.5 w-3.5" />
+                {zipping ? "打包中..." : "打包下载"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onTriggerUpload}
+              disabled={uploading || zipping}
+              className="inline-flex items-center gap-1 text-sm text-sky-600 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              {uploading ? "上传中..." : dragOver ? "松开以上传" : "上传附件"}
+            </button>
+          </div>
         </div>
         <div
           className={[

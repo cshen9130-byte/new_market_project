@@ -7,12 +7,15 @@ import { createHash } from "crypto"
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs"
 import { promises as fs } from "fs"
 import path from "path"
+import AdmZip from "adm-zip"
 import {
   buildDdMaterialsFolderIndex,
   collectDdMaterialsDocumentsForRows,
   ddSyncedMaterialId,
   parseDdSyncedMaterialId,
+  parseRoadshowDdMaterialAttachmentId,
 } from "@/lib/ma/due-diligence-materials"
+import { previewStoredDocument } from "@/lib/server/fund-contract-materials"
 import {
   cleanMaterialDisplayName,
   materialDuplicateKey,
@@ -24,7 +27,12 @@ import { INVESTMENT_NOTE_MATERIAL_MAX_BYTES, INVESTMENT_NOTE_MATERIAL_MAX_MB } f
 import { getServerDueDiligenceTable } from "@/lib/server/due-diligence-table"
 import { getServerInvestmentNote, listServerInvestmentNotes } from "@/lib/server/investment-notes"
 import { resolveInvestmentNoteMaterialDisplayName } from "@/lib/server/investment-note-material-rename"
-import { getKnowledgeBaseFile, listKnowledgeBaseTree } from "@/lib/server/knowledge-base"
+import {
+  getKnowledgeBaseFile,
+  isKnowledgeBaseTextPreview,
+  listKnowledgeBaseTree,
+  readKnowledgeBasePreviewContent,
+} from "@/lib/server/knowledge-base"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 export type InvestmentNoteMaterial = {
@@ -178,6 +186,103 @@ function mimeTypeForFilename(fileName: string, fallback?: string): string {
     ".zip": "application/zip",
   }
   return map[ext] || fallback?.trim() || "application/octet-stream"
+}
+
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+const STRONG_SNIFF_MIMES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  DOCX_MIME,
+  XLSX_MIME,
+  PPTX_MIME,
+])
+const HTML_PREVIEW_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"])
+
+function sniffZipOfficeMime(buffer: Buffer): string | null {
+  const headLen = Math.min(buffer.length, 16 * 1024)
+  const tailStart = Math.max(0, buffer.length - 64 * 1024)
+  const probe = Buffer.concat([buffer.subarray(0, headLen), buffer.subarray(tailStart)]).toString("latin1")
+  if (probe.includes("word/")) return DOCX_MIME
+  if (probe.includes("xl/workbook") || probe.includes("xl/worksheets")) return XLSX_MIME
+  if (probe.includes("ppt/slides") || probe.includes("ppt/presentation")) return PPTX_MIME
+  return null
+}
+
+function sniffMimeType(buffer: Buffer, fileName: string, storedMime?: string): string {
+  if (buffer.length >= 5 && buffer.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf"
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return "image/png"
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg"
+  if (buffer.length >= 6 && buffer.subarray(0, 3).toString("ascii") === "GIF") return "image/gif"
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp"
+  }
+  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) return "image/bmp"
+  if (looksLikeZipBuffer(buffer)) {
+    const office = sniffZipOfficeMime(buffer)
+    if (office) return office
+  }
+  const fromName = mimeTypeForFilename(fileName, "")
+  if (fromName && fromName !== "application/octet-stream") return fromName
+  const stored = (storedMime || "").trim().split(";")[0]
+  if (stored && stored !== "application/octet-stream") return stored
+  if (buffer.length >= 8 && buffer[0] === 0xd0 && buffer[1] === 0xcf && buffer[2] === 0x11 && buffer[3] === 0xe0) {
+    return "application/msword"
+  }
+  if (looksLikeZipBuffer(buffer)) return "application/zip"
+  return stored || "application/octet-stream"
+}
+
+function ensureFilenameExtension(fileName: string, mimeType: string): string {
+  const wanted = extensionForMime(mimeType)
+  const current = getExtension(fileName)
+  const base = (current ? fileName.slice(0, -current.length) : fileName).trim() || "file"
+  if (!wanted) return fileName || "file"
+  if (!current || current === ".bin") return `${base}${wanted}`
+  const currentMime = mimeTypeForFilename(fileName, "")
+  if (STRONG_SNIFF_MIMES.has(mimeType) && currentMime && currentMime !== mimeType) {
+    return `${base}${wanted}`
+  }
+  return fileName
+}
+
+function resolveMaterialFileMeta(
+  buffer: Buffer,
+  fileName: string,
+  storedMime?: string,
+): { filename: string; mimeType: string } {
+  const mimeType = sniffMimeType(buffer, fileName, storedMime)
+  return {
+    filename: ensureFilenameExtension(fileName || "file", mimeType),
+    mimeType,
+  }
+}
+
+function uniqueZipEntryName(filename: string, used: Set<string>): string {
+  const safe = (filename || "file").replace(/[/\\]/g, "_").replace(/\0/g, "") || "file"
+  const key = safe.toLowerCase()
+  if (!used.has(key)) {
+    used.add(key)
+    return safe
+  }
+  const ext = path.extname(safe)
+  const base = ext ? safe.slice(0, -ext.length) : safe
+  let i = 2
+  while (used.has(`${base} (${i})${ext}`.toLowerCase())) i += 1
+  const next = `${base} (${i})${ext}`
+  used.add(next.toLowerCase())
+  return next
 }
 
 function createMaterialId(): string {
@@ -772,16 +877,14 @@ export async function readInvestmentNoteMaterialFile(
   const safeId = String(id || "").trim()
   if (!safeId) return null
 
-  const synced = parseDdSyncedMaterialId(safeId)
-  if (synced) {
+  const kbPath =
+    parseRoadshowDdMaterialAttachmentId(safeId) || parseDdSyncedMaterialId(safeId)?.relativePath
+  if (kbPath) {
     try {
-      const file = await getKnowledgeBaseFile(synced.relativePath)
+      const file = await getKnowledgeBaseFile(kbPath)
       const buffer = await fs.readFile(file.absolutePath)
-      return {
-        buffer,
-        filename: file.name,
-        mimeType: file.mimeType || mimeTypeForFilename(file.name),
-      }
+      const resolved = resolveMaterialFileMeta(buffer, file.name, file.mimeType)
+      return { buffer, filename: resolved.filename, mimeType: resolved.mimeType }
     } catch {
       return null
     }
@@ -791,12 +894,59 @@ export async function readInvestmentNoteMaterialFile(
   if (!row) return null
   try {
     const buffer = await fs.readFile(storagePathFor(row.storageFilename))
-    return {
-      buffer,
-      filename: row.name,
-      mimeType: row.mimeType || mimeTypeForFilename(row.name),
-    }
+    const resolved = resolveMaterialFileMeta(buffer, row.name, row.mimeType)
+    return { buffer, filename: resolved.filename, mimeType: resolved.mimeType }
   } catch {
     return null
   }
+}
+
+/** Convert Word/Excel (and KB text docs) to HTML so the browser can preview them. */
+export async function previewInvestmentNoteMaterialFile(
+  id: string,
+): Promise<{ content: string; contentType: string } | null> {
+  const safeId = String(id || "").trim()
+  if (!safeId) return null
+
+  const kbPath =
+    parseRoadshowDdMaterialAttachmentId(safeId) || parseDdSyncedMaterialId(safeId)?.relativePath
+  if (kbPath) {
+    try {
+      const file = await getKnowledgeBaseFile(kbPath)
+      if (!isKnowledgeBaseTextPreview(file.extension)) return null
+      return await readKnowledgeBasePreviewContent(kbPath)
+    } catch {
+      return null
+    }
+  }
+
+  const row = readAll().find((item) => item.id === safeId)
+  if (!row) return null
+  try {
+    const absolutePath = storagePathFor(row.storageFilename)
+    const buffer = await fs.readFile(absolutePath)
+    const resolved = resolveMaterialFileMeta(buffer, row.name, row.mimeType)
+    if (!HTML_PREVIEW_EXTENSIONS.has(getExtension(resolved.filename))) return null
+    return await previewStoredDocument(absolutePath, resolved.filename)
+  } catch {
+    return null
+  }
+}
+
+export async function zipInvestmentNoteAttachmentFiles(
+  ids: string[],
+): Promise<{ buffer: Buffer; count: number }> {
+  const zip = new AdmZip()
+  const used = new Set<string>()
+  let count = 0
+  for (const rawId of ids) {
+    const file = await readInvestmentNoteMaterialFile(rawId)
+    if (!file) continue
+    zip.addFile(uniqueZipEntryName(file.filename, used), file.buffer)
+    count += 1
+  }
+  if (count === 0) {
+    throw new Error("没有可下载的附件")
+  }
+  return { buffer: zip.toBuffer(), count }
 }

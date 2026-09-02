@@ -47,6 +47,7 @@ import {
   createInvestmentNote,
   deleteInvestmentNote,
   deleteInvestmentNoteMaterial,
+  downloadInvestmentNoteAttachmentsZip,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
   listInvestmentNotes,
@@ -70,11 +71,12 @@ import type { DdMaterialsDocument, DdMaterialsFolderIndex } from "@/lib/ma/due-d
 import {
   buildDdMaterialsFileUrl,
   buildDdMaterialsFolderIndex,
+  buildDdMaterialsPreviewUrl,
   collectDdMaterialsDocumentsForRows,
   parseRoadshowDdMaterialAttachmentId,
   roadshowDdMaterialAttachmentId,
 } from "@/lib/ma/due-diligence-materials"
-import { partitionDuplicateMaterialFiles } from "@/lib/ma/investment-note-material-filename"
+import { materialExtension, partitionDuplicateMaterialFiles } from "@/lib/ma/investment-note-material-filename"
 import { AssociatedProductHoverCard } from "./AssociatedProductHoverCard"
 import { InvestmentNoteAssociationDialog } from "./InvestmentNoteAssociationDialog"
 import { InvestmentNoteMaterialsView } from "./InvestmentNoteMaterialsView"
@@ -87,6 +89,21 @@ import {
 } from "./investment-note-editor-parts"
 
 type NotesTab = "team" | "mine" | "uploads"
+
+const KB_HTML_PREVIEW_EXTENSIONS = new Set([
+  ".txt",
+  ".md",
+  ".markdown",
+  ".json",
+  ".csv",
+  ".log",
+  ".tsv",
+  ".xml",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+])
 
 function displayNoteTitle(title: string): string {
   return title.trim() || "无标题"
@@ -326,6 +343,7 @@ export function InvestmentNotesView() {
   const [proofreading, setProofreading] = useState(false)
   const [integrating, setIntegrating] = useState(false)
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
+  const [zippingAttachments, setZippingAttachments] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingDeepLinkRef = useRef<string | null>(deepLinkNoteId || null)
 
@@ -683,7 +701,11 @@ export function InvestmentNotesView() {
   async function handleOpenAttachment(id: string) {
     const kbPath = parseRoadshowDdMaterialAttachmentId(id)
     if (kbPath) {
-      const opened = window.open(buildDdMaterialsFileUrl(kbPath), "_blank", "noopener,noreferrer")
+      const ext = materialExtension(kbPath)
+      const url = KB_HTML_PREVIEW_EXTENSIONS.has(ext)
+        ? buildDdMaterialsPreviewUrl(kbPath)
+        : buildDdMaterialsFileUrl(kbPath)
+      const opened = window.open(url, "_blank", "noopener,noreferrer")
       if (!opened) {
         toast({
           title: "打开失败",
@@ -701,6 +723,28 @@ export function InvestmentNotesView() {
         description: err instanceof Error ? err.message : "无法打开文件",
         variant: "destructive",
       })
+    }
+  }
+
+  async function handleDownloadAttachmentsZip() {
+    if (zippingAttachments || uploadingAttachments) return
+    const ids = activeAttachments.filter((item) => item.openable).map((item) => item.id)
+    if (ids.length === 0) {
+      toast({ title: "无法打包", description: "当前没有可下载的附件" })
+      return
+    }
+    setZippingAttachments(true)
+    try {
+      const title = displayNoteTitle(selectedNote?.title || "笔记")
+      await downloadInvestmentNoteAttachmentsZip(ids, `${title}-附件`)
+    } catch (err) {
+      toast({
+        title: "打包失败",
+        description: err instanceof Error ? err.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setZippingAttachments(false)
     }
   }
 
@@ -1225,8 +1269,10 @@ export function InvestmentNotesView() {
                     onTriggerUpload={triggerUpload}
                     onDropFiles={(files) => void handleUploadFiles(files)}
                     uploading={uploadingAttachments}
+                    zipping={zippingAttachments}
                     onRemove={(id) => void handleRemoveAttachment(id)}
                     onOpen={(id) => void handleOpenAttachment(id)}
+                    onDownloadZip={() => void handleDownloadAttachmentsZip()}
                   />
 
                   <DropdownMenu>
