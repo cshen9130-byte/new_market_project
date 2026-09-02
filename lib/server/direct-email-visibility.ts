@@ -7,7 +7,7 @@
  * - `hidden` (or sentinel userId) means 全部账户不可见 — non-admins cannot see it.
  * - Explicit empty `userIds` (not hidden) means 全部账户可见.
  * - Mailboxes not yet saved in the store default to 全部账户不可见.
- *//
+ */
 
 import fs from "fs"
 import path from "path"
