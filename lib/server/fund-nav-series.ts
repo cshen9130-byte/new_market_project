@@ -9,12 +9,17 @@ import {
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
-import { applyFundNavCorrectionToLegacyRows, lookupFundNavCorrectionRule } from "@/lib/server/fund-nav-correction-rules"
+import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
 import {
   loadManagedProductNavSeed,
   mergeManagedProductDetailNav,
 } from "@/lib/server/managed-product-nav-seed"
-import { loadManagedProductEmailPoints, loadManagedProductNavSeries, loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
+import {
+  loadManagedProductEmailPoints,
+  loadManagedProductNavSeries,
+  loadManualTeamNavBatch,
+  manualNavPointsForBeian,
+} from "@/lib/server/team-nav-manage-pg"
 
 function pickNavLevel(row: LegacyNavRow): number | null {
   for (const field of [row.cum_nav_withdrawal, row.cumulative_nav, row.nav]) {
@@ -72,20 +77,16 @@ async function loadMergedNavRows(
 
   let navSeries = mergeNavSeriesWithEmail(legacyRows, emailRows, fundContext)
 
-  const correctionRule = lookupFundNavCorrectionRule(beian_hao, product_name, short_name)
-  if (correctionRule?.preserve_high_nav_scale) {
-    return applyFundNavCorrectionToLegacyRows(navSeries, fundContext)
-  }
-
   const managedOverride =
     lookupManagedProductOverride(beian_hao)
     ?? lookupManagedProductOverride(product_name)
 
   // Skip the manual-team DB round-trip when a managed-product override already applies.
+  // preserve_high_nav_scale must not skip this merge — it only disables return-index trim.
   let effectiveManagedOverride = managedOverride
   if (!effectiveManagedOverride) {
     const manualTeamNavMap = await loadManualTeamNavBatch([beian_hao])
-    if ((manualTeamNavMap.get(beian_hao)?.length ?? 0) > 0) {
+    if (manualNavPointsForBeian(manualTeamNavMap, beian_hao).length > 0) {
       effectiveManagedOverride = { beian_hao, product_name }
     }
   }

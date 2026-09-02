@@ -58,6 +58,11 @@ import {
 } from "../lib/server/managed-product-nav-seed.ts"
 import { filterWeekendNavRows, isWeekendIsoDate } from "../lib/nav-trading-day.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
+import {
+  detailNavCacheCoversTeamDates,
+  isDetailNavCacheFresh,
+} from "../lib/server/fund-detail-nav-cache-pg.ts"
+import { teamNavBeianLookupCodes } from "../lib/server/team-nav-manage-pg.ts"
 import * as XLSX from "xlsx"
 import fs from "fs"
 
@@ -3085,5 +3090,36 @@ if (fs.existsSync(excelPath)) {
   const latest = contaminated[1]
   const rets = calcPeriodReturnsFromHistory(contaminated, latest.nav, latest.nav_date, latest)
   assert("1w still rejects ~13% scale jump (SAVW72)", rets.ret_1w == null || Math.abs(rets.ret_1w) < 0.06)
+}
+
+{
+  const aliases = teamNavBeianLookupCodes("VW7878")
+  assert("VW7878 team lookup includes S-prefix", aliases.includes("VW7878") && aliases.includes("SVW7878"))
+  assert("SVW7878 team lookup includes bare code", teamNavBeianLookupCodes("SVW7878").includes("VW7878"))
+
+  const teamSeries = [
+    { price_date: "2026-07-27", nav: "1.5401", cumulative_nav: "1.5401", cum_nav_withdrawal: "1.5401", price_change: "" },
+    { price_date: "2026-08-31", nav: "1.5489", cumulative_nav: "1.5489", cum_nav_withdrawal: "1.5489", price_change: "" },
+  ]
+  const platformStub = [
+    { price_date: "2026-09-01", nav: "1.0278", cumulative_nav: "1.0278", cum_nav_withdrawal: "1.0278", price_change: "" },
+  ]
+  const merged = mergeLegacyWithTeamNav(platformStub, teamSeries)
+  assert("team NAV wins over later platform stub", merged.some((r) => r.price_date === "2026-08-31"))
+  assert("later platform stub does not replace team series", !merged.some((r) => r.price_date === "2026-09-01"))
+
+  const cachedOnePoint = {
+    nav_series: platformStub,
+    tip_nav_date: "2026-09-01",
+  }
+  assert(
+    "list-tip freshness alone is not enough when team dates are missing",
+    isDetailNavCacheFresh(cachedOnePoint, { nav_date: "2026-09-01" })
+      && !detailNavCacheCoversTeamDates(cachedOnePoint, ["2026-07-27", "2026-08-31"]),
+  )
+  assert(
+    "cache covers team dates when series includes them",
+    detailNavCacheCoversTeamDates({ nav_series: [...teamSeries, ...platformStub] }, ["2026-07-27", "2026-08-31"]),
+  )
 }
 

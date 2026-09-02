@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic"
 /**
  * 直投产品 list — backed by email-synced products (邮箱运维池 / custom_email_nav),
  * filtered by 直投设置 crawl-email → account visibility.
- * Admin sees all; linked mailbox products are visible only to the linked account.
+ * Admin sees all; linked mailbox products are visible only to the linked accounts.
  * Optional `crawl_email` query param (admin only) further filters by fetch mailbox.
  */
 export async function GET(req: Request) {

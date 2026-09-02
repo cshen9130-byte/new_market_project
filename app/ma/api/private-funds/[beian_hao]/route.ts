@@ -22,11 +22,13 @@ import {
   type ListCacheFundHeader,
 } from "@/lib/server/fund-detail-fast-path"
 import {
+  detailNavCacheCoversTeamDates,
   getDetailNavCache,
   isDetailNavCacheFresh,
   persistDetailNavSeries,
   syncListTipsFromDetailSeries,
 } from "@/lib/server/fund-detail-nav-cache-pg"
+import { loadManualTeamNavBatch, manualNavPointsForBeian } from "@/lib/server/team-nav-manage-pg"
 import {
   getDetailResponseMemoryCache,
   rememberDetailResponseMemoryCache,
@@ -242,14 +244,27 @@ export async function GET(
     }
 
     // Resolve identity + list-cache hint in parallel (cache also feeds the NAV fast path).
-    const [beian_hao, listHeaderEarly] = await Promise.all([
+    const [beian_hao, listHeaderEarly, teamManualMap] = await Promise.all([
       resolveRouteFundIdFast(rawId),
       lookupListCacheFundHeader(rawId),
+      loadManualTeamNavBatch([rawId]),
     ])
 
     const cacheKey = beian_hao || rawId
+    let teamManualPoints = [
+      ...manualNavPointsForBeian(teamManualMap, rawId),
+      ...manualNavPointsForBeian(teamManualMap, beian_hao),
+    ]
     const cachedDetail = getDetailResponseMemoryCache(cacheKey)
-    if (cachedDetail) {
+    const memoryCoversTeam = cachedDetail != null && detailNavCacheCoversTeamDates(
+      {
+        nav_series: Array.isArray((cachedDetail as { nav_series?: unknown }).nav_series)
+          ? (cachedDetail as { nav_series: Parameters<typeof detailNavCacheCoversTeamDates>[0]["nav_series"] }).nav_series
+          : [],
+      },
+      teamManualPoints.map((point) => point.nav_date),
+    )
+    if (cachedDetail && memoryCoversTeam) {
       const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
       const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
@@ -399,6 +414,14 @@ export async function GET(
     let shortName = info.short_name ?? ""
     let strategy_l3: string | null = info.strategy_l3 ?? null
 
+    if (manualNavPointsForBeian(teamManualMap, routeBeianHao).length === 0) {
+      const extraManual = await loadManualTeamNavBatch([routeBeianHao])
+      teamManualPoints = [
+        ...teamManualPoints,
+        ...manualNavPointsForBeian(extraManual, routeBeianHao),
+      ]
+    }
+
     if (!listHeader) {
       listHeader =
         await lookupListCacheFundHeader(routeBeianHao)
@@ -451,10 +474,16 @@ export async function GET(
     const trackAdvisor = bflTrack?.advisor?.trim() || null
 
     // Prefer persistent detail NAV cache (same series as loadDetailNavSeriesFast).
-    // Freshness: tip date must not lag the list-cache tip.
+    // Freshness: tip date must not lag the list-cache tip, and uploaded team NAV
+    // dates must already be in the cached series (VW7878-style platform stubs).
     const pgCached = await getDetailNavCache(routeBeianHao, productName)
     const pgCacheHit =
-      pgCached != null && isDetailNavCacheFresh(pgCached, listHeader)
+      pgCached != null
+      && isDetailNavCacheFresh(pgCached, listHeader)
+      && detailNavCacheCoversTeamDates(
+        pgCached,
+        teamManualPoints.map((point) => point.nav_date),
+      )
 
     const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved, teamBenchmark, operationDateRows] = await Promise.all([
       strategy_l3
@@ -572,7 +601,7 @@ export async function GET(
 
     const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
     const nav_data_source: "team" | "platform" =
-      managedOverride || hasSeed ? "team" : "platform"
+      managedOverride || hasSeed || teamManualPoints.length > 0 ? "team" : "platform"
 
     const first = nav_series[0]
     const latest = nav_series[nav_series.length - 1]

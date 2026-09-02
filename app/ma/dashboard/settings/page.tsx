@@ -9,6 +9,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -2104,11 +2105,44 @@ function InstructionSettingsPanel() {
 }
 
 // ─── DirectInvestSettingsPanel ────────────────────────────────────────────────
+const HIDDEN_VISIBILITY_SENTINEL = "__none__"
+
 type DirectEmailVisibilityRow = {
   crawlEmailAccount: string
   userId: string
   userName: string
+  userIds?: string[]
+  userNames?: string[]
+  hidden?: boolean
   updatedAt: string
+}
+
+type VisibilityDraft = {
+  hidden: boolean
+  userIds: string[]
+}
+
+function draftFromRow(row: DirectEmailVisibilityRow): VisibilityDraft {
+  if (row.hidden || row.userId === HIDDEN_VISIBILITY_SENTINEL) {
+    return { hidden: true, userIds: [] }
+  }
+  const ids =
+    Array.isArray(row.userIds) && row.userIds.length > 0
+      ? row.userIds.filter(Boolean)
+      : row.userId
+        ? [row.userId]
+        : []
+  return { hidden: false, userIds: ids }
+}
+
+function visibilityLabel(draft: VisibilityDraft | undefined, users: User[]): string {
+  if (!draft || draft.hidden) return "全部账户不可见"
+  if (draft.userIds.length === 0) return "全部账户可见"
+  const names = draft.userIds.map((id) => {
+    const u = users.find((user) => user.id === id)
+    return u?.name || u?.email || id
+  })
+  return names.join("、")
 }
 
 function DirectInvestSettingsPanel() {
@@ -2116,7 +2150,7 @@ function DirectInvestSettingsPanel() {
   const [authChecked, setAuthChecked] = useState(false)
   const [rows, setRows] = useState<DirectEmailVisibilityRow[]>([])
   const [users, setUsers] = useState<User[]>([])
-  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [draft, setDraft] = useState<Record<string, VisibilityDraft>>({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -2150,8 +2184,8 @@ function DirectInvestSettingsPanel() {
         setUsers(sortedUsers)
         const data = Array.isArray(visRes.data) ? visRes.data : []
         setRows(data)
-        const nextDraft: Record<string, string> = {}
-        for (const row of data) nextDraft[row.crawlEmailAccount] = row.userId || ""
+        const nextDraft: Record<string, VisibilityDraft> = {}
+        for (const row of data) nextDraft[row.crawlEmailAccount] = draftFromRow(row)
         setDraft(nextDraft)
       } catch (e: any) {
         if (!cancelled) setLoadError(e?.message || "加载失败")
@@ -2170,10 +2204,14 @@ function DirectInvestSettingsPanel() {
     setSaveMsg(null)
     setLoadError(null)
     try {
-      const mappings = rows.map((row) => ({
-        crawlEmailAccount: row.crawlEmailAccount,
-        userId: draft[row.crawlEmailAccount] || "",
-      }))
+      const mappings = rows.map((row) => {
+        const entry = draft[row.crawlEmailAccount] ?? { hidden: true, userIds: [] }
+        return {
+          crawlEmailAccount: row.crawlEmailAccount,
+          hidden: entry.hidden,
+          userIds: entry.hidden ? [] : entry.userIds,
+        }
+      })
       const res = await fetch("/ma/api/ops/direct-email-visibility", {
         method: "PUT",
         headers: {
@@ -2186,8 +2224,8 @@ function DirectInvestSettingsPanel() {
       if (!res.ok) throw new Error(json?.error || "保存失败")
       const data = Array.isArray(json.data) ? (json.data as DirectEmailVisibilityRow[]) : []
       setRows(data)
-      const nextDraft: Record<string, string> = {}
-      for (const row of data) nextDraft[row.crawlEmailAccount] = row.userId || ""
+      const nextDraft: Record<string, VisibilityDraft> = {}
+      for (const row of data) nextDraft[row.crawlEmailAccount] = draftFromRow(row)
       setDraft(nextDraft)
       setSaveMsg("已保存")
       window.setTimeout(() => setSaveMsg(null), 2000)
@@ -2214,7 +2252,7 @@ function DirectInvestSettingsPanel() {
     <div>
       <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-2">直投邮箱可见性</h2>
       <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-6">
-        将抓取邮箱关联到账户后，该账户仅能在「直投产品」与「邮箱运维池」中看到该邮箱抓取的产品；管理员始终可见全部。未关联的邮箱对所有账户可见。列表包含「抓取邮箱设置」中的账户，以及已产生净值/估值数据的邮箱。
+        将抓取邮箱关联到一个或多个账户后，仅这些账户能在「直投产品」与「邮箱运维池」中看到该邮箱抓取的产品；管理员始终可见全部。新增加的邮箱默认「全部账户不可见」。也可设为「全部账户可见」。列表包含「抓取邮箱设置」中的账户，以及已产生净值/估值数据的邮箱。
       </p>
 
       {loadError && <div className="text-sm text-red-500 mb-4">{loadError}</div>}
@@ -2228,7 +2266,7 @@ function DirectInvestSettingsPanel() {
       ) : (
         <>
           <div className="overflow-auto rounded border w-fit max-w-full">
-            <table className="text-sm border-collapse table-fixed w-[720px]">
+            <table className="text-sm border-collapse table-fixed w-[780px]">
               <thead>
                 <tr className="bg-muted/40 border-b">
                   <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-14">序号</th>
@@ -2237,33 +2275,88 @@ function DirectInvestSettingsPanel() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, idx) => (
-                  <tr key={row.crawlEmailAccount} className="border-b last:border-b-0">
-                    <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{idx + 1}</td>
-                    <td className="px-3 py-2.5 text-zinc-700 dark:text-zinc-200 font-mono text-xs">
-                      {row.crawlEmailAccount}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <select
-                        className="w-full max-w-xs h-8 rounded border border-border bg-background px-2 text-sm"
-                        value={draft[row.crawlEmailAccount] || ""}
-                        onChange={(e) =>
-                          setDraft((prev) => ({
-                            ...prev,
-                            [row.crawlEmailAccount]: e.target.value,
-                          }))
-                        }
-                      >
-                        <option value="">全部账户可见</option>
-                        {users.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name || u.email}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
+                {rows.map((row, idx) => {
+                  const entry = draft[row.crawlEmailAccount] ?? { hidden: true, userIds: [] }
+                  const label = visibilityLabel(entry, users)
+                  return (
+                    <tr key={row.crawlEmailAccount} className="border-b last:border-b-0">
+                      <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{idx + 1}</td>
+                      <td className="px-3 py-2.5 text-zinc-700 dark:text-zinc-200 font-mono text-xs">
+                        {row.crawlEmailAccount}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              title={label}
+                              className="flex w-full max-w-sm items-center justify-between gap-1 h-8 rounded border border-border bg-background px-2 text-sm text-left focus:outline-none focus:ring-1 focus:ring-red-400"
+                            >
+                              <span className={entry.hidden || entry.userIds.length === 0 ? "truncate text-zinc-500" : "truncate"}>
+                                {label}
+                              </span>
+                              <ChevronDown className="size-3.5 shrink-0 text-zinc-400" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-56 max-h-72 overflow-y-auto">
+                            <DropdownMenuCheckboxItem
+                              checked={!entry.hidden && entry.userIds.length === 0}
+                              onCheckedChange={() =>
+                                setDraft((prev) => ({
+                                  ...prev,
+                                  [row.crawlEmailAccount]: { hidden: false, userIds: [] },
+                                }))
+                              }
+                              onSelect={(e) => e.preventDefault()}
+                            >
+                              全部账户可见
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={entry.hidden}
+                              onCheckedChange={() =>
+                                setDraft((prev) => ({
+                                  ...prev,
+                                  [row.crawlEmailAccount]: { hidden: true, userIds: [] },
+                                }))
+                              }
+                              onSelect={(e) => e.preventDefault()}
+                            >
+                              全部账户不可见
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuSeparator />
+                            {users.map((u) => {
+                              const checked = !entry.hidden && entry.userIds.includes(u.id)
+                              return (
+                                <DropdownMenuCheckboxItem
+                                  key={u.id}
+                                  checked={checked}
+                                  onCheckedChange={(nextChecked) =>
+                                    setDraft((prev) => {
+                                      const current = prev[row.crawlEmailAccount] ?? { hidden: true, userIds: [] }
+                                      const nextIds = nextChecked
+                                        ? Array.from(new Set([...current.userIds, u.id]))
+                                        : current.userIds.filter((id) => id !== u.id)
+                                      return {
+                                        ...prev,
+                                        [row.crawlEmailAccount]:
+                                          nextIds.length === 0
+                                            ? { hidden: true, userIds: [] }
+                                            : { hidden: false, userIds: nextIds },
+                                      }
+                                    })
+                                  }
+                                  onSelect={(e) => e.preventDefault()}
+                                >
+                                  {u.name || u.email}
+                                </DropdownMenuCheckboxItem>
+                              )
+                            })}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

@@ -76,9 +76,12 @@ function productNameDedupeKey(productName: string): string {
 
 export type TeamDataElementsFilter = "all" | "missing" | "present"
 export type TeamDataNavLagFilter = "all" | "behind_2w" | "within_2w"
+/** Interior holes in the NAV series (adjacent dates), not lag of the latest date. */
+export type TeamDataNavGapFilter = "all" | "interior_2w" | "no_interior_2w"
 export type TeamDataProductSourceFilter = "all" | "manual" | "email"
 
 const TEAM_NAV_LAG_DAYS = 14
+const TEAM_NAV_INTERIOR_GAP_DAYS = 14
 const TEAM_DATA_PRODUCT_SOURCE: Record<Exclude<TeamDataProductSourceFilter, "all">, string> = {
   manual: "手动添加",
   email: "邮箱同步",
@@ -96,6 +99,8 @@ export type TeamDataListParams = {
   elementsFilter?: TeamDataElementsFilter
   /** Filter by 团队净值日期 lag vs Asia/Shanghai today. Missing NAV counts as behind. */
   navLagFilter?: TeamDataNavLagFilter
+  /** Filter by consecutive holes inside the NAV series (平台数据 / detail cache). */
+  navGapFilter?: TeamDataNavGapFilter
   /** Filter by 产品来源 (手动添加 / 邮箱同步). */
   productSourceFilter?: TeamDataProductSourceFilter
   sort: string
@@ -197,6 +202,7 @@ let resolvedListCache: {
   rows: ResolvedFund[]
   at: number
 } | null = null
+let navGapIdsCache: { key: string; gapped: Set<string>; at: number } | null = null
 let teamDataProductsTableReady = false
 
 type ManualTeamDataProduct = {
@@ -225,6 +231,7 @@ export function invalidateTeamDataListCaches(): void {
   emailFundsCache = null
   identityCache = null
   resolvedListCache = null
+  navGapIdsCache = null
 }
 
 /** Resolve manually added 团队数据 products for fund detail API fallback. */
@@ -1687,6 +1694,144 @@ function matchesNavLagFilter(navDate: string, filter: TeamDataNavLagFilter, toda
   return lag != null && lag <= TEAM_NAV_LAG_DAYS
 }
 
+/** True when any two adjacent NAV dates are more than `minGapDays` calendar days apart. */
+export function hasInteriorNavGap(dates: string[], minGapDays = TEAM_NAV_INTERIOR_GAP_DAYS): boolean {
+  const sorted = [...new Set(dates.map(isoDay).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort()
+  for (let i = 1; i < sorted.length; i++) {
+    if (platformNavDaysBetween(sorted[i], sorted[i - 1]) > minGapDays) return true
+  }
+  return false
+}
+
+type DetailNavGapCacheRow = {
+  code: string
+  cache_key: string
+  product_name: string
+  has_gap: boolean
+}
+
+function detailCacheFitsRow(cache: DetailNavGapCacheRow, row: ResolvedFund): boolean {
+  const aliases = new Set(beianCodeAliases(row.beian_hao ?? "").map((c) => c.toUpperCase()))
+  const code = cache.code.trim().toUpperCase()
+  const key = cache.cache_key.trim().toUpperCase()
+  if (code && aliases.has(code)) return true
+  if (key && aliases.has(key)) return true
+  const name = cache.product_name.trim()
+  return !!name && fundNamesMatch(name, row.product_name)
+}
+
+async function loadDetailNavGapCacheRows(codes: string[], names: string[], gapDays: number): Promise<DetailNavGapCacheRow[]> {
+  if (codes.length === 0 && names.length === 0) return []
+  return query<DetailNavGapCacheRow>(
+    `SELECT
+       UPPER(BTRIM(COALESCE(NULLIF(beian_hao, ''), cache_key))) AS code,
+       cache_key,
+       product_name,
+       EXISTS (
+         SELECT 1
+         FROM (
+           SELECT
+             (elem->>'price_date')::date AS d,
+             LAG((elem->>'price_date')::date) OVER (ORDER BY elem->>'price_date') AS prev
+           FROM jsonb_array_elements(c.nav_series) AS elem
+           WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
+         ) g
+         WHERE prev IS NOT NULL AND (d - prev) > $3
+       ) AS has_gap
+     FROM ops_private_fund_detail_nav_cache c
+     WHERE jsonb_typeof(c.nav_series) = 'array'
+       AND (
+         (cardinality($1::text[]) > 0 AND c.cache_key = ANY($1::text[]))
+         OR (cardinality($1::text[]) > 0 AND UPPER(BTRIM(c.beian_hao)) = ANY($1::text[]))
+         OR (cardinality($2::text[]) > 0 AND c.product_name = ANY($2::text[]))
+       )`,
+    [codes, names, gapDays],
+  ).catch(() => [] as DetailNavGapCacheRow[])
+}
+
+async function loadFallbackNavDatesByCode(codes: string[]): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>()
+  if (codes.length === 0) return out
+  const rows = await query<{ code: string; price_date: string }>(
+    `SELECT DISTINCT UPPER(BTRIM(code)) AS code, price_date::text AS price_date
+     FROM (
+       SELECT beian_hao AS code, price_date
+       FROM private_fund_nav_group_type6
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION
+       SELECT beian_hao AS code, price_date
+       FROM private_fund_nav_group
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION
+       SELECT beian_hao AS code, price_date
+       FROM private_fund_nav_group_hy
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION
+       SELECT product_code AS code, nav_date AS price_date
+       FROM ops_email_nav_records
+       WHERE product_code = ANY($1::text[]) AND nav_date IS NOT NULL AND nav IS NOT NULL
+     ) t`,
+    [codes],
+  ).catch(() => [] as Array<{ code: string; price_date: string }>)
+  for (const row of rows) {
+    const code = row.code?.trim().toUpperCase()
+    const price_date = isoDay(row.price_date)
+    if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(price_date)) continue
+    const list = out.get(code) ?? []
+    list.push(price_date)
+    out.set(code, list)
+  }
+  return out
+}
+
+async function loadProductIdsWithInteriorNavGap(
+  rows: ResolvedFund[],
+  gapDays = TEAM_NAV_INTERIOR_GAP_DAYS,
+): Promise<Set<string>> {
+  const cacheKey = `${gapDays}|${rows.map((r) => r.id).join("|")}`
+  if (
+    navGapIdsCache
+    && navGapIdsCache.key === cacheKey
+    && Date.now() - navGapIdsCache.at < RESOLVED_LIST_CACHE_TTL_MS
+  ) {
+    return navGapIdsCache.gapped
+  }
+
+  const gapped = new Set<string>()
+  if (rows.length === 0) {
+    navGapIdsCache = { key: cacheKey, gapped, at: Date.now() }
+    return gapped
+  }
+
+  const codes = [...new Set(rows.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
+  const cacheRows = await loadDetailNavGapCacheRows(codes, names, gapDays)
+
+  const cachedIds = new Set<string>()
+  for (const row of rows) {
+    const matches = cacheRows.filter((c) => detailCacheFitsRow(c, row))
+    if (matches.length === 0) continue
+    cachedIds.add(row.id)
+    if (matches.some((c) => c.has_gap)) gapped.add(row.id)
+  }
+
+  const uncached = rows.filter((r) => !cachedIds.has(r.id))
+  if (uncached.length > 0) {
+    const fallbackCodes = [...new Set(uncached.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
+    const datesByCode = await loadFallbackNavDatesByCode(fallbackCodes)
+    for (const row of uncached) {
+      const dates = new Set<string>()
+      for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+        for (const d of datesByCode.get(alias.toUpperCase()) ?? []) dates.add(d)
+      }
+      if (hasInteriorNavGap([...dates], gapDays)) gapped.add(row.id)
+    }
+  }
+
+  navGapIdsCache = { key: cacheKey, gapped, at: Date.now() }
+  return gapped
+}
+
 function pickLatestPlatformTip(tips: Array<PlatformNavTip | undefined>): PlatformNavTip | undefined {
   let best: PlatformNavTip | undefined
   for (const tip of tips) {
@@ -1958,6 +2103,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     strategyL3,
     elementsFilter = "all",
     navLagFilter = "all",
+    navGapFilter = "all",
     productSourceFilter = "all",
     sort,
     sortDir,
@@ -2021,6 +2167,11 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   if (navLagFilter === "behind_2w" || navLagFilter === "within_2w") {
     const today = shanghaiToday()
     resolved = resolved.filter((r) => matchesNavLagFilter(r.team_nav_date, navLagFilter, today))
+  }
+
+  if (navGapFilter === "interior_2w" || navGapFilter === "no_interior_2w") {
+    const gapped = await loadProductIdsWithInteriorNavGap(resolved)
+    resolved = resolved.filter((r) => navGapFilter === "interior_2w" ? gapped.has(r.id) : !gapped.has(r.id))
   }
 
   if (productSourceFilter === "manual" || productSourceFilter === "email") {

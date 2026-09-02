@@ -74,6 +74,21 @@ async function ensureTeamNavManualTable(): Promise<void> {
 
 const TEAM_NAV_TIP_DATES = 10
 
+/** Exact 备案号 plus S-prefix / stripped-S aliases (no A/B/C sibling mix). */
+export function teamNavBeianLookupCodes(beian: string): string[] {
+  const u = beian.trim().toUpperCase()
+  if (!u) return []
+  const out = new Set<string>([u])
+  if (u.startsWith("S") && u.length > 5) out.add(u.slice(1))
+  else out.add(`S${u}`)
+  if (u.startsWith("S") && !u.startsWith("SS")) out.add(`S${u}`)
+  return [...out]
+}
+
+function normalizeBeianKey(beian: string): string {
+  return beian.trim().toUpperCase()
+}
+
 /** Latest team/email NAV points only — for list overlays (not full history). */
 export async function loadManagedProductTeamNavTips(
   items: Array<{ beian_hao: string; product_name: string; short_name?: string | null }>,
@@ -151,10 +166,11 @@ export async function loadManualTeamNavBatch(
   nav_type: "pre_fee" | "virtual" = "pre_fee",
 ): Promise<Map<string, TeamNavListPoint[]>> {
   await ensureTeamNavManualTable()
-  const codes = [...new Set(beianHaos.map((b) => b.trim()).filter(Boolean))]
+  const requested = [...new Set(beianHaos.map((b) => b.trim()).filter(Boolean))]
   const out = new Map<string, TeamNavListPoint[]>()
-  if (codes.length === 0) return out
+  if (requested.length === 0) return out
 
+  const lookupCodes = [...new Set(requested.flatMap((b) => teamNavBeianLookupCodes(b)))]
   const rows = await query<{
     beian_hao: string
     nav_date: string
@@ -168,21 +184,47 @@ export async function loadManualTeamNavBatch(
             cumulative_nav::text AS cumulative_nav,
             adjusted_nav::text AS adjusted_nav
      FROM ops_team_nav_manual
-     WHERE beian_hao = ANY($1::text[]) AND nav_type = $2
+     WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND nav_type = $2
      ORDER BY beian_hao, nav_date ASC`,
-    [codes, nav_type],
+    [lookupCodes, nav_type],
   )
+
+  const byStored = new Map<string, TeamNavListPoint[]>()
   for (const row of rows) {
-    const list = out.get(row.beian_hao) ?? []
+    const stored = normalizeBeianKey(row.beian_hao)
+    const list = byStored.get(stored) ?? []
     list.push({
-      nav_date: row.nav_date,
+      nav_date: row.nav_date.slice(0, 10),
       unit_nav: row.unit_nav,
       cumulative_nav: row.cumulative_nav,
       adjusted_nav: row.adjusted_nav,
     })
-    out.set(row.beian_hao, list)
+    byStored.set(stored, list)
+  }
+
+  for (const req of requested) {
+    const family = new Set(teamNavBeianLookupCodes(req))
+    const byDate = new Map<string, TeamNavListPoint>()
+    for (const [stored, points] of byStored) {
+      if (!family.has(stored)) continue
+      for (const point of points) byDate.set(point.nav_date.slice(0, 10), point)
+    }
+    const series = [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+    if (series.length === 0) continue
+    out.set(req, series)
+    out.set(normalizeBeianKey(req), series)
   }
   return out
+}
+
+export function manualNavPointsForBeian(
+  map: Map<string, TeamNavListPoint[]>,
+  beian: string,
+): TeamNavListPoint[] {
+  return map.get(beian)
+    ?? map.get(beian.trim())
+    ?? map.get(normalizeBeianKey(beian))
+    ?? []
 }
 
 function upsertTeamNavPoint(
@@ -353,17 +395,27 @@ async function loadManualTeamNavRows(
   nav_type: "pre_fee" | "virtual",
 ): Promise<ManualNavRow[]> {
   await ensureTeamNavManualTable()
-  return query<ManualNavRow>(
+  const lookupCodes = teamNavBeianLookupCodes(beian_hao)
+  if (lookupCodes.length === 0) return []
+  const rows = await query<ManualNavRow>(
     `SELECT id::text AS id,
             nav_date::text AS nav_date,
             unit_nav::text AS unit_nav,
             cumulative_nav::text AS cumulative_nav,
             adjusted_nav::text AS adjusted_nav
      FROM ops_team_nav_manual
-     WHERE beian_hao = $1 AND nav_type = $2
-     ORDER BY nav_date ASC`,
-    [beian_hao, nav_type],
+     WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND nav_type = $2
+     ORDER BY nav_date ASC, id ASC`,
+    [lookupCodes, nav_type],
   )
+  const byDate = new Map<string, ManualNavRow>()
+  for (const row of rows) {
+    byDate.set(row.nav_date.slice(0, 10), {
+      ...row,
+      nav_date: row.nav_date.slice(0, 10),
+    })
+  }
+  return [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
 }
 
 function fmtNav4(v: string | null | undefined): string {

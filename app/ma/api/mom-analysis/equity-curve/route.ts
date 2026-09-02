@@ -31,27 +31,40 @@ export async function GET(req: Request) {
 
     const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : ""
 
-    const rows = await query<{
-      account: string
-      trade_date: string
-      daily_pnl: string | null
-      margin: string | null
-      equity: string | null
-    }>(
-      `SELECT
-         "账户"         AS account,
-         "交易日期"::text AS trade_date,
-         NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏", ''), ',', ''), ' ', ''), '') AS daily_pnl,
-         NULLIF(REPLACE(REPLACE(COALESCE("保证金占用"::text, ''), ',', ''), ' ', ''), '') AS margin,
-         COALESCE(
-           NULLIF(REPLACE(REPLACE(COALESCE("客户权益"::text, ''), ',', ''), ' ', ''), ''),
-           NULLIF(REPLACE(REPLACE(COALESCE("当日结存"::text, ''), ',', ''), ' ', ''), '')
-         ) AS equity
-       FROM mom_daily_reports
-       ${where}
-       ORDER BY "交易日期" ASC, "账户" ASC`,
-      params.length > 0 ? params : undefined,
-    )
+    const [rows, advisorRows] = await Promise.all([
+      query<{
+        account: string
+        trade_date: string
+        daily_pnl: string | null
+        margin: string | null
+        equity: string | null
+      }>(
+        `SELECT
+           "账户"         AS account,
+           "交易日期"::text AS trade_date,
+           NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏", ''), ',', ''), ' ', ''), '') AS daily_pnl,
+           NULLIF(REPLACE(REPLACE(COALESCE("保证金占用"::text, ''), ',', ''), ' ', ''), '') AS margin,
+           COALESCE(
+             NULLIF(REPLACE(REPLACE(COALESCE("客户权益"::text, ''), ',', ''), ' ', ''), ''),
+             NULLIF(REPLACE(REPLACE(COALESCE("当日结存"::text, ''), ',', ''), ' ', ''), '')
+           ) AS equity
+         FROM mom_daily_reports
+         ${where}
+         ORDER BY "交易日期" ASC, "账户" ASC`,
+        params.length > 0 ? params : undefined,
+      ),
+      query<{ account: string; equity_wan: string }>(
+        `SELECT UPPER(TRIM(account_code)) AS account,
+                COALESCE(equity_wan::text, '0') AS equity_wan
+         FROM mom_advisor_info`,
+      ).catch(() => [] as { account: string; equity_wan: string }[]),
+    ])
+
+    const nominalByAccount = new Map<string, number>()
+    for (const row of advisorRows) {
+      const wan = parseNum(row.equity_wan)
+      if (wan != null && wan > 0) nominalByAccount.set(row.account, wan * 10_000)
+    }
 
     // group rows by account
     const accountMap = new Map<string, Array<{ date: string; pnl: number; margin: number; equity: number }>>()
@@ -70,7 +83,8 @@ export async function GET(req: Request) {
         cum += pnl
         return { date, cumPnl: cum, margin, equity }
       })
-      return { account, data }
+      const nominalCapital = nominalByAccount.get(account.toUpperCase().trim()) ?? null
+      return { account, data, nominalCapital }
     })
 
     // sort by final cumulative PnL descending

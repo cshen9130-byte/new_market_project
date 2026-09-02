@@ -22,6 +22,9 @@ export async function GET(req: Request) {
     const navLagRaw = (searchParams.get("nav_lag") || "").trim().toLowerCase()
     const navLagFilter =
       navLagRaw === "behind_2w" || navLagRaw === "within_2w" ? navLagRaw : "all"
+    const navGapRaw = (searchParams.get("nav_gap") || "").trim().toLowerCase()
+    const navGapFilter =
+      navGapRaw === "interior_2w" || navGapRaw === "no_interior_2w" ? navGapRaw : "all"
     const sourceRaw = (searchParams.get("product_source") || "").trim().toLowerCase()
     const productSourceFilter =
       sourceRaw === "manual" || sourceRaw === "email" ? sourceRaw : "all"
@@ -47,6 +50,7 @@ export async function GET(req: Request) {
       strategyL3,
       elementsFilter,
       navLagFilter,
+      navGapFilter,
       productSourceFilter,
       sort,
       sortDir,
@@ -63,6 +67,7 @@ export async function GET(req: Request) {
         strategyL3,
         elementsFilter,
         navLagFilter,
+        navGapFilter,
         productSourceFilter,
         sort,
         sortDir,

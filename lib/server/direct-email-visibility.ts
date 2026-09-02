@@ -1,11 +1,13 @@
 /**
- * Maps each 抓取邮箱 (crawl email account) to the login user who may see
+ * Maps each 抓取邮箱 (crawl email account) to the login users who may see
  * products fetched from that mailbox in 直投产品 / 邮箱运维池.
  *
  * - Admin (role === "admin") always sees every product.
- * - When an email is linked to a user, only that user (+ admin) sees its products.
- * - Unmapped emails remain visible to everyone (preserves prior shared-pool behaviour).
- */
+ * - When an email is linked to one or more users, only those users (+ admin) see its products.
+ * - `hidden` (or sentinel userId) means 全部账户不可见 — non-admins cannot see it.
+ * - Explicit empty `userIds` (not hidden) means 全部账户可见.
+ * - Mailboxes not yet saved in the store default to 全部账户不可见.
+ *//
 
 import fs from "fs"
 import path from "path"
@@ -80,13 +82,22 @@ async function listKnownCrawlEmailAccounts(): Promise<string[]> {
   return value
 }
 
+/** Stored in `userId` so older readers treat hidden mailboxes as unmatched. */
+export const HIDDEN_VISIBILITY_SENTINEL = "__none__"
+
 export type DirectEmailVisibilityMapping = {
   /** Crawl mailbox address, lowercased */
   crawlEmailAccount: string
-  /** auth_users.id, or "" for unmapped / visible to all */
+  /** First linked auth_users.id, "" for 全部账户可见, or HIDDEN_VISIBILITY_SENTINEL */
   userId: string
-  /** Display name snapshot for UI */
+  /** Display name snapshot for the first linked user */
   userName: string
+  /** All linked auth_users.id values. Empty when visible-to-all or hidden. */
+  userIds: string[]
+  /** Display name snapshots aligned with userIds */
+  userNames: string[]
+  /** True = 全部账户不可见 (non-admins cannot see this mailbox). */
+  hidden: boolean
   updatedAt: string
 }
 
@@ -112,24 +123,95 @@ function emptyStore(): Store {
   return { mappings: [], updatedAt: null }
 }
 
+function uniqueIds(ids: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const id of ids) {
+    const v = id.trim()
+    if (!v || v === HIDDEN_VISIBILITY_SENTINEL || seen.has(v)) continue
+    seen.add(v)
+    out.push(v)
+  }
+  return out
+}
+
+function parseIdList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return uniqueIds(raw.map((x) => String(x ?? "")))
+}
+
+function parseNameList(raw: unknown, len: number): string[] {
+  if (!Array.isArray(raw)) return Array.from({ length: len }, () => "")
+  return Array.from({ length: len }, (_, i) => {
+    const v = raw[i]
+    return typeof v === "string" ? v.trim() : ""
+  })
+}
+
+function normalizeMapping(raw: {
+  crawlEmailAccount?: unknown
+  userId?: unknown
+  userName?: unknown
+  userIds?: unknown
+  userNames?: unknown
+  hidden?: unknown
+  updatedAt?: unknown
+}): DirectEmailVisibilityMapping | null {
+  const crawlEmailAccount = String(raw?.crawlEmailAccount || "").trim().toLowerCase()
+  if (!crawlEmailAccount) return null
+  const hidden =
+    raw?.hidden === true || String(raw?.userId || "").trim() === HIDDEN_VISIBILITY_SENTINEL
+  let userIds = parseIdList(raw?.userIds)
+  const legacyId = String(raw?.userId || "").trim()
+  if (userIds.length === 0 && legacyId && legacyId !== HIDDEN_VISIBILITY_SENTINEL) {
+    userIds = [legacyId]
+  }
+  if (hidden) userIds = []
+  const userNames = parseNameList(raw?.userNames, userIds.length)
+  if (userIds.length > 0 && !userNames[0]) {
+    const legacyName = typeof raw?.userName === "string" ? raw.userName.trim() : ""
+    if (legacyName) userNames[0] = legacyName
+  }
+  return {
+    crawlEmailAccount,
+    userId: hidden ? HIDDEN_VISIBILITY_SENTINEL : userIds[0] || "",
+    userName: hidden ? "" : userNames[0] || (typeof raw?.userName === "string" ? raw.userName.trim() : ""),
+    userIds,
+    userNames,
+    hidden,
+    updatedAt: typeof raw?.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
+  }
+}
+
 function tryParseStore(raw: string): Store | null {
   try {
     const parsed = JSON.parse(raw) as Store
     if (!parsed || !Array.isArray(parsed.mappings)) return null
     return {
       mappings: parsed.mappings
-        .filter((m) => m && typeof m.crawlEmailAccount === "string")
-        .map((m) => ({
-          crawlEmailAccount: String(m.crawlEmailAccount).trim().toLowerCase(),
-          userId: typeof m.userId === "string" ? m.userId.trim() : "",
-          userName: typeof m.userName === "string" ? m.userName.trim() : "",
-          updatedAt: typeof m.updatedAt === "string" ? m.updatedAt : new Date().toISOString(),
-        })),
+        .map((m) => normalizeMapping(m))
+        .filter((m): m is DirectEmailVisibilityMapping => !!m),
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
     }
   } catch {
     return null
   }
+}
+
+function linkedUserIds(link: DirectEmailVisibilityMapping): string[] {
+  if (link.hidden || link.userId === HIDDEN_VISIBILITY_SENTINEL) return []
+  if (Array.isArray(link.userIds) && link.userIds.length > 0) return uniqueIds(link.userIds)
+  if (link.userId) return uniqueIds([link.userId])
+  return []
+}
+
+/** Visibility policy for a known mailbox. Unsaved (not in store) defaults to hidden. */
+export function visibilityMode(
+  link: DirectEmailVisibilityMapping | undefined,
+): "all" | "none" | "users" {
+  if (!link) return "none"
+  if (link.hidden || link.userId === HIDDEN_VISIBILITY_SENTINEL) return "none"
+  return linkedUserIds(link).length > 0 ? "users" : "all"
 }
 
 function readStore(): Store {
@@ -164,41 +246,47 @@ export function readDirectEmailVisibilityMap(): Map<string, DirectEmailVisibilit
   return map
 }
 
+function hiddenDefaultRow(account: string, now: string): DirectEmailVisibilityMapping {
+  return {
+    crawlEmailAccount: account,
+    userId: HIDDEN_VISIBILITY_SENTINEL,
+    userName: "",
+    userIds: [],
+    userNames: [],
+    hidden: true,
+    updatedAt: now,
+  }
+}
+
 /**
  * List rows for the settings UI: every known crawl mailbox, with current visibility link.
+ * Mailboxes not yet saved default to 全部账户不可见.
  */
 export async function listDirectEmailVisibilityRows(): Promise<DirectEmailVisibilityMapping[]> {
   const map = readDirectEmailVisibilityMap()
   const now = new Date().toISOString()
   const accounts = await listKnownCrawlEmailAccounts()
-  return accounts.map((key) => {
-    const existing = map.get(key)
-    return (
-      existing ?? {
-        crawlEmailAccount: key,
-        userId: "",
-        userName: "",
-        updatedAt: now,
-      }
-    )
-  })
+  return accounts.map((key) => map.get(key) ?? hiddenDefaultRow(key, now))
 }
 
 export async function saveDirectEmailVisibilityMappings(
-  updates: { crawlEmailAccount: string; userId: string; userName?: string }[],
+  updates: {
+    crawlEmailAccount: string
+    userId?: string
+    userIds?: string[]
+    userName?: string
+    userNames?: string[]
+    hidden?: boolean
+  }[],
 ): Promise<DirectEmailVisibilityMapping[]> {
   const map = readDirectEmailVisibilityMap()
   const now = new Date().toISOString()
   for (const u of updates) {
     const key = String(u.crawlEmailAccount || "").trim().toLowerCase()
     if (!key || !isMailboxAccount(key)) continue
-    const userId = String(u.userId || "").trim()
-    map.set(key, {
-      crawlEmailAccount: key,
-      userId,
-      userName: userId ? String(u.userName || "").trim() : "",
-      updatedAt: now,
-    })
+    const normalized = normalizeMapping({ ...u, crawlEmailAccount: key, updatedAt: now })
+    if (!normalized) continue
+    map.set(key, normalized)
   }
   const store: Store = {
     mappings: Array.from(map.values()).sort((a, b) =>
@@ -214,7 +302,7 @@ export async function saveDirectEmailVisibilityMappings(
 
 /**
  * Resolve which crawl emails the user may see.
- * Returns null when no filter should be applied (admin, or no restrictive mappings).
+ * Returns null when no filter should be applied (admin, or every mailbox is 全部账户可见).
  */
 export async function resolveAllowedCrawlEmailsForUser(opts: {
   userId: string
@@ -223,20 +311,22 @@ export async function resolveAllowedCrawlEmailsForUser(opts: {
   if (opts.isAdmin) return null
 
   const map = readDirectEmailVisibilityMap()
-  const restrictive = Array.from(map.values()).filter((m) => m.userId)
-  if (restrictive.length === 0) return null
-
   const crawlAccounts = await listKnownCrawlEmailAccounts()
   const allowed = new Set<string>()
+  let hasRestriction = false
   for (const account of crawlAccounts) {
     const link = map.get(account)
-    if (!link?.userId) {
-      // Unmapped → visible to everyone
+    const mode = visibilityMode(link)
+    if (mode === "all") {
       allowed.add(account)
-    } else if (link.userId === opts.userId) {
+      continue
+    }
+    hasRestriction = true
+    if (mode === "users" && link && linkedUserIds(link).includes(opts.userId)) {
       allowed.add(account)
     }
   }
+  if (!hasRestriction) return null
   return Array.from(allowed)
 }
 

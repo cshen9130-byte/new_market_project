@@ -6,7 +6,7 @@ import { FileDown, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface EquityPoint { date: string; cumPnl: number; margin?: number; equity?: number }
-interface EquitySeries { account: string; data: EquityPoint[] }
+interface EquitySeries { account: string; data: EquityPoint[]; nominalCapital?: number | null }
 
 function isoToday() { return new Date().toISOString().slice(0, 10) }
 function isoMonthOffset(m: number) {
@@ -35,6 +35,20 @@ const MARGIN_UTIL_COLOR = "#d97706"
 const INITIAL_CAPITAL = 10_000_000 // 1000万
 
 type DisplayMode = "return" | "pnl"
+type CapitalMode = "fixed" | "nominal"
+
+function resolveStartCapital(series: EquitySeries | undefined, capitalMode: CapitalMode): number {
+  if (capitalMode === "nominal") {
+    const n = series?.nominalCapital
+    if (typeof n === "number" && n > 0) return n
+  }
+  return INITIAL_CAPITAL
+}
+
+function fmtWan(yuan: number): string {
+  const wan = yuan / 10_000
+  return Number.isInteger(wan) ? `${wan}万` : `${wan.toFixed(1)}万`
+}
 
 const BENCHMARK_OPTIONS = [
   { code: "none",     name: "无基准" },
@@ -89,11 +103,12 @@ function FillChart({
 }
 
 /** 20-day rolling annualised volatility (%) from cumPnl series */
-function computeVolatility(data: EquityPoint[], win = 20): Array<[string, number]> {
+function computeVolatility(data: EquityPoint[], capital: number, win = 20): Array<[string, number]> {
   const result: Array<[string, number]> = []
+  const denom = capital > 0 ? capital : INITIAL_CAPITAL
   for (let i = win; i < data.length; i++) {
     const slice = data.slice(i - win, i + 1)
-    const rets = slice.slice(1).map((pt, j) => (pt.cumPnl - slice[j].cumPnl) / INITIAL_CAPITAL)
+    const rets = slice.slice(1).map((pt, j) => (pt.cumPnl - slice[j].cumPnl) / denom)
     const mean = rets.reduce((a, b) => a + b, 0) / rets.length
     const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length - 1)
     result.push([data[i].date, Math.sqrt(variance * 252) * 100])
@@ -101,11 +116,12 @@ function computeVolatility(data: EquityPoint[], win = 20): Array<[string, number
   return result
 }
 
-/** Drawdown (%) relative to INITIAL_CAPITAL + running peak cumPnl */
-function computeDrawdown(data: EquityPoint[]): Array<[string, number]> {
-  let peak = INITIAL_CAPITAL
+/** Drawdown (%) relative to start capital + running peak cumPnl */
+function computeDrawdown(data: EquityPoint[], capital: number): Array<[string, number]> {
+  const start = capital > 0 ? capital : INITIAL_CAPITAL
+  let peak = start
   return data.map(pt => {
-    const val = INITIAL_CAPITAL + pt.cumPnl
+    const val = start + pt.cumPnl
     if (val > peak) peak = val
     return [pt.date, ((val - peak) / peak) * 100] as [string, number]
   })
@@ -129,13 +145,14 @@ function computeMarginYield(data: EquityPoint[]): Array<[string, number]> {
   return result
 }
 
-/** Daily margin utilization (%): 保证金占用 / 客户权益, else 占用 / 名义资本. */
-function computeMarginUtil(data: EquityPoint[]): Array<[string, number]> {
+/** Daily margin utilization (%): 保证金占用 / 客户权益, else 占用 / 起始资金. */
+function computeMarginUtil(data: EquityPoint[], capital: number): Array<[string, number]> {
   if (data.length === 0) return []
+  const fallback = capital > 0 ? capital : INITIAL_CAPITAL
   return data.map(pt => {
     const m = Number(pt.margin) || 0
     const e = Number(pt.equity) || 0
-    const denom = e > 0 ? e : INITIAL_CAPITAL
+    const denom = e > 0 ? e : fallback
     return [pt.date, denom > 0 ? (m / denom) * 100 : 0] as [string, number]
   })
 }
@@ -159,6 +176,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const [compareAccount, setCompareAccount] = useState("")
   const [compareSearch, setCompareSearch] = useState("")
   const [mode, setMode] = useState<DisplayMode>("return")
+  const [capitalMode, setCapitalMode] = useState<CapitalMode>("nominal")
   const [selectedBenchmark, setSelectedBenchmark] = useState("NHCI.NH")
   const [benchmarkData, setBenchmarkData] = useState<Array<{ date: string; close: number }>>([])  
   const [loadingBenchmark, setLoadingBenchmark] = useState(false)
@@ -282,8 +300,16 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         ...(compareSeries && compareSeries.account !== selectedAccount ? [compareSeries] : []),
       ]
 
-  const toDisplayValue = (cumPnl: number) =>
-    mode === "return" ? (cumPnl / INITIAL_CAPITAL) * 100 : cumPnl
+  const capitalHint = (() => {
+    if (capitalMode === "fixed") return "起始资金统一按 1000 万"
+    if (showAll) return "各账户按自身名义本金"
+    const n = primarySeries?.nominalCapital
+    if (typeof n === "number" && n > 0) return `起始资金 ${fmtWan(n)}（名义本金）`
+    return "该账户无名义本金，已回退 1000 万"
+  })()
+
+  const toDisplayValue = (cumPnl: number, capital: number) =>
+    mode === "return" ? (cumPnl / (capital > 0 ? capital : INITIAL_CAPITAL)) * 100 : cumPnl
 
   // Determine the first date of the visible account curve so the benchmark starts there
   const accountStartDate: string | null = (() => {
@@ -342,7 +368,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         ? LINE_COLORS[i % LINE_COLORS.length]
         : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
     },
-    data: computeVolatility(s.data),
+    data: computeVolatility(s.data, resolveStartCapital(s, capitalMode)),
   }))
 
   const marginYieldSeries = visibleSeries.map((s, i) => ({
@@ -382,7 +408,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         : (s.account === compareAccount ? COMPARE_COLOR : MARGIN_UTIL_COLOR),
     },
     ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: MARGIN_UTIL_COLOR, opacity: 0.08 } }),
-    data: computeMarginUtil(s.data),
+    data: computeMarginUtil(s.data, resolveStartCapital(s, capitalMode)),
   }))
 
   const ddSeries = visibleSeries.map((s, i) => ({
@@ -402,7 +428,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         : (s.account === compareAccount ? COMPARE_COLOR : "#ef4444"),
     },
     ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: "#ef4444", opacity: 0.1 } }),
-    data: computeDrawdown(s.data),
+    data: computeDrawdown(s.data, resolveStartCapital(s, capitalMode)),
   }))
 
   const ddSeriesWithBenchmark = benchmarkDrawdownSeries.length > 0
@@ -584,7 +610,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
             : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
         },
         ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: LINE_COLOR, opacity: 0.08 } }),
-        data: s.data.map(d => [d.date, toDisplayValue(d.cumPnl)]),
+        data: s.data.map(d => [d.date, toDisplayValue(d.cumPnl, resolveStartCapital(s, capitalMode))]),
       })),
       ...(benchmarkReturnSeries.length > 0 ? [{
         name: benchmarkName,
@@ -630,6 +656,30 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
                   盈亏
                 </button>
               </div>
+              {/* Start-capital toggle */}
+              <div className="flex rounded border border-input overflow-hidden text-xs" title={capitalHint}>
+                <button
+                  type="button"
+                  onClick={() => setCapitalMode("fixed")}
+                  className={`px-2 py-0.5 transition-colors ${
+                    capitalMode === "fixed" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  1000万
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCapitalMode("nominal")}
+                  className={`px-2 py-0.5 transition-colors ${
+                    capitalMode === "nominal" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  名义本金
+                </button>
+              </div>
+              {capitalMode === "nominal" && (
+                <span className="text-[11px] text-muted-foreground whitespace-nowrap">{capitalHint}</span>
+              )}
               {/* Account selector */}
               <select
                 value={selectedAccount}

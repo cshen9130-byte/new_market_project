@@ -14479,6 +14479,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   const [strategyL3, setStrategyL3] = useState("")
   const [elementsFilter, setElementsFilter] = useState<"all" | "missing" | "present">("all")
   const [navLagFilter, setNavLagFilter] = useState<"all" | "behind_2w" | "within_2w">("all")
+  const [navGapFilter, setNavGapFilter] = useState<"all" | "interior_2w" | "no_interior_2w">("all")
   const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email">("all")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
@@ -14567,7 +14568,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, productSourceFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, productSourceFilter, keyword, pageSize])
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -14584,6 +14585,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
     if (strategyL3) params.set("strategy_l3", strategyL3)
     if (elementsFilter !== "all") params.set("elements", elementsFilter)
     if (navLagFilter !== "all") params.set("nav_lag", navLagFilter)
+    if (navGapFilter !== "all") params.set("nav_gap", navGapFilter)
     if (productSourceFilter !== "all") params.set("product_source", productSourceFilter)
 
     const cacheKey = params.toString()
@@ -14632,7 +14634,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
       cancelled = true
       ac.abort()
     }
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, productSourceFilter, keyword, sortKey, sortDir, teamDataReloadKey])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, productSourceFilter, keyword, sortKey, sortDir, teamDataReloadKey])
 
   useEffect(() => {
     let cancelled = false
@@ -15185,6 +15187,30 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                   navLagFilter === key
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">净值断档：</span>
+          <div className="flex items-center gap-1">
+            {([
+              ["all", "不限", ""],
+              ["interior_2w", "中间缺失超2周", "相邻净值日期间隔超过14天，即使最新日期是最近的也会标出"],
+              ["no_interior_2w", "无中间缺失", "相邻净值日期间隔均不超过14天"],
+            ] as const).map(([key, label, title]) => (
+              <span
+                key={key}
+                title={title || undefined}
+                onClick={() => { setNavGapFilter(key); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  navGapFilter === key
                     ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
                     : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
                 ].join(" ")}

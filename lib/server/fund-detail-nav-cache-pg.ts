@@ -122,6 +122,22 @@ export function isDetailNavCacheFresh(
   return cacheDate >= listDate
 }
 
+/** False when uploaded team/manual NAV dates are missing from the cached series. */
+export function detailNavCacheCoversTeamDates(
+  cached: Pick<DetailNavCacheRow, "nav_series">,
+  teamDates: Array<string | null | undefined>,
+): boolean {
+  const needed = [...new Set(
+    teamDates.map((d) => (d ?? "").trim().slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+  )]
+  if (needed.length === 0) return true
+  if (!cached.nav_series.length) return false
+  const have = new Set(
+    cached.nav_series.map((row) => String(row.price_date ?? "").slice(0, 10)),
+  )
+  return needed.every((date) => have.has(date))
+}
+
 export async function getDetailNavCache(
   beian_hao: string | null | undefined,
   product_name?: string | null,
