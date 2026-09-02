@@ -22,6 +22,7 @@ import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
   canAccessPfOperations,
+  canAccessTraderManage,
   filterInvestmentSidebarGroups,
   isAllowedInvestmentSideItem,
 } from "@/lib/permissions"
@@ -45,6 +46,7 @@ import {
   writeProductFieldConfig,
 } from "@/lib/ma/product-field-config"
 import { ProductElementsDialogContent } from "./components/ProductElementsDialogContent"
+import { OpsTraderManageDialog } from "./components/OpsTraderManageDialog"
 import { BatchAddStrategyDialog, TEAM_BENCHMARK_OPTIONS } from "./components/BatchAddStrategyDialog"
 import { StrategyL3MultiSelect } from "./components/StrategyL3MultiSelect"
 import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
@@ -14436,7 +14438,7 @@ function writeTeamDataListCache(key: string, entry: TeamDataListCacheEntry): voi
   }
 }
 
-function OperationsTeamDataView() {
+function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   const searchParams = useSearchParams()
   const router = useRouter()
   const navManageBeian = searchParams.get("beian_hao")
@@ -14493,6 +14495,7 @@ function OperationsTeamDataView() {
   const [teamElementsDialog, setTeamElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [teamSyncNavDialog, setTeamSyncNavDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [teamScaleDialog, setTeamScaleDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [teamTraderDialog, setTeamTraderDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [teamRemoveDialog, setTeamRemoveDialog] = useState<{ beian_hao: string; product_name: string; product_source: string } | null>(null)
   const [teamRemoveSaving, setTeamRemoveSaving] = useState(false)
   const [teamRemoveError, setTeamRemoveError] = useState<string | null>(null)
@@ -15483,11 +15486,18 @@ function OperationsTeamDataView() {
                           onNoteManage={() => setTeamNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                           onValuationManage={() => openOpsValuationManage("ops-team-data", row.beian_hao!, row.product_name)}
                           onScaleManage={() => setTeamScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
-                          extraItems={[{
-                            label: "同步净值",
-                            icon: RefreshCw,
-                            onClick: () => setTeamSyncNavDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
-                          }]}
+                          extraItems={[
+                            {
+                              label: "同步净值",
+                              icon: RefreshCw,
+                              onClick: () => setTeamSyncNavDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
+                            },
+                            ...(canAccessTraderManage(currentUser) ? [{
+                              label: "盘手管理",
+                              icon: UserRound,
+                              onClick: () => setTeamTraderDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
+                            }] : []),
+                          ]}
                           footerItems={[{
                             label: "移出列表",
                             icon: Trash2,
@@ -15570,6 +15580,12 @@ function OperationsTeamDataView() {
         beian_hao={teamScaleDialog?.beian_hao ?? null}
         product_name={teamScaleDialog?.product_name ?? ""}
         onClose={() => setTeamScaleDialog(null)}
+      />
+      <OpsTraderManageDialog
+        open={!!teamTraderDialog}
+        beian_hao={teamTraderDialog?.beian_hao ?? null}
+        product_name={teamTraderDialog?.product_name ?? ""}
+        onClose={() => setTeamTraderDialog(null)}
       />
 
       {showTeamDataBatchTagDialog && (
@@ -24255,7 +24271,7 @@ function PrivateFundsPageContent() {
           {activeTab === "operations" && activeSideItem === "ops-fof" && <OperationsFofUnderlyingView />}
           {activeTab === "operations" && activeSideItem === "ops-active-funds" && <OperationsManagedProductsView />}
           {activeTab === "operations" && activeSideItem === "ops-email-sync" && <OperationsEmailSyncView />}
-          {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView />}
+          {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView currentUser={currentUser} />}
           {activeTab === "operations" && activeSideItem === "ops-ledger" && <OperationsLedgerView />}
           {activeTab === "operations" && activeSideItem === "ops-element-extract" && <OperationsElementExtractView />}
           {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-ledger" && activeSideItem !== "ops-element-extract" && (

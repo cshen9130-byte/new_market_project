@@ -6,7 +6,6 @@ import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { DateInput } from "@/components/ui/date-input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
   buildMomSignals,
   buildSignalHistory,
@@ -15,15 +14,15 @@ import {
   exposurePct,
   fmtFlowYuan,
   lookupFlow,
+  signalRowKey,
   tagSignalsVsPrev,
   type ActionKind,
   type ExposureMetric,
   type FlowMap,
   type FlowView,
   type MarginTag,
-  type MomSignal,
-  type SignalVsPrev,
 } from "@/lib/ma/quant-vs-subjective-signals"
+import { ACTION_ORDER, MomSignalTable, compareByAction } from "@/components/ma/mom-signal-table"
 import QuantVsSubjectiveHoldingTs, { type HoldingFocus, type HoldingTs } from "@/components/ma/quant-vs-subjective-holding-ts"
 import { QUANT_ACCOUNT_IDS, accountNumericId } from "@/lib/ma/quant-accounts"
 import {
@@ -109,16 +108,6 @@ interface ApiData {
   error?: string
 }
 
-const ACTION_STYLE: Record<ActionKind, string> = {
-  加码: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-900",
-  暂缓加码: "bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-900/50 dark:text-slate-300 dark:border-slate-700",
-  减码准备: "bg-pink-50 text-pink-700 border-pink-200 dark:bg-pink-950/40 dark:text-pink-300 dark:border-pink-900",
-  观望: "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-900",
-  补风格: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-900",
-  控拥挤: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900",
-  扩容: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900",
-}
-
 const ACTION_STACK_COLOR: Record<ActionKind, string> = {
   加码: "#ef4444",
   暂缓加码: "#64748b",
@@ -137,16 +126,6 @@ const ACTION_HEAT_CODE: Record<ActionKind, number> = {
   扩容: 5,
   暂缓加码: 6,
   减码准备: 7,
-}
-
-const MARGIN_TAG_STYLE: Record<MarginTag, string> = {
-  同向加仓: "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300",
-  同向减仓: "border-pink-200 bg-pink-50 text-pink-700 dark:border-pink-900 dark:bg-pink-950/40 dark:text-pink-300",
-  边际背离: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300",
-  分歧收敛: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300",
-  分歧加剧: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-300",
-  一侧变动: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300",
-  变化很小: "border-border bg-muted/40 text-muted-foreground",
 }
 
 const FLOW_TAG_COLOR: Record<MarginTag, string> = {
@@ -521,12 +500,30 @@ export default function QuantVsSubjectiveCharts() {
     }
     return undefined
   }, [data?.date, signalHistory])
+  const prevExposure = useMemo(() => {
+    const map = new Map<string, { q: number; s: number }>()
+    const date = prevDay?.date
+    if (!date) return map
+    for (const r of data?.sectorTs ?? []) {
+      if (r.date === date) map.set(signalRowKey("sector", r.sector), { q: r.quantNetPct, s: r.subjNetPct })
+    }
+    for (const r of data?.productTs ?? []) {
+      if (r.date === date) map.set(signalRowKey("product", r.product), { q: r.quantNetPct, s: r.subjNetPct })
+    }
+    return map
+  }, [data?.sectorTs, data?.productTs, prevDay?.date])
   const { tagged: taggedSignals, gone: goneSignals } = useMemo(
     () => tagSignalsVsPrev(allSignals, prevDay?.items),
     [allSignals, prevDay],
   )
-  const signals = taggedSignals.filter((s) => signalFilter === "all" || s.action === signalFilter)
-  const goneFiltered = goneSignals.filter((s) => signalFilter === "all" || s.action === signalFilter)
+  const signals = taggedSignals
+    .filter((s) => signalFilter === "all" || s.action === signalFilter)
+    .slice()
+    .sort(compareByAction)
+  const goneFiltered = goneSignals
+    .filter((s) => signalFilter === "all" || s.action === signalFilter)
+    .slice()
+    .sort(compareByAction)
   const comparable = taggedSignals.filter((s) => s.level !== "allocation")
   const nNew = comparable.filter((s) => s.vsPrev === "new").length
   const nChanged = comparable.filter((s) => s.vsPrev === "changed").length
@@ -968,7 +965,7 @@ export default function QuantVsSubjectiveCharts() {
                 <p className="text-xs text-muted-foreground mt-0.5">
                   风险口径 · {data?.date ?? "—"}
                   {prevDay ? ` · 对比上一交易日 ${prevDay.date}` : ""}
-                  · 悬停看解读
+                  · 悬停看完整解读
                 </p>
                 {prevDay && (
                   <p className="text-[11px] text-muted-foreground mt-1">
@@ -977,7 +974,7 @@ export default function QuantVsSubjectiveCharts() {
                 )}
               </div>
               <div className="flex flex-wrap gap-1">
-                {(["all", "加码", "暂缓加码", "减码准备", "观望", "补风格", "控拥挤", "扩容"] as const).map((k) => (
+                {(["all", ...ACTION_ORDER] as const).map((k) => (
                   <button
                     key={k}
                     onClick={() => setSignalFilter(k)}
@@ -992,63 +989,19 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-0 flex-1 min-h-0 overflow-y-auto">
             {loading && !data ? (
               <p className="text-sm text-muted-foreground py-8 text-center">加载中…</p>
-            ) : !signals.length && !goneFiltered.length ? (
-              <p className="text-sm text-muted-foreground py-8 text-center">当前截面没有达到阈值的信号。</p>
             ) : (
-              <>
-                <ul className="divide-y divide-border">
-                  {signals.map((s) => {
-                    const clickable = s.level === "product" || s.level === "sector"
-                    const active = clickable && holdingFocus?.level === s.level && holdingFocus.key === s.key
-                    return (
-                      <li key={`${s.level}-${s.key}-${s.type}`}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (s.level !== "product" && s.level !== "sector") return
-                                setHoldingFocus({ level: s.level, key: s.key })
-                                document.getElementById("section-holding-ts")?.scrollIntoView({ behavior: "smooth", block: "start" })
-                              }}
-                              className={`w-full text-left py-1.5 px-1 -mx-1 rounded-md ${clickable ? "cursor-pointer hover:bg-muted/60" : "cursor-default"} ${active ? "bg-muted/80" : ""}`}
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium ${ACTION_STYLE[s.action]}`}>{s.action}</span>
-                                <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
-                                {s.flow && s.flow.tag !== "变化很小" && (
-                                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${MARGIN_TAG_STYLE[s.flow.tag]}`}>{s.flow.tag}</span>
-                                )}
-                                {prevDay && s.level !== "allocation" && (
-                                  <VsPrevBadge vsPrev={s.vsPrev} prevAction={s.prevAction} action={s.action} />
-                                )}
-                              </div>
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="right" sideOffset={8} className="max-w-xs text-left leading-relaxed whitespace-normal">
-                            <SignalHoverDetail signal={s} />
-                          </TooltipContent>
-                        </Tooltip>
-                      </li>
-                    )
-                  })}
-                </ul>
-                {goneFiltered.length > 0 && (
-                  <div className="mt-3 rounded-md border border-dashed border-border p-2.5">
-                    <p className="text-[11px] font-medium text-muted-foreground mb-1.5">
-                      上一交易日有、本日已消失 · {goneFiltered.length}
-                    </p>
-                    <ul className="space-y-1">
-                      {goneFiltered.map((s) => (
-                        <li key={`gone-${s.level}-${s.key}`} className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium opacity-70 ${ACTION_STYLE[s.action]}`}>{s.action}</span>
-                          <span className="truncate">{s.name} · 昨日{s.action}，本日未再进入名单</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </>
+              <MomSignalTable
+                signals={signals}
+                prevExposure={prevExposure}
+                gone={goneFiltered}
+                showPrevChange={Boolean(prevDay)}
+                activeKey={holdingFocus ? `${holdingFocus.level}:${holdingFocus.key}` : undefined}
+                onRowClick={(s) => {
+                  if (s.level !== "product" && s.level !== "sector") return
+                  setHoldingFocus({ level: s.level, key: s.key })
+                  document.getElementById("section-holding-ts")?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }}
+              />
             )}
           </CardContent>
           </Card>
@@ -1455,33 +1408,6 @@ function AccountLane({
   )
 }
 
-function SignalHoverDetail({ signal }: { signal: MomSignal }) {
-  const flow = signal.flow
-  const q = flow?.quantBreadth
-  const s = flow?.subjBreadth
-  const qCutPct = q && q.total > 0 ? Math.round((q.cut / q.total) * 100) : null
-  const sAddPct = s && s.total > 0 ? Math.round((s.add / s.total) * 100) : null
-  const breadth = [
-    q && q.total > 0 ? `${q.cut}/${q.total} 量化户减多头（${qCutPct}%）` : null,
-    s && s.total > 0 ? `主观 ${sAddPct}% 户加多头（${s.add}/${s.total}）` : null,
-  ].filter(Boolean).join(" · ")
-  return (
-    <div className="space-y-1.5">
-      <p>{signal.detail}</p>
-      {flow && flow.tag !== "变化很小" && (
-        <p className="tabular-nums opacity-90">
-          {flow.tag}{flow.cutPnl ? ` · ${flow.cutPnl}` : ""}
-          <br />
-          量化 {fmtFlowYuan(flow.q1d)} · 主观 {fmtFlowYuan(flow.s1d)}
-          <br />
-          5日 {fmtFlowYuan(flow.q5d)} / {fmtFlowYuan(flow.s5d)}
-        </p>
-      )}
-      {breadth ? <p className="opacity-90">{breadth}</p> : null}
-    </div>
-  )
-}
-
 function signalLabel(s: string): string {
   switch (s) {
     case "consensus_long": return "共识做多"
@@ -1499,32 +1425,6 @@ function pctClass(n: number): string {
   if (n > 0.15) return "text-red-600 dark:text-red-400"
   if (n < -0.15) return "text-emerald-600 dark:text-emerald-400"
   return "text-muted-foreground"
-}
-
-function VsPrevBadge({
-  vsPrev,
-  prevAction,
-  action,
-}: {
-  vsPrev: SignalVsPrev
-  prevAction?: ActionKind
-  action: ActionKind
-}) {
-  if (vsPrev === "new") {
-    return (
-      <span className="shrink-0 rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-        新增
-      </span>
-    )
-  }
-  if (vsPrev === "changed" && prevAction) {
-    return (
-      <span className="shrink-0 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-        昨日{prevAction} → {action}
-      </span>
-    )
-  }
-  return null
 }
 
 function Kpi({ title, value, hint, accent, help }: { title: string; value: string; hint: string; accent?: string; help?: React.ReactNode }) {

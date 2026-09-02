@@ -12,6 +12,8 @@ export const PERM_COLUMNS: { key: keyof PagePermissions; label: string; hint?: s
   { key: "aiResearcher", label: "AI 研究员" },
   { key: "pfOperations", label: "私募基金-运维" },
   { key: "pfInvestmentPool", label: "私募基金-投资（投资池）", hint: "勾选后可访问投资概览、在管产品、FOF底层、资料列表" },
+  { key: "pfTraderManage", label: "盘手管理", hint: "勾选后可在运维团队数据中关联产品与 MOM 账户" },
+  { key: "pfCompareAccount", label: "修改对比账户", hint: "勾选后可在产品页账户对比中切换对比账户" },
 ]
 
 export function buildPermissionsSnapshot(source: PagePermissions | undefined): PagePermissions {

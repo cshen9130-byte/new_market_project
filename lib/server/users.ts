@@ -9,6 +9,8 @@ export type PagePermissions = {
   pfOperations?: boolean
   pfInvestmentAlt?: boolean
   pfInvestmentPool?: boolean
+  pfTraderManage?: boolean
+  pfCompareAccount?: boolean
   /** 指令模块角色：基金经理 / 总经理 / 产品运维（旧字段，兼容单角色） */
   instructionRole?: "fund_manager" | "general_manager" | "ops" | ""
   /** 指令模块角色列表；一个账户可同时担任多个角色 */
@@ -144,6 +146,11 @@ export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
   await ensureTable()
   const rows = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users ORDER BY created_at`)
   return rows.map((r) => ({ id: r.id, email: r.email, name: r.name, role: r.role, permissions: parsePermissions(r.permissions) }))
+}
+
+export async function getRequestUser(req: Request): Promise<Omit<StoredUser, "passwordHash"> | null> {
+  const userId = String(req.headers.get("x-market-user-id") || "").trim()
+  return userId ? getUserById(userId) : null
 }
 
 export async function getUserById(id: string): Promise<Omit<StoredUser, "passwordHash"> | null> {

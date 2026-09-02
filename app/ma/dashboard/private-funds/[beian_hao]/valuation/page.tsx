@@ -184,7 +184,7 @@ type AllocationTrendData = {
 const VALUATION_TABS = [
   "业绩指标",
   "产品表现",
-  "持仓要素",
+  "持仓概览",
   "持仓分析",
   "收益分析",
   "归因分析",
@@ -343,7 +343,7 @@ export default function FundValuationAnalysisPage() {
   const [data, setData] = useState<ValuationData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<(typeof VALUATION_TABS)[number]>("持仓要素")
+  const [activeTab, setActiveTab] = useState<(typeof VALUATION_TABS)[number]>("持仓概览")
   const [configMode, setConfigMode] = useState<ConfigMode>("major")
 
   const [filterPeriod, setFilterPeriod] = useState("一年")
@@ -561,7 +561,7 @@ export default function FundValuationAnalysisPage() {
     if (!beian_hao || loading || error || data?.layout_type !== "fof" || !data.has_data) return
     if (
       activeTab !== "收益分析"
-      && activeTab !== "持仓要素"
+      && activeTab !== "持仓概览"
       && activeTab !== "归因分析"
       && activeTab !== "持仓分析"
     ) return
@@ -703,7 +703,7 @@ export default function FundValuationAnalysisPage() {
     if (activeTab === "持仓分析") {
       void loadTrendData()
     }
-    if (activeTab === "收益分析" || activeTab === "持仓要素" || activeTab === "归因分析" || activeTab === "持仓分析") {
+    if (activeTab === "收益分析" || activeTab === "持仓概览" || activeTab === "归因分析" || activeTab === "持仓分析") {
       void loadReturnCurves()
     }
     if (
@@ -934,7 +934,7 @@ export default function FundValuationAnalysisPage() {
       <div className="flex items-center gap-6 border-b border-zinc-100 mb-4 overflow-x-auto bg-white px-1">
         {VALUATION_TABS.map((tab) => {
           const enabled =
-            tab === "持仓要素"
+            tab === "持仓概览"
             || tab === "持仓分析"
             || tab === "收益分析"
             || tab === "产品表现"
@@ -974,7 +974,7 @@ export default function FundValuationAnalysisPage() {
         </div>
       )}
 
-      {!loading && !error && data && !data.has_data && activeTab === "持仓要素" && (
+      {!loading && !error && data && !data.has_data && activeTab === "持仓概览" && (
         <div className="bg-white rounded-lg border border-zinc-100 p-10 text-center">
           <p className="text-zinc-700 font-medium mb-2">暂无估值表数据</p>
           <p className="text-sm text-zinc-500 max-w-lg mx-auto leading-relaxed">
@@ -1229,7 +1229,7 @@ export default function FundValuationAnalysisPage() {
         </>
       )}
 
-      {!loading && !error && data?.has_data && activeTab === "持仓要素" && (
+      {!loading && !error && data?.has_data && activeTab === "持仓概览" && (
         <>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-1 bg-white rounded-lg border border-zinc-100 p-4 shadow-sm">

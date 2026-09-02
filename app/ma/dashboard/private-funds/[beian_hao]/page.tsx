@@ -35,6 +35,7 @@ import { NavAttributionPanel } from "./components/NavAttributionPanel"
 import { FundCompanyPanel } from "./components/FundCompanyPanel"
 import { FundProfilePanel } from "./components/FundProfilePanel"
 import { FundMaterialsPanel } from "./components/FundMaterialsPanel"
+import { FundAccountComparePanel } from "./components/FundAccountComparePanel"
 import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
 import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
@@ -89,6 +90,7 @@ const FUND_DETAIL_TABS = [
   { key: "company", label: "基金公司" },
   { key: "profile", label: "基金档案" },
   { key: "materials", label: "相关资料" },
+  { key: "account-compare", label: "账户对比" },
 ] as const
 
 type FundDetailTab = (typeof FUND_DETAIL_TABS)[number]["key"]
@@ -2924,7 +2926,18 @@ export default function PrivateFundDetailPage() {
         />
       )}
 
-      {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && detailTab !== "company" && detailTab !== "profile" && detailTab !== "materials" && (
+      {detailTab === "account-compare" && (
+        <FundAccountComparePanel
+          beian_hao={beian_hao}
+          productName={displayName}
+          dateFrom={activeFrom}
+          dateTo={activeTo}
+          rows={filteredNavRows}
+          navType={filterNavType}
+        />
+      )}
+
+      {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && detailTab !== "company" && detailTab !== "profile" && detailTab !== "materials" && detailTab !== "account-compare" && (
         <div className="min-h-[320px]" />
       )}
     </div>

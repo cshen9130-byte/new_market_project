@@ -128,7 +128,7 @@ export function HelpSignals() {
         <li>扩容：量化户数占比 vs 量化保证金占比差得太大</li>
       </ul>
       <p>主动调仓 = 手数变化 × 当日价，不含涨跌。每条信号会对比<strong className="text-foreground">上一交易日</strong>：新增、动作变化（如观望→加码）、或维持。下方「已消失」是昨日在名单里、今日掉出阈值或未进前 18 的条目。</p>
-      <p>列表只显示动作、标题和关键变动标签。悬停一行可看完整解读、1 日/5 日调仓金额和账户广度。点选截面日期可看任意历史日；点信号历史图上的日期也会跳转。点击板块/品种信号会筛下方多空持仓图。</p>
+      <p>表格按列拆开动作、板块/品种、方向解读、两侧风险%、边际标签、账户广度和强弱。长句解读、调仓金额放在悬停框里。点选截面日期可看任意历史日；点信号历史图上的日期也会跳转。点击板块/品种信号会筛下方多空持仓图。</p>
     </ChartHelp>
   )
 }
@@ -245,6 +245,7 @@ export function HelpBriefingMomSignals({ volDays = 20 }: { volDays?: number }) {
       <p>板块净风险 = 该板块内各品种净风险相加（板块内多空可以对冲）。量化、主观各自有一组风险预算，两边的%不能加总。</p>
       <Formula>本组风险预算 = Σ |品种净风险|</Formula>
       <Formula>风险% = 该板块净风险 / 本组风险预算　（正=净多，负=净空）</Formula>
+      <p>板块表列出农产到国债共 10 个板块（不含「其他」）；未达阈值的记为「中性」，不从名单里拿掉。</p>
       <p>决策信号阈值（q = |量化风险%|，s = |主观风险%|）：</p>
       <ul className="list-disc pl-4 space-y-1">
         <li>加码：同向，且 q、s 都 ≥ 3%；1 日主动调仓同向加仓</li>
@@ -253,8 +254,7 @@ export function HelpBriefingMomSignals({ volDays = 20 }: { volDays?: number }) {
         <li>观望：反向，且 q、s 都 ≥ 3%</li>
         <li>补风格：一侧 ≥ 8%，另一侧 &lt; 1.5%</li>
         <li>控拥挤：同向且 q + s ≥ 25%</li>
-        <li>中性：其余</li>
-        <li>扩容：量化户数占比与量化保证金占比差得太大（只出现在下方列表）</li>
+        <li>中性：其余（板块表列出，品种表不列）</li>
       </ul>
       <p>信号强弱分数（封顶 100）。book = 该板块占全书量化风险%绝对值 + 占全书主观风险%绝对值。</p>
       <Formula>控拥挤：q + s + book</Formula>
@@ -265,6 +265,8 @@ export function HelpBriefingMomSignals({ volDays = 20 }: { volDays?: number }) {
       <Formula>中性：max(q, s)</Formula>
       <p>档位：分数 ≥ 20 为<strong className="text-foreground">强</strong>，≥ 8 为<strong className="text-foreground">中</strong>，其余为<strong className="text-foreground">弱</strong>。表上数字是这个分数取整。</p>
       <p>解读列：共识做多 / 共识做空 / 方向分歧 / 仅量化 / 仅主观 / 共识但拥挤 / 中性。</p>
+      <p>量化风贡 / 主观风贡的箭头是风险% 今减昨：↑ 更偏多（空得更少），↓ 更偏空（多得更少）。边际用同一组数字：两边变动同号才是同向加/减仓，异号是边际背离。</p>
+      <p>量化户 / 主观户是手数调仓的账户数（加多 1/7 = 7 户里有 1 户加了多）。风贡% = 该板块净风险 / 该组风险预算，别人板块变大或波动变化也会让%下降，所以可以↓但户列为 —。</p>
     </ChartHelp>
   )
 }

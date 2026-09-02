@@ -88,6 +88,8 @@ export interface FlowView {
   s5d: number
   qPrice1d: number
   sPrice1d: number
+  qLive1: boolean
+  sLive1: boolean
   quantBreadth: { add: number; cut: number; flat: number; total: number }
   subjBreadth: { add: number; cut: number; flat: number; total: number }
   quantCells: AccountFlowCell[]
@@ -98,11 +100,30 @@ export interface MomSignal {
   key: string
   name: string
   type: SignalKind | "crowded" | "allocation"
-  action: ActionKind
+  action: DecisionAction
   title: string
   detail: string
   strength: number
   flow?: FlowView
+  quantPct?: number
+  subjPct?: number
+}
+
+export const MOM_SECTORS = ["农产", "生鲜", "贵金属", "有色", "新能源", "黑色", "能源化工", "航运", "股指", "国债"] as const
+
+export function emptySleevePct(): SleevePct {
+  return { riskPctGroup: 0, equityPctGroup: 0, riskPctBook: 0, equityPctBook: 0 }
+}
+
+/** Fill missing canonical sectors so the briefing table always has one row per 板块. */
+export function completeSectorRows(sectors: SignalSourceRow[]): SignalSourceRow[] {
+  const byKey = new Map(sectors.map((r) => [r.key, r]))
+  return MOM_SECTORS.map((name) => byKey.get(name) ?? {
+    key: name,
+    name,
+    quant: emptySleevePct(),
+    subjective: emptySleevePct(),
+  })
 }
 
 export type FlowMap = Record<string, RowFlow>
@@ -292,6 +313,8 @@ export function classifyRowFlow(qStock: number, sStock: number, flow: RowFlow): 
     s5d: s5,
     qPrice1d: flow.quant.price1d,
     sPrice1d: flow.subjective.price1d,
+    qLive1,
+    sLive1,
     quantBreadth: {
       add: flow.quant.addAccounts,
       cut: flow.quant.cutAccounts,
@@ -319,6 +342,81 @@ export function consensusActionWithFlow(crowded: boolean, flow: FlowView | null)
   if (f5 === "diverge") return "暂缓加码"
   if (f5 === "both_cut") return "减码准备"
   return "加码"
+}
+
+/** 今−昨 signed risk%, rounded to the table’s 0.1%. */
+export function signedPctDelta(today: number, yesterday: number): number {
+  return round1(today) - round1(yesterday)
+}
+
+/** 边际 from the 量化今/昨 · 主观今/昨 numbers (not lot trades). */
+export function classifyPctDelta(
+  qToday: number,
+  qYest: number,
+  sToday: number,
+  sYest: number,
+): { tag: MarginTag; kind1d: FlowKind } {
+  const dq = signedPctDelta(qToday, qYest)
+  const ds = signedPctDelta(sToday, sYest)
+  const qLive = dq !== 0
+  const sLive = ds !== 0
+  const sameStock = (qToday > 0.15 && sToday > 0.15) || (qToday < -0.15 && sToday < -0.15)
+  const dir = qToday + sToday < 0 ? -1 : 1
+
+  if (!qLive && !sLive) return { tag: "变化很小", kind1d: "flat" }
+  if (!qLive || !sLive) return { tag: "一侧变动", kind1d: "one_sided" }
+
+  if (sameStock) {
+    if (Math.sign(dq) === Math.sign(ds)) {
+      return dq * dir > 0
+        ? { tag: "同向加仓", kind1d: "both_add" }
+        : { tag: "同向减仓", kind1d: "both_cut" }
+    }
+    return { tag: "边际背离", kind1d: "diverge" }
+  }
+
+  const qOwn = dq * (qToday < 0 ? -1 : 1)
+  const sOwn = ds * (sToday < 0 ? -1 : 1)
+  if (qOwn < 0 && sOwn < 0) return { tag: "分歧收敛", kind1d: "both_cut" }
+  if (qOwn > 0 && sOwn > 0) return { tag: "分歧加剧", kind1d: "diverge" }
+  return { tag: "分歧加剧", kind1d: "diverge" }
+}
+
+export function consensusActionFromPctKind(kind: FlowKind, fallback: DecisionAction): DecisionAction {
+  if (fallback !== "加码" && fallback !== "暂缓加码" && fallback !== "减码准备") return fallback
+  if (kind === "diverge") return "暂缓加码"
+  if (kind === "both_cut") return "减码准备"
+  if (kind === "both_add") return "加码"
+  return fallback
+}
+
+export function applyPctMargin(
+  signal: MomSignal,
+  prev: { q: number; s: number } | undefined,
+): MomSignal {
+  if (!prev || signal.quantPct == null || signal.subjPct == null) return signal
+  const { tag, kind1d } = classifyPctDelta(signal.quantPct, prev.q, signal.subjPct, prev.s)
+  return {
+    ...signal,
+    action: consensusActionFromPctKind(kind1d, signal.action),
+    flow: signal.flow ? { ...signal.flow, tag, kind1d, cutPnl: null } : signal.flow,
+  }
+}
+
+export function pctChangeLines(
+  qToday: number,
+  qYest: number,
+  sToday: number,
+  sYest: number,
+): string[] {
+  const line = (today: number, yest: number, sleeve: string) => {
+    const d = signedPctDelta(today, yest)
+    if (d === 0) return null
+    const dir = today < -0.15 || (Math.abs(today) <= 0.15 && yest < -0.15) ? "空" : "多"
+    const add = dir === "空" ? d < 0 : d > 0
+    return `${sleeve}${add ? "加" : "减"}${dir}`
+  }
+  return [line(qToday, qYest, "量化"), line(sToday, sYest, "主观")].filter((x): x is string => Boolean(x))
 }
 
 export function lookupFlow(flows: FlowMap | undefined, level: string, key: string): RowFlow | undefined {
@@ -408,10 +506,10 @@ export function flowSummaryLine(fv: FlowView): string {
   return `1日 量化 ${fmtFlowYuan(fv.q1d)}、主观 ${fmtFlowYuan(fv.s1d)}；5日 量化 ${fmtFlowYuan(fv.q5d)}、主观 ${fmtFlowYuan(fv.s5d)}`
 }
 
-function dirLabel(pct: number): string {
-  if (pct > 0.15) return `多 ${pct.toFixed(1)}%`
-  if (pct < -0.15) return `空 ${Math.abs(pct).toFixed(1)}%`
-  return `平 ${pct.toFixed(1)}%`
+export function exposureDirLabel(pct: number): string {
+  if (pct > 0.15) return `多${pct.toFixed(1)}%`
+  if (pct < -0.15) return `空${Math.abs(pct).toFixed(1)}%`
+  return `平${pct.toFixed(1)}%`
 }
 
 function flowSentence(fv: FlowView | null, unit: string): string {
@@ -462,6 +560,7 @@ export function buildMomSignals(
   quantCount: number,
   subjCount: number,
   flows?: FlowMap,
+  opts?: { includeNeutral?: boolean; limit?: number },
 ): MomSignal[] {
   const out: MomSignal[] = []
   const budget = metric === "risk" ? "风险预算" : "保证金"
@@ -491,41 +590,51 @@ export function buildMomSignals(
         out.push({
           level, key: row.key, name: label, type: "crowded", action: "控拥挤",
           title: `${label} 共识${dir}但已拥挤${fv && fv.tag !== "变化很小" ? ` · ${fv.tag}` : ""}`,
-          detail: `量化 ${dirLabel(q)}、主观 ${dirLabel(s)}，两侧合计${expName} ${(aq + as_).toFixed(1)}%。方向一致，但组合已偏拥挤，加码前先设总量上限。${extra}`,
+          detail: `量化 ${exposureDirLabel(q)}、主观 ${exposureDirLabel(s)}，两侧合计${expName} ${(aq + as_).toFixed(1)}%。方向一致，但组合已偏拥挤，加码前先设总量上限。${extra}`,
           strength,
           flow: fv ?? undefined,
+          quantPct: q,
+          subjPct: s,
         })
       } else if (action === "暂缓加码") {
         out.push({
           level, key: row.key, name: label, type: signal, action,
           title: consensusTitle(label, dir, beta, heavy, action, fv),
-          detail: `量化 ${dirLabel(q)}、主观 ${dirLabel(s)}。${extra || "存量同向但边际反向，暂缓加码。"}`,
+          detail: `量化 ${exposureDirLabel(q)}、主观 ${exposureDirLabel(s)}。${extra || "存量同向但边际反向，暂缓加码。"}`,
           strength,
           flow: fv ?? undefined,
+          quantPct: q,
+          subjPct: s,
         })
       } else if (action === "减码准备") {
         out.push({
           level, key: row.key, name: label, type: signal, action,
           title: consensusTitle(label, dir, beta, heavy, action, fv),
-          detail: `量化 ${dirLabel(q)}、主观 ${dirLabel(s)}。${extra || "两侧都在减该方向，先准备减码。"}`,
+          detail: `量化 ${exposureDirLabel(q)}、主观 ${exposureDirLabel(s)}。${extra || "两侧都在减该方向，先准备减码。"}`,
           strength,
           flow: fv ?? undefined,
+          quantPct: q,
+          subjPct: s,
         })
       } else if (heavy) {
         out.push({
           level, key: row.key, name: label, type: signal, action: "加码",
           title: consensusTitle(label, dir, beta, true, "加码", fv),
-          detail: `量化 ${dirLabel(q)}、主观 ${dirLabel(s)}（占各侧${budget}）。两边同时重仓，方向共识强。可作为 MOM 加码该${unit}${beta} 的依据：给已有同向账户加钱，或新引进该方向投顾。${extra}`,
+          detail: `量化 ${exposureDirLabel(q)}、主观 ${exposureDirLabel(s)}（占各侧${budget}）。两边同时重仓，方向共识强。可作为 MOM 加码该${unit}${beta} 的依据：给已有同向账户加钱，或新引进该方向投顾。${extra}`,
           strength,
           flow: fv ?? undefined,
+          quantPct: q,
+          subjPct: s,
         })
       } else {
         out.push({
           level, key: row.key, name: label, type: signal, action: "加码",
           title: consensusTitle(label, dir, beta, false, "加码", fv),
-          detail: `量化 ${dirLabel(q)}、主观 ${dirLabel(s)}。方向一致但仓位未到重仓。${extra || `可小幅增加该${unit}暴露，或观察能否走强后再加。`}`,
+          detail: `量化 ${exposureDirLabel(q)}、主观 ${exposureDirLabel(s)}。方向一致但仓位未到重仓。${extra || `可小幅增加该${unit}暴露，或观察能否走强后再加。`}`,
           strength,
           flow: fv ?? undefined,
+          quantPct: q,
+          subjPct: s,
         })
       }
     } else if (signal === "divergence") {
@@ -534,25 +643,42 @@ export function buildMomSignals(
       out.push({
         level, key: row.key, name: label, type: "divergence", action: "观望",
         title: `${label} 量化与主观方向相反${tag}`,
-        detail: `量化 ${dirLabel(q)}、主观 ${dirLabel(s)}。风格分歧，暂不加该${unit} beta。${extra || "可等一侧被市场验证，或保持中性、用另一风格对冲。新投顾不要再往同一方向堆。"}`,
+        detail: `量化 ${exposureDirLabel(q)}、主观 ${exposureDirLabel(s)}。风格分歧，暂不加该${unit} beta。${extra || "可等一侧被市场验证，或保持中性、用另一风格对冲。新投顾不要再往同一方向堆。"}`,
         strength,
         flow: fv ?? undefined,
+        quantPct: q,
+        subjPct: s,
       })
     } else if (signal === "quant_only") {
       out.push({
         level, key: row.key, name: label, type: "quant_only", action: "补风格",
         title: `${label} 仅量化重仓，主观几乎空白`,
-        detail: `量化 ${dirLabel(q)}，主观 ${dirLabel(s)}。若希望该观点被另一风格确认，可考虑增加主观投顾覆盖该${unit}；若认定量化信号足够，则优先给量化账户加钱而非新开主观仓。`,
+        detail: `量化 ${exposureDirLabel(q)}，主观 ${exposureDirLabel(s)}。若希望该观点被另一风格确认，可考虑增加主观投顾覆盖该${unit}；若认定量化信号足够，则优先给量化账户加钱而非新开主观仓。`,
         strength,
         flow: fv ?? undefined,
+        quantPct: q,
+        subjPct: s,
       })
     } else if (signal === "subj_only") {
       out.push({
         level, key: row.key, name: label, type: "subj_only", action: "补风格",
         title: `${label} 仅主观重仓，量化几乎空白`,
-        detail: `主观 ${dirLabel(s)}，量化 ${dirLabel(q)}。可考虑引进量化投顾覆盖该${unit}做分散确认；若只想放大已有主观观点，则给主观账户加钱。`,
+        detail: `主观 ${exposureDirLabel(s)}，量化 ${exposureDirLabel(q)}。可考虑引进量化投顾覆盖该${unit}做分散确认；若只想放大已有主观观点，则给主观账户加钱。`,
         strength,
         flow: fv ?? undefined,
+        quantPct: q,
+        subjPct: s,
+      })
+    } else if (opts?.includeNeutral && level === "sector") {
+      const extra = flowSentence(fv, unit)
+      out.push({
+        level, key: row.key, name: label, type: "neutral", action: "中性",
+        title: `${label} 未达加码/观望阈值`,
+        detail: `量化 ${exposureDirLabel(q)}、主观 ${exposureDirLabel(s)}。两侧仓位都偏轻或一侧不够大，记为中性。${extra}`,
+        strength,
+        flow: fv ?? undefined,
+        quantPct: q,
+        subjPct: s,
       })
     }
   }
@@ -578,7 +704,13 @@ export function buildMomSignals(
   }
 
   out.sort((a, b) => b.strength - a.strength)
-  return out.slice(0, 18)
+  if (!opts) return out.slice(0, 18)
+  const limit = opts.limit ?? 18
+  if (!limit) return out
+  const keep = out.filter((s) => s.level !== "product")
+  const productRows = out.filter((s) => s.level === "product")
+  return [...keep, ...productRows.slice(0, Math.max(0, limit - keep.length))]
+    .sort((a, b) => b.strength - a.strength)
 }
 
 export type ActionCounts = Record<ActionKind, number>
@@ -841,7 +973,7 @@ export function buildSignalHistory(
     const counts = emptyActionCounts()
     const items: HistSignalItem[] = []
     for (const s of signals) {
-      if (s.level === "allocation") continue
+      if (s.level === "allocation" || s.action === "中性") continue
       counts[s.action] += 1
       items.push({
         level: s.level,
@@ -866,7 +998,11 @@ export function tagSignalsVsPrev(
   const tagged = current.map((s) => {
     if (s.level === "allocation") return { ...s, vsPrev: "same" as const }
     const prev = prevMap.get(signalRowKey(s.level, s.key))
-    if (!prev) return { ...s, vsPrev: "new" as const }
+    if (!prev) {
+      // 中性 rows are always listed; missing yesterday only means they also had no signal.
+      if (s.action === "中性") return { ...s, vsPrev: "same" as const }
+      return { ...s, vsPrev: "new" as const }
+    }
     if (prev.action === s.action) return { ...s, vsPrev: "same" as const, prevAction: prev.action }
     return { ...s, vsPrev: "changed" as const, prevAction: prev.action }
   })

@@ -3,88 +3,44 @@
 import { useEffect, useMemo, useState } from "react"
 import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
 import { HelpBriefingMomSignals } from "@/components/ma/quant-vs-subjective-help"
+import { ACTION_ORDER, MomSignalTable } from "@/components/ma/mom-signal-table"
 import {
+  applyPctMargin,
   buildMomSignals,
-  exposurePct,
-  rowDecision,
-  rowStrength,
-  signalKindLabel,
+  buildSignalHistory,
+  completeSectorRows,
   signalRowKey,
-  strengthTier,
-  type ActionKind,
-  type DecisionAction,
+  tagSignalsVsPrev,
   type FlowMap,
   type MomSignal,
-  type SignalSourceRow,
-  type StrengthTier,
+  type TsProductPoint,
+  type TsSectorPoint,
 } from "@/lib/ma/quant-vs-subjective-signals"
-
-const ACTION_STYLE: Record<DecisionAction, { bg: string; color: string; border: string }> = {
-  加码: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
-  暂缓加码: { bg: "#f1f5f9", color: "#334155", border: "#cbd5e1" },
-  减码准备: { bg: "#fdf2f8", color: "#be185d", border: "#fbcfe8" },
-  观望: { bg: "#f5f3ff", color: "#6d28d9", border: "#ddd6fe" },
-  补风格: { bg: "#f0f9ff", color: "#0369a1", border: "#bae6fd" },
-  控拥挤: { bg: "#fffbeb", color: "#b45309", border: "#fde68a" },
-  扩容: { bg: "#ecfdf5", color: "#047857", border: "#a7f3d0" },
-  中性: { bg: "#f8fafc", color: "#64748b", border: "#e2e8f0" },
-}
-
-const ACTION_ORDER: ActionKind[] = ["加码", "暂缓加码", "减码准备", "观望", "补风格", "控拥挤", "扩容"]
 
 interface ApiData {
   ok: boolean
   date?: string | null
   quantShare?: number
-  sectors?: SignalSourceRow[]
-  products?: SignalSourceRow[]
+  sectors?: { key: string; name: string }[]
+  products?: { key: string; name: string; sector?: string }[]
   signals?: MomSignal[]
   groups?: { quant: { nAccounts: number }; subjective: { nAccounts: number } } | null
   volDays?: number
   flows?: FlowMap
+  sectorTs?: TsSectorPoint[]
+  productTs?: TsProductPoint[]
   error?: string
 }
 
 function countLine(signals: MomSignal[]): string {
-  const parts = ACTION_ORDER
-    .map((action) => {
-      const n = signals.filter((s) => s.action === action).length
-      return n > 0 ? `${action} ${n} 条` : null
-    })
-    .filter(Boolean)
-  return parts.join("、") || "无达到阈值的信号"
-}
-
-function fmtPct(n: number, signed = true): string {
-  const body = `${Math.abs(n).toFixed(1)}%`
-  if (!signed) return body
-  if (n > 0.05) return `+${body}`
-  if (n < -0.05) return `-${body}`
-  return body
-}
-
-function pctColor(n: number): string {
-  if (n > 0.15) return "#dc2626"
-  if (n < -0.15) return "#059669"
-  return "#64748b"
-}
-
-const TIER_STYLE: Record<StrengthTier, string> = {
-  强: "#b91c1c",
-  中: "#b45309",
-  弱: "#64748b",
-}
-
-function ActionBadge({ action }: { action: DecisionAction }) {
-  const tone = ACTION_STYLE[action]
-  return (
-    <span
-      className="inline-block shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none"
-      style={{ background: tone.bg, color: tone.color, borderColor: tone.border }}
-    >
-      {action}
-    </span>
-  )
+  const parts: string[] = []
+  for (const action of ACTION_ORDER) {
+    const n = signals.filter((s) => s.action === action).length
+    if (n > 0) parts.push(`${action} ${n} 条`)
+  }
+  const nNeutral = signals.filter((s) => s.action === "中性").length
+  if (nNeutral > 0) parts.push(`中性 ${nNeutral} 条`)
+  return parts.join("、") || "无板块"
 }
 
 export default function BriefingMomSignals() {
@@ -92,8 +48,9 @@ export default function BriefingMomSignals() {
   const [error, setError] = useState<string | null>(null)
   const [date, setDate] = useState<string | null>(null)
   const [signals, setSignals] = useState<MomSignal[]>([])
-  const [sectors, setSectors] = useState<SignalSourceRow[]>([])
-  const [flows, setFlows] = useState<FlowMap | undefined>(undefined)
+  const [sectorTs, setSectorTs] = useState<TsSectorPoint[]>([])
+  const [productTs, setProductTs] = useState<TsProductPoint[]>([])
+  const [productNames, setProductNames] = useState<Record<string, string>>({})
   const [volDays, setVolDays] = useState(20)
 
   useEffect(() => {
@@ -108,21 +65,24 @@ export default function BriefingMomSignals() {
         if (j.ok === false) {
           setError(j.error ?? "加载失败")
           setSignals([])
-          setSectors([])
+          setSectorTs([])
+          setProductTs([])
           return
         }
         setDate(j.date ?? null)
-        setSectors(j.sectors ?? [])
-        setFlows(j.flows)
+        setSectorTs(j.sectorTs ?? [])
+        setProductTs(j.productTs ?? [])
+        setProductNames(Object.fromEntries((j.products ?? []).map((p) => [p.key, p.name])))
         setVolDays(j.volDays ?? 20)
         const built = buildMomSignals(
-          j.sectors ?? [],
+          completeSectorRows(j.sectors ?? []),
           (j.products ?? []).slice(0, 40),
           "risk",
           j.quantShare ?? 0,
           j.groups?.quant.nAccounts ?? 0,
           j.groups?.subjective.nAccounts ?? 0,
           j.flows,
+          { includeNeutral: true, limit: 0 },
         )
         setSignals(built.length ? built : (j.signals ?? []))
       })
@@ -130,7 +90,8 @@ export default function BriefingMomSignals() {
         if (stop) return
         setError(e instanceof Error ? e.message : "请求失败")
         setSignals([])
-        setSectors([])
+        setSectorTs([])
+        setProductTs([])
       })
       .finally(() => {
         if (!stop) setLoading(false)
@@ -138,19 +99,62 @@ export default function BriefingMomSignals() {
     return () => { stop = true }
   }, [])
 
-  const summary = useMemo(() => countLine(signals), [signals])
+  const signalHistory = useMemo(
+    () => buildSignalHistory(sectorTs, productTs, (code) => productNames[code] ?? code),
+    [sectorTs, productTs, productNames],
+  )
+  const prevDay = useMemo(() => {
+    if (!date || !signalHistory.length) return undefined
+    for (let i = signalHistory.length - 1; i >= 0; i--) {
+      if (signalHistory[i].date < date) return signalHistory[i]
+    }
+    return undefined
+  }, [date, signalHistory])
 
-  const sectorRows = useMemo(() => {
-    return [...sectors]
-      .map((row) => {
-        const q = exposurePct(row.quant, "risk")
-        const s = exposurePct(row.subjective, "risk")
-        const decision = rowDecision(row.quant, row.subjective, "risk", flows?.[signalRowKey("sector", row.key)])
-        const strength = rowStrength(row.quant, row.subjective, "risk", flows?.[signalRowKey("sector", row.key)])
-        return { row, q, s, decision, strength, weight: Math.abs(q) + Math.abs(s) }
-      })
-      .sort((a, b) => b.weight - a.weight)
-  }, [sectors, flows])
+  const prevExposure = useMemo(() => {
+    const map = new Map<string, { q: number; s: number }>()
+    const prevDate = prevDay?.date
+    if (!prevDate) return map
+    for (const r of sectorTs) {
+      if (r.date === prevDate) map.set(signalRowKey("sector", r.sector), { q: r.quantNetPct, s: r.subjNetPct })
+    }
+    for (const r of productTs) {
+      if (r.date === prevDate) map.set(signalRowKey("product", r.product), { q: r.quantNetPct, s: r.subjNetPct })
+    }
+    return map
+  }, [sectorTs, productTs, prevDay?.date])
+
+  const alignedSignals = useMemo(
+    () => signals.map((s) => applyPctMargin(s, prevExposure.get(signalRowKey(s.level, s.key)))),
+    [signals, prevExposure],
+  )
+
+  const summary = useMemo(
+    () => countLine(alignedSignals.filter((s) => s.level === "sector" && s.key !== "其他")),
+    [alignedSignals],
+  )
+
+  const { tagged: taggedSignals, gone: goneSignals } = useMemo(
+    () => tagSignalsVsPrev(alignedSignals, prevDay?.items),
+    [alignedSignals, prevDay],
+  )
+
+  const sectorSignals = useMemo(
+    () => taggedSignals.filter((s) => s.level === "sector" && s.key !== "其他"),
+    [taggedSignals],
+  )
+  const goneSectors = useMemo(
+    () => goneSignals.filter((s) => s.level === "sector" && s.key !== "其他"),
+    [goneSignals],
+  )
+  const productSignals = useMemo(
+    () => taggedSignals.filter((s) => s.level === "product" && s.action !== "中性"),
+    [taggedSignals],
+  )
+  const goneProducts = useMemo(
+    () => goneSignals.filter((s) => s.level === "product"),
+    [goneSignals],
+  )
 
   if (loading) {
     return <p className="text-sm text-[#8a9aaa] py-4">加载决策信号…</p>
@@ -164,90 +168,41 @@ export default function BriefingMomSignals() {
       <p className="text-sm leading-7 text-[#2a3a4a] mb-4 pl-1 border-l-4 border-[#c8a84b] bg-[#faf7ef] py-2 px-3 rounded-r">
         当前按风险口径生成
         {date ? <>，持仓截面 <span className="font-semibold">{date}</span></> : null}
-        。{summary}。
+        。板块 {summary}。
       </p>
 
-      {sectorRows.length > 0 && (
-        <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4" style={{ background: "#ffffff" }}>
-          <table className="w-full text-xs border-collapse" style={{ tableLayout: "fixed" }}>
-            <caption className="text-left px-4 py-2.5 text-sm font-semibold text-[#1a3a5c] border-b border-[#ece6d6]">
-              板块决策信号
-            </caption>
-            <colgroup>
-              <col style={{ width: "18%" }} />
-              <col style={{ width: "14%" }} />
-              <col style={{ width: "14%" }} />
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "22%" }} />
-            </colgroup>
-            <thead>
-              <tr style={{ background: "rgba(26,58,92,0.05)" }}>
-                <th className="text-left font-medium text-[#5a6a7a] pl-4 pr-2 py-2">板块</th>
-                <th className="text-right font-medium text-[#5a6a7a] px-2 py-2 whitespace-nowrap">量化风险%</th>
-                <th className="text-right font-medium text-[#5a6a7a] px-2 py-2 whitespace-nowrap">主观风险%</th>
-                <th className="text-left font-medium text-[#5a6a7a] px-2 py-2 whitespace-nowrap">决策信号</th>
-                <th className="text-left font-medium text-[#5a6a7a] px-2 py-2 whitespace-nowrap">
-                  <span className="inline-flex items-center gap-1">
-                    信号强弱
-                    <span className="no-print inline-flex font-sans font-normal">
-                      <HelpBriefingMomSignals volDays={volDays} />
-                    </span>
-                  </span>
-                </th>
-                <th className="text-left font-medium text-[#5a6a7a] pl-2 pr-4 py-2">解读</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sectorRows.map(({ row, q, s, decision, strength }, idx) => {
-                const tier = strengthTier(strength)
-                return (
-                <tr
-                  key={row.key}
-                  style={{ borderTop: idx === 0 ? undefined : "1px solid #ece6d6" }}
-                >
-                  <td className="pl-4 pr-2 py-2 font-medium text-[#1a3a5c] truncate">{row.name}</td>
-                  <td className="px-2 py-2 text-right tabular-nums whitespace-nowrap" style={{ color: pctColor(q) }}>{fmtPct(q)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums whitespace-nowrap" style={{ color: pctColor(s) }}>{fmtPct(s)}</td>
-                  <td className="px-2 py-2"><ActionBadge action={decision.action} /></td>
-                  <td className="px-2 py-2 whitespace-nowrap" style={{ color: TIER_STYLE[tier] }}>
-                    <span className="inline-flex items-baseline gap-1.5 tabular-nums">
-                      <span className="w-4 font-medium">{tier}</span>
-                      <span className="w-6 text-right text-[#8a9aaa]">{strength.toFixed(0)}</span>
-                    </span>
-                  </td>
-                  <td className="pl-2 pr-4 py-2 text-[#5a6a7a]">{signalKindLabel(decision.kind)}</td>
-                </tr>
-                )
-              })}
-            </tbody>
-          </table>
+      <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4 px-3 py-3" style={{ background: "#ffffff" }}>
+        <div className="flex items-center gap-1.5 mb-2">
+          <p className="text-sm font-semibold text-[#1a3a5c]">板块决策信号</p>
+          <span className="no-print inline-flex">
+            <HelpBriefingMomSignals volDays={volDays} />
+          </span>
+        </div>
+        <MomSignalTable
+          signals={sectorSignals}
+          prevExposure={prevExposure}
+          gone={goneSectors}
+          nameHeader="板块"
+          showLevel={false}
+          showPrevChange={Boolean(prevDay)}
+          emptyText="当前没有板块数据。"
+        />
+      </div>
+
+      {productSignals.length + goneProducts.length > 0 && (
+        <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4 px-3 py-3" style={{ background: "#ffffff" }}>
+          <p className="text-sm font-semibold text-[#1a3a5c] mb-2">品种决策信号</p>
+          <MomSignalTable
+            signals={productSignals}
+            prevExposure={prevExposure}
+            gone={goneProducts}
+            nameHeader="品种"
+            showLevel={false}
+            showPrevChange={Boolean(prevDay)}
+            emptyText="当前截面没有达到阈值的品种信号。"
+          />
         </div>
       )}
-
-      <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4" style={{ background: "#ffffff" }}>
-        {!signals.length ? (
-          <p className="text-sm text-[#8a9aaa] py-8 text-center">当前截面没有达到阈值的信号。</p>
-        ) : (
-          <ul>
-            {signals.map((s, idx) => (
-              <li
-                key={`${s.level}-${s.key}-${s.type}`}
-                className="px-4 py-3"
-                style={{ borderTop: idx === 0 ? undefined : "1px solid #ece6d6" }}
-              >
-                <div className="flex items-start gap-2.5">
-                  <ActionBadge action={s.action} />
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold leading-snug text-[#1a3a5c]">{s.title}</div>
-                    <p className="text-xs text-[#5a6a7a] mt-1 leading-relaxed">{s.detail}</p>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
     </>
   )
 }

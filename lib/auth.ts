@@ -10,6 +10,10 @@ export type PagePermissions = {
   pfInvestmentAlt?: boolean
   /** 勾选后：可进投资池（投资概览、在管产品、FOF底层、资料列表） */
   pfInvestmentPool?: boolean
+  /** 勾选后：运维团队数据「盘手管理」，关联产品与 MOM 账户 */
+  pfTraderManage?: boolean
+  /** 勾选后：产品页「账户对比」可切换对比账户 */
+  pfCompareAccount?: boolean
   /** 指令模块角色：基金经理 / 总经理 / 产品运维（旧字段，兼容单角色） */
   instructionRole?: "fund_manager" | "general_manager" | "ops" | ""
   /** 指令模块角色列表；一个账户可同时担任多个角色 */

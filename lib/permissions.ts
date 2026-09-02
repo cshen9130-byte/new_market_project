@@ -48,6 +48,16 @@ export function canAccessPfOperations(user: User | null | undefined): boolean {
   return hasMaScopedPermission(user, "pfOperations")
 }
 
+/** 运维「盘手管理」：关联产品与 MOM 账户 */
+export function canAccessTraderManage(user: User | null | undefined): boolean {
+  return hasMaScopedPermission(user, "pfTraderManage")
+}
+
+/** 产品页「账户对比」切换对比账户 */
+export function canModifyCompareAccount(user: User | null | undefined): boolean {
+  return hasMaScopedPermission(user, "pfCompareAccount")
+}
+
 /** 可进入私募基金「投资」页签 */
 export function canAccessInvestmentTab(user: User | null | undefined): boolean {
   if (!user) return false
