@@ -6,6 +6,7 @@ import {
 } from "@/lib/server/email-parse-fetch"
 import {
   refreshManagedAndFofListCachesIncremental,
+  refreshManagedProductsListCacheLight,
   refreshManagedProductsNavAndListCache,
 } from "@/lib/server/email-nav-latest-pg"
 import { shouldYieldBackgroundWorkToUsers } from "@/lib/server/user-activity-priority"
@@ -72,9 +73,11 @@ function isAbortError(e: unknown): boolean {
 function startYieldPoll(abort: AbortController, yieldToUserTraffic: boolean): ReturnType<typeof setInterval> | null {
   if (!yieldToUserTraffic) return null
   return setInterval(() => {
-    if (!shouldYieldBackgroundWorkToUsers()) return
+    // Browse/list polling must not abort IMAP — otherwise NAV mail that arrived
+    // this morning is still unparsed at 15:00 while FOF组合 is open.
+    if (!shouldYieldBackgroundWorkToUsers({ mutatingOnly: true })) return
     console.log(
-      "[email-parse-fetch-job] yielding to interactive user traffic — aborting scheduled ETL (next 5m cron will retry)",
+      "[email-parse-fetch-job] yielding to user upload/save — aborting scheduled ETL (next 5m cron will retry)",
     )
     abort.abort(new DOMException("yielded to user traffic", "AbortError"))
   }, YIELD_POLL_MS)
@@ -94,6 +97,31 @@ function runtimeDir(): string {
 
 function emailParseLockPath(): string {
   return path.join(runtimeDir(), "email-parse-fetch.lock")
+}
+
+function cacheRefreshPendingPath(): string {
+  return path.join(runtimeDir(), "email-parse-cache-refresh.pending")
+}
+
+function markCacheRefreshPending(): void {
+  try {
+    fs.mkdirSync(runtimeDir(), { recursive: true })
+    fs.writeFileSync(cacheRefreshPendingPath(), String(Date.now()), "utf8")
+  } catch {
+    // ignore
+  }
+}
+
+function clearCacheRefreshPending(): void {
+  try {
+    fs.unlinkSync(cacheRefreshPendingPath())
+  } catch {
+    // ignore
+  }
+}
+
+function isCacheRefreshPending(): boolean {
+  return fs.existsSync(cacheRefreshPendingPath())
 }
 
 function pidIsAlive(pid: number): boolean {
@@ -256,13 +284,32 @@ export function startEmailParseFetchJob(options?: {
           result.navSaved > 0
           || result.valuationSaved > 0
           || result.valuationHoldingsSaved > 0
+        if (hasNewData) markCacheRefreshPending()
+        const pendingCache = isCacheRefreshPending()
 
-        if (!hasNewData) {
+        if (!hasNewData && !pendingCache) {
           job.message = "无新净值/估值表，跳过缓存刷新"
           console.log(
             `[email-parse-fetch-job] light idle — skipped=${result.emailsSkippedKnown}` +
               ` downloaded=${result.emailsDownloaded} (no cache refresh)`,
           )
+        } else if (!hasNewData && pendingCache) {
+          // Previous poll upserted NAV then aborted before list cache caught up.
+          job.message = "上次解析未刷新列表缓存，正在补刷…"
+          try {
+            const incr = await refreshManagedAndFofListCachesIncremental()
+            result.navLatestRefreshed = incr.listCache
+            clearCacheRefreshPending()
+            console.log(
+              `[email-parse-fetch-job] pending cache refresh` +
+                ` managed=${incr.listCache} fof=${incr.fofCache}`,
+            )
+          } catch (e) {
+            if (isAbortError(e)) throw e
+            result.errors.push(
+              `补刷列表缓存失败: ${e instanceof Error ? e.message : String(e)}`,
+            )
+          }
         } else {
           if (abort.signal.aborted) {
             throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
@@ -385,14 +432,19 @@ export function startEmailParseFetchJob(options?: {
           if (abort.signal.aborted) {
             throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
           }
-          job.message = "正在增量刷新在管产品与FOF底层缓存…"
+          job.message = "正在增量刷新在管产品列表…"
           try {
-            const incr = await refreshManagedAndFofListCachesIncremental()
+            // FOF底层 最新净值/涨跌幅 already patched via tip sync above.
+            // Skip the full 106-row FOF metrics rebuild here — it blocks the
+            // worker event loop for ~3–4 minutes and starves the next IMAP poll.
+            const incr = await refreshManagedProductsListCacheLight({
+              reuseResolvedIdentities: true,
+            })
             result.navLatestRefreshed = incr.listCache
             console.log(
-              `[email-parse-fetch-job] incremental cache refresh` +
-                ` managed=${incr.listCache} fof=${incr.fofCache}`,
+              `[email-parse-fetch-job] managed list light refresh rows=${incr.listCache}`,
             )
+            clearCacheRefreshPending()
           } catch (e) {
             if (isAbortError(e)) throw e
             result.errors.push(

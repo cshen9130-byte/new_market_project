@@ -236,11 +236,21 @@ export function getRecentUserHits(sinceMs = RECENT_USER_WINDOW_MS): RecentUserHi
   return pruneRecentUsers(resolvedActivity().recentUsers || []).filter((u) => u.lastAt >= cutoff)
 }
 
+export type YieldToUsersOptions = {
+  /**
+   * When true, only yield for uploads/saves — not for dashboard browsing or
+   * list polling. The 5-minute mailbox poll runs on the dedicated worker; if
+   * it also waits on GET traffic, NAV mail sits unparsed all afternoon.
+   */
+  mutatingOnly?: boolean
+}
+
 /** True when background cron work should defer or abort in favour of users. */
-export function shouldYieldBackgroundWorkToUsers(): boolean {
+export function shouldYieldBackgroundWorkToUsers(options?: YieldToUsersOptions): boolean {
   const now = Date.now()
   const s = resolvedActivity()
   if (s.lastMutatingAt > 0 && now - s.lastMutatingAt < MUTATING_WINDOW_MS) return true
+  if (options?.mutatingOnly) return false
   if (s.lastBrowseAt > 0 && now - s.lastBrowseAt < BROWSE_WINDOW_MS) return true
   if (s.recentHits.length >= BURST_MIN_HITS) return true
   return false

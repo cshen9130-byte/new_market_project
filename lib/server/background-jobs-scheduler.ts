@@ -105,18 +105,18 @@ export async function registerBackgroundJobs(): Promise<void> {
 
   // Every 5 minutes: checkpoint poll mailboxes for new NAV / 估值表 mail.
   // Already-processed UIDs are skipped (empty polls should finish in seconds).
-  // When new mail lands, parse it and immediately refresh 在管产品 + FOF底层
-  // incremental caches — do not wait for the 15m fallback tick.
-  // Full FOF/tracking/metrics rebuilds stay on nightly ETL.
-  // Defers or aborts when users are browsing/uploading; single-flight lock
+  // When new mail lands, parse it and immediately patch 在管产品 + FOF底层
+  // list tips — do not wait for the 15m fallback tick.
+  // Full FOF/tracking/metrics rebuilds stay on the 15m tick / nightly ETL.
+  // Only defers for uploads/saves (not FOF list browsing). Single-flight lock
   // skips a tick if the previous poll is still running.
   cron.schedule("*/5 * * * *", () => {
     void (async () => {
       try {
         const { shouldYieldBackgroundWorkToUsers } = await import("./user-activity-priority")
-        if (shouldYieldBackgroundWorkToUsers()) {
+        if (shouldYieldBackgroundWorkToUsers({ mutatingOnly: true })) {
           console.log(
-            "[5m-etl] deferred: interactive users active — will retry at next 5m slot",
+            "[5m-etl] deferred: users uploading — will retry at next 5m slot",
           )
           return
         }
