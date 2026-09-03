@@ -295,9 +295,13 @@ export async function saveDirectEmailVisibilityMappings(
     updatedAt: now,
   }
   writeStore(store)
+  invalidateDirectEmailVisibilityCaches()
+  return listDirectEmailVisibilityRows()
+}
+
+export function invalidateDirectEmailVisibilityCaches(): void {
   global._knownCrawlEmailsCache = undefined
   global._emailPoolVisibilityCache = undefined
-  return listDirectEmailVisibilityRows()
 }
 
 /**

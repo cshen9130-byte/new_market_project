@@ -1415,6 +1415,23 @@ export async function runCfmmcETL(
   clearAccountSourceCache()
   appendJobLog("etl", `完成：处理 ${result.processed}，新增 ${result.inserted}，更新 ${result.updated}，跳过 ${result.skipped}`)
 
+  try {
+    const { syncAccountRiskDirectNav } = await import("@/lib/server/account-risk-direct-nav-sync")
+    const navSync = await syncAccountRiskDirectNav()
+    for (const item of navSync.items) {
+      if (item.status === "synced") {
+        appendJobLog(
+          "etl",
+          `直投产品净值同步 ${item.productName}：${item.days} 日，最新 ${item.latestNavDate} ${item.latestNav}`,
+        )
+      } else if (item.status === "failed") {
+        appendJobLog("etl", `直投产品净值同步失败 ${item.productName}：${item.error}`)
+      }
+    }
+  } catch (e) {
+    appendJobLog("etl", `直投产品净值同步失败：${e instanceof Error ? e.message : String(e)}`)
+  }
+
   return result
 }
 

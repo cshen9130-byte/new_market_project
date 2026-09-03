@@ -1,0 +1,12 @@
+{
+  "mappings": [
+    {
+      "enabled": true,
+      "bookName": "魏总",
+      "accountNo": "8005166176",
+      "productName": "魏总",
+      "productCode": "WEIZONG",
+      "crawlEmailAccount": "mushenggroup1@foxmail.com"
+    }
+  ]
+}

@@ -38,6 +38,27 @@ export async function registerBackgroundJobs(): Promise<void> {
     runDueCfmmcFetch().catch((e) => console.error("[account-risk-cfmmc] 17:00 scheduler error:", e))
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
+  // 18:30 Beijing weekdays: incremental 单账户 ETL (picks up late 监控中心 /
+  // 邮箱结算文件) then copy NAV into 直投产品. Sync is also run at the end of
+  // every ETL; this tick is the daily catch-up if 17:00 fetch/ETL was skipped.
+  cron.schedule("30 18 * * 1-5", () => {
+    void (async () => {
+      try {
+        if (process.platform === "win32" && (process.env.DATABASE_URL || "").includes(":5433/")) {
+          console.log("[account-risk-direct-nav] skipped: Windows next against tunneled production DB")
+          return
+        }
+        const { runCfmmcETL } = await import("./cfmmc-etl")
+        const etl = await runCfmmcETL("incremental")
+        console.log(
+          `[account-risk-direct-nav] etl processed=${etl.processed} inserted=${etl.inserted} updated=${etl.updated} skipped=${etl.skipped}`,
+        )
+      } catch (e) {
+        console.error("[account-risk-direct-nav] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit)
   // plus 期货市场 Nanhua / vol-corr / 成交额 tables. Frontend charts poll
   // APIs every minute; this job updates the underlying DB.
