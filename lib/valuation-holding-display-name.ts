@@ -35,6 +35,12 @@ export function isValuationCashHoldingName(name: string): boolean {
  * Key: stripped display name or uppercase 估值表代码.
  */
 const VALUATION_HOLDING_NAME_OVERRIDES: Readonly<Record<string, string>> = {
+  // Canonical product: always win when the holding already resolved to ZY084A.
+  ZY084A: "交睿宏观配置5号A类",
+  ZY084: "交睿宏观配置5号A类",
+  // 金舆锡泰一号 估值表 still prints the old 川润300 / 川泽100 custody labels.
+  "交睿川润300增强私募A": "交睿宏观配置5号A类",
+  "交睿川润300增强私募": "交睿宏观配置5号A类",
   "交睿川泽100指数增强A": "交睿宏观配置5号A类",
   "交睿川泽100指数增强": "交睿宏观配置5号A类",
   "7V034A": "交睿宏观配置5号A类",

@@ -82,7 +82,8 @@ const FUND_NAME_CODE_OVERRIDES: Record<string, string> = {
   "乾上泉对冲一号":                     "ALF51",
   "交睿宏观配置1号":                    "JX860B",
   "交睿宏观配置5号":                    "ZY084A",
-  // 金舆锡泰一号 估值表 still prints the old 交睿川泽100 name on ticker 7V034A.
+  // 金舆锡泰一号 估值表 still prints old 交睿川润300 / 川泽100 names on this sleeve.
+  "交睿川润300增强私募":               "ZY084A",
   "交睿川泽100指数增强":               "ZY084A",
 }
 
@@ -106,7 +107,7 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   JRHG02B: "JX860B",
   // 六妙星九紫一号: some FOF 估值表科目 use TA/custodian code ABCX2; AMAC 备案号 is SBPC20.
   ABCX2: "SBPC20",
-  // 交睿宏观配置5号A类: 金舆锡泰一号 估值表 uses custodian ticker 7V034A (stale 川泽100 label).
+  // 交睿宏观配置5号A类: older 金舆锡泰一号 估值表 used custodian ticker 7V034A.
   "7V034A": "ZY084A",
   "7V034": "ZY084A",
 }
