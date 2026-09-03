@@ -15150,97 +15150,101 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
             </div>
           </div>
         )}
-        <div className="flex items-center px-4 py-2">
-          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品要素：</span>
-          <div className="flex items-center gap-1">
-            {([
-              ["all", "不限"],
-              ["missing", "缺失要素"],
-              ["present", "有要素"],
-            ] as const).map(([key, label]) => (
-              <span
-                key={key}
-                onClick={() => { setElementsFilter(key); setPage(1) }}
-                className={[
-                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
-                  elementsFilter === key
-                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
-                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
-                ].join(" ")}
-              >
-                {label}
-              </span>
-            ))}
+        <div className="flex items-center flex-wrap gap-x-10 gap-y-2 px-4 py-2">
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品要素：</span>
+            <div className="flex items-center gap-1">
+              {([
+                ["all", "不限"],
+                ["missing", "缺失要素"],
+                ["present", "有要素"],
+              ] as const).map(([key, label]) => (
+                <span
+                  key={key}
+                  onClick={() => { setElementsFilter(key); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    elementsFilter === key
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品来源：</span>
+            <div className="flex items-center gap-1">
+              {([
+                ["all", "不限"],
+                ["manual", "手动添加"],
+                ["email", "邮箱同步"],
+              ] as const).map(([key, label]) => (
+                <span
+                  key={key}
+                  onClick={() => { setProductSourceFilter(key); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    productSourceFilter === key
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="flex items-center px-4 py-2">
-          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队净值：</span>
-          <div className="flex items-center gap-1">
-            {([
-              ["all", "不限"],
-              ["behind_2w", "滞后超2周"],
-              ["within_2w", "2周内"],
-            ] as const).map(([key, label]) => (
-              <span
-                key={key}
-                onClick={() => { setNavLagFilter(key); setPage(1) }}
-                className={[
-                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
-                  navLagFilter === key
-                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
-                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
-                ].join(" ")}
-              >
-                {label}
-              </span>
-            ))}
+        <div className="flex items-center flex-wrap gap-x-10 gap-y-2 px-4 py-2">
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队净值：</span>
+            <div className="flex items-center gap-1">
+              {([
+                ["all", "不限"],
+                ["behind_2w", "滞后超2周"],
+                ["within_2w", "2周内"],
+              ] as const).map(([key, label]) => (
+                <span
+                  key={key}
+                  onClick={() => { setNavLagFilter(key); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    navLagFilter === key
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
           </div>
-        </div>
-        <div className="flex items-center px-4 py-2">
-          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">净值断档：</span>
-          <div className="flex items-center gap-1">
-            {([
-              ["all", "不限", ""],
-              ["interior_2w", "中间缺失超2周", "相邻净值日期间隔超过14天，即使最新日期是最近的也会标出"],
-              ["no_interior_2w", "无中间缺失", "相邻净值日期间隔均不超过14天"],
-            ] as const).map(([key, label, title]) => (
-              <span
-                key={key}
-                title={title || undefined}
-                onClick={() => { setNavGapFilter(key); setPage(1) }}
-                className={[
-                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
-                  navGapFilter === key
-                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
-                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
-                ].join(" ")}
-              >
-                {label}
-              </span>
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center px-4 py-2">
-          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品来源：</span>
-          <div className="flex items-center gap-1">
-            {([
-              ["all", "不限"],
-              ["manual", "手动添加"],
-              ["email", "邮箱同步"],
-            ] as const).map(([key, label]) => (
-              <span
-                key={key}
-                onClick={() => { setProductSourceFilter(key); setPage(1) }}
-                className={[
-                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
-                  productSourceFilter === key
-                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
-                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
-                ].join(" ")}
-              >
-                {label}
-              </span>
-            ))}
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">净值断档：</span>
+            <div className="flex items-center gap-1">
+              {([
+                ["all", "不限", ""],
+                ["interior_2w", "中间缺失超1/10", "从首个净值日到最近净值日，按该产品常见披露间隔估算，缺失超过一成应有净值。周频产品缺两周通常不会标出"],
+                ["no_interior_2w", "无中间缺失", "从首个净值日到最近净值日，缺失不超过一成应有净值"],
+              ] as const).map(([key, label, title]) => (
+                <span
+                  key={key}
+                  title={title || undefined}
+                  onClick={() => { setNavGapFilter(key); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    navGapFilter === key
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
         <div className="flex items-center px-4 py-2">

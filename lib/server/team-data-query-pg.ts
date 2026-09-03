@@ -76,12 +76,13 @@ function productNameDedupeKey(productName: string): string {
 
 export type TeamDataElementsFilter = "all" | "missing" | "present"
 export type TeamDataNavLagFilter = "all" | "behind_2w" | "within_2w"
-/** Interior holes in the NAV series (adjacent dates), not lag of the latest date. */
+/** Interior holes in the NAV series (missing share of expected points), not lag of the latest date. */
 export type TeamDataNavGapFilter = "all" | "interior_2w" | "no_interior_2w"
 export type TeamDataProductSourceFilter = "all" | "manual" | "email"
 
 const TEAM_NAV_LAG_DAYS = 14
-const TEAM_NAV_INTERIOR_GAP_DAYS = 14
+/** Flag when missing NAV points exceed this share of expected points (first→last date). */
+const TEAM_NAV_INTERIOR_MISSING_RATIO = 0.1
 const TEAM_DATA_PRODUCT_SOURCE: Record<Exclude<TeamDataProductSourceFilter, "all">, string> = {
   manual: "手动添加",
   email: "邮箱同步",
@@ -99,7 +100,7 @@ export type TeamDataListParams = {
   elementsFilter?: TeamDataElementsFilter
   /** Filter by 团队净值日期 lag vs Asia/Shanghai today. Missing NAV counts as behind. */
   navLagFilter?: TeamDataNavLagFilter
-  /** Filter by consecutive holes inside the NAV series (平台数据 / detail cache). */
+  /** Filter by missing-NAV share inside the series (平台数据 / detail cache). */
   navGapFilter?: TeamDataNavGapFilter
   /** Filter by 产品来源 (手动添加 / 邮箱同步). */
   productSourceFilter?: TeamDataProductSourceFilter
@@ -1694,20 +1695,48 @@ function matchesNavLagFilter(navDate: string, filter: TeamDataNavLagFilter, toda
   return lag != null && lag <= TEAM_NAV_LAG_DAYS
 }
 
-/** True when any two adjacent NAV dates are more than `minGapDays` calendar days apart. */
-export function hasInteriorNavGap(dates: string[], minGapDays = TEAM_NAV_INTERIOR_GAP_DAYS): boolean {
+function lowerMedian(values: number[]): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor((sorted.length - 1) / 2)] ?? 0
+}
+
+/**
+ * True when the series is missing more than 10% of expected NAV points between
+ * the first and last date. Cadence is the lower-median adjacent interval so a
+ * weekly fund that skips two weeks is only two points — not an automatic flag.
+ * Gaps of ≤7 calendar days (weekends / holidays) are never counted as holes.
+ */
+export function hasInteriorNavGap(dates: string[]): boolean {
   const sorted = [...new Set(dates.map(isoDay).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort()
+  if (sorted.length < 2) return false
+  const gaps: number[] = []
   for (let i = 1; i < sorted.length; i++) {
-    if (platformNavDaysBetween(sorted[i], sorted[i - 1]) > minGapDays) return true
+    gaps.push(platformNavDaysBetween(sorted[i], sorted[i - 1]))
   }
-  return false
+  const typical = lowerMedian(gaps)
+  if (typical <= 0) return false
+  const span = platformNavDaysBetween(sorted[sorted.length - 1], sorted[0])
+  if (span <= 0) return false
+  const holeFloor = Math.max(typical * 2, 7)
+  let missing = 0
+  for (const gap of gaps) {
+    if (gap > holeFloor) missing += gap / typical - 1
+  }
+  const expected = 1 + span / typical
+  return missing / expected > TEAM_NAV_INTERIOR_MISSING_RATIO
 }
 
 type DetailNavGapCacheRow = {
   code: string
   cache_key: string
   product_name: string
-  has_gap: boolean
+  dates: string[]
+}
+
+function asDateList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((d) => String(d ?? ""))
 }
 
 function detailCacheFitsRow(cache: DetailNavGapCacheRow, row: ResolvedFund): boolean {
@@ -1720,24 +1749,23 @@ function detailCacheFitsRow(cache: DetailNavGapCacheRow, row: ResolvedFund): boo
   return !!name && fundNamesMatch(name, row.product_name)
 }
 
-async function loadDetailNavGapCacheRows(codes: string[], names: string[], gapDays: number): Promise<DetailNavGapCacheRow[]> {
+async function loadDetailNavGapCacheRows(codes: string[], names: string[]): Promise<DetailNavGapCacheRow[]> {
   if (codes.length === 0 && names.length === 0) return []
-  return query<DetailNavGapCacheRow>(
+  const rows = await query<{
+    code: string
+    cache_key: string
+    product_name: string
+    dates: unknown
+  }>(
     `SELECT
        UPPER(BTRIM(COALESCE(NULLIF(beian_hao, ''), cache_key))) AS code,
        cache_key,
        product_name,
-       EXISTS (
-         SELECT 1
-         FROM (
-           SELECT
-             (elem->>'price_date')::date AS d,
-             LAG((elem->>'price_date')::date) OVER (ORDER BY elem->>'price_date') AS prev
-           FROM jsonb_array_elements(c.nav_series) AS elem
-           WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
-         ) g
-         WHERE prev IS NOT NULL AND (d - prev) > $3
-       ) AS has_gap
+       (
+         SELECT COALESCE(array_agg(DISTINCT LEFT(elem->>'price_date', 10)), ARRAY[]::text[])
+         FROM jsonb_array_elements(c.nav_series) AS elem
+         WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
+       ) AS dates
      FROM ops_private_fund_detail_nav_cache c
      WHERE jsonb_typeof(c.nav_series) = 'array'
        AND (
@@ -1745,8 +1773,14 @@ async function loadDetailNavGapCacheRows(codes: string[], names: string[], gapDa
          OR (cardinality($1::text[]) > 0 AND UPPER(BTRIM(c.beian_hao)) = ANY($1::text[]))
          OR (cardinality($2::text[]) > 0 AND c.product_name = ANY($2::text[]))
        )`,
-    [codes, names, gapDays],
-  ).catch(() => [] as DetailNavGapCacheRow[])
+    [codes, names],
+  ).catch(() => [] as Array<{ code: string; cache_key: string; product_name: string; dates: unknown }>)
+  return rows.map((row) => ({
+    code: row.code,
+    cache_key: row.cache_key,
+    product_name: row.product_name,
+    dates: asDateList(row.dates),
+  }))
 }
 
 async function loadFallbackNavDatesByCode(codes: string[]): Promise<Map<string, string[]>> {
@@ -1784,11 +1818,8 @@ async function loadFallbackNavDatesByCode(codes: string[]): Promise<Map<string, 
   return out
 }
 
-async function loadProductIdsWithInteriorNavGap(
-  rows: ResolvedFund[],
-  gapDays = TEAM_NAV_INTERIOR_GAP_DAYS,
-): Promise<Set<string>> {
-  const cacheKey = `${gapDays}|${rows.map((r) => r.id).join("|")}`
+async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<Set<string>> {
+  const cacheKey = `missing_10|${rows.map((r) => r.id).join("|")}`
   if (
     navGapIdsCache
     && navGapIdsCache.key === cacheKey
@@ -1805,14 +1836,14 @@ async function loadProductIdsWithInteriorNavGap(
 
   const codes = [...new Set(rows.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
-  const cacheRows = await loadDetailNavGapCacheRows(codes, names, gapDays)
+  const cacheRows = await loadDetailNavGapCacheRows(codes, names)
 
   const cachedIds = new Set<string>()
   for (const row of rows) {
     const matches = cacheRows.filter((c) => detailCacheFitsRow(c, row))
     if (matches.length === 0) continue
     cachedIds.add(row.id)
-    if (matches.some((c) => c.has_gap)) gapped.add(row.id)
+    if (matches.some((c) => hasInteriorNavGap(c.dates))) gapped.add(row.id)
   }
 
   const uncached = rows.filter((r) => !cachedIds.has(r.id))
@@ -1824,7 +1855,7 @@ async function loadProductIdsWithInteriorNavGap(
       for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
         for (const d of datesByCode.get(alias.toUpperCase()) ?? []) dates.add(d)
       }
-      if (hasInteriorNavGap([...dates], gapDays)) gapped.add(row.id)
+      if (hasInteriorNavGap([...dates])) gapped.add(row.id)
     }
   }
 

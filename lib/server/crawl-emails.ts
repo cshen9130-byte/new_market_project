@@ -76,7 +76,13 @@ let tableReady = false
 async function ensureTable(): Promise<void> {
   if (tableReady) return
   await publicQuery(CREATE_TABLE_SQL)
-  await migrateFromJson()
+  // Legacy JSON can contain stale / colliding ids. Never fail page loads on it —
+  // the DB is the source of truth once the table exists.
+  try {
+    await migrateFromJson()
+  } catch (err) {
+    console.error("[crawl-emails] JSON migration skipped:", err)
+  }
   tableReady = true
 }
 
@@ -167,9 +173,21 @@ async function migrateFromJson(): Promise<void> {
   const rows = mergeLegacyRows(durableJsonPaths().map(readLegacyRows))
   if (rows.length === 0) return
 
+  const existing = await loadAccountsFromDb()
+  const existingIds = new Set(existing.map((a) => a.id))
+  const existingAccounts = new Set(existing.map((a) => a.account.trim().toLowerCase()))
+
   for (const r of rows) {
-    if (!r.account?.trim()) continue
-    const id = r.id || randomUUID()
+    const account = r.account?.trim()
+    if (!account) continue
+    if (existingAccounts.has(account.toLowerCase())) continue
+
+    // JSON copies from several machines can reuse the same id for different
+    // accounts. ON CONFLICT (account) does not cover that, and the insert
+    // then violates ops_crawl_email_accounts_pkey.
+    let id = r.id || randomUUID()
+    if (existingIds.has(id)) id = randomUUID()
+
     const folders = Array.isArray(r.imapFolders) && r.imapFolders.length ? r.imapFolders : ["INBOX"]
     const now = new Date().toISOString()
     await publicQuery(
@@ -177,11 +195,11 @@ async function migrateFromJson(): Promise<void> {
          (id, email_type, account, pass, imap_host, imap_port, imap_folders,
           crawl_status, remark, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       ON CONFLICT (account) DO NOTHING`,
+       ON CONFLICT DO NOTHING`,
       [
         id,
         (r.emailType ?? "").trim(),
-        r.account.trim(),
+        account,
         (r.pass ?? "").trim(),
         (r.imapHost ?? "").trim(),
         r.imapPort ?? 993,
@@ -192,6 +210,8 @@ async function migrateFromJson(): Promise<void> {
         r.updatedAt ?? now,
       ],
     )
+    existingIds.add(id)
+    existingAccounts.add(account.toLowerCase())
   }
 }
 
