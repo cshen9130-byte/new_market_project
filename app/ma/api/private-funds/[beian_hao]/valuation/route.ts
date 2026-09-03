@@ -4,15 +4,21 @@ import {
   getFundValuationAllocation,
 } from "@/lib/server/fund-valuation-allocation"
 import {
+  applyValuationHoldingDisplayName,
   isValuationNonProductHoldingName,
-  stripValuationSubjectPathPrefix,
 } from "@/lib/valuation-holding-display-name"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 function sanitizeFundHoldingsPayload<T extends {
-  fund_holdings?: Array<{ fundName: string; rowKind?: string; index?: number }>
+  fund_holdings?: Array<{
+    fundName: string
+    rowKind?: string
+    index?: number
+    valuationCode?: string | null
+    beianHao?: string | null
+  }>
 }>(data: T): T {
   if (!Array.isArray(data.fund_holdings)) return data
   const fund_holdings = data.fund_holdings
@@ -26,7 +32,7 @@ function sanitizeFundHoldingsPayload<T extends {
     .map((h, i) => ({
       ...h,
       index: i + 1,
-      fundName: stripValuationSubjectPathPrefix(h.fundName) || h.fundName,
+      fundName: applyValuationHoldingDisplayName(h.fundName, h.valuationCode ?? h.beianHao) || h.fundName,
     }))
   return { ...data, fund_holdings }
 }

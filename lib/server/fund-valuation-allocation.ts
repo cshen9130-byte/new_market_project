@@ -51,6 +51,7 @@ import {
   readValuationCacheIfFresh,
 } from "@/lib/server/valuation-cache-refresh"
 import {
+  applyValuationHoldingDisplayName,
   isValuationNonProductHoldingName,
   stripValuationSubjectPathPrefix,
 } from "@/lib/valuation-holding-display-name"
@@ -2826,11 +2827,12 @@ function buildContractEquityTrend(
 }
 
 function fundHoldingDisplayName(h: HoldingRow): string {
-  return stripValuationSubjectPathPrefix(String(h.subject_name ?? h.symbol ?? ""))
+  const raw = String(h.subject_name ?? h.symbol ?? "")
+  return applyValuationHoldingDisplayName(raw, resolveHoldingValuationCode(h) ?? h.symbol)
 }
 
-function sanitizeHoldingDisplayName(name: string): string {
-  return stripValuationSubjectPathPrefix(name) || name
+function sanitizeHoldingDisplayName(name: string, code?: string | null): string {
+  return applyValuationHoldingDisplayName(name, code) || name
 }
 
 function sanitizeAllocationDisplayNames(
@@ -2840,8 +2842,14 @@ function sanitizeAllocationDisplayNames(
     ? result.fund_holdings
       .filter((h) => !isCashLikeHoldingKind(h.rowKind) && !isValuationNonProductHoldingName(h.fundName))
       .map((h, i) => {
-        const fundName = sanitizeHoldingDisplayName(h.fundName)
-        return { ...h, index: i + 1, fundName }
+        const fundName = sanitizeHoldingDisplayName(h.fundName, h.valuationCode ?? h.beianHao)
+        const aliased = resolveFofValuationCodeAlias(h.valuationCode) ?? resolveFofValuationCodeAlias(h.beianHao)
+        return {
+          ...h,
+          index: i + 1,
+          fundName,
+          beianHao: aliased ?? h.beianHao,
+        }
       })
     : result.fund_holdings
   const other_holdings = (result.other_holdings ?? []).map((row, i) => ({

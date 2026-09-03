@@ -31,6 +31,30 @@ export function isValuationCashHoldingName(name: string): boolean {
 }
 
 /**
+ * Custody 估值表 sometimes keeps a stale product name on a reused ticker.
+ * Key: stripped display name or uppercase 估值表代码.
+ */
+const VALUATION_HOLDING_NAME_OVERRIDES: Readonly<Record<string, string>> = {
+  "交睿川泽100指数增强A": "交睿宏观配置5号A类",
+  "交睿川泽100指数增强": "交睿宏观配置5号A类",
+  "7V034A": "交睿宏观配置5号A类",
+  "7V034": "交睿宏观配置5号A类",
+}
+
+/** Replace known stale custody labels after path-prefix cleanup. */
+export function applyValuationHoldingDisplayName(
+  name: string,
+  code?: string | null,
+): string {
+  const stripped = stripValuationSubjectPathPrefix(name) || String(name ?? "").trim()
+  const upperCode = String(code ?? "").trim().toUpperCase()
+  if (upperCode && VALUATION_HOLDING_NAME_OVERRIDES[upperCode]) {
+    return VALUATION_HOLDING_NAME_OVERRIDES[upperCode]
+  }
+  return VALUATION_HOLDING_NAME_OVERRIDES[stripped] ?? stripped
+}
+
+/**
  * 估值表 parent cost buckets, not fund products.
  * Examples: 股票成本_上交所, 深港通股票成本, 基金成本, 封闭式基金成本.
  * Does not match real funds with a 场外_…成本.产品名 path prefix.

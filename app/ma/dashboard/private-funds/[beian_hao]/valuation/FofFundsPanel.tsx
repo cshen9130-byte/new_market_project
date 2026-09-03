@@ -6,8 +6,8 @@ import { ChevronDown, Clock, Download, Info, Search, SquarePen } from "lucide-re
 import { ProductSelectionPanel } from "@/components/ma/product-selection-panel"
 import { normalizeFofDisplayName } from "@/lib/fof-portfolio-var"
 import {
+  applyValuationHoldingDisplayName,
   isValuationCashHoldingName,
-  stripValuationSubjectPathPrefix,
 } from "@/lib/valuation-holding-display-name"
 import type { StrategyPieSelection } from "./FofStrategyPiesPanel"
 
@@ -64,7 +64,8 @@ function isCashOrNonFundRow(row: FundHoldingRow): boolean {
 }
 
 function displayFundName(row: FundHoldingRow): string {
-  const stripped = stripValuationSubjectPathPrefix(row.fundName) || row.fundName
+  const stripped = applyValuationHoldingDisplayName(row.fundName, row.valuationCode ?? row.beianHao)
+    || row.fundName
   return normalizeFofDisplayName(stripped)
 }
 

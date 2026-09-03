@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { isWeekendIsoDate } from "@/lib/nav-trading-day"
-import { tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
+import { getCustomFundByCode, tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
+import { ensureCustomFundNavFresh } from "@/lib/server/custom-fund-nav-daily-refresh"
 import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-nav-query"
 import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
@@ -344,6 +345,12 @@ export async function GET(
     }
     if (!info) {
       const ownerUserId = String(req.headers.get("x-market-user-id") || "").trim() || undefined
+      const customFund = getCustomFundByCode(rawId) ?? getCustomFundByCode(beian_hao)
+      if (customFund) {
+        await ensureCustomFundNavFresh(customFund.product_code).catch((err) => {
+          console.warn("[private-funds/detail] custom fund nav refresh skipped:", err)
+        })
+      }
       const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
         ?? (rawId !== beian_hao ? tryGetCustomFundPrivateDetail(beian_hao, ownerUserId) : null)
       if (customDetail) {

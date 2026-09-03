@@ -81,6 +81,9 @@ const FUND_NAME_CODE_OVERRIDES: Record<string, string> = {
   "棕榈滩泰来三号":                     "BVC41",
   "乾上泉对冲一号":                     "ALF51",
   "交睿宏观配置1号":                    "JX860B",
+  "交睿宏观配置5号":                    "ZY084A",
+  // 金舆锡泰一号 估值表 still prints the old 交睿川泽100 name on ticker 7V034A.
+  "交睿川泽100指数增强":               "ZY084A",
 }
 
 /** 估值表 subject code (often S-prefix / no share-class suffix) → canonical 备案号. */
@@ -103,6 +106,9 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   JRHG02B: "JX860B",
   // 六妙星九紫一号: some FOF 估值表科目 use TA/custodian code ABCX2; AMAC 备案号 is SBPC20.
   ABCX2: "SBPC20",
+  // 交睿宏观配置5号A类: 金舆锡泰一号 估值表 uses custodian ticker 7V034A (stale 川泽100 label).
+  "7V034A": "ZY084A",
+  "7V034": "ZY084A",
 }
 
 export function resolveFofValuationCodeAlias(code: string | null | undefined): string | null {
@@ -520,6 +526,10 @@ export function extractFundHoldingCode(subjectCode: string, subjectName: string)
 
   // 1109 / 1108 private funds: 11090601TA891A, 11080201BVC41AOTC, 11080201AVF39AOTC
   if (/^110[89]/.test(compact)) {
+    const compactUpper = compact.toUpperCase()
+    for (const alias of Object.keys(FOF_VALUATION_CODE_ALIASES).sort((a, b) => b.length - a.length)) {
+      if (compactUpper.includes(alias)) return formatFundHoldingCode(alias)
+    }
     const embedded = compact.match(/110[89]\d+(?:01)?([A-Z]{2}[A-Z0-9]{3,5}[ABC]?)/i)
     if (embedded) {
       const code = embedded[1].toUpperCase()

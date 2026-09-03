@@ -400,6 +400,26 @@ export function startEmailParseFetchJob(options?: {
             )
           }
 
+          if (abort.signal.aborted) {
+            throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+          }
+          job.message = "正在按规则更新自建基金净值…"
+          try {
+            const { refreshAllCustomFundNavFromRules } = await import(
+              "@/lib/server/custom-fund-nav-daily-refresh"
+            )
+            const customNav = await refreshAllCustomFundNavFromRules()
+            console.log(
+              `[email-parse-fetch-job] custom fund nav` +
+                ` refreshed=${customNav.refreshed} skipped=${customNav.skipped} failed=${customNav.failed}`,
+            )
+          } catch (e) {
+            if (isAbortError(e)) throw e
+            result.errors.push(
+              `更新自建基金净值失败: ${e instanceof Error ? e.message : String(e)}`,
+            )
+          }
+
           if (result.valuationSaved > 0 && result.touchedFunds.length > 0) {
             if (abort.signal.aborted) {
               throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")

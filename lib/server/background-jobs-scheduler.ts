@@ -67,6 +67,29 @@ export async function registerBackgroundJobs(): Promise<void> {
     })()
   })
 
+  // 10:00 and 18:00 Beijing: rebuild 自建基金 NAV from saved splice / fixed-income
+  // rules so files like 380001.json follow source 团队净值 after email ingest.
+  cron.schedule("0 10,18 * * *", () => {
+    void (async () => {
+      try {
+        const { refreshAllCustomFundNavFromRules } = await import("./custom-fund-nav-daily-refresh")
+        const result = await refreshAllCustomFundNavFromRules()
+        console.log(
+          `[custom-fund-nav-daily] refreshed=${result.refreshed} skipped=${result.skipped} failed=${result.failed}`,
+        )
+        for (const item of result.items) {
+          if (item.status === "failed") {
+            console.error(
+              `[custom-fund-nav-daily] ${item.product_code} ${item.product_name}: ${item.error}`,
+            )
+          }
+        }
+      } catch (e) {
+        console.error("[custom-fund-nav-daily] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   // Daily at 03:00: refresh stock-market chart data (A-share crowding, board share, top stocks).
   // Runs after macro ETL; ashare_daily incremental uses fast spot mode once caught up.
   cron.schedule("0 3 * * *", () => {

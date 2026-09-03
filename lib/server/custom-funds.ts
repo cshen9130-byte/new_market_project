@@ -336,6 +336,10 @@ export function listCustomFunds(params: CustomFundListParams): {
   return { data, total, page: safePage, pageSize, totalPages }
 }
 
+export function listAllCustomFundRecords(): CustomFundRecord[] {
+  return readFunds()
+}
+
 export function listCustomFundTeamMembers(): string[] {
   const members = new Set<string>()
   for (const fund of readFunds()) {
