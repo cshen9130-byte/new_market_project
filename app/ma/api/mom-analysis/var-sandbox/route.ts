@@ -261,6 +261,18 @@ async function _GET(req: Request) {
           .map(([prod, mv]) => ({ prod, mv: Math.round(mv) })),
       }))
 
+    // Compute portfolio VaR server-side (same formula as the client-side sandboxVaR useMemo)
+    const dvs = products.map(p => p.sigma * p.mv)
+    let portVarCalc = 0
+    for (let i = 0; i < products.length; i++) {
+      if (dvs[i] === 0) continue
+      for (let j = 0; j < products.length; j++) {
+        if (dvs[j] === 0) continue
+        portVarCalc += dvs[i] * dvs[j] * (corrMatrix[i]?.[j] ?? 0)
+      }
+    }
+    const totalVar = portVarCalc > 0 ? Math.round(Z_SCORE * Math.sqrt(portVarCalc)) : 0
+
     return NextResponse.json({
       ok: true,
       date: latestDate,
@@ -272,6 +284,7 @@ async function _GET(req: Request) {
       volDays,
       corrDays,
       distModel,
+      totalVar,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

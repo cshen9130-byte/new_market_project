@@ -15,17 +15,23 @@ export default function VarPredictionChart({ height = 320 }: { height?: number }
   const [varCorrDays, setVarCorrDays]     = useState("252")
   const [varDistModel, setVarDistModel]   = useState("normal")
   const [varZoom, setVarZoom]             = useState({ start: 0, end: 100 })
+  // Sandbox VaR: same formula/filters as VaR沙盒, used as the "today's prediction" extension point
+  const [sbVar, setSbVar]                 = useState<number | null>(null)
 
   const fetchVar = (confidence: string, volDays: string, corrDays: string, distModel: string) => {
     setVarLoading(true)
+    setSbVar(null)
     const params = new URLSearchParams({ confidence, volDays, corrDays, distModel })
-    fetch(`/ma/api/mom-analysis/var-prediction?${params}`)
-      .then((r) => r.json())
-      .then((j) => {
-        const rows: VarPoint[] = j.data ?? []
+    Promise.all([
+      fetch(`/ma/api/mom-analysis/var-prediction?${params}`).then(r => r.json()),
+      fetch(`/ma/api/mom-analysis/var-sandbox?${params}`).then(r => r.json()),
+    ])
+      .then(([predJson, sbJson]) => {
+        const rows: VarPoint[] = predJson.data ?? []
         setVarData(rows)
         setVarZoom({ start: rows.length < 40 ? 0 : 60, end: 100 })
-        if (j.breachRate != null) setVarBreachRate(j.breachRate)
+        if (predJson.breachRate != null) setVarBreachRate(predJson.breachRate)
+        if (sbJson.ok && sbJson.totalVar) setSbVar(sbJson.totalVar)
       })
       .catch(() => {})
       .finally(() => setVarLoading(false))
@@ -39,20 +45,38 @@ export default function VarPredictionChart({ height = 320 }: { height?: number }
     setVarZoom({ start: s, end: e })
   }
 
+  // Extend x-axis and VaR line with a "今日预测" point using the sandbox method
+  const hasSbVar   = sbVar != null && varData.length > 0
+  const lastRow    = varData[varData.length - 1]
+  const xDates     = hasSbVar ? [...varData.map(r => r.date), "今日预测"] : varData.map(r => r.date)
+  const confLabel  = `VaR(${varConfidence}%)`
+
   const option = {
     tooltip: {
       trigger: "axis",
-      formatter: (params: { seriesName: string; name: string; value: number; marker: string }[]) => {
-        const lines = params.map((p) => `${p.marker}${p.seriesName}: ${Number(p.value).toLocaleString("zh-CN")} 元`)
+      formatter: (params: { seriesName: string; name: string; value: number | null; marker: string }[]) => {
+        const lines = params
+          .filter(p => p.value != null)
+          .map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toLocaleString("zh-CN")} 元`)
         return [params[0]?.name, ...lines].join("<br/>")
       },
     },
-    legend: { data: ["实际|盈亏|", `VaR(${varConfidence}%)`], top: 5, itemWidth: 12, itemGap: 8 },
+    legend: { data: ["实际|盈亏|", confLabel], top: 5, itemWidth: 12, itemGap: 8 },
     grid: { left: 65, right: 20, top: 35, bottom: 50 },
     xAxis: {
       type: "category",
-      data: varData.map((r) => r.date),
-      axisLabel: { fontSize: 10, rotate: 30 },
+      data: xDates,
+      axisLabel: {
+        fontSize: 10,
+        rotate: 30,
+        // Always show the last two labels (today's date + "今日预测") regardless of auto-interval
+        interval: (idx: number) => {
+          const n = xDates.length
+          if (hasSbVar && idx >= n - 2) return true
+          const step = Math.max(1, Math.floor(n / 15))
+          return idx % step === 0
+        },
+      },
     },
     yAxis: {
       type: "value",
@@ -66,20 +90,43 @@ export default function VarPredictionChart({ height = 320 }: { height?: number }
       {
         name: "实际|盈亏|",
         type: "bar",
-        data: varData.map((r) => ({
-          value: r.actual,
-          itemStyle: { color: r.actual > r.var ? "#ef4444" : "#94a3b8" },
-        })),
+        // No bar for the synthetic "今日预测" point
+        data: [
+          ...varData.map(r => ({
+            value: r.actual,
+            itemStyle: { color: r.actual > r.var ? "#ef4444" : "#94a3b8" },
+          })),
+          ...(hasSbVar ? [{ value: null as unknown as number, itemStyle: { color: "transparent" } }] : []),
+        ],
         barMaxWidth: 12,
       },
       {
-        name: `VaR(${varConfidence}%)`,
+        name: confLabel,
         type: "line",
-        data: varData.map((r) => r.var),
+        data: [
+          ...varData.map(r => ({ value: r.var })),
+          ...(hasSbVar ? [{ value: sbVar }] : []),
+        ],
         lineStyle: { color: "#f97316", width: 2 },
         itemStyle: { color: "#f97316" },
-        symbol: "none",
+        // Show a distinct dot only on the prediction point
+        symbol: (_v: number, p: { dataIndex: number }) =>
+          hasSbVar && p.dataIndex === xDates.length - 1 ? "circle" : "none",
+        symbolSize: (_v: number, p: { dataIndex: number }) =>
+          hasSbVar && p.dataIndex === xDates.length - 1 ? 8 : 0,
         z: 10,
+        // Dashed segment from last historical point to the prediction
+        ...(hasSbVar && lastRow ? {
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed" as const, color: "#f97316", width: 2, opacity: 0.8 },
+            data: [[
+              { coord: [varData.length - 1, lastRow.var] },
+              { coord: [varData.length,     sbVar] },
+            ]],
+          },
+        } : {}),
       },
     ],
   }

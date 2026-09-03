@@ -1693,6 +1693,8 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
   const [varCorrDays, setVarCorrDays] = useState("252")
   const [varDistModel, setVarDistModel] = useState("normal")
   const [varZoom, setVarZoom] = useState<{ start: number; end: number }>({ start: 60, end: 100 })
+  // Sandbox VaR for "今日预测" extension point (same filters as VaR沙盒)
+  const [varSbVar, setVarSbVar] = useState<number | null>(null)
   const [varFitView, setVarFitView] = useState<"chart" | "table">("chart")
   type OptResult = {
     confidence: string; volDays: number; corrDays: number; distModel: string
@@ -1743,12 +1745,16 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
 
   const fetchVar = (confidence: string, volDays: string, corrDays: string, distModel: string) => {
     setVarLoading(true)
+    setVarSbVar(null)
     const params = new URLSearchParams({ confidence, volDays, corrDays, distModel })
-    fetch(`/ma/api/mom-analysis/var-prediction?${params}`)
-      .then((r) => r.json())
-      .then((varJson) => {
+    Promise.all([
+      fetch(`/ma/api/mom-analysis/var-prediction?${params}`).then(r => r.json()),
+      fetch(`/ma/api/mom-analysis/var-sandbox?${params}`).then(r => r.json()),
+    ])
+      .then(([varJson, sbJson]) => {
         setVarData(varJson.data ?? [])
         if (varJson.breachRate != null) setVarBreachRate(varJson.breachRate)
+        if (sbJson.ok && sbJson.totalVar) setVarSbVar(sbJson.totalVar)
       })
       .catch(() => {})
       .finally(() => setVarLoading(false))
@@ -1863,12 +1869,16 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
       setCorrMatrixData(scatterJson.corrMatrix ?? null)
     }).catch(() => {}).finally(maybeFinish)
 
-    // var-prediction is not cached — fetch separately so it doesn't block PnL rendering
-    fetch(`/ma/api/mom-analysis/var-prediction?confidence=${varConfidence}&volDays=${varVolDays}&corrDays=${varCorrDays}&distModel=${varDistModel}`)
-      .then((r) => r.json())
-      .then((varJson) => {
+    // var-prediction + sandbox — fetched together so the "今日预测" extension point matches VaR沙盒
+    const initParams = new URLSearchParams({ confidence: varConfidence, volDays: varVolDays, corrDays: varCorrDays, distModel: varDistModel })
+    Promise.all([
+      fetch(`/ma/api/mom-analysis/var-prediction?${initParams}`).then(r => r.json()),
+      fetch(`/ma/api/mom-analysis/var-sandbox?${initParams}`).then(r => r.json()),
+    ])
+      .then(([varJson, sbJson]) => {
         setVarData(varJson.data ?? [])
         if (varJson.breachRate != null) setVarBreachRate(varJson.breachRate)
+        if (sbJson.ok && sbJson.totalVar) setVarSbVar(sbJson.totalVar)
       })
       .catch(() => {})
   }, [singleAccount])
@@ -2308,6 +2318,10 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
             const e = params.batch ? params.batch[0].end   : (params.end   ?? varZoom.end)
             setVarZoom({ start: s, end: e })
           }
+          const hasSbPoint   = varSbVar != null && varData.length > 0
+          const sbLastRow    = varData[varData.length - 1]
+          const varXDates    = hasSbPoint ? [...varData.map(r => r.date), "今日预测"] : varData.map(r => r.date)
+          const varConfLabel = `VaR(${varConfidence}%)`
           return (
             <div className="flex gap-3">
               {/* Left: VaR prediction vs actual */}
@@ -2321,17 +2335,29 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
                       option={{
                         tooltip: {
                           trigger: "axis",
-                          formatter: (params: { seriesName: string; name: string; value: number; marker: string }[]) => {
-                            const lines = params.map((p) => `${p.marker}${p.seriesName}: ${Number(p.value).toLocaleString("zh-CN")} 元`)
+                          formatter: (params: { seriesName: string; name: string; value: number | null; marker: string }[]) => {
+                            const lines = params
+                              .filter(p => p.value != null)
+                              .map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toLocaleString("zh-CN")} 元`)
                             return [params[0]?.name, ...lines].join("<br/>")
                           },
                         },
-                        legend: { data: ["实际|盈亏|", `VaR(${varConfidence}%)`], top: 5, itemWidth: 12, itemGap: 8 },
+                        legend: { data: ["实际|盈亏|", varConfLabel], top: 5, itemWidth: 12, itemGap: 8 },
                         grid: { left: 65, right: 20, top: 35, bottom: 50 },
                         xAxis: {
                           type: "category",
-                          data: varData.map((r) => r.date),
-                          axisLabel: { fontSize: 10, rotate: 30 },
+                          data: varXDates,
+                          axisLabel: {
+                            fontSize: 10,
+                            rotate: 30,
+                            // Always show the last two labels (today's date + "今日预测") regardless of auto-interval
+                            interval: (idx: number) => {
+                              const n = varXDates.length
+                              if (hasSbPoint && idx >= n - 2) return true
+                              const step = Math.max(1, Math.floor(n / 15))
+                              return idx % step === 0
+                            },
+                          },
                         },
                         yAxis: {
                           type: "value",
@@ -2345,20 +2371,40 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
                           {
                             name: "实际|盈亏|",
                             type: "bar",
-                            data: varData.map((r) => ({
-                              value: r.actual,
-                              itemStyle: { color: r.actual > r.var ? "#ef4444" : "#94a3b8" },
-                            })),
+                            data: [
+                              ...varData.map(r => ({
+                                value: r.actual,
+                                itemStyle: { color: r.actual > r.var ? "#ef4444" : "#94a3b8" },
+                              })),
+                              ...(hasSbPoint ? [{ value: null as unknown as number, itemStyle: { color: "transparent" } }] : []),
+                            ],
                             barMaxWidth: 12,
                           },
                           {
-                            name: `VaR(${varConfidence}%)`,
+                            name: varConfLabel,
                             type: "line",
-                            data: varData.map((r) => r.var),
+                            data: [
+                              ...varData.map(r => ({ value: r.var })),
+                              ...(hasSbPoint ? [{ value: varSbVar }] : []),
+                            ],
                             lineStyle: { color: "#f97316", width: 2 },
                             itemStyle: { color: "#f97316" },
-                            symbol: "none",
+                            symbol: (_v: number, p: { dataIndex: number }) =>
+                              hasSbPoint && p.dataIndex === varXDates.length - 1 ? "circle" : "none",
+                            symbolSize: (_v: number, p: { dataIndex: number }) =>
+                              hasSbPoint && p.dataIndex === varXDates.length - 1 ? 8 : 0,
                             z: 10,
+                            ...(hasSbPoint && sbLastRow ? {
+                              markLine: {
+                                silent: true,
+                                symbol: "none",
+                                lineStyle: { type: "dashed" as const, color: "#f97316", width: 2, opacity: 0.8 },
+                                data: [[
+                                  { coord: [varData.length - 1, sbLastRow.var] },
+                                  { coord: [varData.length,     varSbVar] },
+                                ]],
+                              },
+                            } : {}),
                           },
                         ],
                       }}
