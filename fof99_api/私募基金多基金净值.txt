@@ -1,0 +1,79 @@
+私募基金多基金净值
+每次可查询多个基金的平台净值，最多不超过40只。
+
+API文档
+请求方式： GET
+请求地址：/fund/price
+
+参数名	类型	必须	描述	示例e.g.
+app_id	string	是	appid	hfnud0cqtrrnnul3kmp
+order_by	string	否	排序key 默认 nav 可选(nav,cumulative_nav_withdrawal,cumulative_nav,price_change)	nav
+order	string	否	时间排序 0=倒序，1=升序	0
+date	string	否	净值日期，传空返回最新净值和日期	2021/9/1
+sign	string	是	签名	fb45a1d93f95397797180f3f9231a6ed
+reg_code	string	是	备案编号，多个产品用逗号隔开	SNQ467,SQS894
+tm	number	是	时间戳（秒）	1788489451
+
+详细说明：
+实际请求：
+
+https://mallapi.huofuniu.com/fund/price?app_id=hfnud0cqtrrnnul3kmp&date=2021-09-01&order=0&order_by=nav&reg_code=SNQ467%2CSQS894&sign=fb45a1d93f95397797180f3f9231a6ed&tm=1788489451
+
+签名说明：
+
+对请求Query参数不包函sign参数，对参数key升序排序 ，按key=value拼接的结果，用&拼接后，再拼接上密钥计算这个字符串的md5哈希
+
+sign = md5(`app_id=hfnud0cqtrrnnul3kmp&date=2021-09-01&order=0&order_by=nav&reg_code=SNQ467%2CSQS894&tm=1788489451ffb326c1ece5fa25552783c730d36666`) = fb45a1d93f95397797180f3f9231a6ed
+
+返回示例：
+{
+example:{
+error_code:0
+msg:"success"
+data:[
+0:{
+nav:3005
+cumulative_nav_withdrawal:3005
+cumulative_nav:3005
+price_change:0
+price_date:"2010-01-01"
+reg_code:""
+}
+]
+}
+}
+
+参数名	描述	类型
+error_code	0=成功，大于0请求出错	string
+data		array
+nav	单位	number
+cumulative_nav_withdrawal	累计	number
+cumulative_nav	复权	number
+price_change	净值变化	number
+price_date	净值日期	string
+reg_code	备案号	string
+
+SDK使用示例：
+# 将fof99目录添加到Python搜索路径【这步很重要，否则执行脚本找不到请求类】
+import sys
+sys.path.append(r'E:\path\to\mall_sdk')
+
+# 1、引入请求类
+from fof99 import FundMultiPrice
+
+# 2、创建请求对象
+appid = 'hfnud0cqtrrnnul3kmp'
+appkey = 'ffb326c1ece5fa25552783c730d36666'
+req = FundMultiPrice(appid, appkey)  # 请求对象
+
+# 3、设置请求参数，参考API文档
+req.set_params(order_by='nav', order='0', date_='2021-09-01', reg_code='SNQ467,SQS894')
+
+# 4、发起请求， use_df=True表示结果返回pandas.DataFrame对象；use_df=False表示结果返回Python列表
+res = req.do_request(use_df=True)
+
+# 5、结果处理
+print(res)
+print(req.get_debug_info())
+
+

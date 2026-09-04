@@ -2,9 +2,8 @@
  * Maps each 抓取邮箱 (crawl email account) to the login users who may see
  * products fetched from that mailbox in 直投产品 / 邮箱运维池.
  *
- * - Admin (role === "admin") always sees every product.
+ * - `hidden` (or sentinel userId) means 全部账户不可见 — nobody sees it, including admin.
  * - When an email is linked to one or more users, only those users (+ admin) see its products.
- * - `hidden` (or sentinel userId) means 全部账户不可见 — non-admins cannot see it.
  * - Explicit empty `userIds` (not hidden) means 全部账户可见.
  * - Mailboxes not yet saved in the store default to 全部账户不可见.
  */
@@ -96,7 +95,7 @@ export type DirectEmailVisibilityMapping = {
   userIds: string[]
   /** Display name snapshots aligned with userIds */
   userNames: string[]
-  /** True = 全部账户不可见 (non-admins cannot see this mailbox). */
+  /** True = 全部账户不可见 (nobody, including admin, can see this mailbox). */
   hidden: boolean
   updatedAt: string
 }
@@ -306,14 +305,13 @@ export function invalidateDirectEmailVisibilityCaches(): void {
 
 /**
  * Resolve which crawl emails the user may see.
- * Returns null when no filter should be applied (admin, or every mailbox is 全部账户可见).
+ * Returns null when no filter should be applied (every mailbox is 全部账户可见).
+ * Hidden mailboxes stay hidden for everyone, including admin.
  */
 export async function resolveAllowedCrawlEmailsForUser(opts: {
   userId: string
   isAdmin: boolean
 }): Promise<string[] | null> {
-  if (opts.isAdmin) return null
-
   const map = readDirectEmailVisibilityMap()
   const crawlAccounts = await listKnownCrawlEmailAccounts()
   const allowed = new Set<string>()
@@ -325,9 +323,14 @@ export async function resolveAllowedCrawlEmailsForUser(opts: {
       allowed.add(account)
       continue
     }
-    hasRestriction = true
-    if (mode === "users" && link && linkedUserIds(link).includes(opts.userId)) {
+    if (mode === "none") {
+      hasRestriction = true
+      continue
+    }
+    if (opts.isAdmin || (link && linkedUserIds(link).includes(opts.userId))) {
       allowed.add(account)
+    } else {
+      hasRestriction = true
     }
   }
   if (!hasRestriction) return null

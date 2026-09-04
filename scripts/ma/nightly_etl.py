@@ -14,6 +14,7 @@ Usage
   python scripts/ma/nightly_etl.py --step amac_futures
   python scripts/ma/nightly_etl.py --step amac_extra
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
+    python scripts/ma/nightly_etl.py --step private_fund_list_nav_sync
   python scripts/ma/nightly_etl.py --step dd_materials_links
   python scripts/ma/nightly_etl.py --group macro   # macro-market charts only
   python scripts/ma/nightly_etl.py --group stock   # stock-market charts only (A-share crowding)
@@ -4589,6 +4590,26 @@ def step_private_fund_indicators(conn) -> int:
     return 0
 
 
+def step_private_fund_list_nav_sync() -> int:
+    """Advance 私募基金 list latest_nav from product-page email/team merge."""
+    log.info("private_fund_list_nav_sync: advancing list NAV from product-page series …")
+    result = run_node_script("refresh_private_fund_list_from_product_nav.ts", timeout=3600)
+    if not result:
+        raise RuntimeError("private_fund_list_nav_sync: no result from refresh_private_fund_list_from_product_nav.ts")
+    if not result.get("ok"):
+        raise RuntimeError(
+            f"private_fund_list_nav_sync: failed — {result.get('error', 'unknown')}"
+        )
+    updated = int(result.get("updated") or 0)
+    log.info(
+        "private_fund_list_nav_sync: candidates=%s resolved=%s updated=%d",
+        result.get("candidates"),
+        result.get("resolved"),
+        updated,
+    )
+    return updated
+
+
 def step_valuation_cache() -> int:
     """Pre-compute 估值表分析 page data (snapshot + trend + curves) for all managed funds.
 
@@ -5219,6 +5240,7 @@ ORDERED_STEPS = [
     "sync_amac_fund_metadata",       # 备案日期 / 公司管理规模 → basicinfo_bfl_track
     "pe_industry_stats",             # 私募行业 dashboard aggregates from amac_* tables
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
+    "private_fund_list_nav_sync",    # advance 私募基金 list NAV from product-page email/team
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "dd_materials_links",            # 尽调表格 links (auto-matching currently off)
     "contract_extract",              # queued fund-contract LLM extract → 产品要素 + 合同附件
@@ -5366,6 +5388,7 @@ def main():
         "sync_amac_fund_metadata":         lambda: step_sync_amac_fund_metadata(),
         "pe_industry_stats":               lambda: step_pe_industry_stats(),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
+        "private_fund_list_nav_sync":      lambda: step_private_fund_list_nav_sync(),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "dd_materials_links":              lambda: step_dd_materials_links(),
         "contract_extract":                lambda: step_contract_extract(),

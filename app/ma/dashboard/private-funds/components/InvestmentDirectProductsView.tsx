@@ -695,11 +695,14 @@ export function InvestmentDirectProductsView() {
         const json = await res.json().catch(() => ({}))
         if (cancelled || !res.ok) return
         const rows = Array.isArray(json.data) ? json.data : []
-        setCrawlEmailOptions(
-          rows
-            .map((r: { crawlEmailAccount?: string }) => String(r?.crawlEmailAccount || "").trim().toLowerCase())
-            .filter(Boolean),
-        )
+        const visible = rows
+          .filter((r: { hidden?: boolean; userId?: string }) =>
+            !r?.hidden && String(r?.userId || "").trim() !== "__none__",
+          )
+          .map((r: { crawlEmailAccount?: string }) => String(r?.crawlEmailAccount || "").trim().toLowerCase())
+          .filter(Boolean)
+        setCrawlEmailOptions(visible)
+        setCrawlEmail((prev) => (prev && !visible.includes(prev) ? "" : prev))
       } catch {
         if (!cancelled) setCrawlEmailOptions([])
       }

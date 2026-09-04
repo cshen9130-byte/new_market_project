@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 import {
+  resolveAllowedCrawlEmailsForUser,
   resolveEmailPoolRegistersForCrawlEmails,
   resolveVisibleEmailPoolRegistersForUser,
 } from "@/lib/server/direct-email-visibility"
@@ -14,7 +15,8 @@ export const dynamic = "force-dynamic"
 /**
  * 直投产品 list — backed by email-synced products (邮箱运维池 / custom_email_nav),
  * filtered by 直投设置 crawl-email → account visibility.
- * Admin sees all; linked mailbox products are visible only to the linked accounts.
+ * Hidden mailboxes (全部账户不可见) are excluded for everyone, including admin.
+ * Linked mailbox products are visible only to the linked accounts (+ admin).
  * Optional `crawl_email` query param (admin only) further filters by fetch mailbox.
  */
 export async function GET(req: Request) {
@@ -49,14 +51,22 @@ export async function GET(req: Request) {
     }
 
     if (crawlEmail) {
-      const emailRegisters = await resolveEmailPoolRegistersForCrawlEmails([crawlEmail])
-      if (emailVisibilityRegisters === null) {
-        emailVisibilityRegisters = emailRegisters
+      // Hidden / unlinked mailboxes must not be peekable via crawl_email, even for admin.
+      const allowedEmails = userId
+        ? await resolveAllowedCrawlEmailsForUser({ userId, isAdmin })
+        : []
+      if (allowedEmails !== null && !allowedEmails.includes(crawlEmail)) {
+        emailVisibilityRegisters = []
       } else {
-        const allow = new Set(emailRegisters.map((r) => r.trim().toUpperCase()))
-        emailVisibilityRegisters = emailVisibilityRegisters.filter((r) =>
-          allow.has(r.trim().toUpperCase()),
-        )
+        const emailRegisters = await resolveEmailPoolRegistersForCrawlEmails([crawlEmail])
+        if (emailVisibilityRegisters === null) {
+          emailVisibilityRegisters = emailRegisters
+        } else {
+          const allow = new Set(emailRegisters.map((r) => r.trim().toUpperCase()))
+          emailVisibilityRegisters = emailVisibilityRegisters.filter((r) =>
+            allow.has(r.trim().toUpperCase()),
+          )
+        }
       }
     }
 

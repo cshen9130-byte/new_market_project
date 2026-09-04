@@ -1,0 +1,57 @@
+# -*- coding: utf-8 -*-
+# 投资顾问相关
+import time
+
+from .baserequest import BaseRequest
+
+
+class CompanyInfo(BaseRequest):
+    """ 提供投资顾问的信息 """
+    _uri = '/company/info'
+
+    def set_params(self, reg_code='', name_cn='', name_short=''):
+        self['code'] = reg_code
+        self['name_cn'] = name_cn
+        self['name_short'] = name_short
+
+
+class CompanyScale(BaseRequest):
+    """ 提供投资顾问的信息 """
+    _uri = '/company/scale'
+
+    def set_params(self, code):
+        self['code'] = code
+
+
+class CompanyShareholder(BaseRequest):
+    """ 私募管理人股东信息查询 """
+    _uri = '/company/shareholder'
+
+    def set_params(self, code):
+        self['code'] = code
+
+
+class CompanyFundList(BaseRequest):
+    """ 提供私募管理人的旗下基金列表。 """
+    _uri = '/company/fund/list'
+
+    def set_params(self, code, product_type=None, page=1, page_size=20, fund_state=0):
+        self['code'] = code
+        if product_type is not None:
+            self['product_type'] = product_type
+        self['page'] = page
+        self['pagesize'] = page_size
+        self['fund_state'] = fund_state
+
+
+class SMCompanyList(BaseRequest):
+    """ 私募管理人列表 """
+    _uri = "/sm/company_list"
+    _method = "POST"
+    _sign_params = False
+    _url_concat_sign = True
+
+    def set_params(self, scale, found_date=1, active=1):
+        self['scale'] = scale
+        self['found_date'] = found_date
+        self['active'] = active

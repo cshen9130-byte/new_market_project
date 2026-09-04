@@ -167,6 +167,13 @@ export function getCfmmcImportBook(userId: string): ImportBook | null {
   return listImportBooks().find((b) => b.source === "cfmmc" && b.cfmmcUserId === uid) ?? null
 }
 
+function cfmmcBookName(userId: string, label?: string): string {
+  const uid = userId.trim()
+  const note = label?.trim()
+  if (note && note !== "未分组" && note !== uid) return note
+  return `监控中心 ${uid}`
+}
+
 export function createCfmmcImportBook(userId: string, label?: string): ImportBook {
   const uid = userId.trim()
   if (!uid) throw new Error("缺少监控中心用户名")
@@ -186,12 +193,9 @@ export function createCfmmcImportBook(userId: string, label?: string): ImportBoo
     writeRaw(data)
     return legacy
   }
-  const name = (label?.trim() && label.trim() !== "未分组" && label.trim() !== uid)
-    ? label.trim()
-    : `监控中心 ${uid}`
   const book: ImportBook = {
     id: newBookId(),
-    name,
+    name: cfmmcBookName(uid, label),
     createdAt: new Date().toISOString(),
     files: [],
     source: "cfmmc",
@@ -200,6 +204,22 @@ export function createCfmmcImportBook(userId: string, label?: string): ImportBoo
   data.books.push(book)
   writeRaw(data)
   return book
+}
+
+/** Keep the 监控中心 book title in sync when the account 备注 changes. */
+export function renameCfmmcImportBook(userId: string, label?: string): ImportBook | null {
+  const uid = userId.trim()
+  if (!uid) return null
+  const book = getCfmmcImportBook(uid)
+  if (!book) return null
+  const name = cfmmcBookName(uid, label)
+  if (book.name === name) return book
+  const data = readRaw()
+  const row = data.books.find((b) => b.id === book.id)
+  if (!row) return book
+  row.name = name
+  writeRaw(data)
+  return row
 }
 
 /** Move leftover auto-group books (named with the 资金账号) into the 监控中心 book. */

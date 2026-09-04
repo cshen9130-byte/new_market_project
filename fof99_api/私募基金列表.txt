@@ -1,0 +1,214 @@
+私募基金列表
+根据平台/团队策略，获取基金列表数据。
+
+API文档
+请求方式： GET
+
+请求地址：/fund/advancedlist
+app_id
+string
+是
+appid
+hfnud0cqtrrnnul3kmp
+type
+number
+是
+1.平台策略；2.团队策略
+1
+fund_state
+number
+否
+运作状态 1.正常运作 2.正常清算 3.提前清算 4.延期清算 5.投顾协议已终止 6.非正常清算 不传则表示全部
+1
+fund_type
+number
+否
+基金类型： 2.私募证券基金； 3/12.券商资管； 5.保险资管； 6/13.信托产品； 8/16.公募专户； 9/17.期货资管； 14.私募资产配置基金
+2
+strategy_one
+是
+一级策略
+不限
+strategy_two
+否
+二级策略
+不限
+strategy_three
+否
+三级策略
+不限
+order
+string
+否
+时间排序 0=倒序，1=升序
+0
+order_by
+string
+否
+排序key 默认 price_date 可选(price_nav,price_cnw,price_cw_nav,price_change,price_date,inception_date)
+price_date
+page
+number
+是
+1
+pagesize
+number
+是
+最大1000
+10
+sign
+string
+是
+签名
+8bcde73bc86e9f92be35d47660c16895
+tm
+number
+是
+时间戳（秒）
+1788505604
+
+详细说明：
+实际请求：
+
+https://mallapi.huofuniu.com/fund/advancedlist?app_id=hfnud0cqtrrnnul3kmp&fund_state=1&fund_type=2&order=0&order_by=price_date&page=1&pagesize=10&sign=8bcde73bc86e9f92be35d47660c16895&strategy_one=%E4%B8%8D%E9%99%90&strategy_three=%E4%B8%8D%E9%99%90&strategy_two=%E4%B8%8D%E9%99%90&tm=1788505604&type=1
+
+签名说明：
+
+对请求Query参数不包函sign参数，对参数key升序排序 ，按key=value拼接的结果，用&拼接后，再拼接上密钥计算这个字符串的md5哈希
+
+sign = md5(`app_id=hfnud0cqtrrnnul3kmp&fund_state=1&fund_type=2&order=0&order_by=price_date&page=1&pagesize=10&strategy_one=%E4%B8%8D%E9%99%90&strategy_three=%E4%B8%8D%E9%99%90&strategy_two=%E4%B8%8D%E9%99%90&tm=1788505604&type=1ffb326c1ece5fa25552783c730d36666`) = 8bcde73bc86e9f92be35d47660c16895
+
+返回示例：
+{
+example:{
+error_code:0
+msg:"success"
+data:{
+list:[
+0:{
+fund_name:"华睿千和大牛八号私募证券投资基金"
+fund_short_name:"华睿千和大牛八号"
+register_number:"SB5332"
+advisor:"天津华睿千和资管"
+inception_date:"2023-07-11"
+liquidate_date:""
+price_cw_nav:0
+price_nav:0
+price_cnw:0
+price_change:0
+price_date:""
+puton_date:"2023-07-14"
+fund_type:2
+fund_state:1
+cycle_type:0
+mandator_name:"华泰证券股份有限公司"
+strategy_one:"股票多头"
+strategy_two:""
+strategy_three:""
+strategy_verify:0
+advisor2:"天津华睿千和资管"
+amac_scale:"未知"
+register_code:"P1015980"
+}
+]
+}
+}
+}
+
+error_code
+0=成功，大于0请求出错
+string
+data.list
+array
+fund_name
+基金名称
+string
+fund_short_name
+基金简称
+string
+register_number
+备案编码
+string
+advisor
+基金管理人
+string
+inception_date
+成立日期
+string
+liquidate_date
+清算日期
+string
+price_cw_nav
+复权净值
+number
+price_nav
+最新净值
+number
+price_cnw
+累计净值
+number
+price_change
+涨跌幅
+number
+price_date
+最新净值日期
+string
+puton_date
+备案时间
+string
+fund_type
+基金类型： 2.私募证券基金； 3/12.券商资管； 5.保险资管； 6/13.信托产品； 8/16.公募专户； 9/17.期货资管； 14.私募资产配置基金
+number
+fund_state
+1.正常运作 2.正常清算 3.提前清算 4.延期清算 5.投顾协议已终止 6.非正常清算
+number
+cycle_type
+净值更新周期类型 0：未知 1：日更新 2：周更新 3：月更新
+number
+mandator_name
+托管人名称
+string
+strategy_one
+一级策略
+string
+strategy_two
+二级策略
+string
+strategy_three
+三级策略
+string
+strategy_verify
+策略是否确认：0-否 1-是
+number
+advisor2
+投资顾问
+string
+amac_scale
+产品规模
+string
+register_code
+登记编号
+string
+
+SDK使用示例：
+# 将fof99目录添加到Python搜索路径【这步很重要，否则执行脚本找不到请求类】
+import sys
+sys.path.append(r'E:\path\to\mall_sdk')
+
+# 1、引入请求类
+from fof99 import FundAdvancedList
+
+# 2、创建请求对象
+appid = 'hfnud0cqtrrnnul3kmp'
+appkey = 'ffb326c1ece5fa25552783c730d36666'
+req = FundAdvancedList(appid, appkey)  # 请求对象
+
+# 3、设置请求参数，参考API文档
+req.set_params(type_=1, fund_state=1, fund_type=2, strategy_one='不限', strategy_two='不限', strategy_three='不限', order='0', order_by='price_date', page=1, pagesize=10)
+
+# 4、发起请求， use_df=True表示结果返回pandas.DataFrame对象；use_df=False表示结果返回Python列表
+res = req.do_request(use_df=True)
+
+# 5、结果处理
+print(res)
+print(req.get_debug_info())

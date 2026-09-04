@@ -102,24 +102,35 @@ function tipFromSeries(series: LegacyNavRow[]): {
   }
 }
 
+function maxIsoDate(...dates: Array<string | null | undefined>): string {
+  let best = ""
+  for (const raw of dates) {
+    const d = (raw ?? "").trim().slice(0, 10)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d) && d > best) best = d
+  }
+  return best
+}
+
 /**
- * Cache is fresh when its tip date is not behind the list-cache tip.
+ * Cache is fresh when its tip date is not behind the newest list tip we already
+ * hold: FOF / 在管 / 跟踪 list-cache, or 私募基金 `private_fund_info`.
  * Unit-NAV equality is not required — managed list tips can diverge from detail
  * on the same date (BatchNavResolver vs detail merge).
  */
 export function isDetailNavCacheFresh(
   cached: Pick<DetailNavCacheRow, "tip_nav_date" | "nav_series">,
   listHeader: ListCacheFundHeader | null | undefined,
+  extraTipDate?: string | null,
 ): boolean {
   if (!cached.nav_series.length) return false
-  const listDate = listHeader?.nav_date?.slice(0, 10) ?? ""
-  if (!listDate) return true
-  const cacheDate =
-    cached.tip_nav_date?.slice(0, 10)
-    || cached.nav_series[cached.nav_series.length - 1]?.price_date?.slice(0, 10)
-    || ""
+  const required = maxIsoDate(listHeader?.nav_date, extraTipDate)
+  if (!required) return true
+  const cacheDate = maxIsoDate(
+    cached.tip_nav_date,
+    cached.nav_series[cached.nav_series.length - 1]?.price_date,
+  )
   if (!cacheDate) return false
-  return cacheDate >= listDate
+  return cacheDate >= required
 }
 
 /** False when uploaded team/manual NAV dates are missing from the cached series. */
@@ -260,6 +271,7 @@ export async function persistDetailNavSeries(opts: {
     }
     // Always advance 跟踪产品 tip — even when FOF tip is written by the caller.
     await syncTrackingListTipFromDetailSeries(opts)
+    await syncPrivateFundListTipFromDetailSeries(opts)
   } catch (err) {
     console.error(
       `[detail-nav-cache] persist failed for ${opts.beian_hao || opts.product_name}:`,
@@ -282,6 +294,7 @@ export async function syncListTipsFromDetailSeries(opts: {
     await syncFofListTipFromDetailSeries(opts)
   }
   await syncTrackingListTipFromDetailSeries(opts)
+  await syncPrivateFundListTipFromDetailSeries(opts)
 }
 
 async function syncFofListTipFromDetailSeries(opts: {
@@ -323,6 +336,28 @@ async function syncTrackingListTipFromDetailSeries(opts: {
   } catch (err) {
     console.warn(
       `[detail-nav-cache] tracking tip sync failed for ${opts.beian_hao || opts.product_name}:`,
+      err,
+    )
+  }
+}
+
+async function syncPrivateFundListTipFromDetailSeries(opts: {
+  beian_hao?: string | null
+  product_name: string
+  nav_series: LegacyNavRow[]
+}): Promise<void> {
+  try {
+    const { patchPrivateFundInfoTipFromSeries } = await import(
+      "@/lib/server/private-fund-list-nav-sync"
+    )
+    await patchPrivateFundInfoTipFromSeries({
+      product_name: opts.product_name,
+      beian_hao: opts.beian_hao,
+      series: opts.nav_series,
+    })
+  } catch (err) {
+    console.warn(
+      `[detail-nav-cache] private-fund list tip sync failed for ${opts.beian_hao || opts.product_name}:`,
       err,
     )
   }

@@ -58,12 +58,19 @@ type InfoRow = {
   ret_1y: string | null
   sharpe_1y: string | null
   calmar_1y: string | null
+  latest_nav_date?: string | null
 }
 
 function pctFromCache(raw: string | null | undefined): string | null {
   if (raw == null || raw === "") return null
   const n = parseFloat(raw)
   return Number.isFinite(n) ? (n * 100).toFixed(4) : null
+}
+
+function navSeriesTipDate(series: unknown): string {
+  if (!Array.isArray(series) || series.length === 0) return ""
+  const last = series[series.length - 1] as { price_date?: string }
+  return String(last?.price_date ?? "").slice(0, 10)
 }
 
 /** Drop non-trading days from detail payload (also sanitizes stale in-memory cache). */
@@ -257,15 +264,26 @@ export async function GET(
       ...manualNavPointsForBeian(teamManualMap, beian_hao),
     ]
     const cachedDetail = getDetailResponseMemoryCache(cacheKey)
+    const memorySeries = Array.isArray((cachedDetail as { nav_series?: unknown } | null)?.nav_series)
+      ? (cachedDetail as { nav_series: Parameters<typeof detailNavCacheCoversTeamDates>[0]["nav_series"] }).nav_series
+      : []
     const memoryCoversTeam = cachedDetail != null && detailNavCacheCoversTeamDates(
-      {
-        nav_series: Array.isArray((cachedDetail as { nav_series?: unknown }).nav_series)
-          ? (cachedDetail as { nav_series: Parameters<typeof detailNavCacheCoversTeamDates>[0]["nav_series"] }).nav_series
-          : [],
-      },
+      { nav_series: memorySeries },
       teamManualPoints.map((point) => point.nav_date),
     )
-    if (cachedDetail && memoryCoversTeam) {
+    const memoryListTipRows = cachedDetail
+      ? await query<{ latest_nav_date: string | null }>(
+          `SELECT latest_nav_date::text AS latest_nav_date
+           FROM private_fund_info
+           WHERE beian_hao = $1 OR beian_hao = $2
+           ORDER BY CASE WHEN beian_hao = $1 THEN 0 ELSE 1 END
+           LIMIT 1`,
+          [cacheKey, rawId],
+        ).catch(() => [] as { latest_nav_date: string | null }[])
+      : []
+    const memoryListTip = (memoryListTipRows[0]?.latest_nav_date ?? "").slice(0, 10)
+    const memoryCoversListTip = !memoryListTip || navSeriesTipDate(memorySeries) >= memoryListTip
+    if (cachedDetail && memoryCoversTeam && memoryCoversListTip) {
       const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
       const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
@@ -281,7 +299,8 @@ export async function GET(
       `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, NULL::text AS strategy_l3, manager,
               inception_date::text AS inception_date, benchmark,
               ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-              sharpe_1y::text, calmar_1y::text
+              sharpe_1y::text, calmar_1y::text,
+              latest_nav_date::text AS latest_nav_date
        FROM private_fund_info WHERE beian_hao = $1`,
       [beian_hao],
     )
@@ -481,12 +500,22 @@ export async function GET(
     const trackAdvisor = bflTrack?.advisor?.trim() || null
 
     // Prefer persistent detail NAV cache (same series as loadDetailNavSeriesFast).
-    // Freshness: tip date must not lag the list-cache tip, and uploaded team NAV
-    // dates must already be in the cached series (VW7878-style platform stubs).
+    // Freshness: tip date must not lag FOF/在管/跟踪 list-cache OR 私募基金
+    // private_fund_info (火富牛 writes the list without rebuilding this cache).
+    const privateListTip = (info.latest_nav_date ?? "").slice(0, 10)
+    if (
+      privateListTip
+      && /^\d{4}-\d{2}-\d{2}$/.test(privateListTip)
+      && (!listHeader?.nav_date || privateListTip > listHeader.nav_date.slice(0, 10))
+    ) {
+      listHeader = listHeader
+        ? { ...listHeader, nav_date: privateListTip }
+        : listHeader
+    }
     const pgCached = await getDetailNavCache(routeBeianHao, productName)
     const pgCacheHit =
       pgCached != null
-      && isDetailNavCacheFresh(pgCached, listHeader)
+      && isDetailNavCacheFresh(pgCached, listHeader, privateListTip)
       && detailNavCacheCoversTeamDates(
         pgCached,
         teamManualPoints.map((point) => point.nav_date),

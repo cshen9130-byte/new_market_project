@@ -1,0 +1,187 @@
+基金自定义字段数据查询
+查询基金自定义字段的数据
+
+API文档
+请求方式： GET
+
+请求地址：/funds/company/fields
+
+
+reg_code
+string
+是
+私募基金备案号或公募基金代码
+SACA69
+type
+number
+是
+1.私募 2.公募
+1
+sign
+string
+是
+签名
+98735afab86ba476923226f4dcb9bfee
+app_id
+string
+是
+appid
+hfnud0cqtrrnnul3kmp
+tm
+number
+是
+时间戳（秒）
+1788505713
+
+详细说明：
+实际请求：
+
+https://mallapi.huofuniu.com/funds/company/fields?app_id=hfnud0cqtrrnnul3kmp&reg_code=SACA69&sign=98735afab86ba476923226f4dcb9bfee&tm=1788505713&type=1
+
+签名说明：
+
+对请求Query参数不包函sign参数，对参数key升序排序 ，按key=value拼接的结果，用&拼接后，再拼接上密钥计算这个字符串的md5哈希
+
+sign = md5(`app_id=hfnud0cqtrrnnul3kmp&reg_code=SACA69&tm=1788505713&type=1ffb326c1ece5fa25552783c730d36666`) = 98735afab86ba476923226f4dcb9bfee
+
+返回示例：
+{
+example:{
+error_code:0
+msg:"success"
+data:{
+fid:1001
+team_field_data:[
+0:{
+date:"2026-02-28 00:00:00"
+fid:466838
+field_data_id:"5a6d689a51df49ca"
+id:81
+insert_time:"2026-07-23 10:13:00"
+number:null
+relation_type:1
+screen_id:1
+text:"文本内容"
+title:"字段名称"
+type:1
+url:"teamField/28350/24544_cWgFrkxs_1750673289328963161.jpeg"
+update_time:"2026-07-23 10:16:00"
+user_name:""
+screen_color:"#FF0000"
+screen_name:"分组名称"
+name:"未来资产1号私募投资基金"
+relation_id:"2d4467a39c19668e4512c1c19a847239"
+short_name:"未来资产1号"
+}
+]
+team_field_id:1
+team_field_title:"字段配置名称"
+team_field_type:1
+}
+}
+}
+
+
+error_code
+0=成功，大于0请求出错
+string
+data
+object
+fid
+基金id
+number
+team_field_data
+array
+date
+日期类型结果
+string
+fid
+基金id
+number
+field_data_id
+附件id
+string
+id
+主键id
+number
+insert_time
+插入时间
+string
+number
+数字类型结果
+string
+relation_type
+对应的基金/公司类型（1私募、2公募、3内部基金)
+number
+screen_id
+team_field_select_set.id
+number
+text
+文本类型结果
+string
+title
+字段类型名称
+string
+type
+字段类型:1-11(1-文本 2-数字 3-百分数 4-日期 5-单选 6-多选 7-附件 8-人员配置 9-关联 (基金)10-超链接 11-关联（公司）
+number
+type_id
+产品id(基金/公司/对接人id)
+number
+url
+文件链接
+string
+update_time
+最后修改时间
+string
+user_name
+人员配置用户
+string
+screen_color
+文本颜色代码
+string
+screen_name
+单选/多选配置名称
+string
+name
+展示基金名称/公司名称
+string
+relation_id
+关联产品id
+string
+short_name
+展示基金简称/公司简称
+string
+team_field_id
+字段配置id
+number
+team_field_title
+字段配置名称
+string
+team_field_type
+字段类型:1-11(1-文本 2-数字 3-百分数 4-日期 5-单选 6-多选 7-附件 8-人员配置 9-关联 (基金)10-超链接 11-关联（公司）
+number
+
+SDK使用示例：
+# 将fof99目录添加到Python搜索路径【这步很重要，否则执行脚本找不到请求类】
+import sys
+sys.path.append(r'E:\path\to\mall_sdk')
+
+# 1、引入请求类
+from fof99 import FundsCompanyFields
+
+# 2、创建请求对象
+appid = 'hfnud0cqtrrnnul3kmp'
+appkey = 'ffb326c1ece5fa25552783c730d36666'
+req = FundsCompanyFields(appid, appkey)  # 请求对象
+
+# 3、设置请求参数，参考API文档
+req.set_params(reg_code='SACA69', type_=1)
+
+# 4、发起请求， use_df=True表示结果返回pandas.DataFrame对象；use_df=False表示结果返回Python列表
+res = req.do_request(use_df=True)
+
+# 5、结果处理
+print(res)
+print(req.get_debug_info())
+

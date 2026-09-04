@@ -3,12 +3,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
   Download,
   FileSpreadsheet,
   FolderOpen,
   Globe,
   Mail,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -16,6 +18,7 @@ import {
   Terminal,
   Trash2,
   UploadCloud,
+  X,
 } from "lucide-react"
 
 import { useToast } from "@/hooks/use-toast"
@@ -157,6 +160,9 @@ export default function AccountRiskDataImport() {
   const [isAddingAccount, setIsAddingAccount] = useState(false)
   const [fetchingAccountId, setFetchingAccountId] = useState<string | null>(null)
   const [isFetchingAllCfmmc, setIsFetchingAllCfmmc] = useState(false)
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null)
+  const [editLabel, setEditLabel] = useState("")
+  const [savingLabelId, setSavingLabelId] = useState<string | null>(null)
 
   type Section = "upload" | "email" | "cfmmc"
   const [activeSection, setActiveSection] = useState<Section>("upload")
@@ -465,6 +471,42 @@ export default function AccountRiskDataImport() {
       toast({ title: "添加失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
     } finally {
       setIsAddingAccount(false)
+    }
+  }
+
+  function startEditLabel(account: CfmmcAccount) {
+    setEditingAccountId(account.id)
+    setEditLabel(account.label === account.userId ? "" : account.label)
+  }
+
+  function cancelEditLabel() {
+    setEditingAccountId(null)
+    setEditLabel("")
+  }
+
+  async function saveAccountLabel(account: CfmmcAccount) {
+    const label = editLabel.trim() || account.userId
+    if (label === account.label) {
+      cancelEditLabel()
+      return
+    }
+    setSavingLabelId(account.id)
+    try {
+      const res = await fetch(`${API}/cfmmc-accounts`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: account.id, label }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(readError(data, "更新失败"))
+      if (data.config) setCfmmc(data.config)
+      cancelEditLabel()
+      await loadFiles()
+      toast({ title: "备注已更新" })
+    } catch (e) {
+      toast({ title: "更新失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
+    } finally {
+      setSavingLabelId(null)
     }
   }
 
@@ -1010,7 +1052,59 @@ export default function AccountRiskDataImport() {
                 {cfmmc.accounts.map((account) => (
                   <div key={account.id} className="flex flex-wrap items-center gap-2 px-3 py-2.5 text-sm">
                     <div className="min-w-0 flex-1">
-                      <p className="font-medium truncate">{account.label || account.userId}</p>
+                      {editingAccountId === account.id ? (
+                        <div className="flex items-center gap-1.5 max-w-sm">
+                          <Input
+                            className="h-7 text-xs"
+                            autoFocus
+                            placeholder="备注（如 账户A）"
+                            value={editLabel}
+                            disabled={savingLabelId === account.id}
+                            onChange={(e) => setEditLabel(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault()
+                                void saveAccountLabel(account)
+                              } else if (e.key === "Escape") {
+                                e.preventDefault()
+                                cancelEditLabel()
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="text-emerald-600 hover:text-emerald-700 disabled:opacity-50"
+                            title="保存备注"
+                            disabled={savingLabelId === account.id}
+                            onClick={() => void saveAccountLabel(account)}
+                          >
+                            {savingLabelId === account.id
+                              ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                              : <Check className="h-3.5 w-3.5" />}
+                          </button>
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                            title="取消"
+                            disabled={savingLabelId === account.id}
+                            onClick={cancelEditLabel}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <p className="font-medium truncate">{account.label || account.userId}</p>
+                          <button
+                            type="button"
+                            className="shrink-0 text-muted-foreground hover:text-foreground"
+                            title="编辑备注"
+                            onClick={() => startEditLabel(account)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
                       <p className="text-xs font-mono text-muted-foreground truncate">{account.userId}</p>
                       {account.lastError && (
                         <p className="text-xs text-destructive truncate" title={account.lastError}>{account.lastError}</p>

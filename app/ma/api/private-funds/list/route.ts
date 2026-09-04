@@ -353,6 +353,7 @@ export async function GET(req: Request) {
         "1个月以内": `i.latest_nav_date >= CURRENT_DATE - INTERVAL '1 month'`,
         "1-3个月": `i.latest_nav_date >= CURRENT_DATE - INTERVAL '3 months' AND i.latest_nav_date < CURRENT_DATE - INTERVAL '1 month'`,
         "3-6个月": `i.latest_nav_date >= CURRENT_DATE - INTERVAL '6 months' AND i.latest_nav_date < CURRENT_DATE - INTERVAL '3 months'`,
+        "6个月以内": `i.latest_nav_date >= CURRENT_DATE - INTERVAL '6 months'`,
         "6个月以上": `i.latest_nav_date < CURRENT_DATE - INTERVAL '6 months'`,
       }
       const colSql = NAV_DATE_COL[navDatePeriod]
@@ -362,6 +363,7 @@ export async function GET(req: Request) {
         "1个月以内": `MAX(price_date) >= CURRENT_DATE - INTERVAL '1 month'`,
         "1-3个月": `MAX(price_date) >= CURRENT_DATE - INTERVAL '3 months' AND MAX(price_date) < CURRENT_DATE - INTERVAL '1 month'`,
         "3-6个月": `MAX(price_date) >= CURRENT_DATE - INTERVAL '6 months' AND MAX(price_date) < CURRENT_DATE - INTERVAL '3 months'`,
+        "6个月以内": `MAX(price_date) >= CURRENT_DATE - INTERVAL '6 months'`,
         "6个月以上": `MAX(price_date) < CURRENT_DATE - INTERVAL '6 months'`,
       }
       const subSql = NAV_DATE_SUBQUERY[navDatePeriod]

@@ -31,6 +31,8 @@ Notes
 * Funds with fewer than 20 NAV data points in the look-back window get
   NULL for Sharpe / Calmar.
 * Risk-free rate assumption: 3 % p.a. (Chinese money-market convention).
+* Does not overwrite private_fund_info when latest_nav_date is already
+  newer than the vendor private_fund_nav tip (email/team product-page sync).
 """
 
 from __future__ import annotations
@@ -293,6 +295,10 @@ def run(conn, *, dry_run: bool = False) -> int:
                     sharpe_1y, calmar_1y, latest_nav, latest_nav_date, beian_hao
                 )
                 WHERE t.beian_hao = v.beian_hao
+                  AND (
+                    t.latest_nav_date IS NULL
+                    OR t.latest_nav_date <= v.latest_nav_date::date
+                  )
                 """,
                 batch,
             )

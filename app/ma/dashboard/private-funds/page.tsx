@@ -417,7 +417,7 @@ const FUND_TYPES = ["不限", "私募证券基金", "券商资管", "期货资�
 const ORG_SIZES = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20亿", "5-10亿", "0-5亿"] as const
 const MORE_INFO_OPTIONS: Record<string, string[]> = {
   "基金成立日期": ["不限", "6个月以内", "6个月-1年", "1-3年", "3-5年", "5年以上", "自定义"],
-  "净值日期":     ["不限", "1个月以内", "1-3个月", "3-6个月", "6个月以上", "自定义"],
+  "净值日期":     ["不限", "1个月以内", "1-3个月", "3-6个月", "6个月以内", "6个月以上", "自定义"],
   "净值频率":     ["不限", "日频", "周频", "月频"],
   "净值完整度":   ["不限", ">80%", ">90%"],
   "是否代表产品": ["不限", "是", "否"],
@@ -11178,11 +11178,14 @@ function OperationsDirectView() {
         const json = await res.json().catch(() => ({}))
         if (cancelled || !res.ok) return
         const rows = Array.isArray(json.data) ? json.data : []
-        setCrawlEmailOptions(
-          rows
-            .map((r: { crawlEmailAccount?: string }) => String(r?.crawlEmailAccount || "").trim().toLowerCase())
-            .filter(Boolean),
-        )
+        const visible = rows
+          .filter((r: { hidden?: boolean; userId?: string }) =>
+            !r?.hidden && String(r?.userId || "").trim() !== "__none__",
+          )
+          .map((r: { crawlEmailAccount?: string }) => String(r?.crawlEmailAccount || "").trim().toLowerCase())
+          .filter(Boolean)
+        setCrawlEmailOptions(visible)
+        setCrawlEmail((prev) => (prev && !visible.includes(prev) ? "" : prev))
       } catch {
         if (!cancelled) setCrawlEmailOptions([])
       }

@@ -98,9 +98,11 @@ mom_data/
 
 # Sensitive credential files
 emailpass.txt
+fof99_api/api_key.txt
 
 # Downloaded settlement xlsx files — only at repo root (one-off download scripts)
 /*.xlsx
+/*.docx
 FOF底层明细.xlsx
 
 # Settlement email config (contains credentials)
@@ -129,6 +131,8 @@ data/tmp/
 data/runtime/
 scripts/ma/_tmp_*
 scripts/ma/_mom_signal_method_output/
+scripts/ma/_mom_signal_backtest_output/
+scripts/ma/fof99_advancedlist_latest_nav.csv
 data/hw_monitor_*
 data/list_perf_*
 yinhe_strategy/report_output/

@@ -12,6 +12,7 @@ import {
   adoptLegacyCfmmcFiles,
   createCfmmcImportBook,
   createEmailImportBook,
+  renameCfmmcImportBook,
   ensureUngroupedBook,
   getImportBook,
   listImportBooks,
@@ -437,7 +438,13 @@ export function updateCfmmcAccount(
   const idx = cfg.accounts.findIndex((a) => a.id === id)
   if (idx < 0) throw new Error("账户不存在")
   const current = cfg.accounts[idx]
-  if (typeof patch.label === "string") current.label = patch.label.trim() || current.label
+  if (typeof patch.label === "string") {
+    const nextLabel = patch.label.trim() || current.userId
+    if (nextLabel !== current.label) {
+      current.label = nextLabel
+      renameCfmmcImportBook(current.userId, nextLabel)
+    }
+  }
   if (typeof patch.userId === "string" && patch.userId.trim()) current.userId = patch.userId.trim()
   if (typeof patch.password === "string" && !isMaskedSecret(patch.password)) current.password = patch.password
   if (typeof patch.enabled === "boolean") current.enabled = patch.enabled

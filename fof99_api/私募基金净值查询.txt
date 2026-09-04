@@ -1,0 +1,80 @@
+私募基金净值查询
+提供私募基金平台净值的数据。
+
+API文档
+请求方式： GET
+请求地址：/price
+
+
+参数名	类型	必须	描述	示例e.g.
+app_id	string	是	appid	hfnud0cqtrrnnul3kmp
+order	string	是	时间排序 0=倒序，1=升序	0
+order_by	string	是	排序key 默认 price_date 可选(nav,cumulative_nav_withdrawal,cumulative_nav,price_change,price_date)	price_date
+reg_code	string	是	备案编号	SSB534
+start_date	string	否	开始日期。 不传默认全部 Format = YYYY-MM-DD	2025/9/4
+end_date	string	否	结束日期。 不传默认全部 Format = YYYY-MM-DD	2026/9/4
+sign	string	是	签名	18d6ac13f0e558ff7f1ad69e91753a7d
+tm	number	是	时间戳（秒）	1788488877
+
+详细说明：
+
+实际请求：
+
+https://mallapi.huofuniu.com/price?app_id=hfnud0cqtrrnnul3kmp&end_date=2026-09-04&order=0&order_by=price_date&reg_code=SSB534&sign=18d6ac13f0e558ff7f1ad69e91753a7d&start_date=2025-09-04&tm=1788488877
+
+签名说明：
+
+对请求Query参数不包函sign参数，对参数key升序排序 ，按key=value拼接的结果，用&拼接后，再拼接上密钥计算这个字符串的md5哈希
+
+sign = md5(`app_id=hfnud0cqtrrnnul3kmp&end_date=2026-09-04&order=0&order_by=price_date&reg_code=SSB534&start_date=2025-09-04&tm=1788488877ffb326c1ece5fa25552783c730d36666`) = 18d6ac13f0e558ff7f1ad69e91753a7d
+
+返回示例：
+
+{
+example:{
+error_code:0
+msg:"success"
+data:[
+0:{
+nav:0.9614
+cumulative_nav_withdrawal:0.9614
+cumulative_nav:0.9614
+price_change:0.0004162331
+price_date:"2022-01-13"
+}
+]
+}
+}
+
+参数名	描述	类型
+error_code	0=成功，大于0请求出错	string
+data		array
+nav	单位净值	string
+cumulative_nav_withdrawal	累计净值	string
+cumulative_nav	复权净值	string
+price_change	净值变化	string
+price_date	净值日期	string
+
+SDK使用示例：
+# 将fof99目录添加到Python搜索路径【这步很重要，否则执行脚本找不到请求类】
+import sys
+sys.path.append(r'E:\path\to\mall_sdk')
+
+# 1、引入请求类
+from fof99 import FundPrice
+
+# 2、创建请求对象
+appid = 'hfnud0cqtrrnnul3kmp'
+appkey = 'ffb326c1ece5fa25552783c730d36666'
+req = FundPrice(appid, appkey)  # 请求对象
+
+# 3、设置请求参数，参考API文档
+req.set_params(order='0', order_by='price_date', reg_code='SSB534', start_date='2025-09-04', end_date='2026-09-04')
+
+# 4、发起请求， use_df=True表示结果返回pandas.DataFrame对象；use_df=False表示结果返回Python列表
+res = req.do_request(use_df=True)
+
+# 5、结果处理
+print(res)
+print(req.get_debug_info())
+
