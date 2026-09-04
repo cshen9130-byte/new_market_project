@@ -91,4 +91,9 @@ python scripts/ma/fof99_weekly_nav_fetch.py --budget 250
 # 火富牛 latest for these is Tue/Wed/Thu, so skip this week's Friday.
 python scripts/ma/fof99_weekly_nav_fetch.py --dry-run --only-fof99-since 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 13 --skip-empty-after 0 --budget 480
 python scripts/ma/fof99_weekly_nav_fetch.py --only-fof99-since 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 13 --skip-empty-after 0 --budget 480
+
+# August-only fill (火富牛 latest in Aug 2026, 8087 funds). Known dates then Friday history.
+# Skip this week's Friday (no Aug fund has a Sep tip). ~15 Fridays ≈ 3032 credits; budget 3100.
+python scripts/ma/fof99_weekly_nav_fetch.py --dry-run --only-fof99-since 2026-08-01 --only-fof99-before 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 15 --skip-empty-after 0 --budget 3100
+python scripts/ma/fof99_weekly_nav_fetch.py --only-fof99-since 2026-08-01 --only-fof99-before 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 15 --skip-empty-after 0 --budget 3100
 ```

@@ -343,12 +343,15 @@ def build_batches(
     have_through: dict[str, date],
     skip: set[tuple[str, date]],
     latest_friday: date,
+    known_latest: dict[str, date] | None = None,
 ) -> list[tuple[date, list[tuple[str, str]]]]:
-    names = {code: name for code, name, _ in universe}
     needed: dict[date, list[tuple[str, str]]] = {}
     for code, name, tip in universe:
         through = have_through.get(code, tip)
-        for friday in fridays_after(through, latest_friday):
+        cap = latest_friday
+        if known_latest and code in known_latest:
+            cap = min(cap, last_friday_on_or_before(known_latest[code]))
+        for friday in fridays_after(through, cap):
             if (code, friday) in skip:
                 continue
             needed.setdefault(friday, []).append((code, name))
@@ -360,7 +363,10 @@ def build_batches(
     return batches
 
 
-def load_have_data_latest(since: date | None = None) -> dict[str, date]:
+def load_have_data_latest(
+    since: date | None = None,
+    before: date | None = None,
+) -> dict[str, date]:
     """备案号 → 火富牛 latest from the 3-6m have-data CSV (no paid calls)."""
     out: dict[str, date] = {}
     if not HAVE_DATA_CSV.is_file():
@@ -376,6 +382,8 @@ def load_have_data_latest(since: date | None = None) -> dict[str, date]:
             except ValueError:
                 continue
             if since is not None and dt < since:
+                continue
+            if before is not None and dt >= before:
                 continue
             out[code] = dt
     return out
@@ -666,6 +674,11 @@ def main() -> int:
         help="restrict to weekly funds whose stored 火富牛 latest is on/after this date",
     )
     parser.add_argument(
+        "--only-fof99-before",
+        metavar="YYYY-MM-DD",
+        help="restrict to weekly funds whose stored 火富牛 latest is before this date",
+    )
+    parser.add_argument(
         "--max-fridays",
         type=int,
         default=None,
@@ -696,7 +709,7 @@ def main() -> int:
     ensure_log_table(cur)
     ensure_universe_table(cur)
     counts = seed_universe_if_empty(cur)
-    if not args.only_fof99_since:
+    if not args.only_fof99_since and not args.only_fof99_before:
         write_policy_csv(cur)
     conn.commit()
     log(
@@ -713,15 +726,15 @@ def main() -> int:
 
     universe = load_universe(cur)
     known_latest: dict[str, date] = {}
-    if args.only_fof99_since:
-        since = date.fromisoformat(args.only_fof99_since)
-        known_latest = load_have_data_latest(since)
+    if args.only_fof99_since or args.only_fof99_before:
+        since = date.fromisoformat(args.only_fof99_since) if args.only_fof99_since else None
+        before = date.fromisoformat(args.only_fof99_before) if args.only_fof99_before else None
+        known_latest = load_have_data_latest(since, before)
         allow = set(known_latest)
         universe = [(c, n, t) for c, n, t in universe if c in allow]
-        log(
-            f"filter 火富牛 latest >= {since.isoformat()}: "
-            f"{len(universe)} weekly products"
-        )
+        lo = since.isoformat() if since else "…"
+        hi = before.isoformat() if before else "…"
+        log(f"filter 火富牛 latest in [{lo}, {hi}): {len(universe)} weekly products")
     codes = [c for c, _, _ in universe]
     log(f"universe policy=weekly: {len(universe)} products")
     if not universe:
@@ -751,9 +764,13 @@ def main() -> int:
         if not known_latest:
             known_latest = load_have_data_latest()
         known_batches = build_known_date_batches(universe, known_latest, skip)
+        for code, dt in known_latest.items():
+            skip.add((code, dt))
         log(f"known 火富牛 latest batches: {len(known_batches)}")
 
-    friday_batches = build_batches(universe, have_through, skip, latest_friday)
+    friday_batches = build_batches(
+        universe, have_through, skip, latest_friday, known_latest=known_latest or None
+    )
     exclude = {latest_friday} if args.skip_latest_friday else None
     friday_batches = cap_batches_newest_dates(
         friday_batches, max_dates=args.max_fridays, exclude=exclude
