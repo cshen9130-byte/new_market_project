@@ -1,6 +1,6 @@
 /**
  * Maps each 抓取邮箱 (crawl email account) to the login users who may see
- * products fetched from that mailbox in 直投产品 / 邮箱运维池.
+ * products fetched from that mailbox in 直投产品. 邮箱运维池 is not filtered.
  *
  * - `hidden` (or sentinel userId) means 全部账户不可见 — nobody sees it, including admin.
  * - When an email is linked to one or more users, only those users (+ admin) see its products.
@@ -456,8 +456,8 @@ export async function resolveEmailPoolRegistersForCrawlEmails(
 }
 
 /**
- * Register numbers (备案号) visible to the user inside the email-sourced pool.
- * null → no filter (show all pool rows).
+ * Register numbers (备案号) visible to the user on 直投产品.
+ * null → no filter (show all pool rows). Does not apply to 邮箱运维池.
  */
 export async function resolveVisibleEmailPoolRegistersForUser(opts: {
   userId: string

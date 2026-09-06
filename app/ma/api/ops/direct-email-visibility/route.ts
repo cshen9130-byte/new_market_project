@@ -6,8 +6,6 @@ import {
   requireAdminUser,
   saveDirectEmailVisibilityMappings,
 } from "@/lib/server/direct-email-visibility"
-import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
-import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -89,8 +87,6 @@ export async function PUT(req: Request) {
     }
 
     const data = await saveDirectEmailVisibilityMappings(updates)
-    // Bust list caches so 邮箱运维池 / 直投产品 pick up new visibility immediately.
-    invalidateListResponseCache(EMAIL_OPS_POOL_KEY)
     return NextResponse.json({ data })
   } catch (e) {
     const message = e instanceof Error ? e.message : "保存失败"

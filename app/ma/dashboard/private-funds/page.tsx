@@ -2699,7 +2699,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     // Stale-while-revalidate: render cached rows instantly, then refresh in the
     // background so pool switches / revisits feel instant while still picking up
     // server-side changes (new NAV, edits, etc.).
-    // Include user id for team pools too — 邮箱运维池 visibility is per-account.
     const cacheKey = `${isMineTab ? "mine" : "team"}\u0000${currentUserId()}\u0000${params.toString()}`
     const cached = readListCache(cacheKey)
     const scopeKey = `${isMineTab ? "mine" : "team"}\u0000${listPool}`
@@ -2720,7 +2719,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     let cancelled = false
     const ac = new AbortController()
     fetch(`/ma/api/tracking-funds/list?${params}`, {
-      // Always send user id so 邮箱运维池 can apply 直投设置 email→account visibility.
       headers: userFetchHeaders(),
       signal: ac.signal,
     })
