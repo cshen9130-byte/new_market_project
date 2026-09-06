@@ -943,6 +943,24 @@ function sheetByName(wb: XLSX.WorkBook, ...needles: string[]): XLSX.WorkSheet | 
   return name ? wb.Sheets[name] : undefined
 }
 
+/** In-memory parse only. Does not write public.cfmmc_* or account_risk.*. */
+export function parseCfmmcWorkbook(buffer: Buffer, sourceFile: string): {
+  summary: CfmmcDailySummary
+  positions: CfmmcPosition[]
+} | null {
+  const wb = XLSX.read(buffer, { type: "buffer", cellDates: false })
+  const ws0 = wb.Sheets[wb.SheetNames[0]]
+  if (!ws0) return null
+  const summary = parseSummarySheet(ws0, sourceFile)
+  if (!summary) return null
+  const posSheet = sheetByName(wb, "持仓明细") ?? sheetByName(wb, "仓位明细")
+  const positions = posSheet
+    ? parsePositionSheet(posSheet, summary.accountNo, summary.tradeDate, sourceFile)
+    : []
+  derivePositionEconomics(positions, summary.marginOccupied)
+  return { summary, positions }
+}
+
 // ─── Upsert helpers ───────────────────────────────────────────────────────────
 
 const SUMMARY_UPSERT = `

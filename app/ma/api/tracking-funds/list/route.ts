@@ -881,6 +881,10 @@ export async function GET(req: Request) {
     global._trackingListStockCostCacheBustV2 = true
     invalidateListResponseCache()
   }
+  const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
+    "@/lib/server/account-risk-direct-nav-sync"
+  )
+  await reconcileAccountRiskDirectNavDisplayNamesSafe()
   const userId = String(req.headers.get("x-market-user-id") || "").trim()
   recordInteractiveUserTraffic("/ma/api/tracking-funds/list", "GET", userId)
   const { searchParams } = new URL(req.url)

@@ -14,7 +14,7 @@ export const MANAGED_FIELD_DEFAULT = ["最新净值日期", "最新单位净值"
 export const OPS_MANAGED_FIELD_DEFAULT = ["备案编码", "最新净值日期", "最新单位净值", "最新涨跌幅", "托管账户余额", "资产净值"] as const
 export const FOF_FIELD_DEFAULT = ["最新净值日期", "最新单位净值", "最新涨跌幅", "市值"] as const
 export const DIRECT_FIELD_DEFAULT = ["备案编码", "最新单位净值", "最新净值日期", "最新涨跌幅", "持仓市值(元)"] as const
-export const INV_DIRECT_FIELD_DEFAULT = ["最新净值日期", "最新单位净值"] as const
+export const INV_DIRECT_FIELD_DEFAULT = ["最新净值日期", "最新单位净值", "市值"] as const
 export const OPS_FOF_FIELD_DEFAULT = ["备案编码", "最新净值日期", "最新单位净值", "最新涨跌幅"] as const
 
 export const FIELD_CONFIG_STORAGE_KEYS = {

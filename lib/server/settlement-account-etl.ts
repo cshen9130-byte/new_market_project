@@ -1620,7 +1620,7 @@ function formatPct(ratio: number): string {
   return `${(ratio * 100).toFixed(1)}%`
 }
 
-function extractSettlementProductCode(...candidates: Array<string | null | undefined>): string {
+export function extractSettlementProductCode(...candidates: Array<string | null | undefined>): string {
   for (const candidate of candidates) {
     const raw = String(candidate ?? "").trim()
     if (!raw) continue
@@ -1635,7 +1635,7 @@ function extractSettlementProductCode(...candidates: Array<string | null | undef
   return ""
 }
 
-function getSettlementSector(productCode: string, instrument: string, productName?: string): string {
+export function getSettlementSector(productCode: string, instrument: string, productName?: string): string {
   const code = productCode.toUpperCase()
 
   // 1. Direct product code lookup (works for both futures AND options on that commodity)
@@ -1664,14 +1664,14 @@ function getSettlementSector(productCode: string, instrument: string, productNam
   return "其他"
 }
 
-function getSettlementProductName(productCode: string, instrument: string, symbol: string): string {
+export function getSettlementProductName(productCode: string, instrument: string, symbol: string): string {
   if (SETTLEMENT_PRODUCT_NAME_MAP[productCode]) return SETTLEMENT_PRODUCT_NAME_MAP[productCode]
   if (instrument.trim()) return instrument.trim()
   if (symbol.trim()) return symbol.trim()
   return productCode || "未识别品种"
 }
 
-function inferSettlementStrategy(params: {
+export function inferSettlementStrategy(params: {
   grossExposure: number
   netExposure: number
   longExposure: number

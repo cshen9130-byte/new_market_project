@@ -117,6 +117,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("pf-inv-dd-report", "尽调报告", "/ma/dashboard/private-funds?tab=investment&side=inv-dd-report", "私募基金 → 投资 → 尽调报告", "pfInvestment", []),
   p("pf-inv-dd-notes", "投资笔记", "/ma/dashboard/private-funds?tab=investment&side=inv-dd-notes", "私募基金 → 投资 → 投资笔记", "pfInvestment", ["笔记"]),
   p("pf-inv-tracking", "跟踪产品", "/ma/dashboard/private-funds?tab=investment&side=inv-tracking", "私募基金 → 投资 → 跟踪产品", "pfInvestment", ["跟踪池"]),
+  p("pf-settlement-analysis", "结算单分析", "/ma/dashboard/private-funds", "私募基金 → 跟踪产品 → 结算单分析", "pfInvestment", ["结算单", "监控中心"]),
   p("pf-inv-tracking-mgr", "跟踪管理人", "/ma/dashboard/private-funds?tab=investment&side=inv-tracking-mgr", "私募基金 → 投资 → 跟踪管理人", "pfInvestment", []),
   p("pf-inv-compare", "基金对比", "/ma/dashboard/private-funds?tab=investment&side=inv-compare", "私募基金 → 投资 → 基金对比", "pfInvestment", ["基金对比"]),
   p("pf-inv-overview", "投资概览", "/ma/dashboard/private-funds?tab=investment&side=inv-overview", "私募基金 → 投资 → 投资概览", "pfInvestmentPool", ["投资池"]),

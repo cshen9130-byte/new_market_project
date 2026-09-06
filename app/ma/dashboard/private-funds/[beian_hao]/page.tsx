@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
 import type React from "react"
 import { useParams, useSearchParams } from "next/navigation"
-import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Repeat, Send, Siren, X } from "lucide-react"
+import { ArrowLeft, Camera, Database, Download, FileSpreadsheet, Files, Heart, HelpCircle, Menu, Plus, Repeat, Send, Siren, X } from "lucide-react"
 import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
@@ -1845,6 +1845,19 @@ export default function PrivateFundDetailPage() {
                 className="p-1.5 rounded text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors"
               >
                 <ValuationPieChartIcon className="h-[18px] w-[18px]" />
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="结算单分析">
+              <button
+                type="button"
+                onClick={() => window.open(
+                  `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}/settlement`,
+                  "_blank",
+                  "noopener,noreferrer",
+                )}
+                className="p-1.5 rounded text-teal-600 hover:text-teal-700 hover:bg-teal-50 transition-colors"
+              >
+                <FileSpreadsheet className="h-[18px] w-[18px]" />
               </button>
             </FundHeaderActionTip>
             <FundHeaderActionTip label="净值修正规则">

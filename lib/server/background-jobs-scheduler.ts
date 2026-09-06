@@ -18,6 +18,7 @@ export async function registerBackgroundJobs(): Promise<void> {
   const { runDueSetups } = await import("./email-dispatch")
   const { runDueSettlementFetch } = await import("./settlement-email")
   const { runDueAccountRiskEmailFetch, runDueCfmmcFetch } = await import("./account-risk-import")
+  const { runDueProductSettlementCfmmcFetch } = await import("./product-settlement")
   const { runDueAllWeatherEmails } = await import("./all-weather-email")
   const { runDueNhciIndexEmails } = await import("./nhci-index-email")
   const cron = (await import("node-cron")).default
@@ -28,6 +29,7 @@ export async function registerBackgroundJobs(): Promise<void> {
     runDueSettlementFetch().catch((e) => console.error("[settlement-email] scheduler error:", e))
     runDueAccountRiskEmailFetch().catch((e) => console.error("[account-risk-email] scheduler error:", e))
     runDueCfmmcFetch().catch((e) => console.error("[account-risk-cfmmc] scheduler error:", e))
+    runDueProductSettlementCfmmcFetch().catch((e) => console.error("[product-settlement-cfmmc] scheduler error:", e))
     runDueAllWeatherEmails().catch((e) => console.error("[all-weather-email] scheduler error:", e))
     runDueNhciIndexEmails().catch((e) => console.error("[nhci-index-email] scheduler error:", e))
   }, { timezone: "Asia/Shanghai" })
@@ -36,6 +38,7 @@ export async function registerBackgroundJobs(): Promise<void> {
   // the whole CFMMC window. isDue still no-ops if the minute poll already ran it.
   cron.schedule("0 17 * * 1-5", () => {
     runDueCfmmcFetch().catch((e) => console.error("[account-risk-cfmmc] 17:00 scheduler error:", e))
+    runDueProductSettlementCfmmcFetch().catch((e) => console.error("[product-settlement-cfmmc] 17:00 scheduler error:", e))
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
   // 18:30 Beijing weekdays: incremental 单账户 ETL (picks up late 监控中心 /

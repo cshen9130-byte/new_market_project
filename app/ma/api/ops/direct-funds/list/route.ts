@@ -8,6 +8,7 @@ import {
 } from "@/lib/server/direct-email-visibility"
 import { getUserById } from "@/lib/server/users"
 import { ensureTrackingFundsListCachePopulated } from "@/lib/server/tracking-funds-list-cache-pg"
+import { sqlFundNameMatch, sqlShareClassProductNameGuard } from "@/lib/server/fund-name-match"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -18,9 +19,16 @@ export const dynamic = "force-dynamic"
  * Hidden mailboxes (全部账户不可见) are excluded for everyone, including admin.
  * Linked mailbox products are visible only to the linked accounts (+ admin).
  * Optional `crawl_email` query param (admin only) further filters by fetch mailbox.
+ * 市值: 单账户 client_equity first; else mailbox-scoped 交易确认单 份额 × 最新净值.
+ * FOF/company TA confirms are not used (different investor).
  */
 export async function GET(req: Request) {
   try {
+    const {
+      listAccountRiskDirectMarketValues,
+      reconcileAccountRiskDirectNavDisplayNamesSafe,
+    } = await import("@/lib/server/account-risk-direct-nav-sync")
+    await reconcileAccountRiskDirectNavDisplayNamesSafe()
     const { searchParams } = new URL(req.url)
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10))
     const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10)))
@@ -30,6 +38,7 @@ export async function GET(req: Request) {
     const sortKey = (searchParams.get("sort") || "product_name").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
     const crawlEmail = (searchParams.get("crawl_email") || "").trim().toLowerCase()
+    const cutoff = (searchParams.get("cutoff") || "").trim().slice(0, 10)
     const userId = String(req.headers.get("x-market-user-id") || "").trim()
 
     const user = userId ? await getUserById(userId).catch(() => null) : null
@@ -72,25 +81,29 @@ export async function GET(req: Request) {
 
     await ensureTrackingFundsListCachePopulated().catch(() => {})
 
+    const accountMv = await listAccountRiskDirectMarketValues({
+      cutoffDate: cutoff || null,
+    }).catch(() => [])
+
+    let confirmEmails: string[] = []
+    if (crawlEmail) {
+      confirmEmails = [crawlEmail]
+    } else if (userId) {
+      const allowedEmails = await resolveAllowedCrawlEmailsForUser({ userId, isAdmin })
+      if (allowedEmails) confirmEmails = allowedEmails
+    }
+    const { listDirectConfirmHoldings } = await import("@/lib/server/direct-confirm-holdings")
+    const confirmHoldings = confirmEmails.length > 0
+      ? await listDirectConfirmHoldings({
+          crawlEmails: confirmEmails,
+          cutoffDate: cutoff || null,
+        }).catch(() => [])
+      : []
+
     const strategyL1Col =
       strategySource === "company" ? "cache.company_strategy_l1" : "cache.platform_strategy_l1"
     const strategyL2Col =
       strategySource === "company" ? "cache.company_strategy_l2" : "cache.platform_strategy_l2"
-
-    const allowedSort: Record<string, string> = {
-      product_name: "i.product_name",
-      latest_nav_date: "cache.nav_date",
-      latest_nav: "cache.unit_nav",
-      latest_price_change: "cache.return_pct",
-      ret_1w: "cache.ret_1w",
-      ret_1m: "cache.ret_1m",
-      ret_3m: "cache.ret_3m",
-      ret_6m: "cache.ret_6m",
-      ret_1y: "cache.ret_1y",
-      sharpe_1y: "cache.sharpe_1y",
-      calmar_1y: "cache.calmar_1y",
-    }
-    const orderCol = allowedSort[sortKey] ?? "i.product_name"
 
     const filterParams: unknown[] = [EMAIL_OPS_POOL_KEY]
     const where: string[] = []
@@ -113,6 +126,96 @@ export async function GET(req: Request) {
     }
 
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
+
+    let mvJoin = ""
+    const accountExpr = accountMv.length > 0 ? "arv.market_value" : "NULL::numeric"
+    if (accountMv.length > 0) {
+      filterParams.push(
+        accountMv.map((m) => m.productCode),
+        accountMv.map((m) => m.productName),
+        accountMv.map((m) => m.bookName || ""),
+        accountMv.map((m) => m.marketValue),
+      )
+      const pCode = filterParams.length - 3
+      const pName = filterParams.length - 2
+      const pBook = filterParams.length - 1
+      const pVal = filterParams.length
+      mvJoin = `
+      LEFT JOIN LATERAL (
+        SELECT t.val AS market_value
+        FROM unnest(
+          $${pCode}::text[],
+          $${pName}::text[],
+          $${pBook}::text[],
+          $${pVal}::numeric[]
+        ) AS t(code, name, book, val)
+        WHERE UPPER(BTRIM(i.beian_hao)) = UPPER(BTRIM(t.code))
+           OR BTRIM(i.product_name) = BTRIM(t.name)
+           OR (BTRIM(t.book) <> '' AND BTRIM(i.product_name) = BTRIM(t.book))
+        LIMIT 1
+      ) arv ON TRUE`
+    }
+
+    let confirmJoin = ""
+    const confirmExpr = confirmHoldings.length > 0
+      ? `CASE
+           WHEN COALESCE(conf.holding_shares, 0) > 0 AND COALESCE(cache.unit_nav, 0) > 0
+           THEN ROUND((conf.holding_shares * cache.unit_nav)::numeric, 2)
+         END`
+      : "NULL::numeric"
+    if (confirmHoldings.length > 0) {
+      filterParams.push(
+        confirmHoldings.map((h) => h.fundCode),
+        confirmHoldings.map((h) => h.fundName),
+        confirmHoldings.map((h) => h.holdingShares),
+      )
+      const pCode = filterParams.length - 2
+      const pName = filterParams.length - 1
+      const pShares = filterParams.length
+      confirmJoin = `
+      LEFT JOIN LATERAL (
+        SELECT SUM(t.shares) AS holding_shares
+        FROM unnest(
+          $${pCode}::text[],
+          $${pName}::text[],
+          $${pShares}::numeric[]
+        ) AS t(code, name, shares)
+        WHERE (BTRIM(t.code) <> '' AND UPPER(BTRIM(i.beian_hao)) = UPPER(BTRIM(t.code)))
+           OR (
+             BTRIM(t.name) <> ''
+             AND ${sqlFundNameMatch("t.name", "i.product_name")}
+             AND ${sqlShareClassProductNameGuard("t.name", "i.product_name")}
+           )
+      ) conf ON TRUE`
+    }
+
+    const mvSelectNum = `COALESCE(${accountExpr}, ${confirmExpr}) AS market_value_num`
+    const mvSelectText = `COALESCE(${accountExpr}, ${confirmExpr})::text AS market_value`
+    const sharesSelect = confirmHoldings.length > 0
+      ? "conf.holding_shares::text AS holding_shares"
+      : "NULL::text AS holding_shares"
+    const mvOrder = (accountMv.length > 0 || confirmHoldings.length > 0)
+      ? `COALESCE(${accountExpr}, ${confirmExpr})`
+      : "NULL"
+
+    const allowedSort: Record<string, string> = {
+      product_name: "i.product_name",
+      latest_nav_date: "cache.nav_date",
+      latest_nav: "cache.unit_nav",
+      latest_price_change: "cache.return_pct",
+      market_value: mvOrder,
+      holding_mv: mvOrder,
+      holding_shares: confirmHoldings.length > 0 ? "conf.holding_shares" : "NULL",
+      ret_1w: "cache.ret_1w",
+      ret_1m: "cache.ret_1m",
+      ret_3m: "cache.ret_3m",
+      ret_6m: "cache.ret_6m",
+      ret_1y: "cache.ret_1y",
+      sharpe_1y: "cache.sharpe_1y",
+      calmar_1y: "cache.calmar_1y",
+    }
+    const orderCol = allowedSort[sortKey] ?? "i.product_name"
+
     const pLimit = filterParams.length + 1
     const pOffset = filterParams.length + 2
 
@@ -135,13 +238,22 @@ export async function GET(req: Request) {
           u.beian_hao
       ) i
       LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao
+      ${mvJoin}
+      ${confirmJoin}
     `
 
-    const countRows = await query<{ total: string }>(
-      `SELECT COUNT(*)::text AS total ${baseFrom} ${whereClause}`,
+    const countRows = await query<{ total: string; total_mv: string }>(
+      `SELECT COUNT(*)::text AS total,
+              COALESCE(SUM(market_value_num), 0)::text AS total_mv
+       FROM (
+         SELECT ${mvSelectNum}
+         ${baseFrom}
+         ${whereClause}
+       ) counted`,
       filterParams,
     )
     const total = parseInt(countRows[0]?.total || "0", 10) || 0
+    const totalMarketValue = countRows[0]?.total_mv ?? "0"
 
     const rows = await query<{
       beian_hao: string
@@ -153,6 +265,8 @@ export async function GET(req: Request) {
       latest_nav: string | null
       latest_nav_date: string | null
       latest_price_change: string | null
+      market_value: string | null
+      holding_shares: string | null
       ret_1w: string | null
       ret_1m: string | null
       ret_3m: string | null
@@ -172,6 +286,8 @@ export async function GET(req: Request) {
          cache.unit_nav::text AS latest_nav,
          cache.nav_date::text AS latest_nav_date,
          cache.return_pct::text AS latest_price_change,
+         ${mvSelectText},
+         ${sharesSelect},
          cache.ret_1w::text AS ret_1w,
          cache.ret_1m::text AS ret_1m,
          cache.ret_3m::text AS ret_3m,
@@ -199,6 +315,8 @@ export async function GET(req: Request) {
           teamTags = null
         }
       }
+      const marketValue = r.market_value && Number(r.market_value) > 0 ? r.market_value : null
+      const holdingShares = r.holding_shares && Number(r.holding_shares) > 0 ? r.holding_shares : null
       return {
         beian_hao: r.beian_hao,
         product_name: r.product_name,
@@ -212,7 +330,9 @@ export async function GET(req: Request) {
         cumulative_nav: null as string | null,
         adjusted_nav: null as string | null,
         latest_price_change: r.latest_price_change,
-        holding_mv: null as string | null,
+        market_value: marketValue,
+        holding_mv: marketValue,
+        holding_shares: holdingShares,
         ret_1w: r.ret_1w,
         ret_1m: r.ret_1m,
         ret_3m: r.ret_3m,
@@ -230,6 +350,7 @@ export async function GET(req: Request) {
       page,
       pageSize,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      totalMarketValue,
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : "查询失败"

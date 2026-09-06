@@ -12,10 +12,10 @@ export type SampleIndicatorKey = (typeof SAMPLE_INDICATOR_OPTIONS)[number]
 
 export function defaultSampleIndicatorVisibility(): Record<SampleIndicatorKey, boolean> {
   return {
-    样本平均值: true,
-    样本中位数: true,
-    样本排名: true,
-    四分位: true,
+    样本平均值: false,
+    样本中位数: false,
+    样本排名: false,
+    四分位: false,
   }
 }
 

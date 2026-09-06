@@ -44,12 +44,24 @@ export async function PUT(req: NextRequest) {
     if (!body.id) {
       return NextResponse.json({ error: "缺少账户 id" }, { status: 400 })
     }
-    updateCfmmcAccount(body.id, {
+    const account = updateCfmmcAccount(body.id, {
       label: body.label,
       userId: body.userId,
       password: body.password,
       enabled: body.enabled,
     })
+    if (account.previousLabel && account.previousLabel !== account.label) {
+      const { syncAccountRiskDirectNavDisplayNamesForAccount } = await import(
+        "@/lib/server/account-risk-direct-nav-sync"
+      )
+      await syncAccountRiskDirectNavDisplayNamesForAccount({
+        userId: account.userId,
+        oldLabel: account.previousLabel,
+        newLabel: account.label,
+      }).catch((err) => {
+        console.warn("[cfmmc-accounts] tracking name sync failed", err)
+      })
+    }
     return NextResponse.json({ ok: true, config: publicCfmmcConfig() })
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "更新失败" }, { status: 400 })

@@ -5,7 +5,7 @@ import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import dynamic from "next/dynamic"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical, SlidersHorizontal, UserRound } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, FileSpreadsheet, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical, SlidersHorizontal, UserRound } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
@@ -8745,7 +8745,7 @@ type DirectFundClass = "private" | "public" | "team"
 type DirectHoldingStatus = "holding" | "cleared"
 type DirectSortKey =
   | "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change"
-  | "holding_mv" | "holding_shares"
+  | "market_value" | "holding_mv" | "holding_shares"
 
 interface DirectFundRow {
   beian_hao: string
@@ -8755,6 +8755,7 @@ interface DirectFundRow {
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
+  market_value: string | null
   holding_mv: string | null
   holding_shares: string | null
   valuation_date: string | null
@@ -10677,6 +10678,7 @@ function InvestmentManagedProductRowMenu({
   onEditStrategy,
   onNoteManage,
   onValuationAnalysis,
+  onSettlementAnalysis,
   onFavorite,
 }: {
   onQueryElements: () => void
@@ -10684,6 +10686,7 @@ function InvestmentManagedProductRowMenu({
   onEditStrategy: () => void
   onNoteManage: () => void
   onValuationAnalysis?: () => void
+  onSettlementAnalysis?: () => void
   onFavorite?: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -10724,6 +10727,9 @@ function InvestmentManagedProductRowMenu({
             <button onClick={() => { onNoteManage(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理</button>
             {onValuationAnalysis && (
               <button onClick={() => { onValuationAnalysis(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />估值表分析</button>
+            )}
+            {onSettlementAnalysis && (
+              <button onClick={() => { onSettlementAnalysis(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><FileSpreadsheet className="h-3.5 w-3.5 text-muted-foreground shrink-0" />结算单分析</button>
             )}
             {onFavorite && (
               <button onClick={() => { onFavorite(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Star className="h-3.5 w-3.5 text-muted-foreground shrink-0" />收藏</button>
@@ -10789,6 +10795,7 @@ function TrackingRowMenu({
             <button onClick={() => { onEditStrategy(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑策略</button>
             <button onClick={() => { onNoteManage(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理</button>
             <button onClick={() => { if (beian_hao) openValuationAnalysisPage(beian_hao); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />估值表分析</button>
+            <button onClick={() => { if (beian_hao) openSettlementAnalysisPage(beian_hao); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><FileSpreadsheet className="h-3.5 w-3.5 text-muted-foreground shrink-0" />结算单分析</button>
             <button onClick={close} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Star className="h-3.5 w-3.5 text-muted-foreground shrink-0" />收藏</button>
             <div className="border-t my-1" />
             <button onClick={() => { onRemove(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500"><MinusCircle className="h-3.5 w-3.5 shrink-0" />取消跟踪</button>
@@ -10834,6 +10841,14 @@ function ValuationPieChartIcon({ className }: { className?: string }) {
 function openValuationAnalysisPage(beian_hao: string) {
   window.open(
     `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}/valuation`,
+    "_blank",
+    "noopener,noreferrer",
+  )
+}
+
+function openSettlementAnalysisPage(beian_hao: string) {
+  window.open(
+    `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}/settlement`,
     "_blank",
     "noopener,noreferrer",
   )
@@ -11342,7 +11357,7 @@ function OperationsDirectView() {
         sortCol={sortKey}
         onSort={(col) => handleSort(col as DirectSortKey)}
         SortIcon={DirectSortIcon}
-        rightAlign={label === "最新涨跌幅" || label === "持仓市值(元)"}
+        rightAlign={label === "最新涨跌幅" || label === "市值" || label === "持仓市值(元)"}
       />
     )
   }
@@ -18297,6 +18312,7 @@ function InvestmentManagedProductsView() {
                             onEditTags={() => openInvTagDialog(row.beian_hao, row.product_name)}
                             onEditStrategy={() => openInvStrategyDialog(row.beian_hao, row.product_name)}
                             onNoteManage={() => openInvNoteDialog(row.beian_hao, row.product_name)}
+                            onSettlementAnalysis={row.beian_hao ? () => openSettlementAnalysisPage(row.beian_hao) : undefined}
                           />
                         </div>
                       </td>
@@ -20052,6 +20068,7 @@ function InvestmentFofOverviewView() {
                             onEditStrategy={() => openFofStrategyDialog(row.beian_hao, row.product_name)}
                             onNoteManage={() => openFofNoteDialog(row.beian_hao, row.product_name)}
                             onValuationAnalysis={row.beian_hao ? () => openValuationAnalysisPage(row.beian_hao) : undefined}
+                            onSettlementAnalysis={row.beian_hao ? () => openSettlementAnalysisPage(row.beian_hao) : undefined}
                             onFavorite={() => toggleFofFavorite(row.id)}
                           />
                         </div>

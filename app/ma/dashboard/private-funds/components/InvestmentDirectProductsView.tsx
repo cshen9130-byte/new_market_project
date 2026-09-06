@@ -10,6 +10,7 @@ import {
   ChevronUp,
   Download,
   FileSearch,
+  FileSpreadsheet,
   Filter,
   HelpCircle,
   Inbox,
@@ -27,6 +28,7 @@ import { ProductSelectionPanelBound } from "@/components/ma/product-selection-pa
 import {
   FIELD_CONFIG_STORAGE_KEYS,
   INV_DIRECT_FIELD_DEFAULT,
+  fieldConfigSplitAround,
   readProductFieldConfig,
   writeProductFieldConfig,
 } from "@/lib/ma/product-field-config"
@@ -39,7 +41,7 @@ type DirectHoldingStatus = "holding" | "cleared"
 
 type InvDirectSortKey =
   | "product_name" | "latest_nav_date" | "latest_nav" | "cumulative_nav"
-  | "holding_mv" | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y"
+  | "market_value" | "holding_mv" | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y"
   | "sharpe_1y" | "calmar_1y"
   | "fund_company" | "adjusted_nav" | "latest_price_change"
   | "metric_calc_time"
@@ -62,7 +64,9 @@ interface InvDirectFundRow {
   cumulative_nav: string | null
   adjusted_nav: string | null
   latest_price_change: string | null
+  market_value: string | null
   holding_mv: string | null
+  holding_shares: string | null
   ret_1w: string | null
   ret_1m: string | null
   ret_3m: string | null
@@ -276,6 +280,15 @@ function DirectRowMenu({
             <button onClick={() => { onNoteManage(); setOpen(false); setPos(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground">
               <StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理
             </button>
+            <a
+              href={`/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}/settlement`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+              onClick={() => { setOpen(false); setPos(null) }}
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5 text-muted-foreground shrink-0" />结算单分析
+            </a>
           </div>
         </>,
         document.body,
@@ -591,7 +604,11 @@ export function InvestmentDirectProductsView() {
     const removed = new Set(["最新累计净值", "持仓市值(元)"])
     const fields = readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invDirect, INV_DIRECT_FIELD_DEFAULT)
       .filter((f) => !removed.has(f))
-    return fields.length > 0 ? fields : [...INV_DIRECT_FIELD_DEFAULT]
+    const next = fields.length > 0 ? fields : [...INV_DIRECT_FIELD_DEFAULT]
+    if (next.includes("市值")) return next
+    const navIdx = next.indexOf("最新单位净值")
+    if (navIdx >= 0) return [...next.slice(0, navIdx + 1), "市值", ...next.slice(navIdx + 1)]
+    return [...next, "市值"]
   })
   const [showAddMetric, setShowAddMetric] = useState(false)
   const [addedCols, setAddedCols] = useState<AddedCol[]>([])
@@ -605,6 +622,7 @@ export function InvestmentDirectProductsView() {
   const [pageSize, setPageSize] = useState(50)
   const [data, setData] = useState<InvDirectFundRow[]>([])
   const [total, setTotal] = useState(0)
+  const [totalMarketValue, setTotalMarketValue] = useState("0")
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
@@ -616,6 +634,7 @@ export function InvestmentDirectProductsView() {
   const isPrivate = fundClass === "private"
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const privateColSpan = 3 + fieldConfigSelected.length + 8 + addedCols.length + 2
+  const directMvTotalSplit = fieldConfigSplitAround(fieldConfigSelected, "市值")
   const publicColSpan = 15 + addedCols.length
   const teamColSpan = 18 + addedCols.length
   const colSpan = isPublic ? publicColSpan : isTeam ? teamColSpan : privateColSpan
@@ -752,11 +771,13 @@ export function InvestmentDirectProductsView() {
       .then((json) => {
         setData(json.data ?? [])
         setTotal(json.total ?? 0)
+        setTotalMarketValue(json.totalMarketValue ?? "0")
         setSelected(new Set())
       })
       .catch(() => {
         setData([])
         setTotal(0)
+        setTotalMarketValue("0")
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
@@ -807,7 +828,7 @@ export function InvestmentDirectProductsView() {
         sortCol={sortKey}
         onSort={(col) => handleSort(col as InvDirectSortKey)}
         SortIcon={SortIcon}
-        rightAlign={label === "最新涨跌幅" || label === "持仓市值(元)"}
+        rightAlign={label === "最新涨跌幅" || label === "市值" || label === "持仓市值(元)"}
       />
     )
   }
@@ -877,7 +898,7 @@ export function InvestmentDirectProductsView() {
       ? ["产品名称", "基金公司", "团队标签", "单位净值", "净值日期", "累计净值", "复权净值", "涨跌幅", "持有市值(元)", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益"]
       : isTeam
         ? ["产品名称", "团队标签", "持仓市值(元)", "单位净值", "累计净值", "涨跌幅", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率", "指标计算时间"]
-        : ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "最新收益", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
+        : ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "市值", "最新收益", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => isPublic
@@ -896,7 +917,7 @@ export function InvestmentDirectProductsView() {
             ].join(",")
           : [
               escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav_date),
-              escape(r.latest_nav), escape(r.latest_price_change),
+              escape(r.latest_nav), escape(r.market_value ?? r.holding_mv), escape(r.latest_price_change),
               escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
               escape(r.sharpe_1y), escape(r.calmar_1y),
             ].join(",")),
@@ -1515,6 +1536,19 @@ export function InvestmentDirectProductsView() {
                 </tr>
               )
             })}
+            {isPrivate && data.length > 0 && (
+              <tr className="bg-muted font-medium">
+                <td className="border-b px-2 py-2" />
+                <td className="border-b px-2 py-2" />
+                <td className="border-b px-3 py-2 text-zinc-600">合计</td>
+                {directMvTotalSplit.before > 0 && <td className="border-b px-3 py-2" colSpan={directMvTotalSplit.before} />}
+                {directMvTotalSplit.hasTotal && (
+                  <td className="border-b px-3 py-2 text-right tabular-nums">{fmtMoney(totalMarketValue)}</td>
+                )}
+                {directMvTotalSplit.after > 0 && <td className="border-b px-3 py-2" colSpan={directMvTotalSplit.after} />}
+                <td className="border-b px-3 py-2" colSpan={8 + addedCols.length + 2} />
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

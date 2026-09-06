@@ -42,7 +42,7 @@ export function ProductFieldConfigHeader({
   rightAlign?: boolean
 }) {
   const sortKey = PRODUCT_FIELD_SORT_KEYS[label]
-  const align = rightAlign || isProductFieldPct(label) ? " text-right" : ""
+  const align = rightAlign || isProductFieldPct(label) || isProductFieldMoney(label) ? " text-right" : ""
   const minW = label === "最新单位净值" ? " min-w-[90px]" : label === "最新涨跌幅" ? " min-w-[88px]" : " min-w-[100px]"
   if (sortKey) {
     return (

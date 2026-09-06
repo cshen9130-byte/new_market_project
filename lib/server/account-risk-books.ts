@@ -161,10 +161,26 @@ export function createEmailImportBook(mailbox?: string): ImportBook {
   return book
 }
 
+export function accountNoMatchesUserId(accountNo: string, userId: string): boolean {
+  const a = accountNo.trim()
+  const u = userId.trim()
+  if (!a || !u) return false
+  return u === a || u.endsWith(a) || a.endsWith(u)
+}
+
 export function getCfmmcImportBook(userId: string): ImportBook | null {
   const uid = userId.trim()
   if (!uid) return null
   return listImportBooks().find((b) => b.source === "cfmmc" && b.cfmmcUserId === uid) ?? null
+}
+
+/** Resolve the 监控中心 book for a 资金账号 (full userId or trailing account no). */
+export function findImportBookForAccountNo(accountNo: string): ImportBook | null {
+  const a = accountNo.trim()
+  if (!a) return null
+  const exact = getCfmmcImportBook(a)
+  if (exact) return exact
+  return listImportBooks().find((b) => b.cfmmcUserId && accountNoMatchesUserId(a, b.cfmmcUserId)) ?? null
 }
 
 function cfmmcBookName(userId: string, label?: string): string {

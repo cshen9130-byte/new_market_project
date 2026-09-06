@@ -433,14 +433,16 @@ export function addCfmmcAccount(input: { label?: string; userId: string; passwor
 export function updateCfmmcAccount(
   id: string,
   patch: Partial<Pick<CfmmcAccount, "label" | "userId" | "password" | "enabled">>,
-): CfmmcAccount {
+): CfmmcAccount & { previousLabel?: string } {
   const cfg = readCfmmcConfig()
   const idx = cfg.accounts.findIndex((a) => a.id === id)
   if (idx < 0) throw new Error("账户不存在")
   const current = cfg.accounts[idx]
+  let previousLabel: string | undefined
   if (typeof patch.label === "string") {
     const nextLabel = patch.label.trim() || current.userId
     if (nextLabel !== current.label) {
+      previousLabel = current.label
       current.label = nextLabel
       renameCfmmcImportBook(current.userId, nextLabel)
     }
@@ -450,7 +452,7 @@ export function updateCfmmcAccount(
   if (typeof patch.enabled === "boolean") current.enabled = patch.enabled
   cfg.accounts[idx] = current
   writeCfmmcConfig(cfg)
-  return current
+  return previousLabel ? { ...current, previousLabel } : current
 }
 
 export function deleteCfmmcAccount(id: string): void {

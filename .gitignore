@@ -112,6 +112,7 @@ data/ops_crawl_emails.json
 data/ops_crawl_emails.json.bak
 data/ops_crawl_emails.json.tmp
 data/account-risk/
+data/product-settlement/
 data/all-weather/
 data/nhci-index/
 data/paper-trading/
@@ -129,6 +130,7 @@ basicinfo_bfl_track/
 tmp/
 data/tmp/
 data/runtime/
+data/exports/
 scripts/ma/_tmp_*
 scripts/ma/_mom_signal_method_output/
 scripts/ma/_mom_signal_backtest_output/

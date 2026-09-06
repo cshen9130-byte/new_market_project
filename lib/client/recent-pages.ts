@@ -109,6 +109,7 @@ const PF_RESERVED = new Set([
 const GENERIC_TITLES = new Set([
   "基金详情",
   "估值表分析",
+  "结算单分析",
   "估值表记录",
   "自建基金",
   "自建基金净值",
@@ -188,6 +189,9 @@ export function describePage(href: string): { title: string; description: string
     }
     if (segs[4] === "valuation") {
       return { title: "估值表分析", description: `私募基金 · ${beian}` }
+    }
+    if (segs[4] === "settlement") {
+      return { title: "结算单分析", description: `私募基金 · ${beian}` }
     }
     return { title: "基金详情", description: `私募基金 · ${beian}` }
   }
