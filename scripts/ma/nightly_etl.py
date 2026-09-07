@@ -4550,7 +4550,7 @@ def step_futures_rollover_dates(conn, *, force: bool = False) -> int:
 
 def step_private_fund_indicators(conn) -> int:
     """Recompute ret_1w/1m/3m/6m/1y, sharpe_1y, calmar_1y for every fund in
-    private_fund_info from the raw private_fund_nav time-series.
+    private_fund_info from merged NAV (type6 / group / hy / vendor / email).
 
     Delegates to scripts/ma/private_fund_indicators_etl.py (same logic as manual runs).
     """

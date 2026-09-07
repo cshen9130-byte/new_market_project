@@ -70,16 +70,21 @@ interface SimilarityResult {
   metricScore: number | null
   overlapMonths: number
   navPoints: number
+  nav: NavPoint[]
 }
 
 // ── DB helpers ─────────────────────────────────────────────────────────────────
+
+const RISK_CACHE_JOIN = `LEFT JOIN ops_tracking_funds_list_cache cache
+       ON UPPER(BTRIM(cache.beian_hao)) = UPPER(BTRIM(i.beian_hao))`
 
 const FUND_INFO_SELECT = `
        i.beian_hao, i.product_name, i.manager,
        ${sqlResolvedStrategySelect("i")},
        i.inception_date::text AS inception_date,
        i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
-       i.sharpe_1y::text, i.calmar_1y::text,
+       COALESCE(i.sharpe_1y, cache.sharpe_1y)::text AS sharpe_1y,
+       COALESCE(i.calmar_1y, cache.calmar_1y)::text AS calmar_1y,
        i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date`
 
 function strategyLabel(fund: Pick<FundInfo, "strategy_l1" | "strategy_l2" | "strategy_l3">): string {
@@ -91,6 +96,7 @@ async function fetchFundByName(subject: string): Promise<FundInfo | null> {
     `SELECT ${FUND_INFO_SELECT}
      FROM private_fund_info i
      ${sqlType6LatestStrategyJoin("i.beian_hao")}
+     ${RISK_CACHE_JOIN}
      WHERE i.product_name ILIKE $1 OR i.beian_hao ILIKE $1 OR i.manager ILIKE $1
      ORDER BY i.product_name
      LIMIT 1`,
@@ -107,9 +113,11 @@ async function fetchCandidatePool(target: FundInfo, limit = 80): Promise<FundInf
             same.strategy_l1, same.strategy_l2, same.strategy_l3,
             i.inception_date::text AS inception_date,
             i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
-            i.sharpe_1y::text, i.calmar_1y::text,
+            COALESCE(i.sharpe_1y, cache.sharpe_1y)::text AS sharpe_1y,
+            COALESCE(i.calmar_1y, cache.calmar_1y)::text AS calmar_1y,
             i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date
      FROM private_fund_info i
+     ${RISK_CACHE_JOIN}
      JOIN (
        SELECT register_number, strategy_l1, strategy_l2, strategy_l3
        FROM (
@@ -148,9 +156,15 @@ async function fetchNavBatch(
   // Batch: fetch all beian_haos from each table in one query per table,
   // then merge in JS. This is much faster than one query per fund.
   const beianHaos = funds.map((f) => f.beian_hao)
-  const productNames = funds.map((f) => f.product_name).filter(Boolean)
 
-  const [groupRows, hyRows, navRows] = await Promise.all([
+  const [type6Rows, groupRows, hyRows, navRows] = await Promise.all([
+    query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
+      `SELECT beian_hao, price_date::text, nav::text, cumulative_nav::text
+       FROM private_fund_nav_group_type6
+       WHERE beian_hao = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
+       ORDER BY beian_hao, price_date ASC`,
+      [beianHaos, cutoffStr],
+    ).catch(() => [] as { beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }[]),
     query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
       `SELECT beian_hao, price_date::text, nav::text, cumulative_nav::text
        FROM private_fund_nav_group
@@ -175,28 +189,36 @@ async function fetchNavBatch(
   ])
 
   // Product-name fallback for funds not found by beian_hao
-  const foundByBeianHao = new Set([...groupRows, ...hyRows, ...navRows].map((r) => r.beian_hao))
+  const foundByBeianHao = new Set([...type6Rows, ...groupRows, ...hyRows, ...navRows].map((r) => r.beian_hao))
   const missingFunds = funds.filter((f) => !foundByBeianHao.has(f.beian_hao) && f.product_name)
 
   let nameRows: typeof groupRows = []
   if (missingFunds.length > 0) {
     const names = missingFunds.map((f) => f.product_name)
-    nameRows = await query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-      `SELECT beian_hao, price_date::text, nav::text, cumulative_nav::text
-       FROM private_fund_nav_group
-       WHERE product_name = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
-       ORDER BY beian_hao, price_date ASC`,
-      [names, cutoffStr],
-    ).catch(() => [] as typeof groupRows)
-    // Remap name rows back to the correct beian_hao
-    for (const r of nameRows) {
-      const f = missingFunds.find((m) => m.product_name === r.beian_hao) ?? missingFunds[0]
-      if (f) r.beian_hao = f.beian_hao
-    }
+    const [type6NameRows, groupNameRows] = await Promise.all([
+      query<{ beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }>(
+        `SELECT beian_hao, product_name, price_date::text, nav::text, cumulative_nav::text
+         FROM private_fund_nav_group_type6
+         WHERE product_name = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
+         ORDER BY beian_hao, price_date ASC`,
+        [names, cutoffStr],
+      ).catch(() => [] as { beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }[]),
+      query<{ beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }>(
+        `SELECT beian_hao, product_name, price_date::text, nav::text, cumulative_nav::text
+         FROM private_fund_nav_group
+         WHERE product_name = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
+         ORDER BY beian_hao, price_date ASC`,
+        [names, cutoffStr],
+      ).catch(() => [] as { beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }[]),
+    ])
+    nameRows = [...type6NameRows, ...groupNameRows].map((r) => {
+      const f = missingFunds.find((m) => m.product_name === r.product_name)
+      return { ...r, beian_hao: f?.beian_hao ?? r.beian_hao }
+    })
   }
 
-  // Merge: group table takes priority, then hy, then nav
-  const all = [...groupRows, ...hyRows, ...navRows, ...nameRows]
+  // Merge: type6 takes priority, then group, hy, nav, name fallback
+  const all = [...type6Rows, ...groupRows, ...hyRows, ...navRows, ...nameRows]
   const result: Record<string, Map<string, NavPoint>> = {}
   for (const r of all) {
     if (!result[r.beian_hao]) result[r.beian_hao] = new Map()
@@ -301,37 +323,97 @@ function computeSimilarity(
     score = metricScore
   }
 
-  return { fund: candidate, score, correlation, metricScore, overlapMonths, navPoints: candidateNav.length }
+  return { fund: candidate, score, correlation, metricScore, overlapMonths, navPoints: candidateNav.length, nav: candidateNav }
 }
 
 // ── Nav stats ───────────────────────────────────────────────────────────────────
 
 function computeNavStats(navPoints: NavPoint[]): {
-  totalReturn: string | null; annReturn: string | null; maxDrawdown: string | null; sharpe: string | null
+  totalReturn: string | null
+  annReturn: string | null
+  maxDrawdown: string | null
+  sharpe: string | null
+  calmar: string | null
+  recordCount: number
+  dateRange: string
 } {
-  if (navPoints.length < 2) return { totalReturn: null, annReturn: null, maxDrawdown: null, sharpe: null }
+  const empty = { totalReturn: null, annReturn: null, maxDrawdown: null, sharpe: null, calmar: null, recordCount: navPoints.length, dateRange: "" }
+  if (navPoints.length < 2) return empty
   const vals = navPoints.map((p) => parseFloat(p.cumulative_nav ?? p.nav))
-  const first = vals[0]; const last = vals[vals.length - 1]
-  if (!isFinite(first) || first <= 0) return { totalReturn: null, annReturn: null, maxDrawdown: null, sharpe: null }
+  const dates = navPoints.map((p) => p.price_date)
+  const first = vals[0]
+  const last = vals[vals.length - 1]
+  const dateRange = `${dates[0]} ~ ${dates[dates.length - 1]}`
+  if (!isFinite(first) || first <= 0 || !isFinite(last)) {
+    return { ...empty, dateRange }
+  }
   const totalRet = ((last / first - 1) * 100)
-  const days = (new Date(navPoints[navPoints.length - 1].price_date).getTime() - new Date(navPoints[0].price_date).getTime()) / 86_400_000
+  const days = (new Date(dates[dates.length - 1]).getTime() - new Date(dates[0]).getTime()) / 86_400_000
   const annRet = days > 0 ? (Math.pow(last / first, 365 / days) - 1) * 100 : null
-  let peak = -Infinity; let maxDd = 0; const dailyRets: number[] = []
+  let peak = -Infinity
+  let maxDd = 0
+  const periodRets: number[] = []
   for (let i = 0; i < vals.length; i++) {
     if (vals[i] > peak) peak = vals[i]
     const dd = peak > 0 ? (peak - vals[i]) / peak : 0
     if (dd > maxDd) maxDd = dd
-    if (i > 0 && vals[i - 1] > 0) dailyRets.push(vals[i] / vals[i - 1] - 1)
+    if (i > 0 && vals[i - 1] > 0) periodRets.push(vals[i] / vals[i - 1] - 1)
   }
   let sharpe: string | null = null
-  if (annRet !== null && dailyRets.length > 1 && days > 0) {
-    const recPerYear = dailyRets.length / (days / 365)
-    const mean = dailyRets.reduce((s, r) => s + r, 0) / dailyRets.length
-    const variance = dailyRets.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyRets.length
+  if (annRet !== null && periodRets.length > 1 && days > 0) {
+    const recPerYear = periodRets.length / (days / 365)
+    const mean = periodRets.reduce((s, r) => s + r, 0) / periodRets.length
+    const variance = periodRets.reduce((s, r) => s + (r - mean) ** 2, 0) / periodRets.length
     const annVol = Math.sqrt(variance) * Math.sqrt(recPerYear)
     if (annVol > 0) sharpe = ((annRet / 100) / annVol).toFixed(2)
   }
-  return { totalReturn: totalRet.toFixed(2), annReturn: annRet?.toFixed(2) ?? null, maxDrawdown: maxDd > 0 ? (maxDd * 100).toFixed(2) : null, sharpe }
+  const calmar = annRet !== null && maxDd > 0 ? ((annRet / 100) / maxDd).toFixed(2) : null
+  return {
+    totalReturn: totalRet.toFixed(2),
+    annReturn: annRet?.toFixed(2) ?? null,
+    maxDrawdown: maxDd > 0 ? (maxDd * 100).toFixed(2) : null,
+    sharpe,
+    calmar,
+    recordCount: navPoints.length,
+    dateRange,
+  }
+}
+
+function overlayRiskFromNav(fund: FundInfo, nav: NavPoint[]): FundInfo {
+  const stats = computeNavStats(nav)
+  return {
+    ...fund,
+    sharpe_1y: fund.sharpe_1y ?? stats.sharpe,
+    calmar_1y: fund.calmar_1y ?? stats.calmar,
+  }
+}
+
+function parseStoredRatio(value: string | null | undefined): string | null {
+  if (!value) return null
+  const n = parseFloat(value)
+  return isFinite(n) ? n.toFixed(2) : null
+}
+
+function formatNavRiskLine(stats: ReturnType<typeof computeNavStats>, fund: FundInfo): string {
+  const dbSharpe = parseStoredRatio(fund.sharpe_1y)
+  const dbCalmar = parseStoredRatio(fund.calmar_1y)
+  const sharpe = dbSharpe ?? stats.sharpe
+  const calmar = dbCalmar ?? stats.calmar
+  const mdd = stats.maxDrawdown
+  const source = dbSharpe || dbCalmar
+    ? "数据库预计算（一年期）"
+    : stats.sharpe || stats.calmar
+      ? "净值回退计算（数据库一年期夏普/卡玛为空）"
+      : mdd
+        ? "净值回退计算（仅回撤）"
+        : null
+
+  if (sharpe || calmar || mdd) {
+    return `风险收益指标 — 来源: ${source}
+  夏普: ${sharpe ?? "N/A"}  卡玛: ${calmar ?? "N/A"}  最大回撤: ${mdd ? "-" + mdd + "%" : "N/A"}  累计: ${stats.totalReturn ? "+" + stats.totalReturn + "%" : "N/A"}  年化: ${stats.annReturn ? "+" + stats.annReturn + "%" : "N/A"}
+  说明: 已给出夏普/卡玛时禁止写「缺夏普/卡玛」或「缺风险指标」。数据库一年期优先；仅当数据库为空时才使用净值回退。`
+  }
+  return `风险指标不足：数据库一年期夏普/卡玛为空，且净值仅 ${stats.recordCount} 条无法回退计算`
 }
 
 // ── SSE helpers ─────────────────────────────────────────────────────────────────
@@ -420,6 +502,7 @@ export async function POST(req: Request) {
             `SELECT ${FUND_INFO_SELECT}
              FROM private_fund_info i
              ${sqlType6LatestStrategyJoin("i.beian_hao")}
+             ${RISK_CACHE_JOIN}
              WHERE i.beian_hao <> $1
              ORDER BY i.latest_nav_date DESC NULLS LAST LIMIT 50`,
             [target.beian_hao],
@@ -442,13 +525,15 @@ export async function POST(req: Request) {
         )
 
         targetNav = target ? (navMap[target.beian_hao] ?? []) : []
+        const scoredTarget = target ? overlayRiskFromNav(target, targetNav) : null
 
         // Score each candidate
         const scored: SimilarityResult[] = []
         for (const c of candidates) {
           const cNav = navMap[c.beian_hao] ?? []
-          const result = computeSimilarity(target ?? c, targetNav, c, cNav)
-          scored.push(result)
+          const candidateWithRisk = overlayRiskFromNav(c, cNav)
+          const result = computeSimilarity(scoredTarget ?? candidateWithRisk, targetNav, candidateWithRisk, cNav)
+          scored.push({ ...result, fund: c })
         }
 
         // Sort by score descending; require at least some nav or metric data
@@ -516,11 +601,11 @@ export async function POST(req: Request) {
   策略: ${strategyLabel(target)}
   最新净值: ${target.latest_nav ?? "N/A"} (${target.latest_nav_date ?? "N/A"})
   近1月/3月/6月/1年: ${target.ret_1m ?? "N/A"} / ${target.ret_3m ?? "N/A"} / ${target.ret_6m ?? "N/A"} / ${target.ret_1y ?? "N/A"}
-  数据库计算 — 累计收益: ${targetStats.totalReturn ? "+" + targetStats.totalReturn + "%" : "N/A"}  年化: ${targetStats.annReturn ? "+" + targetStats.annReturn + "%" : "N/A"}  最大回撤: ${targetStats.maxDrawdown ? "-" + targetStats.maxDrawdown + "%" : "N/A"}  夏普: ${targetStats.sharpe ?? "N/A"}`
+  ${formatNavRiskLine(targetStats, target)}`
           : `=== 目标基金 ===\n注：数据库中未找到"${subject}"的精确记录`
 
         const similarSection = topSimilar.map((r, idx) => {
-          const stats = computeNavStats(r.navPoints > 0 ? [] : []) // stats computed earlier
+          const stats = computeNavStats(r.nav)
           const corrStr = r.correlation !== null ? r.correlation.toFixed(3) : "N/A（数据不足）"
           const metricStr = r.metricScore !== null ? (r.metricScore * 100).toFixed(1) + "%" : "N/A"
           return `=== #${idx + 1} 最相似基金（综合评分: ${(r.score * 100).toFixed(1)}）===
@@ -531,7 +616,7 @@ export async function POST(req: Request) {
   指标相似度: ${metricStr}
   净值记录数: ${r.navPoints}条
   近1月/3月/6月/1年: ${r.fund.ret_1m ?? "N/A"} / ${r.fund.ret_3m ?? "N/A"} / ${r.fund.ret_6m ?? "N/A"} / ${r.fund.ret_1y ?? "N/A"}
-  夏普(1年): ${r.fund.sharpe_1y ?? "N/A"}  卡玛(1年): ${r.fund.calmar_1y ?? "N/A"}`
+  ${formatNavRiskLine(stats, r.fund)}`
         }).join("\n\n")
 
         const kbSection = kbContext ? `\n=== 知识库补充信息 ===\n${kbContext}` : ""
@@ -554,11 +639,16 @@ ${kbSection}
 请生成"${subject}"的相似基金分析报告，格式要求：
 - Markdown格式，使用#/##/###标题层级
 - 执行摘要（最相似基金结论、1-2句核心发现）
-- 相似度排名总览表（维度：相关性/策略/业绩/风险）
+- 相似度排名总览表（维度：相关性/策略/业绩/风险收益可比性/数据完整性）
 - 逐一分析各相似基金（相似点、差异点）
 - 最相似基金深度剖析
 - 投资建议（配置价值、替代/互补关系）
-- 语言专业严谨，数据不足时标注而非编造`
+- 语言专业严谨，数据不足时标注而非编造
+风险收益可比性规则（必须遵守）：
+- 优先使用「数据库预计算（一年期）」的夏普/卡玛。
+- 仅当数据库一年期字段为空时，才使用「净值回退计算」的夏普/卡玛/回撤。
+- 只要已给出夏普或卡玛（无论来自数据库还是净值回退），禁止写「缺夏普/卡玛」或「缺风险指标」。
+- 仅当数据库一年期夏普/卡玛均为空、且净值回退也无法计算时，才可标注风险指标缺失。`
 
         const reportModel = getChatModel(true)
         const reportStream = await reportModel.stream([

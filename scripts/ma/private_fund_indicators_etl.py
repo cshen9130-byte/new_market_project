@@ -2,8 +2,9 @@
 """
 private_fund_indicators_etl.py — Nightly private fund metric computation
 =========================================================================
-Reads all NAV data from ``private_fund_nav`` and recomputes the following
-performance metrics, then writes them back into ``private_fund_info``:
+Reads NAV from every product-page source (type6, group, hy, vendor
+``private_fund_nav``, email), recomputes performance metrics, then writes
+them back into ``private_fund_info``:
 
   ret_1w    — total return over last 7 calendar days    (%, e.g. 2.42)
   ret_1m    — total return over last 30 calendar days   (%)
@@ -31,8 +32,11 @@ Notes
 * Funds with fewer than 20 NAV data points in the look-back window get
   NULL for Sharpe / Calmar.
 * Risk-free rate assumption: 3 % p.a. (Chinese money-market convention).
-* Does not overwrite private_fund_info when latest_nav_date is already
-  newer than the vendor private_fund_nav tip (email/team product-page sync).
+* Prefers type6 / group NAV over vendor ``private_fund_nav``. Tracking
+  products often have series only in those tables; reading vendor-only
+  left sharpe_1y / calmar_1y NULL even when hundreds of NAV points existed.
+* When ``latest_nav_date`` on private_fund_info is already newer (email
+  sync), still backfill NULL sharpe_1y / calmar_1y from the merged series.
 """
 
 from __future__ import annotations
@@ -216,6 +220,86 @@ def compute_fund_metrics(
 
     return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y, latest_nav, ref_date)
 
+
+# type6 > group > hy > vendor nav > email. Same priority as product-page merge.
+_NAV_SOURCES: tuple[tuple[str, str], ...] = (
+    (
+        "private_fund_nav_group_type6",
+        """
+        SELECT beian_hao, price_date, nav, cumulative_nav, 0 AS pri
+        FROM private_fund_nav_group_type6
+        WHERE price_date >= %s AND nav IS NOT NULL AND nav > 0
+          AND beian_hao IS NOT NULL AND BTRIM(beian_hao) <> ''
+        """,
+    ),
+    (
+        "private_fund_nav_group",
+        """
+        SELECT beian_hao, price_date, nav, cumulative_nav, 1 AS pri
+        FROM private_fund_nav_group
+        WHERE price_date >= %s AND nav IS NOT NULL AND nav > 0
+          AND beian_hao IS NOT NULL AND BTRIM(beian_hao) <> ''
+        """,
+    ),
+    (
+        "private_fund_nav_group_hy",
+        """
+        SELECT beian_hao, price_date, nav, cumulative_nav, 2 AS pri
+        FROM private_fund_nav_group_hy
+        WHERE price_date >= %s AND nav IS NOT NULL AND nav > 0
+          AND beian_hao IS NOT NULL AND BTRIM(beian_hao) <> ''
+        """,
+    ),
+    (
+        "private_fund_nav",
+        """
+        SELECT beian_hao, price_date, nav, cumulative_nav, 3 AS pri
+        FROM private_fund_nav
+        WHERE price_date >= %s AND nav IS NOT NULL AND nav > 0
+          AND beian_hao IS NOT NULL AND BTRIM(beian_hao) <> ''
+        """,
+    ),
+    (
+        "ops_email_nav_records",
+        """
+        SELECT product_code AS beian_hao, nav_date AS price_date, nav,
+               NULL::numeric AS cumulative_nav, 4 AS pri
+        FROM ops_email_nav_records
+        WHERE nav_date >= %s AND nav IS NOT NULL AND nav > 0
+          AND product_code IS NOT NULL AND BTRIM(product_code) <> ''
+        """,
+    ),
+)
+
+
+def load_merged_nav(conn, lookback: date) -> "pd.DataFrame":
+    """Load NAV from every product-page table; keep the highest-priority row per date."""
+    all_rows: list[tuple] = []
+    with conn.cursor() as cur:
+        for name, sql in _NAV_SOURCES:
+            try:
+                cur.execute(sql, (lookback,))
+                rows = cur.fetchall()
+                log.info("  %s: %d rows", name, len(rows))
+                all_rows.extend(rows)
+            except Exception as exc:
+                conn.rollback()
+                log.warning("  %s skipped: %s", name, exc)
+
+    if not all_rows:
+        return pd.DataFrame(columns=["beian_hao", "price_date", "nav", "cumulative_nav"])
+
+    df = pd.DataFrame(all_rows, columns=["beian_hao", "price_date", "nav", "cumulative_nav", "pri"])
+    df["beian_hao"] = df["beian_hao"].astype(str).str.strip()
+    df = df[df["beian_hao"] != ""]
+    df["price_date"] = pd.to_datetime(df["price_date"])
+    df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+    df["cumulative_nav"] = pd.to_numeric(df["cumulative_nav"], errors="coerce")
+    df = df[df["nav"].notna() & (df["nav"] > 0)]
+    df = df.sort_values(["beian_hao", "price_date", "pri"])
+    df = df.drop_duplicates(["beian_hao", "price_date"], keep="first")
+    return df.drop(columns=["pri"])
+
 # ── main ETL function ─────────────────────────────────────────────────────────
 
 def run(conn, *, dry_run: bool = False) -> int:
@@ -229,29 +313,12 @@ def run(conn, *, dry_run: bool = False) -> int:
     # No fixed lookback cutoff — load all history needed so that funds with
     # old latest-nav-dates (e.g. monthly reporters) still get correct 1Y metrics.
     # We keep LOOKBACK_DAYS as a safeguard only.
-    log.info("Loading NAV data since %s …", lookback)
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT beian_hao, price_date, nav, cumulative_nav
-            FROM private_fund_nav
-            WHERE price_date >= %s
-              AND nav IS NOT NULL
-              AND nav > 0
-            ORDER BY beian_hao, price_date
-            """,
-            (lookback,),
-        )
-        rows = cur.fetchall()
+    log.info("Loading merged NAV data since %s …", lookback)
+    df = load_merged_nav(conn, lookback)
 
-    if not rows:
+    if df.empty:
         log.warning("No NAV data found — aborting.")
         return 0
-
-    df = pd.DataFrame(rows, columns=["beian_hao", "price_date", "nav", "cumulative_nav"])
-    df["price_date"] = pd.to_datetime(df["price_date"])
-    df["nav"]        = df["nav"].astype(float)
-    df["cumulative_nav"] = pd.to_numeric(df["cumulative_nav"], errors="coerce")
 
     n_funds = df["beian_hao"].nunique()
     log.info("Loaded %d NAV rows for %d funds.", len(df), n_funds)
@@ -280,16 +347,36 @@ def run(conn, *, dry_run: bool = False) -> int:
                 cur,
                 """
                 UPDATE private_fund_info AS t SET
-                    ret_1w          = v.ret_1w::numeric,
-                    ret_1m          = v.ret_1m::numeric,
-                    ret_3m          = v.ret_3m::numeric,
-                    ret_6m          = v.ret_6m::numeric,
-                    ret_1y          = v.ret_1y::numeric,
-                    sharpe_1y       = v.sharpe_1y::numeric,
-                    calmar_1y       = v.calmar_1y::numeric,
-                    latest_nav      = v.latest_nav::numeric,
-                    latest_nav_date = v.latest_nav_date::date,
-                    updated_at      = NOW()
+                    ret_1w = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.ret_1w::numeric ELSE t.ret_1w END,
+                    ret_1m = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.ret_1m::numeric ELSE t.ret_1m END,
+                    ret_3m = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.ret_3m::numeric ELSE t.ret_3m END,
+                    ret_6m = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.ret_6m::numeric ELSE t.ret_6m END,
+                    ret_1y = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.ret_1y::numeric ELSE t.ret_1y END,
+                    sharpe_1y = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.sharpe_1y::numeric
+                        ELSE COALESCE(t.sharpe_1y, v.sharpe_1y::numeric) END,
+                    calmar_1y = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.calmar_1y::numeric
+                        ELSE COALESCE(t.calmar_1y, v.calmar_1y::numeric) END,
+                    latest_nav = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.latest_nav::numeric ELSE t.latest_nav END,
+                    latest_nav_date = CASE
+                        WHEN t.latest_nav_date IS NULL OR t.latest_nav_date <= v.latest_nav_date::date
+                        THEN v.latest_nav_date::date ELSE t.latest_nav_date END,
+                    updated_at = NOW()
                 FROM (VALUES %s) AS v(
                     ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
                     sharpe_1y, calmar_1y, latest_nav, latest_nav_date, beian_hao
@@ -298,6 +385,8 @@ def run(conn, *, dry_run: bool = False) -> int:
                   AND (
                     t.latest_nav_date IS NULL
                     OR t.latest_nav_date <= v.latest_nav_date::date
+                    OR (t.sharpe_1y IS NULL AND v.sharpe_1y IS NOT NULL)
+                    OR (t.calmar_1y IS NULL AND v.calmar_1y IS NOT NULL)
                   )
                 """,
                 batch,
