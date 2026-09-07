@@ -7,6 +7,7 @@ import {
   mapCanonicalManagerNames,
 } from "@/lib/server/manager-name-canonical"
 import { enrichPrivateFundListMetrics } from "@/lib/server/private-fund-list-metrics"
+import { mapManagerRegistrationNos } from "@/lib/server/private-fund-manager-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -78,6 +79,7 @@ type FundListRow = {
   product_name: string
   strategy_l1: string | null
   manager: string
+  manager_registration_no?: string | null
   inception_date: string | null
   benchmark: string | null
   ret_1w: string | null
@@ -553,6 +555,14 @@ export async function GET(req: Request) {
     payload.data = await inheritShareClassParentFields(payload.data)
     const canonicalMap = await mapCanonicalManagerNames(payload.data.map((row) => row.manager))
     payload.data = applyCanonicalManagerNames(payload.data, canonicalMap)
+    const registrationMap = await mapManagerRegistrationNos(payload.data.map((row) => row.manager))
+    payload.data = payload.data.map((row) => {
+      const name = row.manager?.trim() ?? ""
+      return {
+        ...row,
+        manager_registration_no: name ? (registrationMap.get(name) ?? null) : null,
+      }
+    })
     return NextResponse.json(payload)
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to load private funds"

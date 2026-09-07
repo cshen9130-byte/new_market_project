@@ -31,6 +31,7 @@ import {
 import { loadFofUnderlyingNavFunds } from "@/lib/server/fof-email-product-sync"
 import { isValuationStockCostSubjectName } from "@/lib/valuation-holding-display-name"
 import { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
+import { loadOperationDatesByCodes } from "@/lib/server/ops-fund-operation-dates"
 
 export { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
 
@@ -1915,6 +1916,13 @@ async function loadFallbackNavDatesByCode(codes: string[]): Promise<Map<string, 
 async function loadOperationDateByCode(codes: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   if (codes.length === 0) return out
+  const stored = await loadOperationDatesByCodes(codes).catch(() => new Map<string, string>())
+  for (const [code, day] of stored) {
+    for (const alias of beianCodeAliases(code)) {
+      const key = alias.toUpperCase()
+      if (!out.has(key)) out.set(key, day)
+    }
+  }
   const rows = await query<{
     register_number: string | null
     record_key: string | null

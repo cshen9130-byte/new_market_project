@@ -17,6 +17,11 @@ export interface FundManagerProfile {
   bio: string | null
 }
 
+export interface ManagerTeamMember {
+  name: string
+  cert_name: string | null
+}
+
 export interface ManagerTeamSeed {
   executives: ManagerExecutive[]
   legal_rep_name: string | null

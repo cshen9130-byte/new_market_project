@@ -91,6 +91,78 @@ export async function lookupManagerByRegistrationNo(
   return lookupManagerFromAmac(reg)
 }
 
+/** Map canonical manager names to AMAC / list registration numbers for linking. */
+export async function mapManagerRegistrationNos(names: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
+  const map = new Map<string, string>()
+  if (unique.length === 0) return map
+
+  async function fillFrom(sql: string) {
+    const missing = unique.filter((n) => !map.has(n))
+    if (missing.length === 0) return
+    try {
+      const rows = await query<{ manager_name: string; registration_no: string }>(sql, [missing])
+      for (const row of rows) {
+        const name = row.manager_name?.trim()
+        const no = row.registration_no?.trim()
+        if (name && no && !map.has(name)) map.set(name, no)
+      }
+    } catch {
+      // optional table
+    }
+  }
+
+  await fillFrom(
+    `SELECT manager_name, registration_no
+     FROM private_fund_managers_list
+     WHERE manager_name = ANY($1::text[])
+       AND TRIM(COALESCE(registration_no, '')) <> ''`,
+  )
+  await fillFrom(
+    `SELECT manager_name, registration_no
+     FROM amac_managers
+     WHERE manager_name = ANY($1::text[])
+       AND TRIM(COALESCE(registration_no, '')) <> ''`,
+  )
+
+  const remaining = unique.filter(
+    (n) => !map.has(n) && n.length >= 6 && !n.includes("；") && !n.includes(";"),
+  )
+  if (remaining.length > 0) {
+    try {
+      const rows = await query<{ stored: string; registration_no: string }>(
+        `WITH input AS (
+           SELECT DISTINCT TRIM(x) AS stored
+           FROM unnest($1::text[]) AS t(x)
+         ),
+         hits AS (
+           SELECT
+             i.stored,
+             m.registration_no,
+             COUNT(*) OVER (PARTITION BY i.stored) AS hit_count
+           FROM input i
+           JOIN amac_managers m
+             ON m.manager_name LIKE i.stored || '%'
+           WHERE TRIM(COALESCE(m.registration_no, '')) <> ''
+         )
+         SELECT stored, registration_no
+         FROM hits
+         WHERE hit_count = 1`,
+        [remaining],
+      )
+      for (const row of rows) {
+        const name = row.stored?.trim()
+        const no = row.registration_no?.trim()
+        if (name && no && !map.has(name)) map.set(name, no)
+      }
+    } catch {
+      // optional table
+    }
+  }
+
+  return map
+}
+
 async function lookupManagerFromAmac(registrationNo: string): Promise<ManagerListDetail | null> {
   try {
     const amacRows = await query<{

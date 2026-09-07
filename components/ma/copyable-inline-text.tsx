@@ -114,6 +114,51 @@ export function CopyableProductName({
   )
 }
 
+export function managerDetailHref(registrationNo: string, managerName?: string | null) {
+  const href = `/ma/dashboard/private-funds/managers/${encodeURIComponent(registrationNo)}`
+  const name = managerName?.trim()
+  return name ? `${href}?manager=${encodeURIComponent(name)}` : href
+}
+
+export function CopyableManagerName({
+  manager,
+  registrationNo,
+  className,
+}: {
+  manager: string
+  registrationNo?: string | null
+  className?: string
+}) {
+  const text = manager?.trim()
+  if (!text) return <span className="text-muted-foreground">—</span>
+  const href = registrationNo?.trim() ? managerDetailHref(registrationNo, text) : null
+  const labelClass =
+    className ?? "truncate min-w-0 text-blue-600 dark:text-blue-400 hover:underline"
+  return (
+    <CopyableInlineText
+      text={text}
+      copyTitle="复制管理人"
+      label={
+        href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={labelClass}
+            title={text}
+          >
+            {text}
+          </a>
+        ) : (
+          <span className={`${labelClass} cursor-default`} title={text}>
+            {text}
+          </span>
+        )
+      }
+    />
+  )
+}
+
 export function CopyableProductText({
   product_name,
   short_name,

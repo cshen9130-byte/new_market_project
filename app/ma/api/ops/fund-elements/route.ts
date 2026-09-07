@@ -18,6 +18,7 @@ import {
 } from "@/lib/server/fund-elements-write"
 import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { loadTeamBenchmark, upsertTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
+import { loadOperationDate as loadStoredOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 import { isWeakShortFee } from "@/lib/server/fund-contract-element-keywords"
@@ -74,6 +75,8 @@ async function loadBasicinfoTrack(keys: string[]): Promise<BasicinfoTrackRow[]> 
 }
 
 async function loadOperationDate(keys: string[]): Promise<string | null> {
+  const stored = await loadStoredOperationDate(keys).catch(() => null)
+  if (stored) return stored
   await ensureFundElementTrackColumns()
   try {
     const rows = await loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
@@ -87,7 +90,7 @@ async function loadOperationDate(keys: string[]): Promise<string | null> {
     }
     return null
   } catch {
-    // operation_date column may not exist until migration 013 is applied
+    // operation_date column may not exist on basicinfo_bfl_track
     return null
   }
 }

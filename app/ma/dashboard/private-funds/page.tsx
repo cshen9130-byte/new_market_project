@@ -15,7 +15,7 @@ import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-di
 import { ManagerSearchInput, ProductKeywordSearchInput } from "@/components/ma/private-fund-filter-search"
 import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
-import { CopyableInlineText, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
+import { CopyableManagerName, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { DEFAULT_INSTRUCTION_SIDE, INSTRUCTION_SIDE_ITEMS } from "./components/instructions-nav"
 import { InvestmentNotesView } from "./components/InvestmentNotesView"
@@ -1113,6 +1113,7 @@ interface FundRow {
   product_name:    string
   strategy_l1:     string | null
   manager:         string
+  manager_registration_no?: string | null
   inception_date:  string | null
   benchmark:       string | null
   ret_1w:          string | null
@@ -1147,25 +1148,6 @@ function PctCell({ value }: { value: string | null }) {
   if (text === "—") return <span className="text-muted-foreground">—</span>
   const n = parseFloat(value!)
   return <span className={n > 0 ? "text-red-500" : n < 0 ? "text-emerald-600" : ""}>{text}</span>
-}
-
-function CopyableManagerName({ manager }: { manager: string }) {
-  const text = manager?.trim()
-  if (!text) return <span className="text-muted-foreground">—</span>
-  return (
-    <CopyableInlineText
-      text={text}
-      copyTitle="复制管理人"
-      label={
-        <span
-          className="truncate min-w-0 text-blue-600 dark:text-blue-400 cursor-pointer hover:underline"
-          title={text}
-        >
-          {text}
-        </span>
-      }
-    />
-  )
 }
 
 function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; sortDir: SortDir }) {
@@ -1553,7 +1535,10 @@ function PrivateFundTable({
                   {/* Scrollable cells */}
                   <td className={`${cellBase} text-foreground tabular-nums`}>{row.beian_hao}</td>
                   <td className={`${cellBase}`}>
-                    <CopyableManagerName manager={row.manager} />
+                    <CopyableManagerName
+                      manager={row.manager}
+                      registrationNo={row.manager_registration_no}
+                    />
                   </td>
                   <td className={`${cellBase} text-foreground tabular-nums whitespace-nowrap`}>
                     {row.inception_date ?? "—"}

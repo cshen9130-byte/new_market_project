@@ -33,6 +33,7 @@ import {
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
+import { upsertOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { canonicalizeShareClassBeianCode, listFundFamilyProducts } from "@/lib/server/share-class-product"
 
 const ELEMENTS_SOURCE = "ops/fund-elements"
@@ -61,7 +62,10 @@ export async function ensureFundElementTrackColumns(): Promise<void> {
         ADD COLUMN IF NOT EXISTS fee_pay_formula_json jsonb
     `)
   } catch (err) {
-    extraElementColumnsEnsured = false
+    const msg = err instanceof Error ? err.message : String(err)
+    // market_user cannot ALTER this table; 运作日 is stored in ops_fund_operation_dates.
+    extraElementColumnsEnsured = /must be owner|permission denied|42501/i.test(msg)
+    if (!extraElementColumnsEnsured) extraElementColumnsEnsured = false
     console.error("[fund-elements-write] failed to ensure 要素 columns on basicinfo_bfl_track", err)
   }
 }
@@ -330,6 +334,9 @@ export async function writeFundElementsFromBody(body: FundElementWriteBody): Pro
   const custodian = normalizeOptionalString(body.custodian)
 
   await upsertBasicinfoTrackResilient(beian_hao, fieldValues)
+  if (body.operation_date !== undefined) {
+    await upsertOperationDate(beian_hao, normalizeDate(body.operation_date))
+  }
   invalidateDetailResponseMemoryCache([beian_hao, rawBeian])
   invalidateListResponseCache("ops-team-data")
   try {

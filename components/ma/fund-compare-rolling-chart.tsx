@@ -7,9 +7,10 @@ import {
   EXTRA_ROLLING_METRICS,
   PRIMARY_ROLLING_METRICS,
   ROLLING_WINDOW_OPTIONS,
+  alignRollingValuesToDates,
   computeBenchmarkRollingSeriesNav,
   computeRollingMetricSeriesNav,
-  downsampleRollingSeries,
+  downsampleDateAxis,
   formatRollingAxisDate,
   formatRollingMetricValue,
   mergeRollingDates,
@@ -61,7 +62,7 @@ export function FundCompareRollingChart({
     const benchNav = benchmark?.navPoints ?? []
     if (metric === "correlation" && benchNav.length === 0) return []
     return funds.map((fund, idx) => {
-      const raw = computeRollingMetricSeriesNav(
+      const points = computeRollingMetricSeriesNav(
         fund.navPoints.filter((p) => p.d >= appliedFrom && p.d <= appliedTo),
         benchNav,
         windowDays,
@@ -71,7 +72,7 @@ export function FundCompareRollingChart({
         key: fund.beian_hao,
         name: fund.name,
         color: LINE_COLORS[idx % LINE_COLORS.length],
-        points: downsampleRollingSeries(raw),
+        points,
       }
     })
   }, [funds, benchmark, windowDays, metric, appliedFrom, appliedTo])
@@ -83,12 +84,11 @@ export function FundCompareRollingChart({
       windowDays,
       metric,
     )
-    const points = downsampleRollingSeries(raw)
-    if (!points.length) return null
+    if (!raw.length) return null
     return {
       name: `${benchmark.label}(基准)`,
       color: BENCH_COLOR,
-      points,
+      points: raw,
     }
   }, [benchmark, metric, windowDays, appliedFrom, appliedTo])
 
@@ -97,7 +97,7 @@ export function FundCompareRollingChart({
       ...fundSeries.map((s) => s.points),
       ...(benchSeries ? [benchSeries.points] : []),
     ]
-    return mergeRollingDates(all)
+    return downsampleDateAxis(mergeRollingDates(all))
   }, [fundSeries, benchSeries])
 
   const allNamedSeries = useMemo(() => {
@@ -177,19 +177,15 @@ export function FundCompareRollingChart({
         splitLine: { lineStyle: { color: "#f4f4f5", type: "dashed" as const } },
       },
       series: activeSeries.map((s) => {
-        const valueMap = new Map(s.points.map((p) => [p.date, p.value]))
         return {
           name: s.name,
           type: "line" as const,
           smooth: true,
           showSymbol: false,
-          connectNulls: false,
+          connectNulls: true,
           lineStyle: { width: 2, color: s.color },
           itemStyle: { color: s.color },
-          data: dates.map((d) => {
-            const v = valueMap.get(d)
-            return v == null ? null : v
-          }),
+          data: alignRollingValuesToDates(dates, s.points),
         }
       }),
     }

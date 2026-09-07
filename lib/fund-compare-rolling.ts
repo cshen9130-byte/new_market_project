@@ -1,5 +1,15 @@
 import { computeFundNavMetrics, type FundNavMetrics } from "@/lib/fund-nav-metrics"
 import type { NavPoint } from "@/lib/fund-compare-period-returns"
+import cnStatutoryHolidayDates from "@/lib/cn-statutory-holiday-dates.json"
+import { isWeekendIsoDate } from "@/lib/nav-trading-day"
+
+const CN_CLOSED_DATES = new Set(cnStatutoryHolidayDates)
+
+/** Weekends and State Council 放假/调休 rest days — not A-share trading days. */
+export function isCnMarketClosedIsoDate(isoDate: string): boolean {
+  const day = isoDate.slice(0, 10)
+  return isWeekendIsoDate(day) || CN_CLOSED_DATES.has(day)
+}
 
 export type RollingMetricKey =
   | "periodRet"
@@ -192,21 +202,51 @@ export function computeBenchmarkRollingSeriesNav(
   return out
 }
 
-export function downsampleRollingSeries(series: RollingMetricPoint[], maxPoints = 400): RollingMetricPoint[] {
-  if (series.length <= maxPoints) return series
-  const step = Math.ceil(series.length / maxPoints)
-  const out: RollingMetricPoint[] = []
-  for (let i = 0; i < series.length; i += step) out.push(series[i])
-  if (out.at(-1) !== series.at(-1)) out.push(series.at(-1)!)
+export function downsampleDateAxis(dates: string[], maxPoints = 400): string[] {
+  if (dates.length <= maxPoints) return dates
+  const step = Math.ceil(dates.length / maxPoints)
+  const out: string[] = []
+  for (let i = 0; i < dates.length; i += step) out.push(dates[i])
+  if (out.at(-1) !== dates.at(-1)) out.push(dates.at(-1)!)
   return out
 }
 
 export function mergeRollingDates(seriesList: RollingMetricPoint[][]): string[] {
   const dates = new Set<string>()
   for (const series of seriesList) {
-    for (const p of series) dates.add(p.date)
+    for (const p of series) {
+      if (!isCnMarketClosedIsoDate(p.date)) dates.add(p.date)
+    }
   }
   return [...dates].sort()
+}
+
+/**
+ * Map a series onto a shared trading-day axis. Carry the last value across
+ * missing dates (CN holidays, or NAV not published that day) so the line
+ * stays continuous. Null only outside the series' own date range.
+ */
+export function alignRollingValuesToDates(
+  dates: string[],
+  points: RollingMetricPoint[],
+): (number | null)[] {
+  const sorted = [...points]
+    .filter((p): p is RollingMetricPoint & { value: number } => p.value != null && Number.isFinite(p.value))
+    .sort((a, b) => a.date.localeCompare(b.date))
+  if (!sorted.length) return dates.map(() => null)
+
+  const first = sorted[0].date
+  const last = sorted[sorted.length - 1].date
+  let idx = 0
+  let carried: number | null = null
+  return dates.map((d) => {
+    while (idx < sorted.length && sorted[idx].date <= d) {
+      carried = sorted[idx].value
+      idx += 1
+    }
+    if (d < first || d > last) return null
+    return carried
+  })
 }
 
 export function rollingMetricLabel(key: RollingMetricKey): string {

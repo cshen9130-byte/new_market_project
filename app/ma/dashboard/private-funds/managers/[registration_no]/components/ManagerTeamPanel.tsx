@@ -23,11 +23,16 @@ interface FundManagerProfile {
   bio: string | null
 }
 
+interface ManagerTeamMember {
+  name: string
+  cert_name: string | null
+}
+
 interface ManagerTeamData {
   executives: ManagerExecutive[]
   legal_rep_name: string | null
   work_history: WorkHistoryEntry[]
-  team_members: string | null
+  team_members: ManagerTeamMember[]
   fund_managers: FundManagerProfile[]
 }
 
@@ -167,9 +172,28 @@ export function ManagerTeamPanel({ registrationNo }: { registrationNo: string })
       </SectionBlock>
 
       <SectionBlock title="团队成员">
-        <p className="text-sm text-zinc-400">
-          {data.team_members?.trim() ? data.team_members : "暂无内容"}
-        </p>
+        {data.team_members.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 w-full">
+            {data.team_members.map((member) => (
+              <div
+                key={member.name}
+                className="flex items-center gap-2 min-w-0 rounded-md border border-zinc-100 bg-zinc-50/40 px-3 py-2"
+              >
+                <div className="h-7 w-7 rounded-full bg-zinc-200 flex items-center justify-center shrink-0">
+                  <UserRound className="h-3.5 w-3.5 text-zinc-500" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm text-zinc-800 truncate">{member.name}</p>
+                  {member.cert_name ? (
+                    <p className="text-[11px] text-zinc-400 truncate">{member.cert_name}</p>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-400">暂无内容</p>
+        )}
       </SectionBlock>
 
       <SectionBlock title="基金经理">

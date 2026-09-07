@@ -7,6 +7,7 @@ import {
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
 import { ensureFundElementTrackColumns } from "@/lib/server/fund-elements-write"
+import { loadOperationDate as loadStoredOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 
 export const runtime = "nodejs"
@@ -112,6 +113,13 @@ async function loadTrack(beian_hao: string): Promise<TrackRow[]> {
 }
 
 async function loadOperationDate(beian_hao: string): Promise<string | null> {
+  try {
+    const keys = await resolveFundElementsBeianKeys(beian_hao)
+    const stored = await loadStoredOperationDate(keys)
+    if (stored) return stored
+  } catch {
+    // sidecar table may not exist yet
+  }
   await ensureFundElementTrackColumns()
   try {
     const keys = await resolveFundElementsBeianKeys(beian_hao)
@@ -126,7 +134,6 @@ async function loadOperationDate(beian_hao: string): Promise<string | null> {
     }
     return null
   } catch {
-    // operation_date column may not exist until migration 013 is applied
     return null
   }
 }

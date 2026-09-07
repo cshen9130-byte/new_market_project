@@ -42,6 +42,7 @@ import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, re
 import { NavChartSeriesLegend, NavPerformanceEChart } from "./components/NavPerformanceEChart"
 import { DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
+import { createFundCompareHref } from "@/lib/ma-product-selection-actions"
 
 const menuItems = [
   { key: "market",     label: "市场" },
@@ -1909,7 +1910,15 @@ export default function PrivateFundDetailPage() {
             <FundHeaderActionTip label="对比">
               <button
                 type="button"
-                onClick={() => router.push("/ma/dashboard/private-funds?tab=investment&side=inv-compare")}
+                onClick={() => {
+                  const href = createFundCompareHref([{
+                    id: beian_hao,
+                    product_name: info.product_name,
+                    beian_hao,
+                    latest_nav_date: metrics.latest_nav_date,
+                  }])
+                  if (href) router.push(href)
+                }}
                 className="px-1.5 py-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors text-xs font-semibold tracking-tight"
               >
                 VS

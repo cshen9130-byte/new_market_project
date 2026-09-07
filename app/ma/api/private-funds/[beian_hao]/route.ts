@@ -35,6 +35,7 @@ import {
   rememberDetailResponseMemoryCache,
 } from "@/lib/server/fund-detail-response-memory-cache"
 import { loadTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
+import { loadOperationDate as loadStoredOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { ensureFundElementTrackColumns } from "@/lib/server/fund-elements-write"
 
 export const dynamic = "force-dynamic"
@@ -573,14 +574,16 @@ export async function GET(
         registerCode: bflTrack?.register_code ?? null,
       }),
       loadTeamBenchmark([routeBeianHao, beian_hao, rawId].filter(Boolean)).catch(() => null),
-      ensureFundElementTrackColumns()
-        .then(() =>
-          loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
+      loadStoredOperationDate([routeBeianHao, beian_hao, rawId, ...trackKeys].filter(Boolean))
+        .then(async (stored) => {
+          if (stored) return [{ operation_date: stored }]
+          await ensureFundElementTrackColumns()
+          return loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
             trackKeys,
             `SELECT operation_date::text AS operation_date
              FROM basicinfo_bfl_track`,
-          ),
-        )
+          )
+        })
         .catch(() => [] as { operation_date: string | null }[]),
     ])
     const nav_series = sanitizeDetailNavSeries(navSeriesRaw)

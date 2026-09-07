@@ -24,19 +24,24 @@ export function toPickerItems(products: SelectableProduct[]): PortfolioFundPicke
     }))
 }
 
+export function createFundCompareHref(
+  products: SelectableProduct[],
+  scope: "team" | "mine" = "team",
+): string | null {
+  const items = toPickerItems(products)
+  if (items.length === 0) return null
+  const compare = createFundCompareFromPicker(items, scope)
+  saveFundCompare(compare)
+  return `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`
+}
+
 export function openFundCompareWithProducts(
   products: SelectableProduct[],
   scope: "team" | "mine" = "team",
 ) {
-  const items = toPickerItems(products)
-  if (items.length === 0) return
-  const compare = createFundCompareFromPicker(items, scope)
-  saveFundCompare(compare)
-  window.open(
-    `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`,
-    "_blank",
-    "noopener,noreferrer",
-  )
+  const href = createFundCompareHref(products, scope)
+  if (!href) return
+  window.open(href, "_blank", "noopener,noreferrer")
 }
 
 export function openPortfolioWithProducts(products: SelectableProduct[]) {
