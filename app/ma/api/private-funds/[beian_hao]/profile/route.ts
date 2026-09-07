@@ -6,6 +6,7 @@ import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
+import { ensureFundElementTrackColumns } from "@/lib/server/fund-elements-write"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 
 export const runtime = "nodejs"
@@ -111,6 +112,7 @@ async function loadTrack(beian_hao: string): Promise<TrackRow[]> {
 }
 
 async function loadOperationDate(beian_hao: string): Promise<string | null> {
+  await ensureFundElementTrackColumns()
   try {
     const keys = await resolveFundElementsBeianKeys(beian_hao)
     const rows = await loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
@@ -118,7 +120,11 @@ async function loadOperationDate(beian_hao: string): Promise<string | null> {
       `SELECT operation_date::text AS operation_date
        FROM basicinfo_bfl_track`,
     )
-    return fmtDate(rows[0]?.operation_date)
+    for (const row of rows) {
+      const value = fmtDate(row.operation_date)
+      if (value) return value
+    }
+    return null
   } catch {
     // operation_date column may not exist until migration 013 is applied
     return null

@@ -18,6 +18,8 @@ import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
 import { expandBeiansWithShareClassFamily } from "@/lib/server/list-cache-nav-batch"
 import {
   canonicalizeEmailProductCode,
+  fundDisplayNamesMatch,
+  fundNicknameMatchesFullName,
   shareClassProductCodesMatch,
   sqlFundNameMatch,
 } from "@/lib/server/fund-name-match"
@@ -154,6 +156,10 @@ type ResolvedFund = {
   product_source: string
   updated_at: string
   first_entry_date: string
+  /** Official / short / email names so keyword search matches the add-product picker. */
+  search_aliases?: string[]
+  /** Original and remapped 备案号 variants. */
+  search_codes?: string[]
 }
 
 type BflRow = {
@@ -320,16 +326,94 @@ async function loadManualTeamDataProducts(): Promise<ManualTeamDataProduct[]> {
   )
 }
 
-async function teamDataProductInEmailNav(beian_hao: string): Promise<boolean> {
+function collectSearchAliases(...names: Array<string | null | undefined>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const name of names) {
+    const value = name?.trim()
+    if (!value) continue
+    const key = value.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(value)
+  }
+  return out
+}
+
+function collectSearchCodes(...codes: Array<string | null | undefined>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const code of codes) {
+    const raw = code?.trim()
+    if (!raw) continue
+    for (const alias of [raw, ...beianCodeAliases(raw)]) {
+      const key = alias.trim().toUpperCase()
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      out.push(key)
+    }
+  }
+  return out
+}
+
+function mergeResolvedSearchMeta(a: ResolvedFund, b?: ResolvedFund | null): Pick<ResolvedFund, "search_aliases" | "search_codes"> {
+  return {
+    search_aliases: collectSearchAliases(
+      ...(a.search_aliases ?? []),
+      ...(b?.search_aliases ?? []),
+      a.product_name,
+      b?.product_name,
+    ),
+    search_codes: collectSearchCodes(
+      ...(a.search_codes ?? []),
+      ...(b?.search_codes ?? []),
+      a.beian_hao,
+      b?.beian_hao,
+      a.id,
+      b?.id,
+    ),
+  }
+}
+
+function matchesTeamDataKeyword(row: ResolvedFund, keyword: string): boolean {
+  const kw = keyword.trim()
+  if (!kw) return true
+  const kwLower = kw.toLowerCase()
+  const names = collectSearchAliases(row.product_name, ...(row.search_aliases ?? []))
+  if (names.some((name) => name.toLowerCase().includes(kwLower))) return true
+  if (names.some((name) => fundDisplayNamesMatch(name, kw) || fundNicknameMatchesFullName(kw, name) || fundNicknameMatchesFullName(name, kw))) {
+    return true
+  }
+  const codes = collectSearchCodes(row.beian_hao, row.id, ...(row.search_codes ?? []))
+  if (codes.some((code) => code.toLowerCase().includes(kwLower) || kwLower === code.toLowerCase())) return true
+  return false
+}
+
+/** Same visibility rule as the list: usable email / FOF NAV, not a bare product_code stub. */
+async function teamDataProductVisibleInEmailOrFof(beian_hao: string): Promise<boolean> {
+  const codes = [...new Set(beianCodeAliases(beian_hao).map((c) => c.toUpperCase()).filter(Boolean))]
+  if (codes.length === 0) return false
   await ensureEmailNavTable()
-  const rows = await query<{ ok: number }>(
+  const email = await query<{ ok: number }>(
     `SELECT 1 AS ok
      FROM ops_email_nav_records e
-     WHERE NULLIF(BTRIM(e.product_code), '') = $1
+     WHERE UPPER(BTRIM(e.product_code)) = ANY($1::text[])
+       AND e.nav IS NOT NULL
+       AND e.nav_date IS NOT NULL
      LIMIT 1`,
-    [beian_hao],
+    [codes],
   )
-  return rows.length > 0
+  if (email.length > 0) return true
+  const fof = await query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM ops_fof_overview_list_cache
+     WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       AND unit_nav IS NOT NULL
+       AND nav_date IS NOT NULL
+     LIMIT 1`,
+    [codes],
+  ).catch(() => [] as Array<{ ok: number }>)
+  return fof.length > 0
 }
 
 export async function addTeamDataProduct(params: {
@@ -344,12 +428,12 @@ export async function addTeamDataProduct(params: {
   await ensureTeamDataProductsTable()
 
   const existingManual = await query<{ ok: number }>(
-    `SELECT 1 AS ok FROM ops_team_data_products WHERE beian_hao = $1 LIMIT 1`,
+    `SELECT 1 AS ok FROM ops_team_data_products WHERE UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($1)) LIMIT 1`,
     [beian_hao],
   )
   if (existingManual.length > 0) return { error: "already_exists" }
 
-  if (await teamDataProductInEmailNav(beian_hao)) {
+  if (await teamDataProductVisibleInEmailOrFof(beian_hao)) {
     return { error: "already_exists" }
   }
 
@@ -375,7 +459,7 @@ export async function removeTeamDataProduct(params: {
     [beian_hao],
   )
   if (existing.length === 0) {
-    if (await teamDataProductInEmailNav(beian_hao)) {
+    if (await teamDataProductVisibleInEmailOrFof(beian_hao)) {
       return { error: "not_removable" }
     }
     return { error: "not_found" }
@@ -401,14 +485,15 @@ function resolveManualProduct(
     l3: fromT6.l3 ?? fromBfl.l3,
   }
 
+  const product_name = displayProductName(
+    bfl?.product_name ?? null,
+    bfl?.short_name ?? t6?.fund_short_name ?? null,
+    manual.product_name,
+  )
   return {
     id: manual.beian_hao,
     beian_hao: manual.beian_hao,
-    product_name: displayProductName(
-      bfl?.product_name ?? null,
-      bfl?.short_name ?? t6?.fund_short_name ?? null,
-      manual.product_name,
-    ),
+    product_name,
     team_nav_date: "",
     team_nav: "",
     strategy_l1: strategies.l1,
@@ -417,6 +502,14 @@ function resolveManualProduct(
     product_source: "手动添加",
     updated_at: manual.created_at?.trim() || "",
     first_entry_date: isoDay(manual.created_at),
+    search_aliases: collectSearchAliases(
+      product_name,
+      manual.product_name,
+      bfl?.product_name,
+      bfl?.short_name,
+      t6?.fund_short_name,
+    ),
+    search_codes: collectSearchCodes(manual.beian_hao),
   }
 }
 
@@ -1232,12 +1325,14 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
     if (!prev || row.team_nav_date.localeCompare(prev.team_nav_date) > 0) {
       byBeian.set(key, {
         ...row,
+        ...mergeResolvedSearchMeta(row, prev),
         updated_at: maxIsoTimestamp(row.updated_at, prev?.updated_at),
         first_entry_date: minIsoDay(row.first_entry_date, prev?.first_entry_date),
       })
     } else {
       byBeian.set(key, {
         ...prev,
+        ...mergeResolvedSearchMeta(prev, row),
         updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
         first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
       })
@@ -1261,6 +1356,7 @@ function dedupeResolvedByBeian(rows: ResolvedFund[]): ResolvedFund[] {
     const winner = preferNext ? row : prev
     byName.set(nameKey, {
       ...winner,
+      ...mergeResolvedSearchMeta(row, prev),
       updated_at: maxIsoTimestamp(row.updated_at, prev.updated_at),
       first_entry_date: minIsoDay(row.first_entry_date, prev.first_entry_date),
     })
@@ -1367,6 +1463,17 @@ function resolveFund(
     product_source: "邮箱同步",
     updated_at: row.updated_at?.trim() || "",
     first_entry_date: isoDay(row.first_entry_date),
+    search_aliases: collectSearchAliases(
+      product_name,
+      candidate,
+      row.fund_name,
+      bfl?.product_name,
+      bfl?.short_name,
+      t6?.fund_short_name,
+      fd?.product_name,
+      track?.product_name,
+    ),
+    search_codes: collectSearchCodes(beian_hao, code, row.product_code),
   }
 }
 
@@ -1805,8 +1912,47 @@ async function loadFallbackNavDatesByCode(codes: string[]): Promise<Map<string, 
   return out
 }
 
+async function loadOperationDateByCode(codes: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (codes.length === 0) return out
+  const rows = await query<{
+    register_number: string | null
+    record_key: string | null
+    operation_date: string | null
+  }>(
+    `SELECT register_number, record_key, operation_date::text AS operation_date
+     FROM basicinfo_bfl_track
+     WHERE operation_date IS NOT NULL
+       AND (register_number = ANY($1::text[]) OR record_key = ANY($1::text[]))`,
+    [codes],
+  ).catch(() => [] as Array<{
+    register_number: string | null
+    record_key: string | null
+    operation_date: string | null
+  }>)
+  for (const row of rows) {
+    const day = isoDay(row.operation_date)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+    for (const raw of [row.register_number, row.record_key]) {
+      for (const alias of beianCodeAliases(raw ?? "")) {
+        const key = alias.toUpperCase()
+        if (!out.has(key)) out.set(key, day)
+      }
+    }
+  }
+  return out
+}
+
+function operationDateForRow(row: ResolvedFund, byCode: Map<string, string>): string | null {
+  for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+    const day = byCode.get(alias.toUpperCase())
+    if (day) return day
+  }
+  return null
+}
+
 async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<Set<string>> {
-  const cacheKey = `missing_10|${rows.map((r) => r.id).join("|")}`
+  const cacheKey = `missing_10_op|${rows.map((r) => r.id).join("|")}`
   if (
     navGapIdsCache
     && navGapIdsCache.key === cacheKey
@@ -1823,10 +1969,14 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
 
   const codes = [...new Set(rows.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
-  const cacheRows = await loadDetailNavGapCacheRows(codes, names)
+  const [cacheRows, operationDateByCode] = await Promise.all([
+    loadDetailNavGapCacheRows(codes, names),
+    loadOperationDateByCode(codes),
+  ])
 
   const cachedIds = new Set<string>()
   for (const row of rows) {
+    const fromDate = operationDateForRow(row, operationDateByCode)
     const codeMatches = cacheRows.filter((c) => detailCacheFitsRowByCode(c, row))
     // Same-name caches can belong to a retired/wrong 备案号 (e.g. CESX2W vs SAGF75).
     // If this row has its own code cache, ignore name-only hits.
@@ -1835,7 +1985,7 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
       : cacheRows.filter((c) => detailCacheFitsRow(c, row))
     if (matches.length === 0) continue
     cachedIds.add(row.id)
-    if (matches.some((c) => hasInteriorNavGap(c.dates))) gapped.add(row.id)
+    if (matches.some((c) => hasInteriorNavGap(c.dates, fromDate))) gapped.add(row.id)
   }
 
   const uncached = rows.filter((r) => !cachedIds.has(r.id))
@@ -1843,11 +1993,12 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
     const fallbackCodes = [...new Set(uncached.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
     const datesByCode = await loadFallbackNavDatesByCode(fallbackCodes)
     for (const row of uncached) {
+      const fromDate = operationDateForRow(row, operationDateByCode)
       const dates = new Set<string>()
       for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
         for (const d of datesByCode.get(alias.toUpperCase()) ?? []) dates.add(d)
       }
-      if (hasInteriorNavGap([...dates])) gapped.add(row.id)
+      if (hasInteriorNavGap([...dates], fromDate)) gapped.add(row.id)
     }
   }
 
@@ -2157,13 +2308,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   }
 
   if (keyword) {
-    const kw = keyword.toLowerCase()
-    resolved = resolved.filter(
-      (r) =>
-        r.product_name.toLowerCase().includes(kw)
-        || (r.beian_hao ?? "").toLowerCase().includes(kw)
-        || r.id.toLowerCase().includes(kw),
-    )
+    resolved = resolved.filter((r) => matchesTeamDataKeyword(r, keyword))
   }
   if (strategyL1 === "__unconfigured__") {
     resolved = resolved.filter((r) => !r.strategy_l1)

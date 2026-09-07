@@ -35,6 +35,7 @@ import {
   rememberDetailResponseMemoryCache,
 } from "@/lib/server/fund-detail-response-memory-cache"
 import { loadTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
+import { ensureFundElementTrackColumns } from "@/lib/server/fund-elements-write"
 
 export const dynamic = "force-dynamic"
 
@@ -572,11 +573,15 @@ export async function GET(
         registerCode: bflTrack?.register_code ?? null,
       }),
       loadTeamBenchmark([routeBeianHao, beian_hao, rawId].filter(Boolean)).catch(() => null),
-      loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
-        trackKeys,
-        `SELECT operation_date::text AS operation_date
-         FROM basicinfo_bfl_track`,
-      ).catch(() => [] as { operation_date: string | null }[]),
+      ensureFundElementTrackColumns()
+        .then(() =>
+          loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
+            trackKeys,
+            `SELECT operation_date::text AS operation_date
+             FROM basicinfo_bfl_track`,
+          ),
+        )
+        .catch(() => [] as { operation_date: string | null }[]),
     ])
     const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
 
@@ -633,7 +638,10 @@ export async function GET(
       bflTrack?.inception_date?.slice(0, 10) ??
       amacResolved?.establish_date ??
       null
-    const trackOperationDate = operationDateRows[0]?.operation_date?.slice(0, 10) ?? null
+    const trackOperationDate =
+      operationDateRows
+        .map((row) => (row.operation_date ?? "").slice(0, 10))
+        .find((day) => /^\d{4}-\d{2}-\d{2}$/.test(day)) ?? null
 
     const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
     const nav_data_source: "team" | "platform" =

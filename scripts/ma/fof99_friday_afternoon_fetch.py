@@ -3,8 +3,13 @@
 
 1. FundAdvancedList newest-first, stop when a page has no date >= that Friday.
    Persist weekly / weekly_plus points on that Friday (and newer mid-week extras).
+   Also stamp NAV for products established within 2 months that are not yet in
+   the universe (no extra list credits).
 2. FundMultiPrice that Friday for every weekly fund still missing it.
    weekly_plus only if list tip is still before that Friday.
+3. Universe maintain (default): downgrade 3-week empty weeklies; admit those
+   new young funds as weekly and FundMultiPrice only the ones still missing
+   that Friday.
 
 Does not request this week's Friday (usually unpublished Friday afternoon).
 
@@ -46,6 +51,11 @@ from fof99_weekly_nav_fetch import (  # noqa: E402
     log,
     policy_counts,
     save_batch,
+)
+from fof99_weekly_universe_maintain import (  # noqa: E402
+    inception_cutoff,
+    run_maintain,
+    write_new_fund_snapshot,
 )
 
 PAGE_SIZE = 1000
@@ -136,20 +146,33 @@ def persist_list_page(
     friday: date,
     names: dict[str, str],
     allow: set[str],
+    in_universe: set[str],
+    cutoff: date,
     batch_id: str,
-) -> tuple[int, int, int, bool]:
-    """Returns friday_hits, extra_hits, ignored, page_has_hot_date."""
+) -> tuple[int, int, int, bool, list[dict]]:
+    """Returns friday_hits, extra_hits, ignored, page_has_hot_date, new_fund_rows."""
     friday_hits = 0
     extra_hits = 0
     ignored = 0
     hot = False
     ok_codes: list[str] = []
+    new_rows: list[dict] = []
     for raw in chunk:
         code = str(raw.get("register_number") or "").strip().upper()
         dt = parse_iso(raw.get("price_date"))
         if dt is not None and dt >= friday:
             hot = True
-        if not code or code not in allow or dt is None or dt < friday:
+        inception = parse_iso(raw.get("inception_date"))
+        young_new = (
+            bool(code)
+            and code not in in_universe
+            and inception is not None
+            and inception >= cutoff
+        )
+        if not code or dt is None or dt < friday:
+            ignored += 1
+            continue
+        if code not in allow and not young_new:
             ignored += 1
             continue
         try:
@@ -176,8 +199,18 @@ def persist_list_page(
             friday_hits += 1
         else:
             extra_hits += 1
+        if young_new:
+            new_rows.append(
+                {
+                    "reg_code": code,
+                    "product_name": str(raw.get("fund_name") or ""),
+                    "inception_date": inception.isoformat(),
+                    "price_date": dt.isoformat(),
+                    "nav": nav,
+                }
+            )
     invalidate_detail_nav_cache(cur, ok_codes)
-    return friday_hits, extra_hits, ignored, hot
+    return friday_hits, extra_hits, ignored, hot, new_rows
 
 
 def run_list(
@@ -188,14 +221,17 @@ def run_list(
     friday: date,
     names: dict[str, str],
     allow: set[str],
+    in_universe: set[str],
+    cutoff: date,
     max_pages: int,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, list[dict]]:
     from fof99 import FundAdvancedList
 
     cur = conn.cursor()
     pages_paid = 0
     friday_total = 0
     extra_total = 0
+    new_by_code: dict[str, dict] = {}
     for page in range(1, max_pages + 1):
         batch_id = f"fri-pm-{friday.isoformat()}-p{page:04d}"
         existing = credit_note(cur, batch_id)
@@ -229,14 +265,18 @@ def run_list(
             log(f"STOP: list API error page={page} error_code={err} msg={debug.get('msg')}")
             raise SystemExit(1)
         chunk = parse_list_page(data, debug)
-        fri_n, extra_n, _ign, hot = persist_list_page(
+        fri_n, extra_n, _ign, hot, new_rows = persist_list_page(
             cur,
             chunk,
             friday=friday,
             names=names,
             allow=allow,
+            in_universe=in_universe,
+            cutoff=cutoff,
             batch_id=batch_id,
         )
+        for row in new_rows:
+            new_by_code[row["reg_code"]] = row
         stop = 0 if hot else 1
         log_other_mall_credit(
             cur,
@@ -251,14 +291,21 @@ def run_list(
         extra_total += extra_n
         log(
             f"list page {page}: n={len(chunk)}  friday_hits={fri_n}  "
-            f"midweek_extra={extra_n}  credits_used={pages_paid}  "
+            f"midweek_extra={extra_n}  new_young={len(new_rows)}  "
+            f"credits_used={pages_paid}  "
             f"{'STOP (page older than Friday)' if stop else 'continue'}"
         )
         if stop or not chunk:
             break
     else:
         log(f"list hit max pages {max_pages}; not all hot rows may be stamped")
-    return pages_paid, friday_total, extra_total
+    return pages_paid, friday_total, extra_total, list(new_by_code.values())
+
+
+def finish_with_maintain(args, conn, friday: date, today: date) -> int:
+    if args.skip_maintain:
+        return 0
+    return run_maintain(conn, friday=friday, today=today, dry_run=args.dry_run)
 
 
 def main() -> int:
@@ -273,6 +320,11 @@ def main() -> int:
         "--scheduled",
         action="store_true",
         help="cron mode: exit 0 if last week's Friday is a CN holiday (no NAV that week)",
+    )
+    parser.add_argument(
+        "--skip-maintain",
+        action="store_true",
+        help="do not run universe maintain after this fetch",
     )
     args = parser.parse_args()
 
@@ -302,6 +354,15 @@ def main() -> int:
     plus = load_universe(cur, ("weekly_plus",))
     names = {c: n for c, n, _t in weekly + plus}
     allow = set(names)
+    cur.execute(
+        """
+        SELECT UPPER(BTRIM(reg_code))
+        FROM fof99_nav_universe
+        WHERE reg_code IS NOT NULL AND BTRIM(reg_code) <> ''
+        """
+    )
+    in_universe = {r[0] for r in cur.fetchall()}
+    cutoff = inception_cutoff(today)
     skip = load_skip_pairs(cur, list(allow), [friday])
     weekly_need = [(c, n) for c, n, _t in weekly if (c, friday) not in skip]
     plus_need = [(c, n) for c, n, tip in plus if tip < friday and (c, friday) not in skip]
@@ -315,32 +376,40 @@ def main() -> int:
     log(f"weekly_plus behind and missing {friday}: {len(plus_need)}/{len(plus)}")
     log(
         f"plan: list ≤{0 if args.skip_list else args.max_list_pages} pages "
-        f"(stop when page has no date ≥ {friday}), then "
+        f"(stop when page has no date ≥ {friday}; also stamp inception≥{cutoff} "
+        f"not in universe), then "
         f"FundMultiPrice {len(need)} products → {price_credits} credits  "
         f"(before list stamps)"
     )
     if args.dry_run:
         log("dry-run: no API calls")
-        return 0
+        return finish_with_maintain(args, conn, friday, today)
 
     appid, appkey = load_fof99_keys()
     list_paid = 0
     if not args.skip_list:
         try:
-            list_paid, fri_hits, extra_hits = run_list(
+            list_paid, fri_hits, extra_hits, new_rows = run_list(
                 conn,
                 appid=appid,
                 appkey=appkey,
                 friday=friday,
                 names=names,
                 allow=allow,
+                in_universe=in_universe,
+                cutoff=cutoff,
                 max_pages=args.max_list_pages,
             )
         except SystemExit:
             return 1
         except Exception:
             return 1
-        log(f"list done. pages={list_paid}  friday_stamps={fri_hits}  midweek_extra={extra_hits}")
+        if list_paid or new_rows:
+            write_new_fund_snapshot(friday, new_rows)
+        log(
+            f"list done. pages={list_paid}  friday_stamps={fri_hits}  "
+            f"midweek_extra={extra_hits}  new_young={len(new_rows)}"
+        )
         skip = load_skip_pairs(cur, list(allow), [friday])
         plus = load_universe(cur, ("weekly_plus",))
         weekly_need = [(c, n) for c, n, _t in weekly if (c, friday) not in skip]
@@ -356,7 +425,7 @@ def main() -> int:
         log("nothing to FundMultiPrice")
         log(format_credit_usage(credit_usage(cur)))
         conn.commit()
-        return 0
+        return finish_with_maintain(args, conn, friday, today)
 
     used = 0
     ok_total = 0
@@ -395,7 +464,7 @@ def main() -> int:
         f"done. list_pages={list_paid if not args.skip_list else 0}  "
         f"FundMultiPrice={used} ok={ok_total} no_data={no_data_total}"
     )
-    return 0
+    return finish_with_maintain(args, conn, friday, today)
 
 
 if __name__ == "__main__":

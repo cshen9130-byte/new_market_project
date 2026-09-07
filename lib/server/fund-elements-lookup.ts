@@ -301,6 +301,7 @@ const FAMILY_FILL_KEYS = [
   "advisor",
   "scale",
   "inception_date",
+  "operation_date",
   "register_code",
 ] as const
 

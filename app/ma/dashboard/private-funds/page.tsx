@@ -8,6 +8,7 @@ import dynamic from "next/dynamic"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, FileSpreadsheet, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical, SlidersHorizontal, UserRound } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
+import { DateInput } from "@/components/ui/date-input"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
@@ -9113,38 +9114,6 @@ function OpsElementsNotice({ children }: { children: React.ReactNode }) {
   )
 }
 
-const opsDateInputClass =
-  "flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-calendar-picker-indicator]:cursor-pointer"
-
-function OpsDateInput({
-  value,
-  onChange,
-  placeholder = "请选择日期",
-}: {
-  value: string
-  onChange: (value: string) => void
-  placeholder?: string
-}) {
-  const inputRef = useRef<HTMLInputElement>(null)
-  return (
-    <div className="relative flex-1 min-w-0">
-      <input
-        ref={inputRef}
-        type="date"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onClick={() => inputRef.current?.showPicker?.()}
-        className={[opsDateInputClass, "w-full", value ? "text-foreground" : "text-transparent"].join(" ")}
-      />
-      {!value && (
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-          {placeholder}
-        </span>
-      )}
-    </div>
-  )
-}
-
 function OpsEditElementsDialog({
   open,
   beian_hao,
@@ -9532,15 +9501,15 @@ function OpsEditElementsDialog({
               </div>
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>成立日期：</OpsElementsFieldLabel>
-                <OpsDateInput value={inceptionDate} onChange={setInceptionDate} />
+                <DateInput className="flex-1" value={inceptionDate} onChange={setInceptionDate} />
               </div>
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>备案日期：</OpsElementsFieldLabel>
-                <OpsDateInput value={filingDate} onChange={setFilingDate} />
+                <DateInput className="flex-1" value={filingDate} onChange={setFilingDate} />
               </div>
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>运作日：</OpsElementsFieldLabel>
-                <OpsDateInput value={operationDate} onChange={setOperationDate} />
+                <DateInput className="flex-1" value={operationDate} onChange={setOperationDate} />
               </div>
               <div className="col-span-2 flex items-center gap-3">
                 <OpsElementsFieldLabel>托管券商：</OpsElementsFieldLabel>
@@ -14399,7 +14368,7 @@ function teamDataLinkedInvestmentNote(
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v5:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v6:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -14870,11 +14839,23 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
       })
       const json = await res.json()
       if (!res.ok) {
-        setAddTeamFundError(
-          json.error === "already_exists"
-            ? "该产品已在团队数据列表中"
-            : `添加失败：${json.error || "unknown"}`,
-        )
+        if (json.error === "already_exists") {
+          const locate = addTeamFundSelected.beian_hao.trim() || addTeamFundSelected.product_name.trim()
+          closeTeamDataAddDialog()
+          setStrategyL1("")
+          setStrategyL2("")
+          setStrategyL3("")
+          setElementsFilter("all")
+          setNavLagFilter("all")
+          setNavGapFilter("all")
+          setProductSourceFilter("all")
+          setKwInput(locate)
+          setKeyword(locate)
+          setPage(1)
+          setTeamDataReloadKey((k) => k + 1)
+          return
+        }
+        setAddTeamFundError(`添加失败：${json.error || "unknown"}`)
         return
       }
       closeTeamDataAddDialog()
@@ -15243,8 +15224,8 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
             <div className="flex items-center gap-1">
               {([
                 ["all", "不限", ""],
-                ["interior_2w", "中间缺失超1/10", "从首个净值日到最近净值日，按该产品常见披露间隔、用中国市场交易日估算，缺失超过一成应有净值。周末和法定节假日不计入。周频产品缺两周通常不会标出"],
-                ["no_interior_2w", "无中间缺失", "从首个净值日到最近净值日，按交易日估算缺失不超过一成应有净值"],
+                ["interior_2w", "中间缺失超1/10", "从运作日（未填则用首个净值日）到最近净值日，按该产品常见披露间隔、用中国市场交易日估算，缺失超过一成应有净值。周末和法定节假日不计入。周频产品缺两周通常不会标出"],
+                ["no_interior_2w", "无中间缺失", "从运作日（未填则用首个净值日）到最近净值日，按交易日估算缺失不超过一成应有净值"],
               ] as const).map(([key, label, title]) => (
                 <span
                   key={key}
@@ -15426,7 +15407,11 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                 <td colSpan={14} className="py-20 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-2">
                     <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
-                    <span>暂无邮箱同步产品</span>
+                    <span>
+                      {keyword || strategyL1 || elementsFilter !== "all" || navLagFilter !== "all" || navGapFilter !== "all" || productSourceFilter !== "all"
+                        ? "未找到匹配产品，可改用备案号或产品简称搜索"
+                        : "暂无团队数据产品"}
+                    </span>
                   </div>
                 </td>
               </tr>

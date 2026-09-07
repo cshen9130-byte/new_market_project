@@ -10,7 +10,7 @@ import { configureEtlDbTimeout, loadProjectEnvFiles } from "@/lib/server/load-pr
 const execFileAsync = promisify(execFile)
 
 const JOB_KEY = "__fof99FridayAfternoonEtl"
-const JOB_TIMEOUT_MS = 45 * 60 * 1000
+const JOB_TIMEOUT_MS = 50 * 60 * 1000
 const MIN_RERUN_MS = 20 * 60 * 60 * 1000
 
 export type Fof99FridayAfternoonEtlJobStatus = {
@@ -152,7 +152,7 @@ export function startFof99FridayAfternoonEtlJob(options?: {
 
   void (async () => {
     job.status = "running"
-    job.message = "正在运行 Friday-afternoon 火富牛 ETL…"
+    job.message = "正在运行 Friday-afternoon 火富牛 ETL（含宇宙维护）…"
     try {
       const { executable, prefixArgs } = await findPython()
       const scriptPath = path.join(process.cwd(), "scripts", "ma", "fof99_friday_afternoon_fetch.py")
@@ -171,7 +171,7 @@ export function startFof99FridayAfternoonEtlJob(options?: {
       if (stdout.trim()) console.log("[fof99-friday-etl]", stdout.trim().slice(-4000))
       if (stderr.trim()) console.warn("[fof99-friday-etl stderr]", stderr.trim().slice(-4000))
       job.status = "done"
-      job.message = "上一交易周五火富牛净值已更新"
+      job.message = "上一交易周五火富牛净值已更新，宇宙已维护"
       job.finishedAt = Date.now()
       job.exitCode = 0
       setLastSuccessAt(job.finishedAt)

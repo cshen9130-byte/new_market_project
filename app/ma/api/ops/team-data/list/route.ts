@@ -40,7 +40,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-team-data",
-      v: "fof_email_nav_gap11_shareclass_beian",
+      v: "fof_email_nav_gap11_operation_date",
       page,
       pageSize,
       keyword,

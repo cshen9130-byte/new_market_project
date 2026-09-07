@@ -114,7 +114,8 @@ export async function registerBackgroundJobs(): Promise<void> {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
-  // Friday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then FundMultiPrice).
+  // Friday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then FundMultiPrice,
+  // then universe maintain: 3-week empty → update_slow, new ≤2-month funds → weekly).
   // Still runs if *this* Friday is a CN holiday (fetch last week). Skips only when
   // last week's Friday is a holiday (no NAV that week), e.g. 2026-10-02 → 09-25.
   cron.schedule("0 16 * * 5", () => {

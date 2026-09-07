@@ -24,15 +24,23 @@ export type InteriorNavGapStats = {
   ratio: number
 }
 
+function datesOnOrAfter(dates: string[], fromDate?: string | null): string[] {
+  const start = isoDay(fromDate)
+  if (!start || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return dates
+  return dates.filter((d) => isoDay(d) >= start)
+}
+
 /**
  * Missing-NAV share between the first and last date, measured in China A-share
  * market-open days. Weekends and 法定节假日 / 调休 rest days are not expected
  * disclosure days, so they never count as holes.
  * Cadence is the lower-median adjacent interval (weekly funds that skip two
  * weeks stay at two points).
+ * When `fromDate` is set (运作日), only NAV on/after that date is scored — the
+ * current strategy window, not the whole history since first NAV.
  */
-export function analyzeInteriorNavGap(dates: string[]): InteriorNavGapStats {
-  const sorted = [...new Set(dates.map(isoDay).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort()
+export function analyzeInteriorNavGap(dates: string[], fromDate?: string | null): InteriorNavGapStats {
+  const sorted = [...new Set(datesOnOrAfter(dates, fromDate).map(isoDay).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort()
   const empty: InteriorNavGapStats = {
     gapped: false,
     first: sorted[0] ?? "",
@@ -78,6 +86,6 @@ export function analyzeInteriorNavGap(dates: string[]): InteriorNavGapStats {
   }
 }
 
-export function hasInteriorNavGap(dates: string[]): boolean {
-  return analyzeInteriorNavGap(dates).gapped
+export function hasInteriorNavGap(dates: string[], fromDate?: string | null): boolean {
+  return analyzeInteriorNavGap(dates, fromDate).gapped
 }

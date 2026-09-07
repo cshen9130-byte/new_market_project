@@ -1,7 +1,7 @@
 /**
  * Export 基金数据库 funds that match:
  *   净值日期 = 1个月以内
- *   AND 中间缺失超1/10  (same rule as 运维 → 团队数据)
+ *   AND 中间缺失超1/10  (same rule as 运维 → 团队数据; 运作日 scopes the window)
  *
  * Usage:
  *   npx tsx scripts/ma/export_private_funds_nav1m_interior_gap.ts
@@ -260,6 +260,36 @@ async function main() {
       console.log(`  loaded NAV dates ${Math.min(i + BATCH, funds.length)}/${funds.length}`)
     }
 
+    const operationDateByCode = new Map<string, string>()
+    try {
+      const opCodes = [...new Set(funds.flatMap((f) => beianAliases(f.beian_hao)))]
+      for (let i = 0; i < opCodes.length; i += BATCH) {
+        const batch = opCodes.slice(i, i + BATCH)
+        const opRows = await query<{
+          register_number: string | null
+          record_key: string | null
+          operation_date: string | null
+        }>(
+          `SELECT register_number, record_key, operation_date::text AS operation_date
+           FROM basicinfo_bfl_track
+           WHERE operation_date IS NOT NULL
+             AND (register_number = ANY($1::text[]) OR record_key = ANY($1::text[]))`,
+          [batch],
+        )
+        for (const row of opRows) {
+          const day = isoDay(row.operation_date)
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+          for (const raw of [row.register_number, row.record_key]) {
+            for (const alias of beianAliases(raw ?? "")) {
+              if (!operationDateByCode.has(alias)) operationDateByCode.set(alias, day)
+            }
+          }
+        }
+      }
+    } catch {
+      console.warn("operation_date column missing; scoring from first NAV")
+    }
+
     const header = [
       "序号",
       "备案号",
@@ -292,7 +322,10 @@ async function main() {
         for (const d of datesByCode.get(alias) ?? []) dates.add(d)
       }
       if (dates.size === 0) noSeries += 1
-      const stats = analyzeInteriorNavGap([...dates])
+      const fromDate = beianAliases(fund.beian_hao)
+        .map((alias) => operationDateByCode.get(alias))
+        .find(Boolean) ?? null
+      const stats = analyzeInteriorNavGap([...dates], fromDate)
       if (!stats.gapped) continue
       gappedRows.push([
         String(gappedRows.length + 1),

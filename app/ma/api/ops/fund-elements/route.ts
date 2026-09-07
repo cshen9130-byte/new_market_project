@@ -11,7 +11,11 @@ import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
-import { writeFundElementsAcrossShareClasses, writeFundElementsFromBody } from "@/lib/server/fund-elements-write"
+import {
+  ensureFundElementTrackColumns,
+  writeFundElementsAcrossShareClasses,
+  writeFundElementsFromBody,
+} from "@/lib/server/fund-elements-write"
 import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { loadTeamBenchmark, upsertTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
@@ -70,14 +74,18 @@ async function loadBasicinfoTrack(keys: string[]): Promise<BasicinfoTrackRow[]> 
 }
 
 async function loadOperationDate(keys: string[]): Promise<string | null> {
+  await ensureFundElementTrackColumns()
   try {
     const rows = await loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
       keys,
       `SELECT operation_date::text AS operation_date
        FROM basicinfo_bfl_track`,
     )
-    const value = toIsoDateInputValue(rows[0]?.operation_date)
-    return value || null
+    for (const row of rows) {
+      const value = toIsoDateInputValue(row.operation_date)
+      if (value) return value
+    }
+    return null
   } catch {
     // operation_date column may not exist until migration 013 is applied
     return null
@@ -217,8 +225,8 @@ export async function PATCH(req: Request) {
     if (Object.prototype.hasOwnProperty.call(body, "team_benchmark")) {
       const value = body.team_benchmark
       await upsertTeamBenchmark(rawBeian, value == null ? null : String(value))
-      invalidateDetailResponseMemoryCache([rawBeian])
     }
+    invalidateDetailResponseMemoryCache([rawBeian])
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[ops/fund-elements PATCH]", err)

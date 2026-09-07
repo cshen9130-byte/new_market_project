@@ -31,6 +31,8 @@ import {
   type ShareClassFeeOverrides,
 } from "@/lib/server/fund-contract-element-keywords"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
+import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
+import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { canonicalizeShareClassBeianCode, listFundFamilyProducts } from "@/lib/server/share-class-product"
 
 const ELEMENTS_SOURCE = "ops/fund-elements"
@@ -45,19 +47,23 @@ const OPTIONAL_TRACK_COLUMNS = new Set([
 
 let extraElementColumnsEnsured = false
 
-async function ensureExtraElementColumns(): Promise<void> {
+/** Create 运作日 / extra 申赎 columns if migrations 013/018 were not applied yet. */
+export async function ensureFundElementTrackColumns(): Promise<void> {
   if (extraElementColumnsEnsured) return
   extraElementColumnsEnsured = true
-  const cols = await query<{ column_name: string }>(
-    `SELECT column_name
-     FROM information_schema.columns
-     WHERE table_name = 'basicinfo_bfl_track'
-       AND column_name IN ('risk_level', 'lock_period_desc', 'fee_pay_formula', 'fee_pay_formula_json')`,
-  ).catch(() => [] as { column_name: string }[])
-  if (cols.length >= 4) return
-  console.error(
-    "[fund-elements-write] extra 要素 columns missing on basicinfo_bfl_track; apply scripts/db/018_basicinfo_bfl_track_extra_elements.sql",
-  )
+  try {
+    await query(`
+      ALTER TABLE basicinfo_bfl_track
+        ADD COLUMN IF NOT EXISTS operation_date date,
+        ADD COLUMN IF NOT EXISTS risk_level text,
+        ADD COLUMN IF NOT EXISTS lock_period_desc text,
+        ADD COLUMN IF NOT EXISTS fee_pay_formula text,
+        ADD COLUMN IF NOT EXISTS fee_pay_formula_json jsonb
+    `)
+  } catch (err) {
+    extraElementColumnsEnsured = false
+    console.error("[fund-elements-write] failed to ensure 要素 columns on basicinfo_bfl_track", err)
+  }
 }
 
 type BasicinfoTrackRow = {
@@ -248,13 +254,20 @@ async function upsertBasicinfoTrackResilient(
   fieldValues: Record<string, unknown>,
 ): Promise<void> {
   let current = { ...fieldValues }
-  for (let attempt = 0; attempt < OPTIONAL_TRACK_COLUMNS.size + 1; attempt++) {
+  let retriedOperationDateColumn = false
+  for (let attempt = 0; attempt < OPTIONAL_TRACK_COLUMNS.size + 2; attempt++) {
     try {
       await upsertBasicinfoTrack(beian_hao, current)
       return
     } catch (err) {
       const missing = missingOptionalColumn(err)
       if (!missing || !(missing in current) || current[missing] === undefined) throw err
+      if (missing === "operation_date" && !retriedOperationDateColumn) {
+        retriedOperationDateColumn = true
+        extraElementColumnsEnsured = false
+        await ensureFundElementTrackColumns()
+        continue
+      }
       const { [missing]: _omit, ...rest } = current
       current = rest
     }
@@ -265,7 +278,7 @@ export async function writeFundElementsFromBody(body: FundElementWriteBody): Pro
   const rawBeian = String(body?.beian_hao ?? "").trim()
   if (!rawBeian) throw new Error("missing beian_hao")
   const beian_hao = canonicalizeShareClassBeianCode(rawBeian) || rawBeian
-  await ensureExtraElementColumns()
+  await ensureFundElementTrackColumns()
 
   const formulaRaw = body.fee_pay_formula_config as
     | { mode?: unknown; gradients?: unknown }
@@ -317,6 +330,14 @@ export async function writeFundElementsFromBody(body: FundElementWriteBody): Pro
   const custodian = normalizeOptionalString(body.custodian)
 
   await upsertBasicinfoTrackResilient(beian_hao, fieldValues)
+  invalidateDetailResponseMemoryCache([beian_hao, rawBeian])
+  invalidateListResponseCache("ops-team-data")
+  try {
+    const { invalidateTeamDataListCaches } = await import("@/lib/server/team-data-query-pg")
+    invalidateTeamDataListCaches()
+  } catch {
+    // team-data module may be unavailable in some script contexts
+  }
 
   if (fund_manager !== undefined) {
     await query(

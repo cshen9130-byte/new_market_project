@@ -11,6 +11,7 @@ Only `weekly` and `weekly_plus` are fetched. `skip` and `update_slow` are not pa
   python scripts/ma/fof99_weekly_nav_fetch.py
 
 Friday afternoon (previous Friday, list-first): scripts/ma/fof99_friday_afternoon_fetch.py
+Universe hygiene after that job: scripts/ma/fof99_weekly_universe_maintain.py
 """
 
 from __future__ import annotations
