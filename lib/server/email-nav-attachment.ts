@@ -7,6 +7,7 @@ import * as XLSX from "xlsx"
 import {
   extractNavMetadata,
   extractNavData,
+  extractCiticsFundNavAnnouncement,
   normalizeFundDisplayName,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
@@ -309,12 +310,183 @@ export async function extractNavFromCiticsAnnouncementPdf(
   return extractNavRowsFromCiticsAnnouncementText(text, filename, subject)
 }
 
+/** Citics Auto-Disclosure one-day 【基金净值】 xlsx — not YYYYMMDD-YYYYMMDD history. */
+function isCiticsFundNavAnnouncementFile(filename: string, subject: string): boolean {
+  const blob = `${filename}\n${subject}`
+  if (/20\d{6}-20\d{6}/.test(blob)) return false
+  return /【基金净值】/u.test(blob)
+}
+
+function parseLooseNavDate(raw: string): string | null {
+  const text = String(raw ?? "").trim()
+  const iso = text.match(/^(20\d{2})-(\d{2})-(\d{2})$/)
+  if (iso) return iso[0]
+  const compact = text.match(/^(20\d{2})(\d{2})(\d{2})$/)
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`
+  const loose = text.match(/^(20\d{2})[\/.](\d{1,2})[\/.](\d{1,2})$/)
+  if (loose) {
+    return `${loose[1]}-${loose[2].padStart(2, "0")}-${loose[3].padStart(2, "0")}`
+  }
+  return null
+}
+
+function isCiticsShareUnitHeader(header: string): boolean {
+  return /^资产份额净值/.test(header) && !/累计|母基金/.test(header)
+}
+
+function isCiticsShareCumHeader(header: string): boolean {
+  return /^资产份额累计净值/.test(header) && !/母基金/.test(header)
+}
+
+/** Citics 日间净值列表: 日期 / 资产代码 / 资产份额净值(元) / 资产份额累计净值(元). */
+function extractCiticsDailyNavListRows(
+  rows: (string | number | Date | null)[][],
+  filename: string,
+  subject: string,
+): ExtractedNavData[] {
+  if (rows.length < 2) return []
+  let headerIdx = -1
+  let unitIdx = -1
+  let cumIdx = -1
+  let dateIdx = -1
+  let codeIdx = -1
+  let nameIdx = -1
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const header = (rows[i] ?? []).map((c) => String(c ?? "").trim())
+    const u = header.findIndex((h) => isCiticsShareUnitHeader(h))
+    const d = header.findIndex((h) => /^(日期|估值日期|净值日期)$/.test(h) || /^日期$/.test(h))
+    if (u < 0 || d < 0) continue
+    headerIdx = i
+    unitIdx = u
+    cumIdx = header.findIndex((h) => isCiticsShareCumHeader(h))
+    dateIdx = d
+    codeIdx = header.findIndex((h) => /^(资产代码|产品代码)$/.test(h))
+    nameIdx = header.findIndex((h) => /^(资产名称|产品名称)$/.test(h))
+    break
+  }
+  if (headerIdx < 0 || unitIdx < 0 || dateIdx < 0) return []
+
+  const meta = extractNavMetadata(subject, filename)
+  const out: ExtractedNavData[] = []
+  const seen = new Set<string>()
+  for (const row of rows.slice(headerIdx + 1)) {
+    const cells = (row ?? []).map((c) => String(c ?? "").trim())
+    const navDate = parseLooseNavDate(cells[dateIdx] ?? "")
+    const unit = parseFloat((cells[unitIdx] ?? "").replace(/,/g, ""))
+    if (!navDate || !Number.isFinite(unit) || unit <= 0) continue
+    const cumRaw = cumIdx >= 0 ? parseFloat((cells[cumIdx] ?? "").replace(/,/g, "")) : NaN
+    const cumulativeNav = Number.isFinite(cumRaw) && cumRaw > 0 ? cumRaw : null
+    const productCode =
+      canonicalizeEmailProductCode(codeIdx >= 0 ? cells[codeIdx] ?? "" : "") || meta.productCode
+    const fundName =
+      nameIdx >= 0 && /[\u4e00-\u9fff]/.test(cells[nameIdx] ?? "")
+        ? normalizeFundDisplayName(cells[nameIdx] ?? "")
+        : meta.fundName
+    const key = `${productCode ?? ""}|${navDate}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      nav: unit,
+      navDate,
+      cumulativeNav,
+      adjustedNav: null,
+      productCode,
+      fundName,
+      source: "attachment_nav_table",
+    })
+  }
+  return out
+}
+
+/**
+ * Citics 【基金净值】 one-row / label-value announcement.
+ * Never treat 累计单位净值 as 单位净值 (GM266C: 1.3398 unit vs 1.6983 cum).
+ */
+function extractCiticsFundNavFormFromBuffer(
+  buffer: Buffer,
+  filename: string,
+  subject: string,
+): ExtractedNavData[] {
+  if (!isCiticsFundNavAnnouncementFile(filename, subject)) return []
+  try {
+    const wb = XLSX.read(buffer, { type: "buffer", cellDates: true, raw: false })
+    const sheet = wb.Sheets[wb.SheetNames[0] ?? ""]
+    if (!sheet) return []
+    const rows = XLSX.utils.sheet_to_json<(string | number | Date | null)[]>(sheet, {
+      header: 1,
+      defval: "",
+      raw: false,
+    })
+    const fromList = extractCiticsDailyNavListRows(rows, filename, subject)
+    if (fromList.length > 0) return fromList
+
+    const csv = XLSX.utils.sheet_to_csv(sheet, { FS: " ", RS: "\n" })
+    const fromText = extractCiticsFundNavAnnouncement(subject, `${filename}\n${csv}`)
+    if (fromText?.nav != null && fromText.navDate) {
+      return [{ ...fromText, source: "attachment_nav_table" }]
+    }
+
+    const cells = rows.flatMap((row) =>
+      (Array.isArray(row) ? row : []).map((c) => String(c ?? "").trim()),
+    ).filter(Boolean)
+
+    let unitNav: number | null = null
+    let cumulativeNav: number | null = null
+    let navDate: string | null = null
+    let productCode: string | null = null
+    let fundName: string | null = null
+
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i] ?? ""
+      const next = cells[i + 1] ?? ""
+      if (/^产品代码$/.test(cell)) {
+        const canon = canonicalizeEmailProductCode(next)
+        if (canon) productCode = canon
+      }
+      if (/^产品名称$/.test(cell) && /[\u4e00-\u9fff]/.test(next)) {
+        fundName = normalizeFundDisplayName(next)
+      }
+      if (/^(估值日期|净值日期)$/.test(cell)) {
+        const d = parseLooseNavDate(next)
+        if (d) navDate = d
+      }
+      if (/^(单位净值|今日单位净值|基金份额净值)$/.test(cell)) {
+        const n = parseFloat(next.replace(/,/g, ""))
+        if (Number.isFinite(n) && n > 0) unitNav = n
+      }
+      if (/^(累计单位净值|累计净值|基金份额累计净值)$/.test(cell)) {
+        const n = parseFloat(next.replace(/,/g, ""))
+        if (Number.isFinite(n) && n > 0) cumulativeNav = n
+      }
+    }
+
+    if (unitNav != null && navDate) {
+      const meta = extractNavMetadata(subject, `${filename}\n${csv}`)
+      return [{
+        nav: unitNav,
+        navDate,
+        cumulativeNav,
+        adjustedNav: null,
+        productCode: productCode || meta.productCode,
+        fundName: fundName || meta.fundName,
+        source: "attachment_nav_table",
+      }]
+    }
+  } catch {
+    // ignore
+  }
+  return []
+}
+
 /** Parse all historical NAV rows from a 净值表 workbook buffer. */
 export function extractNavTableFromBuffer(
   buffer: Buffer,
   filename: string,
   subject: string,
 ): ExtractedNavData[] {
+  const citicsAnnounce = extractCiticsFundNavFormFromBuffer(buffer, filename, subject)
+  if (citicsAnnounce.length > 0) return citicsAnnounce
+
   try {
     const analysis = analyzeNavWorkbook(buffer, filename)
     const { productCode: subjectCode, fundName: subjectFundName } = extractNavMetadata(

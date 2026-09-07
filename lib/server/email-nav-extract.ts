@@ -245,7 +245,9 @@ function parseAssetNavAnnouncementSubject(text: string): { code: string; fundNam
  */
 function parseCiticsFundNavSubject(text: string): { code: string; fundName: string } | null {
   const bracket = text.match(
-    new RegExp(`【(?:基金净值|净值公告)】([A-Z0-9]+)(?:\\([^)]*\\))?_(?:${FUND_NAME_RE.source})_`),
+    new RegExp(
+      `【(?:基金净值|净值公告)】([A-Z0-9]+)(?:\\([^)]*\\))?(?:_|\\s+)(?:${FUND_NAME_RE.source})_`,
+    ),
   )
   if (bracket) {
     const fundName = pickBestFundNameMatch(text)
@@ -824,6 +826,106 @@ function matchCumulativeUnitNav(bodyText: string): RegExpMatchArray | null {
   )
 }
 
+const CITICS_ANNOUNCE_HEADER_RE =
+  /产品代码\s+产品名称\s+估值日期\s+单位净值\s+累计单位净值\s+协会备案代码/u
+
+const CITICS_ANNOUNCE_ROW_RE = new RegExp(
+  `([A-Z0-9]{4,10})(?:\\([^)]*\\))?\\s+(${FUND_NAME_IN_TABLE})\\s+(\\d{4}-\\d{2}-\\d{2})\\s+(\\d+\\.\\d{3,8})\\s+(\\d+\\.\\d{3,8})\\s+([A-Z0-9]{4,10})`,
+  "u",
+)
+
+/** Citics Auto-Disclosure one-row 【基金净值】 — not a YYYYMMDD-YYYYMMDD history workbook. */
+export function isCiticsFundNavAnnouncementText(subject: string, bodyText: string): boolean {
+  const blob = `${subject}\n${bodyText}`
+  if (/20\d{6}-20\d{6}/.test(blob)) return false
+  if (/【基金净值】/u.test(blob)) return true
+  return (
+    /估值日期/u.test(bodyText)
+    && /协会备案代码/u.test(bodyText)
+    && /单位净值/u.test(bodyText)
+    && /累计单位净值/u.test(bodyText)
+  )
+}
+
+/**
+ * Citics 【基金净值】 announcement (body or flattened xlsx):
+ *   产品代码 产品名称 估值日期 单位净值 累计单位净值 协会备案代码
+ *   GM266C(C级) 尚艺阳光1号私募证券投资基金C类 2026-09-04 1.3398 1.6983 SGN266
+ * Must keep 单位净值 (1.3398) distinct from 累计单位净值 (1.6983).
+ */
+export function extractCiticsFundNavAnnouncementRows(
+  subject: string,
+  bodyText: string,
+): ExtractedNavData[] {
+  if (!isCiticsFundNavAnnouncementText(subject, bodyText)) return []
+
+  const shared = extractNavMetadata(subject, bodyText)
+  const out: ExtractedNavData[] = []
+  const seen = new Set<string>()
+
+  const add = (
+    nav: number,
+    navDate: string,
+    cum: number | null,
+    code: string | null,
+    name: string | null,
+  ) => {
+    if (!navDate || !Number.isFinite(nav) || nav <= 0) return
+    const productCode = canonicalizeEmailProductCode(code ?? "") || shared.productCode
+    const key = `${productCode ?? ""}|${navDate}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      nav,
+      navDate,
+      cumulativeNav: cum,
+      adjustedNav: null,
+      productCode,
+      fundName: name || shared.fundName,
+      source: "body_table",
+    })
+  }
+
+  if (CITICS_ANNOUNCE_HEADER_RE.test(bodyText)) {
+    for (const m of bodyText.matchAll(new RegExp(CITICS_ANNOUNCE_ROW_RE.source, "gu"))) {
+      add(
+        parseFloat(m[4]),
+        m[3],
+        parseFloat(m[5]),
+        m[1],
+        normalizeFundDisplayName(m[2]),
+      )
+    }
+    if (out.length > 0) return out
+  }
+
+  const unitM = matchActualUnitNav(bodyText)
+  const cumM = matchCumulativeUnitNav(bodyText)
+  const dateM =
+    bodyText.match(/估值日期\s*[：:\s]*(\d{4}-\d{2}-\d{2})/u)
+    ?? bodyText.match(/净值日期\s*[：:\s]*(\d{4}-\d{2}-\d{2})/u)
+    ?? (CITICS_ANNOUNCE_HEADER_RE.test(bodyText) ? null : bodyText.match(/(\d{4}-\d{2}-\d{2})/))
+  if (unitM && dateM?.[1]) {
+    const codeLabel = bodyText.match(/产品代码\s*[：:\s]*([A-Z0-9]{4,10})/u)
+    add(
+      parseFloat(unitM[1]),
+      dateM[1],
+      cumM ? parseFloat(cumM[1]) : null,
+      codeLabel?.[1] ?? null,
+      shared.fundName,
+    )
+  }
+
+  return out
+}
+
+export function extractCiticsFundNavAnnouncement(
+  subject: string,
+  bodyText: string,
+): ExtractedNavData | null {
+  return extractCiticsFundNavAnnouncementRows(subject, bodyText)[0] ?? null
+}
+
 function parseVirtualBracketSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
     /【虚拟净值】([A-Z0-9]+)[\s_]([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/u,
@@ -873,6 +975,10 @@ export function extractNavData(
   // Guotai TA虚拟净值 with a 在管 product in 【】: ingest under the underlying fund
   // outside 【】 (never under the investor / 在管 product code).
   const shared = guotaiTaVirtualUnderlyingMeta(subject, extractNavMetadata(subject, bodyText))
+
+  // ── 0. Citics Auto-Disclosure 【基金净值】 one-row announcement ────────────
+  const citicsAnnounce = extractCiticsFundNavAnnouncement(subject, bodyText)
+  if (citicsAnnounce) return citicsAnnounce
 
   // ── 1. Subject: 单位净值：1.2269 ──────────────────────────────────────────
   const subjNavM = subject.match(/单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
@@ -1319,6 +1425,7 @@ function hasNavHistoryTable(bodyText: string, subject: string): boolean {
     /产品代码\s+产品名称\s+日期/u.test(bodyText) ||
     /日期\s+产品名称\s+单位净值/u.test(bodyText) ||
     /协会备案编码/u.test(bodyText) ||
+    /协会备案代码/u.test(bodyText) ||
     /【(?:订阅_)?产品净值】/u.test(subject) ||
     /批量补发/u.test(subject) ||
     /资产净值公告/u.test(subject) ||
@@ -1348,6 +1455,10 @@ export function extractNavHistoryFromBody(
   const expectedCode = shared.productCode?.toUpperCase()
   const candidates: HistoryRowCandidate[] = []
   const seenRaw = new Set<string>()
+
+  if (isCiticsFundNavAnnouncementText(subject, bodyText)) {
+    return extractCiticsFundNavAnnouncementRows(subject, bodyText)
+  }
 
   const addCandidate = (
     code: string,

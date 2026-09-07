@@ -28,6 +28,9 @@ import {
 } from "@/lib/server/managed-product-beian"
 import { loadFofUnderlyingNavFunds } from "@/lib/server/fof-email-product-sync"
 import { isValuationStockCostSubjectName } from "@/lib/valuation-holding-display-name"
+import { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
+
+export { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
 
 /**
  * Explicit 备案号 for team-data rows when email product_code is missing on some
@@ -37,6 +40,8 @@ import { isValuationStockCostSubjectName } from "@/lib/valuation-holding-display
 const TEAM_DATA_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   峰云汇高地一号B类: "BQG14B",
   青钱基石1号B类: "BDW42B",
+  量宇红番茄十一号B类: "JM483B",
+  量宇红番茄十一号私募证券投资基金B类份额: "JM483B",
   准星量化对冲三号A类: "AJU79A",
   // Occasional OCR / reading mix-up with 准星
   淮星量化对冲三号A类: "AJU79A",
@@ -81,8 +86,6 @@ export type TeamDataNavGapFilter = "all" | "interior_2w" | "no_interior_2w"
 export type TeamDataProductSourceFilter = "all" | "manual" | "email"
 
 const TEAM_NAV_LAG_DAYS = 14
-/** Flag when missing NAV points exceed this share of expected points (first→last date). */
-const TEAM_NAV_INTERIOR_MISSING_RATIO = 0.1
 const TEAM_DATA_PRODUCT_SOURCE: Record<Exclude<TeamDataProductSourceFilter, "all">, string> = {
   manual: "手动添加",
   email: "邮箱同步",
@@ -1330,7 +1333,18 @@ function resolveFund(
   )
 
   const overrideBeian = teamDataBeianOverride(product_name) ?? teamDataBeianOverride(candidate)
-  const managedBeian = resolveManagedProductBeian(product_name, autoBeian) ?? autoBeian
+  let managedBeian = resolveManagedProductBeian(product_name, autoBeian) ?? autoBeian
+  // Email often stores the parent 备案号 (SJM483) while BFL identity is the
+  // share-class code (JM483B). Keep the code that matches the display name.
+  const identityBeian = bfl?.beian_hao ?? t6?.register_number ?? fd?.beian_hao ?? track?.beian_hao ?? null
+  if (
+    identityBeian
+    && product_name
+    && (!managedBeian || !shareClassCodeGuard(managedBeian, product_name))
+    && shareClassCodeGuard(identityBeian, product_name)
+  ) {
+    managedBeian = identityBeian
+  }
   const beian_hao = (overrideBeian ?? managedBeian)?.trim() || null
 
   const fromT6 = strategiesFromRow(t6, strategySource)
@@ -1695,38 +1709,6 @@ function matchesNavLagFilter(navDate: string, filter: TeamDataNavLagFilter, toda
   return lag != null && lag <= TEAM_NAV_LAG_DAYS
 }
 
-function lowerMedian(values: number[]): number {
-  if (values.length === 0) return 0
-  const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.floor((sorted.length - 1) / 2)] ?? 0
-}
-
-/**
- * True when the series is missing more than 10% of expected NAV points between
- * the first and last date. Cadence is the lower-median adjacent interval so a
- * weekly fund that skips two weeks is only two points — not an automatic flag.
- * Gaps of ≤7 calendar days (weekends / holidays) are never counted as holes.
- */
-export function hasInteriorNavGap(dates: string[]): boolean {
-  const sorted = [...new Set(dates.map(isoDay).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort()
-  if (sorted.length < 2) return false
-  const gaps: number[] = []
-  for (let i = 1; i < sorted.length; i++) {
-    gaps.push(platformNavDaysBetween(sorted[i], sorted[i - 1]))
-  }
-  const typical = lowerMedian(gaps)
-  if (typical <= 0) return false
-  const span = platformNavDaysBetween(sorted[sorted.length - 1], sorted[0])
-  if (span <= 0) return false
-  const holeFloor = Math.max(typical * 2, 7)
-  let missing = 0
-  for (const gap of gaps) {
-    if (gap > holeFloor) missing += gap / typical - 1
-  }
-  const expected = 1 + span / typical
-  return missing / expected > TEAM_NAV_INTERIOR_MISSING_RATIO
-}
-
 type DetailNavGapCacheRow = {
   code: string
   cache_key: string
@@ -1739,14 +1721,19 @@ function asDateList(value: unknown): string[] {
   return value.map((d) => String(d ?? ""))
 }
 
-function detailCacheFitsRow(cache: DetailNavGapCacheRow, row: ResolvedFund): boolean {
+function detailCacheFitsRowByCode(cache: DetailNavGapCacheRow, row: ResolvedFund): boolean {
   const aliases = new Set(beianCodeAliases(row.beian_hao ?? "").map((c) => c.toUpperCase()))
   const code = cache.code.trim().toUpperCase()
   const key = cache.cache_key.trim().toUpperCase()
-  if (code && aliases.has(code)) return true
-  if (key && aliases.has(key)) return true
+  return (!!code && aliases.has(code)) || (!!key && aliases.has(key))
+}
+
+function detailCacheFitsRow(cache: DetailNavGapCacheRow, row: ResolvedFund): boolean {
+  if (detailCacheFitsRowByCode(cache, row)) return true
   const name = cache.product_name.trim()
-  return !!name && fundNamesMatch(name, row.product_name)
+  if (!name || !fundNamesMatch(name, row.product_name)) return false
+  // fundNamesMatch strips A/B/C类, so 青钱基石1号 would otherwise flag 1号B类.
+  return shareClassFromFundName(name) === shareClassFromFundName(row.product_name)
 }
 
 async function loadDetailNavGapCacheRows(codes: string[], names: string[]): Promise<DetailNavGapCacheRow[]> {
@@ -1840,7 +1827,12 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
 
   const cachedIds = new Set<string>()
   for (const row of rows) {
-    const matches = cacheRows.filter((c) => detailCacheFitsRow(c, row))
+    const codeMatches = cacheRows.filter((c) => detailCacheFitsRowByCode(c, row))
+    // Same-name caches can belong to a retired/wrong 备案号 (e.g. CESX2W vs SAGF75).
+    // If this row has its own code cache, ignore name-only hits.
+    const matches = codeMatches.length > 0
+      ? codeMatches
+      : cacheRows.filter((c) => detailCacheFitsRow(c, row))
     if (matches.length === 0) continue
     cachedIds.add(row.id)
     if (matches.some((c) => hasInteriorNavGap(c.dates))) gapped.add(row.id)

@@ -31,16 +31,43 @@ export function findParentL2ForMisplacedName(
   return null
 }
 
+export function officialStrategyL2Key(l1: string, l2: string): string {
+  return `${l1}\t${l2}`
+}
+
+export function collectOfficialStrategyL2Keys(tree: TeamStrategyNode[]): Set<string> {
+  const keys = new Set<string>()
+  for (const node of tree) {
+    for (const l2 of node.l2s) {
+      if (l2.l2) keys.add(officialStrategyL2Key(node.l1, l2.l2))
+    }
+  }
+  return keys
+}
+
 /**
  * Fold L2 nodes that are actually L3 names (500指增, 风格指增, …) under their real parent.
  * Used after merging the official taxonomy with fund-assigned values.
+ *
+ * Never fold an official 运维 L2 (protectL2Keys) or an L2 that already has its own
+ * L3 children — that hid 打板 when a fund stored it as 择时对冲 / 打板.
  */
-export function reparentMisplacedL2s(tree: TeamStrategyNode[]): TeamStrategyNode[] {
+export function reparentMisplacedL2s(
+  tree: TeamStrategyNode[],
+  protectL2Keys?: ReadonlySet<string>,
+): TeamStrategyNode[] {
   return tree.map((l1Node) => {
+    const taxonomyL2s = new Set(
+      l1Node.l2s.filter((l2) => l2.l3s.length > 0).map((l2) => l2.l2),
+    )
+    const isProtected = (name: string) =>
+      taxonomyL2s.has(name) || Boolean(protectL2Keys?.has(officialStrategyL2Key(l1Node.l1, name)))
+
     const l3Parent = new Map<string, string>()
     for (const l2 of l1Node.l2s) {
       for (const l3 of l2.l3s) {
-        if (l3 && !l3Parent.has(l3)) l3Parent.set(l3, l2.l2)
+        if (!l3 || l3Parent.has(l3) || isProtected(l3)) continue
+        l3Parent.set(l3, l2.l2)
       }
     }
     const hasIndexEnh = l1Node.l2s.some((l2) => l2.l2 === INDEX_ENHANCEMENT_L2)
@@ -49,7 +76,7 @@ export function reparentMisplacedL2s(tree: TeamStrategyNode[]): TeamStrategyNode
 
     for (const l2 of l1Node.l2s) {
       let parent = l3Parent.get(l2.l2)
-      if (parent === l2.l2) parent = undefined
+      if (parent === l2.l2 || isProtected(l2.l2)) parent = undefined
       if (!parent && hasIndexEnh && /指增$/.test(l2.l2) && l2.l2 !== INDEX_ENHANCEMENT_L2) {
         parent = INDEX_ENHANCEMENT_L2
       }

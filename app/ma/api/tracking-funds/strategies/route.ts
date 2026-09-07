@@ -20,16 +20,16 @@ export async function GET(req: Request) {
     || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all"
     ? requestedPool : "bfl"
 
-  const fundResult = await queryFundStrategyTree(strategySource, pool)
-
   if (strategySource !== "company") {
-    return NextResponse.json(fundResult)
+    return NextResponse.json(await queryFundStrategyTree(strategySource, pool))
   }
 
   const customTree = await getStoredTeamStrategies()
-  if (!customTree.length) {
-    return NextResponse.json(mergeStrategyTrees(fundResult))
+  if (customTree.length) {
+    // Edit / filter options must match 运维 → 策略标签 → 团队策略 exactly.
+    return NextResponse.json(customTree)
   }
 
-  return NextResponse.json(mergeStrategyTrees(customTree, fundResult))
+  const fundResult = await queryFundStrategyTree(strategySource, pool)
+  return NextResponse.json(mergeStrategyTrees(fundResult))
 }

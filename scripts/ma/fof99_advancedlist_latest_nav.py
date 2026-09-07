@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Page through 火富牛 FundAdvancedList and write every private fund's latest NAV date.
 
-Does not call FundMultiPrice (no 40-code credits).
+Each page is one mall credit, logged in fof99_mall_other_credit (not FundMultiPrice).
 """
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SDK = ROOT / "fof99_api" / "mall_sdk"
 if str(SDK) not in sys.path:
     sys.path.insert(0, str(SDK))
+if str(ROOT / "scripts" / "ma") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts" / "ma"))
 
 OUT = ROOT / "scripts" / "ma" / "fof99_advancedlist_latest_nav.csv"
 PAGE_SIZE = 1000
@@ -59,8 +61,19 @@ def parse_iso(raw: object) -> str:
 def main() -> int:
     load_env()
     from fof99 import FundAdvancedList
+    from fof99_mall_credits import (
+        credit_usage,
+        format_credit_usage,
+        log_other_mall_credit,
+    )
+    from fof99_weekly_nav_fetch import connect
 
     appid, appkey = load_keys()
+    conn = connect()
+    conn.autocommit = False
+    cur = conn.cursor()
+    print(format_credit_usage(credit_usage(cur)), flush=True)
+    conn.commit()
     cutoff = (date.today() - timedelta(days=31)).isoformat()
     fields = [
         "register_number",
@@ -98,6 +111,14 @@ def main() -> int:
             pagesize=PAGE_SIZE,
         )
         data = req.do_request(use_df=False)
+        log_other_mall_credit(
+            cur,
+            api="/fund/advancedlist",
+            credits=1,
+            note=f"page={page} pagesize={PAGE_SIZE}",
+            batch_id=f"advancedlist-{int(time.time())}-p{page:04d}",
+        )
+        conn.commit()
         debug = req.get_debug_info() or {}
         err = debug.get("error_code")
         if err not in (0, "0", None):
@@ -135,6 +156,8 @@ def main() -> int:
     within_1m = [r for r in with_date if parse_iso(r.get("price_date")) >= cutoff]
     print(f"wrote {OUT}", flush=True)
     print(f"funds={len(rows)}  with_price_date={len(with_date)}  within_1m(>={cutoff})={len(within_1m)}", flush=True)
+    print(format_credit_usage(credit_usage(cur)), flush=True)
+    conn.commit()
     return 0
 
 

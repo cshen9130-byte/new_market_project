@@ -1,5 +1,8 @@
 import { query } from "@/lib/db"
-import { reparentMisplacedL2s } from "@/lib/ma/team-strategy-tree"
+import {
+  collectOfficialStrategyL2Keys,
+  reparentMisplacedL2s,
+} from "@/lib/ma/team-strategy-tree"
 
 export interface OpsStrategyL2 {
   l2: string
@@ -31,7 +34,7 @@ export async function getStoredTeamStrategies(): Promise<OpsStrategyL1[]> {
   return rows[0].tree
 }
 
-export function mergeStrategyTrees(...trees: OpsStrategyL1[]): OpsStrategyL1[] {
+function mergeStrategyTreesRaw(...trees: OpsStrategyL1[]): OpsStrategyL1[] {
   const l1Map = new Map<string, Map<string, Set<string>>>()
 
   for (const tree of trees) {
@@ -51,7 +54,7 @@ export function mergeStrategyTrees(...trees: OpsStrategyL1[]): OpsStrategyL1[] {
     }
   }
 
-  const merged = Array.from(l1Map.entries())
+  return Array.from(l1Map.entries())
     .sort(([a], [b]) => a.localeCompare(b, "zh"))
     .map(([l1, l2Map]) => ({
       l1,
@@ -62,6 +65,19 @@ export function mergeStrategyTrees(...trees: OpsStrategyL1[]): OpsStrategyL1[] {
           l3s: Array.from(l3Set).sort((a, b) => a.localeCompare(b, "zh")),
         })),
     }))
+}
 
-  return reparentMisplacedL2s(merged)
+export function mergeStrategyTrees(...trees: OpsStrategyL1[]): OpsStrategyL1[] {
+  return reparentMisplacedL2s(mergeStrategyTreesRaw(...trees))
+}
+
+/** Merge 运维 taxonomy with fund-assigned values without collapsing official L2s. */
+export function mergeOfficialAndFundStrategyTrees(
+  official: OpsStrategyL1[],
+  fund: OpsStrategyL1[],
+): OpsStrategyL1[] {
+  return reparentMisplacedL2s(
+    mergeStrategyTreesRaw(official, fund),
+    collectOfficialStrategyL2Keys(official),
+  )
 }

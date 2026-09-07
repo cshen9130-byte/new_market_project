@@ -114,6 +114,25 @@ export async function registerBackgroundJobs(): Promise<void> {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
+  // Friday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then FundMultiPrice).
+  // Still runs if *this* Friday is a CN holiday (fetch last week). Skips only when
+  // last week's Friday is a holiday (no NAV that week), e.g. 2026-10-02 → 09-25.
+  cron.schedule("0 16 * * 5", () => {
+    void (async () => {
+      try {
+        const { startFof99FridayAfternoonEtlJob } = await import("./fof99-friday-afternoon-etl-job")
+        const result = startFof99FridayAfternoonEtlJob()
+        if (!result.ok) {
+          console.log(`[fof99-friday-etl] skipped: ${result.reason}`)
+        } else {
+          console.log("[fof99-friday-etl] started")
+        }
+      } catch (e) {
+        console.error("[fof99-friday-etl] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   // Daily at 03:00: refresh stock-market chart data (A-share crowding, board share, top stocks).
   // Runs after macro ETL; ashare_daily incremental uses fast spot mode once caught up.
   cron.schedule("0 3 * * *", () => {

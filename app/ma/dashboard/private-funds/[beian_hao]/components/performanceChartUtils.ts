@@ -543,11 +543,15 @@ export function buildNavChartData(
 export function computeNavChartYDomain(
   data: NavChartPoint[],
   chartMode: "nav" | "return",
+  opts?: { includeFund?: boolean; includeBench?: boolean },
 ): [number, number] | ["auto", "auto"] {
   if (!data.length) return ["auto", "auto"]
+  const includeFund = opts?.includeFund !== false
+  const includeBench = opts?.includeBench !== false
   const vals = data.flatMap((d) => {
-    const out = [d.value]
-    if (typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
+    const out: number[] = []
+    if (includeFund) out.push(d.value)
+    if (includeBench && typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
     return out
   }).filter((v) => Number.isFinite(v))
   if (!vals.length) return ["auto", "auto"]

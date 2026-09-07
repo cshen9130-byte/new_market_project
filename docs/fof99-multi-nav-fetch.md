@@ -28,8 +28,9 @@ The 2026-09-04 净值日期 **1–3个月** job froze **927** products (`scripts
 | Policy | Meaning | 火富牛 weekly ETL |
 |---|---|---|
 | `weekly` | 火富牛 still publishing a current (Aug 2026+) NAV, plus the original 1–3m funds already within 1 month. | **Yes** — Friday `FundMultiPrice` only |
-| `skip` | Empty-date probe `no_data` (1–3m job, plus 3–6m list-blank **287** and missing-from-list **10**). 火富牛 has no series. | **Never** |
-| `update_slow` | 火富牛 latest is old (before Aug 2026, or older than the AMAC list tip on the 1–3m job). | **No**, unless we change the row’s policy later |
+| `weekly_plus` | Current-1m funds that 火富牛 has (Aug 2026+ on advancedlist) but email usually already wrote `private_fund_info.latest_nav_date`. | **Yes, only if list tip is behind that Friday.** Example: updating 2026-08-28, only funds with `list_nav_date` **before** 2026-08-28 are paid (~20 of 150). |
+| `skip` | Empty-date probe `no_data` (1–3m job, 3–6m list-blank **287** + missing-from-list **10**, plus current-1m missing-from-list **171**). 火富牛 has no series. | **Never** |
+| `update_slow` | 火富牛 latest is old (before Aug 2026, or older than the AMAC list tip on the 1–3m job). Includes current-1m blank-policy funds whose 火富牛 latest is before 2026-08 (**36**). | **No**, unless we change the row’s policy later |
 
 Flip a fund later with:
 
@@ -39,7 +40,16 @@ SET policy = 'weekly', reason = 'operator override', updated_at = NOW()
 WHERE reg_code = 'XXXXXX';
 ```
 
-Credit budget is **weekly only**. After the 3–6m August-onward labels, weekly is **9,717** products ≈ **243 credits per Friday** if every fund is one Friday behind. Default script budget stays **40** so a full run cannot start by accident; pass `--budget 243` (or the printed batch count) to fetch all. Stop if planned batches would exceed the budget.
+Credit budget is **weekly + weekly_plus**. Default and hard cap are **300 FundMultiPrice credits per run and per Shanghai day** (12,000 funds × 1 Friday). `--budget` cannot exceed 300. If more Fridays are missing, the job keeps the newest 300 batches and a later run continues. After the 3–6m labels, weekly is **9,717** ≈ **243 credits** for one Friday. `weekly_plus` adds only the funds whose list tip is still behind that Friday (often ~1 extra credit).
+
+Consumed credits (must match the 火富牛 mall 总调用):
+
+```text
+SELECT total_credits FROM fof99_credit_usage;
+-- or: python scripts/ma/fof99_mall_credits.py
+```
+
+That is `FundMultiPrice` batches in `fof99_nav_fetch_log` plus non-price mall calls in `fof99_mall_other_credit`. Baseline **2026-09-07: 3061 + 122 = 3183**. Future `/fund/advancedlist` (and other non-price mall APIs) insert into `fof99_mall_other_credit`.
 
 Goal: each Friday after the last stored NAV, so the list and product page stay on the current week.
 
@@ -55,7 +65,7 @@ Goal: each Friday after the last stored NAV, so the list and product page stay o
 
 ## Rules (must follow)
 
-1. **Plan before any paid call.** Only `policy = 'weekly'`. Compute missing `(beian_hao, friday)` from existing `private_fund_nav` + `private_fund_info` + fetch log. Print universe size, Friday list, batch count, and credit estimate. Do not fetch dates we already have.
+1. **Plan before any paid call.** `policy = 'weekly'` and `weekly_plus` only. Compute missing `(beian_hao, friday)` from existing `private_fund_nav` + `private_fund_info` + fetch log. For `weekly_plus`, use **list tip only** (`private_fund_info.latest_nav_date`): if that date is already on or after the Friday, do not pay. Print universe size, Friday list, batch count, and credit estimate. Do not fetch dates we already have.
 
 2. **One credit = one (Friday, ≤40 codes) call.** Group by Friday, chunk 40. Prefer **latest trading Friday first** so the table updates even if the job stops early; then walk backward. **Never request a Friday that is a PRC public holiday / 调休 rest day** (shared list `lib/cn-statutory-holiday-dates.json`, e.g. 2026-06-19 端午). Those dates have no platform NAV and would be all `no_data`.
 
@@ -75,6 +85,23 @@ Goal: each Friday after the last stored NAV, so the list and product page stay o
 
 9. **Do not write vendor history we already have.** `ON CONFLICT (beian_hao, price_date) DO NOTHING` (or skip before the call). Do not touch `mom_*` or 单账户 tables.
 
+## Friday afternoon (previous Friday, cheaper)
+
+On Friday afternoon 火富牛 usually still shows **last** Friday, not today. Do **not** FundMultiPrice this Friday then.
+
+The PM2 background worker runs this **every Friday 16:00 Asia/Shanghai**. It still runs if **this** Friday is a CN holiday (so last week’s Friday can be fetched). It **skips only when last week’s Friday is a holiday** (no NAV that week). Example: 2026-09-25 中秋 Friday runs and fills 2026-09-18; 2026-10-02 skips because 2026-09-25 was a holiday. Set `FOF99_FRIDAY_ETL_DISABLED=1` to pause. Manual:
+
+```text
+python scripts/ma/fof99_friday_afternoon_fetch.py --dry-run
+python scripts/ma/fof99_friday_afternoon_fetch.py
+```
+
+1. `/fund/advancedlist` newest-first (`order=0`), 1,000/page, **stop when a page has no `price_date` ≥ previous trading Friday** (~11 credits). Persist `weekly` / `weekly_plus` rows whose date **equals** that Friday. Mid-week dates on those pages are stored as extra points only — they do not replace the Friday.
+2. `FundMultiPrice` **that Friday** for every `weekly` fund still missing it, and `weekly_plus` only if the list tip is still behind. Expected leftover after list stamps is the mid-week + older set (~3,923 → ~99 credits on the 2026-09-04 mix), not the full 9,733.
+3. This week’s Friday is left to a later `fof99_weekly_nav_fetch.py` run (weekend / Monday).
+
+Previous Friday = last completed trading Friday **strictly before today** (Friday afternoon → last week). Override with `--friday YYYY-MM-DD`. `--skip-list` is FundMultiPrice only.
+
 ## Resume
 
 Re-run the same script. It rebuilds the missing set from the database and fetch log and continues from the first unpaid batch.
@@ -84,16 +111,11 @@ Re-run the same script. It rebuilds the missing set from the database and fetch 
 ```text
 python scripts/ma/fof99_label_3_6m_have_data.py --dry-run
 python scripts/ma/fof99_label_3_6m_have_data.py
+python scripts/ma/fof99_label_1m_blank_weekly_plus.py --dry-run
+python scripts/ma/fof99_label_1m_blank_weekly_plus.py
+python scripts/ma/fof99_friday_afternoon_fetch.py --dry-run
+python scripts/ma/fof99_friday_afternoon_fetch.py
 python scripts/ma/fof99_weekly_nav_fetch.py --dry-run
-python scripts/ma/fof99_weekly_nav_fetch.py --budget 250
-
-# September-first fill (火富牛 latest in Sep, ~1280 funds). Known dates then Friday gap.
-# 火富牛 latest for these is Tue/Wed/Thu, so skip this week's Friday.
-python scripts/ma/fof99_weekly_nav_fetch.py --dry-run --only-fof99-since 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 13 --skip-empty-after 0 --budget 480
-python scripts/ma/fof99_weekly_nav_fetch.py --only-fof99-since 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 13 --skip-empty-after 0 --budget 480
-
-# August-only fill (火富牛 latest in Aug 2026, 8087 funds). Known dates then Friday history.
-# Skip this week's Friday (no Aug fund has a Sep tip). ~15 Fridays ≈ 3032 credits; budget 3100.
-python scripts/ma/fof99_weekly_nav_fetch.py --dry-run --only-fof99-since 2026-08-01 --only-fof99-before 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 15 --skip-empty-after 0 --budget 3100
-python scripts/ma/fof99_weekly_nav_fetch.py --only-fof99-since 2026-08-01 --only-fof99-before 2026-09-01 --known-latest-first --skip-latest-friday --max-fridays 15 --skip-empty-after 0 --budget 3100
+python scripts/ma/fof99_weekly_nav_fetch.py
+python scripts/ma/fof99_mall_credits.py
 ```

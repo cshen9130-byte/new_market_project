@@ -24,7 +24,7 @@ import {
 } from "../lib/server/email-valuation-attachment.ts"
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
 import { dedupeShareClassDisplayFunds, canonicalizeEmailProductCode, fundNicknameMatchesFullName } from "../lib/server/fund-name-match.ts"
-import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete, fundNameFromNavWorkbookFilename } from "../lib/server/email-nav-extract.ts"
+import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete, fundNameFromNavWorkbookFilename, extractCiticsFundNavAnnouncement } from "../lib/server/email-nav-extract.ts"
 import { resolveManagedProductBeian } from "../lib/server/managed-product-beian.ts"
 import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
@@ -1435,6 +1435,114 @@ assert(
     && sgc823ClassNav?.nav === 1.7084
     && sgc823ClassNav?.productCode === "SGC823",
 )
+
+{
+  // Citics Auto-Disclosure 【基金净值】 one-row announcement (GM266C).
+  // Must store 单位净值 1.3398, not 累计单位净值 1.6983.
+  const gm266cSubject =
+    "【基金净值】GM266C(C级) 尚艺阳光1号私募证券投资基金C类_2026-09-04"
+  const gm266cMeta = extractNavMetadata(gm266cSubject, "")
+  assert(
+    "GM266C Citics 基金净值 subject extracts GM266C",
+    gm266cMeta.productCode === "GM266C"
+      && gm266cMeta.fundName?.includes("尚艺阳光1号") === true,
+  )
+  const gm266cHorizontal =
+    "产品代码 产品名称 估值日期 单位净值 累计单位净值 协会备案代码\n" +
+    "GM266C(C级) 尚艺阳光1号私募证券投资基金C类 2026-09-04 1.3398 1.6983 SGN266"
+  const gm266cBody = extractNavData(gm266cSubject, gm266cHorizontal)
+  assert(
+    "GM266C horizontal table stores unit 1.3398 not cum 1.6983",
+    gm266cBody?.nav === 1.3398
+      && gm266cBody?.cumulativeNav === 1.6983
+      && gm266cBody?.navDate === "2026-09-04"
+      && gm266cBody?.productCode === "GM266C",
+  )
+  const gm266cVertical =
+    "产品代码 GM266C(C级)\n" +
+    "产品名称 尚艺阳光1号私募证券投资基金C类\n" +
+    "估值日期 2026-09-04\n" +
+    "单位净值 1.3398\n" +
+    "累计单位净值 1.6983\n" +
+    "协会备案代码 SGN266"
+  const gm266cVert = extractCiticsFundNavAnnouncement(gm266cSubject, gm266cVertical)
+  assert(
+    "GM266C vertical labels store unit 1.3398 not cum 1.6983",
+    gm266cVert?.nav === 1.3398
+      && gm266cVert?.cumulativeNav === 1.6983
+      && gm266cVert?.navDate === "2026-09-04"
+      && gm266cVert?.productCode === "GM266C",
+  )
+  const gm266cWb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(
+    gm266cWb,
+    XLSX.utils.aoa_to_sheet([
+      ["产品代码", "产品名称", "估值日期", "单位净值", "累计单位净值", "协会备案代码"],
+      ["GM266C(C级)", "尚艺阳光1号私募证券投资基金C类", "2026-09-04", 1.3398, 1.6983, "SGN266"],
+    ]),
+    "Sheet1",
+  )
+  const gm266cXlsx = extractNavTableFromBuffer(
+    Buffer.from(XLSX.write(gm266cWb, { type: "buffer", bookType: "xlsx" })),
+    "【基金净值】GM266C(C级)_尚艺阳光1号私募证券投资基金C类_2026-09-04.xlsx",
+    gm266cSubject,
+  )
+  assert(
+    "GM266C 【基金净值】 xlsx stores unit 1.3398 not cum 1.6983",
+    gm266cXlsx.length === 1
+      && gm266cXlsx[0]?.nav === 1.3398
+      && gm266cXlsx[0]?.cumulativeNav === 1.6983
+      && gm266cXlsx[0]?.navDate === "2026-09-04"
+      && gm266cXlsx[0]?.productCode === "GM266C",
+  )
+  const gm266cVertWb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(
+    gm266cVertWb,
+    XLSX.utils.aoa_to_sheet([
+      ["产品代码", "GM266C(C级)"],
+      ["产品名称", "尚艺阳光1号私募证券投资基金C类"],
+      ["估值日期", "2026-09-04"],
+      ["单位净值", 1.3398],
+      ["累计单位净值", 1.6983],
+      ["协会备案代码", "SGN266"],
+    ]),
+    "Sheet1",
+  )
+  const gm266cVertXlsx = extractNavTableFromBuffer(
+    Buffer.from(XLSX.write(gm266cVertWb, { type: "buffer", bookType: "xlsx" })),
+    "【基金净值】GM266C(C级)_尚艺阳光1号私募证券投资基金C类_2026-09-04.xlsx",
+    gm266cSubject,
+  )
+  assert(
+    "GM266C vertical 【基金净值】 xlsx stores unit 1.3398 not cum 1.6983",
+    gm266cVertXlsx.length === 1
+      && gm266cVertXlsx[0]?.nav === 1.3398
+      && gm266cVertXlsx[0]?.cumulativeNav === 1.6983
+      && gm266cVertXlsx[0]?.navDate === "2026-09-04",
+  )
+  const slq349Wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(
+    slq349Wb,
+    XLSX.utils.aoa_to_sheet([
+      ["日期", "资产代码", "资产名称", "资产份额净值(元)", "资产份额累计净值(元)", "协会备案代码"],
+      ["2026-09-04", "SLQ349(总)", "赢仕安盈二号私募证券投资基金", 1.1731, 1.7379, "SLQ349"],
+    ]),
+    "日间净值列表",
+  )
+  const slq349Xlsx = extractNavTableFromBuffer(
+    Buffer.from(XLSX.write(slq349Wb, { type: "buffer", bookType: "xlsx" })),
+    "【基金净值】SLQ349(总)_赢仕安盈二号私募证券投资基金_2026-09-04.xlsx",
+    "【基金净值】SLQ349(总)_赢仕安盈二号私募证券投资基金_2026-09-04",
+  )
+  assert(
+    "SLQ349 日间净值列表 stores 资产份额净值 1.1731 not 累计 1.7379",
+    slq349Xlsx.length === 1
+      && slq349Xlsx[0]?.nav === 1.1731
+      && slq349Xlsx[0]?.cumulativeNav === 1.7379
+      && slq349Xlsx[0]?.navDate === "2026-09-04"
+      && slq349Xlsx[0]?.productCode === "SLQ349",
+  )
+}
 
 // Weekly team/manual + collapsed legacy mid-weeks must not intercalate (SZJ909 sawtooth).
 {

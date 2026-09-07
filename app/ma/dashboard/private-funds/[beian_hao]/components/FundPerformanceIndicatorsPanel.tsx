@@ -29,7 +29,7 @@ import {
   type ReturnLabelMode,
   buildBenchmarkPctChangesByDate,
 } from "./performanceChartUtils"
-import { NavPerformanceEChart } from "./NavPerformanceEChart"
+import { NavChartSeriesLegend, NavPerformanceEChart } from "./NavPerformanceEChart"
 
 function fmt(v: string | null, decimals = 4): string {
   if (v === null || v === undefined) return "—"
@@ -482,6 +482,8 @@ export function FundPerformanceIndicatorsPanel({
   navTableTitle = "平台数据",
 }: FundPerformanceIndicatorsPanelProps) {
   const [chartMode, setChartMode] = useState<"nav" | "return">("return")
+  const [fundSeriesVisible, setFundSeriesVisible] = useState(true)
+  const [benchSeriesVisible, setBenchSeriesVisible] = useState(true)
   const [returnLabelMode, setReturnLabelMode] = useState<ReturnLabelMode>("cumulative")
   const [showTableBenchmarkChg, setShowTableBenchmarkChg] = useState(false)
   const [showDateRange, setShowDateRange] = useState(false)
@@ -500,8 +502,11 @@ export function FundPerformanceIndicatorsPanel({
   )
 
   const yDomain = useMemo(
-    () => computeNavChartYDomain(activeChartData, chartMode),
-    [activeChartData, chartMode],
+    () => computeNavChartYDomain(activeChartData, chartMode, {
+      includeFund: fundSeriesVisible,
+      includeBench: hasBenchmark && benchSeriesVisible,
+    }),
+    [activeChartData, benchSeriesVisible, chartMode, fundSeriesVisible, hasBenchmark],
   )
 
   const navChartShowDots = activeChartData.length <= 40
@@ -623,20 +628,16 @@ export function FundPerformanceIndicatorsPanel({
                       {dateFrom} ~ {dateTo}
                     </div>
                   )}
-                  <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                      {chartMode === "return" ? "基金收益率" : navType}
-                    </span>
-                    {hasBenchmark && (
-                      <span className="inline-flex items-center gap-1.5">
-                        <svg width="20" height="4" aria-hidden="true" className="inline-block">
-                          <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
-                        </svg>
-                        {benchmarkLabel}
-                      </span>
-                    )}
-                  </div>
+                  <NavChartSeriesLegend
+                    chartMode={chartMode}
+                    navTypeLabel={navType}
+                    benchmarkLabel={benchmarkLabel}
+                    hasBenchmark={hasBenchmark}
+                    fundVisible={fundSeriesVisible}
+                    benchVisible={benchSeriesVisible}
+                    onToggleFund={() => setFundSeriesVisible((v) => !v)}
+                    onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+                  />
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
                   <div className="inline-flex text-xs">
@@ -714,7 +715,8 @@ export function FundPerformanceIndicatorsPanel({
                   navTypeLabel={navType}
                   yDomain={yDomain}
                   showDots={navChartShowDots}
-                  showBench={hasBenchmark}
+                  showFund={fundSeriesVisible}
+                  showBench={hasBenchmark && benchSeriesVisible}
                   benchmarkLabel={benchmarkLabel}
                   returnLabelMode={returnLabelMode}
                 />
@@ -800,20 +802,16 @@ export function FundPerformanceIndicatorsPanel({
                       {dateFrom} ~ {dateTo}
                     </div>
                   )}
-                  <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                      {chartMode === "return" ? "基金收益率" : navType}
-                    </span>
-                    {hasBenchmark && (
-                      <span className="inline-flex items-center gap-1.5">
-                        <svg width="20" height="4" aria-hidden="true" className="inline-block">
-                          <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
-                        </svg>
-                        {benchmarkLabel}
-                      </span>
-                    )}
-                  </div>
+                  <NavChartSeriesLegend
+                    chartMode={chartMode}
+                    navTypeLabel={navType}
+                    benchmarkLabel={benchmarkLabel}
+                    hasBenchmark={hasBenchmark}
+                    fundVisible={fundSeriesVisible}
+                    benchVisible={benchSeriesVisible}
+                    onToggleFund={() => setFundSeriesVisible((v) => !v)}
+                    onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+                  />
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
                   <div className="inline-flex text-xs">
@@ -891,7 +889,8 @@ export function FundPerformanceIndicatorsPanel({
                   navTypeLabel={navType}
                   yDomain={yDomain}
                   showDots={navChartShowDots}
-                  showBench={hasBenchmark}
+                  showFund={fundSeriesVisible}
+                  showBench={hasBenchmark && benchSeriesVisible}
                   benchmarkLabel={benchmarkLabel}
                   returnLabelMode={returnLabelMode}
                   episodeMarks={returnChartEpisodeMarks}
@@ -1059,8 +1058,20 @@ export function FundPerformanceIndicatorsPanel({
             >
               <X className="h-5 w-5" />
             </button>
-            <div className="text-sm font-semibold text-zinc-800 mb-4">
-              {chartMode === "nav" ? `净值走势（${navType}）` : `收益曲线（${navType}）`}
+            <div className="mb-4">
+              <div className="text-sm font-semibold text-zinc-800">
+                {chartMode === "nav" ? `净值走势（${navType}）` : `收益曲线（${navType}）`}
+              </div>
+              <NavChartSeriesLegend
+                chartMode={chartMode}
+                navTypeLabel={navType}
+                benchmarkLabel={benchmarkLabel}
+                hasBenchmark={hasBenchmark}
+                fundVisible={fundSeriesVisible}
+                benchVisible={benchSeriesVisible}
+                onToggleFund={() => setFundSeriesVisible((v) => !v)}
+                onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+              />
             </div>
             <div ref={navChartLightboxRef} style={{ height: lightboxChartHeight || 480 }}>
               <NavPerformanceEChart
@@ -1069,7 +1080,8 @@ export function FundPerformanceIndicatorsPanel({
                 navTypeLabel={navType}
                 yDomain={yDomain}
                 showDots={navChartShowDots}
-                showBench={hasBenchmark}
+                showFund={fundSeriesVisible}
+                showBench={hasBenchmark && benchSeriesVisible}
                 benchmarkLabel={benchmarkLabel}
                 height={lightboxChartHeight || 480}
                 returnLabelMode={returnLabelMode}

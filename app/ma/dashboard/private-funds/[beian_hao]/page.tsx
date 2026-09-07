@@ -39,7 +39,7 @@ import { FundAccountComparePanel } from "./components/FundAccountComparePanel"
 import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
 import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
-import { NavPerformanceEChart } from "./components/NavPerformanceEChart"
+import { NavChartSeriesLegend, NavPerformanceEChart } from "./components/NavPerformanceEChart"
 import { DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 
@@ -961,6 +961,8 @@ export default function PrivateFundDetailPage() {
   }, [beian_hao, data?.info.strategy_l1, data?.info.strategy_l2])
 
   const [chartMode, setChartMode] = useState<"nav" | "return">("return")
+  const [fundSeriesVisible, setFundSeriesVisible] = useState(true)
+  const [benchSeriesVisible, setBenchSeriesVisible] = useState(true)
   const [returnLabelMode, setReturnLabelMode] = useState<ReturnLabelMode>("cumulative")
   const [showTableBenchmarkChg, setShowTableBenchmarkChg] = useState(false)
   const [detailTab, setDetailTab] = useState<FundDetailTab>("performance")
@@ -1601,8 +1603,9 @@ export default function PrivateFundDetailPage() {
   const yDomain = useMemo(() => {
     if (!activeChartData.length) return ["auto", "auto"] as [string, string]
     const vals = activeChartData.flatMap((d) => {
-      const out = [d.value]
-      if (typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
+      const out: number[] = []
+      if (fundSeriesVisible) out.push(d.value)
+      if (benchSeriesVisible && typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
       return out
     }).filter((v) => Number.isFinite(v))
     if (!vals.length) return ["auto", "auto"] as [string, string]
@@ -1615,7 +1618,7 @@ export default function PrivateFundDetailPage() {
     const span = max - min
     const pad = span > 0 ? span * 0.08 : Math.max(Math.abs(max), 1) * 0.08
     return [+(min - pad).toFixed(4), +(max + pad).toFixed(4)] as [number, number]
-  }, [activeChartData, chartMode])
+  }, [activeChartData, benchSeriesVisible, chartMode, fundSeriesVisible])
 
   const navChartPointCount = activeChartData.length
   const navChartShowDots = navChartPointCount <= 40
@@ -2203,20 +2206,16 @@ export default function PrivateFundDetailPage() {
                   {activeFrom} ~ {activeTo}
                 </div>
               )}
-              <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                  {chartMode === "return" ? "基金收益率" : filterNavType}
-                </span>
-                {appliedBench && (
-                  <span className="inline-flex items-center gap-1.5">
-                    <svg width="20" height="4" aria-hidden="true" className="inline-block">
-                      <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
-                    </svg>
-                    {benchmarkLabel}
-                  </span>
-                )}
-              </div>
+              <NavChartSeriesLegend
+                chartMode={chartMode}
+                navTypeLabel={filterNavType}
+                benchmarkLabel={benchmarkLabel}
+                hasBenchmark={!!appliedBench}
+                fundVisible={fundSeriesVisible}
+                benchVisible={benchSeriesVisible}
+                onToggleFund={() => setFundSeriesVisible((v) => !v)}
+                onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+              />
             </div>
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
               <div className="inline-flex text-xs">
@@ -2294,7 +2293,8 @@ export default function PrivateFundDetailPage() {
               navTypeLabel={filterNavType}
               yDomain={yDomain}
               showDots={navChartShowDots}
-              showBench={!!appliedBench}
+              showFund={fundSeriesVisible}
+              showBench={!!appliedBench && benchSeriesVisible}
               benchmarkLabel={benchmarkLabel}
               returnLabelMode={returnLabelMode}
               materialMarks={materialChartMarks}
@@ -2580,20 +2580,16 @@ export default function PrivateFundDetailPage() {
                   {activeFrom} ~ {activeTo}
                 </div>
               )}
-              <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                  {chartMode === "return" ? "基金收益率" : filterNavType}
-                </span>
-                {appliedBench && (
-                  <span className="inline-flex items-center gap-1.5">
-                    <svg width="20" height="4" aria-hidden="true" className="inline-block">
-                      <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
-                    </svg>
-                    {benchmarkLabel}
-                  </span>
-                )}
-              </div>
+              <NavChartSeriesLegend
+                chartMode={chartMode}
+                navTypeLabel={filterNavType}
+                benchmarkLabel={benchmarkLabel}
+                hasBenchmark={!!appliedBench}
+                fundVisible={fundSeriesVisible}
+                benchVisible={benchSeriesVisible}
+                onToggleFund={() => setFundSeriesVisible((v) => !v)}
+                onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+              />
             </div>
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
               <div className="inline-flex text-xs">
@@ -2671,7 +2667,8 @@ export default function PrivateFundDetailPage() {
               navTypeLabel={filterNavType}
               yDomain={yDomain}
               showDots={navChartShowDots}
-              showBench={!!appliedBench}
+              showFund={fundSeriesVisible}
+              showBench={!!appliedBench && benchSeriesVisible}
               benchmarkLabel={benchmarkLabel}
               returnLabelMode={returnLabelMode}
               episodeMarks={returnChartEpisodeMarks}
@@ -2974,6 +2971,16 @@ export default function PrivateFundDetailPage() {
               {activeFrom && activeTo && (
                 <div className="text-xs text-zinc-400 mt-1 tabular-nums">{activeFrom} ~ {activeTo}</div>
               )}
+              <NavChartSeriesLegend
+                chartMode={chartMode}
+                navTypeLabel={filterNavType}
+                benchmarkLabel={benchmarkLabel}
+                hasBenchmark={!!appliedBench}
+                fundVisible={fundSeriesVisible}
+                benchVisible={benchSeriesVisible}
+                onToggleFund={() => setFundSeriesVisible((v) => !v)}
+                onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+              />
             </div>
             <button
               type="button"
@@ -2992,7 +2999,8 @@ export default function PrivateFundDetailPage() {
                 navTypeLabel={filterNavType}
                 yDomain={yDomain}
                 showDots={navChartShowDots}
-                showBench={!!appliedBench}
+                showFund={fundSeriesVisible}
+                showBench={!!appliedBench && benchSeriesVisible}
                 benchmarkLabel={benchmarkLabel}
                 height={lightboxChartHeight}
                 returnLabelMode={returnLabelMode}

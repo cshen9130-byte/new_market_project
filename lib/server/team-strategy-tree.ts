@@ -105,10 +105,14 @@ export async function queryFundStrategyTree(
   return rowsToStrategyTree(rows)
 }
 
-/** Ops-maintained custom tree merged with fund-derived team (company) strategies. */
+/**
+ * Canonical 团队策略 taxonomy for dropdowns and releveling.
+ * When 运维 has a configured tree, use it as-is — do not merge DISTINCT fund
+ * values or reparent L2s (that hid official options such as 打板).
+ */
 export async function loadMergedTeamStrategyTree(): Promise<TeamStrategyNode[]> {
-  const fundTree = await queryFundStrategyTree("company", "all")
   const customTree = await getStoredTeamStrategies()
-  if (!customTree.length) return mergeStrategyTrees(fundTree)
-  return mergeStrategyTrees(customTree, fundTree)
+  if (customTree.length) return customTree
+  const fundTree = await queryFundStrategyTree("company", "all")
+  return mergeStrategyTrees(fundTree)
 }

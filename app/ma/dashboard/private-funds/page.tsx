@@ -14399,7 +14399,7 @@ function teamDataLinkedInvestmentNote(
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v4:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v5:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -15243,8 +15243,8 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
             <div className="flex items-center gap-1">
               {([
                 ["all", "不限", ""],
-                ["interior_2w", "中间缺失超1/10", "从首个净值日到最近净值日，按该产品常见披露间隔估算，缺失超过一成应有净值。周频产品缺两周通常不会标出"],
-                ["no_interior_2w", "无中间缺失", "从首个净值日到最近净值日，缺失不超过一成应有净值"],
+                ["interior_2w", "中间缺失超1/10", "从首个净值日到最近净值日，按该产品常见披露间隔、用中国市场交易日估算，缺失超过一成应有净值。周末和法定节假日不计入。周频产品缺两周通常不会标出"],
+                ["no_interior_2w", "无中间缺失", "从首个净值日到最近净值日，按交易日估算缺失不超过一成应有净值"],
               ] as const).map(([key, label, title]) => (
                 <span
                   key={key}

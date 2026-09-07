@@ -134,7 +134,7 @@ def main() -> int:
     credits = (weekly + 39) // 40
     log(
         f"weekly fetch size={weekly} → ~{credits} credits per Friday "
-        f"(script default budget is 40; pass --budget {credits} to run all)"
+        f"(daily cap 300; one Friday fits if weekly ≤ 12000)"
     )
     return 0
 

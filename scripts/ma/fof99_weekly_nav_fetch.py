@@ -4,10 +4,13 @@ Fill weekly Friday platform NAV via 火富牛 FundMultiPrice (40 codes / 1 date 
 
 See docs/fof99-multi-nav-fetch.md. Stops on the first API failure. Commits each batch.
 
-Only `fof99_nav_universe.policy = 'weekly'` is fetched. `skip` and `update_slow` are not paid.
+Only `weekly` and `weekly_plus` are fetched. `skip` and `update_slow` are not paid.
+`weekly_plus` (email-first) is included on a Friday only when `private_fund_info.latest_nav_date` is still before that Friday.
 
   python scripts/ma/fof99_weekly_nav_fetch.py --dry-run
   python scripts/ma/fof99_weekly_nav_fetch.py
+
+Friday afternoon (previous Friday, list-first): scripts/ma/fof99_friday_afternoon_fetch.py
 """
 
 from __future__ import annotations
@@ -30,9 +33,12 @@ from cn_market_holidays import (  # noqa: E402
     is_cn_market_closed,
     last_trading_friday_on_or_before,
 )
+from fof99_mall_credits import credit_usage, format_credit_usage  # noqa: E402
 
 BATCH_SIZE = 40
-CREDIT_BUDGET = 40
+# One Friday for up to 12,000 funds = 300 credits. Hard cap per run and per Shanghai day.
+DAILY_CREDIT_CAP = 300
+CREDIT_BUDGET = 300
 LATEST_BUDGET = 20
 # Sentinel in fof99_nav_fetch_log: this code already had a date-empty latest probe.
 LATEST_PROBE_DATE = date(1970, 1, 1)
@@ -87,6 +93,14 @@ def ensure_log_table(cur) -> None:
 def ensure_universe_table(cur) -> None:
     sql = (ROOT / "scripts" / "db" / "021_create_fof99_nav_universe.sql").read_text(encoding="utf-8")
     cur.execute(sql)
+    cur.execute("ALTER TABLE fof99_nav_universe DROP CONSTRAINT IF EXISTS fof99_nav_universe_policy_check")
+    cur.execute(
+        """
+        ALTER TABLE fof99_nav_universe
+          ADD CONSTRAINT fof99_nav_universe_policy_check
+          CHECK (policy IN ('weekly', 'weekly_plus', 'skip', 'update_slow'))
+        """
+    )
 
 
 def seed_universe_if_empty(cur) -> dict[str, int]:
@@ -154,13 +168,13 @@ def load_skip_codes(cur) -> set[str]:
 
 
 def upsert_policies(cur, items: list[tuple[str, str, str, str]]) -> int:
-    """Set weekly / update_slow. Never overwrite policy=skip."""
+    """Set weekly / weekly_plus / update_slow. Never overwrite skip or weekly_plus."""
     from psycopg2.extras import execute_values
 
     rows: list[tuple[str, str, str, str]] = []
     for code, name, policy, reason in items:
         code = (code or "").strip().upper()
-        if not code or policy not in ("weekly", "update_slow", "skip"):
+        if not code or policy not in ("weekly", "weekly_plus", "update_slow", "skip"):
             continue
         rows.append((code, name or "", policy, reason))
     if not rows:
@@ -176,6 +190,10 @@ def upsert_policies(cur, items: list[tuple[str, str, str, str]]) -> int:
           reason = EXCLUDED.reason,
           updated_at = NOW()
         WHERE fof99_nav_universe.policy IS DISTINCT FROM 'skip'
+          AND (
+            EXCLUDED.policy = 'weekly_plus'
+            OR fof99_nav_universe.policy IS DISTINCT FROM 'weekly_plus'
+          )
         """,
         rows,
         page_size=500,
@@ -184,7 +202,7 @@ def upsert_policies(cur, items: list[tuple[str, str, str, str]]) -> int:
 
 
 def upsert_skip_codes(cur, items: list[tuple[str, str, str]]) -> int:
-    """Label codes skip. Never overwrite policy=weekly."""
+    """Label codes skip. Never overwrite weekly or weekly_plus."""
     n = 0
     for code, name, reason in items:
         code = (code or "").strip().upper()
@@ -199,7 +217,7 @@ def upsert_skip_codes(cur, items: list[tuple[str, str, str]]) -> int:
               policy = 'skip',
               reason = EXCLUDED.reason,
               updated_at = NOW()
-            WHERE fof99_nav_universe.policy IS DISTINCT FROM 'weekly'
+            WHERE fof99_nav_universe.policy NOT IN ('weekly', 'weekly_plus')
             """,
             (code, name or "", reason),
         )
@@ -241,16 +259,17 @@ def write_policy_csv(cur) -> None:
         log(f"{CSV_PATH.name} is locked; wrote {out_path.name} instead")
 
 
-def load_universe(cur) -> list[tuple[str, str, date]]:
+def load_universe(cur, policies: tuple[str, ...] = ("weekly",)) -> list[tuple[str, str, date]]:
     cur.execute(
         """
         SELECT u.reg_code, COALESCE(i.product_name, u.product_name, ''), i.latest_nav_date
         FROM fof99_nav_universe u
         LEFT JOIN private_fund_info i ON UPPER(BTRIM(i.beian_hao)) = u.reg_code
-        WHERE u.policy = 'weekly'
+        WHERE u.policy = ANY(%s)
           AND u.reg_code IS NOT NULL AND BTRIM(u.reg_code) <> ''
         ORDER BY u.reg_code
-        """
+        """,
+        (list(policies),),
     )
     rows = []
     for code, name, tip in cur.fetchall():
@@ -344,6 +363,7 @@ def build_batches(
     skip: set[tuple[str, date]],
     latest_friday: date,
     known_latest: dict[str, date] | None = None,
+    plus: list[tuple[str, str, date]] | None = None,
 ) -> list[tuple[date, list[tuple[str, str]]]]:
     needed: dict[date, list[tuple[str, str]]] = {}
     for code, name, tip in universe:
@@ -352,6 +372,12 @@ def build_batches(
         if known_latest and code in known_latest:
             cap = min(cap, last_friday_on_or_before(known_latest[code]))
         for friday in fridays_after(through, cap):
+            if (code, friday) in skip:
+                continue
+            needed.setdefault(friday, []).append((code, name))
+    # weekly_plus: email-first. Pay Friday F only when list tip is still before F.
+    for code, name, tip in plus or []:
+        for friday in fridays_after(tip, latest_friday):
             if (code, friday) in skip:
                 continue
             needed.setdefault(friday, []).append((code, name))
@@ -566,7 +592,8 @@ def run_latest(conn, args) -> int:
         "empty-date latest probe is finished. "
         f"policies weekly={counts.get('weekly', 0)} "
         f"skip={counts.get('skip', 0)} "
-        f"update_slow={counts.get('update_slow', 0)}. "
+        f"update_slow={counts.get('update_slow', 0)} "
+        f"weekly_plus={counts.get('weekly_plus', 0)}. "
         "skip and update_slow are not re-probed; weekly ETL uses Friday dates only."
     )
     return 0
@@ -659,6 +686,41 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def fund_multi_price_credits_today(cur) -> int:
+    """FundMultiPrice credits already logged today (Asia/Shanghai)."""
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM (
+          SELECT 1
+          FROM fof99_nav_fetch_log
+          WHERE batch_id IS NOT NULL
+            AND BTRIM(batch_id) <> ''
+            AND batch_id NOT LIKE 'batch:%'
+            AND (fetched_at AT TIME ZONE 'Asia/Shanghai')::date
+              = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+          GROUP BY batch_id, DATE_TRUNC('minute', fetched_at)
+        ) t
+        """
+    )
+    return int((cur.fetchone() or [0])[0])
+
+
+def clamp_daily_budget(requested: int | None, used_today: int) -> int:
+    want = CREDIT_BUDGET if requested is None else requested
+    if want > DAILY_CREDIT_CAP:
+        log(f"budget {want} clamped to daily cap {DAILY_CREDIT_CAP}")
+        want = DAILY_CREDIT_CAP
+    remaining = max(0, DAILY_CREDIT_CAP - used_today)
+    if want > remaining:
+        log(
+            f"budget {want} cut to {remaining} "
+            f"({used_today} FundMultiPrice credits already used today, cap {DAILY_CREDIT_CAP})"
+        )
+        want = remaining
+    return want
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch weekly Friday NAV via FundMultiPrice")
     parser.add_argument("--dry-run", action="store_true")
@@ -667,7 +729,12 @@ def main() -> int:
         action="store_true",
         help="no-op: empty-date probe is done; skip/update_slow are not re-fetched",
     )
-    parser.add_argument("--budget", type=int, default=None)
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=None,
+        help=f"max FundMultiPrice credits this run (default {CREDIT_BUDGET}, hard cap {DAILY_CREDIT_CAP}/day)",
+    )
     parser.add_argument(
         "--only-fof99-since",
         metavar="YYYY-MM-DD",
@@ -700,6 +767,16 @@ def main() -> int:
         default=2,
         help="skip remaining chunks of a historical date after N empty batches (0=never)",
     )
+    parser.add_argument(
+        "--only-weekly-plus",
+        action="store_true",
+        help="do not pay weekly funds; only weekly_plus (email-first)",
+    )
+    parser.add_argument(
+        "--list-tip-before",
+        metavar="YYYY-MM-DD",
+        help="restrict weekly_plus to funds whose list_nav_date is before this date",
+    )
     args = parser.parse_args()
 
     load_env()
@@ -709,22 +786,37 @@ def main() -> int:
     ensure_log_table(cur)
     ensure_universe_table(cur)
     counts = seed_universe_if_empty(cur)
-    if not args.only_fof99_since and not args.only_fof99_before:
+    if not args.only_fof99_since and not args.only_fof99_before and not args.only_weekly_plus:
         write_policy_csv(cur)
+    usage = credit_usage(cur)
     conn.commit()
     log(
         "fof99 policy: "
         f"weekly={counts.get('weekly', 0)}  "
+        f"weekly_plus={counts.get('weekly_plus', 0)}  "
         f"skip={counts.get('skip', 0)}  "
         f"update_slow={counts.get('update_slow', 0)}"
     )
+    log(format_credit_usage(usage))
 
+    used_today = fund_multi_price_credits_today(cur)
     if args.latest:
-        args.budget = args.budget if args.budget is not None else LATEST_BUDGET
+        args.budget = clamp_daily_budget(
+            LATEST_BUDGET if args.budget is None else args.budget, used_today
+        )
         return run_latest(conn, args)
-    args.budget = args.budget if args.budget is not None else CREDIT_BUDGET
+    args.budget = clamp_daily_budget(args.budget, used_today)
+    log(f"daily FundMultiPrice cap {DAILY_CREDIT_CAP}; used today {used_today}; this run ≤ {args.budget}")
+    if args.budget <= 0:
+        log("STOP: daily FundMultiPrice cap already reached")
+        return 2
 
-    universe = load_universe(cur)
+    universe = [] if args.only_weekly_plus else load_universe(cur, ("weekly",))
+    plus = load_universe(cur, ("weekly_plus",))
+    if args.list_tip_before:
+        tip_before = date.fromisoformat(args.list_tip_before)
+        plus = [(c, n, t) for c, n, t in plus if t < tip_before]
+        log(f"weekly_plus list_nav_date < {tip_before.isoformat()}: {len(plus)}")
     known_latest: dict[str, date] = {}
     if args.only_fof99_since or args.only_fof99_before:
         since = date.fromisoformat(args.only_fof99_since) if args.only_fof99_since else None
@@ -735,17 +827,19 @@ def main() -> int:
         lo = since.isoformat() if since else "…"
         hi = before.isoformat() if before else "…"
         log(f"filter 火富牛 latest in [{lo}, {hi}): {len(universe)} weekly products")
-    codes = [c for c, _, _ in universe]
+    codes = [c for c, _, _ in universe] + [c for c, _, _ in plus]
     log(f"universe policy=weekly: {len(universe)} products")
-    if not universe:
+    log(f"universe policy=weekly_plus: {len(plus)} products (email-first; pay only if list tip is behind that Friday)")
+    if not universe and not plus:
         return 0
 
     calendar_friday = last_friday_on_or_before(date.today())
     latest_friday = last_trading_friday_on_or_before(date.today())
-    have_through = load_have_through(cur, codes)
+    have_through = load_have_through(cur, [c for c, _, _ in universe])
     all_fridays: list[date] = []
     d = calendar_friday
-    oldest = min(have_through.values()) if have_through else latest_friday
+    oldest_candidates = list(have_through.values()) + [t for _c, _n, t in plus]
+    oldest = min(oldest_candidates) if oldest_candidates else latest_friday
     while d > oldest:
         all_fridays.append(d)
         d -= timedelta(days=7)
@@ -769,7 +863,12 @@ def main() -> int:
         log(f"known 火富牛 latest batches: {len(known_batches)}")
 
     friday_batches = build_batches(
-        universe, have_through, skip, latest_friday, known_latest=known_latest or None
+        universe,
+        have_through,
+        skip,
+        latest_friday,
+        known_latest=known_latest or None,
+        plus=plus,
     )
     exclude = {latest_friday} if args.skip_latest_friday else None
     friday_batches = cap_batches_newest_dates(
@@ -777,6 +876,20 @@ def main() -> int:
     )
     batches = known_batches + friday_batches
     credits = len(batches)
+    plus_by_date: dict[date, int] = {}
+    for code, _name, tip in plus:
+        for friday in fridays_after(tip, latest_friday):
+            if (code, friday) in skip:
+                continue
+            plus_by_date[friday] = plus_by_date.get(friday, 0) + 1
+    if plus:
+        log("weekly_plus API need (list_nav_date < Friday):")
+        if plus_by_date:
+            for dt in sorted(plus_by_date, reverse=True):
+                log(f"  {dt}: {plus_by_date[dt]} of {len(plus)}")
+        else:
+            log(f"  none — all {len(plus)} already at/after {latest_friday}")
+
     log(f"latest Friday: {latest_friday}")
     log(f"planned batches: {credits}  (budget {args.budget})")
     by_date: dict[date, int] = {}
@@ -791,8 +904,12 @@ def main() -> int:
         log("nothing to fetch")
         return 0
     if credits > args.budget:
-        log(f"STOP: planned {credits} credits > budget {args.budget}")
-        return 2
+        log(
+            f"planned {credits} credits > budget {args.budget}; "
+            f"keeping newest {args.budget} batches (resume later)"
+        )
+        batches = batches[: args.budget]
+        credits = len(batches)
     if args.dry_run:
         log("dry-run: no API calls")
         return 0
@@ -812,6 +929,9 @@ def main() -> int:
         if last_date != price_date:
             empty_streak = 0
             last_date = price_date
+        if used >= args.budget:
+            log(f"STOP: hit run / daily budget {args.budget}")
+            break
         codes_only = [c for c, _ in chunk]
         batch_id = f"{price_date.isoformat()}-{i:04d}"
         log(

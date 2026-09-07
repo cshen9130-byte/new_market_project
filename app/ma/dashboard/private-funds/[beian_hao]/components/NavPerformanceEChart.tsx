@@ -36,6 +36,7 @@ export function NavPerformanceEChart({
   navTypeLabel,
   yDomain,
   showDots,
+  showFund = true,
   showBench,
   benchmarkLabel,
   height = "100%",
@@ -49,6 +50,7 @@ export function NavPerformanceEChart({
   navTypeLabel: string
   yDomain: [number, number] | [string, string]
   showDots: boolean
+  showFund?: boolean
   showBench: boolean
   benchmarkLabel: string
   height?: number | string
@@ -113,6 +115,16 @@ export function NavPerformanceEChart({
         }
       : undefined
 
+    const zeroMarkLine = chartMode === "return"
+      ? {
+          silent: true,
+          symbol: "none",
+          lineStyle: { color: "#d4d4d8", width: 1 },
+          data: [{ yAxis: 0 }],
+          label: { show: false },
+        }
+      : undefined
+
     const series: Array<Record<string, unknown>> = []
     if (showBench) {
       series.push({
@@ -126,40 +138,35 @@ export function NavPerformanceEChart({
         lineStyle: { width: 1.75, color: "#2563eb", type: "dashed" },
         itemStyle: { color: "#2563eb" },
         data: benchPoints,
+        markLine: showFund ? undefined : zeroMarkLine,
       })
     }
-    series.push({
-      name: fundName,
-      type: "line",
-      showSymbol: true,
-      symbol: "circle",
-      symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
-      connectNulls: false,
-      clip: false,
-      lineStyle: { width: 2, color: RED },
-      itemStyle: { color: RED },
-      areaStyle: {
-        color: {
-          type: "linear",
-          x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: "rgba(239,68,68,0.12)" },
-            { offset: 1, color: "rgba(239,68,68,0.01)" },
-          ],
+    if (showFund) {
+      series.push({
+        name: fundName,
+        type: "line",
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
+        connectNulls: false,
+        clip: false,
+        lineStyle: { width: 2, color: RED },
+        itemStyle: { color: RED },
+        areaStyle: {
+          color: {
+            type: "linear",
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: "rgba(239,68,68,0.12)" },
+              { offset: 1, color: "rgba(239,68,68,0.01)" },
+            ],
+          },
         },
-      },
-      data: fundPoints,
-      markPoint: episodeMarkPoint,
-      markLine: chartMode === "return"
-        ? {
-            silent: true,
-            symbol: "none",
-            lineStyle: { color: "#d4d4d8", width: 1 },
-            data: [{ yAxis: 0 }],
-            label: { show: false },
-          }
-        : undefined,
-    })
+        data: fundPoints,
+        markPoint: episodeMarkPoint,
+        markLine: zeroMarkLine,
+      })
+    }
     if (materialMarkPoint) {
       series.push({
         name: "__materials",
@@ -229,6 +236,7 @@ export function NavPerformanceEChart({
     returnLabelMode,
     showBench,
     showDots,
+    showFund,
     yDomain,
   ])
 
@@ -249,5 +257,61 @@ export function NavPerformanceEChart({
         },
       } : undefined}
     />
+  )
+}
+
+export function NavChartSeriesLegend({
+  chartMode,
+  navTypeLabel,
+  benchmarkLabel,
+  hasBenchmark,
+  fundVisible,
+  benchVisible,
+  onToggleFund,
+  onToggleBench,
+}: {
+  chartMode: "nav" | "return"
+  navTypeLabel: string
+  benchmarkLabel: string
+  hasBenchmark: boolean
+  fundVisible: boolean
+  benchVisible: boolean
+  onToggleFund: () => void
+  onToggleBench: () => void
+}) {
+  const fundLabel = chartMode === "return" ? "基金收益率" : navTypeLabel
+  return (
+    <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
+      <button
+        type="button"
+        onClick={onToggleFund}
+        className={[
+          "inline-flex items-center gap-1.5 cursor-pointer transition-opacity select-none",
+          fundVisible ? "opacity-100" : "opacity-40 hover:opacity-60",
+        ].join(" ")}
+        title={fundVisible ? "点击隐藏该曲线" : "点击显示该曲线"}
+        aria-pressed={fundVisible}
+      >
+        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
+        {fundLabel}
+      </button>
+      {hasBenchmark && (
+        <button
+          type="button"
+          onClick={onToggleBench}
+          className={[
+            "inline-flex items-center gap-1.5 cursor-pointer transition-opacity select-none",
+            benchVisible ? "opacity-100" : "opacity-40 hover:opacity-60",
+          ].join(" ")}
+          title={benchVisible ? "点击隐藏该曲线" : "点击显示该曲线"}
+          aria-pressed={benchVisible}
+        >
+          <svg width="20" height="4" aria-hidden="true" className="inline-block">
+            <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
+          </svg>
+          {benchmarkLabel}
+        </button>
+      )}
+    </div>
   )
 }
