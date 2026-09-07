@@ -6,6 +6,7 @@ Fetch AMAC manager / personnel data and upsert into PostgreSQL.
 
 Tables: amac_managers, amac_person_org_stats, amac_manager_details,
         amac_manager_executives, amac_manager_executive_resume,
+        amac_manager_shareholders,
         amac_personnel, amac_personnel_cert_history,
         amac_manager_metrics_history (append-only metric snapshots)
 
@@ -82,6 +83,7 @@ from amac_extra_db import (  # noqa: E402
     UPSERT_EXECUTIVE_RESUME,
     UPSERT_EXECUTIVES,
     UPSERT_MANAGER_DETAILS,
+    UPSERT_SHAREHOLDERS,
     UPSERT_MANAGERS,
     UPSERT_PERSON_ORG,
     UPSERT_PERSONNEL,
@@ -92,6 +94,7 @@ from amac_extra_db import (  # noqa: E402
     executive_csv_row_to_tuple,
     executive_resume_csv_row_to_tuple,
     manager_csv_row_to_tuple,
+    shareholder_csv_row_to_tuple,
     manager_detail_csv_row_to_tuple,
     person_org_csv_row_to_tuple,
     personnel_cert_history_csv_row_to_tuple,
@@ -408,11 +411,11 @@ def _upsert_manager_details(
     full_sync: bool,
     batch_size: int,
     delay: float,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     targets = _select_detail_targets(cur, manager_rows, full_sync=full_sync, batch_size=batch_size)
     if not targets:
         print("  No manager detail pages to fetch.")
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
     mode = "full" if full_sync else "incremental"
     print(f"  Fetching manager details ({mode}): {len(targets):,} pages …")
@@ -420,13 +423,15 @@ def _upsert_manager_details(
     details_fetched = 0
     executives_upserted = 0
     resumes_upserted = 0
+    shareholders_upserted = 0
     skipped = 0
     detail_batch: list[tuple] = []
     exec_batch: list[tuple] = []
     resume_batch: list[tuple] = []
+    shareholder_batch: list[tuple] = []
 
     def flush() -> None:
-        nonlocal details_fetched, executives_upserted, resumes_upserted
+        nonlocal details_fetched, executives_upserted, resumes_upserted, shareholders_upserted
         if detail_batch:
             details = dedupe_tuples(detail_batch, lambda r: r[0])
             execute_values(cur, UPSERT_MANAGER_DETAILS, details, page_size=500)
@@ -445,6 +450,11 @@ def _upsert_manager_details(
             execute_values(cur, UPSERT_EXECUTIVE_RESUME, resumes, page_size=500)
             resumes_upserted += len(resumes)
             resume_batch.clear()
+        if shareholder_batch:
+            holders = dedupe_tuples(shareholder_batch, lambda r: (r[0], r[3]))
+            execute_values(cur, UPSERT_SHAREHOLDERS, holders, page_size=500)
+            shareholders_upserted += len(holders)
+            shareholder_batch.clear()
 
     # Same registration_no twice in one flush also trips ON CONFLICT.
     seen_detail_regs: set[str] = set()
@@ -465,7 +475,7 @@ def _upsert_manager_details(
 
         try:
             html = get_html(session, url)
-            detail_row, exec_rows, resume_rows = parse_manager_detail(html, url)
+            detail_row, exec_rows, resume_rows, shareholder_rows = parse_manager_detail(html, url)
         except AmacPageGone as exc:
             skipped += 1
             print(f"    skip HTTP {exc.status} {url}")
@@ -493,6 +503,9 @@ def _upsert_manager_details(
         for rr in resume_rows:
             rr.setdefault("登记编号", reg)
             rr.setdefault("管理人名称", mgr_name)
+        for sr in shareholder_rows:
+            sr.setdefault("登记编号", reg)
+            sr.setdefault("管理人名称", mgr_name)
 
         detail_tuple = manager_detail_csv_row_to_tuple(detail_row)
         if detail_tuple:
@@ -500,6 +513,9 @@ def _upsert_manager_details(
         exec_batch.extend(t for t in (executive_csv_row_to_tuple(r) for r in exec_rows) if t)
         resume_batch.extend(
             t for t in (executive_resume_csv_row_to_tuple(r) for r in resume_rows) if t
+        )
+        shareholder_batch.extend(
+            t for t in (shareholder_csv_row_to_tuple(r) for r in shareholder_rows) if t
         )
 
         if len(detail_batch) >= 100:
@@ -514,11 +530,12 @@ def _upsert_manager_details(
     cur.execute("ANALYZE amac_manager_details")
     cur.execute("ANALYZE amac_manager_executives")
     cur.execute("ANALYZE amac_manager_executive_resume")
+    cur.execute("ANALYZE amac_manager_shareholders")
     print(
         f"  Details upserted={details_fetched:,} executives={executives_upserted:,} "
-        f"resumes={resumes_upserted:,} skipped={skipped:,}"
+        f"resumes={resumes_upserted:,} shareholders={shareholders_upserted:,} skipped={skipped:,}"
     )
-    return details_fetched, executives_upserted, resumes_upserted
+    return details_fetched, executives_upserted, resumes_upserted, shareholders_upserted
 
 
 DEFAULT_PERSONNEL_ORG_TYPE = "私募"
@@ -766,6 +783,7 @@ def run_etl(
     details_fetched = 0
     executives_upserted = 0
     resumes_upserted = 0
+    shareholders_upserted = 0
     personnel_upserted = 0
     personnel_orgs_fetched = 0
     personnel_certs_upserted = 0
@@ -849,14 +867,16 @@ def run_etl(
                 if skip_details:
                     print("  Skipping manager detail pages (--skip-details).", flush=True)
                 else:
-                    details_fetched, executives_upserted, resumes_upserted = _upsert_manager_details(
-                        session,
-                        cur,
-                        execute_values,
-                        manager_rows,
-                        full_sync=full_details_sync,
-                        batch_size=0 if full_details_sync else detail_batch_size,
-                        delay=request_delay,
+                    details_fetched, executives_upserted, resumes_upserted, shareholders_upserted = (
+                        _upsert_manager_details(
+                            session,
+                            cur,
+                            execute_values,
+                            manager_rows,
+                            full_sync=full_details_sync,
+                            batch_size=0 if full_details_sync else detail_batch_size,
+                            delay=request_delay,
+                        )
                     )
                     conn.commit()
 
@@ -886,6 +906,7 @@ def run_etl(
         + details_fetched
         + executives_upserted
         + resumes_upserted
+        + shareholders_upserted
         + personnel_upserted
         + personnel_certs_upserted
     )
@@ -898,6 +919,7 @@ def run_etl(
         "details_fetched": details_fetched,
         "executives_upserted": executives_upserted,
         "resumes_upserted": resumes_upserted,
+        "shareholders_upserted": shareholders_upserted,
         "personnel_upserted": personnel_upserted,
         "personnel_orgs_fetched": personnel_orgs_fetched,
         "personnel_certs_upserted": personnel_certs_upserted,
@@ -909,6 +931,7 @@ def run_etl(
     print(
         f"Done. mode={mode} managers={managers_upserted:,} person_org={person_org_upserted:,} "
         f"details={details_fetched:,} executives={executives_upserted:,} resumes={resumes_upserted:,} "
+        f"shareholders={shareholders_upserted:,} "
         f"personnel_orgs={personnel_orgs_fetched:,} people={personnel_upserted:,} "
         f"certs={personnel_certs_upserted:,} history+={metrics_history_appended:,}"
     )

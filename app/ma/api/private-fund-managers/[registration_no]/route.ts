@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { lookupAmacManagerDetail } from "@/lib/server/amac-fund-metadata"
+import { loadManagerProfileTexts } from "@/lib/server/manager-profile-texts"
 import {
   buildManagerScaleTrend,
   lookupManagerForDetail,
@@ -8,6 +9,7 @@ import {
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+export const maxDuration = 60
 
 export async function GET(
   req: Request,
@@ -40,15 +42,31 @@ export async function GET(
       console.error("[private-fund-managers/detail] amac detail", amacErr)
     }
 
+    let profileTexts: Awaited<ReturnType<typeof loadManagerProfileTexts>> = {
+      website_url: null,
+      company_intro: null,
+      investment_philosophy: null,
+      investment_strategy: null,
+    }
+    try {
+      profileTexts = await loadManagerProfileTexts({
+        registrationNo,
+        managerName: manager.manager_name,
+      })
+    } catch (profileErr) {
+      console.error("[private-fund-managers/detail] profile texts", profileErr)
+    }
+
     return NextResponse.json({
       ...manager,
       display_name: managerDisplayName(manager.manager_name),
       actual_controller: amacDetail?.actual_controller ?? null,
       full_time_employees: amacDetail?.full_time_staff_count ?? null,
       fund_qualified_employees: amacDetail?.fund_practitioner_count ?? null,
-      company_intro: null,
-      investment_philosophy: null,
-      investment_strategy: null,
+      website_url: profileTexts.website_url,
+      company_intro: profileTexts.company_intro,
+      investment_philosophy: profileTexts.investment_philosophy,
+      investment_strategy: profileTexts.investment_strategy,
       scale_trend: scaleTrend,
     })
   } catch (err) {

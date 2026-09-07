@@ -57,9 +57,47 @@ export async function resolveManagerNameByRegistrationNo(
   return mgr?.manager_name ?? null
 }
 
-function managerMatchParams(managerName: string): [string, string, string] {
-  const brand = extractManagerBrand(managerName)
-  return [`%${managerName}%`, brand ?? "", brand ? `%${brand}%` : ""]
+async function loadManagerMatchScope(registrationNo: string): Promise<{
+  managerName: string
+  nameLikes: string[]
+  fundNos: string[]
+} | null> {
+  const managerName = await resolveManagerNameByRegistrationNo(registrationNo)
+  if (!managerName) return null
+
+  const nameLikes = [`%${managerName}%`]
+  let fundNos: string[] = []
+  try {
+    const rows = await query<{ fund_no: string }>(
+      `SELECT a.fund_no
+       FROM amac_private_funds a
+       JOIN amac_managers m ON m.manager_name = a.manager_name
+       WHERE UPPER(m.registration_no) = UPPER($1)
+         AND NULLIF(BTRIM(a.fund_no), '') IS NOT NULL`,
+      [registrationNo],
+    )
+    fundNos = [...new Set(rows.map((r) => r.fund_no.trim().toUpperCase()).filter(Boolean))]
+  } catch {
+    // amac tables may be absent
+  }
+
+  return { managerName, nameLikes, fundNos }
+}
+
+function managerProductMatchSql(alias: string, nameIdx: number, fundsIdx: number, brandIdx: number): string {
+  return `(
+    ${alias}.manager ILIKE ANY($${nameIdx}::text[])
+    OR (
+      COALESCE(array_length($${fundsIdx}::text[], 1), 0) > 0
+      AND UPPER(BTRIM(${alias}.beian_hao)) = ANY($${fundsIdx}::text[])
+    )
+    OR ($${brandIdx} <> '' AND ${alias}.product_name ILIKE $${brandIdx})
+  )`
+}
+
+function matchParams(scope: { nameLikes: string[]; fundNos: string[]; managerName: string }): [string[], string[], string] {
+  const brand = extractManagerBrand(scope.managerName)
+  return [scope.nameLikes, scope.fundNos, brand ? `%${brand}%` : ""]
 }
 
 function buildDistribution(rows: { name: string | null; count: string }[]): DistributionSlice[] {
@@ -78,24 +116,25 @@ function buildDistribution(rows: { name: string | null; count: string }[]): Dist
 }
 
 export async function loadManagerFundsSummary(registrationNo: string) {
-  const managerName = await resolveManagerNameByRegistrationNo(registrationNo)
-  if (!managerName) return null
-
-  const [managerLike, brand, brandLike] = managerMatchParams(managerName)
+  const scope = await loadManagerMatchScope(registrationNo)
+  if (!scope) return null
+  const { managerName } = scope
+  const params = matchParams(scope)
+  const matchSql = managerProductMatchSql("i", 1, 2, 3)
 
   const repPrimary = await lookupRepresentativeProduct(managerName)
   const repRows = await query<{ beian_hao: string; product_name: string; benchmark: string | null }>(
     `SELECT i.beian_hao, i.product_name, i.benchmark
      FROM private_fund_info i
-     WHERE (i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))
+     WHERE ${matchSql}
        AND i.product_name ~ '优选[0-9]+号'
        AND i.product_name NOT ILIKE '%类%'
      ORDER BY i.product_name
      LIMIT 12`,
-    [managerLike, brand, brandLike],
+    params,
   ).catch(() => [] as { beian_hao: string; product_name: string; benchmark: string | null }[])
 
-  const representative_products: RepresentativeProduct[] =
+  let representative_products: RepresentativeProduct[] =
     repRows.length > 0
       ? repRows.map((r) => ({
           beian_hao: r.beian_hao,
@@ -106,32 +145,55 @@ export async function loadManagerFundsSummary(registrationNo: string) {
         ? [{ ...repPrimary, benchmark: null }]
         : []
 
+  if (representative_products.length === 0) {
+    const fallbackRows = await query<{ beian_hao: string; product_name: string; benchmark: string | null }>(
+      `SELECT i.beian_hao, i.product_name, i.benchmark
+       FROM private_fund_info i
+       WHERE ${matchSql}
+         AND i.product_name NOT ILIKE '%类%'
+       ORDER BY
+         CASE WHEN i.latest_nav_date IS NOT NULL THEN 0 ELSE 1 END,
+         CASE WHEN i.product_name ~ '(^|[^0-9])1号|一号' THEN 0 ELSE 1 END,
+         i.latest_nav_date DESC NULLS LAST,
+         i.inception_date ASC NULLS LAST,
+         i.product_name
+       LIMIT 8`,
+      params,
+    ).catch(() => [] as { beian_hao: string; product_name: string; benchmark: string | null }[])
+
+    representative_products = fallbackRows.map((r) => ({
+      beian_hao: r.beian_hao,
+      product_name: r.product_name,
+      benchmark: r.benchmark,
+    }))
+  }
+
   const [strategyL1Rows, strategyL2Rows, custodianRows] = await Promise.all([
     query<{ name: string | null; count: string }>(
       `SELECT COALESCE(NULLIF(BTRIM(i.strategy_l1), ''), '未知') AS name, COUNT(*)::text AS count
        FROM private_fund_info i
-       WHERE (i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))
+       WHERE ${matchSql}
        GROUP BY 1
        ORDER BY COUNT(*) DESC`,
-      [managerLike, brand, brandLike],
+      params,
     ).catch(() => []),
     query<{ name: string | null; count: string }>(
       `SELECT COALESCE(NULLIF(BTRIM(i.strategy_l2), ''), '未知') AS name, COUNT(*)::text AS count
        FROM private_fund_info i
-       WHERE (i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))
+       WHERE ${matchSql}
        GROUP BY 1
        ORDER BY COUNT(*) DESC`,
-      [managerLike, brand, brandLike],
+      params,
     ).catch(() => []),
     query<{ name: string | null; count: string }>(
       `SELECT COALESCE(NULLIF(BTRIM(t.mandator_name), ''), '未知') AS name,
               COUNT(*)::text AS count
        FROM private_fund_info i
        LEFT JOIN basicinfo_bfl_track t ON t.register_number = i.beian_hao
-       WHERE (i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))
+       WHERE ${matchSql}
        GROUP BY 1
        ORDER BY COUNT(*) DESC`,
-      [managerLike, brand, brandLike],
+      params,
     ).catch(() => []),
   ])
 
@@ -154,8 +216,8 @@ export async function loadManagerProducts(options: {
   sortDir: "ASC" | "DESC"
   cutoffDate: string
 }) {
-  const managerName = await resolveManagerNameByRegistrationNo(options.registrationNo)
-  if (!managerName) {
+  const scope = await loadManagerMatchScope(options.registrationNo)
+  if (!scope) {
     return {
       data: [] as ManagerProductRow[],
       total: 0,
@@ -167,10 +229,11 @@ export async function loadManagerProducts(options: {
       manager_name: null,
     }
   }
+  const { managerName } = scope
+  const [nameLikes, fundNos, brandLike] = matchParams(scope)
 
-  const [managerLike, brand, brandLike] = managerMatchParams(managerName)
-  const conditions: string[] = ["(i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))"]
-  const filterParams: unknown[] = [managerLike, brand, brandLike]
+  const conditions: string[] = [managerProductMatchSql("i", 1, 2, 3)]
+  const filterParams: unknown[] = [nameLikes, fundNos, brandLike]
   let pi = 4
 
   if (options.keyword) {
@@ -193,10 +256,10 @@ export async function loadManagerProducts(options: {
   const strategyRows = await query<{ strategy_l1: string | null }>(
     `SELECT DISTINCT i.strategy_l1
      FROM private_fund_info i
-     WHERE (i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))
+     WHERE ${managerProductMatchSql("i", 1, 2, 3)}
        AND i.strategy_l1 IS NOT NULL AND BTRIM(i.strategy_l1) <> ''
      ORDER BY i.strategy_l1`,
-    [managerLike, brand, brandLike],
+    [nameLikes, fundNos, brandLike],
   ).catch(() => [] as { strategy_l1: string | null }[])
 
   const [countRow, rows] = await Promise.all([

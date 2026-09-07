@@ -1,5 +1,7 @@
 import { lookupManagerEnterpriseSeed } from "@/lib/ma/manager-enterprise-seed"
+import { loadAmacShareholders } from "@/lib/server/amac-manager-shareholders"
 import { lookupAmacManagerDetail } from "@/lib/server/amac-fund-metadata"
+import { loadManagerGsxt } from "@/lib/server/manager-gsxt"
 import { lookupManagerByRegistrationNo } from "@/lib/server/private-fund-manager-query"
 
 function formatCapitalWan(value: string | null | undefined): string | null {
@@ -32,6 +34,19 @@ export async function loadManagerEnterprise(registrationNo: string) {
   }
 
   const amac = await lookupAmacManagerDetail(registrationNo, manager.manager_name)
+  const [shareholders, gsxt] = await Promise.all([
+    loadAmacShareholders({
+      registrationNo,
+      managerName: manager.manager_name,
+      registeredCapitalWan: amac?.registered_capital_cny_wan,
+    }),
+    loadManagerGsxt({
+      registrationNo,
+      managerName: manager.manager_name,
+    }),
+  ])
+
+  const gsxtReg = gsxt.registration
 
   return {
     manager_name: manager.manager_name,
@@ -43,10 +58,10 @@ export async function loadManagerEnterprise(registrationNo: string) {
       registration_date: amac?.registration_date ?? null,
       inception_date: amac?.inception_date || manager.inception_date,
       member_type: manager.member_type,
-      business_reg_no: null,
-      unified_credit_code: amac?.org_code ?? null,
-      business_term: null,
-      business_scope: null,
+      business_reg_no: gsxtReg.business_reg_no,
+      unified_credit_code: gsxtReg.unified_credit_code || amac?.org_code || null,
+      business_term: gsxtReg.business_term,
+      business_scope: gsxtReg.business_scope,
       registered_capital: formatCapitalWan(amac?.registered_capital_cny_wan),
       paid_in_capital: formatCapitalWan(amac?.paid_in_capital_cny_wan),
       actual_controller: amac?.actual_controller ?? null,
@@ -54,14 +69,16 @@ export async function loadManagerEnterprise(registrationNo: string) {
       mgmt_scale: amac?.mgmt_scale || manager.mgmt_scale,
       enterprise_nature: amac?.enterprise_nature ?? null,
       third_party_advisor: amac?.is_investment_advisory_third_party ?? null,
-      operating_status: null,
+      operating_status: gsxtReg.operating_status,
       office_address: amac?.office_address ?? null,
       registered_address: amac?.registered_address ?? null,
     },
-    shareholders: [],
-    external_investments: [],
-    branches: [],
-    annual_reports: [],
-    change_records: [],
+    shareholders,
+    external_investments: gsxt.external_investments,
+    branches: gsxt.branches,
+    annual_reports: gsxt.annual_reports,
+    change_records: gsxt.change_records,
+    gsxt_status: gsxt.status,
+    gsxt_source: gsxt.source,
   }
 }

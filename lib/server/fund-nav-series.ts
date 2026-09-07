@@ -265,7 +265,13 @@ export async function loadFundNavSeries(
   short_name: string,
   opts: { from: string; to: string } | { days: number },
 ): Promise<{ price_date: string; level: string }[]> {
-  const rows = filterRowsByDate(await loadMergedNavRows(beian_hao, product_name, short_name), opts)
+  // Same series as the product detail page (platform/email merge + FOF 估值表
+  // extend). The raw merge can freeze at an older team/email tip — BAH99A
+  // 荣熙恒盈2号A类 stopped at 2026-07-01 in 基金对比 while the product page
+  // already showed 2026-09-04.
+  const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
+  const merged = await loadDetailNavSeriesFast({ beian_hao, product_name, short_name })
+  const rows = filterRowsByDate(merged, opts)
   return rows.flatMap((row) => {
     const level = pickNavLevel(row)
     if (level == null) return []

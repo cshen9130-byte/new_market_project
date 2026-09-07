@@ -4,17 +4,31 @@ import { useCallback, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Menu } from "lucide-react"
 import {
+  computeDrawdownSeries,
   computeExcessReturnSeries,
-  drawdownOnTimeline,
   drawdownYMin,
   hexToRgba,
   mergeDates,
-  monthAxisLabel,
   type ReturnPoint,
 } from "@/lib/fund-compare-drawdown"
+import {
+  dateToUtcTs,
+  echartsTimeXAxis,
+  formatIsoDateFromTs,
+} from "@/app/ma/dashboard/private-funds/[beian_hao]/components/performanceChartUtils"
 
 const LINE_COLORS = ["#ef4444", "#3b82f6", "#f59e0b", "#14b8a6", "#84cc16", "#8b5cf6", "#06b6d4", "#64748b"]
 const BENCH_COLOR = "#60a5fa"
+
+function toDrawdownLineData(points: ReturnPoint[]): [number, number][] {
+  const sorted = [...points].sort((a, b) => a.d.localeCompare(b.d))
+  const drawdowns = computeDrawdownSeries(sorted)
+  return sorted.flatMap((p, i) => {
+    const ts = dateToUtcTs(p.d)
+    const y = drawdowns[i]
+    return Number.isFinite(ts) && Number.isFinite(y) ? [[ts, y] as [number, number]] : []
+  })
+}
 
 interface FundInput {
   beian_hao: string
@@ -58,13 +72,12 @@ export function FundCompareDrawdownChart({
       ...(benchmark && !showExcess ? [benchmark.returnPoints] : []),
     ]
     const dates = mergeDates(allSeries)
-    const lastDate = dates.at(-1) ?? ""
 
     const fundSeries = fundInputs.map((fund, idx) => ({
       key: fund.key,
       name: fund.name,
       color: LINE_COLORS[idx % LINE_COLORS.length],
-      data: drawdownOnTimeline(dates, fund.points),
+      data: toDrawdownLineData(fund.points),
     }))
 
     const benchSeries = benchmark && !showExcess && benchmark.returnPoints.length > 0
@@ -72,11 +85,11 @@ export function FundCompareDrawdownChart({
           key: benchmark.key,
           name: `${benchmark.label}(基准)`,
           color: BENCH_COLOR,
-          data: drawdownOnTimeline(dates, benchmark.returnPoints),
+          data: toDrawdownLineData(benchmark.returnPoints),
         }]
       : []
 
-    return { dates, lastDate, fundSeries, benchSeries }
+    return { dates, fundSeries, benchSeries }
   }, [funds, benchmark, showExcess])
 
   const allNamedSeries = useMemo(
@@ -90,14 +103,29 @@ export function FundCompareDrawdownChart({
   }, [allNamedSeries, hiddenSeries, selectAllSeries])
 
   const chartOption = useMemo(() => {
-    const yMin = drawdownYMin(activeSeries.flatMap((s) => s.data))
+    const yMin = drawdownYMin(activeSeries.flatMap((s) => s.data.map((p) => p[1])))
 
     return {
       backgroundColor: "transparent",
       animation: false,
+      useUTC: true,
       tooltip: {
         trigger: "axis" as const,
-        valueFormatter: (v: number) => (v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(2)}%`),
+        axisPointer: { type: "line", snap: true },
+        formatter: (params: unknown) => {
+          if (!Array.isArray(params) || params.length === 0) return ""
+          const first = params[0] as { axisValue?: string | number }
+          const date = typeof first.axisValue === "number"
+            ? formatIsoDateFromTs(first.axisValue)
+            : String(first.axisValue ?? "").slice(0, 10)
+          const lines = params.map((item) => {
+            const p = item as { seriesName?: string; value?: number | [number, number | null] | null }
+            const raw = Array.isArray(p.value) ? p.value[1] : p.value
+            if (raw == null || !Number.isFinite(raw)) return `${p.seriesName}: —`
+            return `${p.seriesName}: ${Number(raw).toFixed(2)}%`
+          })
+          return [date, ...lines].join("<br/>")
+        },
       },
       legend: {
         type: "scroll" as const,
@@ -113,17 +141,7 @@ export function FundCompareDrawdownChart({
         ),
       },
       grid: { left: 56, right: 24, top: 44, bottom: 40 },
-      xAxis: {
-        type: "category" as const,
-        data: chartSeries.dates,
-        axisLabel: {
-          fontSize: 11,
-          color: "#a1a1aa",
-          formatter: (v: string) => monthAxisLabel(v, chartSeries.lastDate),
-        },
-        axisLine: { lineStyle: { color: "#e4e4e7" } },
-        axisTick: { show: false },
-      },
+      xAxis: echartsTimeXAxis(chartSeries.dates),
       yAxis: {
         type: "value" as const,
         name: "回撤率（%）",
@@ -142,7 +160,7 @@ export function FundCompareDrawdownChart({
         type: "line" as const,
         smooth: true,
         showSymbol: false,
-        connectNulls: false,
+        connectNulls: true,
         lineStyle: { width: 2, color: s.color },
         itemStyle: { color: s.color },
         areaStyle: {
@@ -161,7 +179,7 @@ export function FundCompareDrawdownChart({
         data: s.data,
       })),
     }
-  }, [activeSeries, allNamedSeries, chartSeries.dates, chartSeries.lastDate, hiddenSeries])
+  }, [activeSeries, allNamedSeries, chartSeries.dates, hiddenSeries])
 
   const handleLegendSelectChanged = useCallback((params: { selected?: Record<string, boolean> }) => {
     const selected = params.selected ?? {}

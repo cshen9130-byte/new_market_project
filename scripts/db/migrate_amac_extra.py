@@ -24,6 +24,7 @@ from amac_extra_db import (  # noqa: E402
     UPSERT_EXECUTIVE_RESUME,
     UPSERT_EXECUTIVES,
     UPSERT_MANAGER_DETAILS,
+    UPSERT_SHAREHOLDERS,
     UPSERT_MANAGERS,
     UPSERT_PERSON_ORG,
     UPSERT_PERSONNEL,
@@ -33,6 +34,7 @@ from amac_extra_db import (  # noqa: E402
     load_manager_details_from_csv,
     load_manager_executive_resume_from_csv,
     load_manager_executives_from_csv,
+    load_manager_shareholders_from_csv,
     load_managers_from_csv,
     load_person_org_stats_from_csv,
     load_personnel_cert_history_from_csv,
@@ -90,6 +92,11 @@ def main() -> None:
             "amac_manager_executive_resume",
             lambda: load_manager_executive_resume_from_csv(CSV_DIR),
             UPSERT_EXECUTIVE_RESUME,
+        ),
+        (
+            "amac_manager_shareholders",
+            lambda: load_manager_shareholders_from_csv(CSV_DIR),
+            UPSERT_SHAREHOLDERS,
         ),
         ("amac_personnel", lambda: load_personnel_from_csv(CSV_DIR), UPSERT_PERSONNEL),
         (

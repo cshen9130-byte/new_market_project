@@ -3,6 +3,7 @@ import { loadManagerEnterprise } from "@/lib/server/private-fund-manager-enterpr
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+export const maxDuration = 60
 
 export async function GET(
   _req: Request,

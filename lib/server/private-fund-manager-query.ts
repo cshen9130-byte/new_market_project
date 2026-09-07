@@ -56,39 +56,65 @@ export function mgmtScaleToValue(scale: string | null | undefined): number | nul
   return null
 }
 
+function mapListManagerRow(row: {
+  id: number
+  seq_no: number | null
+  manager_name: string
+  core_strategy: string | null
+  mgmt_scale: string | null
+  active_product_count: number | null
+  inception_date: string | Date | null
+  member_type: string | null
+  registration_no: string
+}): ManagerListDetail {
+  return {
+    ...row,
+    inception_date: row.inception_date ? fmtIso(row.inception_date) : null,
+  }
+}
+
 export async function lookupManagerByRegistrationNo(
   registrationNo: string,
 ): Promise<ManagerListDetail | null> {
   const reg = registrationNo.trim()
   if (!reg) return null
 
-  const rows = await query<{
-    id: number
-    seq_no: number | null
-    manager_name: string
-    core_strategy: string | null
-    mgmt_scale: string | null
-    active_product_count: number | null
-    inception_date: string | Date | null
-    member_type: string | null
-    registration_no: string
-  }>(
-    `SELECT id, seq_no, manager_name, core_strategy, mgmt_scale, active_product_count,
-            inception_date, member_type, registration_no
-     FROM private_fund_managers_list
-     WHERE UPPER(registration_no) = UPPER($1)
-     LIMIT 1`,
-    [reg],
-  )
+  const [rows, amac] = await Promise.all([
+    query<{
+      id: number
+      seq_no: number | null
+      manager_name: string
+      core_strategy: string | null
+      mgmt_scale: string | null
+      active_product_count: number | null
+      inception_date: string | Date | null
+      member_type: string | null
+      registration_no: string
+    }>(
+      `SELECT id, seq_no, manager_name, core_strategy, mgmt_scale, active_product_count,
+              inception_date, member_type, registration_no
+       FROM private_fund_managers_list
+       WHERE UPPER(registration_no) = UPPER($1)
+       LIMIT 1`,
+      [reg],
+    ),
+    lookupManagerFromAmac(reg),
+  ])
   const row = rows[0]
-  if (row) {
-    return {
-      ...row,
-      inception_date: row.inception_date ? fmtIso(row.inception_date) : null,
-    }
-  }
+  if (!row) return amac
+  const list = mapListManagerRow(row)
+  if (!amac) return list
 
-  return lookupManagerFromAmac(reg)
+  // List names are often abbreviated (上海衡颐资管) while AMAC / product tables
+  // use the legal name (上海衡颐资产管理有限公司). Prefer AMAC for matching.
+  return {
+    ...list,
+    manager_name: amac.manager_name || list.manager_name,
+    active_product_count: amac.active_product_count ?? list.active_product_count,
+    mgmt_scale: amac.mgmt_scale ?? list.mgmt_scale,
+    inception_date: list.inception_date ?? amac.inception_date,
+    member_type: list.member_type ?? amac.member_type,
+  }
 }
 
 /** Map canonical manager names to AMAC / list registration numbers for linking. */
@@ -272,9 +298,44 @@ function quarterEndDates(start: Date, end: Date): string[] {
   return points
 }
 
-export async function buildManagerScaleTrend(
+async function loadActiveProductInceptionDates(
   manager: ManagerListDetail,
-): Promise<ManagerScaleTrendPoint[]> {
+): Promise<string[]> {
+  const datesFrom = (rows: { inception_date: string | null }[]) =>
+    rows
+      .map((r) => r.inception_date?.slice(0, 10))
+      .filter((d): d is string => !!d)
+      .sort()
+
+  try {
+    const byReg = await query<{ inception_date: string | null }>(
+      `SELECT a.establish_date::text AS inception_date
+       FROM amac_private_funds a
+       JOIN amac_managers m ON m.manager_name = a.manager_name
+       WHERE UPPER(m.registration_no) = UPPER($1)
+         AND a.working_state = '正在运作'`,
+      [manager.registration_no],
+    )
+    const fromReg = datesFrom(byReg)
+    if (fromReg.length > 0) return fromReg
+  } catch {
+    // amac tables may be absent
+  }
+
+  try {
+    const byName = await query<{ inception_date: string | null }>(
+      `SELECT establish_date::text AS inception_date
+       FROM amac_private_funds
+       WHERE (manager_name = $1 OR manager_name ILIKE $2)
+         AND working_state = '正在运作'`,
+      [manager.manager_name, `%${manager.manager_name}%`],
+    )
+    const fromName = datesFrom(byName)
+    if (fromName.length > 0) return fromName
+  } catch {
+    // optional table
+  }
+
   const brand = extractManagerBrand(manager.manager_name)
   const productRows = await query<{ inception_date: string | null }>(
     `SELECT inception_date::text AS inception_date
@@ -284,10 +345,13 @@ export async function buildManagerScaleTrend(
      ORDER BY inception_date ASC NULLS LAST`,
     [`%${manager.manager_name}%`, brand ?? "", brand ? `%${brand}%` : ""],
   )
+  return datesFrom(productRows)
+}
 
-  const inceptionDates = productRows
-    .map((r) => r.inception_date?.slice(0, 10))
-    .filter((d): d is string => !!d)
+export async function buildManagerScaleTrend(
+  manager: ManagerListDetail,
+): Promise<ManagerScaleTrendPoint[]> {
+  const inceptionDates = await loadActiveProductInceptionDates(manager)
 
   const managerStart = manager.inception_date?.slice(0, 10)
   const earliestProduct = inceptionDates[0]

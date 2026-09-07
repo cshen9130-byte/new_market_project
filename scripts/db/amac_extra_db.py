@@ -14,7 +14,7 @@ def dash_to_none(val):
     if val is None:
         return None
     s = str(val).strip()
-    if not s or s == "-":
+    if not s or s in ("-", "--"):
         return None
     return s
 
@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS amac_manager_details (
     law_firm_name                           TEXT,
     lawyer_name                             TEXT,
     disclosure_backup_investor_query_rate   TEXT,
+    website_url                             TEXT,
     detail_url                              TEXT,
     source_file                             TEXT NOT NULL DEFAULT 'manager_details.csv',
     updated_at                              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -183,6 +184,23 @@ CREATE TABLE IF NOT EXISTS amac_manager_executive_resume (
 
 CREATE INDEX IF NOT EXISTS idx_amac_manager_executive_resume_registration_no
     ON amac_manager_executive_resume (registration_no);
+
+CREATE TABLE IF NOT EXISTS amac_manager_shareholders (
+    id                      SERIAL PRIMARY KEY,
+    registration_no         TEXT NOT NULL,
+    manager_name            TEXT,
+    seq                     INTEGER,
+    investor_name           TEXT NOT NULL,
+    holding_ratio           TEXT,
+    shareholder_type        TEXT,
+    subscribed_amount       TEXT,
+    source_file             TEXT NOT NULL DEFAULT 'manager_shareholders.csv',
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT amac_manager_shareholders_uq UNIQUE (registration_no, investor_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_amac_manager_shareholders_registration_no
+    ON amac_manager_shareholders (registration_no);
 
 CREATE TABLE IF NOT EXISTS amac_personnel (
     id                          SERIAL PRIMARY KEY,
@@ -305,6 +323,7 @@ SCHEMA_MIGRATIONS = [
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_upserted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_orgs_fetched INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE amac_extra_sync_state ADD COLUMN IF NOT EXISTS last_personnel_certs_upserted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE amac_manager_details ADD COLUMN IF NOT EXISTS website_url TEXT",
 ]
 
 
@@ -386,7 +405,7 @@ INSERT INTO amac_manager_details (
     paid_in_capital_cny_wan, paid_in_capital_ratio, enterprise_nature, org_type,
     business_type, full_time_staff_count, fund_practitioner_count, mgmt_scale_range,
     is_investment_advisory_third_party, actual_controller, is_member, law_firm_name,
-    lawyer_name, disclosure_backup_investor_query_rate, detail_url, source_file
+    lawyer_name, disclosure_backup_investor_query_rate, website_url, detail_url, source_file
 ) VALUES %s
 ON CONFLICT (registration_no) DO UPDATE SET
     manager_name_cn                       = EXCLUDED.manager_name_cn,
@@ -411,6 +430,10 @@ ON CONFLICT (registration_no) DO UPDATE SET
     law_firm_name                         = EXCLUDED.law_firm_name,
     lawyer_name                           = EXCLUDED.lawyer_name,
     disclosure_backup_investor_query_rate = EXCLUDED.disclosure_backup_investor_query_rate,
+    website_url                           = COALESCE(
+        NULLIF(BTRIM(EXCLUDED.website_url), ''),
+        amac_manager_details.website_url
+    ),
     detail_url                            = EXCLUDED.detail_url,
     source_file                           = EXCLUDED.source_file,
     updated_at                            = NOW()
@@ -440,6 +463,21 @@ ON CONFLICT (
     manager_name = EXCLUDED.manager_name,
     source_file  = EXCLUDED.source_file,
     updated_at   = NOW()
+"""
+
+UPSERT_SHAREHOLDERS = """
+INSERT INTO amac_manager_shareholders (
+    registration_no, manager_name, seq, investor_name, holding_ratio,
+    shareholder_type, subscribed_amount, source_file
+) VALUES %s
+ON CONFLICT (registration_no, investor_name) DO UPDATE SET
+    manager_name      = EXCLUDED.manager_name,
+    seq               = EXCLUDED.seq,
+    holding_ratio     = EXCLUDED.holding_ratio,
+    shareholder_type  = EXCLUDED.shareholder_type,
+    subscribed_amount = EXCLUDED.subscribed_amount,
+    source_file       = EXCLUDED.source_file,
+    updated_at        = NOW()
 """
 
 UPSERT_PERSONNEL = """
@@ -611,6 +649,7 @@ def manager_detail_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> t
         dash_to_none(row.get("律师事务所名称")),
         dash_to_none(row.get("律师姓名")),
         dash_to_none(row.get("私募基金信息披露备份系统投资者查询账号开立率")),
+        dash_to_none(row.get("机构网址")) or dash_to_none(row.get("website_url")),
         dash_to_none(row.get("详情链接")),
         source,
     )
@@ -629,6 +668,23 @@ def executive_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> tuple 
         title,
         dash_to_none(row.get("是否有基金从业资格")),
         dash_to_none(row.get("资格取得方式")),
+        source,
+    )
+
+
+def shareholder_csv_row_to_tuple(row: dict, *, source: str = SOURCE_API) -> tuple | None:
+    reg_no = dash_to_none(row.get("登记编号"))
+    investor_name = dash_to_none(row.get("姓名/名称") or row.get("investor_name"))
+    if not reg_no or not investor_name:
+        return None
+    return (
+        reg_no,
+        dash_to_none(row.get("管理人名称")),
+        parse_int(row.get("序号")),
+        investor_name,
+        dash_to_none(row.get("认缴比例") or row.get("holding_ratio")),
+        dash_to_none(row.get("股东类型") or row.get("shareholder_type")),
+        dash_to_none(row.get("认缴出资额") or row.get("subscribed_amount")),
         source,
     )
 
@@ -767,6 +823,15 @@ def load_manager_executive_resume_from_csv(csv_dir: Path = DEFAULT_CSV_DIR) -> l
         [t for t in tuples if t],
         lambda r: (r[0], r[2], r[3], r[4], r[5], r[6], r[7]),
     )
+
+
+def load_manager_shareholders_from_csv(csv_dir: Path = DEFAULT_CSV_DIR) -> list[tuple]:
+    path = csv_dir / "manager_shareholders.csv"
+    if not path.exists():
+        return []
+    rows = read_csv("manager_shareholders.csv", csv_dir)
+    tuples = [shareholder_csv_row_to_tuple(row, source="manager_shareholders.csv") for row in rows]
+    return dedupe_tuples([t for t in tuples if t], lambda r: (r[0], r[3]))
 
 
 def load_personnel_from_csv(csv_dir: Path = DEFAULT_CSV_DIR) -> list[tuple]:

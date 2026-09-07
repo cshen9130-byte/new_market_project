@@ -128,6 +128,7 @@ MANAGER_DETAIL_COLUMNS = [
     "律师事务所名称",
     "律师姓名",
     "私募基金信息披露备份系统投资者查询账号开立率",
+    "机构网址",
     "详情链接",
 ]
 
@@ -149,6 +150,16 @@ EXECUTIVE_RESUME_COLUMNS = [
     "任职单位",
     "任职部门",
     "职务",
+]
+
+SHAREHOLDER_COLUMNS = [
+    "登记编号",
+    "管理人名称",
+    "序号",
+    "姓名/名称",
+    "认缴比例",
+    "股东类型",
+    "认缴出资额",
 ]
 
 PERSONNEL_COLUMNS = [
@@ -219,6 +230,7 @@ DETAIL_LABEL_MAP = {
     "律师事务所名称": "律师事务所名称",
     "律师姓名": "律师姓名",
     "私募基金信息披露备份系统投资者查询账号开立率": "私募基金信息披露备份系统投资者查询账号开立率",
+    "机构网址": "机构网址",
 }
 
 
@@ -304,6 +316,22 @@ def clean_html(text: str) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+_EMPTY_WEBSITE = {"", "-", "--", "无", "无网址", "暂无", "暂无网址", "n/a", "na", "null"}
+
+
+def normalize_website_url(raw: str) -> str:
+    """Keep host or absolute URL; drop AMAC empty placeholders."""
+    text = as_text(raw)
+    text = re.sub(r"^javascript:.*", "", text, flags=re.I).strip()
+    if text.lower() in _EMPTY_WEBSITE:
+        return ""
+    if re.match(r"^https?://", text, re.I):
+        return text
+    if "." in text and not any(ch.isspace() for ch in text):
+        return text
+    return ""
 
 
 def progress_path(output_dir: Path, stage: str) -> Path:
@@ -768,7 +796,80 @@ def parse_executives(
     return executives, resumes
 
 
-def parse_manager_detail(html: str, detail_url: str) -> tuple[dict, list[dict], list[dict]]:
+_ORG_SHAREHOLDER_RE = re.compile(
+    r"公司|合伙|企业|基金|信托|银行|证券|集团|有限|公社|合作社|研究所|中心|事务所"
+)
+
+
+def infer_shareholder_type(name: str) -> str:
+    if "合伙" in name:
+        return "合伙企业"
+    if _ORG_SHAREHOLDER_RE.search(name):
+        return "法人股东"
+    return "自然人股东"
+
+
+def format_subscribed_amount(capital_wan: str, ratio_text: str) -> str:
+    cap = re.sub(r"[^\d.]", "", capital_wan or "")
+    ratio = re.sub(r"[^\d.]", "", ratio_text or "")
+    try:
+        cap_f = float(cap)
+        ratio_f = float(ratio)
+    except ValueError:
+        return ""
+    if cap_f <= 0 or ratio_f <= 0:
+        return ""
+    amount = cap_f * ratio_f / 100.0
+    text = f"{amount:.4f}".rstrip("0").rstrip(".")
+    return f"{text}万元人民币"
+
+
+def parse_shareholders(
+    html: str,
+    register_no: str,
+    manager_name: str,
+    registered_capital: str = "",
+) -> list[dict]:
+    """Parse 出资人信息 (姓名/名称 + 认缴比例) from an AMAC manager detail page."""
+    section = extract_section_html(html, "出资人信息")
+    if not section:
+        return []
+
+    table = re.search(
+        r'<table class="list-table[^"]*">.*?<tbody>(.*?)</tbody>',
+        section,
+        re.S,
+    )
+    if not table:
+        return []
+
+    rows: list[dict] = []
+    for tr in re.finditer(r"<tr[^>]*>(.*?)</tr>", table.group(1), re.S):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", tr.group(1), re.S)
+        if len(cells) < 3:
+            continue
+        seq = clean_html(cells[0])
+        name = clean_html(cells[1])
+        ratio = clean_html(cells[2])
+        if not name or name in {"姓名/名称", "暂无", "暂无数据", "-", "--"}:
+            continue
+        if seq and not re.search(r"\d", seq):
+            continue
+        rows.append(
+            {
+                "登记编号": register_no,
+                "管理人名称": manager_name,
+                "序号": seq,
+                "姓名/名称": name,
+                "认缴比例": ratio,
+                "股东类型": infer_shareholder_type(name),
+                "认缴出资额": format_subscribed_amount(registered_capital, ratio),
+            }
+        )
+    return rows
+
+
+def parse_manager_detail(html: str, detail_url: str) -> tuple[dict, list[dict], list[dict], list[dict]]:
     row = {col: "" for col in MANAGER_DETAIL_COLUMNS}
     row["详情链接"] = detail_url
 
@@ -785,12 +886,26 @@ def parse_manager_detail(html: str, detail_url: str) -> tuple[dict, list[dict], 
         )
         match = re.search(pattern, html, re.S | re.I)
         if match:
-            row[col] = clean_html(match.group(1))
+            raw = match.group(1)
+            if col == "机构网址":
+                href = re.search(r"""href=["']([^"']+)["']""", raw, re.I)
+                row[col] = normalize_website_url(href.group(1) if href else clean_html(raw))
+            else:
+                row[col] = clean_html(raw)
+
+    if row.get("机构网址"):
+        row["机构网址"] = normalize_website_url(row["机构网址"])
 
     register_no = row.get("登记编号", "")
     manager_name = row.get("基金管理人全称(中文)", "")
     executives, resumes = parse_executives(html, register_no, manager_name)
-    return row, executives, resumes
+    shareholders = parse_shareholders(
+        html,
+        register_no,
+        manager_name,
+        row.get("注册资本(万元)(人民币)", ""),
+    )
+    return row, executives, resumes, shareholders
 
 
 def fetch_managers(session: requests.Session, output_dir: Path, args: argparse.Namespace) -> None:
@@ -1014,6 +1129,7 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
     detail_csv = output_dir / "manager_details.csv"
     exec_csv = output_dir / "manager_executives.csv"
     resume_csv = output_dir / "manager_executive_resume.csv"
+    shareholder_csv = output_dir / "manager_shareholders.csv"
     prog_path = progress_path(output_dir, "manager_details")
 
     managers: list[dict] = []
@@ -1024,10 +1140,12 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
     detail_append = False
     exec_append = False
     resume_append = False
+    shareholder_append = False
     if args.fresh:
         detail_csv.unlink(missing_ok=True)
         exec_csv.unlink(missing_ok=True)
         resume_csv.unlink(missing_ok=True)
+        shareholder_csv.unlink(missing_ok=True)
         prog_path.unlink(missing_ok=True)
     elif prog_path.exists() and detail_csv.exists():
         prog = load_progress(prog_path)
@@ -1036,6 +1154,7 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
             detail_append = True
             exec_append = exec_csv.exists()
             resume_append = resume_csv.exists()
+            shareholder_append = shareholder_csv.exists()
             print(f"[manager_details] Resuming from index {start_idx:,}/{len(managers):,}")
 
     end_idx = len(managers)
@@ -1046,19 +1165,25 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
     detail_mode = "a" if detail_append else "w"
     exec_mode = "a" if exec_append else "w"
     resume_mode = "a" if resume_append else "w"
+    shareholder_mode = "a" if shareholder_append else "w"
 
     with detail_csv.open(detail_mode, newline="", encoding="utf-8-sig") as dfh, exec_csv.open(
         exec_mode, newline="", encoding="utf-8-sig"
-    ) as efh, resume_csv.open(resume_mode, newline="", encoding="utf-8-sig") as rfh:
+    ) as efh, resume_csv.open(resume_mode, newline="", encoding="utf-8-sig") as rfh, shareholder_csv.open(
+        shareholder_mode, newline="", encoding="utf-8-sig"
+    ) as sfh:
         dw = csv.DictWriter(dfh, fieldnames=MANAGER_DETAIL_COLUMNS)
         ew = csv.DictWriter(efh, fieldnames=EXECUTIVE_COLUMNS)
         rw = csv.DictWriter(rfh, fieldnames=EXECUTIVE_RESUME_COLUMNS)
+        sw = csv.DictWriter(sfh, fieldnames=SHAREHOLDER_COLUMNS)
         if not detail_append:
             dw.writeheader()
         if not exec_append:
             ew.writeheader()
         if not resume_append:
             rw.writeheader()
+        if not shareholder_append:
+            sw.writeheader()
 
         for idx in range(start_idx, end_idx):
             mgr = managers[idx]
@@ -1086,7 +1211,7 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
                 bar.update(idx + 1)
                 time.sleep(args.delay)
                 continue
-            detail_row, exec_rows, resume_rows = parse_manager_detail(html, url)
+            detail_row, exec_rows, resume_rows, shareholder_rows = parse_manager_detail(html, url)
             if not detail_row.get("登记编号"):
                 detail_row["登记编号"] = mgr.get("登记编号", "")
             if not detail_row.get("基金管理人全称(中文)"):
@@ -1099,9 +1224,13 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
             for rr in resume_rows:
                 rr.setdefault("登记编号", reg)
                 rr.setdefault("管理人名称", mgr_name)
+            for sr in shareholder_rows:
+                sr.setdefault("登记编号", reg)
+                sr.setdefault("管理人名称", mgr_name)
             dw.writerow(detail_row)
             ew.writerows(exec_rows)
             rw.writerows(resume_rows)
+            sw.writerows(shareholder_rows)
             save_progress(
                 prog_path,
                 {"next_index": idx + 1, "total": len(managers), "fetched": idx + 1},
@@ -1112,7 +1241,7 @@ def fetch_manager_details(session: requests.Session, output_dir: Path, args: arg
     if end_idx >= len(managers):
         prog_path.unlink(missing_ok=True)
         bar.finish(
-            f"[manager_details] Done. {detail_csv.name}, {exec_csv.name}, {resume_csv.name}"
+            f"[manager_details] Done. {detail_csv.name}, {exec_csv.name}, {resume_csv.name}, {shareholder_csv.name}"
         )
     else:
         bar.finish(f"[manager_details] Stopped early at {end_idx:,}/{len(managers):,}")

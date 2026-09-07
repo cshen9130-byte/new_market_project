@@ -75,7 +75,7 @@ function TextSection({ title, content }: { title: string; content: string | null
         <span className="inline-block w-1 h-4 rounded-sm bg-red-500 shrink-0" />
         {title}
       </div>
-      <p className="text-sm text-zinc-500 leading-relaxed">
+      <p className="text-sm text-zinc-500 leading-relaxed whitespace-pre-wrap">
         {content?.trim() ? content : "暂无内容"}
       </p>
     </div>
@@ -120,6 +120,7 @@ function buildScaleChartOption(trend: ScaleTrendPoint[]): Record<string, unknown
         name: "运作中产品数",
         nameTextStyle: { fontSize: 11, color: "#a1a1aa" },
         axisLabel: { fontSize: 11, color: "#a1a1aa" },
+        minInterval: 1,
         splitLine: { show: false },
       },
     ],
