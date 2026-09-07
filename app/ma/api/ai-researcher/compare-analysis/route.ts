@@ -3,6 +3,11 @@ import { query } from "@/lib/db"
 import { ChatOpenAI } from "@langchain/openai"
 import { HumanMessage, SystemMessage } from "@langchain/core/messages"
 import { loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
+import {
+  formatFundStrategyLabel,
+  sqlResolvedStrategySelect,
+  sqlType6LatestStrategyJoin,
+} from "@/lib/server/fund-strategy-resolve"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -46,6 +51,7 @@ interface FundBasicInfo {
   manager: string
   strategy_l1: string | null
   strategy_l2: string | null
+  strategy_l3: string | null
   inception_date: string | null
   benchmark: string | null
   ret_1w: string | null
@@ -76,19 +82,21 @@ interface ManagerInfo {
 async function fetchFundsBySubjects(subjects: string[]): Promise<FundBasicInfo[]> {
   if (subjects.length === 0) return []
   const conditions = subjects
-    .map((_, i) => `(product_name ILIKE $${i + 1} OR beian_hao ILIKE $${i + 1} OR manager ILIKE $${i + 1})`)
+    .map((_, i) => `(i.product_name ILIKE $${i + 1} OR i.beian_hao ILIKE $${i + 1} OR i.manager ILIKE $${i + 1})`)
     .join(" OR ")
   const params = subjects.map((s) => `%${s}%`)
   const rows = await query<FundBasicInfo>(
     `SELECT
-       beian_hao, product_name, manager, strategy_l1, strategy_l2,
-       inception_date::text AS inception_date, benchmark,
-       ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-       sharpe_1y::text, calmar_1y::text,
-       latest_nav::text, latest_nav_date::text AS latest_nav_date
-     FROM private_fund_info
+       i.beian_hao, i.product_name, i.manager,
+       ${sqlResolvedStrategySelect("i")},
+       i.inception_date::text AS inception_date, i.benchmark,
+       i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
+       i.sharpe_1y::text, i.calmar_1y::text,
+       i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date
+     FROM private_fund_info i
+     ${sqlType6LatestStrategyJoin("i.beian_hao")}
      WHERE ${conditions}
-     ORDER BY product_name
+     ORDER BY i.product_name
      LIMIT 20`,
     params,
   )
@@ -265,7 +273,7 @@ function buildDataSummary(
   for (const f of funds) {
     lines.push(`\n【${f.product_name}】(备案号: ${f.beian_hao})`)
     lines.push(`  管理人: ${f.manager}`)
-    lines.push(`  策略: ${[f.strategy_l1, f.strategy_l2].filter(Boolean).join(" > ") || "未分类"}`)
+    lines.push(`  策略: ${formatFundStrategyLabel(f.strategy_l1, f.strategy_l2, f.strategy_l3)}`)
     lines.push(`  成立日期: ${f.inception_date || "未知"}`)
     lines.push(`  基准: ${f.benchmark || "无"}`)
     lines.push(`  最新净值(系统): ${f.latest_nav || "N/A"} (${f.latest_nav_date || "N/A"})`)

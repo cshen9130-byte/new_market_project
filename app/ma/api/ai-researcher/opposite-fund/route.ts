@@ -2,6 +2,11 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { ChatOpenAI } from "@langchain/openai"
 import { HumanMessage, SystemMessage } from "@langchain/core/messages"
+import {
+  formatFundStrategyLabel,
+  sqlResolvedStrategySelect,
+  sqlType6LatestStrategyJoin,
+} from "@/lib/server/fund-strategy-resolve"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -36,6 +41,7 @@ interface FundInfo {
   manager: string
   strategy_l1: string | null
   strategy_l2: string | null
+  strategy_l3: string | null
   inception_date: string | null
   ret_1w: string | null
   ret_1m: string | null
@@ -66,16 +72,25 @@ interface OppositeResult {
 
 // ── DB helpers ─────────────────────────────────────────────────────────────────
 
+const FUND_INFO_SELECT = `
+       i.beian_hao, i.product_name, i.manager,
+       ${sqlResolvedStrategySelect("i")},
+       i.inception_date::text AS inception_date,
+       i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
+       i.sharpe_1y::text, i.calmar_1y::text,
+       i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date`
+
+function strategyLabel(fund: Pick<FundInfo, "strategy_l1" | "strategy_l2" | "strategy_l3">): string {
+  return formatFundStrategyLabel(fund.strategy_l1, fund.strategy_l2, fund.strategy_l3)
+}
+
 async function fetchFundByName(subject: string): Promise<FundInfo | null> {
   const rows = await query<FundInfo>(
-    `SELECT beian_hao, product_name, manager, strategy_l1, strategy_l2,
-            inception_date::text AS inception_date,
-            ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-            sharpe_1y::text, calmar_1y::text,
-            latest_nav::text, latest_nav_date::text AS latest_nav_date
-     FROM private_fund_info
-     WHERE product_name ILIKE $1 OR beian_hao ILIKE $1 OR manager ILIKE $1
-     ORDER BY product_name LIMIT 1`,
+    `SELECT ${FUND_INFO_SELECT}
+     FROM private_fund_info i
+     ${sqlType6LatestStrategyJoin("i.beian_hao")}
+     WHERE i.product_name ILIKE $1 OR i.beian_hao ILIKE $1 OR i.manager ILIKE $1
+     ORDER BY i.product_name LIMIT 1`,
     [`%${subject}%`],
   )
   return rows[0] ?? null
@@ -85,15 +100,12 @@ async function fetchFundByName(subject: string): Promise<FundInfo | null> {
 // true anti-correlation lives (e.g. a long-short vs. a pure long strategy).
 async function fetchBroadCandidatePool(target: FundInfo, limit = 100): Promise<FundInfo[]> {
   const rows = await query<FundInfo>(
-    `SELECT beian_hao, product_name, manager, strategy_l1, strategy_l2,
-            inception_date::text AS inception_date,
-            ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-            sharpe_1y::text, calmar_1y::text,
-            latest_nav::text, latest_nav_date::text AS latest_nav_date
-     FROM private_fund_info
-     WHERE beian_hao <> $1::text
-       AND latest_nav_date IS NOT NULL
-     ORDER BY latest_nav_date DESC NULLS LAST
+    `SELECT ${FUND_INFO_SELECT}
+     FROM private_fund_info i
+     ${sqlType6LatestStrategyJoin("i.beian_hao")}
+     WHERE i.beian_hao <> $1::text
+       AND i.latest_nav_date IS NOT NULL
+     ORDER BY i.latest_nav_date DESC NULLS LAST
      LIMIT $2`,
     [target.beian_hao, limit],
   )
@@ -294,7 +306,7 @@ export async function POST(req: Request) {
         emit({
           type: "step_done", step: 1,
           summary: target
-            ? `已找到：${target.product_name}（${target.beian_hao}），策略：${[target.strategy_l1, target.strategy_l2].filter(Boolean).join(" > ") || "未分类"}`
+            ? `已找到：${target.product_name}（${target.beian_hao}），策略：${strategyLabel(target)}`
             : `数据库中未找到"${subject}"的精确记录`,
         })
       } catch (err) {
@@ -400,7 +412,7 @@ export async function POST(req: Request) {
           ? `=== 目标基金 ===
 【${target.product_name}】(${target.beian_hao})
   管理人: ${target.manager}  成立: ${target.inception_date ?? "未知"}
-  策略: ${[target.strategy_l1, target.strategy_l2].filter(Boolean).join(" > ") || "未分类"}
+  策略: ${strategyLabel(target)}
   最新净值: ${target.latest_nav ?? "N/A"} (${target.latest_nav_date ?? "N/A"})
   近1月/3月/6月/1年: ${target.ret_1m ?? "N/A"} / ${target.ret_3m ?? "N/A"} / ${target.ret_6m ?? "N/A"} / ${target.ret_1y ?? "N/A"}
   计算指标 — 累计收益: ${targetStats.totalReturn ? "+" + targetStats.totalReturn + "%" : "N/A"}  年化: ${targetStats.annReturn ? "+" + targetStats.annReturn + "%" : "N/A"}  最大回撤: ${targetStats.maxDrawdown ? "-" + targetStats.maxDrawdown + "%" : "N/A"}  夏普: ${targetStats.sharpe ?? "N/A"}`
@@ -412,7 +424,7 @@ export async function POST(req: Request) {
           return `=== #${idx + 1} 最强负相关基金（反向评分: ${antiScore}/100）===
 【${r.fund.product_name}】(${r.fund.beian_hao})
   管理人: ${r.fund.manager}  成立: ${r.fund.inception_date ?? "未知"}
-  策略: ${[r.fund.strategy_l1, r.fund.strategy_l2].filter(Boolean).join(" > ") || "未分类"}
+  策略: ${strategyLabel(r.fund)}
   Pearson相关系数（重叠${r.overlapMonths}个月）: ${corrStr}
   净值记录数: ${r.navPoints}条
   近1月/3月/6月/1年: ${r.fund.ret_1m ?? "N/A"} / ${r.fund.ret_3m ?? "N/A"} / ${r.fund.ret_6m ?? "N/A"} / ${r.fund.ret_1y ?? "N/A"}

@@ -49,6 +49,7 @@ interface FundSearchResult {
   manager: string
   strategy_l1: string | null
   strategy_l2: string | null
+  strategy_l3: string | null
   inception_date: string | null
   latest_nav: string | null
   ret_1y: string | null
@@ -254,6 +255,24 @@ const SKILLS: Skill[] = [
 
 // ── Fund picker component ───────────────────────────────────────────────────────
 
+function fundStrategyLabel(fund: Pick<FundSearchResult, "strategy_l1" | "strategy_l2" | "strategy_l3">): string {
+  return [fund.strategy_l1, fund.strategy_l2, fund.strategy_l3].filter(Boolean).join(" · ")
+}
+
+function emptyManualFund(q: string): FundSearchResult {
+  return {
+    beian_hao: q,
+    product_name: q,
+    manager: "",
+    strategy_l1: null,
+    strategy_l2: null,
+    strategy_l3: null,
+    inception_date: null,
+    latest_nav: null,
+    ret_1y: null,
+  }
+}
+
 function FundPicker({
   selected,
   onChange,
@@ -320,8 +339,8 @@ function FundPicker({
     const already = selected.some((s) => s.product_name === q || s.beian_hao === q)
     if (!already) {
       const next = maxSelect === 1
-        ? [{ beian_hao: q, product_name: q, manager: "", strategy_l1: null, strategy_l2: null, inception_date: null, latest_nav: null, ret_1y: null }]
-        : [...selected, { beian_hao: q, product_name: q, manager: "", strategy_l1: null, strategy_l2: null, inception_date: null, latest_nav: null, ret_1y: null }]
+        ? [emptyManualFund(q)]
+        : [...selected, emptyManualFund(q)]
       onChange(next)
     }
     setQuery("")
@@ -355,8 +374,8 @@ function FundPicker({
             className="flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/20 px-3 py-1 text-sm"
           >
             <span className="font-medium text-foreground">{fund.product_name}</span>
-            {fund.strategy_l1 && (
-              <span className="text-xs text-muted-foreground">· {fund.strategy_l1}</span>
+            {fundStrategyLabel(fund) && (
+              <span className="text-xs text-muted-foreground">· {fundStrategyLabel(fund)}</span>
             )}
             <button
               onClick={() => removeFund(fund.beian_hao)}
@@ -415,8 +434,8 @@ function FundPicker({
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium text-sm truncate">{fund.product_name}</span>
-                        {fund.strategy_l1 && (
-                          <Badge variant="secondary" className="text-xs shrink-0">{fund.strategy_l1}</Badge>
+                        {fundStrategyLabel(fund) && (
+                          <Badge variant="secondary" className="text-xs shrink-0">{fundStrategyLabel(fund)}</Badge>
                         )}
                         {isSelected && <Badge variant="outline" className="text-xs shrink-0">已添加</Badge>}
                       </div>
@@ -434,6 +453,14 @@ function FundPicker({
           </div>
         )}
       </div>
+
+      {selected.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {selected.map((fund) => (
+            `已找到：${fund.product_name}（${fund.beian_hao}），策略：${fundStrategyLabel(fund) || "未分类"}`
+          )).join("；")}
+        </p>
+      )}
     </div>
   )
 }

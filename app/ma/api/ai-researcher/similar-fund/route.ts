@@ -2,6 +2,12 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { ChatOpenAI } from "@langchain/openai"
 import { HumanMessage, SystemMessage } from "@langchain/core/messages"
+import {
+  formatFundStrategyLabel,
+  sqlResolvedStrategySelect,
+  sqlType6LatestStrategyJoin,
+  sqlType6TableResolvedStrategy,
+} from "@/lib/server/fund-strategy-resolve"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -38,6 +44,7 @@ interface FundInfo {
   manager: string
   strategy_l1: string | null
   strategy_l2: string | null
+  strategy_l3: string | null
   inception_date: string | null
   ret_1w: string | null
   ret_1m: string | null
@@ -67,16 +74,25 @@ interface SimilarityResult {
 
 // ── DB helpers ─────────────────────────────────────────────────────────────────
 
+const FUND_INFO_SELECT = `
+       i.beian_hao, i.product_name, i.manager,
+       ${sqlResolvedStrategySelect("i")},
+       i.inception_date::text AS inception_date,
+       i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
+       i.sharpe_1y::text, i.calmar_1y::text,
+       i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date`
+
+function strategyLabel(fund: Pick<FundInfo, "strategy_l1" | "strategy_l2" | "strategy_l3">): string {
+  return formatFundStrategyLabel(fund.strategy_l1, fund.strategy_l2, fund.strategy_l3)
+}
+
 async function fetchFundByName(subject: string): Promise<FundInfo | null> {
   const rows = await query<FundInfo>(
-    `SELECT beian_hao, product_name, manager, strategy_l1, strategy_l2,
-            inception_date::text AS inception_date,
-            ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-            sharpe_1y::text, calmar_1y::text,
-            latest_nav::text, latest_nav_date::text AS latest_nav_date
-     FROM private_fund_info
-     WHERE product_name ILIKE $1 OR beian_hao ILIKE $1 OR manager ILIKE $1
-     ORDER BY product_name
+    `SELECT ${FUND_INFO_SELECT}
+     FROM private_fund_info i
+     ${sqlType6LatestStrategyJoin("i.beian_hao")}
+     WHERE i.product_name ILIKE $1 OR i.beian_hao ILIKE $1 OR i.manager ILIKE $1
+     ORDER BY i.product_name
      LIMIT 1`,
     [`%${subject}%`],
   )
@@ -84,23 +100,34 @@ async function fetchFundByName(subject: string): Promise<FundInfo | null> {
 }
 
 async function fetchCandidatePool(target: FundInfo, limit = 80): Promise<FundInfo[]> {
-  // Same strategy_l1 (or strategy_l2 if available), excluding target.
-  // Cast parameters to text explicitly so PostgreSQL can infer their types.
+  // Match resolved 团队分类, else 平台分类 — not the often-empty private_fund_info.strategy_l*.
+  const resolved = sqlType6TableResolvedStrategy()
   const rows = await query<FundInfo>(
-    `SELECT beian_hao, product_name, manager, strategy_l1, strategy_l2,
-            inception_date::text AS inception_date,
-            ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-            sharpe_1y::text, calmar_1y::text,
-            latest_nav::text, latest_nav_date::text AS latest_nav_date
-     FROM private_fund_info
-     WHERE beian_hao <> $1::text
-       AND (
-         ($2::text IS NOT NULL AND strategy_l1 = $2::text)
-         OR ($3::text IS NOT NULL AND strategy_l2 = $3::text)
-       )
+    `SELECT i.beian_hao, i.product_name, i.manager,
+            same.strategy_l1, same.strategy_l2, same.strategy_l3,
+            i.inception_date::text AS inception_date,
+            i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
+            i.sharpe_1y::text, i.calmar_1y::text,
+            i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date
+     FROM private_fund_info i
+     JOIN (
+       SELECT register_number, strategy_l1, strategy_l2, strategy_l3
+       FROM (
+         SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
+           register_number,
+           ${resolved.l1} AS strategy_l1,
+           ${resolved.l2} AS strategy_l2,
+           ${resolved.l3} AS strategy_l3
+         FROM type6_ops_team_full
+         ORDER BY UPPER(BTRIM(register_number)), updated_at DESC NULLS LAST, id DESC
+       ) t
+       WHERE ($2::text IS NOT NULL AND t.strategy_l1 = $2::text)
+          OR ($3::text IS NOT NULL AND t.strategy_l2 = $3::text)
+     ) same ON UPPER(BTRIM(same.register_number)) = UPPER(BTRIM(i.beian_hao))
+     WHERE i.beian_hao <> $1::text
      ORDER BY
-       CASE WHEN $3::text IS NOT NULL AND strategy_l2 = $3::text THEN 0 ELSE 1 END,
-       latest_nav_date DESC NULLS LAST
+       CASE WHEN $3::text IS NOT NULL AND same.strategy_l2 = $3::text THEN 0 ELSE 1 END,
+       i.latest_nav_date DESC NULLS LAST
      LIMIT $4`,
     [target.beian_hao, target.strategy_l1, target.strategy_l2, limit],
   )
@@ -362,7 +389,7 @@ export async function POST(req: Request) {
         emit({
           type: "step_done", step: 1,
           summary: target
-            ? `已找到：${target.product_name}（${target.beian_hao}），策略：${[target.strategy_l1, target.strategy_l2].filter(Boolean).join(" > ") || "未分类"}`
+            ? `已找到：${target.product_name}（${target.beian_hao}），策略：${strategyLabel(target)}`
             : `数据库中未找到"${subject}"，将基于名称搜索继续分析`,
         })
       } catch (err) {
@@ -379,7 +406,7 @@ export async function POST(req: Request) {
         emit({
           type: "step_done", step: 2,
           summary: candidates.length > 0
-            ? `找到 ${candidates.length} 只同策略候选基金（策略：${target?.strategy_l1 ?? "全部"}${target?.strategy_l2 ? " > " + target.strategy_l2 : ""}）`
+            ? `找到 ${candidates.length} 只同策略候选基金（策略：${target ? strategyLabel(target) : "全部"}）`
             : "未找到同策略基金，将在全库中搜索近似产品",
         })
       } catch (err) {
@@ -390,11 +417,11 @@ export async function POST(req: Request) {
       if (candidates.length === 0 && target) {
         try {
           const fallback = await query<FundInfo>(
-            `SELECT beian_hao, product_name, manager, strategy_l1, strategy_l2,
-                    inception_date::text, ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-                    sharpe_1y::text, calmar_1y::text, latest_nav::text, latest_nav_date::text
-             FROM private_fund_info WHERE beian_hao <> $1
-             ORDER BY latest_nav_date DESC NULLS LAST LIMIT 50`,
+            `SELECT ${FUND_INFO_SELECT}
+             FROM private_fund_info i
+             ${sqlType6LatestStrategyJoin("i.beian_hao")}
+             WHERE i.beian_hao <> $1
+             ORDER BY i.latest_nav_date DESC NULLS LAST LIMIT 50`,
             [target.beian_hao],
           )
           candidates = fallback
@@ -486,7 +513,7 @@ export async function POST(req: Request) {
           ? `=== 目标基金 ===
 【${target.product_name}】(${target.beian_hao})
   管理人: ${target.manager}  成立: ${target.inception_date ?? "未知"}
-  策略: ${[target.strategy_l1, target.strategy_l2].filter(Boolean).join(" > ") || "未分类"}
+  策略: ${strategyLabel(target)}
   最新净值: ${target.latest_nav ?? "N/A"} (${target.latest_nav_date ?? "N/A"})
   近1月/3月/6月/1年: ${target.ret_1m ?? "N/A"} / ${target.ret_3m ?? "N/A"} / ${target.ret_6m ?? "N/A"} / ${target.ret_1y ?? "N/A"}
   数据库计算 — 累计收益: ${targetStats.totalReturn ? "+" + targetStats.totalReturn + "%" : "N/A"}  年化: ${targetStats.annReturn ? "+" + targetStats.annReturn + "%" : "N/A"}  最大回撤: ${targetStats.maxDrawdown ? "-" + targetStats.maxDrawdown + "%" : "N/A"}  夏普: ${targetStats.sharpe ?? "N/A"}`
@@ -499,7 +526,7 @@ export async function POST(req: Request) {
           return `=== #${idx + 1} 最相似基金（综合评分: ${(r.score * 100).toFixed(1)}）===
 【${r.fund.product_name}】(${r.fund.beian_hao})
   管理人: ${r.fund.manager}  成立: ${r.fund.inception_date ?? "未知"}
-  策略: ${[r.fund.strategy_l1, r.fund.strategy_l2].filter(Boolean).join(" > ") || "未分类"}
+  策略: ${strategyLabel(r.fund)}
   相关性（重叠${r.overlapMonths}个月）: ${corrStr}
   指标相似度: ${metricStr}
   净值记录数: ${r.navPoints}条

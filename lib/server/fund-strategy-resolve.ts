@@ -33,6 +33,71 @@ export function isStrategyEmpty(s: StrategyTriple): boolean {
   return !s.l1 && !s.l2 && !s.l3
 }
 
+/** Display path: 团队分类 if present, else 平台分类. Empty → 未分类. */
+export function formatFundStrategyLabel(
+  l1?: string | null,
+  l2?: string | null,
+  l3?: string | null,
+): string {
+  return [l1, l2, l3]
+    .map((v) => trimStrategyValue(v))
+    .filter((v): v is string => Boolean(v))
+    .join(" · ") || "未分类"
+}
+
+/**
+ * Latest type6 row for a fund, exposing company_l1..l3 (团队) and platform_l1..l3 (平台).
+ * `beianExpr` is a SQL expression, e.g. `i.beian_hao`.
+ */
+export function sqlType6LatestStrategyJoin(beianExpr: string, alias = "t6"): string {
+  return `LEFT JOIN LATERAL (
+    SELECT
+      NULLIF(BTRIM(company_strategy_one), '')    AS company_l1,
+      NULLIF(BTRIM(company_strategy_two), '')    AS company_l2,
+      NULLIF(BTRIM(company_strategy_three), '')  AS company_l3,
+      NULLIF(BTRIM(platform_strategy_one), '')   AS platform_l1,
+      NULLIF(BTRIM(platform_strategy_two), '')   AS platform_l2,
+      NULLIF(BTRIM(platform_strategy_three), '') AS platform_l3
+    FROM type6_ops_team_full
+    WHERE register_number = ${beianExpr}
+    ORDER BY updated_at DESC NULLS LAST, id DESC
+    LIMIT 1
+  ) ${alias} ON true`
+}
+
+/** SQL CASE expressions: 团队分类 if any team level is set, otherwise 平台分类 (optional PFI fallback). */
+export function sqlResolvedStrategyExprs(
+  t6Alias = "t6",
+  pfiAlias?: string,
+): { l1: string; l2: string; l3: string } {
+  const hasTeam = `COALESCE(${t6Alias}.company_l1, ${t6Alias}.company_l2, ${t6Alias}.company_l3)`
+  const pfiL1 = pfiAlias ? `, ${pfiAlias}.strategy_l1` : ""
+  const pfiL2 = pfiAlias ? `, ${pfiAlias}.strategy_l2` : ""
+  return {
+    l1: `CASE WHEN ${hasTeam} IS NOT NULL THEN ${t6Alias}.company_l1 ELSE COALESCE(${t6Alias}.platform_l1${pfiL1}) END`,
+    l2: `CASE WHEN ${hasTeam} IS NOT NULL THEN ${t6Alias}.company_l2 ELSE COALESCE(${t6Alias}.platform_l2${pfiL2}) END`,
+    l3: `CASE WHEN ${hasTeam} IS NOT NULL THEN ${t6Alias}.company_l3 ELSE ${t6Alias}.platform_l3 END`,
+  }
+}
+
+export function sqlResolvedStrategySelect(fundAlias: string, t6Alias = "t6"): string {
+  const expr = sqlResolvedStrategyExprs(t6Alias, fundAlias)
+  return `${expr.l1} AS strategy_l1,
+       ${expr.l2} AS strategy_l2,
+       ${expr.l3} AS strategy_l3`
+}
+
+/** Resolved 团队>平台 expressions against raw type6_ops_team_full column names. */
+export function sqlType6TableResolvedStrategy(alias = ""): { l1: string; l2: string; l3: string } {
+  const p = alias ? `${alias}.` : ""
+  const hasTeam = `COALESCE(NULLIF(BTRIM(${p}company_strategy_one), ''), NULLIF(BTRIM(${p}company_strategy_two), ''), NULLIF(BTRIM(${p}company_strategy_three), ''))`
+  return {
+    l1: `CASE WHEN ${hasTeam} IS NOT NULL THEN NULLIF(BTRIM(${p}company_strategy_one), '') ELSE NULLIF(BTRIM(${p}platform_strategy_one), '') END`,
+    l2: `CASE WHEN ${hasTeam} IS NOT NULL THEN NULLIF(BTRIM(${p}company_strategy_two), '') ELSE NULLIF(BTRIM(${p}platform_strategy_two), '') END`,
+    l3: `CASE WHEN ${hasTeam} IS NOT NULL THEN NULLIF(BTRIM(${p}company_strategy_three), '') ELSE NULLIF(BTRIM(${p}platform_strategy_three), '') END`,
+  }
+}
+
 function firstNonEmptyStrategy(...candidates: StrategyTriple[]): StrategyTriple {
   for (const candidate of candidates) {
     if (!isStrategyEmpty(candidate)) return candidate
