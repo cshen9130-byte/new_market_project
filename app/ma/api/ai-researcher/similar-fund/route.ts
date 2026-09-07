@@ -8,6 +8,13 @@ import {
   sqlType6LatestStrategyJoin,
   sqlType6TableResolvedStrategy,
 } from "@/lib/server/fund-strategy-resolve"
+import {
+  addDays,
+  BatchNavResolver,
+  NAV_HISTORY_LOOKBACK_DAYS,
+  type ProductNavIdentity,
+} from "@/lib/server/list-cache-nav-batch"
+import { loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -142,94 +149,123 @@ async function fetchCandidatePool(target: FundInfo, limit = 80): Promise<FundInf
   return rows
 }
 
-// Fetch NAV for many funds at once using the multi-table approach.
-// Returns a map: beian_hao → sorted NavPoint[]
+async function loadNavNameAliases(
+  funds: Pick<FundInfo, "beian_hao" | "product_name">[],
+): Promise<Map<string, { type6Name: string | null; shortName: string | null }>> {
+  const out = new Map<string, { type6Name: string | null; shortName: string | null }>()
+  const beianHaos = funds.map((f) => f.beian_hao).filter(Boolean)
+  if (beianHaos.length === 0) return out
+  const upper = beianHaos.map((b) => b.trim().toUpperCase())
+  const [type6Rows, bflRows] = await Promise.all([
+    query<{ register_number: string; fund_name: string | null }>(
+      `SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
+         register_number,
+         NULLIF(BTRIM(fund_name), '') AS fund_name
+       FROM type6_ops_team_full
+       WHERE UPPER(BTRIM(register_number)) = ANY($1::text[])
+       ORDER BY UPPER(BTRIM(register_number)), updated_at DESC NULLS LAST, id DESC`,
+      [upper],
+    ).catch(() => [] as { register_number: string; fund_name: string | null }[]),
+    query<{ beian_hao: string; product_name: string | null; short_name: string | null }>(
+      `SELECT beian_hao,
+              NULLIF(BTRIM(product_name), '') AS product_name,
+              NULLIF(BTRIM(short_name), '') AS short_name
+       FROM private_fund_info_bfl
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])`,
+      [upper],
+    ).catch(() => [] as { beian_hao: string; product_name: string | null; short_name: string | null }[]),
+  ])
+  for (const row of type6Rows) {
+    const key = row.register_number.trim().toUpperCase()
+    const prev = out.get(key) ?? { type6Name: null, shortName: null }
+    out.set(key, { ...prev, type6Name: row.fund_name })
+  }
+  for (const row of bflRows) {
+    const key = row.beian_hao.trim().toUpperCase()
+    const prev = out.get(key) ?? { type6Name: null, shortName: null }
+    out.set(key, {
+      type6Name: prev.type6Name ?? row.product_name,
+      shortName: row.short_name ?? prev.shortName,
+    })
+  }
+  return out
+}
+
+function batchHistoryToPoints(
+  history: Array<{ nav: number; nav_date: string; return_nav?: number }>,
+): NavPoint[] {
+  return history
+    .map((p) => ({
+      price_date: p.nav_date.slice(0, 10),
+      nav: String(p.nav),
+      cumulative_nav: p.return_nav != null ? String(p.return_nav) : String(p.nav),
+    }))
+    .sort((a, b) => a.price_date.localeCompare(b.price_date))
+}
+
+// Same merge as the product detail page (type6 + group + email + team), batched.
+// Platform-only beian lookups miss funds whose NAV is stored under a short name
+// (e.g. 正合弘毅1号 / SAWV62 shows 73 rows on the detail page).
 async function fetchNavBatch(
   funds: Pick<FundInfo, "beian_hao" | "product_name">[],
   months = 36,
 ): Promise<Record<string, NavPoint[]>> {
   if (funds.length === 0) return {}
+  const asOf = new Date().toISOString().slice(0, 10)
+  const aliases = await loadNavNameAliases(funds)
+  const identities: ProductNavIdentity[] = funds.map((f) => {
+    const alias = aliases.get(f.beian_hao.trim().toUpperCase())
+    const type6Name = alias?.type6Name?.trim() || null
+    const shortName = alias?.shortName?.trim() || null
+    return {
+      beian_hao: f.beian_hao,
+      product_name: f.product_name,
+      short_name: (type6Name && type6Name !== f.product_name ? type6Name : null) || shortName,
+    }
+  })
+
+  const out: Record<string, NavPoint[]> = {}
+  try {
+    const resolver = await BatchNavResolver.create(identities, asOf)
+    const since = addDays(asOf, Math.max(NAV_HISTORY_LOOKBACK_DAYS, months * 31))
+    for (let i = 0; i < funds.length; i++) {
+      const points = batchHistoryToPoints(
+        resolver.mergedHistoryForRiskMetrics(identities[i], since),
+      )
+      if (points.length > 0) out[funds[i].beian_hao] = points
+    }
+  } catch (err) {
+    console.warn("[similar-fund] BatchNavResolver failed, falling back to detail series", err)
+  }
+
+  const missing = funds.filter((f) => !(out[f.beian_hao]?.length))
+  if (missing.length === 0) return out
+
   const cutoff = new Date()
   cutoff.setMonth(cutoff.getMonth() - months)
   const cutoffStr = cutoff.toISOString().slice(0, 10)
-
-  // Batch: fetch all beian_haos from each table in one query per table,
-  // then merge in JS. This is much faster than one query per fund.
-  const beianHaos = funds.map((f) => f.beian_hao)
-
-  const [type6Rows, groupRows, hyRows, navRows] = await Promise.all([
-    query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-      `SELECT beian_hao, price_date::text, nav::text, cumulative_nav::text
-       FROM private_fund_nav_group_type6
-       WHERE beian_hao = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
-       ORDER BY beian_hao, price_date ASC`,
-      [beianHaos, cutoffStr],
-    ).catch(() => [] as { beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }[]),
-    query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-      `SELECT beian_hao, price_date::text, nav::text, cumulative_nav::text
-       FROM private_fund_nav_group
-       WHERE beian_hao = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
-       ORDER BY beian_hao, price_date ASC`,
-      [beianHaos, cutoffStr],
-    ),
-    query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-      `SELECT beian_hao, price_date::text, nav::text, cumulative_nav::text
-       FROM private_fund_nav_group_hy
-       WHERE beian_hao = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
-       ORDER BY beian_hao, price_date ASC`,
-      [beianHaos, cutoffStr],
-    ),
-    query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-      `SELECT beian_hao, price_date::text, nav::text, cumulative_nav::text
-       FROM private_fund_nav
-       WHERE beian_hao = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
-       ORDER BY beian_hao, price_date ASC`,
-      [beianHaos, cutoffStr],
-    ),
-  ])
-
-  // Product-name fallback for funds not found by beian_hao
-  const foundByBeianHao = new Set([...type6Rows, ...groupRows, ...hyRows, ...navRows].map((r) => r.beian_hao))
-  const missingFunds = funds.filter((f) => !foundByBeianHao.has(f.beian_hao) && f.product_name)
-
-  let nameRows: typeof groupRows = []
-  if (missingFunds.length > 0) {
-    const names = missingFunds.map((f) => f.product_name)
-    const [type6NameRows, groupNameRows] = await Promise.all([
-      query<{ beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-        `SELECT beian_hao, product_name, price_date::text, nav::text, cumulative_nav::text
-         FROM private_fund_nav_group_type6
-         WHERE product_name = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
-         ORDER BY beian_hao, price_date ASC`,
-        [names, cutoffStr],
-      ).catch(() => [] as { beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }[]),
-      query<{ beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-        `SELECT beian_hao, product_name, price_date::text, nav::text, cumulative_nav::text
-         FROM private_fund_nav_group
-         WHERE product_name = ANY($1::text[]) AND price_date >= $2::date AND nav IS NOT NULL
-         ORDER BY beian_hao, price_date ASC`,
-        [names, cutoffStr],
-      ).catch(() => [] as { beian_hao: string; product_name: string; price_date: string; nav: string; cumulative_nav: string | null }[]),
-    ])
-    nameRows = [...type6NameRows, ...groupNameRows].map((r) => {
-      const f = missingFunds.find((m) => m.product_name === r.product_name)
-      return { ...r, beian_hao: f?.beian_hao ?? r.beian_hao }
-    })
-  }
-
-  // Merge: type6 takes priority, then group, hy, nav, name fallback
-  const all = [...type6Rows, ...groupRows, ...hyRows, ...navRows, ...nameRows]
-  const result: Record<string, Map<string, NavPoint>> = {}
-  for (const r of all) {
-    if (!result[r.beian_hao]) result[r.beian_hao] = new Map()
-    if (!result[r.beian_hao].has(r.price_date)) {
-      result[r.beian_hao].set(r.price_date, { price_date: r.price_date, nav: r.nav, cumulative_nav: r.cumulative_nav })
-    }
-  }
-  const out: Record<string, NavPoint[]> = {}
-  for (const [bh, dateMap] of Object.entries(result)) {
-    out[bh] = [...dateMap.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
-  }
+  await Promise.all(
+    missing.map(async (f) => {
+      try {
+        const names = await resolveFundNames(f.beian_hao, f.product_name)
+        const series = await loadFundNavSeries(
+          f.beian_hao,
+          names.product_name,
+          names.short_name ?? identities.find((id) => id.beian_hao === f.beian_hao)?.short_name ?? "",
+          { from: cutoffStr, to: asOf },
+        )
+        if (series.length > 0) {
+          out[f.beian_hao] = series.map((p) => ({
+            price_date: p.price_date,
+            nav: p.level,
+            cumulative_nav: p.level,
+          }))
+        }
+      } catch (err) {
+        console.warn(`[similar-fund] detail NAV fallback failed for ${f.beian_hao}`, err)
+      }
+    }),
+  )
   return out
 }
 
@@ -519,7 +555,7 @@ export async function POST(req: Request) {
         const allFunds = target ? [target, ...candidates] : candidates
         const navMap = await withTimeout(
           fetchNavBatch(allFunds.map((f) => ({ beian_hao: f.beian_hao, product_name: f.product_name }))),
-          25_000,
+          45_000,
           {} as Record<string, NavPoint[]>,
           "fetchNavBatch",
         )
@@ -614,7 +650,7 @@ export async function POST(req: Request) {
   策略: ${strategyLabel(r.fund)}
   相关性（重叠${r.overlapMonths}个月）: ${corrStr}
   指标相似度: ${metricStr}
-  净值记录数: ${r.navPoints}条
+  净值记录数: ${r.navPoints}条${r.navPoints === 0 ? "（本次合并未取到序列，不得写成产品未披露净值）" : ""}
   近1月/3月/6月/1年: ${r.fund.ret_1m ?? "N/A"} / ${r.fund.ret_3m ?? "N/A"} / ${r.fund.ret_6m ?? "N/A"} / ${r.fund.ret_1y ?? "N/A"}
   ${formatNavRiskLine(stats, r.fund)}`
         }).join("\n\n")
@@ -648,7 +684,8 @@ ${kbSection}
 - 优先使用「数据库预计算（一年期）」的夏普/卡玛。
 - 仅当数据库一年期字段为空时，才使用「净值回退计算」的夏普/卡玛/回撤。
 - 只要已给出夏普或卡玛（无论来自数据库还是净值回退），禁止写「缺夏普/卡玛」或「缺风险指标」。
-- 仅当数据库一年期夏普/卡玛均为空、且净值回退也无法计算时，才可标注风险指标缺失。`
+- 仅当数据库一年期夏普/卡玛均为空、且净值回退也无法计算时，才可标注风险指标缺失。
+- 净值记录数来自本次合并拉取。禁止把 0 条写成「尚未披露历史净值」；产品详情页可能有完整序列，0 只表示本次未匹配到。有净值条数时必须用其计算相关性和数据完整性。`
 
         const reportModel = getChatModel(true)
         const reportStream = await reportModel.stream([
