@@ -1103,7 +1103,7 @@ export function OperationsElementExtractView() {
         <h1 className="text-lg font-semibold">要素提取</h1>
         <p className="text-sm text-muted-foreground mt-1">
           {tab === "batch"
-            ? "批量上传基金合同后在后台提取并写入空缺要素；可查看历史任务状态，以及哪些 FOF底层产品尚未关联合同。"
+            ? "批量上传基金合同后在后台提取并写入空缺要素；待确认任务可手动修正提取值后再写入。也可查看哪些 FOF底层产品尚未关联合同。"
             : "即时提取：上传后立即解析，核对匹配产品与字段后再写入。"}
         </p>
       </div>

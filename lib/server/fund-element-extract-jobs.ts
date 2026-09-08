@@ -3,6 +3,8 @@ import { promises as fs } from "fs"
 import path from "path"
 import { query, withTransaction } from "@/lib/db"
 import {
+  FUND_ELEMENT_BASIC_KEYS,
+  FUND_ELEMENT_SUBSCRIPTION_KEYS,
   type ExtractedFundElements,
   type FundMatchCandidate,
 } from "@/lib/server/fund-contract-element-extract"
@@ -436,6 +438,66 @@ export async function claimNextElementExtractJob(options?: {
     )
     return rows[0] ? mapJobRow(rows[0]) : null
   })
+}
+
+const EXTRACTED_TEXT_KEYS = [...FUND_ELEMENT_BASIC_KEYS, ...FUND_ELEMENT_SUBSCRIPTION_KEYS]
+
+function emptyExtractedElements(): ExtractedFundElements {
+  const out = {} as ExtractedFundElements
+  for (const key of EXTRACTED_TEXT_KEYS) out[key] = null
+  return out
+}
+
+export function normalizeExtractedElementsPatch(
+  input: Record<string, unknown> | null | undefined,
+  base: ExtractedFundElements | null,
+): ExtractedFundElements {
+  const out = emptyExtractedElements()
+  if (base) {
+    for (const key of EXTRACTED_TEXT_KEYS) out[key] = base[key] ?? null
+    if (base.fee_pay_formula_config !== undefined) {
+      out.fee_pay_formula_config = base.fee_pay_formula_config
+    }
+  }
+  if (!input) return out
+  for (const key of EXTRACTED_TEXT_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue
+    const value = input[key]
+    if (value == null) {
+      out[key] = null
+      continue
+    }
+    const s = String(value).trim()
+    out[key] = s || null
+  }
+  return out
+}
+
+export async function saveElementExtractJobElements(
+  id: number,
+  extractedInput: Record<string, unknown>,
+): Promise<ElementExtractJobRow> {
+  const job = await getElementExtractJobById(id)
+  if (!job) throw new Error("任务不存在")
+  if (job.status === "queued" || job.status === "extracting") {
+    throw new Error("任务正在提取，请稍后再修改")
+  }
+
+  const extracted = normalizeExtractedElementsPatch(extractedInput, job.extracted_json)
+  const patch: {
+    extracted_json: ExtractedFundElements
+    status?: ExtractJobStatus
+    error_message?: string | null
+  } = { extracted_json: extracted }
+
+  if (job.status === "failed") {
+    patch.status = "needs_review"
+    patch.error_message = "已手动填写要素，待确认后写入"
+  }
+
+  const updated = await updateElementExtractJob(id, patch)
+  if (!updated) throw new Error("保存提取要素失败")
+  return updated
 }
 
 export async function updateElementExtractJob(

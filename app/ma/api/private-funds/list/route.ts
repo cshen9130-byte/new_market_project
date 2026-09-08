@@ -10,6 +10,14 @@ import { enrichPrivateFundListMetrics } from "@/lib/server/private-fund-list-met
 import { mapManagerRegistrationNos } from "@/lib/server/private-fund-manager-query"
 import { STRATEGY_UNCONFIGURED } from "@/lib/ma/strategy-unconfigured"
 import { sqlType6LatestStrategyJoin } from "@/lib/server/fund-strategy-resolve"
+import {
+  PRIVATE_FUND_TYPE_AMAC_VALUES,
+  PRIVATE_FUND_TYPE_NAME_PATTERN,
+  PRIVATE_FUND_TYPES_USING_FUTURES_TABLE,
+  PRIVATE_FUND_WORKING_STATE_AMAC,
+  parsePrivateFundTypesParam,
+  parsePrivateFundWorkingStateParam,
+} from "@/lib/ma/private-fund-type-filter"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -290,6 +298,8 @@ export async function GET(req: Request) {
   const inceptionPeriod = (searchParams.get("inception") || "").trim()
   const navDatePeriod = (searchParams.get("navdate") || "").trim()
   const navFrequency = (searchParams.get("navfreq") || "").trim()
+  const fundTypes = parsePrivateFundTypesParam(searchParams.get("fundtype") || "")
+  const workingState = parsePrivateFundWorkingStateParam(searchParams.get("fundstate") || "")
   const metricTab = searchParams.get("metric") || "收益"
   const period = searchParams.get("period") || "本周"
   const range = searchParams.get("range") || "不限"
@@ -454,6 +464,53 @@ export async function GET(req: Request) {
           GROUP BY beian_hao HAVING ${subSql}
         )`)
       }
+    }
+  }
+  if (fundTypes.length > 0) {
+    const typeClauses: string[] = []
+    for (const label of fundTypes) {
+      const parts: string[] = []
+      const amacValues = PRIVATE_FUND_TYPE_AMAC_VALUES[label]
+      if (amacValues.length > 0) {
+        filterParams.push(amacValues)
+        parts.push(`EXISTS (
+          SELECT 1 FROM amac_private_funds _ft
+          WHERE _ft.fund_no = i.beian_hao
+            AND _ft.fund_type = ANY($${filterParams.length})
+        )`)
+      }
+      const namePat = PRIVATE_FUND_TYPE_NAME_PATTERN[label]
+      if (namePat) {
+        filterParams.push(`%${namePat}%`)
+        parts.push(`i.product_name ILIKE $${filterParams.length}`)
+      }
+      if (PRIVATE_FUND_TYPES_USING_FUTURES_TABLE.has(label)) {
+        parts.push(`EXISTS (
+          SELECT 1 FROM amac_futures_products _fut
+          WHERE _fut.fund_no = i.beian_hao
+        )`)
+      }
+      if (parts.length > 0) typeClauses.push(`(${parts.join(" OR ")})`)
+    }
+    if (typeClauses.length > 0) where.push(`(${typeClauses.join(" OR ")})`)
+  }
+  if (workingState) {
+    const amacStates = PRIVATE_FUND_WORKING_STATE_AMAC[workingState]
+    if (amacStates.length > 0) {
+      filterParams.push(amacStates)
+      const idx = filterParams.length
+      where.push(`(
+        EXISTS (
+          SELECT 1 FROM amac_private_funds _ws
+          WHERE _ws.fund_no = i.beian_hao
+            AND _ws.working_state = ANY($${idx})
+        )
+        OR EXISTS (
+          SELECT 1 FROM amac_futures_products _wsf
+          WHERE _wsf.fund_no = i.beian_hao
+            AND _wsf.working_state = ANY($${idx})
+        )
+      )`)
     }
   }
   if (navFrequency && navFrequency !== "不限") {

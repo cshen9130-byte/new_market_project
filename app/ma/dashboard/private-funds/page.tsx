@@ -51,6 +51,7 @@ import {
   STRATEGY_UNCONFIGURED_LABEL,
   isStrategyUnconfigured,
 } from "@/lib/ma/strategy-unconfigured"
+import { PRIVATE_FUND_TYPE_OPTIONS } from "@/lib/ma/private-fund-type-filter"
 import { ProductElementsDialogContent } from "./components/ProductElementsDialogContent"
 import { OpsTraderManageDialog } from "./components/OpsTraderManageDialog"
 import { BatchAddStrategyDialog, TEAM_BENCHMARK_OPTIONS } from "./components/BatchAddStrategyDialog"
@@ -420,7 +421,7 @@ function writeListCache(key: string, entry: ListCacheEntry): void {
 
 const STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"] as const
 const MORE_INFO_TABS = ["基金类型", "基金成立日期", "净值日期", "净值频率", "净值完整度", "是否代表产品", "基金规模提示", "基金信披情况", "基金策略确认", "投资区域", "运作状态", "机构管理规模", "机构办公地址"] as const
-const FUND_TYPES = ["不限", "私募证券基金", "券商资管", "期货资管", "信托产品", "公募专户", "保险资管", "私募资产配置基金"] as const
+const FUND_TYPES = ["不限", ...PRIVATE_FUND_TYPE_OPTIONS] as const
 const ORG_SIZES = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20亿", "5-10亿", "0-5亿"] as const
 const MORE_INFO_OPTIONS: Record<string, string[]> = {
   "基金成立日期": ["不限", "6个月以内", "6个月-1年", "1-3年", "3-5年", "5年以上", "自定义"],
@@ -570,6 +571,8 @@ interface FilterState {
   inceptionPeriod: string
   navDatePeriod: string
   navFrequency: string
+  fundTypes: string[]
+  workingState: string
 }
 
 function defaultPrivateFundFilters(): FilterState {
@@ -584,6 +587,8 @@ function defaultPrivateFundFilters(): FilterState {
     inceptionPeriod: "",
     navDatePeriod: "",
     navFrequency: "",
+    fundTypes: [],
+    workingState: "",
   }
 }
 
@@ -624,8 +629,8 @@ function FundFilterPanel({
   onSave: (name: string) => void
 }) {
   const [moreInfoTab, setMoreInfoTab] = useState("基金类型")
-  const [fundTypes, setFundTypes] = useState<string[]>([])
   const [orgSizes, setOrgSizes] = useState<string[]>([])
+  const fundTypes = filters.fundTypes ?? []
   const [moreInfoValues, setMoreInfoValues] = useState<Record<string, string>>({})
   const [showSaveModal, setShowSaveModal] = useState(false)
   const [strategyHierarchy, setStrategyHierarchy] = useState<FilterHierarchyNode[]>([])
@@ -826,6 +831,32 @@ function FundFilterPanel({
       }
     }
   }
+  for (const ft of fundTypes) {
+    activeConditions.push({
+      label: `基金类型：${ft}`,
+      clear: () => onChange({ fundTypes: fundTypes.filter((x) => x !== ft) }),
+    })
+  }
+  if (filters.inceptionPeriod)
+    activeConditions.push({
+      label: `基金成立日期：${filters.inceptionPeriod}`,
+      clear: () => onChange({ inceptionPeriod: "" }),
+    })
+  if (filters.navDatePeriod)
+    activeConditions.push({
+      label: `净值日期：${filters.navDatePeriod}`,
+      clear: () => onChange({ navDatePeriod: "" }),
+    })
+  if (filters.navFrequency)
+    activeConditions.push({
+      label: `净值频率：${filters.navFrequency}`,
+      clear: () => onChange({ navFrequency: "" }),
+    })
+  if (filters.workingState)
+    activeConditions.push({
+      label: `运作状态：${filters.workingState}`,
+      clear: () => onChange({ workingState: "" }),
+    })
   if (filters.keyword)
     activeConditions.push({
       label: `关键字: ${filters.keyword}`,
@@ -841,7 +872,6 @@ function FundFilterPanel({
 
   function clearAll() {
     onChange({ ...defaultPrivateFundFilters(), strategySource })
-    setFundTypes([])
     setMoreInfoValues({})
   }
 
@@ -955,14 +985,22 @@ function FundFilterPanel({
         <div className="flex items-center px-4 py-2.5">
           <span className={lbl}>更多信息：</span>
           <div className="flex items-center gap-2 overflow-x-auto flex-1 scrollbar-none">
-            {MORE_INFO_TABS.map((tab) => (
-              <FilterPill
-                key={tab}
-                label={tab}
-                active={moreInfoTab === tab}
-                onClick={() => setMoreInfoTab((t) => (t === tab ? "" : tab))}
-              />
-            ))}
+            {MORE_INFO_TABS.map((tab) => {
+              const tabHasFilter =
+                (tab === "基金类型" && fundTypes.length > 0)
+                || (tab === "基金成立日期" && Boolean(filters.inceptionPeriod))
+                || (tab === "净值日期" && Boolean(filters.navDatePeriod))
+                || (tab === "净值频率" && Boolean(filters.navFrequency))
+                || (tab === "运作状态" && Boolean(filters.workingState))
+              return (
+                <FilterPill
+                  key={tab}
+                  label={tab}
+                  active={moreInfoTab === tab || tabHasFilter}
+                  onClick={() => setMoreInfoTab((t) => (t === tab ? "" : tab))}
+                />
+              )
+            })}
           </div>
           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground ml-1 shrink-0" />
         </div>
@@ -978,10 +1016,12 @@ function FundFilterPanel({
                     className="rounded h-3 w-3 accent-red-500"
                     checked={checked}
                     onChange={() => {
-                      if (ft === "不限") setFundTypes([])
-                      else setFundTypes((prev) =>
-                        prev.includes(ft) ? prev.filter((x) => x !== ft) : [...prev, ft]
-                      )
+                      if (ft === "不限") onChange({ fundTypes: [] })
+                      else onChange({
+                        fundTypes: fundTypes.includes(ft)
+                          ? fundTypes.filter((x) => x !== ft)
+                          : [...fundTypes, ft],
+                      })
                     }}
                   />
                   <span>{ft}</span>
@@ -1021,7 +1061,13 @@ function FundFilterPanel({
                 <FilterPill
                   key={opt}
                   label={opt}
-                  active={(moreInfoTab === "基金成立日期" ? (filters.inceptionPeriod || "不限") : moreInfoTab === "净值日期" ? (filters.navDatePeriod || "不限") : moreInfoTab === "净值频率" ? (filters.navFrequency || "不限") : (moreInfoValues[moreInfoTab] ?? "不限")) === opt}
+                  active={(
+                    moreInfoTab === "基金成立日期" ? (filters.inceptionPeriod || "不限")
+                    : moreInfoTab === "净值日期" ? (filters.navDatePeriod || "不限")
+                    : moreInfoTab === "净值频率" ? (filters.navFrequency || "不限")
+                    : moreInfoTab === "运作状态" ? (filters.workingState || "不限")
+                    : (moreInfoValues[moreInfoTab] ?? "不限")
+                  ) === opt}
                   onClick={() => {
                     if (moreInfoTab === "基金成立日期") {
                       onChange({ inceptionPeriod: opt === "不限" ? "" : opt })
@@ -1029,6 +1075,8 @@ function FundFilterPanel({
                       onChange({ navDatePeriod: opt === "不限" ? "" : opt })
                     } else if (moreInfoTab === "净值频率") {
                       onChange({ navFrequency: opt === "不限" ? "" : opt })
+                    } else if (moreInfoTab === "运作状态") {
+                      onChange({ workingState: opt === "不限" ? "" : opt })
                     } else {
                       setMoreInfoValues((prev) => ({ ...prev, [moreInfoTab]: opt }))
                     }
@@ -1465,13 +1513,15 @@ function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; s
 }
 
 function PrivateFundTable({
-  strategyFilters, strategySource, keyword, manager, metricTab, period, range, inceptionPeriod, navDatePeriod, navFrequency,
+  strategyFilters, strategySource, keyword, manager, metricTab, period, range, inceptionPeriod, navDatePeriod, navFrequency, fundTypes, workingState,
   templates, activeTemplateName, onLoadTemplate, onLoadDefault,
 }: {
   strategyFilters: StrategyFilter[]
   strategySource: PrivateFundStrategySource
   keyword: string; manager: string
   metricTab: string; period: string; range: string; inceptionPeriod: string; navDatePeriod: string; navFrequency: string
+  fundTypes: string[]
+  workingState: string
   templates: SavedTemplate[]; activeTemplateName: string | null
   onLoadTemplate: (t: SavedTemplate) => void
   onLoadDefault: () => void
@@ -1491,7 +1541,8 @@ function PrivateFundTable({
   const tableContainerRef = useRef<HTMLDivElement>(null)
 
   const sfKey = JSON.stringify(strategyFilters)
-  const filterKey = `${strategySource}|${sfKey}|${keyword}|${manager}|${metricTab}|${period}|${range}|${inceptionPeriod}|${navDatePeriod}|${navFrequency}|${cutoffDate}`
+  const fundTypeKey = (fundTypes ?? []).join(",")
+  const filterKey = `${strategySource}|${sfKey}|${keyword}|${manager}|${metricTab}|${period}|${range}|${inceptionPeriod}|${navDatePeriod}|${navFrequency}|${fundTypeKey}|${workingState}|${cutoffDate}`
   const fetchGenRef = useRef(0)
   const prevFilterKeyRef = useRef(filterKey)
 
@@ -1509,7 +1560,7 @@ function PrivateFundTable({
 
     const sfParams = encodePrivateFundStrategyParams(strategyFilters)
     setLoading(true)
-    fetch(`/ma/api/private-funds/list?page=${page}&sort=${sortKey}&dir=${sortDir}${sfParams}&strategy_source=${encodeURIComponent(strategySource)}&keyword=${encodeURIComponent(keyword)}&manager=${encodeURIComponent(manager)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&cutoff=${encodeURIComponent(cutoffDate)}`, { signal: controller.signal })
+    fetch(`/ma/api/private-funds/list?page=${page}&sort=${sortKey}&dir=${sortDir}${sfParams}&strategy_source=${encodeURIComponent(strategySource)}&keyword=${encodeURIComponent(keyword)}&manager=${encodeURIComponent(manager)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&fundtype=${encodeURIComponent(fundTypeKey)}&fundstate=${encodeURIComponent(workingState)}&cutoff=${encodeURIComponent(cutoffDate)}`, { signal: controller.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()
@@ -1572,7 +1623,7 @@ function PrivateFundTable({
       rows = data.filter((r) => selected.has(r.beian_hao))
     } else {
       const sfParams = encodePrivateFundStrategyParams(strategyFilters)
-      const url = `/ma/api/private-funds/list?export=1&sort=${sortKey}&dir=${sortDir}${sfParams}&strategy_source=${encodeURIComponent(strategySource)}&keyword=${encodeURIComponent(keyword)}&manager=${encodeURIComponent(manager)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&cutoff=${encodeURIComponent(cutoffDate)}`
+      const url = `/ma/api/private-funds/list?export=1&sort=${sortKey}&dir=${sortDir}${sfParams}&strategy_source=${encodeURIComponent(strategySource)}&keyword=${encodeURIComponent(keyword)}&manager=${encodeURIComponent(manager)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&fundtype=${encodeURIComponent(fundTypeKey)}&fundstate=${encodeURIComponent(workingState)}&cutoff=${encodeURIComponent(cutoffDate)}`
       const json = await fetch(url).then((r) => r.json())
       rows = json.data ?? []
     }
@@ -23314,6 +23365,8 @@ function PrivateFundView() {
       ...defaultPrivateFundFilters(),
       ...t.filters,
       strategySource: t.filters.strategySource === "platform" ? "platform" : "company",
+      fundTypes: Array.isArray(t.filters.fundTypes) ? t.filters.fundTypes : [],
+      workingState: typeof t.filters.workingState === "string" ? t.filters.workingState : "",
     })
     setActiveTemplateName(t.name)
   }
@@ -23337,6 +23390,8 @@ function PrivateFundView() {
         inceptionPeriod={filters.inceptionPeriod}
         navDatePeriod={filters.navDatePeriod}
         navFrequency={filters.navFrequency}
+        fundTypes={filters.fundTypes ?? []}
+        workingState={filters.workingState ?? ""}
         templates={templates}
         activeTemplateName={activeTemplateName}
         onLoadTemplate={handleLoadTemplate}

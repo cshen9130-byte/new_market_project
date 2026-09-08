@@ -6,6 +6,7 @@ import {
   FileSearch,
   FileText,
   Loader2,
+  Pencil,
   PlusCircle,
   RefreshCw,
   Upload,
@@ -184,15 +185,139 @@ function fileKey(file: File) {
   return `${file.name}::${file.size}::${file.lastModified}`
 }
 
+function emptyExtracted(): ExtractedFundElements {
+  return {
+    fund_name: null,
+    register_number: null,
+    advisor: null,
+    fund_manager: null,
+    inception_date: null,
+    puton_date: null,
+    custodian: null,
+    open_day: null,
+    is_temporary_open: null,
+    fee_purchase: null,
+    add_amount: null,
+    fee_redeem: null,
+    precautious_line: null,
+    closed_period: null,
+    stop_line: null,
+    fee_manage_rate: null,
+    fee_trust: null,
+    fee_manage: null,
+    fee_admin_service: null,
+    fee_pay: null,
+    risk_level: null,
+    lock_period_desc: null,
+    fee_pay_formula: null,
+  }
+}
+
 function displayValue(value: string | null | undefined) {
   const s = (value ?? "").trim()
   return s || "—"
 }
 
-function buildDefaultSelection(extracted: ExtractedFundElements | null): Record<ElementKey, boolean> {
+const LONG_TEXT_KEYS = new Set<ElementKey>([
+  "open_day",
+  "fee_redeem",
+  "fee_manage",
+  "fee_pay",
+  "fee_pay_formula",
+  "lock_period_desc",
+  "closed_period",
+  "is_temporary_open",
+  "fee_admin_service",
+  "fee_trust",
+])
+
+function canEditJob(job: ExtractJob) {
+  return job.status === "needs_review" || job.status === "applied" || job.status === "failed"
+}
+
+function FieldCompareRow({
+  fieldKey,
+  extracted,
+  current,
+  selected,
+  onToggle,
+  editing,
+  onExtractedChange,
+}: {
+  fieldKey: ElementKey
+  extracted: string | null
+  current: string | null
+  selected: boolean
+  onToggle: (checked: boolean) => void
+  editing: boolean
+  onExtractedChange: (value: string) => void
+}) {
+  const extractedText = extracted?.trim() || ""
+  const currentText = current?.trim() || ""
+  const changed = extractedText && extractedText !== currentText
+  const disabled = !extractedText
+  const useTextarea = LONG_TEXT_KEYS.has(fieldKey)
+
+  return (
+    <tr className={!editing && disabled ? "opacity-50" : undefined}>
+      <td className="px-3 py-2 align-top">
+        <input
+          type="checkbox"
+          checked={selected && !disabled}
+          disabled={disabled || editing}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="accent-red-500"
+        />
+      </td>
+      <td className="px-3 py-2 text-sm text-zinc-600 whitespace-nowrap">{FIELD_LABELS[fieldKey]}</td>
+      <td className="px-3 py-2 text-sm">
+        {editing ? (
+          useTextarea ? (
+            <textarea
+              value={extracted ?? ""}
+              onChange={(e) => onExtractedChange(e.target.value)}
+              rows={2}
+              className="w-full min-w-[180px] border rounded px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+              placeholder="未提取，可手动填写"
+            />
+          ) : (
+            <input
+              type="text"
+              value={extracted ?? ""}
+              onChange={(e) => onExtractedChange(e.target.value)}
+              className="w-full min-w-[140px] border rounded px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder="未提取，可手动填写"
+            />
+          )
+        ) : (
+          displayValue(extracted)
+        )}
+      </td>
+      <td className="px-3 py-2 text-sm text-muted-foreground">{displayValue(current)}</td>
+      <td className="px-3 py-2 text-xs">
+        {disabled ? (
+          <span className="text-muted-foreground">未提取</span>
+        ) : changed ? (
+          <span className="text-amber-700">将更新</span>
+        ) : currentText ? (
+          <span className="text-emerald-700">一致</span>
+        ) : (
+          <span className="text-blue-700">新增</span>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+function buildDefaultSelection(
+  extracted: ExtractedFundElements | null,
+  status?: ExtractJobStatus,
+): Record<ElementKey, boolean> {
   const out = {} as Record<ElementKey, boolean>
   for (const key of BASIC_KEYS) out[key] = false
-  for (const key of SUBSCRIPTION_KEYS) out[key] = Boolean(extracted?.[key]?.trim())
+  for (const key of SUBSCRIPTION_KEYS) {
+    out[key] = status === "applied" ? false : Boolean(extracted?.[key]?.trim())
+  }
   return out
 }
 
@@ -252,6 +377,7 @@ function userHeaders(): HeadersInit {
 export function OperationsElementExtractBatchPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipSelectionResetRef = useRef(0)
 
   const [files, setFiles] = useState<File[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -282,6 +408,9 @@ export function OperationsElementExtractBatchPanel() {
   const [applyMessage, setApplyMessage] = useState<string | null>(null)
   const [reextracting, setReextracting] = useState(false)
   const [reextractMessage, setReextractMessage] = useState<string | null>(null)
+  const [editingExtracted, setEditingExtracted] = useState(false)
+  const [editDraft, setEditDraft] = useState<ExtractedFundElements | null>(null)
+  const [savingExtracted, setSavingExtracted] = useState(false)
 
   const activeJob = useMemo(
     () => jobs.find((job) => job.id === activeJobId) ?? null,
@@ -380,6 +509,8 @@ export function OperationsElementExtractBatchPanel() {
       setCurrentElements(null)
       setSelectedFields(buildDefaultSelection(null))
       setApplyMessage(null)
+      setEditingExtracted(false)
+      setEditDraft(null)
       return
     }
     const matched = activeJob.matched_funds ?? []
@@ -389,8 +520,12 @@ export function OperationsElementExtractBatchPanel() {
         : null) ?? matched[0] ?? null
     setSelectedFund(existing)
     setFundInput(existing?.product_name || activeJob.product_name || activeJob.extracted_json?.fund_name || "")
-    setSelectedFields(buildDefaultSelection(activeJob.extracted_json))
-    setApplyMessage(activeJob.error_message)
+    if (skipSelectionResetRef.current === activeJob.id) {
+      skipSelectionResetRef.current = 0
+    } else {
+      setSelectedFields(buildDefaultSelection(activeJob.extracted_json, activeJob.status))
+      setApplyMessage(activeJob.error_message)
+    }
   }, [activeJob?.id, activeJob?.status])
 
   useEffect(() => {
@@ -490,6 +625,82 @@ export function OperationsElementExtractBatchPanel() {
     await loadJobs()
   }
 
+  function cancelEditExtracted() {
+    setEditingExtracted(false)
+    setEditDraft(null)
+    setSavingExtracted(false)
+  }
+
+  function selectJob(id: number, options?: { startEdit?: boolean }) {
+    const job = jobs.find((row) => row.id === id)
+    setActiveJobId(id)
+    if (options?.startEdit && job && canEditJob(job)) {
+      setEditDraft({ ...(job.extracted_json ?? emptyExtracted()) })
+      setEditingExtracted(true)
+      setTimeout(() => {
+        document.getElementById("element-extract-editor")?.scrollIntoView({ behavior: "smooth", block: "start" })
+      }, 80)
+      return
+    }
+    cancelEditExtracted()
+  }
+
+  function startEditExtracted() {
+    if (!activeJob || !canEditJob(activeJob)) return
+    setEditDraft({ ...(activeJob.extracted_json ?? emptyExtracted()) })
+    setEditingExtracted(true)
+    setTimeout(() => {
+      document.getElementById("element-extract-editor")?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }, 80)
+  }
+
+  function updateEditDraftField(key: ElementKey, value: string) {
+    setEditDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
+
+  async function saveEditExtracted() {
+    if (!activeJob || !editDraft) return
+    setSavingExtracted(true)
+    setApplyMessage(null)
+    try {
+      const res = await fetch(`/ma/api/ops/fund-elements/jobs/${activeJob.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extracted: editDraft }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.error) throw new Error(json.error || "保存失败")
+      const saved = (json.data ?? {}) as ExtractJob
+      const nextExtracted = saved.extracted_json ?? editDraft
+      const nextSelected = { ...selectedFields }
+      for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
+        const hasValue = Boolean(nextExtracted[key]?.trim())
+        if (!hasValue) nextSelected[key] = false
+        else if (!activeJob.extracted_json?.[key]?.trim()) nextSelected[key] = true
+      }
+      skipSelectionResetRef.current = activeJob.id
+      setJobs((prev) =>
+        prev.map((job) =>
+          job.id === activeJob.id
+            ? {
+                ...job,
+                ...saved,
+                extracted_json: nextExtracted,
+              }
+            : job,
+        ),
+      )
+      setSelectedFields(nextSelected)
+      setEditingExtracted(false)
+      setEditDraft(null)
+      setApplyMessage("提取值已保存，勾选后可写入产品")
+    } catch (err) {
+      setApplyMessage(err instanceof Error ? err.message : "保存失败")
+    } finally {
+      setSavingExtracted(false)
+    }
+  }
+
   async function handleReextractAll() {
     setReextracting(true)
     setReextractMessage(null)
@@ -507,7 +718,7 @@ export function OperationsElementExtractBatchPanel() {
   }
 
   async function handleApply() {
-    if (!activeJob || !selectedFund) return
+    if (!activeJob || !selectedFund || editingExtracted) return
     const payload: Record<string, string | null> = {}
     const extracted = activeJob.extracted_json
     if (!extracted) return
@@ -545,17 +756,21 @@ export function OperationsElementExtractBatchPanel() {
   ).length
 
   function renderFieldTable(keys: ElementKey[], title: string) {
-    const extracted = activeJob?.extracted_json
+    const extracted = editingExtracted && editDraft ? editDraft : activeJob?.extracted_json
     const selectableKeys = keys.filter((key) => extracted?.[key]?.trim())
     const allSelected = selectableKeys.length > 0 && selectableKeys.every((key) => selectedFields[key])
     return (
       <div className="rounded-lg border overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/20">
           <span className="text-sm font-medium">{title}</span>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+          <label className={[
+            "flex items-center gap-2 text-xs text-muted-foreground",
+            editingExtracted ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+          ].join(" ")}>
             <input
               type="checkbox"
               checked={allSelected}
+              disabled={editingExtracted}
               onChange={(e) => {
                 const next = { ...selectedFields }
                 for (const key of keys) {
@@ -569,36 +784,29 @@ export function OperationsElementExtractBatchPanel() {
           </label>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px]">
+          <table className="w-full min-w-[760px]">
             <thead>
               <tr className="border-b bg-muted/10 text-xs text-zinc-500">
                 <th className="px-3 py-2 text-left w-10">写入</th>
                 <th className="px-3 py-2 text-left w-28">字段</th>
                 <th className="px-3 py-2 text-left">提取值</th>
                 <th className="px-3 py-2 text-left">当前值</th>
+                <th className="px-3 py-2 text-left w-20">状态</th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {keys.map((key) => {
-                const value = extracted?.[key] ?? null
-                const disabled = !value?.trim()
-                return (
-                  <tr key={key}>
-                    <td className="px-3 py-2">
-                      <input
-                        type="checkbox"
-                        disabled={disabled}
-                        checked={Boolean(selectedFields[key] && !disabled)}
-                        onChange={(e) => setSelectedFields((prev) => ({ ...prev, [key]: e.target.checked }))}
-                        className="accent-red-500"
-                      />
-                    </td>
-                    <td className="px-3 py-2 text-sm">{FIELD_LABELS[key]}</td>
-                    <td className="px-3 py-2 text-sm">{displayValue(value)}</td>
-                    <td className="px-3 py-2 text-sm text-muted-foreground">{displayValue(currentElements?.[key])}</td>
-                  </tr>
-                )
-              })}
+              {keys.map((key) => (
+                <FieldCompareRow
+                  key={key}
+                  fieldKey={key}
+                  extracted={extracted?.[key] ?? null}
+                  current={currentElements?.[key] ?? null}
+                  selected={selectedFields[key]}
+                  onToggle={(checked) => setSelectedFields((prev) => ({ ...prev, [key]: checked }))}
+                  editing={editingExtracted}
+                  onExtractedChange={(value) => updateEditDraftField(key, value)}
+                />
+              ))}
             </tbody>
           </table>
         </div>
@@ -847,7 +1055,7 @@ export function OperationsElementExtractBatchPanel() {
                 <tr
                   key={job.id}
                   className={activeJobId === job.id ? "bg-red-50/40" : "cursor-pointer hover:bg-muted/20"}
-                  onClick={() => setActiveJobId(job.id)}
+                  onClick={() => selectJob(job.id)}
                 >
                   <td className="px-3 py-2 truncate max-w-[240px]">
                     <a
@@ -893,6 +1101,18 @@ export function OperationsElementExtractBatchPanel() {
                       ) : (
                         <span className="text-xs text-muted-foreground" title="尚未匹配产品">查看</span>
                       )}
+                      {canEditJob(job) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            selectJob(job.id, { startEdit: true })
+                          }}
+                          className="text-xs text-red-600 hover:underline"
+                        >
+                          编辑
+                        </button>
+                      )}
                       <a
                         href={jobFileUrl(job.id, true)}
                         onClick={(e) => e.stopPropagation()}
@@ -926,7 +1146,7 @@ export function OperationsElementExtractBatchPanel() {
         </div>
       </div>
 
-      {activeJob?.extracted_json && (activeJob.status === "needs_review" || activeJob.status === "applied" || activeJob.status === "failed") && (
+      {activeJob && canEditJob(activeJob) && (
         <div className="space-y-4">
           <div className="rounded-lg border p-5 space-y-4">
             <div className="flex items-center gap-2 text-sm font-medium">
@@ -1037,36 +1257,79 @@ export function OperationsElementExtractBatchPanel() {
             )}
           </div>
 
-          {activeJob.status !== "applied" && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-medium">提取结果预览</h2>
-                  <p className="text-xs text-muted-foreground mt-1">勾选需要写入的字段。后台自动入库只会填空缺字段，不会覆盖已有要素。</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void handleApply()}
-                  disabled={!selectedFund || applying || loadingCurrent}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-60"
-                >
-                  {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                  {applying ? "写入中…" : selectedCount > 0 ? `写入 ${selectedCount} 个字段并保存合同` : "仅保存合同到产品"}
-                </button>
+          <div id="element-extract-editor" className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-medium">提取结果预览</h2>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {editingExtracted
+                    ? "编辑模式下可修正或补全提取值；保存后勾选写入目标基金。"
+                    : activeJob.status === "applied"
+                      ? "可修改提取值后覆盖写入已选字段。后台自动入库只会填空缺字段。"
+                      : "勾选需要写入的字段，或先编辑提取值。后台自动入库只会填空缺字段，不会覆盖已有要素。"}
+                </p>
               </div>
-              {applyMessage && (
-                <div className="rounded px-3 py-2 text-sm border bg-muted/20">{applyMessage}</div>
-              )}
-              {loadingCurrent ? (
-                <div className="text-sm text-muted-foreground py-8 text-center">加载当前要素…</div>
-              ) : (
-                <>
-                  {renderFieldTable(BASIC_KEYS, "基本信息")}
-                  {renderFieldTable(SUBSCRIPTION_KEYS, "申赎信息")}
-                </>
-              )}
+              <div className="flex items-center gap-2 shrink-0">
+                {editingExtracted ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={cancelEditExtracted}
+                      disabled={savingExtracted}
+                      className="px-3 py-2 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-60"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void saveEditExtracted()}
+                      disabled={savingExtracted}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-60"
+                    >
+                      {savingExtracted ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {savingExtracted ? "保存中…" : "保存修改"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={startEditExtracted}
+                      disabled={applying || loadingCurrent}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-60"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      编辑提取值
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleApply()}
+                      disabled={!selectedFund || applying || loadingCurrent || !activeJob.extracted_json}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-60"
+                    >
+                      {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {applying
+                        ? "写入中…"
+                        : selectedCount > 0
+                          ? `写入 ${selectedCount} 个字段并保存合同`
+                          : "仅保存合同到产品"}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          )}
+            {applyMessage && (
+              <div className="rounded px-3 py-2 text-sm border bg-muted/20">{applyMessage}</div>
+            )}
+            {loadingCurrent && selectedFund ? (
+              <div className="text-sm text-muted-foreground py-8 text-center">加载当前要素…</div>
+            ) : (
+              <>
+                {renderFieldTable(BASIC_KEYS, "基本信息")}
+                {renderFieldTable(SUBSCRIPTION_KEYS, "申赎信息")}
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

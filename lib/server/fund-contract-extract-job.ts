@@ -17,6 +17,7 @@ import {
   countQueuedElementExtractJobs,
   createElementExtractJobFromBuffer,
   getElementExtractJobById,
+  normalizeExtractedElementsPatch,
   listAppliedElementExtractJobs,
   listAppliedExtractJobsByBeiAns,
   listExtractJobsForRerun,
@@ -822,7 +823,7 @@ export async function applyElementExtractJobManually(input: {
     contractId = material.id
   }
 
-  const extracted = job.extracted_json
+  const extracted = normalizeExtractedElementsPatch(input.fields, job.extracted_json)
   let fields: string[] = []
   if (input.fields) {
     const writeBody = { beian_hao: resolvedBeian, ...input.fields }
@@ -836,6 +837,7 @@ export async function applyElementExtractJobManually(input: {
     status: "applied",
     beian_hao: resolvedBeian,
     product_name: productName,
+    extracted_json: extracted,
     applied_fields: fields,
     error_message: null,
     contract_material_id: contractId,
