@@ -191,6 +191,17 @@ async function searchProductsByName(
            OR record_key ILIKE $2
          )
          AND ${basicinfoShareClassGuard}
+       UNION
+       SELECT fund_no AS beian_hao, fund_name AS product_name, NULL::text AS short_name, NULL::text AS strategy_one
+       FROM amac_private_funds
+       WHERE TRIM(fund_name) <> ''
+         AND (
+           ${sqlFundNameMatch("fund_name", "$1")}
+           OR fund_name ILIKE $2
+           OR fund_name ILIKE $3
+           OR fund_no ILIKE $2
+         )
+         AND ${shareClassGuard}
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY ${sqlFundNameMatchPriority("product_name", "$1")}, product_name ASC
@@ -239,6 +250,10 @@ async function searchProductsBroad(name: string, limit = 10): Promise<PrivateFun
        WHERE fund_name ILIKE $1
           OR register_number ILIKE $1
           OR record_key ILIKE $1
+       UNION
+       SELECT fund_no AS beian_hao, fund_name AS product_name, NULL::text AS short_name, NULL::text AS strategy_one
+       FROM amac_private_funds
+       WHERE fund_name ILIKE $1 OR fund_no ILIKE $1
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY
@@ -282,6 +297,10 @@ async function searchProductsByPrefixFast(
        WHERE product_name ILIKE ANY($1::text[])
           OR short_name ILIKE ANY($1::text[])
           OR beian_hao ILIKE ANY($1::text[])
+       UNION
+       SELECT fund_no AS beian_hao, fund_name AS product_name, NULL::text AS short_name, NULL::text AS strategy_one
+       FROM amac_private_funds
+       WHERE fund_name ILIKE ANY($1::text[]) OR fund_no ILIKE ANY($1::text[])
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY product_name ASC
@@ -289,6 +308,40 @@ async function searchProductsByPrefixFast(
     [patterns, limit],
   ).catch((err) => {
     console.error("[private-fund-product-search] searchProductsByPrefixFast", err)
+    return []
+  })
+}
+
+/** Contains match used only when prefix search misses renamed AMAC names. */
+async function searchProductsContainsFast(
+  name: string,
+  limit: number,
+): Promise<PrivateFundPickerResult[]> {
+  const trimmed = name.trim()
+  if (!trimmed) return []
+  const pattern = `%${trimmed}%`
+
+  return query<PrivateFundPickerResult>(
+    `SELECT beian_hao, product_name, short_name, strategy_one
+     FROM (
+       SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1 AS strategy_one
+       FROM private_fund_info
+       WHERE product_name ILIKE $1 OR beian_hao ILIKE $1
+       UNION
+       SELECT beian_hao, product_name, short_name, strategy_one
+       FROM private_fund_info_bfl
+       WHERE product_name ILIKE $1 OR short_name ILIKE $1 OR beian_hao ILIKE $1
+       UNION
+       SELECT fund_no AS beian_hao, fund_name AS product_name, NULL::text AS short_name, NULL::text AS strategy_one
+       FROM amac_private_funds
+       WHERE fund_name ILIKE $1 OR fund_no ILIKE $1
+     ) t
+     WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
+     ORDER BY product_name ASC
+     LIMIT $2`,
+    [pattern, limit],
+  ).catch((err) => {
+    console.error("[private-fund-product-search] searchProductsContainsFast", err)
     return []
   })
 }
@@ -364,30 +417,51 @@ export async function searchPrivateFundProductsForFastPicker(
   const rows = await searchProductsByPrefixFast(prefixes, fetchLimit)
 
   const scored = new Map<string, { row: PrivateFundPickerResult; score: number }>()
+  const queryLower = trimmed.toLowerCase()
+  const nameMatchesQuery = (name: string) => {
+    const lower = name.toLowerCase()
+    return lower.startsWith(queryLower) || lower.includes(queryLower)
+  }
   const addRow = (row: PrivateFundPickerResult, score: number) => {
     const beian = row.beian_hao?.trim()
     const name = row.product_name?.trim()
     if (!beian || !name) return
     if (!passesShareClassFilters(beian, name, queryShareClass, trimmed)) return
     const existing = scored.get(beian)
+    const next = { row: { ...row, beian_hao: beian, product_name: name }, score }
     if (!existing || score < existing.score) {
-      scored.set(beian, { row: { ...row, beian_hao: beian, product_name: name }, score })
+      scored.set(beian, next)
+      return
+    }
+    if (score === existing.score && nameMatchesQuery(name) && !nameMatchesQuery(existing.row.product_name)) {
+      scored.set(beian, next)
     }
   }
 
-  for (const row of rows) {
-    const name = row.product_name?.trim() || ""
-    const beian = row.beian_hao?.trim() || ""
-    const prefixHit =
-      name.toLowerCase().startsWith(trimmed.toLowerCase())
-      || beian.toUpperCase().startsWith(trimmed.toUpperCase())
-    addRow(row, prefixHit ? 0 : 2)
+  const collectRows = (hits: PrivateFundPickerResult[]) => {
+    for (const row of hits) {
+      const name = row.product_name?.trim() || ""
+      const beian = row.beian_hao?.trim() || ""
+      const prefixHit =
+        name.toLowerCase().startsWith(queryLower)
+        || beian.toUpperCase().startsWith(trimmed.toUpperCase())
+      const containsHit = name.toLowerCase().includes(queryLower)
+      addRow(row, prefixHit ? 0 : containsHit ? 1 : 2)
 
-    const rowShareClass = shareClassFromProductName(row.product_name) ?? shareClassFromRegisterCode(row.beian_hao)
-    const wanted = queryShareClass ?? (registerCode ? shareClassFromRegisterCode(registerCode) : null)
-    if (wanted && isBaseProduct(row) && !rowShareClass) {
-      addRow(synthesizeShareClass(row, wanted), 1)
+      const rowShareClass = shareClassFromProductName(row.product_name) ?? shareClassFromRegisterCode(row.beian_hao)
+      const wanted = queryShareClass ?? (registerCode ? shareClassFromRegisterCode(registerCode) : null)
+      if (wanted && isBaseProduct(row) && !rowShareClass) {
+        addRow(synthesizeShareClass(row, wanted), 1)
+      }
     }
+  }
+
+  const sourceRows = [...rows]
+  collectRows(sourceRows)
+  if (scored.size === 0) {
+    const containsRows = await searchProductsContainsFast(trimmed, fetchLimit)
+    sourceRows.push(...containsRows)
+    collectRows(containsRows)
   }
 
   if (queryShareClass) {
@@ -395,7 +469,7 @@ export async function searchPrivateFundProductsForFastPicker(
       ({ row }) => shareClassFromProductName(row.product_name) === queryShareClass,
     )
     if (!hasWanted) {
-      for (const row of rows) {
+      for (const row of sourceRows) {
         if (!isBaseProduct(row)) continue
         if (!baseNamesMatch(row.product_name, trimmed) && !(row.short_name && baseNamesMatch(row.short_name, trimmed))) {
           continue

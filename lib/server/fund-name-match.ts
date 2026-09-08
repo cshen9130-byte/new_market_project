@@ -21,6 +21,25 @@ export function sqlStripValuationSubjectPathPrefix(nameExpr: string): string {
   ), ''), ${nameExpr})`
 }
 
+/** Prefer the AMAC official name when it is a real rename, not just a suffix difference. */
+export function preferAmacOfficialName(
+  stored: string | null | undefined,
+  amac: string | null | undefined,
+): string {
+  const info = (stored ?? "").trim()
+  const official = (amac ?? "").trim()
+  if (!official) return info
+  if (!info) return official
+  if (official === info) return info
+  const strip = (s: string) =>
+    s.replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "").trim()
+  const infoBase = strip(info)
+  const amacBase = strip(official)
+  if (!infoBase || !amacBase) return info
+  if (amacBase.startsWith(infoBase) || infoBase.startsWith(amacBase)) return info
+  return official
+}
+
 /** Strip common fund suffixes and share-class suffix for fuzzy comparison. */
 export function sqlFundNameBase(nameExpr: string): string {
   return `NULLIF(regexp_replace(

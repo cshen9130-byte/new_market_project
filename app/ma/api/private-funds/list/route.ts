@@ -394,7 +394,14 @@ export async function GET(req: Request) {
   }
   if (keyword) {
     filterParams.push(`%${keyword}%`)
-    where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+    where.push(`(
+      i.product_name ILIKE $${filterParams.length}
+      OR i.beian_hao ILIKE $${filterParams.length}
+      OR EXISTS (
+        SELECT 1 FROM amac_private_funds a
+        WHERE a.fund_no = i.beian_hao AND a.fund_name ILIKE $${filterParams.length}
+      )
+    )`)
   }
   if (manager) {
     const aliases = await expandManagerFilterNames(manager)

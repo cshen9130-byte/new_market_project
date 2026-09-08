@@ -8,7 +8,8 @@ import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-
 import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
-import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
+import { lookupAmacFundMetadata, lookupAmacFundName } from "@/lib/server/amac-fund-metadata"
+import { preferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { preferOfficialManagerName } from "@/lib/server/manager-name-canonical"
 import { ensureShareClassBeianProduct } from "@/lib/server/share-class-product"
 import {
@@ -289,9 +290,15 @@ export async function GET(
       const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
       const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
+        const cachedInfo = body.info as { product_name?: string | null; team_benchmark?: string | null }
+        const cachedAmacName = await lookupAmacFundName(rawId).catch(() => null)
         return NextResponse.json({
           ...body,
-          info: { ...body.info, team_benchmark: teamBenchmark ?? (body.info as { team_benchmark?: string | null }).team_benchmark ?? null },
+          info: {
+            ...cachedInfo,
+            product_name: preferAmacOfficialName(cachedInfo.product_name, cachedAmacName),
+            team_benchmark: teamBenchmark ?? cachedInfo.team_benchmark ?? null,
+          },
         })
       }
       return NextResponse.json(body)
@@ -711,6 +718,7 @@ export async function GET(
       partial: false,
       info: {
         ...info,
+        product_name: preferAmacOfficialName(info.product_name, amacResolved?.fund_name),
         strategy_l3,
         scale,
         manager_names,

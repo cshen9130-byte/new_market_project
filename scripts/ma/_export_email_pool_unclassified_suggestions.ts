@@ -89,10 +89,43 @@ function shareBase(code: string): string {
 
 function nameStem(name: string): string {
   return name
+    .replace(/[（(][ABC]类份额[)）]?$/u, "")
     .replace(/[ABC]类(份额)?$/u, "")
     .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金|集合资产管理计划)$/u, "")
     .replace(/[0-9]+号$/u, "")
     .trim()
+}
+
+function shareClassNameVariants(name: string): string[] {
+  const n = name.trim()
+  const out = new Set<string>([n])
+  const stripped = n
+    .replace(/[（(][ABC]类份额[)）]?$/u, "")
+    .replace(/[ABC]类(份额)?$/u, "")
+    .trim()
+  if (stripped) out.add(stripped)
+  const noFund = stripped
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金|集合资产管理计划)$/u, "")
+    .trim()
+  if (noFund) {
+    out.add(noFund)
+    out.add(`${noFund}私募证券投资基金`)
+  }
+  return [...out].filter((s) => s.length >= 2)
+}
+
+function shareClassCodeVariants(code: string): string[] {
+  const c = code.trim().toUpperCase()
+  if (!c) return []
+  const out = new Set<string>([c])
+  const noShare = c.replace(/[ABC]$/u, "")
+  if (noShare && noShare !== c) {
+    out.add(noShare)
+    if (!noShare.startsWith("S") && noShare.length >= 5) out.add(`S${noShare}`)
+  }
+  if (!c.startsWith("S") && /^[A-Z]/.test(c) && c.length >= 5) out.add(`S${c}`)
+  if (c.startsWith("S") && c.length >= 6) out.add(c.slice(1))
+  return [...out]
 }
 
 function csvEscape(value: string): string {
@@ -291,6 +324,59 @@ async function main() {
   const classified = allTeam.data
     .filter((r) => !unclassKeys.has(`${(r.beian_hao || "").trim()}\t${r.product_name}`))
     .map(toPoolRow)
+
+  const missingMgr = unclassified.filter((r) => !blank(r.manager))
+  if (missingMgr.length) {
+    const allCodes = [...new Set(missingMgr.flatMap((r) => shareClassCodeVariants(r.register_number)))]
+    const allNames = [...new Set(missingMgr.flatMap((r) => shareClassNameVariants(r.product_name)))]
+    const byCode = allCodes.length
+      ? await query<{ beian_hao: string; manager: string }>(
+          `SELECT beian_hao, NULLIF(BTRIM(manager), '') AS manager
+             FROM private_fund_info
+            WHERE beian_hao = ANY($1::text[])
+              AND NULLIF(BTRIM(manager), '') IS NOT NULL`,
+          [allCodes],
+        )
+      : []
+    const byName = allNames.length
+      ? await query<{ product_name: string; manager: string }>(
+          `SELECT product_name, NULLIF(BTRIM(manager), '') AS manager
+             FROM private_fund_info
+            WHERE NULLIF(BTRIM(manager), '') IS NOT NULL
+              AND (product_name = ANY($1::text[]) OR product_name ILIKE ANY($2::text[]))`,
+          [allNames, allNames.map((n) => `${n}%`)],
+        )
+      : []
+    const codeMap = new Map(byCode.map((x) => [x.beian_hao.toUpperCase(), x.manager]))
+    const nameMap = new Map(byName.map((x) => [x.product_name, x.manager]))
+    const knownMgr = new Map<string, string>()
+    for (const r of [...unclassified, ...classified]) {
+      if (blank(r.manager) && nameStem(r.product_name).length >= 4) {
+        knownMgr.set(nameStem(r.product_name), r.manager!)
+      }
+    }
+    for (const r of unclassified) {
+      if (blank(r.manager)) continue
+      for (const c of shareClassCodeVariants(r.register_number)) {
+        const hit = codeMap.get(c.toUpperCase())
+        if (hit) {
+          r.manager = hit
+          break
+        }
+      }
+      if (blank(r.manager)) continue
+      for (const n of shareClassNameVariants(r.product_name)) {
+        const hit = nameMap.get(n) || [...nameMap.entries()].find(([k]) => k.startsWith(n))?.[1]
+        if (hit) {
+          r.manager = hit
+          break
+        }
+      }
+      if (blank(r.manager)) continue
+      const stem = nameStem(r.product_name)
+      if (stem.length >= 4 && knownMgr.has(stem)) r.manager = knownMgr.get(stem)!
+    }
+  }
 
   const classifiedByBase = new Map<string, Array<Guess & { name: string }>>()
   const classifiedByStem = new Map<string, Array<Guess & { name: string }>>()

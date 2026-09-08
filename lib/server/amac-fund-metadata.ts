@@ -13,6 +13,7 @@ function managerNameBrandHint(managerName: string): string {
 }
 
 export type AmacFundMetadata = {
+  fund_name: string | null
   manager_name: string | null
   /** AMAC 托管人名称 → UI「托管券商」 */
   mandator_name: string | null
@@ -20,6 +21,26 @@ export type AmacFundMetadata = {
   put_on_record_date: string | null
   mgmt_scale: string | null
   registration_no: string | null
+}
+
+/** Current AMAC disclosure name for a 备案号 (parent code if share-class). */
+export async function lookupAmacFundName(beianHao: string): Promise<string | null> {
+  const code = beianHao.trim()
+  if (!code) return null
+  const candidates = amacFundNoCandidates(code)
+  try {
+    const rows = await query<{ fund_name: string | null }>(
+      `SELECT NULLIF(BTRIM(fund_name), '') AS fund_name
+       FROM amac_private_funds
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])
+       ORDER BY CASE WHEN UPPER(BTRIM(fund_no)) = UPPER($2) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [candidates, code],
+    )
+    return rows[0]?.fund_name ?? null
+  } catch {
+    return null
+  }
 }
 
 /** Resolve AMAC 托管人 (托管券商) by 备案编号, including share-class suffix match. */
@@ -311,6 +332,7 @@ export async function lookupAmacFundMetadata(
 
   try {
     const fundRows = await query<{
+      fund_name: string | null
       manager_name: string | null
       mandator_name: string | null
       establish_date: string | null
@@ -319,6 +341,7 @@ export async function lookupAmacFundMetadata(
       registration_no: string | null
     }>(
       `SELECT
+         NULLIF(BTRIM(a.fund_name), '') AS fund_name,
          a.manager_name,
          NULLIF(BTRIM(a.mandator_name), '') AS mandator_name,
          a.establish_date::text AS establish_date,
@@ -350,6 +373,7 @@ export async function lookupAmacFundMetadata(
     if (fundRows[0]) {
       const row = fundRows[0]
       return {
+        fund_name: row.fund_name?.trim() || null,
         manager_name: row.manager_name?.trim() || null,
         mandator_name: row.mandator_name?.trim() || null,
         establish_date: fmtDate(row.establish_date),
@@ -379,6 +403,7 @@ export async function lookupAmacFundMetadata(
     if (futuresRows[0]) {
       const row = futuresRows[0]
       return {
+        fund_name: null,
         manager_name: row.manager_name?.trim() || null,
         mandator_name: row.mandator_name?.trim() || null,
         establish_date: fmtDate(row.establish_date),
@@ -396,6 +421,7 @@ export async function lookupAmacFundMetadata(
       const byReg = await lookupAmacManagerByRegistrationNo(registerCode)
       if (byReg) {
         return {
+          fund_name: null,
           manager_name: byReg.manager_name?.trim() || null,
           mandator_name: null,
           establish_date: null,
@@ -410,6 +436,7 @@ export async function lookupAmacFundMetadata(
       const byName = await lookupAmacManagerByName(managerHint)
       if (byName) {
         return {
+          fund_name: null,
           manager_name: byName.manager_name?.trim() || null,
           mandator_name: null,
           establish_date: null,
