@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso } from "@/lib/db"
+import { STRATEGY_UNCONFIGURED } from "@/lib/ma/strategy-unconfigured"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 import { extractManagerBrand, resolveCompanyManagerName } from "@/lib/server/fund-company-query"
+import {
+  parseStrategySource,
+  sqlStrategySourceExprs,
+  sqlType6LatestStrategyJoin,
+} from "@/lib/server/fund-strategy-resolve"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -64,11 +70,14 @@ export async function GET(
     const offset = (page - 1) * pageSize
     const keyword = (searchParams.get("keyword") || "").trim()
     const strategy = (searchParams.get("strategy") || "").trim()
+    const strategySource = parseStrategySource(searchParams.get("strategy_source"))
     const sortParam = searchParams.get("sort") || "product_name"
     const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "product_name"
     const sortDir = searchParams.get("dir") === "desc" ? "DESC" : "ASC"
     const sortCol = ALLOWED_SORT[sortKey]
     const cutoffDate = (searchParams.get("cutoff") || new Date().toISOString().slice(0, 10)).trim()
+    const type6Join = sqlType6LatestStrategyJoin("i.beian_hao", "t6")
+    const strat = sqlStrategySourceExprs(strategySource)
 
     const brand = extractManagerBrand(managerName)
     const conditions: string[] = ["(i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))"]
@@ -82,25 +91,33 @@ export async function GET(
     }
 
     if (strategy && strategy !== "全部") {
-      conditions.push(`(i.strategy_l1 = $${pi} OR i.strategy_l2 = $${pi})`)
-      filterParams.push(strategy)
-      pi++
+      if (strategy === STRATEGY_UNCONFIGURED) {
+        conditions.push(`${strat.l1} IS NULL`)
+      } else {
+        conditions.push(`(${strat.l1} = $${pi} OR ${strat.l2} = $${pi})`)
+        filterParams.push(strategy)
+        pi++
+      }
     }
 
     const whereClause = `WHERE ${conditions.join(" AND ")}`
 
     const strategyRows = await query<{ strategy_l1: string | null }>(
-      `SELECT DISTINCT i.strategy_l1
+      `SELECT DISTINCT ${strat.l1} AS strategy_l1
        FROM private_fund_info i
+       ${type6Join}
        WHERE (i.manager ILIKE $1 OR ($2 <> '' AND i.product_name ILIKE $3))
-         AND i.strategy_l1 IS NOT NULL AND BTRIM(i.strategy_l1) <> ''
-       ORDER BY i.strategy_l1`,
+         AND ${strat.l1} IS NOT NULL
+       ORDER BY 1`,
       [`%${managerName}%`, brand ?? "", brand ? `%${brand}%` : ""],
     ).catch(() => [] as { strategy_l1: string | null }[])
 
     const [countRow, rows] = await Promise.all([
       query<{ total: string }>(
-        `SELECT COUNT(*)::text AS total FROM private_fund_info i ${whereClause}`,
+        `SELECT COUNT(*)::text AS total
+         FROM private_fund_info i
+         ${type6Join}
+         ${whereClause}`,
         filterParams,
       ),
       query<{
@@ -123,8 +140,8 @@ export async function GET(
         `SELECT
            i.beian_hao,
            i.product_name,
-           i.strategy_l1,
-           i.strategy_l2,
+           ${strat.l1} AS strategy_l1,
+           ${strat.l2} AS strategy_l2,
            i.inception_date,
            i.benchmark,
            i.ret_1w::text,
@@ -137,6 +154,7 @@ export async function GET(
            i.latest_nav::text,
            i.latest_nav_date::text
          FROM private_fund_info i
+         ${type6Join}
          ${whereClause}
          ORDER BY ${sortCol} ${sortDir} NULLS LAST, i.product_name ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
@@ -172,6 +190,7 @@ export async function GET(
       strategies: strategyRows.map((r) => r.strategy_l1).filter(Boolean),
       cutoff_date: cutoffDate,
       manager_name: managerName,
+      strategy_source: strategySource,
     })
   } catch (err) {
     console.error("[private-funds/company/products]", err)

@@ -35,6 +35,7 @@ import {
 import { ProductFieldConfigDialog } from "./ProductFieldConfigDialog"
 import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./product-field-config-table"
 import { authService } from "@/lib/auth"
+import { StrategyFilterRows } from "@/components/ma/strategy-filter-rows"
 
 type DirectFundClass = "private" | "public" | "team"
 type DirectHoldingStatus = "holding" | "cleared"
@@ -406,114 +407,32 @@ function StrategyCascadeFilters({
   onStrategyL2Change: (next: string) => void
   onStrategyL3Change: (next: string) => void
 }) {
-  const l2Options = strategyL1
-    ? (strategyHierarchy.find((n) => n.l1 === strategyL1)?.l2s ?? [])
-    : []
-  const l3Options = strategyL2
-    ? (l2Options.find((n) => n.l2 === strategyL2)?.l3s ?? [])
-    : []
-
-  const pillActive = "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
-  const pillIdle = "border-border text-zinc-500 hover:bg-muted/60"
-  const pillUnlimitedActive = "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
-  const pillUnlimitedIdle = "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
-
   return (
-    <>
-      <div className="flex items-start px-4 py-2">
-        <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">{l1Label}：</span>
-        <div className="flex items-center gap-2 flex-wrap flex-1">
-          <div className="relative">
-            <select
-              value={strategySource}
-              onChange={(e) => onStrategySourceChange(e.target.value as "company" | "platform")}
-              className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <option value="platform">{platformOptionLabel}</option>
-              <option value="company">{companyOptionLabel}</option>
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
-          </div>
-          <span
-            onClick={() => onStrategyL1Change("")}
-            className={[
-              "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
-              !strategyL1 ? pillUnlimitedActive : pillUnlimitedIdle,
-            ].join(" ")}
+    <StrategyFilterRows
+      hierarchy={strategyHierarchy}
+      strategyL1={strategyL1}
+      strategyL2={strategyL2}
+      strategyL3={strategyL3}
+      onL1Change={onStrategyL1Change}
+      onL2Change={onStrategyL2Change}
+      onL3Change={onStrategyL3Change}
+      l1Label={l1Label}
+      l2Label={l2Label}
+      l3Label={l3Label}
+      leading={(
+        <div className="relative">
+          <select
+            value={strategySource}
+            onChange={(e) => onStrategySourceChange(e.target.value as "company" | "platform")}
+            className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
           >
-            不限
-          </span>
-          {strategyHierarchy.map((node) => (
-            <span
-              key={node.l1}
-              onClick={() => onStrategyL1Change(strategyL1 === node.l1 ? "" : node.l1)}
-              className={[
-                "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
-                strategyL1 === node.l1 ? pillActive : pillIdle,
-              ].join(" ")}
-            >
-              {node.l1}
-            </span>
-          ))}
-        </div>
-      </div>
-      {strategyL1 && l2Options.length > 0 && (
-        <div className="flex items-start px-4 py-2 bg-muted/20">
-          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">{l2Label}：</span>
-          <div className="flex items-center gap-2 flex-wrap flex-1">
-            <span
-              onClick={() => onStrategyL2Change("")}
-              className={[
-                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
-                !strategyL2 ? pillUnlimitedActive : pillUnlimitedIdle,
-              ].join(" ")}
-            >
-              不限
-            </span>
-            {l2Options.map((node) => (
-              <span
-                key={node.l2}
-                onClick={() => onStrategyL2Change(strategyL2 === node.l2 ? "" : node.l2)}
-                className={[
-                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
-                  strategyL2 === node.l2 ? pillActive : pillIdle,
-                ].join(" ")}
-              >
-                {node.l2}
-              </span>
-            ))}
-          </div>
+            <option value="platform">{platformOptionLabel}</option>
+            <option value="company">{companyOptionLabel}</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
         </div>
       )}
-      {strategyL2 && l3Options.length > 0 && (
-        <div className="flex items-start px-4 py-2 bg-muted/30">
-          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">{l3Label}：</span>
-          <div className="flex items-center gap-2 flex-wrap flex-1">
-            <span
-              onClick={() => onStrategyL3Change("")}
-              className={[
-                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
-                !strategyL3 ? pillUnlimitedActive : pillUnlimitedIdle,
-              ].join(" ")}
-            >
-              不限
-            </span>
-            {l3Options.map((v) => (
-              <span
-                key={v}
-                onClick={() => onStrategyL3Change(strategyL3 === v ? "" : v)}
-                className={[
-                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
-                  strategyL3 === v ? pillActive : pillIdle,
-                ].join(" ")}
-              >
-                {v}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </>
+    />
   )
 }
 

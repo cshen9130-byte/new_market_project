@@ -1,10 +1,41 @@
 import { query } from "@/lib/db"
 import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 
+export type StrategySource = "company" | "platform"
+
 export type StrategyTriple = {
   l1: string | null
   l2: string | null
   l3: string | null
+}
+
+/** Default is 团队策略 (`company`). */
+export function parseStrategySource(raw: string | null | undefined): StrategySource {
+  return String(raw ?? "").trim().toLowerCase() === "platform" ? "platform" : "company"
+}
+
+/**
+ * Column expressions for the 平台/团队 switch.
+ * 团队: type6 company_* only (empty stays 未分类).
+ * 平台: type6 platform_* then private_fund_info.strategy_l*.
+ */
+export function sqlStrategySourceExprs(
+  strategySource: StrategySource,
+  t6Alias = "t6",
+  pfiAlias = "i",
+): { l1: string; l2: string; l3: string } {
+  if (strategySource === "company") {
+    return {
+      l1: `${t6Alias}.company_l1`,
+      l2: `${t6Alias}.company_l2`,
+      l3: `${t6Alias}.company_l3`,
+    }
+  }
+  return {
+    l1: `COALESCE(${t6Alias}.platform_l1, NULLIF(BTRIM(${pfiAlias}.strategy_l1), ''))`,
+    l2: `COALESCE(${t6Alias}.platform_l2, NULLIF(BTRIM(${pfiAlias}.strategy_l2), ''))`,
+    l3: `${t6Alias}.platform_l3`,
+  }
 }
 
 export type ResolvedFundStrategies = {

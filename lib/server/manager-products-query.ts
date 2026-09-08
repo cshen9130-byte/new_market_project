@@ -1,5 +1,12 @@
 import { query, fmtIso } from "@/lib/db"
+import { STRATEGY_UNCONFIGURED } from "@/lib/ma/strategy-unconfigured"
 import { extractManagerBrand, lookupRepresentativeProduct } from "@/lib/server/fund-company-query"
+import {
+  parseStrategySource,
+  sqlStrategySourceExprs,
+  sqlType6LatestStrategyJoin,
+  type StrategySource,
+} from "@/lib/server/fund-strategy-resolve"
 import { lookupManagerByRegistrationNo } from "@/lib/server/private-fund-manager-query"
 
 export interface ManagerProductRow {
@@ -115,12 +122,17 @@ function buildDistribution(rows: { name: string | null; count: string }[]): Dist
     .sort((a, b) => b.count - a.count)
 }
 
-export async function loadManagerFundsSummary(registrationNo: string) {
+export async function loadManagerFundsSummary(
+  registrationNo: string,
+  strategySource: StrategySource = "company",
+) {
   const scope = await loadManagerMatchScope(registrationNo)
   if (!scope) return null
   const { managerName } = scope
   const params = matchParams(scope)
   const matchSql = managerProductMatchSql("i", 1, 2, 3)
+  const type6Join = sqlType6LatestStrategyJoin("i.beian_hao", "t6")
+  const strat = sqlStrategySourceExprs(strategySource)
 
   const repPrimary = await lookupRepresentativeProduct(managerName)
   const repRows = await query<{ beian_hao: string; product_name: string; benchmark: string | null }>(
@@ -170,16 +182,18 @@ export async function loadManagerFundsSummary(registrationNo: string) {
 
   const [strategyL1Rows, strategyL2Rows, custodianRows] = await Promise.all([
     query<{ name: string | null; count: string }>(
-      `SELECT COALESCE(NULLIF(BTRIM(i.strategy_l1), ''), '未知') AS name, COUNT(*)::text AS count
+      `SELECT COALESCE(${strat.l1}, '未分类') AS name, COUNT(*)::text AS count
        FROM private_fund_info i
+       ${type6Join}
        WHERE ${matchSql}
        GROUP BY 1
        ORDER BY COUNT(*) DESC`,
       params,
     ).catch(() => []),
     query<{ name: string | null; count: string }>(
-      `SELECT COALESCE(NULLIF(BTRIM(i.strategy_l2), ''), '未知') AS name, COUNT(*)::text AS count
+      `SELECT COALESCE(${strat.l2}, '未分类') AS name, COUNT(*)::text AS count
        FROM private_fund_info i
+       ${type6Join}
        WHERE ${matchSql}
        GROUP BY 1
        ORDER BY COUNT(*) DESC`,
@@ -212,10 +226,14 @@ export async function loadManagerProducts(options: {
   pageSize: number
   keyword: string
   strategy: string
+  strategySource?: StrategySource | string | null
   sortKey: string
   sortDir: "ASC" | "DESC"
   cutoffDate: string
 }) {
+  const strategySource = parseStrategySource(options.strategySource)
+  const type6Join = sqlType6LatestStrategyJoin("i.beian_hao", "t6")
+  const strat = sqlStrategySourceExprs(strategySource)
   const scope = await loadManagerMatchScope(options.registrationNo)
   if (!scope) {
     return {
@@ -227,6 +245,7 @@ export async function loadManagerProducts(options: {
       strategies: [] as string[],
       cutoff_date: options.cutoffDate,
       manager_name: null,
+      strategy_source: strategySource,
     }
   }
   const { managerName } = scope
@@ -243,9 +262,13 @@ export async function loadManagerProducts(options: {
   }
 
   if (options.strategy && options.strategy !== "全部") {
-    conditions.push(`(i.strategy_l1 = $${pi} OR i.strategy_l2 = $${pi})`)
-    filterParams.push(options.strategy)
-    pi++
+    if (options.strategy === STRATEGY_UNCONFIGURED) {
+      conditions.push(`${strat.l1} IS NULL`)
+    } else {
+      conditions.push(`(${strat.l1} = $${pi} OR ${strat.l2} = $${pi})`)
+      filterParams.push(options.strategy)
+      pi++
+    }
   }
 
   const whereClause = `WHERE ${conditions.join(" AND ")}`
@@ -254,17 +277,21 @@ export async function loadManagerProducts(options: {
   const offset = (options.page - 1) * options.pageSize
 
   const strategyRows = await query<{ strategy_l1: string | null }>(
-    `SELECT DISTINCT i.strategy_l1
+    `SELECT DISTINCT ${strat.l1} AS strategy_l1
      FROM private_fund_info i
+     ${type6Join}
      WHERE ${managerProductMatchSql("i", 1, 2, 3)}
-       AND i.strategy_l1 IS NOT NULL AND BTRIM(i.strategy_l1) <> ''
-     ORDER BY i.strategy_l1`,
+       AND ${strat.l1} IS NOT NULL
+     ORDER BY 1`,
     [nameLikes, fundNos, brandLike],
   ).catch(() => [] as { strategy_l1: string | null }[])
 
   const [countRow, rows] = await Promise.all([
     query<{ total: string }>(
-      `SELECT COUNT(*)::text AS total FROM private_fund_info i ${whereClause}`,
+      `SELECT COUNT(*)::text AS total
+       FROM private_fund_info i
+       ${type6Join}
+       ${whereClause}`,
       filterParams,
     ),
     query<{
@@ -287,8 +314,8 @@ export async function loadManagerProducts(options: {
       `SELECT
          i.beian_hao,
          i.product_name,
-         i.strategy_l1,
-         i.strategy_l2,
+         ${strat.l1} AS strategy_l1,
+         ${strat.l2} AS strategy_l2,
          i.inception_date,
          i.benchmark,
          i.ret_1w::text,
@@ -301,6 +328,7 @@ export async function loadManagerProducts(options: {
          i.latest_nav::text,
          i.latest_nav_date::text
        FROM private_fund_info i
+       ${type6Join}
        ${whereClause}
        ORDER BY ${sortCol} ${options.sortDir} NULLS LAST, i.product_name ASC
        LIMIT $${pi} OFFSET $${pi + 1}`,
@@ -336,5 +364,6 @@ export async function loadManagerProducts(options: {
     strategies: strategyRows.map((r) => r.strategy_l1).filter(Boolean) as string[],
     cutoff_date: options.cutoffDate,
     manager_name: managerName,
+    strategy_source: strategySource,
   }
 }

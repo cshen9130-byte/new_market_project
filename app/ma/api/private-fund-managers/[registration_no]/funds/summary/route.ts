@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server"
+import { parseStrategySource } from "@/lib/server/fund-strategy-resolve"
 import { loadManagerFundsSummary } from "@/lib/server/manager-products-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ registration_no: string }> },
 ) {
   try {
@@ -15,7 +16,8 @@ export async function GET(
       return NextResponse.json({ error: "Missing registration_no" }, { status: 400 })
     }
 
-    const data = await loadManagerFundsSummary(registrationNo)
+    const strategySource = parseStrategySource(new URL(req.url).searchParams.get("strategy_source"))
+    const data = await loadManagerFundsSummary(registrationNo, strategySource)
     if (!data) {
       return NextResponse.json({ error: "Manager not found" }, { status: 404 })
     }

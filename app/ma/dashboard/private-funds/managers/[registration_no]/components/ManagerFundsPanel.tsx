@@ -5,6 +5,7 @@ import Link from "next/link"
 import ReactECharts from "echarts-for-react"
 import { ChevronRight } from "lucide-react"
 import { FundCompanyProductList } from "@/app/ma/dashboard/private-funds/[beian_hao]/components/FundCompanyProductList"
+import { StrategySourceToggle, type StrategySource } from "@/components/ma/strategy-filter-rows"
 
 interface DistributionSlice {
   name: string
@@ -168,6 +169,7 @@ export function ManagerFundsPanel({ registrationNo }: { registrationNo: string }
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [strategyLevel, setStrategyLevel] = useState<"l1" | "l2">("l1")
+  const [strategySource, setStrategySource] = useState<StrategySource>("company")
   const [selectedRep, setSelectedRep] = useState<RepresentativeProduct | null>(null)
   const [chartFund, setChartFund] = useState<ChartPoint[]>([])
   const [chartBench, setChartBench] = useState<ChartPoint[]>([])
@@ -176,9 +178,11 @@ export function ManagerFundsPanel({ registrationNo }: { registrationNo: string }
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    if (!summary) setLoading(true)
     setError(null)
-    fetch(`/ma/api/private-fund-managers/${encodeURIComponent(registrationNo)}/funds/summary`)
+    fetch(
+      `/ma/api/private-fund-managers/${encodeURIComponent(registrationNo)}/funds/summary?strategy_source=${strategySource}`,
+    )
       .then(async (res) => {
         if (!res.ok) throw new Error("加载失败")
         return res.json() as Promise<FundsSummary>
@@ -186,7 +190,12 @@ export function ManagerFundsPanel({ registrationNo }: { registrationNo: string }
       .then((json) => {
         if (cancelled) return
         setSummary(json)
-        setSelectedRep(json.representative_products[0] ?? null)
+        setSelectedRep((prev) => {
+          if (prev && json.representative_products.some((p) => p.beian_hao === prev.beian_hao)) {
+            return prev
+          }
+          return json.representative_products[0] ?? null
+        })
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message)
@@ -197,7 +206,7 @@ export function ManagerFundsPanel({ registrationNo }: { registrationNo: string }
     return () => {
       cancelled = true
     }
-  }, [registrationNo])
+  }, [registrationNo, strategySource])
 
   useEffect(() => {
     if (!selectedRep) {
@@ -343,27 +352,30 @@ export function ManagerFundsPanel({ registrationNo }: { registrationNo: string }
               <span className="inline-block w-1 h-4 rounded-sm bg-red-500 shrink-0" />
               存续产品策略分布
             </div>
-            <div className="inline-flex rounded border border-zinc-200 overflow-hidden text-xs">
-              <button
-                type="button"
-                onClick={() => setStrategyLevel("l1")}
-                className={[
-                  "px-2.5 py-1 transition-colors",
-                  strategyLevel === "l1" ? "bg-red-500 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50",
-                ].join(" ")}
-              >
-                一级
-              </button>
-              <button
-                type="button"
-                onClick={() => setStrategyLevel("l2")}
-                className={[
-                  "px-2.5 py-1 transition-colors",
-                  strategyLevel === "l2" ? "bg-red-500 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50",
-                ].join(" ")}
-              >
-                二级
-              </button>
+            <div className="flex items-center gap-2">
+              <StrategySourceToggle value={strategySource} onChange={setStrategySource} />
+              <div className="inline-flex rounded border border-zinc-200 overflow-hidden text-xs">
+                <button
+                  type="button"
+                  onClick={() => setStrategyLevel("l1")}
+                  className={[
+                    "px-2.5 py-1 transition-colors",
+                    strategyLevel === "l1" ? "bg-red-500 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50",
+                  ].join(" ")}
+                >
+                  一级
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStrategyLevel("l2")}
+                  className={[
+                    "px-2.5 py-1 transition-colors",
+                    strategyLevel === "l2" ? "bg-red-500 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50",
+                  ].join(" ")}
+                >
+                  二级
+                </button>
+              </div>
             </div>
           </div>
           {strategySlices.length > 0 ? (
@@ -396,7 +408,11 @@ export function ManagerFundsPanel({ registrationNo }: { registrationNo: string }
         </div>
       </div>
 
-      <FundCompanyProductList registrationNo={registrationNo} />
+      <FundCompanyProductList
+        registrationNo={registrationNo}
+        strategySource={strategySource}
+        onStrategySourceChange={setStrategySource}
+      />
     </div>
   )
 }

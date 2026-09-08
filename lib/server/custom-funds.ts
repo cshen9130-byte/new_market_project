@@ -2,6 +2,7 @@ import { randomUUID } from "crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import path from "path"
 import { getServerStoragePath } from "@/lib/server/storage"
+import { matchesStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 
 export type CustomFundScope = "team" | "mine"
 
@@ -298,10 +299,10 @@ export function listCustomFunds(params: CustomFundListParams): {
     .map((fund) => toListRow(fund, strategySource))
 
   if (strategyL1) {
-    rows = rows.filter((row) => row.strategy_l1 === strategyL1)
+    rows = rows.filter((row) => matchesStrategyLevelFilter(row.strategy_l1, strategyL1))
   }
   if (strategyL2) {
-    rows = rows.filter((row) => row.strategy_l2 === strategyL2)
+    rows = rows.filter((row) => matchesStrategyLevelFilter(row.strategy_l2, strategyL2))
   }
   if (teamMember) {
     rows = rows.filter((row) => row.team_member === teamMember)

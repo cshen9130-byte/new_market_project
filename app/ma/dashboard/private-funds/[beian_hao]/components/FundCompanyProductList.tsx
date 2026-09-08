@@ -16,6 +16,15 @@ import {
   Search,
 } from "lucide-react"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import {
+  StrategySourceToggle,
+  type StrategySource,
+} from "@/components/ma/strategy-filter-rows"
+import {
+  STRATEGY_UNCONFIGURED,
+  STRATEGY_UNCONFIGURED_LABEL,
+  isStrategyUnconfigured,
+} from "@/lib/ma/strategy-unconfigured"
 
 interface ProductRow {
   beian_hao: string
@@ -50,7 +59,6 @@ type SortKey =
 type SortDir = "asc" | "desc"
 
 const MGMT_TYPES = ["全部", "受托管理类", "顾问管理类"] as const
-const DEFAULT_STRATEGIES = ["全部", "股票策略", "股票多头", "套利策略", "多资产策略", "组合策略", "期货策略"] as const
 
 function fmtNum(v: string | null, decimals = 4) {
   if (!v) return "—"
@@ -63,6 +71,10 @@ function fmtPct(v: string | null) {
   const n = parseFloat(v)
   if (Number.isNaN(n)) return "—"
   return (n >= 0 ? "+" : "") + n.toFixed(2) + "%"
+}
+
+function formatStrategyLabel(l1: string | null, l2: string | null) {
+  return [l1, l2].map((v) => v?.trim()).filter(Boolean).join(" · ") || STRATEGY_UNCONFIGURED_LABEL
 }
 
 function PctCell({ value }: { value: string | null }) {
@@ -107,9 +119,13 @@ function FilterPill({
 export const FundCompanyProductList = memo(function FundCompanyProductList({
   beian_hao,
   registrationNo,
+  strategySource: strategySourceProp,
+  onStrategySourceChange,
 }: {
   beian_hao?: string
   registrationNo?: string
+  strategySource?: StrategySource
+  onStrategySourceChange?: (next: StrategySource) => void
 }) {
   const productsApiUrl = registrationNo
     ? `/ma/api/private-fund-managers/${encodeURIComponent(registrationNo)}/products`
@@ -126,6 +142,8 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
   const [keyword, setKeyword] = useState("")
   const [keywordInput, setKeywordInput] = useState("")
   const [mgmtType, setMgmtType] = useState<string>("全部")
+  const [internalStrategySource, setInternalStrategySource] = useState<StrategySource>("company")
+  const strategySource = strategySourceProp ?? internalStrategySource
   const [strategy, setStrategy] = useState("全部")
   const [operatingOnly, setOperatingOnly] = useState(true)
   const [cutoffDate, setCutoffDate] = useState(() => new Date().toISOString().slice(0, 10))
@@ -134,10 +152,18 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
   const [jumpVal, setJumpVal] = useState("")
   const [favorites, setFavorites] = useState<Set<string>>(new Set())
 
+  function setStrategySource(next: StrategySource) {
+    if (next === strategySource) return
+    if (strategySourceProp === undefined) setInternalStrategySource(next)
+    onStrategySourceChange?.(next)
+    setStrategy("全部")
+    setPage(1)
+  }
+
   const strategyOptions = useMemo(() => {
     const merged = new Set<string>(["全部"])
-    for (const s of DEFAULT_STRATEGIES) merged.add(s)
     for (const s of strategies) if (s) merged.add(s)
+    merged.add(STRATEGY_UNCONFIGURED)
     return Array.from(merged)
   }, [strategies])
 
@@ -152,6 +178,7 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
     })
     if (keyword) params.set("keyword", keyword)
     if (strategy !== "全部") params.set("strategy", strategy)
+    params.set("strategy_source", strategySource)
 
     fetch(`${productsApiUrl}?${params}`)
       .then(async (res) => {
@@ -171,9 +198,13 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
         setTotalPages(1)
       })
       .finally(() => setLoading(false))
-  }, [productsApiUrl, page, pageSize, sortKey, sortDir, keyword, strategy, cutoffDate])
+  }, [productsApiUrl, page, pageSize, sortKey, sortDir, keyword, strategy, strategySource, cutoffDate])
 
   useEffect(() => { loadData() }, [loadData])
+  useEffect(() => {
+    setStrategy("全部")
+    setPage(1)
+  }, [strategySource])
   useEffect(() => { setPage(1) }, [keyword, strategy, mgmtType, operatingOnly, cutoffDate, pageSize])
 
   function handleSort(col: SortKey) {
@@ -269,9 +300,14 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
         <div className="flex items-start gap-3 flex-wrap">
           <span className="text-zinc-500 shrink-0 pt-0.5 w-16">一级策略：</span>
           <div className="flex items-center gap-1.5 flex-wrap">
-            {strategyOptions.map((s) => (
-              <FilterPill key={s} label={s} active={strategy === s} onClick={() => setStrategy(s)} />
-            ))}
+            <StrategySourceToggle value={strategySource} onChange={setStrategySource} />
+            {strategyOptions.map((s) => {
+              const label = isStrategyUnconfigured(s) ? STRATEGY_UNCONFIGURED_LABEL : s
+              const active = isStrategyUnconfigured(s) ? isStrategyUnconfigured(strategy) : strategy === s
+              return (
+                <FilterPill key={s} label={label} active={active} onClick={() => setStrategy(s)} />
+              )
+            })}
           </div>
           <label className="inline-flex items-center gap-1.5 ml-auto text-zinc-600 cursor-pointer">
             <input
@@ -416,11 +452,9 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
                     product_name={row.product_name}
                     className="font-medium text-blue-600 hover:underline leading-5 block truncate max-w-[220px] min-w-0"
                   />
-                  {(row.strategy_l1 || row.strategy_l2) && (
-                    <div className="text-[10px] text-zinc-400 mt-0.5 truncate">
-                      {row.strategy_l1 ?? row.strategy_l2}
-                    </div>
-                  )}
+                  <div className="text-[10px] text-zinc-400 mt-0.5 truncate">
+                    {formatStrategyLabel(row.strategy_l1, row.strategy_l2)}
+                  </div>
                 </td>
                 <td className="px-3 py-2 tabular-nums text-zinc-700 whitespace-nowrap">{row.inception_date ?? "—"}</td>
                 <td className="px-3 py-2 tabular-nums">

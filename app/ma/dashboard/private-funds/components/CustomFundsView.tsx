@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { CopyableInlineText } from "@/components/ma/copyable-inline-text"
+import { StrategyFilterRows } from "@/components/ma/strategy-filter-rows"
 import {
   AlertCircle,
   BarChart2,
@@ -489,9 +490,6 @@ export function CustomFundsView() {
 
   const isTeam = scopeTab === "team"
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const l2Options = strategyL1
-    ? (strategyHierarchy.find((n) => n.l1 === strategyL1)?.l2s ?? [])
-    : []
 
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "all" })
@@ -691,9 +689,14 @@ export function CustomFundsView() {
       </div>
 
       <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
-        <div className="flex items-start px-4 py-2">
-          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
-          <div className="flex items-center gap-2 flex-wrap flex-1">
+        <StrategyFilterRows
+          hierarchy={strategyHierarchy}
+          strategyL1={strategyL1}
+          strategyL2={strategyL2}
+          onL1Change={(next) => { setStrategyL1(next); setStrategyL2(""); setPage(1) }}
+          onL2Change={(next) => { setStrategyL2(next); setPage(1) }}
+          showL3={false}
+          leading={(
             <div className="relative">
               <select
                 value={strategySource}
@@ -710,50 +713,8 @@ export function CustomFundsView() {
               </select>
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
             </div>
-            <span
-              onClick={() => { setStrategyL1(""); setStrategyL2(""); setPage(1) }}
-              className={["inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors", !strategyL1 ? pillUnlimitedActive : pillUnlimitedIdle].join(" ")}
-            >
-              不限
-            </span>
-            {strategyHierarchy.map((node) => (
-              <span
-                key={node.l1}
-                onClick={() => {
-                  const next = strategyL1 === node.l1 ? "" : node.l1
-                  setStrategyL1(next)
-                  setStrategyL2("")
-                  setPage(1)
-                }}
-                className={["inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors", strategyL1 === node.l1 ? pillActive : pillIdle].join(" ")}
-              >
-                {node.l1}
-              </span>
-            ))}
-          </div>
-        </div>
-        {strategyL1 && l2Options.length > 0 && (
-          <div className="flex items-start px-4 py-2 bg-muted/20">
-            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">二级策略：</span>
-            <div className="flex items-center gap-2 flex-wrap flex-1">
-              <span
-                onClick={() => { setStrategyL2(""); setPage(1) }}
-                className={["inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors", !strategyL2 ? pillUnlimitedActive : pillUnlimitedIdle].join(" ")}
-              >
-                不限
-              </span>
-              {l2Options.map((node) => (
-                <span
-                  key={node.l2}
-                  onClick={() => { setStrategyL2(strategyL2 === node.l2 ? "" : node.l2); setPage(1) }}
-                  className={["inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors", strategyL2 === node.l2 ? pillActive : pillIdle].join(" ")}
-                >
-                  {node.l2}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+          )}
+        />
         {isTeam ? (
           <div className="flex items-center px-4 py-2">
             <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队成员：</span>

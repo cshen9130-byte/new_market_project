@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso } from "@/lib/db"
+import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { sanitizeRiskMetricText } from "@/lib/fund-nav-metrics"
 import {
   buildEmailNavLatestExprs,
@@ -214,9 +215,9 @@ export async function GET(req: Request) {
       END`
 
       const stratPrefix = strategySource === "platform" ? "platform" : "company"
-      const stratCol = `cache.${stratPrefix}_strategy_l1`
-      const stratL2Col = `cache.${stratPrefix}_strategy_l2`
-      const stratL3Col = `cache.${stratPrefix}_strategy_l3`
+      const stratCol = `NULLIF(BTRIM(cache.${stratPrefix}_strategy_l1), '')`
+      const stratL2Col = `NULLIF(BTRIM(cache.${stratPrefix}_strategy_l2), '')`
+      const stratL3Col = `NULLIF(BTRIM(cache.${stratPrefix}_strategy_l3), '')`
       const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
       const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
 
@@ -237,23 +238,10 @@ export async function GET(req: Request) {
         pi++
       }
 
-      if (strategyL1 === "__unconfigured__") {
-        conditions.push(`${stratCol} IS NULL`)
-      } else if (strategyL1) {
-        conditions.push(`${stratCol} = $${pi}`)
-        params.push(strategyL1)
-        pi++
-      }
-      if (strategyL2) {
-        conditions.push(`${stratL2Col} = $${pi}`)
-        params.push(strategyL2)
-        pi++
-      }
-      if (strategyL3) {
-        conditions.push(`COALESCE(${stratL3Col}, '') ILIKE $${pi}`)
-        params.push(`%${strategyL3}%`)
-        pi++
-      }
+      appendStrategyLevelFilter(strategyL1, stratCol, conditions, params)
+      appendStrategyLevelFilter(strategyL2, stratL2Col, conditions, params)
+      appendStrategyLevelFilter(strategyL3, stratL3Col, conditions, params, "ilike")
+      pi = params.length + 1
 
       if (holdingStatus === "holding") {
         conditions.push(`${marketValueExpr} > 0`)
@@ -432,23 +420,10 @@ export async function GET(req: Request) {
       pi++
     }
 
-    if (strategyL1 === "__unconfigured__") {
-      conditions.push(`${strategyExpr} IS NULL`)
-    } else if (strategyL1) {
-      conditions.push(`${strategyExpr} = $${pi}`)
-      params.push(strategyL1)
-      pi++
-    }
-    if (strategyL2) {
-      conditions.push(`${strategyL2Expr} = $${pi}`)
-      params.push(strategyL2)
-      pi++
-    }
-    if (strategyL3) {
-      conditions.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${pi}`)
-      params.push(`%${strategyL3}%`)
-      pi++
-    }
+    appendStrategyLevelFilter(strategyL1, strategyExpr, conditions, params)
+    appendStrategyLevelFilter(strategyL2, strategyL2Expr, conditions, params)
+    appendStrategyLevelFilter(strategyL3, strategyL3Expr, conditions, params, "ilike")
+    pi = params.length + 1
 
     if (holdingStatus === "holding") {
       conditions.push(`${marketValueExpr} > 0`)

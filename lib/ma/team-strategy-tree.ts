@@ -7,6 +7,64 @@ export type TeamStrategyNode = {
 
 const INDEX_ENHANCEMENT_L2 = "指数增强"
 
+/** Platform / 协会 L1 names that have a known official 团队策略 equivalent. */
+export const TEAM_L1_ALIASES: Record<string, string> = {
+  组合策略: "多资产策略",
+  其他: "其他策略",
+  股票策略: "股票多头",
+  固定收益: "债券策略",
+  固收策略: "债券策略",
+  管理期货: "期货策略",
+}
+
+export type StrategyTriple = { l1: string | null; l2: string | null; l3: string | null }
+
+function blankStrategy(value: string | null | undefined): string | null {
+  const s = (value || "").trim()
+  return s && s !== "-" ? s : null
+}
+
+function splitStrategyL3(value: string | null): string[] {
+  return parseStrategyLevel3(value || "")
+}
+
+/** Map a 平台/协会 triple onto the official 运维 团队策略 tree. Unmappable L1 → null. */
+export function mapPlatformToOfficialTeam(
+  tree: TeamStrategyNode[],
+  raw: StrategyTriple,
+): StrategyTriple | null {
+  const officialL1 = new Set(tree.map((n) => n.l1))
+  let l1 = blankStrategy(raw.l1)
+  if (!l1) return null
+  if (!officialL1.has(l1)) l1 = TEAM_L1_ALIASES[l1] ?? null
+  if (!l1 || !officialL1.has(l1)) return null
+
+  const l2Node = tree.find((n) => n.l1 === l1)
+  const officialL2 = new Set(l2Node?.l2s.map((x) => x.l2) ?? [])
+  let l2 = blankStrategy(raw.l2)
+  let l3s = splitStrategyL3(raw.l3)
+
+  if (l2 && !officialL2.has(l2)) {
+    const parent = findParentL2ForMisplacedName(tree, l1, l2)
+    if (parent) {
+      if (!l3s.includes(l2)) l3s.unshift(l2)
+      l2 = parent
+    } else {
+      l2 = null
+      l3s = []
+    }
+  }
+
+  if (l2) {
+    const allowed = new Set(l2Node?.l2s.find((x) => x.l2 === l2)?.l3s ?? [])
+    l3s = l3s.filter((tag) => allowed.has(tag))
+  } else {
+    l3s = []
+  }
+
+  return { l1, l2, l3: l3s.length ? l3s.join(",") : null }
+}
+
 function zhSort(a: string, b: string): number {
   return a.localeCompare(b, "zh")
 }

@@ -19,7 +19,9 @@ export async function GET() {
            AND (pool_key = 'mine_default' OR pool_key LIKE 'mine_custom_%')`,
       ),
       query<{ register_number: string }>(
-        `SELECT register_number FROM tracking_pool WHERE register_number IS NOT NULL
+        `SELECT beian_hao AS register_number FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
+         UNION
+         SELECT register_number FROM tracking_pool WHERE register_number IS NOT NULL
          UNION
          SELECT register_number FROM selected_pool WHERE register_number IS NOT NULL
          UNION
@@ -28,6 +30,8 @@ export async function GET() {
          SELECT register_number FROM hy_tracking_pool WHERE register_number IS NOT NULL
          UNION
          SELECT register_number FROM fof_mom_tracking WHERE register_number IS NOT NULL
+         UNION
+         SELECT register_number FROM type6_ops_team_full WHERE register_number IS NOT NULL
          UNION
          SELECT register_number FROM user_custom_pool
            WHERE register_number IS NOT NULL

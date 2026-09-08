@@ -8,6 +8,8 @@ import {
 } from "@/lib/server/manager-name-canonical"
 import { enrichPrivateFundListMetrics } from "@/lib/server/private-fund-list-metrics"
 import { mapManagerRegistrationNos } from "@/lib/server/private-fund-manager-query"
+import { STRATEGY_UNCONFIGURED } from "@/lib/ma/strategy-unconfigured"
+import { sqlType6LatestStrategyJoin } from "@/lib/server/fund-strategy-resolve"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -25,6 +27,7 @@ const SEARCH_LIST_SOURCE = `(
     beian_hao,
     product_name,
     strategy_l1,
+    strategy_l2,
     manager,
     inception_date,
     benchmark,
@@ -43,6 +46,7 @@ const SEARCH_LIST_SOURCE = `(
     b.beian_hao,
     b.product_name,
     b.strategy_one AS strategy_l1,
+    NULL::text AS strategy_l2,
     ''::text AS manager,
     NULL::date AS inception_date,
     NULL::text AS benchmark,
@@ -249,13 +253,26 @@ export async function GET(req: Request) {
   const strategiesRaw = searchParams.get("strategies") || strategy
   const strategies = strategiesRaw ? strategiesRaw.split(",").map((s) => s.trim()).filter(Boolean) : []
   const sfRaw = searchParams.getAll("sf")
-  const sfFilters: { l1: string; l2s: string[] }[] = sfRaw.length > 0
+  const sfFilters: { l1: string; l2s: string[]; l3sByL2: Record<string, string[]> }[] = sfRaw.length > 0
     ? sfRaw.map((s) => {
         const ci = s.indexOf(":")
-        if (ci === -1) return { l1: s, l2s: [] }
-        return { l1: s.slice(0, ci), l2s: s.slice(ci + 1).split(",").filter(Boolean) }
+        if (ci === -1) return { l1: s, l2s: [], l3sByL2: {} }
+        return { l1: s.slice(0, ci), l2s: s.slice(ci + 1).split(",").filter(Boolean), l3sByL2: {} }
       })
-    : strategies.map((l1) => ({ l1, l2s: [] }))
+    : strategies.map((l1) => ({ l1, l2s: [], l3sByL2: {} }))
+  for (const s of searchParams.getAll("sfl3")) {
+    const c1 = s.indexOf(":")
+    const c2 = s.indexOf(":", c1 + 1)
+    if (c1 <= 0 || c2 <= c1) continue
+    const l1 = s.slice(0, c1)
+    const l2 = s.slice(c1 + 1, c2)
+    const l3s = s.slice(c2 + 1).split(",").filter(Boolean)
+    const f = sfFilters.find((x) => x.l1 === l1)
+    if (f) f.l3sByL2[l2] = l3s
+  }
+  const strategySource = (searchParams.get("strategy_source") || "").trim().toLowerCase() === "platform"
+    ? "platform"
+    : "company"
   const keyword = (searchParams.get("keyword") || "").trim()
   const manager = (searchParams.get("manager") || "").trim()
   const inceptionPeriod = (searchParams.get("inception") || "").trim()
@@ -313,18 +330,64 @@ export async function GET(req: Request) {
 
   const filterParams: (string | number | string[])[] = []
   const where: string[] = []
+  const needsTeamJoin = sfFilters.length > 0
+  const teamJoin = needsTeamJoin ? ` ${sqlType6LatestStrategyJoin("i.beian_hao", "t6")}` : ""
+  const amacL1 = `NULLIF(NULLIF(BTRIM(i.strategy_l1), ''), '-')`
+  const amacL2 = `NULLIF(NULLIF(BTRIM(i.strategy_l2), ''), '-')`
+  const companyL1 = `t6.company_l1`
+  const companyL2 = `t6.company_l2`
+  const companyL3 = `t6.company_l3`
+  const platformL1 = `COALESCE(t6.platform_l1, ${amacL1})`
+  const platformL2 = `COALESCE(t6.platform_l2, ${amacL2})`
+  const platformL3 = `t6.platform_l3`
+  const l1Expr = strategySource === "platform" ? platformL1 : companyL1
+  const l2Expr = strategySource === "platform" ? platformL2 : companyL2
+  const l3Expr = strategySource === "platform" ? platformL3 : companyL3
+  const l1Empty = strategySource === "platform"
+    ? `${platformL1} IS NULL`
+    : `COALESCE(t6.company_l1, t6.company_l2, t6.company_l3) IS NULL`
+  const l2Empty = `${l2Expr} IS NULL`
+  const l3Empty = `${l3Expr} IS NULL`
   if (sfFilters.length > 0) {
     const sfClauses: string[] = []
     for (const f of sfFilters) {
-      if (f.l2s.length === 0) {
+      if (f.l1 === STRATEGY_UNCONFIGURED) {
+        sfClauses.push(l1Empty)
+        continue
+      }
+      const realL2s = f.l2s.filter((l2) => l2 !== STRATEGY_UNCONFIGURED)
+      const wantsEmptyL2 = f.l2s.includes(STRATEGY_UNCONFIGURED)
+      if (realL2s.length === 0 && !wantsEmptyL2) {
         filterParams.push(f.l1)
-        sfClauses.push(`i.strategy_l1 = $${filterParams.length}`)
+        sfClauses.push(`${l1Expr} = $${filterParams.length}`)
       } else {
         filterParams.push(f.l1)
         const idxL1 = filterParams.length
-        filterParams.push(f.l2s)
-        const idxL2 = filterParams.length
-        sfClauses.push(`(i.strategy_l1 = $${idxL1} AND i.strategy_l2 = ANY($${idxL2}))`)
+        const l2Parts: string[] = []
+        const unconstrainedL2s = realL2s.filter((l2) => (f.l3sByL2[l2] ?? []).length === 0)
+        const constrainedL2s = realL2s.filter((l2) => (f.l3sByL2[l2] ?? []).length > 0)
+        if (unconstrainedL2s.length > 0) {
+          filterParams.push(unconstrainedL2s)
+          l2Parts.push(`${l2Expr} = ANY($${filterParams.length})`)
+        }
+        for (const l2 of constrainedL2s) {
+          filterParams.push(l2)
+          const idxL2 = filterParams.length
+          const l3s = f.l3sByL2[l2] ?? []
+          const realL3s = l3s.filter((l3) => l3 !== STRATEGY_UNCONFIGURED)
+          const wantsEmptyL3 = l3s.includes(STRATEGY_UNCONFIGURED)
+          const l3Parts: string[] = []
+          for (const l3 of realL3s) {
+            filterParams.push(`%${l3}%`)
+            l3Parts.push(`COALESCE(${l3Expr}, '') ILIKE $${filterParams.length}`)
+          }
+          if (wantsEmptyL3) l3Parts.push(l3Empty)
+          l2Parts.push(`(${l2Expr} = $${idxL2} AND (${l3Parts.join(" OR ")}))`)
+        }
+        if (wantsEmptyL2) {
+          l2Parts.push(l2Empty)
+        }
+        sfClauses.push(`(${l1Expr} = $${idxL1} AND (${l2Parts.join(" OR ")}))`)
       }
     }
     where.push(`(${sfClauses.join(" OR ")})`)
@@ -417,7 +480,7 @@ export async function GET(req: Request) {
   }
 
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
-  const listSource = keyword ? SEARCH_LIST_SOURCE : AMAC_LIST_SOURCE
+  const listSource = `${keyword ? SEARCH_LIST_SOURCE : AMAC_LIST_SOURCE}${teamJoin}`
 
   async function fetchList(storedNav: boolean) {
     const listParams = [...filterParams]

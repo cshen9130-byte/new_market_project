@@ -20,6 +20,7 @@ export async function GET(
     const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10)))
     const keyword = (searchParams.get("keyword") || "").trim()
     const strategy = (searchParams.get("strategy") || "").trim()
+    const strategySource = searchParams.get("strategy_source")
     const sortParam = searchParams.get("sort") || "product_name"
     const sortDir = searchParams.get("dir") === "desc" ? "DESC" : "ASC"
     const cutoffDate = (searchParams.get("cutoff") || new Date().toISOString().slice(0, 10)).trim()
@@ -30,6 +31,7 @@ export async function GET(
       pageSize,
       keyword,
       strategy,
+      strategySource,
       sortKey: sortParam,
       sortDir,
       cutoffDate,

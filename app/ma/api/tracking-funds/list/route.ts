@@ -18,6 +18,7 @@ import {
 import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 import { recordInteractiveUserTraffic } from "@/lib/server/user-activity-priority"
 import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
+import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -27,7 +28,7 @@ const SQL_EXCLUDE_STOCK_COST_BUCKET = `NOT ${sqlSubjectNameIsStockCostBucket("CO
 
 declare global {
   // One-shot: drop stale list JSON that still contains 股票成本_* rows.
-  var _trackingListStockCostCacheBustV2: boolean | undefined
+  var _trackingListStockCostCacheBustV3: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -451,6 +452,23 @@ function sourceIndependentStrategyExprs(
   }
 }
 
+/** Team 「全部」: every shared team pool, including type6 运维池. */
+function teamAllFundsUnionSql(): string {
+  return `
+        SELECT beian_hao, product_name, 1 AS priority, NULL::timestamptz AS added_at
+          FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 2, imported_at FROM tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 3, imported_at FROM selected_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 4, imported_at FROM core_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 5, imported_at FROM hy_tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 6, imported_at FROM fof_mom_tracking WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, COALESCE(fund_short_name, fund_name), 7, imported_at
+          FROM type6_ops_team_full WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 8, imported_at FROM user_custom_pool
+          WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
+  `
+}
+
 function buildCachedFromClause(
   pool: string,
   isCustomPool: boolean,
@@ -469,20 +487,11 @@ function buildCachedFromClause(
           f.priority ASC
         ))[1] AS product_name,
         ${SHANGHAI_DATE_EXPR("MIN(f.added_at)")} AS first_added_at
-      FROM (
-        SELECT beian_hao, product_name, 1 AS priority, NULL::timestamptz AS added_at
-          FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 2, imported_at FROM tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 3, imported_at FROM selected_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 4, imported_at FROM core_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 5, imported_at FROM hy_tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 6, imported_at FROM fof_mom_tracking WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 7, imported_at FROM user_custom_pool
-          WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
+      FROM (${teamAllFundsUnionSql()}
       ) f
       GROUP BY f.beian_hao
     ) i
-    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (pool === "bfl_ops") {
     // Start from type6 membership so manual adds appear immediately even before
@@ -585,18 +594,9 @@ async function handleCachedTrackingList(opts: {
         isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
       const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
 
-      if (strategyL1) {
-        filterParams.push(strategyL1)
-        where.push(`${strategyL1Expr} = $${filterParams.length}`)
-      }
-      if (strategyL2) {
-        filterParams.push(strategyL2)
-        where.push(`${strategyL2Expr} = $${filterParams.length}`)
-      }
-      if (strategyL3) {
-        filterParams.push(`%${strategyL3}%`)
-        where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
-      }
+      appendStrategyLevelFilter(strategyL1, strategyL1Expr, where, filterParams)
+      appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
+      appendStrategyLevelFilter(strategyL3, strategyL3Expr, where, filterParams, "ilike")
       if (keyword) {
         filterParams.push(`%${keyword}%`)
         where.push(`(${resolvedCachedProductNameExpr()} ILIKE $${filterParams.length} OR i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length} OR cache.product_name ILIKE $${filterParams.length} OR cache.short_name ILIKE $${filterParams.length})`)
@@ -757,18 +757,9 @@ async function handleBflOpsList(opts: {
   const filterParams: (string | number)[] = []
   const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
 
-  if (strategyL1) {
-    filterParams.push(strategyL1)
-    where.push(`${strategyL1Expr} = $${filterParams.length}`)
-  }
-  if (strategyL2) {
-    filterParams.push(strategyL2)
-    where.push(`${strategyL2Expr} = $${filterParams.length}`)
-  }
-  if (strategyL3) {
-    filterParams.push(`%${strategyL3}%`)
-    where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
-  }
+  appendStrategyLevelFilter(strategyL1, strategyL1Expr, where, filterParams)
+  appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
+  appendStrategyLevelFilter(strategyL3, strategyL3Expr, where, filterParams, "ilike")
   if (keyword) {
     filterParams.push(`%${keyword}%`)
     where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
@@ -877,8 +868,8 @@ async function handleBflOpsList(opts: {
 }
 
 export async function GET(req: Request) {
-  if (!global._trackingListStockCostCacheBustV2) {
-    global._trackingListStockCostCacheBustV2 = true
+  if (!global._trackingListStockCostCacheBustV3) {
+    global._trackingListStockCostCacheBustV3 = true
     invalidateListResponseCache()
   }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
@@ -1014,20 +1005,7 @@ export async function GET(req: Request) {
 
   const sourceCte = pool === "all"
     ? `WITH all_funds AS (
-        SELECT beian_hao, product_name, 1 AS priority, NULL::timestamptz AS added_at FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
-        UNION ALL
-        SELECT register_number AS beian_hao, product_name, 2 AS priority, imported_at FROM tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL
-        SELECT register_number AS beian_hao, product_name, 3 AS priority, imported_at FROM selected_pool WHERE register_number IS NOT NULL
-        UNION ALL
-        SELECT register_number AS beian_hao, product_name, 4 AS priority, imported_at FROM core_pool WHERE register_number IS NOT NULL
-        UNION ALL
-        SELECT register_number AS beian_hao, product_name, 5 AS priority, imported_at FROM hy_tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL
-        SELECT register_number AS beian_hao, product_name, 6 AS priority, imported_at FROM fof_mom_tracking WHERE register_number IS NOT NULL
-        UNION ALL
-        SELECT register_number AS beian_hao, product_name, 7 AS priority, imported_at FROM user_custom_pool
-          WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
+        ${teamAllFundsUnionSql()}
       ),
       deduped AS (
         SELECT DISTINCT ON (beian_hao) beian_hao, product_name
@@ -1179,18 +1157,9 @@ export async function GET(req: Request) {
         isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
       const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
 
-  if (strategyL1) {
-    filterParams.push(strategyL1)
-    where.push(`${strategyL1Expr} = $${filterParams.length}`)
-  }
-  if (strategyL2) {
-    filterParams.push(strategyL2)
-    where.push(`${strategyL2Expr} = $${filterParams.length}`)
-  }
-  if (strategyL3) {
-    filterParams.push(`%${strategyL3}%`)
-    where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
-  }
+  appendStrategyLevelFilter(strategyL1, strategyL1Expr, where, filterParams)
+  appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
+  appendStrategyLevelFilter(strategyL3, strategyL3Expr, where, filterParams, "ilike")
   if (keyword) {
     filterParams.push(`%${keyword}%`)
     where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)

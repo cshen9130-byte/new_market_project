@@ -9,6 +9,7 @@ import {
 import { getUserById } from "@/lib/server/users"
 import { ensureTrackingFundsListCachePopulated } from "@/lib/server/tracking-funds-list-cache-pg"
 import { sqlFundNameMatch, sqlShareClassProductNameGuard } from "@/lib/server/fund-name-match"
+import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -34,6 +35,8 @@ export async function GET(req: Request) {
     const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10)))
     const keyword = (searchParams.get("keyword") || "").trim()
     const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
+    const strategyL2 = (searchParams.get("strategy_l2") || "").trim()
+    const strategyL3 = (searchParams.get("strategy_l3") || "").trim()
     const strategySource = (searchParams.get("strategy_source") || "platform").trim().toLowerCase()
     const sortKey = (searchParams.get("sort") || "product_name").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
@@ -100,10 +103,10 @@ export async function GET(req: Request) {
         }).catch(() => [])
       : []
 
-    const strategyL1Col =
-      strategySource === "company" ? "cache.company_strategy_l1" : "cache.platform_strategy_l1"
-    const strategyL2Col =
-      strategySource === "company" ? "cache.company_strategy_l2" : "cache.platform_strategy_l2"
+    const prefix = strategySource === "company" ? "company" : "platform"
+    const strategyL1Col = `NULLIF(BTRIM(cache.${prefix}_strategy_l1), '')`
+    const strategyL2Col = `NULLIF(BTRIM(cache.${prefix}_strategy_l2), '')`
+    const strategyL3Col = `NULLIF(BTRIM(cache.${prefix}_strategy_l3), '')`
 
     const filterParams: unknown[] = [EMAIL_OPS_POOL_KEY]
     const where: string[] = []
@@ -120,10 +123,9 @@ export async function GET(req: Request) {
         `(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`,
       )
     }
-    if (strategyL1) {
-      filterParams.push(strategyL1)
-      where.push(`${strategyL1Col} = $${filterParams.length}`)
-    }
+    appendStrategyLevelFilter(strategyL1, strategyL1Col, where, filterParams)
+    appendStrategyLevelFilter(strategyL2, strategyL2Col, where, filterParams)
+    appendStrategyLevelFilter(strategyL3, strategyL3Col, where, filterParams, "ilike")
 
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
 
@@ -261,6 +263,7 @@ export async function GET(req: Request) {
       short_name: string | null
       strategy_l1: string | null
       strategy_l2: string | null
+      strategy_l3: string | null
       team_tags: unknown
       latest_nav: string | null
       latest_nav_date: string | null
@@ -282,6 +285,7 @@ export async function GET(req: Request) {
          cache.short_name,
          ${strategyL1Col} AS strategy_l1,
          ${strategyL2Col} AS strategy_l2,
+         ${strategyL3Col} AS strategy_l3,
          cache.team_tags,
          cache.unit_nav::text AS latest_nav,
          cache.nav_date::text AS latest_nav_date,
@@ -323,6 +327,7 @@ export async function GET(req: Request) {
         short_name: r.short_name,
         strategy_l1: r.strategy_l1,
         strategy_l2: r.strategy_l2,
+        strategy_l3: r.strategy_l3,
         fund_company: null as string | null,
         team_tags: teamTags,
         latest_nav: r.latest_nav,

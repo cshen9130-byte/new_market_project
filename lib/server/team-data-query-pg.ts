@@ -6,6 +6,7 @@
  */
 
 import { query } from "@/lib/db"
+import { isStrategyUnconfigured, matchesStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { extractNavMetadata, normalizeFundDisplayName } from "@/lib/server/email-nav-extract"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
@@ -2318,16 +2319,18 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   if (keyword) {
     resolved = resolved.filter((r) => matchesTeamDataKeyword(r, keyword))
   }
-  if (strategyL1 === "__unconfigured__") {
-    resolved = resolved.filter((r) => !r.strategy_l1)
-  } else if (strategyL1) {
-    resolved = resolved.filter((r) => r.strategy_l1 === strategyL1)
+  if (strategyL1) {
+    resolved = resolved.filter((r) => matchesStrategyLevelFilter(r.strategy_l1, strategyL1))
   }
   if (strategyL2) {
-    resolved = resolved.filter((r) => r.strategy_l2 === strategyL2)
+    resolved = resolved.filter((r) => matchesStrategyLevelFilter(r.strategy_l2, strategyL2))
   }
   if (strategyL3) {
-    resolved = resolved.filter((r) => matchesStrategyL3(r.strategy_l3, strategyL3))
+    resolved = resolved.filter((r) => (
+      isStrategyUnconfigured(strategyL3)
+        ? !String(r.strategy_l3 || "").trim()
+        : matchesStrategyL3(r.strategy_l3, strategyL3)
+    ))
   }
 
   if (elementsFilter === "missing" || elementsFilter === "present") {
