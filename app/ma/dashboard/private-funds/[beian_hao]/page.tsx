@@ -226,6 +226,7 @@ function FundDetailPageShell({
 interface FundInfo {
   beian_hao:      string
   product_name:   string
+  former_product_name?: string | null
   short_name?:    string | null
   strategy_l1:    string | null
   strategy_l2:    string | null
@@ -568,6 +569,15 @@ function NavTable({
             </tr>
           </thead>
           <tbody>
+            {reversed.length === 0 && (
+              <tr>
+                <td colSpan={colCount} className="px-3 py-10 text-center text-xs text-zinc-400 leading-6">
+                  平台暂无该产品净值。火富牛、邮箱托管、团队数据中均未入库。
+                  <br />
+                  协会披露存续规模低于 1000 万元的产品通常没有第三方净值覆盖。
+                </td>
+              </tr>
+            )}
             {reversed.map((r) => {
               const fundCell = formatPctCell(computeNavPctChange(rows, navType, r.price_date))
               const benchCell = showBenchmarkChg
@@ -1762,6 +1772,11 @@ export default function PrivateFundDetailPage() {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-bold text-zinc-900 leading-tight" title={info.product_name}>{displayName}</h1>
+            {info.former_product_name && info.former_product_name !== info.product_name && (
+              <div className="mt-1 text-xs text-zinc-400">
+                曾用名 {info.former_product_name.replace(/私募证券投资基金$/u, "")}
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
           {/* ── 策略标签（一级 / 二级 / 三级） ── */}
           {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3) && (

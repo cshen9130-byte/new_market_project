@@ -21,6 +21,21 @@ export function sqlStripValuationSubjectPathPrefix(nameExpr: string): string {
   ), ''), ${nameExpr})`
 }
 
+/** SQL: prefer AMAC official name when it is a real rename, not just a suffix difference. */
+export function sqlPreferAmacOfficialName(storedExpr: string, amacExpr: string): string {
+  const storedBase = sqlFundNameBase(storedExpr)
+  const amacBase = sqlFundNameBase(amacExpr)
+  return `CASE
+    WHEN COALESCE(BTRIM(${amacExpr}), '') = '' THEN ${storedExpr}
+    WHEN BTRIM(${amacExpr}) IS NOT DISTINCT FROM BTRIM(${storedExpr}) THEN ${storedExpr}
+    WHEN ${amacBase} IS NULL OR ${storedBase} IS NULL THEN ${storedExpr}
+    WHEN ${amacBase} = ${storedBase} THEN ${storedExpr}
+    WHEN ${amacBase} LIKE ${storedBase} || '%' THEN ${storedExpr}
+    WHEN ${storedBase} LIKE ${amacBase} || '%' THEN ${storedExpr}
+    ELSE ${amacExpr}
+  END`
+}
+
 /** Prefer the AMAC official name when it is a real rename, not just a suffix difference. */
 export function preferAmacOfficialName(
   stored: string | null | undefined,

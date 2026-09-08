@@ -179,6 +179,15 @@ const NavTable = memo(function NavTable({
             </tr>
           </thead>
           <tbody>
+            {reversed.length === 0 && (
+              <tr>
+                <td colSpan={colCount} className="px-3 py-10 text-center text-xs text-zinc-400 leading-6">
+                  平台暂无该产品净值。火富牛、邮箱托管、团队数据中均未入库。
+                  <br />
+                  协会披露存续规模低于 1000 万元的产品通常没有第三方净值覆盖。
+                </td>
+              </tr>
+            )}
             {reversed.map((r) => {
               const fundCell = formatPctCell(computeNavPctChange(rows, navType, r.price_date))
               const benchCell = showBenchmarkChg

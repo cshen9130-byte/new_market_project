@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { sqlFundNameBase } from "@/lib/server/fund-name-match"
+import { sqlFundNameBase, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
 import {
   applyCanonicalManagerNames,
   expandManagerFilterNames,
@@ -14,8 +14,34 @@ import { sqlType6LatestStrategyJoin } from "@/lib/server/fund-strategy-resolve"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-/** Plain AMAC master list (default browse). */
-const AMAC_LIST_SOURCE = `private_fund_info i`
+const LIST_NAME_EXPR = sqlPreferAmacOfficialName("i.product_name", "a.fund_name")
+
+const LIST_INFO_COLUMNS = `
+    i.beian_hao,
+    ${LIST_NAME_EXPR} AS product_name,
+    i.product_name AS stored_product_name,
+    i.strategy_l1,
+    i.strategy_l2,
+    i.manager,
+    i.inception_date,
+    i.benchmark,
+    i.ret_1w,
+    i.ret_1m,
+    i.ret_3m,
+    i.ret_6m,
+    i.ret_1y,
+    i.sharpe_1y,
+    i.calmar_1y,
+    i.latest_nav,
+    i.latest_nav_date
+`
+
+/** Plain AMAC master list (default browse). Display AMAC name after a real rename. */
+const AMAC_LIST_SOURCE = `(
+  SELECT ${LIST_INFO_COLUMNS}
+  FROM private_fund_info i
+  LEFT JOIN amac_private_funds a ON a.fund_no = i.beian_hao
+) i`
 
 /**
  * AMAC + BFL-only rows (share-class tiers from 要素提取 / 分级创建).
@@ -23,28 +49,14 @@ const AMAC_LIST_SOURCE = `private_fund_info i`
  * BFL-only rows have no stored manager; inheritShareClassParentFields fills it from the parent.
  */
 const SEARCH_LIST_SOURCE = `(
-  SELECT
-    beian_hao,
-    product_name,
-    strategy_l1,
-    strategy_l2,
-    manager,
-    inception_date,
-    benchmark,
-    ret_1w,
-    ret_1m,
-    ret_3m,
-    ret_6m,
-    ret_1y,
-    sharpe_1y,
-    calmar_1y,
-    latest_nav,
-    latest_nav_date
-  FROM private_fund_info
+  SELECT ${LIST_INFO_COLUMNS}
+  FROM private_fund_info i
+  LEFT JOIN amac_private_funds a ON a.fund_no = i.beian_hao
   UNION ALL
   SELECT
     b.beian_hao,
     b.product_name,
+    b.product_name AS stored_product_name,
     b.strategy_one AS strategy_l1,
     NULL::text AS strategy_l2,
     ''::text AS manager,
@@ -396,11 +408,8 @@ export async function GET(req: Request) {
     filterParams.push(`%${keyword}%`)
     where.push(`(
       i.product_name ILIKE $${filterParams.length}
+      OR i.stored_product_name ILIKE $${filterParams.length}
       OR i.beian_hao ILIKE $${filterParams.length}
-      OR EXISTS (
-        SELECT 1 FROM amac_private_funds a
-        WHERE a.fund_no = i.beian_hao AND a.fund_name ILIKE $${filterParams.length}
-      )
     )`)
   }
   if (manager) {

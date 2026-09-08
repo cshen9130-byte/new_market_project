@@ -290,13 +290,21 @@ export async function GET(
       const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
       const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
-        const cachedInfo = body.info as { product_name?: string | null; team_benchmark?: string | null }
+        const cachedInfo = body.info as {
+          product_name?: string | null
+          former_product_name?: string | null
+          team_benchmark?: string | null
+        }
         const cachedAmacName = await lookupAmacFundName(rawId).catch(() => null)
+        const officialName = preferAmacOfficialName(cachedInfo.product_name, cachedAmacName)
+        const storedName = (cachedInfo.former_product_name ?? cachedInfo.product_name ?? "").trim()
         return NextResponse.json({
           ...body,
           info: {
             ...cachedInfo,
-            product_name: preferAmacOfficialName(cachedInfo.product_name, cachedAmacName),
+            product_name: officialName,
+            former_product_name:
+              officialName && storedName && officialName !== storedName ? storedName : null,
             team_benchmark: teamBenchmark ?? cachedInfo.team_benchmark ?? null,
           },
         })
@@ -719,6 +727,11 @@ export async function GET(
       info: {
         ...info,
         product_name: preferAmacOfficialName(info.product_name, amacResolved?.fund_name),
+        former_product_name: (() => {
+          const official = preferAmacOfficialName(info.product_name, amacResolved?.fund_name)
+          const stored = (info.product_name ?? "").trim()
+          return official && stored && official !== stored ? stored : null
+        })(),
         strategy_l3,
         scale,
         manager_names,
