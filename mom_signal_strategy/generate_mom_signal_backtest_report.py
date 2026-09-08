@@ -25,16 +25,14 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-ROOT = Path(__file__).resolve().parents[2]
-OUT_DIR = ROOT / "scripts" / "ma" / "_mom_signal_backtest_output"
+BASE_DIR = Path(__file__).resolve().parent
+ROOT = BASE_DIR.parent
+OUT_DIR = BASE_DIR / "report_output"
 CHART_DIR = OUT_DIR / "charts"
-REPORT_PATH = ROOT / "MOM决策信号策略回测报告.docx"
-REPORT_PATH_ASCII = ROOT / "MOM_signal_strategy_backtest.docx"
+REPORT_PATH = BASE_DIR / "MOM决策信号策略回测报告.docx"
+REPORT_PATH_ASCII = BASE_DIR / "MOM_signal_strategy_backtest.docx"
 
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _mom_20m_account import (  # noqa: E402
+from _mom_20m_account import (
     START_EQUITY,
     COMM_RATE,
     SLIP_RATE,
@@ -1762,7 +1760,7 @@ def build_report(ctx: dict) -> Path:
     para(
         doc,
         f"持仓交易日 {ctx['pos_days']}，行情 overlapping 后用于回测的信号日 {n_days}。"
-        f"报告生成于 {date.today().isoformat()}。图表原文件在 scripts/ma/_mom_signal_backtest_output/charts/。",
+        f"报告生成于 {date.today().isoformat()}。图表原文件在 mom_signal_strategy/report_output/charts/。",
         size=10, color=MUTED, first_line=False,
     )
 

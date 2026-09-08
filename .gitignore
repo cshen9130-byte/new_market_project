@@ -133,7 +133,8 @@ data/runtime/
 data/exports/
 scripts/ma/_tmp_*
 scripts/ma/_mom_signal_method_output/
-scripts/ma/_mom_signal_backtest_output/
+mom_signal_strategy/report_output/
+data/team_product_history_data/
 scripts/ma/fof99_advancedlist_latest_nav.csv
 data/hw_monitor_*
 data/list_perf_*

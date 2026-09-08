@@ -1,0 +1,9 @@
+# Python virtual environment
+.venv/
+
+# Generated charts / CSVs
+report_output/
+
+# Generated Word reports and Office lock files
+*.docx
+~$*
