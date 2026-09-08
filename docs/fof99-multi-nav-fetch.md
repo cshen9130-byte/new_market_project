@@ -40,6 +40,13 @@ SET policy = 'weekly', reason = 'operator override', updated_at = NOW()
 WHERE reg_code = 'XXXXXX';
 ```
 
+Admit a 火富牛 product that was never in the universe. **Initial fill uses `FundPrice` (`GET /price`) — one product, full history, 1 credit.** After that, Friday ETL keeps it current with FundMultiPrice (this product fits in an existing 40-code batch, so usually 0 extra weekly credits):
+
+```text
+python scripts/ma/fof99_admit_weekly.py --codes SAUN55 --dry-run
+python scripts/ma/fof99_admit_weekly.py --codes SAUN55
+```
+
 Credit budget is **weekly + weekly_plus**. Default and hard cap are **300 FundMultiPrice credits per run and per Shanghai day** (12,000 funds × 1 Friday). `--budget` cannot exceed 300. If more Fridays are missing, the job keeps the newest 300 batches and a later run continues. After the 3–6m labels, weekly is **9,717** ≈ **243 credits** for one Friday. `weekly_plus` adds only the funds whose list tip is still behind that Friday (often ~1 extra credit).
 
 Consumed credits (must match the 火富牛 mall 总调用):
