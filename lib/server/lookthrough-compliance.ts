@@ -18,6 +18,7 @@ import {
   isValuationIncrementSubjectCode,
 } from "@/lib/server/fund-holding-code"
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
+import { sqlType6TableResolvedStrategy } from "@/lib/server/fund-strategy-resolve"
 import type {
   AssetBucket,
   ComplianceCheck,
@@ -25,8 +26,13 @@ import type {
   LookthroughComplianceResult,
   LookthroughHolding,
   LookthroughMissing,
+  LookthroughSubfundStructure,
   ProductCategory,
 } from "@/lib/ma/lookthrough-compliance-types"
+import {
+  loadLookthroughCategoryByBeian,
+  loadLookthroughProductCategories,
+} from "@/lib/server/lookthrough-product-categories"
 
 type RawHolding = {
   valuation_record_id: number
@@ -35,8 +41,11 @@ type RawHolding = {
   symbol: string | null
   row_kind: string | null
   asset_class: string | null
+  direction: string | null
   market_value: number
   cost: number
+  signed_market_value: number
+  signed_cost: number
   quantity: number
   price: number
   extra: Record<string, unknown>
@@ -231,10 +240,10 @@ function classifyBucket(h: RawHolding): AssetBucket {
     return "fixed_income"
   }
 
+  if (kind === "margin_deposit" || kind === "settlement_reserve") return "margin"
+
   if (
-    kind === "margin_deposit"
-    || kind === "settlement_reserve"
-    || kind === "receivable"
+    kind === "receivable"
     || kind === "payable"
     || kind === "clearing"
     || kind === "paid_in_capital"
@@ -262,11 +271,35 @@ function isArticle19ExemptName(h: RawHolding): boolean {
   return isGeneralPledgedRepo(h)
 }
 
+function isClearingLikeHolding(h: RawHolding): boolean {
+  const kind = h.row_kind ?? ""
+  if (
+    kind === "margin_deposit"
+    || kind === "settlement_reserve"
+    || kind === "bank_deposit"
+    || kind === "receivable"
+    || kind === "payable"
+    || kind === "clearing"
+    || kind === "paid_in_capital"
+  ) {
+    return true
+  }
+  return /^(银行存款|结算备付金|存出保证金)/.test(h.subject_name ?? "")
+}
+
 function isConcentrationExempt(h: RawHolding, bucket: AssetBucket): boolean {
   if (bucket === "cash_tool") return true
+  if (isClearingLikeHolding(h)) return true
   if (isPublicFund(h)) return true
   if (isGeneralPledgedRepo(h)) return true
   return false
+}
+
+function holdingSign(h: RawHolding): 1 | -1 {
+  if (h.signed_market_value < 0 || h.signed_cost < 0) return -1
+  const direction = String(h.direction ?? "").toLowerCase()
+  if (direction === "short" || direction === "sell" || h.quantity < 0) return -1
+  return 1
 }
 
 function isBondLike(h: RawHolding, bucket: AssetBucket): boolean {
@@ -324,6 +357,7 @@ function buildChecks(
     maxBondPct: number | null
     maxSingleName: string | null
     maxBondName: string | null
+    bondExemptNote?: string | null
     lookthroughComplete: boolean
     lookthroughAttempted: boolean
     missing: LookthroughMissing[]
@@ -382,8 +416,8 @@ function buildChecks(
       value: fmtPct(p.derivNotionalPct),
       threshold: "≥ 已投资产 80%",
       detail: notionalOk
-        ? "衍生品持仓合约价值达到认定标准。"
-        : "衍生品持仓合约价值未达到已投资产的 80%。",
+        ? "衍生品持仓合约价值达到认定标准。已投资产 = 权益市值 + 固收市值 + 期货合约价值 + 其他已投，不含现金管理工具。"
+        : "衍生品持仓合约价值未达到已投资产的 80%。已投资产按期货合约价值加其他已投、不含现金管理工具。",
     })
     checks.push({
       id: "type-deriv-equity",
@@ -391,10 +425,10 @@ function buildChecks(
       article: "第41条",
       passed: equityOk,
       value: fmtPct(p.derivEquityPct),
-      threshold: "> 已投资产 20%",
+      threshold: "> 市值已投资产 20%",
       detail: equityOk
-        ? "期货和衍生品账户权益超过已投资产的 20%。"
-        : "期货和衍生品账户权益未超过已投资产的 20%。",
+        ? "期货和衍生品账户权益（保证金+结算备付金）超过市值口径已投资产的 20%。该口径不含现金管理工具，也不把合约价值计入分母。"
+        : "期货和衍生品账户权益未超过市值口径已投资产的 20%。",
     })
   } else {
     const isEquity = (p.equityPct ?? 0) >= 80
@@ -434,19 +468,34 @@ function buildChecks(
       : `穿透后「${p.maxSingleName ?? "单一资产"}」占净资产 ${fmtPct(p.maxSinglePct)}，超过 25%。`,
   })
 
+  const bondHasInScope = p.maxBondName != null
   const bondOk = p.maxBondPct == null || p.maxBondPct <= 10 + 1e-6
+  const bondValue = p.maxBondPct == null
+    ? "—"
+    : bondHasInScope
+      ? `${p.maxBondName} ${fmtPct(p.maxBondPct)}`
+      : `无适用债券 ${fmtPct(0)}`
+  const bondDetail = p.maxBondPct == null
+    ? "缺少净资产，无法按第19条计算单一债券占净值。"
+    : [
+      bondHasInScope
+        ? (bondOk
+          ? `最大适用债券「${p.maxBondName}」占净资产 ${fmtPct(p.maxBondPct)}，未超过 10%。`
+          : `「${p.maxBondName}」占净资产 ${fmtPct(p.maxBondPct)}，超过 10%。`)
+        : "第19条按「同一债券」占净资产计。穿透后没有适用的信用债/同一债券，集中度为 0%，未触发 10% 上限。",
+      p.bondExemptNote ? `不按同一债券计：${p.bondExemptNote}。` : "国债、央票、政金债、地方债、可转债、可交换债、债券通用质押式回购除外。",
+      p.lookthroughAttempted && !p.lookthroughComplete
+        ? `有 ${p.missing.length} 只底层未穿透，其内部债券未拆入本项，当前仅按已拆持仓判断。`
+        : "",
+    ].filter(Boolean).join(" ")
   checks.push({
     id: "bond-10",
     title: "单一债券集中度",
     article: "第19条",
     passed: bondOk,
-    value: p.maxBondName
-      ? `${p.maxBondName} ${fmtPct(p.maxBondPct)}`
-      : fmtPct(p.maxBondPct),
+    value: bondValue,
     threshold: "≤ 净资产 10%",
-    detail: bondOk
-      ? "单一债券未超过净资产 10%（国债、央票、政金债、地方债、可转债、可交换债、债券通用质押式回购除外）。"
-      : `「${p.maxBondName ?? "单一债券"}」占净资产 ${fmtPct(p.maxBondPct)}，超过 10%。`,
+    detail: bondDetail,
   })
 
   const levLimit = p.leverageLimitPct
@@ -496,6 +545,13 @@ function namesMatch(a: string | null | undefined, b: string | null | undefined):
   const y = displayName(String(b ?? ""))
   if (!x || !y) return false
   return fundDisplayNamesMatch(x, y) || fundNicknameMatchesFullName(x, y) || fundNicknameMatchesFullName(y, x)
+}
+
+function holdingLookupCode(h: RawHolding): string | null {
+  const symbol = (h.symbol ?? "").trim()
+  if (symbol) return symbol
+  const fromSubject = String(h.subject_code ?? "").match(/[A-Z0-9]{5,}$/i)?.[0]
+  return fromSubject ? fromSubject.trim() : null
 }
 
 function findUnderlyingMeta(
@@ -627,8 +683,11 @@ async function loadHoldingsByRecordIds(recordIds: number[]): Promise<Map<number,
     symbol: string | null
     row_kind: string | null
     asset_class: string | null
+    direction: string | null
     market_value: string | null
     cost: string | null
+    signed_market_value: string | null
+    signed_cost: string | null
     quantity: string | null
     price: string | null
     extra: Record<string, unknown> | null
@@ -640,8 +699,11 @@ async function loadHoldingsByRecordIds(recordIds: number[]): Promise<Map<number,
        symbol,
        row_kind,
        asset_class,
+       direction,
        market_value::text,
        cost::text,
+       signed_market_value::text,
+       signed_cost::text,
        quantity::text,
        price::text,
        extra
@@ -663,8 +725,11 @@ async function loadHoldingsByRecordIds(recordIds: number[]): Promise<Map<number,
       symbol: row.symbol,
       row_kind: row.row_kind,
       asset_class: row.asset_class,
+      direction: row.direction,
       market_value: toNum(row.market_value),
       cost: toNum(row.cost),
+      signed_market_value: toNum(row.signed_market_value),
+      signed_cost: toNum(row.signed_cost),
       quantity: toNum(row.quantity),
       price: toNum(row.price),
       extra: row.extra ?? {},
@@ -736,6 +801,8 @@ type Flattened = {
   holding: RawHolding
   market_value: number
   source_fund: string | null
+  source_valuation_date: string | null
+  source_product_code: string | null
 }
 
 function resolveLookthroughNav(meta: ValuationMeta, childHoldings: RawHolding[] | null | undefined): number {
@@ -781,7 +848,13 @@ function flattenHoldings(
           code: h.symbol,
           market_value: mv,
         })
-        rows.push({ holding: h, market_value: mv, source_fund: null })
+        rows.push({
+          holding: h,
+          market_value: mv,
+          source_fund: null,
+          source_valuation_date: null,
+          source_product_code: holdingLookupCode(h),
+        })
         continue
       }
       const scale = mv / childNav
@@ -795,6 +868,8 @@ function flattenHoldings(
           ...child,
           market_value: child.market_value * scale,
           cost: child.cost * scale,
+          signed_market_value: child.signed_market_value * scale,
+          signed_cost: child.signed_cost * scale,
           quantity: child.quantity * scale,
           extra: scaledExtra,
         }
@@ -804,6 +879,8 @@ function flattenHoldings(
           holding: scaled,
           market_value: isDerivativeHolding(child) ? holdingNotional(scaled) : childMv,
           source_fund: displayName(h.subject_name),
+          source_valuation_date: meta.valuation_date || null,
+          source_product_code: (meta.product_code || holdingLookupCode(h) || "").trim() || null,
         })
         added += 1
       }
@@ -813,7 +890,13 @@ function flattenHoldings(
           code: h.symbol,
           market_value: mv,
         })
-        rows.push({ holding: h, market_value: mv, source_fund: null })
+        rows.push({
+          holding: h,
+          market_value: mv,
+          source_fund: null,
+          source_valuation_date: null,
+          source_product_code: holdingLookupCode(h),
+        })
       } else {
         penetrated += 1
       }
@@ -824,6 +907,8 @@ function flattenHoldings(
       holding: h,
       market_value: isDerivativeHolding(h) ? holdingNotional(h) : mv,
       source_fund: null,
+      source_valuation_date: null,
+      source_product_code: null,
     })
   }
 
@@ -836,6 +921,7 @@ function evaluateProduct(
   holdings: RawHolding[],
   catalog: ValuationMeta[],
   holdingsByRecord: Map<number, RawHolding[]>,
+  opts?: { maxHoldings?: number | null },
 ): LookthroughComplianceProduct {
   const hasValuation = Boolean(meta)
   const lookthrough = Boolean(meta) && !isExcludedNonFof(product.product_name)
@@ -864,65 +950,162 @@ function evaluateProduct(
   let funds = 0
   let other = 0
 
-  const conc = new Map<string, { name: string; value: number; exempt: boolean; bond: boolean }>()
+  const conc = new Map<string, {
+    name: string
+    value: number
+    signedNotional: number
+    grossNotional: number
+    exempt: boolean
+    bond: boolean
+    derivative: boolean
+  }>()
 
   const topHoldings: LookthroughHolding[] = []
+  type SubAcc = {
+    name: string
+    product_code: string | null
+    is_parent_direct: boolean
+    unpenetrated: boolean
+    valuation_date: string | null
+    equity: number
+    fixed_income: number
+    derivatives_notional: number
+    derivatives_equity: number
+    cash_tools: number
+    funds_unpenetrated: number
+    other: number
+  }
+  const PARENT_DIRECT = "母基金直投"
+  const bySubfund = new Map<string, SubAcc>()
+  const missingNames = new Set(flat.missing.map((m) => m.name))
+  const bondExemptMv = new Map<string, number>()
+
+  function subfundOf(row: Flattened): SubAcc {
+    const isUnpenetratedPrivate = !row.source_fund && isPrivateFundHolding(row.holding)
+    const name = row.source_fund
+      || (isUnpenetratedPrivate ? displayName(row.holding.subject_name) : PARENT_DIRECT)
+    const date = row.source_valuation_date
+      || (name === PARENT_DIRECT ? (meta?.valuation_date ?? null) : null)
+    const product_code = row.source_product_code
+      || (isUnpenetratedPrivate ? holdingLookupCode(row.holding) : null)
+      || (name === PARENT_DIRECT ? (meta?.product_code ?? null) : null)
+    let acc = bySubfund.get(name)
+    if (!acc) {
+      acc = {
+        name,
+        product_code,
+        is_parent_direct: name === PARENT_DIRECT,
+        unpenetrated: missingNames.has(name) || isUnpenetratedPrivate,
+        valuation_date: date,
+        equity: 0,
+        fixed_income: 0,
+        derivatives_notional: 0,
+        derivatives_equity: 0,
+        cash_tools: 0,
+        funds_unpenetrated: 0,
+        other: 0,
+      }
+      bySubfund.set(name, acc)
+    } else {
+      if (!acc.valuation_date && date) acc.valuation_date = date
+      if (!acc.product_code && product_code) acc.product_code = product_code
+    }
+    return acc
+  }
 
   for (const row of flat.rows) {
     const bucket = classifyBucket(row.holding)
     const kind = row.holding.row_kind ?? ""
-    const mv = Math.abs(
-      bucket === "derivatives" ? holdingNotional(row.holding) : row.holding.market_value || row.market_value,
-    )
+    const absMv = Math.abs(row.holding.market_value)
+    const sub = subfundOf(row)
+    if (
+      isGeneralPledgedRepo(row.holding)
+      || isArticle19ExemptName(row.holding)
+    ) {
+      if (
+        bucket === "fixed_income"
+        || bucket === "cash_tool"
+        || /债|回购/.test(row.holding.subject_name ?? "")
+      ) {
+        const exemptName = displayName(row.holding.subject_name)
+        bondExemptMv.set(exemptName, (bondExemptMv.get(exemptName) ?? 0) + absMv)
+      }
+    }
 
-    if (bucket === "equity") equity += Math.abs(row.holding.market_value)
-    else if (bucket === "fixed_income") fixedIncome += Math.abs(row.holding.market_value)
-    else if (bucket === "derivatives") derivNotional += holdingNotional(row.holding)
-    else if (bucket === "cash_tool") cashTools += Math.abs(row.holding.market_value)
-    else if (bucket === "fund") funds += Math.abs(row.holding.market_value)
-    else if (
-      kind !== "margin_deposit"
-      && kind !== "settlement_reserve"
-      && kind !== "receivable"
+    if (bucket === "equity") {
+      equity += absMv
+      sub.equity += absMv
+    } else if (bucket === "fixed_income") {
+      fixedIncome += absMv
+      sub.fixed_income += absMv
+    } else if (bucket === "derivatives") {
+      const notional = holdingNotional(row.holding)
+      derivNotional += notional
+      sub.derivatives_notional += notional
+    } else if (bucket === "cash_tool") {
+      cashTools += absMv
+      sub.cash_tools += absMv
+    } else if (bucket === "fund") {
+      funds += absMv
+      sub.funds_unpenetrated += absMv
+    } else if (bucket === "margin") {
+      // 保证金/备付金计入期货账户权益，不计入已投资产/其他
+    } else if (
+      kind !== "receivable"
       && kind !== "payable"
       && kind !== "clearing"
       && kind !== "paid_in_capital"
     ) {
-      other += Math.abs(row.holding.market_value)
+      other += absMv
+      sub.other += absMv
     }
 
     if (kind === "margin_deposit" || kind === "settlement_reserve") {
-      derivEquity += Math.abs(row.holding.market_value)
+      derivEquity += absMv
+      sub.derivatives_equity += absMv
     }
 
-    const concValue = Math.min(
-      Math.abs(row.holding.cost) > 0
+    const exempt = isConcentrationExempt(row.holding, bucket)
+    const bond = isBondLike(row.holding, bucket)
+    const name = displayName(row.holding.subject_name)
+    const key = sameAssetKey(row.holding, bucket)
+    const prev = conc.get(key) ?? {
+      name,
+      value: 0,
+      signedNotional: 0,
+      grossNotional: 0,
+      exempt,
+      bond,
+      derivative: bucket === "derivatives",
+    }
+    prev.exempt = prev.exempt && exempt
+    prev.bond = prev.bond || bond
+    if (bucket === "derivatives") {
+      const notional = holdingNotional(row.holding)
+      prev.derivative = true
+      prev.grossNotional += notional
+      prev.signedNotional += notional * holdingSign(row.holding)
+    } else if (!exempt) {
+      const concValue = Math.abs(row.holding.cost) > 0
         ? Math.min(Math.abs(row.holding.cost), Math.abs(row.holding.market_value) || Math.abs(row.holding.cost))
-        : Math.abs(row.holding.market_value),
-      Number.MAX_SAFE_INTEGER,
-    )
-    if (concValue > 0) {
-      const key = sameAssetKey(row.holding, bucket)
-      const prev = conc.get(key)
-      const name = displayName(row.holding.subject_name)
-      const exempt = isConcentrationExempt(row.holding, bucket)
-      const bond = isBondLike(row.holding, bucket)
-      if (prev) {
-        prev.value += concValue
-        prev.exempt = prev.exempt && exempt
-        prev.bond = prev.bond || bond
-      } else {
-        conc.set(key, { name, value: concValue, exempt, bond })
-      }
+        : Math.abs(row.holding.market_value)
+      prev.value += concValue
     }
+    conc.set(key, prev)
 
-    if (bucket !== "other" || mv > 0) {
+    const skipFromHoldings =
+      kind === "receivable"
+      || kind === "payable"
+      || kind === "clearing"
+      || kind === "paid_in_capital"
+    const displayMv = bucket === "derivatives" ? holdingNotional(row.holding) : absMv
+    if (!skipFromHoldings && displayMv > 0) {
       topHoldings.push({
         name: displayName(row.holding.subject_name),
         symbol: row.holding.symbol,
         bucket,
-        market_value: Math.abs(row.holding.market_value) || mv,
-        pct_nav: nav > 0 ? (Math.abs(row.holding.market_value) / nav) * 100 : 0,
+        market_value: displayMv,
+        pct_nav: nav > 0 ? (displayMv / nav) * 100 : 0,
         source_fund: row.source_fund,
         concentration_exempt: isConcentrationExempt(row.holding, bucket),
       })
@@ -930,10 +1113,55 @@ function evaluateProduct(
   }
 
   const invested = equity + fixedIncome + derivNotional + funds + other
+  const investedMv = equity + fixedIncome + derivEquity + funds + other
+  if (derivNotional > 0 && derivEquity > 0) {
+    for (const item of conc.values()) {
+      if (!item.derivative) continue
+      item.value = derivEquity * (Math.abs(item.signedNotional) / derivNotional)
+    }
+  }
+  const subfund_structures: LookthroughSubfundStructure[] = [...bySubfund.values()]
+    .map((acc) => {
+      const subInvested = acc.equity + acc.fixed_income + acc.derivatives_notional + acc.funds_unpenetrated + acc.other
+      return {
+        name: acc.name,
+        product_code: acc.product_code,
+        is_parent_direct: acc.is_parent_direct,
+        unpenetrated: acc.unpenetrated,
+        valuation_date: acc.valuation_date,
+        fund_strategy: null,
+        buckets: {
+          equity: acc.equity,
+          fixed_income: acc.fixed_income,
+          derivatives_notional: acc.derivatives_notional,
+          cash_tools: acc.cash_tools,
+          funds_unpenetrated: acc.funds_unpenetrated,
+          other: acc.other,
+          invested_assets: subInvested,
+        },
+        ratios: {
+          equity_pct: ratio(acc.equity, subInvested),
+          fixed_income_pct: ratio(acc.fixed_income, subInvested),
+          derivatives_notional_pct: ratio(acc.derivatives_notional, subInvested),
+          funds_unpenetrated_pct: ratio(acc.funds_unpenetrated, subInvested),
+          cash_tools_pct: ratio(acc.cash_tools, subInvested),
+          other_pct: ratio(acc.other, subInvested),
+          share_of_parent_invested_pct: ratio(subInvested, invested),
+        },
+      }
+    })
+    .filter((row) => {
+      if (row.is_parent_direct) return row.buckets.invested_assets > 0
+      return row.buckets.invested_assets > 0 || row.buckets.cash_tools > 10_000
+    })
+    .sort((a, b) => {
+      if (a.is_parent_direct !== b.is_parent_direct) return a.is_parent_direct ? 1 : -1
+      return b.buckets.invested_assets - a.buckets.invested_assets
+    })
   const equityPct = ratio(equity, invested)
   const fiPct = ratio(fixedIncome, invested)
   const derivNotionalPct = ratio(derivNotional, invested)
-  const derivEquityPct = ratio(derivEquity, invested)
+  const derivEquityPct = ratio(derivEquity, investedMv > 0 ? investedMv : invested)
   const fundPct = ratio(funds, invested)
   const leveragePct = ratio(totalAsset, nav)
   const illiquidPct = ratio(article15RestrictedMv(holdings), nav)
@@ -955,6 +1183,13 @@ function evaluateProduct(
       maxBondName = item.name
     }
   }
+  if (hasValuation && nav > 0 && maxBondPct == null) maxBondPct = 0
+  const bondExemptNote = [...bondExemptMv.entries()]
+    .filter(([, value]) => value > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([name, value]) => `${name} ${(value / 10_000).toFixed(2)}万`)
+    .join("、") || null
 
   const checkInput = {
     equityPct,
@@ -968,6 +1203,7 @@ function evaluateProduct(
     maxBondPct,
     maxSingleName,
     maxBondName,
+    bondExemptNote,
     lookthroughComplete: flat.missing.length === 0,
     lookthroughAttempted: lookthrough && flat.underlyingCount > 0,
     missing: flat.missing,
@@ -1028,9 +1264,121 @@ function evaluateProduct(
       derivEquityPct,
       fundPct,
     }),
-    top_holdings: topHoldings.slice(0, 80),
+    top_holdings: opts?.maxHoldings == null
+      ? topHoldings
+      : topHoldings.slice(0, Math.max(0, opts.maxHoldings)),
+    subfund_structures,
     checks_by_category,
   }
+}
+
+function stripShareClassCode(code: string): string {
+  return code.replace(/[ABC]$/i, "")
+}
+
+function formatLookthroughStrategy(
+  l1: string | null | undefined,
+  l2: string | null | undefined,
+  l3: string | null | undefined,
+): string | null {
+  const parts = [l1, l2, l3].map((v) => (v ?? "").trim()).filter(Boolean)
+  return parts.length > 0 ? parts.join("/") : null
+}
+
+async function loadSubfundStrategyMap(
+  codes: string[],
+  names: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  const resolved = sqlType6TableResolvedStrategy()
+  const uniqueCodes = [...new Set(codes.map((c) => c.trim()).filter(Boolean))]
+  const codeKeys = [...new Set(uniqueCodes.map((c) => c.toUpperCase()))]
+  const strippedKeys = [...new Set(codeKeys.map(stripShareClassCode).filter(Boolean))]
+
+  if (codeKeys.length > 0) {
+    const rows = await query<{ register_number: string; l1: string | null; l2: string | null; l3: string | null }>(
+      `SELECT DISTINCT ON (register_number)
+         register_number,
+         ${resolved.l1} AS l1,
+         ${resolved.l2} AS l2,
+         ${resolved.l3} AS l3
+       FROM type6_ops_team_full
+       WHERE UPPER(BTRIM(register_number)) = ANY($1::text[])
+          OR regexp_replace(UPPER(BTRIM(register_number)), '[ABC]$', '') = ANY($2::text[])
+       ORDER BY register_number, updated_at DESC NULLS LAST, id DESC`,
+      [codeKeys, strippedKeys],
+    ).catch(() => [])
+    for (const row of rows) {
+      const label = formatLookthroughStrategy(row.l1, row.l2, row.l3)
+      if (!label) continue
+      const upper = row.register_number.trim().toUpperCase()
+      out.set(upper, label)
+      out.set(stripShareClassCode(upper), label)
+    }
+  }
+
+  const uniqueNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
+  if (uniqueNames.length > 0) {
+    const named = sqlType6TableResolvedStrategy("o")
+    const rows = await query<{ product_name: string; l1: string | null; l2: string | null; l3: string | null }>(
+      `SELECT DISTINCT ON (n.name)
+         n.name AS product_name,
+         ${named.l1} AS l1,
+         ${named.l2} AS l2,
+         ${named.l3} AS l3
+       FROM unnest($1::text[]) AS n(name)
+       JOIN type6_ops_team_full o ON (
+         ${sqlFundNameMatch("o.fund_name", "n.name")}
+         OR ${sqlFundNameMatch("o.fund_short_name", "n.name")}
+       )
+       ORDER BY n.name, o.updated_at DESC NULLS LAST, o.id DESC`,
+      [uniqueNames],
+    ).catch(() => [])
+    for (const row of rows) {
+      const label = formatLookthroughStrategy(row.l1, row.l2, row.l3)
+      if (!label) continue
+      if (!out.has(row.product_name)) out.set(row.product_name, label)
+    }
+  }
+
+  return out
+}
+
+function lookupSubfundStrategy(
+  map: Map<string, string>,
+  code: string | null,
+  name: string,
+): string | null {
+  if (code) {
+    const upper = code.trim().toUpperCase()
+    const hit = map.get(upper) || map.get(stripShareClassCode(upper))
+    if (hit) return hit
+  }
+  return map.get(name) ?? null
+}
+
+async function attachSubfundStrategies(
+  products: LookthroughComplianceProduct[],
+): Promise<LookthroughComplianceProduct[]> {
+  const codes: string[] = []
+  const names: string[] = []
+  for (const product of products) {
+    for (const row of product.subfund_structures) {
+      if (row.is_parent_direct) continue
+      if (row.product_code) codes.push(row.product_code)
+      if (row.name) names.push(row.name)
+    }
+  }
+  if (codes.length === 0 && names.length === 0) return products
+
+  const map = await loadSubfundStrategyMap(codes, names)
+  return products.map((product) => ({
+    ...product,
+    subfund_structures: product.subfund_structures.map((row) => ({
+      ...row,
+      fund_strategy: row.is_parent_direct ? null : lookupSubfundStrategy(map, row.product_code, row.name),
+    })),
+  }))
 }
 
 export async function queryLookthroughCompliance(): Promise<LookthroughComplianceResult> {
@@ -1038,6 +1386,7 @@ export async function queryLookthroughCompliance(): Promise<LookthroughComplianc
   await ensureEmailValuationHoldingsTables()
 
   const products = await loadManagedProducts()
+  const savedCategories = await loadLookthroughProductCategories()
   const latestByProduct = await loadLatestValuationsForManaged(products)
   const managedRecordIds = [...latestByProduct.values()].map((m) => m.id)
   const catalog = await loadLatestValuationCatalog()
@@ -1065,11 +1414,17 @@ export async function queryLookthroughCompliance(): Promise<LookthroughComplianc
   const holdingsByRecord = new Map(managedHoldings)
   for (const [id, rows] of extraHoldings) holdingsByRecord.set(id, rows)
 
-  const resultProducts = products.map((product) => {
-    const meta = latestByProduct.get(product.id)
-    const holdings = meta ? (holdingsByRecord.get(meta.id) ?? []) : []
-    return evaluateProduct(product, meta, holdings, catalog, holdingsByRecord)
-  })
+  const resultProducts = await attachSubfundStrategies(
+    products.map((product) => {
+      const meta = latestByProduct.get(product.id)
+      const holdings = meta ? (holdingsByRecord.get(meta.id) ?? []) : []
+      const evaluated = evaluateProduct(product, meta, holdings, catalog, holdingsByRecord, { maxHoldings: 80 })
+      return {
+        ...evaluated,
+        assigned_category: savedCategories.get(product.id) ?? null,
+      }
+    }),
+  )
 
   return {
     as_of: new Date().toISOString().slice(0, 10),
@@ -1146,8 +1501,9 @@ async function evaluateWithLookthrough(
   product: ManagedProductRow,
   meta: ValuationMeta | undefined,
   catalog: ValuationMeta[],
+  opts?: { maxHoldings?: number | null },
 ): Promise<LookthroughComplianceProduct> {
-  if (!meta) return evaluateProduct(product, undefined, [], catalog, new Map())
+  if (!meta) return evaluateProduct(product, undefined, [], catalog, new Map(), opts)
 
   const holdingsByRecord = await loadHoldingsByRecordIds([meta.id])
   const holdings = holdingsByRecord.get(meta.id) ?? []
@@ -1165,7 +1521,7 @@ async function evaluateWithLookthrough(
     const extra = await loadHoldingsByRecordIds([...new Set(extraIds)])
     for (const [id, rows] of extra) holdingsByRecord.set(id, rows)
   }
-  return evaluateProduct(product, meta, holdings, catalog, holdingsByRecord)
+  return evaluateProduct(product, meta, holdings, catalog, holdingsByRecord, opts)
 }
 
 export async function queryLookthroughComplianceForFund(
@@ -1193,7 +1549,14 @@ export async function queryLookthroughComplianceForFund(
     product_name: meta?.fund_name || productName || beianHao,
     beian_hao: beianHao,
   }
-  return evaluateWithLookthrough(product, meta ?? undefined, catalog)
+  const evaluated = await evaluateWithLookthrough(product, meta ?? undefined, catalog, { maxHoldings: null })
+  const [withStrategy] = await attachSubfundStrategies([
+    {
+      ...evaluated,
+      assigned_category: await loadLookthroughCategoryByBeian(beianHao),
+    },
+  ])
+  return withStrategy
 }
 
 export const lookthroughComplianceQueries = {

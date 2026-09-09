@@ -157,7 +157,33 @@
   height: auto;
 }
 
+@keyframes lookthrough-anomaly-blink {
+  0%,
+  100% {
+    background-color: rgb(254 226 226);
+    color: rgb(185 28 28);
+  }
+  50% {
+    background-color: rgb(239 68 68);
+    color: rgb(255 255 255);
+  }
+}
+
 @layer utilities {
+  .lookthrough-anomaly-cell {
+    animation: lookthrough-anomaly-blink 1.15s ease-in-out infinite;
+    font-weight: 600;
+    border-radius: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lookthrough-anomaly-cell {
+      animation: none;
+      background-color: rgb(254 226 226);
+      color: rgb(185 28 28);
+    }
+  }
+
   .scrollbar-subtle {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklch, var(--muted-foreground) 22%, transparent) transparent;

@@ -1,39 +1,83 @@
 "use client"
 
-import type { ReactNode } from "react"
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { ExposureMetric } from "@/lib/ma/quant-vs-subjective-signals"
 
 function Formula({ children }: { children: ReactNode }) {
   return (
-    <p className="rounded bg-muted px-2 py-1.5 font-mono text-[11px] text-foreground leading-snug">
+    <p className="rounded bg-muted px-2.5 py-1.5 font-mono text-xs text-foreground leading-snug">
       {children}
     </p>
   )
 }
 
+const HelpTrigger = forwardRef<
+  HTMLButtonElement,
+  { title: string } & ButtonHTMLAttributes<HTMLButtonElement>
+>(function HelpTrigger({ title, ...props }, ref) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-label={`${title} 计算说明`}
+      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-input text-[11px] font-medium leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+      {...props}
+    >
+      ?
+    </button>
+  )
+})
+
 export function ChartHelp({
   title,
   children,
+  wide,
+  centered,
 }: {
   title: string
   children: ReactNode
+  wide?: boolean
+  centered?: boolean
 }) {
+  if (centered) {
+    return (
+      <Dialog>
+        <DialogTrigger asChild>
+          <HelpTrigger title={title} />
+        </DialogTrigger>
+        <DialogContent className="flex max-h-[min(88vh,52rem)] w-[min(56rem,calc(100%-1.5rem))] max-w-none flex-col gap-3 overflow-hidden p-6 sm:max-w-none">
+          <DialogHeader className="pr-8">
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {title}的定义、计算公式与各列说明
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1 text-[13px] leading-relaxed text-muted-foreground">
+            <div className="space-y-3">{children}</div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={`${title} 计算说明`}
-          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-input text-[11px] font-medium leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          ?
-        </button>
+        <HelpTrigger title={title} />
       </PopoverTrigger>
       <PopoverContent
         align="end"
         side="bottom"
-        className="w-[22rem] max-h-[70vh] overflow-y-auto text-xs leading-relaxed"
+        className={`${wide ? "w-[28rem]" : "w-[22rem]"} max-h-[75vh] overflow-y-auto text-xs leading-relaxed`}
       >
         <div className="text-sm font-medium text-foreground mb-2">{title}</div>
         <div className="space-y-2 text-muted-foreground">{children}</div>
@@ -57,6 +101,39 @@ function SharedDefs({ volDays }: { volDays: number }) {
       <Formula>净市值 = 多头持仓市值 − 空头持仓市值</Formula>
       <Formula>σ = 近 {volDays} 日日收益标准差（换月跳空已剔除）</Formula>
       <Formula>品种净风险 = σ × 该品种净市值</Formula>
+    </>
+  )
+}
+
+function RiskContributionEquations({ volDays }: { volDays: number }) {
+  return (
+    <>
+      <p className="font-medium text-foreground">风贡怎么定义、怎么算</p>
+      <p>
+        表上的「量化风贡 / 主观风贡」是<strong className="text-foreground">风险贡献占比</strong>，不是保证金、也不是名义市值。量化、主观各自一套分母，两边的%不能加总。期权不计入；同一品种不同合约先合成一个品种净仓。
+      </p>
+      <Formula>净市值ᵢ = 多头持仓市值ᵢ − 空头持仓市值ᵢ</Formula>
+      <p>
+        波动率用该品种连续合约近 <strong className="text-foreground">{volDays}</strong> 个交易日的日收益率样本标准差（分母 n−1）。换月跳空先按中位数+MAD 阈值置 0，再算 σ。没有连续行情的品种用当日持仓品种 σ 的中位数。
+      </p>
+      <Formula>σᵢ = √[ Σₜ (rₜ − r̄)² / (n − 1) ]</Formula>
+      <Formula>品种净风险ᵢ = σᵢ × 净市值ᵢ</Formula>
+      <p>
+        <strong className="text-foreground">不用品种间相关系数。</strong>
+        每个品种只用自己的 σ，没有协方差矩阵，也不是组合波动率的 Euler 分解。风险预算把各品种 |净风险| 相加，分散化不会把分母变小。同一品种多空按净仓 1:1 对冲；同一板块内不同品种的净风险直接相加（板块内相当于当完全相关），不是估计出来的 ρ。
+      </p>
+      <Formula>板块净风险 = Σᵢ∈板块 品种净风险ᵢ</Formula>
+      <Formula>本组风险预算 = Σ全部品种 |σᵢ × 净市值ᵢ|</Formula>
+      <Formula>风贡% = 该板块或品种净风险 / 本组风险预算 × 100</Formula>
+      <p>
+        正 = 净多（红「多 x%」），负 = 净空（绿「空 x%」），|%| ≤ 0.15 显示为平。表上四舍五入到 0.1%。箭头是今减昨：Δ风贡 = round₁(今) − round₁(昨)。
+      </p>
+      <Formula>Δ风贡 = round₀.₁(今日风贡%) − round₀.₁(昨日风贡%)</Formula>
+      <p>
+        强弱分数里的 book 用「占全书」：分母是量化风险预算 + 主观风险预算，所以同一品种两边可以加。
+      </p>
+      <Formula>占全书风险% = 净风险 / (量化风险预算 + 主观风险预算) × 100</Formula>
+      <Formula>book = |量化占全书| + |主观占全书|</Formula>
     </>
   )
 }
@@ -114,21 +191,87 @@ export function HelpDivKpi() {
   )
 }
 
-export function HelpSignals() {
+function HelpSignalColumns() {
   return (
-    <ChartHelp title="MOM 决策信号">
-      <p>只用风险%生成，不随「保证金」开关改变。存量阈值：</p>
-      <ul className="list-disc pl-4 space-y-1">
-        <li>加码：同向，两边 |风险%| ≥ 3%，且边际同向加仓（两边 ≥ 8% 为重仓共识）</li>
-        <li>暂缓加码：存量同向，但 1 日主动调仓反向（5 日仍同加则维持加码）</li>
-        <li>减码准备：存量同向，且 1 日两边都在减（5 日仍同加则维持加码）</li>
-        <li>观望：反向，两边 |风险%| ≥ 3%</li>
-        <li>补风格：一侧 ≥ 8%，另一侧 &lt; 1.5%</li>
-        <li>控拥挤：同向且两边 |风险%| 之和 ≥ 25%</li>
-        <li>扩容：量化户数占比 vs 量化保证金占比差得太大</li>
+    <>
+      <p className="font-medium text-foreground">表上每一列</p>
+      <ul className="list-disc pl-4 space-y-1.5">
+        <li>
+          <strong className="text-foreground">决策</strong>
+          ：MOM 建议动作。共识行由「存量方向 + 风贡箭头」拆成加码 / 暂缓加码 / 减码准备 / 控拥挤；反向就是观望；一侧空白是补风格；资金配置行是扩容。户列不改决策，只看有多少账户在动。
+        </li>
+        <li>
+          <strong className="text-foreground">板块/品种</strong>
+          ：名称旁的小字是层级（板块 / 品种 / 配置）。下面的「新增」= 昨日名单没有这条；「昨日××」= 同一对象昨日是另一个动作（如观望→加码）。
+        </li>
+        <li>
+          <strong className="text-foreground">解读</strong>
+          ：存量方向标签，只看两边风贡的正负和大小，不看箭头。共识做多 / 共识做空 / 方向分歧 / 仅量化 / 仅主观 / 共识但拥挤 / 资金配置。
+        </li>
+        <li>
+          <strong className="text-foreground">强弱</strong>
+          ：分数（封顶 100）和档位。≥ 20 强、≥ 8 中、其余弱。共识看两边较小的 |风险%| 和占全书比重；拥挤、分歧、补风格权重不同。数字越大越该先看。
+        </li>
+        <li>
+          <strong className="text-foreground">量化风贡 / 主观风贡</strong>
+          ：该侧净风险占<strong className="text-foreground">本组风险预算</strong>的百分比。正=净多（红「多 x%」），负=净空（绿「空 x%」），接近 0 为「平」。第二行「昨」是上一交易日同一口径。两边分母不同，不能加总。
+        </li>
+        <li>
+          <strong className="text-foreground">箭头 ↑ ↓</strong>
+          ：风贡% 今减昨（先四舍五入到 0.1%）。
+          <span className="text-red-600 dark:text-red-400">红 ↑</span> = 更偏多（多得更多，或空得更少）；
+          <span className="text-emerald-600 dark:text-emerald-400">绿 ↓</span> = 更偏空。没变则无箭头。% 是组内占比，别的板块变大或波动变化也会让本行动，所以可以有箭头但户列是 —。
+        </li>
+        <li>
+          <strong className="text-foreground">边际</strong>
+          ：把两边箭头合在一起看，和风贡列同一组「今−昨」数字。
+          <ul className="list-disc pl-4 mt-1 space-y-0.5">
+            <li>同向加仓：存量同向，两边都在加该方向 → 共识行记<strong className="text-foreground">加码</strong></li>
+            <li>边际背离：存量同向，一边加一边减 → <strong className="text-foreground">暂缓加码</strong></li>
+            <li>同向减仓：存量同向，两边都在减该方向 → <strong className="text-foreground">减码准备</strong></li>
+            <li>一侧变动：只有一边箭头；变化很小 / —：两边都没动（0.1% 内）。这两种不改动作，共识行通常仍是加码</li>
+            <li>分歧加剧：存量反向，还在往各自方向加</li>
+            <li>分歧收敛：存量反向，两边都在收回</li>
+          </ul>
+          观望 / 补风格 / 控拥挤 / 扩容不随边际改名；分歧加剧/收敛只作参考。
+        </li>
+        <li>
+          <strong className="text-foreground">量化户 / 主观户</strong>
+          ：手数真的往该方向调的账户数，不是风贡%。「加空 2/7」= 7 个量化户里有 2 户在加空（空头风险↑，或减多）。加/减、多/空跟风贡箭头同一套今−昨：空头再 ↓ 是加空，多头再 ↑ 是加多。— = 没有账户达到调仓门槛（约 20 万），即使 % 因波动或分母变了。
+        </li>
       </ul>
-      <p>主动调仓 = 手数变化 × 当日价，不含涨跌。每条信号会对比<strong className="text-foreground">上一交易日</strong>：新增、动作变化（如观望→加码）、或维持。下方「已消失」是昨日在名单里、今日掉出阈值或未进前 18 的条目。</p>
-      <p>表格按列拆开动作、板块/品种、方向解读、两侧风险%、边际标签、账户广度和强弱。长句解读、调仓金额放在悬停框里。点选截面日期可看任意历史日；点信号历史图上的日期也会跳转。点击板块/品种信号会筛下方多空持仓图。</p>
+      <p>
+        下方「上一交易日有、本日已消失」：昨日在名单里，今日掉出阈值或未进前 18。悬停一行看长句解读，以及 1 日 / 5 日主动调仓金额（手数 × 当日价，不含涨跌）；减仓侧会标止损撤退或获利了结。
+      </p>
+    </>
+  )
+}
+
+export function HelpSignals({ volDays = 20 }: { volDays?: number }) {
+  return (
+    <ChartHelp title="MOM 决策信号" centered>
+      <div className="grid gap-6 md:grid-cols-2 md:gap-8">
+        <div className="space-y-3">
+          <p>只用<strong className="text-foreground">风险%</strong>生成，不随「保证金」开关改变。先看两边风贡的存量方向，再用箭头（今−昨）决定共识要不要真加码。</p>
+          <RiskContributionEquations volDays={volDays} />
+          <p className="font-medium text-foreground">决策怎么来的</p>
+          <p>记 q = |量化风贡|，s = |主观风贡|。</p>
+          <ol className="list-decimal pl-4 space-y-1.5">
+            <li>同号且 q、s 都 ≥ 3% → 存量共识（解读：共识做多/做空）。若 q + s ≥ 25% 直接<strong className="text-foreground">控拥挤</strong>，不再加码。</li>
+            <li>否则看边际（两边箭头）：同向加仓 → <strong className="text-foreground">加码</strong>（两边都 ≥ 8% 为重仓共识）；边际背离 → <strong className="text-foreground">暂缓加码</strong>；同向减仓 → <strong className="text-foreground">减码准备</strong>；一侧变动或无箭头 → 默认仍加码。</li>
+            <li>异号且 q、s 都 ≥ 3% → <strong className="text-foreground">观望</strong>（方向分歧）。</li>
+            <li>一侧 ≥ 8%、另一侧 &lt; 1.5% → <strong className="text-foreground">补风格</strong>（仅量化或仅主观重仓）。</li>
+            <li>其余未达阈值，不进这张表。</li>
+            <li><strong className="text-foreground">扩容</strong>不是品种信号：量化户数占比 vs 量化保证金占比差太大（户多钱少约 ≥ 8 个百分点，或钱多户少约 ≥ 15 个百分点）时出现「资金配置」一行。</li>
+          </ol>
+          <Formula>主动调仓（悬停里的万元）= Δ手数 × 当日价，不含价格涨跌</Formula>
+          <p>手数调仓大约 ≥ 100 万且 ≥ 仓位的 5% 才算有效。若 1 日手数背离/同减，但 5 日仍两边加仓、且风贡箭头还没背离，表上仍维持加码。</p>
+          <p>点选截面日期可看任意历史日；点信号历史图上的日期也会跳转。点击板块/品种行会筛下方多空持仓图。</p>
+        </div>
+        <div className="space-y-3">
+          <HelpSignalColumns />
+        </div>
+      </div>
     </ChartHelp>
   )
 }
@@ -239,7 +382,7 @@ export function HelpProductTable({ volDays }: { volDays: number }) {
 
 export function HelpBriefingMomSignals({ volDays = 20 }: { volDays?: number }) {
   return (
-    <ChartHelp title="决策信号怎么算">
+    <ChartHelp title="决策信号怎么算" centered>
       <p>简报始终按<strong className="text-foreground">风险口径</strong>，量化 / 主观用默认账户划分。期权不计入。</p>
       <SharedDefs volDays={volDays} />
       <p>板块净风险 = 该板块内各品种净风险相加（板块内多空可以对冲）。量化、主观各自有一组风险预算，两边的%不能加总。</p>
@@ -265,8 +408,7 @@ export function HelpBriefingMomSignals({ volDays = 20 }: { volDays?: number }) {
       <Formula>中性：max(q, s)</Formula>
       <p>档位：分数 ≥ 20 为<strong className="text-foreground">强</strong>，≥ 8 为<strong className="text-foreground">中</strong>，其余为<strong className="text-foreground">弱</strong>。表上数字是这个分数取整。</p>
       <p>解读列：共识做多 / 共识做空 / 方向分歧 / 仅量化 / 仅主观 / 共识但拥挤 / 中性。</p>
-      <p>量化风贡 / 主观风贡的箭头是风险% 今减昨：↑ 更偏多（空得更少），↓ 更偏空（多得更少）。边际用同一组数字：两边变动同号才是同向加/减仓，异号是边际背离。</p>
-      <p>量化户 / 主观户是手数调仓的账户数（加多 1/7 = 7 户里有 1 户加了多）。风贡% = 该板块净风险 / 该组风险预算，别人板块变大或波动变化也会让%下降，所以可以↓但户列为 —。</p>
+      <HelpSignalColumns />
     </ChartHelp>
   )
 }

@@ -960,7 +960,7 @@ export default function QuantVsSubjectiveCharts() {
               <div>
                 <div className="flex items-center gap-1.5">
                   <CardTitle className="text-sm font-medium">MOM 决策信号</CardTitle>
-                  <HelpSignals />
+                  <HelpSignals volDays={data?.volDays ?? 20} />
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   风险口径 · {data?.date ?? "—"}

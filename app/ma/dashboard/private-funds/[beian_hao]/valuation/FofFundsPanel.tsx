@@ -9,6 +9,7 @@ import {
   applyValuationHoldingDisplayName,
   isValuationCashHoldingName,
 } from "@/lib/valuation-holding-display-name"
+import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
 import type { StrategyPieSelection } from "./FofStrategyPiesPanel"
 
 const FofStrategyPiesPanel = dynamic(
@@ -512,7 +513,39 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-3 pb-2">
         <div>
-          <div className="text-red-500 font-semibold text-sm leading-tight">基金</div>
+          <div className="flex items-center gap-1">
+            <div className="text-red-500 font-semibold text-sm leading-tight">基金</div>
+            <ChartCalcHelpButton
+              heading="FOF底层基金 · 计算说明"
+              blocks={[
+                {
+                  title: "市值",
+                  paragraphs: [
+                    "这是母基金持有该底层的实际市值，不是期货保证金，也不是合约名义本金。",
+                  ],
+                  formula: "市值 = 单位净值 × 份额",
+                },
+                {
+                  title: "市值占比",
+                  formula: "市值占比 = 该底层市值 / 母基金资产净值",
+                },
+                {
+                  title: "单位净值 / 份额",
+                  bullets: [
+                    "单位净值：底层产品最新净值（估值表或官方净值）",
+                    "份额：母基金估值表上的持有份额，是数量不是金额",
+                    "净值低于 1 时，份额会大于市值（例如 0.70 × 份额 ≈ 市值）",
+                  ],
+                },
+                {
+                  title: "和「已投资产」的区别",
+                  paragraphs: [
+                    "本表市值合计是母基金投进各底层的本金。穿透合规页的「已投资产」会再拆底层持仓，其中期货按合约价值计，因此可以大于本表市值合计。",
+                  ],
+                },
+              ]}
+            />
+          </div>
           <div className="flex items-center gap-1.5 text-xs text-zinc-400 mt-0.5">
             <span className="text-zinc-600">FOF底层</span>
             <Clock className="h-3 w-3" />

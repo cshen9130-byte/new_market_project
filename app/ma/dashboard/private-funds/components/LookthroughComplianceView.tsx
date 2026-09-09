@@ -1,16 +1,21 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, ChevronRight, CircleCheck, CircleX, HelpCircle, RefreshCw } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { ChevronDown, ChevronRight, CircleCheck, CircleX, HelpCircle, Loader2, RefreshCw } from "lucide-react"
 import { CopyableProductName } from "@/components/ma/copyable-inline-text"
+import { useToast } from "@/hooks/use-toast"
 import {
   DEFAULT_PRODUCT_CATEGORY,
   PRODUCT_CATEGORIES,
+  isProductCategory,
+  lookthroughAnomalyCells,
   lookthroughConclusion,
+  type LookthroughAnomalyCell,
   type LookthroughComplianceProduct,
   type LookthroughComplianceResult,
   type LookthroughConclusion,
   type ProductCategory,
+  type ComplianceCheck,
 } from "@/lib/ma/lookthrough-compliance-types"
 
 const CATEGORY_STORAGE_KEY = "lookthrough_compliance_categories_v1"
@@ -22,6 +27,7 @@ const BUCKET_LABEL: Record<string, string> = {
   cash_tool: "现金工具",
   fund: "基金(未穿透)",
   other: "其他",
+  margin: "保证金",
 }
 
 function readCategoryMap(): Record<string, ProductCategory> {
@@ -50,6 +56,16 @@ function writeCategoryMap(map: Record<string, ProductCategory>) {
   }
 }
 
+function currentUserName(): string {
+  if (typeof window === "undefined") return ""
+  try {
+    const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+    return u?.name || u?.email || ""
+  } catch {
+    return ""
+  }
+}
+
 function fmtPct(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—"
   return `${value.toFixed(2)}%`
@@ -64,18 +80,18 @@ function fmtMoney(value: number | null | undefined): string {
 }
 
 export function LookthroughComplianceView() {
+  const { toast } = useToast()
   const [data, setData] = useState<LookthroughComplianceResult | null>(null)
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [defaultCategory, setDefaultCategory] = useState<ProductCategory>(DEFAULT_PRODUCT_CATEGORY)
   const [categoryMap, setCategoryMap] = useState<Record<string, ProductCategory>>({})
+  const [savedMap, setSavedMap] = useState<Record<string, ProductCategory>>({})
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [statusFilter, setStatusFilter] = useState<"all" | "pass" | "fail" | "incomplete" | "na">("all")
   const [keyword, setKeyword] = useState("")
-
-  useEffect(() => {
-    setCategoryMap(readCategoryMap())
-  }, [])
+  const hydratedRef = useRef(false)
 
   function load() {
     const ac = new AbortController()
@@ -99,29 +115,80 @@ export function LookthroughComplianceView() {
     return load()
   }, [])
 
+  useEffect(() => {
+    if (!data) return
+    const local = readCategoryMap()
+    const nextSaved: Record<string, ProductCategory> = {}
+    const nextDraft: Record<string, ProductCategory> = {}
+    for (const product of data.products) {
+      const key = String(product.id)
+      if (isProductCategory(product.assigned_category)) nextSaved[key] = product.assigned_category
+      nextDraft[key] = nextSaved[key] ?? local[key] ?? DEFAULT_PRODUCT_CATEGORY
+    }
+    setSavedMap(nextSaved)
+    if (!hydratedRef.current) {
+      setCategoryMap(nextDraft)
+      const first = nextDraft[String(data.products[0]?.id)]
+      if (first && data.products.every((product) => nextDraft[String(product.id)] === first)) {
+        setDefaultCategory(first)
+      }
+      hydratedRef.current = true
+    }
+  }, [data])
+
   function categoryOf(productId: number): ProductCategory {
-    return categoryMap[String(productId)] ?? defaultCategory
+    return categoryMap[String(productId)] ?? savedMap[String(productId)] ?? defaultCategory
+  }
+
+  function savedCategoryOf(productId: number): ProductCategory {
+    return savedMap[String(productId)] ?? DEFAULT_PRODUCT_CATEGORY
   }
 
   function setProductCategory(productId: number, category: ProductCategory) {
-    setCategoryMap((prev) => {
-      const next = { ...prev, [String(productId)]: category }
-      writeCategoryMap(next)
-      return next
-    })
+    if (!isProductCategory(category)) return
+    setCategoryMap((prev) => ({ ...prev, [String(productId)]: category }))
   }
 
   function applyCategoryToAll(category: ProductCategory) {
     setDefaultCategory(category)
     if (!data) {
       setCategoryMap({})
-      writeCategoryMap({})
       return
     }
     const next: Record<string, ProductCategory> = {}
     for (const product of data.products) next[String(product.id)] = category
     setCategoryMap(next)
-    writeCategoryMap(next)
+  }
+
+  async function saveCategories() {
+    if (!data || saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      const items = data.products.map((product) => ({
+        product_id: product.id,
+        beian_hao: product.beian_hao,
+        category: categoryOf(product.id),
+      }))
+      const res = await fetch("/ma/api/investment/lookthrough-compliance/categories", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items, user_name: currentUserName() }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`)
+      const nextSaved: Record<string, ProductCategory> = {}
+      for (const item of items) nextSaved[String(item.product_id)] = item.category
+      setSavedMap(nextSaved)
+      writeCategoryMap(nextSaved)
+      toast({ title: "类别设定已保存", description: `已写入 ${json.saved ?? items.length} 只产品` })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "保存失败"
+      setError(message)
+      toast({ title: "保存失败", description: message, variant: "destructive" })
+    } finally {
+      setSaving(false)
+    }
   }
 
   const rows = useMemo(() => {
@@ -139,7 +206,7 @@ export function LookthroughComplianceView() {
       if (statusFilter === "na") return conclusion === "na"
       return true
     })
-  }, [data, keyword, statusFilter, categoryMap, defaultCategory])
+  }, [data, keyword, statusFilter, categoryMap, savedMap, defaultCategory])
 
   const summary = useMemo(() => {
     const products = data?.products ?? []
@@ -155,7 +222,18 @@ export function LookthroughComplianceView() {
       else na += 1
     }
     return { total: products.length, pass, fail, incomplete, na }
-  }, [data, categoryMap, defaultCategory])
+  }, [data, categoryMap, savedMap, defaultCategory])
+
+  const dirtyCount = useMemo(() => {
+    if (!data) return 0
+    return data.products.filter((product) => categoryOf(product.id) !== savedCategoryOf(product.id)).length
+  }, [data, categoryMap, savedMap, defaultCategory])
+
+  const uniformCategory = useMemo(() => {
+    if (!data?.products.length) return defaultCategory
+    const first = categoryOf(data.products[0].id)
+    return data.products.every((product) => categoryOf(product.id) === first) ? first : null
+  }, [data, categoryMap, savedMap, defaultCategory])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background -m-5">
@@ -169,14 +247,33 @@ export function LookthroughComplianceView() {
               FOF 持仓按底层产品最新估值表穿透后计算。
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => load()}
-            className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2.5 py-1 text-xs text-zinc-600 hover:bg-zinc-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            {dirtyCount > 0 && (
+              <span className="text-[11px] text-amber-600">已改 {dirtyCount} 只，尚未保存</span>
+            )}
+            <button
+              type="button"
+              onClick={() => void saveCategories()}
+              disabled={saving || dirtyCount === 0}
+              className={[
+                "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs",
+                dirtyCount > 0
+                  ? "bg-red-500 text-white hover:bg-red-600 disabled:opacity-60"
+                  : "border border-zinc-200 text-zinc-400",
+              ].join(" ")}
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              {saving ? "保存中…" : "保存设定"}
+            </button>
+            <button
+              type="button"
+              onClick={() => load()}
+              className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2.5 py-1 text-xs text-zinc-600 hover:bg-zinc-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              刷新
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -189,7 +286,7 @@ export function LookthroughComplianceView() {
                 onClick={() => applyCategoryToAll(category)}
                 className={[
                   "px-3 py-1.5 text-xs transition-colors",
-                  defaultCategory === category
+                  uniformCategory === category
                     ? "bg-red-500 text-white"
                     : "bg-white text-zinc-600 hover:bg-zinc-50",
                 ].join(" ")}
@@ -198,7 +295,7 @@ export function LookthroughComplianceView() {
               </button>
             ))}
           </div>
-          <span className="text-[11px] text-zinc-400">默认混合类；点选后应用到全部产品，也可在表内单独修改。</span>
+          <span className="text-[11px] text-zinc-400">点选后立即按该类核算；改完后点「保存设定」写入系统。</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -254,6 +351,7 @@ export function LookthroughComplianceView() {
                     product={product}
                     category={category}
                     conclusion={conclusion}
+                    dirty={category !== savedCategoryOf(product.id)}
                     open={open}
                     onToggle={() => {
                       setExpanded((prev) => {
@@ -313,7 +411,15 @@ function SummaryChip({
   )
 }
 
-function StatusBadge({ conclusion }: { conclusion: LookthroughConclusion }) {
+function StatusBadge({
+  conclusion,
+  category,
+  failed,
+}: {
+  conclusion: LookthroughConclusion
+  category: ProductCategory
+  failed?: ComplianceCheck[]
+}) {
   if (conclusion === "na") {
     return (
       <span className="inline-flex items-center gap-1 text-xs text-zinc-400">
@@ -324,25 +430,79 @@ function StatusBadge({ conclusion }: { conclusion: LookthroughConclusion }) {
   }
   if (conclusion === "incomplete") {
     return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600">
-        <HelpCircle className="h-3.5 w-3.5" />
-        无法判断
+      <span className="inline-flex flex-col gap-0.5">
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600">
+          <HelpCircle className="h-3.5 w-3.5" />
+          无法判断
+        </span>
+        <span className="text-[10px] text-zinc-400">按「{category}」核验</span>
       </span>
     )
   }
   if (conclusion === "pass") {
     return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
-        <CircleCheck className="h-3.5 w-3.5" />
-        合规
+      <span className="inline-flex flex-col gap-0.5">
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+          <CircleCheck className="h-3.5 w-3.5" />
+          合规
+        </span>
+        <span className="text-[10px] text-zinc-400">按「{category}」核验</span>
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600">
-      <CircleX className="h-3.5 w-3.5" />
-      不合规
+    <span className="inline-flex flex-col gap-0.5">
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600">
+        <CircleX className="h-3.5 w-3.5" />
+        不合规
+      </span>
+      <span className="text-[10px] text-zinc-400">按「{category}」核验</span>
+      {failed?.[0] && (
+        <span className="text-[10px] text-red-500">{failed[0].title} {failed[0].value}</span>
+      )}
     </span>
+  )
+}
+
+const ANOMALY_REASON: Record<LookthroughAnomalyCell, (category: ProductCategory, leverageLimit?: number | null) => string> = {
+  equity: (category) =>
+    category === "权益类" ? "未达到权益类已投资产 80% 下限" : "超过混合类权益 80% 上限",
+  fixed_income: (category) =>
+    category === "固定收益类" ? "未达到固定收益类已投资产 80% 下限" : "超过混合类固收 80% 上限",
+  derivatives: (category) =>
+    category === "期货和衍生品类" ? "未达到衍生品合约价值 80% 下限" : "超过混合类衍生品 80% 上限",
+  single_asset: () => "超过单一资产 25% 上限",
+  leverage: (_category, leverageLimit) =>
+    `超过总资产杠杆 ${leverageLimit != null ? `${leverageLimit.toFixed(0)}%` : "200%"} 上限`,
+}
+
+function anomalyReason(
+  cell: LookthroughAnomalyCell,
+  category: ProductCategory,
+  leverageLimit?: number | null,
+): string {
+  return ANOMALY_REASON[cell](category, leverageLimit)
+}
+
+function RatioCell({
+  value,
+  anomaly,
+  reason,
+}: {
+  value: number | null | undefined
+  anomaly: boolean
+  reason: string
+}) {
+  return (
+    <td
+      className={[
+        "px-3 py-2 text-right tabular-nums",
+        anomaly ? "lookthrough-anomaly-cell" : "",
+      ].join(" ")}
+      title={anomaly ? reason : undefined}
+    >
+      {fmtPct(value)}
+    </td>
   )
 }
 
@@ -350,6 +510,7 @@ function ProductBlock({
   product,
   category,
   conclusion,
+  dirty,
   open,
   onToggle,
   onCategory,
@@ -357,11 +518,13 @@ function ProductBlock({
   product: LookthroughComplianceProduct
   category: ProductCategory
   conclusion: LookthroughConclusion
+  dirty: boolean
   open: boolean
   onToggle: () => void
   onCategory: (category: ProductCategory) => void
 }) {
   const checks = product.checks_by_category[category] ?? []
+  const anomalies = lookthroughAnomalyCells(product, category)
   return (
     <>
       <tr className="border-b border-zinc-100 hover:bg-zinc-50/80">
@@ -377,10 +540,20 @@ function ProductBlock({
                 beian_hao={product.beian_hao}
                 product_name={product.product_name}
                 href={`/ma/dashboard/private-funds/${encodeURIComponent(product.beian_hao)}/valuation?tab=${encodeURIComponent("穿透合规")}`}
-                className="text-sm font-medium text-blue-600 hover:underline"
+                className={[
+                  "text-sm font-medium hover:underline",
+                  conclusion === "fail" ? "lookthrough-anomaly-cell px-1" : "text-blue-600",
+                ].join(" ")}
               />
             ) : (
-              <span className="text-sm font-medium text-foreground">{product.product_name}</span>
+              <span
+                className={[
+                  "text-sm font-medium",
+                  conclusion === "fail" ? "lookthrough-anomaly-cell px-1" : "text-foreground",
+                ].join(" ")}
+              >
+                {product.product_name}
+              </span>
             )}
             <span className="text-[11px] text-zinc-400">
               {product.beian_hao || "—"}
@@ -389,17 +562,34 @@ function ProductBlock({
           </div>
         </td>
         <td className="px-3 py-2">
-          <select
-            value={category}
-            onChange={(e) => onCategory(e.target.value as ProductCategory)}
-            className="h-7 rounded border border-zinc-200 bg-white px-1.5 text-xs outline-none focus:border-red-400"
-          >
-            {PRODUCT_CATEGORIES.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-1.5">
+            <select
+              value={category}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation()
+                if (isProductCategory(e.target.value)) onCategory(e.target.value)
+              }}
+              className={[
+                "h-7 rounded bg-white px-1.5 text-xs outline-none",
+                dirty ? "border border-amber-400 focus:border-amber-500" : "border border-zinc-200 focus:border-red-400",
+              ].join(" ")}
+            >
+              {PRODUCT_CATEGORIES.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+            {dirty && <span className="text-[10px] text-amber-600">未保存</span>}
+          </div>
         </td>
-        <td className="px-3 py-2"><StatusBadge conclusion={conclusion} /></td>
+        <td className="px-3 py-2">
+          <StatusBadge
+            conclusion={conclusion}
+            category={category}
+            failed={checks.filter((c) => !c.passed)}
+          />
+        </td>
         <td className="px-3 py-2 text-xs text-zinc-600">
           {!product.is_fof
             ? "直投/非FOF"
@@ -407,11 +597,31 @@ function ProductBlock({
               ? `已穿透 ${product.lookthrough.penetrated_count}/${product.lookthrough.underlying_count}`
               : `未完全 ${product.lookthrough.penetrated_count}/${product.lookthrough.underlying_count}`}
         </td>
-        <td className="px-3 py-2 text-right tabular-nums">{fmtPct(product.ratios.equity_pct)}</td>
-        <td className="px-3 py-2 text-right tabular-nums">{fmtPct(product.ratios.fixed_income_pct)}</td>
-        <td className="px-3 py-2 text-right tabular-nums">{fmtPct(product.ratios.derivatives_notional_pct)}</td>
-        <td className="px-3 py-2 text-right tabular-nums">{fmtPct(product.ratios.max_single_asset_pct)}</td>
-        <td className="px-3 py-2 text-right tabular-nums">{fmtPct(product.ratios.leverage_pct)}</td>
+        <RatioCell
+          value={product.ratios.equity_pct}
+          anomaly={anomalies.has("equity")}
+          reason={anomalyReason("equity", category)}
+        />
+        <RatioCell
+          value={product.ratios.fixed_income_pct}
+          anomaly={anomalies.has("fixed_income")}
+          reason={anomalyReason("fixed_income", category)}
+        />
+        <RatioCell
+          value={product.ratios.derivatives_notional_pct}
+          anomaly={anomalies.has("derivatives")}
+          reason={anomalyReason("derivatives", category)}
+        />
+        <RatioCell
+          value={product.ratios.max_single_asset_pct}
+          anomaly={anomalies.has("single_asset")}
+          reason={anomalyReason("single_asset", category)}
+        />
+        <RatioCell
+          value={product.ratios.leverage_pct}
+          anomaly={anomalies.has("leverage")}
+          reason={anomalyReason("leverage", category, product.ratios.leverage_limit_pct)}
+        />
         <td className="px-3 py-2 text-xs text-zinc-500">{product.valuation_date ?? "—"}</td>
       </tr>
       {open && (
