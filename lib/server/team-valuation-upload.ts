@@ -1,5 +1,8 @@
 import { createHash } from "crypto"
-import { extractValuationFromBuffer } from "@/lib/server/email-valuation-attachment"
+import {
+  extractValuationFromBuffer,
+  extractValuationFromPdfBuffer,
+} from "@/lib/server/email-valuation-attachment"
 import {
   upsertEmailValuationRecords,
   type EmailValuationInsert,
@@ -28,7 +31,7 @@ export async function uploadTeamValuationFiles(options: {
   const product_name = options.product_name.trim()
   if (!beian_hao || !product_name) return { error: "missing_fields" }
 
-  const files = options.files.filter((file) => /\.xlsx?$/i.test(file.name))
+  const files = options.files.filter((file) => /\.(xlsx?|pdf)$/i.test(file.name))
   if (files.length === 0) return { error: "invalid_files" }
   if (files.length > MAX_FILES) return { error: "too_many_files" }
 
@@ -45,7 +48,9 @@ export async function uploadTeamValuationFiles(options: {
 
     try {
       const buffer = Buffer.from(await file.arrayBuffer())
-      const extracted = extractValuationFromBuffer(buffer, file.name, subject)
+      const extracted = /\.pdf$/i.test(file.name)
+        ? await extractValuationFromPdfBuffer(buffer, file.name, subject)
+        : extractValuationFromBuffer(buffer, file.name, subject)
       if (!extracted) {
         failed.push(`${file.name}: 无法解析估值表`)
         continue

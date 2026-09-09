@@ -80,8 +80,14 @@ def heavy_dir(q_pct: float, s_pct: float) -> float:
     return 1.0 if s_pct > 0 else -1.0
 
 
-def signal_trade_dir(action: str, kind: str, q_pct: float, s_pct: float) -> float:
-    """User rule: 加码 follow 主观/量化; 控拥挤 fade; 观望 flat; others as listed."""
+def signal_trade_dir(
+    action: str,
+    kind: str,
+    q_pct: float,
+    s_pct: float,
+    divergence_follow: str | None = None,
+) -> float:
+    """User rule: 加码 follow 主观/量化; 控拥挤 fade; 观望 flat unless divergence_follow."""
     if action == "加码":
         return consensus_dir(kind, q_pct, s_pct)
     if action == "控拥挤":
@@ -89,6 +95,11 @@ def signal_trade_dir(action: str, kind: str, q_pct: float, s_pct: float) -> floa
         return -d if d != 0 else 0.0
     if action == "补风格":
         return heavy_dir(q_pct, s_pct)
+    if action == "观望":
+        if divergence_follow == "subj" and s_pct != 0:
+            return 1.0 if s_pct > 0 else -1.0
+        if divergence_follow == "quant" and q_pct != 0:
+            return 1.0 if q_pct > 0 else -1.0
     return 0.0
 
 
@@ -134,11 +145,12 @@ def size_book(
     close: pd.DataFrame,
     clean: pd.DataFrame,
     as_of: str,
+    slot_count: int | None = None,
 ) -> dict[str, dict]:
     if equity <= 0 or not targets:
         return {}
     ranked = sorted(targets, key=lambda x: -abs(x.get("strength", 1.0)))[:MAX_NAMES]
-    n = len(ranked)
+    n = slot_count if slot_count and slot_count > 0 else len(ranked)
     budget = equity * TARGET_GROSS_LEV / n
     raw = {}
     for t in ranked:
@@ -199,6 +211,9 @@ def run_account(
     ret_wide: pd.DataFrame,
     clean: pd.DataFrame,
     include_bufengge: bool = True,
+    allowed_actions: set[str] | None = None,
+    divergence_follow: str | None = None,
+    roll=None,
 ) -> dict:
     by_date = {d: g for d, g in sig.groupby("date")}
     signal_dates = sorted(by_date)
@@ -217,10 +232,12 @@ def run_account(
         g = by_date[dt]
         targets = []
         for r in g.itertuples(index=False):
-            if (not include_bufengge) and r.action == "补风格":
+            if allowed_actions is not None and r.action not in allowed_actions:
+                d = 0.0
+            elif (not include_bufengge) and r.action == "补风格":
                 d = 0.0
             else:
-                d = signal_trade_dir(r.action, r.kind, r.q_pct, r.s_pct)
+                d = signal_trade_dir(r.action, r.kind, r.q_pct, r.s_pct, divergence_follow)
             if d == 0:
                 continue
             targets.append({
@@ -236,15 +253,73 @@ def run_account(
             })
         book = size_book(targets, equity, close, clean, dt)
 
-        comm = slip = 0.0
+        comm = slip = roll_comm = roll_slip = 0.0
+        n_rolls = 0
         names = set(book) | set(prev_pos)
         for p in names:
-            old = prev_pos.get(p, {}).get("lots", 0)
-            new = book.get(p, {}).get("lots", 0)
+            old_pos = prev_pos.get(p) or {}
+            new_pos = book.get(p) or {}
+            old = old_pos.get("lots", 0)
+            new = new_pos.get("lots", 0)
+            old_c = old_pos.get("contract") or (roll.contract_on(p, dt) if roll else "")
+            new_c = ""
+            if roll:
+                new_c = roll.contract_on(p, nxt) or roll.contract_on(p, dt) or old_c
+                if new and new_c:
+                    book[p] = dict(book[p])
+                    book[p]["contract"] = new_c
+            rolled = bool(roll and old and new and old_c and new_c and old_c != new_c)
+
+            if rolled:
+                c1 = s1 = c2 = s2 = 0.0
+                px_old = (roll.price(old_c, nxt) if roll else 0.0) or _price_on(close, nxt, p) or _price_on(close, dt, p)
+                px_new = (roll.price(new_c, nxt) if roll else 0.0) or px_old
+                if px_old > 0:
+                    notion_old = abs(old) * px_old * multiplier(p)
+                    c1, s1 = trade_cost(notion_old, abs(old))
+                    comm += c1
+                    slip += s1
+                    roll_comm += c1
+                    roll_slip += s1
+                if px_new > 0:
+                    notion_new = abs(new) * px_new * multiplier(p)
+                    c2, s2 = trade_cost(notion_new, abs(new))
+                    comm += c2
+                    slip += s2
+                    roll_comm += c2
+                    roll_slip += s2
+                    n_rolls += 1
+                    spread = (px_new - px_old) if px_old and px_new else 0.0
+                    trade_rows.append({
+                        "signal_date": dt,
+                        "trade_date": nxt,
+                        "product": p,
+                        "name": (book.get(p) or prev_pos.get(p) or {}).get("name", p),
+                        "action": (book.get(p) or prev_pos.get(p) or {}).get("action", ""),
+                        "side": "移仓",
+                        "old_lots": old,
+                        "new_lots": new,
+                        "d_lots": new - old,
+                        "price": px_new,
+                        "notional": (abs(old) * px_old + abs(new) * px_new) * multiplier(p) if px_old and px_new else 0.0,
+                        "commission": (c1 if px_old > 0 else 0.0) + (c2 if px_new > 0 else 0.0),
+                        "slippage": (s1 if px_old > 0 else 0.0) + (s2 if px_new > 0 else 0.0),
+                        "cost": (c1 + s1 if px_old > 0 else 0.0) + (c2 + s2 if px_new > 0 else 0.0),
+                        "from_contract": old_c,
+                        "to_contract": new_c,
+                        "roll_spread": spread,
+                    })
+                continue
+
             d_lots = new - old
             if d_lots == 0:
+                if new and roll and new_c and p in book:
+                    book[p] = dict(book[p])
+                    book[p]["contract"] = new_c or old_c
                 continue
             px = _price_on(close, nxt, p) or _price_on(close, dt, p)
+            if roll and new_c:
+                px = roll.price(new_c, nxt) or roll.price(old_c or new_c, nxt) or px
             if px <= 0:
                 continue
             notion = abs(d_lots) * px * multiplier(p)
@@ -269,6 +344,9 @@ def run_account(
                 "commission": c,
                 "slippage": s,
                 "cost": c + s,
+                "from_contract": old_c or "",
+                "to_contract": new_c or old_c or "",
+                "roll_spread": None,
             })
 
         gross = 0.0
@@ -276,19 +354,35 @@ def run_account(
         for p, pos in book.items():
             if p not in ret_wide.columns:
                 continue
-            r = ret_wide.at[nxt, p] if nxt in ret_wide.index else np.nan
-            if pd.isna(r):
+            held = pos.get("contract") or (roll.contract_on(p, nxt) if roll else "")
+            prev_c = (prev_pos.get(p) or {}).get("contract") or held
+            mark_from = (prev_pos.get(p) or {}).get("mark_date") or dt
+            r = None
+            if roll and prev_c:
+                r = roll.contract_ret(prev_c, mark_from, nxt)
+            if r is None:
+                # No fake continuous jump: prefer cleaned return on missing contract path
+                src = clean if roll is not None else ret_wide
+                if nxt in src.index and p in src.columns:
+                    raw = src.at[nxt, p]
+                    r = None if pd.isna(raw) else float(raw)
+            if r is None:
                 continue
             px = pos["price"] or _price_on(close, nxt, p)
-            pnl = pos["lots"] * (px * multiplier(p)) * float(r)
-            # mark at next close: notional * return
+            if roll and held:
+                px = roll.price(held, nxt) or roll.price(prev_c, nxt) or px
             notion = abs(pos["lots"]) * (_price_on(close, nxt, p) or px) * pos["mult"]
+            if roll and held and roll.price(held, nxt):
+                notion = abs(pos["lots"]) * roll.price(held, nxt) * pos["mult"]
             pnl = (1 if pos["lots"] > 0 else -1) * notion * float(r)
             pos = dict(pos)
             pos["pnl"] = pnl
             pos["ret"] = float(r)
             pos["notional"] = notion
             pos["margin"] = notion * margin_rate(p)
+            pos["contract"] = held or prev_c
+            pos["mark_date"] = nxt
+            pos["price"] = px
             book[p] = pos
             gross += pnl
             n_live += 1
@@ -302,7 +396,7 @@ def run_account(
                 "kind": pos["kind"],
                 "dir": "多" if pos["lots"] > 0 else "空",
                 "lots": pos["lots"],
-                "price": _price_on(close, nxt, p) or pos["price"],
+                "price": px,
                 "mult": pos["mult"],
                 "notional": notion,
                 "margin": pos["margin"],
@@ -310,6 +404,7 @@ def run_account(
                 "s_pct": pos["s_pct"],
                 "pnl": pnl,
                 "ret": float(r),
+                "contract": pos.get("contract", ""),
             })
 
         cost = comm + slip
@@ -332,9 +427,15 @@ def run_account(
             "margin": sum(v["margin"] for v in book.values()),
             "margin_util": (sum(v["margin"] for v in book.values()) / equity) if equity > 0 else 0.0,
             "turnover_notional": sum(abs(r["notional"]) for r in trade_rows if r["signal_date"] == dt),
+            "roll_cost": roll_comm + roll_slip,
+            "n_rolls": n_rolls,
         })
         prev_pos = book
 
+    return _finalize_account(daily_rows, hold_rows, trade_rows, include_bufengge=include_bufengge)
+
+
+def _finalize_account(daily_rows, hold_rows, trade_rows, **extra) -> dict:
     daily = pd.DataFrame(daily_rows)
     holds = pd.DataFrame(hold_rows)
     trades = pd.DataFrame(trade_rows)
@@ -344,7 +445,249 @@ def run_account(
         daily["cum_cost"] = daily["cost"].cumsum()
         daily["cum_gross"] = daily["pnl_gross"].cumsum()
         daily["cum_net"] = daily["pnl_net"].cumsum()
-    return {"daily": daily, "holds": holds, "trades": trades, "include_bufengge": include_bufengge}
+    out = {"daily": daily, "holds": holds, "trades": trades}
+    out.update(extra)
+    return out
+
+
+def run_account_fixed_hold(
+    sig: pd.DataFrame,
+    close: pd.DataFrame,
+    ret_wide: pd.DataFrame,
+    clean: pd.DataFrame,
+    hold_days: int = 10,
+    allowed_actions: set[str] | None = None,
+    include_bufengge: bool = False,
+    divergence_follow: str | None = None,
+) -> dict:
+    """Enter on allowed signals, freeze lots, hold `hold_days` trading sessions, then exit.
+
+    Same product is not pyramided while a hold is live. Opposite-direction signal
+    flattens and re-enters. Calendar is futures sessions in ``ret_wide``.
+    """
+    if hold_days < 1:
+        raise ValueError("hold_days must be >= 1")
+    allowed = allowed_actions if allowed_actions is not None else {"加码"}
+    cal = [str(x) for x in ret_wide.index]
+    if not cal:
+        return _finalize_account([], [], [], hold_days=hold_days)
+
+    by_date = {str(d): g for d, g in sig.groupby("date")}
+    equity = START_EQUITY
+    open_pos: dict[str, dict] = {}
+    daily_rows = []
+    hold_rows = []
+    trade_rows = []
+
+    first_sig = min(by_date) if by_date else cal[0]
+    start_i = int(np.searchsorted(cal, first_sig, side="left"))
+    start_i = min(max(start_i, 0), len(cal) - 1)
+
+    for i in range(start_i, len(cal)):
+        today = cal[i]
+        prev_day = cal[i - 1] if i > 0 else today
+        comm = slip = 0.0
+
+        # Signals dated prev_day (known at that close) enter on today's session.
+        new_targets = []
+        if prev_day in by_date:
+            for r in by_date[prev_day].itertuples(index=False):
+                if r.action not in allowed:
+                    continue
+                if (not include_bufengge) and r.action == "补风格":
+                    continue
+                d = signal_trade_dir(r.action, r.kind, r.q_pct, r.s_pct, divergence_follow)
+                if d == 0:
+                    continue
+                old = open_pos.get(r.product)
+                if old is not None:
+                    old_dir = 1.0 if old["lots"] > 0 else -1.0
+                    if old_dir == d:
+                        continue
+                    px = _price_on(close, today, r.product) or old.get("price", 0.0)
+                    if px > 0:
+                        notion = abs(old["lots"]) * px * multiplier(r.product)
+                        c, s = trade_cost(notion, abs(old["lots"]))
+                        comm += c
+                        slip += s
+                        trade_rows.append({
+                            "signal_date": prev_day,
+                            "trade_date": today,
+                            "product": r.product,
+                            "name": old.get("name", r.product),
+                            "action": old.get("action", ""),
+                            "side": "反手/平",
+                            "old_lots": old["lots"],
+                            "new_lots": 0,
+                            "d_lots": -old["lots"],
+                            "price": px,
+                            "notional": notion,
+                            "commission": c,
+                            "slippage": s,
+                            "cost": c + s,
+                        })
+                    del open_pos[r.product]
+                if r.product in open_pos or len(open_pos) + len(new_targets) >= MAX_NAMES:
+                    continue
+                if any(t["product"] == r.product for t in new_targets):
+                    continue
+                new_targets.append({
+                    "product": r.product,
+                    "name": r.name,
+                    "sector": r.sector,
+                    "action": r.action,
+                    "kind": r.kind,
+                    "dir": d,
+                    "q_pct": r.q_pct,
+                    "s_pct": r.s_pct,
+                    "strength": abs(r.q_pct) + abs(r.s_pct),
+                    "signal_date": prev_day,
+                })
+
+        if new_targets:
+            slots = max(len(open_pos) + len(new_targets), 1)
+            sized = size_book(new_targets, equity, close, clean, prev_day, slot_count=slots)
+            for p, pos in sized.items():
+                if p in open_pos:
+                    continue
+                pos = dict(pos)
+                pos["remaining"] = hold_days
+                pos["signal_date"] = next(t["signal_date"] for t in new_targets if t["product"] == p)
+                pos["entry_date"] = today
+                px = _price_on(close, today, p) or pos["price"]
+                lots = pos["lots"]
+                if px > 0 and lots != 0:
+                    notion = abs(lots) * px * multiplier(p)
+                    c, s = trade_cost(notion, abs(lots))
+                    comm += c
+                    slip += s
+                    trade_rows.append({
+                        "signal_date": pos["signal_date"],
+                        "trade_date": today,
+                        "product": p,
+                        "name": pos["name"],
+                        "action": pos["action"],
+                        "side": "开/加",
+                        "old_lots": 0,
+                        "new_lots": lots,
+                        "d_lots": lots,
+                        "price": px,
+                        "notional": notion,
+                        "commission": c,
+                        "slippage": s,
+                        "cost": c + s,
+                    })
+                open_pos[p] = pos
+
+        gross = 0.0
+        n_live = 0
+        to_close = []
+        for p, pos in open_pos.items():
+            if p not in ret_wide.columns:
+                pos["remaining"] = pos.get("remaining", hold_days) - 1
+                if pos["remaining"] <= 0:
+                    to_close.append(p)
+                continue
+            r = ret_wide.at[today, p] if today in ret_wide.index else np.nan
+            if pd.isna(r):
+                pos["remaining"] = pos.get("remaining", hold_days) - 1
+                if pos["remaining"] <= 0:
+                    to_close.append(p)
+                continue
+            px = _price_on(close, today, p) or pos["price"]
+            notion = abs(pos["lots"]) * (px or pos["price"]) * pos["mult"]
+            pnl = (1 if pos["lots"] > 0 else -1) * notion * float(r)
+            pos = dict(pos)
+            pos["pnl"] = pnl
+            pos["ret"] = float(r)
+            pos["notional"] = notion
+            pos["margin"] = notion * margin_rate(p)
+            pos["price"] = px
+            pos["remaining"] = pos.get("remaining", hold_days) - 1
+            open_pos[p] = pos
+            gross += pnl
+            n_live += 1
+            hold_rows.append({
+                "signal_date": pos.get("signal_date", ""),
+                "entry_date": pos.get("entry_date", ""),
+                "hold_date": today,
+                "product": p,
+                "name": pos["name"],
+                "sector": pos["sector"],
+                "action": pos["action"],
+                "kind": pos["kind"],
+                "dir": "多" if pos["lots"] > 0 else "空",
+                "lots": pos["lots"],
+                "price": px,
+                "mult": pos["mult"],
+                "notional": notion,
+                "margin": pos["margin"],
+                "q_pct": pos["q_pct"],
+                "s_pct": pos["s_pct"],
+                "pnl": pnl,
+                "ret": float(r),
+                "remaining_after": pos["remaining"],
+            })
+            if pos["remaining"] <= 0:
+                to_close.append(p)
+
+        for p in to_close:
+            pos = open_pos.pop(p, None)
+            if not pos:
+                continue
+            px = _price_on(close, today, p) or pos.get("price", 0.0)
+            lots = pos["lots"]
+            if px > 0 and lots != 0:
+                notion = abs(lots) * px * multiplier(p)
+                c, s = trade_cost(notion, abs(lots))
+                comm += c
+                slip += s
+                trade_rows.append({
+                    "signal_date": pos.get("signal_date", ""),
+                    "trade_date": today,
+                    "product": p,
+                    "name": pos.get("name", p),
+                    "action": pos.get("action", ""),
+                    "side": "平仓",
+                    "old_lots": lots,
+                    "new_lots": 0,
+                    "d_lots": -lots,
+                    "price": px,
+                    "notional": notion,
+                    "commission": c,
+                    "slippage": s,
+                    "cost": c + s,
+                })
+
+        cost = comm + slip
+        net = gross - cost
+        if n_live == 0 and not new_targets and cost == 0 and not daily_rows:
+            continue
+        equity = equity + net
+        daily_rows.append({
+            "signal_date": prev_day,
+            "return_date": today,
+            "equity": equity,
+            "pnl_gross": gross,
+            "commission": comm,
+            "slippage": slip,
+            "cost": cost,
+            "pnl_net": net,
+            "ret": net / (equity - net) if (equity - net) > 0 else 0.0,
+            "n": n_live,
+            "n_signals": len(new_targets),
+            "gross_notional": sum(abs(v.get("notional", 0.0)) for v in open_pos.values()),
+            "margin": sum(v.get("margin", 0.0) for v in open_pos.values()),
+            "margin_util": (sum(v.get("margin", 0.0) for v in open_pos.values()) / equity) if equity > 0 else 0.0,
+            "turnover_notional": sum(
+                abs(r["notional"]) for r in trade_rows if r["trade_date"] == today
+            ),
+        })
+        future_signals = any(d in by_date for d in cal[i:])
+        if not open_pos and not future_signals:
+            break
+
+    return _finalize_account(daily_rows, hold_rows, trade_rows, hold_days=hold_days, include_bufengge=include_bufengge)
 
 
 def account_stats(daily: pd.DataFrame) -> dict:

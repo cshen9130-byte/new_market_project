@@ -38,6 +38,7 @@ import {
   extractNavFromValuationBuffer,
   extractValuationFromBuffer,
   extractValuationFromEmailBody,
+  extractValuationFromPdfBuffer,
   selectValuationAttachments,
 } from "@/lib/server/email-valuation-attachment"
 import {
@@ -743,12 +744,19 @@ async function fetchMailbox(
             }
 
             for (const payload of payloads) {
-              const extracted = extractValuationFromBuffer(
-                payload.buffer,
-                payload.parseFilename,
-                subject,
-                senderEmail,
-              )
+              const extracted = /\.pdf$/i.test(payload.parseFilename)
+                ? await extractValuationFromPdfBuffer(
+                    payload.buffer,
+                    payload.parseFilename,
+                    subject,
+                    senderEmail,
+                  )
+                : extractValuationFromBuffer(
+                    payload.buffer,
+                    payload.parseFilename,
+                    subject,
+                    senderEmail,
+                  )
               if (extracted) {
                 valuationSavedForEmail = true
                 valuationRecords.push({

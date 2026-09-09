@@ -70,14 +70,14 @@ export function canAccessPfInvestmentTracking(user: User | null | undefined): bo
   return canAccessInvestmentTab(user)
 }
 
-/** 投资页内：投资池（投资概览、在管产品、FOF底层、资料列表） */
+/** 投资页内：投资池（投资概览、在管产品、FOF底层、资料列表、穿透合规） */
 export function canAccessPfInvestmentPool(user: User | null | undefined): boolean {
   if (!user) return false
   if (isAdmin(user)) return true
   return user.permissions?.pfInvestmentPool === true
 }
 
-const INVESTMENT_POOL_GROUP_LABEL = "投资池"
+const INVESTMENT_POOL_GROUP_LABELS = new Set(["投资池", "合规"])
 
 export function filterInvestmentSidebarGroups<T extends { label: string }>(
   user: User | null | undefined,
@@ -86,7 +86,7 @@ export function filterInvestmentSidebarGroups<T extends { label: string }>(
   const showPool = canAccessPfInvestmentPool(user)
   const showTrackingDirect = canAccessPfInvestmentTracking(user)
   return groups.filter((group) => {
-    if (group.label === INVESTMENT_POOL_GROUP_LABEL) return showPool
+    if (INVESTMENT_POOL_GROUP_LABELS.has(group.label)) return showPool
     return showTrackingDirect
   })
 }
@@ -95,7 +95,7 @@ export function isAllowedInvestmentSideItem(
   user: User | null | undefined,
   sideKey: string,
 ): boolean {
-  const poolKeys = new Set(["inv-overview", "inv-active", "inv-fof", "inv-docs"])
+  const poolKeys = new Set(["inv-overview", "inv-active", "inv-fof", "inv-docs", "inv-lookthrough"])
   if (poolKeys.has(sideKey)) return canAccessPfInvestmentPool(user)
   return canAccessPfInvestmentTracking(user)
 }

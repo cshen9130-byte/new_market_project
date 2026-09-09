@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fund-data": {
+      "command": "pnpm",
+      "args": ["exec", "tsx", "scripts/mcp/fund-data-server.ts"]
+    }
+  }
+}

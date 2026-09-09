@@ -1,5 +1,8 @@
 /**
- * Export 私募数据库 未分类 team-strategy suggestions for review.
+ * Export 基金数据库 → 私募基金 suggestions for:
+ *   基金策略=未分类 (团队策略 empty) + 基金类型=私募证券基金
+ * Matches the list filter that shows ~124,779 rows.
+ *
  *   npx tsx scripts/ma/_export_private_funds_unclassified_suggestions.ts
  */
 import fs from "fs"
@@ -53,10 +56,10 @@ function inferFromName(name: string): Guess | null {
       return { l1: "股票多头", l2: "指数增强", l3, confidence: "high", reasons: [`产品名含${l3}`] }
     }
   }
-  if (/指增|指数增强/.test(n)) {
+  if (/指增|指数增强/.test(n) && !/中性/.test(n)) {
     return { l1: "股票多头", l2: "指数增强", l3: null, confidence: "high", reasons: ["产品名含指增/指数增强"] }
   }
-  if (/中性增强|市场中性|中性策略|量化中性|股票中性|中性[0-9]/.test(n) || /中性$/.test(n)) {
+  if (/中性增强|市场中性|中性策略|量化中性|股票中性|量化市场中性/.test(n) || /中性[0-9]/.test(n) || /中性$/.test(n)) {
     return { l1: "股票对冲", l2: "股票市场中性", l3: null, confidence: "high", reasons: ["产品名含中性"] }
   }
   if (/宏观量化|宏观混合|宏观配置|宏观策略/.test(n)) {
@@ -102,77 +105,85 @@ function inferFromName(name: string): Guess | null {
   if (/债券|固收|固定收益/.test(n) && !/转债|可转/.test(n)) {
     return { l1: "债券策略", l2: null, l3: null, confidence: "medium", reasons: ["产品名含债券/固收"] }
   }
+  if (/可转债|转债/.test(n) && !/套利|指增/.test(n)) {
+    return { l1: "股票多头", l2: "可转债多头", l3: null, confidence: "medium", reasons: ["产品名含可转债"] }
+  }
   if (/主观多头/.test(n)) return { l1: "股票多头", l2: "主观多头", l3: null, confidence: "high", reasons: ["产品名含主观多头"] }
-  if (/股票多头|多头策略/.test(n)) return { l1: "股票多头", l2: null, l3: null, confidence: "medium", reasons: ["产品名含股票多头"] }
-  if (/股票对冲|对冲策略|对冲/.test(n) && !/期货|CTA/.test(n)) {
-    return { l1: "股票对冲", l2: null, l3: null, confidence: /股票对冲|对冲策略/.test(n) ? "medium" : "low", reasons: ["产品名含对冲"] }
+  if (/量化多头|量化选股|量化精选/.test(n) && !/中性|对冲|指增/.test(n)) {
+    return { l1: "股票多头", l2: "量化多头", l3: null, confidence: "medium", reasons: ["产品名含量化多头/选股"] }
+  }
+  if (/股票多头|多头策略/.test(n)) {
+    return { l1: "股票多头", l2: null, l3: null, confidence: "medium", reasons: ["产品名含股票多头"] }
+  }
+  if (/量化对冲|灵活对冲|股票对冲|对冲策略/.test(n) && !/期货|CTA/.test(n)) {
+    return { l1: "股票对冲", l2: null, l3: null, confidence: "medium", reasons: ["产品名含对冲"] }
+  }
+  if (/对冲/.test(n) && !/期货|CTA/.test(n)) {
+    return { l1: "股票对冲", l2: null, l3: null, confidence: "low", reasons: ["产品名含对冲"] }
   }
   if (/套利/.test(n)) return { l1: "套利策略", l2: null, l3: null, confidence: "medium", reasons: ["产品名含套利"] }
   return null
 }
 
+function preferGuess(current: Guess | null, next: Guess | null): Guess | null {
+  if (!next) return current
+  if (!current) return next
+  if (next.confidence === "high" && current.confidence !== "high") return next
+  if (current.confidence === "high" && next.confidence !== "high") {
+    if (next.l1 === current.l1 && next.l2 && !current.l2) {
+      return { ...current, l2: next.l2, l3: next.l3 ?? current.l3, reasons: [...current.reasons, ...next.reasons] }
+    }
+    if (next.l1 !== current.l1) {
+      return { ...current, reasons: [...current.reasons, `其他来源另指向${next.l1}/${next.l2 ?? ""}`] }
+    }
+    return { ...current, reasons: [...current.reasons, ...next.reasons] }
+  }
+  if (next.l1 === current.l1 && next.l2 && !current.l2) {
+    return { ...current, l2: next.l2, l3: next.l3 ?? current.l3, reasons: [...current.reasons, ...next.reasons] }
+  }
+  if (next.l1 !== current.l1 && next.confidence === "high") {
+    return { ...next, reasons: [...next.reasons, `与其他来源冲突:${current.l1}/${current.l2 ?? ""}`] }
+  }
+  return { ...current, reasons: [...current.reasons, ...next.reasons] }
+}
+
 async function main() {
   const { query } = await import("../../lib/db")
   const { getStoredTeamStrategies } = await import("../../lib/server/ops-team-strategies")
-  const { findParentL2ForMisplacedName } = await import("../../lib/ma/team-strategy-tree")
+  const { mapPlatformToOfficialTeam } = await import("../../lib/ma/team-strategy-tree")
+  const { sqlPreferAmacOfficialName } = await import("../../lib/server/fund-name-match")
+  const { sqlType6LatestStrategyJoin } = await import("../../lib/server/fund-strategy-resolve")
 
   const tree = await getStoredTeamStrategies()
-  const officialL1 = new Set(tree.map((n) => n.l1))
   const officialL2 = new Map<string, Set<string>>()
   for (const n of tree) officialL2.set(n.l1, new Set(n.l2s.map((x) => x.l2)))
 
-  const L1_ALIASES: Record<string, string> = {
-    组合策略: "多资产策略",
-    其他: "其他策略",
-    股票策略: "股票多头",
-    固定收益: "债券策略",
-    固收策略: "债券策略",
-  }
-
-  function mapL1(raw: string | null): string | null {
-    if (!raw) return null
-    if (officialL1.has(raw)) return raw
-    return officialL1.has(L1_ALIASES[raw] ?? "") ? L1_ALIASES[raw] : null
-  }
-
   function mapKnown(l1raw: string | null, l2raw: string | null, l3raw: string | null): Triple | null {
-    const l1 = mapL1(l1raw)
-    if (!l1) return null
-    let l2 = blank(l2raw)
-    let l3 = blank(l3raw)
-    if (l2 && !(officialL2.get(l1)?.has(l2))) {
-      const parent = findParentL2ForMisplacedName(tree, l1, l2)
-      if (parent) {
-        const parts = (l3 ? l3.split(/[，,、/]/) : []).map((s) => s.trim()).filter(Boolean)
-        if (!parts.includes(l2)) parts.unshift(l2)
-        l3 = parts.join(",") || null
-        l2 = parent
-      } else {
-        l2 = null
-        l3 = null
-      }
-    }
-    return { l1, l2, l3 }
+    return mapPlatformToOfficialTeam(tree, { l1: blank(l1raw), l2: blank(l2raw), l3: blank(l3raw) })
   }
 
   const classified = await query<{
     register_number: string
     product_name: string
+    manager: string | null
     l1: string | null
     l2: string | null
     l3: string | null
   }>(
-    `SELECT register_number,
-            COALESCE(NULLIF(BTRIM(fund_short_name), ''), NULLIF(BTRIM(fund_name), ''), register_number) AS product_name,
-            NULLIF(BTRIM(company_strategy_one), '') AS l1,
-            NULLIF(BTRIM(company_strategy_two), '') AS l2,
-            NULLIF(BTRIM(company_strategy_three), '') AS l3
-     FROM type6_ops_team_full
-     WHERE NULLIF(BTRIM(company_strategy_one), '') IS NOT NULL`,
+    `SELECT t6.register_number,
+            COALESCE(NULLIF(BTRIM(t6.fund_short_name), ''), NULLIF(BTRIM(t6.fund_name), ''), t6.register_number) AS product_name,
+            NULLIF(BTRIM(i.manager), '') AS manager,
+            NULLIF(BTRIM(t6.company_strategy_one), '') AS l1,
+            NULLIF(BTRIM(t6.company_strategy_two), '') AS l2,
+            NULLIF(BTRIM(t6.company_strategy_three), '') AS l3
+     FROM type6_ops_team_full t6
+     LEFT JOIN private_fund_info i ON i.beian_hao = t6.register_number
+     WHERE NULLIF(BTRIM(t6.company_strategy_one), '') IS NOT NULL`,
   )
 
   const classifiedByBase = new Map<string, Array<Guess & { name: string }>>()
   const classifiedByStem = new Map<string, Array<Guess & { name: string }>>()
+  const managerCounts = new Map<string, Map<string, { n: number; sample: Guess }>>()
   for (const r of classified) {
     if (!r.register_number?.trim()) continue
     const mapped = mapKnown(r.l1, r.l2, r.l3)
@@ -182,35 +193,57 @@ async function main() {
     classifiedByBase.set(base, [...(classifiedByBase.get(base) ?? []), g])
     const stem = nameStem(r.product_name)
     if (stem.length >= 4) classifiedByStem.set(stem, [...(classifiedByStem.get(stem) ?? []), g])
+    const mgr = (r.manager || "").trim()
+    if (mgr) {
+      let byL1 = managerCounts.get(mgr)
+      if (!byL1) {
+        byL1 = new Map()
+        managerCounts.set(mgr, byL1)
+      }
+      const prev = byL1.get(mapped.l1)
+      if (prev) prev.n += 1
+      else byL1.set(mapped.l1, { n: 1, sample: { ...mapped, confidence: "medium", reasons: ["同管理人已有团队策略"] } })
+    }
   }
 
+  const nameExpr = sqlPreferAmacOfficialName("i.product_name", "a.fund_name")
+  const teamJoin = sqlType6LatestStrategyJoin("i.beian_hao", "t6")
   const rows = await query<{
     beian_hao: string
     product_name: string
     manager: string | null
-    company_l1: string | null
-    company_l2: string | null
-    company_l3: string | null
+    amac_l1: string | null
+    amac_l2: string | null
     platform_l1: string | null
     platform_l2: string | null
     platform_l3: string | null
   }>(
     `SELECT
        i.beian_hao,
-       i.product_name,
+       ${nameExpr} AS product_name,
        NULLIF(BTRIM(i.manager), '') AS manager,
-       NULLIF(BTRIM(t6.company_strategy_one), '') AS company_l1,
-       NULLIF(BTRIM(t6.company_strategy_two), '') AS company_l2,
-       NULLIF(BTRIM(t6.company_strategy_three), '') AS company_l3,
-       NULLIF(BTRIM(t6.platform_strategy_one), '') AS platform_l1,
-       NULLIF(BTRIM(t6.platform_strategy_two), '') AS platform_l2,
-       NULLIF(BTRIM(t6.platform_strategy_three), '') AS platform_l3
+       NULLIF(NULLIF(BTRIM(i.strategy_l1), ''), '-') AS amac_l1,
+       NULLIF(NULLIF(BTRIM(i.strategy_l2), ''), '-') AS amac_l2,
+       t6.platform_l1,
+       t6.platform_l2,
+       t6.platform_l3
      FROM private_fund_info i
-     LEFT JOIN type6_ops_team_full t6 ON t6.register_number = i.beian_hao
-     WHERE (NULLIF(BTRIM(i.strategy_l1), '') IS NULL OR BTRIM(i.strategy_l1) = '-')
-       AND i.latest_nav_date >= CURRENT_DATE - INTERVAL '6 months'
-     ORDER BY i.product_name, i.beian_hao`,
+     LEFT JOIN amac_private_funds a ON a.fund_no = i.beian_hao
+     ${teamJoin}
+     WHERE COALESCE(t6.company_l1, t6.company_l2, t6.company_l3) IS NULL
+       AND (
+         EXISTS (
+           SELECT 1 FROM amac_private_funds _ft
+           WHERE _ft.fund_no = i.beian_hao
+             AND _ft.fund_type = ANY($1::text[])
+         )
+         OR i.product_name ILIKE $2
+       )
+     ORDER BY i.beian_hao`,
+    [["私募证券投资基金"], "%私募证券%"],
   )
+
+  console.log(`universe=${rows.length}`)
 
   const headers = [
     "备案号",
@@ -221,30 +254,44 @@ async function main() {
     "建议三级",
     "信心",
     "建议依据",
-    "现有团队策略",
+    "现有协会策略",
     "现有平台策略",
     "同系列已分类产品",
     "是否接受",
     "备注",
   ]
 
-  const outRows: string[][] = []
+  const dest = path.join(process.cwd(), "data", "private-funds-unclassified-securities-strategy-suggestions.csv")
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+  const out = fs.createWriteStream(dest, { encoding: "utf8" })
+  out.write("\uFEFF")
+  out.write(`${headers.map(csvEscape).join(",")}\r\n`)
+
+  let high = 0
+  let medium = 0
+  let low = 0
+  let none = 0
+
+  const pending: string[][] = []
 
   for (const r of rows) {
     if (!r.beian_hao?.trim() || !r.product_name) continue
-    const team = [r.company_l1, r.company_l2, r.company_l3].filter(Boolean).join(" / ")
+    const amac = [r.amac_l1, r.amac_l2].filter(Boolean).join(" / ")
     const platform = [r.platform_l1, r.platform_l2, r.platform_l3].filter(Boolean).join(" / ")
     let guess: Guess | null = null
     const siblingNote: string[] = []
 
-    const fromTeam = mapKnown(r.company_l1, r.company_l2, r.company_l3)
-    if (fromTeam?.l1) {
-      guess = { ...fromTeam, confidence: "high", reasons: ["团队数据已有团队策略"] }
-    }
-
     const fromPlatform = mapKnown(r.platform_l1, r.platform_l2, r.platform_l3)
-    if (fromPlatform?.l1 && (!guess || (guess.confidence !== "high" && fromPlatform.l2))) {
+    if (fromPlatform?.l1) {
       guess = { ...fromPlatform, confidence: fromPlatform.l2 ? "medium" : "low", reasons: ["已有平台策略可映射到运维树"] }
+    }
+    const fromAmac = mapKnown(r.amac_l1, r.amac_l2, null)
+    if (fromAmac?.l1) {
+      guess = preferGuess(guess, {
+        ...fromAmac,
+        confidence: fromAmac.l2 ? "medium" : "low",
+        reasons: ["协会策略可映射到运维树"],
+      })
     }
 
     const sibs = [
@@ -258,40 +305,59 @@ async function main() {
     }
     const sibList = [...uniqueSibs.values()]
     if (sibList.length) {
-      siblingNote.push(sibList.slice(0, 8).map((s) => `${s.name}=${s.l1}${s.l2 ? "/" + s.l2 : ""}${s.l3 ? "/" + s.l3 : ""}`).join("；"))
+      siblingNote.push(
+        sibList
+          .slice(0, 6)
+          .map((s) => `${s.name}=${s.l1}${s.l2 ? "/" + s.l2 : ""}${s.l3 ? "/" + s.l3 : ""}`)
+          .join("；"),
+      )
       const l1s = new Set(sibList.map((s) => s.l1))
-      if (!guess && l1s.size === 1) {
+      if (l1s.size === 1) {
         const best = sibList.find((s) => s.l2) ?? sibList[0]
-        guess = { ...best, confidence: "high", reasons: ["同系列/份额已有团队策略"] }
+        guess = preferGuess(guess, { ...best, confidence: "high", reasons: ["同系列/份额已有团队策略"] })
+      }
+    }
+
+    const mgr = (r.manager || "").trim()
+    if (mgr) {
+      const byL1 = managerCounts.get(mgr)
+      if (byL1) {
+        let total = 0
+        let top: { l1: string; n: number; sample: Guess } | null = null
+        for (const [l1, info] of byL1) {
+          total += info.n
+          if (!top || info.n > top.n) top = { l1, n: info.n, sample: info.sample }
+        }
+        if (top && total >= 3 && top.n / total >= 0.8) {
+          guess = preferGuess(guess, {
+            ...top.sample,
+            confidence: total >= 8 ? "medium" : "low",
+            reasons: [`同管理人${top.n}/${total}已标${top.l1}`],
+          })
+        }
       }
     }
 
     const fromName = inferFromName(r.product_name)
     if (fromName) {
-      if (!guess) guess = fromName
-      else if (fromName.confidence === "high" && guess.confidence !== "high") guess = fromName
-      else if (fromName.l1 === guess.l1 && fromName.l2 && !guess.l2) {
-        guess = { ...guess, l2: fromName.l2, l3: fromName.l3 ?? guess.l3, reasons: [...guess.reasons, ...fromName.reasons] }
-      } else if (fromName.l1 !== guess.l1) {
-        if (fromName.confidence === "high" && guess.reasons[0] !== "团队数据已有团队策略") {
-          guess = { ...fromName, reasons: [...fromName.reasons, `与其他来源冲突:${guess.l1}/${guess.l2 ?? ""}`] }
-        } else {
-          guess = { ...guess, reasons: [...guess.reasons, `产品名另指向${fromName.l1}/${fromName.l2 ?? ""}`] }
-        }
-      } else {
-        guess = { ...guess, reasons: [...guess.reasons, ...fromName.reasons] }
-      }
+      const mappedName = mapKnown(fromName.l1, fromName.l2, fromName.l3)
+      const snapped: Guess = mappedName?.l1
+        ? { ...fromName, ...mappedName, confidence: fromName.confidence, reasons: fromName.reasons }
+        : fromName
+      guess = preferGuess(guess, snapped)
     }
 
     const notes: string[] = []
-    if (fromTeam?.l1 && fromName?.l1 && fromTeam.l1 !== fromName.l1 && fromName.confidence === "high") {
-      notes.push(`产品名指向${fromName.l1}/${fromName.l2 ?? ""}，与已有团队策略不一致`)
-    }
-    if (!guess) notes.push("名称/团队数据/同系列均无法可靠推断")
+    if (!guess) notes.push("名称/协会/平台/同系列/同管理人均无法可靠推断")
 
-    const confidenceLabel = guess?.confidence === "high" ? "高" : guess?.confidence === "medium" ? "中" : guess?.confidence === "low" ? "低" : ""
+    const confidenceLabel =
+      guess?.confidence === "high" ? "高" : guess?.confidence === "medium" ? "中" : guess?.confidence === "low" ? "低" : ""
+    if (confidenceLabel === "高") high++
+    else if (confidenceLabel === "中") medium++
+    else if (confidenceLabel === "低") low++
+    else none++
 
-    outRows.push([
+    pending.push([
       r.beian_hao,
       r.product_name,
       r.manager ?? "",
@@ -300,7 +366,7 @@ async function main() {
       guess?.l3 ?? "",
       confidenceLabel,
       guess ? [...new Set(guess.reasons)].join("；") : "",
-      team,
+      amac,
       platform,
       siblingNote.join("；"),
       "",
@@ -308,24 +374,26 @@ async function main() {
     ])
   }
 
-  outRows.sort((a, b) => {
-    const rank = (c: string) => (c === "高" ? 0 : c === "中" ? 1 : 2)
+  pending.sort((a, b) => {
+    const rank = (c: string) => (c === "高" ? 0 : c === "中" ? 1 : c === "低" ? 2 : 3)
     const d = rank(a[6]) - rank(b[6])
     if (d !== 0) return d
     return a[1].localeCompare(b[1], "zh")
   })
 
-  const dest = path.join(process.cwd(), "data", "private-funds-unclassified-strategy-suggestions.csv")
-  fs.mkdirSync(path.dirname(dest), { recursive: true })
-  const body = [headers, ...outRows].map((cols) => cols.map((c) => csvEscape(c)).join(",")).join("\r\n")
-  fs.writeFileSync(dest, `\uFEFF${body}\r\n`, "utf8")
+  for (const cols of pending) {
+    out.write(`${cols.map(csvEscape).join(",")}\r\n`)
+  }
 
-  const high = outRows.filter((r) => r[6] === "高").length
-  const medium = outRows.filter((r) => r[6] === "中").length
-  const low = outRows.filter((r) => r[6] === "低").length
+  await new Promise<void>((resolve, reject) => {
+    out.end(() => resolve())
+    out.on("error", reject)
+  })
+
   console.log(`wrote ${dest}`)
-  const none = outRows.length - high - medium - low
-  console.log(`candidates=${rows.length} suggested=${outRows.length - none} high=${high} medium=${medium} low=${low} none=${none}`)
+  console.log(
+    `candidates=${pending.length} suggested=${pending.length - none} high=${high} medium=${medium} low=${low} none=${none}`,
+  )
 }
 
 main().catch((e) => {

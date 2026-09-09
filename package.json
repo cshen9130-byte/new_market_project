@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "start": "next start",
     "worker:start": "tsx scripts/background-worker.ts",
+    "mcp:fund-data": "tsx scripts/mcp/fund-data-server.ts",
     "postinstall": "node scripts/patch-next-prefetch.mjs"
   },
   "dependencies": {

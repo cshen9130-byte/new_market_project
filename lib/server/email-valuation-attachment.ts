@@ -3,11 +3,13 @@
  */
 
 import * as XLSX from "xlsx"
+import { PDFParse } from "pdf-parse"
 import {
   extractNavMetadata,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
 import { expandWorksheetUsedRange } from "@/lib/server/nav-cleaner"
+import { pdfParseLoadOptions } from "@/lib/server/pdf-text"
 import {
   parseValuationRows,
   parseValuationWorkbook,
@@ -38,6 +40,54 @@ export type ExtractedValuationData = {
   underlyingHoldings: FofUnderlyingMetric[]
   holdingsCount: number
   source: "attachment_valuation_table" | "body_html_table"
+}
+
+function isPdfValuationFilename(filename: string): boolean {
+  return /\.pdf$/i.test(filename) && VALUATION_FILENAME_RE.test(filename) && !EXCLUDE_VALUATION_RE.test(filename)
+}
+
+function isPdfValuationHeaderRow(row: unknown[]): boolean {
+  const text = (row ?? []).map((cell) => String(cell ?? "").replace(/\s+/g, "")).join("")
+  return /科目代码/.test(text) && /科目名称/.test(text)
+}
+
+function headerRowsFromPdfText(text: string): unknown[][] {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+  const rows: unknown[][] = []
+  for (const line of lines.slice(0, 12)) {
+    if (/科目代码/.test(line) && /科目名称/.test(line)) break
+    if (/第\s*\d+\s*页/.test(line) || /^--\s*\d+\s+of\s+\d+\s*--$/.test(line)) continue
+    rows.push([line])
+  }
+  return rows
+}
+
+function flattenPdfValuationTables(tables: {
+  pages?: Array<{ tables?: string[][][] }>
+  mergedTables?: string[][][]
+}): unknown[][] {
+  const grids = [
+    ...(tables.pages ?? []).flatMap((page) => page.tables ?? []),
+    ...(tables.mergedTables ?? []),
+  ]
+  const rows: unknown[][] = []
+  let seenHeader = false
+  for (const grid of grids) {
+    if (!grid?.length) continue
+    for (const row of grid) {
+      const cleaned = (row ?? []).map((cell) => String(cell ?? "").replace(/\s+/g, " ").trim())
+      if (isPdfValuationHeaderRow(cleaned)) {
+        if (seenHeader) continue
+        seenHeader = true
+      }
+      if (cleaned.every((cell) => !cell)) continue
+      rows.push(cleaned)
+    }
+  }
+  return rows
 }
 
 const VALUATION_FILENAME_RE = /估值表|估值|专用表/i
@@ -509,6 +559,7 @@ export function isValuationAttachmentFilename(filename: string): boolean {
   if (VALUATION_ZIP_RE.test(filename)) {
     return VALUATION_FILENAME_RE.test(filename)
   }
+  if (isPdfValuationFilename(filename)) return true
   if (!/\.xlsx?$/i.test(filename)) return false
   if (EXCLUDE_VALUATION_RE.test(filename)) return false
   return VALUATION_FILENAME_RE.test(filename)
@@ -526,7 +577,9 @@ export function selectValuationAttachments(
   if (valuationSubject && zips.length > 0) return zips
 
   const spreadsheets = attachments.filter(
-    (a) => /\.xlsx?$/i.test(a.filename) && !EXCLUDE_VALUATION_RE.test(a.filename),
+    (a) =>
+      (/\.xlsx?$/i.test(a.filename) || isPdfValuationFilename(a.filename))
+      && !EXCLUDE_VALUATION_RE.test(a.filename),
   )
   const explicit = spreadsheets.filter((a) => isValuationAttachmentFilename(a.filename))
   if (explicit.length > 0) return explicit
@@ -537,6 +590,48 @@ export function selectValuationAttachments(
     return spreadsheets.filter((a) => !/净值波动表|净值表|每日净值|资产净值公告|净值公告/i.test(a.filename))
   }
   return []
+}
+
+/** Parse a custody 估值表 PDF (国泰海通 3级科目估值表 etc.). */
+export async function extractValuationFromPdfBuffer(
+  buffer: Buffer,
+  filename: string,
+  subject: string,
+  senderEmail: string | null = null,
+): Promise<ExtractedValuationData | null> {
+  if (!isPdfValuationFilename(filename) && !/估值表|估值|专用表/i.test(subject)) {
+    return null
+  }
+  const parser = new PDFParse(pdfParseLoadOptions(buffer))
+  try {
+    const parsed = await parser.getText()
+    let tables: { pages?: Array<{ tables?: string[][][] }>; mergedTables?: string[][][] } | null = null
+    try {
+      tables = await parser.getTable()
+    } catch {
+      tables = null
+    }
+    const body = String(parsed.text || "")
+    const tableRows = tables ? flattenPdfValuationTables(tables) : []
+    const rows = [...headerRowsFromPdfText(body), ...tableRows]
+    if (rows.length < 4) return null
+    const headerScan = scanRowsForNav(rows)
+    const analysis = parseValuationRows(rows, filename)
+    return buildExtractedValuation(
+      analysis,
+      subject,
+      filename,
+      "attachment_valuation_table",
+      headerScan.date,
+      senderEmail,
+      body,
+      headerScan.unit,
+    )
+  } catch {
+    return null
+  } finally {
+    await parser.destroy().catch(() => undefined)
+  }
 }
 
 /** Parse full 估值表 structure from a workbook buffer. */

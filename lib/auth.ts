@@ -8,7 +8,7 @@ export type PagePermissions = {
   aiResearcher?: boolean
   pfOperations?: boolean
   pfInvestmentAlt?: boolean
-  /** 勾选后：可进投资池（投资概览、在管产品、FOF底层、资料列表） */
+  /** 勾选后：可进投资池（投资概览、在管产品、FOF底层、资料列表、穿透合规） */
   pfInvestmentPool?: boolean
   /** 勾选后：运维团队数据「盘手管理」，关联产品与 MOM 账户 */
   pfTraderManage?: boolean

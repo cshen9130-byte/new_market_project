@@ -1,8 +1,14 @@
 "use client"
 
-import type { ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { BarChart2 } from "lucide-react"
 import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
+import { authService, type User } from "@/lib/auth"
+import {
+  canAccessInvestmentTab,
+  canAccessPfOperations,
+  filterInvestmentSidebarGroups,
+} from "@/lib/permissions"
 
 const menuItems = [
   { key: "market", label: "市场", href: "/ma/dashboard/private-funds?tab=market&side=strategy-observation" },
@@ -42,6 +48,12 @@ const investmentSidebarGroups = [
     ],
   },
   {
+    label: "合规",
+    items: [
+      { key: "inv-lookthrough", label: "穿透合规", href: "/ma/dashboard/private-funds?tab=investment&side=inv-lookthrough" },
+    ],
+  },
+  {
     label: "直投池",
     items: [
       { key: "inv-direct", label: "直投产品", href: "/ma/dashboard/private-funds?tab=investment&side=inv-direct" },
@@ -57,12 +69,31 @@ export function FundCompareSectionShell({
   children: ReactNode
   activeSideItem?: string
 }) {
+  const [currentUser, setCurrentUser] = useState<User | null>(() => authService.getCurrentUser())
+
+  useEffect(() => {
+    let cancelled = false
+    authService.refreshCurrentUser().then((user) => {
+      if (!cancelled && user) setCurrentUser(user)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const visibleMenuItems = menuItems.filter((item) => {
+    if (item.key === "operations") return canAccessPfOperations(currentUser)
+    if (item.key === "investment") return canAccessInvestmentTab(currentUser)
+    return true
+  })
+  const visibleInvestmentGroups = filterInvestmentSidebarGroups(currentUser, investmentSidebarGroups)
+
   return (
     <div className="flex flex-col h-full overflow-hidden -mx-4 md:-mx-6 -mt-0 -mb-6">
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
         <nav className="flex items-center gap-3 px-6 h-12">
           <div className="flex items-center gap-1 h-full min-w-0 flex-1 overflow-x-auto">
-            {menuItems.map((item) => (
+            {visibleMenuItems.map((item) => (
               <a
                 key={item.key}
                 href={item.href}
@@ -90,7 +121,7 @@ export function FundCompareSectionShell({
             <span className="text-sm font-semibold text-foreground">投资分析</span>
           </div>
           <nav className="flex flex-col pt-3 pb-4">
-            {investmentSidebarGroups.map((group) => {
+            {visibleInvestmentGroups.map((group) => {
               const hasActive = group.items.some((i) => i.key === activeSideItem)
               return (
                 <div key={group.label}>

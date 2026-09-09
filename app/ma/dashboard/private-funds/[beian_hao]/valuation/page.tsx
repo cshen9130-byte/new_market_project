@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
 import dynamic from "next/dynamic"
-import { useParams, useRouter } from "next/navigation"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { ArrowLeft, BarChart2, Camera, Download } from "lucide-react"
 import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
@@ -49,6 +49,10 @@ const ValuationEmptyAnalysis = dynamic(
 )
 const FofTransactionAnalysisPanel = dynamic(
   () => import("./FofTransactionAnalysisPanel").then((m) => m.FofTransactionAnalysisPanel),
+  { ssr: false },
+)
+const LookthroughCompliancePanel = dynamic(
+  () => import("./LookthroughCompliancePanel").then((m) => m.LookthroughCompliancePanel),
   { ssr: false },
 )
 const FofAllocationRiskCharts = dynamic(
@@ -189,7 +193,17 @@ const VALUATION_TABS = [
   "收益分析",
   "归因分析",
   "交易分析",
+  "穿透合规",
 ] as const
+
+function resolveValuationTab(raw: string | null): (typeof VALUATION_TABS)[number] | null {
+  if (!raw) return null
+  if ((VALUATION_TABS as readonly string[]).includes(raw)) {
+    return raw as (typeof VALUATION_TABS)[number]
+  }
+  if (raw === "lookthrough") return "穿透合规"
+  return null
+}
 
 type ConfigMode = "major" | "strategy1" | "strategy2"
 
@@ -338,13 +352,21 @@ async function downloadPageScreenshot(el: HTMLElement, filename: string) {
 export default function FundValuationAnalysisPage() {
   const params = useParams()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const beian_hao = typeof params.beian_hao === "string" ? params.beian_hao : ""
 
   const [data, setData] = useState<ValuationData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<(typeof VALUATION_TABS)[number]>("持仓概览")
+  const [activeTab, setActiveTab] = useState<(typeof VALUATION_TABS)[number]>(
+    () => resolveValuationTab(searchParams.get("tab")) ?? "持仓概览",
+  )
   const [configMode, setConfigMode] = useState<ConfigMode>("major")
+
+  useEffect(() => {
+    const next = resolveValuationTab(searchParams.get("tab"))
+    if (next) setActiveTab(next)
+  }, [searchParams])
 
   const [filterPeriod, setFilterPeriod] = useState("一年")
   const [filterFrom, setFilterFrom] = useState("")
@@ -940,6 +962,7 @@ export default function FundValuationAnalysisPage() {
             || tab === "产品表现"
             || tab === "业绩指标"
             || tab === "交易分析"
+            || tab === "穿透合规"
             || tab === "归因分析"
           return (
           <button
@@ -1095,6 +1118,13 @@ export default function FundValuationAnalysisPage() {
         <FofTransactionAnalysisPanel
           beianHao={beian_hao}
           productName={data?.product_name ?? data?.fund_name ?? null}
+        />
+      )}
+
+      {!loading && !error && activeTab === "穿透合规" && beian_hao && (
+        <LookthroughCompliancePanel
+          beianHao={beian_hao}
+          productName={displayName}
         />
       )}
 

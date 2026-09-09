@@ -128,6 +128,9 @@ const ReportTemplateManagementView = dynamic(() =>
 const InstructionsSection = dynamic(() =>
   import("./components/InstructionsSection").then((m) => ({ default: m.InstructionsSection })),
 )
+const LookthroughComplianceView = dynamic(() =>
+  import("./components/LookthroughComplianceView").then((m) => ({ default: m.LookthroughComplianceView })),
+)
 
 /** Asia/Shanghai calendar date YYYY-MM-DD (not UTC — avoids midnight false "historical" cutoffs). */
 function shanghaiTodayIsoDateClient(): string {
@@ -197,6 +200,12 @@ const investmentSidebarGroups: SidebarGroup[] = [
       { key: "inv-active", label: "在管产品" },
       { key: "inv-fof", label: "FOF底层" },
       { key: "inv-docs", label: "资料列表" },
+    ],
+  },
+  {
+    label: "合规",
+    items: [
+      { key: "inv-lookthrough", label: "穿透合规" },
     ],
   },
   {
@@ -14369,9 +14378,9 @@ function OperationsTeamValuationManageView({
   const [error, setError] = useState<string | null>(null)
 
   function stageFiles(rawFiles: FileList | File[]) {
-    const incoming = Array.from(rawFiles).filter((file) => /\.xlsx?$/i.test(file.name))
+    const incoming = Array.from(rawFiles).filter((file) => /\.(xlsx?|pdf)$/i.test(file.name))
     if (incoming.length === 0) {
-      setError("请选择 .xls 或 .xlsx 格式的估值表")
+      setError("请选择 .xls、.xlsx 或 .pdf 格式的估值表")
       setMessage(null)
       return
     }
@@ -14474,7 +14483,7 @@ function OperationsTeamValuationManageView({
         <input
           ref={fileInputRef}
           type="file"
-          accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          accept=".xls,.xlsx,.pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf"
           multiple
           className="hidden"
           onChange={(e) => {
@@ -14491,7 +14500,7 @@ function OperationsTeamValuationManageView({
           选择估值表
         </button>
         <p className="text-sm text-muted-foreground text-center">
-          请拖入或选择【{product_name}】的估值表，格式限制为 .xls / .xlsx
+          请拖入或选择【{product_name}】的估值表，格式限制为 .xls / .xlsx / .pdf
         </p>
         <p className="text-sm text-muted-foreground text-center mt-1">
           每次最多 {TEAM_VALUATION_UPLOAD_MAX_FILES} 份；选好后点击下方「导入估值表」进行解析。
@@ -24160,7 +24169,7 @@ function PrivateFundsPageContent() {
         <div
           className={[
             "flex w-full min-w-0 min-h-0 flex-1 flex-col p-5 scrollbar-subtle",
-            activeSideItem === "inv-dd-table" ? "overflow-hidden" : "overflow-auto",
+            activeSideItem === "inv-dd-table" || activeSideItem === "inv-lookthrough" ? "overflow-hidden" : "overflow-auto",
           ].join(" ")}
         >
           {activeTab === "market" && activeSideItem === "strategy-observation" && <StrategyObservationView />}
@@ -24216,12 +24225,13 @@ function PrivateFundsPageContent() {
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-calendar") && activeSideItem === "inv-dd-calendar" && <DueDiligenceCalendarView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-report") && activeSideItem === "inv-dd-report" && <DueDiligenceReportView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-notes") && activeSideItem === "inv-dd-notes" && <InvestmentNotesView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-lookthrough") && activeSideItem === "inv-lookthrough" && <LookthroughComplianceView />}
           {activeTab === "investment" && !isAllowedInvestmentSideItem(currentUser, activeSideItem) && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               无权限访问该页面
             </div>
           )}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && activeSideItem !== "inv-dd-table" && activeSideItem !== "inv-dd-calendar" && activeSideItem !== "inv-dd-report" && activeSideItem !== "inv-dd-notes" && (
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && activeSideItem !== "inv-dd-table" && activeSideItem !== "inv-dd-calendar" && activeSideItem !== "inv-dd-report" && activeSideItem !== "inv-dd-notes" && activeSideItem !== "inv-lookthrough" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

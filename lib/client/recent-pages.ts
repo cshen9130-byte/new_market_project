@@ -78,6 +78,7 @@ const PF_SIDE_LABELS: Record<string, string> = {
   "inv-active": "在管产品",
   "inv-fof": "FOF底层",
   "inv-docs": "资料列表",
+  "inv-lookthrough": "穿透合规",
   "inv-direct": "直投产品",
   "inv-direct-portfolio": "直投组合",
   "ops-active-funds": "在管产品",

@@ -20,7 +20,7 @@ export async function POST(req: Request) {
       if (result.error === "too_many_files") {
         return NextResponse.json({ error: "每次最多上传100份估值表" }, { status: 400 })
       }
-      return NextResponse.json({ error: "请上传 .xls 或 .xlsx 格式的估值表" }, { status: 400 })
+      return NextResponse.json({ error: "请上传 .xls、.xlsx 或 .pdf 格式的估值表" }, { status: 400 })
     }
 
     if (result.saved === 0) {

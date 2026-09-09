@@ -88,11 +88,13 @@ export function CopyableProductName({
   product_name,
   short_name,
   className,
+  href,
 }: {
   beian_hao: string
   product_name: string
   short_name?: string | null
   className?: string
+  href?: string
 }) {
   const displayName = uiProductLabel(short_name, product_name)
   return (
@@ -101,7 +103,7 @@ export function CopyableProductName({
       copyTitle="复制产品名称"
       label={
         <a
-          href={`/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}`}
+          href={href ?? `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}`}
           target="_blank"
           rel="noopener noreferrer"
           className={className ?? "truncate min-w-0 font-medium text-blue-600 dark:text-blue-400 hover:underline leading-5 block"}
