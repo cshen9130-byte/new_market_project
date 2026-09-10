@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react"
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react"
 import { createPortal } from "react-dom"
 import { X } from "lucide-react"
 import {
@@ -8,6 +8,15 @@ import {
   openPortfolioWithProducts,
   type SelectableProduct,
 } from "@/lib/ma-product-selection-actions"
+import {
+  clearProductSelection,
+  removeProductSelection,
+  subscribeProductSelectionCleared,
+  subscribeProductSelectionRemoved,
+  upsertProductSelection,
+  useProductSelectionBag,
+  useProductSelectionDockOwner,
+} from "@/lib/ma-product-selection-bag"
 
 export type ProductSelectionPanelItem = {
   id: string
@@ -135,6 +144,98 @@ type ProductSelectionPanelBoundProps<T> = {
   compareScope?: "team" | "mine"
 }
 
+function toSelectableProduct<T>(
+  row: T,
+  getId: (row: T) => string,
+  getName: (row: T) => string,
+  getBeianHao?: (row: T) => string | null,
+  getLatestNavDate?: (row: T) => string | null,
+): SelectableProduct {
+  const id = getId(row)
+  return {
+    id,
+    product_name: getName(row),
+    beian_hao: getBeianHao?.(row) ?? null,
+    latest_nav_date: getLatestNavDate?.(row) ?? null,
+  }
+}
+
+function useSelectedProductMeta<T>(
+  data: T[],
+  selected: Set<string>,
+  getId: (row: T) => string,
+  getName: (row: T) => string,
+  getBeianHao?: (row: T) => string | null,
+  getLatestNavDate?: (row: T) => string | null,
+): SelectableProduct[] {
+  const metaRef = useRef(new Map<string, SelectableProduct>())
+  return useMemo(() => {
+    const meta = metaRef.current
+    for (const row of data) {
+      const id = getId(row)
+      if (selected.has(id)) {
+        meta.set(id, toSelectableProduct(row, getId, getName, getBeianHao, getLatestNavDate))
+      }
+    }
+    for (const id of [...meta.keys()]) {
+      if (!selected.has(id)) meta.delete(id)
+    }
+    const products: SelectableProduct[] = []
+    for (const id of selected) {
+      const item = meta.get(id)
+      if (item) products.push(item)
+    }
+    return products
+  }, [data, selected, getId, getName, getBeianHao, getLatestNavDate])
+}
+
+function idsEqual(selected: Set<string>, id: string): boolean {
+  if (selected.has(id)) return true
+  const key = id.trim().toUpperCase()
+  for (const value of selected) {
+    if (value.trim().toUpperCase() === key) return true
+  }
+  return false
+}
+
+function deleteMatchingId(selected: Set<string>, id: string): Set<string> {
+  const key = id.trim().toUpperCase()
+  const next = new Set(selected)
+  for (const value of selected) {
+    if (value === id || value.trim().toUpperCase() === key) next.delete(value)
+  }
+  return next
+}
+
+function ProductSelectionDock({
+  compareScope,
+}: {
+  compareScope: "team" | "mine"
+}) {
+  const isOwner = useProductSelectionDockOwner()
+  const items = useProductSelectionBag()
+  if (!isOwner) return null
+
+  const hasBeian = items.some((item) => item.beian_hao)
+  return (
+    <ProductSelectionPanel
+      items={items}
+      onRemove={removeProductSelection}
+      onClear={clearProductSelection}
+      onPortfolio={() => {
+        openPortfolioWithProducts(items)
+        clearProductSelection()
+      }}
+      onFundCompare={() => {
+        if (!openFundCompareWithProducts(items, compareScope)) return
+        clearProductSelection()
+      }}
+      portfolioDisabled={!hasBeian}
+      fundCompareDisabled={!hasBeian}
+    />
+  )
+}
+
 export function ProductSelectionPanelBound<T>({
   data,
   selected,
@@ -146,17 +247,46 @@ export function ProductSelectionPanelBound<T>({
   showActions = true,
   compareScope = "team",
 }: ProductSelectionPanelBoundProps<T>) {
-  const selectedProducts = useMemo(() => {
-    const rows = data.filter((row) => selected.has(getId(row)))
-    return rows.map((row): SelectableProduct => ({
-      id: getId(row),
-      product_name: getName(row),
-      beian_hao: getBeianHao?.(row) ?? null,
-      latest_nav_date: getLatestNavDate?.(row) ?? null,
-    }))
-  }, [data, selected, getId, getName, getBeianHao, getLatestNavDate])
+  const selectedProducts = useSelectedProductMeta(
+    data,
+    selected,
+    getId,
+    getName,
+    getBeianHao,
+    getLatestNavDate,
+  )
+  const prevSelectedRef = useRef(selected)
 
-  const hasBeian = selectedProducts.some((p) => p.beian_hao)
+  useEffect(() => {
+    if (!showActions) return
+    upsertProductSelection(selectedProducts)
+    const prev = prevSelectedRef.current
+    const visibleIds = new Set(data.map(getId))
+    for (const id of prev) {
+      if (selected.has(id)) continue
+      // Keep bag items that disappeared only because the current page/filter changed.
+      if (visibleIds.has(id) || selected.size > 0) removeProductSelection(id)
+    }
+    prevSelectedRef.current = selected
+  }, [data, getId, selected, selectedProducts, showActions])
+
+  useEffect(() => {
+    if (!showActions) return
+    return subscribeProductSelectionCleared(() => {
+      setSelected((prev) => (prev.size === 0 ? prev : new Set()))
+    })
+  }, [setSelected, showActions])
+
+  useEffect(() => {
+    if (!showActions) return
+    return subscribeProductSelectionRemoved((id) => {
+      setSelected((prev) => (idsEqual(prev, id) ? deleteMatchingId(prev, id) : prev))
+    })
+  }, [setSelected, showActions])
+
+  if (showActions) {
+    return <ProductSelectionDock compareScope={compareScope} />
+  }
 
   function removeId(id: string) {
     setSelected((prev) => {
@@ -171,10 +301,6 @@ export function ProductSelectionPanelBound<T>({
       items={selectedProducts}
       onRemove={removeId}
       onClear={() => setSelected(new Set())}
-      onPortfolio={showActions ? () => openPortfolioWithProducts(selectedProducts) : undefined}
-      onFundCompare={showActions ? () => openFundCompareWithProducts(selectedProducts, compareScope) : undefined}
-      portfolioDisabled={!hasBeian}
-      fundCompareDisabled={!hasBeian}
     />
   )
 }

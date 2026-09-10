@@ -120,18 +120,26 @@ export function computeMonthlyReturnsForYear(
   year: number,
 ): (number | null)[] {
   const sorted = [...points].sort((a, b) => a.d.localeCompare(b.d))
+  const monthFirst = new Map<string, NavPoint>()
   const monthLast = new Map<string, NavPoint>()
-  for (const p of sorted) monthLast.set(p.d.slice(0, 7), p)
+  for (const p of sorted) {
+    const ym = p.d.slice(0, 7)
+    if (!monthFirst.has(ym)) monthFirst.set(ym, p)
+    monthLast.set(ym, p)
+  }
 
   const result: (number | null)[] = Array(12).fill(null)
+  let prevEnd = sorted.filter((p) => p.d < `${year}-01-01`).at(-1)?.v ?? null
+
   for (let m = 1; m <= 12; m++) {
     const ym = `${year}-${String(m).padStart(2, "0")}`
     const endRow = monthLast.get(ym)
     if (!endRow) continue
-    const prevNav = sorted.filter((p) => p.d < `${ym}-01`).at(-1)?.v
-    if (prevNav && prevNav > 0) {
-      result[m - 1] = parseFloat(((endRow.v / prevNav - 1) * 100).toFixed(2))
+    const baseNav = (prevEnd != null && prevEnd > 0) ? prevEnd : monthFirst.get(ym)?.v
+    if (baseNav && baseNav > 0) {
+      result[m - 1] = parseFloat(((endRow.v / baseNav - 1) * 100).toFixed(2))
     }
+    prevEnd = endRow.v
   }
   return result
 }

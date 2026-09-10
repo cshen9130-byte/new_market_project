@@ -1,8 +1,10 @@
 {
   "mcpServers": {
     "fund-data": {
-      "command": "pnpm",
-      "args": ["exec", "tsx", "scripts/mcp/fund-data-server.ts"]
+      "url": "http://8.154.33.143/ma/api/fund-data/mcp",
+      "headers": {
+        "x-api-key": "YOUR_API_KEY"
+      }
     }
   }
 }

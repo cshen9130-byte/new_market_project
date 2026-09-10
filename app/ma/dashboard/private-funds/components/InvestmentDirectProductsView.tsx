@@ -25,6 +25,7 @@ import {
   Wand2,
 } from "lucide-react"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { pageSelectionChecked, toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
 import {
   FIELD_CONFIG_STORAGE_KEYS,
   INV_DIRECT_FIELD_DEFAULT,
@@ -691,13 +692,11 @@ export function InvestmentDirectProductsView() {
         setData(json.data ?? [])
         setTotal(json.total ?? 0)
         setTotalMarketValue(json.totalMarketValue ?? "0")
-        setSelected(new Set())
       })
       .catch(() => {
         setData([])
         setTotal(0)
         setTotalMarketValue("0")
-        setSelected(new Set())
       })
       .finally(() => setLoading(false))
   }, [page, pageSize, fundClass, strategySource, strategyL1, strategyL2, strategyL3, teamTags, holdingStatus, crawlEmail, isAdminUser, keyword, sortKey, sortDir, cutoffDate])
@@ -764,8 +763,7 @@ export function InvestmentDirectProductsView() {
   }
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.beian_hao)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.beian_hao)))
   }
 
   function pageButtons(): (number | "…")[] {
@@ -1217,7 +1215,7 @@ export function InvestmentDirectProductsView() {
           <thead className={freezeHeader || isTeam ? "sticky top-0 z-20" : ""}>
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
-                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+                <input type="checkbox" className="rounded h-3 w-3" checked={pageSelectionChecked(selected, data.map((r) => r.beian_hao))} onChange={toggleAll} />
               </th>
               <th className={`${thBase} w-10`}>序号</th>
               <th className={`${thSort} min-w-[180px]`} onClick={() => handleSort("product_name")}>产品名称<SortIcon col="product_name" /></th>

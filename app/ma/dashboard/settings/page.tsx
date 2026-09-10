@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { ChevronDown } from "lucide-react"
+import { FundDataApiPanel } from "./fund-data-api-panel"
 import { authService, type User } from "@/lib/auth"
 import { withInstructionAssignment } from "@/lib/page-permissions"
 import {
@@ -29,8 +30,6 @@ import {
   type InstructionRoleKey,
   type InstructionTypeOption,
 } from "@/lib/ma/instruction-roles"
-import { LoginHistoryPanel } from "./login-history-panel"
-
 // ─── localStorage keys ───────────────────────────────────────────────────────
 const METRIC_TEMPLATES_KEY = "tracking_metric_templates"
 const CALC_SETTINGS_KEY    = "tracking_calc_settings"
@@ -78,8 +77,9 @@ const DEFAULT_CALC: CalcSettings = {
 }
 
 const LEFT_NAV = [
-  { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "邀请注册", "登录设置"] },
+  { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "邀请注册"] },
   { group: "团队管理", items: ["评分设置", "指令设置", "直投设置", "报告设置"] },
+  { group: "数据接口", items: ["基金数据API"] },
 ]
 
 const SECTION_FROM_PARAM: Record<string, string> = {
@@ -87,6 +87,7 @@ const SECTION_FROM_PARAM: Record<string, string> = {
   "user-center": "用户中心",
   "instruction-settings": "指令设置",
   "direct-invest-settings": "直投设置",
+  "fund-data-api": "基金数据API",
 }
 
 const PERSONAL_TAG_CATEGORIES = [
@@ -1304,6 +1305,26 @@ function UserCenterPanel() {
             {infoRow("到期时间", "—")}
             {infoRow("密码", "已设置", outlineBtn("修改密码", () => setModal("password")))}
             {infoRow("手机绑定", "未绑定", outlineBtn("修改手机号", () => setModal("phone")))}
+            {infoRow(
+              "API Key",
+              user?.api_key
+                ? <code className="font-mono text-xs break-all">{user.api_key}</code>
+                : "未生成",
+              <div className="flex gap-2">
+                {user?.api_key ? outlineBtn("复制", () => {
+                  void navigator.clipboard.writeText(user.api_key || "")
+                }) : null}
+                {outlineBtn(user?.api_key ? "重新生成" : "生成", async () => {
+                  if (user?.api_key && !window.confirm("重新生成后旧 Key 立即失效，确定吗？")) return
+                  const res = await authService.regenerateApiKey()
+                  if (!res.success) {
+                    window.alert(res.error || "生成失败")
+                    return
+                  }
+                  setUser((prev) => prev ? { ...prev, api_key: res.api_key } : prev)
+                })}
+              </div>,
+            )}
           </div>
         </section>
 
@@ -2461,9 +2482,9 @@ export default function SettingsPage() {
           <div className="p-8">
             <DirectInvestSettingsPanel />
           </div>
-        ) : activeLeft === "登录设置" ? (
+        ) : activeLeft === "基金数据API" ? (
           <div className="p-8">
-            <LoginHistoryPanel />
+            <FundDataApiPanel />
           </div>
         ) : activeLeft !== "个人配置" ? (
           <div className="p-8">

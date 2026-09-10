@@ -53,7 +53,14 @@ const FofTransactionAnalysisPanel = dynamic(
 )
 const LookthroughCompliancePanel = dynamic(
   () => import("./LookthroughCompliancePanel").then((m) => m.LookthroughCompliancePanel),
-  { ssr: false },
+  {
+    ssr: false,
+    loading: () => (
+      <div className="bg-white rounded-lg border border-zinc-100 p-12 text-center text-sm text-zinc-400">
+        正在按估值表穿透核算合规条款…
+      </div>
+    ),
+  },
 )
 const FofAllocationRiskCharts = dynamic(
   () => import("./FofAllocationRiskCharts").then((m) => ({ default: m.FofAllocationRiskCharts })),
@@ -419,8 +426,9 @@ export default function FundValuationAnalysisPage() {
   }, [beian_hao])
 
   useEffect(() => {
+    if (!beian_hao) return
     loadData(configMode)
-  }, [loadData, configMode])
+  }, [beian_hao, loadData, configMode])
 
   const loadTrendData = useCallback(async () => {
     if (!beian_hao || !filterFrom || !filterTo) return null
@@ -985,7 +993,7 @@ export default function FundValuationAnalysisPage() {
         })}
       </div>
 
-      {loading && (
+      {loading && activeTab !== "穿透合规" && (
         <div className="bg-white rounded-lg border border-zinc-100 p-12 text-center text-sm text-zinc-400">
           加载估值表数据…
         </div>
@@ -1121,7 +1129,7 @@ export default function FundValuationAnalysisPage() {
         />
       )}
 
-      {!loading && !error && activeTab === "穿透合规" && beian_hao && (
+      {activeTab === "穿透合规" && beian_hao && (
         <LookthroughCompliancePanel
           beianHao={beian_hao}
           productName={displayName}

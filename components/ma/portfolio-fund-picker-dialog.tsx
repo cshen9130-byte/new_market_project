@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react"
 import { loadLocalPortfolioRows, sortPortfolioRows, type PortfolioListRow } from "@/lib/ma-portfolio-storage"
+import { filterVisibleTeamPools } from "@/lib/client/tracking-pools"
 
 export interface PortfolioFundPickerItem {
   beian_hao: string
@@ -65,7 +66,6 @@ interface ApiTrackRow {
 }
 
 const DEFAULT_TEAM_POOLS = [
-  { key: "bfl", label: "bfl跟踪池" },
   { key: "jy", label: "JY跟踪池" },
 ] as const
 
@@ -75,7 +75,6 @@ const DEFAULT_MINE_POOLS = [
 ] as const
 
 const TEAM_POOL_OPTIONS = [
-  { key: "bfl_ops", label: "bfl 运维池" },
   { key: "jy_ops", label: "JY运维池" },
   ...DEFAULT_TEAM_POOLS,
 ] as const
@@ -287,7 +286,7 @@ export function PortfolioFundPickerDialog({
   const [keyword, setKeyword] = useState("")
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>("fund")
   const [fundCategory, setFundCategory] = useState<FundCategoryTab>("private")
-  const [teamPool, setTeamPool] = useState<string>("bfl")
+  const [teamPool, setTeamPool] = useState<string>("jy")
   const [teamPools, setTeamPools] = useState<{ key: string; label: string }[]>(() => [...DEFAULT_TEAM_POOLS])
   const [teamCategory, setTeamCategory] = useState<TeamCategoryTab>("private")
   const [minePool, setMinePool] = useState<string>("mine_default")
@@ -310,7 +309,7 @@ export function PortfolioFundPickerDialog({
     setKeyword("")
     setPrimaryTab("fund")
     setFundCategory("private")
-    setTeamPool("bfl")
+    setTeamPool("jy")
     setTeamPools([...DEFAULT_TEAM_POOLS])
     setTeamCategory("private")
     setMinePool("mine_default")
@@ -341,9 +340,11 @@ export function PortfolioFundPickerDialog({
         if (!Array.isArray(d?.data)) return
         setTeamPools((prev) => {
           const existing = new Set(prev.map((p) => p.key))
-          const extra = d.data
-            .filter((p: { pool_key?: string }) => p?.pool_key && !existing.has(p.pool_key))
-            .map((p: { pool_key: string; label: string }) => ({ key: p.pool_key, label: p.label }))
+          const extra = filterVisibleTeamPools(
+            d.data
+              .filter((p: { pool_key?: string }) => p?.pool_key && !existing.has(p.pool_key))
+              .map((p: { pool_key: string; label: string }) => ({ key: p.pool_key, label: p.label })),
+          )
           return extra.length ? [...prev, ...extra] : prev
         })
       })

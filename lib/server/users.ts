@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import bcrypt from "bcryptjs"
 import { query } from "@/lib/db"
 
@@ -26,6 +27,7 @@ export type StoredUser = {
   role: "admin" | "user"
   permissions: PagePermissions
   passwordHash: string
+  api_key?: string | null
 }
 
 type DbRow = {
@@ -35,6 +37,13 @@ type DbRow = {
   role: "admin" | "user"
   permissions: PagePermissions | string | null
   password_hash: string
+  api_key?: string | null
+}
+
+const API_KEY_PREFIX = "mf_"
+
+export function generateFundDataApiKey(): string {
+  return `${API_KEY_PREFIX}${randomBytes(20).toString("hex")}`
 }
 
 function parsePermissions(raw: PagePermissions | string | null | undefined): PagePermissions {
@@ -46,7 +55,15 @@ function parsePermissions(raw: PagePermissions | string | null | undefined): Pag
 }
 
 function rowToUser(row: DbRow): StoredUser {
-  return { id: row.id, email: row.email, name: row.name, role: row.role, permissions: parsePermissions(row.permissions), passwordHash: row.password_hash }
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    permissions: parsePermissions(row.permissions),
+    passwordHash: row.password_hash,
+    api_key: row.api_key ?? null,
+  }
 }
 
 // Singleton init promise — safe against concurrent requests and hot reloads
@@ -79,6 +96,17 @@ async function _initTable() {
   if (columns.length === 0) {
     await query(`ALTER TABLE auth_users ADD COLUMN permissions JSONB NOT NULL DEFAULT '{}'`)
   }
+  const apiKeyCols = await query<{ column_name: string }>(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'auth_users'
+        AND column_name = 'api_key'`,
+  )
+  if (apiKeyCols.length === 0) {
+    await query(`ALTER TABLE auth_users ADD COLUMN api_key TEXT`)
+  }
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS auth_users_api_key_uq ON auth_users (api_key) WHERE api_key IS NOT NULL`)
   await _seedIfEmpty()
 }
 
@@ -142,10 +170,49 @@ async function _seedIfEmpty() {
   } catch {}
 }
 
+function toPublicUser(row: DbRow): Omit<StoredUser, "passwordHash"> {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    permissions: parsePermissions(row.permissions),
+    api_key: row.api_key ?? null,
+  }
+}
+
+async function ensureUserApiKey(row: DbRow): Promise<DbRow> {
+  if (row.api_key) return row
+  for (let i = 0; i < 5; i++) {
+    const key = generateFundDataApiKey()
+    try {
+      await query(`UPDATE auth_users SET api_key = $1 WHERE id = $2 AND api_key IS NULL`, [key, row.id])
+      const again = await query<DbRow>(
+        `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`,
+        [row.id],
+      )
+      if (again[0]?.api_key) return again[0]
+    } catch {
+      // unique collision, retry
+    }
+  }
+  const again = await query<DbRow>(
+    `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`,
+    [row.id],
+  )
+  return again[0] ?? row
+}
+
 export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
   await ensureTable()
   const rows = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users ORDER BY created_at`)
-  return rows.map((r) => ({ id: r.id, email: r.email, name: r.name, role: r.role, permissions: parsePermissions(r.permissions) }))
+  return rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    role: r.role,
+    permissions: parsePermissions(r.permissions),
+  }))
 }
 
 export async function getRequestUser(req: Request): Promise<Omit<StoredUser, "passwordHash"> | null> {
@@ -156,10 +223,40 @@ export async function getRequestUser(req: Request): Promise<Omit<StoredUser, "pa
 export async function getUserById(id: string): Promise<Omit<StoredUser, "passwordHash"> | null> {
   if (!id) return null
   await ensureTable()
-  const rows = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users WHERE id = $1`, [id])
+  const rows = await query<DbRow>(
+    `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`,
+    [id],
+  )
   if (rows.length === 0) return null
-  const r = rows[0]
-  return { id: r.id, email: r.email, name: r.name, role: r.role, permissions: parsePermissions(r.permissions) }
+  return toPublicUser(await ensureUserApiKey(rows[0]))
+}
+
+export async function getUserByApiKey(apiKey: string): Promise<Omit<StoredUser, "passwordHash"> | null> {
+  const key = apiKey.trim()
+  if (!key) return null
+  await ensureTable()
+  const rows = await query<DbRow>(
+    `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE api_key = $1`,
+    [key],
+  )
+  if (rows.length === 0) return null
+  return toPublicUser(rows[0])
+}
+
+export async function rotateUserApiKey(id: string): Promise<string> {
+  await ensureTable()
+  const existing = await query<{ id: string }>(`SELECT id FROM auth_users WHERE id = $1`, [id])
+  if (existing.length === 0) throw new Error("用户不存在")
+  for (let i = 0; i < 5; i++) {
+    const key = generateFundDataApiKey()
+    try {
+      await query(`UPDATE auth_users SET api_key = $1 WHERE id = $2`, [key, id])
+      return key
+    } catch {
+      // unique collision
+    }
+  }
+  throw new Error("无法生成 API Key")
 }
 
 export async function getAll(): Promise<StoredUser[]> {
@@ -217,9 +314,9 @@ export async function updateUser(
     await query(`UPDATE auth_users SET permissions = $1 WHERE id = $2`, [JSON.stringify(updates.permissions), id])
   }
 
-  const updated = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users WHERE id = $1`, [id])
+  const updated = await query<DbRow>(`SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`, [id])
   const r = updated[0]
-  return { id: r.id, email: r.email, name: r.name, role: r.role, permissions: parsePermissions(r.permissions) }
+  return toPublicUser(r)
 }
 
 export async function deleteUser(id: string) {
@@ -230,13 +327,14 @@ export async function deleteUser(id: string) {
 export async function verifyLogin(identifier: string, password: string) {
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, password_hash FROM auth_users WHERE email = $1 OR name = $1`,
+    `SELECT id, email, name, role, permissions, password_hash, api_key FROM auth_users WHERE email = $1 OR name = $1`,
     [identifier],
   )
   if (rows.length === 0) return null
   const user = rowToUser(rows[0])
   const ok = await bcrypt.compare(password, user.passwordHash)
   if (!ok) return null
-  const { passwordHash: _ph, ...rest } = user
+  const withKey = await ensureUserApiKey(rows[0])
+  const { passwordHash: _ph, ...rest } = rowToUser({ ...rows[0], ...withKey, password_hash: rows[0].password_hash })
   return rest
 }

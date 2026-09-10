@@ -17,6 +17,9 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   金舆基石一号: "SAVW72",
   古曲祥辰5号: "SXN097",
   荣熙共赢: "SBNX55",
+  // Manual add used spaces: 荣熙如川套利 1 号. Custody 估值表 is SEC272_荣熙如川套利1号…
+  荣熙如川套利1号: "SEC272",
+  "荣熙如川套利 1 号": "SEC272",
   // Guotai TA虚拟净值 mails tag the 在管产品 in 【…】; underlying fund is outside the brackets.
   金舆追风1号: "SCJ536",
   // FOF virtual-NAV mails like 金舆守安一号【SBYC86-峰云汇高山一号】… mis-link 守安 → SBYC86.
@@ -58,13 +61,20 @@ const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   STG733: "TG733C",
 }
 
+function compactFundName(value: string): string {
+  return value.replace(/\s+/g, "")
+}
+
 /** Parent managed-product name must not swallow A/B/C share-class variants. */
 function managedProductOverrideNameMatches(
   overrideProductName: string,
   identifier: string,
 ): boolean {
   if (identifier === overrideProductName) return true
-  if (overrideProductName.length < 4 || !identifier.includes(overrideProductName)) return false
+  const compactOverride = compactFundName(overrideProductName)
+  const compactId = compactFundName(identifier)
+  if (compactId === compactOverride) return true
+  if (overrideProductName.length < 4 || !compactId.includes(compactOverride)) return false
   return shareClassFromProductName(overrideProductName) === shareClassFromProductName(identifier)
 }
 
@@ -93,11 +103,12 @@ export function managedProductsResolvedBeianSqlExpr(
   autoBeianExpr: string,
 ): string {
   const escape = (s: string) => s.replace(/'/g, "''")
+  const compactExpr = `regexp_replace(${productNameExpr}, '\\s+', '', 'g')`
   const cases = Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)
-    .map(
-      ([name, code]) =>
-        `WHEN TRIM(${productNameExpr}) = '${escape(name)}' THEN '${escape(code)}'`,
-    )
+    .map(([name, code]) => {
+      const compact = name.replace(/\s+/g, "")
+      return `WHEN TRIM(${productNameExpr}) = '${escape(name)}' OR ${compactExpr} = '${escape(compact)}' OR ${compactExpr} LIKE '${escape(compact)}%' THEN '${escape(code)}'`
+    })
     .join("\n      ")
   const aliasCases = Object.entries(MANAGED_PRODUCT_BEIAN_ALIASES)
     .map(

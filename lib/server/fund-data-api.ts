@@ -138,11 +138,6 @@ function toNum(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function toText(value: unknown): string {
-  if (value == null) return ""
-  return String(value)
-}
-
 function fmtDate(value: unknown): string {
   if (value == null) return ""
   return String(value).slice(0, 10)
@@ -493,7 +488,9 @@ export async function getFundMultiPrice(options: {
   const resolvedPairs = await Promise.all(
     codes.map(async (code) => ({ code, resolved: await resolveFundRegCode(code) })),
   )
-  const resolved = [...new Set(resolvedPairs.map((p) => p.resolved).filter((v): v is string => Boolean(v)))]
+  const resolved = Array.from(
+    new Set(resolvedPairs.map((p) => p.resolved).filter((v): v is string => Boolean(v))),
+  )
   if (resolved.length === 0) return fundDataErr(2, "no matching funds")
 
   const onDate = parseIsoDate(options.date)
@@ -939,14 +936,14 @@ export async function getCompanyFundList(options: {
 
 export const FUND_DATA_CATALOG = {
   endpoints: [
-    { path: "/fund/info", tool: "fund_info", desc: "私募基金基本信息 (FOF99 FundInfo)" },
-    { path: "/price", tool: "fund_price", desc: "单基金净值序列 (FOF99 FundPrice)" },
-    { path: "/fund/price", tool: "fund_multi_price", desc: "多基金净值，最多 40 只 (FOF99 FundMultiPrice)" },
-    { path: "/fund/advancedlist", tool: "fund_advanced_list", desc: "按策略筛选基金列表 (FOF99 FundAdvancedList)" },
-    { path: "/fund/view", tool: "fund_view", desc: "业绩指标 (FOF99 FundView)" },
+    { path: "/fund/info", tool: "fund_info", desc: "私募基金基本信息" },
+    { path: "/price", tool: "fund_price", desc: "单基金净值序列" },
+    { path: "/fund/price", tool: "fund_multi_price", desc: "多基金净值，最多 40 只" },
+    { path: "/fund/advancedlist", tool: "fund_advanced_list", desc: "按策略筛选基金列表" },
+    { path: "/fund/view", tool: "fund_view", desc: "业绩指标" },
     { path: "/fund/search", tool: "fund_search", desc: "按名称/备案号搜索基金与管理人" },
-    { path: "/company/info", tool: "company_info", desc: "管理人信息 (FOF99 CompanyInfo)" },
-    { path: "/company/fund/list", tool: "company_fund_list", desc: "管理人旗下基金 (FOF99 CompanyFundList)" },
+    { path: "/company/info", tool: "company_info", desc: "管理人信息" },
+    { path: "/company/fund/list", tool: "company_fund_list", desc: "管理人旗下基金" },
   ],
 }
 
@@ -964,10 +961,21 @@ export async function handleFundDataRequest(
       return getFundInfo(params.reg_code)
     case "price":
       if (!params.reg_code) return fundDataErr(1, "reg_code is required")
-      return getFundPrice(params)
+      return getFundPrice({
+        reg_code: params.reg_code,
+        start_date: params.start_date,
+        end_date: params.end_date,
+        order: params.order,
+        order_by: params.order_by,
+      })
     case "fund/price":
       if (!params.reg_code) return fundDataErr(1, "reg_code is required")
-      return getFundMultiPrice(params)
+      return getFundMultiPrice({
+        reg_code: params.reg_code,
+        date: params.date,
+        order: params.order,
+        order_by: params.order_by,
+      })
     case "fund/advancedlist":
       return getFundAdvancedList(params)
     case "fund/view":
@@ -986,16 +994,14 @@ export async function handleFundDataRequest(
 
 export function searchParamsToRecord(searchParams: URLSearchParams): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {}
-  for (const [key, value] of searchParams.entries()) {
+  searchParams.forEach((value, key) => {
     out[key] = value
-  }
+  })
   if (!out.reg_code && out.register_number) out.reg_code = out.register_number
   if (!out.pagesize && out.page_size) out.pagesize = out.page_size
-  if (!out.code && out.reg_code && !out.register_number) {
-    // company endpoints use `code`
+  if (!out.code && (out.registration_no || out.register_code || out.reg_code)) {
+    out.code = out.registration_no || out.register_code || out.reg_code
   }
-  if (!out.code && (out.registration_no || out.register_code)) {
-    out.code = out.registration_no || out.register_code
-  }
+  delete out.api_key
   return out
 }

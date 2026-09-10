@@ -16,6 +16,7 @@ import {
   Search,
 } from "lucide-react"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { pageSelectionChecked, toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
 import {
   StrategySourceToggle,
   type StrategySource,
@@ -190,7 +191,6 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
         setTotal(json.total ?? 0)
         setTotalPages(json.totalPages ?? 1)
         if (Array.isArray(json.strategies)) setStrategies(json.strategies)
-        setSelected(new Set())
       })
       .catch(() => {
         setData([])
@@ -218,8 +218,7 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
   }
 
   function toggleAll() {
-    if (selected.size === data.length) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.beian_hao)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.beian_hao)))
   }
 
   function toggleFavorite(id: string) {
@@ -401,7 +400,7 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
           <thead>
             <tr className="bg-zinc-50/80 border-b border-zinc-100">
               <th className={`${thBase} w-9 px-2`}>
-                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+                <input type="checkbox" className="rounded h-3 w-3" checked={pageSelectionChecked(selected, data.map((r) => r.beian_hao))} onChange={toggleAll} />
               </th>
               <th className={`${thBase} w-10 text-center`}>序号</th>
               <th className={`${thSort} min-w-[180px]`} onClick={() => handleSort("product_name")}>

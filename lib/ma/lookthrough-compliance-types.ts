@@ -36,8 +36,13 @@ export type LookthroughHolding = {
   symbol: string | null
   bucket: AssetBucket
   market_value: number
+  source_subject_mv: number | null
   pct_nav: number
   source_fund: string | null
+  source_nav: number | null
+  parent_holding_mv: number | null
+  lookthrough_scale: number | null
+  subject_level: number | null
   concentration_exempt: boolean
 }
 
@@ -47,7 +52,12 @@ export type LookthroughSubfundStructure = {
   is_parent_direct: boolean
   unpenetrated: boolean
   valuation_date: string | null
+  valuation_sheet_level: number | null
   fund_strategy: string | null
+  source_nav: number | null
+  parent_holding_mv: number | null
+  lookthrough_scale: number | null
+  source_derivatives_notional: number | null
   buckets: {
     equity: number
     fixed_income: number

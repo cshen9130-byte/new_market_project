@@ -1,8 +1,17 @@
 /** Shared loader for team tracking pool tabs — DB is the source of truth for labels and order. */
 
+/** Hidden from every account: sidebar, pickers, membership chips. Data stays in DB. */
+export const HIDDEN_TEAM_POOL_KEYS = new Set(["bfl_ops", "bfl"])
+
+export function isHiddenTeamPoolKey(poolKey: string | null | undefined): boolean {
+  return !!poolKey && HIDDEN_TEAM_POOL_KEYS.has(poolKey)
+}
+
+export function filterVisibleTeamPools<T extends { key?: string; pool_key?: string }>(pools: T[]): T[] {
+  return pools.filter((p) => !isHiddenTeamPoolKey(p.key ?? p.pool_key))
+}
+
 const FALLBACK_TEAM_POOLS = [
-  { key: "bfl_ops", label: "bfl 运维池" },
-  { key: "bfl", label: "bfl跟踪池" },
   { key: "jy_ops", label: "JY运维池" },
   { key: "jy", label: "JY跟踪池" },
 ]
@@ -22,7 +31,7 @@ export function splitFundPoolMemberships(
   let inMine = false
   for (const pool of pools) {
     if (isMineTrackingPoolKey(pool.pool_key)) inMine = true
-    else teamPools.push(pool)
+    else if (!isHiddenTeamPoolKey(pool.pool_key)) teamPools.push(pool)
   }
   return { teamPools, inMine, inTeam: teamPools.length > 0 }
 }
@@ -32,9 +41,12 @@ export async function fetchTeamPoolOptions(): Promise<{ key: string; label: stri
     const res = await fetch("/ma/api/tracking-funds/pools?scope=team", { cache: "no-store" })
     const d = await res.json()
     if (!Array.isArray(d?.data) || d.data.length === 0) return FALLBACK_TEAM_POOLS
-    return d.data
-      .filter((p: { pool_key?: string }) => p?.pool_key && !String(p.pool_key).startsWith("__"))
-      .map((p: { pool_key: string; label: string }) => ({ key: p.pool_key, label: p.label }))
+    const visible = filterVisibleTeamPools(
+      d.data
+        .filter((p: { pool_key?: string }) => p?.pool_key && !String(p.pool_key).startsWith("__"))
+        .map((p: { pool_key: string; label: string }) => ({ key: p.pool_key, label: p.label })),
+    )
+    return visible.length > 0 ? visible : FALLBACK_TEAM_POOLS
   } catch {
     return FALLBACK_TEAM_POOLS
   }

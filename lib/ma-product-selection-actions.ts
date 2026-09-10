@@ -38,10 +38,11 @@ export function createFundCompareHref(
 export function openFundCompareWithProducts(
   products: SelectableProduct[],
   scope: "team" | "mine" = "team",
-) {
+): boolean {
   const href = createFundCompareHref(products, scope)
-  if (!href) return
+  if (!href) return false
   window.open(href, "_blank", "noopener,noreferrer")
+  return true
 }
 
 export function openPortfolioWithProducts(products: SelectableProduct[]) {

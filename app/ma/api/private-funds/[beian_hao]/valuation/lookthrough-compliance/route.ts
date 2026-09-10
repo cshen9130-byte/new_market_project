@@ -5,7 +5,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ beian_hao: string }> },
 ) {
   try {
@@ -14,7 +14,8 @@ export async function GET(
     if (!code) {
       return NextResponse.json({ error: "beian_hao required" }, { status: 400 })
     }
-    const data = await queryLookthroughComplianceForFund(code)
+    const fresh = new URL(req.url).searchParams.get("fresh") === "1"
+    const data = await queryLookthroughComplianceForFund(code, { fresh })
     return NextResponse.json(data)
   } catch (err) {
     console.error("[private-funds/valuation/lookthrough-compliance]", err)

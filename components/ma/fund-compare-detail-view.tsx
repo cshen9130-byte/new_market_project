@@ -265,6 +265,7 @@ export function FundCompareDetailView({
   const [appliedBench, setAppliedBench] = useState<(typeof BENCHMARK_OPTIONS)[number]["key"]>("IF")
   const [appliedAlignStart, setAppliedAlignStart] = useState(true)
   const [fundSeries, setFundSeries] = useState<FundSeries[]>([])
+  const [rawFundSeries, setRawFundSeries] = useState<FundSeries[]>([])
   const [benchSeries, setBenchSeries] = useState<BenchSeries>({ returnPoints: [], navPoints: [] })
   const [visibleFunds, setVisibleFunds] = useState<Set<string>>(() => new Set(initialCompare.funds.map((f) => f.beian_hao)))
   const [loading, setLoading] = useState(false)
@@ -323,6 +324,7 @@ export function FundCompareDetailView({
     setAppliedAlignStart(alignStart)
 
     const series = await Promise.all(compare.funds.map((f) => fetchFundSeries(f, from, to)))
+    setRawFundSeries(series)
     const alignedFunds = alignNavSeriesStart(
       alignReturnSeriesStart(series, alignStart),
       alignStart,
@@ -793,7 +795,7 @@ export function FundCompareDetailView({
         analyzed={analyzed}
         fromDate={appliedFrom}
         toDate={appliedTo}
-        funds={fundSeries
+        funds={rawFundSeries
           .filter((s) => visibleFunds.has(s.beian_hao))
           .map((s) => ({
             beian_hao: s.beian_hao,
@@ -815,7 +817,7 @@ export function FundCompareDetailView({
         analyzed={analyzed}
         fromDate={appliedFrom}
         toDate={appliedTo}
-        funds={fundSeries
+        funds={rawFundSeries
           .filter((s) => visibleFunds.has(s.beian_hao))
           .map((s) => ({
             beian_hao: s.beian_hao,

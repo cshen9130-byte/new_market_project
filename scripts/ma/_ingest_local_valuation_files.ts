@@ -75,6 +75,8 @@ const FILES: Array<{
   storedFilename?: string
   hintCode?: string
   hintName?: string
+  /** Re-parse even when this valuation_date is already in DB (parser fix). */
+  force?: boolean
 }> = [
   {
     path: "d:\\微信\\documents\\xwechat_files\\shencong3036_2378\\msg\\file\\2026-09\\SBVC85_峰云汇高山一号私募证券投资基金_20260826_估值表(1).xls",
@@ -162,6 +164,10 @@ async function ingestFiles() {
 
   for (const file of FILES) {
     const filename = file.storedFilename ?? basename(file.path)
+    if (!fs.existsSync(file.path)) {
+      decisions.push({ filename, action: "skipped", reason: "file missing", path: file.path })
+      continue
+    }
     const buffer = readFileSync(file.path)
     const extracted = /\.pdf$/i.test(filename)
       ? await extractValuationFromPdfBuffer(buffer, filename, filename)
@@ -181,7 +187,7 @@ async function ingestFiles() {
     })
     const existingDate = existing?.latest_date?.slice(0, 10) ?? null
 
-    if (existingDate && existingDate >= extracted.valuationDate) {
+    if (!file.force && existingDate && existingDate >= extracted.valuationDate) {
       decisions.push({
         filename,
         action: "skipped",

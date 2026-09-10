@@ -615,10 +615,21 @@ function hasEconomicValue(row: ValuationRow): boolean {
   )
 }
 
+function isBankDepositSubject(code: string, name: string): boolean {
+  const compactCode = code.replace(/\s+/g, "")
+  if (compactCode.startsWith("1002")) return true
+  return Boolean(compactCode) && /^银行存款/.test(normalizeText(name))
+}
+
 function isOffsetOrSummaryRow(code: string, name: string): boolean {
   const compactCode = code.replace(/\s+/g, "")
   const normalizedName = normalizeText(name)
   const hasContractInName = Boolean(extractContractSymbol("", name)) || isChineseOptionContractName(name)
+
+  // 华泰四级科目 1002 活期 leaves can have a blank 科目名称 while 科目代码/市值 are filled.
+  if (isBankDepositSubject(code, name)) {
+    return /应计利息|估值增值/.test(normalizedName)
+  }
 
   if (!name) return true
   if (/^(基金)?资产净值$/.test(normalizedName) || /^净资产$/.test(normalizedName)) return false
@@ -631,15 +642,16 @@ function isOffsetOrSummaryRow(code: string, name: string): boolean {
   if (/单位净值/.test(normalizedName)) return true
   if (/净值/.test(normalizedName)) return true
   if (/增长率|已实现收益|可分配利润|累计派现|现金类占净值比/.test(normalizedName)) return true
-  if (/冲销|冲抵|估值增值|应计利息/.test(normalizedName)) return true
-  if (compactCode.startsWith("3102") && /初始合约价值/.test(name) && !hasContractInName) return true
-  if (/^3102\.[^.]+\.(02)\./.test(compactCode)) return true
-  if (
-    compactCode.startsWith("3102")
-    && !extractContractSymbol(compactCode, name)
-    && !isChineseOptionContractName(name)
-    && !extractOptionContractFromText(null, name, compactCode)
-  ) return true
+    if (/冲销|冲抵|估值增值|应计利息/.test(normalizedName)) return true
+    if (/^3102\.[^.]+\.(02)\./.test(compactCode)) return true
+    if (compactCode.startsWith("3102")) {
+      if (hasContractInName || isChineseOptionContractName(name) || extractOptionContractFromText(null, name, compactCode)) {
+        return false
+      }
+      // 三级表 PDF wraps as「初始合 约价值」; match on whitespace-stripped name.
+      if (/初始合约/.test(normalizedName) && !/冲销|冲抵|估值增值/.test(normalizedName)) return false
+      return true
+    }
 
   return false
 }
@@ -748,8 +760,12 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
       continue
     }
 
-    if (normalizeSubjectCode(obj.code).startsWith("3102") && !(Number(obj.position) > 0)) {
-      continue
+    const compactCode = normalizeSubjectCode(obj.code)
+    if (compactCode.startsWith("3102") && !(Number(obj.position) > 0)) {
+      const keepLevel3Notional =
+        /初始合约/.test(normalizeText(obj.name))
+        && Math.abs(Number(obj.signed_market_value ?? obj.market_value ?? obj.signed_cost ?? obj.cost ?? 0)) > 0
+      if (!keepLevel3Notional) continue
     }
 
     obj.code = normalizeSubjectCode(obj.code)

@@ -62,7 +62,8 @@ export function sqlFundNameBase(nameExpr: string): string {
       regexp_replace(BTRIM(${nameExpr}), '[ABC]类$', ''),
       '(私募证券投资基金|私募基金|证券投资基金|投资基金)$', ''
     ),
-    '\\s+$', ''
+    '\\s+', '',
+    'g'
   ), '')`
 }
 
@@ -292,6 +293,7 @@ function jsFundNameBase(name: string): string {
   return name
     .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
     .replace(/[ABC]类$/u, "")
+    .replace(/\s+/g, "")
     .trim()
 }
 
@@ -321,6 +323,7 @@ export function fundNicknameMatchesFullName(nickname: string, fullName: string):
       .replace(/(私募证券投资基金|证券投资私募基金|私募基金|证券投资基金|投资基金)$/u, "")
       .replace(/[ABC]类$/u, "")
       .replace(/证券投资$/u, "")
+      .replace(/\s+/g, "")
       .trim()
   const nb = strip(nick)
   const fb = strip(full)

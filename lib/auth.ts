@@ -28,6 +28,8 @@ export interface User {
   name: string
   role?: "admin" | "user"
   permissions?: PagePermissions
+  /** Fund-data HTTP / MCP key. Shown in 用户中心; send as x-api-key. */
+  api_key?: string | null
 }
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -207,6 +209,25 @@ export const authService = {
       return { success: true, user: data.user }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "更新失败"
+      return { success: false, error: message }
+    }
+  },
+
+  regenerateApiKey: async (): Promise<{ success: boolean; api_key?: string; error?: string }> => {
+    try {
+      const uid = currentUserId()
+      if (!uid) return { success: false, error: "未登录" }
+      const data = await jsonFetch<{ ok: true; api_key: string; user: User }>("/api/auth/api-key", {
+        method: "POST",
+        headers: { "x-market-user-id": uid },
+      })
+      const current = authService.getCurrentUser()
+      if (current) {
+        localStorage.setItem("currentUser", JSON.stringify({ ...current, api_key: data.api_key }))
+      }
+      return { success: true, api_key: data.api_key }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "生成失败"
       return { success: false, error: message }
     }
   },

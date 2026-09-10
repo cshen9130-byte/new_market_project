@@ -72,6 +72,13 @@ function fmtDate(value: string | null | undefined): string {
   return value.slice(0, 10)
 }
 
+const SHEET_LEVEL_LABEL = ["", "一级", "二级", "三级", "四级"] as const
+
+function fmtSheetLevel(level: number | null | undefined): string {
+  if (level == null || !Number.isFinite(level)) return "—"
+  return SHEET_LEVEL_LABEL[level] ?? `${level}级`
+}
+
 function textMatch(haystack: string, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
@@ -115,9 +122,26 @@ function holdingFilterClass(active: boolean, extra = "") {
 const EMPTY_HOLDING_FILTERS = {
   asset: "",
   bucket: "",
+  subjectLevel: "",
   source: "",
+  sourceNav: "",
+  parentMv: "",
+  scale: "",
+  subjectMv: "",
   mv: "",
   pct: "",
+}
+
+function filterMoneyWan(query: string, value: number | null | undefined): boolean {
+  if (!query.trim()) return true
+  if (value == null || !Number.isFinite(value)) return false
+  return numericFilter(query, value / 10_000) || textMatch(fmtMoney(value), query)
+}
+
+function filterPctValue(query: string, value: number | null | undefined): boolean {
+  if (!query.trim()) return true
+  if (value == null || !Number.isFinite(value)) return false
+  return numericFilter(query.replace(/%/g, ""), value) || textMatch(`${value.toFixed(4)}%`, query)
 }
 
 const SUBFUND_BUCKETS: {
@@ -154,7 +178,7 @@ const CHECKS_HELP: ChartCalcHelpBlock[] = [
   {
     title: "第12条 单一资产 25%",
     paragraphs: [
-      "同一资产穿透后金额 / 母基金净资产。现金管理工具、公募基金、债券通用质押式回购不计入。",
+      "同一资产穿透后金额 / 母基金净资产。标准化股权按单一上市公司股票/存托凭证计。信用账户、其他证券、国投证券等券商账户、股票成本_深港通等科目合计不是同一资产。现金管理工具、公募基金、债券通用质押式回购不计入。",
     ],
     formula: "单一资产集中度 = max(同一资产金额) / 净资产",
   },
@@ -182,23 +206,25 @@ const MIX_HELP: ChartCalcHelpBlock[] = [
     paragraphs: [
       "第41条用于判断产品类别的口径，不是母基金净资产，也不是 FOF 实盘表里的基金市值合计。",
     ],
-    formula: "已投资产 = 权益市值 + 债权市值 + 期货合约价值 + 未穿透基金 + 其他已投\n不含现金管理工具，也不含保证金/备付金",
+    formula: "已投资产 = 权益市值 + 债权市值 + 期货合约价值 + 未穿透基金 + 其他已投\n不含现金管理工具",
   },
   {
     title: "市值 vs 合约价值 vs 保证金",
     bullets: [
-      "权益 / 债权 / 未穿透基金 / 其他：估值表市值（叶子持仓按母基金持有份额缩放）",
-      "期货和衍生品：合约价值（名义本金），不是保证金；所以已投资产可以大于母基金市值",
-      "衍生品账户权益：保证金 + 结算备付金，用来核验是否 > 市值已投资产 20%",
+      "权益 / 债权 / 未穿透基金 / 其他：估值表市值。同一张表里一级信用账户与三级国投证券等券商科目不重复加总，只留最粗一层账户，再加上能识别的个股叶子",
+      "券商存出保证金/结算备付金计入权益类；期货公司保证金/备付金只计入第41条账户权益，不计入合约价值",
+      "期货和衍生品按双边名义市值：多头名义 + |空头名义|。三级表用「初始合约」叶子，不用衍生工具父级净额（多空对冲后的估值增值）",
+      "冲销合约、估值增值不计入。已投资产因此可以大于母基金市值",
+      "第41条衍生品账户权益：只统计期货公司保证金 + 结算备付金",
       "FOF 实盘「市值」= 底层基金份额 × 单位净值，是实际本金，不拆合约",
     ],
   },
   {
     title: "各类怎么归",
     bullets: [
-      "权益类：股票、可转债/可交换债、股票/混合/指数/ETF 基金",
+      "权益类：股票、可转债/可交换债、股票/混合/指数/ETF 基金、其他证券、信用账户/股东账户、券商账户，以及券商存出保证金/备付金。信用账户与其下国投证券等科目只计一次",
       "债权类：信用债、质押式回购等；国债/央票/政金债/地方债改记现金管理工具",
-      "期货和衍生品：期货、期权、收益互换等，金额用合约价值",
+      "期货和衍生品：期货/期权/收益互换的双边名义市值（多头 + |空头|），不含保证金、冲销、估值增值",
       "基金（未穿透）：底层私募没有估值表，整段份额按基金计",
       "现金管理工具：活期存款、国债、央票、政金债、地方债、货基；展示但不计入已投资产",
     ],
@@ -222,8 +248,11 @@ const SUBFUND_HELP: ChartCalcHelpBlock[] = [
     bullets: [
       "基金策略：团队策略（空则平台策略），一级/二级/三级",
       "估值日：该底层用于穿透的那张估值表日期",
-      "权益/债权/期货/基金/现金/其他：与上方结构同一套分类；期货仍是合约价值",
-      "已投资产：该行权益+债权+期货合约价值+未穿透基金+其他（不含现金管理工具）",
+      "估值表：科目层级。文件名含「三级/四级科目」时用文件名；否则按最细叶子推断（八位科目/初始合约为三级，合约代码为四级）",
+      "底层净资产 / 分成比例：该底层估值表净资产，以及母基金持有市值 / 底层净资产",
+      "底层期货名义：该底层估值表上的双边名义市值（未按母基金份额缩放）。右侧「期货和衍生品」是 × 分成后的母基金切片",
+      "权益/债权/期货/基金/现金/其他：与上方结构同一套分类；期货是缩放后的双边名义市值，不含期货保证金",
+      "已投资产：该行权益+债权+期货双边名义+未穿透基金+其他（不含现金管理工具）",
       "占母基金：该行已投资产 / 母基金已投资产",
     ],
     formula: "单元格占比 = 该底层该类金额 / 该底层已投资产",
@@ -237,11 +266,17 @@ const HOLDINGS_HELP: ChartCalcHelpBlock[] = [
       "与上方「各底层穿透后资产结构」同一套穿透拆分，列出全部叶子持仓（不再截断为 80 条）。",
     ],
     bullets: [
-      "市值：估值表市值 × 母基金持有比例；期货和衍生品用合约价值，不是保证金",
-      "占净值：该条市值 / 母基金净资产。上方「占母基金」是该底层已投资产 / 母基金已投资产，分母不同",
-      "来源底层：拆自哪只子基金；空表示母基金直投",
-      "保证金/备付金单独分类，不计入已投资产，也不计入「其他」",
+      "底层基金净资产：该叶子所在底层用于穿透的估值表净资产",
+      "母基金持有该基金份额市值：母基金估值表上对该底层的市值",
+      "分成比例 = 母基金持有该基金份额市值 / 底层基金净资产",
+      "子基金科目市值：底层估值表该叶子的市值（期货为合约价值），未按母基金份额缩放",
+      "折算持仓市值 = 子基金科目市值 × 分成比例",
+      "占净值：折算持仓市值 / 母基金净资产。上方「占母基金」是该底层已投资产 / 母基金已投资产，分母不同",
+      "科目：该叶子在估值表上的科目层级。一级=4位代码，二级=6位，三级=8位/初始合约，四级=合约代码。同一账户的上级合计（如信用账户）与下级券商科目（如国投证券）不重复列出",
+      "来源底层：拆自哪只子基金；空表示母基金直投，分成三列为空",
+      "期货按双边名义市值（多头+|空头|）；冲销/估值增值不列出。期货保证金计入账户权益，不计入合约价值",
       "同名「上交所质押式回购」若来源底层不同，是两笔持仓",
+      "表底合计：折算持仓市值、占净值为当前筛选结果加总；底层净资产/持有市值/分成/子基金科目市值不可跨行加总",
     ],
   },
 ]
@@ -283,14 +318,15 @@ export function LookthroughCompliancePanel({
     setHoldingFilters(EMPTY_HOLDING_FILTERS)
   }, [beianHao])
 
-  async function runLoad(signal: AbortSignal, opts?: { silent?: boolean }) {
+  async function runLoad(signal: AbortSignal, opts?: { silent?: boolean; fresh?: boolean }) {
     if (!opts?.silent) {
       setLoading(true)
       setError(null)
     }
     try {
+      const qs = opts?.fresh ? "?fresh=1" : ""
       const res = await fetch(
-        `/ma/api/private-funds/${encodeURIComponent(beianHao)}/valuation/lookthrough-compliance`,
+        `/ma/api/private-funds/${encodeURIComponent(beianHao)}/valuation/lookthrough-compliance${qs}`,
         { cache: "no-store", signal },
       )
       const json = await res.json()
@@ -318,14 +354,14 @@ export function LookthroughCompliancePanel({
     }
   }
 
-  function load(opts?: { silent?: boolean }) {
+  function load(opts?: { silent?: boolean; fresh?: boolean }) {
     const ac = new AbortController()
     void runLoad(ac.signal, opts)
     return () => ac.abort()
   }
 
   useEffect(() => {
-    return load()
+    return load({ fresh: true })
   }, [beianHao])
 
   function onCategory(next: ProductCategory) {
@@ -371,7 +407,7 @@ export function LookthroughCompliancePanel({
           ? `成功 ${saved} 份，失败：${failed.slice(0, 2).join("；")}`
           : `成功解析 ${saved} 份，正在按新估值表重算穿透。`,
       })
-      await runLoad(new AbortController().signal, { silent: true })
+      await runLoad(new AbortController().signal, { silent: true, fresh: true })
     } catch (err) {
       toast({
         title: "上传失败",
@@ -445,12 +481,15 @@ export function LookthroughCompliancePanel({
     return rows.filter((h) => {
       if (!textMatch(`${h.name} ${h.symbol ?? ""}`, holdingFilters.asset)) return false
       if (holdingFilters.bucket && h.bucket !== holdingFilters.bucket) return false
+      if (holdingFilters.subjectLevel && String(h.subject_level ?? "") !== holdingFilters.subjectLevel) return false
       const source = h.source_fund || "—"
       if (holdingFilters.source && source !== holdingFilters.source) return false
-      if (holdingFilters.mv && !numericFilter(holdingFilters.mv, h.market_value / 10_000) && !textMatch(fmtMoney(h.market_value), holdingFilters.mv)) {
-        return false
-      }
-      if (holdingFilters.pct && !numericFilter(holdingFilters.pct.replace(/%/g, ""), h.pct_nav) && !textMatch(fmtPct(h.pct_nav), holdingFilters.pct)) {
+      if (!filterMoneyWan(holdingFilters.sourceNav, h.source_nav)) return false
+      if (!filterMoneyWan(holdingFilters.parentMv, h.parent_holding_mv)) return false
+      if (!filterPctValue(holdingFilters.scale, h.lookthrough_scale != null ? h.lookthrough_scale * 100 : null)) return false
+      if (!filterMoneyWan(holdingFilters.subjectMv, h.source_subject_mv)) return false
+      if (!filterMoneyWan(holdingFilters.mv, h.market_value)) return false
+      if (!filterPctValue(holdingFilters.pct, h.pct_nav) && !textMatch(fmtPct(h.pct_nav), holdingFilters.pct)) {
         return false
       }
       return true
@@ -458,6 +497,17 @@ export function LookthroughCompliancePanel({
   }, [data, holdingFilters])
 
   const holdingFilterActive = Object.values(holdingFilters).some((v) => v.trim() !== "")
+
+  const holdingTotals = useMemo(() => {
+    if (filteredHoldings.length === 0) return null
+    let marketValue = 0
+    let pctNav = 0
+    for (const h of filteredHoldings) {
+      if (Number.isFinite(h.market_value)) marketValue += h.market_value
+      if (Number.isFinite(h.pct_nav)) pctNav += h.pct_nav
+    }
+    return { marketValue, pctNav }
+  }, [filteredHoldings])
 
   const subfundRows = data?.subfund_structures ?? []
   const hasSubfundMix = subfundRows.some((row) => !row.is_parent_direct)
@@ -468,7 +518,12 @@ export function LookthroughCompliancePanel({
       is_parent_direct: false,
       unpenetrated: false,
       valuation_date: null,
+      valuation_sheet_level: null,
       fund_strategy: null,
+      source_nav: null,
+      parent_holding_mv: null,
+      lookthrough_scale: null,
+      source_derivatives_notional: null,
       buckets: {
         equity: data.buckets.equity,
         fixed_income: data.buckets.fixed_income,
@@ -556,7 +611,7 @@ export function LookthroughCompliancePanel({
             </button>
             <button
               type="button"
-              onClick={() => load()}
+              onClick={() => load({ fresh: true })}
               className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2.5 py-1 text-xs text-zinc-600 hover:bg-zinc-50"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -655,7 +710,7 @@ export function LookthroughCompliancePanel({
               <ChartCalcHelpButton heading="穿透后资产结构 · 计算说明" blocks={MIX_HELP} />
             </div>
             <p className="mb-2 text-[11px] leading-4 text-zinc-400">
-              已投资产 = 期货合约价值 + 权益/固收/其他已投，不含现金管理工具。
+              已投资产 = 期货双边名义市值 + 权益/固收/其他已投，不含现金管理工具。期货保证金不计入合约价值。
             </p>
             <div className="space-y-2">
               {mixRows.map((row) => {
@@ -734,6 +789,10 @@ export function LookthroughCompliancePanel({
                   <th className="sticky left-0 z-10 bg-zinc-50 px-3 py-2 text-left font-medium">底层产品</th>
                   <th className="px-3 py-2 text-left font-medium whitespace-nowrap">基金策略</th>
                   <th className="px-3 py-2 text-left font-medium whitespace-nowrap">估值日</th>
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">估值表</th>
+                  <th className="px-3 py-2 text-right font-medium whitespace-nowrap">底层净资产</th>
+                  <th className="px-3 py-2 text-right font-medium whitespace-nowrap">分成比例</th>
+                  <th className="px-3 py-2 text-right font-medium whitespace-nowrap">底层期货名义</th>
                   <th className="px-3 py-2 text-right font-medium whitespace-nowrap">操作</th>
                   {SUBFUND_BUCKETS.map((col) => (
                     <th key={col.key} className="px-3 py-2 text-right font-medium whitespace-nowrap">{col.label}</th>
@@ -761,6 +820,20 @@ export function LookthroughCompliancePanel({
                     </td>
                     <td className="px-3 py-2 tabular-nums whitespace-nowrap text-zinc-500">
                       {fmtDate(row.valuation_date)}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-zinc-600">
+                      {fmtSheetLevel(row.valuation_sheet_level)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap text-zinc-500">
+                      {fmtMoney(row.source_nav)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap text-zinc-500">
+                      {row.lookthrough_scale != null && Number.isFinite(row.lookthrough_scale)
+                        ? `${(row.lookthrough_scale * 100).toFixed(4)}%`
+                        : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap text-zinc-500">
+                      {fmtMoney(row.source_derivatives_notional)}
                     </td>
                     <td className="px-3 py-2 text-right">
                       {row.is_parent_direct ? (
@@ -796,6 +869,10 @@ export function LookthroughCompliancePanel({
                 {subfundTotal && (
                   <tr className="border-t border-zinc-200 bg-zinc-50">
                     <td className="sticky left-0 z-10 bg-zinc-50 px-3 py-2 font-medium text-zinc-700">合计</td>
+                    <td className="px-3 py-2 text-zinc-400">—</td>
+                    <td className="px-3 py-2 text-zinc-400">—</td>
+                    <td className="px-3 py-2 text-zinc-400">—</td>
+                    <td className="px-3 py-2 text-zinc-400">—</td>
                     <td className="px-3 py-2 text-zinc-400">—</td>
                     <td className="px-3 py-2 text-zinc-400">—</td>
                     <td className="px-3 py-2 text-zinc-400">—</td>
@@ -857,13 +934,43 @@ export function LookthroughCompliancePanel({
                 </th>
                 <th className="px-3 pt-2 pb-1 text-left font-medium">
                   <span className="inline-flex items-center gap-1">
+                    科目
+                    {holdingFilters.subjectLevel !== "" && <Filter className="h-3 w-3 text-red-500" />}
+                  </span>
+                </th>
+                <th className="px-3 pt-2 pb-1 text-left font-medium">
+                  <span className="inline-flex items-center gap-1">
                     来源底层
                     {holdingFilters.source !== "" && <Filter className="h-3 w-3 text-red-500" />}
                   </span>
                 </th>
                 <th className="px-3 pt-2 pb-1 text-right font-medium">
                   <span className="inline-flex items-center justify-end gap-1">
-                    市值
+                    底层基金净资产
+                    {holdingFilters.sourceNav.trim() !== "" && <Filter className="h-3 w-3 text-red-500" />}
+                  </span>
+                </th>
+                <th className="px-3 pt-2 pb-1 text-right font-medium">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    母基金持有该基金份额市值
+                    {holdingFilters.parentMv.trim() !== "" && <Filter className="h-3 w-3 text-red-500" />}
+                  </span>
+                </th>
+                <th className="px-3 pt-2 pb-1 text-right font-medium">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    分成比例
+                    {holdingFilters.scale.trim() !== "" && <Filter className="h-3 w-3 text-red-500" />}
+                  </span>
+                </th>
+                <th className="px-3 pt-2 pb-1 text-right font-medium">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    子基金科目市值
+                    {holdingFilters.subjectMv.trim() !== "" && <Filter className="h-3 w-3 text-red-500" />}
+                  </span>
+                </th>
+                <th className="px-3 pt-2 pb-1 text-right font-medium">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    折算持仓市值
                     {holdingFilters.mv.trim() !== "" && <Filter className="h-3 w-3 text-red-500" />}
                   </span>
                 </th>
@@ -899,6 +1006,20 @@ export function LookthroughCompliancePanel({
                 </th>
                 <th className="px-3 pb-2 font-normal">
                   <select
+                    value={holdingFilters.subjectLevel}
+                    onChange={(e) => setHoldingFilters((prev) => ({ ...prev, subjectLevel: e.target.value }))}
+                    aria-label="筛选科目层级"
+                    className={holdingFilterClass(holdingFilters.subjectLevel !== "")}
+                  >
+                    <option value="">全部</option>
+                    <option value="1">一级科目</option>
+                    <option value="2">二级科目</option>
+                    <option value="3">三级科目</option>
+                    <option value="4">四级科目</option>
+                  </select>
+                </th>
+                <th className="px-3 pb-2 font-normal">
+                  <select
                     value={holdingFilters.source}
                     onChange={(e) => setHoldingFilters((prev) => ({ ...prev, source: e.target.value }))}
                     aria-label="筛选来源底层"
@@ -912,11 +1033,51 @@ export function LookthroughCompliancePanel({
                 </th>
                 <th className="px-3 pb-2 font-normal">
                   <input
+                    value={holdingFilters.sourceNav}
+                    onChange={(e) => setHoldingFilters((prev) => ({ ...prev, sourceNav: e.target.value }))}
+                    placeholder="万，如 >1000"
+                    title="支持 >1000、>=500、8000-20000"
+                    aria-label="筛选底层基金净资产（万）"
+                    className={holdingFilterClass(holdingFilters.sourceNav.trim() !== "", "text-right")}
+                  />
+                </th>
+                <th className="px-3 pb-2 font-normal">
+                  <input
+                    value={holdingFilters.parentMv}
+                    onChange={(e) => setHoldingFilters((prev) => ({ ...prev, parentMv: e.target.value }))}
+                    placeholder="万，如 >100"
+                    title="支持 >100、>=50、100-300"
+                    aria-label="筛选母基金持有该基金份额市值（万）"
+                    className={holdingFilterClass(holdingFilters.parentMv.trim() !== "", "text-right")}
+                  />
+                </th>
+                <th className="px-3 pb-2 font-normal">
+                  <input
+                    value={holdingFilters.scale}
+                    onChange={(e) => setHoldingFilters((prev) => ({ ...prev, scale: e.target.value }))}
+                    placeholder="% ，如 >1"
+                    title="支持 >1、>=1.5、1-3"
+                    aria-label="筛选分成比例"
+                    className={holdingFilterClass(holdingFilters.scale.trim() !== "", "text-right")}
+                  />
+                </th>
+                <th className="px-3 pb-2 font-normal">
+                  <input
+                    value={holdingFilters.subjectMv}
+                    onChange={(e) => setHoldingFilters((prev) => ({ ...prev, subjectMv: e.target.value }))}
+                    placeholder="万，如 >10"
+                    title="支持 >10、>=5、8-20"
+                    aria-label="筛选子基金科目市值（万）"
+                    className={holdingFilterClass(holdingFilters.subjectMv.trim() !== "", "text-right")}
+                  />
+                </th>
+                <th className="px-3 pb-2 font-normal">
+                  <input
                     value={holdingFilters.mv}
                     onChange={(e) => setHoldingFilters((prev) => ({ ...prev, mv: e.target.value }))}
                     placeholder="万，如 >10"
                     title="支持 >10、>=5、8-20"
-                    aria-label="筛选市值（万）"
+                    aria-label="筛选折算持仓市值（万）"
                     className={holdingFilterClass(holdingFilters.mv.trim() !== "", "text-right")}
                   />
                 </th>
@@ -940,19 +1101,48 @@ export function LookthroughCompliancePanel({
                     {h.symbol && <div className="text-[10px] text-zinc-400">{h.symbol}</div>}
                   </td>
                   <td className="px-3 py-2 text-zinc-500">{BUCKET_LABEL[h.bucket] ?? h.bucket}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-zinc-500">{fmtSheetLevel(h.subject_level)}</td>
                   <td className="px-3 py-2 text-zinc-400">{h.source_fund ?? "—"}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-zinc-500">{fmtMoney(h.source_nav)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-zinc-500">{fmtMoney(h.parent_holding_mv)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-zinc-500">
+                    {h.lookthrough_scale != null && Number.isFinite(h.lookthrough_scale)
+                      ? `${(h.lookthrough_scale * 100).toFixed(4)}%`
+                      : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums text-zinc-500">{fmtMoney(h.source_subject_mv)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtMoney(h.market_value)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtPct(h.pct_nav)}</td>
                 </tr>
               ))}
               {filteredHoldings.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-10 text-center text-zinc-400">
+                  <td colSpan={10} className="px-3 py-10 text-center text-zinc-400">
                     {data.top_holdings.length === 0 ? "无持仓明细" : "无匹配持仓"}
                   </td>
                 </tr>
               )}
             </tbody>
+            {holdingTotals && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="border-t border-zinc-200 bg-zinc-50">
+                  <td className="bg-zinc-50 px-3 py-2 font-medium text-zinc-700">合计</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-zinc-400">—</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-zinc-400">—</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-zinc-400">—</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-zinc-400">—</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-zinc-400">—</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-zinc-400">—</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-zinc-400">—</td>
+                  <td className="bg-zinc-50 px-3 py-2 text-right tabular-nums font-medium text-zinc-700">
+                    {fmtMoney(holdingTotals.marketValue)}
+                  </td>
+                  <td className="bg-zinc-50 px-3 py-2 text-right tabular-nums font-medium text-zinc-700">
+                    {fmtPct(holdingTotals.pctNav)}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>

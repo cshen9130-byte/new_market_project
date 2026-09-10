@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { ChevronDown } from "lucide-react"
 import { invalidateTrackingListCache } from "@/lib/client/tracking-list-cache"
-import { fetchTeamPoolOptions, splitFundPoolMemberships } from "@/lib/client/tracking-pools"
+import { fetchTeamPoolOptions, isHiddenTeamPoolKey, splitFundPoolMemberships } from "@/lib/client/tracking-pools"
 
 const DEFAULT_MINE_POOLS = [
   { key: "", label: "不添加个人池" },
@@ -86,7 +86,7 @@ export function AddToTeamTrackingDialog({
 
   useEffect(() => {
     if (!open) return
-    setTeamPoolsSelected(initialTeamPoolKey ? [initialTeamPoolKey] : [])
+    setTeamPoolsSelected(initialTeamPoolKey && !isHiddenTeamPoolKey(initialTeamPoolKey) ? [initialTeamPoolKey] : [])
     setMinePool("")
     setTeamTagsSelected([])
     setError(null)

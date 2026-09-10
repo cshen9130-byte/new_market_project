@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { filterVisibleTeamPools } from "@/lib/client/tracking-pools"
 import { invalidateTrackingPoolListCaches, purgeOrphanedCustomPoolMemberships } from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
@@ -214,7 +215,7 @@ function isDbConnectionError(err: unknown): boolean {
 }
 
 function fallbackPoolRows(scope: "team" | "mine" | "both") {
-  const team = DEFAULT_TEAM_POOLS.map((p) => ({ ...p, scope: "team", user_key: "" }))
+  const team = filterVisibleTeamPools(DEFAULT_TEAM_POOLS.map((p) => ({ ...p, scope: "team", user_key: "" })))
   const mine = [{ ...DEFAULT_MINE_POOL, scope: "mine", user_key: "" }]
   if (scope === "team") return { data: team }
   if (scope === "mine") return { data: mine }
@@ -244,7 +245,7 @@ export async function GET(req: Request) {
         queryTeamPools(),
         queryMinePools(userKey),
       ])
-      return NextResponse.json({ data: { team, mine } }, { headers: NO_STORE_HEADERS })
+      return NextResponse.json({ data: { team: filterVisibleTeamPools(team), mine } }, { headers: NO_STORE_HEADERS })
     }
 
     if (scope === "mine") {
@@ -262,7 +263,7 @@ export async function GET(req: Request) {
       console.error("[tracking-funds/pools GET] ensureCanonicalTeamRows failed:", err)
     }
     const rows = await queryTeamPools()
-    return NextResponse.json({ data: rows }, { headers: NO_STORE_HEADERS })
+    return NextResponse.json({ data: filterVisibleTeamPools(rows) }, { headers: NO_STORE_HEADERS })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (isDbConnectionError(err)) {

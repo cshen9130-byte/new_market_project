@@ -173,7 +173,55 @@ function isParentBankDepositRow(code: string, name: string): boolean {
   return normalizeCode(code) === "1002"
 }
 
-function resolveCustodyBalance(rows: ValuationRow[]): number {
+/**
+ * 华泰四级科目 parent 1002 uses currency *** and leaves 市值 blank; 市值占比 is still
+ * filled (0.0132 = 0.0132%). Detect whether weights are percent or fraction from
+ * sibling rows that have both 市值 and 市值占比.
+ */
+function inferMarketWeightScale(rows: ValuationRow[], netAssetValue: number): 1 | 100 {
+  if (!(netAssetValue > 1000)) return 100
+  let percentVotes = 0
+  let fractionVotes = 0
+  for (const row of rows) {
+    const mv = pickRowMarketValue(row) || pickRowCost(row)
+    const weight = parseAmount(row.market_weight)
+    if (!(mv > 1000) || !(weight > 0)) continue
+    const frac = mv / netAssetValue
+    if (!(frac > 0)) continue
+    const pct = frac * 100
+    const percentErr = Math.abs(weight - pct) / pct
+    const fractionErr = Math.abs(weight - frac) / frac
+    if (percentErr < 0.2 && percentErr <= fractionErr) percentVotes += 1
+    else if (fractionErr < 0.2) fractionVotes += 1
+  }
+  return fractionVotes > percentVotes ? 1 : 100
+}
+
+function amountFromMarketWeight(
+  row: ValuationRow,
+  netAssetValue: number,
+  scale: 1 | 100,
+): number {
+  if (!(netAssetValue > 1000)) return 0
+  const weight = parseAmount(row.market_weight)
+  if (!(weight > 0)) return 0
+  const pct = scale === 1 ? weight * 100 : weight
+  const amount = netAssetValue * pct / 100
+  return amount > 0 ? amount : 0
+}
+
+function rowCustodyAmount(
+  row: ValuationRow,
+  netAssetValue: number,
+  scale: 1 | 100,
+): number {
+  const direct = pickRowMarketValue(row) || pickRowCost(row)
+  if (direct > 0) return direct
+  return amountFromMarketWeight(row, netAssetValue, scale)
+}
+
+function resolveCustodyBalance(rows: ValuationRow[], netAssetValue = 0): number {
+  const scale = inferMarketWeightScale(rows, netAssetValue)
   // Policy: 托管账户余额 always comes from 活期存款 市值 when present.
   const demandRows = rows.filter((row) =>
     isDemandDepositRow(String(row.original_code ?? row.code ?? ""), String(row.name ?? "")),
@@ -186,7 +234,7 @@ function resolveCustodyBalance(rows: ValuationRow[]): number {
       const code = String(row.original_code ?? row.code ?? "")
       const name = String(row.name ?? "")
       const priority = demandDepositRowPriority(code, name)
-      const amount = pickRowMarketValue(row) || pickRowCost(row)
+      const amount = rowCustodyAmount(row, netAssetValue, scale)
       if (amount <= 0) continue
       if (priority > bestPriority || (priority === bestPriority && amount > bestValue)) {
         bestPriority = priority
@@ -206,7 +254,7 @@ function resolveCustodyBalance(rows: ValuationRow[]): number {
     if (normalizeText(name) === "银行存款") continue
 
     const priority = custodyRowPriority(code, name)
-    const amount = pickRowMarketValue(row) || pickRowCost(row)
+    const amount = rowCustodyAmount(row, netAssetValue, scale)
     if (amount <= 0) continue
 
     if (priority > bestPriority || (priority === bestPriority && amount > bestValue)) {
@@ -217,12 +265,13 @@ function resolveCustodyBalance(rows: ValuationRow[]): number {
   if (bestValue > 0) return bestValue
 
   // CMS omits 0 活期 sub-accounts; leftover cash stays on parent 1002 银行存款.
+  // 华泰四级科目 parent 1002 is currency *** with blank 市值 — recover from 市值占比.
   let parentBank = 0
   for (const row of rows) {
     const code = String(row.original_code ?? row.code ?? "")
     const name = String(row.name ?? "")
     if (!isParentBankDepositRow(code, name)) continue
-    const amount = pickRowMarketValue(row) || pickRowCost(row)
+    const amount = rowCustodyAmount(row, netAssetValue, scale)
     if (amount > parentBank) parentBank = amount
   }
   return parentBank
@@ -395,7 +444,7 @@ export function enrichValuationMetrics(analysis: ValuationAnalysis): {
   }
 
   const netAssetValue = resolveNetAssetValue(analysis.summary, rows)
-  const custodyBalance = resolveCustodyBalance(rows)
+  const custodyBalance = resolveCustodyBalance(rows, netAssetValue)
   const paidInCapital = resolvePaidInCapital(rows, netAssetValue, unitNav)
 
   if (!unitNav && isPlausibleUnitNav(analysis.summary.nav)) {

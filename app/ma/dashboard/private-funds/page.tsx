@@ -28,6 +28,7 @@ import {
   isAllowedInvestmentSideItem,
 } from "@/lib/permissions"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { pageSelectionChecked, toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import {
   fetchFundTeamTagOptions,
@@ -67,6 +68,7 @@ import {
   type InvestmentNote,
   type ProductLinkedInvestmentNote,
 } from "@/lib/ma/investment-notes"
+import { filterVisibleTeamPools, isHiddenTeamPoolKey } from "@/lib/client/tracking-pools"
 
 const DueDiligenceCalendarView = dynamic(() =>
   import("./components/DueDiligenceCalendarView").then((m) => ({ default: m.DueDiligenceCalendarView })),
@@ -319,8 +321,6 @@ const ORG_SIZE_OPTS = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20
 const TEAM_ALL_POOL = { key: "all", label: "全部" }
 const DEFAULT_POOLS = [
   TEAM_ALL_POOL,
-  { key: "bfl_ops", label: "bfl 运维池" },
-  { key: "bfl", label: "bfl跟踪池" },
   { key: "jy_ops", label: "JY运维池" },
   { key: "jy", label: "JY跟踪池" },
 ]
@@ -332,7 +332,7 @@ const DEFAULT_MINE_POOLS = [
 
 // localStorage keys used to render the last-known pool tabs instantly on load
 // (keeps the fast-loading feel) before the authoritative server list arrives.
-const POOLS_CACHE_KEY = "tracking_team_pools_cache_v6"
+const POOLS_CACHE_KEY = "tracking_team_pools_cache_v7"
 const MINE_POOLS_CACHE_KEY = "tracking_mine_pools_cache"
 
 type PoolDef = { key: string; label: string }
@@ -1579,7 +1579,6 @@ function PrivateFundTable({
         setData(json.data ?? [])
         setTotalPages(json.totalPages ?? 1)
         setTotal(json.total ?? 0)
-        setSelected(new Set())
       })
       .catch((err: unknown) => {
         if (gen !== fetchGenRef.current) return
@@ -1606,11 +1605,7 @@ function PrivateFundTable({
   }
 
   function toggleAll() {
-    if (selected.size === data.length) {
-      setSelected(new Set())
-    } else {
-      setSelected(new Set(data.map((r) => r.beian_hao)))
-    }
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.beian_hao)))
   }
 
   function jumpTo() {
@@ -1798,7 +1793,7 @@ function PrivateFundTable({
               <th style={{ left: stickyLeft.checkbox, width: 36, minWidth: 36 }}
                 className={`sticky top-0 ${pfStickyHeadZ} ${pfStickyHeadBg} border-b border-r px-2 py-2.5 box-border`}>
                 <input type="checkbox" className="rounded"
-                  checked={selected.size === data.length && data.length > 0}
+                  checked={pageSelectionChecked(selected, data.map((r) => r.beian_hao))}
                   onChange={toggleAll} />
               </th>
               {/* 序号 */}
@@ -2294,7 +2289,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }
 
   const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
-  const [activePool, setActivePool] = useState("bfl")
+  const [activePool, setActivePool] = useState("all")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
   const [strategySource, setStrategySource] = useState<TrackStrategySource>("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
@@ -2462,11 +2457,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }, [showElementsDialog, elementsBeianHao, elementsName])
 
   const isSupportedPool = pools.some((p) => p.key === activePool)
-  const sourcePool = activePool === "bfl_ops" || isSupportedPool ? activePool : "bfl"
+  const sourcePool = isSupportedPool ? activePool : "all"
   const isMineTab = !isOps && trackTab === "mine"
   const isMyPoolSupported = myActivePool === "mine_all" || myActivePool === "mine_default" || myActivePool.startsWith("mine_custom_")
   const listPool = isMineTab ? myActivePool : sourcePool
-  const listPoolSupported = isMineTab ? isMyPoolSupported : (activePool === "bfl_ops" || isSupportedPool)
+  const listPoolSupported = isMineTab ? isMyPoolSupported : isSupportedPool
 
   function currentUserId(): string {
     try {
@@ -2629,6 +2624,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       specialPool: PoolDef,
       incoming: ApiPool[],
     ) {
+      incoming = cacheKey === POOLS_CACHE_KEY ? filterVisibleTeamPools(incoming) : incoming
       const serverKeys = new Set(incoming.map((p) => p?.pool_key).filter(Boolean) as string[])
       // Server has confirmed our deletes/creates — clear the local bookkeeping.
       for (const k of [...poolTombstonesRef.current]) {
@@ -2693,6 +2689,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (isHiddenTeamPoolKey(activePool) || (pools.length > 0 && !pools.some((p) => p.key === activePool))) {
+      setActivePool("all")
+      setPage(1)
+    }
+  }, [pools, activePool])
 
   // Do not background-prefetch every pool. Each list call (especially ops
   // nav_source=team and pool=all) was expensive enough that prefetch + the
@@ -2814,8 +2817,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.beian_hao)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.beian_hao)))
   }
 
   function jumpTo() {
@@ -3108,7 +3110,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
   useEffect(() => {
     setPage(1)
-    setSelected(new Set())
   }, [trackTab, myActivePool, myOrgSize, myKeyword, myPersonalTags.join("\u0001")])
 
   useEffect(() => {
@@ -3203,7 +3204,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           {pools.map((p) => (
             <button
               key={p.key}
-              onClick={() => { setActivePool(p.key); setPage(1); setSelected(new Set()) }}
+              onClick={() => { setActivePool(p.key); setPage(1) }}
               className={[
                 "px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex-shrink-0",
                 activePool === p.key
@@ -3258,7 +3259,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             {pools.map((p) => (
               <button
                 key={p.key}
-                onClick={() => { setActivePool(p.key); setPage(1); setSelected(new Set()) }}
+                onClick={() => { setActivePool(p.key); setPage(1) }}
                 className={[
                   "w-full text-left px-3 py-2 rounded text-sm transition-colors",
                   activePool === p.key
@@ -3664,7 +3665,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
                   <th className={`${thBase} w-8 px-2`}>
                     <input type="checkbox" className="rounded h-3 w-3"
-                      checked={selected.size === data.length && data.length > 0}
+                      checked={pageSelectionChecked(selected, data.map((r) => r.beian_hao))}
                       onChange={toggleAll} />
                   </th>
                   <th className={`${thBase} w-10`}>序号</th>
@@ -3752,7 +3753,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 <tr className="bg-muted dark:bg-zinc-900 border-b">
                   <th className={`${thBase} w-8 px-2 sticky left-0 z-30 bg-muted dark:bg-zinc-900`}>
                     <input type="checkbox" className="rounded h-3 w-3"
-                      checked={selected.size === data.length && data.length > 0}
+                      checked={pageSelectionChecked(selected, data.map((r) => r.beian_hao))}
                       onChange={toggleAll} />
                   </th>
                   <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted dark:bg-zinc-900`}>序号</th>
@@ -3970,7 +3971,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             {myPools.map((p) => (
               <button
                 key={p.key}
-                onClick={() => { setMyActivePool(p.key); setPage(1); setSelected(new Set()) }}
+                onClick={() => { setMyActivePool(p.key); setPage(1) }}
                 className={[
                   "w-full text-left px-3 py-2 rounded text-sm transition-colors",
                   myActivePool === p.key
@@ -5810,7 +5811,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                             onClick={() => {
                               applyPoolsUpdate("team", (prev) => prev.filter((x) => x.key !== p.key))
                               persistPoolDelete(p.key)
-                              if (activePool === p.key) { setActivePool("bfl"); setPage(1) }
+                              if (activePool === p.key) { setActivePool("all"); setPage(1) }
                             }}
                             className="text-muted-foreground hover:text-red-500 transition-colors"
                           >
@@ -11455,12 +11456,10 @@ function OperationsDirectView() {
       .then((json) => {
         setData(json.data ?? [])
         setTotal(json.total ?? 0)
-        setSelected(new Set())
       })
       .catch(() => {
         setData([])
         setTotal(0)
-        setSelected(new Set())
       })
       .finally(() => setLoading(false))
   }, [page, pageSize, fundClass, strategySource, strategyL1, holdingStatus, crawlEmail, isAdminUser, keyword, sortKey, sortDir, dataReloadKey])
@@ -11596,8 +11595,7 @@ function OperationsDirectView() {
   const directColSpan = 3 + directFieldConfigSelected.length + 3
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.beian_hao)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.beian_hao)))
   }
 
   function pageButtons(): (number | "…")[] {
@@ -11839,7 +11837,7 @@ function OperationsDirectView() {
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
                 <input type="checkbox" className="rounded h-3 w-3"
-                  checked={selected.size === data.length && data.length > 0}
+                  checked={pageSelectionChecked(selected, data.map((r) => r.beian_hao))}
                   onChange={toggleAll} />
               </th>
               <th className={`${thBase} w-10`}>序号</th>
@@ -12373,12 +12371,10 @@ function OperationsFofUnderlyingView() {
       .then((json) => {
         setData(json.data ?? [])
         setTotal(json.total ?? 0)
-        setSelected(new Set())
       })
       .catch(() => {
         setData([])
         setTotal(0)
-        setSelected(new Set())
       })
       .finally(() => setLoading(false))
   }, [page, pageSize, fundClass, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, fofFundSelected?.register_number, fofListReloadKey])
@@ -12445,8 +12441,7 @@ function OperationsFofUnderlyingView() {
   const opsFofColSpan = 3 + fofFieldConfigSelected.length + 2
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.id)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.id)))
   }
 
   function pageButtons(): (number | "…")[] {
@@ -12705,7 +12700,7 @@ function OperationsFofUnderlyingView() {
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
-                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+                <input type="checkbox" className="rounded h-3 w-3" checked={pageSelectionChecked(selected, data.map((r) => r.id))} onChange={toggleAll} />
               </th>
               <th className={`${thBase} w-10 text-center`}>序号</th>
               <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<FofSortIcon col="product_name" /></th>
@@ -14781,7 +14776,6 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   const selectedRows = data.filter((r) => selected.has(r.id))
   const selectedBeianHaos = selectedRows.map((r) => r.beian_hao).filter((bh): bh is string => !!bh)
   const teamDataBatchTrackingPools = [
-    { key: "bfl", label: "bfl跟踪池" },
     { key: "jy", label: "JY跟踪池" },
   ]
 
@@ -14847,7 +14841,6 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
         writeTeamDataListCache(cacheKey, next)
         setData(next.data)
         setTotal(next.total)
-        setSelected(new Set())
       })
       .catch((err) => {
         if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return
@@ -15125,8 +15118,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   }
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.id)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.id)))
   }
 
   function fmtNav(v: string | null | undefined): string {
@@ -15515,7 +15507,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
-                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+                <input type="checkbox" className="rounded h-3 w-3" checked={pageSelectionChecked(selected, data.map((r) => r.id))} onChange={toggleAll} />
               </th>
               <th className={`${thBase} w-10`}>序号</th>
               <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("product_name")}>产品名称<TeamSortIcon col="product_name" /></th>
@@ -16568,13 +16560,11 @@ function OperationsManagedProductsView() {
         if (ac.signal.aborted) return
         setData(rows)
         setTotal(n)
-        setSelected(new Set())
       })
       .catch((err) => {
         if (isAbortError(err) || ac.signal.aborted) return
         setData([])
         setTotal(0)
-        setSelected(new Set())
       })
       .finally(() => {
         if (!ac.signal.aborted) setLoading(false)
@@ -16673,8 +16663,7 @@ function OperationsManagedProductsView() {
   const managedColSpan = 3 + managedFieldConfigSelected.length + 2
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.id)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.id)))
   }
 
   function pageButtons(): (number | "…")[] {
@@ -16937,7 +16926,7 @@ function OperationsManagedProductsView() {
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
-                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+                <input type="checkbox" className="rounded h-3 w-3" checked={pageSelectionChecked(selected, data.map((r) => r.id))} onChange={toggleAll} />
               </th>
               <th className={`${thBase} w-10`}>序号</th>
               <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("product_name")}>产品名称<ManagedSortIcon col="product_name" /></th>
@@ -17668,14 +17657,12 @@ function InvestmentManagedProductsView() {
         setData(rows)
         setTotal(n)
         setTotalNetAssetValue(navTotal)
-        setSelected(new Set())
       })
       .catch((err) => {
         if (isAbortError(err) || ac.signal.aborted) return
         setData([])
         setTotal(0)
         setTotalNetAssetValue("0")
-        setSelected(new Set())
       })
       .finally(() => {
         if (!ac.signal.aborted) setLoading(false)
@@ -17819,8 +17806,7 @@ function InvestmentManagedProductsView() {
   }
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.id)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.id)))
   }
 
   function pageButtons(): (number | "…")[] {
@@ -18166,7 +18152,7 @@ function InvestmentManagedProductsView() {
           <thead className="sticky top-0 z-30">
             <tr className="border-b">
               <th className={`${thBase} px-2 sticky top-0 left-0 ${invStickyHeadZ} ${invStickyHeadBg} w-8 box-border`}>
-                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+                <input type="checkbox" className="rounded h-3 w-3" checked={pageSelectionChecked(selected, data.map((r) => r.id))} onChange={toggleAll} />
               </th>
               <th className={`${thBase} sticky top-0 left-8 ${invStickyHeadZ} ${invStickyHeadBg} w-10 box-border`}>序号</th>
               <th className={`${thSort} min-w-[200px] max-w-[200px] sticky top-0 left-[72px] ${invStickyHeadZ} ${invStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${invStickyLeftShadow}`} onClick={() => handleSort("product_name")}>产品名称<InvSortIcon col="product_name" /></th>
@@ -19134,14 +19120,12 @@ function InvestmentFofOverviewView() {
           setTotal(json.total ?? 0)
           setTotalMarketValue(json.totalMarketValue ?? "0")
         }
-        setSelected(new Set())
       })
       .catch((err) => {
         if (isAbortError(err) || ac.signal.aborted) return
         setData([])
         setTotal(0)
         setTotalMarketValue("0")
-        setSelected(new Set())
       })
       .finally(() => {
         if (!ac.signal.aborted) setLoading(false)
@@ -19169,14 +19153,12 @@ function InvestmentFofOverviewView() {
         setFofDetailData(json.data ?? [])
         setTotal(json.total ?? 0)
         setTotalMarketValue(json.totalMarketValue ?? "0")
-        setSelected(new Set())
       })
       .catch((err) => {
         if (isAbortError(err) || ac.signal.aborted) return
         setFofDetailData([])
         setTotal(0)
         setTotalMarketValue("0")
-        setSelected(new Set())
       })
       .finally(() => {
         if (!ac.signal.aborted) setLoading(false)
@@ -19262,8 +19244,7 @@ function InvestmentFofOverviewView() {
 
   function toggleAll() {
     const rows = viewTab === "detail" ? fofDetailData : data
-    if (selected.size === rows.length && rows.length > 0) setSelected(new Set())
-    else setSelected(new Set(rows.map((r) => r.id)))
+    setSelected((prev) => toggleIdsInSelection(prev, rows.map((r) => r.id)))
   }
 
   function pageButtons(): (number | "…")[] {
@@ -19366,7 +19347,7 @@ function InvestmentFofOverviewView() {
         {([["summary", "底层汇总"], ["detail", "底层明细"]] as const).map(([key, label]) => (
           <button
             key={key}
-            onClick={() => { setViewTab(key); setPage(1); setSelected(new Set()) }}
+            onClick={() => { setViewTab(key); setPage(1) }}
             className={[
               "px-4 py-2 text-sm font-medium transition-colors relative",
               viewTab === key
@@ -19795,7 +19776,7 @@ function InvestmentFofOverviewView() {
                 style={{ left: 0, width: fofStickyChkW, minWidth: fofStickyChkW, maxWidth: fofStickyChkW }}
                 className={`${thBase} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} px-2 text-center box-border`}
               >
-                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+                <input type="checkbox" className="rounded h-3 w-3" checked={pageSelectionChecked(selected, data.map((r) => r.id))} onChange={toggleAll} />
               </th>
               <th
                 style={{ left: fofStickyLeftSeq, width: fofStickySeqW, minWidth: fofStickySeqW, maxWidth: fofStickySeqW }}
@@ -22544,8 +22525,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
   }
 
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.id)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.id)))
   }
 
   function toggleTeamTag(tag: string) {

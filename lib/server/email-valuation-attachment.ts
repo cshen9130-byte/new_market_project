@@ -361,12 +361,13 @@ function pickNavNumberFromRow(row: ValuationRow): number | null {
 /** 国信 subjects omit 备案号; zip inner files are `SCP742…估值表20260825.xlsx`. */
 function mergeValuationNavMetadata(subject: string, filename: string) {
   const fromSubject = extractNavMetadata(subject, "")
-  if (fromSubject.productCode) return fromSubject
   if (!filename.trim()) return fromSubject
   const fromFile = extractNavMetadata(filename, "")
+  // Filename identifies the sheet. FOF/batch subjects often name the parent fund
+  // (e.g. 金舆木盛那平江1号 mail attaching 峰云汇高山一号 估值表).
   return {
-    productCode: fromFile.productCode,
-    fundName: fromSubject.fundName ?? fromFile.fundName,
+    productCode: fromFile.productCode ?? fromSubject.productCode,
+    fundName: fromFile.fundName ?? fromSubject.fundName,
   }
 }
 
@@ -478,9 +479,9 @@ function buildExtractedValuation(
         ? enriched.total_asset - enriched.total_liability
         : null
 
-  const fundName =
-    shared.fundName ??
-    (enriched.fund_name && enriched.fund_name !== "未知基金" ? enriched.fund_name : null)
+  const workbookName =
+    enriched.fund_name && enriched.fund_name !== "未知基金" ? enriched.fund_name : null
+  const fundName = workbookName ?? shared.fundName
 
   const paidInCapital =
     enriched.paid_in_capital > 0
@@ -696,10 +697,9 @@ export function extractNavFromValuationBuffer(
     if (!navDate) return null
 
     const fundName =
-      shared.fundName ??
       (analysis.summary.fund_name && analysis.summary.fund_name !== "未知基金"
         ? analysis.summary.fund_name
-        : null)
+        : null) ?? shared.fundName
 
     return {
       nav,

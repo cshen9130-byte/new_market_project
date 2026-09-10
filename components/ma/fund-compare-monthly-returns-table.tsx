@@ -78,7 +78,17 @@ export function FundCompareMonthlyReturnsTable({
   fromDate: string
   toDate: string
 }) {
-  const yearOptions = useMemo(() => yearsInRange(fromDate, toDate), [fromDate, toDate])
+  const yearOptions = useMemo(() => {
+    const fromRange = yearsInRange(fromDate, toDate)
+    const fromData = new Set<number>()
+    for (const fund of funds) {
+      for (const point of fund.navPoints) {
+        const y = parseInt(point.d.slice(0, 4), 10)
+        if (Number.isFinite(y)) fromData.add(y)
+      }
+    }
+    return [...new Set([...fromRange, ...fromData])].sort((a, b) => b - a)
+  }, [funds, fromDate, toDate])
   const [year, setYear] = useState(() => yearOptions[0] ?? new Date().getFullYear())
   const [sortKey, setSortKey] = useState<SortKey>("name")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")

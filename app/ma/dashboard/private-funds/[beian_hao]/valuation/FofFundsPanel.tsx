@@ -3,7 +3,8 @@
 import { useMemo, useState, type ReactNode } from "react"
 import dynamic from "next/dynamic"
 import { ChevronDown, Clock, Download, Info, Search, SquarePen } from "lucide-react"
-import { ProductSelectionPanel } from "@/components/ma/product-selection-panel"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
 import { normalizeFofDisplayName } from "@/lib/fof-portfolio-var"
 import {
   applyValuationHoldingDisplayName,
@@ -110,6 +111,10 @@ function PctCell({ value }: { value: number | null }) {
   if (value == null) return <span className="text-zinc-400">—</span>
   const cls = value > 0 ? "text-red-500" : value < 0 ? "text-emerald-600" : "text-zinc-600"
   return <span className={cls}>{value > 0 ? "+" : ""}{value.toFixed(2)}%</span>
+}
+
+function holdingSelectionId(row: FundHoldingRow): string {
+  return (row.beianHao || row.valuationCode || row.fundName).trim()
 }
 
 function fundDetailHref(row: FundHoldingRow): string {
@@ -364,7 +369,7 @@ function holdingMatchesPie(row: FundHoldingRow, selection: StrategyPieSelection)
 export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
   const [strategyTab, setStrategyTab] = useState<string>("全部")
   const [pieSelection, setPieSelection] = useState<StrategyPieSelection>({ l1: null, l2: null, l3: null })
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [sortKey, setSortKey] = useState<SortKey | null>("marketValue")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
 
@@ -404,14 +409,7 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
   const totalMarketValue = filtered.reduce((s, r) => s + r.marketValue, 0)
   const totalMarketPct = filtered.reduce((s, r) => s + r.marketPct, 0)
   const dateLabel = valuationDate?.slice(0, 10) ?? "—"
-  const allSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.index))
-  const selectedPanelItems = useMemo(
-    () =>
-      filtered
-        .filter((r) => selected.has(r.index))
-        .map((r) => ({ id: String(r.index), product_name: r.fundName })),
-    [filtered, selected],
-  )
+  const allSelected = filtered.length > 0 && filtered.every((r) => selected.has(holdingSelectionId(r)))
 
   function handleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
@@ -422,22 +420,21 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
   }
 
   function toggleAll() {
-    if (allSelected) setSelected(new Set())
-    else setSelected(new Set(filtered.map((r) => r.index)))
+    setSelected((prev) => toggleIdsInSelection(prev, filtered.map(holdingSelectionId)))
   }
 
-  function toggleRow(index: number) {
+  function toggleRow(id: string) {
     setSelected((prev) => {
       const next = new Set(prev)
-      if (next.has(index)) next.delete(index)
-      else next.add(index)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
   }
 
   function handleExport() {
     const exportRows = selected.size > 0
-      ? filtered.filter((r) => selected.has(r.index))
+      ? filtered.filter((r) => selected.has(holdingSelectionId(r)))
       : filtered
     if (!exportRows.length) return
     const lines = [
@@ -708,10 +705,14 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
       />
     )}
 
-    <ProductSelectionPanel
-      items={selectedPanelItems}
-      onRemove={(id) => toggleRow(Number(id))}
-      onClear={() => setSelected(new Set())}
+    <ProductSelectionPanelBound
+      data={fundOnlyRows}
+      selected={selected}
+      setSelected={setSelected}
+      getId={holdingSelectionId}
+      getName={(r) => r.fundName}
+      getBeianHao={(r) => r.beianHao || r.valuationCode}
+      getLatestNavDate={(r) => r.navDate}
     />
   </>
   )

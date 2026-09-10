@@ -25,6 +25,7 @@ import {
   TrendingUp,
 } from "lucide-react"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
 import { authService } from "@/lib/auth"
 import { CustomFundCreateDialog } from "./CustomFundCreateDialog"
 import { customFundDetailHref } from "@/components/ma/custom-fund-detail-view"
@@ -546,12 +547,10 @@ export function CustomFundsView() {
       .then((json) => {
         setData(json.data ?? [])
         setTotal(json.total ?? 0)
-        setSelected(new Set())
       })
       .catch(() => {
         setData([])
         setTotal(0)
-        setSelected(new Set())
       })
       .finally(() => setLoading(false))
   }, [page, pageSize, scopeTab, strategySource, strategyL1, strategyL2, teamMember, personalTags, keyword, sortKey, sortDir, cutoffDate, isTeam, listRefreshKey])
@@ -566,8 +565,7 @@ export function CustomFundsView() {
   }
 
   function toggleAll() {
-    if (selected.size === data.length) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.id)))
+    setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.id)))
   }
 
   function togglePersonalTag(tag: string) {

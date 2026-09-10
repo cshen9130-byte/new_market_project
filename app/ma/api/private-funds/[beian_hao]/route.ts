@@ -222,6 +222,35 @@ async function loadTrackingInfoFallback(beian_hao: string): Promise<InfoRow | un
   return undefined
 }
 
+async function maybeRespondCustomFundDetail(
+  rawId: string,
+  ownerUserId: string | undefined,
+  opts: { refreshNav: boolean },
+): Promise<NextResponse | null> {
+  const customFund = getCustomFundByCode(rawId)
+  if (!customFund) return null
+  const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
+  if (!customDetail) {
+    return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+  }
+  if (opts.refreshNav) {
+    // Splice/fixed-income rebuild can wait on AMAC NAV; don't block first paint.
+    void ensureCustomFundNavFresh(customFund.product_code).catch((err) => {
+      console.warn("[private-funds/detail] custom fund nav refresh skipped:", err)
+    })
+  }
+  const teamBenchmark = await loadTeamBenchmark(
+    [customDetail.info.beian_hao, rawId].filter(Boolean),
+  ).catch(() => null)
+  return NextResponse.json({
+    ...customDetail,
+    info: {
+      ...customDetail.info,
+      team_benchmark: teamBenchmark || customDetail.info.benchmark || null,
+    },
+  })
+}
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ beian_hao: string }> },
@@ -237,6 +266,14 @@ export async function GET(
     })()
 
     const phase = new URL(req.url).searchParams.get("phase")
+    const ownerUserId = String(req.headers.get("x-market-user-id") || "").trim() || undefined
+
+    // 自建基金 share this route with AMAC products. Resolve them first so a
+    // product-code click does not wait on list-cache / fuzzy name lookups.
+    const customEarly = await maybeRespondCustomFundDetail(rawId, ownerUserId, {
+      refreshNav: phase !== "header",
+    })
+    if (customEarly) return customEarly
 
     // Instant paint path: serve name / latest NAV / period returns from list caches.
     if (phase === "header") {
@@ -380,28 +417,11 @@ export async function GET(
       info = infoFromListCache(beian_hao, listHeader)
     }
     if (!info) {
-      const ownerUserId = String(req.headers.get("x-market-user-id") || "").trim() || undefined
-      const customFund = getCustomFundByCode(rawId) ?? getCustomFundByCode(beian_hao)
-      if (customFund) {
-        await ensureCustomFundNavFresh(customFund.product_code).catch((err) => {
-          console.warn("[private-funds/detail] custom fund nav refresh skipped:", err)
+      if (rawId !== beian_hao) {
+        const customRemapped = await maybeRespondCustomFundDetail(beian_hao, ownerUserId, {
+          refreshNav: true,
         })
-      }
-      const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
-        ?? (rawId !== beian_hao ? tryGetCustomFundPrivateDetail(beian_hao, ownerUserId) : null)
-      if (customDetail) {
-        const teamBenchmark = await loadTeamBenchmark([
-          customDetail.info.beian_hao,
-          rawId,
-          beian_hao,
-        ].filter(Boolean)).catch(() => null)
-        return NextResponse.json({
-          ...customDetail,
-          info: {
-            ...customDetail.info,
-            team_benchmark: teamBenchmark || customDetail.info.benchmark || null,
-          },
-        })
+        if (customRemapped) return customRemapped
       }
 
       // Element-extract / picker may link to a synthesized share-class code (e.g. AJD58B)
