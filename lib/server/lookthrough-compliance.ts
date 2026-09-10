@@ -121,7 +121,7 @@ function mergeValuationMetas(...lists: ValuationMeta[][]): ValuationMeta[] {
 }
 
 function fundCacheKey(beianHao: string): string {
-  return `ltc-v4:${beianHao.trim().toUpperCase()}`
+  return `ltc-v8:${beianHao.trim().toUpperCase()}`
 }
 
 function readFundResult(beianHao: string): LookthroughComplianceProduct | null {
@@ -242,13 +242,82 @@ function displayName(raw: string): string {
   return stripped.replace(/^场外[_/.\s]+/u, "").trim() || raw.trim()
 }
 
-/** 估值表 path / 会计科目 — not a listed company / DR name. */
-const VALUATION_PATH_TOKEN =
-  /^(股票成本|基金成本|封闭式基金成本|成本|市价|上交所|深交所|北交所|沪港通|深港通|港股通|港股|股票|已上市|交易性金融资产|其他交易性金融资产|其他交易性金融资产投资|交易性金融负债|可供出售金融资产|持有至到期投资|买入返售金融资产|卖出回购金融资产|债券|基金|理财|理财产品)$/u
+/** 估值表 path / 会计科目 — not a listed company / DR name. Longer tokens first. */
+const VALUATION_PATH_TOKENS = [
+  "其他交易性金融资产投资",
+  "其他交易性金融资产",
+  "交易性金融资产",
+  "交易性金融负债",
+  "可供出售金融资产",
+  "持有至到期投资",
+  "买入返售金融资产",
+  "卖出回购金融资产",
+  "封闭式基金成本",
+  "股票成本",
+  "基金成本",
+  "上交所",
+  "深交所",
+  "北交所",
+  "沪港通",
+  "深港通",
+  "港股通",
+  "科创板",
+  "创业板",
+  "主板",
+  "港股",
+  "美股",
+  "A股",
+  "B股",
+  "H股",
+  "已上市",
+  "理财产品",
+  "股票",
+  "债券",
+  "基金",
+  "理财",
+  "成本",
+  "市价",
+] as const
+
+const VALUATION_PATH_TOKEN = new RegExp(`^(${VALUATION_PATH_TOKENS.join("|")})$`, "u")
 
 function valuationNameParts(name: string): string[] {
   const stripped = displayName(name)
   return stripped.split(/[_/\s.]+/u).map((p) => p.trim()).filter(Boolean)
+}
+
+/** Strip 深港通/股票成本 etc. from glued labels. Empty remainder ⇒ not a security. */
+function remainderAfterValuationPathTokens(name: string): string {
+  let s = compactSubjectText(displayName(name))
+  let changed = true
+  while (changed && s) {
+    changed = false
+    for (const tok of VALUATION_PATH_TOKENS) {
+      if (s.startsWith(tok)) {
+        s = s.slice(tok.length)
+        changed = true
+        break
+      }
+      if (s.endsWith(tok)) {
+        s = s.slice(0, -tok.length)
+        changed = true
+        break
+      }
+    }
+  }
+  return s
+}
+
+/**
+ * 第12条「同一资产」不含估值表交易所/成本归集科目。
+ * 深港通股票成本 / 股票成本_深港通 are market buckets, not a listed company.
+ * Do not use this for 第41条 aggregate-row skipping: glued cost totals may be the only equity leaf.
+ */
+function isValuationMarketBucketName(name: string): boolean {
+  const compact = compactSubjectText(displayName(name))
+  if (!compact) return false
+  if (isValuationCategoryLabel(name)) return true
+  return remainderAfterValuationPathTokens(name) === ""
 }
 
 /** 同一资产（标准化股权）：单一上市公司股票 / 存托凭证的名称。 */
@@ -267,13 +336,17 @@ function isValuationCategoryLabel(name: string): boolean {
 
 /** 股票成本_深港通 / 深交所 / 交易性金融资产 parent rows — not a security. */
 function isValuationAggregateBucketName(name: string): boolean {
-  if (isValuationCategoryLabel(name)) return true
-  if (equityCompanyLeaf(name)) return false
-  if (isValuationStockCostSubjectName(name) || /^基金成本/u.test(name.trim())) return true
   const n = name.trim()
   if (/冲销|冲抵|估值增值/.test(n)) return true
   if (/^衍生工具$/.test(n)) return true
-  if (/衍生工具|期货投资/.test(n) && !/初始合约/.test(compactSubjectText(n)) && !/[A-Za-z]{1,4}\d{2,5}/.test(n)) return true
+  if (/衍生工具|期货投资/.test(n) && !/初始合约/.test(compactSubjectText(n)) && !/[A-Za-z]{1,4}\d{2,5}/.test(n)) {
+    return true
+  }
+  // 三级科目叶子就是「深港通股票成本 / 封闭式基金成本」，没有个股名在下面。
+  // 不能当父级丢掉，否则整段股票/基金从穿透结构和明细里消失。
+  if (isValuationStockCostSubjectName(n)) return false
+  if (isValuationCategoryLabel(name)) return true
+  if (equityCompanyLeaf(name)) return false
   return false
 }
 
@@ -454,7 +527,7 @@ function marginVenue(h: RawHolding): "broker" | "futures" | "unknown" {
     extraText(h.extra, ["venue", "托管机构", "期货公司", "证券公司", "结算机构"]),
   ].join(" ")
   if (/期货公司|期货|中金所|上期|大商所|郑商所|能源中心|广期/.test(blob)) return "futures"
-  if (/券商|证券|股东|两融|信用账户/.test(blob)) return "broker"
+  if (/券商|证券|股东|两融|信用账户|中金公司|中国国际金融/.test(blob)) return "broker"
   return "unknown"
 }
 
@@ -462,8 +535,10 @@ function marginVenue(h: RawHolding): "broker" | "futures" | "unknown" {
 function isBrokerFirmLeaf(name: string): boolean {
   const n = compactSubjectText(name)
   if (!n || n.length < 4) return false
+  if (/期货/.test(n)) return false
   if (/证券投资|证券基金|证券资管|资产管理计划|私募基金/.test(n)) return false
   if (/^(其他证券|其他投资)$/u.test(n)) return false
+  if (/中国国际金融|中金公司/.test(n) && !/中金所/.test(n)) return true
   return /证券(股份有限公司|有限责任公司|有限公司|股份)?$/u.test(n)
     || /证券公司$/u.test(n)
     || /券商$/u.test(n)
@@ -481,8 +556,17 @@ function classifyBucket(h: RawHolding): AssetBucket {
   if ((kind === "bond" || code.startsWith("1101")) && isCashToolName(name, assetClass)) return "cash_tool"
 
   if (isMarginOrReserveHolding(h)) {
+    const name = h.subject_name ?? ""
+    // 收益互换履约金：不计入第41条已投资产，只进账户权益。
+    if (/收益互换|履约金/.test(name) && !/信用账户|股东账户/.test(name)) return "margin"
+    if (/券商保证金|信用账户|股东账户|两融|融资融券|客户证券款/.test(name) && !/期货/.test(name)) {
+      return "equity"
+    }
     const venue = marginVenue(h)
+    if (venue === "futures") return "margin"
+    // 三级叶子常写成券商全称（华鑫证券 / 中信证券）。这是信用账户/客户证券款，不是期货保证金。
     if (venue === "broker") return "equity"
+    if (isBrokerFirmLeaf(name) || isBrokerFirmLeaf(holdingDisplayLeaf(h))) return "equity"
     return "margin"
   }
 
@@ -498,7 +582,8 @@ function classifyBucket(h: RawHolding): AssetBucket {
   if (kind === "fund" || kind === "fund_or_stock" || code.startsWith("1105") || code.startsWith("1102")) {
     if (/货币/.test(name)) return "cash_tool"
     if (/债券|固收|短债/.test(name)) return "fixed_income"
-    if (/股票|混合|指数|ETF|权益|其他证券/.test(name)) return "equity"
+    if (/股票|A股|混合|指数|ETF|权益|其他证券|港股|深港通|沪港通/.test(name)) return "equity"
+    if (/封闭式基金/.test(name) && !/私募/.test(name)) return "equity"
     return "fund"
   }
 
@@ -584,6 +669,7 @@ function isConcentrationExempt(h: RawHolding, bucket: AssetBucket): boolean {
   if (isPublicFund(h)) return true
   if (isGeneralPledgedRepo(h)) return true
   if (isAccountWrapperName(h.subject_name ?? "")) return true
+  if (isValuationMarketBucketName(h.subject_name ?? "")) return true
   return false
 }
 
@@ -606,11 +692,17 @@ function sameAssetKey(h: RawHolding, bucket: AssetBucket): string | null {
   const ticker = listedSecurityTicker(h)
   if (ticker) return `${bucket}:${ticker}`
   if (isAccountWrapperName(h.subject_name ?? "")) return null
+  if (isValuationMarketBucketName(h.subject_name ?? "")) return null
   if (isValuationCategoryLabel(h.subject_name ?? "")) return null
   const company = equityCompanyLeaf(h.subject_name)
-  if (company && !ACCOUNT_WRAPPER_LEAF_RE.test(company)) return `${bucket}:${company}`
+  if (company && (isValuationMarketBucketName(company) || ACCOUNT_WRAPPER_LEAF_RE.test(company))) {
+    return null
+  }
+  if (company) return `${bucket}:${company}`
   const name = displayName(h.subject_name)
-  if (isValuationCategoryLabel(name) || isAccountWrapperName(name)) return null
+  if (isValuationMarketBucketName(name) || isValuationCategoryLabel(name) || isAccountWrapperName(name)) {
+    return null
+  }
   const symbol = String(h.symbol ?? "").trim().toUpperCase()
   if (symbol && /^\d{6}$/.test(symbol)) return `${bucket}:${symbol}`
   if (!name) return null
@@ -764,8 +856,8 @@ function buildChecks(
       : fmtPct(p.maxSinglePct),
     threshold: "≤ 净资产 25%",
     detail: concOk
-      ? "穿透后单一资产未超过净资产 25%。标准化股权按单一上市公司股票/存托凭证计；信用账户、其他证券、国投证券等券商账户合计不是同一资产；现金管理工具、公募基金、债券通用质押式回购除外。"
-      : `穿透后「${p.maxSingleName ?? "单一资产"}」占净资产 ${fmtPct(p.maxSinglePct)}，超过 25%。标准化股权按单一上市公司股票/存托凭证计，估值表「股票成本_深港通」「信用账户」「其他证券」以及「国投证券」等券商账户合计不视为同一资产。`,
+      ? "穿透后单一资产未超过净资产 25%。标准化股权按单一上市公司股票/存托凭证计；深港通股票成本、股票成本_深港通、信用账户、其他证券、国投证券等券商账户合计不是同一资产；现金管理工具、公募基金、债券通用质押式回购除外。"
+      : `穿透后「${p.maxSingleName ?? "单一资产"}」占净资产 ${fmtPct(p.maxSinglePct)}，超过 25%。标准化股权按单一上市公司股票/存托凭证计，估值表「深港通股票成本」「股票成本_深港通」「信用账户」「其他证券」以及「国投证券」等券商账户合计不视为同一资产。`,
   })
 
   const bondHasInScope = p.maxBondName != null
@@ -1249,21 +1341,31 @@ function collectDuplicateSubjectHoldings(rows: Flattened[]): Set<string> {
       }
     }
     const wrappers = group.filter((row) => isAccountLikeHolding(row.holding) && !skip.has(flattenedRowId(row)))
-    if (wrappers.some((row) => isCreditAccountHolding(row.holding))) {
+    const creditCodes = wrappers
+      .filter((row) => isCreditAccountHolding(row.holding))
+      .map((row) => compactHoldingCode(row.holding))
+      .filter((code) => code.length >= 4)
+    if (creditCodes.length > 0) {
       for (const row of wrappers) {
-        if (!isCreditAccountHolding(row.holding) && isBrokerFirmLeaf(holdingDisplayLeaf(row.holding))) {
-          skip.add(flattenedRowId(row))
-        }
+        if (isCreditAccountHolding(row.holding)) continue
+        if (!isBrokerFirmLeaf(holdingDisplayLeaf(row.holding))) continue
+        const code = compactHoldingCode(row.holding)
+        const underCredit = creditCodes.some(
+          (credit) => code.startsWith(credit) || credit.startsWith(code),
+        )
+        if (underCredit) skip.add(flattenedRowId(row))
       }
     }
     const remaining = wrappers.filter((row) => !skip.has(flattenedRowId(row)))
-    if (remaining.length < 2) continue
-    const coarsest = Math.min(
-      ...remaining.map((row) => inferHoldingSubjectLevel(row.holding) ?? 9),
-    )
     for (const row of remaining) {
-      const level = inferHoldingSubjectLevel(row.holding) ?? 9
-      if (level > coarsest) skip.add(flattenedRowId(row))
+      const code = compactHoldingCode(row.holding)
+      if (code.length < 4) continue
+      const hasCoarserWrapper = remaining.some((other) => {
+        if (other === row) return false
+        const otherCode = compactHoldingCode(other.holding)
+        return otherCode.length >= 4 && otherCode.length < code.length && code.startsWith(otherCode)
+      })
+      if (hasCoarserWrapper) skip.add(flattenedRowId(row))
     }
   }
   return skip
@@ -1524,19 +1626,10 @@ function evaluateProduct(
   }
 
   const duplicateSubjects = collectDuplicateSubjectHoldings(flat.rows)
-  const parentHasCreditAccount = flat.rows.some((row) => (
-    !row.source_fund && isCreditAccountHolding(row.holding)
-  ))
 
   for (const row of flat.rows) {
     if (isValuationAggregateBucket(row.holding)) continue
     if (duplicateSubjects.has(flattenedRowId(row))) continue
-    if (
-      parentHasCreditAccount
-      && !row.source_fund
-      && isBrokerFirmLeaf(holdingDisplayLeaf(row.holding))
-      && !isCreditAccountHolding(row.holding)
-    ) continue
     const bucket = classifyBucket(row.holding)
     const kind = row.holding.row_kind ?? ""
     const absMv = Math.abs(row.holding.market_value)
@@ -1579,7 +1672,7 @@ function evaluateProduct(
       funds += absMv
       sub.funds_unpenetrated += absMv
     } else if (bucket === "margin") {
-      // 无法判断券商/期货公司的保证金，仍不计入已投资产
+      // 期货保证金 / 收益互换履约金：不计入第41条已投资产
     } else if (
       kind !== "receivable"
       && kind !== "payable"
@@ -1590,7 +1683,7 @@ function evaluateProduct(
       sub.other += absMv
     }
 
-    if (kind === "margin_deposit" || kind === "settlement_reserve") {
+    if (bucket === "margin" && (kind === "margin_deposit" || kind === "settlement_reserve")) {
       derivEquity += absMv
       sub.derivatives_equity += absMv
     }
@@ -1599,7 +1692,7 @@ function evaluateProduct(
     const bond = isBondLike(row.holding, bucket)
     const name = equityCompanyLeaf(row.holding.subject_name) || displayName(row.holding.subject_name)
     const key = sameAssetKey(row.holding, bucket)
-    if (key && !isValuationCategoryLabel(name)) {
+    if (key && !isValuationCategoryLabel(name) && !isValuationMarketBucketName(name)) {
       const prev = conc.get(key) ?? {
         name,
         value: 0,
@@ -1729,6 +1822,7 @@ function evaluateProduct(
       maxBondName = item.name
     }
   }
+  if (hasValuation && nav > 0 && maxSinglePct == null) maxSinglePct = 0
   if (hasValuation && nav > 0 && maxBondPct == null) maxBondPct = 0
   const bondExemptNote = [...bondExemptMv.entries()]
     .filter(([, value]) => value > 0)

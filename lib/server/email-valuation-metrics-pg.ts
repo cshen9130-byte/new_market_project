@@ -428,6 +428,46 @@ export type FundMetricsLatestRow = {
   refreshed_at: string
 }
 
+async function listFundMetricsFromRecords(options: {
+  productCode?: string
+  fundName?: string
+}): Promise<FundMetricsLatestRow[]> {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  let idx = 1
+  if (options.productCode) {
+    conditions.push(`UPPER(BTRIM(product_code)) = UPPER(BTRIM($${idx++}))`)
+    params.push(options.productCode)
+  }
+  if (options.fundName) {
+    conditions.push(`fund_name ILIKE $${idx++}`)
+    params.push(`%${options.fundName}%`)
+  }
+  if (conditions.length === 0) return []
+  return query<FundMetricsLatestRow>(
+    `SELECT
+       product_code,
+       fund_name,
+       valuation_date::text AS valuation_date,
+       id AS valuation_record_id,
+       unit_nav::text AS unit_nav,
+       cumulative_nav::text AS cumulative_nav,
+       custody_balance::text AS custody_balance,
+       COALESCE(net_asset_value, net_asset)::text AS net_asset_value,
+       paid_in_capital::text AS paid_in_capital,
+       total_asset::text AS total_asset,
+       total_liability::text AS total_liability,
+       custodian,
+       created_at::text AS refreshed_at
+     FROM ops_email_valuation_records
+     WHERE ${conditions.join(" AND ")}
+       AND NULLIF(BTRIM(fund_name), '') IS NOT NULL
+     ORDER BY valuation_date DESC, id DESC
+     LIMIT 1`,
+    params,
+  )
+}
+
 export async function listFundMetricsLatest(options?: {
   productCode?: string
   fundName?: string
@@ -437,7 +477,7 @@ export async function listFundMetricsLatest(options?: {
   const params: unknown[] = []
   let idx = 1
   if (options?.productCode) {
-    conditions.push(`product_code = $${idx++}`)
+    conditions.push(`UPPER(BTRIM(product_code)) = UPPER(BTRIM($${idx++}))`)
     params.push(options.productCode)
   }
   if (options?.fundName) {
@@ -445,10 +485,16 @@ export async function listFundMetricsLatest(options?: {
     params.push(`%${options.fundName}%`)
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""
-  return query<FundMetricsLatestRow>(
-    `SELECT * FROM ops_email_valuation_fund_metrics_latest ${where} ORDER BY fund_name`,
+  const rows = await query<FundMetricsLatestRow>(
+    `SELECT * FROM ops_email_valuation_fund_metrics_latest ${where}
+     ORDER BY valuation_date DESC, fund_name`,
     params,
   )
+  if (rows.length > 0) return rows
+  if (options?.productCode || options?.fundName) {
+    return listFundMetricsFromRecords(options)
+  }
+  return rows
 }
 
 export type FofUnderlyingLatestRow = {

@@ -221,7 +221,7 @@ export type FundValuationAllocationResult = {
   cache_schema?: number
 }
 
-const ALLOCATION_CACHE_SCHEMA = 3
+const ALLOCATION_CACHE_SCHEMA = 4
 
 const ROW_KIND_LABELS: Record<string, string> = {
   bank_deposit: "托管户现金",
@@ -458,21 +458,35 @@ function extractUnitNavFromHoldings(
   return null
 }
 
-/** 大类配置 — one total per major bucket; avoid summing nested children or derivatives. */
+function compactSubjectCode(code: string | null | undefined): string {
+  return String(code ?? "").replace(/[\s.]/g, "")
+}
+
+/** 大类配置 — drop parent 科目 when a child is present, then sum remaining rows. */
 function aggregateMajorKind(
   holdings: Awaited<ReturnType<typeof listFundLatestValuationHoldings>>["holdings"],
   kind: string,
 ): number {
-  const rows = holdings
-    .filter((h) => h.row_kind === kind)
-    .map((h) => ({ h, depth: subjectDepth(h.subject_code), mv: rowMarketValue(h) }))
-    .filter((r) => r.mv > 0)
+  const byCode = new Map<string, number>()
+  for (const h of holdings) {
+    if (h.row_kind !== kind) continue
+    const mv = rowMarketValue(h)
+    if (!(mv > 0)) continue
+    const code = compactSubjectCode(h.subject_code)
+    if (!code) continue
+    byCode.set(code, Math.max(byCode.get(code) ?? 0, mv))
+  }
+  if (byCode.size === 0) return 0
 
-  if (!rows.length) return 0
-
-  const minDepth = Math.min(...rows.map((r) => r.depth))
-  const shallow = rows.filter((r) => r.depth === minDepth)
-  return Math.max(...shallow.map((r) => r.mv))
+  const codes = [...byCode.keys()]
+  let total = 0
+  for (const [code, mv] of byCode) {
+    if (codes.some((other) => other !== code && other.startsWith(code) && other.length > code.length)) {
+      continue
+    }
+    total += mv
+  }
+  return total
 }
 
 function matchesCashHeaderKind(
@@ -2097,11 +2111,12 @@ export async function getFundValuationAllocation(
 
   const custody_balance = metrics ? parseNum(metrics.custody_balance) : 0
   const valuation_unit_nav = metrics ? parseNum(metrics.unit_nav) : 0
+  const total_asset = metrics ? parseNum(metrics.total_asset) : 0
+  const total_liability = metrics ? parseNum(metrics.total_liability) : 0
   let net_asset_value = stripDerivativeNotionalFromNav(
     metrics ? parseNum(metrics.net_asset_value) : 0,
     holdings,
   )
-  const total_asset = metrics ? parseNum(metrics.total_asset) : 0
   const valuation_date = metrics?.valuation_date ?? holdings[0]?.valuation_date ?? null
 
   const sums = aggregateByRowKind(holdings, mode)
@@ -2109,8 +2124,11 @@ export async function getFundValuationAllocation(
     sums.set("bank_deposit", custody_balance)
   }
 
-  if (net_asset_value <= 0) {
-    net_asset_value = [...sums.values()].reduce((s, v) => s + v, 0)
+  // Never treat 托管户+备付金+保证金 as 资产净值. Prefer 估值表 基金资产净值,
+  // then 资产合计−负债合计.
+  if (net_asset_value <= 0 && total_asset > 0) {
+    const fromTotals = total_asset - Math.max(0, total_liability)
+    if (fromTotals > 1000) net_asset_value = fromTotals
   }
 
   const layout_type = detectValuationLayoutType(holdings)
@@ -2483,10 +2501,7 @@ function computeSnapshotAllocation(
     sums.set("bank_deposit", custodyBalance)
   }
 
-  let nav = stripDerivativeNotionalFromNav(netAssetValue, holdings)
-  if (nav <= 0) {
-    nav = [...sums.values()].reduce((s, v) => s + v, 0)
-  }
+  const nav = stripDerivativeNotionalFromNav(netAssetValue, holdings)
 
   const layout_type = detectValuationLayoutType(holdings)
   return layout_type === "fof"

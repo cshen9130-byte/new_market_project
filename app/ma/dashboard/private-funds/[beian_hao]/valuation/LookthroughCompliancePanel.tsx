@@ -178,7 +178,7 @@ const CHECKS_HELP: ChartCalcHelpBlock[] = [
   {
     title: "第12条 单一资产 25%",
     paragraphs: [
-      "同一资产穿透后金额 / 母基金净资产。标准化股权按单一上市公司股票/存托凭证计。信用账户、其他证券、国投证券等券商账户、股票成本_深港通等科目合计不是同一资产。现金管理工具、公募基金、债券通用质押式回购不计入。",
+      "同一资产穿透后金额 / 母基金净资产。标准化股权按单一上市公司股票/存托凭证计。信用账户、其他证券、国投证券等券商账户、深港通股票成本、股票成本_深港通等科目合计不是同一资产。现金管理工具、公募基金、债券通用质押式回购不计入。",
     ],
     formula: "单一资产集中度 = max(同一资产金额) / 净资产",
   },
@@ -227,6 +227,7 @@ const MIX_HELP: ChartCalcHelpBlock[] = [
       "期货和衍生品：期货/期权/收益互换的双边名义市值（多头 + |空头|），不含保证金、冲销、估值增值",
       "基金（未穿透）：底层私募没有估值表，整段份额按基金计",
       "现金管理工具：活期存款、国债、央票、政金债、地方债、货基；展示但不计入已投资产",
+      "保证金/备付金：期货保证金、收益互换履约金等；明细里会列出，但不计入第41条已投资产",
     ],
   },
   {
@@ -463,6 +464,12 @@ export function LookthroughCompliancePanel({
       { key: "fund", value: data.buckets.funds_unpenetrated, pct: invested > 0 ? (data.buckets.funds_unpenetrated / invested) * 100 : null },
       { key: "other", value: data.buckets.other, pct: invested > 0 ? (data.buckets.other / invested) * 100 : null },
     ].filter((row) => row.value > 0)
+  }, [data])
+
+  const marginPosted = useMemo(() => {
+    return (data?.top_holdings ?? [])
+      .filter((h) => h.bucket === "margin")
+      .reduce((s, h) => s + (Number.isFinite(h.market_value) ? h.market_value : 0), 0)
   }, [data])
 
   const holdingBucketOptions = useMemo(() => {
@@ -753,6 +760,9 @@ export function LookthroughCompliancePanel({
               </div>
               <div>衍生品账户权益 {fmtPct(data.ratios.derivatives_equity_pct)}</div>
               <div>现金管理工具 {fmtMoney(data.buckets.cash_tools)}（不计入已投资产）</div>
+              {marginPosted > 0 && (
+                <div>保证金/备付金 {fmtMoney(marginPosted)}（履约金/期货保证金，不计入已投资产）</div>
+              )}
             </div>
           </div>
 
