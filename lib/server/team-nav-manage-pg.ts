@@ -735,7 +735,11 @@ export async function loadManagedProductNavSeries(params: {
   extraNames?: Array<string | null | undefined>
 }): Promise<LegacyNavRow[]> {
   const points = await loadManagedProductEmailPoints(params)
-  return mergeNavSeriesWithEmail([], points)
+  return mergeNavSeriesWithEmail([], points, {
+    beian_hao: params.beian_hao,
+    product_name: params.product_name,
+    short_name: params.short_name ?? null,
+  })
 }
 
 function overlayNavSeriesByDate(base: LegacyNavRow[], overlay: LegacyNavRow[]): LegacyNavRow[] {

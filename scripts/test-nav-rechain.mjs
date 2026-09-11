@@ -60,6 +60,7 @@ import { filterWeekendNavRows, isWeekendIsoDate } from "../lib/nav-trading-day.t
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
 import {
   detailNavCacheCoversTeamDates,
+  detailNavCacheMatchesSeed,
   isDetailNavCacheFresh,
 } from "../lib/server/fund-detail-nav-cache-pg.ts"
 import { teamNavBeianLookupCodes } from "../lib/server/team-nav-manage-pg.ts"
@@ -320,6 +321,58 @@ assert("SSG947 0623 unit ~1.9983", Math.abs(parseFloat(ssg623.nav) - 1.9983) < 0
 assert("SSG947 0623 cum ~2.5632", Math.abs(parseFloat(ssg623.cum_nav_withdrawal) - 2.5632) < 0.001)
 assert("SSG947 0623 adj >= cum", parseFloat(ssg623.cumulative_nav) >= parseFloat(ssg623.cum_nav_withdrawal) - 0.001)
 assert("SSG947 no chart spike after email extend", ssgDetail.every((r) => parseFloat(r.cumulative_nav) < 5))
+
+{
+  const sadgCtx = { beian_hao: "SADG72", product_name: "凯瑞稳健二号", short_name: "凯瑞稳健二号" }
+  const sadgSeed = loadManagedProductNavSeed("SADG72")
+  assert("SADG72 seed loaded", sadgSeed.length >= 600)
+  const sadgRule = lookupFundNavCorrectionRule("SADG72", "凯瑞稳健二号", "凯瑞稳健二号")
+  assert("SADG72 correction rule", sadgRule?.preserve_high_nav_scale === true && sadgRule.series_start_date === "2023-11-09")
+  assert("SBDF95 rule unchanged", lookupFundNavCorrectionRule("SBDF95")?.series_start_date === "2026-07-03")
+  assert("SET723 rule unchanged", lookupFundNavCorrectionRule("SET723")?.preserve_high_nav_scale === true)
+  assert("SVP460 rule unchanged", lookupFundNavCorrectionRule("SVP460")?.preserve_high_nav_scale === true)
+  assert("SAVW72 rule unchanged", lookupFundNavCorrectionRule("SAVW72")?.series_start_date === "2026-06-12")
+
+  const sadgMerged = mergeManagedProductDetailNav(sadgSeed, [], [], sadgCtx)
+  const d0520 = sadgMerged.find((r) => r.price_date === "2026-05-20")
+  const d0521 = sadgMerged.find((r) => r.price_date === "2026-05-21")
+  const d0910 = sadgMerged.find((r) => r.price_date === "2026-09-10")
+  assert("SADG72 0520 unit ~3.1116", Math.abs(parseFloat(d0520.nav) - 3.1116) < 0.001)
+  assert("SADG72 0521 unit 1.6 (2nd dividend)", Math.abs(parseFloat(d0521.nav) - 1.6) < 0.001)
+  assert("SADG72 0521 cum ~4.1576", Math.abs(parseFloat(d0521.cum_nav_withdrawal) - 4.1576) < 0.001)
+  assert("SADG72 0521 adj ~5.1401 not collapsed", Math.abs(parseFloat(d0521.cumulative_nav) - 5.1401) < 0.01)
+  assert(
+    "SADG72 2nd dividend is not a 48% adj crash",
+    parseFloat(d0521.cumulative_nav) / parseFloat(d0520.cumulative_nav) > 0.95,
+  )
+  assert("SADG72 0910 unit 1.6985", Math.abs(parseFloat(d0910.nav) - 1.6985) < 0.001)
+  assert("SADG72 0910 cum ~4.2561", Math.abs(parseFloat(d0910.cum_nav_withdrawal) - 4.2561) < 0.001)
+  assert("SADG72 0910 adj ~5.4565", Math.abs(parseFloat(d0910.cumulative_nav) - 5.4565) < 0.01)
+
+  const collapsedOverlay = [
+    { price_date: "2026-05-21", nav: "1.6", cumulative_nav: "2.6271", adjusted_nav: "2.6271" },
+    { price_date: "2026-09-10", nav: "1.6985", cumulative_nav: "2.7256", adjusted_nav: "2.8375" },
+  ]
+  const sadgVsCollapsed = mergeManagedProductDetailNav(sadgSeed, collapsedOverlay, [], sadgCtx)
+  const vs0910 = sadgVsCollapsed.find((r) => r.price_date === "2026-09-10")
+  assert("SADG72 seed beats collapsed email on seed dates", Math.abs(parseFloat(vs0910.cumulative_nav) - 5.4565) < 0.01)
+
+  assert(
+    "SADG72 stale cache misses seed",
+    !detailNavCacheMatchesSeed(
+      { nav_series: [{ price_date: "2026-09-10", nav: "1.6985", cum_nav_withdrawal: "2.7256", cumulative_nav: "2.8375" }] },
+      "SADG72",
+    ),
+  )
+  assert(
+    "SADG72 matching cache hits seed",
+    detailNavCacheMatchesSeed(
+      { nav_series: [{ price_date: "2026-09-10", nav: "1.6985", cum_nav_withdrawal: "4.2561", cumulative_nav: "5.4565" }] },
+      "SADG72",
+    ),
+  )
+  assert("SSG947 cache helper ignores missing SADG seed key", detailNavCacheMatchesSeed({ nav_series: [] }, "NOFUND"))
+}
 
 const custodyHistory = [
   {

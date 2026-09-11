@@ -985,6 +985,7 @@ When upstream data has **wrong early history** for one fund only, add a JSON rul
 |---|---|---|---|
 | 锐耐稳健对冲11号 | SBDF95 | 2026-07-03 | Discard wrong ~1 history; ~4 scale from Citics rebased series |
 | 锐耐稳健对冲11号A类 | BDF95A | 2026-07-09 | Same for A-class share |
+| 凯瑞稳健二号 | SADG72 | 2023-11-09 | Manager xlsx seed; 2026-05-21 second dividend must keep adj ~5.14 |
 
 API: `GET /ma/api/fund-nav-correction-rules?code=SBDF95`, `POST /ma/api/fund-nav-correction-rules/save`
 

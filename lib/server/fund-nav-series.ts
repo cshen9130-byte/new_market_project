@@ -90,6 +90,11 @@ async function loadMergedNavRows(
       effectiveManagedOverride = { beian_hao, product_name }
     }
   }
+  // Verified xlsx seed (data/managed-product-nav/<备案号>.json) is enough to use the
+  // seed merge path — do not add the fund to MANAGED_PRODUCT_BEIAN_OVERRIDES.
+  if (!effectiveManagedOverride && loadManagedProductNavSeed(beian_hao).length > 0) {
+    effectiveManagedOverride = { beian_hao, product_name }
+  }
 
   if (!effectiveManagedOverride) {
     return applyFundNavCorrectionToLegacyRows(navSeries, fundContext)
@@ -120,7 +125,7 @@ async function loadMergedNavRows(
         { excludeType6: true },
       )
       return applyFundNavCorrectionToLegacyRows(
-        mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyNoType6),
+        mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyNoType6, fundContext),
         fundContext,
       )
     }

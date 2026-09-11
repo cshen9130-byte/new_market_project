@@ -9,6 +9,7 @@
 import { query } from "@/lib/db"
 import type { LegacyNavRow } from "@/lib/server/email-nav-query"
 import type { ListCacheFundHeader } from "@/lib/server/fund-detail-fast-path"
+import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 
 const TABLE = "ops_private_fund_detail_nav_cache"
 
@@ -131,6 +132,35 @@ export function isDetailNavCacheFresh(
   )
   if (!cacheDate) return false
   return cacheDate >= required
+}
+
+function navFieldClose(got: string | null | undefined, exp: string | null | undefined): boolean {
+  const a = parseFloat(String(got ?? ""))
+  const b = parseFloat(String(exp ?? ""))
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return false
+  return Math.abs(a - b) <= 0.0005
+}
+
+/**
+ * When a verified xlsx seed exists, the cached row on the seed's last date must
+ * match seed unit/累计/复权. Otherwise a "fresh" tip date can still serve a
+ * collapsed 复权 series (SADG72 missed the 2026-05-21 dividend).
+ */
+export function detailNavCacheMatchesSeed(
+  cached: Pick<DetailNavCacheRow, "nav_series">,
+  beianHao?: string | null,
+): boolean {
+  const seed = loadManagedProductNavSeed(beianHao ?? "")
+  if (seed.length === 0) return true
+  const seedLatest = seed[seed.length - 1]
+  const seedDate = seedLatest.price_date.slice(0, 10)
+  const cachedRow = cached.nav_series.find((row) => String(row.price_date ?? "").slice(0, 10) === seedDate)
+  if (!cachedRow) return false
+  return (
+    navFieldClose(cachedRow.nav, seedLatest.nav)
+    && navFieldClose(cachedRow.cum_nav_withdrawal, seedLatest.cum_nav_withdrawal)
+    && navFieldClose(cachedRow.cumulative_nav, seedLatest.cumulative_nav)
+  )
 }
 
 /** False when uploaded team/manual NAV dates are missing from the cached series. */

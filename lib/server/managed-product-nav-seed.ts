@@ -15,6 +15,7 @@ import {
   type EmailNavPoint,
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
+import type { FundNavSeriesContext } from "@/lib/server/fund-nav-correction-rules"
 
 type ManagedNavSeedFile = {
   beian_hao: string
@@ -62,10 +63,11 @@ export function mergeManagedProductDetailNav(
   seedRows: LegacyNavRow[],
   teamEmailPoints: EmailNavPoint[],
   legacyRows: LegacyNavRow[],
+  fundContext?: FundNavSeriesContext | null,
 ): LegacyNavRow[] {
   if (seedRows.length === 0) {
-    const teamRows = mergeNavSeriesWithEmail([], teamEmailPoints)
-    return mergeLegacyWithTeamNav(legacyRows, teamRows)
+    const teamRows = mergeNavSeriesWithEmail([], teamEmailPoints, fundContext)
+    return mergeLegacyWithTeamNav(legacyRows, teamRows, fundContext)
   }
 
   const seedStart = seedRows[0].price_date
@@ -74,10 +76,11 @@ export function mergeManagedProductDetailNav(
   const legacyBeforeSeed = legacyRows.filter((row) => row.price_date < seedStart)
   const seedBase = mergeLegacyWithTeamNav(
     legacyBeforeSeed,
-    mergeNavSeriesWithEmail(seedRows, []),
+    mergeNavSeriesWithEmail(seedRows, [], fundContext),
+    fundContext,
   )
 
-  return mergeNavSeriesWithEmail(seedBase, extensionPoints)
+  return mergeNavSeriesWithEmail(seedBase, extensionPoints, fundContext)
 }
 
 export type ManagedListNavPoint = {

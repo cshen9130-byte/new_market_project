@@ -1401,18 +1401,32 @@ function hasDistinctCumulative(nav: number, cumulative: number | null): boolean 
 }
 
 /** Reject corrupt 累计 from valuation column bleed (e.g. 成立以来倍数 stored as cum). */
-function isPlausibleEmailCumulativeNav(unit: number, cum: number): boolean {
+function isPlausibleEmailCumulativeNav(
+  unit: number,
+  cum: number,
+  fundContext?: FundNavSeriesContext | null,
+): boolean {
   if (!isReasonableNav(unit) || !isReasonableNav(cum)) return false
   if (cum < unit - 0.001) return false
-  if (cum / unit > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO) return false
+  // SADG72 2nd dividend: cum/unit ≈ 2.60 is real. preserve_high_nav_scale skips the cap.
+  if (
+    cum / unit > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO
+    && !shouldSkipReturnIndexSanitize(fundContext)
+  ) {
+    return false
+  }
   return true
 }
 
 /** Reject FOF virtual performance-fee rows whose cum sits below unit (not fund 累计净值). */
-function isUsableEmailCumulativeNav(unit: number, cum: number | null): boolean {
+function isUsableEmailCumulativeNav(
+  unit: number,
+  cum: number | null,
+  fundContext?: FundNavSeriesContext | null,
+): boolean {
   if (cum == null || !isReasonableNav(cum)) return false
   if (!hasDistinctCumulative(unit, cum)) return false
-  if (!isPlausibleEmailCumulativeNav(unit, cum)) return false
+  if (!isPlausibleEmailCumulativeNav(unit, cum, fundContext)) return false
   return cum >= unit - 0.001
 }
 
@@ -2407,7 +2421,7 @@ export function mergeNavSeriesWithEmail(
 
     const emailCum = parseOptionalNav(row.cumulative_nav)
     const emailAdjRaw = parseOptionalNav(row.adjusted_nav)
-    const hasEmailCum = isUsableEmailCumulativeNav(unitNav, emailCum)
+    const hasEmailCum = isUsableEmailCumulativeNav(unitNav, emailCum, fundContext)
     const existing = byDate.get(row.price_date)
     const prevDate = sortedLegacyDates.filter((d) => d < row.price_date).at(-1)
       ?? Array.from(byDate.keys()).filter((d) => d < row.price_date).sort().at(-1)

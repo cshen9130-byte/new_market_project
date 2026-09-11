@@ -25,6 +25,7 @@ import {
 } from "@/lib/server/fund-detail-fast-path"
 import {
   detailNavCacheCoversTeamDates,
+  detailNavCacheMatchesSeed,
   getDetailNavCache,
   isDetailNavCacheFresh,
   persistDetailNavSeries,
@@ -323,7 +324,12 @@ export async function GET(
       : []
     const memoryListTip = (memoryListTipRows[0]?.latest_nav_date ?? "").slice(0, 10)
     const memoryCoversListTip = !memoryListTip || navSeriesTipDate(memorySeries) >= memoryListTip
-    if (cachedDetail && memoryCoversTeam && memoryCoversListTip) {
+    if (
+      cachedDetail
+      && memoryCoversTeam
+      && memoryCoversListTip
+      && detailNavCacheMatchesSeed({ nav_series: memorySeries }, cacheKey)
+    ) {
       const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
       const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
@@ -557,6 +563,7 @@ export async function GET(
         pgCached,
         teamManualPoints.map((point) => point.nav_date),
       )
+      && detailNavCacheMatchesSeed(pgCached, routeBeianHao)
 
     const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved, teamBenchmark, operationDateRows] = await Promise.all([
       strategy_l3

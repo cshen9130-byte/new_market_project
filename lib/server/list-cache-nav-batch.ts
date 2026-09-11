@@ -1352,9 +1352,9 @@ export class BatchNavResolver {
     for (const product of products) {
       const override = lookupManagedProductOverride(product.product_name)
         ?? (product.beian_hao ? lookupManagedProductOverride(product.beian_hao) : null)
-      if (!override) continue
-      if (seedByBeian.has(override.beian_hao)) continue
-      const seedRows = loadManagedProductNavSeed(override.beian_hao)
+      const seedCode = (override?.beian_hao || product.beian_hao || "").trim()
+      if (!seedCode || seedByBeian.has(seedCode)) continue
+      const seedRows = loadManagedProductNavSeed(seedCode)
       if (seedRows.length === 0) continue
       const points = seedRows
         .map((row) => {
@@ -1364,8 +1364,8 @@ export class BatchNavResolver {
         })
         .filter((p): p is NavPoint => p != null)
         .sort((a, b) => b.nav_date.localeCompare(a.nav_date))
-      seedByBeian.set(override.beian_hao, points)
-      seedLatestByBeian.set(override.beian_hao, seedRows[seedRows.length - 1].price_date.slice(0, 10))
+      seedByBeian.set(seedCode, points)
+      seedLatestByBeian.set(seedCode, seedRows[seedRows.length - 1].price_date.slice(0, 10))
     }
 
     const [emailByBeian, emailByName, type6, legacy] = await Promise.all([
@@ -1459,14 +1459,21 @@ export class BatchNavResolver {
     return point
   }
 
-  private seedPointFor(identity: ProductNavIdentity, beforeDate: string): NavPoint | null {
+  private seedCodeFor(identity: ProductNavIdentity): string | null {
     const beian = (identity.beian_hao ?? "").trim()
     const override =
       lookupManagedProductOverride(identity.product_name)
       ?? (beian ? lookupManagedProductOverride(beian) : null)
-    if (!override) return null
-    const seedLatest = this.seedLatestByBeian.get(override.beian_hao)
-    const seedPoint = navAtOrBefore(this.seedByBeian.get(override.beian_hao), beforeDate)
+    const code = (override?.beian_hao || beian || "").trim()
+    if (!code || !this.seedLatestByBeian.has(code)) return null
+    return code
+  }
+
+  private seedPointFor(identity: ProductNavIdentity, beforeDate: string): NavPoint | null {
+    const seedCode = this.seedCodeFor(identity)
+    if (!seedCode) return null
+    const seedLatest = this.seedLatestByBeian.get(seedCode)
+    const seedPoint = navAtOrBefore(this.seedByBeian.get(seedCode), beforeDate)
     if (!seedPoint || !seedLatest || seedPoint.nav_date > seedLatest) return null
     return seedPoint
   }
@@ -1482,10 +1489,8 @@ export class BatchNavResolver {
 
     const seedPoint = this.seedPointFor(identity, beforeDate)
     const seedLatest = (() => {
-      const override =
-        lookupManagedProductOverride(identity.product_name)
-        ?? (beian ? lookupManagedProductOverride(beian) : null)
-      return override ? this.seedLatestByBeian.get(override.beian_hao) : undefined
+      const seedCode = this.seedCodeFor(identity)
+      return seedCode ? this.seedLatestByBeian.get(seedCode) : undefined
     })()
 
     const emailName =
@@ -1672,10 +1677,8 @@ export class BatchNavResolver {
     const short = (identity.short_name ?? "").trim()
     const byDate = new Map<string, NavPoint>()
 
-    const override =
-      lookupManagedProductOverride(identity.product_name)
-      ?? (beian ? lookupManagedProductOverride(beian) : null)
-    const seedLatest = override ? this.seedLatestByBeian.get(override.beian_hao) : undefined
+    const seedCode = this.seedCodeFor(identity)
+    const seedLatest = seedCode ? this.seedLatestByBeian.get(seedCode) : undefined
 
     const apply = (points: NavPoint[] | undefined, opts?: { email?: boolean }) => {
       for (const p of points ?? []) {
@@ -1720,7 +1723,7 @@ export class BatchNavResolver {
       if (short) apply(this.emailByName.get(short), { email: true })
     }
     const seedLayer = () => {
-      if (override) apply(this.seedByBeian.get(override.beian_hao))
+      if (seedCode) apply(this.seedByBeian.get(seedCode))
     }
 
     if (mode === "display") {

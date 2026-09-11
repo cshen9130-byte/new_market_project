@@ -1,0 +1,10 @@
+{
+  "beian_hao": "SADG72",
+  "product_names": [
+    "凯瑞稳健二号",
+    "凯瑞稳健二号私募证券投资基金"
+  ],
+  "series_start_date": "2023-11-09",
+  "preserve_high_nav_scale": true,
+  "note": "Manager 产品净值 Excel is authoritative. Second dividend 2026-05-21 (unit 3.11→1.6, cum gap 1.027→2.558) was missing in email/legacy so 复权 collapsed ~48% and the chart crashed. preserve_high_nav_scale keeps adj ~5.4–6.2."
+}

@@ -1,0 +1,4355 @@
+{
+  "beian_hao": "SADG72",
+  "before_date": null,
+  "source_file": "凯瑞稳健二号净值20260911.xlsx",
+  "row_count": 621,
+  "rows": [
+    {
+      "price_date": "2023-11-09",
+      "nav": "1",
+      "cumulative_nav": "1",
+      "cum_nav_withdrawal": "1",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-02-26",
+      "nav": "0.9964",
+      "cumulative_nav": "0.9964",
+      "cum_nav_withdrawal": "0.9964",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-02-27",
+      "nav": "0.9964",
+      "cumulative_nav": "0.9964",
+      "cum_nav_withdrawal": "0.9964",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-02-28",
+      "nav": "0.9963",
+      "cumulative_nav": "0.9963",
+      "cum_nav_withdrawal": "0.9963",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-02-29",
+      "nav": "0.9963",
+      "cumulative_nav": "0.9963",
+      "cum_nav_withdrawal": "0.9963",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-01",
+      "nav": "0.9962",
+      "cumulative_nav": "0.9962",
+      "cum_nav_withdrawal": "0.9962",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-04",
+      "nav": "0.9961",
+      "cumulative_nav": "0.9961",
+      "cum_nav_withdrawal": "0.9961",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-05",
+      "nav": "0.9961",
+      "cumulative_nav": "0.9961",
+      "cum_nav_withdrawal": "0.9961",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-06",
+      "nav": "1.0043",
+      "cumulative_nav": "1.0043",
+      "cum_nav_withdrawal": "1.0043",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-07",
+      "nav": "0.9964",
+      "cumulative_nav": "0.9964",
+      "cum_nav_withdrawal": "0.9964",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-08",
+      "nav": "0.9977",
+      "cumulative_nav": "0.9977",
+      "cum_nav_withdrawal": "0.9977",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-11",
+      "nav": "1.0149",
+      "cumulative_nav": "1.0149",
+      "cum_nav_withdrawal": "1.0149",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-12",
+      "nav": "1.0241",
+      "cumulative_nav": "1.0241",
+      "cum_nav_withdrawal": "1.0241",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-13",
+      "nav": "1.0244",
+      "cumulative_nav": "1.0244",
+      "cum_nav_withdrawal": "1.0244",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-14",
+      "nav": "0.9883",
+      "cumulative_nav": "0.9883",
+      "cum_nav_withdrawal": "0.9883",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-15",
+      "nav": "0.9893",
+      "cumulative_nav": "0.9893",
+      "cum_nav_withdrawal": "0.9893",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-18",
+      "nav": "0.9909",
+      "cumulative_nav": "0.9909",
+      "cum_nav_withdrawal": "0.9909",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-19",
+      "nav": "0.9898",
+      "cumulative_nav": "0.9898",
+      "cum_nav_withdrawal": "0.9898",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-20",
+      "nav": "0.9903",
+      "cumulative_nav": "0.9903",
+      "cum_nav_withdrawal": "0.9903",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-21",
+      "nav": "0.9885",
+      "cumulative_nav": "0.9885",
+      "cum_nav_withdrawal": "0.9885",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-22",
+      "nav": "0.9888",
+      "cumulative_nav": "0.9888",
+      "cum_nav_withdrawal": "0.9888",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-25",
+      "nav": "0.9511",
+      "cumulative_nav": "0.9511",
+      "cum_nav_withdrawal": "0.9511",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-26",
+      "nav": "0.9449",
+      "cumulative_nav": "0.9449",
+      "cum_nav_withdrawal": "0.9449",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-27",
+      "nav": "0.9449",
+      "cumulative_nav": "0.9449",
+      "cum_nav_withdrawal": "0.9449",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-28",
+      "nav": "0.9365",
+      "cumulative_nav": "0.9365",
+      "cum_nav_withdrawal": "0.9365",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-03-29",
+      "nav": "0.9547",
+      "cumulative_nav": "0.9547",
+      "cum_nav_withdrawal": "0.9547",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-01",
+      "nav": "0.951",
+      "cumulative_nav": "0.951",
+      "cum_nav_withdrawal": "0.951",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-02",
+      "nav": "0.9512",
+      "cumulative_nav": "0.9512",
+      "cum_nav_withdrawal": "0.9512",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-03",
+      "nav": "0.9551",
+      "cumulative_nav": "0.9551",
+      "cum_nav_withdrawal": "0.9551",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-08",
+      "nav": "0.9383",
+      "cumulative_nav": "0.9383",
+      "cum_nav_withdrawal": "0.9383",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-09",
+      "nav": "0.9275",
+      "cumulative_nav": "0.9275",
+      "cum_nav_withdrawal": "0.9275",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-10",
+      "nav": "0.9285",
+      "cumulative_nav": "0.9285",
+      "cum_nav_withdrawal": "0.9285",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-11",
+      "nav": "0.9662",
+      "cumulative_nav": "0.9662",
+      "cum_nav_withdrawal": "0.9662",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-12",
+      "nav": "0.9876",
+      "cumulative_nav": "0.9876",
+      "cum_nav_withdrawal": "0.9876",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-15",
+      "nav": "0.9627",
+      "cumulative_nav": "0.9627",
+      "cum_nav_withdrawal": "0.9627",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-16",
+      "nav": "0.9403",
+      "cumulative_nav": "0.9403",
+      "cum_nav_withdrawal": "0.9403",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-17",
+      "nav": "0.934",
+      "cumulative_nav": "0.934",
+      "cum_nav_withdrawal": "0.934",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-18",
+      "nav": "0.9226",
+      "cumulative_nav": "0.9226",
+      "cum_nav_withdrawal": "0.9226",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-19",
+      "nav": "0.9637",
+      "cumulative_nav": "0.9637",
+      "cum_nav_withdrawal": "0.9637",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-22",
+      "nav": "0.9695",
+      "cumulative_nav": "0.9695",
+      "cum_nav_withdrawal": "0.9695",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-23",
+      "nav": "0.9691",
+      "cumulative_nav": "0.9691",
+      "cum_nav_withdrawal": "0.9691",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-24",
+      "nav": "0.967",
+      "cumulative_nav": "0.967",
+      "cum_nav_withdrawal": "0.967",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-25",
+      "nav": "0.9719",
+      "cumulative_nav": "0.9719",
+      "cum_nav_withdrawal": "0.9719",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-26",
+      "nav": "0.9765",
+      "cumulative_nav": "0.9765",
+      "cum_nav_withdrawal": "0.9765",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-29",
+      "nav": "1.0005",
+      "cumulative_nav": "1.0005",
+      "cum_nav_withdrawal": "1.0005",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-04-30",
+      "nav": "0.9657",
+      "cumulative_nav": "0.9657",
+      "cum_nav_withdrawal": "0.9657",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-06",
+      "nav": "0.9829",
+      "cumulative_nav": "0.9829",
+      "cum_nav_withdrawal": "0.9829",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-07",
+      "nav": "0.9959",
+      "cumulative_nav": "0.9959",
+      "cum_nav_withdrawal": "0.9959",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-08",
+      "nav": "1.0089",
+      "cumulative_nav": "1.0089",
+      "cum_nav_withdrawal": "1.0089",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-09",
+      "nav": "1.0173",
+      "cumulative_nav": "1.0173",
+      "cum_nav_withdrawal": "1.0173",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-10",
+      "nav": "0.9977",
+      "cumulative_nav": "0.9977",
+      "cum_nav_withdrawal": "0.9977",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-13",
+      "nav": "0.9831",
+      "cumulative_nav": "0.9831",
+      "cum_nav_withdrawal": "0.9831",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-14",
+      "nav": "0.9789",
+      "cumulative_nav": "0.9789",
+      "cum_nav_withdrawal": "0.9789",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-15",
+      "nav": "0.9743",
+      "cumulative_nav": "0.9743",
+      "cum_nav_withdrawal": "0.9743",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-16",
+      "nav": "0.9536",
+      "cumulative_nav": "0.9536",
+      "cum_nav_withdrawal": "0.9536",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-17",
+      "nav": "0.9429",
+      "cumulative_nav": "0.9429",
+      "cum_nav_withdrawal": "0.9429",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-20",
+      "nav": "0.9426",
+      "cumulative_nav": "0.9426",
+      "cum_nav_withdrawal": "0.9426",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-21",
+      "nav": "0.946",
+      "cumulative_nav": "0.946",
+      "cum_nav_withdrawal": "0.946",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-22",
+      "nav": "0.9298",
+      "cumulative_nav": "0.9298",
+      "cum_nav_withdrawal": "0.9298",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-23",
+      "nav": "0.9539",
+      "cumulative_nav": "0.9539",
+      "cum_nav_withdrawal": "0.9539",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-24",
+      "nav": "0.9536",
+      "cumulative_nav": "0.9536",
+      "cum_nav_withdrawal": "0.9536",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-27",
+      "nav": "0.9058",
+      "cumulative_nav": "0.9058",
+      "cum_nav_withdrawal": "0.9058",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-28",
+      "nav": "0.9108",
+      "cumulative_nav": "0.9108",
+      "cum_nav_withdrawal": "0.9108",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-29",
+      "nav": "0.8907",
+      "cumulative_nav": "0.8907",
+      "cum_nav_withdrawal": "0.8907",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-30",
+      "nav": "0.9055",
+      "cumulative_nav": "0.9055",
+      "cum_nav_withdrawal": "0.9055",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-05-31",
+      "nav": "0.9024",
+      "cumulative_nav": "0.9024",
+      "cum_nav_withdrawal": "0.9024",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-03",
+      "nav": "0.9354",
+      "cumulative_nav": "0.9354",
+      "cum_nav_withdrawal": "0.9354",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-04",
+      "nav": "0.9364",
+      "cumulative_nav": "0.9364",
+      "cum_nav_withdrawal": "0.9364",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-05",
+      "nav": "0.9353",
+      "cumulative_nav": "0.9353",
+      "cum_nav_withdrawal": "0.9353",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-06",
+      "nav": "0.9238",
+      "cumulative_nav": "0.9238",
+      "cum_nav_withdrawal": "0.9238",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-07",
+      "nav": "0.9018",
+      "cumulative_nav": "0.9018",
+      "cum_nav_withdrawal": "0.9018",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-11",
+      "nav": "0.897",
+      "cumulative_nav": "0.897",
+      "cum_nav_withdrawal": "0.897",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-12",
+      "nav": "0.8973",
+      "cumulative_nav": "0.8973",
+      "cum_nav_withdrawal": "0.8973",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-13",
+      "nav": "0.9256",
+      "cumulative_nav": "0.9256",
+      "cum_nav_withdrawal": "0.9256",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-14",
+      "nav": "0.9383",
+      "cumulative_nav": "0.9383",
+      "cum_nav_withdrawal": "0.9383",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-17",
+      "nav": "0.9616",
+      "cumulative_nav": "0.9616",
+      "cum_nav_withdrawal": "0.9616",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-18",
+      "nav": "1.0001",
+      "cumulative_nav": "1.0001",
+      "cum_nav_withdrawal": "1.0001",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-19",
+      "nav": "1.0095",
+      "cumulative_nav": "1.0095",
+      "cum_nav_withdrawal": "1.0095",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-20",
+      "nav": "1.0084",
+      "cumulative_nav": "1.0084",
+      "cum_nav_withdrawal": "1.0084",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-21",
+      "nav": "1.0074",
+      "cumulative_nav": "1.0074",
+      "cum_nav_withdrawal": "1.0074",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-24",
+      "nav": "0.9936",
+      "cumulative_nav": "0.9936",
+      "cum_nav_withdrawal": "0.9936",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-25",
+      "nav": "0.9673",
+      "cumulative_nav": "0.9673",
+      "cum_nav_withdrawal": "0.9673",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-26",
+      "nav": "0.9611",
+      "cumulative_nav": "0.9611",
+      "cum_nav_withdrawal": "0.9611",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-27",
+      "nav": "0.9493",
+      "cumulative_nav": "0.9493",
+      "cum_nav_withdrawal": "0.9493",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-06-28",
+      "nav": "0.9461",
+      "cumulative_nav": "0.9461",
+      "cum_nav_withdrawal": "0.9461",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-01",
+      "nav": "0.9448",
+      "cumulative_nav": "0.9448",
+      "cum_nav_withdrawal": "0.9448",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-02",
+      "nav": "0.9666",
+      "cumulative_nav": "0.9666",
+      "cum_nav_withdrawal": "0.9666",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-03",
+      "nav": "0.9204",
+      "cumulative_nav": "0.9204",
+      "cum_nav_withdrawal": "0.9204",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-04",
+      "nav": "0.8867",
+      "cumulative_nav": "0.8867",
+      "cum_nav_withdrawal": "0.8867",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-05",
+      "nav": "0.8689",
+      "cumulative_nav": "0.8689",
+      "cum_nav_withdrawal": "0.8689",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-08",
+      "nav": "0.8775",
+      "cumulative_nav": "0.8775",
+      "cum_nav_withdrawal": "0.8775",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-09",
+      "nav": "0.8782",
+      "cumulative_nav": "0.8782",
+      "cum_nav_withdrawal": "0.8782",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-10",
+      "nav": "0.8756",
+      "cumulative_nav": "0.8756",
+      "cum_nav_withdrawal": "0.8756",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-11",
+      "nav": "0.8788",
+      "cumulative_nav": "0.8788",
+      "cum_nav_withdrawal": "0.8788",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-12",
+      "nav": "0.8809",
+      "cumulative_nav": "0.8809",
+      "cum_nav_withdrawal": "0.8809",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-15",
+      "nav": "0.8857",
+      "cumulative_nav": "0.8857",
+      "cum_nav_withdrawal": "0.8857",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-16",
+      "nav": "0.8867",
+      "cumulative_nav": "0.8867",
+      "cum_nav_withdrawal": "0.8867",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-17",
+      "nav": "0.8832",
+      "cumulative_nav": "0.8832",
+      "cum_nav_withdrawal": "0.8832",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-18",
+      "nav": "0.8822",
+      "cumulative_nav": "0.8822",
+      "cum_nav_withdrawal": "0.8822",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-19",
+      "nav": "0.874",
+      "cumulative_nav": "0.874",
+      "cum_nav_withdrawal": "0.874",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-22",
+      "nav": "0.878",
+      "cumulative_nav": "0.878",
+      "cum_nav_withdrawal": "0.878",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-23",
+      "nav": "0.8797",
+      "cumulative_nav": "0.8797",
+      "cum_nav_withdrawal": "0.8797",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-24",
+      "nav": "0.8724",
+      "cumulative_nav": "0.8724",
+      "cum_nav_withdrawal": "0.8724",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-25",
+      "nav": "0.8745",
+      "cumulative_nav": "0.8745",
+      "cum_nav_withdrawal": "0.8745",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-26",
+      "nav": "0.8786",
+      "cumulative_nav": "0.8786",
+      "cum_nav_withdrawal": "0.8786",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-29",
+      "nav": "0.8912",
+      "cumulative_nav": "0.8912",
+      "cum_nav_withdrawal": "0.8912",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-30",
+      "nav": "0.9016",
+      "cumulative_nav": "0.9016",
+      "cum_nav_withdrawal": "0.9016",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-07-31",
+      "nav": "0.9179",
+      "cumulative_nav": "0.9179",
+      "cum_nav_withdrawal": "0.9179",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-01",
+      "nav": "0.9243",
+      "cumulative_nav": "0.9243",
+      "cum_nav_withdrawal": "0.9243",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-02",
+      "nav": "0.9388",
+      "cumulative_nav": "0.9388",
+      "cum_nav_withdrawal": "0.9388",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-05",
+      "nav": "0.9323",
+      "cumulative_nav": "0.9323",
+      "cum_nav_withdrawal": "0.9323",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-06",
+      "nav": "0.9156",
+      "cumulative_nav": "0.9156",
+      "cum_nav_withdrawal": "0.9156",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-07",
+      "nav": "0.9081",
+      "cumulative_nav": "0.9081",
+      "cum_nav_withdrawal": "0.9081",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-08",
+      "nav": "0.8719",
+      "cumulative_nav": "0.8719",
+      "cum_nav_withdrawal": "0.8719",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-09",
+      "nav": "0.863",
+      "cumulative_nav": "0.863",
+      "cum_nav_withdrawal": "0.863",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-12",
+      "nav": "0.855",
+      "cumulative_nav": "0.855",
+      "cum_nav_withdrawal": "0.855",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-13",
+      "nav": "0.8554",
+      "cumulative_nav": "0.8554",
+      "cum_nav_withdrawal": "0.8554",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-14",
+      "nav": "0.8547",
+      "cumulative_nav": "0.8547",
+      "cum_nav_withdrawal": "0.8547",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-15",
+      "nav": "0.8592",
+      "cumulative_nav": "0.8592",
+      "cum_nav_withdrawal": "0.8592",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-16",
+      "nav": "0.8581",
+      "cumulative_nav": "0.8581",
+      "cum_nav_withdrawal": "0.8581",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-19",
+      "nav": "0.8556",
+      "cumulative_nav": "0.8556",
+      "cum_nav_withdrawal": "0.8556",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-20",
+      "nav": "0.8545",
+      "cumulative_nav": "0.8545",
+      "cum_nav_withdrawal": "0.8545",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-21",
+      "nav": "0.8552",
+      "cumulative_nav": "0.8552",
+      "cum_nav_withdrawal": "0.8552",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-22",
+      "nav": "0.8533",
+      "cumulative_nav": "0.8533",
+      "cum_nav_withdrawal": "0.8533",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-23",
+      "nav": "0.8541",
+      "cumulative_nav": "0.8541",
+      "cum_nav_withdrawal": "0.8541",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-26",
+      "nav": "0.8553",
+      "cumulative_nav": "0.8553",
+      "cum_nav_withdrawal": "0.8553",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-27",
+      "nav": "0.8532",
+      "cumulative_nav": "0.8532",
+      "cum_nav_withdrawal": "0.8532",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-28",
+      "nav": "0.8517",
+      "cumulative_nav": "0.8517",
+      "cum_nav_withdrawal": "0.8517",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-29",
+      "nav": "0.8531",
+      "cumulative_nav": "0.8531",
+      "cum_nav_withdrawal": "0.8531",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-08-30",
+      "nav": "0.8577",
+      "cumulative_nav": "0.8577",
+      "cum_nav_withdrawal": "0.8577",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-02",
+      "nav": "0.856",
+      "cumulative_nav": "0.856",
+      "cum_nav_withdrawal": "0.856",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-03",
+      "nav": "0.8565",
+      "cumulative_nav": "0.8565",
+      "cum_nav_withdrawal": "0.8565",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-04",
+      "nav": "0.8566",
+      "cumulative_nav": "0.8566",
+      "cum_nav_withdrawal": "0.8566",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-05",
+      "nav": "0.8565",
+      "cumulative_nav": "0.8565",
+      "cum_nav_withdrawal": "0.8565",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-06",
+      "nav": "0.8552",
+      "cumulative_nav": "0.8552",
+      "cum_nav_withdrawal": "0.8552",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-09",
+      "nav": "0.8512",
+      "cumulative_nav": "0.8512",
+      "cum_nav_withdrawal": "0.8512",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-10",
+      "nav": "0.8514",
+      "cumulative_nav": "0.8514",
+      "cum_nav_withdrawal": "0.8514",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-11",
+      "nav": "0.8487",
+      "cumulative_nav": "0.8487",
+      "cum_nav_withdrawal": "0.8487",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-12",
+      "nav": "0.8485",
+      "cumulative_nav": "0.8485",
+      "cum_nav_withdrawal": "0.8485",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-13",
+      "nav": "0.8482",
+      "cumulative_nav": "0.8482",
+      "cum_nav_withdrawal": "0.8482",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-18",
+      "nav": "0.8247",
+      "cumulative_nav": "0.8247",
+      "cum_nav_withdrawal": "0.8247",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-19",
+      "nav": "0.8414",
+      "cumulative_nav": "0.8414",
+      "cum_nav_withdrawal": "0.8414",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-20",
+      "nav": "0.8669",
+      "cumulative_nav": "0.8669",
+      "cum_nav_withdrawal": "0.8669",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-23",
+      "nav": "0.92",
+      "cumulative_nav": "0.92",
+      "cum_nav_withdrawal": "0.92",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-24",
+      "nav": "0.9219",
+      "cumulative_nav": "0.9219",
+      "cum_nav_withdrawal": "0.9219",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-25",
+      "nav": "0.9097",
+      "cumulative_nav": "0.9097",
+      "cum_nav_withdrawal": "0.9097",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-26",
+      "nav": "0.9053",
+      "cumulative_nav": "0.9053",
+      "cum_nav_withdrawal": "0.9053",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-27",
+      "nav": "0.9138",
+      "cumulative_nav": "0.9138",
+      "cum_nav_withdrawal": "0.9138",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-09-30",
+      "nav": "1.0354",
+      "cumulative_nav": "1.0354",
+      "cum_nav_withdrawal": "1.0354",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-08",
+      "nav": "1.1652",
+      "cumulative_nav": "1.1652",
+      "cum_nav_withdrawal": "1.1652",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-09",
+      "nav": "1.2848",
+      "cumulative_nav": "1.2848",
+      "cum_nav_withdrawal": "1.2848",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-10",
+      "nav": "1.2011",
+      "cumulative_nav": "1.2011",
+      "cum_nav_withdrawal": "1.2011",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-11",
+      "nav": "1.0959",
+      "cumulative_nav": "1.0959",
+      "cum_nav_withdrawal": "1.0959",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-14",
+      "nav": "1.1531",
+      "cumulative_nav": "1.1531",
+      "cum_nav_withdrawal": "1.1531",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-15",
+      "nav": "1.1508",
+      "cumulative_nav": "1.1508",
+      "cum_nav_withdrawal": "1.1508",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-16",
+      "nav": "1.1714",
+      "cumulative_nav": "1.1714",
+      "cum_nav_withdrawal": "1.1714",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-17",
+      "nav": "1.177",
+      "cumulative_nav": "1.177",
+      "cum_nav_withdrawal": "1.177",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-18",
+      "nav": "1.1797",
+      "cumulative_nav": "1.1797",
+      "cum_nav_withdrawal": "1.1797",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-21",
+      "nav": "1.2834",
+      "cumulative_nav": "1.2834",
+      "cum_nav_withdrawal": "1.2834",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-22",
+      "nav": "1.4094",
+      "cumulative_nav": "1.4094",
+      "cum_nav_withdrawal": "1.4094",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-23",
+      "nav": "1.446",
+      "cumulative_nav": "1.446",
+      "cum_nav_withdrawal": "1.446",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-24",
+      "nav": "1.5251",
+      "cumulative_nav": "1.5251",
+      "cum_nav_withdrawal": "1.5251",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-25",
+      "nav": "1.6682",
+      "cumulative_nav": "1.6682",
+      "cum_nav_withdrawal": "1.6682",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-28",
+      "nav": "1.7605",
+      "cumulative_nav": "1.7605",
+      "cum_nav_withdrawal": "1.7605",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-29",
+      "nav": "1.8216",
+      "cumulative_nav": "1.8216",
+      "cum_nav_withdrawal": "1.8216",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-30",
+      "nav": "1.886",
+      "cumulative_nav": "1.886",
+      "cum_nav_withdrawal": "1.886",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-10-31",
+      "nav": "1.9185",
+      "cumulative_nav": "1.9185",
+      "cum_nav_withdrawal": "1.9185",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-01",
+      "nav": "1.8889",
+      "cumulative_nav": "1.8889",
+      "cum_nav_withdrawal": "1.8889",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-04",
+      "nav": "1.8915",
+      "cumulative_nav": "1.8915",
+      "cum_nav_withdrawal": "1.8915",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-05",
+      "nav": "1.8629",
+      "cumulative_nav": "1.8629",
+      "cum_nav_withdrawal": "1.8629",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-06",
+      "nav": "1.8586",
+      "cumulative_nav": "1.8586",
+      "cum_nav_withdrawal": "1.8586",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-07",
+      "nav": "1.9178",
+      "cumulative_nav": "1.9178",
+      "cum_nav_withdrawal": "1.9178",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-08",
+      "nav": "1.9179",
+      "cumulative_nav": "1.9179",
+      "cum_nav_withdrawal": "1.9179",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-11",
+      "nav": "1.9177",
+      "cumulative_nav": "1.9177",
+      "cum_nav_withdrawal": "1.9177",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-12",
+      "nav": "1.9177",
+      "cumulative_nav": "1.9177",
+      "cum_nav_withdrawal": "1.9177",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-13",
+      "nav": "1.9176",
+      "cumulative_nav": "1.9176",
+      "cum_nav_withdrawal": "1.9176",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-14",
+      "nav": "1.9175",
+      "cumulative_nav": "1.9175",
+      "cum_nav_withdrawal": "1.9175",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-15",
+      "nav": "1.9174",
+      "cumulative_nav": "1.9174",
+      "cum_nav_withdrawal": "1.9174",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-18",
+      "nav": "1.9173",
+      "cumulative_nav": "1.9173",
+      "cum_nav_withdrawal": "1.9173",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-19",
+      "nav": "1.9173",
+      "cumulative_nav": "1.9173",
+      "cum_nav_withdrawal": "1.9173",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-20",
+      "nav": "1.9172",
+      "cumulative_nav": "1.9172",
+      "cum_nav_withdrawal": "1.9172",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-21",
+      "nav": "1.9171",
+      "cumulative_nav": "1.9171",
+      "cum_nav_withdrawal": "1.9171",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-22",
+      "nav": "1.917",
+      "cumulative_nav": "1.917",
+      "cum_nav_withdrawal": "1.917",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-25",
+      "nav": "1.9169",
+      "cumulative_nav": "1.9169",
+      "cum_nav_withdrawal": "1.9169",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-26",
+      "nav": "1.9168",
+      "cumulative_nav": "1.9168",
+      "cum_nav_withdrawal": "1.9168",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-27",
+      "nav": "1.9167",
+      "cumulative_nav": "1.9167",
+      "cum_nav_withdrawal": "1.9167",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-28",
+      "nav": "1.9167",
+      "cumulative_nav": "1.9167",
+      "cum_nav_withdrawal": "1.9167",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-11-29",
+      "nav": "1.9166",
+      "cumulative_nav": "1.9166",
+      "cum_nav_withdrawal": "1.9166",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-02",
+      "nav": "1.9164",
+      "cumulative_nav": "1.9164",
+      "cum_nav_withdrawal": "1.9164",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-03",
+      "nav": "1.9163",
+      "cumulative_nav": "1.9163",
+      "cum_nav_withdrawal": "1.9163",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-04",
+      "nav": "1.9163",
+      "cumulative_nav": "1.9163",
+      "cum_nav_withdrawal": "1.9163",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-05",
+      "nav": "1.919",
+      "cumulative_nav": "1.919",
+      "cum_nav_withdrawal": "1.919",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-06",
+      "nav": "1.9114",
+      "cumulative_nav": "1.9114",
+      "cum_nav_withdrawal": "1.9114",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-09",
+      "nav": "1.8606",
+      "cumulative_nav": "1.8606",
+      "cum_nav_withdrawal": "1.8606",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-10",
+      "nav": "1.9125",
+      "cumulative_nav": "1.9125",
+      "cum_nav_withdrawal": "1.9125",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-11",
+      "nav": "1.9101",
+      "cumulative_nav": "1.9101",
+      "cum_nav_withdrawal": "1.9101",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-12",
+      "nav": "1.9758",
+      "cumulative_nav": "1.9758",
+      "cum_nav_withdrawal": "1.9758",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-13",
+      "nav": "1.9772",
+      "cumulative_nav": "1.9772",
+      "cum_nav_withdrawal": "1.9772",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-16",
+      "nav": "1.9218",
+      "cumulative_nav": "1.9218",
+      "cum_nav_withdrawal": "1.9218",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-17",
+      "nav": "1.8147",
+      "cumulative_nav": "1.8147",
+      "cum_nav_withdrawal": "1.8147",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-18",
+      "nav": "1.8146",
+      "cumulative_nav": "1.8146",
+      "cum_nav_withdrawal": "1.8146",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-19",
+      "nav": "1.8158",
+      "cumulative_nav": "1.8158",
+      "cum_nav_withdrawal": "1.8158",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-20",
+      "nav": "1.8382",
+      "cumulative_nav": "1.8382",
+      "cum_nav_withdrawal": "1.8382",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-23",
+      "nav": "1.7545",
+      "cumulative_nav": "1.7545",
+      "cum_nav_withdrawal": "1.7545",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-24",
+      "nav": "1.7318",
+      "cumulative_nav": "1.7318",
+      "cum_nav_withdrawal": "1.7318",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-25",
+      "nav": "1.7325",
+      "cumulative_nav": "1.7325",
+      "cum_nav_withdrawal": "1.7325",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-26",
+      "nav": "1.7303",
+      "cumulative_nav": "1.7303",
+      "cum_nav_withdrawal": "1.7303",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-27",
+      "nav": "1.714",
+      "cumulative_nav": "1.714",
+      "cum_nav_withdrawal": "1.714",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-30",
+      "nav": "1.7392",
+      "cumulative_nav": "1.7392",
+      "cum_nav_withdrawal": "1.7392",
+      "price_change": ""
+    },
+    {
+      "price_date": "2024-12-31",
+      "nav": "1.7031",
+      "cumulative_nav": "1.7031",
+      "cum_nav_withdrawal": "1.7031",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-02",
+      "nav": "1.6716",
+      "cumulative_nav": "1.6716",
+      "cum_nav_withdrawal": "1.6716",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-03",
+      "nav": "1.6488",
+      "cumulative_nav": "1.6488",
+      "cum_nav_withdrawal": "1.6488",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-06",
+      "nav": "1.621",
+      "cumulative_nav": "1.621",
+      "cum_nav_withdrawal": "1.621",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-07",
+      "nav": "1.6441",
+      "cumulative_nav": "1.6441",
+      "cum_nav_withdrawal": "1.6441",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-08",
+      "nav": "1.6412",
+      "cumulative_nav": "1.6412",
+      "cum_nav_withdrawal": "1.6412",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-09",
+      "nav": "1.6428",
+      "cumulative_nav": "1.6428",
+      "cum_nav_withdrawal": "1.6428",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-10",
+      "nav": "1.6555",
+      "cumulative_nav": "1.6555",
+      "cum_nav_withdrawal": "1.6555",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-13",
+      "nav": "1.6265",
+      "cumulative_nav": "1.6265",
+      "cum_nav_withdrawal": "1.6265",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-14",
+      "nav": "1.6554",
+      "cumulative_nav": "1.6554",
+      "cum_nav_withdrawal": "1.6554",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-15",
+      "nav": "1.678",
+      "cumulative_nav": "1.678",
+      "cum_nav_withdrawal": "1.678",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-16",
+      "nav": "1.6851",
+      "cumulative_nav": "1.6851",
+      "cum_nav_withdrawal": "1.6851",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-17",
+      "nav": "1.692",
+      "cumulative_nav": "1.692",
+      "cum_nav_withdrawal": "1.692",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-20",
+      "nav": "1.6778",
+      "cumulative_nav": "1.6778",
+      "cum_nav_withdrawal": "1.6778",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-21",
+      "nav": "1.6754",
+      "cumulative_nav": "1.6754",
+      "cum_nav_withdrawal": "1.6754",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-22",
+      "nav": "1.6687",
+      "cumulative_nav": "1.6687",
+      "cum_nav_withdrawal": "1.6687",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-23",
+      "nav": "1.6464",
+      "cumulative_nav": "1.6464",
+      "cum_nav_withdrawal": "1.6464",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-24",
+      "nav": "1.6505",
+      "cumulative_nav": "1.6505",
+      "cum_nav_withdrawal": "1.6505",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-01-27",
+      "nav": "1.6062",
+      "cumulative_nav": "1.6062",
+      "cum_nav_withdrawal": "1.6062",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-05",
+      "nav": "1.6094",
+      "cumulative_nav": "1.6094",
+      "cum_nav_withdrawal": "1.6094",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-06",
+      "nav": "1.6141",
+      "cumulative_nav": "1.6141",
+      "cum_nav_withdrawal": "1.6141",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-07",
+      "nav": "1.6251",
+      "cumulative_nav": "1.6251",
+      "cum_nav_withdrawal": "1.6251",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-10",
+      "nav": "1.6422",
+      "cumulative_nav": "1.6422",
+      "cum_nav_withdrawal": "1.6422",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-11",
+      "nav": "1.647",
+      "cumulative_nav": "1.647",
+      "cum_nav_withdrawal": "1.647",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-12",
+      "nav": "1.6676",
+      "cumulative_nav": "1.6676",
+      "cum_nav_withdrawal": "1.6676",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-13",
+      "nav": "1.6691",
+      "cumulative_nav": "1.6691",
+      "cum_nav_withdrawal": "1.6691",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-14",
+      "nav": "1.6775",
+      "cumulative_nav": "1.6775",
+      "cum_nav_withdrawal": "1.6775",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-17",
+      "nav": "1.7411",
+      "cumulative_nav": "1.7411",
+      "cum_nav_withdrawal": "1.7411",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-18",
+      "nav": "1.7189",
+      "cumulative_nav": "1.7189",
+      "cum_nav_withdrawal": "1.7189",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-19",
+      "nav": "1.7512",
+      "cumulative_nav": "1.7512",
+      "cum_nav_withdrawal": "1.7512",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-20",
+      "nav": "1.7869",
+      "cumulative_nav": "1.7869",
+      "cum_nav_withdrawal": "1.7869",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-21",
+      "nav": "1.8871",
+      "cumulative_nav": "1.8871",
+      "cum_nav_withdrawal": "1.8871",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-24",
+      "nav": "1.8766",
+      "cumulative_nav": "1.8766",
+      "cum_nav_withdrawal": "1.8766",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-25",
+      "nav": "1.8724",
+      "cumulative_nav": "1.8724",
+      "cum_nav_withdrawal": "1.8724",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-26",
+      "nav": "1.9227",
+      "cumulative_nav": "1.9227",
+      "cum_nav_withdrawal": "1.9227",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-27",
+      "nav": "1.8821",
+      "cumulative_nav": "1.8821",
+      "cum_nav_withdrawal": "1.8821",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-02-28",
+      "nav": "1.9488",
+      "cumulative_nav": "1.9488",
+      "cum_nav_withdrawal": "1.9488",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-03",
+      "nav": "1.9751",
+      "cumulative_nav": "1.9751",
+      "cum_nav_withdrawal": "1.9751",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-04",
+      "nav": "1.9784",
+      "cumulative_nav": "1.9784",
+      "cum_nav_withdrawal": "1.9784",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-05",
+      "nav": "1.9981",
+      "cumulative_nav": "1.9981",
+      "cum_nav_withdrawal": "1.9981",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-06",
+      "nav": "2.0785",
+      "cumulative_nav": "2.0785",
+      "cum_nav_withdrawal": "2.0785",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-07",
+      "nav": "2.0278",
+      "cumulative_nav": "2.0278",
+      "cum_nav_withdrawal": "2.0278",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-10",
+      "nav": "2.0294",
+      "cumulative_nav": "2.0294",
+      "cum_nav_withdrawal": "2.0294",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-11",
+      "nav": "2.0466",
+      "cumulative_nav": "2.0466",
+      "cum_nav_withdrawal": "2.0466",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-12",
+      "nav": "2.0597",
+      "cumulative_nav": "2.0597",
+      "cum_nav_withdrawal": "2.0597",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-13",
+      "nav": "2.0109",
+      "cumulative_nav": "2.0109",
+      "cum_nav_withdrawal": "2.0109",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-14",
+      "nav": "2.0099",
+      "cumulative_nav": "2.0099",
+      "cum_nav_withdrawal": "2.0099",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-17",
+      "nav": "1.9452",
+      "cumulative_nav": "1.9452",
+      "cum_nav_withdrawal": "1.9452",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-18",
+      "nav": "1.9668",
+      "cumulative_nav": "1.9668",
+      "cum_nav_withdrawal": "1.9668",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-19",
+      "nav": "1.9746",
+      "cumulative_nav": "1.9746",
+      "cum_nav_withdrawal": "1.9746",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-20",
+      "nav": "2.0425",
+      "cumulative_nav": "2.0425",
+      "cum_nav_withdrawal": "2.0425",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-21",
+      "nav": "2.0316",
+      "cumulative_nav": "2.0316",
+      "cum_nav_withdrawal": "2.0316",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-24",
+      "nav": "2.0131",
+      "cumulative_nav": "2.0131",
+      "cum_nav_withdrawal": "2.0131",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-25",
+      "nav": "2.006",
+      "cumulative_nav": "2.006",
+      "cum_nav_withdrawal": "2.006",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-26",
+      "nav": "1.9914",
+      "cumulative_nav": "1.9914",
+      "cum_nav_withdrawal": "1.9914",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-27",
+      "nav": "2.0202",
+      "cumulative_nav": "2.0202",
+      "cum_nav_withdrawal": "2.0202",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-28",
+      "nav": "2.0493",
+      "cumulative_nav": "2.0493",
+      "cum_nav_withdrawal": "2.0493",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-03-31",
+      "nav": "2.0501",
+      "cumulative_nav": "2.0501",
+      "cum_nav_withdrawal": "2.0501",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-01",
+      "nav": "2.0506",
+      "cumulative_nav": "2.0506",
+      "cum_nav_withdrawal": "2.0506",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-02",
+      "nav": "2.0525",
+      "cumulative_nav": "2.0525",
+      "cum_nav_withdrawal": "2.0525",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-03",
+      "nav": "2.0302",
+      "cumulative_nav": "2.0302",
+      "cum_nav_withdrawal": "2.0302",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-07",
+      "nav": "1.9758",
+      "cumulative_nav": "1.9758",
+      "cum_nav_withdrawal": "1.9758",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-08",
+      "nav": "1.932",
+      "cumulative_nav": "1.932",
+      "cum_nav_withdrawal": "1.932",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-09",
+      "nav": "1.9364",
+      "cumulative_nav": "1.9364",
+      "cum_nav_withdrawal": "1.9364",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-10",
+      "nav": "1.9589",
+      "cumulative_nav": "1.9589",
+      "cum_nav_withdrawal": "1.9589",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-11",
+      "nav": "1.9744",
+      "cumulative_nav": "1.9744",
+      "cum_nav_withdrawal": "1.9744",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-14",
+      "nav": "1.9544",
+      "cumulative_nav": "1.9544",
+      "cum_nav_withdrawal": "1.9544",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-15",
+      "nav": "1.9536",
+      "cumulative_nav": "1.9536",
+      "cum_nav_withdrawal": "1.9536",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-16",
+      "nav": "2.0555",
+      "cumulative_nav": "2.0555",
+      "cum_nav_withdrawal": "2.0555",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-17",
+      "nav": "2.056",
+      "cumulative_nav": "2.056",
+      "cum_nav_withdrawal": "2.056",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-18",
+      "nav": "2.1409",
+      "cumulative_nav": "2.1409",
+      "cum_nav_withdrawal": "2.1409",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-21",
+      "nav": "2.2071",
+      "cumulative_nav": "2.2071",
+      "cum_nav_withdrawal": "2.2071",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-22",
+      "nav": "2.2423",
+      "cumulative_nav": "2.2423",
+      "cum_nav_withdrawal": "2.2423",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-23",
+      "nav": "2.3002",
+      "cumulative_nav": "2.3002",
+      "cum_nav_withdrawal": "2.3002",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-24",
+      "nav": "2.2977",
+      "cumulative_nav": "2.2977",
+      "cum_nav_withdrawal": "2.2977",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-25",
+      "nav": "2.3119",
+      "cumulative_nav": "2.3119",
+      "cum_nav_withdrawal": "2.3119",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-28",
+      "nav": "2.2434",
+      "cumulative_nav": "2.2434",
+      "cum_nav_withdrawal": "2.2434",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-29",
+      "nav": "2.2429",
+      "cumulative_nav": "2.2429",
+      "cum_nav_withdrawal": "2.2429",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-04-30",
+      "nav": "2.2328",
+      "cumulative_nav": "2.2328",
+      "cum_nav_withdrawal": "2.2328",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-06",
+      "nav": "2.2369",
+      "cumulative_nav": "2.2369",
+      "cum_nav_withdrawal": "2.2369",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-07",
+      "nav": "2.2167",
+      "cumulative_nav": "2.2167",
+      "cum_nav_withdrawal": "2.2167",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-08",
+      "nav": "2.2187",
+      "cumulative_nav": "2.2187",
+      "cum_nav_withdrawal": "2.2187",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-09",
+      "nav": "2.1537",
+      "cumulative_nav": "2.1537",
+      "cum_nav_withdrawal": "2.1537",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-12",
+      "nav": "2.1992",
+      "cumulative_nav": "2.1992",
+      "cum_nav_withdrawal": "2.1992",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-13",
+      "nav": "2.1889",
+      "cumulative_nav": "2.1889",
+      "cum_nav_withdrawal": "2.1889",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-14",
+      "nav": "2.231",
+      "cumulative_nav": "2.231",
+      "cum_nav_withdrawal": "2.231",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-15",
+      "nav": "2.2598",
+      "cumulative_nav": "2.2598",
+      "cum_nav_withdrawal": "2.2598",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-16",
+      "nav": "2.1984",
+      "cumulative_nav": "2.1984",
+      "cum_nav_withdrawal": "2.1984",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-19",
+      "nav": "2.1974",
+      "cumulative_nav": "2.1974",
+      "cum_nav_withdrawal": "2.1974",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-20",
+      "nav": "2.2266",
+      "cumulative_nav": "2.2266",
+      "cum_nav_withdrawal": "2.2266",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-21",
+      "nav": "2.2777",
+      "cumulative_nav": "2.2777",
+      "cum_nav_withdrawal": "2.2777",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-22",
+      "nav": "2.2549",
+      "cumulative_nav": "2.2549",
+      "cum_nav_withdrawal": "2.2549",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-23",
+      "nav": "2.294",
+      "cumulative_nav": "2.294",
+      "cum_nav_withdrawal": "2.294",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-26",
+      "nav": "2.2956",
+      "cumulative_nav": "2.2956",
+      "cum_nav_withdrawal": "2.2956",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-27",
+      "nav": "2.3371",
+      "cumulative_nav": "2.3371",
+      "cum_nav_withdrawal": "2.3371",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-28",
+      "nav": "2.3476",
+      "cumulative_nav": "2.3476",
+      "cum_nav_withdrawal": "2.3476",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-29",
+      "nav": "2.3662",
+      "cumulative_nav": "2.3662",
+      "cum_nav_withdrawal": "2.3662",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-05-30",
+      "nav": "2.349",
+      "cumulative_nav": "2.349",
+      "cum_nav_withdrawal": "2.349",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-03",
+      "nav": "2.4047",
+      "cumulative_nav": "2.4047",
+      "cum_nav_withdrawal": "2.4047",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-04",
+      "nav": "2.3997",
+      "cumulative_nav": "2.3997",
+      "cum_nav_withdrawal": "2.3997",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-05",
+      "nav": "2.4095",
+      "cumulative_nav": "2.4095",
+      "cum_nav_withdrawal": "2.4095",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-06",
+      "nav": "2.4223",
+      "cumulative_nav": "2.4223",
+      "cum_nav_withdrawal": "2.4223",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-09",
+      "nav": "2.4361",
+      "cumulative_nav": "2.4361",
+      "cum_nav_withdrawal": "2.4361",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-10",
+      "nav": "2.438",
+      "cumulative_nav": "2.438",
+      "cum_nav_withdrawal": "2.438",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-11",
+      "nav": "2.345",
+      "cumulative_nav": "2.345",
+      "cum_nav_withdrawal": "2.345",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-12",
+      "nav": "2.3401",
+      "cumulative_nav": "2.3401",
+      "cum_nav_withdrawal": "2.3401",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-13",
+      "nav": "2.2515",
+      "cumulative_nav": "2.2515",
+      "cum_nav_withdrawal": "2.2515",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-16",
+      "nav": "2.2295",
+      "cumulative_nav": "2.2295",
+      "cum_nav_withdrawal": "2.2295",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-17",
+      "nav": "2.2105",
+      "cumulative_nav": "2.2105",
+      "cum_nav_withdrawal": "2.2105",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-18",
+      "nav": "2.1981",
+      "cumulative_nav": "2.1981",
+      "cum_nav_withdrawal": "2.1981",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-19",
+      "nav": "2.1684",
+      "cumulative_nav": "2.1684",
+      "cum_nav_withdrawal": "2.1684",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-20",
+      "nav": "2.1656",
+      "cumulative_nav": "2.1656",
+      "cum_nav_withdrawal": "2.1656",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-23",
+      "nav": "2.1713",
+      "cumulative_nav": "2.1713",
+      "cum_nav_withdrawal": "2.1713",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-24",
+      "nav": "2.181",
+      "cumulative_nav": "2.181",
+      "cum_nav_withdrawal": "2.181",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-25",
+      "nav": "2.1722",
+      "cumulative_nav": "2.1722",
+      "cum_nav_withdrawal": "2.1722",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-26",
+      "nav": "2.1315",
+      "cumulative_nav": "2.1315",
+      "cum_nav_withdrawal": "2.1315",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-27",
+      "nav": "2.1018",
+      "cumulative_nav": "2.1018",
+      "cum_nav_withdrawal": "2.1018",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-06-30",
+      "nav": "2.095",
+      "cumulative_nav": "2.095",
+      "cum_nav_withdrawal": "2.095",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-01",
+      "nav": "2.0117",
+      "cumulative_nav": "2.0117",
+      "cum_nav_withdrawal": "2.0117",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-02",
+      "nav": "1.9966",
+      "cumulative_nav": "1.9966",
+      "cum_nav_withdrawal": "1.9966",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-03",
+      "nav": "1.9912",
+      "cumulative_nav": "1.9912",
+      "cum_nav_withdrawal": "1.9912",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-04",
+      "nav": "1.9579",
+      "cumulative_nav": "1.9579",
+      "cum_nav_withdrawal": "1.9579",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-07",
+      "nav": "1.9917",
+      "cumulative_nav": "1.9917",
+      "cum_nav_withdrawal": "1.9917",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-08",
+      "nav": "1.9937",
+      "cumulative_nav": "1.9937",
+      "cum_nav_withdrawal": "1.9937",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-09",
+      "nav": "1.9953",
+      "cumulative_nav": "1.9953",
+      "cum_nav_withdrawal": "1.9953",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-10",
+      "nav": "1.994",
+      "cumulative_nav": "1.994",
+      "cum_nav_withdrawal": "1.994",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-11",
+      "nav": "1.9997",
+      "cumulative_nav": "1.9997",
+      "cum_nav_withdrawal": "1.9997",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-14",
+      "nav": "2.009",
+      "cumulative_nav": "2.009",
+      "cum_nav_withdrawal": "2.009",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-15",
+      "nav": "2.0347",
+      "cumulative_nav": "2.0347",
+      "cum_nav_withdrawal": "2.0347",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-16",
+      "nav": "2.0293",
+      "cumulative_nav": "2.0293",
+      "cum_nav_withdrawal": "2.0293",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-17",
+      "nav": "2.0451",
+      "cumulative_nav": "2.0451",
+      "cum_nav_withdrawal": "2.0451",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-18",
+      "nav": "2.0415",
+      "cumulative_nav": "2.0415",
+      "cum_nav_withdrawal": "2.0415",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-21",
+      "nav": "2.0613",
+      "cumulative_nav": "2.0613",
+      "cum_nav_withdrawal": "2.0613",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-22",
+      "nav": "2.0938",
+      "cumulative_nav": "2.0938",
+      "cum_nav_withdrawal": "2.0938",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-23",
+      "nav": "2.098",
+      "cumulative_nav": "2.098",
+      "cum_nav_withdrawal": "2.098",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-24",
+      "nav": "2.1068",
+      "cumulative_nav": "2.1068",
+      "cum_nav_withdrawal": "2.1068",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-25",
+      "nav": "2.1151",
+      "cumulative_nav": "2.1151",
+      "cum_nav_withdrawal": "2.1151",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-28",
+      "nav": "2.1093",
+      "cumulative_nav": "2.1093",
+      "cum_nav_withdrawal": "2.1093",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-29",
+      "nav": "2.0953",
+      "cumulative_nav": "2.0953",
+      "cum_nav_withdrawal": "2.0953",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-30",
+      "nav": "2.1041",
+      "cumulative_nav": "2.1041",
+      "cum_nav_withdrawal": "2.1041",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-07-31",
+      "nav": "2.1048",
+      "cumulative_nav": "2.1048",
+      "cum_nav_withdrawal": "2.1048",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-01",
+      "nav": "2.0791",
+      "cumulative_nav": "2.0791",
+      "cum_nav_withdrawal": "2.0791",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-04",
+      "nav": "2.0864",
+      "cumulative_nav": "2.0864",
+      "cum_nav_withdrawal": "2.0864",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-05",
+      "nav": "2.1048",
+      "cumulative_nav": "2.1048",
+      "cum_nav_withdrawal": "2.1048",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-06",
+      "nav": "2.1374",
+      "cumulative_nav": "2.1374",
+      "cum_nav_withdrawal": "2.1374",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-07",
+      "nav": "2.1566",
+      "cumulative_nav": "2.1566",
+      "cum_nav_withdrawal": "2.1566",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-08",
+      "nav": "2.1902",
+      "cumulative_nav": "2.1902",
+      "cum_nav_withdrawal": "2.1902",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-11",
+      "nav": "2.2581",
+      "cumulative_nav": "2.2581",
+      "cum_nav_withdrawal": "2.2581",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-12",
+      "nav": "2.2771",
+      "cumulative_nav": "2.2771",
+      "cum_nav_withdrawal": "2.2771",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-13",
+      "nav": "2.2947",
+      "cumulative_nav": "2.2947",
+      "cum_nav_withdrawal": "2.2947",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-14",
+      "nav": "2.3256",
+      "cumulative_nav": "2.3256",
+      "cum_nav_withdrawal": "2.3256",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-15",
+      "nav": "2.3516",
+      "cumulative_nav": "2.3516",
+      "cum_nav_withdrawal": "2.3516",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-18",
+      "nav": "2.3609",
+      "cumulative_nav": "2.3609",
+      "cum_nav_withdrawal": "2.3609",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-19",
+      "nav": "2.4559",
+      "cumulative_nav": "2.4559",
+      "cum_nav_withdrawal": "2.4559",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-20",
+      "nav": "2.4762",
+      "cumulative_nav": "2.4762",
+      "cum_nav_withdrawal": "2.4762",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-21",
+      "nav": "2.4346",
+      "cumulative_nav": "2.4346",
+      "cum_nav_withdrawal": "2.4346",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-22",
+      "nav": "2.4571",
+      "cumulative_nav": "2.4571",
+      "cum_nav_withdrawal": "2.4571",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-25",
+      "nav": "2.5127",
+      "cumulative_nav": "2.5127",
+      "cum_nav_withdrawal": "2.5127",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-26",
+      "nav": "2.5553",
+      "cumulative_nav": "2.5553",
+      "cum_nav_withdrawal": "2.5553",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-27",
+      "nav": "2.5572",
+      "cumulative_nav": "2.5572",
+      "cum_nav_withdrawal": "2.5572",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-28",
+      "nav": "2.6335",
+      "cumulative_nav": "2.6335",
+      "cum_nav_withdrawal": "2.6335",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-08-29",
+      "nav": "2.5807",
+      "cumulative_nav": "2.5807",
+      "cum_nav_withdrawal": "2.5807",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-01",
+      "nav": "2.6374",
+      "cumulative_nav": "2.6374",
+      "cum_nav_withdrawal": "2.6374",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-02",
+      "nav": "2.6555",
+      "cumulative_nav": "2.6555",
+      "cum_nav_withdrawal": "2.6555",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-03",
+      "nav": "2.634",
+      "cumulative_nav": "2.634",
+      "cum_nav_withdrawal": "2.634",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-04",
+      "nav": "2.5023",
+      "cumulative_nav": "2.5023",
+      "cum_nav_withdrawal": "2.5023",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-05",
+      "nav": "2.5095",
+      "cumulative_nav": "2.5095",
+      "cum_nav_withdrawal": "2.5095",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-08",
+      "nav": "2.517",
+      "cumulative_nav": "2.517",
+      "cum_nav_withdrawal": "2.517",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-09",
+      "nav": "2.5513",
+      "cumulative_nav": "2.5513",
+      "cum_nav_withdrawal": "2.5513",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-10",
+      "nav": "2.5526",
+      "cumulative_nav": "2.5526",
+      "cum_nav_withdrawal": "2.5526",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-11",
+      "nav": "2.5686",
+      "cumulative_nav": "2.5686",
+      "cum_nav_withdrawal": "2.5686",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-12",
+      "nav": "2.5901",
+      "cumulative_nav": "2.5901",
+      "cum_nav_withdrawal": "2.5901",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-15",
+      "nav": "2.6295",
+      "cumulative_nav": "2.6295",
+      "cum_nav_withdrawal": "2.6295",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-16",
+      "nav": "2.6173",
+      "cumulative_nav": "2.6173",
+      "cum_nav_withdrawal": "2.6173",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-17",
+      "nav": "2.599",
+      "cumulative_nav": "2.599",
+      "cum_nav_withdrawal": "2.599",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-18",
+      "nav": "2.6351",
+      "cumulative_nav": "2.6351",
+      "cum_nav_withdrawal": "2.6351",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-19",
+      "nav": "1.6",
+      "cumulative_nav": "2.6271",
+      "cum_nav_withdrawal": "2.6271",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-22",
+      "nav": "1.6148",
+      "cumulative_nav": "2.6514",
+      "cum_nav_withdrawal": "2.6419",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-23",
+      "nav": "1.595",
+      "cumulative_nav": "2.6189",
+      "cum_nav_withdrawal": "2.6221",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-24",
+      "nav": "1.6152",
+      "cumulative_nav": "2.6521",
+      "cum_nav_withdrawal": "2.6423",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-25",
+      "nav": "1.6174",
+      "cumulative_nav": "2.6557",
+      "cum_nav_withdrawal": "2.6445",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-26",
+      "nav": "1.5956",
+      "cumulative_nav": "2.6199",
+      "cum_nav_withdrawal": "2.6227",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-29",
+      "nav": "1.5976",
+      "cumulative_nav": "2.6232",
+      "cum_nav_withdrawal": "2.6247",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-09-30",
+      "nav": "1.6017",
+      "cumulative_nav": "2.6299",
+      "cum_nav_withdrawal": "2.6288",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-09",
+      "nav": "1.6135",
+      "cumulative_nav": "2.6493",
+      "cum_nav_withdrawal": "2.6406",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-10",
+      "nav": "1.6047",
+      "cumulative_nav": "2.6348",
+      "cum_nav_withdrawal": "2.6318",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-13",
+      "nav": "1.632",
+      "cumulative_nav": "2.6796",
+      "cum_nav_withdrawal": "2.6591",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-14",
+      "nav": "1.6283",
+      "cumulative_nav": "2.6736",
+      "cum_nav_withdrawal": "2.6554",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-15",
+      "nav": "1.603",
+      "cumulative_nav": "2.632",
+      "cum_nav_withdrawal": "2.6301",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-16",
+      "nav": "1.5971",
+      "cumulative_nav": "2.6223",
+      "cum_nav_withdrawal": "2.6242",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-17",
+      "nav": "1.5908",
+      "cumulative_nav": "2.612",
+      "cum_nav_withdrawal": "2.6179",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-20",
+      "nav": "1.5964",
+      "cumulative_nav": "2.6212",
+      "cum_nav_withdrawal": "2.6235",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-21",
+      "nav": "1.5961",
+      "cumulative_nav": "2.6207",
+      "cum_nav_withdrawal": "2.6232",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-22",
+      "nav": "1.5818",
+      "cumulative_nav": "2.5972",
+      "cum_nav_withdrawal": "2.6089",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-23",
+      "nav": "1.5678",
+      "cumulative_nav": "2.5742",
+      "cum_nav_withdrawal": "2.5949",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-24",
+      "nav": "1.5475",
+      "cumulative_nav": "2.5409",
+      "cum_nav_withdrawal": "2.5746",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-27",
+      "nav": "1.5354",
+      "cumulative_nav": "2.521",
+      "cum_nav_withdrawal": "2.5625",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-28",
+      "nav": "1.5338",
+      "cumulative_nav": "2.5184",
+      "cum_nav_withdrawal": "2.5609",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-29",
+      "nav": "1.5388",
+      "cumulative_nav": "2.5266",
+      "cum_nav_withdrawal": "2.5659",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-30",
+      "nav": "1.5354",
+      "cumulative_nav": "2.521",
+      "cum_nav_withdrawal": "2.5625",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-10-31",
+      "nav": "1.5162",
+      "cumulative_nav": "2.4895",
+      "cum_nav_withdrawal": "2.5433",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-03",
+      "nav": "1.5108",
+      "cumulative_nav": "2.4806",
+      "cum_nav_withdrawal": "2.5379",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-04",
+      "nav": "1.5063",
+      "cumulative_nav": "2.4733",
+      "cum_nav_withdrawal": "2.5334",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-05",
+      "nav": "1.5213",
+      "cumulative_nav": "2.4979",
+      "cum_nav_withdrawal": "2.5484",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-06",
+      "nav": "1.5612",
+      "cumulative_nav": "2.5634",
+      "cum_nav_withdrawal": "2.5883",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-07",
+      "nav": "1.5609",
+      "cumulative_nav": "2.5629",
+      "cum_nav_withdrawal": "2.588",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-10",
+      "nav": "1.573",
+      "cumulative_nav": "2.5828",
+      "cum_nav_withdrawal": "2.6001",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-11",
+      "nav": "1.5727",
+      "cumulative_nav": "2.5823",
+      "cum_nav_withdrawal": "2.5998",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-12",
+      "nav": "1.5728",
+      "cumulative_nav": "2.5824",
+      "cum_nav_withdrawal": "2.5999",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-13",
+      "nav": "1.5854",
+      "cumulative_nav": "2.6031",
+      "cum_nav_withdrawal": "2.6125",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-14",
+      "nav": "1.589",
+      "cumulative_nav": "2.609",
+      "cum_nav_withdrawal": "2.6161",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-17",
+      "nav": "1.6035",
+      "cumulative_nav": "2.6328",
+      "cum_nav_withdrawal": "2.6306",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-18",
+      "nav": "1.6093",
+      "cumulative_nav": "2.6424",
+      "cum_nav_withdrawal": "2.6364",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-19",
+      "nav": "1.6036",
+      "cumulative_nav": "2.633",
+      "cum_nav_withdrawal": "2.6307",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-20",
+      "nav": "1.5813",
+      "cumulative_nav": "2.5964",
+      "cum_nav_withdrawal": "2.6084",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-21",
+      "nav": "1.5614",
+      "cumulative_nav": "2.5637",
+      "cum_nav_withdrawal": "2.5885",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-24",
+      "nav": "1.564",
+      "cumulative_nav": "2.568",
+      "cum_nav_withdrawal": "2.5911",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-25",
+      "nav": "1.5862",
+      "cumulative_nav": "2.6044",
+      "cum_nav_withdrawal": "2.6133",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-26",
+      "nav": "1.6162",
+      "cumulative_nav": "2.6537",
+      "cum_nav_withdrawal": "2.6433",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-27",
+      "nav": "1.6024",
+      "cumulative_nav": "2.631",
+      "cum_nav_withdrawal": "2.6295",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-11-28",
+      "nav": "1.6033",
+      "cumulative_nav": "2.6325",
+      "cum_nav_withdrawal": "2.6304",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-01",
+      "nav": "1.6164",
+      "cumulative_nav": "2.654",
+      "cum_nav_withdrawal": "2.6435",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-02",
+      "nav": "1.6094",
+      "cumulative_nav": "2.6425",
+      "cum_nav_withdrawal": "2.6365",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-03",
+      "nav": "1.6246",
+      "cumulative_nav": "2.6675",
+      "cum_nav_withdrawal": "2.6517",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-04",
+      "nav": "1.6382",
+      "cumulative_nav": "2.6898",
+      "cum_nav_withdrawal": "2.6653",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-05",
+      "nav": "1.6667",
+      "cumulative_nav": "2.7366",
+      "cum_nav_withdrawal": "2.6938",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-08",
+      "nav": "1.7084",
+      "cumulative_nav": "2.8051",
+      "cum_nav_withdrawal": "2.7355",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-09",
+      "nav": "1.7079",
+      "cumulative_nav": "2.8043",
+      "cum_nav_withdrawal": "2.735",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-10",
+      "nav": "1.7103",
+      "cumulative_nav": "2.8082",
+      "cum_nav_withdrawal": "2.7374",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-11",
+      "nav": "1.7145",
+      "cumulative_nav": "2.8151",
+      "cum_nav_withdrawal": "2.7416",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-12",
+      "nav": "1.7307",
+      "cumulative_nav": "2.8417",
+      "cum_nav_withdrawal": "2.7578",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-15",
+      "nav": "1.7457",
+      "cumulative_nav": "2.8663",
+      "cum_nav_withdrawal": "2.7728",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-16",
+      "nav": "1.7566",
+      "cumulative_nav": "2.8842",
+      "cum_nav_withdrawal": "2.7837",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-17",
+      "nav": "1.7586",
+      "cumulative_nav": "2.8875",
+      "cum_nav_withdrawal": "2.7857",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-18",
+      "nav": "1.7581",
+      "cumulative_nav": "2.8867",
+      "cum_nav_withdrawal": "2.7852",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-19",
+      "nav": "1.7838",
+      "cumulative_nav": "2.9289",
+      "cum_nav_withdrawal": "2.8109",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-22",
+      "nav": "1.7986",
+      "cumulative_nav": "2.9532",
+      "cum_nav_withdrawal": "2.8257",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-23",
+      "nav": "1.7964",
+      "cumulative_nav": "2.9496",
+      "cum_nav_withdrawal": "2.8235",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-24",
+      "nav": "1.8052",
+      "cumulative_nav": "2.964",
+      "cum_nav_withdrawal": "2.8323",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-25",
+      "nav": "1.821",
+      "cumulative_nav": "2.99",
+      "cum_nav_withdrawal": "2.8481",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-26",
+      "nav": "1.8356",
+      "cumulative_nav": "3.0139",
+      "cum_nav_withdrawal": "2.8627",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-29",
+      "nav": "1.8916",
+      "cumulative_nav": "3.1059",
+      "cum_nav_withdrawal": "2.9187",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-30",
+      "nav": "1.9202",
+      "cumulative_nav": "3.1528",
+      "cum_nav_withdrawal": "2.9473",
+      "price_change": ""
+    },
+    {
+      "price_date": "2025-12-31",
+      "nav": "1.9005",
+      "cumulative_nav": "3.1205",
+      "cum_nav_withdrawal": "2.9276",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-05",
+      "nav": "1.9758",
+      "cumulative_nav": "3.2441",
+      "cum_nav_withdrawal": "3.0029",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-06",
+      "nav": "2.0259",
+      "cumulative_nav": "3.3264",
+      "cum_nav_withdrawal": "3.053",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-07",
+      "nav": "2.1003",
+      "cumulative_nav": "3.4486",
+      "cum_nav_withdrawal": "3.1274",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-08",
+      "nav": "2.1167",
+      "cumulative_nav": "3.4755",
+      "cum_nav_withdrawal": "3.1438",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-09",
+      "nav": "2.1799",
+      "cumulative_nav": "3.5793",
+      "cum_nav_withdrawal": "3.207",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-12",
+      "nav": "2.2447",
+      "cumulative_nav": "3.6857",
+      "cum_nav_withdrawal": "3.2718",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-13",
+      "nav": "2.3125",
+      "cumulative_nav": "3.797",
+      "cum_nav_withdrawal": "3.3396",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-14",
+      "nav": "2.341",
+      "cumulative_nav": "3.8438",
+      "cum_nav_withdrawal": "3.3681",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-15",
+      "nav": "2.2819",
+      "cumulative_nav": "3.7467",
+      "cum_nav_withdrawal": "3.309",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-16",
+      "nav": "2.2634",
+      "cumulative_nav": "3.7164",
+      "cum_nav_withdrawal": "3.2905",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-19",
+      "nav": "2.2709",
+      "cumulative_nav": "3.7287",
+      "cum_nav_withdrawal": "3.298",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-20",
+      "nav": "2.2714",
+      "cumulative_nav": "3.7295",
+      "cum_nav_withdrawal": "3.2985",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-21",
+      "nav": "2.2904",
+      "cumulative_nav": "3.7607",
+      "cum_nav_withdrawal": "3.3175",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-22",
+      "nav": "2.2731",
+      "cumulative_nav": "3.7323",
+      "cum_nav_withdrawal": "3.3002",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-23",
+      "nav": "2.2804",
+      "cumulative_nav": "3.7443",
+      "cum_nav_withdrawal": "3.3075",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-26",
+      "nav": "2.3124",
+      "cumulative_nav": "3.7968",
+      "cum_nav_withdrawal": "3.3395",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-27",
+      "nav": "2.3907",
+      "cumulative_nav": "3.9254",
+      "cum_nav_withdrawal": "3.4178",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-28",
+      "nav": "2.5004",
+      "cumulative_nav": "4.1055",
+      "cum_nav_withdrawal": "3.5275",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-29",
+      "nav": "2.5744",
+      "cumulative_nav": "4.227",
+      "cum_nav_withdrawal": "3.6015",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-01-30",
+      "nav": "2.494",
+      "cumulative_nav": "4.095",
+      "cum_nav_withdrawal": "3.5211",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-02",
+      "nav": "2.4205",
+      "cumulative_nav": "3.9743",
+      "cum_nav_withdrawal": "3.4476",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-03",
+      "nav": "2.4284",
+      "cumulative_nav": "3.9873",
+      "cum_nav_withdrawal": "3.4555",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-04",
+      "nav": "2.4556",
+      "cumulative_nav": "4.0319",
+      "cum_nav_withdrawal": "3.4827",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-05",
+      "nav": "2.4334",
+      "cumulative_nav": "3.9955",
+      "cum_nav_withdrawal": "3.4605",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-06",
+      "nav": "2.4333",
+      "cumulative_nav": "3.9953",
+      "cum_nav_withdrawal": "3.4604",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-09",
+      "nav": "2.4376",
+      "cumulative_nav": "4.0024",
+      "cum_nav_withdrawal": "3.4647",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-10",
+      "nav": "2.4119",
+      "cumulative_nav": "3.9602",
+      "cum_nav_withdrawal": "3.439",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-11",
+      "nav": "2.3912",
+      "cumulative_nav": "3.9262",
+      "cum_nav_withdrawal": "3.4183",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-12",
+      "nav": "2.3132",
+      "cumulative_nav": "3.7981",
+      "cum_nav_withdrawal": "3.3403",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-13",
+      "nav": "2.2565",
+      "cumulative_nav": "3.705",
+      "cum_nav_withdrawal": "3.2836",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-24",
+      "nav": "2.3639",
+      "cumulative_nav": "3.8814",
+      "cum_nav_withdrawal": "3.391",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-25",
+      "nav": "2.4465",
+      "cumulative_nav": "4.017",
+      "cum_nav_withdrawal": "3.4736",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-26",
+      "nav": "2.4907",
+      "cumulative_nav": "4.0896",
+      "cum_nav_withdrawal": "3.5178",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-02-27",
+      "nav": "2.5757",
+      "cumulative_nav": "4.2291",
+      "cum_nav_withdrawal": "3.6028",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-02",
+      "nav": "2.7194",
+      "cumulative_nav": "4.4651",
+      "cum_nav_withdrawal": "3.7465",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-03",
+      "nav": "2.7241",
+      "cumulative_nav": "4.4728",
+      "cum_nav_withdrawal": "3.7512",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-04",
+      "nav": "2.8184",
+      "cumulative_nav": "4.6276",
+      "cum_nav_withdrawal": "3.8455",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-05",
+      "nav": "2.8289",
+      "cumulative_nav": "4.6449",
+      "cum_nav_withdrawal": "3.856",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-06",
+      "nav": "2.7849",
+      "cumulative_nav": "4.5726",
+      "cum_nav_withdrawal": "3.812",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-09",
+      "nav": "2.7631",
+      "cumulative_nav": "4.5368",
+      "cum_nav_withdrawal": "3.7902",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-10",
+      "nav": "2.7128",
+      "cumulative_nav": "4.4542",
+      "cum_nav_withdrawal": "3.7399",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-11",
+      "nav": "2.7499",
+      "cumulative_nav": "4.5152",
+      "cum_nav_withdrawal": "3.777",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-12",
+      "nav": "2.7594",
+      "cumulative_nav": "4.5308",
+      "cum_nav_withdrawal": "3.7865",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-13",
+      "nav": "2.802",
+      "cumulative_nav": "4.6007",
+      "cum_nav_withdrawal": "3.8291",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-16",
+      "nav": "2.7204",
+      "cumulative_nav": "4.4667",
+      "cum_nav_withdrawal": "3.7475",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-17",
+      "nav": "2.6786",
+      "cumulative_nav": "4.3981",
+      "cum_nav_withdrawal": "3.7057",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-18",
+      "nav": "2.75",
+      "cumulative_nav": "4.5153",
+      "cum_nav_withdrawal": "3.7771",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-19",
+      "nav": "2.8179",
+      "cumulative_nav": "4.6268",
+      "cum_nav_withdrawal": "3.845",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-20",
+      "nav": "2.8391",
+      "cumulative_nav": "4.6616",
+      "cum_nav_withdrawal": "3.8662",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-23",
+      "nav": "2.841",
+      "cumulative_nav": "4.6647",
+      "cum_nav_withdrawal": "3.8681",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-24",
+      "nav": "2.8402",
+      "cumulative_nav": "4.6634",
+      "cum_nav_withdrawal": "3.8673",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-25",
+      "nav": "2.8372",
+      "cumulative_nav": "4.6585",
+      "cum_nav_withdrawal": "3.8643",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-26",
+      "nav": "2.8374",
+      "cumulative_nav": "4.6588",
+      "cum_nav_withdrawal": "3.8645",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-27",
+      "nav": "2.8626",
+      "cumulative_nav": "4.7002",
+      "cum_nav_withdrawal": "3.8897",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-30",
+      "nav": "2.9324",
+      "cumulative_nav": "4.8148",
+      "cum_nav_withdrawal": "3.9595",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-03-31",
+      "nav": "2.9304",
+      "cumulative_nav": "4.8115",
+      "cum_nav_withdrawal": "3.9575",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-01",
+      "nav": "2.9238",
+      "cumulative_nav": "4.8007",
+      "cum_nav_withdrawal": "3.9509",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-02",
+      "nav": "2.9614",
+      "cumulative_nav": "4.8624",
+      "cum_nav_withdrawal": "3.9885",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-03",
+      "nav": "2.9637",
+      "cumulative_nav": "4.8662",
+      "cum_nav_withdrawal": "3.9908",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-07",
+      "nav": "2.9371",
+      "cumulative_nav": "4.8225",
+      "cum_nav_withdrawal": "3.9642",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-08",
+      "nav": "2.9408",
+      "cumulative_nav": "4.8286",
+      "cum_nav_withdrawal": "3.9679",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-09",
+      "nav": "2.9645",
+      "cumulative_nav": "4.8675",
+      "cum_nav_withdrawal": "3.9916",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-10",
+      "nav": "2.9358",
+      "cumulative_nav": "4.8204",
+      "cum_nav_withdrawal": "3.9629",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-13",
+      "nav": "2.9609",
+      "cumulative_nav": "4.8616",
+      "cum_nav_withdrawal": "3.988",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-14",
+      "nav": "2.9642",
+      "cumulative_nav": "4.867",
+      "cum_nav_withdrawal": "3.9913",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-15",
+      "nav": "2.9376",
+      "cumulative_nav": "4.8234",
+      "cum_nav_withdrawal": "3.9647",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-16",
+      "nav": "2.9367",
+      "cumulative_nav": "4.8219",
+      "cum_nav_withdrawal": "3.9638",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-17",
+      "nav": "2.9584",
+      "cumulative_nav": "4.8575",
+      "cum_nav_withdrawal": "3.9855",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-20",
+      "nav": "3.0219",
+      "cumulative_nav": "4.9618",
+      "cum_nav_withdrawal": "4.049",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-21",
+      "nav": "3.041",
+      "cumulative_nav": "4.9931",
+      "cum_nav_withdrawal": "4.0681",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-22",
+      "nav": "3.0577",
+      "cumulative_nav": "5.0206",
+      "cum_nav_withdrawal": "4.0848",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-23",
+      "nav": "3.0843",
+      "cumulative_nav": "5.0642",
+      "cum_nav_withdrawal": "4.1114",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-24",
+      "nav": "3.0317",
+      "cumulative_nav": "4.9779",
+      "cum_nav_withdrawal": "4.0588",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-27",
+      "nav": "2.9788",
+      "cumulative_nav": "4.891",
+      "cum_nav_withdrawal": "4.0059",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-28",
+      "nav": "3.003",
+      "cumulative_nav": "4.9307",
+      "cum_nav_withdrawal": "4.0301",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-29",
+      "nav": "3.0252",
+      "cumulative_nav": "4.9672",
+      "cum_nav_withdrawal": "4.0523",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-04-30",
+      "nav": "3.0712",
+      "cumulative_nav": "5.0427",
+      "cum_nav_withdrawal": "4.0983",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-06",
+      "nav": "3.078",
+      "cumulative_nav": "5.0539",
+      "cum_nav_withdrawal": "4.1051",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-07",
+      "nav": "3.0956",
+      "cumulative_nav": "5.0828",
+      "cum_nav_withdrawal": "4.1227",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-08",
+      "nav": "3.0692",
+      "cumulative_nav": "5.0394",
+      "cum_nav_withdrawal": "4.0963",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-11",
+      "nav": "3.0974",
+      "cumulative_nav": "5.0857",
+      "cum_nav_withdrawal": "4.1245",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-12",
+      "nav": "3.1383",
+      "cumulative_nav": "5.1529",
+      "cum_nav_withdrawal": "4.1654",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-13",
+      "nav": "3.2107",
+      "cumulative_nav": "5.2718",
+      "cum_nav_withdrawal": "4.2378",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-14",
+      "nav": "3.1646",
+      "cumulative_nav": "5.1961",
+      "cum_nav_withdrawal": "4.1917",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-15",
+      "nav": "3.0858",
+      "cumulative_nav": "5.0667",
+      "cum_nav_withdrawal": "4.1129",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-18",
+      "nav": "3.076",
+      "cumulative_nav": "5.0506",
+      "cum_nav_withdrawal": "4.1031",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-19",
+      "nav": "3.0834",
+      "cumulative_nav": "5.0628",
+      "cum_nav_withdrawal": "4.1105",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-20",
+      "nav": "3.1116",
+      "cumulative_nav": "5.1091",
+      "cum_nav_withdrawal": "4.1387",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-21",
+      "nav": "1.6",
+      "cumulative_nav": "5.1401",
+      "cum_nav_withdrawal": "4.1576",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-22",
+      "nav": "1.6012",
+      "cumulative_nav": "5.1439",
+      "cum_nav_withdrawal": "4.1588",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-25",
+      "nav": "1.6808",
+      "cumulative_nav": "5.3997",
+      "cum_nav_withdrawal": "4.2384",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-26",
+      "nav": "1.6425",
+      "cumulative_nav": "5.2766",
+      "cum_nav_withdrawal": "4.2001",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-27",
+      "nav": "1.6439",
+      "cumulative_nav": "5.2811",
+      "cum_nav_withdrawal": "4.2015",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-28",
+      "nav": "1.661",
+      "cumulative_nav": "5.3361",
+      "cum_nav_withdrawal": "4.2186",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-05-29",
+      "nav": "1.6553",
+      "cumulative_nav": "5.3177",
+      "cum_nav_withdrawal": "4.2129",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-01",
+      "nav": "1.6829",
+      "cumulative_nav": "5.4064",
+      "cum_nav_withdrawal": "4.2405",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-02",
+      "nav": "1.7",
+      "cumulative_nav": "5.4613",
+      "cum_nav_withdrawal": "4.2576",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-03",
+      "nav": "1.6971",
+      "cumulative_nav": "5.452",
+      "cum_nav_withdrawal": "4.2547",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-04",
+      "nav": "1.7334",
+      "cumulative_nav": "5.5686",
+      "cum_nav_withdrawal": "4.291",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-05",
+      "nav": "1.706",
+      "cumulative_nav": "5.4806",
+      "cum_nav_withdrawal": "4.2636",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-08",
+      "nav": "1.6594",
+      "cumulative_nav": "5.3309",
+      "cum_nav_withdrawal": "4.217",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-09",
+      "nav": "1.6705",
+      "cumulative_nav": "5.3666",
+      "cum_nav_withdrawal": "4.2281",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-10",
+      "nav": "1.6868",
+      "cumulative_nav": "5.4189",
+      "cum_nav_withdrawal": "4.2444",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-11",
+      "nav": "1.6801",
+      "cumulative_nav": "5.3974",
+      "cum_nav_withdrawal": "4.2377",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-12",
+      "nav": "1.7124",
+      "cumulative_nav": "5.5012",
+      "cum_nav_withdrawal": "4.27",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-15",
+      "nav": "1.7344",
+      "cumulative_nav": "5.5719",
+      "cum_nav_withdrawal": "4.292",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-16",
+      "nav": "1.7794",
+      "cumulative_nav": "5.7164",
+      "cum_nav_withdrawal": "4.337",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-17",
+      "nav": "1.8079",
+      "cumulative_nav": "5.808",
+      "cum_nav_withdrawal": "4.3655",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-18",
+      "nav": "1.8231",
+      "cumulative_nav": "5.8568",
+      "cum_nav_withdrawal": "4.3807",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-22",
+      "nav": "1.8621",
+      "cumulative_nav": "5.9821",
+      "cum_nav_withdrawal": "4.4197",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-23",
+      "nav": "1.8654",
+      "cumulative_nav": "5.9927",
+      "cum_nav_withdrawal": "4.423",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-24",
+      "nav": "1.879",
+      "cumulative_nav": "6.0364",
+      "cum_nav_withdrawal": "4.4366",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-25",
+      "nav": "1.9434",
+      "cumulative_nav": "6.2433",
+      "cum_nav_withdrawal": "4.501",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-26",
+      "nav": "1.8954",
+      "cumulative_nav": "6.0891",
+      "cum_nav_withdrawal": "4.453",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-29",
+      "nav": "1.9033",
+      "cumulative_nav": "6.1145",
+      "cum_nav_withdrawal": "4.4609",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-06-30",
+      "nav": "1.9228",
+      "cumulative_nav": "6.1771",
+      "cum_nav_withdrawal": "4.4804",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-01",
+      "nav": "1.9307",
+      "cumulative_nav": "6.2025",
+      "cum_nav_withdrawal": "4.4883",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-02",
+      "nav": "1.8512",
+      "cumulative_nav": "5.9471",
+      "cum_nav_withdrawal": "4.4088",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-03",
+      "nav": "1.7931",
+      "cumulative_nav": "5.7604",
+      "cum_nav_withdrawal": "4.3507",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-06",
+      "nav": "1.7615",
+      "cumulative_nav": "5.6589",
+      "cum_nav_withdrawal": "4.3191",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-07",
+      "nav": "1.7566",
+      "cumulative_nav": "5.6432",
+      "cum_nav_withdrawal": "4.3142",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-08",
+      "nav": "1.7696",
+      "cumulative_nav": "5.6849",
+      "cum_nav_withdrawal": "4.3272",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-09",
+      "nav": "1.7772",
+      "cumulative_nav": "5.7093",
+      "cum_nav_withdrawal": "4.3348",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-10",
+      "nav": "1.7534",
+      "cumulative_nav": "5.6329",
+      "cum_nav_withdrawal": "4.311",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-13",
+      "nav": "1.7477",
+      "cumulative_nav": "5.6146",
+      "cum_nav_withdrawal": "4.3053",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-14",
+      "nav": "1.7527",
+      "cumulative_nav": "5.6306",
+      "cum_nav_withdrawal": "4.3103",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-15",
+      "nav": "1.7501",
+      "cumulative_nav": "5.6223",
+      "cum_nav_withdrawal": "4.3077",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-16",
+      "nav": "1.7383",
+      "cumulative_nav": "5.5844",
+      "cum_nav_withdrawal": "4.2959",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-17",
+      "nav": "1.7246",
+      "cumulative_nav": "5.5404",
+      "cum_nav_withdrawal": "4.2822",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-20",
+      "nav": "1.7215",
+      "cumulative_nav": "5.5304",
+      "cum_nav_withdrawal": "4.2791",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-21",
+      "nav": "1.7195",
+      "cumulative_nav": "5.524",
+      "cum_nav_withdrawal": "4.2771",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-22",
+      "nav": "1.7164",
+      "cumulative_nav": "5.514",
+      "cum_nav_withdrawal": "4.274",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-23",
+      "nav": "1.7203",
+      "cumulative_nav": "5.5266",
+      "cum_nav_withdrawal": "4.2779",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-24",
+      "nav": "1.7182",
+      "cumulative_nav": "5.5198",
+      "cum_nav_withdrawal": "4.2758",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-27",
+      "nav": "1.738",
+      "cumulative_nav": "5.5834",
+      "cum_nav_withdrawal": "4.2956",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-28",
+      "nav": "1.6979",
+      "cumulative_nav": "5.4546",
+      "cum_nav_withdrawal": "4.2555",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-29",
+      "nav": "1.6782",
+      "cumulative_nav": "5.3913",
+      "cum_nav_withdrawal": "4.2358",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-30",
+      "nav": "1.6738",
+      "cumulative_nav": "5.3772",
+      "cum_nav_withdrawal": "4.2314",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-07-31",
+      "nav": "1.6744",
+      "cumulative_nav": "5.3791",
+      "cum_nav_withdrawal": "4.232",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-03",
+      "nav": "1.672",
+      "cumulative_nav": "5.3714",
+      "cum_nav_withdrawal": "4.2296",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-04",
+      "nav": "1.6942",
+      "cumulative_nav": "5.4427",
+      "cum_nav_withdrawal": "4.2518",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-05",
+      "nav": "1.7074",
+      "cumulative_nav": "5.4851",
+      "cum_nav_withdrawal": "4.265",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-06",
+      "nav": "1.6956",
+      "cumulative_nav": "5.4472",
+      "cum_nav_withdrawal": "4.2532",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-07",
+      "nav": "1.711",
+      "cumulative_nav": "5.4967",
+      "cum_nav_withdrawal": "4.2686",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-10",
+      "nav": "1.6993",
+      "cumulative_nav": "5.4591",
+      "cum_nav_withdrawal": "4.2569",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-11",
+      "nav": "1.6925",
+      "cumulative_nav": "5.4372",
+      "cum_nav_withdrawal": "4.2501",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-12",
+      "nav": "1.6953",
+      "cumulative_nav": "5.4462",
+      "cum_nav_withdrawal": "4.2529",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-13",
+      "nav": "1.6856",
+      "cumulative_nav": "5.4151",
+      "cum_nav_withdrawal": "4.2432",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-14",
+      "nav": "1.6936",
+      "cumulative_nav": "5.4408",
+      "cum_nav_withdrawal": "4.2512",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-17",
+      "nav": "1.7186",
+      "cumulative_nav": "5.5211",
+      "cum_nav_withdrawal": "4.2762",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-18",
+      "nav": "1.7181",
+      "cumulative_nav": "5.5195",
+      "cum_nav_withdrawal": "4.2757",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-19",
+      "nav": "1.6891",
+      "cumulative_nav": "5.4263",
+      "cum_nav_withdrawal": "4.2467",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-20",
+      "nav": "1.6871",
+      "cumulative_nav": "5.4199",
+      "cum_nav_withdrawal": "4.2447",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-21",
+      "nav": "1.6924",
+      "cumulative_nav": "5.4369",
+      "cum_nav_withdrawal": "4.25",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-24",
+      "nav": "1.71",
+      "cumulative_nav": "5.4935",
+      "cum_nav_withdrawal": "4.2676",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-25",
+      "nav": "1.6914",
+      "cumulative_nav": "5.4337",
+      "cum_nav_withdrawal": "4.249",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-26",
+      "nav": "1.7095",
+      "cumulative_nav": "5.4919",
+      "cum_nav_withdrawal": "4.2671",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-27",
+      "nav": "1.7258",
+      "cumulative_nav": "5.5442",
+      "cum_nav_withdrawal": "4.2834",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-28",
+      "nav": "1.6853",
+      "cumulative_nav": "5.4141",
+      "cum_nav_withdrawal": "4.2429",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-08-31",
+      "nav": "1.6456",
+      "cumulative_nav": "5.2866",
+      "cum_nav_withdrawal": "4.2032",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-01",
+      "nav": "1.6458",
+      "cumulative_nav": "5.2872",
+      "cum_nav_withdrawal": "4.2034",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-02",
+      "nav": "1.6346",
+      "cumulative_nav": "5.2512",
+      "cum_nav_withdrawal": "4.1922",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-03",
+      "nav": "1.6439",
+      "cumulative_nav": "5.2811",
+      "cum_nav_withdrawal": "4.2015",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-04",
+      "nav": "1.652",
+      "cumulative_nav": "5.3071",
+      "cum_nav_withdrawal": "4.2096",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-07",
+      "nav": "1.6725",
+      "cumulative_nav": "5.373",
+      "cum_nav_withdrawal": "4.2301",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-08",
+      "nav": "1.7073",
+      "cumulative_nav": "5.4848",
+      "cum_nav_withdrawal": "4.2649",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-09",
+      "nav": "1.7119",
+      "cumulative_nav": "5.4996",
+      "cum_nav_withdrawal": "4.2695",
+      "price_change": ""
+    },
+    {
+      "price_date": "2026-09-10",
+      "nav": "1.6985",
+      "cumulative_nav": "5.4565",
+      "cum_nav_withdrawal": "4.2561",
+      "price_change": ""
+    }
+  ]
+}
