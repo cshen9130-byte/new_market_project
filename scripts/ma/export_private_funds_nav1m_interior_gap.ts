@@ -1,18 +1,20 @@
 /**
  * Export 基金数据库 funds that match:
  *   净值日期 = 1个月以内
- *   AND 中间缺失超1/10  (same rule as 运维 → 团队数据; 运作日 scopes the window)
+ *   AND consecutive interior NAV holes in 2026-05-01 .. 2026-09-11
+ *   of at least 15 trading days (drops 端午-week 8-day daily skips)
  *
  * Usage:
  *   npx tsx scripts/ma/export_private_funds_nav1m_interior_gap.ts
  *   npx tsx scripts/ma/export_private_funds_nav1m_interior_gap.ts --no-tunnel
  *
- * Out: data/exports/私募基金_净值日期1个月以内_中间缺失超1_10_YYYY-MM-DD.csv
+ * Out: data/exports/私募基金_净值日期1个月以内_2026年5至9月中间连续缺失_YYYY-MM-DD.csv
  */
 import fs from "fs"
 import net from "net"
 import path from "path"
 import { spawn, type ChildProcess } from "child_process"
+import { isChinaWeekendOrPublicHoliday } from "@/lib/server/china-trading-calendar"
 import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
 import { analyzeInteriorNavGap } from "@/lib/server/nav-interior-gap"
 
@@ -26,11 +28,13 @@ const DEFAULT_DB_URL = `postgresql://market_user:2026SmartDashboard%21@127.0.0.1
 
 const BATCH = 400
 const STAMP = new Date().toISOString().slice(0, 10)
+const WINDOW_START = "2026-05-01"
+const WINDOW_END = "2026-09-11"
 const OUT_FILE = path.join(
   process.cwd(),
   "data",
   "exports",
-  `私募基金_净值日期1个月以内_中间缺失超1_10_${STAMP}.csv`,
+  `私募基金_净值日期1个月以内_2026年5至9月中间连续缺失_${STAMP}.csv`,
 )
 
 type FundRow = {
@@ -125,6 +129,70 @@ function pct(n: number): string {
 function num(n: number, digits = 2): string {
   if (!Number.isFinite(n)) return ""
   return n.toFixed(digits)
+}
+
+function addUtcDays(isoDate: string, days: number): string | null {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate)
+  if (!parts) return null
+  const dt = new Date(Date.UTC(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]) + days, 12, 0, 0))
+  return dt.toISOString().slice(0, 10)
+}
+
+function isFriday(isoDate: string): boolean {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate)
+  if (!parts) return false
+  return new Date(Date.UTC(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]))).getUTCDay() === 5
+}
+
+type WindowHole = {
+  before: string
+  after: string
+  holeFrom: string
+  holeTo: string
+  openDays: number
+  fridays: number
+}
+
+function countOpenDaysAndFridays(fromIncl: string, toIncl: string): { openDays: number; fridays: number } {
+  let openDays = 0
+  let fridays = 0
+  for (let day = fromIncl; day && day <= toIncl; day = addUtcDays(day, 1) ?? "") {
+    if (!day) break
+    if (isChinaWeekendOrPublicHoliday(day)) continue
+    openDays += 1
+    if (isFriday(day)) fridays += 1
+  }
+  return { openDays, fridays }
+}
+
+function consecutiveHolesInWindow(
+  dates: string[],
+  windowStart: string,
+  windowEnd: string,
+  holeFloor: number,
+): { holes: WindowHole[]; pointsInWindow: number; longest: WindowHole | null } {
+  const sorted = [...new Set(dates.map(isoDay).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort()
+  const pointsInWindow = sorted.filter((d) => d >= windowStart && d <= windowEnd).length
+  const holes: WindowHole[] = []
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1] ?? ""
+    const next = sorted[i] ?? ""
+    const holeFromRaw = addUtcDays(prev, 1)
+    const holeToRaw = addUtcDays(next, -1)
+    if (!holeFromRaw || !holeToRaw || holeFromRaw > holeToRaw) continue
+    const holeFrom = holeFromRaw > windowStart ? holeFromRaw : windowStart
+    const holeTo = holeToRaw < windowEnd ? holeToRaw : windowEnd
+    if (holeFrom > holeTo) continue
+    const { openDays, fridays } = countOpenDaysAndFridays(holeFrom, holeTo)
+    if (openDays > holeFloor) {
+      holes.push({ before: prev, after: next, holeFrom, holeTo, openDays, fridays })
+    }
+  }
+  const longest = holes.reduce<WindowHole | null>(
+    (best, hole) => (!best || hole.openDays > best.openDays ? hole : best),
+    null,
+  )
+  return { holes, pointsInWindow, longest }
 }
 
 async function tableColumns(
@@ -312,10 +380,19 @@ async function main() {
       "估算缺失点数",
       "应有点数",
       "中间缺失比例",
+      "2026年5-9月净值点数",
+      "2026年5-9月连续缺失段数",
+      "2026年5-9月最长连续缺失起",
+      "2026年5-9月最长连续缺失止",
+      "2026年5-9月最长连续缺失交易日",
+      "2026年5-9月最长连续缺失周五数",
+      "最长连续缺失前一净值日",
+      "最长连续缺失后一净值日",
     ]
 
     const gappedRows: string[][] = []
     let noSeries = 0
+    let wholeHistoryGapped = 0
     for (const fund of funds) {
       const dates = new Set<string>()
       for (const alias of beianAliases(fund.beian_hao)) {
@@ -325,8 +402,15 @@ async function main() {
       const fromDate = beianAliases(fund.beian_hao)
         .map((alias) => operationDateByCode.get(alias))
         .find(Boolean) ?? null
-      const stats = analyzeInteriorNavGap([...dates], fromDate)
-      if (!stats.gapped) continue
+      const scoredDates = fromDate
+        ? [...dates].filter((d) => d >= isoDay(fromDate))
+        : [...dates]
+      const stats = analyzeInteriorNavGap(scoredDates, fromDate)
+      if (stats.gapped) wholeHistoryGapped += 1
+      const holeFloor = Math.max(stats.typical * 2, 7)
+      const window = consecutiveHolesInWindow(scoredDates, WINDOW_START, WINDOW_END, holeFloor)
+      // Drop 端午-week 8-day skips; keep consecutive holes of ~3 weeks or more.
+      if (!window.longest || window.longest.openDays < 15) continue
       gappedRows.push([
         String(gappedRows.length + 1),
         fund.beian_hao,
@@ -349,6 +433,14 @@ async function main() {
         num(stats.missing, 2),
         num(stats.expected, 2),
         pct(stats.ratio),
+        String(window.pointsInWindow),
+        String(window.holes.length),
+        window.longest.holeFrom,
+        window.longest.holeTo,
+        String(window.longest.openDays),
+        String(window.longest.fridays),
+        window.longest.before,
+        window.longest.after,
       ])
     }
 
@@ -360,7 +452,8 @@ async function main() {
     fs.writeFileSync(OUT_FILE, `\uFEFF${lines.join("\n")}\n`, "utf8")
 
     console.log(`No NAV series found: ${noSeries}`)
-    console.log(`中间缺失超1/10: ${gappedRows.length} / ${funds.length}`)
+    console.log(`Whole-history 中间缺失超1/10: ${wholeHistoryGapped} / ${funds.length}`)
+    console.log(`2026-05..${WINDOW_END} consecutive interior holes: ${gappedRows.length} / ${funds.length}`)
     console.log(`Wrote ${OUT_FILE}`)
   } finally {
     if (tunnel) tunnel.kill()

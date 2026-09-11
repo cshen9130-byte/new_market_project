@@ -7,7 +7,9 @@ export const dynamic = "force-dynamic"
 /**
  * Returns all beian_hao values that are currently tracked, split by scope:
  *   mine  — user_custom_pool rows whose pool_key starts with "mine_"
- *   team  — all rows in the standard shared team pool tables
+ *   team  — visible shared team pools only (JY / 精选 / 核心 / hy / FOF / custom).
+ *           Hidden BFL catalog tables (private_fund_info_bfl, type6_ops_team_full)
+ *           must not count: they are the fund universe, not "added to 团队跟踪".
  */
 export async function GET() {
   try {
@@ -19,9 +21,7 @@ export async function GET() {
            AND (pool_key = 'mine_default' OR pool_key LIKE 'mine_custom_%')`,
       ),
       query<{ register_number: string }>(
-        `SELECT beian_hao AS register_number FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
-         UNION
-         SELECT register_number FROM tracking_pool WHERE register_number IS NOT NULL
+        `SELECT register_number FROM tracking_pool WHERE register_number IS NOT NULL
          UNION
          SELECT register_number FROM selected_pool WHERE register_number IS NOT NULL
          UNION
@@ -30,8 +30,6 @@ export async function GET() {
          SELECT register_number FROM hy_tracking_pool WHERE register_number IS NOT NULL
          UNION
          SELECT register_number FROM fof_mom_tracking WHERE register_number IS NOT NULL
-         UNION
-         SELECT register_number FROM type6_ops_team_full WHERE register_number IS NOT NULL
          UNION
          SELECT register_number FROM user_custom_pool
            WHERE register_number IS NOT NULL
