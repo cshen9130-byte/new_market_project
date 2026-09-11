@@ -53,6 +53,7 @@ function pricePrecisionOf(symbol: string) {
   if (asset === "TL" || asset === "T" || asset === "TF" || asset === "TS") return 3
   if (asset === "AU" || asset === "SC") return 2
   if (asset === "IF" || asset === "IH" || asset === "IC" || asset === "IM") return 1
+  if (asset === "NHCI") return 2
   return 0
 }
 

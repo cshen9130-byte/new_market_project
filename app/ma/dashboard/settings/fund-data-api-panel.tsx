@@ -78,6 +78,7 @@ async function callApi(path: string, params: Record<string, string>, apiKey: str
 
 export function FundDataApiPanel() {
   const [apiKey, setApiKey] = useState("")
+  const [showApiKey, setShowApiKey] = useState(false)
   const [q, setQ] = useState("")
   const [regCode, setRegCode] = useState("")
   const [startDate, setStartDate] = useState("")
@@ -94,7 +95,7 @@ export function FundDataApiPanel() {
     return () => { cancelled = true }
   }, [])
 
-  const keyForDocs = apiKey || "YOUR_API_KEY"
+  const keyForDocs = showApiKey && apiKey ? apiKey : "YOUR_API_KEY"
 
   async function run(path: string, params: Record<string, string>) {
     setLoading(true)
@@ -126,10 +127,23 @@ export function FundDataApiPanel() {
           <p><span className="text-zinc-400 w-24 inline-block">网站</span><a className="text-red-500 hover:underline" href={FUND_DATA_PUBLIC_ORIGIN} target="_blank" rel="noreferrer">{FUND_DATA_PUBLIC_ORIGIN}</a></p>
           <p><span className="text-zinc-400 w-24 inline-block">HTTP 基址</span><code className="font-mono text-xs">{FUND_DATA_API_BASE}</code></p>
           <p><span className="text-zinc-400 w-24 inline-block">MCP 地址</span><code className="font-mono text-xs">{FUND_DATA_MCP_URL}</code></p>
-          <p className="flex items-start gap-0">
+          <p className="flex items-start gap-2">
             <span className="text-zinc-400 w-24 inline-block shrink-0">你的 API Key</span>
             {apiKey
-              ? <code className="font-mono text-xs break-all">{apiKey}</code>
+              ? (
+                <>
+                  <code className="font-mono text-xs break-all flex-1">
+                    {showApiKey ? apiKey : `${apiKey.slice(0, 3)}${"•".repeat(Math.max(12, apiKey.length - 3))}`}
+                  </code>
+                  <button
+                    type="button"
+                    className="shrink-0 text-xs text-red-500 hover:underline"
+                    onClick={() => setShowApiKey((v) => !v)}
+                  >
+                    {showApiKey ? "隐藏" : "查看"}
+                  </button>
+                </>
+              )
               : <span className="text-zinc-400">登录后自动生成，也可到 用户中心 查看</span>}
           </p>
         </div>

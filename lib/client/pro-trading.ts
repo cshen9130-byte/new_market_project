@@ -5,6 +5,7 @@ import {
   type IndexProduct,
   pickMostActiveContract,
 } from "@/lib/client/ctp-market"
+import { looksLikeNhciInput, NHCI_SYMBOL } from "@/lib/client/nhci-market"
 
 const LISTED_FUTURES = /^[A-Z]{1,3}\d{3,4}$/
 
@@ -21,6 +22,7 @@ export function resolveSymbolInput(
 ): string | null {
   const q = raw.trim().toUpperCase()
   if (!q) return null
+  if (looksLikeNhciInput(raw) || looksLikeNhciInput(q)) return NHCI_SYMBOL
   const exact = symbols.find((s) => s.toUpperCase() === q)
   if (exact) return exact
   if (LISTED_FUTURES.test(q)) return q

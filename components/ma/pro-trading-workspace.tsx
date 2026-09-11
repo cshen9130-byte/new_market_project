@@ -36,9 +36,10 @@ import {
 import { DEFAULT_ALL_WEATHER_VARIANT_ID } from "@/lib/all-weather/variants"
 import { isAllWeatherAccount, markPrice } from "@/lib/client/paper-trading"
 import { overlaySinaQuote } from "@/lib/client/market-hours"
+import { isNhciSymbol, looksLikeNhciInput, NHCI_NAME, NHCI_SYMBOL } from "@/lib/client/nhci-market"
 import { productOfSymbol, resolveSymbolInput } from "@/lib/client/pro-trading"
 import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
-import type { TimeframeId } from "@/lib/client/timeframes"
+import { isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 import { cn } from "@/lib/utils"
 
 export type ProTradingLayout = "market" | "paper"
@@ -178,7 +179,10 @@ export function ProTradingWorkspace({
   const live1m = candles[symbol] || []
   const { candles: tfCandles, quote: klineQuote } = useSymbolKline(symbol || null, interval, live1m, quotes[symbol])
   const quote = klineQuote || quotes[symbol]
-  const meta = INDEX_FUTURES.find((item) => item.product === product)
+  const meta = isNhciSymbol(symbol)
+    ? { product: NHCI_SYMBOL, name: NHCI_NAME }
+    : INDEX_FUTURES.find((item) => item.product === product)
+  const pxDigits = isNhciSymbol(symbol) ? 2 : 1
   const quotesForMark = useMemo(() => {
     if (!symbol || !klineQuote) return quotes
     const overlaid = overlaySinaQuote(symbol, quotes[symbol], klineQuote)
@@ -192,7 +196,7 @@ export function ProTradingWorkspace({
 
   const listedSymbols = useMemo(() => {
     const extra = paper.state.products.map((p) => p.symbol)
-    return [...new Set([...symbols, ...extra])]
+    return [...new Set([...symbols, ...extra, NHCI_SYMBOL])]
   }, [symbols, paper.state.products])
 
   const orderMarks = useMemo(() => {
@@ -208,7 +212,9 @@ export function ProTradingWorkspace({
   const suggestions = useMemo(() => {
     const q = query.trim().toUpperCase()
     if (!q) return listedSymbols.slice(0, 16)
-    return listedSymbols.filter((s) => s.toUpperCase().includes(q)).slice(0, 16)
+    const matched = listedSymbols.filter((s) => s.toUpperCase().includes(q))
+    if (looksLikeNhciInput(query) && !matched.includes(NHCI_SYMBOL)) matched.unshift(NHCI_SYMBOL)
+    return matched.slice(0, 16)
   }, [query, listedSymbols])
 
   function commit(raw: string) {
@@ -216,6 +222,7 @@ export function ProTradingWorkspace({
     if (!resolved) return
     setSymbol(resolved)
     setQuery(resolved)
+    if (isNhciSymbol(resolved) && isIntradayTimeframe(interval)) setInterval("1d")
   }
 
   function focusChart(raw: string) {
@@ -237,7 +244,7 @@ export function ProTradingWorkspace({
               if (layout === "paper") focusChart(query)
               else commit(query)
             }}
-            placeholder="输入合约 IH2609 / IF / 上证50"
+            placeholder="输入合约 IH2609 / IF / NHCI / 南华商品"
             list="pro-trading-symbols"
             className="h-8 w-full rounded border border-[#2a2e39] bg-[#1e222d] px-2 font-mono text-sm text-white outline-none focus:border-[#4c84ff]"
           />
@@ -267,8 +274,29 @@ export function ProTradingWorkspace({
               {item.product}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => {
+              if (layout === "paper") focusChart(NHCI_SYMBOL)
+              else commit(NHCI_SYMBOL)
+            }}
+            className={cn(
+              "rounded px-2 py-1 text-xs",
+              isNhciSymbol(symbol) ? "bg-[#4c84ff] text-white" : "bg-[#1e222d] text-[#adb3bd] hover:text-white",
+            )}
+          >
+            NHCI
+          </button>
         </div>
-        <TimeframeSelect value={interval} onChange={setInterval} dark className="max-w-[420px]" />
+        <TimeframeSelect
+          value={interval}
+          onChange={(id) => {
+            if (isNhciSymbol(symbol) && isIntradayTimeframe(id)) setInterval("1d")
+            else setInterval(id)
+          }}
+          dark
+          className="max-w-[420px]"
+        />
         <div className="flex shrink-0 items-center overflow-hidden rounded border border-[#2a2e39]">
           <button
             type="button"
@@ -340,13 +368,14 @@ export function ProTradingWorkspace({
         <div className="min-w-0 flex-1 font-medium">
           <span className="font-mono text-white">{symbol || "--"}</span>
           {meta ? <span className="ml-2 text-xs text-[#787b86]">{meta.name}</span> : null}
+          {isNhciSymbol(symbol) ? <span className="ml-2 text-[11px] text-[#787b86]">日线</span> : null}
         </div>
         <div className="text-right tabular-nums">
           <span className={cn("text-lg font-semibold", diff == null ? "text-[#787b86]" : diff >= 0 ? "text-[#ef5350]" : "text-[#26a69a]")}>
-            {fmt(last)}
+            {fmt(last, pxDigits)}
           </span>
           <span className={cn("ml-2 text-xs", diff == null ? "text-[#787b86]" : diff >= 0 ? "text-[#ef5350]" : "text-[#26a69a]")}>
-            {diff == null ? "" : `${diff >= 0 ? "+" : ""}${fmt(diff)} ${pct != null ? `${pct >= 0 ? "+" : ""}${fmt(pct, 2)}%` : ""}`}
+            {diff == null ? "" : `${diff >= 0 ? "+" : ""}${fmt(diff, pxDigits)} ${pct != null ? `${pct >= 0 ? "+" : ""}${fmt(pct, 2)}%` : ""}`}
           </span>
         </div>
         <div className="flex shrink-0 rounded border border-[#2a2e39] p-0.5">
@@ -399,7 +428,9 @@ export function ProTradingWorkspace({
                       spot={spots[product]}
                     />
                   ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-[#787b86]">基差率</div>
+                    <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#787b86]">
+                      {isNhciSymbol(symbol) ? "南华商品指数无股指基差" : "基差率"}
+                    </div>
                   )}
                 </ResizablePanel>
                 <ResizableHandle className="h-1 bg-[#2a2e39]" />
@@ -407,7 +438,9 @@ export function ProTradingWorkspace({
                   {product ? (
                     <IndexIvChart variant="pro" title={meta?.name || product} product={product} iv={iv[product]} />
                   ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-[#787b86]">隐含波动率</div>
+                    <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#787b86]">
+                      {isNhciSymbol(symbol) ? "南华商品指数无股指隐含波动率" : "隐含波动率"}
+                    </div>
                   )}
                 </ResizablePanel>
               </ResizablePanelGroup>

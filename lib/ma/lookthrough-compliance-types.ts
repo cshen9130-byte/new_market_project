@@ -11,9 +11,19 @@ export type ComplianceCheck = {
   title: string
   article: string
   passed: boolean
+  /** 估值表未到单一资产/债券粒度，不能判合规也不能判超限。 */
+  undetermined?: boolean
   value: string
   threshold: string
   detail: string
+}
+
+export function isCheckUndetermined(check: ComplianceCheck): boolean {
+  return Boolean(check.undetermined)
+}
+
+export function isCheckFailed(check: ComplianceCheck): boolean {
+  return !check.passed && !check.undetermined
 }
 
 export type LookthroughMissing = {
@@ -115,6 +125,8 @@ export type LookthroughComplianceProduct = {
     illiquid_restricted_pct: number | null
     max_single_asset_pct: number | null
     max_single_bond_pct: number | null
+    max_single_asset_undetermined?: boolean
+    max_single_bond_undetermined?: boolean
   }
   inferred_type: ProductCategory | "母基金" | "无法判定"
   assigned_category?: ProductCategory | null
@@ -145,6 +157,8 @@ export function lookthroughConclusion(
   if (product.is_fof && !product.lookthrough.complete) return "incomplete"
   const checks = product.checks_by_category[category] ?? []
   if (checks.length === 0) return "na"
+  if (checks.some(isCheckFailed)) return "fail"
+  if (checks.some(isCheckUndetermined)) return "incomplete"
   return checks.every((c) => c.passed) ? "pass" : "fail"
 }
 
@@ -155,7 +169,7 @@ export function lookthroughAnomalyCells(
 ): Set<LookthroughAnomalyCell> {
   const out = new Set<LookthroughAnomalyCell>()
   if (lookthroughConclusion(product, category) !== "fail") return out
-  const failed = (product.checks_by_category[category] ?? []).filter((c) => !c.passed)
+  const failed = (product.checks_by_category[category] ?? []).filter(isCheckFailed)
   if (failed.length === 0) return out
 
   for (const check of failed) {

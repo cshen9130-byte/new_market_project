@@ -8,6 +8,8 @@ import {
   DEFAULT_PRODUCT_CATEGORY,
   PRODUCT_CATEGORIES,
   isProductCategory,
+  isCheckFailed,
+  isCheckUndetermined,
   lookthroughAnomalyCells,
   lookthroughConclusion,
   type LookthroughComplianceProduct,
@@ -178,15 +180,15 @@ const CHECKS_HELP: ChartCalcHelpBlock[] = [
   {
     title: "第12条 单一资产 25%",
     paragraphs: [
-      "同一资产穿透后金额 / 母基金净资产。标准化股权按单一上市公司股票/存托凭证计。信用账户、其他证券、国投证券等券商账户、深港通股票成本、股票成本_深港通等科目合计不是同一资产。现金管理工具、公募基金、债券通用质押式回购不计入。",
+      "同一资产必须是四级科目或已给出证券代码/合约代码的叶子。三级科目（股票成本、信用账户、初始合约价值-多头/空头等）未披露单一持仓，不按同一资产计，也不足以判合规。只有已识别单一资产已超过 25%，或三级未披露合计在最坏情形下仍不超过 25% 时，才能给出通过/不通过。",
     ],
     formula: "单一资产集中度 = max(同一资产金额) / 净资产",
   },
   {
     title: "第19条 单一债券 10%",
     paragraphs: [
-      "只看「同一债券」，不是债权类合计，也不是同名科目加总。国债、央票、政金债、地方债、可转债、可交换债、债券通用质押式回购（如「上交所质押式回购」）不按同一债券计。",
-      "穿透后若没有适用债券，显示 0% / 无适用债券，视为未超限。两只底层都叫「上交所质押式回购」仍是两笔持仓，不能加总去套 10%。",
+      "只看「同一债券」，必须是可识别的债券叶子，不是债权类合计，也不是三级「债券成本」科目。国债、央票、政金债、地方债、可转债、可交换债、债券通用质押式回购（如「上交所质押式回购」）不按同一债券计。",
+      "底层若只有三级估值表、未披露同一债券，本项为无法判定，不能当成 0%。",
     ],
     formula: "单一债券集中度 = max(同一信用债金额) / 净资产",
   },
@@ -273,7 +275,7 @@ const HOLDINGS_HELP: ChartCalcHelpBlock[] = [
       "子基金科目市值：底层估值表该叶子的市值（期货为合约价值），未按母基金份额缩放",
       "折算持仓市值 = 子基金科目市值 × 分成比例",
       "占净值：折算持仓市值 / 母基金净资产。上方「占母基金」是该底层已投资产 / 母基金已投资产，分母不同",
-      "科目：该叶子在估值表上的科目层级。一级=4位代码，二级=6位，三级=8位/初始合约，四级=合约代码。同一账户的上级合计（如信用账户）与下级券商科目（如国投证券）不重复列出",
+      "科目：该叶子在估值表上的科目层级。一级=4位代码，二级=6位，三级=8位/初始合约，四级=合约代码。同一账户的上级合计（如信用账户）与下级券商科目（如国投证券）不重复列出。第12条只用四级或带证券/合约代码的叶子；三级科目不能当成单一资产",
       "来源底层：拆自哪只子基金；空表示母基金直投，分成三列为空",
       "期货按双边名义市值（多头+|空头|）；冲销/估值增值不列出。期货保证金计入账户权益，不计入合约价值",
       "同名「上交所质押式回购」若来源底层不同，是两笔持仓",
@@ -451,7 +453,8 @@ export function LookthroughCompliancePanel({
 
   const checks = data?.checks_by_category[category] ?? []
   const conclusion = data ? lookthroughConclusion(data, category) : "na"
-  const failed = checks.filter((c) => !c.passed)
+  const failed = checks.filter(isCheckFailed)
+  const undetermined = checks.filter(isCheckUndetermined)
   const anomalies = data ? lookthroughAnomalyCells(data, category) : new Set()
 
   const mixRows = useMemo(() => {
@@ -656,16 +659,25 @@ export function LookthroughCompliancePanel({
           ? "border-emerald-200 bg-emerald-50"
           : conclusion === "fail"
             ? "border-red-200 bg-red-50"
-            : "border-zinc-200 bg-zinc-50",
+            : conclusion === "incomplete"
+              ? "border-amber-200 bg-amber-50"
+              : "border-zinc-200 bg-zinc-50",
       ].join(" ")}>
         <div className="flex items-center gap-2">
           {conclusion === "pass" && <CircleCheck className="h-5 w-5 text-emerald-600" />}
           {conclusion === "fail" && <CircleX className="h-5 w-5 text-red-500" />}
-          {(conclusion === "na" || conclusion === "incomplete") && <HelpCircle className="h-5 w-5 text-zinc-400" />}
+          {conclusion === "incomplete" && <HelpCircle className="h-5 w-5 text-amber-500" />}
+          {conclusion === "na" && <HelpCircle className="h-5 w-5 text-zinc-400" />}
           <div className="text-sm font-semibold text-zinc-800">
             {conclusion === "pass" && `按「${category}」核验：全部条款合规`}
             {conclusion === "fail" && `按「${category}」核验：${failed.length} 条未达标`}
-            {conclusion === "incomplete" && "穿透未完全，无法判断"}
+            {conclusion === "incomplete" && (
+              data.lookthrough.missing.length > 0
+                ? "穿透未完全，无法判断"
+                : undetermined.length > 0
+                  ? `底层估值为三级科目，${undetermined.map((c) => c.title).join("、")}无法判断`
+                  : "现有估值表无法判断全部条款"
+            )}
             {conclusion === "na" && "缺少估值表，无法判断"}
           </div>
         </div>
@@ -688,16 +700,22 @@ export function LookthroughCompliancePanel({
               <div key={check.id} className="rounded border border-zinc-100 px-3 py-2.5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-2">
-                    {check.passed
-                      ? <CircleCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                      : <CircleX className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />}
+                    {isCheckUndetermined(check)
+                      ? <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                      : check.passed
+                        ? <CircleCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                        : <CircleX className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />}
                     <div>
                       <div className="text-xs font-medium text-zinc-800">{check.title}</div>
                       <div className="text-[10px] text-zinc-400">{check.article}</div>
                     </div>
                   </div>
                   <div className="text-right text-[11px] text-zinc-500">
-                    <div className={check.passed ? "text-emerald-700" : "text-red-600"}>{check.value}</div>
+                    <div className={
+                      isCheckUndetermined(check)
+                        ? "text-amber-700"
+                        : check.passed ? "text-emerald-700" : "text-red-600"
+                    }>{check.value}</div>
                     <div>标准 {check.threshold}</div>
                   </div>
                 </div>
@@ -751,9 +769,9 @@ export function LookthroughCompliancePanel({
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-zinc-500">
               <div className={anomalies.has("single_asset") ? "lookthrough-anomaly-cell px-1.5 py-0.5" : undefined}>
-                单一资产集中度 {fmtPct(data.ratios.max_single_asset_pct)}
+                单一资产集中度 {data.ratios.max_single_asset_undetermined ? "无法判定" : fmtPct(data.ratios.max_single_asset_pct)}
               </div>
-              <div>单一债券 {fmtPct(data.ratios.max_single_bond_pct)}</div>
+              <div>单一债券 {data.ratios.max_single_bond_undetermined ? "无法判定" : fmtPct(data.ratios.max_single_bond_pct)}</div>
               <div className={anomalies.has("leverage") ? "lookthrough-anomaly-cell px-1.5 py-0.5" : undefined}>
                 杠杆（总资产/净资产） {fmtPct(data.ratios.leverage_pct)}
                 {data.ratios.leverage_limit_pct != null ? ` · 上限 ${data.ratios.leverage_limit_pct}%` : ""}

@@ -5,7 +5,7 @@ import { applyDeeperBook, mergeQuoteTicks, type CtpTick } from "@/lib/client/ctp
 const CFFEX = new Set<string>([...CFFEX_INDEX_PRODUCTS, ...CFFEX_BOND_PRODUCTS])
 
 /** 鸡蛋 / 生猪 / 苹果 / 红枣等：无夜盘。 */
-const NO_NIGHT = new Set(["JD", "LH", "AP", "CJ", "RI", "JR", "LR", "WH", "PM", "RS", "FB", "BB"])
+const NO_NIGHT = new Set(["JD", "LH", "AP", "CJ", "RI", "JR", "LR", "WH", "PM", "RS", "FB", "BB", "NHCI"])
 /** 黄金、白银、原油、低硫燃油：21:00–02:30。 */
 const NIGHT_TO_0230 = new Set(["AU", "AG", "SC", "LU"])
 /** 上期所 / 国际铜等有色：21:00–01:00。碳酸锂 LC 是大商所 23:00，不要放这里。 */

@@ -1164,6 +1164,7 @@ export function priceDigits(symbol: string) {
   if (asset === "T" || asset === "TF" || asset === "TS" || asset === "TL") return 3
   if (asset === "AU" || asset === "AG") return 2
   if (asset === "IF" || asset === "IH" || asset === "IC" || asset === "IM") return 1
+  if (asset === "NHCI") return 2
   return null
 }
 

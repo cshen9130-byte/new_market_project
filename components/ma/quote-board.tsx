@@ -52,6 +52,7 @@ function signed(n: number | null | undefined, digits = 2) {
 }
 
 function quoteTitle(symbol: string) {
+  if (symbol.toUpperCase() === "NHCI" || symbol.toUpperCase() === "NHCI.NH") return "南华商品指数 NHCI"
   const asset = assetFromContract(symbol)
   if (!asset) return symbol
   if (asset === "IM") return displayListedName("中证1000 IM", symbol)

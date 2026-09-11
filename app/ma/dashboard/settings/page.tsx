@@ -1195,6 +1195,7 @@ function UserCenterPanel() {
   const [draftEmail, setDraftEmail] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showApiKey, setShowApiKey] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -1308,9 +1309,14 @@ function UserCenterPanel() {
             {infoRow(
               "API Key",
               user?.api_key
-                ? <code className="font-mono text-xs break-all">{user.api_key}</code>
+                ? (
+                  <code className="font-mono text-xs break-all">
+                    {showApiKey ? user.api_key : `${user.api_key.slice(0, 3)}${"•".repeat(Math.max(12, user.api_key.length - 3))}`}
+                  </code>
+                )
                 : "未生成",
               <div className="flex gap-2">
+                {user?.api_key ? outlineBtn(showApiKey ? "隐藏" : "查看", () => setShowApiKey((v) => !v)) : null}
                 {user?.api_key ? outlineBtn("复制", () => {
                   void navigator.clipboard.writeText(user.api_key || "")
                 }) : null}
@@ -1321,6 +1327,7 @@ function UserCenterPanel() {
                     window.alert(res.error || "生成失败")
                     return
                   }
+                  setShowApiKey(false)
                   setUser((prev) => prev ? { ...prev, api_key: res.api_key } : prev)
                 })}
               </div>,

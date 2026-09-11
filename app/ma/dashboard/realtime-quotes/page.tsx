@@ -39,6 +39,7 @@ import {
   pickMostActiveContract,
 } from "@/lib/client/ctp-market"
 import { isCffexProduct, isCffexSession, overlaySinaQuote } from "@/lib/client/market-hours"
+import { NHCI_SYMBOL } from "@/lib/client/nhci-market"
 import { type TimeframeId } from "@/lib/client/timeframes"
 import { cn } from "@/lib/utils"
 
@@ -151,6 +152,7 @@ export default function RealtimeQuotesPage() {
       ...cffex.symbols,
       ...Object.keys(candles),
       ...Object.keys(quotes),
+      NHCI_SYMBOL,
     ])
     return [...merged]
   }, [ctp.status?.index_symbols, ctp.symbols, cffex.symbols, candles, quotes])

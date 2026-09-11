@@ -96,17 +96,179 @@ def mask_keep(sig: pd.DataFrame, keep: pd.Series) -> pd.DataFrame:
     return out
 
 
-def event_horizon_stats(ev: pd.DataFrame, action="加码") -> dict:
+def _safe_increment(later, earlier) -> pd.Series:
+    a = pd.to_numeric(earlier, errors="coerce")
+    b = pd.to_numeric(later, errors="coerce")
+    out = (1.0 + b) / (1.0 + a) - 1.0
+    return out.replace([np.inf, -np.inf], np.nan)
+
+
+def _col_stats(s: pd.Series) -> dict:
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if s.empty:
+        return {"n": 0, "mu": None, "med": None, "hit": None, "t": None}
+    return {
+        "n": int(len(s)),
+        "mu": float(s.mean()),
+        "med": float(s.median()),
+        "hit": float((s > 0).mean()),
+        "t": tstat(s),
+    }
+
+
+def event_increments(g: pd.DataFrame) -> pd.DataFrame:
+    """Split cumulative event returns into non-overlapping windows."""
+    return pd.DataFrame({
+        "inc1": pd.to_numeric(g["strat_1"], errors="coerce"),
+        "inc2_5": _safe_increment(g["strat_5"], g["strat_1"]),
+        "inc6_10": _safe_increment(g["strat_10"], g["strat_5"]),
+        "inc11_20": _safe_increment(g["strat_20"], g["strat_10"]),
+    }, index=g.index)
+
+
+def flag_streak_starts(ev: pd.DataFrame, action="加码") -> pd.Series:
+    """First 加码 of a consecutive run on the same product (de-overlap)."""
+    start = pd.Series(False, index=ev.index)
+    m = ev["action"] == action
+    if not m.any():
+        return start
+    cal = sorted(ev["date"].astype(str).unique())
+    rank = {d: i for i, d in enumerate(cal)}
+    sub = ev.loc[m, ["product", "date"]].copy()
+    sub["_r"] = sub["date"].astype(str).map(rank)
+    sub = sub.sort_values(["product", "_r"])
+    prev = sub.groupby("product")["_r"].shift(1)
+    start.loc[sub.index] = prev.isna().to_numpy() | ((sub["_r"] - prev).to_numpy() > 1)
+    return start
+
+
+def persistence_increment_stats(ev: pd.DataFrame, sig: pd.DataFrame, action="加码") -> dict:
+    """Split later-window increments by whether 加码 is still on that product."""
+    g = ev[ev["action"] == action].copy()
+    row: dict = {}
+    if g.empty or sig is None or sig.empty:
+        return row
+    cal = [str(x) for x in sorted(sig["date"].astype(str).unique())]
+    rank = {d: i for i, d in enumerate(cal)}
+    live = set(zip(
+        sig.loc[sig["action"] == action, "date"].astype(str),
+        sig.loc[sig["action"] == action, "product"].astype(str),
+    ))
+    inc = event_increments(g)
+
+    def still_at(offset: int) -> pd.Series:
+        flags = []
+        for r in g.itertuples(index=False):
+            i = rank.get(str(r.date))
+            if i is None or i + offset >= len(cal):
+                flags.append(np.nan)
+                continue
+            flags.append((cal[i + offset], str(r.product)) in live)
+        return pd.Series(flags, index=g.index)
+
+    still1 = still_at(1)
+    still5 = still_at(5)
+    for name, mask, col in (
+        ("25_on", still1 == True, "inc2_5"),
+        ("25_off", still1 == False, "inc2_5"),
+        ("610_on", still5 == True, "inc6_10"),
+        ("610_off", still5 == False, "inc6_10"),
+    ):
+        st = _col_stats(inc.loc[mask, col])
+        row[f"n_{name}"] = st["n"]
+        row[f"mu_{name}"] = st["mu"]
+        row[f"hit_{name}"] = st["hit"]
+        row[f"t_{name}"] = st["t"]
+        row[f"med_{name}"] = st["med"]
+    return row
+
+
+def event_horizon_stats(ev: pd.DataFrame, action="加码", sig: pd.DataFrame | None = None) -> dict:
     g = ev[ev["action"] == action]
     row = {"action": action, "n": int(len(g))}
     for h, col in ((1, "strat_1"), (5, "strat_5"), (10, "strat_10"), (20, "strat_20")):
-        s = pd.to_numeric(g[col], errors="coerce").dropna()
-        row[f"n{h}"] = int(len(s))
-        row[f"mu{h}"] = float(s.mean()) if len(s) else None
-        row[f"hit{h}"] = float((s > 0).mean()) if len(s) else None
-        row[f"t{h}"] = tstat(s)
-        row[f"med{h}"] = float(s.median()) if len(s) else None
+        st = _col_stats(g[col])
+        row[f"n{h}"] = st["n"]
+        row[f"mu{h}"] = st["mu"]
+        row[f"hit{h}"] = st["hit"]
+        row[f"t{h}"] = st["t"]
+        row[f"med{h}"] = st["med"]
+        row[f"mu{h}_pd"] = (st["mu"] / h) if st["mu"] is not None else None
+    inc = event_increments(g)
+    for key in ("inc1", "inc2_5", "inc6_10", "inc11_20"):
+        st = _col_stats(inc[key])
+        row[f"n_{key}"] = st["n"]
+        row[f"mu_{key}"] = st["mu"]
+        row[f"hit_{key}"] = st["hit"]
+        row[f"t_{key}"] = st["t"]
+        row[f"med_{key}"] = st["med"]
+    starts = flag_streak_starts(ev, action)
+    g0 = ev.loc[(ev["action"] == action) & starts]
+    row["n_unique"] = int(len(g0))
+    for h, col in ((1, "strat_1"), (5, "strat_5"), (10, "strat_10"), (20, "strat_20")):
+        st = _col_stats(g0[col] if not g0.empty else pd.Series(dtype=float))
+        row[f"n{h}_u"] = st["n"]
+        row[f"mu{h}_u"] = st["mu"]
+        row[f"hit{h}_u"] = st["hit"]
+        row[f"t{h}_u"] = st["t"]
+        row[f"med{h}_u"] = st["med"]
+        row[f"mu{h}_u_pd"] = (st["mu"] / h) if st["mu"] is not None else None
+    row.update(persistence_increment_stats(ev, sig, action) if sig is not None else {})
     return row
+
+
+def draw_event_horizon_charts(ev_row: dict, save_fig) -> dict:
+    """Honest event charts: incremental windows + per-day, not raw cumulative bars."""
+    out = {}
+    inc_labels = ["第1日", "第2–5日", "第6–10日", "第11–20日"]
+    inc_keys = ("inc1", "inc2_5", "inc6_10", "inc11_20")
+    inc_vals = [ev_row.get(f"mu_{k}") or 0 for k in inc_keys]
+    inc_hits = [ev_row.get(f"hit_{k}") for k in inc_keys]
+    pd_labels = ["次日", "5日", "10日", "20日"]
+    pd_vals = [ev_row.get(f"mu{h}_pd") or 0 for h in (1, 5, 10, 20)]
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.4, 4.8), dpi=160)
+    colors = [C_RED if v >= 0 else C_GREEN for v in inc_vals]
+    axes[0].bar(inc_labels, [v * 100 for v in inc_vals], color=colors, width=0.55)
+    axes[0].axhline(0, color="#4A5568", lw=0.8)
+    axes[0].set_ylabel("窗口增量均值（%）", **fp())
+    axes[0].set_title("增量：多拿这几天还有没有边", fontsize=12, color=C_NAVY, **fp())
+    apply_font(axes[0])
+
+    colors = [C_RED if v >= 0 else C_GREEN for v in pd_vals]
+    axes[1].bar(pd_labels, [v * 100 for v in pd_vals], color=colors, width=0.55)
+    axes[1].axhline(0, color="#4A5568", lw=0.8)
+    axes[1].set_ylabel("累计均值 ÷ 天数（%）", **fp())
+    axes[1].set_title("折合每日：才能横比持有期", fontsize=12, color=C_NAVY, **fp())
+    apply_font(axes[1])
+    fig.suptitle("加码事件研究（不是账户回测）", fontsize=13, color=C_NAVY, **fp())
+    out["event"] = save_fig(fig, "event.png")
+
+    fig, ax = plt.subplots(figsize=(8.8, 4.4), dpi=160)
+    ax.bar(inc_labels, [h * 100 if h is not None else 0 for h in inc_hits], color=C_NAVY, width=0.55)
+    ax.axhline(50, color="#A0AEC0", ls="--", lw=1)
+    ax.set_ylabel("增量窗口胜率（%）", **fp())
+    ax.set_title("加码增量胜率（虚线 50%）", fontsize=13, color=C_NAVY, **fp())
+    apply_font(ax)
+    out["hit"] = save_fig(fig, "hit.png")
+
+    if ev_row.get("n_610_on") or ev_row.get("n_610_off"):
+        fig, ax = plt.subplots(figsize=(8.8, 4.6), dpi=160)
+        labels = ["第2–5日", "第6–10日"]
+        on_vals = [ev_row.get("mu_25_on") or 0, ev_row.get("mu_610_on") or 0]
+        off_vals = [ev_row.get("mu_25_off") or 0, ev_row.get("mu_610_off") or 0]
+        x = np.arange(len(labels))
+        ax.bar(x - 0.18, [v * 100 for v in on_vals], 0.36, color=C_RED, label="信号还在")
+        ax.bar(x + 0.18, [v * 100 for v in off_vals], 0.36, color=C_GREEN, label="信号已经没了")
+        ax.axhline(0, color="#4A5568", lw=0.8)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_ylabel("增量均值（%）", **fp())
+        ax.set_title("后面几天拆开：加码还在 vs 已经没了", fontsize=13, color=C_NAVY, **fp())
+        ax.legend(frameon=False, fontsize=8)
+        apply_font(ax)
+        out["persist"] = save_fig(fig, "persist.png")
+    return out
 
 
 def group_event_table(ev: pd.DataFrame, col: str) -> pd.DataFrame:
@@ -229,26 +391,7 @@ def draw_charts(acct, acct_combo, acct_long, acct_short, ev, ev_row) -> dict:
 
     add_ev = ev[ev["action"] == "加码"]
     if not add_ev.empty:
-        fig, ax = plt.subplots(figsize=(9.4, 4.6), dpi=160)
-        hs = [1, 5, 10, 20]
-        vals = [ev_row.get(f"mu{h}") or 0 for h in hs]
-        colors = [C_RED if v >= 0 else C_GREEN for v in vals]
-        ax.bar(["次日", "5日", "10日", "20日"], [v * 100 for v in vals], color=colors, width=0.55)
-        ax.axhline(0, color="#4A5568", lw=0.8)
-        ax.set_ylabel("共识方向对齐平均收益（%）", **fp())
-        ax.set_title("加码事件研究：持有期", fontsize=13, color=C_NAVY, **fp())
-        apply_font(ax)
-        out["event"] = save_fig(fig, "event.png")
-
-        fig, ax = plt.subplots(figsize=(8.6, 4.4), dpi=160)
-        hits = [ev_row.get(f"hit{h}") for h in (1, 5, 10, 20)]
-        ax.bar(["次日", "5日", "10日", "20日"], [h * 100 if h is not None else 0 for h in hits],
-               color=C_NAVY, width=0.55)
-        ax.axhline(50, color="#A0AEC0", ls="--", lw=1)
-        ax.set_ylabel("胜率（%）", **fp())
-        ax.set_title("加码对齐胜率", fontsize=13, color=C_NAVY, **fp())
-        apply_font(ax)
-        out["hit"] = save_fig(fig, "hit.png")
+        out.update(draw_event_horizon_charts(ev_row, save_fig))
 
         cnt = add_ev.groupby("date").size()
         fig, ax = plt.subplots(figsize=(11.2, 3.8), dpi=160)
@@ -522,7 +665,9 @@ def build_report(ctx: dict) -> Path:
         f"其中多头共识 {n_long:,}、空头共识 {n_short:,}。"
         f"账户 {st.get('n')} 个交易日里，有 {flat_days} 日完全空仓——加码名单不是每天都有。"
         f"事件上次日对齐均值 {fmt_pct(ev_row.get('mu1'))}，胜率 {fmt_pct(ev_row.get('hit1'), already=False)}，"
-        f"t={fmt_t(ev_row.get('t1'))}。"
+        f"t={fmt_t(ev_row.get('t1'))}；10 日累计 {fmt_pct(ev_row.get('mu10'))}，"
+        f"但折合每日只有 {fmt_pct(ev_row.get('mu10_pd'))}（次日是 {fmt_pct(ev_row.get('mu1_pd'))}）。"
+        "累计窗口的柱高不能用来选持有期。"
         "对照「加码+控拥挤」用来回答：拿掉拥挤反向之后，成绩会变好还是变差；"
         "多/空对照用来回答：加码是不是只在单边行情里好看。",
     )
@@ -562,31 +707,96 @@ def build_report(ctx: dict) -> Path:
     heading(doc, "四、事件研究：加码本身有没有边", 1)
     para(
         doc,
-        "事件研究不问账户仓位，只问：出现加码后，品种收益按共识方向对齐，均值是否显著不为零。"
-        "这是账户赚钱的微观基础。若次日 t 不强、拉长持有期后又衰减，账户成绩就更依赖仓位规则和少数品种路径。",
+        "事件研究不问账户仓位、费用和名额，只问：出现加码后，品种收益按共识方向对齐，均值是否显著不为零。"
+        "这是账户赚钱的微观基础，但不是选持有期的依据。"
+        "把次日、5 日、10 日、20 日的累计收益画在同一张柱状图上会误导："
+        "10 日柱几乎总会高于次日——只要后面几天不是大亏——哪怕折合每日更差、增量已经没边。"
+        "账户持有 10 日还会锁住最多 8 个名额、忽略持有期内新加码，并把信号消失后的回归段也拿上；"
+        "所以事件上 10 日累计更高，和「持有 10 日的账户更好」不是一回事。",
     )
     add_table(
         doc,
-        ["持有期", "样本", "对齐均值", "中位数", "胜率", "t"],
+        ["口径", "样本", "均值", "折合每日", "中位数", "胜率", "t"],
         [
-            ["次日", f"{ev_row.get('n1')}", fmt_pct(ev_row.get("mu1")), fmt_pct(ev_row.get("med1")),
-             fmt_pct(ev_row.get("hit1"), already=False), fmt_t(ev_row.get("t1"))],
-            ["5 日", f"{ev_row.get('n5')}", fmt_pct(ev_row.get("mu5")), fmt_pct(ev_row.get("med5")),
-             fmt_pct(ev_row.get("hit5"), already=False), fmt_t(ev_row.get("t5"))],
-            ["10 日", f"{ev_row.get('n10')}", fmt_pct(ev_row.get("mu10")), fmt_pct(ev_row.get("med10")),
-             fmt_pct(ev_row.get("hit10"), already=False), fmt_t(ev_row.get("t10"))],
-            ["20 日", f"{ev_row.get('n20')}", fmt_pct(ev_row.get("mu20")), fmt_pct(ev_row.get("med20")),
-             fmt_pct(ev_row.get("hit20"), already=False), fmt_t(ev_row.get("t20"))],
+            ["累计·次日", f"{ev_row.get('n1')}", fmt_pct(ev_row.get("mu1")), fmt_pct(ev_row.get("mu1_pd")),
+             fmt_pct(ev_row.get("med1")), fmt_pct(ev_row.get("hit1"), already=False), fmt_t(ev_row.get("t1"))],
+            ["累计·5 日", f"{ev_row.get('n5')}", fmt_pct(ev_row.get("mu5")), fmt_pct(ev_row.get("mu5_pd")),
+             fmt_pct(ev_row.get("med5")), fmt_pct(ev_row.get("hit5"), already=False), fmt_t(ev_row.get("t5"))],
+            ["累计·10 日", f"{ev_row.get('n10')}", fmt_pct(ev_row.get("mu10")), fmt_pct(ev_row.get("mu10_pd")),
+             fmt_pct(ev_row.get("med10")), fmt_pct(ev_row.get("hit10"), already=False), fmt_t(ev_row.get("t10"))],
+            ["累计·20 日", f"{ev_row.get('n20')}", fmt_pct(ev_row.get("mu20")), fmt_pct(ev_row.get("mu20_pd")),
+             fmt_pct(ev_row.get("med20")), fmt_pct(ev_row.get("hit20"), already=False), fmt_t(ev_row.get("t20"))],
+            ["增量·第1日", f"{ev_row.get('n_inc1')}", fmt_pct(ev_row.get("mu_inc1")), "—",
+             fmt_pct(ev_row.get("med_inc1")), fmt_pct(ev_row.get("hit_inc1"), already=False), fmt_t(ev_row.get("t_inc1"))],
+            ["增量·第2–5日", f"{ev_row.get('n_inc2_5')}", fmt_pct(ev_row.get("mu_inc2_5")), "—",
+             fmt_pct(ev_row.get("med_inc2_5")), fmt_pct(ev_row.get("hit_inc2_5"), already=False), fmt_t(ev_row.get("t_inc2_5"))],
+            ["增量·第6–10日", f"{ev_row.get('n_inc6_10')}", fmt_pct(ev_row.get("mu_inc6_10")), "—",
+             fmt_pct(ev_row.get("med_inc6_10")), fmt_pct(ev_row.get("hit_inc6_10"), already=False), fmt_t(ev_row.get("t_inc6_10"))],
+            ["增量·第11–20日", f"{ev_row.get('n_inc11_20')}", fmt_pct(ev_row.get("mu_inc11_20")), "—",
+             fmt_pct(ev_row.get("med_inc11_20")), fmt_pct(ev_row.get("hit_inc11_20"), already=False), fmt_t(ev_row.get("t_inc11_20"))],
         ],
-        signed_cols={2, 3, 4},
+        signed_cols={2, 3, 4, 5},
     )
-    caption(doc, "表 3  加码按共识方向对齐。|t|<2 时不宜把均值当成稳定边。")
+    caption(doc, "表 3  累计窗口不能横比持有期；看「折合每日」和「增量」。|t|<2 时不宜把均值当成稳定边。")
+    if ev_row.get("n_unique"):
+        para(
+            doc,
+            f"加码 {ev_row.get('n'):,} 条里，连续加码只计首日还剩 {ev_row.get('n_unique'):,} 条。"
+            "同一品种连着加码时，10 日窗口互相重叠，同一段行情被数好几遍，累计均值会被抬高。"
+            f"去重叠后 10 日累计 {fmt_pct(ev_row.get('mu10_u'))}，折合每日 {fmt_pct(ev_row.get('mu10_u_pd'))}。",
+        )
+        add_table(
+            doc,
+            ["去重叠累计", "样本", "均值", "折合每日", "胜率", "t"],
+            [
+                ["次日", f"{ev_row.get('n1_u')}", fmt_pct(ev_row.get("mu1_u")), fmt_pct(ev_row.get("mu1_u_pd")),
+                 fmt_pct(ev_row.get("hit1_u"), already=False), fmt_t(ev_row.get("t1_u"))],
+                ["5 日", f"{ev_row.get('n5_u')}", fmt_pct(ev_row.get("mu5_u")), fmt_pct(ev_row.get("mu5_u_pd")),
+                 fmt_pct(ev_row.get("hit5_u"), already=False), fmt_t(ev_row.get("t5_u"))],
+                ["10 日", f"{ev_row.get('n10_u')}", fmt_pct(ev_row.get("mu10_u")), fmt_pct(ev_row.get("mu10_u_pd")),
+                 fmt_pct(ev_row.get("hit10_u"), already=False), fmt_t(ev_row.get("t10_u"))],
+                ["20 日", f"{ev_row.get('n20_u')}", fmt_pct(ev_row.get("mu20_u")), fmt_pct(ev_row.get("mu20_u_pd")),
+                 fmt_pct(ev_row.get("hit20_u"), already=False), fmt_t(ev_row.get("t20_u"))],
+            ],
+            signed_cols={2, 3, 4},
+        )
+        caption(doc, "表 3b  同一品种连续加码只保留第一天。更接近「开仓一次、持有期内不再叠仓」。")
     if "event" in ch:
         add_picture(doc, ch["event"])
-        caption(doc, "图 11  加码在次日 / 5 / 10 / 20 日的对齐收益。")
+        caption(doc, "图 11  左：第1日 / 第2–5日 / 第6–10日 / 第11–20日的增量。右：累计均值÷天数。不要用旧的累计柱高选持有期。")
     if "hit" in ch:
         add_picture(doc, ch["hit"])
-        caption(doc, "图 12  对齐胜率，虚线 50%。")
+        caption(doc, "图 12  增量窗口胜率，虚线 50%。累计窗口的胜率会把前面几天的赢面带到后面，同样不能横比。")
+    if ev_row.get("n_610_on") or ev_row.get("n_610_off"):
+        para(
+            doc,
+            "第2–5日：加码没了之后增量转负，原账户这时平掉是对的。"
+            "第6–10日：事件上「没了还拿」的均值可以更高——这不能读成「所以该硬拿十天」。"
+            "重叠样本会把同一段行情数好几遍，而且占住 8 个名额会挤掉新的次日加码。"
+            f"第2–5日还在 {ev_row.get('n_25_on')} / 没了 {ev_row.get('n_25_off')}，"
+            f"增量 {fmt_pct(ev_row.get('mu_25_on'))} vs {fmt_pct(ev_row.get('mu_25_off'))}；"
+            f"第6–10日还在 {ev_row.get('n_610_on')} / 没了 {ev_row.get('n_610_off')}，"
+            f"增量 {fmt_pct(ev_row.get('mu_610_on'))} vs {fmt_pct(ev_row.get('mu_610_off'))}。",
+        )
+        add_table(
+            doc,
+            ["窗口", "加码是否还在", "样本", "增量均值", "胜率", "t"],
+            [
+                ["第2–5日", "还在", f"{ev_row.get('n_25_on')}", fmt_pct(ev_row.get("mu_25_on")),
+                 fmt_pct(ev_row.get("hit_25_on"), already=False), fmt_t(ev_row.get("t_25_on"))],
+                ["第2–5日", "已经没了", f"{ev_row.get('n_25_off')}", fmt_pct(ev_row.get("mu_25_off")),
+                 fmt_pct(ev_row.get("hit_25_off"), already=False), fmt_t(ev_row.get("t_25_off"))],
+                ["第6–10日", "还在", f"{ev_row.get('n_610_on')}", fmt_pct(ev_row.get("mu_610_on")),
+                 fmt_pct(ev_row.get("hit_610_on"), already=False), fmt_t(ev_row.get("t_610_on"))],
+                ["第6–10日", "已经没了", f"{ev_row.get('n_610_off')}", fmt_pct(ev_row.get("mu_610_off")),
+                 fmt_pct(ev_row.get("hit_610_off"), already=False), fmt_t(ev_row.get("t_610_off"))],
+            ],
+            signed_cols={3, 4},
+        )
+        caption(doc, "表 3c  同一段增量按加码还在不在拆开。第2–5日没了为负；第6–10日事件上「没了」可以更高，仍不能据此选持有期。")
+    if "persist" in ch:
+        add_picture(doc, ch["persist"])
+        caption(doc, "图 12b  红=加码还在；绿=已经没了。绿柱高也不等于固定持有 10 日的账户更好。")
 
     add_ev = ev[ev["action"] == "加码"].copy()
     if not add_ev.empty:
@@ -956,7 +1166,9 @@ def build_report(ctx: dict) -> Path:
         "第二，保证金率是品种近似值。"
         "第三，信号来自 MOM 存量仓位，账户集合变化后边可能消失。"
         "第四，2.2 倍名义、最多 8 个、1.2% 风险帽是研究设定。"
-        "第五，加码次日事件 t 往往只是弱显著。",
+        "第五，加码次日事件 t 往往只是弱显著。"
+        "第六，事件研究的 5/10/20 日累计均值不能用来选持有期："
+        "柱更高只说明窗口更长，账户层固定持有 10 日常常差于「信号在才持有」。",
     )
     para(
         doc,
@@ -1002,7 +1214,7 @@ def main():
     ev = add_strategy_alignment(event_study(sig, wide))
     extra = sig[["date", "product", "kind1d", "kind5d"]].drop_duplicates()
     ev = ev.merge(extra, on=["date", "product"], how="left")
-    ev_row = event_horizon_stats(ev, "加码")
+    ev_row = event_horizon_stats(ev, "加码", sig=sig)
 
     is_add = sig["action"] == "加码"
     is_long = is_add & (sig["kind"] == "consensus_long")

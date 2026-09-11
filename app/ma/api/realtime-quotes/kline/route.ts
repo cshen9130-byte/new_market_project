@@ -1,16 +1,26 @@
 import { NextResponse } from "next/server"
 
+import { isNhciSymbol, NHCI_SYMBOL } from "@/lib/client/nhci-market"
 import { isTimeframeId, type TimeframeId } from "@/lib/client/timeframes"
 import { getCffexKline } from "@/lib/server/cffex-kline"
+import { getNhciKline, getNhciQuote } from "@/lib/server/nhci-kline"
 import { fetchSinaFuturesQuotes } from "@/lib/server/sina-futures-hq"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-const SYMBOL_RE = /^(IH|IF|IC|IM)(\d{4}|0)$|^[A-Z]{1,3}\d{3,4}$/
+const SYMBOL_RE = /^(IH|IF|IC|IM)(\d{4}|0)$|^[A-Z]{1,3}\d{3,4}$|^NHCI(?:\.NH)?$/
 
 function parseSymbols(raw: string) {
-  return [...new Set(raw.split(/[,\s]+/).map((item) => item.trim().toUpperCase()).filter((item) => SYMBOL_RE.test(item)))]
+  return [
+    ...new Set(
+      raw
+        .split(/[,\s]+/)
+        .map((item) => item.trim().toUpperCase())
+        .filter((item) => SYMBOL_RE.test(item) || isNhciSymbol(item))
+        .map((item) => (isNhciSymbol(item) ? NHCI_SYMBOL : item)),
+    ),
+  ]
 }
 
 async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>) {
@@ -43,6 +53,7 @@ export async function GET(req: Request) {
     if (symbols.length > 1) {
       const rows = await mapPool(symbols, 6, async (item) => {
         try {
+          if (isNhciSymbol(item)) return [NHCI_SYMBOL, await getNhciKline(tf)] as const
           return [item, await getCffexKline(item, tf)] as const
         } catch {
           return [item, []] as const
@@ -51,6 +62,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: true, interval: tf, series: Object.fromEntries(rows) })
     }
     const one = symbols[0]
+    if (isNhciSymbol(one)) {
+      const [candles, quote] = await Promise.all([getNhciKline(tf), getNhciQuote()])
+      return NextResponse.json({ ok: true, symbol: NHCI_SYMBOL, interval: tf, candles, quote })
+    }
     const [candles, quotes] = await Promise.all([getCffexKline(one, tf), fetchSinaFuturesQuotes([one])])
     const quote = quotes.get(one) || null
     return NextResponse.json({ ok: true, symbol: one, interval: tf, candles, quote })

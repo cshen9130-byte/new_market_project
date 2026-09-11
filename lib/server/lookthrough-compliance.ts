@@ -22,10 +22,12 @@ import {
   isValuationIncrementSubjectCode,
   resolveFofValuationCodeAlias,
 } from "@/lib/server/fund-holding-code"
+import { isChineseOptionContractName } from "@/lib/server/option-contract-code"
 import {
   lookupManagedProductOverride,
   remapManagedProductBeianCode,
 } from "@/lib/server/managed-product-beian"
+import { beianFamilyKey } from "@/lib/server/share-class-product"
 import {
   isValuationStockCostSubjectName,
   stripValuationSubjectPathPrefix,
@@ -121,7 +123,7 @@ function mergeValuationMetas(...lists: ValuationMeta[][]): ValuationMeta[] {
 }
 
 function fundCacheKey(beianHao: string): string {
-  return `ltc-v8:${beianHao.trim().toUpperCase()}`
+  return `ltc-v11:${beianHao.trim().toUpperCase()}`
 }
 
 function readFundResult(beianHao: string): LookthroughComplianceProduct | null {
@@ -374,15 +376,25 @@ function tickerFromSubjectCode(code: string | null | undefined): string | null {
   return null
 }
 
-function listedSecurityTicker(h: RawHolding): string | null {
+function quotedListedTicker(h: RawHolding): string | null {
   for (const raw of [
     h.symbol,
     extraText(h.extra, ["ticker", "wind_code", "证券代码", "股票代码", "交易所代码", "listed_code"]),
-    equityCompanyLeaf(h.subject_name),
-    tickerFromSubjectCode(h.subject_code),
   ]) {
     const ticker = normalizeListedTicker(raw)
     if (ticker) return ticker
+  }
+  return null
+}
+
+function listedSecurityTicker(h: RawHolding): string | null {
+  const quoted = quotedListedTicker(h)
+  if (quoted) return quoted
+  if (inferHoldingSubjectLevel(h) === 4) {
+    for (const raw of [equityCompanyLeaf(h.subject_name), tickerFromSubjectCode(h.subject_code)]) {
+      const ticker = normalizeListedTicker(raw)
+      if (ticker) return ticker
+    }
   }
   return null
 }
@@ -633,6 +645,28 @@ function isClearingLikeHolding(h: RawHolding): boolean {
   return /^(银行存款|结算备付金|存出保证金)/.test(h.subject_name ?? "")
 }
 
+/**
+ * 三级表「初始合约价值-多头/空头」是方向合计，不是第12条同一资产。
+ * 仍计入第41条期货合约价值。带合约代码的叶子（IF2509 等）仍按单一品种计。
+ */
+function isDerivativeDirectionBucketName(name: string): boolean {
+  const compact = compactSubjectText(displayName(name))
+  if (!compact) return false
+  if (/[A-Za-z]{1,4}\d{2,5}/.test(compact)) return false
+  if (!/初始合约|合约价值/.test(compact)) return false
+  const remainder = compact
+    .replace(/衍生工具|期货投资|场外/gu, "")
+    .replace(/中国金融期货交易所|上海国际能源交易中心|上海期货交易所|大连商品交易所|郑州商品交易所|广州期货交易所/gu, "")
+    .replace(/中金所|上期所|大商所|郑商所|广期所|能源中心/gu, "")
+    .replace(/投机|套期保值|套保|套利|买方|卖方/gu, "")
+    .replace(/债券期货|股指期货|商品期货|国债期货|股指期权|商品期权/gu, "")
+    .replace(/初始合约价值|初始合约|合约价值/gu, "")
+    .replace(/[（(\-_／/.．]*[多空]头[)）]?/gu, "")
+    .replace(/成本|市价/gu, "")
+    .replace(/[-_／/.．]/gu, "")
+  return remainder === ""
+}
+
 /** 估值表账户/科目合计，不是第12条「同一资产」（单一上市公司股票/存托凭证、同一债券）。 */
 const ACCOUNT_WRAPPER_LEAF_RE =
   /^(信用账户|普通账户|股东账户|保证金账户|两融|两融账户|融资融券|其他证券|其他投资)$/u
@@ -663,13 +697,52 @@ function isAccountLikeHolding(h: RawHolding): boolean {
   return isBrokerFirmLeaf(holdingDisplayLeaf(h))
 }
 
-function isConcentrationExempt(h: RawHolding, bucket: AssetBucket): boolean {
-  if (bucket === "cash_tool") return true
+/** 第12/19条直接豁免：现金、公募、回购、清算。三级科目不是豁免，只是看不见单一资产。 */
+function isArticle12LimitExempt(h: RawHolding, bucket: AssetBucket): boolean {
+  if (bucket === "cash_tool" || bucket === "margin") return true
   if (isClearingLikeHolding(h)) return true
   if (isPublicFund(h)) return true
   if (isGeneralPledgedRepo(h)) return true
-  if (isAccountWrapperName(h.subject_name ?? "")) return true
-  if (isValuationMarketBucketName(h.subject_name ?? "")) return true
+  if (isDerivativeOffsetName(h.subject_name ?? "")) return true
+  return false
+}
+
+/**
+ * 四级合约/证券代码，或估值表已给出 ticker/合约。
+ * 三级科目（股票成本、初始合约价值-多头、信用账户等）没有单一资产身份。
+ */
+function hasSpecificSecurityIdentity(h: RawHolding): boolean {
+  const name = h.subject_name ?? ""
+  if (isDerivativeDirectionBucketName(name)) return false
+  if (isValuationMarketBucketName(name)) return false
+  if (isValuationCategoryLabel(name)) return false
+  if (isAccountWrapperName(name)) return false
+  if (isBrokerFirmLeaf(holdingDisplayLeaf(h))) return false
+  const compact = compactSubjectText(name)
+  const blob = `${h.subject_code ?? ""} ${name} ${h.symbol ?? ""}`
+  if (/[A-Za-z]{1,4}\d{2,5}/.test(blob) && !/初始合约/.test(compact)) return true
+  if (isChineseOptionContractName(name)) return true
+  if (quotedListedTicker(h)) return true
+  return inferHoldingSubjectLevel(h) === 4
+}
+
+/** 三级估值表默认不披露单一持仓：没有 ticker/合约代码就不能当第12条同一资产。 */
+function holdingIsIdentifiableSingleAsset(h: RawHolding, sheetLevel: number | null): boolean {
+  if (!hasSpecificSecurityIdentity(h)) return false
+  if (sheetLevel != null && sheetLevel <= 3) {
+    const compact = compactSubjectText(h.subject_name ?? "")
+    const blob = `${h.subject_code ?? ""} ${h.subject_name ?? ""} ${h.symbol ?? ""}`
+    const hasContract = /[A-Za-z]{1,4}\d{2,5}/.test(blob) && !/初始合约/.test(compact)
+    if (!hasContract && !isChineseOptionContractName(h.subject_name ?? "") && !quotedListedTicker(h)) {
+      return false
+    }
+  }
+  return true
+}
+
+function isConcentrationExempt(h: RawHolding, bucket: AssetBucket, sheetLevel: number | null = null): boolean {
+  if (isArticle12LimitExempt(h, bucket)) return true
+  if (!holdingIsIdentifiableSingleAsset(h, sheetLevel)) return true
   return false
 }
 
@@ -689,20 +762,16 @@ function isBondLike(h: RawHolding, bucket: AssetBucket): boolean {
 }
 
 function sameAssetKey(h: RawHolding, bucket: AssetBucket): string | null {
+  if (!hasSpecificSecurityIdentity(h)) return null
   const ticker = listedSecurityTicker(h)
   if (ticker) return `${bucket}:${ticker}`
-  if (isAccountWrapperName(h.subject_name ?? "")) return null
-  if (isValuationMarketBucketName(h.subject_name ?? "")) return null
-  if (isValuationCategoryLabel(h.subject_name ?? "")) return null
   const company = equityCompanyLeaf(h.subject_name)
   if (company && (isValuationMarketBucketName(company) || ACCOUNT_WRAPPER_LEAF_RE.test(company))) {
     return null
   }
+  if (company && isDerivativeDirectionBucketName(company)) return null
   if (company) return `${bucket}:${company}`
   const name = displayName(h.subject_name)
-  if (isValuationMarketBucketName(name) || isValuationCategoryLabel(name) || isAccountWrapperName(name)) {
-    return null
-  }
   const symbol = String(h.symbol ?? "").trim().toUpperCase()
   if (symbol && /^\d{6}$/.test(symbol)) return `${bucket}:${symbol}`
   if (!name) return null
@@ -749,6 +818,10 @@ function buildChecks(
     maxBondPct: number | null
     maxSingleName: string | null
     maxBondName: string | null
+    singleAssetUndetermined?: boolean
+    singleAssetOpaquePct?: number | null
+    bondUndetermined?: boolean
+    bondOpaquePct?: number | null
     bondExemptNote?: string | null
     lookthroughComplete: boolean
     lookthroughAttempted: boolean
@@ -846,45 +919,62 @@ function buildChecks(
   }
 
   const concOk = p.maxSinglePct == null || p.maxSinglePct <= 25 + 1e-6
+  const concUndetermined = Boolean(p.singleAssetUndetermined)
+  const concIdentified = p.maxSingleName
+    ? `已识别「${p.maxSingleName}」${fmtPct(p.maxSinglePct)}`
+    : p.maxSinglePct != null
+      ? `已识别最大单一资产 ${fmtPct(p.maxSinglePct)}`
+      : "没有可识别的单一证券/合约"
   checks.push({
     id: "conc-25",
     title: "单一资产集中度",
     article: "第12条",
-    passed: concOk,
-    value: p.maxSingleName
-      ? `${p.maxSingleName} ${fmtPct(p.maxSinglePct)}`
-      : fmtPct(p.maxSinglePct),
+    passed: concUndetermined ? true : concOk,
+    undetermined: concUndetermined,
+    value: concUndetermined
+      ? "无法判定"
+      : p.maxSingleName
+        ? `${p.maxSingleName} ${fmtPct(p.maxSinglePct)}`
+        : fmtPct(p.maxSinglePct),
     threshold: "≤ 净资产 25%",
-    detail: concOk
-      ? "穿透后单一资产未超过净资产 25%。标准化股权按单一上市公司股票/存托凭证计；深港通股票成本、股票成本_深港通、信用账户、其他证券、国投证券等券商账户合计不是同一资产；现金管理工具、公募基金、债券通用质押式回购除外。"
-      : `穿透后「${p.maxSingleName ?? "单一资产"}」占净资产 ${fmtPct(p.maxSinglePct)}，超过 25%。标准化股权按单一上市公司股票/存托凭证计，估值表「深港通股票成本」「股票成本_深港通」「信用账户」「其他证券」以及「国投证券」等券商账户合计不视为同一资产。`,
+    detail: concUndetermined
+      ? `底层多为三级科目，未披露单一上市公司股票/存托凭证/合约，不能按第12条判断是否超限。${concIdentified}；三级及未穿透科目合计占净资产 ${fmtPct(p.singleAssetOpaquePct ?? null)}，最坏情形可能超过 25%。现金管理工具、公募基金、债券通用质押式回购除外。`
+      : concOk
+        ? `穿透后单一资产未超过净资产 25%。只按四级科目或已给出证券代码/合约代码的叶子计；三级科目（股票成本、信用账户、初始合约价值-多头/空头等）不是同一资产。${p.singleAssetOpaquePct ? `三级未披露合计 ${fmtPct(p.singleAssetOpaquePct)}，即使并入同一发行人也不超过 25%。` : ""}现金管理工具、公募基金、债券通用质押式回购除外。`
+        : `穿透后「${p.maxSingleName ?? "单一资产"}」占净资产 ${fmtPct(p.maxSinglePct)}，超过 25%。该项来自四级科目或证券/合约代码，不是三级会计科目合计。`,
   })
 
   const bondHasInScope = p.maxBondName != null
   const bondOk = p.maxBondPct == null || p.maxBondPct <= 10 + 1e-6
-  const bondValue = p.maxBondPct == null
-    ? "—"
-    : bondHasInScope
-      ? `${p.maxBondName} ${fmtPct(p.maxBondPct)}`
-      : `无适用债券 ${fmtPct(0)}`
-  const bondDetail = p.maxBondPct == null
+  const bondUndetermined = Boolean(p.bondUndetermined)
+  const bondValue = bondUndetermined
+    ? "无法判定"
+    : p.maxBondPct == null
+      ? "—"
+      : bondHasInScope
+        ? `${p.maxBondName} ${fmtPct(p.maxBondPct)}`
+        : `无适用债券 ${fmtPct(0)}`
+  const bondDetail = p.maxBondPct == null && !bondUndetermined
     ? "缺少净资产，无法按第19条计算单一债券占净值。"
-    : [
-      bondHasInScope
-        ? (bondOk
-          ? `最大适用债券「${p.maxBondName}」占净资产 ${fmtPct(p.maxBondPct)}，未超过 10%。`
-          : `「${p.maxBondName}」占净资产 ${fmtPct(p.maxBondPct)}，超过 10%。`)
-        : "第19条按「同一债券」占净资产计。穿透后没有适用的信用债/同一债券，集中度为 0%，未触发 10% 上限。",
-      p.bondExemptNote ? `不按同一债券计：${p.bondExemptNote}。` : "国债、央票、政金债、地方债、可转债、可交换债、债券通用质押式回购除外。",
-      p.lookthroughAttempted && !p.lookthroughComplete
-        ? `有 ${p.missing.length} 只底层未穿透，其内部债券未拆入本项，当前仅按已拆持仓判断。`
-        : "",
-    ].filter(Boolean).join(" ")
+    : bondUndetermined
+      ? `底层多为三级科目，未披露同一债券明细，不能按第19条判断是否超过净资产 10%。已识别 ${bondHasInScope ? `「${p.maxBondName}」${fmtPct(p.maxBondPct)}` : "无适用债券"}；三级及未穿透债权合计占净资产 ${fmtPct(p.bondOpaquePct ?? null)}，最坏情形可能超过 10%。`
+      : [
+        bondHasInScope
+          ? (bondOk
+            ? `最大适用债券「${p.maxBondName}」占净资产 ${fmtPct(p.maxBondPct)}，未超过 10%。`
+            : `「${p.maxBondName}」占净资产 ${fmtPct(p.maxBondPct)}，超过 10%。`)
+          : "第19条按「同一债券」占净资产计。穿透后没有适用的信用债/同一债券，集中度为 0%，未触发 10% 上限。",
+        p.bondExemptNote ? `不按同一债券计：${p.bondExemptNote}。` : "国债、央票、政金债、地方债、可转债、可交换债、债券通用质押式回购除外。",
+        p.lookthroughAttempted && !p.lookthroughComplete
+          ? `有 ${p.missing.length} 只底层未穿透，其内部债券未拆入本项。`
+          : "",
+      ].filter(Boolean).join(" ")
   checks.push({
     id: "bond-10",
     title: "单一债券集中度",
     article: "第19条",
-    passed: bondOk,
+    passed: bondUndetermined ? true : bondOk,
+    undetermined: bondUndetermined,
     value: bondValue,
     threshold: "≤ 净资产 10%",
     detail: bondDetail,
@@ -932,11 +1022,30 @@ function codesMatch(a: string | null | undefined, b: string | null | undefined):
   return x === y || shareClassProductCodesMatch(x, y)
 }
 
+/**
+ * FOF 持仓常写成「…投资基金B」（无「类」），估值表是母产品「…投资基金」或短名。
+ * 去掉份额后缀后再比，这样 AZH88B 能对上 SAZH88 那张表。
+ */
+function lookthroughNameKey(name: string): string {
+  return displayName(name)
+    .replace(/[ABC]类$/u, "")
+    .replace(/(私募证券投资基金|证券投资私募基金|私募基金|证券投资基金|投资基金)[ABC]?$/u, "")
+    .replace(/证券投资$/u, "")
+    .replace(/\s+/g, "")
+    .trim()
+}
+
 function namesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
   const x = displayName(String(a ?? ""))
   const y = displayName(String(b ?? ""))
   if (!x || !y) return false
-  return fundDisplayNamesMatch(x, y) || fundNicknameMatchesFullName(x, y) || fundNicknameMatchesFullName(y, x)
+  if (fundDisplayNamesMatch(x, y) || fundNicknameMatchesFullName(x, y) || fundNicknameMatchesFullName(y, x)) {
+    return true
+  }
+  const kx = lookthroughNameKey(x)
+  const ky = lookthroughNameKey(y)
+  if (!kx || !ky) return false
+  return kx === ky || kx.startsWith(ky) || ky.startsWith(kx)
 }
 
 function holdingLookupCode(h: RawHolding): string | null {
@@ -1626,6 +1735,9 @@ function evaluateProduct(
   }
 
   const duplicateSubjects = collectDuplicateSubjectHoldings(flat.rows)
+  let opaqueSingleMv = 0
+  let opaqueBondMv = 0
+  let opaqueDerivNotional = 0
 
   for (const row of flat.rows) {
     if (isValuationAggregateBucket(row.holding)) continue
@@ -1688,11 +1800,12 @@ function evaluateProduct(
       sub.derivatives_equity += absMv
     }
 
-    const exempt = isConcentrationExempt(row.holding, bucket)
+    const exempt = isConcentrationExempt(row.holding, bucket, row.source_sheet_level)
     const bond = isBondLike(row.holding, bucket)
+    const identifiable = holdingIsIdentifiableSingleAsset(row.holding, row.source_sheet_level)
     const name = equityCompanyLeaf(row.holding.subject_name) || displayName(row.holding.subject_name)
     const key = sameAssetKey(row.holding, bucket)
-    if (key && !isValuationCategoryLabel(name) && !isValuationMarketBucketName(name)) {
+    if (key && identifiable) {
       const prev = conc.get(key) ?? {
         name,
         value: 0,
@@ -1716,6 +1829,21 @@ function evaluateProduct(
         prev.value += concValue
       }
       conc.set(key, prev)
+    } else if (!isArticle12LimitExempt(row.holding, bucket)) {
+      if (bucket === "derivatives") {
+        opaqueDerivNotional += holdingNotional(row.holding)
+      } else if (
+        bucket === "equity"
+        || bucket === "fixed_income"
+        || bucket === "fund"
+        || bucket === "other"
+      ) {
+        const concValue = Math.abs(row.holding.cost) > 0
+          ? Math.min(Math.abs(row.holding.cost), Math.abs(row.holding.market_value) || Math.abs(row.holding.cost))
+          : absMv
+        opaqueSingleMv += concValue
+        if (bucket === "fixed_income" || bucket === "fund") opaqueBondMv += concValue
+      }
     }
 
     const skipFromHoldings =
@@ -1739,7 +1867,7 @@ function evaluateProduct(
         parent_holding_mv: row.parent_holding_mv,
         lookthrough_scale: row.lookthrough_scale,
         subject_level: inferHoldingSubjectLevel(row.holding),
-        concentration_exempt: isConcentrationExempt(row.holding, bucket),
+        concentration_exempt: isConcentrationExempt(row.holding, bucket, row.source_sheet_level),
       })
     }
   }
@@ -1751,7 +1879,43 @@ function evaluateProduct(
       if (!item.derivative) continue
       item.value = derivEquity * (Math.abs(item.signedNotional) / derivNotional)
     }
+    opaqueSingleMv += derivEquity * (opaqueDerivNotional / derivNotional)
+  } else {
+    for (const item of conc.values()) {
+      if (!item.derivative || item.value > 0) continue
+      item.value = Math.abs(item.signedNotional)
+    }
+    opaqueSingleMv += opaqueDerivNotional
   }
+
+  let maxSinglePct: number | null = null
+  let maxSingleName: string | null = null
+  let maxBondPct: number | null = null
+  let maxBondName: string | null = null
+  for (const item of conc.values()) {
+    if (nav <= 0) continue
+    const pct = (item.value / nav) * 100
+    if (!item.exempt && (maxSinglePct == null || pct > maxSinglePct)) {
+      maxSinglePct = pct
+      maxSingleName = item.name
+    }
+    if (item.bond && !item.exempt && (maxBondPct == null || pct > maxBondPct)) {
+      maxBondPct = pct
+      maxBondName = item.name
+    }
+  }
+  if (hasValuation && nav > 0 && maxSinglePct == null) maxSinglePct = 0
+  if (hasValuation && nav > 0 && maxBondPct == null) maxBondPct = 0
+  const opaqueSinglePct = nav > 0 ? (opaqueSingleMv / nav) * 100 : 0
+  const opaqueBondPct = nav > 0 ? (opaqueBondMv / nav) * 100 : 0
+  const worstSinglePct = (maxSinglePct ?? 0) + opaqueSinglePct
+  const worstBondPct = (maxBondPct ?? 0) + opaqueBondPct
+  const singleAssetUndetermined = Boolean(
+    hasValuation && nav > 0 && (maxSinglePct ?? 0) <= 25 + 1e-6 && worstSinglePct > 25 + 1e-6,
+  )
+  const bondUndetermined = Boolean(
+    hasValuation && nav > 0 && (maxBondPct ?? 0) <= 10 + 1e-6 && worstBondPct > 10 + 1e-6,
+  )
   const subfund_structures: LookthroughSubfundStructure[] = [...bySubfund.values()]
     .map((acc) => {
       const subInvested = acc.equity + acc.fixed_income + acc.derivatives_notional + acc.funds_unpenetrated + acc.other
@@ -1806,24 +1970,6 @@ function evaluateProduct(
   const illiquidPct = ratio(article15RestrictedMv(holdings), nav)
   const leverageLimitPct = (illiquidPct ?? 0) > 20 ? 120 : 200
 
-  let maxSinglePct: number | null = null
-  let maxSingleName: string | null = null
-  let maxBondPct: number | null = null
-  let maxBondName: string | null = null
-  for (const item of conc.values()) {
-    if (nav <= 0) continue
-    const pct = (item.value / nav) * 100
-    if (!item.exempt && (maxSinglePct == null || pct > maxSinglePct)) {
-      maxSinglePct = pct
-      maxSingleName = item.name
-    }
-    if (item.bond && !item.exempt && (maxBondPct == null || pct > maxBondPct)) {
-      maxBondPct = pct
-      maxBondName = item.name
-    }
-  }
-  if (hasValuation && nav > 0 && maxSinglePct == null) maxSinglePct = 0
-  if (hasValuation && nav > 0 && maxBondPct == null) maxBondPct = 0
   const bondExemptNote = [...bondExemptMv.entries()]
     .filter(([, value]) => value > 0)
     .sort((a, b) => b[1] - a[1])
@@ -1843,6 +1989,10 @@ function evaluateProduct(
     maxBondPct,
     maxSingleName,
     maxBondName,
+    singleAssetUndetermined,
+    singleAssetOpaquePct: opaqueSinglePct,
+    bondUndetermined,
+    bondOpaquePct: opaqueBondPct,
     bondExemptNote,
     lookthroughComplete: flat.missing.length === 0,
     lookthroughAttempted: lookthrough && flat.underlyingCount > 0,
@@ -1896,6 +2046,8 @@ function evaluateProduct(
       illiquid_restricted_pct: illiquidPct,
       max_single_asset_pct: maxSinglePct,
       max_single_bond_pct: maxBondPct,
+      max_single_asset_undetermined: singleAssetUndetermined,
+      max_single_bond_undetermined: bondUndetermined,
     },
     inferred_type: inferType({
       equityPct,
@@ -2105,6 +2257,11 @@ function expandProductCodes(raw: string): string[] {
   add(resolveFofValuationCodeAlias(raw))
   for (const code of [...codes]) {
     add(stripShareClassFromProductCode(code))
+    const family = beianFamilyKey(code)
+    if (family) {
+      add(family)
+      add(`S${family}`)
+    }
     if (code.startsWith("S") && code.length > 4) add(code.slice(1))
     else add(`S${code}`)
   }
@@ -2233,6 +2390,7 @@ async function evaluateWithLookthrough(
   }
   let catalog = mergeValuationMetas(
     opts?.catalog ?? [],
+    await loadLatestValuationCatalog(Boolean(opts?.fresh)),
     await loadLatestValuationsForLookups(codes, []),
   )
   const unmatchedNames = privateHoldings

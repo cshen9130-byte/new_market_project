@@ -8,6 +8,8 @@ import {
   DEFAULT_PRODUCT_CATEGORY,
   PRODUCT_CATEGORIES,
   isProductCategory,
+  isCheckFailed,
+  isCheckUndetermined,
   lookthroughAnomalyCells,
   lookthroughConclusion,
   type LookthroughAnomalyCell,
@@ -488,11 +490,20 @@ function RatioCell({
   value,
   anomaly,
   reason,
+  undetermined,
 }: {
   value: number | null | undefined
   anomaly: boolean
   reason: string
+  undetermined?: boolean
 }) {
+  if (undetermined) {
+    return (
+      <td className="px-3 py-2 text-right text-amber-600" title={reason}>
+        无法判定
+      </td>
+    )
+  }
   return (
     <td
       className={[
@@ -587,7 +598,7 @@ function ProductBlock({
           <StatusBadge
             conclusion={conclusion}
             category={category}
-            failed={checks.filter((c) => !c.passed)}
+            failed={checks.filter(isCheckFailed)}
           />
         </td>
         <td className="px-3 py-2 text-xs text-zinc-600">
@@ -615,7 +626,12 @@ function ProductBlock({
         <RatioCell
           value={product.ratios.max_single_asset_pct}
           anomaly={anomalies.has("single_asset")}
-          reason={anomalyReason("single_asset", category)}
+          reason={
+            product.ratios.max_single_asset_undetermined
+              ? "底层为三级科目，未披露单一资产，无法判断是否超过 25%"
+              : anomalyReason("single_asset", category)
+          }
+          undetermined={product.ratios.max_single_asset_undetermined}
         />
         <RatioCell
           value={product.ratios.leverage_pct}
@@ -635,9 +651,11 @@ function ProductBlock({
                     <div key={check.id} className="rounded border border-zinc-200 bg-white px-3 py-2">
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
-                          {check.passed
-                            ? <CircleCheck className="h-3.5 w-3.5 text-emerald-600" />
-                            : <CircleX className="h-3.5 w-3.5 text-red-500" />}
+                          {isCheckUndetermined(check)
+                            ? <HelpCircle className="h-3.5 w-3.5 text-amber-500" />
+                            : check.passed
+                              ? <CircleCheck className="h-3.5 w-3.5 text-emerald-600" />
+                              : <CircleX className="h-3.5 w-3.5 text-red-500" />}
                           <span className="text-xs font-medium text-foreground">{check.title}</span>
                           <span className="text-[10px] text-zinc-400">{check.article}</span>
                         </div>
