@@ -809,7 +809,7 @@ ${fmtPct(snapshot.netExposurePct)} = ${fmtPct(snapshot.longOnlyPct)} + ${fmtPct(
               <Metric
                 label="对冲基金净敞口"
                 value={fmtPct(snapshot.lsNetPct)}
-                hint={`资本 ${fmtWan(snapshot.lsGrossMv)} × ${snapshot.lsEffectivePct.toFixed(1)}%`}
+                hint={`${fmtWan(snapshot.lsNetMv)}（资本 ${fmtWan(snapshot.lsGrossMv)} × ${snapshot.lsEffectivePct.toFixed(1)}%）`}
               />
             </div>
             <ReactECharts option={waterfallOption} style={{ height: 260 }} notMerge />
@@ -1035,12 +1035,13 @@ ${fmtPct(snapshot.netExposurePct)} = ${fmtPct(snapshot.longOnlyPct)} + ${fmtPct(
 function limitUpHint(gross: number, risk: number): string {
   if (Math.abs(gross) < 1) return "未识别到打板产品"
   if (Math.abs(gross - risk) < 1) return fmtWan(risk)
-  return `资本 ${fmtWan(gross)}，按产品权重计入`
+  return `${fmtWan(risk)}（资本 ${fmtWan(gross)} × 权重）`
 }
 
 function longOnlyHint(gross: number, risk: number): string {
+  if (Math.abs(gross) < 1) return "未识别到股票多头产品"
   if (Math.abs(gross - risk) < 1) return fmtWan(risk)
-  return `资本 ${fmtWan(gross)}，按产品权重计入`
+  return `${fmtWan(risk)}（资本 ${fmtWan(gross)} × 权重）`
 }
 
 function Metric({ label, value, hint }: { label: string; value: string; hint: string }) {
