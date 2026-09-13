@@ -4,6 +4,7 @@ import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import type { EChartsOption } from "echarts"
 import { Menu, Settings2 } from "lucide-react"
+import type { StrategyObservationDistribution, StrategyObservationDistParams } from "@/lib/ma/strategy-observation"
 
 const FIT_DISTRIBUTION_CHARTS = [
   { label: "股票市场中性", showExcessToggle: false },
@@ -35,24 +36,9 @@ const FIT_DISTRIBUTION_CHARTS_THIRD = [
 const RED = "#D93025"
 const BLUE = "#1A73E8"
 
-function hashSeed(input: string): number {
-  let h = 0
-  for (let i = 0; i < input.length; i += 1) {
-    h = (h * 31 + input.charCodeAt(i)) >>> 0
-  }
-  return h
-}
-
 function normalPdf(x: number, mean: number, std: number): number {
   if (std <= 0) return 0
   return Math.exp(-0.5 * ((x - mean) / std) ** 2) / (std * Math.sqrt(2 * Math.PI))
-}
-
-function distributionParams(strategy: string, periodKey: string, excess: boolean) {
-  const seed = hashSeed(`${strategy}:${periodKey}:${excess ? "ex" : "abs"}:dist`)
-  const mean = ((seed % 1000) / 1000 - 0.5) * 5.5
-  const std = 1.1 + (seed % 80) / 80
-  return { mean, std }
 }
 
 function buildDensityPoints(mean: number, std: number, xMin: number, xMax: number, steps = 80) {
@@ -73,20 +59,23 @@ function formatWeekRange(endDate: string): string {
 }
 
 function buildDistributionChartOption(
-  strategy: string,
-  currentPeriod: string,
-  previousPeriod: string,
+  current: StrategyObservationDistParams | null,
+  previous: StrategyObservationDistParams | null,
   currentLabel: string,
   previousLabel: string,
-  showExcess: boolean,
   yAxisName: "概率" | "频率" = "概率",
 ): EChartsOption {
-  const current = distributionParams(strategy, currentPeriod, showExcess)
-  const previous = distributionParams(strategy, previousPeriod, showExcess)
-  const xMin = -8
-  const xMax = 8
-  const currentPoints = buildDensityPoints(current.mean, current.std, xMin, xMax)
-  const previousPoints = buildDensityPoints(previous.mean, previous.std, xMin, xMax)
+  const currentSafe = current ?? { mean: 0, std: 1.2, n: 0 }
+  const previousSafe = previous ?? { mean: 0, std: 1.2, n: 0 }
+  const span = Math.max(
+    3,
+    Math.abs(currentSafe.mean) + 3 * currentSafe.std,
+    Math.abs(previousSafe.mean) + 3 * previousSafe.std,
+  )
+  const xMin = -Math.ceil(span)
+  const xMax = Math.ceil(span)
+  const currentPoints = buildDensityPoints(currentSafe.mean, currentSafe.std, xMin, xMax)
+  const previousPoints = buildDensityPoints(previousSafe.mean, previousSafe.std, xMin, xMax)
   const yMax = Math.max(
     ...currentPoints.map((p) => p[1]),
     ...previousPoints.map((p) => p[1]),
@@ -183,16 +172,14 @@ function buildDistributionChartOption(
 function FittedDistributionChart({
   strategy,
   showExcessToggle,
-  currentPeriod,
-  previousPeriod,
+  distribution,
   currentLabel,
   previousLabel,
   yAxisName = "概率",
 }: {
   strategy: string
   showExcessToggle: boolean
-  currentPeriod: string
-  previousPeriod: string
+  distribution?: StrategyObservationDistribution
   currentLabel: string
   previousLabel: string
   yAxisName?: "概率" | "频率"
@@ -202,15 +189,13 @@ function FittedDistributionChart({
   const option = useMemo(
     () =>
       buildDistributionChartOption(
-        strategy,
-        currentPeriod,
-        previousPeriod,
+        showExcess ? distribution?.excessCurrent ?? null : distribution?.current ?? null,
+        showExcess ? distribution?.excessPrevious ?? null : distribution?.previous ?? null,
         currentLabel,
         previousLabel,
-        showExcess,
         yAxisName,
       ),
-    [strategy, currentPeriod, previousPeriod, currentLabel, previousLabel, showExcess, yAxisName],
+    [distribution, currentLabel, previousLabel, showExcess, yAxisName],
   )
 
   return (
@@ -255,15 +240,13 @@ function FittedDistributionChart({
 
 function DistributionChartGrid({
   charts,
-  currentPeriod,
-  previousPeriod,
+  distributions,
   currentLabel,
   previousLabel,
   yAxisName = "概率",
 }: {
   charts: readonly { label: string; showExcessToggle: boolean }[]
-  currentPeriod: string
-  previousPeriod: string
+  distributions: Record<string, StrategyObservationDistribution>
   currentLabel: string
   previousLabel: string
   yAxisName?: "概率" | "频率"
@@ -275,8 +258,7 @@ function DistributionChartGrid({
           key={chart.label}
           strategy={chart.label}
           showExcessToggle={chart.showExcessToggle}
-          currentPeriod={currentPeriod}
-          previousPeriod={previousPeriod}
+          distribution={distributions[chart.label]}
           currentLabel={currentLabel}
           previousLabel={previousLabel}
           yAxisName={yAxisName}
@@ -288,8 +270,10 @@ function DistributionChartGrid({
 
 export function StrategyFittedDistributionSection({
   periodKeys,
+  distributions,
 }: {
   periodKeys: string[]
+  distributions: Record<string, StrategyObservationDistribution>
 }) {
   const { currentPeriod, previousPeriod, currentLabel, previousLabel } = useMemo(() => {
     const current = periodKeys[periodKeys.length - 1] ?? "2026-06-18"
@@ -320,8 +304,7 @@ export function StrategyFittedDistributionSection({
 
       <DistributionChartGrid
         charts={FIT_DISTRIBUTION_CHARTS}
-        currentPeriod={currentPeriod}
-        previousPeriod={previousPeriod}
+        distributions={distributions}
         currentLabel={currentLabel}
         previousLabel={previousLabel}
         yAxisName="概率"
@@ -330,8 +313,7 @@ export function StrategyFittedDistributionSection({
       <div className="mt-3">
         <DistributionChartGrid
           charts={FIT_DISTRIBUTION_CHARTS_SECOND}
-          currentPeriod={currentPeriod}
-          previousPeriod={previousPeriod}
+          distributions={distributions}
           currentLabel={currentLabel}
           previousLabel={previousLabel}
           yAxisName="频率"
@@ -341,8 +323,7 @@ export function StrategyFittedDistributionSection({
       <div className="mt-3">
         <DistributionChartGrid
           charts={FIT_DISTRIBUTION_CHARTS_THIRD}
-          currentPeriod={currentPeriod}
-          previousPeriod={previousPeriod}
+          distributions={distributions}
           currentLabel={currentLabel}
           previousLabel={previousLabel}
           yAxisName="频率"

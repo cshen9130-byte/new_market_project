@@ -1,55 +1,22 @@
 "use client"
 
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Download, Menu } from "lucide-react"
+import {
+  STRATEGY_OBSERVATION_CATEGORIES,
+  STRATEGY_OBSERVATION_TABLE_CATEGORIES,
+  type ReturnGranularity,
+  type StrategyObservationResponse,
+  type StrategyObservationSeries,
+} from "@/lib/ma/strategy-observation"
 import { StrategyFittedDistributionSection } from "./StrategyFittedDistributionSection"
 import { StrategyIndicatorDistributionSection } from "./StrategyIndicatorDistributionSection"
 
-const STRATEGY_CATEGORIES = [
-  "股票市场中性",
-  "1000指增",
-  "500指增",
-  "300指增",
-  "A500指增",
-  "量化选股",
-  "主观多头",
-  "量化期货",
-  "主观期货",
-  "套利策略",
-  "股票对冲",
-  "股票多头",
-  "期权策略",
-  "多资产策略",
-  "债券策略",
-  "组合策略",
-  "可转债多头",
-] as const
-
-const TABLE_STRATEGIES = [
-  "股票市场中性",
-  "1000指增",
-  "500指增",
-  "300指增",
-  "A500指增",
-  "量化选股",
-  "主观多头",
-  "量化精选",
-  "主观精选",
-  "期货策略",
-  "股票对冲",
-  "股票多头",
-  "套利策略",
-  "期权策略",
-  "多资产策略",
-  "债券策略",
-  "组合策略",
-  "可转债多头",
-] as const
+const STRATEGY_CATEGORIES = STRATEGY_OBSERVATION_CATEGORIES
+const TABLE_STRATEGIES = STRATEGY_OBSERVATION_TABLE_CATEGORIES
 
 type StrategyCategory = (typeof STRATEGY_CATEGORIES)[number]
-
-type ReturnGranularity = "week" | "month" | "quarter" | "half" | "year" | "phase"
 
 const RETURN_GRANULARITY_OPTIONS: { key: ReturnGranularity; label: string }[] = [
   { key: "week", label: "周度" },
@@ -60,7 +27,10 @@ const RETURN_GRANULARITY_OPTIONS: { key: ReturnGranularity; label: string }[] = 
   { key: "phase", label: "阶段" },
 ]
 
-const YEAR_OPTIONS = [2026, 2025, 2024, 2023]
+const YEAR_OPTIONS = (() => {
+  const current = new Date().getFullYear()
+  return [current, current - 1, current - 2, current - 3]
+})()
 
 const SERIES_COLORS = [
   "#D93025",
@@ -81,57 +51,6 @@ const SERIES_COLORS = [
   "#0ea5e9",
   "#eab308",
 ]
-
-function hashSeed(input: string): number {
-  let h = 0
-  for (let i = 0; i < input.length; i += 1) {
-    h = (h * 31 + input.charCodeAt(i)) >>> 0
-  }
-  return h
-}
-
-function pseudoReturn(strategy: string, periodKey: string, excess: boolean): number {
-  const seed = hashSeed(`${strategy}:${periodKey}:${excess ? "ex" : "abs"}`)
-  const base = ((seed % 1000) / 1000 - 0.45) * 7.5
-  const wave = Math.sin(seed % 17) * 1.2
-  return Math.round((base + wave) * 100) / 100
-}
-
-function weeklyDatesForYear(year: number): string[] {
-  const dates: string[] = []
-  const cursor = new Date(`${year}-01-01T12:00:00`)
-  const day = cursor.getDay()
-  const diff = cursor.getDate() - day + (day === 0 ? -6 : 1)
-  cursor.setDate(diff)
-  while (cursor.getFullYear() <= year) {
-    if (cursor.getFullYear() === year) {
-      dates.push(cursor.toISOString().slice(0, 10))
-    }
-    cursor.setDate(cursor.getDate() + 7)
-  }
-  return dates
-}
-
-function monthKeysForYear(year: number): string[] {
-  return Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`)
-}
-
-function quarterKeysForYear(year: number): string[] {
-  return [`${year}-Q1`, `${year}-Q2`, `${year}-Q3`, `${year}-Q4`]
-}
-
-function halfKeysForYear(year: number): string[] {
-  return [`${year}-H1`, `${year}-H2`]
-}
-
-function periodKeysForYear(year: number, granularity: ReturnGranularity): string[] {
-  if (granularity === "week") return weeklyDatesForYear(year)
-  if (granularity === "month") return monthKeysForYear(year)
-  if (granularity === "quarter") return quarterKeysForYear(year)
-  if (granularity === "half") return halfKeysForYear(year)
-  if (granularity === "year") return [String(year)]
-  return [`${year}-phase`]
-}
 
 function formatPeriodLabel(key: string, granularity: ReturnGranularity): string {
   if (granularity === "week" || granularity === "phase") return key
@@ -190,40 +109,56 @@ function StrategyPerformanceTable({
   granularity,
   showExcess,
   visibleStrategies,
+  series,
 }: {
   periodKeys: string[]
   granularity: ReturnGranularity
   showExcess: boolean
   visibleStrategies: readonly string[]
+  series: Record<string, StrategyObservationSeries>
 }) {
   const tableRows = useMemo(() => {
     if (!visibleStrategies.length) return []
     return TABLE_STRATEGIES.map((label) => {
-      const values = periodKeys.map((key) => pseudoReturn(label, key, showExcess))
+      const row = series[label]
+      const raw = showExcess ? row?.excessValues : row?.values
+      const values = periodKeys.map((_, index) => raw?.[index] ?? null)
+      const numeric = values.filter((value): value is number => value != null)
       return {
         label,
         values,
-        winRate: computeWinRate(values),
+        winRate: showExcess ? row?.excessWinRate ?? computeWinRate(numeric) : row?.winRate ?? computeWinRate(numeric),
+        yearRet: showExcess ? row?.excessYearRet ?? null : row?.yearRet ?? null,
       }
     })
-  }, [periodKeys, showExcess, visibleStrategies.length])
+  }, [periodKeys, series, showExcess, visibleStrategies.length])
 
   const summaryRows = useMemo(() => {
     if (!tableRows.length) {
-      return { median: [] as number[], average: [] as number[], winRateMedian: 0, winRateAverage: 0 }
+      return {
+        median: [] as number[],
+        average: [] as number[],
+        winRateMedian: 0,
+        winRateAverage: 0,
+        yearRetMedian: 0,
+        yearRetAverage: 0,
+      }
     }
     const median = periodKeys.map((_, colIndex) =>
-      columnMedian(tableRows.map((row) => row.values[colIndex])),
+      columnMedian(tableRows.map((row) => row.values[colIndex]).filter((value): value is number => value != null)),
     )
     const average = periodKeys.map((_, colIndex) =>
-      columnAverage(tableRows.map((row) => row.values[colIndex])),
+      columnAverage(tableRows.map((row) => row.values[colIndex]).filter((value): value is number => value != null)),
     )
-    const winRates = tableRows.map((row) => row.winRate)
+    const winRates = tableRows.map((row) => row.winRate).filter((value): value is number => value != null)
+    const yearRets = tableRows.map((row) => row.yearRet).filter((value): value is number => value != null)
     return {
       median,
       average,
       winRateMedian: columnMedian(winRates),
       winRateAverage: columnAverage(winRates),
+      yearRetMedian: columnMedian(yearRets),
+      yearRetAverage: columnAverage(yearRets),
     }
   }, [periodKeys, tableRows])
 
@@ -270,23 +205,24 @@ function StrategyPerformanceTable({
                     key={`${row.label}-${periodKeys[colIndex]}`}
                     className={[
                       "px-3 py-1.5 text-center tabular-nums border-b border-zinc-50 whitespace-nowrap",
-                      returnColorClass(value),
+                      value == null ? "text-zinc-400" : returnColorClass(value),
                     ].join(" ")}
                   >
-                    {formatReturnPct(value)}
+                    {value == null ? "—" : formatReturnPct(value)}
                   </td>
                 ))}
                 <td className={[
                   "sticky right-[4.5rem] z-10 px-3 py-1.5 text-center tabular-nums border-b border-l border-zinc-50 whitespace-nowrap text-zinc-700",
                   rowBg,
                 ].join(" ")}>
-                  {row.winRate.toFixed(2)}%
+                  {row.winRate == null ? "—" : `${row.winRate.toFixed(2)}%`}
                 </td>
                 <td className={[
-                  "sticky right-0 z-10 px-3 py-1.5 text-center tabular-nums border-b border-l border-zinc-50 whitespace-nowrap text-zinc-400",
+                  "sticky right-0 z-10 px-3 py-1.5 text-center tabular-nums border-b border-l border-zinc-50 whitespace-nowrap",
                   rowBg,
+                  row.yearRet == null ? "text-zinc-400" : returnColorClass(row.yearRet),
                 ].join(" ")}>
-                  —
+                  {row.yearRet == null ? "—" : formatReturnPct(row.yearRet)}
                 </td>
               </tr>
               )
@@ -311,8 +247,11 @@ function StrategyPerformanceTable({
               <td className="sticky right-[4.5rem] z-10 bg-red-50/35 px-3 py-1.5 text-center tabular-nums border-b border-l border-red-100/60 whitespace-nowrap text-zinc-700">
                 {summaryRows.winRateMedian.toFixed(2)}%
               </td>
-              <td className="sticky right-0 z-10 bg-red-50/35 px-3 py-1.5 text-center tabular-nums border-b border-l border-red-100/60 whitespace-nowrap text-zinc-400">
-                —
+              <td className={[
+                "sticky right-0 z-10 bg-red-50/35 px-3 py-1.5 text-center tabular-nums border-b border-l border-red-100/60 whitespace-nowrap",
+                returnColorClass(summaryRows.yearRetMedian),
+              ].join(" ")}>
+                {formatReturnPct(summaryRows.yearRetMedian)}
               </td>
             </tr>
             <tr className="bg-red-50/35">
@@ -335,8 +274,11 @@ function StrategyPerformanceTable({
               <td className="sticky right-[4.5rem] z-10 bg-red-50/35 px-3 py-1.5 text-center tabular-nums border-l border-red-100/60 whitespace-nowrap text-zinc-700">
                 {summaryRows.winRateAverage.toFixed(2)}%
               </td>
-              <td className="sticky right-0 z-10 bg-red-50/35 px-3 py-1.5 text-center tabular-nums border-l border-red-100/60 whitespace-nowrap text-zinc-400">
-                —
+              <td className={[
+                "sticky right-0 z-10 bg-red-50/35 px-3 py-1.5 text-center tabular-nums border-l border-red-100/60 whitespace-nowrap",
+                returnColorClass(summaryRows.yearRetAverage),
+              ].join(" ")}>
+                {formatReturnPct(summaryRows.yearRetAverage)}
               </td>
             </tr>
           </tbody>
@@ -387,41 +329,56 @@ export function StrategyObservationView() {
   )
   const [showExcess, setShowExcess] = useState(false)
   const [selectAllSeries, setSelectAllSeries] = useState(true)
-  const [year, setYear] = useState(2026)
+  const [year, setYear] = useState(() => new Date().getFullYear())
   const [granularity, setGranularity] = useState<ReturnGranularity>("week")
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set())
+  const [payload, setPayload] = useState<StrategyObservationResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const periodKeys = useMemo(
-    () => periodKeysForYear(year, granularity),
-    [year, granularity],
-  )
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+    fetch(`/ma/api/private-funds/market/strategy-observation?year=${year}&granularity=${granularity}`, {
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        const json = await res.json()
+        if (!res.ok) throw new Error(json?.error || "加载策略观察数据失败")
+        setPayload(json as StrategyObservationResponse)
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return
+        setPayload(null)
+        setError(err instanceof Error ? err.message : "加载策略观察数据失败")
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+    return () => controller.abort()
+  }, [year, granularity])
+
+  const periodKeys = payload?.periodKeys ?? []
 
   const visibleStrategies = useMemo(
     () => STRATEGY_CATEGORIES.filter((s) => appliedCategories.has(s)),
     [appliedCategories],
   )
 
-  const statsCutoff = useMemo(() => {
-    const last = periodKeys[periodKeys.length - 1]
-    if (!last) return `${year}-12-31`
-    if (granularity === "week" || granularity === "phase") return last
-    if (granularity === "month") return `${last}-28`
-    if (granularity === "quarter") {
-      const q = Number(last.slice(-1))
-      const month = q * 3
-      return `${year}-${String(month).padStart(2, "0")}-28`
-    }
-    if (granularity === "half") return last.endsWith("H1") ? `${year}-06-30` : `${year}-12-31`
-    return `${year}-12-31`
-  }, [periodKeys, year, granularity])
+  const statsCutoff = payload?.cutoff ?? ""
 
   const chartSeries = useMemo(() => {
-    return visibleStrategies.map((strategy, index) => ({
-      name: strategy,
-      color: SERIES_COLORS[index % SERIES_COLORS.length],
-      data: periodKeys.map((key) => pseudoReturn(strategy, key, showExcess)),
-    }))
-  }, [visibleStrategies, periodKeys, showExcess])
+    return visibleStrategies.map((strategy, index) => {
+      const row = payload?.series[strategy]
+      const raw = showExcess ? row?.excessValues : row?.values
+      return {
+        name: strategy,
+        color: SERIES_COLORS[index % SERIES_COLORS.length],
+        data: periodKeys.map((_, i) => raw?.[i] ?? null),
+      }
+    })
+  }, [payload, periodKeys, showExcess, visibleStrategies])
 
   const activeSeries = useMemo(() => {
     if (selectAllSeries) return chartSeries
@@ -430,11 +387,12 @@ export function StrategyObservationView() {
 
   const chartOption = useMemo(() => {
     const xLabels = periodKeys.map((key) => formatPeriodLabel(key, granularity))
-    const allValues = activeSeries.flatMap((s) => s.data)
-    const minVal = allValues.length ? Math.min(...allValues, 0) : -4
-    const maxVal = allValues.length ? Math.max(...allValues, 0) : 8
-    const yMin = Math.floor(Math.min(minVal, -4) / 2) * 2
-    const yMax = Math.ceil(Math.max(maxVal, 8) / 2) * 2
+    const allValues = activeSeries.flatMap((s) => s.data).filter((v): v is number => v != null)
+    const minVal = allValues.length ? Math.min(...allValues, 0) : -2
+    const maxVal = allValues.length ? Math.max(...allValues, 0) : 2
+    const pad = Math.max(1, Math.ceil((maxVal - minVal) * 0.15))
+    const yMin = Math.floor(minVal - pad)
+    const yMax = Math.ceil(maxVal + pad)
 
     return {
       backgroundColor: "transparent",
@@ -442,11 +400,11 @@ export function StrategyObservationView() {
       tooltip: {
         trigger: "axis" as const,
         axisPointer: { type: "shadow" as const },
-        formatter: (params: Array<{ seriesName: string; value: number; marker: string; axisValue: string }>) => {
+        formatter: (params: Array<{ seriesName: string; value: number | null; marker: string; axisValue: string }>) => {
           if (!params?.length) return ""
           const lines = params
             .filter((p) => p.value != null && !Number.isNaN(p.value))
-            .sort((a, b) => b.value - a.value)
+            .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
             .map((p) => {
               const sign = p.value > 0 ? "+" : ""
               return `${p.marker}${p.seriesName}: ${sign}${p.value.toFixed(2)}%`
@@ -494,7 +452,7 @@ export function StrategyObservationView() {
         type: "value" as const,
         min: yMin,
         max: yMax,
-        interval: 2,
+        interval: yMax - yMin > 12 ? 2 : undefined,
         axisLabel: {
           fontSize: 11,
           color: "#a1a1aa",
@@ -556,7 +514,7 @@ export function StrategyObservationView() {
     const headers = ["日期", ...activeSeries.map((s) => s.name)]
     const rows = periodKeys.map((key, i) => {
       const label = formatPeriodLabel(key, granularity)
-      return [label, ...activeSeries.map((s) => `${s.data[i].toFixed(2)}%`)]
+      return [label, ...activeSeries.map((s) => (s.data[i] == null ? "" : `${s.data[i]!.toFixed(2)}%`))]
     })
     const escape = (v: string) => (v.includes(",") ? `"${v}"` : v)
     const blob = new Blob(
@@ -619,7 +577,10 @@ export function StrategyObservationView() {
               <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
               收益表现
             </div>
-            <div className="text-xs text-zinc-400 mt-1">统计截止：{statsCutoff}</div>
+            <div className="text-xs text-zinc-400 mt-1">
+              统计截止：{statsCutoff || "—"}
+              {payload?.fundCount ? ` · 样本 ${payload.fundCount} 只（净值日期 6 个月以内）` : ""}
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
             <button
@@ -711,6 +672,18 @@ export function StrategyObservationView() {
           <div className="flex items-center justify-center h-64 text-sm text-zinc-400">
             请选择至少一个分类后点击查询
           </div>
+        ) : loading ? (
+          <div className="flex items-center justify-center h-64 text-sm text-zinc-400">
+            正在用私募净值计算策略收益…
+          </div>
+        ) : error ? (
+          <div className="flex items-center justify-center h-64 text-sm text-red-500">
+            {error}
+          </div>
+        ) : periodKeys.length === 0 ? (
+          <div className="flex items-center justify-center h-64 text-sm text-zinc-400">
+            所选年度暂无已实现净值区间
+          </div>
         ) : (
           <>
             <ReactECharts
@@ -725,15 +698,22 @@ export function StrategyObservationView() {
               granularity={granularity}
               showExcess={showExcess}
               visibleStrategies={visibleStrategies}
+              series={payload?.series ?? {}}
             />
           </>
         )}
       </div>
 
-      {visibleStrategies.length > 0 && (
+      {visibleStrategies.length > 0 && payload && (
         <>
-          <StrategyFittedDistributionSection periodKeys={periodKeys} />
-          <StrategyIndicatorDistributionSection statsCutoff={statsCutoff} />
+          <StrategyFittedDistributionSection
+            periodKeys={periodKeys}
+            distributions={payload.distributions}
+          />
+          <StrategyIndicatorDistributionSection
+            statsCutoff={statsCutoff}
+            indicators={payload.indicators}
+          />
         </>
       )}
     </div>
