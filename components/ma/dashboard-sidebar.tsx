@@ -4,13 +4,14 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X, FlaskConical, Activity, CloudSun } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X, FlaskConical, Activity, CloudSun, CalendarDays } from "lucide-react"
 import type React from "react"
 import { authService } from "@/lib/auth"
 import { canAccessAiKnowledge, canAccessAiResearcher } from "@/lib/permissions"
 
 const baseNavigation = [
   { name: "总览", href: "/ma/dashboard", icon: LayoutDashboard },
+  { name: "事件日历", href: "/ma/dashboard/event-calendar", icon: CalendarDays },
   { name: "宏观市场", href: "/ma/dashboard/macro-market", icon: TrendingUp },
   { name: "股票市场", href: "/ma/dashboard/stock-market", icon: LineChart },
   { name: "期货市场", href: "/ma/dashboard/futures-market", icon: Rocket },

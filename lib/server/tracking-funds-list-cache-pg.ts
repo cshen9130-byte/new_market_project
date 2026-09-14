@@ -472,11 +472,12 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
 
       let returnPct: number | null = null
       if (unitNav != null && navDate) {
-        if (teamPoint && navDate === teamPoint.nav_date && teamPoint.prev_nav != null) {
+        // Prefer 复权 daily return (same as product-page 平台数据). Unit/unit from
+        // email tips diverges on TA/分红 dates (R0423B −0.99% vs 复权 −0.64%).
+        returnPct = navResolver.calcDailyReturnPct(identity, unitNav, navDate, null)
+        if (returnPct == null && teamPoint && navDate === teamPoint.nav_date && teamPoint.prev_nav != null) {
           const prev = parseFloat(teamPoint.prev_nav)
           if (Number.isFinite(prev) && prev !== 0) returnPct = unitNav / prev - 1
-        } else {
-          returnPct = navResolver.calcDailyReturnPct(identity, unitNav, navDate, null)
         }
       }
 

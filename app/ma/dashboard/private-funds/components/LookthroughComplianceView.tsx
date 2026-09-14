@@ -244,9 +244,9 @@ export function LookthroughComplianceView() {
           <div>
             <h1 className="text-base font-semibold text-foreground">穿透合规</h1>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-zinc-500">
-              依据中基协《私募证券投资基金运作指引》（2024-08-01）：按选定产品类别核验第41条资产比例，
-              以及第12条单一资产 25%、第19条单一债券 10%、第15条总资产杠杆 200%（流动性受限资产与 AA 级及以下信用债合计超过净资产 20% 时为 120%）。
-              FOF 持仓按底层产品最新估值表穿透后计算。
+              依据中基协《私募证券投资基金运作指引》（2024-08-01），第41条按国泰君安托管202607监控口径：
+              已投资产=资产合计−现金管理工具；权益=股票+股票类基金−融券；期货合约价值与账户权益除以同一已投资产。
+              另核验第12条单一资产 25%、第19条单一债券 10%、第15条总资产杠杆。FOF 持仓按底层最新估值表穿透。
             </p>
           </div>
           <div className="flex items-center gap-2">

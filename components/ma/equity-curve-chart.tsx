@@ -117,14 +117,42 @@ function computeVolatility(data: EquityPoint[], capital: number, win = 20): Arra
 }
 
 /** Drawdown (%) relative to start capital + running peak cumPnl */
-function computeDrawdown(data: EquityPoint[], capital: number): Array<[string, number]> {
+function computeDrawdown(
+  data: EquityPoint[],
+  capital: number,
+  fromFirstPoint = false,
+): Array<[string, number]> {
   const start = capital > 0 ? capital : INITIAL_CAPITAL
-  let peak = start
+  if (data.length === 0) return []
+  let peak = fromFirstPoint ? start + data[0].cumPnl : start
+  if (peak <= 0) peak = start
   return data.map(pt => {
     const val = start + pt.cumPnl
     if (val > peak) peak = val
-    return [pt.date, ((val - peak) / peak) * 100] as [string, number]
+    return [pt.date, peak > 0 ? ((val - peak) / peak) * 100 : 0] as [string, number]
   })
+}
+
+function latestSeriesStart(seriesList: EquitySeries[]): string | null {
+  let latest: string | null = null
+  for (const s of seriesList) {
+    const d = s.data[0]?.date
+    if (!d) continue
+    if (latest === null || d > latest) latest = d
+  }
+  return latest
+}
+
+function clipEquityFrom(data: EquityPoint[], fromDate: string | null): EquityPoint[] {
+  if (!fromDate) return data
+  return data.filter(pt => pt.date >= fromDate)
+}
+
+function rebaseEquityPnl(data: EquityPoint[]): EquityPoint[] {
+  if (data.length === 0) return data
+  const base = data[0].cumPnl
+  if (base === 0) return data
+  return data.map(pt => ({ ...pt, cumPnl: pt.cumPnl - base }))
 }
 
 /** Capital efficiency (%): cumulative PnL / average margin occupied to date. Sign matches NAV. */
@@ -177,6 +205,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const [compareSearch, setCompareSearch] = useState("")
   const [mode, setMode] = useState<DisplayMode>("return")
   const [capitalMode, setCapitalMode] = useState<CapitalMode>("nominal")
+  const [alignStart, setAlignStart] = useState(false)
   const [selectedBenchmark, setSelectedBenchmark] = useState("NHCI.NH")
   const [benchmarkData, setBenchmarkData] = useState<Array<{ date: string; close: number }>>([])  
   const [loadingBenchmark, setLoadingBenchmark] = useState(false)
@@ -311,10 +340,12 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const toDisplayValue = (cumPnl: number, capital: number) =>
     mode === "return" ? (cumPnl / (capital > 0 ? capital : INITIAL_CAPITAL)) * 100 : cumPnl
 
-  // Determine the first date of the visible account curve so the benchmark starts there
+  // Common start = latest first date among visible accounts (起点对齐).
+  // Otherwise keep the earliest date so the benchmark can follow the longest curve.
+  const alignDate = alignStart ? latestSeriesStart(visibleSeries) : null
   const accountStartDate: string | null = (() => {
+    if (alignDate) return alignDate
     if (showAll) {
-      // Start at the earliest date across all visible series
       let earliest: string | null = null
       for (const s of visibleSeries) {
         if (s.data.length > 0) {
@@ -327,6 +358,15 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     const s = visibleSeries[0]
     return s?.data?.[0]?.date ?? null
   })()
+
+  const displaySeries = visibleSeries.map(s => {
+    const clipped = clipEquityFrom(s.data, alignDate)
+    return {
+      ...s,
+      clipped,
+      displayData: alignStart ? rebaseEquityPnl(clipped) : clipped,
+    }
+  })
 
   // Benchmark: rebase to 0 at the first benchmark point >= accountStartDate
   const trimmedBenchmarkData = mode === "return" && selectedBenchmark !== "none"
@@ -352,26 +392,29 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const benchmarkName = BENCHMARK_OPTIONS.find(b => b.code === selectedBenchmark)?.name ?? selectedBenchmark
   const showLegend = showAll || benchmarkReturnSeries.length > 0
 
-  const volSeries = visibleSeries.map((s, i) => ({
-    name: s.account,
-    type: "line" as const,
-    smooth: false,
-    symbol: "none",
-    lineStyle: {
-      width: showAll ? 1.5 : 1.8,
-      color: showAll
-        ? LINE_COLORS[i % LINE_COLORS.length]
-        : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
-    },
-    itemStyle: {
-      color: showAll
-        ? LINE_COLORS[i % LINE_COLORS.length]
-        : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
-    },
-    data: computeVolatility(s.data, resolveStartCapital(s, capitalMode)),
-  }))
+  const volSeries = displaySeries.map((s, i) => {
+    const vol = computeVolatility(s.data, resolveStartCapital(s, capitalMode))
+    return {
+      name: s.account,
+      type: "line" as const,
+      smooth: false,
+      symbol: "none",
+      lineStyle: {
+        width: showAll ? 1.5 : 1.8,
+        color: showAll
+          ? LINE_COLORS[i % LINE_COLORS.length]
+          : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
+      },
+      itemStyle: {
+        color: showAll
+          ? LINE_COLORS[i % LINE_COLORS.length]
+          : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
+      },
+      data: alignDate ? vol.filter(([d]) => d >= alignDate) : vol,
+    }
+  })
 
-  const marginYieldSeries = visibleSeries.map((s, i) => ({
+  const marginYieldSeries = displaySeries.map((s, i) => ({
     name: s.account,
     type: "line" as const,
     smooth: false,
@@ -388,10 +431,10 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         : (s.account === compareAccount ? COMPARE_COLOR : MARGIN_YIELD_COLOR),
     },
     ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: MARGIN_YIELD_COLOR, opacity: 0.08 } }),
-    data: computeMarginYield(s.data),
+    data: computeMarginYield(s.displayData),
   }))
 
-  const marginUtilSeries = visibleSeries.map((s, i) => ({
+  const marginUtilSeries = displaySeries.map((s, i) => ({
     name: s.account,
     type: "line" as const,
     smooth: false,
@@ -408,10 +451,10 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         : (s.account === compareAccount ? COMPARE_COLOR : MARGIN_UTIL_COLOR),
     },
     ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: MARGIN_UTIL_COLOR, opacity: 0.08 } }),
-    data: computeMarginUtil(s.data, resolveStartCapital(s, capitalMode)),
+    data: computeMarginUtil(s.clipped, resolveStartCapital(s, capitalMode)),
   }))
 
-  const ddSeries = visibleSeries.map((s, i) => ({
+  const ddSeries = displaySeries.map((s, i) => ({
     name: s.account,
     type: "line" as const,
     smooth: false,
@@ -428,7 +471,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         : (s.account === compareAccount ? COMPARE_COLOR : "#ef4444"),
     },
     ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: "#ef4444", opacity: 0.1 } }),
-    data: computeDrawdown(s.data, resolveStartCapital(s, capitalMode)),
+    data: computeDrawdown(s.clipped, resolveStartCapital(s, capitalMode), alignStart),
   }))
 
   const ddSeriesWithBenchmark = benchmarkDrawdownSeries.length > 0
@@ -593,7 +636,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       { type: "slider", bottom: showLegend ? 28 : 28, height: 18, start: 0, end: 100 },
     ],
     series: [
-      ...visibleSeries.map((s, i) => ({
+      ...displaySeries.map((s, i) => ({
         name: s.account,
         type: "line",
         smooth: false,
@@ -610,7 +653,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
             : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
         },
         ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: LINE_COLOR, opacity: 0.08 } }),
-        data: s.data.map(d => [d.date, toDisplayValue(d.cumPnl, resolveStartCapital(s, capitalMode))]),
+        data: s.displayData.map(d => [d.date, toDisplayValue(d.cumPnl, resolveStartCapital(s, capitalMode))]),
       })),
       ...(benchmarkReturnSeries.length > 0 ? [{
         name: benchmarkName,
@@ -679,6 +722,21 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
               </div>
               {capitalMode === "nominal" && (
                 <span className="text-[11px] text-muted-foreground whitespace-nowrap">{capitalHint}</span>
+              )}
+              <button
+                type="button"
+                onClick={() => setAlignStart(v => !v)}
+                title="将各曲线裁剪到共同起点并归一到 0，便于对比"
+                className={`rounded border px-2 py-0.5 text-xs transition-colors ${
+                  alignStart
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-input bg-background text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                起点对齐
+              </button>
+              {alignStart && alignDate && (
+                <span className="text-[11px] text-muted-foreground whitespace-nowrap">对齐至 {alignDate}</span>
               )}
               {/* Account selector */}
               <select

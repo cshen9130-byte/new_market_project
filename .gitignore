@@ -120,6 +120,9 @@ data/paper-trading/
 # MOM API cache files
 data/mom-cache/
 
+# Live 事件日历 cache (华尔街见闻)
+data/market-events-cache/
+
 # Local large tracking imports (never commit)
 nav_csv_group/
 nav_csv_group_type6/

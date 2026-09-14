@@ -12,6 +12,7 @@ const FRECENCY_HALF_LIFE_DAYS = 14
 const USER_ID_RE = /^[A-Za-z0-9._:-]{1,80}$/
 
 const PATH_META: Record<string, { title: string; description: string }> = {
+  "/ma/dashboard/event-calendar": { title: "事件日历", description: "宏观发布、央行决议与休市安排" },
   "/ma/dashboard/macro-market": { title: "宏观市场", description: "经济指标、利率与全球市场" },
   "/ma/dashboard/stock-market": { title: "股票市场", description: "指数与行业分析" },
   "/ma/dashboard/futures-market": { title: "期货市场", description: "大宗商品与合约" },

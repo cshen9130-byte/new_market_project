@@ -54,7 +54,8 @@ function p(
 
 export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("home", "总览", "/ma/dashboard", "总览", "any", ["首页", "仪表盘", "市场总览"]),
-  p("macro", "宏观市场", "/ma/dashboard/macro-market", "宏观市场", "any", ["宏观", "PCA", "货币信用"]),
+  p("event-calendar", "事件日历", "/ma/dashboard/event-calendar", "事件日历", "any", ["财经日历", "宏观日历", "经济日历"]),
+  p("macro", "宏观市场", "/ma/dashboard/macro-market", "宏观市场", "any", ["宏观", "PCA", "货币信用", "FOMC", "CPI", "全球", "美国", "失业", "FedWatch"]),
   p("stock", "股票市场", "/ma/dashboard/stock-market", "股票市场", "any", ["股票", "A股"]),
   p("futures", "期货市场", "/ma/dashboard/futures-market", "期货市场", "any", ["期货", "南华", "商品期货"]),
   p("options", "期权市场", "/ma/dashboard/options-market", "期权市场", "any", ["期权"]),

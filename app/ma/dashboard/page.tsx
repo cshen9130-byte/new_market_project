@@ -1,8 +1,16 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { TrendingUp, BarChart3, Activity, PieChart } from "lucide-react"
 import { QuickStartShortcuts } from "@/components/ma/quick-start-shortcuts"
+import { MarketEventCalendar } from "@/components/ma/market-event-calendar"
+import { addIsoDays } from "@/lib/ma/market-event-calendar-shared"
+import { getLiveMarketEvents } from "@/lib/server/market-events-live"
+import { shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 
-export default function DashboardPage() {
+export default async function DashboardPage() {
+  const today = shanghaiTodayIsoDate()
+  const live = await getLiveMarketEvents({ from: addIsoDays(today, -90), to: addIsoDays(today, 90) })
+  const events = live.events
+
   return (
     <div className="space-y-6 pt-6">
       <div>
@@ -63,6 +71,19 @@ export default function DashboardPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <QuickStartShortcuts />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>事件日历</CardTitle>
+          <CardDescription>
+            华尔街见闻财经日历实时数据，每个北京自然日自动刷新今值 / 预期 / 前值。
+            {live.live ? "" : " 当前为本地备用日程。"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <MarketEventCalendar today={today} events={events} sourceLabel={live.source} />
         </CardContent>
       </Card>
     </div>

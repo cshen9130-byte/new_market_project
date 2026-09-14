@@ -4440,6 +4440,14 @@ def step_money_credit(conn) -> int:
     return 0
 
 
+def step_market_events_calendar() -> int:
+    """Refresh 系统总览 事件日历 from Wall Street CN (今值/预期/前值)."""
+    result = run_node_script("refresh_market_events.ts", timeout=180)
+    if not result or not result.get("ok"):
+        raise RuntimeError("market events refresh failed")
+    return int(result.get("count") or 0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP — Futures rollover dates (dominant-contract OI tracking via AkShare)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5150,6 +5158,7 @@ MACRO_STEPS = [
     "regime_similarity",
     "shibor_3m",
     "money_credit",
+    "market_events_calendar",
 ]
 
 # AMAC fund-list sync. Scheduled separately so a broken 01:00 full nightly
@@ -5233,6 +5242,7 @@ ORDERED_STEPS = [
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
+    "market_events_calendar",        # 系统总览 事件日历 (华尔街见闻)
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
     "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
     "amac_futures",                  # AMAC 期货公司集合资管 → amac_futures_products (+ new private_fund_info)
@@ -5381,6 +5391,7 @@ def main():
         "regime_similarity":               lambda: step_regime_similarity(conn),
         "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),
         "money_credit":                    lambda: step_money_credit(conn),
+        "market_events_calendar":          lambda: step_market_events_calendar(),
         "email_nav_parse":                 lambda: step_email_nav_parse(),
         "amac_private_funds":              lambda: step_amac_private_funds(force_full=force),
         "amac_futures":                    lambda: step_amac_futures(force_full=force),

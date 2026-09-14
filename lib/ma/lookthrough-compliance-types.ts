@@ -175,7 +175,7 @@ export function lookthroughAnomalyCells(
   for (const check of failed) {
     if (check.id === "type-equity") out.add("equity")
     else if (check.id === "type-fi") out.add("fixed_income")
-    else if (check.id === "type-deriv-notional") out.add("derivatives")
+    else if (check.id === "type-deriv-notional" || check.id === "type-deriv-equity") out.add("derivatives")
     else if (check.id === "type-mixed") {
       if ((product.ratios.equity_pct ?? 0) >= 80) out.add("equity")
       if ((product.ratios.fixed_income_pct ?? 0) >= 80) out.add("fixed_income")

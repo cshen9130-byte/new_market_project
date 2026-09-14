@@ -1,6 +1,10 @@
 /**
  * 穿透合规 — 《私募证券投资基金运作指引》（2024-08-01）
- * Product-type ratios (第41条) + concentration / leverage (第12 / 15 / 19条).
+ * 第41条产品类别按国泰君安托管202607监控口径：
+ * 已投资产 = 资产合计 − 现金管理工具（含券商普通资金账户 103106）。
+ * 权益 = 1102股票 + 1105股票类基金 + 穿透1109股票 − 2101融券。
+ * 期货：场内初始合约价值 / 已投资产，账户权益 102113+103113+102131+103131+103133 / 同一已投资产。
+ * 第12 / 15 / 19条仍按指引集中度与杠杆。
  * FOF holdings are looked through to underlying 估值表 leaves.
  * Account wrappers (信用账户 / 国投证券) are not summed twice.
  */
@@ -47,6 +51,17 @@ import {
   loadLookthroughCategoryByBeian,
   loadLookthroughProductCategories,
 } from "@/lib/server/lookthrough-product-categories"
+import {
+  gsArticle41InvestedAssets,
+  isGsCashToolHolding,
+  isGsCreditAccountCash,
+  isGsDerivAccountEquityHolding,
+  isGsEquityHolding,
+  isGsFixedIncomeHolding,
+  isGsFuturesNotionalHolding,
+  isGsOtcDerivativeSubject,
+  isGsSecuritiesLendingLiability,
+} from "@/lib/ma/gs-custody-article41"
 
 type RawHolding = {
   valuation_record_id: number
@@ -72,6 +87,7 @@ type ValuationMeta = {
   valuation_date: string
   net_asset_value: number
   total_asset: number
+  total_liability: number
   unit_nav: number | null
   attachment_filename: string | null
 }
@@ -106,6 +122,7 @@ function valuationMetaFromRow(row: ValuationRecordRow): ValuationMeta {
     valuation_date: row.valuation_date,
     net_asset_value: nav,
     total_asset: totalAsset,
+    total_liability: toNum(row.total_liability),
     unit_nav: toNum(row.unit_nav) || null,
     attachment_filename: row.attachment_filename ?? null,
   }
@@ -123,7 +140,7 @@ function mergeValuationMetas(...lists: ValuationMeta[][]): ValuationMeta[] {
 }
 
 function fundCacheKey(beianHao: string): string {
-  return `ltc-v11:${beianHao.trim().toUpperCase()}`
+  return `ltc-v13:${beianHao.trim().toUpperCase()}`
 }
 
 function readFundResult(beianHao: string): LookthroughComplianceProduct | null {
@@ -557,57 +574,25 @@ function isBrokerFirmLeaf(name: string): boolean {
 }
 
 function classifyBucket(h: RawHolding): AssetBucket {
-  const kind = h.row_kind ?? "other"
-  const name = h.subject_name ?? ""
-  const assetClass = h.asset_class ?? ""
-  const code = String(h.subject_code ?? "").replace(/[\s.]/g, "")
-  const blob = `${name} ${assetClass}`
-
-  if (kind === "bank_deposit" || code.startsWith("1002")) return "cash_tool"
-  if (kind === "money_fund" || /货币基金|货币型/.test(name)) return "cash_tool"
-  if ((kind === "bond" || code.startsWith("1101")) && isCashToolName(name, assetClass)) return "cash_tool"
+  if (isGsSecuritiesLendingLiability(h)) return "other"
+  if (isGsCashToolHolding(h)) return "cash_tool"
+  if (isGsDerivAccountEquityHolding(h)) return "margin"
+  if (isGsFuturesNotionalHolding(h)) return "derivatives"
+  if (isGsEquityHolding(h)) return "equity"
+  if (isGsFixedIncomeHolding(h)) return "fixed_income"
+  if (isGsOtcDerivativeSubject(h) || isGsCreditAccountCash(h)) return "other"
+  if (isNonAssetValuationRow(h)) return "other"
+  if (isPrivateFundHolding(h)) return "fund"
 
   if (isMarginOrReserveHolding(h)) {
     const name = h.subject_name ?? ""
-    // 收益互换履约金：不计入第41条已投资产，只进账户权益。
-    if (/收益互换|履约金/.test(name) && !/信用账户|股东账户/.test(name)) return "margin"
-    if (/券商保证金|信用账户|股东账户|两融|融资融券|客户证券款/.test(name) && !/期货/.test(name)) {
-      return "equity"
-    }
-    const venue = marginVenue(h)
-    if (venue === "futures") return "margin"
-    // 三级叶子常写成券商全称（华鑫证券 / 中信证券）。这是信用账户/客户证券款，不是期货保证金。
-    if (venue === "broker") return "equity"
-    if (isBrokerFirmLeaf(name) || isBrokerFirmLeaf(holdingDisplayLeaf(h))) return "equity"
-    return "margin"
+    if (/收益互换|履约金/.test(name)) return "other"
+    if (marginVenue(h) === "futures") return "margin"
+    return "other"
   }
 
-  if (isDerivativeHolding(h)) return "derivatives"
-
-  if (kind === "stock" || code.startsWith("1001")) return "equity"
-  if (/可转债|可交换债/.test(name)) return "equity"
-  // 估值表「其他证券」是权益类归集科目，不是未穿透基金，也不是第41条「其他已投」。
-  if (/其他证券|优先股|存托凭证/.test(blob)) return "equity"
-  if (/信用账户|股东账户|两融/.test(blob) && !/期货/.test(blob)) return "equity"
-  if (isBrokerFirmLeaf(equityCompanyLeaf(name) || name) && !/期货/.test(blob)) return "equity"
-
-  if (kind === "fund" || kind === "fund_or_stock" || code.startsWith("1105") || code.startsWith("1102")) {
-    if (/货币/.test(name)) return "cash_tool"
-    if (/债券|固收|短债/.test(name)) return "fixed_income"
-    if (/股票|A股|混合|指数|ETF|权益|其他证券|港股|深港通|沪港通/.test(name)) return "equity"
-    if (/封闭式基金/.test(name) && !/私募/.test(name)) return "equity"
-    return "fund"
-  }
-
-  if (isNonAssetValuationRow(h)) return "other"
-
-  if (isPrivateFundHolding(h)) return "fund"
-
-  if (kind === "bond" || kind === "repo" || code.startsWith("1101") || code.startsWith("1202")) {
-    return "fixed_income"
-  }
-
-  if (kind === "margin_deposit" || kind === "settlement_reserve") return "margin"
+  // 未列入托管场内合约价值科目的衍生（含场外收益互换）不进第41条分子。
+  if (isDerivativeHolding(h)) return "other"
 
   return "other"
 }
@@ -800,7 +785,7 @@ function inferType(args: {
   if ((fundPct ?? 0) >= 80) return "母基金"
   if ((equityPct ?? 0) >= 80) return "权益类"
   if ((fiPct ?? 0) >= 80) return "固定收益类"
-  if ((derivNotionalPct ?? 0) >= 80 && (derivEquityPct ?? 0) > 20) return "期货和衍生品类"
+  if ((derivNotionalPct ?? 0) >= 80 && (derivEquityPct ?? 0) >= 20) return "期货和衍生品类"
   return "混合类"
 }
 
@@ -855,7 +840,7 @@ function buildChecks(
       threshold: "≥ 已投资产 80%",
       detail: ok
         ? "权益类资产达到权益类产品认定标准。"
-        : "权益类资产未达到已投资产的 80%，不符合权益类认定。",
+        : "股票等股权类资产未达到已投资产的 80%，不符合权益类认定。口径：1102股票 + 1105股票类基金 + 穿透私募股票 − 2101融券。",
     })
   } else if (category === "固定收益类") {
     const ok = (p.fiPct ?? 0) >= 80
@@ -872,7 +857,7 @@ function buildChecks(
     })
   } else if (category === "期货和衍生品类") {
     const notionalOk = (p.derivNotionalPct ?? 0) >= 80
-    const equityOk = (p.derivEquityPct ?? 0) > 20
+    const equityOk = (p.derivEquityPct ?? 0) >= 20
     checks.push({
       id: "type-deriv-notional",
       title: "期货和衍生品合约价值",
@@ -881,8 +866,8 @@ function buildChecks(
       value: fmtPct(p.derivNotionalPct),
       threshold: "≥ 已投资产 80%",
       detail: notionalOk
-        ? "衍生品持仓合约价值达到认定标准。已投资产 = 权益市值 + 固收市值 + 期货合约价值 + 其他已投，不含现金管理工具。"
-        : "衍生品持仓合约价值未达到已投资产的 80%。已投资产按期货合约价值加其他已投、不含现金管理工具。",
+        ? "场内持仓合约价值达到认定标准。已投资产 = 估值表资产合计 − 现金管理工具（国泰君安托管202607）。合约价值不计入分母。"
+        : "场内持仓合约价值未达到已投资产的 80%。已投资产 = 资产合计 − 现金管理工具，不含合约价值。场外1114暂不自动计入。",
     })
     checks.push({
       id: "type-deriv-equity",
@@ -890,15 +875,15 @@ function buildChecks(
       article: "第41条",
       passed: equityOk,
       value: fmtPct(p.derivEquityPct),
-      threshold: "> 市值已投资产 20%",
+      threshold: "≥ 已投资产 20%",
       detail: equityOk
-        ? "期货和衍生品账户权益（保证金+结算备付金）超过市值口径已投资产的 20%。该口径不含现金管理工具，也不把合约价值计入分母。"
-        : "期货和衍生品账户权益未超过市值口径已投资产的 20%。",
+        ? "期货和期权账户权益（102113+103113+102131+103131+103133）达到已投资产的 20%。与合约价值使用同一已投资产分母。"
+        : "期货和期权账户权益未达到已投资产的 20%。分母与合约价值相同，不是市值口径已投资产。",
     })
   } else {
     const isEquity = (p.equityPct ?? 0) >= 80
     const isFi = (p.fiPct ?? 0) >= 80
-    const isDeriv = (p.derivNotionalPct ?? 0) >= 80 && (p.derivEquityPct ?? 0) > 20
+    const isDeriv = (p.derivNotionalPct ?? 0) >= 80 && (p.derivEquityPct ?? 0) >= 20
     const ok = !isEquity && !isFi && !isDeriv
     const crossed = [
       isEquity ? "权益类≥80%" : null,
@@ -1480,20 +1465,32 @@ function collectDuplicateSubjectHoldings(rows: Flattened[]): Set<string> {
   return skip
 }
 
-function resolveLookthroughNav(meta: ValuationMeta, childHoldings: RawHolding[] | null | undefined): number {
-  if (meta.net_asset_value > 0) return meta.net_asset_value
-  if (!childHoldings || childHoldings.length === 0) return 0
+function deriveNavFromHoldings(childHoldings: RawHolding[]): number {
   let assets = 0
   let liabilities = 0
   for (const h of childHoldings) {
     const kind = h.row_kind ?? ""
     const mv = Math.abs(h.market_value)
-    if (mv <= 0 || isDerivativeHolding(h)) continue
+    if (mv <= 0 || isDerivativeHolding(h) || isGsFuturesNotionalHolding(h)) continue
     if (kind === "payable") liabilities += mv
     else if (kind !== "paid_in_capital" && kind !== "clearing") assets += mv
   }
   const derived = assets - liabilities
   return derived > 1000 ? derived : 0
+}
+
+function resolveLookthroughNav(meta: ValuationMeta, childHoldings: RawHolding[] | null | undefined): number {
+  const stored = meta.net_asset_value
+  const byTotal = meta.total_asset > 0
+    ? meta.total_asset - Math.max(0, meta.total_liability)
+    : 0
+  // 估值表偶发把份额小计写成净资产（如 SQX078 资产 1.3 亿、净资产写成 650 万）。
+  // 真杠杆产品总资产大但负债也大，资产−负债仍接近净资产，不会误伤。
+  if (byTotal > 1000 && stored > 0 && byTotal > stored * 3) return byTotal
+  if (stored > 0) return stored
+  if (byTotal > 1000) return byTotal
+  if (!childHoldings || childHoldings.length === 0) return 0
+  return deriveNavFromHoldings(childHoldings)
 }
 
 function flattenHoldings(
@@ -1738,6 +1735,8 @@ function evaluateProduct(
   let opaqueSingleMv = 0
   let opaqueBondMv = 0
   let opaqueDerivNotional = 0
+  let parentCashTools = 0
+  let securitiesLending = 0
 
   for (const row of flat.rows) {
     if (isValuationAggregateBucket(row.holding)) continue
@@ -1746,6 +1745,12 @@ function evaluateProduct(
     const kind = row.holding.row_kind ?? ""
     const absMv = Math.abs(row.holding.market_value)
     const sub = subfundOf(row)
+    if (!row.source_fund && isGsCashToolHolding(row.holding) && absMv > 0) {
+      parentCashTools += absMv
+    }
+    if (isGsSecuritiesLendingLiability(row.holding)) {
+      securitiesLending += absMv
+    }
     if (
       isGeneralPledgedRepo(row.holding)
       || isArticle19ExemptName(row.holding)
@@ -1760,7 +1765,9 @@ function evaluateProduct(
       }
     }
 
-    if (bucket === "equity") {
+    if (isGsSecuritiesLendingLiability(row.holding)) {
+      // 融券负债只从权益分子扣除，不计入已投资产各类。
+    } else if (bucket === "equity") {
       equity += absMv
       sub.equity += absMv
     } else if (bucket === "fixed_income") {
@@ -1768,7 +1775,7 @@ function evaluateProduct(
       sub.fixed_income += absMv
     } else if (bucket === "derivatives") {
       if (isDerivativeOffsetName(row.holding.subject_name ?? "")) {
-        // 冲销/估值增值不计入双边名义
+        // 冲销/估值增值不计入场内合约价值
       } else {
         const notional = holdingNotional(row.holding)
         derivNotional += notional
@@ -1784,7 +1791,10 @@ function evaluateProduct(
       funds += absMv
       sub.funds_unpenetrated += absMv
     } else if (bucket === "margin") {
-      // 期货保证金 / 收益互换履约金：不计入第41条已投资产
+      if (isGsDerivAccountEquityHolding(row.holding)) {
+        derivEquity += absMv
+        sub.derivatives_equity += absMv
+      }
     } else if (
       kind !== "receivable"
       && kind !== "payable"
@@ -1793,11 +1803,6 @@ function evaluateProduct(
     ) {
       other += absMv
       sub.other += absMv
-    }
-
-    if (bucket === "margin" && (kind === "margin_deposit" || kind === "settlement_reserve")) {
-      derivEquity += absMv
-      sub.derivatives_equity += absMv
     }
 
     const exempt = isConcentrationExempt(row.holding, bucket, row.source_sheet_level)
@@ -1872,8 +1877,10 @@ function evaluateProduct(
     }
   }
 
-  const invested = equity + fixedIncome + derivNotional + funds + other
-  const investedMv = equity + fixedIncome + derivEquity + funds + other
+  equity = Math.max(0, equity - securitiesLending)
+  const onBalanceInvested = equity + fixedIncome + derivEquity + funds + other
+  const invested = gsArticle41InvestedAssets(totalAsset, parentCashTools) || onBalanceInvested
+  const cashToolsDeducted = parentCashTools > 0 ? parentCashTools : cashTools
   if (derivNotional > 0 && derivEquity > 0) {
     for (const item of conc.values()) {
       if (!item.derivative) continue
@@ -1918,7 +1925,7 @@ function evaluateProduct(
   )
   const subfund_structures: LookthroughSubfundStructure[] = [...bySubfund.values()]
     .map((acc) => {
-      const subInvested = acc.equity + acc.fixed_income + acc.derivatives_notional + acc.funds_unpenetrated + acc.other
+      const subInvested = acc.equity + acc.fixed_income + acc.derivatives_equity + acc.funds_unpenetrated + acc.other
       return {
         name: acc.name,
         product_code: acc.product_code,
@@ -1949,7 +1956,10 @@ function evaluateProduct(
           funds_unpenetrated_pct: ratio(acc.funds_unpenetrated, subInvested),
           cash_tools_pct: ratio(acc.cash_tools, subInvested),
           other_pct: ratio(acc.other, subInvested),
-          share_of_parent_invested_pct: ratio(subInvested, invested),
+          share_of_parent_invested_pct: ratio(
+            acc.is_parent_direct ? subInvested : (acc.parent_holding_mv ?? subInvested),
+            invested,
+          ),
         },
       }
     })
@@ -1964,7 +1974,7 @@ function evaluateProduct(
   const equityPct = ratio(equity, invested)
   const fiPct = ratio(fixedIncome, invested)
   const derivNotionalPct = ratio(derivNotional, invested)
-  const derivEquityPct = ratio(derivEquity, investedMv > 0 ? investedMv : invested)
+  const derivEquityPct = ratio(derivEquity, invested)
   const fundPct = ratio(funds, invested)
   const leveragePct = ratio(totalAsset, nav)
   const illiquidPct = ratio(article15RestrictedMv(holdings), nav)
@@ -2031,7 +2041,7 @@ function evaluateProduct(
       fixed_income: fixedIncome,
       derivatives_notional: derivNotional,
       derivatives_equity: derivEquity,
-      cash_tools: cashTools,
+      cash_tools: cashToolsDeducted,
       funds_unpenetrated: funds,
       other,
       invested_assets: invested,

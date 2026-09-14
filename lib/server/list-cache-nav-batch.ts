@@ -2047,6 +2047,59 @@ export async function patchLatestDailyReturnFromDetailSeries<T extends TrackFund
   })
 }
 
+export type TeamListNavOverlayPoint = {
+  nav: string
+  nav_date: string
+  prev_nav: string | null
+}
+
+function sameListNavTip(existingNav: number, teamNav: number): boolean {
+  return Math.abs(existingNav - teamNav) < 1e-5
+}
+
+/**
+ * Apply a team/email tip onto a tracking-list row.
+ * Same-date + same unit NAV must keep the cache/detail 复权 最新涨跌幅 — email
+ * tips only carry 单位净值, and unit/unit disagrees with the product page on
+ * TA/分红 dates (R0423B 2026-09-11: 复权 −0.64% vs 单位 −0.99%).
+ */
+export function applyTeamNavOverlayToTrackRow<T extends TrackFundMetricsFields>(
+  row: T,
+  point: TeamListNavOverlayPoint,
+): T {
+  const existingDate = row.latest_nav_date?.slice(0, 10) ?? ""
+  if (existingDate && existingDate > point.nav_date) return row
+
+  const unitNav = parseFloat(point.nav)
+  const existingNav = parseFloat(row.latest_nav ?? "")
+  const hasCachedReturn = row.latest_price_change != null && row.latest_price_change !== ""
+  if (
+    existingDate === point.nav_date
+    && Number.isFinite(existingNav)
+    && Number.isFinite(unitNav)
+    && sameListNavTip(existingNav, unitNav)
+    && hasCachedReturn
+  ) {
+    return row
+  }
+
+  let returnPct: number | null = null
+  if (point.prev_nav != null) {
+    const prev = parseFloat(point.prev_nav)
+    if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
+      returnPct = unitNav / prev - 1
+    }
+  }
+
+  return {
+    ...row,
+    latest_nav: point.nav,
+    latest_nav_date: point.nav_date,
+    latest_price_change:
+      returnPct != null ? String(returnPct) : row.latest_price_change,
+  }
+}
+
 /** Prefer team/email+manual NAV for tracking lists (最新净值日期 / 单位净值). */
 export async function overlayTeamNavOnTrackRows<T extends TrackFundMetricsFields>(
   rows: T[],
@@ -2077,27 +2130,7 @@ export async function overlayTeamNavOnTrackRows<T extends TrackFundMetricsFields
       if (!series?.length) return row
       const point = resolveTeamSeriesListNavAt(series, asOfDate)
       if (!point) return row
-
-      // Only advance (or fill) — never regress a newer platform/cache tip.
-      const existingDate = row.latest_nav_date?.slice(0, 10) ?? ""
-      if (existingDate && existingDate > point.nav_date) return row
-
-      const unitNav = parseFloat(point.nav)
-      let returnPct: number | null = null
-      if (point.prev_nav != null) {
-        const prev = parseFloat(point.prev_nav)
-        if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
-          returnPct = unitNav / prev - 1
-        }
-      }
-
-      return {
-        ...row,
-        latest_nav: point.nav,
-        latest_nav_date: point.nav_date,
-        latest_price_change:
-          returnPct != null ? String(returnPct) : row.latest_price_change,
-      }
+      return applyTeamNavOverlayToTrackRow(row, point)
     })
   } catch (err) {
     console.warn("[overlayTeamNavOnTrackRows] skipped:", err)
