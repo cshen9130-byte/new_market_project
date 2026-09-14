@@ -36,6 +36,7 @@ import { FundCompanyPanel } from "./components/FundCompanyPanel"
 import { FundProfilePanel } from "./components/FundProfilePanel"
 import { FundMaterialsPanel } from "./components/FundMaterialsPanel"
 import { FundAccountComparePanel } from "./components/FundAccountComparePanel"
+import { ShareClassNavBanner } from "./components/ShareClassNavBanner"
 import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
 import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
@@ -43,6 +44,7 @@ import { NavChartSeriesLegend, NavPerformanceEChart } from "./components/NavPerf
 import { DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { createFundCompareHref } from "@/lib/ma-product-selection-actions"
+import { resolveFundOperationDate } from "@/lib/nav-operation-date"
 
 const menuItems = [
   { key: "market",     label: "市场" },
@@ -398,14 +400,22 @@ function getDefaultFilterRange(data: DetailData, todayStr: string): { from: stri
   return { from, to }
 }
 
+function getResolvedOperationDate(data: DetailData): string | null {
+  return resolveFundOperationDate(
+    data.info.operation_date,
+    data.nav_series.map((row) => row.price_date),
+    data.info.inception_date,
+  )
+}
+
 function getOperationFilterRange(data: DetailData, todayStr: string): { from: string; to: string } {
   const { from: defaultFrom, to } = getDefaultFilterRange(data, todayStr)
-  const from = data.info.operation_date?.slice(0, 10) ?? defaultFrom
-  return { from, to }
+  const from = getResolvedOperationDate(data) ?? defaultFrom
+  return { from: from > to ? to : from, to }
 }
 
 function getInitialFilterPeriod(data: DetailData): string {
-  return data.info.operation_date?.slice(0, 10) ? "运作以来" : "成立以来"
+  return getResolvedOperationDate(data) ? "运作以来" : "成立以来"
 }
 
 function formatDateRange(startTs: number, endTs: number): string {
@@ -1727,6 +1737,7 @@ export default function PrivateFundDetailPage() {
   }
 
   const { info, metrics, nav_series, nav_data_source } = data
+  const resolvedOperationDate = getResolvedOperationDate(data)
   const displayName = resolveFundDisplayLabel(info.short_name, info.product_name)
     .replace(/私募证券投资基金/g, "")
     .replace(/私募股权投资基金/g, "")
@@ -2071,8 +2082,12 @@ export default function PrivateFundDetailPage() {
             ) : (
               <span className="font-medium text-zinc-800">—</span>
             )}
-            <span className="whitespace-nowrap">产品成立时间：</span>
-            <span className="font-medium text-zinc-800 whitespace-nowrap">{info.inception_date?.slice(0, 10) ?? "—"}</span>
+            <span className="whitespace-nowrap">{resolvedOperationDate ? "成立/运作日期：" : "产品成立时间："}</span>
+            <span className="font-medium text-zinc-800 whitespace-nowrap">
+              {resolvedOperationDate
+                ? `${info.inception_date?.slice(0, 10) ?? "—"} / ${resolvedOperationDate}`
+                : (info.inception_date?.slice(0, 10) ?? "—")}
+            </span>
             <span className="whitespace-nowrap">基金经理：</span>
             <span className="font-medium text-zinc-800">{info.manager_names || "—"}</span>
           </div>
@@ -2103,6 +2118,8 @@ export default function PrivateFundDetailPage() {
 
         </div>
       </div>
+
+      <ShareClassNavBanner beianHao={beian_hao} />
 
       {/* ── Filter bar ─────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 mb-4 rounded-lg border border-zinc-100 bg-zinc-50 text-xs">

@@ -171,6 +171,7 @@ export function EventTimedTimeline({
   today,
   activeId,
   followLive,
+  autoScrollToLive = true,
   onActiveIdChange,
   onManualNavigate,
   onResumeFollow,
@@ -180,6 +181,8 @@ export function EventTimedTimeline({
   today: string
   activeId: string | null
   followLive: boolean
+  /** When false, highlight the next event without scrolling the page (e.g. dashboard embed). */
+  autoScrollToLive?: boolean
   onActiveIdChange: (id: string) => void
   onManualNavigate: () => void
   onResumeFollow: () => void
@@ -192,6 +195,7 @@ export function EventTimedTimeline({
   const dragStartIndexRef = useRef(0)
   const programmaticScrollRef = useRef(false)
   const followedIdRef = useRef<string | null>(null)
+  const allowAutoScrollRef = useRef(autoScrollToLive)
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   const activeIndex = Math.max(
@@ -282,6 +286,7 @@ export function EventTimedTimeline({
     if (followedIdRef.current === id && activeId === id) return
     followedIdRef.current = id
     onActiveIdChange(id)
+    if (!allowAutoScrollRef.current) return
     scrollToEvent(id, true)
   }, [followLive, events, nowMs, activeId, onActiveIdChange, scrollToEvent])
 
@@ -367,6 +372,7 @@ export function EventTimedTimeline({
         type="button"
         onClick={() => {
           if (followLive) return
+          allowAutoScrollRef.current = true
           onResumeFollow()
         }}
         className={cn(

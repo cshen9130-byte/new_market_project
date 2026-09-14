@@ -249,10 +249,12 @@ export function MarketEventCalendar({
   today,
   events,
   sourceLabel,
+  autoScrollToLive = true,
 }: {
   today: string
   events: MarketEvent[]
   sourceLabel?: string
+  autoScrollToLive?: boolean
 }) {
   const [horizon, setHorizon] = useState<Horizon>("upcoming")
   const [range, setRange] = useState<RangeKey>("14")
@@ -493,6 +495,7 @@ export function MarketEventCalendar({
           today={today}
           activeId={activeCaliperId}
           followLive={followLive}
+          autoScrollToLive={autoScrollToLive}
           onActiveIdChange={setActiveCaliperId}
           onManualNavigate={markManualNavigate}
           onResumeFollow={resumeFollow}

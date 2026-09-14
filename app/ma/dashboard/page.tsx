@@ -83,7 +83,12 @@ export default async function DashboardPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <MarketEventCalendar today={today} events={events} sourceLabel={live.source} />
+          <MarketEventCalendar
+            today={today}
+            events={events}
+            sourceLabel={live.source}
+            autoScrollToLive={false}
+          />
         </CardContent>
       </Card>
     </div>

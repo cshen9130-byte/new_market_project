@@ -38,6 +38,124 @@ function isShareClassCode(code: string): boolean {
   return /[ABC]$/i.test(String(code ?? "").trim())
 }
 
+/** AEC67B → [AEC67, SAEC67] so a share-class page can still load siblings. */
+function expandParentCodes(codes: string[]): string[] {
+  const out = new Set<string>()
+  for (const raw of codes) {
+    const c = String(raw ?? "").trim().toUpperCase()
+    if (!c) continue
+    if (!isShareClassCode(c)) {
+      out.add(c)
+      continue
+    }
+    let family = c.replace(/[ABC]$/i, "")
+    if (family.startsWith("S") && family.length > 1) {
+      const withoutS = family.slice(1)
+      if (/^[A-Z][A-Z0-9]{4,7}$/.test(withoutS)) family = withoutS
+    }
+    if (!family) continue
+    out.add(family)
+    out.add(`S${family}`)
+  }
+  return [...out]
+}
+
+function shareClassLetterOf(beian: string, name: string): "A" | "B" | "C" | null {
+  const fromCode = String(beian ?? "").trim().match(/([ABC])$/i)
+  if (fromCode) return fromCode[1].toUpperCase() as "A" | "B" | "C"
+  const fromName = String(name ?? "").match(/([ABC])类/u)
+  return fromName ? (fromName[1] as "A" | "B" | "C") : null
+}
+
+function keepLatestDate(map: Map<string, string>, code: string, date: string | null | undefined) {
+  const d = String(date ?? "").slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return
+  const key = code.trim().toUpperCase()
+  if (!key) return
+  const prev = map.get(key)
+  if (!prev || d > prev) map.set(key, d)
+}
+
+async function loadLatestNavDates(
+  children: Array<{ beian_hao: string; product_name: string }>,
+): Promise<Map<string, string>> {
+  const dates = new Map<string, string>()
+  const codes = [...new Set(children.map((c) => c.beian_hao.trim().toUpperCase()).filter(Boolean))]
+  const names = [...new Set(children.map((c) => c.product_name.trim()).filter(Boolean))]
+  if (codes.length === 0) return dates
+
+  try {
+    const cacheRows = await query<{ beian_hao: string; tip_nav_date: string | null }>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, tip_nav_date::text AS tip_nav_date
+       FROM ops_private_fund_detail_nav_cache
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+         AND tip_nav_date IS NOT NULL`,
+      [codes],
+    )
+    for (const row of cacheRows) keepLatestDate(dates, row.beian_hao, row.tip_nav_date)
+  } catch {
+    // cache table may be absent in some environments
+  }
+
+  try {
+    const emailCodeRows = await query<{ beian_hao: string; nav_date: string | null }>(
+      `SELECT DISTINCT ON (UPPER(BTRIM(product_code)))
+         UPPER(BTRIM(product_code)) AS beian_hao,
+         nav_date::text AS nav_date
+       FROM ops_email_nav_records
+       WHERE UPPER(BTRIM(product_code)) = ANY($1::text[])
+         AND nav_date IS NOT NULL
+       ORDER BY UPPER(BTRIM(product_code)), nav_date DESC NULLS LAST`,
+      [codes],
+    )
+    for (const row of emailCodeRows) keepLatestDate(dates, row.beian_hao, row.nav_date)
+  } catch {
+    // ignore
+  }
+
+  if (names.length > 0) {
+    try {
+      const emailNameRows = await query<{ product_name: string; nav_date: string | null }>(
+        `SELECT DISTINCT ON (BTRIM(fund_name))
+           BTRIM(fund_name) AS product_name,
+           nav_date::text AS nav_date
+         FROM ops_email_nav_records
+         WHERE BTRIM(fund_name) = ANY($1::text[])
+           AND nav_date IS NOT NULL
+         ORDER BY BTRIM(fund_name), nav_date DESC NULLS LAST`,
+        [names],
+      )
+      const nameToCode = new Map(children.map((c) => [c.product_name.trim(), c.beian_hao]))
+      for (const row of emailNameRows) {
+        const code = nameToCode.get(row.product_name)
+        if (code) keepLatestDate(dates, code, row.nav_date)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  try {
+    const infoRows = await query<{ beian_hao: string; latest_nav_date: string | null }>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, latest_nav_date::text AS latest_nav_date
+       FROM (
+         SELECT beian_hao, latest_nav_date FROM private_fund_info
+         WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+         UNION ALL
+         SELECT beian_hao, latest_nav_date FROM private_fund_info_bfl
+         WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       ) x
+       WHERE latest_nav_date IS NOT NULL`,
+      [codes],
+    )
+    for (const row of infoRows) keepLatestDate(dates, row.beian_hao, row.latest_nav_date)
+  } catch {
+    // ignore
+  }
+
+  return dates
+}
+
 type ChildRow = { beian_hao: string; product_name: string }
 
 /**
@@ -62,7 +180,7 @@ export async function GET(req: Request) {
 
   if (parentCodes.length === 0) return NextResponse.json({ data: {} })
 
-  const eligibleCodes = parentCodes.filter((c) => !isShareClassCode(c))
+  const eligibleCodes = expandParentCodes(parentCodes)
   if (eligibleCodes.length === 0) return NextResponse.json({ data: {} })
 
   // Inline parent subquery (reused in several JOINs below)
@@ -196,25 +314,52 @@ export async function GET(req: Request) {
     }
 
     // ── Build result; synthesize A/B/C for parents with no real children ─────
-    const data: Record<string, Array<ChildRow & { synthetic: boolean }>> = {}
+    const data: Record<string, Array<ChildRow & {
+      synthetic: boolean
+      latest_nav_date: string | null
+      share_class: "A" | "B" | "C" | null
+    }>> = {}
 
+    const pending: Array<ChildRow & { synthetic: boolean; parent: string }> = []
     for (const code of eligibleCodes) {
       const childMap = realChildren[code]
       if (childMap && childMap.size > 0) {
-        data[code] = Array.from(childMap.values())
-          .sort((a, b) => a.product_name.localeCompare(b.product_name, "zh"))
-          .map((r) => ({ ...r, synthetic: false }))
+        for (const row of childMap.values()) pending.push({ ...row, synthetic: false, parent: code })
         continue
       }
 
       const parentName = parentNameMap[code]
       if (!parentName) continue
+      for (const letter of SHARE_CLASS_LETTERS) {
+        pending.push({
+          beian_hao: tieredBeianCode(code, letter),
+          product_name: tieredFullName(parentName, letter),
+          synthetic: true,
+          parent: code,
+        })
+      }
+    }
 
-      data[code] = SHARE_CLASS_LETTERS.map((letter) => ({
-        beian_hao: tieredBeianCode(code, letter),
-        product_name: tieredFullName(parentName, letter),
-        synthetic: true,
-      }))
+    const navDates = await loadLatestNavDates(pending)
+
+    for (const row of pending) {
+      const list = data[row.parent] ??= []
+      list.push({
+        beian_hao: row.beian_hao,
+        product_name: row.product_name,
+        synthetic: row.synthetic,
+        latest_nav_date: navDates.get(row.beian_hao.toUpperCase()) ?? null,
+        share_class: shareClassLetterOf(row.beian_hao, row.product_name),
+      })
+    }
+
+    for (const code of Object.keys(data)) {
+      data[code].sort((a, b) => {
+        const la = a.share_class ?? "Z"
+        const lb = b.share_class ?? "Z"
+        if (la !== lb) return la.localeCompare(lb)
+        return a.product_name.localeCompare(b.product_name, "zh")
+      })
     }
 
     return NextResponse.json({ data })

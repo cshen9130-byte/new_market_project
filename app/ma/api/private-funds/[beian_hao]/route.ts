@@ -37,8 +37,9 @@ import {
   rememberDetailResponseMemoryCache,
 } from "@/lib/server/fund-detail-response-memory-cache"
 import { loadTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
-import { loadOperationDate as loadStoredOperationDate } from "@/lib/server/ops-fund-operation-dates"
+import { loadOperationDate as loadStoredOperationDate, upsertOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { ensureFundElementTrackColumns } from "@/lib/server/fund-elements-write"
+import { resolveFundOperationDate } from "@/lib/nav-operation-date"
 
 export const dynamic = "force-dynamic"
 
@@ -75,6 +76,29 @@ function navSeriesTipDate(series: unknown): string {
   if (!Array.isArray(series) || series.length === 0) return ""
   const last = series[series.length - 1] as { price_date?: string }
   return String(last?.price_date ?? "").slice(0, 10)
+}
+
+function attachResolvedOperationDate<T extends {
+  info?: { operation_date?: string | null; inception_date?: string | null }
+  nav_series?: Array<{ price_date?: string | null }>
+}>(body: T, persistBeian?: string | null): T {
+  const info = body.info
+  const series = body.nav_series
+  if (!info || !Array.isArray(series)) return body
+  const stored = info.operation_date?.slice(0, 10) ?? null
+  const resolved = resolveFundOperationDate(
+    stored,
+    series.map((row) => row.price_date),
+    info.inception_date,
+  )
+  if (!resolved) return body
+  if (!stored && persistBeian) {
+    void upsertOperationDate(persistBeian, resolved).catch((err) => {
+      console.warn("[private-funds/detail] persist inferred operation_date skipped:", err)
+    })
+  }
+  if (resolved === stored) return body
+  return { ...body, info: { ...info, operation_date: resolved } }
 }
 
 /** Drop non-trading days from detail payload (also sanitizes stale in-memory cache). */
@@ -330,13 +354,17 @@ export async function GET(
       && memoryCoversListTip
       && detailNavCacheMatchesSeed({ nav_series: memorySeries }, cacheKey)
     ) {
-      const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
+      const body = attachResolvedOperationDate(
+        sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0]),
+        cacheKey,
+      )
       const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
         const cachedInfo = body.info as {
           product_name?: string | null
           former_product_name?: string | null
           team_benchmark?: string | null
+          operation_date?: string | null
         }
         const cachedAmacName = await lookupAmacFundName(rawId).catch(() => null)
         const officialName = preferAmacOfficialName(cachedInfo.product_name, cachedAmacName)
@@ -683,10 +711,22 @@ export async function GET(
       bflTrack?.inception_date?.slice(0, 10) ??
       amacResolved?.establish_date ??
       null
-    const trackOperationDate =
+    const storedOperationDate =
       operationDateRows
         .map((row) => (row.operation_date ?? "").slice(0, 10))
         .find((day) => /^\d{4}-\d{2}-\d{2}$/.test(day)) ?? null
+    const inceptionForOperation =
+      info.inception_date?.slice(0, 10) ?? trackInception ?? amacResolved?.establish_date ?? null
+    const trackOperationDate = resolveFundOperationDate(
+      storedOperationDate,
+      nav_series.map((row) => row.price_date),
+      inceptionForOperation,
+    )
+    if (!storedOperationDate && trackOperationDate) {
+      void upsertOperationDate(routeBeianHao, trackOperationDate).catch((err) => {
+        console.warn("[private-funds/detail] persist inferred operation_date skipped:", err)
+      })
+    }
 
     const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
     const nav_data_source: "team" | "platform" =
