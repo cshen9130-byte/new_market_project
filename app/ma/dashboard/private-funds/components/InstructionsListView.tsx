@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -73,6 +74,7 @@ import {
 import {
   backfillLedgerFromConfirmedInstructions,
   ensureLedgerRecordsHydrated,
+  formatConfirmedUnitNav,
   isInstructionConfirmed,
   removeLedgerByInstructionId,
   upsertLedgerFromConfirmedInstruction,
@@ -2133,7 +2135,7 @@ function InstructionDetailDialog({
                   <div className="grid grid-cols-1 gap-x-8 gap-y-3 px-1 pb-1 sm:grid-cols-2">
                     <DetailField label="交易确认日期" value={cellDash(record.confirmDate)} />
                     <DetailField label="交易费用" value={cellDash(record.tradeFee)} />
-                    <DetailField label="确认单位净值" value={cellDash(record.nav)} />
+                    <DetailField label="确认单位净值" value={cellDash(formatConfirmedUnitNav(record.nav))} />
                     <DetailField label="确认金额" value={cellDash(record.amount)} />
                     <DetailField label="确认份额" value={cellDash(record.shares)} />
                     <DetailField
@@ -2215,7 +2217,8 @@ function ProductNameLink({
   name: string
   beianHao: string | null | undefined
 }) {
-  const label = name?.trim() || "-"
+  const raw = name?.trim() || "-"
+  const label = raw === "-" ? "-" : (normalizeFundDisplayName(raw) || raw)
   const href = productPageHref(beianHao)
   if (!href || label === "-") return label
   return (
@@ -2224,7 +2227,7 @@ function ProductNameLink({
       target="_blank"
       rel="noopener noreferrer"
       className="text-blue-600 hover:underline dark:text-blue-400"
-      title={`打开产品页：${label}`}
+      title={`打开产品页：${raw}`}
     >
       {label}
     </a>
@@ -2278,7 +2281,7 @@ function renderInstructionCell(
     case "shares":
       return cellDash(row.shares)
     case "nav":
-      return cellDash(row.nav)
+      return cellDash(formatConfirmedUnitNav(row.nav))
     case "progress":
     case "status":
       return (

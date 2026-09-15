@@ -57,6 +57,16 @@ function asNullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null
 }
 
+function formatConfirmedUnitNav(value: unknown): string | null {
+  const raw = asNullableString(value) ?? (typeof value === "number" && Number.isFinite(value) ? String(value) : null)
+  if (raw == null) return null
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const n = Number(trimmed.replace(/,/g, ""))
+  if (!Number.isFinite(n)) return trimmed
+  return n.toFixed(4)
+}
+
 function normalizeAttachment(raw: unknown): OpsLedgerAttachment | null {
   if (!raw || typeof raw !== "object") return null
   const row = raw as Partial<OpsLedgerAttachment>
@@ -97,7 +107,7 @@ export function normalizeOpsLedgerRow(raw: unknown): OpsLedgerRow | null {
     confirm_date,
     confirmed_shares: asNullableString(row.confirmed_shares),
     confirmed_amount: asNullableString(row.confirmed_amount),
-    confirmed_unit_nav: asNullableString(row.confirmed_unit_nav),
+    confirmed_unit_nav: formatConfirmedUnitNav(row.confirmed_unit_nav),
     transaction_fee: asNullableString(row.transaction_fee),
     performance_fee: asNullableString(row.performance_fee),
     share_balance: asNullableString(row.share_balance),

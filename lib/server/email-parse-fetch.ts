@@ -50,6 +50,7 @@ import {
 import {
   hasConfirmAttachment,
   selectConfirmAttachments,
+  expandConfirmZipBuffer,
 } from "@/lib/server/email-confirm-attachment"
 import { parseConfirmSlipFromBuffer } from "@/lib/server/email-confirm-parse"
 import {
@@ -859,13 +860,24 @@ async function fetchMailbox(
               errors.push(`${account.account} UID ${uid} confirm ${att.filename}: empty attachment`)
               continue
             }
-            const parsed = await parseConfirmSlipFromBuffer(buf, att.filename, subject)
-            confirmRecords.push({
-              ...emailMeta,
-              attachmentFilename: att.filename,
-              buffer: buf,
-              parsed,
-            })
+            const inners = /\.zip$/i.test(att.filename)
+              ? expandConfirmZipBuffer(buf)
+              : [{ filename: att.filename, buffer: buf }]
+            if (inners.length === 0 && /\.zip$/i.test(att.filename)) {
+              errors.push(`${account.account} UID ${uid} confirm ${att.filename}: zip had no 确认单 PDF`)
+              continue
+            }
+            for (const inner of inners) {
+              const parsed = await parseConfirmSlipFromBuffer(inner.buffer, inner.filename, subject)
+              confirmRecords.push({
+                ...emailMeta,
+                attachmentFilename: /\.zip$/i.test(att.filename)
+                  ? zipInnerAttachmentKey(att.filename, inner.filename)
+                  : inner.filename,
+                buffer: inner.buffer,
+                parsed,
+              })
+            }
           } catch (e) {
             errors.push(
               `${account.account} UID ${uid} confirm ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,

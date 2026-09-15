@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server"
 import {
   getEmailConfirmRecordById,
-  readEmailConfirmFile,
+  ensureEmailConfirmFile,
 } from "@/lib/server/email-confirm-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+export const maxDuration = 60
 
 export async function GET(
   req: Request,
@@ -23,9 +24,12 @@ export async function GET(
       return NextResponse.json({ error: "确认单不存在" }, { status: 404 })
     }
 
-    const file = await readEmailConfirmFile(record)
+    const file = await ensureEmailConfirmFile(record)
     if (!file) {
-      return NextResponse.json({ error: "确认单文件不存在" }, { status: 404 })
+      return NextResponse.json(
+        { error: "确认单文件不在当前机器，且无法从邮箱重新下载。请确认邮箱爬取账号可用后再试。" },
+        { status: 404 },
+      )
     }
 
     const { searchParams } = new URL(req.url)

@@ -156,6 +156,30 @@ function serverFileUrl(id: string, download = false): string {
   return download ? `${base}?download=1` : base
 }
 
+async function fetchEmailConfirmFile(
+  recordId: number,
+  download = false,
+): Promise<{ blob: Blob; filename?: string }> {
+  const url = `/ma/api/ops/email-confirm-records/${recordId}/file${download ? "?download=1" : ""}`
+  const res = await fetch(url, { headers: authHeaders() })
+  const contentType = res.headers.get("content-type") || ""
+  if (!res.ok || contentType.includes("application/json")) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(
+      (data as { error?: string })?.error
+        || (res.ok ? "确认单文件不存在" : res.statusText)
+        || "读取确认单失败",
+    )
+  }
+  const blob = await res.blob()
+  const disposition = res.headers.get("Content-Disposition") || ""
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i)
+  const filename = match
+    ? decodeURIComponent((match[1] || match[2] || "").trim())
+    : undefined
+  return { blob, filename }
+}
+
 async function fetchServerAttachmentBlob(
   id: string,
 ): Promise<{ blob: Blob; filename?: string } | null> {
@@ -181,8 +205,24 @@ export async function openInstructionAttachment(id: string): Promise<void> {
   if (isEmailConfirmAttachmentId(id)) {
     const recordId = parseEmailConfirmRecordId(id)
     if (recordId == null) throw new Error("确认单链接无效")
-    const url = `/ma/api/ops/email-confirm-records/${recordId}/file`
-    openUrlInNewTab(url)
+    const tab = window.open("about:blank", "_blank")
+    try {
+      const file = await fetchEmailConfirmFile(recordId)
+      const url = URL.createObjectURL(file.blob)
+      if (tab && !tab.closed) {
+        tab.location.replace(url)
+      } else {
+        openUrlInNewTab(url)
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err) {
+      try {
+        tab?.close()
+      } catch {
+        /* ignore */
+      }
+      throw err
+    }
     return
   }
 
@@ -234,10 +274,10 @@ export async function downloadInstructionAttachment(
   if (isEmailConfirmAttachmentId(id)) {
     const recordId = parseEmailConfirmRecordId(id)
     if (recordId == null) throw new Error("确认单链接无效")
-    triggerBrowserDownload(
-      `/ma/api/ops/email-confirm-records/${recordId}/file?download=1`,
-      filename,
-    )
+    const file = await fetchEmailConfirmFile(recordId, true)
+    const url = URL.createObjectURL(file.blob)
+    triggerBrowserDownload(url, filename || file.filename)
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
     return
   }
 

@@ -1,4 +1,5 @@
 import { authService } from "@/lib/auth"
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import {
   formatInstructionAmount,
   listInstructionRecords,
@@ -88,6 +89,13 @@ export function ledgerReviewTitle(row: Pick<OpsLedgerRow, "review_status" | "rev
     ? row.reviewed_at.replace("T", " ").slice(0, 16)
     : ""
   return when ? `${who} 于 ${when} 确认` : `${who} 已确认`
+}
+
+function ledgerNameMatches(name: string, needle: string): boolean {
+  const raw = name.toLowerCase()
+  if (raw.includes(needle)) return true
+  const display = (normalizeFundDisplayName(name) || name).toLowerCase()
+  return display.includes(needle)
 }
 
 function canUseStorage() {
@@ -248,6 +256,16 @@ function formatLedgerNumber(value: string | null | undefined): string | null {
   return formatInstructionAmount(trimmed)
 }
 
+/** 确认单位净值 always 4 decimal places: 1.021265 → 1.0213. */
+export function formatConfirmedUnitNav(value: string | number | null | undefined): string | null {
+  if (value == null) return null
+  const raw = String(value).trim()
+  if (!raw) return null
+  const n = Number(raw.replace(/,/g, ""))
+  if (!Number.isFinite(n)) return raw
+  return n.toFixed(4)
+}
+
 export function isInstructionConfirmed(progress: string | null | undefined): boolean {
   if (!progress) return false
   return progress.includes("已确认") || progress.includes("已完成") || progress.includes("结束")
@@ -284,7 +302,7 @@ export function ledgerRowFromInstruction(record: InstructionWithConfirm): OpsLed
     confirm_date: confirmDate,
     confirmed_shares: formatLedgerNumber(shares),
     confirmed_amount: formatLedgerNumber(record.amount),
-    confirmed_unit_nav: record.nav ? String(record.nav).trim() : null,
+    confirmed_unit_nav: formatConfirmedUnitNav(record.nav),
     transaction_fee: formatLedgerNumber(record.tradeFee),
     performance_fee: null,
     share_balance: null,
@@ -315,7 +333,7 @@ function buildLedgerRecord(input: OpsLedgerInput): OpsLedgerRow {
     confirm_date: input.confirm_date,
     confirmed_shares: formatLedgerNumber(input.confirmed_shares),
     confirmed_amount: formatLedgerNumber(input.confirmed_amount),
-    confirmed_unit_nav: input.confirmed_unit_nav,
+    confirmed_unit_nav: formatConfirmedUnitNav(input.confirmed_unit_nav),
     transaction_fee: formatLedgerNumber(input.transaction_fee),
     performance_fee: formatLedgerNumber(input.performance_fee),
     share_balance: formatLedgerNumber(input.share_balance),
@@ -565,7 +583,7 @@ export function listLedgerRecords(options?: ListLedgerOptions): {
         if (fofFam && ledgerBeianFamilyKey(r.fof_register_number) === fofFam) return true
       }
       if (nameNeedle) {
-        if (r.fof_fund_name.toLowerCase().includes(nameNeedle)) return true
+        if (ledgerNameMatches(r.fof_fund_name, nameNeedle)) return true
         if ((r.fof_register_number || "").toLowerCase().includes(nameNeedle)) return true
       }
       return false
@@ -580,7 +598,7 @@ export function listLedgerRecords(options?: ListLedgerOptions): {
         if (undFam && ledgerBeianFamilyKey(r.underlying_beian_hao) === undFam) return true
       }
       if (nameNeedle) {
-        if (r.underlying_fund_name.toLowerCase().includes(nameNeedle)) return true
+        if (ledgerNameMatches(r.underlying_fund_name, nameNeedle)) return true
         if ((r.underlying_beian_hao || "").toLowerCase().includes(nameNeedle)) return true
       }
       return false
@@ -589,10 +607,11 @@ export function listLedgerRecords(options?: ListLedgerOptions): {
   if (from) rows = rows.filter((r) => r.apply_date >= from)
   if (to) rows = rows.filter((r) => r.apply_date <= to)
   if (nameQ) {
+    const needle = nameQ.toLowerCase()
     rows = rows.filter(
       (r) =>
-        r.underlying_fund_name.includes(nameQ)
-        || r.fof_fund_name.includes(nameQ),
+        ledgerNameMatches(r.underlying_fund_name, needle)
+        || ledgerNameMatches(r.fof_fund_name, needle),
     )
   }
   const reviewStatus = options?.review_status

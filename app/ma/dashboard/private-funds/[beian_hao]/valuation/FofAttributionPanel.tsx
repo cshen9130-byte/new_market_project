@@ -1,10 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { ArrowUpDown, ChevronDown, Download } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import { normalizeFofDisplayName } from "@/lib/fof-portfolio-var"
-import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
+import { ChartCalcHelpButton, type ChartCalcHelpBlock } from "./ChartCalcHelpButton"
 
 const PERIOD_OPTIONS = ["一周", "一月", "三月", "六月", "一年", "成立以来", "自定义"] as const
 type PeriodOption = (typeof PERIOD_OPTIONS)[number]
@@ -25,6 +25,8 @@ type FofAttributionResult = {
   snapshotFrom: string | null
   snapshotTo: string | null
   earliestValuationDate: string | null
+  startNav: number | null
+  startPaidIn: number | null
   rows: FofAttributionRow[]
   totalPnl: number
   totalReturnContribution: number
@@ -155,7 +157,7 @@ function aggregateByStrategy(rows: TableRow[]): TableRow[] {
   return [...map.values()]
 }
 
-const HELP_BLOCKS = [
+const HELP_BLOCKS: ChartCalcHelpBlock[] = [
   {
     title: "覆盖范围",
     paragraphs: [
@@ -181,6 +183,149 @@ const HELP_BLOCKS = [
   },
 ]
 
+function pnlColumnHelp(from?: string | null, to?: string | null): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "口径",
+      paragraphs: ["只对估值表中的基金持仓计算，不含股票、期货、期权、银行存款。"],
+    },
+    {
+      title: "公式",
+      paragraphs: ["相邻两个估值日，用上一估值日的持仓份额乘以当日单位净值变动，再在所选区间内加总。"],
+      formula: "区间投资收益 = Σ 份额_{t-1} × (净值_t − 净值_{t-1})",
+    },
+    {
+      title: "净值缺失时",
+      paragraphs: ["该日改用市值变动减去成本变动，用成本变动近似申赎现金流。"],
+      formula: "P&L ≈ Δ市值 − Δ成本",
+    },
+    ...(from && to
+      ? [{ title: "当前区间", paragraphs: [`估值表实际起止：${from} ～ ${to}`] }]
+      : []),
+  ]
+}
+
+function returnColumnHelp(startNav: number | null): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "含义",
+      paragraphs: ["该基金区间投资收益占组合期初资产净值的比例，表示对组合收益率的贡献。"],
+    },
+    {
+      title: "公式",
+      formula: "组合收益贡献度 = 区间投资收益 / 期初资产净值",
+    },
+    {
+      title: "显示",
+      paragraphs: ["页面按百分比、保留两位小数，例如 −0.0016 显示为 −0.16%。"],
+    },
+    ...(startNav != null && startNav > 0
+      ? [{ title: "本期期初资产净值", formula: `${fmtMoney(startNav)} 元` }]
+      : []),
+  ]
+}
+
+function navColumnHelp(startPaidIn: number | null, startNav: number | null): ChartCalcHelpBlock[] {
+  const usedPaidIn = startPaidIn != null && startPaidIn > 0
+  return [
+    {
+      title: "含义",
+      paragraphs: ["该基金区间投资收益占期初实收资本（份额）的比例，对应对单位净值的贡献。无实收资本时改用期初资产净值。"],
+    },
+    {
+      title: "公式",
+      formula: usedPaidIn
+        ? "组合净值贡献度 = 区间投资收益 / 期初实收资本"
+        : "组合净值贡献度 = 区间投资收益 / 期初资产净值",
+    },
+    {
+      title: "显示",
+      paragraphs: ["页面按小数、保留四位，例如 −0.0016。"],
+    },
+    ...(usedPaidIn
+      ? [{ title: "本期期初实收资本", formula: `${fmtMoney(startPaidIn!)} 元` }]
+      : startNav != null && startNav > 0
+        ? [{ title: "本期分母（期初资产净值）", formula: `${fmtMoney(startNav)} 元` }]
+        : []),
+  ]
+}
+
+function rowPnlHelp(row: TableRow): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "本行",
+      paragraphs: [
+        `${row.fundName} · ${row.fromDate} ～ ${row.toDate}`,
+        "把所选区间内每个估值日的「昨日份额 × 当日净值变动」加总。",
+      ],
+      formula: `区间投资收益 = ${fmtMoney(row.pnl)} 元`,
+    },
+  ]
+}
+
+function rowReturnHelp(row: TableRow, startNav: number | null): ChartCalcHelpBlock[] {
+  const nav = startNav != null && startNav > 0 ? startNav : null
+  return [
+    {
+      title: "本行",
+      paragraphs: [`${row.fundName}`],
+      formula: nav != null
+        ? `${fmtMoney(row.pnl)} / ${fmtMoney(nav)}\n= ${fmtPct(row.returnContribution)}`
+        : `组合收益贡献度 = ${fmtPct(row.returnContribution)}`,
+    },
+  ]
+}
+
+function rowNavHelp(row: TableRow, startPaidIn: number | null, startNav: number | null): ChartCalcHelpBlock[] {
+  const base = startPaidIn != null && startPaidIn > 0
+    ? startPaidIn
+    : startNav != null && startNav > 0
+      ? startNav
+      : null
+  const baseLabel = startPaidIn != null && startPaidIn > 0 ? "期初实收资本" : "期初资产净值"
+  return [
+    {
+      title: "本行",
+      paragraphs: [`${row.fundName}`, `分母：${baseLabel}`],
+      formula: base != null
+        ? `${fmtMoney(row.pnl)} / ${fmtMoney(base)}\n= ${fmtNavContrib(row.navContribution)}`
+        : `组合净值贡献度 = ${fmtNavContrib(row.navContribution)}`,
+    },
+  ]
+}
+
+function totalHelp(filtered: boolean): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "合计",
+      paragraphs: [
+        filtered
+          ? "为当前投资策略筛选下各行加总。"
+          : "为表中全部基金持仓加总。",
+        "贡献度仍相对整组合期初净值 / 实收资本，不会在筛选后重新归一化。",
+      ],
+      formula: "合计 = Σ 当前表中各行",
+    },
+  ]
+}
+
+function CellHelp({
+  heading,
+  blocks,
+}: {
+  heading: string
+  blocks: ChartCalcHelpBlock[]
+}) {
+  return (
+    <ChartCalcHelpButton
+      heading={heading}
+      blocks={blocks}
+      align="end"
+      className="text-zinc-300 hover:text-zinc-600"
+    />
+  )
+}
+
 export function FofAttributionPanel({
   beianHao,
   displayName,
@@ -193,6 +338,7 @@ export function FofAttributionPanel({
   const [sortKey, setSortKey] = useState<SortKey>("pnl")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const [viewMode, setViewMode] = useState<ViewMode>("fund")
+  const [strategyFilter, setStrategyFilter] = useState("全部")
   const [period, setPeriod] = useState<PeriodOption>("自定义")
   const [rangeFrom, setRangeFrom] = useState(fromDate ?? "")
   const [rangeTo, setRangeTo] = useState(toDate ?? "")
@@ -252,12 +398,34 @@ export function FofAttributionPanel({
     setRangeTo(value)
   }
 
+  const allRows = useMemo(() => toTableRows(data?.rows ?? []), [data])
+
+  const strategyOptions = useMemo(() => {
+    const names = [...new Set(allRows.map((row) => row.strategy).filter(Boolean))]
+    names.sort((a, b) => a.localeCompare(b, "zh-CN"))
+    return ["全部", ...names]
+  }, [allRows])
+
+  useEffect(() => {
+    if (strategyFilter !== "全部" && !strategyOptions.includes(strategyFilter)) {
+      setStrategyFilter("全部")
+    }
+  }, [strategyOptions, strategyFilter])
+
   const tableRows = useMemo(() => {
-    const base = toTableRows(data?.rows ?? [])
-    const viewed = viewMode === "strategy" ? aggregateByStrategy(base) : base
+    const filtered = strategyFilter === "全部"
+      ? allRows
+      : allRows.filter((row) => row.strategy === strategyFilter)
+    const viewed = viewMode === "strategy" ? aggregateByStrategy(filtered) : filtered
     const dir = sortDir === "asc" ? 1 : -1
     return [...viewed].sort((a, b) => (a[sortKey] - b[sortKey]) * dir)
-  }, [data, viewMode, sortKey, sortDir])
+  }, [allRows, strategyFilter, viewMode, sortKey, sortDir])
+
+  const filteredTotals = useMemo(() => ({
+    pnl: tableRows.reduce((s, r) => s + r.pnl, 0),
+    returnContribution: tableRows.reduce((s, r) => s + r.returnContribution, 0),
+    navContribution: tableRows.reduce((s, r) => s + r.navContribution, 0),
+  }), [tableRows])
 
   function handleSort(key: SortKey) {
     if (sortKey === key) {
@@ -287,9 +455,9 @@ export function FofAttributionPanel({
         "合计",
         "",
         "",
-        (data?.totalPnl ?? 0).toFixed(2),
-        ((data?.totalReturnContribution ?? 0) * 100).toFixed(4),
-        (data?.totalNavContribution ?? 0).toFixed(6),
+        filteredTotals.pnl.toFixed(2),
+        (filteredTotals.returnContribution * 100).toFixed(4),
+        filteredTotals.navContribution.toFixed(6),
       ].join(","),
     ]
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" })
@@ -359,13 +527,26 @@ export function FofAttributionPanel({
           />
         </div>
         <div className="flex items-center gap-2">
+          <span className="text-xs text-zinc-500 whitespace-nowrap">投资策略：</span>
+          <div className="relative">
+            <select
+              value={strategyFilter}
+              onChange={(e) => setStrategyFilter(e.target.value)}
+              className="h-7 min-w-[6.5rem] appearance-none rounded border border-zinc-200 bg-white pl-2 pr-6 text-xs text-zinc-600 focus:outline-none focus:border-red-300"
+            >
+              {strategyOptions.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
           <div className="relative">
             <select
               value={viewMode}
               onChange={(e) => setViewMode(e.target.value as ViewMode)}
               className="h-7 min-w-[5.5rem] appearance-none rounded border border-zinc-200 bg-white pl-2 pr-6 text-xs text-zinc-600 focus:outline-none focus:border-red-300"
             >
-              <option value="fund">团队策略</option>
+              <option value="fund">基金明细</option>
               <option value="strategy">按策略汇总</option>
             </select>
             <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
@@ -382,6 +563,26 @@ export function FofAttributionPanel({
         </div>
       </div>
 
+      {strategyOptions.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 px-4 pb-3">
+          {strategyOptions.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setStrategyFilter(tab)}
+              className={[
+                "px-2.5 py-1 rounded text-xs border transition-colors whitespace-nowrap",
+                strategyFilter === tab
+                  ? "bg-red-500 text-white border-red-500"
+                  : "border-red-400 text-red-500 hover:bg-red-50",
+              ].join(" ")}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="overflow-x-auto border-t border-zinc-100">
         <table className="w-full text-xs">
           <thead>
@@ -394,9 +595,45 @@ export function FofAttributionPanel({
                 <th className="px-3 py-2.5 text-left font-semibold text-zinc-500 whitespace-nowrap">投资策略</th>
               )}
               <th className="px-3 py-2.5 text-left font-semibold text-zinc-500 whitespace-nowrap">统计区间</th>
-              <SortTh label="区间投资收益（元）" active={sortKey === "pnl"} dir={sortDir} onClick={() => handleSort("pnl")} />
-              <SortTh label="组合收益贡献度" active={sortKey === "returnContribution"} dir={sortDir} onClick={() => handleSort("returnContribution")} />
-              <SortTh label="组合净值贡献度" active={sortKey === "navContribution"} dir={sortDir} onClick={() => handleSort("navContribution")} />
+              <SortTh
+                label="区间投资收益（元）"
+                active={sortKey === "pnl"}
+                dir={sortDir}
+                onClick={() => handleSort("pnl")}
+                help={(
+                  <ChartCalcHelpButton
+                    heading="区间投资收益 · 计算说明"
+                    align="end"
+                    blocks={pnlColumnHelp(data?.snapshotFrom, data?.snapshotTo)}
+                  />
+                )}
+              />
+              <SortTh
+                label="组合收益贡献度"
+                active={sortKey === "returnContribution"}
+                dir={sortDir}
+                onClick={() => handleSort("returnContribution")}
+                help={(
+                  <ChartCalcHelpButton
+                    heading="组合收益贡献度 · 计算说明"
+                    align="end"
+                    blocks={returnColumnHelp(data?.startNav ?? null)}
+                  />
+                )}
+              />
+              <SortTh
+                label="组合净值贡献度"
+                active={sortKey === "navContribution"}
+                dir={sortDir}
+                onClick={() => handleSort("navContribution")}
+                help={(
+                  <ChartCalcHelpButton
+                    heading="组合净值贡献度 · 计算说明"
+                    align="end"
+                    blocks={navColumnHelp(data?.startPaidIn ?? null, data?.startNav ?? null)}
+                  />
+                )}
+              />
             </tr>
           </thead>
           <tbody>
@@ -415,7 +652,9 @@ export function FofAttributionPanel({
             ) : tableRows.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-12 text-center text-sm text-zinc-400">
-                  所选区间估值表不足，无法计算基金收益归因
+                  {allRows.length === 0
+                    ? "所选区间估值表不足，无法计算基金收益归因"
+                    : "当前投资策略筛选下没有基金"}
                 </td>
               </tr>
             ) : (
@@ -443,13 +682,31 @@ export function FofAttributionPanel({
                     {row.fromDate}~{row.toDate}
                   </td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
-                    <SignedMoney value={row.pnl} />
+                    <span className="inline-flex items-center justify-end gap-0.5">
+                      <SignedMoney value={row.pnl} />
+                      <CellHelp
+                        heading={`${row.fundName} · 区间投资收益`}
+                        blocks={rowPnlHelp(row)}
+                      />
+                    </span>
                   </td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
-                    <SignedPct value={row.returnContribution} />
+                    <span className="inline-flex items-center justify-end gap-0.5">
+                      <SignedPct value={row.returnContribution} />
+                      <CellHelp
+                        heading={`${row.fundName} · 组合收益贡献度`}
+                        blocks={rowReturnHelp(row, data?.startNav ?? null)}
+                      />
+                    </span>
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-zinc-700 whitespace-nowrap">
-                    {fmtNavContrib(row.navContribution)}
+                    <span className="inline-flex items-center justify-end gap-0.5">
+                      {fmtNavContrib(row.navContribution)}
+                      <CellHelp
+                        heading={`${row.fundName} · 组合净值贡献度`}
+                        blocks={rowNavHelp(row, data?.startPaidIn ?? null, data?.startNav ?? null)}
+                      />
+                    </span>
                   </td>
                 </tr>
               ))
@@ -459,16 +716,56 @@ export function FofAttributionPanel({
             <tfoot>
               <tr className="bg-zinc-50 border-t border-zinc-200 font-semibold">
                 <td className="px-3 py-2.5 text-zinc-700" colSpan={viewMode === "fund" ? 4 : 3}>
-                  合计
+                  <span className="inline-flex items-center gap-1">
+                    合计
+                    <ChartCalcHelpButton
+                      heading="合计 · 计算说明"
+                      blocks={totalHelp(strategyFilter !== "全部")}
+                    />
+                  </span>
                 </td>
                 <td className="px-3 py-2.5 text-right">
-                  <SignedMoney value={data?.totalPnl ?? 0} />
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    <SignedMoney value={filteredTotals.pnl} />
+                    <CellHelp
+                      heading="合计 · 区间投资收益"
+                      blocks={[{
+                        title: "本行",
+                        paragraphs: ["当前表中各行区间投资收益之和。"],
+                        formula: `Σ = ${fmtMoney(filteredTotals.pnl)} 元`,
+                      }]}
+                    />
+                  </span>
                 </td>
                 <td className="px-3 py-2.5 text-right">
-                  <SignedPct value={data?.totalReturnContribution ?? 0} />
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    <SignedPct value={filteredTotals.returnContribution} />
+                    <CellHelp
+                      heading="合计 · 组合收益贡献度"
+                      blocks={[{
+                        title: "本行",
+                        paragraphs: ["当前表中各行收益贡献度之和，分母仍是整组合期初资产净值。"],
+                        formula: data?.startNav
+                          ? `${fmtMoney(filteredTotals.pnl)} / ${fmtMoney(data.startNav)}\n= ${fmtPct(filteredTotals.returnContribution)}`
+                          : `Σ = ${fmtPct(filteredTotals.returnContribution)}`,
+                      }]}
+                    />
+                  </span>
                 </td>
                 <td className="px-3 py-2.5 text-right tabular-nums text-zinc-700">
-                  {fmtNavContrib(data?.totalNavContribution ?? 0)}
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    {fmtNavContrib(filteredTotals.navContribution)}
+                    <CellHelp
+                      heading="合计 · 组合净值贡献度"
+                      blocks={[{
+                        title: "本行",
+                        paragraphs: ["当前表中各行净值贡献度之和。"],
+                        formula: (data?.startPaidIn || data?.startNav)
+                          ? `${fmtMoney(filteredTotals.pnl)} / ${fmtMoney((data.startPaidIn && data.startPaidIn > 0 ? data.startPaidIn : data.startNav) ?? 0)}\n= ${fmtNavContrib(filteredTotals.navContribution)}`
+                          : `Σ = ${fmtNavContrib(filteredTotals.navContribution)}`,
+                      }]}
+                    />
+                  </span>
                 </td>
               </tr>
             </tfoot>
@@ -484,26 +781,31 @@ function SortTh({
   active,
   dir,
   onClick,
+  help,
 }: {
   label: string
   active: boolean
   dir: "asc" | "desc"
   onClick: () => void
+  help?: ReactNode
 }) {
   return (
     <th className="px-3 py-2.5 text-right font-semibold text-zinc-500 whitespace-nowrap">
-      <button
-        type="button"
-        onClick={onClick}
-        className="inline-flex items-center justify-end gap-0.5 hover:text-zinc-700"
-      >
-        {label}
-        {active ? (
-          <span className="text-[10px] text-zinc-400">{dir === "asc" ? "↑" : "↓"}</span>
-        ) : (
-          <ArrowUpDown className="h-3 w-3 text-zinc-300" />
-        )}
-      </button>
+      <span className="inline-flex items-center justify-end gap-0.5">
+        <button
+          type="button"
+          onClick={onClick}
+          className="inline-flex items-center justify-end gap-0.5 hover:text-zinc-700"
+        >
+          {label}
+          {active ? (
+            <span className="text-[10px] text-zinc-400">{dir === "asc" ? "↑" : "↓"}</span>
+          ) : (
+            <ArrowUpDown className="h-3 w-3 text-zinc-300" />
+          )}
+        </button>
+        {help}
+      </span>
     </th>
   )
 }

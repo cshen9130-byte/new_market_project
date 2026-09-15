@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react"
 import { ChevronDown, Inbox, Search } from "lucide-react"
 import { authService } from "@/lib/auth"
 import { DateInput } from "@/components/ui/date-input"
-import { addLedgerRecord, generateLedgerFromValuation, refreshLedgerRecordsFromServer, type OpsLedgerRow } from "./ops-ledger-store"
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
+import { addLedgerRecord, formatConfirmedUnitNav, generateLedgerFromValuation, refreshLedgerRecordsFromServer, type OpsLedgerRow } from "./ops-ledger-store"
 
 interface FundOption {
   register_number: string
@@ -33,6 +34,12 @@ const TRANSACTION_TYPES = [
   "转换入",
   "转换出",
 ]
+
+function fundLabel(name: string | null | undefined): string {
+  const raw = (name ?? "").trim()
+  if (!raw) return ""
+  return normalizeFundDisplayName(raw) || raw
+}
 
 function FormLabel({ children, required = true }: { children: React.ReactNode; required?: boolean }) {
   return (
@@ -120,7 +127,7 @@ export function AddSingleLedgerDialog({
       setConfirmDate(initial.confirm_date || "")
       setNetAmount(initial.confirmed_amount || "")
       setShares(initial.confirmed_shares || "")
-      setUnitNav(initial.confirmed_unit_nav || "")
+      setUnitNav(formatConfirmedUnitNav(initial.confirmed_unit_nav) || "")
       setFee(initial.transaction_fee || "")
       setShareBalance(initial.share_balance || "")
       setRemark(initial.remark || "")
@@ -208,7 +215,7 @@ export function AddSingleLedgerDialog({
         confirm_date: confirmDate,
         confirmed_amount: netAmount.trim(),
         confirmed_shares: shares.trim() || null,
-        confirmed_unit_nav: unitNav.trim(),
+        confirmed_unit_nav: formatConfirmedUnitNav(unitNav.trim()),
         transaction_fee: fee.trim() || null,
         performance_fee: initial?.performance_fee ?? null,
         share_balance: shareBalance.trim() || null,
@@ -252,7 +259,7 @@ export function AddSingleLedgerDialog({
             <div className="flex-1 relative">
               {fofFundSelected ? (
                 <div className="flex items-center justify-between h-9 border rounded px-3 bg-background">
-                  <span className="text-sm truncate">{fofFundSelected.product_name}</span>
+                  <span className="text-sm truncate">{fundLabel(fofFundSelected.product_name)}</span>
                   <button
                     type="button"
                     onClick={() => { setFofFundSelected(null); setFofFundInput("") }}
@@ -287,7 +294,7 @@ export function AddSingleLedgerDialog({
                             }}
                             className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
                           >
-                            {opt.product_name}
+                            {fundLabel(opt.product_name)}
                           </button>
                         ))}
                       </div>
@@ -314,7 +321,7 @@ export function AddSingleLedgerDialog({
                 <div className="flex flex-1 items-center px-3 gap-2 min-w-0 relative">
                   {underlyingSelected ? (
                     <div className="flex flex-1 items-center justify-between h-9 min-w-0">
-                      <span className="text-sm truncate">{underlyingSelected.short_name || underlyingSelected.product_name}</span>
+                      <span className="text-sm truncate">{fundLabel(underlyingSelected.short_name || underlyingSelected.product_name)}</span>
                       <button
                         type="button"
                         onClick={() => { setUnderlyingSelected(null); setUnderlyingInput(""); setUnderlyingShowDropdown(false) }}
@@ -355,7 +362,7 @@ export function AddSingleLedgerDialog({
                         }}
                         className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
                       >
-                        <div className="text-sm truncate">{opt.short_name || opt.product_name}</div>
+                        <div className="text-sm truncate">{fundLabel(opt.short_name || opt.product_name)}</div>
                         <div className="text-xs text-muted-foreground truncate">{opt.beian_hao}</div>
                       </button>
                     ))}

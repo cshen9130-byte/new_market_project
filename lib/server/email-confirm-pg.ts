@@ -7,6 +7,7 @@ import { promises as fs } from "fs"
 import path from "path"
 import { query } from "@/lib/db"
 import { getServerStoragePath } from "@/lib/server/storage"
+import { fetchConfirmAttachmentFromEmail } from "@/lib/server/email-confirm-attachment-download"
 import {
   parseConfirmSlipFromBuffer,
   type ParsedConfirmSlip,
@@ -408,6 +409,44 @@ export async function readEmailConfirmFile(
     }
   } catch {
     return null
+  }
+}
+
+async function persistConfirmFile(record: EmailConfirmRecord, buffer: Buffer): Promise<void> {
+  const safeAccount = sanitizeFilename(record.crawl_email_account).replace(/[@.]/g, "_")
+  const storageDir = getServerStoragePath("email-confirms", safeAccount)
+  await fs.mkdir(storageDir, { recursive: true })
+  await fs.writeFile(path.join(storageDir, record.storage_filename), buffer)
+  await query(
+    `UPDATE ops_email_confirm_records
+        SET file_size = $2,
+            mime_type = COALESCE(NULLIF(mime_type, ''), $3)
+      WHERE id = $1`,
+    [
+      record.id,
+      buffer.byteLength,
+      record.mime_type || mimeTypeForFilename(record.attachment_filename),
+    ],
+  )
+}
+
+/** Read the stored PDF, or re-download it from IMAP if the disk file is gone. */
+export async function ensureEmailConfirmFile(
+  record: EmailConfirmRecord,
+): Promise<{ buffer: Buffer; filename: string; mimeType: string } | null> {
+  const existing = await readEmailConfirmFile(record)
+  if (existing) return existing
+  const fetched = await fetchConfirmAttachmentFromEmail({
+    crawlEmailAccount: record.crawl_email_account,
+    emailUid: record.email_uid,
+    attachmentFilename: record.attachment_filename,
+  })
+  if (!fetched?.buffer.length) return null
+  await persistConfirmFile(record, fetched.buffer)
+  return {
+    buffer: fetched.buffer,
+    filename: record.attachment_filename || fetched.filename,
+    mimeType: record.mime_type || mimeTypeForFilename(record.attachment_filename || fetched.filename),
   }
 }
 

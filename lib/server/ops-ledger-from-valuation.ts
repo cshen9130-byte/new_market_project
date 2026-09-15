@@ -2,8 +2,9 @@
  * First-pass FOF底层 申赎台账 from parent-FOF 估值表 share changes,
  * with optional overlay from parsed 交易确认单.
  *
- * Auto rows are estimates (估值日 ≈ 确认日, 类型 from Δ份额 sign).
- * Manual / locked / instruction rows are never overwritten.
+ * Rules: docs/ops-ledger-generation-rules.md
+ * 确认单 wins. Else 申请日=T, 确认日=T+1, 净值=T行情, 净额=Δ成本 (prefer integer).
+ * Manual / locked / confirmed / instruction rows are never overwritten.
  */
 
 import { query, queryUnbounded } from "@/lib/db"
@@ -62,11 +63,20 @@ export type ValuationLedgerDelta = {
   parentKey: string
   underlyingCode: string
   underlyingName: string
+  /** Quantity-jump date (T+1 / 确认日). Used in generation_key. */
   valuationDate: string
+  /** Previous valuation date (T / 申请日). Same as valuationDate on first appearance. */
+  applyDate: string
   prevQty: number
   qty: number
   deltaQty: number
+  /** 行情 on T (申请日). */
+  prevNav: number | null
+  /** 行情 on T+1. Do not use for 确认净额 / 确认单位净值. */
   nav: number | null
+  prevCost: number | null
+  cost: number | null
+  deltaCost: number | null
   firstAppearance: boolean
 }
 
@@ -136,7 +146,43 @@ function fmtAmt(n: number): string {
 }
 
 function fmtNav(n: number): string {
-  return n.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")
+  return n.toFixed(4)
+}
+
+function addNullable(a: number | null, b: number | null): number | null {
+  if (a == null && b == null) return null
+  return (a ?? 0) + (b ?? 0)
+}
+
+/** Managers subscribe/redeem in round lots. Prefer 1,000,000.00 over 1,010,831.62. */
+export function preferIntegerAmount(candidates: Array<number | null | undefined>): number | null {
+  const nums = candidates.filter(
+    (n): n is number => n != null && Number.isFinite(n) && Math.abs(n) >= MIN_ABS_AMOUNT,
+  )
+  if (nums.length === 0) return null
+  const abs = (n: number) => Math.abs(n)
+  const isNearInteger = (n: number) => Math.abs(n - Math.round(n)) < 0.02
+  const integers = nums.filter(isNearInteger)
+  const pool = integers.length > 0 ? integers : nums
+  const roundness = (n: number) => {
+    const a = Math.round(abs(n))
+    if (a % 1_000_000 === 0) return 5
+    if (a % 100_000 === 0) return 4
+    if (a % 10_000 === 0) return 3
+    if (a % 1_000 === 0) return 2
+    if (a % 100 === 0) return 1
+    return 0
+  }
+  pool.sort((a, b) => roundness(b) - roundness(a) || abs(a) - abs(b))
+  return pool[0]
+}
+
+export function resolveValuationLedgerAmount(delta: ValuationLedgerDelta): number | null {
+  const absDelta = Math.abs(delta.deltaQty)
+  const fromCost = delta.deltaCost
+  const fromApplyNav =
+    delta.prevNav != null && delta.prevNav > 0 ? absDelta * delta.prevNav : null
+  return preferIntegerAmount([fromCost, fromApplyNav])
 }
 
 function daysBetween(a: string, b: string): number {
@@ -168,7 +214,9 @@ export function matchConfirmToDelta(
 
   for (const row of confirms) {
     if (usedIds.has(row.id)) continue
-    if (row.confirmedShares == null || !(Math.abs(row.confirmedShares) > 0)) continue
+    const hasShares = row.confirmedShares != null && Math.abs(row.confirmedShares) > 0
+    const hasAmount = row.confirmedAmount != null && Math.abs(row.confirmedAmount) > 0
+    if (!hasShares && !hasAmount) continue
     const codeFamily = beianFamilyKey(row.fundCode)
     const codeOk =
       (codeFamily && undFamily && codeFamily === undFamily)
@@ -182,11 +230,24 @@ export function matchConfirmToDelta(
 
     const eventDate = row.confirmDate || row.applyDate
     if (!eventDate) continue
-    const dateDist = daysBetween(eventDate, delta.valuationDate)
+    const confirmDayDist = daysBetween(eventDate, delta.valuationDate)
+    const applyDayDist = row.applyDate
+      ? daysBetween(row.applyDate, delta.applyDate)
+      : Number.POSITIVE_INFINITY
+    const dateDist = Math.min(confirmDayDist, applyDayDist)
     if (dateDist > CONFIRM_DATE_WINDOW_DAYS) continue
 
-    const shareDist = Math.abs(Math.abs(row.confirmedShares) - absDelta) / Math.max(absDelta, Math.abs(row.confirmedShares), 1)
-    if (shareDist > CONFIRM_SHARE_TOLERANCE) continue
+    const shareDist =
+      row.confirmedShares != null && Math.abs(row.confirmedShares) > 0
+        ? Math.abs(Math.abs(row.confirmedShares) - absDelta) / Math.max(absDelta, Math.abs(row.confirmedShares), 1)
+        : Number.POSITIVE_INFINITY
+    const amountAbs = row.confirmedAmount != null ? Math.abs(row.confirmedAmount) : null
+    const costAbs = delta.deltaCost != null ? Math.abs(delta.deltaCost) : null
+    const amountDist =
+      amountAbs != null && costAbs != null && Math.max(amountAbs, costAbs) > 0
+        ? Math.abs(amountAbs - costAbs) / Math.max(amountAbs, costAbs)
+        : Number.POSITIVE_INFINITY
+    if (shareDist > CONFIRM_SHARE_TOLERANCE && amountDist > CONFIRM_SHARE_TOLERANCE) continue
 
     const sign = delta.deltaQty < 0 ? -1 : 1
     const confirmType = normalizeLedgerBusinessType(row.businessType, sign)
@@ -194,8 +255,16 @@ export function matchConfirmToDelta(
     if (sign > 0 && confirmType === "赎回") continue
 
     const investor = (row.investorName || "").replace(/\s+/g, "")
-    const parentHit = parentFamily && investor && investor.toUpperCase().includes(parentFamily)
-    const score = dateDist * 10 + shareDist * 20 - (parentHit ? 2 : 0) - (codeOk ? 1 : 0)
+    const parentHit = Boolean(
+      (parentFamily && investor && investor.toUpperCase().includes(parentFamily))
+      || (delta.parentName && investor && investor.includes(delta.parentName.replace(/\s+/g, "").slice(0, 4))),
+    )
+    const score =
+      dateDist * 10
+      + (Number.isFinite(shareDist) ? shareDist * 20 : 8)
+      + (Number.isFinite(amountDist) ? amountDist * 10 : 0)
+      - (parentHit ? 2 : 0)
+      - (codeOk ? 1 : 0)
     if (!best || score < best.score) best = { row, score }
   }
   return best?.row ?? null
@@ -207,14 +276,13 @@ export function buildValuationLedgerRow(
 ): OpsLedgerRow {
   const sign = delta.deltaQty < 0 ? -1 : 1
   const absDelta = Math.abs(delta.deltaQty)
-  const nav = confirm?.unitNav ?? delta.nav
-  const amount = confirm?.confirmedAmount
-    ?? (nav != null ? absDelta * nav : null)
+  const nav = confirm?.unitNav ?? delta.prevNav ?? delta.nav
+  const amount = confirm?.confirmedAmount ?? resolveValuationLedgerAmount(delta)
   const txType = normalizeLedgerBusinessType(confirm?.businessType, sign)
   const source = confirm ? AUTO_LEDGER_CONFIRM_SOURCE : AUTO_LEDGER_SOURCE
   const remarks: string[] = []
   if (delta.firstAppearance) remarks.push("估值表首现持仓，申请日可能早于该估值日")
-  if (!confirm) remarks.push("由估值表份额变动估算，类型与申请日待核对")
+  if (!confirm) remarks.push("由估值表数量/成本变动估算，申请日=上一估值日，净值用申请日行情")
   else remarks.push(`已匹配交易确认单#${confirm.id}`)
 
   return {
@@ -225,7 +293,7 @@ export function buildValuationLedgerRow(
     underlying_type: "FOF底层",
     underlying_fund_name: delta.underlyingName,
     underlying_beian_hao: delta.underlyingCode || null,
-    apply_date: confirm?.applyDate || confirm?.confirmDate || delta.valuationDate,
+    apply_date: confirm?.applyDate || confirm?.confirmDate || delta.applyDate,
     confirm_date: confirm?.confirmDate || confirm?.applyDate || delta.valuationDate,
     confirmed_shares: fmtQty(confirm?.confirmedShares != null ? Math.abs(confirm.confirmedShares) : absDelta),
     confirmed_amount: amount != null ? fmtAmt(Math.abs(amount)) : null,
@@ -269,6 +337,7 @@ type SeriesRow = {
   qty: string | null
   mv: string | null
   price: string | null
+  cost: string | null
 }
 
 function pickHeld(symbol: string, held: HeldProduct[]): HeldProduct | null {
@@ -351,7 +420,8 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
        r.valuation_date::text AS valuation_date,
        SUM(h.quantity)::text AS qty,
        SUM(h.market_value)::text AS mv,
-       MAX(h.price)::text AS price
+       MAX(h.price)::text AS price,
+       SUM(h.cost)::text AS cost
      FROM ops_email_valuation_holdings h
      INNER JOIN ops_email_valuation_records r ON r.id = h.valuation_record_id
      INNER JOIN (
@@ -385,7 +455,8 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
             confirmed_amount::text, confirmed_shares::text, unit_nav::text,
             trade_fee::text, attachment_filename
        FROM ops_email_confirm_records
-      WHERE confirmed_shares IS NOT NULL`,
+      WHERE confirmed_shares IS NOT NULL
+         OR confirmed_amount IS NOT NULL`,
   )
   const confirms: ConfirmOverlayInput[] = confirmRows.map((row) => ({
     id: Number(row.id),
@@ -402,7 +473,14 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
     attachmentFilename: row.attachment_filename,
   }))
 
-  type Point = { date: string; qty: number; mv: number | null; price: unknown; undName: string }
+  type Point = {
+    date: string
+    qty: number
+    mv: number | null
+    price: unknown
+    cost: number | null
+    undName: string
+  }
   const grouped = new Map<string, {
     parentCode: string
     parentName: string
@@ -427,10 +505,11 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
     }
     const qty = parseNum(row.qty) ?? 0
     const mv = parseNum(row.mv)
+    const cost = parseNum(row.cost)
     const date = String(row.valuation_date || "").slice(0, 10)
     if (!date) continue
     const displayName = und.product_name || stripValuationSubjectPathPrefix(row.und_name || "") || und.beian_hao
-    bucket.points.push({ date, qty, mv, price: row.price, undName: displayName })
+    bucket.points.push({ date, qty, mv, price: row.price, cost, undName: displayName })
   }
 
   const deltas: ValuationLedgerDelta[] = []
@@ -445,15 +524,16 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
       byDate.set(point.date, {
         ...point,
         qty: prev.qty + point.qty,
-        mv: (prev.mv ?? 0) + (point.mv ?? 0),
+        mv: addNullable(prev.mv, point.mv),
+        cost: addNullable(prev.cost, point.cost),
       })
     }
     const dates = [...byDate.keys()].sort()
-    let prevQty: number | null = null
+    let prev: { date: string; qty: number; nav: number | null; cost: number | null } | null = null
     for (const date of dates) {
       const point = byDate.get(date)!
       const nav = resolveNav(point.price, point.qty, point.mv)
-      if (prevQty == null) {
+      if (prev == null) {
         if (isMeaningfulShareDelta(point.qty, nav)) {
           deltas.push({
             parentCode: bucket.parentCode,
@@ -462,18 +542,29 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
             underlyingCode: bucket.und.beian_hao,
             underlyingName: point.undName,
             valuationDate: date,
+            applyDate: date,
             prevQty: 0,
             qty: point.qty,
             deltaQty: point.qty,
+            prevNav: nav,
             nav,
+            prevCost: 0,
+            cost: point.cost,
+            deltaCost: point.cost,
             firstAppearance: true,
           })
         }
-        prevQty = point.qty
+        prev = { date, qty: point.qty, nav, cost: point.cost }
         continue
       }
-      const deltaQty = point.qty - prevQty
-      if (isMeaningfulShareDelta(deltaQty, nav)) {
+      const deltaQty = point.qty - prev.qty
+      const deltaCost =
+        point.cost != null && prev.cost != null
+          ? point.cost - prev.cost
+          : point.cost != null && prev.cost == null
+            ? point.cost
+            : null
+      if (isMeaningfulShareDelta(deltaQty, prev.nav ?? nav)) {
         deltas.push({
           parentCode: bucket.parentCode,
           parentName: bucket.parentName,
@@ -481,14 +572,19 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
           underlyingCode: bucket.und.beian_hao,
           underlyingName: point.undName,
           valuationDate: date,
-          prevQty,
+          applyDate: prev.date,
+          prevQty: prev.qty,
           qty: point.qty,
           deltaQty,
+          prevNav: prev.nav,
           nav,
+          prevCost: prev.cost,
+          cost: point.cost,
+          deltaCost,
           firstAppearance: false,
         })
       }
-      prevQty = point.qty
+      prev = { date, qty: point.qty, nav, cost: point.cost }
     }
   }
 

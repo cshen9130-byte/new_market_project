@@ -16,8 +16,10 @@ import {
   Trash2,
 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { useToast } from "@/hooks/use-toast"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { LedgerSourceCell } from "./LedgerAttachmentLink"
 import { AddSingleLedgerDialog, BatchUploadLedgerDialog, GenerateFromValuationDialog } from "./OperationsLedgerDialogs"
 import {
   LEDGER_FIELD_CONFIG_DEFAULT,
@@ -27,6 +29,7 @@ import {
   backfillLedgerFromConfirmedInstructions,
   confirmLedgerRecords,
   ensureLedgerRecordsHydrated,
+  formatConfirmedUnitNav,
   getLedgerHydrateStatus,
   getLedgerRecordsHydrateError,
   getLedgerRecordsServerSnapshot,
@@ -112,9 +115,23 @@ function csvEscape(value: string): string {
   return value
 }
 
+function ledgerFundLabel(name: string | null | undefined): string {
+  const raw = (name ?? "").trim()
+  if (!raw) return "—"
+  return normalizeFundDisplayName(raw) || raw
+}
+
 function ledgerExportCell(row: OpsLedgerRow, key: string): string {
   if (key === "review_status") {
     return ledgerReviewStatus(row) === "confirmed" ? "已确认" : "待确认"
+  }
+  if (key === "fof_fund_name" || key === "underlying_fund_name") {
+    const raw = String(row[key] ?? "").trim()
+    if (!raw) return ""
+    return normalizeFundDisplayName(raw) || raw
+  }
+  if (key === "confirmed_unit_nav") {
+    return formatConfirmedUnitNav(row.confirmed_unit_nav) ?? ""
   }
   const value = row[key as keyof OpsLedgerRow]
   if (value == null || value === "") return ""
@@ -238,7 +255,13 @@ export function OperationsLedgerView() {
       const name = row.fof_fund_name.trim()
       if (!name) continue
       const reg = (row.fof_register_number || name).trim()
-      if (q && !name.toLowerCase().includes(q) && !reg.toLowerCase().includes(q)) continue
+      const display = ledgerFundLabel(name)
+      if (
+        q
+        && !name.toLowerCase().includes(q)
+        && !display.toLowerCase().includes(q)
+        && !reg.toLowerCase().includes(q)
+      ) continue
       if (!map.has(reg)) map.set(reg, { register_number: reg, product_name: name })
     }
     return [...map.values()].sort((a, b) => a.product_name.localeCompare(b.product_name, "zh"))
@@ -251,7 +274,13 @@ export function OperationsLedgerView() {
       const name = row.underlying_fund_name.trim()
       if (!name) continue
       const beian = (row.underlying_beian_hao || name).trim()
-      if (q && !name.toLowerCase().includes(q) && !beian.toLowerCase().includes(q)) continue
+      const display = ledgerFundLabel(name)
+      if (
+        q
+        && !name.toLowerCase().includes(q)
+        && !display.toLowerCase().includes(q)
+        && !beian.toLowerCase().includes(q)
+      ) continue
       if (!map.has(beian)) {
         map.set(beian, { beian_hao: beian, product_name: name, short_name: name })
       }
@@ -454,9 +483,10 @@ export function OperationsLedgerView() {
     const value = row[key as keyof LedgerRow]
     const display = value == null || value === "" ? "—" : String(value)
     if (key === "fof_fund_name" || key === "underlying_fund_name") {
+      const label = display === "—" ? "—" : ledgerFundLabel(display)
       return (
         <td key={key} className={`${cell} truncate max-w-[180px]`} title={display === "—" ? undefined : display}>
-          {display}
+          {label}
         </td>
       )
     }
@@ -466,6 +496,10 @@ export function OperationsLedgerView() {
           {display}
         </td>
       )
+    }
+    if (key === "confirmed_unit_nav") {
+      const nav = formatConfirmedUnitNav(typeof value === "string" || typeof value === "number" ? value : null)
+      return <td key={key} className={`${cell} text-right tabular-nums`}>{nav ?? "—"}</td>
     }
     if (NUMERIC_LEDGER_FIELDS.has(key)) {
       return <td key={key} className={`${cell} text-right tabular-nums`}>{display}</td>
@@ -477,6 +511,13 @@ export function OperationsLedgerView() {
       return (
         <td key={key} className={cell}>
           <ReviewStatusBadge row={row} />
+        </td>
+      )
+    }
+    if (key === "source") {
+      return (
+        <td key={key} className={cell}>
+          <LedgerSourceCell row={row} className="block truncate max-w-[140px]" />
         </td>
       )
     }
@@ -513,7 +554,7 @@ export function OperationsLedgerView() {
             <div className="relative w-56">
               {fofFundSelected ? (
                 <div className="flex items-center justify-between border rounded h-7 px-2 bg-background">
-                  <span className="text-xs truncate">{fofFundSelected.product_name}</span>
+                  <span className="text-xs truncate">{ledgerFundLabel(fofFundSelected.product_name)}</span>
                   <button
                     type="button"
                     onClick={() => { setFofFundSelected(null); setFofFundInput("") }}
@@ -548,7 +589,7 @@ export function OperationsLedgerView() {
                             }}
                             className="w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors truncate"
                           >
-                            {opt.product_name}
+                            {ledgerFundLabel(opt.product_name)}
                           </button>
                         ))}
                       </div>
@@ -564,7 +605,9 @@ export function OperationsLedgerView() {
             <div className="relative w-56">
               {underlyingSelected ? (
                 <div className="flex items-center justify-between border rounded h-7 px-2 bg-background">
-                  <span className="text-xs truncate">{underlyingSelected.short_name || underlyingSelected.product_name}</span>
+                  <span className="text-xs truncate">
+                    {ledgerFundLabel(underlyingSelected.short_name || underlyingSelected.product_name)}
+                  </span>
                   <button
                     type="button"
                     onClick={() => { setUnderlyingSelected(null); setUnderlyingInput("") }}
@@ -599,7 +642,7 @@ export function OperationsLedgerView() {
                             }}
                             className="w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors truncate"
                           >
-                            {opt.short_name || opt.product_name}
+                            {ledgerFundLabel(opt.short_name || opt.product_name)}
                           </button>
                         ))}
                       </div>
@@ -949,7 +992,7 @@ export function OperationsLedgerView() {
         selected={selected}
         setSelected={setSelected}
         getId={(r) => r.id}
-        getName={(r) => `${r.fof_fund_name} · ${r.underlying_fund_name}`}
+        getName={(r) => `${ledgerFundLabel(r.fof_fund_name)} · ${ledgerFundLabel(r.underlying_fund_name)}`}
         getBeianHao={(r) => r.underlying_beian_hao}
         showActions={false}
       />

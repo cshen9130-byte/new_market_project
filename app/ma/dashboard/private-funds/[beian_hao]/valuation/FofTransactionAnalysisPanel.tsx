@@ -2,19 +2,9 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
 import { ChevronDown, ChevronRight, Download, Inbox } from "lucide-react"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
 import { DateInput } from "@/components/ui/date-input"
-import { useToast } from "@/hooks/use-toast"
-import {
-  downloadInstructionAttachment,
-  openInstructionAttachment,
-} from "../../components/instruction-attachment-files"
-import { parseEmailConfirmRecordId } from "../../components/instructions-store"
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
+import { LedgerAttachmentLink, ledgerConfirmAttachment } from "../../components/LedgerAttachmentLink"
 import {
   backfillLedgerFromConfirmedInstructions,
   ensureLedgerRecordsHydrated,
@@ -23,14 +13,26 @@ import {
   ledgerReviewStatus,
   ledgerReviewTitle,
   listLedgerRecords,
+  formatConfirmedUnitNav,
   subscribeLedgerRecords,
-  type OpsLedgerAttachment,
   type OpsLedgerRow,
 } from "../../components/ops-ledger-store"
 
 function formatCell(value: string | null | undefined): string {
   if (value == null || value === "") return "—"
   return value
+}
+
+function fundLabel(name: string | null | undefined): string {
+  const raw = (name ?? "").trim()
+  if (!raw) return "—"
+  return normalizeFundDisplayName(raw) || raw
+}
+
+function fundExportLabel(name: string | null | undefined): string {
+  const raw = (name ?? "").trim()
+  if (!raw) return ""
+  return normalizeFundDisplayName(raw) || raw
 }
 
 function csvEscape(value: string): string {
@@ -51,88 +53,6 @@ function TxTypeBadge({ type }: { type: string }) {
   )
 }
 
-function coerceConfirmRecordId(value: unknown): number | null {
-  if (value == null || value === "") return null
-  const n = typeof value === "number" ? value : Number(value)
-  return Number.isFinite(n) ? n : null
-}
-
-function resolveAttachmentId(attachment: OpsLedgerAttachment): string {
-  const recordId =
-    coerceConfirmRecordId(attachment.confirmRecordId)
-    ?? parseEmailConfirmRecordId(attachment.id)
-  if (recordId != null) return `email-confirm:${recordId}`
-  return attachment.id
-}
-
-/** Stable URL for email-confirm files so the browser can preview / "Save link as…". */
-function resolveAttachmentPreviewUrl(attachment: OpsLedgerAttachment): string | null {
-  const recordId =
-    coerceConfirmRecordId(attachment.confirmRecordId)
-    ?? parseEmailConfirmRecordId(attachment.id)
-  if (recordId == null) return null
-  return `/ma/api/ops/email-confirm-records/${recordId}/file`
-}
-
-function AttachmentLink({
-  attachment,
-  onOpen,
-  onDownload,
-}: {
-  attachment: OpsLedgerAttachment | null | undefined
-  onOpen: (attachment: OpsLedgerAttachment) => void
-  onDownload: (attachment: OpsLedgerAttachment) => void
-}) {
-  if (!attachment?.id) {
-    return <span className="text-muted-foreground">—</span>
-  }
-  const className =
-    "max-w-[160px] truncate text-left text-sky-600 hover:underline dark:text-sky-400"
-  const previewUrl = resolveAttachmentPreviewUrl(attachment)
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        {previewUrl ? (
-          <a
-            href={previewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`block ${className}`}
-            title={attachment.name}
-          >
-            {attachment.name}
-          </a>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onOpen(attachment)}
-            className={className}
-            title={attachment.name}
-          >
-            {attachment.name}
-          </button>
-        )}
-      </ContextMenuTrigger>
-      <ContextMenuContent className="w-40">
-        <ContextMenuItem
-          onClick={() => {
-            if (previewUrl) {
-              window.open(previewUrl, "_blank")
-            } else {
-              onOpen(attachment)
-            }
-          }}
-        >
-          预览
-        </ContextMenuItem>
-        <ContextMenuItem onClick={() => onDownload(attachment)}>
-          下载文件
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
-  )
-}
-
 export function FofTransactionAnalysisPanel({
   beianHao,
   productName,
@@ -140,7 +60,6 @@ export function FofTransactionAnalysisPanel({
   beianHao: string
   productName?: string | null
 }) {
-  const { toast } = useToast()
   const [fofNameInput, setFofNameInput] = useState("")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
@@ -228,18 +147,18 @@ export function FofTransactionAnalysisPanel({
     const lines = rows.map((row, i) =>
       [
         String(i + 1),
-        csvCell(row.underlying_fund_name),
+        csvCell(fundExportLabel(row.underlying_fund_name)),
         csvCell(row.transaction_type),
         csvCell(row.apply_date),
         csvCell(row.confirm_date),
         csvCell(row.confirmed_amount),
         csvCell(row.confirmed_shares),
-        csvCell(row.confirmed_unit_nav),
+        csvCell(formatConfirmedUnitNav(row.confirmed_unit_nav)),
         csvCell(row.transaction_fee),
         csvCell(row.performance_fee),
         csvCell(ledgerReviewStatus(row) === "confirmed" ? "已确认" : "待确认"),
         csvCell(row.contract_attachment?.name),
-        csvCell(row.confirm_attachment?.name),
+        csvCell(ledgerConfirmAttachment(row)?.name),
         csvCell(row.source),
         csvCell(row.remark),
       ].join(","),
@@ -254,33 +173,6 @@ export function FofTransactionAnalysisPanel({
     a.download = `FOF台账_${namePart}_${stamp}.csv`
     a.click()
     URL.revokeObjectURL(a.href)
-  }
-
-  async function handleOpenAttachment(attachment: OpsLedgerAttachment) {
-    try {
-      await openInstructionAttachment(resolveAttachmentId(attachment))
-    } catch (err) {
-      toast({
-        title: "无法打开附件",
-        description: err instanceof Error ? err.message : "附件不存在",
-        variant: "destructive",
-      })
-    }
-  }
-
-  async function handleDownloadAttachment(attachment: OpsLedgerAttachment) {
-    try {
-      await downloadInstructionAttachment(
-        resolveAttachmentId(attachment),
-        attachment.name,
-      )
-    } catch (err) {
-      toast({
-        title: "无法下载附件",
-        description: err instanceof Error ? err.message : "附件不存在",
-        variant: "destructive",
-      })
-    }
   }
 
   function pageButtons(): (number | "…")[] {
@@ -406,7 +298,7 @@ export function FofTransactionAnalysisPanel({
                     {(page - 1) * pageSize + i + 1}
                   </td>
                   <td className="border-b px-3 py-2 truncate max-w-[180px]" title={row.underlying_fund_name}>
-                    {row.underlying_fund_name}
+                    {fundLabel(row.underlying_fund_name)}
                   </td>
                   <td className="border-b px-3 py-2">
                     <TxTypeBadge type={row.transaction_type} />
@@ -420,7 +312,7 @@ export function FofTransactionAnalysisPanel({
                     {formatCell(row.confirmed_shares)}
                   </td>
                   <td className="border-b px-3 py-2 text-right tabular-nums">
-                    {formatCell(row.confirmed_unit_nav)}
+                    {formatCell(formatConfirmedUnitNav(row.confirmed_unit_nav))}
                   </td>
                   <td className="border-b px-3 py-2 text-right tabular-nums">
                     {formatCell(row.transaction_fee)}
@@ -442,18 +334,10 @@ export function FofTransactionAnalysisPanel({
                     </span>
                   </td>
                   <td className="border-b px-3 py-2">
-                    <AttachmentLink
-                      attachment={row.contract_attachment}
-                      onOpen={handleOpenAttachment}
-                      onDownload={handleDownloadAttachment}
-                    />
+                    <LedgerAttachmentLink attachment={row.contract_attachment} />
                   </td>
                   <td className="border-b px-3 py-2">
-                    <AttachmentLink
-                      attachment={row.confirm_attachment}
-                      onOpen={handleOpenAttachment}
-                      onDownload={handleDownloadAttachment}
-                    />
+                    <LedgerAttachmentLink attachment={ledgerConfirmAttachment(row)} />
                   </td>
                   <td className="border-b px-3 py-2">{formatCell(row.source)}</td>
                   <td className="border-b px-3 py-2 text-muted-foreground truncate max-w-[120px]">

@@ -52,6 +52,7 @@ function collectAttachments(
 }
 
 function decodeFetchedImapPart(buf: Buffer): Buffer {
+  if (buf.length >= 5 && buf.subarray(0, 5).toString("ascii") === "%PDF-") return buf
   if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b) return buf
   if (buf.length >= 8 && buf[0] === 0xd0 && buf[1] === 0xcf) return buf
   const head = buf.subarray(0, Math.min(buf.length, 80)).toString("ascii").replace(/\s+/g, "")
@@ -103,7 +104,7 @@ export function extractAttachmentBuffer(
   return null
 }
 
-async function fetchAttachmentFromMailbox(input: {
+export async function fetchMailboxAttachmentByFilename(input: {
   crawlEmailAccount: string
   emailUid: string
   attachmentFilename: string
@@ -195,7 +196,7 @@ export async function fetchValuationAttachmentFromEmail(input: {
     return { buffer: extracted.buffer, filename: extracted.filename }
   }
 
-  return fetchAttachmentFromMailbox(input)
+  return fetchMailboxAttachmentByFilename(input)
 }
 
 export function mimeTypeForValuationFilename(filename: string): string {
