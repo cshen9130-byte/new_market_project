@@ -4,6 +4,7 @@
  */
 
 import { query } from "@/lib/db"
+import { formatConfirmedUnitNav } from "@/lib/format-confirmed-unit-nav"
 import type { StoredUser } from "@/lib/server/users"
 import { canAccessInstructionRecords } from "@/lib/server/instruction-records"
 
@@ -55,16 +56,6 @@ function asString(value: unknown, fallback = ""): string {
 function asNullableString(value: unknown): string | null {
   if (value == null) return null
   return typeof value === "string" ? value : null
-}
-
-function formatConfirmedUnitNav(value: unknown): string | null {
-  const raw = asNullableString(value) ?? (typeof value === "number" && Number.isFinite(value) ? String(value) : null)
-  if (raw == null) return null
-  const trimmed = raw.trim()
-  if (!trimmed) return null
-  const n = Number(trimmed.replace(/,/g, ""))
-  if (!Number.isFinite(n)) return trimmed
-  return n.toFixed(4)
 }
 
 function normalizeAttachment(raw: unknown): OpsLedgerAttachment | null {

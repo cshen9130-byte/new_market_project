@@ -104,7 +104,7 @@ function cleanCapturedValue(raw: string | null | undefined): string | null {
     /^(FundName|InvestorName|FundCode|FundNumber|BusinessType|TransactionType|ApplicationDate|TradeDate|ConfirmedDate|ConfirmationDate|ConfirmedAmount|ConfirmedNetAmount|ConfirmedShares?|NetAssetValue|NAVperShare|TransactionFee|TradeFee)$/i.test(
       compact,
     )
-    || /^(基金名称|产品名称|投资人名称|客户名称|委托人名称|基金代码|产品代码|业务类型|申请日期|确认日期|确认金额|确认净额|确认份额|单位净值|交易费用|手续费)$/.test(
+    || /^(基金名称|产品名称|投资人名称|客户名称|委托人名称|基金代码|产品代码|业务类型|申请日期|确认日期|确认金额|确认净额|确认份额|单位净值|交易费用|手续费|销售商|管理人名称|确认结果|证件类型)$/.test(
       compact,
     )
   if (labelOnly) return null
@@ -150,7 +150,8 @@ function valueAfterLabel(
 
 const DATE_VALUE =
   /((?:20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?|20\d{6}|20\d{2}-\d{2}-\d{2}))/
-const AMOUNT_VALUE = /([0-9,]+\.\d{2})(?!\d)/
+/** 1,000,000.00 or Xingye-style 1,000,000 (no decimals). */
+const AMOUNT_VALUE = /([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2})?|[0-9]+\.\d{2})(?!\d)/
 const SHARES_VALUE = /([0-9,]+\.\d{2,8})(?!\d)/
 /** Unit NAV only (no thousands separators); rejects trailing ",000.00" fragments. */
 const NAV_VALUE = /(?<![0-9,])([0-9]+\.\d{2,8})(?!\d)/
@@ -282,19 +283,57 @@ function detectBroker(text: string, filename: string, subject: string): string |
   if (/中金公司|中国国际金融|中金/.test(blob)) return "中金"
   if (/中信证券|中信|中信中证/.test(blob)) return "中信"
   if (/众量/.test(blob)) return "众量"
+  if (/兴业证券|兴业/.test(blob)) return "兴业"
   return null
 }
 
 /** All decimal numbers in document order (CID-font TA PDFs dump values after labels). */
 function allDecimalNumbers(text: string): string[] {
   const out: string[] = []
-  const re = /([0-9,]+\.\d{2,8})(?!\d)/g
+  const re = /([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2,8})?|[0-9,]+\.\d{2,8})(?!\d)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) != null) {
     const n = toNumberString(m[1])
     if (n) out.push(n)
   }
   return out
+}
+
+function looksLikeJunkFundName(name: string | null | undefined): boolean {
+  const compact = (name || "").replace(/\s+/g, "")
+  if (!compact || compact.length < 4) return true
+  return /^(销售商|管理人名称|确认结果|证件类型|投资人名称|基金名称|产品名称|Typeof|FundName|基金)/i.test(
+    compact,
+  )
+}
+
+function fundNameFromFilename(filename: string): string | null {
+  const base = filename.replace(/^.*[/\\]/, "")
+  const m = base.match(/([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9]*?(?:私募证券投资基金)?[A-Z]类)/)
+  const name = m?.[1]?.replace(/\s+/g, "") || null
+  if (!name || /金舆|FOF/.test(name) || looksLikeJunkFundName(name)) return null
+  return name
+}
+
+/** If parser put 确认份额 into 确认金额, recover 确认金额 from 份额 × 净值 (prefer round lots). */
+function reconcileAmountFromSharesNav(
+  amount: string | null,
+  shares: string | null,
+  nav: string | null,
+): string | null {
+  const a = amount != null ? Number(amount) : NaN
+  const s = shares != null ? Number(shares) : NaN
+  const n = nav != null ? Number(nav) : NaN
+  const hasAmt = Number.isFinite(a) && a >= 100
+  const hasShares = Number.isFinite(s) && s > 0
+  const hasNav = Number.isFinite(n) && n > 0.05 && n < 100
+  const amountLooksLikeShares = hasAmt && hasShares && Math.abs(a - s) < 0.05
+  if (!(hasShares && hasNav) || (hasAmt && !amountLooksLikeShares)) return amount
+  const implied = s * n
+  if (!(implied >= 100)) return amount
+  const rounded = Math.round(implied)
+  if (Math.abs(implied - rounded) < 0.02) return String(rounded)
+  return implied.toFixed(2)
 }
 
 /**
@@ -425,7 +464,7 @@ export function extractConfirmFieldsFromText(
         t,
         // Avoid matching inside 协会基金名称.
         /(?<!协)基金名称(?:\s*\([^)]*\))?/g,
-        /\s*(?:Fund\s*Name\s+)?([^\n]{2,80}?)(?=\s*(?:基金代码|Fund\s*Code|协会基金|AMAC\b|管理人|业务类型|Transaction|$|\n\n))/,
+        /\s*(?:Fund\s*Name\s+)?([^\n]{2,80}?)(?=\s*(?:基金代码|Fund\s*Code|协会基金|AMAC\b|销售商|管理人|业务类型|Transaction|$|\n\n))/,
         120,
       ),
     ) ||
@@ -519,9 +558,9 @@ export function extractConfirmFieldsFromText(
       AMOUNT_VALUE,
     ) ||
       firstMatch(t, [
-        /确认金额(?:\s*\([^)]*\))?[：:\s]*([0-9,]+\.\d{2})/,
-        /确认净额(?:\s*\([^)]*\))?[：:\s]*([0-9,]+\.\d{2})/,
-        /Confirmed\s*(?:Amount|Net\s*Amount)[：:\s]*([0-9,]+\.\d{2})/,
+        /确认金额(?:\s*\([^)]*\))?[：:\s]*([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2})?|[0-9,]+\.\d{2})/,
+        /确认净额(?:\s*\([^)]*\))?[：:\s]*([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2})?|[0-9,]+\.\d{2})/,
+        /Confirmed\s*(?:Amount|Net\s*Amount)[：:\s]*([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2})?|[0-9,]+\.\d{2})/,
       ]),
   )
   // Reject fee-sized false positives from jumbled TA value dumps.
@@ -548,9 +587,12 @@ export function extractConfirmFieldsFromText(
 
   // 中信/众量 CID-font PDFs often dump values after labels; fill any remaining gaps.
   const scattered = extractScatteredTaFields(t)
-  const mergedFundName = (fundName && !/^(Typeof|FundName|基金)/i.test(fundName.replace(/\s+/g, "")))
+  let mergedFundName = !looksLikeJunkFundName(fundName)
     ? fundName
     : scattered.fundName
+  if (looksLikeJunkFundName(mergedFundName)) {
+    mergedFundName = fundNameFromFilename(filename)
+  }
   const mergedFundCode = fundCode || scattered.fundCode
   const mergedInvestor =
     (investorName && investorName.length >= 6 && !/^(基金账|Investor)/i.test(investorName))
@@ -563,9 +605,14 @@ export function extractConfirmFieldsFromText(
   tradeFee = tradeFee ?? scattered.tradeFee
   const mergedApply = applyDate || scattered.applyDate
   const mergedConfirm = confirmDate || scattered.confirmDate
+  confirmedAmount = reconcileAmountFromSharesNav(confirmedAmount, confirmedShares, unitNav)
 
   return {
-    fundName: mergedFundName?.replace(/\s+/g, "").replace(/^FundName/i, "") || null,
+    fundName:
+      mergedFundName
+        ?.replace(/\s+/g, "")
+        .replace(/^FundName/i, "")
+        .replace(/(销售商|管理人名称|确认结果|证件类型).*$/, "") || null,
     fundCode: mergedFundCode ?? null,
     investorName: mergedInvestor?.replace(/\s+/g, "") || null,
     applyDate: mergedApply,

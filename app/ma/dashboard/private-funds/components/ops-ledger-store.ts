@@ -1,4 +1,5 @@
 import { authService } from "@/lib/auth"
+import { formatConfirmedUnitNav } from "@/lib/format-confirmed-unit-nav"
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import {
   formatInstructionAmount,
@@ -254,16 +255,6 @@ function formatLedgerNumber(value: string | null | undefined): string | null {
   const trimmed = String(value).trim()
   if (!trimmed) return null
   return formatInstructionAmount(trimmed)
-}
-
-/** 确认单位净值 always 4 decimal places: 1.021265 → 1.0213. */
-export function formatConfirmedUnitNav(value: string | number | null | undefined): string | null {
-  if (value == null) return null
-  const raw = String(value).trim()
-  if (!raw) return null
-  const n = Number(raw.replace(/,/g, ""))
-  if (!Number.isFinite(n)) return raw
-  return n.toFixed(4)
 }
 
 export function isInstructionConfirmed(progress: string | null | undefined): boolean {

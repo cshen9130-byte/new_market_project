@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
+import { formatConfirmedUnitNav } from "@/lib/format-confirmed-unit-nav"
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useToast } from "@/hooks/use-toast"
@@ -74,7 +75,6 @@ import {
 import {
   backfillLedgerFromConfirmedInstructions,
   ensureLedgerRecordsHydrated,
-  formatConfirmedUnitNav,
   isInstructionConfirmed,
   removeLedgerByInstructionId,
   upsertLedgerFromConfirmedInstruction,

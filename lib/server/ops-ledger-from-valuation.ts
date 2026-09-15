@@ -26,6 +26,10 @@ import {
   beianFamilyKey,
   sqlBeianFamilyKey,
 } from "@/lib/server/share-class-product"
+import {
+  sqlFundNameBase,
+  sqlStripValuationSubjectPathPrefix,
+} from "@/lib/server/fund-name-match"
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 
 export const AUTO_LEDGER_SOURCE = "估值表"
@@ -202,6 +206,20 @@ function resolveNav(price: unknown, qty: number, mv: number | null): number | nu
   return null
 }
 
+const FOF_INVESTOR_TAGS = ["稳健增长", "基石", "锡泰", "守安"] as const
+
+function fofInvestorTag(text: string): (typeof FOF_INVESTOR_TAGS)[number] | null {
+  const s = text.replace(/\s+/g, "")
+  return FOF_INVESTOR_TAGS.find((t) => s.includes(t)) ?? null
+}
+
+function confirmInvestorAligned(delta: ValuationLedgerDelta, row: ConfirmOverlayInput): boolean {
+  const want = fofInvestorTag(delta.parentName || "")
+  const got = fofInvestorTag(`${row.investorName || ""}${row.attachmentFilename || ""}`)
+  if (want && got) return want === got
+  return true
+}
+
 export function matchConfirmToDelta(
   delta: ValuationLedgerDelta,
   confirms: ConfirmOverlayInput[],
@@ -217,6 +235,7 @@ export function matchConfirmToDelta(
     const hasShares = row.confirmedShares != null && Math.abs(row.confirmedShares) > 0
     const hasAmount = row.confirmedAmount != null && Math.abs(row.confirmedAmount) > 0
     if (!hasShares && !hasAmount) continue
+    if (!confirmInvestorAligned(delta, row)) continue
     const codeFamily = beianFamilyKey(row.fundCode)
     const codeOk =
       (codeFamily && undFamily && codeFamily === undFamily)
@@ -277,7 +296,17 @@ export function buildValuationLedgerRow(
   const sign = delta.deltaQty < 0 ? -1 : 1
   const absDelta = Math.abs(delta.deltaQty)
   const nav = confirm?.unitNav ?? delta.prevNav ?? delta.nav
-  const amount = confirm?.confirmedAmount ?? resolveValuationLedgerAmount(delta)
+  let amount = confirm?.confirmedAmount ?? null
+  if (
+    amount != null
+    && confirm?.confirmedShares != null
+    && Math.abs(amount - confirm.confirmedShares) < 0.05
+    && nav != null
+    && nav > 0
+  ) {
+    amount = preferIntegerAmount([confirm.confirmedShares * nav, amount])
+  }
+  if (amount == null) amount = resolveValuationLedgerAmount(delta)
   const txType = normalizeLedgerBusinessType(confirm?.businessType, sign)
   const source = confirm ? AUTO_LEDGER_CONFIRM_SOURCE : AUTO_LEDGER_SOURCE
   const remarks: string[] = []
@@ -340,13 +369,40 @@ type SeriesRow = {
   cost: string | null
 }
 
-function pickHeld(symbol: string, held: HeldProduct[]): HeldProduct | null {
+function fundNameBase(name: string | null | undefined): string {
+  const stripped = stripValuationSubjectPathPrefix(name || "") || String(name || "")
+  return stripped
+    .replace(/[ABC]类$/u, "")
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .replace(/\s+/g, "")
+    .trim()
+}
+
+function heldMatchRank(h: HeldProduct, name: string): number {
+  let score = 0
+  if (/[ABC]$/u.test(h.beian_hao)) score += 4
+  if (!h.product_name.includes("场外") && !/[._]/.test(h.product_name)) score += 2
+  if (name && fundNameBase(h.product_name) === name) score += 1
+  return score
+}
+
+function pickHeld(symbol: string, undName: string | null | undefined, held: HeldProduct[]): HeldProduct | null {
   const upper = symbol.toUpperCase()
   const exact = held.find((h) => h.beian_hao === upper)
   if (exact) return exact
   const family = beianFamilyKey(symbol)
-  if (!family) return null
-  return held.find((h) => h.family === family) ?? null
+  const name = fundNameBase(undName)
+  const best = (rows: HeldProduct[]) => {
+    if (rows.length === 0) return null
+    if (rows.length === 1) return rows[0]
+    return [...rows].sort((a, b) => heldMatchRank(b, name) - heldMatchRank(a, name))[0]
+  }
+  if (family) {
+    const byFamily = best(held.filter((h) => h.family === family))
+    if (byFamily) return byFamily
+  }
+  if (!name) return null
+  return best(held.filter((h) => fundNameBase(h.product_name) === name))
 }
 
 function mapParent(
@@ -424,13 +480,21 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
        SUM(h.cost)::text AS cost
      FROM ops_email_valuation_holdings h
      INNER JOIN ops_email_valuation_records r ON r.id = h.valuation_record_id
-     INNER JOIN (
-       SELECT DISTINCT ${sqlBeianFamilyKey("beian_hao")} AS family
-         FROM ops_fof_overview_list_cache
-        WHERE COALESCE(market_value, 0) > 0
-          AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
-     ) held ON ${sqlBeianFamilyKey("h.symbol")} = held.family
      WHERE ${HOLDING_FILTER_SQL}
+       AND EXISTS (
+         SELECT 1
+           FROM ops_fof_overview_list_cache c
+          WHERE COALESCE(c.market_value, 0) > 0
+            AND NULLIF(BTRIM(c.beian_hao), '') IS NOT NULL
+            AND (
+              ${sqlBeianFamilyKey("h.symbol")} = ${sqlBeianFamilyKey("c.beian_hao")}
+              OR (
+                ${sqlFundNameBase("c.product_name")} IS NOT NULL
+                AND ${sqlFundNameBase(sqlStripValuationSubjectPathPrefix("h.subject_name"))}
+                  = ${sqlFundNameBase("c.product_name")}
+              )
+            )
+       )
      GROUP BY r.product_code, r.fund_name, UPPER(BTRIM(h.symbol)), r.valuation_date
      ORDER BY 1, 3, 5`,
   )
@@ -490,7 +554,7 @@ export async function generateFofUnderlyingLedgerFromValuation(): Promise<Genera
   }>()
 
   for (const row of series) {
-    const und = pickHeld(row.und_code, held)
+    const und = pickHeld(row.und_code, row.und_name, held)
     if (!und) continue
     const rawParent = String(row.parent_code || "").trim().toUpperCase()
     const rawParentName = String(row.parent_name || "").trim()

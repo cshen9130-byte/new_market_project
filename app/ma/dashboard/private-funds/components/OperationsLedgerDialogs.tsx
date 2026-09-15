@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react"
 import { ChevronDown, Inbox, Search } from "lucide-react"
 import { authService } from "@/lib/auth"
 import { DateInput } from "@/components/ui/date-input"
+import { formatConfirmedUnitNav } from "@/lib/format-confirmed-unit-nav"
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
-import { addLedgerRecord, formatConfirmedUnitNav, generateLedgerFromValuation, refreshLedgerRecordsFromServer, type OpsLedgerRow } from "./ops-ledger-store"
+import { addLedgerRecord, generateLedgerFromValuation, refreshLedgerRecordsFromServer, type OpsLedgerRow } from "./ops-ledger-store"
 
 interface FundOption {
   register_number: string

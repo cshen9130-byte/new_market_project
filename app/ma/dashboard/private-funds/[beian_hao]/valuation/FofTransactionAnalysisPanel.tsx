@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
 import { ChevronDown, ChevronRight, Download, Inbox } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
+import { formatConfirmedUnitNav } from "@/lib/format-confirmed-unit-nav"
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { LedgerAttachmentLink, ledgerConfirmAttachment } from "../../components/LedgerAttachmentLink"
 import {
@@ -13,7 +14,6 @@ import {
   ledgerReviewStatus,
   ledgerReviewTitle,
   listLedgerRecords,
-  formatConfirmedUnitNav,
   subscribeLedgerRecords,
   type OpsLedgerRow,
 } from "../../components/ops-ledger-store"
@@ -303,8 +303,8 @@ export function FofTransactionAnalysisPanel({
                   <td className="border-b px-3 py-2">
                     <TxTypeBadge type={row.transaction_type} />
                   </td>
-                  <td className="border-b px-3 py-2 tabular-nums">{formatCell(row.apply_date)}</td>
-                  <td className="border-b px-3 py-2 tabular-nums">{formatCell(row.confirm_date)}</td>
+                  <td className="border-b px-3 py-2 tabular-nums whitespace-nowrap">{formatCell(row.apply_date)}</td>
+                  <td className="border-b px-3 py-2 tabular-nums whitespace-nowrap">{formatCell(row.confirm_date)}</td>
                   <td className="border-b px-3 py-2 text-right tabular-nums">
                     {formatCell(row.confirmed_amount)}
                   </td>

@@ -1,6 +1,8 @@
 /**
- * FOF 基金持仓收益归因：用估值表历史份额 × 净值变动，得到区间投资收益（元）
- * 及对组合收益 / 净值的贡献。不含股票、期货等非基金资产。
+ * FOF 基金持仓收益归因：区间投资收益 = Δ市值 − 申赎净流入。
+ * 申赎净流入优先用运维「申赎台账」确认净额（与确认单/估值表生成规则一致）；
+ * 台账无记录时退回 Δ成本（与台账在无确认单时的算法相同）。
+ * 不含股票、期货等非基金资产。
  */
 
 import { query } from "@/lib/db"
@@ -18,12 +20,16 @@ import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 import { ensureEmailValuationHoldingsTables } from "@/lib/server/email-valuation-holdings-pg"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
+import { listServerOpsLedgerRecords, type OpsLedgerRow } from "@/lib/server/ops-ledger-records"
+import { beianFamilyKey } from "@/lib/server/share-class-product"
 import {
   applyValuationHoldingDisplayName,
   isValuationNonProductHoldingName,
 } from "@/lib/valuation-holding-display-name"
 
 const MAX_DAILY_RETURN = 0.5
+/** Same floor as 申赎台账 generation (`MIN_ABS_AMOUNT`). */
+const MIN_ABS_CASHFLOW = 100
 
 export type FofAttributionRow = {
   fundName: string
@@ -37,6 +43,8 @@ export type FofAttributionRow = {
   pnl: number
   returnContribution: number
   navContribution: number
+  cashFlow: number
+  cashFlowSource: "ledger" | "cost" | "none"
 }
 
 export type FofAttributionResult = {
@@ -80,6 +88,7 @@ type HoldingSqlRow = {
 
 type Position = {
   key: string
+  matchKeys: string[]
   fundName: string
   valuationCode: string | null
   qty: number
@@ -92,11 +101,14 @@ type FundAcc = {
   fundName: string
   valuationCode: string | null
   pnl: number
+  cashFlow: number
+  ledgerHits: number
+  costHits: number
 }
 
 function parseNum(value: string | number | null | undefined): number {
   if (value == null || value === "") return 0
-  const n = typeof value === "number" ? value : Number(value)
+  const n = typeof value === "number" ? value : Number(String(value).replace(/,/g, "").trim())
   return Number.isFinite(n) ? n : 0
 }
 
@@ -131,6 +143,10 @@ function isDirectEquityStock(row: HoldingSqlRow): boolean {
   return false
 }
 
+function stripFundName(name: string): string {
+  return name.replace(/私募证券投资基金/g, "").replace(/私募基金/g, "").replace(/\s+/g, "").trim()
+}
+
 function holdingIdentity(row: HoldingSqlRow): { key: string; fundName: string; valuationCode: string | null } {
   const name = String(row.subject_name ?? row.symbol ?? "").trim()
   const valuationCode =
@@ -147,6 +163,28 @@ function holdingIdentity(row: HoldingSqlRow): { key: string; fundName: string; v
   return { key: `name:${fundName}`, fundName, valuationCode: null }
 }
 
+function positionMatchKeys(ident: { fundName: string; valuationCode: string | null }): string[] {
+  const keys: string[] = []
+  const seen = new Set<string>()
+  const add = (key: string) => {
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    keys.push(key)
+  }
+  if (ident.valuationCode) {
+    const code = ident.valuationCode.trim().toUpperCase()
+    add(`code:${code}`)
+    const family = beianFamilyKey(code)
+    if (family) add(`code:${family}`)
+  }
+  if (ident.fundName) {
+    add(`name:${ident.fundName}`)
+    const stripped = stripFundName(ident.fundName)
+    if (stripped) add(`name:${stripped}`)
+  }
+  return keys
+}
+
 function toPosition(row: HoldingSqlRow): Position | null {
   if (isDirectEquityStock(row)) return null
   if (isValuationNonProductHoldingName(String(row.subject_name ?? ""))) return null
@@ -158,6 +196,7 @@ function toPosition(row: HoldingSqlRow): Position | null {
   const price = plausiblePrice(parseNum(row.price), qty, mv)
   return {
     key: ident.key,
+    matchKeys: positionMatchKeys(ident),
     fundName: ident.fundName,
     valuationCode: ident.valuationCode,
     qty,
@@ -167,7 +206,8 @@ function toPosition(row: HoldingSqlRow): Position | null {
   }
 }
 
-function dayPnl(prev: Position | undefined, curr: Position | undefined): number {
+/** Mark-to-market P&L when there is no 申赎. Prefer 份额 × Δ净值. */
+function markToMarketPnl(prev: Position | undefined, curr: Position | undefined): number {
   const qty = prev?.qty ?? 0
   const p0 = prev?.price ?? null
   const p1 = curr?.price ?? null
@@ -175,11 +215,122 @@ function dayPnl(prev: Position | undefined, curr: Position | undefined): number 
     const ret = (p1 - p0) / p0
     if (Math.abs(ret) <= MAX_DAILY_RETURN) return qty * (p1 - p0)
   }
-  const mv0 = prev?.mv ?? 0
-  const mv1 = curr?.mv ?? 0
-  const cost0 = prev?.cost ?? 0
-  const cost1 = curr?.cost ?? 0
-  return mv1 - mv0 - (cost1 - cost0)
+  return (curr?.mv ?? 0) - (prev?.mv ?? 0)
+}
+
+function isParentFofLedgerRow(
+  row: OpsLedgerRow,
+  candidateCodes: string[],
+  productName: string | null,
+): boolean {
+  const codeSet = new Set(candidateCodes.map((c) => c.trim().toUpperCase()).filter(Boolean))
+  const famSet = new Set(
+    [...codeSet].map((c) => beianFamilyKey(c)).filter((v): v is string => Boolean(v)),
+  )
+  const fofCode = (row.fof_register_number || "").trim().toUpperCase()
+  if (fofCode) {
+    if (codeSet.has(fofCode)) return true
+    const fam = beianFamilyKey(fofCode)
+    if (fam && famSet.has(fam)) return true
+  }
+  if (!productName) return false
+  const pn = productName.replace(/\s+/g, "")
+  const fn = row.fof_fund_name.replace(/\s+/g, "")
+  if (fn && pn && (fn.includes(pn) || pn.includes(fn))) return true
+  const a = stripFundName(fn)
+  const b = stripFundName(pn)
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)))
+}
+
+function ledgerRowMatchKeys(row: OpsLedgerRow): string[] {
+  const display = applyValuationHoldingDisplayName(
+    row.underlying_fund_name,
+    row.underlying_beian_hao,
+  ) || row.underlying_fund_name
+  return positionMatchKeys({
+    fundName: display,
+    valuationCode: row.underlying_beian_hao,
+  })
+}
+
+function signedLedgerAmount(row: OpsLedgerRow): number {
+  const raw = parseNum(row.confirmed_amount)
+  if (!Number.isFinite(raw) || raw === 0) return 0
+  const abs = Math.abs(raw)
+  const t = String(row.transaction_type ?? "").replace(/\s+/g, "")
+  if (/赎回|转换出|强制调减|现金分红/.test(t) && !/申购|认购|转换入/.test(t)) return -abs
+  if (/申购|认购|转换入|强制调增|红利/.test(t)) return abs
+  return raw
+}
+
+function indexLedgerByMatchKey(rows: OpsLedgerRow[]): Map<string, OpsLedgerRow[]> {
+  const map = new Map<string, OpsLedgerRow[]>()
+  for (const row of rows) {
+    for (const key of ledgerRowMatchKeys(row)) {
+      const list = map.get(key)
+      if (list) {
+        if (!list.some((existing) => existing.id === row.id)) list.push(row)
+      } else {
+        map.set(key, [row])
+      }
+    }
+  }
+  return map
+}
+
+function ledgerRowsForPosition(
+  index: Map<string, OpsLedgerRow[]>,
+  pos: Position | undefined,
+  other: Position | undefined,
+): OpsLedgerRow[] {
+  const sample = pos ?? other
+  if (!sample) return []
+  const seen = new Set<string>()
+  const out: OpsLedgerRow[] = []
+  const collect = (keys: string[]) => {
+    for (const key of keys) {
+      for (const row of index.get(key) ?? []) {
+        if (seen.has(row.id)) continue
+        seen.add(row.id)
+        out.push(row)
+      }
+    }
+  }
+  const exactCode = sample.valuationCode?.trim().toUpperCase() || ""
+  const exactKeys = exactCode ? [`code:${exactCode}`] : []
+  const familyKeys = sample.matchKeys.filter((k) => k.startsWith("code:") && k !== `code:${exactCode}`)
+  const nameKeys = sample.matchKeys.filter((k) => k.startsWith("name:"))
+  collect(exactKeys)
+  if (out.length > 0) return out
+  collect(familyKeys)
+  if (out.length > 0) return out
+  collect(nameKeys)
+  return out
+}
+
+function ledgerCashFlowInStep(
+  rows: OpsLedgerRow[],
+  prevDate: string,
+  currDate: string,
+  usedIds: Set<string>,
+): number {
+  let sum = 0
+  for (const row of rows) {
+    const d = row.confirm_date.slice(0, 10)
+    if (!d || d <= prevDate || d > currDate) continue
+    if (usedIds.has(row.id)) continue
+    const signed = signedLedgerAmount(row)
+    if (!Number.isFinite(signed) || signed === 0) continue
+    usedIds.add(row.id)
+    sum += signed
+  }
+  return sum
+}
+
+function cashFlowSourceOf(acc: FundAcc): "ledger" | "cost" | "none" {
+  if (acc.ledgerHits > 0) return "ledger"
+  if (acc.costHits > 0) return "cost"
+  return "none"
 }
 
 async function resolveCandidateCodes(rawBeianHao: string): Promise<{
@@ -286,7 +437,7 @@ export async function getFofReturnAttribution(
   await ensureEmailValuationTable()
   await ensureEmailValuationHoldingsTables()
 
-  const [inRange, earliestRows] = await Promise.all([
+  const [inRange, earliestRows, allLedger] = await Promise.all([
     query<RecordRow>(
       `SELECT DISTINCT ON (valuation_date)
          id,
@@ -307,8 +458,11 @@ export async function getFofReturnAttribution(
        WHERE product_code = ANY($1::text[])`,
       [candidateCodes],
     ),
+    listServerOpsLedgerRecords(),
   ])
   const earliestValuationDate = earliestRows[0]?.d?.slice(0, 10) ?? null
+  const parentLedger = allLedger.filter((row) => isParentFofLedgerRow(row, candidateCodes, product_name))
+  const ledgerIndex = indexLedgerByMatchKey(parentLedger)
 
   const firstInRange = inRange[0]
   const needPrior = !firstInRange || firstInRange.valuation_date.slice(0, 10) > from
@@ -431,23 +585,55 @@ export async function getFofReturnAttribution(
 
   const end = window[window.length - 1]
   const acc = new Map<string, FundAcc>()
+  const usedLedgerIds = new Set<string>()
 
   for (let i = 1; i < window.length; i++) {
     const prev = window[i - 1]
     const curr = window[i]
-    const keys = new Set([...prev.positions.keys(), ...curr.positions.keys()])
+    const keys = [...new Set([...prev.positions.keys(), ...curr.positions.keys()])]
+    keys.sort((a, b) => {
+      const aCoded = (prev.positions.get(a) ?? curr.positions.get(a))?.valuationCode ? 0 : 1
+      const bCoded = (prev.positions.get(b) ?? curr.positions.get(b))?.valuationCode ? 0 : 1
+      return aCoded - bCoded
+    })
     for (const key of keys) {
       const prevPos = prev.positions.get(key)
       const currPos = curr.positions.get(key)
-      const pnl = dayPnl(prevPos, currPos)
+      const deltaMv = (currPos?.mv ?? 0) - (prevPos?.mv ?? 0)
+      const deltaCost = (currPos?.cost ?? 0) - (prevPos?.cost ?? 0)
+      const ledgerRows = ledgerRowsForPosition(ledgerIndex, currPos, prevPos)
+      const usedBefore = usedLedgerIds.size
+      const ledgerCf = ledgerCashFlowInStep(ledgerRows, prev.date, curr.date, usedLedgerIds)
+      const usedLedger = usedLedgerIds.size > usedBefore
+
+      let pnl: number
+      let cashFlow = 0
+      let usedCost = false
+      if (usedLedger) {
+        cashFlow = ledgerCf
+        pnl = deltaMv - cashFlow
+      } else if (Math.abs(deltaCost) >= MIN_ABS_CASHFLOW) {
+        cashFlow = deltaCost
+        pnl = deltaMv - cashFlow
+        usedCost = true
+      } else {
+        pnl = markToMarketPnl(prevPos, currPos)
+      }
       if (!Number.isFinite(pnl)) continue
+
       const sample = currPos ?? prevPos
       const cur = acc.get(key) ?? {
         fundName: sample?.fundName ?? key,
         valuationCode: sample?.valuationCode ?? null,
         pnl: 0,
+        cashFlow: 0,
+        ledgerHits: 0,
+        costHits: 0,
       }
       cur.pnl += pnl
+      cur.cashFlow += cashFlow
+      if (usedLedger) cur.ledgerHits += 1
+      if (usedCost) cur.costHits += 1
       if (sample?.fundName) cur.fundName = sample.fundName
       if (sample?.valuationCode) cur.valuationCode = sample.valuationCode
       acc.set(key, cur)
@@ -485,6 +671,8 @@ export async function getFofReturnAttribution(
         fromDate: start.date,
         toDate: end.date,
         pnl,
+        cashFlow: item.cashFlow,
+        cashFlowSource: cashFlowSourceOf(item),
         returnContribution: returnBase > 0 ? pnl / returnBase : 0,
         navContribution: navBase > 0 ? pnl / navBase : 0,
       }

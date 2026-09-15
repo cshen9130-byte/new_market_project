@@ -16,6 +16,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
+import { formatConfirmedUnitNav } from "@/lib/format-confirmed-unit-nav"
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { useToast } from "@/hooks/use-toast"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
@@ -29,7 +30,6 @@ import {
   backfillLedgerFromConfirmedInstructions,
   confirmLedgerRecords,
   ensureLedgerRecordsHydrated,
-  formatConfirmedUnitNav,
   getLedgerHydrateStatus,
   getLedgerRecordsHydrateError,
   getLedgerRecordsServerSnapshot,
@@ -447,7 +447,7 @@ export function OperationsLedgerView() {
     const label = LEDGER_FIELD_LABELS[key]
     if (key === "apply_date" || key === "confirm_date") {
       return (
-        <th key={key} className={thSort} onClick={() => handleSort(key)}>
+        <th key={key} className={`${thSort} min-w-[7.25rem]`} onClick={() => handleSort(key)}>
           {label}<SortIcon col={key} />
         </th>
       )
@@ -498,14 +498,14 @@ export function OperationsLedgerView() {
       )
     }
     if (key === "confirmed_unit_nav") {
-      const nav = formatConfirmedUnitNav(typeof value === "string" || typeof value === "number" ? value : null)
+      const nav = formatConfirmedUnitNav(value)
       return <td key={key} className={`${cell} text-right tabular-nums`}>{nav ?? "—"}</td>
     }
     if (NUMERIC_LEDGER_FIELDS.has(key)) {
       return <td key={key} className={`${cell} text-right tabular-nums`}>{display}</td>
     }
     if (key === "apply_date" || key === "confirm_date") {
-      return <td key={key} className={`${cell} tabular-nums`}>{display}</td>
+      return <td key={key} className={`${cell} tabular-nums whitespace-nowrap`}>{display}</td>
     }
     if (key === "review_status") {
       return (
