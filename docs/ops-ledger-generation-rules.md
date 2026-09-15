@@ -149,6 +149,9 @@
 4. 无确认单时：申请日=T、确认日=T+1、净值=T日行情、净额=Δ成本。
 5. 两个候选确认净额时优先**整数金额**（管理人按整数申赎）；带零碎小数的那个多半是用错了确认日行情。
 6. 已确认 / 手工修正 / 指令行不得被自动覆盖。
+7. 夜间 ETL 在 `email_nav_parse` + `investment_pool_metrics` 之后自动跑
+   `ops_ledger_from_valuation`（`scripts/ma/ops_ledger_from_valuation_etl.ts`），
+   把新的估值表份额变动和确认单写入 `ops_ledger_records`。页面上的「从估值表生成」仍可手工补跑。
 
 样例文件在 `shenshu_example/`：
 

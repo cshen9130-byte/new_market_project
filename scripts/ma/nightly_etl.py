@@ -15,6 +15,7 @@ Usage
   python scripts/ma/nightly_etl.py --step amac_extra
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
     python scripts/ma/nightly_etl.py --step private_fund_list_nav_sync
+  python scripts/ma/nightly_etl.py --step ops_ledger_from_valuation
   python scripts/ma/nightly_etl.py --step dd_materials_links
   python scripts/ma/nightly_etl.py --group macro   # macro-market charts only
   python scripts/ma/nightly_etl.py --group stock   # stock-market charts only (A-share crowding)
@@ -4742,6 +4743,36 @@ def step_email_nav_parse(days: int | None = None) -> int:
     return nav_saved + valuation_saved
 
 
+def step_ops_ledger_from_valuation() -> int:
+    """Rebuild 运维台账 / 产品跟踪 from FOF 估值表 share changes + 确认单 overlay.
+
+    Runs after investment_pool_metrics so ops_fof_overview_list_cache is fresh.
+    Confirmed / manual / instruction rows are never overwritten.
+    """
+    log.info("ops_ledger_from_valuation: generating 申赎台账 from 估值表 …")
+    result = run_node_script("ops_ledger_from_valuation_etl.ts", timeout=900)
+    if not result:
+        raise RuntimeError("ops_ledger_from_valuation: no result from ops_ledger_from_valuation_etl.ts")
+    if not result.get("ok"):
+        raise RuntimeError(
+            f"ops_ledger_from_valuation: failed — {result.get('error', 'unknown')}"
+        )
+    inserted = int(result.get("inserted") or 0)
+    updated = int(result.get("updated") or 0)
+    log.info(
+        "ops_ledger_from_valuation: products=%s candidates=%s inserted=%d updated=%d "
+        "confirmMatched=%s skippedProtected=%s skippedDeleted=%s",
+        result.get("products"),
+        result.get("candidates"),
+        inserted,
+        updated,
+        result.get("confirmMatched"),
+        result.get("skippedProtected"),
+        result.get("skippedDeleted"),
+    )
+    return inserted + updated
+
+
 def step_dd_materials_links() -> int:
     """Refresh 尽调表格 ↔ 「内部尽调资料」 links. Auto-matching is currently off."""
     log.info("dd_materials_links: syncing due diligence material folder links …")
@@ -5252,6 +5283,7 @@ ORDERED_STEPS = [
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "private_fund_list_nav_sync",    # advance 私募基金 list NAV from product-page email/team
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
+    "ops_ledger_from_valuation",     # 运维台账 / 产品跟踪 from FOF 估值表 + 确认单
     "dd_materials_links",            # 尽调表格 links (auto-matching currently off)
     "contract_extract",              # queued fund-contract LLM extract → 产品要素 + 合同附件
     "dd_table_daily_backup",         # 尽调表格 daily snapshot (rolling keep last 3)
@@ -5401,6 +5433,7 @@ def main():
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "private_fund_list_nav_sync":      lambda: step_private_fund_list_nav_sync(),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
+        "ops_ledger_from_valuation":       lambda: step_ops_ledger_from_valuation(),
         "dd_materials_links":              lambda: step_dd_materials_links(),
         "contract_extract":                lambda: step_contract_extract(),
         "dd_table_daily_backup":           lambda: step_dd_table_daily_backup(),

@@ -376,4 +376,21 @@ assert.ok(azhSc.A?.fee_pay?.includes("30%"), azhSc.A?.fee_pay)
 assert.ok(azhSc.B?.fee_pay?.includes("20%"), azhSc.B?.fee_pay)
 assert.ok(azhSc.C?.fee_pay?.includes("不收取"), azhSc.C?.fee_pay)
 
+const zhongliang19 = `
+认购费率 0% 0% 0%
+申购费率 0% 0% 0%
+赎回费率（赎回费（含短期赎回费）全部归入整体基金资产且不得减免。）
+本基金A类份额：持有期低于90天（不含）的，赎回费率为1%，持有期在90天及以上的，赎回费率为0%。
+本基金B类份额：持有期
+低于90天（不含）的，赎回
+费率为1%，持有期在90天及
+以上的，赎回费率为0%。
+本基金C类份额：持有期低于90天（不含）的，赎回费率为1%，持有期在90天及以上的，赎回费率为0%。
+年管理费率 0% 1% 1%
+`
+assert.equal(extractFeeRedeemFromText(zhongliang19), "持有不足90天赎回费1%，满90天0%。")
+assert.equal(extractFeeRedeemFromText("本基金的赎回费率为0%。不收取其他费用。"), "0%")
+const zhongliangFilled = fillMissingElementsFromKeywords(zhongliang19, { fee_redeem: "0%" })
+assert.equal(zhongliangFilled.fee_redeem, "持有不足90天赎回费1%，满90天0%。")
+
 console.log("fund-contract-element-keywords: ok")

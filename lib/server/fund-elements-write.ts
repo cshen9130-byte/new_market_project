@@ -28,6 +28,7 @@ import {
   isWeakRiskLevel,
   isWeakShortFee,
   isWeakTemporaryOpen,
+  shouldUpgradeFeeRedeem,
   type ShareClassFeeOverrides,
 } from "@/lib/server/fund-contract-element-keywords"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
@@ -522,7 +523,13 @@ export function buildFillEmptyWriteBody(
   for (const key of WRITE_KEYS) {
     if (key === "register_number" || skip.has(key)) continue
     const next = textField(extracted, key)
-    if (!currentNeedsFill(key, current)) continue
+    const upgradeRedeem =
+      key === "fee_redeem"
+      && shouldUpgradeFeeRedeem(
+        typeof current?.fee_redeem === "string" ? current.fee_redeem : null,
+        next,
+      )
+    if (!currentNeedsFill(key, current) && !upgradeRedeem) continue
     if (next) {
       body[key] = next
       continue

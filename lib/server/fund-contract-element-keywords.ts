@@ -43,6 +43,11 @@ function flatten(text: string): string {
   return collapseWs(text.replace(/[\r\n]+/g, " ")).replace(/％/g, "%")
 }
 
+/** Table cells wrap mid-phrase: "赎回\\n费率" and "持有期\\n低于" become spaced CJK after flatten. */
+function flattenCjk(text: string): string {
+  return flatten(text).replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff\d（(])/g, "$1")
+}
+
 function nearby(text: string, index: number, before: number, after: number): string {
   return text.slice(Math.max(0, index - before), Math.min(text.length, index + after))
 }
@@ -845,28 +850,60 @@ export function extractFeeAdminFromText(text: string): string | null {
   return compactFeeLine(label, m.raw, scope)
 }
 
+const HOLD_LT_RE = /持有(?:时间|期限|期)?\s*(?:低于|小于|不足|少于|不满)/
+const REDEEM_RATE_RE = /赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%/
+
 export function extractFeeRedeemFromText(text: string): string | null {
-  const s = flatten(text)
+  const s = flattenCjk(text)
   const band = s.match(
-    /持有时间\s*(?:小于|不足|少于)\s*(\d+)\s*个?(?:自然日|天)[^。]{0,40}赎回费率[为是]?\s*([\d.]+)\s*%[^。]{0,160}赎回费率[为是]?\s*([\d.]+)\s*%/,
+    /持有(?:时间|期限|期)?\s*(?:低于|小于|不足|少于|不满)\s*(\d+)\s*个?(?:自然日|天)[^。]{0,48}赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%[^。]{0,160}赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%/,
   ) || s.match(
-    /持有期限\s*(?:小于|不足|少于)\s*(\d+)\s*个?(?:自然日|天)[^。]{0,40}([\d.]+)\s*%[^。]{0,80}(?:大于|满|不少于)\s*\1[^。]{0,40}([\d.]+)\s*%/,
+    /持有(?:时间|期限|期)?\s*(?:低于|小于|不足|少于|不满)\s*(\d+)\s*个?(?:自然日|天)[^。]{0,48}([\d.]+)\s*%[^。]{0,80}(?:大于|满|不少于|及以上)\s*\1[^。]{0,40}([\d.]+)\s*%/,
   )
   if (band) {
     return `持有不足${band[1]}天赎回费${pct(band[2])}，满${band[1]}天${pct(band[3])}。`
   }
   const classes: string[] = []
-  const classRe = /([ABC])类份额[^。]{0,80}赎回费率[^。]{0,40}?([\d.]+)\s*%/g
+  const classRe = /([ABC])类份额[^。]{0,80}赎回\s*费\s*率[^。]{0,40}?([\d.]+)\s*%/g
   let cm: RegExpExecArray | null
   while ((cm = classRe.exec(s)) !== null && classes.length < 3) {
     classes.push(`${cm[1]}类${pct(cm[2])}`)
   }
   if (classes.length) return `赎回费${classes.join("，")}。`
-  const timed = /持有时间\s*(?:小于|不足|少于)|持有期限\s*(?:小于|不足|少于)/.test(s)
-  if (!timed && /赎回费率为\s*0\s*%|不收取赎回费|赎回费率为零|不设置赎回费/.test(s)) return "0%"
-  const single = s.match(/本基金的?赎回费率[为是]?\s*([\d.]+)\s*%/)
+  const timed = HOLD_LT_RE.test(s) && REDEEM_RATE_RE.test(s)
+  if (!timed && /赎回\s*费\s*率为\s*0\s*%|不收取赎回费|赎回费率为零|不设置赎回费/.test(s)) return "0%"
+  const single = s.match(/本基金的?赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%/)
   if (single && !timed) return pct(single[1])
   return null
+}
+
+function isFlatFeePercent(value: string | null | undefined): boolean {
+  return /^\s*\d+(?:\.\d+)?\s*%\s*$/.test(value ?? "")
+}
+
+function isTimedRedeemFee(value: string | null | undefined): boolean {
+  const s = value ?? ""
+  return /持有/.test(s) && /赎回?费/.test(s)
+}
+
+/** LLM often keeps only the last 0% band; a holding-period schedule should replace that. */
+export function shouldUpgradeFeeRedeem(
+  current: string | null | undefined,
+  next: string | null | undefined,
+): boolean {
+  return isFlatFeePercent(current) && isTimedRedeemFee(next)
+}
+
+function preferFeeRedeem(
+  current: string | null | undefined,
+  next: string | null,
+): string | null | undefined {
+  const compact = next && !isWeakShortFee(next) ? next : null
+  if (isWeakShortFee(current)) return compact
+  if (!compact) return current
+  if (shouldUpgradeFeeRedeem(current, compact)) return compact
+  if ((current ?? "").length > compact.length + 20) return compact
+  return current
 }
 
 export function extractClosedPeriodFromText(text: string): string | null {
@@ -975,7 +1012,7 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
   }
   out.fee_pay = preferClassLabeled(out.fee_pay, summarizeFeePayDesc(source), isWeakFeePay)
   out.add_amount = preferCompact(out.add_amount, extractAddAmountFromText(source), isWeakAddAmount)
-  out.fee_redeem = preferCompact(out.fee_redeem, extractFeeRedeemFromText(source), isWeakShortFee)
+  out.fee_redeem = preferFeeRedeem(out.fee_redeem, extractFeeRedeemFromText(source))
   out.closed_period = preferCompact(out.closed_period, extractClosedPeriodFromText(source), isWeakShortFee)
   if (isWeakShortFee(out.closed_period)) out.closed_period = "不设置"
   out.fee_trust = preferCompact(out.fee_trust, extractFeeTrustFromText(source), isWeakShortFee)
