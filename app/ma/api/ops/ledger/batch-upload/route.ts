@@ -74,6 +74,10 @@ export async function POST(req: Request) {
       instruction_id: null,
       contract_attachment: null,
       confirm_attachment: null,
+      locked: false,
+      review_status: "pending",
+      reviewed_by: null,
+      reviewed_at: null,
     }))
 
     const records = await upsertServerOpsLedgerRecords(toSave)

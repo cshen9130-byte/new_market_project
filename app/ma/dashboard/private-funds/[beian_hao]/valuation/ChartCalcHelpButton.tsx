@@ -19,10 +19,12 @@ export function ChartCalcHelpButton({
   heading,
   blocks,
   className,
+  label,
 }: {
   heading: string
   blocks: ChartCalcHelpBlock[]
   className?: string
+  label?: string
 }) {
   return (
     <Popover>
@@ -30,12 +32,15 @@ export function ChartCalcHelpButton({
         <button
           type="button"
           className={[
-            "inline-flex items-center text-zinc-400 hover:text-zinc-700 transition-colors shrink-0",
+            "inline-flex items-center gap-0.5 transition-colors shrink-0",
+            label
+              ? "text-red-500 hover:text-red-600 hover:underline"
+              : "text-zinc-400 hover:text-zinc-700",
             className ?? "",
           ].join(" ")}
           aria-label={`${heading}计算说明`}
         >
-          <HelpCircle className="h-3.5 w-3.5" />
+          {label ? <span>{label}</span> : <HelpCircle className="h-3.5 w-3.5" />}
         </button>
       </PopoverTrigger>
       <PopoverContent

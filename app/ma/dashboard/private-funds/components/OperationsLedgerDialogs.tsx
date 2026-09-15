@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { CalendarDays, ChevronDown, Inbox, Search } from "lucide-react"
+import { ChevronDown, Inbox, Search } from "lucide-react"
 import { authService } from "@/lib/auth"
-import { addLedgerRecord, refreshLedgerRecordsFromServer } from "./ops-ledger-store"
+import { DateInput } from "@/components/ui/date-input"
+import { addLedgerRecord, generateLedgerFromValuation, refreshLedgerRecordsFromServer, type OpsLedgerRow } from "./ops-ledger-store"
 
 interface FundOption {
   register_number: string
@@ -66,11 +67,14 @@ export function AddSingleLedgerDialog({
   open,
   onClose,
   onSaved,
+  initial,
 }: {
   open: boolean
   onClose: () => void
   onSaved?: () => void
+  initial?: OpsLedgerRow | null
 }) {
+  const isEdit = Boolean(initial?.id)
   const [fofFundInput, setFofFundInput] = useState("")
   const [fofFundSelected, setFofFundSelected] = useState<FundOption | null>(null)
   const [fofFundOptions, setFofFundOptions] = useState<FundOption[]>([])
@@ -89,6 +93,7 @@ export function AddSingleLedgerDialog({
   const [shares, setShares] = useState("")
   const [unitNav, setUnitNav] = useState("")
   const [fee, setFee] = useState("")
+  const [shareBalance, setShareBalance] = useState("")
   const [remark, setRemark] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -98,25 +103,49 @@ export function AddSingleLedgerDialog({
 
   useEffect(() => {
     if (!open) return
-    setFofFundInput("")
-    setFofFundSelected(null)
+    if (initial) {
+      setFofFundInput("")
+      setFofFundSelected({
+        register_number: initial.fof_register_number || initial.fof_fund_name,
+        product_name: initial.fof_fund_name,
+      })
+      setUnderlyingInput("")
+      setUnderlyingSelected({
+        beian_hao: initial.underlying_beian_hao || initial.underlying_fund_name,
+        product_name: initial.underlying_fund_name,
+        short_name: initial.underlying_fund_name,
+      })
+      setTxType(initial.transaction_type || "")
+      setApplyDate(initial.apply_date || "")
+      setConfirmDate(initial.confirm_date || "")
+      setNetAmount(initial.confirmed_amount || "")
+      setShares(initial.confirmed_shares || "")
+      setUnitNav(initial.confirmed_unit_nav || "")
+      setFee(initial.transaction_fee || "")
+      setShareBalance(initial.share_balance || "")
+      setRemark(initial.remark || "")
+    } else {
+      setFofFundInput("")
+      setFofFundSelected(null)
+      setUnderlyingInput("")
+      setUnderlyingSelected(null)
+      setTxType("")
+      setApplyDate("")
+      setConfirmDate("")
+      setNetAmount("")
+      setShares("")
+      setUnitNav("")
+      setFee("")
+      setShareBalance("")
+      setRemark("")
+    }
     setFofFundOptions([])
     setFofFundShowDropdown(false)
-    setUnderlyingInput("")
-    setUnderlyingSelected(null)
     setUnderlyingOptions([])
     setUnderlyingShowDropdown(false)
-    setTxType("")
-    setApplyDate("")
-    setConfirmDate("")
-    setNetAmount("")
-    setShares("")
-    setUnitNav("")
-    setFee("")
-    setRemark("")
     setSaving(false)
     setError(null)
-  }, [open])
+  }, [open, initial])
 
   useEffect(() => {
     if (!open) return
@@ -168,6 +197,7 @@ export function AddSingleLedgerDialog({
     setError(null)
     try {
       await addLedgerRecord({
+        id: initial?.id,
         fof_register_number: fofFundSelected.register_number,
         fof_fund_name: fofFundSelected.product_name,
         underlying_beian_hao: underlyingSelected.beian_hao,
@@ -180,12 +210,19 @@ export function AddSingleLedgerDialog({
         confirmed_shares: shares.trim() || null,
         confirmed_unit_nav: unitNav.trim(),
         transaction_fee: fee.trim() || null,
-        performance_fee: null,
-        share_balance: null,
-        dividend_per_unit: null,
-        source: "手工",
+        performance_fee: initial?.performance_fee ?? null,
+        share_balance: shareBalance.trim() || null,
+        dividend_per_unit: initial?.dividend_per_unit ?? null,
+        source: isEdit ? "手工修正" : "手工",
         remark: remark.trim() || null,
-        instruction_id: null,
+        instruction_id: initial?.instruction_id ?? null,
+        contract_attachment: initial?.contract_attachment ?? null,
+        confirm_attachment: initial?.confirm_attachment ?? null,
+        generation_key: initial?.generation_key ?? null,
+        locked: isEdit || initial?.locked === true,
+        review_status: "pending",
+        reviewed_by: null,
+        reviewed_at: null,
       })
       onSaved?.()
       onClose()
@@ -205,7 +242,7 @@ export function AddSingleLedgerDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b sticky top-0 bg-background z-10">
-          <span className="font-semibold text-base">添加台账</span>
+          <span className="font-semibold text-base">{isEdit ? "编辑台账" : "添加台账"}</span>
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
         </div>
 
@@ -347,28 +384,28 @@ export function AddSingleLedgerDialog({
 
           <div className="flex items-start gap-4">
             <FormLabel>申请日期：</FormLabel>
-            <div className="flex-1 relative">
-              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
-              <input
-                type="date"
+            <div className="flex-1">
+              <DateInput
                 value={applyDate}
-                onChange={(e) => setApplyDate(e.target.value)}
+                onChange={setApplyDate}
                 placeholder="请选择申请日期"
-                className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                className="w-full"
+                inputClassName="h-9 rounded pl-2 pr-8 text-sm"
+                displayClassName="left-2 text-sm"
               />
             </div>
           </div>
 
           <div className="flex items-start gap-4">
             <FormLabel>确认日期：</FormLabel>
-            <div className="flex-1 relative">
-              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
-              <input
-                type="date"
+            <div className="flex-1">
+              <DateInput
                 value={confirmDate}
-                onChange={(e) => setConfirmDate(e.target.value)}
+                onChange={setConfirmDate}
                 placeholder="请选择确认日期"
-                className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                className="w-full"
+                inputClassName="h-9 rounded pl-2 pr-8 text-sm"
+                displayClassName="left-2 text-sm"
               />
             </div>
           </div>
@@ -428,6 +465,20 @@ export function AddSingleLedgerDialog({
                 value={fee}
                 onChange={(e) => setFee(e.target.value)}
                 placeholder="请输入交易费用"
+                className="w-full h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-start gap-4">
+            <FormLabel required={false}>份额余额：</FormLabel>
+            <div className="flex-1">
+              <input
+                type="text"
+                inputMode="decimal"
+                value={shareBalance}
+                onChange={(e) => setShareBalance(e.target.value)}
+                placeholder="请输入份额余额"
                 className="w-full h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
               />
             </div>
@@ -623,6 +674,93 @@ export function BatchUploadLedgerDialog({
             className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? "上传中…" : "上传"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function GenerateFromValuationDialog({
+  open,
+  onClose,
+  onGenerated,
+}: {
+  open: boolean
+  onClose: () => void
+  onGenerated?: (summary: string) => void
+}) {
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setRunning(false)
+    setError(null)
+  }, [open])
+
+  async function handleGenerate() {
+    if (running) return
+    setRunning(true)
+    setError(null)
+    try {
+      const result = await generateLedgerFromValuation()
+      const summary =
+        `已处理 ${result.products} 只当前持仓底层，估算 ${result.candidates} 笔份额变动；` +
+        `新增 ${result.inserted} 条，更新 ${result.updated} 条，匹配确认单 ${result.confirmMatched} 条` +
+        (result.skippedProtected ? `，跳过已修正 ${result.skippedProtected} 条` : "") +
+        (result.skippedDeleted ? `，跳过已删除 ${result.skippedDeleted} 条` : "") +
+        "。"
+      onGenerated?.(summary)
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成失败，请稍后重试")
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={running ? undefined : onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[520px]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b">
+          <span className="font-semibold text-base">从估值表生成申赎台账</span>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={running}
+            className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none disabled:opacity-40"
+          >
+            ×
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-3 text-sm text-zinc-600 dark:text-zinc-300 leading-relaxed">
+          <p>用母基金估值表上各底层的<strong>持仓份额变动</strong>生成预估台账，能匹配到交易确认单时会补上申请日、费用和附件。生成结果保存在服务器，同事在任意电脑登录后都能看到并修改。</p>
+          <p>这是待核对底稿：申请日可能等于估值日，分红再投/业绩报酬也可能被标成申购或赎回。新生成的记录为「待确认」。</p>
+          <p>已确认、已手工修正、指令或批量上传的记录不会被覆盖。删除过的估值表行也不会再生成。</p>
+          {error && <p className="text-sm text-red-500">{error}</p>}
+        </div>
+        <div className="flex justify-end gap-2 px-6 py-4 border-t">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={running}
+            className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-40"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={running}
+            onClick={() => void handleGenerate()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {running ? "生成中，请稍候…" : "开始生成"}
           </button>
         </div>
       </div>

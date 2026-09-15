@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react"
 import {
-  CalendarDays,
+  Check,
   CheckSquare,
   ChevronDown,
   ChevronsUpDown,
@@ -11,20 +11,28 @@ import {
   HelpCircle,
   Inbox,
   Pencil,
+  RefreshCw,
   Settings2,
   Trash2,
 } from "lucide-react"
+import { DateInput } from "@/components/ui/date-input"
+import { useToast } from "@/hooks/use-toast"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
-import { AddSingleLedgerDialog, BatchUploadLedgerDialog } from "./OperationsLedgerDialogs"
+import { AddSingleLedgerDialog, BatchUploadLedgerDialog, GenerateFromValuationDialog } from "./OperationsLedgerDialogs"
 import {
   LEDGER_FIELD_CONFIG_DEFAULT,
   OperationsLedgerFieldConfigDialog,
 } from "./OperationsLedgerFieldConfigDialog"
 import {
   backfillLedgerFromConfirmedInstructions,
+  confirmLedgerRecords,
   ensureLedgerRecordsHydrated,
+  getLedgerHydrateStatus,
+  getLedgerRecordsHydrateError,
   getLedgerRecordsServerSnapshot,
   getLedgerRecordsSnapshot,
+  ledgerReviewStatus,
+  ledgerReviewTitle,
   listLedgerRecords,
   refreshLedgerRecordsFromServer,
   removeLedgerRecord,
@@ -34,6 +42,7 @@ import {
 
 type RunStatus = "running" | "liquidated"
 type LedgerSortKey = "apply_date" | "confirm_date"
+type ReviewFilter = "all" | "pending" | "confirmed"
 
 type LedgerRow = OpsLedgerRow
 
@@ -64,8 +73,26 @@ const LEDGER_FIELD_LABELS: Record<string, string> = {
   performance_fee: "业绩报酬",
   share_balance: "份额余额",
   dividend_per_unit: "每单位分红",
+  review_status: "核对状态",
   source: "来源",
   remark: "备注",
+}
+
+function ReviewStatusBadge({ row }: { row: OpsLedgerRow }) {
+  const confirmed = ledgerReviewStatus(row) === "confirmed"
+  return (
+    <span
+      title={ledgerReviewTitle(row)}
+      className={[
+        "inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
+        confirmed
+          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+          : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+      ].join(" ")}
+    >
+      {confirmed ? "已确认" : "待确认"}
+    </span>
+  )
 }
 
 const NUMERIC_LEDGER_FIELDS = new Set([
@@ -78,17 +105,33 @@ const NUMERIC_LEDGER_FIELDS = new Set([
   "dividend_per_unit",
 ])
 
+const EXPORT_FIELD_KEYS = Object.keys(LEDGER_FIELD_LABELS)
+
+function csvEscape(value: string): string {
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
+  return value
+}
+
+function ledgerExportCell(row: OpsLedgerRow, key: string): string {
+  if (key === "review_status") {
+    return ledgerReviewStatus(row) === "confirmed" ? "已确认" : "待确认"
+  }
+  const value = row[key as keyof OpsLedgerRow]
+  if (value == null || value === "") return ""
+  if (typeof value === "object") return ""
+  return String(value)
+}
+
 export function OperationsLedgerView() {
+  const { toast } = useToast()
   const [runStatus, setRunStatus] = useState<RunStatus>("running")
 
   const [fofFundInput, setFofFundInput] = useState("")
   const [fofFundSelected, setFofFundSelected] = useState<FundOption | null>(null)
-  const [fofFundOptions, setFofFundOptions] = useState<FundOption[]>([])
   const [fofFundShowDropdown, setFofFundShowDropdown] = useState(false)
 
   const [underlyingInput, setUnderlyingInput] = useState("")
   const [underlyingSelected, setUnderlyingSelected] = useState<UnderlyingOption | null>(null)
-  const [underlyingOptions, setUnderlyingOptions] = useState<UnderlyingOption[]>([])
   const [underlyingShowDropdown, setUnderlyingShowDropdown] = useState(false)
 
   const [applyDateFrom, setApplyDateFrom] = useState("")
@@ -96,30 +139,34 @@ export function OperationsLedgerView() {
 
   const [appliedRunStatus, setAppliedRunStatus] = useState<RunStatus>("running")
   const [appliedFofRegister, setAppliedFofRegister] = useState<string | null>(null)
+  const [appliedFofName, setAppliedFofName] = useState("")
   const [appliedUnderlyingBeian, setAppliedUnderlyingBeian] = useState<string | null>(null)
+  const [appliedUnderlyingName, setAppliedUnderlyingName] = useState("")
   const [appliedApplyDateFrom, setAppliedApplyDateFrom] = useState("")
   const [appliedApplyDateTo, setAppliedApplyDateTo] = useState("")
+  const [reviewStatus, setReviewStatus] = useState<ReviewFilter>("all")
 
   const [sortKey, setSortKey] = useState<LedgerSortKey | "">("")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [batchSelectMode, setBatchSelectMode] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [showAddLedgerMenu, setShowAddLedgerMenu] = useState(false)
   const [showSingleLedgerDialog, setShowSingleLedgerDialog] = useState(false)
+  const [editingLedger, setEditingLedger] = useState<OpsLedgerRow | null>(null)
   const [showBatchLedgerDialog, setShowBatchLedgerDialog] = useState(false)
+  const [showGenerateDialog, setShowGenerateDialog] = useState(false)
   const [showFieldConfig, setShowFieldConfig] = useState(false)
   const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>([...LEDGER_FIELD_CONFIG_DEFAULT])
-
-  const fofFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const underlyingSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const allLedgerRows = useSyncExternalStore(
     subscribeLedgerRecords,
     getLedgerRecordsSnapshot,
     getLedgerRecordsServerSnapshot,
   )
+  const hydrateStatus = getLedgerHydrateStatus()
+  const hydrateError = getLedgerRecordsHydrateError()
 
   useEffect(() => {
     void (async () => {
@@ -135,7 +182,7 @@ export function OperationsLedgerView() {
 
   useEffect(() => {
     setPage(1)
-  }, [appliedRunStatus, appliedFofRegister, appliedUnderlyingBeian, appliedApplyDateFrom, appliedApplyDateTo, pageSize, sortKey, sortDir])
+  }, [appliedRunStatus, appliedFofRegister, appliedFofName, appliedUnderlyingBeian, appliedUnderlyingName, appliedApplyDateFrom, appliedApplyDateTo, pageSize, sortKey, sortDir, reviewStatus])
 
   // run_status filter is UI-only for now (no product status on local rows)
   void appliedRunStatus
@@ -146,73 +193,105 @@ export function OperationsLedgerView() {
         page,
         pageSize,
         fof_register_number: appliedFofRegister,
+        fof_fund_name: appliedFofName || undefined,
         underlying_beian_hao: appliedUnderlyingBeian,
+        underlying_fund_name: appliedUnderlyingName || undefined,
         apply_date_from: appliedApplyDateFrom,
         apply_date_to: appliedApplyDateTo,
         sort: sortKey || "apply_date",
         dir: sortDir,
+        review_status: reviewStatus,
       }),
     [
       allLedgerRows,
       page,
       pageSize,
       appliedFofRegister,
+      appliedFofName,
       appliedUnderlyingBeian,
+      appliedUnderlyingName,
       appliedApplyDateFrom,
       appliedApplyDateTo,
       sortKey,
       sortDir,
+      reviewStatus,
     ],
   )
 
   const data = listResult.data
   const total = listResult.total
   const totalPages = listResult.totalPages
-  const loading = false
+  const loading = hydrateStatus === "loading" && allLedgerRows.length === 0
 
   useEffect(() => {
-    setSelected(new Set())
-  }, [data])
+    const known = new Set(allLedgerRows.map((row) => row.id))
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => known.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [allLedgerRows])
 
-  useEffect(() => {
-    if (fofFundSearchRef.current) clearTimeout(fofFundSearchRef.current)
-    fofFundSearchRef.current = setTimeout(() => {
-      const q = fofFundInput.trim()
-      fetch(`/ma/api/ops/fof-underlying/fof-funds${q ? `?q=${encodeURIComponent(q)}` : ""}`)
-        .then((r) => r.json())
-        .then((d) => { if (Array.isArray(d)) setFofFundOptions(d) })
-        .catch(() => setFofFundOptions([]))
-    }, 200)
-    return () => { if (fofFundSearchRef.current) clearTimeout(fofFundSearchRef.current) }
-  }, [fofFundInput])
-
-  useEffect(() => {
-    if (!underlyingInput.trim()) {
-      setUnderlyingOptions([])
-      setUnderlyingShowDropdown(false)
-      return
+  const fofFundOptions = useMemo(() => {
+    const q = fofFundInput.trim().toLowerCase()
+    const map = new Map<string, FundOption>()
+    for (const row of allLedgerRows) {
+      const name = row.fof_fund_name.trim()
+      if (!name) continue
+      const reg = (row.fof_register_number || name).trim()
+      if (q && !name.toLowerCase().includes(q) && !reg.toLowerCase().includes(q)) continue
+      if (!map.has(reg)) map.set(reg, { register_number: reg, product_name: name })
     }
-    if (underlyingSearchRef.current) clearTimeout(underlyingSearchRef.current)
-    underlyingSearchRef.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(underlyingInput.trim())}`)
-        const json = await res.json()
-        setUnderlyingOptions(Array.isArray(json) ? json : [])
-        setUnderlyingShowDropdown(true)
-      } catch {
-        setUnderlyingOptions([])
+    return [...map.values()].sort((a, b) => a.product_name.localeCompare(b.product_name, "zh"))
+  }, [allLedgerRows, fofFundInput])
+
+  const underlyingOptions = useMemo(() => {
+    const q = underlyingInput.trim().toLowerCase()
+    const map = new Map<string, UnderlyingOption>()
+    for (const row of allLedgerRows) {
+      const name = row.underlying_fund_name.trim()
+      if (!name) continue
+      const beian = (row.underlying_beian_hao || name).trim()
+      if (q && !name.toLowerCase().includes(q) && !beian.toLowerCase().includes(q)) continue
+      if (!map.has(beian)) {
+        map.set(beian, { beian_hao: beian, product_name: name, short_name: name })
       }
-    }, 250)
-    return () => { if (underlyingSearchRef.current) clearTimeout(underlyingSearchRef.current) }
-  }, [underlyingInput])
+    }
+    return [...map.values()].sort((a, b) => a.product_name.localeCompare(b.product_name, "zh"))
+  }, [allLedgerRows, underlyingInput])
+
+  const selectedPendingIds = useMemo(
+    () =>
+      [...selected].filter((id) => {
+        const row = allLedgerRows.find((r) => r.id === id)
+        return row ? ledgerReviewStatus(row) === "pending" : false
+      }),
+    [selected, allLedgerRows],
+  )
 
   function applyFilters() {
+    const fofTyped = fofFundInput.trim()
+    const undTyped = underlyingInput.trim()
     setAppliedRunStatus(runStatus)
     setAppliedFofRegister(fofFundSelected?.register_number ?? null)
+    setAppliedFofName(fofFundSelected?.product_name || fofTyped)
     setAppliedUnderlyingBeian(underlyingSelected?.beian_hao ?? null)
+    setAppliedUnderlyingName(
+      underlyingSelected?.short_name || underlyingSelected?.product_name || undTyped,
+    )
     setAppliedApplyDateFrom(applyDateFrom)
     setAppliedApplyDateTo(applyDateTo)
+    setFofFundShowDropdown(false)
+    setUnderlyingShowDropdown(false)
     setPage(1)
+  }
+
+  function handleFilterKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      setFofFundShowDropdown(false)
+      setUnderlyingShowDropdown(false)
+      applyFilters()
+    }
   }
 
   function handleRunStatusChange(st: RunStatus) {
@@ -234,9 +313,91 @@ export function OperationsLedgerView() {
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
 
+  function pageAllSelected() {
+    return data.length > 0 && data.every((row) => selected.has(row.id))
+  }
+
   function toggleAll() {
-    if (selected.size === data.length && data.length > 0) setSelected(new Set())
-    else setSelected(new Set(data.map((r) => r.id)))
+    const next = new Set(selected)
+    if (pageAllSelected()) {
+      for (const row of data) next.delete(row.id)
+    } else {
+      for (const row of data) next.add(row.id)
+    }
+    setSelected(next)
+  }
+
+  async function handleConfirm(ids: string[]) {
+    const pendingIds = ids.filter((id) => {
+      const row = allLedgerRows.find((r) => r.id === id)
+      return row ? ledgerReviewStatus(row) === "pending" : false
+    })
+    if (pendingIds.length === 0) {
+      toast({ title: "所选记录均已确认" })
+      return
+    }
+    setConfirming(true)
+    try {
+      const count = await confirmLedgerRecords(pendingIds)
+      setSelected(new Set())
+      toast({ title: `已确认 ${count} 条台账` })
+    } catch (err) {
+      toast({
+        title: "确认失败",
+        description: err instanceof Error ? err.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  async function handleRefresh() {
+    try {
+      await refreshLedgerRecordsFromServer()
+      const err = getLedgerRecordsHydrateError()
+      if (err) {
+        toast({ title: "同步失败", description: err, variant: "destructive" })
+      }
+    } catch (err) {
+      toast({
+        title: "同步失败",
+        description: err instanceof Error ? err.message : "请稍后重试",
+        variant: "destructive",
+      })
+    }
+  }
+
+  function handleExport() {
+    const { data: rows } = listLedgerRecords({
+      fof_register_number: appliedFofRegister,
+      fof_fund_name: appliedFofName || undefined,
+      underlying_beian_hao: appliedUnderlyingBeian,
+      underlying_fund_name: appliedUnderlyingName || undefined,
+      apply_date_from: appliedApplyDateFrom,
+      apply_date_to: appliedApplyDateTo,
+      sort: sortKey || "apply_date",
+      dir: sortDir,
+      review_status: reviewStatus,
+      all: true,
+    })
+    if (rows.length === 0) {
+      toast({ title: "暂无数据可导出" })
+      return
+    }
+    const headers = ["序号", ...EXPORT_FIELD_KEYS.map((key) => LEDGER_FIELD_LABELS[key])]
+    const lines = rows.map((row, i) =>
+      [String(i + 1), ...EXPORT_FIELD_KEYS.map((key) => csvEscape(ledgerExportCell(row, key)))].join(","),
+    )
+    const blob = new Blob(["\uFEFF" + [headers.join(","), ...lines].join("\n")], {
+      type: "text/csv;charset=utf-8",
+    })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    const stamp = new Date().toISOString().slice(0, 10)
+    a.download = `申赎台账_${stamp}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
   }
 
   function pageButtons(): (number | "…")[] {
@@ -312,6 +473,13 @@ export function OperationsLedgerView() {
     if (key === "apply_date" || key === "confirm_date") {
       return <td key={key} className={`${cell} tabular-nums`}>{display}</td>
     }
+    if (key === "review_status") {
+      return (
+        <td key={key} className={cell}>
+          <ReviewStatusBadge row={row} />
+        </td>
+      )
+    }
     return <td key={key} className={cell}>{display}</td>
   }
 
@@ -358,10 +526,11 @@ export function OperationsLedgerView() {
                 <>
                   <input
                     className="w-full h-7 border rounded px-2 text-xs bg-background outline-none placeholder:text-muted-foreground/50"
-                    placeholder="请输入并选择FOF基金"
+                    placeholder="请输入FOF基金名称"
                     value={fofFundInput}
                     onChange={(e) => { setFofFundInput(e.target.value); setFofFundShowDropdown(true) }}
                     onFocus={() => setFofFundShowDropdown(true)}
+                    onKeyDown={handleFilterKeyDown}
                   />
                   {fofFundShowDropdown && fofFundOptions.length > 0 && (
                     <>
@@ -408,10 +577,11 @@ export function OperationsLedgerView() {
                 <>
                   <input
                     className="w-full h-7 border rounded px-2 text-xs bg-background outline-none placeholder:text-muted-foreground/50"
-                    placeholder="请输入并选择底层基金"
+                    placeholder="请输入底层基金名称"
                     value={underlyingInput}
-                    onChange={(e) => setUnderlyingInput(e.target.value)}
-                    onFocus={() => underlyingOptions.length > 0 && setUnderlyingShowDropdown(true)}
+                    onChange={(e) => { setUnderlyingInput(e.target.value); setUnderlyingShowDropdown(true) }}
+                    onFocus={() => setUnderlyingShowDropdown(true)}
+                    onKeyDown={handleFilterKeyDown}
                   />
                   {underlyingShowDropdown && underlyingOptions.length > 0 && (
                     <>
@@ -443,25 +613,23 @@ export function OperationsLedgerView() {
           <div className="flex items-center">
             <span className="text-zinc-400 shrink-0 pr-3">申请日期：</span>
             <div className="flex items-center gap-1.5">
-              <div className="relative">
-                <CalendarDays className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                <input
-                  type="date"
-                  value={applyDateFrom}
-                  onChange={(e) => setApplyDateFrom(e.target.value)}
-                  className="h-7 w-32 border rounded pl-7 pr-2 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
-                />
-              </div>
+              <DateInput
+                value={applyDateFrom}
+                onChange={setApplyDateFrom}
+                placeholder="开始日期"
+                className="w-36"
+                inputClassName="h-7 rounded pl-2 pr-8 text-xs"
+                displayClassName="left-2 text-xs"
+              />
               <span className="text-muted-foreground">-</span>
-              <div className="relative">
-                <CalendarDays className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                <input
-                  type="date"
-                  value={applyDateTo}
-                  onChange={(e) => setApplyDateTo(e.target.value)}
-                  className="h-7 w-32 border rounded pl-7 pr-2 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
-                />
-              </div>
+              <DateInput
+                value={applyDateTo}
+                onChange={setApplyDateTo}
+                placeholder="结束日期"
+                className="w-36"
+                inputClassName="h-7 rounded pl-2 pr-8 text-xs"
+                displayClassName="left-2 text-xs"
+              />
             </div>
           </div>
 
@@ -472,10 +640,43 @@ export function OperationsLedgerView() {
           >
             查询
           </button>
+          <button
+            type="button"
+            onClick={() => void handleRefresh()}
+            className="h-7 px-3 border rounded text-xs font-medium hover:bg-muted transition-colors inline-flex items-center gap-1"
+          >
+            <RefreshCw className="h-3 w-3" /> 刷新
+          </button>
+          <div className="flex items-center gap-1 ml-auto">
+            {([["all", "全部"], ["pending", "待确认"], ["confirmed", "已确认"]] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setReviewStatus(value)}
+                className={[
+                  "h-7 px-3 rounded text-xs font-medium transition-colors",
+                  reviewStatus === value
+                    ? value === "pending"
+                      ? "bg-amber-500 text-white"
+                      : value === "confirmed"
+                        ? "bg-emerald-600 text-white"
+                        : "bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900"
+                    : "border text-zinc-600 hover:bg-muted",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
+        {hydrateError ? (
+          <p className="mt-3 text-[11px] text-red-500 leading-relaxed">
+            未能从服务器同步台账（{hydrateError}）。当前可能是本机缓存，刷新后再试。
+          </p>
+        ) : null}
         <p className="mt-3 text-[11px] text-zinc-400 leading-relaxed">
-          说明：该列表展示所有公司产品/在管产品的台账记录。台账仅用于交易分析，不会改变产品的持仓份额。
+          说明：台账保存在服务器，任意电脑登录后均可查看和修改。估值表生成或手工录入的记录默认为「待确认」，核对无误后可单条或批量确认。台账仅用于交易分析，不会改变产品的持仓份额。
         </p>
       </div>
 
@@ -490,17 +691,26 @@ export function OperationsLedgerView() {
         <button
           type="button"
           disabled={data.length === 0}
-          onClick={() => setBatchSelectMode((v) => !v)}
+          onClick={toggleAll}
           className={[
             "inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground",
-            batchSelectMode ? "text-red-500" : "",
+            selected.size > 0 && pageAllSelected() ? "text-red-500" : "",
           ].join(" ")}
         >
-          <CheckSquare className="h-3.5 w-3.5" /> 批量选中
+          <CheckSquare className="h-3.5 w-3.5" /> {pageAllSelected() ? "取消全选" : "本页全选"}
         </button>
         <button
           type="button"
-          disabled={selected.size === 0}
+          disabled={selectedPendingIds.length === 0 || confirming}
+          onClick={() => void handleConfirm(selectedPendingIds)}
+          className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-emerald-700 text-emerald-600"
+        >
+          <Check className="h-3.5 w-3.5" /> {confirming ? "确认中…" : `批量确认${selectedPendingIds.length > 0 ? ` (${selectedPendingIds.length})` : ""}`}
+        </button>
+        <button
+          type="button"
+          disabled={total === 0}
+          onClick={handleExport}
           className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground"
         >
           <Download className="h-3.5 w-3.5" /> 导出
@@ -525,6 +735,17 @@ export function OperationsLedgerView() {
                   type="button"
                   onClick={() => {
                     setShowAddLedgerMenu(false)
+                    setShowGenerateDialog(true)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  从估值表生成
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddLedgerMenu(false)
+                    setEditingLedger(null)
                     setShowSingleLedgerDialog(true)
                   }}
                   className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
@@ -555,14 +776,14 @@ export function OperationsLedgerView() {
                 <input
                   type="checkbox"
                   className="rounded h-3 w-3"
-                  checked={selected.size === data.length && data.length > 0}
+                  checked={pageAllSelected()}
                   onChange={toggleAll}
-                  disabled={!batchSelectMode || data.length === 0}
+                  disabled={data.length === 0}
                 />
               </th>
               <th className={`${thBase} w-10 text-center`}>序号</th>
               {visibleFieldKeys.map(renderHeader)}
-              <th className={`${thBase} text-center w-20 sticky right-0 z-30 bg-muted/40 dark:bg-muted/20 border-l`}>操作</th>
+              <th className={`${thBase} text-center w-28 sticky right-0 z-30 bg-muted/40 dark:bg-muted/20 border-l`}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -587,7 +808,6 @@ export function OperationsLedgerView() {
                       type="checkbox"
                       className="rounded h-3 w-3"
                       checked={isSelected}
-                      disabled={!batchSelectMode}
                       onChange={() => {
                         const s = new Set(selected)
                         isSelected ? s.delete(row.id) : s.add(row.id)
@@ -599,7 +819,29 @@ export function OperationsLedgerView() {
                   {visibleFieldKeys.map((key) => renderCell(key, row, cell))}
                   <td className={`${cell} text-center sticky right-0 bg-background group-hover:bg-muted border-l`}>
                     <div className="flex items-center justify-center gap-2 text-muted-foreground">
-                      <button type="button" className="hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
+                      {ledgerReviewStatus(row) === "pending" ? (
+                        <button
+                          type="button"
+                          className="hover:text-emerald-600 disabled:opacity-40"
+                          disabled={confirming}
+                          onClick={() => void handleConfirm([row.id])}
+                          aria-label="确认台账"
+                          title="确认"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="hover:text-foreground"
+                        onClick={() => {
+                          setEditingLedger(row)
+                          setShowSingleLedgerDialog(true)
+                        }}
+                        aria-label="编辑台账"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                       <button
                         type="button"
                         className="hover:text-red-500"
@@ -674,11 +916,22 @@ export function OperationsLedgerView() {
 
       <AddSingleLedgerDialog
         open={showSingleLedgerDialog}
-        onClose={() => setShowSingleLedgerDialog(false)}
+        initial={editingLedger}
+        onClose={() => {
+          setShowSingleLedgerDialog(false)
+          setEditingLedger(null)
+        }}
       />
       <BatchUploadLedgerDialog
         open={showBatchLedgerDialog}
         onClose={() => setShowBatchLedgerDialog(false)}
+      />
+      <GenerateFromValuationDialog
+        open={showGenerateDialog}
+        onClose={() => setShowGenerateDialog(false)}
+        onGenerated={(summary) => {
+          toast({ title: "申赎台账已生成", description: summary })
+        }}
       />
 
       <OperationsLedgerFieldConfigDialog

@@ -43,6 +43,10 @@ const FofReturnAnalysisPanel = dynamic(
   () => import("./FofReturnAnalysisPanel").then((m) => m.FofReturnAnalysisPanel),
   { ssr: false },
 )
+const FofAttributionPanel = dynamic(
+  () => import("./FofAttributionPanel").then((m) => m.FofAttributionPanel),
+  { ssr: false },
+)
 const ValuationEmptyAnalysis = dynamic(
   () => import("./ValuationEmptyAnalysis").then((m) => m.ValuationEmptyAnalysis),
   { ssr: false },
@@ -1109,14 +1113,24 @@ export default function FundValuationAnalysisPage() {
 
       {!loading && !error && activeTab === "收益分析" && (
         showReturnAnalysis ? (
-          <FofReturnAnalysisPanel
-            series={returnCurves.length > 0 ? returnCurves : (data?.return_curves ?? [])}
-            fundHoldings={data?.fund_holdings ?? []}
-            loading={curvesLoading}
-            displayName={displayName}
-            fromDate={filterFrom}
-            toDate={filterTo}
-          />
+          <>
+            <FofReturnAnalysisPanel
+              series={returnCurves.length > 0 ? returnCurves : (data?.return_curves ?? [])}
+              fundHoldings={data?.fund_holdings ?? []}
+              loading={curvesLoading}
+              displayName={displayName}
+              fromDate={filterFrom}
+              toDate={filterTo}
+            />
+            {beian_hao && (
+              <FofAttributionPanel
+                beianHao={beian_hao}
+                displayName={displayName}
+                fromDate={filterFrom}
+                toDate={filterTo}
+              />
+            )}
+          </>
         ) : (
           <ValuationEmptyAnalysis message="【当前产品没有基金持仓，不支持该类分析】" />
         )

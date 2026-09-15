@@ -140,7 +140,7 @@ function mergeValuationMetas(...lists: ValuationMeta[][]): ValuationMeta[] {
 }
 
 function fundCacheKey(beianHao: string): string {
-  return `ltc-v13:${beianHao.trim().toUpperCase()}`
+  return `ltc-v14:${beianHao.trim().toUpperCase()}`
 }
 
 function readFundResult(beianHao: string): LookthroughComplianceProduct | null {

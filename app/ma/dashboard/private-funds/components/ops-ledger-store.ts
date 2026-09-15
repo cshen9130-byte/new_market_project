@@ -35,6 +35,11 @@ export type OpsLedgerRow = {
   contract_attachment?: OpsLedgerAttachment | null
   /** 确认函/确认单 — from 产品运维确认. */
   confirm_attachment?: OpsLedgerAttachment | null
+  generation_key?: string | null
+  locked?: boolean
+  review_status?: "pending" | "confirmed"
+  reviewed_by?: string | null
+  reviewed_at?: string | null
 }
 
 function toLedgerAttachment(
@@ -56,14 +61,33 @@ const CHANGE_EVENT = "ma-ops-ledger-records-changed"
 const LIST_API = "/ma/api/ops/ledger/list"
 const ADD_API = "/ma/api/ops/ledger/add"
 const DELETE_API = "/ma/api/ops/ledger/delete"
+const CONFIRM_API = "/ma/api/ops/ledger/confirm"
 const EMPTY_SNAPSHOT: OpsLedgerRow[] = []
 
 let cachedSnapshot: OpsLedgerRow[] | null = null
 let hydratePromise: Promise<void> | null = null
 let lastHydrateError: string | null = null
+let hydrateStatus: "idle" | "loading" | "ready" | "error" = "idle"
 
 export function getLedgerRecordsHydrateError(): string | null {
   return lastHydrateError
+}
+
+export function getLedgerHydrateStatus(): "idle" | "loading" | "ready" | "error" {
+  return hydrateStatus
+}
+
+export function ledgerReviewStatus(row: Pick<OpsLedgerRow, "review_status">): "pending" | "confirmed" {
+  return row.review_status === "confirmed" ? "confirmed" : "pending"
+}
+
+export function ledgerReviewTitle(row: Pick<OpsLedgerRow, "review_status" | "reviewed_by" | "reviewed_at">): string {
+  if (ledgerReviewStatus(row) !== "confirmed") return "尚未人工核对"
+  const who = row.reviewed_by?.trim() || "同事"
+  const when = row.reviewed_at
+    ? row.reviewed_at.replace("T", " ").slice(0, 16)
+    : ""
+  return when ? `${who} 于 ${when} 确认` : `${who} 已确认`
 }
 
 function canUseStorage() {
@@ -100,10 +124,15 @@ function readAll(): OpsLedgerRow[] {
 }
 
 function writeAll(rows: OpsLedgerRow[]) {
-  if (!canUseStorage()) return
   cachedSnapshot = rows.length === 0 ? EMPTY_SNAPSHOT : rows
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
-  window.dispatchEvent(new Event(CHANGE_EVENT))
+  if (canUseStorage()) {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
+    } catch {
+      // Private mode / quota — memory snapshot is still shared for this tab.
+    }
+    window.dispatchEvent(new Event(CHANGE_EVENT))
+  }
 }
 
 function invalidateCache() {
@@ -159,8 +188,11 @@ async function deleteByInstructionOnServer(instructionId: string) {
  * Safe to call repeatedly; concurrent callers share one in-flight promise.
  */
 export function ensureLedgerRecordsHydrated(): Promise<void> {
-  if (!canUseStorage()) return Promise.resolve()
   if (hydratePromise) return hydratePromise
+
+  hydrateStatus = "loading"
+  lastHydrateError = null
+  if (canUseStorage()) window.dispatchEvent(new Event(CHANGE_EVENT))
 
   hydratePromise = (async () => {
     try {
@@ -170,13 +202,15 @@ export function ensureLedgerRecordsHydrated(): Promise<void> {
       const serverRows = Array.isArray(data.records) ? data.records : []
       writeAll(serverRows)
       lastHydrateError = null
+      hydrateStatus = "ready"
     } catch (e) {
       lastHydrateError = e instanceof Error ? e.message : "台账列表同步失败"
-    } finally {
-      hydratePromise = null
+      hydrateStatus = "error"
       if (canUseStorage()) {
         window.dispatchEvent(new Event(CHANGE_EVENT))
       }
+    } finally {
+      hydratePromise = null
     }
   })()
 
@@ -195,6 +229,16 @@ function createLedgerId(now = new Date()): string {
   const d = String(now.getDate()).padStart(2, "0")
   const rand = String(Math.floor(Math.random() * 1_000_000_000)).padStart(9, "0")
   return `L${y}${m}${d}${rand}`
+}
+
+function ledgerBeianFamilyKey(code: string | null | undefined): string {
+  const raw = String(code ?? "").trim().toUpperCase()
+  if (!raw) return ""
+  let base = raw.replace(/[ABC]$/u, "")
+  if (base.startsWith("S") && base.length > 1 && /^S[A-Z][A-Z0-9]{4,7}$/u.test(base)) {
+    base = base.slice(1)
+  }
+  return base
 }
 
 function formatLedgerNumber(value: string | null | undefined): string | null {
@@ -250,6 +294,11 @@ export function ledgerRowFromInstruction(record: InstructionWithConfirm): OpsLed
     instruction_id: record.id,
     contract_attachment: toLedgerAttachment(record.contractAttachment),
     confirm_attachment: toLedgerAttachment(record.confirmAttachment),
+    generation_key: null,
+    locked: false,
+    review_status: "confirmed",
+    reviewed_by: null,
+    reviewed_at: record.confirmDate || record.applyDate || null,
   }
 }
 
@@ -276,6 +325,11 @@ function buildLedgerRecord(input: OpsLedgerInput): OpsLedgerRow {
     instruction_id: input.instruction_id ?? null,
     contract_attachment: input.contract_attachment ?? null,
     confirm_attachment: input.confirm_attachment ?? null,
+    generation_key: input.generation_key ?? null,
+    locked: input.locked === true,
+    review_status: input.review_status === "confirmed" ? "confirmed" : "pending",
+    reviewed_by: input.reviewed_by ?? null,
+    reviewed_at: input.reviewed_at ?? null,
   }
 }
 
@@ -419,17 +473,61 @@ export async function backfillLedgerFromConfirmedInstructions(): Promise<number>
   return count
 }
 
+export async function generateLedgerFromValuation(): Promise<{
+  products: number
+  candidates: number
+  inserted: number
+  updated: number
+  skippedProtected: number
+  skippedDeleted: number
+  confirmMatched: number
+}> {
+  const data = await apiFetch<{
+    ok: true
+    products: number
+    candidates: number
+    inserted: number
+    updated: number
+    skippedProtected: number
+    skippedDeleted: number
+    confirmMatched: number
+  }>("/ma/api/ops/ledger/generate-from-valuation", { method: "POST" })
+  await refreshLedgerRecordsFromServer()
+  return data
+}
+
+export async function confirmLedgerRecords(ids: string[]): Promise<number> {
+  const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  if (unique.length === 0) return 0
+  const data = await apiFetch<{ ok: true; count: number; records: OpsLedgerRow[] }>(
+    CONFIRM_API,
+    { method: "POST", body: JSON.stringify({ ids: unique }) },
+  )
+  const updated = Array.isArray(data.records) ? data.records : []
+  if (updated.length > 0) {
+    const byId = new Map(updated.map((row) => [row.id, row]))
+    writeAll(readAll().map((row) => byId.get(row.id) ?? row))
+  }
+  lastHydrateError = null
+  return typeof data.count === "number" ? data.count : updated.length
+}
+
 export type ListLedgerOptions = {
   fof_register_number?: string | null
   fof_fund_name?: string | null
   underlying_beian_hao?: string | null
+  underlying_fund_name?: string | null
+  product_beian_hao?: string | null
   apply_date_from?: string
   apply_date_to?: string
   underlying_name_q?: string
+  review_status?: "pending" | "confirmed" | "all" | ""
   sort?: "apply_date" | "confirm_date" | ""
   dir?: "asc" | "desc"
   page?: number
   pageSize?: number
+  /** Skip pagination and return every matching row. */
+  all?: boolean
 }
 
 export function listLedgerRecords(options?: ListLedgerOptions): {
@@ -443,20 +541,50 @@ export function listLedgerRecords(options?: ListLedgerOptions): {
   const fofReg = options?.fof_register_number?.trim()
   const fofName = options?.fof_fund_name?.trim()
   const undBeian = options?.underlying_beian_hao?.trim()
+  const undName = options?.underlying_fund_name?.trim()
+  const productBeian = options?.product_beian_hao?.trim()
   const from = options?.apply_date_from?.trim()
   const to = options?.apply_date_to?.trim()
   const nameQ = options?.underlying_name_q?.trim()
 
-  if (fofReg || fofName) {
+  if (productBeian) {
+    const family = ledgerBeianFamilyKey(productBeian)
     rows = rows.filter((r) => {
-      if (fofReg && r.fof_register_number === fofReg) return true
-      if (fofName && r.fof_fund_name === fofName) return true
-      if (fofName && r.fof_fund_name.includes(fofName)) return true
+      if (r.fof_register_number === productBeian || r.underlying_beian_hao === productBeian) return true
+      if (family && ledgerBeianFamilyKey(r.fof_register_number) === family) return true
+      if (family && ledgerBeianFamilyKey(r.underlying_beian_hao) === family) return true
       return false
     })
   }
-  if (undBeian) {
-    rows = rows.filter((r) => r.underlying_beian_hao === undBeian)
+  if (fofReg || fofName) {
+    const nameNeedle = fofName?.toLowerCase() ?? ""
+    const fofFam = ledgerBeianFamilyKey(fofReg)
+    rows = rows.filter((r) => {
+      if (fofReg) {
+        if (r.fof_register_number === fofReg) return true
+        if (fofFam && ledgerBeianFamilyKey(r.fof_register_number) === fofFam) return true
+      }
+      if (nameNeedle) {
+        if (r.fof_fund_name.toLowerCase().includes(nameNeedle)) return true
+        if ((r.fof_register_number || "").toLowerCase().includes(nameNeedle)) return true
+      }
+      return false
+    })
+  }
+  if (undBeian || undName) {
+    const nameNeedle = undName?.toLowerCase() ?? ""
+    const undFam = ledgerBeianFamilyKey(undBeian)
+    rows = rows.filter((r) => {
+      if (undBeian) {
+        if (r.underlying_beian_hao === undBeian) return true
+        if (undFam && ledgerBeianFamilyKey(r.underlying_beian_hao) === undFam) return true
+      }
+      if (nameNeedle) {
+        if (r.underlying_fund_name.toLowerCase().includes(nameNeedle)) return true
+        if ((r.underlying_beian_hao || "").toLowerCase().includes(nameNeedle)) return true
+      }
+      return false
+    })
   }
   if (from) rows = rows.filter((r) => r.apply_date >= from)
   if (to) rows = rows.filter((r) => r.apply_date <= to)
@@ -466,6 +594,10 @@ export function listLedgerRecords(options?: ListLedgerOptions): {
         r.underlying_fund_name.includes(nameQ)
         || r.fof_fund_name.includes(nameQ),
     )
+  }
+  const reviewStatus = options?.review_status
+  if (reviewStatus === "pending" || reviewStatus === "confirmed") {
+    rows = rows.filter((r) => (r.review_status || "pending") === reviewStatus)
   }
 
   const sortKey = options?.sort || "apply_date"
@@ -478,9 +610,18 @@ export function listLedgerRecords(options?: ListLedgerOptions): {
     return 0
   })
 
+  const total = rows.length
+  if (options?.all) {
+    return {
+      data: rows,
+      total,
+      page: 1,
+      pageSize: total || 1,
+      totalPages: 1,
+    }
+  }
   const page = Math.max(1, options?.page ?? 1)
   const pageSize = Math.min(200, Math.max(1, options?.pageSize ?? 50))
-  const total = rows.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const start = (page - 1) * pageSize
   return {

@@ -20,6 +20,8 @@ import {
   ensureLedgerRecordsHydrated,
   getLedgerRecordsServerSnapshot,
   getLedgerRecordsSnapshot,
+  ledgerReviewStatus,
+  ledgerReviewTitle,
   listLedgerRecords,
   subscribeLedgerRecords,
   type OpsLedgerAttachment,
@@ -170,8 +172,7 @@ export function FofTransactionAnalysisPanel({
       listLedgerRecords({
         page,
         pageSize,
-        fof_register_number: beianHao,
-        fof_fund_name: productName || undefined,
+        product_beian_hao: beianHao,
         underlying_name_q: appliedName || undefined,
         apply_date_from: appliedFrom || undefined,
         apply_date_to: appliedTo || undefined,
@@ -194,8 +195,7 @@ export function FofTransactionAnalysisPanel({
 
   function handleDownloadCsv() {
     const filter = {
-      fof_register_number: beianHao,
-      fof_fund_name: productName || undefined,
+      product_beian_hao: beianHao,
       underlying_name_q: appliedName || undefined,
       apply_date_from: appliedFrom || undefined,
       apply_date_to: appliedTo || undefined,
@@ -219,6 +219,7 @@ export function FofTransactionAnalysisPanel({
       "确认单位净值",
       "交易费用",
       "业绩报酬",
+      "核对状态",
       "合同",
       "确认单",
       "来源",
@@ -236,6 +237,7 @@ export function FofTransactionAnalysisPanel({
         csvCell(row.confirmed_unit_nav),
         csvCell(row.transaction_fee),
         csvCell(row.performance_fee),
+        csvCell(ledgerReviewStatus(row) === "confirmed" ? "已确认" : "待确认"),
         csvCell(row.contract_attachment?.name),
         csvCell(row.confirm_attachment?.name),
         csvCell(row.source),
@@ -377,6 +379,7 @@ export function FofTransactionAnalysisPanel({
               <th className={`${th} text-right`}>确认单位净值</th>
               <th className={`${th} text-right`}>交易费用</th>
               <th className={`${th} text-right`}>业绩报酬</th>
+              <th className={th}>核对状态</th>
               <th className={th}>合同</th>
               <th className={th}>确认单</th>
               <th className={th}>来源</th>
@@ -386,12 +389,12 @@ export function FofTransactionAnalysisPanel({
           <tbody>
             {data.length === 0 ? (
               <tr>
-                <td colSpan={14} className="py-20 text-center text-muted-foreground">
+                <td colSpan={15} className="py-20 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-2">
                     <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
                     <span>暂无台账数据</span>
                     <span className="text-xs text-zinc-400">
-                      指令进度为「已确认」后，将以来源「指令」同步到此列表
+                      指令确认后会同步到此列表；也可在运维 → 台账管理用估值表生成预估申赎后再修正
                     </span>
                   </div>
                 </td>
@@ -424,6 +427,19 @@ export function FofTransactionAnalysisPanel({
                   </td>
                   <td className="border-b px-3 py-2 text-right tabular-nums">
                     {formatCell(row.performance_fee)}
+                  </td>
+                  <td className="border-b px-3 py-2">
+                    <span
+                      title={ledgerReviewTitle(row)}
+                      className={[
+                        "inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
+                        ledgerReviewStatus(row) === "confirmed"
+                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+                          : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+                      ].join(" ")}
+                    >
+                      {ledgerReviewStatus(row) === "confirmed" ? "已确认" : "待确认"}
+                    </span>
                   </td>
                   <td className="border-b px-3 py-2">
                     <AttachmentLink

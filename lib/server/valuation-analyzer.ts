@@ -645,9 +645,14 @@ function isOffsetOrSummaryRow(code: string, name: string): boolean {
     if (/冲销|冲抵|估值增值|应计利息/.test(normalizedName)) return true
     if (/^3102\.[^.]+\.(02)\./.test(compactCode)) return true
     if (compactCode.startsWith("3102")) {
-      if (hasContractInName || isChineseOptionContractName(name) || extractOptionContractFromText(null, name, compactCode)) {
-        return false
-      }
+      // 招商四级「豆粕2701」puts the ticker in 科目代码 (3102.41.01.M2701 DCE),
+      // not in 科目名称. Looking at the name alone drops those leaves and
+      // understates 合约价值 (SBAH99 7.8亿 → 0.39亿 after 2026-09-07).
+      const hasContract = Boolean(extractContractSymbol(compactCode, name))
+        || hasContractInName
+        || isChineseOptionContractName(name)
+        || Boolean(extractOptionContractFromText(null, name, compactCode))
+      if (hasContract) return false
       // 三级表 PDF wraps as「初始合 约价值」; match on whitespace-stripped name.
       if (/初始合约/.test(normalizedName) && !/冲销|冲抵|估值增值/.test(normalizedName)) return false
       return true

@@ -13,6 +13,7 @@ export const LEDGER_LOCKED_FIELD_KEYS = [
   "confirmed_unit_nav",
   "transaction_fee",
   "performance_fee",
+  "review_status",
   "source",
   "remark",
 ] as const
@@ -37,6 +38,7 @@ export const LEDGER_FIELD_OPTIONS: { key: string; label: string; locked?: boolea
   { key: "remark", label: "备注", locked: true },
   { key: "underlying_beian_hao", label: "底层备案号" },
   { key: "transaction_fee", label: "交易费用", locked: true },
+  { key: "review_status", label: "核对状态", locked: true },
 ]
 
 const LABEL_BY_KEY = Object.fromEntries(LEDGER_FIELD_OPTIONS.map((f) => [f.key, f.label]))

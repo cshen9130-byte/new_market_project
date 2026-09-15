@@ -261,7 +261,16 @@ export function isGsDerivAccountEquityHolding(h: GsHoldingLike): boolean {
   if (codeStartsWithAny(code, ["103106", "103151", "103173"])) return false
   if (codeStartsWithAny(code, DERIV_ACCOUNT_EQUITY_PREFIXES)) return true
   const blob = holdingBlob(h)
-  return /期货期权备付金|期货清算备付金|期货备付金|期货保证金|期货存出保证金/.test(blob)
+  if (/期货期权备付金|期货清算备付金|期货备付金|期货保证金|期货存出保证金/.test(blob)) return true
+  // 招商四级：1021.QH17 结算备付金_清算备付金_国泰君安期货 / 1031.QHC17 存出保证金_国泰君安期货
+  if (
+    (code.startsWith("1021") || code.startsWith("1031"))
+    && /期货/.test(blob)
+    && /备付金|保证金/.test(blob)
+  ) {
+    return true
+  }
+  return false
 }
 
 export function gsArticle41InvestedAssets(totalAsset: number, cashTools: number): number {
