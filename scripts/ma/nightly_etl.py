@@ -3190,10 +3190,16 @@ def _sma_series(values: list[float | None], window: int) -> list[float | None]:
     return out
 
 
-def step_ashare_index(conn, *, force: bool = False) -> int:
-    """Fetch 全A benchmark index close via AkShare (default) or Choice."""
-    index_code = os.environ.get("ASHARE_INDEX_CODE", "000300.SH")
+_ASHARE_INDEX_UNIVERSE = [
+    "000016.SH", "000300.SH", "000905.SH", "000852.SH", "932000.CSI",
+    "399006.SZ", "000985.SH", "000001.SH", "000510.SH", "HSI.HI", "HSTECH.HI",
+    "000688.SH", "899050.BJ", "399372.SZ", "399373.SZ", "399374.SZ", "399375.SZ",
+    "399376.SZ", "399377.SZ", "000015.SH", "399997.SZ", "399808.SZ", "399303.SZ",
+    "801271.SI", "801272.SI", "801273.SI", "801274.SI", "801275.SI", "801276.SI",
+]
 
+
+def _ensure_ashare_index_table(conn) -> None:
     with conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS raw_ashare_index_daily (
@@ -3209,77 +3215,277 @@ def step_ashare_index(conn, *, force: bool = False) -> int:
             CREATE INDEX IF NOT EXISTS raw_ashare_index_daily_code_date_idx
               ON raw_ashare_index_daily (ts_code, trade_date DESC)
         """)
+        cur.execute(
+            "ALTER TABLE raw_ashare_index_daily "
+            "ADD COLUMN IF NOT EXISTS amount NUMERIC(20,2)"
+        )
     conn.commit()
 
+
+def _upsert_ashare_index_records(conn, records: list[tuple]) -> int:
+    if not records:
+        return 0
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_ashare_index_daily (trade_date, ts_code, close, amount, source)
+            VALUES %s
+            ON CONFLICT (trade_date, ts_code) DO UPDATE
+                SET close = EXCLUDED.close,
+                    amount = COALESCE(EXCLUDED.amount, raw_ashare_index_daily.amount),
+                    source = EXCLUDED.source,
+                    fetched_at = NOW()
+            """,
+            records,
+            page_size=2000,
+        )
+    conn.commit()
+    return len(records)
+
+
+def _compute_ashare_equal_weight(conn, *, force: bool = False) -> int:
+    """Chain an equal-weight 全A index from raw_ashare_daily into EQW.CN."""
     today = date.today()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trade_date, close FROM raw_ashare_index_daily
+            WHERE ts_code = 'EQW.CN'
+            ORDER BY trade_date DESC LIMIT 1
+            """
+        )
+        last = cur.fetchone()
+    if force or not last:
+        emit_from = _ashare_backfill_start(today)
+        lookback = emit_from
+        level = 1000.0
+    else:
+        emit_from = last[0]
+        lookback = emit_from - timedelta(days=15)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT close FROM raw_ashare_index_daily
+                WHERE ts_code = 'EQW.CN' AND trade_date < %s
+                ORDER BY trade_date DESC LIMIT 1
+                """,
+                (emit_from,),
+            )
+            seed = cur.fetchone()
+        level = float(seed[0]) if seed and seed[0] is not None else 1000.0
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trade_date, AVG(close / prev - 1.0) AS eq_ret, COUNT(*) AS n
+            FROM (
+                SELECT trade_date, ts_code, close,
+                       LAG(close) OVER (PARTITION BY ts_code ORDER BY trade_date) AS prev
+                FROM raw_ashare_daily
+                WHERE close > 0
+                  AND trade_date >= %s
+            ) t
+            WHERE prev > 0
+            GROUP BY trade_date
+            HAVING COUNT(*) >= 1000
+            ORDER BY trade_date
+            """,
+            (lookback,),
+        )
+        rows = cur.fetchall()
+    records = []
+    for td, eq_ret, _n in rows:
+        if eq_ret is None or td < emit_from:
+            continue
+        level *= 1.0 + float(eq_ret)
+        records.append((td, "EQW.CN", round(level, 4), None, "ashare_daily"))
+    n = _upsert_ashare_index_records(conn, records)
+    if n:
+        log.info("A-share EQW.CN: upserted %d rows (last=%.2f).", n, level)
+    return n
+
+
+def step_ashare_index(conn, *, force: bool = False) -> int:
+    """Fetch 周度回顾 / 规模指数 universe into raw_ashare_index_daily."""
+    _ensure_ashare_index_table(conn)
+    today = date.today()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT ts_code, MAX(trade_date)
+            FROM raw_ashare_index_daily
+            WHERE ts_code = ANY(%s)
+            GROUP BY ts_code
+            """,
+            (_ASHARE_INDEX_UNIVERSE,),
+        )
+        by_code = {row[0]: row[1] for row in cur.fetchall()}
+
+    missing = [c for c in _ASHARE_INDEX_UNIVERSE if c not in by_code]
+    stale = [
+        c for c, mx in by_code.items()
+        if mx is None or mx < today - timedelta(days=1)
+    ]
+    if not force and not missing and not stale:
+        log.info("A-share index universe up-to-date (%d codes), skipping fetch.", len(by_code))
+        return _compute_ashare_equal_weight(conn, force=force)
+
+    if force or missing:
+        start = _ashare_backfill_start(today)
+    else:
+        oldest = min(by_code[c] for c in _ASHARE_INDEX_UNIVERSE if c in by_code)
+        start = (oldest or today) - timedelta(days=5)
+    if start > today:
+        return _compute_ashare_equal_weight(conn, force=force)
+
+    log.info(
+        "A-share index universe: %s → %s (missing=%d stale=%d) …",
+        start, today, len(missing), len(stale),
+    )
+    timeout = int(os.environ.get("ASHARE_INDEX_UNIVERSE_TIMEOUT", "600"))
+    out = run_script(
+        "fetch_ashare_index_universe.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=timeout,
+        log_stderr=True,
+    )
+    records = []
+    if out and not out.get("error"):
+        for r in out.get("data") or []:
+            d = to_date(str(r.get("date", "")).replace("-", ""))
+            cl = safe_float(r.get("close"))
+            code = (r.get("ts_code") or "").strip()
+            src = (r.get("source") or "eastmoney").strip() or "eastmoney"
+            amt = safe_float(r.get("amount"))
+            if d and cl is not None and code:
+                records.append((d, code, cl, amt, src))
+        errs = out.get("errors") or []
+        if errs:
+            log.warning("A-share index universe misses: %s", ", ".join(str(x) for x in errs[:20]))
+    else:
+        log.warning(
+            "A-share index universe fetch failed (%s); falling back to single-index script.",
+            out.get("error") if out else "no output",
+        )
+
+    n = _upsert_ashare_index_records(conn, records)
+    log.info("A-share index universe: upserted %d rows.", n)
+
+    # Keep the legacy 000300 (or ASHARE_INDEX_CODE) path as a safety net.
+    index_code = os.environ.get("ASHARE_INDEX_CODE", "000300.SH")
     with conn.cursor() as cur:
         cur.execute(
             "SELECT MAX(trade_date) FROM raw_ashare_index_daily WHERE ts_code = %s",
             (index_code,),
         )
         cur_max = cur.fetchone()[0]
+    if force or cur_max is None or cur_max < today - timedelta(days=1):
+        legacy_start = _ashare_backfill_start(today) if (force or cur_max is None) else cur_max
+        legacy = run_script(
+            _ashare_index_script(),
+            extra_args=[iso(legacy_start), iso(today)],
+            timeout=int(os.environ.get("ASHARE_ETL_TIMEOUT", "300")),
+        )
+        legacy_rows = []
+        for r in (legacy or {}).get("data") or []:
+            d = to_date(str(r.get("date", "")).replace("-", ""))
+            cl = safe_float(r.get("close"))
+            code = (r.get("ts_code") or index_code).strip()
+            src = (r.get("source") or _ashare_data_source()).strip() or "akshare"
+            if d and cl is not None:
+                legacy_rows.append((d, code, cl, None, src))
+        extra = _upsert_ashare_index_records(conn, legacy_rows)
+        if extra:
+            log.info("A-share index %s fallback: upserted %d rows.", index_code, extra)
+            n += extra
 
-    if not force and cur_max and cur_max >= today - timedelta(days=1):
-        log.info("A-share index %s up-to-date (%s), skipping.", index_code, cur_max)
-        return 0
+    n += _compute_ashare_equal_weight(conn, force=force)
+    return n
 
-    if cur_max is None or force:
+
+def step_ashare_market_breadth(conn, *, force: bool = False) -> int:
+    """Daily 全A成交额 + 上涨/下跌家数 from raw_ashare_daily."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_ashare_market_breadth_daily (
+                trade_date    DATE PRIMARY KEY,
+                total_amount  NUMERIC(20,2),
+                advancers     INTEGER,
+                decliners     INTEGER,
+                unchanged     INTEGER,
+                stock_count   INTEGER,
+                computed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS derived_ashare_market_breadth_daily_date_idx
+              ON derived_ashare_market_breadth_daily (trade_date DESC)
+        """)
+    conn.commit()
+
+    today = date.today()
+    if force:
         start = _ashare_backfill_start(today)
-        log.info(
-            "A-share index %s: %s, backfilling from %s …",
-            index_code,
-            "forced" if force else "first run",
-            start,
-        )
     else:
-        start = cur_max + timedelta(days=1)
-        log.info("A-share index %s: incremental fetch %s → %s …", index_code, start, today)
+        with conn.cursor() as cur:
+            cur.execute("SELECT MAX(trade_date) FROM derived_ashare_market_breadth_daily")
+            cur_max = cur.fetchone()[0]
+        start = (cur_max - timedelta(days=5)) if cur_max else _ashare_backfill_start(today)
 
-    if start > today:
-        log.info("A-share index: already up-to-date.")
-        return 0
-
-    out = run_script(
-        _ashare_index_script(),
-        extra_args=[iso(start), iso(today)],
-        timeout=int(os.environ.get("ASHARE_ETL_TIMEOUT", "300")),
-    )
-    if not out or out.get("error"):
-        log.warning(
-            "A-share index fetch failed for %s (%s); charts will use synthetic 全A from stock data.",
-            index_code,
-            out.get("error") if out else "no output",
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trade_date,
+                   SUM(amount) AS total_amount,
+                   COUNT(*) FILTER (WHERE close > prev) AS advancers,
+                   COUNT(*) FILTER (WHERE close < prev) AS decliners,
+                   COUNT(*) FILTER (WHERE close = prev) AS unchanged,
+                   COUNT(*) AS stock_count
+            FROM (
+                SELECT trade_date, close, amount,
+                       LAG(close) OVER (PARTITION BY ts_code ORDER BY trade_date) AS prev
+                FROM raw_ashare_daily
+                WHERE close > 0
+                  AND trade_date >= %s
+            ) t
+            WHERE prev IS NOT NULL
+            GROUP BY trade_date
+            HAVING COUNT(*) >= 1000
+            ORDER BY trade_date
+            """,
+            (start - timedelta(days=15),),
         )
-        return 0
+        rows = [
+            (td, amt, adv, dec, unch, n)
+            for td, amt, adv, dec, unch, n in cur.fetchall()
+            if td >= start
+        ]
 
-    rows_raw = out.get("data") or []
-    records = []
-    for r in rows_raw:
-        d = to_date(str(r.get("date", "")).replace("-", ""))
-        cl = safe_float(r.get("close"))
-        code = (r.get("ts_code") or index_code).strip()
-        src = (r.get("source") or _ashare_data_source()).strip() or "akshare"
-        if d and cl is not None:
-            records.append((d, code, cl, src))
-
-    if not records:
-        log.warning("A-share index: no rows returned for %s → %s.", start, today)
+    if not rows:
+        log.info("A-share market breadth: no rows from %s.", start)
         return 0
 
     with conn.cursor() as cur:
         execute_values(
             cur,
             """
-            INSERT INTO raw_ashare_index_daily (trade_date, ts_code, close, source)
+            INSERT INTO derived_ashare_market_breadth_daily
+                (trade_date, total_amount, advancers, decliners, unchanged, stock_count)
             VALUES %s
-            ON CONFLICT (trade_date, ts_code) DO UPDATE
-                SET close = EXCLUDED.close, fetched_at = NOW()
+            ON CONFLICT (trade_date) DO UPDATE
+                SET total_amount = EXCLUDED.total_amount,
+                    advancers = EXCLUDED.advancers,
+                    decliners = EXCLUDED.decliners,
+                    unchanged = EXCLUDED.unchanged,
+                    stock_count = EXCLUDED.stock_count,
+                    computed_at = NOW()
             """,
-            records,
+            rows,
         )
     conn.commit()
-    log.info("A-share index %s: upserted %d rows.", index_code, len(records))
-    return len(records)
+    log.info("A-share market breadth: upserted %d days.", len(rows))
+    return len(rows)
 
 
 def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
@@ -5224,6 +5430,7 @@ STOCK_STEPS = [
     "ashare_daily",
     "ashare_stock_names",
     "ashare_index",
+    "ashare_market_breadth",
     "ashare_crowding",
     "ashare_hot_sectors",
     "ashare_hot_sectors_hist",
@@ -5254,6 +5461,7 @@ ORDERED_STEPS = [
     "ashare_daily",
     "ashare_stock_names",
     "ashare_index",
+    "ashare_market_breadth",
     "ashare_crowding",
     "ashare_hot_sectors",
     "ashare_hot_sectors_hist",
@@ -5404,6 +5612,7 @@ def main():
         "ashare_daily":        lambda: step_ashare_daily(conn, force=force),
         "ashare_stock_names":  lambda: step_ashare_stock_names(conn, force=force),
         "ashare_index":        lambda: step_ashare_index(conn, force=force),
+        "ashare_market_breadth": lambda: step_ashare_market_breadth(conn, force=force),
         "ashare_crowding":     lambda: step_compute_ashare_crowding(conn, force=force),
         "ashare_hot_sectors":  lambda: step_ashare_hot_sectors(conn, force=force),
         "ashare_hot_sectors_hist": lambda: step_ashare_hot_sectors_hist(conn, force=force),

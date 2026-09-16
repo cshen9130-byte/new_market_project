@@ -130,6 +130,9 @@ const ReportTemplateManagementView = dynamic(() =>
 const InstructionsSection = dynamic(() =>
   import("./components/InstructionsSection").then((m) => ({ default: m.InstructionsSection })),
 )
+const WeeklyReviewView = dynamic(() =>
+  import("./components/WeeklyReviewView").then((m) => ({ default: m.WeeklyReviewView })),
+)
 const LookthroughComplianceView = dynamic(() =>
   import("./components/LookthroughComplianceView").then((m) => ({ default: m.LookthroughComplianceView })),
 )
@@ -2288,7 +2291,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     router.push(`/ma/dashboard/private-funds?${params.toString()}`)
   }
 
-  const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
+  const [trackTab, setTrackTab] = useState<"team" | "mine" | "weekly">("team")
   const [activePool, setActivePool] = useState("all")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
   const [strategySource, setStrategySource] = useState<TrackStrategySource>("company")
@@ -2459,6 +2462,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const isSupportedPool = pools.some((p) => p.key === activePool)
   const sourcePool = isSupportedPool ? activePool : "all"
   const isMineTab = !isOps && trackTab === "mine"
+  const isWeeklyTab = !isOps && trackTab === "weekly"
   const isMyPoolSupported = myActivePool === "mine_all" || myActivePool === "mine_default" || myActivePool.startsWith("mine_custom_")
   const listPool = isMineTab ? myActivePool : sourcePool
   const listPoolSupported = isMineTab ? isMyPoolSupported : isSupportedPool
@@ -3016,6 +3020,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }
 
   useEffect(() => {
+    if (isWeeklyTab) return
     if (!listPoolSupported) {
       setData([])
       setTotal(0)
@@ -3106,7 +3111,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       .finally(() => { if (!cancelled) setLoading(false) })
 
     return () => { cancelled = true; ac.abort() }
-  }, [listPool, listPoolSupported, isMineTab, isOps, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
+  }, [listPool, listPoolSupported, isMineTab, isWeeklyTab, isOps, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
 
   useEffect(() => {
     setPage(1)
@@ -3218,18 +3223,22 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         </div>
       ) : (
         <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
-          {(["team", "mine"] as const).map((t) => (
+          {([
+            { key: "team", label: "团队跟踪" },
+            { key: "mine", label: "我的跟踪" },
+            { key: "weekly", label: "周度回顾" },
+          ] as const).map((t) => (
             <button
-              key={t}
-              onClick={() => setTrackTab(t)}
+              key={t.key}
+              onClick={() => setTrackTab(t.key)}
               className={[
                 "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
-                trackTab === t
+                trackTab === t.key
                   ? "border-red-500 text-red-600 dark:text-red-400"
                   : "border-transparent text-muted-foreground hover:text-foreground",
               ].join(" ")}
             >
-              {t === "team" ? "团队跟踪" : "我的跟踪"}
+              {t.label}
             </button>
           ))}
         </div>
@@ -4428,6 +4437,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         </div>
       </div>
       )}
+
+      {!isOps && trackTab === "weekly" && <WeeklyReviewView />}
 
       {/* Add metric dialog */}
       {showAddMetricDialog && (

@@ -17,10 +17,12 @@ type FofAttributionRow = {
   fromDate: string
   toDate: string
   pnl: number
+  mtmPnl: number
+  realizedPnl: number
   returnContribution: number
   navContribution: number
   cashFlow: number
-  cashFlowSource: "ledger" | "cost" | "none"
+  cashFlowSource: "ledger" | "qty" | "none"
 }
 
 type FofAttributionResult = {
@@ -54,10 +56,12 @@ type TableRow = {
   fromDate: string
   toDate: string
   pnl: number
+  mtmPnl: number
+  realizedPnl: number
   returnContribution: number
   navContribution: number
   cashFlow: number
-  cashFlowSource: "ledger" | "cost" | "none"
+  cashFlowSource: "ledger" | "qty" | "none"
 }
 
 function subtractFromDate(dateStr: string, amount: number, unit: "day" | "month" | "year"): string {
@@ -115,18 +119,18 @@ function fmtNavContrib(n: number): string {
   return n.toFixed(4)
 }
 
-function cashFlowSourceLabel(source: "ledger" | "cost" | "none"): string {
-  if (source === "ledger") return "运维申赎台账确认净额"
-  if (source === "cost") return "估值表Δ成本（台账无该笔记录时的同一算法）"
-  return "无申赎，未扣现金流"
+function cashFlowSourceLabel(source: "ledger" | "qty" | "none"): string {
+  if (source === "ledger") return "运维申赎台账确认份额/净额/净值"
+  if (source === "qty") return "估值表份额变动，按期末净值估算申赎市值"
+  return "无申赎，按持仓盯市"
 }
 
 function mergeCashFlowSource(
-  a: "ledger" | "cost" | "none",
-  b: "ledger" | "cost" | "none",
-): "ledger" | "cost" | "none" {
+  a: "ledger" | "qty" | "none",
+  b: "ledger" | "qty" | "none",
+): "ledger" | "qty" | "none" {
   if (a === "ledger" || b === "ledger") return "ledger"
-  if (a === "cost" || b === "cost") return "cost"
+  if (a === "qty" || b === "qty") return "qty"
   return "none"
 }
 
@@ -149,6 +153,8 @@ function toTableRows(rows: FofAttributionRow[]): TableRow[] {
     fromDate: row.fromDate,
     toDate: row.toDate,
     pnl: row.pnl,
+    mtmPnl: row.mtmPnl ?? 0,
+    realizedPnl: row.realizedPnl ?? 0,
     returnContribution: row.returnContribution,
     navContribution: row.navContribution,
     cashFlow: row.cashFlow ?? 0,
@@ -170,6 +176,8 @@ function aggregateByStrategy(rows: TableRow[]): TableRow[] {
       continue
     }
     cur.pnl += row.pnl
+    cur.mtmPnl += row.mtmPnl
+    cur.realizedPnl += row.realizedPnl
     cur.returnContribution += row.returnContribution
     cur.navContribution += row.navContribution
     cur.cashFlow += row.cashFlow
@@ -190,16 +198,16 @@ const HELP_BLOCKS: ChartCalcHelpBlock[] = [
   {
     title: "区间投资收益（元）",
     paragraphs: [
-      "相邻两个估值日：市值变动减去该步的申赎净流入。申赎净流入与运维「申赎台账」同一套数据：优先用确认单/台账确认净额（申购为正、赎回为负）；台账没有该笔时，改用估值表成本变动（与台账无确认单时的算法相同）。没有申赎时，退回上一估值日份额乘以单位净值变动。",
+      "相邻两个估值日之间，先把持仓盯市到每笔申赎的确认净值，再分别计算：赎回份额相对上一标记净值已经赚到/亏掉的部分记为申赎已实现盈亏；申购不产生已实现盈亏。剩余份额再盯市到本估值日，记为市值变动。没有申赎时，就是上一估值日份额 × 单位净值变动。",
     ],
-    formula: "区间投资收益 = Δ市值 − 申赎净流入",
+    formula: "区间投资收益 = 剩余持仓市值变动 + Σ申赎已实现盈亏",
   },
   {
-    title: "申赎净流入",
+    title: "申赎已实现盈亏",
     paragraphs: [
-      "确认日落在 (上一估值日, 本估值日] 内的台账确认净额合计。赎回、转换出、强制调减、现金分红为负；申购、认购、转换入、红利转份额为正。",
+      "赎回：赎回份额 × (确认净值 − 上一估值日净值)。例如期初持仓 200 万，净值上涨到 210 万后赎回 110 万市值、留下 100 万，则赎回那部分已实现约 5.24 万，剩余持仓市值变动约 4.76 万，合计 10 万。申购确认时盈亏为 0。确认日在 (上一估值日, 本估值日] 内的台账优先；台账没有该笔时，用估值表份额变动 × 期末净值估算赎回市值。",
     ],
-    formula: "净流入 = Σ申购确认净额 − Σ赎回确认净额",
+    formula: "赎回已实现 = 赎回份额 × (确认净值 − 上一标记净值)",
   },
   {
     title: "组合收益贡献度",
@@ -221,15 +229,17 @@ function pnlColumnHelp(from?: string | null, to?: string | null): ChartCalcHelpB
     },
     {
       title: "公式",
-      paragraphs: ["相邻两个估值日，用市值变动减去该步申赎净流入，再在所选区间内加总。"],
-      formula: "区间投资收益 = Σ (Δ市值 − 申赎净流入)",
+      paragraphs: [
+        "申赎金额不是盈亏。赎回时把该笔份额在确认净值上相对上一估值日已经实现的涨跌记入已实现；剩下的持仓再计算市值变动。区间内各步加总。",
+      ],
+      formula: "区间投资收益 = Σ (剩余持仓市值变动 + 申赎已实现盈亏)",
     },
     {
-      title: "申赎净流入",
+      title: "申赎",
       paragraphs: [
-        "优先用台账确认净额（确认日在相邻估值日之间）。台账无记录时用估值表Δ成本，与台账在无确认单时相同。没有申赎时改用份额 × Δ净值。",
+        "优先用台账确认份额、确认净额、确认净值。台账无记录时用估值表份额变动 × 期末净值估算赎回市值，不用Δ成本。没有申赎时改用份额 × Δ净值。",
       ],
-      formula: "净流入 = Σ申购确认净额 − Σ赎回确认净额",
+      formula: "赎回已实现 = 赎回份额 × (确认净值 − 上一标记净值)",
     },
     ...(from && to
       ? [{ title: "当前区间", paragraphs: [`估值表实际起止：${from} ～ ${to}`] }]
@@ -283,7 +293,6 @@ function navColumnHelp(startPaidIn: number | null, startNav: number | null): Cha
 }
 
 function rowPnlHelp(row: TableRow): ChartCalcHelpBlock[] {
-  const deltaMv = row.pnl + row.cashFlow
   return [
     {
       title: "本行",
@@ -291,7 +300,7 @@ function rowPnlHelp(row: TableRow): ChartCalcHelpBlock[] {
         `${row.fundName} · ${row.fromDate} ～ ${row.toDate}`,
         `申赎来源：${cashFlowSourceLabel(row.cashFlowSource)}`,
       ],
-      formula: `Δ市值 ${fmtMoney(deltaMv)}\n− 申赎净流入 ${fmtMoney(row.cashFlow)}\n= ${fmtMoney(row.pnl)} 元`,
+      formula: `剩余持仓市值变动 ${fmtMoney(row.mtmPnl)}\n+ 申赎已实现盈亏 ${fmtMoney(row.realizedPnl)}\n= ${fmtMoney(row.pnl)} 元`,
     },
   ]
 }
@@ -509,8 +518,8 @@ export function FofAttributionPanel({
         <div className="text-red-500 font-semibold text-sm">FOF归因</div>
         <p className="text-xs text-zinc-500 mt-1.5 leading-relaxed">
           {earliest
-            ? <>自最早估值日 {earliest} 之后，可对之后任意区间进行基金收益归因。申赎现金流与运维申赎台账对齐，不含股票、期货等其他资产。点击查看</>
-            : <>所选区间内仅对基金持仓做收益归因。申赎现金流与运维申赎台账对齐，不含股票、期货等其他资产。点击查看</>}
+            ? <>自最早估值日 {earliest} 之后，可对之后任意区间进行基金收益归因。逐笔计入申赎已实现盈亏，再加剩余持仓市值变动；申赎与运维申赎台账对齐，不含股票、期货等其他资产。点击查看</>
+            : <>所选区间内仅对基金持仓做收益归因。逐笔计入申赎已实现盈亏，再加剩余持仓市值变动；申赎与运维申赎台账对齐，不含股票、期货等其他资产。点击查看</>}
           <ChartCalcHelpButton
             heading="基金收益归因 · 计算逻辑"
             label="基金收益归因计算逻辑"
@@ -764,7 +773,7 @@ export function FofAttributionPanel({
                       heading="合计 · 区间投资收益"
                       blocks={[{
                         title: "本行",
-                        paragraphs: ["当前表中各行区间投资收益之和。口径为 Δ市值 − 申赎净流入。"],
+                        paragraphs: ["当前表中各行区间投资收益之和。口径为剩余持仓市值变动 + 申赎已实现盈亏。"],
                         formula: `Σ = ${fmtMoney(filteredTotals.pnl)} 元`,
                       }]}
                     />

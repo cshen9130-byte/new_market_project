@@ -15,12 +15,14 @@ CREATE TABLE IF NOT EXISTS raw_ashare_index_daily (
     trade_date  DATE          NOT NULL,
     ts_code     VARCHAR(20)   NOT NULL,
     close       NUMERIC(12,4) NOT NULL,
+    amount      NUMERIC(20,2),
     source      VARCHAR(30)   NOT NULL DEFAULT 'choice',
     fetched_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     CONSTRAINT raw_ashare_index_daily_uq UNIQUE (trade_date, ts_code)
 );
 CREATE INDEX IF NOT EXISTS raw_ashare_index_daily_code_date_idx
     ON raw_ashare_index_daily (ts_code, trade_date DESC);
+ALTER TABLE raw_ashare_index_daily ADD COLUMN IF NOT EXISTS amount NUMERIC(20,2);
 """
 
 

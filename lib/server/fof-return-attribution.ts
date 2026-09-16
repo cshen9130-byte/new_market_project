@@ -1,8 +1,8 @@
 /**
- * FOF 基金持仓收益归因：区间投资收益 = Δ市值 − 申赎净流入。
- * 申赎净流入优先用运维「申赎台账」确认净额（与确认单/估值表生成规则一致）；
- * 台账无记录时退回 Δ成本（与台账在无确认单时的算法相同）。
- * 不含股票、期货等非基金资产。
+ * FOF 基金持仓收益归因：
+ * 区间投资收益 = 剩余持仓市值变动 + Σ申赎已实现盈亏。
+ * 申赎优先用运维「申赎台账」确认份额/净额/净值；台账无记录时用估值表份额变动
+ * × 期末净值估算申赎市值。不含股票、期货等非基金资产。
  */
 
 import { query } from "@/lib/db"
@@ -26,8 +26,12 @@ import {
   applyValuationHoldingDisplayName,
   isValuationNonProductHoldingName,
 } from "@/lib/valuation-holding-display-name"
+import {
+  computeHoldingStepPnl,
+  inferFlowEventsFromQty,
+  type AttributionFlowEvent,
+} from "@/lib/server/fof-holding-step-pnl"
 
-const MAX_DAILY_RETURN = 0.5
 /** Same floor as 申赎台账 generation (`MIN_ABS_AMOUNT`). */
 const MIN_ABS_CASHFLOW = 100
 
@@ -41,10 +45,12 @@ export type FofAttributionRow = {
   fromDate: string
   toDate: string
   pnl: number
+  mtmPnl: number
+  realizedPnl: number
   returnContribution: number
   navContribution: number
   cashFlow: number
-  cashFlowSource: "ledger" | "cost" | "none"
+  cashFlowSource: "ledger" | "qty" | "none"
 }
 
 export type FofAttributionResult = {
@@ -101,9 +107,11 @@ type FundAcc = {
   fundName: string
   valuationCode: string | null
   pnl: number
+  mtmPnl: number
+  realizedPnl: number
   cashFlow: number
   ledgerHits: number
-  costHits: number
+  qtyHits: number
 }
 
 function parseNum(value: string | number | null | undefined): number {
@@ -206,18 +214,6 @@ function toPosition(row: HoldingSqlRow): Position | null {
   }
 }
 
-/** Mark-to-market P&L when there is no 申赎. Prefer 份额 × Δ净值. */
-function markToMarketPnl(prev: Position | undefined, curr: Position | undefined): number {
-  const qty = prev?.qty ?? 0
-  const p0 = prev?.price ?? null
-  const p1 = curr?.price ?? null
-  if (qty > 0 && p0 != null && p1 != null && p0 > 0) {
-    const ret = (p1 - p0) / p0
-    if (Math.abs(ret) <= MAX_DAILY_RETURN) return qty * (p1 - p0)
-  }
-  return (curr?.mv ?? 0) - (prev?.mv ?? 0)
-}
-
 function isParentFofLedgerRow(
   row: OpsLedgerRow,
   candidateCodes: string[],
@@ -308,28 +304,56 @@ function ledgerRowsForPosition(
   return out
 }
 
-function ledgerCashFlowInStep(
+function ledgerFlowKind(row: OpsLedgerRow): AttributionFlowEvent["kind"] | null {
+  const t = String(row.transaction_type ?? "").replace(/\s+/g, "")
+  if (/现金分红/.test(t)) return "dividend"
+  if (/赎回|转换出|强制调减/.test(t) && !/申购|认购|转换入/.test(t)) return "redeem"
+  if (/申购|认购|转换入|强制调增|红利/.test(t)) return "subscribe"
+  const signed = signedLedgerAmount(row)
+  if (signed < 0) return "redeem"
+  if (signed > 0) return "subscribe"
+  return null
+}
+
+function ledgerEventsInStep(
   rows: OpsLedgerRow[],
   prevDate: string,
   currDate: string,
   usedIds: Set<string>,
-): number {
-  let sum = 0
+): AttributionFlowEvent[] {
+  const out: AttributionFlowEvent[] = []
   for (const row of rows) {
     const d = row.confirm_date.slice(0, 10)
     if (!d || d <= prevDate || d > currDate) continue
     if (usedIds.has(row.id)) continue
-    const signed = signedLedgerAmount(row)
-    if (!Number.isFinite(signed) || signed === 0) continue
+    const kind = ledgerFlowKind(row)
+    if (!kind) continue
+    const amount = Math.abs(parseNum(row.confirmed_amount))
+    const shares = Math.abs(parseNum(row.confirmed_shares))
+    const navRaw = parseNum(row.confirmed_unit_nav)
+    const nav = navRaw > 0 ? navRaw : (shares > 0 && amount > 0 ? amount / shares : null)
+    const resolvedAmount = amount > 0 ? amount : (finiteNav(nav) && shares > 0 ? shares * nav : 0)
+    if (resolvedAmount < MIN_ABS_CASHFLOW && shares < 0.01) continue
     usedIds.add(row.id)
-    sum += signed
+    out.push({
+      date: d,
+      kind,
+      shares,
+      amount: resolvedAmount,
+      nav: finiteNav(nav) ? nav : null,
+    })
   }
-  return sum
+  out.sort((a, b) => a.date.localeCompare(b.date) || a.kind.localeCompare(b.kind))
+  return out
 }
 
-function cashFlowSourceOf(acc: FundAcc): "ledger" | "cost" | "none" {
+function finiteNav(n: number | null | undefined): n is number {
+  return n != null && Number.isFinite(n) && n > 0
+}
+
+function cashFlowSourceOf(acc: FundAcc): "ledger" | "qty" | "none" {
   if (acc.ledgerHits > 0) return "ledger"
-  if (acc.costHits > 0) return "cost"
+  if (acc.qtyHits > 0) return "qty"
   return "none"
 }
 
@@ -599,41 +623,41 @@ export async function getFofReturnAttribution(
     for (const key of keys) {
       const prevPos = prev.positions.get(key)
       const currPos = curr.positions.get(key)
-      const deltaMv = (currPos?.mv ?? 0) - (prevPos?.mv ?? 0)
-      const deltaCost = (currPos?.cost ?? 0) - (prevPos?.cost ?? 0)
       const ledgerRows = ledgerRowsForPosition(ledgerIndex, currPos, prevPos)
       const usedBefore = usedLedgerIds.size
-      const ledgerCf = ledgerCashFlowInStep(ledgerRows, prev.date, curr.date, usedLedgerIds)
+      const ledgerEvents = ledgerEventsInStep(ledgerRows, prev.date, curr.date, usedLedgerIds)
       const usedLedger = usedLedgerIds.size > usedBefore
 
-      let pnl: number
-      let cashFlow = 0
-      let usedCost = false
-      if (usedLedger) {
-        cashFlow = ledgerCf
-        pnl = deltaMv - cashFlow
-      } else if (Math.abs(deltaCost) >= MIN_ABS_CASHFLOW) {
-        cashFlow = deltaCost
-        pnl = deltaMv - cashFlow
-        usedCost = true
-      } else {
-        pnl = markToMarketPnl(prevPos, currPos)
+      let events = ledgerEvents
+      let usedQty = false
+      if (events.length === 0) {
+        const inferred = inferFlowEventsFromQty(prevPos, currPos)
+        if (inferred.length > 0) {
+          events = inferred
+          usedQty = true
+        }
       }
-      if (!Number.isFinite(pnl)) continue
+
+      const step = computeHoldingStepPnl(prevPos, currPos, events)
+      if (!Number.isFinite(step.pnl)) continue
 
       const sample = currPos ?? prevPos
       const cur = acc.get(key) ?? {
         fundName: sample?.fundName ?? key,
         valuationCode: sample?.valuationCode ?? null,
         pnl: 0,
+        mtmPnl: 0,
+        realizedPnl: 0,
         cashFlow: 0,
         ledgerHits: 0,
-        costHits: 0,
+        qtyHits: 0,
       }
-      cur.pnl += pnl
-      cur.cashFlow += cashFlow
+      cur.pnl += step.pnl
+      cur.mtmPnl += step.mtmPnl
+      cur.realizedPnl += step.realizedPnl
+      cur.cashFlow += step.cashFlow
       if (usedLedger) cur.ledgerHits += 1
-      if (usedCost) cur.costHits += 1
+      if (usedQty) cur.qtyHits += 1
       if (sample?.fundName) cur.fundName = sample.fundName
       if (sample?.valuationCode) cur.valuationCode = sample.valuationCode
       acc.set(key, cur)
@@ -671,6 +695,8 @@ export async function getFofReturnAttribution(
         fromDate: start.date,
         toDate: end.date,
         pnl,
+        mtmPnl: item.mtmPnl,
+        realizedPnl: item.realizedPnl,
         cashFlow: item.cashFlow,
         cashFlowSource: cashFlowSourceOf(item),
         returnContribution: returnBase > 0 ? pnl / returnBase : 0,
