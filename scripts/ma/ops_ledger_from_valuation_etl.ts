@@ -31,7 +31,8 @@ async function main() {
       `[ops_ledger_from_valuation_etl] done: products=${result.products} ` +
         `candidates=${result.candidates} inserted=${result.inserted} ` +
         `updated=${result.updated} confirmMatched=${result.confirmMatched} ` +
-        `skippedProtected=${result.skippedProtected} skippedDeleted=${result.skippedDeleted}`,
+        `skippedProtected=${result.skippedProtected} skippedDeleted=${result.skippedDeleted} ` +
+        `removedStale=${result.removedStale}`,
     )
     console.log(JSON.stringify({ ok: true, ...result }))
     process.exit(0)
@@ -49,6 +50,7 @@ async function main() {
         skippedProtected: 0,
         skippedDeleted: 0,
         confirmMatched: 0,
+        removedStale: 0,
       }),
     )
     process.exit(1)

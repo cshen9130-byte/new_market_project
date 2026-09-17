@@ -112,7 +112,10 @@ export function isWeakFormula(value: string | null | undefined): boolean {
   if (/^(商解决|划款|账册记录)/.test(s)) return true
   if (s.length < 12 && !/[=＝]/.test(s) && !/计提|提取|公式/.test(s)) return true
   // "基准0%" with no carry rate is a failed parse of R>0% excess sharing (A/B 20%/30%).
-  if (isZeroBenchmarkWithoutCarry(s) && !/[×x*]\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return true
+  if (isZeroBenchmarkWithoutCarry(s) && !hasNumericCarryRate(s)) return true
+  if (isHurdleWithoutCarry(s)) return true
+  // E=…×Q with Q never substituted for the contract's 计提比例.
+  if (/[×x*]\s*[Qq]\b/.test(s) && !hasNumericCarryRate(s)) return true
   // Mixed leftover: 基准0% glued onto a different hurdle such as H=(R-6%)×30%.
   if (/基准\s*0\s*%/.test(s) && /R\s*[-－]\s*[1-9]/.test(s)) return true
   return isDumpText(s, FORMULA_MAX)
@@ -135,16 +138,29 @@ export function isWeakFeePay(value: string | null | undefined): boolean {
   // LLM-generated generic "couldn't extract" statements
   if (/未明确(?:说明|规定|披露)|按(?:基金)?合同约定收取/.test(s) && s.length < 60) return true
   if (isZeroBenchmarkWithoutCarry(s)) return true
+  if (isHurdleWithoutCarry(s)) return true
   if (isUnlabeledMultiRuleFeePay(s)) return true
   return isDumpText(s, 90)
 }
 
-/** R>0% / 业绩基准0% without a 10%+ carry rate — not a real 业绩基准 clause. */
+/** True when the text already names a 10%+ carry / 计提比例. */
+function hasNumericCarryRate(s: string): boolean {
+  if (/(?:计提比例|超额计提|提取比例)\s*[为是：:]*\s*[【[]?\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return true
+  if (/[ABC]类(?:超额)?计提\s*[1-9]\d/.test(s)) return true
+  if (/[×x*]\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return true
+  if (/部分的\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return true
+  return false
+}
+
 function isZeroBenchmarkWithoutCarry(s: string): boolean {
   if (!/业绩基准\s*0\s*%|^基准\s*0\s*%|基准\s*0\s*%[；;]/.test(s)) return false
-  if (/(?:计提比例|超额计提)\s*[【[]?\s*[1-9]\d(?:\.\d+)?\s*%/.test(s)) return false
-  if (/[ABC]类(?:超额)?计提\s*[1-9]/.test(s)) return false
-  return true
+  return !hasNumericCarryRate(s)
+}
+
+/** 「计提基准年化10%」with no 计提比例 — incomplete; the catch-up rate is the whole point. */
+function isHurdleWithoutCarry(s: string): boolean {
+  if (!/(?:计提|业绩)基准|年化\s*\d+(?:\.\d+)?\s*%/.test(s)) return false
+  return !hasNumericCarryRate(s)
 }
 
 export function isWeakFeeManage(value: string | null | undefined): boolean {
@@ -154,9 +170,15 @@ export function isWeakFeeManage(value: string | null | undefined): boolean {
 }
 
 export function summarizeFeePayDesc(text: string): string | null {
-  const classBits = extractShareClassPerfFees(text).map(formatClassPerfPayLine)
+  const classFees = extractShareClassPerfFees(text)
+  const classBits = classFees.map(formatClassPerfPayLine)
   if (classBits.length) {
-    const prefix = classBits.length > 1 ? "按实际收益率计提，" : "按超额收益计提，"
+    const hasBench = classFees.some((f) => f.hurdlePct != null && parseFloat(f.hurdlePct) > 0)
+    const prefix = hasBench
+      ? "按业绩基准计提，"
+      : classBits.length > 1
+        ? "按实际收益率计提，"
+        : "按超额收益计提，"
     return `${prefix}${classBits.join("；")}。`.slice(0, 90)
   }
   const { bench, rate } = formulaBenchRate(text)
@@ -339,10 +361,11 @@ function parseCarryPct(raw: string | undefined): string | null {
 }
 
 function formulaBenchRate(scope: string): { bench: string | null; rate: string | null } {
-  const s = flatten(scope)
+  const s = flattenCjk(scope)
   const explicit =
     s.match(/计提基准为年化\s*([\d.]+)\s*%/)
-    || s.match(/业绩(?:报酬)?(?:计提)?基准[为是：:]\s*([\d.]+)\s*%/)
+    || s.match(/计提基准[为是：:]\s*年化\s*([\d.]+)\s*%/)
+    || s.match(/业绩(?:报酬)?(?:计提)?基准[为是：:]\s*(?:年化\s*)?([\d.]+)\s*%/)
   const hurdle =
     s.match(/年化收益率\s*R\s*(?:小于或等于|小于等于|不高于|不超过|≤|<=|<)\s*([\d.]+)\s*%/)
     || s.match(/R\s*(?:小于或等于|小于等于|≤|<=)\s*([\d.]+)\s*%/)
@@ -390,7 +413,16 @@ function classSectionWindow(text: string, cls: string): string | null {
     const boundary = rest.search(boundaryRe)
     const span = boundary >= 0 ? match[0].length + boundary : Math.min(rest.length, 1800)
     const window = text.slice(start, Math.min(start + span, start + 2000))
-    if (/业绩报酬|计提比例|作为业绩报酬|超额收益|收益率\s*R|H\s*[=＝]/.test(window)) return window
+    const before = text.slice(Math.max(0, match.index - 2), match.index)
+    if (/除/.test(before)) continue
+    const afterHead = text.slice(match.index + match[0].length).replace(/\s/g, "").slice(0, 6)
+    if (afterHead.startsWith("投资者以外")) continue
+    const compact = window.replace(/\s/g, "")
+    // A/B table headers sit next to each other ("A类份额 B类份额") — skip that stub.
+    if (compact.length < 24) continue
+    if (/业绩报酬|计提比例|作为业绩报酬|超额收益|收益率\s*R|H\s*[=＝]|计提基准/.test(window)) {
+      return window
+    }
     if (!fallback) fallback = window
   }
   return fallback
@@ -404,6 +436,7 @@ function carryRatesFromWindow(window: string): string[] {
     /部分的\s*([\d.]+)\s*%\s*(?:作为)?业绩报酬/g,
     /超额收益的\s*([\d.]+)\s*%/g,
     /H\s*[=＝][^。;；]{0,60}[×x*]\s*([\d.]+)\s*%\s*[×x*]\s*C/g,
+    /(?:提取比例|计提比例)\s*[（(]?\s*X?\s*[)）]?\s*[为是：:]*\s*[【[]?\s*([\d.]+)\s*[】]]?\s*%/g,
   ]
   for (const re of patterns) {
     const global = new RegExp(re.source, "g")
@@ -417,6 +450,13 @@ function carryRatesFromWindow(window: string): string[] {
 }
 
 function hurdleFromWindow(window: string): string | null {
+  const bench =
+    window.match(/计提基准为年化\s*([\d.]+)\s*%/)
+    || window.match(/计提基准[为是：:]\s*年化\s*([\d.]+)\s*%/)
+  if (bench?.[1]) {
+    const n = parseFloat(bench[1])
+    if (Number.isFinite(n) && n > 0) return pct(bench[1])
+  }
   const m =
     window.match(/超过\s*([\d.]+)\s*%\s*部分/)
     || window.match(/R\s*(?:>|大于)\s*([\d.]+)\s*%/)
@@ -432,8 +472,41 @@ function hFormulaFromWindow(window: string): string | null {
   return m ? cleanEquation(m[0]) : null
 }
 
+/** A/B 份额分类表: A cell is 计提基准+计提比例, B cell is 不计提业绩报酬. */
+function extractDiffTablePerfFees(text: string): ClassPerfFee[] {
+  const s = flattenCjk(text)
+  const pair = s.match(
+    /计提基准[为是：:\s]*年化\s*([\d.]+)\s*%[^。]{0,160}计提比例[为是：:\s]*([\d.]+)\s*%/,
+  )
+  if (!pair?.[1] || !pair[2]) return []
+  const hurdleN = parseFloat(pair[1])
+  const rate = parseCarryPct(pair[2])
+  if (!rate || !Number.isFinite(hurdleN) || hurdleN <= 0) return []
+  if (!/A\s*类(?:基金)?份额/.test(s) || !/B\s*类(?:基金)?份额/.test(s)) return []
+  const named = s.match(/([ABC])\s*类(?:基金)?份额不(?:收取|计提|提取)业绩报酬/)
+  const pairIdx = pair.index ?? 0
+  const exemptIdx = s.search(/不(?:收取|计提|提取)业绩报酬/)
+  let exemptCls: "A" | "B" | "C" | null = null
+  if (named?.[1] === "A" || named?.[1] === "B" || named?.[1] === "C") {
+    exemptCls = named[1]
+  } else if (exemptIdx > pairIdx) {
+    exemptCls = "B"
+  }
+  if (!exemptCls || exemptCls === "A") return []
+  return [
+    {
+      cls: "A",
+      exempt: false,
+      ratePct: rate,
+      hurdlePct: pct(pair[1]),
+      formula: null,
+    },
+    { cls: exemptCls, exempt: true, ratePct: null, hurdlePct: null, formula: null },
+  ]
+}
+
 function extractShareClassPerfFees(text: string): ClassPerfFee[] {
-  const s = flatten(text)
+  const s = flattenCjk(text)
   const out: ClassPerfFee[] = []
   const seen = new Set<string>()
   const push = (fee: ClassPerfFee) => {
@@ -445,7 +518,11 @@ function extractShareClassPerfFees(text: string): ClassPerfFee[] {
     const window = classSectionWindow(s, cls)
     if (!window) continue
     const rates = carryRatesFromWindow(window)
-    const exempt = !rates.length && /不收取业绩报酬|不计提业绩报酬|不提取业绩报酬/.test(window)
+    const conditionalExempt = /若.{0,24}不(?:收取|计提|提取)业绩报酬|R\s*[≤<=].{0,16}不(?:收取|计提|提取)/.test(window)
+    const hasExemptPhrase = /不收取业绩报酬|不计提业绩报酬|不提取业绩报酬/.test(window)
+    // Paying cell + exempt cell linearized into one window — leave it for the table parser.
+    if (rates.length && hasExemptPhrase && !conditionalExempt) continue
+    const exempt = !rates.length && hasExemptPhrase
     if (!exempt && !rates.length) continue
     push({
       cls,
@@ -455,17 +532,23 @@ function extractShareClassPerfFees(text: string): ClassPerfFee[] {
       formula: exempt ? null : hFormulaFromWindow(window),
     })
   }
+  for (const fee of extractDiffTablePerfFees(s)) push(fee)
   if (
     !seen.has("C")
     && /[对将]?\s*C\s*类(?:基金)?份额不(?:收取|计提|提取)业绩报酬/.test(s)
   ) {
     push({ cls: "C", exempt: true, ratePct: null, hurdlePct: null, formula: null })
   }
-  return out
+  const rank = { A: 0, B: 1, C: 2 }
+  return out.sort((a, b) => rank[a.cls] - rank[b.cls])
 }
 
 function formatClassPerfPayLine(fee: ClassPerfFee): string {
   if (fee.exempt) return `${fee.cls}类不收取`
+  const hurdleN = fee.hurdlePct ? parseFloat(fee.hurdlePct) : 0
+  if (fee.ratePct && Number.isFinite(hurdleN) && hurdleN > 0) {
+    return `${fee.cls}类计提基准年化${fee.hurdlePct}，计提比例${fee.ratePct}`
+  }
   if (fee.ratePct) return `${fee.cls}类超额计提${fee.ratePct}`
   return `${fee.cls}类`
 }
@@ -522,9 +605,21 @@ function formulaHeadFromScope(scope: string): string[] {
   return head
 }
 
+function singlePayingCarryRate(classFees: ClassPerfFee[], benchHead: string[]): string | null {
+  const rates = classFees.filter((f) => !f.exempt && f.ratePct).map((f) => f.ratePct!)
+  if (rates.length && new Set(rates).size === 1) return rates[0]
+  return benchHead.join("").match(/超额计提([\d.]+%)/)?.[1] ?? null
+}
+
+function substituteCarryPlaceholder(eq: string, rate: string | null): string {
+  if (!rate) return eq
+  return eq.replace(/([×x*])\s*[Qq]\b/g, `$1${rate}`)
+}
+
 function composePerfFormula(eqParts: string[], classFees: ClassPerfFee[], benchHead: string[]): string | null {
   const classHead = classFees.map(formatClassPerfPayLine)
   const hForms = classFees.map((f) => f.formula).filter((x): x is string => Boolean(x))
+  const rate = singlePayingCarryRate(classFees, benchHead)
   const parts: string[] = []
   const seen = new Set<string>()
   const push = (item: string | null | undefined) => {
@@ -537,7 +632,7 @@ function composePerfFormula(eqParts: string[], classFees: ClassPerfFee[], benchH
   }
   if (classHead.length) classHead.forEach(push)
   else benchHead.forEach(push)
-  eqParts.forEach(push)
+  eqParts.map((eq) => substituteCarryPlaceholder(eq, rate)).forEach(push)
   hForms.forEach(push)
   if (!parts.length) return null
   return parts.join("；").slice(0, FORMULA_MAX)
@@ -986,6 +1081,34 @@ function preferClassLabeled(
   return preferCompact(current, next, isWeak)
 }
 
+export function shouldUpgradeFeePay(
+  current: string | null | undefined,
+  next: string | null | undefined,
+): boolean {
+  const nxt = (next ?? "").trim()
+  if (!nxt || isWeakFeePay(nxt)) return false
+  return hasNumericCarryRate(nxt) && !hasNumericCarryRate(current ?? "")
+}
+
+export function shouldUpgradeFormula(
+  current: string | null | undefined,
+  next: string | null | undefined,
+): boolean {
+  const nxt = (next ?? "").trim()
+  if (!nxt || isWeakFormula(nxt)) return false
+  return hasNumericCarryRate(nxt) && !hasNumericCarryRate(current ?? "")
+}
+
+function preferCarryComplete(
+  current: string | null | undefined,
+  next: string | null,
+  isWeak: (v: string | null | undefined) => boolean,
+): string | null | undefined {
+  const compact = next && !isWeak(next) ? next : null
+  if (compact && hasNumericCarryRate(compact) && !hasNumericCarryRate(current ?? "")) return compact
+  return preferClassLabeled(current, next, isWeak)
+}
+
 export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
   text: string,
   extracted: T,
@@ -996,7 +1119,7 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
   out.risk_level = preferCompact(out.risk_level, extractRiskLevelFromText(source), isWeakRiskLevel)
   out.lock_period_desc = preferCompact(out.lock_period_desc, extractLockPeriodFromText(source), isWeakLockPeriod)
   if (isWeakLockPeriod(out.lock_period_desc)) out.lock_period_desc = "不设置"
-  out.fee_pay_formula = preferClassLabeled(out.fee_pay_formula, extractFeePayFormulaFromText(source), isWeakFormula)
+  out.fee_pay_formula = preferCarryComplete(out.fee_pay_formula, extractFeePayFormulaFromText(source), isWeakFormula)
   out.fee_manage = preferCompact(
     out.fee_manage,
     summarizeFeeManageDesc(source, out.fee_manage, out.fee_manage_rate),
@@ -1010,7 +1133,7 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
       if (Number.isFinite(n) && n > 0 && n <= 10) out.fee_manage_rate = `${n}%`
     }
   }
-  out.fee_pay = preferClassLabeled(out.fee_pay, summarizeFeePayDesc(source), isWeakFeePay)
+  out.fee_pay = preferCarryComplete(out.fee_pay, summarizeFeePayDesc(source), isWeakFeePay)
   out.add_amount = preferCompact(out.add_amount, extractAddAmountFromText(source), isWeakAddAmount)
   out.fee_redeem = preferFeeRedeem(out.fee_redeem, extractFeeRedeemFromText(source))
   out.closed_period = preferCompact(out.closed_period, extractClosedPeriodFromText(source), isWeakShortFee)

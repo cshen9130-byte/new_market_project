@@ -394,6 +394,18 @@ export async function upsertServerOpsLedgerRecords(
   return saved
 }
 
+/** Remove auto-generated rows that are no longer produced. Does not record a generation skip. */
+export async function deleteUnprotectedAutoLedgerRecords(ids: string[]): Promise<number> {
+  await ensureTable()
+  const unique = [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))]
+  if (unique.length === 0) return 0
+  const rows = await query<{ id: string }>(
+    `DELETE FROM ops_ledger_records WHERE id = ANY($1::text[]) RETURNING id`,
+    [unique],
+  )
+  return rows.length
+}
+
 export async function listLedgerGenerationSkips(): Promise<string[]> {
   await ensureTable()
   const rows = await query<{ generation_key: string }>(

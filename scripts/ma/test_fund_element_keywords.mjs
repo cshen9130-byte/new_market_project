@@ -376,6 +376,45 @@ assert.ok(azhSc.A?.fee_pay?.includes("30%"), azhSc.A?.fee_pay)
 assert.ok(azhSc.B?.fee_pay?.includes("20%"), azhSc.B?.fee_pay)
 assert.ok(azhSc.C?.fee_pay?.includes("不收取"), azhSc.C?.fee_pay)
 
+// 棕榈滩泰来四号：分类表「计提基准：年化10%；计提比例：50%」/ B类不计提。禁止只写10% hurdle.
+const agt37a = `
+本基金对 A 类份额和 B 类份额的部分分类约定如下：
+A类份额 B类份额
+分类标准 向除 B 类份额投资者以外的其它合格投资者募集的基金份额 向本基金管理人管理的其他私募基金募集的基金份额
+认购费率 0% 0%
+申购费率 0% 0%
+年管理费率 1% 1%
+业绩报酬（计算方式详见“私募基金的费用与税收”章节之“基金的业绩报酬”）
+计提基准：年化 10%；
+计提比例：50%；
+不计提业绩报酬；
+4、基金的业绩报酬
+R=（Tn - T0）/ T1 × 365 / T ×100%；
+当 R - B >0 时，E=K×T1×（R - B）×T/365×Q；
+`
+assert.ok(isWeakFeePay("A类份额计提基准：年化10%"))
+assert.ok(isWeakFormula("R= (Tn - T0) / T1 × 365 / T × 100%; E=K×T1× (R - B) ×T/365×Q"))
+
+const agtPay = summarizeFeePayDesc(agt37a)
+assert.ok(agtPay && agtPay.includes("10%"), agtPay)
+assert.ok(agtPay && agtPay.includes("50%"), agtPay)
+assert.ok(agtPay && /B类不收取/.test(agtPay), agtPay)
+assert.ok(agtPay && agtPay.indexOf("A类") < agtPay.indexOf("B类"), agtPay)
+
+const agtFormula = extractFeePayFormulaFromText(agt37a)
+assert.ok(agtFormula && agtFormula.includes("50%"), agtFormula)
+assert.ok(agtFormula && /R\s*=/.test(agtFormula), agtFormula)
+assert.ok(agtFormula && !/[×x*]Q/.test(agtFormula.replace(/\s/g, "")), agtFormula)
+
+const agtFilled = fillMissingElementsFromKeywords(agt37a, {
+  fee_pay: "A类份额计提基准：年化10%",
+  fee_pay_formula: "R= (Tn - T0) / T1 × 365 / T × 100%; E=K×T1× (R - B) ×T/365×Q",
+})
+assert.ok(agtFilled.fee_pay?.includes("50%"), agtFilled.fee_pay)
+assert.ok(agtFilled.fee_pay?.includes("10%"), agtFilled.fee_pay)
+assert.ok(agtFilled.fee_pay_formula?.includes("50%"), agtFilled.fee_pay_formula)
+assert.ok(!isWeakFeePay("A类份额计提基准：年化10%；计提比例：50%；B类份额不计提业绩报酬"))
+
 const zhongliang19 = `
 认购费率 0% 0% 0%
 申购费率 0% 0% 0%

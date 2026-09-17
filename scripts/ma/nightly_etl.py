@@ -5012,6 +5012,50 @@ def step_dd_materials_links() -> int:
     return changed
 
 
+def step_promote_unregistered_products() -> int:
+    """Merge 未备案临时产品 into AMAC-listed funds, then rematch leftover extract jobs."""
+    log.info("promote_unregistered_products: matching temp products to AMAC list …")
+    promoted = run_node_script(
+        "contract_extract_etl.ts",
+        extra_args=["--promote-unregistered"],
+        timeout=300,
+    )
+    if not promoted:
+        raise RuntimeError("promote_unregistered_products: no result from --promote-unregistered")
+    if not promoted.get("ok"):
+        raise RuntimeError(
+            f"promote_unregistered_products: failed — {promoted.get('error', 'unknown')}"
+        )
+    promoted_n = int(promoted.get("promoted") or 0)
+    pending_n = int(promoted.get("pending") or 0)
+    failed_n = int(promoted.get("failed") or 0)
+    log.info(
+        "promote_unregistered_products: promoted=%d pending=%d failed=%d",
+        promoted_n,
+        pending_n,
+        failed_n,
+    )
+
+    log.info("promote_unregistered_products: rematching needs_review extract jobs …")
+    rematch = run_node_script(
+        "contract_extract_etl.ts",
+        extra_args=["--rematch-review"],
+        timeout=900,
+    )
+    rematch_applied = 0
+    if rematch and rematch.get("ok"):
+        rematch_applied = int(rematch.get("applied") or 0)
+        log.info(
+            "promote_unregistered_products: rematch processed=%s applied=%s needs_review=%s",
+            rematch.get("processed"),
+            rematch.get("applied"),
+            rematch.get("needsReview"),
+        )
+    elif rematch is None:
+        log.warning("promote_unregistered_products: rematch returned no result")
+    return promoted_n + rematch_applied
+
+
 def step_contract_extract() -> int:
     """Drain queued/failed fund-contract element extract jobs (LLM)."""
     log.info("contract_extract: draining queued contract extract jobs …")
@@ -5405,6 +5449,7 @@ AMAC_STEPS = [
     "amac_private_funds",
     "amac_futures",
     "sync_amac_fund_metadata",
+    "promote_unregistered_products",
 ]
 
 # Chart-critical 期货/期权 steps. Scheduled separately so a broken 01:00 full
@@ -5487,6 +5532,7 @@ ORDERED_STEPS = [
     "amac_futures",                  # AMAC 期货公司集合资管 → amac_futures_products (+ new private_fund_info)
     "amac_extra",                    # AMAC managers / all orgs / every person + executives → amac_* tables
     "sync_amac_fund_metadata",       # 备案日期 / 公司管理规模 → basicinfo_bfl_track
+    "promote_unregistered_products", # 未备案临时产品 → 正式产品；待确认合同重新匹配
     "pe_industry_stats",             # 私募行业 dashboard aggregates from amac_* tables
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "private_fund_list_nav_sync",    # advance 私募基金 list NAV from product-page email/team
@@ -5638,6 +5684,7 @@ def main():
         "amac_futures":                    lambda: step_amac_futures(force_full=force),
         "amac_extra":                      lambda: step_amac_extra(force_full=force),
         "sync_amac_fund_metadata":         lambda: step_sync_amac_fund_metadata(),
+        "promote_unregistered_products":    lambda: step_promote_unregistered_products(),
         "pe_industry_stats":               lambda: step_pe_industry_stats(),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "private_fund_list_nav_sync":      lambda: step_private_fund_list_nav_sync(),

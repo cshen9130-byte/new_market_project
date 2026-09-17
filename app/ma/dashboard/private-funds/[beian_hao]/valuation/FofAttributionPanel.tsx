@@ -45,7 +45,7 @@ type Props = {
   toDate?: string
 }
 
-type SortKey = "pnl" | "returnContribution" | "navContribution"
+type SortKey = "pnl" | "mtmPnl" | "realizedPnl" | "returnContribution" | "navContribution"
 type ViewMode = "fund" | "strategy"
 
 type TableRow = {
@@ -203,6 +203,13 @@ const HELP_BLOCKS: ChartCalcHelpBlock[] = [
     formula: "区间投资收益 = 剩余持仓市值变动 + Σ申赎已实现盈亏",
   },
   {
+    title: "剩余持仓市值变动",
+    paragraphs: [
+      "区间内仍持有的份额盯市到期末净值的盈亏。不含已赎回份额上已经实现的部分。",
+    ],
+    formula: "剩余持仓市值变动 = 区间投资收益 − 申赎已实现盈亏",
+  },
+  {
     title: "申赎已实现盈亏",
     paragraphs: [
       "赎回：赎回份额 × (确认净值 − 上一估值日净值)。例如期初持仓 200 万，净值上涨到 210 万后赎回 110 万市值、留下 100 万，则赎回那部分已实现约 5.24 万，剩余持仓市值变动约 4.76 万，合计 10 万。申购确认时盈亏为 0。确认日在 (上一估值日, 本估值日] 内的台账优先；台账没有该笔时，用估值表份额变动 × 期末净值估算赎回市值。",
@@ -289,6 +296,57 @@ function navColumnHelp(startPaidIn: number | null, startNav: number | null): Cha
       : startNav != null && startNav > 0
         ? [{ title: "本期分母（期初资产净值）", formula: `${fmtMoney(startNav)} 元` }]
         : []),
+  ]
+}
+
+function mtmColumnHelp(): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "含义",
+      paragraphs: ["区间内仍持有的份额，盯市到期末净值的盈亏。不含已赎回份额上已经实现的部分。"],
+    },
+    {
+      title: "公式",
+      formula: "剩余持仓市值变动 = 区间投资收益 − 申赎已实现盈亏",
+    },
+  ]
+}
+
+function realizedColumnHelp(): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "含义",
+      paragraphs: [
+        "赎回份额在确认净值上相对上一标记净值已经赚到/亏掉的部分。申购确认时为 0。优先用申赎台账。",
+      ],
+    },
+    {
+      title: "公式",
+      formula: "赎回已实现 = 赎回份额 × (确认净值 − 上一标记净值)",
+    },
+  ]
+}
+
+function rowMtmHelp(row: TableRow): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "本行",
+      paragraphs: [`${row.fundName} · ${row.fromDate} ～ ${row.toDate}`],
+      formula: `剩余持仓市值变动 = ${fmtMoney(row.mtmPnl)} 元`,
+    },
+  ]
+}
+
+function rowRealizedHelp(row: TableRow): ChartCalcHelpBlock[] {
+  return [
+    {
+      title: "本行",
+      paragraphs: [
+        `${row.fundName} · ${row.fromDate} ～ ${row.toDate}`,
+        `申赎来源：${cashFlowSourceLabel(row.cashFlowSource)}`,
+      ],
+      formula: `申赎已实现盈亏 = ${fmtMoney(row.realizedPnl)} 元`,
+    },
   ]
 }
 
@@ -465,6 +523,8 @@ export function FofAttributionPanel({
 
   const filteredTotals = useMemo(() => ({
     pnl: tableRows.reduce((s, r) => s + r.pnl, 0),
+    mtmPnl: tableRows.reduce((s, r) => s + r.mtmPnl, 0),
+    realizedPnl: tableRows.reduce((s, r) => s + r.realizedPnl, 0),
     returnContribution: tableRows.reduce((s, r) => s + r.returnContribution, 0),
     navContribution: tableRows.reduce((s, r) => s + r.navContribution, 0),
   }), [tableRows])
@@ -475,12 +535,22 @@ export function FofAttributionPanel({
       return
     }
     setSortKey(key)
-    setSortDir(key === "pnl" ? "asc" : "desc")
+    setSortDir(key === "returnContribution" || key === "navContribution" ? "desc" : "asc")
   }
 
   function handleExport() {
     if (!tableRows.length) return
-    const headers = ["序号", "基金名称", "投资策略", "统计区间", "区间投资收益(元)", "组合收益贡献度", "组合净值贡献度"]
+    const headers = [
+      "序号",
+      "基金名称",
+      "投资策略",
+      "统计区间",
+      "区间投资收益(元)",
+      "剩余持仓市值变动(元)",
+      "申赎已实现盈亏(元)",
+      "组合收益贡献度",
+      "组合净值贡献度",
+    ]
     const lines = [
       headers.join(","),
       ...tableRows.map((row, i) => [
@@ -489,6 +559,8 @@ export function FofAttributionPanel({
         row.strategy,
         `${row.fromDate}~${row.toDate}`,
         row.pnl.toFixed(2),
+        row.mtmPnl.toFixed(2),
+        row.realizedPnl.toFixed(2),
         (row.returnContribution * 100).toFixed(4),
         row.navContribution.toFixed(6),
       ].join(",")),
@@ -498,6 +570,8 @@ export function FofAttributionPanel({
         "",
         "",
         filteredTotals.pnl.toFixed(2),
+        filteredTotals.mtmPnl.toFixed(2),
+        filteredTotals.realizedPnl.toFixed(2),
         (filteredTotals.returnContribution * 100).toFixed(4),
         filteredTotals.navContribution.toFixed(6),
       ].join(","),
@@ -511,6 +585,7 @@ export function FofAttributionPanel({
   }
 
   const earliest = data?.earliestValuationDate
+  const colCount = viewMode === "fund" ? 9 : 8
 
   return (
     <div className="bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden mt-4">
@@ -651,6 +726,32 @@ export function FofAttributionPanel({
                 )}
               />
               <SortTh
+                label="剩余持仓市值变动"
+                active={sortKey === "mtmPnl"}
+                dir={sortDir}
+                onClick={() => handleSort("mtmPnl")}
+                help={(
+                  <ChartCalcHelpButton
+                    heading="剩余持仓市值变动 · 计算说明"
+                    align="end"
+                    blocks={mtmColumnHelp()}
+                  />
+                )}
+              />
+              <SortTh
+                label="申赎已实现盈亏"
+                active={sortKey === "realizedPnl"}
+                dir={sortDir}
+                onClick={() => handleSort("realizedPnl")}
+                help={(
+                  <ChartCalcHelpButton
+                    heading="申赎已实现盈亏 · 计算说明"
+                    align="end"
+                    blocks={realizedColumnHelp()}
+                  />
+                )}
+              />
+              <SortTh
                 label="组合收益贡献度"
                 active={sortKey === "returnContribution"}
                 dir={sortDir}
@@ -681,19 +782,19 @@ export function FofAttributionPanel({
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-sm text-zinc-400">
+                <td colSpan={colCount} className="px-4 py-12 text-center text-sm text-zinc-400">
                   加载 FOF 归因…
                 </td>
               </tr>
             ) : error ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-sm text-red-500">
+                <td colSpan={colCount} className="px-4 py-12 text-center text-sm text-red-500">
                   {error}
                 </td>
               </tr>
             ) : tableRows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-sm text-zinc-400">
+                <td colSpan={colCount} className="px-4 py-12 text-center text-sm text-zinc-400">
                   {allRows.length === 0
                     ? "所选区间估值表不足，无法计算基金收益归因"
                     : "当前投资策略筛选下没有基金"}
@@ -729,6 +830,24 @@ export function FofAttributionPanel({
                       <CellHelp
                         heading={`${row.fundName} · 区间投资收益`}
                         blocks={rowPnlHelp(row)}
+                      />
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <span className="inline-flex items-center justify-end gap-0.5">
+                      <SignedMoney value={row.mtmPnl} />
+                      <CellHelp
+                        heading={`${row.fundName} · 剩余持仓市值变动`}
+                        blocks={rowMtmHelp(row)}
+                      />
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <span className="inline-flex items-center justify-end gap-0.5">
+                      <SignedMoney value={row.realizedPnl} />
+                      <CellHelp
+                        heading={`${row.fundName} · 申赎已实现盈亏`}
+                        blocks={rowRealizedHelp(row)}
                       />
                     </span>
                   </td>
@@ -775,6 +894,32 @@ export function FofAttributionPanel({
                         title: "本行",
                         paragraphs: ["当前表中各行区间投资收益之和。口径为剩余持仓市值变动 + 申赎已实现盈亏。"],
                         formula: `Σ = ${fmtMoney(filteredTotals.pnl)} 元`,
+                      }]}
+                    />
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 text-right">
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    <SignedMoney value={filteredTotals.mtmPnl} />
+                    <CellHelp
+                      heading="合计 · 剩余持仓市值变动"
+                      blocks={[{
+                        title: "本行",
+                        paragraphs: ["当前表中各行剩余持仓市值变动之和。"],
+                        formula: `Σ = ${fmtMoney(filteredTotals.mtmPnl)} 元`,
+                      }]}
+                    />
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 text-right">
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    <SignedMoney value={filteredTotals.realizedPnl} />
+                    <CellHelp
+                      heading="合计 · 申赎已实现盈亏"
+                      blocks={[{
+                        title: "本行",
+                        paragraphs: ["当前表中各行申赎已实现盈亏之和。"],
+                        formula: `Σ = ${fmtMoney(filteredTotals.realizedPnl)} 元`,
                       }]}
                     />
                   </span>

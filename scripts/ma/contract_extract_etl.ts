@@ -10,6 +10,7 @@
  *   npx tsx scripts/ma/contract_extract_etl.ts --reextract-incomplete
  *   npx tsx scripts/ma/contract_extract_etl.ts --backfill-keywords
  *   npx tsx scripts/ma/contract_extract_etl.ts --fanout-share-classes
+ *   npx tsx scripts/ma/contract_extract_etl.ts --promote-unregistered
  */
 
 import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
@@ -31,6 +32,7 @@ async function main() {
     backfillKeywordFieldsFromStoredContracts,
     fanoutAppliedElementsToShareClasses,
     processContractExtractQueue,
+    promoteUnregisteredExtractProducts,
     rematchNeedsReviewExtractJobs,
     requeueIncompleteContractExtractJobs,
   } = await import("@/lib/server/fund-contract-extract-job")
@@ -42,8 +44,20 @@ async function main() {
     process.argv.includes("--backfill-keywords") || process.argv.includes("--backfillKeywords")
   const fanoutShareClasses =
     process.argv.includes("--fanout-share-classes") || process.argv.includes("--fanoutShareClasses")
+  const promoteUnregistered =
+    process.argv.includes("--promote-unregistered") || process.argv.includes("--promoteUnregistered")
   const beianHao = (process.argv.find((arg) => arg.startsWith("--beian=")) ?? "").slice("--beian=".length)
   try {
+    if (promoteUnregistered) {
+      console.error("[contract_extract_etl] promoting 未备案临时产品 into AMAC matches…")
+      const promoted = await promoteUnregisteredExtractProducts()
+      console.error(
+        `[contract_extract_etl] promote unregistered: pending=${promoted.pending} ` +
+          `promoted=${promoted.promoted} skipped=${promoted.skipped} failed=${promoted.failed}`,
+      )
+      console.log(JSON.stringify({ ok: true, promoteUnregistered: true, ...promoted }))
+      process.exit(0)
+    }
     if (rematchReview) {
       console.error("[contract_extract_etl] rematching needs_review jobs (reuse extracted JSON)…")
       const result = await rematchNeedsReviewExtractJobs({ maxJobs: 200 })

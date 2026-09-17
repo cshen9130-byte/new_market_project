@@ -330,6 +330,31 @@ function productProfileUrl(beianHao: string) {
   return `/ma/dashboard/private-funds/${encodeURIComponent(beianHao)}?tab=profile`
 }
 
+function guessRegisterFromJob(job: ExtractJob): string {
+  const fromExtract = (job.extracted_json?.register_number ?? "").trim().toUpperCase()
+  if (/^[A-Z][A-Z0-9]{4,7}[A-Z]?$/.test(fromExtract) && /\d/.test(fromExtract) && !fromExtract.startsWith("TMP")) {
+    return fromExtract
+  }
+  const text = `${job.original_filename} ${job.text_preview ?? ""}`.toUpperCase()
+  const re = /(?<![A-Z0-9])([A-Z][A-Z0-9]{4,7}[A-Z]?)(?![A-Z0-9])/g
+  for (const match of text.matchAll(re)) {
+    const code = match[1]
+    if (/\d/.test(code) && !code.startsWith("TMP")) return code
+  }
+  return ""
+}
+
+function isUnregisteredPendingJob(job: ExtractJob) {
+  return (job.error_message ?? "").includes("未备案临时产品")
+}
+
+function jobRemark(job: ExtractJob) {
+  if (isUnregisteredPendingJob(job)) return "未备案临时产品，待协会同步后并入正式产品"
+  if ((job.error_message ?? "").startsWith("已并入正式产品")) return job.error_message ?? "—"
+  if (job.status === "applied") return `已写入 ${job.applied_fields?.length ?? 0} 个空缺字段`
+  return job.error_message || "—"
+}
+
 function statusClass(status: ExtractJobStatus) {
   if (status === "applied") return "bg-emerald-50 text-emerald-800 border-emerald-200"
   if (status === "needs_review") return "bg-amber-50 text-amber-800 border-amber-200"
@@ -411,6 +436,8 @@ export function OperationsElementExtractBatchPanel() {
   const [editingExtracted, setEditingExtracted] = useState(false)
   const [editDraft, setEditDraft] = useState<ExtractedFundElements | null>(null)
   const [savingExtracted, setSavingExtracted] = useState(false)
+  const [unregisteredName, setUnregisteredName] = useState("")
+  const [unregisteredBeian, setUnregisteredBeian] = useState("")
 
   const activeJob = useMemo(
     () => jobs.find((job) => job.id === activeJobId) ?? null,
@@ -511,6 +538,8 @@ export function OperationsElementExtractBatchPanel() {
       setApplyMessage(null)
       setEditingExtracted(false)
       setEditDraft(null)
+      setUnregisteredName("")
+      setUnregisteredBeian("")
       return
     }
     const matched = activeJob.matched_funds ?? []
@@ -520,6 +549,8 @@ export function OperationsElementExtractBatchPanel() {
         : null) ?? matched[0] ?? null
     setSelectedFund(existing)
     setFundInput(existing?.product_name || activeJob.product_name || activeJob.extracted_json?.fund_name || "")
+    setUnregisteredName(activeJob.extracted_json?.fund_name?.trim() || activeJob.product_name || "")
+    setUnregisteredBeian(guessRegisterFromJob(activeJob))
     if (skipSelectionResetRef.current === activeJob.id) {
       skipSelectionResetRef.current = 0
     } else {
@@ -743,6 +774,53 @@ export function OperationsElementExtractBatchPanel() {
       const json = await res.json()
       if (!res.ok || json.error) throw new Error(json.error || "写入失败")
       setApplyMessage(`已写入并保存合同到「${selectedFund.product_name}」`)
+      await Promise.all([loadJobs(), loadCoverage()])
+    } catch (err) {
+      setApplyMessage(err instanceof Error ? err.message : "写入失败")
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  async function handleApplyUnregistered() {
+    if (!activeJob || editingExtracted) return
+    const extracted = activeJob.extracted_json
+    if (!extracted) return
+    const productName = unregisteredName.trim() || extracted.fund_name?.trim() || ""
+    if (!productName) {
+      setApplyMessage("请填写产品名称后再确认为未备案产品")
+      return
+    }
+    const payload: Record<string, string | null> = {}
+    for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
+      const value = extracted[key]
+      if (!value?.trim()) continue
+      payload[key] = value
+    }
+    payload.fund_name = productName
+    if (unregisteredBeian.trim()) payload.register_number = unregisteredBeian.trim()
+    setApplying(true)
+    setApplyMessage(null)
+    try {
+      const res = await fetch(`/ma/api/ops/fund-elements/jobs/${activeJob.id}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...userHeaders() },
+        body: JSON.stringify({
+          create_unregistered: true,
+          product_name: productName,
+          register_number: unregisteredBeian.trim() || null,
+          fields: payload,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.error) throw new Error(json.error || "写入失败")
+      const createdName = json.data?.product_name || productName
+      const createdBeian = json.data?.beian_hao || unregisteredBeian
+      setApplyMessage(
+        json.unregistered
+          ? `已创建未备案临时产品「${createdName}」${createdBeian ? `（${createdBeian}）` : ""}，协会备案后会自动并入正式产品`
+          : `已写入并保存合同到「${createdName}」`,
+      )
       await Promise.all([loadJobs(), loadCoverage()])
     } catch (err) {
       setApplyMessage(err instanceof Error ? err.message : "写入失败")
@@ -1072,6 +1150,11 @@ export function OperationsElementExtractBatchPanel() {
                   <td className="px-3 py-2">
                     {job.product_name || "—"}
                     {job.beian_hao ? <div className="text-xs text-muted-foreground">{job.beian_hao}</div> : null}
+                    {isUnregisteredPendingJob(job) ? (
+                      <span className="mt-1 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800">
+                        未备案
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2">
                     <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs ${statusClass(job.status)}`}>
@@ -1081,10 +1164,8 @@ export function OperationsElementExtractBatchPanel() {
                   <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
                     {(job.processed_at || job.uploaded_at || "").replace("T", " ").slice(0, 19)}
                   </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-[240px]" title={job.error_message || ""}>
-                    {job.status === "applied"
-                      ? `已写入 ${job.applied_fields?.length ?? 0} 个空缺字段`
-                      : job.error_message || "—"}
+                  <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-[240px]" title={jobRemark(job)}>
+                    {jobRemark(job)}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
@@ -1247,6 +1328,48 @@ export function OperationsElementExtractBatchPanel() {
                     产品资料
                   </a>
                 ) : null}
+              </div>
+            )}
+            {activeJob.status === "needs_review" && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+                <div className="text-sm font-medium text-amber-900">合同对应尚未备案的新产品？</div>
+                <p className="text-xs text-amber-800/90">
+                  可先按合同要素创建临时产品并写入。协会列表同步到该产品后，会自动并入正式产品，合同和要素会一起带过去。
+                </p>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-muted-foreground">产品名称</label>
+                    <input
+                      value={unregisteredName}
+                      onChange={(e) => setUnregisteredName(e.target.value)}
+                      placeholder="从合同提取的产品全称"
+                      className="mt-1 w-full border rounded px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">备案号（可空，合同里有则填）</label>
+                    <input
+                      value={unregisteredBeian}
+                      onChange={(e) => setUnregisteredBeian(e.target.value)}
+                      placeholder="暂无则自动生成临时编号"
+                      className="mt-1 w-full border rounded px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleApplyUnregistered()}
+                  disabled={applying || loadingCurrent || editingExtracted || !activeJob.extracted_json || !unregisteredName.trim()}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded border border-amber-300 bg-white text-sm text-amber-900 hover:bg-amber-100 transition-colors disabled:opacity-60"
+                >
+                  {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}
+                  {applying ? "写入中…" : "确认为未备案产品并写入"}
+                </button>
+              </div>
+            )}
+            {isUnregisteredPendingJob(activeJob) && activeJob.status === "applied" && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-900">
+                当前为未备案临时产品。协会备案完成后会自动并入正式产品。
               </div>
             )}
             {activeJob.text_preview && (

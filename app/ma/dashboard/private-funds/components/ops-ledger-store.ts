@@ -490,6 +490,7 @@ export async function generateLedgerFromValuation(): Promise<{
   skippedProtected: number
   skippedDeleted: number
   confirmMatched: number
+  removedStale: number
 }> {
   const data = await apiFetch<{
     ok: true
@@ -500,6 +501,7 @@ export async function generateLedgerFromValuation(): Promise<{
     skippedProtected: number
     skippedDeleted: number
     confirmMatched: number
+    removedStale: number
   }>("/ma/api/ops/ledger/generate-from-valuation", { method: "POST" })
   await refreshLedgerRecordsFromServer()
   return data

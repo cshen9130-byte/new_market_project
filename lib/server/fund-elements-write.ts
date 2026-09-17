@@ -28,7 +28,9 @@ import {
   isWeakRiskLevel,
   isWeakShortFee,
   isWeakTemporaryOpen,
+  shouldUpgradeFeePay,
   shouldUpgradeFeeRedeem,
+  shouldUpgradeFormula,
   type ShareClassFeeOverrides,
 } from "@/lib/server/fund-contract-element-keywords"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
@@ -529,7 +531,19 @@ export function buildFillEmptyWriteBody(
         typeof current?.fee_redeem === "string" ? current.fee_redeem : null,
         next,
       )
-    if (!currentNeedsFill(key, current) && !upgradeRedeem) continue
+    const upgradePay =
+      key === "fee_pay"
+      && shouldUpgradeFeePay(
+        typeof current?.fee_pay === "string" ? current.fee_pay : null,
+        next,
+      )
+    const upgradeFormula =
+      key === "fee_pay_formula"
+      && shouldUpgradeFormula(
+        typeof current?.fee_pay_formula === "string" ? current.fee_pay_formula : null,
+        next,
+      )
+    if (!currentNeedsFill(key, current) && !upgradeRedeem && !upgradePay && !upgradeFormula) continue
     if (next) {
       body[key] = next
       continue
@@ -605,8 +619,16 @@ function splitClassFeePay(feePay: string | null | undefined, cls: string): strin
   if (!/[;；][A-C](?:类|份额|份)/.test(s)) return null
   const parts = s.split(/[;；]/)
   if (parts.length < 2) return null
-  const clsPart = parts.find((p) => new RegExp(`^${cls}(?:类|份额|份)`).test(p.trim()))
-  return clsPart?.trim() ?? null
+  const clsPartIdx = parts.findIndex((p) => new RegExp(`^${cls}(?:类|份额|份)`).test(p.trim()))
+  if (clsPartIdx < 0) return null
+  const chunks = [parts[clsPartIdx].trim()]
+  // "A类计提基准：年化10%；计提比例：50%；B类不计提" — 50% belongs to A, not a new class.
+  for (let i = clsPartIdx + 1; i < parts.length; i++) {
+    const part = parts[i].trim()
+    if (/^[A-C](?:类|份额|份)/.test(part)) break
+    if (part) chunks.push(part)
+  }
+  return chunks.join("；")
 }
 
 /** Merge class-specific fee overrides into the extracted object before writing. */

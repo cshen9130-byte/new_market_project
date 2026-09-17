@@ -10,6 +10,7 @@ import {
   pickHighConfidenceFundMatch,
   readFundContractText,
   softenWeakExtractedFields,
+  type ExtractedFundElements,
 } from "@/lib/server/fund-contract-element-extract"
 import { extractShareClassFeeOverrides } from "@/lib/server/fund-contract-element-keywords"
 import {
@@ -46,6 +47,13 @@ import {
   isLatestContractDocument,
 } from "@/lib/server/contract-document-recency"
 import { shouldYieldBackgroundWorkToUsers } from "@/lib/server/user-activity-priority"
+import {
+  createUnregisteredProductForExtractJob,
+  getUnregisteredProductByJobId,
+  markExtractJobUnregisteredPending,
+  promoteUnregisteredProducts,
+  UNREGISTERED_PENDING_NOTE,
+} from "@/lib/server/unregistered-fund-product"
 
 export type ContractExtractRunResult = {
   processed: number
@@ -209,11 +217,17 @@ async function attachContractAndApply(
     ? await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted)
     : await writeFillEmptyElementsAcrossShareClasses(resolvedBeian, productName, extracted)
 
-  const latestNote = useLatest
-    ? null
-    : currentRecency.kind === "announcement"
-      ? "已保存文件；公告/说明未覆盖合同要素"
-      : "已保存合同；要素以更新的合同或补充协议为准"
+  const pendingUnregistered = await getUnregisteredProductByJobId(job.id)
+  const keepUnregisteredNote =
+    pendingUnregistered?.status === "pending" &&
+    pendingUnregistered.temp_beian_hao.trim().toUpperCase() === resolvedBeian.trim().toUpperCase()
+  const latestNote = keepUnregisteredNote
+    ? UNREGISTERED_PENDING_NOTE
+    : useLatest
+      ? null
+      : currentRecency.kind === "announcement"
+        ? "已保存文件；公告/说明未覆盖合同要素"
+        : "已保存合同；要素以更新的合同或补充协议为准"
 
   await updateElementExtractJob(job.id, {
     status: "applied",
@@ -240,7 +254,7 @@ async function processOneJob(
       contractText: job.text_preview ?? undefined,
     }
     const hasExtractedContent = extractedHasContent(job.extracted_json)
-    const result = options?.reuseExtracted && hasExtractedContent
+    const result = options?.reuseExtracted && hasExtractedContent && job.extracted_json
       ? {
           extracted: job.extracted_json,
           matched_funds: await matchFundsFromExtracted(job.extracted_json, hints),
@@ -535,8 +549,8 @@ export async function backfillKeywordFieldsFromStoredContracts(options?: {
       const current = await loadExtractedElementDisplayValues(beian, productName)
       const extracted = applyContractKeywordFallbacks(text, {
         ...(job.extracted_json ?? {}),
-        fee_manage_rate: job.extracted_json?.fee_manage_rate || current?.fee_manage_rate,
-      })
+        fee_manage_rate: job.extracted_json?.fee_manage_rate || current?.fee_manage_rate || null,
+      } as ExtractedFundElements)
       const shareClassOverrides = extractShareClassFeeOverrides(text)
       const fields = await writeFillEmptyElementsAcrossShareClasses(
         beian,
@@ -833,15 +847,70 @@ export async function applyElementExtractJobManually(input: {
     fields = await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted)
   }
 
+  const pendingUnregistered = await getUnregisteredProductByJobId(job.id)
+  const keepUnregisteredNote =
+    pendingUnregistered?.status === "pending" &&
+    pendingUnregistered.temp_beian_hao.trim().toUpperCase() === resolvedBeian.trim().toUpperCase()
+
   const updated = await updateElementExtractJob(job.id, {
     status: "applied",
     beian_hao: resolvedBeian,
     product_name: productName,
     extracted_json: extracted,
     applied_fields: fields,
-    error_message: null,
+    error_message: keepUnregisteredNote ? UNREGISTERED_PENDING_NOTE : null,
     contract_material_id: contractId,
   })
   if (!updated) throw new Error("更新任务状态失败")
   return updated
+}
+
+export async function applyUnregisteredElementExtractJob(input: {
+  jobId: number
+  product_name?: string | null
+  register_number?: string | null
+  fields?: Record<string, string | null>
+  created_by?: string
+}): Promise<ElementExtractJobRow> {
+  const job = await getElementExtractJobById(input.jobId)
+  if (!job) throw new Error("任务不存在")
+  if (!job.extracted_json) throw new Error("任务尚未完成提取，无法写入")
+
+  const created = await createUnregisteredProductForExtractJob({
+    job,
+    product_name: input.product_name,
+    register_number: input.register_number,
+    created_by: input.created_by,
+  })
+  const extracted = {
+    ...job.extracted_json,
+    fund_name: created.product_name,
+    register_number: created.beian_hao,
+  }
+  await updateElementExtractJob(job.id, {
+    extracted_json: extracted,
+    beian_hao: created.beian_hao,
+    product_name: created.product_name,
+  })
+
+  const applied = await applyElementExtractJobManually({
+    jobId: input.jobId,
+    beian_hao: created.beian_hao,
+    product_name: created.product_name,
+    fields: input.fields
+      ? { ...input.fields, fund_name: created.product_name, register_number: created.beian_hao }
+      : undefined,
+  })
+  if (created.reused_existing) return applied
+  await markExtractJobUnregisteredPending(job.id, created.beian_hao, created.product_name)
+  return {
+    ...applied,
+    beian_hao: created.beian_hao,
+    product_name: created.product_name,
+    error_message: UNREGISTERED_PENDING_NOTE,
+  }
+}
+
+export async function promoteUnregisteredExtractProducts() {
+  return promoteUnregisteredProducts()
 }

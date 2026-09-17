@@ -718,6 +718,7 @@ export function GenerateFromValuationDialog({
         `新增 ${result.inserted} 条，更新 ${result.updated} 条，匹配确认单 ${result.confirmMatched} 条` +
         (result.skippedProtected ? `，跳过已修正 ${result.skippedProtected} 条` : "") +
         (result.skippedDeleted ? `，跳过已删除 ${result.skippedDeleted} 条` : "") +
+        (result.removedStale ? `，清除重复估算 ${result.removedStale} 条` : "") +
         "。"
       onGenerated?.(summary)
       onClose()
