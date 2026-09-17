@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs
 import path from "path"
 import { getServerStoragePath } from "@/lib/server/storage"
 import {
+  INVESTMENT_NOTE_TRASH_RETENTION_DAYS,
   MAX_INVESTMENT_NOTE_CONTENT_CHARS,
   MAX_INVESTMENT_NOTE_TITLE_CHARS,
   compactRichNoteHtml,
@@ -28,6 +29,10 @@ function storageDir() {
 
 function storageFile() {
   return path.join(storageDir(), "notes.json")
+}
+
+function trashStorageFile() {
+  return path.join(storageDir(), "trash.json")
 }
 
 function ensureStorageDir() {
@@ -169,11 +174,19 @@ function normalizeRoadshowAssociations(value: unknown): InvestmentNoteRoadshowAs
 }
 
 type StoredNote = InvestmentNote & { creatorId: string }
+type TrashedStoredNote = StoredNote & {
+  deletedAt: string
+  deletedBy: string
+  deletedById: string
+}
 
 let notesFileCache: { mtimeMs: number; notes: StoredNote[] } | null = null
+let trashFileCache: { mtimeMs: number; notes: TrashedStoredNote[] } | null = null
 
 function toPublicNote(note: StoredNote): InvestmentNote {
-  const { creatorId: _creatorId, ...result } = note
+  const { creatorId: _creatorId, deletedById: _deletedById, ...result } = note as StoredNote & {
+    deletedById?: string
+  }
   return result
 }
 
@@ -221,6 +234,76 @@ function writeAllNotes(notes: StoredNote[]) {
   }
 }
 
+function isTrashExpired(deletedAt: string, nowMs = Date.now()): boolean {
+  const deletedMs = Date.parse(deletedAt)
+  if (Number.isNaN(deletedMs)) return false
+  return nowMs - deletedMs > INVESTMENT_NOTE_TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000
+}
+
+function normalizeTrashNote(raw: unknown): TrashedStoredNote {
+  const note = normalizeNote(raw)
+  const extra = (raw ?? {}) as Partial<{ deletedAt: string; deletedBy: string; deletedById: string }>
+  return {
+    ...note,
+    deletedAt:
+      typeof extra.deletedAt === "string" && extra.deletedAt
+        ? extra.deletedAt
+        : new Date().toISOString(),
+    deletedBy: typeof extra.deletedBy === "string" ? extra.deletedBy : "",
+    deletedById: typeof extra.deletedById === "string" ? extra.deletedById : "",
+  }
+}
+
+function readAllTrash(): TrashedStoredNote[] {
+  ensureStorageDir()
+  const file = trashStorageFile()
+  if (!existsSync(file)) {
+    trashFileCache = null
+    return []
+  }
+
+  try {
+    const mtimeMs = statSync(file).mtimeMs
+    if (trashFileCache && trashFileCache.mtimeMs === mtimeMs) {
+      const keptCached = trashFileCache.notes.filter((n) => !isTrashExpired(n.deletedAt))
+      if (keptCached.length !== trashFileCache.notes.length) {
+        writeAllTrash(keptCached)
+        return keptCached
+      }
+      return trashFileCache.notes
+    }
+    const raw = readFileSync(file, "utf-8")
+    const parsed = JSON.parse(raw)
+    const notes = Array.isArray(parsed) ? parsed.map(normalizeTrashNote) : []
+    const kept = notes.filter((n) => !isTrashExpired(n.deletedAt))
+    if (kept.length !== notes.length) {
+      writeAllTrash(kept)
+      return kept
+    }
+    trashFileCache = { mtimeMs, notes: kept }
+    return kept
+  } catch {
+    trashFileCache = null
+    return []
+  }
+}
+
+function writeAllTrash(notes: TrashedStoredNote[]) {
+  ensureStorageDir()
+  const file = trashStorageFile()
+  writeFileSync(file, JSON.stringify(notes), "utf-8")
+  try {
+    trashFileCache = { mtimeMs: statSync(file).mtimeMs, notes }
+  } catch {
+    trashFileCache = { mtimeMs: Date.now(), notes }
+  }
+}
+
+function canSeeNote(note: StoredNote, userId: string): boolean {
+  if (note.teamShared) return true
+  return note.creatorId === userId
+}
+
 function isoDate(): string {
   return new Date().toISOString().slice(0, 10).replace(/-/g, "/")
 }
@@ -245,6 +328,10 @@ export function getServerInvestmentNote(
   if (!note) return null
   if (!note.teamShared && note.creatorId !== safeUserId) return null
   return { ...toPublicNote(note), contentPending: false, hasBody: Boolean(note.content.trim()) }
+}
+
+export function listAllTeamSharedNotes(): InvestmentNote[] {
+  return readAllNotes().filter((n) => n.teamShared).map(toPublicNote)
 }
 
 export function listServerInvestmentNotes(
@@ -502,7 +589,11 @@ export async function updateServerInvestmentNoteWithKbSync(
   return mirrorNoteToKnowledgeBase({ ...note, creatorId }, owner, previousKbRelativePath)
 }
 
-export function deleteServerInvestmentNote(id: string, userId: string): boolean {
+export function deleteServerInvestmentNote(
+  id: string,
+  userId: string,
+  userName = "",
+): boolean {
   const safeUserId = String(userId || "").trim()
   const safeId = String(id || "").trim()
   if (!safeUserId || !safeId) return false
@@ -514,6 +605,14 @@ export function deleteServerInvestmentNote(id: string, userId: string): boolean 
     throw new Error("没有权限删除此笔记")
   }
 
+  const trash = readAllTrash().filter((n) => n.id !== safeId)
+  trash.unshift({
+    ...target,
+    deletedAt: new Date().toISOString(),
+    deletedBy: String(userName || "").trim() || target.lastModifiedBy || target.creator,
+    deletedById: safeUserId,
+  })
+  writeAllTrash(trash)
   writeAllNotes(notes.filter((n) => n.id !== safeId))
   return true
 }
@@ -521,9 +620,10 @@ export function deleteServerInvestmentNote(id: string, userId: string): boolean 
 export async function deleteServerInvestmentNoteWithKbSync(
   id: string,
   userId: string,
+  userName = "",
 ): Promise<boolean> {
   const target = readAllNotes().find((n) => n.id === id)
-  const deleted = deleteServerInvestmentNote(id, userId)
+  const deleted = deleteServerInvestmentNote(id, userId, userName)
   if (deleted && target?.teamShared) {
     try {
       await removeTeamNoteFromKnowledgeBase(target)
@@ -531,6 +631,129 @@ export async function deleteServerInvestmentNoteWithKbSync(
       console.error("[investment-notes] KB remove failed:", err)
     }
   }
+  return deleted
+}
+
+function toPublicTrashNote(note: TrashedStoredNote): InvestmentNote {
+  const publicNote = toPublicNote(note)
+  return {
+    ...publicNote,
+    deletedAt: note.deletedAt,
+    deletedBy: note.deletedBy,
+  }
+}
+
+export function listServerTrashedInvestmentNotes(
+  userId: string,
+  options?: { hydrateId?: string; includeContent?: boolean },
+): InvestmentNote[] {
+  const safeUserId = String(userId || "").trim()
+  if (!safeUserId) return []
+
+  const liveIds = new Set(readAllNotes().map((n) => n.id))
+  const filtered = readAllTrash()
+    .filter((n) => !liveIds.has(n.id) && canSeeNote(n, safeUserId))
+    .sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt) || 0)
+
+  const publicNotes = filtered.map(toPublicTrashNote)
+  if (options?.includeContent) return publicNotes
+
+  const hydrateId = String(options?.hydrateId || "").trim()
+  if (!hydrateId) return publicNotes.map(toLiteNote)
+  return publicNotes.map((note) => (note.id === hydrateId ? note : toLiteNote(note)))
+}
+
+export function getServerTrashedInvestmentNote(
+  id: string,
+  userId: string,
+): InvestmentNote | null {
+  const safeId = String(id || "").trim()
+  const safeUserId = String(userId || "").trim()
+  if (!safeId || !safeUserId) return null
+
+  const note = readAllTrash().find((n) => n.id === safeId)
+  if (!note || !canSeeNote(note, safeUserId)) return null
+  if (readAllNotes().some((n) => n.id === safeId)) return null
+  return {
+    ...toPublicTrashNote(note),
+    contentPending: false,
+    hasBody: Boolean(note.content.trim()),
+  }
+}
+
+export function restoreServerInvestmentNote(id: string, userId: string): InvestmentNote | null {
+  const safeId = String(id || "").trim()
+  const safeUserId = String(userId || "").trim()
+  if (!safeId || !safeUserId) return null
+
+  const trash = readAllTrash()
+  const idx = trash.findIndex((n) => n.id === safeId)
+  if (idx < 0) return null
+  const target = trash[idx]
+  if (!canModifyNote(target, safeUserId)) {
+    throw new Error("没有权限恢复此笔记")
+  }
+
+  writeAllTrash(trash.filter((n) => n.id !== safeId))
+
+  const notes = readAllNotes()
+  const existing = notes.find((n) => n.id === safeId)
+  if (existing) {
+    const { creatorId: _creatorId, ...result } = existing
+    return result
+  }
+
+  const { deletedAt: _deletedAt, deletedBy: _deletedBy, deletedById: _deletedById, ...restored } =
+    target
+  notes.unshift(restored)
+  writeAllNotes(notes)
+  const { creatorId: _creatorId, ...result } = restored
+  return result
+}
+
+export async function restoreServerInvestmentNoteWithKbSync(
+  id: string,
+  userId: string,
+  owner: InvestmentNoteKbOwner,
+): Promise<InvestmentNote | null> {
+  const before = readAllTrash().find((n) => n.id === id)
+  const note = restoreServerInvestmentNote(id, userId)
+  if (!note) return null
+  if (!note.teamShared) return note
+  const creatorId = before?.creatorId || userId
+  return mirrorNoteToKnowledgeBase({ ...note, creatorId }, owner, note.kbRelativePath)
+}
+
+export function purgeServerInvestmentNote(id: string, userId: string): boolean {
+  const safeId = String(id || "").trim()
+  const safeUserId = String(userId || "").trim()
+  if (!safeId || !safeUserId) return false
+
+  const trash = readAllTrash()
+  const target = trash.find((n) => n.id === safeId)
+  if (!target) return false
+  if (!canModifyNote(target, safeUserId)) {
+    throw new Error("没有权限彻底删除此笔记")
+  }
+  writeAllTrash(trash.filter((n) => n.id !== safeId))
+  return true
+}
+
+export function emptyServerInvestmentNoteTrash(userId: string): number {
+  const safeUserId = String(userId || "").trim()
+  if (!safeUserId) return 0
+
+  const trash = readAllTrash()
+  const keep: TrashedStoredNote[] = []
+  let deleted = 0
+  for (const note of trash) {
+    if (canModifyNote(note, safeUserId) && canSeeNote(note, safeUserId)) {
+      deleted += 1
+    } else {
+      keep.push(note)
+    }
+  }
+  if (deleted > 0) writeAllTrash(keep)
   return deleted
 }
 

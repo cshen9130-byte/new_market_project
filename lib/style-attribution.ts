@@ -77,6 +77,7 @@ export interface FactorContributionSeriesPoint {
 export interface StyleAttributionResult {
   summary: RegressionSummary
   factors: FactorRegressionRow[]
+  intercept: FactorRegressionRow | null
   explainedReturns: ExplainedReturnPoint[]
   factorContributions: FactorContributionBar[]
   factorContributionSeries: FactorContributionSeriesPoint[]
@@ -648,6 +649,18 @@ export function computeStyleAttribution(opts: {
   if (!ols) return null
 
   const offset = includeIntercept ? 1 : 0
+  const intercept: FactorRegressionRow | null = includeIntercept
+    ? {
+        index: 0,
+        factorKey: "alpha",
+        factorName: "截距(周频α)",
+        coefficient: ols.coefficients[0],
+        stdError: ols.stdErrors[0],
+        tStat: ols.tStats[0],
+        pValue: ols.pValues[0],
+        correlation: 0,
+      }
+    : null
   const factors: FactorRegressionRow[] = factorDefs.map((def, idx) => {
     const fi = idx + offset
     const factorSeries = factorReturns[def.key] ?? []
@@ -688,6 +701,7 @@ export function computeStyleAttribution(opts: {
       method: "最小二乘法",
     },
     factors,
+    intercept,
     explainedReturns,
     factorContributions,
     factorContributionSeries,

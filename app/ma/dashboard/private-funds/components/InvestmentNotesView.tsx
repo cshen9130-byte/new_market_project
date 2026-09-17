@@ -7,11 +7,13 @@ import {
   Loader2,
   MoreHorizontal,
   Pencil,
+  RotateCcw,
   Search,
   Share2,
   Sparkles,
   Tag,
   Trash2,
+  Undo2,
 } from "lucide-react"
 import {
   Dialog,
@@ -32,6 +34,17 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { ToastAction } from "@/components/ui/toast"
 import { Switch } from "@/components/ma/ui/switch"
 import { useToast } from "@/hooks/use-toast"
 import type {
@@ -48,14 +61,21 @@ import {
   deleteInvestmentNote,
   deleteInvestmentNoteMaterial,
   downloadInvestmentNoteAttachmentsZip,
+  emptyInvestmentNoteTrash,
+  getTrashedInvestmentNote,
+  INVESTMENT_NOTE_TRASH_RETENTION_DAYS,
+  investmentNoteTrashDaysLeft,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
   listInvestmentNotes,
+  listTrashedInvestmentNotes,
   getInvestmentNote,
   peekInvestmentNotesCache,
+  permanentlyDeleteInvestmentNote,
   noteMatchesKeyword,
   openInvestmentNoteMaterial,
   proofreadInvestmentNoteWithRoadshow,
+  restoreInvestmentNote,
   roadshowAssociationDisplayLabel,
   selectNotesForIntegration,
   setInvestmentNoteAssociations,
@@ -88,7 +108,7 @@ import {
   type NoteAttachmentListItem,
 } from "./investment-note-editor-parts"
 
-type NotesTab = "team" | "mine" | "uploads"
+type NotesTab = "team" | "mine" | "uploads" | "trash"
 
 const KB_HTML_PREVIEW_EXTENSIONS = new Set([
   ".txt",
@@ -107,6 +127,14 @@ const KB_HTML_PREVIEW_EXTENSIONS = new Set([
 
 function displayNoteTitle(title: string): string {
   return title.trim() || "无标题"
+}
+
+function formatDeletedAt(iso?: string): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function isDraftNote(note: InvestmentNote): boolean {
@@ -155,10 +183,12 @@ function NoteAssociations({
   note,
   onManage,
   onManageRoadshows,
+  readOnly = false,
 }: {
   note: InvestmentNote
   onManage: () => void
   onManageRoadshows: () => void
+  readOnly?: boolean
 }) {
   const roadshowAssociations = note.roadshowAssociations ?? []
   return (
@@ -205,6 +235,7 @@ function NoteAssociations({
             </span>
           )
         })}
+        {!readOnly ? (
         <button
           type="button"
           onClick={onManage}
@@ -212,6 +243,7 @@ function NoteAssociations({
         >
           + 添加关联
         </button>
+        ) : null}
         <span className="mx-1 text-zinc-300">|</span>
         <span className="text-sky-600">关联路演：</span>
         {roadshowAssociations.map((item) => (
@@ -223,6 +255,7 @@ function NoteAssociations({
             {roadshowAssociationDisplayLabel(item)}
           </span>
         ))}
+        {!readOnly ? (
         <button
           type="button"
           onClick={onManageRoadshows}
@@ -230,6 +263,7 @@ function NoteAssociations({
         >
           + 添加关联
         </button>
+        ) : null}
       </div>
     </div>
   )
@@ -239,10 +273,12 @@ function NoteContentBody({
   note,
   onManageAssociations,
   onManageRoadshowAssociations,
+  readOnly = false,
 }: {
   note: InvestmentNote
   onManageAssociations: () => void
   onManageRoadshowAssociations: () => void
+  readOnly?: boolean
 }) {
   const isMemo = note.contentVariant === "memo"
   const isAnalysis = note.contentVariant === "analysis"
@@ -254,6 +290,7 @@ function NoteContentBody({
         note={note}
         onManage={onManageAssociations}
         onManageRoadshows={onManageRoadshowAssociations}
+        readOnly={readOnly}
       />
       <div className="flex-1 px-8 py-6">
         {isAnalysis && (
@@ -344,6 +381,8 @@ export function InvestmentNotesView() {
   const [integrating, setIntegrating] = useState(false)
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const [zippingAttachments, setZippingAttachments] = useState(false)
+  const [purgeTarget, setPurgeTarget] = useState<InvestmentNote | null>(null)
+  const [emptyTrashOpen, setEmptyTrashOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingDeepLinkRef = useRef<string | null>(deepLinkNoteId || null)
 
@@ -356,6 +395,7 @@ export function InvestmentNotesView() {
   }, [deepLinkNoteId, deepLinkScope])
 
   const notesScope: "team" | "mine" = activeTab === "mine" ? "mine" : "team"
+  const isTrash = activeTab === "trash"
   const selectedIdRef = useRef(selectedId)
   selectedIdRef.current = selectedId
 
@@ -363,7 +403,10 @@ export function InvestmentNotesView() {
     if (activeTab === "uploads") return
     try {
       const hydrateId = pendingDeepLinkRef.current || selectedIdRef.current || undefined
-      const items = await listInvestmentNotes(notesScope, { hydrateId })
+      const items =
+        activeTab === "trash"
+          ? await listTrashedInvestmentNotes({ hydrateId })
+          : await listInvestmentNotes(notesScope, { hydrateId })
       setNotes(items)
       setSelectedId((prev) => {
         const pending = pendingDeepLinkRef.current
@@ -400,13 +443,18 @@ export function InvestmentNotesView() {
       setLoading(false)
       return
     }
-    const cached = peekInvestmentNotesCache(notesScope)
-    if (cached != null) {
-      setNotes(cached)
-      setLoading(false)
-    } else {
+    if (activeTab === "trash") {
       setNotes([])
       setLoading(true)
+    } else {
+      const cached = peekInvestmentNotesCache(notesScope)
+      if (cached != null) {
+        setNotes(cached)
+        setLoading(false)
+      } else {
+        setNotes([])
+        setLoading(true)
+      }
     }
     void reloadNotes()
     function onRefresh() {
@@ -423,7 +471,7 @@ export function InvestmentNotesView() {
   }, [activeTab, notesScope, reloadNotes])
 
   useEffect(() => {
-    if (activeTab === "uploads") return
+    if (activeTab === "uploads" || activeTab === "trash") return
     void reloadLinkedMaterials(selectedId)
   }, [activeTab, selectedId, reloadLinkedMaterials])
 
@@ -446,16 +494,18 @@ export function InvestmentNotesView() {
     if (!selectedId) return
     if (selectedNote && !selectedNote.contentPending) return
     let cancelled = false
-    void getInvestmentNote(selectedId).then((full) => {
-      if (cancelled || !full) return
-      setNotes((prev) =>
-        prev.map((n) => (n.id === full.id ? { ...n, ...full, contentPending: false } : n)),
-      )
-    })
+    void (activeTab === "trash" ? getTrashedInvestmentNote(selectedId) : getInvestmentNote(selectedId)).then(
+      (full) => {
+        if (cancelled || !full) return
+        setNotes((prev) =>
+          prev.map((n) => (n.id === full.id ? { ...n, ...full, contentPending: false } : n)),
+        )
+      },
+    )
     return () => {
       cancelled = true
     }
-  }, [selectedId, selectedNote])
+  }, [activeTab, selectedId, selectedNote])
 
   const roadshowRowIds = useMemo(
     () =>
@@ -948,15 +998,96 @@ export function InvestmentNotesView() {
   }
 
   function handleDelete() {
-    if (!selectedNote) return
+    if (!selectedNote || isTrash) return
     void handleDeleteNote(selectedNote)
   }
 
   async function handleDeleteNote(note: InvestmentNote) {
-    await deleteInvestmentNote(note.id)
-    setEditing(false)
-    if (selectedId === note.id) setSelectedId(null)
-    await reloadNotes()
+    try {
+      await deleteInvestmentNote(note.id)
+      setEditing(false)
+      if (selectedId === note.id) setSelectedId(null)
+      await reloadNotes()
+      toast({
+        title: "已移入回收站",
+        description: `「${displayNoteTitle(note.title)}」可在 ${INVESTMENT_NOTE_TRASH_RETENTION_DAYS} 天内恢复`,
+        action: (
+          <ToastAction
+            altText="撤销"
+            onClick={() => {
+              void handleRestoreNote(note, { stayOnTab: true })
+            }}
+          >
+            撤销
+          </ToastAction>
+        ),
+      })
+    } catch (e: unknown) {
+      toast({
+        title: "删除失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
+    }
+  }
+
+  async function handleRestoreNote(
+    note: InvestmentNote,
+    options?: { stayOnTab?: boolean },
+  ) {
+    try {
+      const restored = await restoreInvestmentNote(note.id)
+      toast({
+        title: "已恢复",
+        description: `「${displayNoteTitle(note.title)}」已从回收站恢复`,
+      })
+      setSelectedId(note.id)
+      if (!options?.stayOnTab) {
+        setActiveTab(restored?.teamShared === false ? "mine" : "team")
+      }
+      await reloadNotes()
+    } catch (e: unknown) {
+      toast({
+        title: "恢复失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
+    }
+  }
+
+  async function handlePurgeNote(note: InvestmentNote) {
+    try {
+      await permanentlyDeleteInvestmentNote(note.id)
+      setPurgeTarget(null)
+      if (selectedId === note.id) setSelectedId(null)
+      await reloadNotes()
+      toast({ title: "已彻底删除", description: `「${displayNoteTitle(note.title)}」无法再恢复` })
+    } catch (e: unknown) {
+      toast({
+        title: "彻底删除失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
+    }
+  }
+
+  async function handleEmptyTrash() {
+    try {
+      const deleted = await emptyInvestmentNoteTrash()
+      setEmptyTrashOpen(false)
+      setSelectedId(null)
+      await reloadNotes()
+      toast({
+        title: "回收站已清空",
+        description: deleted > 0 ? `已彻底删除 ${deleted} 条笔记` : "回收站是空的",
+      })
+    } catch (e: unknown) {
+      toast({
+        title: "清空失败",
+        description: e instanceof Error ? e.message : "请稍后重试",
+        variant: "destructive",
+      })
+    }
   }
 
   function openRenameDialog(note: InvestmentNote) {
@@ -1053,6 +1184,7 @@ export function InvestmentNotesView() {
           { key: "team" as const, label: "团队笔记" },
           { key: "mine" as const, label: "我的笔记" },
           { key: "uploads" as const, label: "上传资料" },
+          { key: "trash" as const, label: "回收站" },
         ]).map((tab) => (
           <button
             key={tab.key}
@@ -1080,6 +1212,17 @@ export function InvestmentNotesView() {
       <div className="flex flex-1 min-h-0">
         <aside className="flex w-[300px] shrink-0 flex-col border-r bg-white">
           <div className="border-b px-4 py-4">
+            {isTrash ? (
+              <button
+                type="button"
+                onClick={() => setEmptyTrashOpen(true)}
+                disabled={notes.length === 0}
+                className="w-full rounded border border-red-300 bg-white py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-400 disabled:hover:bg-white"
+              >
+                清空回收站
+              </button>
+            ) : (
+              <>
             <button
               type="button"
               onClick={handleWriteNote}
@@ -1111,6 +1254,8 @@ export function InvestmentNotesView() {
                   ? `整合当前 ${mergeableNotes.length} 条笔记`
                   : "整合笔记"}
             </button>
+              </>
+            )}
           </div>
           <div className="border-b px-4 py-3">
             <div className="relative">
@@ -1119,7 +1264,7 @@ export function InvestmentNotesView() {
                 type="text"
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
-                placeholder="搜索管理人 / 路演 / 产品"
+                placeholder={isTrash ? "搜索回收站" : "搜索管理人 / 路演 / 产品"}
                 className="h-9 w-full rounded border border-zinc-200 bg-white pl-9 pr-3 text-sm placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-ring"
               />
             </div>
@@ -1128,7 +1273,9 @@ export function InvestmentNotesView() {
             {loading && filteredNotes.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-zinc-400">加载中...</div>
             ) : filteredNotes.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-zinc-400">暂无笔记</div>
+              <div className="px-4 py-10 text-center text-sm text-zinc-400">
+                {isTrash ? "回收站是空的" : "暂无笔记"}
+              </div>
             ) : (
               filteredNotes.map((note) => {
                 const active = note.id === selectedId
@@ -1150,6 +1297,19 @@ export function InvestmentNotesView() {
                           active ? "bg-sky-50/80" : "hover:bg-zinc-50",
                         ].join(" ")}
                       >
+                        {isTrash ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void handleRestoreNote(note)
+                            }}
+                            className="absolute right-3 top-3 hidden rounded p-0.5 text-sky-500 hover:text-sky-700 group-hover:block"
+                            aria-label="恢复"
+                          >
+                            <Undo2 className="h-3.5 w-3.5" />
+                          </button>
+                        ) : (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -1161,15 +1321,24 @@ export function InvestmentNotesView() {
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
+                        )}
                         <div className="flex items-start justify-between gap-2 pr-6">
                           <div className="min-w-0 flex-1">
                             <div className="text-sm font-medium truncate text-zinc-800">
                               {displayNoteTitle(note.title)}
                             </div>
-                            <div className="mt-1 text-xs text-zinc-400">{note.createdDate}</div>
+                            <div className="mt-1 text-xs text-zinc-400">
+                              {isTrash
+                                ? `${formatDeletedAt(note.deletedAt) || note.createdDate} · ${investmentNoteTrashDaysLeft(note.deletedAt)} 天后清除`
+                                : note.createdDate}
+                            </div>
                           </div>
                           <span className="shrink-0 text-xs text-zinc-400 pt-0.5">
-                            {notesScope === "mine" || !isDraftNote(note) ? note.creator : "笔记"}
+                            {isTrash
+                              ? note.deletedBy || note.creator
+                              : notesScope === "mine" || !isDraftNote(note)
+                                ? note.creator
+                                : "笔记"}
                           </span>
                         </div>
                         {note.preview ? (
@@ -1178,10 +1347,21 @@ export function InvestmentNotesView() {
                       </div>
                     </ContextMenuTrigger>
                     <ContextMenuContent className="w-28 min-w-28">
+                      {isTrash ? (
+                        <>
+                          <ContextMenuItem onClick={() => void handleRestoreNote(note)}>恢复</ContextMenuItem>
+                          <ContextMenuItem variant="destructive" onClick={() => setPurgeTarget(note)}>
+                            彻底删除
+                          </ContextMenuItem>
+                        </>
+                      ) : (
+                        <>
                       <ContextMenuItem onClick={() => openRenameDialog(note)}>重命名</ContextMenuItem>
                       <ContextMenuItem variant="destructive" onClick={() => handleDeleteNote(note)}>
                         删除
                       </ContextMenuItem>
+                        </>
+                      )}
                     </ContextMenuContent>
                   </ContextMenu>
                 )
@@ -1217,6 +1397,27 @@ export function InvestmentNotesView() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {isTrash ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleRestoreNote(selectedNote)}
+                        className="inline-flex items-center gap-1 rounded border border-sky-300 bg-sky-50 px-3 py-1.5 text-sm text-sky-700 hover:bg-sky-100 transition-colors"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        恢复
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPurgeTarget(selectedNote)}
+                        className="inline-flex items-center gap-1 rounded border border-red-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        彻底删除
+                      </button>
+                    </>
+                  ) : (
+                    <>
                   {editing ? (
                     <button
                       type="button"
@@ -1295,7 +1496,7 @@ export function InvestmentNotesView() {
                       </DropdownMenuItem>
                       <DropdownMenuItem variant="destructive" onClick={handleDelete}>
                         <Trash2 className="h-4 w-4" />
-                        删除笔记
+                        移入回收站
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <div className="px-2 py-2 text-xs leading-5 text-zinc-400">
@@ -1305,11 +1506,13 @@ export function InvestmentNotesView() {
                       </div>
                     </DropdownMenuContent>
                   </DropdownMenu>
+                    </>
+                  )}
                 </div>
               </div>
 
               <div className="flex-1 overflow-auto" key={selectedNote.id}>
-                {editing ? (
+                {editing && !isTrash ? (
                   <NoteRichTextEditor
                     value={draftContent}
                     onChange={setDraftContent}
@@ -1320,18 +1523,61 @@ export function InvestmentNotesView() {
                     note={selectedNote}
                     onManageAssociations={openAssociationDialog}
                     onManageRoadshowAssociations={openRoadshowAssociationDialog}
+                    readOnly={isTrash}
                   />
                 )}
               </div>
             </>
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-zinc-400">
-              请选择笔记或点击写笔记
+              {isTrash ? "请选择要恢复的笔记" : "请选择笔记或点击写笔记"}
             </div>
           )}
         </section>
       </div>
       )}
+
+      <AlertDialog open={Boolean(purgeTarget)} onOpenChange={(open) => { if (!open) setPurgeTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>彻底删除笔记？</AlertDialogTitle>
+            <AlertDialogDescription>
+              「{displayNoteTitle(purgeTarget?.title || "")}」将从回收站永久删除，无法再恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => {
+                if (purgeTarget) void handlePurgeNote(purgeTarget)
+              }}
+            >
+              彻底删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={emptyTrashOpen} onOpenChange={setEmptyTrashOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清空回收站？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将彻底删除回收站中的 {notes.length} 条笔记，无法再恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => void handleEmptyTrash()}
+            >
+              清空回收站
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
         <DialogContent className="max-w-md gap-0 p-0" showCloseButton>

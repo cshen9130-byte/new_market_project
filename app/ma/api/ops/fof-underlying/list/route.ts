@@ -26,11 +26,14 @@ import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+const SHANGHAI_DATE_EXPR = (col: string) => `(${col} AT TIME ZONE 'Asia/Shanghai')::date`
+
 const ALLOWED_SORT: Record<string, string> = {
   product_name: "f.product_name",
   latest_nav: "cache.unit_nav",
   latest_nav_date: "cache.nav_date",
   latest_price_change: "cache.return_pct",
+  first_entry_date: "first_entry_date",
 }
 
 const ALLOWED_SORT_SLOW: Record<string, string> = {
@@ -38,6 +41,7 @@ const ALLOWED_SORT_SLOW: Record<string, string> = {
   latest_nav: "f.latest_unit_nav",
   latest_nav_date: "f.latest_nav_date",
   latest_price_change: "f.latest_return_pct",
+  first_entry_date: "first_entry_date",
 }
 
 interface FofRow {
@@ -51,6 +55,7 @@ interface FofRow {
   latest_price_change: string | null
   nav_estimated: boolean
   valuation_date: string | null
+  first_entry_date: string | null
 }
 
 const BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
@@ -66,6 +71,7 @@ function mapRow(r: {
   latest_unit_nav: string | null
   latest_nav_date: string | Date | null
   latest_return_pct: string | null
+  first_entry_date?: string | Date | null
 }): FofRow {
   const navDate = r.latest_nav_date ? fmtIso(r.latest_nav_date) : null
   const productName = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
@@ -83,6 +89,7 @@ function mapRow(r: {
     latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
     nav_estimated: r.latest_unit_nav != null,
     valuation_date: navDate,
+    first_entry_date: r.first_entry_date ? fmtIso(r.first_entry_date) : null,
   }
 }
 
@@ -112,7 +119,7 @@ export async function GET(req: Request) {
       const stratCol = strategySource === "platform"
         ? "cache.platform_strategy_l1"
         : "cache.company_strategy_l1"
-      const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
+      const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "first_entry_date"
 
       const conditions: string[] = [
         "f.product_name <> '合计'",
@@ -158,12 +165,12 @@ export async function GET(req: Request) {
       const identityKey = sqlFofUnderlyingIdentityKey("cache.beian_hao", "f.id")
       const identityTie = sqlFofUnderlyingIdentityTiebreak("f.product_name", "f.id")
       const outerSort =
-        sortKey === "sequence_no" ? "sequence_no"
-          : sortKey === "product_name" ? "product_name"
-            : sortKey === "latest_nav" ? "latest_unit_nav"
-              : sortKey === "latest_nav_date" ? "latest_nav_date"
-                : sortKey === "latest_price_change" ? "latest_return_pct"
-                  : "sequence_no"
+        sortKey === "product_name" ? "product_name"
+          : sortKey === "latest_nav" ? "latest_unit_nav"
+            : sortKey === "latest_nav_date" ? "latest_nav_date"
+              : sortKey === "latest_price_change" ? "latest_return_pct"
+                : sortKey === "first_entry_date" ? "first_entry_date"
+                  : "first_entry_date"
       const dedupedSelect = `
         SELECT DISTINCT ON (${identityKey})
            f.id::text                           AS id,
@@ -174,7 +181,8 @@ export async function GET(req: Request) {
            ${stratCol}                          AS strategy_l1,
            COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
            COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
-           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct
+           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct,
+           ${SHANGHAI_DATE_EXPR("f.imported_at")}::text AS first_entry_date
          ${baseFrom}
          WHERE ${where}
          ORDER BY ${identityKey}, ${identityTie}
@@ -205,6 +213,7 @@ export async function GET(req: Request) {
         latest_unit_nav: string | null
         latest_nav_date: string | null
         latest_return_pct: string | null
+        first_entry_date: string | null
         sequence_no: number | null
       }>(
         `SELECT
@@ -216,7 +225,8 @@ export async function GET(req: Request) {
            strategy_l1,
            latest_unit_nav,
            latest_nav_date,
-           latest_return_pct
+           latest_return_pct,
+           first_entry_date
          FROM (${dedupedSelect}) rows
          ORDER BY ${outerSort} ${sortDir} NULLS LAST, sequence_no ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
@@ -235,11 +245,11 @@ export async function GET(req: Request) {
     // ─── SLOW PATH — historical cutoff, recompute on the fly ────────────────
     const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
-    const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "sequence_no"
-    const sortCol = sortKey === "sequence_no" ? "sequence_no"
-      : sortKey === "latest_nav" ? "latest_unit_nav"
-        : sortKey === "latest_nav_date" ? "latest_nav_date"
-          : sortKey === "latest_price_change" ? "latest_return_pct"
+    const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "first_entry_date"
+    const sortCol = sortKey === "latest_nav" ? "latest_unit_nav"
+      : sortKey === "latest_nav_date" ? "latest_nav_date"
+        : sortKey === "latest_price_change" ? "latest_return_pct"
+          : sortKey === "first_entry_date" ? "first_entry_date"
             : "product_name"
 
     const conditions: string[] = [
@@ -318,6 +328,7 @@ export async function GET(req: Request) {
       latest_unit_nav: string | null
       latest_nav_date: string | Date | null
       latest_return_pct: string | null
+      first_entry_date: string | Date | null
     }>(
       `SELECT * FROM (
          SELECT DISTINCT ON (${identityKey})
@@ -329,7 +340,8 @@ export async function GET(req: Request) {
            ${strategyExpr} AS strategy_l1,
            (${currentNavExpr})::text AS latest_unit_nav,
            ${currentDateExpr} AS latest_nav_date,
-           (${currentPctExpr})::text AS latest_return_pct
+           (${currentPctExpr})::text AS latest_return_pct,
+           ${SHANGHAI_DATE_EXPR("f.imported_at")} AS first_entry_date
          ${baseFrom}
          ${emailNavJoins}
          WHERE ${where}

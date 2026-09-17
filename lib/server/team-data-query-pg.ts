@@ -21,6 +21,7 @@ import {
   canonicalizeEmailProductCode,
   fundDisplayNamesMatch,
   fundNicknameMatchesFullName,
+  isPlausibleEmailProductCode,
   shareClassProductCodesMatch,
   sqlFundNameMatch,
 } from "@/lib/server/fund-name-match"
@@ -55,14 +56,6 @@ const TEAM_DATA_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   桫罗稳鸿: "SBDU00",
   桫罗稳鸿C类: "SBDU00",
   金舆稳健增长1号FOF: "SCU622",
-}
-
-/** Reject email product_codes that are clearly not 备案号 (e.g. C2026 = C + year). */
-function isPlausibleEmailProductCode(code: string | null | undefined): boolean {
-  const c = canonicalizeEmailProductCode(code ?? "")
-  if (!c) return false
-  if (/^[ABC](?:19|20)\d{2}$/.test(c)) return false
-  return /^[A-Z0-9]{4,10}$/.test(c)
 }
 
 function teamDataBeianOverride(productName: string): string | null {

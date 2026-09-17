@@ -7,6 +7,8 @@ import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   canonicalizeEmailProductCode,
+  isBogusYearProductCode,
+  isPlausibleEmailProductCode,
   shareClassProductCodesMatch,
   sqlFundNameMatch,
   sqlShareClassParentCodeMatch,
@@ -189,18 +191,33 @@ function isVirtualAccrualNavTableRow(row: EmailNavRawRow): boolean {
 }
 
 function productCodeMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
-  if (!beian) return false
-  const productCode = (row.product_code ?? "").trim().toUpperCase()
+  if (!beian || !isPlausibleEmailProductCode(beian)) return false
+  const productCode = usableEmailProductCode(row.product_code)
   return embeddedCodeMatchesBeian(productCode, beian.trim().toUpperCase())
 }
 
 function productCodeExactlyMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
-  if (!beian) return false
-  const productCode = canonicalizeEmailProductCode((row.product_code ?? "").trim().toUpperCase())
+  if (!beian || !isPlausibleEmailProductCode(beian)) return false
+  const productCode = usableEmailProductCode(row.product_code)
   const target = canonicalizeEmailProductCode(beian.trim().toUpperCase())
   if (productCode && productCode === target) return true
   const remapped = remapManagedProductBeianCode(productCode)
   return remapped != null && remapped === target
+}
+
+/** Drop calendar-year product_codes (2026) so they cannot collide across funds. */
+function usableEmailProductCode(code: string | null | undefined): string {
+  const raw = canonicalizeEmailProductCode((code ?? "").trim().toUpperCase())
+  if (!raw) return ""
+  const remapped = remapManagedProductBeianCode(raw)
+  if (remapped) return remapped
+  if (isBogusYearProductCode(raw) || !isPlausibleEmailProductCode(raw)) return ""
+  return raw
+}
+
+function emailCodeLookupKey(beian: string): string {
+  const trimmed = (beian ?? "").trim()
+  return isPlausibleEmailProductCode(trimmed) ? trimmed : ""
 }
 
 function embeddedCodeMatchesBeian(code: string, beian: string): boolean {
@@ -447,26 +464,29 @@ export function emailRowMatchesFund(
   beianHao: string,
   aliases: string[],
 ): boolean {
-  const beian = beianHao.trim().toUpperCase()
+  const beian = (beianHao ?? "").trim().toUpperCase()
   if (isFofUnderlyingValuationEmailRow(row, beianHao)) return false
 
-  const productCode = (row.product_code ?? "").trim().toUpperCase()
-  if (beian && productCode && !embeddedCodeMatchesBeian(productCode, beian)) return false
+  const productCode = usableEmailProductCode(row.product_code)
+  const beianIsCode = isPlausibleEmailProductCode(beian)
+  if (beianIsCode && productCode && !embeddedCodeMatchesBeian(productCode, beian)) return false
 
   // Authoritative product_code match wins. Xingye 业绩报酬试算 subjects embed
   // investor TA accounts (…_XY8002280517_…) that must not override SBBC18.
-  if (beian && productCode && embeddedCodeMatchesBeian(productCode, beian)) {
+  // Calendar years (2026) are not 备案号 — do not treat them as identity.
+  if (beianIsCode && productCode && embeddedCodeMatchesBeian(productCode, beian)) {
     return true
   }
 
   const embedded = extractEmbeddedProductCodes(row.fund_name, row.attachment_filename, row.subject)
+    .filter((code) => isPlausibleEmailProductCode(code))
   const meta = `${row.attachment_filename ?? ""} ${row.subject ?? ""} ${row.fund_name ?? ""}`
 
-  if (beian && embedded.length > 0 && !embedded.some((code) => embeddedCodeMatchesBeian(code, beian))) {
+  if (beianIsCode && embedded.length > 0 && !embedded.some((code) => embeddedCodeMatchesBeian(code, beian))) {
     return false
   }
 
-  if (beian && meta.toUpperCase().includes(beian)) return true
+  if (beianIsCode && meta.toUpperCase().includes(beian)) return true
 
   if (nameMatchesAlias(row.fund_name, aliases)) {
     return embedded.length === 0 || embedded.some((code) => embeddedCodeMatchesBeian(code, beian))
@@ -1052,7 +1072,7 @@ async function queryEmailNavManageRawRows(
 ): Promise<EmailNavRawRowWithId[]> {
   await ensureEmailNavTable()
   const aliases = collectFundNameAliases(productName, shortName, extraNames)
-  const beian = (beianHao ?? "").trim()
+  const beian = emailCodeLookupKey(beianHao ?? "")
   const codeAliases = beian ? alternateBeianCodesFor(beian) : []
 
   return query<EmailNavRawRowWithId>(
@@ -1158,7 +1178,7 @@ export async function loadEmailNavSeries(
 ): Promise<EmailNavPoint[]> {
   await ensureEmailNavTable()
   const aliases = collectFundNameAliases(productName, shortName, extraNames)
-  const beian = (beianHao ?? "").trim()
+  const beian = emailCodeLookupKey(beianHao ?? "")
   const codeAliases = beian ? alternateBeianCodesFor(beian) : []
 
   const rows = await query<EmailNavRawRow>(

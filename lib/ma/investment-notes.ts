@@ -335,6 +335,20 @@ export type InvestmentNote = {
   contentPending?: boolean
   /** True when stored body is non-empty (even if `content` was omitted). */
   hasBody?: boolean
+  /** ISO timestamp when the note was moved to 回收站. */
+  deletedAt?: string
+  /** Display name of the user who moved the note to 回收站. */
+  deletedBy?: string
+}
+
+/** Soft-deleted 投资笔记 stay in 回收站 this long, then are purged. */
+export const INVESTMENT_NOTE_TRASH_RETENTION_DAYS = 30
+
+export function investmentNoteTrashDaysLeft(deletedAt?: string, nowMs = Date.now()): number {
+  const deletedMs = Date.parse(String(deletedAt || ""))
+  if (Number.isNaN(deletedMs)) return INVESTMENT_NOTE_TRASH_RETENTION_DAYS
+  const expires = deletedMs + INVESTMENT_NOTE_TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000
+  return Math.max(0, Math.ceil((expires - nowMs) / (24 * 60 * 60 * 1000)))
 }
 
 export const INVESTMENT_NOTE_INTEGRATION_TITLE_MARK = "路演整合"
@@ -670,6 +684,60 @@ export async function deleteInvestmentNote(id: string): Promise<void> {
     method: "DELETE",
   })
   invalidateInvestmentNotesCache(id)
+}
+
+export async function listTrashedInvestmentNotes(options?: {
+  hydrateId?: string
+}): Promise<InvestmentNote[]> {
+  const params = new URLSearchParams()
+  if (options?.hydrateId) params.set("hydrateId", options.hydrateId)
+  const qs = params.toString()
+  const data = await apiFetch<{ ok: true; notes: InvestmentNote[] }>(
+    `/ma/api/investment-notes/trash${qs ? `?${qs}` : ""}`,
+  )
+  return Array.isArray(data.notes) ? data.notes : []
+}
+
+export async function getTrashedInvestmentNote(id: string): Promise<InvestmentNote | null> {
+  const safeId = String(id || "").trim()
+  if (!safeId) return null
+  try {
+    const data = await apiFetch<{ ok: true; note: InvestmentNote }>(
+      `/ma/api/investment-notes/trash?id=${encodeURIComponent(safeId)}`,
+    )
+    const note = { ...data.note, contentPending: false, hasBody: Boolean(data.note.content?.trim()) }
+    rememberFullNote(note)
+    return note
+  } catch {
+    return null
+  }
+}
+
+export async function restoreInvestmentNote(id: string): Promise<InvestmentNote | null> {
+  const data = await apiFetch<{ ok: true; note: InvestmentNote }>("/ma/api/investment-notes/trash", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+  invalidateInvestmentNotesCache()
+  if (!data.note) return null
+  const note = { ...data.note, contentPending: false, hasBody: Boolean(data.note.content?.trim()) }
+  rememberFullNote(note)
+  return note
+}
+
+export async function permanentlyDeleteInvestmentNote(id: string): Promise<void> {
+  await apiFetch<{ ok: true }>(`/ma/api/investment-notes/trash?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  })
+  invalidateInvestmentNotesCache(id)
+}
+
+export async function emptyInvestmentNoteTrash(): Promise<number> {
+  const data = await apiFetch<{ ok: true; deleted?: number }>("/ma/api/investment-notes/trash?empty=1", {
+    method: "DELETE",
+  })
+  invalidateInvestmentNotesCache()
+  return typeof data.deleted === "number" ? data.deleted : 0
 }
 
 export async function setInvestmentNoteTeamShared(

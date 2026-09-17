@@ -161,6 +161,27 @@ export function canonicalizeEmailProductCode(code: string): string {
   return base.endsWith(letter) ? base : `${base}${letter}`
 }
 
+/**
+ * Calendar year (2026) or share-class letter glued to a year (C2026 from
+ * …基金2026-07-30). These are not AMAC 备案号 and must not be used as product_code.
+ * C2026 still remaps to SBDU00 via MANAGED_PRODUCT_BEIAN_ALIASES — call remap first.
+ */
+export function isBogusYearProductCode(code: string | null | undefined): boolean {
+  const c = canonicalizeEmailProductCode(code ?? "")
+  if (!c) return false
+  if (/^(?:19|20)\d{2}$/.test(c)) return true
+  if (/^[ABC](?:19|20)\d{2}$/.test(c)) return true
+  return false
+}
+
+/** Reject year-like tokens; keep real 备案号 / 产品代码 (SBPC20, BAH99A, GM266C). */
+export function isPlausibleEmailProductCode(code: string | null | undefined): boolean {
+  const c = canonicalizeEmailProductCode(code ?? "")
+  if (!c) return false
+  if (isBogusYearProductCode(c)) return false
+  return /^[A-Z0-9]{4,10}$/.test(c)
+}
+
 /** Strip trailing A/B/C share-class suffix from a product / beian code. */
 export function stripShareClassFromProductCode(code: string): string {
   return canonicalizeEmailProductCode(code).replace(/[ABC]$/u, "")

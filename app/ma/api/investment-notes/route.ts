@@ -140,7 +140,7 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少笔记 ID" }, { status: 400 })
     }
 
-    const deleted = await deleteServerInvestmentNoteWithKbSync(id, user.id)
+    const deleted = await deleteServerInvestmentNoteWithKbSync(id, user.id, user.name)
     if (!deleted) {
       return NextResponse.json({ ok: false, error: "笔记不存在" }, { status: 404 })
     }

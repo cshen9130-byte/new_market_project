@@ -23,8 +23,8 @@ import {
   selectValuationAttachments,
 } from "../lib/server/email-valuation-attachment.ts"
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
-import { dedupeShareClassDisplayFunds, canonicalizeEmailProductCode, fundNicknameMatchesFullName } from "../lib/server/fund-name-match.ts"
-import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete, fundNameFromNavWorkbookFilename, extractCiticsFundNavAnnouncement } from "../lib/server/email-nav-extract.ts"
+import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, extractProductCodeFromText, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete, fundNameFromNavWorkbookFilename, extractCiticsFundNavAnnouncement } from "../lib/server/email-nav-extract.ts"
+import { isBogusYearProductCode, isPlausibleEmailProductCode, dedupeShareClassDisplayFunds, canonicalizeEmailProductCode, fundNicknameMatchesFullName } from "../lib/server/fund-name-match.ts"
 import { resolveManagedProductBeian } from "../lib/server/managed-product-beian.ts"
 import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
@@ -2723,6 +2723,75 @@ assert(
     "笃熙禀泰多资产轮动策略3号",
     "资产净值公告_SQQ300_笃熙禀泰多资产轮动策略3号私募证券投资基金_2026-07-09",
   ) === "SQQ300",
+)
+
+assert(
+  "calendar year is not a product_code (草本致远 /2026 vs SND951)",
+  extractProductCodeFromText("基金代码：2026") == null
+    && extractProductCodeFromText("产品代码 2026") == null
+    && applyEmailProductCodeOverride("2026", "草本致远1号", "2026年9月净值") == null
+    && isBogusYearProductCode("2026")
+    && !isPlausibleEmailProductCode("2026"),
+)
+assert(
+  "C2026 still remaps to SBDU00 (桫罗稳鸿) after year-code guard",
+  applyEmailProductCodeOverride("C2026", "桫罗稳鸿", "桫罗稳鸿私募证券投资基金2026-07-30") === "SBDU00"
+    && isBogusYearProductCode("C2026")
+    && !isPlausibleEmailProductCode("C2026"),
+)
+assert(
+  "year product_code does not attach 鸣石 NAV to 草本致远 /2026",
+  emailRowMatchesFund(
+    {
+      product_code: "2026",
+      fund_name: "鸣石广鸣中证1000指数增强1号",
+      nav_date: "2026-09-16",
+      nav: "2.555200",
+      cumulative_nav: "3.091300",
+      adjusted_nav: null,
+      source: "body_table",
+      subject: "2026年09月16日净值",
+      attachment_filename: null,
+    },
+    "2026",
+    ["草本致远1号"],
+  ) === false,
+)
+assert(
+  "year product_code does not reject 草本致远 email rows on SND951",
+  emailRowMatchesFund(
+    {
+      product_code: "2026",
+      fund_name: "草本致远1号",
+      nav_date: "2026-09-16",
+      nav: "1.044000",
+      cumulative_nav: "3.474000",
+      adjusted_nav: null,
+      source: "body_table",
+      subject: "2026年09月16日净值",
+      attachment_filename: null,
+    },
+    "SND951",
+    ["草本致远1号"],
+  ) === true,
+)
+assert(
+  "year product_code does not attach 鸣石 NAV to SND951 草本致远",
+  emailRowMatchesFund(
+    {
+      product_code: "2026",
+      fund_name: "鸣石广鸣中证1000指数增强1号",
+      nav_date: "2026-09-16",
+      nav: "2.555200",
+      cumulative_nav: "3.091300",
+      adjusted_nav: null,
+      source: "body_table",
+      subject: "2026年09月16日净值",
+      attachment_filename: null,
+    },
+    "SND951",
+    ["草本致远1号"],
+  ) === false,
 )
 
 {

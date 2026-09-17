@@ -12267,7 +12267,7 @@ function OperationsDirectView() {
 
 // ─── OperationsFofUnderlyingView ───────────────────────────────────────────
 
-type FofSortKey = "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change"
+type FofSortKey = "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change" | "first_entry_date"
 
 interface FofUnderlyingRow {
   id: string
@@ -12280,6 +12280,7 @@ interface FofUnderlyingRow {
   latest_price_change: string | null
   nav_estimated: boolean
   valuation_date: string | null
+  first_entry_date: string | null
 }
 
 function OperationsFofUnderlyingView() {
@@ -12327,8 +12328,8 @@ function OperationsFofUnderlyingView() {
   const [fofFundSelected, setFofFundSelected] = useState<{ register_number: string; product_name: string } | null>(null)
   const [fofFundOptions, setFofFundOptions] = useState<{ register_number: string; product_name: string }[]>([])
   const [fofFundShowDropdown, setFofFundShowDropdown] = useState(false)
-  const [sortKey, setSortKey] = useState<FofSortKey | "">("")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [sortKey, setSortKey] = useState<FofSortKey>("first_entry_date")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [data, setData] = useState<FofUnderlyingRow[]>([])
@@ -12449,7 +12450,7 @@ function OperationsFofUnderlyingView() {
     )
   }
 
-  const opsFofColSpan = 3 + fofFieldConfigSelected.length + 2
+  const opsFofColSpan = 3 + fofFieldConfigSelected.length + 3
 
   function toggleAll() {
     setSelected((prev) => toggleIdsInSelection(prev, data.map((r) => r.id)))
@@ -12472,12 +12473,13 @@ function OperationsFofUnderlyingView() {
       return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
     }
     const rows = selected.size > 0 ? data.filter((r) => selected.has(r.id)) : data
-    const headers = ["产品名称", "备案编码", "单位净值", "净值日期", "涨跌幅", "估值表日期"]
+    const headers = ["产品名称", "备案编码", "单位净值", "净值日期", "涨跌幅", "估值表日期", "首次入表日期"]
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => [
         escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav),
         escape(r.latest_nav_date), escape(r.latest_price_change), escape(r.valuation_date),
+        escape(r.first_entry_date),
       ].join(",")),
     ]
     const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
@@ -12707,7 +12709,7 @@ function OperationsFofUnderlyingView() {
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1210 }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -12717,6 +12719,7 @@ function OperationsFofUnderlyingView() {
               <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<FofSortIcon col="product_name" /></th>
               {fofFieldConfigSelected.map(renderOpsFofFieldHeader)}
               <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
+              <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_entry_date")}>首次入表日期<FofSortIcon col="first_entry_date" /></th>
               <th className={`${thBase} text-right pr-4 w-24`}>操作</th>
             </tr>
           </thead>
@@ -12760,6 +12763,7 @@ function OperationsFofUnderlyingView() {
                   </td>
                   {fofFieldConfigSelected.map((label) => renderOpsFofFieldCell(label, row, cell))}
                   <td className={`${cell} tabular-nums whitespace-nowrap text-muted-foreground`}>{row.valuation_date ?? "—"}</td>
+                  <td className={`${cell} tabular-nums`}>{row.first_entry_date ?? "—"}</td>
                   <td className={`${cell} text-right pr-4`}>
                     <div className="flex items-center justify-end gap-4">
                       {row.beian_hao && (

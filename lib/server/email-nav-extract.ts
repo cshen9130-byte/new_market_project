@@ -7,7 +7,7 @@
  */
 
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
-import { canonicalizeEmailProductCode } from "@/lib/server/fund-name-match"
+import { canonicalizeEmailProductCode, isBogusYearProductCode } from "@/lib/server/fund-name-match"
 import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 import {
   lookupManagedProductOverride,
@@ -581,39 +581,68 @@ function parseValuationTableSubject(text: string): { code: string; fundName: str
   return null
 }
 
+function takeExtractedProductCode(raw: string | null | undefined): string | null {
+  const code = String(raw ?? "").trim()
+  if (!code) return null
+  // Reject calendar years (2026) and share-class+year (C2026 from …基金2026-07-30).
+  if (isBogusYearProductCode(code)) return null
+  return code
+}
+
 export function extractProductCodeFromText(text: string): string | null {
   const labeled = text.match(/基金代码\s*[：:]\s*([A-Z0-9]+)/)
-  if (labeled) return labeled[1]
+  if (labeled) {
+    const code = takeExtractedProductCode(labeled[1])
+    if (code) return code
+  }
 
   const productCodeLabel = text.match(/产品代码\s*[：:]?\s*([A-Z]{1,6}\d{2,6}[A-Z]?)/)
-  if (productCodeLabel) return productCodeLabel[1]
+  if (productCodeLabel) {
+    const code = takeExtractedProductCode(productCodeLabel[1])
+    if (code) return code
+  }
 
   const gfBeian = text.match(/协会备案编码\s*[：:]\s*([A-Z0-9]+)/)
-  if (gfBeian) return gfBeian[1]
+  if (gfBeian) {
+    const code = takeExtractedProductCode(gfBeian[1])
+    if (code) return code
+  }
 
   const productRef = text.match(/请查阅产品\s*([A-Z0-9]+)\s*[（(]/)
-  if (productRef) return productRef[1]
+  if (productRef) {
+    const code = takeExtractedProductCode(productRef[1])
+    if (code) return code
+  }
 
   const firstLine = text.split("\n")[0] ?? text
   const structured = resolveFromStructuredSubject(firstLine)
-  if (structured?.code) return structured.code
+  if (structured?.code) {
+    const code = takeExtractedProductCode(structured.code)
+    if (code) return code
+  }
 
   const assetNavSubj = text.match(/资产净值公告_([A-Z0-9]+)_/i)
-  if (assetNavSubj) return assetNavSubj[1]
+  if (assetNavSubj) {
+    const code = takeExtractedProductCode(assetNavSubj[1])
+    if (code) return code
+  }
 
   const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)(?:\([总]\))?_/)
-  if (virtualSubj) return virtualSubj[1]
+  if (virtualSubj) {
+    const code = takeExtractedProductCode(virtualSubj[1])
+    if (code) return code
+  }
 
   const bracketVirtualSubj = text.match(/【虚拟净值】([A-Z0-9]+)[\s_]/)
-  if (bracketVirtualSubj) return bracketVirtualSubj[1]
+  if (bracketVirtualSubj) {
+    const code = takeExtractedProductCode(bracketVirtualSubj[1])
+    if (code) return code
+  }
 
   // Typical codes: SBPC20, ASX73A, BSJ74B — allow underscore-delimited codes
   const m = text.match(/(?:^|[^A-Z0-9])_?([A-Z]{1,6}\d{2,6}[A-Z]?)(?:_|[^A-Z0-9]|$)/)
     ?? text.match(/(?:^|[^A-Z0-9])([A-Z]{1,6}\d{2,6}[A-Z]?)(?![A-Z0-9])/)
-  const code = m?.[1] ?? null
-  // Reject share-class letter glued to a year (e.g. C2026 from …基金2026-07-30).
-  if (code && /^[ABC](?:19|20)\d{2}$/i.test(code)) return null
-  return code
+  return takeExtractedProductCode(m?.[1] ?? null)
 }
 
 /**
@@ -729,7 +758,10 @@ export function applyEmailProductCodeOverride(
   }
   const code = canonicalizeEmailProductCode(productCode?.trim().toUpperCase() ?? "")
   if (!code) return null
-  return remapManagedProductBeianCode(code) ?? code
+  const remapped = remapManagedProductBeianCode(code) ?? code
+  // Remap C2026 → SBDU00 first; leftover calendar years are not 备案号.
+  if (isBogusYearProductCode(remapped)) return null
+  return remapped
 }
 
 export function extractNavMetadata(subject: string, bodyText: string) {
@@ -871,7 +903,9 @@ export function extractCiticsFundNavAnnouncementRows(
     name: string | null,
   ) => {
     if (!navDate || !Number.isFinite(nav) || nav <= 0) return
-    const productCode = canonicalizeEmailProductCode(code ?? "") || shared.productCode
+    const productCode =
+      applyEmailProductCodeOverride(code ?? "", name || shared.fundName, subject)
+      || shared.productCode
     const key = `${productCode ?? ""}|${navDate}`
     if (seen.has(key)) return
     seen.add(key)

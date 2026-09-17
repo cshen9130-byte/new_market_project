@@ -2052,3 +2052,65 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes **SVP460/BSQ40B CSC virtual subject keeps underlying (not FOF investor)**.
+
+---
+
+## What Was Fixed (草本致远1号 — year `2026` used as 备案号, 2026-09-17)
+
+### The Problem
+
+`/ma/dashboard/private-funds/2026` showed **草本致远1号** with a spiked 收益曲线 (latest 单位净值 **2.5552**, 复权 spike **~13.77**). Header search for the same name opened `/SND951` (real AMAC 备案号) with a different series.
+
+### Root Cause
+
+A NAV email `body_table` stored **calendar year `2026` as `product_code`** for several unrelated funds on the same date (草本致远1号, 鸣石广鸣中证1000指数增强1号, 鸣石广胜中证A500指数增强1号量化). Then:
+
+1. Team-data / email-pool treated `2026` as a plausible 备案号, so the 草本 row linked to `/private-funds/2026`.
+2. `loadEmailNavSeries("2026")` matched `product_code = 2026` **and** `subject ILIKE '%2026%'` (almost every 2026 email).
+3. `emailRowMatchesFund` treated product_code `2026` as an authoritative identity match, so **鸣石 2.5552** landed on the 草本 page. Search uses `private_fund_info` / BFL **SND951**, which is why the two pages disagreed.
+
+This is the same family as **C2026 → SBDU00** (share-class letter glued to a year), but the token here is a **bare year**.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Year-code detector | `isBogusYearProductCode`, `isPlausibleEmailProductCode` | Reject `2026` / `C2026` as 备案号 |
+| Extract | `extractProductCodeFromText`, `applyEmailProductCodeOverride` | Do not store a year as `product_code`; **C2026 still remaps to SBDU00 first** |
+| Team data identity | `isPlausibleEmailProductCode` (shared) | 草本致远 resolves via BFL to **SND951**, not `/2026` |
+| Email series match | `emailRowMatchesFund`, `emailCodeLookupKey` | Year codes do not match/reject by identity; do not `ILIKE '%2026%'` subjects |
+| Detail fallback | `lookupFundInfoFallback` | Do not resolve `/2026` from email `product_code` |
+
+### What This Fix Does NOT Change
+
+- C2026 → SBDU00 remap for **桫罗稳鸿** — unchanged
+- `preserve_high_nav_scale` funds (SBDF95, BDF95A, SADG72, SET723, SVP460) — unchanged
+- SBAH99 dividend formulas, SNF018 virtual-first, SSG947 seed merge, SQX078 swap repair — unchanged
+- `syncExDivAdjustedNav` / `rechainDerivedFromPrev` / `propagateMissingAdjRows` — unchanged
+
+### Repair stored year codes (one-time)
+
+```sql
+-- 草本致远1号 body_table rows that stored year 2026 as 备案号
+UPDATE ops_email_nav_records
+SET product_code = 'SND951'
+WHERE BTRIM(product_code) ~ '^(19|20)[0-9]{2}$'
+  AND fund_name ILIKE '%草本致远1号%'
+  AND fund_name NOT ILIKE '%B类%'
+  AND fund_name NOT ILIKE '%C类%';
+
+-- Other funds that inherited the same year token (鸣石广鸣 / 鸣石广胜 / 宏锡…)
+UPDATE ops_email_nav_records
+SET product_code = NULL
+WHERE BTRIM(product_code) ~ '^(19|20)[0-9]{2}$';
+```
+
+Do **not** rewrite `C2026` rows (桫罗稳鸿 → SBDU00). Then delete `ops_private_fund_detail_nav_cache` for `2026` / `SND951`.
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **calendar year is not a product_code**, **C2026 still remaps to SBDU00**, **year product_code does not attach 鸣石 NAV to 草本致远**.

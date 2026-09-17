@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Download, Loader2 } from "lucide-react"
+import { Download, FileText, Loader2 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 
 type GroupPreview = {
@@ -51,6 +51,9 @@ export function WeeklyReviewView() {
   const [previewError, setPreviewError] = useState("")
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState("")
+  const [attributing, setAttributing] = useState(false)
+  const [attributeError, setAttributeError] = useState("")
+  const [attributePhase, setAttributePhase] = useState("")
 
   const loadPreview = useCallback(async (date: string) => {
     setPreviewLoading(true)
@@ -74,52 +77,86 @@ export function WeeklyReviewView() {
     void loadPreview(weekEnd)
   }, [weekEnd, loadPreview])
 
+  async function pollJobAndDownload(opts: {
+    startUrl: string
+    statusUrl: (jobId: string) => string
+    fallbackName: string
+    timeoutMs: number
+    onPhase?: (phase: string) => void
+  }) {
+    const start = await fetch(opts.startUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ week_end: weekEnd }),
+    })
+    const startJson = await start.json().catch(() => ({}))
+    if (!start.ok) throw new Error(typeof startJson.error === "string" ? startJson.error : "生成失败")
+    const jobId = typeof startJson.jobId === "string" ? startJson.jobId : ""
+    if (!jobId) throw new Error("未返回任务 ID")
+
+    const deadline = Date.now() + opts.timeoutMs
+    let downloadUrl = ""
+    let fileName = ""
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const st = await fetch(opts.statusUrl(jobId), { cache: "no-store" })
+      const json = await st.json().catch(() => ({}))
+      if (!st.ok) throw new Error(typeof json.error === "string" ? json.error : "查询生成状态失败")
+      if (typeof json.phase === "string" && json.phase) opts.onPhase?.(json.phase)
+      if (json.status === "error") throw new Error(typeof json.error === "string" ? json.error : "生成失败")
+      if (json.status === "done" && typeof json.downloadUrl === "string") {
+        downloadUrl = json.downloadUrl
+        fileName = typeof json.fileName === "string" ? json.fileName : ""
+        break
+      }
+    }
+    if (!downloadUrl) throw new Error("生成超时，请稍后重试")
+
+    const fileRes = await fetch(downloadUrl, { cache: "no-store" })
+    if (!fileRes.ok) throw new Error("下载生成文件失败")
+    const blob = await fileRes.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = fileName || opts.fallbackName
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   async function handleGenerate() {
     setGenerating(true)
     setGenerateError("")
     try {
-      const start = await fetch("/ma/api/tracking-funds/weekly-review/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ week_end: weekEnd }),
+      await pollJobAndDownload({
+        startUrl: "/ma/api/tracking-funds/weekly-review/generate",
+        statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/generate?id=${encodeURIComponent(jobId)}`,
+        fallbackName: `JY跟踪池周度回顾（股票） - ${weekEnd}.xlsx`,
+        timeoutMs: 5 * 60 * 1000,
       })
-      const startJson = await start.json().catch(() => ({}))
-      if (!start.ok) throw new Error(typeof startJson.error === "string" ? startJson.error : "生成失败")
-      const jobId = typeof startJson.jobId === "string" ? startJson.jobId : ""
-      if (!jobId) throw new Error("未返回任务 ID")
-
-      const deadline = Date.now() + 5 * 60 * 1000
-      let downloadUrl = ""
-      let fileName = ""
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2000))
-        const st = await fetch(`/ma/api/tracking-funds/weekly-review/generate?id=${encodeURIComponent(jobId)}`, {
-          cache: "no-store",
-        })
-        const json = await st.json().catch(() => ({}))
-        if (!st.ok) throw new Error(typeof json.error === "string" ? json.error : "查询生成状态失败")
-        if (json.status === "error") throw new Error(typeof json.error === "string" ? json.error : "生成失败")
-        if (json.status === "done" && typeof json.downloadUrl === "string") {
-          downloadUrl = json.downloadUrl
-          fileName = typeof json.fileName === "string" ? json.fileName : ""
-          break
-        }
-      }
-      if (!downloadUrl) throw new Error("生成超时，请稍后重试")
-
-      const fileRes = await fetch(downloadUrl, { cache: "no-store" })
-      if (!fileRes.ok) throw new Error("下载生成文件失败")
-      const blob = await fileRes.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = fileName || `JY跟踪池周度回顾（股票） - ${weekEnd}.xlsx`
-      a.click()
-      URL.revokeObjectURL(url)
     } catch (err) {
       setGenerateError(err instanceof Error ? err.message : "生成失败")
     } finally {
       setGenerating(false)
+    }
+  }
+
+  async function handleAttribution() {
+    setAttributing(true)
+    setAttributeError("")
+    setAttributePhase("正在启动…")
+    try {
+      await pollJobAndDownload({
+        startUrl: "/ma/api/tracking-funds/weekly-review/attribution/generate",
+        statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/attribution/generate?id=${encodeURIComponent(jobId)}`,
+        fallbackName: `JY跟踪池周度归因分析 - ${weekEnd}.docx`,
+        timeoutMs: 10 * 60 * 1000,
+        onPhase: setAttributePhase,
+      })
+    } catch (err) {
+      setAttributeError(err instanceof Error ? err.message : "生成失败")
+    } finally {
+      setAttributing(false)
+      setAttributePhase("")
     }
   }
 
@@ -135,17 +172,29 @@ export function WeeklyReviewView() {
             <h2 className="text-base font-semibold">JY跟踪池 · 周度回顾</h2>
             <p className="mt-1 text-xs text-muted-foreground leading-relaxed max-w-2xl">
               按 JY 跟踪池中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表，格式对齐博孚利周度回顾。
+              「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void handleGenerate()}
-            disabled={generating || previewLoading || (preview?.fund_count ?? 0) === 0}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-red-500 px-4 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            {generating ? "正在生成…" : "生成本周 Excel"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleGenerate()}
+              disabled={generating || attributing || previewLoading || (preview?.fund_count ?? 0) === 0}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-red-500 px-4 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {generating ? "正在生成…" : "生成本周 Excel"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleAttribution()}
+              disabled={generating || attributing || previewLoading || (preview?.fund_count ?? 0) === 0}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-red-200 bg-background px-4 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed dark:border-red-900/60 dark:hover:bg-red-950/40"
+            >
+              {attributing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+              {attributing ? "正在分析…" : "周度归因分析"}
+            </button>
+          </div>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
@@ -164,8 +213,14 @@ export function WeeklyReviewView() {
           </div>
         </div>
 
+        {attributing && attributePhase && (
+          <p className="mt-3 text-sm text-muted-foreground">{attributePhase}</p>
+        )}
         {generateError && (
           <p className="mt-3 text-sm text-red-600">{generateError}</p>
+        )}
+        {attributeError && (
+          <p className="mt-3 text-sm text-red-600">{attributeError}</p>
         )}
         {previewError && (
           <p className="mt-3 text-sm text-red-600">{previewError}</p>

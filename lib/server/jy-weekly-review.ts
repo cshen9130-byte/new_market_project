@@ -13,6 +13,7 @@ import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trad
 import {
   addDays,
   calcPeriodReturnsFromHistory,
+  calendarDaysBetween,
   calcReturn,
   computeOneYearRiskMetrics,
   enrichReturnNavSeries,
@@ -56,7 +57,7 @@ const BUCKET_ORDER = [
 
 const EXCESS_BUCKET_RE = /^(500指增|1000指增|2000指增|300指增|A500指增|指数增强|高换手|中换手|低换手|指增T0|2000指增T0)$/
 
-type MetricMode = "excess" | "absolute"
+export type MetricMode = "excess" | "absolute"
 
 export type WeeklyReviewFund = {
   beian_hao: string
@@ -83,7 +84,7 @@ export type WeeklyReviewPreview = {
 
 type PeriodKey = "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y"
 
-type FundMetrics = {
+export type FundMetrics = {
   beian_hao: string
   name: string
   bucket: string
@@ -135,7 +136,7 @@ const SECTOR_INDICES: Array<{ name: string; codes: string[] }> = [
   { name: "医药医疗", codes: ["801274.SI", "801274", "BK1712.EM"] },
 ]
 
-const BENCH_BY_BUCKET: Record<string, string[]> = {
+export const BENCH_BY_BUCKET: Record<string, string[]> = {
   "500指增": ["000905.SH", "000905"],
   "1000指增": ["000852.SH", "000852"],
   "2000指增": ["932000.CSI", "932000", "000852.SH"],
@@ -177,7 +178,7 @@ export function resolveWeekWindow(weekEndRaw: string): { weekStart: string; week
   return { weekStart: mondayOfWeek(asOf), weekEnd: asOf, asOf }
 }
 
-function displayName(productName: string, shortName: string | null): string {
+export function displayName(productName: string, shortName: string | null): string {
   const raw = (shortName || productName || "").trim()
   return raw
     .replace(/私募证券投资基金/g, "")
@@ -243,7 +244,7 @@ function periodReturnFromSeries(series: Map<string, number>, asOf: string, days:
   return calcReturn(end.value, start.value)
 }
 
-async function loadAshareCloses(codes: string[], from: string, to: string): Promise<Map<string, Map<string, number>>> {
+export async function loadAshareCloses(codes: string[], from: string, to: string): Promise<Map<string, Map<string, number>>> {
   const out = new Map<string, Map<string, number>>()
   if (codes.length === 0) return out
   const rows = await query<{ ts_code: string; trade_date: Date | string; close: string | number | null }>(
@@ -266,7 +267,7 @@ async function loadAshareCloses(codes: string[], from: string, to: string): Prom
   return out
 }
 
-async function loadSpotCloses(symbols: string[], from: string, to: string): Promise<Map<string, Map<string, number>>> {
+export async function loadSpotCloses(symbols: string[], from: string, to: string): Promise<Map<string, Map<string, number>>> {
   const out = new Map<string, Map<string, number>>()
   if (symbols.length === 0) return out
   const rows = await query<{ symbol: string; trade_date: Date | string; close: string | number | null }>(
@@ -289,7 +290,7 @@ async function loadSpotCloses(symbols: string[], from: string, to: string): Prom
   return out
 }
 
-function pickSeries(
+export function pickSeries(
   ashare: Map<string, Map<string, number>>,
   spot: Map<string, Map<string, number>>,
   codes: string[],
@@ -334,6 +335,38 @@ function windowSlice(dates: string[], values: number[], asOf: string, days: numb
   return { dates: outDates, values: outVals }
 }
 
+/** Period return ending at the last NAV on/before asOf, not a tight [asOf-days, asOf] box. */
+function periodReturnAt(
+  dates: string[],
+  values: number[],
+  asOf: string,
+  days: number,
+): number | null {
+  let endIdx = -1
+  for (let i = 0; i < dates.length; i++) {
+    if (dates[i] <= asOf) endIdx = i
+  }
+  if (endIdx < 1) return null
+  const endDate = dates[endIdx]
+  const target = addDays(endDate, days)
+  let startIdx = -1
+  for (let i = 0; i < endIdx; i++) {
+    if (dates[i] <= target) startIdx = i
+  }
+  if (startIdx < 0) {
+    if (days <= 14) startIdx = endIdx - 1
+    else if (days >= 180 && endIdx >= 1) startIdx = 0
+    else return null
+  }
+  const slack = Math.max(days <= 9 ? 8 : 5, Math.floor(days * 0.2))
+  const gap = calendarDaysBetween(endDate, dates[startIdx])
+  if (gap <= 0) return null
+  if (days <= 90 && gap > days + slack) return null
+  if (days > 90 && gap < days * 0.65) return null
+  const ret = values[endIdx] / values[startIdx] - 1
+  return Number.isFinite(ret) ? ret : null
+}
+
 function excessWindows(
   fundHist: NavPoint[],
   bench: Map<string, number>,
@@ -368,26 +401,21 @@ function excessWindows(
     excessVals.push((fv / firstFund) / (bv / firstBench))
   }
   if (excessVals.length < 2) return empty
+  const latestDate = excessDates.filter((d) => d <= asOf).at(-1) ?? asOf
 
-  const period = (days: number): number | null => {
-    const w = windowSlice(excessDates, excessVals, asOf, days)
-    if (w.values.length < 2) return null
-    const ret = w.values[w.values.length - 1] / w.values[0] - 1
-    return Number.isFinite(ret) ? ret : null
-  }
   const dd = (days: number): number | null => {
-    const w = windowSlice(excessDates, excessVals, asOf, days)
+    const w = windowSlice(excessDates, excessVals, latestDate, days)
     if (w.values.length < 2) return null
     const metrics = computeFundNavMetrics(w)
     return metrics && Number.isFinite(metrics.maxDD) ? metrics.maxDD : null
   }
   return {
     excess: {
-      ret_1w: period(7),
-      ret_1m: period(30),
-      ret_3m: period(90),
-      ret_6m: period(180),
-      ret_1y: period(365),
+      ret_1w: periodReturnAt(excessDates, excessVals, asOf, 7),
+      ret_1m: periodReturnAt(excessDates, excessVals, asOf, 30),
+      ret_3m: periodReturnAt(excessDates, excessVals, asOf, 90),
+      ret_6m: periodReturnAt(excessDates, excessVals, asOf, 180),
+      ret_1y: periodReturnAt(excessDates, excessVals, asOf, 365),
     },
     excess_dd_6m: dd(180),
     excess_dd_1y: dd(365),
@@ -425,7 +453,7 @@ const NON_EQUITY_L1 = new Set([
   "其他",
 ])
 
-function isEquityFund(fund: WeeklyReviewFund): boolean {
+export function isEquityFund(fund: WeeklyReviewFund): boolean {
   const l1 = (fund.l1 || "").trim()
   if (l1 && NON_EQUITY_L1.has(l1)) return false
   if (l1 && EQUITY_L1.has(l1)) return true
@@ -476,19 +504,21 @@ function groupSortKey(bucket: string): string {
 function pushPoint(target: Map<string, Map<string, NavPoint>>, key: string, point: NavPoint) {
   const k = key.trim()
   if (!k || !isChinaTradingDay(point.nav_date) || !(point.nav > 0)) return
-  if (!target.has(k)) target.set(k, new Map())
-  const byDate = target.get(k)!
-  const prev = byDate.get(point.nav_date)
-  if (!prev) {
-    byDate.set(point.nav_date, point)
-    return
+  for (const mapKey of [k, k.toUpperCase()]) {
+    if (!target.has(mapKey)) target.set(mapKey, new Map())
+    const byDate = target.get(mapKey)!
+    const prev = byDate.get(point.nav_date)
+    if (!prev) {
+      byDate.set(point.nav_date, point)
+      continue
+    }
+    const prevRet = prev.return_nav ?? prev.nav
+    const nextRet = point.return_nav ?? point.nav
+    if (nextRet !== point.nav && prevRet === prev.nav) byDate.set(point.nav_date, point)
   }
-  const prevRet = prev.return_nav ?? prev.nav
-  const nextRet = point.return_nav ?? point.nav
-  if (nextRet !== point.nav && prevRet === prev.nav) byDate.set(point.nav_date, point)
 }
 
-async function loadWeeklyReviewNavHistories(
+export async function loadWeeklyReviewNavHistories(
   funds: WeeklyReviewFund[],
   asOf: string,
 ): Promise<Map<string, NavPoint[]>> {
@@ -579,24 +609,30 @@ async function loadWeeklyReviewNavHistories(
 
   const out = new Map<string, NavPoint[]>()
   for (const fund of funds) {
+    const trimmed = fund.beian_hao.trim()
+    const noClass = trimmed.replace(/[ABC]$/i, "")
+    const withS = /^S/i.test(noClass) ? noClass : `S${noClass}`
     const keys = [
-      fund.beian_hao,
-      fund.beian_hao.toUpperCase(),
-      fund.beian_hao.replace(/[ABC]$/i, ""),
+      ...expandBeiansWithShareClassFamily([trimmed]),
+      trimmed,
+      trimmed.toUpperCase(),
+      noClass,
+      withS,
       fund.product_name,
       fund.short_name ?? "",
     ]
-    out.set(fund.beian_hao, seriesOf(keys.filter(Boolean)))
+    out.set(fund.beian_hao, seriesOf([...new Set(keys.map((k) => k.trim()).filter(Boolean))]))
   }
   return out
 }
 
-async function computeFundMetrics(
+export async function computeFundMetrics(
   funds: WeeklyReviewFund[],
   asOf: string,
+  preloadedHistories?: Map<string, NavPoint[]>,
 ): Promise<FundMetrics[]> {
   console.time("[jy-weekly-review] load nav histories")
-  const histories = await loadWeeklyReviewNavHistories(funds, asOf)
+  const histories = preloadedHistories ?? await loadWeeklyReviewNavHistories(funds, asOf)
   console.timeEnd("[jy-weekly-review] load nav histories")
   const from = addDays(asOf, NAV_HISTORY_LOOKBACK_DAYS + 40)
   const benchCodes = [...new Set(Object.values(BENCH_BY_BUCKET).flat())]
@@ -621,8 +657,9 @@ async function computeFundMetrics(
     const history = enrichReturnNavSeries(histories.get(fund.beian_hao) ?? [])
     const latest = history.filter((p) => p.nav_date <= asOf).at(-1) ?? null
     const unitNav = latest?.nav ?? navValue(latest) ?? 0
+    const retAsOf = latest && latest.nav_date <= asOf ? latest.nav_date : asOf
     const ret = latest
-      ? calcPeriodReturnsFromHistory(history, unitNav, asOf, latest)
+      ? calcPeriodReturnsFromHistory(history, unitNav, retAsOf, latest)
       : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
     const risk = mode === "absolute"
       ? computeOneYearRiskMetrics(asOf, history.filter((p) => p.nav_date >= addDays(asOf, 365)))
@@ -726,7 +763,7 @@ async function loadMarketBreadth(from: string, to: string): Promise<Array<{
   })
 }
 
-async function buildMarketRows(weekStart: string, weekEnd: string) {
+export async function buildMarketRows(weekStart: string, weekEnd: string) {
   const from = addDays(weekEnd, 20)
   const allCodes = [
     ...MARKET_INDICES.flatMap((x) => x.codes),

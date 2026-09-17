@@ -5,12 +5,13 @@
  *
  * Between two valuation snapshots, mark the current position to each 申赎
  * confirm NAV, then:
- *   赎回: 已实现 = 赎回份额 × (确认净值 − 上一标记净值) + (确认金额 − 赎回市值)
- *         剩余份额继续盯市
+ *   赎回: 当步已实现 = 赎回份额 × (确认净值 − 上一标记净值)。
+ *         持有期间已计入市值变动的部分，在份额减少时按比例转入已实现。
+ *         全部赎回后剩余持仓市值变动 = 0。
  *   申购: 申购时不产生已实现盈亏，新份额从确认净值开始盯市
  *
- * This is not Δ市值 ± 申赎净流入. 申赎金额本身不是盈亏；卖掉的那部分在确认净值
- * 上相对上一估值日已经赚到/亏掉的部分，才计入已实现。
+ * This is not Δ市值 ± 申赎净流入. 台账确认净额若是 Δ成本而不是赎回市值，
+ * 不把 (金额 − 份额×净值) 记进已实现。
  */
 
 export type AttributionFlowKind = "subscribe" | "redeem" | "dividend"
@@ -38,6 +39,8 @@ export type HoldingStepPnl = {
 
 const MAX_DAILY_RETURN = 0.5
 const MIN_ABS_FLOW = 100
+/** Ignore 确认净额 vs 份额×净值 when the gap looks like Δ成本, not a fee. */
+const MAX_PROCEEDS_RESIDUAL_RATIO = 0.01
 
 function finite(n: number | null | undefined): n is number {
   return n != null && Number.isFinite(n)
@@ -109,6 +112,28 @@ export function inferFlowEventsFromQty(
   return [{ date: "", kind: "subscribe", shares: dQty, amount, nav: nav && nav > 0 ? nav : null }]
 }
 
+/**
+ * Accrued 市值变动 on shares that left this step. Move that slice to 已实现
+ * so a full redeem ends with 剩余持仓市值变动 = 0.
+ */
+export function transferredUnrealizedOnRedeem(
+  priorMtm: number,
+  qtyBefore: number,
+  qtyAfter: number,
+): number {
+  if (!(qtyBefore > 1e-8) || priorMtm === 0) return 0
+  const redeemed = qtyBefore - Math.max(qtyAfter, 0)
+  if (redeemed <= 1e-8) return 0
+  return priorMtm * Math.min(1, redeemed / qtyBefore)
+}
+
+function proceedsResidual(amount: number, markedSold: number): number {
+  const residual = amount - markedSold
+  const scale = Math.max(Math.abs(amount), Math.abs(markedSold), 1)
+  if (Math.abs(residual) / scale > MAX_PROCEEDS_RESIDUAL_RATIO) return 0
+  return residual
+}
+
 export function computeHoldingStepPnl(
   prev: HoldingStepPosition | undefined,
   curr: HoldingStepPosition | undefined,
@@ -148,13 +173,13 @@ export function computeHoldingStepPnl(
         const remainQty = Math.max(0, qty - sh)
         mtmPnl += remainQty * (nav - price)
         const markedSold = sh * nav
-        realizedPnl += soldPnl + (ev.amount - markedSold)
+        realizedPnl += soldPnl + proceedsResidual(ev.amount, markedSold)
         price = nav
         qty = remainQty
       } else if (sh > 0 && qty > 0) {
         const carryingMv = price != null ? qty * price : (prev?.mv ?? 0)
         const carrying = carryingMv * (sh / qty)
-        realizedPnl += ev.amount - carrying
+        realizedPnl += proceedsResidual(ev.amount, carrying)
         qty = Math.max(0, qty - sh)
       }
       cashFlow -= ev.amount

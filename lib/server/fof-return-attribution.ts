@@ -29,6 +29,7 @@ import {
 import {
   computeHoldingStepPnl,
   inferFlowEventsFromQty,
+  transferredUnrealizedOnRedeem,
   type AttributionFlowEvent,
 } from "@/lib/server/fof-holding-step-pnl"
 
@@ -652,9 +653,15 @@ export async function getFofReturnAttribution(
         ledgerHits: 0,
         qtyHits: 0,
       }
+      const priorMtm = cur.mtmPnl
       cur.pnl += step.pnl
       cur.mtmPnl += step.mtmPnl
       cur.realizedPnl += step.realizedPnl
+      const moved = transferredUnrealizedOnRedeem(priorMtm, prevPos?.qty ?? 0, currPos?.qty ?? 0)
+      if (moved !== 0) {
+        cur.mtmPnl -= moved
+        cur.realizedPnl += moved
+      }
       cur.cashFlow += step.cashFlow
       if (usedLedger) cur.ledgerHits += 1
       if (usedQty) cur.qtyHits += 1
@@ -662,6 +669,12 @@ export async function getFofReturnAttribution(
       if (sample?.valuationCode) cur.valuationCode = sample.valuationCode
       acc.set(key, cur)
     }
+  }
+
+  for (const [key, item] of acc) {
+    if ((end.positions.get(key)?.qty ?? 0) > 1e-6) continue
+    item.realizedPnl = item.pnl
+    item.mtmPnl = 0
   }
 
   const startNav = start.nav > 0

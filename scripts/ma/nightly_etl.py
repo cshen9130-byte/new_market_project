@@ -3306,42 +3306,48 @@ def _compute_ashare_equal_weight(conn, *, force: bool = False) -> int:
     return n
 
 
+_ASHARE_INDEX_BACKFILL_DAYS = int(os.environ.get("ASHARE_INDEX_BACKFILL_DAYS", "420"))
+
+
 def step_ashare_index(conn, *, force: bool = False) -> int:
     """Fetch 周度回顾 / 规模指数 universe into raw_ashare_index_daily."""
     _ensure_ashare_index_table(conn)
     today = date.today()
+    need_from = today - timedelta(days=_ASHARE_INDEX_BACKFILL_DAYS)
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT ts_code, MAX(trade_date)
+            SELECT ts_code, MIN(trade_date), MAX(trade_date)
             FROM raw_ashare_index_daily
             WHERE ts_code = ANY(%s)
             GROUP BY ts_code
             """,
             (_ASHARE_INDEX_UNIVERSE,),
         )
-        by_code = {row[0]: row[1] for row in cur.fetchall()}
+        coverage = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
 
-    missing = [c for c in _ASHARE_INDEX_UNIVERSE if c not in by_code]
+    missing = [c for c in _ASHARE_INDEX_UNIVERSE if c not in coverage]
     stale = [
-        c for c, mx in by_code.items()
+        c for c, (_mn, mx) in coverage.items()
         if mx is None or mx < today - timedelta(days=1)
     ]
-    if not force and not missing and not stale:
-        log.info("A-share index universe up-to-date (%d codes), skipping fetch.", len(by_code))
+    shallow = [
+        c for c, (mn, _mx) in coverage.items()
+        if mn is None or mn > need_from
+    ]
+    if not force and not missing and not stale and not shallow:
+        log.info("A-share index universe up-to-date (%d codes), skipping fetch.", len(coverage))
         return _compute_ashare_equal_weight(conn, force=force)
 
-    if force or missing:
-        start = _ashare_backfill_start(today)
-    else:
-        oldest = min(by_code[c] for c in _ASHARE_INDEX_UNIVERSE if c in by_code)
-        start = (oldest or today) - timedelta(days=5)
+    start = need_from if (force or missing or shallow) else (
+        min(coverage[c][1] for c in _ASHARE_INDEX_UNIVERSE if c in coverage) - timedelta(days=5)
+    )
     if start > today:
         return _compute_ashare_equal_weight(conn, force=force)
 
     log.info(
-        "A-share index universe: %s → %s (missing=%d stale=%d) …",
-        start, today, len(missing), len(stale),
+        "A-share index universe: %s → %s (missing=%d stale=%d shallow=%d) …",
+        start, today, len(missing), len(stale), len(shallow),
     )
     timeout = int(os.environ.get("ASHARE_INDEX_UNIVERSE_TIMEOUT", "600"))
     out = run_script(

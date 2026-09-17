@@ -1,4 +1,5 @@
 import {
+  isPlausibleEmailProductCode,
   sqlEmailNavShareClassGuard,
   sqlFundNameMatch,
   sqlFundNameMatchPriority,
@@ -819,6 +820,7 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
 
   try {
     await ensureEmailNavTable()
+    const emailCodeKey = isPlausibleEmailProductCode(id) ? id : ""
     const emailRows = await query<{
       beian_hao: string
       product_name: string
@@ -828,20 +830,25 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
          COALESCE(NULLIF(BTRIM(fund_name), ''), NULLIF(BTRIM(product_code), '')) AS product_name
        FROM ops_email_nav_records
        WHERE (
-         NULLIF(BTRIM(product_code), '') IS NOT NULL AND UPPER(BTRIM(product_code)) = UPPER(BTRIM($1))
+         $2 <> ''
+         AND NULLIF(BTRIM(product_code), '') IS NOT NULL
+         AND UPPER(BTRIM(product_code)) = UPPER(BTRIM($2))
        ) OR (
          ${sqlFundNameMatch("fund_name", "$1")}
          AND ${sqlEmailNavShareClassGuard("fund_name", "$1", "product_code")}
        )
        ORDER BY nav_date DESC NULLS LAST, id DESC
        LIMIT 20`,
-      [id],
+      [id, emailCodeKey],
     )
     for (const row of emailRows) {
       if (!row.product_name) continue
       const beian =
         resolveFofValuationCodeAlias(row.beian_hao)
         ?? (row.beian_hao || row.product_name)
+      if (!isPlausibleEmailProductCode(beian) && beian === row.beian_hao) {
+        continue
+      }
       const managedInvestorBeian = resolveManagedProductBeianIgnoringShareClass(row.product_name)
       // Skip investor-as-fund labels when the row is keyed by a different underlying code.
       if (
