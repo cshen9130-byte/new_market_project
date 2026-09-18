@@ -17,6 +17,8 @@ import {
   ensureFofOverviewListCachePopulated,
   shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
+import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
+import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import {
   sqlExcludeFofUnderlyingProduct,
   sqlFofUnderlyingFundClassFilter,
@@ -27,6 +29,8 @@ import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+const SHANGHAI_DATE_EXPR = (col: string) => `(${col} AT TIME ZONE 'Asia/Shanghai')::date`
 
 const ALLOWED_SORT: Record<string, string> = {
   product_name: "f.product_name",
@@ -41,6 +45,8 @@ const ALLOWED_SORT: Record<string, string> = {
   ret_1y: "cache.ret_1y",
   sharpe_1y: "cache.sharpe_1y",
   calmar_1y: "cache.calmar_1y",
+  first_entry_date: "first_entry_date",
+  latest_change_date: sqlLatestChangeAt("beian_hao", "first_entry_date"),
 }
 
 const ALLOWED_SORT_SLOW: Record<string, string> = {
@@ -56,6 +62,8 @@ const ALLOWED_SORT_SLOW: Record<string, string> = {
   ret_1y: "ret_1y",
   sharpe_1y: "sharpe_1y",
   calmar_1y: "calmar_1y",
+  first_entry_date: "first_entry_date",
+  latest_change_date: sqlLatestChangeAt("beian_hao", "first_entry_date"),
 }
 
 const BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
@@ -128,6 +136,8 @@ interface FofOverviewRow {
   ret_1y?: string | null
   sharpe_1y?: string | null
   calmar_1y?: string | null
+  first_entry_date: string | null
+  latest_change_date?: string | null
 }
 
 function mapRow(r: {
@@ -149,11 +159,13 @@ function mapRow(r: {
   ret_1y?: string | null
   sharpe_1y?: string | null
   calmar_1y?: string | null
+  first_entry_date?: string | Date | null
 }): FofOverviewRow {
   const productName = stripValuationSubjectPathPrefix(r.product_name) || r.product_name
   const shortName = r.short_name
     ? (stripValuationSubjectPathPrefix(r.short_name) || r.short_name)
     : null
+  const firstEntry = r.first_entry_date ? fmtIso(r.first_entry_date) : null
   return {
     id: r.id,
     beian_hao: r.beian_hao,
@@ -173,6 +185,8 @@ function mapRow(r: {
     ret_1y: r.ret_1y,
     sharpe_1y: sanitizeRiskMetricText(r.sharpe_1y),
     calmar_1y: sanitizeRiskMetricText(r.calmar_1y),
+    first_entry_date: firstEntry,
+    latest_change_date: firstEntry,
   }
 }
 
@@ -219,7 +233,7 @@ export async function GET(req: Request) {
       const stratL2Col = `NULLIF(BTRIM(cache.${stratPrefix}_strategy_l2), '')`
       const stratL3Col = `NULLIF(BTRIM(cache.${stratPrefix}_strategy_l3), '')`
       const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
-      const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
+      const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "first_entry_date"
 
       const conditions: string[] = [
         "f.product_name <> '合计'",
@@ -296,7 +310,8 @@ export async function GET(req: Request) {
            cache.ret_6m::text                   AS ret_6m,
            cache.ret_1y::text                   AS ret_1y,
            cache.sharpe_1y::text                AS sharpe_1y,
-           cache.calmar_1y::text                AS calmar_1y
+           cache.calmar_1y::text                AS calmar_1y,
+           MIN(${SHANGHAI_DATE_EXPR("f.imported_at")}) OVER (PARTITION BY ${identityKey})::text AS first_entry_date
          ${baseFrom}
          WHERE ${where}
          ORDER BY ${identityKey}, ${identityTie}
@@ -308,7 +323,9 @@ export async function GET(req: Request) {
               : sortKey === "latest_nav" ? "latest_unit_nav"
                 : sortKey === "latest_nav_date" ? "latest_nav_date"
                   : sortKey === "latest_price_change" ? "latest_return_pct"
-                    : sortKey
+                    : sortKey === "first_entry_date" ? "first_entry_date"
+                      : sortKey === "latest_change_date" ? sqlLatestChangeAt("beian_hao", "first_entry_date")
+                      : sortKey
 
       const aggRows = await query<{ n: string; total_mv: string }>(
         `SELECT COUNT(*)::text AS n, COALESCE(SUM(market_value_num), 0)::text AS total_mv
@@ -349,6 +366,7 @@ export async function GET(req: Request) {
         ret_1y: string | null
         sharpe_1y: string | null
         calmar_1y: string | null
+        first_entry_date: string | null
       }>(
         `SELECT
            id,
@@ -369,7 +387,8 @@ export async function GET(req: Request) {
            ret_6m,
            ret_1y,
            sharpe_1y,
-           calmar_1y
+           calmar_1y,
+           first_entry_date
          FROM (${dedupedSelect}) rows
          ORDER BY ${outerSort} ${sortDir} NULLS LAST, sequence_no ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
@@ -379,7 +398,7 @@ export async function GET(req: Request) {
       // Serve precomputed cache as-is. Per-request BatchNavResolver / detail-series
       // patches used to take tens of seconds and freeze the 2-vCPU host; freshness
       // is the worker's job (email parse + 15m cache refresh).
-      const data = rows.map(mapRow)
+      const data = await overlayLatestChangeDate(await overlayFundElementListFields(rows.map(mapRow)))
 
       return NextResponse.json({
         data,
@@ -399,7 +418,7 @@ export async function GET(req: Request) {
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const teamTagsExpr = `CASE WHEN jsonb_typeof(o.tag->'company') = 'array' THEN o.tag->'company' ELSE '[]'::jsonb END`
     const marketValueExpr = `COALESCE(${managedUnderlyingMarketValueExpr(BEIAN_EXPR, PRODUCT_EXPR)}, 0)`
-    const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "sequence_no"
+    const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "first_entry_date"
     // Outer ORDER BY uses the subquery alias; inner SELECT projects managed 市值 as market_value.
     const sortCol = sortKey === "sequence_no" ? "sequence_no" : ALLOWED_SORT_SLOW[sortKey]
 
@@ -531,6 +550,7 @@ export async function GET(req: Request) {
       ret_1y: string | null
       sharpe_1y: string | null
       calmar_1y: string | null
+      first_entry_date: string | Date | null
     }>(
       `SELECT * FROM (
          SELECT DISTINCT ON (${identityKey})
@@ -557,7 +577,8 @@ export async function GET(req: Request) {
            CASE WHEN h1y.nav IS NOT NULL AND h1y.nav <> 0
              THEN ((${currentNavExpr}) / h1y.nav - 1)::text END AS ret_1y,
            pinfo.sharpe_1y::text AS sharpe_1y,
-           pinfo.calmar_1y::text AS calmar_1y
+           pinfo.calmar_1y::text AS calmar_1y,
+           MIN(${SHANGHAI_DATE_EXPR("f.imported_at")}) OVER (PARTITION BY ${identityKey}) AS first_entry_date
          ${baseFrom}
          ${emailNavJoins}
          ${histJoins}
@@ -570,7 +591,7 @@ export async function GET(req: Request) {
     )
 
     return NextResponse.json({
-      data: rows.map(mapRow),
+      data: await overlayLatestChangeDate(await overlayFundElementListFields(rows.map(mapRow))),
       total,
       page,
       pageSize,

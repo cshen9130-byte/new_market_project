@@ -272,6 +272,15 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
     console.warn("[fof-underlying-auto-add] email pool / 团队数据 sync skipped:", err)
   }
 
+  try {
+    const { syncFofUnderlyingToJyTrackingPool } = await import(
+      "@/lib/server/fof-jy-tracking-pool-sync"
+    )
+    await syncFofUnderlyingToJyTrackingPool()
+  } catch (err) {
+    console.warn("[fof-underlying-auto-add] JY跟踪池 sync skipped:", err)
+  }
+
   return added
 }
 

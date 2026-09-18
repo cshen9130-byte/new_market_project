@@ -9,6 +9,7 @@ import {
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
+  canonicalizeFundRouteId,
   resolveManagedProductBeian,
   resolveManagedProductBeianIgnoringShareClass,
   lookupManagedProductOverride,
@@ -569,7 +570,9 @@ async function lookupFofUnderlyingFundInfo(identifier: string): Promise<FundInfo
 
 /** Resolve a URL identifier to beian_hao (direct code lookup, then product name). */
 export async function resolveFundBeianHao(identifier: string): Promise<string | null> {
-  const id = identifier.trim()
+  const raw = identifier.trim()
+  if (!raw) return null
+  const id = canonicalizeFundRouteId(raw)
   if (!id) return null
 
   const aliased = resolveFofValuationCodeAlias(id)
@@ -651,7 +654,8 @@ const EMPTY_FUND_METRICS = {
 
 /** Resolve fund metadata by product name or email product code (e.g. SBPC69). */
 export async function lookupFundInfoFallback(identifier: string): Promise<FundInfoLookupRow | null> {
-  const id = decodeFundIdentifier(identifier)
+  const decoded = decodeFundIdentifier(identifier)
+  const id = canonicalizeFundRouteId(decoded)
   if (!id) return null
 
   const aliased = resolveFofValuationCodeAlias(id)

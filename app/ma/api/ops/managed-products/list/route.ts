@@ -31,6 +31,7 @@ import {
   loadEmailFundMetricsLookup,
   resolveEmailFundMetrics,
 } from "@/lib/server/email-valuation-cache-enrich"
+import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -463,7 +464,7 @@ export async function GET(req: Request) {
 
       // Cache already has NAV / period metrics from the worker — do not re-run
       // team-nav / valuation lookups on every page view (was ~5s+ on this host).
-      const data = rows.map(mapRow).map(applyManagedRiskOverride)
+      const data = await overlayFundElementListFields(rows.map(mapRow).map(applyManagedRiskOverride))
       return NextResponse.json({
         data,
         total,
@@ -639,7 +640,9 @@ export async function GET(req: Request) {
       [...listParams, pageSize, offset],
     )
 
-    const data = (await finalizeManagedRows(rows.map(mapRow))).map(applyManagedRiskOverride)
+    const data = await overlayFundElementListFields(
+      (await finalizeManagedRows(rows.map(mapRow))).map(applyManagedRiskOverride),
+    )
     return NextResponse.json({
       data,
       total,

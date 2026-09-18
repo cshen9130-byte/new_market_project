@@ -19,6 +19,8 @@ import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 import { recordInteractiveUserTraffic } from "@/lib/server/user-activity-priority"
 import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
+import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
+import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -191,6 +193,7 @@ function buildNavJoinConfig(pool: string, cutoffExpr: string): NavJoinConfig {
     allowedSort: {
       product_name: "i.product_name",
       first_added_at: "i.first_added_at",
+      latest_change_date: sqlLatestChangeAt("i.beian_hao"),
       latest_nav: `COALESCE(en.nav, ${fallbackNavExpr})::numeric`,
       latest_nav_date: `COALESCE(en.nav_date, ${fallbackDateExpr})`,
       latest_price_change: `CASE WHEN en.nav IS NOT NULL AND en_prev.nav IS NOT NULL AND en_prev.nav <> 0 THEN (en.nav / en_prev.nav - 1) ELSE ${fallbackPctExpr}::numeric END`,
@@ -232,6 +235,7 @@ interface TrackRow {
   manager: string | null
   inception_date: string | null
   first_added_at: string | null
+  latest_change_date: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -355,6 +359,7 @@ function resolvedCachedProductNameExpr(): string {
 const CACHE_ALLOWED_SORT: Record<string, string> = {
   product_name: resolvedCachedProductNameExpr(),
   first_added_at: "i.first_added_at",
+  latest_change_date: sqlLatestChangeAt("i.beian_hao"),
   latest_nav: "cache.unit_nav",
   latest_nav_date: "cache.nav_date",
   latest_price_change: "cache.return_pct",
@@ -716,8 +721,12 @@ async function handleCachedTrackingList(opts: {
       totalPages: number
       data: TrackRow[]
     }
-    const data = sanitizeTrackRows(
-      await overlayTeamNavOnTrackRows(responseBody.data ?? [], asOfDate),
+    const data = await overlayLatestChangeDate(
+      await overlayFundElementListFields(
+        sanitizeTrackRows(
+          await overlayTeamNavOnTrackRows(responseBody.data ?? [], asOfDate),
+        ),
+      ),
     )
     return NextResponse.json({ ...responseBody, data })
   } catch (e: unknown) {
@@ -788,6 +797,7 @@ async function handleBflOpsList(opts: {
   const allowedSort: Record<string, string> = {
     product_name: "i.product_name",
     first_added_at: "i.first_added_at",
+    latest_change_date: sqlLatestChangeAt("i.beian_hao"),
     latest_nav: `${bflOpsNavExpr()}::numeric`,
     latest_nav_date: bflOpsNavDateExpr(),
     latest_price_change: `${bflOpsNavPctExpr()}::numeric`,
@@ -854,6 +864,7 @@ async function handleBflOpsList(opts: {
     if (asOfDate) {
       data = sanitizeTrackRows(await overlayTeamNavOnTrackRows(data, asOfDate))
     }
+    data = await overlayLatestChangeDate(await overlayFundElementListFields(data))
     return NextResponse.json({
       page,
       pageSize,
@@ -928,6 +939,18 @@ export async function GET(req: Request) {
       await ensureFofUnderlyingInEmailPool()
     } catch (err) {
       console.warn("[tracking-funds/list] FOF→邮箱池 sync skipped:", err)
+    }
+  }
+
+  // JY跟踪池: FOF底层 私募持仓 must appear without a manual add.
+  if (pool === "jy" || pool === "tracking" || pool === "all") {
+    try {
+      const { ensureFofUnderlyingInJyTrackingPool } = await import(
+        "@/lib/server/fof-jy-tracking-pool-sync"
+      )
+      await ensureFofUnderlyingInJyTrackingPool()
+    } catch (err) {
+      console.warn("[tracking-funds/list] FOF→JY跟踪池 sync skipped:", err)
     }
   }
 
@@ -1289,7 +1312,9 @@ export async function GET(req: Request) {
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: sanitizeTrackRows(data),
+      data: await overlayLatestChangeDate(
+        await overlayFundElementListFields(sanitizeTrackRows(data)),
+      ),
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })

@@ -6,7 +6,7 @@ import { ensureCustomFundNavFresh } from "@/lib/server/custom-fund-nav-daily-ref
 import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-nav-query"
 import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
-import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { canonicalizeFundRouteId, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import { lookupAmacFundMetadata, lookupAmacFundName } from "@/lib/server/amac-fund-metadata"
 import { preferAmacOfficialName } from "@/lib/server/fund-name-match"
@@ -299,6 +299,10 @@ export async function GET(
       refreshNav: phase !== "header",
     })
     if (customEarly) return customEarly
+
+    if (!canonicalizeFundRouteId(rawId)) {
+      return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+    }
 
     // Instant paint path: serve name / latest NAV / period returns from list caches.
     if (phase === "header") {

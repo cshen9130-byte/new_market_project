@@ -31,7 +31,7 @@ import {
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
 import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
-import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { canonicalizeFundRouteId, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
 
 /**
@@ -87,7 +87,7 @@ function fmtDate(d: string | Date | null | undefined): string | null {
 export async function lookupListCacheFundHeader(
   rawId: string,
 ): Promise<ListCacheFundHeader | null> {
-  const id = rawId.trim()
+  const id = canonicalizeFundRouteId(rawId.trim())
   if (!id) return null
 
   // Tracking cache stores full L1–L3 for both sources; FOF/managed only keep L1.
@@ -200,8 +200,10 @@ export async function lookupListCacheFundHeader(
  * the expensive fuzzy fund-name lateral join on the common FOF底层 click path.
  */
 export async function resolveRouteFundIdFast(rawId: string): Promise<string> {
-  const id = rawId.trim()
-  if (!id) return id
+  const trimmed = rawId.trim()
+  if (!trimmed) return trimmed
+  const id = canonicalizeFundRouteId(trimmed)
+  if (!id) return trimmed
 
   const aliased = resolveFofValuationCodeAlias(id)
   if (aliased) return aliased

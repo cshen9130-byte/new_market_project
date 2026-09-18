@@ -2,6 +2,7 @@
  * Canonical 备案号 for 在管产品 rows — overrides fuzzy auto-resolution when
  * the business defines a fixed product ↔ code mapping.
  */
+import { isBogusYearProductCode } from "@/lib/server/fund-name-match"
 import { shareClassFromProductName, stripShareClassSuffix } from "@/lib/server/share-class-product"
 
 export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
@@ -133,6 +134,19 @@ export function remapManagedProductBeianCode(code: string): string | null {
   const aliased = MANAGED_PRODUCT_BEIAN_ALIASES[normalized]
   if (aliased) return aliased
   return null
+}
+
+/**
+ * Remap aliases such as C2026 → SBDU00 first. Leftover calendar years (2026)
+ * are not 备案号 and must not resolve a product page or list-cache identity.
+ */
+export function canonicalizeFundRouteId(id: string | null | undefined): string | null {
+  const trimmed = (id ?? "").trim()
+  if (!trimmed) return null
+  const remapped = remapManagedProductBeianCode(trimmed)
+  if (remapped) return remapped
+  if (isBogusYearProductCode(trimmed)) return null
+  return trimmed
 }
 
 /** Custody / legacy codes that should resolve to this canonical 备案号. */

@@ -27,6 +27,7 @@ import {
 } from "@/lib/server/fund-name-match"
 import {
   alternateBeianCodesFor,
+  canonicalizeFundRouteId,
   remapManagedProductBeianCode,
   resolveManagedProductBeian,
 } from "@/lib/server/managed-product-beian"
@@ -56,6 +57,10 @@ const TEAM_DATA_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   桫罗稳鸿: "SBDU00",
   桫罗稳鸿C类: "SBDU00",
   金舆稳健增长1号FOF: "SCU622",
+  // Year token 2026 was stored as product_code on several 鸣石 / 草本 emails.
+  草本致远1号: "SND951",
+  鸣石广胜中证A500指数增强1号量化: "SBNJ90",
+  鸣石广鸣中证1000指数增强1号: "SNK642",
 }
 
 function teamDataBeianOverride(productName: string): string | null {
@@ -248,7 +253,7 @@ export async function lookupTeamDataProductFundInfo(identifier: string): Promise
   strategy_l2: string | null
   strategy_l3: string | null
 } | null> {
-  const id = identifier.trim()
+  const id = canonicalizeFundRouteId(identifier.trim())
   if (!id) return null
 
   await ensureTeamDataProductsTable()

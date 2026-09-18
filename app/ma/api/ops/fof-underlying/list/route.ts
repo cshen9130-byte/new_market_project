@@ -15,6 +15,7 @@ import {
   ensureFofOverviewListCachePopulated,
   shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
+import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import {
   sqlExcludeFofUnderlyingProduct,
   sqlFofUnderlyingFundClassFilter,
@@ -234,7 +235,7 @@ export async function GET(req: Request) {
       )
 
       return NextResponse.json({
-        data: rows.map(mapRow),
+        data: await overlayFundElementListFields(rows.map(mapRow)),
         total,
         page,
         pageSize,
@@ -353,7 +354,7 @@ export async function GET(req: Request) {
     )
 
     return NextResponse.json({
-      data: rows.map(mapRow),
+      data: await overlayFundElementListFields(rows.map(mapRow)),
       total,
       page,
       pageSize,

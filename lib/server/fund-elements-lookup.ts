@@ -65,7 +65,7 @@ function addShareClassFamilyKeys(
   }
 }
 
-function expandBeianLookupKeys(input: string[]): string[] {
+export function expandBeianLookupKeys(input: string[]): string[] {
   const keys: string[] = []
   const seen = new Set<string>()
   for (const key of input) {
@@ -325,4 +325,137 @@ function mergeFamilyTrackRows<T extends Record<string, unknown>>(rows: T[]): T[]
     }
   }
   return [out]
+}
+
+export type FundElementListFields = {
+  open_day: string | null
+  fee_manage: string | null
+  fee_manage_rate: string | null
+  fee_pay: string | null
+  fee_redeem: string | null
+}
+
+const EMPTY_LIST_FIELDS: FundElementListFields = {
+  open_day: null,
+  fee_manage: null,
+  fee_manage_rate: null,
+  fee_pay: null,
+  fee_redeem: null,
+}
+
+function formatManageRateForList(raw: string | null | undefined): string | null {
+  if (raw == null) return null
+  const s = String(raw).trim()
+  if (!s) return null
+  if (s.includes("%")) return s
+  const n = parseFloat(s)
+  if (!Number.isFinite(n) || n === 0) return null
+  const pct = n <= 1 ? n * 100 : n
+  return `${pct.toFixed(2).replace(/\.?0+$/, "")}%`
+}
+
+function nonemptyText(value: unknown): string | null {
+  const s = String(value ?? "").trim()
+  if (!s || s === "—" || s === "无" || /^-+$/.test(s)) return null
+  return s
+}
+
+function mergeListFields(primary: FundElementListFields, extra: FundElementListFields): FundElementListFields {
+  return {
+    open_day: primary.open_day || extra.open_day,
+    fee_manage: primary.fee_manage || extra.fee_manage,
+    fee_manage_rate: primary.fee_manage_rate || extra.fee_manage_rate,
+    fee_pay: primary.fee_pay || extra.fee_pay,
+    fee_redeem: primary.fee_redeem || extra.fee_redeem,
+  }
+}
+
+function toListFields(row: {
+  open_day?: string | null
+  fee_manage?: string | null
+  fee_manage_rate?: string | null
+  fee_pay?: string | null
+  fee_redeem?: string | null
+}): FundElementListFields {
+  const rate = formatManageRateForList(row.fee_manage_rate)
+  const manage = nonemptyText(row.fee_manage) || rate
+  return {
+    open_day: nonemptyText(row.open_day),
+    fee_manage: manage,
+    fee_manage_rate: rate,
+    fee_pay: nonemptyText(row.fee_pay),
+    fee_redeem: nonemptyText(row.fee_redeem),
+  }
+}
+
+/** Attach 开放日 / 管理费 / 业绩报酬说明 / 赎回费 onto list rows (one batch query). */
+export async function overlayFundElementListFields<T extends { beian_hao?: string | null }>(
+  rows: T[],
+): Promise<T[]> {
+  if (rows.length === 0) return rows
+  const codes = [...new Set(rows.map((r) => String(r.beian_hao ?? "").trim()).filter(Boolean))]
+  if (codes.length === 0) {
+    return rows.map((row) => ({ ...row, ...EMPTY_LIST_FIELDS }))
+  }
+  const expanded = expandBeianLookupKeys(codes)
+  if (expanded.length === 0) {
+    return rows.map((row) => ({ ...row, ...EMPTY_LIST_FIELDS }))
+  }
+  try {
+    const dbRows = await query<{
+      register_number: string | null
+      record_key: string | null
+      open_day: string | null
+      fee_manage: string | null
+      fee_manage_rate: string | null
+      fee_pay: string | null
+      fee_redeem: string | null
+    }>(
+      `SELECT register_number, record_key,
+              NULLIF(BTRIM(open_day), '') AS open_day,
+              NULLIF(BTRIM(fee_manage), '') AS fee_manage,
+              fee_manage_rate::text AS fee_manage_rate,
+              NULLIF(BTRIM(fee_pay), '') AS fee_pay,
+              NULLIF(BTRIM(fee_redeem), '') AS fee_redeem
+       FROM basicinfo_bfl_track
+       WHERE register_number = ANY($1::text[])
+          OR record_key = ANY($1::text[])
+       ORDER BY
+         CASE WHEN ${sqlHasUsableFundElements()} THEN 0 ELSE 1 END,
+         updated_at DESC NULLS LAST,
+         id DESC`,
+      [expanded],
+    )
+    const byKey = new Map<string, FundElementListFields>()
+    const put = (key: string | null | undefined, fields: FundElementListFields) => {
+      const k = String(key ?? "").trim().toUpperCase()
+      if (!k) return
+      const prev = byKey.get(k)
+      byKey.set(k, prev ? mergeListFields(prev, fields) : fields)
+    }
+    for (const row of dbRows) {
+      const fields = toListFields(row)
+      for (const key of expandBeianLookupKeys(
+        [row.register_number, row.record_key].filter((v): v is string => Boolean(v)),
+      )) {
+        put(key, fields)
+      }
+    }
+    return rows.map((row) => {
+      const beian = String(row.beian_hao ?? "").trim()
+      let found: FundElementListFields | undefined
+      if (beian) {
+        for (const key of expandBeianLookupKeys([beian])) {
+          const hit = byKey.get(key.toUpperCase())
+          if (hit && (hit.open_day || hit.fee_manage || hit.fee_pay || hit.fee_redeem || hit.fee_manage_rate)) {
+            found = hit
+            break
+          }
+        }
+      }
+      return { ...row, ...(found ?? EMPTY_LIST_FIELDS) }
+    })
+  } catch {
+    return rows.map((row) => ({ ...row, ...EMPTY_LIST_FIELDS }))
+  }
 }

@@ -1,11 +1,16 @@
 "use client"
 
 import type { ReactNode } from "react"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
+  getProductFieldDisplay,
   getProductFieldTextValue,
+  isProductFieldLongText,
   isProductFieldMoney,
   isProductFieldNav,
   isProductFieldPct,
+  isProductFieldSummarized,
+  productFieldColWidthPx,
   PRODUCT_FIELD_SORT_KEYS,
 } from "@/lib/ma/product-field-config"
 
@@ -43,15 +48,25 @@ export function ProductFieldConfigHeader({
 }) {
   const sortKey = PRODUCT_FIELD_SORT_KEYS[label]
   const align = rightAlign || isProductFieldPct(label) || isProductFieldMoney(label) ? " text-right" : ""
-  const minW = label === "最新单位净值" ? " min-w-[90px]" : label === "最新涨跌幅" ? " min-w-[88px]" : " min-w-[100px]"
+  const summarized = isProductFieldSummarized(label)
+  const widthPx = productFieldColWidthPx(label)
+  const sizeCls = summarized
+    ? " !px-1.5 !whitespace-normal leading-tight"
+    : label === "最新单位净值" ? " min-w-[90px]"
+    : label === "最新涨跌幅" ? " min-w-[88px]"
+    : isProductFieldLongText(label) ? " min-w-[140px]"
+    : " min-w-[100px]"
+  const sizeStyle = summarized
+    ? { width: widthPx, minWidth: widthPx, maxWidth: widthPx }
+    : undefined
   if (sortKey) {
     return (
-      <th key={label} className={`${thSort}${align}${minW}`} onClick={() => onSort(sortKey)}>
+      <th key={label} style={sizeStyle} className={`${thSort}${align}${sizeCls} box-border`} onClick={() => onSort(sortKey)}>
         {label}<SortIcon col={sortKey} />
       </th>
     )
   }
-  return <th key={label} className={`${thBase}${minW}`}>{label}</th>
+  return <th key={label} style={sizeStyle} className={`${thBase}${sizeCls} box-border`}>{label}</th>
 }
 
 export function ProductFieldConfigCell({
@@ -98,6 +113,41 @@ export function ProductFieldConfigCell({
       </td>
     )
   }
-  const val = getProductFieldTextValue(row, label)
-  return <td key={label} className={`${cell} tabular-nums`}>{val ?? "—"}</td>
+  const { short, detail } = getProductFieldDisplay(row, label)
+  if (isProductFieldLongText(label)) {
+    const summarized = isProductFieldSummarized(label)
+    const widthPx = productFieldColWidthPx(label)
+    const sizeStyle = summarized
+      ? { width: widthPx, minWidth: widthPx, maxWidth: widthPx }
+      : undefined
+    const sizeCls = summarized ? " !px-1.5 overflow-hidden box-border" : " max-w-[220px]"
+    if (!short) {
+      return <td key={label} style={sizeStyle} className={`${cell}${sizeCls}`}><span className="text-muted-foreground">—</span></td>
+    }
+    const showTip = Boolean(detail && detail !== short)
+    const text = (
+      <span className="block truncate">
+        {short}
+      </span>
+    )
+    return (
+      <td key={label} style={sizeStyle} className={`${cell}${sizeCls}`}>
+        {showTip ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="block cursor-default truncate">{text}</span>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              sideOffset={6}
+              className="max-w-[360px] text-left whitespace-pre-wrap leading-relaxed [text-wrap:auto]"
+            >
+              {detail}
+            </TooltipContent>
+          </Tooltip>
+        ) : text}
+      </td>
+    )
+  }
+  return <td key={label} className={`${cell} tabular-nums`}>{short ?? "—"}</td>
 }

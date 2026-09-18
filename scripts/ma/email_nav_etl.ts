@@ -298,6 +298,20 @@ async function main() {
       console.warn("[email_nav_etl] email ops pool sync skipped:", err)
     }
 
+    let jyPoolSync: Record<string, unknown> | null = null
+    try {
+      const { syncFofUnderlyingToJyTrackingPool } = await import(
+        "@/lib/server/fof-jy-tracking-pool-sync"
+      )
+      const poolSync = await syncFofUnderlyingToJyTrackingPool()
+      jyPoolSync = poolSync
+      console.error(
+        `[email_nav_etl] JY跟踪池 synced from FOF底层 (inserted=${poolSync.inserted}, skipped=${poolSync.skipped}, candidates=${poolSync.totalCandidates})`,
+      )
+    } catch (err) {
+      console.warn("[email_nav_etl] JY跟踪池 sync skipped:", err)
+    }
+
     console.log(
       JSON.stringify({
         ok: true,
@@ -306,6 +320,7 @@ async function main() {
         incremental: days == null,
         days: days ?? null,
         emailPoolSync,
+        jyPoolSync,
         ...result,
       }),
     )

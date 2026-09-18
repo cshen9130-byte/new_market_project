@@ -10,6 +10,7 @@ import { getUserById } from "@/lib/server/users"
 import { ensureTrackingFundsListCachePopulated } from "@/lib/server/tracking-funds-list-cache-pg"
 import { sqlFundNameMatch, sqlShareClassProductNameGuard } from "@/lib/server/fund-name-match"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
+import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -350,7 +351,7 @@ export async function GET(req: Request) {
     })
 
     return NextResponse.json({
-      data,
+      data: await overlayFundElementListFields(data),
       total,
       page,
       pageSize,

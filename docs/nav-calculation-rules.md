@@ -2114,3 +2114,57 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes **calendar year is not a product_code**, **C2026 still remaps to SBDU00**, **year product_code does not attach 鸣石 NAV to 草本致远**.
+
+---
+
+## What Was Fixed (鸣石广胜中证A500指数增强1号量化 — SBNJ90 / `/2026` mix, 2026-09-18)
+
+### The Problem
+
+`/ma/dashboard/private-funds/2026` showed **鸣石广胜中证A500指数增强1号量化** with a spiked 收益曲线: 平台数据 jumped to 鸣石广鸣's **2.5552 / 3.0913** (2026-09-16) then crashed to **0.8631 / 1.3992 (−54.76%)** on 2026-09-17.
+
+Real AMAC 备案号 is **SBNJ90**. 鸣石广鸣中证1000指数增强1号 is **SNK642** (unit NAV ~2.48–2.55).
+
+### Root Cause
+
+Same year-token family as 草本致远 `/2026` vs `/SND951`. After 草本 was unlinked from the year code, leftover `product_code = 2026` / list-cache / detail-cache identity still resolved `/2026` to 鸣石广胜 and merged 鸣石广鸣 rows into the same 平台数据 series.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Year route reject | `canonicalizeFundRouteId` | Remap **C2026 → SBDU00** first; leftover `2026` does not identify a fund |
+| Detail API | `private-funds/[beian_hao]` | `/2026` returns 404; C2026 still remaps |
+| List / fallback | `lookupListCacheFundHeader`, `resolveRouteFundIdFast`, `lookupFundInfoFallback`, `lookupTeamDataProductFundInfo` | Do not resolve year tokens from cache or email `product_code` |
+| Team-data identity | `TEAM_DATA_BEIAN_OVERRIDES` | 鸣石广胜 → **SBNJ90**, 鸣石广鸣 → **SNK642**, 草本致远1号 stays **SND951** |
+| One-time repair | `scripts/ma/_repair_mingshi_year_code_nav.ts` | Map 鸣石 year/null codes; drop `/2026` caches only |
+
+### What This Fix Does NOT Change
+
+- 草本致远1号 **SND951** matching / chart — unchanged
+- C2026 → SBDU00 remap for **桫罗稳鸿** — unchanged
+- `preserve_high_nav_scale` funds (SBDF95, BDF95A, SADG72, SET723, SVP460) — unchanged
+- SBAH99 dividend formulas, SNF018 virtual-first, SSG947 seed merge, SQX078 swap repair — unchanged
+- CMS / CSC virtual / 估值表 day-shift heals — unchanged
+- `syncExDivAdjustedNav` / `rechainDerivedFromPrev` / `propagateMissingAdjRows` — unchanged
+
+### Repair stored 鸣石 year codes (one-time)
+
+```bash
+npx tsx scripts/ma/_repair_mingshi_year_code_nav.ts
+npx tsx scripts/ma/_repair_mingshi_year_code_nav.ts --apply
+```
+
+Does **not** rewrite `C2026` or 草本致远 `SND951` history. Deletes duplicate year-token 草本 rows, maps 鸣石 year tokens to **SBNJ90** / **SNK642**, and clears detail/list cache for `2026` / `SBNJ90` / `SNK642` only.
+
+Open `/ma/dashboard/private-funds/SBNJ90` after repair. `/2026` is not a 备案号.
+
+### Regression Checks
+
+```bash
+npx tsx scripts/ma/_test_mingshi_year_code_nav.ts
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **year route /2026 is rejected**, **C2026 still remaps to SBDU00**, **鸣石广鸣 2.5552 does not attach to 鸣石广胜 SBNJ90**, **草本致远 / SND951 year-code match is unchanged**.
+

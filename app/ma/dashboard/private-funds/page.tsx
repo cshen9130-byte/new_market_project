@@ -39,6 +39,7 @@ import {
   DIRECT_FIELD_DEFAULT,
   FIELD_CONFIG_STORAGE_KEYS,
   fieldConfigSplitAround,
+  productFieldColWidthPx,
   FOF_FIELD_DEFAULT,
   MANAGED_FIELD_DEFAULT,
   OPS_MANAGED_FIELD_DEFAULT,
@@ -2083,6 +2084,7 @@ interface TrackFundRow {
   manager: string | null
   inception_date: string | null
   first_added_at: string | null
+  latest_change_date: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -2791,8 +2793,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
 
-  const teamConfigColSpan = 3 + fieldConfigSelected.length + 7 + 3
-  const mineConfigColSpan = 3 + fieldConfigSelected.length + 4 + 3
+  const teamConfigColSpan = 5 + fieldConfigSelected.length + 7 + 3
+  const mineConfigColSpan = 5 + fieldConfigSelected.length + 4 + 3
 
   function renderFieldConfigHeader(label: string) {
     return (
@@ -2933,13 +2935,14 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       headers: userFetchHeaders(),
     }).then((r) => r.json())
     const rows: TrackFundRow[] = json.data ?? []
-    const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "首次入表日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)"]
+    const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "首次入表日期", "最新变动日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)"]
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => [
         escape(r.beian_hao), escape(r.product_name), escape(r.short_name),
         escape(r.strategy_l1), escape(r.strategy_l2), escape(r.manager), escape(r.inception_date),
         escape(r.first_added_at?.slice(0, 10)),
+        escape(r.latest_change_date?.slice(0, 10)),
         escape(r.latest_nav), escape(r.latest_nav_date), escape(r.latest_price_change),
         escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
         escape(r.sharpe_1y), escape(r.calmar_1y),
@@ -3680,6 +3683,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-10`}>序号</th>
                   <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
+                  <th className={`${thSort} min-w-[110px]`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
                   <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("beian_hao")}>备案编码<SortIco col="beian_hao" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("latest_nav")}>团队单位净值<SortIco col="latest_nav" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("latest_nav_date")}>团队净值日期<SortIco col="latest_nav_date" /></th>
@@ -3689,11 +3693,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               </thead>
               <tbody>
                 {loading && data.length === 0 ? (
-                  <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={10} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isSupportedPool ? (
-                  <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
+                  <tr><td colSpan={10} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
                 ) : data.length === 0 ? (
-                  <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
+                  <tr><td colSpan={10} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
                   const isSelected = selected.has(row.beian_hao)
                   const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
@@ -3729,6 +3733,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
+                      <td className={`${cell} tabular-nums`}>{row.latest_change_date?.slice(0, 10) ?? "—"}</td>
                       <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao}</td>
                       <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
                       <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
@@ -3757,7 +3762,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           </div>
           ) : (
           <div className="overflow-x-auto rounded-lg border">
-            <table className="text-sm border-collapse w-full" style={{ minWidth: 1400 }}>
+            <table className="text-sm border-collapse w-full" style={{ minWidth: 1680 }}>
               <thead className="sticky top-0 z-20">
                 <tr className="bg-muted dark:bg-zinc-900 border-b">
                   <th className={`${thBase} w-8 px-2 sticky left-0 z-30 bg-muted dark:bg-zinc-900`}>
@@ -3768,6 +3773,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted dark:bg-zinc-900`}>序号</th>
                   <th className={`${thSort} min-w-[200px] sticky left-[72px] z-30 bg-muted dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-700`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
+                  <th className={`${thSort} min-w-[110px]`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
                   {fieldConfigSelected.map(renderFieldConfigHeader)}
                   <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
                     <div>近一周收益<SortIco col="ret_1w" /></div>
@@ -3840,6 +3846,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
+                      <td className={`${cell} tabular-nums`}>{row.latest_change_date?.slice(0, 10) ?? "—"}</td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -4266,6 +4273,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-10`}>序号</th>
                   <th className={`${thBase} min-w-[200px]`}>产品名称</th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
+                  <th className={`${thSort} min-w-[110px]`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
                   {fieldConfigSelected.map((label) => (
                     <th key={label} className={`${thBase} min-w-[100px]`}>{label}</th>
                   ))}
@@ -4339,6 +4347,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
+                      <td className={`${cell} tabular-nums`}>{row.latest_change_date?.slice(0, 10) ?? "—"}</td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -9049,7 +9058,7 @@ const DIRECT_FIELD_CONFIG_LOCKED = "备案编码"
 const DIRECT_FIELD_CONFIG_DEFAULT = ["备案编码", "单位净值", "净值日期", "涨跌幅"]
 const DIRECT_FIELD_CONFIG_OPTIONS: Record<string, string[]> = {
   "基本信息": ["备案编码", "备案日期", "成立日期", "基金全称", "管理人规模", "基准指数", "基金管理人", "投资顾问", "托管券商", "平台一级策略", "平台二级策略", "平台三级策略"],
-  "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "最低申购金额", "封闭期", "开放日"],
+  "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "赎回费", "最低申购金额", "封闭期", "开放日", "管理费", "业绩报酬说明"],
   "团队策略/标签": ["团队一级策略", "团队二级策略", "团队三级策略", "团队标签", "所在跟踪池"],
   "净值信息": ["单位净值", "净值日期", "涨跌幅", "成立以来收益", "近一年收益", "最大回撤", "年化收益", "年化波动率", "夏普比率", "卡玛比率"],
   "团队字段": ["团队评级", "团队备注", "关注度"],
@@ -18781,7 +18790,7 @@ function InvestmentManagedProductsView() {
 type FofOverviewSortKey =
   | "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change"
   | "market_value" | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y"
-  | "sharpe_1y" | "calmar_1y"
+  | "sharpe_1y" | "calmar_1y" | "first_entry_date" | "latest_change_date"
 
 interface FofOverviewRow {
   id: string
@@ -18802,6 +18811,8 @@ interface FofOverviewRow {
   ret_1y?: string | null
   sharpe_1y?: string | null
   calmar_1y?: string | null
+  first_entry_date: string | null
+  latest_change_date?: string | null
 }
 
 type FofDetailSortKey =
@@ -18877,9 +18888,9 @@ function InvestmentFofOverviewView() {
   const [showFofTemplateMenu, setShowFofTemplateMenu] = useState(false)
   const [fofMetricTemplates, setFofMetricTemplates] = useState<{ name: string; items: { period: string; metric: string }[] }[]>(() => loadTrackingMetricTemplates())
   const [fofActiveTemplate, setFofActiveTemplate] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<FofOverviewSortKey | "">("")
+  const [sortKey, setSortKey] = useState<FofOverviewSortKey | "">("first_entry_date")
   const [detailSortKey, setDetailSortKey] = useState<FofDetailSortKey | "">("")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [data, setData] = useState<FofOverviewRow[]>([])
@@ -19300,12 +19311,13 @@ function InvestmentFofOverviewView() {
       return
     }
     const rows = selected.size > 0 ? data.filter((r) => selected.has(r.id)) : data
-    const headers = ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "最新涨跌幅", "市值", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
+    const headers = ["产品名称", "备案编码", "首次入表日期", "最新变动日期", "最新净值日期", "最新单位净值", "最新涨跌幅", "市值", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => [
-        escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav_date),
-        escape(r.latest_nav), escape(r.latest_price_change), escape(r.market_value),
+        escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.first_entry_date),
+        escape(r.latest_change_date?.slice(0, 10)),
+        escape(r.latest_nav_date), escape(r.latest_nav), escape(r.latest_price_change), escape(r.market_value),
         escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m),
         escape(r.ret_1y), escape(r.sharpe_1y), escape(r.calmar_1y),
       ].join(",")),
@@ -19319,8 +19331,10 @@ function InvestmentFofOverviewView() {
   }
 
   const fofMvTotalSplit = fieldConfigSplitAround(fofFieldConfigSelected, "市值")
-  const colSpan = 3 + fofFieldConfigSelected.length + 7 + fofAddedCols.length + 3
-  const fofScrollMinW = 1900 + fofFieldConfigSelected.length * 100 + fofAddedCols.length * 96
+  const colSpan = 5 + fofFieldConfigSelected.length + 7 + fofAddedCols.length + 3
+  const fofScrollMinW = 2120
+    + fofFieldConfigSelected.reduce((sum, label) => sum + productFieldColWidthPx(label), 0)
+    + fofAddedCols.length * 96
   const detailColSpan = 18 + fofAddedCols.length
   const fofStickyHeadBg = "bg-muted dark:bg-zinc-900"
   const fofStickyCellBg = "bg-background dark:bg-background"
@@ -19806,6 +19820,16 @@ function InvestmentFofOverviewView() {
               >
                 产品名称<FofOverviewSortIcon col="product_name" />
               </th>
+              <th className={`${fofScrollHeadSort} min-w-[110px]`} onClick={() => handleSort("first_entry_date")}>
+                首次入表日期<FofOverviewSortIcon col="first_entry_date" />
+              </th>
+              <th
+                className={`${fofScrollHeadSort} min-w-[110px]`}
+                title="净值、要素表、策略等最近一次更新的日期"
+                onClick={() => handleSort("latest_change_date")}
+              >
+                最新变动日期<FofOverviewSortIcon col="latest_change_date" />
+              </th>
               {fofFieldConfigSelected.map(renderInvFofFieldHeader)}
               <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
                 <div>近一周收益<FofOverviewSortIcon col="ret_1w" /></div>
@@ -19900,6 +19924,10 @@ function InvestmentFofOverviewView() {
                             </div>
                           ) : null
                         })()}
+                      </td>
+                      <td className={`${scrollCell} tabular-nums`}>{row.first_entry_date ?? "—"}</td>
+                      <td className={`${scrollCell} tabular-nums`}>
+                        {(row.latest_change_date || row.first_entry_date)?.slice(0, 10) ?? "—"}
                       </td>
                       {fofFieldConfigSelected.map((label) => renderInvFofFieldCell(label, row, scrollCell))}
                       <td className={`${scrollCell} text-right tabular-nums`}>
@@ -20000,6 +20028,8 @@ function InvestmentFofOverviewView() {
                   >
                     合计
                   </td>
+                  <td className="border-b px-3 py-2 bg-muted" />
+                  <td className="border-b px-3 py-2 bg-muted" />
                   {fofMvTotalSplit.before > 0 && <td className="border-b px-3 py-2 bg-muted" colSpan={fofMvTotalSplit.before} />}
                   {fofMvTotalSplit.hasTotal && (
                     <td className="border-b px-3 py-2 text-right tabular-nums bg-muted">{fmtMoney(totalMarketValue)}</td>
