@@ -84,9 +84,9 @@ export function AccountOverviewTable() {
                     <th className="px-2 py-1.5 font-medium">账号</th>
                     <th className="px-2 py-1.5 text-right font-medium">动态权益</th>
                     <th className="px-2 py-1.5 text-right font-medium">保证金</th>
-                    <th className="px-2 py-1.5 text-right font-medium">总盈亏</th>
-                    <th className="px-2 py-1.5 text-right font-medium">持盈</th>
-                    <th className="px-2 py-1.5 text-right font-medium">平盈</th>
+                    <th className="px-2 py-1.5 text-right font-medium" title="客户权益差减去出入金，与净值曲线当日盈亏一致。浮动盈亏+平仓盈亏">当日盈亏</th>
+                    <th className="px-2 py-1.5 text-right font-medium" title="当日浮动变动 = 当日盈亏 − 平仓盈亏（含手续费等，不是结算单持仓浮动水平）">浮动盈亏</th>
+                    <th className="px-2 py-1.5 text-right font-medium" title="结算单当日平仓盈亏">平仓盈亏</th>
                     <th className="px-2 py-1.5 text-right font-medium">风险度</th>
                     <th className="px-2 py-1.5 text-right font-medium">单边风险度</th>
                     <th className="px-2 py-1.5 text-right font-medium">手续费</th>

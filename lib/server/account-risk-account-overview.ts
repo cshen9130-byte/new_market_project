@@ -4,6 +4,7 @@
  */
 import { publicQuery } from "@/lib/db"
 import { toNum } from "@/lib/server/account-risk-classify"
+import { countedEquityPathPnl } from "@/lib/server/account-risk-nav"
 import { productNameFromClientLabel } from "@/lib/server/account-risk-product-elements"
 import { scopeWhere } from "@/lib/server/account-risk-scope"
 
@@ -54,7 +55,23 @@ export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
   const scoped = scopeWhere(params)
   const result = await publicQuery(
     `
-    WITH latest AS (
+    WITH ranked AS (
+      SELECT
+        account_no,
+        trade_date,
+        client_name,
+        company_name,
+        client_equity,
+        margin_occupied,
+        deposit_wd,
+        realized_pl,
+        commission,
+        risk_ratio,
+        LAG(client_equity) OVER (PARTITION BY account_no ORDER BY trade_date) AS prev_equity
+      FROM public.cfmmc_daily_summary
+      WHERE ${scoped}
+    ),
+    latest AS (
       SELECT DISTINCT ON (account_no)
         account_no,
         trade_date,
@@ -62,12 +79,12 @@ export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
         company_name,
         client_equity,
         margin_occupied,
+        deposit_wd,
         realized_pl,
-        mtm_pl,
         commission,
-        risk_ratio
-      FROM public.cfmmc_daily_summary
-      WHERE ${scoped}
+        risk_ratio,
+        prev_equity
+      FROM ranked
       ORDER BY account_no, trade_date DESC
     ),
     ls AS (
@@ -87,8 +104,9 @@ export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
            l.company_name,
            l.client_equity,
            l.margin_occupied,
+           l.deposit_wd,
+           l.prev_equity,
            l.realized_pl,
-           l.mtm_pl,
            l.commission,
            l.risk_ratio,
            ls.long_margin,
@@ -107,8 +125,9 @@ export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
     company_name: string | null
     client_equity: number | string | null
     margin_occupied: number | string | null
+    deposit_wd: number | string | null
+    prev_equity: number | string | null
     realized_pl: number | string | null
-    mtm_pl: number | string | null
     commission: number | string | null
     risk_ratio: number | string | null
     long_margin: number | string | null
@@ -116,9 +135,14 @@ export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
   }[]).map((row) => {
     const equity = row.client_equity == null ? null : toNum(row.client_equity)
     const margin = row.margin_occupied == null ? null : toNum(row.margin_occupied)
-    const holdingPl = row.mtm_pl == null ? null : toNum(row.mtm_pl)
-    const closedPl = row.realized_pl == null ? null : toNum(row.realized_pl)
+    const closedPl = row.realized_pl == null ? null : Math.round(toNum(row.realized_pl))
     const riskRaw = row.risk_ratio == null ? null : toNum(row.risk_ratio)
+    const prevEquity = row.prev_equity == null ? null : toNum(row.prev_equity)
+    const flow = toNum(row.deposit_wd)
+    const totalPl = equity == null ? null : Math.round(countedEquityPathPnl(equity, prevEquity, flow))
+    // Statement 浮动盈亏 is a mark-to-open LEVEL. Show today's increment so
+    // 浮动盈亏 + 平仓盈亏 = 当日盈亏 (fees and other residuals sit in 浮动).
+    const holdingPl = totalPl == null ? null : totalPl - (closedPl ?? 0)
     return {
       fundName: productNameFromClientLabel(clean(row.client_name)),
       companyName: shortCompanyName(clean(row.company_name)),
@@ -126,7 +150,7 @@ export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
       tradeDate: row.trade_date,
       equity,
       margin,
-      totalPl: holdingPl == null && closedPl == null ? null : (holdingPl ?? 0) + (closedPl ?? 0),
+      totalPl,
       holdingPl,
       closedPl,
       riskPct: asRiskPct(riskRaw, margin ?? 0, equity ?? 0),

@@ -52,6 +52,21 @@ export function aggregateEquityByDate(
   return Array.from(dateMap.values()).sort((a, b) => a.date.localeCompare(b.date))
 }
 
+/**
+ * Same counted daily PnL as the NAV tooltip 当日盈亏.
+ * First snapshot is the capital base (0). Do not use 平仓盈亏+浮动盈亏:
+ * CFMMC 浮动盈亏 is a mark-to-open LEVEL, not a daily increment.
+ */
+export function countedEquityPathPnl(
+  equity: number,
+  prevEquity: number | null | undefined,
+  flow: number,
+): number {
+  const prev = asFiniteNumber(prevEquity)
+  if (prev > 0) return equity - prev - flow
+  return 0
+}
+
 /** Compound unit NAV from 1.0. First snapshot is the capital base (0 return). */
 export function compoundAccountRiskNav(days: AccountRiskEquityDay[]): AccountRiskNavPoint[] {
   let nav = 1.0
@@ -65,7 +80,7 @@ export function compoundAccountRiskNav(days: AccountRiskEquityDay[]): AccountRis
         : day.pnl
     const dailyReturn = prevEquity > 0 ? economicPnl / prevEquity : 0
     nav = nav * (1 + dailyReturn)
-    const countedPnl = prevEquity > 0 ? economicPnl : 0
+    const countedPnl = countedEquityPathPnl(day.equity, prevEquity, netFlow)
     cumPnl += countedPnl
     prevEquity = day.equity
     return {
