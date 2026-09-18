@@ -4,6 +4,7 @@ import {
   parseFeePayFormulaConfig,
 } from "@/lib/ma/fund-elements-extra"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
+import { fundNameKey, sqlFundNameKey } from "@/lib/server/fund-name-match"
 import {
   SHARE_CLASS_OPTIONS,
   beianFamilyKey,
@@ -370,6 +371,12 @@ function mergeListFields(primary: FundElementListFields, extra: FundElementListF
   }
 }
 
+function hasListFields(fields: FundElementListFields | undefined): boolean {
+  return Boolean(
+    fields && (fields.open_day || fields.fee_manage || fields.fee_pay || fields.fee_redeem || fields.fee_manage_rate),
+  )
+}
+
 function toListFields(row: {
   open_day?: string | null
   fee_manage?: string | null
@@ -388,74 +395,228 @@ function toListFields(row: {
   }
 }
 
+async function loadTrackListFieldsByBeian(codes: string[]): Promise<Map<string, FundElementListFields>> {
+  const byKey = new Map<string, FundElementListFields>()
+  const expanded = expandBeianLookupKeys(codes)
+  if (expanded.length === 0) return byKey
+  const dbRows = await query<{
+    register_number: string | null
+    record_key: string | null
+    open_day: string | null
+    fee_manage: string | null
+    fee_manage_rate: string | null
+    fee_pay: string | null
+    fee_redeem: string | null
+  }>(
+    `SELECT register_number, record_key,
+            NULLIF(BTRIM(open_day), '') AS open_day,
+            NULLIF(BTRIM(fee_manage), '') AS fee_manage,
+            fee_manage_rate::text AS fee_manage_rate,
+            NULLIF(BTRIM(fee_pay), '') AS fee_pay,
+            NULLIF(BTRIM(fee_redeem), '') AS fee_redeem
+     FROM basicinfo_bfl_track
+     WHERE register_number = ANY($1::text[])
+        OR record_key = ANY($1::text[])
+     ORDER BY
+       CASE WHEN ${sqlHasUsableFundElements()} THEN 0 ELSE 1 END,
+       updated_at DESC NULLS LAST,
+       id DESC`,
+    [expanded],
+  )
+  const put = (key: string | null | undefined, fields: FundElementListFields) => {
+    const k = String(key ?? "").trim().toUpperCase()
+    if (!k) return
+    const prev = byKey.get(k)
+    byKey.set(k, prev ? mergeListFields(prev, fields) : fields)
+  }
+  for (const row of dbRows) {
+    const fields = toListFields(row)
+    for (const key of expandBeianLookupKeys(
+      [row.register_number, row.record_key].filter((v): v is string => Boolean(v)),
+    )) {
+      put(key, fields)
+    }
+  }
+  return byKey
+}
+
+function lookupBeianListFields(
+  beian: string,
+  byKey: Map<string, FundElementListFields>,
+): FundElementListFields | undefined {
+  if (!beian) return undefined
+  for (const key of expandBeianLookupKeys([beian])) {
+    const hit = byKey.get(key.toUpperCase())
+    if (hasListFields(hit)) return hit
+  }
+  return undefined
+}
+
+async function loadTrackListFieldsByName(names: string[]): Promise<Map<string, FundElementListFields>> {
+  const byName = new Map<string, FundElementListFields>()
+  const keys = [...new Set(names.map((name) => fundNameKey(name)).filter((key): key is string => Boolean(key)))]
+  if (keys.length === 0) return byName
+  const dbRows = await query<{
+    fund_name: string | null
+    fund_short_name: string | null
+    open_day: string | null
+    fee_manage: string | null
+    fee_manage_rate: string | null
+    fee_pay: string | null
+    fee_redeem: string | null
+  }>(
+    `SELECT fund_name, fund_short_name,
+            NULLIF(BTRIM(open_day), '') AS open_day,
+            NULLIF(BTRIM(fee_manage), '') AS fee_manage,
+            fee_manage_rate::text AS fee_manage_rate,
+            NULLIF(BTRIM(fee_pay), '') AS fee_pay,
+            NULLIF(BTRIM(fee_redeem), '') AS fee_redeem
+     FROM basicinfo_bfl_track
+     WHERE ${sqlHasUsableFundElements()}
+       AND (
+         ${sqlFundNameKey("fund_name")} = ANY($1::text[])
+         OR ${sqlFundNameKey("fund_short_name")} = ANY($1::text[])
+       )
+     ORDER BY updated_at DESC NULLS LAST, id DESC`,
+    [keys],
+  )
+  const put = (name: string | null | undefined, fields: FundElementListFields) => {
+    const key = fundNameKey(name)
+    if (!key || !hasListFields(fields)) return
+    const prev = byName.get(key)
+    byName.set(key, prev ? mergeListFields(prev, fields) : fields)
+  }
+  for (const row of dbRows) {
+    const fields = toListFields(row)
+    put(row.fund_name, fields)
+    put(row.fund_short_name, fields)
+  }
+  return byName
+}
+
 /** Attach 开放日 / 管理费 / 业绩报酬说明 / 赎回费 onto list rows (one batch query). */
-export async function overlayFundElementListFields<T extends { beian_hao?: string | null }>(
+export async function overlayFundElementListFields<T extends {
+  beian_hao?: string | null
+  product_name?: string | null
+}>(
   rows: T[],
 ): Promise<T[]> {
   if (rows.length === 0) return rows
   const codes = [...new Set(rows.map((r) => String(r.beian_hao ?? "").trim()).filter(Boolean))]
-  if (codes.length === 0) {
-    return rows.map((row) => ({ ...row, ...EMPTY_LIST_FIELDS }))
-  }
-  const expanded = expandBeianLookupKeys(codes)
-  if (expanded.length === 0) {
-    return rows.map((row) => ({ ...row, ...EMPTY_LIST_FIELDS }))
-  }
+  let byBeian = new Map<string, FundElementListFields>()
   try {
-    const dbRows = await query<{
-      register_number: string | null
-      record_key: string | null
-      open_day: string | null
-      fee_manage: string | null
-      fee_manage_rate: string | null
-      fee_pay: string | null
-      fee_redeem: string | null
-    }>(
-      `SELECT register_number, record_key,
-              NULLIF(BTRIM(open_day), '') AS open_day,
-              NULLIF(BTRIM(fee_manage), '') AS fee_manage,
-              fee_manage_rate::text AS fee_manage_rate,
-              NULLIF(BTRIM(fee_pay), '') AS fee_pay,
-              NULLIF(BTRIM(fee_redeem), '') AS fee_redeem
-       FROM basicinfo_bfl_track
-       WHERE register_number = ANY($1::text[])
-          OR record_key = ANY($1::text[])
-       ORDER BY
-         CASE WHEN ${sqlHasUsableFundElements()} THEN 0 ELSE 1 END,
-         updated_at DESC NULLS LAST,
-         id DESC`,
-      [expanded],
-    )
-    const byKey = new Map<string, FundElementListFields>()
-    const put = (key: string | null | undefined, fields: FundElementListFields) => {
-      const k = String(key ?? "").trim().toUpperCase()
-      if (!k) return
-      const prev = byKey.get(k)
-      byKey.set(k, prev ? mergeListFields(prev, fields) : fields)
-    }
-    for (const row of dbRows) {
-      const fields = toListFields(row)
-      for (const key of expandBeianLookupKeys(
-        [row.register_number, row.record_key].filter((v): v is string => Boolean(v)),
-      )) {
-        put(key, fields)
-      }
-    }
-    return rows.map((row) => {
-      const beian = String(row.beian_hao ?? "").trim()
-      let found: FundElementListFields | undefined
-      if (beian) {
-        for (const key of expandBeianLookupKeys([beian])) {
-          const hit = byKey.get(key.toUpperCase())
-          if (hit && (hit.open_day || hit.fee_manage || hit.fee_pay || hit.fee_redeem || hit.fee_manage_rate)) {
-            found = hit
-            break
-          }
-        }
-      }
-      return { ...row, ...(found ?? EMPTY_LIST_FIELDS) }
-    })
+    if (codes.length > 0) byBeian = await loadTrackListFieldsByBeian(codes)
   } catch {
-    return rows.map((row) => ({ ...row, ...EMPTY_LIST_FIELDS }))
+    byBeian = new Map()
   }
+
+  const missingNames = rows
+    .filter((row) => !hasListFields(lookupBeianListFields(String(row.beian_hao ?? "").trim(), byBeian)))
+    .map((row) => String(row.product_name ?? "").trim())
+    .filter(Boolean)
+  let byName = new Map<string, FundElementListFields>()
+  try {
+    if (missingNames.length > 0) byName = await loadTrackListFieldsByName(missingNames)
+  } catch {
+    byName = new Map()
+  }
+
+  return rows.map((row) => {
+    const found =
+      lookupBeianListFields(String(row.beian_hao ?? "").trim(), byBeian)
+      ?? byName.get(fundNameKey(row.product_name) ?? "")
+    return { ...row, ...(found ?? EMPTY_LIST_FIELDS) }
+  })
+}
+
+export const FUND_ELEMENT_LIST_SORT_KEYS = ["open_day", "fee_manage", "fee_pay", "fee_redeem"] as const
+export type FundElementListSortKey = (typeof FUND_ELEMENT_LIST_SORT_KEYS)[number]
+
+export function isFundElementListSortKey(sortKey: string): sortKey is FundElementListSortKey {
+  return (FUND_ELEMENT_LIST_SORT_KEYS as readonly string[]).includes(sortKey)
+}
+
+function sqlSortDir(sortDir: string): "ASC" | "DESC" {
+  return String(sortDir).toUpperCase() === "DESC" ? "DESC" : "ASC"
+}
+
+function sqlFirstPercent(textExpr: string): string {
+  return `(regexp_match(COALESCE(${textExpr}, ''), '(\\d+(?:\\.\\d+)?)\\s*%'))[1]::numeric`
+}
+
+function sqlFeeNoneAsZero(textExpr: string): string {
+  return `CASE WHEN COALESCE(${textExpr}, '') ~ '不收取|不计提|不提取|免赎回|无赎回费|无业绩报酬|免管理费|无管理费' THEN 0 END`
+}
+
+function sqlManageFeeSortNum(alias: string): string {
+  return `COALESCE(
+    CASE
+      WHEN ${alias}.fee_manage_rate IS NOT NULL AND ${alias}.fee_manage_rate <> 0 THEN
+        CASE WHEN ${alias}.fee_manage_rate <= 1 THEN ${alias}.fee_manage_rate * 100 ELSE ${alias}.fee_manage_rate END
+    END,
+    ${sqlFirstPercent(`${alias}.fee_manage`)},
+    ${sqlFeeNoneAsZero(`${alias}.fee_manage`)}
+  )`
+}
+
+function sqlTextFeeSortNum(textExpr: string): string {
+  return `COALESCE(${sqlFirstPercent(textExpr)}, ${sqlFeeNoneAsZero(textExpr)})`
+}
+
+function sqlOpenDayRank(alias: string): string {
+  return `CASE
+    WHEN ${alias}.open_day IS NULL THEN NULL
+    WHEN ${alias}.open_day ~ '每个交易日|每日开放|每个工作日开放' AND ${alias}.open_day !~ '每周' THEN 1
+    WHEN ${alias}.open_day ~ '每周' THEN 2
+    WHEN ${alias}.open_day ~ '每(两|2)周|双周' THEN 3
+    WHEN ${alias}.open_day ~ '每月|月度' THEN 4
+    WHEN ${alias}.open_day ~ '每季|季度' THEN 5
+    ELSE 6
+  END`
+}
+
+/** LATERAL join used only when ORDER BY 开放日 / 管理费 / 业绩报酬说明 / 赎回费. */
+export function sqlFundElementSortJoin(beianExpr: string, alias = "el_sort"): string {
+  return `LEFT JOIN LATERAL (
+    SELECT
+      NULLIF(BTRIM(b.open_day), '') AS open_day,
+      NULLIF(BTRIM(b.fee_manage), '') AS fee_manage,
+      b.fee_manage_rate,
+      NULLIF(BTRIM(b.fee_pay), '') AS fee_pay,
+      NULLIF(BTRIM(b.fee_redeem), '') AS fee_redeem
+    FROM basicinfo_bfl_track b
+    WHERE b.register_number = ${beianExpr}
+       OR b.record_key = ${beianExpr}
+    ORDER BY
+      CASE WHEN ${sqlHasUsableFundElements("b")} THEN 0 ELSE 1 END,
+      b.updated_at DESC NULLS LAST,
+      b.id DESC
+    LIMIT 1
+  ) ${alias} ON true`
+}
+
+export function sqlFundElementOrderBy(sortKey: string, sortDir: string, alias = "el_sort"): string | null {
+  if (!isFundElementListSortKey(sortKey)) return null
+  const dir = sqlSortDir(sortDir)
+  if (sortKey === "open_day") {
+    return `${sqlOpenDayRank(alias)} ${dir} NULLS LAST, ${alias}.open_day ${dir} NULLS LAST`
+  }
+  if (sortKey === "fee_manage") {
+    return `${sqlManageFeeSortNum(alias)} ${dir} NULLS LAST`
+  }
+  if (sortKey === "fee_pay") {
+    return `${sqlTextFeeSortNum(`${alias}.fee_pay`)} ${dir} NULLS LAST, ${alias}.fee_pay ${dir} NULLS LAST`
+  }
+  return `${sqlTextFeeSortNum(`${alias}.fee_redeem`)} ${dir} NULLS LAST, ${alias}.fee_redeem ${dir} NULLS LAST`
+}
+
+export function applyFundElementListSort(
+  sortKey: string,
+  sortDir: string,
+  beianExpr: string,
+  alias = "el_sort",
+): { active: boolean; joinSql: string; orderSql: string } {
+  const orderSql = sqlFundElementOrderBy(sortKey, sortDir, alias)
+  if (!orderSql) return { active: false, joinSql: "", orderSql: "" }
+  return { active: true, joinSql: sqlFundElementSortJoin(beianExpr, alias), orderSql }
 }

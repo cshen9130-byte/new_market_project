@@ -55,6 +55,31 @@ export function preferAmacOfficialName(
   return official
 }
 
+/** Collapse 全称 / A类 / A类份额 to the same product key used by list 要素 overlay. */
+export function fundNameKey(name: string | null | undefined): string | null {
+  const s = String(name ?? "").trim()
+  if (!s) return null
+  const key = s
+    .replace(/[ABC]类(?:份额)?$/u, "")
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .replace(/\s+/g, "")
+    .replace(/份额$/u, "")
+  return key || null
+}
+
+/** SQL: same normalization as fundNameKey. */
+export function sqlFundNameKey(nameExpr: string): string {
+  return `NULLIF(regexp_replace(
+    regexp_replace(
+      regexp_replace(BTRIM(${nameExpr}), '[ABC]类(份额)?$', ''),
+      '(私募证券投资基金|私募基金|证券投资基金|投资基金)$',
+      ''
+    ),
+    '\\s+', '',
+    'g'
+  ), '')`
+}
+
 /** Strip common fund suffixes and share-class suffix for fuzzy comparison. */
 export function sqlFundNameBase(nameExpr: string): string {
   return `NULLIF(regexp_replace(

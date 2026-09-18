@@ -2795,14 +2795,27 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
   const teamConfigColSpan = 5 + fieldConfigSelected.length + 7 + 3
   const mineConfigColSpan = 5 + fieldConfigSelected.length + 4 + 3
+  const trackStickyHeadBg = "bg-muted dark:bg-zinc-900"
+  const trackStickyHeadZ = "z-40"
+  const trackStickyBodyZ = "z-20"
+  const trackStickyLeftShadow = "shadow-[4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[4px_0_8px_-4px_rgba(0,0,0,0.35)]"
+  const trackStickyRightShadow = "shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.35)]"
+  const trackStickyRightColW = 64
+  const trackStickyRight = { ops: 0, docs: trackStickyRightColW, trend: trackStickyRightColW * 2 }
+  const trackStickyRightColStyle = (right: number, width = trackStickyRightColW): CSSProperties => ({
+    right,
+    width,
+    minWidth: width,
+    maxWidth: width,
+  })
 
   function renderFieldConfigHeader(label: string) {
     return (
       <ProductFieldConfigHeader
         key={label}
         label={label}
-        thSort={thSort}
-        thBase={thBase}
+        thSort={`${thSort} relative z-0 ${trackStickyHeadBg}`}
+        thBase={`${thBase} relative z-0 ${trackStickyHeadBg}`}
         sortCol={sortCol}
         onSort={handleSort}
         SortIcon={SortIco}
@@ -3762,44 +3775,44 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           </div>
           ) : (
           <div className="overflow-x-auto rounded-lg border">
-            <table className="text-sm border-collapse w-full" style={{ minWidth: 1680 }}>
-              <thead className="sticky top-0 z-20">
-                <tr className="bg-muted dark:bg-zinc-900 border-b">
-                  <th className={`${thBase} w-8 px-2 sticky left-0 z-30 bg-muted dark:bg-zinc-900`}>
+            <table className="text-sm border-separate border-spacing-0 w-full" style={{ minWidth: 1680 }}>
+              <thead className="sticky top-0 z-30">
+                <tr className="border-b">
+                  <th className={`${thBase} w-8 px-2 sticky top-0 left-0 ${trackStickyHeadZ} ${trackStickyHeadBg} box-border`}>
                     <input type="checkbox" className="rounded h-3 w-3"
                       checked={pageSelectionChecked(selected, data.map((r) => r.beian_hao))}
                       onChange={toggleAll} />
                   </th>
-                  <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted dark:bg-zinc-900`}>序号</th>
-                  <th className={`${thSort} min-w-[200px] sticky left-[72px] z-30 bg-muted dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-700`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
-                  <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
-                  <th className={`${thSort} min-w-[110px]`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
+                  <th className={`${thBase} w-10 sticky top-0 left-8 ${trackStickyHeadZ} ${trackStickyHeadBg} box-border`}>序号</th>
+                  <th className={`${thSort} min-w-[200px] sticky top-0 left-[72px] ${trackStickyHeadZ} ${trackStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${trackStickyLeftShadow}`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
+                  <th className={`${thSort} min-w-[110px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
+                  <th className={`${thSort} min-w-[110px] relative z-0 ${trackStickyHeadBg}`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
                   {fieldConfigSelected.map(renderFieldConfigHeader)}
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
+                  <th className={`${thSort} text-right min-w-[88px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("ret_1w")}>
                     <div>近一周收益<SortIco col="ret_1w" /></div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 7)}</div>}
                   </th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1m")}>
+                  <th className={`${thSort} text-right min-w-[88px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("ret_1m")}>
                     <div>近一月收益<SortIco col="ret_1m" /></div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 30)}</div>}
                   </th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_3m")}>
+                  <th className={`${thSort} text-right min-w-[88px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("ret_3m")}>
                     <div>近三月收益<SortIco col="ret_3m" /></div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 91)}</div>}
                   </th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_6m")}>
+                  <th className={`${thSort} text-right min-w-[88px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("ret_6m")}>
                     <div>近六月收益<SortIco col="ret_6m" /></div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 182)}</div>}
                   </th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1y")}>
+                  <th className={`${thSort} text-right min-w-[88px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("ret_1y")}>
                     <div>近一年收益<SortIco col="ret_1y" /></div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 365)}</div>}
                   </th>
-                  <th className={`${thSort} text-center min-w-[98px]`} onClick={() => handleSort("sharpe_1y")}>近一年夏普比率<SortIco col="sharpe_1y" /></th>
-                  <th className={`${thSort} text-center min-w-[98px]`} onClick={() => handleSort("calmar_1y")}>近一年卡玛比率<SortIco col="calmar_1y" /></th>
-                  <th className={`${thBase} text-center w-16 sticky right-32 z-30 bg-muted dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-700`}>走势</th>
-                  <th className={`${thBase} text-center w-16 sticky right-16 z-30 bg-muted dark:bg-zinc-900`}>资料</th>
-                  <th className={`${thBase} text-center w-16 sticky right-0 z-30 bg-muted dark:bg-zinc-900`}>操作</th>
+                  <th className={`${thSort} text-center min-w-[98px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("sharpe_1y")}>近一年夏普比率<SortIco col="sharpe_1y" /></th>
+                  <th className={`${thSort} text-center min-w-[98px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("calmar_1y")}>近一年卡玛比率<SortIco col="calmar_1y" /></th>
+                  <th style={trackStickyRightColStyle(trackStickyRight.trend)} className={`${thBase} text-center sticky top-0 ${trackStickyHeadZ} ${trackStickyHeadBg} overflow-hidden box-border border-l border-zinc-200 dark:border-zinc-700 ${trackStickyRightShadow}`}>走势</th>
+                  <th style={trackStickyRightColStyle(trackStickyRight.docs)} className={`${thBase} text-center sticky top-0 ${trackStickyHeadZ} ${trackStickyHeadBg} overflow-hidden box-border`}>资料</th>
+                  <th style={trackStickyRightColStyle(trackStickyRight.ops)} className={`${thBase} text-center sticky top-0 ${trackStickyHeadZ} ${trackStickyHeadBg} overflow-hidden box-border`}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -3811,10 +3824,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <tr><td colSpan={teamConfigColSpan} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
                   const isSelected = selected.has(row.beian_hao)
-                  const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
-                  const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/40" : "group-hover:bg-muted"
-                  const cell = `border-b px-3 py-0 ${bg} ${hoverBg} transition-colors`
-                  const stickyCell = `${cell} z-10`
+                  const bg = isSelected ? "bg-blue-50 dark:bg-blue-950" : "bg-background"
+                  const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900" : "group-hover:bg-muted"
+                  const cell = `border-b px-3 py-0 relative z-0 ${bg} ${hoverBg} transition-colors`
+                  const stickyCell = `border-b px-3 py-0 sticky ${trackStickyBodyZ} ${bg} ${hoverBg} transition-colors overflow-hidden box-border`
                   return (
                     <tr key={row.beian_hao} className="group" style={{ height: 52 }}>
                       <td className={`${stickyCell} px-2 text-center sticky left-0`}>
@@ -3827,7 +3840,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           }} />
                       </td>
                       <td className={`${stickyCell} text-center tabular-nums sticky left-8`}>{(page - 1) * 50 + i + 1}</td>
-                      <td className={`${stickyCell} sticky left-[72px] border-r border-zinc-200 dark:border-zinc-700`}>
+                      <td className={`${stickyCell} sticky left-[72px] border-r border-zinc-200 dark:border-zinc-700 ${trackStickyLeftShadow}`}>
                         <CopyableProductName
                           beian_hao={row.beian_hao}
                           product_name={row.product_name}
@@ -3870,7 +3883,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       </td>
                       <td className={`${cell} text-center tabular-nums`}><TrackRatioCell value={row.sharpe_1y} /></td>
                       <td className={`${cell} text-center tabular-nums`}><TrackRatioCell value={row.calmar_1y} /></td>
-                      <td className={`${stickyCell} text-center sticky right-32 border-l border-zinc-200 dark:border-zinc-700`}>
+                      <td style={trackStickyRightColStyle(trackStickyRight.trend)} className={`${stickyCell} text-center border-l border-zinc-200 dark:border-zinc-700 ${trackStickyRightShadow}`}>
                         <div className="flex items-center justify-center"
                           onMouseEnter={(e) => {
                             if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
@@ -3887,7 +3900,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
                         </div>
                       </td>
-                      <td className={`${stickyCell} text-center sticky right-16`}>
+                      <td style={trackStickyRightColStyle(trackStickyRight.docs)} className={`${stickyCell} text-center`}>
                         {fundNotes[row.beian_hao] ? (
                           <div className="relative flex items-center justify-center">
                             <button
@@ -3904,7 +3917,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           <span className="text-muted-foreground">—</span>
                         )}
                       </td>
-                      <td className={`${stickyCell} text-center sticky right-0`}>
+                      <td style={trackStickyRightColStyle(trackStickyRight.ops)} className={`${stickyCell} text-center`}>
                         <div className="flex items-center justify-center">
                           <TrackingRowMenu
                             beian_hao={row.beian_hao}
@@ -9058,7 +9071,7 @@ const DIRECT_FIELD_CONFIG_LOCKED = "备案编码"
 const DIRECT_FIELD_CONFIG_DEFAULT = ["备案编码", "单位净值", "净值日期", "涨跌幅"]
 const DIRECT_FIELD_CONFIG_OPTIONS: Record<string, string[]> = {
   "基本信息": ["备案编码", "备案日期", "成立日期", "基金全称", "管理人规模", "基准指数", "基金管理人", "投资顾问", "托管券商", "平台一级策略", "平台二级策略", "平台三级策略"],
-  "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "赎回费", "最低申购金额", "封闭期", "开放日", "管理费", "业绩报酬说明"],
+  "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "赎回费", "最低申购金额", "封闭期", "开放日", "管理费", "业绩报酬"],
   "团队策略/标签": ["团队一级策略", "团队二级策略", "团队三级策略", "团队标签", "所在跟踪池"],
   "净值信息": ["单位净值", "净值日期", "涨跌幅", "成立以来收益", "近一年收益", "最大回撤", "年化收益", "年化波动率", "夏普比率", "卡玛比率"],
   "团队字段": ["团队评级", "团队备注", "关注度"],

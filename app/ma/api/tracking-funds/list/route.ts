@@ -19,7 +19,7 @@ import { EMAIL_OPS_POOL_KEY } from "@/lib/server/email-tracking-pool-sync"
 import { recordInteractiveUserTraffic } from "@/lib/server/user-activity-priority"
 import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
-import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
+import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 
 export const runtime = "nodejs"
@@ -31,6 +31,8 @@ const SQL_EXCLUDE_STOCK_COST_BUCKET = `NOT ${sqlSubjectNameIsStockCostBucket("CO
 declare global {
   // One-shot: drop stale list JSON that still contains 股票成本_* rows.
   var _trackingListStockCostCacheBustV3: boolean | undefined
+  // One-shot: drop list JSON cached before 开放日/费率 sortable ORDER BY.
+  var _trackingListElementSortCacheBustV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -645,10 +647,13 @@ async function handleCachedTrackingList(opts: {
       const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
       const pLimit = filterParams.length + 1
       const pOffset = filterParams.length + 2
+      const elementSort = applyFundElementListSort(sortKey, sortDir, "i.beian_hao")
       const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.first_added_at"
-      const orderSql = sortKey === "first_added_at" || !CACHE_ALLOWED_SORT[sortKey]
-        ? `${orderCol} ${sortDir} NULLS LAST, ${resolvedCachedProductNameExpr()} ASC`
-        : `${orderCol} ${sortDir} NULLS LAST`
+      const orderSql = elementSort.active
+        ? `${elementSort.orderSql}, ${resolvedCachedProductNameExpr()} ASC`
+        : sortKey === "first_added_at" || !CACHE_ALLOWED_SORT[sortKey]
+          ? `${orderCol} ${sortDir} NULLS LAST, ${resolvedCachedProductNameExpr()} ASC`
+          : `${orderCol} ${sortDir} NULLS LAST`
       const baseFrom = buildCachedFromClause(pool, isCustomPool, isMineAllPool)
 
       if (personalTags.length > 0) {
@@ -692,6 +697,7 @@ async function handleCachedTrackingList(opts: {
              cache.sharpe_1y::text,
              cache.calmar_1y::text
            ${baseFrom}
+           ${elementSort.joinSql}
            ${whereClause}
            ORDER BY ${orderSql}
            LIMIT $${pLimit} OFFSET $${pOffset}`,
@@ -807,10 +813,13 @@ async function handleBflOpsList(opts: {
     ret_6m: "ret_6m",
     ret_1y: "ret_1y",
   }
+  const elementSort = applyFundElementListSort(sortKey, sortDir, "i.beian_hao")
   const orderCol = allowedSort[sortKey] ?? "i.first_added_at"
-  const orderSql = sortKey === "first_added_at" || !allowedSort[sortKey]
-    ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
-    : `${orderCol} ${sortDir} NULLS LAST`
+  const orderSql = elementSort.active
+    ? `${elementSort.orderSql}, i.product_name ASC`
+    : sortKey === "first_added_at" || !allowedSort[sortKey]
+      ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
+      : `${orderCol} ${sortDir} NULLS LAST`
   const sourceWithNav = `${BFL_OPS_SOURCE_CTE}${BFL_OPS_TYPE6_LATEST_CTES(cutoffExpr)}`
 
   try {
@@ -847,6 +856,7 @@ async function handleBflOpsList(opts: {
          LEFT JOIN latest_by_name lbn ON lbn.product_name = i.product_name AND lbc.nav IS NULL
          LEFT JOIN latest_by_name lbs ON lbs.product_name = i.short_name AND lbc.nav IS NULL AND lbn.nav IS NULL
            AND i.short_name IS NOT NULL AND i.short_name <> i.product_name
+         ${elementSort.joinSql}
          ${whereClause}
          ORDER BY ${orderSql}
          LIMIT $${pLimit} OFFSET $${pOffset}`,
@@ -881,6 +891,10 @@ async function handleBflOpsList(opts: {
 export async function GET(req: Request) {
   if (!global._trackingListStockCostCacheBustV3) {
     global._trackingListStockCostCacheBustV3 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListElementSortCacheBustV1) {
+    global._trackingListElementSortCacheBustV1 = true
     invalidateListResponseCache()
   }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
@@ -1003,6 +1017,7 @@ export async function GET(req: Request) {
   }
 
   const navConfig = buildNavJoinConfig(pool, cutoffExpr)
+  const elementSort = applyFundElementListSort(sortKey, sortDir, "i.beian_hao")
   const orderCol = navConfig.allowedSort[sortKey] ?? "i.first_added_at"
 
   const sourceJsonExpr = rawStrategyJsonExpr("i")
@@ -1222,9 +1237,11 @@ export async function GET(req: Request) {
   const pLimit  = filterParams.length + 1
   const pOffset = filterParams.length + 2
 
-  const orderSql = sortKey === "first_added_at" || !navConfig.allowedSort[sortKey]
-    ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
-    : `${orderCol} ${sortDir} NULLS LAST`
+  const orderSql = elementSort.active
+    ? `${elementSort.orderSql}, i.product_name ASC`
+    : sortKey === "first_added_at" || !navConfig.allowedSort[sortKey]
+      ? `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
+      : `${orderCol} ${sortDir} NULLS LAST`
 
   const { latestNavJoin, fallbackNavExpr, fallbackDateExpr, fallbackPctExpr } = navConfig
   const emailNavJoins = buildEmailNavLatestJoins("i.beian_hao", "i.product_name", "i.short_name", cutoffExpr)
@@ -1290,6 +1307,7 @@ export async function GET(req: Request) {
          ${emailNavJoins}
          ${latestNavJoin}
          ${histJoins}
+         ${elementSort.joinSql}
          ${whereClause}
          ORDER BY ${orderSql}
          LIMIT $${pLimit} OFFSET $${pOffset}`,

@@ -1,12 +1,46 @@
 "use client"
 
 import { formatTemporaryOpen } from "@/lib/ma/fund-elements-extra"
+import {
+  formatBareFeeRate,
+  summarizeManageFee,
+  summarizeOpenDay,
+  summarizeRedeemFee,
+} from "@/lib/ma/product-field-config"
 
 export type ProductElementsData = Record<string, string | null | undefined>
 
 function display(v: string | null | undefined) {
   if (v == null || String(v).trim() === "") return "—"
   return v
+}
+
+function displayOpenDay(v: string | null | undefined) {
+  if (!summarizeOpenDay(v)) return null
+  return v
+}
+
+function displayClosedPeriod(v: string | null | undefined) {
+  const s = String(v ?? "").trim()
+  if (!s || /^\d+(?:\.\d+)?$/.test(s)) return null
+  return s
+}
+
+function displayFeeText(v: string | null | undefined) {
+  const s = String(v ?? "").trim()
+  if (!s) return null
+  return formatBareFeeRate(s) || s
+}
+
+function displayManageRate(rate: string | null | undefined, manage: string | null | undefined) {
+  return summarizeManageFee(manage, rate)
+}
+
+function displayManageDesc(manage: string | null | undefined) {
+  const s = String(manage ?? "").trim()
+  if (!s) return null
+  if (formatBareFeeRate(s)) return null
+  return s
 }
 
 function Row2({
@@ -84,14 +118,14 @@ export function ProductElementsDialogContent({ data }: { data: ProductElementsDa
       </div>
       <table className="w-full border border-border rounded-lg overflow-hidden text-sm">
         <tbody>
-          <Row2 l1="开放日" v1={data.open_day} l2="是否可临开" v2={formatTemporaryOpen(data.is_temporary_open)} />
+          <Row2 l1="开放日" v1={displayOpenDay(data.open_day)} l2="是否可临开" v2={formatTemporaryOpen(data.is_temporary_open)} />
           <Row2 l1="申购费" v1={data.fee_purchase} l2="追加限制" v2={data.add_amount} />
-          <Row2 l1="赎回费" v1={data.fee_redeem} l2="风险等级" v2={data.risk_level} multiline />
-          <Row2 l1="预警线" v1={data.precautious_line} l2="封闭期" v2={data.closed_period} />
+          <Row2 l1="赎回费" v1={summarizeRedeemFee(data.fee_redeem) || displayFeeText(data.fee_redeem)} l2="风险等级" v2={data.risk_level} multiline />
+          <Row2 l1="预警线" v1={data.precautious_line} l2="封闭期" v2={displayClosedPeriod(data.closed_period)} />
           <Row2 l1="平仓线" v1={data.stop_line} l2="锁定期说明" v2={data.lock_period_desc} multiline />
-          <Row2 l1="管理费率" v1={data.fee_manage_rate} l2="托管费" v2={data.fee_trust} />
-          <Row2 l1="管理费说明" v1={data.fee_manage} l2="外包费" v2={data.fee_admin_service} multiline />
-          <FullRow label="业绩报酬说明" value={data.fee_pay} />
+          <Row2 l1="管理费率" v1={displayManageRate(data.fee_manage_rate, data.fee_manage)} l2="托管费" v2={displayFeeText(data.fee_trust)} />
+          <Row2 l1="管理费说明" v1={displayManageDesc(data.fee_manage)} l2="外包费" v2={displayFeeText(data.fee_admin_service)} multiline />
+          <FullRow label="业绩报酬说明" value={displayFeeText(data.fee_pay)} />
           <FullRow label="业绩报酬公式" value={data.fee_pay_formula} />
         </tbody>
       </table>

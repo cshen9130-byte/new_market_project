@@ -401,6 +401,7 @@ function userHeaders(): HeadersInit {
 
 export function OperationsElementExtractBatchPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const editorPanelRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipSelectionResetRef = useRef(0)
 
@@ -662,27 +663,32 @@ export function OperationsElementExtractBatchPanel() {
     setSavingExtracted(false)
   }
 
+  function scrollToEditorPanel() {
+    window.setTimeout(() => {
+      editorPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }, 80)
+  }
+
   function selectJob(id: number, options?: { startEdit?: boolean }) {
     const job = jobs.find((row) => row.id === id)
     setActiveJobId(id)
     if (options?.startEdit && job && canEditJob(job)) {
       setEditDraft({ ...(job.extracted_json ?? emptyExtracted()) })
       setEditingExtracted(true)
-      setTimeout(() => {
-        document.getElementById("element-extract-editor")?.scrollIntoView({ behavior: "smooth", block: "start" })
-      }, 80)
+      scrollToEditorPanel()
       return
     }
     cancelEditExtracted()
+    if (job && canEditJob(job)) {
+      scrollToEditorPanel()
+    }
   }
 
   function startEditExtracted() {
     if (!activeJob || !canEditJob(activeJob)) return
     setEditDraft({ ...(activeJob.extracted_json ?? emptyExtracted()) })
     setEditingExtracted(true)
-    setTimeout(() => {
-      document.getElementById("element-extract-editor")?.scrollIntoView({ behavior: "smooth", block: "start" })
-    }, 80)
+    scrollToEditorPanel()
   }
 
   function updateEditDraftField(key: ElementKey, value: string) {
@@ -1132,7 +1138,7 @@ export function OperationsElementExtractBatchPanel() {
               {jobs.map((job) => (
                 <tr
                   key={job.id}
-                  className={activeJobId === job.id ? "bg-red-50/40" : "cursor-pointer hover:bg-muted/20"}
+                  className={activeJobId === job.id ? "cursor-pointer bg-red-50/40" : "cursor-pointer hover:bg-muted/20"}
                   onClick={() => selectJob(job.id)}
                 >
                   <td className="px-3 py-2 truncate max-w-[240px]">
@@ -1228,7 +1234,7 @@ export function OperationsElementExtractBatchPanel() {
       </div>
 
       {activeJob && canEditJob(activeJob) && (
-        <div className="space-y-4">
+        <div id="element-extract-editor" ref={editorPanelRef} className="space-y-4 scroll-mt-3">
           <div className="rounded-lg border p-5 space-y-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -1380,7 +1386,7 @@ export function OperationsElementExtractBatchPanel() {
             )}
           </div>
 
-          <div id="element-extract-editor" className="space-y-4">
+          <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-medium">提取结果预览</h2>

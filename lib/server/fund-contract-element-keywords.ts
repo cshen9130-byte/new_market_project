@@ -135,6 +135,7 @@ function isUnlabeledMultiRuleFeePay(s: string): boolean {
 export function isWeakFeePay(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
   if (!s || s === "—" || /^-+$/.test(s) || /^详见/.test(s)) return true
+  if (/^\d+(?:\.\d+)?$/.test(s)) return true
   // LLM-generated generic "couldn't extract" statements
   if (/未明确(?:说明|规定|披露)|按(?:基金)?合同约定收取/.test(s) && s.length < 60) return true
   if (isZeroBenchmarkWithoutCarry(s)) return true
@@ -166,6 +167,7 @@ function isHurdleWithoutCarry(s: string): boolean {
 export function isWeakFeeManage(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
   if (!s || s === "—" || /^-+$/.test(s) || /^详见/.test(s)) return true
+  if (/^\d+(?:\.\d+)?$/.test(s)) return true
   return isDumpText(s, FEE_DESC_MAX)
 }
 
@@ -197,6 +199,7 @@ export function isWeakAddAmount(value: string | null | undefined): boolean {
 export function isWeakShortFee(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
   if (!s || s === "—" || s === "无" || /^详见/.test(s)) return true
+  if (/^\d+(?:\.\d+)?$/.test(s)) return true
   // Custody/admin fees are normally 0.05%-0.3%; ≥0.5% signals garbled extraction
   const high = s.match(/年(?:托管|运营服务|外包|基金服务)费率\s*([\d.]+)\s*%/)
   if (high?.[1] && parseFloat(high[1]) >= 0.5) return true
@@ -207,6 +210,163 @@ export function isWeakTemporaryOpen(value: string | number | null | undefined): 
   const s = String(value ?? "").trim()
   if (!s) return true
   return /^-?\d+(?:\.0+)?$/.test(s)
+}
+
+const OPEN_DAY_MAX = 80
+
+function uniqueOpenDays(days: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const day of days) {
+    const d = day === "天" ? "日" : day
+    if (!d || seen.has(d)) continue
+    seen.add(d)
+    out.push(d)
+  }
+  return out
+}
+
+function weekdaysInOpenDayText(text: string): string[] {
+  const compact = text.replace(/\s+/g, "")
+  const weeklyHits = uniqueOpenDays(
+    [...compact.matchAll(/每(?:个自然)?周(?:的)?(?:周|星期)?([一二三四五六日天])/g)].map((m) => m[1]),
+  )
+  if (weeklyHits.length >= 2) return weeklyHits
+  const listed = compact.match(
+    /每(?:个自然)?周(?:的)?((?:周|星期)?[一二三四五六日天](?:[、,，和及与](?:每)?(?:周|星期)?[一二三四五六日天])*)/,
+  )
+  if (listed?.[1]) {
+    return uniqueOpenDays([...listed[1].matchAll(/[一二三四五六日天]/g)].map((m) => m[0]))
+  }
+  if (weeklyHits.length === 1) return weeklyHits
+  const abbreviated = compact.match(
+    /周([一二三四五六日天])((?:[、,，和及][一二三四五六日天])+)/,
+  )
+  if (abbreviated) {
+    return uniqueOpenDays([
+      abbreviated[1],
+      ...[...abbreviated[2].matchAll(/[一二三四五六日天]/g)].map((m) => m[0]),
+    ])
+  }
+  if (!/(?:固定)?开放日|申购开放|赎回开放/.test(compact)) return []
+  const found: string[] = []
+  const pairs: Array<[RegExp, string]> = [
+    [/周一|星期一/, "一"],
+    [/周二|星期二/, "二"],
+    [/周三|星期三/, "三"],
+    [/周四|星期四/, "四"],
+    [/周五|星期五/, "五"],
+    [/周六|星期六/, "六"],
+    [/周日|周天|星期日|星期天/, "日"],
+  ]
+  for (const [re, day] of pairs) {
+    if (re.test(compact)) found.push(day)
+  }
+  return uniqueOpenDays(found)
+}
+
+export function hasConcreteOpenSchedule(value: string | null | undefined): boolean {
+  const compact = String(value ?? "").replace(/\s+/g, "")
+  if (!compact) return false
+  if (weekdaysInOpenDayText(compact).length) return true
+  if (/每(?:个自然)?周的?最后/.test(compact) && /(?:工作|交易)日/.test(compact)) return true
+  if (/每(?:个自然)?周的?第[0-9一二三四五六七八九十、,，和\-至到]+个(?:工作|交易)日/.test(compact)) return true
+  if (/每(?:自然)?月/.test(compact) && /(?:工作|交易)日/.test(compact)) return true
+  if (/每(?:自然)?季度|每季度/.test(compact) && /(?:开放|工作日|交易日)/.test(compact)) return true
+  if (/每年/.test(compact) && /(?:工作|交易)日/.test(compact) && /开放/.test(compact)) return true
+  if (/(?:每个交易日|每日开放|每个工作日)(?:开放)?(?:申赎)?/.test(compact) && !/每(?:个自然)?周/.test(compact)) return true
+  return false
+}
+
+export function isWeakOpenDay(value: string | null | undefined): boolean {
+  const raw = (value ?? "").trim()
+  if (!raw || raw === "—" || raw === "无" || /^详见/.test(raw)) return true
+  const s = raw.replace(/FOF投资产品池/g, "").replace(/^[；;、,\s]+|[；;、,\s]+$/g, "").trim()
+  if (!s) return true
+  if (hasConcreteOpenSchedule(s)) return false
+  if (isDumpText(s, OPEN_DAY_MAX)) return true
+  if (/开放日.{0,10}(?:包括|分为|含有?)(?:固定开放日|临时开放日)/.test(s)) return true
+  if (/固定开放日[和与、]临时开放日/.test(s)) return true
+  if (/开放日(?:是)?指|开放日[:：]/.test(s)) return true
+  if (/办理基金(?:份额)?申购|申购[、,/和或]*赎回业务的(?:交易|工作)日/.test(s)) return true
+  if (/私募基金管理人办理|基金管理人办理基金/.test(s) && /申购/.test(s)) return true
+  if (!/开放|每周|每月|交易日|工作日|申购|赎回|预约/.test(s)) return true
+  if (/^\d{4}[-./年]\d{1,2}[-./月]\d{1,2}日?$/.test(s)) return true
+  return false
+}
+
+function summarizeConcreteOpenDay(window: string): string | null {
+  const compact = flattenCjk(window)
+  if (!compact) return null
+
+  const sub = compact.match(/申购开放日[^。；;]{0,80}/)?.[0] ?? ""
+  const red = compact.match(/赎回开放日[^。；;]{0,80}/)?.[0] ?? ""
+  if (sub && red) {
+    const subDays = weekdaysInOpenDayText(sub)
+    const redDays = weekdaysInOpenDayText(red)
+    if (subDays.length && redDays.length) {
+      if (subDays.join() === redDays.join()) return `每周${subDays.join("、周")}`
+      return `申购每周${subDays.join("、周")}；赎回每周${redDays.join("、周")}`
+    }
+  }
+
+  if (/每个交易日|每日开放|每个工作日开放/.test(compact) && !/每周|每月|每自然周/.test(compact)) {
+    return "每个交易日"
+  }
+  if (/每(?:个自然)?周的?最后(?:一个)?交易日|每周最后(?:一个)?交易日/.test(compact)) {
+    return "每周最后一个交易日"
+  }
+  if (/每(?:个自然)?周的?最后(?:一个)?工作日|每周最后(?:一个)?工作日/.test(compact)) {
+    return "每周最后一个工作日"
+  }
+  const nthWork = compact.match(/每(?:个自然)?周的?第([0-9一二三四五六七八九十、,，和\-至到]+)个工作日/)
+  if (nthWork?.[1]) return `每周第${nthWork[1].replace(/[和]/g, "、")}个工作日`
+  const monthLast = compact.match(/每(?:自然)?月最后(?:一个)?(工作日|交易日)/)
+  if (monthLast?.[1]) return `每月最后${monthLast[1]}`
+  const monthNth = compact.match(/每月(?:的)?第([0-9一二三四五六七八九十、,，和\-至到]+)个(工作日|交易日)/)
+  if (monthNth?.[1] && monthNth[2]) {
+    return `每月第${monthNth[1].replace(/[和]/g, "、")}个${monthNth[2]}`
+  }
+  const days = weekdaysInOpenDayText(compact)
+  if (days.length) return `每周${days.join("、周")}`
+  return null
+}
+
+export function extractOpenDayFromText(text: string): string | null {
+  const s = flattenCjk(text)
+  const windows: Array<{ text: string; score: number }> = []
+  const re = /固定开放日|申购开放日|赎回开放日|开放日/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(s)) !== null) {
+    if (looksLikeToc(s, match.index)) continue
+    const chunk = nearby(s, match.index, 24, 180)
+    let score = 1
+    if (/固定开放日/.test(match[0])) score += 4
+    if (/申购开放日|赎回开放日/.test(match[0])) score += 2
+    if (looksLikeGlossary(s, match.index) && !hasConcreteOpenSchedule(chunk)) continue
+    windows.push({ text: chunk, score })
+  }
+  windows.sort((a, b) => b.score - a.score)
+  for (const window of windows) {
+    const summary = summarizeConcreteOpenDay(window.text)
+    if (summary) return summary
+  }
+  if (!windows.length && /每个交易日|每日开放/.test(s)) {
+    return summarizeConcreteOpenDay(s)
+  }
+  return null
+}
+
+export function shouldUpgradeOpenDay(
+  current: string | null | undefined,
+  next: string | null | undefined,
+): boolean {
+  const nxt = (next ?? "").trim()
+  if (!nxt || isWeakOpenDay(nxt)) return false
+  if (isWeakOpenDay(current)) return true
+  const cur = (current ?? "").trim()
+  const padded = /开放日包括|固定开放日和临时开放日|开放日(?:是)?指|办理基金(?:份额)?申购/.test(cur)
+  return padded && !/开放日包括|固定开放日和临时开放日|开放日(?:是)?指|办理基金(?:份额)?申购/.test(nxt)
 }
 
 function formatRiskGrade(grade: string, label?: string): string | null {
@@ -1056,6 +1216,7 @@ export type KeywordFillable = {
   fee_trust?: string | null
   fee_admin_service?: string | null
   fee_manage_rate?: string | null
+  open_day?: string | null
 }
 
 function preferCompact<T extends string>(
@@ -1140,6 +1301,11 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
   if (isWeakShortFee(out.closed_period)) out.closed_period = "不设置"
   out.fee_trust = preferCompact(out.fee_trust, extractFeeTrustFromText(source), isWeakShortFee)
   out.fee_admin_service = preferCompact(out.fee_admin_service, extractFeeAdminFromText(source), isWeakShortFee)
+  out.open_day = preferCompact(out.open_day, extractOpenDayFromText(source), isWeakOpenDay)
+  if (out.open_day) {
+    const compactDay = summarizeConcreteOpenDay(out.open_day)
+    if (compactDay) out.open_day = compactDay
+  }
   if (isWeakTemporaryOpen(out.is_temporary_open)) {
     const value = extractTemporaryOpenFromText(source)
     if (value) out.is_temporary_open = value

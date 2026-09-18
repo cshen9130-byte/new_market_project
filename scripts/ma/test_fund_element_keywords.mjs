@@ -9,15 +9,27 @@ import {
   extractLockPeriodFromText,
   extractRiskLevelFromText,
   extractShareClassFeeOverrides,
+  extractOpenDayFromText,
   extractTemporaryOpenFromText,
   fillMissingElementsFromKeywords,
+  isWeakFeeManage,
   isWeakFeePay,
   isWeakFormula,
+  isWeakOpenDay,
   isWeakRiskLevel,
+  isWeakShortFee,
+  shouldUpgradeOpenDay,
   summarizeFeeManageDesc,
   summarizeFeePayDesc,
 } from "../../lib/server/fund-contract-element-keywords.ts"
 import { formatTemporaryOpen } from "../../lib/ma/fund-elements-extra.ts"
+import {
+  summarizeManageFee,
+  summarizeOpenDay,
+  summarizePerfFee,
+  summarizeRedeemFee,
+} from "../../lib/ma/product-field-config.ts"
+import { fundNameKey } from "../../lib/server/fund-name-match.ts"
 
 const guqu = `
 12、以扣减基金份额方式提取业绩报酬的风险（若有）
@@ -431,5 +443,103 @@ assert.equal(extractFeeRedeemFromText(zhongliang19), "持有不足90天赎回费
 assert.equal(extractFeeRedeemFromText("本基金的赎回费率为0%。不收取其他费用。"), "0%")
 const zhongliangFilled = fillMissingElementsFromKeywords(zhongliang19, { fee_redeem: "0%" })
 assert.equal(zhongliangFilled.fee_redeem, "持有不足90天赎回费1%，满90天0%。")
+
+const openDayGlossaryThenFixed = `
+第十二条 释义
+开放日：指本基金开放申购、赎回等业务的日期。开放日包括固定开放日和临时开放日。
+第十三条 基金的申购与赎回
+（一）开放日
+本基金的固定开放日为每周二、周四（如遇非交易日则顺延至下一个交易日）。
+基金管理人可设置临时开放日。
+`
+assert.equal(extractOpenDayFromText(openDayGlossaryThenFixed), "每周二、周四")
+assert.ok(isWeakOpenDay("开放日包括固定开放日和临时开放日"))
+assert.ok(isWeakOpenDay("开放日包括固定开放日和临时开放日。"))
+assert.ok(!isWeakOpenDay("每周二、周四"))
+assert.ok(shouldUpgradeOpenDay("开放日包括固定开放日和临时开放日", "每周二、周四"))
+assert.ok(shouldUpgradeOpenDay(
+  "周一、三、五为固定开放日，如开放日遇节假日则顺延至下一工作日；指管理人正式受理基金申购或赎回业务的工作日，包括固定开放日和临时开放日。",
+  "每周一、周三、周五",
+))
+const openDayFilled = fillMissingElementsFromKeywords(openDayGlossaryThenFixed, {
+  open_day: "开放日包括固定开放日和临时开放日",
+})
+assert.equal(openDayFilled.open_day, "每周二、周四")
+assert.equal(
+  extractOpenDayFromText("本基金固定开放日为每个自然周的最后一个交易日，接受申购和赎回申请。"),
+  "每周最后一个交易日",
+)
+assert.equal(
+  extractOpenDayFromText("本基金固定开放日为每个自然周的周三，接受申购和赎回申请。"),
+  "每周三",
+)
+assert.equal(
+  extractOpenDayFromText("开放日为每周的第3、4个工作日，无对应工作日的，则不开放。"),
+  "每周第3、4个工作日",
+)
+assert.equal(
+  extractOpenDayFromText("周一、三、五为固定开放日，如开放日遇节假日则顺延至下一工作日。"),
+  "每周一、周三、周五",
+)
+assert.equal(
+  extractOpenDayFromText("开放日：指本基金开放申购、赎回等业务的日期。开放日包括固定开放日和临时开放日。"),
+  null,
+)
+assert.ok(isWeakOpenDay("私募基金管理人办理基金份额申购、赎回业务的交易日。"))
+assert.ok(isWeakOpenDay("开放日（如有）：私募基金管理人办理基金份额申购、赎回业务的交易日。"))
+assert.ok(isWeakOpenDay("基金管理人办理基金申购和/或赎回业务的工作日。"))
+assert.ok(!isWeakOpenDay("本基金开放日为每自然月最后一个工作日。管理人可根据实际情况增设临时开放日。"))
+assert.ok(!isWeakOpenDay("每年2月、5月、8月、11月的最后五个工作日为固定开放日；临时开放日仅可办理赎回。"))
+assert.ok(shouldUpgradeOpenDay(
+  "私募基金管理人办理基金份额申购、赎回业务的交易日。",
+  "每周三、周四",
+))
+const zhenCai = fillMissingElementsFromKeywords(
+  "本基金的固定开放日为每周三、每周四，开放申购和赎回。",
+  { open_day: "私募基金管理人办理基金份额申购、赎回业务的交易日。" },
+)
+assert.equal(zhenCai.open_day, "每周三、周四")
+const zhenCaiLlm = fillMissingElementsFromKeywords("无关文本", {
+  open_day: "每周三,每周四开放申购和赎回",
+})
+assert.equal(zhenCaiLlm.open_day, "每周三、周四")
+
+const huafuOpen = "本基金存续期内申购和赎回开放日为本基金成立之日后【每周第一个交易日】。私募基金投资者可在本基金开放日申购或赎回本基金。基金管理人有权根据基金运作需求设置临时开放日。临时开放日具体以基金管理人公告或函件为准，原则上不得利用临时开放日安排继续申购。"
+assert.equal(summarizeOpenDay(huafuOpen), "每周一")
+assert.equal(summarizeOpenDay("每个自然周的第一个工作日开放申购赎回"), "每周一")
+assert.equal(summarizeOpenDay("每周第2个交易日"), "每周二")
+assert.equal(summarizeOpenDay("每个自然周的最后一个工作日"), "每周五")
+assert.equal(summarizeOpenDay("每周最后一个交易日"), "每周五")
+assert.equal(
+  summarizeOpenDay("（2025年5月调整）基金的申购赎回开放日为【每月15号（如遇非交易日，则顺延至下一个交易日）和每月最后一个交易日】"),
+  "每月15，31日",
+)
+assert.equal(summarizeOpenDay("每自然月份的 1 号和 15 号，非工作日顺延"), "每月1，15日")
+assert.equal(summarizeOpenDay("每月的1号和15号"), "每月1，15日")
+assert.equal(summarizeOpenDay("FOF投资产品池"), null)
+assert.equal(summarizeOpenDay("FOF投资产品池；每个工作日"), "每个交易日")
+assert.equal(summarizeOpenDay("2025-07-11"), null)
+assert.ok(isWeakOpenDay("FOF投资产品池"))
+assert.ok(isWeakOpenDay("2025-07-11"))
+assert.ok(!isWeakOpenDay("FOF投资产品池；每个工作日"))
+
+assert.equal(summarizeRedeemFee("0.000000"), "0%")
+assert.equal(summarizeManageFee("0.010000", "0.0"), "1%")
+assert.equal(summarizeManageFee("0.010000", "0.00%"), "1%")
+assert.equal(summarizeManageFee(null, "0.01"), "1%")
+assert.equal(summarizePerfFee("0.200000"), "20%")
+assert.equal(summarizeManageFee("年管理费率1%，每日计提", "0"), "1%")
+assert.equal(
+  summarizeOpenDay("封闭期结束之后的每自然季度首月（即1、4、7、10月）第5个自然日，如遇非交易日，则顺延至下一交易日。"),
+  "每季首月第5日",
+)
+assert.ok(isWeakFeeManage("0.010000"))
+assert.ok(isWeakFeePay("0.200000"))
+assert.ok(isWeakShortFee("0.001000"))
+assert.equal(fundNameKey("六妙星豪鑫3号私募证券投资基金A类"), "六妙星豪鑫3号")
+assert.equal(fundNameKey("六妙星豪鑫3号私募证券投资基金A类份额"), "六妙星豪鑫3号")
+assert.equal(fundNameKey("六妙星豪鑫3号A类"), "六妙星豪鑫3号")
+assert.equal(fundNameKey("诚奇睿盈对冲2号私募证券投资基金A类"), "诚奇睿盈对冲2号")
+assert.notEqual(fundNameKey("六妙星豪鑫3号A类"), fundNameKey("六妙星豪鑫6号A类"))
 
 console.log("fund-contract-element-keywords: ok")

@@ -2,14 +2,14 @@ export const PRODUCT_FIELD_TABS = ["基本信息", "申赎信息", "团队策略
 
 export const PRODUCT_FIELD_OPTIONS: Record<string, string[]> = {
   "基本信息": ["备案编码", "成立日期", "基金全称", "备案日期", "基准指数", "基金管理人", "管理人规模", "投资顾问", "托管券商", "平台一级策略", "平台二级策略", "平台三级策略"],
-  "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "赎回费", "最低申购金额", "封闭期", "开放日", "管理费", "业绩报酬说明"],
+  "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "赎回费", "最低申购金额", "封闭期", "开放日", "管理费", "业绩报酬"],
   "团队策略/标签/池": ["团队一级策略", "团队二级策略", "团队三级策略", "团队标签", "所在跟踪池"],
   "净值信息": ["最新净值日期", "最新单位净值", "最新累计净值", "最新涨跌幅", "托管账户余额", "资产净值", "市值", "持仓市值(元)", "成立以来收益", "近两年收益", "近三年收益", "最大回撤", "年化收益", "年化波动率", "信息比率", "卡玛比率"],
   "团队字段": ["团队评级", "团队备注", "关注度"],
   "其他": ["产品规模", "基金托管人", "外部评级"],
 }
 
-export const PRODUCT_ELEMENT_FIELD_DEFAULT = ["开放日", "管理费", "业绩报酬说明", "赎回费"] as const
+export const PRODUCT_ELEMENT_FIELD_DEFAULT = ["开放日", "管理费", "业绩报酬", "赎回费"] as const
 export const PRODUCT_FIELD_DEFAULT = ["最新净值日期", "最新单位净值", "最新涨跌幅", ...PRODUCT_ELEMENT_FIELD_DEFAULT] as const
 export const MANAGED_FIELD_DEFAULT = ["最新净值日期", "最新单位净值", "最新涨跌幅", "托管账户余额", "资产净值"] as const
 export const OPS_MANAGED_FIELD_DEFAULT = ["备案编码", "最新净值日期", "最新单位净值", "最新涨跌幅", "托管账户余额", "资产净值"] as const
@@ -51,6 +51,12 @@ export const PRODUCT_FIELD_SORT_KEYS: Record<string, string> = {
   "市值": "market_value",
   "持仓市值(元)": "holding_mv",
   "持仓份额": "holding_shares",
+  "开放日": "open_day",
+  "管理费": "fee_manage",
+  "管理费说明": "fee_manage",
+  "业绩报酬": "fee_pay",
+  "业绩报酬说明": "fee_pay",
+  "赎回费": "fee_redeem",
 }
 
 const ELEMENT_FIELDS_SEED_SUFFIX = ":seed_element_fields_v2"
@@ -76,15 +82,37 @@ function appendNewDefaultElementFields(
   }
 }
 
+const LEGACY_PRODUCT_FIELD_LABELS: Record<string, string> = {
+  "业绩报酬说明": "业绩报酬",
+}
+
+function normalizeProductFieldLabel(label: string): string {
+  return LEGACY_PRODUCT_FIELD_LABELS[label] ?? label
+}
+
+function isPerfFeeField(label: string) {
+  return label === "业绩报酬" || label === "业绩报酬说明"
+}
+
 export function readProductFieldConfig(storageKey: string, defaultFields: readonly string[]): string[] {
   try {
     const raw = localStorage.getItem(storageKey)
     if (!raw) return [...defaultFields]
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return [...defaultFields]
-    const valid = parsed.filter(
-      (f): f is string => typeof f === "string" && ALL_LABELS.has(f),
+    let remapped = false
+    const mapped = parsed.map((f) => {
+      if (typeof f !== "string") return f
+      const next = normalizeProductFieldLabel(f)
+      if (next !== f) remapped = true
+      return next
+    })
+    const valid = uniqueKeepOrder(
+      mapped.filter((f): f is string => typeof f === "string" && ALL_LABELS.has(f)),
     )
+    if (valid.length > 0 && remapped) {
+      writeProductFieldConfig(storageKey, valid)
+    }
     const selected = valid.length > 0 ? valid : [...defaultFields]
     return appendNewDefaultElementFields(storageKey, selected, defaultFields)
   } catch {
@@ -129,6 +157,7 @@ export function getProductFieldTextValue(row: Record<string, unknown>, label: st
     "开放日": pick("open_day"),
     "管理费": pick("fee_manage") || pick("fee_manage_rate"),
     "管理费说明": pick("fee_manage") || pick("fee_manage_rate"),
+    "业绩报酬": pick("fee_pay"),
     "业绩报酬说明": pick("fee_pay"),
     "赎回费": pick("fee_redeem"),
   }
@@ -158,18 +187,18 @@ export function isProductFieldNav(label: string) {
 }
 
 export function isProductFieldLongText(label: string) {
-  return label === "开放日" || label === "管理费" || label === "管理费说明" || label === "业绩报酬说明" || label === "赎回费"
+  return label === "开放日" || label === "管理费" || label === "管理费说明" || isPerfFeeField(label) || label === "赎回费"
 }
 
 export function isProductFieldSummarized(label: string) {
-  return label === "开放日" || label === "管理费" || label === "管理费说明" || label === "业绩报酬说明" || label === "赎回费"
+  return label === "开放日" || label === "管理费" || label === "管理费说明" || isPerfFeeField(label) || label === "赎回费"
 }
 
 /** Fixed px width so short 要素 columns do not absorb leftover table space. */
 export function productFieldColWidthPx(label: string): number {
-  if (label === "管理费" || label === "管理费说明" || label === "赎回费") return 52
-  if (label === "开放日") return 108
-  if (label === "业绩报酬说明") return 64
+  if (label === "管理费" || label === "管理费说明" || label === "赎回费") return 64
+  if (label === "开放日") return 120
+  if (isPerfFeeField(label)) return 76
   if (label === "最新单位净值") return 90
   if (label === "最新涨跌幅") return 88
   return 100
@@ -191,6 +220,30 @@ function formatPctNumber(n: number): string {
   return `${rounded}%`
 }
 
+/** Huofuniu-style fractions: 0.01 → 1%, 0.2 → 20%, 0.001 → 0.1%. */
+export function formatBareFeeRate(raw: string | null | undefined): string | null {
+  const s = String(raw ?? "").trim()
+  if (!s || !/^\d+(?:\.\d+)?$/.test(s)) return null
+  const n = parseFloat(s)
+  if (!Number.isFinite(n)) return null
+  if (n === 0) return "0%"
+  const pct = n <= 1 ? n * 100 : n
+  if (pct < 0 || pct > 100) return null
+  return formatPctNumber(pct)
+}
+
+function parseManageRate(rate: string | null | undefined): string | null {
+  const rateText = String(rate ?? "").trim()
+  if (!rateText) return null
+  const hasPct = /[%％]/.test(rateText)
+  const n = parseFloat(rateText.replace(/[%％]/g, ""))
+  if (!Number.isFinite(n) || n === 0) return null
+  if (hasPct) return formatPctNumber(n)
+  const pct = n <= 1 ? n * 100 : n
+  if (pct <= 0 || pct > 10) return null
+  return formatPctNumber(pct)
+}
+
 function extractPercents(text: string): string[] {
   const out: string[] = []
   const re = /(\d+(?:\.\d+)?)\s*%/g
@@ -205,8 +258,12 @@ function extractPercents(text: string): string[] {
 
 function weekdaysFrom(text: string): string[] {
   const compact = text.replace(/\s+/g, "")
+  const weeklyHits = uniqueKeepOrder(
+    [...compact.matchAll(/每(?:个自然)?周(?:的)?(?:周|星期)?([一二三四五六日天])/g)].map((m) => (m[1] === "天" ? "日" : m[1])),
+  )
+  if (weeklyHits.length >= 2) return weeklyHits
   const list = compact.match(
-    /每周(?:的)?((?:周|星期)?[一二三四五六日天](?:[、,，和及](?:周|星期)?[一二三四五六日天])*)/,
+    /每周(?:的)?((?:周|星期)?[一二三四五六日天](?:[、,，和及](?:每)?(?:周|星期)?[一二三四五六日天])*)/,
   )
   if (list) {
     const days = [...list[1].matchAll(/[一二三四五六日天]/g)].map((m) => (m[0] === "天" ? "日" : m[0]))
@@ -228,6 +285,34 @@ function weekdaysFrom(text: string): string[] {
   return uniqueKeepOrder(found)
 }
 
+function summarizeMonthlyCalendarOpenDay(compact: string): string | null {
+  if (!/每月|每自然月/.test(compact)) return null
+  const days: string[] = []
+  const seen = new Set<string>()
+  const add = (raw: string) => {
+    const n = parseInt(raw, 10)
+    if (!Number.isFinite(n) || n < 1 || n > 31) return
+    const d = String(n)
+    if (seen.has(d)) return
+    seen.add(d)
+    days.push(d)
+  }
+  const numbered = compact.matchAll(/(?:每月|每自然月份?)(?:的)?(\d{1,2})\s*号|和(\d{1,2})\s*号/g)
+  for (const match of numbered) {
+    add(match[1] || match[2])
+  }
+  if (/每月最后(?:一个)?(?:交易|工作)日|每月最后一日/.test(compact)) add("31")
+  if (!days.length) return null
+  return `每月${days.join("，")}日`
+}
+
+function stripOpenDayPoolJunk(raw: string): string {
+  return raw
+    .replace(/FOF投资产品池/g, "")
+    .replace(/^[；;、,\s]+|[；;、,\s]+$/g, "")
+    .trim()
+}
+
 function firstClause(text: string, max = 16): string {
   const first = text.split(/[。；;\n]/)[0].replace(/\s+/g, "").trim()
   if (!first) return text.trim()
@@ -235,15 +320,38 @@ function firstClause(text: string, max = 16): string {
 }
 
 export function summarizeOpenDay(raw: string | null | undefined): string | null {
-  const s = String(raw ?? "").trim()
+  const s = stripOpenDayPoolJunk(String(raw ?? "").trim())
   if (!s) return null
   const compact = s.replace(/\s+/g, "")
-  if (/每个交易日|每日开放|每个工作日开放/.test(compact) && !/每周/.test(compact)) {
+  if (/每个交易日|每日开放|每个工作日/.test(compact) && !/每周/.test(compact)) {
     return "每个交易日"
   }
-  if (/每周最后/.test(compact) && /交易日/.test(compact)) return "每周最后一个交易日"
+  if (/每(?:个自然)?周的?最后/.test(compact) && /(?:工作|交易)日/.test(compact)) {
+    return "每周五"
+  }
+  const firstOfWeek = compact.match(
+    /每(?:个自然)?周(?:的)?第([一二三四五1-5])个(?:交易|工作)日/,
+  )
+  if (firstOfWeek?.[1]) {
+    const nth: Record<string, string> = {
+      一: "一",
+      二: "二",
+      三: "三",
+      四: "四",
+      五: "五",
+      "1": "一",
+      "2": "二",
+      "3": "三",
+      "4": "四",
+      "5": "五",
+    }
+    const day = nth[firstOfWeek[1]]
+    if (day) return `每周${day}`
+  }
   const nthWork = compact.match(/每周的?第([0-9、,，和\-至到]+)个工作日/)
   if (nthWork) return `每周第${nthWork[1].replace(/[和]/g, "、")}个工作日`
+  const monthly = summarizeMonthlyCalendarOpenDay(compact)
+  if (monthly) return monthly
 
   const sub = compact.match(/申购开放日[^。]{0,100}/)?.[0] ?? ""
   const red = compact.match(/赎回开放日[^。]{0,100}/)?.[0] ?? ""
@@ -254,6 +362,13 @@ export function summarizeOpenDay(raw: string | null | undefined): string | null 
 
   const days = weekdaysFrom(compact)
   if (days.length) return `每周${days.join("、周")}`
+  if (/每(?:自然)?季度|每季/.test(compact)) {
+    const nthNatural = compact.match(/第([0-9一二三四五六七八九十]+)个自然日/)
+    if (nthNatural) return `每季首月第${nthNatural[1]}日`
+    const nthTrade = compact.match(/第([0-9一二三四五六七八九十]+)个(?:交易|工作)日/)
+    if (nthTrade) return `每季第${nthTrade[1]}个交易日`
+  }
+  if (!/开放|每周|每月|每季|交易日|工作日|申购|赎回|预约/.test(compact)) return null
   return firstClause(s)
 }
 
@@ -261,12 +376,8 @@ export function summarizeManageFee(
   full: string | null | undefined,
   rate: string | null | undefined,
 ): string | null {
-  const rateText = String(rate ?? "").trim()
-  if (rateText) {
-    const n = parseFloat(rateText.replace(/%/g, ""))
-    if (Number.isFinite(n)) return formatPctNumber(n)
-    if (rateText.includes("%")) return rateText
-  }
+  const fromRate = parseManageRate(rate)
+  if (fromRate) return fromRate
   const s = String(full ?? "").trim()
   if (!s) return null
   const classRates: string[] = []
@@ -279,6 +390,8 @@ export function summarizeManageFee(
   if (uniqClass.length >= 2) return uniqClass.join("/")
   const pcts = extractPercents(s)
   if (pcts.length) return pcts[0]
+  const bare = formatBareFeeRate(s)
+  if (bare) return bare
   return firstClause(s, 10)
 }
 
@@ -286,6 +399,8 @@ export function summarizeRedeemFee(raw: string | null | undefined): string | nul
   const s = String(raw ?? "").trim()
   if (!s) return null
   const compact = s.replace(/\s+/g, "")
+  const bare = formatBareFeeRate(s)
+  if (bare) return bare
   if (/^0%$/.test(compact) || compact === "0") return "0%"
   if (
     /不收取赎回费|不设置赎回费|免赎回费|无赎回费|赎回费率为?零/.test(compact)
@@ -353,6 +468,8 @@ export function summarizePerfFee(raw: string | null | undefined): string | null 
   if (uniqClass.length === 1) return uniqClass[0]
   if (pcts.length) return pcts[0]
   if (noneRe.test(compact)) return "不收取"
+  const bare = formatBareFeeRate(s)
+  if (bare) return bare
   return firstClause(s, 12)
 }
 
@@ -370,16 +487,17 @@ export function getProductFieldDisplay(
     return { short: summarizeOpenDay(detail), detail }
   }
   if (label === "管理费" || label === "管理费说明") {
-    return {
-      short: summarizeManageFee(pick("fee_manage"), pick("fee_manage_rate")),
-      detail: pick("fee_manage") || pick("fee_manage_rate"),
-    }
+    const short = summarizeManageFee(pick("fee_manage"), pick("fee_manage_rate"))
+    const raw = pick("fee_manage") || pick("fee_manage_rate")
+    return { short, detail: formatBareFeeRate(raw) || raw }
   }
   if (label === "赎回费") {
-    return { short: summarizeRedeemFee(detail), detail }
+    const short = summarizeRedeemFee(detail)
+    return { short, detail: formatBareFeeRate(detail) || detail }
   }
-  if (label === "业绩报酬说明") {
-    return { short: summarizePerfFee(detail), detail }
+  if (isPerfFeeField(label)) {
+    const short = summarizePerfFee(detail)
+    return { short, detail: formatBareFeeRate(detail) || detail }
   }
   return { short: detail, detail }
 }

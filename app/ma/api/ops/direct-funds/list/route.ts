@@ -10,7 +10,7 @@ import { getUserById } from "@/lib/server/users"
 import { ensureTrackingFundsListCachePopulated } from "@/lib/server/tracking-funds-list-cache-pg"
 import { sqlFundNameMatch, sqlShareClassProductNameGuard } from "@/lib/server/fund-name-match"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
-import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
+import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -217,7 +217,11 @@ export async function GET(req: Request) {
       sharpe_1y: "cache.sharpe_1y",
       calmar_1y: "cache.calmar_1y",
     }
+    const elementSort = applyFundElementListSort(sortKey, sortDir, "i.beian_hao")
     const orderCol = allowedSort[sortKey] ?? "i.product_name"
+    const orderSql = elementSort.active
+      ? `${elementSort.orderSql}, i.product_name ASC`
+      : `${orderCol} ${sortDir} NULLS LAST, i.product_name ASC`
 
     const pLimit = filterParams.length + 1
     const pOffset = filterParams.length + 2
@@ -302,8 +306,9 @@ export async function GET(req: Request) {
          cache.calmar_1y::text AS calmar_1y,
          cache.refreshed_at::text AS metric_calc_time
        ${baseFrom}
+       ${elementSort.joinSql}
        ${whereClause}
-       ORDER BY ${orderCol} ${sortDir} NULLS LAST, i.product_name ASC
+       ORDER BY ${orderSql}
        LIMIT $${pLimit} OFFSET $${pOffset}`,
       [...filterParams, pageSize, (page - 1) * pageSize],
     )

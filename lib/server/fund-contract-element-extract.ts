@@ -35,6 +35,7 @@ import {
   isWeakRiskLevel,
   isWeakShortFee,
   isWeakTemporaryOpen,
+  isWeakOpenDay,
 } from "@/lib/server/fund-contract-element-keywords"
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -353,6 +354,7 @@ const CONTRACT_SECTION_WINDOWS: ContractSectionWindow[] = [
   { re: /年化收益率|计提比例/g, before: 300, after: 2800, priority: 9, group: "perf" },
   { re: /申购费|赎回费/g, before: 180, after: 1800, priority: 8, group: "subscription" },
   { re: /开放日|临时开放|临开/g, before: 180, after: 2000, priority: 8, group: "subscription" },
+  { re: /固定开放日\s*[为是：:]|每(?:个自然)?周(?:的)?(?:第|[一二三四五六日天]|最后)|每个交易日开放|申购开放日|赎回开放日/g, before: 80, after: 600, priority: 12, group: "subscription" },
   { re: /封闭期|锁定期|份额锁定|不满.{0,12}不得赎回/g, before: 180, after: 2200, priority: 11, group: "lock" },
   { re: /预警线|止损线|平仓线/g, before: 120, after: 1400, priority: 8, group: "subscription" },
   { re: /风险等级|风险评级|本基金属于\s*R[1-5]|R[1-5]\s*[（(][^)）]{0,16}风险|中高风险|中低风险/g, before: 80, after: 900, priority: 11, group: "risk" },
@@ -372,6 +374,7 @@ const KEYWORD_FALLBACK_KEYS: ExtractedFundElementTextKey[] = [
   "fee_trust",
   "fee_admin_service",
   "is_temporary_open",
+  "open_day",
 ]
 
 const MISSING_FIELD_GROUPS: Partial<Record<ExtractedFundElementTextKey, ContractSectionGroup>> = {
@@ -387,6 +390,7 @@ const MISSING_FIELD_GROUPS: Partial<Record<ExtractedFundElementTextKey, Contract
   fee_admin_service: "fees",
   fee_manage_rate: "fees",
   is_temporary_open: "subscription",
+  open_day: "subscription",
 }
 
 type TextRange = { start: number; end: number; priority: number; group?: ContractSectionGroup }
@@ -519,7 +523,7 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 - inception_date: 成立日期 (YYYY-MM-DD)
 - puton_date: 备案日期 (YYYY-MM-DD)
 - custodian: 托管人/托管券商
-- open_day: 开放日，一两句。不要把锁定期、赎回费写进本字段。
+- open_day: 具体开放安排，如「每周二、周四」「每周第3、4个工作日」「每个交易日」「每月最后一个交易日」。必须写清星期、工作日序号或每月规则。禁止只摘释义「开放日包括固定开放日和临时开放日」。固定开放日与临时开放日分开写时，本字段只写固定开放日的具体日期；是否可临开写到 is_temporary_open。不要把锁定期、赎回费写进本字段。
 - is_temporary_open: "可临开"、"否"、"不可临开"、"可临开回" 之一；不要填 0、1、2。
 - fee_purchase: 申购费率，如 "0%"。
 - add_amount: 追加/申购金额限制，一两句，如「首次净申购不低于100万元」。
@@ -608,6 +612,7 @@ export function softenWeakExtractedFields(extracted: ExtractedFundElements): Ext
     fee_trust: isWeakShortFee(extracted.fee_trust) ? null : extracted.fee_trust,
     fee_admin_service: isWeakShortFee(extracted.fee_admin_service) ? null : extracted.fee_admin_service,
     is_temporary_open: isWeakTemporaryOpen(extracted.is_temporary_open) ? null : extracted.is_temporary_open,
+    open_day: isWeakOpenDay(extracted.open_day) ? null : extracted.open_day,
   }
 }
 

@@ -15,7 +15,7 @@ import {
   ensureFofOverviewListCachePopulated,
   shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
-import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
+import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import {
   sqlExcludeFofUnderlyingProduct,
   sqlFofUnderlyingFundClassFilter,
@@ -120,7 +120,8 @@ export async function GET(req: Request) {
       const stratCol = strategySource === "platform"
         ? "cache.platform_strategy_l1"
         : "cache.company_strategy_l1"
-      const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "first_entry_date"
+      const elementSort = applyFundElementListSort(sortParam, sortDir, "rows.beian_hao")
+      const sortKey = ALLOWED_SORT[sortParam] || elementSort.active ? sortParam : "first_entry_date"
 
       const conditions: string[] = [
         "f.product_name <> '合计'",
@@ -165,13 +166,16 @@ export async function GET(req: Request) {
       `
       const identityKey = sqlFofUnderlyingIdentityKey("cache.beian_hao", "f.id")
       const identityTie = sqlFofUnderlyingIdentityTiebreak("f.product_name", "f.id")
-      const outerSort =
-        sortKey === "product_name" ? "product_name"
-          : sortKey === "latest_nav" ? "latest_unit_nav"
-            : sortKey === "latest_nav_date" ? "latest_nav_date"
-              : sortKey === "latest_price_change" ? "latest_return_pct"
-                : sortKey === "first_entry_date" ? "first_entry_date"
-                  : "first_entry_date"
+      const outerSort = elementSort.active
+        ? elementSort.orderSql
+        : `${
+          sortKey === "product_name" ? "product_name"
+            : sortKey === "latest_nav" ? "latest_unit_nav"
+              : sortKey === "latest_nav_date" ? "latest_nav_date"
+                : sortKey === "latest_price_change" ? "latest_return_pct"
+                  : sortKey === "first_entry_date" ? "first_entry_date"
+                    : "first_entry_date"
+        } ${sortDir} NULLS LAST`
       const dedupedSelect = `
         SELECT DISTINCT ON (${identityKey})
            f.id::text                           AS id,
@@ -229,7 +233,8 @@ export async function GET(req: Request) {
            latest_return_pct,
            first_entry_date
          FROM (${dedupedSelect}) rows
-         ORDER BY ${outerSort} ${sortDir} NULLS LAST, sequence_no ASC
+         ${elementSort.joinSql}
+         ORDER BY ${outerSort}, sequence_no ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
         [...params, pageSize, offset],
       )
@@ -246,12 +251,17 @@ export async function GET(req: Request) {
     // ─── SLOW PATH — historical cutoff, recompute on the fly ────────────────
     const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
-    const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "first_entry_date"
-    const sortCol = sortKey === "latest_nav" ? "latest_unit_nav"
-      : sortKey === "latest_nav_date" ? "latest_nav_date"
-        : sortKey === "latest_price_change" ? "latest_return_pct"
-          : sortKey === "first_entry_date" ? "first_entry_date"
-            : "product_name"
+    const elementSort = applyFundElementListSort(sortParam, sortDir, "rows.beian_hao")
+    const sortKey = ALLOWED_SORT_SLOW[sortParam] || elementSort.active ? sortParam : "first_entry_date"
+    const sortCol = elementSort.active
+      ? elementSort.orderSql
+      : `${
+        sortKey === "latest_nav" ? "latest_unit_nav"
+          : sortKey === "latest_nav_date" ? "latest_nav_date"
+            : sortKey === "latest_price_change" ? "latest_return_pct"
+              : sortKey === "first_entry_date" ? "first_entry_date"
+                : "product_name"
+      } ${sortDir} NULLS LAST`
 
     const conditions: string[] = [
       "f.product_name <> '合计'",
@@ -348,7 +358,8 @@ export async function GET(req: Request) {
          WHERE ${where}
          ORDER BY ${identityKey}, ${identityTie}
        ) rows
-       ORDER BY ${sortCol} ${sortDir} NULLS LAST, sequence_no ASC
+       ${elementSort.joinSql}
+       ORDER BY ${sortCol}, sequence_no ASC
        LIMIT $${listParams.length + 1} OFFSET $${listParams.length + 2}`,
       [...listParams, pageSize, offset],
     )

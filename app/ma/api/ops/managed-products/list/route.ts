@@ -31,7 +31,7 @@ import {
   loadEmailFundMetricsLookup,
   resolveEmailFundMetrics,
 } from "@/lib/server/email-valuation-cache-enrich"
-import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
+import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -396,7 +396,10 @@ export async function GET(req: Request) {
         pi++
       }
 
-      const sortCol = ALLOWED_SORT[sortParam] ?? "m.sequence_no"
+      const elementSort = applyFundElementListSort(sortParam, sortDir, "cache.beian_hao")
+      const sortCol = elementSort.active
+        ? elementSort.orderSql
+        : `${ALLOWED_SORT[sortParam] ?? "m.sequence_no"} ${sortDir} NULLS LAST`
       const where = conditions.join(" AND ")
       const baseFrom = `
         FROM managed_products m
@@ -456,8 +459,9 @@ export async function GET(req: Request) {
            cache.sharpe_1y::text,
            cache.calmar_1y::text
          ${baseFrom}
+         ${elementSort.joinSql}
          WHERE ${where}
-         ORDER BY ${sortCol} ${sortDir} NULLS LAST, m.sequence_no ASC
+         ORDER BY ${sortCol}, m.sequence_no ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
         [...params, pageSize, offset],
       )
@@ -519,7 +523,10 @@ export async function GET(req: Request) {
     const strategyL3Expr = `NULLIF(BTRIM(o.${strategyPrefix}_strategy_three), '')`
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const teamTagsExpr = `CASE WHEN jsonb_typeof(o.tag->'company') = 'array' THEN o.tag->'company' ELSE '[]'::jsonb END`
-    const sortCol      = ALLOWED_SORT_SLOW[sortParam] ?? "sequence_no"
+    const elementSort = applyFundElementListSort(sortParam, sortDir, "rows.beian_hao")
+    const sortCol = elementSort.active
+      ? elementSort.orderSql
+      : `${ALLOWED_SORT_SLOW[sortParam] ?? "sequence_no"} ${sortDir} NULLS LAST`
 
     const conditions: string[] = ["m.product_name <> '合计'"]
     const params: unknown[] = []
@@ -635,7 +642,8 @@ export async function GET(req: Request) {
          ${histJoins}
          WHERE ${where}
        ) rows
-       ORDER BY ${sortCol} ${sortDir} NULLS LAST, sequence_no ASC
+       ${elementSort.joinSql}
+       ORDER BY ${sortCol}, sequence_no ASC
        LIMIT $${listParams.length + 1} OFFSET $${listParams.length + 2}`,
       [...listParams, pageSize, offset],
     )

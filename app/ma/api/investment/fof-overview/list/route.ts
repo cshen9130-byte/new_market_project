@@ -17,7 +17,7 @@ import {
   ensureFofOverviewListCachePopulated,
   shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
-import { overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
+import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import {
   sqlExcludeFofUnderlyingProduct,
@@ -233,7 +233,8 @@ export async function GET(req: Request) {
       const stratL2Col = `NULLIF(BTRIM(cache.${stratPrefix}_strategy_l2), '')`
       const stratL3Col = `NULLIF(BTRIM(cache.${stratPrefix}_strategy_l3), '')`
       const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
-      const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "first_entry_date"
+      const elementSort = applyFundElementListSort(sortParam, sortDir, "rows.beian_hao")
+      const sortKey = ALLOWED_SORT[sortParam] || elementSort.active ? sortParam : "first_entry_date"
 
       const conditions: string[] = [
         "f.product_name <> '合计'",
@@ -316,16 +317,19 @@ export async function GET(req: Request) {
          WHERE ${where}
          ORDER BY ${identityKey}, ${identityTie}
       `
-      const outerSort =
-        sortKey === "sequence_no" ? "sequence_no"
-          : sortKey === "market_value" ? "market_value_num"
-            : sortKey === "product_name" ? "product_name"
-              : sortKey === "latest_nav" ? "latest_unit_nav"
-                : sortKey === "latest_nav_date" ? "latest_nav_date"
-                  : sortKey === "latest_price_change" ? "latest_return_pct"
-                    : sortKey === "first_entry_date" ? "first_entry_date"
-                      : sortKey === "latest_change_date" ? sqlLatestChangeAt("beian_hao", "first_entry_date")
-                      : sortKey
+      const outerSort = elementSort.active
+        ? elementSort.orderSql
+        : `${
+          sortKey === "sequence_no" ? "sequence_no"
+            : sortKey === "market_value" ? "market_value_num"
+              : sortKey === "product_name" ? "product_name"
+                : sortKey === "latest_nav" ? "latest_unit_nav"
+                  : sortKey === "latest_nav_date" ? "latest_nav_date"
+                    : sortKey === "latest_price_change" ? "latest_return_pct"
+                      : sortKey === "first_entry_date" ? "first_entry_date"
+                        : sortKey === "latest_change_date" ? sqlLatestChangeAt("beian_hao", "first_entry_date")
+                        : sortKey
+        } ${sortDir} NULLS LAST`
 
       const aggRows = await query<{ n: string; total_mv: string }>(
         `SELECT COUNT(*)::text AS n, COALESCE(SUM(market_value_num), 0)::text AS total_mv
@@ -390,7 +394,8 @@ export async function GET(req: Request) {
            calmar_1y,
            first_entry_date
          FROM (${dedupedSelect}) rows
-         ORDER BY ${outerSort} ${sortDir} NULLS LAST, sequence_no ASC
+         ${elementSort.joinSql}
+         ORDER BY ${outerSort}, sequence_no ASC
          LIMIT $${pi} OFFSET $${pi + 1}`,
         [...params, pageSize, offset],
       )
@@ -418,9 +423,12 @@ export async function GET(req: Request) {
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const teamTagsExpr = `CASE WHEN jsonb_typeof(o.tag->'company') = 'array' THEN o.tag->'company' ELSE '[]'::jsonb END`
     const marketValueExpr = `COALESCE(${managedUnderlyingMarketValueExpr(BEIAN_EXPR, PRODUCT_EXPR)}, 0)`
-    const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "first_entry_date"
+    const elementSort = applyFundElementListSort(sortParam, sortDir, "rows.beian_hao")
+    const sortKey = ALLOWED_SORT_SLOW[sortParam] || elementSort.active ? sortParam : "first_entry_date"
     // Outer ORDER BY uses the subquery alias; inner SELECT projects managed 市值 as market_value.
-    const sortCol = sortKey === "sequence_no" ? "sequence_no" : ALLOWED_SORT_SLOW[sortKey]
+    const sortCol = elementSort.active
+      ? elementSort.orderSql
+      : `${sortKey === "sequence_no" ? "sequence_no" : ALLOWED_SORT_SLOW[sortKey]} ${sortDir} NULLS LAST`
 
     const conditions: string[] = [
       "f.product_name <> '合计'",
@@ -585,7 +593,8 @@ export async function GET(req: Request) {
          WHERE ${where}
          ORDER BY ${identityKey}, ${identityTie}
        ) rows
-       ORDER BY ${sortCol} ${sortDir} NULLS LAST, sequence_no ASC
+       ${elementSort.joinSql}
+       ORDER BY ${sortCol}, sequence_no ASC
        LIMIT $${listParams.length + 1} OFFSET $${listParams.length + 2}`,
       [...listParams, pageSize, offset],
     )

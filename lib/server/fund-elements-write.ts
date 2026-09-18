@@ -28,9 +28,11 @@ import {
   isWeakRiskLevel,
   isWeakShortFee,
   isWeakTemporaryOpen,
+  isWeakOpenDay,
   shouldUpgradeFeePay,
   shouldUpgradeFeeRedeem,
   shouldUpgradeFormula,
+  shouldUpgradeOpenDay,
   type ShareClassFeeOverrides,
 } from "@/lib/server/fund-contract-element-keywords"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
@@ -485,6 +487,7 @@ function currentNeedsFill(
   if (key === "fee_manage") return isWeakFeeManage(value)
   if (key === "fee_pay") return isWeakFeePay(value)
   if (key === "add_amount") return isWeakAddAmount(value)
+  if (key === "open_day") return isWeakOpenDay(value)
   if (key === "fee_redeem" || key === "closed_period" || key === "fee_trust" || key === "fee_admin_service") {
     return isWeakShortFee(value)
   }
@@ -543,7 +546,13 @@ export function buildFillEmptyWriteBody(
         typeof current?.fee_pay_formula === "string" ? current.fee_pay_formula : null,
         next,
       )
-    if (!currentNeedsFill(key, current) && !upgradeRedeem && !upgradePay && !upgradeFormula) continue
+    const upgradeOpen =
+      key === "open_day"
+      && shouldUpgradeOpenDay(
+        typeof current?.open_day === "string" ? current.open_day : null,
+        next,
+      )
+    if (!currentNeedsFill(key, current) && !upgradeRedeem && !upgradePay && !upgradeFormula && !upgradeOpen) continue
     if (next) {
       body[key] = next
       continue
@@ -754,6 +763,16 @@ function mergeAmendmentIntoCurrent(
     const add = textField(extracted, key)
     const prev = textField(current, key)
     if (!add || !prev) continue
+    if (key === "open_day") {
+      if (isWeakOpenDay(add) && !isWeakOpenDay(prev)) {
+        out[key] = prev
+        continue
+      }
+      if (isWeakOpenDay(prev) && !isWeakOpenDay(add)) {
+        out[key] = add
+        continue
+      }
+    }
     if (key === "fee_pay" || key === "fee_pay_formula") {
       const addWeak = key === "fee_pay" ? isWeakFeePay(add) : isWeakFormula(add)
       const prevWeak = key === "fee_pay" ? isWeakFeePay(prev) : isWeakFormula(prev)
@@ -796,6 +815,7 @@ function buildOverwriteNonEmptyWriteBody(
     if (key === "register_number" || skip.has(key)) continue
     const next = textField(extracted, key)
     if (!next) continue
+    if (key === "open_day" && isWeakOpenDay(next)) continue
     body[key] = next
   }
   attachFormulaConfig(body, extracted, null, "overwrite")

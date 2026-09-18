@@ -21,6 +21,7 @@ import { loadTeamBenchmark, upsertTeamBenchmark } from "@/lib/server/ops-team-be
 import { loadOperationDate as loadStoredOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
+import { formatBareFeeRate } from "@/lib/ma/product-field-config"
 import { isWeakShortFee } from "@/lib/server/fund-contract-element-keywords"
 import { loadResolvedFundStrategies } from "@/lib/server/fund-strategy-resolve"
 
@@ -205,9 +206,9 @@ export async function GET(req: Request) {
     stop_line: el?.stop_line ?? null,
     lock_period_desc: extra.lock_period_desc,
     fee_manage_rate,
-    fee_trust: isWeakShortFee(el?.fee_trust) ? null : el?.fee_trust ?? null,
+    fee_trust: formatBareFeeRate(el?.fee_trust) || (isWeakShortFee(el?.fee_trust) ? null : el?.fee_trust ?? null),
     fee_manage: el?.fee_manage ?? null,
-    fee_admin_service: isWeakShortFee(el?.fee_admin_service) ? null : el?.fee_admin_service ?? null,
+    fee_admin_service: formatBareFeeRate(el?.fee_admin_service) || (isWeakShortFee(el?.fee_admin_service) ? null : el?.fee_admin_service ?? null),
     fee_pay: el?.fee_pay ?? null,
     fee_pay_formula: extra.fee_pay_formula,
     fee_pay_formula_config: extra.fee_pay_formula_config,
