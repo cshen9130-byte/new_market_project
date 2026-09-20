@@ -977,6 +977,32 @@ const sbdf95EmailOut = mergeNavSeriesWithEmail([], sbdf95EmailOnly)
 assert("SBDF95 email-only corrupt cluster removed", !sbdf95EmailOut.some((r) => r.price_date >= "2026-07-03"))
 assert("SBDF95 email-only latest ~1.0214", Math.abs(parseFloat(sbdf95EmailOut.at(-1).nav) - 1.0214) < 0.001)
 
+// SXK911: mid-series 火富牛 return-index burst then fake ex-div (unit back to 1, 累计 stuck at ~12).
+const sxk911Burst = [
+  { price_date: "2023-04-14", nav: "1.006000", cumulative_nav: "1.006000", cum_nav_withdrawal: "1.006000", price_change: "" },
+  { price_date: "2023-04-21", nav: "1.620100", cumulative_nav: "1.620100", cum_nav_withdrawal: "1.620100", price_change: "" },
+  { price_date: "2023-04-28", nav: "12.194600", cumulative_nav: "12.194600", cum_nav_withdrawal: "12.194600", price_change: "" },
+  { price_date: "2023-05-05", nav: "12.198100", cumulative_nav: "12.198100", cum_nav_withdrawal: "12.198100", price_change: "" },
+  { price_date: "2023-05-12", nav: "12.201700", cumulative_nav: "12.201700", cum_nav_withdrawal: "12.201700", price_change: "" },
+  { price_date: "2023-05-16", nav: "1.000000", cumulative_nav: "12.203700", cum_nav_withdrawal: "12.203700", price_change: "" },
+  { price_date: "2023-05-19", nav: "1.001400", cumulative_nav: "12.220785", cum_nav_withdrawal: "12.205100", price_change: "" },
+  { price_date: "2026-09-11", nav: "1.170300", cumulative_nav: "14.280885", cum_nav_withdrawal: "14.283210", price_change: "" },
+]
+const sxk911Out = mergeNavSeriesWithEmail(sxk911Burst, [])
+assert("SXK911 drops 2023-04-21 return-index step", !sxk911Out.some((r) => r.price_date === "2023-04-21"))
+assert("SXK911 drops 12.x return-index burst", !sxk911Out.some((r) => parseFloat(r.nav) > 2))
+const sxk9110516 = sxk911Out.find((r) => r.price_date === "2023-05-16")
+const sxk911Latest = sxk911Out.at(-1)
+assert("SXK911 05-16 unit stays 1.00", Math.abs(parseFloat(sxk9110516.nav) - 1.0) < 0.001)
+assert("SXK911 05-16 cum reset to unit", Math.abs(parseFloat(sxk9110516.cum_nav_withdrawal) - 1.0) < 0.001)
+assert("SXK911 latest unit 1.1703", Math.abs(parseFloat(sxk911Latest.nav) - 1.1703) < 0.001)
+assert(
+  "SXK911 latest adj not 12x leftover",
+  Math.abs(parseFloat(sxk911Latest.cumulative_nav) - 1.1703) < 0.01,
+)
+const sxk911CumRet = parseFloat(sxk911Latest.cumulative_nav) / parseFloat(sxk911Out[0].cumulative_nav) - 1
+assert("SXK911 since-inception ~17% not +1328%", sxk911CumRet > 0.10 && sxk911CumRet < 0.25)
+
 const sbdf95Batch = sanitizeNavPointSeries([
   { nav_date: "2026-07-01", nav: 1.0214 },
   { nav_date: "2026-07-03", nav: 4.6587 },

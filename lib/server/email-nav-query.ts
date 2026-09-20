@@ -2099,6 +2099,86 @@ function sanitizeReturnIndexTail(rows: LegacyNavRow[]): LegacyNavRow[] {
 }
 
 /**
+ * Drop a mid-series return-index burst (vendor stored 累计收益指数 as 单位净值)
+ * and strip the leftover fake ex-div 累计/复权 once unit NAV resumes the old scale.
+ *
+ * SXK911 擎丰1号3期 2023-04/05: 1.006 → 1.62 → 12.19 (all-equal) → unit reset
+ * to 1.00 while 累计 stayed ~12.2, so 复权 locked in a 12× factor (+1328%).
+ * Tail-only sanitizers miss this because the corrupt run is not at the end.
+ */
+function sanitizeReturnIndexBurst(rows: LegacyNavRow[]): LegacyNavRow[] {
+  if (rows.length < 3) return rows
+
+  const START_RATIO = 1.5
+  const drop = new Set<number>()
+  const reset = new Set<number>()
+
+  let i = 1
+  while (i < rows.length) {
+    const typical = typicalUnitNavBefore(rows, i) ?? parseOptionalNav(rows[i - 1]?.nav)
+    const unit = parseOptionalNav(rows[i].nav)
+    if (
+      typical == null || typical <= 0 ||
+      unit == null ||
+      !navFieldsAllEqual(rows[i]) ||
+      unit / typical < START_RATIO
+    ) {
+      i += 1
+      continue
+    }
+
+    let j = i
+    let peak = unit
+    while (j < rows.length) {
+      const u = parseOptionalNav(rows[j].nav)
+      if (u == null || u / typical < START_RATIO) break
+      if (!navFieldsAllEqual(rows[j]) && u < peak * 0.8) break
+      peak = Math.max(peak, u)
+      j += 1
+    }
+
+    if (peak / typical < ISOLATED_SPIKE_RATIO) {
+      i += 1
+      continue
+    }
+
+    if (j >= rows.length) {
+      for (let k = i; k < rows.length; k += 1) drop.add(k)
+      break
+    }
+
+    const afterUnit = parseOptionalNav(rows[j].nav)
+    if (afterUnit == null || afterUnit / typical >= START_RATIO) {
+      i += 1
+      continue
+    }
+
+    for (let k = i; k < j; k += 1) drop.add(k)
+    for (let k = j; k < rows.length; k += 1) {
+      const u = parseOptionalNav(rows[k].nav)
+      const c = parseOptionalNav(rows[k].cum_nav_withdrawal) ?? parseOptionalNav(rows[k].cumulative_nav)
+      if (u == null || u / typical >= START_RATIO) break
+      if (c != null && c / Math.max(u, typical) >= ISOLATED_SPIKE_RATIO) {
+        reset.add(k)
+        continue
+      }
+      break
+    }
+    i = j
+  }
+
+  if (drop.size === 0 && reset.size === 0) return rows
+  return rows.flatMap((row, idx) => {
+    if (drop.has(idx)) return []
+    if (!reset.has(idx)) return [row]
+    const unit = parseOptionalNav(row.nav)
+    if (unit == null) return [row]
+    const v = String(+unit.toFixed(6))
+    return [{ ...row, nav: v, cumulative_nav: v, cum_nav_withdrawal: v }]
+  })
+}
+
+/**
  * Drop terminal (or gap) rows where unit/cum/adj collapsed to one value that jumped
  * >100% from the prior row — e.g. legacy platform storing cumulative-return index as NAV.
  * V-shaped middle outliers are left for sanitizeVShapeNavOutliers.
@@ -2330,6 +2410,7 @@ export function sanitizeReturnIndexNavSeries(
 ): LegacyNavRow[] {
   if (shouldSkipReturnIndexSanitize(fundContext)) return rows
   let out = sanitizeIsolatedNavSpikes(rows)
+  out = sanitizeReturnIndexBurst(out)
   out = sanitizeReturnIndexTail(out)
   return out
 }
@@ -2345,6 +2426,7 @@ function finalizeNavSeries(
   out = sanitizeVShapeNavOutliers(out)
   if (!shouldSkipReturnIndexSanitize(fundContext)) {
     out = sanitizeIsolatedNavSpikes(out)
+    out = sanitizeReturnIndexBurst(out)
     out = sanitizeReturnIndexTail(out)
   }
   out = repairCorruptUnitNavRows(out)

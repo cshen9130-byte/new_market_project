@@ -281,7 +281,7 @@ function buildPortrait(p: {
 
   const lsStyle = p.longPnl === 0 && p.shortPnl === 0
     ? "多空盈亏拆分不足。"
-    : `多头平仓 ${fmtWan(p.longPnl)}，空头平仓 ${fmtWan(p.shortPnl)}。${p.longPnl >= p.shortPnl ? "多头贡献更大。" : "空头贡献更大。"}`
+    : `多头 ${fmtWan(p.longPnl)}，空头 ${fmtWan(p.shortPnl)}（平仓 + 持仓盯市）。${p.longPnl >= p.shortPnl ? "多头贡献更大。" : "空头贡献更大。"}`
 
   const prefix = thin ? "样本偏短，以下为粗画像，请结合图表看稳定性。" : "由成交、平仓与日核算倒推，不是投顾自述。"
   const summary = `${prefix} 更像「${strategyLabel}」。日胜率 ${fmtPct(p.dayWinRate * 100, 0)}，平仓胜率 ${fmtPct(wr * 100, 0)}。`
@@ -327,7 +327,7 @@ async function _GET(req: Request) {
       return d.toISOString().slice(0, 10)
     })()
 
-    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows] = await Promise.all([
+    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows] = await Promise.all([
       query<{
         account: string; date: string; pnl: string; equity: string; margin: string; risk: string
       }>(
@@ -468,6 +468,21 @@ async function _GET(req: Request) {
          ORDER BY 1`,
         [accountId, from, to],
       ),
+      query<{
+        product: string; mtm: string; long_mtm: string; short_mtm: string
+      }>(
+        `SELECT
+           UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
+           SUM(${numExpr("持仓盈亏")})::text AS mtm,
+           SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS long_mtm,
+           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS short_mtm
+         FROM mom_position_details
+         WHERE ${ACC}
+           AND "交易日期"::date BETWEEN $2::date AND $3::date
+           AND "合约" IS NOT NULL
+         GROUP BY 1`,
+        [accountId, from, to],
+      ),
     ])
 
     const account = dailyRows[0]?.account || `rx${accountId}`
@@ -595,40 +610,102 @@ async function _GET(req: Request) {
       winRate: v.days ? r2((v.wins / v.days) * 100) : 0,
     }))
 
-    const products = closeProdRows
-      .map((r) => {
-        const code = getPrefix(r.product)
-        const lots = toNum(r.lots)
-        const winLots = toNum(r.win_lots)
-        const lossLots = toNum(r.loss_lots)
-        const winPnl = toNum(r.win_pnl)
-        const lossPnl = toNum(r.loss_pnl)
+    type CloseAgg = {
+      closePnl: number; lots: number; winLots: number; lossLots: number
+      winPnl: number; lossPnl: number; avgHoldWin: number | null; avgHoldLoss: number | null; n: number
+    }
+    const closeByCode = new Map<string, CloseAgg>()
+    for (const r of closeProdRows) {
+      const code = getPrefix(r.product)
+      if (!code) continue
+      const lots = toNum(r.lots)
+      const winLots = toNum(r.win_lots)
+      const lossLots = toNum(r.loss_lots)
+      const winPnl = toNum(r.win_pnl)
+      const lossPnl = toNum(r.loss_pnl)
+      const prev = closeByCode.get(code)
+      if (prev) {
+        prev.closePnl += toNum(r.pnl)
+        prev.lots += lots
+        prev.winLots += winLots
+        prev.lossLots += lossLots
+        prev.winPnl += winPnl
+        prev.lossPnl += lossPnl
+        prev.n += toNum(r.n)
+      } else {
+        closeByCode.set(code, {
+          closePnl: toNum(r.pnl),
+          lots,
+          winLots,
+          lossLots,
+          winPnl,
+          lossPnl,
+          avgHoldWin: r.avg_hold_win == null ? null : r1(toNum(r.avg_hold_win)),
+          avgHoldLoss: r.avg_hold_loss == null ? null : r1(toNum(r.avg_hold_loss)),
+          n: toNum(r.n),
+        })
+      }
+    }
+
+    type MtmAgg = { mtm: number; longMtm: number; shortMtm: number }
+    const mtmByCode = new Map<string, MtmAgg>()
+    for (const r of posMtmRows) {
+      const code = getPrefix(r.product)
+      if (!code) continue
+      const cur = mtmByCode.get(code) ?? { mtm: 0, longMtm: 0, shortMtm: 0 }
+      cur.mtm += toNum(r.mtm)
+      cur.longMtm += toNum(r.long_mtm)
+      cur.shortMtm += toNum(r.short_mtm)
+      mtmByCode.set(code, cur)
+    }
+
+    const products = [...new Set([...closeByCode.keys(), ...mtmByCode.keys()])]
+      .map((code) => {
+        const c = closeByCode.get(code)
+        const m = mtmByCode.get(code)
+        const closePnl = c?.closePnl ?? 0
+        const mtmPnl = m?.mtm ?? 0
+        const lots = c?.lots ?? 0
+        const winLots = c?.winLots ?? 0
+        const lossLots = c?.lossLots ?? 0
+        const winPnl = c?.winPnl ?? 0
+        const lossPnl = c?.lossPnl ?? 0
         const pf = Math.abs(lossPnl) > 0 ? winPnl / Math.abs(lossPnl) : null
         return {
           code,
           name: PROD_NAMES[code] ?? code,
           sector: getSector(code),
-          pnl: r0(toNum(r.pnl)),
+          closePnl: r0(closePnl),
+          mtmPnl: r0(mtmPnl),
+          pnl: r0(closePnl + mtmPnl),
           lots: r1(lots),
           winRate: winLots + lossLots > 0 ? r2((winLots / (winLots + lossLots)) * 100) : 0,
           profitFactor: pf == null ? null : r2(pf),
-          avgHoldWin: r.avg_hold_win == null ? null : r1(toNum(r.avg_hold_win)),
-          avgHoldLoss: r.avg_hold_loss == null ? null : r1(toNum(r.avg_hold_loss)),
-          n: toNum(r.n),
+          avgHoldWin: c?.avgHoldWin ?? null,
+          avgHoldLoss: c?.avgHoldLoss ?? null,
+          n: c?.n ?? 0,
         }
       })
-      .filter((p) => p.code && p.n > 0)
+      .filter((p) => p.code && (p.n > 0 || p.pnl !== 0))
       .sort((a, b) => b.pnl - a.pnl)
 
-    const sectorMap = new Map<string, { pnl: number; lots: number }>()
+    const sectorMap = new Map<string, { pnl: number; lots: number; closePnl: number; mtmPnl: number }>()
     for (const p of products) {
-      const cur = sectorMap.get(p.sector) ?? { pnl: 0, lots: 0 }
+      const cur = sectorMap.get(p.sector) ?? { pnl: 0, lots: 0, closePnl: 0, mtmPnl: 0 }
       cur.pnl += p.pnl
       cur.lots += p.lots
+      cur.closePnl += p.closePnl
+      cur.mtmPnl += p.mtmPnl
       sectorMap.set(p.sector, cur)
     }
     const sectors = [...sectorMap.entries()]
-      .map(([sector, v]) => ({ sector, pnl: r0(v.pnl), lots: r1(v.lots) }))
+      .map(([sector, v]) => ({
+        sector,
+        pnl: r0(v.pnl),
+        lots: r1(v.lots),
+        closePnl: r0(v.closePnl),
+        mtmPnl: r0(v.mtmPnl),
+      }))
       .sort((a, b) => b.pnl - a.pnl)
 
     const HOLD_LABEL: Record<string, string> = {
@@ -687,9 +764,19 @@ async function _GET(req: Request) {
     const shortLots = toNum(shortRow?.lots)
     const longWinLots = toNum(longRow?.win_lots)
     const shortWinLots = toNum(shortRow?.win_lots)
+    let longMtm = 0
+    let shortMtm = 0
+    for (const v of mtmByCode.values()) {
+      longMtm += v.longMtm
+      shortMtm += v.shortMtm
+    }
     const longShort = {
-      longPnl: r0(toNum(longRow?.pnl)),
-      shortPnl: r0(toNum(shortRow?.pnl)),
+      longPnl: r0(toNum(longRow?.pnl) + longMtm),
+      shortPnl: r0(toNum(shortRow?.pnl) + shortMtm),
+      longClosePnl: r0(toNum(longRow?.pnl)),
+      shortClosePnl: r0(toNum(shortRow?.pnl)),
+      longMtm: r0(longMtm),
+      shortMtm: r0(shortMtm),
       longLots: r1(longLots),
       shortLots: r1(shortLots),
       longWinRate: longLots > 0 ? r2((longWinLots / longLots) * 100) : 0,
@@ -856,4 +943,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("quant-strategy", _GET)
+export const GET = withMomCache("quant-strategy-v2", _GET)

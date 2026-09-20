@@ -79,9 +79,10 @@ interface ApiData {
   portrait: { strategyLabel: string; summary: string; items: PortraitItem[] }
   equity: { date: string; pnl: number; cumPnl: number; equity: number; margin: number; riskPct: number; ddPct: number }[]
   regime: { key: string; label: string; pnl: number; days: number; winRate: number }[]
-  sectors: { sector: string; pnl: number; lots: number }[]
+  sectors: { sector: string; pnl: number; lots: number; closePnl?: number; mtmPnl?: number }[]
   products: {
     code: string; name: string; sector: string; pnl: number; lots: number
+    closePnl?: number; mtmPnl?: number
     winRate: number; profitFactor: number | null; avgHoldWin: number | null; avgHoldLoss: number | null; n: number
   }[]
   payoff: {
@@ -99,7 +100,11 @@ interface ApiData {
     afterLoss: { dRisk: number | null; dMarginPct: number | null; nextOpenShare: number | null; n: number }
   }
   hedge: { date: string; ratio: number; longMv: number; shortMv: number; lockShare: number }[]
-  longShort: { longPnl: number; shortPnl: number; longLots: number; shortLots: number; longWinRate: number; shortWinRate: number }
+  longShort: {
+    longPnl: number; shortPnl: number; longLots: number; shortLots: number
+    longWinRate: number; shortWinRate: number
+    longClosePnl?: number; shortClosePnl?: number; longMtm?: number; shortMtm?: number
+  }
 }
 
 const TONE: Record<Tone, string> = {
@@ -227,7 +232,16 @@ export default function QuantStrategyCharts() {
     const rows = [...(data?.sectors ?? [])].sort((a, b) => a.pnl - b.pnl)
     if (!rows.length) return {}
     return {
-      tooltip: { trigger: "axis", formatter: (ps: { name: string; value: number }[]) => `${ps[0].name} ${fmtWan(ps[0].value)}` },
+      tooltip: {
+        trigger: "axis",
+        formatter: (ps: { name: string; value: number }[]) => {
+          const r = rows.find((x) => x.sector === ps[0]?.name)
+          if (!r) return `${ps[0]?.name ?? ""} ${fmtWan(ps[0]?.value)}`
+          const close = r.closePnl ?? 0
+          const mtm = r.mtmPnl ?? 0
+          return `${r.sector}<br/>合计 ${fmtWan(r.pnl)}<br/>平仓 ${fmtWan(close)}<br/>盯市 ${fmtWan(mtm)}`
+        },
+      },
       grid: { left: 64, right: 24, top: 8, bottom: 24 },
       xAxis: { type: "value", axisLabel: { fontSize: 10, formatter: axisPnl }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
       yAxis: { type: "category", data: rows.map((r) => r.sector), axisLabel: { fontSize: 11 } },
@@ -331,7 +345,19 @@ export default function QuantStrategyCharts() {
     const ls = data?.longShort
     if (!ls) return {}
     return {
-      tooltip: { trigger: "axis" },
+      tooltip: {
+        trigger: "axis",
+        formatter: () => {
+          const closeL = ls.longClosePnl ?? 0
+          const closeS = ls.shortClosePnl ?? 0
+          const mtmL = ls.longMtm ?? 0
+          const mtmS = ls.shortMtm ?? 0
+          return [
+            `多头合计 ${fmtWan(ls.longPnl)}（平仓 ${fmtWan(closeL)} / 盯市 ${fmtWan(mtmL)}）`,
+            `空头合计 ${fmtWan(ls.shortPnl)}（平仓 ${fmtWan(closeS)} / 盯市 ${fmtWan(mtmS)}）`,
+          ].join("<br/>")
+        },
+      },
       grid: { left: 56, right: 16, top: 16, bottom: 28 },
       xAxis: { type: "category", data: ["多头（卖平）", "空头（买平）"], axisLabel: { fontSize: 11 } },
       yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: axisPnl }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
@@ -474,7 +500,7 @@ export default function QuantStrategyCharts() {
         <ChartCard title="哪种市场赚得多" caption="按南华商品指数日涨跌、20 日趋势强度、波动水平切分账户日盈亏。">
           {(data?.regime?.length ?? 0) > 0 && <ReactECharts option={regimeOption} style={{ height: 280, width: "100%" }} notMerge />}
         </ChartCard>
-        <ChartCard title="板块盈亏" caption="正贡献=擅长，负贡献=不擅长。结合上面的市场环境一起看。">
+        <ChartCard title="板块盈亏" caption="盈亏 = 平仓盈亏 + 持仓盯市（未扣手续费）。只看平仓会把「拿着赚、换仓亏」画成全板块亏损；区间净盈亏来自日报，会再扣手续费。">
           {(data?.sectors?.length ?? 0) > 0 && <ReactECharts option={sectorOption} style={{ height: 280, width: "100%" }} notMerge />}
         </ChartCard>
       </div>
@@ -510,7 +536,7 @@ export default function QuantStrategyCharts() {
         <ChartCard title="日盘 vs 夜盘" caption="按成交时间：21:00–08:00 计夜盘。看平仓盈亏发生在哪一盘。">
           {data?.session && <ReactECharts option={sessionOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
-        <ChartCard title="多头 vs 空头" caption="卖平=平多头，买平=平空头。谁贡献利润一目了然。">
+        <ChartCard title="多头 vs 空头" caption="卖平=平多头，买平=平空头；再加持仓盯市。钱经常是拿着赚的，平仓只是换仓成本。">
           {data?.longShort && <ReactECharts option={lsOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
       </div>
@@ -522,7 +548,7 @@ export default function QuantStrategyCharts() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium">品种明细</CardTitle>
-          <p className="text-xs text-muted-foreground mt-0.5">按平仓盈亏排序。胜率与持仓天数按手数加权。</p>
+          <p className="text-xs text-muted-foreground mt-0.5">按合计盈亏（平仓 + 盯市）排序。胜率与持仓天数仍按平仓手数加权。</p>
         </CardHeader>
         <CardContent className="pt-0 overflow-x-auto">
           <table className="w-full text-xs">
@@ -530,7 +556,9 @@ export default function QuantStrategyCharts() {
               <tr className="text-muted-foreground border-b">
                 <th className="text-left font-medium py-2 pr-3">品种</th>
                 <th className="text-left font-medium py-2 pr-3">板块</th>
-                <th className="text-right font-medium py-2 px-2">盈亏</th>
+                <th className="text-right font-medium py-2 px-2">合计</th>
+                <th className="text-right font-medium py-2 px-2">平仓</th>
+                <th className="text-right font-medium py-2 px-2">盯市</th>
                 <th className="text-right font-medium py-2 px-2">手数</th>
                 <th className="text-right font-medium py-2 px-2">胜率</th>
                 <th className="text-right font-medium py-2 px-2">盈亏比</th>
@@ -544,6 +572,8 @@ export default function QuantStrategyCharts() {
                   <td className="py-1.5 pr-3 whitespace-nowrap">{row.name}<span className="text-muted-foreground ml-1">{row.code}</span></td>
                   <td className="py-1.5 pr-3 text-muted-foreground">{row.sector}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums" style={{ color: pnlColor(row.pnl) }}>{fmtWan(row.pnl)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums" style={{ color: pnlColor(row.closePnl ?? 0) }}>{fmtWan(row.closePnl ?? 0)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums" style={{ color: pnlColor(row.mtmPnl ?? 0) }}>{fmtWan(row.mtmPnl ?? 0)}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{row.lots.toFixed(0)}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{fmtPct(row.winRate, 0)}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{row.profitFactor?.toFixed(2) ?? "—"}</td>
