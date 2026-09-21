@@ -14,6 +14,22 @@ export function joinStrategyLevel3(values: string[]): string {
     .join("、")
 }
 
+/** Union 三级策略 tags (comma /顿号) keeping first-seen order. Database form uses commas. */
+export function mergeStrategyLevel3(
+  ...values: Array<string | null | undefined>
+): string {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    for (const part of parseStrategyLevel3(value ?? "")) {
+      if (seen.has(part)) continue
+      seen.add(part)
+      out.push(part)
+    }
+  }
+  return out.join(",")
+}
+
 export function strategyLevel3SetsEqual(a: string, b: string): boolean {
   const left = [...new Set(parseStrategyLevel3(a))].sort((x, y) => x.localeCompare(y, "zh"))
   const right = [...new Set(parseStrategyLevel3(b))].sort((x, y) => x.localeCompare(y, "zh"))

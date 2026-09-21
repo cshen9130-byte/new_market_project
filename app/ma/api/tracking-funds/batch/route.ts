@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import {
+  expandBeianHaosWithShareClassFamily,
+  writeCompanyStrategyAcrossShareClasses,
+} from "@/lib/server/company-strategy-share-class"
 import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
@@ -138,24 +142,21 @@ export async function POST(req: Request) {
         }
 
         if (writeStrategy) {
-          const ph = ids.map((_, i) => `$${i + 1}`).join(", ")
-          await query(
-            `UPDATE type6_ops_team_full
-             SET company_strategy_one   = $${ids.length + 1},
-                 company_strategy_two   = $${ids.length + 2},
-                 company_strategy_three = $${ids.length + 3},
-                 updated_at = NOW()
-             WHERE register_number IN (${ph})`,
-            [...ids, l1, l2, l3]
-          )
-          await syncCompanyStrategyCaches(
-            ids.map((beian_hao) => ({
+          const seenFamily = new Set<string>()
+          for (const beian_hao of ids) {
+            const key = beian_hao.trim().toUpperCase()
+            if (seenFamily.has(key)) continue
+            const result = await writeCompanyStrategyAcrossShareClasses({
               beian_hao,
               strategy_l1: l1,
               strategy_l2: l2,
               strategy_l3: l3,
-            })),
-          )
+            })
+            seenFamily.add(key)
+            for (const row of result.family) {
+              seenFamily.add(row.beian_hao.trim().toUpperCase())
+            }
+          }
         }
 
         if (writeBenchmark && bench) {
@@ -166,7 +167,8 @@ export async function POST(req: Request) {
       }
 
       case "remove_strategy": {
-        const ph = ids.map((_, i) => `$${i + 1}`).join(", ")
+        const targetIds = await expandBeianHaosWithShareClassFamily(ids)
+        const ph = targetIds.map((_, i) => `$${i + 1}`).join(", ")
         await query(
           `UPDATE type6_ops_team_full
            SET company_strategy_one   = NULL,
@@ -174,17 +176,17 @@ export async function POST(req: Request) {
                company_strategy_three = NULL,
                updated_at = NOW()
            WHERE register_number IN (${ph})`,
-          ids
+          targetIds
         )
         await syncCompanyStrategyCaches(
-          ids.map((beian_hao) => ({
+          targetIds.map((beian_hao) => ({
             beian_hao,
             strategy_l1: null,
             strategy_l2: null,
             strategy_l3: null,
           })),
         )
-        return NextResponse.json({ ok: true, count: ids.length })
+        return NextResponse.json({ ok: true, count: targetIds.length })
       }
 
       // ── Move / Copy ───────────────────────────────────────────────────────

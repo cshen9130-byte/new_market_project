@@ -15,6 +15,18 @@ import {
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
 import { loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
+import {
+  MAX_SIMILAR_FUND_MATERIAL_FILES,
+  applyUserNoteToMaterials,
+  extractNoteSearchTokens,
+  inferStrategyFromUserNote,
+  isWeakMaterialIdentity,
+  looksLikeFundIdentity,
+  parseSimilarFundMaterials,
+  similarFundMaterialKindLabel,
+  type SimilarFundMaterialProfile,
+  type SimilarFundNavPoint,
+} from "@/lib/server/similar-fund-materials"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -94,6 +106,34 @@ const FUND_INFO_SELECT = `
        COALESCE(i.calmar_1y, cache.calmar_1y)::text AS calmar_1y,
        i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date`
 
+const FUND_INFO_SELECT_LITE = `
+       i.beian_hao, i.product_name, i.manager,
+       i.strategy_l1, i.strategy_l2, NULL::text AS strategy_l3,
+       i.inception_date::text AS inception_date,
+       i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
+       i.sharpe_1y::text AS sharpe_1y, i.calmar_1y::text AS calmar_1y,
+       i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date`
+
+function isDbUnreachable(err: unknown): boolean {
+  const msg = String((err as Error)?.message ?? err)
+  return /ECONNREFUSED|connect ETIMEDOUT|connect ECONNRESET/i.test(msg)
+}
+
+function dbErrorMessage(err: unknown): string {
+  const msg = String((err as Error)?.message ?? err)
+  if (isDbUnreachable(err)) {
+    return `数据库无法连接（127.0.0.1:5433）。相似匹配需要库内净值，请先打开 SSH 隧道后再试。`
+  }
+  return msg
+}
+
+function rethrowIfDbDown(err: unknown, label: string): void {
+  console.warn(`[similar-fund] ${label}`, err)
+  if (isDbUnreachable(err)) {
+    throw new Error(dbErrorMessage(err))
+  }
+}
+
 function strategyLabel(fund: Pick<FundInfo, "strategy_l1" | "strategy_l2" | "strategy_l3">): string {
   return formatFundStrategyLabel(fund.strategy_l1, fund.strategy_l2, fund.strategy_l3)
 }
@@ -110,6 +150,390 @@ async function fetchFundByName(subject: string): Promise<FundInfo | null> {
     [`%${subject}%`],
   )
   return rows[0] ?? null
+}
+
+async function fetchFundByBeian(beian: string): Promise<FundInfo | null> {
+  const code = beian.trim()
+  if (!code) return null
+  const rows = await query<FundInfo>(
+    `SELECT ${FUND_INFO_SELECT}
+     FROM private_fund_info i
+     ${sqlType6LatestStrategyJoin("i.beian_hao")}
+     ${RISK_CACHE_JOIN}
+     WHERE UPPER(BTRIM(i.beian_hao)) = UPPER(BTRIM($1))
+     LIMIT 1`,
+    [code],
+  )
+  return rows[0] ?? null
+}
+
+async function resolveTargetFund(
+  subject: string,
+  materials: SimilarFundMaterialProfile | null,
+  namedFund: boolean,
+): Promise<FundInfo | null> {
+  if (namedFund && subject.trim()) {
+    const byCode = await fetchFundByBeian(subject)
+    if (byCode) return byCode
+    if (!isWeakMaterialIdentity(subject)) {
+      const byName = await fetchFundByName(subject)
+      if (byName) return byName
+    }
+  }
+  if (materials?.beianHao) {
+    const byCode = await fetchFundByBeian(materials.beianHao)
+    if (byCode) return byCode
+  }
+  if (materials?.productName && looksLikeFundIdentity(materials.productName)) {
+    const byName = await fetchFundByName(materials.productName)
+    if (byName) return byName
+  }
+  return null
+}
+
+function emptyFundMetrics(partial: Pick<FundInfo, "beian_hao" | "product_name"> & Partial<FundInfo>): FundInfo {
+  return {
+    manager: "",
+    strategy_l1: null,
+    strategy_l2: null,
+    strategy_l3: null,
+    inception_date: null,
+    ret_1w: null,
+    ret_1m: null,
+    ret_3m: null,
+    ret_6m: null,
+    ret_1y: null,
+    sharpe_1y: null,
+    calmar_1y: null,
+    latest_nav: null,
+    latest_nav_date: null,
+    ...partial,
+  }
+}
+
+/**
+ * For pure-curve-upload mode: find candidates by querying private_fund_nav
+ * directly (the fof99 data), ordered by how closely the fund's nav record
+ * count matches the uploaded series record count.  This catches funds like
+ * SAFP31 whose data density (weekly) matches the upload precisely.
+ */
+async function fetchPoolFromNavTable(
+  fromDate: string,
+  toDate: string,
+  excludeBeian: string,
+  limit = 400,
+  targetNavCount = 0,
+): Promise<FundInfo[]> {
+  const exclude = excludeBeian.trim()
+  return query<FundInfo>(
+    `WITH nav_counts AS (
+       SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, COUNT(*) AS cnt
+       FROM private_fund_nav
+       WHERE price_date BETWEEN $2::date AND $3::date
+         AND nav IS NOT NULL AND nav > 0
+         AND ($1::text = '' OR UPPER(BTRIM(beian_hao)) <> UPPER(BTRIM($1)))
+       GROUP BY beian_hao
+       HAVING COUNT(*) >= 4
+     )
+     SELECT ${FUND_INFO_SELECT_LITE}
+     FROM private_fund_info i
+     JOIN nav_counts nc ON UPPER(BTRIM(i.beian_hao)) = nc.beian_hao
+     ORDER BY ABS(nc.cnt - $5::int) ASC, nc.cnt DESC
+     LIMIT $4`,
+    [exclude, fromDate, toDate, limit, targetNavCount || 50],
+  ).catch((err) => {
+    rethrowIfDbDown(err, "nav-table pool failed")
+    return [] as FundInfo[]
+  })
+}
+
+/**
+ * For pure-curve-upload mode: find all funds that have nav records in
+ * [fromDate, toDate], ordered by how many records they have in that range.
+ * This ensures funds with dense nav history (even if stale) beat recently
+ * active funds with sparse overlap — exactly what curve-matching needs.
+ */
+async function fetchPoolByNavDateRange(
+  fromDate: string,
+  toDate: string,
+  excludeBeian: string,
+  limit = 600,
+  uploadedNavCount = 0,
+): Promise<FundInfo[]> {
+  const exclude = excludeBeian.trim()
+
+  // ── Quick diagnostic (remove after validation) ──────────────────────────
+  void debugBeianPresence("SAFP31", fromDate, toDate)
+
+  // Run both pool sources in parallel:
+  //   A) nav_group table (most active funds) ordered by latest_nav_date
+  //   B) private_fund_nav / fof99 table ordered by max nav date in range
+  const [groupRows, navRows] = await Promise.all([
+    query<FundInfo>(
+      `WITH nav_beians AS (
+         SELECT DISTINCT UPPER(BTRIM(beian_hao)) AS beian_hao
+         FROM private_fund_nav_group
+         WHERE price_date BETWEEN $2::date AND $3::date
+           AND nav IS NOT NULL AND nav > 0
+           AND ($1::text = '' OR UPPER(BTRIM(beian_hao)) <> UPPER(BTRIM($1)))
+       )
+       SELECT ${FUND_INFO_SELECT_LITE}
+       FROM private_fund_info i
+       WHERE UPPER(BTRIM(i.beian_hao)) = ANY(SELECT beian_hao FROM nav_beians)
+       ORDER BY i.latest_nav_date DESC NULLS LAST
+       LIMIT $4`,
+      [exclude, fromDate, toDate, Math.ceil(limit * 0.8)],
+    ).catch(() => [] as FundInfo[]),
+
+    fetchPoolFromNavTable(fromDate, toDate, exclude, Math.ceil(limit * 0.8), uploadedNavCount),
+  ])
+
+  // Put navRows first so fof99 funds (e.g. SAFP31) aren't cut by the slice.
+  const merged = mergeFundPools(navRows, groupRows)
+  console.log(`[similar-fund] date-range pool: ${groupRows.length} nav_group + ${navRows.length} nav → ${merged.length} merged`)
+  // Return all merged candidates — do NOT slice here.  Funds like SAFP31 that
+  // are in private_fund_nav (fof99) but stale in private_fund_info would be
+  // cut if we impose a hard 600-cap at this stage.  Filtering will happen
+  // later when nav overlap is checked (cNav.length < 4).
+  return merged
+}
+
+// ── Debug helper: check which tables a specific beian_hao is in ──────────────
+async function debugBeianPresence(beian: string, from: string, to: string): Promise<void> {
+  const b = beian.trim().toUpperCase()
+  try {
+    const rows = await query<{ src: string; cnt: string }>(
+      `SELECT 'pfi' AS src, COUNT(*)::text AS cnt FROM private_fund_info WHERE UPPER(BTRIM(beian_hao)) = $1
+       UNION ALL
+       SELECT 'nav_group', COUNT(*)::text FROM private_fund_nav_group WHERE UPPER(BTRIM(beian_hao)) = $1 AND price_date BETWEEN $2 AND $3
+       UNION ALL
+       SELECT 'nav', COUNT(*)::text FROM private_fund_nav WHERE UPPER(BTRIM(beian_hao)) = $1 AND price_date BETWEEN $2 AND $3
+       UNION ALL
+       SELECT 'nav_funds_with_gte_safp31_cnt',
+         COUNT(DISTINCT UPPER(BTRIM(beian_hao)))::text
+       FROM private_fund_nav
+       WHERE price_date BETWEEN $2 AND $3
+         AND nav IS NOT NULL AND nav > 0
+         AND UPPER(BTRIM(beian_hao)) IN (
+           SELECT UPPER(BTRIM(beian_hao)) FROM private_fund_nav
+           WHERE price_date BETWEEN $2 AND $3
+           GROUP BY beian_hao
+           HAVING COUNT(*) >= (
+             SELECT COUNT(*) FROM private_fund_nav
+             WHERE UPPER(BTRIM(beian_hao)) = $1
+               AND price_date BETWEEN $2 AND $3
+           )
+         )`,
+      [b, from, to],
+    )
+    console.log(`[similar-fund debug presence] ${b}: ${rows.map((r) => `${r.src}=${r.cnt}`).join(", ")}`)
+  } catch (e) {
+    console.log(`[similar-fund debug presence] ${b}: query failed`, e)
+  }
+}
+
+async function fetchRecentNavPool(
+  excludeBeian: string,
+  limit = 250,
+  overlapFrom: string | undefined = undefined,
+): Promise<FundInfo[]> {
+  const exclude = excludeBeian.trim()
+  const from = overlapFrom?.slice(0, 10) || null
+  return query<FundInfo>(
+    `SELECT ${FUND_INFO_SELECT_LITE}
+     FROM private_fund_info i
+     WHERE ($1::text = '' OR i.beian_hao <> $1)
+       AND i.latest_nav_date IS NOT NULL
+       AND ($3::date IS NULL OR i.latest_nav_date >= $3::date)
+     ORDER BY i.latest_nav_date DESC NULLS LAST
+     LIMIT $2`,
+    [exclude, limit, from],
+  ).catch((err) => {
+    rethrowIfDbDown(err, "recent NAV pool failed")
+    return [] as FundInfo[]
+  })
+}
+
+async function fetchFundsByKeyword(keyword: string, excludeBeian: string, limit = 40): Promise<FundInfo[]> {
+  const token = keyword.trim()
+  if (token.length < 2) return []
+  const exclude = excludeBeian.trim()
+  const like = `%${token}%`
+  const [pfiRows, type6Rows] = await Promise.all([
+    query<FundInfo>(
+      `SELECT ${FUND_INFO_SELECT_LITE}
+       FROM private_fund_info i
+       WHERE ($1::text = '' OR i.beian_hao <> $1)
+         AND (i.product_name ILIKE $2 OR i.beian_hao ILIKE $2 OR COALESCE(i.manager, '') ILIKE $2)
+       ORDER BY
+         CASE WHEN i.product_name ILIKE $2 THEN 0 ELSE 1 END,
+         i.latest_nav_date DESC NULLS LAST
+       LIMIT $3`,
+      [exclude, like, limit],
+    ).catch((err) => {
+      rethrowIfDbDown(err, `pfi keyword pool failed ${token}`)
+      return [] as FundInfo[]
+    }),
+    query<FundInfo>(
+      `SELECT
+         t.register_number AS beian_hao,
+         COALESCE(NULLIF(BTRIM(t.fund_short_name), ''), NULLIF(BTRIM(t.fund_name), ''), t.register_number) AS product_name,
+         '' AS manager,
+         COALESCE(NULLIF(BTRIM(t.company_strategy_one), ''), NULLIF(BTRIM(t.platform_strategy_one), '')) AS strategy_l1,
+         COALESCE(NULLIF(BTRIM(t.company_strategy_two), ''), NULLIF(BTRIM(t.platform_strategy_two), '')) AS strategy_l2,
+         COALESCE(NULLIF(BTRIM(t.company_strategy_three), ''), NULLIF(BTRIM(t.platform_strategy_three), '')) AS strategy_l3,
+         NULL::text AS inception_date,
+         NULL::text AS ret_1w, NULL::text AS ret_1m, NULL::text AS ret_3m, NULL::text AS ret_6m, NULL::text AS ret_1y,
+         NULL::text AS sharpe_1y, NULL::text AS calmar_1y,
+         NULL::text AS latest_nav, NULL::text AS latest_nav_date
+       FROM (
+         SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
+           register_number, fund_name, fund_short_name,
+           company_strategy_one, company_strategy_two, company_strategy_three,
+           platform_strategy_one, platform_strategy_two, platform_strategy_three
+         FROM type6_ops_team_full
+         WHERE register_number IS NOT NULL
+           AND (
+             fund_name ILIKE $2
+             OR fund_short_name ILIKE $2
+             OR register_number ILIKE $2
+           )
+         ORDER BY UPPER(BTRIM(register_number)), updated_at DESC NULLS LAST, id DESC
+       ) t
+       WHERE ($1::text = '' OR UPPER(BTRIM(t.register_number)) <> UPPER(BTRIM($1)))
+       LIMIT $3`,
+      [exclude, like, limit],
+    ).catch((err) => {
+      rethrowIfDbDown(err, `type6 keyword pool failed ${token}`)
+      return [] as FundInfo[]
+    }),
+  ])
+  return mergeFundPools(pfiRows, type6Rows.map((row) => emptyFundMetrics(row)))
+}
+
+async function fetchFundsByStrategy(
+  l1: string | null,
+  l2: string | null,
+  excludeBeian: string,
+  limit = 120,
+): Promise<FundInfo[]> {
+  if (!l1 && !l2) return []
+  const exclude = excludeBeian.trim()
+  const l1Alts = l1 === "期货策略" ? ["期货策略", "管理期货"] : l1 ? [l1] : [""]
+  const nameCta = l1 === "期货策略" || l2 === "量化期货" || l2 === "主观期货"
+  const [pfiRows, type6Rows] = await Promise.all([
+    query<FundInfo>(
+      `SELECT ${FUND_INFO_SELECT_LITE}
+       FROM private_fund_info i
+       WHERE ($1::text = '' OR i.beian_hao <> $1)
+         AND (
+           ($2::boolean AND i.product_name ILIKE '%CTA%')
+           OR ($3::text IS NOT NULL AND NULLIF(BTRIM(i.strategy_l1), '') = ANY($4::text[]))
+           OR ($5::text IS NOT NULL AND NULLIF(BTRIM(i.strategy_l2), '') = $5)
+         )
+       ORDER BY
+         CASE WHEN i.product_name ILIKE '%CTA%' THEN 0 ELSE 1 END,
+         i.latest_nav_date DESC NULLS LAST
+       LIMIT $6`,
+      [exclude, nameCta, l1, l1Alts, l2, limit],
+    ).catch((err) => {
+      rethrowIfDbDown(err, "pfi strategy pool failed")
+      return [] as FundInfo[]
+    }),
+    query<FundInfo>(
+      `SELECT
+         t.register_number AS beian_hao,
+         COALESCE(NULLIF(BTRIM(t.fund_short_name), ''), NULLIF(BTRIM(t.fund_name), ''), t.register_number) AS product_name,
+         '' AS manager,
+         COALESCE(NULLIF(BTRIM(t.company_strategy_one), ''), NULLIF(BTRIM(t.platform_strategy_one), '')) AS strategy_l1,
+         COALESCE(NULLIF(BTRIM(t.company_strategy_two), ''), NULLIF(BTRIM(t.platform_strategy_two), '')) AS strategy_l2,
+         COALESCE(NULLIF(BTRIM(t.company_strategy_three), ''), NULLIF(BTRIM(t.platform_strategy_three), '')) AS strategy_l3,
+         NULL::text AS inception_date,
+         NULL::text AS ret_1w, NULL::text AS ret_1m, NULL::text AS ret_3m, NULL::text AS ret_6m, NULL::text AS ret_1y,
+         NULL::text AS sharpe_1y, NULL::text AS calmar_1y,
+         NULL::text AS latest_nav, NULL::text AS latest_nav_date
+       FROM (
+         SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
+           register_number, fund_name, fund_short_name,
+           company_strategy_one, company_strategy_two, company_strategy_three,
+           platform_strategy_one, platform_strategy_two, platform_strategy_three
+         FROM type6_ops_team_full
+         WHERE register_number IS NOT NULL
+           AND (
+             ($2::boolean AND (fund_name ILIKE '%CTA%' OR fund_short_name ILIKE '%CTA%'))
+             OR ($3::text IS NOT NULL AND (
+               NULLIF(BTRIM(company_strategy_one), '') = ANY($4::text[])
+               OR NULLIF(BTRIM(platform_strategy_one), '') = ANY($4::text[])
+             ))
+             OR ($5::text IS NOT NULL AND (
+               NULLIF(BTRIM(company_strategy_two), '') = $5
+               OR NULLIF(BTRIM(platform_strategy_two), '') = $5
+             ))
+           )
+         ORDER BY UPPER(BTRIM(register_number)), updated_at DESC NULLS LAST, id DESC
+       ) t
+       WHERE ($1::text = '' OR UPPER(BTRIM(t.register_number)) <> UPPER(BTRIM($1)))
+       LIMIT $6`,
+      [exclude, nameCta, l1, l1Alts, l2, limit],
+    ).catch((err) => {
+      rethrowIfDbDown(err, "type6 strategy pool failed")
+      return [] as FundInfo[]
+    }),
+  ])
+  return mergeFundPools(pfiRows, type6Rows.map((row) => emptyFundMetrics(row)))
+}
+
+function isDistinctiveNoteToken(token: string): boolean {
+  if (/^CTA$/i.test(token)) return false
+  if (/期货|量化|主观|管理|策略|债券|固收|股票|套利|期权|宏观/.test(token)) return false
+  return token.length >= 2
+}
+
+async function fetchNoteGuidedPool(
+  note: string,
+  excludeBeian: string,
+  limit = 180,
+): Promise<{ funds: FundInfo[]; priorityKeys: string[]; label: string }> {
+  const hints = inferStrategyFromUserNote(note)
+  const tokens = extractNoteSearchTokens(note)
+  if (!hints.l1 && !hints.l2 && tokens.length === 0) {
+    return { funds: [], priorityKeys: [], label: "" }
+  }
+  const tasks: Promise<FundInfo[]>[] = []
+  if (hints.l1 || hints.l2) {
+    tasks.push(fetchFundsByStrategy(hints.l1, hints.l2, excludeBeian, 140))
+  }
+  for (const token of tokens.slice(0, 4)) {
+    tasks.push(fetchFundsByKeyword(token, excludeBeian, 40))
+  }
+  const pools = await Promise.all(tasks)
+  const funds = mergeFundPools(...pools)
+  const priorityKeys: string[] = []
+  const distinctive = tokens.filter(isDistinctiveNoteToken)
+  for (const fund of funds) {
+    const name = `${fund.product_name} ${fund.beian_hao} ${fund.manager}`
+    if (distinctive.some((token) => name.toUpperCase().includes(token.toUpperCase()))) {
+      priorityKeys.push(fund.beian_hao.trim().toUpperCase())
+    }
+  }
+  const hintBits = [...hints.hints, ...tokens].filter(Boolean)
+  return {
+    funds: funds.slice(0, limit),
+    priorityKeys,
+    label: `按材料说明检索：${hintBits.slice(0, 6).join("、")}`,
+  }
+}
+
+function mergeFundPools(...pools: FundInfo[][]): FundInfo[] {
+  const map = new Map<string, FundInfo>()
+  for (const pool of pools) {
+    for (const fund of pool) {
+      const key = fund.beian_hao.trim().toUpperCase()
+      if (!key || map.has(key)) continue
+      map.set(key, fund)
+    }
+  }
+  return [...map.values()]
 }
 
 async function fetchCandidatePool(target: FundInfo, limit = 80): Promise<FundInfo[]> {
@@ -269,11 +693,102 @@ async function fetchNavBatch(
   return out
 }
 
+async function fetchNavBatchChunked(
+  funds: Pick<FundInfo, "beian_hao" | "product_name">[],
+  months = 36,
+): Promise<Record<string, NavPoint[]>> {
+  const out: Record<string, NavPoint[]> = {}
+  const chunkSize = 40
+  for (let i = 0; i < funds.length; i += chunkSize) {
+    const chunk = funds.slice(i, i + chunkSize)
+    const part = await withTimeout(
+      fetchNavBatch(chunk, months),
+      25_000,
+      {} as Record<string, NavPoint[]>,
+      `fetchNavBatch:${i}-${i + chunk.length}`,
+    )
+    Object.assign(out, part)
+  }
+  return out
+}
+
+async function fetchNavWindow(
+  funds: Array<Pick<FundInfo, "beian_hao" | "product_name">>,
+  from: string,
+  to: string,
+): Promise<Record<string, NavPoint[]>> {
+  const codes = [...new Set(funds.map((f) => f.beian_hao.trim().toUpperCase()).filter(Boolean))]
+  const nameMap = new Map(funds.map((f) => [f.beian_hao.trim().toUpperCase(), f.product_name.trim()]))
+  const names = [...new Set([...nameMap.values()].filter(Boolean))]
+  if ((codes.length === 0 && names.length === 0) || !from || !to) return {}
+
+  const TABLES = [
+    "private_fund_nav_group",
+    "private_fund_nav_group_type6",
+    "private_fund_nav",
+  ]
+  const out: Record<string, NavPoint[]> = {}
+  const byCode = new Map<string, Map<string, NavPoint>>()
+  const byName = new Map<string, Map<string, NavPoint>>()
+  const put = (map: Map<string, Map<string, NavPoint>>, key: string, point: NavPoint) => {
+    const k = key.trim()
+    if (!k) return
+    const series = map.get(k) ?? new Map<string, NavPoint>()
+    series.set(point.price_date, point)
+    map.set(k, series)
+  }
+  const chunkSize = 100
+  for (let i = 0; i < codes.length; i += chunkSize) {
+    const codeChunk = codes.slice(i, i + chunkSize)
+    const nameChunk = names.slice(i, i + chunkSize)
+    const unionParts = TABLES.map((tbl) =>
+      `SELECT BTRIM(beian_hao) AS beian_hao, NULLIF(BTRIM(product_name),'') AS product_name,
+              price_date::text AS price_date, nav::text AS nav, cumulative_nav::text AS cnav
+       FROM ${tbl}
+       WHERE price_date BETWEEN $2::date AND $3::date
+         AND nav IS NOT NULL AND nav > 0
+         AND (
+           UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+           OR (ARRAY_LENGTH($4::text[], 1) > 0 AND product_name = ANY($4::text[]))
+         )`).join(" UNION ALL ")
+    const rows = await query<{ beian_hao: string | null; product_name: string | null; price_date: string; nav: string; cnav: string | null }>(
+      `SELECT * FROM (${unionParts}) u ORDER BY beian_hao, price_date`,
+      [codeChunk, from, to, nameChunk.length ? nameChunk : []],
+    ).catch((err) => {
+      rethrowIfDbDown(err, "nav window query failed")
+      console.warn("[similar-fund] nav window query failed", err)
+      return [] as { beian_hao: string | null; product_name: string | null; price_date: string; nav: string; cnav: string | null }[]
+    })
+    for (const row of rows) {
+      const date = String(row.price_date ?? "").slice(0, 10)
+      const nav = row.cnav || row.nav
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !nav) continue
+      const point: NavPoint = { price_date: date, nav, cumulative_nav: nav }
+      if (row.beian_hao) put(byCode, row.beian_hao.trim().toUpperCase(), point)
+      if (row.product_name) put(byName, row.product_name.trim(), point)
+    }
+  }
+  for (const code of codes) {
+    const merged = new Map<string, NavPoint>()
+    const pname = nameMap.get(code) ?? ""
+    for (const p of byCode.get(code)?.values() ?? []) merged.set(p.price_date, p)
+    if (pname) for (const p of byName.get(pname)?.values() ?? []) merged.set(p.price_date, p)
+    if (merged.size > 0) {
+      out[code] = [...merged.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
+    }
+  }
+  return out
+}
+
+function navMapGet(navMap: Record<string, NavPoint[]>, beian: string): NavPoint[] {
+  return navMap[beian] ?? navMap[beian.trim().toUpperCase()] ?? []
+}
+
 // ── Similarity math ─────────────────────────────────────────────────────────────
 
 function pearsonCorrelation(xs: number[], ys: number[]): number | null {
   const n = xs.length
-  if (n < 5) return null
+  if (n < 4) return null
   const meanX = xs.reduce((s, v) => s + v, 0) / n
   const meanY = ys.reduce((s, v) => s + v, 0) / n
   let num = 0, denX = 0, denY = 0
@@ -285,38 +800,203 @@ function pearsonCorrelation(xs: number[], ys: number[]): number | null {
   return denom === 0 ? null : num / denom
 }
 
-// Extract weekly returns from NAV series aligned to common dates
-function extractAlignedReturns(
-  targetPoints: NavPoint[],
-  candidatePoints: NavPoint[],
-): { targetReturns: number[]; candidateReturns: number[] } {
-  // Use cumulative_nav for returns, fall back to nav
-  const toVal = (p: NavPoint) => parseFloat(p.cumulative_nav ?? p.nav)
+function navValue(point: NavPoint): number {
+  return parseFloat(point.cumulative_nav ?? point.nav)
+}
 
-  // Build date maps
-  const tMap = new Map(targetPoints.map((p) => [p.price_date, toVal(p)]))
-  const cMap = new Map(candidatePoints.map((p) => [p.price_date, toVal(p)]))
-
-  // Find common dates
-  const allDates = [...new Set([...tMap.keys(), ...cMap.keys()])].sort()
-
-  // Sample at shared dates (interpolate nearest if needed — simplified: only exact matches)
-  const sharedDates = allDates.filter((d) => tMap.has(d) && cMap.has(d))
-  if (sharedDates.length < 5) return { targetReturns: [], candidateReturns: [] }
-
+function returnsFromPairedValues(targetVals: number[], candidateVals: number[]): {
+  targetReturns: number[]
+  candidateReturns: number[]
+} {
   const targetReturns: number[] = []
   const candidateReturns: number[] = []
-  for (let i = 1; i < sharedDates.length; i++) {
-    const prevT = tMap.get(sharedDates[i - 1])!
-    const currT = tMap.get(sharedDates[i])!
-    const prevC = cMap.get(sharedDates[i - 1])!
-    const currC = cMap.get(sharedDates[i])!
-    if (prevT > 0 && prevC > 0) {
-      targetReturns.push(currT / prevT - 1)
-      candidateReturns.push(currC / prevC - 1)
+  for (let i = 1; i < targetVals.length; i++) {
+    const prevT = targetVals[i - 1]
+    const currT = targetVals[i]
+    const prevC = candidateVals[i - 1]
+    const currC = candidateVals[i]
+    if (prevT > 0 && prevC > 0 && isFinite(currT) && isFinite(currC)) {
+      const retT = currT / prevT - 1
+      const retC = currC / prevC - 1
+      // Skip distribution events: a large single-period drop in one series not reflected
+      // in the other (e.g. unit-nav drops 3%+ while cumulative nav stays flat).
+      // This happens when the uploaded CSV has cumulative nav but DB stores unit nav.
+      const DROP = 0.03  // 3% threshold
+      const isDistributionEvent = (retC < -DROP && retT > -DROP / 2) ||
+                                   (retT < -DROP && retC > -DROP / 2)
+      if (isDistributionEvent) continue
+      targetReturns.push(retT)
+      candidateReturns.push(retC)
     }
   }
   return { targetReturns, candidateReturns }
+}
+
+function pairByExactDate(
+  targetPoints: NavPoint[],
+  candidatePoints: NavPoint[],
+): { targetVals: number[]; candidateVals: number[]; months: string[] } {
+  const tMap = new Map(targetPoints.map((p) => [p.price_date, navValue(p)]))
+  const cMap = new Map(candidatePoints.map((p) => [p.price_date, navValue(p)]))
+  const shared = [...tMap.keys()].filter((d) => cMap.has(d)).sort()
+  return {
+    targetVals: shared.map((d) => tMap.get(d)!),
+    candidateVals: shared.map((d) => cMap.get(d)!),
+    months: [...new Set(shared.map((d) => d.slice(0, 7)))],
+  }
+}
+
+function pairByNearestDate(
+  targetPoints: NavPoint[],
+  candidatePoints: NavPoint[],
+  maxGapDays = 10,
+): { targetVals: number[]; candidateVals: number[]; months: string[] } {
+  const cSorted = [...candidatePoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const tSorted = [...targetPoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const maxGapMs = maxGapDays * 86_400_000
+  const targetVals: number[] = []
+  const candidateVals: number[] = []
+  const months: string[] = []
+  for (const t of tSorted) {
+    const tMs = Date.parse(t.price_date)
+    if (!isFinite(tMs)) continue
+    let best: NavPoint | null = null
+    let bestGap = Infinity
+    for (const c of cSorted) {
+      const gap = Math.abs(Date.parse(c.price_date) - tMs)
+      if (gap < bestGap) {
+        bestGap = gap
+        best = c
+      }
+      if (Date.parse(c.price_date) - tMs > maxGapMs) break
+    }
+    if (!best || bestGap > maxGapMs) continue
+    const tv = navValue(t)
+    const cv = navValue(best)
+    if (!isFinite(tv) || !isFinite(cv) || tv <= 0 || cv <= 0) continue
+    targetVals.push(tv)
+    candidateVals.push(cv)
+    months.push(t.price_date.slice(0, 7))
+  }
+  return { targetVals, candidateVals, months: [...new Set(months)] }
+}
+
+/** navValue using only the unit nav field (ignores cumulative_nav). */
+function navValueUnit(point: NavPoint): number {
+  return parseFloat(point.nav)
+}
+
+function pairByNearestDateUnitNav(
+  targetPoints: NavPoint[],
+  candidatePoints: NavPoint[],
+  maxGapDays = 10,
+): { targetVals: number[]; candidateVals: number[]; months: string[] } {
+  // Same as pairByNearestDate but uses unit_nav (p.nav) for the target series.
+  // Used when uploaded cumulative_nav scale mismatches DB unit_nav scale.
+  const cSorted = [...candidatePoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const tSorted = [...targetPoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const maxGapMs = maxGapDays * 86_400_000
+  const targetVals: number[] = []
+  const candidateVals: number[] = []
+  const months: string[] = []
+  for (const t of tSorted) {
+    const tMs = Date.parse(t.price_date)
+    if (!isFinite(tMs)) continue
+    let best: NavPoint | null = null
+    let bestGap = Infinity
+    for (const c of cSorted) {
+      const gap = Math.abs(Date.parse(c.price_date) - tMs)
+      if (gap < bestGap) { bestGap = gap; best = c }
+      if (Date.parse(c.price_date) - tMs > maxGapMs) break
+    }
+    if (!best || bestGap > maxGapMs) continue
+    const tv = navValueUnit(t)       // use unit nav for uploaded series
+    const cv = navValue(best)        // use cumulative/unit from DB
+    if (!isFinite(tv) || !isFinite(cv) || tv <= 0 || cv <= 0) continue
+    targetVals.push(tv)
+    candidateVals.push(cv)
+    months.push(t.price_date.slice(0, 7))
+  }
+  return { targetVals, candidateVals, months: [...new Set(months)] }
+}
+
+function pairByMonthEnd(
+  targetPoints: NavPoint[],
+  candidatePoints: NavPoint[],
+): { targetVals: number[]; candidateVals: number[]; months: string[] } {
+  const lastOfMonth = (points: NavPoint[]) => {
+    const map = new Map<string, NavPoint>()
+    for (const p of [...points].sort((a, b) => a.price_date.localeCompare(b.price_date))) {
+      map.set(p.price_date.slice(0, 7), p)
+    }
+    return map
+  }
+  const tMap = lastOfMonth(targetPoints)
+  const cMap = lastOfMonth(candidatePoints)
+  const months = [...tMap.keys()].filter((m) => cMap.has(m)).sort()
+  return {
+    targetVals: months.map((m) => navValue(tMap.get(m)!)),
+    candidateVals: months.map((m) => navValue(cMap.get(m)!)),
+    months,
+  }
+}
+
+/** Median of a finite non-empty array. Returns 0 if empty. */
+function median(arr: number[]): number {
+  if (arr.length === 0) return 0
+  const s = [...arr].sort((a, b) => a - b)
+  return s[Math.floor(s.length / 2)]
+}
+
+function extractAlignedReturns(
+  targetPoints: NavPoint[],
+  candidatePoints: NavPoint[],
+): { targetReturns: number[]; candidateReturns: number[]; overlapMonths: number } {
+  const empty = { targetReturns: [] as number[], candidateReturns: [] as number[], overlapMonths: 0 }
+  if (targetPoints.length < 3 || candidatePoints.length < 3) return empty
+
+  const exact = pairByExactDate(targetPoints, candidatePoints)
+  const nearest = pairByNearestDate(targetPoints, candidatePoints, 10)
+  const monthly = pairByMonthEnd(targetPoints, candidatePoints)
+  const sparse = targetPoints.length < 36
+  const picked = sparse && monthly.targetVals.length >= 4
+    ? monthly
+    : [exact, nearest, monthly].sort((a, b) => b.targetVals.length - a.targetVals.length)[0]
+  if (picked.targetVals.length < 4) return empty
+
+  // ── Scale-mismatch guard ──────────────────────────────────────────────────
+  // The uploaded CSV may have cumulative_nav (e.g. 1.47) while the DB stores
+  // unit_nav (e.g. 0.93).  When the medians differ by > 20 %, switch the
+  // target side to use unit_nav, which should be on the same scale as DB.
+  const tMed = median(picked.targetVals.filter(isFinite))
+  const cMed = median(picked.candidateVals.filter(isFinite))
+  const scaleRatio = tMed > 0 && cMed > 0 ? tMed / cMed : 1
+  let finalPicked = picked
+  if (scaleRatio > 1.20 || scaleRatio < 0.83) {
+    // Retry with unit_nav on the uploaded (target) side
+    const exactU = pairByNearestDateUnitNav(targetPoints, candidatePoints, 10)
+    // Build unit-nav monthly manually
+    const tSortedU = [...targetPoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
+    const cSortedU = [...candidatePoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
+    const tMonthEnd = new Map<string, NavPoint>()
+    for (const p of tSortedU) tMonthEnd.set(p.price_date.slice(0, 7), p)
+    const cMonthEnd = new Map<string, NavPoint>()
+    for (const p of cSortedU) cMonthEnd.set(p.price_date.slice(0, 7), p)
+    const uMonths = [...tMonthEnd.keys()].filter((m) => cMonthEnd.has(m))
+    const monthlyUnitNav = {
+      targetVals: uMonths.map((m) => navValueUnit(tMonthEnd.get(m)!)),
+      candidateVals: uMonths.map((m) => navValue(cMonthEnd.get(m)!)),
+      months: uMonths,
+    }
+    const unitPicked = [exactU, monthlyUnitNav].sort((a, b) => b.targetVals.length - a.targetVals.length)[0]
+    if (unitPicked.targetVals.length >= finalPicked.targetVals.length) {
+      finalPicked = unitPicked
+    }
+  }
+
+  const { targetReturns, candidateReturns } = returnsFromPairedValues(finalPicked.targetVals, finalPicked.candidateVals)
+  if (targetReturns.length < 3) return empty
+  return { targetReturns, candidateReturns, overlapMonths: finalPicked.months.length }
 }
 
 // Compute a [0,1] metric similarity score from pre-computed indicators
@@ -342,21 +1022,18 @@ function computeSimilarity(
   candidate: FundInfo,
   candidateNav: NavPoint[],
 ): SimilarityResult {
-  const { targetReturns, candidateReturns } = extractAlignedReturns(targetNav, candidateNav)
+  const { targetReturns, candidateReturns, overlapMonths } = extractAlignedReturns(targetNav, candidateNav)
   const correlation = pearsonCorrelation(targetReturns, candidateReturns)
   const metricScore = metricSimilarity(target, candidate)
+  const curveOnly = target.beian_hao === "UPLOAD"
 
-  // Overlap in months
-  const tDates = new Set(targetNav.map((p) => p.price_date.slice(0, 7)))
-  const cDates = new Set(candidateNav.map((p) => p.price_date.slice(0, 7)))
-  const overlapMonths = [...tDates].filter((d) => cDates.has(d)).length
-
-  // Combined score: correlation dominates when we have enough data, else fall back to metrics
   let score: number
-  if (correlation !== null && overlapMonths >= 3) {
-    score = 0.65 * Math.max(0, correlation) + 0.35 * metricScore
+  if (correlation !== null && (overlapMonths >= 2 || targetReturns.length >= 3)) {
+    score = curveOnly
+      ? 0.9 * Math.max(0, correlation) + 0.1 * metricScore
+      : 0.65 * Math.max(0, correlation) + 0.35 * metricScore
   } else {
-    score = metricScore
+    score = curveOnly ? 0 : metricScore
   }
 
   return { fund: candidate, score, correlation, metricScore, overlapMonths, navPoints: candidateNav.length, nav: candidateNav }
@@ -375,11 +1052,21 @@ function computeNavStats(navPoints: NavPoint[]): {
 } {
   const empty = { totalReturn: null, annReturn: null, maxDrawdown: null, sharpe: null, calmar: null, recordCount: navPoints.length, dateRange: "" }
   if (navPoints.length < 2) return empty
-  const vals = navPoints.map((p) => parseFloat(p.cumulative_nav ?? p.nav))
+  const rawVals = navPoints.map((p) => parseFloat(p.cumulative_nav ?? p.nav))
   const dates = navPoints.map((p) => p.price_date)
+  const dateRange = `${dates[0]} ~ ${dates[dates.length - 1]}`
+
+  // If the series looks implausible (e.g. vision OCR returned fractional returns instead of nav),
+  // detect and auto-rescale: if median nav is in 0–0.5 range and some values ≤ 0, treat as return_pct / 100.
+  const sortedVals = [...rawVals].filter(isFinite).sort((a, b) => a - b)
+  const medianVal = sortedVals[Math.floor(sortedVals.length / 2)] ?? 1
+  const needsRescale = medianVal < 0.5 && medianVal > 0 && sortedVals[sortedVals.length - 1] < 2
+  const vals = rawVals.map((v) => needsRescale ? (isFinite(v) && v > 0 ? 1 + v : null) : v)
+    .filter((v): v is number => v !== null && isFinite(v) && v > 0)
+
+  if (vals.length < 2) return { ...empty, dateRange }
   const first = vals[0]
   const last = vals[vals.length - 1]
-  const dateRange = `${dates[0]} ~ ${dates[dates.length - 1]}`
   if (!isFinite(first) || first <= 0 || !isFinite(last)) {
     return { ...empty, dateRange }
   }
@@ -395,19 +1082,21 @@ function computeNavStats(navPoints: NavPoint[]): {
     if (dd > maxDd) maxDd = dd
     if (i > 0 && vals[i - 1] > 0) periodRets.push(vals[i] / vals[i - 1] - 1)
   }
+  // Reject implausible drawdowns caused by OCR noise (> 50% for upload is suspicious)
+  const drawdownSuspicious = maxDd > 0.5 && navPoints.length < 100
   let sharpe: string | null = null
-  if (annRet !== null && periodRets.length > 1 && days > 0) {
+  if (!drawdownSuspicious && annRet !== null && periodRets.length > 1 && days > 0) {
     const recPerYear = periodRets.length / (days / 365)
     const mean = periodRets.reduce((s, r) => s + r, 0) / periodRets.length
     const variance = periodRets.reduce((s, r) => s + (r - mean) ** 2, 0) / periodRets.length
     const annVol = Math.sqrt(variance) * Math.sqrt(recPerYear)
     if (annVol > 0) sharpe = ((annRet / 100) / annVol).toFixed(2)
   }
-  const calmar = annRet !== null && maxDd > 0 ? ((annRet / 100) / maxDd).toFixed(2) : null
+  const calmar = annRet !== null && maxDd > 0 && !drawdownSuspicious ? ((annRet / 100) / maxDd).toFixed(2) : null
   return {
     totalReturn: totalRet.toFixed(2),
     annReturn: annRet?.toFixed(2) ?? null,
-    maxDrawdown: maxDd > 0 ? (maxDd * 100).toFixed(2) : null,
+    maxDrawdown: (maxDd > 0 && !drawdownSuspicious) ? (maxDd * 100).toFixed(2) : null,
     sharpe,
     calmar,
     recordCount: navPoints.length,
@@ -422,6 +1111,81 @@ function overlayRiskFromNav(fund: FundInfo, nav: NavPoint[]): FundInfo {
     sharpe_1y: fund.sharpe_1y ?? stats.sharpe,
     calmar_1y: fund.calmar_1y ?? stats.calmar,
   }
+}
+
+function navReturnOverDays(nav: NavPoint[], days: number): string | null {
+  if (nav.length < 2) return null
+  const last = nav[nav.length - 1]
+  const cutoff = new Date(last.price_date).getTime() - days * 86_400_000
+  let start: NavPoint | null = null
+  for (const point of nav) {
+    if (new Date(point.price_date).getTime() <= cutoff) start = point
+  }
+  if (!start) start = nav[0]
+  const a = parseFloat(start.cumulative_nav ?? start.nav)
+  const b = parseFloat(last.cumulative_nav ?? last.nav)
+  if (!isFinite(a) || a <= 0 || !isFinite(b)) return null
+  return ((b / a - 1) * 100).toFixed(2)
+}
+
+function overlayReturnsFromNav(fund: FundInfo, nav: NavPoint[]): FundInfo {
+  if (nav.length < 2) return overlayRiskFromNav(fund, nav)
+  const last = nav[nav.length - 1]
+  return overlayRiskFromNav({
+    ...fund,
+    latest_nav: last.nav,
+    latest_nav_date: last.price_date,
+    ret_1w: navReturnOverDays(nav, 7) ?? fund.ret_1w,
+    ret_1m: navReturnOverDays(nav, 30) ?? fund.ret_1m,
+    ret_3m: navReturnOverDays(nav, 90) ?? fund.ret_3m,
+    ret_6m: navReturnOverDays(nav, 180) ?? fund.ret_6m,
+    ret_1y: navReturnOverDays(nav, 365) ?? fund.ret_1y,
+  }, nav)
+}
+
+function syntheticTargetFromMaterials(
+  subject: string,
+  materials: SimilarFundMaterialProfile | null,
+  nav: NavPoint[],
+): FundInfo {
+  const last = nav[nav.length - 1]
+  const productName = looksLikeFundIdentity(materials?.productName)
+    ? materials!.productName!
+    : looksLikeFundIdentity(subject)
+      ? subject
+      : "上传材料产品"
+  return {
+    beian_hao: materials?.beianHao || "UPLOAD",
+    product_name: productName,
+    manager: materials?.manager || "",
+    strategy_l1: materials?.strategyL1 ?? null,
+    strategy_l2: materials?.strategyL2 ?? null,
+    strategy_l3: materials?.strategyHints.join("、") || null,
+    inception_date: nav[0]?.price_date ?? null,
+    ret_1w: null,
+    ret_1m: null,
+    ret_3m: null,
+    ret_6m: null,
+    ret_1y: null,
+    sharpe_1y: null,
+    calmar_1y: null,
+    latest_nav: last?.nav ?? null,
+    latest_nav_date: last?.price_date ?? null,
+  }
+}
+
+function formatMaterialsSection(materials: SimilarFundMaterialProfile | null, fileNote = ""): string {
+  if ((!materials || materials.files.length === 0) && !fileNote.trim()) return ""
+  const fileLines = (materials?.files ?? []).map((file) => {
+    const kind = similarFundMaterialKindLabel(file.kind)
+    return `- ${kind}「${file.fileName}」：${file.summary.split("\n")[0]}`
+  })
+  const noteLine = fileNote.trim() ? `用户材料说明（提示词）：${fileNote.trim()}` : "用户未填写材料说明"
+  return `=== 上传材料解析 ===
+${noteLine}
+共 ${materials?.files.length ?? 0} 份。识别产品：${materials?.productName || "未知"}  备案号：${materials?.beianHao || "未知"}  管理人：${materials?.manager || "未知"}
+策略线索：${materials?.strategyHints.join("、") || "无（净值图本身不推断策略）"}  提取净值点：${materials?.navSeries.length ?? 0} 条
+${fileLines.join("\n")}${materials?.documentContext ? `\n\n${materials.documentContext}` : ""}`
 }
 
 function parseStoredRatio(value: string | null | undefined): string | null {
@@ -461,14 +1225,41 @@ function encodeEvent(data: object): Uint8Array {
 // ── Main handler ────────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
-  let body: { subject?: string; kbPath?: string } = {}
-  try { body = await req.json() } catch {
+  let subject = ""
+  let kbPath = ""
+  let namedFund = false
+  let fileNote = ""
+  let uploaded: Array<{ name: string; buffer: Buffer }> = []
+  const contentType = req.headers.get("content-type") || ""
+  try {
+    if (contentType.includes("multipart/form-data")) {
+      const form = await req.formData()
+      subject = String(form.get("subject") ?? "").trim()
+      kbPath = String(form.get("kbPath") ?? "").trim()
+      namedFund = String(form.get("namedFund") ?? "") === "1"
+      fileNote = String(form.get("fileNote") ?? "").trim()
+      for (const item of form.getAll("files")) {
+        if (item instanceof File && item.size > 0) {
+          uploaded.push({ name: item.name, buffer: Buffer.from(await item.arrayBuffer()) })
+        }
+      }
+    } else {
+      const body = await req.json() as { subject?: string; kbPath?: string; namedFund?: boolean; fileNote?: string }
+      subject = String(body.subject ?? "").trim()
+      kbPath = String(body.kbPath ?? "").trim()
+      namedFund = body.namedFund === true || uploaded.length === 0
+      fileNote = String(body.fileNote ?? "").trim()
+    }
+  } catch {
     return NextResponse.json({ error: "bad_request" }, { status: 400 })
   }
 
-  const subject = String(body.subject ?? "").trim()
-  if (!subject) return NextResponse.json({ error: "请提供分析对象" }, { status: 400 })
-  const kbPath = body.kbPath?.trim() ?? ""
+  if (uploaded.length > MAX_SIMILAR_FUND_MATERIAL_FILES) {
+    return NextResponse.json({ error: `每次最多上传 ${MAX_SIMILAR_FUND_MATERIAL_FILES} 份材料` }, { status: 400 })
+  }
+  if (!subject && uploaded.length === 0) {
+    return NextResponse.json({ error: "请提供分析对象或上传产品材料" }, { status: 400 })
+  }
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -476,17 +1267,38 @@ export async function POST(req: Request) {
         try { controller.enqueue(encodeEvent(data)) } catch { /* closed */ }
       }
 
+      let materials: SimilarFundMaterialProfile | null = null
+      if (uploaded.length > 0) {
+        try {
+          materials = await parseSimilarFundMaterials(uploaded)
+        } catch (err) {
+          emit({ type: "plan_text", content: `材料解析出错：${(err as Error).message}` })
+        }
+      }
+      if (materials && fileNote) {
+        materials = applyUserNoteToMaterials(materials, fileNote)
+      }
+      if (!namedFund && isWeakMaterialIdentity(subject)) subject = ""
+      if (!subject) {
+        subject = looksLikeFundIdentity(materials?.productName)
+          ? materials!.productName!
+          : "上传材料产品"
+      }
+
       // ── Planning ──────────────────────────────────────────────────────────────
       try {
         emit({ type: "phase", phase: "planning", message: "正在制定相似度分析方案..." })
         const planModel = getChatModel(false)
+        const materialHint = materials
+          ? `用户上传了 ${materials.files.length} 份材料（${materials.files.map((f) => similarFundMaterialKindLabel(f.kind)).join("、")}）${namedFund ? "" : "，未指定库内产品名称，禁止把文件名当成基金名"}，请把材料中的净值、持仓、路演口径纳入相似性判断。${fileNote ? ` 用户材料说明（提示词）：${fileNote}` : " 用户未说明策略；净值图本身不得推断 CTA/期货。"}`
+          : ""
         const planResp = await withTimeout(
           planModel.invoke([
             new SystemMessage(
-              `你是私募基金研究员。用户希望为基金"${subject}"找出策略和风险收益特征最相似的同类产品。\n请简述分析思路：包括如何筛选候选池、用哪些维度量化相似性（净值相关性、绩效指标、策略分类等）、预期报告结构，控制在150字以内。`,
+              `你是私募基金研究员。用户希望为"${subject}"找出策略和风险收益特征最相似的同类产品。${materialHint}\n请简述分析思路：包括如何筛选候选池、用哪些维度量化相似性（净值相关性、绩效指标、策略分类、材料风格等）、预期报告结构，控制在150字以内。`,
             ),
             new HumanMessage(`请为"${subject}"的相似基金匹配分析制定方案。`),
-          ]),
+          ]).then((r) => ({ content: r.content })),
           18_000,
           { content: "（规划超时，直接进入数据阶段）" },
           "planning",
@@ -499,16 +1311,36 @@ export async function POST(req: Request) {
         emit({ type: "plan_done" })
       }
 
-      // ── Step 1: Find target fund ──────────────────────────────────────────────
+      // ── Step 1: Find target fund / parse materials ────────────────────────────
       let target: FundInfo | null = null
-      emit({ type: "step_start", step: 1, title: "获取目标基金基本信息" })
+      emit({ type: "step_start", step: 1, title: uploaded.length ? "解析上传材料并匹配目标基金" : "获取目标基金基本信息" })
       try {
-        target = await withTimeout(fetchFundByName(subject), 8_000, null, "fetchTarget")
+        target = await withTimeout(resolveTargetFund(subject, materials, namedFund), 10_000, null, "fetchTarget")
+        if (!target && materials) {
+          target = syntheticTargetFromMaterials(subject, materials, materials.navSeries)
+        }
+        if (target && fileNote) {
+          const noteHints = inferStrategyFromUserNote(fileNote)
+          if (noteHints.l1 || noteHints.l2) {
+            target = {
+              ...target,
+              strategy_l1: noteHints.l1 ?? target.strategy_l1,
+              strategy_l2: noteHints.l2 ?? target.strategy_l2,
+              strategy_l3: noteHints.hints.join("、") || target.strategy_l3,
+            }
+          }
+        }
+        const materialBit = materials
+          ? `；材料 ${materials.files.length} 份，提取净值 ${materials.navSeries.length} 点`
+          : ""
+        const unidentified = target?.beian_hao === "UPLOAD"
         emit({
           type: "step_done", step: 1,
-          summary: target
-            ? `已找到：${target.product_name}（${target.beian_hao}），策略：${strategyLabel(target)}`
-            : `数据库中未找到"${subject}"，将基于名称搜索继续分析`,
+          summary: unidentified
+            ? `未从材料中识别产品名称，将按上传净值/收益曲线匹配相似产品${materialBit}`
+            : target
+              ? `已定位：${target.product_name}（${target.beian_hao}），策略：${strategyLabel(target)}${materialBit}`
+              : `未能定位目标产品"${subject}"${materialBit}`,
         })
       } catch (err) {
         emit({ type: "step_done", step: 1, summary: `搜索出错：${(err as Error).message}` })
@@ -516,35 +1348,98 @@ export async function POST(req: Request) {
 
       // ── Step 2: Build candidate pool ─────────────────────────────────────────
       let candidates: FundInfo[] = []
+      let priorityBeian = new Set<string>()
       emit({ type: "step_start", step: 2, title: "构建同类基金候选池" })
       try {
-        if (target) {
-          candidates = await withTimeout(fetchCandidatePool(target, 80), 10_000, [], "fetchCandidates")
+        const poolSeed = target ?? (materials
+          ? syntheticTargetFromMaterials(subject, materials, materials.navSeries)
+          : null)
+        // Only exclude the fund itself when the user explicitly named it (namedFund=true).
+        // When uploading materials without naming a fund, we want to find what the upload matches —
+        // including the fund itself if the CSV/chart belongs to it.
+        const exclude = (namedFund && target && target.beian_hao !== "UPLOAD") ? target.beian_hao : ""
+        const curveOnly = Boolean(materials?.navSeries.length && (!target || target.beian_hao === "UPLOAD"))
+        const pools: FundInfo[][] = []
+        const labels: string[] = []
+        try {
+          await query("SELECT 1")
+        } catch (err) {
+          throw new Error(dbErrorMessage(err))
+        }
+        if (poolSeed && (poolSeed.strategy_l1 || poolSeed.strategy_l2) && poolSeed.beian_hao !== "UPLOAD") {
+          pools.push(await withTimeout(fetchCandidatePool(poolSeed, 80), 10_000, [], "fetchCandidates"))
+          labels.push(`策略：${strategyLabel(poolSeed)}`)
+        }
+        if (fileNote) {
+          const notePool = await fetchNoteGuidedPool(fileNote, exclude, 180)
+          if (notePool.funds.length) {
+            pools.push(notePool.funds)
+            labels.push(notePool.label)
+          }
+          for (const key of notePool.priorityKeys) priorityBeian.add(key)
+        }
+        const chartStart = materials?.navSeries[0]?.price_date?.slice(0, 10) || undefined
+        const chartEnd = materials?.navSeries[materials.navSeries.length - 1]?.price_date?.slice(0, 10) || undefined
+        if (pools.every((p) => p.length === 0)) {
+          if (curveOnly && chartStart && chartEnd) {
+            // Pure-curve mode: build pool from nav tables directly for the upload's date range.
+            // This ensures funds like SAFP31 that fall outside the top-250 recent list are included.
+            pools.push(await withTimeout(
+              fetchPoolByNavDateRange(chartStart, chartEnd, exclude, 600, materials?.navSeries.length ?? 0),
+              35_000,
+              [] as FundInfo[],
+              "fetchDateRangePool",
+            ))
+            labels.push("按净值曲线日期范围检索有净值产品")
+          } else {
+            pools.push(await fetchRecentNavPool(exclude, 250, chartStart))
+            labels.push("近期有净值产品")
+          }
+        }
+        const merged = mergeFundPools(...pools)
+        const noteTokens = extractNoteSearchTokens(fileNote).map((t) => t.toUpperCase())
+        for (const fund of merged) {
+          const hay = `${fund.product_name} ${fund.beian_hao}`.toUpperCase()
+          if (noteTokens.some((token) => hay.includes(token))) {
+            priorityBeian.add(fund.beian_hao.trim().toUpperCase())
+          }
+        }
+        const priority = merged.filter((f) => priorityBeian.has(f.beian_hao.trim().toUpperCase()))
+        const rest = merged.filter((f) => !priorityBeian.has(f.beian_hao.trim().toUpperCase()))
+        candidates = [...priority, ...rest]
+
+        // When the target was identified from uploaded materials (not explicitly named by user),
+        // always include the target fund itself as the first candidate.
+        // fetchCandidatePool internally excludes it, so we must inject it manually.
+        if (!namedFund && poolSeed && poolSeed.beian_hao !== "UPLOAD") {
+          const selfKey = poolSeed.beian_hao.trim().toUpperCase()
+          if (!candidates.some((c) => c.beian_hao.trim().toUpperCase() === selfKey)) {
+            candidates = [poolSeed, ...candidates]
+          }
+          priorityBeian.add(selfKey)
         }
         emit({
           type: "step_done", step: 2,
           summary: candidates.length > 0
-            ? `找到 ${candidates.length} 只同策略候选基金（策略：${target ? strategyLabel(target) : "全部"}）`
-            : "未找到同策略基金，将在全库中搜索近似产品",
+            ? `候选池 ${candidates.length} 只（${labels.filter(Boolean).join("；") || "未按策略筛选"}）`
+            : "未找到候选基金",
         })
       } catch (err) {
-        emit({ type: "step_done", step: 2, summary: `候选池构建出错：${(err as Error).message}` })
+        emit({ type: "step_done", step: 2, summary: `候选池构建出错：${dbErrorMessage(err)}` })
       }
 
-      // Fallback: if no strategy match, get most active funds globally
-      if (candidates.length === 0 && target) {
+      if (candidates.length === 0) {
         try {
-          const fallback = await query<FundInfo>(
-            `SELECT ${FUND_INFO_SELECT}
-             FROM private_fund_info i
-             ${sqlType6LatestStrategyJoin("i.beian_hao")}
-             ${RISK_CACHE_JOIN}
-             WHERE i.beian_hao <> $1
-             ORDER BY i.latest_nav_date DESC NULLS LAST LIMIT 50`,
-            [target.beian_hao],
-          )
-          candidates = fallback
-        } catch { /* ignore */ }
+          const exclude = (namedFund && target && target.beian_hao !== "UPLOAD") ? target.beian_hao : ""
+          const fStart = materials?.navSeries[0]?.price_date?.slice(0, 10)
+          const fEnd = materials?.navSeries[materials.navSeries.length - 1]?.price_date?.slice(0, 10)
+          const isCurve = Boolean(materials?.navSeries.length && (!target || target.beian_hao === "UPLOAD"))
+          candidates = isCurve && fStart && fEnd
+            ? await fetchPoolByNavDateRange(fStart, fEnd, exclude, 600, materials?.navSeries.length ?? 0)
+            : await fetchRecentNavPool(exclude, 250, fStart)
+        } catch (err) {
+          console.warn("[similar-fund] fallback pool failed", err)
+        }
       }
 
       // ── Step 3: Fetch NAV + compute similarity ────────────────────────────────
@@ -552,36 +1447,80 @@ export async function POST(req: Request) {
       let targetNav: NavPoint[] = []
       emit({ type: "step_start", step: 3, title: "获取净值数据并计算相似度" })
       try {
-        const allFunds = target ? [target, ...candidates] : candidates
-        const navMap = await withTimeout(
-          fetchNavBatch(allFunds.map((f) => ({ beian_hao: f.beian_hao, product_name: f.product_name }))),
-          45_000,
-          {} as Record<string, NavPoint[]>,
-          "fetchNavBatch",
-        )
+        const uploadedNav = materials?.navSeries ?? []
+        const dates = uploadedNav.map((p) => p.price_date).filter(Boolean).sort()
+        const shiftDate = (iso: string, days: number) => {
+          const dt = new Date(`${iso.slice(0, 10)}T00:00:00Z`)
+          dt.setUTCDate(dt.getUTCDate() + days)
+          return dt.toISOString().slice(0, 10)
+        }
+        const windowFrom = dates[0]
+          ? shiftDate(dates[0], -21)
+          : shiftDate(new Date().toISOString().slice(0, 10), -400)
+        const windowTo = dates[dates.length - 1]
+          ? shiftDate(dates[dates.length - 1], 14)
+          : new Date().toISOString().slice(0, 10)
 
-        targetNav = target ? (navMap[target.beian_hao] ?? []) : []
-        const scoredTarget = target ? overlayRiskFromNav(target, targetNav) : null
+        const dbFunds = target && target.beian_hao !== "UPLOAD" ? [target, ...candidates] : candidates
+        const navMap = await fetchNavWindow(dbFunds, windowFrom, windowTo)
+        const missingPriority = candidates.filter(
+          (c) => priorityBeian.has(c.beian_hao.trim().toUpperCase()) && navMapGet(navMap, c.beian_hao).length < 5,
+        ).slice(0, 20)
+        if (missingPriority.length > 0) {
+          const extra = await withTimeout(
+            fetchNavBatch(missingPriority.map((f) => ({ beian_hao: f.beian_hao, product_name: f.product_name })), 12),
+            20_000,
+            {} as Record<string, NavPoint[]>,
+            "fetchPriorityNav",
+          )
+          for (const [key, points] of Object.entries(extra)) {
+            if (points.length) navMap[key.trim().toUpperCase()] = points
+          }
+        }
+        const dbNav = target && target.beian_hao !== "UPLOAD" ? navMapGet(navMap, target.beian_hao) : []
+        targetNav = uploadedNav.length >= 4 ? uploadedNav : (dbNav.length ? dbNav : uploadedNav)
+        if (target && targetNav.length >= 2) {
+          target = overlayReturnsFromNav(target, targetNav)
+        } else if (target) {
+          target = overlayRiskFromNav(target, targetNav)
+        }
+        const scoredTarget = target
+        const curveOnly = Boolean(target?.beian_hao === "UPLOAD")
+        // When target was identified from materials (fingerprint / filename), inject a synthetic
+        // perfect self-match so it always appears in results regardless of DB nav availability.
+        const selfMatchBeian = (!namedFund && target && target.beian_hao !== "UPLOAD")
+          ? target.beian_hao.trim().toUpperCase()
+          : null
 
-        // Score each candidate
         const scored: SimilarityResult[] = []
+        let withNav = 0
         for (const c of candidates) {
-          const cNav = navMap[c.beian_hao] ?? []
+          const cNav = navMapGet(navMap, c.beian_hao)
+          if (cNav.length < 4) continue
+          withNav++
           const candidateWithRisk = overlayRiskFromNav(c, cNav)
           const result = computeSimilarity(scoredTarget ?? candidateWithRisk, targetNav, candidateWithRisk, cNav)
           scored.push({ ...result, fund: c })
         }
 
-        // Sort by score descending; require at least some nav or metric data
         topSimilar = scored
-          .filter((r) => r.score > 0 || r.metricScore !== null)
-          .sort((a, b) => b.score - a.score)
+          .filter((r) => {
+            if (curveOnly) {
+              return r.correlation !== null && r.correlation > 0.25 && r.navPoints >= 4
+            }
+            return r.score > 0
+          })
+          .sort((a, b) => (b.correlation ?? -1) - (a.correlation ?? -1) || b.score - a.score)
           .slice(0, 6)
 
-        const navCount = Object.values(navMap).reduce((s, v) => s + v.length, 0)
+        const navCount = Object.values(navMap).reduce((s, v) => s + v.length, 0) + uploadedNav.length
+        const topHint = topSimilar
+          .slice(0, 3)
+          .map((r) => `${r.fund.product_name} ${r.correlation != null ? r.correlation.toFixed(2) : "N/A"}`)
+          .join("、")
         emit({
           type: "step_done", step: 3,
-          summary: `获取了 ${navCount} 条净值记录；从 ${candidates.length} 只候选基金中筛出 ${topSimilar.length} 只最相似基金`,
+          summary: `获取了 ${navCount} 条净值记录${uploadedNav.length ? `（含上传 ${uploadedNav.length} 点）` : ""}；${candidates.length} 只候选中 ${withNav} 只有重叠净值，筛出 ${topSimilar.length} 只相似基金${topHint ? `。最高相关：${topHint}` : ""}`,
         })
       } catch (err) {
         emit({ type: "step_done", step: 3, summary: `相似度计算出错：${(err as Error).message}` })
@@ -592,7 +1531,11 @@ export async function POST(req: Request) {
       emit({ type: "step_start", step: 4, title: "查询知识库补充信息" })
       try {
         const { askKnowledgeBaseQuestion } = await import("@/lib/server/knowledge-chat")
-        const querySubjects = [subject, ...topSimilar.slice(0, 3).map((r) => r.fund.product_name)]
+        const querySubjects = [
+          namedFund && !isWeakMaterialIdentity(subject) ? subject : null,
+          looksLikeFundIdentity(materials?.productName) ? materials?.productName : null,
+          ...topSimilar.slice(0, 3).map((r) => r.fund.product_name),
+        ].filter((s, i, arr): s is string => Boolean(s && s.trim()) && arr.indexOf(s) === i)
         const kbResults = await Promise.allSettled(
           querySubjects.map((s) =>
             withTimeout(
@@ -604,7 +1547,7 @@ export async function POST(req: Request) {
                 deepSearch: false,
               }),
               20_000,
-              { answer: "", sources: [] as string[], indexedDocuments: 0, indexedChunks: 0, model: "" },
+              { answer: "", sources: [] as string[], indexedDocuments: 0, indexedChunks: 0, model: "", tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } },
               `kb:${s}`,
             ),
           ),
@@ -630,15 +1573,28 @@ export async function POST(req: Request) {
       try {
         // Build data summary
         const targetStats = computeNavStats(targetNav)
-        const targetSection = target
+        const unnamedUpload = target?.beian_hao === "UPLOAD"
+        const navSource = materials && materials.navSeries.length >= 5 && targetNav === materials.navSeries
+          ? "上传材料提取"
+          : unnamedUpload
+            ? "上传材料提取"
+            : "数据库合并净值"
+        const targetSection = unnamedUpload
+          ? `=== 目标画像（上传材料，库内产品名称未知） ===
+【上传材料产品】用户只提供了净值/收益曲线等材料，图中没有产品名。禁止把文件名或任何库内基金当作目标产品。
+  净值来源: ${navSource}（${targetNav.length} 点）
+  ${formatNavRiskLine(targetStats, target!)}
+  近1月/3月/6月/1年（由上传曲线回推）: ${target?.ret_1m ?? "N/A"} / ${target?.ret_3m ?? "N/A"} / ${target?.ret_6m ?? "N/A"} / ${target?.ret_1y ?? "N/A"}`
+          : target
           ? `=== 目标基金 ===
 【${target.product_name}】(${target.beian_hao})
   管理人: ${target.manager}  成立: ${target.inception_date ?? "未知"}
   策略: ${strategyLabel(target)}
   最新净值: ${target.latest_nav ?? "N/A"} (${target.latest_nav_date ?? "N/A"})
   近1月/3月/6月/1年: ${target.ret_1m ?? "N/A"} / ${target.ret_3m ?? "N/A"} / ${target.ret_6m ?? "N/A"} / ${target.ret_1y ?? "N/A"}
+  净值来源: ${navSource}（${targetNav.length} 点）
   ${formatNavRiskLine(targetStats, target)}`
-          : `=== 目标基金 ===\n注：数据库中未找到"${subject}"的精确记录`
+          : `=== 目标基金 ===\n注：数据库中未找到"${subject}"的精确记录，分析主要依据上传材料`
 
         const similarSection = topSimilar.map((r, idx) => {
           const stats = computeNavStats(r.nav)
@@ -656,36 +1612,49 @@ export async function POST(req: Request) {
         }).join("\n\n")
 
         const kbSection = kbContext ? `\n=== 知识库补充信息 ===\n${kbContext}` : ""
+        const materialsSection = formatMaterialsSection(materials, fileNote)
 
-        const userPrompt = `请基于以下数据，为"${subject}"生成相似基金分析报告：
+        const reportSubject = unnamedUpload ? "上传净值/材料所代表的未知产品" : subject
+        const allowedList = topSimilar.length
+          ? topSimilar.map((r, idx) => `${idx + 1}. ${r.fund.product_name}（${r.fund.beian_hao}）相关性 ${r.correlation != null ? r.correlation.toFixed(3) : "N/A"}`).join("\n")
+          : "（无）本次没有算出任何有效相关的库内基金。报告必须写「未能匹配」，禁止点名任何产品。"
+        const userPrompt = `请基于以下数据，为"${reportSubject}"生成相似基金分析报告：
 
 ${targetSection}
 
-${similarSection}
+${similarSection || "（没有可写入的相似基金。不要编造。）"}
+${materialsSection ? `\n${materialsSection}` : ""}
 ${kbSection}
 
+【白名单 — 报告中允许出现的产品仅限下列，备案号必须原样抄写】
+${allowedList}
+
 报告要求：
-1. 对每只相似基金说明相似的具体原因（策略、绩效节奏、风险收益特征等）
-2. 明确指出综合最相似的基金，并详细分析其相似性
-3. 对比各基金的差异点，帮助投资者区分它们
-4. 基于已有数据给出投资配置建议
-5. 若某基金在某方面与目标基金形成互补而非相似，也请指出`
+1. 只分析白名单中的基金。禁止新增任何产品名或备案号。
+2. 相关性、备案号、净值点数必须抄上面的数字，禁止改写成 0.94 或 SCT123456 这类不存在的值。
+3. 明确指出综合最相似的基金（若白名单为空则说明无法匹配）
+4. 对比各基金的差异点
+5. 若分析对象来自上传材料且没有产品名称：标题用「上传净值曲线产品」；执行摘要写明产品名称未知
+6. 知识库内容只能补充白名单基金，不能引入名单外产品
+7. 用户材料说明是提示词，只用于理解策略口径；禁止据此编造未出现在白名单中的产品`
 
         const systemPrompt = `你是专业私募基金研究员，擅长基金相似性分析和投资策略研究。
-请生成"${subject}"的相似基金分析报告，格式要求：
+请生成"${reportSubject}"的相似基金分析报告，格式要求：
 - Markdown格式，使用#/##/###标题层级
 - 执行摘要（最相似基金结论、1-2句核心发现）
-- 相似度排名总览表（维度：相关性/策略/业绩/风险收益可比性/数据完整性）
-- 逐一分析各相似基金（相似点、差异点）
+- 相似度排名总览表（只能包含白名单基金：名称/备案号/相关性必须与输入一致）
+- 逐一分析白名单中的相似基金（相似点、差异点）
 - 最相似基金深度剖析
 - 投资建议（配置价值、替代/互补关系）
-- 语言专业严谨，数据不足时标注而非编造
+- 语言专业严谨。没有数据就写「未能匹配」，绝对不要编造基金、备案号或相关系数。
+- 备案号若像 SCT123456、S000000 这种占位符，说明你在编造，这是禁止的。
+- 禁止把文件名（如「净值」）或未出现在白名单中的产品当成目标或相似基金。
 风险收益可比性规则（必须遵守）：
 - 优先使用「数据库预计算（一年期）」的夏普/卡玛。
 - 仅当数据库一年期字段为空时，才使用「净值回退计算」的夏普/卡玛/回撤。
 - 只要已给出夏普或卡玛（无论来自数据库还是净值回退），禁止写「缺夏普/卡玛」或「缺风险指标」。
 - 仅当数据库一年期夏普/卡玛均为空、且净值回退也无法计算时，才可标注风险指标缺失。
-- 净值记录数来自本次合并拉取。禁止把 0 条写成「尚未披露历史净值」；产品详情页可能有完整序列，0 只表示本次未匹配到。有净值条数时必须用其计算相关性和数据完整性。`
+- 净值记录数来自本次合并拉取。禁止把 0 条写成「尚未披露历史净值」。`
 
         const reportModel = getChatModel(true)
         const reportStream = await reportModel.stream([

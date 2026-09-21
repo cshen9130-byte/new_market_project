@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { mergeStrategyLevel3 } from "@/lib/ma/strategy-level3"
 import { relevelMisplacedTeamStrategy } from "@/lib/ma/team-strategy-tree"
-import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
-import { addFundToTrackingPool } from "@/lib/server/tracking-pool-membership"
+import { writeCompanyStrategyAcrossShareClasses } from "@/lib/server/company-strategy-share-class"
+import { listFundFamilyProducts } from "@/lib/server/share-class-product"
 import { loadMergedTeamStrategyTree } from "@/lib/server/team-strategy-tree"
 
 export const runtime = "nodejs"
@@ -147,43 +148,46 @@ export async function POST(req: Request) {
         }
       })
 
-      let updated = 0
-      const synced: Array<typeof releveledUpdates[number] & { product_name?: string | null }> = []
-      for (const item of releveledUpdates) {
-        let result = await query<{ register_number: string }>(
-          `UPDATE type6_ops_team_full
-           SET company_strategy_one   = $2,
-               company_strategy_two   = $3,
-               company_strategy_three = $4,
-               updated_at = NOW()
-           WHERE register_number = $1
-           RETURNING register_number`,
-          [item.beian_hao, item.strategy_l1, item.strategy_l2, item.strategy_l3],
-        )
-        if (!result.length) {
-          // Align with single-fund PATCH: create team-pool row when missing.
-          try {
-            await addFundToTrackingPool("bfl_ops", item.beian_hao, item.beian_hao)
-          } catch {
-            // permission / schema issues — leave as not updated
-          }
-          result = await query<{ register_number: string }>(
-            `UPDATE type6_ops_team_full
-             SET company_strategy_one   = $2,
-                 company_strategy_two   = $3,
-                 company_strategy_three = $4,
-                 updated_at = NOW()
-             WHERE register_number = $1
-             RETURNING register_number`,
-            [item.beian_hao, item.strategy_l1, item.strategy_l2, item.strategy_l3],
-          )
+      const familyCache = new Map<string, Array<{ beian_hao: string; product_name: string }>>()
+      async function familyOf(beianHao: string) {
+        const key = beianHao.trim().toUpperCase()
+        const cached = familyCache.get(key)
+        if (cached) return cached
+        const family = await listFundFamilyProducts(beianHao)
+        const members = family.length ? family : [{ beian_hao: beianHao, product_name: beianHao }]
+        for (const member of members) {
+          familyCache.set(member.beian_hao.trim().toUpperCase(), members)
         }
-        if (result.length) {
-          updated += result.length
-          synced.push(item)
-        }
+        if (!familyCache.has(key)) familyCache.set(key, members)
+        return members
       }
-      await syncCompanyStrategyCaches(synced)
+
+      const groups = new Map<string, {
+        beian_hao: string
+        strategy_l1: string | null
+        strategy_l2: string | null
+        strategy_l3: string | null
+      }>()
+      for (const item of releveledUpdates) {
+        const family = await familyOf(item.beian_hao)
+        const groupKey = family.map((row) => row.beian_hao.trim().toUpperCase()).sort().join("|")
+        const existing = groups.get(groupKey)
+        if (!existing) {
+          groups.set(groupKey, { ...item })
+          continue
+        }
+        if (item.strategy_l1) {
+          existing.strategy_l1 = item.strategy_l1
+          existing.strategy_l2 = item.strategy_l2
+        }
+        existing.strategy_l3 = mergeStrategyLevel3(existing.strategy_l3, item.strategy_l3) || null
+      }
+
+      let updated = 0
+      for (const item of groups.values()) {
+        const result = await writeCompanyStrategyAcrossShareClasses(item)
+        updated += result.updated.length
+      }
       return NextResponse.json({ ok: true, updated })
     } catch (err) {
       console.error("[batch-company-strategies] sync error:", err)

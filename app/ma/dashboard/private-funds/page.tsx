@@ -2085,6 +2085,7 @@ interface TrackFundRow {
   inception_date: string | null
   first_added_at: string | null
   latest_change_date: string | null
+  latest_change_label: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -2136,6 +2137,39 @@ function formatStrategyTagLabel(
 ): string {
   const l3Label = parseStrategyLevel3(l3 ?? "").join("、")
   return [l1, l2, l3Label].map((v) => (v || "").trim()).filter(Boolean).join(" · ")
+}
+
+const SHARE_CLASS_STRATEGY_HINT =
+  "同产品 A/B/C 类份额仅管理费、业绩报酬等不同，保存后将同步同一策略标签。不同三级策略会合并为多选。"
+
+function shareClassFamilyCount(payload: { share_class_family?: unknown } | null | undefined): number {
+  return Array.isArray(payload?.share_class_family) ? payload.share_class_family.length : 0
+}
+
+function LatestChangeDateCell({
+  date,
+  label,
+  emptyFallback,
+}: {
+  date?: string | null
+  label?: string | null
+  emptyFallback?: string | null
+}) {
+  const shown = (date || emptyFallback)?.slice(0, 10) || null
+  if (!shown) return <span className="text-muted-foreground">—</span>
+  const tip = (label ?? "").trim() || "净值、要素表、策略等最近一次更新"
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="cursor-help border-b border-dotted border-zinc-400/80">
+          {shown}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="max-w-[320px] text-left leading-5">
+        {tip}
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 function TrackPctCell({ value }: { value: string | null }) {
@@ -2364,6 +2398,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [editStrategyL2, setEditStrategyL2] = useState("")
   const [editStrategyL3, setEditStrategyL3] = useState<string[]>([])
   const [editStrategySaving, setEditStrategySaving] = useState(false)
+  const [editStrategyFamilyCount, setEditStrategyFamilyCount] = useState(0)
   // Note dialog
   const [showNoteDialog, setShowNoteDialog] = useState(false)
   const [noteBeianHao, setNoteBeianHao] = useState<string | null>(null)
@@ -2877,10 +2912,12 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     setEditStrategyL1("")
     setEditStrategyL2("")
     setEditStrategyL3([])
+    setEditStrategyFamilyCount(0)
     setShowEditStrategyDialog(true)
     try {
       const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
+      setEditStrategyFamilyCount(shareClassFamilyCount(d))
       const hasTeam = Boolean(d?.strategy_l1 || d?.strategy_l2 || d?.strategy_l3)
       const l1 = hasTeam ? (d.strategy_l1 || "") : (d?.platform_l1 || "")
       const l2 = hasTeam ? (d.strategy_l2 || "") : (d?.platform_l2 || "")
@@ -3746,7 +3783,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
-                      <td className={`${cell} tabular-nums`}>{row.latest_change_date?.slice(0, 10) ?? "—"}</td>
+                      <td className={`${cell} tabular-nums`}>
+                        <LatestChangeDateCell date={row.latest_change_date} label={row.latest_change_label} />
+                      </td>
                       <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao}</td>
                       <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
                       <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
@@ -3859,7 +3898,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
-                      <td className={`${cell} tabular-nums`}>{row.latest_change_date?.slice(0, 10) ?? "—"}</td>
+                      <td className={`${cell} tabular-nums`}>
+                        <LatestChangeDateCell date={row.latest_change_date} label={row.latest_change_label} />
+                      </td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -4360,7 +4401,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
-                      <td className={`${cell} tabular-nums`}>{row.latest_change_date?.slice(0, 10) ?? "—"}</td>
+                      <td className={`${cell} tabular-nums`}>
+                        <LatestChangeDateCell date={row.latest_change_date} label={row.latest_change_label} />
+                      </td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -4707,6 +4750,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 {/* Warning */}
                 <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
                   团队策略仅内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+                  {editStrategyFamilyCount > 1 ? ` ${SHARE_CLASS_STRATEGY_HINT}` : ""}
                 </div>
                 {/* 一级策略 */}
                 <div className="flex items-center gap-3">
@@ -9436,6 +9480,7 @@ function OpsEditElementsDialog({
   const [teamL2, setTeamL2] = useState("")
   const [teamL3s, setTeamL3s] = useState<string[]>([])
   const [teamBenchmark, setTeamBenchmark] = useState("")
+  const [opsStrategyFamilyCount, setOpsStrategyFamilyCount] = useState(0)
 
   const [openDay, setOpenDay] = useState("")
   const [feePurchase, setFeePurchase] = useState("")
@@ -9467,6 +9512,7 @@ function OpsEditElementsDialog({
     setOperationDate("")
     setFilingDate("")
     setTeamBenchmark("")
+    setOpsStrategyFamilyCount(0)
     setLoading(true)
     const productQuery = product_name.trim()
       ? `&product_name=${encodeURIComponent(product_name.trim())}`
@@ -9497,7 +9543,7 @@ function OpsEditElementsDialog({
         const resolvedPlatformL3 = d.platform_l3 || companyStrategy?.platform_l3 || ""
         setPlatformL1(resolvedPlatformL1)
         setPlatformL2(resolvedPlatformL2)
-        setPlatformL3s(resolvedPlatformL3 ? resolvedPlatformL3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
+        setPlatformL3s(parseStrategyLevel3(String(resolvedPlatformL3 || "")))
         setBenchmark(d.benchmark ?? "")
         const apiTeamL1 = companyStrategy?.strategy_l1 ?? d.company_l1 ?? ""
         const apiTeamL2 = companyStrategy?.strategy_l2 ?? d.company_l2 ?? ""
@@ -9508,7 +9554,8 @@ function OpsEditElementsDialog({
         const companyL3 = hasTeam ? apiTeamL3 : resolvedPlatformL3
         setTeamL1(companyL1)
         setTeamL2(companyL2)
-        setTeamL3s(companyL3 ? String(companyL3).split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
+        setTeamL3s(parseStrategyLevel3(String(companyL3 || "")))
+        setOpsStrategyFamilyCount(shareClassFamilyCount(companyStrategy))
         setTeamBenchmark(d.team_benchmark ?? "")
         setOpenDay(d.open_day ?? "")
         setFeePurchase(d.fee_purchase ?? "")
@@ -9985,7 +10032,10 @@ function OpsEditElementsDialog({
             </div>
           ) : (
             <div className="space-y-4">
-              <OpsElementsNotice>团队策略的新增、编辑在【运维-数据维护-团队策略】中。</OpsElementsNotice>
+              <OpsElementsNotice>
+                团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+                {opsStrategyFamilyCount > 1 ? ` ${SHARE_CLASS_STRATEGY_HINT}` : ""}
+              </OpsElementsNotice>
               {renderStrategySelectors(teamTree, teamL1, setTeamL1, teamL2, setTeamL2, teamL3s, setTeamL3s)}
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>团队基准：</OpsElementsFieldLabel>
@@ -17636,6 +17686,7 @@ function InvestmentManagedProductsView() {
   const [invStrategyL2, setInvStrategyL2] = useState("")
   const [invStrategyL3, setInvStrategyL3] = useState<string[]>([])
   const [invStrategySaving, setInvStrategySaving] = useState(false)
+  const [invStrategyFamilyCount, setInvStrategyFamilyCount] = useState(0)
   const [showInvNoteDialog, setShowInvNoteDialog] = useState(false)
   const [invNoteBeianHao, setInvNoteBeianHao] = useState<string | null>(null)
   const [invNoteName, setInvNoteName] = useState("")
@@ -17770,10 +17821,12 @@ function InvestmentManagedProductsView() {
     setInvStrategyL1("")
     setInvStrategyL2("")
     setInvStrategyL3([])
+    setInvStrategyFamilyCount(0)
     setShowInvStrategyDialog(true)
     try {
       const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
+      setInvStrategyFamilyCount(shareClassFamilyCount(d))
       const hasTeam = Boolean(d?.strategy_l1 || d?.strategy_l2 || d?.strategy_l3)
       const l1 = hasTeam ? (d.strategy_l1 || "") : (d?.platform_l1 || "")
       const l2 = hasTeam ? (d.strategy_l2 || "") : (d?.platform_l2 || "")
@@ -18529,6 +18582,11 @@ function InvestmentManagedProductsView() {
                   <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
                   <span className="font-semibold text-sm">{invStrategyName}</span>
                 </div>
+                {invStrategyFamilyCount > 1 && (
+                  <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                    {SHARE_CLASS_STRATEGY_HINT}
+                  </div>
+                )}
                 <div className="flex items-center gap-3">
                   <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">一级策略：</span>
                   <div className="relative flex-1">
@@ -18826,6 +18884,7 @@ interface FofOverviewRow {
   calmar_1y?: string | null
   first_entry_date: string | null
   latest_change_date?: string | null
+  latest_change_label?: string | null
 }
 
 type FofDetailSortKey =
@@ -18935,6 +18994,7 @@ function InvestmentFofOverviewView() {
   const [fofStrategyL2, setFofStrategyL2] = useState("")
   const [fofStrategyL3, setFofStrategyL3] = useState<string[]>([])
   const [fofStrategySaving, setFofStrategySaving] = useState(false)
+  const [fofStrategyFamilyCount, setFofStrategyFamilyCount] = useState(0)
   const [showFofNoteDialog, setShowFofNoteDialog] = useState(false)
   const [fofNoteBeianHao, setFofNoteBeianHao] = useState<string | null>(null)
   const [fofNoteName, setFofNoteName] = useState("")
@@ -19005,10 +19065,12 @@ function InvestmentFofOverviewView() {
     setFofStrategyL1("")
     setFofStrategyL2("")
     setFofStrategyL3([])
+    setFofStrategyFamilyCount(0)
     setShowFofStrategyDialog(true)
     try {
       const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`)
       const d = await res.json()
+      setFofStrategyFamilyCount(shareClassFamilyCount(d))
       const hasTeam = Boolean(d?.strategy_l1 || d?.strategy_l2 || d?.strategy_l3)
       const l1 = hasTeam ? (d.strategy_l1 || "") : (d?.platform_l1 || "")
       const l2 = hasTeam ? (d.strategy_l2 || "") : (d?.platform_l2 || "")
@@ -19940,7 +20002,11 @@ function InvestmentFofOverviewView() {
                       </td>
                       <td className={`${scrollCell} tabular-nums`}>{row.first_entry_date ?? "—"}</td>
                       <td className={`${scrollCell} tabular-nums`}>
-                        {(row.latest_change_date || row.first_entry_date)?.slice(0, 10) ?? "—"}
+                        <LatestChangeDateCell
+                          date={row.latest_change_date}
+                          label={row.latest_change_label}
+                          emptyFallback={row.first_entry_date}
+                        />
                       </td>
                       {fofFieldConfigSelected.map((label) => renderInvFofFieldCell(label, row, scrollCell))}
                       <td className={`${scrollCell} text-right tabular-nums`}>
@@ -20425,6 +20491,11 @@ function InvestmentFofOverviewView() {
                   <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
                   <span className="font-semibold text-sm">{fofStrategyName}</span>
                 </div>
+                {fofStrategyFamilyCount > 1 && (
+                  <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                    {SHARE_CLASS_STRATEGY_HINT}
+                  </div>
+                )}
                 <div className="flex items-center gap-3">
                   <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">一级策略：</span>
                   <div className="relative flex-1">

@@ -783,3 +783,22 @@ export function resetPaperBook(variantId?: AllWeatherVariantId | null): void {
   const file = bookFile(parseAllWeatherVariantId(variantId))
   if (fs.existsSync(file)) fs.unlinkSync(file)
 }
+
+/**
+ * Refresh every 全天候 variant's paper book if its `asOf` is behind today.
+ * Called by the 09:35 daily cron so the book stays current even when the
+ * auto-email is disabled or SMTP fails.
+ */
+export async function refreshAllWeatherBooksIfStale(): Promise<void> {
+  const today = todayStamp()
+  for (const variantId of ALL_WEATHER_VARIANT_IDS) {
+    const existing = readPaperBook(variantId)
+    if (existing && existing.asOf >= today) continue // already up-to-date
+    try {
+      await refreshPaperBook({ variantId })
+      console.log(`[all-weather-book] refreshed ${variantId} → ${today}`)
+    } catch (e) {
+      console.error(`[all-weather-book] failed to refresh ${variantId}:`, e)
+    }
+  }
+}

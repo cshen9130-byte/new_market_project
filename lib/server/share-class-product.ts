@@ -209,7 +209,20 @@ export async function listFundFamilyProducts(beianHao: string): Promise<Array<{
   const code = String(beianHao ?? "").trim()
   if (!code) return []
   const current = await loadMainProduct(code)
-  const name = current?.product_name?.trim()
+  let name = current?.product_name?.trim()
+  if (!name) {
+    const family = beianFamilyKey(code)
+    if (family) {
+      for (const candidate of Array.from(new Set([`S${family}`, family]))) {
+        if (candidate.toUpperCase() === code.toUpperCase()) continue
+        const parent = await loadMainProduct(candidate)
+        if (parent?.product_name?.trim()) {
+          name = parent.product_name.trim()
+          break
+        }
+      }
+    }
+  }
   const seen = new Set<string>()
   const out: Array<{ beian_hao: string; product_name: string }> = []
 
@@ -239,20 +252,50 @@ export async function listFundFamilyProducts(beianHao: string): Promise<Array<{
   }
 
   if (!seen.has(code.toUpperCase())) {
+    seen.add(code.toUpperCase())
     out.unshift({ beian_hao: code, product_name: name || code })
   }
 
   try {
     const family = beianFamilyKey(code)
     if (family) {
-      const fofRows = await query<{ beian_hao: string; product_name: string }>(
-        `SELECT DISTINCT beian_hao, COALESCE(NULLIF(BTRIM(product_name), ''), beian_hao) AS product_name
-         FROM ops_fof_overview_list_cache
-         WHERE ${sqlBeianFamilyKey("beian_hao")} = $1
-           AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL`,
-        [family],
-      )
-      for (const row of fofRows) {
+      const extraQueries: Array<Promise<Array<{ beian_hao: string; product_name: string }>>> = [
+        query<{ beian_hao: string; product_name: string }>(
+          `SELECT DISTINCT beian_hao, COALESCE(NULLIF(BTRIM(product_name), ''), beian_hao) AS product_name
+           FROM ops_fof_overview_list_cache
+           WHERE ${sqlBeianFamilyKey("beian_hao")} = $1
+             AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL`,
+          [family],
+        ).catch(() => []),
+        query<{ beian_hao: string; product_name: string }>(
+          `SELECT DISTINCT register_number AS beian_hao,
+                  COALESCE(NULLIF(BTRIM(fund_name), ''), register_number) AS product_name
+           FROM type6_ops_team_full
+           WHERE ${sqlBeianFamilyKey("register_number")} = $1
+             AND NULLIF(BTRIM(register_number), '') IS NOT NULL`,
+          [family],
+        ).catch(() => []),
+        query<{ beian_hao: string; product_name: string }>(
+          `SELECT DISTINCT beian_hao, COALESCE(NULLIF(BTRIM(product_name), ''), beian_hao) AS product_name
+           FROM ops_tracking_funds_list_cache
+           WHERE ${sqlBeianFamilyKey("beian_hao")} = $1
+             AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL`,
+          [family],
+        ).catch(() => []),
+        query<{ beian_hao: string; product_name: string }>(
+          `SELECT beian_hao, product_name
+           FROM (
+             SELECT beian_hao, product_name FROM private_fund_info_bfl
+             WHERE ${sqlBeianFamilyKey("beian_hao")} = $1
+             UNION
+             SELECT beian_hao, product_name FROM private_fund_info
+             WHERE ${sqlBeianFamilyKey("beian_hao")} = $1
+           ) t`,
+          [family],
+        ).catch(() => []),
+      ]
+      const extraRows = (await Promise.all(extraQueries)).flat()
+      for (const row of extraRows) {
         const beian = row.beian_hao.trim()
         if (!beian || seen.has(beian.toUpperCase())) continue
         seen.add(beian.toUpperCase())
@@ -260,7 +303,7 @@ export async function listFundFamilyProducts(beianHao: string): Promise<Array<{
       }
     }
   } catch {
-    // FOF cache may be unavailable
+    // Family-key tables may be unavailable
   }
 
   return out

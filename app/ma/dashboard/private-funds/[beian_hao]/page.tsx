@@ -667,6 +667,7 @@ export default function PrivateFundDetailPage() {
   const [platformL2, setPlatformL2] = useState<string>("")
   const [platformL3s, setPlatformL3s] = useState<string[]>([])
   const [savingStrategy, setSavingStrategy] = useState(false)
+  const [strategyFamilyCount, setStrategyFamilyCount] = useState(0)
   const [strategySaveError, setStrategySaveError] = useState<string | null>(null)
 
   function splitStrategyLevels(raw: string | null | undefined): string[] {
@@ -684,6 +685,7 @@ export default function PrivateFundDetailPage() {
     setPlatformL3s(splitStrategyLevels(data.info.strategy_l3))
     setStrategyTab("team")
     setStrategySaveError(null)
+    setStrategyFamilyCount(0)
     setShowStrategyModal(true)
     Promise.all([
       fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all").then((r) => r.json()),
@@ -694,6 +696,7 @@ export default function PrivateFundDetailPage() {
         if (Array.isArray(tree)) setStrategyTree(tree)
         if (Array.isArray(pTree)) setPlatformTree(pTree)
         if (!strategy || strategy.error) return
+        setStrategyFamilyCount(Array.isArray(strategy.share_class_family) ? strategy.share_class_family.length : 0)
         const hasApiTeam = Boolean(strategy.strategy_l1 || strategy.strategy_l2 || strategy.strategy_l3)
         const teamL1 = hasApiTeam ? (strategy.strategy_l1 ?? "") : (data.info.strategy_l1 ?? "")
         const teamL2 = hasApiTeam ? (strategy.strategy_l2 ?? "") : (data.info.strategy_l2 ?? "")
@@ -3216,7 +3219,9 @@ export default function PrivateFundDetailPage() {
                 <div className="rounded px-3 py-2.5 text-xs" style={{ backgroundColor: "#fffbeb", color: "#92400e", border: "1px solid #fde68a" }}>
                   {isPlatform
                     ? "当前策略已确认，无法修改。如有疑问，请联系客服。"
-                    : "团队策略的新增、编辑在【运维-数据维护-团队策略】中。"}
+                    : strategyFamilyCount > 1
+                      ? "团队策略的新增、编辑在【运维-数据维护-团队策略】中。同产品 A/B/C 类份额仅管理费、业绩报酬等不同，保存后将同步同一策略标签。不同三级策略会合并为多选。"
+                      : "团队策略的新增、编辑在【运维-数据维护-团队策略】中。"}
                 </div>
 
                 <div className="flex items-center gap-3">

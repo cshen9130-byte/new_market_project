@@ -1,11 +1,16 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
-import { RefreshCw } from "lucide-react"
+import { Columns2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
+import { buildCompareInsights, type CompareInsights } from "@/lib/ma/quant-strategy-compare"
+import type { FactorFamily, HeatCell, RegimeFactors } from "@/lib/ma/quant-regime-factors"
+import type { StrategyInference } from "@/lib/ma/quant-strategy-infer"
+import { CHART_HELP, helpForFactor, QuantChartHelp, type ChartHelpSpec } from "@/components/ma/quant-strategy-help"
+import { InferPanel } from "@/components/ma/quant-strategy-infer-panel"
 
 const UP = "#ef4444"
 const DOWN = "#10b981"
@@ -21,13 +26,22 @@ function isoMonthOffset(m: number) {
   return d.toISOString().slice(0, 10)
 }
 
+const ALL_FROM = "2025-01-01"
+
 const RANGES = [
   { label: "近一月", from: () => isoMonthOffset(-1), to: () => isoToday() },
   { label: "近三月", from: () => isoMonthOffset(-3), to: () => isoToday() },
   { label: "近六月", from: () => isoMonthOffset(-6), to: () => isoToday() },
   { label: "近一年", from: () => isoMonthOffset(-12), to: () => isoToday() },
-  { label: "全部", from: () => "2025-01-01", to: () => isoToday() },
-]
+  { label: "全部", from: () => ALL_FROM, to: () => isoToday() },
+] as const
+
+type RangeLabel = (typeof RANGES)[number]["label"]
+
+function boundsFor(label: RangeLabel): { from: string; to: string } {
+  const r = RANGES.find((x) => x.label === label) ?? RANGES[RANGES.length - 1]
+  return { from: r.from(), to: r.to() }
+}
 
 function fmtWan(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—"
@@ -46,6 +60,36 @@ function pnlColor(n: number): string {
   if (n > 0) return UP
   if (n < 0) return DOWN
   return "inherit"
+}
+
+const PALETTE = ["#3b82f6", "#ef4444", "#8b5cf6", "#f59e0b", "#06b6d4", "#ec4899", "#10b981"]
+
+function accLabel(d: ApiData): string {
+  const id = d.accountId || d.account || ""
+  const digits = String(id).replace(/\D/g, "")
+  return digits ? `rx${digits}` : "—"
+}
+
+function nightLotsShare(d: ApiData): number | null {
+  const day = d.session?.day.lots ?? 0
+  const night = d.session?.night.lots ?? 0
+  if (day + night <= 0) return null
+  return (night / (day + night)) * 100
+}
+
+function portraitDetail(d: ApiData, title: string): string {
+  return d.portrait?.items.find((x) => x.title === title)?.detail ?? "—"
+}
+
+function bestSet(values: (number | null | undefined)[], mode: "max" | "min"): Set<number> {
+  const finite = values
+    .map((v, i) => ({ i, v }))
+    .filter((x): x is { i: number; v: number } => x.v != null && Number.isFinite(x.v))
+  if (finite.length < 2) return new Set()
+  const nums = finite.map((x) => x.v)
+  if (new Set(nums).size === 1) return new Set()
+  const target = mode === "max" ? Math.max(...nums) : Math.min(...nums)
+  return new Set(finite.filter((x) => x.v === target).map((x) => x.i))
 }
 
 type Tone = "good" | "bad" | "neutral"
@@ -75,10 +119,13 @@ interface ApiData {
     lockShareAvg?: number
     nCloses: number
     corrNhci: number | null
+    upCapture?: number | null
+    downCapture?: number | null
   }
   portrait: { strategyLabel: string; summary: string; items: PortraitItem[] }
   equity: { date: string; pnl: number; cumPnl: number; equity: number; margin: number; riskPct: number; ddPct: number }[]
   regime: { key: string; label: string; pnl: number; days: number; winRate: number }[]
+  regimeFactors?: RegimeFactors
   sectors: { sector: string; pnl: number; lots: number; closePnl?: number; mtmPnl?: number }[]
   products: {
     code: string; name: string; sector: string; pnl: number; lots: number
@@ -105,6 +152,7 @@ interface ApiData {
     longWinRate: number; shortWinRate: number
     longClosePnl?: number; shortClosePnl?: number; longMtm?: number; shortMtm?: number
   }
+  inference?: StrategyInference
 }
 
 const TONE: Record<Tone, string> = {
@@ -113,38 +161,270 @@ const TONE: Record<Tone, string> = {
   neutral: "border-border bg-muted/30",
 }
 
+const PeriodCtx = createContext("")
+
+function PeriodBadge({ className = "" }: { className?: string }) {
+  const period = useContext(PeriodCtx)
+  if (!period) return null
+  return (
+    <span className={`rounded-md border border-border bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground tabular-nums shrink-0 ${className}`}>
+      {period}
+    </span>
+  )
+}
+
 function axisPnl(v: number) {
   const abs = Math.abs(v)
   if (abs >= 10000) return `${(v / 10000).toFixed(1)}万`
   return String(Math.round(v))
 }
 
+function familyBarOption(fam: FactorFamily) {
+  const rows = fam.buckets.filter((b) => b.days > 0)
+  if (!rows.length) return {}
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { name: string; value: number; dataIndex: number }[]) => {
+        const i = ps[0]?.dataIndex ?? 0
+        const r = rows[i]
+        if (!r) return ""
+        const t = r.tStat == null ? "—" : r.tStat.toFixed(2)
+        return `${r.label}<br/>日均 ${fmtWan(r.avgPnl)}<br/>合计 ${fmtWan(r.pnl)}<br/>天数 ${r.days} · 日胜率 ${fmtPct(r.winRate)}<br/>t 统计 ${t}`
+      },
+    },
+    grid: { left: 56, right: 12, top: 8, bottom: 36 },
+    xAxis: { type: "category" as const, data: rows.map((r) => r.label), axisLabel: { fontSize: 10, rotate: rows.length > 4 ? 28 : 0 } },
+    yAxis: { type: "value" as const, name: "日均", axisLabel: { fontSize: 10, formatter: axisPnl }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
+    series: [{
+      type: "bar" as const,
+      data: rows.map((r) => ({ value: r.avgPnl, itemStyle: { color: r.avgPnl >= 0 ? UP : DOWN, borderRadius: [2, 2, 0, 0] } })),
+      barMaxWidth: 28,
+    }],
+  }
+}
+
+function scatterFitOption(
+  points: { x: number; y: number; label: string }[],
+  buckets: { meanX: number; meanY: number; label: string; n: number }[],
+  opts: {
+    xName: string
+    yName: string
+    xFmt: (v: number) => string
+    yFmt: (v: number) => string
+    scatterName: string
+  },
+) {
+  if (!points.length) return {}
+  const line = [...buckets].sort((a, b) => a.meanX - b.meanX)
+  return {
+    tooltip: {
+      formatter: (p: { seriesType?: string; data?: { value: number[]; label?: string; n?: number } }) => {
+        const raw = p.data
+        if (!raw?.value) return ""
+        const [x, y] = raw.value
+        if (p.seriesType === "line") {
+          return `${raw.label ?? "分档"}<br/>${opts.xName} ${opts.xFmt(x)}<br/>均值 ${opts.yFmt(y)}<br/>n=${raw.n ?? "—"}`
+        }
+        return `${raw.label ?? ""}<br/>${opts.xName} ${opts.xFmt(x)}<br/>${opts.yName} ${opts.yFmt(y)}`
+      },
+    },
+    grid: { left: 52, right: 16, top: 28, bottom: 40 },
+    legend: { top: 0, textStyle: { fontSize: 11 } },
+    xAxis: {
+      type: "value" as const,
+      name: opts.xName,
+      nameLocation: "middle" as const,
+      nameGap: 28,
+      axisLabel: { fontSize: 10, formatter: opts.xFmt },
+      splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+    },
+    yAxis: {
+      type: "value" as const,
+      name: opts.yName,
+      axisLabel: { fontSize: 10, formatter: opts.yFmt },
+      splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+    },
+    series: [
+      {
+        name: opts.scatterName,
+        type: "scatter" as const,
+        symbolSize: 7,
+        itemStyle: { color: BLUE, opacity: 0.45 },
+        data: points.map((pt) => ({ value: [pt.x, pt.y], label: pt.label })),
+      },
+      {
+        name: "分档均值",
+        type: "line" as const,
+        showSymbol: true,
+        symbolSize: 9,
+        lineStyle: { width: 2, color: UP },
+        itemStyle: { color: UP },
+        data: line.map((b) => ({ value: [b.meanX, b.meanY], label: b.label, n: b.n })),
+      },
+    ],
+  }
+}
+
+function heatmapChartOption(cells: HeatCell[]) {
+  const xLabels = [...new Set(cells.map((c) => c.carryLabel))]
+  const yLabels = [...new Set(cells.map((c) => c.trendLabel))]
+  const data = cells.map((c) => [xLabels.indexOf(c.carryLabel), yLabels.indexOf(c.trendLabel), c.avgPnl, c])
+  const absMax = Math.max(1, ...cells.map((c) => Math.abs(c.avgPnl)))
+  return {
+    tooltip: {
+      formatter: (p: { data?: { raw?: HeatCell } }) => {
+        const c = p.data?.raw
+        if (!c) return ""
+        const t = c.tStat == null ? "—" : c.tStat.toFixed(2)
+        return `${c.carryLabel} × ${c.trendLabel}<br/>日均 ${fmtWan(c.avgPnl)}<br/>合计 ${fmtWan(c.pnl)}<br/>天数 ${c.days} · 日胜率 ${fmtPct(c.winRate)}<br/>t 统计 ${t}`
+      },
+    },
+    grid: { left: 88, right: 28, top: 8, bottom: 36 },
+    xAxis: { type: "category" as const, data: xLabels, axisLabel: { fontSize: 10 } },
+    yAxis: { type: "category" as const, data: yLabels, axisLabel: { fontSize: 10 } },
+    visualMap: {
+      min: -absMax,
+      max: absMax,
+      calculable: false,
+      orient: "vertical" as const,
+      right: 0,
+      top: "middle",
+      itemHeight: 80,
+      text: ["赚", "亏"],
+      inRange: { color: ["#10b981", "#f4f4f5", "#ef4444"] },
+      textStyle: { fontSize: 10 },
+    },
+    series: [{
+      type: "heatmap" as const,
+      data: data.map(([x, y, v, c]) => ({
+        value: [x, y, v],
+        raw: c,
+      })),
+      label: {
+        show: true,
+        fontSize: 10,
+        formatter: (p: { data: { raw: HeatCell } }) => {
+          const c = p.data.raw
+          if (!c || c.days < 1) return ""
+          return `${fmtWan(c.avgPnl)}\n${c.days}日`
+        },
+      },
+    }],
+  }
+}
+
 export default function QuantStrategyCharts() {
   const [accountId, setAccountId] = useState("319")
-  const [range, setRange] = useState("近六月")
-  const [from, setFrom] = useState(() => isoMonthOffset(-6))
-  const [to, setTo] = useState(() => isoToday())
+  const [range, setRange] = useState<RangeLabel>("全部")
+  const [{ from, to }, setBounds] = useState(() => boundsFor("全部"))
   const [data, setData] = useState<ApiData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [compareMode, setCompareMode] = useState(false)
+  const [compareRows, setCompareRows] = useState<ApiData[]>([])
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [compareError, setCompareError] = useState<string | null>(null)
+  const [compareBounds, setCompareBounds] = useState<{ from: string; to: string } | null>(null)
+  const loadSeq = useRef(0)
+  const compareSeq = useRef(0)
+  const shownRef = useRef<ApiData | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (nextAccount: string, nextFrom: string, nextTo: string) => {
+    const reqId = ++loadSeq.current
     setLoading(true)
     setError(null)
+    const shown = shownRef.current
+    if (shown?.from !== nextFrom || shown?.to !== nextTo || String(shown?.accountId ?? "") !== String(nextAccount)) {
+      shownRef.current = null
+      setData(null)
+    }
     try {
-      const params = new URLSearchParams({ account: accountId, from, to })
-      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${params}`)
+      const params = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo })
+      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${params}`, { cache: "no-store" })
       const json = await res.json()
+      if (reqId !== loadSeq.current) return
       if (!res.ok || !json.ok) throw new Error(json.error || "请求失败")
-      setData(json as ApiData)
+      const next = json as ApiData
+      shownRef.current = next
+      setData(next)
     } catch (e) {
+      if (reqId !== loadSeq.current) return
       setError(e instanceof Error ? e.message : "加载失败")
     } finally {
-      setLoading(false)
+      if (reqId === loadSeq.current) setLoading(false)
     }
-  }, [accountId, from, to])
+  }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (compareMode) return
+    void load(accountId, from, to)
+  }, [accountId, from, to, load, compareMode])
+
+  const loadCompare = useCallback(async (nextFrom = from, nextTo = to) => {
+    const reqId = ++compareSeq.current
+    setCompareLoading(true)
+    setCompareError(null)
+    try {
+      const settled = await Promise.allSettled(
+        QUANT_ACCOUNT_IDS.map(async (id) => {
+          const params = new URLSearchParams({ account: String(id), from: nextFrom, to: nextTo })
+          const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${params}`, { cache: "no-store" })
+          const json = await res.json()
+          if (!res.ok || !json.ok) throw new Error(json.error || `rx${id} 请求失败`)
+          return json as ApiData
+        }),
+      )
+      if (reqId !== compareSeq.current) return
+      const ok: ApiData[] = []
+      const failed: string[] = []
+      settled.forEach((s, i) => {
+        if (s.status === "fulfilled" && !s.value.notYetRun) ok.push(s.value)
+        else failed.push(`rx${QUANT_ACCOUNT_IDS[i]}`)
+      })
+      setCompareRows(ok)
+      setCompareBounds({ from: nextFrom, to: nextTo })
+      if (!ok.length) setCompareError(failed.length ? `${failed.join("、")} 加载失败` : "没有可对比的账户")
+      else setCompareError(failed.length ? `${failed.join("、")} 暂无数据，已对照其余账户` : null)
+    } catch (e) {
+      if (reqId !== compareSeq.current) return
+      setCompareError(e instanceof Error ? e.message : "对比加载失败")
+    } finally {
+      if (reqId === compareSeq.current) setCompareLoading(false)
+    }
+  }, [from, to])
+
+  const selectAccount = (id: string) => {
+    setCompareMode(false)
+    setAccountId(id)
+  }
+
+  const selectRange = (label: RangeLabel) => {
+    const next = boundsFor(label)
+    setRange(label)
+    setBounds(next)
+    if (compareMode) void loadCompare(next.from, next.to)
+  }
+
+  const toggleCompare = () => {
+    if (compareMode) {
+      setCompareMode(false)
+      return
+    }
+    setCompareMode(true)
+    if (!compareBounds || compareBounds.from !== from || compareBounds.to !== to || !compareRows.length) {
+      void loadCompare(from, to)
+    }
+  }
+
+  const viewKey = `${accountId}|${from}|${to}|${data?.from ?? ""}|${data?.to ?? ""}`
+  const periodFrom = compareMode
+    ? (compareRows[0]?.from ?? compareBounds?.from ?? from)
+    : (data?.from ?? from)
+  const periodTo = compareMode
+    ? (compareRows[0]?.to ?? compareBounds?.to ?? to)
+    : (data?.to ?? to)
+  const periodText = `${range} · ${periodFrom} 至 ${periodTo}`
 
   const ids = data?.quantIds?.length ? data.quantIds : [...QUANT_ACCOUNT_IDS]
   const k = data?.kpis
@@ -205,28 +485,41 @@ export default function QuantStrategyCharts() {
     }
   }, [eq])
 
-  const regimeOption = useMemo(() => {
-    const rows = data?.regime ?? []
-    if (!rows.length) return {}
-    return {
-      tooltip: {
-        trigger: "axis",
-        formatter: (ps: { name: string; value: number; dataIndex: number }[]) => {
-          const i = ps[0]?.dataIndex ?? 0
-          const r = rows[i]
-          return `${r.label}<br/>盈亏 ${fmtWan(r.pnl)}<br/>天数 ${r.days} · 日胜率 ${fmtPct(r.winRate)}`
-        },
+  const factorFamilies = data?.regimeFactors?.families ?? []
+  const heatmapCells = data?.regimeFactors?.heatmap ?? []
+  const heatmapOption = useMemo(() => heatmapChartOption(heatmapCells), [heatmapCells])
+
+  const bookVolOption = useMemo(() => {
+    const ch = data?.inference?.charts?.bookVol
+    if (!ch?.points.length) return {}
+    return scatterFitOption(
+      ch.points.map((p) => ({ x: p.mktVol, y: p.leverage, label: p.date })),
+      ch.buckets,
+      {
+        scatterName: "交易日",
+        xName: "市场波动 %",
+        yName: "总敞口",
+        xFmt: (v) => `${v.toFixed(0)}%`,
+        yFmt: (v) => `${v.toFixed(2)}x`,
       },
-      grid: { left: 56, right: 12, top: 8, bottom: 28 },
-      xAxis: { type: "category", data: rows.map((r) => r.label), axisLabel: { fontSize: 10 } },
-      yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: axisPnl }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
-      series: [{
-        type: "bar",
-        data: rows.map((r) => ({ value: r.pnl, itemStyle: { color: r.pnl >= 0 ? UP : DOWN, borderRadius: [2, 2, 0, 0] } })),
-        barMaxWidth: 28,
-      }],
-    }
-  }, [data?.regime])
+    )
+  }, [data?.inference?.charts?.bookVol])
+
+  const crossVolOption = useMemo(() => {
+    const ch = data?.inference?.charts?.crossVol
+    if (!ch?.points.length) return {}
+    return scatterFitOption(
+      ch.points.map((p) => ({ x: p.vol, y: p.weight, label: p.product })),
+      ch.buckets,
+      {
+        scatterName: "品种日",
+        xName: "品种波动 %",
+        yName: "市值权重 %",
+        xFmt: (v) => `${v.toFixed(0)}%`,
+        yFmt: (v) => `${v.toFixed(1)}%`,
+      },
+    )
+  }, [data?.inference?.charts?.crossVol])
 
   const sectorOption = useMemo(() => {
     const rows = [...(data?.sectors ?? [])].sort((a, b) => a.pnl - b.pnl)
@@ -391,28 +684,46 @@ export default function QuantStrategyCharts() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm text-muted-foreground">
-            选择量化账户，用成交、平仓与日核算倒推策略画像：适合什么市、怎么管风险、盈亏偏好、是否对冲、日盘还是夜盘、盈亏单持仓多久。
+            {compareMode
+              ? "同一区间下横向对照各量化账户的策略画像、绩效与权益曲线。点击账户进入单账户详情。"
+              : "选择量化账户，用成交、平仓与日核算倒推策略画像：适合什么市、怎么管风险、盈亏偏好、是否对冲、日盘还是夜盘、盈亏单持仓多久。"}
           </p>
-          {data?.account && (
+          {!compareMode && data?.account && (
             <p className="text-xs text-muted-foreground mt-1">
               {data.account} · {data.from} 至 {data.to} · {k?.tradingDays ?? 0} 个交易日 · {k?.nCloses ?? 0} 笔平仓
             </p>
           )}
+          {compareMode && (compareRows[0]?.from || from) && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {compareRows[0]?.from ?? from} 至 {compareRows[0]?.to ?? to} · {compareRows.length} 个量化账户
+            </p>
+          )}
         </div>
-        <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? "animate-spin" : ""}`} />
-          刷新
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant={compareMode ? "default" : "outline"} onClick={toggleCompare} disabled={compareLoading}>
+            <Columns2 className="h-3.5 w-3.5 mr-1.5" />
+            {compareMode ? "退出对比" : "横向对比"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void (compareMode ? loadCompare() : load(accountId, from, to))}
+            disabled={compareMode ? compareLoading : loading}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${(compareMode ? compareLoading : loading) ? "animate-spin" : ""}`} />
+            {(compareMode ? compareLoading : loading) ? "加载中" : "刷新"}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground mr-1">账户</span>
         {ids.map((id) => {
-          const active = String(id) === accountId
+          const active = !compareMode && String(id) === accountId
           return (
             <button
               key={id}
-              onClick={() => setAccountId(String(id))}
+              onClick={() => selectAccount(String(id))}
               className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
                 active
                   ? "border-primary bg-primary text-primary-foreground"
@@ -431,11 +742,7 @@ export default function QuantStrategyCharts() {
           return (
             <button
               key={r.label}
-              onClick={() => {
-                setRange(r.label)
-                setFrom(r.from())
-                setTo(r.to())
-              }}
+              onClick={() => selectRange(r.label)}
               className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
                 active
                   ? "border-primary bg-primary text-primary-foreground"
@@ -448,12 +755,21 @@ export default function QuantStrategyCharts() {
         })}
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {data?.notYetRun && <p className="text-sm text-muted-foreground">核算表尚未导入。</p>}
+      {error && !compareMode && <p className="text-sm text-destructive">{error}</p>}
+      {compareError && compareMode && (
+        <p className={`text-sm ${compareRows.length ? "text-muted-foreground" : "text-destructive"}`}>{compareError}</p>
+      )}
+      {data?.notYetRun && !compareMode && <p className="text-sm text-muted-foreground">核算表尚未导入。</p>}
 
+      <PeriodCtx.Provider value={periodText}>
+      {compareMode ? (
+        <CompareView rows={compareRows} loading={compareLoading} onOpenAccount={selectAccount} />
+      ) : (
+      <div key={viewKey} className={`space-y-5 ${loading ? "opacity-60 pointer-events-none" : ""}`}>
       <div className="rounded-lg border border-border p-4 space-y-3">
         <div className="flex flex-wrap items-baseline gap-3">
           <h2 className="text-lg font-semibold tracking-tight">{data?.portrait.strategyLabel ?? (loading ? "分析中…" : "—")}</h2>
+          <PeriodBadge />
           {k?.corrNhci != null && (
             <span className="text-xs text-muted-foreground">南华相关 {k.corrNhci}</span>
           )}
@@ -461,13 +777,43 @@ export default function QuantStrategyCharts() {
         <p className="text-sm text-muted-foreground leading-relaxed">{data?.portrait.summary}</p>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
           {(data?.portrait.items ?? []).map((item) => (
-            <div key={item.title} className={`rounded-md border px-3 py-2.5 ${TONE[item.tone]}`}>
+            <div key={`${viewKey}-${item.title}`} className={`rounded-md border px-3 py-2.5 ${TONE[item.tone]}`}>
               <div className="text-xs font-medium mb-1">{item.title}</div>
               <p className="text-xs text-muted-foreground leading-relaxed">{item.detail}</p>
             </div>
           ))}
+          {!(data?.portrait.items ?? []).length && (
+            <p className="text-xs text-muted-foreground py-2">
+              {loading ? "正在按所选区间重算擅长、板块盈亏和图表…" : "该区间没有画像。"}
+            </p>
+          )}
         </div>
       </div>
+
+      {data?.inference && <InferPanel inference={data.inference} period={periodText} />}
+
+      {(data?.inference?.charts?.bookVol || data?.inference?.charts?.crossVol) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <ChartCard
+            title="组合层：市场波动 vs 总敞口"
+            caption={`${data.inference.charts.bookVol?.mktName ?? "市场波动"}。ρ=${data.inference.charts.bookVol?.rho == null ? "—" : data.inference.charts.bookVol.rho.toFixed(2)}（n=${data.inference.charts.bookVol?.n ?? 0}）。点往右下=市场更吵时减仓；往右上=扛仓/加仓。`}
+            help={CHART_HELP.bookVol}
+          >
+            {(data.inference.charts.bookVol?.points.length ?? 0) > 0 && (
+              <ReactECharts key={`${viewKey}-bookvol`} option={bookVolOption} style={{ height: 280, width: "100%" }} notMerge />
+            )}
+          </ChartCard>
+          <ChartCard
+            title="截面：品种波动 vs 市值权重"
+            caption={`同一天里高波动品种是否少配。ρ(权重, 1/σ)=${data.inference.charts.crossVol?.rho == null ? "—" : data.inference.charts.crossVol.rho.toFixed(2)}（n=${data.inference.charts.crossVol?.n ?? 0} 个品种日）。折线往右下=品种层风险平价。`}
+            help={CHART_HELP.crossVol}
+          >
+            {(data.inference.charts.crossVol?.points.length ?? 0) > 0 && (
+              <ReactECharts key={`${viewKey}-crossvol`} option={crossVolOption} style={{ height: 280, width: "100%" }} notMerge />
+            )}
+          </ChartCard>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <Kpi title="区间净盈亏" value={fmtWan(k?.totalPnl)} hint={`${k?.tradingDays ?? 0} 个交易日`} accent={k ? pnlColor(k.totalPnl) : undefined} />
@@ -485,35 +831,61 @@ export default function QuantStrategyCharts() {
           )}
           hint={`日盘 ${fmtWan(data?.session?.day.pnl ?? 0)} / 夜盘 ${fmtWan(data?.session?.night.pnl ?? 0)}（平仓）`}
         />
+        <Kpi
+          title="南华涨 / 跌捕获"
+          value={`${k?.upCapture == null ? "—" : k.upCapture.toFixed(2)} / ${k?.downCapture == null ? "—" : k.downCapture.toFixed(2)}`}
+          hint="账户日收益 / 南华日收益，涨日与跌日分开"
+          help={CHART_HELP.capture}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="累计盈亏与回撤" caption="权益曲线形态：趋势跟踪通常回撤深、恢复慢；短线更碎。">
-          {eq.length > 0 && <ReactECharts option={equityOption} style={{ height: 280, width: "100%" }} notMerge />}
+        <ChartCard title="累计盈亏与回撤" caption="权益曲线形态：趋势跟踪通常回撤深、恢复慢；短线更碎。" help={CHART_HELP.equity}>
+          {eq.length > 0 && <ReactECharts key={`${viewKey}-eq`} option={equityOption} style={{ height: 280, width: "100%" }} notMerge />}
         </ChartCard>
-        <ChartCard title="日盈亏分布" caption="柱子偏左=经常小亏；右尾长=偶尔大赢。和胜率/盈亏比对照看。">
-          {eq.length > 0 && <ReactECharts option={histOption} style={{ height: 280, width: "100%" }} notMerge />}
-        </ChartCard>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="哪种市场赚得多" caption="按南华商品指数日涨跌、20 日趋势强度、波动水平切分账户日盈亏。">
-          {(data?.regime?.length ?? 0) > 0 && <ReactECharts option={regimeOption} style={{ height: 280, width: "100%" }} notMerge />}
-        </ChartCard>
-        <ChartCard title="板块盈亏" caption="盈亏 = 平仓盈亏 + 持仓盯市（未扣手续费）。只看平仓会把「拿着赚、换仓亏」画成全板块亏损；区间净盈亏来自日报，会再扣手续费。">
-          {(data?.sectors?.length ?? 0) > 0 && <ReactECharts option={sectorOption} style={{ height: 280, width: "100%" }} notMerge />}
+        <ChartCard title="日盈亏分布" caption="柱子偏左=经常小亏；右尾长=偶尔大赢。和胜率/盈亏比对照看。" help={CHART_HELP.hist}>
+          {eq.length > 0 && <ReactECharts key={`${viewKey}-hist`} option={histOption} style={{ height: 280, width: "100%" }} notMerge />}
         </ChartCard>
       </div>
 
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <div className="flex items-center gap-1.5">
+            <h2 className="text-sm font-medium">哪种市场赚得多</h2>
+            <QuantChartHelp spec={CHART_HELP.overview} />
+          </div>
+          <PeriodBadge />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          柱高是日均盈亏，不是区间合计。Tooltip 里有天数、合计、日胜率和 t 统计。旧的「趋势 / 波动」两刀切已换成 carry、多周期趋势、价仓和宏观簇。
+        </p>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {factorFamilies.map((fam) => (
+            <ChartCard key={`${viewKey}-${fam.key}`} title={fam.title} caption={fam.caption} help={helpForFactor(fam.key, fam.title)}>
+              <ReactECharts key={`${viewKey}-${fam.key}`} option={familyBarOption(fam)} style={{ height: 260, width: "100%" }} notMerge />
+            </ChartCard>
+          ))}
+          <ChartCard title="板块盈亏" caption="盈亏 = 平仓盈亏 + 持仓盯市（未扣手续费）。只看平仓会把「拿着赚、换仓亏」画成全板块亏损；区间净盈亏来自日报，会再扣手续费。" help={CHART_HELP.sector}>
+            {(data?.sectors?.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-sector`} option={sectorOption} style={{ height: 260, width: "100%" }} notMerge />}
+          </ChartCard>
+        </div>
+        {heatmapCells.some((c) => c.days > 0) && (
+          <ChartCard title="Carry × 趋势一致性" caption="贴水/升水与 5/20/60 日趋势是否同向。只在「贴水 × 同向多」赚钱是展期+多头；两边趋势都赚才是双边跟踪。" help={CHART_HELP.heatmap}>
+            <ReactECharts key={`${viewKey}-heat`} option={heatmapOption} style={{ height: 320, width: "100%" }} notMerge />
+          </ChartCard>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="风险度" caption="杠杆用到什么水平、是否突然抬升。">
-          {eq.length > 0 && <ReactECharts option={riskOption} style={{ height: 260, width: "100%" }} notMerge />}
+        <ChartCard title="风险度" caption="杠杆用到什么水平、是否突然抬升。" help={CHART_HELP.risk}>
+          {eq.length > 0 && <ReactECharts key={`${viewKey}-risk`} option={riskOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
         <ChartCard
           title="赚了 / 亏了之后第二天"
-          caption={`盈利日 n=${data?.afterMove.afterWin.n ?? 0}，亏损日 n=${data?.afterMove.afterLoss.n ?? 0}。风险度下降=收手；开仓占比高=还在加。`}
+          caption={`盈利日 n=${data?.afterMove?.afterWin.n ?? 0}，亏损日 n=${data?.afterMove?.afterLoss.n ?? 0}。风险度下降=收手；开仓占比高=还在加。`}
+          help={CHART_HELP.after}
         >
-          {data?.afterMove && <ReactECharts option={afterOption} style={{ height: 260, width: "100%" }} notMerge />}
+          {data?.afterMove && <ReactECharts key={`${viewKey}-after`} option={afterOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
       </div>
 
@@ -521,33 +893,41 @@ export default function QuantStrategyCharts() {
         <ChartCard
           title="盈亏偏好"
           caption={`平仓胜率 ${fmtPct(p?.winRate, 0)}，盈亏比 ${p?.profitFactor?.toFixed(2) ?? "—"}。高胜率低柱差=刮头皮；低胜率但盈利柱远高于亏损柱=趋势。`}
+          help={CHART_HELP.payoff}
         >
-          {p && <ReactECharts option={payoffOption} style={{ height: 260, width: "100%" }} notMerge />}
+          {p && <ReactECharts key={`${viewKey}-payoff`} option={payoffOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
         <ChartCard
           title="持仓多久才走"
-          caption={`盈利单 ${data?.hold.avgWin?.toFixed(1) ?? "—"} 天，亏损单 ${data?.hold.avgLoss?.toFixed(1) ?? "—"} 天。亏的比赚的拿得久 = 扛单。`}
+          caption={`盈利单 ${data?.hold?.avgWin?.toFixed(1) ?? "—"} 天，亏损单 ${data?.hold?.avgLoss?.toFixed(1) ?? "—"} 天。亏的比赚的拿得久 = 扛单。`}
+          help={CHART_HELP.hold}
         >
-          {(data?.hold.buckets.length ?? 0) > 0 && <ReactECharts option={holdOption} style={{ height: 260, width: "100%" }} notMerge />}
+          {(data?.hold?.buckets.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-hold`} option={holdOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="日盘 vs 夜盘" caption="按成交时间：21:00–08:00 计夜盘。看平仓盈亏发生在哪一盘。">
-          {data?.session && <ReactECharts option={sessionOption} style={{ height: 260, width: "100%" }} notMerge />}
+        <ChartCard title="日盘 vs 夜盘" caption="按成交时间：21:00–08:00 计夜盘。看平仓盈亏发生在哪一盘。" help={CHART_HELP.session}>
+          {data?.session && <ReactECharts key={`${viewKey}-session`} option={sessionOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
-        <ChartCard title="多头 vs 空头" caption="卖平=平多头，买平=平空头；再加持仓盯市。钱经常是拿着赚的，平仓只是换仓成本。">
-          {data?.longShort && <ReactECharts option={lsOption} style={{ height: 260, width: "100%" }} notMerge />}
+        <ChartCard title="多头 vs 空头" caption="卖平=平多头，买平=平空头；再加持仓盯市。钱经常是拿着赚的，平仓只是换仓成本。" help={CHART_HELP.ls}>
+          {data?.longShort && <ReactECharts key={`${viewKey}-ls`} option={lsOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
       </div>
 
-      <ChartCard title="持仓是否对冲" caption="对冲度 = 2×min(多市值,空市值)/(多+空)。接近 100% 几乎锁住；双开是同一合约既买又卖。">
-        {(data?.hedge.length ?? 0) > 0 && <ReactECharts option={hedgeOption} style={{ height: 260, width: "100%" }} notMerge />}
+      <ChartCard title="持仓是否对冲" caption="对冲度 = 2×min(多市值,空市值)/(多+空)。接近 100% 几乎锁住；双开是同一合约既买又卖。" help={CHART_HELP.hedge}>
+        {(data?.hedge?.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-hedge`} option={hedgeOption} style={{ height: 260, width: "100%" }} notMerge />}
       </ChartCard>
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">品种明细</CardTitle>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-sm font-medium">品种明细</CardTitle>
+              <QuantChartHelp spec={CHART_HELP.products} />
+            </div>
+            <PeriodBadge />
+          </div>
           <p className="text-xs text-muted-foreground mt-0.5">按合计盈亏（平仓 + 盯市）排序。胜率与持仓天数仍按平仓手数加权。</p>
         </CardHeader>
         <CardContent className="pt-0 overflow-x-auto">
@@ -588,15 +968,33 @@ export default function QuantStrategyCharts() {
           )}
         </CardContent>
       </Card>
+      </div>
+      )}
+      </PeriodCtx.Provider>
     </div>
   )
 }
 
-function Kpi({ title, value, hint, accent }: { title: string; value: string; hint?: string; accent?: string }) {
+function Kpi({
+  title,
+  value,
+  hint,
+  accent,
+  help,
+}: {
+  title: string
+  value: string
+  hint?: string
+  accent?: string
+  help?: ChartHelpSpec
+}) {
   return (
     <Card>
       <CardHeader className="pb-1">
-        <CardTitle className="text-xs font-medium text-muted-foreground">{title}</CardTitle>
+        <div className="flex items-center gap-1">
+          <CardTitle className="text-xs font-medium text-muted-foreground">{title}</CardTitle>
+          {help && <QuantChartHelp spec={help} />}
+        </div>
       </CardHeader>
       <CardContent className="pt-0">
         <div className="text-xl font-semibold tabular-nums" style={accent ? { color: accent } : undefined}>{value}</div>
@@ -606,16 +1004,413 @@ function Kpi({ title, value, hint, accent }: { title: string; value: string; hin
   )
 }
 
-function ChartCard({ title, caption, children }: { title: string; caption: string; children: ReactNode }) {
+function ChartCard({
+  title,
+  caption,
+  help,
+  children,
+}: {
+  title: string
+  caption: string
+  help?: ChartHelpSpec
+  children: ReactNode
+}) {
   return (
     <Card>
       <CardHeader className="pb-1">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <CardTitle className="text-sm font-medium">{title}</CardTitle>
+            {help && <QuantChartHelp spec={help} />}
+          </div>
+          <PeriodBadge />
+        </div>
         <p className="text-xs text-muted-foreground mt-0.5">{caption}</p>
       </CardHeader>
       <CardContent className="pt-0">
         {children || <div className="h-[260px] flex items-center justify-center text-xs text-muted-foreground">暂无数据</div>}
       </CardContent>
     </Card>
+  )
+}
+
+const PORTRAIT_COMPARE_TITLES = [
+  "适合的市场",
+  "不适合的市场",
+  "亏损之后",
+  "盈利之后",
+  "盈亏偏好",
+  "对冲程度",
+  "持仓习惯",
+  "多空",
+  "擅长",
+  "不擅长",
+] as const
+
+function CompareView({
+  rows,
+  loading,
+  onOpenAccount,
+}: {
+  rows: ApiData[]
+  loading: boolean
+  onOpenAccount: (id: string) => void
+}) {
+  const overlayOption = useMemo(() => {
+    const dateSet = new Set<string>()
+    for (const r of rows) for (const e of r.equity ?? []) dateSet.add(e.date)
+    const dates = [...dateSet].sort()
+    if (!dates.length) return {}
+    return {
+      tooltip: { trigger: "axis" },
+      legend: { top: 0, type: "scroll", textStyle: { fontSize: 11 } },
+      grid: { left: 56, right: 16, top: 28, bottom: 28 },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 14, bottom: 4, textStyle: { fontSize: 9 } }],
+      xAxis: { type: "category", data: dates.map((d) => d.slice(5)), axisLabel: { fontSize: 10 } },
+      yAxis: {
+        type: "value",
+        name: "累计盈亏",
+        axisLabel: { fontSize: 10, formatter: axisPnl },
+        splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+      },
+      series: rows.map((r, i) => {
+        const map = new Map((r.equity ?? []).map((e) => [e.date, e.cumPnl]))
+        return {
+          name: `${accLabel(r)} ${r.portrait?.strategyLabel ?? ""}`.trim(),
+          type: "line",
+          showSymbol: false,
+          data: dates.map((d) => map.get(d) ?? null),
+          connectNulls: true,
+          lineStyle: { width: 2, color: PALETTE[i % PALETTE.length] },
+          itemStyle: { color: PALETTE[i % PALETTE.length] },
+        }
+      }),
+    }
+  }, [rows])
+
+  const compareFamilies = useMemo(() => {
+    const keys = ["carry", "trend", "oi", "cluster", "volLvl"]
+    return keys
+      .map((key) => {
+        const title = rows.map((r) => r.regimeFactors?.families.find((f) => f.key === key)).find((f) => f)?.title ?? key
+        const labels = Array.from(new Set(rows.flatMap((r) => (r.regimeFactors?.families.find((f) => f.key === key)?.buckets ?? []).map((b) => b.label))))
+        return { key, title, labels }
+      })
+      .filter((f) => f.labels.length > 0)
+  }, [rows])
+
+  const compareFamilyOptions = useMemo(() => {
+    return compareFamilies.map((fam) => ({
+      key: fam.key,
+      title: fam.title,
+      option: {
+        tooltip: { trigger: "axis" as const },
+        legend: { top: 0, type: "scroll" as const, textStyle: { fontSize: 11 } },
+        grid: { left: 56, right: 16, top: 28, bottom: 36 },
+        xAxis: { type: "category" as const, data: fam.labels, axisLabel: { fontSize: 10, rotate: fam.labels.length > 4 ? 28 : 0 } },
+        yAxis: {
+          type: "value" as const,
+          name: "日均",
+          axisLabel: { fontSize: 10, formatter: axisPnl },
+          splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+        },
+        series: rows.map((r, i) => ({
+          name: accLabel(r),
+          type: "bar" as const,
+          barMaxWidth: 12,
+          itemStyle: { color: PALETTE[i % PALETTE.length], borderRadius: 2 },
+          data: fam.labels.map((lab) => r.regimeFactors?.families.find((f) => f.key === fam.key)?.buckets.find((b) => b.label === lab)?.avgPnl ?? 0),
+        })),
+      },
+    }))
+  }, [rows, compareFamilies])
+
+  const insights = useMemo(() => buildCompareInsights(rows), [rows])
+
+  const kpiRows = useMemo(() => {
+    const pnls = rows.map((r) => r.kpis?.totalPnl)
+    const dayWr = rows.map((r) => r.kpis?.dayWinRate)
+    const tradeWr = rows.map((r) => r.kpis?.tradeWinRate)
+    const pf = rows.map((r) => r.kpis?.profitFactor)
+    const sharpe = rows.map((r) => r.kpis?.sharpe)
+    const dd = rows.map((r) => r.kpis?.maxDdPct)
+    return [
+      { label: "策略画像", values: rows.map((r) => r.portrait?.strategyLabel ?? "—") },
+      {
+        label: "区间净盈亏",
+        values: rows.map((r) => ({ text: fmtWan(r.kpis?.totalPnl), color: pnlColor(r.kpis?.totalPnl ?? 0) })),
+        best: bestSet(pnls, "max"),
+      },
+      { label: "日胜率", values: rows.map((r) => fmtPct(r.kpis?.dayWinRate, 0)), best: bestSet(dayWr, "max") },
+      { label: "平仓胜率", values: rows.map((r) => fmtPct(r.kpis?.tradeWinRate, 0)), best: bestSet(tradeWr, "max") },
+      { label: "盈亏比", values: rows.map((r) => r.kpis?.profitFactor?.toFixed(2) ?? "—"), best: bestSet(pf, "max") },
+      { label: "夏普", values: rows.map((r) => r.kpis?.sharpe?.toFixed(2) ?? "—"), best: bestSet(sharpe, "max") },
+      { label: "最大回撤", values: rows.map((r) => fmtPct(r.kpis?.maxDdPct)), best: bestSet(dd, "max") },
+      {
+        label: "盈/亏持仓天数",
+        values: rows.map((r) => `${r.kpis?.avgHoldWin?.toFixed(1) ?? "—"} / ${r.kpis?.avgHoldLoss?.toFixed(1) ?? "—"}`),
+      },
+      { label: "平均对冲度", values: rows.map((r) => fmtPct(r.kpis?.hedgeRatioAvg, 0)) },
+      { label: "夜盘手数占比", values: rows.map((r) => fmtPct(nightLotsShare(r), 0)) },
+      { label: "南华相关", values: rows.map((r) => (r.kpis?.corrNhci == null ? "—" : String(r.kpis.corrNhci))) },
+      {
+        label: "涨/跌捕获",
+        values: rows.map((r) => {
+          const up = r.kpis?.upCapture
+          const dn = r.kpis?.downCapture
+          if (up == null && dn == null) return "—"
+          return `${up == null ? "—" : up.toFixed(2)} / ${dn == null ? "—" : dn.toFixed(2)}`
+        }),
+      },
+      { label: "交易日 / 平仓", values: rows.map((r) => `${r.kpis?.tradingDays ?? 0} / ${r.kpis?.nCloses ?? 0}`) },
+    ]
+  }, [rows])
+
+  if (!rows.length) {
+    return (
+      <p className="text-sm text-muted-foreground py-10 text-center">
+        {loading ? "正在拉取各量化账户…" : "没有可对比的账户数据。"}
+      </p>
+    )
+  }
+
+  return (
+    <div className={`space-y-5 ${loading ? "opacity-60 pointer-events-none" : ""}`}>
+      {insights && <CompareInsightsPanel insights={insights} />}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2.5">
+        {rows.map((r, i) => (
+          <button
+            key={r.accountId ?? i}
+            type="button"
+            onClick={() => r.accountId && onOpenAccount(String(r.accountId))}
+            className="text-left rounded-lg border border-border p-3 hover:bg-muted/40 transition-colors"
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <span className="h-2 w-2 rounded-full shrink-0" style={{ background: PALETTE[i % PALETTE.length] }} />
+              <span className="text-sm font-semibold">{accLabel(r)}</span>
+            </div>
+            <div className="text-xs font-medium mb-1">{r.portrait?.strategyLabel ?? "—"}</div>
+            <div className="text-lg font-semibold tabular-nums" style={{ color: pnlColor(r.kpis?.totalPnl ?? 0) }}>
+              {fmtWan(r.kpis?.totalPnl)}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              日胜率 {fmtPct(r.kpis?.dayWinRate, 0)} · 夏普 {r.kpis?.sharpe?.toFixed(2) ?? "—"} · 回撤 {fmtPct(r.kpis?.maxDdPct)}
+            </p>
+            {r.inference?.headline && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.inference.headline}</p>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-sm font-medium">绩效对照</CardTitle>
+              <QuantChartHelp spec={CHART_HELP.compareKpi} />
+            </div>
+            <PeriodBadge />
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            同一区间下各量化账户的核心指标。高亮为该行最优值；点击列头进入单账户详情。
+          </p>
+        </CardHeader>
+        <CardContent className="pt-0 overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-muted-foreground border-b">
+                <th className="text-left font-medium py-2 pr-3 sticky left-0 bg-background min-w-[7rem]">指标</th>
+                {rows.map((r, i) => (
+                  <th key={r.accountId ?? i} className="text-right font-medium py-2 px-2 min-w-[7.5rem]">
+                    <button type="button" onClick={() => r.accountId && onOpenAccount(String(r.accountId))} className="hover:underline">
+                      {accLabel(r)}
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {kpiRows.map((row) => (
+                <tr key={row.label} className="border-b border-border/60">
+                  <td className="py-1.5 pr-3 text-muted-foreground sticky left-0 bg-background">{row.label}</td>
+                  {row.values.map((v, i) => {
+                    const text = typeof v === "string" ? v : v.text
+                    const color = typeof v === "string" ? undefined : v.color
+                    const best = row.best?.has(i)
+                    return (
+                      <td
+                        key={i}
+                        className={`py-1.5 px-2 text-right tabular-nums ${best ? "font-semibold bg-red-50/70 dark:bg-red-950/20" : ""}`}
+                        style={color ? { color } : undefined}
+                      >
+                        {text}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      <ChartCard title="累计盈亏对照" caption="同一时间轴上的累计盈亏。点击上方卡片可进入单账户详情。" help={CHART_HELP.overlay}>
+        {rows.some((r) => (r.equity?.length ?? 0) > 0) && (
+          <ReactECharts option={overlayOption} style={{ height: 320, width: "100%" }} notMerge />
+        )}
+      </ChartCard>
+
+      {compareFamilyOptions.map((fam) => (
+        <ChartCard key={fam.key} title={`${fam.title}对照`} caption="同一因子分档下各账户的日均盈亏。" help={helpForFactor(fam.key, fam.title)}>
+          <ReactECharts option={fam.option} style={{ height: 300, width: "100%" }} notMerge />
+        </ChartCard>
+      ))}
+
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <CardTitle className="text-sm font-medium">画像对照</CardTitle>
+              <QuantChartHelp spec={CHART_HELP.comparePortrait} />
+            </div>
+            <PeriodBadge />
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5">由成交、平仓与日核算倒推的策略习惯，便于横向看差异。</p>
+        </CardHeader>
+        <CardContent className="pt-0 overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-muted-foreground border-b">
+                <th className="text-left font-medium py-2 pr-3 sticky left-0 bg-background min-w-[6rem]">维度</th>
+                {rows.map((r, i) => (
+                  <th key={r.accountId ?? i} className="text-left font-medium py-2 px-2 min-w-[12rem]">{accLabel(r)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {PORTRAIT_COMPARE_TITLES.map((title) => (
+                <tr key={title} className="border-b border-border/60 align-top">
+                  <td className="py-2 pr-3 text-muted-foreground sticky left-0 bg-background whitespace-nowrap">{title}</td>
+                  {rows.map((r, i) => (
+                    <td key={r.accountId ?? i} className="py-2 px-2 text-muted-foreground leading-relaxed">
+                      {portraitDetail(r, title)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function corrCellClass(c: number | null): string {
+  if (c == null) return ""
+  if (c >= 0.55) return "bg-red-100 font-semibold dark:bg-red-950/40"
+  if (c >= 0.35) return "bg-red-50 dark:bg-red-950/20"
+  if (c <= 0.12) return "bg-emerald-50 dark:bg-emerald-950/20"
+  return ""
+}
+
+function CompareInsightsPanel({ insights }: { insights: CompareInsights }) {
+  const { corrMatrix, sectorConsensus } = insights
+  return (
+    <div className="rounded-lg border border-border p-4 space-y-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h2 className="text-lg font-semibold tracking-tight">结论</h2>
+        <PeriodBadge />
+      </div>
+      <p className="text-sm leading-relaxed">{insights.headline}</p>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+        <Kpi title="组合净盈亏" value={fmtWan(insights.bookPnl)} hint={`${insights.winners} 赚 / ${insights.losers} 亏`} accent={pnlColor(insights.bookPnl)} />
+        <Kpi
+          title="日盈亏平均相关"
+          value={insights.avgCorr == null ? "—" : insights.avgCorr.toFixed(2)}
+          hint={insights.avgCorr != null && insights.avgCorr >= 0.35 ? "同步偏高，分散弱" : "重叠天数上的 Pearson"}
+        />
+        <Kpi
+          title="主导画像"
+          value={insights.styleGroups[0]?.label ?? "—"}
+          hint={insights.styleGroups[0] ? `${insights.styleGroups[0].accounts.length} / ${corrMatrix.labels.length} 个账户` : undefined}
+        />
+        <Kpi
+          title="结论条数"
+          value={String(insights.findings.length)}
+          hint="由对照数据倒推，不是投顾自述"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+        {insights.findings.map((item) => (
+          <div key={item.title} className={`rounded-md border px-3 py-2.5 ${TONE[item.tone]}`}>
+            <div className="text-xs font-medium mb-1">{item.title}</div>
+            <p className="text-xs text-muted-foreground leading-relaxed">{item.detail}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div>
+          <div className="text-sm font-medium mb-1">日盈亏相关</div>
+          <p className="text-xs text-muted-foreground mb-2">重叠交易日的 Pearson。红=走在一起，绿=更互补。对角为 1。</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-muted-foreground border-b">
+                  <th className="text-left font-medium py-1.5 pr-2"> </th>
+                  {corrMatrix.labels.map((lab) => (
+                    <th key={lab} className="text-right font-medium py-1.5 px-1.5">{lab}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {corrMatrix.labels.map((rowLab, i) => (
+                  <tr key={rowLab} className="border-b border-border/60">
+                    <td className="py-1 pr-2 text-muted-foreground whitespace-nowrap">{rowLab}</td>
+                    {corrMatrix.values[i].map((c, j) => (
+                      <td key={j} className={`py-1 px-1.5 text-right tabular-nums ${corrCellClass(c)}`}>
+                        {c == null ? "—" : c.toFixed(2)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {sectorConsensus.length > 0 && (
+          <div>
+            <div className="text-sm font-medium mb-1">板块共识</div>
+            <p className="text-xs text-muted-foreground mb-2">多少账户在该板块赚钱 / 亏损，以及合计盈亏（平仓+盯市）。</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b">
+                    <th className="text-left font-medium py-1.5 pr-2">板块</th>
+                    <th className="text-right font-medium py-1.5 px-2">赚钱</th>
+                    <th className="text-right font-medium py-1.5 px-2">亏损</th>
+                    <th className="text-right font-medium py-1.5 pl-2">合计</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sectorConsensus.map((s) => (
+                    <tr key={s.sector} className="border-b border-border/60">
+                      <td className="py-1 pr-2">{s.sector}</td>
+                      <td className="py-1 px-2 text-right tabular-nums">{s.pos}</td>
+                      <td className="py-1 px-2 text-right tabular-nums">{s.neg}</td>
+                      <td className="py-1 pl-2 text-right tabular-nums" style={{ color: pnlColor(s.pnl) }}>{fmtWan(s.pnl)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }

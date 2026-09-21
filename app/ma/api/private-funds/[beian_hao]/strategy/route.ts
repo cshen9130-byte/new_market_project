@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server"
-import { query } from "@/lib/db"
-import { syncCompanyStrategyCaches } from "@/lib/server/company-strategy-sync"
 import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 import {
@@ -8,7 +6,11 @@ import {
   loadResolvedFundStrategies,
   persistEmptyTeamStrategyFromPlatform,
 } from "@/lib/server/fund-strategy-resolve"
-import { addFundToTrackingPool } from "@/lib/server/tracking-pool-membership"
+import {
+  familyHasTeamStrategy,
+  loadShareClassFamilyTeamStrategies,
+  writeCompanyStrategyAcrossShareClasses,
+} from "@/lib/server/company-strategy-share-class"
 import { relevelMisplacedTeamStrategy } from "@/lib/ma/team-strategy-tree"
 import { loadMergedTeamStrategyTree } from "@/lib/server/team-strategy-tree"
 
@@ -21,21 +23,10 @@ function trimOrNull(value: unknown): string | null {
   return s ? s : null
 }
 
-async function updateCompanyStrategy(
-  beian_hao: string,
-  strategy_l1: string | null,
-  strategy_l2: string | null,
-  strategy_l3: string | null,
-) {
-  return query<{ register_number: string }>(
-    `UPDATE type6_ops_team_full
-     SET company_strategy_one   = $2,
-         company_strategy_two   = $3,
-         company_strategy_three = $4,
-         updated_at = NOW()
-     WHERE register_number = $1
-     RETURNING register_number`,
-    [beian_hao, strategy_l1, strategy_l2, strategy_l3],
+function permissionDeniedResponse() {
+  return NextResponse.json(
+    { error: "数据库账号无写入权限（团队策略），请联系管理员执行 scripts/db/019_grant_type6_ops_team_full_write.sql" },
+    { status: 500 },
   )
 }
 
@@ -50,8 +41,20 @@ export async function GET(
 
   try {
     const resolved = await loadResolvedFundStrategies(beian_hao, [rawId])
+    let family: Awaited<ReturnType<typeof loadShareClassFamilyTeamStrategies>>["family"] = []
+    let familyMerged = resolved.company
+    try {
+      const loaded = await loadShareClassFamilyTeamStrategies(beian_hao)
+      family = loaded.family
+      familyMerged = loaded.merged
+    } catch (err) {
+      console.error("Share-class family strategy lookup failed:", err)
+    }
     let company = resolved.company
-    if (isStrategyEmpty(company) && !isStrategyEmpty(resolved.platform)) {
+    const familyHasTeam = familyHasTeamStrategy(family)
+
+    // Prefer sibling A/B/C 团队策略 over copying 平台策略 onto an empty class.
+    if (isStrategyEmpty(company) && !familyHasTeam && !isStrategyEmpty(resolved.platform)) {
       const wrote = await persistEmptyTeamStrategyFromPlatform(
         beian_hao,
         resolved.platform,
@@ -59,11 +62,14 @@ export async function GET(
       )
       if (wrote) company = resolved.platform
     }
-    const team = isStrategyEmpty(company) ? resolved.platform : company
+
+    const team = !isStrategyEmpty(familyMerged)
+      ? familyMerged
+      : (isStrategyEmpty(company) ? resolved.platform : company)
     let strategy_l1 = team.l1
     let strategy_l2 = team.l2
     let strategy_l3 = team.l3
-    if (!isStrategyEmpty(company)) {
+    if (!isStrategyEmpty(team)) {
       const tree = await loadMergedTeamStrategyTree()
       const releveled = relevelMisplacedTeamStrategy(
         strategy_l1 ?? "",
@@ -86,6 +92,10 @@ export async function GET(
       platform_l1: resolved.platform.l1,
       platform_l2: resolved.platform.l2,
       platform_l3: resolved.platform.l3,
+      share_class_family: family.map((row) => ({
+        beian_hao: row.beian_hao,
+        product_name: row.product_name,
+      })),
     })
   } catch (err) {
     console.error("Strategy GET error:", err)
@@ -117,50 +127,38 @@ export async function PATCH(
   const strategy_l3 = releveled.l3 || null
 
   try {
-    let result = await updateCompanyStrategy(beian_hao, strategy_l1, strategy_l2, strategy_l3)
-
-    // Product may exist in BFL / list cache but not yet in the team ops table.
-    if (!result.length) {
-      try {
-        await addFundToTrackingPool("bfl_ops", beian_hao, product_name)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        if (/permission denied|无写入权限/i.test(msg)) {
-          return NextResponse.json(
-            { error: "数据库账号无写入权限（团队策略），请联系管理员执行 scripts/db/019_grant_type6_ops_team_full_write.sql" },
-            { status: 500 },
-          )
-        }
-        throw err
-      }
-      result = await updateCompanyStrategy(beian_hao, strategy_l1, strategy_l2, strategy_l3)
-    }
-
-    if (!result.length) {
-      return NextResponse.json({ error: "Fund not found in team pool" }, { status: 404 })
-    }
-
-    await syncCompanyStrategyCaches([
-      { beian_hao, strategy_l1, strategy_l2, strategy_l3, product_name },
-    ])
-    // Also bust detail cache keyed by the raw URL id (may differ from resolved beian).
-    invalidateDetailResponseMemoryCache([rawId, beian_hao])
-
-    return NextResponse.json({
-      ok: true,
-      updated: result.length,
+    const result = await writeCompanyStrategyAcrossShareClasses({
+      beian_hao,
+      product_name,
       strategy_l1,
       strategy_l2,
       strategy_l3,
     })
+
+    if (!result.updated.length) {
+      return NextResponse.json({ error: "Fund not found in team pool" }, { status: 404 })
+    }
+
+    invalidateDetailResponseMemoryCache([
+      rawId,
+      beian_hao,
+      ...result.updated,
+      ...result.family.map((row) => row.beian_hao),
+    ])
+
+    return NextResponse.json({
+      ok: true,
+      updated: result.updated.length,
+      strategy_l1,
+      strategy_l2,
+      strategy_l3,
+      share_class_family: result.family,
+    })
   } catch (err) {
     console.error("Strategy PATCH error:", err)
     const msg = err instanceof Error ? err.message : String(err)
-    if (/permission denied/i.test(msg)) {
-      return NextResponse.json(
-        { error: "数据库账号无写入权限（团队策略），请联系管理员执行 scripts/db/019_grant_type6_ops_team_full_write.sql" },
-        { status: 500 },
-      )
+    if (/permission denied|无写入权限/i.test(msg)) {
+      return permissionDeniedResponse()
     }
     return NextResponse.json({ error: "Database error" }, { status: 500 })
   }

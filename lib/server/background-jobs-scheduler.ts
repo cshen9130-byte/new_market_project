@@ -21,6 +21,7 @@ export async function registerBackgroundJobs(): Promise<void> {
   const { runDueProductSettlementCfmmcFetch } = await import("./product-settlement")
   const { runDueAllWeatherEmails } = await import("./all-weather-email")
   const { runDueNhciIndexEmails } = await import("./nhci-index-email")
+  const { refreshAllWeatherBooksIfStale } = await import("./all-weather-book")
   const cron = (await import("node-cron")).default
 
   // Check every minute whether any dispatch setup is due
@@ -33,6 +34,13 @@ export async function registerBackgroundJobs(): Promise<void> {
     runDueAllWeatherEmails().catch((e) => console.error("[all-weather-email] scheduler error:", e))
     runDueNhciIndexEmails().catch((e) => console.error("[nhci-index-email] scheduler error:", e))
   }, { timezone: "Asia/Shanghai" })
+
+  // 09:35 Beijing weekdays: ensure 全天候 paper-book is updated even when auto-email
+  // is disabled or SMTP fails. Each variant refreshes only if its asOf < today.
+  // recoverMissedExecutions keeps the book current after a server restart.
+  cron.schedule("35 9 * * 1-5", () => {
+    refreshAllWeatherBooksIfStale().catch((e) => console.error("[all-weather-book] daily refresh error:", e))
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
   // Dedicated 17:00 Beijing tick so a blocked FOF/cache minute does not drop
   // the whole CFMMC window. isDue still no-ops if the minute poll already ran it.

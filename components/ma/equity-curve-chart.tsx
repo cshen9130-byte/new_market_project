@@ -287,6 +287,56 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     if (partial) setCompareAccount(partial.account)
   }
 
+  const downloadCsv = () => {
+    const series = selectedAccount === "全部" ? displaySeries : displaySeries.filter(s => s.account === selectedAccount)
+    if (series.length === 0) return
+
+    const rows: string[] = []
+
+    if (series.length === 1) {
+      // Single account: include daily_pnl, cum_pnl, return_rate_pct, margin, equity
+      const s = series[0]
+      const capital = resolveStartCapital(s, capitalMode)
+      rows.push("date,daily_pnl,cum_pnl,return_rate_pct,margin_occupied,equity")
+      let prevCum = 0
+      for (const pt of s.displayData) {
+        const dailyPnl = pt.cumPnl - prevCum
+        prevCum = pt.cumPnl
+        const returnRate = capital > 0 ? (pt.cumPnl / capital) * 100 : 0
+        rows.push(`${pt.date},${dailyPnl.toFixed(2)},${pt.cumPnl.toFixed(2)},${returnRate.toFixed(4)},${(pt.margin ?? 0).toFixed(2)},${(pt.equity ?? 0).toFixed(2)}`)
+      }
+    } else {
+      // Multiple accounts: one return_rate_pct column per account
+      const accountNames = series.map(s => s.account)
+      rows.push(`date,${accountNames.map(a => `${a.toUpperCase()}_return_pct`).join(",")}`)
+      // Collect all dates
+      const dateSet = new Set<string>()
+      for (const s of series) for (const pt of s.displayData) dateSet.add(pt.date)
+      const dates = [...dateSet].sort()
+      for (const date of dates) {
+        const vals = series.map(s => {
+          const capital = resolveStartCapital(s, capitalMode)
+          const pt = s.displayData.find(p => p.date === date)
+          if (!pt) return ""
+          return capital > 0 ? ((pt.cumPnl / capital) * 100).toFixed(4) : "0"
+        })
+        rows.push(`${date},${vals.join(",")}`)
+      }
+    }
+
+    const bom = "\uFEFF"
+    const blob = new Blob([bom + rows.join("\n")], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    const label = selectedAccount === "全部" ? "全部账户" : selectedAccount.toUpperCase()
+    a.download = `${label}_收益率曲线_${from}_${to}.csv`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   const downloadProfile = async () => {
     if (!selectedAccount || selectedAccount === "全部") {
       setProfileError("请先选择一个账户")
@@ -758,6 +808,16 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
               >
                 <FileDown className={`h-3.5 w-3.5 ${profiling ? "animate-pulse" : ""}`} />
                 {profiling ? "生成中…" : "盘手侧写"}
+              </button>
+              <button
+                type="button"
+                onClick={downloadCsv}
+                disabled={displaySeries.length === 0}
+                title="下载当前视图的收益率数据（CSV）"
+                className="inline-flex items-center gap-1 rounded border border-input bg-background px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+              >
+                <FileDown className="h-3.5 w-3.5" />
+                导出 CSV
               </button>
               {/* Quick ranges */}
               {QUICK_RANGES.map(r => {

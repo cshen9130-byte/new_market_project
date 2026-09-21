@@ -41,7 +41,7 @@ function getPageContext(path: string, search = ""): string {
     if (tab === "quant-vs-subjective")
       return "当前页面：【量化vs主观】（位于 MOM分析 → 盘手历史交易复盘）。对比量化账户与主观账户的持仓与风险敞口。"
     if (tab === "quant-strategy")
-      return "当前页面：【量化策略分析】（位于 MOM分析 → 盘手历史交易复盘）。"
+      return "当前页面：【量化策略分析】（位于 MOM分析 → 盘手历史交易复盘）。可按账户看策略画像，或点「横向对比」对照各量化账户的绩效、权益曲线与画像。"
     if (tab === "equity-curve")
       return "当前页面：【盘手收益曲线】（位于 MOM分析 → 盘手历史交易复盘）。"
     if (tab === "variety-review")

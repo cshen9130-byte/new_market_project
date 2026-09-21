@@ -141,7 +141,7 @@ export function BatchAddStrategyDialog({
           </div>
 
           <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-            对已选产品批量添加团队策略或基准指数，仅内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+            对已选产品批量添加团队策略或基准指数，仅内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。同产品 A/B/C 类份额会同步同一策略标签。
           </div>
 
           {strategyEnabled && (

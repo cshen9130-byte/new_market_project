@@ -89,7 +89,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
     "mom",
     ["主观vs量化", "主观 vs 量化", "量化 vs 主观", "主观量化", "量化主观", "quant vs subjective", "主观和量化"],
   ),
-  p("mom-quant-strategy", "量化策略分析", "/ma/dashboard/mom-analysis/trader-analysis?tab=quant-strategy", "MOM分析 → 盘手历史交易复盘 → 量化策略分析", "mom", ["量化策略"]),
+  p("mom-quant-strategy", "量化策略分析", "/ma/dashboard/mom-analysis/trader-analysis?tab=quant-strategy", "MOM分析 → 盘手历史交易复盘 → 量化策略分析", "mom", ["量化策略", "横向对比"]),
   p("mom-carry", "业绩报酬测算", "/ma/dashboard/mom-analysis/carry-calc", "MOM分析 → 业绩报酬测算", "mom", ["提成", "报酬测算"]),
   p("mom-data-import", "数据导入", "/ma/dashboard/mom-analysis/data-import", "MOM分析 → 数据导入", "mom", ["导入核算"]),
   p("mom-anomaly", "异常监测", "/ma/dashboard/mom-analysis/anomaly-detection", "MOM分析 → 异常监测", "mom", ["异常检测"]),

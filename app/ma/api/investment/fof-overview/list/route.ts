@@ -138,6 +138,7 @@ interface FofOverviewRow {
   calmar_1y?: string | null
   first_entry_date: string | null
   latest_change_date?: string | null
+  latest_change_label?: string | null
 }
 
 function mapRow(r: {
@@ -187,6 +188,7 @@ function mapRow(r: {
     calmar_1y: sanitizeRiskMetricText(r.calmar_1y),
     first_entry_date: firstEntry,
     latest_change_date: firstEntry,
+    latest_change_label: firstEntry ? "首次入表" : null,
   }
 }
 

@@ -238,6 +238,7 @@ interface TrackRow {
   inception_date: string | null
   first_added_at: string | null
   latest_change_date: string | null
+  latest_change_label: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null

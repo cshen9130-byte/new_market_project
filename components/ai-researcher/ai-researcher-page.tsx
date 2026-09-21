@@ -33,9 +33,11 @@ import {
   FolderOpen,
   File as FileIcon,
   Building2,
+  Upload,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -100,6 +102,8 @@ interface Skill {
   keywordRequired?: boolean
   /** When true, require a private fund manager company name input */
   managerProfileRequired?: boolean
+  /** When true, allow dragging in product materials instead of (or in addition to) a fund name */
+  fileUploadOptional?: boolean
   /** API route path (relative to /ma/api/ai-researcher/) */
   apiPath?: string
 }
@@ -141,7 +145,7 @@ const SKILLS: Skill[] = [
   {
     id: "similar-fund",
     name: "相似基金匹配",
-    description: "输入一只基金，AI自动从数据库中计算净值相关性与绩效指标相似度，找出策略最接近的同类产品，并深度分析相似原因与差异点。",
+    description: "输入一只基金，或拖入该产品的净值图、路演PPT、纪要、净值Excel、估值表、结算单、融航报告等材料，AI从全库匹配最相似产品并生成对比报告。两种方式可单独或一起使用。",
     icon: <ScanSearch className="h-5 w-5" />,
     badge: "可用",
     colors: {
@@ -149,8 +153,9 @@ const SKILLS: Skill[] = [
       border: "rgb(20 184 166 / 0.35)",
       icon: "#14b8a6",
     },
-    steps: ["获取目标基金信息", "构建同类候选池", "计算净值相关性与指标相似度", "查询知识库补充信息", "生成相似度分析报告"],
+    steps: ["解析目标基金或上传材料", "构建同类候选池", "计算净值相关性与指标相似度", "查询知识库补充信息", "生成相似度分析报告"],
     singleFund: true,
+    fileUploadOptional: true,
     apiPath: "similar-fund",
   },
   {
@@ -623,6 +628,117 @@ function KbBrowserNode({
   )
 }
 
+const SIMILAR_FUND_FILE_ACCEPT = ".pdf,.doc,.docx,.ppt,.pptx,.pptm,.ppsx,.xls,.xlsx,.xlsm,.csv,.png,.jpg,.jpeg,.webp,.gif,.bmp,.zip,.rar,.txt,.md"
+const MAX_SIMILAR_FUND_FILES = 15
+
+function guessClientMaterialKind(fileName: string): string {
+  const n = fileName.toLowerCase()
+  if (/\.(zip|rar)$/i.test(fileName) || /融航/.test(fileName)) return "融航/压缩包"
+  if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName) || /净值图/.test(fileName)) return "净值图"
+  if (/估值表/.test(fileName)) return "估值表"
+  if (/结算单/.test(fileName)) return "结算单"
+  if (/净值/.test(fileName) && /\.(xlsx?|csv)$/i.test(fileName)) return "净值"
+  if (/路演|road.?show/.test(n) || /\.(pptx?|pptm|ppsx)$/i.test(fileName)) return "路演"
+  if (/纪要|笔记|note|会议/.test(n)) return "纪要"
+  return "材料"
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function MaterialDropZone({
+  files,
+  onChange,
+}: {
+  files: File[]
+  onChange: (files: File[]) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+
+  function mergeFiles(incoming: File[]) {
+    const byKey = new Map(files.map((file) => [`${file.name}:${file.size}:${file.lastModified}`, file]))
+    for (const file of incoming) {
+      byKey.set(`${file.name}:${file.size}:${file.lastModified}`, file)
+    }
+    onChange([...byKey.values()].slice(0, MAX_SIMILAR_FUND_FILES))
+  }
+
+  function handleFiles(list: FileList | File[] | null) {
+    if (!list) return
+    mergeFiles(Array.from(list))
+  }
+
+  return (
+    <div className="space-y-2">
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept={SIMILAR_FUND_FILE_ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          handleFiles(e.target.files)
+          e.target.value = ""
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragOver(true)
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          handleFiles(e.dataTransfer.files)
+        }}
+        className={cn(
+          "flex w-full flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed px-4 py-7 text-sm transition-colors",
+          dragOver
+            ? "border-teal-400 bg-teal-50/70 dark:bg-teal-950/20"
+            : "border-border bg-muted/30 hover:bg-muted/50",
+        )}
+      >
+        <Upload className="h-5 w-5 text-muted-foreground" />
+        <span className="font-medium">拖入或点击选择产品材料</span>
+        <span className="text-xs text-muted-foreground text-center leading-relaxed max-w-lg">
+          支持净值图、路演 PPT、路演纪要、净值 Excel、估值表、结算单、融航报告等，可一次拖入同一管理人的多份文件（最多 {MAX_SIMILAR_FUND_FILES} 份）
+        </span>
+      </button>
+      {files.length > 0 && (
+        <div className="space-y-1.5">
+          {files.map((file, index) => (
+            <div
+              key={`${file.name}:${file.size}:${file.lastModified}`}
+              className="flex items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-sm"
+            >
+              <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{file.name}</span>
+              <Badge variant="secondary" className="text-[10px] shrink-0">
+                {guessClientMaterialKind(file.name)}
+              </Badge>
+              <span className="text-xs text-muted-foreground shrink-0">{formatFileSize(file.size)}</span>
+              <button
+                type="button"
+                onClick={() => onChange(files.filter((_, i) => i !== index))}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main page component ────────────────────────────────────────────────────────
 
 export function AIResearcherPage() {
@@ -633,6 +749,8 @@ export function AIResearcherPage() {
   const [roadshowBeianHao, setRoadshowBeianHao] = useState("")
   const [backgroundKeyword, setBackgroundKeyword] = useState("")
   const [managerName, setManagerName] = useState("")
+  const [materialFiles, setMaterialFiles] = useState<File[]>([])
+  const [fileNote, setFileNote] = useState("")
   // ── KB folder browser ────────────────────────────────────────────────────
   const [kbBrowserOpen, setKbBrowserOpen] = useState(false)
   const [kbTree, setKbTree] = useState<KbFolder | null>(null)
@@ -722,11 +840,15 @@ export function AIResearcherPage() {
     setRoadshowBeianHao("")
     setBackgroundKeyword("")
     setManagerName("")
+    setMaterialFiles([])
+    setFileNote("")
   }
 
   function handleCancelForm() {
     setShowTaskForm(false)
     setSelectedSkillId(null)
+    setMaterialFiles([])
+    setFileNote("")
   }
 
   async function handleRunTask() {
@@ -738,6 +860,8 @@ export function AIResearcherPage() {
       if (!backgroundKeyword.trim()) return
     } else if (skill.noFundRequired) {
       if (!kbPath.trim()) return
+    } else if (skill.fileUploadOptional) {
+      if (selectedFunds.length === 0 && materialFiles.length === 0) return
     } else if (selectedFunds.length === 0) {
       return
     }
@@ -749,7 +873,11 @@ export function AIResearcherPage() {
         ? [backgroundKeyword.trim()]
         : skill.noFundRequired
           ? [kbPath.trim() || "全部知识库"]
-          : selectedFunds.map((f) => f.product_name)
+          : skill.fileUploadOptional && selectedFunds.length === 0
+            ? [`${materialFiles.length === 1
+              ? `上传材料：${materialFiles[0].name}`
+              : `上传材料（${materialFiles.length}份）`}${fileNote.trim() ? ` · ${fileNote.trim().slice(0, 24)}${fileNote.trim().length > 24 ? "…" : ""}` : ""}`]
+            : selectedFunds.map((f) => f.product_name)
 
     const initialSteps: TaskStep[] = skill.steps.map((title, i) => ({
       step: i + 1,
@@ -790,18 +918,37 @@ export function AIResearcherPage() {
         : skill.noFundRequired
           ? { kbPath: kbPath.trim(), beianHao: roadshowBeianHao.trim() }
           : skill.singleFund
-            ? { subject: subjects[0], kbPath }
+            ? { subject: subjects[0], kbPath, fileNote: fileNote.trim(), namedFund: selectedFunds.length > 0 }
             : { subjects, kbPath }
 
     try {
-      const res = await fetch(`/ma/api/ai-researcher/${apiPath}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: ctrl.signal,
-      })
+      const useFormData = Boolean(skill.fileUploadOptional && materialFiles.length > 0)
+      let res: Response
+      if (useFormData) {
+        const form = new FormData()
+        form.append("subject", selectedFunds[0]?.product_name ?? "")
+        form.append("namedFund", selectedFunds.length > 0 ? "1" : "0")
+        form.append("kbPath", kbPath)
+        form.append("fileNote", fileNote.trim())
+        for (const file of materialFiles) form.append("files", file)
+        res = await fetch(`/ma/api/ai-researcher/${apiPath}`, {
+          method: "POST",
+          body: form,
+          signal: ctrl.signal,
+        })
+      } else {
+        res = await fetch(`/ma/api/ai-researcher/${apiPath}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: ctrl.signal,
+        })
+      }
 
-      if (!res.ok || !res.body) throw new Error("请求失败")
+      if (!res.ok || !res.body) {
+        const errJson = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(errJson?.error || "请求失败")
+      }
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -1450,11 +1597,17 @@ export function AIResearcherPage() {
                     <div>
                       <label className="text-sm font-medium mb-1.5 block">
                         {selectedSkill.singleFund ? "目标基金" : "分析对象"}
-                        <span className="text-destructive ml-1">*</span>
+                        {selectedSkill.fileUploadOptional ? (
+                          <span className="text-xs text-muted-foreground ml-2 font-normal">可选</span>
+                        ) : (
+                          <span className="text-destructive ml-1">*</span>
+                        )}
                         <span className="text-xs text-muted-foreground ml-2 font-normal">
-                          {selectedSkill.singleFund
-                            ? "输入一只基金名称或备案号，AI将自动搜索相似基金"
-                            : "输入基金名称或备案号，可添加多个进行对比"}
+                          {selectedSkill.fileUploadOptional
+                            ? "输入一只基金名称或备案号；也可只拖入下方材料"
+                            : selectedSkill.singleFund
+                              ? "输入一只基金名称或备案号，AI将自动搜索相似基金"
+                              : "输入基金名称或备案号，可添加多个进行对比"}
                         </span>
                       </label>
                       <FundPicker
@@ -1464,6 +1617,46 @@ export function AIResearcherPage() {
                         placeholder={selectedSkill.singleFund ? "输入目标基金名称或备案号..." : undefined}
                       />
                     </div>
+                    {selectedSkill.fileUploadOptional && (
+                      <div>
+                        <div className="relative my-1">
+                          <div className="absolute inset-0 flex items-center">
+                            <span className="w-full border-t" />
+                          </div>
+                          <div className="relative flex justify-center">
+                            <span className="bg-card px-2 text-xs text-muted-foreground">或拖入材料</span>
+                          </div>
+                        </div>
+                        <label className="text-sm font-medium mb-1.5 block">
+                          产品材料
+                          {selectedFunds.length === 0 ? (
+                            <span className="text-destructive ml-1">*</span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground ml-2 font-normal">可选</span>
+                          )}
+                          <span className="text-xs text-muted-foreground ml-2 font-normal">
+                            与目标基金二选一即可，也可同时使用
+                          </span>
+                        </label>
+                        <MaterialDropZone files={materialFiles} onChange={setMaterialFiles} />
+                        <div className="mt-3">
+                          <label className="text-sm font-medium mb-1.5 block">
+                            材料说明
+                            <span className="text-xs text-muted-foreground ml-2 font-normal">可选，当作提示词</span>
+                          </label>
+                          <Textarea
+                            value={fileNote}
+                            onChange={(e) => setFileNote(e.target.value)}
+                            rows={3}
+                            placeholder="净值图本身看不出策略。可写例如：这是一只 CTA / 量化期货产品"
+                            className="min-h-[72px] resize-y"
+                          />
+                          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                            候选池只按这段文字检索策略或名称，不会从净值曲线推断 CTA / 期货。
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     <div>
                       <label className="text-sm font-medium mb-1.5 block">
                         知识库路径
@@ -1494,7 +1687,9 @@ export function AIResearcherPage() {
                           ? !backgroundKeyword.trim()
                           : selectedSkill.noFundRequired
                             ? !kbPath.trim()
-                            : selectedFunds.length === 0
+                            : selectedSkill.fileUploadOptional
+                              ? selectedFunds.length === 0 && materialFiles.length === 0
+                              : selectedFunds.length === 0
                     }
                     className="gap-2"
                   >
@@ -1513,6 +1708,11 @@ export function AIResearcherPage() {
                     {!selectedSkill.keywordRequired && !selectedSkill.noFundRequired && selectedFunds.length > 0 && (
                       <Badge variant="secondary" className="ml-1 text-xs">
                         {selectedSkill.singleFund ? selectedFunds[0].product_name : `${selectedFunds.length}个对象`}
+                      </Badge>
+                    )}
+                    {selectedSkill.fileUploadOptional && materialFiles.length > 0 && (
+                      <Badge variant="secondary" className="ml-1 text-xs">
+                        {materialFiles.length}份材料
                       </Badge>
                     )}
                   </Button>

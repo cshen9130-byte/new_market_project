@@ -3,6 +3,19 @@ import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
 import { getPrefix } from "@/lib/server/prod-utils"
 import { QUANT_ACCOUNT_IDS, accountNumericId } from "@/lib/ma/quant-accounts"
+import {
+  computeRegimeFactors,
+  fitUnfitFromFactors,
+  legacyRegimeFromFactors,
+  lookbackFrom,
+  type ContractLeg,
+  type FactorFamily,
+} from "@/lib/ma/quant-regime-factors"
+import {
+  AKSHARE_CONTINUOUS,
+  inferQuantStrategy,
+  productFromAkshare,
+} from "@/lib/ma/quant-strategy-infer"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -151,6 +164,8 @@ function buildPortrait(p: {
   shortPnl: number
   regime: { key: string; pnl: number; days: number }[]
   sectors: { sector: string; pnl: number }[]
+  factorFamilies?: FactorFamily[]
+  capture?: { up: number | null; down: number | null }
 }): { strategyLabel: string; summary: string; items: PortraitItem[] } {
   const thin = p.days < 20 || p.nCloses < 30
   const payoff = p.avgLoss < 0 ? p.avgWin / Math.abs(p.avgLoss) : null
@@ -176,33 +191,38 @@ function buildPortrait(p: {
 
   const regimeMap = Object.fromEntries(p.regime.map((x) => [x.key, x]))
   const better = (a: string, b: string) => (regimeMap[a]?.pnl ?? 0) >= (regimeMap[b]?.pnl ?? 0) ? a : b
-  const trendVsRange = better("trend", "range")
-  const upVsDown = better("up", "down")
-  const hiVsLo = better("highVol", "lowVol")
-
-  const fitBits: string[] = []
-  const unfitBits: string[] = []
-  if (trendVsRange === "trend") {
-    fitBits.push("趋势市（南华指数 20 日方向清晰）")
-    unfitBits.push("震荡市")
-  } else {
-    fitBits.push("震荡 / 均值回归市")
-    unfitBits.push("单边趋势市")
+  const fromFactors = p.factorFamilies?.length ? fitUnfitFromFactors(p.factorFamilies) : { fit: [], unfit: [] }
+  const fitBits: string[] = [...fromFactors.fit]
+  const unfitBits: string[] = [...fromFactors.unfit]
+  if (!fitBits.length) {
+    const trendVsRange = better("trend", "range")
+    const upVsDown = better("up", "down")
+    const hiVsLo = better("highVol", "lowVol")
+    if (trendVsRange === "trend") {
+      fitBits.push("趋势市（南华指数 20 日方向清晰）")
+      unfitBits.push("震荡市")
+    } else {
+      fitBits.push("震荡 / 均值回归市")
+      unfitBits.push("单边趋势市")
+    }
+    if (upVsDown === "up") {
+      fitBits.push("商品指数上涨日")
+      unfitBits.push("商品指数下跌日")
+    } else {
+      fitBits.push("商品指数下跌日")
+      unfitBits.push("商品指数上涨日")
+    }
+    if (hiVsLo === "highVol") {
+      fitBits.push("高波动环境")
+      unfitBits.push("低波动环境")
+    } else {
+      fitBits.push("低波动环境")
+      unfitBits.push("波动突然放大")
+    }
   }
-  if (upVsDown === "up") {
-    fitBits.push("商品指数上涨日")
-    unfitBits.push("商品指数下跌日")
-  } else {
-    fitBits.push("商品指数下跌日")
-    unfitBits.push("商品指数上涨日")
-  }
-  if (hiVsLo === "highVol") {
-    fitBits.push("高波动环境")
-    unfitBits.push("低波动环境")
-  } else {
-    fitBits.push("低波动环境")
-    unfitBits.push("波动突然放大")
-  }
+  const captureBit = p.capture?.up != null && p.capture?.down != null
+    ? `南华上涨捕获 ${p.capture.up.toFixed(2)}，下跌捕获 ${p.capture.down.toFixed(2)}。`
+    : ""
 
   const sectorsSorted = [...p.sectors].sort((a, b) => b.pnl - a.pnl)
   const posSectors = sectorsSorted.filter((s) => s.pnl > 0).slice(0, 3)
@@ -287,7 +307,7 @@ function buildPortrait(p: {
   const summary = `${prefix} 更像「${strategyLabel}」。日胜率 ${fmtPct(p.dayWinRate * 100, 0)}，平仓胜率 ${fmtPct(wr * 100, 0)}。`
 
   const items: PortraitItem[] = [
-    { title: "策略类型", detail: `${strategyLabel}。${hold != null ? `持仓中位数约 ${hold.toFixed(1)} 天。` : ""}与南华商品指数日收益相关 ${p.corrNhci == null ? "样本不足" : r2(p.corrNhci)}。`, tone: "neutral" },
+    { title: "策略类型", detail: `${strategyLabel}。${hold != null ? `持仓中位数约 ${hold.toFixed(1)} 天。` : ""}与南华商品指数日收益相关 ${p.corrNhci == null ? "样本不足" : r2(p.corrNhci)}。${captureBit ? ` ${captureBit}` : ""}`, tone: "neutral" },
     { title: "适合的市场", detail: fitBits.join("；") + "。", tone: "good" },
     { title: "不适合的市场", detail: unfitBits.join("；") + "。", tone: "bad" },
     { title: "亏损之后", detail: afterLoss, tone: lossTone },
@@ -314,20 +334,12 @@ async function _GET(req: Request) {
     }
 
     const isoToday = new Date().toISOString().slice(0, 10)
-    const defaultFrom = (() => {
-      const d = new Date()
-      d.setMonth(d.getMonth() - 6)
-      return d.toISOString().slice(0, 10)
-    })()
-    const from = sp.get("from") || defaultFrom
+    const from = sp.get("from") || "2025-01-01"
     const to = sp.get("to") || isoToday
-    const nhFrom = (() => {
-      const d = new Date(`${from}T00:00:00Z`)
-      d.setUTCDate(d.getUTCDate() - 40)
-      return d.toISOString().slice(0, 10)
-    })()
+    const nhFrom = lookbackFrom(from, 400)
+    const NH_CODES = ["NHCI.NH", "NHAI.NH", "NHECI.NH", "NHFI.NH", "NHPMI.NH", "NHNEI.NH", "NHNFI.NH"]
 
-    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows] = await Promise.all([
+    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows, clusterRows, contractRows, openInfRows, posInfRows] = await Promise.all([
       query<{
         account: string; date: string; pnl: string; equity: string; margin: string; risk: string
       }>(
@@ -344,14 +356,15 @@ async function _GET(req: Request) {
          ORDER BY "交易日期"`,
         [accountId, from, to],
       ),
-      query<{ date: string; close: string }>(
-        `SELECT trade_date::text AS date, close::text AS close
+      query<{ date: string; code: string; close: string }>(
+        `SELECT trade_date::text AS date, code, close::text AS close
          FROM raw_nanhua_indices_daily
-         WHERE code = 'NHCI.NH' AND close IS NOT NULL AND close > 0
-           AND trade_date BETWEEN $1::date AND $2::date
-         ORDER BY trade_date`,
-        [nhFrom, to],
-      ).catch(() => [] as { date: string; close: string }[]),
+         WHERE code = ANY($1::text[])
+           AND close IS NOT NULL AND close > 0
+           AND trade_date BETWEEN $2::date AND $3::date
+         ORDER BY trade_date, code`,
+        [NH_CODES, nhFrom, to],
+      ).catch(() => [] as { date: string; code: string; close: string }[]),
       query<{
         product: string; pnl: string; lots: string; win_lots: string; loss_lots: string
         win_pnl: string; loss_pnl: string; avg_hold_win: string | null; avg_hold_loss: string | null
@@ -483,9 +496,101 @@ async function _GET(req: Request) {
          GROUP BY 1`,
         [accountId, from, to],
       ),
+      query<{ date: string; cluster: string }>(
+        `SELECT trade_date::text AS date, cluster::text AS cluster
+         FROM current_market_prediction
+         WHERE freq = 'daily'
+           AND trade_date BETWEEN $1::date AND $2::date
+           AND cluster IS NOT NULL`,
+        [from, to],
+      ).catch(() => [] as { date: string; cluster: string }[]),
+      query<{
+        date: string; product: string; rk: string; px: string; oi: string
+        doi: string; pct: string; volume: string; contract: string
+      }>(
+        `WITH parsed AS (
+           SELECT
+             trade_date,
+             UPPER(REGEXP_REPLACE(SPLIT_PART(TRIM(contract), '.', 1), '[0-9].*$', '')) AS product,
+             SPLIT_PART(TRIM(contract), '.', 1) AS root,
+             COALESCE(NULLIF(clear, 0), NULLIF(close, 0), 0) AS px,
+             COALESCE(hqoi, 0) AS oi,
+             COALESCE(change_oi, 0) AS doi,
+             COALESCE(pct_change, pct_change_close, pct_change_clear, 0) AS pct,
+             COALESCE(volume, 0) AS volume
+           FROM raw_futures_contracts_daily
+           WHERE trade_date BETWEEN $1::date AND $2::date
+             AND COALESCE(clear, close) > 0
+             AND COALESCE(hqoi, 0) > 0
+         ),
+         ranked AS (
+           SELECT *,
+             ROW_NUMBER() OVER (PARTITION BY trade_date, product ORDER BY oi DESC) AS rk
+           FROM parsed
+           WHERE product ~ '^[A-Z]{1,2}$'
+         )
+         SELECT
+           trade_date::text AS date,
+           product,
+           rk::text AS rk,
+           px::text AS px,
+           oi::text AS oi,
+           doi::text AS doi,
+           pct::text AS pct,
+           volume::text AS volume,
+           root AS contract
+         FROM ranked
+         WHERE rk <= 2`,
+        [from, to],
+      ).catch(() => [] as {
+        date: string; product: string; rk: string; px: string; oi: string
+        doi: string; pct: string; volume: string; contract: string
+      }[]),
+      query<{ date: string; product: string; buy_open: string; sell_open: string }>(
+        `SELECT
+           "交易日期"::text AS date,
+           UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
+           SUM(CASE WHEN TRIM("买/卖") LIKE '%买%' AND TRIM("开/平") LIKE '%开%' THEN ${numExpr("手数")} ELSE 0 END)::text AS buy_open,
+           SUM(CASE WHEN TRIM("买/卖") LIKE '%卖%' AND TRIM("开/平") LIKE '%开%' THEN ${numExpr("手数")} ELSE 0 END)::text AS sell_open
+         FROM mom_futures_trade_details
+         WHERE ${ACC}
+           AND "交易日期"::date BETWEEN $2::date AND $3::date
+           AND "合约" IS NOT NULL
+         GROUP BY 1, 2`,
+        [accountId, from, to],
+      ).catch(() => [] as { date: string; product: string; buy_open: string; sell_open: string }[]),
+      query<{ date: string; product: string; buy_lots: string; sell_lots: string; mv: string }>(
+        `SELECT
+           "交易日期"::text AS date,
+           UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
+           SUM(${numExpr("买持仓")})::text AS buy_lots,
+           SUM(${numExpr("卖持仓")})::text AS sell_lots,
+           SUM(${numExpr("持仓市値")})::text AS mv
+         FROM mom_position_details
+         WHERE ${ACC}
+           AND "交易日期"::date BETWEEN $2::date AND $3::date
+           AND "合约" IS NOT NULL
+           AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
+         GROUP BY 1, 2`,
+        [accountId, from, to],
+      ).catch(() => [] as { date: string; product: string; buy_lots: string; sell_lots: string; mv: string }[]),
     ])
 
     const account = dailyRows[0]?.account || `rx${accountId}`
+
+    const pxLookback = lookbackFrom(from, 120)
+    const akCodes = [...new Set(openInfRows.map((r) => AKSHARE_CONTINUOUS[r.product]).filter(Boolean))]
+    const inferPxRows = akCodes.length
+      ? await query<{ date: string; code: string; close: string; volume: string }>(
+        `SELECT trade_date::text AS date, code, close::text AS close, COALESCE(volume, 0)::text AS volume
+         FROM raw_akshare_futures_daily
+         WHERE code = ANY($1::text[])
+           AND trade_date BETWEEN $2::date AND $3::date
+           AND close IS NOT NULL AND CAST(close AS float8) > 0
+         ORDER BY code, trade_date`,
+        [akCodes, pxLookback, to],
+      ).catch(() => [] as { date: string; code: string; close: string; volume: string }[])
+      : []
 
     const equity: {
       date: string; pnl: number; cumPnl: number; equity: number; margin: number; riskPct: number; ddPct: number
@@ -528,43 +633,21 @@ async function _GET(req: Request) {
     const sharpe = rets.length >= 10 && stdev(rets) > 0 ? (mean(rets) / stdev(rets)) * Math.sqrt(252) : null
     const maxDdPct = equity.length ? Math.min(...equity.map((x) => x.ddPct)) : 0
 
-    const nhci = nhciRows.map((r) => ({ date: r.date.slice(0, 10), close: toNum(r.close) }))
+    const nhByCode: Record<string, { date: string; close: number }[]> = {}
+    for (const r of nhciRows) {
+      const code = r.code
+      const date = r.date.slice(0, 10)
+      const close = toNum(r.close)
+      if (!code || close <= 0) continue
+      if (!nhByCode[code]) nhByCode[code] = []
+      nhByCode[code].push({ date, close })
+    }
     const nhciRet = new Map<string, number>()
-    const nhciVol = new Map<string, number>()
-    const nhciTrend = new Map<string, number>()
-    const nhciTs = new Map<string, number>()
-    for (let i = 1; i < nhci.length; i++) {
-      if (nhci[i - 1].close > 0) {
-        nhciRet.set(nhci[i].date, nhci[i].close / nhci[i - 1].close - 1)
+    const nhciPts = nhByCode["NHCI.NH"] ?? []
+    for (let i = 1; i < nhciPts.length; i++) {
+      if (nhciPts[i - 1].close > 0) {
+        nhciRet.set(nhciPts[i].date, nhciPts[i].close / nhciPts[i - 1].close - 1)
       }
-    }
-    const vols: number[] = []
-    for (let i = 20; i < nhci.length; i++) {
-      const slice = []
-      for (let j = i - 19; j <= i; j++) {
-        const r = nhciRet.get(nhci[j].date)
-        if (r != null) slice.push(r)
-      }
-      const v = stdev(slice)
-      nhciVol.set(nhci[i].date, v)
-      vols.push(v)
-      const prev = nhci[i - 20]?.close
-      if (prev > 0) {
-        const tr = nhci[i].close / prev - 1
-        nhciTrend.set(nhci[i].date, tr)
-        nhciTs.set(nhci[i].date, v > 0 ? Math.abs(tr) / (v * Math.sqrt(20)) : 0)
-      }
-    }
-    const medVol = [...vols].sort((a, b) => a - b)[Math.floor(vols.length / 2)] ?? 0
-
-    type Bucket = { pnl: number; days: number; wins: number }
-    const regimeAcc: Record<string, Bucket> = {
-      up: { pnl: 0, days: 0, wins: 0 },
-      down: { pnl: 0, days: 0, wins: 0 },
-      trend: { pnl: 0, days: 0, wins: 0 },
-      range: { pnl: 0, days: 0, wins: 0 },
-      highVol: { pnl: 0, days: 0, wins: 0 },
-      lowVol: { pnl: 0, days: 0, wins: 0 },
     }
     const px: number[] = []
     const py: number[] = []
@@ -573,42 +656,28 @@ async function _GET(req: Request) {
       if (ret != null) {
         px.push(d.pnl)
         py.push(ret)
-        const side = ret >= 0 ? "up" : "down"
-        regimeAcc[side].pnl += d.pnl
-        regimeAcc[side].days += 1
-        if (d.pnl > 0) regimeAcc[side].wins += 1
-      }
-      const vol = nhciVol.get(d.date)
-      if (vol != null && medVol > 0) {
-        const k = vol >= medVol ? "highVol" : "lowVol"
-        regimeAcc[k].pnl += d.pnl
-        regimeAcc[k].days += 1
-        if (d.pnl > 0) regimeAcc[k].wins += 1
-      }
-      const ts = nhciTs.get(d.date)
-      if (ts != null) {
-        const k = ts >= 1 ? "trend" : "range"
-        regimeAcc[k].pnl += d.pnl
-        regimeAcc[k].days += 1
-        if (d.pnl > 0) regimeAcc[k].wins += 1
       }
     }
     const corrNhci = pearson(px, py)
-    const REGIME_LABEL: Record<string, string> = {
-      up: "商品上涨日",
-      down: "商品下跌日",
-      trend: "趋势市",
-      range: "震荡市",
-      highVol: "高波动",
-      lowVol: "低波动",
-    }
-    const regime = Object.entries(regimeAcc).map(([key, v]) => ({
-      key,
-      label: REGIME_LABEL[key] ?? key,
-      pnl: r0(v.pnl),
-      days: v.days,
-      winRate: v.days ? r2((v.wins / v.days) * 100) : 0,
+
+    const contracts: ContractLeg[] = contractRows.map((r) => ({
+      date: r.date.slice(0, 10),
+      product: r.product,
+      rk: toNum(r.rk),
+      px: toNum(r.px),
+      oi: toNum(r.oi),
+      doi: toNum(r.doi),
+      pct: toNum(r.pct),
+      volume: toNum(r.volume),
+      contract: r.contract,
     }))
+    const regimeFactors = computeRegimeFactors({
+      equity: equity.map((e) => ({ date: e.date, pnl: e.pnl, equity: e.equity })),
+      nhByCode,
+      contracts,
+      clusters: clusterRows.map((r) => ({ date: r.date.slice(0, 10), cluster: Math.round(toNum(r.cluster)) })),
+    })
+    const regime = legacyRegimeFromFactors(regimeFactors)
 
     type CloseAgg = {
       closePnl: number; lots: number; winLots: number; lossLots: number
@@ -856,6 +925,48 @@ async function _GET(req: Request) {
     const hedgeAvg = hedge.length ? mean(hedge.map((h) => h.ratio)) / 100 : 0
     const lockShare = hedge.length ? mean(hedge.map((h) => h.lockShare)) / 100 : 0
 
+    const nightLotsShare = (session.night.lots + session.day.lots) > 0
+      ? session.night.lots / (session.night.lots + session.day.lots)
+      : 0
+    const inference = inferQuantStrategy({
+      opens: openInfRows.map((r) => ({
+        date: r.date.slice(0, 10),
+        product: r.product,
+        buyOpen: toNum(r.buy_open),
+        sellOpen: toNum(r.sell_open),
+      })),
+      positions: posInfRows.map((r) => ({
+        date: r.date.slice(0, 10),
+        product: r.product,
+        sector: getSector(r.product),
+        buyLots: toNum(r.buy_lots),
+        sellLots: toNum(r.sell_lots),
+        mv: toNum(r.mv),
+      })),
+      prices: inferPxRows.map((r) => ({
+        product: productFromAkshare(r.code),
+        date: r.date.slice(0, 10),
+        close: toNum(r.close),
+        volume: toNum(r.volume),
+      })),
+      bookDays: equity.map((d) => ({
+        date: d.date,
+        equity: d.equity,
+        margin: d.margin,
+        riskPct: d.riskPct,
+      })),
+      nhci: nhciPts,
+      meta: {
+        medianHold,
+        hedgeAvg,
+        lockShare,
+        nightLotsShare,
+        corrNhci,
+        from,
+        to,
+      },
+    })
+
     const portrait = buildPortrait({
       days: equity.length,
       nCloses,
@@ -882,6 +993,8 @@ async function _GET(req: Request) {
       shortPnl: longShort.shortPnl,
       regime,
       sectors,
+      factorFamilies: regimeFactors.families,
+      capture: regimeFactors.capture,
     })
 
     return NextResponse.json({
@@ -907,10 +1020,13 @@ async function _GET(req: Request) {
         lockShareAvg: r2(lockShare * 100),
         nCloses,
         corrNhci: corrNhci == null ? null : r2(corrNhci),
+        upCapture: regimeFactors.capture.up,
+        downCapture: regimeFactors.capture.down,
       },
       portrait,
       equity,
       regime,
+      regimeFactors,
       sectors,
       products,
       payoff: {
@@ -932,6 +1048,7 @@ async function _GET(req: Request) {
       afterMove,
       hedge,
       longShort,
+      inference,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -943,4 +1060,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("quant-strategy-v2", _GET)
+export const GET = withMomCache("quant-strategy-v10", _GET)
