@@ -34,6 +34,9 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   // + fund_name=金舆木盛那平江1号, so auto-resolution linked 那平江 → SBVC85 (wrong page).
   // Custody 估值表: SCP742金舆木盛那平江1号…
   金舆木盛那平江1号: "SCP742",
+  // Citics 【基金净值】 SAFFP4; AMAC / 团队跟踪 display is 睿松 (custody 资产名称 still 信裕).
+  睿松量化选股进取1号: "SAFFP4",
+  信裕量化选股进取1号: "SAFFP4",
 }
 
 /** Known 托管券商 for 在管产品 when registration tables are incomplete. */

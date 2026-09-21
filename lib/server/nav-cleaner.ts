@@ -4,6 +4,7 @@ import path from "path"
 import * as XLSX from "xlsx"
 
 import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
+import { canonicalizeEmailProductCode } from "@/lib/server/fund-name-match"
 
 export type NavCleanerRow = {
   date: string
@@ -46,11 +47,11 @@ type DateOrder = "ymd" | "mdy" | "dmy"
 const TEMPLATE_PATH = path.join(process.cwd(), "NAV_template", "上传净值模版.xlsx")
 
 const PRODUCT_CODE_HEADER_PATTERNS = [
-  /产品代码|基金代码|证券代码|协会备案编码|备案编码|备案编号|产品编号|基金编号|productcode|fundcode|beian/i,
+  /产品代码|基金代码|证券代码|资产代码|协会备案编码|协会备案代码|备案编码|备案编号|产品编号|基金编号|productcode|fundcode|beian/i,
 ]
 
 const PRODUCT_NAME_HEADER_PATTERNS = [
-  /产品名称|基金名称|证券名称|productname|fundname/i,
+  /产品名称|基金名称|证券名称|资产名称|productname|fundname/i,
 ]
 
 const PRODUCT_CODE_VALUE_RE = /^[A-Z]{1,6}\d{2,6}[A-Z]?$/
@@ -530,7 +531,10 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
         .map((row) => stringifyCell(row[index]).trim().toUpperCase())
         .filter(Boolean)
       if (values.length === 0) continue
-      const codeCount = values.filter((value) => PRODUCT_CODE_VALUE_RE.test(value)).length
+      const codeCount = values.filter((value) => {
+        const canon = canonicalizeEmailProductCode(value)
+        return PRODUCT_CODE_VALUE_RE.test(canon || value)
+      }).length
       if (codeCount / values.length >= 0.8) {
         productCodeIndex = index
         break
@@ -695,7 +699,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
     const adjustedNav = adjustedIndex != null ? parseNumberValue(row[adjustedIndex]) : null
     const rowProductCode =
       productCodeIndex != null
-        ? stringifyCell(row[productCodeIndex]).trim().toUpperCase() || null
+        ? canonicalizeEmailProductCode(stringifyCell(row[productCodeIndex])) || null
         : null
     const rowFundName =
       productNameIndex != null

@@ -866,11 +866,18 @@ const CITICS_ANNOUNCE_ROW_RE = new RegExp(
   "u",
 )
 
-/** Citics Auto-Disclosure one-row 【基金净值】 — not a YYYYMMDD-YYYYMMDD history workbook. */
+/**
+ * Citics Auto-Disclosure one-row 【基金净值】 body/form.
+ * YYYYMMDD-YYYYMMDD in the subject is a history-file name, not a reason to skip
+ * label/value announcement text (SAFFP4 睿松量化选股进取1号).
+ */
 export function isCiticsFundNavAnnouncementText(subject: string, bodyText: string): boolean {
   const blob = `${subject}\n${bodyText}`
-  if (/20\d{6}-20\d{6}/.test(blob)) return false
-  if (/【基金净值】/u.test(blob)) return true
+  // Body-history tables use extractNavHistoryFromBody; do not swallow those
+  // when the only 【基金净值】 hit is a date-range filename and the body has
+  // no announcement labels.
+  const hasRange = /20\d{6}-20\d{6}/.test(blob)
+  if (/【基金净值】/u.test(blob) && !hasRange) return true
   return (
     /估值日期/u.test(bodyText)
     && /协会备案代码/u.test(bodyText)

@@ -21,6 +21,7 @@ import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
+import { teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -33,6 +34,8 @@ declare global {
   var _trackingListStockCostCacheBustV3: boolean | undefined
   // One-shot: drop list JSON cached before 开放日/费率 sortable ORDER BY.
   var _trackingListElementSortCacheBustV1: boolean | undefined
+  // One-shot: drop 全部 results that still included the hidden BFL catalog.
+  var _trackingListVisiblePoolsCacheBustV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -460,23 +463,6 @@ function sourceIndependentStrategyExprs(
   }
 }
 
-/** Team 「全部」: every shared team pool, including type6 运维池. */
-function teamAllFundsUnionSql(): string {
-  return `
-        SELECT beian_hao, product_name, 1 AS priority, NULL::timestamptz AS added_at
-          FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 2, imported_at FROM tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 3, imported_at FROM selected_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 4, imported_at FROM core_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 5, imported_at FROM hy_tracking_pool WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 6, imported_at FROM fof_mom_tracking WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, COALESCE(fund_short_name, fund_name), 7, imported_at
-          FROM type6_ops_team_full WHERE register_number IS NOT NULL
-        UNION ALL SELECT register_number, product_name, 8, imported_at FROM user_custom_pool
-          WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
-  `
-}
-
 function buildCachedFromClause(
   pool: string,
   isCustomPool: boolean,
@@ -495,7 +481,7 @@ function buildCachedFromClause(
           f.priority ASC
         ))[1] AS product_name,
         ${SHANGHAI_DATE_EXPR("MIN(f.added_at)")} AS first_added_at
-      FROM (${teamAllFundsUnionSql()}
+      FROM (${teamVisibleTrackingFundsUnionSql()}
       ) f
       GROUP BY f.beian_hao
     ) i
@@ -898,6 +884,10 @@ export async function GET(req: Request) {
     global._trackingListElementSortCacheBustV1 = true
     invalidateListResponseCache()
   }
+  if (!global._trackingListVisiblePoolsCacheBustV1) {
+    global._trackingListVisiblePoolsCacheBustV1 = true
+    invalidateListResponseCache("all")
+  }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
     "@/lib/server/account-risk-direct-nav-sync"
   )
@@ -1044,7 +1034,7 @@ export async function GET(req: Request) {
 
   const sourceCte = pool === "all"
     ? `WITH all_funds AS (
-        ${teamAllFundsUnionSql()}
+        ${teamVisibleTrackingFundsUnionSql()}
       ),
       deduped AS (
         SELECT DISTINCT ON (beian_hao) beian_hao, product_name

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -7,7 +8,7 @@ export const dynamic = "force-dynamic"
 /**
  * Returns all beian_hao values that are currently tracked, split by scope:
  *   mine  — user_custom_pool rows whose pool_key starts with "mine_"
- *   team  — visible shared team pools only (JY / 精选 / 核心 / hy / FOF / custom).
+ *   team  — funds in currently visible sidebar 跟踪产品池.
  *           Hidden BFL catalog tables (private_fund_info_bfl, type6_ops_team_full)
  *           must not count: they are the fund universe, not "added to 团队跟踪".
  */
@@ -21,19 +22,8 @@ export async function GET() {
            AND (pool_key = 'mine_default' OR pool_key LIKE 'mine_custom_%')`,
       ),
       query<{ register_number: string }>(
-        `SELECT register_number FROM tracking_pool WHERE register_number IS NOT NULL
-         UNION
-         SELECT register_number FROM selected_pool WHERE register_number IS NOT NULL
-         UNION
-         SELECT register_number FROM core_pool WHERE register_number IS NOT NULL
-         UNION
-         SELECT register_number FROM hy_tracking_pool WHERE register_number IS NOT NULL
-         UNION
-         SELECT register_number FROM fof_mom_tracking WHERE register_number IS NOT NULL
-         UNION
-         SELECT register_number FROM user_custom_pool
-           WHERE register_number IS NOT NULL
-             AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')`,
+        `SELECT DISTINCT beian_hao AS register_number
+         FROM (${teamVisibleTrackingFundsUnionSql()}) t`,
       ),
     ])
 

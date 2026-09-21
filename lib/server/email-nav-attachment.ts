@@ -310,11 +310,24 @@ export async function extractNavFromCiticsAnnouncementPdf(
   return extractNavRowsFromCiticsAnnouncementText(text, filename, subject)
 }
 
-/** Citics Auto-Disclosure one-day 【基金净值】 xlsx — not YYYYMMDD-YYYYMMDD history. */
+/** Citics Auto-Disclosure 【基金净值】 xlsx (one-row form or YYYYMMDD-YYYYMMDD history). */
 function isCiticsFundNavAnnouncementFile(filename: string, subject: string): boolean {
+  return /【基金净值】/u.test(`${filename}\n${subject}`)
+}
+
+/** Citics history xlsx: 对外名_托管名(总)__from-to — keep the disclosure/subject name. */
+function pickCiticsRowFundName(
+  rowName: string | null,
+  subjectName: string | null,
+  filename: string,
+  subject: string,
+): string | null {
+  if (!rowName) return subjectName
+  if (!subjectName) return rowName
+  if (rowName === subjectName) return rowName
   const blob = `${filename}\n${subject}`
-  if (/20\d{6}-20\d{6}/.test(blob)) return false
-  return /【基金净值】/u.test(blob)
+  if (blob.includes(rowName) && blob.includes(subjectName)) return subjectName
+  return rowName
 }
 
 function parseLooseNavDate(raw: string): string | null {
@@ -378,10 +391,11 @@ function extractCiticsDailyNavListRows(
     const cumulativeNav = Number.isFinite(cumRaw) && cumRaw > 0 ? cumRaw : null
     const productCode =
       canonicalizeEmailProductCode(codeIdx >= 0 ? cells[codeIdx] ?? "" : "") || meta.productCode
-    const fundName =
+    const rowFundName =
       nameIdx >= 0 && /[\u4e00-\u9fff]/.test(cells[nameIdx] ?? "")
         ? normalizeFundDisplayName(cells[nameIdx] ?? "")
-        : meta.fundName
+        : null
+    const fundName = pickCiticsRowFundName(rowFundName, meta.fundName, filename, subject)
     const key = `${productCode ?? ""}|${navDate}`
     if (seen.has(key)) continue
     seen.add(key)

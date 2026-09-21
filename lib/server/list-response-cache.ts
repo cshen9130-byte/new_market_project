@@ -86,7 +86,7 @@ export function buildListResponseCacheKey(opts: {
   // requests that omit the param entirely (both produce identical SQL).
   const normOrgSize = opts.orgSize === "不限" ? "" : opts.orgSize
   return JSON.stringify({
-    v: 3,
+    v: 4,
     pool: opts.pool, pg: opts.page, ps: opts.pageSize,
     sk: opts.sortKey, sd: opts.sortDir,
     kw: opts.keyword, l1: opts.strategyL1, l2: opts.strategyL2, l3: opts.strategyL3,

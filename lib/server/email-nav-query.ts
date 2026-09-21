@@ -337,6 +337,24 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   return current
 }
 
+/**
+ * Citics 【基金净值】 history xlsx keeps the custody/TA name (信裕) next to the
+ * current disclosure name (睿松). Matching must treat them as one product.
+ */
+const EMAIL_FUND_RENAME_ALIASES: ReadonlyArray<readonly [string, string]> = [
+  ["睿松量化选股进取1号", "信裕量化选股进取1号"],
+]
+
+function expandFundRenameAliases(names: Iterable<string>): string[] {
+  const out = new Set(names)
+  for (const [left, right] of EMAIL_FUND_RENAME_ALIASES) {
+    const values = [...out]
+    if (values.some((n) => n.includes(left))) out.add(right)
+    if (values.some((n) => n.includes(right))) out.add(left)
+  }
+  return Array.from(out)
+}
+
 /** Collect every name variant we know for a fund (for email matching). */
 export function collectFundNameAliases(
   productName: string,
@@ -348,7 +366,7 @@ export function collectFundNameAliases(
     const name = (raw ?? "").trim()
     if (name) out.add(name)
   }
-  return Array.from(out)
+  return expandFundRenameAliases(out)
 }
 
 function isAClassFund(beianHao: string, aliases: string[]): boolean {
@@ -469,7 +487,21 @@ export function emailRowMatchesFund(
 
   const productCode = usableEmailProductCode(row.product_code)
   const beianIsCode = isPlausibleEmailProductCode(beian)
-  if (beianIsCode && productCode && !embeddedCodeMatchesBeian(productCode, beian)) return false
+  const metaForName = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""} ${row.subject ?? ""}`
+  const nameHit =
+    nameMatchesAlias(row.fund_name, aliases)
+    || aliases.some((alias) => alias.length >= 4 && metaForName.includes(alias))
+  // Citics Auto-Disclosure is one product per mail; product_code (SAFFP4) can
+  // differ from AMAC 备案号. CMS 等N个产品 mails must still reject code mismatch.
+  const citicsSingleProduct = /【(?:基金净值|净值公告)】/u.test(`${row.subject ?? ""}\n${row.attachment_filename ?? ""}`)
+  if (
+    beianIsCode
+    && productCode
+    && !embeddedCodeMatchesBeian(productCode, beian)
+    && !(citicsSingleProduct && nameHit)
+  ) {
+    return false
+  }
 
   // Authoritative product_code match wins. Xingye 业绩报酬试算 subjects embed
   // investor TA accounts (…_XY8002280517_…) that must not override SBBC18.
@@ -482,7 +514,12 @@ export function emailRowMatchesFund(
     .filter((code) => isPlausibleEmailProductCode(code))
   const meta = `${row.attachment_filename ?? ""} ${row.subject ?? ""} ${row.fund_name ?? ""}`
 
-  if (beianIsCode && embedded.length > 0 && !embedded.some((code) => embeddedCodeMatchesBeian(code, beian))) {
+  if (
+    beianIsCode
+    && embedded.length > 0
+    && !embedded.some((code) => embeddedCodeMatchesBeian(code, beian))
+    && !(citicsSingleProduct && nameHit)
+  ) {
     return false
   }
 
@@ -492,7 +529,7 @@ export function emailRowMatchesFund(
     return embedded.length === 0 || embedded.some((code) => embeddedCodeMatchesBeian(code, beian))
   }
 
-  return false
+  return citicsSingleProduct && nameHit
 }
 
 /** SQL guard: keep rows whose embedded product code matches the fund beian_hao. */
@@ -2538,23 +2575,39 @@ export function mergeNavSeriesWithEmail(
     const emailAdj =
       isPlausibleEmailAdjustedNav(resolvedCum, emailAdjRaw) ? emailAdjRaw : null
 
-    // Unit-only FOF 估值表 holdings across a sparse gap (no 累计) collapse cum→unit and
-    // invent a false crash (SBBC18: June 1.1459 → Aug 0.9832 / −14%). Skip those marks;
-    // Xingye 业绩报酬试算 rows supply real 累计 and still merge.
-    // Do NOT apply this guard when extending past the legacy tip — post-investment virtual
-    // NAV (e.g. 虚拟业绩报酬) often sits below published platform unit after platform stops
-    // (ABG50B: platform 1.21 → email virtual ~1.05).
+    // Unit-only FOF 估值表 holdings across a *sparse* gap (no 累计 column at all)
+    // collapse cum→unit and invent a false crash (SBBC18: June 1.1459 → Aug 0.9832 / −14%).
+    // Skip those marks only. Xingye 业绩报酬试算 rows supply real 累计 and still merge.
+    //
+    // A normal weekly 净值表 must never hit this:
+    // - 累计 = 单位 (undivided funds) is a real 累计 field, not "missing 累计"
+    // - Fri→Fri (~7d) is not a sparse gap; a −5% weekly return is ordinary
+    // Measure the hole from the last kept point (not last legacy print) and
+    // require >21 calendar days so three weekly Fridays cannot cascade-drop.
+    // Do NOT apply this guard when extending past the legacy tip — post-investment
+    // virtual NAV (ABG50B: platform 1.21 → email virtual ~1.05) sits below unit.
     const legacyTipDate = sortedLegacyDates.at(-1) ?? ""
     const isPostLegacyTip = Boolean(legacyTipDate) && row.price_date > legacyTipDate
+    const lastKeptDate = Array.from(byDate.keys())
+      .filter((d) => d < row.price_date)
+      .sort()
+      .at(-1)
+    const lastKeptRow = lastKeptDate ? byDate.get(lastKeptDate) ?? null : null
+    const gapDays =
+      lastKeptDate != null
+        ? (Date.parse(row.price_date.slice(0, 10)) - Date.parse(lastKeptDate.slice(0, 10))) / 86_400_000
+        : 0
     if (
       !existing
       && resolvedCum == null
-      && prevRow != null
+      && emailCum == null
+      && lastKeptRow != null
       && !isPostLegacyTip
+      && gapDays > 21
       && (() => {
-        const prevUnit = parseOptionalNav(prevRow.nav)
+        const prevUnit = parseOptionalNav(lastKeptRow.nav)
         const prevCum =
-          parseOptionalNav(prevRow.cum_nav_withdrawal) ?? parseOptionalNav(prevRow.cumulative_nav)
+          parseOptionalNav(lastKeptRow.cum_nav_withdrawal) ?? parseOptionalNav(lastKeptRow.cumulative_nav)
         if (prevUnit == null || prevUnit <= 0 || prevCum == null) return false
         if (hasDividendOffset(prevUnit, prevCum)) return false
         return resolvedUnitNav < prevUnit * 0.95

@@ -36,6 +36,8 @@ import {
   lookupFundNavCorrectionRule,
   type FundNavSeriesContext,
 } from "@/lib/server/fund-nav-correction-rules"
+import { fillMissingNavIfOverlapConsistent } from "@/lib/server/share-class-nav-fill"
+import { shareClassFamilyBeianCodes } from "@/lib/server/share-class-product"
 
 export type NavPoint = {
   nav: number
@@ -603,7 +605,10 @@ function expandBeiansWithParentCodes(codes: string[]): string[] {
     if (!code) continue
     out.add(code)
     const parent = code.replace(/[ABC]$/u, "")
-    if (parent !== code) out.add(parent)
+    if (parent === code) continue
+    out.add(parent)
+    if (parent.startsWith("S") && parent.length > 1) out.add(parent.slice(1))
+    else if (parent) out.add(`S${parent}`)
   }
   return [...out]
 }
@@ -1745,11 +1750,40 @@ export class BatchNavResolver {
     }
 
     const merged = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, p]) => p)
-    return applyNavPointSeriesStartTrim(merged, {
+    const filled = this.fillMergedHistoryFromShareClassFamily(beian, merged, sinceDate)
+    return applyNavPointSeriesStartTrim(filled, {
       beian_hao: beian || null,
       product_name: identity.product_name,
       short_name: short || null,
     })
+  }
+
+  /** Parent ↔ A/B/C missing dates, only when overlapping unit NAV matches (non-分红). */
+  private fillMergedHistoryFromShareClassFamily(
+    beian: string,
+    merged: NavPoint[],
+    sinceDate: string,
+  ): NavPoint[] {
+    const self = beian.trim().toUpperCase()
+    if (!self || merged.length === 0) return merged
+    let filled = merged
+    for (const code of shareClassFamilyBeianCodes(self)) {
+      if (code === self) continue
+      const donorByDate = new Map<string, NavPoint>()
+      const add = (points: NavPoint[] | undefined) => {
+        for (const point of points ?? []) {
+          if (point.nav_date < sinceDate) continue
+          if (!isChinaTradingDay(point.nav_date)) continue
+          if (!isPlausibleEmailUnitNav(point.nav)) continue
+          donorByDate.set(point.nav_date, point)
+        }
+      }
+      add(this.legacyByBeian.get(code))
+      add(this.type6ByBeian.get(code))
+      add(this.emailByBeian.get(code))
+      filled = fillMissingNavIfOverlapConsistent(filled, [...donorByDate.values()])
+    }
+    return filled
   }
 }
 

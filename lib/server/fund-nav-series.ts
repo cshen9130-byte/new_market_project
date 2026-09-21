@@ -14,6 +14,8 @@ import {
   loadManagedProductNavSeed,
   mergeManagedProductDetailNav,
 } from "@/lib/server/managed-product-nav-seed"
+import { fillMissingNavIfOverlapConsistent } from "@/lib/server/share-class-nav-fill"
+import { shareClassFamilyBeianCodes } from "@/lib/server/share-class-product"
 import {
   loadManagedProductEmailPoints,
   loadManagedProductNavSeries,
@@ -41,13 +43,19 @@ export async function resolveFundNames(beian_hao: string, product_name?: string)
   const bfl = await loadBflNames(beian_hao)
   const bflShort = (bfl?.short_name ?? "").trim()
   const inputName = (product_name ?? "").trim()
+  const code = beian_hao.trim().toUpperCase()
 
-  if (inputName) {
+  if (inputName && inputName.toUpperCase() !== code) {
     return { product_name: inputName, short_name: bflShort }
   }
 
   const nameRow = await query<{ product_name: string; fund_short_name: string | null }>(
-    `SELECT COALESCE(b.fund_short_name, t.product_name) AS product_name, b.fund_short_name
+    `SELECT COALESCE(
+       NULLIF(BTRIM(b.fund_short_name), ''),
+       NULLIF(BTRIM(t.fund_short_name), ''),
+       NULLIF(BTRIM(t.fund_name), '')
+     ) AS product_name,
+     COALESCE(NULLIF(BTRIM(b.fund_short_name), ''), NULLIF(BTRIM(t.fund_short_name), '')) AS fund_short_name
      FROM type6_ops_team_full t
      LEFT JOIN basicinfo_bfl_track b ON b.register_number = t.register_number
      WHERE t.register_number = $1
@@ -55,10 +63,63 @@ export async function resolveFundNames(beian_hao: string, product_name?: string)
     [beian_hao],
   ).catch(() => [] as { product_name: string; fund_short_name: string | null }[])
 
-  return {
-    product_name: nameRow[0]?.product_name ?? bfl?.product_name ?? beian_hao,
-    short_name: nameRow[0]?.fund_short_name ?? bflShort,
+  if (nameRow[0]?.product_name) {
+    return {
+      product_name: nameRow[0].product_name,
+      short_name: nameRow[0].fund_short_name ?? bflShort,
+    }
   }
+
+  const amac = await query<{ product_name: string }>(
+    `SELECT product_name FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
+    [beian_hao],
+  ).catch(() => [] as { product_name: string }[])
+
+  return {
+    product_name: amac[0]?.product_name ?? bfl?.product_name ?? beian_hao,
+    short_name: bflShort,
+  }
+}
+
+async function listFamilyCodesWithNav(beianHao: string): Promise<string[]> {
+  const self = beianHao.trim().toUpperCase()
+  const family = shareClassFamilyBeianCodes(self).filter((code) => code !== self)
+  if (family.length === 0) return []
+  const rows = await query<{ code: string }>(
+    `SELECT DISTINCT UPPER(BTRIM(code)) AS code
+     FROM (
+       SELECT beian_hao AS code
+       FROM private_fund_nav_group_type6
+       WHERE beian_hao = ANY($1::text[])
+       UNION
+       SELECT beian_hao
+       FROM private_fund_nav
+       WHERE beian_hao = ANY($1::text[])
+       UNION
+       SELECT BTRIM(product_code)
+       FROM ops_email_nav_records
+       WHERE BTRIM(product_code) = ANY($1::text[])
+     ) t
+     WHERE NULLIF(BTRIM(code), '') IS NOT NULL`,
+    [family],
+  ).catch(() => [] as { code: string }[])
+  return rows.map((row) => row.code).filter(Boolean)
+}
+
+/** Copy missing dates from parent ↔ A/B/C siblings when overlapping NAV matches (non-分红). */
+async function fillMergedNavFromShareClassFamily(
+  beianHao: string,
+  rows: LegacyNavRow[],
+): Promise<LegacyNavRow[]> {
+  if (rows.length === 0) return rows
+  const donors = await listFamilyCodesWithNav(beianHao)
+  let filled = rows
+  for (const code of donors) {
+    const names = await resolveFundNames(code)
+    const donor = await loadMergedNavRows(code, names.product_name, names.short_name)
+    filled = fillMissingNavIfOverlapConsistent(filled, donor)
+  }
+  return filled
 }
 
 async function loadMergedNavRows(
@@ -245,7 +306,7 @@ export async function loadFundNavRange(
   product_name: string,
   short_name: string,
 ): Promise<{ nav_start_date: string | null; latest_nav_date: string | null }> {
-  const rows = await loadMergedNavRows(beian_hao, product_name, short_name)
+  const rows = await loadMergedFundNavRows(beian_hao, product_name, short_name)
   if (rows.length === 0) return { nav_start_date: null, latest_nav_date: null }
   return {
     nav_start_date: rows[0].price_date.slice(0, 10),
@@ -259,9 +320,13 @@ export async function loadMergedFundNavRows(
   short_name: string,
 ): Promise<LegacyNavRow[]> {
   // Defense in depth: custody forward-fills can still leak if a merge path skips finalize.
-  const rows = (await loadMergedNavRows(beian_hao, product_name, short_name))
-    .filter((row) => isChinaTradingDay(row.price_date.slice(0, 10)))
-  return recomputeNavPriceChanges(rows)
+  const rows = await fillMergedNavFromShareClassFamily(
+    beian_hao,
+    await loadMergedNavRows(beian_hao, product_name, short_name),
+  )
+  return recomputeNavPriceChanges(
+    rows.filter((row) => isChinaTradingDay(row.price_date.slice(0, 10))),
+  )
 }
 
 export async function loadFundNavSeries(

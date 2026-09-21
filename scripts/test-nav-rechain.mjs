@@ -1,4 +1,4 @@
-import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund } from "../lib/server/email-nav-query.ts"
+import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
@@ -1701,6 +1701,66 @@ assert(
       && slq349Xlsx[0]?.navDate === "2026-09-04"
       && slq349Xlsx[0]?.productCode === "SLQ349",
   )
+
+  const saffp4Subject =
+    "【基金净值】SAFFP4_睿松量化选股进取1号私募证券投资基金_20240102-20260918"
+  const saffp4Filename =
+    "【基金净值】睿松量化选股进取1号私募证券投资基金_信裕量化选股进取1号私募证券投资基金(总)__20240102-20260918.xlsx"
+  assert(
+    "SAFFP4 history xlsx is selected as a 净值表 attachment",
+    selectNavTableAttachments(saffp4Subject, [{ filename: saffp4Filename, part: "2" }]).length === 1,
+  )
+  const saffp4Wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(
+    saffp4Wb,
+    XLSX.utils.aoa_to_sheet([
+      ["日期", "资产代码", "资产名称", "资产份额净值(元)", "资产份额累计净值(元)", "协会备案代码"],
+      ["2026-08-26", "SAFFP4(总)", "信裕量化选股进取1号私募证券投资基金", 1.1187, 1.1187, "SAFFP4"],
+      ["2026-09-17", "SAFFP4(总)", "信裕量化选股进取1号私募证券投资基金", 1.105, 1.105, "SAFFP4"],
+      ["2026-09-18", "SAFFP4(总)", "信裕量化选股进取1号私募证券投资基金", 1.1022, 1.1022, "SAFFP4"],
+    ]),
+    "日间净值列表",
+  )
+  const saffp4Rows = extractNavTableFromBuffer(
+    Buffer.from(XLSX.write(saffp4Wb, { type: "buffer", bookType: "xlsx" })),
+    saffp4Filename,
+    saffp4Subject,
+  )
+  assert(
+    "SAFFP4 YYYYMMDD-YYYYMMDD 日间净值列表 keeps all history rows through 2026-09-18",
+    saffp4Rows.length === 3
+      && saffp4Rows.at(-1)?.navDate === "2026-09-18"
+      && saffp4Rows.at(-1)?.nav === 1.1022
+      && saffp4Rows.at(-1)?.productCode === "SAFFP4"
+      && saffp4Rows.at(-1)?.fundName === "睿松量化选股进取1号",
+  )
+  const saffp4Meta = extractNavMetadata(saffp4Subject, saffp4Filename)
+  assert(
+    "SAFFP4 Citics subject extracts code + 睿松 name",
+    saffp4Meta.productCode === "SAFFP4" && saffp4Meta.fundName === "睿松量化选股进取1号",
+  )
+  const saffp4MatchRow = {
+    nav: "1.1022",
+    nav_date: "2026-09-18",
+    cumulative_nav: "1.1022",
+    product_code: "SAFFP4",
+    fund_name: "睿松量化选股进取1号",
+    subject: saffp4Subject,
+    attachment_filename: saffp4Filename,
+    source: "attachment_nav_table",
+  }
+  assert(
+    "SAFFP4 email matches 睿松量化选股进取1号 by code",
+    emailRowMatchesFund(saffp4MatchRow, "SAFFP4", collectFundNameAliases("睿松量化选股进取1号", null)),
+  )
+  assert(
+    "SAFFP4 email still matches 睿松 when dashboard 备案号 differs (name in subject)",
+    emailRowMatchesFund(saffp4MatchRow, "SXXXXX", collectFundNameAliases("睿松量化选股进取1号", null)),
+  )
+  assert(
+    "信裕 custody name aliases to 睿松",
+    collectFundNameAliases("睿松量化选股进取1号", null).includes("信裕量化选股进取1号"),
+  )
 }
 
 // Weekly team/manual + collapsed legacy mid-weeks must not intercalate (SZJ909 sawtooth).
@@ -1830,6 +1890,91 @@ assert(
   sbbc18Aug5 != null
     && Number(sbbc18Aug5.nav) === 0.9849
     && Math.abs(Number(sbbc18Aug5.cum_nav_withdrawal) - 1.1354) < 0.0001,
+)
+
+// SASK40 华年量化选股择时1号: HTSC 每日净值表 stores unit==cum (undivided). A real
+// weekly drawdown >5% must still merge; the SBBC18 skip is only for missing 累计.
+const sask40LegacyGap = [
+  {
+    price_date: "2026-07-10",
+    nav: "1.5629",
+    cumulative_nav: "1.5629",
+    cum_nav_withdrawal: "1.5629",
+    price_change: "",
+  },
+  {
+    price_date: "2026-08-07",
+    nav: "1.5894",
+    cumulative_nav: "1.5894",
+    cum_nav_withdrawal: "1.5894",
+    price_change: "",
+  },
+]
+const sask40EmailDip = mergeNavSeriesWithEmail(
+  sask40LegacyGap,
+  [
+    { price_date: "2026-07-17", nav: "1.4721", cumulative_nav: "1.4721", adjusted_nav: "1.4721" },
+    { price_date: "2026-07-24", nav: "1.4229", cumulative_nav: "1.4229", adjusted_nav: "1.4229" },
+    { price_date: "2026-07-31", nav: "1.4378", cumulative_nav: "1.4378", adjusted_nav: "1.4378" },
+    { price_date: "2026-08-07", nav: "1.5894", cumulative_nav: "1.5894", adjusted_nav: "1.5894" },
+  ],
+  { beian_hao: "SASK40", product_name: "华年量化选股择时1号", short_name: "华年量化选股择时1号" },
+)
+const sask40Jul17 = sask40EmailDip.find((r) => r.price_date === "2026-07-17")
+const sask40Jul24 = sask40EmailDip.find((r) => r.price_date === "2026-07-24")
+const sask40Jul31 = sask40EmailDip.find((r) => r.price_date === "2026-07-31")
+assert(
+  "SASK40 HTSC 净值表 keeps Jul 17/24/31 drawdown (unit==cum is not missing 累计)",
+  sask40Jul17 != null
+    && Number(sask40Jul17.nav) === 1.4721
+    && sask40Jul24 != null
+    && Number(sask40Jul24.nav) === 1.4229
+    && sask40Jul31 != null
+    && Number(sask40Jul31.nav) === 1.4378,
+)
+
+// Same weekly −5.8% dip with no 累计 field at all (parser missed the column).
+// A 7-day 净值表 gap is not SBBC18's sparse hole — keep the dates.
+const sask40UnitOnlyWeekly = mergeNavSeriesWithEmail(
+  sask40LegacyGap,
+  [
+    { price_date: "2026-07-17", nav: "1.4721", cumulative_nav: null, adjusted_nav: null },
+    { price_date: "2026-07-24", nav: "1.4229", cumulative_nav: null, adjusted_nav: null },
+    { price_date: "2026-07-31", nav: "1.4378", cumulative_nav: null, adjusted_nav: null },
+  ],
+  { beian_hao: "SASK40", product_name: "华年量化选股择时1号", short_name: "华年量化选股择时1号" },
+)
+assert(
+  "weekly unit-only 净值表 keeps −5.8% Fri dip (not a sparse FOF-holdings gap)",
+  sask40UnitOnlyWeekly.some((r) => r.price_date === "2026-07-17" && Number(r.nav) === 1.4721)
+    && sask40UnitOnlyWeekly.some((r) => r.price_date === "2026-07-24" && Number(r.nav) === 1.4229)
+    && sask40UnitOnlyWeekly.some((r) => r.price_date === "2026-07-31" && Number(r.nav) === 1.4378),
+)
+
+const sbbc18LegacyMidGap = [
+  {
+    price_date: "2026-06-24",
+    nav: "1.145900",
+    cumulative_nav: "1.145900",
+    cum_nav_withdrawal: "1.145900",
+    price_change: "",
+  },
+  {
+    price_date: "2026-09-01",
+    nav: "0.986400",
+    cumulative_nav: "1.137000",
+    cum_nav_withdrawal: "1.137000",
+    price_change: "",
+  },
+]
+const sbbc18SparseUnitOnly = mergeNavSeriesWithEmail(
+  sbbc18LegacyMidGap,
+  [{ price_date: "2026-08-04", nav: "0.983200", cumulative_nav: null, adjusted_nav: null }],
+  { beian_hao: "SBBC18", product_name: "贞元强势1号私募证券投资基金", short_name: "贞元强势1号" },
+)
+assert(
+  "SBBC18 still skips unit-only FOF holdings in a ≥21d mid-series hole",
+  sbbc18SparseUnitOnly.every((r) => r.price_date !== "2026-08-04"),
 )
 
 // Zhongtai/中泰: CODE_产品_投资者_虚拟净值_YYYYMMDD — body + attachment must ingest.

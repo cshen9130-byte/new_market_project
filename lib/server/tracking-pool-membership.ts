@@ -1,4 +1,5 @@
 import { createHash } from "crypto"
+import { HIDDEN_TEAM_POOL_KEYS } from "@/lib/client/tracking-pools"
 import { query } from "@/lib/db"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { resolveTrackingProductName } from "@/lib/server/tracking-product-name"
@@ -11,6 +12,45 @@ export const REGISTER_POOL_TABLE: Record<string, string> = {
   core: "core_pool",
   hy: "hy_tracking_pool",
   fof: "fof_mom_tracking",
+}
+
+function sqlHiddenTeamPoolKeys(): string {
+  return [...HIDDEN_TEAM_POOL_KEYS].map((k) => `'${k.replace(/'/g, "''")}'`).join(", ")
+}
+
+/** True when `tracking_custom_pools` still has a visible team tab for this key. */
+function sqlVisibleTeamPoolExists(keyPredicate: string): string {
+  return `EXISTS (
+      SELECT 1 FROM tracking_custom_pools c
+      WHERE c.scope = 'team'
+        AND ${keyPredicate}
+        AND c.pool_key NOT LIKE '\\_\\_%'
+        AND c.pool_key NOT IN (${sqlHiddenTeamPoolKeys()})
+    )`
+}
+
+/**
+ * Team 「全部」membership: union of sidebar 跟踪产品池 only.
+ * Hidden BFL catalog tables (`private_fund_info_bfl`, `type6_ops_team_full`)
+ * are the fund universe and must not appear on the 全部 tab.
+ */
+export function teamVisibleTrackingFundsUnionSql(): string {
+  return `
+        SELECT register_number AS beian_hao, product_name, 1 AS priority, imported_at AS added_at
+          FROM tracking_pool WHERE register_number IS NOT NULL
+            AND ${sqlVisibleTeamPoolExists("c.pool_key IN ('jy', 'tracking')")}
+        UNION ALL SELECT register_number, product_name, 2, imported_at FROM selected_pool WHERE register_number IS NOT NULL
+            AND ${sqlVisibleTeamPoolExists("c.pool_key = 'selected'")}
+        UNION ALL SELECT register_number, product_name, 3, imported_at FROM core_pool WHERE register_number IS NOT NULL
+            AND ${sqlVisibleTeamPoolExists("c.pool_key = 'core'")}
+        UNION ALL SELECT register_number, product_name, 4, imported_at FROM hy_tracking_pool WHERE register_number IS NOT NULL
+            AND ${sqlVisibleTeamPoolExists("c.pool_key = 'hy'")}
+        UNION ALL SELECT register_number, product_name, 5, imported_at FROM fof_mom_tracking WHERE register_number IS NOT NULL
+            AND ${sqlVisibleTeamPoolExists("c.pool_key = 'fof'")}
+        UNION ALL SELECT register_number, product_name, 6, imported_at FROM user_custom_pool p
+          WHERE p.register_number IS NOT NULL
+            AND ${sqlVisibleTeamPoolExists("c.pool_key = p.pool_key")}
+  `
 }
 
 export function isCustomTrackingPool(pool: string): boolean {

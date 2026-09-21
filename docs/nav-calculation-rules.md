@@ -2168,3 +2168,73 @@ npx tsx scripts/test-nav-rechain.mjs
 
 Includes **year route /2026 is rejected**, **C2026 still remaps to SBDU00**, **鸣石广鸣 2.5552 does not attach to 鸣石广胜 SBNJ90**, **草本致远 / SND951 year-code match is unchanged**.
 
+---
+
+## What Was Fixed (华年量化选股择时1号 — SASK40, 2026-09-21)
+
+### The Problem
+
+Product page `/ma/dashboard/private-funds/SASK40` jumped **2026-07-10 (1.5629) → 2026-08-07 (1.5894)** and showed **+11.70%**. The HTSC email 净值表 already had the three Fridays in between:
+
+| Date | 单位净值 | 累计净值 (`资产份额累计净值(元)`) |
+|---|---|---|
+| 2026-07-10 | 1.5629 | 1.5629 |
+| **2026-07-17** | **1.4721 (−5.81%)** | 1.4721 |
+| **2026-07-24** | **1.4229** | 1.4229 |
+| **2026-07-31** | **1.4378** | 1.4378 |
+| 2026-08-07 | 1.5894 | 1.5894 |
+
+The −5.81% week is an ordinary 股票多头 weekly return. The fund is **not** special. The workbook **did** contain 累计 (column `资产份额累计净值(元)`); UID 5127 stored `cumulative_nav = nav` on every row. This is an undivided fund (no 分红), so 累计 = 单位 is correct.
+
+### Root Cause
+
+`mergeNavSeriesWithEmail` had a guard for **SBBC18 贞元强势1号**: unit-only FOF 估值表 holdings across a **sparse** hole (June 1.1459 → August 0.9832, no 累计 field) invented a false −14% crash. Those marks are skipped.
+
+The guard was too broad:
+
+1. **`isUsableEmailCumulativeNav` requires 累计 to differ from unit by >0.1%.** Undivided 净值表 rows (`累计 = 单位`) set `resolvedCum = null`, so the merger treated a filled 累计 column as “no 累计”.
+2. **Any email-only date >5% below the previous kept unit was dropped**, including a normal Friday-to-Friday week.
+3. **Cascade:** after 07-17 was skipped, 07-24 and 07-31 were still compared to **07-10** (last kept / last legacy print), not to the prior week. Both still looked like a crash. 08-07 had recovered enough vs 07-10 to stay.
+
+The HTSC file is weekly (Fridays + a few month-ends), not daily. Parse of UID 5127 was fine (87 rows through 2026-08-28).
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Keep 净值表 累计 = 单位 | `mergeNavSeriesWithEmail` | Skip only when `emailCum == null` (no 累计 field). A stored 累计 that equals unit is real 累计. |
+| Weekly return is not a sparse hole | `mergeNavSeriesWithEmail` | Skip only when the hole from the **last kept** point is **>21 calendar days**. Fri→Fri (~7d) never matches. |
+| No cascade | `mergeNavSeriesWithEmail` | Gap and 5% check use the last kept series date, not the last legacy print. Three weekly Fridays cannot wipe a drawdown. |
+| Data fill (same values) | `private_fund_nav` SASK40 / ASK40A | Inserted 07-17 / 07-24 / 07-31 so the page was correct before the merge guard shipped. Overlap with ASK40A is consistent (non-分红). |
+| Tests | `scripts/test-nav-rechain.mjs` | SASK40 weekly dip with 累计 = 单位; same dip with `cumulative_nav: null`; SBBC18 still skips unit-only FOF holdings in a ≥21d mid-series hole |
+
+Skip now requires **all** of: no 累计 field, mid-series gap (not after the legacy tip), hole **>21 days** from the last kept point, unit drop **>5%**.
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-07-10 | 1.5629 | 1.5629 | 1.5629 |
+| 2026-07-17 | **1.4721** | 1.4721 | 1.4721 |
+| 2026-07-24 | **1.4229** | 1.4229 | 1.4229 |
+| 2026-07-31 | **1.4378** | 1.4378 | 1.4378 |
+| 2026-08-07 | 1.5894 | 1.5894 | 1.5894 |
+
+Detail cache: **97** points, tip **2026-09-18 / 1.6759**. ASK40A filled the same three dates (overlap consistent).
+
+### What This Fix Does NOT Change
+
+- SBBC18 unit-only FOF holdings across a multi-week hole — still skipped
+- SBBC18 Xingye 业绩报酬试算 rows with distinct 累计 — still merge
+- SBAH99 dividend formulas, SNF018 virtual-first, SSG947 seed merge, SQX078 swap repair — unchanged
+- `isUsableEmailCumulativeNav` (still requires a distinct unit/cum gap for *using* 累计 in rechain) — unchanged; only the skip no longer treats equal unit/cum as missing 累计
+- `syncExDivAdjustedNav` / `rechainDerivedFromPrev` / `propagateMissingAdjRows` — unchanged
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **SASK40 HTSC 净值表 keeps Jul 17/24/31 drawdown**, **weekly unit-only 净值表 keeps −5.8% Fri dip**, **SBBC18 still skips unit-only FOF holdings in a ≥21d mid-series hole**.
+

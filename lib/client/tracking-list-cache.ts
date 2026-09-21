@@ -1,6 +1,6 @@
 /** Client-side stale-while-revalidate cache for 团队跟踪 / 我的跟踪 list views. */
 
-const LIST_CACHE_PREFIX = "tracking_list_cache:"
+const LIST_CACHE_PREFIXES = ["tracking_list_cache_v3:", "tracking_list_cache_v2:", "tracking_list_cache:"]
 
 export function invalidateTrackingListCache(poolKeys?: string[]): void {
   if (typeof window === "undefined") return
@@ -17,8 +17,9 @@ export function invalidateTrackingListCache(poolKeys?: string[]): void {
 
   try {
     for (const k of Object.keys(localStorage)) {
-      if (!k.startsWith(LIST_CACHE_PREFIX)) continue
-      const cacheKey = k.slice(LIST_CACHE_PREFIX.length)
+      const prefix = LIST_CACHE_PREFIXES.find((p) => k.startsWith(p))
+      if (!prefix) continue
+      const cacheKey = k.slice(prefix.length)
       if (shouldClear(cacheKey)) localStorage.removeItem(k)
     }
   } catch { /* ignore quota / access errors */ }

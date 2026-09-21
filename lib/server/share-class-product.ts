@@ -115,6 +115,26 @@ export function beianFamilyKey(code: string | null | undefined): string | null {
   return base || null
 }
 
+/**
+ * Parent + A/B/C codes for a 备案号 family (SAVV28, AVV28, AVV28A, …).
+ * Used to share NAV across non-分红 share classes of the same product.
+ */
+export function shareClassFamilyBeianCodes(code: string | null | undefined): string[] {
+  const family = beianFamilyKey(code)
+  if (!family) return []
+  const bases = family.startsWith("S")
+    ? [family, family.slice(1)]
+    : [family, `S${family}`]
+  const out = new Set<string>()
+  for (const base of bases) {
+    const trimmed = base.trim().toUpperCase()
+    if (!trimmed) continue
+    out.add(trimmed)
+    for (const letter of SHARE_CLASS_OPTIONS) out.add(`${trimmed}${letter}`)
+  }
+  return [...out]
+}
+
 /** SQL: same normalization as beianFamilyKey. */
 export function sqlBeianFamilyKey(codeExpr: string): string {
   const base = `regexp_replace(UPPER(BTRIM(${codeExpr})), '[ABC]$', '')`
