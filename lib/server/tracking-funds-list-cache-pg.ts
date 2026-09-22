@@ -21,6 +21,7 @@ import {
 } from "@/lib/server/list-cache-nav-batch"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import { isCodeLikeProductName, resolveTrackingProductName } from "@/lib/server/tracking-product-name"
+import { cleanValuationDerivedFundName } from "@/lib/server/valuation-filename"
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_tracking_funds_list_cache (
@@ -225,13 +226,15 @@ export async function upsertTrackingFundListCacheEntry(
     [beian_hao],
   )
   const poolName = poolRows[0]?.product_name ?? product_name
-  const resolvedName = isCodeLikeProductName(poolName, beian_hao)
-    ? await resolveTrackingProductName(beian_hao, poolName)
-    : poolName
+  const resolvedName = await resolveTrackingProductName(beian_hao, poolName)
+  const bflShort = bflRows[0]?.short_name?.trim() || null
+  const resolvedShort = bflShort
+    ? await resolveTrackingProductName(beian_hao, bflShort)
+    : resolvedName
   const row: BaseFundRow = {
     beian_hao,
     product_name: resolvedName,
-    short_name: bflRows[0]?.short_name ?? (isCodeLikeProductName(poolName, beian_hao) ? null : poolName),
+    short_name: resolvedShort || (isCodeLikeProductName(poolName, beian_hao) ? null : resolvedName),
     raw_strategy: bflRows[0]?.raw_strategy ?? null,
   }
 
@@ -423,7 +426,12 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
   const asOfDate = new Date().toISOString().slice(0, 10)
   logProgress("loading fund identities…")
 
-  const funds = await query<BaseFundRow>(`${IDENTITY_SQL.trim()} ORDER BY product_name`)
+  const funds = (await query<BaseFundRow>(`${IDENTITY_SQL.trim()} ORDER BY product_name`))
+    .map((f) => ({
+      ...f,
+      product_name: cleanValuationDerivedFundName(f.product_name) || f.product_name,
+      short_name: cleanValuationDerivedFundName(f.short_name) || f.short_name,
+    }))
   logProgress(`found ${funds.length} funds — upserting in batches of ${TRACKING_CACHE_BATCH}…`)
 
   if (funds.length === 0) return 0

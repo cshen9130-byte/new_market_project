@@ -918,7 +918,7 @@ export function AIResearcherPage() {
         : skill.noFundRequired
           ? { kbPath: kbPath.trim(), beianHao: roadshowBeianHao.trim() }
           : skill.singleFund
-            ? { subject: subjects[0], kbPath, fileNote: fileNote.trim(), namedFund: selectedFunds.length > 0 }
+            ? { subject: subjects[0], kbPath, fileNote: fileNote.trim(), namedFund: selectedFunds.length > 0, beianHao: selectedFunds[0]?.beian_hao ?? "" }
             : { subjects, kbPath }
 
     try {
@@ -927,6 +927,7 @@ export function AIResearcherPage() {
       if (useFormData) {
         const form = new FormData()
         form.append("subject", selectedFunds[0]?.product_name ?? "")
+        form.append("beianHao", selectedFunds[0]?.beian_hao ?? "")
         form.append("namedFund", selectedFunds.length > 0 ? "1" : "0")
         form.append("kbPath", kbPath)
         form.append("fileNote", fileNote.trim())

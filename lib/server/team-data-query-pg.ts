@@ -33,6 +33,11 @@ import {
 } from "@/lib/server/managed-product-beian"
 import { loadFofUnderlyingNavFunds } from "@/lib/server/fof-email-product-sync"
 import { isValuationStockCostSubjectName } from "@/lib/valuation-holding-display-name"
+import {
+  cleanValuationDerivedFundName,
+  isValuationReportTitle,
+  parseValuationWorkbookFilename,
+} from "@/lib/server/valuation-filename"
 import { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
 import { loadOperationDatesByCodes } from "@/lib/server/ops-fund-operation-dates"
 
@@ -185,18 +190,26 @@ type NamedFundRow = {
   product_name: string
 }
 
+type AmacRow = {
+  fund_no: string
+  fund_name: string
+}
+
 type IdentityTables = {
   bfl: BflRow[]
   t6: T6Row[]
   fofDetail: NamedFundRow[]
   fofTrack: NamedFundRow[]
+  amac: AmacRow[]
 }
 
 type IdentityIndexes = {
   bflByBeian: Map<string, BflRow>
   t6ByRegister: Map<string, T6Row>
+  amacByFundNo: Map<string, AmacRow>
   bflByNameBase: Map<string, BflRow[]>
   t6ByNameBase: Map<string, T6Row[]>
+  amacByNameBase: Map<string, AmacRow[]>
   fofDetailByNameBase: Map<string, NamedFundRow[]>
   fofTrackByNameBase: Map<string, NamedFundRow[]>
 }
@@ -477,6 +490,7 @@ function resolveManualProduct(
 ): ResolvedFund {
   const bfl = indexes.bflByBeian.get(manual.beian_hao)
   const t6 = indexes.t6ByRegister.get(manual.beian_hao)
+  const amac = lookupAmacByFundNo(indexes, manual.beian_hao)
   const fromT6 = strategiesFromRow(t6 ?? null, strategySource)
   const fromBfl = strategiesFromRow(bfl ?? null, strategySource)
   const strategies = {
@@ -486,7 +500,7 @@ function resolveManualProduct(
   }
 
   const product_name = displayProductName(
-    bfl?.product_name ?? null,
+    amacDisplayName(amac) ?? bfl?.product_name ?? null,
     bfl?.short_name ?? t6?.fund_short_name ?? null,
     manual.product_name,
   )
@@ -505,6 +519,7 @@ function resolveManualProduct(
     search_aliases: collectSearchAliases(
       product_name,
       manual.product_name,
+      amac?.fund_name,
       bfl?.product_name,
       bfl?.short_name,
       t6?.fund_short_name,
@@ -570,8 +585,10 @@ function pushNameIndex<T>(index: Map<string, T[]>, name: string, row: T) {
 function buildIdentityIndexes(tables: IdentityTables): IdentityIndexes {
   const bflByBeian = new Map<string, BflRow>()
   const t6ByRegister = new Map<string, T6Row>()
+  const amacByFundNo = new Map<string, AmacRow>()
   const bflByNameBase = new Map<string, BflRow[]>()
   const t6ByNameBase = new Map<string, T6Row[]>()
+  const amacByNameBase = new Map<string, AmacRow[]>()
   const fofDetailByNameBase = new Map<string, NamedFundRow[]>()
   const fofTrackByNameBase = new Map<string, NamedFundRow[]>()
 
@@ -584,10 +601,26 @@ function buildIdentityIndexes(tables: IdentityTables): IdentityIndexes {
     t6ByRegister.set(row.register_number, row)
     if (row.fund_short_name) pushNameIndex(t6ByNameBase, row.fund_short_name, row)
   }
+  for (const row of tables.amac) {
+    const no = row.fund_no.trim()
+    if (!no) continue
+    amacByFundNo.set(no, row)
+    amacByFundNo.set(no.toUpperCase(), row)
+    pushNameIndex(amacByNameBase, row.fund_name, row)
+  }
   for (const row of tables.fofDetail) pushNameIndex(fofDetailByNameBase, row.product_name, row)
   for (const row of tables.fofTrack) pushNameIndex(fofTrackByNameBase, row.product_name, row)
 
-  return { bflByBeian, t6ByRegister, bflByNameBase, t6ByNameBase, fofDetailByNameBase, fofTrackByNameBase }
+  return {
+    bflByBeian,
+    t6ByRegister,
+    amacByFundNo,
+    bflByNameBase,
+    t6ByNameBase,
+    amacByNameBase,
+    fofDetailByNameBase,
+    fofTrackByNameBase,
+  }
 }
 
 function collectByNameBase<T>(index: Map<string, T[]>, candidate: string): T[] {
@@ -647,11 +680,17 @@ function shareClassCodeGuard(code: string | null | undefined, productName: strin
 
 function cleanEmailFundName(raw: string | null): string | null {
   if (!raw?.trim()) return null
+  const fromValuation = cleanValuationDerivedFundName(raw)
+  if (fromValuation && fromValuation !== raw.trim()) {
+    return normalizeFundDisplayName(fromValuation) || fromValuation
+  }
   const stripped = raw.trim().replace(/^资产净值公告_[A-Z0-9]+_/, "")
   return normalizeFundDisplayName(stripped)
 }
 
 function nameCandidate(row: RawEmailFund): string {
+  const fromValuation = cleanValuationDerivedFundName(row.fund_name)
+  if (fromValuation) return normalizeFundDisplayName(fromValuation) || fromValuation
   const fromName = row.fund_name && !row.fund_name.startsWith("资产净值公告_")
     ? normalizeFundDisplayName(row.fund_name)
     : cleanEmailFundName(row.fund_name)
@@ -703,6 +742,77 @@ function bestNamedMatch(
   return bestNamedMatchFromRows(collectByNameBase(index, candidate), candidate)
 }
 
+function identityNamesMatch(
+  identity: { product_name?: string | null; short_name?: string | null; fund_short_name?: string | null },
+  candidate: string,
+): boolean {
+  const names = [identity.product_name, identity.short_name, identity.fund_short_name]
+    .map((n) => (n ?? "").trim())
+    .filter(Boolean)
+  return names.some((n) => fundNamesMatch(n, candidate))
+}
+
+function lookupAmacByFundNo(indexes: IdentityIndexes, code: string): AmacRow | null {
+  const trimmed = code.trim()
+  if (!trimmed) return null
+  return indexes.amacByFundNo.get(trimmed) ?? indexes.amacByFundNo.get(trimmed.toUpperCase()) ?? null
+}
+
+function amacDisplayName(row: AmacRow | null | undefined): string | null {
+  const official = row?.fund_name?.trim()
+  if (!official) return null
+  return fundNameBase(official) || official
+}
+
+/** Official AMAC 备案号 wins over stale T6/BFL names for the same code. */
+function amacCodeConflictsWithEmailName(
+  code: string,
+  candidate: string,
+  indexes: IdentityIndexes,
+): boolean {
+  const normalized = code.trim().toUpperCase()
+  if (!normalized || !candidate.trim()) return false
+  const amac = lookupAmacByFundNo(indexes, normalized)
+  if (amac) {
+    return !identityNamesMatch({ product_name: amac.fund_name }, candidate)
+  }
+  const bfl = indexes.bflByBeian.get(normalized) ?? indexes.bflByBeian.get(code.trim())
+  const t6 = indexes.t6ByRegister.get(normalized) ?? indexes.t6ByRegister.get(code.trim())
+  if (!bfl && !t6) return false
+  if (bfl && identityNamesMatch(bfl, candidate)) return false
+  if (t6 && identityNamesMatch({ fund_short_name: t6.fund_short_name }, candidate)) return false
+  return true
+}
+
+function bestAmacMatch(
+  indexes: IdentityIndexes,
+  candidate: string,
+  productCode: string | null,
+): AmacRow | null {
+  if (productCode) {
+    const byCode = lookupAmacByFundNo(indexes, productCode)
+    if (
+      byCode
+      && shareClassCodeGuard(byCode.fund_no, candidate)
+      && identityNamesMatch({ product_name: byCode.fund_name }, candidate)
+    ) {
+      return byCode
+    }
+  }
+  let best: AmacRow | null = null
+  let bestScore = Infinity
+  for (const row of collectByNameBase(indexes.amacByNameBase, candidate)) {
+    if (!fundNamesMatch(row.fund_name, candidate)) continue
+    if (!shareClassCodeGuard(row.fund_no, candidate)) continue
+    const score = matchPriority(row.fund_name, candidate)
+    if (score < bestScore) {
+      bestScore = score
+      best = row
+    }
+  }
+  return best
+}
+
 function bestBflMatch(
   indexes: IdentityIndexes,
   candidate: string,
@@ -710,7 +820,13 @@ function bestBflMatch(
 ): BflRow | null {
   if (productCode) {
     const byCode = indexes.bflByBeian.get(productCode)
-    if (byCode && shareClassCodeGuard(byCode.beian_hao, candidate)) return byCode
+    if (
+      byCode
+      && shareClassCodeGuard(byCode.beian_hao, candidate)
+      && identityNamesMatch(byCode, candidate)
+    ) {
+      return byCode
+    }
   }
   let best: BflRow | null = null
   let bestScore = Infinity
@@ -734,7 +850,13 @@ function bestT6Match(
 ): T6Row | null {
   if (productCode) {
     const byCode = indexes.t6ByRegister.get(productCode)
-    if (byCode && shareClassCodeGuard(byCode.register_number, candidate)) return byCode
+    if (
+      byCode
+      && shareClassCodeGuard(byCode.register_number, candidate)
+      && identityNamesMatch({ fund_short_name: byCode.fund_short_name }, candidate)
+    ) {
+      return byCode
+    }
   }
   let best: T6Row | null = null
   let bestScore = Infinity
@@ -894,13 +1016,45 @@ async function loadAllRawEmailFundRows(): Promise<RawEmailFund[]> {
   return dedupeRawFunds([...navRows, ...valRows, ...subjectRows, ...fofRows])
 }
 
-function emailPoolRegisterNumber(resolved: ResolvedFund, raw: RawEmailFund): string | null {
+function emailPoolRegisterNumber(
+  resolved: ResolvedFund,
+  raw: RawEmailFund,
+  indexes: IdentityIndexes,
+): string | null {
+  const candidate = nameCandidate(raw)
+  const fromFilename = [raw.fund_name, raw.fund_key, raw.product_code]
+    .map((value) => parseValuationWorkbookFilename(value ?? ""))
+    .find((parsed) => parsed?.code)
+  const filenameCode = fromFilename?.code?.trim()
+  if (filenameCode && !amacCodeConflictsWithEmailName(filenameCode, candidate, indexes)) {
+    return filenameCode.toUpperCase()
+  }
   const beian = resolved.beian_hao?.trim()
-  if (beian) return beian
+  if (
+    beian
+    && !isValuationReportTitle(beian)
+    && !amacCodeConflictsWithEmailName(beian, candidate, indexes)
+  ) {
+    return beian
+  }
   const code = raw.product_code?.trim()
-  if (code) return code.toUpperCase()
+  if (
+    code
+    && !isValuationReportTitle(code)
+    && !amacCodeConflictsWithEmailName(code, candidate, indexes)
+  ) {
+    return code.toUpperCase()
+  }
   const id = resolved.id?.trim()
-  return id || null
+  if (
+    id
+    && !isValuationReportTitle(id)
+    && !amacCodeConflictsWithEmailName(id, candidate, indexes)
+  ) {
+    return id
+  }
+  if (isValuationReportTitle(candidate)) return filenameCode?.toUpperCase() || null
+  return candidate || null
 }
 
 /** Manager names / parse noise that must never become 邮箱运维池 rows. */
@@ -934,6 +1088,7 @@ function isJunkTeamDataProductName(name: string | null | undefined): boolean {
   if (EMAIL_POOL_JUNK_DENYLIST.has(n.toLowerCase())) return true
   if (/^(?:私募|基金|证券|投资|证券投资)$/u.test(n)) return true
   if (isValuationStockCostSubjectName(n)) return true
+  if (isValuationReportTitle(n)) return true
   return false
 }
 
@@ -957,6 +1112,7 @@ function isPlausibleEmailPoolFund(productName: string, registerNumber: string): 
   if (name === "号" || reg === "号") return false
   if (!/[\u4e00-\u9fffA-Za-z]/.test(name)) return false
   if (isJunkTeamDataProductName(name)) return false
+  if (isValuationReportTitle(reg)) return false
   if (isEmailPoolCompanyOrAnnouncementName(name)) return false
   if (isEmailPoolCompanyOrAnnouncementName(reg)) return false
 
@@ -992,14 +1148,27 @@ function isFundCodeRegisterNumber(reg: string): boolean {
 }
 
 function upgradePoolRegisterNumber(fund: EmailPoolFund, indexes: IdentityIndexes): EmailPoolFund {
-  if (isFundCodeRegisterNumber(fund.register_number)) return fund
   const candidate = fund.product_name.trim()
+  const amac = bestAmacMatch(indexes, candidate, null)
+  if (
+    amac?.fund_no?.trim()
+    && !amacCodeConflictsWithEmailName(amac.fund_no, candidate, indexes)
+  ) {
+    return { ...fund, register_number: amac.fund_no.trim() }
+  }
+  if (isFundCodeRegisterNumber(fund.register_number)) return fund
   const bfl = bestBflMatch(indexes, candidate, null)
-  if (bfl?.beian_hao?.trim()) {
+  if (
+    bfl?.beian_hao?.trim()
+    && !amacCodeConflictsWithEmailName(bfl.beian_hao, candidate, indexes)
+  ) {
     return { ...fund, register_number: bfl.beian_hao.trim() }
   }
   const t6 = bestT6Match(indexes, candidate, null)
-  if (t6?.register_number?.trim()) {
+  if (
+    t6?.register_number?.trim()
+    && !amacCodeConflictsWithEmailName(t6.register_number, candidate, indexes)
+  ) {
     return { ...fund, register_number: t6.register_number.trim() }
   }
   return fund
@@ -1022,6 +1191,8 @@ function canonicalEmailPoolProductName(
 ): string {
   const reg = registerNumber.trim()
   const upper = reg.toUpperCase()
+  const amacName = amacDisplayName(lookupAmacByFundNo(indexes, upper))
+  if (amacName) return amacName
   const bfl = indexes.bflByBeian.get(reg) ?? indexes.bflByBeian.get(upper)
   const t6 = indexes.t6ByRegister.get(reg) ?? indexes.t6ByRegister.get(upper)
   const emailName = emailNameByCode?.trim() ?? ""
@@ -1109,7 +1280,7 @@ export async function loadEmailPoolFunds(): Promise<EmailPoolFund[]> {
   const emailNameByRegister = new Map<string, { name: string; navDate: string; identityScore: number }>()
   for (const row of rawRows) {
     const resolved = resolveFund(row, indexes, "company")
-    const register_number = emailPoolRegisterNumber(resolved, row)
+    const register_number = emailPoolRegisterNumber(resolved, row, indexes)
     if (!register_number) continue
     const candidate = nameCandidate(row)
     const identityScore = emailPoolRowIdentityScore(row, register_number, candidate)
@@ -1222,13 +1393,20 @@ async function loadRawEmailFunds(): Promise<RawEmailFund[]> {
      JOIN latest_edit e USING (fund_key)`,
   )
   const repaired = rows.map((row) => {
+    const { subject: _subject, ...rest } = row
+    const fromFilename = parseValuationWorkbookFilename(row.fund_name ?? "")
+    if (fromFilename?.fundName) {
+      return {
+        ...rest,
+        fund_name: fromFilename.fundName,
+        product_code: rest.product_code || fromFilename.code || null,
+      }
+    }
     if (!isJunkTeamDataProductName(row.fund_name) || !row.subject) {
-      const { subject: _subject, ...rest } = row
       return rest
     }
     const meta = extractNavMetadata(row.subject, "")
     const fixedName = meta.fundName?.trim() || null
-    const { subject: _subject, ...rest } = row
     if (!fixedName || isJunkTeamDataProductName(fixedName)) return rest
     return {
       ...rest,
@@ -1373,7 +1551,7 @@ async function loadIdentityTables(): Promise<{ tables: IdentityTables; indexes: 
   if (identityCache && Date.now() - identityCache.at < IDENTITY_CACHE_TTL_MS) {
     return { tables: identityCache.tables, indexes: identityCache.indexes }
   }
-  const [bfl, t6, fofDetail, fofTrack] = await Promise.all([
+  const [bfl, t6, fofDetail, fofTrack, amac] = await Promise.all([
     query<BflRow>(
       `SELECT beian_hao, product_name, short_name, strategy_company
        FROM private_fund_info_bfl
@@ -1394,8 +1572,13 @@ async function loadIdentityTables(): Promise<{ tables: IdentityTables; indexes: 
       `SELECT beian_hao, product_name FROM investment_tracking_fof_underlying
        WHERE NULLIF(BTRIM(product_name), '') IS NOT NULL`,
     ),
+    query<AmacRow>(
+      `SELECT fund_no, fund_name FROM amac_private_funds
+       WHERE NULLIF(BTRIM(fund_no), '') IS NOT NULL
+         AND NULLIF(BTRIM(fund_name), '') IS NOT NULL`,
+    ).catch(() => [] as AmacRow[]),
   ])
-  const tables = { bfl, t6, fofDetail, fofTrack }
+  const tables = { bfl, t6, fofDetail, fofTrack, amac }
   const indexes = buildIdentityIndexes(tables)
   identityCache = { tables, indexes, at: Date.now() }
   return { tables, indexes }
@@ -1408,22 +1591,27 @@ function resolveFund(
 ): ResolvedFund {
   const candidate = nameCandidate(row)
   const code = canonicalizeEmailProductCode(row.product_code?.trim() || "") || null
+  const amac = bestAmacMatch(indexes, candidate, code)
   const fd = bestNamedMatch(indexes.fofDetailByNameBase, candidate)
   const track = bestNamedMatch(indexes.fofTrackByNameBase, candidate)
   const bfl = bestBflMatch(indexes, candidate, code)
   const t6 = bestT6Match(indexes, candidate, code)
 
   const autoBeian = (() => {
+    if (amac?.fund_no) return amac.fund_no
     if (code && isPlausibleEmailProductCode(code) && codeMatchesShareClass(code, candidate)) {
-      return code
+      if (!amacCodeConflictsWithEmailName(code, candidate, indexes)) return code
     }
     const fromIdentity = bfl?.beian_hao ?? t6?.register_number ?? fd?.beian_hao ?? track?.beian_hao ?? null
     if (fromIdentity) return fromIdentity
-    return code && isPlausibleEmailProductCode(code) ? code : null
+    if (code && isPlausibleEmailProductCode(code) && !amacCodeConflictsWithEmailName(code, candidate, indexes)) {
+      return code
+    }
+    return null
   })()
 
   const product_name = displayProductName(
-    fd?.product_name ?? track?.product_name ?? bfl?.product_name,
+    amacDisplayName(amac) ?? fd?.product_name ?? track?.product_name ?? bfl?.product_name,
     bfl?.short_name ?? t6?.fund_short_name,
     candidate,
   )
@@ -1432,7 +1620,7 @@ function resolveFund(
   let managedBeian = resolveManagedProductBeian(product_name, autoBeian) ?? autoBeian
   // Email often stores the parent 备案号 (SJM483) while BFL identity is the
   // share-class code (JM483B). Keep the code that matches the display name.
-  const identityBeian = bfl?.beian_hao ?? t6?.register_number ?? fd?.beian_hao ?? track?.beian_hao ?? null
+  const identityBeian = amac?.fund_no ?? bfl?.beian_hao ?? t6?.register_number ?? fd?.beian_hao ?? track?.beian_hao ?? null
   if (
     identityBeian
     && product_name
@@ -1467,6 +1655,7 @@ function resolveFund(
       product_name,
       candidate,
       row.fund_name,
+      amac?.fund_name,
       bfl?.product_name,
       bfl?.short_name,
       t6?.fund_short_name,

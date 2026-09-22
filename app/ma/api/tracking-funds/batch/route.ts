@@ -12,9 +12,11 @@ import { upsertTeamBenchmarks } from "@/lib/server/ops-team-benchmarks"
 import {
   addFundToTrackingPool,
   invalidateTrackingPoolListCaches,
+  isAggregateTrackingPool,
   isCustomTrackingPool,
   isWritableTrackingPool,
   REGISTER_POOL_TABLE,
+  removeFundFromAggregateTrackingPool,
   removeFundFromTrackingPool,
 } from "@/lib/server/tracking-pool-membership"
 
@@ -194,6 +196,12 @@ export async function POST(req: Request) {
       case "copy": {
         if (!target_pool) return NextResponse.json({ error: "missing_target_pool" }, { status: 400 })
         if (!pool) return NextResponse.json({ error: "missing_pool" }, { status: 400 })
+        if (isAggregateTrackingPool(pool as string)) {
+          return NextResponse.json(
+            { error: "请先在左侧选择具体产品池，再移动或复制产品" },
+            { status: 400 },
+          )
+        }
         const tp = target_pool as string
         if (!isWritableTrackingPool(tp)) {
           return NextResponse.json(
@@ -222,10 +230,18 @@ export async function POST(req: Request) {
       // ── Remove from pool (批量取消跟踪) ────────────────────────────────────
       case "remove": {
         if (!pool) return NextResponse.json({ error: "missing_pool" }, { status: 400 })
-        for (const bh of ids) {
-          await removeFundFromTrackingPool(pool as string, bh)
+        const source = pool as string
+        if (isAggregateTrackingPool(source)) {
+          for (const bh of ids) {
+            await removeFundFromAggregateTrackingPool(source, bh)
+          }
+          invalidateTrackingPoolListCaches([])
+          return NextResponse.json({ ok: true, count: ids.length })
         }
-        invalidateTrackingPoolListCaches([pool as string])
+        for (const bh of ids) {
+          await removeFundFromTrackingPool(source, bh)
+        }
+        invalidateTrackingPoolListCaches([source])
         return NextResponse.json({ ok: true, count: ids.length })
       }
 

@@ -1660,6 +1660,7 @@ type EmailNavFallbackPoint = {
   price_date: string
   nav: string
   cumulative_nav: string | null
+  source: "attachment_valuation_table"
 }
 
 function collectFundValuationLookupCodes(
@@ -1823,6 +1824,7 @@ export async function loadFundValuationNavFallbackSeries(
       price_date,
       nav: String(nav),
       cumulative_nav: null,
+      source: "attachment_valuation_table",
     }))
 }
 

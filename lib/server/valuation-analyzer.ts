@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx"
 import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
+import { cleanValuationDerivedFundName, parseValuationWorkbookFilename } from "@/lib/server/valuation-filename"
 import { expandWorksheetUsedRange } from "@/lib/server/nav-cleaner"
 import {
   extractOptionContractFromText,
@@ -439,17 +440,37 @@ export function extractCustodianFromHeaderRows(rows: unknown[][], maxRow: number
 }
 
 function extractFundName(rows: unknown[][], headerRowIndex: number, filename: string): string {
+  const takeName = (raw: string | null | undefined): string | null => {
+    const cleaned = cleanValuationDerivedFundName(raw)
+    if (cleaned) return cleaned
+    const text = (raw ?? "").trim()
+    return text && !/估值表|估值报表/.test(text) ? text : null
+  }
+
+  const fromFile = parseValuationWorkbookFilename(filename)
+  if (fromFile?.fundName) return fromFile.fundName
+
   for (let i = 0; i < Math.min(headerRowIndex, 12); i++) {
     const joined = (rows[i] || []).map(cellToString).filter(Boolean).join(" ")
+    const fromTitle = parseValuationWorkbookFilename(joined)
+    if (fromTitle?.fundName) return fromTitle.fundName
+
     const parts = joined.split(/___|__|_/).map((part) => part.trim()).filter(Boolean)
     const fund = parts.find((part) => /基金/.test(part) && !/估值表|专用表|证券投资基金估值|管理人|托管/.test(part))
-    if (fund) return fund.replace(/专用表$/, "")
+    const fromFund = takeName(fund?.replace(/专用表$/, ""))
+    if (fromFund) return fromFund
 
     const quoted = joined.match(/[""''\u201c\u201d]([^""''\u201c\u201d]*基金[^""''\u201c\u201d]*)[""''\u201c\u201d]/)
-    if (quoted?.[1] && !/估值表|管理人/.test(quoted[1])) return quoted[1].trim()
+    if (quoted?.[1] && !/估值表|管理人/.test(quoted[1])) {
+      const fromQuoted = takeName(quoted[1])
+      if (fromQuoted) return fromQuoted
+    }
 
     const productLine = joined.match(/(?:产品名称|基金名称)\s*[：:]\s*([^\s|]+(?:基金[^\s|]*)?)/)
-    if (productLine?.[1]) return productLine[1].trim()
+    if (productLine?.[1]) {
+      const fromProduct = takeName(productLine[1])
+      if (fromProduct) return fromProduct
+    }
   }
 
   const filePatterns = [

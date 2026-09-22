@@ -3,7 +3,9 @@ import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-li
 import {
   addFundToTrackingPool,
   invalidateTrackingPoolListCaches,
+  isAggregateTrackingPool,
   isWritableTrackingPool,
+  removeFundFromAggregateTrackingPool,
   removeFundFromTrackingPool,
 } from "@/lib/server/tracking-pool-membership"
 
@@ -57,6 +59,17 @@ export async function DELETE(req: Request) {
   const beian_hao = searchParams.get("beian_hao") ?? ""
   if (!pool || !beian_hao) {
     return NextResponse.json({ error: "missing_fields" }, { status: 400 })
+  }
+  if (isAggregateTrackingPool(pool)) {
+    try {
+      await removeFundFromAggregateTrackingPool(pool, beian_hao)
+      invalidateTrackingPoolListCaches([])
+      return NextResponse.json({ ok: true })
+    } catch (err) {
+      console.error("[tracking-funds/add DELETE]", err)
+      const mapped = mapDbError(err)
+      return NextResponse.json({ error: mapped.error }, { status: mapped.status })
+    }
   }
   if (!isWritableTrackingPool(pool)) {
     return NextResponse.json({ error: "unknown_pool" }, { status: 400 })

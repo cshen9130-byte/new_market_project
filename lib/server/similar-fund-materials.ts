@@ -258,11 +258,12 @@ export function applyUserNoteToMaterials(
 
 function navFromCleanerRows(rows: NavCleanerRow[]): SimilarFundNavPoint[] {
   return rows
-    .filter((row) => row.date && (row.cumulativeNav > 0 || row.unitNav > 0))
+    .filter((row) => row.date && (row.cumulativeNav > 0 || row.unitNav > 0 || (row.adjustedNav ?? 0) > 0))
     .map((row) => ({
       price_date: row.date.slice(0, 10),
-      nav: String(row.unitNav || row.cumulativeNav),
-      cumulative_nav: String(row.cumulativeNav || row.unitNav),
+      nav: String(row.unitNav || row.cumulativeNav || row.adjustedNav),
+      // Product-page CSV has 复权净值; DB matching uses return_nav / 复权 when present.
+      cumulative_nav: String(row.adjustedNav || row.cumulativeNav || row.unitNav),
     }))
     .sort((a, b) => a.price_date.localeCompare(b.price_date))
 }

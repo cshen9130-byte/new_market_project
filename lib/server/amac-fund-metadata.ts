@@ -1,4 +1,9 @@
 import { query, fmtIso } from "@/lib/db"
+import {
+  expandFundSearchKeywords,
+  isPlausibleEmailProductCode,
+  sqlFundNameBase,
+} from "@/lib/server/fund-name-match"
 
 function managerNameBrandHint(managerName: string): string {
   const name = managerName.trim()
@@ -21,6 +26,28 @@ export type AmacFundMetadata = {
   put_on_record_date: string | null
   mgmt_scale: string | null
   registration_no: string | null
+}
+
+/** Resolve official AMAC `fund_no` from a product name when the route id is not a code. */
+export async function lookupAmacFundNoByName(productName: string): Promise<string | null> {
+  const name = productName.trim()
+  if (!name || isPlausibleEmailProductCode(name)) return null
+  const terms = expandFundSearchKeywords(name)
+  try {
+    const placeholders = terms.map((_, i) => `$${i + 1}`).join(", ")
+    const rows = await query<{ fund_no: string }>(
+      `SELECT DISTINCT fund_no
+       FROM amac_private_funds
+       WHERE ${sqlFundNameBase("fund_name")} IN (${terms.map((_, i) => sqlFundNameBase(`$${i + 1}`)).join(", ")})
+          OR BTRIM(fund_name) IN (${placeholders})
+       LIMIT 3`,
+      terms,
+    )
+    const codes = [...new Set(rows.map((r) => r.fund_no?.trim()).filter(Boolean))]
+    return codes.length === 1 ? codes[0] : null
+  } catch {
+    return null
+  }
 }
 
 /** Current AMAC disclosure name for a 备案号 (parent code if share-class). */
@@ -414,6 +441,13 @@ export async function lookupAmacFundMetadata(
     }
   } catch {
     // amac tables may not exist in some environments
+  }
+
+  if (!isPlausibleEmailProductCode(code)) {
+    const fundNo = await lookupAmacFundNoByName(code)
+    if (fundNo && fundNo.toUpperCase() !== code.toUpperCase()) {
+      return lookupAmacFundMetadata(fundNo, options)
+    }
   }
 
   try {

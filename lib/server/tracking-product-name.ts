@@ -1,5 +1,10 @@
 import { isCodeLikeProductName } from "@/lib/fund-display-name"
 import { query } from "@/lib/db"
+import { lookupAmacFundName } from "@/lib/server/amac-fund-metadata"
+import {
+  cleanValuationDerivedFundName,
+  isValuationReportTitle,
+} from "@/lib/server/valuation-filename"
 
 export { isCodeLikeProductName }
 
@@ -17,13 +22,27 @@ function preferDisplayName(
  * When a pool row stored the 备案号 as product_name, look up the real name
  * from BFL / type6 / private_fund_info (same sources as 团队数据).
  */
+function stripAmacFundSuffix(name: string): string {
+  return name.replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "").trim() || name
+}
+
 export async function resolveTrackingProductName(
   beianHao: string,
   fallback: string,
 ): Promise<string> {
   const code = beianHao.trim()
-  const hint = fallback.trim() || code
-  if (!code || !isCodeLikeProductName(hint, code)) return hint
+  const rawHint = fallback.trim() || code
+  const hint = cleanValuationDerivedFundName(rawHint)
+    || (isValuationReportTitle(rawHint) ? code : rawHint)
+  if (!code) return hint
+
+  const amacName = await lookupAmacFundName(code)
+  if (amacName) {
+    const display = stripAmacFundSuffix(amacName)
+    if (!isCodeLikeProductName(display, code)) return display
+  }
+
+  if (!isCodeLikeProductName(hint, code)) return hint
 
   const rows = await query<{
     bfl_name: string | null

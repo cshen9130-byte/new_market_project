@@ -21,7 +21,28 @@ import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
-import { teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
+import { purgeValuationFilenameIdentities, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
+import { expandFundSearchKeywords, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
+import { cleanValuationDerivedFundName, isValuationReportTitle } from "@/lib/server/valuation-filename"
+
+function appendProductKeywordFilter(
+  keyword: string,
+  nameExprs: string[],
+  where: string[],
+  filterParams: unknown[],
+) {
+  const terms = expandFundSearchKeywords(keyword)
+  if (terms.length === 0) return
+  const parts: string[] = []
+  for (const term of terms) {
+    filterParams.push(`%${term}%`)
+    const idx = filterParams.length
+    for (const expr of nameExprs) {
+      parts.push(`${expr} ILIKE $${idx}`)
+    }
+  }
+  where.push(`(${parts.join(" OR ")})`)
+}
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -36,6 +57,14 @@ declare global {
   var _trackingListElementSortCacheBustV1: boolean | undefined
   // One-shot: drop 全部 results that still included the hidden BFL catalog.
   var _trackingListVisiblePoolsCacheBustV1: boolean | undefined
+  // One-shot: drop list JSON from before SAFF24 / 磐松量化选股进取1号 identity split.
+  var _trackingListSaff24IdentityCacheBustV1: boolean | undefined
+  var _trackingListSaff24IdentityCacheBustV2: boolean | undefined
+  var _trackingListSaff24IdentityCacheBustV3: boolean | undefined
+  var _trackingListSaff24IdentityCacheBustV4: boolean | undefined
+  var _trackingListAmacNameCacheBustV1: boolean | undefined
+  var _trackingListValuationFilenameCacheBustV1: boolean | undefined
+  var _trackingListValuationFilenameCacheBustV2: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -255,11 +284,15 @@ interface TrackRow {
 }
 
 function sanitizeTrackRows(rows: TrackRow[]): TrackRow[] {
-  return rows.map((row) => ({
-    ...row,
-    sharpe_1y: sanitizeRiskMetricText(row.sharpe_1y),
-    calmar_1y: sanitizeRiskMetricText(row.calmar_1y),
-  }))
+  return rows
+    .filter((row) => !isValuationReportTitle(row.beian_hao) && !isValuationReportTitle(row.product_name))
+    .map((row) => ({
+      ...row,
+      product_name: cleanValuationDerivedFundName(row.product_name) || row.product_name,
+      short_name: cleanValuationDerivedFundName(row.short_name) || row.short_name,
+      sharpe_1y: sanitizeRiskMetricText(row.sharpe_1y),
+      calmar_1y: sanitizeRiskMetricText(row.calmar_1y),
+    }))
 }
 
 type StrategySource = "company" | "platform"
@@ -347,9 +380,13 @@ function bflOpsNavPctExpr(): string {
   return "COALESCE(lbc.price_change, lbn.price_change, lbs.price_change)"
 }
 
-/** Prefer BFL/cache name when the pool stored the 备案号 as product_name. */
+const LIST_CACHE_JOINS = `
+    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao
+    LEFT JOIN amac_private_funds amac ON UPPER(BTRIM(amac.fund_no)) = UPPER(BTRIM(i.beian_hao))`
+
+/** Pool/cache name, then AMAC official name when T6/BFL still has a stale rename. */
 function resolvedCachedProductNameExpr(): string {
-  return `CASE
+  const stored = `CASE
     WHEN i.product_name ~ '^[A-Za-z0-9]{4,10}$'
       OR UPPER(BTRIM(i.product_name)) = UPPER(BTRIM(i.beian_hao))
     THEN COALESCE(
@@ -360,6 +397,7 @@ function resolvedCachedProductNameExpr(): string {
     )
     ELSE i.product_name
   END`
+  return sqlPreferAmacOfficialName(stored, "amac.fund_name")
 }
 
 const CACHE_ALLOWED_SORT: Record<string, string> = {
@@ -485,7 +523,7 @@ function buildCachedFromClause(
       ) f
       GROUP BY f.beian_hao
     ) i
-    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    ${LIST_CACHE_JOINS}`
   }
   if (pool === "bfl_ops") {
     // Start from type6 membership so manual adds appear immediately even before
@@ -499,13 +537,13 @@ function buildCachedFromClause(
       WHERE t.register_number IS NOT NULL
       ORDER BY t.register_number, t.updated_at DESC NULLS LAST, t.id DESC
     ) i
-    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    ${LIST_CACHE_JOINS}`
   }
   if (pool === "bfl") {
     return `FROM (
       SELECT i0.*, NULL::date AS first_added_at FROM private_fund_info_bfl i0
     ) i
-    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    ${LIST_CACHE_JOINS}`
   }
   if (isCustomPool) {
     const poolFilter = isMineAllPool
@@ -520,7 +558,7 @@ function buildCachedFromClause(
       WHERE p.register_number IS NOT NULL ${poolFilter}
       ORDER BY UPPER(BTRIM(register_number)), p.updated_at DESC NULLS LAST, p.id DESC
     ) i
-    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    ${LIST_CACHE_JOINS}`
   }
   const sourceTable =
     pool === "selected" ? "selected_pool"
@@ -536,7 +574,7 @@ function buildCachedFromClause(
     WHERE p.register_number IS NOT NULL
     GROUP BY p.register_number, p.product_name
   ) i
-  LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+  ${LIST_CACHE_JOINS}`
 }
 
 async function handleCachedTrackingList(opts: {
@@ -592,8 +630,19 @@ async function handleCachedTrackingList(opts: {
       appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
       appendStrategyLevelFilter(strategyL3, strategyL3Expr, where, filterParams, "ilike")
       if (keyword) {
-        filterParams.push(`%${keyword}%`)
-        where.push(`(${resolvedCachedProductNameExpr()} ILIKE $${filterParams.length} OR i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length} OR cache.product_name ILIKE $${filterParams.length} OR cache.short_name ILIKE $${filterParams.length})`)
+        appendProductKeywordFilter(
+          keyword,
+          [
+            resolvedCachedProductNameExpr(),
+            "i.product_name",
+            "i.beian_hao",
+            "cache.product_name",
+            "cache.short_name",
+            "amac.fund_name",
+          ],
+          where,
+          filterParams,
+        )
       }
       if (teamTags.length > 0) {
         filterParams.push(teamTags)
@@ -763,8 +812,7 @@ async function handleBflOpsList(opts: {
   appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
   appendStrategyLevelFilter(strategyL3, strategyL3Expr, where, filterParams, "ilike")
   if (keyword) {
-    filterParams.push(`%${keyword}%`)
-    where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+    appendProductKeywordFilter(keyword, ["i.product_name", "i.beian_hao"], where, filterParams)
   }
   if (teamTags.length > 0) {
     const clauses = teamTags.map((tag) => {
@@ -887,6 +935,35 @@ export async function GET(req: Request) {
   if (!global._trackingListVisiblePoolsCacheBustV1) {
     global._trackingListVisiblePoolsCacheBustV1 = true
     invalidateListResponseCache("all")
+  }
+  if (!global._trackingListSaff24IdentityCacheBustV1) {
+    global._trackingListSaff24IdentityCacheBustV1 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListSaff24IdentityCacheBustV2) {
+    global._trackingListSaff24IdentityCacheBustV2 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListSaff24IdentityCacheBustV3) {
+    global._trackingListSaff24IdentityCacheBustV3 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListSaff24IdentityCacheBustV4) {
+    global._trackingListSaff24IdentityCacheBustV4 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListAmacNameCacheBustV1) {
+    global._trackingListAmacNameCacheBustV1 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListValuationFilenameCacheBustV1) {
+    global._trackingListValuationFilenameCacheBustV1 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListValuationFilenameCacheBustV2) {
+    global._trackingListValuationFilenameCacheBustV2 = true
+    invalidateListResponseCache()
+    await purgeValuationFilenameIdentities()
   }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
     "@/lib/server/account-risk-direct-nav-sync"
@@ -1190,8 +1267,7 @@ export async function GET(req: Request) {
   appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
   appendStrategyLevelFilter(strategyL3, strategyL3Expr, where, filterParams, "ilike")
   if (keyword) {
-    filterParams.push(`%${keyword}%`)
-    where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+    appendProductKeywordFilter(keyword, ["i.product_name", "i.beian_hao"], where, filterParams)
   }
   if (teamTags.length > 0) {
     const clauses = teamTags.map((tag) => {

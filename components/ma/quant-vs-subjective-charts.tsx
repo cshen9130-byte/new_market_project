@@ -1052,48 +1052,6 @@ export default function QuantVsSubjectiveCharts() {
         </div>
       </div>
 
-      {signalHistory.length > 0 && (
-        <Card>
-          <CardHeader className="pb-1">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <CardTitle className="text-sm font-medium">决策信号历史</CardTitle>
-                  <HelpSignalHistory />
-                </div>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  每日按同一风险阈值重算 · 点击柱或色块切换截面日期
-                </p>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-1 space-y-3">
-            <ReactECharts
-              option={countHistoryOption}
-              style={{ height: 240, width: "100%" }}
-              notMerge
-              onEvents={{
-                click: (params: { dataIndex?: number }) => {
-                  const idx = params.dataIndex
-                  if (idx != null && tradingDates[idx]) pickDate(tradingDates[idx])
-                },
-              }}
-            />
-            <ReactECharts
-              option={sectorHeatOption}
-              style={{ height: Math.max(220, 28 + 22 * Math.min(11, SECTOR_ORDER.length)), width: "100%" }}
-              notMerge
-              onEvents={{
-                click: (params: { data?: [number, number, number] }) => {
-                  const idx = params.data?.[0]
-                  if (idx != null && tradingDates[idx]) pickDate(tradingDates[idx])
-                },
-              }}
-            />
-          </CardContent>
-        </Card>
-      )}
-
       <QuantVsSubjectiveHoldingTs
         holdingTs={data?.holdingTs}
         metric={metric}
@@ -1101,6 +1059,8 @@ export default function QuantVsSubjectiveCharts() {
         sectorTs={data?.sectorTs}
         productTs={data?.productTs}
         flows={data?.flows}
+        asOf={data?.date}
+        quantIds={quantIds}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1259,6 +1219,48 @@ export default function QuantVsSubjectiveCharts() {
           </CardContent>
         </Card>
       </div>
+
+      {signalHistory.length > 0 && (
+        <Card>
+          <CardHeader className="pb-1">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <CardTitle className="text-sm font-medium">决策信号历史</CardTitle>
+                  <HelpSignalHistory />
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  每日按同一风险阈值重算 · 点击柱或色块切换截面日期
+                </p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-1 space-y-3">
+            <ReactECharts
+              option={countHistoryOption}
+              style={{ height: 240, width: "100%" }}
+              notMerge
+              onEvents={{
+                click: (params: { dataIndex?: number }) => {
+                  const idx = params.dataIndex
+                  if (idx != null && tradingDates[idx]) pickDate(tradingDates[idx])
+                },
+              }}
+            />
+            <ReactECharts
+              option={sectorHeatOption}
+              style={{ height: Math.max(220, 28 + 22 * Math.min(11, SECTOR_ORDER.length)), width: "100%" }}
+              notMerge
+              onEvents={{
+                click: (params: { data?: [number, number, number] }) => {
+                  const idx = params.data?.[0]
+                  if (idx != null && tradingDates[idx]) pickDate(tradingDates[idx])
+                },
+              }}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {sectors.length > 0 && (
         <Card>

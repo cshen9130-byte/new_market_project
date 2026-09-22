@@ -8,6 +8,7 @@
 
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { canonicalizeEmailProductCode, isBogusYearProductCode } from "@/lib/server/fund-name-match"
+import { parseValuationWorkbookFilename } from "@/lib/server/valuation-filename"
 import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 import {
   lookupManagedProductOverride,
@@ -537,6 +538,11 @@ function valuationFilenameBase(text: string): string {
 /** Parse CODE_FUNDNAME_4级科目估值表_YYYYMMDD (Guotai Junan etc.). */
 function parseValuationTableSubject(text: string): { code: string; fundName: string } | null {
   const file = valuationFilenameBase(text)
+  // Glued short names without 基金: SAJX62稳博鹏瑞套利2号2026年08月31日估值报表四级
+  const gluedShort = parseValuationWorkbookFilename(file)
+  if (gluedShort?.fundName) {
+    return { code: gluedShort.code, fundName: normalizeFundDisplayName(gluedShort.fundName) }
+  }
   const m = file.match(
     /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(?:\d级科目)?估值表_(20\d{6})/u,
   )

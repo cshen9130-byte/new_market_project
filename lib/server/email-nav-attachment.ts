@@ -351,7 +351,19 @@ function isCiticsShareCumHeader(header: string): boolean {
   return /^资产份额累计净值/.test(header) && !/母基金/.test(header)
 }
 
-/** Citics 日间净值列表: 日期 / 资产代码 / 资产份额净值(元) / 资产份额累计净值(元). */
+function isCiticsHistoryUnitHeader(header: string): boolean {
+  return /^(单位净值|今日单位净值|基金份额净值)$/.test(header)
+}
+
+function isCiticsHistoryCumHeader(header: string): boolean {
+  return /^(累计单位净值|累计净值)$/.test(header)
+}
+
+function isCiticsHistoryDateHeader(header: string): boolean {
+  return /^(日期|估值日期|净值日期|估值基准日)$/.test(header)
+}
+
+/** Citics 日间净值列表 / 估值基准日 history: 日期 or 估值基准日 + 单位净值 or 资产份额净值. */
 function extractCiticsDailyNavListRows(
   rows: (string | number | Date | null)[][],
   filename: string,
@@ -366,12 +378,24 @@ function extractCiticsDailyNavListRows(
   let nameIdx = -1
   for (let i = 0; i < Math.min(rows.length, 8); i++) {
     const header = (rows[i] ?? []).map((c) => String(c ?? "").trim())
-    const u = header.findIndex((h) => isCiticsShareUnitHeader(h))
-    const d = header.findIndex((h) => /^(日期|估值日期|净值日期)$/.test(h) || /^日期$/.test(h))
+    const shareUnit = header.findIndex((h) => isCiticsShareUnitHeader(h))
+    const historyDate = header.some((h) => /^估值基准日$/.test(h))
+    const u = shareUnit >= 0
+      ? shareUnit
+      : historyDate
+        ? header.findIndex((h) => isCiticsHistoryUnitHeader(h))
+        : -1
+    const d = header.findIndex((h) => (
+      shareUnit >= 0
+        ? /^(日期|估值日期|净值日期)$/.test(h)
+        : isCiticsHistoryDateHeader(h)
+    ))
     if (u < 0 || d < 0) continue
     headerIdx = i
     unitIdx = u
-    cumIdx = header.findIndex((h) => isCiticsShareCumHeader(h))
+    cumIdx = header.findIndex((h) => (
+      shareUnit >= 0 ? isCiticsShareCumHeader(h) : isCiticsHistoryCumHeader(h)
+    ))
     dateIdx = d
     codeIdx = header.findIndex((h) => /^(资产代码|产品代码)$/.test(h))
     nameIdx = header.findIndex((h) => /^(资产名称|产品名称)$/.test(h))

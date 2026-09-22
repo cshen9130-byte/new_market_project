@@ -71,6 +71,11 @@ export function isWritableTrackingPool(pool: string): boolean {
   )
 }
 
+/** Client-only 「全部」 tabs — union views, not a real membership table. */
+export function isAggregateTrackingPool(pool: string): boolean {
+  return pool === "all" || pool === "mine_all"
+}
+
 function rowHash(pool: string, beian_hao: string, product_name: string): string {
   return createHash("sha256").update(`${pool}::${beian_hao}::${product_name}`).digest("hex")
 }
@@ -150,6 +155,66 @@ export async function addFundToTrackingPool(
   return { created: rows.length > 0 }
 }
 
+/**
+ * Remove a fund from every visible pool that feeds 「全部」 / 「我的全部」.
+ * Does not touch hidden BFL catalog tables.
+ */
+export async function removeFundFromAggregateTrackingPool(
+  pool: string,
+  beian_hao: string,
+): Promise<void> {
+  if (pool === "mine_all") {
+    await query(
+      `DELETE FROM user_custom_pool
+       WHERE register_number = $1
+         AND (pool_key = 'mine_default' OR pool_key LIKE 'mine_custom_%')`,
+      [beian_hao],
+    )
+    return
+  }
+  if (pool !== "all") {
+    await removeFundFromTrackingPool(pool, beian_hao)
+    return
+  }
+
+  await query(
+    `DELETE FROM tracking_pool
+     WHERE register_number = $1
+       AND ${sqlVisibleTeamPoolExists("c.pool_key IN ('jy', 'tracking')")}`,
+    [beian_hao],
+  )
+  await query(
+    `DELETE FROM selected_pool
+     WHERE register_number = $1
+       AND ${sqlVisibleTeamPoolExists("c.pool_key = 'selected'")}`,
+    [beian_hao],
+  )
+  await query(
+    `DELETE FROM core_pool
+     WHERE register_number = $1
+       AND ${sqlVisibleTeamPoolExists("c.pool_key = 'core'")}`,
+    [beian_hao],
+  )
+  await query(
+    `DELETE FROM hy_tracking_pool
+     WHERE register_number = $1
+       AND ${sqlVisibleTeamPoolExists("c.pool_key = 'hy'")}`,
+    [beian_hao],
+  )
+  await query(
+    `DELETE FROM fof_mom_tracking
+     WHERE register_number = $1
+       AND ${sqlVisibleTeamPoolExists("c.pool_key = 'fof'")}`,
+    [beian_hao],
+  )
+  await query(
+    `DELETE FROM user_custom_pool p
+     WHERE p.register_number = $1
+       AND ${sqlVisibleTeamPoolExists("c.pool_key = p.pool_key")}`,
+    [beian_hao],
+  )
+}
+
 export async function removeFundFromTrackingPool(pool: string, beian_hao: string): Promise<void> {
   if (isCustomTrackingPool(pool)) {
     await query(
@@ -203,6 +268,56 @@ export async function purgeOrphanedCustomPoolMemberships(): Promise<number> {
   } catch {
     return 0
   }
+}
+
+const VALUATION_FILENAME_IDENTITY_SQL =
+  `((COALESCE(register_number, '') ~ '估值报表|估值表' AND COALESCE(register_number, '') ~ '20\\d{2}')
+    OR (COALESCE(product_name, '') ~ '估值报表|估值表' AND COALESCE(product_name, '') ~ '20\\d{2}'
+        AND COALESCE(register_number, '') ~ '估值报表|估值表'))`
+
+/** Drop pool/cache rows whose 备案号 is a 估值表 filename, not a product code. */
+export async function purgeValuationFilenameIdentities(): Promise<number> {
+  let deleted = 0
+  const poolTables = [
+    "user_custom_pool",
+    "tracking_pool",
+    "selected_pool",
+    "core_pool",
+    "hy_tracking_pool",
+    "fof_mom_tracking",
+  ]
+  try {
+    for (const table of poolTables) {
+      const rows = await query<{ n: string }>(
+        `WITH deleted AS (
+           DELETE FROM ${table}
+           WHERE ${VALUATION_FILENAME_IDENTITY_SQL}
+           RETURNING 1
+         )
+         SELECT COUNT(*)::text AS n FROM deleted`,
+      )
+      deleted += parseInt(rows[0]?.n ?? "0", 10)
+    }
+    const extras = [
+      `DELETE FROM ops_tracking_funds_list_cache
+        WHERE beian_hao ~ '估值报表|估值表' AND beian_hao ~ '20\\d{2}'`,
+      `DELETE FROM private_fund_info_bfl
+        WHERE beian_hao ~ '估值报表|估值表' AND beian_hao ~ '20\\d{2}'`,
+      `DELETE FROM type6_ops_team_full
+        WHERE register_number ~ '估值报表|估值表' AND register_number ~ '20\\d{2}'`,
+    ]
+    for (const sql of extras) {
+      const rows = await query<{ n: string }>(
+        `WITH deleted AS (${sql} RETURNING 1)
+         SELECT COUNT(*)::text AS n FROM deleted`,
+      ).catch(() => [] as { n: string }[])
+      deleted += parseInt(rows[0]?.n ?? "0", 10)
+    }
+    if (deleted > 0) invalidateTrackingPoolListCaches([])
+  } catch (err) {
+    console.warn("[tracking-pool] purge valuation-filename identities failed", err)
+  }
+  return deleted
 }
 
 export function isKnownCustomPoolKey(poolKey: string, definedPoolKeys: ReadonlySet<string>): boolean {

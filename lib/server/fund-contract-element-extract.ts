@@ -25,6 +25,7 @@ import {
   parseFeePayFormulaConfig,
   type FeePayFormulaConfig,
 } from "@/lib/ma/fund-elements-extra"
+import { parseValuationWorkbookFilename } from "@/lib/server/valuation-filename"
 import {
   fillMissingElementsFromKeywords,
   isWeakAddAmount,
@@ -832,6 +833,11 @@ function extractBeianCodes(...sources: Array<string | null | undefined>): string
 function extractFundNamesFromFileName(fileName: string): string[] {
   const base = path.basename(fileName, path.extname(fileName))
   const out = new Set<string>()
+  const parsed = parseValuationWorkbookFilename(fileName)
+  if (parsed?.fundName) {
+    out.add(parsed.fundName)
+    return Array.from(out)
+  }
   for (const segment of base.split(/[-_]/)) {
     const name = segment.trim()
     if (!name || GENERIC_FILE_NAME_SEGMENTS.has(name) || /^\d{8}/.test(name)) continue

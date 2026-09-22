@@ -33,6 +33,8 @@ import {
 import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
 import { canonicalizeFundRouteId, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
+import { lookupAmacFundNoByName } from "@/lib/server/amac-fund-metadata"
+import { isPlausibleEmailProductCode } from "@/lib/server/fund-name-match"
 
 /**
  * Extend 平台数据 with FOF 估值表 holdings only when platform/email lags by this many
@@ -212,8 +214,19 @@ export async function resolveRouteFundIdFast(rawId: string): Promise<string> {
     lookupManagedProductOverride(id)
   if (override?.beian_hao) return override.beian_hao
 
+  if (!isPlausibleEmailProductCode(id)) {
+    const amacNo = await lookupAmacFundNoByName(id)
+    if (amacNo) return amacNo
+  }
+
   const cached = await lookupListCacheFundHeader(id)
-  if (cached?.beian_hao?.trim()) return cached.beian_hao.trim()
+  if (cached?.beian_hao?.trim()) {
+    const cachedBeian = cached.beian_hao.trim()
+    if (isPlausibleEmailProductCode(cachedBeian)) return cachedBeian
+    const amacNo = await lookupAmacFundNoByName(cachedBeian)
+    if (amacNo) return amacNo
+    return cachedBeian
+  }
 
   // Direct code hit — same as resolveFundBeianHao's first branch, without name join.
   try {
@@ -223,6 +236,8 @@ export async function resolveRouteFundIdFast(rawId: string): Promise<string> {
        SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = $1
        UNION ALL
        SELECT register_number FROM type6_ops_team_full WHERE register_number = $1
+       UNION ALL
+       SELECT fund_no FROM amac_private_funds WHERE UPPER(BTRIM(fund_no)) = UPPER($1)
        LIMIT 1`,
       [id],
     )
@@ -467,6 +482,7 @@ function extendSeriesWithPoints(
       price_date: targetDate,
       nav: String(resolvedNav),
       cumulative_nav: null,
+      source: "attachment_valuation_table",
     })
   }
   const extension = [...extensionByDate.values()].sort((a, b) =>

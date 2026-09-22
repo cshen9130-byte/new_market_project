@@ -323,6 +323,15 @@ const ORG_SIZE_OPTS = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20
 // other pool definition (label, order, existence) lives in the DB and is loaded
 // from /ma/api/tracking-funds/pools.
 const TEAM_ALL_POOL = { key: "all", label: "全部" }
+
+function trackingUntrackMessage(pool: string, opts: { productName?: string; count?: number }): string {
+  const scope =
+    pool === "all" ? "所有团队跟踪产品池"
+    : pool === "mine_all" ? "所有我的跟踪产品池"
+    : "当前产品池"
+  if (opts.productName) return `确定要将「${opts.productName}」从${scope}中移除吗？`
+  return `确定要将已选 ${opts.count ?? 0} 只产品从${scope}中移除吗？`
+}
 const DEFAULT_POOLS = [
   TEAM_ALL_POOL,
   { key: "jy_ops", label: "JY运维池" },
@@ -376,7 +385,7 @@ function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
 // flash very stale data.
 type ListCacheEntry = { data: TrackFundRow[]; total: number; ts?: number }
 const listMemCache = new Map<string, ListCacheEntry>()
-const LIST_CACHE_PREFIX = "tracking_list_cache_v3:"
+const LIST_CACHE_PREFIX = "tracking_list_cache_v6:"
 const LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function readListCache(key: string): ListCacheEntry | null {
@@ -3024,7 +3033,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       if (!res.ok) {
         const err = await res.json().catch(() => ({})) as Record<string, unknown>
         console.error("[batch op]", err)
-        const msg = (err.error as string) || "操作失败，请重试"
+        const raw = (err.error as string) || "操作失败，请重试"
+        const msg = raw.startsWith("unknown_pool")
+          ? "请先在左侧选择具体产品池，再取消跟踪"
+          : raw
         alert(`批量操作失败：${msg}`)
       } else {
         opOk = true
@@ -3538,7 +3550,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(trackingUntrackMessage(sourcePool, { count: selected.size })); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
                     </div>
                   </>
                 )}
@@ -3660,7 +3672,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(trackingUntrackMessage(sourcePool, { count: selected.size })); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
                     </div>
                   </>
                 )}
@@ -3802,7 +3814,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                             onEditTags={() => openEditTagDialog(row.beian_hao, row.product_name)}
                             onEditStrategy={() => openEditStrategyDialog(row.beian_hao, row.product_name)}
                             onNoteManage={() => openNoteDialog(row.beian_hao, row.product_name)}
-                            onRemove={() => { setBatchContextPool(sourcePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
+                            onRemove={() => { setBatchContextPool(sourcePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(trackingUntrackMessage(sourcePool, { productName: row.product_name })); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
                           />
                         </div>
                       </td>
@@ -3967,7 +3979,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                             onEditTags={() => openEditTagDialog(row.beian_hao, row.product_name)}
                             onEditStrategy={() => openEditStrategyDialog(row.beian_hao, row.product_name)}
                             onNoteManage={() => openNoteDialog(row.beian_hao, row.product_name)}
-                            onRemove={() => { setBatchContextPool(sourcePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
+                            onRemove={() => { setBatchContextPool(sourcePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(trackingUntrackMessage(sourcePool, { productName: row.product_name })); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
                           />
                         </div>
                       </td>
@@ -4261,7 +4273,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
-                      <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(trackingUntrackMessage(myActivePool, { count: selected.size })); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
                     </div>
                   </>
                 )}
@@ -4455,7 +4467,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       </td>
                       <td className={`${cell} text-center`}>
                         <PersonalTrackingRowMenu
-                          onUntrack={() => { setBatchContextPool(myActivePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
+                          onUntrack={() => { setBatchContextPool(myActivePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(trackingUntrackMessage(myActivePool, { productName: row.product_name })); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
                           onEditTags={() => openPersonalEditTagDialog(row.beian_hao, row.product_name)}
                           onNoteManage={() => openPersonalNoteDialog(row.beian_hao, row.product_name)}
                         />
@@ -15694,21 +15706,20 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                   <td className={cell}>
                     {!investmentNotesReady ? (
                       <span className="text-muted-foreground">—</span>
-                    ) : linkedNoteByRowId.has(row.id) ? (
-                      <button
-                        type="button"
-                        title={linkedNoteByRowId.get(row.id)?.title || "打开关联投资笔记"}
-                        onClick={() => {
-                          const note = linkedNoteByRowId.get(row.id)
-                          if (note) window.open(investmentNoteDeepLink(note), "_blank")
-                        }}
-                        className="text-emerald-600 hover:text-emerald-700 hover:underline"
-                      >
-                        已关联
-                      </button>
-                    ) : (
-                      <span className="text-zinc-400">未关联</span>
-                    )}
+                    ) : (() => {
+                      const note = linkedNoteByRowId.get(row.id)
+                      return note ? (
+                        <Link
+                          href={investmentNoteDeepLink(note)}
+                          title={note.title || "打开关联投资笔记"}
+                          className="text-emerald-600 hover:text-emerald-700 hover:underline"
+                        >
+                          已关联
+                        </Link>
+                      ) : (
+                        <span className="text-zinc-400">未关联</span>
+                      )
+                    })()}
                   </td>
                   <td className={`${cell} tabular-nums`}>{row.first_entry_date ?? "—"}</td>
                   <td className={`${cell} text-center`}>

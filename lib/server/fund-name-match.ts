@@ -229,6 +229,13 @@ export function sqlShareClassParentCodeMatch(codeCol: string, beianCol: string):
   return `regexp_replace(UPPER(BTRIM(${beianCol})), '[ABC]$', '') = UPPER(BTRIM(${codeCol}))`
 }
 
+/** SQL equivalent of {@link shareClassProductCodesMatch} (A/B/C suffix + optional leading S). */
+export function sqlShareClassCodesMatch(codeA: string, codeB: string): string {
+  const a = `regexp_replace(UPPER(BTRIM(${codeA})), '[ABC]$', '')`
+  const b = `regexp_replace(UPPER(BTRIM(${codeB})), '[ABC]$', '')`
+  return `(${a} = ${b} OR ('S' || ${a}) = ${b} OR ${a} = ('S' || ${b}))`
+}
+
 /** Email row is not explicitly tagged as a different share class (B/C when target is A, etc.). */
 function sqlEmailNavUnclassifiedShareClassGuard(fundNameCol: string, productCodeCol: string): string {
   return `(
@@ -399,6 +406,23 @@ export function fundDisplayNamesMatch(columnName: string, targetName: string): b
     || (serialOk && na === nb)
     || (serialOk && (a.startsWith(nb) || b.startsWith(na)))
   )
+}
+
+/**
+ * Extra ILIKE terms so nicknames still find the disclosure name.
+ * 磐松量化进取1号 ↔ 磐松量化选股进取1号
+ */
+export function expandFundSearchKeywords(keyword: string): string[] {
+  const k = keyword.trim()
+  if (!k) return []
+  const out = new Set<string>([k])
+  if (/量化进取/u.test(k) && !/量化选股进取/u.test(k)) {
+    out.add(k.replace(/量化进取/u, "量化选股进取"))
+  }
+  if (/量化选股进取/u.test(k)) {
+    out.add(k.replace(/量化选股进取/u, "量化进取"))
+  }
+  return [...out]
 }
 
 /** Share-class guard for email NAV rows when resolving beian from fund_name. */

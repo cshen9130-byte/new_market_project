@@ -384,13 +384,17 @@ export function InvestmentNotesView() {
   const [purgeTarget, setPurgeTarget] = useState<InvestmentNote | null>(null)
   const [emptyTrashOpen, setEmptyTrashOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const notesListRef = useRef<HTMLDivElement>(null)
   const pendingDeepLinkRef = useRef<string | null>(deepLinkNoteId || null)
+  const pendingScrollNoteIdRef = useRef<string | null>(deepLinkNoteId || null)
 
   useEffect(() => {
     if (!deepLinkNoteId) return
     pendingDeepLinkRef.current = deepLinkNoteId
+    pendingScrollNoteIdRef.current = deepLinkNoteId
     setActiveTab(deepLinkScope)
     setSelectedId(deepLinkNoteId)
+    setKeyword("")
     setEditing(false)
   }, [deepLinkNoteId, deepLinkScope])
 
@@ -410,8 +414,8 @@ export function InvestmentNotesView() {
       setNotes(items)
       setSelectedId((prev) => {
         const pending = pendingDeepLinkRef.current
-        if (pending && items.some((n) => n.id === pending)) {
-          pendingDeepLinkRef.current = null
+        if (pending) {
+          if (items.some((n) => n.id === pending)) pendingDeepLinkRef.current = null
           return pending
         }
         if (prev && items.some((n) => n.id === prev)) return prev
@@ -491,15 +495,34 @@ export function InvestmentNotesView() {
   )
 
   useEffect(() => {
+    const targetId = pendingScrollNoteIdRef.current
+    if (!targetId || selectedId !== targetId) return
+    if (!filteredNotes.some((n) => n.id === targetId)) return
+    const container = notesListRef.current
+    if (!container) return
+    const escape =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape
+        : (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+    const el = container.querySelector<HTMLElement>(`[data-note-id="${escape(targetId)}"]`)
+    if (!el) return
+    pendingScrollNoteIdRef.current = null
+    el.scrollIntoView({ block: "center", behavior: "smooth" })
+  }, [selectedId, filteredNotes, loading])
+
+  useEffect(() => {
     if (!selectedId) return
     if (selectedNote && !selectedNote.contentPending) return
     let cancelled = false
     void (activeTab === "trash" ? getTrashedInvestmentNote(selectedId) : getInvestmentNote(selectedId)).then(
       (full) => {
         if (cancelled || !full) return
-        setNotes((prev) =>
-          prev.map((n) => (n.id === full.id ? { ...n, ...full, contentPending: false } : n)),
-        )
+        setNotes((prev) => {
+          if (prev.some((n) => n.id === full.id)) {
+            return prev.map((n) => (n.id === full.id ? { ...n, ...full, contentPending: false } : n))
+          }
+          return [full, ...prev]
+        })
       },
     )
     return () => {
@@ -1269,7 +1292,7 @@ export function InvestmentNotesView() {
               />
             </div>
           </div>
-          <div className="flex-1 overflow-auto">
+          <div ref={notesListRef} className="flex-1 overflow-auto">
             {loading && filteredNotes.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-zinc-400">加载中...</div>
             ) : filteredNotes.length === 0 ? (
@@ -1283,6 +1306,7 @@ export function InvestmentNotesView() {
                   <ContextMenu key={note.id}>
                     <ContextMenuTrigger asChild>
                       <div
+                        data-note-id={note.id}
                         role="button"
                         tabIndex={0}
                         onClick={() => selectNote(note)}

@@ -1,6 +1,6 @@
 /** Client-side stale-while-revalidate cache for 团队跟踪 / 我的跟踪 list views. */
 
-const LIST_CACHE_PREFIXES = ["tracking_list_cache_v3:", "tracking_list_cache_v2:", "tracking_list_cache:"]
+const LIST_CACHE_PREFIXES = ["tracking_list_cache_v6:", "tracking_list_cache_v5:", "tracking_list_cache_v4:", "tracking_list_cache_v3:", "tracking_list_cache_v2:", "tracking_list_cache:"]
 
 export function invalidateTrackingListCache(poolKeys?: string[]): void {
   if (typeof window === "undefined") return

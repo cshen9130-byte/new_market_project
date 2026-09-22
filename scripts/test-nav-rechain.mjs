@@ -24,7 +24,9 @@ import {
 } from "../lib/server/email-valuation-attachment.ts"
 import { unitNavFromValuationSummary } from "../lib/server/email-valuation-nav-backfill.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride, extractProductCodeFromText, isCmsMultiProductNavIncomplete, isCscBatchNavIncomplete, fundNameFromNavWorkbookFilename, extractCiticsFundNavAnnouncement } from "../lib/server/email-nav-extract.ts"
-import { isBogusYearProductCode, isPlausibleEmailProductCode, dedupeShareClassDisplayFunds, canonicalizeEmailProductCode, fundNicknameMatchesFullName } from "../lib/server/fund-name-match.ts"
+import { parseValuationWorkbookFilename, cleanValuationDerivedFundName } from "../lib/server/valuation-filename.ts"
+import { parseValuationWorkbook } from "../lib/server/valuation-analyzer.ts"
+import { isBogusYearProductCode, isPlausibleEmailProductCode, dedupeShareClassDisplayFunds, canonicalizeEmailProductCode, fundNicknameMatchesFullName, expandFundSearchKeywords } from "../lib/server/fund-name-match.ts"
 import { canonicalizeFundRouteId, resolveManagedProductBeian } from "../lib/server/managed-product-beian.ts"
 import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } from "../lib/server/email-valuation-cache-enrich.ts"
 import {
@@ -1761,6 +1763,63 @@ assert(
     "信裕 custody name aliases to 睿松",
     collectFundNameAliases("睿松量化选股进取1号", null).includes("信裕量化选股进取1号"),
   )
+
+  const saff24Subject =
+    "【基金净值】SAFF24_磐松量化选股进取1号私募证券投资基金_20240102-20260918"
+  const saff24Filename =
+    "【基金净值】磐松量化选股进取1号私募证券投资基金_磐松量化选股进取1号私募证券投资基金(总)等__20240102-20260918.xlsx"
+  const saff24Row = {
+    nav: "2.1235",
+    nav_date: "2026-09-21",
+    cumulative_nav: "2.1235",
+    product_code: "SAFF24",
+    fund_name: "磐松量化选股进取1号",
+    subject: saff24Subject,
+    attachment_filename: saff24Filename,
+    source: "attachment_nav_table",
+  }
+  assert(
+    "SAFF24 进取 email does not attach to AMAC 金选500",
+    emailRowMatchesFund(saff24Row, "SAFF24", collectFundNameAliases("磐松金选500指数增强1号", null)) === false,
+  )
+  assert(
+    "SAFF24 进取 email matches 量化选股进取1号 by name",
+    emailRowMatchesFund(
+      saff24Row,
+      "磐松量化选股进取1号",
+      collectFundNameAliases("磐松量化选股进取1号", null),
+    ),
+  )
+  assert(
+    "磐松量化进取1号 aliases to 量化选股进取1号",
+    collectFundNameAliases("磐松量化进取1号", null).includes("磐松量化选股进取1号"),
+  )
+  assert(
+    "search 磐松量化进取1号 also looks up 量化选股进取1号",
+    expandFundSearchKeywords("磐松量化进取1号").includes("磐松量化选股进取1号"),
+  )
+  const saff24HistoryWb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(
+    saff24HistoryWb,
+    XLSX.utils.aoa_to_sheet([
+      ["产品代码", "产品名称", "投资者名称", "基金账号", "估值基准日", "单位净值", "累计净值", "资产净值"],
+      ["SAFF24", "磐松量化选股进取1号私募证券投资基金", "金舆", "123", "2026-09-18", 2.0487, 2.0487, 100],
+      ["SAFF24", "磐松量化选股进取1号私募证券投资基金", "金舆", "123", "2026-09-21", 2.1235, 2.1235, 100],
+    ]),
+    "净值",
+  )
+  const saff24HistoryRows = extractNavTableFromBuffer(
+    Buffer.from(XLSX.write(saff24HistoryWb, { type: "buffer", bookType: "xlsx" })),
+    saff24Filename,
+    saff24Subject,
+  )
+  assert(
+    "Citics 估值基准日 history xlsx keeps unit NAV rows",
+    saff24HistoryRows.length === 2
+      && saff24HistoryRows.at(-1)?.navDate === "2026-09-21"
+      && saff24HistoryRows.at(-1)?.nav === 2.1235
+      && saff24HistoryRows.at(-1)?.fundName === "磐松量化选股进取1号",
+  )
 }
 
 // Weekly team/manual + collapsed legacy mid-weeks must not intercalate (SZJ909 sawtooth).
@@ -1851,7 +1910,7 @@ assert(
   ),
 )
 
-// Sparse gap: unit-only FOF 估值表 holdings must not collapse 累计 after June pre-div tip.
+// Sparse gap: FOF parent 估值表 holdings must not collapse 累计 after June pre-div tip.
 const sbbc18JuneTip = [
   {
     price_date: "2026-06-24",
@@ -1861,16 +1920,40 @@ const sbbc18JuneTip = [
     price_change: "",
   },
 ]
+const sbbc18ValuationHolding = {
+  price_date: "2026-08-04",
+  nav: "0.983200",
+  cumulative_nav: null,
+  adjusted_nav: null,
+  source: "attachment_valuation_table",
+  subject: "SCN504_金舆守安一号私募证券投资基金估值表20260804",
+}
 const sbbc18FofOnly = mergeNavSeriesWithEmail(
   sbbc18JuneTip,
-  [{ price_date: "2026-08-04", nav: "0.983200", cumulative_nav: null, adjusted_nav: null }],
+  [sbbc18ValuationHolding],
   { beian_hao: "SBBC18", product_name: "贞元强势1号私募证券投资基金", short_name: "贞元强势1号" },
 )
 assert(
-  "SBBC18 skips unit-only FOF holdings crash across June→Aug gap (no false −14%)",
+  "SBBC18 skips 估值表 holdings crash across June→Aug gap (no false −14%)",
   sbbc18FofOnly.length === 1
     && sbbc18FofOnly[0].price_date === "2026-06-24"
     && Number(sbbc18FofOnly[0].nav) === 1.1459,
+)
+const sbbc18NavTableSparse = mergeNavSeriesWithEmail(
+  sbbc18JuneTip,
+  [{
+    price_date: "2026-08-04",
+    nav: "0.983200",
+    cumulative_nav: null,
+    adjusted_nav: null,
+    source: "attachment_nav_table",
+    subject: "SBBC18贞元强势1号私募证券投资基金每日净值表",
+  }],
+  { beian_hao: "SBBC18", product_name: "贞元强势1号私募证券投资基金", short_name: "贞元强势1号" },
+)
+assert(
+  "净值表 across a sparse gap is kept even without 累计 (source, not field shape)",
+  sbbc18NavTableSparse.some((r) => r.price_date === "2026-08-04" && Number(r.nav) === 0.9832),
 )
 const sbbc18EmailCum = mergeNavSeriesWithEmail(
   sbbc18JuneTip,
@@ -1880,6 +1963,8 @@ const sbbc18EmailCum = mergeNavSeriesWithEmail(
       nav: "0.984900",
       cumulative_nav: "1.135400",
       adjusted_nav: null,
+      source: "attachment_nav_table",
+      subject: sbbc18TrialSubject,
     },
   ],
   { beian_hao: "SBBC18", product_name: "贞元强势1号私募证券投资基金", short_name: "贞元强势1号" },
@@ -1893,7 +1978,7 @@ assert(
 )
 
 // SASK40 华年量化选股择时1号: HTSC 每日净值表 stores unit==cum (undivided). A real
-// weekly drawdown >5% must still merge; the SBBC18 skip is only for missing 累计.
+// weekly drawdown >5% must still merge; the skip is only for 估值表 fallback.
 const sask40LegacyGap = [
   {
     price_date: "2026-07-10",
@@ -1913,10 +1998,10 @@ const sask40LegacyGap = [
 const sask40EmailDip = mergeNavSeriesWithEmail(
   sask40LegacyGap,
   [
-    { price_date: "2026-07-17", nav: "1.4721", cumulative_nav: "1.4721", adjusted_nav: "1.4721" },
-    { price_date: "2026-07-24", nav: "1.4229", cumulative_nav: "1.4229", adjusted_nav: "1.4229" },
-    { price_date: "2026-07-31", nav: "1.4378", cumulative_nav: "1.4378", adjusted_nav: "1.4378" },
-    { price_date: "2026-08-07", nav: "1.5894", cumulative_nav: "1.5894", adjusted_nav: "1.5894" },
+    { price_date: "2026-07-17", nav: "1.4721", cumulative_nav: "1.4721", adjusted_nav: "1.4721", source: "attachment_nav_table" },
+    { price_date: "2026-07-24", nav: "1.4229", cumulative_nav: "1.4229", adjusted_nav: "1.4229", source: "attachment_nav_table" },
+    { price_date: "2026-07-31", nav: "1.4378", cumulative_nav: "1.4378", adjusted_nav: "1.4378", source: "attachment_nav_table" },
+    { price_date: "2026-08-07", nav: "1.5894", cumulative_nav: "1.5894", adjusted_nav: "1.5894", source: "attachment_nav_table" },
   ],
   { beian_hao: "SASK40", product_name: "华年量化选股择时1号", short_name: "华年量化选股择时1号" },
 )
@@ -1934,18 +2019,18 @@ assert(
 )
 
 // Same weekly −5.8% dip with no 累计 field at all (parser missed the column).
-// A 7-day 净值表 gap is not SBBC18's sparse hole — keep the dates.
+// A 净值表 is never the SBBC18 估值表 skip — keep the dates.
 const sask40UnitOnlyWeekly = mergeNavSeriesWithEmail(
   sask40LegacyGap,
   [
-    { price_date: "2026-07-17", nav: "1.4721", cumulative_nav: null, adjusted_nav: null },
-    { price_date: "2026-07-24", nav: "1.4229", cumulative_nav: null, adjusted_nav: null },
-    { price_date: "2026-07-31", nav: "1.4378", cumulative_nav: null, adjusted_nav: null },
+    { price_date: "2026-07-17", nav: "1.4721", cumulative_nav: null, adjusted_nav: null, source: "attachment_nav_table" },
+    { price_date: "2026-07-24", nav: "1.4229", cumulative_nav: null, adjusted_nav: null, source: "attachment_nav_table" },
+    { price_date: "2026-07-31", nav: "1.4378", cumulative_nav: null, adjusted_nav: null, source: "attachment_nav_table" },
   ],
   { beian_hao: "SASK40", product_name: "华年量化选股择时1号", short_name: "华年量化选股择时1号" },
 )
 assert(
-  "weekly unit-only 净值表 keeps −5.8% Fri dip (not a sparse FOF-holdings gap)",
+  "weekly unit-only 净值表 keeps −5.8% Fri dip (source is 净值表, not 估值表)",
   sask40UnitOnlyWeekly.some((r) => r.price_date === "2026-07-17" && Number(r.nav) === 1.4721)
     && sask40UnitOnlyWeekly.some((r) => r.price_date === "2026-07-24" && Number(r.nav) === 1.4229)
     && sask40UnitOnlyWeekly.some((r) => r.price_date === "2026-07-31" && Number(r.nav) === 1.4378),
@@ -1969,11 +2054,11 @@ const sbbc18LegacyMidGap = [
 ]
 const sbbc18SparseUnitOnly = mergeNavSeriesWithEmail(
   sbbc18LegacyMidGap,
-  [{ price_date: "2026-08-04", nav: "0.983200", cumulative_nav: null, adjusted_nav: null }],
+  [sbbc18ValuationHolding],
   { beian_hao: "SBBC18", product_name: "贞元强势1号私募证券投资基金", short_name: "贞元强势1号" },
 )
 assert(
-  "SBBC18 still skips unit-only FOF holdings in a ≥21d mid-series hole",
+  "SBBC18 still skips 估值表 holdings in a ≥21d mid-series hole",
   sbbc18SparseUnitOnly.every((r) => r.price_date !== "2026-08-04"),
 )
 
@@ -3594,6 +3679,35 @@ if (fs.existsSync(excelPath)) {
     selectNavTableAttachments("unrelated", [{ filename: "添运8号历史净值.xlsx", part: "2" }]).length === 1,
   )
   assert("添运1号历史净值 filename nickname", fundNameFromNavWorkbookFilename("添运1号历史净值.xlsx") === "添运1号")
+  const sajx62Title = "SAJX62稳博鹏瑞套利2号2026年08月31日估值报表四级.xls"
+  const sajx62Meta = extractNavMetadata(sajx62Title, "")
+  assert("SAJX62 glued 估值报表四级 is not the product name", sajx62Meta.fundName === "稳博鹏瑞套利2号")
+  assert("SAJX62 glued 估值报表四级 keeps 备案号", sajx62Meta.productCode === "SAJX62")
+  assert(
+    "parseValuationWorkbookFilename strips 估值报表四级 title",
+    parseValuationWorkbookFilename(sajx62Title)?.fundName === "稳博鹏瑞套利2号"
+      && parseValuationWorkbookFilename(sajx62Title)?.code === "SAJX62",
+  )
+  assert(
+    "cleanValuationDerivedFundName drops unparseable 估值表 titles",
+    cleanValuationDerivedFundName("2024-03-20至2024-08-27估值报表补发文件") == null,
+  )
+  const sajx62Wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(
+    sajx62Wb,
+    XLSX.utils.aoa_to_sheet([
+      ["SAJX62稳博鹏瑞套利2号2026年08月31日估值报表四级"],
+      ["产品名称", "SAJX62稳博鹏瑞套利2号2026年08月31日估值报表四级"],
+      ["科目代码", "科目名称", "市值"],
+      ["1002", "银行存款", 100],
+    ]),
+    "Sheet1",
+  )
+  const sajx62Analysis = parseValuationWorkbook(
+    Buffer.from(XLSX.write(sajx62Wb, { type: "buffer", bookType: "xlsx" })),
+    sajx62Title,
+  )
+  assert("workbook title is not stored as fund_name", sajx62Analysis.summary.fund_name === "稳博鹏瑞套利2号")
   assert(
     "CTA 净值数据 filename keeps legal name",
     /众量多元化CTA1号/.test(

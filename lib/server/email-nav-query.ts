@@ -31,6 +31,9 @@ export type EmailNavPoint = {
   nav: string | null
   cumulative_nav: string | null
   adjusted_nav?: string | null
+  source?: string | null
+  subject?: string | null
+  attachment_filename?: string | null
 }
 
 type EmailNavRawRow = {
@@ -126,6 +129,16 @@ export const EMAIL_NAV_VALUATION_SOURCE_FILTER = `(
   OR COALESCE(e.subject, '') ILIKE '%估值表%'
   OR COALESCE(e.attachment_filename, '') ILIKE '%估值表%'
 )`
+
+/** True when a merge point came from a 估值表, not a 净值表 / 试算 / 虚拟净值 mail. */
+export function isValuationFallbackNavPoint(row: {
+  source?: string | null
+  subject?: string | null
+  attachment_filename?: string | null
+}): boolean {
+  if ((row.source ?? "").trim() === "attachment_valuation_table") return true
+  return /估值表/u.test(`${row.subject ?? ""}\n${row.attachment_filename ?? ""}`)
+}
 
 /** @deprecated use EMAIL_NAV_PRIMARY_SOURCE_FILTER */
 export const EMAIL_NAV_UNIT_NAV_SOURCE_FILTER = EMAIL_NAV_PRIMARY_SOURCE_FILTER
@@ -343,6 +356,8 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
  */
 const EMAIL_FUND_RENAME_ALIASES: ReadonlyArray<readonly [string, string]> = [
   ["睿松量化选股进取1号", "信裕量化选股进取1号"],
+  // Search / email nickname drops 选股; Citics disclosure uses the full name.
+  ["磐松量化选股进取1号", "磐松量化进取1号"],
 ]
 
 function expandFundRenameAliases(names: Iterable<string>): string[] {
@@ -503,10 +518,14 @@ export function emailRowMatchesFund(
     return false
   }
 
-  // Authoritative product_code match wins. Xingye 业绩报酬试算 subjects embed
-  // investor TA accounts (…_XY8002280517_…) that must not override SBBC18.
+  // Authoritative product_code match wins unless Citics reused that code for a
+  // different product (SAFF24 进取 vs AMAC 金选500). Xingye 业绩报酬试算 subjects
+  // embed investor TA accounts (…_XY8002280517_…) that must not override SBBC18.
   // Calendar years (2026) are not 备案号 — do not treat them as identity.
   if (beianIsCode && productCode && embeddedCodeMatchesBeian(productCode, beian)) {
+    if (citicsSingleProduct && row.fund_name && aliases.length > 0 && !nameHit) {
+      return false
+    }
     return true
   }
 
@@ -523,10 +542,18 @@ export function emailRowMatchesFund(
     return false
   }
 
-  if (beianIsCode && meta.toUpperCase().includes(beian)) return true
+  if (beianIsCode && meta.toUpperCase().includes(beian) && (nameHit || !row.fund_name)) return true
 
   if (nameMatchesAlias(row.fund_name, aliases)) {
-    return embedded.length === 0 || embedded.some((code) => embeddedCodeMatchesBeian(code, beian))
+    if (
+      embedded.length === 0
+      || embedded.some((code) => embeddedCodeMatchesBeian(code, beian))
+    ) {
+      return true
+    }
+    // Name-based email-pool keys (no AMAC 备案号) still match Citics rows
+    // whose 产品代码 collided with a different AMAC product.
+    return citicsSingleProduct || !beianIsCode
   }
 
   return citicsSingleProduct && nameHit
@@ -873,6 +900,9 @@ function rowsToEmailPoints(rows: EmailNavRawRow[]): EmailNavPoint[] {
     nav: row.nav,
     cumulative_nav: row.cumulative_nav,
     adjusted_nav: row.adjusted_nav,
+    source: row.source,
+    subject: row.subject,
+    attachment_filename: row.attachment_filename,
   }))
 }
 
@@ -1186,6 +1216,9 @@ export async function loadEmailNavManagePoints(
     nav: row.nav,
     cumulative_nav: row.cumulative_nav,
     adjusted_nav: row.adjusted_nav,
+    source: row.source,
+    subject: row.subject,
+    attachment_filename: row.attachment_filename,
   }))
 }
 
@@ -2575,19 +2608,12 @@ export function mergeNavSeriesWithEmail(
     const emailAdj =
       isPlausibleEmailAdjustedNav(resolvedCum, emailAdjRaw) ? emailAdjRaw : null
 
-    // Unit-only FOF 估值表 holdings across a *sparse* gap (no 累计 column at all)
-    // collapse cum→unit and invent a false crash (SBBC18: June 1.1459 → Aug 0.9832 / −14%).
-    // Skip those marks only. Xingye 业绩报酬试算 rows supply real 累计 and still merge.
-    //
-    // A normal weekly 净值表 must never hit this:
-    // - 累计 = 单位 (undivided funds) is a real 累计 field, not "missing 累计"
-    // - Fri→Fri (~7d) is not a sparse gap; a −5% weekly return is ordinary
-    // Measure the hole from the last kept point (not last legacy print) and
-    // require >21 calendar days so three weekly Fridays cannot cascade-drop.
-    // Do NOT apply this guard when extending past the legacy tip — post-investment
-    // virtual NAV (ABG50B: platform 1.21 → email virtual ~1.05) sits below unit.
-    const legacyTipDate = sortedLegacyDates.at(-1) ?? ""
-    const isPostLegacyTip = Boolean(legacyTipDate) && row.price_date > legacyTipDate
+    // FOF parent 估值表 holdings (守安/锡泰 listing 贞元 as underlying) only have 市价.
+    // Across a sparse hole they collapse cum→unit (SBBC18: June 1.1459 → Aug 0.9832 / −14%).
+    // Judge by source, not by “missing 累计”: a 净值表 with 累计=单位 is still a 净值表.
+    // Xingye 业绩报酬试算 / HTSC 净值表 / 虚拟净值 never hit this.
+    // The old “after legacy tip” exemption was for ABG50B virtual NAV; that source
+    // is not 估值表, so it no longer needs an exception here.
     const lastKeptDate = Array.from(byDate.keys())
       .filter((d) => d < row.price_date)
       .sort()
@@ -2599,10 +2625,8 @@ export function mergeNavSeriesWithEmail(
         : 0
     if (
       !existing
-      && resolvedCum == null
-      && emailCum == null
+      && isValuationFallbackNavPoint(row)
       && lastKeptRow != null
-      && !isPostLegacyTip
       && gapDays > 21
       && (() => {
         const prevUnit = parseOptionalNav(lastKeptRow.nav)

@@ -1,5 +1,6 @@
 import { query } from "@/lib/db"
 import { preferAmacOfficialName, sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import { parseValuationWorkbookFilename } from "@/lib/server/valuation-filename"
 import { fundNameCore, normalizeRegisterCode } from "@/lib/server/fund-picker-search"
 import {
   loadExtractedElementDisplayValues,
@@ -124,7 +125,12 @@ export function resolveUnregisteredProductName(input: {
   const override = input.override?.trim()
   if (override) return override
   const fromExtracted = input.extracted?.fund_name?.trim()
-  if (fromExtracted) return fromExtracted
+  if (fromExtracted) {
+    const fromExtractedFile = parseValuationWorkbookFilename(fromExtracted)
+    return fromExtractedFile?.fundName || fromExtracted
+  }
+  const fromFile = parseValuationWorkbookFilename(input.fileName ?? "")
+  if (fromFile?.fundName) return fromFile.fundName
   const fileName = (input.fileName ?? "").replace(/\.[^.]+$/, "")
   const cleaned = fileName
     .replace(/^【\d+】/, "")
@@ -132,6 +138,8 @@ export function resolveUnregisteredProductName(input: {
     .replace(/基金合同.*$/u, "")
     .replace(/_V[\d.]+$/i, "")
     .replace(/^[A-Z][A-Z0-9]{4,7}[A-Z]?/, "")
+    .replace(/20\d{2}年\d{1,2}月\d{1,2}日.*$/u, "")
+    .replace(/(?:每日)?(?:产品)?(?:[三四]级(?:科目)?)?(?:估值报表|估值表).*$/u, "")
     .trim()
   return cleaned || "未备案产品"
 }

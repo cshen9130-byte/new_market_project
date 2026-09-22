@@ -491,6 +491,7 @@ function navPointsFromEmailSeries(
     adjusted_nav?: string | null
     source: string | null
     subject: string | null
+    attachment_filename?: string | null
   }>,
   context: FundNavSeriesContext,
 ): NavPoint[] {
@@ -500,6 +501,9 @@ function navPointsFromEmailSeries(
     nav: row.nav,
     cumulative_nav: row.cumulative_nav,
     adjusted_nav: row.adjusted_nav ?? null,
+    source: row.source,
+    subject: row.subject,
+    attachment_filename: row.attachment_filename,
   }))
   const merged = mergeNavSeriesWithEmail([], emailPts, context)
   const metaByDate = new Map(selected.map((r) => [r.nav_date.slice(0, 10), r]))
@@ -711,7 +715,39 @@ export function backfillParentEmailFromShareClassSiblings(
   }
 }
 
-async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<Map<string, NavPoint[]>> {
+function identityAliasesForBeian(
+  identityAliasesByBeian: Map<string, string[]> | undefined,
+  ...codes: Array<string | null | undefined>
+): string[] | null {
+  if (!identityAliasesByBeian) return null
+  for (const raw of codes) {
+    const code = (raw ?? "").trim()
+    if (!code) continue
+    const hit =
+      identityAliasesByBeian.get(code)
+      ?? identityAliasesByBeian.get(code.toUpperCase())
+      ?? identityAliasesByBeian.get(canonicalizeEmailProductCode(code) || "")
+    if (hit && hit.length > 0) return hit
+  }
+  return null
+}
+
+function mergeIdentityAliases(
+  map: Map<string, string[]>,
+  key: string,
+  aliases: string[],
+): void {
+  const code = key.trim()
+  if (!code || aliases.length === 0) return
+  const prev = map.get(code) ?? []
+  map.set(code, [...new Set([...prev, ...aliases])])
+}
+
+async function loadEmailNavBatch(
+  beians: string[],
+  sinceDate: string,
+  identityAliasesByBeian?: Map<string, string[]>,
+): Promise<Map<string, NavPoint[]>> {
   const out = new Map<string, NavPoint[]>()
   if (beians.length === 0) return out
 
@@ -746,11 +782,16 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
 
   for (const [code, codeRows] of rowsByCode) {
     const lookupCode = canonicalizeEmailProductCode(code) || code
-    const aliases = collectFundNameAliases(
-      codeRows[0]?.fund_name ?? "",
-      null,
-      codeRows.map((r) => r.fund_name),
-    )
+    // Prefer the requested AMAC/pool identity. Citics reuses 产品代码 (SAFF24
+    // 进取 vs AMAC 金选500); aliases from the email row itself would keep the
+    // collision and attach the wrong NAV to the list cache.
+    const aliases =
+      identityAliasesForBeian(identityAliasesByBeian, lookupCode, code)
+      ?? collectFundNameAliases(
+        codeRows[0]?.fund_name ?? "",
+        null,
+        codeRows.map((r) => r.fund_name),
+      )
     const selected = selectEmailNavSeriesRows(
       codeRows.map((row) => ({
         nav_date: row.nav_date.slice(0, 10),
@@ -1344,12 +1385,18 @@ export class BatchNavResolver {
     const { staleBeians, staleNames, staleSince } = collectStaleNavKeys(products, hints, defaultSince)
 
     const beianByName = new Map<string, string>()
+    const identityAliasesByBeian = new Map<string, string[]>()
     for (const product of products) {
       const beian = (product.beian_hao ?? "").trim()
       if (!beian) continue
       beianByName.set(product.product_name, beian)
       const short = (product.short_name ?? "").trim()
       if (short) beianByName.set(short, beian)
+      const aliases = collectFundNameAliases(product.product_name, product.short_name)
+      mergeIdentityAliases(identityAliasesByBeian, beian, aliases)
+      mergeIdentityAliases(identityAliasesByBeian, beian.toUpperCase(), aliases)
+      const canonical = canonicalizeEmailProductCode(beian)
+      if (canonical) mergeIdentityAliases(identityAliasesByBeian, canonical, aliases)
     }
 
     const seedByBeian = new Map<string, NavPoint[]>()
@@ -1374,7 +1421,7 @@ export class BatchNavResolver {
     }
 
     const [emailByBeian, emailByName, type6, legacy] = await Promise.all([
-      loadEmailNavBatch(beians, defaultSince),
+      loadEmailNavBatch(beians, defaultSince, identityAliasesByBeian),
       loadEmailNavByNameBatch(names, defaultSince, beianByName),
       loadType6NavBatch(beians, names, defaultSince),
       loadLegacyNavBatch(beians, names, defaultSince),
@@ -1382,7 +1429,7 @@ export class BatchNavResolver {
 
     if (staleSince && (staleBeians.length > 0 || staleNames.length > 0)) {
       const [staleEmail, staleEmailName, staleType6, staleLegacy] = await Promise.all([
-        loadEmailNavBatch(staleBeians, staleSince),
+        loadEmailNavBatch(staleBeians, staleSince, identityAliasesByBeian),
         loadEmailNavByNameBatch(staleNames, staleSince, beianByName),
         loadType6NavBatch(staleBeians, staleNames, staleSince),
         loadLegacyNavBatch(staleBeians, staleNames, staleSince),

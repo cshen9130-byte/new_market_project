@@ -20,6 +20,7 @@ import {
   type TsSectorPoint,
 } from "@/lib/ma/quant-vs-subjective-signals"
 import { HelpCandle, HelpHoldingBar, HelpWaterfall } from "@/components/ma/quant-vs-subjective-help"
+import JiaamaOnlyTracker from "@/components/ma/jiaama-only-tracker"
 
 const ACTION_HEAT_COLOR: Record<ActionKind, string> = {
   加码: "#ef4444",
@@ -653,6 +654,8 @@ export default function QuantVsSubjectiveHoldingTs({
   sectorTs,
   productTs,
   flows,
+  asOf,
+  quantIds,
 }: {
   holdingTs: HoldingTs | null | undefined
   metric: ExposureMetric
@@ -660,6 +663,8 @@ export default function QuantVsSubjectiveHoldingTs({
   sectorTs?: TsSectorPoint[]
   productTs?: TsProductPoint[]
   flows?: FlowMap
+  asOf?: string | null
+  quantIds?: number[] | null
 }) {
   const [cat, setCat] = useState("全部")
   const [sector, setSector] = useState("全部")
@@ -1074,6 +1079,7 @@ export default function QuantVsSubjectiveHoldingTs({
         {swapped ? subjHoldingCard : quantCandleCard}
         {subjCandleCard}
       </div>
+      <JiaamaOnlyTracker date={asOf} quantIds={quantIds} />
       {qDecomp && sDecomp && (
         <Card>
           <CardHeader className="pb-1">
