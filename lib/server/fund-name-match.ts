@@ -36,6 +36,26 @@ export function sqlPreferAmacOfficialName(storedExpr: string, amacExpr: string):
   END`
 }
 
+/**
+ * List rows: put the AMAC name in product_name, and drop a short_name that is a
+ * different product (a former name such as 兰盈中性增强 vs 兰盈俱乐部3号).
+ * Same-fund full/short pairs are kept so the UI can still pick the shorter label.
+ */
+export function applyOfficialProductFields(
+  storedName: string | null | undefined,
+  officialName: string | null | undefined,
+  shortName: string | null | undefined,
+): { product_name: string; short_name: string | null } {
+  const product_name = preferAmacOfficialName(storedName, officialName) || (storedName ?? "").trim()
+  const short = (shortName ?? "").trim()
+  const productKey = fundNameKey(product_name)
+  const shortKey = fundNameKey(short)
+  if (!short || (productKey && shortKey && productKey !== shortKey)) {
+    return { product_name, short_name: null }
+  }
+  return { product_name, short_name: short }
+}
+
 /** Prefer the AMAC official name when it is a real rename, not just a suffix difference. */
 export function preferAmacOfficialName(
   stored: string | null | undefined,

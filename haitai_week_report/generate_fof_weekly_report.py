@@ -47,7 +47,24 @@ C_BORDER = "#E2E8F0"
 
 PRODUCT_NAME = "海泰1号"
 REPORT_TITLE = "低波稳健FOF 1号"
-PRODUCT_TAGLINE = "低波动 · 稳健运作 · 强势股策略"
+PRODUCT_TAGLINE = "低波动 · 稳健运作 · FOF策略"
+# Previous default labeled every curve report as 强势股, including FOF products.
+LEGACY_STRONG_STOCK_TAGLINE = "低波动 · 稳健运作 · 强势股策略"
+
+
+def resolve_strategy_phrase(
+    strategy_label: str | None = None,
+    product_name: str | None = None,
+    report_title: str | None = None,
+) -> str:
+    """Short strategy name for the header and 要点. FOF products stay FOF."""
+    label = (strategy_label or "").strip()
+    blob = f"{product_name or ''} {report_title or ''}"
+    if "FOF" in blob.upper() or "FOF" in label.upper():
+        return "FOF策略"
+    if not label:
+        return "策略"
+    return label if label.endswith("策略") else f"{label}策略"
 
 REPORT_KIND_LABELS: dict[str, dict[str, str]] = {
     "weekly": {
@@ -676,6 +693,7 @@ def build_highlights(
     metrics: dict,
     benchmark_label: str = "沪深300",
     report_kind: str | None = "weekly",
+    strategy_phrase: str = "FOF策略",
 ) -> list[str]:
     labels = REPORT_KIND_LABELS[normalize_report_kind(report_kind)]
     period_name = labels["period_name"]
@@ -715,7 +733,8 @@ def build_highlights(
         line4 = f"  产品随市场同步调整，继续严控波动、稳健运作。"
 
     line5 = f"• 运作情况：运作以来累计{tr * 100:+.2f}%，最大回撤"
-    line6 = f"  {md * 100:.2f}%，强势股策略持续稳健运作。"
+    phrase = (strategy_phrase or "策略").strip() or "策略"
+    line6 = f"  {md * 100:.2f}%，{phrase}持续稳健运作。"
 
     return [line1, line2, line3, line4, line5, line6]
 
@@ -1064,6 +1083,7 @@ def _make_weekly_report(
     report_title: str,
     product_tagline: str,
     benchmark_label: str,
+    strategy_phrase: str = "FOF策略",
 ) -> tuple[str, str]:
     labels = REPORT_KIND_LABELS[ctx["kind"]]
     plot_df = ctx["plot_df"]
@@ -1247,7 +1267,9 @@ def _make_weekly_report(
     bottom_h = 0.14
 
     draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, labels["period_highlights"], fp_bold, fp)
-    highlights = build_highlights(metrics, benchmark_label, report_kind=ctx["kind"])
+    highlights = build_highlights(
+        metrics, benchmark_label, report_kind=ctx["kind"], strategy_phrase=strategy_phrase,
+    )
     for i, line in enumerate(highlights):
         draw_text(ax, 0.06, bottom_y + bottom_h - 0.042 - i * 0.016, line, fp, size=8.5, color=C_TEXT)
 
@@ -1297,6 +1319,7 @@ def _make_monthly_report(
     report_title: str,
     product_tagline: str,
     benchmark_label: str,
+    strategy_phrase: str = "FOF策略",
 ) -> tuple[str, str]:
     """Light Chinese-style monthly report — red accents, horse-year motif, seal stamp."""
     labels = REPORT_KIND_LABELS["monthly"]
@@ -1537,7 +1560,9 @@ def _make_monthly_report(
     draw_text(ax, 0.780, 0.590, f"{month_label}  回顾",
               fp_bold or fp, size=10, color="white", weight="bold", ha="center")
     draw_text(ax, 0.614, 0.560, period_range, fp, size=7, color=C_DIM)
-    highlights = build_highlights(metrics, benchmark_label, report_kind="monthly")
+    highlights = build_highlights(
+        metrics, benchmark_label, report_kind="monthly", strategy_phrase=strategy_phrase,
+    )
     for i, line in enumerate(highlights[:5]):
         txt_col = C_INK if i % 2 == 0 else C_DIM
         draw_text(ax, 0.612, 0.546 - i * 0.027, line, fp, size=7.5, color=txt_col)
@@ -1705,7 +1730,8 @@ def make_report(
     week_end: str | None = None,
     product_name: str = PRODUCT_NAME,
     report_title: str = REPORT_TITLE,
-    product_tagline: str = PRODUCT_TAGLINE,
+    product_tagline: str | None = None,
+    strategy_label: str | None = None,
     benchmark_label: str = "沪深300",
     nav_frequency: str | None = "weekly",
     report_kind: str | None = "weekly",
@@ -1728,6 +1754,10 @@ def make_report(
         report_kind=kind,
     )
     metrics = ctx["metrics"]
+    strategy_phrase = resolve_strategy_phrase(strategy_label, product_name, report_title)
+    tagline = (product_tagline or "").strip()
+    if not tagline or tagline in (PRODUCT_TAGLINE, LEGACY_STRONG_STOCK_TAGLINE):
+        tagline = f"低波动 · 稳健运作 · {strategy_phrase}"
 
     if kind == "monthly" and layout == "review":
         png_path, pdf_path = _make_monthly_report(
@@ -1735,8 +1765,9 @@ def make_report(
             output_dir=output_dir,
             product_name=product_name,
             report_title=report_title,
-            product_tagline=product_tagline,
+            product_tagline=tagline,
             benchmark_label=benchmark_label,
+            strategy_phrase=strategy_phrase,
         )
     else:
         png_path, pdf_path = _make_weekly_report(
@@ -1744,8 +1775,9 @@ def make_report(
             output_dir=output_dir,
             product_name=product_name,
             report_title=report_title,
-            product_tagline=product_tagline,
+            product_tagline=tagline,
             benchmark_label=benchmark_label,
+            strategy_phrase=strategy_phrase,
         )
 
     print(f"净值文件: {os.path.basename(nav_file)}")
@@ -1786,8 +1818,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--product-tagline",
-        default=PRODUCT_TAGLINE,
-        help="页眉右侧标语",
+        default="",
+        help="页眉右侧标语；留空时按产品策略生成",
+    )
+    parser.add_argument(
+        "--strategy-label",
+        default="",
+        help="策略称呼，用于页眉标语与要点文案，例如 FOF策略",
     )
     parser.add_argument(
         "--benchmark-label",
@@ -1831,6 +1868,7 @@ def main(argv: list[str] | None = None) -> int:
             product_name=args.product_name,
             report_title=args.report_title,
             product_tagline=args.product_tagline,
+            strategy_label=args.strategy_label,
             benchmark_label=args.benchmark_label,
             nav_frequency=args.nav_frequency,
             report_kind=args.report_kind,

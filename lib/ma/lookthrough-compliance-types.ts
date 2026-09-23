@@ -146,6 +146,7 @@ export type LookthroughAnomalyCell =
   | "equity"
   | "fixed_income"
   | "derivatives"
+  | "deriv_equity"
   | "single_asset"
   | "leverage"
 
@@ -175,11 +176,15 @@ export function lookthroughAnomalyCells(
   for (const check of failed) {
     if (check.id === "type-equity") out.add("equity")
     else if (check.id === "type-fi") out.add("fixed_income")
-    else if (check.id === "type-deriv-notional" || check.id === "type-deriv-equity") out.add("derivatives")
+    else if (check.id === "type-deriv-notional") out.add("derivatives")
+    else if (check.id === "type-deriv-equity") out.add("deriv_equity")
     else if (check.id === "type-mixed") {
       if ((product.ratios.equity_pct ?? 0) >= 80) out.add("equity")
       if ((product.ratios.fixed_income_pct ?? 0) >= 80) out.add("fixed_income")
-      if ((product.ratios.derivatives_notional_pct ?? 0) >= 80) out.add("derivatives")
+      if ((product.ratios.derivatives_notional_pct ?? 0) >= 80 && (product.ratios.derivatives_equity_pct ?? 0) >= 20) {
+        out.add("derivatives")
+        out.add("deriv_equity")
+      }
     } else if (check.id === "conc-25") out.add("single_asset")
     else if (check.id === "leverage") out.add("leverage")
   }

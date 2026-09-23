@@ -1,5 +1,6 @@
 import { query, fmtIso } from "@/lib/db"
 import {
+  applyOfficialProductFields,
   expandFundSearchKeywords,
   isPlausibleEmailProductCode,
   sqlFundNameBase,
@@ -68,6 +69,38 @@ export async function lookupAmacFundName(beianHao: string): Promise<string | nul
   } catch {
     return null
   }
+}
+
+/** Replace stale stored names with the current AMAC name for a page of list rows. */
+export async function overlayAmacOfficialProductNames<T extends {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+}>(rows: T[]): Promise<T[]> {
+  const codes = [...new Set(rows.map((row) => row.beian_hao.trim().toUpperCase()).filter(Boolean))]
+  if (codes.length === 0) return rows
+  let byCode = new Map<string, string>()
+  try {
+    const amacRows = await query<{ fund_no: string; fund_name: string | null }>(
+      `SELECT UPPER(BTRIM(fund_no)) AS fund_no, NULLIF(BTRIM(fund_name), '') AS fund_name
+       FROM amac_private_funds
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])`,
+      [codes],
+    )
+    byCode = new Map(
+      amacRows.flatMap((row) => (row.fund_name ? [[row.fund_no, row.fund_name] as const] : [])),
+    )
+  } catch {
+    return rows
+  }
+  return rows.map((row) => {
+    const names = applyOfficialProductFields(
+      row.product_name,
+      byCode.get(row.beian_hao.trim().toUpperCase()),
+      row.short_name,
+    )
+    return { ...row, ...names }
+  })
 }
 
 /** Resolve AMAC 托管人 (托管券商) by 备案编号, including share-class suffix match. */

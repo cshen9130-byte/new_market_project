@@ -45,9 +45,11 @@ export const INFER_HELP: ChartHelpSpec = {
 export function InferPanel({
   inference,
   period,
+  factorNote,
 }: {
   inference: StrategyInference
   period?: string
+  factorNote?: string
 }) {
   return (
     <div className="rounded-lg border border-border p-4 space-y-3">
@@ -66,6 +68,10 @@ export function InferPanel({
 
       {inference.headline && (
         <p className="text-sm leading-relaxed">{inference.headline}</p>
+      )}
+
+      {factorNote && (
+        <p className="text-sm leading-relaxed">{factorNote}</p>
       )}
 
       {inference.conclusions && inference.conclusions.length > 0 && (

@@ -8,8 +8,10 @@ import { findCustomFundByName, getCustomFundByCode } from "@/lib/server/custom-f
 import {
   buildFofWeeklyNavCsv,
   isValidReportId,
+  reportProductTagline,
   resolveFofWeeklyProductNavRange,
   resolveProductBeianHao,
+  resolveReportStrategyPhrase,
   type FofWeeklyNavFrequency,
 } from "@/lib/server/fof-weekly-report"
 
@@ -188,7 +190,12 @@ export async function generateFofMonthlyReport(
   await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
 
   const reportTitle = (input.report_title || names.product_name).trim()
-  const productTagline = (input.product_tagline || "低波动 · 稳健运作 · 强势股策略").trim()
+  const strategyPhrase = await resolveReportStrategyPhrase(
+    beian_hao,
+    [names.product_name, names.short_name, product_name, reportTitle],
+    customFund,
+  )
+  const productTagline = reportProductTagline(strategyPhrase, input.product_tagline)
   const { executable: pythonExe, prefixArgs } = await findPython()
   const resolvedMonthBegin = month_begin || getMonthStart(month_end)
   const reportLayout = input.report_layout === "curve" ? "curve" : "review"
@@ -210,6 +217,8 @@ export async function generateFofMonthlyReport(
     reportTitle,
     "--product-tagline",
     productTagline,
+    "--strategy-label",
+    strategyPhrase,
     "--benchmark-label",
     benchLabel,
     "--nav-frequency",

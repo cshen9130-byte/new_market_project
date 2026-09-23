@@ -125,6 +125,8 @@ export function GreeksPanel({ greekLetters }: { greekLetters: GreekLetterRow[] }
     }
   }
 
+  if (!greekLetters.length) return null
+
   return (
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
       <div className="px-4 pt-4 pb-2 flex items-center gap-1.5">

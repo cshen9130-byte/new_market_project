@@ -3,7 +3,7 @@
  * All managed products are treated as FOF except 荣熙恒盈2号.
  */
 
-import { fmtIso, query, queryUnbounded } from "@/lib/db"
+import { fmtIso, query, queryUnbounded, withTransaction } from "@/lib/db"
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 import {
   BatchNavResolver,
@@ -142,16 +142,17 @@ async function refreshManagedFofUnderlyingForProductCodes(
   await ensureManagedFofUnderlyingTable()
   await ensureEmailValuationHoldingsTables()
 
-  await query(
-    `DELETE FROM ops_managed_fof_underlying
-     WHERE UPPER(BTRIM(fof_product_code)) = ANY($1::text[])`,
-    [productCodes],
-  )
-
   const fundMatch = sqlFundNameMatch("r.fund_name", "m.product_name")
   const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
 
-  const rows = await query<{ n: string }>(
+  const rows = await withTransaction(async (txQuery) => {
+    await txQuery(`SET LOCAL statement_timeout = 0`)
+    await txQuery(
+      `DELETE FROM ops_managed_fof_underlying
+       WHERE UPPER(BTRIM(fof_product_code)) = ANY($1::text[])`,
+      [productCodes],
+    )
+    return txQuery<{ n: string }>(
     `WITH latest_valuation AS (
        SELECT DISTINCT ON (m.id)
          m.id AS managed_product_id,
@@ -218,8 +219,9 @@ async function refreshManagedFofUnderlyingForProductCodes(
        RETURNING 1
      )
      SELECT COUNT(*)::text AS n FROM inserted`,
-    [productCodes, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
-  )
+      [productCodes, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
+    )
+  })
 
   const inserted = parseInt(rows[0]?.n ?? "0", 10)
   if (inserted > 0 && !options.skipNavBackfill) {
@@ -282,14 +284,17 @@ export async function refreshManagedFofUnderlying(
     await backfillFundHoldingSymbols()
   }
 
-  await query(`DELETE FROM ops_managed_fof_underlying`)
-
   const productExpr = "m.product_name"
   const beianExpr = fofUnderlyingBeianExpr(productExpr)
   const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
   const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
 
-  const rows = await query<{ n: string }>(
+  // Delete and insert in one transaction. A timed-out rebuild used to commit the
+  // DELETE first and leave 持仓 empty while the overview cache still showed 市值.
+  const inserted = await withTransaction(async (txQuery) => {
+    await txQuery(`SET LOCAL statement_timeout = 0`)
+    await txQuery(`DELETE FROM ops_managed_fof_underlying`)
+    const rows = await txQuery<{ n: string }>(
     `WITH managed_fof AS (
        SELECT
          m.id AS managed_product_id,
@@ -364,10 +369,15 @@ export async function refreshManagedFofUnderlying(
        RETURNING 1
      )
      SELECT COUNT(*)::text AS n FROM inserted`,
-    [MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
-  )
+      [MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
+    )
+    const n = parseInt(rows[0]?.n ?? "0", 10)
+    if (n === 0) {
+      throw new Error("managed FOF underlying refresh inserted 0 rows; keeping previous snapshot")
+    }
+    return n
+  })
 
-  const inserted = parseInt(rows[0]?.n ?? "0", 10)
   if (inserted > 0 && !options.skipNavBackfill) {
     await backfillManagedFofUnderlyingNavFields({
       skipSymbolBackfill: options.skipSymbolBackfill,
@@ -1913,7 +1923,7 @@ export async function listUnderlyingHoldings(options: {
   totalQuantity: string | null
   totalMarketValue: string | null
 }> {
-  await ensureManagedFofUnderlyingTable()
+  await ensureManagedFofUnderlyingPopulated()
 
   const beian = options.beianHao?.trim() || ""
   const productName = options.productName.trim()

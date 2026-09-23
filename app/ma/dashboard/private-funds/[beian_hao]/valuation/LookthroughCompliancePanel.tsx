@@ -775,7 +775,9 @@ export function LookthroughCompliancePanel({
                 杠杆（总资产/净资产） {fmtPct(data.ratios.leverage_pct)}
                 {data.ratios.leverage_limit_pct != null ? ` · 上限 ${data.ratios.leverage_limit_pct}%` : ""}
               </div>
-              <div>衍生品账户权益 {fmtPct(data.ratios.derivatives_equity_pct)}（/已投资产）</div>
+              <div className={anomalies.has("deriv_equity") ? "lookthrough-anomaly-cell px-1.5 py-0.5" : undefined}>
+                衍生品账户权益 {fmtPct(data.ratios.derivatives_equity_pct)}（/已投资产，标准 ≥ 20%）
+              </div>
               <div>已投资产 {fmtMoney(data.buckets.invested_assets)}</div>
               <div>现金管理工具 {fmtMoney(data.buckets.cash_tools)}（从资产合计中扣除）</div>
               {marginPosted > 0 && (

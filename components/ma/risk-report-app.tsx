@@ -9071,24 +9071,28 @@ function RiskReportAppCore({
             >
               {isAllAccountsOverview ? "账户明细 ↓" : "产品要素 ↓"}
             </button>
-            <button
-              onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              业绩指标 ↓
-            </button>
-            <button
-              onClick={() => document.getElementById("section-volatility")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              波动分析 ↓
-            </button>
-            <button
-              onClick={() => document.getElementById("section-pnl")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              分类盈亏 ↓
-            </button>
+            {!isAllAccountsOverview && (
+              <>
+                <button
+                  onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })}
+                  className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  业绩指标 ↓
+                </button>
+                <button
+                  onClick={() => document.getElementById("section-volatility")?.scrollIntoView({ behavior: "smooth" })}
+                  className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  波动分析 ↓
+                </button>
+                <button
+                  onClick={() => document.getElementById("section-pnl")?.scrollIntoView({ behavior: "smooth" })}
+                  className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  分类盈亏 ↓
+                </button>
+              </>
+            )}
             <button
               onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
               className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"

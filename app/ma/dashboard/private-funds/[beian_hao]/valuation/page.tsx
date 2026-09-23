@@ -14,7 +14,8 @@ import type { OptionRow } from "./OptionsPanel"
 import type { GreekLetterRow, TermAnalysisRow } from "./GreeksTermPanel"
 import { FofFundsPanel, type FundHoldingRow } from "./FofFundsPanel"
 import type { ReturnCurveSeries } from "./FofReturnCurvePanel"
-import { OtherHoldingsPanel, type OtherHoldingRow } from "./OtherHoldingsPanel"
+import { type OtherHoldingRow } from "./OtherHoldingsPanel"
+import { AssetHoldingsTable } from "./AssetHoldingsTable"
 import type { ValuationHoldingDetailRow, StockRiskExposure } from "./EquityValuationPanel"
 import type { AllocationTrendSeries } from "./AllocationTrendPanel"
 import type { SectorWeightTrendData } from "./SectorWeightTrendPanel"
@@ -167,6 +168,11 @@ type ValuationData = {
   inception_date: string | null
   layout_type: "fof" | "derivative" | "equity"
   allocation: AllocationRow[]
+  category_details?: Array<{
+    rowKind: string
+    category: string
+    rows: ValuationHoldingDetailRow[]
+  }>
   fund_holdings: FundHoldingRow[]
   stock_holdings: ValuationHoldingDetailRow[]
   bond_holdings: ValuationHoldingDetailRow[]
@@ -228,6 +234,11 @@ const ALLOCATION_COLORS: Record<string, string> = {
   私募基金: "#4472c4",
   公募基金: "#70ad47",
   其他: "#a5a5a5",
+  证券清算款: "#9dc3e6",
+  应收款: "#c5e0b4",
+  期权: "#c65911",
+  衍生品盈亏: "#f4b183",
+  应付款: "#c00000",
 }
 
 const TAB_DEFAULT_SIDE: Record<string, string> = {
@@ -358,6 +369,130 @@ async function downloadPageScreenshot(el: HTMLElement, filename: string) {
   a.href = url
   a.download = filename
   a.click()
+}
+
+const COMPOSITION_TITLES: Record<string, string> = {
+  bank_deposit: "托管户现金",
+  settlement_reserve: "清算备付金",
+  margin_deposit: "存出保证金",
+  stock: "股票持仓",
+  bond: "债券持仓",
+  wealth: "理财持仓",
+  clearing: "证券清算款",
+  receivable: "应收款",
+  payable: "应付款",
+  other: "其他持仓",
+  option: "期权持仓",
+  derivative_pnl: "衍生品盈亏",
+}
+
+function HoldingComposition({
+  data,
+  displayName,
+}: {
+  data: ValuationData
+  displayName: string
+}) {
+  const details = data.category_details ?? []
+  const derivatives = data.derivatives ?? []
+  const options = data.options ?? []
+  const funds = data.fund_holdings ?? []
+  let fundsShown = false
+  let futuresShown = false
+  let optionsShown = false
+
+  const futuresHint = details.some((group) => group.rowKind === "derivative_pnl")
+    ? "计入资产净值的是合约浮动盈亏"
+    : "合约名义市值不计入上方资产净值，资金占用已在存出保证金"
+
+  return (
+    <>
+      {details.map((group) => {
+        if (group.rowKind === "private_fund" || group.rowKind === "public_fund") {
+          if (fundsShown) return null
+          fundsShown = true
+          if (funds.length > 0) {
+            return (
+              <FofFundsPanel
+                key="funds"
+                rows={funds}
+                valuationDate={data.valuation_date}
+                displayName={displayName}
+              />
+            )
+          }
+          const fundRows = details
+            .filter((item) => item.rowKind === "private_fund" || item.rowKind === "public_fund")
+            .flatMap((item) => item.rows)
+          return (
+            <AssetHoldingsTable
+              key="funds"
+              title="基金持仓"
+              subtitle="私募基金与公募基金"
+              rows={fundRows}
+              valuationDate={data.valuation_date}
+              displayName={displayName}
+              exportLabel="基金持仓"
+              accent="red"
+              showCategory
+            />
+          )
+        }
+        if (group.rowKind === "option" && options.length > 0) {
+          optionsShown = true
+          return (
+            <OptionsPanel
+              key="option"
+              options={options}
+              valuationDate={data.valuation_date}
+              displayName={displayName}
+            />
+          )
+        }
+        if (group.rowKind === "derivative_pnl" && derivatives.length > 0) {
+          futuresShown = true
+          return (
+            <DerivativesPanel
+              key="futures"
+              derivatives={derivatives}
+              valuationDate={data.valuation_date}
+              displayName={displayName}
+              hint={futuresHint}
+            />
+          )
+        }
+        return (
+          <AssetHoldingsTable
+            key={group.rowKind}
+            title={COMPOSITION_TITLES[group.rowKind] ?? group.category}
+            subtitle="明细合计等于上方该类别市值"
+            rows={group.rows}
+            valuationDate={data.valuation_date}
+            displayName={displayName}
+            exportLabel={group.category}
+            accent="red"
+            showCategory={group.rowKind === "other"}
+            statusColumnLabel={group.rowKind === "stock" ? "停牌信息" : "结算状态"}
+          />
+        )
+      })}
+      {!futuresShown && derivatives.length > 0 && (
+        <DerivativesPanel
+          derivatives={derivatives}
+          valuationDate={data.valuation_date}
+          displayName={displayName}
+          hint={futuresHint}
+        />
+      )}
+      {!optionsShown && options.length > 0 && (
+        <OptionsPanel
+          options={options}
+          valuationDate={data.valuation_date}
+          displayName={displayName}
+        />
+      )}
+    </>
+  )
 }
 
 export default function FundValuationAnalysisPage() {
@@ -614,7 +749,6 @@ export default function FundValuationAnalysisPage() {
   )
   const navDateLabel = data?.unit_nav_date ?? data?.valuation_date?.slice(0, 10) ?? "—"
   const isFofLayout = data?.layout_type === "fof" || Boolean(trendData?.fof_trend)
-  const isEquityLayout = data?.layout_type === "equity"
   const hasFundHoldings = (data?.fund_holdings?.length ?? 0) > 0
   const showReturnAnalysis = isFofLayout && hasFundHoldings
   const appliedBenchKey = benchmarkKeyFromLabel(filterBench)
@@ -687,12 +821,16 @@ export default function FundValuationAnalysisPage() {
 
   const donutOption = useMemo(() => {
     if (!data?.allocation.length) return {}
+    const pieRows = data.allocation.filter((r) => r.value > 0)
+    const pctOf = (name: string) => data.allocation.find((r) => r.category === name)?.pct
     return {
-      color: data.allocation.map((r) => ALLOCATION_COLORS[r.category] ?? "#a5a5a5"),
+      color: pieRows.map((r) => ALLOCATION_COLORS[r.category] ?? "#a5a5a5"),
       tooltip: {
         trigger: "item",
-        formatter: (p: { name: string; value: number; percent: number }) =>
-          `${p.name}<br/>${fmtMoney(p.value)} (${p.percent.toFixed(4)}%)`,
+        formatter: (p: { name: string; value: number }) => {
+          const pct = pctOf(p.name)
+          return `${p.name}<br/>${fmtMoney(p.value)} (${pct != null ? pct.toFixed(4) : "0.0000"}%)`
+        },
       },
       legend: {
         orient: "horizontal",
@@ -700,7 +838,7 @@ export default function FundValuationAnalysisPage() {
         itemWidth: 10,
         itemHeight: 10,
         textStyle: { fontSize: 12, color: "#666" },
-        data: data.allocation.map((r) => r.category),
+        data: pieRows.map((r) => r.category),
       },
       series: [{
         type: "pie",
@@ -709,11 +847,14 @@ export default function FundValuationAnalysisPage() {
         avoidLabelOverlap: true,
         label: {
           show: true,
-          formatter: (p: { name: string; percent: number }) => `${p.name}: ${p.percent.toFixed(4)}%`,
+          formatter: (p: { name: string }) => {
+            const pct = pctOf(p.name)
+            return `${p.name}: ${pct != null ? pct.toFixed(4) : "0.0000"}%`
+          },
           fontSize: 11,
         },
         labelLine: { length: 10, length2: 6 },
-        data: data.allocation.map((r) => ({
+        data: pieRows.map((r) => ({
           name: r.category,
           value: r.value,
           itemStyle: { color: ALLOCATION_COLORS[r.category] ?? "#a5a5a5" },
@@ -1293,7 +1434,7 @@ export default function FundValuationAnalysisPage() {
                   {
                     title: "切片",
                     paragraphs: [
-                      "最新估值日各大类持仓市值。环上百分比与右侧表格「市值占比」都是市值 / 资产净值。",
+                      "最新估值日按资产净值拆开。股票、基金、债券、理财、清算款计入资产；应付款和空头期权权利金记为负数。期货合约名义本金不重复计入，保证金已在存出保证金里。各行市值相加等于资产净值，市值占比相加为 100%。",
                     ],
                     formula: "市值占比 = 该大类市值 / 资产净值 × 100",
                   },
@@ -1359,8 +1500,8 @@ export default function FundValuationAnalysisPage() {
                   <tr key={row.rowKind} className="border-b border-zinc-50 hover:bg-zinc-50/50">
                     <td className="px-4 py-2.5 text-zinc-500 tabular-nums">{row.index}</td>
                     <td className="px-4 py-2.5 text-zinc-800">{row.category}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums text-zinc-800">{fmtMoney(row.value)}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums text-zinc-600">{fmtPct(row.pct)}</td>
+                    <td className={`px-4 py-2.5 text-right tabular-nums ${row.value < 0 ? "text-emerald-600" : "text-zinc-800"}`}>{fmtMoney(row.value)}</td>
+                    <td className={`px-4 py-2.5 text-right tabular-nums ${row.pct < 0 ? "text-emerald-600" : "text-zinc-600"}`}>{fmtPct(row.pct)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1373,23 +1514,36 @@ export default function FundValuationAnalysisPage() {
           </div>
         </div>
 
-        {isEquityLayout ? (
+        <HoldingComposition
+          data={data}
+          displayName={displayName}
+        />
+
+        {(data.stock_holdings ?? []).length > 0 && (
           <EquityValuationPanel
-            stockHoldings={data.stock_holdings ?? []}
-            bondHoldings={data.bond_holdings ?? []}
-            wealthHoldings={data.wealth_holdings ?? []}
-            otherHoldings={data.equity_other_holdings ?? []}
+            exposureOnly
+            stockHoldings={[]}
+            bondHoldings={[]}
+            wealthHoldings={[]}
+            otherHoldings={[]}
             stockRiskExposure={data.stock_risk_exposure ?? null}
             valuationDate={data.valuation_date}
             displayName={displayName}
           />
-        ) : isFofLayout ? (
+        )}
+
+        {(data.derivatives ?? []).length > 0 && (
+          <SectorMarketSharePanel
+            rows={data.derivative_sector_shares ?? []}
+            displayName={displayName}
+            valuationDate={data.valuation_date}
+          />
+        )}
+        <GreeksPanel greekLetters={data.greek_letters ?? []} />
+        <TermAnalysisPanel termAnalysis={data.term_analysis ?? []} />
+
+        {isFofLayout && (
           <>
-            <FofFundsPanel
-              rows={data.fund_holdings ?? []}
-              valuationDate={data.valuation_date}
-              displayName={displayName}
-            />
             <FofVolatilityAnalysisPanel
               series={returnCurves.length > 0 ? returnCurves : (data.return_curves ?? [])}
               fundHoldings={data.fund_holdings ?? []}
@@ -1414,35 +1568,6 @@ export default function FundValuationAnalysisPage() {
               toDate={filterTo}
               benchmark={filterBench}
             />
-            <OtherHoldingsPanel
-              rows={data.other_holdings ?? []}
-              valuationDate={data.valuation_date}
-              displayName={displayName}
-            />
-          </>
-        ) : (
-          <>
-        <DerivativesPanel
-          derivatives={data.derivatives ?? []}
-          valuationDate={data.valuation_date}
-          displayName={displayName}
-        />
-
-        <SectorMarketSharePanel
-          rows={data.derivative_sector_shares ?? []}
-          displayName={displayName}
-          valuationDate={data.valuation_date}
-        />
-
-        <OptionsPanel
-          options={data.options ?? []}
-          valuationDate={data.valuation_date}
-          displayName={displayName}
-        />
-
-        <GreeksPanel greekLetters={data.greek_letters ?? []} />
-
-        <TermAnalysisPanel termAnalysis={data.term_analysis ?? []} />
           </>
         )}
         </>

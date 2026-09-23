@@ -30,6 +30,7 @@ type Props = {
   derivatives: DerivativeRow[]
   valuationDate: string | null
   displayName: string
+  hint?: string
 }
 
 function fmtMoney(n: number): string {
@@ -79,7 +80,7 @@ function SortHeader({
   )
 }
 
-export function DerivativesPanel({ derivatives, valuationDate, displayName }: Props) {
+export function DerivativesPanel({ derivatives, valuationDate, displayName, hint }: Props) {
   const [sectorTab, setSectorTab] = useState<SectorTab>("全部")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
@@ -147,6 +148,7 @@ export function DerivativesPanel({ derivatives, valuationDate, displayName }: Pr
   }
 
   const dateLabel = valuationDate?.slice(0, 10) ?? "—"
+  if (!derivatives.length) return null
 
   return (
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm overflow-hidden">
@@ -154,7 +156,7 @@ export function DerivativesPanel({ derivatives, valuationDate, displayName }: Pr
         <div>
           <div className="text-red-500 font-semibold text-sm">期货及衍生品</div>
           <div className="flex items-center gap-1.5 text-xs text-zinc-400 mt-1">
-            <span className="text-zinc-600">期货合约</span>
+            <span className="text-zinc-600">{hint ?? "期货合约"}</span>
             <Clock className="h-3 w-3" />
             <span>{dateLabel}</span>
           </div>

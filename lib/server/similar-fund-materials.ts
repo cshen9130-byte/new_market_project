@@ -3,9 +3,13 @@
  * 估值表, 结算单, 融航报告, …) into a comparable profile for 相似基金匹配.
  */
 
+import { execFile } from "node:child_process"
 import { promises as fs } from "fs"
 import os from "os"
 import path from "path"
+import { promisify } from "node:util"
+
+const execFileP = promisify(execFile)
 import { extractNavMetadata } from "@/lib/server/email-nav-extract"
 import { extractNavFromValuationBuffer } from "@/lib/server/email-valuation-attachment"
 import { readFileDocumentText } from "@/lib/server/knowledge-base"
@@ -279,6 +283,51 @@ function mergeNavSeries(parts: SimilarFundNavPoint[][]): SimilarFundNavPoint[] {
   return [...map.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
 }
 
+/** Vision used to invent a point every 5-7 days. Keep visible month ticks only. */
+export function downsampleInterpolatedChartNav(points: SimilarFundNavPoint[]): SimilarFundNavPoint[] {
+  if (points.length < 16) return points
+  const sorted = [...points].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const gaps: number[] = []
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = (Date.parse(sorted[i].price_date) - Date.parse(sorted[i - 1].price_date)) / 86_400_000
+    if (Number.isFinite(gap) && gap > 0) gaps.push(gap)
+  }
+  if (gaps.length === 0) return points
+  const mid = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)]
+  if (mid < 3.5 || mid > 12) return points
+  const last = new Map<string, SimilarFundNavPoint>()
+  for (const point of sorted) last.set(point.price_date.slice(0, 7), point)
+  const monthly = [...last.values()]
+  return monthly.length >= 6 ? monthly : points
+}
+
+/**
+ * Chart x-axis last label is often 8月 while the line continues into 9月.
+ * A late jump on a month-end tick is the endpoint past that label.
+ */
+export function extendChartPastLastAxisTick(points: SimilarFundNavPoint[]): SimilarFundNavPoint[] {
+  if (points.length < 6) return points
+  const sorted = [...points].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const last = sorted[sorted.length - 1]
+  const prev = sorted[sorted.length - 2]
+  const lastNav = Number(last.nav)
+  const prevNav = Number(prev.nav)
+  if (!(lastNav > 0 && prevNav > 0)) return points
+  const jump = lastNav / prevNav - 1
+  const day = Number(last.price_date.slice(8, 10))
+  if (Math.abs(jump) < 0.025 || day < 27) return points
+  const dt = new Date(`${last.price_date}T00:00:00Z`)
+  dt.setUTCMonth(dt.getUTCMonth() + 1)
+  const next = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-17`
+  if (next <= last.price_date) return points
+  const keptTick: SimilarFundNavPoint = {
+    price_date: last.price_date,
+    nav: prev.nav,
+    cumulative_nav: prev.cumulative_nav,
+  }
+  return [...sorted.slice(0, -1), keptTick, { ...last, price_date: next }]
+}
+
 function looksLikeValuation(analysis: ValuationAnalysis): boolean {
   const details = analysis.portfolio_data.filter((row) => Boolean(row.include_in_detail))
   return details.length >= 3 || (analysis.summary.nav > 0 && analysis.portfolio_data.length >= 5)
@@ -447,6 +496,128 @@ function visionRowsToNav(navRaw: unknown[], axisHint: string): SimilarFundNavPoi
   return clean.length >= 3 ? clean : points
 }
 
+function addIsoDays(iso: string, days: number): string {
+  const dt = new Date(`${iso}T00:00:00Z`)
+  dt.setUTCDate(dt.getUTCDate() + days)
+  return dt.toISOString().slice(0, 10)
+}
+
+/** Map axis ticks to the pixel line. Month-end labels usually sit after the line started. */
+function chartDigitizeWindow(axis: Record<string, unknown>): { start: string; end: string } | null {
+  const first = String(axis.x_first || "").slice(0, 10)
+  const last = String(axis.x_last || "").slice(0, 10)
+  const ticks = Array.isArray(axis.x_ticks) ? axis.x_ticks.map((t) => String(t)) : []
+  let start = /^\d{4}-\d{2}-\d{2}$/.test(first) ? first : ""
+  let end = /^\d{4}-\d{2}-\d{2}$/.test(last) ? last : ""
+  if (!start && ticks[0]) {
+    const t = ticks[0]
+    start = /^\d{4}-\d{2}$/.test(t) ? `${t}-01` : t.slice(0, 10)
+  }
+  if (!end && ticks.length) {
+    const t = ticks[ticks.length - 1]
+    end = /^\d{4}-\d{2}$/.test(t) ? `${t}-28` : t.slice(0, 10)
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return null
+  const past = axis.curve_past_last_tick === true || String(axis.curve_past_last_tick) === "true"
+  if (Number(start.slice(8, 10)) >= 27) start = addIsoDays(start, -30)
+  const endDay = Number(end.slice(8, 10))
+  // Last printed month-end tick is often 8月 while the line continues into 9月.
+  if (endDay >= 27 && (past || Number(end.slice(5, 7)) !== Number(start.slice(5, 7)))) {
+    end = addIsoDays(end, 19)
+  }
+  if (end <= start) return null
+  return { start, end }
+}
+
+async function runPythonJson(args: string[]): Promise<string> {
+  const attempts: Array<{ cmd: string; prefix: string[] }> = [
+    { cmd: "python", prefix: [] },
+    { cmd: "py", prefix: ["-3"] },
+    { cmd: "python3", prefix: [] },
+  ]
+  let lastErr: unknown
+  for (const { cmd, prefix } of attempts) {
+    try {
+      const { stdout } = await execFileP(cmd, [...prefix, ...args], {
+        timeout: 25_000,
+        windowsHide: true,
+      })
+      return String(stdout || "").trim()
+    } catch (err) {
+      lastErr = err
+      if ((err as { code?: string }).code === "ENOENT") continue
+    }
+  }
+  if (lastErr) throw lastErr
+  return ""
+}
+
+async function digitizeReturnChartPng(
+  buffer: Buffer,
+  startDate: string,
+  endDate: string,
+  yMax: number,
+): Promise<SimilarFundNavPoint[]> {
+  const tmp = path.join(os.tmpdir(), `sf-chart-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
+  const script = path.join(process.cwd(), "scripts", "digitize-return-chart.py")
+  try {
+    await fs.writeFile(tmp, buffer)
+    const stdout = await runPythonJson([script, tmp, startDate, endDate, String(yMax)])
+    const rows = JSON.parse(stdout || "[]") as unknown
+    if (!Array.isArray(rows) || rows.length < 20) return []
+    return visionRowsToNav(rows, "return_pct")
+  } catch {
+    return []
+  } finally {
+    await fs.unlink(tmp).catch(() => undefined)
+  }
+}
+
+async function visionJson(
+  dataUrl: string,
+  prompt: string,
+  apiKey: string,
+  baseURL: string,
+  model: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${baseURL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 4000,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: dataUrl } },
+          { type: "text", text: prompt },
+        ],
+      }],
+    }),
+  })
+  if (!res.ok) throw new Error(`vision ${res.status}`)
+  const parsed = await res.json()
+  const content = parsed?.choices?.[0]?.message?.content
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map((part: { text?: string }) => part?.text || "").join("\n")
+      : JSON.stringify(content ?? "")
+  return parseJsonObject(text) ?? {}
+}
+
+function chartPointSummary(nav: SimilarFundNavPoint[]): string {
+  return nav.map((p) => {
+    const v = Number(p.cumulative_nav ?? p.nav)
+    const pct = Number.isFinite(v) ? `${((v - 1) * 100).toFixed(1)}%` : "?"
+    return `${p.price_date} ${pct}`
+  }).join("、")
+}
+
 async function extractFromImage(buffer: Buffer, fileName: string): Promise<ParsedSimilarFundFile> {
   const ext = path.extname(fileName).toLowerCase()
   const mime: Record<string, string> = {
@@ -475,69 +646,77 @@ async function extractFromImage(buffer: Buffer, fileName: string): Promise<Parse
 
   const dataUrl = `data:${mime[ext] || "image/png"};base64,${buffer.toString("base64")}`
   const baseURL = process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  const model = process.env.DASHSCOPE_VISION_MODEL || "qwen-vl-plus"
+  const model = process.env.DASHSCOPE_VISION_MODEL || "qwen-vl-max"
   try {
-    const res = await fetch(`${baseURL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        max_tokens: 8000,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image_url", image_url: { url: dataUrl } },
-            {
-              type: "text",
-              text: `这是私募产品净值/收益曲线截图。图中往往没有产品名称。只输出 JSON：
-{"product_name":"","beian_hao":"","manager":"","axis":"return_pct","pts":[["2026-05-16",0],["2026-05-23",0.2]]}
+    const axis = await visionJson(dataUrl, `只读这张私募收益/净值图的坐标轴。只输出 JSON：
+{"axis":"return_pct","y_min":0,"y_max":12,"x_first":"2025-12-31","x_last":"2026-09-17","x_ticks":["2025-12","2026-01","2026-08"],"curve_past_last_tick":true}
 规则：
-1. product_name、beian_hao、manager 仅当图中文字明确出现时填写，否则必须是空字符串。禁止猜测、禁止用文件名编造。
-2. pts 为 [日期, 数值] 数组。必须覆盖横轴全部区间：起点、终点、每个可见刻度，以及刻度之间每隔约 5-7 天再取一点。目标 32-48 个点，不要只给 8-12 个点。
-3. 纵轴若是累计收益率百分比（0%~18%），axis=return_pct，数值用百分比（15 表示 15%，不要写成 0.15）。
-4. 纵轴若是净值（1.00、1.08），axis=nav，数值用净值。
-5. 日期必须是图中横轴的真实年份（如 2026-05-16），不要编成 2024/2025。
-6. 不要输出 JSON 以外的文字。`,
-            },
-          ],
-        }],
-      }),
-    })
-    if (!res.ok) throw new Error(`vision ${res.status}`)
-    const parsed = await res.json()
-    const content = parsed?.choices?.[0]?.message?.content
-    const text = typeof content === "string"
-      ? content
-      : Array.isArray(content)
-        ? content.map((part: { text?: string }) => part?.text || "").join("\n")
-        : JSON.stringify(content ?? "")
-    const obj = parseJsonObject(text) ?? {}
+1. axis=return_pct 若纵轴是百分比，axis=nav 若是净值。
+2. y_min/y_max 必须是图上纵轴最下/最上刻度的真实数字。
+3. x_ticks 为图上每个横轴月份标签；x_first/x_last 为曲线真正的起点和终点日期。
+4. 若曲线在最后一个横轴标签之后还向右画，curve_past_last_tick=true，x_last 要比最后一个标签更晚。
+5. 不要输出 JSON 以外的文字。`, apiKey, baseURL, model)
+
+    const yMin = Number(axis.y_min)
+    const yMax = Number(axis.y_max)
+    const xTicks = Array.isArray(axis.x_ticks) ? axis.x_ticks.map((t) => String(t)) : []
+    const pastLast = axis.curve_past_last_tick === true || String(axis.curve_past_last_tick) === "true"
+    const axisHint = String(axis.axis || "return_pct")
+    const scaleBit = Number.isFinite(yMin) && Number.isFinite(yMax)
+      ? `纵轴已确认是 ${axisHint}，刻度从 ${yMin} 到 ${yMax}。`
+      : `纵轴按 ${axisHint} 读取。`
+    const tickBit = xTicks.length
+      ? `横轴月份标签：${xTicks.join("、")}。起点 ${String(axis.x_first || "")}，终点 ${String(axis.x_last || "")}。`
+      : ""
+    const pastBit = pastLast
+      ? "曲线在最后一个横轴标签之后仍向右延伸：终点必须单独成点，不要把终点涨幅写在最后一个月份标签上。"
+      : ""
+
+    const window = chartDigitizeWindow(axis)
+    const yTop = Number.isFinite(yMax) && yMax > 1 && yMax <= 80 ? yMax : 12
+    const digitized = window
+      ? await digitizeReturnChartPng(buffer, window.start, window.end, yTop)
+      : []
+
+    let obj: Record<string, unknown> = {}
+    if (digitized.length < 20) {
+      obj = await visionJson(dataUrl, `这是同一张私募收益/净值图。${scaleBit}${tickBit}${pastBit}
+对照纵轴刻度，读取曲线在每个横轴标签处的实际高度。只输出 JSON：
+{"product_name":"","beian_hao":"","manager":"","axis":"${axisHint}","pts":[["2025-12-31",0],["2026-01-31",3.2]]}
+规则：
+1. 不要猜产品名。pts 每个点必须是该日期处曲线相对纵轴的真实读数。
+2. return_pct 用百分比（3.2 表示 3.2%）。横盘就是相邻点几乎相同，禁止把横盘读成一路上升到 7%-9%。
+3. 只输出可见月份刻度 + 真正终点，不要插值，不要超过 18 个点。
+4. 不要输出 JSON 以外的文字。`, apiKey, baseURL, model)
+    }
+
     const navRaw = Array.isArray(obj.pts)
       ? obj.pts
       : Array.isArray(obj.nav_points)
         ? obj.nav_points
         : []
-    const nav = visionRowsToNav(navRaw, String(obj.axis || ""))
+    const visionNav = visionRowsToNav(navRaw, String(obj.axis || axisHint || ""))
+    const nav = digitized.length >= 20 ? digitized : visionNav
     const productName = trustedProductName(String(obj.product_name || "")) || identity.productName
     const beianHao = normalizeRegisterCode(String(obj.beian_hao || "")) ?? identity.beianHao
     const manager = looksLikeFundIdentity(String(obj.manager || "")) ? String(obj.manager).trim() : null
-    const notes = String(obj.notes || "").trim()
+    const notes = [String(obj.notes || "").trim(), tickBit, pastBit].filter(Boolean).join(" ")
+    const summaryPts = nav.length <= 18
+      ? chartPointSummary(nav)
+      : `${nav[0]?.price_date}→${nav[nav.length - 1]?.price_date} ${nav.length}点`
+    const axisBit = window ? `轴 ${window.start}~${window.end} y${yTop}` : ""
     return {
       fileName,
       kind: "chart",
       summary: nav.length
-        ? `从净值图识别 ${nav.length} 个收益/净值点${productName ? `，产品 ${productName}` : "（图中无产品名）"}`
+        ? `从净值图识别 ${nav.length} 个点${productName ? `，产品 ${productName}` : "（图中无产品名）"}：${summaryPts}${axisBit ? `（${axisBit}）` : ""}`
         : `已读取净值图，但未能还原曲线点${productName ? `；图中产品 ${productName}` : ""}`,
       productName,
       beianHao,
       manager,
       nav,
       textExcerpt: notes,
-      extra: String(obj.axis || ""),
+      extra: String(obj.axis || axisHint || ""),
     }
   } catch (err) {
     return empty(`图片识别失败：${(err as Error).message}`)
@@ -771,7 +950,11 @@ export async function parseSimilarFundMaterials(
     }
   }
 
-  const navSeries = mergeNavSeries(parsed.map((f) => f.nav))
+  const merged = mergeNavSeries(parsed.map((f) => f.nav))
+  const fromChart = parsed.some((f) => f.kind === "chart")
+  const navSeries = fromChart && merged.length < 40
+    ? extendChartPastLastAxisTick(downsampleInterpolatedChartNav(merged))
+    : merged
   // A NAV chart cannot tell CTA/期货. Only documents (路演/纪要/表格文本) may contribute strategy hints.
   const strategyBlob = parsed
     .filter((f) => f.kind !== "chart")

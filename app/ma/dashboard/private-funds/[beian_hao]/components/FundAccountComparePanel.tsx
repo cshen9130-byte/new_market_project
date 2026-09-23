@@ -24,6 +24,39 @@ function userFetchHeaders(): Record<string, string> {
   }
 }
 
+const COMPARE_ACCOUNT_STORAGE_PREFIX = "pf-compare-account:"
+
+function compareAccountStorageKey(beianHao: string): string {
+  let userId = ""
+  try {
+    const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+    userId = u?.id != null ? String(u.id) : ""
+  } catch {
+    userId = ""
+  }
+  return `${COMPARE_ACCOUNT_STORAGE_PREFIX}${userId}:${beianHao}`
+}
+
+function readSavedCompareAccount(beianHao: string): string {
+  if (typeof window === "undefined" || !beianHao) return ""
+  try {
+    return localStorage.getItem(compareAccountStorageKey(beianHao)) || ""
+  } catch {
+    return ""
+  }
+}
+
+function writeSavedCompareAccount(beianHao: string, account: string) {
+  if (typeof window === "undefined" || !beianHao) return
+  try {
+    const key = compareAccountStorageKey(beianHao)
+    if (account) localStorage.setItem(key, account)
+    else localStorage.removeItem(key)
+  } catch {
+    /* ignore quota */
+  }
+}
+
 const ACCOUNT_BLUE = "#2563eb"
 const EXCESS_PURPLE = "#7c3aed"
 
@@ -292,6 +325,7 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
 }) {
   const [account, setAccount] = useState("")
   const [userPicked, setUserPicked] = useState(false)
+  const [restoredBeian, setRestoredBeian] = useState<string | null>(null)
   const [payload, setPayload] = useState<AccountCompareResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -305,14 +339,16 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
   }, [])
 
   useEffect(() => {
-    setAccount("")
-    setUserPicked(false)
+    const saved = readSavedCompareAccount(beian_hao)
+    setAccount(saved)
+    setUserPicked(Boolean(saved))
     setPayload(null)
+    setRestoredBeian(beian_hao)
   }, [beian_hao])
 
   useEffect(() => {
-    if (!beian_hao) {
-      setPayload(null)
+    if (!beian_hao || restoredBeian !== beian_hao) {
+      if (!beian_hao) setPayload(null)
       return
     }
     let cancelled = false
@@ -348,7 +384,7 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [beian_hao, dateFrom, dateTo, productName, fetchAccount, userPicked])
+  }, [beian_hao, dateFrom, dateTo, productName, fetchAccount, userPicked, restoredBeian])
 
   const fundPoints = useMemo<CompareNavPoint[]>(() => {
     return rows
@@ -371,8 +407,11 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
   )
 
   const accountLabel = `MOM ${payload?.account ?? account ?? ""}`.trim()
+  const prefsReady = restoredBeian === beian_hao
   const availableAccounts = payload?.availableAccounts?.length
-    ? payload.availableAccounts
+    ? (account && !payload.availableAccounts.includes(account)
+      ? [account, ...payload.availableAccounts]
+      : payload.availableAccounts)
     : (account ? [account] : [])
 
   const overlapMetrics = analysis?.difference
@@ -390,8 +429,10 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
             disabled={!canPickAccount}
             onChange={(e) => {
               if (!canPickAccount) return
+              const next = e.target.value
               setUserPicked(true)
-              setAccount(e.target.value)
+              setAccount(next)
+              writeSavedCompareAccount(beian_hao, next)
             }}
             title={canPickAccount ? undefined : "无权限修改对比账户"}
             className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[120px] disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed"
@@ -419,22 +460,22 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
         相关性和跟踪误差只在产品净值披露日上配对，避免把周频产品当成日频。
       </p>
 
-      {loading && <div className="min-h-[240px] text-sm text-zinc-400 py-16 text-center">加载账户净值…</div>}
-      {error && <div className="min-h-[160px] text-sm text-red-500 py-10 text-center">{error}</div>}
-      {!loading && !error && !account && (
+      {(loading || !prefsReady) && <div className="min-h-[240px] text-sm text-zinc-400 py-16 text-center">加载账户净值…</div>}
+      {prefsReady && error && <div className="min-h-[160px] text-sm text-red-500 py-10 text-center">{error}</div>}
+      {prefsReady && !loading && !error && !account && (
         <div className="min-h-[160px] text-sm text-zinc-400 py-10 text-center">请选择要对比的 MOM 账户</div>
       )}
-      {!loading && !error && account && payload?.message && !payload.series.length && (
+      {prefsReady && !loading && !error && account && payload?.message && !payload.series.length && (
         <div className="min-h-[160px] text-sm text-zinc-400 py-10 text-center">{payload.message}</div>
       )}
-      {!loading && !error && account && payload && payload.series.length > 0 && fundPoints.length < 2 && (
+      {prefsReady && !loading && !error && account && payload && payload.series.length > 0 && fundPoints.length < 2 && (
         <div className="min-h-[160px] text-sm text-zinc-400 py-10 text-center">产品净值不足，无法对比</div>
       )}
-      {!loading && !error && analysis && analysis.overlay.length < 2 && (
+      {prefsReady && !loading && !error && analysis && analysis.overlay.length < 2 && (
         <div className="min-h-[160px] text-sm text-zinc-400 py-10 text-center">所选区间内产品与账户没有重叠日期</div>
       )}
 
-      {!loading && !error && analysis && analysis.overlay.length >= 2 && (
+      {prefsReady && !loading && !error && analysis && analysis.overlay.length >= 2 && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
             <Kpi

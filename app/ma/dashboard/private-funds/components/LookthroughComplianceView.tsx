@@ -245,7 +245,7 @@ export function LookthroughComplianceView() {
             <h1 className="text-base font-semibold text-foreground">穿透合规</h1>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-zinc-500">
               依据中基协《私募证券投资基金运作指引》（2024-08-01），第41条按国泰君安托管202607监控口径：
-              已投资产=资产合计−现金管理工具；权益=股票+股票类基金−融券；期货合约价值与账户权益除以同一已投资产。
+              已投资产=资产合计−现金管理工具；权益=股票+股票类基金−融券；期货合约价值与账户权益除以同一已投资产。账户权益标准 ≥ 已投资产 20%。
               另核验第12条单一资产 25%、第19条单一债券 10%、第15条总资产杠杆。FOF 持仓按底层最新估值表穿透。
             </p>
           </div>
@@ -337,6 +337,12 @@ export function LookthroughComplianceView() {
                 <th className="px-3 py-2 text-right font-medium">权益%</th>
                 <th className="px-3 py-2 text-right font-medium">固收%</th>
                 <th className="px-3 py-2 text-right font-medium">衍生品%</th>
+                <th
+                  className="px-3 py-2 text-right font-medium"
+                  title="期货和衍生品账户权益 / 已投资产。标准 ≥ 20%。科目 102113+103113+102131+103131+103133。"
+                >
+                  账户权益
+                </th>
                 <th className="px-3 py-2 text-right font-medium">单一资产</th>
                 <th className="px-3 py-2 text-right font-medium">杠杆</th>
                 <th className="px-3 py-2 text-left font-medium">估值日</th>
@@ -473,6 +479,8 @@ const ANOMALY_REASON: Record<LookthroughAnomalyCell, (category: ProductCategory,
     category === "固定收益类" ? "未达到固定收益类已投资产 80% 下限" : "超过混合类固收 80% 上限",
   derivatives: (category) =>
     category === "期货和衍生品类" ? "未达到衍生品合约价值 80% 下限" : "超过混合类衍生品 80% 上限",
+  deriv_equity: (category) =>
+    category === "期货和衍生品类" ? "未达到期货和衍生品账户权益 20% 下限" : "达到期货和衍生品账户权益 20%，与混合类约定不符",
   single_asset: () => "超过单一资产 25% 上限",
   leverage: (_category, leverageLimit) =>
     `超过总资产杠杆 ${leverageLimit != null ? `${leverageLimit.toFixed(0)}%` : "200%"} 上限`,
@@ -491,11 +499,13 @@ function RatioCell({
   anomaly,
   reason,
   undetermined,
+  title,
 }: {
   value: number | null | undefined
   anomaly: boolean
   reason: string
   undetermined?: boolean
+  title?: string
 }) {
   if (undetermined) {
     return (
@@ -510,7 +520,7 @@ function RatioCell({
         "px-3 py-2 text-right tabular-nums",
         anomaly ? "lookthrough-anomaly-cell" : "",
       ].join(" ")}
-      title={anomaly ? reason : undefined}
+      title={anomaly ? reason : title}
     >
       {fmtPct(value)}
     </td>
@@ -624,6 +634,12 @@ function ProductBlock({
           reason={anomalyReason("derivatives", category)}
         />
         <RatioCell
+          value={product.ratios.derivatives_equity_pct}
+          anomaly={anomalies.has("deriv_equity")}
+          reason={anomalyReason("deriv_equity", category)}
+          title="标准 ≥ 已投资产 20%"
+        />
+        <RatioCell
           value={product.ratios.max_single_asset_pct}
           anomaly={anomalies.has("single_asset")}
           reason={
@@ -642,7 +658,7 @@ function ProductBlock({
       </tr>
       {open && (
         <tr className="border-b border-zinc-200 bg-zinc-50/50">
-          <td colSpan={11} className="px-6 py-4">
+          <td colSpan={12} className="px-6 py-4">
             <div className="grid gap-4 lg:grid-cols-2">
               <div>
                 <div className="mb-2 text-xs font-medium text-zinc-600">规则核验（{category}）</div>

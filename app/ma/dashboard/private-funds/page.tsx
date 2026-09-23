@@ -385,7 +385,7 @@ function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
 // flash very stale data.
 type ListCacheEntry = { data: TrackFundRow[]; total: number; ts?: number }
 const listMemCache = new Map<string, ListCacheEntry>()
-const LIST_CACHE_PREFIX = "tracking_list_cache_v6:"
+const LIST_CACHE_PREFIX = "tracking_list_cache_v7:"
 const LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function readListCache(key: string): ListCacheEntry | null {

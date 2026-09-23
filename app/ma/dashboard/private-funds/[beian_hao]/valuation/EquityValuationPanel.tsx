@@ -29,6 +29,7 @@ type Props = {
   stockRiskExposure: StockRiskExposure | null
   valuationDate: string | null
   displayName: string
+  exposureOnly?: boolean
 }
 
 function fmtMoney(n: number): string {
@@ -253,7 +254,11 @@ export function EquityValuationPanel({
   stockRiskExposure,
   valuationDate,
   displayName,
+  exposureOnly = false,
 }: Props) {
+  if (exposureOnly) {
+    return stockRiskExposure ? <StockRiskExposurePanel exposure={stockRiskExposure} /> : null
+  }
   return (
     <>
       <AnalyticsPlaceholder

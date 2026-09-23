@@ -155,6 +155,14 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
   const [prodSubSectorFilter, setProdSubSectorFilter] = useState<string>("全部")
 
   const load = useCallback(async () => {
+    if (allAccounts) {
+      setAllData([])
+      setTurnoverSeries([])
+      setHoldingSeries([])
+      setLoading(false)
+      setError(null)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -173,7 +181,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
     } finally {
       setLoading(false)
     }
-  }, [productCode])
+  }, [productCode, allAccounts])
 
   const loadBenchmark = useCallback(async (from: string, to: string) => {
     setLoadingBenchmark(true)
@@ -195,6 +203,14 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
   }, [])
 
   const loadCategoryPnl = useCallback(async () => {
+    if (allAccounts) {
+      setCategoryPnlData({})
+      setSectorPnlData({})
+      setSubSectorPnlData({})
+      setProductPnlData({})
+      setLoadingCategoryPnl(false)
+      return
+    }
     setLoadingCategoryPnl(true)
     try {
       const params = new URLSearchParams()
@@ -211,7 +227,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
     } finally {
       setLoadingCategoryPnl(false)
     }
-  }, [productCode])
+  }, [productCode, allAccounts])
 
   useEffect(() => { load() }, [load])
   useEffect(() => { loadCategoryPnl() }, [loadCategoryPnl])
@@ -688,6 +704,8 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
     })
   }, [normalizedBenchmarkData])
 
+  if (allAccounts) return <AccountOverviewTable />
+
   const drawdownOption = {
     animation: false,
     backgroundColor: "transparent",
@@ -1053,6 +1071,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
                     <thead className="sticky top-0 bg-card shadow-sm">
                       <tr className="border-b text-left">
                         <th className="px-2 py-1.5 text-center font-medium">日期</th>
+                        {isAccount && <th className="px-2 py-1.5 text-right font-medium">客户权益</th>}
                         <th className="px-2 py-1.5 text-right font-medium">单位净值</th>
                         <th className="px-2 py-1.5 text-right font-medium">累计净值</th>
                         <th className="px-2 py-1.5 text-right font-medium">复权净值</th>
@@ -1063,6 +1082,9 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
                       {reversedData.map((point) => (
                         <tr key={point.date} className="border-b last:border-b-0">
                           <td className="whitespace-nowrap px-2 py-1 text-center">{point.date}</td>
+                          {isAccount && (
+                            <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums">{fmtMoney(point.cumCapital)}</td>
+                          )}
                           <td className="px-2 py-1 text-right tabular-nums">{fmtNav(point.navNorm)}</td>
                           <td className="px-2 py-1 text-right tabular-nums">{fmtNav(point.navNorm)}</td>
                           <td className="px-2 py-1 text-right tabular-nums">{fmtNav(point.navNorm)}</td>

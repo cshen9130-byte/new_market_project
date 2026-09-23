@@ -64,6 +64,15 @@ interface TaskStep {
   summary?: string
 }
 
+interface SimilarFundMatch {
+  rank: number
+  beian_hao: string
+  product_name: string
+  correlation: number | null
+  overlapMonths: number
+  sameProduct?: boolean
+}
+
 interface ResearchTask {
   id: string
   skillId: string
@@ -76,6 +85,7 @@ interface ResearchTask {
   planText: string
   steps: TaskStep[]
   reportText: string
+  matches?: SimilarFundMatch[]
   errorMessage?: string
 }
 
@@ -1011,6 +1021,11 @@ export function AIResearcherPage() {
       case "report_text":
         updateTask((t) => ({ ...t, reportText: t.reportText + String(event.delta ?? "") }))
         break
+      case "matches": {
+        const items = Array.isArray(event.items) ? event.items as SimilarFundMatch[] : []
+        updateTask((t) => ({ ...t, matches: items }))
+        break
+      }
       case "error":
         updateTask((t) => ({ ...t, status: "error", errorMessage: String(event.message ?? "未知错误") }))
         break
@@ -1878,6 +1893,31 @@ export function AIResearcherPage() {
 
               {/* Report area */}
               <div className="flex-1 overflow-y-auto">
+                {activeTask.matches && activeTask.matches.length > 0 && !activeTask.reportText && (
+                  <div className="max-w-3xl mx-auto px-8 py-6">
+                    <p className="text-sm font-semibold mb-2">相似度计算结果</p>
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="border-b text-left text-muted-foreground">
+                          <th className="py-1.5 pr-3 font-medium">排名</th>
+                          <th className="py-1.5 pr-3 font-medium">产品名称</th>
+                          <th className="py-1.5 pr-3 font-medium">备案号</th>
+                          <th className="py-1.5 font-medium">相关性</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeTask.matches.map((m) => (
+                          <tr key={`${m.rank}-${m.beian_hao}`} className="border-b last:border-0">
+                            <td className="py-1.5 pr-3">{m.rank}</td>
+                            <td className="py-1.5 pr-3">{m.product_name}</td>
+                            <td className="py-1.5 pr-3 font-mono text-xs">{m.beian_hao}</td>
+                            <td className="py-1.5">{m.correlation != null ? m.correlation.toFixed(3) : "N/A"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
                 {activeTask.reportText ? (
                   <div ref={reportContainerRef} className="max-w-3xl mx-auto px-8 py-6 bg-white" style={{ color: "#111" }}>
                     <MarkdownNotePreview

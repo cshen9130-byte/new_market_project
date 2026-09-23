@@ -9,6 +9,7 @@ import {
 import { getUserById } from "@/lib/server/users"
 import { ensureTrackingFundsListCachePopulated } from "@/lib/server/tracking-funds-list-cache-pg"
 import { sqlFundNameMatch, sqlShareClassProductNameGuard } from "@/lib/server/fund-name-match"
+import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 
@@ -356,7 +357,7 @@ export async function GET(req: Request) {
     })
 
     return NextResponse.json({
-      data: await overlayFundElementListFields(data),
+      data: await overlayFundElementListFields(await overlayAmacOfficialProductNames(data)),
       total,
       page,
       pageSize,

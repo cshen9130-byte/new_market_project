@@ -105,6 +105,12 @@ export type OptionRow = {
 
 export type ValuationLayoutType = "fof" | "derivative" | "equity"
 
+export type AllocationDetailGroup = {
+  rowKind: string
+  category: string
+  rows: ValuationHoldingDetailRow[]
+}
+
 export type ValuationHoldingDetailRow = {
   index: number
   assetName: string
@@ -202,6 +208,7 @@ export type FundValuationAllocationResult = {
   inception_date: string | null
   layout_type: ValuationLayoutType
   allocation: AllocationRow[]
+  category_details: AllocationDetailGroup[]
   fund_holdings: FundHoldingRow[]
   stock_holdings: ValuationHoldingDetailRow[]
   bond_holdings: ValuationHoldingDetailRow[]
@@ -221,7 +228,7 @@ export type FundValuationAllocationResult = {
   cache_schema?: number
 }
 
-const ALLOCATION_CACHE_SCHEMA = 4
+const ALLOCATION_CACHE_SCHEMA = 7
 
 const ROW_KIND_LABELS: Record<string, string> = {
   bank_deposit: "托管户现金",
@@ -1188,6 +1195,344 @@ function aggregateFofAllocation(
   }))
 }
 
+const BALANCED_ALLOCATION_ORDER = [
+  "bank_deposit",
+  "settlement_reserve",
+  "margin_deposit",
+  "stock",
+  "bond",
+  "private_fund",
+  "public_fund",
+  "wealth",
+  "clearing",
+  "receivable",
+  "option",
+  "derivative_pnl",
+  "payable",
+  "other",
+] as const
+
+const BALANCED_ALLOCATION_LABELS: Record<(typeof BALANCED_ALLOCATION_ORDER)[number], string> = {
+  bank_deposit: "托管户现金",
+  settlement_reserve: "清算备付金",
+  margin_deposit: "存出保证金",
+  stock: "股票",
+  bond: "债券",
+  private_fund: "私募基金",
+  public_fund: "公募基金",
+  wealth: "理财",
+  clearing: "证券清算款",
+  receivable: "应收款",
+  option: "期权",
+  derivative_pnl: "衍生品盈亏",
+  payable: "应付款",
+  other: "其他",
+}
+
+function signedEconomicValue(h: HoldingRow): number {
+  return parseNum(h.signed_market_value) || parseNum(h.market_value)
+}
+
+function isBalanceTotalRow(h: HoldingRow): boolean {
+  const name = String(h.subject_name ?? "").replace(/\s/g, "")
+  return /资产净值|资产合计|资产类合计|负债合计|负债类合计|实收资本|累计净值|单位净值/.test(name)
+}
+
+function isLiabilityHolding(h: HoldingRow): boolean {
+  if (h.row_kind === "payable") return true
+  const code = String(h.subject_code ?? "").replace(/[\s.]/g, "")
+  return /^2/.test(code)
+}
+
+function isClearingAllocationHolding(h: HoldingRow): boolean {
+  if (h.row_kind === "clearing") return true
+  const code = String(h.subject_code ?? h.original_subject_code ?? "").replace(/[\s.]/g, "")
+  return code.startsWith("3003")
+}
+
+function isFuturesMtmHolding(h: HoldingRow): boolean {
+  if (isOptionHolding(h) || h.row_kind === "option") return false
+  if (h.row_kind === "derivative") return true
+  return isDerivativeNotionalHolding(h)
+}
+
+function sumSignedEconomic(rows: HoldingRow[]): number {
+  return rows.reduce((sum, h) => sum + signedEconomicValue(h), 0)
+}
+
+/** Leaf cash accounts that aggregateMajorKind actually sums (parents dropped). */
+function cashComponentRows(holdings: HoldingRow[], kind: string): HoldingRow[] {
+  const rows = holdings.filter((h) => {
+    if (h.row_kind !== kind) return false
+    if (!(rowMarketValue(h) > 0)) return false
+    return Boolean(compactSubjectCode(h.subject_code))
+  })
+  const codes = rows.map((h) => compactSubjectCode(h.subject_code))
+  const leaves = rows.filter((h) => {
+    const code = compactSubjectCode(h.subject_code)
+    return !codes.some((other) => other !== code && other.startsWith(code) && other.length > code.length)
+  })
+  const byCode = new Map<string, HoldingRow>()
+  for (const h of leaves) {
+    const code = compactSubjectCode(h.subject_code)
+    const prev = byCode.get(code)
+    if (!prev || rowMarketValue(h) > rowMarketValue(prev)) byCode.set(code, h)
+  }
+  return [...byCode.values()]
+}
+
+/**
+ * 大类配置 that partitions 资产净值.
+ * Futures contract notional is omitted (保证金 already holds that economics).
+ * 证券清算款 / 期权权利金 / 衍生品盈亏 are included only when they move the
+ * total closer to 资产净值. Any remainder is 其他, so the rows sum to 100%.
+ */
+export function buildBalancedMajorAllocation(
+  holdings: HoldingRow[],
+  netAssetValue: number,
+  custodyBalance: number,
+): { rows: AllocationRow[]; details: AllocationDetailGroup[] } {
+  const detail = holdings.filter((h) => h.include_in_detail !== false && !isBalanceTotalRow(h))
+  const buckets = new Map<string, number>()
+  const members = new Map<string, HoldingRow[]>()
+  const add = (key: string, value: number) => {
+    if (!Number.isFinite(value) || value === 0) return
+    buckets.set(key, (buckets.get(key) ?? 0) + value)
+  }
+  const remember = (key: string, rows: HoldingRow[]) => {
+    if (!rows.length) return
+    const list = members.get(key) ?? []
+    list.push(...rows)
+    members.set(key, list)
+  }
+
+  const bankRows = cashComponentRows(holdings, "bank_deposit")
+  const bank = custodyBalance > 0 ? custodyBalance : aggregateMajorKind(holdings, "bank_deposit")
+  add("bank_deposit", bank)
+  remember("bank_deposit", bankRows)
+  const settlementRows = cashComponentRows(holdings, "settlement_reserve")
+  add("settlement_reserve", aggregateMajorKind(holdings, "settlement_reserve"))
+  remember("settlement_reserve", settlementRows)
+  const marginRows = cashComponentRows(holdings, "margin_deposit")
+  add("margin_deposit", aggregateMajorKind(holdings, "margin_deposit"))
+  remember("margin_deposit", marginRows)
+
+  const stockRows = detail.filter(isDirectEquityStock)
+  add("stock", sumSignedEconomic(stockRows))
+  remember("stock", stockRows)
+  const bondRows = detail.filter((h) =>
+    isBondHoldingRow(h) && !isDirectEquityStock(h) && !isLiabilityHolding(h),
+  )
+  add("bond", sumSignedEconomic(bondRows))
+  remember("bond", bondRows)
+
+  const fundRows = dedupeFundHoldings(detail.filter((h) => isUnderlyingFundInvestment(h)))
+  const privateFundRows: HoldingRow[] = []
+  const publicFundRows: HoldingRow[] = []
+  for (const h of fundRows) {
+    const key = classifyFundHoldingKind(h) === "private_fund" ? "private_fund" : "public_fund"
+    add(key, signedEconomicValue(h))
+    if (key === "private_fund") privateFundRows.push(h)
+    else publicFundRows.push(h)
+  }
+  remember("private_fund", privateFundRows)
+  remember("public_fund", publicFundRows)
+
+  const wealthRows = detail.filter((h) =>
+    isWealthHolding(h)
+    && !isDirectEquityStock(h)
+    && !isUnderlyingFundInvestment(h)
+    && !isBondHoldingRow(h)
+    && !isLiabilityHolding(h),
+  )
+  add("wealth", sumSignedEconomic(wealthRows))
+  remember("wealth", wealthRows)
+  const receivableRows = detail.filter((h) =>
+    h.row_kind === "receivable" && !isLiabilityHolding(h),
+  )
+  add("receivable", sumSignedEconomic(receivableRows))
+  remember("receivable", receivableRows)
+
+  const alreadyClassified = (h: HoldingRow) =>
+    CASH_ROW_KINDS.has(h.row_kind ?? "")
+    || isDirectEquityStock(h)
+    || isBondHoldingRow(h)
+    || isUnderlyingFundInvestment(h)
+    || isWealthHolding(h)
+    || h.row_kind === "receivable"
+    || isLiabilityHolding(h)
+    || isClearingAllocationHolding(h)
+    || isOptionHolding(h)
+    || h.row_kind === "option"
+    || isFuturesMtmHolding(h)
+
+  const otherRows = detail.filter((h) => !alreadyClassified(h))
+  add("other", sumSignedEconomic(otherRows))
+  remember("other", otherRows)
+  const payableRows = detail.filter(isLiabilityHolding)
+  add("payable", -payableRows.reduce((sum, h) => sum + Math.abs(signedEconomicValue(h)), 0))
+  remember("payable", payableRows)
+
+  const clearingRows = detail.filter(isClearingAllocationHolding)
+  const optionRows = detail.filter((h) => isOptionHolding(h) || h.row_kind === "option")
+  const derivativeRows = detail.filter(isFuturesMtmHolding)
+  const optional = {
+    clearing: sumSignedEconomic(clearingRows),
+    option: sumSignedEconomic(optionRows),
+    derivative_pnl: sumSignedEconomic(derivativeRows),
+  } as const
+  const optionalMembers = {
+    clearing: clearingRows,
+    option: optionRows,
+    derivative_pnl: derivativeRows,
+  } as const
+  const optionalKeys = ["clearing", "option", "derivative_pnl"] as const
+
+  const coreSum = [...buckets.values()].reduce((sum, value) => sum + value, 0)
+  let bestKeys: Array<(typeof optionalKeys)[number]> = []
+  if (netAssetValue > 0) {
+    let bestGap = Math.abs(coreSum - netAssetValue)
+    for (let mask = 0; mask < 8; mask++) {
+      let extra = 0
+      const chosen: Array<(typeof optionalKeys)[number]> = []
+      optionalKeys.forEach((key, index) => {
+        if ((mask & (1 << index)) === 0) return
+        extra += optional[key]
+        chosen.push(key)
+      })
+      const gap = Math.abs(coreSum + extra - netAssetValue)
+      if (gap < bestGap - 1) {
+        bestGap = gap
+        bestKeys = chosen
+      }
+    }
+  }
+  for (const key of bestKeys) {
+    add(key, optional[key])
+    remember(key, optionalMembers[key])
+  }
+
+  let explained = [...buckets.values()].reduce((sum, value) => sum + value, 0)
+  let otherResidual = 0
+  if (netAssetValue > 0) {
+    const residual = netAssetValue - explained
+    const gapRatio = Math.abs(residual) / netAssetValue
+    // Positive residual is an unclassified asset. A small negative residual is
+    // rounding or a fee. A large negative residual means the lines already
+    // overstate NAV, so don't invent an offsetting 其他.
+    if (Math.abs(residual) >= 0.01 && (residual > 0 || gapRatio <= 0.15)) {
+      add("other", residual)
+      otherResidual = residual
+      explained += residual
+    }
+  }
+
+  const navBase = netAssetValue > 0
+    ? netAssetValue
+    : [...buckets.values()].reduce((sum, value) => sum + value, 0)
+
+  const rows = BALANCED_ALLOCATION_ORDER
+    .map((key) => [key, buckets.get(key) ?? 0] as const)
+    .filter(([, value]) => Math.abs(value) >= 0.01)
+    .map(([key, value], index) => ({
+      index: index + 1,
+      category: BALANCED_ALLOCATION_LABELS[key],
+      rowKind: key,
+      value: Math.round(value * 100) / 100,
+      pct: navBase !== 0 ? (value / navBase) * 100 : 0,
+    }))
+
+  const tied = navBase > 0 && Math.abs(explained - navBase) < 1
+  if (tied && rows.length > 0) {
+    const rounded = rows.map((row) => Math.round(row.pct * 10000) / 10000)
+    const drift = Math.round((100 - rounded.reduce((sum, pct) => sum + pct, 0)) * 10000) / 10000
+    if (Math.abs(drift) > 0 && Math.abs(drift) <= 0.05) {
+      let largest = 0
+      for (let i = 1; i < rows.length; i++) {
+        if (Math.abs(rows[i].value) > Math.abs(rows[largest].value)) largest = i
+      }
+      rounded[largest] = Math.round((rounded[largest] + drift) * 10000) / 10000
+    }
+    rows.forEach((row, index) => {
+      row.pct = rounded[index]
+    })
+  }
+
+  const details = rows.map((allocationRow) => ({
+    rowKind: allocationRow.rowKind,
+    category: allocationRow.category,
+    rows: detailRowsForBucket(
+      allocationRow.rowKind,
+      members.get(allocationRow.rowKind) ?? [],
+      allocationRow.value,
+      navBase,
+      allocationRow.rowKind === "other" ? otherResidual : 0,
+    ),
+  }))
+
+  return { rows, details }
+}
+
+function detailRowsForBucket(
+  key: string,
+  list: HoldingRow[],
+  target: number,
+  nav: number,
+  residual: number,
+): ValuationHoldingDetailRow[] {
+  const negate = key === "payable"
+  const rows = list
+    .map((h) => {
+      const row = mapHoldingToDetailRow(h, nav)
+      const marketValue = negate ? -Math.abs(signedEconomicValue(h)) : signedEconomicValue(h)
+      return {
+        ...row,
+        marketValue,
+        marketPct: nav > 0 ? (marketValue / nav) * 100 : 0,
+      }
+    })
+    .filter((row) => row.assetName && Math.abs(row.marketValue) >= 0.01)
+    .sort((a, b) => Math.abs(b.marketValue) - Math.abs(a.marketValue))
+
+  if (Math.abs(residual) >= 0.01) {
+    rows.push({
+      assetName: "未单列差额",
+      valuationCode: null,
+      category: BALANCED_ALLOCATION_LABELS.other,
+      quantity: null,
+      price: null,
+      marketValue: residual,
+      marketPct: nav > 0 ? (residual / nav) * 100 : 0,
+      cost: null,
+      unrealizedPnl: null,
+      settlementStatus: "",
+    })
+  }
+
+  const sum = rows.reduce((total, row) => total + row.marketValue, 0)
+  const gap = Math.round((target - sum) * 100) / 100
+  if (Math.abs(gap) >= 0.01) {
+    rows.push({
+      assetName: "未单列差额",
+      valuationCode: null,
+      category: null,
+      quantity: null,
+      price: null,
+      marketValue: gap,
+      marketPct: nav > 0 ? (gap / nav) * 100 : 0,
+      cost: null,
+      unrealizedPnl: null,
+      settlementStatus: "",
+    })
+  }
+
+  return rows.map((row, index) => ({
+    index: index + 1,
+    ...row,
+    marketValue: Math.round(row.marketValue * 100) / 100,
+  }))
+}
+
 function deriveNavFromShares(quantity: unknown, marketValue: unknown): number | null {
   const shares = parseNum(String(quantity ?? ""))
   const mv = parseNum(String(marketValue ?? ""))
@@ -2132,51 +2477,41 @@ export async function getFundValuationAllocation(
   }
 
   const layout_type = detectValuationLayoutType(holdings)
-  let allocation = layout_type === "fof"
-    ? aggregateFofAllocation(holdings, net_asset_value, custody_balance)
-    : layout_type === "equity"
-      ? aggregateEquityAllocation(holdings, net_asset_value, custody_balance)
-      : buildAllocation(sums, net_asset_value)
+  let book = buildBalancedMajorAllocation(holdings, net_asset_value, custody_balance)
+  let allocation = book.rows
 
-  // FOF: major-kind NAV fallback is cash-only; prefer sum of FOF allocation buckets.
+  // When the valuation header has no 资产净值, use the classified book as NAV
+  // and rebuild so the weights are shares of that total.
   if (
-    layout_type === "fof"
-    && !(metrics && parseNum(metrics.net_asset_value) > 0)
+    !(metrics && parseNum(metrics.net_asset_value) > 0)
     && allocation.length > 0
   ) {
     const allocNav = allocation.reduce((s, row) => s + row.value, 0)
-    if (allocNav > 0) {
+    if (allocNav > 1000) {
       net_asset_value = allocNav
-      allocation = aggregateFofAllocation(holdings, net_asset_value, custody_balance)
+      book = buildBalancedMajorAllocation(holdings, net_asset_value, custody_balance)
+      allocation = book.rows
     }
   }
+  const category_details = book.details
 
-  const derivatives = layout_type === "derivative"
-    ? buildDerivatives(holdings, net_asset_value)
-    : []
-  const derivative_sector_shares = layout_type === "derivative"
+  const derivatives = buildDerivatives(holdings, net_asset_value)
+  const derivative_sector_shares = derivatives.length > 0
     ? buildDerivativeSectorShares(derivatives, net_asset_value)
     : []
-  const derivativeOptions = layout_type === "derivative"
-    ? buildOptions(holdings, net_asset_value)
-    : []
+  const derivativeOptions = buildOptions(holdings, net_asset_value)
 
-  const fund_holdings = layout_type === "fof"
-    ? await buildFundHoldings(holdings, net_asset_value, valuation_date)
-    : []
-  const stock_holdings = layout_type === "equity"
-    ? buildEquityDetailHoldings(holdings, net_asset_value, isDirectEquityStock)
-    : []
-  const bond_holdings = layout_type === "equity"
-    ? buildEquityDetailHoldings(holdings, net_asset_value, isBondHoldingRow)
-    : []
-  const wealth_holdings = layout_type === "equity"
-    ? buildEquityDetailHoldings(holdings, net_asset_value, isWealthHolding)
-    : []
-  const equity_other_holdings = layout_type === "equity"
-    ? buildEquityDetailHoldings(holdings, net_asset_value, isEquityOtherHolding)
-    : []
-  const stock_risk_exposure = layout_type === "equity"
+  const fund_holdings = await buildFundHoldings(
+    holdings.filter((h) => isUnderlyingFundInvestment(h)),
+    net_asset_value,
+    valuation_date,
+  )
+  const detailRows = (kind: string) => category_details.find((group) => group.rowKind === kind)?.rows ?? []
+  const stock_holdings = detailRows("stock")
+  const bond_holdings = detailRows("bond")
+  const wealth_holdings = detailRows("wealth")
+  const equity_other_holdings = detailRows("other")
+  const stock_risk_exposure = stock_holdings.length > 0
     ? buildStockRiskExposure(holdings, net_asset_value)
     : null
   const other_holdings = layout_type === "fof"
@@ -2191,7 +2526,7 @@ export async function getFundValuationAllocation(
     )
     : []
 
-  const holdingExtras = layout_type === "derivative"
+  const holdingExtras = derivativeOptions.length > 0 || derivatives.length > 0
     ? holdings.map((h) => ({
       subject_name: h.subject_name,
       subject_code: h.subject_code,
@@ -2210,7 +2545,7 @@ export async function getFundValuationAllocation(
     }))
     : []
 
-  const optionContracts = layout_type === "derivative"
+  const optionContracts = derivativeOptions.length > 0
     ? holdings
       .filter((h) => isOptionHolding(h))
       .map((h) => {
@@ -2225,13 +2560,13 @@ export async function getFundValuationAllocation(
       .filter((c): c is string => Boolean(c))
     : []
 
-  const marketGreeks = layout_type === "derivative"
+  const marketGreeks = optionContracts.length > 0
     ? await loadOptionMarketGreeks(optionContracts, valuation_date)
     : new Map()
-  const greek_letters = layout_type === "derivative"
+  const greek_letters = derivativeOptions.length > 0
     ? buildGreekLetters(holdingExtras, marketGreeks)
     : []
-  const term_analysis = layout_type === "derivative"
+  const term_analysis = derivativeOptions.length > 0 || derivatives.length > 0
     ? buildTermAnalysis(holdingExtras, valuation_date, net_asset_value)
     : []
 
@@ -2301,6 +2636,7 @@ export async function getFundValuationAllocation(
     inception_date: fundMeta.inception_date,
     layout_type,
     allocation,
+    category_details,
     fund_holdings,
     stock_holdings,
     bond_holdings,
@@ -2492,23 +2828,12 @@ function jsonHoldingsToRows(
 
 function computeSnapshotAllocation(
   holdings: HoldingRow[],
-  mode: AllocationMode,
+  _mode: AllocationMode,
   custodyBalance: number,
   netAssetValue: number,
 ): AllocationRow[] {
-  const sums = aggregateByRowKind(holdings, mode)
-  if (custodyBalance > 0) {
-    sums.set("bank_deposit", custodyBalance)
-  }
-
   const nav = stripDerivativeNotionalFromNav(netAssetValue, holdings)
-
-  const layout_type = detectValuationLayoutType(holdings)
-  return layout_type === "fof"
-    ? aggregateFofAllocation(holdings, nav, custodyBalance)
-    : layout_type === "equity"
-      ? aggregateEquityAllocation(holdings, nav, custodyBalance)
-      : buildAllocation(sums, nav)
+  return buildBalancedMajorAllocation(holdings, nav, custodyBalance).rows
 }
 
 function sectorWeightPctByMode(
@@ -2881,7 +3206,14 @@ function sanitizeAllocationDisplayNames(
     ...row,
     contractName: sanitizeHoldingDisplayName(row.contractName),
   }))
-  return { ...result, fund_holdings, other_holdings, equity_other_holdings, derivatives }
+  const category_details = (result.category_details ?? []).map((group) => ({
+    ...group,
+    rows: group.rows.map((row) => ({
+      ...row,
+      assetName: sanitizeHoldingDisplayName(row.assetName, row.valuationCode),
+    })),
+  }))
+  return { ...result, fund_holdings, other_holdings, equity_other_holdings, derivatives, category_details }
 }
 
 async function enrichCachedFundStrategies(

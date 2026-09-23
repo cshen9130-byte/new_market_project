@@ -351,24 +351,14 @@ function holdingMatchesPie(row: FundHoldingRow, selection: StrategyPieSelection)
     .filter(Boolean)
   const l1 = row.strategyL1?.trim() || fromPath[0] || "未配置"
   const l2 = row.strategyL2?.trim() || fromPath[1] || "未配置"
-  const l3s = (row.strategyL3 ?? "")
-    .split(/[，,、]/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-  const l3Labels = l3s.length > 0 ? l3s : ["未配置"]
   if (l1 !== selection.l1) return false
   if (selection.l2 && l2 !== selection.l2) return false
-  if (selection.l3) {
-    if (l3Labels.includes(selection.l3)) return true
-    if (l3Labels.length === 1 && l3Labels[0] === "未配置" && row.fundName === selection.l3) return true
-    return false
-  }
   return true
 }
 
 export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
   const [strategyTab, setStrategyTab] = useState<string>("全部")
-  const [pieSelection, setPieSelection] = useState<StrategyPieSelection>({ l1: null, l2: null, l3: null })
+  const [pieSelection, setPieSelection] = useState<StrategyPieSelection>({ l1: null, l2: null })
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [sortKey, setSortKey] = useState<SortKey | null>("marketValue")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
@@ -575,7 +565,7 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
             type="button"
             onClick={() => {
               setStrategyTab(tab)
-              setPieSelection({ l1: null, l2: null, l3: null })
+              setPieSelection({ l1: null, l2: null })
             }}
             className={[
               "px-2.5 py-1 rounded text-xs border transition-colors whitespace-nowrap",

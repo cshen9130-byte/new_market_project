@@ -23,6 +23,7 @@ import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/se
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import { purgeValuationFilenameIdentities, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
 import { expandFundSearchKeywords, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
+import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import { cleanValuationDerivedFundName, isValuationReportTitle } from "@/lib/server/valuation-filename"
 
 function appendProductKeywordFilter(
@@ -754,7 +755,7 @@ async function handleCachedTrackingList(opts: {
         pageSize,
         total,
         totalPages: Math.ceil(total / pageSize),
-        data: sanitizeTrackRows(enrichedRows),
+        data: sanitizeTrackRows(await overlayAmacOfficialProductNames(enrichedRows)),
       }
     }) as {
       page: number
@@ -1398,7 +1399,7 @@ export async function GET(req: Request) {
       total,
       totalPages: Math.ceil(total / pageSize),
       data: await overlayLatestChangeDate(
-        await overlayFundElementListFields(sanitizeTrackRows(data)),
+        await overlayFundElementListFields(sanitizeTrackRows(await overlayAmacOfficialProductNames(data))),
       ),
     })
   } catch (e: any) {

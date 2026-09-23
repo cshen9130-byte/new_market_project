@@ -16,6 +16,7 @@ import {
   inferQuantStrategy,
   productFromAkshare,
 } from "@/lib/ma/quant-strategy-infer"
+import { inferFactorDml } from "@/lib/ma/quant-factor-dml"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -336,7 +337,7 @@ async function _GET(req: Request) {
     const isoToday = new Date().toISOString().slice(0, 10)
     const from = sp.get("from") || "2025-01-01"
     const to = sp.get("to") || isoToday
-    const nhFrom = lookbackFrom(from, 400)
+    const nhFrom = lookbackFrom(from, 560)
     const NH_CODES = ["NHCI.NH", "NHAI.NH", "NHECI.NH", "NHFI.NH", "NHPMI.NH", "NHNEI.NH", "NHNFI.NH"]
 
     const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows, clusterRows, contractRows, openInfRows, posInfRows] = await Promise.all([
@@ -578,7 +579,7 @@ async function _GET(req: Request) {
 
     const account = dailyRows[0]?.account || `rx${accountId}`
 
-    const pxLookback = lookbackFrom(from, 120)
+    const pxLookback = lookbackFrom(from, 560)
     const akCodes = [...new Set(openInfRows.map((r) => AKSHARE_CONTINUOUS[r.product]).filter(Boolean))]
     const inferPxRows = akCodes.length
       ? await query<{ date: string; code: string; close: string; volume: string }>(
@@ -967,6 +968,61 @@ async function _GET(req: Request) {
       },
     })
 
+    const sectorOf: Record<string, string> = {}
+    for (const r of openInfRows) if (r.product) sectorOf[r.product] = getSector(r.product)
+    for (const r of posInfRows) if (r.product) sectorOf[r.product] = getSector(r.product)
+    let factorDml: ReturnType<typeof inferFactorDml>
+    try {
+      factorDml = inferFactorDml({
+        opens: openInfRows.map((r) => ({
+          date: r.date.slice(0, 10),
+          product: r.product,
+          buyOpen: toNum(r.buy_open),
+          sellOpen: toNum(r.sell_open),
+        })),
+        positions: posInfRows.map((r) => ({
+          date: r.date.slice(0, 10),
+          product: r.product,
+          buyLots: toNum(r.buy_lots),
+          sellLots: toNum(r.sell_lots),
+        })),
+        prices: inferPxRows.map((r) => ({
+          product: productFromAkshare(r.code),
+          date: r.date.slice(0, 10),
+          close: toNum(r.close),
+          volume: toNum(r.volume),
+        })),
+        nhci: nhciPts,
+        contracts: contracts.map((c) => ({
+          date: c.date,
+          product: c.product,
+          rk: c.rk,
+          px: c.px,
+          oi: c.oi,
+          doi: c.doi,
+        })),
+        bookDays: equity.map((d) => ({ date: d.date, riskPct: d.riskPct })),
+        sectorOf,
+        from,
+        to,
+      })
+    } catch (err) {
+      console.error("[factor-dml]", err)
+      factorDml = {
+        headline: "因子推断没有算完。",
+        n: 0,
+        dates: 0,
+        products: 0,
+        tested: 0,
+        significant: 0,
+        nonlinear: 0,
+        causal: { headline: "因子推断没有算完。", directCount: 0, edges: [] },
+        irl: { headline: "因子推断没有算完。", rewardGap: 0, factors: [] },
+        audit: { headline: "因子推断没有算完。", placeboDcor: 0, factors: [] },
+        rows: [],
+      }
+    }
+
     const portrait = buildPortrait({
       days: equity.length,
       nCloses,
@@ -1049,6 +1105,7 @@ async function _GET(req: Request) {
       hedge,
       longShort,
       inference,
+      factorDml,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -1060,4 +1117,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("quant-strategy-v10", _GET)
+export const GET = withMomCache("quant-strategy-v19", _GET)

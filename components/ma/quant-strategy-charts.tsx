@@ -9,8 +9,11 @@ import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
 import { buildCompareInsights, type CompareInsights } from "@/lib/ma/quant-strategy-compare"
 import type { FactorFamily, HeatCell, RegimeFactors } from "@/lib/ma/quant-regime-factors"
 import type { StrategyInference } from "@/lib/ma/quant-strategy-infer"
+import type { FactorDmlReport } from "@/lib/ma/quant-factor-dml"
 import { CHART_HELP, helpForFactor, QuantChartHelp, type ChartHelpSpec } from "@/components/ma/quant-strategy-help"
 import { InferPanel } from "@/components/ma/quant-strategy-infer-panel"
+import { FactorDmlPanel } from "@/components/ma/quant-factor-dml-panel"
+import { readFactorSupport } from "@/lib/ma/quant-factor-reading"
 
 const UP = "#ef4444"
 const DOWN = "#10b981"
@@ -153,6 +156,7 @@ interface ApiData {
     longClosePnl?: number; shortClosePnl?: number; longMtm?: number; shortMtm?: number
   }
   inference?: StrategyInference
+  factorDml?: FactorDmlReport
 }
 
 const TONE: Record<Tone, string> = {
@@ -775,6 +779,9 @@ export default function QuantStrategyCharts() {
           )}
         </div>
         <p className="text-sm text-muted-foreground leading-relaxed">{data?.portrait.summary}</p>
+        {data?.factorDml && data.portrait?.strategyLabel && (
+          <p className="text-sm leading-relaxed">{readFactorSupport(data.factorDml, data.portrait.strategyLabel)?.portrait}</p>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
           {(data?.portrait.items ?? []).map((item) => (
             <div key={`${viewKey}-${item.title}`} className={`rounded-md border px-3 py-2.5 ${TONE[item.tone]}`}>
@@ -790,7 +797,15 @@ export default function QuantStrategyCharts() {
         </div>
       </div>
 
-      {data?.inference && <InferPanel inference={data.inference} period={periodText} />}
+      {data?.inference && (
+        <InferPanel
+          inference={data.inference}
+          period={periodText}
+          factorNote={data.factorDml && data.portrait?.strategyLabel
+            ? readFactorSupport(data.factorDml, data.portrait.strategyLabel)?.inference
+            : undefined}
+        />
+      )}
 
       {(data?.inference?.charts?.bookVol || data?.inference?.charts?.crossVol) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -918,6 +933,8 @@ export default function QuantStrategyCharts() {
       <ChartCard title="持仓是否对冲" caption="对冲度 = 2×min(多市值,空市值)/(多+空)。接近 100% 几乎锁住；双开是同一合约既买又卖。" help={CHART_HELP.hedge}>
         {(data?.hedge?.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-hedge`} option={hedgeOption} style={{ height: 260, width: "100%" }} notMerge />}
       </ChartCard>
+
+      {data?.factorDml && <FactorDmlPanel report={data.factorDml} period={periodText} />}
 
       <Card>
         <CardHeader className="pb-2">
@@ -1198,6 +1215,15 @@ function CompareView({
             </p>
             {r.inference?.headline && (
               <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.inference.headline}</p>
+            )}
+            {r.factorDml?.headline && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.factorDml.headline}</p>
+            )}
+            {r.factorDml?.causal?.headline && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.factorDml.causal.headline}</p>
+            )}
+            {r.factorDml?.irl?.headline && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.factorDml.irl.headline}</p>
             )}
           </button>
         ))}

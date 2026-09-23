@@ -32,6 +32,8 @@ import {
   isWeakMaterialIdentity,
   looksLikeFundIdentity,
   parseSimilarFundMaterials,
+  downsampleInterpolatedChartNav,
+  extendChartPastLastAxisTick,
   similarFundMaterialKindLabel,
   type SimilarFundMaterialProfile,
   type SimilarFundNavPoint,
@@ -300,6 +302,12 @@ async function fetchPoolFromNavTable(
   targetNavCount = 0,
 ): Promise<FundInfo[]> {
   const exclude = excludeBeian.trim()
+  const days = (Date.parse(toDate) - Date.parse(fromDate)) / 86_400_000
+  const weeks = Math.max(8, Math.round(days / 7))
+  // Month-end ticks OR a densely digitized line should still retrieve weekly Friday series.
+  const target = days >= 120 && (targetNavCount <= 16 || targetNavCount >= 80)
+    ? weeks
+    : (targetNavCount || 50)
   return query<FundInfo>(
     `WITH nav_counts AS (
        SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, COUNT(*) AS cnt
@@ -315,7 +323,7 @@ async function fetchPoolFromNavTable(
      JOIN nav_counts nc ON UPPER(BTRIM(i.beian_hao)) = nc.beian_hao
      ORDER BY ABS(nc.cnt - $5::int) ASC, nc.cnt DESC
      LIMIT $4`,
-    [exclude, fromDate, toDate, limit, targetNavCount || 50],
+    [exclude, fromDate, toDate, limit, target],
   ).catch((err) => {
     rethrowIfDbDown(err, "nav-table pool failed")
     return [] as FundInfo[]
@@ -512,6 +520,36 @@ async function fetchPoolByAlignedWindow(
   })
 }
 
+/** Same calendar span as the upload, even if print count differs (weekly vs OCR month-ends). */
+async function fetchPoolByDateSpan(
+  fromDate: string,
+  toDate: string,
+  excludeBeian: string,
+  limit = 200,
+): Promise<FundInfo[]> {
+  const exclude = excludeBeian.trim()
+  return query<FundInfo>(
+    `WITH agg AS (
+       SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, MIN(price_date) AS mn, MAX(price_date) AS mx
+       FROM private_fund_nav
+       WHERE price_date BETWEEN $2::date AND $3::date AND nav IS NOT NULL AND nav > 0
+       GROUP BY 1
+       HAVING COUNT(*) >= 4
+     )
+     SELECT ${FUND_INFO_SELECT_LITE}
+     FROM private_fund_info i
+     JOIN agg a ON UPPER(BTRIM(i.beian_hao)) = a.beian_hao
+     WHERE ($1::text = '' OR UPPER(BTRIM(i.beian_hao)) <> UPPER(BTRIM($1)))
+       AND a.mn <= $2::date + 21 AND a.mx >= $3::date - 21
+     ORDER BY (ABS(a.mn - $2::date) + ABS(a.mx - $3::date)) ASC
+     LIMIT $4`,
+    [exclude, fromDate, toDate, limit],
+  ).catch((err) => {
+    rethrowIfDbDown(err, "date-span pool failed")
+    return [] as FundInfo[]
+  })
+}
+
 /**
  * Funds whose unit NAV on the upload's first and last dates is close to the
  * uploaded curve. This is date-aligned level matching, not an identity lookup.
@@ -588,11 +626,14 @@ async function fetchPoolBySharedDates(
 ): Promise<FundInfo[]> {
   const sample = [...new Set(dates.map((d) => d.slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))]
   if (sample.length < 3) return []
-  const picked = sample.length <= 8
+  const pickedCore = sample.length <= 12
     ? sample
-    : [sample[0], ...sample.filter((_, i) => i > 0 && i < sample.length - 1 && i % Math.ceil((sample.length - 2) / 6) === 0).slice(0, 6), sample[sample.length - 1]]
+    : [sample[0], ...sample.filter((_, i) => i > 0 && i < sample.length - 1 && i % Math.ceil((sample.length - 2) / 8) === 0).slice(0, 8), sample[sample.length - 1]]
+  const lastByMonth = new Map<string, string>()
+  for (const d of dates) lastByMonth.set(d.slice(0, 7), d.slice(0, 10))
+  const picked = [...new Set([...pickedCore, ...lastByMonth.values()])]
   const exclude = excludeBeian.trim()
-  const minHits = Math.min(4, picked.length)
+  const minHits = Math.max(3, Math.ceil(pickedCore.length * 0.8))
   const [official, emailCodes, teamCodes] = await Promise.all([
     query<FundInfo>(
       `WITH hits AS (
@@ -614,9 +655,9 @@ async function fetchPoolBySharedDates(
        SELECT ${FUND_INFO_SELECT_LITE}
        FROM private_fund_info i
        JOIN hits h ON UPPER(BTRIM(i.beian_hao)) = h.beian_hao
-       ORDER BY h.hit DESC, i.latest_nav_date DESC NULLS LAST
+       ORDER BY h.hit DESC, i.beian_hao
        LIMIT $4`,
-      [exclude, picked, minHits, limit],
+      [exclude, picked, minHits, Math.max(limit, 400)],
     ).catch((err) => {
       rethrowIfDbDown(err, "shared-date pool failed")
       return [] as FundInfo[]
@@ -642,7 +683,59 @@ async function fetchPoolBySharedDates(
   ])
   const extraCodes = [...emailCodes, ...teamCodes].map((r) => r.code)
   const aliased = extraCodes.length ? await fetchFundsForNavCodes(extraCodes) : []
-  return mergeFundPools(official, aliased).slice(0, limit)
+  const weekly = await fetchPoolWeeklySharedDates(picked, exclude, minHits, 200)
+  return mergeFundPools(official, aliased, weekly)
+}
+
+/** Weekly-density funds in the upload window (about one print per week). */
+async function fetchPoolWeeklySharedDates(
+  dates: string[],
+  excludeBeian: string,
+  _minHits: number,
+  limit = 400,
+): Promise<FundInfo[]> {
+  if (dates.length < 3) return []
+  const sorted = [...dates].sort()
+  return fetchPoolWeeklyInWindow(sorted[0], sorted[sorted.length - 1], excludeBeian, limit)
+}
+
+async function fetchPoolWeeklyInWindow(
+  fromDate: string,
+  toDate: string,
+  excludeBeian: string,
+  limit = 400,
+  uploadReturn?: number,
+): Promise<FundInfo[]> {
+  const exclude = excludeBeian.trim()
+  const days = (Date.parse(toDate) - Date.parse(fromDate)) / 86_400_000
+  if (!Number.isFinite(days) || days < 60) return []
+  const weeks = Math.max(8, Math.round(days / 7))
+  const ret = uploadReturn != null && isFinite(uploadReturn) ? uploadReturn : 0
+  return query<FundInfo>(
+    `WITH nav_counts AS (
+       SELECT UPPER(BTRIM(beian_hao)) AS beian_hao,
+              COUNT(*)::int AS cnt,
+              (ARRAY_AGG(nav ORDER BY price_date))[1]::float8 AS first_nav,
+              (ARRAY_AGG(nav ORDER BY price_date DESC))[1]::float8 AS last_nav
+       FROM private_fund_nav
+       WHERE price_date BETWEEN $2::date AND $3::date
+         AND nav IS NOT NULL AND nav > 0
+       GROUP BY 1
+       HAVING COUNT(*) BETWEEN 12 AND 90
+     )
+     SELECT ${FUND_INFO_SELECT_LITE}
+     FROM private_fund_info i
+     JOIN nav_counts nc ON UPPER(BTRIM(i.beian_hao)) = nc.beian_hao
+     WHERE ($1::text = '' OR UPPER(BTRIM(i.beian_hao)) <> UPPER(BTRIM($1)))
+       AND nc.first_nav > 0
+     ORDER BY ABS(nc.cnt - $5::int) ASC,
+              ABS(nc.last_nav / nc.first_nav - 1 - $6::float8) ASC
+     LIMIT $4`,
+    [exclude, fromDate, toDate, limit, weeks, ret],
+  ).catch((err) => {
+    rethrowIfDbDown(err, "weekly window pool failed")
+    return [] as FundInfo[]
+  })
 }
 
 /**
@@ -651,6 +744,55 @@ async function fetchPoolBySharedDates(
  * This ensures funds with dense nav history (even if stale) beat recently
  * active funds with sparse overlap — exactly what curve-matching needs.
  */
+async function fetchPoolByWindowReturn(
+  fromDate: string,
+  toDate: string,
+  excludeBeian: string,
+  uploadReturn: number,
+  limit = 200,
+): Promise<FundInfo[]> {
+  if (!isFinite(uploadReturn) || Math.abs(uploadReturn) < 0.015) return []
+  const pad = 0.03
+  const lo = uploadReturn >= 0
+    ? Math.min(uploadReturn * 0.45, uploadReturn - pad)
+    : Math.min(uploadReturn * 1.7, uploadReturn - pad)
+  const hi = uploadReturn >= 0
+    ? Math.max(uploadReturn * 1.8, uploadReturn + pad)
+    : Math.max(uploadReturn * 0.45, uploadReturn + pad)
+  const minR = Math.min(lo, hi)
+  const maxR = Math.max(lo, hi)
+  const exclude = excludeBeian.trim()
+  return query<FundInfo>(
+    `WITH s AS (
+       SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(price_date) AS mn, MAX(price_date) AS mx
+       FROM private_fund_nav
+       WHERE price_date BETWEEN $2::date AND $3::date AND nav IS NOT NULL AND nav > 0
+       GROUP BY 1
+       HAVING COUNT(*) >= 4
+     ),
+     ends AS (
+       SELECT s.code, f.nav::float8 AS v0, l.nav::float8 AS v1
+       FROM s
+       JOIN private_fund_nav f
+         ON UPPER(BTRIM(f.beian_hao)) = s.code AND f.price_date = s.mn AND f.nav > 0
+       JOIN private_fund_nav l
+         ON UPPER(BTRIM(l.beian_hao)) = s.code AND l.price_date = s.mx AND l.nav > 0
+     )
+     SELECT ${FUND_INFO_SELECT_LITE}
+     FROM private_fund_info i
+     JOIN ends e ON UPPER(BTRIM(i.beian_hao)) = e.code
+     WHERE e.v0 > 0
+       AND (e.v1 / e.v0 - 1) BETWEEN $4 AND $5
+       AND ($1::text = '' OR UPPER(BTRIM(i.beian_hao)) <> UPPER(BTRIM($1)))
+     ORDER BY ABS((e.v1 / e.v0 - 1) - $6) ASC
+     LIMIT $7`,
+    [exclude, fromDate, toDate, minR, maxR, uploadReturn, limit],
+  ).catch((err) => {
+    rethrowIfDbDown(err, "window-return pool failed")
+    return [] as FundInfo[]
+  })
+}
+
 async function fetchPoolByNavDateRange(
   fromDate: string,
   toDate: string,
@@ -659,10 +801,11 @@ async function fetchPoolByNavDateRange(
   uploadedNavCount = 0,
   uploadDates: string[] = [],
   endpoint?: { firstDate: string; lastDate: string; firstNav: number; lastNav: number },
+  uploadReturn?: number,
 ): Promise<FundInfo[]> {
   const exclude = excludeBeian.trim()
 
-  const [groupRows, navRows, dateRows, alignedRows, endpointRows, emailRows, teamRows, shareClassRows] = await Promise.all([
+  const [groupRows, navRows, dateRows, alignedRows, spanRows, endpointRows, emailRows, teamRows, shareClassRows, weeklyRows] = await Promise.all([
     query<FundInfo>(
       `WITH nav_beians AS (
          SELECT DISTINCT UPPER(BTRIM(beian_hao)) AS beian_hao
@@ -682,6 +825,7 @@ async function fetchPoolByNavDateRange(
     fetchPoolFromNavTable(fromDate, toDate, exclude, Math.ceil(limit * 0.8), uploadedNavCount),
     fetchPoolBySharedDates(uploadDates, exclude, 200),
     fetchPoolByAlignedWindow(fromDate, toDate, exclude, uploadedNavCount, 200),
+    fetchPoolByDateSpan(fromDate, toDate, exclude, 400),
     endpoint
       ? fetchPoolByEndpointLevels(endpoint.firstDate, endpoint.lastDate, endpoint.firstNav, endpoint.lastNav, exclude, 80)
       : Promise.resolve([] as FundInfo[]),
@@ -690,11 +834,20 @@ async function fetchPoolByNavDateRange(
     (Date.parse(toDate) - Date.parse(fromDate)) / 86_400_000 <= 90
       ? fetchPoolShareClassInWindow(fromDate, toDate, uploadedNavCount)
       : Promise.resolve([] as FundInfo[]),
+    fetchPoolWeeklyInWindow(fromDate, toDate, exclude, 400, uploadReturn),
   ])
 
-  const merged = mergeFundPools(shareClassRows, endpointRows, emailRows, teamRows, alignedRows, dateRows, navRows, groupRows)
-  console.log(`[similar-fund] date-range pool: ${groupRows.length} nav_group + ${navRows.length} nav + ${dateRows.length} shared-dates + ${alignedRows.length} aligned + ${endpointRows.length} endpoints + ${emailRows.length} email + ${teamRows.length} team + ${shareClassRows.length} share-class → ${merged.length} merged`)
-  return merged
+  const merged = mergeFundPools(shareClassRows, endpointRows, emailRows, teamRows, alignedRows, spanRows, dateRows, navRows, groupRows, weeklyRows)
+  let returnRows: FundInfo[] = []
+  if (uploadReturn != null && isFinite(uploadReturn) && merged.length < 800) {
+    returnRows = await Promise.race([
+      fetchPoolByWindowReturn(fromDate, toDate, exclude, uploadReturn, 120),
+      new Promise<FundInfo[]>((resolve) => setTimeout(() => resolve([]), 8_000)),
+    ]).catch(() => [] as FundInfo[])
+  }
+  const out = returnRows.length ? mergeFundPools(merged, returnRows) : merged
+  console.log(`[similar-fund] date-range pool: ${groupRows.length} nav_group + ${navRows.length} nav + ${dateRows.length} shared-dates + ${alignedRows.length} aligned + ${endpointRows.length} endpoints + ${emailRows.length} email + ${teamRows.length} team + ${shareClassRows.length} share-class + ${weeklyRows.length} weekly + ${returnRows.length} window-return → ${out.length} merged`)
+  return out
 }
 
 /** BFL A/B/C products are often missing from private_fund_info joins. */
@@ -1340,10 +1493,29 @@ function pairByExactDate(
   }
 }
 
+function nearestNavPoint(sorted: NavPoint[], tMs: number, maxGapMs: number): NavPoint | null {
+  let best: NavPoint | null = null
+  let bestGap = Infinity
+  for (const point of sorted) {
+    const gap = Math.abs(Date.parse(point.price_date) - tMs)
+    if (gap < bestGap) {
+      bestGap = gap
+      best = point
+    }
+    if (Date.parse(point.price_date) - tMs > maxGapMs) break
+  }
+  return best && bestGap <= maxGapMs ? best : null
+}
+
+/**
+ * Pair the sparser series onto the denser one. A 200-point chart vs weekly
+ * NAV must not attach 5 chart days to the same Friday (that zeros returns).
+ */
 function pairByNearestDate(
   targetPoints: NavPoint[],
   candidatePoints: NavPoint[],
   maxGapDays = 10,
+  valueFn: (p: NavPoint) => number = navValue,
 ): { targetVals: number[]; candidateVals: number[]; months: string[] } {
   const cSorted = [...candidatePoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
   const tSorted = [...targetPoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
@@ -1351,26 +1523,22 @@ function pairByNearestDate(
   const targetVals: number[] = []
   const candidateVals: number[] = []
   const months: string[] = []
-  for (const t of tSorted) {
-    const tMs = Date.parse(t.price_date)
-    if (!isFinite(tMs)) continue
-    let best: NavPoint | null = null
-    let bestGap = Infinity
-    for (const c of cSorted) {
-      const gap = Math.abs(Date.parse(c.price_date) - tMs)
-      if (gap < bestGap) {
-        bestGap = gap
-        best = c
-      }
-      if (Date.parse(c.price_date) - tMs > maxGapMs) break
-    }
-    if (!best || bestGap > maxGapMs) continue
-    const tv = navValue(t)
-    const cv = navValue(best)
+  const iterateTarget = tSorted.length <= cSorted.length * 1.35
+  const keys = iterateTarget ? tSorted : cSorted
+  const search = iterateTarget ? cSorted : tSorted
+  for (const key of keys) {
+    const keyMs = Date.parse(key.price_date)
+    if (!isFinite(keyMs)) continue
+    const other = nearestNavPoint(search, keyMs, maxGapMs)
+    if (!other) continue
+    const tPoint = iterateTarget ? key : other
+    const cPoint = iterateTarget ? other : key
+    const tv = valueFn(tPoint)
+    const cv = valueFn(cPoint)
     if (!isFinite(tv) || !isFinite(cv) || tv <= 0 || cv <= 0) continue
     targetVals.push(tv)
     candidateVals.push(cv)
-    months.push(t.price_date.slice(0, 7))
+    months.push(key.price_date.slice(0, 7))
   }
   return { targetVals, candidateVals, months: [...new Set(months)] }
 }
@@ -1399,31 +1567,7 @@ function pairByNearestDateUnitNav(
   candidatePoints: NavPoint[],
   maxGapDays = 10,
 ): { targetVals: number[]; candidateVals: number[]; months: string[] } {
-  const cSorted = [...candidatePoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
-  const tSorted = [...targetPoints].sort((a, b) => a.price_date.localeCompare(b.price_date))
-  const maxGapMs = maxGapDays * 86_400_000
-  const targetVals: number[] = []
-  const candidateVals: number[] = []
-  const months: string[] = []
-  for (const t of tSorted) {
-    const tMs = Date.parse(t.price_date)
-    if (!isFinite(tMs)) continue
-    let best: NavPoint | null = null
-    let bestGap = Infinity
-    for (const c of cSorted) {
-      const gap = Math.abs(Date.parse(c.price_date) - tMs)
-      if (gap < bestGap) { bestGap = gap; best = c }
-      if (Date.parse(c.price_date) - tMs > maxGapMs) break
-    }
-    if (!best || bestGap > maxGapMs) continue
-    const tv = navValueUnit(t)
-    const cv = navValueUnit(best)
-    if (!isFinite(tv) || !isFinite(cv) || tv <= 0 || cv <= 0) continue
-    targetVals.push(tv)
-    candidateVals.push(cv)
-    months.push(t.price_date.slice(0, 7))
-  }
-  return { targetVals, candidateVals, months: [...new Set(months)] }
+  return pairByNearestDate(targetPoints, candidatePoints, maxGapDays, navValueUnit)
 }
 
 function pairByMonthEnd(
@@ -1528,6 +1672,31 @@ function pairingReturnCorr(targetVals: number[], candidateVals: number[]): numbe
   return pearsonCorrelation(targetReturns, candidateReturns)
 }
 
+function pairingReturnN(targetVals: number[]): number {
+  return Math.max(0, targetVals.length - 1)
+}
+
+/** Ignore a 4-point Pearson of 1.00 when a 20-point pairing of 0.99 exists. */
+function pickDenseCorr(entries: Array<{ corr: number | null; n: number }>): number | null {
+  const ok = entries.filter((e): e is { corr: number; n: number } =>
+    e.corr != null && Number.isFinite(e.corr) && e.n >= 3)
+  if (!ok.length) return null
+  const maxN = Math.max(...ok.map((e) => e.n))
+  const minKeep = maxN >= 8 ? Math.max(6, Math.ceil(maxN * 0.4)) : 3
+  const pool = ok.filter((e) => e.n >= minKeep)
+  const use = pool.length ? pool : ok
+  let best = use[0]
+  let bestAdj = -Infinity
+  for (const e of use) {
+    const adj = e.corr * (0.5 + 0.5 * Math.min(1, e.n / Math.max(8, maxN)))
+    if (adj > bestAdj + 1e-9) {
+      bestAdj = adj
+      best = e
+    }
+  }
+  return best.corr
+}
+
 function bestPairingCorrelation(
   targetVals: number[],
   candidateVals: number[],
@@ -1540,6 +1709,18 @@ function bestPairingCorrelation(
 }
 
 /** OCR/收益曲线 is usually 1.00→1.1x. Do not let level-Pearson ≈ 1 vs any rising 固收 beat a real return match. */
+function seriesTotalReturn(points: NavPoint[]): number | null {
+  const vals = points.map((p) => navValue(p)).filter((v) => v > 0)
+  if (vals.length < 2 || !(vals[0] > 0)) return null
+  return vals[vals.length - 1] / vals[0] - 1
+}
+
+function seriesUnitTotalReturn(points: NavPoint[]): number | null {
+  const vals = points.map((p) => navValueUnit(p)).filter((v) => v > 0)
+  if (vals.length < 2 || !(vals[0] > 0)) return null
+  return vals[vals.length - 1] / vals[0] - 1
+}
+
 function isReturnIndexNav(points: NavPoint[]): boolean {
   const vals = points.map((p) => navValue(p)).filter((v) => v > 0)
   if (vals.length < 4) return false
@@ -1585,24 +1766,23 @@ function computeSimilarity(
   const exact = pairByExactDate(targetNav, candidateNav)
   const exactUnit = pairByExactDateUnit(targetNav, candidateNav)
   const unitNear = pairByNearestDateUnitNav(targetNav, candidateNav, 10)
+  const monthly = pairByMonthEnd(targetNav, candidateNav)
   const returnIndex = isReturnIndexNav(targetNav)
-  const corrs = returnIndex
+  const correlation = pickDenseCorr(returnIndex
     ? [
-      pearsonCorrelation(aligned.targetReturns, aligned.candidateReturns),
-      pairingReturnCorr(exact.targetVals, exact.candidateVals),
-      pairingReturnCorr(exactUnit.targetVals, exactUnit.candidateVals),
-      pairingReturnCorr(unitNear.targetVals, unitNear.candidateVals),
+      { corr: pearsonCorrelation(aligned.targetReturns, aligned.candidateReturns), n: aligned.targetReturns.length },
+      { corr: pairingReturnCorr(exact.targetVals, exact.candidateVals), n: pairingReturnN(exact.targetVals) },
+      { corr: pairingReturnCorr(exactUnit.targetVals, exactUnit.candidateVals), n: pairingReturnN(exactUnit.targetVals) },
+      { corr: pairingReturnCorr(unitNear.targetVals, unitNear.candidateVals), n: pairingReturnN(unitNear.targetVals) },
+      { corr: pairingReturnCorr(monthly.targetVals, monthly.candidateVals), n: pairingReturnN(monthly.targetVals) },
     ]
     : [
-      pearsonCorrelation(aligned.targetReturns, aligned.candidateReturns),
-      bestPairingCorrelation(exact.targetVals, exact.candidateVals),
-      bestPairingCorrelation(exactUnit.targetVals, exactUnit.candidateVals),
-      bestPairingCorrelation(unitNear.targetVals, unitNear.candidateVals),
-    ]
-  const correlation = corrs.filter((v): v is number => v != null).reduce<number | null>(
-    (best, v) => (best == null || v > best ? v : best),
-    null,
-  )
+      { corr: pearsonCorrelation(aligned.targetReturns, aligned.candidateReturns), n: aligned.targetReturns.length },
+      { corr: bestPairingCorrelation(exact.targetVals, exact.candidateVals), n: exact.targetVals.length },
+      { corr: bestPairingCorrelation(exactUnit.targetVals, exactUnit.candidateVals), n: exactUnit.targetVals.length },
+      { corr: bestPairingCorrelation(unitNear.targetVals, unitNear.candidateVals), n: unitNear.targetVals.length },
+      { corr: bestPairingCorrelation(monthly.targetVals, monthly.candidateVals), n: monthly.targetVals.length },
+    ])
   const overlapMonths = aligned.overlapMonths || exact.months.length || unitNear.months.length
   const metricScore = metricSimilarity(target, candidate)
   const levelResidual = unitLevelResidual(targetNav, candidateNav)
@@ -1787,6 +1967,12 @@ function formatOverlapPeriods(nav: NavPoint[]): string {
  */
 function dropScaleDiscontinuities(points: NavPoint[], upload: NavPoint[]): NavPoint[] {
   if (points.length < 4) return points
+  const units = points.map((p) => navValueUnit(p)).filter((v) => v > 0)
+  if (units.length >= 2) {
+    const lo = Math.min(...units)
+    const hi = Math.max(...units)
+    if (lo > 0 && hi / lo < 1.4) return points
+  }
   const sorted = [...points].sort((a, b) => a.price_date.localeCompare(b.price_date))
   const cuts = [0]
   for (let i = 1; i < sorted.length; i++) {
@@ -2012,6 +2198,17 @@ export async function POST(req: Request) {
       if (uploaded.length > 0) {
         try {
           materials = await parseSimilarFundMaterials(uploaded)
+          const chartLike = materials.files.some((f) => f.kind === "chart")
+          if (chartLike && materials.navSeries.length >= 16 && materials.navSeries.length < 80) {
+            materials = {
+              ...materials,
+              navSeries: extendChartPastLastAxisTick(downsampleInterpolatedChartNav(materials.navSeries)),
+            }
+          }
+          console.log(
+            "[similar-fund] upload nav",
+            materials.navSeries.map((p) => `${p.price_date}:${Number(p.nav).toFixed(4)}`).join(" "),
+          )
         } catch (err) {
           emit({ type: "plan_text", content: `材料解析出错：${(err as Error).message}` })
         }
@@ -2075,9 +2272,16 @@ export async function POST(req: Request) {
             }
           }
         }
-        const materialBit = materials
-          ? `；材料 ${materials.files.length} 份，提取净值 ${materials.navSeries.length} 点`
-          : ""
+        const materialBit = (() => {
+          if (!materials) return ""
+          const n = materials.navSeries.length
+          const first = materials.navSeries[0]?.price_date?.slice(0, 10)
+          const last = materials.navSeries[n - 1]?.price_date?.slice(0, 10)
+          const ret = seriesTotalReturn(materials.navSeries)
+          const retBit = ret != null && Number.isFinite(ret) ? `，${ret >= 0 ? "+" : ""}${(ret * 100).toFixed(1)}%` : ""
+          const spanBit = first && last ? `（${first}~${last}${retBit}）` : ""
+          return `；材料 ${materials.files.length} 份，提取净值 ${n} 点${spanBit}`
+        })()
         const unidentified = target?.beian_hao === "UPLOAD"
         emit({
           type: "step_done", step: 1,
@@ -2132,13 +2336,25 @@ export async function POST(req: Request) {
           ? { firstDate: chartStart, lastDate: chartEnd, firstNav: firstUnit, lastNav: lastUnit }
           : undefined
         const hasUploadNav = Boolean(materials && materials.navSeries.length >= 4 && chartStart && chartEnd)
+        const uploadRet = hasUploadNav ? seriesTotalReturn(materials!.navSeries) : null
         if (hasUploadNav) {
-          pools.push(await withTimeout(
-            fetchPoolByNavDateRange(chartStart!, chartEnd!, exclude, 600, materials?.navSeries.length ?? 0, materials?.navSeries.map((p) => p.price_date) ?? [], endpoint),
-            50_000,
-            [] as FundInfo[],
-            "fetchDateRangePool",
-          ))
+          const uploadDates = materials!.navSeries.map((p) => p.price_date.slice(0, 10))
+          const weeklyMinHits = Math.max(3, Math.ceil(Math.min(uploadDates.length, 12) * 0.8))
+          const [rangePool, weeklyPool] = await Promise.all([
+            withTimeout(
+              fetchPoolByNavDateRange(chartStart!, chartEnd!, exclude, 600, materials?.navSeries.length ?? 0, uploadDates, endpoint, uploadRet ?? undefined),
+              80_000,
+              [] as FundInfo[],
+              "fetchDateRangePool",
+            ),
+            withTimeout(
+              fetchPoolWeeklySharedDates(uploadDates, exclude, weeklyMinHits, 400),
+              25_000,
+              [] as FundInfo[],
+              "weeklySharedPool",
+            ),
+          ])
+          pools.push(mergeFundPools(rangePool, weeklyPool))
           labels.push("按净值曲线日期范围检索有净值产品")
         } else if (pools.every((p) => p.length === 0)) {
           pools.push(await fetchRecentNavPool(exclude, 250, chartStart))
@@ -2188,7 +2404,7 @@ export async function POST(req: Request) {
             ? { firstDate: fStart, lastDate: fEnd, firstNav: fFirst, lastNav: fLast }
             : undefined
           candidates = isCurve && fStart && fEnd
-            ? await fetchPoolByNavDateRange(fStart, fEnd, exclude, 600, materials?.navSeries.length ?? 0, materials?.navSeries.map((p) => p.price_date) ?? [], fEndpoint)
+            ? await fetchPoolByNavDateRange(fStart, fEnd, exclude, 600, materials?.navSeries.length ?? 0, materials?.navSeries.map((p) => p.price_date) ?? [], fEndpoint, seriesTotalReturn(materials?.navSeries ?? []) ?? undefined)
             : await fetchRecentNavPool(exclude, 250, fStart)
         } catch (err) {
           console.warn("[similar-fund] fallback pool failed", err)
@@ -2294,20 +2510,39 @@ export async function POST(req: Request) {
           scored.push({ ...result, fund: candidateWithRisk, nav: statsNav })
         }
 
-        topSimilar = scored
+        const uploadMonths = new Set(targetNav.map((p) => p.price_date.slice(0, 7))).size
+        const minOverlap = curveOnly && uploadMonths >= 6
+          ? Math.max(4, Math.ceil(uploadMonths * 0.5))
+          : 2
+        const uploadRet = seriesTotalReturn(targetNav)
+        const returnIndexUpload = isReturnIndexNav(targetNav)
+        type Scored = SimilarityResult & { fund: FundInfo; nav: NavPoint[]; candRet: number | null; adj: number }
+        const coverAdj = (r: { correlation: number | null; overlapMonths: number; nav: NavPoint[]; candRet?: number | null }) => {
+          const cov = r.overlapMonths / Math.max(uploadMonths, 1)
+          const base = (r.correlation ?? -1) * (0.35 + 0.65 * Math.min(1, cov))
+          if (!returnIndexUpload || uploadRet == null || !isFinite(uploadRet)) return base
+          const cand = r.candRet ?? seriesUnitTotalReturn(r.nav)
+          if (cand == null || !isFinite(cand)) return base * 0.92
+          return base / (1 + Math.abs(cand - uploadRet) * 2)
+        }
+        const ranked: Scored[] = scored.map((r) => {
+          const candRet = seriesUnitTotalReturn(r.nav) ?? seriesTotalReturn(r.nav)
+          return { ...r, candRet, adj: coverAdj({ ...r, candRet }) }
+        })
+        topSimilar = ranked
           .filter((r) => {
             if (curveOnly) {
-              return r.correlation !== null && r.correlation > 0.25 && r.navPoints >= 4
+              return r.correlation !== null && r.correlation > 0.25 && r.navPoints >= 4 && r.overlapMonths >= minOverlap
             }
             return r.score > 0
           })
           .sort((a, b) => {
+            const adjDiff = a.adj - b.adj
+            // A 3-month 0.99 must not beat a 9-month 0.85 path match (chart OCR).
+            if (Math.abs(adjDiff) > 0.002) return b.adj - a.adj
             const ca = a.correlation ?? -1
             const cb = b.correlation ?? -1
             const corrDiff = cb - ca
-            // Chart month-ends vs weekly NAV rarely share exact dates. Do not
-            // bury a 0.91 return match under a 0.99 level-Pearson with more
-            // exact calendar hits.
             if (Math.abs(corrDiff) > 0.002) return corrDiff
             const uploadN = targetNav.length
             const confA = confidentCurveOverlap(uploadN, a.alignedExact)
@@ -2526,8 +2761,8 @@ ${allowedList}
         const systemPrompt = `你是专业私募基金研究员，擅长基金相似性分析和投资策略研究。
 请生成"${reportSubject}"的相似基金分析报告，格式要求：
 - Markdown格式，使用#/##/###标题层级
+- 不要再输出标题或排名总览表（系统已给出）。从执行摘要写起。
 - 执行摘要（最相似基金结论、1-2句核心发现）
-- 相似度排名总览表（只能包含白名单基金：名称/备案号/相关性必须与输入一致）
 - 逐一分析白名单中的相似基金（相似点、差异点）
 - 最相似基金深度剖析
 - 投资建议（配置价值、替代/互补关系）
@@ -2542,13 +2777,37 @@ ${allowedList}
 - 净值记录数来自本次合并拉取。禁止把 0 条写成「尚未披露历史净值」。
 - 「区间不足」表示该近N月窗口长于重叠区间，照抄「区间不足」，禁止用更长历史填数。`
 
+        const uploadCurveLine = targetNav.length
+          ? `识别曲线：${targetNav.map((p) => {
+            const v = navValue(p)
+            return `${p.price_date} ${Number.isFinite(v) ? ((v - 1) * 100).toFixed(1) + "%" : "?"}`
+          }).join(" · ")}`
+          : ""
+        const rankTable = [
+          `# 相似基金分析报告：${unnamedUpload ? "上传净值曲线产品" : reportSubject}`,
+          "",
+          "## 相似度排名（系统计算）",
+          "",
+          ...(uploadCurveLine ? [uploadCurveLine, ""] : []),
+          "| 排名 | 产品名称 | 备案号 | 相关性 | 重叠月数 |",
+          "| --- | --- | --- | --- | --- |",
+          ...topSimilar.map((r, idx) => {
+            const corr = r.correlation != null ? r.correlation.toFixed(3) : "N/A"
+            return `| ${idx + 1} | ${r.fund.product_name} | ${r.fund.beian_hao} | ${corr} | ${r.overlapMonths} |`
+          }),
+          "",
+          "上表由净值/收益曲线相关性直接计算，下面是基于该名单的文字分析。",
+          "",
+        ].join("\n")
+        emit({ type: "report_text", delta: rankTable })
+
         const reportModel = getChatModel(true)
         const reportStream = await reportModel.stream([
           new SystemMessage(systemPrompt),
           new HumanMessage(userPrompt),
         ])
 
-        let reportLength = 0
+        let reportLength = rankTable.length
         for await (const chunk of reportStream) {
           const delta = typeof chunk.content === "string" ? chunk.content : ""
           if (delta) { emit({ type: "report_text", delta }); reportLength += delta.length }

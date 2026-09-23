@@ -79,6 +79,14 @@ export function normalizeFundDisplayName(raw: string): string {
   return `${base}${shareClass}`
 }
 
+/** Same product after dropping 全称 / 份额 / A类, so a rename does not look like a short name. */
+function displayNameKey(label: string): string {
+  return label
+    .replace(/[ABC]类(?:份额)?$/u, "")
+    .replace(/\s+/gu, "")
+    .replace(/份额$/u, "")
+}
+
 function toDisplayLabel(raw: string): string {
   // Drop 估值表 subject-path prefixes (场外_已上市_开放式_私募_…) before legal cleanup.
   const withoutSubjectPath = stripValuationSubjectPathPrefix(raw) || raw
@@ -97,12 +105,16 @@ export function resolveFundDisplayLabel(
   shortName: string | null | undefined,
   productName: string,
 ): string {
+  const productLabel = toDisplayLabel((productName ?? "").trim())
+  const shortLabel = toDisplayLabel((shortName ?? "").trim())
+  const labels = [productLabel, shortLabel].filter(Boolean)
+  if (labels.length === 0) return ""
+  const productKey = displayNameKey(productLabel)
+  const shortKey = displayNameKey(shortLabel)
+  // A rename (兰盈中性增强 vs 兰盈俱乐部3号) is not a full-name/short-name pair.
+  // Keep product_name: list and detail APIs put the AMAC official name there.
+  if (productKey && shortKey && productKey !== shortKey) return productLabel
   // Prefer product_name first for equal-length ties — in several list APIs it is
   // already the shorter/display name while short_name holds the full legal name.
-  const labels = [productName, shortName]
-    .map((v) => (v ?? "").trim())
-    .filter(Boolean)
-    .map(toDisplayLabel)
-  if (labels.length === 0) return ""
   return labels.reduce((a, b) => (a.length <= b.length ? a : b))
 }

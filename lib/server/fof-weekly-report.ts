@@ -5,7 +5,8 @@ import { mkdir, readFile, readdir, writeFile } from "fs/promises"
 import path from "path"
 import { promisify } from "util"
 import { query } from "@/lib/db"
-import { findCustomFundByName, getCustomFundByCode } from "@/lib/server/custom-funds"
+import { findCustomFundByName, getCustomFundByCode, type CustomFundRecord } from "@/lib/server/custom-funds"
+import { loadResolvedFundStrategies } from "@/lib/server/fund-strategy-resolve"
 import { listCustomFundNavRows } from "@/lib/server/custom-fund-nav"
 import { generateCustomFundNavFromRule } from "@/lib/server/custom-fund-nav-generate"
 import { getCustomFundNavGenerationRule } from "@/lib/server/custom-fund-nav-rules"
@@ -83,6 +84,57 @@ function normalizeNavFrequency(value: string | undefined): FofWeeklyNavFrequency
   const freq = (value ?? "weekly").trim().toLowerCase()
   if (freq === "daily" || freq === "monthly") return freq
   return "weekly"
+}
+
+/** Old curve-report default. It labeled every product as 强势股, including FOF. */
+const LEGACY_STRONG_STOCK_TAGLINE = "低波动 · 稳健运作 · 强势股策略"
+
+/** Short phrase for the header tagline and 本周/本月要点. FOF products stay FOF. */
+export function reportStrategyPhrase(
+  productNames: Array<string | null | undefined>,
+  levels: Array<string | null | undefined>,
+): string {
+  const names = productNames.map((value) => value?.trim() ?? "").filter(Boolean)
+  const values = levels.map((value) => value?.trim() ?? "").filter((value) => value && value !== "未分类")
+  if (names.some((name) => /fof/i.test(name)) || values.some((value) => /fof/i.test(value))) {
+    return "FOF策略"
+  }
+  const specific = [...values].reverse().find(Boolean)
+  if (!specific) return "策略"
+  return specific.endsWith("策略") ? specific : `${specific}策略`
+}
+
+export function reportProductTagline(strategyPhrase: string, override?: string | null): string {
+  const custom = override?.trim() ?? ""
+  if (custom && custom !== LEGACY_STRONG_STOCK_TAGLINE) return custom
+  return `低波动 · 稳健运作 · ${strategyPhrase}`
+}
+
+export async function resolveReportStrategyPhrase(
+  beianHao: string,
+  productNames: Array<string | null | undefined>,
+  customFund?: CustomFundRecord | null,
+): Promise<string> {
+  if (customFund) {
+    const team = [customFund.team_strategy_l1, customFund.team_strategy_l2, customFund.team_strategy_l3]
+    const platform = [
+      customFund.platform_strategy_l1,
+      customFund.platform_strategy_l2,
+      customFund.platform_strategy_l3,
+    ]
+    const levels = team.some((value) => value?.trim()) ? team : platform
+    return reportStrategyPhrase([...productNames, customFund.product_name], levels)
+  }
+  try {
+    const resolved = await loadResolvedFundStrategies(beianHao)
+    return reportStrategyPhrase(
+      [...productNames, resolved.product_name],
+      [resolved.team.l1, resolved.team.l2, resolved.team.l3],
+    )
+  } catch (err) {
+    console.warn("[fof-weekly-report] strategy lookup failed:", err)
+    return reportStrategyPhrase(productNames, [])
+  }
 }
 
 export type FofWeeklyReportResult = {
@@ -838,7 +890,12 @@ export async function generateFofWeeklyReport(
   await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
 
   const reportTitle = (input.report_title || names.product_name).trim()
-  const productTagline = (input.product_tagline || "低波动 · 稳健运作 · 强势股策略").trim()
+  const strategyPhrase = await resolveReportStrategyPhrase(
+    beian_hao,
+    [names.product_name, names.short_name, product_name, reportTitle],
+    customFund,
+  )
+  const productTagline = reportProductTagline(strategyPhrase, input.product_tagline)
   const pythonStartedAt = Date.now()
   const { executable: pythonExe, prefixArgs } = await findPython(SCRIPT_DIR)
   console.log(
@@ -861,6 +918,8 @@ export async function generateFofWeeklyReport(
     reportTitle,
     "--product-tagline",
     productTagline,
+    "--strategy-label",
+    strategyPhrase,
     "--benchmark-label",
     benchLabel,
     "--nav-frequency",

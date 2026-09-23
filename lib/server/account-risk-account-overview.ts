@@ -4,7 +4,11 @@
  */
 import { publicQuery } from "@/lib/db"
 import { toNum } from "@/lib/server/account-risk-classify"
-import { countedEquityPathPnl } from "@/lib/server/account-risk-nav"
+import {
+  aggregateEquityByDate,
+  compoundAccountRiskNav,
+  countedEquityPathPnl,
+} from "@/lib/server/account-risk-nav"
 import { productNameFromClientLabel } from "@/lib/server/account-risk-product-elements"
 import { scopeWhere } from "@/lib/server/account-risk-scope"
 
@@ -21,6 +25,8 @@ export type AccountOverviewRow = {
   riskPct: number | null
   unilateralRiskPct: number | null
   commission: number | null
+  /** Compounded unit NAV (starts at 1), same formula as the 净值曲线 chart. */
+  nav: number[]
 }
 
 function clean(value: string | null | undefined): string {
@@ -50,7 +56,77 @@ function asUnilateralPct(longMargin: number, shortMargin: number, margin: number
   return 0
 }
 
+const SPARKLINE_POINTS = 96
+
+/** Keep endpoints so the cell still shows the true start and latest NAV. */
+function downsampleNav(values: number[], maxPoints = SPARKLINE_POINTS): number[] {
+  if (values.length <= maxPoints) return values
+  const last = values.length - 1
+  const out: number[] = []
+  for (let i = 0; i < maxPoints; i++) {
+    out.push(values[Math.round((i * last) / (maxPoints - 1))])
+  }
+  return out
+}
+
+async function loadNavSeriesByAccount(): Promise<Map<string, number[]>> {
+  const params: unknown[] = []
+  const scoped = scopeWhere(params)
+  const result = await publicQuery(
+    `
+    SELECT account_no,
+           trade_date::text AS date,
+           COALESCE(client_equity, 0) AS client_equity,
+           COALESCE(daily_pnl, 0) AS daily_pnl,
+           COALESCE(deposit_wd, 0) AS deposit_wd
+    FROM public.cfmmc_daily_summary
+    WHERE ${scoped}
+    ORDER BY account_no ASC, trade_date ASC
+    `,
+    params,
+  )
+  const byAccount = new Map<string, Array<{
+    date: string
+    client_equity: unknown
+    daily_pnl: unknown
+    deposit_wd: unknown
+  }>>()
+  for (const row of result.rows as Array<{
+    account_no: string
+    date: string
+    client_equity: unknown
+    daily_pnl: unknown
+    deposit_wd: unknown
+  }>) {
+    const account = String(row.account_no ?? "").trim()
+    if (!account) continue
+    const list = byAccount.get(account)
+    const point = {
+      date: row.date,
+      client_equity: row.client_equity,
+      daily_pnl: row.daily_pnl,
+      deposit_wd: row.deposit_wd,
+    }
+    if (list) list.push(point)
+    else byAccount.set(account, [point])
+  }
+  const out = new Map<string, number[]>()
+  for (const [account, days] of byAccount) {
+    const series = compoundAccountRiskNav(aggregateEquityByDate(days))
+    out.set(account, downsampleNav(series.map((point) => point.nav)))
+  }
+  return out
+}
+
 export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
+  const [rows, navByAccount] = await Promise.all([
+    loadAccountOverviewSnapshots(),
+    loadNavSeriesByAccount(),
+  ])
+  return rows.map((row) => ({ ...row, nav: navByAccount.get(row.accountNo) ?? [] }))
+}
+
+async function loadAccountOverviewSnapshots(): Promise<Omit<AccountOverviewRow, "nav">[]> {
   const params: unknown[] = []
   const scoped = scopeWhere(params)
   const result = await publicQuery(

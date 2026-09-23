@@ -936,6 +936,7 @@ export async function fetchCfmmcAccount(
     downloaded?: number
     skipped?: number
     discarded?: number
+    beginDate?: string | null
     haveToday?: boolean
     error?: string
   }) => {
@@ -947,9 +948,10 @@ export async function fetchCfmmcAccount(
       const book = attachFetchedFiles(account, result.files ?? (result.filename ? [result.filename] : []))
       bookId = book?.id
       const discardedBit = result.discarded ? `，无结算/日期不符 ${result.discarded}` : ""
+      const beginBit = result.beginDate ? `，结算起始日 ${result.beginDate}` : ""
       appendJobLog(
         "fetch",
-        `账户「${account.label || account.userId}」现有 ${book?.files.length ?? 0} 个文件（新下载 ${result.downloaded ?? result.files?.length ?? 0}，磁盘已有 ${result.skipped ?? 0}${discardedBit}）`,
+        `账户「${account.label || account.userId}」现有 ${book?.files.length ?? 0} 个文件（新下载 ${result.downloaded ?? result.files?.length ?? 0}，磁盘已有 ${result.skipped ?? 0}${discardedBit}${beginBit}）`,
       )
     }
     if (idx >= 0) {
@@ -995,19 +997,19 @@ export async function fetchCfmmcAccount(
   const args = [script, "--out-dir", outDir]
   const incremental = mode !== "history"
   if (mode === "history") {
-    args.push("--history", "--days", "65")
+    args.push("--history")
   } else {
     args.push("--incremental", "--days", "10")
     const since = latestCfmmcFileDate(account.userId)
     if (since) args.push("--since", since)
   }
-  appendJobLog("fetch", `开始获取 ${account.label || account.userId}（${incremental ? "增量" : "全部历史"}，Python ${python}）…`)
+  appendJobLog("fetch", `开始获取 ${account.label || account.userId}（${incremental ? "增量" : "从账户最早结算日"}，Python ${python}）…`)
   try {
     const { stdout } = await runPythonLogged(
       python,
       args,
       cfmmcFetchEnv(account),
-      mode === "history" ? 1_200_000 : 600_000,
+      mode === "history" ? 5_400_000 : 600_000,
     )
     return finish(applyResult(parseJsonLine(stdout)))
   } catch (e) {
