@@ -16,6 +16,7 @@ import {
   sqlPostInvestmentVirtualNavExpr,
 } from "@/lib/server/email-nav-query"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
+import { buildTieredBeianCode, type ShareClassLetter } from "@/lib/server/share-class-product"
 import { expandBeiansWithShareClassFamily } from "@/lib/server/list-cache-nav-batch"
 import {
   canonicalizeEmailProductCode,
@@ -564,8 +565,9 @@ const EMAIL_FUNDS_SORT: Record<string, string> = {
 function fundNameBase(name: string): string {
   return name
     .trim()
-    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/, "")
-    .replace(/[ABC]类$/, "")
+    .replace(/[ABC]类份额$/u, "")
+    .replace(/[ABC]类$/u, "")
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
     .trim()
 }
 
@@ -675,7 +677,18 @@ function shareClassCodeGuard(code: string | null | undefined, productName: strin
   if (!cls) return true
   const c = (code ?? "").trim().toUpperCase()
   if (!c) return true
-  return c.endsWith(cls)
+  if (c.endsWith(cls)) return true
+  // Parent filing (SGT288) can back 卓尚天道1号A类; the code is tiered later.
+  return !/[ABC]$/u.test(c)
+}
+
+/** SGT288 + A类 → GT288A. Leave codes that already end in A/B/C unchanged. */
+function tierParentBeian(code: string | null, productName: string): string | null {
+  if (!code) return null
+  const cls = shareClassFromFundName(productName)
+  const c = code.trim().toUpperCase()
+  if (!cls || /[ABC]$/u.test(c)) return c
+  return buildTieredBeianCode(c, cls as ShareClassLetter)
 }
 
 function cleanEmailFundName(raw: string | null): string | null {
@@ -698,7 +711,9 @@ function nameCandidate(row: RawEmailFund): string {
 }
 
 function codeMatchesShareClass(code: string, name: string): boolean {
-  return shareClassCodeGuard(code, name)
+  const cls = shareClassFromFundName(name)
+  if (!cls) return true
+  return code.trim().toUpperCase().endsWith(cls)
 }
 
 function dedupeKey(row: RawEmailFund): string {
@@ -717,7 +732,11 @@ function displayProductName(
 ): string {
   const canonical = lookupName?.trim() || candidate
   if (/[ABC]类/u.test(canonical)) return canonical
-  return lookupShort?.trim() || canonical
+  const short = lookupShort?.trim()
+  if (short && /[ABC]类/u.test(short)) return short
+  const cls = shareClassFromFundName(candidate)
+  if (cls && canonical && !/[ABC]类/u.test(canonical)) return `${canonical}${cls}类`
+  return short || canonical
 }
 
 function bestNamedMatchFromRows(rows: NamedFundRow[], candidate: string): NamedFundRow | null {
@@ -1629,7 +1648,10 @@ function resolveFund(
   ) {
     managedBeian = identityBeian
   }
-  const beian_hao = (overrideBeian ?? managedBeian)?.trim() || null
+  const beian_hao = tierParentBeian(
+    (overrideBeian ?? managedBeian)?.trim() || null,
+    /[ABC]类/u.test(product_name) ? product_name : candidate,
+  )
 
   const fromT6 = strategiesFromRow(t6, strategySource)
   const fromBfl = strategiesFromRow(bfl, strategySource)
@@ -2459,6 +2481,45 @@ async function loadBeiansWithFundElements(beians: string[]): Promise<Set<string>
   return new Set(rows.map((r) => (r.code || "").trim()).filter(Boolean))
 }
 
+/** Header search reads private_fund_info; team-data identity tables do not. */
+async function fillBeianFromPrivateFundInfo(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
+  const missing = rows.filter((r) => !r.beian_hao?.trim() && fundNameBase(r.product_name).length >= 4)
+  if (missing.length === 0) return rows
+  const patterns = [...new Set(missing.map((r) => `%${fundNameBase(r.product_name)}%`))]
+  const hits = await query<{ beian_hao: string; product_name: string }>(
+    `SELECT beian_hao, product_name
+     FROM private_fund_info
+     WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+       AND NULLIF(BTRIM(product_name), '') IS NOT NULL
+       AND product_name ILIKE ANY($1::text[])`,
+    [patterns],
+  ).catch(() => [] as Array<{ beian_hao: string; product_name: string }>)
+  if (hits.length === 0) return rows
+
+  return rows.map((row) => {
+    if (row.beian_hao?.trim()) return row
+    let best: { beian_hao: string; product_name: string } | null = null
+    let bestScore = Infinity
+    for (const hit of hits) {
+      if (!fundNamesMatch(hit.product_name, row.product_name)) continue
+      if (!shareClassCodeGuard(hit.beian_hao, row.product_name)) continue
+      const score = matchPriority(hit.product_name, row.product_name)
+      if (score < bestScore) {
+        bestScore = score
+        best = hit
+      }
+    }
+    const beian = tierParentBeian(best?.beian_hao ?? null, row.product_name)
+    if (!beian) return row
+    return {
+      ...row,
+      id: beian,
+      beian_hao: beian,
+      search_codes: collectSearchCodes(beian, ...(row.search_codes ?? [])),
+    }
+  })
+}
+
 export async function listTeamData(params: TeamDataListParams): Promise<{
   data: TeamDataListRow[]
   total: number
@@ -2495,6 +2556,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
       loadIdentityTables(),
     ])
     resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
+    resolved = await fillBeianFromPrivateFundInfo(resolved)
     resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
     resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
     resolved = await overlayEmailNavByProductCode(resolved)

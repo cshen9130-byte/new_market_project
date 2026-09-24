@@ -10,6 +10,7 @@ import {
   isBogusYearProductCode,
   isPlausibleEmailProductCode,
   shareClassProductCodesMatch,
+  stripShareClassFromProductCode,
   sqlFundNameMatch,
   sqlShareClassParentCodeMatch,
 } from "@/lib/server/fund-name-match"
@@ -348,6 +349,62 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   const prevHasBeian = beian && `${current.attachment_filename ?? ""}${current.subject ?? ""}`.toUpperCase().includes(beian)
   if (rowHasBeian && !prevHasBeian) return candidate
   return current
+}
+
+function metaDeclaresShareClass(meta: string): "A" | "B" | "C" | null {
+  if (/A类/u.test(meta)) return "A"
+  if (/B类/u.test(meta)) return "B"
+  if (/C类/u.test(meta)) return "C"
+  return null
+}
+
+/**
+ * Share-class TA虚拟净值 often stores 累计 = 单位 (investor virtual unit only).
+ * The parent 资产净值公告 on the same date can still have the real dividend gap
+ * at the same unit (NW169B: virtual 1.063/1.063 vs 公告 1.063/1.436).
+ *
+ * Borrow that 累计 only when units match. SNF018 stays on virtual: its attachment
+ * unit is the cumulative scale, so the units do not match and virtual keeps its
+ * own separated cum.
+ */
+function borrowSameUnitParentCumulative(
+  best: EmailNavRawRow,
+  dayFiltered: EmailNavRawRow[],
+  beian: string,
+  aliases: string[],
+): EmailNavRawRow {
+  const unit = emailRowEffectiveUnitNav(best)
+  const cum = parseOptionalNav(best.cumulative_nav)
+  if (unit == null) return best
+  if (cum != null && hasDividendOffset(unit, cum) && isPlausibleEmailCumulativeNav(unit, cum)) {
+    return best
+  }
+
+  const targetLetter = targetShareClassLetter(beian, aliases)
+  let donor: EmailNavRawRow | null = null
+  for (const row of dayFiltered) {
+    if (row === best) continue
+    const donorUnit = emailRowEffectiveUnitNav(row)
+    const donorCum = parseOptionalNav(row.cumulative_nav)
+    if (donorUnit == null || donorCum == null) continue
+    if (Math.abs(donorUnit - unit) > 0.0001) continue
+    if (!hasDividendOffset(donorUnit, donorCum)) continue
+    if (!isPlausibleEmailCumulativeNav(donorUnit, donorCum)) continue
+
+    const meta = `${row.fund_name ?? ""} ${row.subject ?? ""} ${row.attachment_filename ?? ""}`
+    const donorLetter = metaDeclaresShareClass(meta)
+    if (targetLetter && donorLetter && donorLetter !== targetLetter) continue
+    if (!targetLetter && donorLetter) continue
+
+    const donorCode = (row.product_code ?? "").trim().toUpperCase()
+    if (donorCode && beian && !shareClassProductCodesMatch(donorCode, beian)) continue
+
+    if (!donor || (emailRowHasAttachmentDividendOffset(row) && !emailRowHasAttachmentDividendOffset(donor))) {
+      donor = row
+    }
+  }
+  if (!donor) return best
+  return { ...best, cumulative_nav: donor.cumulative_nav, adjusted_nav: null }
 }
 
 /**
@@ -773,6 +830,7 @@ export function selectEmailNavSeriesRows(
       best = preferEmailNavRow(best, dayRows[i], beian)
     }
     best = pickEmailNavRowWithContinuity(dayRows, best, beian, prevNav, aClass)
+    best = borrowSameUnitParentCumulative(best, dayFiltered, beian, aliases)
     const recovered = recoverPlausibleEmailUnitNav(
       parseOptionalNav(best.nav),
       parseOptionalNav(best.cumulative_nav),
@@ -1140,7 +1198,9 @@ async function queryEmailNavManageRawRows(
   await ensureEmailNavTable()
   const aliases = collectFundNameAliases(productName, shortName, extraNames)
   const beian = emailCodeLookupKey(beianHao ?? "")
-  const codeAliases = beian ? alternateBeianCodesFor(beian) : []
+  const codeAliases = beian
+    ? [...new Set([...alternateBeianCodesFor(beian), ...shareClassParentLookupCodes(beian)])]
+    : []
 
   return query<EmailNavRawRowWithId>(
     `SELECT e.id::text AS id, e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
@@ -1240,6 +1300,17 @@ export async function loadEmailNavManageRows(
   }))
 }
 
+/** Parent 备案号 variants for an A/B/C code (NW169B → NW169, SNW169). */
+function shareClassParentLookupCodes(beian: string): string[] {
+  const code = beian.trim().toUpperCase()
+  if (!/[ABC]$/u.test(code)) return []
+  const stripped = stripShareClassFromProductCode(code)
+  if (!stripped || stripped === code) return []
+  const baseNoS = stripped.startsWith("S") ? stripped.slice(1) : stripped
+  const baseWithS = stripped.startsWith("S") ? stripped : `S${stripped}`
+  return [...new Set([baseNoS, baseWithS].filter((c) => c && c !== code))]
+}
+
 export async function loadEmailNavSeries(
   beianHao: string,
   productName: string,
@@ -1249,7 +1320,9 @@ export async function loadEmailNavSeries(
   await ensureEmailNavTable()
   const aliases = collectFundNameAliases(productName, shortName, extraNames)
   const beian = emailCodeLookupKey(beianHao ?? "")
-  const codeAliases = beian ? alternateBeianCodesFor(beian) : []
+  const codeAliases = beian
+    ? [...new Set([...alternateBeianCodesFor(beian), ...shareClassParentLookupCodes(beian)])]
+    : []
 
   const rows = await query<EmailNavRawRow>(
     `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
@@ -2312,7 +2385,20 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
     const staleAdj = adj != null && prevAdj != null && unitRet > 0.001 && adjRet < 0.0001
     const staleCum = cum != null && prevCum != null && unitRet > 0.001 && cumRet < 0.0001
     const spikeAdj = adj != null && prevAdj != null && (adj / prevAdj > 1.3 || adj / prevAdj < 0.7)
-    const spikeCum = cum != null && prevCum != null && (cum / prevCum > 1.3 || cum / prevCum < 0.7)
+    let spikeCum = cum != null && prevCum != null && (cum / prevCum > 1.3 || cum / prevCum < 0.7)
+    // A collapsed prior cum (unit == cum) makes the next real dividend gap look like a spike.
+    // Keep the gap (NW169B 1.024 / 1.397 after a 1.023 / 1.023 legacy row).
+    if (
+      spikeCum
+      && unit != null
+      && cum != null
+      && prevUnit != null
+      && prevCum != null
+      && !hasDividendOffset(prevUnit, prevCum)
+      && hasDividendOffset(unit, cum)
+    ) {
+      spikeCum = false
+    }
     const unreasonableAdj = adj != null && !isReasonableNav(adj)
     const unreasonableCum = cum != null && !isReasonableNav(cum)
 
@@ -2682,6 +2768,25 @@ export function mergeNavSeriesWithEmail(
         })()
       ) {
         // Post-dividend email confirmed unit only — legacy cum/adj may be collapsed or stale.
+        updated.cumulative_nav = ""
+        unitOnlyEmailDates.add(row.price_date)
+      } else if (
+        resolvedCum == null
+        && (() => {
+          const existingCum = parseOptionalNav(existing.cum_nav_withdrawal)
+          if (existingCum != null && hasDividendOffset(resolvedUnitNav, existingCum)) return false
+          return Array.from(byDate.values()).some((prior) => {
+            if (prior.price_date >= row.price_date) return false
+            const priorUnit = parseOptionalNav(prior.nav)
+            const priorCum = parseOptionalNav(prior.cum_nav_withdrawal)
+            return priorUnit != null && priorCum != null && hasDividendOffset(priorUnit, priorCum)
+          })
+        })()
+      ) {
+        // Earlier row still has the dividend gap, but this legacy cum was copied from unit
+        // (NW169B HY / virtual). Clear it so the forward rechain restores the gap. Do not
+        // do this when this row's own cum is already a real gap.
+        updated.cum_nav_withdrawal = ""
         updated.cumulative_nav = ""
         unitOnlyEmailDates.add(row.price_date)
       } else if (emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {

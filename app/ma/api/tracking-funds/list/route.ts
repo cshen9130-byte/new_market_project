@@ -22,7 +22,7 @@ import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import { purgeValuationFilenameIdentities, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
-import { expandFundSearchKeywords, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
+import { expandFundSearchKeywords, sqlFundNameKey, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import { cleanValuationDerivedFundName, isValuationReportTitle } from "@/lib/server/valuation-filename"
 
@@ -66,6 +66,7 @@ declare global {
   var _trackingListAmacNameCacheBustV1: boolean | undefined
   var _trackingListValuationFilenameCacheBustV1: boolean | undefined
   var _trackingListValuationFilenameCacheBustV2: boolean | undefined
+  var _trackingListNameAliasDedupeV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -509,20 +510,32 @@ function buildCachedFromClause(
 ): string {
   if (pool === "all") {
     return `FROM (
-      SELECT
-        f.beian_hao,
-        (ARRAY_AGG(f.product_name ORDER BY
-          CASE
-            WHEN UPPER(BTRIM(f.product_name)) = UPPER(BTRIM(f.beian_hao)) THEN 2
-            WHEN f.product_name ~ '^[A-Za-z0-9]{4,10}$' THEN 1
-            ELSE 0
-          END,
-          f.priority ASC
-        ))[1] AS product_name,
-        ${SHANGHAI_DATE_EXPR("MIN(f.added_at)")} AS first_added_at
-      FROM (${teamVisibleTrackingFundsUnionSql()}
-      ) f
-      GROUP BY f.beian_hao
+      WITH grouped AS (
+        SELECT
+          f.beian_hao,
+          (ARRAY_AGG(f.product_name ORDER BY
+            CASE
+              WHEN UPPER(BTRIM(f.product_name)) = UPPER(BTRIM(f.beian_hao)) THEN 2
+              WHEN f.product_name ~ '^[A-Za-z0-9]{4,10}$' THEN 1
+              ELSE 0
+            END,
+            f.priority ASC
+          ))[1] AS product_name,
+          ${SHANGHAI_DATE_EXPR("MIN(f.added_at)")} AS first_added_at
+        FROM (${teamVisibleTrackingFundsUnionSql()}
+        ) f
+        GROUP BY f.beian_hao
+      )
+      SELECT g.beian_hao, g.product_name, g.first_added_at
+      FROM grouped g
+      WHERE g.beian_hao ~ '^[A-Za-z0-9]{4,16}$'
+         OR NOT EXISTS (
+           SELECT 1 FROM grouped c
+           WHERE c.beian_hao ~ '^[A-Za-z0-9]{4,16}$'
+             AND ${sqlFundNameKey("c.product_name")} = ${sqlFundNameKey("g.product_name")}
+             AND ${sqlNameOrCodeShareClass("c.product_name", "c.beian_hao")}
+                 IS NOT DISTINCT FROM ${sqlNameOrCodeShareClass("g.product_name", "g.beian_hao")}
+         )
     ) i
     ${LIST_CACHE_JOINS}`
   }
@@ -961,6 +974,10 @@ export async function GET(req: Request) {
     global._trackingListValuationFilenameCacheBustV1 = true
     invalidateListResponseCache()
   }
+  if (!global._trackingListNameAliasDedupeV1) {
+    global._trackingListNameAliasDedupeV1 = true
+    invalidateListResponseCache()
+  }
   if (!global._trackingListValuationFilenameCacheBustV2) {
     global._trackingListValuationFilenameCacheBustV2 = true
     invalidateListResponseCache()
@@ -989,7 +1006,10 @@ export async function GET(req: Request) {
       ? requestedPool
       : "bfl"
   const isExport = searchParams.get("export") === "1"
-  const pageSize = isExport ? 100000 : 50
+  const requestedPageSize = parseInt(searchParams.get("pageSize") || "", 10)
+  const pageSize = isExport
+    ? 100000
+    : Math.min(100, Math.max(1, Number.isFinite(requestedPageSize) && requestedPageSize > 0 ? requestedPageSize : 50))
   const offset   = isExport ? 0 : (page - 1) * pageSize
   const rawSort = searchParams.get("sort")
   const sortKey  = rawSort || "first_added_at"

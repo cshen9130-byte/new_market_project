@@ -8,7 +8,9 @@ import { mkdir, readFile, writeFile } from "fs/promises"
 import path from "path"
 import { fmtIso, n, query, queryUnbounded } from "@/lib/db"
 import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
+import { isPlausibleEmailUnitNav, recoverPlausibleEmailUnitNav } from "@/lib/server/email-nav-query"
 import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
+import { beianFamilyKey } from "@/lib/server/share-class-product"
 import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 import {
   addDays,
@@ -187,6 +189,63 @@ export function displayName(productName: string, shortName: string | null): stri
     .trim() || productName
 }
 
+/** Sheet label with share-class / 份额 markers removed, so parent and A/B/C match. */
+function weeklyReviewNameKey(fund: WeeklyReviewFund): string {
+  const base = displayName(fund.product_name, fund.short_name)
+    .replace(/[ABC]类份额$/u, "")
+    .replace(/份额$/u, "")
+    .replace(/[ABC]类$/u, "")
+    .replace(/\s+/g, "")
+  return base || fund.beian_hao.trim().toUpperCase()
+}
+
+/** Parent filing first, then A/B/C; S-prefixed 备案号 before a bare alias. */
+function representativeRank(beian: string): [number, number] {
+  const code = beian.trim().toUpperCase()
+  const classRank = /A$/.test(code) ? 1 : /B$/.test(code) ? 2 : /C$/.test(code) ? 3 : 0
+  const sRank = code.startsWith("S") ? 0 : 1
+  return [classRank, sRank]
+}
+
+function preferWeeklyReviewFund(a: WeeklyReviewFund, b: WeeklyReviewFund): WeeklyReviewFund {
+  const [ca, sa] = representativeRank(a.beian_hao)
+  const [cb, sb] = representativeRank(b.beian_hao)
+  if (ca !== cb) return ca < cb ? a : b
+  if (sa !== sb) return sa < sb ? a : b
+  return a
+}
+
+function collapseByKey(
+  funds: WeeklyReviewFund[],
+  keyOf: (fund: WeeklyReviewFund) => string,
+): WeeklyReviewFund[] {
+  const best = new Map<string, WeeklyReviewFund>()
+  const order: string[] = []
+  for (const fund of funds) {
+    const key = keyOf(fund)
+    const prev = best.get(key)
+    if (!prev) {
+      best.set(key, fund)
+      order.push(key)
+      continue
+    }
+    best.set(key, preferWeeklyReviewFund(prev, fund))
+  }
+  return order.map((key) => best.get(key)!)
+}
+
+/**
+ * One row per product inside a strategy sheet.
+ * Parent + A/B/C (and same-name alias codes) stay separate when they fall in different buckets.
+ */
+export function collapseWeeklyReviewFunds(funds: WeeklyReviewFund[]): WeeklyReviewFund[] {
+  const byFamily = collapseByKey(funds, (fund) => {
+    const family = beianFamilyKey(fund.beian_hao) || fund.beian_hao.trim().toUpperCase()
+    return `${family}\0${bucketForFund(fund)}`
+  })
+  return collapseByKey(byFamily, (fund) => `${weeklyReviewNameKey(fund)}\0${bucketForFund(fund)}`)
+}
+
 function inferIndexEnhBucket(productName: string, l3: string | null): string | null {
   const hay = `${productName} ${l3 ?? ""}`
   if (/空气指增|空气增强/.test(hay)) return "空气指增"
@@ -353,16 +412,32 @@ function periodReturnAt(
   for (let i = 0; i < endIdx; i++) {
     if (dates[i] <= target) startIdx = i
   }
-  if (startIdx < 0) {
-    if (days <= 14) startIdx = endIdx - 1
-    else if (days >= 180 && endIdx >= 1) startIdx = 0
+  const slack = Math.max(days <= 9 ? 8 : 5, Math.floor(days * 0.2))
+  const minSpan = Math.floor(days * 0.65)
+  const gapOf = (idx: number) => calendarDaysBetween(endDate, dates[idx])
+  const acceptable = (idx: number) => {
+    if (idx < 0 || idx >= endIdx) return false
+    const gap = gapOf(idx)
+    if (gap <= 0) return false
+    if (days <= 90 && gap > days + slack) return false
+    if (gap < minSpan && days > 14) return false
+    return true
+  }
+  if (!acceptable(startIdx)) {
+    // Lookback date falls in a publication hole (天演 2026-05-22→06-26).
+    // Use the first NAV after the hole when the remaining window is still most of the period.
+    let inside = -1
+    for (let i = Math.max(startIdx, 0); i < endIdx; i++) {
+      if (dates[i] > target) {
+        inside = i
+        break
+      }
+    }
+    if (acceptable(inside)) startIdx = inside
+    else if (days >= 180 && acceptable(0)) startIdx = 0
+    else if (days <= 14 && endIdx >= 1) startIdx = endIdx - 1
     else return null
   }
-  const slack = Math.max(days <= 9 ? 8 : 5, Math.floor(days * 0.2))
-  const gap = calendarDaysBetween(endDate, dates[startIdx])
-  if (gap <= 0) return null
-  if (days <= 90 && gap > days + slack) return null
-  if (days > 90 && gap < days * 0.65) return null
   const ret = values[endIdx] / values[startIdx] - 1
   return Number.isFinite(ret) ? ret : null
 }
@@ -486,7 +561,7 @@ export function previewWeeklyReview(funds: WeeklyReviewFund[]): WeeklyReviewGrou
 
 export async function buildWeeklyReviewPreview(weekEnd: string): Promise<WeeklyReviewPreview> {
   const { weekStart, weekEnd: end, asOf } = resolveWeekWindow(weekEnd)
-  const funds = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const funds = collapseWeeklyReviewFunds((await loadJyTrackingPoolFunds()).filter(isEquityFund))
   return {
     week_start: weekStart,
     week_end: end,
@@ -499,6 +574,49 @@ export async function buildWeeklyReviewPreview(weekEnd: string): Promise<WeeklyR
 function groupSortKey(bucket: string): string {
   const idx = BUCKET_ORDER.indexOf(bucket)
   return idx >= 0 ? `${String(idx).padStart(3, "0")}_${bucket}` : `999_${bucket}`
+}
+
+/** Keep unit and 复权 on a per-share scale. Asset-value rows (SBPC20 基金资产净值) are repaired or dropped. */
+function weeklyReturnPoint(
+  date: string,
+  unitRaw: number | null,
+  cumulativeRaw: number | null,
+  adjustedRaw: number | null,
+): NavPoint | null {
+  const unit = recoverPlausibleEmailUnitNav(unitRaw, cumulativeRaw ?? adjustedRaw)
+  if (unit == null) return null
+  let returnNav = unit
+  for (const candidate of [adjustedRaw, cumulativeRaw]) {
+    if (candidate == null || !isPlausibleEmailUnitNav(candidate)) continue
+    const ratio = candidate / unit
+    if (ratio < 0.85 || ratio > 2.5) continue
+    if (candidate >= returnNav) returnNav = candidate
+  }
+  return { nav: unit, nav_date: date.slice(0, 10), return_nav: returnNav }
+}
+
+/** Cache that stops or jumps while email still has a dense recent series (贞元虎踞一号) should not win. */
+function recentHole(points: NavPoint[], asOf: string): boolean {
+  const recent = points.filter((p) => p.nav_date >= addDays(asOf, 45) && p.nav_date <= asOf)
+  if (recent.length < 2) return true
+  for (let i = 1; i < recent.length; i++) {
+    if (calendarDaysBetween(recent[i].nav_date, recent[i - 1].nav_date) > 14) return true
+  }
+  return false
+}
+
+function preferWeeklyNavSeries(
+  cached: NavPoint[] | undefined,
+  emailSeries: NavPoint[],
+  asOf: string,
+): NavPoint[] {
+  if (!cached || cached.length < 2) return emailSeries
+  if (emailSeries.length < 2) return cached
+  const cacheTip = cached[cached.length - 1]?.nav_date ?? ""
+  const emailTip = emailSeries[emailSeries.length - 1]?.nav_date ?? ""
+  if (emailTip > cacheTip) return emailSeries
+  if (recentHole(cached, asOf) && !recentHole(emailSeries, asOf)) return emailSeries
+  return cached
 }
 
 function pushPoint(target: Map<string, Map<string, NavPoint>>, key: string, point: NavPoint) {
@@ -533,6 +651,16 @@ export async function loadWeeklyReviewNavHistories(
     nav_date: string
     nav: string | number | null
     cumulative_nav: string | number | null
+    adjusted_nav: string | number | null
+  }
+  type CacheRow = {
+    beian_hao: string
+    nav_series: Array<{
+      price_date?: string
+      nav?: string | number | null
+      cumulative_nav?: string | number | null
+      cum_nav_withdrawal?: string | number | null
+    }>
   }
   type LegacyRow = {
     beian_hao: string
@@ -543,10 +671,10 @@ export async function loadWeeklyReviewNavHistories(
     cum_nav_withdrawal: string | number | null
   }
 
-  const [emailRows, legacyRows] = await Promise.all([
+  const [emailRows, legacyRows, cacheRows] = await Promise.all([
     queryUnbounded<EmailRow>(
       `SELECT BTRIM(product_code) AS code, NULLIF(BTRIM(fund_name), '') AS fund_name,
-              nav_date::text AS nav_date, nav, cumulative_nav
+              nav_date::text AS nav_date, nav, cumulative_nav, adjusted_nav
        FROM ops_email_nav_records
        WHERE nav IS NOT NULL
          AND nav_date >= $2::date AND nav_date <= $3::date
@@ -565,30 +693,45 @@ export async function loadWeeklyReviewNavHistories(
          AND nav IS NOT NULL`,
       [beians, since, asOf],
     ).catch(() => [] as LegacyRow[]),
+    queryUnbounded<CacheRow>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, nav_series
+       FROM ops_private_fund_detail_nav_cache
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])`,
+      [beians.map((b) => b.toUpperCase())],
+    ).catch(() => [] as CacheRow[]),
   ])
 
   const byKey = new Map<string, Map<string, NavPoint>>()
-  for (const row of legacyRows) {
-    const unit = n(row.nav)
-    if (unit == null || unit <= 0) continue
-    const adj = n(row.cum_nav_withdrawal) ?? n(row.cumulative_nav)
-    const point: NavPoint = {
-      nav: unit,
-      nav_date: row.price_date.slice(0, 10),
-      return_nav: adj != null && adj > 0 ? adj : unit,
+  const cacheByBeian = new Map<string, NavPoint[]>()
+  for (const row of cacheRows) {
+    const points: NavPoint[] = []
+    for (const item of row.nav_series ?? []) {
+      const date = String(item.price_date ?? "").slice(0, 10)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > asOf || date < since) continue
+      const point = weeklyReturnPoint(
+        date,
+        n(item.nav),
+        n(item.cumulative_nav),
+        n(item.cum_nav_withdrawal),
+      )
+      if (point) points.push(point)
     }
+    if (points.length >= 2) cacheByBeian.set(row.beian_hao.toUpperCase(), points)
+  }
+  for (const row of legacyRows) {
+    const point = weeklyReturnPoint(
+      row.price_date,
+      n(row.nav),
+      n(row.cumulative_nav),
+      n(row.cum_nav_withdrawal),
+    )
+    if (!point) continue
     pushPoint(byKey, row.beian_hao, point)
     if (row.product_name) pushPoint(byKey, row.product_name, point)
   }
   for (const row of emailRows) {
-    const unit = n(row.nav)
-    if (unit == null || unit <= 0) continue
-    const adj = n(row.cumulative_nav)
-    const point: NavPoint = {
-      nav: unit,
-      nav_date: row.nav_date.slice(0, 10),
-      return_nav: adj != null && adj > 0 ? adj : unit,
-    }
+    const point = weeklyReturnPoint(row.nav_date, n(row.nav), n(row.cumulative_nav), n(row.adjusted_nav))
+    if (!point) continue
     if (row.code) pushPoint(byKey, row.code, point)
     if (row.fund_name) pushPoint(byKey, row.fund_name, point)
   }
@@ -621,7 +764,9 @@ export async function loadWeeklyReviewNavHistories(
       fund.product_name,
       fund.short_name ?? "",
     ]
-    out.set(fund.beian_hao, seriesOf([...new Set(keys.map((k) => k.trim()).filter(Boolean))]))
+    const cached = cacheByBeian.get(trimmed.toUpperCase())
+    const emailSeries = seriesOf([...new Set(keys.map((k) => k.trim()).filter(Boolean))])
+    out.set(fund.beian_hao, preferWeeklyNavSeries(cached, emailSeries, asOf))
   }
   return out
 }
@@ -821,7 +966,7 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promis
   groupCount: number
 }> {
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
-  const funds = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const funds = collapseWeeklyReviewFunds((await loadJyTrackingPoolFunds()).filter(isEquityFund))
   if (funds.length === 0) {
     throw new Error("JY跟踪池中没有可导出的股票策略产品")
   }

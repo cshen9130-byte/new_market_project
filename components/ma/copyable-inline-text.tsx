@@ -74,8 +74,12 @@ export function CopyableInlineText({
 }
 
 /** Last-line UI guard: never render legal fund-type wording or 估值表 path prefixes. */
-function uiProductLabel(short_name: string | null | undefined, product_name: string): string {
-  const cleaned = resolveFundDisplayLabel(short_name, product_name)
+function uiProductLabel(
+  short_name: string | null | undefined,
+  product_name: string,
+  beian_hao?: string | null,
+): string {
+  const cleaned = resolveFundDisplayLabel(short_name, product_name, beian_hao)
     .replace(/私募证券投资基金/g, "")
     .replace(/私募股权投资基金/g, "")
     .trim()
@@ -96,7 +100,7 @@ export function CopyableProductName({
   className?: string
   href?: string
 }) {
-  const displayName = uiProductLabel(short_name, product_name)
+  const displayName = uiProductLabel(short_name, product_name, beian_hao)
   return (
     <CopyableInlineText
       text={displayName || product_name}

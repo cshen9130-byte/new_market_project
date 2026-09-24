@@ -17,6 +17,7 @@ import {
   productFromAkshare,
 } from "@/lib/ma/quant-strategy-infer"
 import { inferFactorDml } from "@/lib/ma/quant-factor-dml"
+import { buildFeatureStability, sectorRiskByDay, type DayObs } from "@/lib/ma/quant-feature-stability"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -167,6 +168,7 @@ function buildPortrait(p: {
   sectors: { sector: string; pnl: number }[]
   factorFamilies?: FactorFamily[]
   capture?: { up: number | null; down: number | null }
+  annVolPct?: number | null
 }): { strategyLabel: string; summary: string; items: PortraitItem[] } {
   const thin = p.days < 20 || p.nCloses < 30
   const payoff = p.avgLoss < 0 ? p.avgWin / Math.abs(p.avgLoss) : null
@@ -189,6 +191,8 @@ function buildPortrait(p: {
   if (p.corrNhci != null && Math.abs(p.corrNhci) >= 0.22) {
     strategyLabel += p.corrNhci > 0 ? " · 商品多头 beta" : " · 逆商品 / 对冲 beta"
   }
+  const volClass = p.annVolPct == null ? null : p.annVolPct >= 12 ? "高波" : p.annVolPct >= 6 ? "中波" : "低波"
+  if (volClass) strategyLabel += ` · ${volClass}`
 
   const regimeMap = Object.fromEntries(p.regime.map((x) => [x.key, x]))
   const better = (a: string, b: string) => (regimeMap[a]?.pnl ?? 0) >= (regimeMap[b]?.pnl ?? 0) ? a : b
@@ -308,7 +312,7 @@ function buildPortrait(p: {
   const summary = `${prefix} 更像「${strategyLabel}」。日胜率 ${fmtPct(p.dayWinRate * 100, 0)}，平仓胜率 ${fmtPct(wr * 100, 0)}。`
 
   const items: PortraitItem[] = [
-    { title: "策略类型", detail: `${strategyLabel}。${hold != null ? `持仓中位数约 ${hold.toFixed(1)} 天。` : ""}与南华商品指数日收益相关 ${p.corrNhci == null ? "样本不足" : r2(p.corrNhci)}。${captureBit ? ` ${captureBit}` : ""}`, tone: "neutral" },
+    { title: "策略类型", detail: `${strategyLabel}。${volClass && p.annVolPct != null ? `按日收益年化波动 ${p.annVolPct.toFixed(1)}% 归为${volClass}（12% 以上高波，6% 到 12% 中波，低于 6% 低波）。` : ""}${hold != null ? `持仓中位数约 ${hold.toFixed(1)} 天。` : ""}与南华商品指数日收益相关 ${p.corrNhci == null ? "样本不足" : r2(p.corrNhci)}。${captureBit ? ` ${captureBit}` : ""}`, tone: "neutral" },
     { title: "适合的市场", detail: fitBits.join("；") + "。", tone: "good" },
     { title: "不适合的市场", detail: unfitBits.join("；") + "。", tone: "bad" },
     { title: "亏损之后", detail: afterLoss, tone: lossTone },
@@ -337,10 +341,11 @@ async function _GET(req: Request) {
     const isoToday = new Date().toISOString().slice(0, 10)
     const from = sp.get("from") || "2025-01-01"
     const to = sp.get("to") || isoToday
+    const coreOnly = sp.get("scope") === "core"
     const nhFrom = lookbackFrom(from, 560)
     const NH_CODES = ["NHCI.NH", "NHAI.NH", "NHECI.NH", "NHFI.NH", "NHPMI.NH", "NHNEI.NH", "NHNFI.NH"]
 
-    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows, clusterRows, contractRows, openInfRows, posInfRows] = await Promise.all([
+    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows, clusterRows, contractRows, openInfRows, posInfRows, closeDayRows, closeSectorRows, mtmSectorRows] = await Promise.all([
       query<{
         account: string; date: string; pnl: string; equity: string; margin: string; risk: string
       }>(
@@ -560,13 +565,15 @@ async function _GET(req: Request) {
          GROUP BY 1, 2`,
         [accountId, from, to],
       ).catch(() => [] as { date: string; product: string; buy_open: string; sell_open: string }[]),
-      query<{ date: string; product: string; buy_lots: string; sell_lots: string; mv: string }>(
+      query<{ date: string; product: string; buy_lots: string; sell_lots: string; mv: string; long_mv: string; short_mv: string }>(
         `SELECT
            "交易日期"::text AS date,
            UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
            SUM(${numExpr("买持仓")})::text AS buy_lots,
            SUM(${numExpr("卖持仓")})::text AS sell_lots,
-           SUM(${numExpr("持仓市値")})::text AS mv
+           SUM(${numExpr("持仓市値")})::text AS mv,
+           SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS long_mv,
+           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv
          FROM mom_position_details
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
@@ -574,7 +581,53 @@ async function _GET(req: Request) {
            AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
          GROUP BY 1, 2`,
         [accountId, from, to],
-      ).catch(() => [] as { date: string; product: string; buy_lots: string; sell_lots: string; mv: string }[]),
+      ).catch(() => [] as { date: string; product: string; buy_lots: string; sell_lots: string; mv: string; long_mv: string; short_mv: string }[]),
+      query<{
+        date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
+        lots: string; hold_sum: string
+      }>(
+        `SELECT
+           "交易日期"::text AS date,
+           SUM(CASE WHEN ${numExpr("平仓盈亏")} > 0 THEN ${numExpr("手数")} ELSE 0 END)::text AS win_lots,
+           SUM(CASE WHEN ${numExpr("平仓盈亏")} < 0 THEN ${numExpr("手数")} ELSE 0 END)::text AS loss_lots,
+           SUM(CASE WHEN ${numExpr("平仓盈亏")} > 0 THEN ${numExpr("平仓盈亏")} ELSE 0 END)::text AS win_pnl,
+           SUM(CASE WHEN ${numExpr("平仓盈亏")} < 0 THEN ${numExpr("平仓盈亏")} ELSE 0 END)::text AS loss_pnl,
+           SUM(${numExpr("手数")})::text AS lots,
+           SUM(${numExpr("手数")} * GREATEST(("交易日期"::date - ${OPEN_DATE}), 0))::text AS hold_sum
+         FROM mom_close_details
+         WHERE ${ACC}
+           AND "交易日期"::date BETWEEN $2::date AND $3::date
+         GROUP BY 1`,
+        [accountId, from, to],
+      ).catch(() => [] as {
+        date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
+        lots: string; hold_sum: string
+      }[]),
+      query<{ date: string; product: string; pnl: string }>(
+        `SELECT
+           "交易日期"::text AS date,
+           UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
+           SUM(${numExpr("平仓盈亏")})::text AS pnl
+         FROM mom_close_details
+         WHERE ${ACC}
+           AND "交易日期"::date BETWEEN $2::date AND $3::date
+           AND "合约" IS NOT NULL
+         GROUP BY 1, 2`,
+        [accountId, from, to],
+      ).catch(() => [] as { date: string; product: string; pnl: string }[]),
+      query<{ date: string; product: string; pnl: string }>(
+        `SELECT
+           "交易日期"::text AS date,
+           UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
+           SUM(${numExpr("持仓盈亏")})::text AS pnl
+         FROM mom_position_details
+         WHERE ${ACC}
+           AND "交易日期"::date BETWEEN $2::date AND $3::date
+           AND "合约" IS NOT NULL
+           AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
+         GROUP BY 1, 2`,
+        [accountId, from, to],
+      ).catch(() => [] as { date: string; product: string; pnl: string }[]),
     ])
 
     const account = dailyRows[0]?.account || `rx${accountId}`
@@ -971,8 +1024,8 @@ async function _GET(req: Request) {
     const sectorOf: Record<string, string> = {}
     for (const r of openInfRows) if (r.product) sectorOf[r.product] = getSector(r.product)
     for (const r of posInfRows) if (r.product) sectorOf[r.product] = getSector(r.product)
-    let factorDml: ReturnType<typeof inferFactorDml>
-    try {
+    let factorDml: ReturnType<typeof inferFactorDml> | null = null
+    if (!coreOnly) try {
       factorDml = inferFactorDml({
         opens: openInfRows.map((r) => ({
           date: r.date.slice(0, 10),
@@ -1023,6 +1076,67 @@ async function _GET(req: Request) {
       }
     }
 
+    const closeByDay = new Map(closeDayRows.map((r) => [r.date.slice(0, 10), r]))
+    const hedgeByDay = new Map(hedge.map((h) => [h.date, h.ratio]))
+    const sectorRisk = sectorRiskByDay({
+      positions: posInfRows.map((r) => ({
+        date: r.date.slice(0, 10),
+        product: r.product,
+        sector: getSector(r.product),
+        longMv: toNum(r.long_mv),
+        shortMv: toNum(r.short_mv),
+      })),
+      returns: contracts.filter((c) => c.rk === 1).map((c) => ({
+        date: c.date,
+        product: c.product,
+        pct: c.pct,
+      })),
+    })
+    const featureDays: DayObs[] = equity.map((e) => {
+      const c = closeByDay.get(e.date)
+      const risk = sectorRisk.top.get(e.date)
+      return {
+        date: e.date,
+        pnl: e.pnl,
+        winLots: toNum(c?.win_lots),
+        lossLots: toNum(c?.loss_lots),
+        winPnl: toNum(c?.win_pnl),
+        lossPnl: toNum(c?.loss_pnl),
+        closeLots: toNum(c?.lots),
+        holdSum: toNum(c?.hold_sum),
+        openLots: tradeByDate.get(e.date)?.open ?? 0,
+        hedge: hedgeByDay.get(e.date) ?? null,
+        topSectorShare: risk?.share ?? null,
+        topSector: risk?.topSector ?? null,
+        nhRet: nhciRet.get(e.date) ?? null,
+      }
+    })
+    const sectorPnl = new Map<string, Map<string, number>>()
+    const addSectorPnl = (date: string, product: string, pnl: number) => {
+      const sector = getSector(product)
+      if (!sector || !pnl) return
+      const day = date.slice(0, 10)
+      const book = sectorPnl.get(day) ?? new Map<string, number>()
+      book.set(sector, (book.get(sector) ?? 0) + pnl)
+      sectorPnl.set(day, book)
+    }
+    for (const r of closeSectorRows) addSectorPnl(r.date, r.product, toNum(r.pnl))
+    for (const r of mtmSectorRows) addSectorPnl(r.date, r.product, toNum(r.pnl))
+    const featureStability = buildFeatureStability(featureDays, nhciPts, {
+      variance: sectorRisk.variance,
+      pnl: sectorPnl,
+    })
+    const retVol: number[] = []
+    for (let i = 1; i < equity.length; i++) {
+      const prev = equity[i - 1]!.equity
+      if (prev > 0) retVol.push(equity[i]!.pnl / prev)
+    }
+    const retMean = retVol.length ? retVol.reduce((a, b) => a + b, 0) / retVol.length : 0
+    const retSd = retVol.length >= 20
+      ? Math.sqrt(retVol.reduce((s, x) => s + (x - retMean) ** 2, 0) / (retVol.length - 1))
+      : null
+    const annVolPct = retSd == null ? null : retSd * Math.sqrt(252) * 100
+
     const portrait = buildPortrait({
       days: equity.length,
       nCloses,
@@ -1051,6 +1165,16 @@ async function _GET(req: Request) {
       sectors,
       factorFamilies: regimeFactors.families,
       capture: regimeFactors.capture,
+      annVolPct,
+    })
+    const typeItem = portrait.items.find((item) => item.title === "策略类型")
+    if (typeItem && featureStability.notes.some((n) => n.includes("对调"))) {
+      typeItem.detail += "全样本把整段收成一个标签。换市况时胜率和盈亏比会对调，单看平均会把两种做法写成同一种。"
+    }
+    portrait.items.splice(1, 0, {
+      title: "市况里的风格",
+      detail: [featureStability.headline, ...featureStability.notes].join(""),
+      tone: "neutral" as const,
     })
 
     return NextResponse.json({
@@ -1105,6 +1229,7 @@ async function _GET(req: Request) {
       hedge,
       longShort,
       inference,
+      featureStability,
       factorDml,
     })
   } catch (err) {
@@ -1117,4 +1242,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("quant-strategy-v19", _GET)
+export const GET = withMomCache("quant-strategy-v26", _GET)

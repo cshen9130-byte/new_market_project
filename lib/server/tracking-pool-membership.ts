@@ -2,6 +2,7 @@ import { createHash } from "crypto"
 import { HIDDEN_TEAM_POOL_KEYS } from "@/lib/client/tracking-pools"
 import { query } from "@/lib/db"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
+import { canonicalProductCode } from "@/lib/server/fund-holding-code"
 import { resolveTrackingProductName } from "@/lib/server/tracking-product-name"
 
 /** Standard register-number pool tables keyed by pool id. */
@@ -86,6 +87,7 @@ export async function addFundToTrackingPool(
   beian_hao: string,
   product_name: string,
 ): Promise<{ created: boolean }> {
+  beian_hao = canonicalProductCode(beian_hao) || beian_hao.trim()
   product_name = await resolveTrackingProductName(beian_hao, product_name)
   if (isCustomTrackingPool(pool)) {
     const hash = rowHash(pool, beian_hao, product_name)

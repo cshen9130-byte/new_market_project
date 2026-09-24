@@ -4,6 +4,7 @@ import { handleFundDataMcpRpc, type McpJsonRpc } from "@/lib/server/fund-data-mc
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+export const maxDuration = 300
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -23,7 +24,7 @@ export async function GET(req: Request) {
   return NextResponse.json(
     {
       name: "fund-data",
-      version: "1.0.0",
+      version: "1.1.0",
       transport: "mcp",
       usage: "POST JSON-RPC 2.0 with header x-api-key",
     },
@@ -47,7 +48,7 @@ export async function POST(req: Request) {
     )
   }
 
-  const reply = await handleFundDataMcpRpc(msg)
+  const reply = await handleFundDataMcpRpc(msg, auth.user)
   if (reply == null) {
     return new NextResponse(null, { status: 202, headers: CORS })
   }

@@ -99,9 +99,10 @@ interface Props {
   variant?: "mom" | "account"
   accountKey?: string
   allAccounts?: boolean
+  onSelectAccount?: (selectKey: string) => void
 }
 
-export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false, variant = "mom", accountKey = "", allAccounts = false }: Props) {
+export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false, variant = "mom", accountKey = "", allAccounts = false, onSelectAccount }: Props) {
   const isAccount = variant === "account"
   const [allData, setAllData] = useState<NavPoint[]>([])
   const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
@@ -704,7 +705,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
     })
   }, [normalizedBenchmarkData])
 
-  if (allAccounts) return <AccountOverviewTable />
+  if (allAccounts) return <AccountOverviewTable onSelectAccount={onSelectAccount} />
 
   const drawdownOption = {
     animation: false,
@@ -833,7 +834,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
   <>
     {/* ══ 产品要素 / 账户明细 ═══════════════════════════════════════════ */}
     {allAccounts ? (
-      <AccountOverviewTable />
+      <AccountOverviewTable onSelectAccount={onSelectAccount} />
     ) : (
     <>
     <div id="section-product" className="flex items-center gap-2 mb-3" style={{ scrollMarginTop: "3rem" }}>

@@ -9,6 +9,7 @@ import {
   compoundAccountRiskNav,
   countedEquityPathPnl,
 } from "@/lib/server/account-risk-nav"
+import { accountNoMatchesUserId, listImportBooks, type ImportBook } from "@/lib/server/account-risk-books"
 import { productNameFromClientLabel } from "@/lib/server/account-risk-product-elements"
 import { scopeWhere } from "@/lib/server/account-risk-scope"
 
@@ -16,6 +17,8 @@ export type AccountOverviewRow = {
   fundName: string
   companyName: string
   accountNo: string
+  /** Switcher value (`book:…` or the 资金账号) so the overview can open this account. */
+  selectKey: string
   tradeDate: string
   equity: number | null
   margin: number | null
@@ -118,15 +121,40 @@ async function loadNavSeriesByAccount(): Promise<Map<string, number[]>> {
   return out
 }
 
+/** Map a 资金账号 to the account switcher value. Prefer the import book that owns the file. */
+function bookSelectKey(accountNo: string, sourceFile: string, books: ImportBook[]): string {
+  const rel = sourceFile.replace(/\\/g, "/").trim()
+  const active = books.filter((book) => book.files.length > 0)
+  if (rel) {
+    const exact = active.find((book) => book.files.some((file) => file.replace(/\\/g, "/") === rel))
+    if (exact) return `book:${exact.id}`
+    const prefix = rel.includes("/") ? rel.split("/")[0] : ""
+    if (prefix) {
+      const byDir = active.find((book) => book.id === prefix)
+      if (byDir) return `book:${byDir.id}`
+    }
+  }
+  const byUser = active.find((book) => book.cfmmcUserId && accountNoMatchesUserId(accountNo, book.cfmmcUserId))
+  return byUser ? `book:${byUser.id}` : accountNo
+}
+
 export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
   const [rows, navByAccount] = await Promise.all([
     loadAccountOverviewSnapshots(),
     loadNavSeriesByAccount(),
   ])
-  return rows.map((row) => ({ ...row, nav: navByAccount.get(row.accountNo) ?? [] }))
+  const books = listImportBooks()
+  return rows.map((row) => {
+    const { sourceFile, ...rest } = row
+    return {
+      ...rest,
+      selectKey: bookSelectKey(row.accountNo, sourceFile, books),
+      nav: navByAccount.get(row.accountNo) ?? [],
+    }
+  })
 }
 
-async function loadAccountOverviewSnapshots(): Promise<Omit<AccountOverviewRow, "nav">[]> {
+async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOverviewRow, "nav" | "selectKey"> & { sourceFile: string }>> {
   const params: unknown[] = []
   const scoped = scopeWhere(params)
   const result = await publicQuery(
@@ -135,6 +163,7 @@ async function loadAccountOverviewSnapshots(): Promise<Omit<AccountOverviewRow, 
       SELECT
         account_no,
         trade_date,
+        source_file,
         client_name,
         company_name,
         client_equity,
@@ -151,6 +180,7 @@ async function loadAccountOverviewSnapshots(): Promise<Omit<AccountOverviewRow, 
       SELECT DISTINCT ON (account_no)
         account_no,
         trade_date,
+        source_file,
         client_name,
         company_name,
         client_equity,
@@ -176,6 +206,7 @@ async function loadAccountOverviewSnapshots(): Promise<Omit<AccountOverviewRow, 
     )
     SELECT l.account_no,
            l.trade_date::text AS trade_date,
+           l.source_file,
            l.client_name,
            l.company_name,
            l.client_equity,
@@ -197,6 +228,7 @@ async function loadAccountOverviewSnapshots(): Promise<Omit<AccountOverviewRow, 
   return (result.rows as {
     account_no: string
     trade_date: string
+    source_file: string | null
     client_name: string | null
     company_name: string | null
     client_equity: number | string | null
@@ -223,6 +255,7 @@ async function loadAccountOverviewSnapshots(): Promise<Omit<AccountOverviewRow, 
       fundName: productNameFromClientLabel(clean(row.client_name)),
       companyName: shortCompanyName(clean(row.company_name)),
       accountNo: String(row.account_no ?? "").trim(),
+      sourceFile: String(row.source_file ?? "").trim(),
       tradeDate: row.trade_date,
       equity,
       margin,

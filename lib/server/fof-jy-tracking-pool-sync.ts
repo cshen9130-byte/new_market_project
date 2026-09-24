@@ -9,6 +9,7 @@
  */
 
 import { query } from "@/lib/db"
+import { canonicalProductCode } from "@/lib/server/fund-holding-code"
 import {
   SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF,
   sqlExcludeFofUnderlyingProduct,
@@ -63,7 +64,7 @@ function fofListDisplayNameSql(): string {
 function normalizeFunds(rows: { beian_hao: string; product_name: string }[]): FofJySyncFund[] {
   const byBeian = new Map<string, FofJySyncFund>()
   for (const row of rows) {
-    const beian = (row.beian_hao || "").trim().toUpperCase()
+    const beian = canonicalProductCode(row.beian_hao)
     const name = stripValuationSubjectPathPrefix(row.product_name || "").trim() || (row.product_name || "").trim()
     if (!beian || name.length < 2) continue
     if (isValuationStockCostSubjectName(name)) continue

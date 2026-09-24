@@ -727,11 +727,11 @@ function AdvisorContent() {
   )
 }
 
-function OverviewContent({ variant, accountKey, allAccounts }: { variant: "mom" | "account"; accountKey: string; allAccounts?: boolean }) {
+function OverviewContent({ variant, accountKey, allAccounts, onSelectAccount }: { variant: "mom" | "account"; accountKey: string; allAccounts?: boolean; onSelectAccount?: (selectKey: string) => void }) {
   return (
     <div className="space-y-4">
       <div className="w-full">
-        <ProductNavChart height={380} variant={variant} accountKey={accountKey} allAccounts={allAccounts} />
+        <ProductNavChart height={380} variant={variant} accountKey={accountKey} allAccounts={allAccounts} onSelectAccount={onSelectAccount} />
       </div>
     </div>
   )
@@ -9135,7 +9135,7 @@ function RiskReportAppCore({
           )}
         </div>
         <div key={accountScopeKey}>
-        {activeTab === "overview" && <OverviewContent variant={variant} accountKey={accountScopeKey} allAccounts={isAllAccountsOverview} />}
+        {activeTab === "overview" && <OverviewContent variant={variant} accountKey={accountScopeKey} allAccounts={isAllAccountsOverview} onSelectAccount={isAccount ? cfmmcScope.onChange : undefined} />}
         {activeTab === "intraday" && <IntradayContent singleAccount={isAccount} />}
         {activeTab === "position" && <PositionContent sectorChartCapturing={sectorChartCapturing} setSectorChartCapturing={setSectorChartCapturing} hideAccountOptionPnl={isAccount} defaultVarWeightView={isAccount ? "var" : "weight"} defaultGroupMode={isAccount ? "板块" : "大类"} />}
         {activeTab === "advisor" && <AdvisorContent />}

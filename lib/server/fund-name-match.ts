@@ -100,6 +100,18 @@ export function sqlFundNameKey(nameExpr: string): string {
   ), '')`
 }
 
+/** A类 / B类 from the name, else a trailing A/B/C on a real filing code. */
+export function sqlNameOrCodeShareClass(nameExpr: string, codeExpr: string): string {
+  return `COALESCE(
+    NULLIF(substring(BTRIM(${nameExpr}) from '([ABC])类$'), ''),
+    CASE
+      WHEN UPPER(BTRIM(${codeExpr})) ~ '^[A-Z0-9]{4,16}[ABC]$'
+      THEN right(UPPER(BTRIM(${codeExpr})), 1)
+      ELSE ''
+    END
+  )`
+}
+
 /** Strip common fund suffixes and share-class suffix for fuzzy comparison. */
 export function sqlFundNameBase(nameExpr: string): string {
   return `NULLIF(regexp_replace(

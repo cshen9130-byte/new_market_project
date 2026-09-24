@@ -9,7 +9,8 @@
 
 import { createHash } from "crypto"
 import { query } from "@/lib/db"
-import { isPlausibleEmailProductCode } from "@/lib/server/fund-name-match"
+import { canonicalProductCode } from "@/lib/server/fund-holding-code"
+import { isPlausibleEmailProductCode, sqlFundNameKey, sqlNameOrCodeShareClass } from "@/lib/server/fund-name-match"
 import { invalidateTrackingPoolListCaches, purgeValuationFilenameIdentities } from "@/lib/server/tracking-pool-membership"
 import { loadEmailPoolFunds } from "@/lib/server/team-data-query-pg"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
@@ -53,7 +54,10 @@ async function ensurePoolDefinition(): Promise<void> {
 
 /** All funds discovered from email (NAV, valuation, parse subjects). */
 async function loadEmailSyncFunds(): Promise<{ beian_hao: string; product_name: string }[]> {
-  const funds = await loadEmailPoolFunds()
+  const funds = (await loadEmailPoolFunds()).map((fund) => ({
+    ...fund,
+    beian_hao: canonicalProductCode(fund.beian_hao) || fund.beian_hao,
+  }))
   return funds.map((f) => ({
     beian_hao: f.register_number,
     product_name: f.product_name,
@@ -67,7 +71,10 @@ async function loadEmailSyncFunds(): Promise<{ beian_hao: string; product_name: 
 export async function syncEmailTrackingPool(): Promise<EmailTrackingPoolSyncResult> {
   await ensurePoolDefinition()
   await purgeValuationFilenameIdentities()
-  const funds = await loadEmailSyncFunds()
+  const funds = (await loadEmailSyncFunds()).map((fund) => ({
+    ...fund,
+    beian_hao: canonicalProductCode(fund.beian_hao) || fund.beian_hao,
+  }))
   const targetBeians = new Set(funds.map((f) => f.beian_hao))
 
   let inserted = 0
@@ -170,10 +177,9 @@ export async function syncEmailTrackingPool(): Promise<EmailTrackingPoolSyncResu
            SELECT 1 FROM user_custom_pool c
            WHERE c.pool_key = p.pool_key
              AND c.register_number = ANY($3::text[])
-             AND (
-               BTRIM(c.product_name) IN (BTRIM(p.product_name), BTRIM(p.register_number))
-               OR BTRIM(p.product_name) IN (BTRIM(c.product_name), BTRIM(c.register_number))
-             )
+             AND ${sqlFundNameKey("c.product_name")} = ${sqlFundNameKey("COALESCE(NULLIF(BTRIM(p.product_name), ''), p.register_number)")}
+             AND ${sqlNameOrCodeShareClass("c.product_name", "c.register_number")}
+                 IS NOT DISTINCT FROM ${sqlNameOrCodeShareClass("COALESCE(NULLIF(BTRIM(p.product_name), ''), p.register_number)", "p.register_number")}
          )
        RETURNING p.register_number`,
       [EMAIL_OPS_POOL_KEY, EMAIL_NAME_SOURCE, codedTargets],

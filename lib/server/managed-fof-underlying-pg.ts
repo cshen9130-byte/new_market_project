@@ -28,7 +28,7 @@ import {
   sqlShareClassHoldingCodeGuard,
   sqlShareClassProductNameGuard,
 } from "@/lib/server/fund-name-match"
-import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode, isDirectEquityOrEtfValuationHolding, isValuationClearingSubjectCode, isValuationIncrementSubjectCode, sqlSubjectCodeIsClearing, sqlSubjectCodeIsValuationIncrement } from "@/lib/server/fund-holding-code"
+import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, sqlCanonicalProductCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode, isDirectEquityOrEtfValuationHolding, isValuationClearingSubjectCode, isValuationIncrementSubjectCode, sqlSubjectCodeIsClearing, sqlSubjectCodeIsValuationIncrement } from "@/lib/server/fund-holding-code"
 import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 
 /** Managed products excluded from FOF underlying extraction (non-FOF). */
@@ -143,7 +143,7 @@ async function refreshManagedFofUnderlyingForProductCodes(
   await ensureEmailValuationHoldingsTables()
 
   const fundMatch = sqlFundNameMatch("r.fund_name", "m.product_name")
-  const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
+  const underlyingKey = `NULLIF(${sqlCanonicalProductCode("h.symbol")}, '')`
 
   const rows = await withTransaction(async (txQuery) => {
     await txQuery(`SET LOCAL statement_timeout = 0`)
@@ -175,7 +175,7 @@ async function refreshManagedFofUnderlyingForProductCodes(
          lv.fof_product_code,
          lv.valuation_date,
          lv.valuation_record_id,
-         NULLIF(BTRIM(UPPER(h.symbol)), '') AS underlying_product_code,
+         NULLIF(${sqlCanonicalProductCode("h.symbol")}, '') AS underlying_product_code,
          h.subject_name AS underlying_name,
          h.subject_code,
          CASE
@@ -287,7 +287,7 @@ export async function refreshManagedFofUnderlying(
   const productExpr = "m.product_name"
   const beianExpr = fofUnderlyingBeianExpr(productExpr)
   const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
-  const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
+  const underlyingKey = `NULLIF(${sqlCanonicalProductCode("h.symbol")}, '')`
 
   // Delete and insert in one transaction. A timed-out rebuild used to commit the
   // DELETE first and leave 持仓 empty while the overview cache still showed 市值.
@@ -325,7 +325,7 @@ export async function refreshManagedFofUnderlying(
          lv.fof_product_code,
          lv.valuation_date,
          lv.valuation_record_id,
-         NULLIF(BTRIM(UPPER(h.symbol)), '') AS underlying_product_code,
+         NULLIF(${sqlCanonicalProductCode("h.symbol")}, '') AS underlying_product_code,
          h.subject_name AS underlying_name,
          h.subject_code,
          CASE

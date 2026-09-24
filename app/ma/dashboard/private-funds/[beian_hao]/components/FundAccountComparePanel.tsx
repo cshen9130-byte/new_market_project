@@ -11,7 +11,7 @@ import {
 } from "@/lib/ma/fund-account-compare"
 import { authService } from "@/lib/auth"
 import { canModifyCompareAccount } from "@/lib/permissions"
-import { RED, getNavFieldValue, type NavRow } from "./shared"
+import { RED, filterPointsByFrequency, getNavFieldValue, type NavFrequencyFilter, type NavRow } from "./shared"
 import { dateToUtcTs, echartsTimeXAxis, formatIsoDateFromTs, toGappedLinePoints } from "./performanceChartUtils"
 
 function userFetchHeaders(): Record<string, string> {
@@ -308,6 +308,8 @@ const METRIC_ROWS: Array<{
   { key: "ddRecoveryDays", label: "回撤修复(天)", format: fmtInt },
 ]
 
+const MOM_FREQ_OPTIONS: NavFrequencyFilter[] = ["全部", "日频", "周频", "月频"]
+
 export const FundAccountComparePanel = memo(function FundAccountComparePanel({
   beian_hao,
   productName,
@@ -315,6 +317,7 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
   dateTo,
   rows,
   navType,
+  productFreq,
 }: {
   beian_hao: string
   productName: string
@@ -322,8 +325,10 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
   dateTo: string
   rows: NavRow[]
   navType: string
+  productFreq: NavFrequencyFilter
 }) {
   const [account, setAccount] = useState("")
+  const [momFreq, setMomFreq] = useState<NavFrequencyFilter>(productFreq)
   const [userPicked, setUserPicked] = useState(false)
   const [restoredBeian, setRestoredBeian] = useState<string | null>(null)
   const [payload, setPayload] = useState<AccountCompareResponse | null>(null)
@@ -345,6 +350,10 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
     setPayload(null)
     setRestoredBeian(beian_hao)
   }, [beian_hao])
+
+  useEffect(() => {
+    setMomFreq(productFreq)
+  }, [beian_hao, productFreq])
 
   useEffect(() => {
     if (!beian_hao || restoredBeian !== beian_hao) {
@@ -393,11 +402,12 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
   }, [rows, navType])
 
   const accountPoints = useMemo<CompareNavPoint[]>(() => {
-    return (payload?.series ?? [])
+    const daily = (payload?.series ?? [])
       .filter((p) => (!dateFrom || p.date >= dateFrom) && (!dateTo || p.date <= dateTo))
       .map((p) => ({ d: p.date, v: p.nav }))
       .filter((p) => Number.isFinite(p.v) && p.v > 0)
-  }, [payload?.series, dateFrom, dateTo])
+    return filterPointsByFrequency(daily, momFreq)
+  }, [payload?.series, dateFrom, dateTo, momFreq])
 
   const analysis = useMemo(
     () => (fundPoints.length >= 2 && accountPoints.length >= 2
@@ -443,6 +453,18 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
             ))}
           </select>
         </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-zinc-500">账户频率</span>
+          <select
+            value={momFreq}
+            onChange={(e) => setMomFreq(e.target.value as NavFrequencyFilter)}
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
+          >
+            {MOM_FREQ_OPTIONS.map((freq) => (
+              <option key={freq} value={freq}>{freq}</option>
+            ))}
+          </select>
+        </div>
         {payload?.advisor?.advisor_name && (
           <span>投顾：<span className="font-medium text-zinc-800">{payload.advisor.advisor_name}</span></span>
         )}
@@ -456,8 +478,8 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
         )}
       </div>
       <p className="text-[11px] text-zinc-400 leading-relaxed">
-        产品线用{navType}；账户线用 MOM 结算日报按日复利（当日盈亏−手续费+权利金净额）/ 上日结存，起点归一后对比。
-        相关性和跟踪误差只在产品净值披露日上配对，避免把周频产品当成日频。
+        产品线用{navType}；账户线用 MOM 结算日报按日复利（当日盈亏−手续费+权利金净额）/ 上日结存，再按账户频率取样，起点归一后对比。
+        账户频率默认与产品净值频率相同。相关性和跟踪误差只在产品净值披露日上配对。
       </p>
 
       {(loading || !prefsReady) && <div className="min-h-[240px] text-sm text-zinc-400 py-16 text-center">加载账户净值…</div>}

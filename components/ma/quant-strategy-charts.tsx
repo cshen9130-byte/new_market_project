@@ -129,6 +129,51 @@ interface ApiData {
   equity: { date: string; pnl: number; cumPnl: number; equity: number; margin: number; riskPct: number; ddPct: number }[]
   regime: { key: string; label: string; pnl: number; days: number; winRate: number }[]
   regimeFactors?: RegimeFactors
+  featureStability?: {
+    window: number
+    headline: string
+    notes: string[]
+    track: {
+      date: string
+      winRate: number | null
+      payoff: number | null
+      trades: number | null
+      hold: number | null
+      hedge: number | null
+      corr: number | null
+      sectorShare: number | null
+    }[]
+    regimes: {
+      family: string
+      familyLabel: string
+      key: string
+      label: string
+      days: number
+      winRate: number | null
+      payoff: number | null
+      trades: number | null
+      hold: number | null
+      hedge: number | null
+      corr: number | null
+      sectorShare: number | null
+      topSector: string | null
+    }[]
+    conditions?: {
+      key: string
+      label: string
+      days: number
+      largestRisk: { sector: string | null; share: number | null }
+      lowestRisk: { sector: string | null; share: number | null }
+      profitSector: { sector: string | null; pnl: number | null }
+      lossSector: { sector: string | null; pnl: number | null }
+    }[]
+    scatter?: {
+      volSplit: number | null
+      trendSplit?: number
+      chopSplit?: number
+      points: { dir: number; vol: number; trend?: number; chop?: number; pnl: number }[]
+    }
+  }
   sectors: { sector: string; pnl: number; lots: number; closePnl?: number; mtmPnl?: number }[]
   products: {
     code: string; name: string; sector: string; pnl: number; lots: number
@@ -166,6 +211,36 @@ const TONE: Record<Tone, string> = {
 }
 
 const PeriodCtx = createContext("")
+
+type VolClass = "高波" | "中波" | "低波"
+
+function volClassOf(label: string | null | undefined): VolClass | null {
+  if (!label) return null
+  if (label.endsWith(" · 高波")) return "高波"
+  if (label.endsWith(" · 中波")) return "中波"
+  if (label.endsWith(" · 低波")) return "低波"
+  return null
+}
+
+function labelWithoutVol(label: string): string {
+  return label.replace(/ · [高中低]波$/, "")
+}
+
+const VOL_BADGE: Record<VolClass, string> = {
+  高波: "bg-red-600 text-white",
+  中波: "bg-amber-400 text-amber-950",
+  低波: "bg-sky-700 text-white",
+}
+
+function VolBadge({ label, large = false }: { label: string | null | undefined; large?: boolean }) {
+  const vol = volClassOf(label)
+  if (!vol) return null
+  return (
+    <span className={`inline-flex items-center rounded-md font-semibold tracking-tight ${VOL_BADGE[vol]} ${large ? "px-3 py-1 text-2xl" : "px-1.5 py-0.5 text-xs"}`}>
+      {vol}
+    </span>
+  )
+}
 
 function PeriodBadge({ className = "" }: { className?: string }) {
   const period = useContext(PeriodCtx)
@@ -324,6 +399,7 @@ export default function QuantStrategyCharts() {
   const [{ from, to }, setBounds] = useState(() => boundsFor("全部"))
   const [data, setData] = useState<ApiData | null>(null)
   const [loading, setLoading] = useState(false)
+  const [factorPending, setFactorPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [compareMode, setCompareMode] = useState(false)
   const [compareRows, setCompareRows] = useState<ApiData[]>([])
@@ -337,6 +413,7 @@ export default function QuantStrategyCharts() {
   const load = useCallback(async (nextAccount: string, nextFrom: string, nextTo: string) => {
     const reqId = ++loadSeq.current
     setLoading(true)
+    setFactorPending(false)
     setError(null)
     const shown = shownRef.current
     if (shown?.from !== nextFrom || shown?.to !== nextTo || String(shown?.accountId ?? "") !== String(nextAccount)) {
@@ -344,8 +421,8 @@ export default function QuantStrategyCharts() {
       setData(null)
     }
     try {
-      const params = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo })
-      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${params}`, { cache: "no-store" })
+      const core = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo, scope: "core" })
+      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${core}`, { cache: "no-store" })
       const json = await res.json()
       if (reqId !== loadSeq.current) return
       if (!res.ok || !json.ok) throw new Error(json.error || "请求失败")
@@ -355,8 +432,25 @@ export default function QuantStrategyCharts() {
     } catch (e) {
       if (reqId !== loadSeq.current) return
       setError(e instanceof Error ? e.message : "加载失败")
+      setLoading(false)
+      return
+    }
+    if (reqId !== loadSeq.current) return
+    setLoading(false)
+    setFactorPending(true)
+    try {
+      const full = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo })
+      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${full}`, { cache: "no-store" })
+      const json = await res.json()
+      if (reqId !== loadSeq.current) return
+      if (!res.ok || !json.ok) return
+      const next = json as ApiData
+      shownRef.current = next
+      setData(next)
+    } catch {
+      if (reqId !== loadSeq.current) return
     } finally {
-      if (reqId === loadSeq.current) setLoading(false)
+      if (reqId === loadSeq.current) setFactorPending(false)
     }
   }, [])
 
@@ -372,7 +466,7 @@ export default function QuantStrategyCharts() {
     try {
       const settled = await Promise.allSettled(
         QUANT_ACCOUNT_IDS.map(async (id) => {
-          const params = new URLSearchParams({ account: String(id), from: nextFrom, to: nextTo })
+          const params = new URLSearchParams({ account: String(id), from: nextFrom, to: nextTo, scope: "core" })
           const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${params}`, { cache: "no-store" })
           const json = await res.json()
           if (!res.ok || !json.ok) throw new Error(json.error || `rx${id} 请求失败`)
@@ -638,6 +732,147 @@ export default function QuantStrategyCharts() {
     }
   }, [data?.hedge])
 
+  const stability = data?.featureStability
+  const stabilityDates = stability?.track.map((p) => p.date.slice(5)) ?? []
+  const stabilityOption = useMemo(() => {
+    const rows = stability?.track ?? []
+    if (!rows.length) return {}
+    return {
+      tooltip: { trigger: "axis" },
+      legend: { top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 44, right: 44, top: 32, bottom: 28 },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 14, bottom: 4, textStyle: { fontSize: 9 } }],
+      xAxis: { type: "category", data: stabilityDates, axisLabel: { fontSize: 10 } },
+      yAxis: [
+        { type: "value", name: "胜率%", min: 0, max: 100, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
+        { type: "value", name: "盈亏比", axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+      ],
+      series: [
+        { name: "胜率", type: "line", showSymbol: false, yAxisIndex: 0, data: rows.map((r) => r.winRate), lineStyle: { width: 2, color: UP }, itemStyle: { color: UP } },
+        { name: "盈亏比", type: "line", showSymbol: false, yAxisIndex: 1, data: rows.map((r) => r.payoff), lineStyle: { width: 2, color: BLUE }, itemStyle: { color: BLUE } },
+      ],
+    }
+  }, [stability, stabilityDates])
+  const postureOption = useMemo(() => {
+    const rows = stability?.track ?? []
+    if (!rows.length) return {}
+    return {
+      tooltip: { trigger: "axis" },
+      legend: { top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 44, right: 44, top: 32, bottom: 28 },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 14, bottom: 4, textStyle: { fontSize: 9 } }],
+      xAxis: { type: "category", data: stabilityDates, axisLabel: { fontSize: 10 } },
+      yAxis: [
+        { type: "value", name: "%", axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
+        { type: "value", name: "相关", min: -1, max: 1, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+      ],
+      series: [
+        { name: "对冲度", type: "line", showSymbol: false, data: rows.map((r) => r.hedge), lineStyle: { width: 2, color: BLUE }, itemStyle: { color: BLUE } },
+        { name: "风险贡献占比", type: "line", showSymbol: false, data: rows.map((r) => r.sectorShare), lineStyle: { width: 1.5, color: AMBER }, itemStyle: { color: AMBER } },
+        { name: "南华相关", type: "line", showSymbol: false, yAxisIndex: 1, data: rows.map((r) => r.corr), lineStyle: { width: 1.5, color: DOWN }, itemStyle: { color: DOWN } },
+      ],
+    }
+  }, [stability, stabilityDates])
+  const activityOption = useMemo(() => {
+    const rows = stability?.track ?? []
+    if (!rows.length) return {}
+    return {
+      tooltip: { trigger: "axis" },
+      legend: { top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 44, right: 44, top: 32, bottom: 28 },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 14, bottom: 4, textStyle: { fontSize: 9 } }],
+      xAxis: { type: "category", data: stabilityDates, axisLabel: { fontSize: 10 } },
+      yAxis: [
+        { type: "value", name: "天", axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
+        { type: "value", name: "手/日", axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+      ],
+      series: [
+        { name: "持有天数", type: "line", showSymbol: false, data: rows.map((r) => r.hold), lineStyle: { width: 2, color: UP }, itemStyle: { color: UP } },
+        { name: "日均开平手数", type: "line", showSymbol: false, yAxisIndex: 1, data: rows.map((r) => r.trades), lineStyle: { width: 1.5, color: BLUE }, itemStyle: { color: BLUE } },
+      ],
+    }
+  }, [stability, stabilityDates])
+  const regimeFeatureOption = useMemo(() => {
+    const rows = stability?.regimes ?? []
+    if (!rows.length) return {}
+    return {
+      tooltip: { trigger: "axis" },
+      legend: { top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 44, right: 44, top: 32, bottom: 48 },
+      xAxis: { type: "category", data: rows.map((r) => `${r.label}\n${r.days}天`), axisLabel: { fontSize: 10, interval: 0 } },
+      yAxis: [
+        { type: "value", name: "胜率%", min: 0, max: 100, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } } },
+        { type: "value", name: "盈亏比", axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+      ],
+      series: [
+        { name: "胜率", type: "bar", barMaxWidth: 22, data: rows.map((r) => r.winRate), itemStyle: { color: UP } },
+        { name: "盈亏比", type: "line", yAxisIndex: 1, data: rows.map((r) => r.payoff), lineStyle: { width: 2, color: BLUE }, itemStyle: { color: BLUE } },
+      ],
+    }
+  }, [stability])
+  const marketScatters = useMemo(() => {
+    const pts = stability?.scatter?.points ?? []
+    const spec = [
+      { key: "vol", yName: "市场低波动 → 市场高波动", yOf: (p: { vol: number }) => p.vol, split: stability?.scatter?.volSplit ?? null, splitLabel: "以上为市场高波动", yTip: "年化波动" },
+      { key: "trend", yName: "弱趋势 → 市场趋势", yOf: (p: { trend?: number }) => p.trend ?? null, split: stability?.scatter?.trendSplit ?? null, splitLabel: "以上为市场趋势", yTip: "趋势效率" },
+      { key: "chop", yName: "弱震荡 → 市场震荡", yOf: (p: { chop?: number }) => p.chop ?? null, split: stability?.scatter?.chopSplit ?? null, splitLabel: "以上为市场震荡", yTip: "来回程度" },
+    ] as const
+    return spec.map((item) => {
+      const win = pts.filter((p) => p.pnl > 0 && item.yOf(p) != null).map((p) => [p.dir, item.yOf(p)])
+      const loss = pts.filter((p) => p.pnl < 0 && item.yOf(p) != null).map((p) => [p.dir, item.yOf(p)])
+      if (!win.length && !loss.length) return { key: item.key, option: null }
+      return {
+        key: item.key,
+        option: {
+          tooltip: {
+            trigger: "item" as const,
+            formatter: (p: { seriesName?: string; value?: number[] }) => {
+              const v = p.value ?? []
+              return `${p.seriesName ?? ""}<br/>南华20日 ${v[0]?.toFixed(1) ?? "—"}%<br/>${item.yTip} ${v[1]?.toFixed(1) ?? "—"}%`
+            },
+          },
+          legend: { top: 0, right: 0, textStyle: { fontSize: 11 } },
+          grid: { left: 64, right: 16, top: 28, bottom: 40 },
+          xAxis: {
+            type: "value" as const,
+            name: "市场下跌  ←    市场上涨",
+            nameLocation: "middle" as const,
+            nameGap: 26,
+            nameTextStyle: { fontSize: 11 },
+            axisLabel: { fontSize: 10, formatter: (v: number) => `${v}%` },
+            splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+          },
+          yAxis: {
+            type: "value" as const,
+            name: item.yName,
+            nameLocation: "middle" as const,
+            nameGap: 42,
+            nameRotate: 90,
+            nameTextStyle: { fontSize: 11 },
+            axisLabel: { fontSize: 10, formatter: (v: number) => `${v}%` },
+            splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+          },
+          series: [
+            {
+              name: "盈利",
+              type: "scatter" as const,
+              data: win,
+              symbolSize: 8,
+              itemStyle: { color: UP },
+              markLine: item.split == null ? undefined : {
+                silent: true,
+                symbol: "none",
+                lineStyle: { type: "dashed" as const, color: "#94a3b8" },
+                data: [{ yAxis: item.split, label: { formatter: item.splitLabel, fontSize: 10, position: "insideStartTop" } }],
+              },
+            },
+            { name: "亏损", type: "scatter" as const, data: loss, symbolSize: 8, itemStyle: { color: DOWN } },
+          ],
+        },
+      }
+    })
+  }, [stability])
+
   const lsOption = useMemo(() => {
     const ls = data?.longShort
     if (!ls) return {}
@@ -771,8 +1006,9 @@ export default function QuantStrategyCharts() {
       ) : (
       <div key={viewKey} className={`space-y-5 ${loading ? "opacity-60 pointer-events-none" : ""}`}>
       <div className="rounded-lg border border-border p-4 space-y-3">
-        <div className="flex flex-wrap items-baseline gap-3">
-          <h2 className="text-lg font-semibold tracking-tight">{data?.portrait.strategyLabel ?? (loading ? "分析中…" : "—")}</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <VolBadge label={data?.portrait.strategyLabel} large />
+          <h2 className="text-lg font-semibold tracking-tight">{data?.portrait.strategyLabel ? labelWithoutVol(data.portrait.strategyLabel) : (loading ? "分析中…" : "—")}</h2>
           <PeriodBadge />
           {k?.corrNhci != null && (
             <span className="text-xs text-muted-foreground">南华相关 {k.corrNhci}</span>
@@ -796,6 +1032,78 @@ export default function QuantStrategyCharts() {
           )}
         </div>
       </div>
+
+      {stability && stability.track.length > 0 && (
+        <div className="space-y-4">
+          {(stability.conditions?.length ?? 0) > 0 && (
+          <div className="rounded-lg border border-border p-4 space-y-2">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-border text-left text-muted-foreground">
+                      <th className="py-1.5 pr-3 font-medium"> </th>
+                      {stability.conditions!.map((col) => (
+                        <th key={col.key} className="py-1.5 pr-3 font-medium">{col.label}<span className="block font-normal">{col.days} 天</span></th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {([
+                      ["风险贡献最大板块", (col: NonNullable<typeof stability.conditions>[number]) => col.largestRisk.sector ? `${col.largestRisk.sector} ${col.largestRisk.share?.toFixed(0) ?? ""}%` : "—"],
+                      ["风险贡献最小板块", (col: NonNullable<typeof stability.conditions>[number]) => col.lowestRisk.sector ? `${col.lowestRisk.sector} ${col.lowestRisk.share?.toFixed(0) ?? ""}%` : "—"],
+                      ["盈利板块", (col: NonNullable<typeof stability.conditions>[number]) => col.profitSector.sector ? `${col.profitSector.sector} ${fmtWan(col.profitSector.pnl)}` : "—"],
+                      ["亏损板块", (col: NonNullable<typeof stability.conditions>[number]) => col.lossSector.sector ? `${col.lossSector.sector} ${fmtWan(col.lossSector.pnl)}` : "—"],
+                    ] as const).map(([label, cell]) => (
+                      <tr key={label} className="border-b border-border/60">
+                        <td className="py-1.5 pr-3 text-muted-foreground whitespace-nowrap">{label}</td>
+                        {stability.conditions!.map((col) => (
+                          <td key={col.key} className="py-1.5 pr-3">{cell(col)}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">市场高波动、市场低波动按南华 20 日波动相对这段样本的中位数。市场上涨、市场下跌按南华 20 日收益方向。这是市场状态，不是账户自己的高波、中波、低波。风险贡献是该板块占组合方差的比例。盈亏是这些日子里平仓盈亏加持仓盯市。</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium mb-1">当日盈亏在市场状态里的位置</p>
+                <p className="text-[11px] text-muted-foreground mb-1">横轴都是南华 20 日涨跌。红点是当天盈利，绿点是当天亏损。上面纵轴是波动，下面两张分别是趋势效率和来回程度。趋势效率 = 20 日净位移 / 路径长度，35% 以上算市场趋势；来回程度是它的补数，65% 以上算市场震荡。</p>
+                {marketScatters.filter((chart) => chart.key === "vol" && chart.option).map((chart) => (
+                  <ReactECharts key={`${viewKey}-mkt-${chart.key}`} option={chart.option} style={{ height: 280, width: "100%" }} notMerge />
+                ))}
+              </div>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {marketScatters.filter((chart) => chart.key !== "vol" && chart.option).map((chart) => (
+                  <ReactECharts key={`${viewKey}-mkt-${chart.key}`} option={chart.option} style={{ height: 280, width: "100%" }} notMerge />
+                ))}
+              </div>
+          </div>
+          )}
+          <div className="rounded-lg border border-border p-4 space-y-2">
+            <h3 className="text-sm font-medium">特征是否稳</h3>
+            <p className="text-sm leading-relaxed">{stability.headline}</p>
+            {stability.notes.map((note) => (
+              <p key={note.slice(0, 24)} className="text-sm text-muted-foreground leading-relaxed">{note}</p>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <ChartCard title="胜率与盈亏比" caption={`每 ${stability.window} 个交易日滚一次。两条线反向走，就是全样本平均看不出来的风格切换。`}>
+              <ReactECharts key={`${viewKey}-stab-wp`} option={stabilityOption} style={{ height: 280, width: "100%" }} notMerge />
+            </ChartCard>
+            <ChartCard title="不同市况下的胜率与盈亏比" caption="趋势/震荡按南华 5、20、60 日是否同向。南华上行按 20 日收益符号。波动按 20 日波动相对这段样本的中位数。">
+              <ReactECharts key={`${viewKey}-stab-rg`} option={regimeFeatureOption} style={{ height: 280, width: "100%" }} notMerge />
+            </ChartCard>
+            <ChartCard title="对冲、风险贡献和南华相关" caption="板块线是风险贡献最大的板块占组合方差的比例，不是持仓市值。国债市值可以很大，波动低，贡献就小。南华相关是这 20 天里日盈亏和南华日收益的相关。">
+              <ReactECharts key={`${viewKey}-stab-hd`} option={postureOption} style={{ height: 280, width: "100%" }} notMerge />
+            </ChartCard>
+            <ChartCard title="持有天数和交易频率" caption="持有天数按平仓手数加权。频率是这段窗口里每天的开仓手数加平仓手数。">
+              <ReactECharts key={`${viewKey}-stab-ac`} option={activityOption} style={{ height: 280, width: "100%" }} notMerge />
+            </ChartCard>
+          </div>
+        </div>
+      )}
 
       {data?.inference && (
         <InferPanel
@@ -934,6 +1242,9 @@ export default function QuantStrategyCharts() {
         {(data?.hedge?.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-hedge`} option={hedgeOption} style={{ height: 260, width: "100%" }} notMerge />}
       </ChartCard>
 
+      {factorPending && !data?.factorDml && (
+        <p className="text-sm text-muted-foreground">因子推断计算中，上面的结论先出来。</p>
+      )}
       {data?.factorDml && <FactorDmlPanel report={data.factorDml} period={periodText} />}
 
       <Card>
@@ -1064,6 +1375,82 @@ const PORTRAIT_COMPARE_TITLES = [
   "不擅长",
 ] as const
 
+const MARKET_COLS = [
+  { key: "volHigh", label: "市场高波动" },
+  { key: "volLow", label: "市场低波动" },
+  { key: "nhUp", label: "市场上涨" },
+  { key: "nhDown", label: "市场下跌" },
+] as const
+
+type MarketCell = { sector: string | null; metric: number | null }
+
+function marketHeatmap(
+  rows: ApiData[],
+  pick: (c: NonNullable<NonNullable<ApiData["featureStability"]>["conditions"]>[number]) => MarketCell,
+  mode: "pnl" | "share",
+) {
+  const accounts = rows.map((r) => accLabel(r))
+  const data: { value: [number, number, number]; sector: string }[] = []
+  let lo = 0
+  let hi = 0
+  rows.forEach((r, yi) => {
+    for (let xi = 0; xi < MARKET_COLS.length; xi++) {
+      const col = MARKET_COLS[xi]!
+      const cell = r.featureStability?.conditions?.find((c) => c.key === col.key)
+      if (!cell) continue
+      const picked = pick(cell)
+      if (picked.metric == null || !picked.sector) continue
+      data.push({ value: [xi, yi, picked.metric], sector: picked.sector })
+      lo = Math.min(lo, picked.metric)
+      hi = Math.max(hi, picked.metric)
+    }
+  })
+  if (!data.length) return null
+  const bound = mode === "pnl" ? Math.max(Math.abs(lo), Math.abs(hi), 1) : 100
+  return {
+    tooltip: {
+      formatter: (p: { data?: { sector?: string; value?: number[] } }) => {
+        const sector = p.data?.sector ?? "—"
+        const v = p.data?.value?.[2]
+        const metric = mode === "pnl" ? fmtWan(v) : v == null ? "—" : `${v.toFixed(0)}%`
+        return `${sector}<br/>${metric}`
+      },
+    },
+    grid: { left: 56, right: 16, top: 8, bottom: 52 },
+    xAxis: { type: "category" as const, data: MARKET_COLS.map((c) => c.label), axisLabel: { fontSize: 11 }, splitArea: { show: true } },
+    yAxis: { type: "category" as const, data: accounts, axisLabel: { fontSize: 11 }, splitArea: { show: true } },
+    visualMap: {
+      min: mode === "pnl" ? -bound : 0,
+      max: bound,
+      calculable: false,
+      orient: "horizontal" as const,
+      left: "center",
+      bottom: 0,
+      itemWidth: 12,
+      itemHeight: 80,
+      text: mode === "pnl" ? ["盈", "亏"] : ["占比高", "占比低"],
+      textStyle: { fontSize: 10 },
+      inRange: { color: mode === "pnl" ? [DOWN, "#f5f5f4", UP] : ["#e0f2fe", "#0369a1"] },
+    },
+    series: [{
+      type: "heatmap" as const,
+      data,
+      label: {
+        show: true,
+        fontSize: 10,
+        color: "#111827",
+        formatter: (p: { data?: { sector?: string; value?: number[] } }) => {
+          const sector = p.data?.sector ?? "—"
+          const v = p.data?.value?.[2]
+          const metric = mode === "pnl" ? fmtWan(v) : v == null ? "" : `${v.toFixed(0)}%`
+          return `${sector}\n${metric}`
+        },
+      },
+      emphasis: { itemStyle: { shadowBlur: 6 } },
+    }],
+  }
+}
+
 function CompareView({
   rows,
   loading,
@@ -1143,6 +1530,36 @@ function CompareView({
   }, [rows, compareFamilies])
 
   const insights = useMemo(() => buildCompareInsights(rows), [rows])
+  const marketCharts = useMemo(() => {
+    const height = Math.max(280, 52 + rows.length * 46)
+    const specs: { key: string; title: string; caption: string; option: ReturnType<typeof marketHeatmap> }[] = [
+      {
+        key: "risk-hi",
+        title: "市况对照 · 风险贡献最大板块",
+        caption: "格子是该账户在这种市场状态下，占组合方差最多的板块。颜色是占比。",
+        option: marketHeatmap(rows, (c) => ({ sector: c.largestRisk.sector, metric: c.largestRisk.share }), "share"),
+      },
+      {
+        key: "risk-lo",
+        title: "市况对照 · 风险贡献最小板块",
+        caption: "格子是占组合方差最少、且这段市况里经常在仓的板块。颜色是占比。",
+        option: marketHeatmap(rows, (c) => ({ sector: c.lowestRisk.sector, metric: c.lowestRisk.share }), "share"),
+      },
+      {
+        key: "profit",
+        title: "市况对照 · 盈利板块",
+        caption: "格子是这种市场状态下平仓加盯市赚得最多的板块。红色更赚，绿色更亏。",
+        option: marketHeatmap(rows, (c) => ({ sector: c.profitSector.sector, metric: c.profitSector.pnl }), "pnl"),
+      },
+      {
+        key: "loss",
+        title: "市况对照 · 亏损板块",
+        caption: "格子是这种市场状态下亏得最多的板块。红色更赚，绿色更亏。",
+        option: marketHeatmap(rows, (c) => ({ sector: c.lossSector.sector, metric: c.lossSector.pnl }), "pnl"),
+      },
+    ]
+    return { height, specs: specs.filter((s) => s.option) }
+  }, [rows])
 
   const kpiRows = useMemo(() => {
     const pnls = rows.map((r) => r.kpis?.totalPnl)
@@ -1205,14 +1622,18 @@ function CompareView({
             <div className="flex items-center gap-2 mb-1">
               <span className="h-2 w-2 rounded-full shrink-0" style={{ background: PALETTE[i % PALETTE.length] }} />
               <span className="text-sm font-semibold">{accLabel(r)}</span>
+              <VolBadge label={r.portrait?.strategyLabel} />
             </div>
-            <div className="text-xs font-medium mb-1">{r.portrait?.strategyLabel ?? "—"}</div>
+            <div className="text-xs font-medium mb-1">{r.portrait?.strategyLabel ? labelWithoutVol(r.portrait.strategyLabel) : "—"}</div>
             <div className="text-lg font-semibold tabular-nums" style={{ color: pnlColor(r.kpis?.totalPnl ?? 0) }}>
               {fmtWan(r.kpis?.totalPnl)}
             </div>
             <p className="text-[11px] text-muted-foreground mt-0.5">
               日胜率 {fmtPct(r.kpis?.dayWinRate, 0)} · 夏普 {r.kpis?.sharpe?.toFixed(2) ?? "—"} · 回撤 {fmtPct(r.kpis?.maxDdPct)}
             </p>
+            {r.featureStability?.headline && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.featureStability.headline}</p>
+            )}
             {r.inference?.headline && (
               <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.inference.headline}</p>
             )}
@@ -1286,6 +1707,16 @@ function CompareView({
           <ReactECharts option={overlayOption} style={{ height: 320, width: "100%" }} notMerge />
         )}
       </ChartCard>
+
+      {marketCharts.specs.length > 0 && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {marketCharts.specs.map((spec) => (
+            <ChartCard key={spec.key} title={spec.title} caption={spec.caption}>
+              <ReactECharts option={spec.option} style={{ height: marketCharts.height, width: "100%" }} notMerge />
+            </ChartCard>
+          ))}
+        </div>
+      )}
 
       {compareFamilyOptions.map((fam) => (
         <ChartCard key={fam.key} title={`${fam.title}对照`} caption="同一因子分档下各账户的日均盈亏。" help={helpForFactor(fam.key, fam.title)}>

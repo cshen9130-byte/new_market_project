@@ -2303,3 +2303,44 @@ npx tsx scripts/test-nav-rechain.mjs
 
 Includes **SASK40 HTSC 净值表 keeps Jul 17/24/31 drawdown**, **weekly unit-only 净值表 keeps −5.8% Fri dip**, **净值表 sparse gap kept without 累计**, **SBBC18 skips 估值表 holdings crash across June→Aug**, **SBBC18 still skips 估值表 holdings in a ≥21d mid-series hole**.
 
+---
+
+## What Was Fixed (星阔江月2号B类 — NW169B, TA虚拟净值 cum copied from unit, 2026-09-24)
+
+### The Problem
+
+`/ma/dashboard/private-funds/NW169B` was correct through **2026-05-06** (单位 **1.0180**, 累计 **1.3910**, 复权 **1.4417**) and then collapsed. From **2026-05-07** the table showed 单位 = 累计 = 复权 (**1.0200**), 涨跌幅 **−29.25%**. Header on **2026-09-22** was **1.0630 / 1.0630 / 1.0630**.
+
+The parent 资产净值公告 (`SNW169`) on those same dates already had the dividend gap (2026-05-07 单位 **1.020** / 累计 **1.393**; 2026-09-22 单位 **1.063** / 累计 **1.436**).
+
+### Root Cause
+
+B类 TA虚拟净值 (`product_code = NW169B`, subject contains `B类`) stores 累计 = 单位. Share-class filtering keeps that row and drops the parent 公告 because the 公告 name has no `B类`. Virtual tier then never sees the 公告, so the copied 累计 resets the series.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Same-unit 累计 borrow | `borrowSameUnitParentCumulative` in `selectEmailNavSeriesRows` | When the chosen row has no dividend gap, copy 累计 from a same-date parent row whose **单位 matches** and whose 累计 is a real gap. Clear copied 复权 so merge rechains it. |
+
+### What This Fix Does NOT Change
+
+- SNF018 virtual-first: 公告 unit is the cumulative scale, so units do not match and virtual unit + cum stay
+- SBAH99 dividend formulas, SSG947 seed merge, SQX078 swap repair, SASK40 / SBBC18 估值表 skip
+- `syncExDivAdjustedNav` / `rechainDerivedFromPrev` / `propagateMissingAdjRows`
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-05-06 | 1.018 | 1.391 | 1.4417 |
+| 2026-05-07 | 1.020 | **1.393** | 1.4445 |
+| 2026-09-22 | 1.063 | **1.436** | 1.5062 |
+| 2026-09-23 | 1.065 | **1.438** | 1.5090 |
+
+Refresh only this detail cache:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=NW169B --name=星阔江月2号B类
+```
+

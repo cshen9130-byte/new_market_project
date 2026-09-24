@@ -718,7 +718,15 @@ def login(page, user_id: str, password: str) -> None:
 
         err = page_error_text(page)
         log(f"Still on login page. {err or 'No error text.'}")
-        if "验证码" in err or "verif" in err.lower() or not err:
+        lowered = err.lower()
+        if "超过" in err or "3 times" in lowered or "分钟后再试" in err or "try again after" in lowered:
+            raise RuntimeError(err)
+        # A wrong captcha is sometimes reported as a bad password. Stop before the
+        # site's third strike, which locks the account for about an hour.
+        if "验证码" in err or "verif" in lowered or not err or "password" in lowered or "密码" in err:
+            if "password" in lowered or "密码" in err:
+                if attempt >= 2:
+                    raise RuntimeError(err)
             page.locator(".login-form-refresh-captcha-btn").click()
             time.sleep(0.4)
             continue

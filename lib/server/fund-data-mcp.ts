@@ -1,3 +1,4 @@
+import { callAccountMcpTool } from "@/lib/server/account-mcp"
 import {
   getCompanyFundList,
   getCompanyInfo,
@@ -8,6 +9,7 @@ import {
   getFundView,
   searchFunds,
 } from "@/lib/server/fund-data-api"
+import { accountToolsFor, mcpAccountArea, type McpAccount } from "@/lib/server/mcp-account-access"
 
 export type FundDataMcpTool = {
   name: string
@@ -206,9 +208,16 @@ export async function callFundDataTool(
   }
 }
 
+function publicToolShape<T extends { name: string; description: string; inputSchema: Record<string, unknown> }>(
+  tool: T,
+) {
+  return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema }
+}
+
 /** JSON-RPC result body, or null for notifications (no response). */
 export async function handleFundDataMcpRpc(
   msg: McpJsonRpc,
+  account?: McpAccount | null,
 ): Promise<Record<string, unknown> | null> {
   const method = String(msg.method ?? "")
   const id = msg.id
@@ -221,7 +230,7 @@ export async function handleFundDataMcpRpc(
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "fund-data", version: "1.0.0" },
+        serverInfo: { name: "fund-data", version: "1.1.0" },
       },
     }
   }
@@ -231,14 +240,20 @@ export async function handleFundDataMcpRpc(
     return { jsonrpc: "2.0", id: id ?? null, result: {} }
   }
   if (method === "tools/list") {
-    return { jsonrpc: "2.0", id: id ?? null, result: { tools: FUND_DATA_MCP_TOOLS } }
+    const tools = [
+      ...FUND_DATA_MCP_TOOLS.map(publicToolShape),
+      ...accountToolsFor(account).map(publicToolShape),
+    ]
+    return { jsonrpc: "2.0", id: id ?? null, result: { tools } }
   }
   if (method === "tools/call") {
     const params = asRecord(msg.params)
     const name = String(params.name ?? "")
     const args = asRecord(params.arguments)
     try {
-      const data = await callFundDataTool(name, args)
+      const data = mcpAccountArea(name)
+        ? await callAccountMcpTool(account, name, args)
+        : await callFundDataTool(name, args)
       return {
         jsonrpc: "2.0",
         id: id ?? null,

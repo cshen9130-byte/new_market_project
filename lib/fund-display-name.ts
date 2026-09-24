@@ -87,6 +87,29 @@ function displayNameKey(label: string): string {
     .replace(/份额$/u, "")
 }
 
+function trailingShareClass(label: string): string {
+  return label.match(/([A-Z])类$/u)?.[1] ?? ""
+}
+
+/** EJ748B → B. Parent codes such as SEJ748 are left unchanged. */
+function shareClassLetterFromBeian(beianHao: string | null | undefined): string {
+  return String(beianHao ?? "").trim().toUpperCase().match(/([ABC])$/u)?.[1] ?? ""
+}
+
+/**
+ * When both stored names omit the class, the filing code is the remaining signal
+ * (众量资产聚宝19号 + EJ748B → 众量资产聚宝19号B类).
+ */
+export function appendShareClassFromBeian(
+  label: string,
+  beianHao: string | null | undefined,
+): string {
+  const name = label.trim()
+  const letter = shareClassLetterFromBeian(beianHao)
+  if (!name || !letter || trailingShareClass(name)) return name
+  return `${name}${letter}类`
+}
+
 function toDisplayLabel(raw: string): string {
   // Drop 估值表 subject-path prefixes (场外_已上市_开放式_私募_…) before legal cleanup.
   const withoutSubjectPath = stripValuationSubjectPathPrefix(raw) || raw
@@ -99,11 +122,13 @@ function toDisplayLabel(raw: string): string {
 /**
  * Preferred table/chart label.
  * Note: some APIs invert fields (short_name = full legal name, product_name = short).
- * We normalize both and keep the shortest clean label.
+ * We normalize both and keep the shortest clean label, unless only one of them
+ * still has the A/B/C share class.
  */
 export function resolveFundDisplayLabel(
   shortName: string | null | undefined,
   productName: string,
+  beianHao?: string | null,
 ): string {
   const productLabel = toDisplayLabel((productName ?? "").trim())
   const shortLabel = toDisplayLabel((shortName ?? "").trim())
@@ -114,7 +139,13 @@ export function resolveFundDisplayLabel(
   // A rename (兰盈中性增强 vs 兰盈俱乐部3号) is not a full-name/short-name pair.
   // Keep product_name: list and detail APIs put the AMAC official name there.
   if (productKey && shortKey && productKey !== shortKey) return productLabel
+  // Same product: a short name often omits A/B/C类. Keep the class-bearing label.
+  const productClass = trailingShareClass(productLabel)
+  const shortClass = trailingShareClass(shortLabel)
+  if (productClass && !shortClass) return productLabel
+  if (shortClass && !productClass) return shortLabel
   // Prefer product_name first for equal-length ties — in several list APIs it is
   // already the shorter/display name while short_name holds the full legal name.
-  return labels.reduce((a, b) => (a.length <= b.length ? a : b))
+  const shortest = labels.reduce((a, b) => (a.length <= b.length ? a : b))
+  return appendShareClassFromBeian(shortest, beianHao)
 }

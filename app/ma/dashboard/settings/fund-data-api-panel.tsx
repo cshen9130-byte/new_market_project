@@ -211,8 +211,17 @@ const json = await res.json()  // { error_code, msg, data }`}
 }`}
         />
         <p className="text-xs text-zinc-400 mt-3">
-          可用工具：fund_search、fund_info、fund_price、fund_multi_price、fund_advanced_list、fund_view、company_info、company_fund_list。
+          公开工具：fund_search、fund_info、fund_price、fund_multi_price、fund_advanced_list、fund_view、company_info、company_fund_list。
         </p>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
+          同一地址还会按<strong>当前 API Key 所属账户</strong>开放内部工具。没有对应页面权限时，tools/list 不会列出该工具，直接调用也会被拒绝。
+        </p>
+        <ul className="mt-2 text-sm text-zinc-500 dark:text-zinc-400 space-y-1 list-disc pl-5">
+          <li>跟踪池（需 MA / 投资）：tracking_pools、tracking_pool_list、tracking_pool_detail。列表含策略分级、策略标签、开放日、费率、净值。</li>
+          <li>在管产品（需投资池权限）：managed_products_list。没有「在管产品」权限时，MCP 同样无法查询。</li>
+          <li>AI 研究员（需 AI 研究员）：同策略对比、相似/相反基金、路演扫描、团队背景、管理人画像。</li>
+          <li>AI 知识库（需 AI 知识库）：kb_list、kb_read、kb_ask。</li>
+        </ul>
       </section>
 
       <section>

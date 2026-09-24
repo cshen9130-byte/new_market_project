@@ -110,6 +110,70 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   // 交睿宏观配置5号A类: older 金舆锡泰一号 估值表 used custodian ticker 7V034A.
   "7V034A": "ZY084A",
   "7V034": "ZY084A",
+  // Custodian / name / 总层面 codes for the same product as the AMAC 备案号.
+  CESX2W: "SAGF75",
+  "场外_已上市_开放式_私募_成本.诚奇浦江CTA1号": "SSB595",
+  "多璨价值驱动6号B": "SH724B",
+  ZB0807: "SXL292",
+  "SADE15_总层面": "SADE15",
+  XY7653: "SVH952",
+  "SBMT21_总层面": "SBMT21",
+  XY5995: "SQP359",
+  HGPZ01: "SLN974",
+  "金舆木盛那平江1号": "SCP742",
+  "宽价种子1号B": "AKD71B",
+  SBSS95O: "SBSS95",
+  "SX4966(总)": "SX4966",
+  AAZG5A: "ASX73A",
+  A500: "SBNJ90",
+  "SAHZ51_总层面": "SAHZ51",
+  "奇盾抱朴专享1号": "SBGD35",
+  "SAYS34(总)": "SAYS34",
+  "睿量原子8号": "SASP78",
+  ZXD33X202405010008695: "SGC095",
+  AANT7A: "VR172A",
+  "SAMS33_总层面": "SAMS33",
+  "STA785(总)": "STA785",
+  "稳博鹏瑞套利2号": "SAJX62",
+  T07972: "SQU741",
+  "自然红启程2号": "SBSQ40",
+  "AYS34B(B级)": "AYS34B",
+  "GM266C(C级)": "GM266C",
+  "BWF50A(A级)": "BWF50A",
+  // 俊丹鹰击一号: A类代码 BAK10A is the same fund as AMAC 备案号 SBAK10.
+  BAK10A: "SBAK10",
+}
+
+/** Canonical 备案号 plus every custodian/估值表 code that points at the same product. */
+export function productCodeAliasFamily(code: string | null | undefined): string[] {
+  const c = String(code ?? "").trim().toUpperCase()
+  if (!c) return []
+  const canonical = (FOF_VALUATION_CODE_ALIASES[c] ?? c).toUpperCase()
+  const family = new Set<string>([c, canonical])
+  for (const [alias, target] of Object.entries(FOF_VALUATION_CODE_ALIASES)) {
+    const a = alias.toUpperCase()
+    const t = target.toUpperCase()
+    if (a === canonical || t === canonical || a === c || t === c) {
+      family.add(a)
+      family.add(t)
+    }
+  }
+  return [...family]
+}
+
+export function canonicalProductCode(code: string | null | undefined): string {
+  const c = String(code ?? "").trim().toUpperCase()
+  if (!c) return ""
+  return (FOF_VALUATION_CODE_ALIASES[c] ?? c).toUpperCase()
+}
+
+/** SQL: custodian / 估值表 code → AMAC 备案号. Unknown codes stay uppercased. */
+export function sqlCanonicalProductCode(expr: string): string {
+  const q = (s: string) => s.replace(/'/g, "''")
+  const arms = Object.entries(FOF_VALUATION_CODE_ALIASES)
+    .map(([alias, target]) => `WHEN '${q(alias)}' THEN '${q(target)}'`)
+    .join(" ")
+  return `CASE UPPER(BTRIM(COALESCE(${expr}, ''))) ${arms} ELSE UPPER(BTRIM(COALESCE(${expr}, ''))) END`
 }
 
 export function resolveFofValuationCodeAlias(code: string | null | undefined): string | null {

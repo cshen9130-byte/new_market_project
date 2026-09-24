@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { productCodeAliasFamily } from "@/lib/server/fund-holding-code"
 import {
   isKnownCustomPoolKey,
   purgeOrphanedCustomPoolMemberships,
@@ -88,11 +89,44 @@ function parseBeianList(searchParams: URLSearchParams): string[] {
   return out
 }
 
+function aliasLookupKeys(beians: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const b of beians) {
+    for (const code of productCodeAliasFamily(b)) {
+      if (seen.has(code)) continue
+      seen.add(code)
+      out.push(code)
+    }
+  }
+  return out
+}
+
+/** Same product under a custodian code and a 备案号 shares one pool set. */
+function mergeAliasPools(
+  requested: string[],
+  byCode: Map<string, { pool_key: string; pool_label: string }[]>,
+): Map<string, { pool_key: string; pool_label: string }[]> {
+  const merged = new Map<string, { pool_key: string; pool_label: string }[]>()
+  for (const b of requested) {
+    const list: { pool_key: string; pool_label: string }[] = []
+    for (const code of productCodeAliasFamily(b)) {
+      for (const pool of byCode.get(code) ?? []) {
+        if (list.some((x) => x.pool_key === pool.pool_key)) continue
+        list.push(pool)
+      }
+    }
+    merged.set(b, list)
+  }
+  return merged
+}
+
 async function loadPoolMembershipsByBeian(
   beians: string[],
 ): Promise<Map<string, { pool_key: string; pool_label: string }[]>> {
+  const lookup = aliasLookupKeys(beians)
   const byBeian = new Map<string, { pool_key: string; pool_label: string }[]>()
-  for (const b of beians) byBeian.set(b, [])
+  for (const b of lookup) byBeian.set(b, [])
 
   let labelByKey = new Map(Object.entries(POOL_LABELS))
   try {
@@ -110,11 +144,11 @@ async function loadPoolMembershipsByBeian(
         `SELECT DISTINCT ${p.col} AS beian
          FROM ${p.table}
          WHERE ${p.col} = ANY($1::text[])`,
-        [beians],
+        [lookup],
       )
       const label = labelByKey.get(p.key) ?? POOL_LABELS[p.key] ?? p.key
       for (const row of rows) {
-        const beian = String(row.beian ?? "").trim()
+        const beian = String(row.beian ?? "").trim().toUpperCase()
         if (!beian) continue
         const list = byBeian.get(beian)
         if (!list) continue
@@ -130,10 +164,10 @@ async function loadPoolMembershipsByBeian(
        FROM user_custom_pool u
        LEFT JOIN tracking_custom_pools p ON p.pool_key = u.pool_key
        WHERE u.register_number = ANY($1::text[])`,
-      [beians],
+      [lookup],
     )
     for (const row of customRows) {
-      const beian = String(row.register_number ?? "").trim()
+      const beian = String(row.register_number ?? "").trim().toUpperCase()
       if (!beian) continue
       if (!isKnownCustomPoolKey(row.pool_key, definedPoolKeys)) continue
       const list = byBeian.get(beian)
@@ -146,7 +180,7 @@ async function loadPoolMembershipsByBeian(
     }
   } catch { /* table may not exist */ }
 
-  return byBeian
+  return mergeAliasPools(beians, byBeian)
 }
 
 export async function GET(req: Request) {
@@ -159,18 +193,23 @@ export async function GET(req: Request) {
     // Empty / missing → keep old single-beian contract shape
     if (beians.length === 0) return NextResponse.json({ tags: [], pools: [] })
 
+    const lookup = aliasLookupKeys(beians)
     const tags = await query<FundTagRow>(
       `SELECT id, beian_hao, tag_name, created_by, created_at
        FROM ops_fund_tags
-       WHERE beian_hao = ANY($1::text[])
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
        ORDER BY created_at`,
-      [beians],
+      [lookup],
     )
     const tagsByBeian = new Map<string, string[]>()
     for (const b of beians) tagsByBeian.set(b, [])
     for (const t of tags) {
-      const list = tagsByBeian.get(t.beian_hao)
-      if (list) list.push(t.tag_name)
+      const owner = String(t.beian_hao ?? "").trim().toUpperCase()
+      for (const b of beians) {
+        if (!productCodeAliasFamily(b).includes(owner)) continue
+        const list = tagsByBeian.get(b)
+        if (list && !list.includes(t.tag_name)) list.push(t.tag_name)
+      }
     }
 
     const poolsByBeian = await loadPoolMembershipsByBeian(beians)

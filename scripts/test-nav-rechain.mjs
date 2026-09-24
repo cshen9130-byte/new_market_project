@@ -3779,3 +3779,100 @@ if (fs.existsSync(excelPath)) {
   )
 }
 
+{
+  const nw169 = selectEmailNavSeriesRows(
+    [
+      {
+        nav_date: "2026-05-06",
+        nav: "1.018",
+        cumulative_nav: "1.391",
+        adjusted_nav: "1.391",
+        product_code: "SNW169",
+        fund_name: "星阔江月2号",
+        attachment_filename: null,
+        subject: "资产净值公告_SNW169_星阔江月2号私募证券投资基金_2026-05-06",
+        source: "attachment_nav_table",
+      },
+      {
+        nav_date: "2026-05-07",
+        nav: "1.02",
+        cumulative_nav: "1.02",
+        adjusted_nav: null,
+        product_code: "NW169B",
+        fund_name: "星阔江月2号B类",
+        attachment_filename: null,
+        subject: "国泰海通证券资产托管发送：星阔江月2号私募证券投资基金B【衡颐海泰1号私募证券投资基金】TA虚拟净值_2026-05-07",
+        source: "body_table",
+      },
+      {
+        nav_date: "2026-05-07",
+        nav: "1.02",
+        cumulative_nav: "1.393",
+        adjusted_nav: "1.393",
+        product_code: "SNW169",
+        fund_name: "星阔江月2号",
+        attachment_filename: null,
+        subject: "资产净值公告_SNW169_星阔江月2号私募证券投资基金_2026-05-07",
+        source: "attachment_nav_table",
+      },
+    ],
+    "NW169B",
+    ["星阔江月2号B类"],
+  )
+  const may7 = nw169.find((row) => row.nav_date === "2026-05-07")
+  assert(
+    "NW169B virtual keeps unit and borrows 公告 累计",
+    may7 != null && Math.abs(parseFloat(may7.nav) - 1.02) < 1e-6 && Math.abs(parseFloat(may7.cumulative_nav) - 1.393) < 1e-6,
+  )
+  const merged = mergeNavSeriesWithEmail([], nw169.map((row) => ({
+    price_date: row.nav_date,
+    nav: row.nav,
+    cumulative_nav: row.cumulative_nav,
+    adjusted_nav: row.adjusted_nav,
+    source: row.source,
+    subject: row.subject,
+  })))
+  const mergedMay7 = merged.find((row) => row.price_date === "2026-05-07")
+  assert(
+    "NW169B 2026-05-07 keeps dividend gap (cum > unit)",
+    mergedMay7 != null
+      && Math.abs(parseFloat(mergedMay7.nav) - 1.02) < 1e-6
+      && parseFloat(mergedMay7.cum_nav_withdrawal) > 1.39
+      && parseFloat(mergedMay7.cumulative_nav) >= parseFloat(mergedMay7.cum_nav_withdrawal),
+  )
+
+  const snf = selectEmailNavSeriesRows(
+    [
+      {
+        nav_date: "2026-06-25",
+        nav: "1.3475",
+        cumulative_nav: "1.76",
+        adjusted_nav: null,
+        product_code: "SNF018",
+        fund_name: "钜融添宝20号",
+        attachment_filename: null,
+        subject: "TA虚拟净值_钜融添宝20号_2026-06-25",
+        source: "body_table",
+      },
+      {
+        nav_date: "2026-06-25",
+        nav: "1.7600",
+        cumulative_nav: "1.7600",
+        adjusted_nav: null,
+        product_code: "SNF018",
+        fund_name: "钜融添宝20号",
+        attachment_filename: null,
+        subject: "资产净值公告_SNF018_钜融添宝20号_2026-06-25",
+        source: "attachment_nav_table",
+      },
+    ],
+    "SNF018",
+    ["钜融添宝20号"],
+  )
+  const snfRow = snf.find((row) => row.nav_date === "2026-06-25")
+  assert(
+    "SNF018 virtual unit still wins over 公告 cum-as-unit",
+    snfRow != null && Math.abs(parseFloat(snfRow.nav) - 1.3475) < 1e-6 && Math.abs(parseFloat(snfRow.cumulative_nav) - 1.76) < 1e-6,
+  )
+}
+

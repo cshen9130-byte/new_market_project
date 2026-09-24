@@ -132,6 +132,13 @@ function shuffle(xs: Float64Array, rng: () => number): Float64Array {
 
 type Pair = { product: string; x: number; y: number; ret: number; opened: number }
 
+function rawDcor(pairs: Pair[]): number {
+  const idx = strideIdx(pairs.length, CAP)
+  const x = Float64Array.from(idx, (i) => pairs[i]!.x)
+  const y = Float64Array.from(idx, (i) => pairs[i]!.y)
+  return distanceCorrelation(x, y)
+}
+
 function screenOne(pairs: Pair[], seed: number): { dcor: number; breakDcor: number; shiftDcor: number; pass1: boolean; pass2: boolean } {
   const idx = strideIdx(pairs.length, CAP)
   const x = Float64Array.from(idx, (i) => pairs[i]!.x)
@@ -273,7 +280,18 @@ export function screenDependence(input: {
     const y = spec.outcome === "direction" ? input.yDir : input.yInt
     const pairs = collect(input.products, spec.values, y, input.ret, input.opened)
     if (pairs.length < 80) continue
-    const screen = screenOne(pairs, hashId(spec.id))
+    const dcor = rawDcor(pairs)
+    const bar = Math.max(0.06, placeboDcor)
+    // Already at or under the placebo bar, so the permutation test cannot pass it.
+    const screen = dcor <= bar
+      ? {
+          dcor,
+          breakDcor: breakCorrelation(pairs, dcor),
+          shiftDcor: Math.max(rotatedDcor(pairs, 8), rotatedDcor(pairs, 16)),
+          pass1: false,
+          pass2: false,
+        }
+      : screenOne(pairs, hashId(spec.id))
     const timingPairs = collect(input.products, spec.values, input.opened, input.ret, input.opened.map(() => 1))
     const timing = timingPairs.length >= 80 ? distanceCorrelation(
       Float64Array.from(strideIdx(timingPairs.length, CAP), (i) => timingPairs[i]!.x),

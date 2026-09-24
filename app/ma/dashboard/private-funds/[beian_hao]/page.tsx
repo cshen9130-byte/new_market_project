@@ -2988,6 +2988,7 @@ export default function PrivateFundDetailPage() {
           dateTo={activeTo}
           rows={filteredNavRows}
           navType={filterNavType}
+          productFreq={appliedFreq}
         />
       )}
 

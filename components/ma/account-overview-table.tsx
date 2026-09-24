@@ -1,13 +1,15 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react"
+import { ChevronDown, ChevronUp, ChevronsUpDown, ListFilter } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 
 type OverviewRow = {
   fundName: string
   companyName: string
   accountNo: string
+  selectKey?: string
   tradeDate: string
   equity: number | null
   margin: number | null
@@ -104,6 +106,7 @@ type TableRow = {
   fundName: string
   companyName: string
   accountLabel: string
+  selectKey: string
   nav: number[]
   equity: number | null
   margin: number | null
@@ -176,6 +179,7 @@ function toTableRow(members: OverviewRow[], groupBy: GroupBy, key: string): Tabl
     fundName: groupBy === "company" ? labelMany(members.map((row) => row.fundName), "个") : (single ? single.fundName : key),
     companyName: groupBy === "fund" ? labelMany(members.map((row) => row.companyName), "家") : (single ? single.companyName : key),
     accountLabel: single ? (single.accountNo || "—") : `${members.length}个账号`,
+    selectKey: single ? (single.selectKey || single.accountNo) : "",
     nav: single?.nav ?? [],
     equity,
     margin,
@@ -210,12 +214,26 @@ function sortValue(row: TableRow, key: SortKey): string | number | null {
   return row[key]
 }
 
-function AccountCells({ row }: { row: TableRow }) {
+function AccountCells({ row, onSelectAccount }: { row: TableRow; onSelectAccount?: (selectKey: string) => void }) {
+  const openAccount = onSelectAccount && row.selectKey && row.accountLabel !== "—" ? onSelectAccount : null
   return (
     <>
       <td className="whitespace-nowrap px-2 py-1.5">{row.fundName || "—"}</td>
       <td className="whitespace-nowrap px-2 py-1.5">{row.companyName || "—"}</td>
-      <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{row.accountLabel || "—"}</td>
+      <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">
+        {openAccount ? (
+          <button
+            type="button"
+            onClick={() => openAccount(row.selectKey)}
+            title="查看该账户"
+            className="text-primary underline-offset-2 hover:underline"
+          >
+            {row.accountLabel}
+          </button>
+        ) : (
+          row.accountLabel || "—"
+        )}
+      </td>
       <td className="px-2 py-1 text-center">
         {row.nav.length >= 2 ? <NavSparkline values={row.nav} /> : <span className="text-muted-foreground">—</span>}
       </td>
@@ -242,9 +260,77 @@ function compareValues(a: string | number | null, b: string | number | null, dir
   return String(a).localeCompare(String(b), "zh-CN") * sign
 }
 
-const COLUMNS: { key: SortKey; label: string; align: "left" | "right" | "center"; title?: string }[] = [
-  { key: "fundName", label: "私募基金", align: "left" },
-  { key: "companyName", label: "期货公司", align: "left" },
+function displayName(value: string): string {
+  const name = value.trim()
+  return name || "—"
+}
+
+function uniqueNames(rows: OverviewRow[], key: "fundName" | "companyName"): string[] {
+  const names = new Set<string>()
+  for (const row of rows) names.add(displayName(row[key] || ""))
+  return [...names].sort((a, b) => a.localeCompare(b, "zh-CN"))
+}
+
+function ColumnValueFilter({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[]
+  selected: string[] | null
+  onChange: (next: string[] | null) => void
+}) {
+  const filtering = selected != null
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title={filtering ? `已选 ${selected.length} 项` : "筛选"}
+          aria-label="筛选"
+          className={`inline-flex rounded p-0.5 ${filtering ? "text-primary" : "text-muted-foreground opacity-60 hover:opacity-100 hover:text-foreground"}`}
+        >
+          <ListFilter className="h-3 w-3" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-2">
+        <label className="flex items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted">
+          <input
+            type="checkbox"
+            className="shrink-0"
+            checked={!filtering}
+            onChange={() => onChange(null)}
+          />
+          <span>全部</span>
+        </label>
+        <div className="mt-1 max-h-64 space-y-0.5 overflow-auto border-t pt-1">
+          {options.map((name) => {
+            const checked = selected?.includes(name) ?? false
+            return (
+              <label key={name} className="flex items-start gap-2 rounded px-1 py-1 text-xs hover:bg-muted">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 shrink-0"
+                  checked={checked}
+                  onChange={() => {
+                    const current = selected ?? []
+                    const next = checked ? current.filter((item) => item !== name) : [...current, name]
+                    onChange(next.length === 0 || next.length === options.length ? null : next)
+                  }}
+                />
+                <span className="leading-4">{name}</span>
+              </label>
+            )
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+const COLUMNS: { key: SortKey; label: string; align: "left" | "right" | "center"; title?: string; filter?: "fundName" | "companyName" }[] = [
+  { key: "fundName", label: "私募基金", align: "left", filter: "fundName" },
+  { key: "companyName", label: "期货公司", align: "left", filter: "companyName" },
   { key: "accountNo", label: "账号", align: "left" },
   { key: "nav", label: "净值曲线", align: "center", title: "按累计收益率排序。分组与合计不画曲线。" },
   { key: "equity", label: "动态权益", align: "right" },
@@ -257,12 +343,14 @@ const COLUMNS: { key: SortKey; label: string; align: "left" | "right" | "center"
   { key: "commission", label: "手续费", align: "right" },
 ]
 
-export function AccountOverviewTable() {
+export function AccountOverviewTable({ onSelectAccount }: { onSelectAccount?: (selectKey: string) => void }) {
   const [rows, setRows] = useState<OverviewRow[]>([])
   const [loading, setLoading] = useState(true)
   const [groupBy, setGroupBy] = useState<GroupBy>("none")
   const [sortKey, setSortKey] = useState<SortKey>("fundName")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [fundFilter, setFundFilter] = useState<string[] | null>(null)
+  const [companyFilter, setCompanyFilter] = useState<string[] | null>(null)
 
   useEffect(() => {
     let stop = false
@@ -283,19 +371,28 @@ export function AccountOverviewTable() {
     return () => { stop = true }
   }, [])
 
-  const asOf = rows.reduce((max, row) => (row.tradeDate > max ? row.tradeDate : max), "")
+  const fundOptions = useMemo(() => uniqueNames(rows, "fundName"), [rows])
+  const companyOptions = useMemo(() => uniqueNames(rows, "companyName"), [rows])
+  const filteredRows = useMemo(() => rows.filter((row) => {
+    const fund = displayName(row.fundName || "")
+    const company = displayName(row.companyName || "")
+    if (fundFilter && !fundFilter.includes(fund)) return false
+    if (companyFilter && !companyFilter.includes(company)) return false
+    return true
+  }), [rows, fundFilter, companyFilter])
+  const asOf = filteredRows.reduce((max, row) => (row.tradeDate > max ? row.tradeDate : max), "")
   const tableRows = useMemo(() => {
-    const grouped = groupRows(rows, groupBy)
+    const grouped = groupRows(filteredRows, groupBy)
     return [...grouped].sort((a, b) => {
       const cmp = compareValues(sortValue(a, sortKey), sortValue(b, sortKey), sortDir)
       if (cmp !== 0) return cmp
       return String(a.fundName).localeCompare(String(b.fundName), "zh-CN")
         || String(a.sortAccount).localeCompare(String(b.sortAccount), "zh-CN")
     })
-  }, [rows, groupBy, sortKey, sortDir])
+  }, [filteredRows, groupBy, sortKey, sortDir])
   const totalRow = useMemo(
-    () => (rows.length > 0 ? toTableRow(rows, "fund", "合计") : null),
-    [rows],
+    () => (filteredRows.length > 0 ? toTableRow(filteredRows, "fund", "合计") : null),
+    [filteredRows],
   )
 
   function onSort(key: SortKey) {
@@ -346,34 +443,46 @@ export function AccountOverviewTable() {
                           aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
                           className={`px-2 py-1.5 font-medium ${col.align === "right" ? "text-right" : col.align === "center" ? "text-center" : ""}`}
                         >
-                          <button
-                            type="button"
-                            onClick={() => onSort(col.key)}
-                            className={`inline-flex items-center gap-0.5 hover:text-foreground ${col.align === "right" ? "flex-row-reverse" : ""}`}
-                          >
-                            {col.label}
-                            {active
-                              ? (sortDir === "asc"
-                                ? <ChevronUp className="h-3 w-3 shrink-0" />
-                                : <ChevronDown className="h-3 w-3 shrink-0" />)
-                              : <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-40" />}
-                          </button>
+                          <span className={`inline-flex items-center gap-0.5 ${col.align === "right" ? "flex-row-reverse" : ""}`}>
+                            <button
+                              type="button"
+                              onClick={() => onSort(col.key)}
+                              className={`inline-flex items-center gap-0.5 hover:text-foreground ${col.align === "right" ? "flex-row-reverse" : ""}`}
+                            >
+                              {col.label}
+                              {active
+                                ? (sortDir === "asc"
+                                  ? <ChevronUp className="h-3 w-3 shrink-0" />
+                                  : <ChevronDown className="h-3 w-3 shrink-0" />)
+                                : <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-40" />}
+                            </button>
+                            {col.filter === "fundName" && (
+                              <ColumnValueFilter options={fundOptions} selected={fundFilter} onChange={setFundFilter} />
+                            )}
+                            {col.filter === "companyName" && (
+                              <ColumnValueFilter options={companyOptions} selected={companyFilter} onChange={setCompanyFilter} />
+                            )}
+                          </span>
                         </th>
                       )
                     })}
                   </tr>
                 </thead>
                 <tbody>
-                  {tableRows.map((row) => (
+                  {tableRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={COLUMNS.length} className="px-2 py-6 text-center text-muted-foreground">无匹配账户</td>
+                    </tr>
+                  ) : tableRows.map((row) => (
                     <tr key={row.key} className="border-b">
-                      <AccountCells row={row} />
+                      <AccountCells row={row} onSelectAccount={onSelectAccount} />
                     </tr>
                   ))}
                 </tbody>
                 {totalRow && (
                   <tfoot>
                     <tr className="border-t bg-muted/40 font-medium">
-                      <AccountCells row={{ ...totalRow, fundName: "合计", companyName: "—" }} />
+                      <AccountCells row={{ ...totalRow, fundName: "合计", companyName: "—", selectKey: "" }} />
                     </tr>
                   </tfoot>
                 )}

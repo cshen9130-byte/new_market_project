@@ -29,6 +29,7 @@ import {
   isEquityFund,
   isValidWeeklyReviewJobId,
   loadAshareCloses,
+  collapseWeeklyReviewFunds,
   loadJyTrackingPoolFunds,
   loadSpotCloses,
   loadWeeklyReviewNavHistories,
@@ -786,7 +787,7 @@ function selectRecommendations(analyzed: AttributionFundPayload[]): AttributionF
 
 export async function buildWeeklyAttributionPayload(weekEndRaw: string): Promise<ReportPayload> {
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
-  const funds = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const funds = collapseWeeklyReviewFunds((await loadJyTrackingPoolFunds()).filter(isEquityFund))
   if (funds.length === 0) throw new Error("JY跟踪池中没有可分析的股票策略产品")
 
   const histories = await loadWeeklyReviewNavHistories(funds, asOf)

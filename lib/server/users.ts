@@ -7,6 +7,7 @@ export type PagePermissions = {
   classic?: boolean
   mom?: boolean
   aiKnowledge?: boolean
+  aiResearcher?: boolean
   pfOperations?: boolean
   pfInvestmentAlt?: boolean
   pfInvestmentPool?: boolean

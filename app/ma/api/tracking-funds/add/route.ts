@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { canonicalProductCode, productCodeAliasFamily } from "@/lib/server/fund-holding-code"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 import {
   addFundToTrackingPool,
@@ -39,8 +40,9 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { created } = await addFundToTrackingPool(pool, beian_hao, product_name)
-    await ensureFundListCacheEntry(beian_hao, product_name)
+    const canonical = canonicalProductCode(beian_hao) || beian_hao
+    const { created } = await addFundToTrackingPool(pool, canonical, product_name)
+    await ensureFundListCacheEntry(canonical, product_name)
     invalidateTrackingPoolListCaches([pool])
     if (!created) {
       return NextResponse.json({ error: "already_exists" }, { status: 409 })
@@ -60,9 +62,11 @@ export async function DELETE(req: Request) {
   if (!pool || !beian_hao) {
     return NextResponse.json({ error: "missing_fields" }, { status: 400 })
   }
+  const family = productCodeAliasFamily(beian_hao)
+  const targets = family.length > 0 ? family : [beian_hao]
   if (isAggregateTrackingPool(pool)) {
     try {
-      await removeFundFromAggregateTrackingPool(pool, beian_hao)
+      for (const code of targets) await removeFundFromAggregateTrackingPool(pool, code)
       invalidateTrackingPoolListCaches([])
       return NextResponse.json({ ok: true })
     } catch (err) {
@@ -75,7 +79,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "unknown_pool" }, { status: 400 })
   }
   try {
-    await removeFundFromTrackingPool(pool, beian_hao)
+    for (const code of targets) await removeFundFromTrackingPool(pool, code)
     invalidateTrackingPoolListCaches([pool])
     return NextResponse.json({ ok: true })
   } catch (err) {

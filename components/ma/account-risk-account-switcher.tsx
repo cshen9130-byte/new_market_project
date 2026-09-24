@@ -56,7 +56,8 @@ export function useCfmmcAccountScope(): CfmmcAccountScope {
         setAccounts(rows)
         const imported = rows.filter((a) => a.imported)
         const namedBooks = imported.filter((a) => a.kind === "book")
-        const next = saved && (saved === "all" || rows.some((a) => a.accountNo === saved))
+        const savedAccount = /^[A-Za-z0-9_-]{4,32}$/.test(saved)
+        const next = saved && (saved === "all" || rows.some((a) => a.accountNo === saved) || savedAccount)
           ? saved
           : namedBooks.length === 1
             ? namedBooks[0].accountNo
@@ -96,6 +97,7 @@ export function AccountRiskAccountSwitcher({
 }) {
   if (accounts.length === 0) return null
   const current = accounts.find((a) => a.accountNo === selected)
+  const listed = selected === "" || selected === "all" || !!current
   return (
     <label className={compact ? "flex items-center gap-2 min-w-0" : "flex flex-col gap-1 min-w-0"}>
       <select
@@ -105,6 +107,7 @@ export function AccountRiskAccountSwitcher({
         title={current ? `${current.label} ${current.accountNo}` : "全部账户"}
       >
         {accounts.length > 1 && <option value="all">全部账户（汇总）</option>}
+        {!listed && selected && <option value={selected}>{selected}</option>}
         {SOURCE_GROUPS.map((g) => {
           const rows = accounts.filter((a) => (a.source ?? "upload") === g.source)
           if (rows.length === 0) return null
