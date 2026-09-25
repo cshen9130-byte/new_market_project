@@ -2344,3 +2344,54 @@ Refresh only this detail cache:
 npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=NW169B --name=星阔江月2号B类
 ```
 
+---
+
+## What Was Fixed (贞元虎踞一号A类 — BUK40A, manual team tip blocks the dividend, 2026-09-24)
+
+### The Problem
+
+`/ma/dashboard/private-funds/BUK40A` showed a cliff on the 收益曲线 around 2026-08-28. The table had 单位 = 累计 = 复权, and 2026-08-28 printed about **−7.85%**. Header returns were about **−6.92%** since inception.
+
+The 虚拟计提净值表 already had the dividend:
+
+| Date | 单位净值 | 累计净值 |
+|---|---|---|
+| 2026-08-27 | 1.0948 | 1.0948 |
+| 2026-08-28 | **1.0000** | **1.0948** |
+| 2026-09-23 | 1.0012 | 1.0960 |
+
+### Root Cause
+
+`ops_team_nav_manual` for BUK40A stops on **2026-08-03** (单位 1.0756). Any manual row made `loadMergedNavRows` take the team path and stop there. Email after that tip was dropped, so the 2026-08-28 dividend never reached the page. A later sibling/parent point then filled 2026-08-31 as unit = 累计 = 复权 = 1.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Email after a stopped team series | `appendEmailAfterSeriesTip` | Keep the team series through its last date. Merge email only on later dates. |
+| Detail merge | `loadMergedNavRows` | After `mergeLegacyWithTeamNav`, call `appendEmailAfterSeriesTip` with the same email rows. |
+
+Dates inside the team window are still team-only. A 估值表 fallback across a long hole is still skipped by the existing merge guard.
+
+### What This Fix Does NOT Change
+
+- Team NAV inside `[teamStart, teamEnd]` — unchanged (SZJ909)
+- SBAH99 dividend formulas, SNF018 virtual-first, SSG947 seed merge, SQX078 swap repair, NW169B same-unit 累计 borrow
+- SASK40 / SBBC18 估值表 skip
+- `syncExDivAdjustedNav` / `rechainDerivedFromPrev` / `propagateMissingAdjRows`
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-08-03 | 1.0756 | 1.0756 | 1.0756 |
+| 2026-08-27 | 1.0948 | 1.0948 | 1.0948 |
+| 2026-08-28 | 1.0000 | **1.0948** | **1.0948** |
+| 2026-09-23 | 1.0012 | **1.0960** | **~1.0961** |
+
+Refresh only this detail cache:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=BUK40A --name=贞元虎踞一号A类
+```
+

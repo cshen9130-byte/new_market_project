@@ -401,6 +401,25 @@ function parsePct(ws: XLSX.WorkSheet, r: number, c: number): number | null {
   return n > 1 ? n / 100 : n
 }
 
+/** Number to the right of a label. A literal 0 in the usual column must not hide the real amount further right. */
+function valueBeside(ws: XLSX.WorkSheet, r: number, labelCol: number, endCol: number): number | null {
+  const nums: number[] = []
+  for (let c = labelCol + 1; c <= endCol; c++) {
+    const n = cellNum(ws, r, c)
+    if (n != null) nums.push(n)
+  }
+  if (nums.length === 0) return null
+  const nonzero = nums.find((n) => n !== 0)
+  return nonzero != null ? nonzero : 0
+}
+
+function assignLabel(map: Record<string, number | null>, label: string, value: number | null): void {
+  if (!label || value == null) return
+  const prev = map[label]
+  if (prev != null && prev !== 0 && value === 0) return
+  map[label] = value
+}
+
 function lookupNum(map: Record<string, number | null>, ...aliases: string[]): number | null {
   for (const alias of aliases) {
     if (Object.prototype.hasOwnProperty.call(map, alias) && map[alias] != null) return map[alias]
@@ -481,13 +500,14 @@ function parseSummarySheet(ws: XLSX.WorkSheet, sourceFile: string): CfmmcDailySu
   const clientName  = cellStr(ws, acctRow + 1, 2)
   const companyName = cellStr(ws, acctRow + 2, 2)
 
-  // Find the summary rows by searching for known labels in col 0 / col 5
+  // Labels sit in col 0 and col 5. Values are usually col 2 / col 7, but some
+  // 国投 rows put 0 in that cell and the real 保证金占用 one column further right.
   const labelValueMap: Record<string, number | null> = {}
   for (let r = acctRow + 3; r <= maxRow; r++) {
     const left  = cellStr(ws, r, 0)
     const right = cellStr(ws, r, 5)
-    if (left)  labelValueMap[left]  = cellNum(ws, r, 2)
-    if (right) labelValueMap[right] = cellNum(ws, r, 7)
+    if (left)  assignLabel(labelValueMap, left, valueBeside(ws, r, 0, 4))
+    if (right) assignLabel(labelValueMap, right, valueBeside(ws, r, 5, 10))
   }
 
   // 胜率/风险度 may be stored as percent string

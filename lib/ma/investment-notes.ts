@@ -1,4 +1,9 @@
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
+import {
+  integrationBriefHtml,
+  roadshowTimelineBuckets,
+  type InvestmentNoteIntegrationAnalysis,
+} from "@/lib/ma/investment-note-integration"
 
 /** Max stored note HTML length (includes markup, not just visible text). */
 export const MAX_INVESTMENT_NOTE_CONTENT_CHARS = 10_000_000
@@ -430,21 +435,72 @@ export type IntegratedInvestmentNoteDraft = Pick<
   "title" | "content" | "associations" | "roadshowAssociations"
 >
 
-/** Build a new note body that concatenates source notes in chronological order. */
+export type { InvestmentNoteIntegrationAnalysis } from "@/lib/ma/investment-note-integration"
+
+function mostCommonRoadshowName(notes: InvestmentNote[]): string {
+  const counts = new Map<string, number>()
+  for (const note of notes) {
+    for (const item of note.roadshowAssociations ?? []) {
+      const name = (item.fundCompany || item.ddTarget || "").trim()
+      if (!name) continue
+      counts.set(name, (counts.get(name) ?? 0) + 1)
+    }
+  }
+  let best = ""
+  let bestCount = 0
+  for (const [name, count] of counts) {
+    if (count > bestCount) {
+      best = name
+      bestCount = count
+    }
+  }
+  return best
+}
+
+/** Build a new note: timeline, summary, recent changes, then the original notes. */
 export function buildIntegratedInvestmentNoteDraft(
   notes: InvestmentNote[],
   keyword: string,
+  analysis?: InvestmentNoteIntegrationAnalysis | null,
+  options?: { analysisError?: string; selected?: boolean },
 ): IntegratedInvestmentNoteDraft {
   const sources = selectNotesForIntegration(notes)
   const q = keyword.trim()
-  const titleBase = q || (sources[0]?.title ?? "").trim() || "路演"
+  const titleBase = q || mostCommonRoadshowName(sources) || (sources[0]?.title ?? "").trim() || "路演"
   const title = `${titleBase} ${INVESTMENT_NOTE_INTEGRATION_TITLE_MARK}`.slice(0, MAX_INVESTMENT_NOTE_TITLE_CHARS)
+  const dates = sources.map((note) => (note.createdDate || "").trim()).filter(Boolean).sort()
+  const buckets = roadshowTimelineBuckets(
+    sources.map((note) => ({
+      createdDate: note.createdDate,
+      roadshows: (note.roadshowAssociations ?? []).map((item) => ({
+        key: roadshowAssociationKey(item),
+        date: item.ddDate || note.createdDate,
+      })),
+    })),
+  )
+  const roadshowCount = new Set(
+    sources.flatMap((note) => (note.roadshowAssociations ?? []).map((item) => roadshowAssociationKey(item)).filter(Boolean)),
+  ).size
+  const sourceLabel = options?.selected ? "勾选结果，" : q ? `搜索「${q}」的结果，` : ""
 
   const intro = [
     "<div><b>整合说明</b></div>",
     noteHtmlLine(
-      `本笔记由${q ? `搜索「${q}」得到的 ` : ""}${sources.length} 条路演笔记按时间顺序整合，原文笔记仍保留。`,
+      `本笔记${options?.selected ? "由勾选的" : q ? `由搜索「${q}」得到的` : "由"}${sources.length} 条路演笔记整合，含路演时间线与综述，原文仍保留在文末。`,
     ),
+    noteHtmlLine(""),
+    integrationBriefHtml({
+      noteCount: sources.length,
+      roadshowCount: roadshowCount || buckets.reduce((sum, bucket) => sum + bucket.count, 0),
+      from: dates[0],
+      to: dates[dates.length - 1],
+      sourceLabel,
+      buckets,
+      analysis: analysis ?? null,
+      analysisError: options?.analysisError,
+    }),
+    noteHtmlLine(""),
+    "<div><b>原文笔记</b></div>",
     noteHtmlLine(""),
   ]
 
@@ -890,6 +946,29 @@ export type InvestmentNoteProofreadChange = {
   field: string
   from: string
   to: string
+}
+
+export type InvestmentNoteIntegrateSource = {
+  title: string
+  date: string
+  creator?: string
+  roadshows: string[]
+  text: string
+}
+
+/** Ask the model for a short brief: summary, recent changes, focus, and chart series. */
+export async function summarizeInvestmentNotesForIntegration(input: {
+  keyword?: string
+  notes: InvestmentNoteIntegrateSource[]
+}): Promise<InvestmentNoteIntegrationAnalysis> {
+  const data = await apiFetch<{ ok: true; analysis: InvestmentNoteIntegrationAnalysis }>(
+    "/ma/api/investment-notes/integrate",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  )
+  return data.analysis
 }
 
 export type InvestmentNoteProofreadResult = {

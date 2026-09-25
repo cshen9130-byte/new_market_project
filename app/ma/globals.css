@@ -152,7 +152,8 @@
   margin: 0;
 }
 
-.investment-note-rich img {
+.investment-note-rich img,
+.investment-note-rich svg {
   max-width: 100%;
   height: auto;
 }

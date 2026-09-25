@@ -23,6 +23,7 @@ import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/se
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import { purgeValuationFilenameIdentities, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
 import { expandFundSearchKeywords, sqlFundNameKey, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
+import { sqlBeianFamilyKey } from "@/lib/server/share-class-product"
 import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import { cleanValuationDerivedFundName, isValuationReportTitle } from "@/lib/server/valuation-filename"
 
@@ -67,6 +68,8 @@ declare global {
   var _trackingListValuationFilenameCacheBustV1: boolean | undefined
   var _trackingListValuationFilenameCacheBustV2: boolean | undefined
   var _trackingListNameAliasDedupeV1: boolean | undefined
+  // One-shot: drop list JSON that still showed parent + A/B/C of the same product.
+  var _trackingListParentShareClassDedupeV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -503,6 +506,23 @@ function sourceIndependentStrategyExprs(
   }
 }
 
+/**
+ * Parent filing (SBUK40 / 贞元虎踞一号) is the same product as its A/B/C row.
+ * Keep the share class; hide the parent when both are in this list.
+ */
+function sqlHideParentBesideShareClass(rowAlias: string, siblingFrom: string): string {
+  return `NOT (
+    UPPER(BTRIM(${rowAlias}.beian_hao)) !~ '[ABC]$'
+    AND EXISTS (
+      SELECT 1 FROM ${siblingFrom} sib
+      WHERE sib.beian_hao <> ${rowAlias}.beian_hao
+        AND UPPER(BTRIM(sib.beian_hao)) ~ '[ABC]$'
+        AND ${sqlBeianFamilyKey("sib.beian_hao")} = ${sqlBeianFamilyKey(`${rowAlias}.beian_hao`)}
+        AND ${sqlFundNameKey("sib.product_name")} IS NOT DISTINCT FROM ${sqlFundNameKey(`${rowAlias}.product_name`)}
+    )
+  )`
+}
+
 function buildCachedFromClause(
   pool: string,
   isCustomPool: boolean,
@@ -528,14 +548,17 @@ function buildCachedFromClause(
       )
       SELECT g.beian_hao, g.product_name, g.first_added_at
       FROM grouped g
-      WHERE g.beian_hao ~ '^[A-Za-z0-9]{4,16}$'
-         OR NOT EXISTS (
+      WHERE (
+        g.beian_hao ~ '^[A-Za-z0-9]{4,16}$'
+        OR NOT EXISTS (
            SELECT 1 FROM grouped c
            WHERE c.beian_hao ~ '^[A-Za-z0-9]{4,16}$'
              AND ${sqlFundNameKey("c.product_name")} = ${sqlFundNameKey("g.product_name")}
              AND ${sqlNameOrCodeShareClass("c.product_name", "c.beian_hao")}
                  IS NOT DISTINCT FROM ${sqlNameOrCodeShareClass("g.product_name", "g.beian_hao")}
          )
+      )
+        AND ${sqlHideParentBesideShareClass("g", "grouped")}
     ) i
     ${LIST_CACHE_JOINS}`
   }
@@ -564,13 +587,17 @@ function buildCachedFromClause(
       ? "AND (p.pool_key = 'mine_default' OR p.pool_key LIKE 'mine_custom_%')"
       : "AND p.pool_key = $1"
     return `FROM (
-      SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
-        p.register_number AS beian_hao,
-        p.product_name,
-        MIN(${SHANGHAI_DATE_EXPR("p.imported_at")}) OVER (PARTITION BY UPPER(BTRIM(register_number))) AS first_added_at
-      FROM user_custom_pool p
-      WHERE p.register_number IS NOT NULL ${poolFilter}
-      ORDER BY UPPER(BTRIM(register_number)), p.updated_at DESC NULLS LAST, p.id DESC
+      WITH grouped AS (
+        SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
+          p.register_number AS beian_hao,
+          p.product_name,
+          MIN(${SHANGHAI_DATE_EXPR("p.imported_at")}) OVER (PARTITION BY UPPER(BTRIM(register_number))) AS first_added_at
+        FROM user_custom_pool p
+        WHERE p.register_number IS NOT NULL ${poolFilter}
+        ORDER BY UPPER(BTRIM(register_number)), p.updated_at DESC NULLS LAST, p.id DESC
+      )
+      SELECT * FROM grouped g
+      WHERE ${sqlHideParentBesideShareClass("g", "grouped")}
     ) i
     ${LIST_CACHE_JOINS}`
   }
@@ -582,11 +609,15 @@ function buildCachedFromClause(
     : pool === "jy" || pool === "tracking" ? "tracking_pool"
     : "tracking_pool"
   return `FROM (
-    SELECT p.register_number AS beian_hao, p.product_name,
-      MIN(${SHANGHAI_DATE_EXPR("p.imported_at")}) AS first_added_at
-    FROM ${sourceTable} p
-    WHERE p.register_number IS NOT NULL
-    GROUP BY p.register_number, p.product_name
+    WITH grouped AS (
+      SELECT p.register_number AS beian_hao, p.product_name,
+        MIN(${SHANGHAI_DATE_EXPR("p.imported_at")}) AS first_added_at
+      FROM ${sourceTable} p
+      WHERE p.register_number IS NOT NULL
+      GROUP BY p.register_number, p.product_name
+    )
+    SELECT * FROM grouped g
+    WHERE ${sqlHideParentBesideShareClass("g", "grouped")}
   ) i
   ${LIST_CACHE_JOINS}`
 }
@@ -978,6 +1009,10 @@ export async function GET(req: Request) {
     global._trackingListNameAliasDedupeV1 = true
     invalidateListResponseCache()
   }
+  if (!global._trackingListParentShareClassDedupeV1) {
+    global._trackingListParentShareClassDedupeV1 = true
+    invalidateListResponseCache()
+  }
   if (!global._trackingListValuationFilenameCacheBustV2) {
     global._trackingListValuationFilenameCacheBustV2 = true
     invalidateListResponseCache()
@@ -1180,6 +1215,7 @@ export async function GET(req: Request) {
             ELSE NULL
           END AS strategy_company
         ) tag_data
+        WHERE ${sqlHideParentBesideShareClass("d", "deduped")}
       )`
     : pool === "bfl_ops"
     ? `WITH source AS (
@@ -1211,7 +1247,7 @@ export async function GET(req: Request) {
         ORDER BY o.register_number, o.updated_at DESC NULLS LAST, o.id DESC
       )`
     : isExternalPool
-    ? `WITH source AS (
+    ? `WITH grouped AS (
         SELECT
           p.register_number AS beian_hao,
           CASE
@@ -1261,6 +1297,10 @@ export async function GET(req: Request) {
         ) tag_data
         WHERE p.register_number IS NOT NULL
           ${isCustomPool ? (isMineAllPool ? "AND (p.pool_key = 'mine_default' OR p.pool_key LIKE 'mine_custom_%')" : "AND p.pool_key = $1") : ""}
+      ),
+      source AS (
+        SELECT * FROM grouped g
+        WHERE ${sqlHideParentBesideShareClass("g", "grouped")}
       )`
     : `WITH source AS (
         SELECT

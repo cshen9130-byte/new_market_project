@@ -1,4 +1,4 @@
-import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
+import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
@@ -3873,6 +3873,54 @@ if (fs.existsSync(excelPath)) {
   assert(
     "SNF018 virtual unit still wins over 公告 cum-as-unit",
     snfRow != null && Math.abs(parseFloat(snfRow.nav) - 1.3475) < 1e-6 && Math.abs(parseFloat(snfRow.cumulative_nav) - 1.76) < 1e-6,
+  )
+}
+
+{
+  const team = [
+    { price_date: "2026-08-03", nav: "1.0756", cumulative_nav: "1.0756", cum_nav_withdrawal: "1.0756", price_change: "" },
+    { price_date: "2026-08-31", nav: "1", cumulative_nav: "1", cum_nav_withdrawal: "1", price_change: "" },
+  ]
+  const email = [
+    {
+      price_date: "2026-08-03",
+      nav: "9.9999",
+      cumulative_nav: "9.9999",
+      adjusted_nav: null,
+      source: "attachment_nav_table",
+      subject: "虚拟计提净值表_20260803",
+      attachment_filename: null,
+    },
+    {
+      price_date: "2026-08-27",
+      nav: "1.0948",
+      cumulative_nav: "1.0948",
+      adjusted_nav: "1.0948",
+      source: "attachment_nav_table",
+      subject: "贞元虎踞一号A_虚拟计提净值表_20260827",
+      attachment_filename: null,
+    },
+    {
+      price_date: "2026-08-28",
+      nav: "1.0000",
+      cumulative_nav: "1.0948",
+      adjusted_nav: "1.0948",
+      source: "attachment_nav_table",
+      subject: "贞元虎踞一号A_虚拟计提净值表_20260828",
+      attachment_filename: null,
+    },
+  ]
+  const out = appendEmailAfterSeriesTip(team, email, { beian_hao: "BUK40A", product_name: "贞元虎踞一号A类" })
+  const aug3 = out.find((row) => row.price_date === "2026-08-03")
+  const aug28 = out.find((row) => row.price_date === "2026-08-28")
+  assert("BUK40A team tip is not replaced by later email", aug3 != null && Math.abs(parseFloat(aug3.nav) - 1.0756) < 1e-6)
+  assert(
+    "BUK40A email after team tip keeps the 2026-08-28 dividend gap",
+    aug28 != null
+      && Math.abs(parseFloat(aug28.nav) - 1) < 1e-6
+      && Math.abs(parseFloat(aug28.cum_nav_withdrawal) - 1.0948) < 1e-4
+      && Math.abs(parseFloat(aug28.cumulative_nav) - 1.0948) < 0.01
+      && Math.abs(parseFloat(aug28.price_change)) < 1,
   )
 }
 

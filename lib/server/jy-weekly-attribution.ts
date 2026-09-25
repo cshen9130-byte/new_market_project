@@ -30,6 +30,7 @@ import {
   isValidWeeklyReviewJobId,
   loadAshareCloses,
   collapseWeeklyReviewFunds,
+  loadWeeklyReviewNavCoverage,
   loadJyTrackingPoolFunds,
   loadSpotCloses,
   loadWeeklyReviewNavHistories,
@@ -694,7 +695,7 @@ async function analyzeFund(opts: {
 
   const payload: AttributionFundPayload = {
     beian_hao: fund.beian_hao,
-    name: xmlSafeText(displayName(fund.product_name, fund.short_name)),
+    name: xmlSafeText(displayName(fund.product_name, fund.short_name, fund.beian_hao)),
     bucket: metrics.bucket,
     mode: metrics.mode,
     manager,
@@ -787,7 +788,9 @@ function selectRecommendations(analyzed: AttributionFundPayload[]): AttributionF
 
 export async function buildWeeklyAttributionPayload(weekEndRaw: string): Promise<ReportPayload> {
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
-  const funds = collapseWeeklyReviewFunds((await loadJyTrackingPoolFunds()).filter(isEquityFund))
+  const equity = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
+  const funds = collapseWeeklyReviewFunds(equity, coverage)
   if (funds.length === 0) throw new Error("JY跟踪池中没有可分析的股票策略产品")
 
   const histories = await loadWeeklyReviewNavHistories(funds, asOf)
@@ -835,7 +838,7 @@ export async function buildWeeklyAttributionPayload(weekEndRaw: string): Promise
   for (const row of winnerMetrics) {
     const fund = fundByBeian.get(row.beian_hao)
     if (!fund) continue
-    const names = [fund.product_name, fund.short_name ?? "", displayName(fund.product_name, fund.short_name)]
+    const names = [fund.product_name, fund.short_name ?? "", displayName(fund.product_name, fund.short_name, fund.beian_hao)]
     const notes = teamNotes.filter((n) => noteMatchesFund(n, fund)).slice(0, 4)
     const roadshows: RoadshowExcerpt[] = []
     if (ddTable) {

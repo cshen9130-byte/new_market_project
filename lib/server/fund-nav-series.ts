@@ -4,6 +4,7 @@ import {
   loadEmailNavSeries,
   loadPrivateFundLegacyNavRows,
   mergeLegacyWithTeamNav,
+  appendEmailAfterSeriesTip,
   mergeNavSeriesWithEmail,
   recomputeNavPriceChanges,
   type LegacyNavRow,
@@ -204,8 +205,9 @@ async function loadMergedNavRows(
       if (seedBackfill.length > 0) {
         base = mergeLegacyWithTeamNav(base, seedBackfill, fundContext)
       }
+      const teamMerged = mergeLegacyWithTeamNav(base, teamSeries, fundContext)
       return applyFundNavCorrectionToLegacyRows(
-        mergeLegacyWithTeamNav(base, teamSeries, fundContext),
+        appendEmailAfterSeriesTip(teamMerged, emailRows, fundContext),
         fundContext,
       )
     }

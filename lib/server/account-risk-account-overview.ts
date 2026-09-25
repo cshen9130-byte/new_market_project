@@ -51,6 +51,25 @@ function asRiskPct(raw: number | null, margin: number, equity: number): number |
   return equity > 0 ? (margin / equity) * 100 : null
 }
 
+/**
+ * Some 国投结算单 store 保证金占用 as 0 while 客户权益, 可用资金 and 风险度
+ * still describe the real occupation (margin = equity − available).
+ */
+function reconcileMargin(
+  margin: number | null,
+  equity: number | null,
+  available: number | null,
+  riskRaw: number | null,
+): number | null {
+  if (margin != null && margin !== 0) return margin
+  if (equity == null || equity <= 0 || available == null || available < 0 || available >= equity) return margin
+  if (riskRaw == null || riskRaw <= 0) return margin
+  const riskFrac = riskRaw <= 1 ? riskRaw : riskRaw / 100
+  const implied = equity - available
+  if (Math.abs(implied / equity - riskFrac) > 0.005) return margin
+  return Math.round(implied * 100) / 100
+}
+
 function asUnilateralPct(longMargin: number, shortMargin: number, margin: number, equity: number): number | null {
   if (equity <= 0) return null
   const lsTotal = longMargin + shortMargin
@@ -168,6 +187,7 @@ async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOvervie
         company_name,
         client_equity,
         margin_occupied,
+        available,
         deposit_wd,
         realized_pl,
         commission,
@@ -185,6 +205,7 @@ async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOvervie
         company_name,
         client_equity,
         margin_occupied,
+        available,
         deposit_wd,
         realized_pl,
         commission,
@@ -211,6 +232,7 @@ async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOvervie
            l.company_name,
            l.client_equity,
            l.margin_occupied,
+           l.available,
            l.deposit_wd,
            l.prev_equity,
            l.realized_pl,
@@ -233,6 +255,7 @@ async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOvervie
     company_name: string | null
     client_equity: number | string | null
     margin_occupied: number | string | null
+    available: number | string | null
     deposit_wd: number | string | null
     prev_equity: number | string | null
     realized_pl: number | string | null
@@ -242,9 +265,15 @@ async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOvervie
     short_margin: number | string | null
   }[]).map((row) => {
     const equity = row.client_equity == null ? null : toNum(row.client_equity)
-    const margin = row.margin_occupied == null ? null : toNum(row.margin_occupied)
-    const closedPl = row.realized_pl == null ? null : Math.round(toNum(row.realized_pl))
     const riskRaw = row.risk_ratio == null ? null : toNum(row.risk_ratio)
+    const available = row.available == null ? null : toNum(row.available)
+    const margin = reconcileMargin(
+      row.margin_occupied == null ? null : toNum(row.margin_occupied),
+      equity,
+      available,
+      riskRaw,
+    )
+    const closedPl = row.realized_pl == null ? null : Math.round(toNum(row.realized_pl))
     const prevEquity = row.prev_equity == null ? null : toNum(row.prev_equity)
     const flow = toNum(row.deposit_wd)
     const totalPl = equity == null ? null : Math.round(countedEquityPathPnl(equity, prevEquity, flow))

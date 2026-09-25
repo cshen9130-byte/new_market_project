@@ -10,12 +10,21 @@ import os
 import re
 import subprocess
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 OUT = Path(os.environ.get("TRAFFIC_RAW_OUT", "/tmp/week_traffic_raw"))
 NGINX_DIR = Path("/var/log/nginx")
 TZ_NAME = "Asia/Shanghai"
+TZ = timezone(timedelta(hours=8))
+# Inclusive calendar dates in Asia/Shanghai, YYYY-MM-DD. Empty = no bound.
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SINCE = os.environ.get("TRAFFIC_SINCE", "").strip()
+UNTIL = os.environ.get("TRAFFIC_UNTIL", "").strip()
+if SINCE and not _DATE_RE.match(SINCE):
+    raise SystemExit(f"TRAFFIC_SINCE must be YYYY-MM-DD, got {SINCE!r}")
+if UNTIL and not _DATE_RE.match(UNTIL):
+    raise SystemExit(f"TRAFFIC_UNTIL must be YYYY-MM-DD, got {UNTIL!r}")
 
 LOG_RE = re.compile(
     r'^(?P<ip>\S+) \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<req>[^"]*)" '
@@ -77,6 +86,25 @@ def parse_time(raw: str) -> datetime | None:
         return datetime.strptime(raw, "%d/%b/%Y:%H:%M:%S %z")
     except ValueError:
         return None
+
+
+def window_bounds() -> tuple[datetime | None, datetime | None]:
+    since = datetime.strptime(SINCE, "%Y-%m-%d").replace(tzinfo=TZ) if SINCE else None
+    # UNTIL is inclusive calendar date.
+    until = (
+        datetime.strptime(UNTIL, "%Y-%m-%d").replace(tzinfo=TZ) + timedelta(days=1)
+        if UNTIL
+        else None
+    )
+    return since, until
+
+
+def in_window(ts: datetime, since: datetime | None, until: datetime | None) -> bool:
+    if since is not None and ts < since:
+        return False
+    if until is not None and ts >= until:
+        return False
+    return True
 
 
 def collapse_path(path: str) -> str:
@@ -217,6 +245,7 @@ def fetch_sql(sql: str) -> list[list[str]]:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    since, until = window_bounds()
 
     daily = defaultdict(lambda: Counter())
     daily_bytes = Counter()
@@ -230,6 +259,7 @@ def main() -> None:
     methods = Counter()
     ip_hits = defaultdict(lambda: Counter())
     ip_net = {}
+    ip_paths: dict[str, Counter] = defaultdict(Counter)
 
     lines_scanned = 0
     hits = 0
@@ -246,7 +276,7 @@ def main() -> None:
                 if not m:
                     continue
                 ts = parse_time(m.group("time"))
-                if ts is None:
+                if ts is None or not in_window(ts, since, until):
                     continue
                 hits += 1
                 if first_ts is None or ts < first_ts:
@@ -282,6 +312,8 @@ def main() -> None:
                 ip_hits[ip]["hits"] += 1
                 ip_hits[ip][kind] += 1
                 ip_net[ip] = net
+                if kind in {"page", "api", "admin", "login"}:
+                    ip_paths[ip][path] += 1
                 bytes_total += nbytes
                 kind_total[kind] += 1
 
@@ -329,8 +361,17 @@ def main() -> None:
         ip_rows.append([ip, ip_net[ip], c["hits"], c["page"], c["api"]])
     write_csv(OUT / "ips.csv", ["ip", "network", "hits", "page", "api"], ip_rows)
 
+    ip_path_rows = []
+    ranked_ips = sorted(ip_paths, key=lambda ip: ip_hits[ip]["hits"], reverse=True)[:60]
+    for ip in ranked_ips:
+        for path, n in ip_paths[ip].most_common(40):
+            ip_path_rows.append([ip, path, n])
+    write_csv(OUT / "ip_paths.csv", ["ip", "path", "hits"], ip_path_rows)
+
+    since_sql = f" AND logged_at >= TIMESTAMPTZ '{SINCE} 00:00:00+08'" if SINCE else ""
+    until_sql = f" AND logged_at < TIMESTAMPTZ '{UNTIL} 00:00:00+08' + interval '1 day'" if UNTIL else ""
     login_rows = fetch_sql(
-        """
+        f"""
         SELECT
           COALESCE(NULLIF(name, ''), identifier) AS who,
           to_char(logged_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') AS ts,
@@ -339,6 +380,7 @@ def main() -> None:
           COALESCE(user_agent, ''),
           COALESCE(ip, '')
         FROM public.auth_login_history
+        WHERE TRUE{since_sql}{until_sql}
         ORDER BY logged_at
         """
     )
@@ -369,6 +411,8 @@ def main() -> None:
         "first_ts": first_ts.isoformat() if first_ts else None,
         "last_ts": last_ts.isoformat() if last_ts else None,
         "timezone": TZ_NAME,
+        "since": SINCE or None,
+        "until": UNTIL or None,
         "http_source": "/var/log/nginx/access.log + rotated access.log.*",
         "login_source": "public.auth_login_history",
     }

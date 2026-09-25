@@ -70,12 +70,15 @@ import {
   listInvestmentNotes,
   listTrashedInvestmentNotes,
   getInvestmentNote,
+  isEmptyDraftInvestmentNote,
+  isIntegratedInvestmentNote,
   peekInvestmentNotesCache,
   permanentlyDeleteInvestmentNote,
   noteMatchesKeyword,
   openInvestmentNoteMaterial,
   proofreadInvestmentNoteWithRoadshow,
   restoreInvestmentNote,
+  summarizeInvestmentNotesForIntegration,
   roadshowAssociationDisplayLabel,
   selectNotesForIntegration,
   setInvestmentNoteAssociations,
@@ -85,6 +88,7 @@ import {
   updateInvestmentNote,
   uploadInvestmentNoteMaterial,
 } from "@/lib/ma/investment-notes"
+import { investmentNotePlainText } from "@/lib/ma/investment-note-integration"
 import type { DueDiligenceTableRow } from "@/lib/ma/due-diligence-table"
 import { loadDueDiligenceTableFromServer } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsDocument, DdMaterialsFolderIndex } from "@/lib/ma/due-diligence-materials"
@@ -379,6 +383,7 @@ export function InvestmentNotesView() {
   const [loading, setLoading] = useState(() => peekInvestmentNotesCache(initialScope) == null)
   const [proofreading, setProofreading] = useState(false)
   const [integrating, setIntegrating] = useState(false)
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set())
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const [zippingAttachments, setZippingAttachments] = useState(false)
   const [purgeTarget, setPurgeTarget] = useState<InvestmentNote | null>(null)
@@ -488,6 +493,14 @@ export function InvestmentNotesView() {
     () => selectNotesForIntegration(filteredNotes),
     [filteredNotes],
   )
+  const checkedMergeableNotes = useMemo(
+    () => selectNotesForIntegration(notes.filter((note) => checkedIds.has(note.id))),
+    [notes, checkedIds],
+  )
+  const integrateTargets = checkedMergeableNotes.length >= 2 ? checkedMergeableNotes : mergeableNotes
+  const integrateUsesSelection = checkedMergeableNotes.length >= 2
+  const allVisibleChecked =
+    mergeableNotes.length > 0 && mergeableNotes.every((note) => checkedIds.has(note.id))
 
   const selectedNote = useMemo(
     () => notes.find((n) => n.id === selectedId) ?? filteredNotes.find((n) => n.id === selectedId) ?? null,
@@ -844,22 +857,44 @@ export function InvestmentNotesView() {
     setEditing(true)
   }
 
+  function toggleCheckedNote(id: string) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectVisibleNotes() {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (allVisibleChecked) {
+        for (const note of mergeableNotes) next.delete(note.id)
+      } else {
+        for (const note of mergeableNotes) next.add(note.id)
+      }
+      return next
+    })
+  }
+
   async function handleIntegrateNotes() {
     if (integrating || saving) return
     const q = keyword.trim()
-    if (!q) {
+    const useSelection = checkedMergeableNotes.length >= 2
+    if (!useSelection && !q) {
       toast({
         title: "无法整合",
-        description: "请先搜索同一管理人，再整合当前列表中的多条路演笔记",
+        description: "请勾选至少 2 条笔记，或先搜索同一管理人再整合当前列表",
         variant: "destructive",
       })
       return
     }
-    const liteSources = selectNotesForIntegration(filteredNotes)
+    const liteSources = useSelection ? checkedMergeableNotes : mergeableNotes
     if (liteSources.length < 2) {
       toast({
         title: "无法整合",
-        description: "当前搜索结果不足 2 条可整合笔记（空草稿和已整合笔记不会计入）",
+        description: "可整合笔记不足 2 条（空草稿和已整合笔记不会计入）",
         variant: "destructive",
       })
       return
@@ -873,7 +908,28 @@ export function InvestmentNotesView() {
           return (await getInvestmentNote(note.id)) ?? note
         }),
       )
-      const draft = buildIntegratedInvestmentNoteDraft(sources, q)
+      let analysis: Awaited<ReturnType<typeof summarizeInvestmentNotesForIntegration>> | null = null
+      let analysisError = ""
+      try {
+        analysis = await summarizeInvestmentNotesForIntegration({
+          keyword: useSelection ? "" : q,
+          notes: sources.map((note) => ({
+            title: note.title,
+            date: note.createdDate,
+            creator: note.creator,
+            roadshows: (note.roadshowAssociations ?? []).map((item) =>
+              [item.ddDate, item.label || item.fundCompany || item.ddTarget].filter(Boolean).join(" "),
+            ),
+            text: investmentNotePlainText(note.content || note.preview || ""),
+          })),
+        })
+      } catch (err) {
+        analysisError = err instanceof Error ? err.message : "综述生成失败"
+      }
+      const draft = buildIntegratedInvestmentNoteDraft(sources, useSelection ? "" : q, analysis, {
+        selected: useSelection,
+        analysisError,
+      })
       if (draft.content.length > MAX_INVESTMENT_NOTE_CONTENT_CHARS) {
         toast({
           title: "无法整合",
@@ -890,15 +946,20 @@ export function InvestmentNotesView() {
         associations: draft.associations,
         roadshowAssociations: draft.roadshowAssociations,
       })
+      await setInvestmentNoteTags(note.id, ["整合"])
       await reloadNotes()
+      setCheckedIds(new Set())
       setSelectedId(note.id)
       setDraftTitle(note.title)
       setDraftContent(note.content)
       setDraftAttachments(note.attachments)
       setEditing(false)
       toast({
-        title: "已整合为新笔记",
-        description: `已将 ${sources.length} 条笔记合并为「${displayNoteTitle(note.title)}」，原文仍保留`,
+        title: analysis ? "已整合为新笔记" : "已整合，综述未生成",
+        description: analysis
+          ? `已将 ${sources.length} 条笔记合并为「${displayNoteTitle(note.title)}」，含时间线、近期变化和关注点。原文仍保留`
+          : `时间线与原文已写入「${displayNoteTitle(note.title)}」。${analysisError}`,
+        variant: analysis ? "default" : "destructive",
       })
     } catch (err) {
       toast({
@@ -1256,13 +1317,15 @@ export function InvestmentNotesView() {
             <button
               type="button"
               onClick={() => void handleIntegrateNotes()}
-              disabled={integrating || !keyword.trim() || mergeableNotes.length < 2}
+              disabled={integrating || integrateTargets.length < 2 || (!integrateUsesSelection && !keyword.trim())}
               title={
-                !keyword.trim()
-                  ? "请先搜索同一管理人的多条路演笔记"
-                  : mergeableNotes.length < 2
-                    ? "至少需要 2 条可整合笔记"
-                    : `将当前 ${mergeableNotes.length} 条笔记整合为一条`
+                integrateUsesSelection
+                  ? `将勾选的 ${checkedMergeableNotes.length} 条笔记整理成综述、时间线和关注点`
+                  : !keyword.trim()
+                    ? "勾选至少 2 条笔记，或先搜索同一管理人"
+                    : mergeableNotes.length < 2
+                      ? "至少需要 2 条可整合笔记"
+                      : `将当前 ${mergeableNotes.length} 条笔记整理成综述、时间线和关注点`
               }
               className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded border border-red-300 bg-white py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-400 disabled:hover:bg-white"
             >
@@ -1273,10 +1336,21 @@ export function InvestmentNotesView() {
               )}
               {integrating
                 ? "整合中..."
-                : keyword.trim() && mergeableNotes.length >= 2
-                  ? `整合当前 ${mergeableNotes.length} 条笔记`
-                  : "整合笔记"}
+                : integrateUsesSelection
+                  ? `整合已选 ${checkedMergeableNotes.length} 条`
+                  : keyword.trim() && mergeableNotes.length >= 2
+                    ? `整合当前 ${mergeableNotes.length} 条笔记`
+                    : "整合笔记"}
             </button>
+            {mergeableNotes.length >= 2 ? (
+              <button
+                type="button"
+                onClick={toggleSelectVisibleNotes}
+                className="mt-2 w-full text-center text-xs text-zinc-500 hover:text-red-600"
+              >
+                {allVisibleChecked ? "取消全选" : `全选当前 ${mergeableNotes.length} 条`}
+              </button>
+            ) : null}
               </>
             )}
           </div>
@@ -1347,6 +1421,16 @@ export function InvestmentNotesView() {
                         </button>
                         )}
                         <div className="flex items-start justify-between gap-2 pr-6">
+                          {!isTrash && !isEmptyDraftInvestmentNote(note) && !isIntegratedInvestmentNote(note) ? (
+                            <input
+                              type="checkbox"
+                              checked={checkedIds.has(note.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={() => toggleCheckedNote(note.id)}
+                              aria-label={`选择 ${displayNoteTitle(note.title)}`}
+                              className="mt-1 h-3.5 w-3.5 shrink-0 accent-red-500"
+                            />
+                          ) : null}
                           <div className="min-w-0 flex-1">
                             <div className="text-sm font-medium truncate text-zinc-800">
                               {displayNoteTitle(note.title)}

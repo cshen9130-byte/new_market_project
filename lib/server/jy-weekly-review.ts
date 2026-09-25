@@ -10,6 +10,7 @@ import { fmtIso, n, query, queryUnbounded } from "@/lib/db"
 import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import { isPlausibleEmailUnitNav, recoverPlausibleEmailUnitNav } from "@/lib/server/email-nav-query"
 import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { beianFamilyKey } from "@/lib/server/share-class-product"
 import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 import {
@@ -180,13 +181,12 @@ export function resolveWeekWindow(weekEndRaw: string): { weekStart: string; week
   return { weekStart: mondayOfWeek(asOf), weekEnd: asOf, asOf }
 }
 
-export function displayName(productName: string, shortName: string | null): string {
-  const raw = (shortName || productName || "").trim()
-  return raw
-    .replace(/私募证券投资基金/g, "")
-    .replace(/证券投资基金/g, "")
-    .replace(/\s+/g, " ")
-    .trim() || productName
+export function displayName(
+  productName: string,
+  shortName: string | null,
+  beianHao?: string | null,
+): string {
+  return resolveFundDisplayLabel(shortName, productName, beianHao) || productName
 }
 
 /** Sheet label with share-class / 份额 markers removed, so parent and A/B/C match. */
@@ -199,15 +199,27 @@ function weeklyReviewNameKey(fund: WeeklyReviewFund): string {
   return base || fund.beian_hao.trim().toUpperCase()
 }
 
-/** Parent filing first, then A/B/C; S-prefixed 备案号 before a bare alias. */
+/** Share class before the main filing when NAV coverage ties; A before B before C. */
 function representativeRank(beian: string): [number, number] {
   const code = beian.trim().toUpperCase()
-  const classRank = /A$/.test(code) ? 1 : /B$/.test(code) ? 2 : /C$/.test(code) ? 3 : 0
+  const classRank = /A$/.test(code) ? 0 : /B$/.test(code) ? 1 : /C$/.test(code) ? 2 : 3
   const sRank = code.startsWith("S") ? 0 : 1
   return [classRank, sRank]
 }
 
-function preferWeeklyReviewFund(a: WeeklyReviewFund, b: WeeklyReviewFund): WeeklyReviewFund {
+function navCoverageOf(fund: WeeklyReviewFund, coverage: Map<string, number> | undefined): number {
+  if (!coverage) return 0
+  return coverage.get(fund.beian_hao.trim().toUpperCase()) ?? 0
+}
+
+function preferWeeklyReviewFund(
+  a: WeeklyReviewFund,
+  b: WeeklyReviewFund,
+  coverage?: Map<string, number>,
+): WeeklyReviewFund {
+  const na = navCoverageOf(a, coverage)
+  const nb = navCoverageOf(b, coverage)
+  if (na !== nb) return na > nb ? a : b
   const [ca, sa] = representativeRank(a.beian_hao)
   const [cb, sb] = representativeRank(b.beian_hao)
   if (ca !== cb) return ca < cb ? a : b
@@ -218,6 +230,7 @@ function preferWeeklyReviewFund(a: WeeklyReviewFund, b: WeeklyReviewFund): Weekl
 function collapseByKey(
   funds: WeeklyReviewFund[],
   keyOf: (fund: WeeklyReviewFund) => string,
+  coverage?: Map<string, number>,
 ): WeeklyReviewFund[] {
   const best = new Map<string, WeeklyReviewFund>()
   const order: string[] = []
@@ -229,7 +242,7 @@ function collapseByKey(
       order.push(key)
       continue
     }
-    best.set(key, preferWeeklyReviewFund(prev, fund))
+    best.set(key, preferWeeklyReviewFund(prev, fund, coverage))
   }
   return order.map((key) => best.get(key)!)
 }
@@ -238,12 +251,95 @@ function collapseByKey(
  * One row per product inside a strategy sheet.
  * Parent + A/B/C (and same-name alias codes) stay separate when they fall in different buckets.
  */
-export function collapseWeeklyReviewFunds(funds: WeeklyReviewFund[]): WeeklyReviewFund[] {
+export function collapseWeeklyReviewFunds(
+  funds: WeeklyReviewFund[],
+  coverage?: Map<string, number>,
+): WeeklyReviewFund[] {
   const byFamily = collapseByKey(funds, (fund) => {
     const family = beianFamilyKey(fund.beian_hao) || fund.beian_hao.trim().toUpperCase()
     return `${family}\0${bucketForFund(fund)}`
+  }, coverage)
+  return collapseByKey(byFamily, (fund) => `${weeklyReviewNameKey(fund)}\0${bucketForFund(fund)}`, coverage)
+}
+
+function fundsNeedingCoverage(funds: WeeklyReviewFund[]): WeeklyReviewFund[] {
+  const collisions = (keyOf: (fund: WeeklyReviewFund) => string) => {
+    const groups = new Map<string, WeeklyReviewFund[]>()
+    for (const fund of funds) {
+      const key = keyOf(fund)
+      const list = groups.get(key) ?? []
+      list.push(fund)
+      groups.set(key, list)
+    }
+    return [...groups.values()].filter((list) => list.length > 1).flat()
+  }
+  const familyKey = (fund: WeeklyReviewFund) => {
+    const family = beianFamilyKey(fund.beian_hao) || fund.beian_hao.trim().toUpperCase()
+    return `${family}\0${bucketForFund(fund)}`
+  }
+  const seen = new Set<string>()
+  const out: WeeklyReviewFund[] = []
+  for (const fund of [...collisions(familyKey), ...collisions((fund) => `${weeklyReviewNameKey(fund)}\0${bucketForFund(fund)}`)]) {
+    const code = fund.beian_hao.trim().toUpperCase()
+    if (seen.has(code)) continue
+    seen.add(code)
+    out.push(fund)
+  }
+  return out
+}
+/**
+ * Own-series length for parent vs A/B/C that share a sheet row.
+ * Sibling codes are not merged, so the invested email class can win when it has more points.
+ */
+export async function loadWeeklyReviewNavCoverage(
+  funds: WeeklyReviewFund[],
+  asOf: string,
+): Promise<Map<string, number>> {
+  const codes = [...new Set(fundsNeedingCoverage(funds).map((f) => f.beian_hao.trim().toUpperCase()).filter(Boolean))]
+  const out = new Map<string, number>()
+  if (codes.length === 0) return out
+  const rows = await query<{ code: string; n: string | number }>(
+    `WITH email AS (
+       SELECT UPPER(BTRIM(product_code)) AS code, COUNT(DISTINCT nav_date)::int AS n
+       FROM ops_email_nav_records
+       WHERE nav IS NOT NULL
+         AND nav_date <= $2::date
+         AND BTRIM(product_code) <> ''
+         AND UPPER(BTRIM(product_code)) = ANY($1::text[])
+       GROUP BY 1
+     ),
+     legacy AS (
+       SELECT UPPER(BTRIM(beian_hao)) AS code, COUNT(DISTINCT price_date)::int AS n
+       FROM private_fund_nav
+       WHERE nav IS NOT NULL
+         AND price_date <= $2::date
+         AND UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       GROUP BY 1
+     ),
+     cache AS (
+       SELECT UPPER(BTRIM(beian_hao)) AS code,
+              jsonb_array_length(COALESCE(nav_series, '[]'::jsonb)) AS n
+       FROM ops_private_fund_detail_nav_cache
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+     )
+     SELECT code, MAX(n)::int AS n
+     FROM (
+       SELECT code, n FROM email
+       UNION ALL SELECT code, n FROM legacy
+       UNION ALL SELECT code, n FROM cache
+     ) src
+     WHERE code IS NOT NULL
+     GROUP BY code`,
+    [codes, asOf],
+  ).catch((err: unknown) => {
+    console.error("[jy-weekly-review] nav coverage failed:", err)
+    return [] as Array<{ code: string; n: string | number }>
   })
-  return collapseByKey(byFamily, (fund) => `${weeklyReviewNameKey(fund)}\0${bucketForFund(fund)}`)
+  for (const row of rows) {
+    const nPoints = Number(row.n)
+    if (row.code && Number.isFinite(nPoints)) out.set(row.code, nPoints)
+  }
+  return out
 }
 
 function inferIndexEnhBucket(productName: string, l3: string | null): string | null {
@@ -561,7 +657,9 @@ export function previewWeeklyReview(funds: WeeklyReviewFund[]): WeeklyReviewGrou
 
 export async function buildWeeklyReviewPreview(weekEnd: string): Promise<WeeklyReviewPreview> {
   const { weekStart, weekEnd: end, asOf } = resolveWeekWindow(weekEnd)
-  const funds = collapseWeeklyReviewFunds((await loadJyTrackingPoolFunds()).filter(isEquityFund))
+  const equity = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
+  const funds = collapseWeeklyReviewFunds(equity, coverage)
   return {
     week_start: weekStart,
     week_end: end,
@@ -616,6 +714,7 @@ function preferWeeklyNavSeries(
   const emailTip = emailSeries[emailSeries.length - 1]?.nav_date ?? ""
   if (emailTip > cacheTip) return emailSeries
   if (recentHole(cached, asOf) && !recentHole(emailSeries, asOf)) return emailSeries
+  if (emailSeries.length > cached.length && emailTip >= cacheTip && !recentHole(emailSeries, asOf)) return emailSeries
   return cached
 }
 
@@ -827,7 +926,7 @@ export async function computeFundMetrics(
 
     out.push({
       beian_hao: fund.beian_hao,
-      name: displayName(fund.product_name, fund.short_name),
+      name: displayName(fund.product_name, fund.short_name, fund.beian_hao),
       bucket,
       mode,
       ret,
@@ -966,7 +1065,9 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promis
   groupCount: number
 }> {
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
-  const funds = collapseWeeklyReviewFunds((await loadJyTrackingPoolFunds()).filter(isEquityFund))
+  const equity = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
+  const funds = collapseWeeklyReviewFunds(equity, coverage)
   if (funds.length === 0) {
     throw new Error("JY跟踪池中没有可导出的股票策略产品")
   }

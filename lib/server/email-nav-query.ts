@@ -2843,6 +2843,40 @@ export function mergeLegacyWithTeamNav(
   return finalizeNavSeries(merged, new Set(), new Set(), fundContext)
 }
 
+/**
+ * Manual team NAV stays authoritative through its last date.
+ * Email after that tip still extends the series (BUK40A: team stops 2026-08-03,
+ * 虚拟计提净值表 continues through the 2026-08-28 dividend). Dates inside the
+ * team window are not replaced.
+ */
+function seriesTipBeforeLongHole(series: LegacyNavRow[]): string {
+  const dates = [...new Set(series.map((row) => row.price_date.slice(0, 10)))].sort()
+  if (dates.length === 0) return ""
+  let tip = dates[0]
+  for (let i = 1; i < dates.length; i += 1) {
+    const gapDays = (Date.parse(dates[i]) - Date.parse(dates[i - 1])) / 86_400_000
+    if (gapDays > 21) return dates[i - 1]
+    tip = dates[i]
+  }
+  return tip
+}
+
+export function appendEmailAfterSeriesTip(
+  series: LegacyNavRow[],
+  emailRows: EmailNavPoint[],
+  fundContext?: FundNavSeriesContext | null,
+): LegacyNavRow[] {
+  if (emailRows.length === 0) return series
+  if (series.length === 0) return mergeNavSeriesWithEmail([], emailRows, fundContext)
+  // A stray later point (parent 估值表) must not hide email that belongs in the hole.
+  // Weekly team gaps stay inside the team window (SZJ909).
+  const tip = seriesTipBeforeLongHole(series)
+  const later = emailRows.filter((row) => row.price_date.slice(0, 10) > tip)
+  if (later.length === 0) return series
+  const kept = series.filter((row) => row.price_date.slice(0, 10) <= tip)
+  return mergeNavSeriesWithEmail(kept, later, fundContext)
+}
+
 /** Return rows where adj >= cum >= unit is violated (empty = OK). */
 export function findNavInvariantViolations(rows: LegacyNavRow[]): Array<{
   price_date: string
