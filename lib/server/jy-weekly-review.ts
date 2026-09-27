@@ -1,6 +1,6 @@
 /**
  * JY 跟踪池周度回顾 Excel — layout follows 博孚利周度回顾（股票）:
- * 目录 + 股票市场回顾 + one sheet per 团队策略 bucket.
+ * 目录 + 口径说明 + 股票市场回顾 + one sheet per 团队策略 bucket.
  */
 
 import { randomUUID } from "crypto"
@@ -490,12 +490,16 @@ function windowSlice(dates: string[], values: number[], asOf: string, days: numb
   return { dates: outDates, values: outVals }
 }
 
-/** Period return ending at the last NAV on/before asOf, not a tight [asOf-days, asOf] box. */
+/**
+ * Period return ending at the last NAV on/before asOf, not a tight [asOf-days, asOf] box.
+ * minEndDate rejects a window whose end print is older than the report week.
+ */
 function periodReturnAt(
   dates: string[],
   values: number[],
   asOf: string,
   days: number,
+  minEndDate?: string,
 ): number | null {
   let endIdx = -1
   for (let i = 0; i < dates.length; i++) {
@@ -503,6 +507,7 @@ function periodReturnAt(
   }
   if (endIdx < 1) return null
   const endDate = dates[endIdx]
+  if (minEndDate && endDate < minEndDate) return null
   const target = addDays(endDate, days)
   let startIdx = -1
   for (let i = 0; i < endIdx; i++) {
@@ -573,6 +578,7 @@ function excessWindows(
   }
   if (excessVals.length < 2) return empty
   const latestDate = excessDates.filter((d) => d <= asOf).at(-1) ?? asOf
+  const weekStart = mondayOfWeek(asOf)
 
   const dd = (days: number): number | null => {
     const w = windowSlice(excessDates, excessVals, latestDate, days)
@@ -582,7 +588,7 @@ function excessWindows(
   }
   return {
     excess: {
-      ret_1w: periodReturnAt(excessDates, excessVals, asOf, 7),
+      ret_1w: periodReturnAt(excessDates, excessVals, asOf, 7, weekStart),
       ret_1m: periodReturnAt(excessDates, excessVals, asOf, 30),
       ret_3m: periodReturnAt(excessDates, excessVals, asOf, 90),
       ret_6m: periodReturnAt(excessDates, excessVals, asOf, 180),
@@ -905,6 +911,8 @@ export async function computeFundMetrics(
     const ret = latest
       ? calcPeriodReturnsFromHistory(history, unitNav, retAsOf, latest)
       : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
+    // 近一周 must end on a print inside the report week. A 9/18 NAV is last week, not 9/21–9/25.
+    if (!latest || latest.nav_date < mondayOfWeek(asOf)) ret.ret_1w = null
     const risk = mode === "absolute"
       ? computeOneYearRiskMetrics(asOf, history.filter((p) => p.nav_date >= addDays(asOf, 365)))
       : { sharpe_1y: null, calmar_1y: null }
@@ -1058,6 +1066,174 @@ export async function buildMarketRows(weekStart: string, weekEnd: string) {
   }
 }
 
+const BENCH_CODE_NAME: Record<string, string> = {
+  "000905.SH": "中证500",
+  "000905": "中证500",
+  "000852.SH": "中证1000",
+  "000852": "中证1000",
+  "932000.CSI": "中证2000",
+  "932000": "中证2000",
+  "932000.SH": "中证2000",
+  "000300.SH": "沪深300",
+  "000300": "沪深300",
+  "000510.SH": "中证A500",
+  "000510": "中证A500",
+}
+
+function describeBenchCodes(codes: string[]): string {
+  const parts: string[] = []
+  const seen = new Set<string>()
+  for (const code of codes) {
+    const name = BENCH_CODE_NAME[code] ?? code
+    if (seen.has(name)) continue
+    seen.add(name)
+    const display = codes.find((c) => (BENCH_CODE_NAME[c] ?? c) === name && c.includes(".")) ?? code
+    parts.push(`${name}（${display}）`)
+  }
+  if (parts.length <= 1) return parts[0] ?? ""
+  return `${parts[0]}；序列缺失时依次改用 ${parts.slice(1).join("、")}`
+}
+
+type MethodologyRow =
+  | { kind: "title"; text: string }
+  | { kind: "pair"; label: string; text: string }
+  | { kind: "spacer" }
+
+/** Reader-facing notes for the weekly workbook. Wording tracks the calculators above. */
+export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: string): MethodologyRow[] {
+  const benchRows: MethodologyRow[] = Object.entries(BENCH_BY_BUCKET).map(([bucket, codes]) => ({
+    kind: "pair" as const,
+    label: bucket,
+    text: describeBenchCodes(codes),
+  }))
+  return [
+    { kind: "title", text: `口径说明（统计区间 ${fmtSlashDate(weekStart)} ~ ${fmtSlashDate(weekEnd)}，截止日 ${weekEnd}）` },
+    {
+      kind: "pair",
+      label: "样本范围",
+      text: "只含 JY 跟踪池里的股票策略产品。一级策略为期货、债券、固收、多资产、套利、期权或其他的产品不进入本表。同一备案号只保留最新一条跟踪记录。",
+    },
+    {
+      kind: "pair",
+      label: "份额合并",
+      text: "同一策略分组内，同一产品的母份额与 A/B/C 份额合并为一行。优先采用截止日前净值点数更多的份额；点数相同则 A 优先于 B、C，S 开头的备案号优先。同一产品落在不同策略分组时仍各占一行。",
+    },
+    {
+      kind: "pair",
+      label: "统计截止",
+      text: "收益、超额、回撤和风险比率都不用截止日之后的数据。近一周收益和近一周超额的期末净值必须落在统计区间内（该周周一至截止日）。区间内没有净值时这两格留空，不用上一周的涨跌代替本周。近一月及更长区间截止到截止日当日或之前最近一条已公布净值；若尚未公布到截止日，那些窗口的终点会早于截止日。",
+    },
+    {
+      kind: "pair",
+      label: "净值取值",
+      text: "收益用复权净值：累计净值或复权净值相对单位净值处于 0.85–2.5 倍、且不低于单位净值时采用该值，否则用单位净值。之后若出现只有单位净值的点，会沿用最近一次有效的复权比例。只保留 A 股交易日。净值来自邮件净值、历史净值表和产品详情缓存，近期更完整、没有超过 14 天断档的序列优先。回看约 400 个自然日。",
+    },
+    {
+      kind: "pair",
+      label: "指标选择",
+      text: "指数增强类分组（名称以「指增」结尾，以及高换手、中换手、低换手）列超额收益和超额最大回撤。空气指增，以及量化中性、强势股、择时择股、转债、打板、DMA、股票多空等分组列绝对收益、近一年夏普和近一年卡玛。",
+    },
+    {
+      kind: "pair",
+      label: "绝对收益",
+      text: "近一周 / 近一月 / 近三月 / 近六月 / 近一年分别对应期末净值日前 7 / 30 / 90 / 180 / 365 个自然日。收益 = 期末复权净值 / 期初复权净值 − 1。期初取目标日当日或之前最近一条净值。近一周的期末必须落在统计区间内，否则留空。近一周要求期初与期末处于约 ±6% 的同一份额尺度，近一月约 ±10%，更长区间在净值路径连续时允许复利后的涨跌，否则约 ±15%。跌幅若大于该净值序列的最大回撤，单元格留空。",
+    },
+    {
+      kind: "pair",
+      label: "夏普比率",
+      text: "只出现在绝对收益表。取截止日前 365 个自然日内的复权净值，至少 20 个点。年化收益按日历跨度复利（一年按 365.25 天）。年化波动为相邻净值收益率的样本标准差（分母 n−1）乘以 √年化期数：中位间隔不超过 2 天按 252，不超过 10 天按 52，更疏的公布频率相应降为 26、12 或 4。夏普 =（年化收益 − 2% 无风险利率）/ 年化波动。绝对值超过 50 或样本不足时留空，保留四位小数。",
+    },
+    {
+      kind: "pair",
+      label: "卡玛比率",
+      text: "与夏普使用同一个近一年窗口。最大回撤 =（区间最高复权净值 − 其后最低净值）/ 最高净值。卡玛 = 年化收益 / 最大回撤。回撤不足 0.01% 或比值绝对值超过 50 时留空。",
+    },
+    {
+      kind: "pair",
+      label: "超额收益",
+      text: "先把基金复权净值和基准收盘价各自归一到近一年窗口内的首个有效点，超额净值 = 基金归一净值 / 基准归一净值。基准对齐到每个基金净值日当日或之前的最近收盘价。各期超额 = 超额净值的区间涨跌幅，窗口同样是 7 / 30 / 90 / 180 / 365 个自然日。近一周超额只在期末净值日落在统计区间内时计算，期末早于该周周一则留空。回看日若落在净值空档中，近一月及以上改用空档之后、且仍覆盖该窗口大部分的第一条净值；近一周在期末已落在统计区间内时，退回到期末的前一条净值。覆盖不足时留空。",
+    },
+    {
+      kind: "pair",
+      label: "超额最大回撤",
+      text: "近六月、近一年超额最大回撤是对应窗口内超额净值的最大回撤，算法与绝对收益的最大回撤相同。表内以正数表示，0.05 即从超额高点回落 5%。",
+    },
+    {
+      kind: "pair",
+      label: "股票市场回顾",
+      text: "宽基、风格和大类指数的涨跌幅，是截止日收盘相对约 7 个自然日前收盘的涨跌幅，两端都取当日或之前最近收盘。数据来自指数日行情；上证50、沪深300、中证500、中证1000在指数缺失时改用 IH、IF、IC、IM。全A成交量是当日全市场成交额，换算成亿元后四舍五入到整数；上涨家数为当日上涨家数。日均成交量和平均上涨家数是统计区间内有数据交易日的算术平均。",
+    },
+    {
+      kind: "pair",
+      label: "排序与颜色",
+      text: "各策略表按近一周超额（绝对收益表则按近一周收益）从高到低排列。正收益为红色，负收益为绿色。回撤、夏普、卡玛不按涨跌着色。百分比单元格存的是小数（1% 为 0.01）。",
+    },
+    {
+      kind: "pair",
+      label: "空值",
+      text: "净值点数不足、基准缺失、窗口被公布空档打断，或风险比率超出合理范围时，对应单元格留空，不填 0。绝对收益、夏普、卡玛与投资分析列表使用同一套净值算法；超额收益和超额回撤只在本周报里按下列基准计算。",
+    },
+    { kind: "spacer" },
+    { kind: "title", text: "超额基准对照" },
+    ...benchRows,
+    {
+      kind: "pair",
+      label: "空气指增",
+      text: "不计算超额，改为绝对收益、近一年夏普和近一年卡玛。",
+    },
+    {
+      kind: "pair",
+      label: "其他指增",
+      text: "名称以「指增」结尾、但上表没有单列的分组，默认对中证500（000905.SH）。指数序列缺失时，分组名含 300 的用 IF，含 1000 的（含 1000 指增、2000 指增）用 IM，其余用 IC。",
+    },
+  ]
+}
+
+function methodologySheet(weekStart: string, weekEnd: string): {
+  aoa: unknown[][]
+  styles: Map<string, CellStyle>
+  rowHeights: number[]
+  merges: Array<{ s: { r: number; c: number }; e: { r: number; c: number } }>
+} {
+  const aoa: unknown[][] = []
+  const styles = new Map<string, CellStyle>()
+  const rowHeights: number[] = []
+  const merges: Array<{ s: { r: number; c: number }; e: { r: number; c: number } }> = []
+  const title: CellStyle = {
+    ...headerStyle(),
+    alignment: { wrapText: true, vertical: "center", horizontal: "left" },
+  }
+  const label: CellStyle = {
+    font: { name: FONT_NAME, sz: 11, bold: true, color: { rgb: HEADER_FILL } },
+    alignment: { wrapText: true, vertical: "top", horizontal: "left" },
+  }
+  const body: CellStyle = {
+    font: { name: FONT_NAME, sz: 11 },
+    alignment: { wrapText: true, vertical: "top", horizontal: "left" },
+  }
+  for (const row of buildWeeklyReviewMethodologyRows(weekStart, weekEnd)) {
+    const r = aoa.length
+    if (row.kind === "spacer") {
+      aoa.push([])
+      rowHeights.push(12)
+      continue
+    }
+    if (row.kind === "title") {
+      aoa.push([row.text, " "])
+      styles.set(`${r},0`, title)
+      styles.set(`${r},1`, title)
+      merges.push({ s: { r, c: 0 }, e: { r, c: 1 } })
+      rowHeights.push(24)
+      continue
+    }
+    aoa.push([row.label, row.text])
+    styles.set(`${r},0`, label)
+    styles.set(`${r},1`, body)
+    rowHeights.push(Math.min(120, Math.max(22, Math.ceil(row.text.length / 40) * 18)))
+  }
+  return { aoa, styles, rowHeights, merges }
+}
+
 export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promise<{
   buffer: Buffer
   fileName: string
@@ -1096,7 +1272,31 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promis
   const orderedBuckets = [...groups.keys()].sort((a, b) => groupSortKey(a).localeCompare(groupSortKey(b), "zh"))
 
   const tocRows: unknown[][] = [["页码", "工作表", "标题", "行数", "列数"]]
-  const sheets: Array<{ name: string; title: string; rows: number; cols: number; aoa: unknown[][]; styles: Map<string, CellStyle> }> = []
+  const sheets: Array<{
+    name: string
+    title: string
+    rows: number
+    cols: number
+    aoa: unknown[][]
+    styles: Map<string, CellStyle>
+    rowHeights?: number[]
+    merges?: Array<{ s: { r: number; c: number }; e: { r: number; c: number } }>
+  }> = []
+
+  {
+    const note = methodologySheet(weekStart, weekEnd)
+    sheets.push({
+      name: "口径说明",
+      title: "口径说明",
+      rows: note.aoa.length,
+      cols: 2,
+      aoa: note.aoa,
+      styles: note.styles,
+      rowHeights: note.rowHeights,
+      merges: note.merges,
+    })
+    tocRows.push(["—", "口径说明", "口径说明", note.aoa.filter((row) => row.some((cell) => String(cell ?? "").trim())).length, 2])
+  }
 
   // ── market sheet ────────────────────────────────────────────────────────
   {
@@ -1211,7 +1411,11 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promis
     const ws = XLSX.utils.aoa_to_sheet(sheet.aoa)
     const maxCol = Math.max(0, ...sheet.aoa.map((r) => r.length))
     styleAoaSheet(ws, sheet.aoa.length, maxCol, (r, c) => sheet.styles.get(`${r},${c}`), XLSX)
-    if (sheet.title === "股票市场回顾") {
+    if (sheet.merges?.length) ws["!merges"] = sheet.merges
+    if (sheet.title === "口径说明") {
+      ws["!cols"] = [{ wch: 16 }, { wch: 92 }]
+      ws["!rows"] = sheet.rowHeights?.map((hpt) => ({ hpt }))
+    } else if (sheet.title === "股票市场回顾") {
       ws["!cols"] = [
         { wch: 14 }, { wch: 22 }, { wch: 10 },
         { wch: 12 }, { wch: 14 }, { wch: 10 },

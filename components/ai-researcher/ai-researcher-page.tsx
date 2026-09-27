@@ -964,6 +964,7 @@ export function AIResearcherPage() {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ""
+      let streamError: string | null = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -976,6 +977,7 @@ export function AIResearcherPage() {
           if (!line.startsWith("data: ")) continue
           try {
             const event = JSON.parse(line.slice(6))
+            if (event?.type === "error") streamError = String(event.message ?? "未知错误")
             handleStreamEvent(event, taskId, updateTask)
           } catch {
             // ignore parse errors
@@ -983,14 +985,26 @@ export function AIResearcherPage() {
         }
       }
 
-      updateTask((t) => ({ ...t, status: "done", durationMs: Date.now() - t.startedAt }))
+      if (streamError) {
+        updateTask((t) => ({ ...t, status: "error", errorMessage: streamError, durationMs: Date.now() - t.startedAt }))
+      } else {
+        updateTask((t) => ({ ...t, status: "done", durationMs: Date.now() - t.startedAt }))
+      }
     } catch (err) {
       if ((err as Error).name === "AbortError") {
         updateTask((t) => ({ ...t, status: "error", errorMessage: "任务已手动停止" }))
       } else {
-        updateTask((t) => ({ ...t, status: "error", errorMessage: (err as Error).message }))
+        updateTask((t) => ({ ...t, status: "error", errorMessage: streamDisconnectMessage(err) }))
       }
     }
+  }
+
+  function streamDisconnectMessage(err: unknown): string {
+    const msg = err instanceof Error ? err.message : String(err ?? "")
+    if (/network error|failed to fetch|networkerror|load failed/i.test(msg)) {
+      return "连接中断，分析结果没有传回页面。请再运行一次。"
+    }
+    return msg || "请求失败"
   }
 
   function handleStreamEvent(

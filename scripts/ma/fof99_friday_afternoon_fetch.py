@@ -7,7 +7,10 @@
    the universe (no extra list credits).
 2. FundMultiPrice that Friday for every weekly fund still missing it.
    weekly_plus only if list tip is still before that Friday.
-3. Universe maintain (default): downgrade 3-week empty weeklies; admit those
+3. Late retry: previous trading Friday, only for funds that were no_data then
+   and are ok on this Friday (they reported this week, so last Friday may
+   have landed late). One attempt. Still empty stays no_data.
+4. Universe maintain (default): downgrade 3-week empty weeklies; admit those
    new young funds as weekly and FundMultiPrice only the ones still missing
    that Friday.
 
@@ -38,10 +41,12 @@ from fof99_mall_credits import (  # noqa: E402
 )
 from fof99_weekly_nav_fetch import (  # noqa: E402
     BATCH_SIZE,
+    DAILY_CREDIT_CAP,
     connect,
     ensure_log_table,
     ensure_universe_table,
     fetch_batch,
+    fund_multi_price_credits_today,
     invalidate_detail_nav_cache,
     last_friday_on_or_before,
     load_env,
@@ -75,6 +80,222 @@ def parse_iso(raw: object) -> date | None:
 def previous_week_friday(today: date) -> date:
     """Last calendar Friday strictly before today (Friday afternoon → last week)."""
     return last_friday_on_or_before(today - timedelta(days=1))
+
+
+def prior_trading_friday(friday: date) -> date | None:
+    """Trading Friday strictly before `friday` (holiday Fridays skipped)."""
+    d = friday - timedelta(days=7)
+    for _ in range(16):
+        if not is_cn_market_closed(d):
+            return d
+        d -= timedelta(days=7)
+    return None
+
+
+def load_late_retry_codes(cur, *, friday: date, prior: date) -> list[tuple[str, str]]:
+    """no_data on the prior Friday, ok on this Friday, and still missing that prior NAV."""
+    cur.execute(
+        """
+        SELECT UPPER(BTRIM(old.reg_code)), COALESCE(u.product_name, '')
+        FROM fof99_nav_fetch_log old
+        JOIN fof99_nav_fetch_log arrived
+          ON UPPER(BTRIM(arrived.reg_code)) = UPPER(BTRIM(old.reg_code))
+         AND arrived.price_date = %s
+         AND arrived.status = 'ok'
+        LEFT JOIN fof99_nav_universe u
+          ON UPPER(BTRIM(u.reg_code)) = UPPER(BTRIM(old.reg_code))
+        WHERE old.price_date = %s
+          AND old.status = 'no_data'
+          AND NOT EXISTS (
+            SELECT 1 FROM private_fund_nav n
+            WHERE UPPER(BTRIM(n.beian_hao)) = UPPER(BTRIM(old.reg_code))
+              AND n.price_date = %s
+          )
+        ORDER BY 1
+        """,
+        (friday, prior, prior),
+    )
+    return [(r[0], r[1] or "") for r in cur.fetchall() if r[0]]
+
+
+def price_credits_today(cur) -> int:
+    """FundMultiPrice log batches plus same-day /fund/price rows in the other-mall ledger."""
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(credits), 0)::int
+        FROM fof99_mall_other_credit
+        WHERE api = '/fund/price'
+          AND (fetched_at AT TIME ZONE 'Asia/Shanghai')::date
+            = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+        """
+    )
+    other = int((cur.fetchone() or [0])[0])
+    return fund_multi_price_credits_today(cur) + other
+
+
+def save_late_retry(
+    conn,
+    prior: date,
+    requested: list[tuple[str, str]],
+    rows: list[dict],
+    batch_id: str,
+) -> tuple[int, int]:
+    """Upgrade a prior-Friday no_data row when that date is present now. Count 1 credit."""
+    by_code: dict[str, dict] = {}
+    for raw in rows or []:
+        code = str(raw.get("reg_code") or "").strip().upper()
+        if code:
+            by_code[code] = raw
+    names = {c: n for c, n in requested}
+    ok = 0
+    still_empty = 0
+    ok_codes: list[str] = []
+    cur = conn.cursor()
+    want = prior.isoformat()
+    for code, _name in requested:
+        raw = by_code.get(code)
+        nav = None
+        if raw is not None:
+            try:
+                nav = float(raw.get("nav"))
+            except (TypeError, ValueError):
+                nav = None
+        returned = str((raw or {}).get("price_date") or "")[:10]
+        if raw is None or nav is None or nav <= 0 or returned != want:
+            still_empty += 1
+            continue
+        cur.execute(
+            """
+            INSERT INTO private_fund_nav
+              (beian_hao, product_name, price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (beian_hao, price_date) DO NOTHING
+            """,
+            (
+                code,
+                names.get(code) or None,
+                prior,
+                nav,
+                raw.get("cumulative_nav"),
+                raw.get("cumulative_nav_withdrawal"),
+                raw.get("price_change"),
+            ),
+        )
+        cur.execute(
+            """
+            UPDATE fof99_nav_fetch_log
+            SET status = 'ok',
+                nav = %s,
+                error_code = NULL,
+                error_msg = NULL
+            WHERE UPPER(BTRIM(reg_code)) = %s
+              AND price_date = %s
+              AND status = 'no_data'
+            """,
+            (nav, code, prior),
+        )
+        cur.execute(
+            """
+            UPDATE private_fund_info
+            SET latest_nav = %s,
+                latest_nav_date = %s::date,
+                updated_at = NOW()
+            WHERE beian_hao = %s
+              AND (latest_nav_date IS NULL OR latest_nav_date < %s::date)
+            """,
+            (nav, prior, code, prior),
+        )
+        ok += 1
+        ok_codes.append(code)
+    invalidate_detail_nav_cache(cur, ok_codes)
+    log_other_mall_credit(
+        cur,
+        api="/fund/price",
+        credits=1,
+        note=(
+            f"late retry {want} after arrived Friday "
+            f"n={len(requested)} ok={ok} still_empty={still_empty}"
+        ),
+        batch_id=batch_id,
+    )
+    conn.commit()
+    return ok, still_empty
+
+
+def retry_last_week_misses(
+    conn,
+    *,
+    friday: date,
+    appid: str | None,
+    appkey: str | None,
+    dry_run: bool,
+) -> int:
+    """One FundMultiPrice pass on the prior Friday for funds that arrived this Friday."""
+    prior = prior_trading_friday(friday)
+    if prior is None:
+        log("late retry: no prior trading Friday")
+        return 0
+    cur = conn.cursor()
+    codes = load_late_retry_codes(cur, friday=friday, prior=prior)
+    batches = [codes[i : i + BATCH_SIZE] for i in range(0, len(codes), BATCH_SIZE)]
+    log(
+        f"late retry: {prior} for funds with {friday} ok and {prior} no_data: "
+        f"{len(codes)} products → {len(batches)} credits"
+    )
+    if dry_run or not codes:
+        return 0
+    if not appid or not appkey:
+        log("STOP: late retry missing 火富牛 keys")
+        return 1
+    used_today = price_credits_today(cur)
+    remaining = max(0, DAILY_CREDIT_CAP - used_today)
+    if len(batches) > remaining:
+        log(
+            f"late retry cut from {len(batches)} to {remaining} credits "
+            f"({used_today} already used today, cap {DAILY_CREDIT_CAP})"
+        )
+        batches = batches[:remaining]
+    if not batches:
+        log("late retry skipped: daily credit cap reached")
+        return 0
+
+    ok_total = 0
+    empty_total = 0
+    paid = 0
+    for i, chunk in enumerate(batches, start=1):
+        batch_id = f"fri-late-{friday.isoformat()}-{prior.isoformat()}-m{i:04d}"
+        if credit_note(cur, batch_id) is not None:
+            log(f"[late {i}/{len(batches)}] {batch_id} already paid, skip HTTP")
+            continue
+        only = [c for c, _ in chunk]
+        log(
+            f"[late {i}/{len(batches)}] credit {paid + 1}/{len(batches)}  {prior}  "
+            f"n={len(only)}  {only[0]}…{only[-1]}"
+        )
+        try:
+            data, debug = fetch_batch(appid, appkey, only, prior)
+        except Exception as exc:
+            log(f"STOP: late-retry exception on {batch_id}: {exc}")
+            return 1
+        err = debug.get("error_code")
+        if err not in (0, "0", None, 0.0) or data is None:
+            log(f"STOP: late-retry API error on {batch_id} error_code={err} msg={debug.get('msg')}")
+            return 1
+        if not isinstance(data, list):
+            log(f"STOP: late-retry unexpected payload type {type(data)} on {batch_id}")
+            return 1
+        ok, empty = save_late_retry(conn, prior, chunk, data, batch_id)
+        paid += 1
+        ok_total += ok
+        empty_total += empty
+        log(
+            f"    late saved ok={ok} still_empty={empty}  "
+            f"credits_used={paid}/{len(batches)}"
+        )
+        cur = conn.cursor()
+    log(format_credit_usage(credit_usage(conn.cursor())))
+    log(f"late retry done. paid={paid} ok={ok_total} still_empty={empty_total}")
+    return 0
 
 
 def parse_list_page(data, debug: dict) -> list[dict]:
@@ -383,6 +604,11 @@ def main() -> int:
     )
     if args.dry_run:
         log("dry-run: no API calls")
+        rc = retry_last_week_misses(
+            conn, friday=friday, appid=None, appkey=None, dry_run=True
+        )
+        if rc != 0:
+            return rc
         return finish_with_maintain(args, conn, friday, today)
 
     appid, appkey = load_fof99_keys()
@@ -425,6 +651,11 @@ def main() -> int:
         log("nothing to FundMultiPrice")
         log(format_credit_usage(credit_usage(cur)))
         conn.commit()
+        rc = retry_last_week_misses(
+            conn, friday=friday, appid=appid, appkey=appkey, dry_run=False
+        )
+        if rc != 0:
+            return rc
         return finish_with_maintain(args, conn, friday, today)
 
     used = 0
@@ -464,6 +695,11 @@ def main() -> int:
         f"done. list_pages={list_paid if not args.skip_list else 0}  "
         f"FundMultiPrice={used} ok={ok_total} no_data={no_data_total}"
     )
+    rc = retry_last_week_misses(
+        conn, friday=friday, appid=appid, appkey=appkey, dry_run=False
+    )
+    if rc != 0:
+        return rc
     return finish_with_maintain(args, conn, friday, today)
 
 

@@ -79,8 +79,9 @@ Goal: each Friday after the last stored NAV, so the list and product page stay o
 3. **Never duplicate a paid call.** Skip `(reg_code, date)` when:
    - `private_fund_nav` already has that day, or
    - `fof99_nav_fetch_log.status` is `ok` or `no_data`.
+   The late-Friday retry below is the only exception, and each of its batches is keyed so a rerun does not pay it again.
 
-4. **Do not retry logged empties.** Friday `no_data` and empty-date `no_data` are permanent for that pair / product. `skip` funds are never requested again.
+4. **Do not retry logged empties**, except the one-week late retry. Friday `no_data` and empty-date `no_data` stay put for that pair. `skip` funds are never requested again. After the Friday-afternoon job has fetched target Friday F, it retries the previous trading Friday P **only** for codes that are `no_data` on P and `ok` on F (they reported this Friday, so last Friday may have landed late). Example: the 2026-09-18 pull logged 927 empties for 2026-09-11; the 2026-09-25 pull then found 301 of those with 2026-09-18, and only those 301 are retried for 2026-09-11. One attempt. Still empty stays `no_data` and is not tried on a later Friday. Each retry batch is 40 codes / 1 credit and is recorded in `fof99_mall_other_credit` (`api=/fund/price`) because the fetch-log row already exists.
 
 5. **Stop immediately on real failure.** HTTP ≠ 200, `error_code != 0`, timeout, quota, or unexpected exception → print the batch, date, and debug info, then **exit**. Do not continue through the remaining products.
 
@@ -105,8 +106,9 @@ python scripts/ma/fof99_friday_afternoon_fetch.py
 
 1. `/fund/advancedlist` newest-first (`order=0`), 1,000/page, **stop when a page has no `price_date` ≥ previous trading Friday** (~11 credits). Persist `weekly` / `weekly_plus` rows whose date **equals** that Friday. Mid-week dates on those pages are stored as extra points only — they do not replace the Friday. The same pages also stamp NAV for products **established within 2 months** that are not yet in the universe (no extra list credits).
 2. `FundMultiPrice` **that Friday** for every `weekly` fund still missing it, and `weekly_plus` only if the list tip is still behind. Expected leftover after list stamps is the mid-week + older set (~3,923 → ~99 credits on the 2026-09-04 mix), not the full 9,733.
-3. This week’s Friday is left to a later `fof99_weekly_nav_fetch.py` run (weekend / Monday).
-4. **Universe maintain** (same process, after the fetch). `--skip-maintain` to skip.
+3. **Late retry** of the previous trading Friday, only for funds that were `no_data` that day and `ok` on this Friday. See rule 4.
+4. This week’s Friday is left to a later `fof99_weekly_nav_fetch.py` run (weekend / Monday).
+5. **Universe maintain** (same process, after the late retry, so a recovered prior Friday counts as present). `--skip-maintain` to skip.
 
 Previous Friday = last completed trading Friday **strictly before today** (Friday afternoon → last week). Override with `--friday YYYY-MM-DD`. `--skip-list` is FundMultiPrice only.
 

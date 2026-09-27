@@ -702,10 +702,14 @@ function cleanEmailFundName(raw: string | null): string | null {
 }
 
 function nameCandidate(row: RawEmailFund): string {
+  const rawName = (row.fund_name ?? "").trim()
   const fromValuation = cleanValuationDerivedFundName(row.fund_name)
-  if (fromValuation) return normalizeFundDisplayName(fromValuation) || fromValuation
-  const fromName = row.fund_name && !row.fund_name.startsWith("资产净值公告_")
-    ? normalizeFundDisplayName(row.fund_name)
+  // cleanValuationDerivedFundName returns the input unchanged when it is not a 估值表 title.
+  if (fromValuation && fromValuation !== rawName) {
+    return normalizeFundDisplayName(fromValuation) || fromValuation
+  }
+  const fromName = rawName && !rawName.startsWith("资产净值公告_")
+    ? normalizeFundDisplayName(rawName)
     : cleanEmailFundName(row.fund_name)
   return fromName ?? row.product_code ?? row.fund_key
 }

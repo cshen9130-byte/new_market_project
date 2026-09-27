@@ -50,4 +50,23 @@ describe("resolveFundDisplayLabel", () => {
       "兰盈俱乐部3号",
     )
   })
+
+  it("strips 资产净值公告 filename prefixes from the product name", () => {
+    assert.equal(
+      resolveFundDisplayLabel(null, "资产净值公告_AVF39A_棕榈滩泰来"),
+      "棕榈滩泰来",
+    )
+    assert.equal(
+      resolveFundDisplayLabel(null, "资产净值公告_AVF39A_棕榈滩泰来私募证券投资基金"),
+      "棕榈滩泰来",
+    )
+    assert.equal(
+      resolveFundDisplayLabel(null, "资产净值公告_SVP460墨雪鑫瑞1号私募证券投资基金_20260805.xls"),
+      "墨雪鑫瑞1号",
+    )
+    assert.equal(
+      resolveFundDisplayLabel(null, "资产净值公告_SSG947_抱朴聚融祥和一号"),
+      "抱朴聚融祥和一号",
+    )
+  })
 })

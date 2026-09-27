@@ -236,6 +236,16 @@ function parseAssetNavAnnouncementSubject(text: string): { code: string; fundNam
     if (fundName) return { code: dated[3], fundName }
   }
 
+  // Short nickname, no 私募证券投资基金:
+  // 资产净值公告_AVF39A_棕榈滩泰来_20260924.xls
+  const shortNamed = text.match(
+    /资产净值公告_([A-Z0-9]{4,10})_([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9]*?)(?=_(?:20\d{2})|\.xls|$)/iu,
+  )
+  if (shortNamed) {
+    const fundName = finalizeExtractedFundName(shortNamed[2])
+    if (fundName) return { code: shortNamed[1].toUpperCase(), fundName }
+  }
+
   return null
 }
 

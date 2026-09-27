@@ -171,7 +171,7 @@ export function WeeklyReviewView() {
           <div className="min-w-0">
             <h2 className="text-base font-semibold">JY跟踪池 · 周度回顾</h2>
             <p className="mt-1 text-xs text-muted-foreground leading-relaxed max-w-2xl">
-              按 JY 跟踪池中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表，格式对齐博孚利周度回顾。同一产品的 A/B/C 份额在同一策略里合并为一行。
+              按 JY 跟踪池中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表。同一产品的 A/B/C 份额在同一策略里合并为一行。
               「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。
             </p>
           </div>
@@ -210,6 +210,7 @@ export function WeeklyReviewView() {
           <div className="text-xs text-muted-foreground">
             统计区间：<span className="text-foreground font-medium">{rangeLabel}</span>
             {preview ? ` · ${preview.fund_count} 只产品 · ${preview.groups.length} 个策略分组` : null}
+            。近一周只计入该区间内有净值的产品，没有则留空。
           </div>
         </div>
 

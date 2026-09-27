@@ -60,9 +60,26 @@ function getChatModel(streaming = false) {
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+  let settled = false
+  // A query that rejects after the timeout must not become an unhandled rejection
+  // and take down the process (the browser then only shows "network error").
+  const guarded = promise.then(
+    (value) => value,
+    (err) => {
+      if (settled) {
+        console.warn(`[similar-fund] ${label} failed after timeout`, err)
+        return fallback
+      }
+      throw err
+    },
+  )
   return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => { console.warn(`[similar-fund] ${label} timed out`); resolve(fallback) }, ms)),
+    guarded,
+    new Promise<T>((resolve) => setTimeout(() => {
+      settled = true
+      console.warn(`[similar-fund] ${label} timed out`)
+      resolve(fallback)
+    }, ms)),
   ])
 }
 
@@ -804,6 +821,7 @@ async function fetchPoolByNavDateRange(
   uploadReturn?: number,
 ): Promise<FundInfo[]> {
   const exclude = excludeBeian.trim()
+  const spanDays = (Date.parse(toDate) - Date.parse(fromDate)) / 86_400_000
 
   const [groupRows, navRows, dateRows, alignedRows, spanRows, endpointRows, emailRows, teamRows, shareClassRows, weeklyRows] = await Promise.all([
     query<FundInfo>(
@@ -824,7 +842,11 @@ async function fetchPoolByNavDateRange(
 
     fetchPoolFromNavTable(fromDate, toDate, exclude, Math.ceil(limit * 0.8), uploadedNavCount),
     fetchPoolBySharedDates(uploadDates, exclude, 200),
-    fetchPoolByAlignedWindow(fromDate, toDate, exclude, uploadedNavCount, 200),
+    // A multi-year chart must not UNION every NAV row in five tables; that scan
+    // holds the pool until the gateway drops the SSE connection.
+    (Number.isFinite(spanDays) && spanDays <= 450 && uploadedNavCount <= 180)
+      ? fetchPoolByAlignedWindow(fromDate, toDate, exclude, uploadedNavCount, 200)
+      : Promise.resolve([] as FundInfo[]),
     fetchPoolByDateSpan(fromDate, toDate, exclude, 400),
     endpoint
       ? fetchPoolByEndpointLevels(endpoint.firstDate, endpoint.lastDate, endpoint.firstNav, endpoint.lastNav, exclude, 80)
@@ -2193,17 +2215,25 @@ export async function POST(req: Request) {
       const emit = (data: object) => {
         try { controller.enqueue(encodeEvent(data)) } catch { /* closed */ }
       }
+      // Nginx proxy_read_timeout is 300s of silence. Candidate-pool SQL emits nothing
+      // until it finishes, so a chart match was dropped as a browser "network error".
+      const keepAlive = setInterval(() => {
+        try { controller.enqueue(new TextEncoder().encode(`: ping\n\n`)) } catch { /* closed */ }
+      }, 12_000)
 
+      try {
       let materials: SimilarFundMaterialProfile | null = null
       if (uploaded.length > 0) {
         try {
           materials = await parseSimilarFundMaterials(uploaded)
           const chartLike = materials.files.some((f) => f.kind === "chart")
-          if (chartLike && materials.navSeries.length >= 16 && materials.navSeries.length < 80) {
-            materials = {
-              ...materials,
-              navSeries: extendChartPastLastAxisTick(downsampleInterpolatedChartNav(materials.navSeries)),
+          if (chartLike && materials.navSeries.length >= 16) {
+            const before = materials.navSeries.length
+            const navSeries = extendChartPastLastAxisTick(downsampleInterpolatedChartNav(materials.navSeries))
+            if (navSeries.length !== before) {
+              console.log(`[similar-fund] chart nav downsampled ${before} → ${navSeries.length}`)
             }
+            materials = { ...materials, navSeries }
           }
           console.log(
             "[similar-fund] upload nav",
@@ -2404,7 +2434,12 @@ export async function POST(req: Request) {
             ? { firstDate: fStart, lastDate: fEnd, firstNav: fFirst, lastNav: fLast }
             : undefined
           candidates = isCurve && fStart && fEnd
-            ? await fetchPoolByNavDateRange(fStart, fEnd, exclude, 600, materials?.navSeries.length ?? 0, materials?.navSeries.map((p) => p.price_date) ?? [], fEndpoint, seriesTotalReturn(materials?.navSeries ?? []) ?? undefined)
+            ? await withTimeout(
+                fetchPoolByNavDateRange(fStart, fEnd, exclude, 600, materials?.navSeries.length ?? 0, materials?.navSeries.map((p) => p.price_date) ?? [], fEndpoint, seriesTotalReturn(materials?.navSeries ?? []) ?? undefined),
+                80_000,
+                [] as FundInfo[],
+                "fallbackDateRangePool",
+              )
             : await fetchRecentNavPool(exclude, 250, fStart)
         } catch (err) {
           console.warn("[similar-fund] fallback pool failed", err)
@@ -2430,7 +2465,13 @@ export async function POST(req: Request) {
           ? shiftDate(dates[dates.length - 1], 14)
           : new Date().toISOString().slice(0, 10)
 
-        const dbFunds = target && target.beian_hao !== "UPLOAD" ? [target, ...candidates] : candidates
+        const dbFundsAll = target && target.beian_hao !== "UPLOAD" ? [target, ...candidates] : candidates
+        // Each chunk scans the upload window. A multi-year chart used to queue
+        // enough of these to outlast the gateway and surface as "network error".
+        const dbFunds = dbFundsAll.slice(0, 240)
+        if (dbFundsAll.length > dbFunds.length) {
+          console.log(`[similar-fund] nav window capped ${dbFundsAll.length} → ${dbFunds.length}`)
+        }
         const navMap = await fetchNavWindow(dbFunds, windowFrom, windowTo)
         const uploadFirst = dates[0]
         const uploadLast = dates[dates.length - 1]
@@ -2822,6 +2863,13 @@ ${allowedList}
       } finally {
         try { controller.close() } catch { /* already closed */ }
       }
+      } catch (err) {
+        console.error("[similar-fund] pipeline error:", err)
+        emit({ type: "error", message: `分析中断：${(err as Error).message}` })
+      } finally {
+        clearInterval(keepAlive)
+        try { controller.close() } catch { /* already closed */ }
+      }
     },
   })
 
@@ -2830,6 +2878,7 @@ ${allowedList}
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   })
 }

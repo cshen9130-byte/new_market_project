@@ -43,6 +43,21 @@ function stripLegalPhrases(value: string): string {
   return value.replace(new RegExp(LEGAL_PHRASES, "gu"), "")
 }
 
+/**
+ * Custody filenames are stored as the fund name:
+ * `资产净值公告_AVF39A_棕榈滩泰来私募证券投资基金_20260924.xls`.
+ * Keep the product name after the code.
+ */
+function stripAssetNavAnnouncementTitle(raw: string): string {
+  const s = raw.trim()
+  const next = s.replace(/^资产净值公告_[A-Z0-9]{4,10}_?/iu, "").trim()
+  if (!next || next === s || !/[\u4e00-\u9fff]/u.test(next)) return s
+  return next
+    .replace(/[_.\-\s]*20\d{6}(?:[_.\-\s]*20\d{6})?(?:\.(?:xlsx?|xls|csv|pdf))?$/iu, "")
+    .replace(/\.(?:xlsx?|xls|csv|pdf)$/iu, "")
+    .trim() || next
+}
+
 function hasLegalPhrase(value: string): boolean {
   return new RegExp(LEGAL_PHRASES, "u").test(value)
 }
@@ -51,6 +66,7 @@ function hasLegalPhrase(value: string): boolean {
 export function normalizeFundDisplayName(raw: string): string {
   let s = raw.trim()
   if (!s) return s
+  s = stripAssetNavAnnouncementTitle(s)
   // Announcement subjects often start with 关于…基金合同变更 / 净值通知.
   s = s.replace(/^关于+/u, "")
   if (!s) return s
@@ -111,8 +127,10 @@ export function appendShareClassFromBeian(
 }
 
 function toDisplayLabel(raw: string): string {
+  // Drop 资产净值公告_CODE_ before the 估值表 path chop, which treats `.xls` as a name leaf.
+  const withoutAnnouncement = stripAssetNavAnnouncementTitle(raw)
   // Drop 估值表 subject-path prefixes (场外_已上市_开放式_私募_…) before legal cleanup.
-  const withoutSubjectPath = stripValuationSubjectPathPrefix(raw) || raw
+  const withoutSubjectPath = stripValuationSubjectPathPrefix(withoutAnnouncement) || withoutAnnouncement
   const normalized = normalizeFundDisplayName(withoutSubjectPath)
   // Final guarantee: the long legal wording must never remain in UI labels.
   const stripped = stripLegalPhrases(normalized || withoutSubjectPath).trim()

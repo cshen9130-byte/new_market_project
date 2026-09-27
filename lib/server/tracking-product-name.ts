@@ -1,4 +1,4 @@
-import { isCodeLikeProductName } from "@/lib/fund-display-name"
+import { isCodeLikeProductName, normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { query } from "@/lib/db"
 import { lookupAmacFundName } from "@/lib/server/amac-fund-metadata"
 import {
@@ -32,8 +32,9 @@ export async function resolveTrackingProductName(
 ): Promise<string> {
   const code = beianHao.trim()
   const rawHint = fallback.trim() || code
-  const hint = cleanValuationDerivedFundName(rawHint)
+  const valuationHint = cleanValuationDerivedFundName(rawHint)
     || (isValuationReportTitle(rawHint) ? code : rawHint)
+  const hint = normalizeFundDisplayName(valuationHint) || valuationHint
   if (!code) return hint
 
   const amacName = await lookupAmacFundName(code)

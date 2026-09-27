@@ -283,7 +283,19 @@ function mergeNavSeries(parts: SimilarFundNavPoint[][]): SimilarFundNavPoint[] {
   return [...map.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
 }
 
-/** Vision used to invent a point every 5-7 days. Keep visible month ticks only. */
+function lastPointByBucket(
+  sorted: SimilarFundNavPoint[],
+  bucket: (iso: string) => string,
+): SimilarFundNavPoint[] {
+  const last = new Map<string, SimilarFundNavPoint>()
+  for (const point of sorted) last.set(bucket(point.price_date), point)
+  return [...last.values()]
+}
+
+/**
+ * Chart OCR and pixel digitizing invent a point every few days.
+ * Keep week or month ticks so matching does not treat a drawing as a daily NAV print.
+ */
 export function downsampleInterpolatedChartNav(points: SimilarFundNavPoint[]): SimilarFundNavPoint[] {
   if (points.length < 16) return points
   const sorted = [...points].sort((a, b) => a.price_date.localeCompare(b.price_date))
@@ -294,10 +306,18 @@ export function downsampleInterpolatedChartNav(points: SimilarFundNavPoint[]): S
   }
   if (gaps.length === 0) return points
   const mid = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)]
-  if (mid < 3.5 || mid > 12) return points
-  const last = new Map<string, SimilarFundNavPoint>()
-  for (const point of sorted) last.set(point.price_date.slice(0, 7), point)
-  const monthly = [...last.values()]
+  if (mid > 12) return points
+  const monthly = lastPointByBucket(sorted, (iso) => iso.slice(0, 7))
+  // One point per pixel column becomes a fake daily series (often 100–1000 points).
+  if (mid < 3.5) {
+    if (sorted.length <= 36) return points
+    const weekly = lastPointByBucket(sorted, (iso) => {
+      const t = Date.parse(`${iso.slice(0, 10)}T00:00:00Z`)
+      return Number.isFinite(t) ? String(Math.floor(t / (7 * 86_400_000))) : iso.slice(0, 10)
+    })
+    if (weekly.length >= 8 && weekly.length <= 80) return weekly
+    return monthly.length >= 6 ? monthly : weekly.length >= 8 ? weekly : points
+  }
   return monthly.length >= 6 ? monthly : points
 }
 
@@ -952,7 +972,7 @@ export async function parseSimilarFundMaterials(
 
   const merged = mergeNavSeries(parsed.map((f) => f.nav))
   const fromChart = parsed.some((f) => f.kind === "chart")
-  const navSeries = fromChart && merged.length < 40
+  const navSeries = fromChart
     ? extendChartPastLastAxisTick(downsampleInterpolatedChartNav(merged))
     : merged
   // A NAV chart cannot tell CTA/期货. Only documents (路演/纪要/表格文本) may contribute strategy hints.

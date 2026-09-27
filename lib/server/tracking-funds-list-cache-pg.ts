@@ -20,8 +20,14 @@ import {
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
 import { isCodeLikeProductName, resolveTrackingProductName } from "@/lib/server/tracking-product-name"
 import { cleanValuationDerivedFundName } from "@/lib/server/valuation-filename"
+
+function cleanTrackedProductName(raw: string | null | undefined): string {
+  const valuation = cleanValuationDerivedFundName(raw) || String(raw ?? "").trim()
+  return normalizeFundDisplayName(valuation) || valuation
+}
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_tracking_funds_list_cache (
@@ -429,8 +435,8 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
   const funds = (await query<BaseFundRow>(`${IDENTITY_SQL.trim()} ORDER BY product_name`))
     .map((f) => ({
       ...f,
-      product_name: cleanValuationDerivedFundName(f.product_name) || f.product_name,
-      short_name: cleanValuationDerivedFundName(f.short_name) || f.short_name,
+      product_name: cleanTrackedProductName(f.product_name) || f.product_name,
+      short_name: f.short_name ? cleanTrackedProductName(f.short_name) || f.short_name : f.short_name,
     }))
   logProgress(`found ${funds.length} funds — upserting in batches of ${TRACKING_CACHE_BATCH}…`)
 
