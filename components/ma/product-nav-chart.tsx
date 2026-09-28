@@ -359,6 +359,24 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
     return maxDd
   })()
   const performanceColor = getChinaMarketColor(totalReturn)
+  const cashFlowMarks = isAccount
+    ? normalizedData.flatMap((point) => {
+        const prevEquity = point.cumCapital - point.netFlow - point.pnl
+        if (!(prevEquity > 0) || Math.abs(point.netFlow) / prevEquity < 0.08) return []
+        const outflow = point.netFlow < 0
+        const y = Math.round((point.navNorm - 1) * 10000) / 100
+        return [{
+          coord: [point.date, y],
+          itemStyle: { color: outflow ? "#16a34a" : "#dc2626" },
+          label: {
+            formatter: outflow ? "出金" : "入金",
+            fontSize: 10,
+            color: outflow ? "#16a34a" : "#dc2626",
+            position: "top" as const,
+          },
+        }]
+      })
+    : []
   const benchmarkLastPoint = normalizedBenchmarkData[normalizedBenchmarkData.length - 1]
   const showBenchmarkSeries = showBenchmark && normalizedBenchmarkData.length > 0
   const sharpeWindows = [20, 60, 120] as const
@@ -399,7 +417,9 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
           ? `<br/>累计盈亏 ${fmtMoney(pt.cumPnl)}`
           : ""
         const capitalLabel = pt && pt.cumPnl != null ? "客户权益" : "累计规模"
-        const flow = pt && pt.netFlow !== 0 ? `<br/>资金流入 ${fmtMoney(pt.netFlow)}` : ""
+        const flow = pt && pt.netFlow !== 0
+          ? `<br/>${pt.netFlow > 0 ? "入金" : "出金"} ${fmtMoney(Math.abs(pt.netFlow))}`
+          : ""
         const returnColor = getChinaMarketColor(retPct)
         const dailyReturnColor = pt ? getChinaMarketColor(pt.dailyReturn) : "#64748b"
         const benchmarkLine = benchmarkPoint && showBenchmarkSeries
@@ -457,6 +477,9 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
           symbol: "none",
           data: [{ yAxis: 0, lineStyle: { color: "#888", type: "dashed", width: 1 }, label: { show: false } }],
         },
+        markPoint: cashFlowMarks.length > 0
+          ? { symbol: "circle", symbolSize: 7, data: cashFlowMarks }
+          : undefined,
       },
       ...(showBenchmarkSeries
         ? [

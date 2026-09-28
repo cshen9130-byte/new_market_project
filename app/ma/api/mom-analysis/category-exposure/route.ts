@@ -128,7 +128,22 @@ const ALL_PRODS = [
   "TS","TF","T","TL",
 ]
 
-async function _GET() {
+function accountParam(req: Request): string | null | false {
+  const raw = new URL(req.url).searchParams.get("account")?.trim() ?? ""
+  if (!raw) return null
+  if (!/^\d{1,8}$/.test(raw)) return false
+  return raw.replace(/^0+/, "") || "0"
+}
+
+const ACCOUNT_SQL = ` AND REGEXP_REPLACE(REGEXP_REPLACE(TRIM("账户"::text), '[^0-9]', '', 'g'), '^0+', '') = $1`
+
+async function _GET(req: Request) {
+  const account = accountParam(req)
+  if (account === false) {
+    return NextResponse.json({ ok: false, error: "无效账户" }, { status: 400 })
+  }
+  const accountSql = account ? ACCOUNT_SQL : ""
+  const params = account ? [account] : []
   try {
     const rows = await query<{
       date: string
@@ -157,9 +172,10 @@ async function _GET() {
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
          AND TRIM("账户"::text) NOT LIKE '%国信%'
-         AND TRIM("账户"::text) <> '665300200077'
+         AND TRIM("账户"::text) <> '665300200077'${accountSql}
        GROUP BY "交易日期"::date, UPPER(TRIM("合约"))
        ORDER BY "交易日期"::date`,
+      params,
     )
 
     // Daily account equity (客户权益) from mom_daily_reports — the true 净资本
@@ -172,9 +188,10 @@ async function _GET() {
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
          AND TRIM("账户"::text) NOT LIKE '%国信%'
-         AND TRIM("账户"::text) <> '665300200077'
+         AND TRIM("账户"::text) <> '665300200077'${accountSql}
        GROUP BY "交易日期"::date
        ORDER BY "交易日期"::date`,
+      params,
     )
     const equityMap = new Map<string, number>()
     for (const r of equityRows) {

@@ -43,6 +43,7 @@ function isIndex(h: Hit): boolean {
 export function readFactorSupport(
   report: FactorDmlReport | null | undefined,
   strategyLabel: string,
+  opts?: { hedged?: boolean },
 ): { portrait: string; inference: string } | null {
   if (!report?.audit || !report.tested) return null
   const hits = hitsOf(report)
@@ -59,7 +60,7 @@ export function readFactorSupport(
   const maConfounded = hits.some((h) => h.verdict === "confounded" && isMaOrMom(h))
   const longBeta = strategyLabel.includes("商品多头")
   const shortBeta = strategyLabel.includes("逆商品")
-  const hedged = strategyLabel.includes("多空")
+  const hedged = opts?.hedged ?? strategyLabel.includes("多空")
 
   let portrait: string
   if (!used.length) {

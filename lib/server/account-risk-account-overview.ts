@@ -100,7 +100,11 @@ async function loadNavSeriesByAccount(): Promise<Map<string, number[]>> {
            trade_date::text AS date,
            COALESCE(client_equity, 0) AS client_equity,
            COALESCE(daily_pnl, 0) AS daily_pnl,
-           COALESCE(deposit_wd, 0) AS deposit_wd
+           COALESCE(deposit_wd, 0) AS deposit_wd,
+           balance_bf,
+           balance_cf,
+           realized_pl,
+           commission
     FROM public.cfmmc_daily_summary
     WHERE ${scoped}
     ORDER BY account_no ASC, trade_date ASC
@@ -112,6 +116,10 @@ async function loadNavSeriesByAccount(): Promise<Map<string, number[]>> {
     client_equity: unknown
     daily_pnl: unknown
     deposit_wd: unknown
+    balance_bf: unknown
+    balance_cf: unknown
+    realized_pl: unknown
+    commission: unknown
   }>>()
   for (const row of result.rows as Array<{
     account_no: string
@@ -119,6 +127,10 @@ async function loadNavSeriesByAccount(): Promise<Map<string, number[]>> {
     client_equity: unknown
     daily_pnl: unknown
     deposit_wd: unknown
+    balance_bf: unknown
+    balance_cf: unknown
+    realized_pl: unknown
+    commission: unknown
   }>) {
     const account = String(row.account_no ?? "").trim()
     if (!account) continue
@@ -128,6 +140,10 @@ async function loadNavSeriesByAccount(): Promise<Map<string, number[]>> {
       client_equity: row.client_equity,
       daily_pnl: row.daily_pnl,
       deposit_wd: row.deposit_wd,
+      balance_bf: row.balance_bf,
+      balance_cf: row.balance_cf,
+      realized_pl: row.realized_pl,
+      commission: row.commission,
     }
     if (list) list.push(point)
     else byAccount.set(account, [point])

@@ -1,7 +1,11 @@
 /**
  * Create one 团队笔记 per embedded file in the three external DD folders.
- * Text comes from kb_chunks (already extracted). qwen-plus only writes the
- * title and HTML summary. Author is 外部笔记, not auto.
+ * Text comes from kb_chunks (already extracted). Written reports and meeting
+ * notes are kept in full. Pitch decks are summarized. The sidebar date is the
+ * roadshow/file date plus a channel label. Author is 外部笔记.
+ *
+ * Grouping same-roadshow files and copying originals into attachments is done
+ * by scripts/ma/refine_external_kb_notes.py.
  *
  *   npx tsx scripts/ma/backfill_external_kb_notes.ts --dry-run
  *   npx tsx scripts/ma/backfill_external_kb_notes.ts --limit=2
@@ -104,6 +108,50 @@ function extractJsonObject(text: string): unknown {
   }
 }
 
+function channelFromSource(source: string): string {
+  if (source.includes("点睛")) return "点睛"
+  if (source.includes("Beny") || source.includes("beny")) return "beny"
+  if (source.includes("喵财") || source.includes("喵才")) return "喵财君"
+  return ""
+}
+
+function eventDateFromName(name: string): string {
+  const day = name.match(/(20\d{2})[.\-_/年](\d{1,2})[.\-_/月](\d{1,2})/) || name.match(/(20\d{2})(\d{2})(\d{2})(?!\d)/)
+  if (day) {
+    const year = Number(day[1])
+    const month = Number(day[2])
+    const date = Number(day[3])
+    if (year >= 2000 && year <= 2035 && month >= 1 && month <= 12 && date >= 1 && date <= 31) {
+      return `${year}/${String(month).padStart(2, "0")}/${String(date).padStart(2, "0")}`
+    }
+  }
+  const monthOnly = name.match(/(20\d{2})[.\-_/年](\d{1,2})(?:月)?(?!\d)/) || name.match(/(20\d{2})(\d{2})(?!\d)/)
+  if (monthOnly) {
+    const year = Number(monthOnly[1])
+    const month = Number(monthOnly[2])
+    if (year >= 2000 && year <= 2035 && month >= 1 && month <= 12) {
+      return `${year}/${String(month).padStart(2, "0")}`
+    }
+  }
+  return ""
+}
+
+function createdDateLabel(source: string): string {
+  const channel = channelFromSource(source)
+  const stamp = eventDateFromName(source.split("/").pop() || source)
+  if (stamp && channel) return `${stamp} · ${channel}`
+  if (channel) return `日期不详 · ${channel}`
+  return ""
+}
+
+function isDesignedSource(source: string): boolean {
+  const name = source.split("/").pop() || source
+  if (source.includes("/尽调报告/")) return true
+  if (/(尽调报告|会议纪要|调研纪要|交流纪要|访谈纪要)/.test(name)) return true
+  if (name.includes("纪要") && !name.includes("介绍") && !name.includes("推介")) return true
+  return false
+}
+
 function fileTitle(source: string): string {
   const base = source.split("/").pop() || source
   return base.replace(/\.[^.]+$/, "").trim().slice(0, 80) || "外部资料笔记"
@@ -131,10 +179,10 @@ async function summarize(input: {
     "你是私募投资研究助手，负责把路演材料、尽调资料、合同或研究报告整理成投资笔记。",
     "要求：",
     "1. 只依据提供的文件内容整理，不要编造其中没有的事实、数据或结论。",
-    "2. 用中文撰写，结构清晰，突出要点、关键数据和风险。",
+    "2. 写详细，保留管理人、团队、规模、策略做法、业绩数字、风控和观点。有业绩时用 HTML table。",
     "3. 严格输出 JSON：{\"title\":\"笔记标题\",\"content\":\"HTML正文\",\"products\":[{\"name\":\"产品全称\",\"recordNo\":\"备案号\"}]}",
     "4. title 简洁，不超过 80 字，可包含管理人、产品或主题。",
-    "5. content 使用简单 HTML（div、b、p、ul、li、table），不要使用 markdown，不要用代码块包裹。",
+    "5. content 使用简单 HTML（div、b、p、ul、li、table、tr、th、td），不要使用 markdown，不要用代码块包裹。",
     "6. products 列出文件中明确出现的基金产品。name 用全称；备案号未知则 recordNo 为空字符串。没有产品则 []。不要编造产品。",
   ].join("\n")
   const body = {
@@ -269,7 +317,9 @@ async function main() {
       console.error(`[external-notes] stop: spent ¥${progress.spentRmb.toFixed(2)} reached budget ¥${BUDGET_RMB}`)
       break
     }
-    const text = stitchChunks(grouped.get(source) || []).slice(0, MAX_TEXT)
+    const stitched = stitchChunks(grouped.get(source) || [])
+    const designedSource = isDesignedSource(source)
+    const text = stitched.slice(0, designedSource ? 80_000 : MAX_TEXT)
     const name = source.split("/").pop() || source
     if (text.length < 40) {
       progress.failed.push({ source, error: "提取文字过短" })
@@ -281,7 +331,11 @@ async function main() {
       let title = fileTitle(source)
       let body = textToNoteHtml(text.slice(0, 4000))
       let products: Array<{ name: string; recordNo: string }> = []
+      const designed = designedSource
       try {
+        if (designed) {
+          body = textToNoteHtml(text)
+        } else {
         const generated = await summarize({ apiKey, baseUrl, model, fileName: name, text })
         title = generated.title || title
         body = generated.content
@@ -289,6 +343,7 @@ async function main() {
         progress.promptTokens += generated.promptTokens
         progress.completionTokens += generated.completionTokens
         progress.spentRmb += generated.promptTokens * PRICE_IN_PER_TOKEN + generated.completionTokens * PRICE_OUT_PER_TOKEN
+        }
       } catch (err) {
         console.error(`[external-notes] AI fallback ${name}: ${err instanceof Error ? err.message : err}`)
       }
@@ -308,6 +363,8 @@ async function main() {
           title,
           content: `${sourceBlock(source)}${body}`,
           teamShared: true,
+          createdDate: createdDateLabel(source),
+          sourceLabel: channelFromSource(source),
           ...(extractedProducts.length ? { extractedProducts } : {}),
         },
         { append: true },

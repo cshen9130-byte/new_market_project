@@ -64,14 +64,13 @@ import {
   emptyInvestmentNoteTrash,
   getTrashedInvestmentNote,
   INVESTMENT_NOTE_TRASH_RETENTION_DAYS,
+  investmentNoteListDateParts,
   investmentNoteTrashDaysLeft,
   linkInvestmentNoteMaterial,
   listInvestmentNoteMaterials,
   listInvestmentNotes,
   listTrashedInvestmentNotes,
   getInvestmentNote,
-  isEmptyDraftInvestmentNote,
-  isIntegratedInvestmentNote,
   peekInvestmentNotesCache,
   permanentlyDeleteInvestmentNote,
   noteMatchesKeyword,
@@ -128,6 +127,18 @@ const KB_HTML_PREVIEW_EXTENSIONS = new Set([
   ".xls",
   ".xlsx",
 ])
+
+function NoteListDate({ note }: { note: InvestmentNote }) {
+  const { date, source } = investmentNoteListDateParts(note)
+  return (
+    <>
+      <span className="tabular-nums">{date}</span>
+      {source ? (
+        <span className="rounded bg-zinc-100 px-1 py-px text-[10px] leading-4 text-zinc-500">{source}</span>
+      ) : null}
+    </>
+  )
+}
 
 function displayNoteTitle(title: string): string {
   return title.trim() || "无标题"
@@ -383,7 +394,6 @@ export function InvestmentNotesView() {
   const [loading, setLoading] = useState(() => peekInvestmentNotesCache(initialScope) == null)
   const [proofreading, setProofreading] = useState(false)
   const [integrating, setIntegrating] = useState(false)
-  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set())
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const [zippingAttachments, setZippingAttachments] = useState(false)
   const [purgeTarget, setPurgeTarget] = useState<InvestmentNote | null>(null)
@@ -493,14 +503,6 @@ export function InvestmentNotesView() {
     () => selectNotesForIntegration(filteredNotes),
     [filteredNotes],
   )
-  const checkedMergeableNotes = useMemo(
-    () => selectNotesForIntegration(notes.filter((note) => checkedIds.has(note.id))),
-    [notes, checkedIds],
-  )
-  const integrateTargets = checkedMergeableNotes.length >= 2 ? checkedMergeableNotes : mergeableNotes
-  const integrateUsesSelection = checkedMergeableNotes.length >= 2
-  const allVisibleChecked =
-    mergeableNotes.length > 0 && mergeableNotes.every((note) => checkedIds.has(note.id))
 
   const selectedNote = useMemo(
     () => notes.find((n) => n.id === selectedId) ?? filteredNotes.find((n) => n.id === selectedId) ?? null,
@@ -857,40 +859,18 @@ export function InvestmentNotesView() {
     setEditing(true)
   }
 
-  function toggleCheckedNote(id: string) {
-    setCheckedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  function toggleSelectVisibleNotes() {
-    setCheckedIds((prev) => {
-      const next = new Set(prev)
-      if (allVisibleChecked) {
-        for (const note of mergeableNotes) next.delete(note.id)
-      } else {
-        for (const note of mergeableNotes) next.add(note.id)
-      }
-      return next
-    })
-  }
-
   async function handleIntegrateNotes() {
     if (integrating || saving) return
     const q = keyword.trim()
-    const useSelection = checkedMergeableNotes.length >= 2
-    if (!useSelection && !q) {
+    if (!q) {
       toast({
         title: "无法整合",
-        description: "请勾选至少 2 条笔记，或先搜索同一管理人再整合当前列表",
+        description: "请先搜索同一管理人，再整合当前搜索结果",
         variant: "destructive",
       })
       return
     }
-    const liteSources = useSelection ? checkedMergeableNotes : mergeableNotes
+    const liteSources = mergeableNotes
     if (liteSources.length < 2) {
       toast({
         title: "无法整合",
@@ -912,7 +892,7 @@ export function InvestmentNotesView() {
       let analysisError = ""
       try {
         analysis = await summarizeInvestmentNotesForIntegration({
-          keyword: useSelection ? "" : q,
+          keyword: q,
           notes: sources.map((note) => ({
             title: note.title,
             date: note.createdDate,
@@ -926,8 +906,7 @@ export function InvestmentNotesView() {
       } catch (err) {
         analysisError = err instanceof Error ? err.message : "综述生成失败"
       }
-      const draft = buildIntegratedInvestmentNoteDraft(sources, useSelection ? "" : q, analysis, {
-        selected: useSelection,
+      const draft = buildIntegratedInvestmentNoteDraft(sources, q, analysis, {
         analysisError,
       })
       if (draft.content.length > MAX_INVESTMENT_NOTE_CONTENT_CHARS) {
@@ -948,7 +927,6 @@ export function InvestmentNotesView() {
       })
       await setInvestmentNoteTags(note.id, ["整合"])
       await reloadNotes()
-      setCheckedIds(new Set())
       setSelectedId(note.id)
       setDraftTitle(note.title)
       setDraftContent(note.content)
@@ -1317,15 +1295,13 @@ export function InvestmentNotesView() {
             <button
               type="button"
               onClick={() => void handleIntegrateNotes()}
-              disabled={integrating || integrateTargets.length < 2 || (!integrateUsesSelection && !keyword.trim())}
+              disabled={integrating || !keyword.trim() || mergeableNotes.length < 2}
               title={
-                integrateUsesSelection
-                  ? `将勾选的 ${checkedMergeableNotes.length} 条笔记整理成综述、时间线和关注点`
-                  : !keyword.trim()
-                    ? "勾选至少 2 条笔记，或先搜索同一管理人"
-                    : mergeableNotes.length < 2
-                      ? "至少需要 2 条可整合笔记"
-                      : `将当前 ${mergeableNotes.length} 条笔记整理成综述、时间线和关注点`
+                !keyword.trim()
+                  ? "先搜索同一管理人，再整合当前搜索结果"
+                  : mergeableNotes.length < 2
+                    ? "至少需要 2 条可整合笔记"
+                    : `将当前搜索结果中的 ${mergeableNotes.length} 条笔记整理成综述、时间线和关注点`
               }
               className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded border border-red-300 bg-white py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-400 disabled:hover:bg-white"
             >
@@ -1336,21 +1312,10 @@ export function InvestmentNotesView() {
               )}
               {integrating
                 ? "整合中..."
-                : integrateUsesSelection
-                  ? `整合已选 ${checkedMergeableNotes.length} 条`
-                  : keyword.trim() && mergeableNotes.length >= 2
-                    ? `整合当前 ${mergeableNotes.length} 条笔记`
-                    : "整合笔记"}
+                : keyword.trim() && mergeableNotes.length >= 2
+                  ? `整合当前 ${mergeableNotes.length} 条笔记`
+                  : "整合笔记"}
             </button>
-            {mergeableNotes.length >= 2 ? (
-              <button
-                type="button"
-                onClick={toggleSelectVisibleNotes}
-                className="mt-2 w-full text-center text-xs text-zinc-500 hover:text-red-600"
-              >
-                {allVisibleChecked ? "取消全选" : `全选当前 ${mergeableNotes.length} 条`}
-              </button>
-            ) : null}
               </>
             )}
           </div>
@@ -1421,24 +1386,18 @@ export function InvestmentNotesView() {
                         </button>
                         )}
                         <div className="flex items-start justify-between gap-2 pr-6">
-                          {!isTrash && !isEmptyDraftInvestmentNote(note) && !isIntegratedInvestmentNote(note) ? (
-                            <input
-                              type="checkbox"
-                              checked={checkedIds.has(note.id)}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={() => toggleCheckedNote(note.id)}
-                              aria-label={`选择 ${displayNoteTitle(note.title)}`}
-                              className="mt-1 h-3.5 w-3.5 shrink-0 accent-red-500"
-                            />
-                          ) : null}
                           <div className="min-w-0 flex-1">
                             <div className="text-sm font-medium truncate text-zinc-800">
                               {displayNoteTitle(note.title)}
                             </div>
-                            <div className="mt-1 text-xs text-zinc-400">
-                              {isTrash
-                                ? `${formatDeletedAt(note.deletedAt) || note.createdDate} · ${investmentNoteTrashDaysLeft(note.deletedAt)} 天后清除`
-                                : note.createdDate}
+                            <div className="mt-1 flex items-center gap-1.5 text-xs text-zinc-400">
+                              {isTrash ? (
+                                <span>
+                                  {`${formatDeletedAt(note.deletedAt) || note.createdDate} · ${investmentNoteTrashDaysLeft(note.deletedAt)} 天后清除`}
+                                </span>
+                              ) : (
+                                <NoteListDate note={note} />
+                              )}
                             </div>
                           </div>
                           <span className="shrink-0 text-xs text-zinc-400 pt-0.5">

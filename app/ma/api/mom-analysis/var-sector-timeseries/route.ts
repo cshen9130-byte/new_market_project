@@ -148,10 +148,25 @@ function floorIndex(arr: string[], target: string): number {
   return idx
 }
 
+function accountParam(req: Request): string | null | false {
+  const raw = new URL(req.url).searchParams.get("account")?.trim() ?? ""
+  if (!raw) return null
+  if (!/^\d{1,8}$/.test(raw)) return false
+  return raw.replace(/^0+/, "") || "0"
+}
+
 async function _GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const volDays  = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays")  ?? "20",  10)))
   const corrDays = Math.max(5, Math.min(756, parseInt(searchParams.get("corrDays") ?? "252", 10)))
+  const account = accountParam(req)
+  if (account === false) {
+    return NextResponse.json({ ok: false, error: "无效账户" }, { status: 400 })
+  }
+  const accountSql = account
+    ? ` AND REGEXP_REPLACE(REGEXP_REPLACE(TRIM("账户"::text), '[^0-9]', '', 'g'), '^0+', '') = $1`
+    : ""
+  const params = account ? [account] : []
 
   try {
     // 1. Fetch signed MV per contract per date
@@ -170,9 +185,10 @@ async function _GET(req: Request) {
          AND TRIM("账户"::text) NOT LIKE '%国信%'
          AND TRIM("账户"::text) <> '665300200077'
          AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
-         AND TRIM("合约") NOT LIKE '%-%-%'
+         AND TRIM("合约") NOT LIKE '%-%-%'${accountSql}
        GROUP BY "交易日期", UPPER(TRIM("合约"))
        ORDER BY 1`,
+      params,
     )
 
     if (mvRows.length === 0) {

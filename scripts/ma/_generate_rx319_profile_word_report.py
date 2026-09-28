@@ -319,9 +319,11 @@ def para(doc, text="", *, size=11, bold=False, color=None, align=None, space_aft
 
 
 def heading(doc, text, level=1):
+    level = min(3, level + int(getattr(heading, "offset", 0)))
     p = doc.add_heading(text, level=level)
+    size = {1: 16, 2: 14, 3: 12}.get(level, 12)
     for run in p.runs:
-        set_run_font(run, size=16 if level == 1 else 13, bold=True, color=NAVY)
+        set_run_font(run, size=size, bold=True, color=NAVY)
     return p
 
 
@@ -1444,7 +1446,37 @@ def chart_ls(profile) -> Path:
 
 # ── report ──────────────────────────────────────────────────────────────────
 
-def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | None = None) -> None:
+def playbook_of(p: dict) -> tuple[str, str]:
+    """Strategy name and execution habit, from the account's own traces."""
+    broad = p["avg_pos_prod"] >= 15
+    overnight = p["pingjin_ratio"] < 0.08
+    hedged = p["avg_hedge"] >= 0.45
+    onesided = p["avg_hedge"] < 0.35
+    burst = (p["night_open_burst"] + p["day_open_burst"]) >= 0.35
+    if broad and overnight and hedged:
+        name = "全市场截面 CTA"
+    elif p["pingjin_ratio"] >= 0.25:
+        name = "日内短周期"
+    elif onesided and not broad:
+        name = "偏单边趋势 / 波段"
+    elif p["mom5_hit"] >= 0.58 and not hedged:
+        name = "时序动量"
+    elif p["mom5_hit"] <= 0.42 and hedged:
+        name = "截面反转"
+    else:
+        name = "混合量化"
+    if burst and overnight:
+        method = "开盘附近批量，隔夜持有"
+    elif p["pingjin_ratio"] >= 0.25:
+        method = "日内平今占比高"
+    elif overnight:
+        method = "隔夜持有，盘中换手不高"
+    else:
+        method = "短周期与隔夜混合"
+    return name, method
+
+
+def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_path: Path | None = None, doc: Document | None = None, chapter: bool = False) -> Document:
     dwr, cst = p["daily_wr"], p["close_stats"]
     nh = p.get("nh_stats") or {}
     sess = {r["session"]: r for r in p["sess_pnl"]}
@@ -1481,20 +1513,31 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
     if top2 / all_pos >= 0.65 and len(mo) >= 4:
         perf_blurb += "利润集中在少数月份，不能按这段年化外推。"
 
-    doc = Document()
-    section = doc.sections[0]
-    section.page_width = Cm(21.0)
-    section.page_height = Cm(29.7)
-    section.left_margin = Cm(1.8)
-    section.right_margin = Cm(1.8)
-    section.top_margin = Cm(1.7)
-    section.bottom_margin = Cm(1.7)
+    playbook, method = playbook_of(p)
+    own = doc is None
+    if own:
+        doc = Document()
+        section = doc.sections[0]
+        section.page_width = Cm(21.0)
+        section.page_height = Cm(29.7)
+        section.left_margin = Cm(1.8)
+        section.right_margin = Cm(1.8)
+        section.top_margin = Cm(1.7)
+        section.bottom_margin = Cm(1.7)
+    else:
+        doc.add_page_break()
 
-    para(doc, "内部资料 · 交易员行为画像 · 请勿外传", size=9, color=GOLD, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=18)
-    para(doc, f"{acc} 交易员画像报告", size=26, bold=True, color=NAVY, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=6)
+    heading.offset = 0
+    if chapter:
+        heading(doc, f"{acc}  {p['advisor_name'] or '未登记投顾'}  交易策略", 1)
+    else:
+        para(doc, "内部资料 · 交易员行为画像 · 请勿外传", size=9, color=GOLD, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=18)
+        para(doc, f"{acc} 交易员画像报告", size=26, bold=True, color=NAVY, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=6)
     para(doc, f"{p['advisor_name'] or '未登记投顾'}  ·  {p['company'] or '未登记团队'}  ·  {p['sector_label'] or '未分类'} / {p['style'] or '无风格标签'}", size=13, color=TEXT, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=10)
-    para(doc, f"样本  {p['from']}  ~  {p['to']}      数据截止  {p['to']}      {p['n_days']} 个交易日", size=11, color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
-    para(doc, "方法：犯罪学里的罪犯侧写（offender profiling）——不听他说自己是谁，而从现场痕迹还原他是谁、在什么场子里动手、压力下会怎么做。", size=10, color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=16)
+    para(doc, f"样本  {p['from']}  ~  {p['to']}      {p['n_days']} 个交易日      策略鉴定：{playbook}", size=11, color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
+    if not chapter:
+        para(doc, "方法：从成交、平仓、持仓和日报还原他做什么策略、在什么市场得手、压力下怎么加减仓。", size=10, color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=16)
+    heading.offset = 1 if chapter else 0
 
     heading(doc, "一、一页侧写", 1)
     para(
@@ -1517,8 +1560,8 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
     )
 
     card = [
-        ["身份", f"{p['account'].upper()}  {p['advisor_name']}（{p['company']}）", "策略鉴定", "系统化截面 CTA（多强空弱 / 混合多因子）"],
-        ["作案手法", "全市场小单隔夜，夜盘开盘集中下单", "周期", p["cycle_label"]],
+        ["身份", f"{p['account'].upper()}  {p['advisor_name'] or '未登记'}（{p['company'] or '未登记'}）", "策略鉴定", playbook],
+        ["执行习惯", method, "周期", p["cycle_label"]],
         ["狩猎场", f"{p['n_products']} 品种 / {p['n_sectors']} 板块，商品为主", "对冲", p["hedge_label"]],
         ["风险回报", p["rr_tag"], "微观形状", p["rr_label"]],
         ["亏钱之后", p["loss_label"], "赚钱之后", p["win_label"]],
@@ -1776,9 +1819,17 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         doc,
         f"按日报口径（当日持仓盈亏 + 当日平仓盈亏）：多头合计 {fmt_money(p['long_total'], True)}，空头合计 {fmt_money(p['short_total'], True)}。"
         f"多头盯市 {fmt_money(p['long_mtm'], True)}、卖平 {fmt_money(p['long_close'], True)}；空头盯市 {fmt_money(p['short_mtm'], True)}、买平 {fmt_money(p['short_close'], True)}。"
-        "两边盯市都为正、平仓实现都为负：钱是「拿着」赚的，换仓是成本。这段上涨市里，多头账面贡献了利润，空头总账为负。"
-        f"但逐笔相对开仓价，空头更干净：胜率 {fmt_pct(p['short_wr']['win_rate'], 1)}、盈亏比 {p['short_wr']['payoff']:.2f}，多头只有 {fmt_pct(p['long_wr']['win_rate'], 1)} / {p['long_wr']['payoff']:.2f}。"
-        "「多强空弱」在方向上成立（动量对齐率高），在这段样本的赚钱贡献上，多头才是发工资的那一侧。",
+        + (
+            "两边盯市为正、平仓实现为负：钱主要是拿着赚的，换仓是成本。"
+            if p["long_mtm"] > 0 and p["short_mtm"] > 0 and p["long_close"] < 0 and p["short_close"] < 0
+            else "盯市和平仓的符号并不对称，要分开看哪一侧在贡献、哪一侧在付出换仓成本。"
+        )
+        + (
+            "这段样本里多头账面大于空头，发工资的是多头一侧。"
+            if p["long_total"] > p["short_total"]
+            else "这段样本里空头账面大于多头，发工资的是空头一侧。"
+        )
+        + f"逐笔相对开仓价：空头胜率 {fmt_pct(p['short_wr']['win_rate'], 1)}、盈亏比 {p['short_wr']['payoff']:.2f}；多头 {fmt_pct(p['long_wr']['win_rate'], 1)} / {p['long_wr']['payoff']:.2f}。",
     )
 
     heading(doc, "八、日盘还是夜盘", 1)
@@ -1814,8 +1865,12 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         doc,
         f"夜盘成交 {fmt_int(night_n)} 笔（占日+夜 {fmt_pct(night_share, 0)}），日盘 {fmt_int(day_n)} 笔。"
         f"平仓单实现盈亏：夜盘 {fmt_money(night_pnl, True)}，日盘 {fmt_money(day_pnl, True)}。"
-        f"两边的平仓实现都为负，说明这段样本的利润不在「平仓这一笔」，而在隔夜持仓的盯市——先拿着，再在开盘附近换仓。"
-        f"{fmt_pct(p['night_open_burst'], 1)} 的全部成交挤在 21:00–21:05，{fmt_pct(p['day_open_burst'], 1)} 挤在 09:00–09:05，合计超过一半的单子发生在两个五分钟窗口。"
+        + (
+            "两边平仓实现都为负，利润更可能在隔夜盯市，而不是平仓这一笔。"
+            if night_pnl < 0 and day_pnl < 0
+            else "平仓实现的日夜拆分见上表，不要默认利润都在隔夜盯市。"
+        )
+        + f"{fmt_pct(p['night_open_burst'], 1)} 的全部成交挤在 21:00–21:05，{fmt_pct(p['day_open_burst'], 1)} 挤在 09:00–09:05。"
         + (
             "他是「夜盘开盘定价 + 隔夜持有」的机器：夜盘是主执行窗，日盘补股指国债和日盘品种。"
             if night_share >= 0.45
@@ -1899,12 +1954,15 @@ def write_report(p: dict, charts: dict, output_path: Path, ascii_path: Path | No
         bp = doc.add_paragraph(style="List Number")
         add_text(bp, n, size=10, color=TEXT)
 
-    para(doc, f"生成日期 {date.today().isoformat()}。画像对象：{acc} {p['advisor_name'] or '未登记'} / {p['company'] or '未登记'}。", size=9, color=MUTED, space_before=14)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(str(output_path))
-    if ascii_path is not None:
-        ascii_path.parent.mkdir(parents=True, exist_ok=True)
-        doc.save(str(ascii_path))
+    para(doc, f"生成日期 {date.today().isoformat()}。画像对象：{acc} {p['advisor_name'] or '未登记'} / {p['company'] or '未登记'}。策略鉴定：{playbook}。", size=9, color=MUTED, space_before=14)
+    heading.offset = 0
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(output_path))
+        if ascii_path is not None:
+            ascii_path.parent.mkdir(parents=True, exist_ok=True)
+            doc.save(str(ascii_path))
+    return doc
 
 
 def json_ready(p: dict) -> dict:

@@ -175,7 +175,16 @@ function normalizeMapping(raw: AccountRiskDirectNavMapping): AccountRiskDirectNa
 }
 
 async function loadEquityRows(mapping: AccountRiskDirectNavMapping): Promise<
-  Array<{ date: string; client_equity: unknown; daily_pnl: unknown; deposit_wd: unknown }>
+  Array<{
+    date: string
+    client_equity: unknown
+    daily_pnl: unknown
+    deposit_wd: unknown
+    balance_bf: unknown
+    balance_cf: unknown
+    realized_pl: unknown
+    commission: unknown
+  }>
 > {
   const params: unknown[] = []
   const where: string[] = []
@@ -200,7 +209,11 @@ async function loadEquityRows(mapping: AccountRiskDirectNavMapping): Promise<
     `SELECT trade_date::text AS date,
             COALESCE(client_equity, 0) AS client_equity,
             COALESCE(daily_pnl, 0) AS daily_pnl,
-            COALESCE(deposit_wd, 0) AS deposit_wd
+            COALESCE(deposit_wd, 0) AS deposit_wd,
+            balance_bf,
+            balance_cf,
+            realized_pl,
+            commission
      FROM public.cfmmc_daily_summary
      WHERE ${where.join(" AND ")}
      ORDER BY trade_date ASC`,
@@ -211,6 +224,10 @@ async function loadEquityRows(mapping: AccountRiskDirectNavMapping): Promise<
     client_equity: unknown
     daily_pnl: unknown
     deposit_wd: unknown
+    balance_bf: unknown
+    balance_cf: unknown
+    realized_pl: unknown
+    commission: unknown
   }>
 }
 

@@ -336,6 +336,8 @@ export type InvestmentNote = {
   lastModifiedBy: string
   modifiedDate: string
   createdDate: string
+  /** Short channel label for notes imported from an external research source, e.g. 点睛 / beny / 喵财君. */
+  sourceLabel?: string
   /** List payloads omit HTML; fetch the note by id before editing or merging. */
   contentPending?: boolean
   /** True when stored body is non-empty (even if `content` was omitted). */
@@ -348,6 +350,25 @@ export type InvestmentNote = {
 
 /** Soft-deleted 投资笔记 stay in 回收站 this long, then are purged. */
 export const INVESTMENT_NOTE_TRASH_RETENTION_DAYS = 30
+
+const EXTERNAL_NOTE_SOURCE_LABELS = ["点睛", "beny", "喵财君"] as const
+
+/** Sidebar date line: roadshow/file date, plus the external channel when one is stored. */
+export function investmentNoteListDateParts(note: {
+  createdDate?: string
+  sourceLabel?: string
+}): { date: string; source: string } {
+  const sourceField = (note.sourceLabel || "").trim()
+  const raw = (note.createdDate || "").trim()
+  const match = raw.match(/^(.*?)\s*·\s*(点睛|beny|喵财君)\s*$/)
+  if (match) {
+    return { date: match[1].trim(), source: sourceField || match[2] }
+  }
+  if ((EXTERNAL_NOTE_SOURCE_LABELS as readonly string[]).includes(sourceField)) {
+    return { date: raw, source: sourceField }
+  }
+  return { date: raw, source: sourceField }
+}
 
 export function investmentNoteTrashDaysLeft(deletedAt?: string, nowMs = Date.now()): number {
   const deletedMs = Date.parse(String(deletedAt || ""))

@@ -22,6 +22,7 @@ const AccountDailyPnlChart     = dynamic(() => import("@/components/ma/account-d
 const AdvisorPnlHistogramChart = dynamic(() => import("@/components/ma/advisor-pnl-histogram-chart"), { ssr: false })
 const AdvisorEquityCurveChart  = dynamic(() => import("@/components/ma/advisor-equity-curve-chart"), { ssr: false })
 const AdvisorVolCorrScatter    = dynamic(() => import("@/components/ma/advisor-vol-corr-scatter"),   { ssr: false })
+const AdvisorWinPayoffScatter  = dynamic(() => import("@/components/ma/advisor-win-payoff-scatter"), { ssr: false })
 const AdvisorCorrTimeseries    = dynamic(() => import("@/components/ma/advisor-corr-timeseries"),    { ssr: false })
 const AdvisorRiskReturnScatter = dynamic(() => import("@/components/ma/advisor-risk-return-scatter"), { ssr: false })
 const AdvisorMaxSharpeWeights  = dynamic(() => import("@/components/ma/advisor-max-sharpe-weights"),  { ssr: false })
@@ -688,9 +689,10 @@ function AdvisorContent() {
         <div className="flex-1 border-t border-border" />
       </div>
 
-      <div className="flex gap-4 items-stretch">
-        <div className="w-1/2 flex flex-col">
+      <div className="flex gap-4 items-start">
+        <div className="w-1/2 flex flex-col gap-4">
           <AdvisorVolCorrScatter height={380} />
+          <AdvisorWinPayoffScatter height={380} />
         </div>
         <div className="w-1/2 flex flex-col">
           <AdvisorCorrTimeseries height={380} />

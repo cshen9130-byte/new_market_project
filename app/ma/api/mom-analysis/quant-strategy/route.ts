@@ -17,7 +17,9 @@ import {
   productFromAkshare,
 } from "@/lib/ma/quant-strategy-infer"
 import { inferFactorDml } from "@/lib/ma/quant-factor-dml"
-import { buildFeatureStability, sectorRiskByDay, type DayObs } from "@/lib/ma/quant-feature-stability"
+import { buildLinearScatters, emptyLinearScatters } from "@/lib/ma/quant-linear-scatters"
+import { buildAlphaBeta, buildFeatureStability, buildSectorVolExposure, sectorRiskByDay, summarizeBookRisk, summarizeTradeFrequency, type DayObs } from "@/lib/ma/quant-feature-stability"
+import { classifyBookStyle } from "@/lib/ma/quant-book-style"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -31,6 +33,82 @@ function toNum(v: unknown): number {
 function r0(n: number): number { return Math.round(n) }
 function r1(n: number): number { return Math.round(n * 10) / 10 }
 function r2(n: number): number { return Math.round(n * 100) / 100 }
+
+/** 盈亏比 = 平均盈利 / |平均亏损|. Null when one side has no lots. */
+function lotPayoff(winLots: number, lossLots: number, winPnl: number, lossPnl: number): number | null {
+  if (!(winLots > 0) || !(lossLots > 0)) return null
+  const avgLoss = Math.abs(lossPnl) / lossLots
+  if (!(avgLoss > 0)) return null
+  return (winPnl / winLots) / avgLoss
+}
+
+const RR_CLIP = 20000
+const RR_BINS = 60
+
+type RrLayer = {
+  n: number
+  winRate: number | null
+  avgWin: number | null
+  avgLoss: number | null
+  payoff: number | null
+  profitFactor: number | null
+  expectancy: number | null
+}
+
+const EMPTY_RR: RrLayer = {
+  n: 0, winRate: null, avgWin: null, avgLoss: null, payoff: null, profitFactor: null, expectancy: null,
+}
+
+function payoffLayer(pnls: number[]): RrLayer {
+  const x = pnls.filter((v) => Number.isFinite(v))
+  if (!x.length) return { ...EMPTY_RR }
+  let nWin = 0
+  let nLoss = 0
+  let sumWin = 0
+  let sumLoss = 0
+  let sum = 0
+  for (const v of x) {
+    sum += v
+    if (v > 0) { nWin += 1; sumWin += v }
+    else if (v < 0) { nLoss += 1; sumLoss += v }
+  }
+  const avgWin = nWin ? sumWin / nWin : 0
+  const avgLoss = nLoss ? -sumLoss / nLoss : 0
+  const grossLoss = -sumLoss
+  return {
+    n: x.length,
+    winRate: r1((nWin / x.length) * 100),
+    avgWin: nWin ? r0(avgWin) : null,
+    avgLoss: nLoss ? r0(avgLoss) : null,
+    payoff: avgLoss > 0 ? r2(avgWin / avgLoss) : null,
+    profitFactor: grossLoss > 0 ? r2(sumWin / grossLoss) : null,
+    expectancy: r0(sum / x.length),
+  }
+}
+
+function layerFromAgg(row: {
+  n: string; n_win: string; n_loss: string
+  avg_win: string; avg_loss: string; gross_win: string; gross_loss: string; expectancy: string
+} | undefined): RrLayer {
+  if (!row) return { ...EMPTY_RR }
+  const n = toNum(row.n)
+  const nWin = toNum(row.n_win)
+  const nLoss = toNum(row.n_loss)
+  if (!n) return { ...EMPTY_RR }
+  const avgWin = toNum(row.avg_win)
+  const avgLoss = toNum(row.avg_loss)
+  const grossWin = toNum(row.gross_win)
+  const grossLoss = toNum(row.gross_loss)
+  return {
+    n,
+    winRate: r1((nWin / n) * 100),
+    avgWin: nWin ? r0(avgWin) : null,
+    avgLoss: nLoss ? r0(avgLoss) : null,
+    payoff: avgLoss > 0 ? r2(avgWin / avgLoss) : null,
+    profitFactor: grossLoss > 0 ? r2(grossWin / grossLoss) : null,
+    expectancy: r0(toNum(row.expectancy)),
+  }
+}
 
 const numExpr = (col: string) =>
   `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}"::text, ''), ',', ''), ' ', ''), '')::numeric, 0)`
@@ -48,6 +126,11 @@ const SESSION = `CASE
        AND (SPLIT_PART(TRIM("成交时间"), ':', 1)::int >= 21
             OR SPLIT_PART(TRIM("成交时间"), ':', 1)::int < 8)
   THEN 'night' ELSE 'day'
+END`
+
+const CLOSE_MATCH_PNL = `CASE
+  WHEN ABS(${numExpr("逐笔平仓盈亏")}) > 0.0000001 THEN ${numExpr("逐笔平仓盈亏")}
+  ELSE ${numExpr("平仓盈亏")}
 END`
 
 const SECTOR_MAP: Record<string, string> = {
@@ -169,6 +252,7 @@ function buildPortrait(p: {
   factorFamilies?: FactorFamily[]
   capture?: { up: number | null; down: number | null }
   annVolPct?: number | null
+  intradayShare?: number | null
 }): { strategyLabel: string; summary: string; items: PortraitItem[] } {
   const thin = p.days < 20 || p.nCloses < 30
   const payoff = p.avgLoss < 0 ? p.avgWin / Math.abs(p.avgLoss) : null
@@ -178,11 +262,15 @@ function buildPortrait(p: {
   const nightPnlShare = nightPnlAbs > 0 ? p.nightPnl / (p.nightPnl + p.dayPnl || 1) : 0
 
   const wr = p.tradeWinRate
+  // Same-day lots, or a hold of about two days, is a different book from the
+  // multi-day CTA cluster. Hedge is checked later: every quant account here
+  // is long/short, so hedge-first would hide the short horizon.
+  const dayTrade = (hold != null && hold <= 2) || (p.intradayShare != null && p.intradayShare >= 0.4)
   let strategyLabel = "商品量化"
-  if (p.lockShare > 0.2) strategyLabel = "锁仓 / 套利倾向"
+  if (dayTrade && wr >= 0.55 && (payoff == null || payoff <= 1.2)) strategyLabel = "日内高胜率短线"
+  else if (dayTrade) strategyLabel = "日内交易"
+  else if (p.lockShare > 0.2) strategyLabel = "锁仓 / 套利倾向"
   else if (p.hedgeAvg > 0.5) strategyLabel = "多空组合 CTA"
-  else if (hold != null && hold <= 1 && wr >= 0.55) strategyLabel = "日内高胜率短线"
-  else if (hold != null && hold <= 1) strategyLabel = "日内短周期"
   else if (wr < 0.48 && payoff != null && payoff > 1.4) strategyLabel = "趋势跟踪（低胜率高盈亏比）"
   else if (wr >= 0.55 && (payoff == null || payoff <= 1.2)) strategyLabel = "高胜率低盈亏比"
   else if (hold != null && hold <= 5) strategyLabel = "短周期 CTA"
@@ -192,6 +280,8 @@ function buildPortrait(p: {
     strategyLabel += p.corrNhci > 0 ? " · 商品多头 beta" : " · 逆商品 / 对冲 beta"
   }
   const volClass = p.annVolPct == null ? null : p.annVolPct >= 12 ? "高波" : p.annVolPct >= 6 ? "中波" : "低波"
+  const holdClass = hold == null ? null : hold <= 2 ? "日内" : hold <= 8 ? "短周期" : hold <= 20 ? "中周期" : "长周期"
+  if (holdClass) strategyLabel += ` · ${holdClass}`
   if (volClass) strategyLabel += ` · ${volClass}`
 
   const regimeMap = Object.fromEntries(p.regime.map((x) => [x.key, x]))
@@ -311,8 +401,11 @@ function buildPortrait(p: {
   const prefix = thin ? "样本偏短，以下为粗画像，请结合图表看稳定性。" : "由成交、平仓与日核算倒推，不是投顾自述。"
   const summary = `${prefix} 更像「${strategyLabel}」。日胜率 ${fmtPct(p.dayWinRate * 100, 0)}，平仓胜率 ${fmtPct(wr * 100, 0)}。`
 
+  const dayTradeNote = strategyLabel.startsWith("日内")
+    ? `${p.intradayShare != null ? `当日开平占平仓手数 ${fmtPct(p.intradayShare * 100, 0)}。` : ""}${p.hedgeAvg > 0.5 ? `账面仍多空对锁（对冲度 ${fmtPct(p.hedgeAvg * 100, 0)}），但持仓远短于其他多空账户，所以单独归为日内，不并进「多空组合 CTA」。` : ""}`
+    : ""
   const items: PortraitItem[] = [
-    { title: "策略类型", detail: `${strategyLabel}。${volClass && p.annVolPct != null ? `按日收益年化波动 ${p.annVolPct.toFixed(1)}% 归为${volClass}（12% 以上高波，6% 到 12% 中波，低于 6% 低波）。` : ""}${hold != null ? `持仓中位数约 ${hold.toFixed(1)} 天。` : ""}与南华商品指数日收益相关 ${p.corrNhci == null ? "样本不足" : r2(p.corrNhci)}。${captureBit ? ` ${captureBit}` : ""}`, tone: "neutral" },
+    { title: "策略类型", detail: `${strategyLabel}。${volClass && p.annVolPct != null ? `按日收益年化波动 ${p.annVolPct.toFixed(1)}% 归为${volClass}（12% 以上高波，6% 到 12% 中波，低于 6% 低波）。` : ""}${hold != null && holdClass ? `持仓中位数约 ${hold.toFixed(1)} 天，归为${holdClass}（2 天以内日内，8 天以内短周期，20 天以内中周期，超过 20 天长周期）。` : ""}${dayTradeNote}与南华商品指数日收益相关 ${p.corrNhci == null ? "样本不足" : r2(p.corrNhci)}。${captureBit ? ` ${captureBit}` : ""}`, tone: "neutral" },
     { title: "适合的市场", detail: fitBits.join("；") + "。", tone: "good" },
     { title: "不适合的市场", detail: unfitBits.join("；") + "。", tone: "bad" },
     { title: "亏损之后", detail: afterLoss, tone: lossTone },
@@ -345,14 +438,15 @@ async function _GET(req: Request) {
     const nhFrom = lookbackFrom(from, 560)
     const NH_CODES = ["NHCI.NH", "NHAI.NH", "NHECI.NH", "NHFI.NH", "NHPMI.NH", "NHNEI.NH", "NHNFI.NH"]
 
-    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows, clusterRows, contractRows, openInfRows, posInfRows, closeDayRows, closeSectorRows, mtmSectorRows] = await Promise.all([
+    const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows, clusterRows, contractRows, openInfRows, posInfRows, closeDayRows, mtmDayRows, closeSectorRows, mtmSectorRows, rrShapeRows] = await Promise.all([
       query<{
-        account: string; date: string; pnl: string; equity: string; margin: string; risk: string
+        account: string; date: string; pnl: string; gross_pnl: string; equity: string; margin: string; risk: string
       }>(
         `SELECT
            TRIM("账户") AS account,
            "交易日期"::text AS date,
            (${numExpr("当日盈亏")} - ${numExpr("当日手续费")} + ${numExpr("权利金收入")} - ${numExpr("权利金支出")})::text AS pnl,
+           ${numExpr("当日盈亏")}::text AS gross_pnl,
            ${numExpr("客户权益")}::text AS equity,
            ${numExpr("保证金占用")}::text AS margin,
            "风险度" AS risk
@@ -489,12 +583,17 @@ async function _GET(req: Request) {
       ),
       query<{
         product: string; mtm: string; long_mtm: string; short_mtm: string
+        win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
       }>(
         `SELECT
            UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
            SUM(${numExpr("持仓盈亏")})::text AS mtm,
            SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS long_mtm,
-           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS short_mtm
+           SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS short_mtm,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} > 0 THEN ${numExpr("买持仓")} + ${numExpr("卖持仓")} ELSE 0 END)::text AS win_lots,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("买持仓")} + ${numExpr("卖持仓")} ELSE 0 END)::text AS loss_lots,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS win_pnl,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS loss_pnl
          FROM mom_position_details
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
@@ -603,6 +702,25 @@ async function _GET(req: Request) {
         date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
         lots: string; hold_sum: string
       }[]),
+      query<{
+        date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
+      }>(
+        `SELECT
+           "交易日期"::text AS date,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} > 0 THEN ${numExpr("买持仓")} + ${numExpr("卖持仓")} ELSE 0 END)::text AS win_lots,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("买持仓")} + ${numExpr("卖持仓")} ELSE 0 END)::text AS loss_lots,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS win_pnl,
+           SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS loss_pnl
+         FROM mom_position_details
+         WHERE ${ACC}
+           AND "交易日期"::date BETWEEN $2::date AND $3::date
+           AND "合约" IS NOT NULL
+           AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
+         GROUP BY 1`,
+        [accountId, from, to],
+      ).catch(() => [] as {
+        date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
+      }[]),
       query<{ date: string; product: string; pnl: string }>(
         `SELECT
            "交易日期"::text AS date,
@@ -628,6 +746,58 @@ async function _GET(req: Request) {
          GROUP BY 1, 2`,
         [accountId, from, to],
       ).catch(() => [] as { date: string; product: string; pnl: string }[]),
+      query<{
+        layers: {
+          layer: string
+          n: string; n_win: string; n_loss: string
+          avg_win: string; avg_loss: string; gross_win: string; gross_loss: string; expectancy: string
+        }[] | null
+        bins: Record<string, number> | null
+      }>(
+        `WITH c AS MATERIALIZED (
+           SELECT
+             ${CLOSE_MATCH_PNL} AS pnl,
+             CASE
+               WHEN TRIM("买/卖") LIKE '%卖%' THEN 'long'
+               WHEN TRIM("买/卖") LIKE '%买%' THEN 'short'
+               ELSE 'other'
+             END AS side
+           FROM mom_close_details
+           WHERE ${ACC}
+             AND "交易日期"::date BETWEEN $2::date AND $3::date
+         ),
+         layers AS (
+           SELECT
+             COALESCE(side, 'all') AS layer,
+             COUNT(*)::text AS n,
+             COUNT(*) FILTER (WHERE pnl > 0)::text AS n_win,
+             COUNT(*) FILTER (WHERE pnl < 0)::text AS n_loss,
+             COALESCE(AVG(pnl) FILTER (WHERE pnl > 0), 0)::text AS avg_win,
+             COALESCE(AVG(-pnl) FILTER (WHERE pnl < 0), 0)::text AS avg_loss,
+             COALESCE(SUM(pnl) FILTER (WHERE pnl > 0), 0)::text AS gross_win,
+             COALESCE(SUM(-pnl) FILTER (WHERE pnl < 0), 0)::text AS gross_loss,
+             COALESCE(AVG(pnl), 0)::text AS expectancy
+           FROM c
+           GROUP BY ROLLUP(side)
+         ),
+         bins AS (
+           SELECT
+             LEAST(${RR_BINS - 1}, GREATEST(0, FLOOR((LEAST(GREATEST(pnl, ${-RR_CLIP}), ${RR_CLIP - 0.000001}) + ${RR_CLIP}) / (${(RR_CLIP * 2) / RR_BINS}))))::int AS bin,
+             COUNT(*)::int AS n
+           FROM c
+           GROUP BY 1
+         )
+         SELECT
+           COALESCE((SELECT json_agg(layers) FROM layers), '[]'::json) AS layers,
+           COALESCE((SELECT json_object_agg(bin, n) FROM bins), '{}'::json) AS bins`,
+        [accountId, from, to],
+      ).catch((err) => {
+        console.error("[quant-strategy] rr shape", err)
+        return [] as {
+          layers: null
+          bins: null
+        }[]
+      }),
     ])
 
     const account = dailyRows[0]?.account || `rx${accountId}`
@@ -669,6 +839,25 @@ async function _GET(req: Request) {
         riskPct: r2(riskPct),
         ddPct: r2(ddPct),
       })
+    }
+
+    const rrBins = Array.from({ length: RR_BINS }, () => 0)
+    const rrPacked = rrShapeRows[0]
+    for (const [key, count] of Object.entries(rrPacked?.bins ?? {})) {
+      const bin = Math.round(toNum(key))
+      if (bin >= 0 && bin < RR_BINS) rrBins[bin] = Math.round(toNum(count))
+    }
+    const rrByLayer = new Map((rrPacked?.layers ?? []).map((r) => [r.layer ?? "all", r]))
+    const rrShape = {
+      clip: RR_CLIP,
+      binCount: RR_BINS,
+      bins: rrBins,
+      layers: [
+        { key: "day", label: "日盈亏", ...payoffLayer(dailyRows.map((r) => toNum(r.gross_pnl))) },
+        { key: "close", label: "逐笔平仓", ...layerFromAgg(rrByLayer.get("all")) },
+        { key: "long", label: "多头平仓", ...layerFromAgg(rrByLayer.get("long")) },
+        { key: "short", label: "空头平仓", ...layerFromAgg(rrByLayer.get("short")) },
+      ],
     }
 
     const pnls = equity.map((x) => x.pnl)
@@ -770,15 +959,22 @@ async function _GET(req: Request) {
       }
     }
 
-    type MtmAgg = { mtm: number; longMtm: number; shortMtm: number }
+    type MtmAgg = {
+      mtm: number; longMtm: number; shortMtm: number
+      winLots: number; lossLots: number; winPnl: number; lossPnl: number
+    }
     const mtmByCode = new Map<string, MtmAgg>()
     for (const r of posMtmRows) {
       const code = getPrefix(r.product)
       if (!code) continue
-      const cur = mtmByCode.get(code) ?? { mtm: 0, longMtm: 0, shortMtm: 0 }
+      const cur = mtmByCode.get(code) ?? { mtm: 0, longMtm: 0, shortMtm: 0, winLots: 0, lossLots: 0, winPnl: 0, lossPnl: 0 }
       cur.mtm += toNum(r.mtm)
       cur.longMtm += toNum(r.long_mtm)
       cur.shortMtm += toNum(r.short_mtm)
+      cur.winLots += toNum(r.win_lots)
+      cur.lossLots += toNum(r.loss_lots)
+      cur.winPnl += toNum(r.win_pnl)
+      cur.lossPnl += toNum(r.loss_pnl)
       mtmByCode.set(code, cur)
     }
 
@@ -789,10 +985,11 @@ async function _GET(req: Request) {
         const closePnl = c?.closePnl ?? 0
         const mtmPnl = m?.mtm ?? 0
         const lots = c?.lots ?? 0
-        const winLots = c?.winLots ?? 0
-        const lossLots = c?.lossLots ?? 0
-        const winPnl = c?.winPnl ?? 0
-        const lossPnl = c?.lossPnl ?? 0
+        const winLots = (c?.winLots ?? 0) + (m?.winLots ?? 0)
+        const lossLots = (c?.lossLots ?? 0) + (m?.lossLots ?? 0)
+        const winPnl = (c?.winPnl ?? 0) + (m?.winPnl ?? 0)
+        const lossPnl = (c?.lossPnl ?? 0) + (m?.lossPnl ?? 0)
+        const decided = winLots + lossLots
         const pf = Math.abs(lossPnl) > 0 ? winPnl / Math.abs(lossPnl) : null
         return {
           code,
@@ -802,7 +999,8 @@ async function _GET(req: Request) {
           mtmPnl: r0(mtmPnl),
           pnl: r0(closePnl + mtmPnl),
           lots: r1(lots),
-          winRate: winLots + lossLots > 0 ? r2((winLots / (winLots + lossLots)) * 100) : 0,
+          winRate: decided > 0 ? r2((winLots / decided) * 100) : null,
+          payoff: (() => { const v = lotPayoff(winLots, lossLots, winPnl, lossPnl); return v == null ? null : r2(v) })(),
           profitFactor: pf == null ? null : r2(pf),
           avgHoldWin: c?.avgHoldWin ?? null,
           avgHoldLoss: c?.avgHoldLoss ?? null,
@@ -812,23 +1010,41 @@ async function _GET(req: Request) {
       .filter((p) => p.code && (p.n > 0 || p.pnl !== 0))
       .sort((a, b) => b.pnl - a.pnl)
 
-    const sectorMap = new Map<string, { pnl: number; lots: number; closePnl: number; mtmPnl: number }>()
+    const sectorMap = new Map<string, {
+      pnl: number; lots: number; closePnl: number; mtmPnl: number
+      winLots: number; lossLots: number; winPnl: number; lossPnl: number; n: number
+    }>()
     for (const p of products) {
-      const cur = sectorMap.get(p.sector) ?? { pnl: 0, lots: 0, closePnl: 0, mtmPnl: 0 }
+      const c = closeByCode.get(p.code)
+      const m = mtmByCode.get(p.code)
+      const cur = sectorMap.get(p.sector) ?? { pnl: 0, lots: 0, closePnl: 0, mtmPnl: 0, winLots: 0, lossLots: 0, winPnl: 0, lossPnl: 0, n: 0 }
       cur.pnl += p.pnl
       cur.lots += p.lots
       cur.closePnl += p.closePnl
       cur.mtmPnl += p.mtmPnl
+      cur.winLots += (c?.winLots ?? 0) + (m?.winLots ?? 0)
+      cur.lossLots += (c?.lossLots ?? 0) + (m?.lossLots ?? 0)
+      cur.winPnl += (c?.winPnl ?? 0) + (m?.winPnl ?? 0)
+      cur.lossPnl += (c?.lossPnl ?? 0) + (m?.lossPnl ?? 0)
+      cur.n += (c?.n ?? 0) + ((m?.winLots ?? 0) + (m?.lossLots ?? 0) > 0 ? 1 : 0)
       sectorMap.set(p.sector, cur)
     }
     const sectors = [...sectorMap.entries()]
-      .map(([sector, v]) => ({
-        sector,
-        pnl: r0(v.pnl),
-        lots: r1(v.lots),
-        closePnl: r0(v.closePnl),
-        mtmPnl: r0(v.mtmPnl),
-      }))
+      .map(([sector, v]) => {
+        const decided = v.winLots + v.lossLots
+        const pf = Math.abs(v.lossPnl) > 0 ? v.winPnl / Math.abs(v.lossPnl) : null
+        return {
+          sector,
+          pnl: r0(v.pnl),
+          lots: r1(v.lots),
+          closePnl: r0(v.closePnl),
+          mtmPnl: r0(v.mtmPnl),
+          n: v.n,
+          winRate: decided > 0 ? r2((v.winLots / decided) * 100) : null,
+          payoff: (() => { const x = lotPayoff(v.winLots, v.lossLots, v.winPnl, v.lossPnl); return x == null ? null : r2(x) })(),
+          profitFactor: pf == null ? null : r2(pf),
+        }
+      })
       .sort((a, b) => b.pnl - a.pnl)
 
     const HOLD_LABEL: Record<string, string> = {
@@ -853,11 +1069,14 @@ async function _GET(req: Request) {
 
     let winLots = 0, lossLots = 0, winPnl = 0, lossPnl = 0, nCloses = 0
     let holdWinW = 0, holdLossW = 0, holdWinN = 0, holdLossN = 0, holdAllW = 0, holdAllN = 0
+    let intradayLots = 0, holdLots = 0
     for (const r of closeHoldRows) {
       const lots = toNum(r.lots)
       const pnl = toNum(r.pnl)
       const n = toNum(r.n)
       const avgH = toNum(r.avg_hold)
+      holdLots += lots
+      if (r.bucket === "intraday") intradayLots += lots
       nCloses += n
       if (r.outcome === "win") {
         winLots += lots
@@ -873,13 +1092,32 @@ async function _GET(req: Request) {
       holdAllW += avgH * n
       holdAllN += n
     }
-    const tradeWinRate = winLots + lossLots > 0 ? winLots / (winLots + lossLots) : 0
+    const closeTradeWinRate = winLots + lossLots > 0 ? winLots / (winLots + lossLots) : 0
     const avgWin = winLots > 0 ? winPnl / winLots : 0
     const avgLoss = lossLots > 0 ? lossPnl / lossLots : 0
-    const tradePf = Math.abs(lossPnl) > 0 ? winPnl / Math.abs(lossPnl) : null
+    const closePf = Math.abs(lossPnl) > 0 ? winPnl / Math.abs(lossPnl) : null
+    let bookWinLots = winLots
+    let bookLossLots = lossLots
+    let bookWinPnl = winPnl
+    let bookLossPnl = lossPnl
+    for (const v of mtmByCode.values()) {
+      bookWinLots += v.winLots
+      bookLossLots += v.lossLots
+      bookWinPnl += v.winPnl
+      bookLossPnl += v.lossPnl
+    }
+    const bookResidual = cum - (bookWinPnl + bookLossPnl)
+    if (bookResidual >= 0) bookWinPnl += bookResidual
+    else bookLossPnl += bookResidual
+    const bookDecided = bookWinLots + bookLossLots
+    const tradeWinRate = bookDecided > 0 ? bookWinLots / bookDecided : 0
+    const tradePf = Math.abs(bookLossPnl) > 0 ? bookWinPnl / Math.abs(bookLossPnl) : null
+    const bookPayoff = lotPayoff(bookWinLots, bookLossLots, bookWinPnl, bookLossPnl)
+    const bookExpectancy = bookWinPnl + bookLossPnl
     const avgHoldWin = holdWinN > 0 ? holdWinW / holdWinN : null
     const avgHoldLoss = holdLossN > 0 ? holdLossW / holdLossN : null
     const medianHold = holdAllN > 0 ? holdAllW / holdAllN : null
+    const intradayShare = holdLots > 0 ? intradayLots / holdLots : null
 
     const longRow = closeDirRows.find((r) => r.direction === "卖")
     const shortRow = closeDirRows.find((r) => r.direction === "买")
@@ -1021,6 +1259,53 @@ async function _GET(req: Request) {
       },
     })
 
+    let linearScatters = emptyLinearScatters()
+    try {
+      linearScatters = buildLinearScatters({
+        from,
+        to,
+        equity: equity.map((d) => ({
+          date: d.date,
+          equity: d.equity,
+          pnl: d.pnl,
+          riskPct: d.riskPct,
+          ddPct: d.ddPct,
+        })),
+        positions: posInfRows.map((r) => ({
+          date: r.date,
+          product: r.product,
+          buyLots: toNum(r.buy_lots),
+          sellLots: toNum(r.sell_lots),
+          mv: toNum(r.mv),
+          longMv: toNum(r.long_mv),
+          shortMv: toNum(r.short_mv),
+        })),
+        opens: openInfRows.map((r) => ({
+          date: r.date,
+          product: r.product,
+          buyOpen: toNum(r.buy_open),
+          sellOpen: toNum(r.sell_open),
+        })),
+        prices: inferPxRows.map((r) => ({
+          product: productFromAkshare(r.code),
+          date: r.date,
+          close: toNum(r.close),
+          volume: toNum(r.volume),
+        })),
+        nhci: nhciPts,
+        contracts: contracts.map((c) => ({
+          date: c.date,
+          product: c.product,
+          rk: c.rk,
+          px: c.px,
+          oi: c.oi,
+          doi: c.doi,
+        })),
+      })
+    } catch (err) {
+      console.error("[linear-scatters]", err)
+    }
+
     const sectorOf: Record<string, string> = {}
     for (const r of openInfRows) if (r.product) sectorOf[r.product] = getSector(r.product)
     for (const r of posInfRows) if (r.product) sectorOf[r.product] = getSector(r.product)
@@ -1077,6 +1362,7 @@ async function _GET(req: Request) {
     }
 
     const closeByDay = new Map(closeDayRows.map((r) => [r.date.slice(0, 10), r]))
+    const mtmByDay = new Map(mtmDayRows.map((r) => [r.date.slice(0, 10), r]))
     const hedgeByDay = new Map(hedge.map((h) => [h.date, h.ratio]))
     const sectorRisk = sectorRiskByDay({
       positions: posInfRows.map((r) => ({
@@ -1092,16 +1378,50 @@ async function _GET(req: Request) {
         pct: c.pct,
       })),
     })
+    const bookRisk = summarizeBookRisk(sectorRisk.products, PROD_NAMES)
+    const sectorVol = buildSectorVolExposure({
+      returns: contracts.filter((c) => c.rk === 1).map((c) => ({
+        date: c.date,
+        product: c.product,
+        pct: c.pct,
+      })),
+      variance: sectorRisk.variance,
+      sectorOf: getSector,
+      heldSectors: [...new Set(posInfRows.map((r) => getSector(r.product)).filter(Boolean))],
+    })
+    const closeLots = new Map(closeProdRows.map((r) => [r.product, toNum(r.lots)]))
+    const tradeFrequency = summarizeTradeFrequency({
+      opens: openInfRows.map((r) => ({
+        date: r.date.slice(0, 10),
+        product: r.product,
+        lots: toNum(r.buy_open) + toNum(r.sell_open),
+      })),
+      closes: closeSectorRows.map((r) => ({
+        date: r.date.slice(0, 10),
+        product: r.product,
+      })),
+      closeLots,
+      names: PROD_NAMES,
+      sectorOf: getSector,
+    })
     const featureDays: DayObs[] = equity.map((e) => {
       const c = closeByDay.get(e.date)
+      const m = mtmByDay.get(e.date)
       const risk = sectorRisk.top.get(e.date)
+      const winLots = toNum(c?.win_lots) + toNum(m?.win_lots)
+      const lossLots = toNum(c?.loss_lots) + toNum(m?.loss_lots)
+      let winPnl = toNum(c?.win_pnl) + toNum(m?.win_pnl)
+      let lossPnl = toNum(c?.loss_pnl) + toNum(m?.loss_pnl)
+      const residual = e.pnl - (winPnl + lossPnl)
+      if (residual >= 0) winPnl += residual
+      else lossPnl += residual
       return {
         date: e.date,
         pnl: e.pnl,
-        winLots: toNum(c?.win_lots),
-        lossLots: toNum(c?.loss_lots),
-        winPnl: toNum(c?.win_pnl),
-        lossPnl: toNum(c?.loss_pnl),
+        winLots,
+        lossLots,
+        winPnl,
+        lossPnl,
         closeLots: toNum(c?.lots),
         holdSum: toNum(c?.hold_sum),
         openLots: tradeByDate.get(e.date)?.open ?? 0,
@@ -1122,6 +1442,15 @@ async function _GET(req: Request) {
     }
     for (const r of closeSectorRows) addSectorPnl(r.date, r.product, toNum(r.pnl))
     for (const r of mtmSectorRows) addSectorPnl(r.date, r.product, toNum(r.pnl))
+    const sectorAlphaRows: { date: string; sector: string; pnl: number }[] = []
+    for (const [date, book] of sectorPnl) {
+      for (const [sector, pnl] of book) sectorAlphaRows.push({ date, sector, pnl })
+    }
+    const alphaBeta = buildAlphaBeta(
+      equity.map((e) => ({ date: e.date, pnl: e.pnl, equity: e.equity })),
+      nhciRet,
+      { sectors: sectorAlphaRows },
+    )
     const featureStability = buildFeatureStability(featureDays, nhciPts, {
       variance: sectorRisk.variance,
       pnl: sectorPnl,
@@ -1137,12 +1466,28 @@ async function _GET(req: Request) {
       : null
     const annVolPct = retSd == null ? null : retSd * Math.sqrt(252) * 100
 
-    const portrait = buildPortrait({
+    const bookStyle = classifyBookStyle({
+      positions: posInfRows.map((r) => ({
+        date: r.date.slice(0, 10),
+        product: r.product,
+        longMv: toNum(r.long_mv),
+        shortMv: toNum(r.short_mv),
+        mv: toNum(r.mv),
+      })),
+      prices: inferPxRows.map((r) => ({
+        product: productFromAkshare(r.code),
+        date: r.date.slice(0, 10),
+        close: toNum(r.close),
+      })),
+      corrNhci,
+    })
+    const portrait = {
+      ...buildPortrait({
       days: equity.length,
       nCloses,
       dayWinRate,
-      tradeWinRate,
-      profitFactor: tradePf,
+      tradeWinRate: closeTradeWinRate,
+      profitFactor: closePf,
       avgWin,
       avgLoss,
       avgHoldWin,
@@ -1166,6 +1511,14 @@ async function _GET(req: Request) {
       factorFamilies: regimeFactors.families,
       capture: regimeFactors.capture,
       annVolPct,
+      intradayShare,
+    }),
+      bookStyle,
+    }
+    portrait.items.unshift({
+      title: "结构",
+      detail: bookStyle.detail,
+      tone: "neutral" as const,
     })
     const typeItem = portrait.items.find((item) => item.title === "策略类型")
     if (typeItem && featureStability.notes.some((n) => n.includes("对调"))) {
@@ -1189,7 +1542,9 @@ async function _GET(req: Request) {
         totalPnl: r0(cum),
         dayWinRate: r2(dayWinRate * 100),
         tradeWinRate: r2(tradeWinRate * 100),
+        payoff: bookPayoff == null ? null : r2(bookPayoff),
         profitFactor: tradePf == null ? null : r2(tradePf),
+        expectancy: r0(bookExpectancy),
         dayProfitFactor: dayPf == null ? null : r2(dayPf),
         sharpe: sharpe == null ? null : r2(sharpe),
         maxDdPct: r2(maxDdPct),
@@ -1209,11 +1564,15 @@ async function _GET(req: Request) {
       regimeFactors,
       sectors,
       products,
+      bookRisk,
+      sectorVol,
+      alphaBeta,
+      tradeFrequency,
       payoff: {
-        winRate: r2(tradeWinRate * 100),
+        winRate: r2(closeTradeWinRate * 100),
         avgWin: r0(avgWin),
         avgLoss: r0(avgLoss),
-        profitFactor: tradePf == null ? null : r2(tradePf),
+        profitFactor: closePf == null ? null : r2(closePf),
         winLots: r1(winLots),
         lossLots: r1(lossLots),
         winDays,
@@ -1228,7 +1587,9 @@ async function _GET(req: Request) {
       afterMove,
       hedge,
       longShort,
+      rrShape,
       inference,
+      linearScatters,
       featureStability,
       factorDml,
     })
@@ -1242,4 +1603,5 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("quant-strategy-v26", _GET)
+export const QUANT_STRATEGY_CACHE_KEY = "quant-strategy-v51"
+export const GET = withMomCache(QUANT_STRATEGY_CACHE_KEY, _GET)

@@ -10,6 +10,17 @@ export type AccountRiskEquityDay = {
   flow: number
 }
 
+type EquitySourceRow = {
+  date: string
+  client_equity: unknown
+  daily_pnl: unknown
+  deposit_wd: unknown
+  balance_bf?: unknown
+  balance_cf?: unknown
+  realized_pl?: unknown
+  commission?: unknown
+}
+
 export type AccountRiskNavPoint = {
   date: string
   nav: number
@@ -25,21 +36,45 @@ export function asFiniteNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-export function aggregateEquityByDate(
-  rows: Array<{
-    date: string
-    client_equity: unknown
-    daily_pnl: unknown
-    deposit_wd: unknown
-  }>,
-): AccountRiskEquityDay[] {
+/**
+ * Cash that changed 当日结存 but was not booked in 当日存取合计.
+ *
+ * Identity on these statements:
+ *   当日结存 = 上日结存 + 当日存取合计 + 平仓盈亏 − 当日手续费
+ * A large, round residual is an external transfer (银期转出/入金 on another line).
+ * Compounding it into unit NAV draws a fake performance drop. Small residuals
+ * (option premium, delivery, fees) stay inside the return.
+ */
+export function unbookedCashTransfer(row: {
+  balance_bf?: unknown
+  balance_cf?: unknown
+  deposit_wd?: unknown
+  realized_pl?: unknown
+  commission?: unknown
+}): number {
+  if (row.balance_bf == null || row.balance_cf == null || row.realized_pl == null) return 0
+  const broughtForward = asFiniteNumber(row.balance_bf)
+  const carriedForward = asFiniteNumber(row.balance_cf)
+  const booked = asFiniteNumber(row.deposit_wd)
+  const realized = asFiniteNumber(row.realized_pl)
+  const fee = asFiniteNumber(row.commission)
+  const residual = carriedForward - broughtForward - booked - realized + fee
+  const base = Math.abs(broughtForward)
+  const abs = Math.abs(residual)
+  if (base < 1 || abs < 100_000 || abs / base < 0.08) return 0
+  const round = Math.round(residual / 10_000) * 10_000
+  if (Math.abs(residual - round) > 1_000) return 0
+  return residual
+}
+
+export function aggregateEquityByDate(rows: EquitySourceRow[]): AccountRiskEquityDay[] {
   const dateMap = new Map<string, AccountRiskEquityDay>()
   for (const r of rows) {
     const date = String(r.date ?? "").slice(0, 10)
     if (!date) continue
     const equity = asFiniteNumber(r.client_equity)
     const pnl = asFiniteNumber(r.daily_pnl)
-    const flow = asFiniteNumber(r.deposit_wd)
+    const flow = asFiniteNumber(r.deposit_wd) + unbookedCashTransfer(r)
     const existing = dateMap.get(date)
     if (existing) {
       existing.equity += equity

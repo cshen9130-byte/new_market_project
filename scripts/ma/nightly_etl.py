@@ -5400,6 +5400,37 @@ def step_amac_futures(force_full: bool = False) -> int:
     return 0
 
 
+def step_quant_strategy_cache() -> int:
+    """Precompute 量化策略分析 so the page reads today's file cache.
+
+    Covers every account × range, including book risk, trade frequency,
+    sector vol, alpha/beta, R:R shape, linear scatters, and the factor
+    panel (core + full).
+    Runs after market data is loaded. A later MOM settlement import
+    refreshes the same files from the data-import job.
+    """
+    log.info("quant_strategy_cache: precomputing 量化策略分析 payloads …")
+    result = run_node_script(
+        "precompute_quant_strategy.ts",
+        extra_args=["--force"],
+        timeout=7200,
+    )
+    if not result:
+        raise RuntimeError("quant_strategy_cache: no result from precompute_quant_strategy.ts")
+    ok = int(result.get("ok") or 0)
+    cached = int(result.get("cached") or 0)
+    failed = int(result.get("failed") or 0)
+    log.info(
+        "quant_strategy_cache: ok=%d cached=%d failed=%d total=%s in %.1fs",
+        ok, cached, failed, result.get("total"), (result.get("ms") or 0) / 1000,
+    )
+    for err in (result.get("errors") or [])[:10]:
+        log.warning("  quant_strategy_cache: %s", err)
+    if ok + cached == 0:
+        raise RuntimeError(f"quant_strategy_cache: all {failed} payloads failed")
+    return ok + cached
+
+
 def step_warm_mom_cache() -> int:
     """Call the /ma/api/mom-analysis/warm-cache endpoint to pre-compute all chart data."""
     import urllib.request
@@ -5549,6 +5580,7 @@ ORDERED_STEPS = [
     "dd_table_daily_backup",         # 尽调表格 daily snapshot (rolling keep last 3)
     "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)
     "warm_mom_cache",                # warm MOM dashboard API caches
+    "quant_strategy_cache",          # 量化策略分析 payloads (page reads the file cache)
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
 ]
 
@@ -5702,6 +5734,7 @@ def main():
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
         "valuation_cache":                 lambda: step_valuation_cache(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
+        "quant_strategy_cache":            lambda: step_quant_strategy_cache(),
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),
     }
 

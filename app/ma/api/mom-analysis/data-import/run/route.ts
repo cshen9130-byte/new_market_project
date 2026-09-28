@@ -178,6 +178,21 @@ export async function POST(request: Request) {
           } catch (e) {
             send(`[warm-cache] 缓存预热失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
           }
+
+          try {
+            const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs")
+            const quantScript = path.join(process.cwd(), "scripts", "ma", "precompute_quant_strategy.ts")
+            const child = spawn(process.execPath, [tsxCli, quantScript, "--force"], {
+              cwd: process.cwd(),
+              detached: true,
+              stdio: "ignore",
+              windowsHide: true,
+            })
+            child.unref()
+            send("[quant-strategy] 已在后台重算量化策略分析，页面会在算完后直接读缓存")
+          } catch (e) {
+            send(`[quant-strategy] 后台重算未启动 (非致命): ${e instanceof Error ? e.message : String(e)}`)
+          }
         }
         send(`__EXIT__:${code ?? "unknown"}`)
         controller.close()

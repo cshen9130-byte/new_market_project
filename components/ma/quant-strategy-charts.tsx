@@ -2,10 +2,11 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
-import { Columns2, RefreshCw } from "lucide-react"
+import { ArrowLeftRight, Columns2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
+import { QUANT_STRATEGY_RANGES, quantStrategyBounds, type QuantStrategyRangeLabel } from "@/lib/ma/quant-strategy-ranges"
 import { buildCompareInsights, type CompareInsights } from "@/lib/ma/quant-strategy-compare"
 import type { FactorFamily, HeatCell, RegimeFactors } from "@/lib/ma/quant-regime-factors"
 import type { StrategyInference } from "@/lib/ma/quant-strategy-infer"
@@ -14,36 +15,34 @@ import { CHART_HELP, helpForFactor, QuantChartHelp, type ChartHelpSpec } from "@
 import { InferPanel } from "@/components/ma/quant-strategy-infer-panel"
 import { FactorDmlPanel } from "@/components/ma/quant-factor-dml-panel"
 import { readFactorSupport } from "@/lib/ma/quant-factor-reading"
+import type { LinearKind, LinearScatterChart, LinearScatterReport } from "@/lib/ma/quant-linear-scatters"
+import type { BookStyle, BookStyleKind } from "@/lib/ma/quant-book-style"
+import type { AlphaBeta, BookRisk, BookRiskSector, FreqSector, SectorVolSeries, TradeFrequency } from "@/lib/ma/quant-feature-stability"
+import { QuantTraderExposureCharts } from "@/components/ma/quant-trader-exposure-charts"
 
 const UP = "#ef4444"
 const DOWN = "#10b981"
 const BLUE = "#3b82f6"
 const AMBER = "#f59e0b"
 
-function isoToday() {
-  return new Date().toISOString().slice(0, 10)
-}
-function isoMonthOffset(m: number) {
-  const d = new Date()
-  d.setMonth(d.getMonth() + m)
-  return d.toISOString().slice(0, 10)
-}
-
-const ALL_FROM = "2025-01-01"
-
-const RANGES = [
-  { label: "近一月", from: () => isoMonthOffset(-1), to: () => isoToday() },
-  { label: "近三月", from: () => isoMonthOffset(-3), to: () => isoToday() },
-  { label: "近六月", from: () => isoMonthOffset(-6), to: () => isoToday() },
-  { label: "近一年", from: () => isoMonthOffset(-12), to: () => isoToday() },
-  { label: "全部", from: () => ALL_FROM, to: () => isoToday() },
-] as const
-
-type RangeLabel = (typeof RANGES)[number]["label"]
+const RANGES = QUANT_STRATEGY_RANGES
+type RangeLabel = QuantStrategyRangeLabel
 
 function boundsFor(label: RangeLabel): { from: string; to: string } {
-  const r = RANGES.find((x) => x.label === label) ?? RANGES[RANGES.length - 1]
-  return { from: r.from(), to: r.to() }
+  return quantStrategyBounds(label)
+}
+
+function fmtInt(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—"
+  return Math.round(n).toLocaleString("zh-CN")
+}
+
+function fmtMoney(n: number | null | undefined, signed = false): string {
+  if (n == null || !Number.isFinite(n)) return "—"
+  const body = Math.abs(Math.round(n)).toLocaleString("zh-CN")
+  if (n < 0) return `-${body}`
+  if (signed && n > 0) return `+${body}`
+  return body
 }
 
 function fmtWan(n: number | null | undefined): string {
@@ -57,6 +56,16 @@ function fmtWan(n: number | null | undefined): string {
 function fmtPct(n: number | null | undefined, d = 1): string {
   if (n == null || !Number.isFinite(n)) return "—"
   return `${n.toFixed(d)}%`
+}
+
+function signedFixed(n: number, digits: number): string {
+  const sign = n > 0 ? "+" : ""
+  return `${sign}${n.toFixed(digits)}`
+}
+
+function signedPctPoints(n: number, digits = 0): string {
+  const sign = n > 0 ? "+" : ""
+  return `${sign}${n.toFixed(digits)}%`
 }
 
 function pnlColor(n: number): string {
@@ -111,7 +120,9 @@ interface ApiData {
     totalPnl: number
     dayWinRate: number
     tradeWinRate: number
+    payoff?: number | null
     profitFactor: number | null
+    expectancy?: number
     dayProfitFactor: number | null
     sharpe: number | null
     maxDdPct: number
@@ -125,7 +136,7 @@ interface ApiData {
     upCapture?: number | null
     downCapture?: number | null
   }
-  portrait: { strategyLabel: string; summary: string; items: PortraitItem[] }
+  portrait: { strategyLabel: string; summary: string; items: PortraitItem[]; bookStyle?: BookStyle }
   equity: { date: string; pnl: number; cumPnl: number; equity: number; margin: number; riskPct: number; ddPct: number }[]
   regime: { key: string; label: string; pnl: number; days: number; winRate: number }[]
   regimeFactors?: RegimeFactors
@@ -137,6 +148,7 @@ interface ApiData {
       date: string
       winRate: number | null
       payoff: number | null
+      pnl?: number
       trades: number | null
       hold: number | null
       hedge: number | null
@@ -151,6 +163,7 @@ interface ApiData {
       days: number
       winRate: number | null
       payoff: number | null
+      pnl?: number
       trades: number | null
       hold: number | null
       hedge: number | null
@@ -174,11 +187,18 @@ interface ApiData {
       points: { dir: number; vol: number; trend?: number; chop?: number; pnl: number }[]
     }
   }
-  sectors: { sector: string; pnl: number; lots: number; closePnl?: number; mtmPnl?: number }[]
+  sectors: {
+    sector: string; pnl: number; lots: number; closePnl?: number; mtmPnl?: number
+    n?: number; winRate?: number | null; payoff?: number | null; profitFactor?: number | null
+  }[]
+  bookRisk?: BookRisk | null
+  tradeFrequency?: TradeFrequency | null
+  sectorVol?: { window: number; sectors: SectorVolSeries[] } | null
+  alphaBeta?: AlphaBeta | null
   products: {
     code: string; name: string; sector: string; pnl: number; lots: number
     closePnl?: number; mtmPnl?: number
-    winRate: number; profitFactor: number | null; avgHoldWin: number | null; avgHoldLoss: number | null; n: number
+    winRate: number | null; payoff?: number | null; profitFactor: number | null; avgHoldWin: number | null; avgHoldLoss: number | null; n: number
   }[]
   payoff: {
     winRate: number; avgWin: number; avgLoss: number; profitFactor: number | null
@@ -200,7 +220,24 @@ interface ApiData {
     longWinRate: number; shortWinRate: number
     longClosePnl?: number; shortClosePnl?: number; longMtm?: number; shortMtm?: number
   }
+  rrShape?: {
+    clip: number
+    binCount: number
+    bins: number[]
+    layers: {
+      key: string
+      label: string
+      n: number
+      winRate: number | null
+      avgWin: number | null
+      avgLoss: number | null
+      payoff: number | null
+      profitFactor: number | null
+      expectancy: number | null
+    }[]
+  }
   inference?: StrategyInference
+  linearScatters?: LinearScatterReport
   factorDml?: FactorDmlReport
 }
 
@@ -223,21 +260,85 @@ function volClassOf(label: string | null | undefined): VolClass | null {
 }
 
 function labelWithoutVol(label: string): string {
-  return label.replace(/ · [高中低]波$/, "")
+  return label.replace(/ · [高中低]波$/, "").replace(/ · (日内|短周期|中周期|长周期)$/, "")
 }
 
-const VOL_BADGE: Record<VolClass, string> = {
-  高波: "bg-red-600 text-white",
-  中波: "bg-amber-400 text-amber-950",
-  低波: "bg-sky-700 text-white",
+type HoldClass = "日内" | "短周期" | "中周期" | "长周期"
+
+function holdClassOf(label: string | null | undefined): HoldClass | null {
+  if (!label) return null
+  const bare = label.replace(/ · [高中低]波$/, "")
+  if (bare.endsWith(" · 日内")) return "日内"
+  if (bare.endsWith(" · 短周期")) return "短周期"
+  if (bare.endsWith(" · 中周期")) return "中周期"
+  if (bare.endsWith(" · 长周期")) return "长周期"
+  return null
 }
 
-function VolBadge({ label, large = false }: { label: string | null | undefined; large?: boolean }) {
+const HOLD_DOT: Record<HoldClass, string> = {
+  日内: "bg-violet-500",
+  短周期: "bg-teal-500",
+  中周期: "bg-blue-500",
+  长周期: "bg-stone-500",
+}
+
+const VOL_DOT: Record<VolClass, string> = {
+  高波: "bg-red-500",
+  中波: "bg-amber-500",
+  低波: "bg-sky-500",
+}
+
+const BOOK_KINDS: BookStyleKind[] = ["择时", "选票", "指数增强", "多空", "截面"]
+
+function BookStyleMarks({ style, compact = false }: { style: BookStyle | null | undefined; compact?: boolean }) {
+  if (!style?.primary) return null
+  const kinds = compact
+    ? BOOK_KINDS.filter((kind) => kind === style.primary || kind === style.secondary)
+    : BOOK_KINDS
+  return (
+    <div className={`flex flex-wrap items-center gap-1 ${compact ? "" : "w-full"}`}>
+      {kinds.map((kind) => {
+        const on = style.primary === kind
+        const sec = style.secondary === kind
+        return (
+          <span
+            key={kind}
+            className={`inline-flex items-center rounded-full border font-medium ${
+              compact ? "px-1.5 py-px text-[10px]" : "px-2 py-0.5 text-[11px]"
+            } ${
+              on
+                ? "border-foreground bg-foreground text-background"
+                : sec
+                  ? "border-foreground/40 text-foreground"
+                  : "border-border text-muted-foreground/70"
+            }`}
+          >
+            {kind}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+function VolBadge({ label }: { label: string | null | undefined }) {
   const vol = volClassOf(label)
   if (!vol) return null
   return (
-    <span className={`inline-flex items-center rounded-md font-semibold tracking-tight ${VOL_BADGE[vol]} ${large ? "px-3 py-1 text-2xl" : "px-1.5 py-0.5 text-xs"}`}>
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground shrink-0">
+      <span className={`h-1.5 w-1.5 rounded-full ${VOL_DOT[vol]}`} aria-hidden />
       {vol}
+    </span>
+  )
+}
+
+function HoldBadge({ label }: { label: string | null | undefined }) {
+  const hold = holdClassOf(label)
+  if (!hold) return null
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground shrink-0">
+      <span className={`h-1.5 w-1.5 rounded-full ${HOLD_DOT[hold]}`} aria-hidden />
+      {hold}
     </span>
   )
 }
@@ -345,6 +446,113 @@ function scatterFitOption(
   }
 }
 
+function fmtKind(kind: LinearKind, v: number): string {
+  if (!Number.isFinite(v)) return "—"
+  if (kind === "pct") return `${v.toFixed(1)}%`
+  if (kind === "pct0") return `${v.toFixed(0)}%`
+  if (kind === "x") return `${v.toFixed(2)}x`
+  if (kind === "rsi") return v.toFixed(0)
+  if (kind === "z") return v.toFixed(1)
+  return v.toFixed(2)
+}
+
+const LINEAR_HELP: ChartHelpSpec = {
+  heading: "策略里的直线关系 · 方法说明",
+  blocks: [
+    {
+      title: "在做什么",
+      paragraphs: [
+        "把这个盘手的仓位、方向、杠杆，和一组长得出来的量配成散点，逐对做 Pearson。只留下统计上显著、而且散点云本身就是一条斜线的。所以有的账户一两张，有的三四张，有的这一段一张都没有。",
+      ],
+    },
+    {
+      title: "试了哪些",
+      bullets: [
+        "账户日：南华波动对对冲度、品种数、集中度、开仓密度；南华 5/20 日涨跌对净敞口；趋势强度对方向仓；回撤对杠杆；账户自身波动对杠杆；昨日盈亏对今日杠杆、风险度和开仓。",
+        "品种日：5/20/60 日涨跌、相对 MA20、RSI 对净市值权重；趋势强度对权重；5 日涨跌和均线对买开还是卖开；次主力升贴水、主力持仓量变化对净市值；成交量对开仓手数。",
+        "横轴除了「总杠杆对品种数」是同一天的结构，其余都用前一交易日收盘就能算的值，不用当天收盘解释当天持仓。",
+        "市场波动对总敞口、品种波动对权重，上面两张固定图已经在画，这里不重复。",
+      ],
+    },
+    {
+      title: "什么叫过关",
+      paragraphs: [
+        "先把两侧各 2% 的极端值夹住再算相关，避免几个离群点画出一条假直线。样本短的时候要求更陡。交易日够多时，|ρ| 大约要到 0.40（账户日）或 0.42（品种日）才留。p≤0.01，并且在全部检验里做 BH 校正后 q≤0.10。",
+      ],
+      formula: "ρ = Pearson(X, Y)\nt = ρ √((n−2) / (1−ρ²))\n五档均值要顺着同一方向走，不能一头跳变，也不能是 U 型",
+    },
+    {
+      title: "读法",
+      bullets: [
+        "红线是夹住极端值之后的最小二乘直线。黄点是按横轴分成五档后的均值，用来看这五档是不是顺着同一条斜线走。散点是落在中间 96% 里的样本。",
+        "同一类里只留最陡的一条。5 日和 20 日动量如果都过关，只画更明显的那张。",
+        "最多四张。没过关的不画，避免每个账户看起来都一样。",
+        "品种层面还要在品种内部去掉各自的均值之后仍然同向，避免「只做了几个一直在涨的品种」被看成一条规则。",
+      ],
+    },
+  ],
+}
+
+function linearScatterOption(ch: LinearScatterChart) {
+  if (!ch.points.length) return {}
+  const fmtX = (v: number) => fmtKind(ch.xKind, v)
+  const fmtY = (v: number) => fmtKind(ch.yKind, v)
+  return {
+    tooltip: {
+      formatter: (p: { seriesType?: string; data?: { value?: number[]; label?: string } | number[] }) => {
+        const raw = p.data
+        const value = Array.isArray(raw) ? raw : raw?.value
+        if (!value) return ""
+        const [x, y] = value
+        if (p.seriesType === "line") return `直线<br/>${ch.xName} ${fmtX(x)}<br/>${ch.yName} ${fmtY(y)}`
+        const label = !Array.isArray(raw) && raw?.label ? `${raw.label}<br/>` : ""
+        return `${label}${ch.xName} ${fmtX(x)}<br/>${ch.yName} ${fmtY(y)}`
+      },
+    },
+    grid: { left: 52, right: 16, top: 28, bottom: 40 },
+    legend: { top: 0, textStyle: { fontSize: 11 } },
+    xAxis: {
+      type: "value" as const,
+      name: ch.xName,
+      nameLocation: "middle" as const,
+      nameGap: 28,
+      axisLabel: { fontSize: 10, formatter: fmtX },
+      splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+    },
+    yAxis: {
+      type: "value" as const,
+      name: ch.yName,
+      axisLabel: { fontSize: 10, formatter: fmtY },
+      splitLine: { lineStyle: { type: "dashed", opacity: 0.25 } },
+    },
+    series: [
+      {
+        name: "样本",
+        type: "scatter" as const,
+        symbolSize: 7,
+        itemStyle: { color: BLUE, opacity: 0.45 },
+        data: ch.points.map((pt) => ({ value: [pt.x, pt.y], label: pt.label })),
+      },
+      {
+        name: "直线",
+        type: "line" as const,
+        showSymbol: false,
+        data: [[ch.line.x0, ch.line.y0], [ch.line.x1, ch.line.y1]],
+        lineStyle: { width: 2, color: UP },
+        itemStyle: { color: UP },
+      },
+      {
+        name: "五档均值",
+        type: "scatter" as const,
+        symbolSize: 11,
+        z: 3,
+        itemStyle: { color: AMBER, borderColor: "#fff", borderWidth: 1 },
+        data: (ch.bins ?? []).map((b) => ({ value: [b.x, b.y] })),
+      },
+    ],
+  }
+}
+
 function heatmapChartOption(cells: HeatCell[]) {
   const xLabels = [...new Set(cells.map((c) => c.carryLabel))]
   const yLabels = [...new Set(cells.map((c) => c.trendLabel))]
@@ -393,6 +601,928 @@ function heatmapChartOption(cells: HeatCell[]) {
   }
 }
 
+const SECTOR_COLOR: Record<string, string> = {
+  农产: "#84cc16",
+  生鲜: "#22c55e",
+  贵金属: "#eab308",
+  有色: "#f97316",
+  新能源: "#06b6d4",
+  黑色: "#475569",
+  能源化工: "#8b5cf6",
+  航运: "#0ea5e9",
+  股指: "#ef4444",
+  国债: "#3b82f6",
+  其他: "#a1a1aa",
+}
+
+function sectorColor(name: string): string {
+  return SECTOR_COLOR[name] ?? "#94a3b8"
+}
+
+function shadeHex(hex: string, t: number): string {
+  const n = hex.replace("#", "")
+  const r = parseInt(n.slice(0, 2), 16)
+  const g = parseInt(n.slice(2, 4), 16)
+  const b = parseInt(n.slice(4, 6), 16)
+  const mix = (c: number) => Math.round(c + (255 - c) * t)
+  return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`
+}
+
+function foldProducts(products: BookRiskSector["products"], max = 8) {
+  const rows = products.map((p) => ({ name: p.name, withinShare: p.withinShare, riskShare: p.riskShare }))
+  if (rows.length <= max) return rows
+  const head = rows.slice(0, max - 1)
+  const rest = rows.slice(max - 1)
+  return [
+    ...head,
+    {
+      name: `其余 ${rest.length} 个`,
+      withinShare: rest.reduce((s, p) => s + p.withinShare, 0),
+      riskShare: rest.reduce((s, p) => s + p.riskShare, 0),
+    },
+  ]
+}
+
+function bookSectorOption(book: BookRisk) {
+  const rows = [...book.sectors].sort((a, b) => a.riskShare - b.riskShare)
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { name?: string }[]) => {
+        const s = book.sectors.find((x) => x.sector === ps[0]?.name)
+        if (!s) return ""
+        return [
+          s.sector,
+          `风险贡献 ${s.riskShare.toFixed(1)}%`,
+          `等权 ${book.equalShare.toFixed(1)}%`,
+          `${s.productCount} 个品种 · ${s.stance}`,
+        ].join("<br/>")
+      },
+    },
+    grid: { left: 72, right: 48, top: 12, bottom: 24 },
+    xAxis: {
+      type: "value" as const,
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${v}%` },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: { type: "category" as const, data: rows.map((r) => r.sector), axisLabel: { fontSize: 11 } },
+    series: [{
+      type: "bar" as const,
+      barMaxWidth: 16,
+      data: rows.map((r) => ({
+        value: r.riskShare,
+        itemStyle: { color: sectorColor(r.sector), borderRadius: 2 },
+      })),
+      markLine: {
+        symbol: "none",
+        label: { formatter: `等权 ${book.equalShare.toFixed(0)}%`, fontSize: 10, color: "#64748b" },
+        lineStyle: { type: "dashed" as const, color: "#64748b" },
+        data: [{ xAxis: book.equalShare }],
+      },
+    }],
+  }
+}
+
+function bookTreeOption(book: BookRisk) {
+  return {
+    tooltip: {
+      formatter: (p: { name?: string; value?: number; data?: { within?: number }; treePathInfo?: { name: string }[] }) => {
+        const path = (p.treePathInfo ?? []).map((x) => x.name).filter(Boolean)
+        const within = p.data?.within
+        const extra = within != null ? `<br/>占该板块 ${within.toFixed(0)}%` : ""
+        return `${path.join(" / ") || p.name || ""}<br/>组合风险贡献 ${Number(p.value ?? 0).toFixed(1)}%${extra}`
+      },
+    },
+    series: [{
+      type: "treemap" as const,
+      roam: false,
+      nodeClick: false,
+      breadcrumb: { show: false },
+      width: "100%",
+      height: "94%",
+      top: 4,
+      label: {
+        fontSize: 11,
+        color: "#1f2937",
+        formatter: (p: { name: string; value: number }) => (p.value >= 3.5 ? `${p.name}\n${p.value.toFixed(0)}%` : p.name),
+      },
+      upperLabel: { show: true, height: 18, fontSize: 11, color: "#fff" },
+      itemStyle: { borderColor: "#fff", borderWidth: 1, gapWidth: 2 },
+      levels: [
+        { itemStyle: { borderWidth: 3, gapWidth: 4, borderColor: "#fff" }, upperLabel: { show: true } },
+        { itemStyle: { borderWidth: 1, gapWidth: 1, borderColor: "rgba(255,255,255,0.75)" } },
+      ],
+      data: book.sectors.map((s) => {
+        const base = sectorColor(s.sector)
+        const shown = s.products.filter((p) => p.riskShare > 0)
+        const kids = shown.length
+          ? shown
+          : [{ name: s.topProduct || s.sector, riskShare: s.riskShare, withinShare: 100 }]
+        return {
+          name: s.sector,
+          itemStyle: { color: base },
+          children: kids.map((p, i) => ({
+            name: p.name,
+            value: p.riskShare,
+            within: p.withinShare,
+            itemStyle: {
+              color: shadeHex(base, kids.length <= 1 ? 0.45 : 0.4 + (i / Math.max(kids.length - 1, 1)) * 0.45),
+            },
+          })),
+        }
+      }),
+    }],
+  }
+}
+
+function withinSectorOption(sector: BookRiskSector) {
+  const shown = foldProducts(sector.products).sort((a, b) => a.withinShare - b.withinShare)
+  const equal = sector.productCount > 0 ? 100 / sector.productCount : 0
+  const focus = sector.stance === "有所偏好" || sector.stance === "明显偏好"
+  const base = sectorColor(sector.sector)
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { name?: string }[]) => {
+        const row = shown.find((x) => x.name === ps[0]?.name)
+        if (!row) return ""
+        return `${row.name}<br/>占该板块 ${row.withinShare.toFixed(1)}%<br/>占组合 ${row.riskShare.toFixed(1)}%<br/>等权 ${equal.toFixed(1)}%`
+      },
+    },
+    grid: { left: 92, right: 36, top: 8, bottom: 24 },
+    xAxis: {
+      type: "value" as const,
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${v}%` },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: { type: "category" as const, data: shown.map((r) => r.name), axisLabel: { fontSize: 10 } },
+    series: [{
+      type: "bar" as const,
+      barMaxWidth: 14,
+      data: shown.map((r) => ({
+        value: r.withinShare,
+        itemStyle: {
+          color: !focus || r.name === sector.topProduct ? base : "#cbd5e1",
+          borderRadius: 2,
+        },
+      })),
+      markLine: {
+        symbol: "none",
+        label: { formatter: `等权 ${equal.toFixed(0)}%`, fontSize: 10, color: "#64748b" },
+        lineStyle: { type: "dashed" as const, color: "#64748b" },
+        data: [{ xAxis: equal }],
+      },
+    }],
+  }
+}
+
+function compareBookOption(rows: ApiData[]) {
+  const books = rows.filter((r) => (r.bookRisk?.sectors.length ?? 0) > 0)
+  const names = new Set<string>()
+  for (const r of books) for (const s of r.bookRisk!.sectors) names.add(s.sector)
+  const order = ["农产", "生鲜", "黑色", "有色", "贵金属", "能源化工", "新能源", "航运", "股指", "国债", "其他"]
+  const sectors = [...names].sort((a, b) => {
+    const ia = order.indexOf(a)
+    const ib = order.indexOf(b)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+  })
+  if (!sectors.length) return null
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { seriesName?: string; name?: string; value?: number }[]) => {
+        const head = ps[0]?.name ?? ""
+        const lines = ps.map((p) => `${p.seriesName} ${p.value == null ? "—" : `${Number(p.value).toFixed(1)}%`}`)
+        return [`${head} 风险贡献`, ...lines].join("<br/>")
+      },
+    },
+    legend: { top: 0, type: "scroll" as const, textStyle: { fontSize: 11 } },
+    grid: { left: 44, right: 12, top: 32, bottom: 28 },
+    xAxis: { type: "category" as const, data: sectors, axisLabel: { fontSize: 11 } },
+    yAxis: {
+      type: "value" as const,
+      name: "%",
+      axisLabel: { fontSize: 10 },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: books.map((r, i) => ({
+      name: accLabel(r),
+      type: "bar" as const,
+      barMaxWidth: 14,
+      itemStyle: { color: PALETTE[i % PALETTE.length], borderRadius: 2 },
+      data: sectors.map((name) => r.bookRisk!.sectors.find((s) => s.sector === name)?.riskShare ?? 0),
+    })),
+  }
+}
+
+function fmtFreqP(p: number | null | undefined): string {
+  if (p == null || !Number.isFinite(p)) return "—"
+  if (p < 0.001) return "<0.001"
+  return p.toFixed(3)
+}
+
+function foldFreq(products: FreqSector["products"], max = 8) {
+  const rows = products.map((p) => ({
+    name: p.name,
+    withinShare: p.withinShare,
+    days: p.days,
+    openLots: p.openLots,
+    closeLots: p.closeLots,
+  }))
+  if (rows.length <= max) return rows
+  const head = rows.slice(0, max - 1)
+  const rest = rows.slice(max - 1)
+  return [
+    ...head,
+    {
+      name: `其余 ${rest.length} 个`,
+      withinShare: rest.reduce((s, p) => s + p.withinShare, 0),
+      days: rest.reduce((s, p) => s + p.days, 0),
+      openLots: rest.reduce((s, p) => s + p.openLots, 0),
+      closeLots: rest.reduce((s, p) => s + p.closeLots, 0),
+    },
+  ]
+}
+
+function freqSectorOption(book: TradeFrequency) {
+  const rows = [...book.sectors].sort((a, b) => a.days - b.days)
+  const mean = rows.reduce((s, r) => s + r.days, 0) / rows.length
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { name?: string }[]) => {
+        const s = book.sectors.find((x) => x.sector === ps[0]?.name)
+        if (!s) return ""
+        return [
+          s.sector,
+          `有成交 ${s.days} 天`,
+          `占各板块天数 ${s.share.toFixed(1)}%`,
+          `等权 ${mean.toFixed(0)} 天`,
+          `${s.productCount} 个品种 · ${s.stance}`,
+        ].join("<br/>")
+      },
+    },
+    grid: { left: 72, right: 56, top: 12, bottom: 24 },
+    xAxis: {
+      type: "value" as const,
+      name: "天",
+      axisLabel: { fontSize: 10 },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: { type: "category" as const, data: rows.map((r) => r.sector), axisLabel: { fontSize: 11 } },
+    series: [{
+      type: "bar" as const,
+      barMaxWidth: 16,
+      data: rows.map((r) => ({
+        value: r.days,
+        itemStyle: { color: sectorColor(r.sector), borderRadius: 2 },
+      })),
+      markLine: {
+        symbol: "none",
+        label: { formatter: `等权 ${mean.toFixed(0)}天`, fontSize: 10, color: "#64748b" },
+        lineStyle: { type: "dashed" as const, color: "#64748b" },
+        data: [{ xAxis: mean }],
+      },
+    }],
+  }
+}
+
+function freqWithinOption(sector: FreqSector) {
+  const shown = foldFreq(sector.products).sort((a, b) => a.days - b.days)
+  const mean = sector.productCount > 0
+    ? sector.products.reduce((s, p) => s + p.days, 0) / sector.productCount
+    : 0
+  const focus = sector.stance === "显著不同"
+  const base = sectorColor(sector.sector)
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { name?: string }[]) => {
+        const row = shown.find((x) => x.name === ps[0]?.name)
+        if (!row) return ""
+        return `${row.name}<br/>有成交 ${row.days} 天<br/>占该板块 ${row.withinShare.toFixed(1)}%<br/>等权 ${mean.toFixed(0)} 天<br/>开仓 ${row.openLots.toFixed(0)} 手 · 平仓 ${row.closeLots.toFixed(0)} 手`
+      },
+    },
+    grid: { left: 92, right: 48, top: 8, bottom: 24 },
+    xAxis: {
+      type: "value" as const,
+      name: "天",
+      axisLabel: { fontSize: 10 },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: { type: "category" as const, data: shown.map((r) => r.name), axisLabel: { fontSize: 10 } },
+    series: [{
+      type: "bar" as const,
+      barMaxWidth: 14,
+      data: shown.map((r) => ({
+        value: r.days,
+        itemStyle: {
+          color: !focus || r.name === sector.topProduct ? base : "#cbd5e1",
+          borderRadius: 2,
+        },
+      })),
+      markLine: {
+        symbol: "none",
+        label: { formatter: `等权 ${mean.toFixed(0)}天`, fontSize: 10, color: "#64748b" },
+        lineStyle: { type: "dashed" as const, color: "#64748b" },
+        data: [{ xAxis: mean }],
+      },
+    }],
+  }
+}
+
+function alphaBetaOption(ab: AlphaBeta) {
+  const rows = ab.points
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { dataIndex?: number }[]) => {
+        const row = rows[ps[0]?.dataIndex ?? 0]
+        if (!row) return ""
+        return [
+          row.date,
+          `alpha 当日 ${fmtWan(row.alpha)} · 累计 ${fmtWan(row.cumAlpha)}`,
+          `beta 当日 ${fmtWan(row.beta)} · 累计 ${fmtWan(row.cumBeta)}`,
+        ].join("<br/>")
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 56, right: 16, top: 32, bottom: 48 },
+    dataZoom: [
+      { type: "inside" as const },
+      { type: "slider" as const, height: 14, bottom: 4, textStyle: { fontSize: 9 } },
+    ],
+    xAxis: { type: "category" as const, data: rows.map((r) => r.date.slice(5)), axisLabel: { fontSize: 10 } },
+    yAxis: {
+      type: "value" as const,
+      name: "累计盈亏",
+      axisLabel: { fontSize: 10, formatter: axisPnl },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: [
+      {
+        name: "累计 alpha",
+        type: "line" as const,
+        showSymbol: false,
+        data: rows.map((r) => r.cumAlpha),
+        lineStyle: { width: 2, color: "#8b5cf6" },
+        itemStyle: { color: "#8b5cf6" },
+      },
+      {
+        name: "累计 beta",
+        type: "line" as const,
+        showSymbol: false,
+        data: rows.map((r) => r.cumBeta),
+        lineStyle: { width: 2, color: BLUE },
+        itemStyle: { color: BLUE },
+      },
+    ],
+  }
+}
+
+function alphaNavOption(ab: AlphaBeta) {
+  const rows = ab.nav ?? []
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { dataIndex?: number }[]) => {
+        const row = rows[ps[0]?.dataIndex ?? 0]
+        if (!row) return ""
+        return [
+          row.date,
+          `账户净值 ${row.trader.toFixed(2)}`,
+          `南华商品指数 ${row.nhci.toFixed(2)}`,
+        ].join("<br/>")
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 48, right: 16, top: 32, bottom: 48 },
+    dataZoom: [
+      { type: "inside" as const },
+      { type: "slider" as const, height: 14, bottom: 4, textStyle: { fontSize: 9 } },
+    ],
+    xAxis: { type: "category" as const, data: rows.map((r) => r.date.slice(5)), axisLabel: { fontSize: 10 } },
+    yAxis: {
+      type: "value" as const,
+      name: "指数",
+      scale: true,
+      axisLabel: { fontSize: 10 },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: [
+      {
+        name: "账户净值",
+        type: "line" as const,
+        showSymbol: false,
+        data: rows.map((r) => r.trader),
+        lineStyle: { width: 2, color: "#8b5cf6" },
+        itemStyle: { color: "#8b5cf6" },
+      },
+      {
+        name: "南华商品指数",
+        type: "line" as const,
+        showSymbol: false,
+        data: rows.map((r) => r.nhci),
+        lineStyle: { width: 2, color: AMBER },
+        itemStyle: { color: AMBER },
+      },
+    ],
+  }
+}
+
+function sectorAlphaOption(ab: AlphaBeta) {
+  const rows = [...(ab.sectors ?? [])].sort((a, b) => b.alphaPnl - a.alphaPnl)
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { dataIndex?: number }[]) => {
+        const row = rows[ps[0]?.dataIndex ?? 0]
+        if (!row) return ""
+        return [
+          row.sector,
+          `alpha ${fmtWan(row.alphaPnl)} · beta ${fmtWan(row.betaPnl)}`,
+          `alpha t=${row.t == null ? "—" : row.t.toFixed(2)} · ${row.stance}`,
+        ].join("<br/>")
+      },
+    },
+    grid: { left: 72, right: 16, top: 12, bottom: 28 },
+    xAxis: {
+      type: "value" as const,
+      axisLabel: { fontSize: 10, formatter: axisPnl },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: {
+      type: "category" as const,
+      data: rows.map((r) => r.sector),
+      inverse: true,
+      axisLabel: { fontSize: 11 },
+    },
+    series: [{
+      type: "bar" as const,
+      barMaxWidth: 16,
+      data: rows.map((r) => ({
+        value: r.alphaPnl,
+        itemStyle: { color: r.alphaPnl >= 0 ? UP : DOWN, borderRadius: 2 },
+      })),
+    }],
+  }
+}
+
+function compareAlphaBetaOption(rows: ApiData[]) {
+  const books = rows.filter((r) => (r.alphaBeta?.points.length ?? 0) > 0)
+  if (!books.length) return null
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { seriesName?: string; name?: string; value?: number }[]) => {
+        const head = ps[0]?.name ?? ""
+        const lines = ps.map((p) => `${p.seriesName} ${p.value == null ? "—" : fmtWan(Number(p.value))}`)
+        return [head, ...lines].join("<br/>")
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 56, right: 12, top: 32, bottom: 28 },
+    xAxis: { type: "category" as const, data: books.map((r) => accLabel(r)), axisLabel: { fontSize: 11 } },
+    yAxis: {
+      type: "value" as const,
+      name: "盈亏",
+      axisLabel: { fontSize: 10, formatter: axisPnl },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: [
+      {
+        name: "alpha",
+        type: "bar" as const,
+        barMaxWidth: 18,
+        itemStyle: { color: "#8b5cf6", borderRadius: 2 },
+        data: books.map((r) => r.alphaBeta!.alphaPnl),
+      },
+      {
+        name: "beta",
+        type: "bar" as const,
+        barMaxWidth: 18,
+        itemStyle: { color: BLUE, borderRadius: 2 },
+        data: books.map((r) => r.alphaBeta!.betaPnl),
+      },
+    ],
+  }
+}
+
+function breakevenPayoff(winRatePct: number): number {
+  const p = winRatePct / 100
+  if (!(p > 0.005)) return 20
+  if (p >= 1) return 0
+  return (1 - p) / p
+}
+
+function expectancyCurve(x0: number, x1: number): [number, number][] {
+  const lo = Math.max(x0, 1)
+  const hi = Math.min(x1, 99)
+  if (!(hi > lo)) return []
+  const n = 48
+  const data: [number, number][] = []
+  for (let i = 0; i <= n; i++) {
+    const x = lo + ((hi - lo) * i) / n
+    data.push([Number(x.toFixed(2)), Number(breakevenPayoff(x).toFixed(3))])
+  }
+  return data
+}
+
+function payoffAxes(xs: number[], ys: number[], xPad: number) {
+  const xSpan = Math.max(8, Math.max(...xs) - Math.min(...xs))
+  const xMin = Math.max(0, Math.min(...xs, 50) - xSpan * xPad)
+  const xMax = Math.min(100, Math.max(...xs, 50) + xSpan * xPad)
+  const curve = expectancyCurve(xMin, xMax)
+  const pointHi = Math.max(...ys, 0.2)
+  const curveCap = Math.max(pointHi * 2.2, 1.6)
+  const shown = curve.map((p) => p[1]).filter((y) => y <= curveCap)
+  const yLo = Math.min(...ys, ...(shown.length ? shown : [0]))
+  const yHi = Math.max(...ys, ...(shown.length ? shown : [0]))
+  const ySpan = Math.max(0.35, yHi - yLo)
+  return {
+    xMin,
+    xMax,
+    yMin: Math.max(0, yLo - ySpan * 0.18),
+    yMax: yHi + ySpan * 0.22,
+    curve,
+  }
+}
+
+function compareWinPayoffOption(rows: ApiData[]) {
+  const points = rows.flatMap((r, i) => {
+    const x = r.kpis?.tradeWinRate
+    const y = r.kpis?.payoff
+    if (x == null || y == null || !Number.isFinite(x) || !Number.isFinite(y)) return []
+    return [{
+      name: accLabel(r),
+      accountId: r.accountId ? String(r.accountId) : undefined,
+      value: [x, y] as [number, number],
+      pnl: r.kpis?.totalPnl ?? null,
+      expectancy: r.kpis?.expectancy ?? null,
+      label: r.portrait?.strategyLabel ?? "",
+      itemStyle: { color: PALETTE[i % PALETTE.length], borderColor: "#fff", borderWidth: 1 },
+    }]
+  })
+  if (!points.length) return null
+  const xs = points.map((p) => p.value[0])
+  const ys = points.map((p) => p.value[1])
+  const axes = payoffAxes(xs, ys, 0.28)
+  return {
+    tooltip: {
+      formatter: (p: { data?: { name?: string; value?: [number, number]; pnl?: number | null; expectancy?: number | null; label?: string } }) => {
+        const d = p.data
+        if (!d || Array.isArray(d) || !d.value) return ""
+        const [x, y] = d.value
+        const lines = [
+          d.name ?? "",
+          d.label ? d.label : "",
+          `胜率 ${x.toFixed(1)}%（平仓 + 持仓）`,
+          `盈亏比 ${y.toFixed(2)}（平均盈利 / |平均亏损|）`,
+          `打平需要 ${breakevenPayoff(x).toFixed(2)}`,
+          `期望 ${y > breakevenPayoff(x) ? "正" : y < breakevenPayoff(x) ? "负" : "打平"}`,
+        ]
+        if (d.expectancy != null && Number.isFinite(d.expectancy)) lines.push(`期望合计 ${fmtWan(d.expectancy)}`)
+        if (d.pnl != null && Number.isFinite(d.pnl)) lines.push(`日报净盈亏 ${fmtWan(d.pnl)}`)
+        return lines.filter(Boolean).join("<br/>")
+      },
+    },
+    grid: { left: 52, right: 36, top: 16, bottom: 40 },
+    xAxis: {
+      type: "value" as const,
+      name: "胜率",
+      nameLocation: "middle" as const,
+      nameGap: 26,
+      min: axes.xMin,
+      max: axes.xMax,
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${v.toFixed(0)}%` },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: {
+      type: "value" as const,
+      name: "盈亏比",
+      min: axes.yMin,
+      max: axes.yMax,
+      axisLabel: { fontSize: 10, formatter: (v: number) => v.toFixed(2) },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: [{
+      name: "期望 0",
+      type: "line" as const,
+      showSymbol: false,
+      silent: true,
+      data: axes.curve,
+      lineStyle: { type: "dashed" as const, width: 1, color: "#94a3b8" },
+      itemStyle: { color: "#94a3b8" },
+      endLabel: { show: true, formatter: "期望 0", fontSize: 10, color: "#64748b" },
+      z: 1,
+    }, {
+      type: "scatter" as const,
+      cursor: "pointer",
+      symbolSize: 16,
+      label: {
+        show: true,
+        formatter: (p: { name?: string }) => p.name ?? "",
+        position: "top" as const,
+        fontSize: 11,
+        color: "#475569",
+        distance: 8,
+      },
+      labelLayout: { hideOverlap: true },
+      data: points,
+    }],
+  }
+}
+
+function dailyReturnPct(d: ApiData): number[] {
+  const out: number[] = []
+  for (const e of d.equity ?? []) {
+    const prev = e.equity - e.pnl
+    if (prev > 0 && Number.isFinite(e.pnl)) out.push((e.pnl / prev) * 100)
+  }
+  return out
+}
+
+function kdeBandwidth(xs: number[]): number {
+  const n = xs.length
+  if (n < 2) return 0.2
+  const sorted = [...xs].sort((a, b) => a - b)
+  const mean = xs.reduce((s, v) => s + v, 0) / n
+  const sd = Math.sqrt(xs.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1))
+  const q = (p: number) => sorted[Math.min(n - 1, Math.max(0, Math.round(p * (n - 1))))]!
+  const iqr = q(0.75) - q(0.25)
+  const sigma = Math.min(sd || iqr / 1.34, iqr > 0 ? iqr / 1.34 : sd) || 0.15
+  return Math.max(0.05, 1.06 * sigma * n ** -0.2)
+}
+
+function gaussianKde(xs: number[], grid: number[], h: number): number[] {
+  const n = xs.length
+  const inv = 1 / (n * h * Math.sqrt(2 * Math.PI))
+  const h2 = 2 * h * h
+  return grid.map((x) => {
+    let s = 0
+    for (const v of xs) {
+      const d = x - v
+      s += Math.exp(-(d * d) / h2)
+    }
+    return s * inv
+  })
+}
+
+function compareReturnPdfOption(rows: ApiData[]) {
+  const books = rows.flatMap((r, i) => {
+    const rets = dailyReturnPct(r)
+    if (rets.length < 8) return []
+    return [{ name: accLabel(r), color: PALETTE[i % PALETTE.length]!, rets }]
+  })
+  if (!books.length) return null
+  const pooled = books.flatMap((b) => b.rets).sort((a, b) => a - b)
+  const q = (p: number) => pooled[Math.min(pooled.length - 1, Math.max(0, Math.round(p * (pooled.length - 1))))]!
+  const lo = q(0.01)
+  const hi = q(0.99)
+  const pad = Math.max(0.2, (hi - lo) * 0.2)
+  const x0 = lo - pad
+  const x1 = hi + pad
+  const grid = Array.from({ length: 81 }, (_, i) => x0 + ((x1 - x0) * i) / 80)
+  return {
+    tooltip: { trigger: "axis" as const },
+    legend: { top: 0, type: "scroll" as const, textStyle: { fontSize: 11 } },
+    grid: { left: 48, right: 16, top: 32, bottom: 40 },
+    xAxis: {
+      type: "value" as const,
+      name: "日收益",
+      nameLocation: "middle" as const,
+      nameGap: 26,
+      min: x0,
+      max: x1,
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${v.toFixed(1)}%` },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: {
+      type: "value" as const,
+      name: "密度",
+      axisLabel: { fontSize: 10, formatter: (v: number) => v.toFixed(2) },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: books.map((b, i) => {
+      const density = gaussianKde(b.rets, grid, kdeBandwidth(b.rets))
+      return {
+        name: b.name,
+        type: "line" as const,
+        showSymbol: false,
+        smooth: true,
+        data: grid.map((x, k) => [x, density[k]]),
+        lineStyle: { width: 2, color: b.color },
+        itemStyle: { color: b.color },
+        markLine: i === 0
+          ? {
+              silent: true,
+              symbol: "none",
+              label: { formatter: "0", fontSize: 10, color: "#64748b" },
+              lineStyle: { type: "dashed" as const, color: "#94a3b8" },
+              data: [{ xAxis: 0 }],
+            }
+          : undefined,
+      }
+    }),
+  }
+}
+
+function edgeScatterOption(
+  rows: { name: string; winRate: number | null; payoff: number | null; pnl: number; trades: number }[],
+) {
+  const usable = rows.filter((r) => r.winRate != null && Number.isFinite(r.winRate))
+  if (!usable.length) return null
+  const finiteY = usable.map((r) => r.payoff).filter((y): y is number => y != null && Number.isFinite(y))
+  const maxFinite = finiteY.length ? Math.max(...finiteY) : 1
+  const cap = Math.max(maxFinite * 1.25, 1.5)
+  const points = usable.map((r) => {
+    const capped = r.payoff == null && r.pnl > 0
+    const y = capped ? cap : (r.payoff ?? 0)
+    return {
+      name: r.name,
+      value: [r.winRate as number, y] as [number, number],
+      pnl: r.pnl,
+      capped,
+      payoff: r.payoff,
+      trades: r.trades,
+    }
+  })
+  const paint = (pnl: number) => (pnl > 0 ? UP : pnl < 0 ? DOWN : "#94a3b8")
+  const seriesOf = (name: string, pick: (pnl: number) => boolean) => {
+    const data = points.filter((p) => pick(p.pnl)).map((p) => ({
+      name: p.name,
+      value: p.value,
+      pnl: p.pnl,
+      capped: p.capped,
+      payoff: p.payoff,
+      trades: p.trades,
+      itemStyle: { color: paint(p.pnl), borderColor: "#fff", borderWidth: 1 },
+    }))
+    return {
+      name,
+      type: "scatter" as const,
+      symbolSize: points.length > 24 ? 11 : 15,
+      label: {
+        show: true,
+        formatter: (p: { name?: string }) => p.name ?? "",
+        position: "top" as const,
+        fontSize: 10,
+        color: "#475569",
+        distance: 6,
+      },
+      labelLayout: { hideOverlap: true },
+      data,
+    }
+  }
+  const xs = points.map((p) => p.value[0])
+  const ys = points.map((p) => p.value[1])
+  const axes = payoffAxes(xs, ys, 0.2)
+  const series = [
+    {
+      name: "期望 0",
+      type: "line" as const,
+      showSymbol: false,
+      silent: true,
+      data: axes.curve,
+      lineStyle: { type: "dashed" as const, width: 1, color: "#94a3b8" },
+      itemStyle: { color: "#94a3b8" },
+      endLabel: { show: true, formatter: "期望 0", fontSize: 10, color: "#64748b" },
+      z: 1,
+    },
+    ...[
+      seriesOf("盈利", (pnl) => pnl > 0),
+      seriesOf("亏损", (pnl) => pnl < 0),
+      seriesOf("持平", (pnl) => pnl === 0),
+    ].filter((s) => s.data.length),
+  ]
+  return {
+    tooltip: {
+      formatter: (p: { data?: { name?: string; value?: [number, number]; pnl?: number; capped?: boolean; payoff?: number | null; trades?: number } }) => {
+        const d = p.data
+        if (!d || Array.isArray(d) || !d.value) return ""
+        if (d.name === "期望 0" || d.value.length < 2) return ""
+        const need = breakevenPayoff(d.value[0])
+        const payoff = d.capped ? "无亏损，图上放在顶部" : (d.payoff == null ? "0" : d.payoff.toFixed(2))
+        const y = d.capped ? cap : d.value[1]
+        return [
+          d.name ?? "",
+          `交易笔数 ${(d.trades ?? 0).toLocaleString("zh-CN")}`,
+          `胜率 ${d.value[0].toFixed(1)}%`,
+          `盈亏比 ${payoff}（平均盈利 / |平均亏损|）`,
+          `打平需要 ${need.toFixed(2)}`,
+          `期望 ${y > need ? "正" : y < need ? "负" : "打平"}`,
+          `合计 ${fmtWan(d.pnl ?? 0)}`,
+        ].join("<br/>")
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 52, right: 28, top: 32, bottom: 40 },
+    xAxis: {
+      type: "value" as const,
+      name: "胜率",
+      nameLocation: "middle" as const,
+      nameGap: 26,
+      min: axes.xMin,
+      max: axes.xMax,
+      axisLabel: { fontSize: 10, formatter: (v: number) => `${v.toFixed(0)}%` },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    yAxis: {
+      type: "value" as const,
+      name: "盈亏比",
+      min: axes.yMin,
+      max: axes.yMax,
+      axisLabel: { fontSize: 10, formatter: (v: number) => v.toFixed(2) },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series,
+  }
+}
+
+function compareFreqOption(rows: ApiData[]) {
+  const books = rows.filter((r) => (r.tradeFrequency?.sectors.length ?? 0) > 0)
+  const names = new Set<string>()
+  for (const r of books) for (const s of r.tradeFrequency!.sectors) names.add(s.sector)
+  const order = ["农产", "生鲜", "黑色", "有色", "贵金属", "能源化工", "新能源", "航运", "股指", "国债", "其他"]
+  const sectors = [...names].sort((a, b) => {
+    const ia = order.indexOf(a)
+    const ib = order.indexOf(b)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+  })
+  if (!sectors.length) return null
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { seriesName?: string; name?: string; value?: number }[]) => {
+        const head = ps[0]?.name ?? ""
+        const lines = ps.map((p) => `${p.seriesName} ${p.value == null ? "—" : `${Number(p.value).toFixed(1)}%`}`)
+        return [`${head} 成交天数占比`, ...lines].join("<br/>")
+      },
+    },
+    legend: { top: 0, type: "scroll" as const, textStyle: { fontSize: 11 } },
+    grid: { left: 44, right: 12, top: 32, bottom: 28 },
+    xAxis: { type: "category" as const, data: sectors, axisLabel: { fontSize: 11 } },
+    yAxis: {
+      type: "value" as const,
+      name: "%",
+      axisLabel: { fontSize: 10 },
+      splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } },
+    },
+    series: books.map((r, i) => ({
+      name: accLabel(r),
+      type: "bar" as const,
+      barMaxWidth: 14,
+      itemStyle: { color: PALETTE[i % PALETTE.length], borderRadius: 2 },
+      data: sectors.map((name) => r.tradeFrequency!.sectors.find((s) => s.sector === name)?.share ?? 0),
+    })),
+  }
+}
+
+function sectorVolOption(series: SectorVolSeries, window: number) {
+  const rows = series.points
+  return {
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (ps: { axisValue?: string; seriesName?: string; value?: number | null }[]) => {
+        const date = ps[0]?.axisValue ?? ""
+        const lines = ps.map((p) => {
+          if (p.value == null || Number.isNaN(p.value)) return `${p.seriesName} —`
+          return `${p.seriesName} ${Number(p.value).toFixed(1)}%`
+        })
+        return [date, ...lines].join("<br/>")
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 48, right: 48, top: 32, bottom: 28 },
+    dataZoom: [{ type: "inside" as const }],
+    xAxis: { type: "category" as const, data: rows.map((r) => r.date.slice(5)), axisLabel: { fontSize: 10 } },
+    yAxis: [
+      { type: "value" as const, name: "波动%", axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.25 } } },
+      { type: "value" as const, name: "风险%", axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+    ],
+    series: [
+      {
+        name: `${window}日市场波动`,
+        type: "line" as const,
+        showSymbol: false,
+        yAxisIndex: 0,
+        data: rows.map((r) => r.vol),
+        lineStyle: { width: 1.5, color: AMBER },
+        itemStyle: { color: AMBER },
+      },
+      {
+        name: "风险贡献",
+        type: "line" as const,
+        showSymbol: false,
+        yAxisIndex: 1,
+        data: rows.map((r) => r.risk),
+        lineStyle: { width: 2, color: sectorColor(series.sector) },
+        itemStyle: { color: sectorColor(series.sector) },
+      },
+    ],
+  }
+}
+
 export default function QuantStrategyCharts() {
   const [accountId, setAccountId] = useState("319")
   const [range, setRange] = useState<RangeLabel>("全部")
@@ -402,6 +1532,9 @@ export default function QuantStrategyCharts() {
   const [factorPending, setFactorPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [compareMode, setCompareMode] = useState(false)
+  const [pairPick, setPairPick] = useState(false)
+  const [pairIds, setPairIds] = useState<string[]>([])
+  const [pairSlot, setPairSlot] = useState<0 | 1>(0)
   const [compareRows, setCompareRows] = useState<ApiData[]>([])
   const [compareLoading, setCompareLoading] = useState(false)
   const [compareError, setCompareError] = useState<string | null>(null)
@@ -420,15 +1553,18 @@ export default function QuantStrategyCharts() {
       shownRef.current = null
       setData(null)
     }
+    const coreParams = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo, scope: "core" })
+    const fullParams = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo })
+    const coreP = fetch(`/ma/api/mom-analysis/quant-strategy?${coreParams}`, { cache: "no-store" })
+      .then(async (res) => ({ res, json: await res.json() as ApiData }))
+    const fullP = fetch(`/ma/api/mom-analysis/quant-strategy?${fullParams}`, { cache: "no-store" })
+      .then(async (res) => ({ res, json: await res.json() as ApiData }))
     try {
-      const core = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo, scope: "core" })
-      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${core}`, { cache: "no-store" })
-      const json = await res.json()
+      const { res, json } = await coreP
       if (reqId !== loadSeq.current) return
       if (!res.ok || !json.ok) throw new Error(json.error || "请求失败")
-      const next = json as ApiData
-      shownRef.current = next
-      setData(next)
+      shownRef.current = json
+      setData(json)
     } catch (e) {
       if (reqId !== loadSeq.current) return
       setError(e instanceof Error ? e.message : "加载失败")
@@ -439,14 +1575,11 @@ export default function QuantStrategyCharts() {
     setLoading(false)
     setFactorPending(true)
     try {
-      const full = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo })
-      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${full}`, { cache: "no-store" })
-      const json = await res.json()
+      const { res, json } = await fullP
       if (reqId !== loadSeq.current) return
       if (!res.ok || !json.ok) return
-      const next = json as ApiData
-      shownRef.current = next
-      setData(next)
+      shownRef.current = json
+      setData(json)
     } catch {
       if (reqId !== loadSeq.current) return
     } finally {
@@ -454,36 +1587,55 @@ export default function QuantStrategyCharts() {
     }
   }, [])
 
-  useEffect(() => {
-    if (compareMode) return
-    void load(accountId, from, to)
-  }, [accountId, from, to, load, compareMode])
-
-  const loadCompare = useCallback(async (nextFrom = from, nextTo = to) => {
+  const loadCompare = useCallback(async (
+    nextFrom = from,
+    nextTo = to,
+    accountIds: readonly (string | number)[] = QUANT_ACCOUNT_IDS,
+  ) => {
     const reqId = ++compareSeq.current
     setCompareLoading(true)
     setCompareError(null)
-    try {
-      const settled = await Promise.allSettled(
-        QUANT_ACCOUNT_IDS.map(async (id) => {
-          const params = new URLSearchParams({ account: String(id), from: nextFrom, to: nextTo, scope: "core" })
+    const ids = accountIds.map(String)
+    const fetchOne = async (id: string): Promise<ApiData> => {
+      const params = new URLSearchParams({ account: id, from: nextFrom, to: nextTo, scope: "core" })
+      let last: unknown = new Error(`rx${id} 请求失败`)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (reqId !== compareSeq.current) throw new Error("stale")
+        try {
           const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${params}`, { cache: "no-store" })
-          const json = await res.json()
+          const json = await res.json() as ApiData
           if (!res.ok || !json.ok) throw new Error(json.error || `rx${id} 请求失败`)
-          return json as ApiData
-        }),
-      )
+          return json
+        } catch (e) {
+          last = e
+          if (attempt < 2 && reqId === compareSeq.current) {
+            await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+          }
+        }
+      }
+      throw last instanceof Error ? last : new Error(`rx${id} 请求失败`)
+    }
+    try {
+      const settled = await Promise.allSettled(ids.map((id) => fetchOne(id)))
       if (reqId !== compareSeq.current) return
       const ok: ApiData[] = []
-      const failed: string[] = []
+      const missing: string[] = []
+      const broken: string[] = []
       settled.forEach((s, i) => {
+        const name = `rx${ids[i]}`
         if (s.status === "fulfilled" && !s.value.notYetRun) ok.push(s.value)
-        else failed.push(`rx${QUANT_ACCOUNT_IDS[i]}`)
+        else if (s.status === "fulfilled") missing.push(name)
+        else if (s.reason instanceof Error && s.reason.message === "stale") return
+        else broken.push(name)
       })
       setCompareRows(ok)
       setCompareBounds({ from: nextFrom, to: nextTo })
-      if (!ok.length) setCompareError(failed.length ? `${failed.join("、")} 加载失败` : "没有可对比的账户")
-      else setCompareError(failed.length ? `${failed.join("、")} 暂无数据，已对照其余账户` : null)
+      const notes = [
+        missing.length ? `${missing.join("、")} 暂无数据` : "",
+        broken.length ? `${broken.join("、")} 加载失败` : "",
+      ].filter(Boolean)
+      if (!ok.length) setCompareError(notes.join("，") || "没有可对比的账户")
+      else setCompareError(notes.length ? `${notes.join("，")}，已对照其余账户` : null)
     } catch (e) {
       if (reqId !== compareSeq.current) return
       setCompareError(e instanceof Error ? e.message : "对比加载失败")
@@ -492,27 +1644,87 @@ export default function QuantStrategyCharts() {
     }
   }, [from, to])
 
+  useEffect(() => {
+    if (compareMode) return
+    void load(accountId, from, to)
+  }, [accountId, from, to, load, compareMode])
+
+  useEffect(() => {
+    if (!compareMode || !pairPick) return
+    if (pairIds.length !== 2) {
+      compareSeq.current += 1
+      setCompareLoading(false)
+      setCompareError(null)
+      return
+    }
+    void loadCompare(from, to, pairIds)
+  }, [compareMode, pairPick, pairIds, from, to, loadCompare])
+
   const selectAccount = (id: string) => {
     setCompareMode(false)
+    setPairPick(false)
     setAccountId(id)
+  }
+
+  const pickPairAccount = (id: string) => {
+    const left = pairIds[0] ?? ""
+    const right = pairIds[1] ?? ""
+    if (id === left) {
+      setPairSlot(0)
+      return
+    }
+    if (id === right) {
+      setPairSlot(1)
+      return
+    }
+    if (pairSlot === 0) {
+      if (right) setCompareLoading(true)
+      setPairIds(right ? [id, right] : [id])
+      if (!right) setPairSlot(1)
+      return
+    }
+    if (!left) {
+      setPairIds([id])
+      setPairSlot(1)
+      return
+    }
+    setCompareLoading(true)
+    setPairIds([left, id])
   }
 
   const selectRange = (label: RangeLabel) => {
     const next = boundsFor(label)
     setRange(label)
     setBounds(next)
-    if (compareMode) void loadCompare(next.from, next.to)
+    if (compareMode && !pairPick) void loadCompare(next.from, next.to)
   }
 
   const toggleCompare = () => {
-    if (compareMode) {
+    if (compareMode && !pairPick) {
       setCompareMode(false)
       return
     }
+    setPairPick(false)
     setCompareMode(true)
-    if (!compareBounds || compareBounds.from !== from || compareBounds.to !== to || !compareRows.length) {
+    if (pairPick || !compareBounds || compareBounds.from !== from || compareBounds.to !== to || !compareRows.length) {
       void loadCompare(from, to)
     }
+  }
+
+  const togglePairMode = () => {
+    if (compareMode && pairPick) {
+      setCompareMode(false)
+      setPairPick(false)
+      return
+    }
+    const nextIds = pairIds.length ? pairIds : [accountId]
+    if (nextIds.length === 2) setCompareLoading(true)
+    setPairIds(nextIds)
+    setPairSlot(nextIds[1] ? 0 : 1)
+    setCompareRows([])
+    setCompareError(null)
+    setPairPick(true)
+    setCompareMode(true)
   }
 
   const viewKey = `${accountId}|${from}|${to}|${data?.from ?? ""}|${data?.to ?? ""}`
@@ -583,9 +1795,91 @@ export default function QuantStrategyCharts() {
     }
   }, [eq])
 
+  const rrShape = data?.rrShape
+  const rrHistOption = useMemo(() => {
+    const bins = rrShape?.bins ?? []
+    if (!bins.some((n) => n > 0)) return {}
+    const clip = rrShape?.clip ?? 20000
+    const nBins = bins.length
+    const step = (clip * 2) / nBins
+    return {
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (ps: { dataIndex?: number; value?: number }[]) => {
+          const i = ps[0]?.dataIndex ?? 0
+          const lo = -clip + i * step
+          const hi = lo + step
+          const count = bins[i] ?? 0
+          return `${fmtInt(lo)} ~ ${fmtInt(hi)} 元<br/>${fmtInt(count)} 笔`
+        },
+      },
+      grid: { left: 52, right: 16, top: 16, bottom: 52 },
+      xAxis: [
+        {
+          type: "category",
+          data: bins.map((_, i) => String(i)),
+          axisLabel: { show: false },
+          axisTick: { show: false },
+          axisLine: { show: false },
+        },
+        {
+          type: "value",
+          min: -clip,
+          max: clip,
+          name: "单笔逐笔平仓盈亏（元，已截尾）",
+          nameLocation: "middle",
+          nameGap: 28,
+          nameTextStyle: { fontSize: 11, color: "#4A5568" },
+          axisLabel: { fontSize: 10, color: "#4A5568", formatter: (v: number) => fmtInt(v) },
+          splitLine: { show: false },
+          axisLine: { lineStyle: { color: "#A0AEC0" } },
+        },
+      ],
+      yAxis: {
+        type: "value",
+        name: "笔数",
+        nameTextStyle: { fontSize: 11, color: "#4A5568" },
+        axisLabel: { fontSize: 10, color: "#4A5568" },
+        splitLine: { lineStyle: { color: "#E2E8F0" } },
+      },
+      series: [
+        {
+          type: "bar",
+          xAxisIndex: 0,
+          data: bins,
+          barCategoryGap: "12%",
+          itemStyle: { color: "rgba(26,54,93,0.85)" },
+        },
+        {
+          type: "line",
+          xAxisIndex: 1,
+          data: [[0, 0]],
+          symbol: "none",
+          silent: true,
+          lineStyle: { opacity: 0 },
+          tooltip: { show: false },
+          markLine: {
+            symbol: "none",
+            silent: true,
+            animation: false,
+            lineStyle: { color: "#C9A227", width: 1.2 },
+            label: { show: false },
+            data: [{ xAxis: 0 }],
+          },
+        },
+      ],
+    }
+  }, [rrShape])
+
   const factorFamilies = data?.regimeFactors?.families ?? []
   const heatmapCells = data?.regimeFactors?.heatmap ?? []
   const heatmapOption = useMemo(() => heatmapChartOption(heatmapCells), [heatmapCells])
+
+  const linearOptions = useMemo(
+    () => (data?.linearScatters?.charts ?? []).map((ch) => ({ ch, option: linearScatterOption(ch) })),
+    [data?.linearScatters],
+  )
 
   const bookVolOption = useMemo(() => {
     const ch = data?.inference?.charts?.bookVol
@@ -643,6 +1937,46 @@ export default function QuantStrategyCharts() {
       }],
     }
   }, [data?.sectors])
+
+  const sectorEdgeChart = useMemo(() => {
+    const trades = new Map<string, number>()
+    for (const p of data?.products ?? []) trades.set(p.sector, (trades.get(p.sector) ?? 0) + p.n)
+    return edgeScatterOption((data?.sectors ?? []).map((s) => ({
+      name: s.sector,
+      winRate: s.winRate ?? null,
+      payoff: s.payoff ?? null,
+      pnl: s.pnl,
+      trades: trades.get(s.sector) ?? 0,
+    })))
+  }, [data?.sectors, data?.products])
+  const productEdgeChart = useMemo(
+    () => edgeScatterOption((data?.products ?? []).map((p) => ({
+      name: p.name,
+      winRate: p.winRate,
+      payoff: p.payoff ?? null,
+      pnl: p.pnl,
+      trades: p.n,
+    }))),
+    [data?.products],
+  )
+
+  const bookRisk = data?.bookRisk
+  const bookSectorChart = useMemo(() => (bookRisk?.sectors.length ? bookSectorOption(bookRisk) : null), [bookRisk])
+  const bookTreeChart = useMemo(() => (bookRisk?.sectors.length ? bookTreeOption(bookRisk) : null), [bookRisk])
+  const tradeFrequency = data?.tradeFrequency
+  const freqSectorChart = useMemo(() => (tradeFrequency?.sectors.length ? freqSectorOption(tradeFrequency) : null), [tradeFrequency])
+  const alphaBeta = data?.alphaBeta
+  const alphaBetaChart = useMemo(() => (alphaBeta?.points.length ? alphaBetaOption(alphaBeta) : null), [alphaBeta])
+  const alphaNavChart = useMemo(() => ((alphaBeta?.nav?.length ?? 0) > 1 ? alphaNavOption(alphaBeta!) : null), [alphaBeta])
+  const sectorAlphaChart = useMemo(
+    () => ((alphaBeta?.sectors?.length ?? 0) > 0 ? sectorAlphaOption(alphaBeta!) : null),
+    [alphaBeta],
+  )
+  const sectorVol = data?.sectorVol
+  const sectorVolCharts = useMemo(
+    () => (sectorVol?.sectors ?? []).filter((s) => s.points.length > 0).map((s) => ({ sector: s.sector, option: sectorVolOption(s, sectorVol?.window ?? 20) })),
+    [sectorVol],
+  )
 
   const afterOption = useMemo(() => {
     const a = data?.afterMove
@@ -738,7 +2072,21 @@ export default function QuantStrategyCharts() {
     const rows = stability?.track ?? []
     if (!rows.length) return {}
     return {
-      tooltip: { trigger: "axis" },
+      tooltip: {
+        trigger: "axis" as const,
+        formatter: (ps: { dataIndex?: number }[]) => {
+          const row = rows[ps[0]?.dataIndex ?? 0]
+          if (!row) return ""
+          const need = row.winRate != null && row.winRate > 0 ? (100 - row.winRate) / row.winRate : null
+          return [
+            row.date,
+            `胜率 ${row.winRate == null ? "—" : row.winRate.toFixed(1)}%`,
+            `盈亏比 ${row.payoff == null ? "—" : row.payoff.toFixed(2)}（平均盈利 / |平均亏损|）`,
+            need == null ? "" : `打平需要 ${need.toFixed(2)}`,
+            `窗口盈亏 ${fmtWan(row.pnl)}`,
+          ].filter(Boolean).join("<br/>")
+        },
+      },
       legend: { top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 44, right: 44, top: 32, bottom: 28 },
       dataZoom: [{ type: "inside" }, { type: "slider", height: 14, bottom: 4, textStyle: { fontSize: 9 } }],
@@ -796,7 +2144,22 @@ export default function QuantStrategyCharts() {
     const rows = stability?.regimes ?? []
     if (!rows.length) return {}
     return {
-      tooltip: { trigger: "axis" },
+      tooltip: {
+        trigger: "axis" as const,
+        formatter: (ps: { dataIndex?: number }[]) => {
+          const row = rows[ps[0]?.dataIndex ?? 0]
+          if (!row) return ""
+          const need = row.winRate != null && row.winRate > 0 ? (100 - row.winRate) / row.winRate : null
+          const pnl = row.pnl ?? 0
+          return [
+            `${row.label} ${row.days}天`,
+            `胜率 ${row.winRate == null ? "—" : row.winRate.toFixed(1)}%`,
+            `盈亏比 ${row.payoff == null ? "—" : row.payoff.toFixed(2)}（平均盈利 / |平均亏损|）`,
+            need == null ? "" : `打平需要 ${need.toFixed(2)}`,
+            `期望 ${pnl > 0 ? "正" : pnl < 0 ? "负" : "平"} · 这段盈亏 ${fmtWan(row.pnl)}`,
+          ].filter(Boolean).join("<br/>")
+        },
+      },
       legend: { top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 44, right: 44, top: 32, bottom: 48 },
       xAxis: { type: "category", data: rows.map((r) => `${r.label}\n${r.days}天`), axisLabel: { fontSize: 10, interval: 0 } },
@@ -923,34 +2286,57 @@ export default function QuantStrategyCharts() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm text-muted-foreground">
-            {compareMode
-              ? "同一区间下横向对照各量化账户的策略画像、绩效与权益曲线。点击账户进入单账户详情。"
-              : "选择量化账户，用成交、平仓与日核算倒推策略画像：适合什么市、怎么管风险、盈亏偏好、是否对冲、日盘还是夜盘、盈亏单持仓多久。"}
+            {pairPick
+              ? "先点「左」或「右」选定要换的一侧，再点账户。两侧都可以换。"
+              : compareMode
+                ? "同一区间下横向对照各量化账户的策略画像、绩效与权益曲线。点击账户进入单账户详情。"
+                : "选择量化账户，用成交、平仓与日核算倒推策略画像：适合什么市、怎么管风险、盈亏偏好、是否对冲、日盘还是夜盘、盈亏单持仓多久。"}
           </p>
           {!compareMode && data?.account && (
             <p className="text-xs text-muted-foreground mt-1">
               {data.account} · {data.from} 至 {data.to} · {k?.tradingDays ?? 0} 个交易日 · {k?.nCloses ?? 0} 笔平仓
             </p>
           )}
-          {compareMode && (compareRows[0]?.from || from) && (
+          {compareMode && !pairPick && (compareRows[0]?.from || from) && (
             <p className="text-xs text-muted-foreground mt-1">
               {compareRows[0]?.from ?? from} 至 {compareRows[0]?.to ?? to} · {compareRows.length} 个量化账户
             </p>
           )}
+          {pairPick && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {pairIds.length === 2
+                ? `${compareRows[0]?.from ?? from} 至 ${compareRows[0]?.to ?? to} · rx${pairIds[0]} 与 rx${pairIds[1]} · 正在选${pairSlot === 0 ? "左侧" : "右侧"}`
+                : pairSlot === 0
+                  ? `正在选左侧${pairIds[0] ? `，当前 rx${pairIds[0]}` : ""}`
+                  : pairIds[0]
+                    ? `正在选右侧，左侧是 rx${pairIds[0]}`
+                    : "先点一个账户作为左侧"}
+            </p>
+          )}
         </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant={compareMode ? "default" : "outline"} onClick={toggleCompare} disabled={compareLoading}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant={compareMode && !pairPick ? "default" : "outline"} onClick={toggleCompare} disabled={compareLoading}>
             <Columns2 className="h-3.5 w-3.5 mr-1.5" />
-            {compareMode ? "退出对比" : "横向对比"}
+            {compareMode && !pairPick ? "退出对比" : "横向对比"}
+          </Button>
+          <Button size="sm" variant={pairPick ? "default" : "outline"} onClick={togglePairMode} disabled={compareLoading}>
+            <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
+            {pairPick ? "退出双账户" : "双账户对比"}
           </Button>
           <Button
             size="sm"
             variant="outline"
-            onClick={() => void (compareMode ? loadCompare() : load(accountId, from, to))}
-            disabled={compareMode ? compareLoading : loading}
+            onClick={() => {
+              if (pairPick) {
+                if (pairIds.length === 2) void loadCompare(from, to, pairIds)
+                return
+              }
+              void (compareMode ? loadCompare() : load(accountId, from, to))
+            }}
+            disabled={pairPick ? pairIds.length !== 2 || compareLoading : compareMode ? compareLoading : loading}
           >
             <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${(compareMode ? compareLoading : loading) ? "animate-spin" : ""}`} />
-            {(compareMode ? compareLoading : loading) ? "加载中" : "刷新"}
+            {(pairPick ? compareLoading && pairIds.length === 2 : compareMode ? compareLoading : loading) ? "加载中" : "刷新"}
           </Button>
         </div>
       </div>
@@ -958,11 +2344,12 @@ export default function QuantStrategyCharts() {
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground mr-1">账户</span>
         {ids.map((id) => {
-          const active = !compareMode && String(id) === accountId
+          const pairIndex = pairIds.indexOf(String(id))
+          const active = pairPick ? pairIndex >= 0 : !compareMode && String(id) === accountId
           return (
             <button
               key={id}
-              onClick={() => selectAccount(String(id))}
+              onClick={() => (pairPick ? pickPairAccount(String(id)) : selectAccount(String(id)))}
               className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
                 active
                   ? "border-primary bg-primary text-primary-foreground"
@@ -970,10 +2357,39 @@ export default function QuantStrategyCharts() {
               }`}
             >
               rx{id}
+              {pairPick && pairIndex >= 0 ? (pairIndex === 0 ? " 左" : " 右") : ""}
             </button>
           )
         })}
       </div>
+      {pairPick && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <button
+            type="button"
+            onClick={() => setPairSlot(0)}
+            className={`rounded-md border px-2.5 py-1 font-medium ${
+              pairSlot === 0
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-input bg-background text-foreground hover:bg-muted"
+            }`}
+          >
+            左 {pairIds[0] ? `rx${pairIds[0]}` : "点选账户"}
+          </button>
+          <span className="text-xs text-muted-foreground">对比</span>
+          <button
+            type="button"
+            onClick={() => setPairSlot(1)}
+            className={`rounded-md border px-2.5 py-1 font-medium ${
+              pairSlot === 1
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-input bg-background text-foreground hover:bg-muted"
+            }`}
+          >
+            右 {pairIds[1] ? `rx${pairIds[1]}` : "点选账户"}
+          </button>
+          <span className="text-xs text-muted-foreground">点亮的一侧会被下一个账户替换</span>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground mr-1">区间</span>
         {RANGES.map((r) => {
@@ -1001,22 +2417,32 @@ export default function QuantStrategyCharts() {
       {data?.notYetRun && !compareMode && <p className="text-sm text-muted-foreground">核算表尚未导入。</p>}
 
       <PeriodCtx.Provider value={periodText}>
-      {compareMode ? (
+      {compareMode && pairPick && pairIds.length < 2 ? (
+        <p className="text-sm text-muted-foreground py-8 text-center">
+          {pairSlot === 0
+            ? `正在选左侧${pairIds[0] ? `，当前 rx${pairIds[0]}` : ""}。点一个账户。`
+            : pairIds[0]
+              ? `正在选右侧。左侧是 rx${pairIds[0]}，点一个账户。`
+              : "先点「左」，再点一个账户。"}
+        </p>
+      ) : compareMode ? (
         <CompareView rows={compareRows} loading={compareLoading} onOpenAccount={selectAccount} />
       ) : (
       <div key={viewKey} className={`space-y-5 ${loading ? "opacity-60 pointer-events-none" : ""}`}>
       <div className="rounded-lg border border-border p-4 space-y-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <VolBadge label={data?.portrait.strategyLabel} large />
+        <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-lg font-semibold tracking-tight">{data?.portrait.strategyLabel ? labelWithoutVol(data.portrait.strategyLabel) : (loading ? "分析中…" : "—")}</h2>
+          <HoldBadge label={data?.portrait.strategyLabel} />
+          <VolBadge label={data?.portrait.strategyLabel} />
           <PeriodBadge />
           {k?.corrNhci != null && (
             <span className="text-xs text-muted-foreground">南华相关 {k.corrNhci}</span>
           )}
         </div>
+        <BookStyleMarks style={data?.portrait.bookStyle} />
         <p className="text-sm text-muted-foreground leading-relaxed">{data?.portrait.summary}</p>
         {data?.factorDml && data.portrait?.strategyLabel && (
-          <p className="text-sm leading-relaxed">{readFactorSupport(data.factorDml, data.portrait.strategyLabel)?.portrait}</p>
+          <p className="text-sm leading-relaxed">{readFactorSupport(data.factorDml, data.portrait.strategyLabel, { hedged: (data.kpis?.hedgeRatioAvg ?? 0) >= 50 })?.portrait}</p>
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
           {(data?.portrait.items ?? []).map((item) => (
@@ -1032,6 +2458,231 @@ export default function QuantStrategyCharts() {
           )}
         </div>
       </div>
+
+      {(sectorEdgeChart || productEdgeChart) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {sectorEdgeChart && (
+            <ChartCard
+              title="板块：胜率 × 盈亏比"
+              caption="每个点是一个板块。盈亏比是平均盈利 / |平均亏损|。虚线是期望为 0：胜率越高，打平所需的盈亏比越低。点在线上方，这段合计为正。"
+              help={CHART_HELP.edgeScatter}
+            >
+              <ReactECharts key={`${viewKey}-edge-sec`} option={sectorEdgeChart} style={{ height: 340, width: "100%" }} notMerge />
+            </ChartCard>
+          )}
+          {productEdgeChart && (
+            <ChartCard
+              title="品种：胜率 × 盈亏比"
+              caption="每个点是一个品种。盈亏比是平均盈利 / |平均亏损|。90% 胜率、盈亏比 0.8 仍在期望 0 线上方。没有亏损的品种点放在顶部。"
+              help={CHART_HELP.edgeScatter}
+            >
+              <ReactECharts key={`${viewKey}-edge-prod`} option={productEdgeChart} style={{ height: 340, width: "100%" }} notMerge />
+            </ChartCard>
+          )}
+        </div>
+      )}
+
+      {alphaBeta && alphaBetaChart && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-medium">盈亏来自 alpha 还是 beta</h2>
+              <QuantChartHelp spec={CHART_HELP.alphaBeta} />
+            </div>
+            <PeriodBadge />
+          </div>
+          <p className="text-sm leading-relaxed">{alphaBeta.headline}</p>
+          {alphaBeta.sectorHeadline && (
+            <p className="text-sm leading-relaxed text-muted-foreground">{alphaBeta.sectorHeadline}</p>
+          )}
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+            <Kpi title="alpha 合计" value={fmtWan(alphaBeta.alphaPnl)} accent={pnlColor(alphaBeta.alphaPnl)} hint="不跟着南华的部分" />
+            <Kpi title="beta 合计" value={fmtWan(alphaBeta.betaPnl)} accent={pnlColor(alphaBeta.betaPnl)} hint="跟着南华涨跌的部分" />
+            <Kpi title="每 1% 南华" value={fmtWan(alphaBeta.betaPerPct)} hint="回归斜率，元" />
+            <Kpi
+              title="alpha 的 t"
+              value={alphaBeta.alphaT == null ? "—" : alphaBeta.alphaT.toFixed(2)}
+              hint={alphaBeta.alphaStance || "截距是否显著"}
+            />
+            <Kpi
+              title="beta 的 t / R²"
+              value={`${alphaBeta.t == null ? "—" : alphaBeta.t.toFixed(2)} / ${alphaBeta.r2 == null ? "—" : alphaBeta.r2.toFixed(2)}`}
+              hint={`${alphaBeta.n} 个有南华行情的交易日`}
+            />
+            <Kpi title="稳定性" value={alphaBeta.alphaStance || "—"} hint="前后半段 alpha 是否同号" />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {alphaNavChart && (
+              <ChartCard
+                title="账户净值与南华商品指数"
+                caption="两条线都从 100 起算，只用同一批有南华行情的交易日。账户净值按当日盈亏 / 上日权益连乘，不含出入金。"
+                help={CHART_HELP.alphaBeta}
+              >
+                <ReactECharts key={`${viewKey}-alpha-nav`} option={alphaNavChart} style={{ height: 320, width: "100%" }} notMerge />
+              </ChartCard>
+            )}
+            <ChartCard
+              title="累计 alpha 与累计 beta"
+              caption="日盈亏（元）对南华日涨跌（%）回归。beta 盈亏 = 斜率 × 当天涨跌；alpha = 当天盈亏 − beta。只含有南华行情的交易日。"
+              help={CHART_HELP.alphaBeta}
+            >
+              <ReactECharts key={`${viewKey}-alpha-beta`} option={alphaBetaChart} style={{ height: 320, width: "100%" }} notMerge />
+            </ChartCard>
+          </div>
+          {sectorAlphaChart && (
+            <ChartCard
+              title="各板块的 alpha"
+              caption="每个板块用自己的日盈亏对南华回归。红柱是这段多出来的盈利，绿柱是多出来的亏损。悬停看 t 和稳定性。各板块 alpha 加总不必等于账户 alpha。"
+              help={CHART_HELP.alphaBeta}
+            >
+              <ReactECharts
+                key={`${viewKey}-sector-alpha`}
+                option={sectorAlphaChart}
+                style={{ height: Math.max(220, (alphaBeta.sectors?.length ?? 1) * 28 + 48), width: "100%" }}
+                notMerge
+              />
+            </ChartCard>
+          )}
+        </div>
+      )}
+
+      <QuantTraderExposureCharts accountId={accountId} from={from} to={to} />
+
+      {bookRisk && bookRisk.sectors.length > 0 && bookSectorChart && bookTreeChart && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-medium">交易范围</h2>
+              <QuantChartHelp spec={CHART_HELP.bookRisk} />
+            </div>
+            <PeriodBadge />
+          </div>
+          <p className="text-sm leading-relaxed">{bookRisk.headline}</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Kpi title="交易板块" value={String(bookRisk.sectorCount)} hint={bookRisk.stance} />
+            <Kpi title="交易品种" value={String(bookRisk.productCount)} hint={`${bookRisk.days} 个有风险贡献的交易日`} />
+            <Kpi
+              title="板块有效个数"
+              value={`${bookRisk.effective.toFixed(1)} / ${bookRisk.sectorCount}`}
+              hint="等权时有效个数接近板块数"
+            />
+            <Kpi
+              title="风险最大板块"
+              value={bookRisk.topSector ? `${bookRisk.topSector} ${bookRisk.topShare?.toFixed(0) ?? ""}%` : "—"}
+              hint={`等权 ${bookRisk.equalShare.toFixed(0)}%`}
+            />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartCard
+              title="板块风险贡献"
+              caption={`柱子是该板块占组合方差的比例。虚线是 ${bookRisk.sectorCount} 个板块等权（${bookRisk.equalShare.toFixed(0)}%）。明显高于虚线就是偏好该板块。`}
+              help={CHART_HELP.bookRisk}
+            >
+              <ReactECharts key={`${viewKey}-book-sec`} option={bookSectorChart} style={{ height: Math.max(220, bookRisk.sectors.length * 32 + 40), width: "100%" }} notMerge />
+            </ChartCard>
+            <ChartCard
+              title="品种占组合风险"
+              caption="面积是品种风险贡献，不是持仓市值。同一颜色是一个板块。块越大，风险越集中在这个名字上。"
+              help={CHART_HELP.bookRisk}
+            >
+              <ReactECharts key={`${viewKey}-book-tree`} option={bookTreeChart} style={{ height: 340, width: "100%" }} notMerge />
+            </ChartCard>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {bookRisk.sectors.map((sector) => (
+              <ChartCard
+                key={sector.sector}
+                title={`${sector.sector} · 风险贡献 ${sector.riskShare.toFixed(1)}% · ${sector.productCount} 个品种`}
+                caption={
+                  sector.stance === "单一"
+                    ? `只做${sector.topProduct ?? "一个品种"}。柱子是该品种占这个板块风险的比例。`
+                    : `${sector.stance}。虚线是板块内等权 ${sector.productCount > 0 ? (100 / sector.productCount).toFixed(0) : "—"}%。柱子是占该板块风险的比例，不是市值。`
+                }
+              >
+                <ReactECharts
+                  key={`${viewKey}-book-${sector.sector}`}
+                  option={withinSectorOption(sector)}
+                  style={{ height: Math.max(160, Math.min(sector.products.length, 8) * 28 + 36), width: "100%" }}
+                  notMerge
+                />
+              </ChartCard>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tradeFrequency && tradeFrequency.sectors.length > 0 && freqSectorChart && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-medium">交易频率</h2>
+              <QuantChartHelp spec={CHART_HELP.tradeFreq} />
+            </div>
+            <PeriodBadge />
+          </div>
+          <p className="text-sm leading-relaxed">{tradeFrequency.headline}</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Kpi title="板块之间" value={tradeFrequency.stance} hint={`卡方 p ${fmtFreqP(tradeFrequency.p)}`} />
+            <Kpi title="成交最多的板块" value={tradeFrequency.topSector ? `${tradeFrequency.topSector} ${tradeFrequency.topShare?.toFixed(0) ?? ""}%` : "—"} hint={`等权 ${tradeFrequency.equalShare.toFixed(0)}%`} />
+            <Kpi title="板块数" value={String(tradeFrequency.sectorCount)} hint="有开仓或平仓才计入" />
+            <Kpi title="品种数" value={String(tradeFrequency.productCount)} hint="按有成交的品种" />
+          </div>
+          <ChartCard
+            title="板块成交天数"
+            caption={`柱子是有成交的天数。虚线是 ${tradeFrequency.sectorCount} 个板块天数相同。同一天做了两个板块，两边都计一天。卡方 p ${fmtFreqP(tradeFrequency.p)}。`}
+            help={CHART_HELP.tradeFreq}
+          >
+            <ReactECharts key={`${viewKey}-freq-sec`} option={freqSectorChart} style={{ height: Math.max(220, tradeFrequency.sectors.length * 32 + 40), width: "100%" }} notMerge />
+          </ChartCard>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {tradeFrequency.sectors.map((sector) => (
+              <ChartCard
+                key={sector.sector}
+                title={`${sector.sector} · 频率占 ${sector.share.toFixed(1)}% · ${sector.stance} · ${sector.productCount} 个品种`}
+                caption={
+                  sector.stance === "单一"
+                    ? `只在${sector.topProduct ?? "一个品种"}有成交。这个板块有成交 ${sector.days} 天。`
+                    : `板块内卡方 p ${fmtFreqP(sector.p)}。虚线是这 ${sector.productCount} 个品种天数相同。柱子是有成交的天数。这个板块有成交 ${sector.days} 天，占各板块天数 ${sector.share.toFixed(1)}%。`
+                }
+              >
+                <ReactECharts
+                  key={`${viewKey}-freq-${sector.sector}`}
+                  option={freqWithinOption(sector)}
+                  style={{ height: Math.max(160, Math.min(sector.products.length, 8) * 28 + 36), width: "100%" }}
+                  notMerge
+                />
+              </ChartCard>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {sectorVolCharts.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-medium">板块波动与敞口</h2>
+              <QuantChartHelp spec={CHART_HELP.sectorVol} />
+            </div>
+            <PeriodBadge />
+          </div>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            每张图一个板块。琥珀色是该板块主力合约等权收益的 {sectorVol?.window ?? 20} 日年化波动。彩色线是账户当天的风险贡献，占组合方差的比例。
+          </p>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {sectorVolCharts.map((chart) => (
+              <ChartCard
+                key={chart.sector}
+                title={`${chart.sector} · 市场波动与风险贡献`}
+                caption="左轴是市场波动，右轴是风险贡献。市场波动用全市场主力合约，不是这个账户的持仓波动。"
+                help={CHART_HELP.sectorVol}
+              >
+                <ReactECharts key={`${viewKey}-vol-${chart.sector}`} option={chart.option} style={{ height: 280, width: "100%" }} notMerge />
+              </ChartCard>
+            ))}
+          </div>
+        </div>
+      )}
 
       {stability && stability.track.length > 0 && (
         <div className="space-y-4">
@@ -1089,10 +2740,10 @@ export default function QuantStrategyCharts() {
             ))}
           </div>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <ChartCard title="胜率与盈亏比" caption={`每 ${stability.window} 个交易日滚一次。两条线反向走，就是全样本平均看不出来的风格切换。`}>
+            <ChartCard title="胜率与盈亏比" caption={`每 ${stability.window} 个交易日滚一次。胜率和盈亏比含平仓和持仓，盈亏比是平均盈利 / |平均亏损|。窗口盈亏等于这些日子的日报净盈亏。`}>
               <ReactECharts key={`${viewKey}-stab-wp`} option={stabilityOption} style={{ height: 280, width: "100%" }} notMerge />
             </ChartCard>
-            <ChartCard title="不同市况下的胜率与盈亏比" caption="趋势/震荡按南华 5、20、60 日是否同向。南华上行按 20 日收益符号。波动按 20 日波动相对这段样本的中位数。">
+            <ChartCard title="不同市况下的胜率与盈亏比" caption="趋势/震荡按南华 5、20、60 日是否同向。胜率和盈亏比含平仓和持仓。盈亏比可以低于 1 而期望仍为正。悬停里的这段盈亏等于这些日子的日报净盈亏。">
               <ReactECharts key={`${viewKey}-stab-rg`} option={regimeFeatureOption} style={{ height: 280, width: "100%" }} notMerge />
             </ChartCard>
             <ChartCard title="对冲、风险贡献和南华相关" caption="板块线是风险贡献最大的板块占组合方差的比例，不是持仓市值。国债市值可以很大，波动低，贡献就小。南华相关是这 20 天里日盈亏和南华日收益的相关。">
@@ -1110,9 +2761,34 @@ export default function QuantStrategyCharts() {
           inference={data.inference}
           period={periodText}
           factorNote={data.factorDml && data.portrait?.strategyLabel
-            ? readFactorSupport(data.factorDml, data.portrait.strategyLabel)?.inference
+            ? readFactorSupport(data.factorDml, data.portrait.strategyLabel, { hedged: (data.kpis?.hedgeRatioAvg ?? 0) >= 50 })?.inference
             : undefined}
         />
+      )}
+
+      {data?.linearScatters && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-medium">策略里的直线关系</h2>
+              <QuantChartHelp spec={LINEAR_HELP} />
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span>检验 {data.linearScatters.tested} 组 · 展示 {data.linearScatters.shown} 张</span>
+              <PeriodBadge />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground leading-relaxed">{data.linearScatters.headline}</p>
+          {linearOptions.length > 0 && (
+            <div className={`grid grid-cols-1 gap-4 ${linearOptions.length > 1 ? "lg:grid-cols-2" : ""}`}>
+              {linearOptions.map(({ ch, option }) => (
+                <ChartCard key={`${viewKey}-lin-${ch.id}`} title={ch.title} caption={ch.detail}>
+                  <ReactECharts key={`${viewKey}-lin-${ch.id}`} option={option} style={{ height: 280, width: "100%" }} notMerge />
+                </ChartCard>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {(data?.inference?.charts?.bookVol || data?.inference?.charts?.crossVol) && (
@@ -1140,7 +2816,7 @@ export default function QuantStrategyCharts() {
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <Kpi title="区间净盈亏" value={fmtWan(k?.totalPnl)} hint={`${k?.tradingDays ?? 0} 个交易日`} accent={k ? pnlColor(k.totalPnl) : undefined} />
-        <Kpi title="日胜率 / 平仓胜率" value={`${fmtPct(k?.dayWinRate, 0)} / ${fmtPct(k?.tradeWinRate, 0)}`} hint={`盈亏比 ${k?.profitFactor?.toFixed(2) ?? "—"}`} />
+        <Kpi title="日胜率 / 胜率（含持仓）" value={`${fmtPct(k?.dayWinRate, 0)} / ${fmtPct(k?.tradeWinRate, 0)}`} hint={`盈亏比 ${k?.payoff?.toFixed(2) ?? "—"} · 期望合计 ${fmtWan(k?.expectancy)}`} />
         <Kpi title="夏普 / 最大回撤" value={`${k?.sharpe?.toFixed(2) ?? "—"} / ${fmtPct(k?.maxDdPct)}`} hint="回撤相对权益峰值" />
         <Kpi title="盈/亏持仓天数" value={`${k?.avgHoldWin?.toFixed(1) ?? "—"} / ${k?.avgHoldLoss?.toFixed(1) ?? "—"}`} hint={`中位数 ${k?.medianHold?.toFixed(1) ?? "—"} 天`} />
         <Kpi title="平均对冲度" value={fmtPct(k?.hedgeRatioAvg, 0)} hint={`同一合约双开 ${fmtPct(k?.lockShareAvg, 0)}`} />
@@ -1170,6 +2846,49 @@ export default function QuantStrategyCharts() {
           {eq.length > 0 && <ReactECharts key={`${viewKey}-hist`} option={histOption} style={{ height: 280, width: "100%" }} notMerge />}
         </ChartCard>
       </div>
+
+      <ChartCard
+        title="单笔盈亏分布：胜率与盈亏比的微观形状"
+        caption="高峰贴着零、左右大致对称，是广度策略；右尾极长、左尾被砍，才是趋势跟踪。横轴截到 ±2 万元。"
+        help={CHART_HELP.rrShape}
+      >
+        {(rrShape?.bins.some((n) => n > 0)) && (
+          <ReactECharts key={`${viewKey}-rr`} option={rrHistOption} style={{ height: 320, width: "100%" }} notMerge />
+        )}
+        <p className="text-xs text-muted-foreground mt-2 mb-2">
+          盈亏比 = 平均赢 / 平均亏；利润因子 = 总盈利 / 总亏损。逐笔用平仓明细「逐笔平仓盈亏」。日盈亏用核算日报「当日盈亏」。
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-muted-foreground border-b">
+                <th className="text-left font-medium py-2 pr-3">层级</th>
+                <th className="text-right font-medium py-2 px-2">样本</th>
+                <th className="text-right font-medium py-2 px-2">胜率</th>
+                <th className="text-right font-medium py-2 px-2">平均赢</th>
+                <th className="text-right font-medium py-2 px-2">平均亏</th>
+                <th className="text-right font-medium py-2 px-2">盈亏比</th>
+                <th className="text-right font-medium py-2 px-2">利润因子</th>
+                <th className="text-right font-medium py-2 pl-2">期望</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(rrShape?.layers ?? []).map((row) => (
+                <tr key={row.key} className="border-b border-border/60">
+                  <td className="py-1.5 pr-3 whitespace-nowrap">{row.label}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{fmtInt(row.n)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{fmtPct(row.winRate, 1)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{fmtMoney(row.avgWin)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{fmtMoney(row.avgLoss)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{row.payoff == null ? "—" : row.payoff.toFixed(2)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{row.profitFactor == null ? "—" : row.profitFactor.toFixed(2)}</td>
+                  <td className="py-1.5 pl-2 text-right tabular-nums" style={{ color: row.expectancy == null ? undefined : pnlColor(row.expectancy) }}>{fmtMoney(row.expectancy, true)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </ChartCard>
 
       <div className="space-y-3">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -1256,7 +2975,7 @@ export default function QuantStrategyCharts() {
             </div>
             <PeriodBadge />
           </div>
-          <p className="text-xs text-muted-foreground mt-0.5">按合计盈亏（平仓 + 盯市）排序。胜率与持仓天数仍按平仓手数加权。</p>
+          <p className="text-xs text-muted-foreground mt-0.5">按合计盈亏（平仓 + 盯市）排序。胜率和盈亏比含当天持仓盈亏。持仓天数仍按平仓。</p>
         </CardHeader>
         <CardContent className="pt-0 overflow-x-auto">
           <table className="w-full text-xs">
@@ -1284,7 +3003,7 @@ export default function QuantStrategyCharts() {
                   <td className="py-1.5 px-2 text-right tabular-nums" style={{ color: pnlColor(row.mtmPnl ?? 0) }}>{fmtWan(row.mtmPnl ?? 0)}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{row.lots.toFixed(0)}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{fmtPct(row.winRate, 0)}</td>
-                  <td className="py-1.5 px-2 text-right tabular-nums">{row.profitFactor?.toFixed(2) ?? "—"}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{row.payoff?.toFixed(2) ?? "—"}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{row.avgHoldWin?.toFixed(1) ?? "—"}</td>
                   <td className="py-1.5 pl-2 text-right tabular-nums">{row.avgHoldLoss?.toFixed(1) ?? "—"}</td>
                 </tr>
@@ -1565,28 +3284,55 @@ function CompareView({
     const pnls = rows.map((r) => r.kpis?.totalPnl)
     const dayWr = rows.map((r) => r.kpis?.dayWinRate)
     const tradeWr = rows.map((r) => r.kpis?.tradeWinRate)
-    const pf = rows.map((r) => r.kpis?.profitFactor)
+    const pf = rows.map((r) => r.kpis?.payoff)
     const sharpe = rows.map((r) => r.kpis?.sharpe)
     const dd = rows.map((r) => r.kpis?.maxDdPct)
+    const left = rows[0]
+    const right = rows[1]
+    const pair = rows.length === 2 && left != null && right != null
+    const deltaOf = (
+      pick: (r: ApiData) => number | null | undefined,
+      fmt: (n: number) => string,
+      colorize = false,
+    ): string | { text: string; color?: string } | undefined => {
+      if (!pair || !left || !right) return undefined
+      const a = pick(left)
+      const b = pick(right)
+      if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return "—"
+      const n = a - b
+      const text = fmt(n)
+      return colorize ? { text, color: pnlColor(n) } : text
+    }
     return [
-      { label: "策略画像", values: rows.map((r) => r.portrait?.strategyLabel ?? "—") },
+      { label: "策略画像", values: rows.map((r) => r.portrait?.strategyLabel ?? "—"), delta: undefined },
+      {
+        label: "结构",
+        values: rows.map((r) => {
+          const b = r.portrait?.bookStyle
+          if (!b?.primary) return "—"
+          return b.secondary ? `${b.primary} / ${b.secondary}` : b.primary
+        }),
+        delta: undefined,
+      },
       {
         label: "区间净盈亏",
         values: rows.map((r) => ({ text: fmtWan(r.kpis?.totalPnl), color: pnlColor(r.kpis?.totalPnl ?? 0) })),
         best: bestSet(pnls, "max"),
+        delta: deltaOf((r) => r.kpis?.totalPnl, fmtWan, true),
       },
-      { label: "日胜率", values: rows.map((r) => fmtPct(r.kpis?.dayWinRate, 0)), best: bestSet(dayWr, "max") },
-      { label: "平仓胜率", values: rows.map((r) => fmtPct(r.kpis?.tradeWinRate, 0)), best: bestSet(tradeWr, "max") },
-      { label: "盈亏比", values: rows.map((r) => r.kpis?.profitFactor?.toFixed(2) ?? "—"), best: bestSet(pf, "max") },
-      { label: "夏普", values: rows.map((r) => r.kpis?.sharpe?.toFixed(2) ?? "—"), best: bestSet(sharpe, "max") },
-      { label: "最大回撤", values: rows.map((r) => fmtPct(r.kpis?.maxDdPct)), best: bestSet(dd, "max") },
+      { label: "日胜率", values: rows.map((r) => fmtPct(r.kpis?.dayWinRate, 0)), best: bestSet(dayWr, "max"), delta: deltaOf((r) => r.kpis?.dayWinRate, (n) => signedPctPoints(n, 0)) },
+      { label: "胜率（含持仓）", values: rows.map((r) => fmtPct(r.kpis?.tradeWinRate, 0)), best: bestSet(tradeWr, "max"), delta: deltaOf((r) => r.kpis?.tradeWinRate, (n) => signedPctPoints(n, 0)) },
+      { label: "盈亏比", values: rows.map((r) => r.kpis?.payoff?.toFixed(2) ?? "—"), best: bestSet(pf, "max"), delta: deltaOf((r) => r.kpis?.payoff, (n) => signedFixed(n, 2), true) },
+      { label: "夏普", values: rows.map((r) => r.kpis?.sharpe?.toFixed(2) ?? "—"), best: bestSet(sharpe, "max"), delta: deltaOf((r) => r.kpis?.sharpe, (n) => signedFixed(n, 2), true) },
+      { label: "最大回撤", values: rows.map((r) => fmtPct(r.kpis?.maxDdPct)), best: bestSet(dd, "max"), delta: deltaOf((r) => r.kpis?.maxDdPct, (n) => signedPctPoints(n, 1)) },
       {
         label: "盈/亏持仓天数",
         values: rows.map((r) => `${r.kpis?.avgHoldWin?.toFixed(1) ?? "—"} / ${r.kpis?.avgHoldLoss?.toFixed(1) ?? "—"}`),
+        delta: undefined,
       },
-      { label: "平均对冲度", values: rows.map((r) => fmtPct(r.kpis?.hedgeRatioAvg, 0)) },
-      { label: "夜盘手数占比", values: rows.map((r) => fmtPct(nightLotsShare(r), 0)) },
-      { label: "南华相关", values: rows.map((r) => (r.kpis?.corrNhci == null ? "—" : String(r.kpis.corrNhci))) },
+      { label: "平均对冲度", values: rows.map((r) => fmtPct(r.kpis?.hedgeRatioAvg, 0)), delta: deltaOf((r) => r.kpis?.hedgeRatioAvg, (n) => signedPctPoints(n, 0)) },
+      { label: "夜盘手数占比", values: rows.map((r) => fmtPct(nightLotsShare(r), 0)), delta: deltaOf((r) => nightLotsShare(r), (n) => signedPctPoints(n, 0)) },
+      { label: "南华相关", values: rows.map((r) => (r.kpis?.corrNhci == null ? "—" : String(r.kpis.corrNhci))), delta: deltaOf((r) => r.kpis?.corrNhci, (n) => signedFixed(n, 2)) },
       {
         label: "涨/跌捕获",
         values: rows.map((r) => {
@@ -1595,10 +3341,17 @@ function CompareView({
           if (up == null && dn == null) return "—"
           return `${up == null ? "—" : up.toFixed(2)} / ${dn == null ? "—" : dn.toFixed(2)}`
         }),
+        delta: undefined,
       },
-      { label: "交易日 / 平仓", values: rows.map((r) => `${r.kpis?.tradingDays ?? 0} / ${r.kpis?.nCloses ?? 0}`) },
+      { label: "交易日 / 平仓", values: rows.map((r) => `${r.kpis?.tradingDays ?? 0} / ${r.kpis?.nCloses ?? 0}`), delta: undefined },
     ]
   }, [rows])
+
+  const winPayoffChart = useMemo(() => compareWinPayoffOption(rows), [rows])
+  const returnPdfChart = useMemo(() => compareReturnPdfOption(rows), [rows])
+  const alphaBetaCompareChart = useMemo(() => compareAlphaBetaOption(rows), [rows])
+  const bookCompareChart = useMemo(() => compareBookOption(rows), [rows])
+  const freqCompareChart = useMemo(() => compareFreqOption(rows), [rows])
 
   if (!rows.length) {
     return (
@@ -1622,8 +3375,10 @@ function CompareView({
             <div className="flex items-center gap-2 mb-1">
               <span className="h-2 w-2 rounded-full shrink-0" style={{ background: PALETTE[i % PALETTE.length] }} />
               <span className="text-sm font-semibold">{accLabel(r)}</span>
+              <HoldBadge label={r.portrait?.strategyLabel} />
               <VolBadge label={r.portrait?.strategyLabel} />
             </div>
+            <div className="mb-1"><BookStyleMarks style={r.portrait?.bookStyle} compact /></div>
             <div className="text-xs font-medium mb-1">{r.portrait?.strategyLabel ? labelWithoutVol(r.portrait.strategyLabel) : "—"}</div>
             <div className="text-lg font-semibold tabular-nums" style={{ color: pnlColor(r.kpis?.totalPnl ?? 0) }}>
               {fmtWan(r.kpis?.totalPnl)}
@@ -1631,6 +3386,24 @@ function CompareView({
             <p className="text-[11px] text-muted-foreground mt-0.5">
               日胜率 {fmtPct(r.kpis?.dayWinRate, 0)} · 夏普 {r.kpis?.sharpe?.toFixed(2) ?? "—"} · 回撤 {fmtPct(r.kpis?.maxDdPct)}
             </p>
+            {r.alphaBeta && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                alpha {fmtWan(r.alphaBeta.alphaPnl)} · beta {fmtWan(r.alphaBeta.betaPnl)}
+                {r.alphaBeta.alphaStance ? ` · alpha ${r.alphaBeta.alphaStance}` : ""}
+                {r.alphaBeta.t != null && Math.abs(r.alphaBeta.t) >= 2 ? " · beta 显著" : " · beta 不显著"}
+              </p>
+            )}
+            {r.bookRisk && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                {r.bookRisk.sectorCount} 个板块 · {r.bookRisk.stance} · {r.bookRisk.productCount} 个品种
+              </p>
+            )}
+            {r.tradeFrequency && (
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                频率 {r.tradeFrequency.stance}
+                {r.tradeFrequency.topSector ? ` · 最多${r.tradeFrequency.topSector} ${r.tradeFrequency.topShare?.toFixed(0) ?? ""}%` : ""}
+              </p>
+            )}
             {r.featureStability?.headline && (
               <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{r.featureStability.headline}</p>
             )}
@@ -1650,6 +3423,139 @@ function CompareView({
         ))}
       </div>
 
+      {(winPayoffChart || returnPdfChart) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {winPayoffChart && (
+            <ChartCard
+              title="胜率与盈亏比"
+              caption="每个点是一个账户。纵轴是平均盈利 / |平均亏损|，不是盈利总额 / 亏损总额。虚线是期望为 0，随胜率下降：胜率 90% 时盈亏比 0.8 已经是正期望。"
+              help={CHART_HELP.winPayoff}
+            >
+              <ReactECharts
+                option={winPayoffChart}
+                style={{ height: 360, width: "100%" }}
+                notMerge
+                onEvents={{
+                  click: (params: { data?: { accountId?: string } }) => {
+                    const id = params.data?.accountId
+                    if (id) onOpenAccount(id)
+                  },
+                }}
+              />
+            </ChartCard>
+          )}
+          {returnPdfChart && (
+            <ChartCard
+              title="日收益分布"
+              caption="每条线是该账户日收益率的密度曲线。横轴是当日盈亏 / 上日权益。线越宽，日收益越散。颜色和左边圆点是同一个账户。"
+              help={CHART_HELP.returnPdf}
+            >
+              <ReactECharts option={returnPdfChart} style={{ height: 360, width: "100%" }} notMerge />
+            </ChartCard>
+          )}
+        </div>
+      )}
+
+      {alphaBetaCompareChart && (
+        <ChartCard
+          title="各账户盈亏来自 alpha 还是 beta"
+          caption="柱子是这段里拆出来的 alpha 合计和 beta 合计，单位元。beta 是跟着南华商品指数涨跌的部分。|t| 不到 2 时，不要把盈亏说成指数 beta。"
+          help={CHART_HELP.alphaBeta}
+        >
+          <ReactECharts option={alphaBetaCompareChart} style={{ height: 320, width: "100%" }} notMerge />
+        </ChartCard>
+      )}
+
+      {bookCompareChart && (
+        <div className="space-y-4">
+          <ChartCard
+            title="各账户板块风险贡献"
+            caption="柱高是该板块占这个账户组合方差的比例，不是持仓市值。同一板块里谁的柱子更高，谁把更多风险放在这里。"
+            help={CHART_HELP.bookRisk}
+          >
+            <ReactECharts option={bookCompareChart} style={{ height: 320, width: "100%" }} notMerge />
+          </ChartCard>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">板块内品种</CardTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">每个板块写品种个数，以及风险是接近均等还是偏好某一个品种。占比是该品种占本板块风险贡献。</p>
+            </CardHeader>
+            <CardContent className="pt-0 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b">
+                    <th className="text-left font-medium py-2 pr-3 sticky left-0 bg-background">账户</th>
+                    <th className="text-left font-medium py-2 pr-3">板块</th>
+                    <th className="text-left font-medium py-2">板块内</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.filter((r) => r.bookRisk).map((r, i) => (
+                    <tr key={r.accountId ?? i} className="border-b border-border/60 align-top">
+                      <td className="py-2 pr-3 whitespace-nowrap sticky left-0 bg-background">{accLabel(r)}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap">{r.bookRisk!.sectorCount} 个 · {r.bookRisk!.stance}</td>
+                      <td className="py-2 text-muted-foreground leading-relaxed">
+                        {r.bookRisk!.sectors.map((s) => (
+                          s.stance === "单一"
+                            ? `${s.sector}只做${s.topProduct ?? "一个品种"}`
+                            : s.stance === "接近均等"
+                              ? `${s.sector} ${s.productCount} 个、均等`
+                              : `${s.sector} ${s.productCount} 个、${s.stance}${s.topProduct ?? ""} ${s.topWithin?.toFixed(0) ?? ""}%`
+                        )).join("；")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {freqCompareChart && (
+        <div className="space-y-4">
+          <ChartCard
+            title="各账户板块交易频率"
+            caption="柱高是该板块有成交的天数占这个账户各板块天数合计。不是持仓市值。卡方用来判断板块之间是不是一样勤。"
+            help={CHART_HELP.tradeFreq}
+          >
+            <ReactECharts option={freqCompareChart} style={{ height: 320, width: "100%" }} notMerge />
+          </ChartCard>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">板块内交易频率</CardTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">每个板块写品种个数，以及成交天数是没有显著差别还是显著不同。占比是该品种占本板块成交天数。</p>
+            </CardHeader>
+            <CardContent className="pt-0 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b">
+                    <th className="text-left font-medium py-2 pr-3 sticky left-0 bg-background">账户</th>
+                    <th className="text-left font-medium py-2 pr-3">板块之间</th>
+                    <th className="text-left font-medium py-2">板块内</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.filter((r) => r.tradeFrequency).map((r, i) => (
+                    <tr key={r.accountId ?? i} className="border-b border-border/60 align-top">
+                      <td className="py-2 pr-3 whitespace-nowrap sticky left-0 bg-background">{accLabel(r)}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap">{r.tradeFrequency!.stance} · p {fmtFreqP(r.tradeFrequency!.p)}</td>
+                      <td className="py-2 text-muted-foreground leading-relaxed">
+                        {r.tradeFrequency!.sectors.map((s) => (
+                          s.stance === "单一"
+                            ? `${s.sector}只在${s.topProduct ?? "一个品种"}`
+                            : `${s.sector} ${s.productCount} 个、${s.stance}${s.stance === "显著不同" && s.topProduct ? s.topProduct : ""}`
+                        )).join("；")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       <Card>
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -1661,6 +3567,7 @@ function CompareView({
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">
             同一区间下各量化账户的核心指标。高亮为该行最优值；点击列头进入单账户详情。
+            {rows.length === 2 ? " 差值是左列减右列。" : ""}
           </p>
         </CardHeader>
         <CardContent className="pt-0 overflow-x-auto">

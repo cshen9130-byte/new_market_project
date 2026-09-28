@@ -218,10 +218,20 @@ export function buildCompareInsights(rows: CompareAccount[]): CompareInsights | 
       : avgCorr != null
         ? `日盈亏平均相关 ${avgCorr.toFixed(2)}。`
         : ""
+    const rest = styleGroups.filter((g) => g.label !== dominant.label)
+    const restBit = rest.length
+      ? `其余 ${rest.map((g) => `${joinAcc(g.accounts)} 为「${g.label}」`).join("；")}，持仓周期不在这一簇里。`
+      : "更像同一类 CTA 的不同参数或不同起步日。"
     findings.push({
-      title: "风格高度同质",
-      detail: `${dominant.accounts.length}/${rows.length} 个账户被判为「${dominant.label}」。${extra}这不是七套互相独立的策略，更像同一类 CTA 的不同参数 / 不同起步日。`,
-      tone: "bad",
+      title: rest.length ? "多数同质，有单独一类" : (rows.length === 2 ? "风格相同" : "风格高度同质"),
+      detail: `${dominant.accounts.length}/${rows.length} 个账户被判为「${dominant.label}」。${extra}${restBit}`,
+      tone: rest.length ? "neutral" : (rows.length === 2 ? "neutral" : "bad"),
+    })
+  } else if (rows.length === 2 && styleGroups.length >= 2) {
+    findings.push({
+      title: "风格不同",
+      detail: styleGroups.map((g) => `${g.label}（${joinAcc(g.accounts)}）`).join("；") + "。",
+      tone: "good",
     })
   } else if (styleGroups.length >= 3) {
     findings.push({
@@ -273,7 +283,14 @@ export function buildCompareInsights(rows: CompareAccount[]): CompareInsights | 
   const topPnl = rankedPnl[0]
   const absBook = rows.reduce((s, r) => s + Math.abs(r.kpis?.totalPnl ?? 0), 0)
   const topShare = absBook > 0 ? Math.abs(topPnl.kpis?.totalPnl ?? 0) / absBook : 0
-  if (topPnl.kpis && topShare >= 0.28) {
+  if (rows.length === 2 && topPnl.kpis && rankedPnl[1]?.kpis) {
+    const other = rankedPnl[1]
+    findings.push({
+      title: "盈亏对比",
+      detail: `${accId(topPnl)} 净盈亏 ${fmtWan(topPnl.kpis.totalPnl)}，${accId(other)} 为 ${fmtWan(other.kpis?.totalPnl ?? 0)}。`,
+      tone: "neutral",
+    })
+  } else if (rows.length >= 3 && topPnl.kpis && topShare >= 0.28) {
     findings.push({
       title: "收益集中",
       detail: `组合净盈亏 ${fmtWan(bookPnl)}。${accId(topPnl)} 独占 ${fmtWan(topPnl.kpis.totalPnl)}（占各账户盈亏绝对值的 ${fmtPct(topShare * 100, 0)}）。组合表现很大程度上就是这一套。`,
@@ -373,7 +390,19 @@ export function buildCompareInsights(rows: CompareAccount[]): CompareInsights | 
     })
   }
 
-  if (pairs.length) {
+  if (rows.length === 2 && pairs.length === 1) {
+    const p = pairs[0]
+    const rel = p.corr >= 0.45
+      ? "同涨同跌明显，两边一起赚、一起回吐。"
+      : p.corr <= 0.2
+        ? "走势分化，放在一起有分散。"
+        : "有一定同向，但不是同一条曲线。"
+    findings.push({
+      title: "日盈亏相关",
+      detail: `${p.a} 与 ${p.b} 相关 ${p.corr.toFixed(2)}，重叠 ${p.n} 个交易日。${rel}`,
+      tone: p.corr >= 0.45 ? "bad" : p.corr <= 0.2 ? "good" : "neutral",
+    })
+  } else if (pairs.length) {
     const ranked = (stablePairs.length ? stablePairs : pairs)
     const hi = ranked.filter((p) => p.corr >= 0.45).slice(0, 3)
     const lo = [...ranked].sort((a, b) => a.corr - b.corr).slice(0, 2)
@@ -387,8 +416,17 @@ export function buildCompareInsights(rows: CompareAccount[]): CompareInsights | 
   }
 
   let headline: string
-  if (dominant && dominant.accounts.length >= rows.length - 1 && avgCorr != null && avgCorr >= 0.3) {
+  if (rows.length === 2) {
+    const corrBit = pairs[0] ? `日盈亏相关 ${pairs[0].corr.toFixed(2)}。` : ""
+    const leftLab = ids[0] ?? "左"
+    const rightLab = ids[1] ?? "右"
+    headline = `${leftLab} 与 ${rightLab}：净盈亏 ${fmtWan(rows[0]?.kpis?.totalPnl ?? 0)} / ${fmtWan(rows[1]?.kpis?.totalPnl ?? 0)}。${corrBit}`
+  } else if (dominant && dominant.accounts.length === rows.length && avgCorr != null && avgCorr >= 0.3) {
     headline = `这 ${rows.length} 个量化账户基本是同一类「${dominant.label}」。组合净盈亏 ${fmtWan(bookPnl)}，但日盈亏平均相关 ${avgCorr.toFixed(2)}，上涨一起赚、下跌一起回吐，横向对比看到的差异主要是仓位、持仓天数和起步早晚，不是独立的 alpha。`
+  } else if (dominant && dominant.accounts.length >= rows.length - 1 && avgCorr != null && avgCorr >= 0.3) {
+    const rest = styleGroups.filter((g) => g.label !== dominant.label)
+    const split = rest.map((g) => `${joinAcc(g.accounts)} 单独是「${g.label}」`).join("；")
+    headline = `${dominant.accounts.length} 个账户是「${dominant.label}」。${split}，胜率盈亏比和持仓天数都不在主簇上。组合净盈亏 ${fmtWan(bookPnl)}，日盈亏平均相关 ${avgCorr.toFixed(2)}。`
   } else if (avgCorr != null && avgCorr < 0.2) {
     headline = `账户日盈亏平均相关只有 ${avgCorr.toFixed(2)}，风格互补强于重叠。组合净盈亏 ${fmtWan(bookPnl)}，${winners} 个赚钱、${losers} 个亏损。`
   } else {

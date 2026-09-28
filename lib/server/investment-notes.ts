@@ -89,6 +89,10 @@ function normalizeNote(raw: unknown): InvestmentNote & { creatorId: string } {
     lastModifiedBy: typeof note.lastModifiedBy === "string" ? note.lastModifiedBy : "",
     modifiedDate: typeof note.modifiedDate === "string" ? note.modifiedDate : now,
     createdDate: typeof note.createdDate === "string" ? note.createdDate : now,
+    sourceLabel:
+      typeof (note as { sourceLabel?: unknown }).sourceLabel === "string"
+        ? (note as { sourceLabel: string }).sourceLabel.trim()
+        : "",
   }
 }
 
@@ -399,7 +403,14 @@ export function createServerInvestmentNote(
   partial?: Partial<
     Pick<
       InvestmentNote,
-      "title" | "content" | "teamShared" | "associations" | "extractedProducts" | "roadshowAssociations"
+      | "title"
+      | "content"
+      | "teamShared"
+      | "associations"
+      | "extractedProducts"
+      | "roadshowAssociations"
+      | "createdDate"
+      | "sourceLabel"
     >
   >,
   options?: CreateServerInvestmentNoteOptions,
@@ -416,6 +427,12 @@ export function createServerInvestmentNote(
 
   const title = String(partial?.title ?? "").trim().slice(0, MAX_TITLE_CHARS) || "无标题"
   const date = isoDate()
+  const createdDate =
+    typeof partial?.createdDate === "string" && partial.createdDate.trim()
+      ? partial.createdDate.trim()
+      : date
+  const sourceLabel =
+    typeof partial?.sourceLabel === "string" ? partial.sourceLabel.trim() : ""
   const note: InvestmentNote & { creatorId: string } = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     title,
@@ -442,7 +459,8 @@ export function createServerInvestmentNote(
     creatorId: safeUserId,
     lastModifiedBy: userName,
     modifiedDate: date,
-    createdDate: date,
+    createdDate,
+    ...(sourceLabel ? { sourceLabel } : {}),
   }
 
   const notes = readAllNotes()
@@ -461,7 +479,14 @@ export async function createServerInvestmentNoteWithKbSync(
   partial?: Partial<
     Pick<
       InvestmentNote,
-      "title" | "content" | "teamShared" | "associations" | "extractedProducts" | "roadshowAssociations"
+      | "title"
+      | "content"
+      | "teamShared"
+      | "associations"
+      | "extractedProducts"
+      | "roadshowAssociations"
+      | "createdDate"
+      | "sourceLabel"
     >
   >,
   options?: CreateServerInvestmentNoteOptions,

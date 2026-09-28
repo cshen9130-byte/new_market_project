@@ -962,7 +962,17 @@ export function inferQuantStrategy(input: {
   const structuralSupport: InferFinding[] = []
   const hold = meta.medianHold
   if (hold != null) {
-    if (hold >= 2) {
+    if (hold <= 2) {
+      structuralSupport.push({
+        id: "intraday",
+        family: "周期",
+        stance: "support",
+        title: "持仓以当日到隔夜为主",
+        detail: `平仓中位数 ${hold.toFixed(1)} 天，更像日内交易，不是拿几天的波段。`,
+        q: null,
+        stat: `中位数 ${hold.toFixed(1)} 天`,
+      })
+    } else {
       structuralReject.push({
         id: "not_intraday",
         family: "周期",
@@ -972,38 +982,27 @@ export function inferQuantStrategy(input: {
         q: null,
         stat: `中位数 ${hold.toFixed(1)} 天`,
       })
-    } else if (hold <= 0.5) {
-      structuralSupport.push({
-        id: "intraday",
-        family: "周期",
-        stance: "support",
-        title: "持仓以当日为主",
-        detail: `平仓中位数 ${hold.toFixed(1)} 天，更像日内 / 隔夜极短。`,
-        q: null,
-        stat: `中位数 ${hold.toFixed(1)} 天`,
-      })
-    }
-    if (hold >= 2 && hold <= 8) {
-      structuralSupport.push({
-        id: "short_swing",
-        family: "周期",
-        stance: "support",
-        title: "短周期持仓（约数日）",
-        detail: `中位数 ${hold.toFixed(1)} 天，像短周期 CTA / 波段，不是 20 日以上的长趋势。`,
-        q: null,
-        stat: `中位数 ${hold.toFixed(1)} 天`,
-      })
-    }
-    if (hold > 8) {
-      structuralSupport.push({
-        id: "medium_trend",
-        family: "周期",
-        stance: "support",
-        title: "中长周期持仓",
-        detail: `中位数 ${hold.toFixed(1)} 天，更接近经典中周期趋势。`,
-        q: null,
-        stat: `中位数 ${hold.toFixed(1)} 天`,
-      })
+      if (hold <= 8) {
+        structuralSupport.push({
+          id: "short_swing",
+          family: "周期",
+          stance: "support",
+          title: "短周期持仓（约数日）",
+          detail: `中位数 ${hold.toFixed(1)} 天，像短周期 CTA / 波段，不是 20 日以上的长趋势。`,
+          q: null,
+          stat: `中位数 ${hold.toFixed(1)} 天`,
+        })
+      } else {
+        structuralSupport.push({
+          id: "medium_trend",
+          family: "周期",
+          stance: "support",
+          title: "中长周期持仓",
+          detail: `中位数 ${hold.toFixed(1)} 天，更接近经典中周期趋势。`,
+          q: null,
+          stat: `中位数 ${hold.toFixed(1)} 天`,
+        })
+      }
     }
   }
   if (meta.hedgeAvg >= 0.45 && meta.lockShare < 0.08) {
@@ -1270,7 +1269,7 @@ export function inferQuantStrategy(input: {
 
   const plan: string[] = []
   plan.push("先按成交结构分类，再对常见量化规则做假设检验：均线/突破/5·20·60 日动量、RSI、波动/流动性过滤（含板块层）、品种之间 1/σ 权重、组合层是否在市场波动升高时减总敞口、品种/板块池是否稳定。")
-  if (hold != null) plan.push(`持仓中位数 ${hold.toFixed(1)} 天 → 先验当作${hold <= 1 ? "日内/超短" : hold <= 8 ? "短周期 CTA" : "中周期 CTA"}，用开仓日去证伪。`)
+  if (hold != null) plan.push(`持仓中位数 ${hold.toFixed(1)} 天 → 先验当作${hold <= 2 ? "日内交易" : hold <= 8 ? "短周期 CTA" : "中周期 CTA"}，用开仓日去证伪。`)
   if (meta.hedgeAvg >= 0.4) plan.push("对冲度偏高 → 先验当作多空组合，重点看过滤和仓位，而不是单边突破。")
   else plan.push("对冲度不高 → 先验当作方向性系统，检验是否趋势、是否突破、是否有波动上限。")
   plan.push("机器学习/打分核心通常还原不了；只报告成交里留下显著痕迹的过滤器和约束。不显著的规则不展示。相关的趋势规则会收成一族，避免每个账户看起来都一样。")
