@@ -1,4 +1,4 @@
-/**
+**
  * Create one 团队笔记 per embedded file in the three external DD folders.
  * Text comes from kb_chunks (already extracted). Written reports and meeting
  * notes are kept in full. Pitch decks are summarized. The sidebar date is the
@@ -274,6 +274,7 @@ async function main() {
   const { query } = await import("@/lib/db")
   const { listServerInvestmentNotes, createServerInvestmentNoteWithKbSync } = await import("@/lib/server/investment-notes")
   const { resolveExtractedProductCandidates } = await import("@/lib/server/investment-note-extracted-products")
+  const { associationsFromMatchedExtractedProducts } = await import("@/lib/server/investment-note-auto-associate")
 
   const existing = new Set<string>()
   for (const note of listServerInvestmentNotes("team", AUTHOR)) {
@@ -365,7 +366,12 @@ async function main() {
           teamShared: true,
           createdDate: createdDateLabel(source),
           sourceLabel: channelFromSource(source),
-          ...(extractedProducts.length ? { extractedProducts } : {}),
+          ...(extractedProducts.length
+            ? {
+                extractedProducts,
+                associations: associationsFromMatchedExtractedProducts(extractedProducts),
+              }
+            : {}),
         },
         { append: true },
       )

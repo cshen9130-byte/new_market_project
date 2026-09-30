@@ -26,6 +26,7 @@ import {
 } from "@/lib/server/fund-holding-code"
 import { managedUnderlyingMarketValueExpr } from "@/lib/server/managed-fof-underlying-pg"
 import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
+import { orderSqlForProjectedAlias } from "@/lib/server/fof-overview-list-sort"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -65,6 +66,7 @@ const ALLOWED_SORT_SLOW: Record<string, string> = {
   first_entry_date: "first_entry_date",
   latest_change_date: sqlLatestChangeAt("beian_hao", "first_entry_date"),
 }
+
 
 const BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
 const PRODUCT_EXPR = "f.product_name"
@@ -319,19 +321,19 @@ export async function GET(req: Request) {
          WHERE ${where}
          ORDER BY ${identityKey}, ${identityTie}
       `
+      const sortAlias =
+        sortKey === "sequence_no" ? "sequence_no"
+          : sortKey === "market_value" ? "market_value_num"
+            : sortKey === "product_name" ? "product_name"
+              : sortKey === "latest_nav" ? "latest_unit_nav"
+                : sortKey === "latest_nav_date" ? "latest_nav_date"
+                  : sortKey === "latest_price_change" ? "latest_return_pct"
+                    : sortKey === "first_entry_date" ? "first_entry_date"
+                      : sortKey === "latest_change_date" ? sqlLatestChangeAt("beian_hao", "first_entry_date")
+                        : sortKey
       const outerSort = elementSort.active
         ? elementSort.orderSql
-        : `${
-          sortKey === "sequence_no" ? "sequence_no"
-            : sortKey === "market_value" ? "market_value_num"
-              : sortKey === "product_name" ? "product_name"
-                : sortKey === "latest_nav" ? "latest_unit_nav"
-                  : sortKey === "latest_nav_date" ? "latest_nav_date"
-                    : sortKey === "latest_price_change" ? "latest_return_pct"
-                      : sortKey === "first_entry_date" ? "first_entry_date"
-                        : sortKey === "latest_change_date" ? sqlLatestChangeAt("beian_hao", "first_entry_date")
-                        : sortKey
-        } ${sortDir} NULLS LAST`
+        : orderSqlForProjectedAlias(sortAlias, sortDir)
 
       const aggRows = await query<{ n: string; total_mv: string }>(
         `SELECT COUNT(*)::text AS n, COALESCE(SUM(market_value_num), 0)::text AS total_mv
@@ -430,7 +432,9 @@ export async function GET(req: Request) {
     // Outer ORDER BY uses the subquery alias; inner SELECT projects managed 市值 as market_value.
     const sortCol = elementSort.active
       ? elementSort.orderSql
-      : `${sortKey === "sequence_no" ? "sequence_no" : ALLOWED_SORT_SLOW[sortKey]} ${sortDir} NULLS LAST`
+      : sortKey === "sequence_no"
+        ? `sequence_no ${sortDir} NULLS LAST`
+        : orderSqlForProjectedAlias(ALLOWED_SORT_SLOW[sortKey], sortDir)
 
     const conditions: string[] = [
       "f.product_name <> '合计'",

@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
 import type React from "react"
 import { useParams, useSearchParams } from "next/navigation"
-import { ArrowLeft, Camera, Database, Download, FileSpreadsheet, Files, Heart, HelpCircle, Menu, Plus, Repeat, Send, Siren, X } from "lucide-react"
+import { ArrowLeft, Camera, ChevronDown, Database, Download, FileSpreadsheet, Files, Heart, HelpCircle, Menu, Plus, Repeat, Send, Settings, Siren, X } from "lucide-react"
 import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
@@ -14,11 +14,12 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
 import { resolveDefaultBenchmarkKey } from "@/lib/ma/team-benchmark"
-import { computeFundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
+import { computeFundNavMetrics, type FundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
 import { isWeekendIsoDate } from "@/lib/nav-trading-day"
 import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequency, computeHeadlineRiskMetrics, type HeadlineRiskFrequency, type NavFrequencyFilter, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
@@ -278,11 +279,30 @@ const BENCHMARK_OPTIONS = [
   { key: "IC", label: "中证500" },
   { key: "IF", label: "沪深300" },
   { key: "IH", label: "上证50" },
+  { key: "000001.SH", label: "上证指数" },
+  { key: "000906.SH", label: "中证800" },
+  { key: "000903.SH", label: "中证100" },
+  { key: "000688.SH", label: "科创50" },
+  { key: "000510.SH", label: "中证A500" },
+  { key: "000985.SH", label: "中证全指" },
+  { key: "000902.SH", label: "中证流通" },
+  { key: "000832.SH", label: "中证转债" },
+  { key: "H11006.CSI", label: "中证国债" },
+  { key: "399303.SZ", label: "国证2000" },
+  { key: "000922.SH", label: "中证红利" },
+  { key: "899050.BJ", label: "北证50" },
+  { key: "HSI.HI", label: "恒生指数" },
+  { key: "H00300.CSI", label: "沪深300全收益" },
   { key: "NHCI.NH", label: "南华商品指数" },
   { key: "100001.CCI", label: "中证商品指数" },
   { key: "511010.SH", label: "国债ETF" },
   { key: "518880.SH", label: "黄金ETF" },
 ] as const
+
+/** Sentinel select values — not real benchmark codes. */
+const OTHER_BENCHMARKS_VALUE = "__other_benchmarks__"
+const MANAGE_COMMON_BENCHMARKS_VALUE = "__manage_common_benchmarks__"
+const COMMON_BENCHMARKS_SETTINGS_HREF = "/ma/dashboard/settings?tab=common-benchmarks"
 
 function getBenchmarkLabel(key: string): string {
   return BENCHMARK_OPTIONS.find((option) => option.key === key)?.label ?? "业绩基准"
@@ -488,6 +508,8 @@ function exportNavCsv(
     showBenchmarkChg?: boolean
     benchmarkLabel?: string
     benchmarkChgByDate?: Map<string, number | null>
+    showExcessChg?: boolean
+    excessChgByDate?: Map<string, number | null>
   },
 ) {
   const escape = (v: string | null | undefined) => {
@@ -498,6 +520,9 @@ function exportNavCsv(
   const headers = ["日期", "单位净值", "累计净值", "复权净值", "涨跌幅"]
   if (options?.showBenchmarkChg && options.benchmarkLabel) {
     headers.push(`${options.benchmarkLabel}涨跌幅`)
+  }
+    if (options?.showExcessChg) {
+    headers.push("超额涨跌幅")
   }
   const csvRows = [
     headers.join(","),
@@ -514,6 +539,10 @@ function exportNavCsv(
       if (options?.showBenchmarkChg && options.benchmarkLabel) {
         const benchChg = options.benchmarkChgByDate?.get(r.price_date) ?? null
         cols.push(benchChg === null ? "" : benchChg.toFixed(2) + "%")
+      }
+      if (options?.showExcessChg) {
+        const excessChg = options.excessChgByDate?.get(r.price_date) ?? null
+        cols.push(excessChg === null ? "" : excessChg.toFixed(2) + "%")
       }
       return cols.join(",")
     }),
@@ -541,12 +570,16 @@ function NavTable({
   showBenchmarkChg = false,
   benchmarkLabel,
   benchmarkChgByDate,
+  showExcessChg = false,
+  excessChgByDate,
 }: {
   rows: NavRow[]
   navType: string
   showBenchmarkChg?: boolean
   benchmarkLabel?: string
   benchmarkChgByDate?: Map<string, number | null>
+  showExcessChg?: boolean
+  excessChgByDate?: Map<string, number | null>
 }) {
   // Show newest first
   const reversed = useMemo(() => [...rows].reverse(), [rows])
@@ -554,7 +587,7 @@ function NavTable({
   const th = "px-2.5 py-2.5 font-medium text-zinc-500 text-xs whitespace-nowrap"
   const td = "px-2.5 py-2 text-xs whitespace-nowrap"
   const tdNum = `${td} text-right tabular-nums`
-  const colCount = showBenchmarkChg ? 6 : 5
+  const colCount = 5 + (showBenchmarkChg ? 1 : 0) + (showExcessChg ? 1 : 0)
   const evenPct = `${(100 / colCount).toFixed(4)}%`
 
   return (
@@ -576,6 +609,9 @@ function NavTable({
               {showBenchmarkChg && (
                 <th className={`${th} text-right`}>{benchColLabel}</th>
               )}
+              {showExcessChg && (
+                <th className={`${th} text-right`}>超额涨跌幅</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -593,6 +629,9 @@ function NavTable({
               const benchCell = showBenchmarkChg
                 ? formatPctCell(benchmarkChgByDate?.get(r.price_date) ?? null)
                 : null
+              const excessCell = showExcessChg
+                ? formatPctCell(excessChgByDate?.get(r.price_date) ?? null)
+                : null
               return (
                 <tr key={r.price_date} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
                   <td className={`${td} text-zinc-700`}>{r.price_date}</td>
@@ -605,6 +644,11 @@ function NavTable({
                   {showBenchmarkChg && benchCell && (
                     <td className={`${tdNum} font-medium`} style={benchCell.chgStyle}>
                       {benchCell.text}
+                    </td>
+                  )}
+                  {showExcessChg && excessCell && (
+                    <td className={`${tdNum} font-medium`} style={excessCell.chgStyle}>
+                      {excessCell.text}
                     </td>
                   )}
                 </tr>
@@ -986,6 +1030,7 @@ export default function PrivateFundDetailPage() {
 
   const [chartMode, setChartMode] = useState<"nav" | "return">("return")
   const [fundSeriesVisible, setFundSeriesVisible] = useState(true)
+  const [excessSeriesVisible, setExcessSeriesVisible] = useState(false)
   const [benchSeriesVisible, setBenchSeriesVisible] = useState(true)
   const [returnLabelMode, setReturnLabelMode] = useState<ReturnLabelMode>("cumulative")
   const [showTableBenchmarkChg, setShowTableBenchmarkChg] = useState(false)
@@ -1044,6 +1089,7 @@ export default function PrivateFundDetailPage() {
   const [benchmarkData,  setBenchmarkData]  = useState<BenchmarkPoint[]>([])
   const [showDateRange,    setShowDateRange]    = useState(false)
   const [excessByDivision, setExcessByDivision] = useState(false)
+  const [intervalExcess, setIntervalExcess] = useState(false)
   const [headlineRiskFreq, setHeadlineRiskFreq] = useState<HeadlineRiskFrequency>("周频")
 
   const headlineRisk = useMemo(() => {
@@ -1133,23 +1179,73 @@ export default function PrivateFundDetailPage() {
     }
   }, [data, appliedBench])
 
-  const PERIOD_OPTIONS = ["成立以来", "运作以来", "近1年", "近3年", "近5年", "今年以来", "自定义"]
+  const PERIOD_OPTIONS = [
+    "自定义",
+    "成立以来",
+    "运作以来",
+    "今年以来",
+    "近一周",
+    "近一月",
+    "近三月",
+    "近六月",
+    "近一年",
+    "近两年",
+    "近三年",
+    "近五年",
+    "近十年",
+    "2026年",
+    "2025年",
+    "2024年",
+    "2023年",
+    "2022年",
+    "2021年",
+    "2020年",
+  ]
   function applyPeriod(p: string) {
     setFilterPeriod(p)
     if (!data) return
+    if (p === "自定义") return
     const { from: defaultFrom, to: last } = getDefaultFilterRange(data, todayStr)
     let from = defaultFrom
-    if (p === "运作以来") from = getOperationFilterRange(data, todayStr).from
-    else if (p === "近1年")  from = sub(last, 1, "year")
-    else if (p === "近3年")  from = sub(last, 3, "year")
-    else if (p === "近5年")  from = sub(last, 5, "year")
-    else if (p === "今年以来") from = last.slice(0, 4) + "-01-01"
+    let to = last
+    const yearMatch = /^(\d{4})年$/.exec(p)
+    if (p === "运作以来") {
+      from = getOperationFilterRange(data, todayStr).from
+    } else if (p === "今年以来") {
+      from = last.slice(0, 4) + "-01-01"
+    } else if (p === "近一周") {
+      from = sub(last, 7, "day")
+    } else if (p === "近一月") {
+      from = sub(last, 1, "month")
+    } else if (p === "近三月") {
+      from = sub(last, 3, "month")
+    } else if (p === "近六月") {
+      from = sub(last, 6, "month")
+    } else if (p === "近一年" || p === "近1年") {
+      from = sub(last, 1, "year")
+    } else if (p === "近两年") {
+      from = sub(last, 2, "year")
+    } else if (p === "近三年" || p === "近3年") {
+      from = sub(last, 3, "year")
+    } else if (p === "近五年" || p === "近5年") {
+      from = sub(last, 5, "year")
+    } else if (p === "近十年") {
+      from = sub(last, 10, "year")
+    } else if (yearMatch) {
+      const year = yearMatch[1]
+      from = `${year}-01-01`
+      // Full calendar year for completed years; current/incomplete year ends at latest NAV/today.
+      const endOfYear = `${year}-12-31`
+      to = endOfYear < last ? endOfYear : last
+    }
     setFilterFrom(from)
-    setFilterTo(last)
+    setFilterTo(to)
   }
-  function sub(dateStr: string, n: number, unit: "year"): string {
-    const d = new Date(dateStr)
-    d.setFullYear(d.getFullYear() - n)
+  function sub(dateStr: string, n: number, unit: "day" | "month" | "year"): string {
+    const d = new Date(`${dateStr.slice(0, 10)}T12:00:00`)
+    if (unit === "year") d.setFullYear(d.getFullYear() - n)
+    else if (unit === "month") d.setMonth(d.getMonth() - n)
+    else d.setDate(d.getDate() - n)
     return d.toISOString().slice(0, 10)
   }
   function handleApply() {
@@ -1224,18 +1320,43 @@ export default function PrivateFundDetailPage() {
         }
       }
 
+      const fundCum = chartMode === "return"
+        ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
+        : navValue
+      const benchCum = benchmarkValues[index]
+      let excessValue = null
+      let excessPeriodReturn = null
+      if (chartMode === "return" && benchCum !== null) {
+        if (excessByDivision) {
+          const f = 1 + fundCum / 100
+          const bv = 1 + benchCum / 100
+          excessValue = bv !== 0 ? +(((f / bv) - 1) * 100).toFixed(4) : null
+        } else {
+          excessValue = +(fundCum - benchCum).toFixed(4)
+        }
+        if (periodReturn !== null && benchmarkPeriodReturn !== null) {
+          if (excessByDivision) {
+            const fp = 1 + periodReturn / 100
+            const bp = 1 + benchmarkPeriodReturn / 100
+            excessPeriodReturn = bp !== 0 ? +(((fp / bp) - 1) * 100).toFixed(4) : null
+          } else {
+            excessPeriodReturn = +(periodReturn - benchmarkPeriodReturn).toFixed(4)
+          }
+        }
+      }
+
       return {
         date: row.price_date,
         ts: dateToUtcTs(row.price_date),
-        value: chartMode === "return"
-          ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
-          : navValue,
-        benchmarkValue: benchmarkValues[index],
+        value: fundCum,
+        benchmarkValue: benchCum,
+        excessValue,
         periodReturn,
         benchmarkPeriodReturn,
+        excessPeriodReturn,
       }
     })
-  }, [appliedBench, appliedFreq, benchmarkData, chartMode, filterNavType, filteredNavRows])
+  }, [appliedBench, appliedFreq, benchmarkData, chartMode, excessByDivision, filterNavType, filteredNavRows])
 
   const drawdownChartData = useMemo(
     () => buildDrawdownChartData(filteredNavRows, filterNavType, !!appliedBench, benchmarkData),
@@ -1290,6 +1411,12 @@ export default function PrivateFundDetailPage() {
 
   const benchmarkLabel = getBenchmarkLabel(appliedBench)
 
+  const excessChgByDate = useMemo(() => {
+    const m = new Map<string, number | null>()
+    for (const point of activeChartData) m.set(point.date, point.excessPeriodReturn)
+    return m
+  }, [activeChartData])
+
   const benchmarkChgByDate = useMemo(() => {
     if (!appliedBench || !benchmarkData.length || !filteredNavRows.length) return undefined
     return buildBenchmarkPctChangesByDate(filteredNavRows, benchmarkData)
@@ -1322,6 +1449,76 @@ export default function PrivateFundDetailPage() {
     return buildBenchmarkIntervalMetrics(benchmarkData, intervalCutoffDate)
   }, [appliedBench, benchmarkData, intervalCutoffDate])
 
+
+  function excessMetricsForYear(yearRows: NavRow[]): FundNavMetrics | null {
+    if (!appliedBench || benchmarkData.length < 2 || yearRows.length < 2) return null
+    const bench = [...benchmarkData].sort((a, b) => a.date.localeCompare(b.date))
+    let bi = 0
+    let last: number | null = null
+    const aligned: Array<number | null> = yearRows.map((row) => {
+      while (bi < bench.length && bench[bi].date <= row.price_date) {
+        last = bench[bi].value
+        bi += 1
+      }
+      return last
+    })
+    const dates: string[] = []
+    const levels: number[] = []
+    let nav = 1
+    let prevF = 0
+    let prevB = 0
+    let fund0 = 0
+    let fund1 = 0
+    let bench0 = 0
+    let bench1 = 0
+    let started = false
+    for (let i = 0; i < yearRows.length; i++) {
+      const f = getNavFieldValue(yearRows[i], filterNavType)
+      const b = aligned[i]
+      if (b === null || !(b > 0) || !(f > 0) || !isFinite(f)) continue
+      if (!started) {
+        started = true
+        prevF = f
+        prevB = b
+        fund0 = f
+        bench0 = b
+        dates.push(yearRows[i].price_date)
+        levels.push(1)
+        continue
+      }
+      const fundRet = f / prevF - 1
+      const benchRet = b / prevB - 1
+      const excessRet = excessByDivision
+        ? (1 + benchRet !== 0 ? (1 + fundRet) / (1 + benchRet) - 1 : 0)
+        : fundRet - benchRet
+      nav *= 1 + excessRet
+      if (!isFinite(nav) || nav <= 0) return null
+      dates.push(yearRows[i].price_date)
+      levels.push(nav)
+      prevF = f
+      prevB = b
+      fund1 = f
+      bench1 = b
+    }
+    const built = computeFundNavMetrics({ dates, values: levels })
+    if (!built || !(fund0 > 0) || !(bench0 > 0) || !(fund1 > 0)) return null
+    const fundPeriod = fund1 / fund0 - 1
+    const benchPeriod = bench1 / bench0 - 1
+    const periodRet = excessByDivision
+      ? (1 + benchPeriod !== 0 ? (1 + fundPeriod) / (1 + benchPeriod) - 1 : NaN)
+      : fundPeriod - benchPeriod
+    if (!isFinite(periodRet)) return null
+    const startTs = new Date(dates[0]).getTime()
+    const endTs = new Date(dates[dates.length - 1]).getTime()
+    const years = Math.max((endTs - startTs) / 86400000 / 365.25, 1 / 365)
+    const annRet = Math.pow(1 + periodRet, 1 / years) - 1
+    built.periodRet = periodRet
+    built.sharpe = isFinite(built.annVol) && built.annVol > 0 && isFinite(annRet) ? (annRet - 0.02) / built.annVol : NaN
+    built.calmar = isFinite(annRet) && built.maxDD >= 1e-4 ? annRet / built.maxDD : NaN
+    built.sortino = isFinite(annRet) && built.downsideRisk > 0 ? (annRet - 0.02) / built.downsideRisk : NaN
+    return built
+  }
+
   const annualFundRows = useMemo((): AnnualFundRow[] => {
     if (filteredNavRows.length < 2) return []
     const groups = new Map<number, NavRow[]>()
@@ -1340,11 +1537,12 @@ export default function PrivateFundDetailPage() {
           year,
           interval: `${dates[0]} ~ ${dates[dates.length - 1]}`,
           metrics,
+          excessMetrics: excessMetricsForYear(rows),
         })
       }
     }
     return out.sort((a, b) => b.year - a.year)
-  }, [filteredNavRows, filterNavType])
+  }, [filteredNavRows, filterNavType, appliedBench, benchmarkData, excessByDivision])
 
   const peerByYear = useMemo(() => {
     const m = new Map<number, PeerYearlyRow>()
@@ -1630,6 +1828,7 @@ export default function PrivateFundDetailPage() {
       const out: number[] = []
       if (fundSeriesVisible) out.push(d.value)
       if (benchSeriesVisible && typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
+      if (excessSeriesVisible && chartMode === "return" && typeof d.excessValue === "number") out.push(d.excessValue)
       return out
     }).filter((v) => Number.isFinite(v))
     if (!vals.length) return ["auto", "auto"] as [string, string]
@@ -1642,7 +1841,7 @@ export default function PrivateFundDetailPage() {
     const span = max - min
     const pad = span > 0 ? span * 0.08 : Math.max(Math.abs(max), 1) * 0.08
     return [+(min - pad).toFixed(4), +(max + pad).toFixed(4)] as [number, number]
-  }, [activeChartData, benchSeriesVisible, chartMode, fundSeriesVisible])
+  }, [activeChartData, benchSeriesVisible, chartMode, excessSeriesVisible, fundSeriesVisible])
 
   const navChartPointCount = activeChartData.length
   const navChartShowDots = navChartPointCount <= 40
@@ -2182,13 +2381,47 @@ export default function PrivateFundDetailPage() {
         {/* 业绩基准 */}
         <div className="flex items-center gap-1.5">
           <span className="text-zinc-500 whitespace-nowrap">业绩基准：</span>
-          <select
-            value={filterBench}
-            onChange={e => { setFilterBench(e.target.value); setAppliedBench(e.target.value) }}
-            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[120px]"
-          >
-            {BENCHMARK_OPTIONS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-          </select>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center justify-between gap-2 border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 min-w-[140px] focus:outline-none"
+              >
+                <span className="truncate">{getBenchmarkLabel(filterBench)}</span>
+                <ChevronDown className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-80 w-[200px] overflow-y-auto p-1">
+              {BENCHMARK_OPTIONS.map((option) => (
+                <DropdownMenuItem
+                  key={option.key || "none"}
+                  onClick={() => {
+                    setFilterBench(option.key)
+                    setAppliedBench(option.key)
+                  }}
+                  className={option.key === filterBench ? "font-medium text-zinc-900" : "text-zinc-600"}
+                >
+                  {option.label}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <div className="mt-1 rounded-md bg-zinc-50 px-1 py-1">
+                <DropdownMenuItem
+                  onSelect={(event) => event.preventDefault()}
+                  className="text-xs text-zinc-500 focus:text-zinc-700"
+                >
+                  其他业绩基准
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => window.open(COMMON_BENCHMARKS_SETTINGS_HREF, "_blank", "noopener,noreferrer")}
+                  className="text-xs font-medium text-red-600 focus:bg-red-50 focus:text-red-700"
+                >
+                  <Settings className="size-3.5 text-red-500" />
+                  管理常用基准
+                </DropdownMenuItem>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* Buttons */}
@@ -2259,6 +2492,8 @@ export default function PrivateFundDetailPage() {
                 benchVisible={benchSeriesVisible}
                 onToggleFund={() => setFundSeriesVisible((v) => !v)}
                 onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+                excessVisible={excessSeriesVisible}
+                onToggleExcess={() => setExcessSeriesVisible((v) => !v)}
               />
             </div>
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
@@ -2339,6 +2574,7 @@ export default function PrivateFundDetailPage() {
               showDots={navChartShowDots}
               showFund={fundSeriesVisible}
               showBench={!!appliedBench && benchSeriesVisible}
+              showExcess={chartMode === "return" && !!appliedBench && excessSeriesVisible}
               benchmarkLabel={benchmarkLabel}
               returnLabelMode={returnLabelMode}
               materialMarks={materialChartMarks}
@@ -2390,6 +2626,8 @@ export default function PrivateFundDetailPage() {
                   showBenchmarkChg: !!(showTableBenchmarkChg && appliedBench),
                   benchmarkLabel,
                   benchmarkChgByDate,
+                  showExcessChg: chartMode === "return" && !!appliedBench && excessSeriesVisible,
+                  excessChgByDate,
                 },
               )}
               disabled={filteredNavRows.length === 0}
@@ -2406,6 +2644,8 @@ export default function PrivateFundDetailPage() {
           showBenchmarkChg={!!(showTableBenchmarkChg && appliedBench)}
           benchmarkLabel={benchmarkLabel}
           benchmarkChgByDate={benchmarkChgByDate}
+          showExcessChg={chartMode === "return" && !!appliedBench && excessSeriesVisible}
+          excessChgByDate={excessChgByDate}
         />
       </div>
       </div>{/* end flex chart+table */}
@@ -2633,6 +2873,8 @@ export default function PrivateFundDetailPage() {
                 benchVisible={benchSeriesVisible}
                 onToggleFund={() => setFundSeriesVisible((v) => !v)}
                 onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+                excessVisible={excessSeriesVisible}
+                onToggleExcess={() => setExcessSeriesVisible((v) => !v)}
               />
             </div>
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
@@ -2713,6 +2955,7 @@ export default function PrivateFundDetailPage() {
               showDots={navChartShowDots}
               showFund={fundSeriesVisible}
               showBench={!!appliedBench && benchSeriesVisible}
+              showExcess={chartMode === "return" && !!appliedBench && excessSeriesVisible}
               benchmarkLabel={benchmarkLabel}
               returnLabelMode={returnLabelMode}
               episodeMarks={returnChartEpisodeMarks}
@@ -2765,6 +3008,8 @@ export default function PrivateFundDetailPage() {
                   showBenchmarkChg: !!(showTableBenchmarkChg && appliedBench),
                   benchmarkLabel,
                   benchmarkChgByDate,
+                  showExcessChg: chartMode === "return" && !!appliedBench && excessSeriesVisible,
+                  excessChgByDate,
                 },
               )}
               disabled={filteredNavRows.length === 0}
@@ -2781,6 +3026,8 @@ export default function PrivateFundDetailPage() {
           showBenchmarkChg={!!(showTableBenchmarkChg && appliedBench)}
           benchmarkLabel={benchmarkLabel}
           benchmarkChgByDate={benchmarkChgByDate}
+          showExcessChg={chartMode === "return" && !!appliedBench && excessSeriesVisible}
+          excessChgByDate={excessChgByDate}
         />
       </div>
       </div>{/* end flex chart+table copy */}
@@ -2860,6 +3107,8 @@ export default function PrivateFundDetailPage() {
           benchmarkSeries={benchmarkData}
           benchmarkLabel={benchmarkLabel}
           hasBenchmark={!!appliedBench}
+          showExcess={intervalExcess}
+          onShowExcessChange={setIntervalExcess}
         />
       )}
 
@@ -2870,6 +3119,9 @@ export default function PrivateFundDetailPage() {
           rows={filteredNavRows}
           navType={filterNavType}
           peerMonthly={peerMonthly}
+          showExcess={intervalExcess}
+          benchmarkSeries={benchmarkData}
+          excessByDivision={excessByDivision}
         />
       )}
 
@@ -3025,6 +3277,8 @@ export default function PrivateFundDetailPage() {
                 benchVisible={benchSeriesVisible}
                 onToggleFund={() => setFundSeriesVisible((v) => !v)}
                 onToggleBench={() => setBenchSeriesVisible((v) => !v)}
+                excessVisible={excessSeriesVisible}
+                onToggleExcess={() => setExcessSeriesVisible((v) => !v)}
               />
             </div>
             <button
@@ -3046,6 +3300,7 @@ export default function PrivateFundDetailPage() {
                 showDots={navChartShowDots}
                 showFund={fundSeriesVisible}
                 showBench={!!appliedBench && benchSeriesVisible}
+              showExcess={chartMode === "return" && !!appliedBench && excessSeriesVisible}
                 benchmarkLabel={benchmarkLabel}
                 height={lightboxChartHeight}
                 returnLabelMode={returnLabelMode}

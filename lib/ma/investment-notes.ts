@@ -1203,32 +1203,120 @@ export type GeneratedInvestmentNoteFromMaterials = {
   skipped: string[]
 }
 
+export type GenerateNoteFromMaterialsProgress = {
+  stage: "extracting" | "summarizing" | "saving"
+  index?: number
+  total?: number
+  name?: string
+}
+
+
+function formatGenerateProgress(progress: GenerateNoteFromMaterialsProgress): string {
+  if (progress.stage === "extracting") {
+    const index = progress.index ?? 0
+    const total = progress.total ?? 0
+    const name = (progress.name || "").trim()
+    return name
+      ? `正在提取 ${index}/${total}：${name}`
+      : `正在提取 ${index}/${total}`
+  }
+  if (progress.stage === "summarizing") return "正在生成笔记内容…"
+  if (progress.stage === "saving") return "正在保存笔记…"
+  return "生成中…"
+}
+
 /** Generate, save, and link an investment note from selected「上传资料」files. */
 export async function generateInvestmentNoteFromMaterials(
   materialIds: string[],
+  options?: {
+    onProgress?: (progress: GenerateNoteFromMaterialsProgress) => void
+    signal?: AbortSignal
+  },
 ): Promise<GeneratedInvestmentNoteFromMaterials> {
-  const data = await apiFetch<{
-    ok: true
+  const res = await fetch("/ma/api/investment-notes/generate-from-materials", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ materialIds }),
+    signal: options?.signal,
+  })
+  const contentType = res.headers.get("content-type") || ""
+  if (!res.ok && !contentType.includes("ndjson")) {
+    const data = await res.json().catch(() => ({} as { error?: string }))
+    throw new Error(data?.error || res.statusText || "生成失败")
+  }
+  if (!res.body) {
+    throw new Error("生成失败：空响应")
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let donePayload: {
     note: InvestmentNote
     materials: InvestmentNoteMaterial[]
     skipped?: string[]
-  }>("/ma/api/investment-notes/generate-from-materials", {
-    method: "POST",
-    body: JSON.stringify({ materialIds }),
-  })
+  } | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split("\n")
+    buffer = lines.pop() || ""
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let event: Record<string, any>
+      try {
+        event = JSON.parse(trimmed)
+      } catch {
+        continue
+      }
+      if (event.type === "progress") {
+        const progress: GenerateNoteFromMaterialsProgress = {
+          stage: event.stage,
+          index: typeof event.index === "number" ? event.index : undefined,
+          total: typeof event.total === "number" ? event.total : undefined,
+          name: typeof event.name === "string" ? event.name : undefined,
+        }
+        options?.onProgress?.(progress)
+        continue
+      }
+      if (event.type === "error" || event.ok === false) {
+        throw new Error(event.error || "生成失败")
+      }
+      if (event.type === "done" || event.note) {
+        donePayload = {
+          note: event.note as InvestmentNote,
+          materials: Array.isArray(event.materials) ? event.materials : [],
+          skipped: Array.isArray(event.skipped) ? event.skipped : [],
+        }
+      }
+    }
+  }
+
+  if (!donePayload?.note) {
+    throw new Error("生成失败：未收到结果")
+  }
+
   invalidateInvestmentNotesCache()
   const note = {
-    ...data.note,
+    ...donePayload.note,
     contentPending: false,
-    hasBody: Boolean(data.note.content?.trim()),
+    hasBody: Boolean(donePayload.note.content?.trim()),
   }
   rememberFullNote(note)
   return {
     note,
-    materials: Array.isArray(data.materials) ? data.materials : [],
-    skipped: Array.isArray(data.skipped) ? data.skipped : [],
+    materials: donePayload.materials,
+    skipped: Array.isArray(donePayload.skipped) ? donePayload.skipped : [],
   }
 }
+
+export { formatGenerateProgress }
 
 export function investmentNoteMaterialFileUrl(id: string): string {
   return `/ma/api/investment-notes/materials/${encodeURIComponent(id)}/file`

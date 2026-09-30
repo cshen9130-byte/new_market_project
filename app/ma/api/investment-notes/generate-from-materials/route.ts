@@ -27,18 +27,43 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "请先选择文件" }, { status: 400 })
     }
 
-    const result = await generateInvestmentNoteFromMaterials({
-      materialIds,
-      userId: user.id,
-      userName: user.name,
-      owner: { id: user.id, name: user.name, email: user.email },
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (payload: Record<string, unknown>) => {
+          controller.enqueue(encoder.encode(JSON.stringify(payload) + "\n"))
+        }
+        try {
+          const result = await generateInvestmentNoteFromMaterials({
+            materialIds,
+            userId: user.id,
+            userName: user.name,
+            owner: { id: user.id, name: user.name, email: user.email },
+            onProgress: (progress) => send({ type: "progress", ...progress }),
+          })
+          send({
+            type: "done",
+            ok: true,
+            note: result.note,
+            materials: result.materials,
+            skipped: result.skipped,
+          })
+        } catch (e: unknown) {
+          const message = e instanceof Error ? e.message : String(e)
+          console.error("[investment-notes/generate-from-materials]", e)
+          send({ type: "error", ok: false, error: message })
+        } finally {
+          controller.close()
+        }
+      },
     })
 
-    return NextResponse.json({
-      ok: true,
-      note: result.note,
-      materials: result.materials,
-      skipped: result.skipped,
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      },
     })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)

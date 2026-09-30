@@ -43,6 +43,7 @@ import {
   autoRenameInvestmentNoteMaterials,
   deleteInvestmentNoteMaterial,
   extractInvestmentNoteMaterialElements,
+  formatGenerateProgress,
   generateInvestmentNoteFromMaterials,
   investmentNoteDeepLink,
   isDdSyncedInvestmentNoteMaterial,
@@ -219,6 +220,7 @@ export function InvestmentNoteMaterialsView() {
   const [linkingId, setLinkingId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [generating, setGenerating] = useState(false)
+  const [generateStatus, setGenerateStatus] = useState<string | null>(null)
   const [panelMounted, setPanelMounted] = useState(false)
   const [panelCollapsed, setPanelCollapsed] = useState(false)
   const [extractJobs, setExtractJobs] = useState<InvestmentNoteExtractJob[]>([])
@@ -474,8 +476,11 @@ export function InvestmentNoteMaterialsView() {
       return
     }
     setGenerating(true)
+    setGenerateStatus(`准备提取 ${ids.length} 个文件…`)
     try {
-      const result = await generateInvestmentNoteFromMaterials(ids)
+      const result = await generateInvestmentNoteFromMaterials(ids, {
+        onProgress: (progress) => setGenerateStatus(formatGenerateProgress(progress)),
+      })
       const byId = new Map(result.materials.map((m) => [m.id, m]))
       setMaterials((prev) => prev.map((m) => byId.get(m.id) ?? m))
       setSelectedIds(new Set())
@@ -512,6 +517,7 @@ export function InvestmentNoteMaterialsView() {
       })
     } finally {
       setGenerating(false)
+      setGenerateStatus(null)
     }
   }
 
@@ -702,7 +708,7 @@ export function InvestmentNoteMaterialsView() {
                 onClick={() => setPanelCollapsed(false)}
                 className="fixed bottom-6 right-6 z-[60] rounded-lg border bg-background px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-muted/50 transition-colors"
               >
-                {generating ? "生成中..." : `已选 (${selectedCount})`}
+                {generating ? generateStatus || "生成中..." : `已选 (${selectedCount})`}
               </button>
             ) : (
               <div className="fixed bottom-6 right-6 z-[60] w-80 rounded-lg border bg-background shadow-xl flex flex-col max-h-[min(420px,calc(100vh-3rem))]">
@@ -740,6 +746,14 @@ export function InvestmentNoteMaterialsView() {
                   ))}
                 </div>
 
+                {generating && generateStatus ? (
+                  <div
+                    className="px-4 py-2 text-xs text-muted-foreground border-t truncate"
+                    title={generateStatus}
+                  >
+                    {generateStatus}
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between px-4 py-3 border-t flex-shrink-0">
                   <button
                     type="button"

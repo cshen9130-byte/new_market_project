@@ -60,6 +60,7 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
   const [expanded, setExpanded] = useState(false)
   const [showInterval, setShowInterval] = useState(true)
   const [showBenchmark, setShowBenchmark] = useState(hasBenchmark)
+  const [showExcess, setShowExcess] = useState(false)
   const [visibleSampleRows, setVisibleSampleRows] = useState(defaultSampleIndicatorVisibility)
 
   function toggleSampleRow(key: SampleIndicatorKey) {
@@ -81,7 +82,8 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
       lines.push([
         String(row.year), productName,
         ...ANNUAL_METRIC_COLUMNS.map((c) => {
-          const v = row.metrics[c.key]
+          const source = showExcess ? (row.excessMetrics ?? null) : row.metrics
+          const v = source ? source[c.key] : null
           if (v === null || !isFinite(v as number)) return ""
           if (c.type === "days") return String(Math.round(v as number))
           if (c.type === "ratio") return (v as number).toFixed(4)
@@ -108,6 +110,14 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
           {dateRangeLabel && <div className="text-xs text-zinc-400 mt-1">统计区间：{dateRangeLabel}</div>}
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
+          {hasBenchmark && fundRows.some((row) => row.excessMetrics) && (
+            <button type="button" onClick={() => setShowExcess((v) => !v)} className="inline-flex items-center gap-1.5 hover:text-zinc-900 transition-colors">
+              <span aria-hidden="true" className={["inline-flex h-3.5 w-3.5 items-center justify-center rounded border", showExcess ? "border-zinc-700 bg-zinc-700" : "border-zinc-300 bg-white"].join(" ")}>
+                {showExcess && <svg viewBox="0 0 12 12" className="h-2.5 w-2.5 text-white" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 6l3 3 5-5" /></svg>}
+              </span>
+                超额
+            </button>
+          )}
           {hasBenchmark && (
             <button type="button" onClick={() => setShowBenchmark((v) => !v)} className="inline-flex items-center gap-1.5 hover:text-zinc-900 transition-colors">
               <span aria-hidden="true" className={["inline-flex h-3.5 w-3.5 items-center justify-center rounded border", showBenchmark ? "border-zinc-700 bg-zinc-700" : "border-zinc-300 bg-white"].join(" ")}>
@@ -168,11 +178,14 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-zinc-800 font-medium border-r border-zinc-100 truncate max-w-[120px]">{productName}</td>
-                    {ANNUAL_METRIC_COLUMNS.map((col) => (
+                    {ANNUAL_METRIC_COLUMNS.map((col) => {
+                      const shown = showExcess ? (fundRow.excessMetrics ?? null) : fundRow.metrics
+                      return (
                       <td key={col.key} className="px-2 py-2.5 text-center">
-                        <AnnualMetricFundCell value={fundRow.metrics[col.key]} type={col.type} />
+                        <AnnualMetricFundCell value={shown ? shown[col.key] : null} type={col.type} />
                       </td>
-                    ))}
+                      )
+                    })}
                   </tr>
                   {activeSampleLabels.map((label, ri) => {
                     const isLast = ri === activeSampleLabels.length - 1

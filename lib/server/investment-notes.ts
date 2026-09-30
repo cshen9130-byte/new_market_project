@@ -19,6 +19,10 @@ import {
   upsertTeamNoteInKnowledgeBase,
   type InvestmentNoteKbOwner,
 } from "@/lib/server/investment-notes-kb-sync"
+import {
+  associationsFromMatchedExtractedProducts,
+  mergeInvestmentNoteAssociations,
+} from "@/lib/server/investment-note-auto-associate"
 
 const MAX_CONTENT_CHARS = MAX_INVESTMENT_NOTE_CONTENT_CHARS
 const MAX_TITLE_CHARS = MAX_INVESTMENT_NOTE_TITLE_CHARS
@@ -442,10 +446,20 @@ export function createServerInvestmentNote(
     teamShared: partial?.teamShared ?? false,
     kbRelativePath: null,
     tags: [],
-    associations:
-      partial?.associations !== undefined
-        ? normalizeAssociations(partial.associations)
-        : [],
+    associations: (() => {
+      const provided =
+        partial?.associations !== undefined
+          ? normalizeAssociations(partial.associations)
+          : []
+      const extracted =
+        partial?.extractedProducts !== undefined
+          ? normalizeExtractedProducts(partial.extractedProducts)
+          : []
+      return mergeInvestmentNoteAssociations(
+        provided,
+        associationsFromMatchedExtractedProducts(extracted),
+      )
+    })(),
     extractedProducts:
       partial?.extractedProducts !== undefined
         ? normalizeExtractedProducts(partial.extractedProducts)
@@ -666,6 +680,24 @@ function toPublicTrashNote(note: TrashedStoredNote): InvestmentNote {
     deletedAt: note.deletedAt,
     deletedBy: note.deletedBy,
   }
+}
+
+/** Patch associations only (keeps modifiedDate / lastModifiedBy). Used by association backfill. */
+export function patchServerInvestmentNoteAssociations(
+  id: string,
+  associations: InvestmentNoteAssociation[],
+): InvestmentNote | null {
+  const notes = readAllNotes()
+  const index = notes.findIndex((item) => item.id === id)
+  if (index < 0) return null
+  const existing = notes[index]
+  notes[index] = {
+    ...existing,
+    associations: normalizeAssociations(associations),
+  }
+  writeAllNotes(notes)
+  const { creatorId: _creatorId, ...result } = notes[index]
+  return result
 }
 
 export function listServerTrashedInvestmentNotes(

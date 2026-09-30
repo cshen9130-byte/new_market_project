@@ -38,6 +38,7 @@ export function NavPerformanceEChart({
   showDots,
   showFund = true,
   showBench,
+  showExcess = false,
   benchmarkLabel,
   height = "100%",
   returnLabelMode = "cumulative",
@@ -52,6 +53,7 @@ export function NavPerformanceEChart({
   showDots: boolean
   showFund?: boolean
   showBench: boolean
+  showExcess?: boolean
   benchmarkLabel: string
   height?: number | string
   returnLabelMode?: ReturnLabelMode
@@ -77,6 +79,18 @@ export function NavPerformanceEChart({
             y: d.benchmarkValue,
             date: d.date,
             periodReturn: d.benchmarkPeriodReturn,
+          })),
+          showDots,
+        )
+      : []
+
+    const excessPoints = showExcess
+      ? toGappedLinePoints(
+          data.map((d) => ({
+            ts: d.ts,
+            y: d.excessValue,
+            date: d.date,
+            periodReturn: d.excessPeriodReturn,
           })),
           showDots,
         )
@@ -141,6 +155,20 @@ export function NavPerformanceEChart({
         markLine: showFund ? undefined : zeroMarkLine,
       })
     }
+    if (showExcess) {
+      series.push({
+        name: "累计超额",
+        type: "line",
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
+        connectNulls: false,
+        clip: false,
+        lineStyle: { width: 1.75, color: "#059669" },
+        itemStyle: { color: "#059669" },
+        data: excessPoints,
+      })
+    }
     if (showFund) {
       series.push({
         name: fundName,
@@ -201,8 +229,11 @@ export function NavPerformanceEChart({
               ? item.data?.periodReturn
               : y
             if (typeof shown !== "number" || !Number.isFinite(shown)) continue
+            const isExcess = item.seriesName === "累计超额"
             const label = chartMode === "return"
-              ? formatReturnTooltipLabel(item.seriesName, returnLabelMode, isBench)
+              ? (isExcess
+                ? (returnLabelMode === "period" ? "当日超额" : "累计超额")
+                : formatReturnTooltipLabel(item.seriesName, returnLabelMode, isBench))
               : (item.seriesName ?? "")
             lines.push(`${label}: ${yTooltip(shown, chartMode)}`)
           }
@@ -236,6 +267,7 @@ export function NavPerformanceEChart({
     returnLabelMode,
     showBench,
     showDots,
+    showExcess,
     showFund,
     yDomain,
   ])
@@ -269,6 +301,8 @@ export function NavChartSeriesLegend({
   benchVisible,
   onToggleFund,
   onToggleBench,
+  excessVisible = false,
+  onToggleExcess,
 }: {
   chartMode: "nav" | "return"
   navTypeLabel: string
@@ -278,6 +312,8 @@ export function NavChartSeriesLegend({
   benchVisible: boolean
   onToggleFund: () => void
   onToggleBench: () => void
+  excessVisible?: boolean
+  onToggleExcess?: () => void
 }) {
   const fundLabel = chartMode === "return" ? "基金收益率" : navTypeLabel
   return (
@@ -310,6 +346,21 @@ export function NavChartSeriesLegend({
             <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
           </svg>
           {benchmarkLabel}
+        </button>
+      )}
+      {hasBenchmark && chartMode === "return" && (
+        <button
+          type="button"
+          onClick={onToggleExcess}
+          className={[
+            "inline-flex items-center gap-1.5 cursor-pointer transition-opacity select-none",
+            excessVisible ? "opacity-100" : "opacity-40 hover:opacity-60",
+          ].join(" ")}
+          title={excessVisible ? "点击隐藏该曲线" : "点击显示该曲线"}
+          aria-pressed={excessVisible}
+        >
+          <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
+          累计超额
         </button>
       )}
     </div>

@@ -41,8 +41,56 @@ interface MetricTemplate { name: string; items: MetricItem[] }
 interface CompareTemplate { name: string; indicators: string[] }
 interface CommonBenchmark { type: string; name: string }
 
-const BENCHMARK_TYPE_OPTIONS = ["指数", "私募指数", "自定义"]
-const BENCHMARK_NAME_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数", "中证商品指数"]
+const BENCHMARK_TYPE_OPTIONS = ["基准指数", "指数", "私募指数", "自定义"]
+const BENCHMARK_NAME_OPTIONS = [
+  "中证1000",
+  "中证500",
+  "沪深300",
+  "上证50",
+  "上证指数",
+  "中证800",
+  "中证100",
+  "科创50",
+  "中证A500",
+  "中证全指",
+  "中证流通",
+  "中证转债",
+  "中证国债",
+  "国证2000",
+  "中证红利",
+  "北证50",
+  "恒生指数",
+  "沪深300全收益",
+  "南华商品指数",
+  "中证商品指数",
+  "国债ETF",
+  "黄金ETF",
+]
+
+const DEFAULT_COMMON_BENCHMARKS: CommonBenchmark[] = [
+  { type: "基准指数", name: "中证1000" },
+  { type: "基准指数", name: "中证500" },
+  { type: "基准指数", name: "沪深300" },
+  { type: "基准指数", name: "上证50" },
+  { type: "基准指数", name: "上证指数" },
+  { type: "基准指数", name: "中证800" },
+  { type: "基准指数", name: "中证100" },
+  { type: "基准指数", name: "科创50" },
+  { type: "基准指数", name: "中证A500" },
+  { type: "基准指数", name: "中证全指" },
+  { type: "基准指数", name: "中证流通" },
+  { type: "基准指数", name: "中证转债" },
+  { type: "基准指数", name: "中证国债" },
+  { type: "基准指数", name: "国证2000" },
+  { type: "基准指数", name: "中证红利" },
+  { type: "基准指数", name: "北证50" },
+  { type: "基准指数", name: "恒生指数" },
+  { type: "基准指数", name: "沪深300全收益" },
+  { type: "基准指数", name: "南华商品指数" },
+  { type: "基准指数", name: "中证商品指数" },
+  { type: "基准指数", name: "国债ETF" },
+  { type: "基准指数", name: "黄金ETF" },
+]
 
 const ADD_METRIC_PERIODS = [
   "本周","本月","近一周","近一月","近三月",
@@ -1021,7 +1069,16 @@ function CompareAnalysisTemplatesPanel() {
 
 // ─── CommonBenchmarksPanel ────────────────────────────────────────────────────
 function CommonBenchmarksPanel() {
-  const [benchmarks, setBenchmarks] = useState<CommonBenchmark[]>(() => readLS<CommonBenchmark[]>(COMMON_BENCHMARKS_KEY, []))
+  const [benchmarks, setBenchmarks] = useState<CommonBenchmark[]>(() => {
+    const stored = readLS<CommonBenchmark[]>(COMMON_BENCHMARKS_KEY, [])
+    if (stored.length === 0) return DEFAULT_COMMON_BENCHMARKS
+    const legacy = new Set(["上证50", "上证指数", "创业板指", "中证1000", "中证2000", "中证500", "物盛版日频等权指数", "中证流通", "中证转债", "米筐微盘股指数", "国证2000", "沪深300", "米筐小市值指数", "火富牛可转债多头精选指数", "火富牛套利策略精选指数", "火富牛股票市场中性精选指数"])
+    const names = stored.map((item) => item.name)
+    const isLegacySeed = names.length === legacy.size && names.every((name) => legacy.has(name))
+    if (!isLegacySeed) return stored
+    localStorage.setItem(COMMON_BENCHMARKS_KEY, JSON.stringify(DEFAULT_COMMON_BENCHMARKS))
+    return DEFAULT_COMMON_BENCHMARKS
+  })
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [editIdx, setEditIdx] = useState<number | null>(null)
@@ -2417,7 +2474,12 @@ function PlaceholderPanel({ title }: { title: string }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
   const searchParams = useSearchParams()
-  const initialTab = (searchParams.get("tab") === "metric-templates" ? "指标模板" : "计算设置") as Tab
+  const tabParam = searchParams.get("tab")
+  const initialTab = (
+    tabParam === "metric-templates" ? "指标模板"
+    : tabParam === "common-benchmarks" ? "常用基准"
+    : "计算设置"
+  ) as Tab
   const sectionParam = searchParams.get("section") || ""
   const categoryParam = searchParams.get("category") || "fund"
   const [activeTab, setActiveTab] = useState<Tab>(initialTab)
@@ -2426,7 +2488,9 @@ export default function SettingsPage() {
   )
 
   useEffect(() => {
-    if (searchParams.get("tab") === "metric-templates") setActiveTab("指标模板")
+    const tab = searchParams.get("tab")
+    if (tab === "metric-templates") setActiveTab("指标模板")
+    else if (tab === "common-benchmarks") setActiveTab("常用基准")
     const section = searchParams.get("section") || ""
     if (SECTION_FROM_PARAM[section]) setActiveLeft(SECTION_FROM_PARAM[section])
   }, [searchParams])

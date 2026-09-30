@@ -58,6 +58,14 @@ export type GeneratedNoteFromMaterials = {
   skipped: string[]
 }
 
+export type GenerateNoteFromMaterialsProgress = {
+  stage: "extracting" | "summarizing" | "saving"
+  index?: number
+  total?: number
+  name?: string
+}
+
+
 function getExtension(fileName: string): string {
   return path.extname(fileName).toLowerCase()
 }
@@ -347,6 +355,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
   roadshowPlainText?: string
   fallbackTitle?: string
   createOptions?: CreateServerInvestmentNoteOptions
+  onProgress?: (progress: GenerateNoteFromMaterialsProgress) => void
 }): Promise<GeneratedNoteFromMaterials> {
   const ids = input.materialIds.map((id) => String(id || "").trim()).filter(Boolean)
   if (ids.length === 0) throw new Error("请先选择文件")
@@ -360,7 +369,14 @@ export async function generateInvestmentNoteFromMaterials(input: {
   const extracted: Array<{ name: string; text: string }> = []
   const skipped: string[] = []
 
-  for (const material of materials) {
+  for (let i = 0; i < materials.length; i += 1) {
+    const material = materials[i]
+    input.onProgress?.({
+      stage: "extracting",
+      index: i + 1,
+      total: materials.length,
+      name: material.name,
+    })
     const file = await readInvestmentNoteMaterialFile(material.id)
     if (!file) {
       skipped.push(`${material.name}（文件缺失）`)
@@ -391,6 +407,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
   let title = input.fallbackTitle?.trim() || fallbackTitle(fileNames)
   let body = fallbackContent(extracted)
   let aiProducts: Array<{ name: string; recordNo: string }> = []
+  input.onProgress?.({ stage: "summarizing", total: materials.length })
   try {
     const generated = await summarizeWithAi({
       fileNames,
@@ -436,6 +453,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
     }
   }
 
+  input.onProgress?.({ stage: "saving", total: materials.length })
   const note = await createServerInvestmentNoteWithKbSync(
     input.userId,
     input.userName,

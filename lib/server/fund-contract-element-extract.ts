@@ -224,7 +224,6 @@ async function extractTextFromImage(buffer: Buffer, ext: string): Promise<string
   }
   return text.replace(/\s+/g, " ").trim()
 }
-
 function isSparsePdfText(text: string): boolean {
   const cleaned = text
     .replace(/--\s*\d+\s+of\s+\d+\s*--/gi, " ")

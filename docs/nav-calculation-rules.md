@@ -18,7 +18,7 @@ This must be satisfied for **every single row** in the NAV series, including and
 | `cum_nav_withdrawal` | 累计净值 | Cumulative NAV = unit + all historical dividends paid (stays flat or rises on ex-div) |
 | `cumulative_nav` | 复权净值 | Reinvestment-adjusted NAV — always ≥ 累计净值 |
 
-In `ops_team_nav_manual` the column `cumulative_nav` stores **累计净值** (not 复权净值). The 复权净值 is always **computed** by the pipeline — never stored from manual uploads.
+In `ops_team_nav_manual` the column `cumulative_nav` stores **累计净值** (not 复权净值). Column `adjusted_nav` is optional: leave it null and the pipeline computes 复权 (preserving any legacy adj/cum premium via `mergeLegacyWithTeamNav`); or supply a correct 复权 that already carries that premium. See **Operator rule — manual team NAV uploads**.
 
 ---
 
@@ -362,6 +362,7 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `resolveFundBeianHao` | Direct beian DB lookup must run before managed-product override — otherwise BAH99A routes to SBAH99 |
 | `remapManagedProductBeianCode` | Do not remap A/B/C share-class codes (e.g. BAH99A) to parent 在管产品 beian |
 | `lookupManagedProductOverride` | Must use share-class-aware name match — loose `includes` maps A类 names to parent managed product |
+| `mergeLegacyWithTeamNav` | After a legacy tip with adj/cum premium, must clear under-premium / collapsed team 复权 before finalize — disabling re-breaks GA681A-style cliff (3.30→~2.52) on manual uploads without 复权 |
 | `finalizeNavSeries` (call order) | `syncExDivAdjustedNav` must run before `propagateMissingAdjRows`, which must run before `refreshStaleDerivedFields`, then `repairAdjBelowCumRows`, then `alignPreDividendNavRows` |
 
 ### After any change to the NAV pipeline
@@ -437,7 +438,33 @@ The managed product pipeline is in:
 ## Known Limitations
 
 - Micro-dividends where unit NAV still rises on the ex-div date (market return > dividend per unit) are **not detected** by `isLikelyDividendExDate` since there is no unit drop. For large dividends like 荣熙恒盈2号's 0.21/unit this cannot happen.
-- `复权净值` is always computed, never stored from manual uploads. Slight numerical differences vs fund-manager-provided adj values are expected (~0.001–0.003 range).
+- `复权净值` is normally **computed** by the pipeline when `ops_team_nav_manual.adjusted_nav` is null. Slight numerical differences vs fund-manager-provided adj values are expected (~0.001–0.003 range). When a legacy series already carries adj/cum premium, the merge path must preserve it (see operator rule below) — do not force adj = cum by hand.
+
+---
+
+## Operator rule — manual team NAV uploads
+
+Applies whenever operators upload team NAV Excel into `ops_team_nav_manual` (unit + 累计, with or without 复权) after a legacy / platform series that already has **adj > cum** premium (e.g. GA681A tip adj/cum ≈ 1.311).
+
+### What the pipeline does now (required)
+
+1. Upload unit + 累计 as usual. Leaving `adjusted_nav` null is fine.
+2. `loadManagedProductNavSeries` may finalize the team stream alone first (复权 temporarily ≈ 累计).
+3. `mergeLegacyWithTeamNav` (**must not be bypassed**) detects legacy-tip adj/cum premium (>0.05), **clears** team 复权 that is collapsed to 累计 **or** whose adj/cum is >0.05 below the tip ratio, then `finalizeNavSeries` rechains 复权 forward from the legacy tip so the premium continues across the handoff.
+
+### Optional
+
+- You **may** also supply a correct `adjusted_nav` in the upload that already carries the same premium (adj/cum ≈ tip ratio). That is helpful but not required after the GA681A merge fix.
+
+### What NOT to do
+
+- **Do not** hand-edit stored `adjusted_nav` to equal 累计 (or otherwise strip premium) "to make the chart look flat" — that recreates the GA681A cliff.
+- **Do not** bypass `mergeLegacyWithTeamNav` / finalize the team stream in isolation as the final series when a legacy tip with premium exists.
+- **Do not** assume "unit + 累计 only upload ⇒ 复权 should equal 累计 forever" after a premium legacy tip — 复权 must rechain from that tip.
+
+### Quick check after upload
+
+On the product detail page, confirm the first team date's 复权 is continuous with the legacy tip (no multi-tenths drop) and `adj >= cum >= unit` holds through the tip. For GA681A the tip should stay near **3.39**, not ~2.62.
 
 ---
 
@@ -2395,3 +2422,57 @@ Refresh only this detail cache:
 npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=BUK40A --name=贞元虎踞一号A类
 ```
 
+## What Was Fixed (集微投资2期A类 — GA681A, 2026-09-30)
+
+**集微投资2期A类 / GA681A** — legacy platform NAV had a large adj/cum premium; a manual team upload without 复权 collapsed that premium at the handoff. Code + DB repaired 2026-09-30. Operators: follow **Operator rule — manual team NAV uploads** so this does not recur on the next Excel upload.
+
+### Symptom
+
+Product detail showed unit **1.8601**, 累计 **2.5861**, 复权 **~2.6155** on **2026-09-24**. Historical platform/group 复权 was already **~3.30** on **2026-05-29** (adj/cum ≈ **1.311**), then collapsed after the manual team upload started → chart cliff **3.30 → ~2.52**.
+
+| | Tip date | 单位 | 累计 | 复权 |
+|---|---|---|---|---|
+| **Before (broken)** | 2026-09-24 | 1.8601 | 2.5861 | **~2.6155** (collapsed) |
+| **After (fixed)** | 2026-09-24 | 1.8601 | 2.5861 | **3.391599** (premium kept) |
+
+### Root Cause
+
+1. Legacy `private_fund_nav_group` tip (**2026-05-29**) already had high adj/cum premium (~**1.311**); adj **3.300711**.
+2. Manual `ops_team_nav_manual` upload (2026-09-29) had unit + 累计 only (`adjusted_nav` null), starting **2026-06-05**.
+3. `loadManagedProductNavSeries` finalized that team stream **in isolation** → 复权 collapsed toward 累计 (or a tiny within-window premium).
+4. `mergeLegacyWithTeamNav` pasted those team rows after the legacy tip **without clearing** the under-premium / collapsed 复权, so finalize kept adj≈cum and the chart cliffed **3.30 → ~2.52**.
+5. Unit and 累计 were already correct (constant dividend gap **0.726**); only 复权 was wrong.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Code | `lib/server/email-nav-query.ts` → `mergeLegacyWithTeamNav` | If legacy tip has adj/cum premium (>0.05), **clear** team 复权 that is collapsed to 累计 **or** whose adj/cum is more than 0.05 below the tip ratio, then let `finalizeNavSeries` rechain from the tip |
+| DB repair | `ops_team_nav_manual` GA681A only | `UPDATE adjusted_nav` from the corrected merge (**19** rows) |
+| Cache | `ops_private_fund_detail_nav_cache` GA681A | Invalidated + refreshed |
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-05-29 (legacy tip) | 1.7908 | 2.5168 | **3.300711** |
+| 2026-06-05 (first team) | 1.7917 | 2.5177 | **3.301891** |
+| 2026-06-26 | 1.8531 | 2.5791 | **3.382415** |
+| 2026-09-24 (tip) | 1.8601 | 2.5861 | **3.391599** |
+
+Invariant `adj >= cum >= unit` holds; adj/cum stays ≈ **1.311** across the team handoff. Tip adj went from **~2.6155** (broken) → **~3.39** (correct).
+
+### What This Fix Does NOT Change
+
+- SBAH99 dividend formulas (`syncExDivAdjustedNav`, `rechainDerivedFromPrev`, etc.)
+- SNF018 virtual-first FOF email priority
+- SSG947 seed merge, SQX078 swap repair, BUK40A append-email-after-team-tip
+- Team window exclusivity (SZJ909)
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes assertion block **GA681A team adj rechains from legacy tip**.

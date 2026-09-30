@@ -40,6 +40,7 @@ export interface AnnualFundRow {
   year: number
   interval: string
   metrics: FundNavMetrics
+  excessMetrics?: FundNavMetrics | null
 }
 
 export function getNavFieldValue(row: NavRow, navType: string): number {

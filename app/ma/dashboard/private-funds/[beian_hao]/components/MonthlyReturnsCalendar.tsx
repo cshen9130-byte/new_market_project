@@ -2,7 +2,7 @@
 
 import { memo, useState, useMemo, Fragment } from "react"
 import type React from "react"
-import { RED, GREEN, getNavFieldValue, type NavRow, type PeerMonthlyRow } from "./shared"
+import { RED, GREEN, getNavFieldValue, type NavRow, type PeerMonthlyRow, type BenchmarkPoint } from "./shared"
 import {
   SampleIndicatorPicker,
   defaultSampleIndicatorVisibility,
@@ -38,16 +38,69 @@ function computeMonthlyReturns(rows: NavRow[], navType: string): MonthlyReturn[]
   })
 }
 
+
+function benchmarkAtDate(series: BenchmarkPoint[], date: string): number | null {
+  let last: number | null = null
+  for (const p of series) {
+    if (p.date <= date) last = p.value
+    else break
+  }
+  return last
+}
+
+function computeMonthlyExcess(
+  rows: NavRow[],
+  navType: string,
+  benchmarkSeries: BenchmarkPoint[],
+  byDivision: boolean,
+): MonthlyReturn[] {
+  if (!rows.length || !benchmarkSeries.length) return []
+  const sorted = [...rows].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const bench = [...benchmarkSeries].sort((a, b) => a.date.localeCompare(b.date))
+  const monthFirst = new Map<string, NavRow>()
+  const monthLast = new Map<string, NavRow>()
+  for (const row of sorted) {
+    const ym = row.price_date.slice(0, 7)
+    if (!monthFirst.has(ym)) monthFirst.set(ym, row)
+    monthLast.set(ym, row)
+  }
+  const keys = [...monthLast.keys()].sort()
+  return keys.map((key, i) => {
+    const [yearStr, monthStr] = key.split("-")
+    const year = parseInt(yearStr, 10)
+    const month = parseInt(monthStr, 10)
+    const endRow = monthLast.get(key)!
+    const baseRow = i === 0 ? monthFirst.get(key)! : monthLast.get(keys[i - 1])!
+    const endNav = getNavFieldValue(endRow, navType)
+    const baseNav = getNavFieldValue(baseRow, navType)
+    const b0 = benchmarkAtDate(bench, baseRow.price_date)
+    const b1 = benchmarkAtDate(bench, endRow.price_date)
+    if (!(baseNav > 0) || !isFinite(endNav) || b0 === null || b1 === null || !(b0 > 0)) {
+      return { year, month, ret: null }
+    }
+    const fund = endNav / baseNav - 1
+    const benchRet = b1 / b0 - 1
+    const excess = byDivision
+      ? (1 + benchRet !== 0 ? (1 + fund) / (1 + benchRet) - 1 : null)
+      : fund - benchRet
+    return { year, month, ret: excess === null || !isFinite(excess) ? null : excess * 100 }
+  })
+}
+
 const CALENDAR_MONTHS = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"]
 
 export const MonthlyReturnsCalendar = memo(function MonthlyReturnsCalendar({
   productName, sampleGroup, rows, navType, peerMonthly,
+  showExcess = false, benchmarkSeries = [], excessByDivision = false,
 }: {
   productName: string
   sampleGroup: string | null
   rows: NavRow[]
   navType: string
   peerMonthly: PeerMonthlyRow[]
+  showExcess?: boolean
+  benchmarkSeries?: BenchmarkPoint[]
+  excessByDivision?: boolean
 }) {
   const INITIAL_YEARS = 2
   const [expanded, setExpanded] = useState(false)
@@ -57,7 +110,11 @@ export const MonthlyReturnsCalendar = memo(function MonthlyReturnsCalendar({
     setVisibleSampleRows((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
-  const monthly = useMemo(() => computeMonthlyReturns(rows, navType), [rows, navType])
+  const monthly = useMemo(() => {
+    if (!showExcess) return computeMonthlyReturns(rows, navType)
+    const excess = computeMonthlyExcess(rows, navType, benchmarkSeries, excessByDivision)
+    return excess.length ? excess : computeMonthlyReturns(rows, navType)
+  }, [rows, navType, showExcess, benchmarkSeries, excessByDivision])
 
   const peerByYm = useMemo(() => {
     const m = new Map<string, PeerMonthlyRow>()

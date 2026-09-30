@@ -130,6 +130,7 @@ function ReturnBarTooltip({
 
 export const IntervalReturnsChart = memo(function IntervalReturnsChart({
   productName, sampleGroup, dateRangeLabel, rows, navType, benchmarkSeries, benchmarkLabel, hasBenchmark,
+  showExcess: showExcessProp, onShowExcessChange,
 }: {
   productName: string
   sampleGroup: string | null
@@ -139,10 +140,18 @@ export const IntervalReturnsChart = memo(function IntervalReturnsChart({
   benchmarkSeries: BenchmarkPoint[]
   benchmarkLabel: string
   hasBenchmark: boolean
+  showExcess?: boolean
+  onShowExcessChange?: (next: boolean) => void
 }) {
   const [granularity, setGranularity] = useState<ReturnGranularity>("month")
   const [showBenchmark, setShowBenchmark] = useState(false)
-  const [showExcess, setShowExcess] = useState(false)
+  const [showExcessState, setShowExcessState] = useState(false)
+  const showExcess = showExcessProp ?? showExcessState
+  function toggleExcess() {
+    const next = !showExcess
+    if (onShowExcessChange) onShowExcessChange(next)
+    else setShowExcessState(next)
+  }
 
   const chartData = useMemo(
     () => computePeriodReturnBars(rows, navType, granularity, benchmarkSeries),
@@ -152,7 +161,7 @@ export const IntervalReturnsChart = memo(function IntervalReturnsChart({
   const yDomain = useMemo((): [number, number] => {
     if (!chartData.length) return [-5, 5]
     const vals = chartData.flatMap((d) => {
-      if (showExcess && showBenchmark) return [d.excessPct ?? d.fundPct]
+      if (showExcess) return [d.excessPct ?? 0]
       if (showBenchmark) return [d.fundPct, d.benchPct ?? 0]
       return [d.fundPct]
     }).filter((v) => v !== null && isFinite(v)) as number[]
@@ -162,16 +171,16 @@ export const IntervalReturnsChart = memo(function IntervalReturnsChart({
     return [Math.floor(min - pad), Math.ceil(max + pad)]
   }, [chartData, showBenchmark, showExcess])
 
-  const seriesName = showExcess && showBenchmark ? "超额" : productName
+  const seriesName = showExcess ? "超额" : productName
 
   function exportCsv() {
     const headers = ["区间", productName]
     if (showBenchmark) headers.push(`${benchmarkLabel}（基准）`)
-    if (showExcess && showBenchmark) headers.push("超额")
+    if (showExcess) headers.push("超额")
     const lines = chartData.map((d) => {
       const row = [d.label, `${d.fundPct.toFixed(2)}%`]
       if (showBenchmark) row.push(d.benchPct !== null ? `${d.benchPct.toFixed(2)}%` : "")
-      if (showExcess && showBenchmark) row.push(d.excessPct !== null ? `${d.excessPct.toFixed(2)}%` : "")
+      if (showExcess) row.push(d.excessPct !== null ? `${d.excessPct.toFixed(2)}%` : "")
       return row
     })
     const escape = (v: string) => v.includes(",") ? `"${v}"` : v
@@ -197,7 +206,7 @@ export const IntervalReturnsChart = memo(function IntervalReturnsChart({
         <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
           {hasBenchmark && (
             <>
-              <button type="button" onClick={() => setShowExcess((v) => !v)} className="inline-flex items-center gap-1.5 hover:text-zinc-900 transition-colors">
+              <button type="button" onClick={toggleExcess} className="inline-flex items-center gap-1.5 hover:text-zinc-900 transition-colors">
                 <span className={["inline-flex h-3.5 w-3.5 items-center justify-center rounded border", showExcess ? "border-zinc-700 bg-zinc-700" : "border-zinc-300 bg-white"].join(" ")}>
                   {showExcess && <svg viewBox="0 0 12 12" className="h-2.5 w-2.5 text-white" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 6l3 3 5-5" /></svg>}
                 </span>
@@ -270,9 +279,9 @@ export const IntervalReturnsChart = memo(function IntervalReturnsChart({
                 </Bar>
               </>
             ) : (
-              <Bar dataKey={showExcess && showBenchmark ? "excessPct" : "fundPct"} name={seriesName} radius={[2, 2, 0, 0]}>
+              <Bar dataKey={showExcess ? "excessPct" : "fundPct"} name={seriesName} radius={[2, 2, 0, 0]}>
                 {chartData.map((entry, i) => {
-                  const v = showExcess && showBenchmark ? (entry.excessPct ?? entry.fundPct) : entry.fundPct
+                  const v = showExcess ? (entry.excessPct ?? 0) : entry.fundPct
                   return <Cell key={i} fill={v >= 0 ? RED : GREEN} />
                 })}
               </Bar>

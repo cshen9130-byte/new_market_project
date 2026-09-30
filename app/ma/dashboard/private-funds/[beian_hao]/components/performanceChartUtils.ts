@@ -19,8 +19,10 @@ export type NavChartPoint = {
   ts: number
   value: number
   benchmarkValue: number | null
+  excessValue: number | null
   periodReturn: number | null
   benchmarkPeriodReturn: number | null
+  excessPeriodReturn: number | null
 }
 
 function matchBenchmarkRawValues(
@@ -527,15 +529,27 @@ export function buildNavChartData(
 
   return sampled.map((row, index) => {
     const navValue = fundNavValues[index]
+    const fundCum = chartMode === "return"
+      ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
+      : navValue
+    const benchCum = benchmarkValues[index]
+    const periodReturn = periodReturns[index]
+    const benchmarkPeriodReturn = benchmarkPeriodReturns[index]
+    const excessValue = chartMode === "return" && benchCum !== null
+      ? +(fundCum - benchCum).toFixed(4)
+      : null
+    const excessPeriodReturn = periodReturn !== null && benchmarkPeriodReturn !== null
+      ? +(periodReturn - benchmarkPeriodReturn).toFixed(4)
+      : null
     return {
       date: row.price_date,
       ts: dateToUtcTs(row.price_date),
-      value: chartMode === "return"
-        ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
-        : navValue,
-      benchmarkValue: benchmarkValues[index],
-      periodReturn: periodReturns[index],
-      benchmarkPeriodReturn: benchmarkPeriodReturns[index],
+      value: fundCum,
+      benchmarkValue: benchCum,
+      excessValue,
+      periodReturn,
+      benchmarkPeriodReturn,
+      excessPeriodReturn,
     }
   })
 }

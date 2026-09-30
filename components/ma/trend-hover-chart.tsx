@@ -51,6 +51,7 @@ export function TrendHoverChart({
       beian_hao,
       days: String(days),
       mode,
+      lite: "1",
     })
     fetch(`/ma/api/tracking-funds/chart-preview?${params}`)
       .then((r) => r.json())
