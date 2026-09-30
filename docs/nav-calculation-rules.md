@@ -279,6 +279,7 @@ npx tsx scripts/ma/_diag_bah99a_route.ts
 
 ---
 
+
 ### What This Fix Does NOT Change
 
 - SBAH99 dividend formulas (`syncExDivAdjustedNav`, `rechainDerivedFromPrev`, etc.)
@@ -2476,3 +2477,54 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes assertion block **GA681A team adj rechains from legacy tip**.
+
+
+## What Was Fixed (卓尚天道1号A — GT288A, unit-only manual upload vs custodian email, 2026-09-30)
+
+### The Problem
+
+The return chart for GT288A jumped from about +13% to about +30% at the end of September 2026.
+
+The manual file `卓尚天道1号A份额净值序列_20250620_20260911.xlsx` only has 单位净值. It was stored in `ops_team_nav_manual` (`beian_hao = GT288A`, `nav_type = pre_fee`, 311 rows, 2025-06-19 through 2026-09-23) with `cumulative_nav = unit_nav` and `adjusted_nav` empty (or equal to unit on the last few rows). The chart therefore treated 累计净值 and 复权净值 as the unit series.
+
+Custodian email in `ops_email_nav_records` (`product_code = GT288A`, `source = attachment_nav_table`) has 单位净值, 累计净值, and 复权净值 for 2025-06-20 through 2026-09-29, including the same dates as the Excel. Those official 累计 / 复权 numbers are not the unit series (2025-06-20 unit 1.0000, 累计 and 复权 1.1929). From 2026-01-07 the email 单位净值 is also lower than the manual unit. The email is the custodian source and is the one to keep for the overlap, not only for dates after the Excel.
+
+### Root Cause
+
+`loadManagedProductEmailPoints` drops every email date inside a manual window of at least 10 rows, then builds manual points with `cumulative_nav: row.cumulative_nav ?? row.unit_nav`. A unit-only upload therefore owns the window and publishes 累计 = 单位. `appendEmailAfterSeriesTip` only adds email after the team tip, which is correct for a team series that already has a real 累计 (BUK40A, SZJ909) and wrong when the manual file never had 累计 or 复权.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Code | `lib/server/email-nav-query.ts` — `preferCustodianEmailOverUnitOnlyManual` | Called from `loadManagedProductEmailPoints` and `loadManagedProductTeamNavBatch` before the manual window wins |
+| Trigger | whole manual series is unit-only, and email has a real 累计 gap (`abs(cum - unit) >= 0.01`) on at least 20 dates and at least half of the manual dates | Overlapping dates are replaced with the email unit, 累计, and 复权. Manual dates the email does not cover stay manual, except an interior date the email never published (GT288A 2026-06-01, unit 1.1160 between custodian units 1.0445 and 1.0499), which is dropped so it cannot spike the chart. The single leading day is kept when its unit matches the next email unit |
+| Lead-in | one date before the first email row | If that day's unit matches the next email unit, copy that next 累计 and 复权 (GT288A 2025-06-19). Do not carry across a unit change |
+| DB repair | `ops_team_nav_manual` GT288A only | Overlapping rows updated from `ops_email_nav_records`. 2025-06-19 累计 / 复权 copied from 2025-06-20 because both units are 1.0000 |
+| Cache | `ops_private_fund_detail_nav_cache` GT288A | Invalidated + refreshed |
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2025-06-19 (lead-in, unit matches next day) | 1.0000 | **1.1929** | **1.1929** |
+| 2025-06-20 | 1.0000 | **1.1929** | **1.1929** |
+| 2026-09-23 | 1.0513 | **1.3083** | **1.3083** |
+| 2026-09-29 (email tail) | 1.0471 | **1.3041** | **1.3041** |
+
+2026-06-01 was in the manual file only (unit 1.1160, no custodian row). That row was deleted from `ops_team_nav_manual`.
+
+### What This Fix Does NOT Change
+
+- GA681A: the manual file already has a real 累计 gap, so the unit-only check is false and the premium rechain stays
+- BUK40A and SZJ909: team window still wins unless the whole manual series is unit-only and email covers at least 20 dates and half of them with a real 累计 gap
+- VW787B (15 email gaps) and SAYP39 (1 email gap): below the 20-date and 50% guard, so the upload is not rewritten
+- SBAH99 dividend formulas, SNF018 virtual-first FOF email priority, SSG947 seed merge, SQX078 swap repair
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes assertion block **GT288A overlap takes custodian unit and cum**.

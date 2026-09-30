@@ -1,4 +1,4 @@
-import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
+import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, preferCustodianEmailOverUnitOnlyManual, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
@@ -3977,3 +3977,55 @@ if (fs.existsSync(excelPath)) {
   )
 }
 
+
+function testGt288aUnitOnlyManualPrefersCustodianEmail() {
+  const iso = (n) => new Date(Date.UTC(2025, 5, 20 + n)).toISOString().slice(0, 10)
+  const manual = Array.from({ length: 40 }, (_, i) => ({
+    id: String(i),
+    nav_date: iso(i),
+    unit_nav: i === 0 ? "1.0000" : (1.1 + i * 0.001).toFixed(4),
+    cumulative_nav: i === 0 ? "1.0000" : (1.1 + i * 0.001).toFixed(4),
+    adjusted_nav: null,
+  }))
+  // Leading day is the day before the first email date, same unit.
+  manual.unshift({
+    id: "lead",
+    nav_date: "2025-06-19",
+    unit_nav: "1.0000",
+    cumulative_nav: "1.0000",
+    adjusted_nav: null,
+  })
+  const email = manual.slice(1).map((row, i) => ({
+    price_date: row.nav_date,
+    nav: i === 0 ? "1.0000" : (1.05 + i * 0.0001).toFixed(4),
+    cumulative_nav: (1.1929 + i * 0.0001).toFixed(4),
+    adjusted_nav: (1.1929 + i * 0.0001).toFixed(4),
+  }))
+  manual.splice(10, 0, {
+    id: "holiday",
+    nav_date: "2026-06-01",
+    unit_nav: "1.1160",
+    cumulative_nav: "1.1160",
+    adjusted_nav: null,
+  })
+  const out = preferCustodianEmailOverUnitOnlyManual(manual, email)
+  assert(
+    "GT288A interior date with no email is dropped",
+    out.every((row) => row.nav_date !== "2026-06-01"),
+  )
+  assert(
+    "GT288A overlap takes custodian unit and cum",
+    out[1].unit_nav === "1.0000" && out[1].cumulative_nav.startsWith("1.1929") && out[1].adjusted_nav.startsWith("1.1929"),
+  )
+  assert(
+    "GT288A lead-in day copies next official cum when units match",
+    out[0].nav_date === "2025-06-19" && out[0].unit_nav === "1.0000" && out[0].cumulative_nav.startsWith("1.1929"),
+  )
+  const withCum = manual.map((row) => ({ ...row, cumulative_nav: "1.8000", adjusted_nav: "2.1000" }))
+  const kept = preferCustodianEmailOverUnitOnlyManual(withCum, email)
+  assert("real cum manual is not replaced by email", kept[1].cumulative_nav === "1.8000" && kept[1].unit_nav === manual[1].unit_nav)
+  const sparse = preferCustodianEmailOverUnitOnlyManual(manual, email.slice(0, 5))
+  assert("sparse custodian gaps do not rewrite a unit-only upload", sparse[1].unit_nav === manual[1].unit_nav && sparse[1].cumulative_nav === manual[1].cumulative_nav)
+}
+
+testGt288aUnitOnlyManualPrefersCustodianEmail()

@@ -4,6 +4,7 @@ import {
   loadEmailNavManagePoints,
   loadEmailNavManageRows,
   mergeNavSeriesWithEmail,
+  preferCustodianEmailOverUnitOnlyManual,
   type EmailNavPoint,
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
@@ -310,8 +311,17 @@ export async function loadManagedProductTeamNavBatch(
     for (const point of emailByCode.get(code) ?? []) {
       upsertTeamNavPoint(byDate, point, true)
     }
-    // Manual upload wins unit on the same date (matches loadManagedProductEmailPoints).
-    for (const point of manualMap.get(code) ?? []) {
+    const emailAsPoints: EmailNavPoint[] = (emailByCode.get(code) ?? []).map((point) => ({
+      price_date: point.nav_date,
+      nav: point.unit_nav,
+      cumulative_nav: point.cumulative_nav,
+      adjusted_nav: point.adjusted_nav,
+    }))
+    const manualCorrected = preferCustodianEmailOverUnitOnlyManual(
+      manualMap.get(code) ?? [],
+      emailAsPoints,
+    )
+    for (const point of manualCorrected) {
       upsertTeamNavPoint(byDate, { ...point, nav_date: point.nav_date.slice(0, 10) }, true)
     }
     const series = [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
@@ -701,20 +711,21 @@ export async function loadManagedProductEmailPoints(params: {
     loadManualTeamNavRows(params.beian_hao, nav_type),
   ])
 
-  const manualDates = new Set(manual.map((row) => row.nav_date))
+  const manualForChart = preferCustodianEmailOverUnitOnlyManual(manual, emailPoints)
+  const manualDates = new Set(manualForChart.map((row) => row.nav_date))
   // Manual upload owns its [min, max] window so mid-week email scraps cannot
   // intercalate between weekly rows and sawtooth the 复权 chart. Email may still
   // extend *after* the last manual date for ongoing auto-updates.
-  const manualMin = manual[0]?.nav_date ?? ""
-  const manualMax = manual[manual.length - 1]?.nav_date ?? ""
+  const manualMin = manualForChart[0]?.nav_date ?? ""
+  const manualMax = manualForChart[manualForChart.length - 1]?.nav_date ?? ""
   const filteredEmail = emailPoints.filter((row) => {
     if (manualDates.has(row.price_date)) return false
-    if (manual.length >= 10 && manualMin && manualMax) {
+    if (manualForChart.length >= 10 && manualMin && manualMax) {
       return row.price_date < manualMin || row.price_date > manualMax
     }
     return true
   })
-  const manualPoints: EmailNavPoint[] = manual.map((row) => ({
+  const manualPoints: EmailNavPoint[] = manualForChart.map((row) => ({
     price_date: row.nav_date,
     nav: row.unit_nav,
     cumulative_nav: row.cumulative_nav ?? row.unit_nav,

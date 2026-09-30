@@ -2891,6 +2891,113 @@ function seriesTipBeforeLongHole(series: LegacyNavRow[]): string {
   return tip
 }
 
+/**
+ * A manual upload that only stored 单位净值 copies that number into 累计净值 and
+ * leaves 复权净值 empty (or equal to 单位). When custodian email covers most of
+ * those same dates with a real 累计 gap, keep the email unit, 累计, and 复权
+ * (GT288A). A series that already has its own 累计 (GA681A) is left alone. A
+ * handful of email gaps (VW787B, SAYP39) is not enough to rewrite the upload.
+ */
+export function preferCustodianEmailOverUnitOnlyManual<T extends {
+  nav_date: string
+  unit_nav: string
+  cumulative_nav: string | null
+  adjusted_nav: string | null
+}>(manual: T[], emailPoints: EmailNavPoint[]): T[] {
+  if (manual.length < 5) return manual
+  const unitOnly = (row: T) => {
+    const unit = Number(row.unit_nav)
+    if (!Number.isFinite(unit) || unit <= 0) return false
+    const cum =
+      row.cumulative_nav == null || row.cumulative_nav === "" ? null : Number(row.cumulative_nav)
+    const adj =
+      row.adjusted_nav == null || row.adjusted_nav === "" ? null : Number(row.adjusted_nav)
+    const cumMissing = cum == null || !Number.isFinite(cum) || Math.abs(cum - unit) < 0.0005
+    const adjMissing = adj == null || !Number.isFinite(adj) || Math.abs(adj - unit) < 0.0005
+    return cumMissing && adjMissing
+  }
+  if (!manual.every(unitOnly)) return manual
+
+  const emailByDate = new Map<string, EmailNavPoint>()
+  for (const point of emailPoints) {
+    const date = point.price_date.slice(0, 10)
+    const unit = point.nav == null || point.nav === "" ? NaN : Number(point.nav)
+    const cum =
+      point.cumulative_nav == null || point.cumulative_nav === ""
+        ? null
+        : Number(point.cumulative_nav)
+    if (!Number.isFinite(unit) || unit <= 0 || cum == null || !Number.isFinite(cum)) continue
+    if (Math.abs(cum - unit) < 0.01) continue
+    emailByDate.set(date, point)
+  }
+
+  let hits = 0
+  for (const row of manual) {
+    if (emailByDate.has(row.nav_date.slice(0, 10))) hits += 1
+  }
+  if (hits < 20 || hits < manual.length * 0.5) return manual
+
+  const replaced = manual.map((row) => {
+    const email = emailByDate.get(row.nav_date.slice(0, 10))
+    if (
+      !email ||
+      email.nav == null ||
+      email.nav === "" ||
+      email.cumulative_nav == null ||
+      email.cumulative_nav === ""
+    ) {
+      return row
+    }
+    const adj =
+      email.adjusted_nav == null || email.adjusted_nav === ""
+        ? email.cumulative_nav
+        : email.adjusted_nav
+    return {
+      ...row,
+      unit_nav: String(email.nav),
+      cumulative_nav: String(email.cumulative_nav),
+      adjusted_nav: String(adj),
+    }
+  })
+
+  // One leading day the email does not cover (GT288A 2025-06-19, unit 1.0) would
+  // still chart a cliff into the first official 累计. Copy that next day's 累计
+  // and 复权 only when the units match. Do not carry across a unit change.
+  let carriedLeadIn = false
+  const order = replaced
+    .map((row, index) => ({ row, index, date: row.nav_date.slice(0, 10) }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.index - b.index)
+  if (order.length >= 2 && !emailByDate.has(order[0].date)) {
+    const first = order[0].row
+    const second = order[1].row
+    const unit0 = Number(first.unit_nav)
+    const unit1 = Number(second.unit_nav)
+    const cum1 = second.cumulative_nav == null ? NaN : Number(second.cumulative_nav)
+    if (
+      Number.isFinite(unit0) &&
+      Number.isFinite(unit1) &&
+      Math.abs(unit0 - unit1) < 0.0005 &&
+      Number.isFinite(cum1) &&
+      Math.abs(cum1 - unit1) >= 0.01
+    ) {
+      replaced[order[0].index] = {
+        ...first,
+        cumulative_nav: second.cumulative_nav,
+        adjusted_nav: second.adjusted_nav,
+      }
+      carriedLeadIn = true
+    }
+  }
+
+  // Email did not publish these dates. Keeping a unit-only interior point
+  // (GT288A 2026-06-01, unit 1.116 between custodian units 1.0445 and 1.0499)
+  // spikes the chart. Drop every uncovered date except the one carried lead-in.
+  return replaced.filter((row, index) => {
+    if (emailByDate.has(row.nav_date.slice(0, 10))) return true
+    return carriedLeadIn && index === order[0].index
+  })
+}
+
 export function appendEmailAfterSeriesTip(
   series: LegacyNavRow[],
   emailRows: EmailNavPoint[],
