@@ -111,9 +111,7 @@ export function InvestmentNoteAssociationDialog({
         if (cancelled) return
         setExtractedProducts(result.products)
         setExtractedPending(result.pendingCount)
-        if (initial && (result.products.length > 0 || result.pendingCount > 0)) {
-          setCategory(EXTRACTED_SOURCE)
-        }
+        // Keep category on 私募基金 by default; user opens 资料提取 via the button.
       } catch {
         if (cancelled) return
         if (initial) {
@@ -355,20 +353,49 @@ export function InvestmentNoteAssociationDialog({
             <div className="flex items-center gap-3 border-b px-4 py-3">
               <div className="relative w-40 shrink-0">
                 <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value as ListSource)}
+                  value={category === EXTRACTED_SOURCE ? "" : category}
+                  onChange={(e) => setCategory(e.target.value as AssociationCategory)}
                   className="h-9 w-full appearance-none rounded border border-zinc-200 bg-white pl-3 pr-8 text-sm text-zinc-700 focus:border-red-400 focus:outline-none focus:ring-1 focus:ring-red-200"
                 >
-                  <option value={EXTRACTED_SOURCE}>
-                    {EXTRACTED_SOURCE}
-                    {extractedProducts.length > 0 ? ` (${extractedProducts.length})` : ""}
-                  </option>
+                  {category === EXTRACTED_SOURCE ? (
+                    <option value="" disabled hidden>
+                      资料提取
+                    </option>
+                  ) : null}
                   {ASSOCIATION_CATEGORIES.map((item) => (
                     <option key={item} value={item}>{item}</option>
                   ))}
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
               </div>
+              <button
+                type="button"
+                onClick={() => setCategory(EXTRACTED_SOURCE)}
+                disabled={!noteId}
+                title={
+                  !noteId
+                    ? "请先打开具体笔记"
+                    : extractedPending > 0 && extractedProducts.length === 0
+                      ? `资料提取中（${extractedPending}）`
+                      : extractedProducts.length > 0
+                        ? `查看资料提取结果（${extractedProducts.length}）`
+                        : "查看资料提取结果"
+                }
+                className={`h-9 shrink-0 rounded border px-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  category === EXTRACTED_SOURCE
+                    ? "border-amber-400 bg-amber-50 text-amber-900"
+                    : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+                }`}
+              >
+                资料提取
+                {extractedLoading ? (
+                  <span className="ml-1 text-zinc-400">…</span>
+                ) : extractedProducts.length > 0 ? (
+                  <span className="ml-1 tabular-nums text-amber-700">({extractedProducts.length})</span>
+                ) : extractedPending > 0 ? (
+                  <span className="ml-1 tabular-nums text-zinc-400">({extractedPending})</span>
+                ) : null}
+              </button>
               <div className="relative min-w-0 flex-1">
                 <input
                   type="text"
