@@ -14,7 +14,7 @@ import {
 import { readFundContractText } from "@/lib/server/fund-contract-element-extract"
 import { resolveExtractedProductCandidates } from "@/lib/server/investment-note-extracted-products"
 import { extractPptxText, isPptxOpenXmlExtension } from "@/lib/server/pptx-text"
-import { readPdfTextFastForNotes } from "@/lib/server/pdf-text"
+import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
 import {
   linkInvestmentNoteMaterials,
   readInvestmentNoteMaterialFile,
@@ -28,15 +28,13 @@ import {
 import type { InvestmentNoteKbOwner } from "@/lib/server/investment-notes-kb-sync"
 
 const MAX_MATERIALS = 8
-/** Quality-first budget: large decks should finish within ~30s. */
-const MAX_TEXT_PER_FILE = 10_000
-const MAX_TOTAL_TEXT = 28_000
+/** Same source budget as the earlier high-quality notes. */
+const MAX_TEXT_PER_FILE = 12_000
+const MAX_TOTAL_TEXT = 40_000
 const FALLBACK_TEXT_PER_FILE = 6_000
-const PDF_NOTE_MAX_PAGES_SMALL = 30
-const PDF_NOTE_MAX_PAGES_LARGE = 50
-const LARGE_PDF_BYTES = 8 * 1024 * 1024
-const AI_TIMEOUT_MS = 28_000
-const AI_MAX_TOKENS = 4_096
+/** Room for a full qwen-plus write-up. The progress bar keeps moving. */
+const AI_TIMEOUT_MS = 120_000
+const AI_MAX_TOKENS = 8_192
 const TEXT_EXTENSIONS = new Set([".txt", ".csv"])
 const EXTRACT_EXTENSIONS = new Set([
   ".doc",
@@ -165,7 +163,7 @@ function stringifyModelContent(content: unknown): string {
 function getChatModel(): ChatOpenAI {
   const apiKey = process.env.DASHSCOPE_API_KEY
   if (!apiKey) throw new Error("缺少 DASHSCOPE_API_KEY")
-  // qwen-plus for note quality; still bounded to ~30s and no thinking mode.
+  // Same model path as the earlier structured notes (管理人 / 团队 / 业绩表).
   const model =
     process.env.DASHSCOPE_NOTE_MODEL ||
     process.env.DASHSCOPE_ANALYSIS_MODEL ||
@@ -196,12 +194,10 @@ async function extractMaterialText(buffer: Buffer, fileName: string): Promise<st
   if (isPptxOpenXmlExtension(ext)) {
     return extractPptxText(buffer)
   }
-  // PDFs: skip OCR / getTable (those hang on large decks). Large files get
-  // more pages within the ~30s budget.
+  // Full text plus tables — the performance grid in strategy decks lives in tables.
+  // OCR stays off; that path is what made large PDFs look stuck.
   if (ext === ".pdf") {
-    const maxPages =
-      buffer.byteLength >= LARGE_PDF_BYTES ? PDF_NOTE_MAX_PAGES_LARGE : PDF_NOTE_MAX_PAGES_SMALL
-    return (await readPdfTextFastForNotes(buffer, { maxPages })).trim()
+    return (await readPdfTextWithCmaps(buffer)).trim()
   }
   if (EXTRACT_EXTENSIONS.has(ext)) {
     return (await readFundContractText(buffer, fileName)).trim()
@@ -248,7 +244,7 @@ async function summarizeWithAi(input: {
       "你是私募投资研究助手，负责把路演材料、尽调资料、合同或研究报告整理成投资笔记。",
       "要求：",
       "1. 只依据提供的文件内容和路演信息整理，不要编造其中没有的事实、数据或结论。",
-      "2. 用中文撰写，结构清晰，突出要点、关键数据和风险；内容充实但控制篇幅。",
+      "2. 用中文撰写，结构清晰，突出要点、关键数据和风险。",
       "3. 严格输出 JSON：{\"title\":\"笔记标题\",\"content\":\"HTML正文\",\"products\":[{\"name\":\"产品全称\",\"recordNo\":\"备案号\"}]}",
       "4. title 简洁，不超过 80 字，可包含管理人、产品或主题。",
       "5. content 使用简单 HTML（div、b、p、ul、li、table），不要使用 markdown，不要用代码块包裹。",
@@ -436,16 +432,29 @@ export async function generateInvestmentNoteFromMaterials(input: {
 
   for (let i = 0; i < materials.length; i += 1) {
     const material = materials[i]
-    input.onProgress?.(
-      progressPayload({
-        stage: "extracting",
-        index: i + 1,
-        total: materials.length,
-        name: material.name,
-      }),
-    )
+    const extractStarted = Date.now()
+    const emitExtract = () => {
+      const elapsed = (Date.now() - extractStarted) / 1000
+      const total = Math.max(1, materials.length)
+      const sliceStart = 5 + (i / total) * 35
+      const sliceEnd = 5 + ((i + 1) / total) * 35
+      const creep = Math.min(0.9, elapsed / 45)
+      input.onProgress?.(
+        progressPayload({
+          stage: "extracting",
+          index: i + 1,
+          total: materials.length,
+          name: material.name,
+          elapsedSec: Math.round(elapsed),
+          percent: sliceStart + (sliceEnd - sliceStart) * creep,
+        }),
+      )
+    }
+    emitExtract()
+    const extractTick = setInterval(emitExtract, 1_200)
     const file = await readInvestmentNoteMaterialFile(material.id)
     if (!file) {
+      clearInterval(extractTick)
       skipped.push(`${material.name}（文件缺失）`)
       continue
     }
@@ -459,6 +468,8 @@ export async function generateInvestmentNoteFromMaterials(input: {
     } catch (err) {
       const reason = err instanceof Error ? err.message : "无法提取文字"
       skipped.push(`${material.name}（${reason}）`)
+    } finally {
+      clearInterval(extractTick)
     }
   }
 

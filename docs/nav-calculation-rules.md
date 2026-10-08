@@ -20,6 +20,8 @@ This must be satisfied for **every single row** in the NAV series, including and
 
 In `ops_team_nav_manual` the column `cumulative_nav` stores **累计净值** (not 复权净值). Column `adjusted_nav` is optional: leave it null and the pipeline computes 复权 (preserving any legacy adj/cum premium via `mergeLegacyWithTeamNav`); or supply a correct 复权 that already carries that premium. See **Operator rule — manual team NAV uploads**.
 
+火富牛 `FundMultiPrice` already uses these names: `cumulative_nav` = 复权净值, `cumulative_nav_withdrawal` = 累计净值. `FundAdvancedList` does not: `price_cw_nav` = 复权净值, `price_cnw` = 累计净值. The Friday list writer must map the list names onto the columns above. See **What Was Fixed (复途神舟一号 — SXL292, Friday list columns, 2026-10-09)**.
+
 ---
 
 ## What Was Fixed (荣熙恒盈2号 — SBAH99)
@@ -2611,3 +2613,79 @@ Includes **fof99 yields only to custodian NAV email**. The older **STE102 stale 
 ```bash
 npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=STE102 --name=京盈智投博远
 ```
+
+## What Was Fixed (复途神舟一号 — SXL292, Friday list columns, 2026-10-09)
+
+### The Problem
+
+The product page for 复途神舟一号 (备案号 SXL292) showed **2026-09-29** as 单位净值 **1.0449**, 累计净值 **1.4394**, 复权净值 **1.4928**, 涨跌幅 **+3.71%**, 成立以来 about **+49.28%**. 火富牛 for the same day is 单位净值 **1.0449**, 累计净值 **1.3880**, 复权净值 **1.4394**, 涨跌幅 about **+0.02%**, 成立以来 **43.94%** (`1.4394 / 1 − 1`). Since the 2026-03-20 dividend, 火富牛 累计净值 stays at 单位净值 **+ 0.3431**, and 复权净值 stays about **0.05** above 累计净值.
+
+The page series is 火富牛 only. Six 广发 virtual-NAV emails exist for this product; they do not replace a `legacy_origin = fof99` point.
+
+### Root Cause
+
+火富牛 did not change its columns on 2026-09-04. Two APIs use different field names for the same pair of numbers:
+
+| API | 累计净值 | 复权净值 | How this repo writes it |
+|---|---|---|---|
+| `FundMultiPrice` (`/fund/price`) | `cumulative_nav_withdrawal` | `cumulative_nav` | Weekly batches `{date}-{nnnn}` and Friday probe batches `fri-pm-{date}-m{nnnn}` match the DB columns |
+| `FundAdvancedList` (`/fund/advancedlist`) | `price_cnw` | `price_cw_nav` | Friday list pages `fri-pm-{date}-p{nnnn}` |
+
+From commit `117c0098` (2026-09-07), `persist_list_page` in `scripts/ma/fof99_friday_afternoon_fetch.py` passed `cum=price_cnw` and `withdraw=price_cw_nav`. The insert column order is `(nav, cumulative_nav, cum_nav_withdrawal) = (nav, cum, withdraw)`, so 累计净值 landed in `cumulative_nav` and 复权净值 landed in `cum_nav_withdrawal`. `ON CONFLICT (beian_hao, price_date) DO NOTHING` keeps the first writer. `fof99_nav_fetch_log` is also first-writer only, so `batch_id` still says `…-pNNNN` even if a later `FundMultiPrice` `save_latest` updated the NAV row.
+
+SXL292:
+
+| Date | Batch | What was stored before the repair |
+|---|---|---|
+| 2026-08-28 | `2026-08-28-0044` (FundMultiPrice) | 单位 1.038900, 复权 1.431179, 累计 1.382000. Left as-is |
+| 2026-09-04 | `fri-pm-2026-09-04-p0006` | 单位 1.039700, `cumulative_nav` 1.382800 (true 累计), `cum_nav_withdrawal` 1.432281 (true 复权) |
+| 2026-09-11 | `fri-pm-2026-09-11-p0006` | same reversal |
+| 2026-09-18 | `fri-pm-2026-09-18-p0006` | same reversal |
+| 2026-09-24 | `fri-pm-2026-09-24-m0040` (FundMultiPrice) | 复权 1.439307, 累计 1.387900. Left as-is |
+| 2026-09-29 | `fri-pm-2026-09-30-p0003` | 单位 1.044900, `cumulative_nav` 1.388000 (true 累计), `cum_nav_withdrawal` 1.439445 (true 复权) |
+
+The **1.4928** figure was not stored. On read, `repairSwappedCumAdjRows` only swaps when `(累计 − 复权) / 单位 >= 0.15`. SXL292’s gap is about **4.9%**, so that rule does not fire. `isContinuationColumnSwap` unswaps a run of at least two dates and deliberately leaves a single day (STE102). 09-04/11/18 are a run of three; 09-29 is one day after a correctly oriented 09-24. `repairAdjBelowCumRows` then saw 累计列 > 复权列 and set 复权 to `prevAdj × thisWithdrawal / prevCum` = `1.439307 × 1.439445 / 1.387900` = **1.492761**. The table 涨跌幅 is that 复权 against the previous 复权: `1.492761 / 1.439307 − 1` = **+3.71%**.
+
+This is not the 中信邮件 header fix, the SQX078 15% swap, or the dividend rechain. Those run on email rows or on read, and they did not write these `private_fund_nav` rows.
+
+### The Correct Fix Applied
+
+1. **Writer.** `persist_list_page` now passes `cum=price_cw_nav` (复权 → `cumulative_nav`) and `withdraw=price_cnw` (累计 → `cum_nav_withdrawal`). New list inserts match FundMultiPrice. `ON CONFLICT DO NOTHING` does not repair rows already stored.
+
+2. **Historical rows.** `scripts/ma/_repair_friday_list_nav_apply.sql` exchanges the two columns only for fetch-log batches matching `^fri-pm-[0-9]{4}-[0-9]{2}-[0-9]{2}-p[0-9]+$`. A row is exchanged only when the stored pair is still the reversed list mapping:
+   - Against the nearest earlier row whose batch is **not** a list page: `cumulative_nav` continues 累计 (`单位 + (prior 累计 − prior 单位)`) and `cum_nav_withdrawal` continues 复权 (`prior 复权 × 单位 / prior 单位`), and that error is at least 5× smaller than the opposite reading, within `GREATEST(0.01, 0.001 × nav)`.
+   - If that anchor is missing or a dividend makes both readings miss, consecutive list rows of the same fund are used the same way. A row the anchor already calls correct is never exchanged. A difference of **0.00005** or less is left alone (same number at 4dp).
+
+   Applied **2026-10-09**: **15,009** rows, **4,173** funds. `ops_private_fund_detail_nav_cache` was deleted for those 备案号, and the ZB0807 alias cache for SXL292 was deleted. The next product-page open rebuilds from `private_fund_nav`. List-tip 涨跌幅 (`ops_fof_overview_list_cache.return_pct`) refreshes when that detail series is rebuilt.
+
+3. **Do not run the naive swap.** `scripts/ma/_repair_friday_list_nav_columns.py` now exits without writing. Swapping every p-batch row where `cum_nav_withdrawal > cumulative_nav` also matches funds whose true 累计净值 is above 复权净值 after this repair, and would reverse them again. Re-running the apply script hits its pre-fix SXL292 guard and aborts.
+
+The 15% threshold and the one-day continuation guard were not changed. Lowering 15% would mis-handle SQX078 (gap about 50%, and the swap there is the correct read). Treating every one-day inversion as a column swap would mis-handle STE102.
+
+### Verified Correct Values (after fix)
+
+SXL292 in `private_fund_nav`. `cumulative_nav` is 复权净值, `cum_nav_withdrawal` is 累计净值.
+
+| Date | 单位净值 | 累计净值 | 复权净值 | |
+|---|---|---|---|---|
+| 2026-08-28 | 1.038900 | 1.382000 | 1.431179 | not a list row; unchanged |
+| 2026-09-04 | 1.039700 | 1.382800 | 1.432281 | exchanged |
+| 2026-09-11 | 1.040600 | 1.383700 | 1.433521 | exchanged |
+| 2026-09-18 | 1.043300 | 1.386400 | 1.437241 | exchanged |
+| 2026-09-24 | 1.044800 | 1.387900 | 1.439307 | m-batch; unchanged |
+| 2026-09-29 | 1.044900 | 1.388000 | 1.439445 | exchanged |
+
+After the cache miss, 成立以来 uses 复权 **1.439445 / 1 − 1 = 43.94%**, and the 09-29 涨跌幅 is **1.439445 / 1.439307 − 1**.
+
+Left unchanged on purpose: STE102 **2026-09-10** stays 单位 3.206000, 累计 3.306000, 复权 3.471837. SSD519 and SAHM87 list-dated rows that a later FundMultiPrice update had already corrected were not exchanged.
+
+### What This Fix Does NOT Change
+
+- `repairSwappedCumAdjRows` (SQX078, 15% gap)
+- `isContinuationColumnSwap` (one isolated day is not a column swap)
+- `repairAdjBelowCumRows`, `syncExDivAdjustedNav`, `rechainDerivedFromPrev`
+- 中信【基金净值】 header parsing and the Citics repair scripts
+- FundMultiPrice weekly batches and `fri-pm-*-m*` probe batches
+- Email virtual NAV for SXL292 (it still does not overwrite 火富牛 rows)
+
+A few list rows were not exchanged: the two columns differ by less than 0.00005, or a dividend / missing prior week made both orientations miss. The same test after the update selects **0** further rows. Some repaired funds have true 累计净值 above 复权净值; do not swap them back just because `cum_nav_withdrawal > cumulative_nav`.

@@ -416,8 +416,10 @@ def persist_list_page(
             name=names.get(code, str(raw.get("fund_name") or "")),
             price_date=dt,
             nav=nav,
-            cum=raw.get("price_cnw"),
-            withdraw=raw.get("price_cw_nav"),
+            # List fields are named the other way from FundMultiPrice.
+            # price_cnw is 累计净值 → cum_nav_withdrawal; price_cw_nav is 复权净值 → cumulative_nav.
+            cum=raw.get("price_cw_nav"),
+            withdraw=raw.get("price_cnw"),
             change=raw.get("price_change"),
             batch_id=batch_id,
         )

@@ -1223,7 +1223,7 @@ export function generateProgressPercent(progress: GenerateNoteFromMaterialsProgr
   }
   if (progress.stage === "summarizing") {
     const sec = Math.max(0, progress.elapsedSec ?? 0)
-    return Math.max(0, Math.min(88, Math.round(42 + Math.min(46, (sec / 28) * 46))))
+    return Math.max(0, Math.min(88, Math.round(42 + Math.min(46, (sec / 120) * 46))))
   }
   if (progress.stage === "saving") return 95
   return 0

@@ -1,0 +1,25 @@
+{
+  "lines_scanned": 334158,
+  "hits_in_week": 308846,
+  "product_hits": 238853,
+  "page_hits": 97693,
+  "unique_ips": 1107,
+  "bytes_in_week": 8623451669,
+  "kind": {
+    "page": 97693,
+    "api": 138640,
+    "heartbeat": 38945,
+    "static": 24633,
+    "probe": 4372,
+    "admin": 1781,
+    "login": 739,
+    "other": 2043
+  },
+  "first_ts": "2026-09-11T00:00:00+08:00",
+  "last_ts": "2026-09-24T21:08:55+08:00",
+  "timezone": "Asia/Shanghai",
+  "since": "2026-09-11",
+  "until": "2026-09-24",
+  "http_source": "/var/log/nginx/access.log + rotated access.log.*",
+  "login_source": "public.auth_login_history"
+}
