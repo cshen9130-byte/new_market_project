@@ -512,11 +512,23 @@ function extractEmbeddedProductCodes(...parts: Array<string | null | undefined>)
   return Array.from(codes)
 }
 
+function fundSerialSuffix(name: string): string {
+  const base = name
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .replace(/[ABC]类$/u, "")
+    .replace(/\s+/g, "")
+    .trim()
+  return base.match(/[一二三四五六七八九十百千0-9]+号$/u)?.[0] ?? ""
+}
+
 function nameMatchesAlias(fundName: string | null, aliases: string[]): boolean {
   const name = (fundName ?? "").trim()
   if (!name) return false
   return aliases.some((alias) => {
     const a = alias.trim()
+    if (!a) return false
+    // 诚奇睿盈对冲 must not absorb 诚奇睿盈对冲2号.
+    if (fundSerialSuffix(name) !== fundSerialSuffix(a)) return false
     return name === a || name.startsWith(a) || a.startsWith(name)
   })
 }
@@ -2547,12 +2559,59 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   return sorted
 }
 
+function swapCumAdjFields(row: LegacyNavRow): LegacyNavRow {
+  const cum = parseOptionalNav(row.cum_nav_withdrawal)
+  const adj = parseOptionalNav(row.cumulative_nav)
+  if (cum == null || adj == null) return row
+  return {
+    ...row,
+    cum_nav_withdrawal: String(+adj.toFixed(6)),
+    cumulative_nav: String(+cum.toFixed(6)),
+  }
+}
+
+/**
+ * Small inversion where `cumulative_nav` continues the prior 累计 (unit + gap)
+ * and `cum_nav_withdrawal` continues the prior 复权 (unit ratio). One isolated
+ * date is stale 复权 (STE102) and must not swap. Two or more dates in a row
+ * are a persistent column swap (SCX154 from 2026-09-04).
+ */
+function isContinuationColumnSwap(prev: LegacyNavRow, curr: LegacyNavRow): boolean {
+  const unit = parseOptionalNav(curr.nav)
+  const storedCum = parseOptionalNav(curr.cum_nav_withdrawal)
+  const storedAdj = parseOptionalNav(curr.cumulative_nav)
+  const prevUnit = parseOptionalNav(prev.nav)
+  const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+  const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+  if (
+    unit == null || storedCum == null || storedAdj == null
+    || prevUnit == null || prevUnit <= 0 || prevCum == null || prevAdj == null
+    || unit <= 0
+  ) return false
+  if (
+    !isReasonableNav(unit) || !isReasonableNav(storedCum) || !isReasonableNav(storedAdj)
+    || !isReasonableNav(prevUnit) || !isReasonableNav(prevCum) || !isReasonableNav(prevAdj)
+  ) return false
+  if (storedCum <= storedAdj) return false
+  if (prevAdj + 0.001 < prevCum) return false
+  if (!hasDistinctCumulative(unit, storedCum) || !hasDistinctCumulative(unit, storedAdj)) return false
+  // Large inversions are the SQX078 absolute swap, already handled above.
+  if ((storedCum - storedAdj) / unit >= 0.15) return false
+
+  const unitRatio = unit / prevUnit
+  if (unitRatio <= 0.5 || unitRatio >= 1.5) return false
+  const gap = prevCum - prevUnit
+  const expectedCum = gap > 0.01 ? unit + gap : prevCum * unitRatio
+  const expectedAdj = prevAdj * unitRatio
+  return Math.abs(storedAdj - expectedCum) <= 0.0005 && Math.abs(storedCum - expectedAdj) <= 0.0005
+}
+
 /**
  * Legacy platform rows sometimes store 累计净值 and 复权净值 in swapped DB columns
  * (cum_nav_withdrawal > cumulative_nav while both sit above unit). Restores adj >= cum >= unit.
  */
 function repairSwappedCumAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
-  return rows.map((row) => {
+  const sorted = rows.map((row) => {
     const unit = parseOptionalNav(row.nav)
     const cum = parseOptionalNav(row.cum_nav_withdrawal)
     const adj = parseOptionalNav(row.cumulative_nav)
@@ -2567,15 +2626,30 @@ function repairSwappedCumAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
 
     const swappedCum = adj
     const swappedAdj = cum
-    if (swappedAdj >= swappedCum && swappedCum >= unit) {
-      return {
-        ...row,
-        cum_nav_withdrawal: String(+swappedCum.toFixed(6)),
-        cumulative_nav: String(+swappedAdj.toFixed(6)),
-      }
-    }
+    if (swappedAdj >= swappedCum && swappedCum >= unit) return swapCumAdjFields(row)
     return row
   })
+
+  let i = 1
+  while (i < sorted.length) {
+    if (!isContinuationColumnSwap(sorted[i - 1], sorted[i])) {
+      i += 1
+      continue
+    }
+    const run = [i]
+    let prev = swapCumAdjFields(sorted[i])
+    let j = i + 1
+    while (j < sorted.length && isContinuationColumnSwap(prev, sorted[j])) {
+      run.push(j)
+      prev = swapCumAdjFields(sorted[j])
+      j += 1
+    }
+    if (run.length >= 2) {
+      for (const idx of run) sorted[idx] = swapCumAdjFields(sorted[idx])
+    }
+    i = j
+  }
+  return sorted
 }
 
 /** Strip return-index spikes/tails for list-cache batch paths (no full finalize pipeline). */
@@ -2679,14 +2753,18 @@ export function mergeNavSeriesWithEmail(
   emailRows: EmailNavPoint[],
   fundContext?: FundNavSeriesContext | null,
 ): LegacyNavRow[] {
-  if (emailRows.length === 0) return finalizeNavSeries(legacyRows, new Set(), new Set(), fundContext)
+  // Unswap 累计/复权 before email overlay. A 资产净值公告 confirms 累计 and copies
+  // it into 复权; if the columns are still swapped, that overlay replaces the real
+  // 复权 (sitting in cum_nav_withdrawal) and finalize can no longer recover it.
+  const legacyPrepared = repairSwappedCumAdjRows(legacyRows)
+  if (emailRows.length === 0) return finalizeNavSeries(legacyPrepared, new Set(), new Set(), fundContext)
 
   const byDate = new Map<string, LegacyNavRow>()
-  for (const row of legacyRows) {
+  for (const row of legacyPrepared) {
     byDate.set(row.price_date, { ...row })
   }
 
-  const sortedLegacyDates = legacyRows.map((row) => row.price_date).sort()
+  const sortedLegacyDates = legacyPrepared.map((row) => row.price_date).sort()
   const unitOnlyEmailDates = new Set<string>()
   const adjOnlyEmailDates = new Set<string>()
 

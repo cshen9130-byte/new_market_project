@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Search } from "lucide-react"
+import { NavPresenceBadge } from "@/components/ma/nav-presence-badge"
 import { cn } from "@/lib/utils"
 
 type ProductHit = {
@@ -11,6 +12,7 @@ type ProductHit = {
   product_name: string
   short_name: string | null
   strategy_one: string | null
+  has_nav: boolean | null
 }
 
 type ManagerHit = {
@@ -21,14 +23,22 @@ type ManagerHit = {
 
 type SearchHit = ProductHit | ManagerHit
 
-function HighlightMatch({ text, query }: { text: string; query: string }) {
+function HighlightMatch({
+  text,
+  query,
+  matchClassName = "text-red-500",
+}: {
+  text: string
+  query: string
+  matchClassName?: string
+}) {
   if (!query) return <>{text}</>
   const idx = text.toLowerCase().indexOf(query.toLowerCase())
   if (idx < 0) return <>{text}</>
   return (
     <>
       {text.slice(0, idx)}
-      <span className="text-red-500">{text.slice(idx, idx + query.length)}</span>
+      <span className={matchClassName}>{text.slice(idx, idx + query.length)}</span>
       {text.slice(idx + query.length)}
     </>
   )
@@ -67,7 +77,7 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
     const el = wrapRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
-    const width = Math.max(rect.width, 320)
+    const width = Math.max(rect.width, 420)
     const left = Math.min(rect.left, window.innerWidth - width - 12)
     setDropdownPos({ top: rect.bottom + 4, left: Math.max(12, left), width })
   }, [])
@@ -92,7 +102,11 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
         const nextProducts: ProductHit[] = Array.isArray(json.products)
           ? json.products
               .filter((row: { beian_hao?: string; product_name?: string }) => row.beian_hao && row.product_name)
-              .map((row: ProductHit) => ({ ...row, kind: "product" as const }))
+              .map((row: ProductHit) => ({
+                ...row,
+                kind: "product" as const,
+                has_nav: row.has_nav === true ? true : row.has_nav === false ? false : null,
+              }))
           : []
         const nextManagers: ManagerHit[] = Array.isArray(json.managers)
           ? json.managers
@@ -267,15 +281,37 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
                           onMouseEnter={() => setHoverIdx(idx)}
                           onClick={() => goTo(hit)}
                           className={cn(
-                            "flex w-full items-start justify-between gap-3 px-3 py-1.5 text-left transition-colors",
+                            "flex w-full items-center gap-2 border-l-2 px-3 py-1.5 text-left transition-colors",
+                            hit.has_nav === true
+                              ? "border-emerald-500"
+                              : hit.has_nav === false
+                                ? "border-zinc-200"
+                                : "border-transparent",
                             idx === hoverIdx ? "bg-muted/70" : "hover:bg-muted/50",
                           )}
                         >
-                          <span className="min-w-0 text-xs text-foreground truncate">
-                            <HighlightMatch text={hit.short_name || hit.product_name} query={query.trim()} />
+                          <span className={cn(
+                            "min-w-0 flex-1 text-xs truncate",
+                            hit.has_nav === false ? "text-zinc-400" : "text-foreground",
+                          )}>
+                            <HighlightMatch
+                              text={hit.short_name || hit.product_name}
+                              query={query.trim()}
+                              matchClassName={hit.has_nav === false ? "text-zinc-400" : "text-red-500"}
+                            />
                           </span>
-                          <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                            <HighlightMatch text={hit.beian_hao} query={query.trim()} />
+                          {hit.has_nav === true || hit.has_nav === false ? (
+                            <NavPresenceBadge hasNav={hit.has_nav} />
+                          ) : null}
+                          <span className={cn(
+                            "shrink-0 text-[11px] tabular-nums",
+                            hit.has_nav === false ? "text-zinc-400" : "text-muted-foreground",
+                          )}>
+                            <HighlightMatch
+                              text={hit.beian_hao}
+                              query={query.trim()}
+                              matchClassName={hit.has_nav === false ? "text-zinc-400" : "text-red-500"}
+                            />
                           </span>
                         </button>
                       ))}

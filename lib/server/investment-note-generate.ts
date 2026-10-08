@@ -14,7 +14,7 @@ import {
 import { readFundContractText } from "@/lib/server/fund-contract-element-extract"
 import { resolveExtractedProductCandidates } from "@/lib/server/investment-note-extracted-products"
 import { extractPptxText, isPptxOpenXmlExtension } from "@/lib/server/pptx-text"
-import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
+import { readPdfTextFastForNotes } from "@/lib/server/pdf-text"
 import {
   linkInvestmentNoteMaterials,
   readInvestmentNoteMaterialFile,
@@ -28,12 +28,17 @@ import {
 import type { InvestmentNoteKbOwner } from "@/lib/server/investment-notes-kb-sync"
 
 const MAX_MATERIALS = 8
-const MAX_TEXT_PER_FILE = 12_000
-const MAX_TOTAL_TEXT = 40_000
-const CONTRACT_MAX_BYTES = 20 * 1024 * 1024
+/** Quality-first budget: large decks should finish within ~30s. */
+const MAX_TEXT_PER_FILE = 10_000
+const MAX_TOTAL_TEXT = 28_000
+const FALLBACK_TEXT_PER_FILE = 6_000
+const PDF_NOTE_MAX_PAGES_SMALL = 30
+const PDF_NOTE_MAX_PAGES_LARGE = 50
+const LARGE_PDF_BYTES = 8 * 1024 * 1024
+const AI_TIMEOUT_MS = 28_000
+const AI_MAX_TOKENS = 4_096
 const TEXT_EXTENSIONS = new Set([".txt", ".csv"])
 const EXTRACT_EXTENSIONS = new Set([
-  ".pdf",
   ".doc",
   ".docx",
   ".xls",
@@ -63,6 +68,37 @@ export type GenerateNoteFromMaterialsProgress = {
   index?: number
   total?: number
   name?: string
+  /** Seconds spent in the current stage (for summarizing heartbeat). */
+  elapsedSec?: number
+  /** 0–100 overall progress for the UI bar. */
+  percent?: number
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function progressPayload(
+  partial: Omit<GenerateNoteFromMaterialsProgress, "percent"> & { percent?: number },
+): GenerateNoteFromMaterialsProgress {
+  if (typeof partial.percent === "number") {
+    return { ...partial, percent: clampPercent(partial.percent) }
+  }
+  if (partial.stage === "extracting") {
+    const total = Math.max(1, partial.total ?? 1)
+    const index = Math.max(0, partial.index ?? 0)
+    // 5% → 40% across files
+    return { ...partial, percent: clampPercent(5 + (index / total) * 35) }
+  }
+  if (partial.stage === "summarizing") {
+    const elapsed = Math.max(0, partial.elapsedSec ?? 0)
+    // 42% → 88% over the AI budget (never claim 100% until save finishes)
+    return {
+      ...partial,
+      percent: clampPercent(42 + Math.min(46, (elapsed / (AI_TIMEOUT_MS / 1000)) * 46)),
+    }
+  }
+  return { ...partial, percent: 92 }
 }
 
 
@@ -129,15 +165,19 @@ function stringifyModelContent(content: unknown): string {
 function getChatModel(): ChatOpenAI {
   const apiKey = process.env.DASHSCOPE_API_KEY
   if (!apiKey) throw new Error("缺少 DASHSCOPE_API_KEY")
+  // qwen-plus for note quality; still bounded to ~30s and no thinking mode.
+  const model =
+    process.env.DASHSCOPE_NOTE_MODEL ||
+    process.env.DASHSCOPE_ANALYSIS_MODEL ||
+    process.env.DASHSCOPE_CHAT_MODEL ||
+    "qwen-plus"
   return new ChatOpenAI({
     apiKey,
-    model: process.env.DASHSCOPE_ANALYSIS_MODEL || process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
+    model,
     temperature: 0.2,
-    // Bound the call so a hung DashScope request falls back to extracted text
-    // before nginx's 300s silence timeout drops the browser connection.
-    timeout: 90_000,
-    maxRetries: 1,
-    maxTokens: 8192,
+    timeout: AI_TIMEOUT_MS,
+    maxRetries: 0,
+    maxTokens: AI_MAX_TOKENS,
     streaming: false,
     // Qwen3 keeps thinking on by default. A non-streaming call then either
     // errors or sits until the proxy kills it.
@@ -156,8 +196,12 @@ async function extractMaterialText(buffer: Buffer, fileName: string): Promise<st
   if (isPptxOpenXmlExtension(ext)) {
     return extractPptxText(buffer)
   }
-  if (ext === ".pdf" && buffer.byteLength > CONTRACT_MAX_BYTES) {
-    return (await readPdfTextWithCmaps(buffer)).trim()
+  // PDFs: skip OCR / getTable (those hang on large decks). Large files get
+  // more pages within the ~30s budget.
+  if (ext === ".pdf") {
+    const maxPages =
+      buffer.byteLength >= LARGE_PDF_BYTES ? PDF_NOTE_MAX_PAGES_LARGE : PDF_NOTE_MAX_PAGES_SMALL
+    return (await readPdfTextFastForNotes(buffer, { maxPages })).trim()
   }
   if (EXTRACT_EXTENSIONS.has(ext)) {
     return (await readFundContractText(buffer, fileName)).trim()
@@ -177,7 +221,7 @@ function fallbackTitle(fileNames: string[]): string {
 function fallbackContent(extracted: Array<{ name: string; text: string }>): string {
   const sections = extracted.flatMap((item, index) => [
     `<div><b>${index + 1}. ${escapeHtml(item.name)}</b></div>`,
-    toNoteHtml(item.text.slice(0, MAX_TEXT_PER_FILE)),
+    toNoteHtml(item.text.slice(0, FALLBACK_TEXT_PER_FILE)),
     "<div><br></div>",
   ])
   return compactRichNoteHtml(sections.join(""))
@@ -204,7 +248,7 @@ async function summarizeWithAi(input: {
       "你是私募投资研究助手，负责把路演材料、尽调资料、合同或研究报告整理成投资笔记。",
       "要求：",
       "1. 只依据提供的文件内容和路演信息整理，不要编造其中没有的事实、数据或结论。",
-      "2. 用中文撰写，结构清晰，突出要点、关键数据和风险。",
+      "2. 用中文撰写，结构清晰，突出要点、关键数据和风险；内容充实但控制篇幅。",
       "3. 严格输出 JSON：{\"title\":\"笔记标题\",\"content\":\"HTML正文\",\"products\":[{\"name\":\"产品全称\",\"recordNo\":\"备案号\"}]}",
       "4. title 简洁，不超过 80 字，可包含管理人、产品或主题。",
       "5. content 使用简单 HTML（div、b、p、ul、li、table），不要使用 markdown，不要用代码块包裹。",
@@ -225,7 +269,20 @@ async function summarizeWithAi(input: {
       .join("\n"),
   )
 
-  const aiResult = await model.invoke([system, human])
+  // Hard deadline in addition to the model timeout — LangChain/DashScope
+  // hangs occasionally ignore the client timeout and leave the UI spinning.
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const aiResult = await Promise.race([
+    model.invoke([system, human]),
+    new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error("笔记生成超时，已改用原文摘要")),
+        AI_TIMEOUT_MS,
+      )
+    }),
+  ]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId)
+  })
   const rawText = stringifyModelContent(aiResult.content)
   const parsed = extractJsonObject(rawText) as {
     title?: unknown
@@ -379,12 +436,14 @@ export async function generateInvestmentNoteFromMaterials(input: {
 
   for (let i = 0; i < materials.length; i += 1) {
     const material = materials[i]
-    input.onProgress?.({
-      stage: "extracting",
-      index: i + 1,
-      total: materials.length,
-      name: material.name,
-    })
+    input.onProgress?.(
+      progressPayload({
+        stage: "extracting",
+        index: i + 1,
+        total: materials.length,
+        name: material.name,
+      }),
+    )
     const file = await readInvestmentNoteMaterialFile(material.id)
     if (!file) {
       skipped.push(`${material.name}（文件缺失）`)
@@ -415,7 +474,19 @@ export async function generateInvestmentNoteFromMaterials(input: {
   let title = input.fallbackTitle?.trim() || fallbackTitle(fileNames)
   let body = fallbackContent(extracted)
   let aiProducts: Array<{ name: string; recordNo: string }> = []
-  input.onProgress?.({ stage: "summarizing", total: materials.length })
+  const summarizeStarted = Date.now()
+  input.onProgress?.(
+    progressPayload({ stage: "summarizing", total: materials.length, elapsedSec: 0 }),
+  )
+  const summarizeTick = setInterval(() => {
+    input.onProgress?.(
+      progressPayload({
+        stage: "summarizing",
+        total: materials.length,
+        elapsedSec: Math.round((Date.now() - summarizeStarted) / 1000),
+      }),
+    )
+  }, 1_200)
   try {
     const generated = await summarizeWithAi({
       fileNames,
@@ -427,7 +498,12 @@ export async function generateInvestmentNoteFromMaterials(input: {
     aiProducts = generated.products
   } catch (err) {
     console.error("[investment-note-generate] AI summarize failed, using extracted text", err)
+  } finally {
+    clearInterval(summarizeTick)
   }
+  input.onProgress?.(
+    progressPayload({ stage: "summarizing", total: materials.length, percent: 90 }),
+  )
 
   const sourceLines = [
     "<div><b>资料来源</b></div>",
@@ -461,7 +537,7 @@ export async function generateInvestmentNoteFromMaterials(input: {
     }
   }
 
-  input.onProgress?.({ stage: "saving", total: materials.length })
+  input.onProgress?.(progressPayload({ stage: "saving", total: materials.length, percent: 95 }))
   const note = await createServerInvestmentNoteWithKbSync(
     input.userId,
     input.userName,

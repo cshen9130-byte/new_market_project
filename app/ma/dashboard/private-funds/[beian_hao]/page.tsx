@@ -3060,7 +3060,7 @@ export default function PrivateFundDetailPage() {
                 <div className="flex items-center gap-2 text-sm font-semibold text-zinc-700">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500" />
                   动态回撤
-                  <DrawdownCalcHelpButton />
+                  <DrawdownCalcHelpButton showExcess={!!appliedBench} />
                 </div>
                 {filteredNavRows.length > 0 && (
                   <div className="text-xs text-zinc-400 mt-1">
@@ -3068,7 +3068,7 @@ export default function PrivateFundDetailPage() {
                   </div>
                 )}
               </div>
-              <div className="flex items-center gap-4 text-xs text-zinc-600">
+              <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs text-zinc-600">
                 <span className="inline-flex items-center gap-1.5">
                   <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
                   {displayName}
@@ -3077,6 +3077,12 @@ export default function PrivateFundDetailPage() {
                   <span className="inline-flex items-center gap-1.5">
                     <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#2563eb" }} />
                     {benchmarkLabel}（基准）
+                  </span>
+                )}
+                {appliedBench && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
+                    累计超额回撤
                   </span>
                 )}
               </div>

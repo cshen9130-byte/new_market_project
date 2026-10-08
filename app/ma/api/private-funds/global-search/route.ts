@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { lookupBeianCodesWithNav } from "@/lib/server/fund-nav-presence"
 import { searchPrivateFundProductsForFastPicker } from "@/lib/server/private-fund-product-search"
 
 export const runtime = "nodejs"
@@ -10,6 +11,8 @@ export type GlobalSearchProduct = {
   product_name: string
   short_name: string | null
   strategy_one: string | null
+  /** null when the NAV lookup failed and the client should hide the label. */
+  has_nav: boolean | null
 }
 
 export type GlobalSearchManager = {
@@ -65,11 +68,16 @@ export async function GET(req: Request) {
     const [products, managers] = await Promise.all([
       searchPrivateFundProductsForFastPicker(q, limit).catch((err) => {
         console.error("[private-funds/global-search] products", err)
-        return [] as GlobalSearchProduct[]
+        return [] as Omit<GlobalSearchProduct, "has_nav">[]
       }),
       searchManagers(q, limit),
     ])
-    return NextResponse.json({ products, managers })
+    const present = await lookupBeianCodesWithNav(products.map((row) => row.beian_hao))
+    const annotated: GlobalSearchProduct[] = products.map((row) => ({
+      ...row,
+      has_nav: present ? present.has(row.beian_hao.trim().toUpperCase()) : null,
+    }))
+    return NextResponse.json({ products: annotated, managers })
   } catch (err) {
     console.error("[private-funds/global-search]", err)
     return NextResponse.json({ error: "db_error" }, { status: 500 })

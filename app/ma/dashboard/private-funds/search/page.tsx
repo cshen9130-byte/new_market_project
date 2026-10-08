@@ -6,12 +6,14 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Suspense } from "react"
 import { ArrowLeft } from "lucide-react"
 import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
+import { NavPresenceBadge } from "@/components/ma/nav-presence-badge"
 
 type ProductRow = {
   beian_hao: string
   product_name: string
   short_name: string | null
   strategy_one: string | null
+  has_nav?: boolean | null
 }
 
 type ManagerRow = {
@@ -128,12 +130,17 @@ function SearchResultsContent() {
                     {products.map((row) => (
                       <tr key={row.beian_hao} className="border-t border-zinc-50 hover:bg-zinc-50/80">
                         <td className="px-5 py-2.5">
-                          <Link
-                            href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                            className="text-blue-600 hover:underline"
-                          >
-                            {row.short_name || row.product_name}
-                          </Link>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <Link
+                              href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                              className={row.has_nav === false ? "text-zinc-400 hover:underline" : "text-blue-600 hover:underline"}
+                            >
+                              {row.short_name || row.product_name}
+                            </Link>
+                            {row.has_nav === true || row.has_nav === false ? (
+                              <NavPresenceBadge hasNav={row.has_nav} />
+                            ) : null}
+                          </div>
                         </td>
                         <td className="px-5 py-2.5 text-zinc-500 tabular-nums">{row.beian_hao}</td>
                         <td className="px-5 py-2.5 text-zinc-500">{row.strategy_one || "—"}</td>

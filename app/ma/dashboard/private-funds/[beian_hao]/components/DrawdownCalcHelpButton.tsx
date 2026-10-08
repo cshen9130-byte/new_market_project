@@ -34,7 +34,7 @@ export function DrawdownCalcHelpButton({ showExcess = false }: { showExcess?: bo
           </p>
           {showExcess && (
             <p>
-              超额回撤：先按除法合成超额净值序列（基金累计涨跌相对基准），再对该序列计算动态回撤。
+              累计超额回撤：先按除法合成超额净值序列（基金累计涨跌相对基准），再对该序列计算动态回撤。
             </p>
           )}
         </div>

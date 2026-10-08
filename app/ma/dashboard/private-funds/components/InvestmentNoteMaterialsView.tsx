@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Progress } from "@/components/ui/progress"
 import {
   Command,
   CommandEmpty,
@@ -45,6 +46,7 @@ import {
   extractInvestmentNoteMaterialElements,
   formatGenerateProgress,
   generateInvestmentNoteFromMaterials,
+  generateProgressPercent,
   investmentNoteDeepLink,
   isDdSyncedInvestmentNoteMaterial,
   linkInvestmentNoteMaterial,
@@ -221,6 +223,7 @@ export function InvestmentNoteMaterialsView() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [generating, setGenerating] = useState(false)
   const [generateStatus, setGenerateStatus] = useState<string | null>(null)
+  const [generatePercent, setGeneratePercent] = useState(0)
   const [panelMounted, setPanelMounted] = useState(false)
   const [panelCollapsed, setPanelCollapsed] = useState(false)
   const [extractJobs, setExtractJobs] = useState<InvestmentNoteExtractJob[]>([])
@@ -477,10 +480,15 @@ export function InvestmentNoteMaterialsView() {
     }
     setGenerating(true)
     setGenerateStatus(`准备提取 ${ids.length} 个文件…`)
+    setGeneratePercent(2)
     try {
       const result = await generateInvestmentNoteFromMaterials(ids, {
-        onProgress: (progress) => setGenerateStatus(formatGenerateProgress(progress)),
+        onProgress: (progress) => {
+          setGenerateStatus(formatGenerateProgress(progress))
+          setGeneratePercent(generateProgressPercent(progress))
+        },
       })
+      setGeneratePercent(100)
       const byId = new Map(result.materials.map((m) => [m.id, m]))
       setMaterials((prev) => prev.map((m) => byId.get(m.id) ?? m))
       setSelectedIds(new Set())
@@ -518,6 +526,7 @@ export function InvestmentNoteMaterialsView() {
     } finally {
       setGenerating(false)
       setGenerateStatus(null)
+      setGeneratePercent(0)
     }
   }
 
@@ -708,7 +717,9 @@ export function InvestmentNoteMaterialsView() {
                 onClick={() => setPanelCollapsed(false)}
                 className="fixed bottom-6 right-6 z-[60] rounded-lg border bg-background px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-muted/50 transition-colors"
               >
-                {generating ? generateStatus || "生成中..." : `已选 (${selectedCount})`}
+                {generating
+                  ? `${generatePercent}% · ${generateStatus || "生成中..."}`
+                  : `已选 (${selectedCount})`}
               </button>
             ) : (
               <div className="fixed bottom-6 right-6 z-[60] w-80 rounded-lg border bg-background shadow-xl flex flex-col max-h-[min(420px,calc(100vh-3rem))]">
@@ -746,12 +757,21 @@ export function InvestmentNoteMaterialsView() {
                   ))}
                 </div>
 
-                {generating && generateStatus ? (
-                  <div
-                    className="px-4 py-2 text-xs text-muted-foreground border-t truncate"
-                    title={generateStatus}
-                  >
-                    {generateStatus}
+                {generating ? (
+                  <div className="px-4 py-3 border-t space-y-2">
+                    <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                      <span className="truncate" title={generateStatus || "生成中…"}>
+                        {generateStatus || "生成中…"}
+                      </span>
+                      <span className="shrink-0 tabular-nums font-medium text-foreground">
+                        {generatePercent}%
+                      </span>
+                    </div>
+                    <Progress
+                      value={generatePercent}
+                      className="h-1.5"
+                      aria-label="生成笔记进度"
+                    />
                   </div>
                 ) : null}
                 <div className="flex items-center justify-between px-4 py-3 border-t flex-shrink-0">
@@ -770,7 +790,7 @@ export function InvestmentNoteMaterialsView() {
                     className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                    {generating ? "生成中..." : "生成笔记"}
+                    {generating ? `${generatePercent}%` : "生成笔记"}
                   </button>
                 </div>
               </div>

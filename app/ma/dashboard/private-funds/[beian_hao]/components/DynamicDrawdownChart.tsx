@@ -44,9 +44,16 @@ export function DynamicDrawdownChart({
           data.map((d) => ({ ts: d.ts, y: d.benchDD, date: d.date })),
           showDots,
         )
+    const excessPoints = hasBenchmark && !showExcess
+      ? toGappedLinePoints(
+          data.map((d) => ({ ts: d.ts, y: d.excessDD, date: d.date })),
+          showDots,
+        )
+      : []
     const yMin = drawdownYMin([
       ...fundPoints.map((p) => p.value[1]),
       ...benchPoints.map((p) => p.value[1]),
+      ...excessPoints.map((p) => p.value[1]),
     ])
 
     const episodeMarkPoint = episodeMarks.length
@@ -72,7 +79,7 @@ export function DynamicDrawdownChart({
 
     if (showExcess) {
       series.push({
-        name: "超额回撤",
+        name: "累计超额回撤",
         type: "line",
         smooth: false,
         showSymbol: true,
@@ -80,15 +87,15 @@ export function DynamicDrawdownChart({
         symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 5 : 0),
         connectNulls: false,
         clip: false,
-        lineStyle: { width: 2, color: "#ef4444" },
-        itemStyle: { color: "#ef4444" },
+        lineStyle: { width: 2, color: "#059669" },
+        itemStyle: { color: "#059669" },
         areaStyle: {
           color: {
             type: "linear",
             x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [
-              { offset: 0, color: "rgba(239,68,68,0.04)" },
-              { offset: 1, color: "rgba(239,68,68,0.22)" },
+              { offset: 0, color: "rgba(5,150,105,0.04)" },
+              { offset: 1, color: "rgba(5,150,105,0.22)" },
             ],
           },
         },
@@ -97,7 +104,7 @@ export function DynamicDrawdownChart({
         markLine: maxFundDrawdown !== null ? {
           silent: true,
           symbol: "none",
-          lineStyle: { type: "dashed", color: "#ef4444", opacity: 0.6 },
+          lineStyle: { type: "dashed", color: "#059669", opacity: 0.6 },
           label: { show: false },
           data: [{ yAxis: maxFundDrawdown }],
         } : undefined,
@@ -158,6 +165,22 @@ export function DynamicDrawdownChart({
             },
           },
           data: benchPoints,
+        })
+      }
+
+      if (hasBenchmark) {
+        series.push({
+          name: "累计超额回撤",
+          type: "line",
+          smooth: false,
+          showSymbol: true,
+          symbol: "circle",
+          symbolSize: (_v: unknown, params: { data?: { showDot?: boolean } }) => (params.data?.showDot ? 4 : 0),
+          connectNulls: false,
+          clip: false,
+          lineStyle: { width: 1.75, color: "#059669" },
+          itemStyle: { color: "#059669" },
+          data: excessPoints,
         })
       }
     }

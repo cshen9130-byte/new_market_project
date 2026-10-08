@@ -259,10 +259,16 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
          cumulative_nav  = EXCLUDED.cumulative_nav,
          adjusted_nav    = EXCLUDED.adjusted_nav,
          fund_name       = EXCLUDED.fund_name,
-         source          = EXCLUDED.source`
+         source          = EXCLUDED.source
+       WHERE ops_email_nav_records.nav IS DISTINCT FROM EXCLUDED.nav
+          OR ops_email_nav_records.cumulative_nav IS DISTINCT FROM EXCLUDED.cumulative_nav
+          OR ops_email_nav_records.adjusted_nav IS DISTINCT FROM EXCLUDED.adjusted_nav
+          OR ops_email_nav_records.fund_name IS DISTINCT FROM EXCLUDED.fund_name
+          OR ops_email_nav_records.source IS DISTINCT FROM EXCLUDED.source
+       RETURNING 1`
     try {
-      await query(insertSql, params)
-      count++
+      const written = await query(insertSql, params)
+      count += written.length
     } catch (err) {
       if (!isUniqueViolation(err) || droppedLegacyUnique) throw err
       // Leftover 4-column unique key still rejects same-email multi-product rows.
@@ -270,8 +276,8 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
         `ALTER TABLE ops_email_nav_records DROP CONSTRAINT IF EXISTS uq_email_nav_record_date`,
       ).catch(() => {})
       droppedLegacyUnique = true
-      await query(insertSql, params)
-      count++
+      const written = await query(insertSql, params)
+      count += written.length
     }
   }
   return count

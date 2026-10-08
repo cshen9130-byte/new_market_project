@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { NavPresenceBadge } from "@/components/ma/nav-presence-badge"
 import { Checkbox } from "@/components/ma/ui/checkbox"
 import {
   ASSOCIATION_CATEGORIES,
@@ -66,6 +67,7 @@ export function InvestmentNoteAssociationDialog({
   const [extractedProducts, setExtractedProducts] = useState<InvestmentNoteExtractedProduct[]>([])
   const [extractedPending, setExtractedPending] = useState(0)
   const [extractedLoading, setExtractedLoading] = useState(false)
+  const [navPresence, setNavPresence] = useState<Record<string, boolean> | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
 
@@ -89,6 +91,7 @@ export function InvestmentNoteAssociationDialog({
     setExpandedParents(new Set())
     setExtractedProducts([])
     setExtractedPending(0)
+    setNavPresence(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
@@ -231,6 +234,55 @@ export function InvestmentNoteAssociationDialog({
     if (!open) return
     loadFunds(searchKeyword)
   }, [open, category, searchKeyword, loadFunds])
+
+  const navLookupKey = useMemo(() => {
+    const codes = new Set<string>()
+    for (const row of fundRows) {
+      const code = row.beian_hao.trim()
+      if (code) codes.add(code)
+    }
+    for (const children of Object.values(shareClassMap)) {
+      for (const child of children) {
+        const code = child.beian_hao.trim()
+        if (code) codes.add(code)
+      }
+    }
+    for (const item of extractedProducts) {
+      const code = (item.recordNo || "").trim()
+      if (code) codes.add(code)
+    }
+    for (const item of selected) {
+      const code = (item.recordNo || "").trim()
+      if (code) codes.add(code)
+    }
+    return [...codes].sort().join(",")
+  }, [fundRows, shareClassMap, extractedProducts, selected])
+
+  useEffect(() => {
+    if (!open || !navLookupKey) {
+      return
+    }
+    const controller = new AbortController()
+    fetch(`/ma/api/private-funds/nav-presence?codes=${encodeURIComponent(navLookupKey)}`, {
+      signal: controller.signal,
+    })
+      .then((res) => res.json())
+      .then((json: { has_nav?: Record<string, boolean> | null }) => {
+        if (controller.signal.aborted) return
+        if (!json.has_nav) return
+        setNavPresence((prev) => ({ ...(prev ?? {}), ...json.has_nav }))
+      })
+      .catch((err: unknown) => {
+        if (err instanceof Error && err.name === "AbortError") return
+      })
+    return () => controller.abort()
+  }, [open, navLookupKey])
+
+  function navFlag(code: string | null | undefined): boolean | undefined {
+    const key = (code || "").trim().toUpperCase()
+    if (!key || !navPresence || !(key in navPresence)) return undefined
+    return navPresence[key]
+  }
 
   const selectedKeys = useMemo(() => new Set(selected.map(associationKey)), [selected])
 
@@ -470,6 +522,7 @@ export function InvestmentNoteAssociationDialog({
                         const checked = selectedKeys.has(associationKey(item))
                         const recordNo = item.recordNo
                         const confidence = row.confidence && CONFIDENCE_LABEL[row.confidence]
+                        const hasNav = navFlag(recordNo)
                         return (
                           <tr
                             key={`${associationKey(item)}-${row.sourceFile || index}`}
@@ -483,20 +536,23 @@ export function InvestmentNoteAssociationDialog({
                             </td>
                             <td className="px-3 py-2.5 text-zinc-700">
                               <div className="min-w-0">
-                                {recordNo ? (
-                                  <a
-                                    href={`/ma/dashboard/private-funds/${encodeURIComponent(recordNo)}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-sky-600 hover:underline"
-                                    title={item.name}
-                                    onClick={(e) => e.stopPropagation()}
-                                  >
-                                    {associationDisplayLabel(item)}
-                                  </a>
-                                ) : (
-                                  <span title={item.name}>{associationDisplayLabel(item)}</span>
-                                )}
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  {recordNo ? (
+                                    <a
+                                      href={`/ma/dashboard/private-funds/${encodeURIComponent(recordNo)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className={`truncate hover:underline ${hasNav === false ? "text-zinc-400" : "text-sky-600"}`}
+                                      title={item.name}
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {associationDisplayLabel(item)}
+                                    </a>
+                                  ) : (
+                                    <span className="truncate" title={item.name}>{associationDisplayLabel(item)}</span>
+                                  )}
+                                  {hasNav === true || hasNav === false ? <NavPresenceBadge hasNav={hasNav} /> : null}
+                                </div>
                                 <div className="mt-0.5 text-[11px] text-zinc-400">
                                   {confidence || "文件提取"}
                                   {row.sourceFile ? ` · ${row.sourceFile}` : ""}
@@ -537,6 +593,7 @@ export function InvestmentNoteAssociationDialog({
                       const children = shareClassMap[row.beian_hao] ?? []
                       const hasChildren = children.length > 0
                       const isExpanded = expandedParents.has(row.beian_hao)
+                      const hasNav = navFlag(row.beian_hao)
 
                       return (
                         <Fragment key={row.beian_hao}>
@@ -565,12 +622,13 @@ export function InvestmentNoteAssociationDialog({
                                   href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-sky-600 hover:underline"
+                                  className={`min-w-0 truncate hover:underline ${hasNav === false ? "text-zinc-400" : "text-sky-600"}`}
                                   title={row.product_name}
                                   onClick={(e) => e.stopPropagation()}
                                 >
                                   {associationDisplayLabel(item)}
                                 </a>
+                                {hasNav === true || hasNav === false ? <NavPresenceBadge hasNav={hasNav} /> : null}
                               </div>
                             </td>
                             <td className="px-3 py-2.5 text-zinc-500 tabular-nums">{row.beian_hao}</td>
@@ -584,6 +642,7 @@ export function InvestmentNoteAssociationDialog({
                               recordNo: child.beian_hao,
                             }
                             const childChecked = selectedKeys.has(associationKey(childItem))
+                            const childHasNav = navFlag(child.beian_hao)
                             return (
                               <tr key={child.beian_hao} className={`border-b border-zinc-100 hover:bg-sky-50/70 ${child.synthetic ? "bg-zinc-50/60" : "bg-sky-50/40"}`}>
                                 <td className="px-3 py-2">
@@ -598,7 +657,7 @@ export function InvestmentNoteAssociationDialog({
                                   <div className="flex items-center gap-1.5">
                                     <span className="shrink-0 text-xs text-zinc-300">└</span>
                                     {child.synthetic ? (
-                                      <span className="italic text-zinc-500" title={child.product_name}>
+                                      <span className={`min-w-0 truncate italic ${childHasNav === false ? "text-zinc-400" : "text-zinc-500"}`} title={child.product_name}>
                                         {child.product_name}
                                       </span>
                                     ) : (
@@ -606,13 +665,14 @@ export function InvestmentNoteAssociationDialog({
                                         href={`/ma/dashboard/private-funds/${encodeURIComponent(child.beian_hao)}`}
                                         target="_blank"
                                         rel="noopener noreferrer"
-                                        className="text-sky-600 hover:underline"
+                                        className={`min-w-0 truncate hover:underline ${childHasNav === false ? "text-zinc-400" : "text-sky-600"}`}
                                         title={child.product_name}
                                         onClick={(e) => e.stopPropagation()}
                                       >
                                         {child.product_name}
                                       </a>
                                     )}
+                                    {childHasNav === true || childHasNav === false ? <NavPresenceBadge hasNav={childHasNav} /> : null}
                                   </div>
                                 </td>
                                 <td className={`py-2 pr-3 tabular-nums ${child.synthetic ? "italic text-zinc-400" : "text-zinc-500"}`}>
@@ -642,6 +702,7 @@ export function InvestmentNoteAssociationDialog({
                   {selected.map((item) => {
                     const recordNo = (item.recordNo || "").trim()
                     const label = associationDisplayLabel(item)
+                    const hasNav = navFlag(recordNo)
                     return (
                       <div
                         key={associationKey(item)}
@@ -653,7 +714,7 @@ export function InvestmentNoteAssociationDialog({
                               href={`/ma/dashboard/private-funds/${encodeURIComponent(recordNo)}`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="block truncate text-sm text-sky-600 hover:underline"
+                              className={`block truncate text-sm hover:underline ${hasNav === false ? "text-zinc-400" : "text-sky-600"}`}
                               title={item.name}
                             >
                               {label}
@@ -661,8 +722,13 @@ export function InvestmentNoteAssociationDialog({
                           ) : (
                             <div className="truncate text-sm text-zinc-800">{label}</div>
                           )}
-                          {recordNo ? (
-                            <div className="mt-0.5 text-xs text-zinc-400 tabular-nums">{recordNo}</div>
+                          {recordNo || hasNav === true || hasNav === false ? (
+                            <div className="mt-0.5 flex items-center gap-1.5">
+                              {recordNo ? (
+                                <span className="text-xs text-zinc-400 tabular-nums">{recordNo}</span>
+                              ) : null}
+                              {hasNav === true || hasNav === false ? <NavPresenceBadge hasNav={hasNav} /> : null}
+                            </div>
                           ) : null}
                         </div>
                         <button

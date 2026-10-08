@@ -195,6 +195,13 @@ export type FofOverviewListCacheRefreshOptions = {
    * for the nightly full rebuild.
    */
   reuseResolvedIdentities?: boolean
+  /**
+   * Skip the all-product detail 估值表 scan. The 15-minute fallback and the email
+   * pending-cache path set this: that scan runs 8 funds at a time against ~250k
+   * holdings rows and pegs the host, then the next tick starts it again.
+   * Touched-fund tips are patched by the 5-minute mail job instead.
+   */
+  skipDetailSync?: boolean
 }
 
 /** Rebuild precomputed list cache for all FOF概览 rows (as of CURRENT_DATE). */
@@ -206,6 +213,7 @@ export async function refreshFofOverviewListCache(
   await ensureFofOverviewListCacheTable()
 
   const reuseIdentities = options.reuseResolvedIdentities === true
+  const skipDetailSync = options.skipDetailSync === true
   const asOfDate = new Date().toISOString().slice(0, 10)
 
   // Fast path: reuse beian codes from yesterday's cache; only run expensive lateral
@@ -512,16 +520,21 @@ export async function refreshFofOverviewListCache(
 
   // Force 最新涨跌幅 (+ tip NAV/date) to match each product's detail 平台数据 row.
   // For full rebuild, patch staging before swap so live never shows a half-built set.
-  logProgress("syncing 最新涨跌幅 from detail 平台数据…", t0)
-  const synced = await syncFofOverviewLatestFromDetail(
-    products.map((p) => ({
-      product_name: p.product_name,
-      beian_hao: p.beian_hao,
-      short_name: p.short_name,
-    })),
-    writeTable,
-  )
-  logProgress(`detail sync updated ${synced}/${products.length} rows`, t0)
+  // Scheduled incremental ticks skip this: it re-scans every underlying's 估值表.
+  if (!skipDetailSync) {
+    logProgress("syncing 最新涨跌幅 from detail 平台数据…", t0)
+    const synced = await syncFofOverviewLatestFromDetail(
+      products.map((p) => ({
+        product_name: p.product_name,
+        beian_hao: p.beian_hao,
+        short_name: p.short_name,
+      })),
+      writeTable,
+    )
+    logProgress(`detail sync updated ${synced}/${products.length} rows`, t0)
+  } else {
+    logProgress("skipped all-product detail sync (incremental tick)", t0)
+  }
 
   if (!reuseIdentities) {
     logProgress("indexing staging cache…", t0)

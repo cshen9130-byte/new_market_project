@@ -146,7 +146,10 @@ export async function refreshManagedAndFofListCachesIncremental(): Promise<{
   const { refreshFofOverviewListCache } = await import(
     "@/lib/server/fof-overview-list-cache-pg"
   )
-  const fofCache = await refreshFofOverviewListCache({ reuseResolvedIdentities: true })
+  const fofCache = await refreshFofOverviewListCache({
+    reuseResolvedIdentities: true,
+    skipDetailSync: true,
+  })
   return { listCache, fofCache, emailNavLatest }
 }
 

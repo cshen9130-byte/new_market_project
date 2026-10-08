@@ -13,6 +13,16 @@ export async function registerBackgroundJobs(): Promise<void> {
     console.log("[background-jobs] cron schedules already registered in this process — skip")
     return
   }
+
+  // Local `next dev` on Windows tunnels to production Postgres (:5433). Those
+  // crons already run in the PM2 worker; a second copy from this machine was
+  // re-scanning every FOF 估值表 and pinning the server.
+  if (process.platform === "win32" && (process.env.DATABASE_URL || "").includes(":5433/")) {
+    globalThis.__backgroundJobsRegistered = true
+    console.log("[background-jobs] skipped: Windows next against tunneled production DB")
+    return
+  }
+
   globalThis.__backgroundJobsRegistered = true
 
   const { runDueSetups } = await import("./email-dispatch")
@@ -159,9 +169,8 @@ export async function registerBackgroundJobs(): Promise<void> {
 
   // Every 5 minutes: checkpoint poll mailboxes for new NAV / 估值表 mail.
   // Already-processed UIDs are skipped (empty polls should finish in seconds).
-  // When new mail lands, parse it and immediately patch 在管产品 + FOF底层
-  // list tips — do not wait for the 15m fallback tick.
-  // Full FOF/tracking/metrics rebuilds stay on the 15m tick / nightly ETL.
+  // When new mail lands, patch touched 在管产品 list rows. FOF list metrics
+  // stay on the 15-minute tick — do not re-scan every underlying 估值表 here.
   // Only defers for uploads/saves (not FOF list browsing). Single-flight lock
   // skips a tick if the previous poll is still running.
   cron.schedule("*/5 * * * *", () => {

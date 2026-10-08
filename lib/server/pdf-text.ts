@@ -79,3 +79,25 @@ export async function readPdfTextWithCmaps(buffer: Buffer): Promise<string> {
     await parser.destroy().catch(() => undefined)
   }
 }
+
+/**
+ * Note generation only needs a readable skim of early pages.
+ * Skipping getTable() and limiting pages keeps large strategy decks (20MB+)
+ * from sitting on「正在生成笔记内容」for minutes.
+ */
+export async function readPdfTextFastForNotes(
+  buffer: Buffer,
+  options?: { maxPages?: number },
+): Promise<string> {
+  const maxPages = Math.max(1, Math.min(options?.maxPages ?? 30, 60))
+  const parser = new PDFParse(pdfParseLoadOptions(buffer))
+  try {
+    const parsed = await parser.getText({ first: maxPages })
+    return String(parsed.text || "")
+      .replace(/[^\S\n]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  } finally {
+    await parser.destroy().catch(() => undefined)
+  }
+}

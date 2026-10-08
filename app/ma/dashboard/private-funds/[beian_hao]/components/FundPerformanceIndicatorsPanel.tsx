@@ -232,9 +232,9 @@ function exportDrawdownCsv(
     return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
   }
   const headers = showExcess
-    ? ["日期", "超额回撤(%)"]
+    ? ["日期", "累计超额回撤(%)"]
     : hasBenchmark
-      ? ["日期", `${productName}回撤(%)`, `${benchmarkLabel}回撤(%)`]
+      ? ["日期", `${productName}回撤(%)`, `${benchmarkLabel}回撤(%)`, "累计超额回撤(%)"]
       : ["日期", `${productName}回撤(%)`]
   const lines = [
     headers.join(","),
@@ -243,7 +243,10 @@ function exportDrawdownCsv(
         return [escape(row.date), row.excessDD === null ? "" : row.excessDD.toFixed(4)].join(",")
       }
       const cols = [escape(row.date), row.fundDD.toFixed(4)]
-      if (hasBenchmark) cols.push(row.benchDD === null ? "" : row.benchDD.toFixed(4))
+      if (hasBenchmark) {
+        cols.push(row.benchDD === null ? "" : row.benchDD.toFixed(4))
+        cols.push(row.excessDD === null ? "" : row.excessDD.toFixed(4))
+      }
       return cols.join(",")
     }),
   ]
@@ -986,13 +989,19 @@ export function FundPerformanceIndicatorsPanel({
                           {benchmarkLabel}（基准）
                         </span>
                       )}
+                      {hasBenchmark && (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
+                          累计超额回撤
+                        </span>
+                      )}
                     </div>
                   )}
                   {showDrawdownExcess && (
                     <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
                       <span className="inline-flex items-center gap-1.5">
-                        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                        超额回撤
+                        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
+                        累计超额回撤
                       </span>
                     </div>
                   )}

@@ -360,35 +360,6 @@ export function startEmailParseFetchJob(options?: {
             )
           }
 
-          // Advance FOF底层 tip (最新净值/涨跌幅) for touched funds immediately —
-          // do not wait for the full metrics rebuild below.
-          if (result.touchedFunds.length > 0) {
-            if (abort.signal.aborted) {
-              throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
-            }
-            job.message = "正在同步FOF底层最新涨跌幅…"
-            try {
-              const { syncFofOverviewLatestFromDetail } = await import(
-                "@/lib/server/fof-overview-list-cache-pg"
-              )
-              const tipSynced = await syncFofOverviewLatestFromDetail(
-                result.touchedFunds.map((fund) => ({
-                  product_name: fund.fundName || fund.productCode,
-                  beian_hao: fund.productCode || null,
-                  short_name: fund.fundName || null,
-                })),
-              )
-              console.log(
-                `[email-parse-fetch-job] FOF tip sync updated ${tipSynced}/${result.touchedFunds.length} touched funds`,
-              )
-            } catch (e) {
-              if (isAbortError(e)) throw e
-              result.errors.push(
-                `同步FOF底层最新涨跌幅失败: ${e instanceof Error ? e.message : String(e)}`,
-              )
-            }
-          }
-
           if (result.valuationSaved > 0) {
             if (abort.signal.aborted) {
               throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
@@ -434,9 +405,8 @@ export function startEmailParseFetchJob(options?: {
           }
           job.message = "正在增量刷新在管产品列表…"
           try {
-            // FOF底层 最新净值/涨跌幅 already patched via tip sync above.
-            // Skip the full 106-row FOF metrics rebuild here — it blocks the
-            // worker event loop for ~3–4 minutes and starves the next IMAP poll.
+            // FOF list metrics stay on the 15-minute tick. Do not scan every
+            // underlying 估值表 here — that pass was pegging the host.
             const incr = await refreshManagedProductsListCacheLight({
               reuseResolvedIdentities: true,
             })
@@ -449,26 +419,6 @@ export function startEmailParseFetchJob(options?: {
             if (isAbortError(e)) throw e
             result.errors.push(
               `增量刷新列表缓存失败: ${e instanceof Error ? e.message : String(e)}`,
-            )
-          }
-
-          if (abort.signal.aborted) {
-            throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
-          }
-          job.message = "正在按规则更新自建基金净值…"
-          try {
-            const { refreshAllCustomFundNavFromRules } = await import(
-              "@/lib/server/custom-fund-nav-daily-refresh"
-            )
-            const customNav = await refreshAllCustomFundNavFromRules()
-            console.log(
-              `[email-parse-fetch-job] custom fund nav` +
-                ` refreshed=${customNav.refreshed} skipped=${customNav.skipped} failed=${customNav.failed}`,
-            )
-          } catch (e) {
-            if (isAbortError(e)) throw e
-            result.errors.push(
-              `更新自建基金净值失败: ${e instanceof Error ? e.message : String(e)}`,
             )
           }
 

@@ -1040,8 +1040,8 @@ const sbdf95Batch = sanitizeNavPointSeries([
   { nav_date: "2026-07-08", nav: 4.6627 },
 ], { beian_hao: "SBDF95" })
 assert("SBDF95 batch keeps NAV before 运作日期", sbdf95Batch.some((p) => p.nav_date < "2026-07-03"))
-const sbdf95Latest = sbdf95Batch.find((p) => p.nav_date === "2026-07-08")
-assert("SBDF95 batch correction latest ~4.66", !!sbdf95Latest && Math.abs(sbdf95Latest.nav - 4.6627) < 0.01)
+const sbdf95BatchLatest = sbdf95Batch.find((p) => p.nav_date === "2026-07-08")
+assert("SBDF95 batch correction latest ~4.66", !!sbdf95BatchLatest && Math.abs(sbdf95BatchLatest.nav - 4.6627) < 0.01)
 
 const sbdf95Rule = lookupFundNavCorrectionRule("SBDF95", "锐耐稳健对冲11号")
 assert("SBDF95 correction rule loaded", sbdf95Rule?.series_start_date === "2026-07-03")
@@ -4088,6 +4088,54 @@ function testSte102StaleAdjIsNotColumnSwap() {
 }
 
 testSte102StaleAdjIsNotColumnSwap()
+
+// SCX154 格量多策略2号: from 2026-09-04 火富牛 stored 累计 in cumulative_nav and
+// 复权 in cum_nav_withdrawal. The gap is ~11% of unit, under the SQX078 15% swap.
+// The mislabeling runs for several weeks, unlike STE102's one-day stale 复权.
+// 资产净值公告 then confirms 累计 and must not wipe the restored 复权.
+function testScx154PersistentColumnSwap() {
+  const rows = [
+    { price_date: "2026-08-28", nav: "1.141900", cumulative_nav: "1.776272", cum_nav_withdrawal: "1.651900", price_change: "" },
+    { price_date: "2026-09-04", nav: "1.149400", cumulative_nav: "1.659400", cum_nav_withdrawal: "1.787938", price_change: "" },
+    { price_date: "2026-09-11", nav: "1.158800", cumulative_nav: "1.668800", cum_nav_withdrawal: "1.802560", price_change: "" },
+    { price_date: "2026-09-18", nav: "1.163900", cumulative_nav: "1.673900", cum_nav_withdrawal: "1.810493", price_change: "" },
+    { price_date: "2026-09-24", nav: "1.168700", cumulative_nav: "1.678700", cum_nav_withdrawal: "1.817960", price_change: "" },
+  ]
+  const email = [
+    {
+      price_date: "2026-09-18",
+      nav: "1.163900",
+      cumulative_nav: "1.673900",
+      adjusted_nav: "1.673900",
+      source: "attachment_nav_table",
+      subject: "资产净值公告_SCX154_格量多策略2号私募证券投资基金_2026-09-18",
+    },
+    {
+      price_date: "2026-09-24",
+      nav: "1.168700",
+      cumulative_nav: "1.678700",
+      adjusted_nav: "1.678700",
+      source: "attachment_nav_table",
+      subject: "资产净值公告_SCX154_格量多策略2号私募证券投资基金_2026-09-24",
+    },
+  ]
+  const out = mergeNavSeriesWithEmail(rows, email)
+  const expect = {
+    "2026-09-04": [1.6594, 1.787938],
+    "2026-09-11": [1.6688, 1.80256],
+    "2026-09-18": [1.6739, 1.810493],
+    "2026-09-24": [1.6787, 1.81796],
+  }
+  for (const [date, [cum, adj]] of Object.entries(expect)) {
+    const row = out.find((r) => r.price_date === date)
+    assert(`SCX154 ${date} cum restored`, row && Math.abs(parseFloat(row.cum_nav_withdrawal) - cum) < 0.0001)
+    assert(`SCX154 ${date} adj restored`, row && Math.abs(parseFloat(row.cumulative_nav) - adj) < 0.0001)
+  }
+  const aug28 = out.find((r) => r.price_date === "2026-08-28")
+  assert("SCX154 pre-swap row unchanged", aug28 && Math.abs(parseFloat(aug28.cumulative_nav) - 1.776272) < 0.0001)
+}
+
+testScx154PersistentColumnSwap()
 
 // 托管净值邮件 outranks 火富牛. Other email must not replace a tagged fof99 row.
 // Untagged rows keep the old email-wins behavior.

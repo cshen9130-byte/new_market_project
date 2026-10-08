@@ -1208,8 +1208,26 @@ export type GenerateNoteFromMaterialsProgress = {
   index?: number
   total?: number
   name?: string
+  elapsedSec?: number
+  percent?: number
 }
 
+export function generateProgressPercent(progress: GenerateNoteFromMaterialsProgress): number {
+  if (typeof progress.percent === "number" && Number.isFinite(progress.percent)) {
+    return Math.max(0, Math.min(100, Math.round(progress.percent)))
+  }
+  if (progress.stage === "extracting") {
+    const total = Math.max(1, progress.total ?? 1)
+    const index = Math.max(0, progress.index ?? 0)
+    return Math.max(0, Math.min(100, Math.round(5 + (index / total) * 35)))
+  }
+  if (progress.stage === "summarizing") {
+    const sec = Math.max(0, progress.elapsedSec ?? 0)
+    return Math.max(0, Math.min(88, Math.round(42 + Math.min(46, (sec / 28) * 46))))
+  }
+  if (progress.stage === "saving") return 95
+  return 0
+}
 
 function formatGenerateProgress(progress: GenerateNoteFromMaterialsProgress): string {
   if (progress.stage === "extracting") {
@@ -1220,7 +1238,10 @@ function formatGenerateProgress(progress: GenerateNoteFromMaterialsProgress): st
       ? `正在提取 ${index}/${total}：${name}`
       : `正在提取 ${index}/${total}`
   }
-  if (progress.stage === "summarizing") return "正在生成笔记内容…"
+  if (progress.stage === "summarizing") {
+    const sec = typeof progress.elapsedSec === "number" ? progress.elapsedSec : 0
+    return sec > 0 ? `正在生成笔记内容…（${sec}s）` : "正在生成笔记内容…"
+  }
   if (progress.stage === "saving") return "正在保存笔记…"
   return "生成中…"
 }
@@ -1278,6 +1299,8 @@ export async function generateInvestmentNoteFromMaterials(
         index: typeof event.index === "number" ? event.index : undefined,
         total: typeof event.total === "number" ? event.total : undefined,
         name: typeof event.name === "string" ? event.name : undefined,
+        elapsedSec: typeof event.elapsedSec === "number" ? event.elapsedSec : undefined,
+        percent: typeof event.percent === "number" ? event.percent : undefined,
       }
       options?.onProgress?.(progress)
       return

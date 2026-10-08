@@ -643,7 +643,9 @@ export function downsampleDrawdownChartPoints(
     const p = points[i]
     if (!Number.isFinite(p.ts)) continue
     if (p.ts < nextTs) {
-      if (!best || p.fundDD < best.fundDD) best = p
+      const depth = Math.min(p.fundDD, p.benchDD ?? 0, p.excessDD ?? 0)
+      const bestDepth = best ? Math.min(best.fundDD, best.benchDD ?? 0, best.excessDD ?? 0) : 0
+      if (!best || depth < bestDepth) best = p
       continue
     }
     flush()
@@ -724,6 +726,7 @@ export function computeDrawdownYDomain(
     if (showExcess) return d.excessDD !== null ? [d.excessDD] : []
     const out = [d.fundDD]
     if (d.benchDD !== null) out.push(d.benchDD)
+    if (d.excessDD !== null) out.push(d.excessDD)
     return out
   })
   if (!vals.length) return [-10, 0]
