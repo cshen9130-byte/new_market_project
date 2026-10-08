@@ -1204,7 +1204,7 @@ export type GeneratedInvestmentNoteFromMaterials = {
 }
 
 export type GenerateNoteFromMaterialsProgress = {
-  stage: "extracting" | "summarizing" | "saving"
+  stage: "extracting" | "summarizing" | "linking" | "saving"
   index?: number
   total?: number
   name?: string
@@ -1225,7 +1225,11 @@ export function generateProgressPercent(progress: GenerateNoteFromMaterialsProgr
     const sec = Math.max(0, progress.elapsedSec ?? 0)
     return Math.max(0, Math.min(88, Math.round(42 + Math.min(46, (sec / 120) * 46))))
   }
-  if (progress.stage === "saving") return 95
+  if (progress.stage === "linking") {
+    const sec = Math.max(0, progress.elapsedSec ?? 0)
+    return Math.max(90, Math.min(94, 90 + sec))
+  }
+  if (progress.stage === "saving") return 96
   return 0
 }
 
@@ -1242,6 +1246,7 @@ function formatGenerateProgress(progress: GenerateNoteFromMaterialsProgress): st
     const sec = typeof progress.elapsedSec === "number" ? progress.elapsedSec : 0
     return sec > 0 ? `正在生成笔记内容…（${sec}s）` : "正在生成笔记内容…"
   }
+  if (progress.stage === "linking") return "正在关联产品…"
   if (progress.stage === "saving") return "正在保存笔记…"
   return "生成中…"
 }

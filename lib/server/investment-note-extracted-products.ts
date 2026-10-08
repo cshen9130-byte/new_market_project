@@ -8,7 +8,13 @@ import {
 import { findElementExtractJobsForMaterials } from "@/lib/server/fund-element-extract-jobs"
 import { listInvestmentNoteMaterialExtractLinks } from "@/lib/server/investment-note-materials"
 import { getServerInvestmentNote } from "@/lib/server/investment-notes"
-import { searchTrackingFunds } from "@/lib/server/fund-picker-search"
+import { query } from "@/lib/db"
+import {
+  normalizeRegisterCode,
+  searchFundsByRegister,
+  searchTrackingFunds,
+  type FundPickerSearchRow,
+} from "@/lib/server/fund-picker-search"
 
 export type InvestmentNoteExtractedProductsResult = {
   products: InvestmentNoteExtractedProduct[]
@@ -148,6 +154,111 @@ export async function resolveExtractedProductCandidates(
         confidence: "extracted",
       })
     }
+  }
+  return Array.from(out.values())
+}
+
+const FAST_PRODUCT_LIMIT = 8
+const FAST_NAME_SEARCH_MS = 2_000
+
+function withTimeout<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms)
+    work.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(fallback)
+      },
+    )
+  })
+}
+
+/** One indexed 备案号 lookup, plus a single short name query. Skips the full matcher. */
+async function searchFundNamesOnce(names: string[]): Promise<FundPickerSearchRow[]> {
+  const patterns = names
+    .map((name) => name.replace(/[%_\\]/g, "").trim())
+    .filter((name) => name.length >= 4)
+    .slice(0, FAST_PRODUCT_LIMIT)
+    .map((name) => `%${name.slice(0, 10)}%`)
+  if (!patterns.length) return []
+  return query<FundPickerSearchRow>(
+    `SELECT beian_hao, product_name, short_name
+     FROM private_fund_info_bfl
+     WHERE product_name ILIKE ANY($1::text[])
+        OR short_name ILIKE ANY($1::text[])
+     LIMIT 16`,
+    [patterns],
+  ).catch(() => [])
+}
+
+/**
+ * Note generation only. Accurate contract matching is too slow here
+ * (many products × multi-table fuzzy search) and left the bar sitting at 90%.
+ */
+export async function resolveExtractedProductCandidatesFast(
+  raw: Array<{ name?: string | null; recordNo?: string | null }>,
+  sourceFile = "",
+): Promise<InvestmentNoteExtractedProduct[]> {
+  const items = raw
+    .map((item) => ({
+      name: String(item.name || "").trim(),
+      recordNo: String(item.recordNo || "").trim(),
+    }))
+    .filter((item) => item.name || item.recordNo)
+    .slice(0, FAST_PRODUCT_LIMIT)
+  if (!items.length) return []
+
+  const codes = Array.from(
+    new Set(items.map((item) => normalizeRegisterCode(item.recordNo)).filter((code): code is string => Boolean(code))),
+  )
+  const byCode = new Map<string, FundPickerSearchRow>()
+  if (codes.length) {
+    const rows = await withTimeout(searchFundsByRegister(codes, codes.length), FAST_NAME_SEARCH_MS, [])
+    for (const row of rows) {
+      const code = row.beian_hao.trim().toUpperCase()
+      if (code && !byCode.has(code)) byCode.set(code, row)
+    }
+  }
+
+  const needName = items.filter((item) => {
+    const code = normalizeRegisterCode(item.recordNo)
+    return !code || !byCode.has(code)
+  })
+  const nameRows = needName.length
+    ? await withTimeout(
+        searchFundNamesOnce(needName.map((item) => item.name).filter(Boolean)),
+        FAST_NAME_SEARCH_MS,
+        [],
+      )
+    : []
+
+  const out = new Map<string, InvestmentNoteExtractedProduct>()
+  for (const item of items) {
+    const code = normalizeRegisterCode(item.recordNo)
+    const byRegister = code ? byCode.get(code) : undefined
+    if (byRegister) {
+      addProduct(out, productsFromMatchedFund(byRegister, sourceFile, "matched"))
+      continue
+    }
+    const byName = item.name
+      ? nameRows.find(
+          (row) => namesOverlap(row.product_name, item.name) || (row.short_name ? namesOverlap(row.short_name, item.name) : false),
+        )
+      : undefined
+    if (byName) {
+      addProduct(out, productsFromMatchedFund(byName, sourceFile, "matched"))
+      continue
+    }
+    addProduct(out, {
+      name: item.name || item.recordNo,
+      recordNo: item.recordNo,
+      sourceFile,
+      confidence: "extracted",
+    })
   }
   return Array.from(out.values())
 }

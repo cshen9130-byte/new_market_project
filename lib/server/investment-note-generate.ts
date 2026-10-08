@@ -12,7 +12,7 @@ import {
   type InvestmentNoteRoadshowAssociation,
 } from "@/lib/ma/investment-notes"
 import { readFundContractText } from "@/lib/server/fund-contract-element-extract"
-import { resolveExtractedProductCandidates } from "@/lib/server/investment-note-extracted-products"
+import { resolveExtractedProductCandidatesFast } from "@/lib/server/investment-note-extracted-products"
 import { extractPptxText, isPptxOpenXmlExtension } from "@/lib/server/pptx-text"
 import { readPdfTextWithCmaps } from "@/lib/server/pdf-text"
 import {
@@ -62,7 +62,7 @@ export type GeneratedNoteFromMaterials = {
 }
 
 export type GenerateNoteFromMaterialsProgress = {
-  stage: "extracting" | "summarizing" | "saving"
+  stage: "extracting" | "summarizing" | "linking" | "saving"
   index?: number
   total?: number
   name?: string
@@ -96,7 +96,11 @@ function progressPayload(
       percent: clampPercent(42 + Math.min(46, (elapsed / (AI_TIMEOUT_MS / 1000)) * 46)),
     }
   }
-  return { ...partial, percent: 92 }
+  if (partial.stage === "linking") {
+    const elapsed = Math.max(0, partial.elapsedSec ?? 0)
+    return { ...partial, percent: clampPercent(90 + Math.min(4, elapsed)) }
+  }
+  return { ...partial, percent: 96 }
 }
 
 
@@ -512,10 +516,6 @@ export async function generateInvestmentNoteFromMaterials(input: {
   } finally {
     clearInterval(summarizeTick)
   }
-  input.onProgress?.(
-    progressPayload({ stage: "summarizing", total: materials.length, percent: 90 }),
-  )
-
   const sourceLines = [
     "<div><b>资料来源</b></div>",
     `<div>${escapeHtml(`本笔记根据 ${extracted.length} 份上传资料自动生成：${extracted.map((item) => item.name).join("、")}`)}</div>`,
@@ -532,8 +532,21 @@ export async function generateInvestmentNoteFromMaterials(input: {
 
   let extractedProducts: InvestmentNoteExtractedProduct[] = []
   if (aiProducts.length > 0) {
+    const linkStarted = Date.now()
+    input.onProgress?.(
+      progressPayload({ stage: "linking", total: materials.length, elapsedSec: 0, percent: 90 }),
+    )
+    const linkTick = setInterval(() => {
+      input.onProgress?.(
+        progressPayload({
+          stage: "linking",
+          total: materials.length,
+          elapsedSec: Math.round((Date.now() - linkStarted) / 1000),
+        }),
+      )
+    }, 800)
     try {
-      extractedProducts = await resolveExtractedProductCandidates(
+      extractedProducts = await resolveExtractedProductCandidatesFast(
         aiProducts,
         extracted.map((item) => item.name).join("、"),
       )
@@ -545,10 +558,12 @@ export async function generateInvestmentNoteFromMaterials(input: {
         sourceFile: extracted.map((file) => file.name).join("、"),
         confidence: "extracted" as const,
       }))
+    } finally {
+      clearInterval(linkTick)
     }
   }
 
-  input.onProgress?.(progressPayload({ stage: "saving", total: materials.length, percent: 95 }))
+  input.onProgress?.(progressPayload({ stage: "saving", total: materials.length, percent: 96 }))
   const note = await createServerInvestmentNoteWithKbSync(
     input.userId,
     input.userName,
