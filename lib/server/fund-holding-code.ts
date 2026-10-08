@@ -142,6 +142,9 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   "BWF50A(A级)": "BWF50A",
   // 俊丹鹰击一号: A类代码 BAK10A is the same fund as AMAC 备案号 SBAK10.
   BAK10A: "SBAK10",
+  // 诚奇睿盈对冲2号A类: 估值表科目 110906011AAEO3 parses as AAEO3A.
+  // That custodian ticker is the same fund as 备案号 QH717A.
+  AAEO3A: "QH717A",
 }
 
 /** Canonical 备案号 plus every custodian/估值表 code that points at the same product. */

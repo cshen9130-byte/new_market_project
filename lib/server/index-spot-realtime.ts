@@ -115,3 +115,40 @@ export async function getIndexSpotRealtime() {
   cached = { at: Date.now(), data }
   return data
 }
+
+export type IndexSpotLast = {
+  price: number | null
+  date: string | null
+  time: string | null
+}
+
+let lastInflight: Promise<Record<IndexProduct, IndexSpotLast>> | null = null
+let lastCached: { at: number; data: Record<IndexProduct, IndexSpotLast> } | null = null
+const LAST_TTL_MS = 8_000
+
+/** Last index print only. Skips minute bars so the basis chart can poll cheaply. */
+export async function getIndexSpotLast() {
+  if (lastCached && Date.now() - lastCached.at < LAST_TTL_MS) return lastCached.data
+  if (lastInflight) return lastInflight
+  lastInflight = (async () => {
+    const list = INDEX_FUTURES.map((item) => INDEX_SPOT[item.product].sina).join(",")
+    const hqText = await sinaGet(`https://hq.sinajs.cn/list=${list}`, "https://finance.sina.com.cn")
+    const quotes = parseIndexHq(hqText)
+    const out = {} as Record<IndexProduct, IndexSpotLast>
+    for (const item of INDEX_FUTURES) {
+      const quote = quotes.get(INDEX_SPOT[item.product].sina)
+      const price = quote?.last != null && quote.last > 0 ? quote.last : null
+      out[item.product] = {
+        price,
+        date: quote?.date ? quote.date.slice(0, 10).replace(/\//g, "-") : null,
+        time: quote?.time ?? null,
+      }
+    }
+    return out
+  })().finally(() => {
+    lastInflight = null
+  })
+  const data = await lastInflight
+  lastCached = { at: Date.now(), data }
+  return data
+}

@@ -392,7 +392,7 @@ function closeOnOrBefore(series: Map<string, number>, date: string): { date: str
   return best
 }
 
-function periodReturnFromSeries(series: Map<string, number>, asOf: string, days: number): number | null {
+export function periodReturnFromSeries(series: Map<string, number>, asOf: string, days: number): number | null {
   const end = closeOnOrBefore(series, asOf)
   const start = closeOnOrBefore(series, addDays(asOf, days))
   if (!end || !start || start.date >= end.date) return null
@@ -876,20 +876,33 @@ export async function loadWeeklyReviewNavHistories(
   return out
 }
 
+export type FundMetricsOptions = {
+  bucketFor?: (fund: WeeklyReviewFund) => string
+  modeFor?: (bucket: string) => MetricMode
+}
+
 export async function computeFundMetrics(
   funds: WeeklyReviewFund[],
   asOf: string,
   preloadedHistories?: Map<string, NavPoint[]>,
+  opts?: FundMetricsOptions,
 ): Promise<FundMetrics[]> {
+  const resolveBucket = opts?.bucketFor ?? bucketForFund
+  const resolveMode = opts?.modeFor ?? metricModeForBucket
   console.time("[jy-weekly-review] load nav histories")
   const histories = preloadedHistories ?? await loadWeeklyReviewNavHistories(funds, asOf)
   console.timeEnd("[jy-weekly-review] load nav histories")
   const from = addDays(asOf, NAV_HISTORY_LOOKBACK_DAYS + 40)
+  const needsExcess = opts
+    ? funds.some((fund) => resolveMode(resolveBucket(fund)) === "excess")
+    : true
   const benchCodes = [...new Set(Object.values(BENCH_BY_BUCKET).flat())]
-  const [ashare, spot] = await Promise.all([
-    loadAshareCloses(benchCodes, from, asOf),
-    loadSpotCloses(["IH", "IF", "IC", "IM"], from, asOf),
-  ])
+  const [ashare, spot] = needsExcess
+    ? await Promise.all([
+      loadAshareCloses(benchCodes, from, asOf),
+      loadSpotCloses(["IH", "IF", "IC", "IM"], from, asOf),
+    ])
+    : [new Map<string, Map<string, number>>(), new Map<string, Map<string, number>>()]
   const benchCache = new Map<string, Map<string, number>>()
   function benchForBucket(bucket: string): Map<string, number> | null {
     if (benchCache.has(bucket)) return benchCache.get(bucket)!
@@ -902,8 +915,8 @@ export async function computeFundMetrics(
 
   const out: FundMetrics[] = []
   for (const fund of funds) {
-    const bucket = bucketForFund(fund)
-    const mode = metricModeForBucket(bucket)
+    const bucket = resolveBucket(fund)
+    const mode = resolveMode(bucket)
     const history = enrichReturnNavSeries(histories.get(fund.beian_hao) ?? [])
     const latest = history.filter((p) => p.nav_date <= asOf).at(-1) ?? null
     const unitNav = latest?.nav ?? navValue(latest) ?? 0

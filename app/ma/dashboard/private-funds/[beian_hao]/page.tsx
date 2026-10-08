@@ -8,6 +8,7 @@ import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { FundNavCorrectionRulesDialog } from "@/components/ma/fund-nav-correction-rules-dialog"
+import { SetOperationDateDialog } from "@/components/ma/set-operation-date-dialog"
 import { invalidateTrackingListCache } from "@/lib/client/tracking-list-cache"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
@@ -40,12 +41,11 @@ import { FundAccountComparePanel } from "./components/FundAccountComparePanel"
 import { ShareClassNavBanner } from "./components/ShareClassNavBanner"
 import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
-import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
+import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, geometricExcessPct, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
 import { NavChartSeriesLegend, NavPerformanceEChart } from "./components/NavPerformanceEChart"
 import { DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { createFundCompareHref } from "@/lib/ma-product-selection-actions"
-import { resolveFundOperationDate } from "@/lib/nav-operation-date"
 
 const menuItems = [
   { key: "market",     label: "市场" },
@@ -421,11 +421,8 @@ function getDefaultFilterRange(data: DetailData, todayStr: string): { from: stri
 }
 
 function getResolvedOperationDate(data: DetailData): string | null {
-  return resolveFundOperationDate(
-    data.info.operation_date,
-    data.nav_series.map((row) => row.price_date),
-    data.info.inception_date,
-  )
+  const day = data.info.operation_date?.slice(0, 10) ?? ""
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null
 }
 
 function getOperationFilterRange(data: DetailData, todayStr: string): { from: string; to: string } {
@@ -572,6 +569,7 @@ function NavTable({
   benchmarkChgByDate,
   showExcessChg = false,
   excessChgByDate,
+  pending = false,
 }: {
   rows: NavRow[]
   navType: string
@@ -580,6 +578,7 @@ function NavTable({
   benchmarkChgByDate?: Map<string, number | null>
   showExcessChg?: boolean
   excessChgByDate?: Map<string, number | null>
+  pending?: boolean
 }) {
   // Show newest first
   const reversed = useMemo(() => [...rows].reverse(), [rows])
@@ -618,9 +617,15 @@ function NavTable({
             {reversed.length === 0 && (
               <tr>
                 <td colSpan={colCount} className="px-3 py-10 text-center text-xs text-zinc-400 leading-6">
-                  平台暂无该产品净值。火富牛、邮箱托管、团队数据中均未入库。
-                  <br />
-                  协会披露存续规模低于 1000 万元的产品通常没有第三方净值覆盖。
+                  {pending ? (
+                    "加载净值曲线…"
+                  ) : (
+                    <>
+                      平台暂无该产品净值。火富牛、邮箱托管、团队数据中均未入库。
+                      <br />
+                      协会披露存续规模低于 1000 万元的产品通常没有第三方净值覆盖。
+                    </>
+                  )}
                 </td>
               </tr>
             )}
@@ -695,6 +700,7 @@ export default function PrivateFundDetailPage() {
   const [showMyTrackingDialog, setShowMyTrackingDialog] = useState(false)
   const [showTeamTrackingDialog, setShowTeamTrackingDialog] = useState(false)
   const [showNavCorrectionDialog, setShowNavCorrectionDialog] = useState(false)
+  const [showSetOperationDate, setShowSetOperationDate] = useState(false)
   const [managerRegistrationNo, setManagerRegistrationNo] = useState<string | null>(null)
 
   // ─── 编辑要素 modal ─────────────────────────────────────────────────────────
@@ -958,7 +964,7 @@ export default function PrivateFundDetailPage() {
     // Abort if the series path hangs (e.g. cold valuation history scan) so the UI
     // is not stuck on “加载净值曲线…” forever after the header already painted.
     const seriesAbort = new AbortController()
-    const seriesTimeout = window.setTimeout(() => seriesAbort.abort(), 20_000)
+    const seriesTimeout = window.setTimeout(() => seriesAbort.abort(), 45_000)
     fetch(detailUrl, { headers, signal: seriesAbort.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
@@ -1327,13 +1333,6 @@ export default function PrivateFundDetailPage() {
       let excessValue = null
       let excessPeriodReturn = null
       if (chartMode === "return" && benchCum !== null) {
-        if (excessByDivision) {
-          const f = 1 + fundCum / 100
-          const bv = 1 + benchCum / 100
-          excessValue = bv !== 0 ? +(((f / bv) - 1) * 100).toFixed(4) : null
-        } else {
-          excessValue = +(fundCum - benchCum).toFixed(4)
-        }
         if (periodReturn !== null && benchmarkPeriodReturn !== null) {
           if (excessByDivision) {
             const fp = 1 + periodReturn / 100
@@ -1343,6 +1342,7 @@ export default function PrivateFundDetailPage() {
             excessPeriodReturn = +(periodReturn - benchmarkPeriodReturn).toFixed(4)
           }
         }
+        excessValue = geometricExcessPct(fundCum, benchCum)
       }
 
       return {
@@ -1940,7 +1940,7 @@ export default function PrivateFundDetailPage() {
 
   const { info, metrics, nav_series, nav_data_source } = data
   const resolvedOperationDate = getResolvedOperationDate(data)
-  const displayName = resolveFundDisplayLabel(info.short_name, info.product_name)
+  const displayName = resolveFundDisplayLabel(info.short_name, info.product_name, info.beian_hao || beian_hao)
     .replace(/私募证券投资基金/g, "")
     .replace(/私募股权投资基金/g, "")
     .trim() || info.product_name
@@ -2331,10 +2331,22 @@ export default function PrivateFundDetailPage() {
           <span className="text-zinc-500 whitespace-nowrap">统计区间：</span>
           <select
             value={filterPeriod}
-            onChange={e => applyPeriod(e.target.value)}
+            onChange={e => {
+              const next = e.target.value
+              if (next === "设置运作") {
+                setShowSetOperationDate(true)
+                return
+              }
+              applyPeriod(next)
+            }}
             className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
           >
-            {PERIOD_OPTIONS.map(o => <option key={o}>{o}</option>)}
+            {PERIOD_OPTIONS.map(o => (
+              <Fragment key={o}>
+                <option value={o}>{o}</option>
+                {o === "运作以来" ? <option value="设置运作">设置运作</option> : null}
+              </Fragment>
+            ))}
           </select>
         </div>
 
@@ -2462,7 +2474,10 @@ export default function PrivateFundDetailPage() {
       {detailTab === "performance" && (
       <>
       {/* ── Chart + Table side by side ─────────────────── */}
-      <div className="flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
+      <div
+        className="flex flex-col xl:flex-row gap-4"
+        style={seriesLoading || activeChartData.length > 1 ? { height: 420 } : undefined}
+      >
       {seriesLoading && activeChartData.length <= 1 && (
         <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
           <div className="text-sm font-semibold text-zinc-800 mb-2">净值走势</div>
@@ -2646,6 +2661,7 @@ export default function PrivateFundDetailPage() {
           benchmarkChgByDate={benchmarkChgByDate}
           showExcessChg={chartMode === "return" && !!appliedBench && excessSeriesVisible}
           excessChgByDate={excessChgByDate}
+          pending={seriesLoading}
         />
       </div>
       </div>{/* end flex chart+table */}
@@ -2842,7 +2858,8 @@ export default function PrivateFundDetailPage() {
         </div>
       )}
 
-      {/* ── Chart + Table (copy above drawdown) ─────────── */}
+      {/* Second copy sits above 动态回撤. With no series it is a duplicate empty 平台数据. */}
+      {activeChartData.length > 1 && (
       <div className="mt-4 flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
       {seriesLoading && activeChartData.length <= 1 && (
         <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
@@ -3028,9 +3045,11 @@ export default function PrivateFundDetailPage() {
           benchmarkChgByDate={benchmarkChgByDate}
           showExcessChg={chartMode === "return" && !!appliedBench && excessSeriesVisible}
           excessChgByDate={excessChgByDate}
+          pending={seriesLoading}
         />
       </div>
-      </div>{/* end flex chart+table copy */}
+      </div>
+      )}{/* end flex chart+table copy */}
 
       {/* ── Dynamic Drawdown Chart ───────────────────────── */}
       {drawdownChartData.length > 1 && (
@@ -3619,6 +3638,17 @@ export default function PrivateFundDetailPage() {
       beianHao={beian_hao}
       productName={info.product_name}
       onSaved={reloadFundDetail}
+    />
+    <SetOperationDateDialog
+      open={showSetOperationDate}
+      onClose={() => setShowSetOperationDate(false)}
+      beianHao={beian_hao}
+      productName={info.product_name}
+      initialDate={resolvedOperationDate}
+      onSaved={(operationDate) => {
+        setData((prev) => prev ? { ...prev, info: { ...prev.info, operation_date: operationDate } } : prev)
+        reloadFundDetail()
+      }}
     />
     </>
   )

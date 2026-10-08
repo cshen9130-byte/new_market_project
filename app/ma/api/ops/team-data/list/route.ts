@@ -25,9 +25,15 @@ export async function GET(req: Request) {
     const navGapRaw = (searchParams.get("nav_gap") || "").trim().toLowerCase()
     const navGapFilter =
       navGapRaw === "interior_2w" || navGapRaw === "no_interior_2w" ? navGapRaw : "all"
+    const navAnomalyRaw = (searchParams.get("nav_anomaly") || "").trim().toLowerCase()
+    const navAnomalyFilter =
+      navAnomalyRaw === "jump" || navAnomalyRaw === "no_jump" ? navAnomalyRaw : "all"
     const sourceRaw = (searchParams.get("product_source") || "").trim().toLowerCase()
     const productSourceFilter =
-      sourceRaw === "manual" || sourceRaw === "email" ? sourceRaw : "all"
+      sourceRaw === "manual" || sourceRaw === "email" || sourceRaw === "fof99" ? sourceRaw : "all"
+    const operationDateRaw = (searchParams.get("operation_date") || "").trim().toLowerCase()
+    const operationDateFilter =
+      operationDateRaw === "present" || operationDateRaw === "absent" ? operationDateRaw : "all"
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
@@ -40,7 +46,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-team-data",
-      v: "fof_email_nav_gap14_team_strategy_fill",
+      v: "update_method_partition",
       page,
       pageSize,
       keyword,
@@ -51,7 +57,9 @@ export async function GET(req: Request) {
       elementsFilter,
       navLagFilter,
       navGapFilter,
+      navAnomalyFilter,
       productSourceFilter,
+      operationDateFilter,
       sort,
       sortDir,
     })
@@ -68,7 +76,9 @@ export async function GET(req: Request) {
         elementsFilter,
         navLagFilter,
         navGapFilter,
+        navAnomalyFilter,
         productSourceFilter,
+        operationDateFilter,
         sort,
         sortDir,
       })

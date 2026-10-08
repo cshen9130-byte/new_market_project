@@ -125,8 +125,9 @@ export async function registerBackgroundJobs(): Promise<void> {
   // Friday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then FundMultiPrice,
   // then late retry of last week's no_data only for funds that arrived this Friday,
   // then universe maintain: 3-week empty → update_slow, new ≤2-month funds → weekly).
-  // Still runs if *this* Friday is a CN holiday (fetch last week). Skips only when
-  // last week's Friday is a holiday (no NAV that week), e.g. 2026-10-02 → 09-25.
+  // Still runs if *this* Friday is a CN holiday (fetch last week). A holiday
+  // Friday uses the last open day of that week (2026-10-02 → 2026-09-30).
+  // Skips only when that whole Mon–Fri has no trading day.
   cron.schedule("0 16 * * 5", () => {
     void (async () => {
       try {

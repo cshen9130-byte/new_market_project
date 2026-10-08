@@ -239,6 +239,7 @@ const operationsSidebarGroups: SidebarGroup[] = [
       { key: "ops-email-sync", label: "邮箱同步" },
       { key: "ops-ledger", label: "台账管理" },
       { key: "ops-team-data", label: "团队数据" },
+      { key: "ops-platform-data", label: "平台数据" },
       { key: "ops-strategy-tags", label: "策略标签" },
       { key: "ops-element-extract", label: "要素提取" },
     ],
@@ -385,7 +386,7 @@ function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
 // flash very stale data.
 type ListCacheEntry = { data: TrackFundRow[]; total: number; ts?: number }
 const listMemCache = new Map<string, ListCacheEntry>()
-const LIST_CACHE_PREFIX = "tracking_list_cache_v7:"
+const LIST_CACHE_PREFIX = "tracking_list_cache_v8:"
 const LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function readListCache(key: string): ListCacheEntry | null {
@@ -2336,7 +2337,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     router.push(`/ma/dashboard/private-funds?${params.toString()}`)
   }
 
-  const [trackTab, setTrackTab] = useState<"team" | "mine" | "weekly">("team")
+  const [trackTab, setTrackTab] = useState<"team" | "mine" | "weekly" | "weekly-futures">("team")
   const [activePool, setActivePool] = useState("all")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
   const [strategySource, setStrategySource] = useState<TrackStrategySource>("company")
@@ -2508,7 +2509,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const isSupportedPool = pools.some((p) => p.key === activePool)
   const sourcePool = isSupportedPool ? activePool : "all"
   const isMineTab = !isOps && trackTab === "mine"
-  const isWeeklyTab = !isOps && trackTab === "weekly"
+  const isWeeklyTab = !isOps && (trackTab === "weekly" || trackTab === "weekly-futures")
   const isMyPoolSupported = myActivePool === "mine_all" || myActivePool === "mine_default" || myActivePool.startsWith("mine_custom_")
   const listPool = isMineTab ? myActivePool : sourcePool
   const listPoolSupported = isMineTab ? isMyPoolSupported : isSupportedPool
@@ -3287,17 +3288,18 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           ))}
         </div>
       ) : (
-        <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
+        <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0 overflow-x-auto">
           {([
             { key: "team", label: "团队跟踪" },
             { key: "mine", label: "我的跟踪" },
-            { key: "weekly", label: "周度回顾" },
+            { key: "weekly", label: "周度回顾(股票)" },
+            { key: "weekly-futures", label: "周度回顾(期货)" },
           ] as const).map((t) => (
             <button
               key={t.key}
               onClick={() => setTrackTab(t.key)}
               className={[
-                "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
+                "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap",
                 trackTab === t.key
                   ? "border-red-500 text-red-600 dark:text-red-400"
                   : "border-transparent text-muted-foreground hover:text-foreground",
@@ -4515,7 +4517,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       </div>
       )}
 
-      {!isOps && trackTab === "weekly" && <WeeklyReviewView />}
+      {!isOps && trackTab === "weekly" && <WeeklyReviewView variant="equity" />}
+      {!isOps && trackTab === "weekly-futures" && <WeeklyReviewView variant="futures" />}
 
       {/* Add metric dialog */}
       {showAddMetricDialog && (
@@ -14681,6 +14684,63 @@ type TeamDataSortKey =
   | "team_nav" | "team_nav_date" | "valuation_date"
   | "first_entry_date"
 
+type TeamDataNavAnomaly = {
+  reason: "jump" | "spike"
+  date: string
+  ratio: number
+  snippet: { date: string; value: number }[]
+}
+
+function formatAnomalyMove(ratio: number): string {
+  if (!Number.isFinite(ratio) || ratio <= 0) return "—"
+  const pct = (ratio - 1) * 100
+  const digits = Math.abs(pct) >= 100 ? 0 : 1
+  return `${pct > 0 ? "+" : ""}${pct.toFixed(digits)}%`
+}
+
+function NavAnomalySpark({
+  points,
+  markDate,
+}: {
+  points: { date: string; value: number }[]
+  markDate: string
+}) {
+  const width = 120
+  const height = 36
+  const pad = 4
+  if (points.length < 2) return null
+  const values = points.map((point) => point.value).filter((value) => Number.isFinite(value))
+  if (values.length < 2) return null
+  let min = Math.min(...values)
+  let max = Math.max(...values)
+  if (max - min < 1e-6) {
+    min -= 0.01
+    max += 0.01
+  }
+  const xAt = (index: number) => pad + (index / (points.length - 1)) * (width - pad * 2)
+  const yAt = (value: number) => pad + (1 - (value - min) / (max - min)) * (height - pad * 2)
+  const line = points
+    .map((point, index) => `${index === 0 ? "M" : "L"}${xAt(index).toFixed(1)} ${yAt(point.value).toFixed(1)}`)
+    .join(" ")
+  const mark = points.findIndex((point) => point.date === markDate)
+  const title = points.map((point) => `${point.date}  ${point.value.toFixed(4)}`).join("\n")
+  const segment = (from: number, to: number) =>
+    `M${xAt(from).toFixed(1)} ${yAt(points[from].value).toFixed(1)} L${xAt(to).toFixed(1)} ${yAt(points[to].value).toFixed(1)}`
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="shrink-0" role="img" aria-label="异常净值片段">
+      <title>{title}</title>
+      <path d={line} fill="none" stroke="#a1a1aa" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round" />
+      {mark > 0 && (
+        <path d={segment(mark - 1, mark)} fill="none" stroke="#dc2626" strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />
+      )}
+      {mark >= 0 && mark < points.length - 1 && (
+        <path d={segment(mark, mark + 1)} fill="none" stroke="#dc2626" strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />
+      )}
+      {mark >= 0 && <circle cx={xAt(mark)} cy={yAt(points[mark].value)} r="2.4" fill="#dc2626" />}
+    </svg>
+  )
+}
+
 interface TeamDataRow {
   id: string
   beian_hao: string | null
@@ -14695,6 +14755,8 @@ interface TeamDataRow {
   strategy_l1: string | null
   first_entry_date?: string | null
   redeemed?: boolean
+  nav_anomaly?: TeamDataNavAnomaly | null
+  operation_date?: string | null
 }
 
 function teamDataLinkedInvestmentNote(
@@ -14712,7 +14774,8 @@ function teamDataLinkedInvestmentNote(
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v6:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v10:"
+const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v1:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -14721,20 +14784,21 @@ function isTeamDataListRow(row: unknown): row is TeamDataRow {
   return typeof r.id === "string" && typeof r.product_name === "string"
 }
 
-function readTeamDataListCache(key: string): TeamDataListCacheEntry | null {
-  const mem = teamDataListMemCache.get(key)
+function readTeamDataListCache(key: string, prefix = TEAM_DATA_LIST_CACHE_PREFIX): TeamDataListCacheEntry | null {
+  const storageKey = prefix + key
+  const mem = teamDataListMemCache.get(storageKey)
   if (mem) return mem
   if (typeof window === "undefined") return null
   try {
-    const raw = localStorage.getItem(TEAM_DATA_LIST_CACHE_PREFIX + key)
+    const raw = localStorage.getItem(storageKey)
     if (!raw) return null
     const parsed = JSON.parse(raw) as TeamDataListCacheEntry
     if (parsed.ts && Date.now() - parsed.ts > TEAM_DATA_LIST_CACHE_TTL_MS) {
-      localStorage.removeItem(TEAM_DATA_LIST_CACHE_PREFIX + key)
+      localStorage.removeItem(storageKey)
       return null
     }
     if (!Array.isArray(parsed.data)) {
-      localStorage.removeItem(TEAM_DATA_LIST_CACHE_PREFIX + key)
+      localStorage.removeItem(storageKey)
       return null
     }
     const data = parsed.data.filter(isTeamDataListRow)
@@ -14743,31 +14807,42 @@ function readTeamDataListCache(key: string): TeamDataListCacheEntry | null {
       total: typeof parsed.total === "number" ? parsed.total : data.length,
       ts: parsed.ts,
     }
-    teamDataListMemCache.set(key, entry)
+    teamDataListMemCache.set(storageKey, entry)
     return entry
   } catch {
-    try { localStorage.removeItem(TEAM_DATA_LIST_CACHE_PREFIX + key) } catch { /* ignore */ }
+    try { localStorage.removeItem(storageKey) } catch { /* ignore */ }
     return null
   }
 }
 
-function writeTeamDataListCache(key: string, entry: TeamDataListCacheEntry): void {
+function writeTeamDataListCache(key: string, entry: TeamDataListCacheEntry, prefix = TEAM_DATA_LIST_CACHE_PREFIX): void {
+  const storageKey = prefix + key
   const stamped: TeamDataListCacheEntry = { ...entry, ts: Date.now() }
-  teamDataListMemCache.set(key, stamped)
+  teamDataListMemCache.set(storageKey, stamped)
   if (typeof window === "undefined") return
   try {
-    localStorage.setItem(TEAM_DATA_LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
+    localStorage.setItem(storageKey, JSON.stringify(stamped))
   } catch {
     try {
       for (const k of Object.keys(localStorage)) {
-        if (k.startsWith(TEAM_DATA_LIST_CACHE_PREFIX)) localStorage.removeItem(k)
+        if (k.startsWith(prefix)) localStorage.removeItem(k)
       }
-      localStorage.setItem(TEAM_DATA_LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
+      localStorage.setItem(storageKey, JSON.stringify(stamped))
     } catch { /* in-memory cache still works */ }
   }
 }
 
-function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
+function OperationsTeamDataView({
+  currentUser,
+  mode = "team",
+}: {
+  currentUser: User | null
+  mode?: "team" | "platform"
+}) {
+  const isPlatform = mode === "platform"
+  const sideKey = isPlatform ? "ops-platform-data" : "ops-team-data"
+  const listApi = isPlatform ? "/ma/api/ops/platform-data/list" : "/ma/api/ops/team-data/list"
+  const cachePrefix = isPlatform ? PLATFORM_DATA_LIST_CACHE_PREFIX : TEAM_DATA_LIST_CACHE_PREFIX
   const searchParams = useSearchParams()
   const router = useRouter()
   const navManageBeian = searchParams.get("beian_hao")
@@ -14778,7 +14853,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   function openNavManage(beian_hao: string, product_name: string) {
     const params = new URLSearchParams()
     params.set("tab", "operations")
-    params.set("side", "ops-team-data")
+    params.set("side", sideKey)
     params.set("nav", "manage")
     params.set("beian_hao", beian_hao)
     params.set("product_name", product_name)
@@ -14801,7 +14876,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
     router.push(`/ma/dashboard/private-funds?${params.toString()}`)
   }
 
-  const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
+  const [strategySource, setStrategySource] = useState<"company" | "platform">(isPlatform ? "platform" : "company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
   const [strategyL2, setStrategyL2] = useState("")
@@ -14809,7 +14884,12 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   const [elementsFilter, setElementsFilter] = useState<"all" | "missing" | "present">("all")
   const [navLagFilter, setNavLagFilter] = useState<"all" | "behind_2w" | "within_2w">("all")
   const [navGapFilter, setNavGapFilter] = useState<"all" | "interior_2w" | "no_interior_2w">("all")
-  const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email">("all")
+  const [navAnomalyFilter, setNavAnomalyFilter] = useState<"all" | "jump" | "no_jump">("all")
+  const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email" | "fof99">("all")
+  const [operationDateFilter, setOperationDateFilter] = useState<"all" | "present" | "absent">("all")
+  const [productClassFilter, setProductClassFilter] = useState<"all" | "private">(isPlatform ? "private" : "all")
+  const [navPresenceFilter, setNavPresenceFilter] = useState<"all" | "present" | "absent">(isPlatform ? "present" : "all")
+  const [navDateFilter, setNavDateFilter] = useState<"all" | "m1" | "m1_3" | "m3_6" | "within_m6" | "over_m6">("all")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<TeamDataSortKey>("first_entry_date")
@@ -14819,6 +14899,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   const [data, setData] = useState<TeamDataRow[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [listNotice, setListNotice] = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showAuditLog, setShowAuditLog] = useState(false)
   const [teamNoteDialog, setTeamNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -14879,6 +14960,9 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   ]
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const showNavAnomalyCol = navAnomalyFilter === "jump"
+  const showOperationDateCol = operationDateFilter === "present"
+  const teamDataColCount = 14 + (showNavAnomalyCol ? 1 : 0) + (showOperationDateCol ? 1 : 0)
 
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "bfl_ops" })
@@ -14890,7 +14974,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, productSourceFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, pageSize])
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -14908,10 +14992,16 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
     if (elementsFilter !== "all") params.set("elements", elementsFilter)
     if (navLagFilter !== "all") params.set("nav_lag", navLagFilter)
     if (navGapFilter !== "all") params.set("nav_gap", navGapFilter)
+    if (navAnomalyFilter !== "all") params.set("nav_anomaly", navAnomalyFilter)
     if (productSourceFilter !== "all") params.set("product_source", productSourceFilter)
+    if (operationDateFilter !== "all") params.set("operation_date", operationDateFilter)
+    if (productClassFilter !== "all") params.set("product_class", productClassFilter)
+    if (navPresenceFilter !== "all") params.set("nav_presence", navPresenceFilter)
+    if (navDateFilter !== "all") params.set("nav_date", navDateFilter)
 
     const cacheKey = params.toString()
-    const cached = readTeamDataListCache(cacheKey)
+    const cached = readTeamDataListCache(cacheKey, cachePrefix)
+    setListNotice("")
     if (cached) {
       setData(cached.data)
       setTotal(cached.total)
@@ -14922,11 +15012,18 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
 
     let cancelled = false
     const ac = new AbortController()
-    fetch(`/ma/api/ops/team-data/list?${params}`, { signal: ac.signal })
+    fetch(`${listApi}?${params}`, { signal: ac.signal })
       .then((r) => r.json())
       .then((json) => {
         if (cancelled) return
         if (json?.error || !Array.isArray(json.data)) {
+          const message = typeof json?.message === "string" ? json.message : ""
+          if (message) {
+            setData([])
+            setTotal(0)
+            setListNotice(message)
+            return
+          }
           if (!cached) {
             setData([])
             setTotal(0)
@@ -14937,9 +15034,10 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
           data: json.data.filter(isTeamDataListRow),
           total: json.total ?? 0,
         }
-        writeTeamDataListCache(cacheKey, next)
+        writeTeamDataListCache(cacheKey, next, cachePrefix)
         setData(next.data)
         setTotal(next.total)
+        setListNotice("")
       })
       .catch((err) => {
         if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return
@@ -14955,7 +15053,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
       cancelled = true
       ac.abort()
     }
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, productSourceFilter, keyword, sortKey, sortDir, teamDataReloadKey])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix])
 
   useEffect(() => {
     let cancelled = false
@@ -15185,6 +15283,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
           setNavLagFilter("all")
           setNavGapFilter("all")
           setProductSourceFilter("all")
+          setOperationDateFilter("all")
           setKwInput(locate)
           setKeyword(locate)
           setPage(1)
@@ -15227,7 +15326,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
   }
 
   function handleExport() {
-    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "有无估值表", "产品来源", "关联笔记", "首次入表日期", "已赎回"]
+    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "有无估值表", "更新方式", "关联笔记", ...(showOperationDateCol ? ["运作日期"] : []), "首次入表日期", "已赎回"]
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
     const lines = [headers.join(",")]
     for (const row of data) {
@@ -15242,6 +15341,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
         escape(row.has_valuation ? "有" : "无"),
         escape(row.product_source),
         escape(linkedNoteByRowId.has(row.id) ? "已关联" : "未关联"),
+        ...(showOperationDateCol ? [escape(row.operation_date ?? "")] : []),
         escape(row.first_entry_date ?? ""),
         escape(row.redeemed ? "是" : "否"),
       ].join(","))
@@ -15250,7 +15350,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `团队数据_${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `${isPlatform ? "平台数据" : "团队数据"}_${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -15396,12 +15496,13 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
             </div>
           </div>
           <div className="flex items-center">
-            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品来源：</span>
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">更新方式：</span>
             <div className="flex items-center gap-1">
               {([
                 ["all", "不限"],
-                ["manual", "手动添加"],
-                ["email", "邮箱同步"],
+                ["email", "邮箱抓取"],
+                ["manual", "手动更新"],
+                ["fof99", "fof99"],
               ] as const).map(([key, label]) => (
                 <span
                   key={key}
@@ -15418,8 +15519,107 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
               ))}
             </div>
           </div>
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">运作日期：</span>
+            <div className="flex items-center gap-1">
+              {([
+                ["all", "不限"],
+                ["present", "有"],
+                ["absent", "无"],
+              ] as const).map(([key, label]) => (
+                <span
+                  key={key}
+                  onClick={() => { setOperationDateFilter(key); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    operationDateFilter === key
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
         <div className="flex items-center flex-wrap gap-x-10 gap-y-2 px-4 py-2">
+          {isPlatform && (
+            <>
+              <div className="flex items-center">
+                <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品分类：</span>
+                <div className="flex items-center gap-1">
+                  {([
+                    ["all", "不限"],
+                    ["private", "私募基金"],
+                  ] as const).map(([key, label]) => (
+                    <span
+                      key={key}
+                      onClick={() => { setProductClassFilter(key); setPage(1) }}
+                      className={[
+                        "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                        productClassFilter === key
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                          : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center">
+                <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">净值数据：</span>
+                <div className="flex items-center gap-1">
+                  {([
+                    ["all", "不限"],
+                    ["present", "有净值"],
+                    ["absent", "无净值"],
+                  ] as const).map(([key, label]) => (
+                    <span
+                      key={key}
+                      title={key === "present" ? "平台单位净值不为空" : key === "absent" ? "平台单位净值为空" : undefined}
+                      onClick={() => { setNavPresenceFilter(key); setPage(1) }}
+                      className={[
+                        "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                        navPresenceFilter === key
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                          : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center">
+                <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">净值日期：</span>
+                <div className="flex items-center gap-1">
+                  {([
+                    ["all", "不限"],
+                    ["m1", "1个月以内"],
+                    ["m1_3", "1-3个月"],
+                    ["m3_6", "3-6个月"],
+                    ["within_m6", "6个月以内"],
+                    ["over_m6", "6个月以上"],
+                  ] as const).map(([key, label]) => (
+                    <span
+                      key={key}
+                      onClick={() => { setNavDateFilter(key); setPage(1) }}
+                      className={[
+                        "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                        navDateFilter === key
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                          : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
           <div className="flex items-center">
             <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队净值：</span>
             <div className="flex items-center gap-1">
@@ -15467,6 +15667,30 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
               ))}
             </div>
           </div>
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">净值异常：</span>
+            <div className="flex items-center gap-1">
+              {([
+                ["all", "不限", ""],
+                ["jump", "有异常", "净值图默认看复权净值（没有复权则用累计净值，再没有则用单位净值）。常见披露间隔内，相邻两点涨跌达到 30% 算跳变；中间明显缺了一大段的，不把这段涨跌算跳变。约一个月内翻倍或腰斩也算。某一点相对前后都偏了 15% 以上、前后却很接近的尖刺也算。只因分红让单位净值下跌、复权仍然平滑的，不会标出"],
+                ["no_jump", "无异常", "常见披露间隔内没有 30% 跳变，近一个月没有翻倍或腰斩，也没有这种尖刺"],
+              ] as const).map(([key, label, title]) => (
+                <span
+                  key={key}
+                  title={title || undefined}
+                  onClick={() => { setNavAnomalyFilter(key); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    navAnomalyFilter === key
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
@@ -15495,12 +15719,14 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
         >
           批量上传要素
         </button>
-        <button
-          onClick={openShareClassDialog}
-          className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
-        >
-          <PlusCircle className="h-3.5 w-3.5" /> 新增分级
-        </button>
+        {!isPlatform && (
+          <button
+            onClick={openShareClassDialog}
+            className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+          >
+            <PlusCircle className="h-3.5 w-3.5" /> 新增分级
+          </button>
+        )}
         <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
           <Download className="h-3.5 w-3.5" /> 导出
         </button>
@@ -15566,19 +15792,21 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                 >
                   批量取消策略
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowTeamDataBatchMenu(false)
-                    setTeamDataBatchConfirmTitle("批量移除")
-                    setTeamDataBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从团队数据列表中移出吗？`)
-                    setTeamDataBatchConfirmAction("remove_team_data")
-                    setShowTeamDataBatchConfirmDialog(true)
-                  }}
-                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500"
-                >
-                  批量移除
-                </button>
+                {!isPlatform && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTeamDataBatchMenu(false)
+                      setTeamDataBatchConfirmTitle("批量移除")
+                      setTeamDataBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从团队数据列表中移出吗？`)
+                      setTeamDataBatchConfirmAction("remove_team_data")
+                      setShowTeamDataBatchConfirmDialog(true)
+                    }}
+                    className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500"
+                  >
+                    批量移除
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -15593,16 +15821,18 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
             </>
           )}
         </div>
-        <button
-          onClick={openTeamDataAddDialog}
-          className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors"
-        >
-          添加产品
-        </button>
+        {!isPlatform && (
+          <button
+            onClick={openTeamDataAddDialog}
+            className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors"
+          >
+            添加产品
+          </button>
+        )}
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 + (showNavAnomalyCol ? 200 : 0) + (showOperationDateCol ? 120 : 0) }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -15615,26 +15845,30 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav_date")}>平台净值日期<TeamSortIcon col="platform_nav_date" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav")}>团队单位净值<TeamSortIcon col="team_nav" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav_date")}>团队净值日期<TeamSortIcon col="team_nav_date" /></th>
+              {showNavAnomalyCol && <th className={`${thBase} min-w-[210px]`}>异常</th>}
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("valuation_date")}>估值表日期<TeamSortIcon col="valuation_date" /></th>
               <th className={`${thBase} min-w-[80px]`}>有无估值表</th>
-              <th className={`${thBase} min-w-[90px]`}>产品来源</th>
+              <th className={`${thBase} min-w-[90px]`}>更新方式</th>
               <th className={`${thBase} min-w-[80px]`}>关联笔记</th>
+              {showOperationDateCol && <th className={`${thBase} min-w-[110px]`}>运作日期</th>}
               <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_entry_date")}>首次入表日期<TeamSortIcon col="first_entry_date" /></th>
               <th className={`${thBase} text-center w-20`}>操作</th>
             </tr>
           </thead>
           <tbody>
             {loading && data.length === 0 ? (
-              <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+              <tr><td colSpan={teamDataColCount} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
             ) : data.length === 0 ? (
               <tr>
-                <td colSpan={14} className="py-20 text-center text-muted-foreground">
+                <td colSpan={teamDataColCount} className="py-20 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-2">
                     <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
                     <span>
-                      {keyword || strategyL1 || elementsFilter !== "all" || navLagFilter !== "all" || navGapFilter !== "all" || productSourceFilter !== "all"
+                      {listNotice
+                        ? listNotice
+                        : keyword || strategyL1 || elementsFilter !== "all" || navLagFilter !== "all" || navGapFilter !== "all" || navAnomalyFilter !== "all" || productSourceFilter !== "all" || operationDateFilter !== "all" || productClassFilter !== "all" || navPresenceFilter !== "all" || navDateFilter !== "all"
                         ? "未找到匹配产品，可改用备案号或产品简称搜索"
-                        : "暂无团队数据产品"}
+                        : isPlatform ? "暂无私募基金" : "暂无团队数据产品"}
                     </span>
                   </div>
                 </td>
@@ -15683,6 +15917,24 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                     </div>
                   </td>
                   <td className={`${cell} tabular-nums`}>{row.team_nav_date ?? "—"}</td>
+                  {showNavAnomalyCol && (
+                    <td className={cell}>
+                      {row.nav_anomaly ? (
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-[4.75rem]">
+                            <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-red-50 text-red-600 border border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-800">
+                              {row.nav_anomaly.reason === "spike" ? "尖刺" : "跳变"}
+                            </span>
+                            <div className="mt-0.5 text-[10px] tabular-nums text-zinc-500">{row.nav_anomaly.date}</div>
+                            <div className="text-[10px] tabular-nums text-red-600">{formatAnomalyMove(row.nav_anomaly.ratio)}</div>
+                          </div>
+                          <NavAnomalySpark points={row.nav_anomaly.snippet} markDate={row.nav_anomaly.date} />
+                        </div>
+                      ) : (
+                        <span className="text-zinc-400">—</span>
+                      )}
+                    </td>
+                  )}
                   <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
                   <td className={cell}>
                     {row.has_valuation ? (
@@ -15690,7 +15942,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                         <button
                           type="button"
                           title="打开估值表管理"
-                          onClick={() => openOpsValuationManage("ops-team-data", row.beian_hao!, row.product_name)}
+                          onClick={() => openOpsValuationManage(sideKey, row.beian_hao!, row.product_name)}
                           className="text-emerald-600 hover:text-emerald-700 hover:underline"
                         >
                           有
@@ -15721,6 +15973,9 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                       )
                     })()}
                   </td>
+                  {showOperationDateCol && (
+                    <td className={`${cell} tabular-nums`}>{row.operation_date ?? "—"}</td>
+                  )}
                   <td className={`${cell} tabular-nums`}>{row.first_entry_date ?? "—"}</td>
                   <td className={`${cell} text-center`}>
                     <div className="flex items-center justify-center gap-4">
@@ -15738,7 +15993,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                           onElementsManage={() => setTeamElementsDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                           onPermissionManage={() => {}}
                           onNoteManage={() => setTeamNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
-                          onValuationManage={() => openOpsValuationManage("ops-team-data", row.beian_hao!, row.product_name)}
+                          onValuationManage={() => openOpsValuationManage(sideKey, row.beian_hao!, row.product_name)}
                           onScaleManage={() => setTeamScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                           extraItems={[
                             {
@@ -15752,7 +16007,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
                               onClick: () => setTeamTraderDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
                             }] : []),
                           ]}
-                          footerItems={[{
+                          footerItems={isPlatform ? [] : [{
                             label: "移出列表",
                             icon: Trash2,
                             destructive: true,
@@ -15807,7 +16062,7 @@ function OperationsTeamDataView({ currentUser }: { currentUser: User | null }) {
       </div>
 
       {showAuditLog && (
-        <OpsAuditLogDialog open={showAuditLog} onClose={() => setShowAuditLog(false)} initialType="团队数据" />
+        <OpsAuditLogDialog open={showAuditLog} onClose={() => setShowAuditLog(false)} initialType={isPlatform ? "不限" : "团队数据"} />
       )}
       <OpsTeamNoteDialog
         open={!!teamNoteDialog}
@@ -24363,9 +24618,10 @@ function PrivateFundsPageContent() {
           {activeTab === "operations" && activeSideItem === "ops-active-funds" && <OperationsManagedProductsView />}
           {activeTab === "operations" && activeSideItem === "ops-email-sync" && <OperationsEmailSyncView />}
           {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView currentUser={currentUser} />}
+          {activeTab === "operations" && activeSideItem === "ops-platform-data" && <OperationsTeamDataView currentUser={currentUser} mode="platform" />}
           {activeTab === "operations" && activeSideItem === "ops-ledger" && <OperationsLedgerView />}
           {activeTab === "operations" && activeSideItem === "ops-element-extract" && <OperationsElementExtractView />}
-          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-ledger" && activeSideItem !== "ops-element-extract" && (
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-platform-data" && activeSideItem !== "ops-ledger" && activeSideItem !== "ops-element-extract" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

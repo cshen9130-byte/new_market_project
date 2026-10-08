@@ -64,7 +64,7 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     name: "tracking_pool_detail",
     area: "tracking",
     description:
-      "查询跟踪池中单只产品的完整信息：策略分级、策略标签、个人标签、开放日、管理费、业绩报酬、赎回费、净值与收益，以及团队笔记和个人笔记。",
+      "查询跟踪池中单只产品的完整信息：策略分级、策略标签、个人标签、开放日、费率、净值与收益，以及跟踪池上的团队短备注（team_note）和个人短备注（personal_note）。这不是知识库里的长文「投资笔记」；长文请用 kb_ask，folder_path 填「投资笔记」。",
     inputSchema: obj(
       {
         reg_code: { type: "string", description: "备案号" },
@@ -94,14 +94,18 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
   {
     name: "ai_researcher_compare",
     area: "researcher",
-    description: "同策略对比分析。传入多只基金名称或备案号，生成对比研究报告。",
+    description:
+      "同策略对比分析。自动读取数据库净值（区间收益、最大回撤、夏普、近期净值）并检索知识库，生成对比报告。要同时用净值和投资笔记：subjects 传两只基金的名称或备案号，kb_path 填「投资笔记」。",
     inputSchema: obj({
       subjects: {
         type: "array",
         items: { type: "string" },
-        description: "基金名称或备案号，至少 1 个",
+        description: "基金名称或备案号。对比至少传 2 个，例如 [\"SR6089\", \"另一只备案号\"]",
       },
-      kb_path: { type: "string", description: "知识库文件夹相对路径，空为全库" },
+      kb_path: {
+        type: "string",
+        description: "知识库文件夹。只要投资笔记时填「投资笔记」。留空则全库检索（路演、月报、尽调、笔记都会进入报告）",
+      },
     }, ["subjects"]),
   },
   {
@@ -155,28 +159,29 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
   {
     name: "kb_list",
     area: "knowledge",
-    description: "列出 AI 知识库中当前账户可见的文件夹和文件。",
+    description: "列出 AI 知识库中当前账户可见的文件夹和文件。团队投资笔记在文件夹「投资笔记」下。",
     inputSchema: obj({
-      path: { type: "string", description: "文件夹相对路径，空为根目录" },
+      path: { type: "string", description: "文件夹相对路径。列投资笔记填「投资笔记」，空为根目录" },
       limit: { type: "integer", description: "最多返回条数，默认 200，最大 400" },
     }),
   },
   {
     name: "kb_read",
     area: "knowledge",
-    description: "读取知识库中一个文件的文本内容。",
+    description: "读取知识库中一个文件的文本内容。path 来自 kb_list，例如「投资笔记/某产品投资笔记.html」。",
     inputSchema: obj({
-      path: { type: "string", description: "文件相对路径" },
+      path: { type: "string", description: "文件相对路径，如 投资笔记/某产品投资笔记.html" },
     }, ["path"]),
   },
   {
     name: "kb_ask",
     area: "knowledge",
-    description: "基于 AI 知识库回答问题，返回回答与引用文件。",
+    description:
+      "基于 AI 知识库回答问题，返回回答与引用文件。只根据投资笔记回答时，folder_path 填「投资笔记」，question 里写上基金名称或备案号。",
     inputSchema: obj({
-      question: { type: "string" },
-      folder_path: { type: "string", description: "限定文件夹，空为全库" },
-      file_path: { type: "string", description: "只针对一个文件提问" },
+      question: { type: "string", description: "问题。例：对比两只基金的策略、团队和风险，只引用投资笔记" },
+      folder_path: { type: "string", description: "限定文件夹。投资笔记填「投资笔记」。空为全库" },
+      file_path: { type: "string", description: "只针对一个文件提问，如 投资笔记/某产品投资笔记.html" },
     }, ["question"]),
   },
 ]

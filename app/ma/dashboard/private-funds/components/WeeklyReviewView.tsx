@@ -44,7 +44,42 @@ function slashDate(iso: string): string {
   return `${y}/${Number(m)}/${Number(d)}`
 }
 
-export function WeeklyReviewView() {
+type WeeklyReviewVariant = "equity" | "futures"
+
+const VARIANT_COPY: Record<WeeklyReviewVariant, {
+  title: string
+  description: string
+  empty: string
+  loading: string
+  excelName: (weekEnd: string) => string
+  previewUrl: (date: string) => string
+  generateUrl: string
+  statusUrl: (jobId: string) => string
+}> = {
+  equity: {
+    title: "JY跟踪池 · 周度回顾(股票)",
+    description: "按 JY 跟踪池中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表。同一产品的 A/B/C 份额在同一策略里合并为一行。「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。",
+    empty: "JY跟踪池中暂无股票策略产品",
+    loading: "正在统计 JY 跟踪池产品…",
+    excelName: (weekEnd) => `JY跟踪池周度回顾（股票） - ${weekEnd}.xlsx`,
+    previewUrl: (date) => `/ma/api/tracking-funds/weekly-review/preview?week_end=${encodeURIComponent(date)}`,
+    generateUrl: "/ma/api/tracking-funds/weekly-review/generate",
+    statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/generate?id=${encodeURIComponent(jobId)}`,
+  },
+  futures: {
+    title: "JY跟踪池 · 周度回顾(期货)",
+    description: "按 JY 跟踪池中的期货策略产品生成周报 Excel，覆盖量化 CTA、主观 CTA、期权、期货套利和期权套利：期货市场回顾 + 按策略分组的绝对收益 / 夏普 / 卡玛。同一产品的 A/B/C 份额在同一策略里合并为一行。",
+    empty: "JY跟踪池中暂无期货、CTA 或期权策略产品",
+    loading: "正在统计 JY 跟踪池期货与期权产品…",
+    excelName: (weekEnd) => `JY跟踪池周度回顾（期货） - ${weekEnd}.xlsx`,
+    previewUrl: (date) => `/ma/api/tracking-funds/weekly-review/futures/preview?week_end=${encodeURIComponent(date)}`,
+    generateUrl: "/ma/api/tracking-funds/weekly-review/futures/generate",
+    statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/futures/generate?id=${encodeURIComponent(jobId)}`,
+  },
+}
+
+export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyReviewVariant }) {
+  const copy = VARIANT_COPY[variant]
   const [weekEnd, setWeekEnd] = useState(defaultWeekEnd)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
@@ -59,7 +94,7 @@ export function WeeklyReviewView() {
     setPreviewLoading(true)
     setPreviewError("")
     try {
-      const res = await fetch(`/ma/api/tracking-funds/weekly-review/preview?week_end=${encodeURIComponent(date)}`, {
+      const res = await fetch(copy.previewUrl(date), {
         cache: "no-store",
       })
       const json = await res.json().catch(() => ({}))
@@ -71,7 +106,7 @@ export function WeeklyReviewView() {
     } finally {
       setPreviewLoading(false)
     }
-  }, [])
+  }, [copy])
 
   useEffect(() => {
     void loadPreview(weekEnd)
@@ -128,9 +163,9 @@ export function WeeklyReviewView() {
     setGenerateError("")
     try {
       await pollJobAndDownload({
-        startUrl: "/ma/api/tracking-funds/weekly-review/generate",
-        statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/generate?id=${encodeURIComponent(jobId)}`,
-        fallbackName: `JY跟踪池周度回顾（股票） - ${weekEnd}.xlsx`,
+        startUrl: copy.generateUrl,
+        statusUrl: copy.statusUrl,
+        fallbackName: copy.excelName(weekEnd),
         timeoutMs: 5 * 60 * 1000,
       })
     } catch (err) {
@@ -169,10 +204,9 @@ export function WeeklyReviewView() {
       <div className="rounded-xl border bg-background shadow-sm p-5">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold">JY跟踪池 · 周度回顾</h2>
+            <h2 className="text-base font-semibold">{copy.title}</h2>
             <p className="mt-1 text-xs text-muted-foreground leading-relaxed max-w-2xl">
-              按 JY 跟踪池中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表。同一产品的 A/B/C 份额在同一策略里合并为一行。
-              「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。
+              {copy.description}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -185,6 +219,7 @@ export function WeeklyReviewView() {
               {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
               {generating ? "正在生成…" : "生成本周 Excel"}
             </button>
+            {variant === "equity" && (
             <button
               type="button"
               onClick={() => void handleAttribution()}
@@ -194,6 +229,7 @@ export function WeeklyReviewView() {
               {attributing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
               {attributing ? "正在分析…" : "周度归因分析"}
             </button>
+            )}
           </div>
         </div>
 
@@ -233,11 +269,11 @@ export function WeeklyReviewView() {
         {previewLoading ? (
           <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            正在统计 JY 跟踪池产品…
+            {copy.loading}
           </div>
         ) : !preview || preview.groups.length === 0 ? (
           <div className="py-16 text-center text-sm text-muted-foreground">
-            JY跟踪池中暂无股票策略产品
+            {copy.empty}
           </div>
         ) : (
           <table className="w-full text-sm">

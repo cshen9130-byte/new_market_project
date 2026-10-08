@@ -208,12 +208,15 @@ async function queryKnowledgeBase(
   const { askKnowledgeBaseQuestion } = await import("@/lib/server/knowledge-chat")
 
   const folderPath = kbPath || null // null = global search across all indexed docs
+  const notesOnly = isInvestmentNotesScope(kbPath)
 
   // Build one focused question per subject, then run all in parallel
   const perSubjectQueries = subjects.map((subject) => {
-    const q = navMissing
-      ? `关于"${subject}"：请提取该基金/管理人的历史净值走势、累计收益率、最大回撤、夏普比率等业绩数据，以及策略特点、风险控制方法、投资团队背景。如有具体数字请完整列出。`
-      : `关于"${subject}"：请从相关文档（路演材料、月报、尽调资料等）中提取该基金/管理人的策略特点、投资方法、历史业绩、团队背景和产品特色。`
+    const q = notesOnly
+      ? `关于"${subject}"：请只依据投资笔记提取策略逻辑、团队与容量、风险点，以及笔记里写到的业绩评价。数字保持原文。笔记没有的内容写「笔记未提及」，不要改写成路演或月报口径。`
+      : navMissing
+        ? `关于"${subject}"：请提取该基金/管理人的历史净值走势、累计收益率、最大回撤、夏普比率等业绩数据，以及策略特点、风险控制方法、投资团队背景。如有具体数字请完整列出。投资笔记、路演材料、月报、尽调资料都可以用。`
+        : `关于"${subject}"：请从相关文档（投资笔记、路演材料、月报、尽调资料等）中提取该基金/管理人的策略特点、投资方法、历史业绩、团队背景和产品特色。`
     return withTimeout(
       askKnowledgeBaseQuestion({
         question: q,
@@ -410,14 +413,24 @@ function computeNavStats(navPoints: NavPoint[]): NavStats {
   }
 }
 
-function buildReportSystemPrompt(subjects: string[], hasKbNav: boolean): string {
+function isInvestmentNotesScope(kbPath: string | null | undefined): boolean {
+  if (!kbPath) return false
+  return kbPath.replace(/\\/g, "/").split("/").some((part) => part.trim() === "投资笔记")
+}
+
+function buildReportSystemPrompt(subjects: string[], hasKbNav: boolean, notesOnly: boolean): string {
+  const qualitative = notesOnly
+    ? "4. 投资笔记（仅知识库「投资笔记」文件夹）。策略、团队、容量、风险等定性判断必须来自这些笔记；笔记没写的标「笔记未提及」，不要补路演或月报口径"
+    : hasKbNav
+      ? "4. 知识库提取的业绩/净值信息（来自投资笔记、路演材料、月报等文件）"
+      : "4. 知识库补充信息（投资笔记、策略描述、团队背景等）"
   return `你是一位专业的私募基金研究员，擅长对同类策略的不同基金产品和管理人进行深度对比分析。
 
 你将收到结构化数据，其中可能包含：
 1. 基金基本信息（策略分类、成立日期、系统预计算绩效指标）
-2. 净值历史序列（若数据库中有记录）
+2. 净值历史序列（若数据库中有记录）——业绩数字以这部分为准
 3. 管理人登记信息（如有）
-${hasKbNav ? "4. 知识库提取的业绩/净值信息（来自路演材料、月报等文件）" : "4. 知识库补充信息（策略描述、团队背景等）"}
+${qualitative}
 
 报告要求：
 - 语言：中文，专业严谨，逻辑清晰
@@ -592,8 +605,9 @@ export async function POST(req: Request) {
       emit({ type: "step_start", step: 5, title: "生成对比分析报告" })
       try {
         const dataSummary = buildDataSummary(funds, navMap, navTimedOut, managers)
+        const notesOnly = isInvestmentNotesScope(kbPath)
         const kbSection = kbContext
-          ? `\n=== 知识库提取信息（路演/月报/研究文件）===\n${kbContext}\n`
+          ? `\n=== ${notesOnly ? "投资笔记" : "知识库提取信息（投资笔记/路演/月报/研究文件）"} ===\n${kbContext}\n`
           : ""
         const userPrompt = [
           `请基于以下数据，生成"${subjects.join("、")}"的专业对比分析报告。`,
@@ -609,7 +623,7 @@ export async function POST(req: Request) {
 
         const reportModel = getChatModel(true)
         const reportStream = await reportModel.stream([
-          new SystemMessage(buildReportSystemPrompt(subjects, hasKbNav)),
+          new SystemMessage(buildReportSystemPrompt(subjects, hasKbNav, isInvestmentNotesScope(kbPath))),
           new HumanMessage(userPrompt),
         ])
 

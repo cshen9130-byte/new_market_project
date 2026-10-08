@@ -32,7 +32,8 @@ if str(ROOT / "scripts" / "ma") not in sys.path:
 
 from cn_market_holidays import (  # noqa: E402
     is_cn_market_closed,
-    last_trading_friday_on_or_before,
+    resolve_week_target,
+    week_friday,
 )
 from fof99_mall_credits import credit_usage, format_credit_usage  # noqa: E402
 
@@ -285,14 +286,23 @@ def last_friday_on_or_before(day: date) -> date:
 
 
 def fridays_after(have_through: date, latest_friday: date) -> list[date]:
+    """Newest-first dates to request. A holiday Friday becomes that week's last open day.
+
+    Any open day already inside the holiday week counts as having it, so a
+    2026-09-29 point does not also pay for 2026-09-30.
+    """
     first = last_friday_on_or_before(have_through + timedelta(days=7))
     if first <= have_through:
         first += timedelta(days=7)
     out: list[date] = []
+    seen: set[date] = set()
     d = latest_friday
     while d >= first:
-        if not is_cn_market_closed(d):
-            out.append(d)
+        fetch, cover = resolve_week_target(d)
+        in_week = bool(cover) and cover[0] <= have_through <= d
+        if fetch is not None and fetch > have_through and fetch not in seen and not in_week:
+            out.append(fetch)
+            seen.add(fetch)
         d -= timedelta(days=7)
     return out
 
@@ -373,13 +383,17 @@ def build_batches(
         if known_latest and code in known_latest:
             cap = min(cap, last_friday_on_or_before(known_latest[code]))
         for friday in fridays_after(through, cap):
-            if (code, friday) in skip:
+            _fetch, cover = resolve_week_target(week_friday(friday))
+            days = cover or [friday]
+            if any((code, day) in skip for day in days):
                 continue
             needed.setdefault(friday, []).append((code, name))
     # weekly_plus: email-first. Pay Friday F only when list tip is still before F.
     for code, name, tip in plus or []:
         for friday in fridays_after(tip, latest_friday):
-            if (code, friday) in skip:
+            _fetch, cover = resolve_week_target(week_friday(friday))
+            days = cover or [friday]
+            if any((code, day) in skip for day in days):
                 continue
             needed.setdefault(friday, []).append((code, name))
     batches: list[tuple[date, list[tuple[str, str]]]] = []
@@ -835,7 +849,9 @@ def main() -> int:
         return 0
 
     calendar_friday = last_friday_on_or_before(date.today())
-    latest_friday = last_trading_friday_on_or_before(date.today())
+    # Cap at the calendar Friday so a holiday week is still planned. The request
+    # date is that week's last open day, not the closed Friday.
+    latest_friday = calendar_friday
     have_through = load_have_through(cur, [c for c, _, _ in universe])
     all_fridays: list[date] = []
     d = calendar_friday
@@ -844,14 +860,17 @@ def main() -> int:
     while d > oldest:
         all_fridays.append(d)
         d -= timedelta(days=7)
-    holiday_fridays = [f for f in all_fridays if is_cn_market_closed(f)]
-    if holiday_fridays:
-        log(
-            "skip CN holiday Fridays (no credits): "
-            + ", ".join(f.isoformat() for f in holiday_fridays)
-        )
+    holiday_notes: list[str] = []
+    cover_dates: list[date] = []
+    for fday in all_fridays:
+        fetch_day, cover = resolve_week_target(fday)
+        cover_dates.extend(cover)
+        if fetch_day is not None and fetch_day != fday:
+            holiday_notes.append(f"{fday.isoformat()} → {fetch_day.isoformat()}")
+    if holiday_notes:
+        log("holiday Friday uses last open day that week: " + ", ".join(holiday_notes))
     known_dates = sorted({known_latest[c] for c in codes if c in known_latest})
-    skip_dates = list(dict.fromkeys((all_fridays or [latest_friday]) + known_dates))
+    skip_dates = list(dict.fromkeys(cover_dates + known_dates))
     skip = load_skip_pairs(cur, codes, skip_dates)
 
     known_batches: list[tuple[date, list[tuple[str, str]]]] = []
@@ -871,7 +890,10 @@ def main() -> int:
         known_latest=known_latest or None,
         plus=plus,
     )
-    exclude = {latest_friday} if args.skip_latest_friday else None
+    exclude = None
+    if args.skip_latest_friday:
+        skipped, _cover = resolve_week_target(latest_friday)
+        exclude = {skipped or latest_friday}
     friday_batches = cap_batches_newest_dates(
         friday_batches, max_dates=args.max_fridays, exclude=exclude
     )
@@ -880,7 +902,8 @@ def main() -> int:
     plus_by_date: dict[date, int] = {}
     for code, _name, tip in plus:
         for friday in fridays_after(tip, latest_friday):
-            if (code, friday) in skip:
+            _fetch, cover = resolve_week_target(week_friday(friday))
+            if any((code, day) in skip for day in (cover or [friday])):
                 continue
             plus_by_date[friday] = plus_by_date.get(friday, 0) + 1
     if plus:

@@ -7,6 +7,7 @@ import {
   type ExtractJobStatus,
 } from "@/lib/server/fund-element-extract-jobs"
 import { startContractExtractJob } from "@/lib/server/fund-contract-extract-job"
+import { retargetPromotedExtractJobs } from "@/lib/server/unregistered-fund-product"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -38,7 +39,8 @@ export async function GET(req: Request) {
     const limit = parseInt(searchParams.get("limit") || "50", 10)
     const offset = parseInt(searchParams.get("offset") || "0", 10)
     const result = await listElementExtractJobs({ status, q, ids, limit, offset })
-    return NextResponse.json({ ok: true, ...result })
+    const rows = await retargetPromotedExtractJobs(result.rows)
+    return NextResponse.json({ ok: true, ...result, rows })
   } catch (err) {
     console.error("[ops/fund-elements/jobs GET]", err)
     return NextResponse.json({ error: "加载提取任务失败" }, { status: 500 })

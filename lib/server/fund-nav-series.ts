@@ -15,6 +15,7 @@ import {
   loadManagedProductNavSeed,
   mergeManagedProductDetailNav,
 } from "@/lib/server/managed-product-nav-seed"
+import { getDetailNavCache } from "@/lib/server/fund-detail-nav-cache-pg"
 import { fillMissingNavIfOverlapConsistent } from "@/lib/server/share-class-nav-fill"
 import { shareClassFamilyBeianCodes } from "@/lib/server/share-class-product"
 import {
@@ -107,12 +108,61 @@ async function listFamilyCodesWithNav(beianHao: string): Promise<string[]> {
   return rows.map((row) => row.code).filter(Boolean)
 }
 
+const FAMILY_NAV_BORROWED = Symbol.for("market.shareClassFamilyNavBorrowed")
+
+/** True when this series was copied from a parent/sibling because this share class has no rows. */
+export function seriesBorrowedFromShareClassFamily(rows: LegacyNavRow[]): boolean {
+  return Boolean((rows as unknown as Record<symbol, boolean>)[FAMILY_NAV_BORROWED])
+}
+
+function markShareClassFamilyNavBorrowed(rows: LegacyNavRow[]): LegacyNavRow[] {
+  Object.defineProperty(rows, FAMILY_NAV_BORROWED, { value: true, enumerable: false })
+  return rows
+}
+
+async function loadFamilyDonorSeries(code: string): Promise<LegacyNavRow[]> {
+  const cached = await getDetailNavCache(code).catch(() => null)
+  if (
+    cached
+    && cached.nav_series.length > 0
+    && (cached.beian_hao ?? "").trim().toUpperCase() === code
+  ) {
+    return cached.nav_series.map((row) => ({ ...row }))
+  }
+  const names = await resolveFundNames(code)
+  return loadMergedNavRows(code, names.product_name, names.short_name)
+}
+
+/**
+ * A share class with zero of its own points (TE102B) still opens a detail page.
+ * Show the parent series so 净值分析 is not a blank chart. Do not copy onto an
+ * empty parent — a 分红 child must not become the parent's history.
+ */
+async function inheritEmptyShareClassFamilyNav(beianHao: string): Promise<LegacyNavRow[]> {
+  const self = beianHao.trim().toUpperCase()
+  if (!/[ABC]$/u.test(self)) return []
+  const donors = await listFamilyCodesWithNav(self)
+  const ordered = [...donors].sort((a, b) => {
+    const aParent = /[ABC]$/u.test(a) ? 1 : 0
+    const bParent = /[ABC]$/u.test(b) ? 1 : 0
+    return aParent - bParent
+  })
+  let best: LegacyNavRow[] = []
+  for (const code of ordered) {
+    const series = await loadFamilyDonorSeries(code)
+    if (series.length === 0) continue
+    if (!/[ABC]$/u.test(code)) return series
+    if (series.length > best.length) best = series
+  }
+  return best
+}
+
 /** Copy missing dates from parent ↔ A/B/C siblings when overlapping NAV matches (non-分红). */
 async function fillMergedNavFromShareClassFamily(
   beianHao: string,
   rows: LegacyNavRow[],
 ): Promise<LegacyNavRow[]> {
-  if (rows.length === 0) return rows
+  if (rows.length === 0) return inheritEmptyShareClassFamilyNav(beianHao)
   const donors = await listFamilyCodesWithNav(beianHao)
   let filled = rows
   for (const code of donors) {
@@ -322,13 +372,13 @@ export async function loadMergedFundNavRows(
   short_name: string,
 ): Promise<LegacyNavRow[]> {
   // Defense in depth: custody forward-fills can still leak if a merge path skips finalize.
-  const rows = await fillMergedNavFromShareClassFamily(
-    beian_hao,
-    await loadMergedNavRows(beian_hao, product_name, short_name),
+  const own = await loadMergedNavRows(beian_hao, product_name, short_name)
+  const filled = await fillMergedNavFromShareClassFamily(beian_hao, own)
+  const rows = recomputeNavPriceChanges(
+    filled.filter((row) => isChinaTradingDay(row.price_date.slice(0, 10))),
   )
-  return recomputeNavPriceChanges(
-    rows.filter((row) => isChinaTradingDay(row.price_date.slice(0, 10))),
-  )
+  if (own.length === 0 && rows.length > 0) markShareClassFamilyNavBorrowed(rows)
+  return rows
 }
 
 export async function loadFundNavSeries(

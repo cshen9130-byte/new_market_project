@@ -89,6 +89,17 @@ async function findPython(): Promise<PythonInvocation> {
   throw new Error("FOF99 Friday ETL Python deps missing (psycopg2). Run: pip install psycopg2-binary")
 }
 
+/** True when that Friday, or an earlier weekday of the same week, is a trading day. */
+export function weekOfFridayHasOpenDay(fridayIso: string): boolean {
+  const parts = parseIsoDateParts(fridayIso)
+  if (!parts) return false
+  for (let back = 0; back <= 4; back++) {
+    const iso = new Date(Date.UTC(parts.y, parts.m - 1, parts.d - back)).toISOString().slice(0, 10)
+    if (!isChinaWeekendOrPublicHoliday(iso)) return true
+  }
+  return false
+}
+
 /** Last calendar Friday strictly before Shanghai today (Friday → last week). */
 export function previousWeekFridayIso(todayIso: string = shanghaiTodayIsoDate()): string | null {
   const weekday = isoDateWeekdayUtc(todayIso)
@@ -127,8 +138,8 @@ export function startFof99FridayAfternoonEtlJob(options?: {
     return { ok: false, reason: "local_tunnel" }
   }
   const prevFriday = previousWeekFridayIso()
-  if (!options?.force && prevFriday && isChinaWeekendOrPublicHoliday(prevFriday)) {
-    console.log("[fof99-friday-etl] skipped: previous week Friday is a CN holiday", prevFriday)
+  if (!options?.force && prevFriday && !weekOfFridayHasOpenDay(prevFriday)) {
+    console.log("[fof99-friday-etl] skipped: previous week has no trading day", prevFriday)
     return { ok: false, reason: "holiday" }
   }
 

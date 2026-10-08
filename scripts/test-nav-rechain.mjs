@@ -232,10 +232,10 @@ const guotaiSubject = "国泰海通证券资产托管估值表发送：SAVW72_�
 assert("guotai subject detected", isGuotaiValuationSubject(guotaiSubject, ""))
 assert("guotai is custody pattern", isCustodySendDateValuationSubject(guotaiSubject, ""))
 
-// SAVW72 series_start_date drops mis-dated pre-inception valuation rows.
+// 运作日期 no longer drops NAV before the saved date.
 const savwRule = lookupFundNavCorrectionRule("SAVW72")
 assert("SAVW72 correction rule loaded", !!savwRule && savwRule.series_start_date === "2026-06-12")
-const savwTrimmed = applyFundNavCorrectionToLegacyRows(
+const savwKept = applyFundNavCorrectionToLegacyRows(
   [
     { price_date: "2026-06-02", nav: "1.0069", cumulative_nav: "1.0069", cum_nav_withdrawal: "1.0069", price_change: "" },
     { price_date: "2026-06-12", nav: "1.0001", cumulative_nav: "1.0001", cum_nav_withdrawal: "1.0001", price_change: "" },
@@ -243,8 +243,8 @@ const savwTrimmed = applyFundNavCorrectionToLegacyRows(
   ],
   { beian_hao: "SAVW72", product_name: "金舆基石一号", short_name: null },
 )
-assert("SAVW72 drops 06-02", !savwTrimmed.some((r) => r.price_date === "2026-06-02"))
-assert("SAVW72 keeps inception", savwTrimmed[0]?.price_date === "2026-06-12")
+assert("SAVW72 keeps NAV before 运作日期", savwKept.some((r) => r.price_date === "2026-06-02"))
+assert("SAVW72 keeps later rows", savwKept.length === 3)
 
 // ex-div: cumulative stored as unit on 2026-04-30
 const exDivLegacy = [
@@ -454,6 +454,35 @@ assert("SSG947 no chart spike after email extend", ssgDetail.every((r) => parseF
     ),
   )
   assert("SSG947 cache helper ignores missing SADG seed key", detailNavCacheMatchesSeed({ nav_series: [] }, "NOFUND"))
+
+  assert(
+    "SBAH99 rechained 复权 above the seed still hits cache",
+    detailNavCacheMatchesSeed(
+      {
+        nav_series: [{
+          price_date: "2026-06-23",
+          nav: "1.2753",
+          cum_nav_withdrawal: "1.4853",
+          cumulative_nav: "1.493105",
+        }],
+      },
+      "SBAH99",
+    ),
+  )
+  assert(
+    "SBAH99 复权 below the seed still misses cache",
+    !detailNavCacheMatchesSeed(
+      {
+        nav_series: [{
+          price_date: "2026-06-23",
+          nav: "1.2753",
+          cum_nav_withdrawal: "1.4853",
+          cumulative_nav: "1.40",
+        }],
+      },
+      "SBAH99",
+    ),
+  )
 }
 
 const custodyHistory = [
@@ -1010,9 +1039,9 @@ const sbdf95Batch = sanitizeNavPointSeries([
   { nav_date: "2026-07-03", nav: 4.6587 },
   { nav_date: "2026-07-08", nav: 4.6627 },
 ], { beian_hao: "SBDF95" })
-assert("SBDF95 batch with correction rule keeps ~4 tail", sbdf95Batch.length === 2)
-assert("SBDF95 batch correction drops pre-07-03", !sbdf95Batch.some((p) => p.nav_date < "2026-07-03"))
-assert("SBDF95 batch correction latest ~4.66", Math.abs(sbdf95Batch[0].nav - 4.6627) < 0.01)
+assert("SBDF95 batch keeps NAV before 运作日期", sbdf95Batch.some((p) => p.nav_date < "2026-07-03"))
+const sbdf95Latest = sbdf95Batch.find((p) => p.nav_date === "2026-07-08")
+assert("SBDF95 batch correction latest ~4.66", !!sbdf95Latest && Math.abs(sbdf95Latest.nav - 4.6627) < 0.01)
 
 const sbdf95Rule = lookupFundNavCorrectionRule("SBDF95", "锐耐稳健对冲11号")
 assert("SBDF95 correction rule loaded", sbdf95Rule?.series_start_date === "2026-07-03")
@@ -4029,3 +4058,91 @@ function testGt288aUnitOnlyManualPrefersCustodianEmail() {
 }
 
 testGt288aUnitOnlyManualPrefersCustodianEmail()
+
+// STE102 京盈智投博远: on 2026-09-10 and 2026-09-23 the platform stored a stale
+// unit+0.10 in cumulative_nav and the real 累计 in cum_nav_withdrawal.
+// That gap is ~5% of unit, so it must NOT take the SQX078 column swap.
+// 复权 is rebuilt: cum-ratio when unit rose, dividend reinvestment when unit dropped.
+function testSte102StaleAdjIsNotColumnSwap() {
+  const rows = [
+    { price_date: "2026-09-04", nav: "3.103000", cumulative_nav: "3.360297", cum_nav_withdrawal: "3.203000", price_change: "" },
+    { price_date: "2026-09-10", nav: "3.206000", cumulative_nav: "3.306000", cum_nav_withdrawal: "3.471837", price_change: "" },
+    { price_date: "2026-09-11", nav: "3.200000", cumulative_nav: "3.465340", cum_nav_withdrawal: "3.300000", price_change: "" },
+    { price_date: "2026-09-18", nav: "3.181000", cumulative_nav: "3.444765", cum_nav_withdrawal: "3.281000", price_change: "" },
+    { price_date: "2026-09-23", nav: "3.127000", cumulative_nav: "3.227000", cum_nav_withdrawal: "3.386287", price_change: "" },
+  ]
+  const out = mergeNavSeriesWithEmail(rows, [])
+  const at = (d) => out.find((r) => r.price_date === d)
+  const d10 = at("2026-09-10")
+  const d11 = at("2026-09-11")
+  const d18 = at("2026-09-18")
+  const d23 = at("2026-09-23")
+  assert("STE102 09-18 cum stays 3.281", Math.abs(parseFloat(d18.cum_nav_withdrawal) - 3.281) < 0.0001)
+  assert("STE102 09-18 adj stays 3.444765", Math.abs(parseFloat(d18.cumulative_nav) - 3.444765) < 0.0001)
+  assert("STE102 09-11 cum stays 3.300", Math.abs(parseFloat(d11.cum_nav_withdrawal) - 3.3) < 0.0001)
+  assert("STE102 09-10 keeps real cum 3.471837", Math.abs(parseFloat(d10.cum_nav_withdrawal) - 3.471837) < 0.0001)
+  assert("STE102 09-10 adj is cum-ratio 3.642336", Math.abs(parseFloat(d10.cumulative_nav) - 3.642336) < 0.0001)
+  assert("STE102 09-23 keeps real cum 3.386287", Math.abs(parseFloat(d23.cum_nav_withdrawal) - 3.386287) < 0.0001)
+  assert("STE102 09-23 adj is reinvested 3.558782", Math.abs(parseFloat(d23.cumulative_nav) - 3.558782) < 0.0001)
+  assert("STE102 09-23 cum is not the stale unit+0.10", Math.abs(parseFloat(d23.cum_nav_withdrawal) - 3.227) > 0.05)
+}
+
+testSte102StaleAdjIsNotColumnSwap()
+
+// 托管净值邮件 outranks 火富牛. Other email must not replace a tagged fof99 row.
+// Untagged rows keep the old email-wins behavior.
+function testFof99YieldsOnlyToCustodianNavEmail() {
+  const fof = [{
+    price_date: "2026-09-23",
+    nav: "3.127000",
+    cumulative_nav: "3.500000",
+    cum_nav_withdrawal: "3.400000",
+    price_change: "",
+    legacy_origin: "fof99",
+  }]
+  const virtual = [{
+    price_date: "2026-09-23",
+    nav: "2.200000",
+    cumulative_nav: "2.500000",
+    source: "body",
+    subject: "TA虚拟净值 STE102",
+  }]
+  const kept = mergeNavSeriesWithEmail(fof, virtual)
+  assert("virtual email does not replace fof99 unit", Math.abs(parseFloat(kept[0].nav) - 3.127) < 0.0001)
+  assert("virtual email does not replace fof99 cum", Math.abs(parseFloat(kept[0].cum_nav_withdrawal) - 3.4) < 0.0001)
+  assert("virtual email does not replace fof99 adj", Math.abs(parseFloat(kept[0].cumulative_nav) - 3.5) < 0.0001)
+
+  const custody = [{
+    price_date: "2026-09-23",
+    nav: "3.050000",
+    cumulative_nav: "3.200000",
+    adjusted_nav: "3.250000",
+    source: "attachment_nav_table",
+    subject: "招商证券资产托管 产品净值",
+    attachment_filename: "净值表.xlsx",
+  }]
+  const replaced = mergeNavSeriesWithEmail(fof, custody)
+  assert("custodian nav email replaces fof99 unit", Math.abs(parseFloat(replaced[0].nav) - 3.05) < 0.0001)
+  assert("custodian nav email replaces fof99 cum", Math.abs(parseFloat(replaced[0].cum_nav_withdrawal) - 3.2) < 0.0001)
+
+  const untagged = [{ ...fof[0] }]
+  delete untagged[0].legacy_origin
+  const emailWins = mergeNavSeriesWithEmail(untagged, virtual)
+  assert("untagged platform row still lets email win", Math.abs(parseFloat(emailWins[0].nav) - 2.2) < 0.0001)
+
+  const tail = [{
+    price_date: "2026-09-30",
+    nav: "3.140000",
+    cumulative_nav: "3.420000",
+    source: "body",
+    subject: "TA虚拟净值 STE102",
+  }]
+  const extended = mergeNavSeriesWithEmail(fof, tail)
+  assert("email still fills a date fof99 does not have", extended.some((row) => row.price_date === "2026-09-30"))
+  assert(
+    "fof99 date stays when email only adds a later day",
+    extended.some((row) => row.price_date === "2026-09-23" && Math.abs(parseFloat(row.nav) - 3.127) < 0.0001),
+  )
+}
+
+testFof99YieldsOnlyToCustodianNavEmail()

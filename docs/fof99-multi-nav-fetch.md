@@ -40,6 +40,8 @@ SET policy = 'weekly', reason = 'operator override', updated_at = NOW()
 WHERE reg_code = 'XXXXXX';
 ```
 
+Trust order on the private-fund detail page: **托管净值邮件, then this fof99 series, then other platform tables.** Full rule: `docs/nav-calculation-rules.md` → “Data Priority for 私募详情”. The Friday job still does not overwrite a date it already has. To replace one product’s stored history, pass `--replace` on the admit command below (1 credit; the same day’s `batch_id` is not charged again).
+
 Admit a 火富牛 product that was never in the universe. **Initial fill uses `FundPrice` (`GET /price`) — one product, full history, 1 credit.** After that, Friday ETL keeps it current with FundMultiPrice (this product fits in an existing 40-code batch, so usually 0 extra weekly credits):
 
 ```text
@@ -74,7 +76,7 @@ Goal: each Friday after the last stored NAV, so the list and product page stay o
 
 1. **Plan before any paid call.** `policy = 'weekly'` and `weekly_plus` only. Compute missing `(beian_hao, friday)` from existing `private_fund_nav` + `private_fund_info` + fetch log. For `weekly_plus`, use **list tip only** (`private_fund_info.latest_nav_date`): if that date is already on or after the Friday, do not pay. Print universe size, Friday list, batch count, and credit estimate. Do not fetch dates we already have.
 
-2. **One credit = one (Friday, ≤40 codes) call.** Group by Friday, chunk 40. Prefer **latest trading Friday first** so the table updates even if the job stops early; then walk backward. **Never request a Friday that is a PRC public holiday / 调休 rest day** (shared list `lib/cn-statutory-holiday-dates.json`, e.g. 2026-06-19 端午). Those dates have no platform NAV and would be all `no_data`.
+2. **One credit = one (date, ≤40 codes) call.** Group by date, chunk 40. Prefer **latest week first** so the table updates even if the job stops early; then walk backward. **Never request a Friday that is a PRC public holiday / 调休 rest day** (shared list `lib/cn-statutory-holiday-dates.json`, e.g. 2026-06-19 端午). Those dates have no platform NAV and would be all `no_data`. When that Friday is closed, do not skip the week: request the **last open day of the same Mon–Fri**, and treat a NAV already stored on **any open day of that week** as having the week. If that preferred day comes back empty, try the previous open day in the same week. Skip the week only when Mon–Fri has no trading day. Examples: 2026-10-02 → 2026-09-30 (09-28 and 09-29 also count); 2026-09-25 → 2026-09-24.
 
 3. **Never duplicate a paid call.** Skip `(reg_code, date)` when:
    - `private_fund_nav` already has that day, or
@@ -97,15 +99,15 @@ Goal: each Friday after the last stored NAV, so the list and product page stay o
 
 On Friday afternoon 火富牛 usually still shows **last** Friday, not today. Do **not** FundMultiPrice this Friday then.
 
-The PM2 background worker runs this **every Friday 16:00 Asia/Shanghai**. It still runs if **this** Friday is a CN holiday (so last week’s Friday can be fetched). It **skips only when last week’s Friday is a holiday** (no NAV that week). Example: 2026-09-25 中秋 Friday runs and fills 2026-09-18; 2026-10-02 skips because 2026-09-25 was a holiday. Set `FOF99_FRIDAY_ETL_DISABLED=1` to pause. Manual:
+The PM2 background worker runs this **every Friday 16:00 Asia/Shanghai**. It still runs if **this** Friday is a CN holiday (so last week can be fetched). A holiday Friday is never requested. The job uses the last open day of that week, and a NAV already stored on any open day of the week counts. Example: 2026-10-02 → 2026-09-30 (09-28 and 09-29 also count); 2026-09-25 → 2026-09-24. It skips only when that whole Monday–Friday has no trading day. If the preferred day comes back empty, it tries the previous open day in the same week. Set `FOF99_FRIDAY_ETL_DISABLED=1` to pause. Manual:
 
 ```text
 python scripts/ma/fof99_friday_afternoon_fetch.py --dry-run
 python scripts/ma/fof99_friday_afternoon_fetch.py
 ```
 
-1. `/fund/advancedlist` newest-first (`order=0`), 1,000/page, **stop when a page has no `price_date` ≥ previous trading Friday** (~11 credits). Persist `weekly` / `weekly_plus` rows whose date **equals** that Friday. Mid-week dates on those pages are stored as extra points only — they do not replace the Friday. The same pages also stamp NAV for products **established within 2 months** that are not yet in the universe (no extra list credits).
-2. `FundMultiPrice` **that Friday** for every `weekly` fund still missing it, and `weekly_plus` only if the list tip is still behind. Expected leftover after list stamps is the mid-week + older set (~3,923 → ~99 credits on the 2026-09-04 mix), not the full 9,733.
+1. `/fund/advancedlist` newest-first (`order=0`), 1,000/page, **stop when a page has no `price_date` ≥ the week’s Monday on a holiday week, otherwise ≥ that Friday** (~11 credits). Persist `weekly` / `weekly_plus` rows whose date **equals** the request date. On a holiday week, any open day that week is kept and counts as the week’s point. Other mid-week dates on those pages are stored as extra points only — they do not replace an open Friday. The same pages also stamp NAV for products **established within 2 months** that are not yet in the universe (no extra list credits).
+2. `FundMultiPrice` **that request date** for every `weekly` fund still missing the week, and `weekly_plus` only if the list tip is still behind. On a holiday week, funds whose stored latest is still before that week are not paid (they did not publish it). Expected leftover after list stamps is the mid-week + older set (~3,923 → ~99 credits on the 2026-09-04 mix), not the full 9,733.
 3. **Late retry** of the previous trading Friday, only for funds that were `no_data` that day and `ok` on this Friday. See rule 4.
 4. This week’s Friday is left to a later `fof99_weekly_nav_fetch.py` run (weekend / Monday).
 5. **Universe maintain** (same process, after the late retry, so a recovered prior Friday counts as present). `--skip-maintain` to skip.

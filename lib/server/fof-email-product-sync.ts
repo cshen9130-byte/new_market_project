@@ -237,6 +237,7 @@ export async function ensureFofUnderlyingInEmailPool(): Promise<number> {
       try {
         const { invalidateListResponseCache } = await import("@/lib/server/list-response-cache")
         invalidateListResponseCache("ops-team-data")
+        invalidateListResponseCache("ops-platform-data")
       } catch {
         /* ignore */
       }

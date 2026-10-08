@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { X } from "lucide-react"
+import { DateInput } from "@/components/ui/date-input"
 import type { FundNavCorrectionRule } from "@/lib/fund-nav-correction-rules-types"
 import { EMPTY_FUND_NAV_CORRECTION_RULE } from "@/lib/fund-nav-correction-rules-types"
 
@@ -40,12 +41,20 @@ export function FundNavCorrectionRulesDialog({
     setRule(emptyRule(beianHao, productName))
     setAliasInput("")
     setLoading(true)
-    fetch(`/ma/api/fund-nav-correction-rules?code=${encodeURIComponent(beianHao)}`)
-      .then((res) => res.json())
-      .then((json: { rule?: FundNavCorrectionRule | null }) => {
+    Promise.all([
+      fetch(`/ma/api/fund-nav-correction-rules?code=${encodeURIComponent(beianHao)}`).then((res) => res.json()),
+      fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beianHao)}`).then((res) => res.json()).catch(() => null),
+    ])
+      .then(([json, elements]: [{ rule?: FundNavCorrectionRule | null }, { operation_date?: string | null } | null]) => {
+        const operationDate = (elements?.operation_date ?? "").slice(0, 10)
         if (json.rule) {
-          setRule(json.rule)
+          setRule({
+            ...json.rule,
+            series_start_date: operationDate || json.rule.series_start_date,
+          })
           setAliasInput((json.rule.product_names ?? []).join("\n"))
+        } else if (operationDate) {
+          setRule((current) => ({ ...current, series_start_date: operationDate }))
         }
       })
       .catch(() => setError("加载规则失败"))
@@ -126,20 +135,19 @@ export function FundNavCorrectionRulesDialog({
           ) : (
             <>
               <p className="text-muted-foreground text-xs leading-relaxed">
-                仅影响当前基金。用于丢弃错误的历史净值，从指定日期开始使用新的净值尺度。
+                仅影响当前基金。这里的日期是运作日期，不会删除该日期之前的净值。
                 其他基金不受影响。
               </p>
 
               <label className="block space-y-1">
-                <span className="font-medium">系列起始日期</span>
-                <input
-                  type="date"
-                  className="w-full rounded border px-3 py-2 bg-background"
+                <span className="font-medium">设置运作日期</span>
+                <DateInput
                   value={rule.series_start_date}
-                  onChange={(e) => setRule((r) => ({ ...r, series_start_date: e.target.value }))}
+                  onChange={(value) => setRule((r) => ({ ...r, series_start_date: value }))}
+                  placeholder="请选择日期"
                 />
                 <span className="text-xs text-muted-foreground">
-                  该日期之前的净值全部丢弃
+                  保存为该产品的运作日期，此前净值保留
                 </span>
               </label>
 

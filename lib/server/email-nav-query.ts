@@ -141,6 +141,22 @@ export function isValuationFallbackNavPoint(row: {
   return /估值表/u.test(`${row.subject ?? ""}\n${row.attachment_filename ?? ""}`)
 }
 
+/**
+ * 托管净值邮件: 净值表 / 业绩报酬试算 from the custodian.
+ * TA虚拟净值 and 估值表 are not this tier.
+ */
+export function isCustodianNavEmailPoint(row: {
+  source?: string | null
+  subject?: string | null
+  attachment_filename?: string | null
+}): boolean {
+  if (isValuationFallbackNavPoint(row)) return false
+  if (isPostInvestmentVirtualNavEmail(row.subject)) return false
+  if ((row.source ?? "").trim() === "attachment_nav_table") return true
+  const blob = `${row.subject ?? ""}\n${row.attachment_filename ?? ""}`
+  return /托管/u.test(blob) && /净值|试算/u.test(blob)
+}
+
 /** @deprecated use EMAIL_NAV_PRIMARY_SOURCE_FILTER */
 export const EMAIL_NAV_UNIT_NAV_SOURCE_FILTER = EMAIL_NAV_PRIMARY_SOURCE_FILTER
 
@@ -1356,19 +1372,19 @@ export async function loadEmailNavSeries(
 }
 
 const TYPE6_LEGACY_NAV_UNIONS = `
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 0 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group_type6
          WHERE beian_hao = $1
 
          UNION ALL
 
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 1 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group_type6
          WHERE $2 <> '' AND product_name = $2
 
          UNION ALL
 
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 2 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group_type6
          WHERE $3 <> '' AND product_name = $3
 
@@ -1478,65 +1494,66 @@ export async function loadPrivateFundLegacyNavRows(
   const type6Block = excludeType6 ? "" : TYPE6_LEGACY_NAV_UNIONS
   try {
     const raw = await query<LegacyNavRowWithPri>(
-      `SELECT
+      `       SELECT
           price_date::text AS price_date,
           nav::text,
           cumulative_nav::text,
           cum_nav_withdrawal::text,
           price_change::text,
-          pri
+          pri,
+          legacy_origin
        FROM (
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 0 AS pri, 'fof99' AS legacy_origin
+         FROM private_fund_nav
+         WHERE beian_hao = $1
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 1 AS pri, 'fof99' AS legacy_origin
+         FROM private_fund_nav
+         WHERE $2 <> '' AND product_name = $2
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 2 AS pri, 'fof99' AS legacy_origin
+         FROM private_fund_nav
+         WHERE $3 <> '' AND product_name = $3
+
+         UNION ALL
+
          ${type6Block}
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 6 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group
          WHERE beian_hao = $1
 
          UNION ALL
 
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 7 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group
          WHERE $2 <> '' AND product_name = $2
 
          UNION ALL
 
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 8 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group
          WHERE $3 <> '' AND product_name = $3
 
          UNION ALL
 
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 6 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 9 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group_hy
          WHERE beian_hao = $1
 
          UNION ALL
 
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 7 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 10 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group_hy
          WHERE $2 <> '' AND product_name = $2
 
          UNION ALL
 
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 8 AS pri
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 11 AS pri, 'platform' AS legacy_origin
          FROM private_fund_nav_group_hy
-         WHERE $3 <> '' AND product_name = $3
-
-         UNION ALL
-
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 9 AS pri
-         FROM private_fund_nav
-         WHERE beian_hao = $1
-
-         UNION ALL
-
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 10 AS pri
-         FROM private_fund_nav
-         WHERE $2 <> '' AND product_name = $2
-
-         UNION ALL
-
-         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 11 AS pri
-         FROM private_fund_nav
          WHERE $3 <> '' AND product_name = $3
        ) nav_union
        ORDER BY price_date ASC, pri ASC`,
@@ -1555,6 +1572,8 @@ export type LegacyNavRow = {
   cumulative_nav: string
   cum_nav_withdrawal: string
   price_change: string
+  /** Set by loadPrivateFundLegacyNavRows. fof99 rows yield only to 托管净值邮件. */
+  legacy_origin?: "fof99" | "platform" | null
 }
 
 function hasDistinctCumulative(nav: number, cumulative: number | null): boolean {
@@ -2723,6 +2742,12 @@ export function mergeNavSeriesWithEmail(
         return resolvedUnitNav < prevUnit * 0.95
       })()
     ) {
+      continue
+    }
+
+    // Trust order: 托管净值邮件, then 火富牛 (private_fund_nav). Other email
+    // fills dates fof99 does not have, and still overwrites untagged platform rows.
+    if (existing?.legacy_origin === "fof99" && !isCustodianNavEmailPoint(row)) {
       continue
     }
 

@@ -52,6 +52,7 @@ import {
   getUnregisteredProductByJobId,
   markExtractJobUnregisteredPending,
   promoteUnregisteredProducts,
+  resolvePromotedBeian,
   UNREGISTERED_PENDING_NOTE,
 } from "@/lib/server/unregistered-fund-product"
 
@@ -820,8 +821,9 @@ export async function applyElementExtractJobManually(input: {
   if (!job) throw new Error("任务不存在")
   if (!job.extracted_json) throw new Error("任务尚未完成提取，无法写入")
 
-  const ensured = await ensureShareClassBeianProduct(input.beian_hao)
-  const resolvedBeian = ensured?.beian_hao || input.beian_hao.trim()
+  const officialBeian = await resolvePromotedBeian(input.beian_hao)
+  const ensured = await ensureShareClassBeianProduct(officialBeian)
+  const resolvedBeian = ensured?.beian_hao || officialBeian.trim()
   const productName = input.product_name?.trim() || job.product_name || resolvedBeian
 
   const buffer = await readStoredContractBuffer(job)

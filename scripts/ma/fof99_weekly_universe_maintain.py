@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "scripts" / "ma") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts" / "ma"))
 
-from cn_market_holidays import is_cn_market_closed  # noqa: E402
+from cn_market_holidays import is_cn_market_closed, resolve_week_target  # noqa: E402
 from fof99_mall_credits import credit_usage, format_credit_usage  # noqa: E402
 from fof99_weekly_nav_fetch import (  # noqa: E402
     BATCH_SIZE,
@@ -465,10 +465,13 @@ def main() -> int:
 
     sys.stdout.reconfigure(encoding="utf-8")
     today = date.today()
-    friday = date.fromisoformat(args.friday) if args.friday else previous_week_friday(today)
-    if is_cn_market_closed(friday):
-        log(f"skip: previous week Friday {friday} is a CN holiday")
+    nominal = date.fromisoformat(args.friday) if args.friday else previous_week_friday(today)
+    friday, _cover = resolve_week_target(nominal)
+    if friday is None:
+        log(f"skip: week of {nominal} has no trading day")
         return 0
+    if friday != nominal:
+        log(f"Friday {nominal} is a CN holiday; maintain uses {friday}")
 
     load_env()
     conn = connect()

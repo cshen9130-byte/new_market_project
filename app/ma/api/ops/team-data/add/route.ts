@@ -29,6 +29,7 @@ export async function POST(req: Request) {
     }
 
     invalidateListResponseCache("ops-team-data")
+    invalidateListResponseCache("ops-platform-data")
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[team-data/add]", err)

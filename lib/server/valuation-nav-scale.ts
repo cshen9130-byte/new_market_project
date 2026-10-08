@@ -29,3 +29,21 @@ export function valuationScaleMismatchesSeries(
   if (!last) return false
   return Math.abs(last.valNav / last.seriesNav - 1) > ratio
 }
+
+/**
+ * True when the valuation series does not extend past the platform tip.
+ * An older mark must not replace platform history: its level can sit well
+ * below today's tip just because the fund rose (SB2980: 2026-02-02 1.0787
+ * vs 火富牛 2026-09-24 1.1550).
+ */
+export function valuationTipIsNotAfterSeries(
+  series: Array<{ price_date?: string | null }>,
+  valuation: Array<{ price_date?: string | null }>,
+): boolean {
+  const seriesDate = String(series.at(-1)?.price_date ?? "").slice(0, 10)
+  const valDate = String(valuation.at(-1)?.price_date ?? "").slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(seriesDate) || !/^\d{4}-\d{2}-\d{2}$/.test(valDate)) {
+    return false
+  }
+  return valDate <= seriesDate
+}

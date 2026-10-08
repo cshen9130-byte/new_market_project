@@ -340,7 +340,10 @@ export async function GET(req: Request) {
       }
     }
 
-    const navDates = await loadLatestNavDates(pending)
+    const navDates = await loadLatestNavDates([
+      ...pending,
+      ...Object.entries(parentNameMap).map(([beian_hao, product_name]) => ({ beian_hao, product_name })),
+    ])
 
     for (const row of pending) {
       const list = data[row.parent] ??= []
@@ -362,7 +365,25 @@ export async function GET(req: Request) {
       })
     }
 
-    return NextResponse.json({ data })
+    const familyNav: Array<ChildRow & {
+      latest_nav_date: string
+      share_class: "A" | "B" | "C" | null
+    }> = []
+    const seenFamily = new Set<string>()
+    for (const [code, productName] of Object.entries(parentNameMap)) {
+      const key = code.trim().toUpperCase()
+      const latest = navDates.get(key)
+      if (!key || !latest || seenFamily.has(key)) continue
+      seenFamily.add(key)
+      familyNav.push({
+        beian_hao: key,
+        product_name: productName,
+        latest_nav_date: latest,
+        share_class: shareClassLetterOf(key, productName),
+      })
+    }
+
+    return NextResponse.json({ data, family_nav: familyNav })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Failed to load share classes"
     return NextResponse.json({ error: message }, { status: 500 })

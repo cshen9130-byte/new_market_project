@@ -2,7 +2,7 @@ import { createHash } from "crypto"
 import { HIDDEN_TEAM_POOL_KEYS } from "@/lib/client/tracking-pools"
 import { query } from "@/lib/db"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
-import { canonicalProductCode } from "@/lib/server/fund-holding-code"
+import { canonicalProductCode, sqlCanonicalProductCode } from "@/lib/server/fund-holding-code"
 import { resolveTrackingProductName } from "@/lib/server/tracking-product-name"
 
 /** Standard register-number pool tables keyed by pool id. */
@@ -320,6 +320,90 @@ export async function purgeValuationFilenameIdentities(): Promise<number> {
     console.warn("[tracking-pool] purge valuation-filename identities failed", err)
   }
   return deleted
+}
+
+/**
+ * 诚奇睿盈对冲2号A类 was tracked twice: 备案号 QH717A and custodian ticker AAEO3A.
+ * Drop the ticker when QH717A is already present; otherwise rewrite it in place.
+ */
+export async function collapseAliasedTrackingIdentities(): Promise<number> {
+  let changed = 0
+  const alias = "AAEO3A"
+  const memberships: { table: string; col: string; scope?: string }[] = [
+    { table: "tracking_pool", col: "register_number" },
+    { table: "selected_pool", col: "register_number" },
+    { table: "core_pool", col: "register_number" },
+    { table: "hy_tracking_pool", col: "register_number" },
+    { table: "fof_mom_tracking", col: "register_number" },
+    { table: "user_custom_pool", col: "register_number", scope: "pool_key" },
+    { table: "type6_ops_team_full", col: "register_number" },
+    { table: "ops_tracking_funds_list_cache", col: "beian_hao" },
+  ]
+  try {
+    for (const { table, col, scope } of memberships) {
+      const canon = sqlCanonicalProductCode(`a.${col}`)
+      const scopeSql = scope ? `AND b.${scope} = a.${scope}` : ""
+      const aliasOnly = `UPPER(BTRIM(a.${col})) = '${alias}'`
+      const deleted = await query<{ n: string }>(
+        `WITH deleted AS (
+           DELETE FROM ${table} a
+           WHERE ${aliasOnly}
+             AND ${canon} <> UPPER(BTRIM(a.${col}))
+             AND EXISTS (
+               SELECT 1 FROM ${table} b
+               WHERE UPPER(BTRIM(b.${col})) = ${canon}
+               ${scopeSql}
+             )
+           RETURNING 1
+         )
+         SELECT COUNT(*)::text AS n FROM deleted`,
+      ).catch(() => [] as { n: string }[])
+      changed += parseInt(deleted[0]?.n ?? "0", 10)
+
+      const updated = await query<{ n: string }>(
+        `WITH updated AS (
+           UPDATE ${table} a
+           SET ${col} = ${canon}
+           WHERE ${aliasOnly}
+             AND ${canon} <> UPPER(BTRIM(a.${col}))
+           RETURNING 1
+         )
+         SELECT COUNT(*)::text AS n FROM updated`,
+      ).catch(() => [] as { n: string }[])
+      changed += parseInt(updated[0]?.n ?? "0", 10)
+    }
+
+    const canonCode = sqlCanonicalProductCode("a.underlying_product_code")
+    const cacheDeletes = [
+      `DELETE FROM ops_private_fund_detail_nav_cache a
+        WHERE UPPER(BTRIM(COALESCE(a.beian_hao, ''))) = '${alias}'
+           OR UPPER(BTRIM(COALESCE(a.cache_key, ''))) = '${alias}'`,
+      `UPDATE ops_managed_fof_underlying a
+        SET underlying_product_code = ${canonCode}
+        WHERE UPPER(BTRIM(a.underlying_product_code)) = '${alias}'
+          AND ${canonCode} <> UPPER(BTRIM(a.underlying_product_code))
+          AND NOT EXISTS (
+            SELECT 1 FROM ops_managed_fof_underlying b
+            WHERE b.managed_product_id = a.managed_product_id
+              AND b.valuation_date = a.valuation_date
+              AND b.underlying_name = a.underlying_name
+              AND b.subject_code IS NOT DISTINCT FROM a.subject_code
+              AND UPPER(BTRIM(b.underlying_product_code)) = ${canonCode}
+              AND b.ctid <> a.ctid
+          )`,
+    ]
+    for (const sql of cacheDeletes) {
+      const rows = await query<{ n: string }>(
+        `WITH changed AS (${sql} RETURNING 1)
+         SELECT COUNT(*)::text AS n FROM changed`,
+      ).catch(() => [] as { n: string }[])
+      changed += parseInt(rows[0]?.n ?? "0", 10)
+    }
+    if (changed > 0) invalidateTrackingPoolListCaches([])
+  } catch (err) {
+    console.warn("[tracking-pool] collapse aliased identities failed", err)
+  }
+  return changed
 }
 
 export function isKnownCustomPoolKey(poolKey: string, definedPoolKeys: ReadonlySet<string>): boolean {

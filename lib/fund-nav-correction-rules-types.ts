@@ -8,8 +8,8 @@ export type FundNavCorrectionRule = {
   /** Extra product name aliases that should resolve to this rule */
   product_names?: string[]
   /**
-   * Keep NAV rows on or after this date only (ISO YYYY-MM-DD).
-   * Rows strictly before this date are discarded.
+   * Manual 运作日期 (ISO YYYY-MM-DD). Also kept on the correction rule.
+   * Earlier NAV rows are kept.
    */
   series_start_date: string
   /**

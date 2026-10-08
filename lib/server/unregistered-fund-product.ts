@@ -6,12 +6,16 @@ import {
   loadExtractedElementDisplayValues,
   writeFillEmptyElementsAcrossShareClasses,
 } from "@/lib/server/fund-elements-write"
+import { listFundFamilyProducts } from "@/lib/server/share-class-product"
 import {
   addFundToTrackingPool,
   invalidateTrackingPoolListCaches,
 } from "@/lib/server/tracking-pool-membership"
 import { updateElementExtractJob, type ElementExtractJobRow } from "@/lib/server/fund-element-extract-jobs"
-import type { ExtractedFundElements } from "@/lib/server/fund-contract-element-extract"
+import {
+  resolveContractRegisterNumber,
+  type ExtractedFundElements,
+} from "@/lib/server/fund-contract-element-extract"
 
 export const UNREGISTERED_PENDING_NOTE = "未备案临时产品，待协会同步后并入正式产品"
 
@@ -37,7 +41,6 @@ export type UnregisteredPromoteResult = {
 }
 
 const TEMP_BEIAN_RE = /^TMP\d{5}$/
-const BEIAN_IN_TEXT_RE = /(?<![A-Z0-9])([A-Z][A-Z0-9]{4,7}[A-Z]?)(?![A-Z0-9])/g
 
 let tableReady: Promise<void> | null = null
 
@@ -51,6 +54,80 @@ export function unregisteredPromotedNote(beianHao: string): string {
 
 export function isUnregisteredPendingNote(message: string | null | undefined): boolean {
   return (message ?? "").includes("未备案临时产品")
+}
+
+/** Temp 备案号 that has already been merged into an AMAC product. */
+export async function resolvePromotedBeian(beianHao: string): Promise<string> {
+  const raw = String(beianHao ?? "").trim()
+  if (!raw) return raw
+  await ensureUnregisteredProductsTable()
+  const upper = raw.toUpperCase()
+  const candidates = [upper]
+  if (/[ABC]$/.test(upper)) candidates.push(upper.slice(0, -1))
+  const rows = await query<{ promoted_beian_hao: string | null }>(
+    `SELECT promoted_beian_hao
+     FROM ops_unregistered_products
+     WHERE status = 'promoted'
+       AND NULLIF(BTRIM(promoted_beian_hao), '') IS NOT NULL
+       AND UPPER(BTRIM(temp_beian_hao)) = ANY($1::text[])
+     ORDER BY
+       CASE WHEN UPPER(BTRIM(temp_beian_hao)) = $2 THEN 0 ELSE 1 END,
+       promoted_at DESC NULLS LAST
+     LIMIT 1`,
+    [candidates, upper],
+  )
+  return rows[0]?.promoted_beian_hao?.trim() || raw
+}
+
+/** Point already-promoted tasks at the official 备案号 so a later 写入 does not land on the temp code. */
+export async function retargetPromotedExtractJobs<T extends {
+  beian_hao: string | null
+  product_name: string | null
+  matched_funds: { beian_hao: string; product_name: string; short_name: string | null }[] | null
+}>(jobs: T[]): Promise<T[]> {
+  const codes = new Set<string>()
+  for (const job of jobs) {
+    const beian = job.beian_hao?.trim().toUpperCase()
+    if (beian) {
+      codes.add(beian)
+      if (/[ABC]$/.test(beian)) codes.add(beian.slice(0, -1))
+    }
+    for (const fund of job.matched_funds ?? []) {
+      const code = fund.beian_hao?.trim().toUpperCase()
+      if (!code) continue
+      codes.add(code)
+      if (/[ABC]$/.test(code)) codes.add(code.slice(0, -1))
+    }
+  }
+  if (!codes.size) return jobs
+  await ensureUnregisteredProductsTable()
+  const rows = await query<{
+    temp_beian_hao: string
+    promoted_beian_hao: string
+    product_name: string
+  }>(
+    `SELECT temp_beian_hao, promoted_beian_hao, product_name
+     FROM ops_unregistered_products
+     WHERE status = 'promoted'
+       AND NULLIF(BTRIM(promoted_beian_hao), '') IS NOT NULL
+       AND UPPER(BTRIM(temp_beian_hao)) = ANY($1::text[])`,
+    [[...codes]],
+  )
+  const byTemp = new Map(rows.map((row) => [row.temp_beian_hao.trim().toUpperCase(), row]))
+  if (!byTemp.size) return jobs
+  return jobs.map((job) => {
+    const raw = job.beian_hao?.trim().toUpperCase() || ""
+    const hit = byTemp.get(raw) || (/[ABC]$/.test(raw) ? byTemp.get(raw.slice(0, -1)) : undefined)
+    if (!hit?.promoted_beian_hao) return job
+    const official = hit.promoted_beian_hao.trim()
+    const productName = hit.product_name?.trim() || job.product_name || official
+    return {
+      ...job,
+      beian_hao: official,
+      product_name: productName,
+      matched_funds: [{ beian_hao: official, product_name: productName, short_name: null }],
+    }
+  })
 }
 
 export async function ensureUnregisteredProductsTable(): Promise<void> {
@@ -91,15 +168,6 @@ export async function ensureUnregisteredProductsTable(): Promise<void> {
   await tableReady
 }
 
-function extractRegisterCodesFromText(text: string): string[] {
-  const out = new Set<string>()
-  for (const match of text.toUpperCase().matchAll(BEIAN_IN_TEXT_RE)) {
-    const code = normalizeRegisterCode(match[1])
-    if (code && !isTempBeianCode(code)) out.add(code)
-  }
-  return Array.from(out)
-}
-
 export function guessUnregisteredRegisterNumber(input: {
   extracted?: ExtractedFundElements | null
   fileName?: string | null
@@ -108,13 +176,11 @@ export function guessUnregisteredRegisterNumber(input: {
 }): string | null {
   const fromOverride = normalizeRegisterCode(input.override)
   if (fromOverride && !isTempBeianCode(fromOverride)) return fromOverride
-  const fromExtracted = normalizeRegisterCode(input.extracted?.register_number)
-  if (fromExtracted && !isTempBeianCode(fromExtracted)) return fromExtracted
-  for (const source of [input.fileName, input.contractText]) {
-    const codes = extractRegisterCodesFromText(source ?? "")
-    if (codes[0]) return codes[0]
-  }
-  return null
+  return resolveContractRegisterNumber({
+    contractText: input.contractText,
+    fileName: input.fileName,
+    extracted: input.extracted?.register_number,
+  })
 }
 
 export function resolveUnregisteredProductName(input: {
@@ -545,14 +611,18 @@ async function promoteOne(row: UnregisteredProductRow): Promise<"promoted" | "sk
      WHERE id = $1`,
     [row.id, to, officialName],
   )
-  await query(
-    `UPDATE ops_element_extract_jobs
-     SET error_message = $2,
-         beian_hao = COALESCE(beian_hao, $3),
-         product_name = COALESCE(NULLIF(BTRIM($4), ''), product_name)
-     WHERE id = $1`,
-    [row.extract_job_id, unregisteredPromotedNote(to), to, officialName],
-  ).catch(() => undefined)
+  const family = await listFundFamilyProducts(to)
+  const matchedFunds = (family.length ? family : [{ beian_hao: to, product_name: officialName }]).map((item) => ({
+    beian_hao: item.beian_hao,
+    product_name: item.product_name,
+    short_name: null,
+  }))
+  await updateElementExtractJob(row.extract_job_id, {
+    beian_hao: to,
+    product_name: officialName,
+    matched_funds: matchedFunds,
+    error_message: unregisteredPromotedNote(to),
+  })
 
   invalidateTrackingPoolListCaches(["bfl"])
   return "promoted"

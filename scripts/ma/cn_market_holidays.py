@@ -30,8 +30,39 @@ def last_friday_on_or_before(day: date) -> date:
     return day - timedelta(days=(day.weekday() - 4) % 7)
 
 
+def week_friday(day: date) -> date:
+    """Friday of the Mon–Sun week that contains `day`."""
+    return day + timedelta(days=(4 - day.weekday()) % 7)
+
+
 def last_trading_friday_on_or_before(day: date) -> date:
     d = last_friday_on_or_before(day)
     while is_cn_market_closed(d):
         d -= timedelta(days=7)
     return d
+
+
+def week_trading_days(friday: date) -> list[date]:
+    """Mon–Fri of `friday`'s week that are not weekends or PRC holidays."""
+    monday = friday - timedelta(days=friday.weekday())
+    return [
+        monday + timedelta(days=i)
+        for i in range(5)
+        if not is_cn_market_closed(monday + timedelta(days=i))
+    ]
+
+
+def resolve_week_target(friday: date) -> tuple[date | None, list[date]]:
+    """Date to request, and dates that already satisfy that week.
+
+    An open Friday is requested as itself. A holiday Friday is not requested.
+    Use the last open day of that week, and treat any open day in the week as
+    already having it. Examples: 2026-10-02 → 2026-09-30 (09-28 and 09-29 also
+    count); 2026-09-25 → 2026-09-24. None when the whole Mon–Fri is closed.
+    """
+    days = week_trading_days(friday)
+    if not days:
+        return None, []
+    if is_cn_market_closed(friday):
+        return days[-1], days
+    return friday, [friday]

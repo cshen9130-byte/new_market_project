@@ -344,6 +344,7 @@ export async function writeFundElementsFromBody(body: FundElementWriteBody): Pro
   }
   invalidateDetailResponseMemoryCache([beian_hao, rawBeian])
   invalidateListResponseCache("ops-team-data")
+  invalidateListResponseCache("ops-platform-data")
   try {
     const { invalidateTeamDataListCaches } = await import("@/lib/server/team-data-query-pg")
     invalidateTeamDataListCaches()

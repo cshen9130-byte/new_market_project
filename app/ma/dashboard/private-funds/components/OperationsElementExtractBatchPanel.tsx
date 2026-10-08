@@ -544,10 +544,14 @@ export function OperationsElementExtractBatchPanel() {
       return
     }
     const matched = activeJob.matched_funds ?? []
-    const existing =
-      (activeJob.beian_hao
-        ? matched.find((fund) => fund.beian_hao === activeJob.beian_hao)
-        : null) ?? matched[0] ?? null
+    const jobBeian = activeJob.beian_hao?.trim() || ""
+    const existing = jobBeian
+      ? matched.find((fund) => fund.beian_hao.trim().toUpperCase() === jobBeian.toUpperCase()) ?? {
+          beian_hao: jobBeian,
+          product_name: activeJob.product_name || activeJob.extracted_json?.fund_name || jobBeian,
+          short_name: null,
+        }
+      : matched[0] ?? null
     setSelectedFund(existing)
     setFundInput(existing?.product_name || activeJob.product_name || activeJob.extracted_json?.fund_name || "")
     setUnregisteredName(activeJob.extracted_json?.fund_name?.trim() || activeJob.product_name || "")
@@ -1305,6 +1309,7 @@ export function OperationsElementExtractBatchPanel() {
                         ].join(" ")}
                       >
                         {fund.product_name}
+                        <span className="text-muted-foreground"> {fund.beian_hao}</span>
                       </button>
                     ))
                   )}

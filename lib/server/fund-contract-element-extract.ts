@@ -517,7 +517,7 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 
 字段说明：
 - fund_name: 基金全称
-- register_number: 备案编号/基金备案号（如 SXN097、SBNX55 等字母数字编码）
+- register_number: 协会备案编号，如 SGH529、SXN097。只取「备案编号」「基金编码」「协会备案编码」后面的编码。封面或页眉的合同版本号（如「版本：JJHT02-202608」）不是备案编号，必须填 null。
 - advisor: 投资顾问
 - fund_manager: 基金管理人
 - inception_date: 成立日期 (YYYY-MM-DD)
@@ -869,14 +869,75 @@ function collectMatchNameCandidates(elements: ExtractedFundElements, hints?: Mat
   return Array.from(out)
 }
 
+const LABELED_REGISTER_RE = /(?:基金备案编号|产品备案编号|协会备案编号|备案编号|基金备案号|协会备案(?:编码|代码|号)|产品备案(?:编码|代码|号)|基金编码)\s*[：:为]?\s*([A-Z][A-Z0-9]{4,7}[A-Z]?)/g
+const VERSION_REGISTER_RE = /版本(?:号|编码)?\s*[：:]?\s*([A-Z][A-Z0-9]{4,7}[A-Z]?)(?:\s*[-–—－]\s*\d{4,8})?/g
+const DATED_VERSION_REGISTER_RE = /(?<![A-Z0-9])([A-Z][A-Z0-9]{4,7}[A-Z]?)\s*[-–—－]\s*(20\d{4})(?!\d)/g
+
+function collectLabeledRegisterCodes(text: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const re = new RegExp(LABELED_REGISTER_RE.source, LABELED_REGISTER_RE.flags)
+  for (const match of text.toUpperCase().matchAll(re)) {
+    const code = normalizeRegisterCode(match[1])
+    if (!code || seen.has(code)) continue
+    seen.add(code)
+    out.push(code)
+  }
+  return out
+}
+
+/** Cover/header tokens such as 「版本：JJHT02-202608」 are contract versions, not 备案编号. */
+export function collectVersionRegisterCodes(...sources: Array<string | null | undefined>): Set<string> {
+  const out = new Set<string>()
+  const text = sources.filter(Boolean).join("\n").toUpperCase()
+  if (!text) return out
+  for (const pattern of [VERSION_REGISTER_RE, DATED_VERSION_REGISTER_RE]) {
+    const re = new RegExp(pattern.source, pattern.flags)
+    for (const match of text.matchAll(re)) {
+      const code = normalizeRegisterCode(match[1])
+      if (code) out.add(code)
+    }
+  }
+  return out
+}
+
+function preferFilingCode(codes: string[]): string | null {
+  return codes.find((code) => code.startsWith("S")) ?? codes[0] ?? null
+}
+
+/**
+ * Prefer a labeled 协会备案编号. Drop version numbers the model copies off the cover.
+ * Returns null when the only code in view is a version token, so name matching can supply the real code.
+ */
+export function resolveContractRegisterNumber(input: {
+  contractText?: string | null
+  fileName?: string | null
+  extracted?: string | null
+}): string | null {
+  const text = `${input.contractText ?? ""}\n${input.fileName ?? ""}`
+  const version = collectVersionRegisterCodes(text)
+  const labeled = collectLabeledRegisterCodes(text)
+  const labeledReal = labeled.filter((code) => !version.has(code))
+  const fromLabel = preferFilingCode(labeledReal.length ? labeledReal : labeled)
+  if (fromLabel) return fromLabel
+  const extracted = normalizeRegisterCode(input.extracted)
+  if (extracted && !version.has(extracted)) return extracted
+  return null
+}
+
 function collectRegisterCandidates(elements: ExtractedFundElements, hints?: MatchHints): string[] {
   const out = new Set<string>()
+  const version = collectVersionRegisterCodes(hints?.contractText, hints?.fileName)
   const register = normalizeRegisterCode(elements.register_number)
-  if (register) out.add(register)
-  for (const code of extractBeianCodes(hints?.contractText, elements.fund_name)) out.add(code)
+  if (register && !version.has(register)) out.add(register)
+  for (const code of extractBeianCodes(hints?.contractText, elements.fund_name)) {
+    if (!version.has(code)) out.add(code)
+  }
   // Filename codes are often the parent FOF 备案号. Keep them only when the contract name is unknown.
   if (!(elements.fund_name ?? "").trim()) {
-    for (const code of extractBeianCodes(hints?.fileName)) out.add(code)
+    for (const code of extractBeianCodes(hints?.fileName)) {
+      if (!version.has(code)) out.add(code)
+    }
   }
   return Array.from(out)
 }
@@ -885,10 +946,23 @@ function enrichExtractedRegisterNumber(
   elements: ExtractedFundElements,
   hints?: MatchHints,
 ): ExtractedFundElements {
-  if (normalizeRegisterCode(elements.register_number)) return elements
-  const textCodes = extractBeianCodes(hints?.contractText, elements.fund_name)
-  if (!textCodes.length) return elements
-  return { ...elements, register_number: textCodes[0] }
+  const register_number = resolveContractRegisterNumber({
+    contractText: hints?.contractText,
+    fileName: hints?.fileName,
+    extracted: elements.register_number,
+  })
+  if (register_number === elements.register_number) return elements
+  return { ...elements, register_number }
+}
+
+function adoptMatchedRegisterNumber(
+  extracted: ExtractedFundElements,
+  matched: FundMatchCandidate | null,
+): ExtractedFundElements {
+  if (normalizeRegisterCode(extracted.register_number) || !matched) return extracted
+  const code = normalizeRegisterCode(matched.beian_hao)
+  if (!code) return extracted
+  return { ...extracted, register_number: code }
 }
 
 function addMatches(target: Map<string, ScoredFundMatch>, rows: FundMatchCandidate[], score: number) {
@@ -1035,8 +1109,12 @@ export async function extractFundContractElements(input: {
   const text = await readFundContractText(input.buffer, input.fileName)
   const extractedRaw = await extractElementsWithLlm(text)
   const hints = { fileName: input.fileName, contractText: text }
-  const extracted = enrichExtractedRegisterNumber(extractedRaw, hints)
-  const matched_funds = await matchFundsFromExtracted(extracted, hints)
+  const enriched = enrichExtractedRegisterNumber(extractedRaw, hints)
+  const matched_funds = await matchFundsFromExtracted(enriched, hints)
+  const extracted = adoptMatchedRegisterNumber(
+    enriched,
+    pickHighConfidenceFundMatch(enriched, matched_funds, hints),
+  )
   return {
     extracted,
     matched_funds,

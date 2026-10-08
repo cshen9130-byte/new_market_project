@@ -8,6 +8,7 @@ import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-
 import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { canonicalizeFundRouteId, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import { seriesBorrowedFromShareClassFamily } from "@/lib/server/fund-nav-series"
 import { lookupAmacFundMetadata, lookupAmacFundName } from "@/lib/server/amac-fund-metadata"
 import { preferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { preferOfficialManagerName } from "@/lib/server/manager-name-canonical"
@@ -37,9 +38,8 @@ import {
   rememberDetailResponseMemoryCache,
 } from "@/lib/server/fund-detail-response-memory-cache"
 import { loadTeamBenchmark } from "@/lib/server/ops-team-benchmarks"
-import { loadOperationDate as loadStoredOperationDate, upsertOperationDate } from "@/lib/server/ops-fund-operation-dates"
+import { loadOperationDate as loadStoredOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { ensureFundElementTrackColumns } from "@/lib/server/fund-elements-write"
-import { resolveFundOperationDate } from "@/lib/nav-operation-date"
 
 export const dynamic = "force-dynamic"
 
@@ -78,27 +78,31 @@ function navSeriesTipDate(series: unknown): string {
   return String(last?.price_date ?? "").slice(0, 10)
 }
 
-function attachResolvedOperationDate<T extends {
-  info?: { operation_date?: string | null; inception_date?: string | null }
-  nav_series?: Array<{ price_date?: string | null }>
-}>(body: T, persistBeian?: string | null): T {
-  const info = body.info
-  const series = body.nav_series
-  if (!info || !Array.isArray(series)) return body
-  const stored = info.operation_date?.slice(0, 10) ?? null
-  const resolved = resolveFundOperationDate(
-    stored,
-    series.map((row) => row.price_date),
-    info.inception_date,
-  )
-  if (!resolved) return body
-  if (!stored && persistBeian) {
-    void upsertOperationDate(persistBeian, resolved).catch((err) => {
-      console.warn("[private-funds/detail] persist inferred operation_date skipped:", err)
-    })
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
+
+function isoOperationDate(value: string | null | undefined): string | null {
+  const day = (value ?? "").slice(0, 10)
+  return ISO_DAY.test(day) ? day : null
+}
+
+/** 运作日 is manual only. Never infer it from NAV gaps or 成立日. */
+async function loadManualOperationDate(keys: Array<string | null | undefined>): Promise<string | null> {
+  const unique = [...new Set(keys.map((key) => (key ?? "").trim()).filter(Boolean))]
+  if (unique.length === 0) return null
+  const stored = await loadStoredOperationDate(unique).catch(() => null)
+  const fromOps = isoOperationDate(stored)
+  if (fromOps) return fromOps
+  await ensureFundElementTrackColumns()
+  const rows = await loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
+    unique,
+    `SELECT operation_date::text AS operation_date
+     FROM basicinfo_bfl_track`,
+  ).catch(() => [] as { operation_date: string | null }[])
+  for (const row of rows) {
+    const day = isoOperationDate(row.operation_date)
+    if (day) return day
   }
-  if (resolved === stored) return body
-  return { ...body, info: { ...info, operation_date: resolved } }
+  return null
 }
 
 /** Drop non-trading days from detail payload (also sanitizes stale in-memory cache). */
@@ -309,12 +313,28 @@ export async function GET(
       const cached = await lookupListCacheFundHeader(rawId)
       if (cached) {
         const payload = buildDetailHeaderFromListCache(rawId, cached)
-        const teamBenchmark = await loadTeamBenchmark(
-          [payload.info.beian_hao, rawId].filter(Boolean),
-        ).catch(() => null)
+        const [teamBenchmark, navCache, manualOperationDate] = await Promise.all([
+          loadTeamBenchmark(
+            [payload.info.beian_hao, rawId].filter(Boolean),
+          ).catch(() => null),
+          getDetailNavCache(
+            payload.info.beian_hao,
+            payload.info.product_name,
+          ).catch(() => null),
+          loadManualOperationDate([payload.info.beian_hao, rawId]),
+        ])
+        const headerSeries =
+          navCache && isDetailNavCacheFresh(navCache, cached)
+            ? navCache.nav_series
+            : payload.nav_series
         return NextResponse.json({
           ...payload,
-          info: { ...payload.info, team_benchmark: teamBenchmark },
+          nav_series: headerSeries,
+          info: {
+            ...payload.info,
+            team_benchmark: teamBenchmark,
+            operation_date: manualOperationDate,
+          },
         })
       }
       return NextResponse.json({ error: "Header cache miss", partial: true }, { status: 404 })
@@ -354,15 +374,16 @@ export async function GET(
     const memoryCoversListTip = !memoryListTip || navSeriesTipDate(memorySeries) >= memoryListTip
     if (
       cachedDetail
+      && memorySeries.length > 0
       && memoryCoversTeam
       && memoryCoversListTip
       && detailNavCacheMatchesSeed({ nav_series: memorySeries }, cacheKey)
     ) {
-      const body = attachResolvedOperationDate(
-        sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0]),
-        cacheKey,
-      )
-      const teamBenchmark = await loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null)
+      const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
+      const [teamBenchmark, manualOperationDate] = await Promise.all([
+        loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null),
+        loadManualOperationDate([cacheKey, beian_hao, rawId]),
+      ])
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
         const cachedInfo = body.info as {
           product_name?: string | null
@@ -381,6 +402,7 @@ export async function GET(
             former_product_name:
               officialName && storedName && officialName !== storedName ? storedName : null,
             team_benchmark: teamBenchmark ?? cachedInfo.team_benchmark ?? null,
+            operation_date: manualOperationDate,
           },
         })
       }
@@ -597,7 +619,7 @@ export async function GET(
       )
       && detailNavCacheMatchesSeed(pgCached, routeBeianHao)
 
-    const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved, teamBenchmark, operationDateRows] = await Promise.all([
+    const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved, teamBenchmark, manualOperationDate] = await Promise.all([
       strategy_l3
         ? Promise.resolve([] as { l3: string | null }[])
         : query<{ l3: string | null }>(
@@ -648,21 +670,14 @@ export async function GET(
         registerCode: bflTrack?.register_code ?? null,
       }),
       loadTeamBenchmark([routeBeianHao, beian_hao, rawId].filter(Boolean)).catch(() => null),
-      loadStoredOperationDate([routeBeianHao, beian_hao, rawId, ...trackKeys].filter(Boolean))
-        .then(async (stored) => {
-          if (stored) return [{ operation_date: stored }]
-          await ensureFundElementTrackColumns()
-          return loadBasicinfoTrackByBeianKeys<{ operation_date: string | null }>(
-            trackKeys,
-            `SELECT operation_date::text AS operation_date
-             FROM basicinfo_bfl_track`,
-          )
-        })
-        .catch(() => [] as { operation_date: string | null }[]),
+      loadManualOperationDate([routeBeianHao, beian_hao, rawId, ...trackKeys]),
     ])
     const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
+    // Parent history shown on an empty A/B/C page must not be written back as
+    // that share's own cache or list tip (TE102B has no series of its own).
+    const borrowedFamilyNav = seriesBorrowedFromShareClassFamily(navSeriesRaw)
 
-    if (navSeriesRaw.length > 0) {
+    if (navSeriesRaw.length > 0 && !borrowedFamilyNav) {
       if (!pgCacheHit) {
         // Write-through so the next open is instant (same merge result).
         // Also advances FOF / 跟踪产品 list tips to match this page.
@@ -715,23 +730,6 @@ export async function GET(
       bflTrack?.inception_date?.slice(0, 10) ??
       amacResolved?.establish_date ??
       null
-    const storedOperationDate =
-      operationDateRows
-        .map((row) => (row.operation_date ?? "").slice(0, 10))
-        .find((day) => /^\d{4}-\d{2}-\d{2}$/.test(day)) ?? null
-    const inceptionForOperation =
-      info.inception_date?.slice(0, 10) ?? trackInception ?? amacResolved?.establish_date ?? null
-    const trackOperationDate = resolveFundOperationDate(
-      storedOperationDate,
-      nav_series.map((row) => row.price_date),
-      inceptionForOperation,
-    )
-    if (!storedOperationDate && trackOperationDate) {
-      void upsertOperationDate(routeBeianHao, trackOperationDate).catch((err) => {
-        console.warn("[private-funds/detail] persist inferred operation_date skipped:", err)
-      })
-    }
-
     const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
     const nav_data_source: "team" | "platform" =
       managedOverride || hasSeed || teamManualPoints.length > 0 ? "team" : "platform"
@@ -811,7 +809,7 @@ export async function GET(
           trackInception ??
           amacResolved?.establish_date ??
           null,
-        operation_date: trackOperationDate,
+        operation_date: manualOperationDate,
         team_benchmark: teamBenchmark,
         manager:
           preferOfficialManagerName(

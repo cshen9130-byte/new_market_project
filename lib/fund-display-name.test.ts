@@ -33,6 +33,17 @@ describe("resolveFundDisplayLabel", () => {
     )
   })
 
+  it("keeps C类份额 as the share class and does not append it twice", () => {
+    assert.equal(
+      resolveFundDisplayLabel(null, "添禄投资添睿六号私募证券投资基金C类份额", "AWV23C"),
+      "添禄投资添睿六号C类",
+    )
+    assert.equal(
+      resolveFundDisplayLabel("添禄投资添睿六号", "添禄投资添睿六号", "AWV23C"),
+      "添禄投资添睿六号C类",
+    )
+  })
+
   it("adds the share class from the filing code when both names omit it", () => {
     assert.equal(
       resolveFundDisplayLabel("众量资产聚宝19号", "众量资产聚宝19号", "EJ748B"),

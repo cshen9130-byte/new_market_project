@@ -60,20 +60,26 @@ export function ShareClassNavBanner({ beianHao }: { beianHao: string }) {
 
     fetch(`/ma/api/private-funds/share-classes?parents=${encodeURIComponent(parents.join(","))}`)
       .then((res) => (res.ok ? res.json() : null))
-      .then((payload: { data?: Record<string, ShareClassChild[]> } | null) => {
+      .then((payload: { data?: Record<string, ShareClassChild[]>; family_nav?: ShareClassChild[] } | null) => {
         if (cancelled) return
         const seen = new Set<string>()
         const merged: ShareClassChild[] = []
-        for (const list of Object.values(payload?.data ?? {})) {
-          for (const row of list ?? []) {
-            const key = (row.beian_hao ?? "").trim().toUpperCase()
-            if (!key || seen.has(key) || sameBeian(key, beianHao)) continue
-            if (row.synthetic) continue
-            seen.add(key)
-            merged.push(row)
-          }
+        const consider = (row: ShareClassChild) => {
+          const key = (row.beian_hao ?? "").trim().toUpperCase()
+          const date = (row.latest_nav_date ?? "").slice(0, 10)
+          if (!key || seen.has(key) || sameBeian(key, beianHao)) return
+          if (row.synthetic) return
+          // A registered B/C share with no series still has a detail page, but
+          // there is nothing to analyze (TE102B). Only offer the jump when NAV exists.
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return
+          seen.add(key)
+          merged.push({ ...row, latest_nav_date: date })
         }
-        merged.sort((a, b) => (a.share_class ?? "Z").localeCompare(b.share_class ?? "Z"))
+        for (const row of payload?.family_nav ?? []) consider(row)
+        for (const list of Object.values(payload?.data ?? {})) {
+          for (const row of list ?? []) consider(row)
+        }
+        merged.sort((a, b) => (a.share_class ?? "").localeCompare(b.share_class ?? ""))
         setRows(merged)
       })
       .catch(() => {

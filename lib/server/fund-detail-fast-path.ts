@@ -21,7 +21,10 @@ import {
   type NavPoint,
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
-import { valuationScaleMismatchesSeries } from "@/lib/server/valuation-nav-scale"
+import {
+  valuationScaleMismatchesSeries,
+  valuationTipIsNotAfterSeries,
+} from "@/lib/server/valuation-nav-scale"
 import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 import {
   collectFundNameAliases,
@@ -89,8 +92,10 @@ function fmtDate(d: string | Date | null | undefined): string | null {
 export async function lookupListCacheFundHeader(
   rawId: string,
 ): Promise<ListCacheFundHeader | null> {
-  const id = canonicalizeFundRouteId(rawId.trim())
-  if (!id) return null
+  const routed = canonicalizeFundRouteId(rawId.trim())
+  if (!routed) return null
+  // Custodian tickers (AAEO3A → QH717A) must paint the 备案号 header, not a second product.
+  const id = resolveFofValuationCodeAlias(routed) ?? routed
 
   // Tracking cache stores full L1–L3 for both sources; FOF/managed only keep L1.
   const selectCols = (source: ListCacheFundHeader["source"]) => `
@@ -323,7 +328,14 @@ export function buildDetailHeaderFromListCache(
       sharpe_1y: cached.sharpe_1y,
       calmar_1y: cached.calmar_1y,
     },
-    nav_series: [],
+    // One list-cache point so the table is not the "未入库" empty state while the
+    // full series is still loading. Leave 累计 blank — unit-only tips are not 累计.
+    nav_series: seriesFromListHeader(cached).map((row) => ({
+      ...row,
+      cumulative_nav: "",
+      cum_nav_withdrawal: "",
+      price_change: "",
+    })),
     nav_data_source: "platform",
     metrics: {
       // Hide weekend forward-fill tips until the full trading-day series arrives.
@@ -420,6 +432,10 @@ function shouldReplaceMergedSeriesWithValuation(
 ): boolean {
   if (navSeries.length === 0 || valuation.length === 0) return false
   if (valuationScaleMismatchesSeries(navSeries, valuation)) return true
+  // Stale custody/FOF mark behind the platform tip is the same series, not a
+  // second scale. Comparing its level to today's tip looks like a >5% crash
+  // and would discard the 火富牛 history.
+  if (valuationTipIsNotAfterSeries(navSeries, valuation)) return false
   const tipNav = valuation.at(-1)?.nav != null ? parseFloat(String(valuation.at(-1)!.nav)) : NaN
   return Number.isFinite(tipNav) && isSparseGapUnitOnlyCrash(navSeries, tipNav, null)
 }

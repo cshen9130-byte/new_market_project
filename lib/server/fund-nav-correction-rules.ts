@@ -127,21 +127,12 @@ export function shouldSkipReturnIndexSanitize(context?: FundNavSeriesContext | n
   return rule?.preserve_high_nav_scale === true
 }
 
+/** 运作日期 does not drop earlier NAV. The date is stored separately and only changes the stats window. */
 export function applyFundNavCorrectionToLegacyRows<T extends LegacyNavRowLike>(
   rows: T[],
-  context?: FundNavSeriesContext | null,
+  _context?: FundNavSeriesContext | null,
 ): T[] {
-  if (!context || rows.length === 0) return rows
-  const rule = lookupFundNavCorrectionRule(
-    context.beian_hao,
-    context.product_name,
-    context.short_name,
-  )
-  if (!rule?.series_start_date) return rows
-
-  const start = rule.series_start_date
-  const trimmed = rows.filter((row) => row.price_date.slice(0, 10) >= start)
-  return trimmed.length === rows.length ? rows : trimmed
+  return rows
 }
 
 export function getFundNavCorrectionRule(beianHao: string): FundNavCorrectionRule | null {

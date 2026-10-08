@@ -35,7 +35,7 @@ const BARE_LEGAL_RE = new RegExp(
  * Trailing share-class markers:
  * A类 / A / (A类) / （A类） / (A) / （A）
  */
-const SHARE_CLASS_RE = /(?:[(（]([A-Z])类?[)）]|([A-Z])类)$/u
+const SHARE_CLASS_RE = /(?:[(（]([A-Z])类?(?:份额)?[)）]|([A-Z])类(?:份额)?)$/u
 const BARE_SHARE_LETTER_RE = /([A-Z])$/u
 const BARE_FRAGMENT_RE = /^(?:私募|基金|证券|投资|证券投资)$/u
 
@@ -104,7 +104,7 @@ function displayNameKey(label: string): string {
 }
 
 function trailingShareClass(label: string): string {
-  return label.match(/([A-Z])类$/u)?.[1] ?? ""
+  return label.match(/([A-Z])类(?:份额)?$/u)?.[1] ?? ""
 }
 
 /** EJ748B → B. Parent codes such as SEJ748 are left unchanged. */

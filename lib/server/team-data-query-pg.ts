@@ -6,6 +6,7 @@
  */
 
 import { query } from "@/lib/db"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { isStrategyUnconfigured, matchesStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { extractNavMetadata, normalizeFundDisplayName } from "@/lib/server/email-nav-extract"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
@@ -40,7 +41,13 @@ import {
   parseValuationWorkbookFilename,
 } from "@/lib/server/valuation-filename"
 import { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
-import { loadOperationDatesByCodes } from "@/lib/server/ops-fund-operation-dates"
+import {
+  chartNavLevel,
+  navAnomalyHit,
+  type NavAnomalyHit,
+  type NavAnomalyPoint,
+} from "@/lib/server/nav-anomaly"
+import { ensureOpsFundOperationDates, loadOperationDatesByCodes } from "@/lib/server/ops-fund-operation-dates"
 
 export { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
 
@@ -91,12 +98,23 @@ export type TeamDataElementsFilter = "all" | "missing" | "present"
 export type TeamDataNavLagFilter = "all" | "behind_2w" | "within_2w"
 /** Interior holes in the NAV series (missing share of expected points), not lag of the latest date. */
 export type TeamDataNavGapFilter = "all" | "interior_2w" | "no_interior_2w"
-export type TeamDataProductSourceFilter = "all" | "manual" | "email"
+/** Suspicious jumps or one-point spikes on the default 复权净值 chart. */
+export type TeamDataNavAnomalyFilter = "all" | "jump" | "no_jump"
+export type TeamDataProductSourceFilter = "all" | "manual" | "email" | "fof99"
+/** Filter by whether a manual or 产品要素 运作日期 is set. */
+export type TeamDataOperationDateFilter = "all" | "present" | "absent"
 
 const TEAM_NAV_LAG_DAYS = 14
+/** How the newest data point (团队净值 / 估值表 / fof99) was written. */
+const TEAM_DATA_UPDATE_METHOD = {
+  manual: "手动更新",
+  email: "邮箱抓取",
+  fof99: "fof99",
+} as const
 const TEAM_DATA_PRODUCT_SOURCE: Record<Exclude<TeamDataProductSourceFilter, "all">, string> = {
-  manual: "手动添加",
-  email: "邮箱同步",
+  manual: TEAM_DATA_UPDATE_METHOD.manual,
+  email: TEAM_DATA_UPDATE_METHOD.email,
+  fof99: TEAM_DATA_UPDATE_METHOD.fof99,
 }
 
 export type TeamDataListParams = {
@@ -109,12 +127,16 @@ export type TeamDataListParams = {
   strategyL3: string
   /** Filter by whether 产品要素 (申赎字段) exist in basicinfo_bfl_track. */
   elementsFilter?: TeamDataElementsFilter
-  /** Filter by 团队净值日期 lag vs Asia/Shanghai today. Missing NAV counts as behind. */
+  /** Filter by fund-page latest NAV date lag vs Asia/Shanghai today. Missing NAV counts as behind. */
   navLagFilter?: TeamDataNavLagFilter
   /** Filter by missing-NAV share inside the series (平台数据 / detail cache). */
   navGapFilter?: TeamDataNavGapFilter
-  /** Filter by 产品来源 (手动添加 / 邮箱同步). */
+  /** Filter by a large jump or reverting spike on the charted NAV series. */
+  navAnomalyFilter?: TeamDataNavAnomalyFilter
+  /** Filter by 更新方式 (邮箱抓取 / 手动更新 / fof99). */
   productSourceFilter?: TeamDataProductSourceFilter
+  /** Filter by whether 运作日期 is set (ops_fund_operation_dates or basicinfo_bfl_track). */
+  operationDateFilter?: TeamDataOperationDateFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
@@ -126,10 +148,12 @@ export type TeamDataListRow = {
   platform_nav: string | null
   platform_nav_date: string | null
   team_nav: string | null
+  /** Latest trading day on the fund page (单位净值 date), not the raw email tip. */
   team_nav_date: string | null
   valuation_date: string | null
   /** True when a 估值表 was fetched for this product (email/upload), not merely FOF-underlying NAV. */
   has_valuation: boolean
+  /** 更新方式 of the latest data point: 邮箱抓取 / 手动更新 / fof99. */
   product_source: string
   strategy_l1: string | null
   /** Last edit / sync time. */
@@ -138,6 +162,10 @@ export type TeamDataListRow = {
   first_entry_date: string | null
   /** FOF底层汇总 has this product, but latest 估值表 no longer holds it. */
   redeemed: boolean
+  /** Set when the list is filtered to 净值异常 / 有异常. */
+  nav_anomaly?: NavAnomalyHit | null
+  /** Set when the list is filtered to 运作日期 / 有. */
+  operation_date?: string | null
 }
 
 type RawEmailFund = {
@@ -227,6 +255,7 @@ let resolvedListCache: {
   at: number
 } | null = null
 let navGapIdsCache: { key: string; gapped: Set<string>; at: number } | null = null
+let navAnomalyIdsCache: { key: string; hits: Map<string, NavAnomalyHit>; at: number } | null = null
 let teamDataProductsTableReady = false
 
 type ManualTeamDataProduct = {
@@ -256,6 +285,7 @@ export function invalidateTeamDataListCaches(): void {
   identityCache = null
   resolvedListCache = null
   navGapIdsCache = null
+  navAnomalyIdsCache = null
 }
 
 /** Resolve manually added 团队数据 products for fund detail API fallback. */
@@ -515,6 +545,7 @@ function resolveManualProduct(
     strategy_l2: strategies.l2,
     strategy_l3: strategies.l3,
     product_source: "手动添加",
+    team_nav_via: "",
     updated_at: manual.created_at?.trim() || "",
     first_entry_date: isoDay(manual.created_at),
     search_aliases: collectSearchAliases(
@@ -1675,6 +1706,7 @@ function resolveFund(
     strategy_l2: strategies.l2,
     strategy_l3: strategies.l3,
     product_source: "邮箱同步",
+    team_nav_via: row.team_nav_date.trim() ? "email" : "",
     updated_at: row.updated_at?.trim() || "",
     first_entry_date: isoDay(row.first_entry_date),
     search_aliases: collectSearchAliases(
@@ -1881,9 +1913,15 @@ async function overlayEmailNavByProductCode(rows: ResolvedFund[]): Promise<Resol
       nav_date: isoDay(best.team_nav_date),
       unit_nav: best.team_nav,
     }])
+    const emailDate = isoDay(best.team_nav_date)
+    const prevDate = isoDay(row.team_nav_date)
+    const team_nav_via = !prevDate || (emailDate && emailDate >= prevDate)
+      ? "email" as const
+      : (row.team_nav_via ?? "")
     return {
       ...row,
       ...merged,
+      team_nav_via,
       updated_at: maxIsoTimestamp(row.updated_at, best.updated_at),
     }
   })
@@ -1934,8 +1972,165 @@ async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[
     if (manual.length === 0) {
       return updated_at === row.updated_at ? row : { ...row, updated_at }
     }
+    let manualDate = ""
+    for (const tip of manual) {
+      const day = isoDay(tip.nav_date)
+      if (day > manualDate) manualDate = day
+    }
+    const prevDate = isoDay(row.team_nav_date)
+    const manualWon = Boolean(manualDate) && (!prevDate || manualDate >= prevDate)
     const merged = mergeLatestTeamNav(row.team_nav_date, row.team_nav, manual)
-    return { ...row, ...merged, updated_at }
+    return {
+      ...row,
+      ...merged,
+      updated_at,
+      team_nav_via: manualWon ? "manual" : (row.team_nav_via ?? (isoDay(merged.team_nav_date) ? "email" : "")),
+    }
+  })
+}
+
+type DatedCodeTip = { code: string; date: string; via?: "email" | "manual" }
+
+/** Newest tip whose 备案号 / share class fits this list row. */
+function latestDatedTipForRow(row: ResolvedFund, tips: DatedCodeTip[]): DatedCodeTip | null {
+  const beian = row.beian_hao?.trim() || ""
+  if (!beian || tips.length === 0) return null
+  const family = new Set(teamNavFamilyLookupCodes(beian))
+  const rowCls = shareClassFromFundName(row.product_name) || shareClassFromCode(beian)
+  let best: DatedCodeTip | null = null
+  for (const tip of tips) {
+    const code = tip.code.trim().toUpperCase()
+    if (!family.has(code) && !shareClassProductCodesMatch(code, beian)) continue
+    const codeCls = shareClassFromCode(code)
+    if (rowCls && codeCls && rowCls !== codeCls) continue
+    const date = isoDay(tip.date)
+    if (!date || date <= "1970-01-01") continue
+    if (!best || date > isoDay(best.date)) best = { ...tip, date }
+  }
+  return best
+}
+
+function valuationUpdateVia(source: string, crawlAccount: string): "email" | "manual" {
+  if (source.trim() === "manual_upload" || crawlAccount.trim() === "team_manual_upload") return "manual"
+  return "email"
+}
+
+/**
+ * 更新方式 is the pipeline that wrote the newest data point:
+ * email NAV / 估值表 → 邮箱抓取, manual NAV / 估值表 upload → 手动更新,
+ * fof99 FundMultiPrice → fof99. Same-day ties prefer a manual upload, then email.
+ */
+async function overlayLatestUpdateMethod(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
+  const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
+  if (beians.length === 0) {
+    return rows.map((row) => ({
+      ...row,
+      product_source: row.team_nav_date.trim()
+        ? TEAM_DATA_UPDATE_METHOD.email
+        : (row.product_source === "手动添加" ? TEAM_DATA_UPDATE_METHOD.manual : TEAM_DATA_UPDATE_METHOD.email),
+    }))
+  }
+  const lookupCodes = expandBeiansWithShareClassFamily(beians)
+  const officialCodes = [...new Set(beians.flatMap((code) => beianCodeAliases(code)))]
+  const [fofRows, valuationRows, officialByCode, valuationNavByCode] = await Promise.all([
+    query<{ code: string; price_date: string }>(
+      `SELECT DISTINCT ON (code)
+         code,
+         price_date
+       FROM (
+         SELECT UPPER(BTRIM(reg_code)) AS code, price_date::text AS price_date
+         FROM fof99_nav_fetch_log
+         WHERE status = 'ok'
+           AND price_date > DATE '1970-01-01'
+           AND UPPER(BTRIM(reg_code)) = ANY($1::text[])
+       ) l
+       ORDER BY code, price_date DESC`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; price_date: string }>),
+    query<{ code: string; valuation_date: string; source: string; crawl_email_account: string }>(
+      `SELECT DISTINCT ON (code)
+         code,
+         valuation_date,
+         source,
+         crawl_email_account
+       FROM (
+         SELECT
+           UPPER(BTRIM(product_code)) AS code,
+           valuation_date::text AS valuation_date,
+           COALESCE(source, '') AS source,
+           COALESCE(crawl_email_account, '') AS crawl_email_account,
+           id
+         FROM ops_email_valuation_records
+         WHERE product_code = ANY($1::text[])
+           AND valuation_date IS NOT NULL
+       ) v
+       ORDER BY code, valuation_date DESC, id DESC`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; valuation_date: string; source: string; crawl_email_account: string }>),
+    loadOfficialPlatformNavTips(officialCodes),
+    loadValuationPlatformNavTips(lookupCodes),
+  ])
+
+  const fofTips: DatedCodeTip[] = fofRows.map((row) => ({ code: row.code, date: row.price_date }))
+  const valuationTips: DatedCodeTip[] = valuationRows.map((row) => ({
+    code: row.code,
+    date: row.valuation_date,
+    via: valuationUpdateVia(row.source, row.crawl_email_account),
+  }))
+
+  return rows.map((row) => {
+    const cands: Array<{ date: string; method: string; rank: number }> = []
+    const teamDate = isoDay(row.team_nav_date)
+    if (teamDate && teamDate > "1970-01-01" && (row.team_nav_via === "manual" || row.team_nav_via === "email")) {
+      const manual = row.team_nav_via === "manual"
+      cands.push({
+        date: teamDate,
+        method: manual ? TEAM_DATA_UPDATE_METHOD.manual : TEAM_DATA_UPDATE_METHOD.email,
+        rank: manual ? 30 : 20,
+      })
+    }
+    const fof = latestDatedTipForRow(row, fofTips)
+    if (fof) cands.push({ date: fof.date, method: TEAM_DATA_UPDATE_METHOD.fof99, rank: 10 })
+    const valuation = latestDatedTipForRow(row, valuationTips)
+    if (valuation) {
+      const manual = valuation.via === "manual"
+      cands.push({
+        date: valuation.date,
+        method: manual ? TEAM_DATA_UPDATE_METHOD.manual : TEAM_DATA_UPDATE_METHOD.email,
+        rank: manual ? 30 : 20,
+      })
+    }
+    let best: { date: string; method: string; rank: number } | null = null
+    for (const cand of cands) {
+      if (!best || cand.date > best.date || (cand.date === best.date && cand.rank > best.rank)) best = cand
+    }
+    const beian = row.beian_hao?.trim() || ""
+    const official = officialTipForRow(beian, officialByCode)
+    const valuationNav = valuationTipForRow(beian, valuationNavByCode)
+    const plat = mergeOfficialWithValuationNav(official, valuationNav)
+    const platformDate = isoDay(plat?.price_date)
+    const fromValuation = Boolean(
+      valuationNav?.price_date
+      && platformDate
+      && platformDate === isoDay(valuationNav.price_date)
+      && (!official?.price_date || isoDay(valuationNav.price_date) > isoDay(official.price_date))
+    )
+    let method = best?.method ?? ""
+    if (platformDate && platformDate > "1970-01-01" && (!best || platformDate > best.date)) {
+      if (fof && fof.date === platformDate) method = TEAM_DATA_UPDATE_METHOD.fof99
+      else if (fromValuation) {
+        method = valuation?.via === "manual" ? TEAM_DATA_UPDATE_METHOD.manual : TEAM_DATA_UPDATE_METHOD.email
+      }
+    }
+    // Every list row is one of the three update methods. A newer grouped 平台净值
+    // date is not a fourth channel. With no email, manual, or fof99 point, a
+    // hand-added product is 手动更新 and every other row is 邮箱抓取.
+    if (!method) {
+      method = row.product_source === "手动添加"
+        ? TEAM_DATA_UPDATE_METHOD.manual
+        : TEAM_DATA_UPDATE_METHOD.email
+    }
+    return { ...row, product_source: method }
   })
 }
 
@@ -2031,10 +2226,13 @@ function matchesNavLagFilter(navDate: string, filter: TeamDataNavLagFilter, toda
   return lag != null && lag <= TEAM_NAV_LAG_DAYS
 }
 
-type DetailNavGapCacheRow = {
+type DetailNavCacheIdentity = {
   code: string
   cache_key: string
   product_name: string
+}
+
+type DetailNavGapCacheRow = DetailNavCacheIdentity & {
   dates: string[]
 }
 
@@ -2043,14 +2241,14 @@ function asDateList(value: unknown): string[] {
   return value.map((d) => String(d ?? ""))
 }
 
-function detailCacheFitsRowByCode(cache: DetailNavGapCacheRow, row: ResolvedFund): boolean {
+function detailCacheFitsRowByCode(cache: DetailNavCacheIdentity, row: ResolvedFund): boolean {
   const aliases = new Set(beianCodeAliases(row.beian_hao ?? "").map((c) => c.toUpperCase()))
   const code = cache.code.trim().toUpperCase()
   const key = cache.cache_key.trim().toUpperCase()
   return (!!code && aliases.has(code)) || (!!key && aliases.has(key))
 }
 
-function detailCacheFitsRow(cache: DetailNavGapCacheRow, row: ResolvedFund): boolean {
+function detailCacheFitsRow(cache: DetailNavCacheIdentity, row: ResolvedFund): boolean {
   if (detailCacheFitsRowByCode(cache, row)) return true
   const name = cache.product_name.trim()
   if (!name || !fundNamesMatch(name, row.product_name)) return false
@@ -2090,6 +2288,127 @@ async function loadDetailNavGapCacheRows(codes: string[], names: string[]): Prom
     product_name: row.product_name,
     dates: asDateList(row.dates),
   }))
+}
+
+type FundPageNavTip = DetailNavCacheIdentity & {
+  nav_date: string
+}
+
+/** Last China trading day among candidate dates — same rule as the fund page header. */
+function latestTradingNavDate(dates: Array<string | null | undefined>): string {
+  let best = ""
+  for (const raw of dates) {
+    const day = isoDay(raw)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !isChinaTradingDay(day)) continue
+    if (day > best) best = day
+  }
+  return best
+}
+
+/**
+ * Tip dates from the detail NAV cache. That series is what the fund page draws,
+ * and opening the page rewrites it via persistDetailNavSeries.
+ */
+async function loadFundPageNavTips(codes: string[], names: string[]): Promise<FundPageNavTip[]> {
+  if (codes.length === 0 && names.length === 0) return []
+  const rows = await query<{
+    code: string
+    cache_key: string
+    product_name: string
+    tip_nav_date: string | null
+  }>(
+    `SELECT
+       UPPER(BTRIM(COALESCE(NULLIF(c.beian_hao, ''), c.cache_key))) AS code,
+       c.cache_key,
+       c.product_name,
+       c.tip_nav_date::text AS tip_nav_date
+     FROM ops_private_fund_detail_nav_cache c
+     WHERE (cardinality($1::text[]) > 0 AND (
+              c.cache_key = ANY($1::text[])
+              OR UPPER(BTRIM(c.beian_hao)) = ANY($1::text[])
+            ))
+        OR (cardinality($2::text[]) > 0 AND c.product_name = ANY($2::text[]))`,
+    [codes, names],
+  ).catch(() => [] as Array<{
+    code: string
+    cache_key: string
+    product_name: string
+    tip_nav_date: string | null
+  }>)
+
+  const weekendKeys = rows
+    .filter((row) => !latestTradingNavDate([row.tip_nav_date]))
+    .map((row) => row.cache_key)
+  const tailByKey = new Map<string, string[]>()
+  if (weekendKeys.length > 0) {
+    const tails = await query<{ cache_key: string; tail_dates: string[] | null }>(
+      `SELECT
+         c.cache_key,
+         (
+           SELECT COALESCE(array_agg(d ORDER BY d DESC), ARRAY[]::text[])
+           FROM (
+             SELECT LEFT(elem->>'price_date', 10) AS d
+             FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(c.nav_series) = 'array' THEN c.nav_series ELSE '[]'::jsonb END
+             ) AS elem
+             WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
+             ORDER BY 1 DESC
+             LIMIT 20
+           ) tail
+         ) AS tail_dates
+       FROM ops_private_fund_detail_nav_cache c
+       WHERE c.cache_key = ANY($1::text[])`,
+      [weekendKeys],
+    ).catch(() => [] as Array<{ cache_key: string; tail_dates: string[] | null }>)
+    for (const row of tails) tailByKey.set(row.cache_key, row.tail_dates ?? [])
+  }
+
+  const out: FundPageNavTip[] = []
+  for (const row of rows) {
+    const nav_date = latestTradingNavDate([
+      row.tip_nav_date,
+      ...(tailByKey.get(row.cache_key) ?? []),
+    ])
+    if (!nav_date) continue
+    out.push({
+      code: row.code,
+      cache_key: row.cache_key,
+      product_name: row.product_name,
+      nav_date,
+    })
+  }
+  return out
+}
+
+function fundPageNavDateForRow(row: ResolvedFund, tips: FundPageNavTip[]): string {
+  const codeMatches = tips.filter((tip) => detailCacheFitsRowByCode(tip, row))
+  const matches = codeMatches.length > 0
+    ? codeMatches
+    : tips.filter((tip) => detailCacheFitsRow(tip, row))
+  if (matches.length === 0) return ""
+  const exact = (row.beian_hao ?? "").trim().toUpperCase()
+  const exactHit = exact
+    ? matches.find((tip) => tip.cache_key.trim().toUpperCase() === exact)
+    : undefined
+  if (exactHit?.nav_date) return exactHit.nav_date
+  return matches.reduce((best, tip) => (tip.nav_date > best ? tip.nav_date : best), "")
+}
+
+/**
+ * 团队净值日期 = the latest NAV date on the fund page (单位净值（date）).
+ * That date is the last trading day of the detail NAV series, rewritten when the page is opened.
+ */
+async function overlayFundPageLatestNavDate(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
+  if (rows.length === 0) return rows
+  const codes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(rows.map((row) => row.product_name.trim()).filter(Boolean))]
+  const tips = await loadFundPageNavTips(codes, names)
+  if (tips.length === 0) return rows
+  return rows.map((row) => {
+    const navDate = fundPageNavDateForRow(row, tips)
+    if (!navDate || navDate === row.team_nav_date) return row
+    return { ...row, team_nav_date: navDate }
+  })
 }
 
 async function loadFallbackNavDatesByCode(codes: string[]): Promise<Map<string, string[]>> {
@@ -2165,12 +2484,57 @@ async function loadOperationDateByCode(codes: string[]): Promise<Map<string, str
   return out
 }
 
-function operationDateForRow(row: ResolvedFund, byCode: Map<string, string>): string | null {
+function operationDateForRow(
+  row: { beian_hao: string | null },
+  byCode: Map<string, string>,
+): string | null {
   for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
     const day = byCode.get(alias.toUpperCase())
     if (day) return day
   }
   return null
+}
+
+/** 运作日期 by fund id. Prefers the manual date, then basicinfo_bfl_track. */
+export async function operationDateByFundId(
+  rows: Array<{ id: string; beian_hao: string | null }>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (rows.length === 0) return out
+  const codes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const byCode = await loadOperationDateByCode(codes)
+  for (const row of rows) {
+    const day = operationDateForRow(row, byCode)
+    if (day) out.set(row.id, day)
+  }
+  return out
+}
+
+/** Every 备案号 alias that has a 运作日期, for catalog-wide SQL filters. */
+export async function loadBeianCodesWithOperationDate(): Promise<string[]> {
+  await ensureOpsFundOperationDates()
+  const [stored, tracked] = await Promise.all([
+    query<{ code: string | null }>(
+      `SELECT beian_hao AS code
+       FROM ops_fund_operation_dates
+       WHERE operation_date IS NOT NULL`,
+    ).catch(() => [] as Array<{ code: string | null }>),
+    query<{ register_number: string | null; record_key: string | null }>(
+      `SELECT register_number, record_key
+       FROM basicinfo_bfl_track
+       WHERE operation_date IS NOT NULL`,
+    ).catch(() => [] as Array<{ register_number: string | null; record_key: string | null }>),
+  ])
+  const codes = new Set<string>()
+  for (const row of stored) {
+    for (const alias of beianCodeAliases(row.code ?? "")) codes.add(alias.toUpperCase())
+  }
+  for (const row of tracked) {
+    for (const raw of [row.register_number, row.record_key]) {
+      for (const alias of beianCodeAliases(raw ?? "")) codes.add(alias.toUpperCase())
+    }
+  }
+  return [...codes]
 }
 
 async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<Set<string>> {
@@ -2226,6 +2590,238 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
 
   navGapIdsCache = { key: cacheKey, gapped, at: Date.now() }
   return gapped
+}
+
+type DetailNavAnomalyCacheRow = DetailNavCacheIdentity & {
+  points: NavAnomalyPoint[]
+}
+
+function asChartPoints(value: unknown): NavAnomalyPoint[] {
+  let raw = value
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw)
+    } catch {
+      return []
+    }
+  }
+  if (!Array.isArray(raw)) return []
+  const byDate = new Map<string, number>()
+  for (const item of raw) {
+    if (item == null || typeof item !== "object") continue
+    const rec = item as Record<string, unknown>
+    const date = isoDay(String(rec.d ?? ""))
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+    const level = chartNavLevel({ adjusted: rec.adj, cumulative: rec.cum, unit: rec.unit })
+    if (level == null) continue
+    byDate.set(date, level)
+  }
+  return [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, value]) => ({ date, value }))
+}
+
+async function loadDetailNavAnomalyCacheRows(codes: string[], names: string[]): Promise<DetailNavAnomalyCacheRow[]> {
+  if (codes.length === 0 && names.length === 0) return []
+  const rows = await query<{
+    code: string
+    cache_key: string
+    product_name: string
+    points: unknown
+  }>(
+    `SELECT
+       UPPER(BTRIM(COALESCE(NULLIF(beian_hao, ''), cache_key))) AS code,
+       cache_key,
+       product_name,
+       (
+         SELECT COALESCE(jsonb_agg(jsonb_build_object(
+           'd', LEFT(elem->>'price_date', 10),
+           'adj', elem->>'cumulative_nav',
+           'cum', elem->>'cum_nav_withdrawal',
+           'unit', elem->>'nav'
+         )), '[]'::jsonb)
+         FROM jsonb_array_elements(c.nav_series) AS elem
+         WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
+       ) AS points
+     FROM ops_private_fund_detail_nav_cache c
+     WHERE jsonb_typeof(c.nav_series) = 'array'
+       AND (
+         (cardinality($1::text[]) > 0 AND c.cache_key = ANY($1::text[]))
+         OR (cardinality($1::text[]) > 0 AND UPPER(BTRIM(c.beian_hao)) = ANY($1::text[]))
+         OR (cardinality($2::text[]) > 0 AND c.product_name = ANY($2::text[]))
+       )`,
+    [codes, names],
+  ).catch(() => [] as Array<{ code: string; cache_key: string; product_name: string; points: unknown }>)
+  return rows.map((row) => ({
+    code: row.code,
+    cache_key: row.cache_key,
+    product_name: row.product_name,
+    points: asChartPoints(row.points),
+  }))
+}
+
+type FallbackNavLevelRow = {
+  src: string
+  code: string
+  price_date: string
+  adjusted: string | null
+  cumulative: string | null
+  unit: string | null
+}
+
+async function loadFallbackNavLevels(codes: string[]): Promise<FallbackNavLevelRow[]> {
+  if (codes.length === 0) return []
+  return query<FallbackNavLevelRow>(
+    `SELECT src, UPPER(BTRIM(code)) AS code, price_date::text AS price_date,
+            adjusted, cumulative, unit
+     FROM (
+       SELECT 'type6' AS src, beian_hao AS code, price_date,
+              cumulative_nav::text AS adjusted, cum_nav_withdrawal::text AS cumulative, nav::text AS unit
+       FROM private_fund_nav_group_type6
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+         AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL OR cum_nav_withdrawal IS NOT NULL)
+       UNION ALL
+       SELECT 'group' AS src, beian_hao AS code, price_date,
+              cumulative_nav::text AS adjusted, cum_nav_withdrawal::text AS cumulative, nav::text AS unit
+       FROM private_fund_nav_group
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+         AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL OR cum_nav_withdrawal IS NOT NULL)
+       UNION ALL
+       SELECT 'hy' AS src, beian_hao AS code, price_date,
+              cumulative_nav::text AS adjusted, cum_nav_withdrawal::text AS cumulative, nav::text AS unit
+       FROM private_fund_nav_group_hy
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+         AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL OR cum_nav_withdrawal IS NOT NULL)
+       UNION ALL
+       SELECT 'email' AS src, product_code AS code, nav_date AS price_date,
+              cumulative_nav::text AS adjusted, NULL::text AS cumulative, nav::text AS unit
+       FROM ops_email_nav_records
+       WHERE product_code = ANY($1::text[]) AND nav_date IS NOT NULL
+         AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL)
+     ) t`,
+    [codes],
+  ).catch(() => [] as FallbackNavLevelRow[])
+}
+
+const FALLBACK_NAV_SOURCE_RANK = ["email", "type6", "group", "hy"] as const
+
+function indexFallbackNavLevels(rows: FallbackNavLevelRow[]): Map<string, FallbackNavLevelRow[]> {
+  const out = new Map<string, FallbackNavLevelRow[]>()
+  for (const row of rows) {
+    const key = `${row.src}|${(row.code ?? "").trim().toUpperCase()}`
+    const list = out.get(key)
+    if (list) list.push(row)
+    else out.set(key, [row])
+  }
+  return out
+}
+
+function longestFallbackChartSeries(
+  index: Map<string, FallbackNavLevelRow[]>,
+  aliases: string[],
+): NavAnomalyPoint[] {
+  const ranked = aliases.map((code) => code.toUpperCase())
+  let best: NavAnomalyPoint[] = []
+  for (const src of FALLBACK_NAV_SOURCE_RANK) {
+    const byDate = new Map<string, { value: number; rank: number }>()
+    ranked.forEach((code, codeRank) => {
+      for (const row of index.get(`${src}|${code}`) ?? []) {
+        const date = isoDay(row.price_date)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+        const value = chartNavLevel({
+          adjusted: row.adjusted,
+          cumulative: row.cumulative,
+          unit: row.unit,
+        })
+        if (value == null) continue
+        const prev = byDate.get(date)
+        if (!prev || codeRank < prev.rank) byDate.set(date, { value, rank: codeRank })
+      }
+    })
+    if (byDate.size > best.length) {
+      best = [...byDate.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, item]) => ({ date, value: item.value }))
+    }
+  }
+  return best
+}
+
+function preferNavAnomalyHit(
+  current: { hit: NavAnomalyHit; count: number } | null,
+  next: { hit: NavAnomalyHit; count: number } | null,
+): { hit: NavAnomalyHit; count: number } | null {
+  if (!next) return current
+  if (!current) return next
+  if (next.count !== current.count) return next.count > current.count ? next : current
+  const nextMag = Math.abs(Math.log(next.hit.ratio))
+  const currentMag = Math.abs(Math.log(current.hit.ratio))
+  return nextMag > currentMag ? next : current
+}
+
+function scoredNavAnomaly(
+  points: NavAnomalyPoint[],
+  fromDate: string | null,
+): { hit: NavAnomalyHit; count: number } | null {
+  const hit = navAnomalyHit(points, fromDate)
+  if (!hit) return null
+  return { hit, count: points.length }
+}
+
+async function loadProductNavAnomalies(rows: ResolvedFund[]): Promise<Map<string, NavAnomalyHit>> {
+  const cacheKey = `jump30_spike15_snip|${rows.map((r) => r.id).join("|")}`
+  if (
+    navAnomalyIdsCache
+    && navAnomalyIdsCache.key === cacheKey
+    && Date.now() - navAnomalyIdsCache.at < RESOLVED_LIST_CACHE_TTL_MS
+  ) {
+    return navAnomalyIdsCache.hits
+  }
+
+  const hits = new Map<string, NavAnomalyHit>()
+  if (rows.length === 0) {
+    navAnomalyIdsCache = { key: cacheKey, hits, at: Date.now() }
+    return hits
+  }
+
+  const codes = [...new Set(rows.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
+  const [cacheRows, operationDateByCode] = await Promise.all([
+    loadDetailNavAnomalyCacheRows(codes, names),
+    loadOperationDateByCode(codes),
+  ])
+
+  const cachedIds = new Set<string>()
+  for (const row of rows) {
+    const fromDate = operationDateForRow(row, operationDateByCode)
+    const codeMatches = cacheRows.filter((c) => detailCacheFitsRowByCode(c, row))
+    const matches = codeMatches.length > 0
+      ? codeMatches
+      : cacheRows.filter((c) => detailCacheFitsRow(c, row))
+    if (matches.length === 0) continue
+    cachedIds.add(row.id)
+    let best: { hit: NavAnomalyHit; count: number } | null = null
+    for (const match of matches) {
+      best = preferNavAnomalyHit(best, scoredNavAnomaly(match.points, fromDate))
+    }
+    if (best) hits.set(row.id, best.hit)
+  }
+
+  const uncached = rows.filter((r) => !cachedIds.has(r.id))
+  if (uncached.length > 0) {
+    const fallbackCodes = [...new Set(uncached.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
+    const levelRows = await loadFallbackNavLevels(fallbackCodes)
+    const levelIndex = indexFallbackNavLevels(levelRows)
+    for (const row of uncached) {
+      const fromDate = operationDateForRow(row, operationDateByCode)
+      const series = longestFallbackChartSeries(levelIndex, beianCodeAliases(row.beian_hao ?? ""))
+      const scored = scoredNavAnomaly(series, fromDate)
+      if (scored) hits.set(row.id, scored.hit)
+    }
+  }
+
+  navAnomalyIdsCache = { key: cacheKey, hits, at: Date.now() }
+  return hits
 }
 
 function pickLatestPlatformTip(tips: Array<PlatformNavTip | undefined>): PlatformNavTip | undefined {
@@ -2524,6 +3120,72 @@ async function fillBeianFromPrivateFundInfo(rows: ResolvedFund[]): Promise<Resol
   })
 }
 
+export type PlatformFundSeed = {
+  id: string
+  beian_hao: string
+  product_name: string
+  strategy_l1: string | null
+  strategy_l2: string | null
+  strategy_l3: string | null
+  first_entry_date: string | null
+}
+
+function platformSeedToResolved(seed: PlatformFundSeed): ResolvedFund {
+  return {
+    id: seed.id,
+    beian_hao: seed.beian_hao,
+    product_name: seed.product_name,
+    team_nav_date: "",
+    team_nav: "",
+    strategy_l1: seed.strategy_l1,
+    strategy_l2: seed.strategy_l2,
+    strategy_l3: seed.strategy_l3,
+    product_source: "私募基金",
+    team_nav_via: "",
+    updated_at: "",
+    first_entry_date: seed.first_entry_date ?? "",
+  }
+}
+
+/** Drop 平台数据 rows that fail the same 净值断档 / 净值异常 rules as 团队数据. */
+export async function filterPlatformSeedsByNavSeries(
+  seeds: PlatformFundSeed[],
+  navGapFilter: TeamDataNavGapFilter,
+  navAnomalyFilter: TeamDataNavAnomalyFilter,
+): Promise<{ seeds: PlatformFundSeed[]; anomalyById: Map<string, NavAnomalyHit> }> {
+  let resolved = seeds.map(platformSeedToResolved)
+  let anomalyHits = new Map<string, NavAnomalyHit>()
+  if (navGapFilter === "interior_2w" || navGapFilter === "no_interior_2w") {
+    const gapped = await loadProductIdsWithInteriorNavGap(resolved)
+    resolved = resolved.filter((row) => (
+      navGapFilter === "interior_2w" ? gapped.has(row.id) : !gapped.has(row.id)
+    ))
+  }
+  if (navAnomalyFilter === "jump" || navAnomalyFilter === "no_jump") {
+    anomalyHits = await loadProductNavAnomalies(resolved)
+    resolved = resolved.filter((row) => (
+      navAnomalyFilter === "jump" ? anomalyHits.has(row.id) : !anomalyHits.has(row.id)
+    ))
+  }
+  const keep = new Set(resolved.map((row) => row.id))
+  return {
+    seeds: seeds.filter((seed) => keep.has(seed.id)),
+    anomalyById: anomalyHits,
+  }
+}
+
+/**
+ * Fill one page of 私募基金 rows with the same 平台净值 / 团队净值 / 估值表 columns as 团队数据.
+ */
+export async function enrichPlatformFundPage(seeds: PlatformFundSeed[]): Promise<TeamDataListRow[]> {
+  if (seeds.length === 0) return []
+  let resolved = seeds.map(platformSeedToResolved)
+  resolved = await overlayEmailNavByProductCode(resolved)
+  resolved = await overlayManualTeamNav(resolved)
+  resolved = await overlayLatestUpdateMethod(resolved)
+  return enrichPageRows(resolved)
+}
+
 export async function listTeamData(params: TeamDataListParams): Promise<{
   data: TeamDataListRow[]
   total: number
@@ -2539,7 +3201,9 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     elementsFilter = "all",
     navLagFilter = "all",
     navGapFilter = "all",
+    navAnomalyFilter = "all",
     productSourceFilter = "all",
+    operationDateFilter = "all",
     sort,
     sortDir,
   } = params
@@ -2566,6 +3230,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     resolved = await overlayEmailNavByProductCode(resolved)
     resolved = await overlayManualTeamNav(resolved)
     resolved = await overlayFirstEntryDate(resolved)
+    resolved = await overlayLatestUpdateMethod(resolved)
     resolvedListCache = { strategySource, rows: resolved, at: Date.now() }
   }
 
@@ -2596,6 +3261,8 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     })
   }
 
+  resolved = await overlayFundPageLatestNavDate(resolved)
+
   if (navLagFilter === "behind_2w" || navLagFilter === "within_2w") {
     const today = shanghaiToday()
     resolved = resolved.filter((r) => matchesNavLagFilter(r.team_nav_date, navLagFilter, today))
@@ -2606,9 +3273,23 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     resolved = resolved.filter((r) => navGapFilter === "interior_2w" ? gapped.has(r.id) : !gapped.has(r.id))
   }
 
-  if (productSourceFilter === "manual" || productSourceFilter === "email") {
+  let anomalyHits = new Map<string, NavAnomalyHit>()
+  if (navAnomalyFilter === "jump" || navAnomalyFilter === "no_jump") {
+    anomalyHits = await loadProductNavAnomalies(resolved)
+    resolved = resolved.filter((r) => navAnomalyFilter === "jump" ? anomalyHits.has(r.id) : !anomalyHits.has(r.id))
+  }
+
+  if (productSourceFilter !== "all") {
     const wanted = TEAM_DATA_PRODUCT_SOURCE[productSourceFilter]
     resolved = resolved.filter((r) => r.product_source === wanted)
+  }
+
+  let operationDateById = new Map<string, string>()
+  if (operationDateFilter === "present" || operationDateFilter === "absent") {
+    operationDateById = await operationDateByFundId(resolved)
+    resolved = resolved.filter((r) => (
+      operationDateFilter === "present" ? operationDateById.has(r.id) : !operationDateById.has(r.id)
+    ))
   }
 
   const effectiveSort = sort || "first_entry_date"
@@ -2625,6 +3306,18 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   const total = sorted.length
   const pageRows = sorted.slice((page - 1) * pageSize, page * pageSize)
   let data = await enrichPageRows(pageRows)
+  if (navAnomalyFilter === "jump") {
+    data = data.map((row) => ({
+      ...row,
+      nav_anomaly: anomalyHits.get(row.id) ?? null,
+    }))
+  }
+  if (operationDateFilter === "present") {
+    data = data.map((row) => ({
+      ...row,
+      operation_date: operationDateById.get(row.id) ?? null,
+    }))
+  }
 
   if (sort === "platform_nav" || sort === "platform_nav_date" || sort === "valuation_date") {
     data = [...data].sort((a, b) => compareRows(a, b, sort, sortDir))

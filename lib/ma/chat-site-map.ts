@@ -137,6 +137,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("pf-ops-email", "邮箱同步", "/ma/dashboard/private-funds?tab=operations&side=ops-email-sync", "私募基金 → 运维 → 邮箱同步", "pfOperations", ["邮箱"]),
   p("pf-ops-ledger", "台账管理", "/ma/dashboard/private-funds?tab=operations&side=ops-ledger", "私募基金 → 运维 → 台账管理", "pfOperations", ["台账"]),
   p("pf-ops-team", "团队数据", "/ma/dashboard/private-funds?tab=operations&side=ops-team-data", "私募基金 → 运维 → 团队数据", "pfOperations", []),
+  p("pf-ops-platform", "平台数据", "/ma/dashboard/private-funds?tab=operations&side=ops-platform-data", "私募基金 → 运维 → 平台数据", "pfOperations", ["私募基金"]),
   p("pf-ops-tags", "策略标签", "/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags", "私募基金 → 运维 → 策略标签", "pfOperations", ["标签"]),
   p("pf-ops-extract", "要素提取", "/ma/dashboard/private-funds?tab=operations&side=ops-element-extract", "私募基金 → 运维 → 要素提取", "pfOperations", ["要素"]),
 

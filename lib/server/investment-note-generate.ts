@@ -133,7 +133,15 @@ function getChatModel(): ChatOpenAI {
     apiKey,
     model: process.env.DASHSCOPE_ANALYSIS_MODEL || process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
     temperature: 0.2,
+    // Bound the call so a hung DashScope request falls back to extracted text
+    // before nginx's 300s silence timeout drops the browser connection.
+    timeout: 90_000,
+    maxRetries: 1,
+    maxTokens: 8192,
     streaming: false,
+    // Qwen3 keeps thinking on by default. A non-streaming call then either
+    // errors or sits until the proxy kills it.
+    modelKwargs: { enable_thinking: false },
     configuration: {
       baseURL: process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
     },

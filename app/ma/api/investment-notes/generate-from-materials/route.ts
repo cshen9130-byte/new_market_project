@@ -4,7 +4,7 @@ import { generateInvestmentNoteFromMaterials } from "@/lib/server/investment-not
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-export const maxDuration = 120
+export const maxDuration = 300
 
 async function getUser(req: Request) {
   const userId = String(req.headers.get("x-market-user-id") || "").trim()
@@ -33,6 +33,16 @@ export async function POST(req: Request) {
         const send = (payload: Record<string, unknown>) => {
           controller.enqueue(encoder.encode(JSON.stringify(payload) + "\n"))
         }
+        // proxy_read_timeout is 300s of silence. Text extraction and the model
+        // call emit nothing until they finish, so a company PDF was dropped as
+        // a browser failure while the status sat on「正在生成笔记内容」.
+        const keepAlive = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode("\n"))
+          } catch {
+            clearInterval(keepAlive)
+          }
+        }, 12_000)
         try {
           const result = await generateInvestmentNoteFromMaterials({
             materialIds,
@@ -51,9 +61,18 @@ export async function POST(req: Request) {
         } catch (e: unknown) {
           const message = e instanceof Error ? e.message : String(e)
           console.error("[investment-notes/generate-from-materials]", e)
-          send({ type: "error", ok: false, error: message })
+          try {
+            send({ type: "error", ok: false, error: message })
+          } catch {
+            // Client already disconnected.
+          }
         } finally {
-          controller.close()
+          clearInterval(keepAlive)
+          try {
+            controller.close()
+          } catch {
+            // already closed
+          }
         }
       },
     })

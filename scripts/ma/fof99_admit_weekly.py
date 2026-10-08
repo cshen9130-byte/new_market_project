@@ -110,7 +110,14 @@ def _as_rows(data) -> list[dict]:
     return []
 
 
-def save_fund_history(conn, code: str, name: str, rows: list[dict]) -> tuple[int, str | None, str | None]:
+def save_fund_history(
+    conn,
+    code: str,
+    name: str,
+    rows: list[dict],
+    *,
+    replace: bool = False,
+) -> tuple[int, str | None, str | None]:
     from psycopg2.extras import execute_values
 
     tuples: list[tuple] = []
@@ -139,22 +146,47 @@ def save_fund_history(conn, code: str, name: str, rows: list[dict]) -> tuple[int
         return 0, None, None
 
     cur = conn.cursor()
-    execute_values(
-        cur,
+    conflict_set = (
         """
-        INSERT INTO private_fund_nav
-          (beian_hao, product_name, price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change)
-        VALUES %s
-        ON CONFLICT (beian_hao, price_date) DO UPDATE SET
+          nav = EXCLUDED.nav,
+          product_name = COALESCE(EXCLUDED.product_name, private_fund_nav.product_name),
+          cumulative_nav = EXCLUDED.cumulative_nav,
+          cum_nav_withdrawal = EXCLUDED.cum_nav_withdrawal,
+          price_change = EXCLUDED.price_change
+        """
+        if replace
+        else """
           nav = EXCLUDED.nav,
           product_name = COALESCE(EXCLUDED.product_name, private_fund_nav.product_name),
           cumulative_nav = COALESCE(EXCLUDED.cumulative_nav, private_fund_nav.cumulative_nav),
           cum_nav_withdrawal = COALESCE(EXCLUDED.cum_nav_withdrawal, private_fund_nav.cum_nav_withdrawal),
           price_change = COALESCE(EXCLUDED.price_change, private_fund_nav.price_change)
+        """
+    )
+    execute_values(
+        cur,
+        f"""
+        INSERT INTO private_fund_nav
+          (beian_hao, product_name, price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change)
+        VALUES %s
+        ON CONFLICT (beian_hao, price_date) DO UPDATE SET
+        {conflict_set}
         """,
         tuples,
         page_size=500,
     )
+    if replace and len(dates) >= 30:
+        cur.execute(
+            """
+            DELETE FROM private_fund_nav
+            WHERE beian_hao = %s
+              AND price_date <> ALL(%s::date[])
+            """,
+            (code, dates),
+        )
+        log(f"    replace: removed {cur.rowcount} date(s) not in the 火富牛 history")
+    elif replace:
+        log(f"    replace skipped delete: history has {len(dates)} row(s), need at least 30")
     first_date, last_date = min(dates), max(dates)
     last_nav = next(t[3] for t in tuples if t[2] == last_date)
     cur.execute(
@@ -169,7 +201,6 @@ def save_fund_history(conn, code: str, name: str, rows: list[dict]) -> tuple[int
         (last_nav, last_date, code, last_date),
     )
     invalidate_detail_nav_cache(cur, [code])
-    conn.commit()
     return len(tuples), first_date, last_date
 
 
@@ -180,6 +211,11 @@ def main() -> int:
     )
     parser.add_argument("--codes", required=True, help="comma-separated 备案号")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="overwrite matching dates and delete this product's dates absent from the FundPrice history",
+    )
     parser.add_argument(
         "--reason",
         default="operator override: 火富牛 has series; weekly Friday FundMultiPrice",
@@ -214,6 +250,7 @@ def main() -> int:
     log(
         f"plan: upsert policy=weekly, then FundPrice GET /price "
         f"({len(requested)} credit(s), full history per product)"
+        + ("  replace=yes" if args.replace else "")
     )
     log(format_credit_usage(usage_before))
 
@@ -229,6 +266,13 @@ def main() -> int:
     failed = 0
     for code, name in requested:
         batch_id = f"fundprice-history-{date.today().isoformat()}-{code}"
+        cur.execute(
+            "SELECT 1 FROM fof99_mall_other_credit WHERE batch_id = %s",
+            (batch_id,),
+        )
+        if cur.fetchone():
+            log(f"SKIP already charged {batch_id}")
+            continue
         log(f"API FundPrice /price  {code}  batch={batch_id}")
         try:
             data, debug = fetch_fund_history(appid, appkey, code)
@@ -240,7 +284,7 @@ def main() -> int:
             log(f"STOP: API error on {code} error_code={err} msg={debug.get('msg')}")
             return 1
         rows = _as_rows(data)
-        n, first_date, last_date = save_fund_history(conn, code, name, rows)
+        n, first_date, last_date = save_fund_history(conn, code, name, rows, replace=args.replace)
         cur = conn.cursor()
         log_other_mall_credit(
             cur,
@@ -251,6 +295,18 @@ def main() -> int:
         )
         conn.commit()
         log(f"    saved {n} NAV rows  {first_date} → {last_date}")
+        cur.execute(
+            """
+            SELECT price_date::text, nav::text, cum_nav_withdrawal::text, cumulative_nav::text
+            FROM private_fund_nav
+            WHERE beian_hao = %s
+            ORDER BY price_date DESC
+            LIMIT 4
+            """,
+            (code,),
+        )
+        for price_date, nav, cum, adj in cur.fetchall():
+            log(f"    {price_date}  unit={nav}  cum={cum}  adj={adj}")
         if n == 0:
             failed += 1
     usage_after = credit_usage(conn.cursor())

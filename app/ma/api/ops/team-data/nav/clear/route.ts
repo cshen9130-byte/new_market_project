@@ -33,6 +33,7 @@ export async function POST(req: Request) {
 
     invalidateTeamDataListCaches()
     invalidateListResponseCache("ops-team-data")
+    invalidateListResponseCache("ops-platform-data")
     return NextResponse.json({ ok: true, count: result.count })
   } catch (err) {
     console.error("[team-data/nav/clear]", err)

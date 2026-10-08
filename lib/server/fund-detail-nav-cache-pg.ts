@@ -156,11 +156,18 @@ export function detailNavCacheMatchesSeed(
   const seedDate = seedLatest.price_date.slice(0, 10)
   const cachedRow = cached.nav_series.find((row) => String(row.price_date ?? "").slice(0, 10) === seedDate)
   if (!cachedRow) return false
-  return (
-    navFieldClose(cachedRow.nav, seedLatest.nav)
-    && navFieldClose(cachedRow.cum_nav_withdrawal, seedLatest.cum_nav_withdrawal)
-    && navFieldClose(cachedRow.cumulative_nav, seedLatest.cumulative_nav)
-  )
+  const unitOk = navFieldClose(cachedRow.nav, seedLatest.nav)
+  const cumOk = navFieldClose(cachedRow.cum_nav_withdrawal, seedLatest.cum_nav_withdrawal)
+  const adjOk = navFieldClose(cachedRow.cumulative_nav, seedLatest.cumulative_nav)
+  if (unitOk && cumOk && adjOk) return true
+  // Rechained 复权 can sit above the xlsx seed while 单位 and 累计 still match
+  // (SBAH99: seed 复权 1.4707, live 1.4931 on 2026-06-23). Rejecting that cache
+  // rebuilds the same series on every open. A collapsed 复权 (SADG72) is lower
+  // than the seed and still misses.
+  if (!unitOk || !cumOk) return false
+  const cachedAdj = parseFloat(String(cachedRow.cumulative_nav ?? ""))
+  const seedAdj = parseFloat(String(seedLatest.cumulative_nav ?? ""))
+  return Number.isFinite(cachedAdj) && Number.isFinite(seedAdj) && cachedAdj + 0.0005 >= seedAdj
 }
 
 /** False when uploaded team/manual NAV dates are missing from the cached series. */

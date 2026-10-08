@@ -37,13 +37,16 @@ export async function resolveTrackingProductName(
   const hint = normalizeFundDisplayName(valuationHint) || valuationHint
   if (!code) return hint
 
+  const shareLetter = code.toUpperCase().match(/([ABC])$/u)?.[1] ?? ""
   const amacName = await lookupAmacFundName(code)
-  if (amacName) {
-    const display = stripAmacFundSuffix(amacName)
-    if (!isCodeLikeProductName(display, code)) return display
+  const amacDisplay = amacName ? stripAmacFundSuffix(amacName) : ""
+  const amacHasClass = /[ABC]类/u.test(amacDisplay)
+  // Parent AMAC 备案号 (SAWV23) must not replace a C-class label (AWV23C).
+  if (amacDisplay && (!shareLetter || amacHasClass) && !isCodeLikeProductName(amacDisplay, code)) {
+    return amacDisplay
   }
 
-  if (!isCodeLikeProductName(hint, code)) return hint
+  if (!shareLetter && !isCodeLikeProductName(hint, code)) return hint
 
   const rows = await query<{
     bfl_name: string | null
@@ -76,7 +79,16 @@ export async function resolveTrackingProductName(
     row?.bfl_short ?? row?.t6_short,
     hint,
   )
-  return isCodeLikeProductName(resolved, code) ? hint : resolved
+  const named = isCodeLikeProductName(resolved, code) ? hint : resolved
+  if (
+    shareLetter
+    && named
+    && !/[ABC]类/u.test(named)
+    && !isCodeLikeProductName(named, code)
+  ) {
+    return `${named}${shareLetter}类`
+  }
+  return named
 }
 
 /** Rewrite user_custom_pool rows whose product_name is only a 备案号. */

@@ -365,6 +365,7 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `lookupManagedProductOverride` | Must use share-class-aware name match — loose `includes` maps A类 names to parent managed product |
 | `mergeLegacyWithTeamNav` | After a legacy tip with adj/cum premium, must clear under-premium / collapsed team 复权 before finalize — disabling re-breaks GA681A-style cliff (3.30→~2.52) on manual uploads without 复权 |
 | `finalizeNavSeries` (call order) | `syncExDivAdjustedNav` must run before `propagateMissingAdjRows`, which must run before `refreshStaleDerivedFields`, then `repairAdjBelowCumRows`, then `alignPreDividendNavRows` |
+| `shouldReplaceMergedSeriesWithValuation` | A one-point 估值表 mark must not replace a longer platform / 火富牛 series — see **Rule — one 估值表 point** |
 
 ### After any change to the NAV pipeline
 
@@ -384,6 +385,36 @@ Any new data source that provides rows for managed products must:
 1. Map 累计净值 → `cum_nav_withdrawal` (not `cumulative_nav`)
 2. Map 复权净值 → `cumulative_nav` (or leave it empty `""` to be computed)
 3. If 复权净值 is not available, leave `cumulative_nav = ""` — `propagateMissingAdjRows` will fill it in
+
+### Rule — one 估值表 point does not replace a better series
+
+A product that already has a real NAV history from a better source (火富牛 `private_fund_nav`, platform / legacy tables, or an email 净值表 with more than one date) must not be touched by a **single** 估值表 point.
+
+That point is meaningless. It is not a series, not a scale check, and not a reason to extend or replace the better source. Do not fetch it for the product page in the first place.
+
+Applies to every 估值表 path that can feed the detail page or its cache:
+
+- The product's own custody 估值表 (`ops_email_valuation_records` → `ops_email_nav_records`, `source = attachment_valuation_table`)
+- A parent FOF 估值表 holding (`ops_managed_fof_underlying`, `ops_email_valuation_holdings`)
+- `loadFundValuationNavFallbackSeries` and `shouldReplaceMergedSeriesWithValuation` in `lib/server/fund-detail-fast-path.ts`
+
+**Do**
+
+1. Count 估值表 dates for this product before using them. One date → skip the fetch and skip the merge. Leave the better series as it is.
+2. Keep 火富牛 / platform history when it has more dates than the 估值表 mark. A lower unit NAV on that one older date is the fund rising later, not a second scale and not a >5% crash.
+3. Write the detail cache from the better series. A one-point 估值表 result must not be persisted over it (`ops_private_fund_detail_nav_cache`).
+
+**Do not**
+
+- Do not call the valuation fallback, and do not copy that one custody row into `ops_email_nav_records`, when the only purpose is to extend or replace a longer 火富牛 / platform series.
+- Do not let `isSparseGapUnitOnlyCrash` / `shouldReplaceMergedSeriesWithValuation` throw away the longer series because the single mark is more than 5% below the latest platform tip.
+- Do not treat "platform tip is a few days old" as a reason to load a one-point 估值表. Staleness is not a second source.
+
+**Case — 汇艾稳健6号 (SB2980)**
+
+火富牛 already had 179 Fridays, 2023-06-26 `1.0000` through 2026-09-24 **`1.1550`** (成立以来 15.50%, 今年以来 8.27%). One custody 估值表 row, 2026-02-02 **`1.0787`**, was loaded because the platform tip was more than 5 days behind today. The crash check compared `1.0787` with `1.1550` and the product page kept only that one point. The 估值表 row sits between the 火富牛 neighbors (2026-01-30 `1.0713`, 2026-02-06 `1.0870`); it is the same series, one date, and it must not win.
+
+A 估值表 history of **two or more dates** is unchanged: it can still extend a holdings-only fund, or replace the platform series when an overlapping date is a real scale mismatch (`valuationScaleMismatchesSeries`).
 
 ---
 
@@ -433,6 +464,28 @@ Email selection for 在管产品 uses the same path as the detail page: `loadMan
 The managed product pipeline is in:
 - `lib/server/team-nav-manage-pg.ts` → `loadManagedProductEmailPoints`, `loadManagedProductNavSeries`
 - `lib/server/managed-product-nav-seed.ts` → `mergeManagedProductDetailNav`
+
+---
+
+## Data Priority for 私募详情 (platform NAV)
+
+Applies to the private-fund detail series (`loadPrivateFundLegacyNavRows` → `mergeNavSeriesWithEmail`). This is the trust order. Do not let a lower source replace a higher one on the same date.
+
+```
+托管净值邮件   (highest)
+        ↓
+火富牛 fof99 API   (private_fund_nav)
+        ↓
+other platform tables (type6 / group / hy) and email that is not a 托管净值邮件
+```
+
+**托管净值邮件** is a custodian 净值表 or 业绩报酬试算: `source = attachment_nav_table`, or a subject/filename that contains both `托管` and `净值`/`试算`. It is not a 估值表 and not a TA虚拟净值 mail (`isCustodianNavEmailPoint`).
+
+**火富牛** is `private_fund_nav`, filled by `FundPrice` (`GET /price`, one product, full history, 1 credit) or the Friday `FundMultiPrice` job. On an overlapping date it wins over type6, group, hy, 估值表, TA虚拟净值, and any other non-custodian email. Those emails may still add a date that 火富牛 does not have.
+
+Rows that are not tagged `legacy_origin = "fof99"` keep the previous behavior: email still overwrites them. Managed-product manual uploads stay above this ladder (`ops_team_nav_manual`).
+
+The Friday multi-fund job still does not overwrite a date it already stored (`ON CONFLICT DO NOTHING`). An operator one-product replace is `python scripts/ma/fof99_admit_weekly.py --codes CODE --replace` (still 1 credit, and a same-day `batch_id` is not charged twice).
 
 ---
 
@@ -2528,3 +2581,33 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes assertion block **GT288A overlap takes custodian unit and cum**.
+
+## What Was Fixed (京盈智投博远 — STE102, fof99 overwrite, 2026-10-08)
+
+### The Problem
+
+A local rechain of the old platform rows rebuilt **2026-09-23** as 累计 **3.3863** and 复权 **3.5588**. That is not the series to show. STE102 has no 托管净值邮件. The next source is the 火富牛 API.
+
+### What was written
+
+One `FundPrice` call (`GET /price`, batch `fundprice-history-2026-10-08-STE102`, 1 credit) replaced `private_fund_nav` for STE102. 299 rows, **2021-11-24** through **2026-09-23**. Dates absent from that history were removed (none were). Field mapping is the existing one: `nav` = 单位, `cum_nav_withdrawal` = 累计 (`cumulative_nav_withdrawal`), `cumulative_nav` = 复权 (`cumulative_nav`).
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-09-10 | 3.2060 | 3.3060 | 3.4718 |
+| 2026-09-18 | 3.1810 | 3.2810 | 3.4448 |
+| 2026-09-23 | 3.1270 | **3.2270** | **3.3863** |
+
+`复权 >= 累计 >= 单位` holds on these rows. Do not rechain them into the old 3.5588 figure. A later 托管净值邮件 on the same date still replaces this series. See **Data Priority for 私募详情**.
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **fof99 yields only to custodian NAV email**. The older **STE102 stale adj is not a column swap** block still covers untagged platform rows. Refresh only this detail cache:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=STE102 --name=京盈智投博远
+```

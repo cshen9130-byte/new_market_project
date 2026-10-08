@@ -304,16 +304,9 @@ export function sanitizeNavPointSeries(
 
 function applyNavPointSeriesStartTrim(
   points: NavPoint[],
-  context?: FundNavSeriesContext | null,
+  _context?: FundNavSeriesContext | null,
 ): NavPoint[] {
-  const rule = lookupFundNavCorrectionRule(
-    context?.beian_hao,
-    context?.product_name,
-    context?.short_name,
-  )
-  if (!rule?.series_start_date) return points
-  const start = rule.series_start_date
-  return points.filter((p) => p.nav_date >= start)
+  return points
 }
 
 function dedupeLegacyBatchRows(

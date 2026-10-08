@@ -89,6 +89,7 @@ const PF_SIDE_LABELS: Record<string, string> = {
   "ops-email-sync": "邮箱同步",
   "ops-ledger": "台账管理",
   "ops-team-data": "团队数据",
+  "ops-platform-data": "平台数据",
   "ops-strategy-tags": "策略标签",
   "ops-element-extract": "要素提取",
   "cmd-initiate": "发起指令",

@@ -21,7 +21,7 @@ import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
-import { purgeValuationFilenameIdentities, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
+import { collapseAliasedTrackingIdentities, purgeValuationFilenameIdentities, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
 import { expandFundSearchKeywords, sqlFundNameKey, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { sqlBeianFamilyKey } from "@/lib/server/share-class-product"
 import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
@@ -70,6 +70,8 @@ declare global {
   var _trackingListNameAliasDedupeV1: boolean | undefined
   // One-shot: drop list JSON that still showed parent + A/B/C of the same product.
   var _trackingListParentShareClassDedupeV1: boolean | undefined
+  // One-shot: drop the AAEO3A duplicate of 诚奇睿盈对冲2号A类 (QH717A).
+  var _trackingListCustodianAliasCollapseV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -1017,6 +1019,11 @@ export async function GET(req: Request) {
     global._trackingListValuationFilenameCacheBustV2 = true
     invalidateListResponseCache()
     await purgeValuationFilenameIdentities()
+  }
+  if (!global._trackingListCustodianAliasCollapseV1) {
+    global._trackingListCustodianAliasCollapseV1 = true
+    invalidateListResponseCache()
+    await collapseAliasedTrackingIdentities()
   }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
     "@/lib/server/account-risk-direct-nav-sync"

@@ -2,7 +2,7 @@ import { query } from "@/lib/db"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 
-async function ensureOperationDatesTable() {
+export async function ensureOpsFundOperationDates() {
   await query(`
     CREATE TABLE IF NOT EXISTS ops_fund_operation_dates (
       beian_hao VARCHAR(64) PRIMARY KEY,
@@ -19,7 +19,7 @@ function normalizeBeian(beianHao: string): string {
 
 export async function loadOperationDate(keys: string[]): Promise<string | null> {
   if (!keys.length) return null
-  await ensureOperationDatesTable()
+  await ensureOpsFundOperationDates()
   const rows = await query<{ operation_date: string | null }>(
     `SELECT operation_date::text AS operation_date
      FROM ops_fund_operation_dates
@@ -36,7 +36,7 @@ export async function loadOperationDate(keys: string[]): Promise<string | null> 
 export async function upsertOperationDate(beianHao: string, operationDate: string | null) {
   const code = normalizeBeian(beianHao)
   if (!code) return
-  await ensureOperationDatesTable()
+  await ensureOpsFundOperationDates()
   const value = toIsoDateInputValue(operationDate) || null
   if (!value) {
     await query(`DELETE FROM ops_fund_operation_dates WHERE beian_hao = $1`, [code])
@@ -54,7 +54,7 @@ export async function upsertOperationDate(beianHao: string, operationDate: strin
 export async function loadOperationDatesByCodes(codes: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   if (codes.length === 0) return out
-  await ensureOperationDatesTable()
+  await ensureOpsFundOperationDates()
   const rows = await query<{ beian_hao: string; operation_date: string | null }>(
     `SELECT beian_hao, operation_date::text AS operation_date
      FROM ops_fund_operation_dates

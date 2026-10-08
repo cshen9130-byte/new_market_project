@@ -156,7 +156,7 @@ function mergeRedeem(primary: ElementPayload, donor: ElementPayload): ElementPay
 const HEADERS = [
   "列表产品名称",
   "备案编码",
-  "产品来源",
+  "更新方式",
   "产品全称",
   "备案编号",
   "投资顾问",

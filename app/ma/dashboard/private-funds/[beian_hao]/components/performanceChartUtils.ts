@@ -42,6 +42,19 @@ function matchBenchmarkRawValues(
   })
 }
 
+/**
+ * 累计超额 = (1+基金累计)/(1+基准累计) − 1.
+ * Subtracting the two cumulative returns can fall on a day the fund still
+ * beats the benchmark, once the fund's gain from the base date is large.
+ */
+export function geometricExcessPct(fundCumPct: number, benchCumPct: number): number | null {
+  const benchFactor = 1 + benchCumPct / 100
+  if (benchFactor === 0 || !Number.isFinite(benchFactor) || !Number.isFinite(fundCumPct)) return null
+  const excess = ((1 + fundCumPct / 100) / benchFactor - 1) * 100
+  if (!Number.isFinite(excess)) return null
+  return +excess.toFixed(4)
+}
+
 function computePctChangeSeries(values: number[]): Array<number | null> {
   return values.map((value, index) => {
     if (index === 0) return null
@@ -535,11 +548,11 @@ export function buildNavChartData(
     const benchCum = benchmarkValues[index]
     const periodReturn = periodReturns[index]
     const benchmarkPeriodReturn = benchmarkPeriodReturns[index]
-    const excessValue = chartMode === "return" && benchCum !== null
-      ? +(fundCum - benchCum).toFixed(4)
-      : null
     const excessPeriodReturn = periodReturn !== null && benchmarkPeriodReturn !== null
       ? +(periodReturn - benchmarkPeriodReturn).toFixed(4)
+      : null
+    const excessValue = chartMode === "return" && benchCum !== null
+      ? geometricExcessPct(fundCum, benchCum)
       : null
     return {
       date: row.price_date,

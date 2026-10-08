@@ -1244,6 +1244,9 @@ export async function generateInvestmentNoteFromMaterials(
   })
   const contentType = res.headers.get("content-type") || ""
   if (!res.ok && !contentType.includes("ndjson")) {
+    if (res.status === 502 || res.status === 504) {
+      throw new Error("生成超时，请稍后重试")
+    }
     const data = await res.json().catch(() => ({} as { error?: string }))
     throw new Error(data?.error || res.statusText || "生成失败")
   }
@@ -1260,43 +1263,60 @@ export async function generateInvestmentNoteFromMaterials(
     skipped?: string[]
   } | null = null
 
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith(":")) return
+    let event: Record<string, any>
+    try {
+      event = JSON.parse(trimmed)
+    } catch {
+      return
+    }
+    if (event.type === "progress") {
+      const progress: GenerateNoteFromMaterialsProgress = {
+        stage: event.stage,
+        index: typeof event.index === "number" ? event.index : undefined,
+        total: typeof event.total === "number" ? event.total : undefined,
+        name: typeof event.name === "string" ? event.name : undefined,
+      }
+      options?.onProgress?.(progress)
+      return
+    }
+    if (event.type === "error" || event.ok === false) {
+      throw new Error(event.error || "生成失败")
+    }
+    if (event.type === "done" || event.note) {
+      donePayload = {
+        note: event.note as InvestmentNote,
+        materials: Array.isArray(event.materials) ? event.materials : [],
+        skipped: Array.isArray(event.skipped) ? event.skipped : [],
+      }
+    }
+  }
+
   while (true) {
-    const { done, value } = await reader.read()
+    let read: ReadableStreamReadResult<Uint8Array>
+    try {
+      read = await reader.read()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (
+        err instanceof TypeError ||
+        /failed to fetch|network|terminated|reset|timeout|aborted|incomplete/i.test(message)
+      ) {
+        throw new Error("生成超时或连接中断，请稍后重试")
+      }
+      throw err
+    }
+    const { done, value } = read
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split("\n")
     buffer = lines.pop() || ""
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let event: Record<string, any>
-      try {
-        event = JSON.parse(trimmed)
-      } catch {
-        continue
-      }
-      if (event.type === "progress") {
-        const progress: GenerateNoteFromMaterialsProgress = {
-          stage: event.stage,
-          index: typeof event.index === "number" ? event.index : undefined,
-          total: typeof event.total === "number" ? event.total : undefined,
-          name: typeof event.name === "string" ? event.name : undefined,
-        }
-        options?.onProgress?.(progress)
-        continue
-      }
-      if (event.type === "error" || event.ok === false) {
-        throw new Error(event.error || "生成失败")
-      }
-      if (event.type === "done" || event.note) {
-        donePayload = {
-          note: event.note as InvestmentNote,
-          materials: Array.isArray(event.materials) ? event.materials : [],
-          skipped: Array.isArray(event.skipped) ? event.skipped : [],
-        }
-      }
-    }
+    for (const line of lines) consumeLine(line)
   }
+  buffer += decoder.decode()
+  if (buffer.trim()) consumeLine(buffer)
 
   if (!donePayload?.note) {
     throw new Error("生成失败：未收到结果")

@@ -5,6 +5,11 @@ import ReactECharts from "echarts-for-react"
 import { Menu } from "lucide-react"
 import { HelpAnnualizedDiscount } from "@/components/ma/realtime-chart-help"
 import { DateInput } from "@/components/ui/date-input"
+import { isCffexSession } from "@/lib/client/market-hours"
+import { LimitUpHeatChart } from "./LimitUpHeatChart"
+
+const LIVE_POLL_MS = 5_000
+const IDLE_POLL_MS = 60_000
 
 const PAGE_TABS = [
   { key: "quant", label: "量化观察" },
@@ -42,11 +47,50 @@ type Point = {
   date: string
   annualized_discount_pct: number
   days_to_maturity?: number
+  /** Epoch ms for the live print. Daily settlement points stay on `date`. */
+  time?: number
 }
 
 type ApiPayload = {
   roles?: Record<string, Record<string, Point[]>>
   error?: string
+}
+
+type LiveDiscountPoint = {
+  annualized_discount_pct: number
+  days_to_maturity: number
+}
+
+type LiveDiscountPayload = {
+  date: string
+  session: boolean
+  fetchedAt?: number
+  roles?: Record<string, Record<string, LiveDiscountPoint>>
+}
+
+function mergeLiveDiscount(history: ApiPayload | null, live: LiveDiscountPayload | null): ApiPayload | null {
+  if (!history) return history
+  if (!live?.date || !live.roles || !Object.keys(live.roles).length) return history
+  const roles: Record<string, Record<string, Point[]>> = { ...(history.roles || {}) }
+  for (const [product, liveRoles] of Object.entries(live.roles)) {
+    const histProduct = { ...(roles[product] || {}) }
+    for (const [role, livePt] of Object.entries(liveRoles) as Array<[string, LiveDiscountPoint]>) {
+      const histPts = histProduct[role] || []
+      const hasToday = histPts.some((point) => point.date === live.date)
+      if (hasToday && !live.session) continue
+      const point: Point = {
+        date: live.date,
+        annualized_discount_pct: livePt.annualized_discount_pct,
+        days_to_maturity: livePt.days_to_maturity,
+        time: live.fetchedAt,
+      }
+      histProduct[role] = [...histPts.filter((row) => row.date !== live.date), point].sort((a, b) =>
+        a.date.localeCompare(b.date),
+      )
+    }
+    roles[product] = histProduct
+  }
+  return { ...history, roles }
 }
 
 function shanghaiToday(): string {
@@ -92,6 +136,31 @@ function seriesName(product: ProductCode, role: (typeof ROLE_ORDER)[number]) {
   return `${product}${ROLE_LABEL[role]}年化升贴水率`
 }
 
+function defaultLegend(product: ProductCode) {
+  return {
+    [seriesName(product, "近月")]: false,
+    [seriesName(product, "次月")]: false,
+    [seriesName(product, "当季")]: true,
+    [seriesName(product, "下季")]: true,
+  }
+}
+
+function formatAxisValue(axis: string | number) {
+  if (typeof axis === "string" && /^\d{4}-\d{2}-\d{2}$/.test(axis)) return axis
+  const ms = typeof axis === "number" ? axis : Date.parse(String(axis))
+  if (!Number.isFinite(ms)) return String(axis)
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(ms)
+}
+
 function niceYExtent(extent: { min: number; max: number }) {
   const span = Math.max(0.01, extent.max - extent.min)
   const pad = Math.max(0.8, span * 0.15)
@@ -110,10 +179,14 @@ export function StockMarketView() {
   const [appliedTo, setAppliedTo] = useState(today)
   const [activeTab, setActiveTab] = useState<PageTab>("quant")
   const [product, setProduct] = useState<ProductCode>("IC")
-  const [payload, setPayload] = useState<ApiPayload | null>(null)
+  const [history, setHistory] = useState<ApiPayload | null>(null)
+  const [live, setLive] = useState<LiveDiscountPayload | null>(null)
+  const [liveError, setLiveError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [legendSelected, setLegendSelected] = useState(() => defaultLegend("IC"))
   const chartRef = useRef<ReactECharts>(null)
+  const payload = useMemo(() => mergeLiveDiscount(history, live), [history, live])
 
   useEffect(() => {
     let cancelled = false
@@ -126,7 +199,7 @@ export function StockMarketView() {
         return json
       })
       .then((json) => {
-        if (!cancelled) setPayload(json)
+        if (!cancelled) setHistory(json)
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : "加载升贴水数据失败")
@@ -138,6 +211,69 @@ export function StockMarketView() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (activeTab !== "quant") return
+    let stopped = false
+    let timer: number | undefined
+    let inflight = false
+    const sessionRef = { current: isCffexSession() }
+
+    async function poll() {
+      if (stopped || inflight) return
+      inflight = true
+      const ctrl = new AbortController()
+      const kill = window.setTimeout(() => ctrl.abort(), 12_000)
+      try {
+        const res = await fetch(`/ma/api/basis/live-discount?t=${Date.now()}`, {
+          cache: "no-store",
+          signal: ctrl.signal,
+        })
+        const json = (await res.json()) as LiveDiscountPayload & { error?: string }
+        if (!res.ok) throw new Error(json.error || "实时升贴水获取失败")
+        if (stopped) return
+        sessionRef.current = !!json.session
+        setLive({ ...json, fetchedAt: Date.now() })
+        setLiveError(null)
+      } catch (err) {
+        const name = err && typeof err === "object" && "name" in err ? String(err.name) : ""
+        if (!stopped && name !== "AbortError") {
+          setLiveError(err instanceof Error ? err.message : "实时升贴水获取失败")
+        }
+      } finally {
+        window.clearTimeout(kill)
+        inflight = false
+      }
+    }
+
+    function arm() {
+      if (timer) window.clearTimeout(timer)
+      const delay = document.hidden || !sessionRef.current ? IDLE_POLL_MS : LIVE_POLL_MS
+      timer = window.setTimeout(() => {
+        void poll().finally(() => {
+          if (!stopped) arm()
+        })
+      }, delay)
+    }
+
+    function onVisible() {
+      if (document.hidden || stopped) return
+      if (timer) window.clearTimeout(timer)
+      void poll().finally(() => {
+        if (!stopped) arm()
+      })
+    }
+
+    void poll().finally(() => {
+      if (!stopped) arm()
+    })
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      stopped = true
+      if (timer) window.clearTimeout(timer)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [activeTab])
 
   const handleQuery = useCallback(() => {
     setAppliedFrom(draftFrom)
@@ -163,14 +299,16 @@ export function StockMarketView() {
         .filter((p) => p.date >= appliedFrom && p.date <= appliedTo)
         .filter((p) => typeof p.annualized_discount_pct === "number")
         .filter((p) => (p.days_to_maturity ?? MIN_DAYS) >= MIN_DAYS)
-        .map((p) => [p.date, Number((-p.annualized_discount_pct).toFixed(2))] as [string, number])
+        .map((p) => [p.time ?? p.date, Number((-p.annualized_discount_pct).toFixed(2))] as [string | number, number])
+      const last = data.length - 1
       return {
         name,
         type: "line" as const,
         data,
         smooth: 0,
-        showSymbol: false,
-        symbol: "none",
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: (_value: unknown, params: { dataIndex?: number }) => (params.dataIndex === last ? 8 : 0),
         connectNulls: true,
         z: style.area ? 3 : 2,
         lineStyle: {
@@ -200,19 +338,9 @@ export function StockMarketView() {
     })
   }, [appliedFrom, appliedTo, payload, product])
 
-  const legendSelected = useMemo(
-    () => ({
-      [seriesName(product, "近月")]: false,
-      [seriesName(product, "次月")]: false,
-      [seriesName(product, "当季")]: true,
-      [seriesName(product, "下季")]: true,
-    }),
-    [product],
-  )
-
   const option = useMemo(
     () => ({
-      animationDuration: 300,
+      animation: false,
       color: ROLE_ORDER.map((role) => ROLE_STYLE[role].color),
       tooltip: {
         trigger: "axis" as const,
@@ -226,7 +354,21 @@ export function StockMarketView() {
           crossStyle: { color: "#94a3b8" },
           lineStyle: { color: "#94a3b8", type: "dashed" as const, width: 1 },
         },
-        valueFormatter: (v: number) => (typeof v === "number" ? `${v.toFixed(2)}%` : "-"),
+        formatter: (params: unknown) => {
+          const rows = (Array.isArray(params) ? params : [params]) as Array<{
+            axisValue?: string | number
+            marker?: string
+            seriesName?: string
+            data?: [string | number, number]
+          }>
+          const title = formatAxisValue(rows[0]?.axisValue ?? "")
+          const lines = rows.map((row) => {
+            const value = row.data?.[1]
+            const text = typeof value === "number" ? `${value.toFixed(2)}%` : "-"
+            return `${row.marker || ""}${row.seriesName || ""}: ${text}`
+          })
+          return [title, ...lines].join("<br/>")
+        },
       },
       legend: {
         data: series.map((s) => s.name),
@@ -288,6 +430,29 @@ export function StockMarketView() {
 
   const hasData = series.some((s) => s.data.length > 0)
 
+  const liveReadout = useMemo(() => {
+    if (!live?.fetchedAt) return null
+    const clock = new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).format(live.fetchedAt)
+    const pick = (role: (typeof ROLE_ORDER)[number]) => {
+      const row = series.find((item) => item.name === seriesName(product, role))
+      const last = row?.data.at(-1)
+      return typeof last?.[1] === "number" ? `${last[1].toFixed(2)}%` : "--"
+    }
+    return { clock, quarter: pick("当季"), nextQuarter: pick("下季") }
+  }, [live?.fetchedAt, product, series])
+
+  useEffect(() => {
+    const inst = chartRef.current?.getEchartsInstance()
+    if (!inst || !hasData) return
+    inst.setOption(option, { notMerge: false, replaceMerge: ["series"], lazyUpdate: false })
+  }, [hasData, option])
+
   return (
     <div className="flex flex-col gap-3 -m-1">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 bg-white px-1">
@@ -323,7 +488,9 @@ export function StockMarketView() {
         </div>
       </div>
 
-      {activeTab !== "quant" ? (
+      {activeTab === "heat" ? (
+        <LimitUpHeatChart />
+      ) : activeTab !== "quant" ? (
         <div className="px-1 py-16 text-center text-sm text-zinc-400">该功能正在建设中，敬请期待</div>
       ) : (
         <div className="px-1 pt-2">
@@ -335,7 +502,13 @@ export function StockMarketView() {
                 <span className="text-sm font-semibold text-zinc-800">股指期货升贴水率</span>
                 <HelpAnnualizedDiscount />
               </div>
-              <p className="mt-1 ml-[11px] text-xs text-zinc-400">年化升贴水率按交易日结算价更新。</p>
+              <p className="mt-1 ml-[11px] text-xs text-zinc-400">
+                {liveReadout
+                  ? `最新 ${liveReadout.clock} · 当季 ${liveReadout.quarter} · 下季 ${liveReadout.nextQuarter}`
+                  : liveError
+                    ? `实时行情未刷新：${liveError}`
+                    : "正在接入最新价…"}
+              </p>
             </div>
             <div className="flex flex-col items-end gap-1.5 shrink-0">
               <div className="flex items-center gap-1.5">
@@ -343,7 +516,10 @@ export function StockMarketView() {
                   <button
                     key={code}
                     type="button"
-                    onClick={() => setProduct(code)}
+                    onClick={() => {
+                      setProduct(code)
+                      setLegendSelected(defaultLegend(code))
+                    }}
                     className={[
                       "h-7 min-w-[2.5rem] px-2 rounded-sm border text-xs font-medium transition-colors",
                       product === code
@@ -370,7 +546,27 @@ export function StockMarketView() {
           ) : error ? (
             <div className="flex h-[420px] items-center justify-center text-sm text-red-500">{error}</div>
           ) : hasData ? (
-            <ReactECharts ref={chartRef} option={option} style={{ height: 440 }} notMerge lazyUpdate />
+            <ReactECharts
+              ref={chartRef}
+              option={option}
+              style={{ height: 440 }}
+              notMerge={false}
+              replaceMerge={["series"]}
+              lazyUpdate={false}
+              onEvents={{
+                legendselectchanged: (event: { selected?: Record<string, boolean> }) => {
+                  const next = event.selected
+                  if (!next) return
+                  setLegendSelected((prev) => {
+                    const keys = new Set([...Object.keys(prev), ...Object.keys(next)])
+                    for (const key of keys) {
+                      if (prev[key] !== next[key]) return next
+                    }
+                    return prev
+                  })
+                },
+              }}
+            />
           ) : (
             <div className="flex h-[420px] items-center justify-center text-sm text-zinc-400">所选区间暂无数据</div>
           )}

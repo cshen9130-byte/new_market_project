@@ -4,6 +4,8 @@ import {
   deleteFundNavCorrectionRule,
   saveFundNavCorrectionRule,
 } from "@/lib/server/fund-nav-correction-rules"
+import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
+import { upsertOperationDate } from "@/lib/server/ops-fund-operation-dates"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 
 export const dynamic = "force-dynamic"
@@ -47,6 +49,8 @@ export async function POST(req: Request) {
       preserve_high_nav_scale: body.rule?.preserve_high_nav_scale === true,
       note: body.rule?.note ?? "",
     })
+    await upsertOperationDate(beian, saved.series_start_date)
+    invalidateDetailResponseMemoryCache([beian])
 
     try {
       const productName = body.rule?.product_names?.[0] ?? beian
