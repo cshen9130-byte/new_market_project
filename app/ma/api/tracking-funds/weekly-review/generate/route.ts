@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { normalizeWeeklyReviewPools } from "@/lib/ma/weekly-review-pools"
 import {
   defaultWeeklyReviewWeekEnd,
   getWeeklyReviewJobStatus,
@@ -12,11 +13,12 @@ export const maxDuration = 300
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({})) as { week_end?: string }
+    const body = await req.json().catch(() => ({})) as { week_end?: string; pools?: unknown }
     const weekEnd = (body.week_end || "").trim() || defaultWeeklyReviewWeekEnd()
+    const pools = normalizeWeeklyReviewPools(body.pools)
     const jobId = await prepareWeeklyReviewJob()
     setImmediate(() => {
-      void runWeeklyReviewJob(jobId, weekEnd)
+      void runWeeklyReviewJob(jobId, weekEnd, pools)
     })
     return NextResponse.json({
       async: true,

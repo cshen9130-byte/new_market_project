@@ -10,6 +10,12 @@ import { fmtIso, n, query, queryUnbounded } from "@/lib/db"
 import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import { isPlausibleEmailUnitNav, recoverPlausibleEmailUnitNav } from "@/lib/server/email-nav-query"
 import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
+import {
+  normalizeWeeklyReviewPools,
+  weeklyReviewPoolFileLabel,
+  weeklyReviewPoolScopePhrase,
+  type WeeklyReviewPoolKey,
+} from "@/lib/ma/weekly-review-pools"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { beianFamilyKey } from "@/lib/server/share-class-product"
 import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
@@ -599,19 +605,38 @@ function excessWindows(
   }
 }
 
-export async function loadJyTrackingPoolFunds(): Promise<WeeklyReviewFund[]> {
+const POOL_SOURCE_SQL: Record<WeeklyReviewPoolKey, string> = {
+  jy: "tracking_pool",
+  selected: "selected_pool",
+}
+
+export async function loadJyTrackingPoolFunds(poolsInput?: unknown): Promise<WeeklyReviewFund[]> {
+  const pools = normalizeWeeklyReviewPools(poolsInput)
+  const sources = pools.map((key) => {
+    const table = POOL_SOURCE_SQL[key]
+    return `
+      SELECT p.register_number,
+             COALESCE(NULLIF(BTRIM(c.product_name), ''), NULLIF(BTRIM(p.product_name), ''), p.register_number) AS product_name,
+             NULLIF(BTRIM(c.short_name), '') AS short_name,
+             NULLIF(BTRIM(c.company_strategy_l1), '') AS l1,
+             NULLIF(BTRIM(c.company_strategy_l2), '') AS l2,
+             NULLIF(BTRIM(c.company_strategy_l3), '') AS l3,
+             p.imported_at
+      FROM ${table} p
+      LEFT JOIN ops_tracking_funds_list_cache c ON c.beian_hao = p.register_number
+      WHERE p.register_number IS NOT NULL AND BTRIM(p.register_number) <> ''
+    `
+  }).join(" UNION ALL ")
   const rows = await query<WeeklyReviewFund>(
-    `SELECT DISTINCT ON (UPPER(BTRIM(p.register_number)))
-        p.register_number AS beian_hao,
-        COALESCE(NULLIF(BTRIM(c.product_name), ''), NULLIF(BTRIM(p.product_name), ''), p.register_number) AS product_name,
-        NULLIF(BTRIM(c.short_name), '') AS short_name,
-        NULLIF(BTRIM(c.company_strategy_l1), '') AS l1,
-        NULLIF(BTRIM(c.company_strategy_l2), '') AS l2,
-        NULLIF(BTRIM(c.company_strategy_l3), '') AS l3
-     FROM tracking_pool p
-     LEFT JOIN ops_tracking_funds_list_cache c ON c.beian_hao = p.register_number
-     WHERE p.register_number IS NOT NULL AND BTRIM(p.register_number) <> ''
-     ORDER BY UPPER(BTRIM(p.register_number)), p.imported_at DESC NULLS LAST`,
+    `SELECT DISTINCT ON (UPPER(BTRIM(src.register_number)))
+        src.register_number AS beian_hao,
+        src.product_name,
+        src.short_name,
+        src.l1,
+        src.l2,
+        src.l3
+     FROM (${sources}) src
+     ORDER BY UPPER(BTRIM(src.register_number)), src.imported_at DESC NULLS LAST`,
   )
   return rows.filter((r) => r.beian_hao)
 }
@@ -661,9 +686,9 @@ export function previewWeeklyReview(funds: WeeklyReviewFund[]): WeeklyReviewGrou
   return [...known, ...rest]
 }
 
-export async function buildWeeklyReviewPreview(weekEnd: string): Promise<WeeklyReviewPreview> {
+export async function buildWeeklyReviewPreview(weekEnd: string, poolsInput?: unknown): Promise<WeeklyReviewPreview> {
   const { weekStart, weekEnd: end, asOf } = resolveWeekWindow(weekEnd)
-  const equity = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const equity = (await loadJyTrackingPoolFunds(poolsInput)).filter(isEquityFund)
   const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
   const funds = collapseWeeklyReviewFunds(equity, coverage)
   return {
@@ -1113,7 +1138,7 @@ type MethodologyRow =
   | { kind: "spacer" }
 
 /** Reader-facing notes for the weekly workbook. Wording tracks the calculators above. */
-export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: string): MethodologyRow[] {
+export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: string, poolsInput?: unknown): MethodologyRow[] {
   const benchRows: MethodologyRow[] = Object.entries(BENCH_BY_BUCKET).map(([bucket, codes]) => ({
     kind: "pair" as const,
     label: bucket,
@@ -1124,7 +1149,7 @@ export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: str
     {
       kind: "pair",
       label: "样本范围",
-      text: "只含 JY 跟踪池里的股票策略产品。一级策略为期货、债券、固收、多资产、套利、期权或其他的产品不进入本表。同一备案号只保留最新一条跟踪记录。",
+      text: `只含 ${weeklyReviewPoolScopePhrase(normalizeWeeklyReviewPools(poolsInput))}里的股票策略产品。一级策略为期货、债券、固收、多资产、套利、期权或其他的产品不进入本表。同一备案号只保留最新一条跟踪记录。产品同时在多个所选池中时只保留一行。`,
     },
     {
       kind: "pair",
@@ -1202,7 +1227,7 @@ export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: str
   ]
 }
 
-function methodologySheet(weekStart: string, weekEnd: string): {
+function methodologySheet(weekStart: string, weekEnd: string, poolsInput?: unknown): {
   aoa: unknown[][]
   styles: Map<string, CellStyle>
   rowHeights: number[]
@@ -1224,7 +1249,7 @@ function methodologySheet(weekStart: string, weekEnd: string): {
     font: { name: FONT_NAME, sz: 11 },
     alignment: { wrapText: true, vertical: "top", horizontal: "left" },
   }
-  for (const row of buildWeeklyReviewMethodologyRows(weekStart, weekEnd)) {
+  for (const row of buildWeeklyReviewMethodologyRows(weekStart, weekEnd, poolsInput)) {
     const r = aoa.length
     if (row.kind === "spacer") {
       aoa.push([])
@@ -1247,18 +1272,19 @@ function methodologySheet(weekStart: string, weekEnd: string): {
   return { aoa, styles, rowHeights, merges }
 }
 
-export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promise<{
+export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsInput?: unknown): Promise<{
   buffer: Buffer
   fileName: string
   fundCount: number
   groupCount: number
 }> {
+  const pools = normalizeWeeklyReviewPools(poolsInput)
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
-  const equity = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const equity = (await loadJyTrackingPoolFunds(pools)).filter(isEquityFund)
   const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
   const funds = collapseWeeklyReviewFunds(equity, coverage)
   if (funds.length === 0) {
-    throw new Error("JY跟踪池中没有可导出的股票策略产品")
+    throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可导出的股票策略产品`)
   }
 
   const [metrics, market] = await Promise.all([
@@ -1297,7 +1323,7 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promis
   }> = []
 
   {
-    const note = methodologySheet(weekStart, weekEnd)
+    const note = methodologySheet(weekStart, weekEnd, pools)
     sheets.push({
       name: "口径说明",
       title: "口径说明",
@@ -1447,7 +1473,7 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string): Promis
   const yy = weekEnd.slice(2, 4)
   const mm = weekEnd.slice(5, 7)
   const dd = weekEnd.slice(8, 10)
-  const fileName = `JY跟踪池周度回顾（股票） - ${yy}.${mm}.${dd}.xlsx`
+  const fileName = `${weeklyReviewPoolFileLabel(pools)}周度回顾（股票） - ${yy}.${mm}.${dd}.xlsx`
   return { buffer, fileName, fundCount: funds.length, groupCount: orderedBuckets.length }
 }
 
@@ -1531,7 +1557,7 @@ export async function readWeeklyReviewJobFile(jobId: string): Promise<{ buffer: 
   return { buffer, fileName: status.fileName }
 }
 
-export async function runWeeklyReviewJob(jobId: string, weekEnd: string): Promise<void> {
+export async function runWeeklyReviewJob(jobId: string, weekEnd: string, poolsInput?: unknown): Promise<void> {
   await writeJobStatus({
     status: "running",
     jobId,
@@ -1539,7 +1565,7 @@ export async function runWeeklyReviewJob(jobId: string, weekEnd: string): Promis
   })
   try {
     console.time("[jy-weekly-review] generate workbook")
-    const result = await generateJyWeeklyReviewWorkbook(weekEnd)
+    const result = await generateJyWeeklyReviewWorkbook(weekEnd, poolsInput)
     console.timeEnd("[jy-weekly-review] generate workbook")
     await mkdir(jobDir(jobId), { recursive: true })
     await writeFile(jobFilePath(jobId), result.buffer)

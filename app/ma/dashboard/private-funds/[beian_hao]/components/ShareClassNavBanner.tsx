@@ -94,37 +94,35 @@ export function ShareClassNavBanner({ beianHao }: { beianHao: string }) {
   if (dismissed || rows.length === 0) return null
 
   return (
-    <div className="mb-4 rounded border border-[#c5e0f5] bg-[#eef6fc] px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#2b7bb9]" aria-hidden="true" />
-        <div className="min-w-0 flex-1 space-y-1">
-          {rows.map((row) => {
-            const name = shortClassName(row.product_name)
-            const date = (row.latest_nav_date ?? "").slice(0, 10)
-            const text = date
-              ? `${name}, 净值已更新至${date}, 您可点击前往查看净值分析`
-              : `${name}, 您可点击前往查看净值分析`
-            return (
-              <Link
-                key={row.beian_hao}
-                href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                className="block text-sm text-[#2b7bb9] hover:underline"
-                title={row.product_name}
-              >
-                {text}
-              </Link>
-            )
-          })}
-        </div>
-        <button
-          type="button"
-          onClick={() => setDismissed(true)}
-          className="shrink-0 rounded p-0.5 text-[#7aa7c9] hover:bg-white/70 hover:text-[#2b7bb9]"
-          aria-label="关闭分级提示"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
+    <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded border border-[#c5e0f5] bg-[#eef6fc] px-3 py-2">
+      <Info className="h-4 w-4 shrink-0 text-[#2b7bb9]" aria-hidden="true" />
+      <div className="flex min-w-0 flex-1 items-center gap-x-4">
+        {rows.map((row) => {
+          const name = shortClassName(row.product_name)
+          const date = (row.latest_nav_date ?? "").slice(0, 10)
+          const text = date
+            ? `${name}, 净值已更新至${date}, 您可点击前往查看净值分析`
+            : `${name}, 您可点击前往查看净值分析`
+          return (
+            <Link
+              key={row.beian_hao}
+              href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+              className="shrink-0 whitespace-nowrap text-sm leading-5 text-[#2b7bb9] hover:underline"
+              title={row.product_name}
+            >
+              {text}
+            </Link>
+          )
+        })}
       </div>
+      <button
+        type="button"
+        onClick={() => setDismissed(true)}
+        className="shrink-0 rounded p-0.5 text-[#7aa7c9] hover:bg-white/70 hover:text-[#2b7bb9]"
+        aria-label="关闭分级提示"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   )
 }

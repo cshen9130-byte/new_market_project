@@ -10,6 +10,11 @@ import path from "path"
 import { fmtIso, n, query } from "@/lib/db"
 import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
 import {
+  normalizeWeeklyReviewPools,
+  weeklyReviewPoolFileLabel,
+  weeklyReviewPoolScopePhrase,
+} from "@/lib/ma/weekly-review-pools"
+import {
   collapseWeeklyReviewFunds,
   computeFundMetrics,
   isValidWeeklyReviewJobId,
@@ -217,15 +222,15 @@ export function previewFuturesWeeklyReview(funds: WeeklyReviewFund[]) {
     }))
 }
 
-async function loadFuturesWeeklyFunds(asOf: string): Promise<WeeklyReviewFund[]> {
-  const pool = (await loadJyTrackingPoolFunds()).filter(isFuturesWeeklyFund)
+async function loadFuturesWeeklyFunds(asOf: string, poolsInput?: unknown): Promise<WeeklyReviewFund[]> {
+  const pool = (await loadJyTrackingPoolFunds(poolsInput)).filter(isFuturesWeeklyFund)
   const coverage = await loadWeeklyReviewNavCoverage(pool, asOf)
   return collapseWeeklyReviewFunds(pool, coverage)
 }
 
-export async function buildFuturesWeeklyReviewPreview(weekEnd: string): Promise<WeeklyReviewPreview> {
+export async function buildFuturesWeeklyReviewPreview(weekEnd: string, poolsInput?: unknown): Promise<WeeklyReviewPreview> {
   const { weekStart, weekEnd: end, asOf } = resolveWeekWindow(weekEnd)
-  const funds = await loadFuturesWeeklyFunds(asOf)
+  const funds = await loadFuturesWeeklyFunds(asOf, poolsInput)
   return {
     week_start: weekStart,
     week_end: end,
@@ -311,13 +316,14 @@ type MethodologyRow =
   | { kind: "title"; text: string }
   | { kind: "pair"; label: string; text: string }
 
-function buildFuturesMethodologyRows(weekStart: string, weekEnd: string): MethodologyRow[] {
+function buildFuturesMethodologyRows(weekStart: string, weekEnd: string, poolsInput?: unknown): MethodologyRow[] {
+  const scope = weeklyReviewPoolScopePhrase(normalizeWeeklyReviewPools(poolsInput))
   return [
     { kind: "title", text: `口径说明（统计区间 ${fmtSlashDate(weekStart)} ~ ${fmtSlashDate(weekEnd)}，截止日 ${weekEnd}）` },
     {
       kind: "pair",
       label: "样本范围",
-      text: "只含 JY 跟踪池里的期货与期权相关产品：一级策略为期货策略、管理期货或期权策略；套利策略里的期货套利、期权套利；多资产策略里的股票期货复合。股票多头、股票对冲、债券、可转债套利、ETF 套利不进入本表。同一备案号只保留最新一条跟踪记录。",
+      text: `只含 ${scope}里的期货与期权相关产品：一级策略为期货策略、管理期货或期权策略；套利策略里的期货套利、期权套利；多资产策略里的股票期货复合。股票多头、股票对冲、债券、可转债套利、ETF 套利不进入本表。同一备案号只保留最新一条跟踪记录。产品同时在多个所选池中时只保留一行。`,
     },
     {
       kind: "pair",
@@ -399,7 +405,7 @@ function sheetName(seq: number, title: string): string {
   return `${String(seq).padStart(2, "0")}_${title}`.replace(/[:\\/?*[\]]/g, " ").slice(0, 31)
 }
 
-function methodologySheet(weekStart: string, weekEnd: string) {
+function methodologySheet(weekStart: string, weekEnd: string, poolsInput?: unknown) {
   const aoa: unknown[][] = []
   const styles = new Map<string, CellStyle>()
   const rowHeights: number[] = []
@@ -416,7 +422,7 @@ function methodologySheet(weekStart: string, weekEnd: string) {
     font: { name: FONT_NAME, sz: 11 },
     alignment: { wrapText: true, vertical: "top", horizontal: "left" },
   }
-  for (const row of buildFuturesMethodologyRows(weekStart, weekEnd)) {
+  for (const row of buildFuturesMethodologyRows(weekStart, weekEnd, poolsInput)) {
     const r = aoa.length
     if (row.kind === "title") {
       aoa.push([row.text, " "])
@@ -434,16 +440,17 @@ function methodologySheet(weekStart: string, weekEnd: string) {
   return { aoa, styles, rowHeights, merges }
 }
 
-export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string): Promise<{
+export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, poolsInput?: unknown): Promise<{
   buffer: Buffer
   fileName: string
   fundCount: number
   groupCount: number
 }> {
+  const pools = normalizeWeeklyReviewPools(poolsInput)
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
-  const funds = await loadFuturesWeeklyFunds(asOf)
+  const funds = await loadFuturesWeeklyFunds(asOf, pools)
   if (funds.length === 0) {
-    throw new Error("JY跟踪池中没有可导出的期货、CTA 或期权策略产品")
+    throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可导出的期货、CTA 或期权策略产品`)
   }
 
   const [metrics, market] = await Promise.all([
@@ -485,7 +492,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string):
   }> = []
 
   {
-    const note = methodologySheet(weekStart, weekEnd)
+    const note = methodologySheet(weekStart, weekEnd, pools)
     sheets.push({
       name: "口径说明",
       title: "口径说明",
@@ -597,7 +604,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string):
   const yy = weekEnd.slice(2, 4)
   const mm = weekEnd.slice(5, 7)
   const dd = weekEnd.slice(8, 10)
-  const fileName = `JY跟踪池周度回顾（期货） - ${yy}.${mm}.${dd}.xlsx`
+  const fileName = `${weeklyReviewPoolFileLabel(pools)}周度回顾（期货） - ${yy}.${mm}.${dd}.xlsx`
   return { buffer, fileName, fundCount: funds.length, groupCount: orderedBuckets.length }
 }
 
@@ -665,7 +672,7 @@ export async function readFuturesWeeklyReviewJobFile(jobId: string): Promise<{ b
   return { buffer, fileName: status.fileName }
 }
 
-export async function runFuturesWeeklyReviewJob(jobId: string, weekEnd: string): Promise<void> {
+export async function runFuturesWeeklyReviewJob(jobId: string, weekEnd: string, poolsInput?: unknown): Promise<void> {
   await writeJobStatus({
     status: "running",
     jobId,
@@ -673,7 +680,7 @@ export async function runFuturesWeeklyReviewJob(jobId: string, weekEnd: string):
   })
   try {
     console.time("[jy-weekly-review-futures] generate workbook")
-    const result = await generateJyFuturesWeeklyReviewWorkbook(weekEnd)
+    const result = await generateJyFuturesWeeklyReviewWorkbook(weekEnd, poolsInput)
     console.timeEnd("[jy-weekly-review-futures] generate workbook")
     await mkdir(jobDir(jobId), { recursive: true })
     await writeFile(jobFilePath(jobId), result.buffer)

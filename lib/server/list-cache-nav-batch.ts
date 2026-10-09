@@ -1998,6 +1998,9 @@ function needsNavMetricsRecompute(
   // next-server list path: trust the precomputed cache. Missing NAV is an ETL
   // gap (show "—"), not a reason to run BatchNavResolver on 50 funds and hang
   // 跟踪产品 for a minute. Only recompute clearly corrupt daily returns.
+  // Stale 最新净值日期 is NOT handled here. corrupt-only skips the 10-day check
+  // below on purpose. The list still has to follow a newer 火富牛 tip via
+  // overlayPlatformInfoNavOnTrackRows. See docs/tracking-pool-rules.md.
   if (mode === "corrupt-only") {
     if (!row.latest_nav) return false
     const nav = parseFloat(row.latest_nav)
@@ -2210,6 +2213,229 @@ export async function overlayTeamNavOnTrackRows<T extends TrackFundMetricsFields
     console.warn("[overlayTeamNavOnTrackRows] skipped:", err)
     return rows
   }
+}
+
+type PlatformInfoNavRow = {
+  beian_hao: string
+  latest_nav: string | null
+  latest_nav_date: string | null
+}
+
+type PlatformNavHistoryRow = {
+  beian_hao: string
+  price_date: string
+  nav: string
+  cumulative_nav: string | null
+}
+
+type TrackRowWithSourceTip = TrackFundMetricsFields & {
+  source_nav_date?: string | null
+  source_unit_nav?: string | null
+  source_return_pct?: string | null
+}
+
+function stripSourceNavDate<T extends TrackFundMetricsFields>(row: T): T {
+  if (!("source_nav_date" in row) && !("source_unit_nav" in row) && !("source_return_pct" in row)) {
+    return row
+  }
+  const copy = { ...row }
+  const extra = copy as TrackRowWithSourceTip
+  delete extra.source_nav_date
+  delete extra.source_unit_nav
+  delete extra.source_return_pct
+  return copy
+}
+
+/** SQL accepts any weekday. Put statutory holidays back on the cache tip. */
+function restoreNonTradingPlatformTip<T extends TrackFundMetricsFields>(row: T): T {
+  const extra = row as TrackRowWithSourceTip
+  const sourceDate = extra.source_nav_date?.slice(0, 10) ?? ""
+  const shownDate = row.latest_nav_date?.slice(0, 10) ?? ""
+  if (!sourceDate || !shownDate || shownDate === sourceDate || isChinaTradingDay(shownDate)) {
+    return row
+  }
+  return {
+    ...row,
+    latest_nav_date: sourceDate,
+    latest_nav: extra.source_unit_nav ?? row.latest_nav,
+    latest_price_change: extra.source_return_pct ?? row.latest_price_change,
+  }
+}
+
+/**
+ * Advance a tracking-list tip to private_fund_info when 火富牛 has a later
+ * trading-day NAV than the list cache. The product page already does this.
+ * Do not replace this with a page-sized BatchNavResolver scan, and do not
+ * drop it when corrupt-only mode is on. See docs/tracking-pool-rules.md.
+ */
+export async function overlayPlatformInfoNavOnTrackRows<T extends TrackFundMetricsFields>(
+  rows: T[],
+  asOfDate: string,
+): Promise<T[]> {
+  if (rows.length === 0) return rows
+  const codes = [...new Set(rows.map((row) => row.beian_hao.trim().toUpperCase()).filter(Boolean))]
+  if (codes.length === 0) return rows.map((row) => stripSourceNavDate(restoreNonTradingPlatformTip(row)))
+
+  let infoRows: PlatformInfoNavRow[] = []
+  try {
+    infoRows = await query<PlatformInfoNavRow>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao,
+              latest_nav::text AS latest_nav,
+              latest_nav_date::text AS latest_nav_date
+       FROM private_fund_info
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+         AND latest_nav_date IS NOT NULL
+         AND latest_nav IS NOT NULL`,
+      [codes],
+    )
+  } catch (err) {
+    console.warn("[overlayPlatformInfoNavOnTrackRows] info lookup skipped:", err)
+    return rows.map((row) => stripSourceNavDate(restoreNonTradingPlatformTip(row)))
+  }
+
+  const infoByCode = new Map<string, PlatformInfoNavRow>()
+  for (const row of infoRows) infoByCode.set(row.beian_hao, row)
+
+  const pending = new Map<string, { nav: number; navDate: string }>()
+  for (const row of rows) {
+    const code = row.beian_hao.trim().toUpperCase()
+    const info = infoByCode.get(code)
+    if (!info) continue
+    if (lookupFundNavCorrectionRule(row.beian_hao, row.product_name, row.short_name)?.preserve_high_nav_scale) {
+      continue
+    }
+    const infoDate = info.latest_nav_date?.slice(0, 10) ?? ""
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(infoDate) || infoDate > asOfDate.slice(0, 10)) continue
+    if (!isChinaTradingDay(infoDate)) continue
+    const nav = parseFloat(info.latest_nav ?? "")
+    if (!isPlausibleEmailUnitNav(nav)) continue
+    const shownDate = row.latest_nav_date?.slice(0, 10) ?? ""
+    if (shownDate && shownDate > infoDate) continue
+    const sourceDate = (
+      (row as T & { source_nav_date?: string | null }).source_nav_date
+      ?? row.latest_nav_date
+      ?? ""
+    ).slice(0, 10)
+    if (sourceDate && infoDate <= sourceDate) continue
+    pending.set(code, { nav, navDate: infoDate })
+  }
+
+  if (pending.size === 0) {
+    return rows.map((row) => stripSourceNavDate(restoreNonTradingPlatformTip(row)))
+  }
+
+  const since = addDays(asOfDate.slice(0, 10), NAV_HISTORY_LOOKBACK_DAYS)
+  const historyByCode = new Map<string, Map<string, NavPoint>>()
+  try {
+    const histRows = await query<PlatformNavHistoryRow>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao,
+              price_date::text AS price_date,
+              nav::text AS nav,
+              cumulative_nav::text AS cumulative_nav
+       FROM private_fund_nav
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+         AND price_date >= $2::date
+         AND price_date <= $3::date
+         AND nav IS NOT NULL AND nav > 0`,
+      [[...pending.keys()], since, asOfDate.slice(0, 10)],
+    )
+    for (const row of histRows) {
+      const navDate = row.price_date.slice(0, 10)
+      if (!isChinaTradingDay(navDate)) continue
+      const nav = parseFloat(row.nav)
+      if (!isPlausibleEmailUnitNav(nav)) continue
+      const cum = parseFloat(row.cumulative_nav ?? "")
+      const point: NavPoint = { nav, nav_date: navDate }
+      if (isPlausibleEmailUnitNav(cum)) point.return_nav = cum
+      const byDate = historyByCode.get(row.beian_hao) ?? new Map<string, NavPoint>()
+      byDate.set(navDate, point)
+      historyByCode.set(row.beian_hao, byDate)
+    }
+  } catch (err) {
+    console.warn("[overlayPlatformInfoNavOnTrackRows] history lookup skipped:", err)
+  }
+
+  const patched = rows.map((row) => {
+    const code = row.beian_hao.trim().toUpperCase()
+    const tip = pending.get(code)
+    if (!tip) return stripSourceNavDate(restoreNonTradingPlatformTip(row))
+    const shownDate = row.latest_nav_date?.slice(0, 10) ?? ""
+    const sourceDate = (
+      (row as T & { source_nav_date?: string | null }).source_nav_date
+      ?? shownDate
+    ).slice(0, 10)
+    // One code can be evaluated twice only in tests; never pull a newer team
+    // tip, or an already-current cache tip, back to the platform date.
+    if ((shownDate && shownDate > tip.navDate) || (sourceDate && tip.navDate <= sourceDate)) {
+      return stripSourceNavDate(restoreNonTradingPlatformTip(row))
+    }
+    const history = [...(historyByCode.get(code)?.values() ?? [])]
+      .filter((point) => point.nav_date <= tip.navDate)
+      .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+    const onTip = history.some((point) => point.nav_date === tip.navDate)
+    if (!onTip) {
+      history.push({ nav: tip.nav, nav_date: tip.navDate, return_nav: tip.nav })
+    }
+    const returnPct = calcDailyReturnPctFromHistory(history, tip.nav, tip.navDate, null)
+    const returns = calcPeriodReturnsFromHistory(history, tip.nav, tip.navDate)
+    return stripSourceNavDate({
+      ...row,
+      latest_nav: String(tip.nav),
+      latest_nav_date: tip.navDate,
+      latest_price_change: returnPct != null ? String(returnPct) : null,
+      ret_1w: returns.ret_1w != null ? String(returns.ret_1w) : null,
+      ret_1m: returns.ret_1m != null ? String(returns.ret_1m) : null,
+      ret_3m: returns.ret_3m != null ? String(returns.ret_3m) : null,
+      ret_6m: returns.ret_6m != null ? String(returns.ret_6m) : null,
+      ret_1y: returns.ret_1y != null ? String(returns.ret_1y) : null,
+    })
+  })
+
+  const updates = patched.filter((row) => {
+    const tip = pending.get(row.beian_hao.trim().toUpperCase())
+    return !!tip && row.latest_nav_date?.slice(0, 10) === tip.navDate
+  })
+  if (updates.length > 0) {
+    try {
+      await query(
+        `UPDATE ops_tracking_funds_list_cache AS c SET
+           unit_nav = u.unit_nav,
+           nav_date = u.nav_date::date,
+           return_pct = u.return_pct,
+           ret_1w = u.ret_1w,
+           ret_1m = u.ret_1m,
+           ret_3m = u.ret_3m,
+           ret_6m = u.ret_6m,
+           ret_1y = u.ret_1y,
+           refreshed_at = NOW()
+         FROM unnest(
+           $1::text[], $2::numeric[], $3::date[],
+           $4::numeric[], $5::numeric[], $6::numeric[],
+           $7::numeric[], $8::numeric[], $9::numeric[]
+         ) AS u(
+           beian_hao, unit_nav, nav_date, return_pct,
+           ret_1w, ret_1m, ret_3m, ret_6m, ret_1y
+         )
+         WHERE UPPER(BTRIM(c.beian_hao)) = UPPER(BTRIM(u.beian_hao))
+           AND (c.nav_date IS NULL OR c.nav_date < u.nav_date)`,
+        [
+          updates.map((row) => row.beian_hao),
+          updates.map((row) => clampPgNumeric(parseFloat(row.latest_nav ?? ""), 16, 6)),
+          updates.map((row) => row.latest_nav_date),
+          updates.map((row) => clampPgNumeric(parseFloat(row.latest_price_change ?? ""), 16, 8)),
+          updates.map((row) => clampPgNumeric(parseFloat(row.ret_1w ?? ""), 16, 8)),
+          updates.map((row) => clampPgNumeric(parseFloat(row.ret_1m ?? ""), 16, 8)),
+          updates.map((row) => clampPgNumeric(parseFloat(row.ret_3m ?? ""), 16, 8)),
+          updates.map((row) => clampPgNumeric(parseFloat(row.ret_6m ?? ""), 16, 8)),
+          updates.map((row) => clampPgNumeric(parseFloat(row.ret_1y ?? ""), 16, 8)),
+        ],
+      )
+    } catch (err) {
+      console.warn("[overlayPlatformInfoNavOnTrackRows] cache write-back skipped:", err)
+    }
+  }
+
+  return patched
 }
 
 /** Chunked INSERT to stay within Postgres parameter limits. */

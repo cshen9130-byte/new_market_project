@@ -5,6 +5,11 @@ import type {
   StrategyObservationIndicatorRow,
   StrategyObservationIndicatorTab,
 } from "@/lib/ma/strategy-observation"
+import { ChartCalcHelpButton } from "../[beian_hao]/valuation/ChartCalcHelpButton"
+import {
+  indicatorDistributionHelp,
+  STRATEGY_OBSERVATION_HELP_POPOVER,
+} from "./strategy-observation-calc-help"
 
 const METRIC_TABS = [
   { key: "return", label: "收益分位" },
@@ -46,6 +51,11 @@ export function StrategyIndicatorDistributionSection({
       <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 mb-3">
         <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
         指标分布
+        <ChartCalcHelpButton
+          heading="指标分布 · 计算说明"
+          blocks={indicatorDistributionHelp()}
+          contentClassName={STRATEGY_OBSERVATION_HELP_POPOVER}
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-zinc-100 pb-2 mb-3">

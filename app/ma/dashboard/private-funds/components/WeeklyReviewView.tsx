@@ -3,6 +3,13 @@
 import { useCallback, useEffect, useState } from "react"
 import { Download, FileText, Loader2 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
+import {
+  DEFAULT_WEEKLY_REVIEW_POOLS,
+  toggleWeeklyReviewPool,
+  weeklyReviewPoolFileLabel,
+  weeklyReviewPoolScopePhrase,
+  type WeeklyReviewPoolKey,
+} from "@/lib/ma/weekly-review-pools"
 
 type GroupPreview = {
   bucket: string
@@ -46,33 +53,39 @@ function slashDate(iso: string): string {
 
 type WeeklyReviewVariant = "equity" | "futures"
 
+const POOL_CHOICES: Array<{ key: "all" | WeeklyReviewPoolKey; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "jy", label: "JY跟踪池" },
+  { key: "selected", label: "JY精选池" },
+]
+
 const VARIANT_COPY: Record<WeeklyReviewVariant, {
-  title: string
-  description: string
-  empty: string
-  loading: string
-  excelName: (weekEnd: string) => string
-  previewUrl: (date: string) => string
+  title: (label: string) => string
+  description: (scope: string) => string
+  empty: (scope: string) => string
+  loading: (scope: string) => string
+  excelName: (weekEnd: string, label: string) => string
+  previewUrl: (date: string, pools: WeeklyReviewPoolKey[]) => string
   generateUrl: string
   statusUrl: (jobId: string) => string
 }> = {
   equity: {
-    title: "JY跟踪池 · 周度回顾(股票)",
-    description: "按 JY 跟踪池中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表。同一产品的 A/B/C 份额在同一策略里合并为一行。「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。",
-    empty: "JY跟踪池中暂无股票策略产品",
-    loading: "正在统计 JY 跟踪池产品…",
-    excelName: (weekEnd) => `JY跟踪池周度回顾（股票） - ${weekEnd}.xlsx`,
-    previewUrl: (date) => `/ma/api/tracking-funds/weekly-review/preview?week_end=${encodeURIComponent(date)}`,
+    title: (label) => `${label} · 周度回顾(股票)`,
+    description: (scope) => `按${scope}中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表。同一产品的 A/B/C 份额在同一策略里合并为一行。「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。`,
+    empty: (scope) => `${scope}中暂无股票策略产品`,
+    loading: (scope) => `正在统计${scope}产品…`,
+    excelName: (weekEnd, label) => `${label}周度回顾（股票） - ${weekEnd}.xlsx`,
+    previewUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/preview?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/generate",
     statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/generate?id=${encodeURIComponent(jobId)}`,
   },
   futures: {
-    title: "JY跟踪池 · 周度回顾(期货)",
-    description: "按 JY 跟踪池中的期货策略产品生成周报 Excel，覆盖量化 CTA、主观 CTA、期权、期货套利和期权套利：期货市场回顾 + 按策略分组的绝对收益 / 夏普 / 卡玛。同一产品的 A/B/C 份额在同一策略里合并为一行。",
-    empty: "JY跟踪池中暂无期货、CTA 或期权策略产品",
-    loading: "正在统计 JY 跟踪池期货与期权产品…",
-    excelName: (weekEnd) => `JY跟踪池周度回顾（期货） - ${weekEnd}.xlsx`,
-    previewUrl: (date) => `/ma/api/tracking-funds/weekly-review/futures/preview?week_end=${encodeURIComponent(date)}`,
+    title: (label) => `${label} · 周度回顾(期货)`,
+    description: (scope) => `按${scope}中的期货策略产品生成周报 Excel，覆盖量化 CTA、主观 CTA、期权、期货套利和期权套利：期货市场回顾 + 按策略分组的绝对收益 / 夏普 / 卡玛。同一产品的 A/B/C 份额在同一策略里合并为一行。`,
+    empty: (scope) => `${scope}中暂无期货、CTA 或期权策略产品`,
+    loading: (scope) => `正在统计${scope}期货与期权产品…`,
+    excelName: (weekEnd, label) => `${label}周度回顾（期货） - ${weekEnd}.xlsx`,
+    previewUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/futures/preview?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/futures/generate",
     statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/futures/generate?id=${encodeURIComponent(jobId)}`,
   },
@@ -81,6 +94,7 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
 export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyReviewVariant }) {
   const copy = VARIANT_COPY[variant]
   const [weekEnd, setWeekEnd] = useState(defaultWeekEnd)
+  const [pools, setPools] = useState<WeeklyReviewPoolKey[]>([...DEFAULT_WEEKLY_REVIEW_POOLS])
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState("")
@@ -90,11 +104,11 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
   const [attributeError, setAttributeError] = useState("")
   const [attributePhase, setAttributePhase] = useState("")
 
-  const loadPreview = useCallback(async (date: string) => {
+  const loadPreview = useCallback(async (date: string, poolKeys: WeeklyReviewPoolKey[]) => {
     setPreviewLoading(true)
     setPreviewError("")
     try {
-      const res = await fetch(copy.previewUrl(date), {
+      const res = await fetch(copy.previewUrl(date, poolKeys), {
         cache: "no-store",
       })
       const json = await res.json().catch(() => ({}))
@@ -109,8 +123,8 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
   }, [copy])
 
   useEffect(() => {
-    void loadPreview(weekEnd)
-  }, [weekEnd, loadPreview])
+    void loadPreview(weekEnd, pools)
+  }, [weekEnd, pools, loadPreview])
 
   async function pollJobAndDownload(opts: {
     startUrl: string
@@ -122,7 +136,7 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
     const start = await fetch(opts.startUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ week_end: weekEnd }),
+      body: JSON.stringify({ week_end: weekEnd, pools }),
     })
     const startJson = await start.json().catch(() => ({}))
     if (!start.ok) throw new Error(typeof startJson.error === "string" ? startJson.error : "生成失败")
@@ -165,7 +179,7 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
       await pollJobAndDownload({
         startUrl: copy.generateUrl,
         statusUrl: copy.statusUrl,
-        fallbackName: copy.excelName(weekEnd),
+        fallbackName: copy.excelName(weekEnd, weeklyReviewPoolFileLabel(pools)),
         timeoutMs: 5 * 60 * 1000,
       })
     } catch (err) {
@@ -183,7 +197,7 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
       await pollJobAndDownload({
         startUrl: "/ma/api/tracking-funds/weekly-review/attribution/generate",
         statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/attribution/generate?id=${encodeURIComponent(jobId)}`,
-        fallbackName: `JY跟踪池周度归因分析 - ${weekEnd}.docx`,
+        fallbackName: `${weeklyReviewPoolFileLabel(pools)}周度归因分析 - ${weekEnd}.docx`,
         timeoutMs: 10 * 60 * 1000,
         onPhase: setAttributePhase,
       })
@@ -198,15 +212,25 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
   const rangeLabel = preview
     ? `${slashDate(preview.week_start)} ~ ${slashDate(preview.week_end)}`
     : "—"
+  const poolLabel = weeklyReviewPoolFileLabel(pools)
+  const poolScope = weeklyReviewPoolScopePhrase(pools)
+  const allOn = pools.includes("jy") && pools.includes("selected")
+
+  function pickPool(key: "all" | WeeklyReviewPoolKey) {
+    setPools((prev) => {
+      const next = toggleWeeklyReviewPool(prev, key)
+      return next.join(",") === prev.join(",") ? prev : next
+    })
+  }
 
   return (
     <div className="flex flex-col min-w-0 gap-4">
       <div className="rounded-xl border bg-background shadow-sm p-5">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold">{copy.title}</h2>
+            <h2 className="text-base font-semibold">{copy.title(poolLabel)}</h2>
             <p className="mt-1 text-xs text-muted-foreground leading-relaxed max-w-2xl">
-              {copy.description}
+              {copy.description(poolScope)}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -234,6 +258,29 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-400 shrink-0">产品池</span>
+            <div className="inline-flex flex-wrap items-center gap-1" role="group" aria-label="产品池">
+              {POOL_CHOICES.map((choice) => {
+                const active = choice.key === "all" ? allOn : pools.includes(choice.key)
+                return (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => pickPool(choice.key)}
+                    className={`inline-flex h-9 items-center rounded-md border px-3 text-sm ${
+                      active
+                        ? "border-red-500 bg-red-50 font-medium text-red-600 dark:bg-red-950/40 dark:text-red-400"
+                        : "border-zinc-200 bg-background text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                    }`}
+                  >
+                    {choice.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 shrink-0">报告周截止日</span>
             <DateInput
@@ -269,11 +316,11 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
         {previewLoading ? (
           <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            {copy.loading}
+            {copy.loading(poolScope)}
           </div>
         ) : !preview || preview.groups.length === 0 ? (
           <div className="py-16 text-center text-sm text-muted-foreground">
-            {copy.empty}
+            {copy.empty(poolScope)}
           </div>
         ) : (
           <table className="w-full text-sm">

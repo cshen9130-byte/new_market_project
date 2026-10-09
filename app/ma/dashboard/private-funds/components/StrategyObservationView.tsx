@@ -10,8 +10,14 @@ import {
   type StrategyObservationResponse,
   type StrategyObservationSeries,
 } from "@/lib/ma/strategy-observation"
+import { ChartCalcHelpButton } from "../[beian_hao]/valuation/ChartCalcHelpButton"
 import { StrategyFittedDistributionSection } from "./StrategyFittedDistributionSection"
 import { StrategyIndicatorDistributionSection } from "./StrategyIndicatorDistributionSection"
+import {
+  returnPerformanceHelp,
+  returnTableHelp,
+  STRATEGY_OBSERVATION_HELP_POPOVER,
+} from "./strategy-observation-calc-help"
 
 const STRATEGY_CATEGORIES = STRATEGY_OBSERVATION_CATEGORIES
 const TABLE_STRATEGIES = STRATEGY_OBSERVATION_TABLE_CATEGORIES
@@ -171,7 +177,14 @@ function StrategyPerformanceTable({
           <thead>
             <tr className="bg-zinc-50 text-zinc-500">
               <th className="sticky left-0 z-20 bg-zinc-50 px-3 py-2 text-left font-medium border-b border-zinc-100 min-w-[7.5rem]">
-                分类
+                <span className="inline-flex items-center gap-1">
+                  分类
+                  <ChartCalcHelpButton
+                    heading="分类收益表 · 计算说明"
+                    blocks={returnTableHelp()}
+                    contentClassName={STRATEGY_OBSERVATION_HELP_POPOVER}
+                  />
+                </span>
               </th>
               {periodKeys.map((key) => (
                 <th
@@ -576,6 +589,11 @@ export function StrategyObservationView() {
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
               <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
               收益表现
+              <ChartCalcHelpButton
+                heading="收益表现 · 计算说明"
+                blocks={returnPerformanceHelp()}
+                contentClassName={STRATEGY_OBSERVATION_HELP_POPOVER}
+              />
             </div>
             <div className="text-xs text-zinc-400 mt-1">
               统计截止：{statsCutoff || "—"}
@@ -709,6 +727,9 @@ export function StrategyObservationView() {
           <StrategyFittedDistributionSection
             periodKeys={periodKeys}
             distributions={payload.distributions}
+            year={year}
+            granularity={granularity}
+            cutoff={statsCutoff}
           />
           <StrategyIndicatorDistributionSection
             statsCutoff={statsCutoff}

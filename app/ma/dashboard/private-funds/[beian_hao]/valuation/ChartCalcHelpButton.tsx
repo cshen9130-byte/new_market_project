@@ -19,12 +19,14 @@ export function ChartCalcHelpButton({
   heading,
   blocks,
   className,
+  contentClassName,
   label,
   align = "start",
 }: {
   heading: string
   blocks: ChartCalcHelpBlock[]
   className?: string
+  contentClassName?: string
   label?: string
   align?: "start" | "center" | "end"
 }) {
@@ -47,7 +49,10 @@ export function ChartCalcHelpButton({
       </PopoverTrigger>
       <PopoverContent
         align={align}
-        className="w-[24rem] max-h-[70vh] overflow-y-auto p-3.5 text-xs leading-relaxed text-zinc-600"
+        className={[
+          "max-h-[70vh] overflow-y-auto p-3.5 text-xs leading-relaxed text-zinc-600",
+          contentClassName ?? "w-[24rem]",
+        ].join(" ")}
       >
         <div className="font-semibold text-zinc-800 mb-2">{heading}</div>
         <div className="space-y-3">

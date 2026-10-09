@@ -6,6 +6,7 @@ export const STRATEGY_OBSERVATION_CATEGORIES = [
   "500指增",
   "300指增",
   "A500指增",
+  "2000指增",
   "量化选股",
   "主观多头",
   "量化期货",
@@ -26,6 +27,7 @@ export const STRATEGY_OBSERVATION_TABLE_CATEGORIES = [
   "500指增",
   "300指增",
   "A500指增",
+  "2000指增",
   "量化选股",
   "主观多头",
   "量化精选",
@@ -66,8 +68,12 @@ export type StrategyObservationSeries = {
 
 export type StrategyObservationDistParams = {
   mean: number
+  median: number
+  p90: number
   std: number
   n: number
+  /** Cleaned cross-section used to score and draw the fit. Capped at 2000 points. */
+  sample?: number[]
 }
 
 export type StrategyObservationDistribution = {
@@ -107,6 +113,7 @@ const INDEX_ENHANCE_TAGS: Record<string, RegExp> = {
   "500指增": /(?<![A1])500指增|(?<!中证[A1])中证500(?:指增|指数增强)|(?<![A1])500增强/,
   "300指增": /300指增|沪深300(?:指增|指数增强)|HS300(?:指增|指数增强)|300增强/,
   "A500指增": /A500指增|A500指数增强|中证A500(?:指增|指数增强)|A500增强/,
+  "2000指增": /2000指增(?!T0)|中证2000(?:指增|指数增强)|2000增强(?!T0)/,
 }
 
 function compact(value: string | null | undefined): string {
@@ -148,7 +155,8 @@ export function fundMatchesObservationCategory(
     case "1000指增":
     case "500指增":
     case "300指增":
-    case "A500指增": {
+    case "A500指增":
+    case "2000指增": {
       const haystack = `${l2}${l3}${name}`
       if (category === "500指增" && INDEX_ENHANCE_TAGS["A500指增"].test(haystack)) return false
       const re = INDEX_ENHANCE_TAGS[category]
@@ -247,6 +255,14 @@ export function median(values: number[]): number | null {
   const sorted = [...values].sort((a, b) => a - b)
   const mid = Math.floor(sorted.length / 2)
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+}
+
+/** Ascending percentile. 0.9 means about 90% of the sample is at or below the result. */
+export function percentile(values: number[], fraction: number): number | null {
+  if (!values.length) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * fraction)))
+  return sorted[index]
 }
 
 export function stdev(values: number[]): number {

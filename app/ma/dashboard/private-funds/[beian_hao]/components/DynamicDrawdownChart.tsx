@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
 import { dateToUtcTs, echartsTimeXAxis, toGappedLinePoints, type DrawdownChartPoint } from "./performanceChartUtils"
 import type { DrawdownEpisodeMark } from "./DrawdownEpisodesTable"
@@ -19,6 +19,9 @@ export function DynamicDrawdownChart({
   benchmarkLabel,
   hasBenchmark,
   showExcess,
+  showFund = true,
+  showBench = true,
+  showExcessLine = true,
   maxFundDrawdown,
   height = "100%",
   episodeMarks = [],
@@ -28,30 +31,38 @@ export function DynamicDrawdownChart({
   benchmarkLabel: string
   hasBenchmark: boolean
   showExcess: boolean
+  showFund?: boolean
+  showBench?: boolean
+  showExcessLine?: boolean
   maxFundDrawdown: number | null
   height?: number | string
   episodeMarks?: DrawdownEpisodeMark[]
 }) {
   const option = useMemo(() => {
+    const includeFund = !showExcess && showFund
+    const includeBench = !showExcess && hasBenchmark && showBench
+    const includeExcess = showExcess ? showExcessLine : hasBenchmark && showExcessLine
     const showDots = data.length <= 40
-    const fundPoints = toGappedLinePoints(
-      data.map((d) => ({ ts: d.ts, y: showExcess ? d.excessDD : d.fundDD, date: d.date })),
-      showDots,
-    )
-    const benchPoints = showExcess
-      ? []
-      : toGappedLinePoints(
+    const fundPoints = includeFund || showExcess
+      ? toGappedLinePoints(
+          data.map((d) => ({ ts: d.ts, y: showExcess ? d.excessDD : d.fundDD, date: d.date })),
+          showDots,
+        )
+      : []
+    const benchPoints = includeBench
+      ? toGappedLinePoints(
           data.map((d) => ({ ts: d.ts, y: d.benchDD, date: d.date })),
           showDots,
         )
-    const excessPoints = hasBenchmark && !showExcess
+      : []
+    const excessPoints = includeExcess && !showExcess
       ? toGappedLinePoints(
           data.map((d) => ({ ts: d.ts, y: d.excessDD, date: d.date })),
           showDots,
         )
       : []
     const yMin = drawdownYMin([
-      ...fundPoints.map((p) => p.value[1]),
+      ...(includeFund || (showExcess && includeExcess) ? fundPoints.map((p) => p.value[1]) : []),
       ...benchPoints.map((p) => p.value[1]),
       ...excessPoints.map((p) => p.value[1]),
     ])
@@ -77,7 +88,7 @@ export function DynamicDrawdownChart({
 
     const series: Array<Record<string, unknown>> = []
 
-    if (showExcess) {
+    if (showExcess && includeExcess) {
       series.push({
         name: "累计超额回撤",
         type: "line",
@@ -109,8 +120,8 @@ export function DynamicDrawdownChart({
           data: [{ yAxis: maxFundDrawdown }],
         } : undefined,
       })
-    } else {
-      series.push({
+    } else if (!showExcess) {
+      if (includeFund) series.push({
         name: productName,
         type: "line",
         smooth: false,
@@ -142,7 +153,7 @@ export function DynamicDrawdownChart({
         } : undefined,
       })
 
-      if (hasBenchmark) {
+      if (includeBench) {
         series.push({
           name: `${benchmarkLabel}（基准）`,
           type: "line",
@@ -168,7 +179,7 @@ export function DynamicDrawdownChart({
         })
       }
 
-      if (hasBenchmark) {
+      if (includeExcess) {
         series.push({
           name: "累计超额回撤",
           type: "line",
@@ -211,7 +222,7 @@ export function DynamicDrawdownChart({
       },
       series,
     }
-  }, [data, productName, benchmarkLabel, hasBenchmark, showExcess, maxFundDrawdown, episodeMarks])
+  }, [data, productName, benchmarkLabel, hasBenchmark, showExcess, showFund, showBench, showExcessLine, maxFundDrawdown, episodeMarks])
 
   if (!data.length) return null
 
@@ -222,5 +233,83 @@ export function DynamicDrawdownChart({
       notMerge
       lazyUpdate
     />
+  )
+}
+
+function DrawdownLegendButton({
+  visible,
+  onClick,
+  children,
+}: {
+  visible: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "inline-flex items-center gap-1.5 cursor-pointer transition-opacity select-none",
+        visible ? "opacity-100" : "opacity-40 hover:opacity-60",
+      ].join(" ")}
+      title={visible ? "点击隐藏该曲线" : "点击显示该曲线"}
+      aria-pressed={visible}
+    >
+      {children}
+    </button>
+  )
+}
+
+export function DrawdownSeriesLegend({
+  productName,
+  benchmarkLabel,
+  showFund = true,
+  showBench = false,
+  showExcess = false,
+  fundVisible,
+  benchVisible,
+  excessVisible,
+  onToggleFund,
+  onToggleBench,
+  onToggleExcess,
+  className = "flex items-center gap-4 text-xs text-zinc-600",
+}: {
+  productName: string
+  benchmarkLabel: string
+  showFund?: boolean
+  showBench?: boolean
+  showExcess?: boolean
+  fundVisible: boolean
+  benchVisible: boolean
+  excessVisible: boolean
+  onToggleFund: () => void
+  onToggleBench: () => void
+  onToggleExcess: () => void
+  className?: string
+}) {
+  return (
+    <div className={className}>
+      {showFund && (
+        <DrawdownLegendButton visible={fundVisible} onClick={onToggleFund}>
+          <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#ef4444" }} />
+          {productName}
+        </DrawdownLegendButton>
+      )}
+      {showBench && (
+        <DrawdownLegendButton visible={benchVisible} onClick={onToggleBench}>
+          <svg width="20" height="4" aria-hidden="true" className="inline-block">
+            <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
+          </svg>
+          {benchmarkLabel}（基准）
+        </DrawdownLegendButton>
+      )}
+      {showExcess && (
+        <DrawdownLegendButton visible={excessVisible} onClick={onToggleExcess}>
+          <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
+          累计超额回撤
+        </DrawdownLegendButton>
+      )}
+    </div>
   )
 }

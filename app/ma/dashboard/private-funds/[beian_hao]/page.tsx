@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
+import { useEffect, useState, useMemo, useCallback, useRef, memo } from "react"
 import type React from "react"
 import { useParams, useSearchParams } from "next/navigation"
 import { ArrowLeft, Camera, ChevronDown, Database, Download, FileSpreadsheet, Files, Heart, HelpCircle, Menu, Plus, Repeat, Send, Settings, Siren, X } from "lucide-react"
@@ -43,7 +43,7 @@ import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
 import { buildBenchmarkPctChangesByDate, buildDrawdownChartData, dateToUtcTs, geometricExcessPct, resampleNavRowsForChart, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
 import { NavChartSeriesLegend, NavPerformanceEChart } from "./components/NavPerformanceEChart"
-import { DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
+import { DrawdownSeriesLegend, DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { createFundCompareHref } from "@/lib/ma-product-selection-actions"
 
@@ -1038,6 +1038,9 @@ export default function PrivateFundDetailPage() {
   const [fundSeriesVisible, setFundSeriesVisible] = useState(true)
   const [excessSeriesVisible, setExcessSeriesVisible] = useState(false)
   const [benchSeriesVisible, setBenchSeriesVisible] = useState(true)
+  const [ddFundVisible, setDdFundVisible] = useState(true)
+  const [ddBenchVisible, setDdBenchVisible] = useState(true)
+  const [ddExcessVisible, setDdExcessVisible] = useState(true)
   const [returnLabelMode, setReturnLabelMode] = useState<ReturnLabelMode>("cumulative")
   const [showTableBenchmarkChg, setShowTableBenchmarkChg] = useState(false)
   const [detailTab, setDetailTab] = useState<FundDetailTab>("performance")
@@ -2329,25 +2332,38 @@ export default function PrivateFundDetailPage() {
         {/* 统计区间 */}
         <div className="flex items-center gap-1.5">
           <span className="text-zinc-500 whitespace-nowrap">统计区间：</span>
-          <select
-            value={filterPeriod}
-            onChange={e => {
-              const next = e.target.value
-              if (next === "设置运作") {
-                setShowSetOperationDate(true)
-                return
-              }
-              applyPeriod(next)
-            }}
-            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
-          >
-            {PERIOD_OPTIONS.map(o => (
-              <Fragment key={o}>
-                <option value={o}>{o}</option>
-                {o === "运作以来" ? <option value="设置运作">设置运作</option> : null}
-              </Fragment>
-            ))}
-          </select>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center justify-between gap-2 border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 min-w-[6.5rem] focus:outline-none"
+              >
+                <span className="truncate">{filterPeriod}</span>
+                <ChevronDown className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-80 w-[9.5rem] overflow-y-auto p-1 text-xs">
+              <div className="mb-1 rounded-md bg-red-50 px-1 py-0.5">
+                <DropdownMenuItem
+                  onSelect={() => setShowSetOperationDate(true)}
+                  className="font-medium text-red-600 focus:bg-red-100 focus:text-red-700"
+                >
+                  <Settings className="size-3.5 text-red-500" />
+                  设置运作
+                </DropdownMenuItem>
+              </div>
+              <DropdownMenuSeparator />
+              {PERIOD_OPTIONS.map(o => (
+                <DropdownMenuItem
+                  key={o}
+                  onSelect={() => applyPeriod(o)}
+                  className={o === filterPeriod ? "font-medium text-zinc-900" : "text-zinc-600"}
+                >
+                  {o}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* Date from */}
@@ -3068,24 +3084,19 @@ export default function PrivateFundDetailPage() {
                   </div>
                 )}
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs text-zinc-600">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                  {displayName}
-                </span>
-                {appliedBench && (
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#2563eb" }} />
-                    {benchmarkLabel}（基准）
-                  </span>
-                )}
-                {appliedBench && (
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
-                    累计超额回撤
-                  </span>
-                )}
-              </div>
+              <DrawdownSeriesLegend
+                className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-xs text-zinc-600"
+                productName={displayName}
+                benchmarkLabel={benchmarkLabel}
+                showBench={!!appliedBench}
+                showExcess={!!appliedBench}
+                fundVisible={ddFundVisible}
+                benchVisible={ddBenchVisible}
+                excessVisible={ddExcessVisible}
+                onToggleFund={() => setDdFundVisible((v) => !v)}
+                onToggleBench={() => setDdBenchVisible((v) => !v)}
+                onToggleExcess={() => setDdExcessVisible((v) => !v)}
+              />
             </div>
             <div className="flex-1 min-h-0">
               <DynamicDrawdownChart
@@ -3094,6 +3105,9 @@ export default function PrivateFundDetailPage() {
                 benchmarkLabel={benchmarkLabel}
                 hasBenchmark={!!appliedBench}
                 showExcess={false}
+                showFund={ddFundVisible}
+                showBench={ddBenchVisible}
+                showExcessLine={ddExcessVisible}
                 maxFundDrawdown={maxFundDrawdown}
                 height="100%"
                 episodeMarks={drawdownEpisodeMarks}

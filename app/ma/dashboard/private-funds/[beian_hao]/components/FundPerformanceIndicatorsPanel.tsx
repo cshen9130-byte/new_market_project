@@ -19,7 +19,7 @@ import {
 } from "./shared"
 import { computePeriodStats } from "./computePeriodStats"
 import { DrawdownEpisodesTable, useDrawdownEpisodeRows, buildDrawdownEpisodeMarks } from "./DrawdownEpisodesTable"
-import { DynamicDrawdownChart } from "./DynamicDrawdownChart"
+import { DrawdownSeriesLegend, DynamicDrawdownChart } from "./DynamicDrawdownChart"
 import { DrawdownCalcHelpButton } from "./DrawdownCalcHelpButton"
 import {
   buildNavChartData,
@@ -501,6 +501,9 @@ export function FundPerformanceIndicatorsPanel({
   const [showDateRange, setShowDateRange] = useState(false)
   const [excessByDivision, setExcessByDivision] = useState(false)
   const [showDrawdownExcess, setShowDrawdownExcess] = useState(false)
+  const [ddFundVisible, setDdFundVisible] = useState(true)
+  const [ddBenchVisible, setDdBenchVisible] = useState(true)
+  const [ddExcessVisible, setDdExcessVisible] = useState(true)
   const [navChartLightboxOpen, setNavChartLightboxOpen] = useState(false)
   const [lightboxChartHeight, setLightboxChartHeight] = useState(0)
 
@@ -977,34 +980,20 @@ export function FundPerformanceIndicatorsPanel({
                       统计区间：{dateFrom} - {dateTo}
                     </div>
                   )}
-                  {!showDrawdownExcess && (
-                    <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                        {productName}
-                      </span>
-                      {hasBenchmark && (
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#2563eb" }} />
-                          {benchmarkLabel}（基准）
-                        </span>
-                      )}
-                      {hasBenchmark && (
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
-                          累计超额回撤
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {showDrawdownExcess && (
-                    <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#059669" }} />
-                        累计超额回撤
-                      </span>
-                    </div>
-                  )}
+                  <DrawdownSeriesLegend
+                    className="flex items-center gap-4 text-xs text-zinc-600 mt-2"
+                    productName={productName}
+                    benchmarkLabel={benchmarkLabel}
+                    showFund={!showDrawdownExcess}
+                    showBench={!showDrawdownExcess && hasBenchmark}
+                    showExcess={showDrawdownExcess || hasBenchmark}
+                    fundVisible={ddFundVisible}
+                    benchVisible={ddBenchVisible}
+                    excessVisible={ddExcessVisible}
+                    onToggleFund={() => setDdFundVisible((v) => !v)}
+                    onToggleBench={() => setDdBenchVisible((v) => !v)}
+                    onToggleExcess={() => setDdExcessVisible((v) => !v)}
+                  />
                 </div>
                 <div className="flex items-center gap-4 flex-shrink-0">
                   {hasBenchmark && (
@@ -1042,6 +1031,9 @@ export function FundPerformanceIndicatorsPanel({
                   benchmarkLabel={benchmarkLabel}
                   hasBenchmark={hasBenchmark}
                   showExcess={showDrawdownExcess}
+                  showFund={ddFundVisible}
+                  showBench={ddBenchVisible}
+                  showExcessLine={ddExcessVisible}
                   maxFundDrawdown={maxFundDrawdown}
                   height="100%"
                   episodeMarks={drawdownEpisodeMarks}

@@ -9,7 +9,7 @@ import {
   ensureTrackingFundsListCachePopulated,
   shouldUseTrackingFundsListCache,
 } from "@/lib/server/tracking-funds-list-cache-pg"
-import { enrichTrackFundMetricsRows, overlayTeamNavOnTrackRows } from "@/lib/server/list-cache-nav-batch"
+import { enrichTrackFundMetricsRows, overlayPlatformInfoNavOnTrackRows, overlayTeamNavOnTrackRows } from "@/lib/server/list-cache-nav-batch"
 import {
   buildListResponseCacheKey,
   invalidateListResponseCache,
@@ -389,7 +389,31 @@ function bflOpsNavPctExpr(): string {
 
 const LIST_CACHE_JOINS = `
     LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao
+    LEFT JOIN LATERAL (
+      SELECT latest_nav, latest_nav_date
+      FROM private_fund_info p
+      WHERE p.beian_hao = i.beian_hao
+      ORDER BY latest_nav_date DESC NULLS LAST
+      LIMIT 1
+    ) pinfo_tip ON true
     LEFT JOIN amac_private_funds amac ON UPPER(BTRIM(amac.fund_no)) = UPPER(BTRIM(i.beian_hao))`
+
+/**
+ * 火富牛 writes private_fund_info.latest_nav_date without rebuilding
+ * ops_tracking_funds_list_cache. Sort and the selected page must use that
+ * newer trading-day tip. Weekend rows stay on the cache date; the response
+ * overlay still drops statutory holidays. See docs/tracking-pool-rules.md.
+ */
+const PLATFORM_TIP_READY_SQL = `
+  pinfo_tip.latest_nav_date IS NOT NULL
+  AND pinfo_tip.latest_nav_date <= CURRENT_DATE
+  AND (cache.nav_date IS NULL OR pinfo_tip.latest_nav_date > cache.nav_date)
+  AND pinfo_tip.latest_nav > 0.1
+  AND pinfo_tip.latest_nav <= 50
+  AND EXTRACT(DOW FROM pinfo_tip.latest_nav_date) NOT IN (0, 6)`
+
+const PLATFORM_TIP_NAV_SQL = `CASE WHEN ${PLATFORM_TIP_READY_SQL} THEN pinfo_tip.latest_nav ELSE cache.unit_nav END`
+const PLATFORM_TIP_DATE_SQL = `CASE WHEN ${PLATFORM_TIP_READY_SQL} THEN pinfo_tip.latest_nav_date ELSE cache.nav_date END`
 
 /** Pool/cache name, then AMAC official name when T6/BFL still has a stale rename. */
 function resolvedCachedProductNameExpr(): string {
@@ -411,8 +435,8 @@ const CACHE_ALLOWED_SORT: Record<string, string> = {
   product_name: resolvedCachedProductNameExpr(),
   first_added_at: "i.first_added_at",
   latest_change_date: sqlLatestChangeAt("i.beian_hao"),
-  latest_nav: "cache.unit_nav",
-  latest_nav_date: "cache.nav_date",
+  latest_nav: PLATFORM_TIP_NAV_SQL,
+  latest_nav_date: PLATFORM_TIP_DATE_SQL,
   latest_price_change: "cache.return_pct",
   ret_1w: "cache.ret_1w",
   ret_1m: "cache.ret_1m",
@@ -769,8 +793,11 @@ async function handleCachedTrackingList(opts: {
              NULL::text AS manager,
              NULL::text AS inception_date,
              i.first_added_at::text AS first_added_at,
-             cache.unit_nav::text AS latest_nav,
-             cache.nav_date::text AS latest_nav_date,
+             cache.nav_date::text AS source_nav_date,
+             cache.unit_nav::text AS source_unit_nav,
+             cache.return_pct::text AS source_return_pct,
+             ${PLATFORM_TIP_NAV_SQL}::text AS latest_nav,
+             ${PLATFORM_TIP_DATE_SQL}::text AS latest_nav_date,
              cache.return_pct::text AS latest_price_change,
              cache.ret_1w::text,
              cache.ret_1m::text,
@@ -813,7 +840,10 @@ async function handleCachedTrackingList(opts: {
     const data = await overlayLatestChangeDate(
       await overlayFundElementListFields(
         sanitizeTrackRows(
-          await overlayTeamNavOnTrackRows(responseBody.data ?? [], asOfDate),
+          await overlayPlatformInfoNavOnTrackRows(
+            await overlayTeamNavOnTrackRows(responseBody.data ?? [], asOfDate),
+            asOfDate,
+          ),
         ),
       ),
     )
@@ -954,7 +984,12 @@ async function handleBflOpsList(opts: {
     const total = parseInt(countRow[0]?.total ?? "0")
     let data = sanitizeTrackRows(rows)
     if (asOfDate) {
-      data = sanitizeTrackRows(await overlayTeamNavOnTrackRows(data, asOfDate))
+      data = sanitizeTrackRows(
+        await overlayPlatformInfoNavOnTrackRows(
+          await overlayTeamNavOnTrackRows(data, asOfDate),
+          asOfDate,
+        ),
+      )
     }
     data = await overlayLatestChangeDate(await overlayFundElementListFields(data))
     return NextResponse.json({
@@ -1459,7 +1494,10 @@ export async function GET(req: Request) {
     // Historical cutoffs skip the precomputed cache — still recompute stale/corrupt NAV
     // so parent funds (e.g. SBHK26) pick up share-class email dates like the detail page.
     let data = await enrichTrackFundMetricsRows(rows, asOfDateForNav)
-    data = await overlayTeamNavOnTrackRows(data, asOfDateForNav)
+    data = await overlayPlatformInfoNavOnTrackRows(
+      await overlayTeamNavOnTrackRows(data, asOfDateForNav),
+      asOfDateForNav,
+    )
     return NextResponse.json({
       page,
       pageSize,

@@ -13,9 +13,11 @@ import {
   shareClassProductNamesMatch,
 } from "@/lib/server/fund-name-match"
 import {
+  beianFamilyKey,
   buildTieredBeianCode,
   buildTieredFullName,
   buildTieredShortName,
+  canonicalizeShareClassBeianCode,
   shareClassFromProductName,
   stripShareClassSuffix,
   type ShareClassLetter,
@@ -56,6 +58,103 @@ function synthesizeShareClass(
     short_name: buildTieredShortName(row.short_name, row.product_name, letter),
     strategy_one: row.strategy_one ?? null,
   }
+}
+
+/** 20950A and S20950A are one numeric AMAC code; letter codes stay on beianFamilyKey. */
+function searchAliasKey(code: string): string {
+  const family = beianFamilyKey(code) ?? code.trim().toUpperCase().replace(/[ABC]$/u, "")
+  if (/^S\d{4,7}$/u.test(family)) return family.slice(1)
+  return family
+}
+
+function shareLetterOf(row: Pick<FundPickerSearchRow, "beian_hao" | "product_name">): ShareClassLetter | "" {
+  return shareClassFromProductName(row.product_name) ?? shareClassFromRegisterCode(row.beian_hao) ?? ""
+}
+
+function nameCores(row: Pick<FundPickerSearchRow, "product_name" | "short_name">): Set<string> {
+  const out = new Set<string>()
+  for (const name of [row.product_name, row.short_name]) {
+    const core = fundNameCore(name ?? "").toLowerCase()
+    if (core) out.add(core)
+  }
+  return out
+}
+
+function sameAliasFund(a: FundPickerSearchRow, b: FundPickerSearchRow): boolean {
+  if (shareLetterOf(a) !== shareLetterOf(b)) return false
+  if (searchAliasKey(a.beian_hao) !== searchAliasKey(b.beian_hao)) return false
+  const coresA = nameCores(a)
+  for (const core of nameCores(b)) {
+    if (coresA.has(core)) return true
+  }
+  return false
+}
+
+/** Lower is better. Numeric AMAC codes keep the S prefix; letter codes drop a mistaken S. */
+function aliasCodePreference(code: string): number {
+  const upper = code.trim().toUpperCase()
+  const canonical = canonicalizeShareClassBeianCode(upper) ?? upper
+  let rank = canonical === upper ? 0 : 10
+  const body = upper.replace(/[ABC]$/u, "")
+  if (/^\d{4,7}$/u.test(body)) rank += 5
+  return rank
+}
+
+function mergeAliasDisplay(
+  keep: PrivateFundPickerResult,
+  drop: PrivateFundPickerResult,
+): PrivateFundPickerResult {
+  if (keep.short_name?.trim()) return keep
+  const keepCores = nameCores(keep)
+  const dropShort = drop.short_name?.trim()
+  if (dropShort && keepCores.has(fundNameCore(dropShort).toLowerCase())) {
+    return { ...keep, short_name: dropShort }
+  }
+  const dropName = drop.product_name.trim()
+  if (dropName.length < keep.product_name.trim().length && keepCores.has(fundNameCore(dropName).toLowerCase())) {
+    return { ...keep, short_name: dropName }
+  }
+  return keep
+}
+
+function scoredHasShareClass(
+  scored: Map<string, { row: PrivateFundPickerResult; score: number }>,
+  base: PrivateFundPickerResult,
+  letter: ShareClassLetter,
+): boolean {
+  const baseCores = nameCores(base)
+  const alias = searchAliasKey(buildTieredBeianCode(base.beian_hao, letter))
+  for (const { row } of scored.values()) {
+    if (shareLetterOf(row) !== letter) continue
+    if (searchAliasKey(row.beian_hao) === alias) return true
+    for (const core of nameCores(row)) {
+      if (baseCores.has(core)) return true
+    }
+  }
+  return false
+}
+
+function collapseAliasFundHits(
+  entries: { row: PrivateFundPickerResult; score: number }[],
+): { row: PrivateFundPickerResult; score: number }[] {
+  const kept: { row: PrivateFundPickerResult; score: number }[] = []
+  for (const entry of entries) {
+    const idx = kept.findIndex((prev) => sameAliasFund(prev.row, entry.row))
+    if (idx < 0) {
+      kept.push(entry)
+      continue
+    }
+    const prev = kept[idx]
+    const takeNext = aliasCodePreference(entry.row.beian_hao) < aliasCodePreference(prev.row.beian_hao)
+      || (
+        aliasCodePreference(entry.row.beian_hao) === aliasCodePreference(prev.row.beian_hao)
+        && entry.score < prev.score
+      )
+    kept[idx] = takeNext
+      ? { row: mergeAliasDisplay(entry.row, prev.row), score: Math.min(entry.score, prev.score) }
+      : { row: mergeAliasDisplay(prev.row, entry.row), score: Math.min(entry.score, prev.score) }
+  }
+  return kept
 }
 
 function passesShareClassFilters(
@@ -439,6 +538,7 @@ export async function searchPrivateFundProductsForFastPicker(
   }
 
   const collectRows = (hits: PrivateFundPickerResult[]) => {
+    const bases: PrivateFundPickerResult[] = []
     for (const row of hits) {
       const name = row.product_name?.trim() || ""
       const beian = row.beian_hao?.trim() || ""
@@ -447,12 +547,13 @@ export async function searchPrivateFundProductsForFastPicker(
         || beian.toUpperCase().startsWith(trimmed.toUpperCase())
       const containsHit = name.toLowerCase().includes(queryLower)
       addRow(row, prefixHit ? 0 : containsHit ? 1 : 2)
-
-      const rowShareClass = shareClassFromProductName(row.product_name) ?? shareClassFromRegisterCode(row.beian_hao)
-      const wanted = queryShareClass ?? (registerCode ? shareClassFromRegisterCode(registerCode) : null)
-      if (wanted && isBaseProduct(row) && !rowShareClass) {
-        addRow(synthesizeShareClass(row, wanted), 1)
-      }
+      if (isBaseProduct(row)) bases.push(row)
+    }
+    const wanted = queryShareClass ?? (registerCode ? shareClassFromRegisterCode(registerCode) : null)
+    if (!wanted) return
+    for (const row of bases) {
+      if (scoredHasShareClass(scored, row, wanted)) continue
+      addRow(synthesizeShareClass(row, wanted), 1)
     }
   }
 
@@ -474,6 +575,7 @@ export async function searchPrivateFundProductsForFastPicker(
         if (!baseNamesMatch(row.product_name, trimmed) && !(row.short_name && baseNamesMatch(row.short_name, trimmed))) {
           continue
         }
+        if (scoredHasShareClass(scored, row, queryShareClass)) continue
         addRow(synthesizeShareClass(row, queryShareClass), 3)
       }
     }
@@ -487,14 +589,14 @@ export async function searchPrivateFundProductsForFastPicker(
               || shareClassFromRegisterCode(row.beian_hao) === letter)
             && baseNamesMatch(row.product_name, base.product_name),
         )
-        if (!alreadyHas) {
+        if (!alreadyHas && !scoredHasShareClass(scored, base, letter)) {
           addRow(synthesizeShareClass(base, letter), baseScore + 4)
         }
       }
     }
   }
 
-  return Array.from(scored.values())
+  return collapseAliasFundHits(Array.from(scored.values()))
     .sort((a, b) => a.score - b.score || a.row.product_name.localeCompare(b.row.product_name, "zh-CN"))
     .slice(0, limit)
     .map((entry) => entry.row)
@@ -536,11 +638,13 @@ export async function searchPrivateFundProductsForPicker(
   }
 
   if (registerCodes.size > 0) {
-    for (const row of await searchProductsByRegister(Array.from(registerCodes), limit)) {
-      addRow(row, 0)
-      const rowShareClass = shareClassFromProductName(row.product_name) ?? shareClassFromRegisterCode(row.beian_hao)
-      const wantedShareClass = queryShareClass ?? directShareClass
-      if (wantedShareClass && isBaseProduct(row) && !rowShareClass) {
+    const registerRows = await searchProductsByRegister(Array.from(registerCodes), limit)
+    for (const row of registerRows) addRow(row, 0)
+    const wantedShareClass = queryShareClass ?? directShareClass
+    if (wantedShareClass) {
+      for (const row of registerRows) {
+        if (!isBaseProduct(row)) continue
+        if (scoredHasShareClass(scored, row, wantedShareClass)) continue
         addRow(synthesizeShareClass(row, wantedShareClass), 1)
       }
     }
@@ -613,14 +717,14 @@ export async function searchPrivateFundProductsForPicker(
               || shareClassFromRegisterCode(row.beian_hao) === letter)
             && baseNamesMatch(row.product_name, base.product_name),
         )
-        if (!alreadyHas) {
+        if (!alreadyHas && !scoredHasShareClass(scored, base, letter)) {
           addRow(synthesizeShareClass(base, letter), baseScore + 8)
         }
       }
     }
   }
 
-  return Array.from(scored.values())
+  return collapseAliasFundHits(Array.from(scored.values()))
     .sort((a, b) => a.score - b.score || a.row.product_name.localeCompare(b.row.product_name, "zh-CN"))
     .slice(0, limit)
     .map((entry) => entry.row)

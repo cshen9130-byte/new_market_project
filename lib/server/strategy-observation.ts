@@ -3,6 +3,8 @@ import {
   fundMatchesObservationCategory,
   lookbackStart,
   mean,
+  median,
+  percentile,
   periodStartDate,
   sanitizeReturns,
   rankedPercentile,
@@ -149,12 +151,24 @@ function classifyFunds(funds: FundRow[]): Map<string, Set<string>> {
   return byCategory
 }
 
+function shiftDateBack(iso: string, granularity: ReturnGranularity): string {
+  const date = new Date(`${iso}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return iso
+  if (granularity === "week") date.setDate(date.getDate() - 21)
+  else if (granularity === "month") date.setMonth(date.getMonth() - 2)
+  else if (granularity === "quarter") date.setMonth(date.getMonth() - 4)
+  else if (granularity === "half") date.setMonth(date.getMonth() - 8)
+  else date.setFullYear(date.getFullYear() - 1)
+  return date.toISOString().slice(0, 10)
+}
+
 async function loadPeriodNavs(
   year: number,
   granularity: ReturnGranularity,
   cutoff: string,
+  rangeFrom?: string,
 ): Promise<PeriodNavRow[]> {
-  const from = lookbackStart(year, granularity)
+  const from = rangeFrom ? shiftDateBack(rangeFrom, granularity) : lookbackStart(year, granularity)
   const bucketSql = sqlPeriodBucketExpr("price_date", granularity === "phase" ? "year" : granularity)
   const rows = await queryUnbounded<{ beian_hao: string; bucket: string; nav: string | number | null }>(
     `SELECT DISTINCT ON (beian_hao, bucket)
@@ -306,11 +320,22 @@ function displayPeriodKey(bucket: string, year: number, granularity: ReturnGranu
   return bucket
 }
 
-function keepPeriod(bucket: string, year: number, granularity: ReturnGranularity, cutoff: string): boolean {
-  if (granularity === "phase") return bucket === String(year)
-  if (granularity === "year") return bucket === String(year)
-  if (!bucket.startsWith(String(year))) return false
-  return periodStartDate(bucket, granularity) <= cutoff
+function keepPeriod(
+  bucket: string,
+  year: number,
+  granularity: ReturnGranularity,
+  cutoff: string,
+  rangeFrom?: string,
+): boolean {
+  if (granularity === "phase" || granularity === "year") {
+    if (!rangeFrom) return bucket === String(year)
+    const bucketYear = Number(bucket)
+    return bucketYear >= Number(rangeFrom.slice(0, 4)) && bucketYear <= Number(cutoff.slice(0, 4))
+  }
+  const start = periodStartDate(bucket, granularity)
+  if (start > cutoff) return false
+  if (rangeFrom) return start >= rangeFrom
+  return bucket.startsWith(String(year))
 }
 
 function buildFundReturns(rows: PeriodNavRow[]): Map<string, { bucket: string; nav: number }[]> {
@@ -346,13 +371,27 @@ function fundYearReturn(points: { bucket: string; nav: number }[], year: number)
   return (lastInYear.nav / base - 1) * 100
 }
 
+function compactSample(values: number[], cap = 2000): number[] {
+  const rounded = (value: number) => Math.round(value * 10000) / 10000
+  if (values.length <= cap) return values.map(rounded)
+  const out: number[] = []
+  const step = values.length / cap
+  for (let i = 0; i < cap; i++) {
+    out.push(rounded(values[Math.min(values.length - 1, Math.floor((i + 0.5) * step))]))
+  }
+  return out
+}
+
 function distParams(values: number[]): StrategyObservationDistParams | null {
   const avg = mean(values)
   if (avg == null) return null
   return {
     mean: round2(avg) ?? 0,
+    median: round2(median(values)) ?? round2(avg) ?? 0,
+    p90: round2(percentile(values, 0.9)) ?? 0,
     std: round2(stdev(values)) ?? 1.2,
     n: values.length,
+    sample: compactSample(values),
   }
 }
 
@@ -408,16 +447,21 @@ export async function loadStrategyObservation(
   year: number,
   granularity: ReturnGranularity,
   noCache = false,
+  range?: { from?: string; to?: string },
 ): Promise<StrategyObservationResponse> {
-  const cacheKey = `${year}:${granularity}`
+  const rangeFrom = range?.from
+  const rangeTo = range?.to
+  const cacheKey = `${year}:${granularity}:${rangeFrom ?? ""}:${rangeTo ?? ""}:dist-fit`
   const hit = cache.get(cacheKey)
   if (!noCache && hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.payload
 
-  const cutoff = todayIso()
+  const today = todayIso()
+  const cutoff = rangeTo && rangeTo < today ? rangeTo : today
+  const benchFrom = rangeFrom ? shiftDateBack(rangeFrom, granularity) : lookbackStart(year, granularity)
   const [funds, periodNavs, benchmarks] = await Promise.all([
     loadFunds(),
-    loadPeriodNavs(year, granularity, cutoff),
-    loadBenchmarkPrices(lookbackStart(year, granularity), cutoff),
+    loadPeriodNavs(year, granularity, cutoff, rangeFrom),
+    loadBenchmarkPrices(benchFrom, cutoff),
   ])
 
   const byCategory = classifyFunds(funds)
@@ -431,7 +475,7 @@ export async function loadStrategyObservation(
   const rawPeriodKeys = new Set<string>()
   for (const points of byFundNav.values()) {
     for (const point of points) {
-      if (keepPeriod(point.bucket, year, granularity, statsCutoff)) rawPeriodKeys.add(point.bucket)
+      if (keepPeriod(point.bucket, year, granularity, statsCutoff, rangeFrom)) rawPeriodKeys.add(point.bucket)
     }
   }
   const periodKeys = granularity === "phase"

@@ -14,6 +14,11 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages"
 import { query } from "@/lib/db"
 import { noteAssociatesToProduct, type InvestmentNote } from "@/lib/ma/investment-notes"
 import {
+  normalizeWeeklyReviewPools,
+  weeklyReviewPoolFileLabel,
+  weeklyReviewPoolScopePhrase,
+} from "@/lib/ma/weekly-review-pools"
+import {
   computeStyleAttribution,
   type FactorDef,
   type StyleAttributionResult,
@@ -786,12 +791,14 @@ function selectRecommendations(analyzed: AttributionFundPayload[]): AttributionF
   return picked.sort((a, b) => b.buy_score - a.buy_score)
 }
 
-export async function buildWeeklyAttributionPayload(weekEndRaw: string): Promise<ReportPayload> {
+export async function buildWeeklyAttributionPayload(weekEndRaw: string, poolsInput?: unknown): Promise<ReportPayload> {
+  const pools = normalizeWeeklyReviewPools(poolsInput)
+  const scope = weeklyReviewPoolScopePhrase(pools)
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
-  const equity = (await loadJyTrackingPoolFunds()).filter(isEquityFund)
+  const equity = (await loadJyTrackingPoolFunds(pools)).filter(isEquityFund)
   const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
   const funds = collapseWeeklyReviewFunds(equity, coverage)
-  if (funds.length === 0) throw new Error("JY跟踪池中没有可分析的股票策略产品")
+  if (funds.length === 0) throw new Error(`${scope}中没有可分析的股票策略产品`)
 
   const histories = await loadWeeklyReviewNavHistories(funds, asOf)
   const [metrics, market] = await Promise.all([
@@ -908,7 +915,7 @@ export async function buildWeeklyAttributionPayload(weekEndRaw: string): Promise
     winner_count: analyzed.length,
     recommend_count: recommendations.length,
     methodology: [
-      "样本：JY跟踪池股票策略产品，分组与周报 Excel 一致。",
+      `样本：${scope}股票策略产品，分组与周报 Excel 一致。`,
       "赢家：每个策略分组按本周收益（指增看超额）取前 4 名且收益为正。",
       "回归：以产品净值区间收益对宽基/风格指数做带截距 OLS，拆出本周 β·因子 与残差 α。",
       "过滤：优先保留本周 α 贡献占优、近 4/12 周特质收益仍为正的产品，剔除明显靠市场贝塔吃饭的赢家。",
@@ -1063,7 +1070,7 @@ export function defaultAttributionWeekEnd(): string {
   return defaultWeeklyReviewWeekEnd()
 }
 
-export async function runWeeklyAttributionJob(jobId: string, weekEnd: string): Promise<void> {
+export async function runWeeklyAttributionJob(jobId: string, weekEnd: string, poolsInput?: unknown): Promise<void> {
   await writeJobStatus({
     status: "running",
     jobId,
@@ -1071,7 +1078,7 @@ export async function runWeeklyAttributionJob(jobId: string, weekEnd: string): P
     phase: "正在筛选赢家并做收益归因",
   })
   try {
-    const payload = await buildWeeklyAttributionPayload(weekEnd)
+    const payload = await buildWeeklyAttributionPayload(weekEnd, poolsInput)
     await writeJobStatus({
       status: "running",
       jobId,
@@ -1085,7 +1092,7 @@ export async function runWeeklyAttributionJob(jobId: string, weekEnd: string): P
     const yy = payload.week_end.slice(2, 4)
     const mm = payload.week_end.slice(5, 7)
     const dd = payload.week_end.slice(8, 10)
-    const fileName = `JY跟踪池周度归因分析 - ${yy}.${mm}.${dd}.docx`
+    const fileName = `${weeklyReviewPoolFileLabel(normalizeWeeklyReviewPools(poolsInput))}周度归因分析 - ${yy}.${mm}.${dd}.docx`
     const outFile = jobFilePath(jobId)
     await renderWordReport(payload, dir, outFile)
     await writeJobStatus({
