@@ -928,6 +928,16 @@ export function selectEmailNavSeriesRows(
 function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): EmailNavRawRow[] {
   const beian = beianHao.trim().toUpperCase()
   let latestRatio: number | null = null
+  // A whole custodian series with cum/unit > 2 can be 火富牛累计 plus a constant
+  // (R0423B +2.5943). Keep those so merge can rebase the dividend. One corrupt
+  // cell (SBFM35 成立以来倍数 = 3) is still stripped.
+  const highRatioCount = rows.filter((row) => {
+    const unit = parseOptionalNav(row.nav)
+    const cum = parseOptionalNav(row.cumulative_nav)
+    return unit != null && cum != null && cum >= unit - 0.001
+      && !isPlausibleEmailCumulativeNav(unit, cum)
+  }).length
+  const keepSeriesHighRatioCum = highRatioCount >= 3
   return rows.map((row) => {
     let working = row
     let unit = parseOptionalNav(working.nav)
@@ -944,15 +954,18 @@ function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): 
     }
 
     if (unit != null && cum != null && !isPlausibleEmailCumulativeNav(unit, cum)) {
-      // Dividend-paying underlyings in post-investment virtual emails can legitimately
-      // carry cum/unit > MAX_PLAUSIBLE (SQX078 ~2.04). Stripping cum forces unit-only
-      // rechain and understates 复权 on the email tail.
+      // Virtual emails can legitimately carry cum/unit > 2 (SQX078 ~2.04).
       const keepHighRatioVirtualCum =
         isPostInvestmentVirtualNavEmail(working.subject)
         && hasDistinctCumulative(unit, cum)
         && isReasonableNav(cum)
         && cum >= unit - 0.001
-      if (!keepHighRatioVirtualCum) {
+      const keepShiftedCustodianCum =
+        keepSeriesHighRatioCum
+        && hasDistinctCumulative(unit, cum)
+        && isReasonableNav(cum)
+        && cum >= unit - 0.001
+      if (!keepHighRatioVirtualCum && !keepShiftedCustodianCum) {
         working = { ...working, cumulative_nav: null }
         cum = null
       }
@@ -2153,10 +2166,12 @@ function sanitizeVShapeNavOutliers(rows: LegacyNavRow[]): LegacyNavRow[] {
       unitDevNext >= OUTLIER_THRESHOLD &&
       unitBridge <= NEIGHBOR_TOLERANCE
 
-    const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? prevCum
+    // Missing 复权 must not fall back to 累计. An email row that only has 累计 yet
+    // would make a real adj/cum premium on the middle date look like a one-day
+    // spike (R0423B 2026-02-13 复权 2.878 between two 累计-only neighbors).
+    const prevAdj = parseOptionalNav(prev.cumulative_nav)
     const currAdj = parseOptionalNav(curr.cumulative_nav)
     const nextAdj = parseOptionalNav(next.cumulative_nav)
-      ?? parseOptionalNav(next.cum_nav_withdrawal)
     const isAdjVShape =
       prevAdj != null && currAdj != null && nextAdj != null &&
       isReasonableNav(prevAdj) && isReasonableNav(currAdj) && isReasonableNav(nextAdj) &&
@@ -2747,6 +2762,73 @@ function emailUnitOnlyNeedsRechain(
   return !cumOk || !adjOk
 }
 
+/**
+ * Custodian 净值表 sometimes stores 累计净值 = 火富牛累计 + a constant
+ * (R0423B: +2.5943, so cum/unit > 2 and the absolute level is rejected).
+ * The dividend still shows up as a jump in that gap. Subtract the constant
+ * learned from same-date, same-unit overlaps so the ex-date keeps 累计 and 复权.
+ * A growing wrong column (成立以来倍数) is not a stable offset and is left alone.
+ */
+function rebaseAdditiveEmailCumulative(
+  legacyRows: LegacyNavRow[],
+  emailRows: EmailNavPoint[],
+): EmailNavPoint[] {
+  if (legacyRows.length === 0 || emailRows.length === 0) return emailRows
+
+  const legacyByDate = new Map<string, LegacyNavRow>()
+  for (const row of legacyRows) {
+    legacyByDate.set(row.price_date.slice(0, 10), row)
+  }
+
+  const offsets: number[] = []
+  for (const row of emailRows) {
+    const legacy = legacyByDate.get(row.price_date.slice(0, 10))
+    if (!legacy) continue
+    const unit = parseOptionalNav(row.nav)
+    const emailCum = parseOptionalNav(row.cumulative_nav)
+    const legacyUnit = parseOptionalNav(legacy.nav)
+    const legacyCum = parseOptionalNav(legacy.cum_nav_withdrawal)
+      ?? parseOptionalNav(legacy.cumulative_nav)
+    if (
+      unit == null || emailCum == null || legacyUnit == null || legacyCum == null
+      || legacyUnit <= 0 || unit <= 0
+    ) continue
+    if (Math.abs(unit - legacyUnit) > 0.0005) continue
+    if (!(emailCum / unit > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO)) continue
+    if (!isPlausibleEmailCumulativeNav(legacyUnit, legacyCum)) continue
+    if (emailCum <= legacyCum + 0.05) continue
+    offsets.push(emailCum - legacyCum)
+  }
+
+  if (offsets.length < 3) return emailRows
+  offsets.sort((a, b) => a - b)
+  const median = offsets[Math.floor(offsets.length / 2)]!
+  if (median < 0.05) return emailRows
+  if (offsets[offsets.length - 1]! - offsets[0]! > 0.005) return emailRows
+
+  const shifted: EmailNavPoint[] = []
+  for (const row of emailRows) {
+    const unit = parseOptionalNav(row.nav)
+    const emailCum = parseOptionalNav(row.cumulative_nav)
+    if (unit == null || emailCum == null || !(emailCum / unit > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO)) {
+      shifted.push(row)
+      continue
+    }
+    const nextCum = emailCum - median
+    if (nextCum < unit - 0.001 || !isReasonableNav(nextCum)) return emailRows
+    const emailAdj = parseOptionalNav(row.adjusted_nav)
+    const nextAdj = emailAdj != null && Math.abs(emailAdj - emailCum) < 0.001
+      ? nextCum
+      : emailAdj
+    shifted.push({
+      ...row,
+      cumulative_nav: String(+nextCum.toFixed(6)),
+      adjusted_nav: nextAdj != null ? String(+nextAdj.toFixed(6)) : row.adjusted_nav,
+    })
+  }
+  return shifted
+}
+
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(
   legacyRows: LegacyNavRow[],
@@ -2757,6 +2839,7 @@ export function mergeNavSeriesWithEmail(
   // it into 复权; if the columns are still swapped, that overlay replaces the real
   // 复权 (sitting in cum_nav_withdrawal) and finalize can no longer recover it.
   const legacyPrepared = repairSwappedCumAdjRows(legacyRows)
+  emailRows = rebaseAdditiveEmailCumulative(legacyPrepared, emailRows)
   if (emailRows.length === 0) return finalizeNavSeries(legacyPrepared, new Set(), new Set(), fundContext)
 
   const byDate = new Map<string, LegacyNavRow>()

@@ -2638,6 +2638,8 @@ const sbhk26History = [
     source: "attachment_valuation_table",
   },
 ]
+testR0423bDividendOffsetRebase()
+
 const sbhk26Selected = selectEmailNavSeriesRows(sbhk26History, "SBHK26", ["六妙星豪鑫6号"])
 const sbhk26Jun29 = sbhk26Selected.find((r) => r.nav_date === "2026-06-29")
 assert(
@@ -4194,3 +4196,61 @@ function testFof99YieldsOnlyToCustodianNavEmail() {
 }
 
 testFof99YieldsOnlyToCustodianNavEmail()
+
+// R0423B: custodian 净值表 累计 = 火富牛累计 + 2.5943 (cum/unit > 2).
+// 2026-02-25 paid ~0.674/unit. Keeping the raw 5.3 scale, or dropping it and
+// chaining on 单位, both cliff 复权. Rebase onto the 火富牛 scale and keep the dividend.
+function testR0423bDividendOffsetRebase() {
+  const legacy = [
+    { price_date: "2026-02-06", nav: "2.303900", cumulative_nav: "2.831947", cum_nav_withdrawal: "2.604400", price_change: "", legacy_origin: "fof99" },
+    { price_date: "2026-02-13", nav: "2.341200", cumulative_nav: "2.877796", cum_nav_withdrawal: "2.641700", price_change: "", legacy_origin: "fof99" },
+    { price_date: "2026-02-27", nav: "1.740100", cumulative_nav: "2.967896", cum_nav_withdrawal: "2.715000", price_change: "", legacy_origin: "fof99" },
+    { price_date: "2026-03-13", nav: "1.662300", cumulative_nav: "2.835201", cum_nav_withdrawal: "2.637200", price_change: "", legacy_origin: "fof99" },
+  ]
+  const email = [
+    ["2026-02-06", "2.303900", "5.198700"],
+    ["2026-02-13", "2.341200", "5.236000"],
+    ["2026-02-24", "2.386400", "5.281200"],
+    ["2026-02-25", "1.732400", "5.301600"],
+    ["2026-02-26", "1.740700", "5.309900"],
+    ["2026-03-13", "1.662300", "5.231500"],
+  ].map(([price_date, nav, cumulative_nav]) => ({
+    price_date,
+    nav,
+    cumulative_nav,
+    adjusted_nav: cumulative_nav,
+    source: "attachment_nav_table",
+    subject: "【净值表】荣熙优选10号私募证券投资基金B-R0423B",
+  }))
+  const out = mergeNavSeriesWithEmail(legacy, email)
+  const feb25 = out.find((r) => r.price_date === "2026-02-25")
+  const feb27 = out.find((r) => r.price_date === "2026-02-27")
+  assert(
+    "R0423B 2026-02-25 unit is the ex-div unit",
+    feb25 && Math.abs(parseFloat(feb25.nav) - 1.7324) < 0.0001,
+  )
+  assert(
+    "R0423B 2026-02-25 累计 keeps the dividend (not unit+old gap)",
+    feb25 && Math.abs(parseFloat(feb25.cum_nav_withdrawal) - 2.7073) < 0.001,
+  )
+  assert(
+    "R0423B 2026-02-25 复权 stays near the pre-div level",
+    feb25
+      && parseFloat(feb25.cumulative_nav) > 2.9
+      && parseFloat(feb25.cumulative_nav) < 3.05,
+  )
+  assert(
+    "R0423B 2026-02-25 adj >= cum >= unit",
+    feb25
+      && parseFloat(feb25.cumulative_nav) >= parseFloat(feb25.cum_nav_withdrawal) - 0.0001
+      && parseFloat(feb25.cum_nav_withdrawal) >= parseFloat(feb25.nav) - 0.0001,
+  )
+  assert(
+    "R0423B 2026-02-27 keeps 火富牛 累计",
+    feb27 && Math.abs(parseFloat(feb27.cum_nav_withdrawal) - 2.715) < 0.001,
+  )
+  assert(
+    "R0423B 2026-02-27 复权 does not cliff",
+    feb27 && parseFloat(feb27.cumulative_nav) > 2.9,
+  )
+}
