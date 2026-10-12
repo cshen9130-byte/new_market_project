@@ -420,22 +420,115 @@ export type FundPricePoint = {
   reg_code?: string
 }
 
-function mapPriceRow(row: {
+type PublishedNavRow = {
+  price_date: string
   nav: string | null
   cumulative_nav: string | null
   cum_nav_withdrawal: string | null
   price_change: string | null
-  price_date: string
-  beian_hao?: string
-}): FundPricePoint {
-  return {
-    nav: toNum(row.nav),
-    cumulative_nav_withdrawal: toNum(row.cum_nav_withdrawal),
-    cumulative_nav: toNum(row.cumulative_nav),
-    price_change: toNum(row.price_change),
-    price_date: fmtDate(row.price_date),
-    ...(row.beian_hao ? { reg_code: row.beian_hao } : {}),
+}
+
+/**
+ * Same series as the product page: 火富牛, 分组/好买, 托管邮件, and the detail cache.
+ * `private_fund_nav` alone is empty for products such as SQX078 (特夫郁金香全量化).
+ */
+async function loadPublishedNavSeries(beianHao: string): Promise<PublishedNavRow[]> {
+  const { getDetailNavCache, isDetailNavCacheFresh } = await import(
+    "@/lib/server/fund-detail-nav-cache-pg"
+  )
+  const [cached, tipRows] = await Promise.all([
+    getDetailNavCache(beianHao).catch(() => null),
+    query<{ latest_nav_date: string | null }>(
+      `SELECT latest_nav_date::text AS latest_nav_date
+       FROM private_fund_info
+       WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
+       LIMIT 1`,
+      [beianHao],
+    ).catch(() => [] as { latest_nav_date: string | null }[]),
+  ])
+  const infoTip = tipRows[0]?.latest_nav_date?.slice(0, 10) ?? null
+  const cacheBeian = (cached?.beian_hao ?? "").trim().toUpperCase()
+  if (
+    cached
+    && cacheBeian === beianHao.trim().toUpperCase()
+    && isDetailNavCacheFresh(cached, null, infoTip)
+  ) {
+    return cached.nav_series
   }
+
+  const { resolveFundNames } = await import("@/lib/server/fund-nav-series")
+  const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
+  const names = await resolveFundNames(beianHao)
+  return loadDetailNavSeriesFast({
+    beian_hao: beianHao,
+    product_name: names.product_name,
+    short_name: names.short_name,
+  })
+}
+
+function publishedRowsToPoints(rows: PublishedNavRow[], regCode?: string): FundPricePoint[] {
+  const out: FundPricePoint[] = []
+  for (const row of rows) {
+    const nav = toNum(row.nav)
+    const priceDate = fmtDate(row.price_date)
+    if (nav == null || nav <= 0 || !priceDate) continue
+    out.push({
+      nav,
+      cumulative_nav_withdrawal: toNum(row.cum_nav_withdrawal),
+      cumulative_nav: toNum(row.cumulative_nav),
+      price_change: toNum(row.price_change),
+      price_date: priceDate,
+      ...(regCode ? { reg_code: regCode } : {}),
+    })
+  }
+  return out
+}
+
+function priceSortValue(point: FundPricePoint, orderBy: string): number | string {
+  if (orderBy === "price_date") return point.price_date
+  if (orderBy === "cumulative_nav") return point.cumulative_nav ?? 0
+  if (orderBy === "cum_nav_withdrawal") return point.cumulative_nav_withdrawal ?? 0
+  if (orderBy === "price_change") return point.price_change ?? 0
+  return point.nav ?? 0
+}
+
+function sortPricePoints(points: FundPricePoint[], orderBy: string, asc: boolean): FundPricePoint[] {
+  return [...points].sort((a, b) => {
+    const av = priceSortValue(a, orderBy)
+    const bv = priceSortValue(b, orderBy)
+    if (av < bv) return asc ? -1 : 1
+    if (av > bv) return asc ? 1 : -1
+    if (a.price_date < b.price_date) return asc ? -1 : 1
+    if (a.price_date > b.price_date) return asc ? 1 : -1
+    return 0
+  })
+}
+
+function latestPointOnOrBefore(points: FundPricePoint[], onDate: string | null): FundPricePoint | null {
+  let best: FundPricePoint | null = null
+  for (const point of points) {
+    if (onDate && point.price_date > onDate) continue
+    if (!best || point.price_date >= best.price_date) best = point
+  }
+  return best
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      out[index] = await fn(items[index])
+    }
+  })
+  await Promise.all(workers)
+  return out
 }
 
 export async function getFundPrice(options: {
@@ -453,26 +546,13 @@ export async function getFundPrice(options: {
   const orderBy = PRICE_ORDER_BY[String(options.order_by ?? "price_date")] ?? "price_date"
   const asc = parseOrderAsc(options.order)
 
-  const rows = await query<{
-    nav: string | null
-    cumulative_nav: string | null
-    cum_nav_withdrawal: string | null
-    price_change: string | null
-    price_date: string
-  }>(
-    `SELECT nav::text, cumulative_nav::text, cum_nav_withdrawal::text,
-            price_change::text, price_date::text
-     FROM private_fund_nav
-     WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
-       AND ($2::date IS NULL OR price_date >= $2::date)
-       AND ($3::date IS NULL OR price_date <= $3::date)
-       AND nav IS NOT NULL AND nav > 0
-     ORDER BY ${orderBy} ${asc ? "ASC" : "DESC"}
-     LIMIT 5000`,
-    [resolved, start, end],
-  )
-
-  return fundDataOk(rows.map(mapPriceRow))
+  const rows = await loadPublishedNavSeries(resolved)
+  const points = publishedRowsToPoints(rows).filter((point) => {
+    if (start && point.price_date < start) return false
+    if (end && point.price_date > end) return false
+    return true
+  })
+  return fundDataOk(sortPricePoints(points, orderBy, asc).slice(0, 5000))
 }
 
 export async function getFundMultiPrice(options: {
@@ -497,47 +577,12 @@ export async function getFundMultiPrice(options: {
   const orderBy = PRICE_ORDER_BY[String(options.order_by ?? "nav")] ?? "nav"
   const asc = parseOrderAsc(options.order ?? "0")
 
-  const rows = await query<{
-    beian_hao: string
-    nav: string | null
-    cumulative_nav: string | null
-    cum_nav_withdrawal: string | null
-    price_change: string | null
-    price_date: string
-  }>(
-    onDate
-      ? `SELECT DISTINCT ON (UPPER(BTRIM(beian_hao)))
-           beian_hao, nav::text, cumulative_nav::text, cum_nav_withdrawal::text,
-           price_change::text, price_date::text
-         FROM private_fund_nav
-         WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
-           AND price_date <= $2::date
-           AND nav IS NOT NULL AND nav > 0
-         ORDER BY UPPER(BTRIM(beian_hao)), price_date DESC`
-      : `SELECT DISTINCT ON (UPPER(BTRIM(beian_hao)))
-           beian_hao, nav::text, cumulative_nav::text, cum_nav_withdrawal::text,
-           price_change::text, price_date::text
-         FROM private_fund_nav
-         WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
-           AND nav IS NOT NULL AND nav > 0
-         ORDER BY UPPER(BTRIM(beian_hao)), price_date DESC`,
-    onDate ? [resolved.map((c) => c.toUpperCase()), onDate] : [resolved.map((c) => c.toUpperCase())],
-  )
-
-  const sorted = rows
-    .map(mapPriceRow)
-    .sort((a, b) => {
-      const key = orderBy === "price_date" ? "price_date" : orderBy === "cumulative_nav" ? "cumulative_nav"
-        : orderBy === "cum_nav_withdrawal" ? "cumulative_nav_withdrawal"
-        : orderBy === "price_change" ? "price_change" : "nav"
-      const av = key === "price_date" ? a.price_date : (a[key as keyof FundPricePoint] as number | null) ?? 0
-      const bv = key === "price_date" ? b.price_date : (b[key as keyof FundPricePoint] as number | null) ?? 0
-      if (av < bv) return asc ? -1 : 1
-      if (av > bv) return asc ? 1 : -1
-      return 0
-    })
-
-  return fundDataOk(sorted)
+  const points = await mapWithConcurrency(resolved, 4, async (code) => {
+    const rows = await loadPublishedNavSeries(code)
+    return latestPointOnOrBefore(publishedRowsToPoints(rows, code), onDate)
+  })
+  const present = points.filter((point): point is FundPricePoint => point != null)
+  return fundDataOk(sortPricePoints(present, orderBy, asc))
 }
 
 export async function getFundView(regCode: string): Promise<FundDataEnvelope<Record<string, unknown>>> {
