@@ -6,23 +6,37 @@ PROJECT_ROOT="${1:-/root/new_market_project}"
 cd "$PROJECT_ROOT"
 
 echo "==> git sync"
-# Crawl-email credentials live in a tracked JSON file. Preserve/restore via
-# EXIT trap so a mid-script `git reset --hard` cannot drop UI-added mailboxes.
-CRAWL_EMAIL_JSON="data/ops_crawl_emails.json"
-CRAWL_EMAIL_PRESERVE="/tmp/ops_crawl_emails.json.preserve"
-restore_crawl_emails() {
-  if [ -f "$CRAWL_EMAIL_PRESERVE" ]; then
-    mkdir -p data
-    cp -a "$CRAWL_EMAIL_PRESERVE" "$CRAWL_EMAIL_JSON"
-    git update-index --skip-worktree "$CRAWL_EMAIL_JSON" 2>/dev/null || true
-    echo "    restored $CRAWL_EMAIL_JSON"
-  fi
+# These tracked JSON files are edited on the server (mailbox passwords, 直投
+# visibility). Copy them out before `git reset --hard` and put them back after,
+# or a deploy replaces them with the empty/stale copies committed in git.
+PRESERVE_JSON_FILES=(
+  "data/ops_crawl_emails.json"
+  "data/ops_direct_email_visibility.json"
+)
+preserve_server_json() {
+  local rel dest
+  for rel in "${PRESERVE_JSON_FILES[@]}"; do
+    dest="/tmp/$(basename "$rel").preserve"
+    if [ -f "$rel" ]; then
+      cp -a "$rel" "$dest"
+      echo "    preserved $rel"
+    fi
+  done
 }
-if [ -f "$CRAWL_EMAIL_JSON" ]; then
-  cp -a "$CRAWL_EMAIL_JSON" "$CRAWL_EMAIL_PRESERVE"
-  echo "    preserved $CRAWL_EMAIL_JSON"
-fi
-trap restore_crawl_emails EXIT
+restore_server_json() {
+  local rel src
+  mkdir -p data
+  for rel in "${PRESERVE_JSON_FILES[@]}"; do
+    src="/tmp/$(basename "$rel").preserve"
+    if [ -f "$src" ]; then
+      cp -a "$src" "$rel"
+      git update-index --skip-worktree "$rel" 2>/dev/null || true
+      echo "    restored $rel"
+    fi
+  done
+}
+preserve_server_json
+trap restore_server_json EXIT
 
 git fetch origin main
 # Production should match GitHub exactly — discard lockfile drift and any hotfix edits.
@@ -31,7 +45,7 @@ if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; th
   git reset --hard HEAD
 fi
 git reset --hard origin/main
-restore_crawl_emails
+restore_server_json
 
 echo "==> pnpm install"
 CI=1 pnpm install --frozen-lockfile </dev/null

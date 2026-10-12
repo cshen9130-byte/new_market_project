@@ -66,6 +66,23 @@ function addUtcDays(isoDate: string, days: number): string | null {
   return dt.toISOString().slice(0, 10)
 }
 
+/**
+ * True when a State Council 放假调休 day sits strictly between the two dates.
+ * A normal weekend does not count. 2026-02-13 → 2026-02-24 is true (春节).
+ * 2026-03-03 → 2026-03-04 is false.
+ */
+export function gapCrossesCnStatutoryHoliday(earlier: string, later: string): boolean {
+  const start = earlier.slice(0, 10)
+  const end = later.slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end <= start) {
+    return false
+  }
+  for (let cursor = addUtcDays(start, 1); cursor && cursor < end; cursor = addUtcDays(cursor, 1)) {
+    if (CN_STATUTORY_HOLIDAY_DATES.has(cursor)) return true
+  }
+  return false
+}
+
 /** Market-open days in (earlier, later]. Weekends and 法定节假日 / 调休 rest days are skipped. */
 export function chinaMarketOpenDaysBetween(later: string, earlier: string): number {
   const start = earlier.slice(0, 10)

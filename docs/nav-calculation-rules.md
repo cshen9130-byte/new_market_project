@@ -342,6 +342,16 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 
 ## Rules for Future Code Changes
 
+### Rule — Chinese market holidays
+
+Every rule in this file that treats two consecutive NAV rows as one trading session must use the China A-share calendar. A gap that contains a State Council 放假调休 day is not one session. 春节, 国庆, 劳动节, 清明, 端午, 中秋, and 元旦 all create that gap. A plain weekend does not.
+
+The calendar is `lib/server/china-trading-calendar.ts`, backed by `lib/cn-statutory-holiday-dates.json` (放假调休, including the extra weekdays) and `date-holidays` for the statutory core. `scripts/ma/cn_market_holidays.py` reads the same JSON for the 火富牛 Friday fetch. Do not keep a second list.
+
+`gapCrossesCnStatutoryHoliday(earlier, later)` is true when a 放假 day sits strictly between the two dates. `sanitizeVShapeNavOutliers` must not flatten 复权 across that closure. The 2026 春节 closure is **2026-02-15 through 2026-02-23**. 荣熙优选10号B类 **2026-02-13** (火富牛 复权 **2.877796**) and **2026-02-24** (the next email) are consecutive rows in the series and are not one day. Treating them as one day pulled the 复权 down to the 累计. A Friday-to-Friday corrupt print that only crosses a weekend, such as SLA033 **2022-10-11**, is still repaired. The unit V-shape stays on; only the 复权 V-shape stands down when the gap contains a 放假 day, because a real 复权 premium across 春节 looked like a one-day spike and a bad 单位 print after 国庆 did not.
+
+The JSON lists 放假调休 for **2018 through 2026**, plus **2027-01-01**. When the State Council publishes the next year’s 放假安排, add those dates to the JSON before that year starts. A missing 调休 weekday lets a one-day rule fire across the closure again.
+
 ### DO NOT touch these without re-verifying the invariant
 
 | Function | Risk if changed |
@@ -357,10 +367,10 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
 | `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
 | `preferEmailNavRow` / `isPlausibleEmailUnitNav` | Reject 虚拟计提 share-count rows; prefer `product_code`-matched 净值表 — reverting to id-only tie-break breaks BAH99A FOF list |
-| `isPlausibleEmailCumulativeNav` | Reject valuation column bleed (cum/unit > 2) — disabling re-breaks SBFM35 unit inference |
+| `isPlausibleEmailCumulativeNav` | Bounds only (0.1–100, cum ≥ unit). Do not restore a blanket `cum/unit > 2` reject — that cliffs a real 累计 (R0423B, SQX078). Stray cells and a frozen 累计 are cleared by `clearCorruptEmailCumulative` |
 | `selectEmailNavSeriesRows` per-date fallback | Use share-class email only when no parent row exists for that date — reverting to global pool drops SBFM35 A-class dates |
 | `repairSwappedCumAdjRows` | Fixes legacy rows where 累计 and 复权 DB columns are swapped (`cum > adj`) — disabling leaves SQX078-style corrupt 平台数据 |
-| `sanitizeVShapeNavOutliers` | Removes single-day V-shaped legacy outliers (~7–15% dip/spike with flat neighbors) — disabling lets corrupt platform rows distort max-drawdown and period returns |
+| `sanitizeVShapeNavOutliers` | Removes single-day V-shaped legacy outliers (~7–15% dip/spike with flat neighbors). The 复权 test stands down when `gapCrossesCnStatutoryHoliday` is true — a 春节 / 国庆 closure is not one session (R0423B 2026-02-13). The unit test still runs (SLA033) |
 | `preferLegacyNavRow` / `dedupeLegacyNavRowsByDate` | When group + per-fund tables disagree on ex-div dates, prefer the row whose 累计 stayed near the prior level (SLA063) — reverting to pri-only tie-break keeps wrong group cum |
 | `resolveFundBeianHao` | Direct beian DB lookup must run before managed-product override — otherwise BAH99A routes to SBAH99 |
 | `remapManagedProductBeianCode` | Do not remap A/B/C share-class codes (e.g. BAH99A) to parent 在管产品 beian |
@@ -1026,7 +1036,7 @@ Fund detail **收益曲线 (复权净值)** and headline 成立以来收益 for 
 
 | Area | File / function | What changed |
 |---|---|---|
-| Keep high-ratio virtual cum | `applyEmailUnitNavCorrection` | Post-investment **虚拟净值** emails keep 累计 when cum/unit > 2 and cum has a real dividend offset (SQX078 pattern only — other sources still capped at 2×) |
+| Keep high-ratio virtual cum | `applyEmailUnitNavCorrection` | A real 累计 above 2× is kept (SQX078 about **2.06×**). The blanket cap is gone; see **What Was Fixed (cum/unit > 2 is no longer a blanket reject)**. A stray cell and a frozen column are still cleared |
 | Unit-rate adj on email-confirmed cum | `rechainDerivedFromPrev` | When email supplies 累计 matching the constant post-div gap (`unit + prevGap`) on a non-ex-div day, grow 复权 at **unit/prevUnit** instead of cum/prevCum |
 
 ### Verified Correct Values (after fix)
@@ -1725,7 +1735,7 @@ After deploy: `npx tsx scripts/ma/_repair_sbah99_pool.ts`
 
 | Area | File / function | What changed |
 |---|---|---|
-| Reject corrupt email 累计 | `isPlausibleEmailCumulativeNav`, `isUsableEmailCumulativeNav` | Ignore cum when `cum/unit > 2` (column bleed) |
+| Reject a stray corrupt 累计 | `clearCorruptEmailCumulative` | One or two cells with `cum/unit > 2` inside an otherwise normal series are cleared (the integer **3** on 2026-05-29). A whole series above 2× is not discarded |
 | No ratio from bad cum | `applyEmailUnitNavCorrection` | Only learn unit/cum ratio from plausible 累计; strip corrupt cum |
 | No inference on share-class rows | `applyEmailUnitNavCorrection` | Skip `inferEmailUnitNav` for `isParentCodeEmailRow` (BFM35A when querying SBFM35) |
 | Prefer plausible cum in tie-break | `preferEmailNavRow` | Deprioritize rows with implausible 累计; exclude from “distinct cum” bonus |
@@ -2727,11 +2737,11 @@ All in `lib/server/email-nav-query.ts`.
 
 | Area | Function | What changed |
 |---|---|---|
-| Keep the shifted column | `applyEmailUnitNavCorrection` | If the selected email series has **≥ 3** rows with `cum/unit > 2`, `cum ≥ unit`, and a reasonable 累计, leave that 累计 in place so the merge can see the offset. One corrupt cell is still cleared (SBFM35 `成立以来倍数 = 3`). Post-investment virtual mail with `cum/unit > 2` (SQX078) is still kept, as before |
+| Do not discard a whole series for `cum/unit > 2` | `isPlausibleEmailCumulativeNav`, `clearCorruptEmailCumulative` | The ratio is no longer a reason to null every high 累计. See **What Was Fixed (cum/unit > 2 is no longer a blanket reject)** |
 | Learn the constant | `rebaseAdditiveEmailCumulative`, called at the start of `mergeNavSeriesWithEmail` after `repairSwappedCumAdjRows` | On dates where \|email 单位 − 火富牛单位\| ≤ **0.0005**, email `cum/unit > 2`, 火富牛累计 is itself plausible, and email 累计 > 火富牛累计 **+ 0.05**, record `email 累计 − 火富牛累计` (火富牛累计 is `cum_nav_withdrawal`, else `cumulative_nav`). Need **≥ 3** offsets, median ≥ **0.05**, and max − min ≤ **0.005**. Then subtract that median from every high-ratio email 累计. If any shifted 累计 would fall below 单位 or fail `isReasonableNav`, the whole rebase is aborted and the email rows are returned unchanged |
 | Do not promote the raw 累计 into 复权 | same function | When `adjusted_nav` equals the unshifted 累计 within **0.001**, shift it by the same median so it stays equal to the new 累计. `isPlausibleEmailAdjustedNav` then rejects it. Leaving **5.2** in `adjusted_nav` would be accepted as 复权 and spike the chart |
 | Ex-date and later email-only days | existing merge + `rechainDerivedFromPrev` | Overlap dates keep 火富牛 复权 when it is still above the shifted 累计 (`keepLegacyAdj`). Email-only dates (2026-02-24, 02-25, 02-26) are `adjOnly` and chain with the dividend formula once the gap jumps. 火富牛 **2026-02-27** is not in the email, so its 累计 **2.7150** and 复权 **2.967896** stay |
-| V-shape | `sanitizeVShapeNavOutliers` | A missing 复权 is not filled from 累计. The 复权 V-shape test runs only when previous, current, and next all have `cumulative_nav`. A real adj/cum premium between two 累计-only email days is left alone |
+| V-shape | `sanitizeVShapeNavOutliers` | A missing 复权 is not filled from 累计. The 复权 V-shape test runs only when previous, current, and next all have `cumulative_nav`, and it does not run when `gapCrossesCnStatutoryHoliday` is true on either side. A real adj/cum premium across 春节 (2026-02-13 between 2026-02-06 and 2026-02-24) is left alone |
 
 A column that grows (成立以来倍数) does not produce offsets inside **0.005**, so it is not subtracted. `mergeNavSeriesWithEmail([], email)` still cannot learn **2.5943**, because there is no 火富牛 overlap. The detail page passes both series; that is the path this fix repairs. The list sparkline that merges email alone does not.
 
@@ -2754,7 +2764,7 @@ After the dividend, `累计 − 单位` stays **0.9749**. The worst remaining �
 
 ### What This Fix Does NOT Change
 
-- The ratio cap of **2** itself. A single `cum/unit > 2` cell is still nulled (SBFM35)
+- One or two `cum/unit > 2` cells inside an otherwise normal series are still cleared (SBFM35). A whole series above 2× is not discarded; see the section below
 - SQX078 virtual-mail 累计 above **2×** unit
 - SBAH99 dividend formulas, SXL292 Friday list columns, GT288A unit-only manual uploads
 - Empty-legacy email merge (list sparkline). It still has no overlap from which to learn the **2.5943** offset
@@ -2766,4 +2776,117 @@ After the dividend, `累计 − 单位` stays **0.9749**. The worst remaining �
 npx tsx scripts/test-nav-rechain.mjs
 ```
 
-Includes **R0423B 2026-02-25 累计 keeps the dividend** and **R0423B 2026-02-27 keeps 火富牛 累计** (`testR0423bDividendOffsetRebase`). The fixture uses 火富牛 rows for 02-06, 02-13, 02-27, 03-13 and custodian rows whose 累计 is 火富牛累计 **+ 2.5943**, with `adjusted_nav` copied from that 累计.
+Includes **R0423B 2026-02-25 累计 keeps the dividend** and **R0423B 2026-02-27 keeps 火富牛 累计** (`testR0423bDividendOffsetRebase`). The fixture uses 火富牛 rows for 02-06, 02-13, 02-27, 03-13 and custodian rows whose 累计 is 火富牛累计 **+ 2.5943**, with `adjusted_nav` copied from that 累计. `testCnHolidayClosureSkipsAdjVShape` checks that the same 复权 premium is not flattened across the 2026 春节 closure.
+
+## What Was Fixed (cum/unit > 2 is no longer a blanket reject)
+
+### The Problem
+
+`isPlausibleEmailCumulativeNav` dropped every email 累计 with `累计 / 单位 > 2`. That guard was written for one 金友至远1号 (SBFM35) cell on **2026-05-29** whose 累计 was the integer **3** (a 成立以来倍数, 单位 **1.0263**). `applyEmailUnitNavCorrection` learned `1.0263 / 3 ≈ 0.342` from that cell and scaled later 资产净值公告 rows, where the two columns were equal, down to about **0.36**. The list showed 单位 **0.3699** and 最新涨跌幅 **−63.96%** instead of 单位 **1.0813** and about **+5%**.
+
+On the current mailbox that one-cell shape does not recur. SBFM35’s **2026-05-29** 估值表 累计 is empty, and the 净值表 has 累计 equal to 单位. The same cap is what deleted 荣熙优选10号B类’s custodian 累计 (about **2.2×** before the dividend, about **3.0×** after) and drew the **2026-02-25** cliff. Across email rows with both columns, **511** funds have a series and **28** have `累计 / 单位 > 2` on three or more dates. None have it on only one or two dates. About **24** of the 28 are a real 累计 or a constant custodian offset. The useful hits are a frozen wrong column, not the integer **3**.
+
+### The Correct Fix Applied
+
+`累计 / 单位 > 2` is no longer a reason to discard a series. It remains the signal for the checks below, and the trigger inside `rebaseAdditiveEmailCumulative`.
+
+| Check | Where | What it does |
+|---|---|---|
+| Stray cell | `clearCorruptEmailCumulative`, called from `applyEmailUnitNavCorrection` and again at the start of `mergeNavSeriesWithEmail` | **1 or 2** dates above 2×, and the series also has a normal 累计: clear those cells, and clear `adjusted_nav` when it is a copy of that 累计. This is the SBFM35 cell. It does not match a series that is entirely above 2× |
+| Frozen column | same function | At least **8** rows, median ratio above 2, 单位 range above **0.05**, 累计 range at most **0.10** and under a quarter of the 单位 range: clear the 累计 column. 文艺复兴26号 (SQQ26A), 单位 **0.98 → 1.50**, 累计 stuck near **6.3**. Median ratio above **8** and 累计 range at most **0.05**: clear it even when 单位 is quiet. 文艺复兴6号 (SZM314) near **16**, and the 12-row parse whose fund name is **日期** near **12.37** |
+| Same-date tie | `preferEmailNavRow` | On one date, a normal 累计 beats a rival cell above 2×. A series with no rival is kept |
+| Do not learn a unit ratio from it | `applyEmailUnitNavCorrection` | `latestRatio` is still learned only when `cum/unit ≤ 2`. A kept high series cannot scale a later row where 单位 equals 累计 |
+| Rebase | `rebaseAdditiveEmailCumulative` | Unchanged. A constant gap versus 火富牛 (R0423B **+2.5943**, at least three overlaps, spread at most **0.005**) is subtracted |
+| No 火富牛 | `mergeNavSeriesWithEmail` when the legacy series is empty | After the stray and frozen checks, a 累计 that is still above 2× is dropped. The list sparkline merges email alone and must not plot the raw **5.3** base. Detail merge passes 火富牛, so a real ratio above 2 that already matches 火富牛 (SQX078 about **2.06×**) is kept, and a constant offset is rebased first. A later 单位净值 of exactly **1.0000** that passes the dividend check is kept; see **鲲腾进取2号 — SLV324** below |
+
+Left in place: the **0.1–100** bound (荣熙恒盈2号’s 累计 in the millions), `preserve_high_nav_scale`, and a quiet series near **4×** where both columns barely move (臻选之常A类, STV890). A column that grows, such as 成立以来倍数, still does not form a constant inside **0.005**, so the rebase does not subtract it.
+
+This change does not decide the 春节 gap. That is **Rule — Chinese market holidays**: the 复权 V-shape stands down when the two rows have a 放假 day between them.
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+`testEmailCumRatioGuards` covers the frozen column, the quiet **4×** series, unit inference, detail merge, and the email-only drop. `testCnHolidayClosureSkipsAdjVShape` keeps a 复权 premium across **2026-02-13 → 2026-02-24** and still repairs the same shape on **2026-03-03 → 2026-03-05**.
+
+## What Was Fixed (鲲腾进取2号 — SLV324, mid-series unit reset to 1.0000, 2026-10-12)
+
+### The Problem
+
+The detail chart for 鲲腾进取2号 jumped **−23.2%** on **2025-12-17**. 火富牛 does not have that cliff. Its weekly 复权 goes from **2.970591** on **2025-12-12** to **2.812711** on **2025-12-19** (`price_change` **−5.31%**).
+
+The custodian 净值表 on the reset day:
+
+| Date | 单位净值 | 累计净值 |
+|---|---|---|
+| 2025-12-16 | 1.3022 | 2.4004 |
+| 2025-12-17 | **1.0000** | **2.3906** |
+| 2025-12-18 | 0.9818 | 2.3724 |
+
+单位净值 drops **23.2%**. 累计净值 moves **−0.41%** (`2.3906 / 2.4004 − 1`). That is a manager reset of the unit. The dividend gap widens from **1.0982** to **1.3906**. The email has no separate 复权 column; `adjusted_nav` is a copy of 累计净值.
+
+### Root Cause
+
+`isLikelyDividendExDate` already describes this day: 单位 drops more than **1.5%**, and 累计 stays inside **0.995×** to **1.05×** of the previous 累计. When that 累计 is still on the row, `rechainDerivedFromPrev` keeps it and moves 复权 by the 累计 change, not by `1.0000 / 1.3022`.
+
+The email-only merge never reached that check. After the reset, `2.3906 / 1.0000 = 2.39`, which is above the **2×** cap. `mergeNavSeriesWithEmail` with an empty legacy series drops every remaining 累计 above 2× (the list sparkline has no 火富牛 overlap to judge the scale). The reset day's 累计 was cleared. The rechain then pasted the old gap onto the new unit:
+
+`1.0000 + (2.4004 − 1.3022) = 2.0982`
+
+and multiplied 复权 by the unit ratio. That is the **−23.2%** step. The same drop happens in `clearCorruptEmailCumulative` when the reset is one of only one or two dates above 2×.
+
+The fund's own first print is also 单位净值 **1.0000** (2020-09-11, 累计净值 **1.0000**). A bare search for 1.0000 would rewrite the launch.
+
+### The Correct Fix Applied
+
+`isConfirmedMidSeriesUnitReset` in `lib/server/email-nav-query.ts` keeps the existing dividend rule and adds the 1.0000 confirmation:
+
+1. This row's 单位净值 is **1.0000** within **0.0001**.
+2. An earlier row already has 单位净值 more than **0.05** away from 1. The opening cluster of 1.0000 does not qualify.
+3. `isLikelyDividendExDate` passes against the previous 单位 and 累计: the unit drop is sharp, and this 累计 stays near the previous 累计.
+
+When all three hold, the 累计 is not cleared. The existing rechain then moves 复权 with that 累计. Call sites:
+
+| Where | What changed |
+|---|---|
+| `mergeNavSeriesWithEmail`, empty legacy series | A confirmed reset above 2× is left in place. Every other email-only 累计 above 2× is still dropped |
+| `clearCorruptEmailCumulative` | A confirmed reset is not one of the one-or-two stray cells above 2× |
+
+A day that merely prints 1.0000, or whose 累计 jumps with the unit, is unchanged.
+
+### Verified Correct Values (after fix)
+
+Email-only merge, the path that used to drop the 累计:
+
+| Date | 单位净值 | 累计净值 | 复权净值 | 复权日涨跌 |
+|---|---|---|---|---|
+| 2025-12-16 | 1.3022 | 2.4004 | 3.371254 | |
+| 2025-12-17 | 1.0000 | **2.3906** | **3.35749** | **−0.41%** |
+| 2025-12-18 | 0.9818 | 2.3724 | | −1.82% (unit return; the gap is constant again) |
+
+The stale detail cache stored **2025-12-17** as 累计 **2.0982** (`1.0000 + (2.4004 − 1.3022)`) and 复权 **2.174664** (previous 复权 × `1.0000 / 1.3022`), about **−23.2%**.
+
+Detail cache `SLV324`, rebuilt with 火富牛 plus the custodian mail. **2025-12-19** 复权 matches the 火富牛 weekly point **2.812711**.
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2025-12-16 | 1.3022 | 2.4004 | 2.831847 |
+| 2025-12-17 | 1.0000 | **2.3906** | **2.820286** |
+| 2025-12-19 | 1.0010 | 2.3916 | **2.812711** |
+
+### What This Fix Does NOT Change
+
+- The opening 单位净值 **1.0000** (this fund, **2020-09-11**)
+- Email-only 累计 above 2× that is not a confirmed mid-series reset (the list sparkline, R0423B's unshifted **+2.5943** base, SQX078's virtual tail when 火富牛 is absent)
+- One or two stray cells above 2× that are not this reset (SBFM35)
+- The dividend formulas themselves (`isLikelyDividendExDate`, `rechainDerivedFromPrev`, `syncExDivAdjustedNav`)
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **mid-series unit 1.0000 keeps the email 累计** (`testMidSeriesUnitResetKeepsCumulative`). The fixture is the 2025-12-15 through 2025-12-18 custodian rows plus the 2020-09-11 launch print. The launch row stays 单位 = 累计 = **1.0000**. The reset row keeps 累计 **2.3906**, and its 复权 ratio to the previous day stays within **0.01** of `2.3906 / 2.4004`.

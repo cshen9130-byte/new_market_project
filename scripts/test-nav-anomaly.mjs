@@ -1,4 +1,5 @@
-import { analyzeNavAnomaly, chartNavLevel, hasNavAnomaly } from "../lib/server/nav-anomaly.ts"
+import { analyzeNavAnomaly, chartNavLevel, hasNavAnomaly, navAnomalyHit } from "../lib/server/nav-anomaly.ts"
+import { diagnoseNavAnomaly } from "../lib/server/nav-anomaly-cause.ts"
 
 function assert(cond, message) {
   if (!cond) throw new Error(message)
@@ -105,5 +106,95 @@ const dividend = [
   { date: "2026-03-04", adjusted: "1.12", unit: "0.81" },
 ].map((row) => ({ date: row.date, value: chartNavLevel(row) }))
 assert(!hasNavAnomaly(dividend), "dividend drop in 单位净值 should not flag when 复权 is smooth")
+
+const sourceJump = [
+  { date: "2026-03-02", value: 1, field: "adjusted" },
+  { date: "2026-03-03", value: 1.4, field: "adjusted" },
+  { date: "2026-03-04", value: 1.41, field: "adjusted" },
+]
+const sourceHit = navAnomalyHit(sourceJump)
+const sourceDiag = diagnoseNavAnomaly(sourceJump, [{
+  key: "fof99",
+  label: "火富牛",
+  points: sourceJump,
+}], sourceHit)
+assert(sourceDiag.cause === "source", "jump already in one feed is source data")
+assert(sourceDiag.source_count === 1, "one feed on the chart")
+assert(sourceDiag.cause_label === "源数据异常", "source label")
+
+const smoothA = [
+  { date: "2026-03-02", value: 1, field: "adjusted" },
+  { date: "2026-03-03", value: 1.01, field: "adjusted" },
+]
+const smoothB = [
+  { date: "2026-03-04", value: 1.5, field: "adjusted" },
+  { date: "2026-03-05", value: 1.51, field: "adjusted" },
+]
+const spliced = [...smoothA, ...smoothB]
+const spliceHit = navAnomalyHit(spliced)
+const spliceDiag = diagnoseNavAnomaly(spliced, [
+  { key: "fof99", label: "火富牛", points: smoothA },
+  { key: "email_nav_table", label: "邮件净值表", points: smoothB },
+], spliceHit)
+assert(spliceDiag.cause === "rules", "splice of two smooth feeds is our merge")
+assert(spliceDiag.source_count === 2, "both feeds are used")
+assert(spliceDiag.cause_detail.includes("火富牛") && spliceDiag.cause_detail.includes("邮件净值表"), "splice names both feeds")
+
+const rewritten = [
+  { date: "2026-03-02", value: 1, field: "unit" },
+  { date: "2026-03-03", value: 1.01, field: "unit" },
+  { date: "2026-03-04", value: 1.02, field: "unit" },
+]
+const charted = [
+  { date: "2026-03-02", value: 1 },
+  { date: "2026-03-03", value: 1.45 },
+  { date: "2026-03-04", value: 1.46 },
+]
+const rewriteHit = navAnomalyHit(charted)
+const rewriteDiag = diagnoseNavAnomaly(charted, [{
+  key: "email_nav_table",
+  label: "邮件净值表",
+  points: rewritten,
+}], rewriteHit)
+assert(rewriteDiag.cause === "rules", "rechained level that is not in the raw column is a calculation")
+assert(rewriteDiag.cause_label === "计算或修正导致", "rules label")
+
+const mixedFields = [
+  { date: "2026-03-02", value: 1, field: "adjusted" },
+  { date: "2026-03-03", value: 1.4, field: "unit" },
+]
+const mixedChart = [
+  { date: "2026-03-02", value: 1 },
+  { date: "2026-03-03", value: 1.4 },
+]
+const mixedHit = navAnomalyHit(mixedChart)
+const mixedDiag = diagnoseNavAnomaly(mixedChart, [{
+  key: "fof99",
+  label: "火富牛",
+  points: mixedFields,
+}], mixedHit)
+assert(mixedDiag.cause === "rules", "复权 and 单位 on different days do not count as one raw step")
+
+const parentBackedChart = [
+  { date: "2023-09-14", value: 0.5874 },
+  { date: "2023-09-15", value: 1 },
+  { date: "2023-09-18", value: 1 },
+]
+const parentBackedHit = navAnomalyHit(parentBackedChart)
+const parentBackedDiag = diagnoseNavAnomaly(parentBackedChart, [{
+  key: "fof99",
+  label: "火富牛",
+  points: [
+    { date: "2023-09-14", value: 0.5874, field: "unit" },
+    { date: "2023-09-14", value: 0.5874, field: "adjusted" },
+    { date: "2023-09-15", value: 1, field: "unit" },
+    { date: "2023-09-15", value: 0.5874, field: "adjusted" },
+  ],
+}], parentBackedHit)
+assert(parentBackedDiag.cause === "source", "parent unit step copied onto a share class is source data")
+assert(parentBackedDiag.cause_label === "源数据异常", "parent unit step label")
+
+const emptyDiag = diagnoseNavAnomaly(charted, [], rewriteHit)
+assert(emptyDiag.cause === "unknown", "no raw feeds stays unknown")
 
 console.log("nav-anomaly ok")

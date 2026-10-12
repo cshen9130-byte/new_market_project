@@ -16,7 +16,7 @@ import {
 } from "@/lib/server/fof-weekly-report"
 
 export { isValidReportId }
-import { resolveFofWeeklyBenchmark } from "@/lib/server/fof-weekly-benchmark"
+import { loadFofWeeklyBenchmarkPrices, resolveFofWeeklyBenchmark } from "@/lib/server/fof-weekly-benchmark"
 import { resolveFundNames } from "@/lib/server/fund-nav-series"
 
 const execFileAsync = promisify(execFile)
@@ -51,9 +51,9 @@ export type FofMonthlyReportResult = {
 }
 
 function normalizeNavFrequency(value: string | undefined): FofMonthlyNavFrequency {
-  const freq = (value ?? "monthly").trim().toLowerCase()
-  if (freq === "daily" || freq === "weekly") return freq
-  return "monthly"
+  const freq = (value ?? "weekly").trim().toLowerCase()
+  if (freq === "daily" || freq === "monthly") return freq
+  return "weekly"
 }
 
 function reportDir(reportId: string): string {
@@ -63,6 +63,31 @@ function reportDir(reportId: string): string {
 function getMonthStart(dateStr: string): string {
   const [year, month] = dateStr.split("-")
   return `${year}-${month}-01`
+}
+
+function shiftIsoDate(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T12:00:00`)
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+/** Daily benchmark closes for the report window, so 本月指数收益 does not follow each product's NAV dates. */
+async function writeMonthlyBenchmarkCsv(
+  benchmarkKey: Parameters<typeof loadFofWeeklyBenchmarkPrices>[0],
+  monthBegin: string,
+  monthEnd: string,
+  outPath: string,
+): Promise<void> {
+  const prices = await loadFofWeeklyBenchmarkPrices(benchmarkKey, shiftIsoDate(monthBegin, -21), monthEnd)
+  const lines = ["date,close"]
+  for (const date of [...prices.keys()].sort()) {
+    const close = prices.get(date)
+    if (close != null && close > 0) lines.push(`${date},${close}`)
+  }
+  if (lines.length < 3) {
+    throw new Error("基准日行情不足，无法计算本月收益")
+  }
+  await writeFile(outPath, lines.join("\n"), "utf8")
 }
 
 let cachedPython: { executable: string; prefixArgs: string[] } | null = null
@@ -188,6 +213,18 @@ export async function generateFofMonthlyReport(
 
   const navFile = path.join(outDir, "nav.csv")
   await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
+  const resolvedMonthBegin = month_begin || getMonthStart(month_end)
+  try {
+    await writeMonthlyBenchmarkCsv(
+      benchmark.key,
+      resolvedMonthBegin,
+      month_end,
+      path.join(outDir, "benchmark.csv"),
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn("[fof-monthly-report] benchmark calendar unavailable:", msg)
+  }
 
   const reportTitle = (input.report_title || names.product_name).trim()
   const strategyPhrase = await resolveReportStrategyPhrase(
@@ -197,7 +234,6 @@ export async function generateFofMonthlyReport(
   )
   const productTagline = reportProductTagline(strategyPhrase, input.product_tagline)
   const { executable: pythonExe, prefixArgs } = await findPython()
-  const resolvedMonthBegin = month_begin || getMonthStart(month_end)
   const reportLayout = input.report_layout === "curve" ? "curve" : "review"
 
   const args = [

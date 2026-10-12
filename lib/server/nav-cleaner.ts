@@ -98,9 +98,15 @@ function isCumulativeNavHeader(normalizedHeader: string): boolean {
   return isWithdrawalNavHeader(normalizedHeader) || isAdjustedNavHeader(normalizedHeader)
 }
 
+/** 银河 [虚拟净值] sheet: investor fee columns, not the fund's 单位/累计净值. */
+function isGalaxyInvestorFeeHeader(normalizedHeader: string): boolean {
+  return /计提后虚拟净值|提取前净值|虚拟计提业绩报酬/u.test(normalizedHeader)
+}
+
 /** Total AUM / share-count columns must not score as unit NAV (Citics 【基金净值】 xlsx). */
 function isNonUnitNavHeader(normalizedHeader: string): boolean {
   if (isCumulativeNavHeader(normalizedHeader)) return true
+  if (isGalaxyInvestorFeeHeader(normalizedHeader)) return true
   // CSC 虚拟净值: keep 提取后/扣除后 unit; drop pre-fee 提取前/未扣除 columns.
   return /母基金|基金资产净值|资产净值(?!值)|净资产|资产份额(?!净值)|持有份额|份额数|成立以来|收益率|涨跌幅|试算前单位净值|试算前累计|虚拟单位净值|未扣除计提费用的单位净值|未扣除.*单位净值|虚拟净值提取前单位净值|totalasset|netasset(?!value)/i.test(
     normalizedHeader,
@@ -459,7 +465,9 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
 
   const navCandidates = scoredColumns.filter((column) => column.index !== dateIndex)
 
-  const adjustedCandidate = [...navCandidates].sort((left, right) => right.adjustedScore - left.adjustedScore)[0] ?? null
+  const adjustedCandidate = [...navCandidates]
+    .filter((column) => !isGalaxyInvestorFeeHeader(normalizeHeader(column.header)))
+    .sort((left, right) => right.adjustedScore - left.adjustedScore)[0] ?? null
   // Require an explicit header keyword match (score contribution ≥ 5) beyond the baseline
   // numeric-only score (3).  A threshold of > 4 prevents bare-numeric columns from being
   // mis-assigned as 复权净值 in 3-column attachments that omit the adjusted NAV column.
@@ -467,6 +475,7 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
 
   const withdrawalCandidate = [...navCandidates]
     .filter((column) => column.index !== adjustedIndex)
+    .filter((column) => !isGalaxyInvestorFeeHeader(normalizeHeader(column.header)))
     .sort((left, right) => right.withdrawalScore - left.withdrawalScore)[0] ?? null
   let cumulativeIndex = withdrawalCandidate && withdrawalCandidate.withdrawalScore > 1 ? withdrawalCandidate.index : null
 

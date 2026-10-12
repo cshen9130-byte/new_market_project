@@ -35,11 +35,20 @@ export type NavAnomalyStats = {
   snippet: NavAnomalyPoint[]
 }
 
+export type NavAnomalyCause = "source" | "rules" | "unknown"
+
 export type NavAnomalyHit = {
   reason: "jump" | "spike"
   date: string
   ratio: number
   snippet: NavAnomalyPoint[]
+  /** Distinct upstream feeds whose dates appear on the charted NAV. */
+  source_count?: number
+  sources?: string[]
+  /** source = the jump/spike is already in an upstream feed; rules = merge, rechain, or correction created it. */
+  cause?: NavAnomalyCause
+  cause_label?: string
+  cause_detail?: string
 }
 
 type LevelFields = {

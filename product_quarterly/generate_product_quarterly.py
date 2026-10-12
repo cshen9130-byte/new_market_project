@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,12 @@ def _fmt_date_cn(value: str) -> str:
         return value
 
 
+def _safe_report_stem(name: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n]+', "_", name)
+    cleaned = re.sub(r"_+", "_", cleaned).strip(" ._")
+    return cleaned[:120] or "持有期季报"
+
+
 def _display_short_name(short_name: str, product_name: str) -> str:
     raw = (short_name or product_name or "").strip()
     for suffix in ("私募证券投资基金", "私募投资基金", "证券投资基金", "私募基金", "投资基金"):
@@ -163,7 +170,44 @@ def _total_return(start: float, end: float) -> float:
 def _max_drawdown(nav: pd.Series) -> float:
     peak = nav.cummax()
     dd = nav / peak - 1.0
-    return float(dd.min()) if len(dd) else 0.0
+    value = float(dd.min()) if len(dd) else 0.0
+    # A dip smaller than 0.01% rounds to 0.00%. Keep the sign off that zero.
+    if not np.isfinite(value) or value > -5e-5:
+        return 0.0
+    return value
+
+
+def normalize_nav_frequency(freq: str | None) -> str:
+    normalized = (freq or "weekly").strip().lower()
+    if normalized in ("daily", "weekly", "monthly"):
+        return normalized
+    return "weekly"
+
+
+def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
+    """Keep the last trading day of each week or month.
+
+    Weekly buckets start on Monday. A period that ends mid-week still keeps
+    that week's latest trading day, so the ending net value stays on the report.
+    """
+    normalized = normalize_nav_frequency(freq)
+    work = df.sort_values("date").copy()
+    trading = work[work["date"].dt.weekday < 5]
+    if not trading.empty:
+        work = trading
+    if normalized == "weekly":
+        monday = work["date"] - pd.to_timedelta(work["date"].dt.weekday, unit="D")
+        work = work.assign(_bucket=monday.dt.normalize())
+        sampled = work.groupby("_bucket", sort=True).tail(1)
+    elif normalized == "monthly":
+        work = work.assign(_bucket=work["date"].dt.to_period("M").astype(str))
+        sampled = work.groupby("_bucket", sort=True).tail(1)
+    else:
+        sampled = work
+    sampled = sampled.drop(columns="_bucket", errors="ignore").sort_values("date").reset_index(drop=True)
+    if len(sampled) < 2:
+        raise ValueError("按所选净值频率聚合后数据不足")
+    return sampled
 
 
 def _holding_metrics(series: pd.Series, start: pd.Timestamp, end: pd.Timestamp) -> dict[str, float | None]:
@@ -224,13 +268,18 @@ def auto_commentary(
     b2 = _fmt_pct(metrics["bench2"]["ret"])
     x1 = _fmt_pct(metrics["excess1"])
     x2 = _fmt_pct(metrics["excess2"])
-    return (
-        f"本报告覆盖 {period_begin.year}年{period_begin.month}月{period_begin.day}日至"
-        f"{period_end.year}年{period_end.month}月{period_end.day}日持有期"
-        f"（约{days}个自然日、{n}个净值日）。期内「{product_label}」区间收益 {ret}，年化收益 {ann}，"
-        f"期间最大回撤 {mdd}。同期{bench1_label}区间收益 {b1}，{bench2_label}区间收益 {b2}。"
-        f"产品相对{bench1_label}超额 {x1}，相对{bench2_label}超额 {x2}。"
-        "以上数据仅反映本持有期已实现净值表现，不构成对未来收益的承诺或投资建议。"
+    return "\n".join(
+        [
+            (
+                f"本报告覆盖 {period_begin.year}年{period_begin.month}月{period_begin.day}日至"
+                f"{period_end.year}年{period_end.month}月{period_end.day}日持有期"
+                f"（约{days}个自然日、{n}个净值日）。"
+            ),
+            f"期内「{product_label}」区间收益 {ret}，年化收益 {ann}，期间最大回撤 {mdd}。",
+            f"同期{bench1_label}区间收益 {b1}，{bench2_label}区间收益 {b2}。",
+            f"产品相对{bench1_label}超额 {x1}，相对{bench2_label}超额 {x2}。",
+            "以上数据仅反映本持有期已实现净值表现，不构成对未来收益的承诺或投资建议。",
+        ]
     )
 
 
@@ -379,20 +428,50 @@ def draw_compare_table(
     return y - (len(rows) + 1) * row_h - 0.014
 
 
-def draw_wrapped_text(ax, text: str, x: float, y: float, fp: FontProperties | None, fontsize: float = 8.0, line_h: float = 0.0165, max_chars: int = 52, max_lines: int = 5) -> float:
+_WRAP_BREAK_AFTER = set("。！？；，、： ")
+_NO_SPLIT_CHARS = set("0123456789+-.%")
+
+
+def wrap_report_text(text: str, max_chars: int = 56) -> list[str]:
+    """Wrap on sentence and clause breaks, and keep amounts such as +0.49% on one line."""
+    lines: list[str] = []
+    for para in (text or "").split("\n"):
+        para = para.strip()
+        if not para:
+            continue
+        start = 0
+        while start < len(para):
+            rest = para[start:]
+            if len(rest) <= max_chars:
+                lines.append(rest)
+                break
+            end = max_chars
+            while end > 1 and rest[end - 1] in _NO_SPLIT_CHARS and end < len(rest) and rest[end] in _NO_SPLIT_CHARS:
+                end -= 1
+            if rest[end - 1] in "「『（(":
+                end -= 1
+            window = rest[:end]
+            break_at = 0
+            for i in range(len(window) - 1, 0, -1):
+                if window[i - 1] in _WRAP_BREAK_AFTER and window[i] not in _NO_SPLIT_CHARS:
+                    break_at = i
+                    break
+            if break_at <= 0:
+                break_at = max(end, 1)
+            piece = rest[:break_at].strip()
+            if piece:
+                lines.append(piece)
+            start += break_at
+            while start < len(para) and para[start] == " ":
+                start += 1
+    return lines
+
+
+def draw_wrapped_text(ax, text: str, x: float, y: float, fp: FontProperties | None, fontsize: float = 8.0, line_h: float = 0.0165, max_chars: int = 56, max_lines: int = 6) -> float:
     content = (text or "").strip()
     if not content:
         return y
-    lines: list[str] = []
-    for para in content.split("\n"):
-        buf = ""
-        for ch in para:
-            buf += ch
-            if len(buf) >= max_chars:
-                lines.append(buf.strip())
-                buf = ""
-        if buf.strip():
-            lines.append(buf.strip())
+    lines = wrap_report_text(content, max_chars=max_chars)
     for i, line in enumerate(lines[:max_lines]):
         ax.text(x, y - i * line_h, line, transform=ax.transAxes, ha="left", va="top", fontsize=fontsize, color=C_TEXT, fontproperties=fp)
     return y - min(len(lines), max_lines) * line_h - 0.01
@@ -425,6 +504,7 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
     nav_df = nav_df[nav_df["date"] <= period_end].copy()
     if len(nav_df) < 2:
         raise ValueError("报告截止日期之前净值数据不足")
+    nav_df = apply_nav_frequency(nav_df, str(config.get("nav_frequency") or "weekly"))
 
     metrics = calc_metrics(nav_df, period_begin, period_end)
     overview.setdefault("unit_nav", _fmt_num(metrics["unit_nav"], 4))
@@ -480,7 +560,7 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
     )
 
     y = draw_section_bar(ax, y, "三、净值走势（期初=1）", fp_bold)
-    chart_h = 0.28
+    chart_h = 0.24
     label_pad = 0.028
     chart_bottom = y - chart_h
     ax_nav = fig.add_axes([0.11, chart_bottom + label_pad, 0.78, chart_h - label_pad - 0.01])
@@ -524,7 +604,7 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
 
     y = draw_section_bar(ax, y, "五、简要说明", fp_bold)
     note = user_note or auto_commentary(short_name, period_begin, period_end, metrics, bench1_label, bench2_label)
-    y = draw_wrapped_text(ax, note, 0.05, y, fp, fontsize=8.0, max_chars=50, max_lines=6)
+    y = draw_wrapped_text(ax, note, 0.05, y, fp, fontsize=8.0, max_chars=56, max_lines=6)
 
     ax.add_patch(Rectangle((0.04, 0.038), 0.92, 0.0008, facecolor=C_BORDER, edgecolor="none", transform=ax.transAxes, zorder=2))
     ax.text(
@@ -553,8 +633,10 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    q_label = f"{period_end.year}Q{(period_end.month - 1) // 3 + 1}"
-    stem = f"quarterly_report_{q_label}"
+    stem = _safe_report_stem(
+        f"{short_name}_{period_begin.year}年{period_begin.month}月{period_begin.day}日"
+        f"至{period_end.year}年{period_end.month}月{period_end.day}日持有期季报"
+    )
     png_path = output_dir / f"{stem}.png"
     pdf_path = output_dir / f"{stem}.pdf"
     fig.savefig(png_path, dpi=170, facecolor=C_BG, bbox_inches="tight", pad_inches=0.12)

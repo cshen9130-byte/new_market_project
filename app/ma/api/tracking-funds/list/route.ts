@@ -21,8 +21,9 @@ import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
-import { collapseAliasedTrackingIdentities, purgeValuationFilenameIdentities, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
+import { collapseAliasedTrackingIdentities, purgeValuationFilenameIdentities, REGISTER_POOL_TABLE, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
 import { expandFundSearchKeywords, sqlFundNameKey, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
+import { resolveTrackingKeywordBeianCodes } from "@/lib/server/tracking-keyword-search"
 import { sqlBeianFamilyKey } from "@/lib/server/share-class-product"
 import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import { cleanValuationDerivedFundName, isValuationReportTitle } from "@/lib/server/valuation-filename"
@@ -535,16 +536,26 @@ function sourceIndependentStrategyExprs(
 /**
  * Parent filing (SBUK40 / 贞元虎踞一号) is the same product as its A/B/C row.
  * Keep the share class; hide the parent when both are in this list.
+ *
+ * Callers must read from a MATERIALIZED `keyed` CTE that already has
+ * family_key / name_key / is_share_code. Computing those regexes inside the
+ * EXISTS made 「全部」 a ~6s nested loop (one scan per fund) before LIMIT.
  */
-function sqlHideParentBesideShareClass(rowAlias: string, siblingFrom: string): string {
+function sqlShareClassKeyColumns(alias: string): string {
+  return `${sqlBeianFamilyKey(`${alias}.beian_hao`)} AS family_key,
+    ${sqlFundNameKey(`${alias}.product_name`)} AS name_key,
+    (UPPER(BTRIM(${alias}.beian_hao)) ~ '[ABC]$') AS is_share_code`
+}
+
+function sqlHideParentBesideShareClass(rowAlias: string, siblingFrom = "keyed"): string {
   return `NOT (
-    UPPER(BTRIM(${rowAlias}.beian_hao)) !~ '[ABC]$'
+    NOT ${rowAlias}.is_share_code
     AND EXISTS (
       SELECT 1 FROM ${siblingFrom} sib
-      WHERE sib.beian_hao <> ${rowAlias}.beian_hao
-        AND UPPER(BTRIM(sib.beian_hao)) ~ '[ABC]$'
-        AND ${sqlBeianFamilyKey("sib.beian_hao")} = ${sqlBeianFamilyKey(`${rowAlias}.beian_hao`)}
-        AND ${sqlFundNameKey("sib.product_name")} IS NOT DISTINCT FROM ${sqlFundNameKey(`${rowAlias}.product_name`)}
+      WHERE sib.is_share_code
+        AND sib.beian_hao <> ${rowAlias}.beian_hao
+        AND sib.family_key = ${rowAlias}.family_key
+        AND sib.name_key IS NOT DISTINCT FROM ${rowAlias}.name_key
     )
   )`
 }
@@ -571,20 +582,29 @@ function buildCachedFromClause(
         FROM (${teamVisibleTrackingFundsUnionSql()}
         ) f
         GROUP BY f.beian_hao
+      ),
+      keyed AS MATERIALIZED (
+        SELECT
+          g.beian_hao,
+          g.product_name,
+          g.first_added_at,
+          ${sqlShareClassKeyColumns("g")},
+          (g.beian_hao ~ '^[A-Za-z0-9]{4,16}$') AS is_code,
+          ${sqlNameOrCodeShareClass("g.product_name", "g.beian_hao")} AS share_class
+        FROM grouped g
       )
-      SELECT g.beian_hao, g.product_name, g.first_added_at
-      FROM grouped g
+      SELECT k.beian_hao, k.product_name, k.first_added_at
+      FROM keyed k
       WHERE (
-        g.beian_hao ~ '^[A-Za-z0-9]{4,16}$'
+        k.is_code
         OR NOT EXISTS (
-           SELECT 1 FROM grouped c
-           WHERE c.beian_hao ~ '^[A-Za-z0-9]{4,16}$'
-             AND ${sqlFundNameKey("c.product_name")} = ${sqlFundNameKey("g.product_name")}
-             AND ${sqlNameOrCodeShareClass("c.product_name", "c.beian_hao")}
-                 IS NOT DISTINCT FROM ${sqlNameOrCodeShareClass("g.product_name", "g.beian_hao")}
+           SELECT 1 FROM keyed c
+           WHERE c.is_code
+             AND c.name_key = k.name_key
+             AND c.share_class IS NOT DISTINCT FROM k.share_class
          )
       )
-        AND ${sqlHideParentBesideShareClass("g", "grouped")}
+        AND ${sqlHideParentBesideShareClass("k")}
     ) i
     ${LIST_CACHE_JOINS}`
   }
@@ -621,9 +641,15 @@ function buildCachedFromClause(
         FROM user_custom_pool p
         WHERE p.register_number IS NOT NULL ${poolFilter}
         ORDER BY UPPER(BTRIM(register_number)), p.updated_at DESC NULLS LAST, p.id DESC
+      ),
+      keyed AS MATERIALIZED (
+        SELECT g.*,
+          ${sqlShareClassKeyColumns("g")}
+        FROM grouped g
       )
-      SELECT * FROM grouped g
-      WHERE ${sqlHideParentBesideShareClass("g", "grouped")}
+      SELECT k.beian_hao, k.product_name, k.first_added_at
+      FROM keyed k
+      WHERE ${sqlHideParentBesideShareClass("k")}
     ) i
     ${LIST_CACHE_JOINS}`
   }
@@ -641,11 +667,309 @@ function buildCachedFromClause(
       FROM ${sourceTable} p
       WHERE p.register_number IS NOT NULL
       GROUP BY p.register_number, p.product_name
+    ),
+    keyed AS MATERIALIZED (
+      SELECT g.*,
+        ${sqlShareClassKeyColumns("g")}
+      FROM grouped g
     )
-    SELECT * FROM grouped g
-    WHERE ${sqlHideParentBesideShareClass("g", "grouped")}
+    SELECT k.beian_hao, k.product_name, k.first_added_at
+    FROM keyed k
+    WHERE ${sqlHideParentBesideShareClass("k")}
   ) i
   ${LIST_CACHE_JOINS}`
+}
+
+type CachedListOpts = {
+  page: number
+  pageSize: number
+  offset: number
+  sortKey: string
+  sortDir: string
+  pool: string
+  requestedPool: string | null
+  isCustomPool: boolean
+  isMineAllPool: boolean
+  keyword: string
+  strategyL1: string
+  strategyL2: string
+  strategyL3: string
+  strategySource: StrategySource
+  orgSize: string
+  teamTagMode: string
+  teamTags: string[]
+  personalTagMode: string
+  personalTags: string[]
+  personalUserKey: string
+  asOfDate: string
+  navSource?: string
+}
+
+/**
+ * Keyword search reads the list cache by beian code instead of ILIKE-ing the
+ * full pool union (that union cannot push a name predicate down, so every
+ * keystroke rebuilt every tracked fund).
+ * Returns null when the cache has no name hit and the caller should use the
+ * full scan.
+ */
+async function buildFastKeywordCachedBody(opts: CachedListOpts): Promise<{
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+  data: TrackRow[]
+} | null> {
+  const codes = await resolveTrackingKeywordBeianCodes({
+    keyword: opts.keyword,
+    pool: opts.pool,
+    isCustomPool: opts.isCustomPool,
+    isMineAllPool: opts.isMineAllPool,
+  })
+  if (codes == null) return null
+  if (codes.length === 0) {
+    return { page: opts.page, pageSize: opts.pageSize, total: 0, totalPages: 0, data: [] }
+  }
+
+  const { l1: strategyL1Expr, l2: strategyL2Expr, l3: strategyL3Expr } =
+    cachedStrategyExprs(opts.pool, opts.strategySource)
+  const indepStrategy = cachedIndependentStrategyExprs()
+  const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
+  const filterParams: unknown[] = [codes]
+  const where: string[] = [
+    `cache.beian_hao = ANY($1::text[])`,
+    `NOT ${sqlSubjectNameIsStockCostBucket("COALESCE(cache.product_name, '')")}`,
+  ]
+  appendStrategyLevelFilter(opts.strategyL1, strategyL1Expr, where, filterParams)
+  appendStrategyLevelFilter(opts.strategyL2, strategyL2Expr, where, filterParams)
+  appendStrategyLevelFilter(opts.strategyL3, strategyL3Expr, where, filterParams, "ilike")
+  if (opts.teamTags.length > 0) {
+    filterParams.push(opts.teamTags)
+    if (opts.teamTagMode === "or") {
+      where.push(
+        `EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = ANY($${filterParams.length}::text[]))`,
+      )
+    } else {
+      where.push(
+        `NOT EXISTS (SELECT 1 FROM unnest($${filterParams.length}::text[]) req(tag) WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = req.tag))`,
+      )
+    }
+  }
+  if (opts.personalTags.length > 0 && opts.personalUserKey) {
+    await query(`
+      CREATE TABLE IF NOT EXISTS ops_personal_fund_tags (
+        id         SERIAL PRIMARY KEY,
+        beian_hao  VARCHAR(64) NOT NULL,
+        tag_name   VARCHAR(255) NOT NULL,
+        user_key   VARCHAR(255) NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (beian_hao, tag_name, user_key)
+      )
+    `)
+    filterParams.push(opts.personalUserKey)
+    const userKeyParam = filterParams.length
+    const clauses = opts.personalTags.map((tag) => {
+      filterParams.push(tag)
+      return `EXISTS (
+        SELECT 1 FROM ops_personal_fund_tags pt
+        WHERE pt.beian_hao = cache.beian_hao
+          AND pt.user_key = $${userKeyParam}
+          AND pt.tag_name = $${filterParams.length}
+      )`
+    })
+    where.push(opts.personalTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+  }
+  const scaleValue = ORG_SIZE_SCALE[opts.orgSize]
+  if (scaleValue) {
+    filterParams.push(scaleValue)
+    where.push(`EXISTS (
+      SELECT 1 FROM basicinfo_bfl_track b
+      WHERE b.scale = $${filterParams.length}
+        AND (b.record_key = cache.beian_hao OR b.register_number = cache.beian_hao)
+    )`)
+  }
+
+  const whereClause = `WHERE ${where.join(" AND ")}`
+  const sortMap: Record<string, string> = {
+    product_name: "cache.product_name",
+    latest_nav: "cache.unit_nav",
+    latest_nav_date: "cache.nav_date",
+    latest_price_change: "cache.return_pct",
+    ret_1w: "cache.ret_1w",
+    ret_1m: "cache.ret_1m",
+    ret_3m: "cache.ret_3m",
+    ret_6m: "cache.ret_6m",
+    ret_1y: "cache.ret_1y",
+    sharpe_1y: "cache.sharpe_1y",
+    calmar_1y: "cache.calmar_1y",
+  }
+  const sortExpr = sortMap[opts.sortKey]
+  const pageParams = [...filterParams]
+  let orderSql = `${sortExpr ?? "cache.product_name"} ${opts.sortDir} NULLS LAST, cache.product_name ASC`
+  if (!sortExpr) {
+    const prefixes = expandFundSearchKeywords(opts.keyword).map((term) => `${term}%`)
+    pageParams.push(prefixes)
+    const prefixIdx = pageParams.length
+    orderSql = `CASE
+      WHEN cache.product_name ILIKE ANY($${prefixIdx}::text[])
+        OR cache.beian_hao ILIKE ANY($${prefixIdx}::text[])
+        OR COALESCE(cache.short_name, '') ILIKE ANY($${prefixIdx}::text[])
+      THEN 0 ELSE 1
+    END, LENGTH(cache.product_name), cache.product_name`
+  }
+  const pLimit = pageParams.length + 1
+  const pOffset = pageParams.length + 2
+
+  const [countRow, pageRows] = await Promise.all([
+    query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM ops_tracking_funds_list_cache cache ${whereClause}`,
+      filterParams,
+    ),
+    query<{
+      beian_hao: string
+      product_name: string
+      short_name: string | null
+      strategy_l1: string | null
+      strategy_l2: string | null
+      platform_strategy_l1: string | null
+      platform_strategy_l2: string | null
+      platform_strategy_l3: string | null
+      company_strategy_l1: string | null
+      company_strategy_l2: string | null
+      company_strategy_l3: string | null
+      latest_nav: string | null
+      latest_nav_date: string | null
+      latest_price_change: string | null
+      ret_1w: string | null
+      ret_1m: string | null
+      ret_3m: string | null
+      ret_6m: string | null
+      ret_1y: string | null
+      sharpe_1y: string | null
+      calmar_1y: string | null
+    }>(
+      `SELECT
+         cache.beian_hao,
+         cache.product_name,
+         cache.short_name,
+         ${strategyL1Expr} AS strategy_l1,
+         ${strategyL2Expr} AS strategy_l2,
+         ${indepStrategy.platform_l1} AS platform_strategy_l1,
+         ${indepStrategy.platform_l2} AS platform_strategy_l2,
+         ${indepStrategy.platform_l3} AS platform_strategy_l3,
+         ${indepStrategy.company_l1} AS company_strategy_l1,
+         ${indepStrategy.company_l2} AS company_strategy_l2,
+         ${indepStrategy.company_l3} AS company_strategy_l3,
+         cache.unit_nav::text AS latest_nav,
+         cache.nav_date::text AS latest_nav_date,
+         cache.return_pct::text AS latest_price_change,
+         cache.ret_1w::text,
+         cache.ret_1m::text,
+         cache.ret_3m::text,
+         cache.ret_6m::text,
+         cache.ret_1y::text,
+         cache.sharpe_1y::text,
+         cache.calmar_1y::text
+       FROM ops_tracking_funds_list_cache cache
+       ${whereClause}
+       ORDER BY ${orderSql}
+       LIMIT $${pLimit} OFFSET $${pOffset}`,
+      [...pageParams, opts.pageSize, opts.offset],
+    ),
+  ])
+
+  const pageCodes = pageRows.map((row) => row.beian_hao)
+  const addedAt = new Map<string, string>()
+  if (pageCodes.length > 0) {
+    try {
+      const addedRows = await query<{ register_number: string; first_added_at: string | null }>(
+        firstAddedSql(opts),
+        firstAddedParams(opts, pageCodes),
+      )
+      for (const row of addedRows) {
+        if (row.register_number && row.first_added_at) {
+          addedAt.set(row.register_number.trim().toUpperCase(), row.first_added_at)
+        }
+      }
+    } catch (err) {
+      console.error("[tracking-funds/list] keyword first_added_at", err)
+    }
+  }
+
+  const total = parseInt(countRow[0]?.total ?? "0", 10)
+  const rows: TrackRow[] = pageRows.map((row) => ({
+    beian_hao: row.beian_hao,
+    product_name: row.product_name,
+    short_name: row.short_name,
+    strategy_l1: row.strategy_l1,
+    strategy_l2: row.strategy_l2,
+    platform_strategy_l1: row.platform_strategy_l1,
+    platform_strategy_l2: row.platform_strategy_l2,
+    platform_strategy_l3: row.platform_strategy_l3,
+    company_strategy_l1: row.company_strategy_l1,
+    company_strategy_l2: row.company_strategy_l2,
+    company_strategy_l3: row.company_strategy_l3,
+    manager: null,
+    inception_date: null,
+    first_added_at: addedAt.get(row.beian_hao.trim().toUpperCase()) ?? null,
+    latest_nav: row.latest_nav,
+    latest_nav_date: row.latest_nav_date,
+    latest_price_change: row.latest_price_change,
+    ret_1w: row.ret_1w,
+    ret_1m: row.ret_1m,
+    ret_3m: row.ret_3m,
+    ret_6m: row.ret_6m,
+    ret_1y: row.ret_1y,
+    sharpe_1y: row.sharpe_1y,
+    calmar_1y: row.calmar_1y,
+  }))
+  const enrichedRows = await enrichTrackFundMetricsRows(rows, opts.asOfDate)
+  return {
+    page: opts.page,
+    pageSize: opts.pageSize,
+    total,
+    totalPages: Math.ceil(total / opts.pageSize),
+    data: sanitizeTrackRows(await overlayAmacOfficialProductNames(enrichedRows)),
+  }
+}
+
+function firstAddedSql(opts: CachedListOpts): string {
+  const added = SHANGHAI_DATE_EXPR("imported_at")
+  if (opts.isCustomPool) {
+    const poolSql = opts.isMineAllPool
+      ? "(pool_key = 'mine_default' OR pool_key LIKE 'mine_custom_%')"
+      : "pool_key = $2"
+    return `SELECT register_number, MIN(${added})::text AS first_added_at
+      FROM user_custom_pool
+      WHERE register_number = ANY($1::text[]) AND ${poolSql}
+      GROUP BY register_number`
+  }
+  if (opts.pool === "bfl_ops") {
+    return `SELECT register_number, MIN(${SHANGHAI_DATE_EXPR("imported_at")})::text AS first_added_at
+      FROM type6_ops_team_full
+      WHERE register_number = ANY($1::text[])
+      GROUP BY register_number`
+  }
+  if (opts.pool === "all") {
+    return `SELECT register_number, MIN(first_added_at)::text AS first_added_at FROM (
+      SELECT register_number, ${added} AS first_added_at FROM tracking_pool WHERE register_number = ANY($1::text[])
+      UNION ALL SELECT register_number, ${added} FROM selected_pool WHERE register_number = ANY($1::text[])
+      UNION ALL SELECT register_number, ${added} FROM core_pool WHERE register_number = ANY($1::text[])
+      UNION ALL SELECT register_number, ${added} FROM hy_tracking_pool WHERE register_number = ANY($1::text[])
+      UNION ALL SELECT register_number, ${added} FROM fof_mom_tracking WHERE register_number = ANY($1::text[])
+      UNION ALL SELECT register_number, ${added} FROM user_custom_pool WHERE register_number = ANY($1::text[])
+    ) s
+    GROUP BY register_number`
+  }
+  const table = REGISTER_POOL_TABLE[opts.pool] ?? "tracking_pool"
+  return `SELECT register_number, MIN(${added})::text AS first_added_at
+    FROM ${table}
+    WHERE register_number = ANY($1::text[])
+    GROUP BY register_number`
+}
+
+function firstAddedParams(opts: CachedListOpts, pageCodes: string[]): unknown[] {
+  if (opts.isCustomPool && !opts.isMineAllPool && opts.requestedPool) return [pageCodes, opts.requestedPool]
+  return [pageCodes]
 }
 
 async function handleCachedTrackingList(opts: {
@@ -687,6 +1011,15 @@ async function handleCachedTrackingList(opts: {
   try {
     const responseBody = await withListResponseCache(serverCacheKey, async () => {
       await ensureTrackingFundsListCachePopulated()
+
+      if (keyword) {
+        try {
+          const fast = await buildFastKeywordCachedBody(opts)
+          if (fast) return fast
+        } catch (err) {
+          console.error("[tracking-funds/list] fast keyword", err)
+        }
+      }
 
       const { l1: strategyL1Expr, l2: strategyL2Expr, l3: strategyL3Expr } =
         cachedStrategyExprs(pool, strategySource)
@@ -1063,7 +1396,9 @@ export async function GET(req: Request) {
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
     "@/lib/server/account-risk-direct-nav-sync"
   )
-  await reconcileAccountRiskDirectNavDisplayNamesSafe()
+  // Name repair and pool sync must not sit in front of the table. They invalidate
+  // the list cache themselves when they actually change a row.
+  void reconcileAccountRiskDirectNavDisplayNamesSafe()
   const userId = String(req.headers.get("x-market-user-id") || "").trim()
   recordInteractiveUserTraffic("/ma/api/tracking-funds/list", "GET", userId)
   const { searchParams } = new URL(req.url)
@@ -1128,7 +1463,9 @@ export async function GET(req: Request) {
       const { ensureFofUnderlyingInJyTrackingPool } = await import(
         "@/lib/server/fof-jy-tracking-pool-sync"
       )
-      await ensureFofUnderlyingInJyTrackingPool()
+      void ensureFofUnderlyingInJyTrackingPool().catch((err) => {
+        console.warn("[tracking-funds/list] FOF→JY跟踪池 sync skipped:", err)
+      })
     } catch (err) {
       console.warn("[tracking-funds/list] FOF→JY跟踪池 sync skipped:", err)
     }
@@ -1216,6 +1553,15 @@ export async function GET(req: Request) {
         FROM all_funds
         ORDER BY beian_hao, priority ASC
       ),
+      keyed AS MATERIALIZED (
+        SELECT d.beian_hao, d.product_name,
+          ${sqlShareClassKeyColumns("d")}
+        FROM deduped d
+      ),
+      visible AS (
+        SELECT beian_hao, product_name FROM keyed k
+        WHERE ${sqlHideParentBesideShareClass("k")}
+      ),
       first_added AS (
         SELECT beian_hao, MIN(added_at) AS added_at FROM all_funds GROUP BY beian_hao
       ),
@@ -1233,7 +1579,7 @@ export async function GET(req: Request) {
           o.platform_strategy_two,
           o.platform_strategy_three,
           ${SHANGHAI_DATE_EXPR("fa.added_at")} AS first_added_at
-        FROM deduped d
+        FROM visible d
         LEFT JOIN first_added fa ON fa.beian_hao = d.beian_hao
         LEFT JOIN LATERAL (
           SELECT * FROM type6_ops_team_full o
@@ -1257,7 +1603,6 @@ export async function GET(req: Request) {
             ELSE NULL
           END AS strategy_company
         ) tag_data
-        WHERE ${sqlHideParentBesideShareClass("d", "deduped")}
       )`
     : pool === "bfl_ops"
     ? `WITH source AS (
@@ -1340,9 +1685,14 @@ export async function GET(req: Request) {
         WHERE p.register_number IS NOT NULL
           ${isCustomPool ? (isMineAllPool ? "AND (p.pool_key = 'mine_default' OR p.pool_key LIKE 'mine_custom_%')" : "AND p.pool_key = $1") : ""}
       ),
+      keyed AS MATERIALIZED (
+        SELECT g.*,
+          ${sqlShareClassKeyColumns("g")}
+        FROM grouped g
+      ),
       source AS (
-        SELECT * FROM grouped g
-        WHERE ${sqlHideParentBesideShareClass("g", "grouped")}
+        SELECT * FROM keyed k
+        WHERE ${sqlHideParentBesideShareClass("k")}
       )`
     : `WITH source AS (
         SELECT

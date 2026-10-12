@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSProperties, type MouseEvent, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -14,6 +14,7 @@ import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { ManagerSearchInput, ProductKeywordSearchInput } from "@/components/ma/private-fund-filter-search"
 import { HeaderGlobalSearch } from "@/components/ma/header-global-search"
+import { TrackingKeywordSearch } from "@/components/ma/tracking-keyword-search"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { CopyableManagerName, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -425,19 +426,39 @@ function readListCache(key: string): ListCacheEntry | null {
   }
 }
 
+/** Same filters, ignoring the calendar day, so opening the list tomorrow still paints yesterday's rows. */
+function listCacheLatestKey(key: string): string {
+  return key.replace(/cutoff=\d{4}-\d{2}-\d{2}/, "cutoff=latest")
+}
+
+function readListCachePreferLatest(key: string): ListCacheEntry | null {
+  const exact = readListCache(key)
+  if (exact) return exact
+  if (typeof window === "undefined") return null
+  if (!key.includes(`cutoff=${shanghaiTodayIsoDateClient()}`)) return null
+  return readListCache(listCacheLatestKey(key))
+}
+
 function writeListCache(key: string, entry: ListCacheEntry): void {
   const stamped: ListCacheEntry = { ...entry, ts: Date.now() }
   listMemCache.set(key, stamped)
+  const snap = key.includes(`cutoff=${shanghaiTodayIsoDateClient()}`) ? listCacheLatestKey(key) : null
+  if (snap) listMemCache.set(snap, stamped)
   if (typeof window === "undefined") return
+  const payload = JSON.stringify(stamped)
+  const persist = () => {
+    localStorage.setItem(LIST_CACHE_PREFIX + key, payload)
+    if (snap) localStorage.setItem(LIST_CACHE_PREFIX + snap, payload)
+  }
   try {
-    localStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
+    persist()
   } catch {
     // localStorage full — drop cached lists and retry once.
     try {
       for (const k of Object.keys(localStorage)) {
         if (k.startsWith(LIST_CACHE_PREFIX)) localStorage.removeItem(k)
       }
-      localStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
+      persist()
     } catch { /* give up; in-memory cache still works */ }
   }
 }
@@ -2349,7 +2370,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
   const [teamTags, setTeamTags] = useState<string[]>([])
   const [orgSizeFilter, setOrgSizeFilter] = useState("不限")
-  const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortCol, setSortCol] = useState("")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
@@ -2462,7 +2482,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const addFundSearchRef = useRef<ReturnType<typeof setTimeout>|null>(null)
   const [myFundClass, setMyFundClass] = useState<"private" | "public">("private")
   const [myOrgSize, setMyOrgSize] = useState("不限")
-  const [myKwInput, setMyKwInput] = useState("")
   const [myKeyword, setMyKeyword] = useState("")
   const [myPersonalTagMode, setMyPersonalTagMode] = useState<"and" | "or">("and")
   const [myPersonalTagOptions, setMyPersonalTagOptions] = useState<string[]>([])
@@ -2515,6 +2534,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const listPoolSupported = isMineTab ? isMyPoolSupported : isSupportedPool
 
   function currentUserId(): string {
+    if (typeof window === "undefined") return ""
     try {
       const u = JSON.parse(localStorage.getItem("currentUser") || "null")
       return u?.id ?? ""
@@ -3085,13 +3105,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     return btns
   }
 
-  useEffect(() => {
-    if (isWeeklyTab) return
-    if (!listPoolSupported) {
-      setData([])
-      setTotal(0)
-      return
-    }
+  function buildTrackingListRequest(): { params: URLSearchParams; cacheKey: string } | null {
+    if (isWeeklyTab || !listPoolSupported) return null
     const params = new URLSearchParams({
       page: String(page), sort: sortCol, dir: sortDir,
       pool: listPool,
@@ -3111,12 +3126,57 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       params.set("personal_tag_mode", myPersonalTagMode)
       myPersonalTags.forEach((tag) => params.append("personal_tag", tag))
     }
+    const cacheKey = `${isMineTab ? "mine" : "team"}\u0000${currentUserId()}\u0000${params.toString()}`
+    return { params, cacheKey }
+  }
+
+  const trackListDeps = [listPool, listPoolSupported, isMineTab, isWeeklyTab, isOps, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey] as const
+
+  // Paint the last list before the browser draws, including yesterday's rows when
+  // today's cutoff key is still empty. The effect below refreshes in the background.
+  useLayoutEffect(() => {
+    if (isWeeklyTab) return
+    if (!listPoolSupported) {
+      setData([])
+      setTotal(0)
+      return
+    }
+    const req = buildTrackingListRequest()
+    if (!req) return
+    const cached = readListCachePreferLatest(req.cacheKey)
+    const scopeKey = `${isMineTab ? "mine" : "team"}\u0000${listPool}`
+    const scopeChanged = lastTrackListScopeRef.current !== "" && lastTrackListScopeRef.current !== scopeKey
+    lastTrackListScopeRef.current = scopeKey
+    if (cached) {
+      setData(cached.data)
+      setTotal(cached.total)
+      setLoading(false)
+      return
+    }
+    if (scopeChanged) {
+      setData([])
+      setTotal(0)
+    }
+    setLoading(true)
+    // buildTrackingListRequest closes over the same inputs as trackListDeps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, trackListDeps)
+
+  useEffect(() => {
+    if (isWeeklyTab) return
+    if (!listPoolSupported) {
+      setData([])
+      setTotal(0)
+      return
+    }
+    const req = buildTrackingListRequest()
+    if (!req) return
+    const { params, cacheKey } = req
 
     // Stale-while-revalidate: render cached rows instantly, then refresh in the
     // background so pool switches / revisits feel instant while still picking up
     // server-side changes (new NAV, edits, etc.).
-    const cacheKey = `${isMineTab ? "mine" : "team"}\u0000${currentUserId()}\u0000${params.toString()}`
-    const cached = readListCache(cacheKey)
+    const cached = readListCachePreferLatest(cacheKey)
     const scopeKey = `${isMineTab ? "mine" : "team"}\u0000${listPool}`
     const scopeChanged = lastTrackListScopeRef.current !== "" && lastTrackListScopeRef.current !== scopeKey
     lastTrackListScopeRef.current = scopeKey
@@ -3156,7 +3216,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           const nextParams = new URLSearchParams(params)
           nextParams.set("page", String(nextPage))
           const nextKey = `${isMineTab ? "mine" : "team"}\u0000${currentUserId()}\u0000${nextParams.toString()}`
-          if (!readListCache(nextKey)) {
+          if (!readListCachePreferLatest(nextKey)) {
             fetch(`/ma/api/tracking-funds/list?${nextParams}`, {
               headers: userFetchHeaders(),
               signal: ac.signal,
@@ -3473,18 +3533,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             {/* 关键字 */}
             <div className="flex items-center px-4 py-2">
               <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
-              <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-60">
-                <input
-                  className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
-                  placeholder="输入产品/产品备案号，回车搜索"
-                  value={kwInput}
-                  onChange={(e) => setKwInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { setKeyword(kwInput); setPage(1) } }}
-                />
-                <button onClick={() => { setKeyword(kwInput); setPage(1) }} className="text-muted-foreground hover:text-foreground transition-colors">
-                  <Search className="h-3 w-3" />
-                </button>
-              </div>
+              <TrackingKeywordSearch
+                value={keyword}
+                pool={listPool}
+                onChange={(q) => { setKeyword(q); setPage(1) }}
+              />
               <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none ml-3">
                 <input type="checkbox" className="rounded h-3 w-3" />
                 收藏
@@ -3497,16 +3550,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           {/* Toolbar */}
           {isOps ? (
           <div className="flex items-center justify-between mb-3 flex-shrink-0 gap-3">
-            <div className="flex items-center border rounded-lg px-3 h-8 gap-2 bg-background flex-1 max-w-md">
-              <Search className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-              <input
-                className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
-                placeholder="请输入产品/产品备案号，按回车搜索"
-                value={kwInput}
-                onChange={(e) => setKwInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") { setKeyword(kwInput); setPage(1) } }}
-              />
-            </div>
+            <TrackingKeywordSearch
+              variant="toolbar"
+              className="flex-1 max-w-md"
+              value={keyword}
+              pool={listPool}
+              onChange={(q) => { setKeyword(q); setPage(1) }}
+            />
             <div className="flex items-center gap-3 text-xs text-zinc-600 flex-shrink-0">
               <button
                 onClick={() => setShowAuditLogDialog(true)}
@@ -4173,20 +4223,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             {/* 关键字 */}
             <div className="flex items-center px-4 py-2">
               <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
-              <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-60">
-                <input
-                  className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
-                  placeholder="输入产品/产品备案号，回车搜索"
-                  value={myKwInput}
-                  onChange={(e) => setMyKwInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && setMyKeyword(myKwInput)}
-                />
-                <button
-                  onClick={() => setMyKeyword(myKwInput)}
-                  className="text-muted-foreground hover:text-foreground transition-colors">
-                  <Search className="h-3 w-3" />
-                </button>
-              </div>
+              <TrackingKeywordSearch
+                value={myKeyword}
+                pool={listPool}
+                onChange={(q) => { setMyKeyword(q); setPage(1) }}
+              />
             </div>
           </div>
           {/* Toolbar */}
@@ -14689,6 +14730,11 @@ type TeamDataNavAnomaly = {
   date: string
   ratio: number
   snippet: { date: string; value: number }[]
+  source_count?: number
+  sources?: string[]
+  cause?: "source" | "rules" | "unknown"
+  cause_label?: string
+  cause_detail?: string
 }
 
 function formatAnomalyMove(ratio: number): string {
@@ -14885,6 +14931,7 @@ function OperationsTeamDataView({
   const [navLagFilter, setNavLagFilter] = useState<"all" | "behind_2w" | "within_2w">("all")
   const [navGapFilter, setNavGapFilter] = useState<"all" | "interior_2w" | "no_interior_2w">("all")
   const [navAnomalyFilter, setNavAnomalyFilter] = useState<"all" | "jump" | "no_jump">("all")
+  const [navAnomalyCauseFilter, setNavAnomalyCauseFilter] = useState<"all" | "source" | "rules">("all")
   const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email" | "fof99">("all")
   const [operationDateFilter, setOperationDateFilter] = useState<"all" | "present" | "absent">("all")
   const [productClassFilter, setProductClassFilter] = useState<"all" | "private">(isPlatform ? "private" : "all")
@@ -14962,7 +15009,7 @@ function OperationsTeamDataView({
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const showNavAnomalyCol = navAnomalyFilter === "jump"
   const showOperationDateCol = operationDateFilter === "present"
-  const teamDataColCount = 14 + (showNavAnomalyCol ? 1 : 0) + (showOperationDateCol ? 1 : 0)
+  const teamDataColCount = 14 + (showNavAnomalyCol ? 2 : 0) + (showOperationDateCol ? 1 : 0)
 
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "bfl_ops" })
@@ -14974,7 +15021,7 @@ function OperationsTeamDataView({
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, pageSize])
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -14993,6 +15040,9 @@ function OperationsTeamDataView({
     if (navLagFilter !== "all") params.set("nav_lag", navLagFilter)
     if (navGapFilter !== "all") params.set("nav_gap", navGapFilter)
     if (navAnomalyFilter !== "all") params.set("nav_anomaly", navAnomalyFilter)
+    if (navAnomalyFilter === "jump" && navAnomalyCauseFilter !== "all") {
+      params.set("nav_anomaly_cause", navAnomalyCauseFilter)
+    }
     if (productSourceFilter !== "all") params.set("product_source", productSourceFilter)
     if (operationDateFilter !== "all") params.set("operation_date", operationDateFilter)
     if (productClassFilter !== "all") params.set("product_class", productClassFilter)
@@ -15053,7 +15103,7 @@ function OperationsTeamDataView({
       cancelled = true
       ac.abort()
     }
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix])
 
   useEffect(() => {
     let cancelled = false
@@ -15678,7 +15728,11 @@ function OperationsTeamDataView({
                 <span
                   key={key}
                   title={title || undefined}
-                  onClick={() => { setNavAnomalyFilter(key); setPage(1) }}
+                  onClick={() => {
+                    setNavAnomalyFilter(key)
+                    if (key !== "jump") setNavAnomalyCauseFilter("all")
+                    setPage(1)
+                  }}
                   className={[
                     "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                     navAnomalyFilter === key
@@ -15691,6 +15745,32 @@ function OperationsTeamDataView({
               ))}
             </div>
           </div>
+          {navAnomalyFilter === "jump" && (
+            <div className="flex items-center">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">异常成因：</span>
+              <div className="flex items-center gap-1">
+                {([
+                  ["all", "不限", ""],
+                  ["rules", "计算或修正导致", "原始源本身没有这一步，是合并、复权计算或修正规则产生的"],
+                  ["source", "源数据异常", "跳变或尖刺已在某个源的原始净值里"],
+                ] as const).map(([key, label, title]) => (
+                  <span
+                    key={key}
+                    title={title || undefined}
+                    onClick={() => { setNavAnomalyCauseFilter(key); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                      navAnomalyCauseFilter === key
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
@@ -15832,7 +15912,7 @@ function OperationsTeamDataView({
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 + (showNavAnomalyCol ? 200 : 0) + (showOperationDateCol ? 120 : 0) }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 + (showNavAnomalyCol ? 390 : 0) + (showOperationDateCol ? 120 : 0) }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -15846,6 +15926,14 @@ function OperationsTeamDataView({
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav")}>团队单位净值<TeamSortIcon col="team_nav" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav_date")}>团队净值日期<TeamSortIcon col="team_nav_date" /></th>
               {showNavAnomalyCol && <th className={`${thBase} min-w-[210px]`}>异常</th>}
+              {showNavAnomalyCol && (
+                <th
+                  className={`${thBase} min-w-[180px]`}
+                  title="这条净值用了几个数据源。源数据异常：跳变或尖刺已在某个源的原始净值里。计算或修正导致：原始源本身没有这一步，是合并、复权计算或修正规则产生的。"
+                >
+                  异常成因
+                </th>
+              )}
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("valuation_date")}>估值表日期<TeamSortIcon col="valuation_date" /></th>
               <th className={`${thBase} min-w-[80px]`}>有无估值表</th>
               <th className={`${thBase} min-w-[90px]`}>更新方式</th>
@@ -15929,6 +16017,40 @@ function OperationsTeamDataView({
                             <div className="text-[10px] tabular-nums text-red-600">{formatAnomalyMove(row.nav_anomaly.ratio)}</div>
                           </div>
                           <NavAnomalySpark points={row.nav_anomaly.snippet} markDate={row.nav_anomaly.date} />
+                        </div>
+                      ) : (
+                        <span className="text-zinc-400">—</span>
+                      )}
+                    </td>
+                  )}
+                  {showNavAnomalyCol && (
+                    <td className={cell}>
+                      {row.nav_anomaly ? (
+                        <div className="leading-tight" title={row.nav_anomaly.cause_detail}>
+                          <div className="tabular-nums">
+                            {row.nav_anomaly.source_count ?? 0} 个数据源
+                          </div>
+                          {!!row.nav_anomaly.sources?.length && (
+                            <div className="mt-0.5 text-[10px] text-zinc-500">
+                              {row.nav_anomaly.sources.join("、")}
+                            </div>
+                          )}
+                          <span
+                            className={`mt-1 inline-block px-1 py-0.5 rounded text-[10px] border ${
+                              row.nav_anomaly.cause === "source"
+                                ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800"
+                                : row.nav_anomaly.cause === "rules"
+                                  ? "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800"
+                                  : "bg-zinc-50 text-zinc-500 border-zinc-200 dark:bg-zinc-800/50 dark:text-zinc-400 dark:border-zinc-700"
+                            }`}
+                          >
+                            {row.nav_anomaly.cause_label ?? "未能判断"}
+                          </span>
+                          {row.nav_anomaly.cause_detail && (
+                            <div className="mt-0.5 max-w-[16rem] text-[10px] text-zinc-500">
+                              {row.nav_anomaly.cause_detail}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <span className="text-zinc-400">—</span>

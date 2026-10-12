@@ -36,6 +36,14 @@ const BENCH2_OPTIONS = [
   { key: "IC", label: "中证500" },
 ] as const
 
+const NAV_FREQUENCY_OPTIONS = [
+  { value: "weekly", label: "周频" },
+  { value: "daily", label: "日频" },
+  { value: "monthly", label: "月频" },
+] as const
+
+type NavFrequency = (typeof NAV_FREQUENCY_OPTIONS)[number]["value"]
+
 function userFetchHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {}
   try {
@@ -107,6 +115,8 @@ type GenerateResult = {
   periodStart: string
   periodEnd: string
   previewUrl: string
+  pngFileName: string
+  pdfFileName: string
   download: { png: string; pdf: string }
 }
 
@@ -231,6 +241,8 @@ export function ProductQuarterlyReportDialog({
   const [reportTitle, setReportTitle] = useState("")
   const [commentary, setCommentary] = useState("")
   const [brandName, setBrandName] = useState("")
+  const [investmentManager, setInvestmentManager] = useState("")
+  const [navFrequency, setNavFrequency] = useState<NavFrequency>("weekly")
   const [navRange, setNavRange] = useState<{ start: string | null; end: string | null }>({
     start: null,
     end: null,
@@ -250,6 +262,8 @@ export function ProductQuarterlyReportDialog({
     setReportTitle("")
     setCommentary("")
     setBrandName("")
+    setInvestmentManager("")
+    setNavFrequency("weekly")
     setNavRange({ start: null, end: null })
     setLoading(false)
     setError(null)
@@ -317,6 +331,8 @@ export function ProductQuarterlyReportDialog({
           bench2_key: bench2Key,
           commentary: commentary.trim() || undefined,
           brand_name: brandName.trim() || undefined,
+          investment_manager: investmentManager.trim() || undefined,
+          nav_frequency: navFrequency,
         }),
       })
       const json = await resp.json()
@@ -459,12 +475,15 @@ export function ProductQuarterlyReportDialog({
           </div>
 
           <div>
-            <label className="mb-1.5 block text-sm font-medium">品牌 / 水印</label>
+            <label className="mb-1.5 block text-sm font-medium">投资经理</label>
             <input
               type="text"
-              value={brandName}
-              onChange={(e) => setBrandName(e.target.value)}
-              placeholder="默认取管理人简称"
+              value={investmentManager}
+              onChange={(e) => {
+                setInvestmentManager(e.target.value)
+                setResult(null)
+              }}
+              placeholder="填写姓名，不填则取投顾名称"
               className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
@@ -478,6 +497,38 @@ export function ProductQuarterlyReportDialog({
               placeholder="默认使用产品名称"
               className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-sm font-medium">品牌 / 水印</label>
+            <input
+              type="text"
+              value={brandName}
+              onChange={(e) => setBrandName(e.target.value)}
+              placeholder="默认取管理人简称"
+              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-sm font-medium">净值频率</label>
+            <select
+              value={navFrequency}
+              onChange={(e) => {
+                setNavFrequency(e.target.value as NavFrequency)
+                setResult(null)
+              }}
+              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {NAV_FREQUENCY_OPTIONS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-xs text-zinc-400">
+              周频取每周最后一个交易日。周内回撤不计入最大回撤
+            </p>
           </div>
 
           <div className="sm:col-span-2">
@@ -519,7 +570,7 @@ export function ProductQuarterlyReportDialog({
             <>
               <a
                 href={result.download.png}
-                download
+                download={result.pngFileName}
                 className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-muted"
               >
                 <Download className="mr-2 h-4 w-4" />
@@ -527,7 +578,7 @@ export function ProductQuarterlyReportDialog({
               </a>
               <a
                 href={result.download.pdf}
-                download
+                download={result.pdfFileName}
                 className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-muted"
               >
                 <Download className="mr-2 h-4 w-4" />

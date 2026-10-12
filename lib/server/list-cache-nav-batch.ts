@@ -2262,6 +2262,19 @@ function restoreNonTradingPlatformTip<T extends TrackFundMetricsFields>(row: T):
   }
 }
 
+/** Original code plus its uppercase form, so `beian_hao = ANY(...)` can use a btree index.
+ *  UPPER(BTRIM(beian_hao)) = ANY(...) seq-scans private_fund_nav (millions of rows). */
+function indexableBeianCodes(codes: Iterable<string>): string[] {
+  const out = new Set<string>()
+  for (const code of codes) {
+    const raw = String(code ?? "").trim()
+    if (!raw) continue
+    out.add(raw)
+    out.add(raw.toUpperCase())
+  }
+  return [...out]
+}
+
 /**
  * Advance a tracking-list tip to private_fund_info when 火富牛 has a later
  * trading-day NAV than the list cache. The product page already does this.
@@ -2273,7 +2286,7 @@ export async function overlayPlatformInfoNavOnTrackRows<T extends TrackFundMetri
   asOfDate: string,
 ): Promise<T[]> {
   if (rows.length === 0) return rows
-  const codes = [...new Set(rows.map((row) => row.beian_hao.trim().toUpperCase()).filter(Boolean))]
+  const codes = indexableBeianCodes(rows.map((row) => row.beian_hao))
   if (codes.length === 0) return rows.map((row) => stripSourceNavDate(restoreNonTradingPlatformTip(row)))
 
   let infoRows: PlatformInfoNavRow[] = []
@@ -2283,7 +2296,7 @@ export async function overlayPlatformInfoNavOnTrackRows<T extends TrackFundMetri
               latest_nav::text AS latest_nav,
               latest_nav_date::text AS latest_nav_date
        FROM private_fund_info
-       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       WHERE beian_hao = ANY($1::text[])
          AND latest_nav_date IS NOT NULL
          AND latest_nav IS NOT NULL`,
       [codes],
@@ -2333,11 +2346,11 @@ export async function overlayPlatformInfoNavOnTrackRows<T extends TrackFundMetri
               nav::text AS nav,
               cumulative_nav::text AS cumulative_nav
        FROM private_fund_nav
-       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       WHERE beian_hao = ANY($1::text[])
          AND price_date >= $2::date
          AND price_date <= $3::date
          AND nav IS NOT NULL AND nav > 0`,
-      [[...pending.keys()], since, asOfDate.slice(0, 10)],
+      [indexableBeianCodes(pending.keys()), since, asOfDate.slice(0, 10)],
     )
     for (const row of histRows) {
       const navDate = row.price_date.slice(0, 10)

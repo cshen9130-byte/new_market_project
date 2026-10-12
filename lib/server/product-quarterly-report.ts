@@ -49,6 +49,8 @@ export type ProductQuarterlyReportRequest = {
   commentary?: string
   brand_name?: string
   watermark?: string
+  investment_manager?: string
+  nav_frequency?: "daily" | "weekly" | "monthly"
 }
 
 export type ProductQuarterlyReportResult = {
@@ -400,6 +402,7 @@ export async function generateProductQuarterlyReport(
   await writeFile(navFile, `\uFEFF${dualCsv}`, "utf8")
 
   const reportTitle = (input.report_title || names.product_name).trim()
+  const typedInvestmentManager = (input.investment_manager || "").trim()
   const brandName = (
     input.brand_name ||
     overview.manager.replace(/私募基金管理有限公司|基金管理有限公司|有限公司/g, "") ||
@@ -417,10 +420,11 @@ export async function generateProductQuarterlyReport(
     bench1_label: bench1.label,
     bench2_label: built.benchLabel || bench2.label,
     commentary: (input.commentary || "").trim(),
+    nav_frequency: input.nav_frequency === "daily" || input.nav_frequency === "monthly" ? input.nav_frequency : "weekly",
     report_heading: formatQuarterHeading(period_begin, period_end),
     overview: {
       manager: overview.manager,
-      investment_manager: overview.investment_manager,
+      investment_manager: typedInvestmentManager || overview.investment_manager,
       custodian: overview.custodian,
       inception_date: overview.inception_date,
       product_type: overview.product_type,

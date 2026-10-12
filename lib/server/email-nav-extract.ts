@@ -281,6 +281,7 @@ function parseCiticsFundNavSubject(text: string): { code: string; fundName: stri
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
 function extractFundNameFromSubject(subject: string): string | null {
   for (const parser of [
+    parseGalaxyHalfwidthVirtualNavSubject,
     parseXingyePerfTrialSubject,
     parseCfscTaVirtualSubject,
     parseZhongtaiVirtualNavSubject,
@@ -408,6 +409,7 @@ function guotaiTaVirtualUnderlyingMeta(
 
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
+    parseGalaxyHalfwidthVirtualNavSubject,
     parseXingyePerfTrialSubject,
     parseCfscTaVirtualSubject,
     parseVirtualBracketSubject,
@@ -650,6 +652,7 @@ export function extractProductCodeFromText(text: string): string | null {
   }
 
   const bracketVirtualSubj = text.match(/【虚拟净值】([A-Z0-9]+)[\s_]/)
+    ?? text.match(/\[虚拟净值\]\[([A-Z0-9]{4,10})\]/)
   if (bracketVirtualSubj) {
     const code = takeExtractedProductCode(bracketVirtualSubj[1])
     if (code) return code
@@ -992,6 +995,25 @@ function parseVirtualBracketSubject(text: string): { code: string; fundName: str
 }
 
 /**
+ * 中国银河证券托管 virtual-NAV mail. Half-width brackets, product first, FOF investor second.
+ *   [虚拟净值][AJX62B]-[稳博鹏瑞套利2号私募证券投资基金B][鑫楚稳增量化1号FOF私募证券投资基金][20260924]
+ *   [虚拟净值][AJX62B]-[稳博鹏瑞套利2号私募证券投资基金B]金舆稳健增长1号FOF私募证券投资基金[20260827]
+ * The attachment uses the same stem plus .xls.
+ */
+function parseGalaxyHalfwidthVirtualNavSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    new RegExp(
+      `\\[虚拟净值\\]\\[([A-Z0-9]{4,10})\\]-?(${FUND_NAME_RE.source})`,
+      "u",
+    ),
+  )
+  if (!m) return null
+  const fundName = normalizeFundDisplayName(m[2])
+  if (!fundName) return null
+  return { code: m[1].toUpperCase(), fundName }
+}
+
+/**
  * CFSC/财通证券 【TA虚拟净值】-DATE-CODE-FUND-INVESTOR
  * Example: 【TA虚拟净值】-2026-08-03-ZY084A-交睿宏观配置5号私募证券投资基金A-金舆基石一号…
  */
@@ -1004,6 +1026,35 @@ function parseCfscTaVirtualSubject(text: string): { code: string; fundName: stri
   )
   if (!m) return null
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
+function extractGalaxyVirtualNavBody(
+  subject: string,
+  bodyText: string,
+  shared: { productCode: string | null; fundName: string | null },
+): ExtractedNavData | null {
+  if (!/\[虚拟净值\]/u.test(subject) && !/计提后虚拟净值/u.test(bodyText)) return null
+  const row = bodyText.match(
+    new RegExp(
+      `(${FUND_NAME_RE.source})\\s+([A-Z0-9]{4,10})\\s+${FUND_NAME_RE.source}\\s+[\\d,]+(?:\\.\\d+)?\\s+(20\\d{6}|\\d{4}-\\d{2}-\\d{2})\\s+(\\d+\\.\\d{3,8})\\s+(\\d+\\.\\d{3,8})`,
+      "u",
+    ),
+  )
+  if (!row) return null
+  const navDate = normaliseDate(row[3])
+  if (!navDate) return null
+  const unit = parseFloat(row[4])
+  const cum = parseFloat(row[5])
+  if (!Number.isFinite(unit) || unit <= 0) return null
+  return {
+    nav: unit,
+    navDate,
+    cumulativeNav: Number.isFinite(cum) && cum > 0 ? cum : null,
+    adjustedNav: null,
+    productCode: (shared.productCode ?? row[2]).toUpperCase(),
+    fundName: shared.fundName ?? normalizeFundDisplayName(row[1]),
+    source: "body_table",
+  }
 }
 
 function subjectDate(subject: string): string | null {
@@ -1032,6 +1083,13 @@ export function extractNavData(
   // Guotai TA虚拟净值 with a 在管 product in 【】: ingest under the underlying fund
   // outside 【】 (never under the investor / 在管 product code).
   const shared = guotaiTaVirtualUnderlyingMeta(subject, extractNavMetadata(subject, bodyText))
+
+  // ── 0g. 银河证券 [虚拟净值][CODE]-[产品]-[投资者][YYYYMMDD] ───────────────
+  // Columns: 产品名称 产品代码 客户名称 参与计提份额 净值日期 单位净值 累计单位净值
+  //          虚拟计提业绩报酬 提取前净值 计提后虚拟净值 基金账号
+  // Store 单位净值 / 累计单位净值. 计提后虚拟净值 is the investor's post-fee figure.
+  const galaxyVirtual = extractGalaxyVirtualNavBody(subject, bodyText, shared)
+  if (galaxyVirtual) return galaxyVirtual
 
   // ── 0. Citics Auto-Disclosure 【基金净值】 one-row announcement ────────────
   const citicsAnnounce = extractCiticsFundNavAnnouncement(subject, bodyText)

@@ -466,6 +466,7 @@ async function fetchMailbox(
   errors: string[],
   signal?: AbortSignal,
   knownEmailKeys: Set<string> = new Set(),
+  subjectIncludes?: string,
 ): Promise<FetchMailboxResult> {
   throwIfAborted(signal)
   if (!account.pass?.trim()) {
@@ -503,13 +504,26 @@ async function fetchMailbox(
 
   const folders = getImapFolders(account)
 
+  if (subjectIncludes) {
+    console.error(`[fetchMailbox] connect ${account.account} folders=${folders.join(",")}`)
+  }
   await client.connect()
   try {
     for (const folder of folders) {
       throwIfAborted(signal)
+      if (subjectIncludes) console.error(`[fetchMailbox] open ${folder}`)
       await client.mailboxOpen(folder)
-      const uids = (await client.search({ since }, { uid: true })) || []
+      const searchCriteria: { since: Date; subject?: string } = { since }
+      const subjectNeedle = subjectIncludes?.trim()
+      if (subjectNeedle) searchCriteria.subject = subjectNeedle
+      if (subjectIncludes) console.error(`[fetchMailbox] search since=${since.toISOString().slice(0, 10)} subject=${subjectNeedle ?? ""}`)
+      const uids = (await client.search(searchCriteria, { uid: true })) || []
+      if (subjectIncludes) console.error(`[fetchMailbox] ${folder} uids=${uids.length}`)
       if (uids.length === 0) continue
+
+      const uidChunks: Array<number[] | typeof uids> = []
+      const chunkSize = subjectIncludes ? 200 : uids.length
+      for (let i = 0; i < uids.length; i += chunkSize) uidChunks.push(uids.slice(i, i + chunkSize))
 
       // ── Step 1: batch-fetch envelopes + body structures for ALL matching UIDs ──
       // A single IMAP FETCH command instead of N individual round-trips.
@@ -526,8 +540,13 @@ async function fetchMailbox(
       }
       const candidates: Candidate[] = []
 
+      for (let chunkIndex = 0; chunkIndex < uidChunks.length; chunkIndex += 1) {
+        const chunk = uidChunks[chunkIndex]
+        if (subjectIncludes) {
+          console.error(`[fetchMailbox] envelopes ${chunkIndex + 1}/${uidChunks.length}`)
+        }
       for await (const msg of client.fetch(
-        uids,
+        chunk,
         { uid: true, envelope: true, bodyStructure: true, internalDate: true },
         { uid: true },
       )) {
@@ -542,6 +561,7 @@ async function fetchMailbox(
           }
         }).envelope
         const subject = envelope?.subject ?? ""
+        if (subjectNeedle && !subject.includes(subjectNeedle)) continue
         const senderEmail = formatSenderEmail(envelope?.from)
         const receiverEmail = formatReceiverEmail(envelope)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -565,6 +585,7 @@ async function fetchMailbox(
           attachments,
           textParts,
         })
+      }
       }
 
       // ── Step 2: download body/attachments only for NEW fund-related emails ──
@@ -930,6 +951,48 @@ async function fetchMailbox(
     downloaded,
     elementExtractQueued,
   }
+}
+
+/**
+ * Download and store NAV rows whose subject contains `subjectIncludes`.
+ * Does not move the mailbox checkpoint or replace the parse-record log.
+ */
+export async function ingestEmailNavBySubject(options: {
+  subjectIncludes: string
+  since: Date
+  account?: string
+}): Promise<{ downloaded: number; navRows: number; navSaved: number; errors: string[] }> {
+  const errors: string[] = []
+  const accounts: CrawlEmailAccount[] = []
+  if (options.account?.trim()) {
+    const one = await getCrawlEmailByAccount(options.account.trim())
+    if (!one) throw new Error(`抓取邮箱不存在: ${options.account}`)
+    accounts.push(one)
+  } else {
+    for (const pub of await listCrawlEmails()) {
+      const full = await getCrawlEmailByAccount(pub.account)
+      if (full?.pass?.trim()) accounts.push(full)
+    }
+  }
+  if (accounts.length === 0) throw new Error("抓取邮箱未配置授权码")
+
+  const navRecords: EmailNavInsert[] = []
+  let downloaded = 0
+  for (const account of accounts) {
+    console.error(`[ingestEmailNavBySubject] ${account.account} subject=${options.subjectIncludes}`)
+    const result = await fetchMailbox(
+      account,
+      options.since,
+      errors,
+      undefined,
+      new Set(),
+      options.subjectIncludes,
+    )
+    downloaded += result.downloaded
+    navRecords.push(...result.navRecords)
+  }
+  const navSaved = await upsertEmailNavRecords(navRecords)
+  return { downloaded, navRows: navRecords.length, navSaved, errors }
 }
 
 export async function fetchEmailParseRecords(options?: {

@@ -11,13 +11,15 @@ import {
   sqlType6LatestStrategyJoin,
 } from "@/lib/server/fund-strategy-resolve"
 import {
+  attachNavAnomalyDiagnosis,
   enrichPlatformFundPage,
-  filterPlatformSeedsByNavSeries,
+  filterByNavAnomalyCause,
   loadBeianCodesWithOperationDate,
   operationDateByFundId,
   type PlatformFundSeed,
   type TeamDataElementsFilter,
   type TeamDataListRow,
+  type TeamDataNavAnomalyCauseFilter,
   type TeamDataNavAnomalyFilter,
   type TeamDataNavGapFilter,
   type TeamDataNavLagFilter,
@@ -25,6 +27,7 @@ import {
   type TeamDataProductSourceFilter,
 } from "@/lib/server/team-data-query-pg"
 import type { NavAnomalyHit } from "@/lib/server/nav-anomaly"
+import { loadFreshNavSeriesFlags, NAV_SERIES_FLAG_RULE } from "@/lib/server/nav-series-flags-pg"
 
 export type PlatformProductClassFilter = "all" | "private" | "asset" | "trust" | "equity"
 export type PlatformNavPresenceFilter = "all" | "present" | "absent"
@@ -43,6 +46,7 @@ export type PlatformDataListParams = {
   navLagFilter: TeamDataNavLagFilter
   navGapFilter: TeamDataNavGapFilter
   navAnomalyFilter: TeamDataNavAnomalyFilter
+  navAnomalyCauseFilter?: TeamDataNavAnomalyCauseFilter
   productSourceFilter: TeamDataProductSourceFilter
   operationDateFilter?: TeamDataOperationDateFilter
   /** 私募基金 excludes 股权 / 信托 / 资管. Default on the 平台数据 page. */
@@ -105,10 +109,6 @@ const NAV_DATE_SQL: Record<Exclude<PlatformNavDateFilter, "all">, string> = {
 
 /** Same 14-day lag window as team data. */
 const NAV_LAG_DAYS = 14
-/** Full-series scan batch. Each batch stays under the DB statement timeout. */
-const SERIES_BATCH = 200
-const SERIES_BATCH_CONCURRENCY = 8
-const SERIES_UNIVERSE_TTL_MS = 5 * 60 * 1000
 
 const ELEMENTS_PRESENT_SQL = `EXISTS (
   SELECT 1 FROM basicinfo_bfl_track b
@@ -254,97 +254,87 @@ function resortPage(rows: TeamDataListRow[], sort: string, dir: "ASC" | "DESC"):
   })
 }
 
-type SeriesUniverse = {
-  key: string
-  at: number
-  rows: SeedRow[]
-  anomalyById: Map<string, NavAnomalyHit>
+function readStoredAnomaly(value: unknown): NavAnomalyHit | null {
+  if (value == null || typeof value !== "object") return null
+  const rec = value as NavAnomalyHit
+  if (rec.reason !== "jump" && rec.reason !== "spike") return null
+  if (!rec.date || !Number.isFinite(rec.ratio)) return null
+  return rec
 }
 
-declare global {
-  // eslint-disable-next-line no-var
-  var _platformSeriesUniverse: Map<string, SeriesUniverse> | undefined
-  // eslint-disable-next-line no-var
-  var _platformSeriesInFlight: Map<string, Promise<SeriesUniverse>> | undefined
-}
+type StaleFlagRow = { beian_hao: string; product_name: string; tip: string | null }
 
-function seriesUniverseCache(): Map<string, SeriesUniverse> {
-  if (!global._platformSeriesUniverse) global._platformSeriesUniverse = new Map()
-  return global._platformSeriesUniverse
-}
-
-function seriesInFlight(): Map<string, Promise<SeriesUniverse>> {
-  if (!global._platformSeriesInFlight) global._platformSeriesInFlight = new Map()
-  return global._platformSeriesInFlight
-}
-
-function chunkRows<T>(rows: T[], size: number): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size))
-  return out
-}
-
-/** Scan every matching fund. Batches keep each NAV-series query small enough to finish. */
-async function filterSeedRowsByNavSeries(
-  rows: SeedRow[],
-  navGapFilter: TeamDataNavGapFilter,
-  navAnomalyFilter: TeamDataNavAnomalyFilter,
-): Promise<{ rows: SeedRow[]; anomalyById: Map<string, NavAnomalyHit> }> {
-  const batches = chunkRows(rows, SERIES_BATCH)
-  const parts: Array<Awaited<ReturnType<typeof filterPlatformSeedsByNavSeries>>> = new Array(batches.length)
-  let cursor = 0
-  async function worker() {
-    while (cursor < batches.length) {
-      const index = cursor
-      cursor += 1
-      parts[index] = await filterPlatformSeedsByNavSeries(toSeeds(batches[index]), navGapFilter, navAnomalyFilter)
+/** Recompute flags whose latest NAV date or rule no longer matches. */
+async function refreshStaleSeriesFlags(
+  amacJoin: string,
+  joins: string[],
+  whereSql: string,
+  filterParams: unknown[],
+): Promise<void> {
+  await loadFreshNavSeriesFlags([])
+  const ruleIdx = filterParams.length + 1
+  const stalePredicate = `(
+    f.beian_hao IS NULL
+    OR f.tip_date IS DISTINCT FROM LEFT(COALESCE(i.latest_nav_date::text, ''), 10)
+    OR f.rule_version IS DISTINCT FROM $${ruleIdx}
+  )`
+  const staleSql = `
+    SELECT BTRIM(i.beian_hao) AS beian_hao,
+           i.product_name,
+           LEFT(COALESCE(i.latest_nav_date::text, ''), 10) AS tip
+    FROM private_fund_info i
+    ${amacJoin}
+    ${joins.join("\n")}
+    LEFT JOIN ops_nav_series_flags f ON f.beian_hao = BTRIM(i.beian_hao)
+    ${whereSql ? `${whereSql} AND ${stalePredicate}` : `WHERE ${stalePredicate}`}`
+  const stale = await query<StaleFlagRow>(staleSql, [...filterParams, NAV_SERIES_FLAG_RULE])
+  const dated = await query<StaleFlagRow & { operation_date: string | null }>(`
+    SELECT BTRIM(i.beian_hao) AS beian_hao,
+           i.product_name,
+           LEFT(COALESCE(i.latest_nav_date::text, ''), 10) AS tip,
+           f.operation_date
+    FROM ops_nav_series_flags f
+    JOIN private_fund_info i ON BTRIM(i.beian_hao) = f.beian_hao
+    WHERE f.operation_date <> ''
+       OR BTRIM(i.beian_hao) IN (
+         SELECT BTRIM(beian_hao) FROM ops_fund_operation_dates
+         UNION
+         SELECT BTRIM(register_number) FROM basicinfo_bfl_track
+          WHERE operation_date IS NOT NULL AND NULLIF(BTRIM(register_number), '') IS NOT NULL
+         UNION
+         SELECT BTRIM(record_key) FROM basicinfo_bfl_track
+          WHERE operation_date IS NOT NULL AND NULLIF(BTRIM(record_key), '') IS NOT NULL
+       )`)
+  if (dated.length > 0) {
+    const live = await operationDateByFundId(dated.map((row) => ({
+      id: row.beian_hao.trim(),
+      beian_hao: row.beian_hao.trim(),
+    })))
+    const seen = new Set(stale.map((row) => row.beian_hao.trim()))
+    for (const row of dated) {
+      const id = row.beian_hao.trim()
+      if (seen.has(id)) continue
+      if ((live.get(id) ?? "") === (row.operation_date ?? "")) continue
+      seen.add(id)
+      stale.push(row)
     }
   }
-  const workers = Math.min(SERIES_BATCH_CONCURRENCY, batches.length)
-  await Promise.all(Array.from({ length: workers }, () => worker()))
-  const keep = new Set<string>()
-  const anomalyById = new Map<string, NavAnomalyHit>()
-  for (const part of parts) {
-    for (const seed of part.seeds) keep.add(seed.id)
-    for (const [id, hit] of part.anomalyById) anomalyById.set(id, hit)
-  }
-  return {
-    rows: rows.filter((row) => keep.has(row.beian_hao.trim())),
-    anomalyById,
-  }
-}
-
-async function loadSeriesUniverse(
-  key: string,
-  loadRows: () => Promise<SeedRow[]>,
-  navGapFilter: TeamDataNavGapFilter,
-  navAnomalyFilter: TeamDataNavAnomalyFilter,
-): Promise<SeriesUniverse> {
-  const cached = seriesUniverseCache().get(key)
-  if (cached && Date.now() - cached.at < SERIES_UNIVERSE_TTL_MS) return cached
-  const pending = seriesInFlight().get(key)
-  if (pending) return pending
-  const promise = (async () => {
-    const loaded = await loadRows()
-    const filtered = await filterSeedRowsByNavSeries(loaded, navGapFilter, navAnomalyFilter)
-    const universe: SeriesUniverse = {
-      key,
-      at: Date.now(),
-      rows: filtered.rows,
-      anomalyById: filtered.anomalyById,
-    }
-    const cache = seriesUniverseCache()
-    cache.set(key, universe)
-    if (cache.size > 6) {
-      const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0]
-      if (oldest && oldest[0] !== key) cache.delete(oldest[0])
-    }
-    return universe
-  })().finally(() => {
-    seriesInFlight().delete(key)
-  })
-  seriesInFlight().set(key, promise)
-  return promise
+  if (stale.length === 0) return
+  await loadFreshNavSeriesFlags(stale.flatMap((row) => {
+    const beian = row.beian_hao?.trim()
+    const name = row.product_name?.trim()
+    if (!beian || !name) return []
+    return [{
+      id: beian,
+      beian_hao: beian,
+      product_name: name,
+      strategy_l1: null,
+      strategy_l2: null,
+      strategy_l3: null,
+      first_entry_date: null,
+      tipDate: isoDay(row.tip),
+    }]
+  }))
 }
 
 export async function listPlatformPrivateFunds(params: PlatformDataListParams): Promise<{
@@ -365,6 +355,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     navLagFilter,
     navGapFilter,
     navAnomalyFilter,
+    navAnomalyCauseFilter = "all",
     productSourceFilter,
     operationDateFilter = "all",
     productClassFilter = "all",
@@ -490,40 +481,110 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
 
   const needsSeries = navGapFilter !== "all" || navAnomalyFilter !== "all"
   if (needsSeries) {
-    const seriesKey = JSON.stringify({
-      keyword,
-      strategySource,
-      strategyL1,
-      strategyL2,
-      strategyL3,
-      elementsFilter,
-      navLagFilter,
-      navGapFilter,
-      navAnomalyFilter,
-      productSourceFilter,
-      operationDateFilter,
-      productClassFilter,
-      navPresenceFilter,
-      navDateFilter,
-      sort,
-      sortDir,
-    })
-    const universe = await loadSeriesUniverse(
-      seriesKey,
-      () => query<SeedRow>(selectSql, filterParams),
-      navGapFilter,
-      navAnomalyFilter,
-    )
-    const pageRows = universe.rows.slice((page - 1) * pageSize, page * pageSize)
-    let data = resortPage(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(pageRows)), pageRows), sort, sortDir)
+    const seriesJoins = [...sharedJoins]
+    if (sort === "valuation_date" && !seriesJoins.includes(VALUATION_JOIN)) seriesJoins.push(VALUATION_JOIN)
+    if ((sort === "team_nav" || sort === "team_nav_date") && !seriesJoins.includes(TEAM_NAV_JOIN)) {
+      seriesJoins.push(TEAM_NAV_JOIN)
+    }
+    await refreshStaleSeriesFlags(amacJoin, sharedJoins, whereSql, filterParams)
+
+    const flagPreds: string[] = []
+    if (navGapFilter === "interior_2w") flagPreds.push("f.has_interior_gap")
+    else if (navGapFilter === "no_interior_2w") flagPreds.push("NOT f.has_interior_gap")
+    if (navAnomalyFilter === "jump") flagPreds.push("f.anomaly IS NOT NULL")
+    else if (navAnomalyFilter === "no_jump") flagPreds.push("f.anomaly IS NULL")
+    const flagWhere = [...where, ...flagPreds]
+    const flagWhereSql = flagWhere.length > 0 ? `WHERE ${flagWhere.join(" AND ")}` : ""
+    const fromSql = `
+      FROM private_fund_info i
+      ${amacJoin}
+      ${seriesJoins.join("\n")}
+      JOIN ops_nav_series_flags f ON f.beian_hao = BTRIM(i.beian_hao)
+      ${flagWhereSql}`
+    const flaggedSql = `
+      SELECT
+        i.beian_hao,
+        i.product_name,
+        NULL::text AS strategy_l1,
+        NULL::text AS strategy_l2,
+        NULL::text AS strategy_l3,
+        COALESCE(a.put_on_record_date, i.inception_date)::text AS first_entry_date,
+        i.latest_nav::text AS latest_nav,
+        i.latest_nav_date::text AS latest_nav_date,
+        f.anomaly AS anomaly
+      ${fromSql}
+      ORDER BY ${orderSql}`
+
+    type FlaggedSeed = SeedRow & { anomaly: unknown }
+    let seriesRows: FlaggedSeed[]
+    let total: number
+    const diagnoseAll = navAnomalyFilter === "jump" && navAnomalyCauseFilter !== "all"
+    if (diagnoseAll) {
+      seriesRows = await query<FlaggedSeed>(flaggedSql, filterParams)
+      total = seriesRows.length
+    } else {
+      const limitIdx = filterParams.length + 1
+      const offsetIdx = filterParams.length + 2
+      const [countRows, pageOnly] = await Promise.all([
+        query<{ total: string }>(`SELECT COUNT(*)::text AS total ${fromSql}`, filterParams),
+        query<FlaggedSeed>(
+          `${flaggedSql} LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+          [...filterParams, pageSize, (page - 1) * pageSize],
+        ),
+      ])
+      total = parseInt(countRows[0]?.total ?? "0", 10) || 0
+      seriesRows = pageOnly
+    }
+
+    let anomalyById = new Map<string, NavAnomalyHit>()
+    for (const row of seriesRows) {
+      const id = row.beian_hao?.trim()
+      const hit = readStoredAnomaly(row.anomaly)
+      if (id && hit) anomalyById.set(id, hit)
+    }
+    if (diagnoseAll) {
+      const filtered = await filterByNavAnomalyCause(
+        seriesRows
+          .filter((row) => row.beian_hao?.trim() && row.product_name?.trim())
+          .map((row) => ({
+            id: row.beian_hao.trim(),
+            beian_hao: row.beian_hao.trim(),
+            product_name: row.product_name.trim(),
+          })),
+        anomalyById,
+        navAnomalyCauseFilter,
+      )
+      const keep = new Set(filtered.rows.map((row) => row.id))
+      seriesRows = seriesRows.filter((row) => keep.has(row.beian_hao.trim()))
+      anomalyById = filtered.hits
+      total = seriesRows.length
+      seriesRows = seriesRows.slice((page - 1) * pageSize, page * pageSize)
+    }
+
+    const pageIds = seriesRows.map((row) => row.beian_hao.trim().toUpperCase()).filter(Boolean)
+    let hydrated: SeedRow[] = seriesRows
+    if (pageIds.length > 0) {
+      const marker = `ORDER BY ${orderSql}`
+      const extra = `UPPER(BTRIM(i.beian_hao)) = ANY($${filterParams.length + 1}::text[])`
+      const pageSql = whereSql
+        ? selectSql.replace(marker, `AND ${extra}\n    ${marker}`)
+        : selectSql.replace(marker, `WHERE ${extra}\n    ${marker}`)
+      const loaded = await query<SeedRow>(pageSql, [...filterParams, pageIds])
+      const byId = new Map(loaded.map((row) => [row.beian_hao.trim().toUpperCase(), row]))
+      hydrated = seriesRows.map((row) => byId.get(row.beian_hao.trim().toUpperCase()) ?? row)
+    }
+    let data = resortPage(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(hydrated)), hydrated), sort, sortDir)
     if (navAnomalyFilter === "jump") {
       data = data.map((row) => ({
         ...row,
-        nav_anomaly: universe.anomalyById.get(row.id) ?? null,
+        nav_anomaly: anomalyById.get(row.id) ?? null,
       }))
+      if (data.some((row) => row.nav_anomaly && !row.nav_anomaly.cause)) {
+        data = await attachNavAnomalyDiagnosis(data)
+      }
     }
     if (operationDateFilter === "present") data = await withOperationDates(data)
-    return { data, total: universe.rows.length }
+    return { data, total }
   }
 
   const limitIdx = filterParams.length + 1

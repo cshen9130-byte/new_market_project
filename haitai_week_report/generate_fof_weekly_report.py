@@ -270,29 +270,45 @@ def periods_per_year_for_frequency(freq: str | None) -> int:
     return 52
 
 
+def _trading_day_nav(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop Saturday/Sunday forward-fills, matching the product page."""
+    work = df.sort_values("date").copy()
+    if work.empty:
+        return work
+    trading = work[work["date"].dt.weekday < 5]
+    return trading if not trading.empty else work
+
+
 def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
-    """Resample NAV series to the requested frequency before metrics/charting."""
+    """Sample NAV the same way as the product page frequency filter.
+
+    Weekly keeps the last trading day of each Monday-start week.
+    Monthly keeps the last trading day of each calendar month.
+    Daily keeps every trading day. The kept row keeps its real date, so a
+    report that ends mid-week still includes that week.
+    """
     normalized = normalize_nav_frequency(freq)
-    if normalized == "daily":
-        return df
+    work = _trading_day_nav(df)
+    if work.empty:
+        return work
 
-    work = df.sort_values("date").set_index("date")
-    rule = "W-FRI" if normalized == "weekly" else "ME"
-    resampled = work.resample(rule).last()
-    resampled = resampled.dropna(subset=["adj_nav"]).reset_index()
+    if normalized == "weekly":
+        monday = work["date"] - pd.to_timedelta(work["date"].dt.weekday, unit="D")
+        work = work.assign(_bucket=monday.dt.normalize())
+        sampled = work.groupby("_bucket", sort=True).tail(1)
+    elif normalized == "monthly":
+        work = work.assign(_bucket=work["date"].dt.to_period("M").astype(str))
+        sampled = work.groupby("_bucket", sort=True).tail(1)
+    else:
+        sampled = work
 
-    # Clamp period-end labels to the actual last data date so that a partial
-    # week/month (e.g. data ending on a Wednesday) is not labeled with the
-    # upcoming Friday/month-end, which would otherwise be excluded when the
-    # caller filters with `date <= as_of`.
-    max_actual_date = df["date"].max()
-    resampled["date"] = resampled["date"].apply(lambda d: min(d, max_actual_date))
-
-    resampled["daily_ret"] = resampled["adj_nav"].pct_change()
-    resampled["pct_chg"] = resampled["daily_ret"].apply(
+    sampled = sampled.drop(columns="_bucket", errors="ignore")
+    sampled = sampled.sort_values("date").reset_index(drop=True)
+    sampled["daily_ret"] = sampled["adj_nav"].pct_change()
+    sampled["pct_chg"] = sampled["daily_ret"].apply(
         lambda x: f"{x * 100:+.2f}%" if pd.notna(x) else "--"
     )
-    return resampled
+    return sampled
 
 
 def compute_interval_returns(df: pd.DataFrame, fund_name: str = PRODUCT_NAME) -> list[dict]:
@@ -322,6 +338,13 @@ def compute_interval_returns(df: pd.DataFrame, fund_name: str = PRODUCT_NAME) ->
                 continue
 
             ret = month_row.iloc[0]["ret"]
+            if pd.isna(ret):
+                # Inception month has no previous month-end. The product page
+                # uses the first point inside that month as the base.
+                month_points = work[(work["year"] == year) & (work["month"] == month)]
+                start_nav = float(month_points["adj_nav"].iloc[0]) if not month_points.empty else 0.0
+                end_nav = float(month_points["adj_nav"].iloc[-1]) if not month_points.empty else 0.0
+                ret = end_nav / start_nav - 1.0 if start_nav > 0 else float("nan")
             if pd.isna(ret):
                 row[month] = None
             else:
@@ -533,12 +556,65 @@ def risk_return_series(nav: pd.Series, nav_frequency: str | None = None) -> tupl
     return nav.pct_change().dropna(), periods_per_year
 
 
+def load_benchmark_calendar(nav_file: str) -> pd.Series | None:
+    """Daily benchmark closes written next to nav.csv for monthly reports."""
+    path = Path(nav_file).with_name("benchmark.csv")
+    if not path.is_file():
+        return None
+    frame = pd.read_csv(path)
+    if frame.empty or len(frame.columns) < 2:
+        return None
+    frame = frame.rename(columns={frame.columns[0]: "date", frame.columns[1]: "close"})
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    frame = frame.dropna(subset=["date", "close"])
+    frame = frame[frame["close"] > 0].sort_values("date").drop_duplicates("date", keep="last")
+    if frame.empty:
+        return None
+    return frame.set_index("date")["close"]
+
+
+def calendar_benchmark_return(
+    prices: pd.Series,
+    period_start: pd.Timestamp,
+    period_end: pd.Timestamp,
+) -> float | None:
+    """Index return over a calendar window, independent of each product's NAV dates.
+
+    End is the last close on or before period_end. Start is the last close
+    strictly before period_start, so 9/1–9/30 is the August close to the
+    September close.
+    """
+    series = pd.to_numeric(prices, errors="coerce").dropna()
+    series = series[series > 0].sort_index()
+    if series.empty:
+        return None
+    series.index = pd.to_datetime(series.index).normalize()
+    period_start = pd.Timestamp(period_start).normalize()
+    period_end = pd.Timestamp(period_end).normalize()
+    covered = series[series.index <= period_end]
+    prior = series[series.index < period_start]
+    if covered.empty or prior.empty:
+        return None
+    end_px = float(covered.iloc[-1])
+    start_px = float(prior.iloc[-1])
+    if start_px <= 0:
+        return None
+    print(
+        "[compute_metrics] calendar benchmark "
+        f"{prior.index[-1].date()} {start_px:.4f} -> "
+        f"{covered.index[-1].date()} {end_px:.4f}"
+    )
+    return end_px / start_px - 1.0
+
+
 def compute_metrics(
     df: pd.DataFrame,
     as_of_date: pd.Timestamp | None = None,
     nav_frequency: str | None = None,
     week_begin: pd.Timestamp | None = None,
     report_kind: str | None = "weekly",
+    period_benchmark: pd.Series | None = None,
 ) -> dict:
     work = df.copy()
     if as_of_date is not None:
@@ -621,6 +697,13 @@ def compute_metrics(
     else:
         week_return = float(week_df["adj_nav"].iloc[-1] / week_df["adj_nav"].iloc[0] - 1)
         week_bench = float(week_df["csi300"].iloc[-1] / week_df["csi300"].iloc[0] - 1)
+    # Monthly 沪深300本月 is the calendar window (e.g. 8/31 close → 9/30 close),
+    # not the product's resampled NAV dates. Otherwise two September reports
+    # quote different index returns.
+    if kind == "monthly" and period_benchmark is not None:
+        calendar_bench = calendar_benchmark_return(period_benchmark, week_start, week_end)
+        if calendar_bench is not None:
+            week_bench = calendar_bench
     week_excess = week_return - week_bench
 
     report_year = int(ref_date.year)
@@ -996,6 +1079,133 @@ def _extract_recent_monthly_returns(interval_rows: list[dict], end_date: pd.Time
     return out
 
 
+def _history_date_ticks(dates: pd.Series | pd.DatetimeIndex):
+    """Pick x ticks that stay readable on a long cumulative chart.
+
+    A fixed 3-month step turns a 2020–2026 series into ~24 labels and they
+    overwrite each other. Longer histories step out to half-years, then years.
+    """
+    start = pd.Timestamp(pd.Series(dates).min())
+    end = pd.Timestamp(pd.Series(dates).max())
+    span_days = max(int((end - start).days), 1)
+    if span_days >= 365 * 4:
+        return mdates.YearLocator(), mdates.DateFormatter("%Y")
+    if span_days >= 365 * 2:
+        return mdates.MonthLocator(bymonth=(1, 7)), mdates.DateFormatter("%Y/%m")
+    if span_days >= 400:
+        return mdates.MonthLocator(interval=4), mdates.DateFormatter("%Y/%m")
+    if span_days >= 140:
+        return mdates.MonthLocator(interval=2), mdates.DateFormatter("%Y/%m")
+    if span_days >= 70:
+        return mdates.MonthLocator(), mdates.DateFormatter("%m/%d")
+    return mdates.WeekdayLocator(byweekday=mdates.MO, interval=2), mdates.DateFormatter("%m/%d")
+
+
+def _review_history_table_layout(n_years: int) -> dict:
+    """Place the full-history monthly table under the cumulative chart."""
+    n_rows = max(n_years, 1) + 1
+    table_top = 0.232
+    table_floor = 0.100
+    row_h = min(0.018, (table_top - table_floor) / n_rows)
+    tbl_h = row_h * n_rows
+    font = 6.5 if row_h >= 0.015 else (5.6 if row_h >= 0.011 else 4.6)
+    return {
+        "y": table_top - tbl_h,
+        "h": tbl_h,
+        "row_h": row_h,
+        "font": font,
+        "top": table_top,
+    }
+
+
+def _draw_review_history_table(
+    ax,
+    interval_rows: list[dict],
+    layout: dict,
+    *,
+    fp,
+    fp_bold,
+    up: str,
+    down: str,
+    ink: str,
+    dim: str,
+    border: str,
+    header_bg: str,
+    white: str,
+    zebra: str,
+) -> None:
+    """Year × month returns, most recent year on the first row."""
+    rows = list(interval_rows)
+    headers = ["年份"] + [f"{m}月" for m in range(1, 13)] + ["全年"]
+    n_cols = len(headers)
+    x, y, w = 0.076, layout["y"], 0.868
+    row_h = layout["row_h"]
+    tbl_h = layout["h"]
+    font = layout["font"]
+    col_w = w / n_cols
+
+    ax.add_patch(FancyBboxPatch(
+        (x, y), w, tbl_h,
+        boxstyle="round,pad=0.002,rounding_size=0.004",
+        facecolor=white, edgecolor=border, linewidth=0.8,
+        transform=ax.transAxes, clip_on=False, zorder=3,
+    ))
+    ax.add_patch(Rectangle(
+        (x, y + tbl_h - row_h), w, row_h,
+        transform=ax.transAxes, facecolor=header_bg, edgecolor="none",
+        clip_on=False, zorder=3,
+    ))
+    ax.add_patch(Rectangle(
+        (x, y + tbl_h - row_h), w, 0.001,
+        transform=ax.transAxes, color=border, clip_on=False, zorder=4,
+    ))
+    # Separate the year total from the monthly cells.
+    ax.add_patch(Rectangle(
+        (x + (n_cols - 1) * col_w, y), 0.001, tbl_h,
+        transform=ax.transAxes, color=border, clip_on=False, zorder=4,
+    ))
+
+    for i, header in enumerate(headers):
+        draw_text(
+            ax, x + i * col_w + col_w / 2, y + tbl_h - row_h / 2, header,
+            fp_bold or fp, size=font, color=dim, ha="center", va="center", weight="bold",
+        )
+
+    if not rows:
+        draw_text(ax, x + w / 2, y + row_h / 2, "—", fp, size=font, color=dim, ha="center")
+        return
+
+    for r_idx, row in enumerate(rows):
+        row_bottom = y + tbl_h - (r_idx + 2) * row_h
+        if r_idx % 2 == 1:
+            ax.add_patch(Rectangle(
+                (x, row_bottom), w, row_h,
+                transform=ax.transAxes, facecolor=zebra, edgecolor="none",
+                clip_on=False, zorder=3,
+            ))
+        cy = row_bottom + row_h / 2
+        cells: list[tuple[str, str, str]] = [(str(row["year"]), ink, "bold")]
+        for month in range(1, 13):
+            val = row.get(month)
+            if val is None:
+                cells.append(("—", dim, "normal"))
+            else:
+                color = up if val > 0 else (down if val < 0 else ink)
+                cells.append((f"{val * 100:+.2f}%", color, "normal"))
+        annual = row.get("annual")
+        if annual is None:
+            cells.append(("—", dim, "bold"))
+        else:
+            color = up if annual > 0 else (down if annual < 0 else ink)
+            cells.append((f"{annual * 100:+.2f}%", color, "bold"))
+        for i, (text, color, weight) in enumerate(cells):
+            draw_text(
+                ax, x + i * col_w + col_w / 2, cy, text,
+                fp_bold if weight == "bold" else fp,
+                size=font, color=color, ha="center", va="center", weight=weight,
+            )
+
+
 def _prepare_report_context(
     nav_file: str,
     *,
@@ -1011,24 +1221,39 @@ def _prepare_report_context(
     if first_adj > 0 and abs(first_adj - 1.0) > 1e-6:
         raw_df = raw_df.copy()
         raw_df["adj_nav"] = raw_df["adj_nav"] / first_adj
-    df = apply_nav_frequency(raw_df, nav_frequency)
     as_of = pd.Timestamp(week_end).normalize() if week_end else None
     report_week_begin = pd.Timestamp(week_begin).normalize() if week_begin else None
     if as_of is not None:
-        if as_of < df["date"].min() or as_of > df["date"].max():
+        if raw_df.empty or as_of < raw_df["date"].min() or as_of > raw_df["date"].max():
             raise ValueError(
                 f"所选日期 {as_of.date()} 超出净值区间 "
-                f"{df['date'].min().date()} ~ {df['date'].max().date()}"
+                f"{raw_df['date'].min().date()} ~ {raw_df['date'].max().date()}"
             )
+        # Cut before weekly/monthly folding. Otherwise the last days of the
+        # report month sit in a week labeled with the next Friday (9/28–9/30
+        # → 10/2) and drop out of a report that ends on the 30th.
+        raw_df = raw_df[raw_df["date"] <= as_of].copy()
     if report_week_begin is not None and as_of is not None and report_week_begin > as_of:
         raise ValueError(
             f"报告开始日期 {report_week_begin.date()} 不能晚于结束日期 {as_of.date()}"
         )
+    df = apply_nav_frequency(raw_df, nav_frequency)
 
     plot_df = df[df["date"] <= as_of].copy() if as_of is not None else df
     daily_plot_df = raw_df[raw_df["date"] <= as_of].copy() if as_of is not None else raw_df.copy()
-    interval_rows = compute_interval_returns(daily_plot_df, fund_name=product_name)
-    metrics = compute_metrics(df, as_of, nav_frequency, report_week_begin, report_kind=kind)
+    # Month cells follow the selected frequency, same as the product page
+    # 月度收益 table. Weekly uses the last trading day of each week, so a
+    # month that ends after Friday is not marked to that Friday.
+    interval_rows = compute_interval_returns(plot_df, fund_name=product_name)
+    period_benchmark = None
+    if kind == "monthly":
+        period_benchmark = load_benchmark_calendar(nav_file)
+        if period_benchmark is None:
+            period_benchmark = daily_plot_df.set_index("date")["csi300"]
+    metrics = compute_metrics(
+        df, as_of, nav_frequency, report_week_begin, report_kind=kind,
+        period_benchmark=period_benchmark,
+    )
 
     cur_year = int(as_of.year) if as_of is not None else int(daily_plot_df["date"].dt.year.max())
     year_row = next((r for r in interval_rows if r["year"] == cur_year), None)
@@ -1221,19 +1446,7 @@ def _make_weekly_report(
     chart_ax.axhline(0, color=C_BORDER, linewidth=0.8, linestyle="-", alpha=0.8)
     chart_ax.grid(True, alpha=0.15, linestyle=":", color="#94A3B8")
 
-    span_days = (fund_cum.index[-1] - fund_cum.index[0]).days
-    if span_days > 730:
-        date_locator = mdates.MonthLocator(interval=6)
-        date_formatter = mdates.DateFormatter("%Y/%m")
-    elif span_days > 365:
-        date_locator = mdates.MonthLocator(interval=3)
-        date_formatter = mdates.DateFormatter("%Y/%m")
-    elif span_days > 120:
-        date_locator = mdates.MonthLocator()
-        date_formatter = mdates.DateFormatter("%Y/%m")
-    else:
-        date_locator = mdates.WeekdayLocator(byweekday=mdates.MO, interval=2)
-        date_formatter = mdates.DateFormatter("%m/%d")
+    date_locator, date_formatter = _history_date_ticks(fund_cum.index)
     chart_ax.xaxis.set_major_locator(date_locator)
     chart_ax.xaxis.set_major_formatter(date_formatter)
     chart_ax.tick_params(axis="x", labelsize=8, colors=C_TEXT_LIGHT, rotation=0, pad=2)
@@ -1563,13 +1776,17 @@ def _make_monthly_report(
     highlights = build_highlights(
         metrics, benchmark_label, report_kind="monthly", strategy_phrase=strategy_phrase,
     )
-    for i, line in enumerate(highlights[:5]):
+    # Six lines: the max-drawdown figure is on the last line. Keep it inside the card.
+    highlight_top = 0.546
+    highlight_step = 0.022 if len(highlights) > 5 else 0.027
+    for i, line in enumerate(highlights):
         txt_col = C_INK if i % 2 == 0 else C_DIM
-        draw_text(ax, 0.612, 0.546 - i * 0.027, line, fp, size=7.5, color=txt_col)
+        draw_text(ax, 0.612, highlight_top - i * highlight_step, line, fp, size=7.5, color=txt_col)
 
     # ── CUMULATIVE CHART ─────────────────────────────────────────────────────
-    cum_card_bottom = 0.138
-    cum_card_h = 0.259
+    history_layout = _review_history_table_layout(len(interval_rows))
+    cum_card_bottom = history_layout["y"] - 0.010
+    cum_card_h = 0.397 - cum_card_bottom
     ax.add_patch(FancyBboxPatch(
         (0.04, cum_card_bottom), 0.92, cum_card_h,
         boxstyle="round,pad=0.006,rounding_size=0.012",
@@ -1583,7 +1800,7 @@ def _make_monthly_report(
               f"累计收益率（{product_name}  vs  {benchmark_label}）",
               fp_bold or fp, size=10, color=C_RED_DEEP, weight="bold")
 
-    cum_ax = fig.add_axes([0.078, 0.255, 0.868, 0.095])
+    cum_ax = fig.add_axes([0.078, 0.278, 0.868, 0.078])
     cum_ax.set_facecolor(C_WHITE)
     start_nav = float(plot_df["adj_nav"].iloc[0])
     fund_cum  = (plot_df.set_index("date")["adj_nav"] / start_nav - 1) * 100
@@ -1611,9 +1828,10 @@ def _make_monthly_report(
     x_max = fund_cum.index.max()
     x_pad = pd.Timedelta(days=20)
     cum_ax.set_xlim(x_min - x_pad, x_max + x_pad)
-    cum_ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    cum_ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y/%m"))
-    cum_ax.tick_params(axis="both", labelsize=7, colors=C_DIM)
+    date_locator, date_formatter = _history_date_ticks(fund_cum.index)
+    cum_ax.xaxis.set_major_locator(date_locator)
+    cum_ax.xaxis.set_major_formatter(date_formatter)
+    cum_ax.tick_params(axis="both", labelsize=8, colors=C_DIM)
     cum_ax.tick_params(axis="x", pad=2)
     for sp in cum_ax.spines.values():
         sp.set_color(C_BORDER)
@@ -1635,73 +1853,15 @@ def _make_monthly_report(
         legend_kw["prop"] = fp
     cum_ax.legend(**legend_kw)
 
-    # ── MONTHLY RETURN TABLE (below cumulative chart) ───────────────────────
-    draw_text(ax, 0.076, 0.228, "月度收益明细",
+    # ── MONTHLY RETURN TABLE (full history, below cumulative chart) ────────
+    draw_text(ax, 0.076, history_layout["top"] + 0.014, "月度收益明细",
               fp_bold or fp, size=8, color=C_RED_DEEP, weight="bold")
-
-    n = len(monthly_bars)
-    tbl_x0, tbl_y, tbl_w = 0.076, 0.175, 0.868
-    lbl_w = 0.048
-    row_h = 0.022
-    tbl_h = row_h * 2
-    col_w = (tbl_w - lbl_w) / n
-
-    # Outer table border
-    ax.add_patch(FancyBboxPatch(
-        (tbl_x0, tbl_y), tbl_w, tbl_h,
-        boxstyle="round,pad=0.002,rounding_size=0.004",
-        facecolor=C_WHITE, edgecolor=C_BORDER, linewidth=0.8,
-        transform=ax.transAxes, clip_on=False, zorder=3,
-    ))
-    # Horizontal divider between header & data rows
-    ax.add_patch(Rectangle(
-        (tbl_x0, tbl_y + row_h), tbl_w, 0.0012,
-        transform=ax.transAxes, color=C_BORDER, clip_on=False, zorder=4,
-    ))
-    # Vertical divider after label column
-    ax.add_patch(Rectangle(
-        (tbl_x0 + lbl_w, tbl_y), 0.0012, tbl_h,
-        transform=ax.transAxes, color=C_BORDER, clip_on=False, zorder=4,
-    ))
-
-    # Header row background (month labels)
-    ax.add_patch(Rectangle(
-        (tbl_x0 + lbl_w, tbl_y + row_h), tbl_w - lbl_w, row_h,
-        transform=ax.transAxes, facecolor=C_RED_PALE, edgecolor="none",
-        clip_on=False, zorder=3,
-    ))
-
-    # Row labels
-    draw_text(ax, tbl_x0 + lbl_w / 2, tbl_y + row_h + row_h / 2, "月份",
-              fp_bold or fp, size=6.5, color=C_RED_MID, ha="center", va="center", weight="bold")
-    draw_text(ax, tbl_x0 + lbl_w / 2, tbl_y + row_h / 2, "收益率",
-              fp_bold or fp, size=6.5, color=C_RED_MID, ha="center", va="center", weight="bold")
-
-    for i, (lbl, ret) in enumerate(monthly_bars):
-        cx = tbl_x0 + lbl_w + i * col_w
-        # Column divider
-        if i > 0:
-            ax.add_patch(Rectangle(
-                (cx, tbl_y), 0.0008, tbl_h,
-                transform=ax.transAxes, color=C_BORDER, clip_on=False, zorder=4, alpha=0.6,
-            ))
-        # Compact month label
-        if "/" in lbl:
-            yr, mo = lbl.split("/", 1)
-            month_lbl = f"{yr}/{int(mo)}"
-        else:
-            month_lbl = lbl
-        draw_text(ax, cx + col_w / 2, tbl_y + row_h + row_h / 2, month_lbl,
-                  fp, size=6, color=C_DIM, ha="center", va="center")
-        # Return value with Chinese color convention
-        if ret is not None:
-            val_txt = f"{ret * 100:+.1f}%"
-            val_col = ch_color(ret)
-        else:
-            val_txt = "--"
-            val_col = C_DIM
-        draw_text(ax, cx + col_w / 2, tbl_y + row_h / 2, val_txt,
-                  fp_bold or fp, size=6.5, color=val_col, ha="center", va="center", weight="bold")
+    _draw_review_history_table(
+        ax, interval_rows, history_layout,
+        fp=fp, fp_bold=fp_bold,
+        up=C_RED, down=C_DOWN, ink=C_INK, dim=C_DIM,
+        border=C_BORDER, header_bg=C_RED_PALE, white=C_WHITE, zebra=C_RED_PALE,
+    )
 
     # ── FOOTER ──────────────────────────────────────────────────────────────
     ax.add_patch(Rectangle((0, 0), 1, 0.078, transform=ax.transAxes,
@@ -1719,7 +1879,7 @@ def _make_monthly_report(
     draw_text(ax, 0.50, 0.044, disclaimer, fp, size=7, color="#FFCDD2", ha="center")
     draw_text(ax, 0.50, 0.022, product_tagline, fp, size=7.5, color=C_GOLD_PALE, ha="center")
 
-    return _save_report_figure(fig, output_dir, report_title, end_date, "月报回顾版")
+    return _save_report_figure(fig, output_dir, report_title, end_date, labels["file_suffix"])
 
 
 def make_report(

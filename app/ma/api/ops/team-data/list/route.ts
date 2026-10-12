@@ -28,6 +28,11 @@ export async function GET(req: Request) {
     const navAnomalyRaw = (searchParams.get("nav_anomaly") || "").trim().toLowerCase()
     const navAnomalyFilter =
       navAnomalyRaw === "jump" || navAnomalyRaw === "no_jump" ? navAnomalyRaw : "all"
+    const navAnomalyCauseRaw = (searchParams.get("nav_anomaly_cause") || "").trim().toLowerCase()
+    const navAnomalyCauseFilter =
+      navAnomalyFilter === "jump" && (navAnomalyCauseRaw === "source" || navAnomalyCauseRaw === "rules")
+        ? navAnomalyCauseRaw
+        : "all"
     const sourceRaw = (searchParams.get("product_source") || "").trim().toLowerCase()
     const productSourceFilter =
       sourceRaw === "manual" || sourceRaw === "email" || sourceRaw === "fof99" ? sourceRaw : "all"
@@ -58,6 +63,7 @@ export async function GET(req: Request) {
       navLagFilter,
       navGapFilter,
       navAnomalyFilter,
+      navAnomalyCauseFilter,
       productSourceFilter,
       operationDateFilter,
       sort,
@@ -77,6 +83,7 @@ export async function GET(req: Request) {
         navLagFilter,
         navGapFilter,
         navAnomalyFilter,
+        navAnomalyCauseFilter,
         productSourceFilter,
         operationDateFilter,
         sort,

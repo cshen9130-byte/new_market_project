@@ -1034,6 +1034,34 @@ assert(
 const sxk911CumRet = parseFloat(sxk911Latest.cumulative_nav) / parseFloat(sxk911Out[0].cumulative_nav) - 1
 assert("SXK911 since-inception ~17% not +1328%", sxk911CumRet > 0.10 && sxk911CumRet < 0.25)
 
+// SQU767 六妙星豪鑫主观2号: real unit NAV grinds 0.57 → 2.81 (max week ~17%).
+// Must not be cut as a 成立以来倍数 tail the way SBDF95's one-day 4× jump is.
+const squ767Grind = []
+{
+  let level = 0.5654
+  const cursor = new Date("2024-04-12T00:00:00Z")
+  for (let i = 0; i < 80; i += 1) {
+    const iso = cursor.toISOString().slice(0, 10)
+    const v = level.toFixed(4)
+    squ767Grind.push({
+      price_date: iso,
+      nav: v,
+      cumulative_nav: v,
+      cum_nav_withdrawal: v,
+      price_change: "",
+    })
+    level *= 1.02
+    cursor.setUTCDate(cursor.getUTCDate() + 7)
+  }
+}
+const squ767GrindOut = mergeNavSeriesWithEmail(squ767Grind, [
+  { price_date: "2026-10-09", nav: "2.8100", cumulative_nav: "2.8100", adjusted_nav: "2.8100" },
+])
+const squ767GrindLatest = squ767GrindOut.at(-1)
+assert("SQU767 grind keeps 2024-11 and later", squ767GrindOut.some((r) => r.price_date >= "2024-11-01"))
+assert("SQU767 grind keeps email tip 2026-10-09", squ767GrindLatest?.price_date === "2026-10-09")
+assert("SQU767 grind latest unit 2.8100", Math.abs(parseFloat(squ767GrindLatest.nav) - 2.81) < 0.001)
+
 const sbdf95Batch = sanitizeNavPointSeries([
   { nav_date: "2026-07-01", nav: 1.0214 },
   { nav_date: "2026-07-03", nav: 4.6587 },
@@ -2639,6 +2667,9 @@ const sbhk26History = [
   },
 ]
 testR0423bDividendOffsetRebase()
+testEmailCumRatioGuards()
+testMidSeriesUnitResetKeepsCumulative()
+testCnHolidayClosureSkipsAdjVShape()
 
 const sbhk26Selected = selectEmailNavSeriesRows(sbhk26History, "SBHK26", ["六妙星豪鑫6号"])
 const sbhk26Jun29 = sbhk26Selected.find((r) => r.nav_date === "2026-06-29")
@@ -4252,5 +4283,166 @@ function testR0423bDividendOffsetRebase() {
   assert(
     "R0423B 2026-02-27 复权 does not cliff",
     feb27 && parseFloat(feb27.cumulative_nav) > 2.9,
+  )
+}
+
+function emailSeriesRow(date, nav, cum, code) {
+  return {
+    nav_date: date,
+    nav: nav.toFixed(4),
+    cumulative_nav: cum.toFixed(4),
+    adjusted_nav: cum.toFixed(4),
+    product_code: code,
+    fund_name: code,
+    attachment_filename: "",
+    subject: `${code} 净值表`,
+    source: "attachment_nav_table",
+  }
+}
+
+function testEmailCumRatioGuards() {
+  const stuckCum = []
+  for (let i = 0; i < 10; i += 1) {
+    const day = String(i + 1).padStart(2, "0")
+    stuckCum.push(emailSeriesRow(`2026-04-${day}`, 1 + i * 0.04, 6.3, "SQQ26A"))
+  }
+  const stuckSelected = selectEmailNavSeriesRows(stuckCum, "SQQ26A", ["SQQ26A"])
+  assert(
+    "frozen 累计 is cleared when 单位 moves (文艺复兴26号 shape)",
+    stuckSelected.length >= 8
+      && stuckSelected.every((row) => row.cumulative_nav == null)
+      && Math.abs(parseFloat(stuckSelected[stuckSelected.length - 1].nav) - 1.36) < 0.001,
+  )
+
+  const extreme = []
+  for (let i = 0; i < 10; i += 1) {
+    const day = String(i + 1).padStart(2, "0")
+    extreme.push(emailSeriesRow(`2026-04-${day}`, 1 + i * 0.001, 16.14 + i * 0.001, "SZM314"))
+  }
+  const extremeSelected = selectEmailNavSeriesRows(extreme, "SZM314", ["SZM314"])
+  assert(
+    "frozen 累计 above 8× is cleared when 单位 is quiet",
+    extremeSelected.length >= 8 && extremeSelected.every((row) => row.cumulative_nav == null),
+  )
+
+  const quiet = []
+  for (let i = 0; i < 10; i += 1) {
+    const day = String(i + 1).padStart(2, "0")
+    quiet.push(emailSeriesRow(`2026-04-${day}`, 1.011 + i * 0.0004, 4.173 + i * 0.0004, "STV890"))
+  }
+  const quietSelected = selectEmailNavSeriesRows(quiet, "STV890", ["STV890"])
+  const quietLast = quietSelected[quietSelected.length - 1]
+  assert(
+    "quiet series near 4× keeps 累计",
+    quietLast != null && Math.abs(parseFloat(quietLast.cumulative_nav) - (4.173 + 9 * 0.0004)) < 0.001,
+  )
+
+  const moving = []
+  for (let i = 0; i < 8; i += 1) {
+    const day = String(i + 1).padStart(2, "0")
+    const unit = 1.1 + i * 0.02
+    moving.push(emailSeriesRow(`2026-05-${day}`, unit, unit * 2.15, "REAL2X"))
+  }
+  moving.push(emailSeriesRow("2026-05-12", 1.2, 1.2, "REAL2X"))
+  const movingSelected = selectEmailNavSeriesRows(moving, "REAL2X", ["REAL2X"])
+  const equalRow = movingSelected.find((row) => row.nav_date === "2026-05-12")
+  assert(
+    "a real series above 2× does not teach unit inference to scale a later row",
+    equalRow != null && Math.abs(parseFloat(equalRow.nav) - 1.2) < 0.001,
+  )
+
+  const legacy = [{
+    price_date: "2026-05-01",
+    nav: "1.1000",
+    cumulative_nav: "2.3650",
+    cum_nav_withdrawal: "2.3650",
+    price_change: "",
+    legacy_origin: "fof99",
+  }]
+  const emailPoints = movingSelected
+    .filter((row) => row.nav_date !== "2026-05-12")
+    .map((row) => ({
+      price_date: row.nav_date,
+      nav: row.nav,
+      cumulative_nav: row.cumulative_nav,
+      adjusted_nav: row.adjusted_nav,
+      source: row.source,
+      subject: row.subject,
+    }))
+  const withLegacy = mergeNavSeriesWithEmail(legacy, emailPoints)
+  const may8 = withLegacy.find((row) => row.price_date === "2026-05-08")
+  assert(
+    "detail merge keeps a real cum/unit above 2 when 火富牛 is on the same scale",
+    may8 != null && Math.abs(parseFloat(may8.cum_nav_withdrawal) - 1.24 * 2.15) < 0.01,
+  )
+  const emailOnly = mergeNavSeriesWithEmail([], emailPoints)
+  const may8Alone = emailOnly.find((row) => row.price_date === "2026-05-08")
+  assert(
+    "email-only merge does not keep an unconfirmed cum/unit above 2",
+    may8Alone != null && Math.abs(parseFloat(may8Alone.cum_nav_withdrawal) - 1.24 * 2.15) > 0.05,
+  )
+}
+
+function testMidSeriesUnitResetKeepsCumulative() {
+  const points = [
+    { price_date: "2025-12-15", nav: "1.3302", cumulative_nav: "2.4284", adjusted_nav: "2.4284", source: "attachment_nav_table" },
+    { price_date: "2025-12-16", nav: "1.3022", cumulative_nav: "2.4004", adjusted_nav: "2.4004", source: "attachment_nav_table" },
+    { price_date: "2025-12-17", nav: "1.0000", cumulative_nav: "2.3906", adjusted_nav: "2.3906", source: "attachment_nav_table" },
+    { price_date: "2025-12-18", nav: "0.9818", cumulative_nav: "2.3724", adjusted_nav: "2.3724", source: "attachment_nav_table" },
+  ]
+  const opening = mergeNavSeriesWithEmail([], [
+    { price_date: "2020-09-11", nav: "1.0000", cumulative_nav: "1.0000", adjusted_nav: "1.0000", source: "attachment_nav_table" },
+    ...points,
+  ])
+  const reset = opening.find((row) => row.price_date === "2025-12-17")
+  const before = opening.find((row) => row.price_date === "2025-12-16")
+  const launch = opening.find((row) => row.price_date === "2020-09-11")
+  assert(
+    "mid-series unit 1.0000 keeps the email 累计",
+    reset != null && Math.abs(parseFloat(reset.cum_nav_withdrawal) - 2.3906) < 0.0001,
+  )
+  assert(
+    "mid-series unit reset moves 复权 with 累计, not the unit drop",
+    reset != null && before != null
+      && Math.abs(parseFloat(reset.cumulative_nav) / parseFloat(before.cumulative_nav) - 2.3906 / 2.4004) < 0.01,
+  )
+  assert(
+    "opening unit 1.0000 is not treated as a reset",
+    launch != null && Math.abs(parseFloat(launch.nav) - 1) < 0.0001
+      && Math.abs(parseFloat(launch.cum_nav_withdrawal) - 1) < 0.0001,
+  )
+}
+
+function holidayAdjRow(date, adj) {
+  return {
+    price_date: date,
+    nav: "2.3400",
+    cumulative_nav: adj,
+    cum_nav_withdrawal: "2.5000",
+    price_change: "",
+  }
+}
+
+function testCnHolidayClosureSkipsAdjVShape() {
+  const acrossNewYear = mergeNavSeriesWithEmail([
+    holidayAdjRow("2026-02-06", "2.6000"),
+    holidayAdjRow("2026-02-13", "2.8800"),
+    holidayAdjRow("2026-02-24", "2.6400"),
+  ], [])
+  const feb13 = acrossNewYear.find((row) => row.price_date === "2026-02-13")
+  assert(
+    "春节 gap does not flatten a 复权 premium (R0423B 2026-02-13)",
+    feb13 != null && Math.abs(parseFloat(feb13.cumulative_nav) - 2.88) < 0.02,
+  )
+
+  const ordinaryDays = mergeNavSeriesWithEmail([
+    holidayAdjRow("2026-03-03", "2.6000"),
+    holidayAdjRow("2026-03-04", "2.8800"),
+    holidayAdjRow("2026-03-05", "2.6400"),
+  ], [])
+  const mar4 = ordinaryDays.find((row) => row.price_date === "2026-03-04")
+  assert(
+    "a one-day 复权 spike on ordinary sessions is still repaired",
+    mar4 != null && Math.abs(parseFloat(mar4.cumulative_nav) - 2.6) < 0.02,
   )
 }

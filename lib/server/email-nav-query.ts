@@ -3,7 +3,7 @@
  */
 
 import { query } from "@/lib/db"
-import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
+import { gapCrossesCnStatutoryHoliday, isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   canonicalizeEmailProductCode,
@@ -165,8 +165,14 @@ function sourceTier(source: string | null | undefined, subject?: string | null):
 }
 
 const MAX_PLAUSIBLE_EMAIL_UNIT_NAV = 50
-/** Reject 成立以来倍数 / wrong columns stored as 累计 (SBFM35: cum=3.0, unit≈1.02). */
+/**
+ * cum/unit above this starts the 火富牛 offset rebase and the stray-cell check.
+ * It does not discard a whole series (R0423B sits near 3× because of a constant
+ * custodian base; SQX078 virtual 累计 is about 2.06×).
+ */
 const MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO = 2
+/** Frozen 累计 at this multiple is a wrong column even when 单位 is quiet (文艺复兴6号 ~16×). */
+const EXTREME_FROZEN_CUM_UNIT_RATIO = 8
 
 /** Reject share-count / cost columns mis-parsed as unit NAV (e.g. 虚拟计提净值表 holdings). */
 export function isPlausibleEmailUnitNav(
@@ -322,31 +328,28 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   const currentDistinct = currNav != null && currCumField != null
     && isPlausibleEmailUnitNav(currNav, currCumField)
     && isPlausibleEmailCumulativeNav(currNav, currCumField)
+    && !emailCumUnitRatioExceedsCap(currNav, currCumField)
     && hasDividendOffset(currNav, currCumField)
   const candidateDistinct = candNav != null && candCumField != null
     && isPlausibleEmailUnitNav(candNav, candCumField)
     && isPlausibleEmailCumulativeNav(candNav, candCumField)
+    && !emailCumUnitRatioExceedsCap(candNav, candCumField)
     && hasDividendOffset(candNav, candCumField)
   if (candidateDistinct && !currentDistinct) return candidate
   if (currentDistinct && !candidateDistinct) return current
 
-  // Prefer rows with plausible 累计 over valuation column bleed (cum >> unit).
-  if (
-    currNav != null && currCumField != null
-    && !isPlausibleEmailCumulativeNav(currNav, currCumField)
-    && candNav != null
-    && (candCumField == null || isPlausibleEmailCumulativeNav(candNav, candCumField))
-  ) {
-    return candidate
-  }
-  if (
-    candNav != null && candCumField != null
-    && !isPlausibleEmailCumulativeNav(candNav, candCumField)
-    && currNav != null
-    && (currCumField == null || isPlausibleEmailCumulativeNav(currNav, currCumField))
-  ) {
-    return current
-  }
+  // Same date: prefer a normal 累计 over one cell sitting above 2× (SBFM35 cum=3
+  // vs the 资产净值公告). A series that is entirely above 2× has no rival row.
+  const currentBleed = currNav != null && currCumField != null && (
+    !isPlausibleEmailCumulativeNav(currNav, currCumField)
+    || emailCumUnitRatioExceedsCap(currNav, currCumField)
+  )
+  const candidateBleed = candNav != null && candCumField != null && (
+    !isPlausibleEmailCumulativeNav(candNav, candCumField)
+    || emailCumUnitRatioExceedsCap(candNav, candCumField)
+  )
+  if (currentBleed && !candidateBleed && candNav != null) return candidate
+  if (candidateBleed && !currentBleed && currNav != null) return current
 
   if (beian) {
     const candCode = productCodeMatchesBeian(candidate, beian)
@@ -928,17 +931,7 @@ export function selectEmailNavSeriesRows(
 function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): EmailNavRawRow[] {
   const beian = beianHao.trim().toUpperCase()
   let latestRatio: number | null = null
-  // A whole custodian series with cum/unit > 2 can be 火富牛累计 plus a constant
-  // (R0423B +2.5943). Keep those so merge can rebase the dividend. One corrupt
-  // cell (SBFM35 成立以来倍数 = 3) is still stripped.
-  const highRatioCount = rows.filter((row) => {
-    const unit = parseOptionalNav(row.nav)
-    const cum = parseOptionalNav(row.cumulative_nav)
-    return unit != null && cum != null && cum >= unit - 0.001
-      && !isPlausibleEmailCumulativeNav(unit, cum)
-  }).length
-  const keepSeriesHighRatioCum = highRatioCount >= 3
-  return rows.map((row) => {
+  return clearCorruptEmailCumulative(rows).map((row) => {
     let working = row
     let unit = parseOptionalNav(working.nav)
     let cum = parseOptionalNav(working.cumulative_nav)
@@ -954,26 +947,14 @@ function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): 
     }
 
     if (unit != null && cum != null && !isPlausibleEmailCumulativeNav(unit, cum)) {
-      // Virtual emails can legitimately carry cum/unit > 2 (SQX078 ~2.04).
-      const keepHighRatioVirtualCum =
-        isPostInvestmentVirtualNavEmail(working.subject)
-        && hasDistinctCumulative(unit, cum)
-        && isReasonableNav(cum)
-        && cum >= unit - 0.001
-      const keepShiftedCustodianCum =
-        keepSeriesHighRatioCum
-        && hasDistinctCumulative(unit, cum)
-        && isReasonableNav(cum)
-        && cum >= unit - 0.001
-      if (!keepHighRatioVirtualCum && !keepShiftedCustodianCum) {
-        working = { ...working, cumulative_nav: null }
-        cum = null
-      }
+      working = { ...working, cumulative_nav: null }
+      cum = null
     }
 
     if (
       unit != null && cum != null && cum - unit > 0.05 && !isParentCodeEmailRow(working, beian)
       && isPlausibleEmailCumulativeNav(unit, cum)
+      && !emailCumUnitRatioExceedsCap(unit, cum)
     ) {
       latestRatio = unit / cum
     }
@@ -1224,8 +1205,14 @@ function isVirtualNavRow(row: EmailNavRawRow): boolean {
   // Xingye 业绩报酬试算表 xlsx is often named *_虚拟净值试算结果.xlsx but stores
   // official 单位净值 (not investor virtual NAV). Keep it on the pre_fee stream.
   if (/业绩报酬试算表/u.test(subject)) return false
-  const meta = `${subject}${row.fund_name ?? ""}${row.attachment_filename ?? ""}`
-  return /虚拟/u.test(meta)
+  // Citics 【基金虚拟净值表现估算】 parses 实际净值 / 实际累计净值 into nav, not the
+  // per-investor 虚拟净值 column. The subject still contains 虚拟, but the stored
+  // series is the fund's official unit NAV and must stay on pre_fee. Otherwise a
+  // manual upload that ends mid-month (STX591 through 2026-09-10) hides every later
+  // trading day until the next non-virtual point.
+  const meta = `${subject}\n${row.attachment_filename ?? ""}`
+  if (/【基金虚拟净值表现估[算值]】/u.test(meta)) return false
+  return /虚拟/u.test(`${meta}${row.fund_name ?? ""}`)
 }
 
 type EmailNavRawRowWithId = EmailNavRawRow & { id: string }
@@ -1607,22 +1594,119 @@ function hasDistinctCumulative(nav: number, cumulative: number | null): boolean 
   return Math.abs(cumulative - nav) / nav > 0.001
 }
 
-/** Reject corrupt 累计 from valuation column bleed (e.g. 成立以来倍数 stored as cum). */
+/** Reject a 累计 outside 0.1–100 or below 单位. A high cum/unit is not itself corrupt. */
 function isPlausibleEmailCumulativeNav(
   unit: number,
   cum: number,
-  fundContext?: FundNavSeriesContext | null,
+  _fundContext?: FundNavSeriesContext | null,
 ): boolean {
   if (!isReasonableNav(unit) || !isReasonableNav(cum)) return false
   if (cum < unit - 0.001) return false
-  // SADG72 2nd dividend: cum/unit ≈ 2.60 is real. preserve_high_nav_scale skips the cap.
-  if (
-    cum / unit > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO
-    && !shouldSkipReturnIndexSanitize(fundContext)
-  ) {
-    return false
-  }
   return true
+}
+
+function emailCumUnitRatioExceedsCap(unit: number, cum: number): boolean {
+  return unit > 0 && cum / unit > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO
+}
+
+/**
+ * A manager reset of 单位净值 lands on 1.0000 after the fund has already traded
+ * away from 1. The launch print is also 1.0000, so that opening cluster does not
+ * count. Confirm with the dividend rule: 单位 drops sharply and 累计 stays put.
+ */
+function isConfirmedMidSeriesUnitReset(
+  rows: Array<{ nav: string | null; cumulative_nav: string | null }>,
+  index: number,
+): boolean {
+  const unit = parseOptionalNav(rows[index]?.nav)
+  const cum = parseOptionalNav(rows[index]?.cumulative_nav)
+  if (unit == null || cum == null || Math.abs(unit - 1) > 0.0001) return false
+
+  let prevUnit: number | null = null
+  let prevCum: number | null = null
+  let sawUnitAwayFromReset = false
+  for (let i = 0; i < index; i += 1) {
+    const earlierUnit = parseOptionalNav(rows[i]?.nav)
+    const earlierCum = parseOptionalNav(rows[i]?.cumulative_nav)
+    if (earlierUnit == null) continue
+    if (Math.abs(earlierUnit - 1) > 0.05) sawUnitAwayFromReset = true
+    if (earlierCum != null) {
+      prevUnit = earlierUnit
+      prevCum = earlierCum
+    }
+  }
+  if (!sawUnitAwayFromReset || prevUnit == null || prevCum == null) return false
+  return isLikelyDividendExDate(prevUnit, unit, prevCum, cum)
+}
+
+/**
+ * Drop a 累计 column that is not a series.
+ *
+ * - One or two dates above 2× inside an otherwise normal series (SBFM35 cum=3).
+ *   Those cells taught unit inference a ratio near 0.34 and scaled later 单位.
+ * - A column that does not move while 单位 does, and still sits above 2×
+ *   (文艺复兴26号 累计 stuck near 6.3). A frozen column above about 8× is
+ *   cleared even when 单位 is quiet (文艺复兴6号 ~16, a parse named 日期 ~12).
+ *
+ * A whole series above 2× whose 累计 moves with 单位 is kept so merge can
+ * rebase a constant custodian offset, or use the 累计 as-is when it already
+ * matches 火富牛 (SQX078).
+ */
+function clearCorruptEmailCumulative<T extends {
+  nav: string | null
+  cumulative_nav: string | null
+  adjusted_nav?: string | null
+}>(rows: T[]): T[] {
+  if (rows.length === 0) return rows
+
+  const parsed = rows.map((row) => {
+    const unit = parseOptionalNav(row.nav)
+    const cum = parseOptionalNav(row.cumulative_nav)
+    const bounded = unit != null && cum != null
+      && isReasonableNav(unit) && isReasonableNav(cum)
+      && cum >= unit - 0.001
+    const high = unit != null && cum != null && bounded && emailCumUnitRatioExceedsCap(unit, cum)
+    return { unit, cum, bounded, high }
+  })
+
+  const clear = new Set<number>()
+  const highIndexes = parsed.flatMap((row, index) => (row.high ? [index] : []))
+  const normalCumCount = parsed.filter((row) => row.bounded && !row.high).length
+  if (highIndexes.length >= 1 && highIndexes.length <= 2 && normalCumCount >= 1) {
+    for (const index of highIndexes) {
+      if (isConfirmedMidSeriesUnitReset(rows, index)) continue
+      clear.add(index)
+    }
+  }
+
+  const both = parsed.filter((row): row is { unit: number; cum: number; bounded: true; high: boolean } => (
+    row.bounded && row.unit != null && row.cum != null
+  ))
+  if (both.length >= 8) {
+    const unitRange = Math.max(...both.map((row) => row.unit)) - Math.min(...both.map((row) => row.unit))
+    const cumRange = Math.max(...both.map((row) => row.cum)) - Math.min(...both.map((row) => row.cum))
+    const ratios = both.map((row) => row.cum / row.unit).sort((a, b) => a - b)
+    const medRatio = ratios[Math.floor(ratios.length / 2)] ?? 0
+    const unitMovesCumStuck = medRatio > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO
+      && unitRange > 0.05
+      && cumRange <= 0.10
+      && cumRange < unitRange * 0.25
+    const extremeFrozen = medRatio > EXTREME_FROZEN_CUM_UNIT_RATIO && cumRange <= 0.05
+    if (unitMovesCumStuck || extremeFrozen) {
+      for (let index = 0; index < parsed.length; index += 1) {
+        if (parsed[index]?.cum != null) clear.add(index)
+      }
+    }
+  }
+
+  if (clear.size === 0) return rows
+  return rows.map((row, index) => {
+    if (!clear.has(index)) return row
+    const cum = parsed[index]?.cum
+    const adj = parseOptionalNav(row.adjusted_nav)
+    const adjustedNav = cum != null && adj != null && Math.abs(adj - cum) < 0.001 ? null : row.adjusted_nav
+    return { ...row, cumulative_nav: null, adjusted_nav: adjustedNav }
+  })
 }
 
 /** Reject FOF virtual performance-fee rows whose cum sits below unit (not fund 累计净值). */
@@ -2172,7 +2256,15 @@ function sanitizeVShapeNavOutliers(rows: LegacyNavRow[]): LegacyNavRow[] {
     const prevAdj = parseOptionalNav(prev.cumulative_nav)
     const currAdj = parseOptionalNav(curr.cumulative_nav)
     const nextAdj = parseOptionalNav(next.cumulative_nav)
+    // Consecutive rows split by 春节 / 国庆 / 劳动节 / 清明 / 端午 / 中秋 / 元旦
+    // are not one session. A real 复权 premium must not be flattened across that
+    // closure (R0423B 2026-02-13 → 2026-02-24). A plain weekend still counts as
+    // one step, so a Friday-to-Friday corrupt print is still repaired (SLA033).
+    const holidayClosure =
+      gapCrossesCnStatutoryHoliday(prev.price_date, curr.price_date)
+      || gapCrossesCnStatutoryHoliday(curr.price_date, next.price_date)
     const isAdjVShape =
+      !holidayClosure &&
       prevAdj != null && currAdj != null && nextAdj != null &&
       isReasonableNav(prevAdj) && isReasonableNav(currAdj) && isReasonableNav(nextAdj) &&
       unitBridge <= 0.02 &&
@@ -2332,7 +2424,27 @@ function sanitizeReturnIndexBurst(rows: LegacyNavRow[]): LegacyNavRow[] {
     }
 
     if (j >= rows.length) {
-      for (let k = i; k < rows.length; k += 1) drop.add(k)
+      // The elevated run never mean-reverts. Drop it only when some step at
+      // least doubles (SBDF95 1.02 → 4.66 stored 成立以来倍数 as 单位净值).
+      // A grind that stays high is the fund's own NAV (SQU767 0.57 → 2.81,
+      // largest week +17%) and must be kept, including later 净值表 points.
+      let jumpAt = -1
+      const entryPrev = parseOptionalNav(rows[i - 1]?.nav)
+      if (entryPrev != null && entryPrev > 0 && unit != null && unit / entryPrev >= ISOLATED_SPIKE_RATIO) {
+        jumpAt = i
+      } else {
+        for (let k = i + 1; k < rows.length; k += 1) {
+          const prev = parseOptionalNav(rows[k - 1].nav)
+          const cur = parseOptionalNav(rows[k].nav)
+          if (prev != null && prev > 0 && cur != null && cur / prev >= ISOLATED_SPIKE_RATIO) {
+            jumpAt = k
+            break
+          }
+        }
+      }
+      if (jumpAt >= 0) {
+        for (let k = jumpAt; k < rows.length; k += 1) drop.add(k)
+      }
       break
     }
 
@@ -2839,7 +2951,26 @@ export function mergeNavSeriesWithEmail(
   // it into 复权; if the columns are still swapped, that overlay replaces the real
   // 复权 (sitting in cum_nav_withdrawal) and finalize can no longer recover it.
   const legacyPrepared = repairSwappedCumAdjRows(legacyRows)
+  emailRows = clearCorruptEmailCumulative(emailRows)
   emailRows = rebaseAdditiveEmailCumulative(legacyPrepared, emailRows)
+  // No 火富牛 overlap: a series still above 2× may be an unshifted custodian
+  // base (R0423B +2.5943). The list sparkline merges email alone and cannot
+  // learn that constant, so it keeps the unit and drops the raw 累计. Detail
+  // merge passes 火富牛, rebases a constant offset, and keeps a real high ratio
+  // (SQX078) when the two sources already share a scale.
+  if (legacyPrepared.length === 0) {
+    emailRows = emailRows.map((row, index) => {
+      const unit = parseOptionalNav(row.nav)
+      const cum = parseOptionalNav(row.cumulative_nav)
+      if (unit == null || cum == null || !emailCumUnitRatioExceedsCap(unit, cum)) return row
+      // A later 单位净值 of 1.0000, with 累计 unchanged, is a reset. Keep that 累计
+      // so 复权 follows the 累计 change. The opening 1.0000 is not this case.
+      if (isConfirmedMidSeriesUnitReset(emailRows, index)) return row
+      const adj = parseOptionalNav(row.adjusted_nav)
+      const adjustedNav = adj != null && Math.abs(adj - cum) < 0.001 ? null : row.adjusted_nav
+      return { ...row, cumulative_nav: null, adjusted_nav: adjustedNav }
+    })
+  }
   if (emailRows.length === 0) return finalizeNavSeries(legacyPrepared, new Set(), new Set(), fundContext)
 
   const byDate = new Map<string, LegacyNavRow>()

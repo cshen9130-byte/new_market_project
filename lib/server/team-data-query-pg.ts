@@ -47,6 +47,14 @@ import {
   type NavAnomalyHit,
   type NavAnomalyPoint,
 } from "@/lib/server/nav-anomaly"
+import {
+  diagnoseNavAnomaly,
+  navSourceLabel,
+  NAV_SOURCE_RANK,
+  type NavSourceField,
+  type NavSourcePoint,
+  type NavSourceSeries,
+} from "@/lib/server/nav-anomaly-cause"
 import { ensureOpsFundOperationDates, loadOperationDatesByCodes } from "@/lib/server/ops-fund-operation-dates"
 
 export { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
@@ -100,6 +108,8 @@ export type TeamDataNavLagFilter = "all" | "behind_2w" | "within_2w"
 export type TeamDataNavGapFilter = "all" | "interior_2w" | "no_interior_2w"
 /** Suspicious jumps or one-point spikes on the default 复权净值 chart. */
 export type TeamDataNavAnomalyFilter = "all" | "jump" | "no_jump"
+/** Why a flagged step exists. Only applied together with 有异常. */
+export type TeamDataNavAnomalyCauseFilter = "all" | "source" | "rules"
 export type TeamDataProductSourceFilter = "all" | "manual" | "email" | "fof99"
 /** Filter by whether a manual or 产品要素 运作日期 is set. */
 export type TeamDataOperationDateFilter = "all" | "present" | "absent"
@@ -133,6 +143,8 @@ export type TeamDataListParams = {
   navGapFilter?: TeamDataNavGapFilter
   /** Filter by a large jump or reverting spike on the charted NAV series. */
   navAnomalyFilter?: TeamDataNavAnomalyFilter
+  /** Among 有异常 rows, keep 源数据异常 or 计算或修正导致. */
+  navAnomalyCauseFilter?: TeamDataNavAnomalyCauseFilter
   /** Filter by 更新方式 (邮箱抓取 / 手动更新 / fof99). */
   productSourceFilter?: TeamDataProductSourceFilter
   /** Filter by whether 运作日期 is set (ops_fund_operation_dates or basicinfo_bfl_track). */
@@ -1760,6 +1772,30 @@ function beianCodeAliases(code: string): string[] {
   return [...out]
 }
 
+/**
+ * Main filing behind a tiered share class. SGT288 + A类 is stored as GT288A, so
+ * the A类 chart can carry the parent 单位净值. The anomaly check has to see that
+ * parent feed or it treats the parent's own step as a local 复权 calculation.
+ */
+function parentFilingCodes(code: string): string[] {
+  const u = code.trim().toUpperCase()
+  const match = u.match(/^(.+?)([ABC])$/u)
+  if (!match) return []
+  const letter = match[2] as ShareClassLetter
+  const base = match[1]
+  const candidates = base.startsWith("S") ? [base, base.slice(1)] : [base, `S${base}`]
+  const parents = new Set<string>()
+  for (const candidate of candidates) {
+    if (!candidate || candidate === u) continue
+    if (buildTieredBeianCode(candidate, letter) === u) parents.add(candidate)
+  }
+  return [...parents]
+}
+
+function anomalyRawCodes(code: string): string[] {
+  return [...new Set([...beianCodeAliases(code), ...parentFilingCodes(code)])]
+}
+
 function shareClassFromCode(code: string): string {
   const m = code.trim().toUpperCase().match(/[ABC]$/u)
   return m ? m[0] : ""
@@ -2256,32 +2292,67 @@ function detailCacheFitsRow(cache: DetailNavCacheIdentity, row: ResolvedFund): b
   return shareClassFromFundName(name) === shareClassFromFundName(row.product_name)
 }
 
-async function loadDetailNavGapCacheRows(codes: string[], names: string[]): Promise<DetailNavGapCacheRow[]> {
+/**
+ * Code and name lookups stay separate so each one can use an index.
+ * OR-ing product_name into the code predicate made Postgres scan the whole
+ * cache and expand every NAV series.
+ */
+async function queryDetailNavCache<T extends { cache_key: string }>(
+  codes: string[],
+  names: string[],
+  selectList: string,
+): Promise<T[]> {
   if (codes.length === 0 && names.length === 0) return []
-  const rows = await query<{
+  const codeSql = `
+    SELECT ${selectList}
+    FROM ops_private_fund_detail_nav_cache c
+    WHERE jsonb_typeof(c.nav_series) = 'array'
+      AND (c.cache_key = ANY($1::text[]) OR c.beian_hao = ANY($1::text[]))`
+  const nameSql = `
+    SELECT ${selectList}
+    FROM ops_private_fund_detail_nav_cache c
+    WHERE jsonb_typeof(c.nav_series) = 'array'
+      AND c.product_name = ANY($1::text[])`
+  const [byCode, byName] = await Promise.all([
+    codes.length
+      ? query<T>(codeSql, [codes]).catch(() => [] as T[])
+      : Promise.resolve([] as T[]),
+    names.length
+      ? query<T>(nameSql, [names]).catch(() => [] as T[])
+      : Promise.resolve([] as T[]),
+  ])
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const row of [...byCode, ...byName]) {
+    const key = row.cache_key.trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(row)
+  }
+  return out
+}
+
+const DETAIL_NAV_CACHE_SELECT_HEAD = `
+  UPPER(BTRIM(COALESCE(NULLIF(beian_hao, ''), cache_key))) AS code,
+  cache_key,
+  product_name`
+
+async function loadDetailNavGapCacheRows(codes: string[], names: string[]): Promise<DetailNavGapCacheRow[]> {
+  const rows = await queryDetailNavCache<{
     code: string
     cache_key: string
     product_name: string
     dates: unknown
   }>(
-    `SELECT
-       UPPER(BTRIM(COALESCE(NULLIF(beian_hao, ''), cache_key))) AS code,
-       cache_key,
-       product_name,
+    codes,
+    names,
+    `${DETAIL_NAV_CACHE_SELECT_HEAD},
        (
          SELECT COALESCE(array_agg(DISTINCT LEFT(elem->>'price_date', 10)), ARRAY[]::text[])
          FROM jsonb_array_elements(c.nav_series) AS elem
          WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
-       ) AS dates
-     FROM ops_private_fund_detail_nav_cache c
-     WHERE jsonb_typeof(c.nav_series) = 'array'
-       AND (
-         (cardinality($1::text[]) > 0 AND c.cache_key = ANY($1::text[]))
-         OR (cardinality($1::text[]) > 0 AND UPPER(BTRIM(c.beian_hao)) = ANY($1::text[]))
-         OR (cardinality($2::text[]) > 0 AND c.product_name = ANY($2::text[]))
-       )`,
-    [codes, names],
-  ).catch(() => [] as Array<{ code: string; cache_key: string; product_name: string; dates: unknown }>)
+       ) AS dates`,
+  )
   return rows.map((row) => ({
     code: row.code,
     cache_key: row.cache_key,
@@ -2622,17 +2693,15 @@ function asChartPoints(value: unknown): NavAnomalyPoint[] {
 }
 
 async function loadDetailNavAnomalyCacheRows(codes: string[], names: string[]): Promise<DetailNavAnomalyCacheRow[]> {
-  if (codes.length === 0 && names.length === 0) return []
-  const rows = await query<{
+  const rows = await queryDetailNavCache<{
     code: string
     cache_key: string
     product_name: string
     points: unknown
   }>(
-    `SELECT
-       UPPER(BTRIM(COALESCE(NULLIF(beian_hao, ''), cache_key))) AS code,
-       cache_key,
-       product_name,
+    codes,
+    names,
+    `${DETAIL_NAV_CACHE_SELECT_HEAD},
        (
          SELECT COALESCE(jsonb_agg(jsonb_build_object(
            'd', LEFT(elem->>'price_date', 10),
@@ -2642,16 +2711,8 @@ async function loadDetailNavAnomalyCacheRows(codes: string[], names: string[]): 
          )), '[]'::jsonb)
          FROM jsonb_array_elements(c.nav_series) AS elem
          WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
-       ) AS points
-     FROM ops_private_fund_detail_nav_cache c
-     WHERE jsonb_typeof(c.nav_series) = 'array'
-       AND (
-         (cardinality($1::text[]) > 0 AND c.cache_key = ANY($1::text[]))
-         OR (cardinality($1::text[]) > 0 AND UPPER(BTRIM(c.beian_hao)) = ANY($1::text[]))
-         OR (cardinality($2::text[]) > 0 AND c.product_name = ANY($2::text[]))
-       )`,
-    [codes, names],
-  ).catch(() => [] as Array<{ code: string; cache_key: string; product_name: string; points: unknown }>)
+       ) AS points`,
+  )
   return rows.map((row) => ({
     code: row.code,
     cache_key: row.cache_key,
@@ -2822,6 +2883,293 @@ async function loadProductNavAnomalies(rows: ResolvedFund[]): Promise<Map<string
 
   navAnomalyIdsCache = { key: cacheKey, hits, at: Date.now() }
   return hits
+}
+
+type RawNavSourceRow = {
+  src: string
+  code: string
+  price_date: string
+  adjusted: string | null
+  cumulative: string | null
+  unit: string | null
+}
+
+/** Raw feed levels for the current page, before merge / 复权 rechain / correction. */
+async function loadRawNavSourceLevels(codes: string[]): Promise<RawNavSourceRow[]> {
+  if (codes.length === 0) return []
+  const virtual = sqlPostInvestmentVirtualNavExpr("e.subject")
+  const [legacy, email, manual] = await Promise.all([
+    query<RawNavSourceRow>(
+      `SELECT src, UPPER(BTRIM(code)) AS code, price_date::text AS price_date,
+              adjusted, cumulative, unit
+       FROM (
+         SELECT 'fof99' AS src, beian_hao AS code, price_date,
+                cumulative_nav::text AS adjusted, cum_nav_withdrawal::text AS cumulative, nav::text AS unit
+         FROM private_fund_nav
+         WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+           AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL OR cum_nav_withdrawal IS NOT NULL)
+         UNION ALL
+         SELECT 'type6' AS src, beian_hao AS code, price_date,
+                cumulative_nav::text AS adjusted, cum_nav_withdrawal::text AS cumulative, nav::text AS unit
+         FROM private_fund_nav_group_type6
+         WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+           AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL OR cum_nav_withdrawal IS NOT NULL)
+         UNION ALL
+         SELECT 'group' AS src, beian_hao AS code, price_date,
+                cumulative_nav::text AS adjusted, cum_nav_withdrawal::text AS cumulative, nav::text AS unit
+         FROM private_fund_nav_group
+         WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+           AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL OR cum_nav_withdrawal IS NOT NULL)
+         UNION ALL
+         SELECT 'hy' AS src, beian_hao AS code, price_date,
+                cumulative_nav::text AS adjusted, cum_nav_withdrawal::text AS cumulative, nav::text AS unit
+         FROM private_fund_nav_group_hy
+         WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE
+           AND (nav IS NOT NULL OR cumulative_nav IS NOT NULL OR cum_nav_withdrawal IS NOT NULL)
+       ) t`,
+      [codes],
+    ).catch(() => [] as RawNavSourceRow[]),
+    query<RawNavSourceRow>(
+      `SELECT
+         CASE
+           WHEN ${virtual} THEN 'email_virtual'
+           WHEN COALESCE(e.source, '') = 'attachment_nav_table' THEN 'email_nav_table'
+           WHEN COALESCE(e.source, '') = 'attachment_valuation_table' THEN 'email_valuation'
+           ELSE 'email_other'
+         END AS src,
+         UPPER(BTRIM(e.product_code)) AS code,
+         e.nav_date::text AS price_date,
+         e.adjusted_nav::text AS adjusted,
+         e.cumulative_nav::text AS cumulative,
+         e.nav::text AS unit
+       FROM ops_email_nav_records e
+       WHERE UPPER(BTRIM(e.product_code)) = ANY($1::text[])
+         AND e.nav_date IS NOT NULL
+         AND (e.nav IS NOT NULL OR e.cumulative_nav IS NOT NULL OR e.adjusted_nav IS NOT NULL)`,
+      [codes],
+    ).catch(() => [] as RawNavSourceRow[]),
+    query<RawNavSourceRow>(
+      `SELECT 'manual' AS src,
+              UPPER(BTRIM(beian_hao)) AS code,
+              nav_date::text AS price_date,
+              adjusted_nav::text AS adjusted,
+              cumulative_nav::text AS cumulative,
+              unit_nav::text AS unit
+       FROM ops_team_nav_manual
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+         AND nav_type = 'pre_fee'`,
+      [codes],
+    ).catch(() => [] as RawNavSourceRow[]),
+  ])
+  return [...legacy, ...email, ...manual]
+}
+
+function indexRawNavSources(rows: RawNavSourceRow[]): Map<string, RawNavSourceRow[]> {
+  const out = new Map<string, RawNavSourceRow[]>()
+  for (const row of rows) {
+    const key = `${row.src}|${(row.code ?? "").trim().toUpperCase()}`
+    const list = out.get(key)
+    if (list) list.push(row)
+    else out.set(key, [row])
+  }
+  return out
+}
+
+function pushRawLevel(
+  points: NavSourcePoint[],
+  date: string,
+  field: NavSourceField,
+  raw: string | null,
+): void {
+  if (raw == null) return
+  const text = String(raw).trim()
+  if (!text) return
+  const value = Number(text)
+  if (!Number.isFinite(value) || value <= 0) return
+  points.push({ date, value, field })
+}
+
+function sourceSeriesForAliases(
+  index: Map<string, RawNavSourceRow[]>,
+  aliases: string[],
+): NavSourceSeries[] {
+  const ranked = aliases.map((code) => code.toUpperCase())
+  const out: NavSourceSeries[] = []
+  for (const src of NAV_SOURCE_RANK) {
+    const points: NavSourcePoint[] = []
+    for (const code of ranked) {
+      for (const row of index.get(`${src}|${code}`) ?? []) {
+        const date = isoDay(row.price_date)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+        pushRawLevel(points, date, "adjusted", row.adjusted)
+        pushRawLevel(points, date, "cumulative", row.cumulative)
+        pushRawLevel(points, date, "unit", row.unit)
+      }
+    }
+    if (points.length === 0) continue
+    out.push({ key: src, label: navSourceLabel(src), points })
+  }
+  return out
+}
+
+function chartSeriesForAnomalyRow(
+  row: { beian_hao: string | null; product_name: string },
+  cacheRows: DetailNavAnomalyCacheRow[],
+  levelIndex: Map<string, FallbackNavLevelRow[]>,
+  fromDate: string | null,
+  hit: NavAnomalyHit,
+): NavAnomalyPoint[] {
+  const identity = row as ResolvedFund
+  const codeMatches = cacheRows.filter((cache) => detailCacheFitsRowByCode(cache, identity))
+  const matches = codeMatches.length > 0
+    ? codeMatches
+    : cacheRows.filter((cache) => detailCacheFitsRow(cache, identity))
+  let best: NavAnomalyPoint[] | null = null
+  let bestCount = -1
+  for (const match of matches) {
+    const scored = scoredNavAnomaly(match.points, fromDate)
+    if (!scored || scored.hit.date !== hit.date || scored.hit.reason !== hit.reason) continue
+    if (scored.count > bestCount) {
+      bestCount = scored.count
+      best = match.points
+    }
+  }
+  if (best && best.length > 0) return best
+  if (matches.length > 0) {
+    return matches.reduce((left, right) => (left.points.length >= right.points.length ? left : right)).points
+  }
+  return longestFallbackChartSeries(levelIndex, beianCodeAliases(row.beian_hao ?? ""))
+}
+
+function windowChartPoints(points: NavAnomalyPoint[], fromDate: string | null): NavAnomalyPoint[] {
+  const start = isoDay(fromDate)
+  const byDate = new Map<string, number>()
+  for (const point of points) {
+    const date = isoDay(point.date)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(point.value > 0)) continue
+    if (start && date < start) continue
+    byDate.set(date, point.value)
+  }
+  return [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, value]) => ({ date, value }))
+}
+
+type NavAnomalyDiagnosisRow = {
+  id: string
+  beian_hao: string | null
+  product_name: string
+  nav_anomaly?: NavAnomalyHit | null
+}
+
+/**
+ * For the current 有异常 page, count feeds on the charted NAV and say whether
+ * the flagged step is already in one feed or produced by our merge / correction.
+ */
+export async function attachNavAnomalyDiagnosis<T extends NavAnomalyDiagnosisRow>(rows: T[]): Promise<T[]> {
+  const targets = rows.filter((row) => row.nav_anomaly && (row.beian_hao || row.product_name))
+  if (targets.length === 0) return rows
+  try {
+    return await attachNavAnomalyDiagnosisInner(rows, targets)
+  } catch (err) {
+    console.error("[nav-anomaly-cause] diagnosis failed:", err)
+    return rows.map((row) => (
+      row.nav_anomaly
+        ? {
+          ...row,
+          nav_anomaly: {
+            ...row.nav_anomaly,
+            source_count: 0,
+            sources: [],
+            cause: "unknown",
+            cause_label: "未能判断",
+            cause_detail: "没有读到原始净值",
+          },
+        }
+        : row
+    ))
+  }
+}
+
+/** Keep 有异常 rows whose diagnosed cause matches the 异常成因 filter. */
+export async function filterByNavAnomalyCause<T extends NavAnomalyDiagnosisRow>(
+  rows: T[],
+  anomalyHits: Map<string, NavAnomalyHit>,
+  cause: TeamDataNavAnomalyCauseFilter,
+): Promise<{ rows: T[]; hits: Map<string, NavAnomalyHit> }> {
+  if (cause === "all" || rows.length === 0) return { rows, hits: anomalyHits }
+  const diagnosed = await attachNavAnomalyDiagnosis(rows.map((row) => ({
+    id: row.id,
+    beian_hao: row.beian_hao,
+    product_name: row.product_name,
+    nav_anomaly: anomalyHits.get(row.id) ?? null,
+  })))
+  const hits = new Map(anomalyHits)
+  for (const row of diagnosed) {
+    if (row.nav_anomaly) hits.set(row.id, row.nav_anomaly)
+  }
+  return {
+    rows: rows.filter((row) => hits.get(row.id)?.cause === cause),
+    hits,
+  }
+}
+
+async function attachNavAnomalyDiagnosisInner<T extends NavAnomalyDiagnosisRow>(
+  rows: T[],
+  targets: T[],
+): Promise<T[]> {
+
+  const codes = [...new Set(targets.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const rawCodes = [...new Set(targets.flatMap((row) => anomalyRawCodes(row.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(targets.map((row) => row.product_name.trim()).filter(Boolean))]
+  const [cacheRows, rawRows, operationDateByCode] = await Promise.all([
+    loadDetailNavAnomalyCacheRows(codes, names),
+    loadRawNavSourceLevels(rawCodes),
+    loadOperationDateByCode(codes),
+  ])
+  const rawIndex = indexRawNavSources(rawRows)
+  const fallbackRows: FallbackNavLevelRow[] = rawRows
+    .filter((row) => row.src === "type6" || row.src === "group" || row.src === "hy" || row.src.startsWith("email"))
+    .map((row) => (
+      row.src.startsWith("email")
+        ? {
+          // Same mapping as the uncached anomaly scan: email 累计 is the chart level.
+          src: "email",
+          code: row.code,
+          price_date: row.price_date,
+          adjusted: row.cumulative,
+          cumulative: null,
+          unit: row.unit,
+        }
+        : {
+          src: row.src,
+          code: row.code,
+          price_date: row.price_date,
+          adjusted: row.adjusted,
+          cumulative: row.cumulative,
+          unit: row.unit,
+        }
+    ))
+  const levelIndex = indexFallbackNavLevels(fallbackRows)
+
+  const diagnosisById = new Map<string, ReturnType<typeof diagnoseNavAnomaly>>()
+  for (const row of targets) {
+    const hit = row.nav_anomaly
+    if (!hit) continue
+    const fromDate = operationDateForRow(row, operationDateByCode)
+    const aliases = anomalyRawCodes(row.beian_hao ?? "")
+    const chart = windowChartPoints(
+      chartSeriesForAnomalyRow(row, cacheRows, levelIndex, fromDate, hit),
+      fromDate,
+    )
+    diagnosisById.set(row.id, diagnoseNavAnomaly(chart, sourceSeriesForAliases(rawIndex, aliases), hit))
+  }
+
+  return rows.map((row) => {
+    const diagnosis = diagnosisById.get(row.id)
+    if (!diagnosis || !row.nav_anomaly) return row
+    return { ...row, nav_anomaly: { ...row.nav_anomaly, ...diagnosis } }
+  })
 }
 
 function pickLatestPlatformTip(tips: Array<PlatformNavTip | undefined>): PlatformNavTip | undefined {
@@ -3130,6 +3478,21 @@ export type PlatformFundSeed = {
   first_entry_date: string | null
 }
 
+/** Gap and anomaly for a platform-data batch, using the same rules as the live filters. */
+export async function assessPlatformNavSeries(seeds: PlatformFundSeed[]): Promise<{
+  gappedIds: Set<string>
+  anomalyById: Map<string, NavAnomalyHit>
+  operationDateById: Map<string, string>
+}> {
+  const resolved = seeds.map(platformSeedToResolved)
+  const [gappedIds, anomalyById, operationDateById] = await Promise.all([
+    loadProductIdsWithInteriorNavGap(resolved),
+    loadProductNavAnomalies(resolved),
+    operationDateByFundId(resolved),
+  ])
+  return { gappedIds, anomalyById, operationDateById }
+}
+
 function platformSeedToResolved(seed: PlatformFundSeed): ResolvedFund {
   return {
     id: seed.id,
@@ -3202,6 +3565,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     navLagFilter = "all",
     navGapFilter = "all",
     navAnomalyFilter = "all",
+    navAnomalyCauseFilter = "all",
     productSourceFilter = "all",
     operationDateFilter = "all",
     sort,
@@ -3278,6 +3642,11 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     anomalyHits = await loadProductNavAnomalies(resolved)
     resolved = resolved.filter((r) => navAnomalyFilter === "jump" ? anomalyHits.has(r.id) : !anomalyHits.has(r.id))
   }
+  if (navAnomalyFilter === "jump" && navAnomalyCauseFilter !== "all") {
+    const filtered = await filterByNavAnomalyCause(resolved, anomalyHits, navAnomalyCauseFilter)
+    resolved = filtered.rows
+    anomalyHits = filtered.hits
+  }
 
   if (productSourceFilter !== "all") {
     const wanted = TEAM_DATA_PRODUCT_SOURCE[productSourceFilter]
@@ -3311,6 +3680,9 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
       ...row,
       nav_anomaly: anomalyHits.get(row.id) ?? null,
     }))
+    if (data.some((row) => row.nav_anomaly && !row.nav_anomaly.cause)) {
+      data = await attachNavAnomalyDiagnosis(data)
+    }
   }
   if (operationDateFilter === "present") {
     data = data.map((row) => ({

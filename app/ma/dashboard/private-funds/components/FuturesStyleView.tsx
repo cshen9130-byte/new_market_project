@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Menu } from "lucide-react"
+import { FuturesStyleCalcHelp } from "./FuturesStyleCalcHelp"
 
 const SECTOR_TABS = [
   { key: "all", label: "全部" },
@@ -606,10 +607,11 @@ export function FuturesStyleView() {
             </button>
           ))}
         </div>
-        <div className="flex items-baseline gap-2 mb-4">
-          <span className="inline-block w-1 h-4 rounded-sm bg-red-500 shrink-0 self-center" />
+        <div className="flex items-center gap-2 mb-4">
+          <span className="inline-block w-1 h-4 rounded-sm bg-red-500 shrink-0" />
           <span className="text-sm font-semibold text-zinc-800">最新风格因子收益</span>
           <span className="text-sm text-zinc-400">{latestDate}</span>
+          <FuturesStyleCalcHelp section="latest" />
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
           {cardValues.map((card) => (
@@ -636,6 +638,7 @@ export function FuturesStyleView() {
           <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
             <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
             单日风格因子收益
+            <FuturesStyleCalcHelp section="daily" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
@@ -687,6 +690,7 @@ export function FuturesStyleView() {
           <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
             <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
             区间统计
+            <FuturesStyleCalcHelp section="interval" />
           </div>
           <div className="text-xs text-zinc-400 mt-1 ml-3">
             当前区间统计截止点为: {statsCutoff}
@@ -745,6 +749,7 @@ export function FuturesStyleView() {
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
               <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
               风格因子累计收益
+              <FuturesStyleCalcHelp section="cumulative" />
             </div>
             <div className="text-xs text-zinc-400 mt-1 ml-3">
               统计区间: {appliedFrom} ~ {statsCutoff}
