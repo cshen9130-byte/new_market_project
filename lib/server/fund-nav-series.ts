@@ -16,7 +16,7 @@ import {
   mergeManagedProductDetailNav,
 } from "@/lib/server/managed-product-nav-seed"
 import { getDetailNavCache } from "@/lib/server/fund-detail-nav-cache-pg"
-import { fillMissingNavIfOverlapConsistent } from "@/lib/server/share-class-nav-fill"
+import { fillMissingNavFromShareClassDonor } from "@/lib/server/share-class-nav-fill"
 import { shareClassFamilyBeianCodes } from "@/lib/server/share-class-product"
 import {
   loadManagedProductEmailPoints,
@@ -157,7 +157,10 @@ async function inheritEmptyShareClassFamilyNav(beianHao: string): Promise<Legacy
   return best
 }
 
-/** Copy missing dates from parent ↔ A/B/C siblings when overlapping NAV matches (non-分红). */
+/**
+ * Copy missing dates from the parent and A/B siblings when overlapping 单位净值 matches.
+ * Never copy from a C-class series onto the main fund.
+ */
 async function fillMergedNavFromShareClassFamily(
   beianHao: string,
   rows: LegacyNavRow[],
@@ -168,7 +171,7 @@ async function fillMergedNavFromShareClassFamily(
   for (const code of donors) {
     const names = await resolveFundNames(code)
     const donor = await loadMergedNavRows(code, names.product_name, names.short_name)
-    filled = fillMissingNavIfOverlapConsistent(filled, donor)
+    filled = fillMissingNavFromShareClassDonor(beianHao, code, filled, donor)
   }
   return filled
 }

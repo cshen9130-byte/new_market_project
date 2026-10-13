@@ -6,6 +6,8 @@ import { promisify } from "util"
 import { query } from "@/lib/db"
 import {
   applyContractKeywordFallbacks,
+  adoptMatchedRegisterNumber,
+  discardDisagreedRegister,
   extractFundContractElements,
   matchFundsFromExtracted,
   pickHighConfidenceFundMatch,
@@ -270,18 +272,26 @@ async function processOneJob(
     if (!result.extracted) {
       throw new Error("要素提取结果为空")
     }
-    const extracted = sanitizeExtractedForDocument(job.original_filename, result.extracted)
+    const sanitized = sanitizeExtractedForDocument(job.original_filename, result.extracted)
+    const stripped = discardDisagreedRegister(sanitized, result.matched_funds)
+    const picked = pickHighConfidenceFundMatch(stripped, result.matched_funds, {
+      fileName: job.original_filename,
+    })
+    const priorBeian = job.beian_hao?.trim() || ""
+    const priorWasRejected =
+      Boolean(priorBeian) &&
+      (sanitized.register_number ?? "").trim().toUpperCase() === priorBeian.toUpperCase() &&
+      !(stripped.register_number ?? "").trim()
     const matched =
-      pickHighConfidenceFundMatch(extracted, result.matched_funds, {
-        fileName: job.original_filename,
-      }) ??
-      (job.beian_hao
+      picked ??
+      (priorBeian && !priorWasRejected
         ? {
-            beian_hao: job.beian_hao,
-            product_name: job.product_name || extracted.fund_name || job.beian_hao,
+            beian_hao: priorBeian,
+            product_name: job.product_name || stripped.fund_name || priorBeian,
             short_name: null,
           }
         : null)
+    const extracted = adoptMatchedRegisterNumber(stripped, matched)
     if (!matched) {
       await updateElementExtractJob(job.id, {
         status: "needs_review",

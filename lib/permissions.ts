@@ -32,6 +32,11 @@ export function hasMaScopedPermission(
   return user.permissions?.[key] === true
 }
 
+/** MOM数据API：交易流水、保证金使用率、历史 VaR 等。管理员默认可用。 */
+export function canAccessMomDataApi(user: User | null | undefined): boolean {
+  return hasMaScopedPermission(user, "momDataApi")
+}
+
 export function canAccessAiKnowledge(user: User | null | undefined): boolean {
   if (!user) return false
   if (isAdmin(user)) return true

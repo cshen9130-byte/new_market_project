@@ -1,4 +1,4 @@
-import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, preferCustodianEmailOverUnitOnlyManual, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
+import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeManagedTeamPointsWithLegacy, mergeNavSeriesWithEmail, preferCustodianEmailOverUnitOnlyManual, dropManualSeriesDisjointFromCustodian, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
@@ -12,6 +12,7 @@ import {
   backfillParentEmailFromShareClassSiblings,
 } from "../lib/server/list-cache-nav-batch.ts"
 import { valuationScaleMismatchesSeries } from "../lib/server/valuation-nav-scale.ts"
+import { fillMissingNavFromShareClassDonor, mayUseShareClassNavDonor } from "../lib/server/share-class-nav-fill.ts"
 import { amacFundNoCandidates } from "../lib/server/amac-fund-metadata.ts"
 import { lookupFundNavCorrectionRule, applyFundNavCorrectionToLegacyRows } from "../lib/server/fund-nav-correction-rules.ts"
 import {
@@ -2666,10 +2667,13 @@ const sbhk26History = [
     source: "attachment_valuation_table",
   },
 ]
+testSnd951HighRatioDividendKeptWhenFof99Present()
 testR0423bDividendOffsetRebase()
 testEmailCumRatioGuards()
 testMidSeriesUnitResetKeepsCumulative()
 testCnHolidayClosureSkipsAdjVShape()
+testSbgs17LevelBreakDoesNotCarryDividendGap()
+testSbgs17ManualDisjointFromCustodianIsDropped()
 
 const sbhk26Selected = selectEmailNavSeriesRows(sbhk26History, "SBHK26", ["六妙星豪鑫6号"])
 const sbhk26Jun29 = sbhk26Selected.find((r) => r.nav_date === "2026-06-29")
@@ -2694,6 +2698,32 @@ const sbhk26Backfilled = sbhk26ListMap.get("SBHK26") ?? []
 assert(
   "SBHK26 list parent gets BHK26A Jul-23 fallback",
   sbhk26Backfilled.some((p) => p.nav_date === "2026-07-23" && Math.abs(p.nav - 1.074) < 0.0001),
+)
+assert(
+  "C-class is not a NAV donor for the main fund",
+  mayUseShareClassNavDonor("SLQ415", "LQ415C") === false,
+)
+assert(
+  "A-class can still fill the main fund",
+  mayUseShareClassNavDonor("SLQ415", "LQ415A") === true,
+)
+assert(
+  "main fund can still fill C-class",
+  mayUseShareClassNavDonor("LQ415C", "SLQ415") === true,
+)
+const slq415Parent = [
+  { price_date: "2024-01-04", nav: "1.066500" },
+  { price_date: "2024-01-08", nav: "1.066500" },
+]
+const lq415cDonor = [
+  { price_date: "2024-01-04", nav: "1.066500" },
+  { price_date: "2024-01-05", nav: "1.066500" },
+  { price_date: "2024-01-08", nav: "1.066500" },
+]
+const slq415Filled = fillMissingNavFromShareClassDonor("SLQ415", "LQ415C", slq415Parent, lq415cDonor)
+assert(
+  "SLQ415 does not take the LQ415C 2024-01-05 row",
+  slq415Filled.length === 2 && !slq415Filled.some((row) => row.price_date === "2024-01-05"),
 )
 
 // Multi-investor 【基金虚拟净值表现估算】 under one product_code: continuity must
@@ -4286,6 +4316,79 @@ function testR0423bDividendOffsetRebase() {
   )
 }
 
+// 草本致远1号 SND951. After 2024-11-25, 累计/单位 > 2. The 2025-12-22 dividend
+// (单位 1.461 → 1.030, 累计 3.434 → 3.460) must stay a dividend when 火富牛 is
+// present. The list sparkline still has no 火富牛, so that path keeps dropping it.
+function testSnd951HighRatioDividendKeptWhenFof99Present() {
+  const legacy = [
+    { price_date: "2024-11-15", nav: "1.796000", cumulative_nav: "4.539192", cum_nav_withdrawal: "3.114000", price_change: "", legacy_origin: "fof99" },
+    { price_date: "2024-11-22", nav: "1.723000", cumulative_nav: "4.354693", cum_nav_withdrawal: "3.041000", price_change: "", legacy_origin: "fof99" },
+    { price_date: "2024-11-25", nav: "1.050000", cumulative_nav: "4.309200", cum_nav_withdrawal: "3.023000", price_change: "", legacy_origin: "fof99" },
+    { price_date: "2025-12-19", nav: "1.461000", cumulative_nav: "5.995943", cum_nav_withdrawal: "3.434000", price_change: "", legacy_origin: "fof99" },
+    { price_date: "2025-12-26", nav: "1.095000", cumulative_nav: "6.487766", cum_nav_withdrawal: "3.525000", price_change: "", legacy_origin: "fof99" },
+  ]
+  const email = [
+    ["2024-11-22", "1.723000", "3.041000"],
+    ["2024-11-25", "1.050000", "3.023000"],
+    ["2025-12-18", "1.470000", "3.443000"],
+    ["2025-12-19", "1.461000", "3.434000"],
+    ["2025-12-22", "1.030000", "3.460000"],
+    ["2025-12-23", "1.044000", "3.474000"],
+  ].map(([price_date, nav, cumulative_nav]) => ({
+    price_date,
+    nav,
+    cumulative_nav,
+    adjusted_nav: cumulative_nav,
+    source: "attachment_nav_table",
+    subject: "【订阅_产品净值】草本致远1号私募证券投资基金_SND951",
+  }))
+
+  const team = mergeManagedTeamPointsWithLegacy(legacy, email)
+  const base = mergeNavSeriesWithEmail(legacy, [])
+  const out = mergeLegacyWithTeamNav(base, team)
+  const nov25 = out.find((row) => row.price_date === "2024-11-25")
+  const dec19 = out.find((row) => row.price_date === "2025-12-19")
+  const dec22 = out.find((row) => row.price_date === "2025-12-22")
+  const dec19Adj = dec19 ? parseFloat(dec19.cumulative_nav) : NaN
+  const dec22Adj = dec22 ? parseFloat(dec22.cumulative_nav) : NaN
+  assert(
+    "SND951 team series does not keep a 火富牛-only date inside the window",
+    !team.some((row) => row.price_date === "2025-12-26"),
+  )
+  assert(
+    "SND951 2025-12-22 累计 stays on the custodian dividend",
+    dec22 && Math.abs(parseFloat(dec22.cum_nav_withdrawal) - 3.46) < 0.001,
+  )
+  assert(
+    "SND951 2025-12-22 复权 follows the dividend, not the unit drop",
+    dec19Adj > 0 && dec22Adj / dec19Adj > 1.01 && dec22Adj / dec19Adj < 1.03,
+  )
+  assert(
+    "SND951 2024-11-25 复权 does not take the 39% unit drop",
+    nov25 && parseFloat(nov25.cumulative_nav) > 4.2,
+  )
+  assert(
+    "SND951 2025-12-22 adj >= cum >= unit",
+    dec22
+      && parseFloat(dec22.cumulative_nav) >= parseFloat(dec22.cum_nav_withdrawal) - 0.0001
+      && parseFloat(dec22.cum_nav_withdrawal) >= parseFloat(dec22.nav) - 0.0001,
+  )
+
+  const stripped = mergeManagedTeamPointsWithLegacy([], email)
+  const bare19 = stripped.find((row) => row.price_date === "2025-12-19")
+  const bare22 = stripped.find((row) => row.price_date === "2025-12-22")
+  const bare19Adj = bare19 ? parseFloat(bare19.cumulative_nav) : NaN
+  const bare22Adj = bare22 ? parseFloat(bare22.cumulative_nav) : NaN
+  assert(
+    "SND951 without 火富牛 still drops the 3× 累计",
+    bare22 && Math.abs(parseFloat(bare22.cum_nav_withdrawal) - 3.46) > 0.1,
+  )
+  assert(
+    "SND951 without 火富牛 still treats the dividend as a loss",
+    bare19Adj > 0 && bare22Adj / bare19Adj < 0.95,
+  )
+}
+
 function emailSeriesRow(date, nav, cum, code) {
   return {
     nav_date: date,
@@ -4445,4 +4548,77 @@ function testCnHolidayClosureSkipsAdjVShape() {
     "a one-day 复权 spike on ordinary sessions is still repaired",
     mar4 != null && Math.abs(parseFloat(mar4.cumulative_nav) - 2.6) < 0.02,
   )
+}
+
+function testSbgs17LevelBreakDoesNotCarryDividendGap() {
+  const out = mergeNavSeriesWithEmail([
+    { price_date: "2026-07-17", nav: "1.866000", cum_nav_withdrawal: "2.358300", cumulative_nav: "2.485849", price_change: "" },
+    { price_date: "2026-07-24", nav: "1.863000", cum_nav_withdrawal: "2.355300", cumulative_nav: "2.481852", price_change: "" },
+    { price_date: "2026-07-31", nav: "1.112900", cum_nav_withdrawal: "1.112900", cumulative_nav: "1.112900", price_change: "" },
+    { price_date: "2026-08-07", nav: "1.228400", cum_nav_withdrawal: "1.228400", cumulative_nav: "1.228400", price_change: "" },
+  ], [])
+  const at = (d) => out.find((row) => row.price_date === d)
+  const jul24 = at("2026-07-24")
+  const jul31 = at("2026-07-31")
+  const aug7 = at("2026-08-07")
+  assert(
+    "SBGS17 2026-07-24 still carries its own dividend gap",
+    jul24 != null && Math.abs(parseFloat(jul24.cum_nav_withdrawal) - 2.3553) < 0.001,
+  )
+  assert(
+    "SBGS17 2026-07-31 keeps 累计 1.1129 instead of unit plus the old gap",
+    jul31 != null && Math.abs(parseFloat(jul31.cum_nav_withdrawal) - 1.1129) < 0.001,
+  )
+  assert(
+    "SBGS17 2026-07-31 复权 stays on that 累计, not 1.691",
+    jul31 != null && Math.abs(parseFloat(jul31.cumulative_nav) - 1.1129) < 0.001,
+  )
+  assert(
+    "SBGS17 2026-08-07 stays on the new series",
+    aug7 != null
+      && Math.abs(parseFloat(aug7.nav) - 1.2284) < 0.001
+      && Math.abs(parseFloat(aug7.cum_nav_withdrawal) - 1.2284) < 0.001,
+  )
+
+  const mild = mergeNavSeriesWithEmail([
+    { price_date: "2026-07-17", nav: "1.866000", cum_nav_withdrawal: "2.358300", cumulative_nav: "2.485849", price_change: "" },
+    { price_date: "2026-07-24", nav: "1.680000", cum_nav_withdrawal: "1.680000", cumulative_nav: "1.680000", price_change: "" },
+  ], [])
+  const mildDay = mild.find((row) => row.price_date === "2026-07-24")
+  assert(
+    "a 10% week on a dividend series still carries the gap",
+    mildDay != null && Math.abs(parseFloat(mildDay.cum_nav_withdrawal) - (1.68 + (2.3583 - 1.866))) < 0.01,
+  )
+}
+
+function testSbgs17ManualDisjointFromCustodianIsDropped() {
+  const manual = []
+  const email = []
+  for (let i = 0; i < 12; i += 1) {
+    const day = String(i + 1).padStart(2, "0")
+    const date = `2026-06-${day}`
+    manual.push({
+      nav_date: date,
+      unit_nav: (1.85 + i * 0.001).toFixed(4),
+      cumulative_nav: (2.34 + i * 0.001).toFixed(4),
+    })
+    email.push({
+      price_date: date,
+      nav: (1.12 + i * 0.001).toFixed(4),
+      cumulative_nav: (1.12 + i * 0.001).toFixed(4),
+    })
+  }
+  manual.unshift({ nav_date: "2022-07-22", unit_nav: "1.4670", cumulative_nav: "1.4670" })
+  const dropped = dropManualSeriesDisjointFromCustodian(manual, email)
+  assert("SBGS17-style manual series yields to the custodian book", dropped.length === 0)
+
+  const close = manual.map((row, i) => ({
+    ...row,
+    unit_nav: i === 0 ? row.unit_nav : (1.02 * (1.12 + (i - 1) * 0.001)).toFixed(4),
+  }))
+  const kept = dropManualSeriesDisjointFromCustodian(close, email)
+  assert("a few-percent fee gap keeps the manual upload", kept.length === close.length)
+
+  const sparse = dropManualSeriesDisjointFromCustodian(manual.slice(0, 4), email)
+  assert("fewer than 8 shared dates does not drop the manual upload", sparse.length === 4)
 }

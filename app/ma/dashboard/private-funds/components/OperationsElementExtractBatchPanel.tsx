@@ -1436,7 +1436,7 @@ export function OperationsElementExtractBatchPanel() {
                 ) : null}
               </div>
             )}
-            {activeJob.status === "needs_review" && (
+            {activeJob.status === "needs_review" && !selectedFund && (
               <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-4 space-y-3">
                 <div className="text-sm font-medium text-amber-900">合同对应尚未备案的新产品？</div>
                 <p className="text-xs text-amber-800/90">

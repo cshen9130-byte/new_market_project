@@ -1,7 +1,12 @@
 /**
- * Share NAV across parent / A·B·C share classes only when overlapping dates agree.
+ * Share NAV across parent / A·B share classes only when overlapping dates agree.
  * Non-分红 A类 (unit ≈ cum) can fill parent gaps and inherit parent type6 history.
  * 分红 classes diverge on overlap and are left untouched.
+ *
+ * A C-class series is never a donor. Filling the main fund from C类 is only a
+ * supplement, and unit overlap does not prove the C-class 复权 is safe to splice
+ * in. 赢仕安盈三号C类 (LQ415C) stored 复权 = 单位 through 2025-11-14; copying
+ * 2024-01-05 onto SLQ415 dropped the chart 16%. See docs/nav-calculation-rules.md.
  */
 
 export const SHARE_CLASS_NAV_OVERLAP_TOL = 0.005
@@ -70,4 +75,33 @@ export function fillMissingNavIfOverlapConsistent<T extends {
   if (target.length === 0) return target
   if (!navSeriesOverlapConsistent(target, donor)) return target
   return fillMissingRowsByDate(target, donor)
+}
+
+/** Trailing C on a 备案号 is the C share class (LQ415C, SLQ415C). */
+export function isCShareClassBeian(code: string | null | undefined): boolean {
+  return /C$/u.test((code ?? "").trim().toUpperCase())
+}
+
+/**
+ * C类 may not fill another fund. The parent may still fill C类, and A/B may
+ * still fill the parent when overlapping 单位净值 agrees.
+ */
+export function mayUseShareClassNavDonor(
+  targetCode: string | null | undefined,
+  donorCode: string | null | undefined,
+): boolean {
+  const target = (targetCode ?? "").trim().toUpperCase()
+  const donor = (donorCode ?? "").trim().toUpperCase()
+  if (!target || !donor || donor === target) return false
+  return !isCShareClassBeian(donor)
+}
+
+/** Same as {@link fillMissingNavIfOverlapConsistent}, except a C-class donor is ignored. */
+export function fillMissingNavFromShareClassDonor<T extends {
+  price_date?: string
+  nav_date?: string
+  nav: string | number
+}>(targetCode: string, donorCode: string, target: T[], donor: T[]): T[] {
+  if (!mayUseShareClassNavDonor(targetCode, donorCode)) return target
+  return fillMissingNavIfOverlapConsistent(target, donor)
 }

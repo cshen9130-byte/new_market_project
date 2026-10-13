@@ -36,7 +36,7 @@ import {
   lookupFundNavCorrectionRule,
   type FundNavSeriesContext,
 } from "@/lib/server/fund-nav-correction-rules"
-import { fillMissingNavIfOverlapConsistent } from "@/lib/server/share-class-nav-fill"
+import { fillMissingNavFromShareClassDonor, mayUseShareClassNavDonor } from "@/lib/server/share-class-nav-fill"
 import { shareClassFamilyBeianCodes } from "@/lib/server/share-class-product"
 
 export type NavPoint = {
@@ -646,9 +646,10 @@ export function expandBeiansWithShareClassFamily(codes: string[]): string[] {
 }
 
 /**
- * Detail `selectEmailNavSeriesRows` uses A/B/C email on dates the parent has no row.
- * List batch keys by exact product_code — copy sibling dates onto the parent series
+ * Detail `selectEmailNavSeriesRows` uses A/B email on dates the parent has no row.
+ * List batch keys by exact product_code — copy A/B sibling dates onto the parent series
  * (continuity-gated) so SBHK26 advances past the last custody 估值表 with BHK26A virtual NAV.
+ * C类 is not a donor.
  */
 export function backfillParentEmailFromShareClassSiblings(
   emailByBeian: Map<string, NavPoint[]>,
@@ -666,6 +667,7 @@ export function backfillParentEmailFromShareClassSiblings(
       const sibling = code.trim().toUpperCase()
       if (!sibling || sibling === parent) continue
       if (!/[ABC]$/u.test(sibling)) continue
+      if (!mayUseShareClassNavDonor(parent, sibling)) continue
       if (!shareClassProductCodesMatch(sibling, parent)) continue
       for (const point of points) {
         if (byDate.has(point.nav_date)) continue
@@ -1798,7 +1800,7 @@ export class BatchNavResolver {
     })
   }
 
-  /** Parent ↔ A/B/C missing dates, only when overlapping unit NAV matches (non-分红). */
+  /** Parent ↔ A/B missing dates, only when overlapping unit NAV matches. C类 is not a donor. */
   private fillMergedHistoryFromShareClassFamily(
     beian: string,
     merged: NavPoint[],
@@ -1808,7 +1810,7 @@ export class BatchNavResolver {
     if (!self || merged.length === 0) return merged
     let filled = merged
     for (const code of shareClassFamilyBeianCodes(self)) {
-      if (code === self) continue
+      if (!mayUseShareClassNavDonor(self, code)) continue
       const donorByDate = new Map<string, NavPoint>()
       const add = (points: NavPoint[] | undefined) => {
         for (const point of points ?? []) {
@@ -1821,7 +1823,7 @@ export class BatchNavResolver {
       add(this.legacyByBeian.get(code))
       add(this.type6ByBeian.get(code))
       add(this.emailByBeian.get(code))
-      filled = fillMissingNavIfOverlapConsistent(filled, [...donorByDate.values()])
+      filled = fillMissingNavFromShareClassDonor(self, code, filled, [...donorByDate.values()])
     }
     return filled
   }

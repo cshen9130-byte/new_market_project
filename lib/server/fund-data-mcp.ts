@@ -7,7 +7,11 @@ import {
   getFundMultiPrice,
   getFundPrice,
   getFundPriceBulk,
+  getAmacFund,
+  getAmacManager,
   getFundView,
+  listAmacManagerFunds,
+  searchAmacFunds,
   searchFunds,
 } from "@/lib/server/fund-data-api"
 import { accountToolsFor, mcpAccountArea, type McpAccount } from "@/lib/server/mcp-account-access"
@@ -145,6 +149,57 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
       required: ["code"],
     },
   },
+  {
+    name: "amac_fund",
+    description: "按备案号读取基金业协会已入库的产品备案。先查私募基金，没有再查期货资管。返回协会原文：名称、管理人、托管人、运作状态、基金类型、成立日、备案日。份额代码会落到母基金备案号。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reg_code: { type: "string", description: "备案号，如 SR6089" },
+      },
+      required: ["reg_code"],
+    },
+  },
+  {
+    name: "amac_fund_search",
+    description: "在协会备案库里按产品名称、备案号或管理人名称搜索。纯字母数字且不少于 4 位时按备案号精确匹配（含份额母代码）。返回私募与期货资管。不含净值。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "名称或备案号，至少 2 个字符" },
+        fund_type: { type: "string", description: "协会基金类型原文，如 私募证券投资基金" },
+        working_state: { type: "string", description: "协会运作状态原文，如 正在运作" },
+        page: { type: "integer", description: "从 1 开始，默认 1" },
+        pagesize: { type: "integer", description: "默认 20，最大 50" },
+      },
+      required: ["q"],
+    },
+  },
+  {
+    name: "amac_manager",
+    description: "按登记编号或名称读取协会管理人登记信息，并带上高管和出资人。数据来自已入库的协会披露，不是实时网页。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "管理人登记编号，如 P1032021" },
+        name_cn: { type: "string", description: "管理人名称" },
+      },
+    },
+  },
+  {
+    name: "amac_manager_funds",
+    description: "列出某管理人在协会披露的私募产品与期货资管。用登记编号或名称定位管理人，再按协会管理人全称精确匹配产品。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "管理人登记编号" },
+        name_cn: { type: "string", description: "管理人名称" },
+        working_state: { type: "string", description: "协会运作状态原文，如 正在运作；不传为全部" },
+        page: { type: "integer", description: "从 1 开始，默认 1" },
+        pagesize: { type: "integer", description: "默认 20，最大 100" },
+      },
+    },
+  },
 ]
 
 export type McpJsonRpc = {
@@ -232,6 +287,29 @@ export async function callFundDataTool(
         pagesize: str(args, "pagesize"),
         fund_state: str(args, "fund_state"),
       })
+    case "amac_fund":
+      return getAmacFund(str(args, "reg_code") || "")
+    case "amac_fund_search":
+      return searchAmacFunds({
+        q: str(args, "q"),
+        fund_type: str(args, "fund_type"),
+        working_state: str(args, "working_state"),
+        page: str(args, "page"),
+        pagesize: str(args, "pagesize"),
+      })
+    case "amac_manager":
+      return getAmacManager({
+        code: str(args, "code"),
+        name_cn: str(args, "name_cn"),
+      })
+    case "amac_manager_funds":
+      return listAmacManagerFunds({
+        code: str(args, "code"),
+        name_cn: str(args, "name_cn"),
+        working_state: str(args, "working_state"),
+        page: str(args, "page"),
+        pagesize: str(args, "pagesize"),
+      })
     default:
       throw new Error(`unknown tool: ${name}`)
   }
@@ -259,7 +337,7 @@ export async function handleFundDataMcpRpc(
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "fund-data", version: "1.1.0" },
+        serverInfo: { name: "fund-data", version: "1.2.0" },
       },
     }
   }

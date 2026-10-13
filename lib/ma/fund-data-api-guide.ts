@@ -106,7 +106,7 @@ ${FENCE}json
 }
 ${FENCE}
 
-公开工具（任何持有有效 Key 的账户）：\`fund_search\`、\`fund_info\`、\`fund_price\`、\`fund_price_bulk\`、\`fund_multi_price\`、\`fund_advanced_list\`、\`fund_view\`、\`company_info\`、\`company_fund_list\`。
+公开工具（任何持有有效 Key 的账户）：\`fund_search\`、\`fund_info\`、\`fund_price\`、\`fund_price_bulk\`、\`fund_multi_price\`、\`fund_advanced_list\`、\`fund_view\`、\`company_info\`、\`company_fund_list\`、\`amac_fund\`、\`amac_fund_search\`、\`amac_manager\`、\`amac_manager_funds\`。
 
 同一地址还会按当前 API Key 所属账户开放内部工具。权限与网页相同。
 
@@ -122,7 +122,7 @@ ${FENCE}
 
 ### 外部业绩榜对比跟踪池
 
-点睛这类业绩榜是表格。不要用 \`kb_read\` 或 \`kb_ask\` 去读 xlsx，表格被抽成文字后名次和收益会对不齐。一次 \`external_rank_compare\` 会自己解析榜单，并按榜单截止日从净值库重算跟踪池里同一策略的收益。
+和跟踪池对名次用 \`external_rank_compare\`。它解析业绩榜，并按榜单截止日从净值库重算跟踪池里同一策略的收益。问榜上某一列谁最高，用下一节的 \`kb_ask\` 或 \`kb_read\`，两边的第一名相同。
 
 文件名保留「点睛」或「业绩榜」。不传 \`file_path\` 时，用该策略最新一份。一份文件里有多种策略（例如量化 CTA 和主观 CTA 在同一张表）时必须传 \`class\`。
 
@@ -155,6 +155,38 @@ ${FENCE}
 - \`needs_review\`：名称只是部分相同，没有自动匹配。
 
 \`class\` 可用：主观多头、量化股票、量化CTA、主观CTA，或具体分组如 500指增。\`pools\` 用 jy、selected 或 jy,selected。\`week_end\` 只用于提示和榜单截止日差多少天，不会改计算窗口。
+
+### 点睛排行：某一列谁最高
+
+截止 2025-09-30 的主观多头榜，按成立以来夏普比率从高到低，第一名是国源信达 1.96。原表按今年以来收益率排列，北京禧悦私募在第 1 行，夏普是 1.31。\`kb_ask\` 在服务端按问题里的列排序，模型不再重排。\`kb_read\` 返回工作表名、表头和一行一个对象，按同一列排序得到同一名次。\`ranking.sort_key\` 是排序列，文件名里的「今年来」是原表的今年以来收益率，不是这次的排序。
+
+直接要答案：
+
+${FENCE}json
+{
+  "name": "kb_ask",
+  "arguments": {
+    "question": "点睛排行榜截止20250930，主观多头基金管理人里，成立以来夏普比率最高的是谁？"
+  }
+}
+${FENCE}
+
+自己读表再排序。根目录 \`kb_list\` 会在 400 条停住，用 \`q\` 按文件名搜：
+
+${FENCE}json
+{ "name": "kb_list", "arguments": { "q": "点睛 930" } }
+{ "name": "kb_read", "arguments": { "path": "外部私募业绩排行/点睛业绩放送_主观多头管理人业绩榜（今年来截止930）.xlsx" } }
+${FENCE}
+
+\`kb_read\` 的 \`sheets[]\`。按成立以来夏普比率降序后的第一行：
+
+${FENCE}json
+{
+  "sheet": "主观多头(20250930)",
+  "headers": ["基金管理人", "管理规模", "成立以来夏普比率"],
+  "rows": [{ "基金管理人": "国源信达", "管理规模": "50-100亿", "成立以来夏普比率": 1.96 }]
+}
+${FENCE}
 
 ### 问知识库：某人看多或看空哪些品种
 
@@ -839,7 +871,7 @@ ${FENCE}
 
 MCP：\`fund_view\`
 
-已计算好的区间收益和风险指标。
+已计算好的区间收益和风险指标。备案号整段匹配。SB595C 对应诚奇母基金 SSB595 的 C 类。涵崧的备案号是 SB5957。\`ai_researcher_compare\` 用同一套查找和同一套 \`fund/view\` 指标。
 
 | 参数 | 必填 | 类型 | 说明 |
 | --- | --- | --- | --- |
@@ -935,6 +967,148 @@ ${FENCE}json
   ]
 }
 ${FENCE}
+### GET /amac/fund
+
+MCP：\`amac_fund\`
+
+按备案号读取已入库的基金业协会产品备案。先查私募基金，没有再查期货资管。份额代码会落到母基金备案号。这是协会披露原文，不含净值。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| reg_code 或 register_number | 是 | string | 备案号 |
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/amac/fund?reg_code=SR6089"
+${FENCE}
+
+${FENCE}json
+{ "name": "amac_fund", "arguments": { "reg_code": "SR6089" } }
+${FENCE}
+
+\`data\` 示例：
+
+${FENCE}json
+{
+  "source": "private",
+  "fund_no": "SR6089",
+  "fund_name": "幻方中证500指数增强",
+  "manager_name": "杭州幻方科技",
+  "working_state": "正在运作",
+  "mandator_name": "某某托管",
+  "establish_date": "2019-01-01",
+  "put_on_record_date": "2019-01-15",
+  "fund_type": "私募证券投资基金",
+  "detail_url": "https://gs.amac.org.cn/...",
+  "updated_at": "2026-10-12T20:00:00.000Z"
+}
+${FENCE}
+
+\`source\` 为 \`private\`（私募）或 \`futures\`（期货资管）。期货资管还会带 \`due_date\`、\`investment_type\`、\`is_tiered\`。
+
+### GET /amac/fund/search
+
+MCP：\`amac_fund_search\`
+
+在协会备案库里按产品名称、备案号或管理人搜索。\`q\` 为不少于 4 位的字母数字时按备案号精确匹配（含份额母代码）；否则按名称、管理人、备案号包含匹配。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| q 或 keyword | 是 | string | 至少 2 个字符，最长 80 |
+| fund_type | 否 | string | 协会类型原文，如 私募证券投资基金 |
+| working_state | 否 | string | 协会状态原文，如 正在运作、提前清算 |
+| page / pagesize | 否 | int | 默认 1 / 20，pagesize 最大 50 |
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/amac/fund/search?q=%E5%B9%BB%E6%96%B9&working_state=%E6%AD%A3%E5%9C%A8%E8%BF%90%E4%BD%9C&page=1&pagesize=20"
+${FENCE}
+
+${FENCE}json
+{ "name": "amac_fund_search", "arguments": { "q": "幻方", "working_state": "正在运作", "page": 1, "pagesize": 20 } }
+${FENCE}
+
+\`data\` 示例：
+
+${FENCE}json
+{
+  "total": 12,
+  "page": 1,
+  "pagesize": 20,
+  "list": [
+    { "source": "private", "fund_no": "SR6089", "fund_name": "幻方中证500指数增强", "manager_name": "杭州幻方科技", "working_state": "正在运作", "fund_type": "私募证券投资基金" }
+  ]
+}
+${FENCE}
+
+### GET /amac/manager
+
+MCP：\`amac_manager\`
+
+协会管理人登记信息，附带高管和出资人。登记编号优先；名称按全称精确，其次前缀，再模糊。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| code | 二选一 | string | 登记编号，如 P1032021；也可用 registration_no |
+| name_cn | 二选一 | string | 管理人名称 |
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/amac/manager?code=P1032021"
+${FENCE}
+
+${FENCE}json
+{ "name": "amac_manager", "arguments": { "code": "P1032021" } }
+${FENCE}
+
+\`data\` 示例：
+
+${FENCE}json
+{
+  "registration_no": "P1032021",
+  "manager_name": "杭州幻方科技",
+  "legal_rep_name": "某某",
+  "mgmt_scale_range": "100亿元以上",
+  "full_time_staff_count": 80,
+  "actual_controller": "某某",
+  "executives": [{ "person_name": "某某", "title": "总经理", "has_fund_qualification": "是" }],
+  "shareholders": [{ "seq": 1, "investor_name": "某某", "holding_ratio": "60%" }]
+}
+${FENCE}
+
+### GET /amac/manager/funds
+
+MCP：\`amac_manager_funds\`
+
+某管理人在协会披露的私募产品与期货资管。先解析登记编号或名称，再按协会管理人全称精确匹配。不含净值；要净值用 \`/company/fund/list\` 或 \`/price\`。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| code | 二选一 | string | 管理人登记编号 |
+| name_cn | 二选一 | string | 管理人名称 |
+| working_state | 否 | string | 协会运作状态原文；不传为全部 |
+| page / pagesize | 否 | int | 默认 1 / 20，pagesize 最大 100 |
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/amac/manager/funds?code=P1032021&working_state=%E6%AD%A3%E5%9C%A8%E8%BF%90%E4%BD%9C&page=1&pagesize=20"
+${FENCE}
+
+${FENCE}json
+{ "name": "amac_manager_funds", "arguments": { "code": "P1032021", "working_state": "正在运作", "page": 1, "pagesize": 20 } }
+${FENCE}
+
+\`data\` 示例：
+
+${FENCE}json
+{
+  "registration_no": "P1032021",
+  "manager_name": "杭州幻方科技",
+  "total": 12,
+  "page": 1,
+  "pagesize": 20,
+  "list": [
+    { "source": "private", "fund_no": "SR6089", "fund_name": "幻方中证500指数增强", "working_state": "正在运作", "fund_type": "私募证券投资基金" }
+  ]
+}
+${FENCE}
+
 `.replaceAll(FENCE, "```")
 }
 

@@ -955,7 +955,7 @@ function enrichExtractedRegisterNumber(
   return { ...elements, register_number }
 }
 
-function adoptMatchedRegisterNumber(
+export function adoptMatchedRegisterNumber(
   extracted: ExtractedFundElements,
   matched: FundMatchCandidate | null,
 ): ExtractedFundElements {
@@ -963,6 +963,22 @@ function adoptMatchedRegisterNumber(
   const code = normalizeRegisterCode(matched.beian_hao)
   if (!code) return extracted
   return { ...extracted, register_number: code }
+}
+
+/**
+ * A filing code that already belongs to a differently named product must not
+ * override the name match. 「知行投资基金 / SD7207」 is not 「知行稳健1号」.
+ */
+export function discardDisagreedRegister(
+  extracted: ExtractedFundElements,
+  matchedFunds: FundMatchCandidate[],
+): ExtractedFundElements {
+  const register = normalizeRegisterCode(extracted.register_number)
+  const name = (extracted.fund_name ?? "").trim()
+  if (!register || !name) return extracted
+  const hit = matchedFunds.find((fund) => fund.beian_hao.trim().toUpperCase() === register)
+  if (!hit || fundNameAgrees(hit, name)) return extracted
+  return { ...extracted, register_number: null }
 }
 
 function addMatches(target: Map<string, ScoredFundMatch>, rows: FundMatchCandidate[], score: number) {
@@ -1111,9 +1127,10 @@ export async function extractFundContractElements(input: {
   const hints = { fileName: input.fileName, contractText: text }
   const enriched = enrichExtractedRegisterNumber(extractedRaw, hints)
   const matched_funds = await matchFundsFromExtracted(enriched, hints)
+  const withoutConflict = discardDisagreedRegister(enriched, matched_funds)
   const extracted = adoptMatchedRegisterNumber(
-    enriched,
-    pickHighConfidenceFundMatch(enriched, matched_funds, hints),
+    withoutConflict,
+    pickHighConfidenceFundMatch(withoutConflict, matched_funds, hints),
   )
   return {
     extracted,

@@ -8,6 +8,7 @@ export const PERM_COLUMNS: { key: keyof PagePermissions; label: string; hint?: s
   { key: "ma", label: "MA 市场监控" },
   { key: "classic", label: "分析看板（传统风格）" },
   { key: "mom", label: "MOM 分析" },
+  { key: "momDataApi", label: "MOM数据API", hint: "勾选后该账户才能看到 MOM数据API，并在页面里单独生成一把 Key" },
   { key: "aiKnowledge", label: "AI 知识库" },
   { key: "aiResearcher", label: "AI 研究员" },
   { key: "pfOperations", label: "私募基金-运维" },

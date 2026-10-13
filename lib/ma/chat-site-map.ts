@@ -4,6 +4,7 @@ import {
   canAccessAiResearcher,
   canAccessPfInvestmentPool,
   canAccessPfInvestmentTracking,
+  canAccessMomDataApi,
   canAccessPfOperations,
   isAdmin,
 } from "@/lib/permissions"
@@ -16,6 +17,7 @@ export type ChatPageAccess =
   | "pfOperations"
   | "pfInvestment"
   | "pfInvestmentPool"
+  | "momDataApi"
 
 export type ChatSitePage = {
   id: string
@@ -66,6 +68,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("tools", "小工具", "/ma/dashboard/tools", "小工具", "any", ["工具集合"]),
   p("settings", "设置", "/ma/dashboard/settings", "设置", "any", ["用户中心", "个人设置"]),
   p("fund-data-api", "基金数据API", "/ma/dashboard/settings?section=fund-data-api", "设置 → 基金数据API", "any", ["FOF99", "基金API", "MCP"]),
+  p("mom-data-api", "MOM数据API", "/ma/dashboard/settings?section=mom-data-api", "设置 → MOM数据API", "momDataApi", ["MOM API", "保证金使用率", "VaR"]),
 
   p("tool-nav-cleaner", "净值表识别及清洗", "/ma/dashboard/tools/nav-cleaner", "小工具 → 净值表识别及清洗", "any", ["NAV清洗", "净值清洗"]),
   p("tool-send-email", "自动发邮件", "/ma/dashboard/tools/send-email", "小工具 → 自动发邮件", "any", ["发邮件"]),
@@ -174,6 +177,8 @@ export function canAccessChatSitePage(user: User | null | undefined, access: Cha
       return canAccessPfInvestmentTracking(user)
     case "pfInvestmentPool":
       return canAccessPfInvestmentPool(user)
+    case "momDataApi":
+      return canAccessMomDataApi(user)
   }
 }
 

@@ -1907,6 +1907,18 @@ function rechainDerivedFromPrev(
         return { cum: String(+currCum.toFixed(6)), adj: String(+adjFromUnit.toFixed(6)) }
       }
     }
+    // The row's own 累计 left the old dividend gap and sits on 单位, and 单位
+    // itself jumped by 30% or more (SBGS17 2026-07-24 1.863/2.355 → 2026-07-31
+    // 1.113/1.113). That is a second series, not a stale 累计. Keep it.
+    // A smaller week still falls through and carries the gap.
+    const levelBreak =
+      (unitRatio <= 0.7 || unitRatio >= 1 / 0.7)
+      && Math.abs(currCum - unit) <= Math.max(0.01, unit * 0.005)
+      && Math.abs(currCum - emailGapCum) >= 0.05
+    if (levelBreak) {
+      const v = String(+currCum.toFixed(6))
+      return { cum: v, adj: v }
+    }
   }
   // Grow adj at the cumulative rate to maintain adj/cum ratio constant (≥ 1 after ex-div).
   const adj = prevCum > 0 ? prevAdj * cum / prevCum : prevAdj * unitRatio
@@ -2658,6 +2670,20 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
       lastGoodRatio = adj / cum
       continue
     }
+    const unit = parseOptionalNav(sorted[i].nav)
+    const prevUnit = i > 0 ? parseOptionalNav(sorted[i - 1].nav) : null
+    const prevCum = i > 0
+      ? parseOptionalNav(sorted[i - 1].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i - 1].cumulative_nav)
+      : null
+    if (
+      unit != null && prevUnit != null && prevUnit > 0 && prevCum != null
+      && (unit / prevUnit <= 0.7 || unit / prevUnit >= 1 / 0.7)
+      && prevCum - prevUnit > 0.03
+      && Math.abs(cum - unit) <= Math.max(0.01, unit * 0.005)
+    ) {
+      lastGoodRatio = null
+      continue
+    }
     if (lastGoodRatio != null && lastGoodRatio >= minAdjCumRatio && adj <= cum + flatAdjEps) {
       const filled = +(cum * lastGoodRatio).toFixed(6)
       if (isReasonableNav(filled) && filled >= cum + flatAdjEps) {
@@ -3137,6 +3163,30 @@ export function mergeNavSeriesWithEmail(
 }
 
 /**
+ * 在管产品 team points, with 火富牛 available for the 2× 累计 check.
+ *
+ * An empty legacy list drops 累计 whenever 累计/单位 > 2. That is correct for the
+ * list sparkline (an unshifted custodian base such as R0423B +2.5943). It is wrong
+ * for a real dividend history: 草本致远1号 累计 sits near 3× after 2024-11-25, so
+ * the 2025-12-22 cash dividend was rebuilt as 单位 + the old gap and 复权 fell 29.5%.
+ *
+ * Pass 火富牛 here. A matching 累计 is kept and the dividend formula runs. A stable
+ * additive offset is still rebased. Returned rows are only the team dates, so a
+ * weekly manual window does not gain interior 火富牛 days (SZJ909).
+ */
+export function mergeManagedTeamPointsWithLegacy(
+  legacyRows: LegacyNavRow[],
+  points: EmailNavPoint[],
+  fundContext?: FundNavSeriesContext | null,
+): LegacyNavRow[] {
+  const merged = mergeNavSeriesWithEmail(legacyRows, points, fundContext)
+  if (legacyRows.length === 0 || points.length === 0) return merged
+  const teamDates = new Set(points.map((point) => point.price_date.slice(0, 10)))
+  const teamOnly = merged.filter((row) => teamDates.has(row.price_date.slice(0, 10)))
+  return teamOnly.length > 0 ? teamOnly : merged
+}
+
+/**
  * Team / managed NAV wins for its whole coverage window.
  * Legacy may only backfill dates *before* the first team point — never intercalate
  * inside [teamStart, teamEnd], or sparse corrupt rows create sawtooth charts between
@@ -3313,6 +3363,56 @@ export function preferCustodianEmailOverUnitOnlyManual<T extends {
     if (emailByDate.has(row.nav_date.slice(0, 10))) return true
     return carriedLeadIn && index === order[0].index
   })
+}
+
+const DISJOINT_MANUAL_MIN_OVERLAP = 8
+const DISJOINT_MANUAL_MEDIAN_GAP = 0.2
+const DISJOINT_MANUAL_POINT_GAP = 0.1
+const DISJOINT_MANUAL_POINT_SHARE = 0.8
+
+function positiveUnitNav(raw: string | null | undefined): number | null {
+  if (raw == null || raw.trim() === "") return null
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n
+}
+
+/**
+ * Drop a manual upload when shared dates show it is a different fund from the
+ * custodian 净值表 (SBGS17: manual stays near 1.86 from a 2022 history, email
+ * stays near 1.11 from the 2025-09-24 launch). A few-percent fee gap, or a
+ * handful of mismatched dates, keeps the upload. The whole series yields,
+ * including dates before the email starts, so the old history cannot cliff
+ * into the custodian's first 1.00.
+ */
+export function dropManualSeriesDisjointFromCustodian<T extends {
+  nav_date: string
+  unit_nav: string
+}>(
+  manual: T[],
+  emailPoints: Array<{ price_date: string; nav: string | null }>,
+): T[] {
+  if (manual.length === 0 || emailPoints.length === 0) return manual
+  const emailUnit = new Map<string, number>()
+  for (const point of emailPoints) {
+    const unit = positiveUnitNav(point.nav)
+    if (unit == null) continue
+    emailUnit.set(point.price_date.slice(0, 10), unit)
+  }
+  const gaps: number[] = []
+  for (const row of manual) {
+    const email = emailUnit.get(row.nav_date.slice(0, 10))
+    const unit = positiveUnitNav(row.unit_nav)
+    if (email == null || unit == null) continue
+    gaps.push(Math.abs(unit / email - 1))
+  }
+  if (gaps.length < DISJOINT_MANUAL_MIN_OVERLAP) return manual
+  const wide = gaps.filter((gap) => gap >= DISJOINT_MANUAL_POINT_GAP).length
+  if (wide < gaps.length * DISJOINT_MANUAL_POINT_SHARE) return manual
+  const sorted = [...gaps].sort((a, b) => a - b)
+  const median = sorted[Math.floor((sorted.length - 1) / 2)] ?? 0
+  if (median < DISJOINT_MANUAL_MEDIAN_GAP) return manual
+  return []
 }
 
 export function appendEmailAfterSeriesTip(

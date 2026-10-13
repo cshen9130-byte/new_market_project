@@ -4,6 +4,8 @@ export type PagePermissions = {
   ma?: boolean
   classic?: boolean
   mom?: boolean
+  /** 勾选后：该账户的 API Key 可调用 MOM数据API（交易流水与已计算风险指标） */
+  momDataApi?: boolean
   aiKnowledge?: boolean
   aiResearcher?: boolean
   pfOperations?: boolean
@@ -30,6 +32,8 @@ export interface User {
   permissions?: PagePermissions
   /** Fund-data HTTP / MCP key. Shown in 用户中心; send as x-api-key. */
   api_key?: string | null
+  /** MOM数据API key. Separate from api_key. Shown only on the MOM数据API page. */
+  mom_api_key?: string | null
 }
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -226,6 +230,25 @@ export const authService = {
         localStorage.setItem("currentUser", JSON.stringify({ ...current, api_key: data.api_key }))
       }
       return { success: true, api_key: data.api_key }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "生成失败"
+      return { success: false, error: message }
+    }
+  },
+
+  regenerateMomApiKey: async (): Promise<{ success: boolean; mom_api_key?: string; error?: string }> => {
+    try {
+      const uid = currentUserId()
+      if (!uid) return { success: false, error: "未登录" }
+      const data = await jsonFetch<{ ok: true; mom_api_key: string; user: User }>("/api/auth/mom-api-key", {
+        method: "POST",
+        headers: { "x-market-user-id": uid },
+      })
+      const current = authService.getCurrentUser()
+      if (current) {
+        localStorage.setItem("currentUser", JSON.stringify({ ...current, mom_api_key: data.mom_api_key }))
+      }
+      return { success: true, mom_api_key: data.mom_api_key }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "生成失败"
       return { success: false, error: message }

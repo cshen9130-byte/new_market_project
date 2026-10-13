@@ -194,6 +194,34 @@ const parentBackedDiag = diagnoseNavAnomaly(parentBackedChart, [{
 assert(parentBackedDiag.cause === "source", "parent unit step copied onto a share class is source data")
 assert(parentBackedDiag.cause_label === "源数据异常", "parent unit step label")
 
+const scaledEmail = [
+  { date: "2024-02-02", value: 1.2367, field: "unit" },
+  { date: "2024-02-02", value: 1.3367, field: "cumulative" },
+  { date: "2024-02-08", value: 0.9214, field: "unit" },
+  { date: "2024-02-08", value: 1.0214, field: "cumulative" },
+]
+const scaledChart = [
+  { date: "2024-02-02", value: 1.389048 },
+  { date: "2024-02-08", value: 1.034906 },
+]
+const scaledHit = navAnomalyHit(scaledChart)
+assert(scaledHit, "scaled unit series is still a jump")
+const scaledDiag = diagnoseNavAnomaly(scaledChart, [{
+  key: "email_other",
+  label: "邮件净值",
+  points: scaledEmail,
+}], scaledHit)
+assert(scaledDiag.cause === "source", "fixed 复权 scale of a raw unit jump is source data")
+assert(scaledDiag.cause_label === "源数据异常", "scaled unit jump label")
+assert(scaledDiag.cause_detail.includes("邮件净值"), "scaled unit jump names the email feed")
+
+const cumulativeOnly = diagnoseNavAnomaly(scaledChart, [{
+  key: "email_other",
+  label: "邮件净值",
+  points: scaledEmail.filter((point) => point.field === "cumulative"),
+}], scaledHit)
+assert(cumulativeOnly.cause === "rules", "累计 return that differs from the chart stays a calculation")
+
 const emptyDiag = diagnoseNavAnomaly(charted, [], rewriteHit)
 assert(emptyDiag.cause === "unknown", "no raw feeds stays unknown")
 

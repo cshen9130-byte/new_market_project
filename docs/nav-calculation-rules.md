@@ -2890,3 +2890,104 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 Includes **mid-series unit 1.0000 keeps the email 累计** (`testMidSeriesUnitResetKeepsCumulative`). The fixture is the 2025-12-15 through 2025-12-18 custodian rows plus the 2020-09-11 launch print. The launch row stays 单位 = 累计 = **1.0000**. The reset row keeps 累计 **2.3906**, and its 复权 ratio to the previous day stays within **0.01** of `2.3906 / 2.4004`.
+
+---
+
+## What Was Fixed (赢仕安盈三号 — SLQ415, do not fill the main fund from C类, 2026-10-13)
+
+### The Problem
+
+赢仕安盈三号 (SLQ415) showed a 尖刺 on **2024-01-05**: 复权 **1.270610 → 1.0665 → 1.270610**, about **−16.1%**. 单位净值 did not move. It stayed **1.066500** on 2024-01-04, 2024-01-05, and 2024-01-08. The same dip versus the 2024-01-02 复权 **1.270729** is the **−16.07%** 成立以来最大回撤 on the product page.
+
+### Root Cause
+
+Filling the main fund from a C-class series is only a supplement. It used to run whenever overlapping 单位净值 agreed within 0.5%, and then it copied the whole C-class row, including 复权.
+
+1. 火富牛 has no SLQ415 row on Friday **2024-01-05**. The surrounding parent rows are 单位 **1.066500**, 累计 **1.256700**, 复权 **1.270610**. The parent has carried that dividend gap since **2021-12-22**.
+2. 赢仕安盈三号C类 (LQ415C) is a weekly series. Its 火富牛 row that day is 单位 = 累计 = 复权 = **1.066500**. C类 复权 stays equal to 单位 from launch through **2025-11-14**. The first C类 row with a real 复权 gap is **2025-11-21**.
+3. `fillMissingNavIfOverlapConsistent` treated the matching 单位 as proof the series were the same, and pasted the C类 row onto the parent after the parent series had already been finalized. The one-day spike repair never saw it. The chart plots 复权, so one Friday became a V-shaped −16% spike.
+
+Two later parent gaps also exist only on LQ415C (**2026-05-18**, **2026-09-15**). Those C类 rows already have a 复权 gap, but the same copy is still not safe enough to keep. When we are not certain a C类 row will leave the main fund's 复权 alone, we do not fill from C类 at all.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Donor gate | `mayUseShareClassNavDonor`, `fillMissingNavFromShareClassDonor` in `share-class-nav-fill.ts` | A 备案号 ending in `C` is never a NAV donor |
+| Detail series | `fillMergedNavFromShareClassFamily` | Parent and A/B siblings can still fill gaps. C类 cannot |
+| List series | `fillMergedHistoryFromShareClassFamily`, `backfillParentEmailFromShareClassSiblings` | Same rule. A类 email can still extend the parent (BHK26A → SBHK26) |
+
+The parent may still fill a C类 page. An empty C类 can still inherit the parent series. A/B overlap fill is unchanged.
+
+### What This Fix Does NOT Change
+
+- LQ415C's own 火富牛 rows. The C类 page still shows 复权 = 单位 through 2025-11-14
+- Parent → C类, and A/B → parent, when overlapping 单位净值 agrees
+- The 2024-01-05 market level. There was no −16% move. 单位净值 was flat
+
+### Verified
+
+After the gate, the merged SLQ415 series has no **2024-01-05** point. 2024-01-04 and 2024-01-08 stay 复权 **1.270610**.
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **C-class is not a NAV donor for the main fund** and **SLQ415 does not take the LQ415C 2024-01-05 row**. Refresh the product page after deploy so the detail cache is rewritten without that Friday.
+
+---
+
+## What Was Fixed (草本致远1号 — SND951, 2025-12-22 dividend shown as −29.5%, 2026-10-13)
+
+### The Problem
+
+草本致远1号 (SND951) was flagged as a 跳变 on **2025-12-22**: chart 复权 **3.812789 → 2.688003**, **−29.50%**. The custodian 净值表 and 火富牛 both show a cash dividend that day, and a small gain.
+
+| | 单位净值 | 累计净值 | 火富牛复权 |
+|---|---:|---:|---:|
+| 2025-12-19 | 1.461 | 3.434 | 5.995943 |
+| 2025-12-22 | 1.030 | 3.460 | 6.102647 (**+1.78%**) |
+
+单位净值 fell by 0.431. 累计净值 rose by 0.026. The gap widened by **0.457 per unit** (the dividend). 火富牛's published daily change is the same **+1.78%**.
+
+The same shape happened on **2024-11-25**: 单位 **1.723 → 1.050**, 累计 stayed near **3.02** (dividend about **0.655**), 火富牛复权 **−1.04%**. After that day, 累计/单位 sits around **2.8–3.4**.
+
+### Root Cause
+
+`loadManagedProductNavSeries` finalized the manual and custodian rows with **no 火富牛 history** (`mergeNavSeriesWithEmail([], points)`).
+
+An empty legacy list treats 累计/单位 above **2** as an unshifted custodian base and deletes that 累计. That rule is for the list sparkline, which cannot learn an offset such as R0423B **+2.5943**. 草本致远's 累计 is a real post-dividend cumulative, and it matches 火富牛 `cum_nav_withdrawal` exactly. Deleting it left 累计 = 单位 + the old gap of **1.318**. On 2025-12-22 that fake 累计 fell with 单位, so the ex-dividend check did not fire, and 复权 was multiplied by `1.030 / 1.461`.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Team merge | `mergeManagedTeamPointsWithLegacy` | Merge team points with 火富牛, then keep only the team dates |
+| 在管产品 series | `loadManagedProductNavSeries` | Load 火富牛 (type6 excluded) and pass it into that merge |
+
+A 累计 that already matches 火富牛 is kept, and `syncExDivAdjustedNav` prices the dividend. A stable additive offset is still rebased (R0423B). Interior 火富牛 days are not copied into a weekly manual window (SZJ909).
+
+### What This Fix Does NOT Change
+
+- The empty-legacy strip on the list sparkline. Email-only 累计 above 2× is still dropped there
+- R0423B's rebase of a constant custodian offset
+- SQX078 when 火富牛 is absent
+- The dividend formulas themselves
+
+### Verified
+
+With 火富牛 present, 2025-12-22 累计 stays **3.460** and 复权 moves about **+1.8%** versus 2025-12-19, not −29.5%. 2024-11-25 复权 stays above **4.2** (the 火富牛 level is about **4.31**). Without 火富牛, the 3× 累计 is still dropped and 复权 still falls.
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **SND951 2025-12-22 复权 follows the dividend, not the unit drop** and **SND951 without 火富牛 still treats the dividend as a loss**.
+
+Refresh the product page after deploy so the detail cache is rewritten:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SND951 --name=草本致远1号
+```
+
+Then delete the stored anomaly flag for `SND951` in `ops_nav_series_flags`. The flag is reused while the tip date is unchanged, so the ops list keeps the old −29.5% until that row is cleared.

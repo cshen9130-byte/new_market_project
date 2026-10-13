@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { ChevronDown } from "lucide-react"
 import { FundDataApiPanel } from "./fund-data-api-panel"
+import { MomDataApiPanel } from "./mom-data-api-panel"
 import { authService, type User } from "@/lib/auth"
+import { canAccessMomDataApi } from "@/lib/permissions"
 import { withInstructionAssignment } from "@/lib/page-permissions"
 import {
   DropdownMenu,
@@ -127,7 +129,7 @@ const DEFAULT_CALC: CalcSettings = {
 const LEFT_NAV = [
   { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "邀请注册"] },
   { group: "团队管理", items: ["评分设置", "指令设置", "直投设置", "报告设置"] },
-  { group: "数据接口", items: ["基金数据API"] },
+  { group: "数据接口", items: ["基金数据API", "MOM数据API"] },
 ]
 
 const SECTION_FROM_PARAM: Record<string, string> = {
@@ -136,6 +138,7 @@ const SECTION_FROM_PARAM: Record<string, string> = {
   "instruction-settings": "指令设置",
   "direct-invest-settings": "直投设置",
   "fund-data-api": "基金数据API",
+  "mom-data-api": "MOM数据API",
 }
 
 const PERSONAL_TAG_CATEGORIES = [
@@ -2483,17 +2486,36 @@ export default function SettingsPage() {
   const sectionParam = searchParams.get("section") || ""
   const categoryParam = searchParams.get("category") || "fund"
   const [activeTab, setActiveTab] = useState<Tab>(initialTab)
+  const [momApiAllowed, setMomApiAllowed] = useState(false)
   const [activeLeft, setActiveLeft] = useState(
-    SECTION_FROM_PARAM[sectionParam] ?? "个人配置"
+    sectionParam === "mom-data-api" ? "基金数据API" : (SECTION_FROM_PARAM[sectionParam] ?? "个人配置")
   )
+
+  useEffect(() => {
+    let cancelled = false
+    void authService.refreshCurrentUser().then((user) => {
+      if (!cancelled) setMomApiAllowed(canAccessMomDataApi(user))
+    })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     const tab = searchParams.get("tab")
     if (tab === "metric-templates") setActiveTab("指标模板")
     else if (tab === "common-benchmarks") setActiveTab("常用基准")
     const section = searchParams.get("section") || ""
-    if (SECTION_FROM_PARAM[section]) setActiveLeft(SECTION_FROM_PARAM[section])
-  }, [searchParams])
+    if (!SECTION_FROM_PARAM[section]) return
+    if (section === "mom-data-api" && !momApiAllowed) {
+      setActiveLeft("基金数据API")
+      return
+    }
+    setActiveLeft(SECTION_FROM_PARAM[section])
+  }, [searchParams, momApiAllowed])
+
+  const leftNav = LEFT_NAV.map((section) => ({
+    ...section,
+    items: section.items.filter((item) => item !== "MOM数据API" || momApiAllowed),
+  }))
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -2505,7 +2527,7 @@ export default function SettingsPage() {
           </div>
           <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">用户设置</span>
         </div>
-        {LEFT_NAV.map((section) => (
+        {leftNav.map((section) => (
           <div key={section.group} className="mt-3">
             <p className="px-5 pb-1 text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wide">{section.group}</p>
             {section.items.map((item) => (
@@ -2554,6 +2576,14 @@ export default function SettingsPage() {
             <DirectInvestSettingsPanel />
           </div>
         ) : activeLeft === "基金数据API" ? (
+          <div className="p-8">
+            <FundDataApiPanel />
+          </div>
+        ) : activeLeft === "MOM数据API" && momApiAllowed ? (
+          <div className="p-8">
+            <MomDataApiPanel />
+          </div>
+        ) : activeLeft === "MOM数据API" ? (
           <div className="p-8">
             <FundDataApiPanel />
           </div>

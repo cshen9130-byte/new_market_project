@@ -159,16 +159,17 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
   {
     name: "kb_list",
     area: "knowledge",
-    description: "列出 AI 知识库中当前账户可见的文件夹和文件。团队投资笔记在文件夹「投资笔记」下。",
+    description: "列出 AI 知识库中当前账户可见的文件夹和文件。团队投资笔记在文件夹「投资笔记」下。根目录列举会在 400 条处停住，找点睛业绩榜请传 q，例如「点睛 930」，会在全库按文件名搜索。",
     inputSchema: obj({
       path: { type: "string", description: "文件夹相对路径。列投资笔记填「投资笔记」，空为根目录" },
+      q: { type: "string", description: "按文件名搜索，空格分开的词都要出现。例：点睛 930。不受根目录 400 条截断影响" },
       limit: { type: "integer", description: "最多返回条数，默认 200，最大 400" },
     }),
   },
   {
     name: "kb_read",
     area: "knowledge",
-    description: "读取知识库中一个文件的文本内容。path 来自 kb_list，例如「投资笔记/某产品投资笔记.html」。",
+    description: "读取知识库中一个文件。xlsx 返回 sheets：每张表有 sheet、headers、rows（一行一个对象），另有按行排列的 text。不会把整张表收成一行。行数放不下时 truncated 为 true，并给出 next_row，截断发生在整行边界。path 来自 kb_list 或 kb_list 的 q 搜索。",
     inputSchema: obj({
       path: { type: "string", description: "文件相对路径，如 投资笔记/某产品投资笔记.html" },
     }, ["path"]),
@@ -189,7 +190,7 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     name: "kb_ask",
     area: "knowledge",
     description:
-      "基于 AI 知识库回答问题。人名、路演、观点类问题会优先读路径命中的短文件全文。填表时 question 写成「列：「量道」，行：「代表产品」」，不要传 folder_path，否则只搜一个文件夹。没有段落出现列名时 value 为「暂无数据」，sources 为空。列名出现时返回 value，以及 sources（path、quote，quote 含列名）。文件名含列名且文件较短时会整篇读入。默认模型 qwen-plus。只要片段不要回答时用 kb_search。",
+      "基于 AI 知识库回答问题。人名、路演、观点类问题会优先读路径命中的短文件全文。点睛等业绩榜问「最高 / 前 N / 某一列」时，服务端解析 xlsx 后按该列排序再回答，ranking.sort_key 是排序列，与文件名里的「今年来」不是同一排序。填表时 question 写成「列：「量道」，行：「代表产品」」，不要传 folder_path，否则只搜一个文件夹。没有段落出现列名时 value 为「暂无数据」，sources 为空。列名出现时返回 value，以及 sources（path、quote，quote 含列名）。文件名含列名且文件较短时会整篇读入。默认模型 qwen-plus。只要片段不要回答时用 kb_search。",
     inputSchema: obj({
       question: { type: "string", description: "问题。例：左广东看多的品种都有哪些？只根据路演笔记原文回答" },
       folder_path: { type: "string", description: "限定文件夹。投资笔记填「投资笔记」。空为全库" },

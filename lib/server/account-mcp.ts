@@ -393,6 +393,13 @@ function findKbFolder(node: KbFolder, path: string): KbFolder | null {
   return null
 }
 
+function flattenKbFiles(node: KbFolder, out: Array<{ name: string; path: string; size: number }>) {
+  for (const doc of node.documents ?? []) {
+    out.push({ name: doc.name, path: doc.relativePath, size: doc.size ?? 0 })
+  }
+  for (const folder of node.folders ?? []) flattenKbFiles(folder, out)
+}
+
 async function kbList(account: McpAccount, args: Record<string, unknown>) {
   const { listKnowledgeBaseTree, normalizeKnowledgeBasePath } = await import("@/lib/server/knowledge-base")
   const path = normalizeKnowledgeBasePath(str(args, "path"))
@@ -400,6 +407,20 @@ async function kbList(account: McpAccount, args: Record<string, unknown>) {
   const tree = await listKnowledgeBaseTree(account.id, account.role === "admin") as KbFolder
   const root = path ? findKbFolder(tree, path) : tree
   if (!root) throw new Error(`知识库中没有文件夹「${path}」`)
+  const query = str(args, "q") || str(args, "query")
+  if (query) {
+    const files: Array<{ name: string; path: string; size: number }> = []
+    flattenKbFiles(root, files)
+    const { pathHasToken } = await import("@/lib/server/spreadsheet-rank")
+    const tokens = query.split(/\s+/).filter(Boolean)
+    const hits = files.filter((file) => tokens.every((token) => pathHasToken(file.path, token) || pathHasToken(file.name, token)))
+    return {
+      path,
+      query,
+      truncated: hits.length > limit,
+      entries: hits.slice(0, limit).map((file) => ({ type: "file", path: file.path, name: file.name, size: file.size })),
+    }
+  }
   const entries: Array<Record<string, unknown>> = []
   pushKbNode(root, entries, limit, false)
   return { path, truncated: entries.length >= limit, entries }
@@ -410,6 +431,19 @@ async function kbRead(args: Record<string, unknown>) {
   if (!path) throw new Error("请提供 path")
   const { getKnowledgeBaseFile, readFileDocumentText } = await import("@/lib/server/knowledge-base")
   const file = await getKnowledgeBaseFile(path)
+  if (file.extension === ".xlsx" || file.extension === ".xls") {
+    const { readFile } = await import("fs/promises")
+    const { capSheetTables, tablesFromWorkbook } = await import("@/lib/server/spreadsheet-rank")
+    const capped = capSheetTables(tablesFromWorkbook(await readFile(file.absolutePath)))
+    return {
+      path: file.relativePath,
+      name: file.name,
+      truncated: capped.truncated,
+      next_row: capped.next_row,
+      sheets: capped.tables,
+      text: capped.text,
+    }
+  }
   const text = await readFileDocumentText(file.absolutePath, file.extension)
   const truncated = text.length > KB_TEXT_CAP
   return {
@@ -455,6 +489,16 @@ async function kbAsk(args: Record<string, unknown>) {
     grounded: true,
     includePassages: boolArg(args, "debug"),
   })
+  if ("ranking" in result && result.ranking) {
+    return {
+      answer: result.answer,
+      ranking: result.ranking,
+      sources: result.sources,
+      citations: result.citations ?? [],
+      citations_grounded: result.citations_grounded ?? true,
+      model: result.model,
+    }
+  }
   if (result.value != null) {
     const cellSources = result.cell_sources ?? []
     return {

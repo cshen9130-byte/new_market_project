@@ -14,6 +14,13 @@ import {
 } from "@/lib/ma/private-fund-type-filter"
 import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
 import {
+  queryAmacFund,
+  queryAmacFundSearch,
+  queryAmacManager,
+  queryAmacManagerFunds,
+  type AmacCall,
+} from "@/lib/server/fund-data-amac"
+import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
@@ -1514,7 +1521,47 @@ export const FUND_DATA_CATALOG = {
     { path: "/fund/search", tool: "fund_search", desc: "按名称/备案号搜索基金与管理人" },
     { path: "/company/info", tool: "company_info", desc: "管理人信息" },
     { path: "/company/fund/list", tool: "company_fund_list", desc: "管理人旗下基金" },
+    { path: "/amac/fund", tool: "amac_fund", desc: "协会备案产品（私募 + 期货资管）" },
+    { path: "/amac/fund/search", tool: "amac_fund_search", desc: "按名称、备案号或管理人搜索协会备案产品" },
+    { path: "/amac/manager", tool: "amac_manager", desc: "协会管理人登记信息、高管与出资人" },
+    { path: "/amac/manager/funds", tool: "amac_manager_funds", desc: "某管理人在协会披露的产品" },
   ],
+}
+
+function fromAmac<T>(result: AmacCall<T>): FundDataEnvelope<T> {
+  if (result.error_code === 0) return fundDataOk(result.data)
+  return fundDataErr(result.error_code, result.msg)
+}
+
+export async function getAmacFund(regCode: string): Promise<FundDataEnvelope<unknown>> {
+  return fromAmac(await queryAmacFund(regCode))
+}
+
+export async function searchAmacFunds(params: Record<string, string | undefined>): Promise<FundDataEnvelope<unknown>> {
+  return fromAmac(await queryAmacFundSearch({
+    q: params.q || params.keyword,
+    fund_type: params.fund_type,
+    working_state: params.working_state,
+    page: params.page,
+    pagesize: params.pagesize,
+  }))
+}
+
+export async function getAmacManager(params: Record<string, string | undefined>): Promise<FundDataEnvelope<unknown>> {
+  return fromAmac(await queryAmacManager({
+    code: params.code,
+    name_cn: params.name_cn || params.name,
+  }))
+}
+
+export async function listAmacManagerFunds(params: Record<string, string | undefined>): Promise<FundDataEnvelope<unknown>> {
+  return fromAmac(await queryAmacManagerFunds({
+    code: params.code,
+    name_cn: params.name_cn || params.name,
+    working_state: params.working_state,
+    page: params.page,
+    pagesize: params.pagesize,
+  }))
 }
 
 export async function handleFundDataRequest(
@@ -1566,6 +1613,14 @@ export async function handleFundDataRequest(
       return getCompanyInfo(params)
     case "company/fund/list":
       return getCompanyFundList(params)
+    case "amac/fund":
+      return getAmacFund(params.reg_code || "")
+    case "amac/fund/search":
+      return searchAmacFunds(params)
+    case "amac/manager":
+      return getAmacManager(params)
+    case "amac/manager/funds":
+      return listAmacManagerFunds(params)
     default:
       return fundDataErr(1, `unknown endpoint: /${key}`)
   }

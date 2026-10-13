@@ -4,9 +4,9 @@ import type { NavAnomalyHit, NavAnomalyPoint } from "@/lib/server/nav-anomaly"
  * Decide whether a charted NAV jump/spike is already in one upstream feed,
  * or only appears after we merge feeds and recompute 复权 / 累计.
  *
- * A feed explains the anomaly when the chart points on both sides of the step
- * (or all three points of a spike) match that feed's own raw level.
- * A raw level is 复权, then 累计, then 单位, with no rechain.
+ * A feed explains the anomaly when one raw column contains every step point.
+ * The column can match the charted levels, or the same return when 复权 is a
+ * constant scale of that column. A mix of 复权 and 单位 does not count.
  */
 
 export const NAV_SOURCE_LABELS: Record<string, string> = {
@@ -66,23 +66,41 @@ function anyClose(source: NavSourceSeries, date: string, target: number): boolea
   return false
 }
 
-function fieldsMatching(source: NavSourceSeries, point: NavAnomalyPoint | null): Set<NavSourceField> {
-  const fields = new Set<NavSourceField>()
-  if (!point) return fields
+const NAV_SOURCE_FIELDS: NavSourceField[] = ["adjusted", "cumulative", "unit"]
+
+function ratiosClose(a: number, b: number): boolean {
+  if (!(a > 0) || !(b > 0)) return false
+  return Math.abs(a - b) / Math.max(a, b) <= LEVEL_REL_TOLERANCE
+}
+
+function valuesOn(source: NavSourceSeries, date: string, field: NavSourceField): number[] {
+  const values: number[] = []
   for (const row of source.points) {
-    if (row.date === point.date && levelsClose(row.value, point.value)) fields.add(row.field)
+    if (row.date === date && row.field === field) values.push(row.value)
   }
-  return fields
+  return values
+}
+
+/** One raw column holds the charted levels, or the same return under a fixed 复权 scale. */
+function fieldExplains(source: NavSourceSeries, step: NavAnomalyPoint[], field: NavSourceField): boolean {
+  const columns = step.map((point) => valuesOn(source, point.date, field))
+  if (columns.some((values) => values.length === 0)) return false
+  if (columns.every((values, index) => values.some((value) => levelsClose(value, step[index].value)))) return true
+  for (let i = 1; i < step.length; i += 1) {
+    const chartRatio = step[i].value / step[i - 1].value
+    const matched = columns[i - 1].some((left) => columns[i].some((right) => ratiosClose(right / left, chartRatio)))
+    if (!matched) return false
+  }
+  return step.length > 1
 }
 
 /** Feeds where one raw column, not a mix of 复权 and 单位, contains every step point. */
 function feedsExplaining(sources: NavSourceSeries[], step: Array<NavAnomalyPoint | null>): string[] {
   if (step.some((point) => point == null)) return []
+  const points = step as NavAnomalyPoint[]
   const keys: string[] = []
   for (const source of sources) {
-    const fieldSets = step.map((point) => fieldsMatching(source, point))
-    const shared = [...fieldSets[0]].filter((field) => fieldSets.every((set) => set.has(field)))
-    if (shared.length > 0) keys.push(source.key)
+    if (NAV_SOURCE_FIELDS.some((field) => fieldExplains(source, points, field))) keys.push(source.key)
   }
   return keys
 }

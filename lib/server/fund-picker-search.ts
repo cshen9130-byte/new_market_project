@@ -28,7 +28,10 @@ const BEIAN_CODE_RE = /(?<![A-Z0-9])([A-Z][A-Z0-9]{4,7}[A-Z]?)(?![A-Z0-9])/gi
 export function fundNameCore(name: string): string {
   return name
     .trim()
-    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金|集合资产管理计划|资产管理计划)/g, "")
+    .replace(
+      /(私募证券投资基金|私募投资基金|证券投资基金|私募基金|投资基金|集合资产管理计划|资产管理计划)/g,
+      "",
+    )
     .replace(/[ABC]类$/g, "")
     .trim()
 }

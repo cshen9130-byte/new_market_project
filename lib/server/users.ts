@@ -6,6 +6,8 @@ export type PagePermissions = {
   ma?: boolean
   classic?: boolean
   mom?: boolean
+  /** 勾选后：该账户的 API Key 可调用 MOM数据API（交易流水与已计算风险指标） */
+  momDataApi?: boolean
   aiKnowledge?: boolean
   aiResearcher?: boolean
   pfOperations?: boolean
@@ -29,6 +31,8 @@ export type StoredUser = {
   permissions: PagePermissions
   passwordHash: string
   api_key?: string | null
+  /** Separate from the fund-data key. Only issued from the MOM数据API page. */
+  mom_api_key?: string | null
 }
 
 type DbRow = {
@@ -39,12 +43,18 @@ type DbRow = {
   permissions: PagePermissions | string | null
   password_hash: string
   api_key?: string | null
+  mom_api_key?: string | null
 }
 
 const API_KEY_PREFIX = "mf_"
+const MOM_API_KEY_PREFIX = "mk_"
 
 export function generateFundDataApiKey(): string {
   return `${API_KEY_PREFIX}${randomBytes(20).toString("hex")}`
+}
+
+export function generateMomDataApiKey(): string {
+  return `${MOM_API_KEY_PREFIX}${randomBytes(24).toString("hex")}`
 }
 
 function parsePermissions(raw: PagePermissions | string | null | undefined): PagePermissions {
@@ -64,6 +74,7 @@ function rowToUser(row: DbRow): StoredUser {
     permissions: parsePermissions(row.permissions),
     passwordHash: row.password_hash,
     api_key: row.api_key ?? null,
+    mom_api_key: row.mom_api_key ?? null,
   }
 }
 
@@ -108,6 +119,17 @@ async function _initTable() {
     await query(`ALTER TABLE auth_users ADD COLUMN api_key TEXT`)
   }
   await query(`CREATE UNIQUE INDEX IF NOT EXISTS auth_users_api_key_uq ON auth_users (api_key) WHERE api_key IS NOT NULL`)
+  const momKeyCols = await query<{ column_name: string }>(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'auth_users'
+        AND column_name = 'mom_api_key'`,
+  )
+  if (momKeyCols.length === 0) {
+    await query(`ALTER TABLE auth_users ADD COLUMN mom_api_key TEXT`)
+  }
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS auth_users_mom_api_key_uq ON auth_users (mom_api_key) WHERE mom_api_key IS NOT NULL`)
   await _seedIfEmpty()
 }
 
@@ -179,6 +201,7 @@ function toPublicUser(row: DbRow): Omit<StoredUser, "passwordHash"> {
     role: row.role,
     permissions: parsePermissions(row.permissions),
     api_key: row.api_key ?? null,
+    mom_api_key: row.mom_api_key ?? null,
   }
 }
 
@@ -189,7 +212,7 @@ async function ensureUserApiKey(row: DbRow): Promise<DbRow> {
     try {
       await query(`UPDATE auth_users SET api_key = $1 WHERE id = $2 AND api_key IS NULL`, [key, row.id])
       const again = await query<DbRow>(
-        `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`,
+        `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`,
         [row.id],
       )
       if (again[0]?.api_key) return again[0]
@@ -198,7 +221,7 @@ async function ensureUserApiKey(row: DbRow): Promise<DbRow> {
     }
   }
   const again = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`,
+    `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`,
     [row.id],
   )
   return again[0] ?? row
@@ -225,7 +248,7 @@ export async function getUserById(id: string): Promise<Omit<StoredUser, "passwor
   if (!id) return null
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`,
+    `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`,
     [id],
   )
   if (rows.length === 0) return null
@@ -258,6 +281,34 @@ export async function rotateUserApiKey(id: string): Promise<string> {
     }
   }
   throw new Error("无法生成 API Key")
+}
+
+export async function getUserByMomApiKey(apiKey: string): Promise<Omit<StoredUser, "passwordHash"> | null> {
+  const key = apiKey.trim()
+  if (!key) return null
+  await ensureTable()
+  const rows = await query<DbRow>(
+    `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE mom_api_key = $1`,
+    [key],
+  )
+  if (rows.length === 0) return null
+  return toPublicUser(rows[0])
+}
+
+export async function rotateUserMomApiKey(id: string): Promise<string> {
+  await ensureTable()
+  const existing = await query<{ id: string }>(`SELECT id FROM auth_users WHERE id = $1`, [id])
+  if (existing.length === 0) throw new Error("用户不存在")
+  for (let i = 0; i < 5; i++) {
+    const key = generateMomDataApiKey()
+    try {
+      await query(`UPDATE auth_users SET mom_api_key = $1 WHERE id = $2`, [key, id])
+      return key
+    } catch {
+      // unique collision
+    }
+  }
+  throw new Error("无法生成 MOM API Key")
 }
 
 export async function getAll(): Promise<StoredUser[]> {
@@ -315,7 +366,13 @@ export async function updateUser(
     await query(`UPDATE auth_users SET permissions = $1 WHERE id = $2`, [JSON.stringify(updates.permissions), id])
   }
 
-  const updated = await query<DbRow>(`SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE id = $1`, [id])
+  const roleRow = await query<{ role: string }>(`SELECT role FROM auth_users WHERE id = $1`, [id])
+  const savedPerms = "permissions" in updates ? updates.permissions : undefined
+  if (roleRow[0]?.role !== "admin" && savedPerms && savedPerms.momDataApi !== true) {
+    await query(`UPDATE auth_users SET mom_api_key = NULL WHERE id = $1`, [id])
+  }
+
+  const updated = await query<DbRow>(`SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`, [id])
   const r = updated[0]
   return toPublicUser(r)
 }
@@ -328,7 +385,7 @@ export async function deleteUser(id: string) {
 export async function verifyLogin(identifier: string, password: string) {
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, password_hash, api_key FROM auth_users WHERE email = $1 OR name = $1`,
+    `SELECT id, email, name, role, permissions, password_hash, api_key, mom_api_key FROM auth_users WHERE email = $1 OR name = $1`,
     [identifier],
   )
   if (rows.length === 0) return null

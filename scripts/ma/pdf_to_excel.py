@@ -13,6 +13,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        try:
+            _reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
 import fitz
 import pandas as pd
 
@@ -53,9 +61,24 @@ PERCENT_RE = re.compile(r"-?\d+(?:\.\d+)?%")
 SCALE_STRAT_RE = re.compile(
     r"^(?P<scale>\d+\s*[~～~\-]\s*\d+\s*亿(?:以上)?|\d+\s*亿以上)(?P<strat>\S.+)$"
 )
+STRATEGY_LABEL_RE = re.compile(r"^(?:(?:[A-Za-z]{1,4}\d{2,4}|\d{2,4}|[一-鿿]{2,8})指增)$|^(?:量化选股|量化择时|量化对冲|量化多头|市场中性)$")
+STRATEGY_PERCENT_RE = re.compile(
+    r"^(?P<strat>(?:(?:[A-Za-z]{1,4}\d{2,4}|\d{2,4}|[一-鿿]{2,8})指增|量化选股|量化择时|量化对冲|量化多头|市场中性))\d?(?P<pct>-?\d+(?:\.\d+)?%)$"
+)
 HEADER_LABEL_RE = re.compile(
     r"基金简称|产品名称|管理人|管理规模|规模|策略|近1周|今年|周超额|\d{4}年|\d{4}超额"
 )
+
+
+HEADER_LABEL_EXACT_RE = re.compile(
+    r"^(?:基金简称|产品名称|管理人|管理规模|规模|策略|近1周|近1月|今年|周超额|\d{4}年|\d{4}超额)$"
+)
+
+
+def is_header_label(text: str) -> bool:
+    return bool(HEADER_LABEL_EXACT_RE.fullmatch(text.replace(" ", "")))
+
+
 
 
 def log(message: str) -> None:
@@ -364,7 +387,7 @@ def restore_sign(img: np.ndarray, box: Box) -> Box:
     text = clean_cell(box.text).replace("|", "")
     text = re.sub(r"\.{2,}", ".", text)
     leading = re.fullmatch(r"[^\d\-]*(-?\d+(?:\.\d+)?%)", text)
-    if leading:
+    if leading and not STRATEGY_LABEL_RE.fullmatch(text[: leading.start(1)]):
         text = leading.group(1)
     if re.fullmatch(r"\d+(?:\.\d+)?%", text) and cell_is_green(img, box):
         text = f"-{text}"
@@ -373,7 +396,7 @@ def restore_sign(img: np.ndarray, box: Box) -> Box:
     return Box(text, box.x0, box.x1, box.y0, box.y1, box.score)
 
 
-def ocr_image(engine, img: np.ndarray, on_strip=None) -> list[Box]:
+def ocr_image(engine, img: np.ndarray, on_strip=None, gap: float = ROW_GAP) -> list[Box]:
     height = img.shape[0]
     boxes: list[Box] = []
     y = 0
@@ -405,18 +428,19 @@ def ocr_image(engine, img: np.ndarray, on_strip=None) -> list[Box]:
         if y1 >= height:
             break
         y += STRIP_H - OVERLAP
-    return dedup_boxes(boxes)
+    return dedup_boxes(boxes, gap)
 
 
-def dedup_boxes(boxes: list[Box]) -> list[Box]:
+def dedup_boxes(boxes: list[Box], gap: float = ROW_GAP) -> list[Box]:
     boxes.sort(key=lambda box: (box.cy, box.cx))
     kept: list[Box] = []
+    x_tol = max(8.0, 25.0 * gap / ROW_GAP)
     for box in boxes:
         duplicate = False
         for prev in reversed(kept[-40:]):
-            if box.cy - prev.cy > ROW_GAP:
+            if box.cy - prev.cy > gap:
                 break
-            if abs(box.cx - prev.cx) < 25 and box.text == prev.text:
+            if abs(box.cx - prev.cx) < x_tol and box.text == prev.text:
                 duplicate = True
                 if box.score > prev.score:
                     prev.score = box.score
@@ -450,11 +474,11 @@ def split_glued(boxes: list[Box]) -> list[Box]:
     return output
 
 
-def cluster_rows(boxes: list[Box]) -> list[list[Box]]:
+def cluster_rows(boxes: list[Box], gap: float = ROW_GAP) -> list[list[Box]]:
     rows: list[list[Box]] = []
     centers: list[float] = []
     for box in sorted(boxes, key=lambda item: item.cy):
-        if not rows or box.cy - centers[-1] > ROW_GAP:
+        if not rows or box.cy - centers[-1] > gap:
             rows.append([box])
             centers.append(box.cy)
         else:
@@ -493,6 +517,30 @@ def explode_header(row: list[Box]) -> list[Box]:
     return cells
 
 
+
+def split_header_boxes(row: list[Box]) -> tuple[list[Box], list[Box]]:
+    labels: list[Box] = []
+    spilled: list[Box] = []
+    for box in explode_header(row):
+        compact = box.text.replace(" ", "")
+        if is_header_label(compact):
+            labels.append(Box(compact, box.x0, box.x1, box.y0, box.y1, box.score))
+        elif compact:
+            spilled.append(box)
+    return labels, spilled
+
+
+def bounds_from_boxes(labels: list[Box], width: int) -> tuple[list[str], list[float]]:
+    cells = sorted(labels, key=lambda box: box.cx)
+    names = dedupe_columns([box.text for box in cells])
+    centers = [box.cx for box in cells]
+    bounds = [0.0]
+    for left, right in zip(centers, centers[1:]):
+        bounds.append((left + right) / 2)
+    bounds.append(float(width))
+    return names, bounds
+
+
 def header_columns(row: list[Box], width: int) -> tuple[list[str], list[float]]:
     cells = sorted(explode_header(row), key=lambda box: box.cx)
     names = [box.text.replace(" ", "") for box in cells]
@@ -525,18 +573,61 @@ def put_cell(values: list[str], index: int, text: str) -> None:
     values[index] = f"{values[index]}{text}"
 
 
+def strategy_column(names: list[str]) -> int | None:
+    for index, name in enumerate(names):
+        if "策略" in str(name):
+            return index
+    return None
+
+
 def assign_row(row: list[Box], names: list[str], bounds: list[float]) -> list[str]:
     values = [""] * len(names)
+    strat_idx = strategy_column(names)
     for box in row:
+        text = box.text.replace(" ", "").replace("−", "-").replace("–", "-")
+        center = column_index(bounds, box.cx)
+        glued = STRATEGY_PERCENT_RE.fullmatch(text)
+        if glued and strat_idx is not None:
+            put_cell(values, strat_idx, glued.group("strat"))
+            pct_idx = center if center > strat_idx else min(strat_idx + 1, len(names) - 1)
+            put_cell(values, pct_idx, glued.group("pct"))
+            continue
+        if strat_idx is not None and center >= strat_idx and STRATEGY_LABEL_RE.fullmatch(text):
+            put_cell(values, strat_idx, text)
+            continue
         left = column_index(bounds, box.x0 + 4)
         right = column_index(bounds, box.x1 - 4)
-        match = SCALE_STRAT_RE.match(box.text.replace(" ", ""))
+        match = SCALE_STRAT_RE.match(text)
         if match and right > left:
             put_cell(values, left, match.group("scale"))
-            put_cell(values, right, match.group("strat"))
+            strat_text = match.group("strat")
+            if strat_idx is not None and STRATEGY_LABEL_RE.fullmatch(strat_text):
+                put_cell(values, strat_idx, strat_text)
+            else:
+                glued_tail = STRATEGY_PERCENT_RE.fullmatch(strat_text)
+                if glued_tail and strat_idx is not None:
+                    put_cell(values, strat_idx, glued_tail.group("strat"))
+                    pct_idx = right if right > strat_idx else min(strat_idx + 1, len(names) - 1)
+                    put_cell(values, pct_idx, glued_tail.group("pct"))
+                else:
+                    put_cell(values, right, strat_text)
             continue
-        put_cell(values, column_index(bounds, box.cx), box.text)
+        put_cell(values, center, text)
+    strat_idx = strategy_column(names)
+    if strat_idx is not None:
+        for index, value in enumerate(list(values)):
+            if not value or index == strat_idx:
+                continue
+            glued = STRATEGY_PERCENT_RE.fullmatch(value.replace(" ", ""))
+            if not glued:
+                continue
+            strat = glued.group("strat")
+            current = values[strat_idx]
+            if not current or len(strat) > len(current):
+                values[strat_idx] = strat
+            values[index] = glued.group("pct")
     return values
+
 
 
 def fix_percent(text: str, aggressive: bool) -> str:
@@ -558,22 +649,31 @@ def clean_strategy(text: str) -> str:
     return text
 
 
-def page_to_frame(img: np.ndarray, boxes: list[Box]) -> tuple[pd.DataFrame, list[str]]:
+def page_to_frame(img: np.ndarray, boxes: list[Box], gap: float = ROW_GAP) -> tuple[pd.DataFrame, list[str]]:
     boxes = [
         Box(clean_cell(box.text).replace("|", ""), box.x0, box.x1, box.y0, box.y1, box.score)
         for box in boxes
     ]
     boxes = split_glued(boxes)
     boxes = [restore_sign(img, box) for box in boxes]
-    rows = cluster_rows(boxes)
+    rows = cluster_rows(boxes, gap)
     header_index = next((index for index, row in enumerate(rows) if is_ocr_header_row(row)), None)
     if header_index is None:
         raise RuntimeError("未找到业绩表表头（需包含管理人，以及基金简称、产品名称或策略）。")
 
-    names, bounds = header_columns(rows[header_index], img.shape[1])
-    names = dedupe_columns(names)
+    labels, spilled = split_header_boxes(rows[header_index])
+    if len(labels) >= 6:
+        names, bounds = bounds_from_boxes(labels, img.shape[1])
+    else:
+        names, bounds = header_columns(rows[header_index], img.shape[1])
+        names = dedupe_columns(names)
+        spilled = []
     notes = ["".join(box.text for box in row) for row in rows[:header_index]]
     records: list[list[str]] = []
+    if spilled and names:
+        spilled_values = assign_row(spilled, names, bounds)
+        if any(spilled_values):
+            records.append(spilled_values)
     damaged: set[int] = set()
     for row in rows[header_index + 1 :]:
         if is_ocr_header_row(row):
@@ -623,9 +723,16 @@ def limit_image(image: np.ndarray) -> tuple[np.ndarray, bool]:
     return np.array(resized), True
 
 
+def header_quality(frame: pd.DataFrame) -> int:
+    labels = sum(1 for name in frame.columns if is_header_label(str(name)))
+    junk = len(frame.columns) - labels
+    return labels * 10 - junk * 8 + min(len(frame.index), 40)
+
+
 def needs_ocr_retry(frame: pd.DataFrame) -> bool:
-    columns = len(frame.columns)
-    return len(frame.index) < 3 or columns < 8 or columns > 18
+    labels = sum(1 for name in frame.columns if is_header_label(str(name)))
+    junk = len(frame.columns) - labels
+    return len(frame.index) < 3 or labels < 8 or junk > 0
 
 
 def largest_embedded_image(doc: fitz.Document, page: fitz.Page) -> np.ndarray | None:
@@ -695,7 +802,10 @@ def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path) -> dict[str, ob
     for page_index in range(page_limit):
         log(f"page {page_index + 1}/{page_limit}")
         image = page_to_rgb(doc, doc[page_index])
+        full_width = image.shape[1]
         image, shrunk = limit_image(image)
+        scale = image.shape[1] / max(full_width, 1)
+        gap = max(6.0, ROW_GAP * scale)
         if shrunk:
             warnings.append(f"第 {page_index + 1} 页图片过高，已缩小后再识别。")
         log(f"  size={image.shape[1]}x{image.shape[0]}")
@@ -707,22 +817,23 @@ def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path) -> dict[str, ob
         frame = None
         notes: list[str] = []
         try:
-            boxes = ocr_image(engine, image, on_strip)
-            frame, notes = page_to_frame(image, boxes)
-            if needs_ocr_retry(frame):
-                frame = None
+            boxes = ocr_image(engine, image, on_strip, gap)
+            frame, notes = page_to_frame(image, boxes, gap)
         except RuntimeError:
             frame = None
-        if frame is None:
+        if frame is None or needs_ocr_retry(frame):
             report(min(99, 12 + 80 * (page_index + 0.5) / max(page_limit, 1)), "表头不完整，正在再识别一次")
             if fallback is None:
                 fallback = rapid_ocr(params={"Global.log_level": "error", "Det.unclip_ratio": 1.05})
             try:
-                boxes = ocr_image(fallback, image, on_strip)
-                frame, notes = page_to_frame(image, boxes)
+                boxes = ocr_image(fallback, image, on_strip, gap)
+                second, second_notes = page_to_frame(image, boxes, gap)
+                if frame is None or header_quality(second) > header_quality(frame):
+                    frame, notes = second, second_notes
             except RuntimeError as exc:
-                warnings.append(f"第 {page_index + 1} 页：{exc}")
-                continue
+                if frame is None:
+                    warnings.append(f"第 {page_index + 1} 页：{exc}")
+                    continue
         name = sheet_name_from_notes(notes, page_index)
         frames.append((name, frame))
         meta.append((f"第{page_index + 1}页", " / ".join(notes)[:500]))

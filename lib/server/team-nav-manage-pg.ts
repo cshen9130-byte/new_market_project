@@ -3,7 +3,9 @@ import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import {
   loadEmailNavManagePoints,
   loadEmailNavManageRows,
-  mergeNavSeriesWithEmail,
+  loadPrivateFundLegacyNavRows,
+  mergeManagedTeamPointsWithLegacy,
+  dropManualSeriesDisjointFromCustodian,
   preferCustodianEmailOverUnitOnlyManual,
   type EmailNavPoint,
   type LegacyNavRow,
@@ -711,7 +713,11 @@ export async function loadManagedProductEmailPoints(params: {
     loadManualTeamNavRows(params.beian_hao, nav_type),
   ])
 
-  const manualForChart = preferCustodianEmailOverUnitOnlyManual(manual, emailPoints)
+  const manualAligned = preferCustodianEmailOverUnitOnlyManual(manual, emailPoints)
+  // pre_fee only. 虚拟净值 is allowed to sit far from the custodian 单位净值.
+  const manualForChart = nav_type === "pre_fee"
+    ? dropManualSeriesDisjointFromCustodian(manualAligned, emailPoints)
+    : manualAligned
   const manualDates = new Set(manualForChart.map((row) => row.nav_date))
   // Manual upload owns its [min, max] window so mid-week email scraps cannot
   // intercalate between weekly rows and sawtooth the 复权 chart. Email may still
@@ -737,7 +743,10 @@ export async function loadManagedProductEmailPoints(params: {
   )
 }
 
-/** Team / manual NAV stream for 在管产品 — avoids corrupt legacy type6 rows. */
+/**
+ * Team / manual NAV stream for 在管产品.
+ * 火富牛 (not type6) is passed in so a real 累计 above 2× survives; type6 stays out.
+ */
 export async function loadManagedProductNavSeries(params: {
   beian_hao: string
   product_name: string
@@ -746,7 +755,13 @@ export async function loadManagedProductNavSeries(params: {
   extraNames?: Array<string | null | undefined>
 }): Promise<LegacyNavRow[]> {
   const points = await loadManagedProductEmailPoints(params)
-  return mergeNavSeriesWithEmail([], points, {
+  const legacy = await loadPrivateFundLegacyNavRows(
+    params.beian_hao,
+    params.product_name,
+    params.short_name ?? "",
+    { excludeType6: true },
+  )
+  return mergeManagedTeamPointsWithLegacy(legacy, points, {
     beian_hao: params.beian_hao,
     product_name: params.product_name,
     short_name: params.short_name ?? null,

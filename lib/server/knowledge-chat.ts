@@ -1715,6 +1715,22 @@ export async function askKnowledgeBaseQuestion(input: {
 }) {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
+  const { answerSpreadsheetRank, isSheetRankQuestion } = await import("@/lib/server/spreadsheet-rank")
+  if (isSheetRankQuestion(question)) {
+    const ranked = await answerSpreadsheetRank(question)
+    if (ranked) {
+      return {
+        answer: ranked.answer,
+        sources: ranked.sources,
+        indexedDocuments: ranked.sources.length,
+        indexedChunks: 0,
+        model: ranked.model,
+        citations: ranked.citations,
+        citations_grounded: ranked.citations_grounded,
+        ranking: ranked.ranking,
+      }
+    }
+  }
   const cell = parseTableCellQuestion(question)
   const ctx = await buildRetrievalContext(input)
   if (cell && ctx.cellEmpty) {
@@ -1843,6 +1859,16 @@ export async function* streamKnowledgeBaseAnswer(input: {
   if (!question) {
     yield { type: "done", sources: [], indexedDocuments: 0, indexedChunks: 0, model: selectModelForQuestion(input.modelMode ?? "auto", 0) }
     return
+  }
+  const { answerSpreadsheetRank, isSheetRankQuestion } = await import("@/lib/server/spreadsheet-rank")
+  if (isSheetRankQuestion(question)) {
+    const ranked = await answerSpreadsheetRank(question)
+    if (ranked) {
+      yield { type: "phase", phase: "generating" }
+      yield { type: "text", delta: ranked.answer, modelId: ranked.model }
+      yield { type: "done", sources: ranked.sources, indexedDocuments: ranked.sources.length, indexedChunks: 0, model: ranked.model }
+      return
+    }
   }
   yield { type: "phase", phase: "searching" }
   const ctx = await buildRetrievalContext(input)
