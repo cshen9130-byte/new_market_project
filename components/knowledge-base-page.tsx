@@ -3332,6 +3332,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       .filter((line) => !/^(来源|source|参考文献)\s*[：:]/i.test(line))
 
     const cleaned = cleanedLines.join("\n").trim()
+      .replace(/(?:^|\n+)\s*暂无数据[。.]?\s*$/u, "")
+      .replace(/[。；;]\s*暂无数据[。.]?\s*$/u, "")
+      .trim()
     if (!cleaned) return "暂无数据"
 
     // Only collapse to 暂无数据 when the ENTIRE cleaned output is a no-data phrase
@@ -3372,9 +3375,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           : rowMode === "options" && optionsList.length > 0
             ? `输出要求：只能从以下选项中选一个最符合的输出：${optionsList.map((o) => `「${o}」`).join("、")}。只输出选项本身，不加任何解释。如果无法判断则输出「未知」。`
             : "输出要求：仅输出单元格内容本身，不加开场白，不加来源脚注，1-4句或要点列表。"
-        const q = title
-          ? `你正在填写「${title}」比较表中的一个单元格。列（对象）：「${colName}」，行（维度）：「${rowName}」。请尽力从知识库找到相关信息。搜索时可用同义词/缩写/相关概念扩展（如"打板"联想"涨停""强势股""竞价""封板"等）。无直接字面匹配时从相关内容推断并注明"（推测）"。完全无任何线索时才输出"暂无数据"。${lengthInstruction}`
-          : `请从知识库找「${colName}」在「${rowName}」维度的信息。可用同义词/相关概念扩展；无直接信息时推断并注明"（推测）"；完全无线索才输出"暂无数据"。${lengthInstruction}`
+        const rowHint = /基金经理|投资经理/.test(rowName)
+          ? "只填负责投资的人，不要填运营、技术或市场负责人。"
+          : /代表产品|产品名称/.test(rowName)
+            ? "只写产品名称，不要把策略标题当成产品。"
+            : ""
+        const q = `填写「${title || "比较表"}」。列：「${colName}」，行：「${rowName}」。只采用出现了「${colName}」的段落。没有出现「${colName}」则只写「暂无数据」。不要用其他产品的业绩或人名推断。${rowHint}${lengthInstruction}`
 
         const cellAbort = new AbortController()
         const timeoutId = setTimeout(() => cellAbort.abort("timeout"), 60000)
@@ -3385,12 +3391,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             signal: cellAbort.signal,
             body: JSON.stringify({
               question: q,
-              folderPath: chatScopeFolderPath,
-              filePath: chatScopeFilePath,
+              folderPath: null,
+              filePath: null,
               useBm25: true,
               useGraphRag: false,
               stream: true,
-              modelMode: mode === "deep" ? "plus" : "turbo",
+              modelMode: "plus",
               deepSearch: mode === "deep",
               thinkingSearch: false,
             }),
@@ -3435,7 +3441,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
           const normalized = normalizeTableCellValue(fullContent)
           setTableFillData((prev) => ({ ...prev, [cellKey]: normalized || "暂无数据" }))
-          if (sourcesForCell.length > 0) {
+          if (normalized !== "暂无数据" && sourcesForCell.length > 0) {
             setTableFillColumnSources((prev) => {
               const key = String(colIdx)
               const existing = prev[key] ?? []

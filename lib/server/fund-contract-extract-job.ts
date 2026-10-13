@@ -1,3 +1,4 @@
+import { createHash } from "crypto"
 import fs from "fs"
 import path from "path"
 import { execFile } from "child_process"
@@ -17,6 +18,7 @@ import {
   claimNextElementExtractJob,
   countQueuedElementExtractJobs,
   createElementExtractJobFromBuffer,
+  findLiveElementExtractDuplicate,
   getElementExtractJobById,
   normalizeExtractedElementsPatch,
   listAppliedElementExtractJobs,
@@ -676,6 +678,23 @@ export async function enqueueOrphanContractMaterialJobs(): Promise<number> {
     const file = await readFundContractMaterialFile(material.id)
     if (!file) continue
     try {
+      const hash = createHash("sha256").update(file.buffer).digest("hex").slice(0, 16)
+      const existing = await findLiveElementExtractDuplicate({
+        contentHash: hash,
+        originalFilename: material.original_filename,
+        fileSize: file.buffer.length,
+      })
+      if (existing) {
+        if (!existing.contract_material_id) {
+          await query(
+            `UPDATE ops_element_extract_jobs
+             SET contract_material_id = $2
+             WHERE id = $1 AND contract_material_id IS NULL`,
+            [existing.id, material.id],
+          )
+        }
+        continue
+      }
       await createElementExtractJobFromBuffer({
         buffer: file.buffer,
         originalFilename: material.original_filename,
@@ -683,6 +702,7 @@ export async function enqueueOrphanContractMaterialJobs(): Promise<number> {
         beian_hao: material.beian_hao,
         product_name: material.title || null,
         contract_material_id: material.id,
+        contentHash: hash,
       })
       created += 1
     } catch (err) {

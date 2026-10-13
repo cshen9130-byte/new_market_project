@@ -6,6 +6,7 @@ import {
   getFundInfo,
   getFundMultiPrice,
   getFundPrice,
+  getFundPriceBulk,
   getFundView,
   searchFunds,
 } from "@/lib/server/fund-data-api"
@@ -20,7 +21,7 @@ export type FundDataMcpTool = {
 export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
   {
     name: "fund_search",
-    description: "按备案号、产品名称或管理人名称搜索私募基金与管理人。名称未知时先用这个。",
+    description: "按备案号、产品名称或管理人名称搜索私募基金与管理人。名称未知时先用这个。份额、A类/A类份额、私募基金/私募证券投资基金视为同一产品族，结果含 price_reg_code、parent_reg_code、share_class，并带上母基金。测试产品不返回。",
     inputSchema: {
       type: "object",
       properties: {
@@ -32,7 +33,7 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
   },
   {
     name: "fund_info",
-    description: "查询单只私募基金基本信息（名称、管理人、策略、申赎要素、最新净值）。",
+    description: "查询单只私募基金基本信息（名称、管理人、策略、申赎要素、最新净值）。返回 price_reg_code（/price 接受的代码）、parent_reg_code、share_class。份额代码不会 404。",
     inputSchema: {
       type: "object",
       properties: {
@@ -43,7 +44,7 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
   },
   {
     name: "fund_price",
-    description: "查询单只基金净值时间序列。",
+    description: "查询单只基金净值时间序列。份额代码会落到母基金序列，并返回 series_reg_code。price_change 是百分比（0.30 表示 0.30%），与 ret_* 相同；全序列第一天为 null，之后持平为 0。单次最多 5000 行，升序截断时看 next_start_date。",
     inputSchema: {
       type: "object",
       properties: {
@@ -61,7 +62,7 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
   },
   {
     name: "fund_multi_price",
-    description: "一次查询最多 40 只基金在指定日期（或不传则最新）的净值。",
+    description: "一次查询最多 40 只基金在指定日期（或不传则最新）的净值。price_change 是百分比。整段历史用 fund_price_bulk。",
     inputSchema: {
       type: "object",
       properties: {
@@ -69,6 +70,21 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
         date: { type: "string", description: "YYYY-MM-DD；不传为最新净值" },
         order: { type: "string", description: "1=升序，0=降序（默认）" },
         order_by: { type: "string", description: "nav|price_date|cumulative_nav|price_change" },
+      },
+      required: ["reg_code"],
+    },
+  },
+  {
+    name: "fund_price_bulk",
+    description: "按备案号列表导出历史净值。适合跟踪池。每只返回 points，以及 price_reg_code、series_reg_code、parent_reg_code、share_class。某只满 5000 行时 truncated 为 true，next_cursor 停在该只并用 next_start_date 续取。找不到的代码在该只上 error_code 为 2，整批仍成功。测试产品视为找不到。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reg_code: { type: "string", description: "逗号或空白分隔的备案号。跟踪池整本导出用这个" },
+        start_date: { type: "string", description: "YYYY-MM-DD，含当天" },
+        end_date: { type: "string", description: "YYYY-MM-DD，含当天" },
+        cursor: { type: "string", description: "上一页的 next_cursor。形如 12 或 12@2024-03-01" },
+        batch: { type: "integer", description: "每页基金数，默认 10，最大 20" },
       },
       required: ["reg_code"],
     },
@@ -174,6 +190,19 @@ export async function callFundDataTool(
         order: str(args, "order"),
         order_by: str(args, "order_by"),
       })
+    case "fund_price_bulk": {
+      const listed = args.reg_codes
+      const joined = Array.isArray(listed)
+        ? listed.map((code) => String(code)).join(",")
+        : str(args, "reg_code") || str(args, "reg_codes") || ""
+      return getFundPriceBulk({
+        reg_code: joined,
+        start_date: str(args, "start_date"),
+        end_date: str(args, "end_date"),
+        cursor: str(args, "cursor"),
+        batch: str(args, "batch"),
+      })
+    }
     case "fund_advanced_list":
       return getFundAdvancedList({
         strategy_one: str(args, "strategy_one"),

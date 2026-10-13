@@ -455,6 +455,41 @@ export async function pgVectorSearch(
   }))
 }
 
+/** File paths whose path contains a person or title anchor. Scope '' searches the whole library. */
+export async function pgFindSourcesByAnchors(scope: string, anchors: string[], limit = 24): Promise<string[]> {
+  const patterns = anchors
+    .map((anchor) => anchor.trim().replace(/[\\%_]/g, ""))
+    .filter((anchor) => anchor.length >= 2)
+    .slice(0, 8)
+    .map((anchor) => `%${anchor}%`)
+  if (patterns.length === 0) return []
+  await pgEnsureSchema()
+  const likes = patterns.map((_, i) => `source ILIKE $${i + 1}`).join(" OR ")
+  const isRoot = scope === ""
+  const rows = await dbQuery<{ source: string }>(
+    isRoot
+      ? `SELECT DISTINCT source FROM kb_chunks WHERE ${likes} LIMIT $${patterns.length + 1}`
+      : `SELECT DISTINCT source FROM kb_chunks
+          WHERE (${likes})
+            AND (scope = $${patterns.length + 1} OR source LIKE $${patterns.length + 2} ESCAPE '\\')
+          LIMIT $${patterns.length + 3}`,
+    isRoot
+      ? [...patterns, limit]
+      : [...patterns, scope, `${escapeSourcePrefix(scope)}/%`, limit],
+  )
+  return rows.map((row) => row.source)
+}
+
+/** Chunk texts for one file, in index order, for neighbor expansion. */
+export async function pgLoadChunkTextsForSource(source: string): Promise<string[]> {
+  await pgEnsureSchema()
+  const rows = await dbQuery<{ content: string }>(
+    `SELECT content FROM kb_chunks WHERE source = $1 ORDER BY id`,
+    [source],
+  )
+  return rows.map((row) => row.content)
+}
+
 /** Return index metadata for a scope without loading any vector data.
  * When scope is '' (root), aggregates stats across ALL scopes. */
 export async function pgGetIndexInfo(scope: string): Promise<{

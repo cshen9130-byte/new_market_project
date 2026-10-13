@@ -2,7 +2,7 @@ import { Document } from "@langchain/core/documents"
 import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai"
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters"
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory"
-import { collectKnowledgeBaseDocuments, getKnowledgeBaseFile, readFileDocumentText, normalizeKnowledgeBasePath, listKnowledgeBaseIndexableFiles, probeKnowledgeBaseChatExtract, knowledgeBaseChatExtractReasonLabel } from "@/lib/server/knowledge-base"
+import { collectKnowledgeBaseDocuments, getKnowledgeBaseFile, readFileDocumentText, readKnowledgeFilePages, normalizeKnowledgeBasePath, listKnowledgeBaseIndexableFiles, probeKnowledgeBaseChatExtract, knowledgeBaseChatExtractReasonLabel } from "@/lib/server/knowledge-base"
 import {
   type FileFingerprint,
   type MemoryVectorRow,
@@ -28,6 +28,8 @@ import {
   pgDeleteScopeChunks,
   pgUpsertFileChunks,
   pgVectorSearch,
+  pgFindSourcesByAnchors,
+  pgLoadChunkTextsForSource,
   pgGetIndexInfo,
   pgLoadBm25Index,
   pgSaveBm25Index,
@@ -39,6 +41,28 @@ import {
   pgSaveLLMEntityEntries,
   pgDeleteLLMEntityCache,
 } from "@/lib/server/knowledge-pg"
+import {
+  KB_FULL_READ_FILES,
+  KB_GROUNDED_RULE,
+  KB_IDENTITY_RULE,
+  KB_SHORT_FILE_CHARS,
+  assembleContext,
+  buildFileBody,
+  extractQueryAnchors,
+  cellSourcesFromCitations,
+  namesColumn,
+  quoteNamingColumn,
+  parseGroundedAnswer,
+  parseTableCellQuestion,
+  rankSources,
+  snippetsToHits,
+  stripTrailingNoData,
+  stripUnstatedIdentityAssumptions,
+  tableCellInstruction,
+  type KbHit,
+  type KbSearchHit,
+  type KnowledgePage,
+} from "@/lib/server/knowledge-retrieval"
 
 type KnowledgeBaseIndexCacheEntry = {
   signature: string
@@ -331,11 +355,11 @@ export function selectModelForQuestion(mode: KbModelMode, indexedChunks = 0): st
   return MODEL_IDS.plus
 }
 
-function createChatModel(modelId: string) {
+function createChatModel(modelId: string, temperature = 0.2) {
   return new ChatOpenAI({
     apiKey: getDashScopeApiKey(),
     model: modelId,
-    temperature: 0.2,
+    temperature,
     streaming: true,
     configuration: {
       baseURL: getDashScopeBaseUrl(),
@@ -1211,10 +1235,10 @@ function bm25RankChunks(
   }
 
   scored.sort((a, b) => b.score - a.score)
-  return scored.slice(0, topK).map(({ idx }) =>
+  return scored.slice(0, topK).map(({ idx, score }) =>
     new Document({
       pageContent: String(rows[idx].content || ""),
-      metadata: rows[idx].metadata || {},
+      metadata: { ...(rows[idx].metadata || {}), score, channel: "bm25" },
     }),
   )
 }
@@ -1258,6 +1282,58 @@ type RetrievalContext = {
   sources: string[]
   indexedDocuments: number
   indexedChunks: number
+  contextText: string
+  passages: KbSearchHit[]
+  pageIndex: Record<string, KnowledgePage[]>
+  /** Table cell whose retrieved text never names the column. Do not call the model. */
+  cellEmpty?: boolean
+}
+
+const FULL_READ_BYTES = 8 * 1024 * 1024
+
+function kbSystem(base: string, grounded?: boolean) {
+  return `${base}\n${KB_IDENTITY_RULE}${grounded ? `\n${KB_GROUNDED_RULE}` : ""}`
+}
+
+function docToHit(doc: Document): KbHit | null {
+  const source = String(doc.metadata?.source || "")
+  if (!source) return null
+  const channel = doc.metadata?.channel === "bm25" ? "bm25" : "vector"
+  return {
+    source,
+    content: doc.pageContent,
+    score: Number(doc.metadata?.score ?? 0) || 0,
+    channel,
+  }
+}
+
+async function loadRankedFile(source: string, rows: MemoryVectorRow[]) {
+  let fullText = ""
+  let pages: KnowledgePage[] = []
+  try {
+    const file = await getKnowledgeBaseFile(source)
+    if (file.size <= FULL_READ_BYTES) {
+      const read = await readKnowledgeFilePages(file.absolutePath, file.extension)
+      fullText = read.text
+      pages = read.pages
+    }
+  } catch {
+    fullText = ""
+  }
+  let chunks: string[] = []
+  if (!fullText || fullText.length > KB_SHORT_FILE_CHARS) {
+    chunks = rows
+      .filter((row) => String(row.metadata?.source || "") === source)
+      .map((row) => String(row.content || ""))
+    if (chunks.length === 0) {
+      try {
+        chunks = await pgLoadChunkTextsForSource(source)
+      } catch {
+        chunks = []
+      }
+    }
+  }
+  return { fullText, pages, chunks }
 }
 
 const MAX_HISTORY_TURNS = 12
@@ -1344,7 +1420,10 @@ async function pgVectorSearchDocs(
   try {
     const queryVec = await embeddingsModel.embedQuery(question)
     const rows = await pgVectorSearch(scope, queryVec, topK)
-    return rows.map((r) => new Document({ pageContent: r.content, metadata: r.metadata }))
+    return rows.map((r) => new Document({
+      pageContent: r.content,
+      metadata: { ...(r.metadata || {}), score: r.score, channel: "vector" },
+    }))
   } catch {
     return []
   }
@@ -1355,6 +1434,7 @@ async function buildMultiFileRetrievalContext(input: {
   filePaths: string[]
   inlineDocuments?: Array<{ name: string; text: string }>
   history?: KbChatHistoryTurn[]
+  grounded?: boolean
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
   const history = normalizeChatHistory(input.history)
@@ -1388,9 +1468,12 @@ async function buildMultiFileRetrievalContext(input: {
   }
 
   const scopeLabel = `侧栏 ${sources.length} 个文件`
-  const systemContent = parts.length > 0
-    ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。资料来自用户侧栏暂存的多个文件。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件。"
-    : "你是市场研究助手。侧栏文件内容为空或暂不支持提取文字。请告知用户无法解读这些文件内容。回答使用中文。"
+  const systemContent = kbSystem(
+    parts.length > 0
+      ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。资料来自用户侧栏暂存的多个文件。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件。"
+      : "你是市场研究助手。侧栏文件内容为空或暂不支持提取文字。请告知用户无法解读这些文件内容。回答使用中文。",
+    input.grounded,
+  )
   const userContent = parts.length > 0
     ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${combined}`
     : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`
@@ -1400,6 +1483,9 @@ async function buildMultiFileRetrievalContext(input: {
     sources,
     indexedDocuments: sources.length,
     indexedChunks: sources.length,
+    contextText: combined,
+    passages: [],
+    pageIndex: {},
   }
 }
 
@@ -1414,60 +1500,76 @@ async function buildRetrievalContext(input: {
   useGraphRag?: boolean
   deepSearch?: boolean
   thinkingSearch?: boolean
+  grounded?: boolean
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
   const history = normalizeChatHistory(input.history)
   const retrievalQuestion = buildRetrievalQuestion(question, history)
   const enableBm25 = input.useBm25 !== false
   const enableGraphRag = input.useGraphRag === true
-  const topK = input.thinkingSearch ? 40 : input.deepSearch ? 20 : 4
-  const matchCap = input.thinkingSearch ? 60 : input.deepSearch ? 30 : 8
+  const topK = input.thinkingSearch ? 40 : input.deepSearch ? 20 : 8
+  const matchCap = input.thinkingSearch ? 60 : input.deepSearch ? 30 : 16
 
   const filePaths = (input.filePaths ?? []).map((p) => String(p).trim()).filter(Boolean)
   const inlineDocuments = (input.inlineDocuments ?? []).filter((doc) => doc.name && doc.text?.trim())
   if (filePaths.length > 0 || inlineDocuments.length > 0) {
-    return buildMultiFileRetrievalContext({ question, filePaths, inlineDocuments, history })
+    return buildMultiFileRetrievalContext({ question, filePaths, inlineDocuments, history, grounded: input.grounded })
   }
 
   // ── Single-file mode ──
   if (input.filePath) {
     const file = await getKnowledgeBaseFile(input.filePath)
-    const text = await readFileDocumentText(file.absolutePath, file.extension)
+    const paged = input.grounded ? await readKnowledgeFilePages(file.absolutePath, file.extension) : null
+    const text = paged?.text ?? await readFileDocumentText(file.absolutePath, file.extension)
+    const pages = paged?.pages ?? (text ? [{ num: 1, text }] : [])
     const scopeLabel = file.relativePath
-    const systemContent = text
-      ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文。"
-      : "你是市场研究助手。该文档内容为空或暂不支持提取文字。请告知用户无法解读该文件内容。回答使用中文。"
+    const systemContent = kbSystem(
+      text
+        ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文。"
+        : "你是市场研究助手。该文档内容为空或暂不支持提取文字。请告知用户无法解读该文件内容。回答使用中文。",
+      input.grounded,
+    )
     const userContent = text
       ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${text}`
       : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`
+    const coverage = text.length <= KB_SHORT_FILE_CHARS ? "full" as const : "neighbors" as const
     return {
       messages: withConversationHistory(systemContent, history, userContent),
-      sources: [file.relativePath],
+      sources: text ? [file.relativePath] : [],
       indexedDocuments: 1,
       indexedChunks: 1,
+      contextText: text,
+      pageIndex: { [file.relativePath]: pages },
+      passages: text
+        ? snippetsToHits({ source: file.relativePath, score: 1, aliases: [], coverage, text, pages }, question)
+        : [],
     }
   }
 
   // ── Folder mode ──
   const folderPath = normalizeKnowledgeBasePath(input.folderPath)
   let index: KnowledgeBaseIndexCacheEntry | null = null
+  let memoryRows: MemoryVectorRow[] = []
   const matches: Document[] = []
 
   try {
     index = await getOrBuildVectorStore(folderPath, undefined, { queryOnly: true })
-    const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
-    const denseMatches = rows.length > 0
-      ? await index.vectorStore.similaritySearch(retrievalQuestion, topK)
+    memoryRows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
+    const denseMatches = memoryRows.length > 0
+      ? (await index.vectorStore.similaritySearchWithScore(retrievalQuestion, topK)).map(([doc, score]) => new Document({
+          pageContent: doc.pageContent,
+          metadata: { ...(doc.metadata || {}), score, channel: "vector" },
+        }))
       : await pgVectorSearchDocs(folderPath, retrievalQuestion, createIndexEmbeddingsModel(), topK)
     const useBm25 = enableBm25 && index.indexedChunks <= KB_QUERY_BM25_MAX_CHUNKS
-    const bm25Matches = useBm25 ? bm25RankChunks(retrievalQuestion, rows, index.bm25Index, topK) : []
+    const bm25Matches = useBm25 ? bm25RankChunks(retrievalQuestion, memoryRows, index.bm25Index, topK) : []
     const seedDocs = [...denseMatches, ...bm25Matches]
 
     // Collect seed chunk indices (positions in the rows array) for graph expansion
     const seedIndices: number[] = []
     if (enableGraphRag) {
       for (const doc of seedDocs) {
-        const idx = rows.findIndex(
+        const idx = memoryRows.findIndex(
           (r) => String(r.content || "") === doc.pageContent && String(r.metadata?.source || "") === String(doc.metadata?.source || ""),
         )
         if (idx !== -1) seedIndices.push(idx)
@@ -1477,7 +1579,7 @@ async function buildRetrievalContext(input: {
     const merged = [...seedDocs]
     // Graph RAG expansion: 1-hop traversal via shared entities
     if (enableGraphRag && seedIndices.length > 0) {
-      const graphExpanded = graphExpandContext(retrievalQuestion, rows, seedIndices, index.graphIndex, topK)
+      const graphExpanded = graphExpandContext(retrievalQuestion, memoryRows, seedIndices, index.graphIndex, topK)
       merged.push(...graphExpanded)
     }
 
@@ -1495,40 +1597,102 @@ async function buildRetrievalContext(input: {
     if (!msg.includes("没有可用于问答的文档")) throw classifyApiError(error)
   }
 
+  const cell = parseTableCellQuestion(question)
+  const pathAnchors = [...extractQueryAnchors(question)]
+  if (cell) pathAnchors.push(cell.column)
+  let pathSources: string[] = []
+  if (pathAnchors.length > 0) {
+    try {
+      pathSources = await pgFindSourcesByAnchors(folderPath || "", pathAnchors, 24)
+    } catch {
+      pathSources = []
+    }
+  }
+
+  const hits = matches.map(docToHit).filter((hit): hit is KbHit => Boolean(hit))
+  const ranked = rankSources(hits, question, pathSources).slice(0, KB_FULL_READ_FILES)
+  const pageIndex: Record<string, KnowledgePage[]> = {}
+  const parts: Array<{ source: string; text: string }> = []
+  const passages: KbSearchHit[] = []
+  for (const doc of ranked) {
+    const loaded = await loadRankedFile(doc.source, memoryRows)
+    const body = buildFileBody({ fullText: loaded.fullText, chunks: loaded.chunks, question })
+    if (!body.text.trim()) continue
+    pageIndex[doc.source] = loaded.pages
+    parts.push({ source: doc.source, text: body.text })
+    passages.push(...snippetsToHits({
+      source: doc.source,
+      score: doc.score,
+      aliases: doc.aliases,
+      coverage: body.coverage,
+      text: body.text,
+      pages: loaded.pages,
+    }, question))
+  }
+  if (!cell && parts.length === 0 && matches.length > 0) {
+    const bySource = new Map<string, string[]>()
+    for (const match of matches) {
+      const source = String(match.metadata?.source || "")
+      if (!source) continue
+      const list = bySource.get(source) || []
+      list.push(match.pageContent)
+      bySource.set(source, list)
+    }
+    for (const [source, chunks] of bySource) {
+      const body = buildFileBody({ fullText: "", chunks, question })
+      if (!body.text.trim()) continue
+      parts.push({ source, text: body.text })
+      passages.push(...snippetsToHits({
+        source,
+        score: 0,
+        aliases: [],
+        coverage: "neighbors",
+        text: body.text,
+        pages: [],
+      }, question))
+    }
+  }
+  let cellEmpty = false
+  if (cell) {
+    const named = parts.filter((part) => namesColumn(part.source, cell.column) || namesColumn(part.text, cell.column))
+    parts.length = 0
+    parts.push(...named)
+    const namedPaths = new Set(named.map((part) => part.source))
+    const namedPassages = passages.filter((hit) =>
+      namedPaths.has(hit.path) && (namesColumn(hit.path, cell.column) || namesColumn(hit.snippet, cell.column)),
+    )
+    passages.length = 0
+    passages.push(...namedPassages)
+    cellEmpty = named.length === 0
+  }
+  const assembled = assembleContext(parts)
   const hasGraphExpanded = matches.some((m) => m.metadata?.graphExpanded)
-  // qwen-max has a ~30720-token context window; Chinese ≈1 char/token.
-  // Reserve ~800 chars for system prompt + question prefix; cap context at 28000 chars.
-  const MAX_CONTEXT_CHARS = 28000
-  let contextRaw = matches
-    .map((m, i) => {
-      const tag = m.metadata?.graphExpanded ? "[图谱扩展]" : ""
-      return `资料 ${i + 1}${tag} (${String(m.metadata?.source || "未知来源")})\n${m.pageContent}`
-    })
-    .join("\n\n")
-  const context = contextRaw.length > MAX_CONTEXT_CHARS
-    ? contextRaw.slice(0, MAX_CONTEXT_CHARS) + "\n\n[…内容过长，已截断]"
-    : contextRaw
-
-  const sources = Array.from(
-    new Set(matches.map((m) => String(m.metadata?.source || "")).filter(Boolean)),
-  )
-
   const systemNote = enableGraphRag && hasGraphExpanded
     ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。部分资料来自知识图谱关联扩展（标注[图谱扩展]），请综合利用。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
     : "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
+  const cellRule = cell && !cellEmpty ? `\n${tableCellInstruction(cell.column, cell.row)}` : ""
 
-  const systemContent = matches.length > 0
-    ? systemNote
-    : "你是市场研究助手。当前本地知识库为空，因此本轮回答不引用本地资料。你可以直接回答用户的问题，但需要明确说明当前没有本地文档可供检索。回答使用中文。"
-  const userContent = matches.length > 0
-    ? `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n参考资料：\n${context}`
+  const systemContent = kbSystem(
+    cellEmpty
+      ? "没有资料出现该列名称。只回答「暂无数据」。不要用其他产品的内容填这一格。"
+      : assembled.sources.length > 0
+        ? systemNote + cellRule
+        : "你是市场研究助手。当前本地知识库为空，因此本轮回答不引用本地资料。你可以直接回答用户的问题，但需要明确说明当前没有本地文档可供检索。回答使用中文。",
+    input.grounded,
+  )
+  const userContent = assembled.sources.length > 0
+    ? `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n参考资料（标题括号内是文件路径；[第N页] 是页码）：\n${assembled.body}`
     : `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n当前知识库目录为空，请直接基于通用能力回答，并提醒用户尚未上传资料。`
 
   return {
     messages: withConversationHistory(systemContent, history, userContent),
-    sources,
+    sources: assembled.sources,
     indexedDocuments: index?.indexedDocuments ?? 0,
     indexedChunks: index?.indexedChunks ?? 0,
+    contextText: assembled.body,
+    passages,
+    pageIndex,
+    cellEmpty,
   }
 }
 
@@ -1544,20 +1708,111 @@ export async function askKnowledgeBaseQuestion(input: {
   modelMode?: KbModelMode
   deepSearch?: boolean
   thinkingSearch?: boolean
+  /** Require quotes, paths, and pages. Drops sources the answer does not quote. */
+  grounded?: boolean
+  /** Include retrieved snippets, scores, and pages. */
+  includePassages?: boolean
 }) {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
+  const cell = parseTableCellQuestion(question)
   const ctx = await buildRetrievalContext(input)
-  const modelId = selectModelForQuestion(input.modelMode ?? "auto", ctx.indexedChunks)
-  const model = createChatModel(modelId)
+  if (cell && ctx.cellEmpty) {
+    return {
+      answer: "暂无数据",
+      value: "暂无数据",
+      sources: [] as string[],
+      cell_sources: [] as Array<{ path: string; quote: string }>,
+      indexedDocuments: ctx.indexedDocuments,
+      indexedChunks: ctx.indexedChunks,
+      model: selectModelForQuestion("plus", ctx.indexedChunks),
+      citations: [] as ReturnType<typeof parseGroundedAnswer>["citations"],
+      citations_grounded: true,
+    }
+  }
+  const requested = input.modelMode ?? "auto"
+  const mode = input.grounded && requested === "auto" ? "plus" : requested
+  const modelId = selectModelForQuestion(mode, ctx.indexedChunks)
+  const model = createChatModel(modelId, input.grounded ? 0 : 0.2)
   const response = await model.invoke(ctx.messages)
+  let answer = stringifyModelContent(response.content)
+  let sources = ctx.sources
+  let citations: ReturnType<typeof parseGroundedAnswer>["citations"] | undefined
+  let citationsGrounded: boolean | undefined
+  if (input.grounded) {
+    const parsed = parseGroundedAnswer(answer, ctx.contextText, ctx.sources, ctx.pageIndex)
+    answer = parsed.answer
+    sources = parsed.sources
+    citations = parsed.citations
+    citationsGrounded = parsed.citationsGrounded
+  } else {
+    answer = stripUnstatedIdentityAssumptions(answer, ctx.contextText)
+  }
+  let cellSources: Array<{ path: string; quote: string }> | undefined
+  if (cell) {
+    answer = stripTrailingNoData(answer)
+    cellSources = cellSourcesFromCitations(citations ?? [], cell.column)
+    if (answer === "暂无数据") {
+      sources = []
+      citations = []
+      citationsGrounded = true
+      cellSources = []
+    } else if (cellSources.length === 0) {
+      const quote = quoteNamingColumn(ctx.contextText, cell.column)
+      const at = quote ? ctx.contextText.indexOf(cell.column) : -1
+      let path = ""
+      let best = -1
+      for (const candidate of ctx.sources) {
+        const mark = at >= 0 ? ctx.contextText.lastIndexOf(candidate, at) : -1
+        if (mark > best) {
+          best = mark
+          path = candidate
+        }
+      }
+      if (!path) path = ctx.sources.find((source) => namesColumn(source, cell.column)) || ""
+      if (quote && path) {
+        cellSources = [{ path, quote }]
+        citations = [{ n: 1, quote, path, page: null }]
+        sources = [path]
+        citationsGrounded = true
+      }
+    } else if (citations) {
+      citations = citations.filter((item) => namesColumn(item.quote, cell.column))
+      sources = cellSources.map((item) => item.path)
+      citationsGrounded = cellSources.length > 0
+    }
+  }
   return {
-    answer: stringifyModelContent(response.content),
-    sources: ctx.sources,
+    answer,
+    sources,
     indexedDocuments: ctx.indexedDocuments,
     indexedChunks: ctx.indexedChunks,
     tokenUsage: extractTokenUsage(response),
     model: modelId,
+    ...(cell ? { value: answer, cell_sources: cellSources ?? [] } : {}),
+    ...(input.grounded ? { citations, citations_grounded: citationsGrounded } : {}),
+    ...(input.includePassages ? { passages: ctx.passages } : {}),
+  }
+}
+
+/** Ranked snippets before generation. Does not call the chat model. */
+export async function searchKnowledgeBase(input: {
+  question: string
+  folderPath?: string | null
+  filePath?: string | null
+  limit?: number
+}) {
+  const question = input.question.trim()
+  if (!question) throw new Error("请输入问题")
+  const ctx = await buildRetrievalContext({
+    question,
+    folderPath: input.folderPath,
+    filePath: input.filePath,
+  })
+  const limit = Math.min(20, Math.max(1, input.limit ?? 8))
+  return {
+    anchors: extractQueryAnchors(question),
+    hits: ctx.passages.slice(0, limit),
   }
 }
 
@@ -1591,6 +1846,13 @@ export async function* streamKnowledgeBaseAnswer(input: {
   }
   yield { type: "phase", phase: "searching" }
   const ctx = await buildRetrievalContext(input)
+  if (ctx.cellEmpty) {
+    const modelId = selectModelForQuestion(input.modelMode ?? "auto", ctx.indexedChunks)
+    yield { type: "phase", phase: "generating" }
+    yield { type: "text", delta: "暂无数据", modelId }
+    yield { type: "done", sources: [], indexedDocuments: ctx.indexedDocuments, indexedChunks: ctx.indexedChunks, model: modelId }
+    return
+  }
   yield { type: "phase", phase: "generating" }
   const modelId = selectModelForQuestion(input.modelMode ?? "auto", ctx.indexedChunks)
   const model = createChatModel(modelId)

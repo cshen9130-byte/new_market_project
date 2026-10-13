@@ -20,6 +20,13 @@ export type GlobalSearchManager = {
   manager_name: string
 }
 
+/** 有净值 first, then 无净值. A failed lookup stays after both so it is not treated as 无净值. */
+function navPresenceRank(hasNav: boolean | null): number {
+  if (hasNav === true) return 0
+  if (hasNav === false) return 1
+  return 2
+}
+
 async function searchManagers(q: string, limit = 8): Promise<GlobalSearchManager[]> {
   const like = `%${q}%`
   const prefix = `${q}%`
@@ -63,10 +70,13 @@ export async function GET(req: Request) {
 
   const parsedLimit = Number.parseInt(searchParams.get("limit") || "8", 10)
   const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 40) : 8
+  // Name search is capped at 40. Rank that pool by 有无净值, then keep the requested page size
+  // so 有净值 products are not dropped just because a 无净值 name ranked higher.
+  const productPool = 40
 
   try {
     const [products, managers] = await Promise.all([
-      searchPrivateFundProductsForFastPicker(q, limit).catch((err) => {
+      searchPrivateFundProductsForFastPicker(q, productPool).catch((err) => {
         console.error("[private-funds/global-search] products", err)
         return [] as Omit<GlobalSearchProduct, "has_nav">[]
       }),
@@ -77,7 +87,8 @@ export async function GET(req: Request) {
       ...row,
       has_nav: present ? present.has(row.beian_hao.trim().toUpperCase()) : null,
     }))
-    return NextResponse.json({ products: annotated, managers })
+    annotated.sort((a, b) => navPresenceRank(a.has_nav) - navPresenceRank(b.has_nav))
+    return NextResponse.json({ products: annotated.slice(0, limit), managers })
   } catch (err) {
     console.error("[private-funds/global-search]", err)
     return NextResponse.json({ error: "db_error" }, { status: 500 })

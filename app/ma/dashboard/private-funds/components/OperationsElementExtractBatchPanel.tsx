@@ -65,6 +65,8 @@ type ExtractJob = {
   error_message: string | null
   processed_at: string | null
   contract_material_id: number | null
+  duplicate_of_id?: number | null
+  duplicate_count?: number
 }
 
 type CoverageFilter = "all" | "missing_contract" | "has_contract" | "missing_beian" | "missing_elements"
@@ -183,6 +185,60 @@ function isAcceptedContractFile(file: File): boolean {
 
 function fileKey(file: File) {
   return `${file.name}::${file.size}::${file.lastModified}`
+}
+
+function uploadDuplicateKey(name: string, size: number) {
+  if (!name.trim() || !Number.isFinite(size) || size <= 0) return ""
+  return `${name.trim().toLowerCase()}::${size}`
+}
+
+function mergeIncomingExtractFiles(
+  current: File[],
+  incoming: File[],
+  jobs: ExtractJob[],
+): { next: File[]; notice: string | null } {
+  const seenNames = new Set(current.map((file) => file.name.trim().toLowerCase()).filter(Boolean))
+  const seenKeys = new Set(current.map((file) => uploadDuplicateKey(file.name, file.size)).filter(Boolean))
+  const existingNames = new Set(
+    jobs
+      .filter((job) => job.status !== "failed")
+      .map((job) => job.original_filename.trim().toLowerCase())
+      .filter(Boolean),
+  )
+  const next = [...current]
+  const skipped: string[] = []
+  let skippedExisting = 0
+  let skippedBatch = 0
+  for (const file of incoming) {
+    const name = file.name.trim().toLowerCase()
+    const key = uploadDuplicateKey(file.name, file.size)
+    const sameName = Boolean(name) && (seenNames.has(name) || existingNames.has(name))
+    const sameBytes = Boolean(key) && seenKeys.has(key)
+    if (sameName || sameBytes) {
+      if (existingNames.has(name) && !seenNames.has(name)) skippedExisting += 1
+      else skippedBatch += 1
+      if (skipped.length < 4) skipped.push(file.name)
+      continue
+    }
+    if (next.length >= MAX_FILES) break
+    if (name) seenNames.add(name)
+    if (key) seenKeys.add(key)
+    next.push(file)
+  }
+  const skippedCount = skippedExisting + skippedBatch
+  if (!skippedCount) return { next, notice: null }
+  const preview = skipped.join("、")
+  const tail = skippedCount > skipped.length ? ` 等 ${skippedCount} 个` : ""
+  const why =
+    skippedExisting > 0 && skippedBatch === 0
+      ? "与已有提取任务同名"
+      : skippedBatch > 0 && skippedExisting === 0
+        ? "本次选择了同名文件"
+        : "与已有任务或本次选择同名"
+  return {
+    next,
+    notice: `已自动忽略 ${skippedCount} 个重复文件（${why}）：${preview}${tail}`,
+  }
 }
 
 function emptyExtracted(): ExtractedFundElements {
@@ -349,10 +405,21 @@ function isUnregisteredPendingJob(job: ExtractJob) {
 }
 
 function jobRemark(job: ExtractJob) {
-  if (isUnregisteredPendingJob(job)) return "未备案临时产品，待协会同步后并入正式产品"
-  if ((job.error_message ?? "").startsWith("已并入正式产品")) return job.error_message ?? "—"
-  if (job.status === "applied") return `已写入 ${job.applied_fields?.length ?? 0} 个空缺字段`
-  return job.error_message || "—"
+  let base = "—"
+  if (isUnregisteredPendingJob(job)) base = "未备案临时产品，待协会同步后并入正式产品"
+  else if ((job.error_message ?? "").startsWith("已并入正式产品")) base = job.error_message ?? "—"
+  else if (job.status === "applied") base = `已写入 ${job.applied_fields?.length ?? 0} 个空缺字段`
+  else base = job.error_message || "—"
+
+  if (job.duplicate_of_id) {
+    const note = `重复文件，与任务 #${job.duplicate_of_id} 相同`
+    return base !== "—" ? `${note} · ${base}` : note
+  }
+  if ((job.duplicate_count ?? 0) > 0) {
+    const note = `另有 ${job.duplicate_count} 份重复文件，已保留本条`
+    return base !== "—" ? `${note} · ${base}` : note
+  }
+  return base
 }
 
 function statusClass(status: ExtractJobStatus) {
@@ -409,6 +476,7 @@ export function OperationsElementExtractBatchPanel() {
   const [isDragOver, setIsDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null)
 
   const [jobs, setJobs] = useState<ExtractJob[]>([])
   const [jobsTotal, setJobsTotal] = useState(0)
@@ -610,19 +678,13 @@ export function OperationsElementExtractBatchPanel() {
     } else {
       setUploadError(null)
     }
-    if (!accepted.length) return
-    setFiles((prev) => {
-      const seen = new Set(prev.map(fileKey))
-      const next = [...prev]
-      for (const file of accepted) {
-        const key = fileKey(file)
-        if (seen.has(key)) continue
-        if (next.length >= MAX_FILES) break
-        seen.add(key)
-        next.push(file)
-      }
-      return next
-    })
+    if (!accepted.length) {
+      setUploadNotice(null)
+      return
+    }
+    const merged = mergeIncomingExtractFiles(files, accepted, jobs)
+    setFiles(merged.next)
+    setUploadNotice(merged.notice)
   }
 
   async function handleUpload() {
@@ -632,6 +694,7 @@ export function OperationsElementExtractBatchPanel() {
     }
     setUploading(true)
     setUploadError(null)
+    setUploadNotice(null)
     try {
       const form = new FormData()
       for (const file of files) form.append("files", file)
@@ -645,6 +708,17 @@ export function OperationsElementExtractBatchPanel() {
       const failed = Array.isArray(json.errors) ? json.errors : []
       if (failed.length) {
         setUploadError(failed.map((row: { fileName: string; error: string }) => `${row.fileName}：${row.error}`).join("；"))
+      }
+      const dupes = Array.isArray(json.duplicates)
+        ? (json.duplicates as Array<{ fileName?: string }>)
+        : []
+      if (dupes.length) {
+        const preview = dupes
+          .slice(0, 4)
+          .map((row) => row.fileName || "未命名文件")
+          .join("、")
+        const tail = dupes.length > 4 ? ` 等 ${dupes.length} 个` : ""
+        setUploadNotice(`已跳过 ${dupes.length} 个重复文件（同名或内容相同）：${preview}${tail}`)
       }
       setFiles([])
       if (fileInputRef.current) fileInputRef.current.value = ""
@@ -1023,7 +1097,7 @@ export function OperationsElementExtractBatchPanel() {
             <PlusCircle className="h-10 w-10 text-muted-foreground/40 mb-2" strokeWidth={1} />
             <span className="text-sm text-foreground mb-1">将文件拖到此处，或点击上传（可多选）</span>
             <span className="text-xs text-muted-foreground">
-              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 20MB，最多 {MAX_FILES} 份。上传后后台提取并写入空缺要素。
+              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 20MB，最多 {MAX_FILES} 份。同名或内容相同的文件会自动识别为重复并跳过。上传后后台提取并写入空缺要素。
             </span>
             <input
               ref={fileInputRef}
@@ -1050,13 +1124,17 @@ export function OperationsElementExtractBatchPanel() {
             {files.length > 0 && (
               <button
                 type="button"
-                onClick={() => setFiles([])}
+                onClick={() => {
+                  setFiles([])
+                  setUploadNotice(null)
+                }}
                 disabled={uploading}
                 className="px-4 py-2 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-60"
               >
                 清除待上传文件
               </button>
             )}
+            {uploadNotice && <p className="text-sm text-amber-700">{uploadNotice}</p>}
             {uploadError && <p className="text-sm text-red-600">{uploadError}</p>}
           </div>
         </div>
@@ -1145,17 +1223,34 @@ export function OperationsElementExtractBatchPanel() {
                   className={activeJobId === job.id ? "cursor-pointer bg-red-50/40" : "cursor-pointer hover:bg-muted/20"}
                   onClick={() => selectJob(job.id)}
                 >
-                  <td className="px-3 py-2 truncate max-w-[240px]">
-                    <a
-                      href={jobFileUrl(job.id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-blue-600 hover:underline"
-                      title={`查看 ${job.original_filename}`}
-                    >
-                      {job.original_filename}
-                    </a>
+                  <td className="px-3 py-2 max-w-[280px]">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <a
+                        href={jobFileUrl(job.id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="truncate text-blue-600 hover:underline"
+                        title={`查看 ${job.original_filename}`}
+                      >
+                        {job.original_filename}
+                      </a>
+                      {job.duplicate_of_id ? (
+                        <span
+                          className="shrink-0 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800"
+                          title={`与任务 #${job.duplicate_of_id} 重复`}
+                        >
+                          重复
+                        </span>
+                      ) : (job.duplicate_count ?? 0) > 0 ? (
+                        <span
+                          className="shrink-0 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800"
+                          title={`另有 ${job.duplicate_count} 份相同文件`}
+                        >
+                          有重复
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="px-3 py-2">
                     {job.product_name || "—"}

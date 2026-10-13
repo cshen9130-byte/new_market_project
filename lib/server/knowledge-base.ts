@@ -1197,6 +1197,41 @@ async function readChatDocumentText(absolutePath: string, extension: string) {
 
 export { readChatDocumentText as readFileDocumentText }
 
+export type KnowledgeFilePage = { num: number; text: string }
+
+/** Read a knowledge file with page breaks kept, so answers can cite a page. */
+export async function readKnowledgeFilePages(absolutePath: string, extension: string): Promise<{
+  pages: KnowledgeFilePage[]
+  text: string
+}> {
+  if (extension === ".pdf") {
+    const buffer = await fs.readFile(absolutePath)
+    const parser = new PDFParse({ data: buffer, CanvasFactory })
+    try {
+      const parsed = await parser.getText()
+      const pages = (parsed.pages || [])
+        .map((page) => ({
+          num: page.num,
+          text: String(page.text || "").replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim(),
+        }))
+        .filter((page) => page.text)
+      if (pages.length === 0) {
+        const text = String(parsed.text || "").trim()
+        return { pages: text ? [{ num: 1, text }] : [], text }
+      }
+      return {
+        pages,
+        text: pages.map((page) => `[第${page.num}页]\n${page.text}`).join("\n\n"),
+      }
+    } finally {
+      await parser.destroy().catch(() => undefined)
+    }
+  }
+
+  const text = await readChatDocumentText(absolutePath, extension)
+  return { pages: text ? [{ num: 1, text }] : [], text }
+}
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")

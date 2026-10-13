@@ -43,6 +43,7 @@ export type ElementExtractJobRow = {
   original_filename: string
   storage_filename: string
   file_size: number
+  content_hash: string | null
   mime_type: string
   uploaded_by: string
   uploaded_at: string
@@ -59,7 +60,7 @@ export type ElementExtractJobRow = {
 }
 
 const JOB_SELECT_COLS = `
-  id, original_filename, storage_filename, file_size, mime_type, uploaded_by,
+  id, original_filename, storage_filename, file_size, content_hash, mime_type, uploaded_by,
   uploaded_at::text,
   status, beian_hao, product_name,
   extracted_json, matched_funds, text_preview, applied_fields,
@@ -76,6 +77,103 @@ function sanitizeFilename(name: string) {
   return name.replace(/[^\w\u4e00-\u9fff.\-()+（）\s]/g, "_").replace(/\s+/g, " ").trim() || "contract.pdf"
 }
 
+/** Last 16 hex chars of `{timestamp}_{sha256-16}.ext`. */
+export function contentHashFromExtractStorageFilename(storageFilename: string): string | null {
+  const match = String(storageFilename || "").trim().match(/_([0-9a-f]{16})(?:\.[^.]+)?$/i)
+  return match?.[1]?.toLowerCase() ?? null
+}
+
+const DUPLICATE_STATUS_RANK: Record<ExtractJobStatus, number> = {
+  applied: 0,
+  needs_review: 1,
+  extracting: 2,
+  queued: 3,
+  failed: 4,
+}
+
+export type ElementExtractDuplicateSource = {
+  id: number
+  contentHash: string | null
+  originalFilename: string
+  fileSize: number
+  status: ExtractJobStatus
+  uploadedAt: string
+}
+
+export type ElementExtractDuplicateMark = {
+  duplicateOfId: number | null
+  duplicateCount: number
+}
+
+/** Group jobs that share content hash or the same filename. */
+export function assignElementExtractDuplicateMarks(
+  rows: ElementExtractDuplicateSource[],
+): Map<number, ElementExtractDuplicateMark> {
+  const parent = new Map<number, number>()
+  const find = (id: number): number => {
+    let current = parent.get(id) ?? id
+    if (current !== id) {
+      current = find(current)
+      parent.set(id, current)
+    }
+    return current
+  }
+  const union = (a: number, b: number) => {
+    const pa = find(a)
+    const pb = find(b)
+    if (pa !== pb) parent.set(pa, pb)
+  }
+
+  for (const row of rows) parent.set(row.id, row.id)
+
+  const byHash = new Map<string, number>()
+  const byName = new Map<string, number>()
+  for (const row of rows) {
+    const hash = (row.contentHash || "").trim().toLowerCase()
+    if (/^[0-9a-f]{16}$/.test(hash)) {
+      const prev = byHash.get(hash)
+      if (prev != null) union(prev, row.id)
+      else byHash.set(hash, row.id)
+    }
+    const name = row.originalFilename.trim().toLowerCase()
+    if (name) {
+      const prev = byName.get(name)
+      if (prev != null) union(prev, row.id)
+      else byName.set(name, row.id)
+    }
+  }
+
+  const groups = new Map<number, ElementExtractDuplicateSource[]>()
+  for (const row of rows) {
+    const root = find(row.id)
+    const group = groups.get(root) ?? []
+    group.push(row)
+    groups.set(root, group)
+  }
+
+  const marks = new Map<number, ElementExtractDuplicateMark>()
+  for (const group of groups.values()) {
+    if (group.length < 2) {
+      const only = group[0]
+      if (only) marks.set(only.id, { duplicateOfId: null, duplicateCount: 0 })
+      continue
+    }
+    const canonical = [...group].sort((a, b) => {
+      const rank = DUPLICATE_STATUS_RANK[a.status] - DUPLICATE_STATUS_RANK[b.status]
+      if (rank !== 0) return rank
+      if (a.uploadedAt !== b.uploadedAt) return a.uploadedAt < b.uploadedAt ? -1 : 1
+      return a.id - b.id
+    })[0]
+    for (const row of group) {
+      marks.set(row.id, {
+        duplicateOfId: row.id === canonical.id ? null : canonical.id,
+        duplicateCount: row.id === canonical.id ? group.length - 1 : 0,
+      })
+    }
+  }
+  return marks
+}
+
 export async function ensureElementExtractJobsTable(): Promise<void> {
   if (!tableReady) {
     tableReady = (async () => {
@@ -85,6 +183,7 @@ export async function ensureElementExtractJobsTable(): Promise<void> {
           original_filename    TEXT NOT NULL,
           storage_filename     TEXT NOT NULL UNIQUE,
           file_size            BIGINT NOT NULL DEFAULT 0,
+          content_hash         VARCHAR(16),
           mime_type            TEXT NOT NULL DEFAULT 'application/octet-stream',
           uploaded_by          VARCHAR(255) NOT NULL DEFAULT '',
           uploaded_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -108,6 +207,24 @@ export async function ensureElementExtractJobsTable(): Promise<void> {
         CREATE INDEX IF NOT EXISTS idx_ops_element_extract_jobs_beian
           ON ops_element_extract_jobs (beian_hao)
       `)
+      await query(`
+        ALTER TABLE ops_element_extract_jobs
+          ADD COLUMN IF NOT EXISTS content_hash VARCHAR(16)
+      `)
+      await query(`
+        UPDATE ops_element_extract_jobs
+        SET content_hash = lower(right(split_part(storage_filename, '.', 1), 16))
+        WHERE content_hash IS NULL
+          AND right(split_part(storage_filename, '.', 1), 16) ~ '^[0-9a-fA-F]{16}$'
+      `)
+      await query(`
+        CREATE INDEX IF NOT EXISTS idx_ops_element_extract_jobs_content_hash
+          ON ops_element_extract_jobs (content_hash)
+      `)
+      await query(`
+        CREATE INDEX IF NOT EXISTS idx_ops_element_extract_jobs_name_size
+          ON ops_element_extract_jobs (original_filename, file_size)
+      `)
     })().catch((err) => {
       tableReady = null
       throw err
@@ -119,6 +236,10 @@ export async function ensureElementExtractJobsTable(): Promise<void> {
 function mapJobRow(row: ElementExtractJobRow): ElementExtractJobRow {
   return {
     ...row,
+    file_size: Number(row.file_size) || 0,
+    content_hash:
+      (row.content_hash || "").trim().toLowerCase() ||
+      contentHashFromExtractStorageFilename(row.storage_filename),
     extracted_json: (row.extracted_json ?? null) as ExtractedFundElements | null,
     matched_funds: Array.isArray(row.matched_funds) ? row.matched_funds : null,
     applied_fields: Array.isArray(row.applied_fields)
@@ -168,6 +289,7 @@ export async function createElementExtractJobFromBuffer(input: {
   beian_hao?: string | null
   product_name?: string | null
   contract_material_id?: number | null
+  contentHash?: string | null
 }): Promise<ElementExtractJobRow> {
   await ensureElementExtractJobsTable()
 
@@ -182,7 +304,10 @@ export async function createElementExtractJobFromBuffer(input: {
     throw new Error("文件大小不能超过 20MB")
   }
 
-  const hash = createHash("sha256").update(input.buffer).digest("hex").slice(0, 16)
+  const providedHash = (input.contentHash || "").trim().toLowerCase()
+  const hash = /^[0-9a-f]{16}$/.test(providedHash)
+    ? providedHash
+    : createHash("sha256").update(input.buffer).digest("hex").slice(0, 16)
   const storageFilename = `${Date.now()}_${hash}${ext}`
   const storageDir = getServerStoragePath("fund-elements", "jobs")
   const storagePath = path.join(storageDir, storageFilename)
@@ -194,8 +319,8 @@ export async function createElementExtractJobFromBuffer(input: {
     const rows = await query<ElementExtractJobRow>(
       `INSERT INTO ops_element_extract_jobs
          (original_filename, storage_filename, file_size, mime_type, uploaded_by, status,
-          beian_hao, product_name, contract_material_id)
-       VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8)
+          beian_hao, product_name, contract_material_id, content_hash)
+       VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9)
        RETURNING ${JOB_SELECT_COLS}`,
       [
         originalFilename,
@@ -206,6 +331,7 @@ export async function createElementExtractJobFromBuffer(input: {
         input.beian_hao?.trim() || null,
         input.product_name?.trim() || null,
         input.contract_material_id ?? null,
+        hash,
       ],
     )
     const row = rows[0]
@@ -226,6 +352,127 @@ export async function createElementExtractJob(input: {
     buffer,
     originalFilename: input.file.name || "contract.pdf",
     uploaded_by: input.uploaded_by,
+  })
+}
+
+export type ElementExtractUploadDuplicate = {
+  fileName: string
+  existingId: number
+  existingFileName: string
+}
+
+/** Non-failed job with the same bytes or the same filename. */
+export async function findLiveElementExtractDuplicate(input: {
+  contentHash: string
+  originalFilename: string
+  fileSize: number
+  excludeId?: number
+}): Promise<ElementExtractJobRow | null> {
+  await ensureElementExtractJobsTable()
+  const hash = input.contentHash.trim().toLowerCase()
+  const name = sanitizeFilename(input.originalFilename || "")
+  const size = Number(input.fileSize) || 0
+  const excludeId = input.excludeId && input.excludeId > 0 ? input.excludeId : 0
+  if (!/^[0-9a-f]{16}$/.test(hash) && !name) return null
+  const rows = await query<ElementExtractJobRow>(
+    `SELECT ${JOB_SELECT_COLS}
+     FROM ops_element_extract_jobs
+     WHERE status <> 'failed'
+       AND id <> $4
+       AND (
+         ($1 <> '' AND (
+           content_hash = $1
+           OR lower(right(split_part(storage_filename, '.', 1), 16)) = $1
+         ))
+         OR ($2 <> '' AND lower(original_filename) = lower($2))
+         OR ($3 > 0 AND lower(original_filename) = lower($2) AND file_size = $3)
+       )
+     ORDER BY
+       CASE status
+         WHEN 'applied' THEN 0
+         WHEN 'needs_review' THEN 1
+         WHEN 'extracting' THEN 2
+         WHEN 'queued' THEN 3
+         ELSE 4
+       END,
+       uploaded_at ASC,
+       id ASC
+     LIMIT 1`,
+    [/^[0-9a-f]{16}$/.test(hash) ? hash : "", name, size, excludeId],
+  )
+  return rows[0] ? mapJobRow(rows[0]) : null
+}
+
+export async function annotateElementExtractJobDuplicates<T extends ElementExtractJobRow>(
+  rows: T[],
+): Promise<Array<T & { duplicate_of_id: number | null; duplicate_count: number }>> {
+  const blank = rows.map((row) => ({
+    ...row,
+    duplicate_of_id: null as number | null,
+    duplicate_count: 0,
+  }))
+  if (!rows.length) return blank
+
+  const hashes = [
+    ...new Set(
+      rows
+        .map((row) => (row.content_hash || contentHashFromExtractStorageFilename(row.storage_filename) || "").toLowerCase())
+        .filter((hash) => /^[0-9a-f]{16}$/.test(hash)),
+    ),
+  ]
+  const names = [...new Set(rows.map((row) => row.original_filename).filter(Boolean))]
+
+  const siblings = await query<{
+    id: number
+    content_hash: string | null
+    storage_filename: string
+    original_filename: string
+    file_size: string | number
+    status: ExtractJobStatus
+    uploaded_at: string
+  }>(
+    `SELECT id, content_hash, storage_filename, original_filename, file_size::text AS file_size,
+            status, uploaded_at::text AS uploaded_at
+     FROM ops_element_extract_jobs
+     WHERE content_hash = ANY($1::text[])
+        OR lower(right(split_part(storage_filename, '.', 1), 16)) = ANY($1::text[])
+        OR original_filename = ANY($2::text[])`,
+    [hashes.length ? hashes : ["__no_content_hash__"], names.length ? names : ["__no_filename__"]],
+  )
+
+  const sources = new Map<number, ElementExtractDuplicateSource>()
+  const addSource = (source: ElementExtractDuplicateSource) => {
+    if (!sources.has(source.id)) sources.set(source.id, source)
+  }
+  for (const row of siblings) {
+    addSource({
+      id: Number(row.id),
+      contentHash: (row.content_hash || contentHashFromExtractStorageFilename(row.storage_filename) || "").toLowerCase() || null,
+      originalFilename: row.original_filename,
+      fileSize: Number(row.file_size) || 0,
+      status: row.status,
+      uploadedAt: row.uploaded_at || "",
+    })
+  }
+  for (const row of rows) {
+    addSource({
+      id: row.id,
+      contentHash: row.content_hash,
+      originalFilename: row.original_filename,
+      fileSize: Number(row.file_size) || 0,
+      status: row.status,
+      uploadedAt: row.uploaded_at || "",
+    })
+  }
+
+  const marks = assignElementExtractDuplicateMarks([...sources.values()])
+  return rows.map((row) => {
+    const mark = marks.get(row.id) ?? { duplicateOfId: null, duplicateCount: 0 }
+    return {
+      ...row,
+      duplicate_of_id: mark.duplicateOfId,
+      duplicate_count: mark.duplicateCount,
+    }
   })
 }
 
@@ -260,8 +507,12 @@ export async function findElementExtractJobsForMaterials(input: {
     params.push(jobIds)
   }
   if (hashes.length) {
-    conditions.push(`lower(right(split_part(storage_filename, '.', 1), 16)) = ANY($${i++}::text[])`)
+    conditions.push(`(
+      content_hash = ANY($${i}::text[])
+      OR lower(right(split_part(storage_filename, '.', 1), 16)) = ANY($${i}::text[])
+    )`)
     params.push(hashes)
+    i++
   }
   if (filenames.length) {
     conditions.push(`original_filename = ANY($${i++}::text[])`)
@@ -585,7 +836,19 @@ export async function listExtractJobsForRerun(): Promise<ElementExtractJobRow[]>
      WHERE status IN ('applied', 'needs_review', 'failed')
      ORDER BY id ASC`,
   )
-  return rows.map(mapJobRow).filter((job) => {
+  const mapped = rows.map(mapJobRow)
+  const marks = assignElementExtractDuplicateMarks(
+    mapped.map((job) => ({
+      id: job.id,
+      contentHash: job.content_hash,
+      originalFilename: job.original_filename,
+      fileSize: Number(job.file_size) || 0,
+      status: job.status,
+      uploadedAt: job.uploaded_at || "",
+    })),
+  )
+  return mapped.filter((job) => {
+    if (marks.get(job.id)?.duplicateOfId) return false
     if (job.status === "failed" || job.status === "needs_review") return true
     return extractedLooksIncomplete(job.extracted_json)
   })

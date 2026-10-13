@@ -1,8 +1,10 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { Download } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import { authService } from "@/lib/auth"
+import { downloadFundDataApiGuide } from "@/lib/ma/fund-data-api-guide"
 import {
   FUND_DATA_API_BASE,
   FUND_DATA_MCP_URL,
@@ -86,6 +88,7 @@ export function FundDataApiPanel() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<Envelope | null>(null)
   const [error, setError] = useState("")
+  const [guideSaved, setGuideSaved] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -119,9 +122,24 @@ export function FundDataApiPanel() {
   return (
     <div className="max-w-4xl space-y-10">
       <header>
-        <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-2">基金数据 API</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+          <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200">基金数据 API</h2>
+          <button
+            type="button"
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 border border-red-500 text-red-500 rounded text-sm hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors"
+            onClick={() => {
+              downloadFundDataApiGuide(apiKey)
+              setGuideSaved(true)
+              window.setTimeout(() => setGuideSaved(false), 1500)
+            }}
+          >
+            <Download className="size-3.5" aria-hidden />
+            {guideSaved ? "已下载" : "下载给 AI 的说明"}
+          </button>
+        </div>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed">
           生产环境只读接口。每个登录账号在「用户中心」都有一把 API Key，请求时必须带上，系统据此识别用户并访问正式库。
+          下载的 Markdown 已写入你的 API Key 和全部接口说明，可直接发给模型。请只发给你信任的对话。
         </p>
         <div className="mt-4 border rounded-lg px-4 py-3 text-sm space-y-1">
           <p><span className="text-zinc-400 w-24 inline-block">网站</span><a className="text-red-500 hover:underline" href={FUND_DATA_PUBLIC_ORIGIN} target="_blank" rel="noreferrer">{FUND_DATA_PUBLIC_ORIGIN}</a></p>
@@ -152,7 +170,7 @@ export function FundDataApiPanel() {
       <section>
         <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">1. HTTP 接入</h3>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3 leading-relaxed">
-          全部为 GET。每个请求必须带 API Key，任选一种方式：请求头 <code className="font-mono text-xs">x-api-key</code>、
+          查询为 GET。跟踪池整本净值用 POST /price/bulk，备案号放 JSON。每个请求必须带 API Key，任选一种方式：请求头 <code className="font-mono text-xs">x-api-key</code>、
           <code className="font-mono text-xs">Authorization: Bearer</code>，或 query <code className="font-mono text-xs">api_key</code>。
           Key 在「用户中心」查看或重新生成。
         </p>
@@ -196,7 +214,7 @@ const json = await res.json()  // { error_code, msg, data }`}
         <ol className="text-sm text-zinc-500 dark:text-zinc-400 space-y-2 list-decimal pl-5 mb-3 leading-relaxed">
           <li>打开 Cursor Settings → MCP（或 Claude Desktop → Developer → Edit Config）。</li>
           <li>新增 <code className="font-mono text-xs">fund-data</code>，类型选 URL，把下面 JSON 贴进去（替换 API Key）。</li>
-          <li>启用后可以直接用自然语言提问，例如对比两只基金、查净值、读投资笔记。模型会按下面的工具名去调用。</li>
+          <li>启用后可以直接用自然语言提问，例如对比两只基金、查净值、问某人在路演里看多什么。模型会按下面的工具名去调用。</li>
         </ol>
         <CodeBlock
           text={`{
@@ -211,7 +229,7 @@ const json = await res.json()  // { error_code, msg, data }`}
 }`}
         />
         <p className="text-xs text-zinc-400 mt-3">
-          公开工具（任何持有有效 Key 的账户）：fund_search、fund_info、fund_price、fund_multi_price、fund_advanced_list、fund_view、company_info、company_fund_list。
+          公开工具（任何持有有效 Key 的账户）：fund_search、fund_info、fund_price、fund_price_bulk、fund_multi_price、fund_advanced_list、fund_view、company_info、company_fund_list。
         </p>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
           同一地址还会按<strong>当前 API Key 所属账户</strong>开放内部工具。没有对应页面权限时，tools/list 不会列出该工具，直接调用也会被拒绝。权限与网页相同。
@@ -220,7 +238,8 @@ const json = await res.json()  // { error_code, msg, data }`}
           <li>跟踪池（需投资页）：tracking_pools、tracking_pool_list、tracking_pool_detail。detail 里的 team_note / personal_note 是跟踪池短备注。</li>
           <li>在管产品（需投资池权限）：managed_products_list。</li>
           <li>AI 研究员（需 AI 研究员）：ai_researcher_compare、ai_researcher_similar、ai_researcher_opposite、ai_researcher_roadshow、ai_researcher_team_background、ai_researcher_manager_profile。</li>
-          <li>AI 知识库（需 AI 知识库）：kb_list、kb_read、kb_ask。团队投资笔记在文件夹「投资笔记」。</li>
+          <li>AI 知识库（需 AI 知识库）：问某人观点用 kb_ask，只要原文片段用 kb_search，读全文用 kb_read，看有哪些文件用 kb_list。见下方「问知识库」。</li>
+          <li>外部业绩榜（需投资页，并且要有 AI 知识库）：external_rank_compare。用知识库里的点睛等业绩榜 xlsx，和跟踪池同一策略对比。见下方「外部业绩榜」。</li>
         </ul>
       </section>
 
@@ -232,15 +251,129 @@ const json = await res.json()  // { error_code, msg, data }`}
 
         <div>
           <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
-            对比两只基金：净值 + 投资笔记
+            外部业绩榜对比跟踪池
           </h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
-            一次调用 <code className="font-mono text-xs">ai_researcher_compare</code>。工具会自己完成四步：按名称或备案号找到产品、从数据库读取净值并计算区间收益、最大回撤和夏普、只在知识库文件夹「投资笔记」里检索团队笔记、再写成 Markdown 对比报告。业绩数字以净值库为准，策略和团队判断以笔记为准。
+            点睛这类业绩榜是表格。不要用 kb_read 或 kb_ask 去读 xlsx，表格被抽成文字后名次和收益会对不齐。一次 <code className="font-mono text-xs">external_rank_compare</code> 会自己解析榜单，并按榜单截止日从净值库重算跟踪池里同一策略的收益。文件名保留「点睛」或「业绩榜」。不传 file_path 时，用该策略最新一份。一份文件里有多种策略时必须传 class。
+          </p>
+          <p className="text-xs text-zinc-400 mb-2">在 Cursor 里可以直接这样说</p>
+          <CodeBlock
+            text={`用知识库里最新的点睛主观多头榜，和 JY跟踪池比较。窗口按榜单自己的截止日期。
+列出他们前 20 里我们池子没有的，以及两边都有但名次差超过 15 的。
+只根据工具返回的数字说。needs_review 里的名字不要当成已经匹配。`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-2">模型应调用</p>
+          <CodeBlock
+            text={`{
+  "name": "external_rank_compare",
+  "arguments": {
+    "class": "主观多头",
+    "pools": "jy",
+    "top_n": 20
+  }
+}`}
+          />
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
+            收益是百分数：159.12 表示 159.12%。their_* 是榜单原数，our_* 是池内产品按同一窗口重算的结果，our_return 取该管理人池内这一策略里最高的一条。rank_gap = 池内名次 − 榜单名次，正数表示按我们的净值它排得更靠后。external_only 是榜上有、池子没有的候选；both 是已经对上的名称；pool_only 是池子里有、不在榜单前 N；needs_review 是名称只是部分相同，没有自动匹配。class 可用主观多头、量化股票、量化CTA、主观CTA，或具体分组如 500指增。pools 用 jy、selected 或 jy,selected。week_end 只用于提示和榜单截止日差多少天。
+          </p>
+        </div>
+
+        <div>
+          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+            问知识库：某人看多或看空哪些品种
+          </h4>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
+            路演、尽调笔记里「某人怎么看」走知识库，不走净值接口。一次 <code className="font-mono text-xs">kb_ask</code> 即可。它会按人名匹配文件路径，把路演笔记排在月报前面；同一份笔记若在两个文件夹各有一份，只读一份。笔记不长时读全文，所以姓名在第 1 页、观点在后面几页也能答出来。
+          </p>
+          <p className="text-xs text-zinc-400 mb-2">在 Cursor 里可以直接这样说</p>
+          <CodeBlock
+            text={`左广东看多的品种都有哪些？只根据知识库原文回答。
+每一条结论都要带原文、文件路径和页码。资料没写他属于哪家基金，就写「资料未说明」。`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-2">模型应调用</p>
+          <CodeBlock
+            text={`{
+  "name": "kb_ask",
+  "arguments": {
+    "question": "左广东看多的品种都有哪些？只引用路演笔记原文，没有写的不要推断。"
+  }
+}`}
+          />
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 mb-2 leading-relaxed">
+            先看 <code className="font-mono text-xs">citations</code>，再用 <code className="font-mono text-xs">answer</code>。每条引用都有原文 <code className="font-mono text-xs">quote</code>、文件 <code className="font-mono text-xs">path</code> 和页码 <code className="font-mono text-xs">page</code>。<code className="font-mono text-xs">citations_grounded</code> 为 true 时，<code className="font-mono text-xs">sources</code> 里只剩实际引用过的文件；为 false 时，模型没有给出能对上原文的句子，不要把回答当成已核实。资料没写的任职或产品归属会写成「资料未说明该关联」。
+          </p>
+          <CodeBlock
+            text={`{
+  "answer": "左广东在 2025-12-25 华泰期货路演里放在多头方向的是铜、铝、黄金、铂金、碳酸锂【1】。",
+  "sources": ["内部尽调资料/2025.12.25-左广东/左广东路演笔记-2025.12.25.pdf"],
+  "citations": [
+    {
+      "n": 1,
+      "quote": "多头方向：铜、铝、黄金、铂金、碳酸锂",
+      "path": "内部尽调资料/2025.12.25-左广东/左广东路演笔记-2025.12.25.pdf",
+      "page": 2
+    }
+  ],
+  "citations_grounded": true,
+  "model": "qwen-plus"
+}`}
+          />
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 mb-2 leading-relaxed">
+            只想先看证据、先不写结论时，用 <code className="font-mono text-xs">kb_search</code>。片段里已经有答案就可以停。<code className="font-mono text-xs">suggest_full_read</code> 为 true，或片段里没有要的句子，再用返回的 <code className="font-mono text-xs">path</code> 调 <code className="font-mono text-xs">kb_read</code>。路径必须来自返回值，不要自己编。
+          </p>
+          <CodeBlock
+            text={`{ "name": "kb_search", "arguments": { "question": "左广东看多的品种都有哪些？", "limit": 6 } }
+
+{ "name": "kb_read", "arguments": { "path": "内部尽调资料/2025.12.25-左广东/左广东路演笔记-2025.12.25.pdf" } }`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-1">kb_search 返回。duplicate_paths 是已合并的另一份副本，不必再读</p>
+          <CodeBlock
+            text={`{
+  "anchors": ["左广东"],
+  "hits": [
+    {
+      "path": "内部尽调资料/2025.12.25-左广东/左广东路演笔记-2025.12.25.pdf",
+      "score": 129.2,
+      "page": 2,
+      "snippet": "多头方向：铜、铝、黄金、铂金、碳酸锂",
+      "duplicate_paths": ["MOM尽调资料/左广东/左广东路演笔记-2025.12.25.pdf"],
+      "suggest_full_read": false,
+      "coverage": "full"
+    }
+  ]
+}`}
+          />
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 mb-2 leading-relaxed">
+            答案对不上时，给 <code className="font-mono text-xs">kb_ask</code> 加上 <code className="font-mono text-xs">debug: true</code>。多出来的 <code className="font-mono text-xs">passages</code> 与上面的 hits 相同，用来看模型读到了哪一段。问观点时不要把 <code className="font-mono text-xs">model</code> 设成 turbo。
+          </p>
+          <ParamTable
+            rows={[
+              ["question", "是", "string", "问题本身。把「只引用原文、没有写的不要推断」写进问题里"],
+              ["folder_path", "否", "string", "路演和尽调留空，搜全库。只要团队投资笔记时填「投资笔记」"],
+              ["file_path", "否", "string", "已经从 kb_search 或 kb_list 拿到路径时填写，只读这一份"],
+              ["model", "否", "string", "默认 plus。turbo 更快，但不适合抽观点；max 更慢"],
+              ["debug", "否", "boolean", "仅 kb_ask。true 时附上检索片段 passages"],
+              ["limit", "否", "integer", "仅 kb_search。默认 8，最大 20"],
+            ]}
+          />
+          <ul className="text-sm text-zinc-500 dark:text-zinc-400 space-y-1 list-disc pl-5 leading-relaxed">
+            <li>需要账户有「AI 知识库」权限。没有权限时 tools/list 里不会出现这些工具。</li>
+            <li>kb_ask 大约几十秒。kb_search 不写结论，通常更快。</li>
+            <li>笔记大约超过 2.4 万字时不会整篇放入回答，kb_read 也会截断。这时以 citations 的页码为准，或把 file_path 指到该文件再问一次。</li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+            对比几只基金
+          </h4>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
+            一次调用 <code className="font-mono text-xs">ai_researcher_compare</code>。先看返回里的 <code className="font-mono text-xs">resolved</code> 和 <code className="font-mono text-xs">bindings</code>。有一只没绑上时 <code className="font-mono text-xs">report</code> 为 null，不会写对比。都绑上之后，业绩在 <code className="font-mono text-xs">funds</code>，和 fund/view 相同。团队策略不同时 <code className="font-mono text-xs">same_strategy</code> 为 false，只分组，不排序。名称以「C类」结尾会绑到母基金。
           </p>
           <p className="text-xs text-zinc-400 mb-2">在 Cursor 里可以直接这样说</p>
           <CodeBlock
             text={`对比「幻方中证500指数增强」和「九坤日享中证500指数增强」。
-净值用数据库序列算收益、回撤和夏普；定性内容只看知识库「投资笔记」，不要用路演和月报。`}
+先确认两只都绑定到备案号。业绩只用返回的 funds，不要另算。策略不同就分组，不要排序。`}
           />
           <p className="text-xs text-zinc-400 mt-3 mb-2">对应的 MCP 工具调用</p>
           <CodeBlock
@@ -252,7 +385,7 @@ const json = await res.json()  // { error_code, msg, data }`}
   }
 }`}
           />
-          <p className="text-xs text-zinc-400 mt-3 mb-1">名称对不上时改传备案号。下面第二个备案号请换成另一只产品</p>
+          <p className="text-xs text-zinc-400 mt-3 mb-1">名称对不上时改传备案号。备案号整段精确匹配，不会用前缀撞到另一只产品</p>
           <CodeBlock
             text={`{
   "name": "ai_researcher_compare",
@@ -264,27 +397,32 @@ const json = await res.json()  // { error_code, msg, data }`}
           />
           <ParamTable
             rows={[
-              ["subjects", "是", "string[]", "至少 2 个。每个可以是产品名或备案号，最多 10 个"],
-              ["kb_path", "建议填", "string", "只要投资笔记时填「投资笔记」。留空则全库检索，路演、月报、尽调、笔记都会进入报告"],
+              ["subjects", "是", "string[]", "至少 2 个。产品名或备案号，最多 10 个。名称以 A类 / B类 / C类 结尾时绑定母基金"],
+              ["kb_path", "否", "string", "填「投资笔记」时只在该文件夹里找点名该基金的段落。留空则全库查找，仍然只保留点名该基金的段落"],
             ]}
           />
           <p className="text-xs text-zinc-400 mb-1">返回（MCP 文本里是这段 JSON）</p>
           <CodeBlock
             text={`{
-  "plan": "先对齐策略，再用净值比收益和回撤，最后用投资笔记核对团队与容量……",
-  "steps": [
-    { "step": 1, "summary": "找到 2 只基金：……" },
-    { "step": 2, "summary": "获取了 480 条净值记录：……" },
-    { "step": 4, "summary": "检索完成（路径: 投资笔记，3 个来源文件）" }
+  "resolved": true,
+  "misses": [],
+  "bindings": [
+    { "query": "幻方中证500指数增强", "register_number": "SR6089", "fund_name": "幻方中证500指数增强", "match": "name", "match_score": 1, "nav_loaded": true, "nav_scope": "self" }
   ],
-  "report": "# 对比分析\\n\\n## 执行摘要\\n……"
+  "same_strategy": false,
+  "funds": [
+    { "register_number": "SR6089", "latest_nav": 1.23, "metrics": { "ret_1y": 12.4, "sharpe_1y": 1.1 }, "incomplete_windows": [] }
+  ],
+  "notes": [],
+  "report": "# 基金对比\\n……"
 }`}
           />
           <ul className="mt-3 text-sm text-zinc-500 dark:text-zinc-400 space-y-1 list-disc pl-5 leading-relaxed">
-            <li>需要账户有「AI 研究员」权限。净值读取和「投资笔记」检索都在这一次调用里完成。</li>
+            <li>需要账户有「AI 研究员」权限。</li>
+            <li>有一只未绑定时，misses 写出查询词和原因，report 为 null。</li>
+            <li>funds.metrics 的收益是百分数：12.4 表示 12.4%。夏普、卡玛是比率。incomplete_windows 里的字段不是完整区间。</li>
+            <li>share_class 为 C 且 nav_scope 为 parent 时，净值是母基金公布值，不是该类单独净值。</li>
             <li>知识库「投资笔记」只包含已分享到团队的笔记。未分享的个人笔记不在这个文件夹里。</li>
-            <li>笔记里没有的策略细节，报告会写成「笔记未提及」，不会用路演材料补上。</li>
-            <li>报告生成通常要几十秒到两分钟。MCP 会等整份报告结束后一次返回。</li>
           </ul>
         </div>
 
@@ -331,14 +469,9 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
   ]
 }`}
           />
-          <p className="text-xs text-zinc-400 mt-3 mb-1">kb_ask 返回</p>
-          <CodeBlock
-            text={`{
-  "answer": "SR6089：笔记写明策略为中证500指增，团队……。另一只：笔记未提及容量。",
-  "sources": ["投资笔记/幻方500指增投资笔记.html"],
-  "model": "……"
-}`}
-          />
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
+            投资笔记的 <code className="font-mono text-xs">kb_ask</code> 同样返回 citations。字段怎么读，见上面「问知识库」。这里把 folder_path 设为「投资笔记」，避免路演和月报混进来。
+          </p>
           <p className="text-xs text-zinc-400 mt-3 mb-1">kb_read 返回。正文超过约 2.4 万字时 truncated 为 true，text 末尾会截断</p>
           <CodeBlock
             text={`{
@@ -499,30 +632,34 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
         <div>
           <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">AI 填表助手</h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
-            网页上的「填表助手」在 AI 知识库页面：列是产品，行是维度，逐格提问后可以导出 CSV / Excel。MCP 没有单独的填表工具。在 Cursor 里做同一张表，对每个单元格调一次 <code className="font-mono text-xs">kb_ask</code>。
+            网页上的「填表助手」在 AI 知识库页面：列是产品或管理人，行是维度，逐格提问后可以导出 CSV / Excel。MCP 没有单独的填表工具。在 Cursor 里做同一张表，对每个单元格调一次 <code className="font-mono text-xs">kb_ask</code>。打板策略横向比较表要搜全库，不要传 folder_path。量道在外部尽调路演稿，六妙星在在线笔记和内部尽调，衍复在投资笔记。
           </p>
-          <p className="text-xs text-zinc-400 mb-2">可以说：「用投资笔记填一张表。列是量桥、量道，行是基金经理（不超过 10 字）和策略原理（1 到 4 句）。没有就写暂无数据。」模型应按下面这样逐格调用。</p>
+          <p className="text-xs text-zinc-400 mb-2">可以说：「填一张打板策略横向比较表。列是量道、六妙星、衍复，行是代表产品、基金经理、细分策略。检索全库。每一格只采用出现了该列名称的段落，没有就写暂无数据。」</p>
           <CodeBlock
-            text={`简短行
+            text={`代表产品
 { "name": "kb_ask", "arguments": {
-  "folder_path": "投资笔记",
-  "question": "填写「打板策略横向比较表」。列：「量桥」，行：「基金经理」。只输出一个名字，不超过 10 字，不要解释。没有则写「暂无数据」。"
+  "question": "填写「打板策略横向比较表」。列：「量道」，行：「代表产品」。只输出产品名称，不超过 30 字，不要解释。只采用出现了「量道」的段落。没有产品名则写「暂无数据」。不要把策略名称当成产品。"
 } }
 
-详细行
+基金经理
 { "name": "kb_ask", "arguments": {
-  "folder_path": "投资笔记",
-  "question": "填写「打板策略横向比较表」。列：「量桥」，行：「策略原理」。只输出单元格内容，1 到 4 句，不要开场白，不要来源脚注。没有则写「暂无数据」。"
+  "question": "填写「打板策略横向比较表」。列：「六妙星」，行：「基金经理」。只输出负责投资或该策略的基金经理姓名，不超过 15 字，不要解释。不要填写运营、技术或市场负责人。只采用出现了「六妙星」的段落。没有则写「暂无数据」。"
 } }
 
-选项行
+细分策略
 { "name": "kb_ask", "arguments": {
+  "question": "填写「打板策略横向比较表」。列：「衍复」，行：「细分策略」。只输出单元格内容，1 到 4 句，不要开场白，不要来源脚注。只采用出现了「衍复」的段落。没有则写「暂无数据」。"
+} }`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-1">用户明确只要某一个文件夹时才加 folder_path</p>
+          <CodeBlock
+            text={`{ "name": "kb_ask", "arguments": {
   "folder_path": "投资笔记",
-  "question": "填写「打板策略横向比较表」。列：「量道」，行：「策略风格」。只能从「打板」「趋势」「套利」里选一个输出。无法判断则写「未知」。"
+  "question": "填写「打板策略横向比较表」。列：「衍复」，行：「代表产品」。只输出产品名称，不超过 30 字，不要解释。只采用出现了「衍复」的段落。没有产品名则写「暂无数据」。"
 } }`}
           />
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-2 leading-relaxed">
-            每格的 answer 填进表里，sources 记到该列的引用。列很多时先用 kb_list 看「投资笔记」里有哪些产品，缺文件的列直接写「暂无数据」，不必再问。网页助手默认用较快模型；这里的 kb_ask 同样只检索你限定的文件夹。
+            每一格用返回的 value。sources 记在这一格，每条 quote 都要含列名；路径和正文都没有该列名称的丢掉。没有段落出现列名时 value 为「暂无数据」，sources 为空。正文已经有内容时，末尾再写的「暂无数据」丢掉。近名不算：六九星、衍宏不会填进六妙星、衍复。代表产品要是产品名称，量道应接近「千石资本量道对冲1号」。基金经理要是投资负责人，量道填程余，余晓锋是首席运营官兼技术总监。不要用 kb_list 判断全库里有没有这一列。kb_ask 默认 qwen-plus，填表不要改成 turbo。
           </p>
         </div>
       </section>
@@ -556,7 +693,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
             GET /fund/search
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_search</span>
           </h4>
-          <p className="text-sm text-zinc-500 mb-2">按产品名、备案号搜基金，同时搜管理人。名称不确定时先调这个，再用返回的 register_number 调后面的接口。</p>
+          <p className="text-sm text-zinc-500 mb-2">按产品名、备案号搜基金，同时搜管理人。名称不确定时先调这个，再用返回的 price_reg_code 调 /price。份额、A类/A类份额、私募基金/私募证券投资基金视为同一产品族，母基金会跟在份额旁边。测试产品不出现。</p>
           <ParamTable
             rows={[
               ["q 或 keyword", "是", "string", "名称或备案号"],
@@ -573,7 +710,7 @@ MCP
           <p className="text-xs text-zinc-400 mt-3 mb-1">data</p>
           <CodeBlock
             text={`{
-  "products": [{ "register_number": "SR6089", "fund_name": "...", "fund_short_name": "...", "strategy_one": "..." }],
+  "products": [{ "register_number": "AAK83C", "fund_name": "...", "fund_short_name": "...", "strategy_one": "...", "price_reg_code": "SAAK83", "parent_reg_code": "SAAK83", "share_class": "C" }],
   "managers": [{ "registration_no": "P1032021", "manager_name": "..." }]
 }`}
           />
@@ -599,6 +736,9 @@ MCP
   "fund_name": "幻方中证500指数增强",
   "fund_short_name": "",
   "register_number": "SR6089",
+  "price_reg_code": "SR6089",
+  "parent_reg_code": "SR6089",
+  "share_class": null,
   "advisor": "杭州幻方科技",
   "inception_date": "2019-01-01",
   "latest_nav": 1.234,
@@ -618,7 +758,7 @@ MCP
             GET /price
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_price</span>
           </h4>
-          <p className="text-sm text-zinc-500 mb-2">单只基金净值序列，最多 5000 行。对比两只产品时各请求一次，自己对齐 price_date。</p>
+          <p className="text-sm text-zinc-500 mb-2">单只基金净值序列，最多 5000 行。份额代码会解析到母基金，series_reg_code 是实际取数的备案号。price_change 是百分比：0.2976 表示 +0.2976%。全序列第一天为 null，之后持平为 0。基金存在但没有净值时 error_code 为 0、data 为 []。</p>
           <p className="text-xs text-zinc-400 mb-1">请求：2025 年全年、按日期从早到晚</p>
           <CodeBlock
             text={`curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/price?reg_code=SR6089&start_date=2025-01-01&end_date=2025-12-31&order=1"
@@ -628,16 +768,60 @@ MCP
           />
           <ParamTable
             rows={[
-              ["reg_code", "是", "string", "备案号"],
+              ["reg_code", "是", "string", "备案号或份额代码"],
               ["start_date", "否", "YYYY-MM-DD", "含当天；也接受 2025/1/1"],
               ["end_date", "否", "YYYY-MM-DD", "含当天"],
               ["order", "否", "0 | 1", "1 升序（默认），0 降序"],
               ["order_by", "否", "string", "price_date（默认）| nav | cumulative_nav | cumulative_nav_withdrawal | price_change"],
             ]}
           />
-          <p className="text-xs text-zinc-400 mb-1">data[]</p>
+          <p className="text-xs text-zinc-400 mb-1">data[]。升序超过 5000 行时响应带 truncated 和 next_start_date</p>
           <CodeBlock
-            text={`{ "nav": 1.0123, "cumulative_nav_withdrawal": 1.02, "cumulative_nav": 1.03, "price_change": 0.001, "price_date": "2025-01-06" }`}
+            text={`{ "reg_code": "SR6089", "nav": 1.348, "cumulative_nav_withdrawal": 1.348, "cumulative_nav": 1.348, "price_change": 0.2976, "price_date": "2025-01-07" }`}
+          />
+        </div>
+
+        <div>
+          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+            POST /price/bulk
+            <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_price_bulk</span>
+          </h4>
+          <p className="text-sm text-zinc-500 mb-2">跟踪池导出用这个。POST JSON 放整本备案号；GET 只适合少量代码。每页默认 10 只、最多 20 只。某只满 5000 行时 next_cursor 停在该只，形如 12@2024-03-01。找不到的代码写在该只的 error_code 2 上，整批仍成功。</p>
+          <ParamTable
+            rows={[
+              ["reg_code / reg_codes", "是", "string 或 string[]", "备案号。GET 用逗号分隔；POST 用数组"],
+              ["start_date", "否", "YYYY-MM-DD", "含当天"],
+              ["end_date", "否", "YYYY-MM-DD", "含当天"],
+              ["cursor", "否", "string", "上一页的 next_cursor"],
+              ["batch", "否", "int", "每页基金数，默认 10，最大 20"],
+              ["format", "否", "ndjson", "每只基金一行，最后一行是 next_cursor"],
+            ]}
+          />
+          <p className="text-xs text-zinc-400 mb-1">请求</p>
+          <CodeBlock
+            text={`curl -H "x-api-key: ${keyForDocs}" -H "Content-Type: application/json" \\
+  -d "{\\"reg_codes\\":[\\"SR6089\\",\\"AAK83C\\"],\\"start_date\\":\\"2020-01-01\\",\\"batch\\":10}" \\
+  "${FUND_DATA_API_BASE}/price/bulk"
+
+MCP
+{ "name": "fund_price_bulk", "arguments": { "reg_code": "SR6089,AAK83C", "start_date": "2020-01-01", "batch": 10 } }`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-1">data.series[]。份额 AAK83C 的序列在母基金 SAAK83 上</p>
+          <CodeBlock
+            text={`{
+  "series": [{
+    "reg_code": "AAK83C",
+    "price_reg_code": "SAAK83",
+    "series_reg_code": "SAAK83",
+    "parent_reg_code": "SAAK83",
+    "share_class": "C",
+    "truncated": false,
+    "next_start_date": null,
+    "error_code": 0,
+    "points": [{ "reg_code": "SAAK83", "nav": 1.348, "price_change": 0.2976, "price_date": "2025-01-07" }]
+  }],
+  "next_cursor": "2"
+}`}
           />
         </div>
 
@@ -646,7 +830,7 @@ MCP
             GET /fund/price
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_multi_price</span>
           </h4>
-          <p className="text-sm text-zinc-500 mb-2">一次取最多 40 只基金在某日（或最新）的净值。</p>
+          <p className="text-sm text-zinc-500 mb-2">一次取最多 40 只基金在某日（或最新）的一条净值。整段历史用 /price/bulk。price_change 是百分比。</p>
           <ParamTable
             rows={[
               ["reg_code", "是", "string", "逗号分隔备案号，最多 40 个"],
@@ -668,8 +852,8 @@ MCP
           <p className="text-xs text-zinc-400 mt-3 mb-1">data[] 每只一行，带 reg_code</p>
           <CodeBlock
             text={`[
-  { "reg_code": "SR6089", "nav": 1.84, "cumulative_nav": 2.10, "cumulative_nav_withdrawal": 2.05, "price_change": 0.004, "price_date": "2026-09-30" },
-  { "reg_code": "SXXXXX", "nav": 1.21, "cumulative_nav": 1.33, "cumulative_nav_withdrawal": 1.30, "price_change": -0.002, "price_date": "2026-09-26" }
+  { "reg_code": "SR6089", "nav": 1.84, "cumulative_nav": 2.10, "cumulative_nav_withdrawal": 2.05, "price_change": 0.40, "price_date": "2026-09-30" },
+  { "reg_code": "SXXXXX", "nav": 1.21, "cumulative_nav": 1.33, "cumulative_nav_withdrawal": 1.30, "price_change": -0.20, "price_date": "2026-09-26" }
 ]`}
           />
         </div>
@@ -679,7 +863,7 @@ MCP
             GET /fund/advancedlist
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_advanced_list</span>
           </h4>
-          <p className="text-sm text-zinc-500 mb-2">分页列表，可按策略、类型、运作状态、关键字筛选。</p>
+          <p className="text-sm text-zinc-500 mb-2">分页列表，可按策略、类型、运作状态、关键字筛选。每行带 price_reg_code、parent_reg_code、share_class。测试产品不出现。</p>
           <ParamTable
             rows={[
               ["strategy_one / two / three", "否", "string", "一级/二/三级策略；不传或「不限」表示不过滤"],
@@ -810,7 +994,7 @@ MCP
   "page": 1,
   "pagesize": 20,
   "list": [
-    { "fund_name": "幻方中证500指数增强", "register_number": "SR6089", "inception_date": "2019-01-01", "price_nav": 1.84, "price_date": "2026-09-30", "fund_type": 2, "fund_state": 1 }
+    { "fund_name": "幻方中证500指数增强", "register_number": "SR6089", "price_reg_code": "SR6089", "parent_reg_code": "SR6089", "share_class": null, "inception_date": "2019-01-01", "price_nav": 1.84, "price_date": "2026-09-30", "fund_type": 2, "fund_state": 1 }
   ]
 }`}
           />

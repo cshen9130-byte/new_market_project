@@ -36,6 +36,7 @@ const PATH_META: Record<string, { title: string; description: string }> = {
   "/ma/dashboard/tools/settlement-analysis": { title: "结算单分析", description: "小工具" },
   "/ma/dashboard/tools/valuation-table-analysis": { title: "估值表分析", description: "小工具" },
   "/ma/dashboard/tools/nav-attribution": { title: "净值归因", description: "小工具" },
+  "/ma/dashboard/tools/pdf-to-excel": { title: "PDF 转 Excel", description: "小工具" },
   "/ma/dashboard/ai-knowledge": { title: "AI知识库", description: "知识检索与智能问答" },
   "/ma/dashboard/ai-researcher": { title: "AI研究员", description: "自动规划并生成研究报告" },
   "/ma/dashboard/all-weather": { title: "全天候跟踪", description: "全市场跟踪看板" },

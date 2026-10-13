@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Activity, BarChart2, FileSpreadsheet, FileText, Mail, PieChart, Wrench } from "lucide-react"
+import { Activity, BarChart2, FileScan, FileSpreadsheet, FileText, Mail, PieChart, Wrench } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -45,6 +45,13 @@ const toolCards = [
     description: "上传产品净值数据，按多资产大类或商品CTA风格因子做回归分析，生成因子贡献与风险贡献报告。",
     href: "/ma/dashboard/tools/nav-attribution",
     icon: Activity,
+    actionLabel: "打开小工具",
+  },
+  {
+    title: "PDF 转 Excel",
+    description: "上传基金估值表或业绩 PDF。文字表格直接提取；业绩长图截图用 OCR 识别后导出 Excel。",
+    href: "/ma/dashboard/tools/pdf-to-excel",
+    icon: FileScan,
     actionLabel: "打开小工具",
   },
 ]

@@ -73,6 +73,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("tool-settlement", "结算单分析", "/ma/dashboard/tools/settlement-analysis", "小工具 → 结算单分析", "any", ["结算单"]),
   p("tool-valuation-table", "估值表分析", "/ma/dashboard/tools/valuation-table-analysis", "小工具 → 估值表分析", "any", ["估值表"]),
   p("tool-nav-attribution", "净值归因", "/ma/dashboard/tools/nav-attribution", "小工具 → 净值归因", "any", ["归因"]),
+  p("tool-pdf-to-excel", "PDF 转 Excel", "/ma/dashboard/tools/pdf-to-excel", "小工具 → PDF 转 Excel", "any", ["PDF转Excel", "估值表PDF", "业绩PDF", "pdf excel"]),
 
   p("mom", "MOM分析", "/ma/dashboard/mom-analysis", "MOM分析", "mom", ["MOM", "MOM模块"]),
   p("mom-risk-report", "MOM每日风控", "/ma/dashboard/mom-analysis/risk-report", "MOM分析 → MOM每日风控", "mom", ["每日风控", "风控报告"]),

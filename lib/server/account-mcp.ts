@@ -291,6 +291,7 @@ async function collectResearcher(res: Response): Promise<Record<string, unknown>
   let report = ""
   const steps: Array<{ step: number; summary: string }> = []
   let matches: unknown = undefined
+  let compare: Record<string, unknown> | null = null
   for (const line of text.split("\n")) {
     if (!line.startsWith("data: ")) continue
     let event: Record<string, unknown>
@@ -305,7 +306,26 @@ async function collectResearcher(res: Response): Promise<Record<string, unknown>
       steps.push({ step: Number(event.step) || steps.length + 1, summary: String(event.summary ?? "") })
     }
     if (event.type === "matches") matches = event.items
+    if (event.type === "compare") compare = event
     if (event.type === "error") throw new Error(String(event.message || "分析失败"))
+  }
+  if (compare) {
+    const compareReport = compare.report
+    const capped = typeof compareReport === "string" && compareReport.length > REPORT_CAP
+      ? `${compareReport.slice(0, REPORT_CAP)}\n\n[报告过长，已截断]`
+      : compareReport ?? null
+    return {
+      resolved: compare.resolved === true,
+      misses: compare.misses ?? [],
+      bindings: compare.bindings ?? [],
+      same_strategy: compare.same_strategy === true,
+      strategy_groups: compare.strategy_groups ?? [],
+      funds: compare.funds ?? [],
+      notes: compare.notes ?? [],
+      plan,
+      steps,
+      report: capped,
+    }
   }
   if (report.length > REPORT_CAP) {
     report = `${report.slice(0, REPORT_CAP)}\n\n[报告过长，已截断]`
@@ -400,6 +420,29 @@ async function kbRead(args: Record<string, unknown>) {
   }
 }
 
+function boolArg(args: Record<string, unknown>, key: string): boolean {
+  const value = args[key]
+  return value === true || value === 1 || value === "true" || value === "1"
+}
+
+function kbModelMode(args: Record<string, unknown>): "auto" | "plus" | "turbo" | "max" {
+  const mode = str(args, "model")
+  if (mode === "turbo" || mode === "max" || mode === "plus" || mode === "auto") return mode
+  return "plus"
+}
+
+async function kbSearch(args: Record<string, unknown>) {
+  const question = str(args, "question")
+  if (!question) throw new Error("请提供 question")
+  const { searchKnowledgeBase } = await import("@/lib/server/knowledge-chat")
+  return searchKnowledgeBase({
+    question,
+    folderPath: str(args, "folder_path") || null,
+    filePath: str(args, "file_path") || null,
+    limit: intArg(args, "limit", 8, 20),
+  })
+}
+
 async function kbAsk(args: Record<string, unknown>) {
   const question = str(args, "question")
   if (!question) throw new Error("请提供 question")
@@ -408,11 +451,29 @@ async function kbAsk(args: Record<string, unknown>) {
     question,
     folderPath: str(args, "folder_path") || null,
     filePath: str(args, "file_path") || null,
+    modelMode: kbModelMode(args),
+    grounded: true,
+    includePassages: boolArg(args, "debug"),
   })
+  if (result.value != null) {
+    const cellSources = result.cell_sources ?? []
+    return {
+      value: result.value,
+      answer: result.value,
+      sources: cellSources,
+      citations: result.citations ?? [],
+      citations_grounded: result.value === "暂无数据" || cellSources.length > 0,
+      model: result.model,
+      ...(result.passages ? { passages: result.passages } : {}),
+    }
+  }
   return {
     answer: result.answer,
     sources: result.sources,
+    citations: result.citations ?? [],
+    citations_grounded: result.citations_grounded ?? false,
     model: result.model,
+    ...(result.passages ? { passages: result.passages } : {}),
   }
 }
 
@@ -482,8 +543,23 @@ export async function callAccountMcpTool(
       return kbList(account, args)
     case "kb_read":
       return kbRead(args)
+    case "kb_search":
+      return kbSearch(args)
     case "kb_ask":
       return kbAsk(args)
+    case "external_rank_compare": {
+      if (!canUseMcpArea(account, "knowledge")) {
+        throw new Error(mcpAreaDeniedMessage("knowledge"))
+      }
+      const { compareExternalRank } = await import("@/lib/server/external-rank-compare")
+      return compareExternalRank({
+        className: str(args, "class"),
+        filePath: str(args, "file_path"),
+        pools: str(args, "pools"),
+        weekEnd: str(args, "week_end"),
+        topN: intArg(args, "top_n", 30, 100),
+      })
+    }
     default:
       throw new Error(`unknown tool: ${name}`)
   }

@@ -26,7 +26,34 @@ import {
   lookupManagerByRegistrationNo,
   lookupManagerForDetail,
 } from "@/lib/server/private-fund-manager-query"
+import { normalizeRegisterCode } from "@/lib/server/fund-picker-search"
 import { searchPrivateFundProductsForFastPicker } from "@/lib/server/private-fund-product-search"
+import type { ShareClassLetter } from "@/lib/server/share-class-product"
+import {
+  incompleteWindows,
+  nameBindsToQuery,
+  nameMatchScore,
+  navScopeFor,
+  parseCompareSubject,
+  shareClassParentCandidates,
+  teamStrategyLabel,
+} from "@/lib/server/compare-funds"
+import {
+  PRICE_BULK_DEFAULT,
+  PRICE_BULK_MAX,
+  familySearchText,
+  fundFamilyName,
+  isTestFundProduct,
+  listedPriceFields,
+  nextPriceDate,
+  nullFirstPriceChange,
+  pagePricePoints,
+  parsePriceBulkCursor,
+  priceBulkCursor,
+  priceChangePercent,
+  priceCodeCandidates,
+  sameFundFamily,
+} from "@/lib/server/fund-price-identity"
 
 export type FundDataOk<T> = { error_code: 0; msg: "success"; data: T }
 export type FundDataErr = { error_code: number; msg: string; data: null }
@@ -172,22 +199,257 @@ function fof99FundState(amacState: string | null | undefined): number {
   return AMAC_STATE_TO_FOF99[key] ?? 0
 }
 
-export async function resolveFundRegCode(raw: string): Promise<string | null> {
-  const code = raw.trim()
-  if (!code) return null
-  const exact = await query<{ beian_hao: string }>(
-    `SELECT beian_hao FROM (
-       SELECT beian_hao FROM private_fund_info WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
+type ExactBeianRow = { beian_hao: string; product_name: string | null }
+
+async function exactBeianRow(code: string): Promise<ExactBeianRow | null> {
+  const rows = await query<ExactBeianRow>(
+    `SELECT beian_hao, product_name FROM (
+       SELECT beian_hao, product_name FROM private_fund_info WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
        UNION ALL
-       SELECT beian_hao FROM private_fund_info_bfl WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
+       SELECT beian_hao, product_name FROM private_fund_info_bfl WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
      ) t
      LIMIT 1`,
     [code],
   ).catch(() => [])
-  if (exact[0]?.beian_hao) return exact[0].beian_hao
+  const row = rows[0]
+  if (!row?.beian_hao) return null
+  return { beian_hao: row.beian_hao, product_name: row.product_name }
+}
 
-  const hits = await searchPrivateFundProductsForFastPicker(code, 1).catch(() => [])
-  return hits[0]?.beian_hao?.trim() || null
+export type FundQueryLookup = {
+  registerNumber: string
+  shareClass: ShareClassLetter | null
+  navScope: "self" | "parent"
+  match: "exact_code" | "share_parent" | "name"
+  matchScore: number
+  fundName: string | null
+}
+
+function lookupFromRow(
+  row: ExactBeianRow,
+  shareClass: ShareClassLetter | null,
+  match: FundQueryLookup["match"],
+  matchScore: number,
+  navScope: "self" | "parent",
+): FundQueryLookup {
+  return {
+    registerNumber: row.beian_hao,
+    shareClass,
+    navScope,
+    match,
+    matchScore,
+    fundName: row.product_name,
+  }
+}
+
+/** Exact 备案号, or the parent fund when the code is that parent's A/B/C share. No prefix match. */
+async function lookupExactOrParent(code: string): Promise<FundQueryLookup | null> {
+  const exact = await exactBeianRow(code)
+  if (exact) return lookupFromRow(exact, null, "exact_code", 1, "self")
+
+  const parents = shareClassParentCandidates(code)
+  if (!parents) return null
+  for (const parent of parents.parents) {
+    const hit = await exactBeianRow(parent)
+    if (!hit) continue
+    return lookupFromRow(hit, parents.letter, "share_parent", 1, "parent")
+  }
+  return null
+}
+
+async function bindPickerHit(
+  hit: { beian_hao?: string | null; product_name?: string | null; short_name?: string | null },
+  searchName: string,
+  shareClass: ShareClassLetter | null,
+): Promise<FundQueryLookup | null> {
+  const beian = hit.beian_hao?.trim()
+  const name = hit.product_name?.trim()
+  if (!beian || !name) return null
+  if (!nameBindsToQuery(searchName, name, hit.short_name)) return null
+  const score = nameMatchScore(searchName, name, hit.short_name) ?? 0.85
+
+  const exact = await exactBeianRow(beian)
+  if (exact) {
+    const productName = exact.product_name || name
+    if (!nameBindsToQuery(searchName, productName, hit.short_name)) return null
+    return lookupFromRow(
+      { beian_hao: exact.beian_hao, product_name: productName },
+      shareClass,
+      "name",
+      score,
+      navScopeFor(shareClass, productName),
+    )
+  }
+
+  const normalized = normalizeRegisterCode(beian)
+  const parents = normalized ? shareClassParentCandidates(normalized) : null
+  if (!parents) return null
+  for (const parent of parents.parents) {
+    const row = await exactBeianRow(parent)
+    if (!row) continue
+    const productName = row.product_name || name
+    if (!nameBindsToQuery(searchName, productName, hit.short_name)) continue
+    return lookupFromRow(
+      { beian_hao: row.beian_hao, product_name: productName },
+      shareClass ?? parents.letter,
+      "name",
+      score,
+      "parent",
+    )
+  }
+  return null
+}
+
+/** Same resolver fund/search and fund/info use. A code never falls through to a prefix search. */
+export async function lookupFundQueryHits(raw: string): Promise<FundQueryLookup[]> {
+  const queryText = raw.trim()
+  if (!queryText) return []
+  const code = normalizeRegisterCode(queryText)
+  if (code) {
+    const one = await lookupExactOrParent(code)
+    return one ? [one] : []
+  }
+
+  const parsed = parseCompareSubject(queryText)
+  const searchName = parsed.baseName || queryText
+  const hits = await searchPrivateFundProductsForFastPicker(searchName, 8).catch(() => [])
+  const out: FundQueryLookup[] = []
+  const seen = new Set<string>()
+  for (const hit of hits) {
+    const resolved = await bindPickerHit(hit, searchName, parsed.shareClass)
+    if (!resolved) continue
+    const key = resolved.registerNumber.toUpperCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(resolved)
+  }
+  return out
+}
+
+export async function lookupFundQuery(raw: string): Promise<FundQueryLookup | null> {
+  const hits = await lookupFundQueryHits(raw)
+  return hits[0] ?? null
+}
+
+export async function resolveFundRegCode(raw: string): Promise<string | null> {
+  const identity = await resolvePriceIdentity(raw)
+  return identity?.priceRegCode ?? null
+}
+
+export type PriceIdentity = {
+  queried: string
+  registerNumber: string
+  fundName: string
+  priceRegCode: string
+  parentRegCode: string
+  shareClass: ShareClassLetter | null
+  navScope: "self" | "parent"
+}
+
+async function codesWithNav(codes: string[]): Promise<Set<string>> {
+  const unique = Array.from(new Set(codes.map((code) => code.trim().toUpperCase()).filter(Boolean)))
+  if (unique.length === 0) return new Set()
+  const rows = await query<{ beian_hao: string }>(
+    `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao
+     FROM private_fund_info
+     WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       AND latest_nav IS NOT NULL`,
+    [unique],
+  ).catch(() => [] as { beian_hao: string }[])
+  return new Set(rows.map((row) => row.beian_hao.toUpperCase()))
+}
+
+async function siblingSeriesCode(fundName: string, candidates: string[]): Promise<string | null> {
+  if (fundFamilyName(fundName).length < 4) return null
+  const hits = await searchPrivateFundProductsForFastPicker(fundName, 12).catch(() => [])
+  const codes: string[] = []
+  const seen = new Set<string>()
+  for (const hit of hits) {
+    const name = hit.product_name?.trim()
+    const code = hit.beian_hao?.trim().toUpperCase()
+    if (!name || !code || seen.has(code)) continue
+    if (!sameFundFamily(fundName, name)) continue
+    seen.add(code)
+    codes.push(code)
+  }
+  if (codes.length === 0) return null
+  const withNav = await codesWithNav(codes)
+  const navCodes = codes.filter((code) => withNav.has(code))
+  const preferred = candidates.map((code) => code.toUpperCase()).filter((code) => withNav.has(code))
+  if (preferred.length > 0) return preferred[0]
+  if (navCodes.length === 1) return navCodes[0]
+  const sPrefixed = navCodes.filter((code) => code.startsWith("S"))
+  if (sPrefixed.length === 1) return sPrefixed[0]
+  return null
+}
+
+function shareClassForPrice(
+  queryCode: string,
+  lookup: FundQueryLookup,
+  priceRegCode: string,
+): ShareClassLetter | null {
+  if (lookup.shareClass) return lookup.shareClass
+  const normalized = normalizeRegisterCode(queryCode) || queryCode.trim().toUpperCase()
+  const parents = shareClassParentCandidates(normalized)
+  if (!parents) return null
+  if (parents.parents.some((parent) => parent.toUpperCase() === priceRegCode.toUpperCase())) return parents.letter
+  return null
+}
+
+/** Code /price will accept, including share-class parents and a same-name sibling series. */
+export async function resolvePriceIdentity(raw: string): Promise<PriceIdentity | null> {
+  const queryText = raw.trim()
+  if (!queryText || isTestFundProduct(queryText, queryText)) return null
+  const lookup = await lookupFundQuery(queryText)
+  if (!lookup) return null
+  if (isTestFundProduct(lookup.fundName, lookup.registerNumber) || isTestFundProduct(lookup.fundName, queryText)) {
+    return null
+  }
+
+  const candidates: string[] = []
+  const add = (code: string) => {
+    const next = code.trim().toUpperCase()
+    if (next && !candidates.includes(next)) candidates.push(next)
+  }
+  for (const code of priceCodeCandidates(queryText)) add(code)
+  for (const code of priceCodeCandidates(lookup.registerNumber)) add(code)
+
+  const withNav = await codesWithNav(candidates)
+  let series = candidates.find((code) => withNav.has(code)) ?? null
+  if (!series) {
+    const probe = Array.from(new Set([candidates[0], lookup.registerNumber.toUpperCase()].filter(Boolean)))
+    for (const code of probe.slice(0, 2)) {
+      const rows = await loadPublishedNavSeries(code)
+      if (publishedRowsToPoints(rows).length > 0) {
+        series = code
+        break
+      }
+    }
+  }
+  if (!series && lookup.fundName) series = await siblingSeriesCode(lookup.fundName, candidates)
+
+  const priceRegCode = (series ?? lookup.registerNumber).toUpperCase()
+  const shareClass = shareClassForPrice(queryText, lookup, priceRegCode)
+  const normalized = normalizeRegisterCode(queryText) || queryText.toUpperCase()
+  const parents = shareClassParentCandidates(normalized)
+  const parentFromTier = parents?.parents.find((parent) => parent.toUpperCase() === priceRegCode) ?? parents?.parents[0]
+  const parentRegCode = shareClass && parentFromTier
+    ? parentFromTier
+    : priceRegCode === lookup.registerNumber.toUpperCase()
+      ? lookup.registerNumber.toUpperCase()
+      : priceRegCode
+  const navScope: "self" | "parent" =
+    priceRegCode !== lookup.registerNumber.toUpperCase() || lookup.navScope === "parent" ? "parent" : "self"
+
+  return {
+    queried: queryText,
+    registerNumber: lookup.registerNumber,
+    fundName: lookup.fundName || lookup.registerNumber,
+    priceRegCode,
+    parentRegCode,
+    shareClass,
+    navScope,
+  }
 }
 
 type InfoCoreRow = {
@@ -333,9 +595,57 @@ function parseManagerNames(raw: string | null | undefined): { name: string; id: 
     .map((name) => ({ name, id: "" }))
 }
 
+export type CompareFundRecord = {
+  register_number: string
+  fund_name: string
+  manager: string
+  inception_date: string | null
+  latest_nav: number | null
+  latest_nav_date: string | null
+  ret_1w: number | null
+  ret_1m: number | null
+  ret_3m: number | null
+  ret_6m: number | null
+  ret_1y: number | null
+  sharpe_1y: number | null
+  calmar_1y: number | null
+  strategy_l1: string | null
+  strategy_l2: string | null
+  strategy_l3: string | null
+}
+
+/** fund/view metrics plus the team strategy fields. Empty team strategy stays empty. */
+export async function loadCompareFundRecord(registerNumber: string): Promise<CompareFundRecord | null> {
+  const [core, strategies] = await Promise.all([
+    loadInfoCore(registerNumber),
+    loadResolvedFundStrategies(registerNumber).catch(() => null),
+  ])
+  if (!core && !strategies) return null
+  const team = strategies?.team
+  return {
+    register_number: core?.beian_hao || strategies?.beian_hao || registerNumber,
+    fund_name: core?.product_name?.trim() || strategies?.product_name?.trim() || registerNumber,
+    manager: core?.manager?.trim() || "",
+    inception_date: fmtDate(core?.inception_date) || null,
+    latest_nav: toNum(core?.latest_nav),
+    latest_nav_date: fmtDate(core?.latest_nav_date) || null,
+    ret_1w: toNum(core?.ret_1w),
+    ret_1m: toNum(core?.ret_1m),
+    ret_3m: toNum(core?.ret_3m),
+    ret_6m: toNum(core?.ret_6m),
+    ret_1y: toNum(core?.ret_1y),
+    sharpe_1y: toNum(core?.sharpe_1y),
+    calmar_1y: toNum(core?.calmar_1y),
+    strategy_l1: team?.l1 ?? null,
+    strategy_l2: team?.l2 ?? null,
+    strategy_l3: team?.l3 ?? null,
+  }
+}
+
 export async function getFundInfo(regCode: string): Promise<FundDataEnvelope<Record<string, unknown>>> {
-  const resolved = await resolveFundRegCode(regCode)
-  if (!resolved) return fundDataErr(2, `fund not found: ${regCode}`)
+  const identity = await resolvePriceIdentity(regCode)
+  if (!identity) return fundDataErr(2, `fund not found: ${regCode}`)
+  const resolved = identity.registerNumber
 
   const [core, track, strategies, amac] = await Promise.all([
     loadInfoCore(resolved),
@@ -371,6 +681,10 @@ export async function getFundInfo(regCode: string): Promise<FundDataEnvelope<Rec
     advisor,
     advisor2: advisor,
     register_number: resolved,
+    share_class: identity.shareClass,
+    nav_scope: identity.navScope,
+    price_reg_code: identity.priceRegCode,
+    parent_reg_code: identity.parentRegCode,
     inception_date: fmtDate(track?.inception_date || core?.inception_date || amac?.establish_date || core?.amac_establish),
     puton_date: fmtDate(track?.puton_date || amac?.put_on_record_date || core?.amac_puton),
     mandator_name: mandator,
@@ -476,7 +790,7 @@ function publishedRowsToPoints(rows: PublishedNavRow[], regCode?: string): FundP
       nav,
       cumulative_nav_withdrawal: toNum(row.cum_nav_withdrawal),
       cumulative_nav: toNum(row.cumulative_nav),
-      price_change: toNum(row.price_change),
+      price_change: priceChangePercent(row.price_change),
       price_date: priceDate,
       ...(regCode ? { reg_code: regCode } : {}),
     })
@@ -531,28 +845,144 @@ async function mapWithConcurrency<T, R>(
   return out
 }
 
+export type PriceSeriesMeta = {
+  series_reg_code: string
+  queried_reg_code: string
+  price_reg_code: string
+  parent_reg_code: string
+  share_class: ShareClassLetter | null
+  fund_name: string
+  truncated: boolean
+  next_start_date: string | null
+}
+
+export type PriceSeriesEnvelope = FundDataOk<FundPricePoint[]> & PriceSeriesMeta
+
+async function chronologicalPricePoints(
+  identity: PriceIdentity,
+  start: string | null,
+  end: string | null,
+): Promise<FundPricePoint[]> {
+  const rows = await loadPublishedNavSeries(identity.priceRegCode)
+  const stamped = nullFirstPriceChange(publishedRowsToPoints(rows, identity.priceRegCode))
+  return stamped.filter((point) => {
+    if (start && point.price_date < start) return false
+    if (end && point.price_date > end) return false
+    return true
+  })
+}
+
+function seriesMeta(identity: PriceIdentity, truncated: boolean, nextStart: string | null): PriceSeriesMeta {
+  return {
+    series_reg_code: identity.priceRegCode,
+    queried_reg_code: identity.queried,
+    price_reg_code: identity.priceRegCode,
+    parent_reg_code: identity.parentRegCode,
+    share_class: identity.shareClass,
+    fund_name: identity.fundName,
+    truncated,
+    next_start_date: nextStart,
+  }
+}
+
 export async function getFundPrice(options: {
   reg_code: string
   start_date?: string | null
   end_date?: string | null
   order?: string | number | null
   order_by?: string | null
-}): Promise<FundDataEnvelope<FundPricePoint[]>> {
-  const resolved = await resolveFundRegCode(options.reg_code)
-  if (!resolved) return fundDataErr(2, `fund not found: ${options.reg_code}`)
+}): Promise<PriceSeriesEnvelope | FundDataErr> {
+  const identity = await resolvePriceIdentity(options.reg_code)
+  if (!identity) return fundDataErr(2, `fund not found: ${options.reg_code}`)
 
   const start = parseIsoDate(options.start_date)
   const end = parseIsoDate(options.end_date)
   const orderBy = PRICE_ORDER_BY[String(options.order_by ?? "price_date")] ?? "price_date"
   const asc = parseOrderAsc(options.order)
+  const points = await chronologicalPricePoints(identity, start, end)
+  const sorted = sortPricePoints(points, orderBy, asc)
+  const page = sorted.slice(0, 5000)
+  const truncated = sorted.length > 5000
+  let nextStart: string | null = null
+  if (truncated && asc && orderBy === "price_date") {
+    const last = page[page.length - 1]?.price_date
+    nextStart = last ? nextPriceDate(last) : null
+    if (end && nextStart && nextStart > end) nextStart = null
+  }
+  return { ...fundDataOk(page), ...seriesMeta(identity, truncated, nextStart) }
+}
 
-  const rows = await loadPublishedNavSeries(resolved)
-  const points = publishedRowsToPoints(rows).filter((point) => {
-    if (start && point.price_date < start) return false
-    if (end && point.price_date > end) return false
-    return true
+export type PriceBulkSeries = PriceSeriesMeta & {
+  reg_code: string
+  points: FundPricePoint[]
+  error_code: number
+  msg: string
+}
+
+export async function getFundPriceBulk(options: {
+  reg_code?: string | null
+  start_date?: string | null
+  end_date?: string | null
+  cursor?: string | null
+  batch?: string | number | null
+}): Promise<FundDataEnvelope<{ series: PriceBulkSeries[]; next_cursor: string | null }>> {
+  const codes = splitRegCodes(options.reg_code || "")
+  if (codes.length === 0) return fundDataErr(1, "reg_code is required")
+  const parsed = parsePriceBulkCursor(options.cursor)
+  const batch = Math.min(PRICE_BULK_MAX, Math.max(1, parseIntParam(options.batch, PRICE_BULK_DEFAULT)))
+  const end = parseIsoDate(options.end_date)
+  const rangeStart = parseIsoDate(options.start_date)
+  const series: PriceBulkSeries[] = []
+  const cursorIndex = Math.min(parsed.index, codes.length)
+  let index = cursorIndex
+
+  while (index < codes.length && series.length < batch) {
+    const code = codes[index]
+    const cursorStart = index === cursorIndex ? parsed.start : null
+    const start = cursorStart && rangeStart
+      ? (cursorStart > rangeStart ? cursorStart : rangeStart)
+      : cursorStart || rangeStart
+    const identity = await resolvePriceIdentity(code)
+    if (!identity) {
+      series.push({
+        reg_code: code,
+        points: [],
+        error_code: 2,
+        msg: `fund not found: ${code}`,
+        series_reg_code: "",
+        queried_reg_code: code,
+        price_reg_code: "",
+        parent_reg_code: "",
+        share_class: null,
+        fund_name: "",
+        truncated: false,
+        next_start_date: null,
+      })
+      index += 1
+      continue
+    }
+    const points = await chronologicalPricePoints(identity, start, end)
+    const page = pagePricePoints(points, null, null)
+    let nextStart = page.next_start_date
+    if (end && nextStart && nextStart > end) nextStart = null
+    const truncated = page.truncated && nextStart != null
+    series.push({
+      reg_code: code,
+      points: page.points,
+      error_code: 0,
+      msg: "success",
+      ...seriesMeta(identity, truncated, truncated ? nextStart : null),
+    })
+    if (truncated && nextStart) {
+      return fundDataOk({ series, next_cursor: priceBulkCursor(index, nextStart) })
+    }
+    index += 1
+  }
+
+  return fundDataOk({
+    series,
+    next_cursor: index < codes.length ? priceBulkCursor(index, null) : null,
   })
-  return fundDataOk(sortPricePoints(points, orderBy, asc).slice(0, 5000))
 }
 
 export async function getFundMultiPrice(options: {
@@ -565,21 +995,19 @@ export async function getFundMultiPrice(options: {
   if (codes.length === 0) return fundDataErr(1, "reg_code is required")
   if (codes.length > 40) return fundDataErr(1, "reg_code supports at most 40 funds")
 
-  const resolvedPairs = await Promise.all(
-    codes.map(async (code) => ({ code, resolved: await resolveFundRegCode(code) })),
-  )
-  const resolved = Array.from(
-    new Set(resolvedPairs.map((p) => p.resolved).filter((v): v is string => Boolean(v))),
-  )
-  if (resolved.length === 0) return fundDataErr(2, "no matching funds")
+  const identities = (
+    await Promise.all(codes.map(async (code) => ({ code, identity: await resolvePriceIdentity(code) })))
+  ).filter((row): row is { code: string; identity: PriceIdentity } => row.identity != null)
+  if (identities.length === 0) return fundDataErr(2, "no matching funds")
 
   const onDate = parseIsoDate(options.date)
   const orderBy = PRICE_ORDER_BY[String(options.order_by ?? "nav")] ?? "nav"
   const asc = parseOrderAsc(options.order ?? "0")
 
-  const points = await mapWithConcurrency(resolved, 4, async (code) => {
-    const rows = await loadPublishedNavSeries(code)
-    return latestPointOnOrBefore(publishedRowsToPoints(rows, code), onDate)
+  const points = await mapWithConcurrency(identities, 4, async ({ identity }) => {
+    const rows = await chronologicalPricePoints(identity, null, null)
+    const latest = latestPointOnOrBefore(rows, onDate)
+    return latest ? { ...latest, reg_code: identity.priceRegCode } : null
   })
   const present = points.filter((point): point is FundPricePoint => point != null)
   return fundDataOk(sortPricePoints(present, orderBy, asc))
@@ -602,25 +1030,108 @@ export async function getFundView(regCode: string): Promise<FundDataEnvelope<Rec
     sharpe_1y: toNum(core?.sharpe_1y),
     calmar_1y: toNum(core?.calmar_1y),
     strategy: info.data.strategy,
+    share_class: info.data.share_class ?? null,
+    nav_scope: info.data.nav_scope ?? "self",
+    price_reg_code: info.data.price_reg_code ?? info.data.register_number,
+    parent_reg_code: info.data.parent_reg_code ?? info.data.register_number,
+    incomplete_windows: incompleteWindows(
+      fmtDate(info.data.inception_date) || null,
+      fmtDate(core?.latest_nav_date) || null,
+    ),
   })
 }
 
+type SearchProduct = {
+  register_number: string
+  fund_name: string
+  fund_short_name: string
+  strategy_one: string
+  price_reg_code: string
+  parent_reg_code: string
+  share_class: ShareClassLetter | null
+}
+
+async function decorateSearchProduct(product: {
+  register_number: string
+  fund_name: string
+  fund_short_name: string
+  strategy_one: string
+}): Promise<SearchProduct | null> {
+  if (isTestFundProduct(product.fund_name, product.register_number)) return null
+  const identity = await resolvePriceIdentity(product.register_number)
+  if (!identity || isTestFundProduct(identity.fundName, identity.registerNumber)) return null
+  return {
+    ...product,
+    fund_name: product.fund_name || identity.fundName,
+    price_reg_code: identity.priceRegCode,
+    parent_reg_code: identity.parentRegCode,
+    share_class: identity.shareClass,
+  }
+}
+
+async function withParentProducts(products: SearchProduct[]): Promise<SearchProduct[]> {
+  const seen = new Set(products.map((product) => product.register_number.toUpperCase()))
+  const parents: SearchProduct[] = []
+  for (const product of products) {
+    const parent = product.parent_reg_code.toUpperCase()
+    if (!parent || parent === product.register_number.toUpperCase() || seen.has(parent)) continue
+    seen.add(parent)
+    const record = await loadCompareFundRecord(parent)
+    if (!record || isTestFundProduct(record.fund_name, parent)) continue
+    parents.push({
+      register_number: record.register_number || parent,
+      fund_name: record.fund_name,
+      fund_short_name: "",
+      strategy_one: teamStrategyLabel(record.strategy_l1, record.strategy_l2, record.strategy_l3),
+      price_reg_code: parent,
+      parent_reg_code: parent,
+      share_class: null,
+    })
+  }
+  return [...parents, ...products]
+}
+
 export async function searchFunds(q: string, limit = 8): Promise<FundDataEnvelope<{
-  products: Array<{
-    register_number: string
-    fund_name: string
-    fund_short_name: string
-    strategy_one: string
-  }>
+  products: SearchProduct[]
   managers: Array<{ registration_no: string; manager_name: string }>
 }>> {
   const keyword = q.trim()
-  if (!keyword) return fundDataOk({ products: [], managers: [] })
+  if (!keyword || isTestFundProduct(keyword, keyword)) return fundDataOk({ products: [], managers: [] })
   const take = Math.min(Math.max(parseIntParam(limit, 8), 1), 40)
 
-  const [products, managers] = await Promise.all([
-    searchPrivateFundProductsForFastPicker(keyword, take).catch(() => []),
-    query<{ registration_no: string; manager_name: string }>(
+  if (normalizeRegisterCode(keyword)) {
+    const hits = await lookupFundQueryHits(keyword)
+    const products: SearchProduct[] = []
+    for (const hit of hits.slice(0, take)) {
+      const record = await loadCompareFundRecord(hit.registerNumber)
+      const decorated = await decorateSearchProduct({
+        register_number: hit.registerNumber,
+        fund_name: record?.fund_name || hit.fundName || hit.registerNumber,
+        fund_short_name: "",
+        strategy_one: record
+          ? teamStrategyLabel(record.strategy_l1, record.strategy_l2, record.strategy_l3)
+          : "",
+      })
+      if (decorated) products.push(decorated)
+    }
+    return fundDataOk({ products: await withParentProducts(products), managers: [] })
+  }
+
+  const cleaned = familySearchText(keyword)
+  const nameQueries = cleaned && cleaned !== keyword ? [keyword, cleaned] : [keyword]
+  const picked: Awaited<ReturnType<typeof searchPrivateFundProductsForFastPicker>> = []
+  const seenBeian = new Set<string>()
+  for (const nameQuery of nameQueries) {
+    const hits = await searchPrivateFundProductsForFastPicker(nameQuery, take).catch(() => [])
+    for (const hit of hits) {
+      const key = (hit.beian_hao || "").trim().toUpperCase()
+      if (!key || seenBeian.has(key)) continue
+      seenBeian.add(key)
+      picked.push(hit)
+    }
+  }
+
+  const managers = await query<{ registration_no: string; manager_name: string }>(
       `SELECT registration_no, manager_name
        FROM (
          SELECT registration_no, manager_name
@@ -643,19 +1154,28 @@ export async function searchFunds(q: string, limit = 8): Promise<FundDataEnvelop
          LENGTH(manager_name) ASC
        LIMIT $3`,
       [`%${keyword}%`, `${keyword}%`, take],
-    ).catch(() => []),
-  ])
+  ).catch(() => [] as { registration_no: string; manager_name: string }[])
+
+  const products: SearchProduct[] = []
+  for (const hit of picked.slice(0, take)) {
+    const decorated = await decorateSearchProduct({
+      register_number: hit.beian_hao,
+      fund_name: hit.product_name,
+      fund_short_name: hit.short_name ?? "",
+      strategy_one: hit.strategy_one ?? "",
+    })
+    if (decorated) products.push(decorated)
+  }
 
   return fundDataOk({
-    products: products.map((p) => ({
-      register_number: p.beian_hao,
-      fund_name: p.product_name,
-      fund_short_name: p.short_name ?? "",
-      strategy_one: p.strategy_one ?? "",
-    })),
+    products: await withParentProducts(products),
     managers,
   })
 }
+
+const SQL_EXCLUDE_TEST_FUND = `COALESCE(i.beian_hao, '') !~* '_test_'
+  AND COALESCE(i.product_name, '') !~* '^test fund\\b'
+  AND COALESCE(i.product_name, '') !~ '测试基金|测试产品'`
 
 export async function getFundAdvancedList(options: {
   strategy_one?: string | null
@@ -693,7 +1213,7 @@ export async function getFundAdvancedList(options: {
     : `t6.company_l2`
   const l3Expr = strategySource === "platform" ? `t6.platform_l3` : `t6.company_l3`
 
-  const where: string[] = []
+  const where: string[] = [SQL_EXCLUDE_TEST_FUND]
   const params: unknown[] = []
 
   if (!isUnlimited(l1)) {
@@ -846,6 +1366,7 @@ export async function getFundAdvancedList(options: {
     strategy_verify: 0,
     amac_scale: row.amac_scale ?? "",
     register_code: row.register_code ?? "",
+    ...listedPriceFields(row.beian_hao, row.product_name),
   }))
 
   return fundDataOk({ list, total, page, pagesize })
@@ -920,6 +1441,7 @@ export async function getCompanyFundList(options: {
          WHERE manager_name = $1
        )
      )
+     AND ${SQL_EXCLUDE_TEST_FUND}
      ${stateClause}`,
     baseParams,
   )
@@ -957,6 +1479,7 @@ export async function getCompanyFundList(options: {
          WHERE manager_name = $1
        )
      )
+     AND ${SQL_EXCLUDE_TEST_FUND}
      ${stateClause}
      ORDER BY i.latest_nav_date DESC NULLS LAST, i.beian_hao
      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -972,6 +1495,7 @@ export async function getCompanyFundList(options: {
       price_date: fmtDate(row.latest_nav_date),
       fund_type: fof99FundType(row.fund_type),
       fund_state: fof99FundState(row.working_state),
+      ...listedPriceFields(row.beian_hao, row.product_name),
     })),
     total,
     page,
@@ -982,8 +1506,9 @@ export async function getCompanyFundList(options: {
 export const FUND_DATA_CATALOG = {
   endpoints: [
     { path: "/fund/info", tool: "fund_info", desc: "私募基金基本信息" },
-    { path: "/price", tool: "fund_price", desc: "单基金净值序列" },
-    { path: "/fund/price", tool: "fund_multi_price", desc: "多基金净值，最多 40 只" },
+    { path: "/price", tool: "fund_price", desc: "单基金净值序列。份额代码会解析到 price_reg_code" },
+    { path: "/price/bulk", tool: "fund_price_bulk", desc: "多基金历史净值。POST 体可带整本跟踪池备案号，cursor 续页" },
+    { path: "/fund/price", tool: "fund_multi_price", desc: "多基金净值，最多 40 只，同一日" },
     { path: "/fund/advancedlist", tool: "fund_advanced_list", desc: "按策略筛选基金列表" },
     { path: "/fund/view", tool: "fund_view", desc: "业绩指标" },
     { path: "/fund/search", tool: "fund_search", desc: "按名称/备案号搜索基金与管理人" },
@@ -1012,6 +1537,15 @@ export async function handleFundDataRequest(
         end_date: params.end_date,
         order: params.order,
         order_by: params.order_by,
+      })
+    case "price/bulk":
+      if (!params.reg_code) return fundDataErr(1, "reg_code is required")
+      return getFundPriceBulk({
+        reg_code: params.reg_code,
+        start_date: params.start_date,
+        end_date: params.end_date,
+        cursor: params.cursor,
+        batch: params.batch,
       })
     case "fund/price":
       if (!params.reg_code) return fundDataErr(1, "reg_code is required")

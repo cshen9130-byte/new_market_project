@@ -1,3 +1,4 @@
+import { createHash } from "crypto"
 import {
   FUND_ELEMENT_EXTRACT_MAX_MB,
   isFundElementExtractableFile,
@@ -6,6 +7,7 @@ import {
 import { startContractExtractJob } from "@/lib/server/fund-contract-extract-job"
 import {
   createElementExtractJobFromBuffer,
+  findLiveElementExtractDuplicate,
   type ElementExtractJobRow,
 } from "@/lib/server/fund-element-extract-jobs"
 import {
@@ -45,12 +47,23 @@ export async function enqueueElementExtractForInvestmentNoteMaterial(input: {
     return { job: null, skipReason: `未能读取「${input.fileName}」，无法提取产品要素` }
   }
 
-  const job = await createElementExtractJobFromBuffer({
-    buffer: file.buffer,
+  const hash = createHash("sha256").update(file.buffer).digest("hex").slice(0, 16)
+  const existing = await findLiveElementExtractDuplicate({
+    contentHash: hash,
     originalFilename: file.filename || input.fileName,
-    uploaded_by: input.uploadedBy,
+    fileSize: file.buffer.length,
   })
+  const job =
+    existing ??
+    (await createElementExtractJobFromBuffer({
+      buffer: file.buffer,
+      originalFilename: file.filename || input.fileName,
+      uploaded_by: input.uploadedBy,
+      contentHash: hash,
+    }))
   setInvestmentNoteMaterialExtractJobId(input.materialId, job.id)
-  startContractExtractJob()
+  if (!existing || existing.status === "queued" || existing.status === "extracting") {
+    startContractExtractJob()
+  }
   return { job, skipReason: null }
 }

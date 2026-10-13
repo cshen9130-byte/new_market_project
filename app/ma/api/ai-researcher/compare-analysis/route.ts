@@ -1,35 +1,30 @@
 import { NextResponse } from "next/server"
-import { query } from "@/lib/db"
-import { ChatOpenAI } from "@langchain/openai"
-import { HumanMessage, SystemMessage } from "@langchain/core/messages"
-import { loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
 import {
-  formatFundStrategyLabel,
-  sqlResolvedStrategySelect,
-  sqlType6LatestStrategyJoin,
-} from "@/lib/server/fund-strategy-resolve"
+  buildCompareReport,
+  distinctFundFamilies,
+  groupByTeamStrategy,
+  incompleteWindows,
+  missReport,
+  passageNamesFund,
+  teamStrategyLabel,
+  type CompareBinding,
+  type CompareFund,
+  type CompareNote,
+} from "@/lib/server/compare-funds"
+import { loadCompareFundRecord, lookupFundQueryHits } from "@/lib/server/fund-data-api"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-// ── LLM helpers ────────────────────────────────────────────────────────────────
-
-function getChatModel(streaming = false) {
-  const apiKey = process.env.DASHSCOPE_API_KEY
-  if (!apiKey) throw new Error("缺少 DASHSCOPE_API_KEY")
-  return new ChatOpenAI({
-    apiKey,
-    model: process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
-    temperature: 0.3,
-    streaming,
-    configuration: {
-      baseURL: process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    },
-  })
-}
-
-// ── Timeout helper ─────────────────────────────────────────────────────────────
+const STEP_TITLES = [
+  "",
+  "搜索并匹配基金/管理人信息",
+  "获取净值历史数据",
+  "获取管理人背景信息",
+  "查询知识库相关文档",
+  "生成对比分析报告",
+]
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
   return Promise.race([
@@ -43,417 +38,43 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: str
   ])
 }
 
-// ── DB helpers ─────────────────────────────────────────────────────────────────
-
-interface FundBasicInfo {
-  beian_hao: string
-  product_name: string
-  manager: string
-  strategy_l1: string | null
-  strategy_l2: string | null
-  strategy_l3: string | null
-  inception_date: string | null
-  benchmark: string | null
-  ret_1w: string | null
-  ret_1m: string | null
-  ret_3m: string | null
-  ret_6m: string | null
-  ret_1y: string | null
-  sharpe_1y: string | null
-  calmar_1y: string | null
-  latest_nav: string | null
-  latest_nav_date: string | null
-}
-
-interface NavPoint {
-  price_date: string
-  nav: string
-  cumulative_nav: string | null
-}
-
-interface ManagerInfo {
-  registration_no: string
-  manager_name: string
-  registration_date: string | null
-  aum: string | null
-  product_count: number | null
-}
-
-async function fetchFundsBySubjects(subjects: string[]): Promise<FundBasicInfo[]> {
-  if (subjects.length === 0) return []
-  const conditions = subjects
-    .map((_, i) => `(i.product_name ILIKE $${i + 1} OR i.beian_hao ILIKE $${i + 1} OR i.manager ILIKE $${i + 1})`)
-    .join(" OR ")
-  const params = subjects.map((s) => `%${s}%`)
-  const rows = await query<FundBasicInfo>(
-    `SELECT
-       i.beian_hao, i.product_name, i.manager,
-       ${sqlResolvedStrategySelect("i")},
-       i.inception_date::text AS inception_date, i.benchmark,
-       i.ret_1w::text, i.ret_1m::text, i.ret_3m::text, i.ret_6m::text, i.ret_1y::text,
-       i.sharpe_1y::text, i.calmar_1y::text,
-       i.latest_nav::text, i.latest_nav_date::text AS latest_nav_date
-     FROM private_fund_info i
-     ${sqlType6LatestStrategyJoin("i.beian_hao")}
-     WHERE ${conditions}
-     ORDER BY i.product_name
-     LIMIT 20`,
-    params,
-  )
-  return rows
-}
-
-// Same merged NAV path as the fund detail page / due-diligence table
-// (type6 + legacy + email + team). Platform-only tables miss funds like
-// 古曲祥辰1号 whose series only exists after that merge.
-async function fetchNavHistoryRaw(
-  funds: Pick<FundBasicInfo, "beian_hao" | "product_name">[],
-  months = 36,
-): Promise<Record<string, NavPoint[]>> {
-  if (funds.length === 0) return {}
-  const cutoff = new Date()
-  cutoff.setMonth(cutoff.getMonth() - months)
-  const cutoffStr = cutoff.toISOString().slice(0, 10)
-  const toStr = new Date().toISOString().slice(0, 10)
-
-  const perFundPromises = funds.map(async (f) => {
-    try {
-      const names = await resolveFundNames(f.beian_hao, f.product_name)
-      const series = await loadFundNavSeries(
-        f.beian_hao,
-        names.product_name,
-        names.short_name ?? "",
-        { from: cutoffStr, to: toStr },
-      )
-      const points: NavPoint[] = series.map((p) => ({
-        price_date: p.price_date,
-        nav: p.level,
-        cumulative_nav: p.level,
-      }))
-      return { beian_hao: f.beian_hao, points }
-    } catch (err) {
-      console.error(`[ai-researcher] fetchNavHistory ${f.beian_hao}`, err)
-      return { beian_hao: f.beian_hao, points: [] as NavPoint[] }
-    }
-  })
-
-  const settled = await Promise.allSettled(perFundPromises)
-  const result: Record<string, NavPoint[]> = {}
-  for (const s of settled) {
-    if (s.status === "fulfilled" && s.value.points.length > 0) {
-      result[s.value.beian_hao] = s.value.points
-    }
-  }
-  return result
-}
-
-// Wraps the NAV fetch with a timeout so a slow merge never blocks the pipeline.
-async function fetchNavHistory(
-  funds: Pick<FundBasicInfo, "beian_hao" | "product_name">[],
-): Promise<{ navMap: Record<string, NavPoint[]>; timedOut: boolean }> {
-  if (funds.length === 0) return { navMap: {}, timedOut: false }
-  let timedOut = false
-  const navMap = await Promise.race([
-    fetchNavHistoryRaw(funds),
-    new Promise<Record<string, NavPoint[]>>((resolve) =>
-      setTimeout(() => {
-        timedOut = true
-        resolve({})
-      }, 30_000),
-    ),
-  ])
-  return { navMap, timedOut }
-}
-
-async function fetchManagerInfo(managerNames: string[]): Promise<ManagerInfo[]> {
-  if (managerNames.length === 0) return []
-  const conditions = managerNames.map((_, i) => `manager_name ILIKE $${i + 1}`).join(" OR ")
-  const params = managerNames.map((m) => `%${m}%`)
-  try {
-    return await withTimeout(
-      query<ManagerInfo>(
-        `SELECT registration_no, manager_name,
-                registration_date::text AS registration_date,
-                aum::text AS aum,
-                product_count
-         FROM private_fund_managers
-         WHERE ${conditions}
-         LIMIT 10`,
-        params,
-      ),
-      8_000,
-      [],
-      "fetchManagerInfo",
-    )
-  } catch {
-    return []
-  }
-}
-
-// ── KB query helper ────────────────────────────────────────────────────────────
-
-interface KbResult {
-  answer: string
-  sources: string[]
-}
-
-// Query each subject individually – a single combined query dilutes the
-// vector similarity and misses fund-specific documents. Per-subject queries
-// mirror how the KB assistant is used manually (type the fund name → get hits).
-async function queryKnowledgeBase(
-  subjects: string[],
-  kbPath: string | null,
-  navMissing: boolean,
-): Promise<KbResult> {
-  const { askKnowledgeBaseQuestion } = await import("@/lib/server/knowledge-chat")
-
-  const folderPath = kbPath || null // null = global search across all indexed docs
-  const notesOnly = isInvestmentNotesScope(kbPath)
-
-  // Build one focused question per subject, then run all in parallel
-  const perSubjectQueries = subjects.map((subject) => {
-    const q = notesOnly
-      ? `关于"${subject}"：请只依据投资笔记提取策略逻辑、团队与容量、风险点，以及笔记里写到的业绩评价。数字保持原文。笔记没有的内容写「笔记未提及」，不要改写成路演或月报口径。`
-      : navMissing
-        ? `关于"${subject}"：请提取该基金/管理人的历史净值走势、累计收益率、最大回撤、夏普比率等业绩数据，以及策略特点、风险控制方法、投资团队背景。如有具体数字请完整列出。投资笔记、路演材料、月报、尽调资料都可以用。`
-        : `关于"${subject}"：请从相关文档（投资笔记、路演材料、月报、尽调资料等）中提取该基金/管理人的策略特点、投资方法、历史业绩、团队背景和产品特色。`
-    return withTimeout(
-      askKnowledgeBaseQuestion({
-        question: q,
-        folderPath,
-        useBm25: true,
-        modelMode: "turbo",
-        deepSearch: navMissing,
-      }),
-      25_000,
-      { answer: "", sources: [] as string[], indexedDocuments: 0, indexedChunks: 0, model: "" },
-      `kb-query:${subject}`,
-    )
-  })
-
-  const results = await Promise.allSettled(perSubjectQueries)
-
-  const sections: string[] = []
-  const allSources: string[] = []
-
-  for (let i = 0; i < subjects.length; i++) {
-    const res = results[i]
-    if (res.status === "rejected") continue
-    const { answer, sources } = res.value
-    if (answer && answer.trim().length > 30) {
-      sections.push(`【${subjects[i]}】\n${answer.trim()}`)
-    }
-    if (sources) {
-      for (const s of sources) {
-        if (!allSources.includes(s)) allSources.push(s)
-      }
-    }
-  }
-
-  return {
-    answer: sections.join("\n\n---\n\n"),
-    sources: allSources,
-  }
-}
-
-// ── SSE helpers ────────────────────────────────────────────────────────────────
-
 function encodeEvent(data: object): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`)
 }
 
-// ── Report helpers ─────────────────────────────────────────────────────────────
-
-function buildDataSummary(
-  funds: FundBasicInfo[],
-  navMap: Record<string, NavPoint[]>,
-  navTimedOut: boolean,
-  managers: ManagerInfo[],
-): string {
-  const lines: string[] = []
-
-  lines.push("=== 基金基本信息 ===")
-  for (const f of funds) {
-    lines.push(`\n【${f.product_name}】(备案号: ${f.beian_hao})`)
-    lines.push(`  管理人: ${f.manager}`)
-    lines.push(`  策略: ${formatFundStrategyLabel(f.strategy_l1, f.strategy_l2, f.strategy_l3)}`)
-    lines.push(`  成立日期: ${f.inception_date || "未知"}`)
-    lines.push(`  基准: ${f.benchmark || "无"}`)
-    lines.push(`  最新净值(系统): ${f.latest_nav || "N/A"} (${f.latest_nav_date || "N/A"})`)
-    lines.push(`  系统绩效指标(预计算):`)
-    lines.push(`    近1周: ${pct(f.ret_1w)}  近1月: ${pct(f.ret_1m)}  近3月: ${pct(f.ret_3m)}`)
-    lines.push(`    近6月: ${pct(f.ret_6m)}  近1年: ${pct(f.ret_1y)}`)
-    lines.push(`    夏普比(1年): ${num(f.sharpe_1y)}  卡玛比(1年): ${num(f.calmar_1y)}`)
-  }
-
-  if (managers.length > 0) {
-    lines.push("\n=== 管理人信息 ===")
-    for (const m of managers) {
-      lines.push(`\n【${m.manager_name}】(登记号: ${m.registration_no})`)
-      lines.push(`  登记日期: ${m.registration_date || "未知"}`)
-      lines.push(`  管理规模: ${m.aum ? m.aum + "亿" : "未知"}`)
-      lines.push(`  产品数量: ${m.product_count ?? "未知"}`)
+async function notesForFunds(
+  funds: CompareFund[],
+  queries: Map<string, string>,
+  kbPath: string,
+): Promise<CompareNote[]> {
+  const { searchKnowledgeBase } = await import("@/lib/server/knowledge-chat")
+  const notes: CompareNote[] = []
+  for (const fund of funds) {
+    const query = queries.get(fund.register_number) || fund.fund_name
+    const found = await withTimeout(
+      searchKnowledgeBase({
+        question: `${fund.fund_name} ${fund.register_number}`,
+        folderPath: kbPath || null,
+        limit: 6,
+      }),
+      12_000,
+      { anchors: [] as string[], hits: [] },
+      `compare-notes:${fund.register_number}`,
+    )
+    for (const hit of found.hits) {
+      const text = `${hit.snippet}\n${hit.path}`
+      if (!passageNamesFund(text, [fund.fund_name, query], fund.register_number)) continue
+      notes.push({
+        register_number: fund.register_number,
+        path: hit.path,
+        page: hit.page,
+        quote: hit.snippet.replace(/\s+/g, " ").trim().slice(0, 400),
+      })
+      if (notes.filter((note) => note.register_number === fund.register_number).length >= 2) break
     }
   }
-
-  lines.push("\n=== 净值走势与计算指标（数据库）===")
-  if (navTimedOut) {
-    lines.push("⚠️ 净值数据库查询超时，未能获取历史净值序列。")
-  }
-  for (const f of funds) {
-    const nav = navMap[f.beian_hao]
-    if (!nav || nav.length === 0) {
-      lines.push(`${f.product_name}: 数据库中无净值序列（可能未收录或备案号不匹配）`)
-      continue
-    }
-    const stats = computeNavStats(nav)
-    lines.push(`${f.product_name}: ${stats.recordCount}条记录 (${stats.dateRange})`)
-    lines.push(`  区间累计收益: ${stats.totalReturn ? "+" + stats.totalReturn + "%" : "N/A"}`)
-    lines.push(`  年化收益率(计算): ${stats.annReturn ? "+" + stats.annReturn + "%" : "N/A"}`)
-    lines.push(`  今年以来收益(计算): ${stats.ytdReturn ? (parseFloat(stats.ytdReturn) >= 0 ? "+" : "") + stats.ytdReturn + "%" : "N/A"}`)
-    lines.push(`  最大回撤(计算): ${stats.maxDrawdown ? "-" + stats.maxDrawdown + "%" : "N/A"}`)
-    lines.push(`  夏普比率-成立以来(计算): ${stats.sharpe ?? "N/A"}`)
-    lines.push(`  卡玛比率-成立以来(计算): ${stats.calmar ?? "N/A"}`)
-    const recent = nav.slice(-12)
-    const navStr = recent.map((p) => `${p.price_date.slice(0, 7)}: ${p.cumulative_nav || p.nav}`).join(", ")
-    lines.push(`  近期累计净值: ${navStr}`)
-  }
-
-  return lines.join("\n")
+  return notes
 }
-
-// Values in private_fund_info are already stored in percentage form (e.g. 50.44, not 0.5044)
-function pct(v: string | null): string {
-  if (!v) return "N/A"
-  const n = parseFloat(v)
-  return isNaN(n) ? "N/A" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%"
-}
-
-function num(v: string | null): string {
-  if (!v) return "N/A"
-  const n = parseFloat(v)
-  return isNaN(n) ? "N/A" : n.toFixed(3)
-}
-
-interface NavStats {
-  totalReturn: string | null     // percent
-  annReturn: string | null       // percent
-  ytdReturn: string | null       // percent
-  maxDrawdown: string | null     // percent (positive = loss)
-  sharpe: string | null
-  calmar: string | null
-  recordCount: number
-  dateRange: string
-}
-
-function computeNavStats(navPoints: NavPoint[]): NavStats {
-  if (navPoints.length < 2) {
-    return { totalReturn: null, annReturn: null, ytdReturn: null, maxDrawdown: null, sharpe: null, calmar: null, recordCount: navPoints.length, dateRange: "" }
-  }
-
-  const vals = navPoints.map((p) => parseFloat(p.cumulative_nav ?? p.nav))
-  const dates = navPoints.map((p) => p.price_date)
-
-  const first = vals[0]
-  const last = vals[vals.length - 1]
-  if (!isFinite(first) || first <= 0 || !isFinite(last)) {
-    return { totalReturn: null, annReturn: null, ytdReturn: null, maxDrawdown: null, sharpe: null, calmar: null, recordCount: navPoints.length, dateRange: `${dates[0]} ~ ${dates[dates.length - 1]}` }
-  }
-
-  const totalRet = (last / first - 1) * 100
-
-  const days = (new Date(dates[dates.length - 1]).getTime() - new Date(dates[0]).getTime()) / 86_400_000
-  const annRet = days > 0 ? (Math.pow(last / first, 365 / days) - 1) * 100 : null
-
-  // YTD
-  const thisYear = new Date().getFullYear().toString()
-  const ytdBaseIdx = (() => {
-    const lastBeforeYear = [...navPoints].reverse().findIndex((p) => p.price_date < `${thisYear}-01-01`)
-    if (lastBeforeYear >= 0) return navPoints.length - 1 - lastBeforeYear
-    return navPoints.findIndex((p) => p.price_date >= `${thisYear}-01-01`)
-  })()
-  const ytdBase = ytdBaseIdx >= 0 ? vals[ytdBaseIdx] : null
-  const ytdRet = ytdBase && ytdBase > 0 ? (last / ytdBase - 1) * 100 : null
-
-  // Max drawdown
-  let peak = -Infinity
-  let maxDd = 0
-  const dailyRets: number[] = []
-  for (let i = 0; i < vals.length; i++) {
-    const v = vals[i]
-    if (v > peak) peak = v
-    const dd = peak > 0 ? (peak - v) / peak : 0
-    if (dd > maxDd) maxDd = dd
-    if (i > 0 && vals[i - 1] > 0) dailyRets.push(v / vals[i - 1] - 1)
-  }
-
-  // Sharpe (since inception, rf=0)
-  let sharpe: string | null = null
-  if (annRet !== null && dailyRets.length > 1 && days > 0) {
-    const totalYears = days / 365
-    const recPerYear = dailyRets.length / totalYears
-    const mean = dailyRets.reduce((s, r) => s + r, 0) / dailyRets.length
-    const variance = dailyRets.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyRets.length
-    const annVol = Math.sqrt(variance) * Math.sqrt(recPerYear)
-    if (annVol > 0) sharpe = ((annRet / 100) / annVol).toFixed(2)
-  }
-
-  // Calmar = annReturn / maxDrawdown
-  const calmar = annRet !== null && maxDd > 0 ? ((annRet / 100) / maxDd).toFixed(2) : null
-
-  return {
-    totalReturn: totalRet.toFixed(2),
-    annReturn: annRet !== null ? annRet.toFixed(2) : null,
-    ytdReturn: ytdRet !== null ? ytdRet.toFixed(2) : null,
-    maxDrawdown: maxDd > 0 ? (maxDd * 100).toFixed(2) : null,
-    sharpe,
-    calmar,
-    recordCount: navPoints.length,
-    dateRange: `${dates[0]} ~ ${dates[dates.length - 1]}`,
-  }
-}
-
-function isInvestmentNotesScope(kbPath: string | null | undefined): boolean {
-  if (!kbPath) return false
-  return kbPath.replace(/\\/g, "/").split("/").some((part) => part.trim() === "投资笔记")
-}
-
-function buildReportSystemPrompt(subjects: string[], hasKbNav: boolean, notesOnly: boolean): string {
-  const qualitative = notesOnly
-    ? "4. 投资笔记（仅知识库「投资笔记」文件夹）。策略、团队、容量、风险等定性判断必须来自这些笔记；笔记没写的标「笔记未提及」，不要补路演或月报口径"
-    : hasKbNav
-      ? "4. 知识库提取的业绩/净值信息（来自投资笔记、路演材料、月报等文件）"
-      : "4. 知识库补充信息（投资笔记、策略描述、团队背景等）"
-  return `你是一位专业的私募基金研究员，擅长对同类策略的不同基金产品和管理人进行深度对比分析。
-
-你将收到结构化数据，其中可能包含：
-1. 基金基本信息（策略分类、成立日期、系统预计算绩效指标）
-2. 净值历史序列（若数据库中有记录）——业绩数字以这部分为准
-3. 管理人登记信息（如有）
-${qualitative}
-
-报告要求：
-- 语言：中文，专业严谨，逻辑清晰
-- 格式：Markdown（#/##/### 标题，- 列表，**粗体**强调关键数字）
-- 表格单元格内禁止使用 HTML 标签（不要写 <br> 或 <br/>）；换行请用空格或「名称（备案号）」同一行写法
-- 内容：深度分析而非数据堆砌，给出有判断力的结论
-- 数据缺失时：明确标注"数据不足"，不编造数字，但可基于可用信息进行定性分析
-- 年化/年度指标（ret_1y、sharpe_1y 等）为 N/A 仅表示该基金成立不足一年，**不代表无净值数据**；请直接使用已有的 latest_nav、近1月/近3月/近6月收益和净值序列进行分析
-- 若 latest_nav 字段有值，说明数据库中有最新净值记录，应明确引用；不得将"年化指标 N/A"误描述为"无任何净值披露"
-
-建议报告结构（根据数据可用性灵活调整）：
-1. 执行摘要（核心结论，2-3点关键发现）
-2. 产品基本信息对比
-3. 历史业绩与绩效指标对比
-4. 风险特征对比（最大回撤、夏普比率、卡玛比率等）
-5. 净值走势分析（有数据时画出关键趋势；无序列数据时基于已知信息分析）
-6. 管理人/团队背景对比（如有信息）
-7. 综合评估与投资建议
-
-分析对象：${subjects.join("、")}`
-}
-
-// ── Main handler ───────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
   let body: { subjects?: string[]; kbPath?: string } = {}
@@ -466,11 +87,9 @@ export async function POST(req: Request) {
   const subjects = Array.isArray(body.subjects)
     ? body.subjects.map((s) => String(s).trim()).filter(Boolean).slice(0, 10)
     : []
-
   if (subjects.length === 0) {
     return NextResponse.json({ error: "请提供至少一个分析对象" }, { status: 400 })
   }
-
   const kbPath = body.kbPath?.trim() ?? ""
 
   const stream = new ReadableStream({
@@ -479,169 +98,159 @@ export async function POST(req: Request) {
         try {
           controller.enqueue(encodeEvent(data))
         } catch {
-          // controller already closed — ignore
+          // controller already closed
         }
       }
-
-      // Each step is wrapped independently so a failure in one never blocks the rest.
-
-      // ── Planning ───────────────────────────────────────────────────────────
-      try {
-        emit({ type: "phase", phase: "planning", message: "正在规划分析方案..." })
-        const planModel = getChatModel(false)
-        const planResponse = await withTimeout(
-          planModel.invoke([
-            new SystemMessage(
-              `你是一位专业私募基金研究员。用户希望对以下对象进行同策略对比分析：${subjects.join("、")}。\n请简要说明分析思路（分析角度、重点维度、预期结构），控制在200字以内，语言简练专业。`,
-            ),
-            new HumanMessage(`请为"${subjects.join("、")}"的对比分析生成分析规划。`),
-          ]),
-          20_000,
-          { content: "（规划生成超时，直接进入数据获取阶段）" },
-          "planning",
-        )
-        const planText =
-          typeof planResponse.content === "string" ? planResponse.content : JSON.stringify(planResponse.content)
-        emit({ type: "plan_text", content: planText })
-        emit({ type: "plan_done" })
-      } catch (err) {
-        emit({ type: "plan_text", content: `规划阶段出错：${(err as Error).message}` })
-        emit({ type: "plan_done" })
+      const step = (n: number, summary: string) => {
+        emit({ type: "step_start", step: n, title: STEP_TITLES[n] })
+        emit({ type: "step_done", step: n, summary })
       }
 
-      // ── Step 1: Search funds ────────────────────────────────────────────────
-      let funds: FundBasicInfo[] = []
-      emit({ type: "step_start", step: 1, title: "搜索并匹配基金/管理人信息" })
       try {
-        funds = await withTimeout(fetchFundsBySubjects(subjects), 10_000, [], "fetchFunds")
-        const foundNames = funds.map((f) => f.product_name)
-        emit({
-          type: "step_done",
-          step: 1,
-          summary:
-            funds.length > 0
-              ? `找到 ${funds.length} 只基金：${foundNames.slice(0, 3).join("、")}${funds.length > 3 ? " 等" : ""}`
-              : "数据库中未找到匹配基金，将基于输入名称分析",
-        })
-      } catch (err) {
-        emit({ type: "step_done", step: 1, summary: `搜索出错：${(err as Error).message}` })
-      }
+        const misses: Array<{ query: string; reason: string }> = []
+        const bindings: CompareBinding[] = []
+        const funds: CompareFund[] = []
+        const queryByCode = new Map<string, string>()
 
-      // ── Step 2: NAV history ─────────────────────────────────────────────────
-      let navMap: Record<string, NavPoint[]> = {}
-      let navTimedOut = false
-      let navMissing = false
-      emit({ type: "step_start", step: 2, title: "获取净值历史数据" })
-      try {
-        const result = await fetchNavHistory(funds.map((f) => ({ beian_hao: f.beian_hao, product_name: f.product_name })))
-        navMap = result.navMap
-        navTimedOut = result.timedOut
-        const totalPoints = Object.values(navMap).reduce((s, v) => s + v.length, 0)
-        navMissing = totalPoints === 0
-        const perFund = funds
-          .map((f) => `${f.product_name}(${navMap[f.beian_hao]?.length ?? 0}条)`)
-          .join("、")
-        emit({
-          type: "step_done",
-          step: 2,
-          summary: navTimedOut
-            ? "⚠️ 查询超时，数据库净值序列未能获取（将从知识库补充）"
-            : navMissing
-              ? "数据库中暂无净值序列，将尝试从知识库路演材料中提取"
-              : `获取了 ${totalPoints} 条净值记录：${perFund}`,
-        })
-      } catch (err) {
-        navMissing = true
-        emit({ type: "step_done", step: 2, summary: `获取净值出错：${(err as Error).message}，将从知识库补充` })
-      }
-
-      // ── Step 3: Manager info ────────────────────────────────────────────────
-      let managers: ManagerInfo[] = []
-      emit({ type: "step_start", step: 3, title: "获取管理人背景信息" })
-      try {
-        const managerNames = [...new Set(funds.map((f) => f.manager).filter(Boolean))]
-        managers = await fetchManagerInfo(managerNames)
-        emit({
-          type: "step_done",
-          step: 3,
-          summary: managers.length > 0 ? `获取了 ${managers.length} 家管理人信息` : "未找到管理人详细信息",
-        })
-      } catch (err) {
-        emit({ type: "step_done", step: 3, summary: `管理人查询出错：${(err as Error).message}` })
-      }
-
-      // ── Step 4: Knowledge base ──────────────────────────────────────────────
-      // Always query KB – when kbPath is given, scope to that folder;
-      // otherwise search all indexed documents globally.
-      let kbContext = ""
-      let hasKbNav = false
-      emit({ type: "step_start", step: 4, title: "查询知识库相关文档" })
-      try {
-        const kbResult = await queryKnowledgeBase(
-          subjects,
-          kbPath || null,
-          navMissing || navTimedOut,
-        )
-        kbContext = kbResult.answer ?? ""
-        hasKbNav = (navMissing || navTimedOut) && /净值|累计净值|收益率|回撤|夏普|单位净值/.test(kbContext)
-        const scope = kbPath ? `路径: ${kbPath}` : "全库检索"
-        emit({
-          type: "step_done",
-          step: 4,
-          summary:
-            kbContext && kbContext.length > 50
-              ? `检索完成（${scope}，${kbResult.sources.length} 个来源文件${hasKbNav ? "，已找到业绩/净值数据" : ""}）`
-              : `知识库中未找到相关内容（${scope}）`,
-        })
-      } catch (err) {
-        emit({
-          type: "step_done",
-          step: 4,
-          summary: `知识库查询出错：${(err as Error).message}`,
-        })
-      }
-
-      // ── Step 5: Generate report ─────────────────────────────────────────────
-      emit({ type: "step_start", step: 5, title: "生成对比分析报告" })
-      try {
-        const dataSummary = buildDataSummary(funds, navMap, navTimedOut, managers)
-        const notesOnly = isInvestmentNotesScope(kbPath)
-        const kbSection = kbContext
-          ? `\n=== ${notesOnly ? "投资笔记" : "知识库提取信息（投资笔记/路演/月报/研究文件）"} ===\n${kbContext}\n`
-          : ""
-        const userPrompt = [
-          `请基于以下数据，生成"${subjects.join("、")}"的专业对比分析报告。`,
-          "",
-          dataSummary,
-          kbSection,
-          navMissing && !kbContext
-            ? "注意：本次净值序列数据不足，请重点利用系统预计算的绩效指标（ret_1y、sharpe_1y 等）进行绩效比较，并在报告中说明数据局限性。"
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n")
-
-        const reportModel = getChatModel(true)
-        const reportStream = await reportModel.stream([
-          new SystemMessage(buildReportSystemPrompt(subjects, hasKbNav, isInvestmentNotesScope(kbPath))),
-          new HumanMessage(userPrompt),
-        ])
-
-        let reportLength = 0
-        for await (const chunk of reportStream) {
-          const delta = typeof chunk.content === "string" ? chunk.content : ""
-          if (delta) {
-            emit({ type: "report_text", delta })
-            reportLength += delta.length
+        for (const subject of subjects) {
+          const hits = await lookupFundQueryHits(subject)
+          const families = distinctFundFamilies(hits.map((hit) => hit.registerNumber))
+          if (hits.length === 0) {
+            misses.push({ query: subject, reason: "数据库中未找到匹配基金" })
+            continue
           }
+          if (families.length > 1) {
+            misses.push({ query: subject, reason: "名称对应多只基金，请改用备案号" })
+            continue
+          }
+          const hit = hits[0]
+          const record = await loadCompareFundRecord(hit.registerNumber)
+          if (!record) {
+            misses.push({ query: subject, reason: "数据库中未找到匹配基金" })
+            continue
+          }
+          const strategy = teamStrategyLabel(record.strategy_l1, record.strategy_l2, record.strategy_l3)
+          const fund: CompareFund = {
+            register_number: record.register_number,
+            fund_name: record.fund_name,
+            manager: record.manager,
+            strategy,
+            strategy_l1: record.strategy_l1,
+            strategy_l2: record.strategy_l2,
+            strategy_l3: record.strategy_l3,
+            inception_date: record.inception_date,
+            latest_nav: record.latest_nav,
+            latest_nav_date: record.latest_nav_date,
+            share_class: hit.shareClass,
+            nav_scope: hit.navScope,
+            metrics: {
+              ret_1w: record.ret_1w,
+              ret_1m: record.ret_1m,
+              ret_3m: record.ret_3m,
+              ret_6m: record.ret_6m,
+              ret_1y: record.ret_1y,
+              sharpe_1y: record.sharpe_1y,
+              calmar_1y: record.calmar_1y,
+            },
+            incomplete_windows: incompleteWindows(record.inception_date, record.latest_nav_date),
+          }
+          funds.push(fund)
+          queryByCode.set(fund.register_number, subject)
+          bindings.push({
+            query: subject,
+            register_number: fund.register_number,
+            fund_name: fund.fund_name,
+            match: hit.match,
+            match_score: hit.matchScore,
+            share_class: hit.shareClass,
+            nav_loaded: fund.latest_nav != null,
+            nav_scope: hit.navScope,
+          })
         }
 
-        emit({ type: "step_done", step: 5, summary: `报告生成完成（约 ${reportLength} 字）` })
+        const resolved = misses.length === 0
+        emit({ type: "resolution", resolved, misses, bindings })
+
+        const plan = resolved
+          ? `已绑定 ${bindings.map((b) => `${b.query} → ${b.fund_name}（${b.register_number}）`).join("；")}。业绩取数据库原值。团队策略不同则只分组，不排序。`
+          : `有对象未绑定，不生成对比报告。未命中：${misses.map((m) => m.query).join("、")}。`
+        emit({ type: "phase", phase: "planning", message: "正在核对数据库记录..." })
+        emit({ type: "plan_text", content: plan })
+        emit({ type: "plan_done" })
+
+        if (!resolved) {
+          step(1, `未找到：${misses.map((m) => m.query).join("、")}`)
+          step(2, "已跳过。有对象未绑定，不读取净值。")
+          step(3, "已跳过。有对象未绑定，不补管理人。")
+          step(4, "已跳过。未绑定的对象不用投资笔记补业绩。")
+          step(5, "未生成对比报告。")
+          const text = missReport(misses)
+          emit({ type: "report_text", delta: text })
+          emit({
+            type: "compare",
+            resolved: false,
+            misses,
+            bindings,
+            same_strategy: false,
+            strategy_groups: [],
+            funds: [],
+            notes: [],
+            report: null,
+          })
+          emit({ type: "done" })
+          return
+        }
+
+        const grouped = groupByTeamStrategy(funds)
+        step(
+          1,
+          bindings.map((b) => `${b.query} → ${b.fund_name}（${b.register_number}，${b.match}）`).join("；"),
+        )
+        step(
+          2,
+          funds
+            .map((f) => `${f.fund_name} ${f.latest_nav ?? "无净值"}${f.latest_nav_date ? `（${f.latest_nav_date}）` : ""}`)
+            .join("；"),
+        )
+        step(3, funds.map((f) => `${f.fund_name}：${f.manager || "管理人未填写"}`).join("；"))
+
+        let notes: CompareNote[] = []
+        try {
+          notes = await notesForFunds(funds, queryByCode, kbPath)
+          step(
+            4,
+            notes.length > 0
+              ? `投资笔记中有 ${notes.length} 段点名这些基金的原文`
+              : "投资笔记中没有点名这些基金的段落，已省略笔记",
+          )
+        } catch (err) {
+          step(4, `投资笔记查询出错：${(err as Error).message}。已省略笔记，业绩仍以数据库为准。`)
+        }
+
+        const report = buildCompareReport({
+          same_strategy: grouped.same_strategy,
+          groups: grouped.groups,
+          bindings,
+          funds,
+          notes,
+        })
+        step(5, grouped.same_strategy ? "已输出数据库指标。未另写配置建议。" : "团队策略不同，已分组，未做同策略排序。")
+        emit({ type: "report_text", delta: report })
+        emit({
+          type: "compare",
+          resolved: true,
+          misses: [],
+          bindings,
+          same_strategy: grouped.same_strategy,
+          strategy_groups: grouped.groups,
+          funds,
+          notes,
+          report,
+        })
         emit({ type: "done" })
       } catch (err) {
-        console.error("[ai-researcher/compare-analysis] report generation error:", err)
-        emit({ type: "step_done", step: 5, summary: `报告生成失败：${(err as Error).message}` })
-        emit({ type: "error", message: `报告生成失败：${(err as Error).message}` })
+        console.error("[ai-researcher/compare-analysis]", err)
+        emit({ type: "error", message: `对比失败：${(err as Error).message}` })
       } finally {
         try {
           controller.close()

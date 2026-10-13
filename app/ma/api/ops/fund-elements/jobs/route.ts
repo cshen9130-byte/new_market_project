@@ -1,9 +1,14 @@
+import { createHash } from "crypto"
 import { NextResponse } from "next/server"
 import {
   EXTRACT_JOB_MAX_FILES,
   EXTRACT_JOB_STATUSES,
-  createElementExtractJob,
+  annotateElementExtractJobDuplicates,
+  createElementExtractJobFromBuffer,
+  findLiveElementExtractDuplicate,
   listElementExtractJobs,
+  type ElementExtractJobRow,
+  type ElementExtractUploadDuplicate,
   type ExtractJobStatus,
 } from "@/lib/server/fund-element-extract-jobs"
 import { startContractExtractJob } from "@/lib/server/fund-contract-extract-job"
@@ -39,7 +44,8 @@ export async function GET(req: Request) {
     const limit = parseInt(searchParams.get("limit") || "50", 10)
     const offset = parseInt(searchParams.get("offset") || "0", 10)
     const result = await listElementExtractJobs({ status, q, ids, limit, offset })
-    const rows = await retargetPromotedExtractJobs(result.rows)
+    const annotated = await annotateElementExtractJobDuplicates(result.rows)
+    const rows = await retargetPromotedExtractJobs(annotated)
     return NextResponse.json({ ok: true, ...result, rows })
   } catch (err) {
     console.error("[ops/fund-elements/jobs GET]", err)
@@ -65,14 +71,53 @@ export async function POST(req: Request) {
     }
 
     const uploaded_by = currentUser(req)
-    const created = []
+    const created: ElementExtractJobRow[] = []
+    const duplicates: ElementExtractUploadDuplicate[] = []
     const errors: { fileName: string; error: string }[] = []
+    const seenHashes = new Map<string, ElementExtractJobRow>()
+    const seenNames = new Map<string, ElementExtractJobRow>()
     for (const file of files) {
+      const fileName = file.name || "contract.pdf"
       try {
-        created.push(await createElementExtractJob({ file, uploaded_by }))
+        const buffer = Buffer.from(await file.arrayBuffer())
+        const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
+        const nameKey = fileName.trim().toLowerCase()
+        const inBatch = seenHashes.get(hash) || (nameKey ? seenNames.get(nameKey) : undefined)
+        if (inBatch) {
+          duplicates.push({
+            fileName,
+            existingId: inBatch.id,
+            existingFileName: inBatch.original_filename,
+          })
+          continue
+        }
+        const existing = await findLiveElementExtractDuplicate({
+          contentHash: hash,
+          originalFilename: fileName,
+          fileSize: buffer.byteLength,
+        })
+        if (existing) {
+          seenHashes.set(hash, existing)
+          if (nameKey) seenNames.set(nameKey, existing)
+          duplicates.push({
+            fileName,
+            existingId: existing.id,
+            existingFileName: existing.original_filename,
+          })
+          continue
+        }
+        const job = await createElementExtractJobFromBuffer({
+          buffer,
+          originalFilename: fileName,
+          uploaded_by,
+          contentHash: hash,
+        })
+        seenHashes.set(hash, job)
+        if (nameKey) seenNames.set(nameKey, job)
+        created.push(job)
       } catch (err) {
         errors.push({
-          fileName: file.name,
+          fileName,
           error: err instanceof Error ? err.message : "上传失败",
         })
       }
@@ -83,7 +128,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json(
-      { ok: true, data: created, errors },
+      { ok: true, data: created, duplicates, errors },
       { status: 202 },
     )
   } catch (err) {

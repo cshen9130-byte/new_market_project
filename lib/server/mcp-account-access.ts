@@ -95,16 +95,16 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     name: "ai_researcher_compare",
     area: "researcher",
     description:
-      "同策略对比分析。自动读取数据库净值（区间收益、最大回撤、夏普、近期净值）并检索知识库，生成对比报告。要同时用净值和投资笔记：subjects 传两只基金的名称或备案号，kb_path 填「投资笔记」。",
+      "对比多只基金。先按与 fund_search、fund_info 相同的规则绑定备案号，并先返回 bindings（备案号、名称、匹配方式、是否有净值）。任一对象未绑定则 resolved 为 false、report 为 null，不会用投资笔记编造业绩。绑定成功后 funds 里是 fund_view 的净值、收益、夏普、卡玛；incomplete_windows 标出成立时间不够的区间。same_strategy 为 false 时只分组，不做同策略排序。名称带「C类」会绑到母基金，nav_scope 为 parent 表示公布净值不是该类单独净值。投资笔记只保留正文点名该基金的段落。",
     inputSchema: obj({
       subjects: {
         type: "array",
         items: { type: "string" },
-        description: "基金名称或备案号。对比至少传 2 个，例如 [\"SR6089\", \"另一只备案号\"]",
+        description: "基金名称或备案号，至少 2 个。名称以 A类/B类/C类 结尾时绑定母基金。备案号整段精确匹配。",
       },
       kb_path: {
         type: "string",
-        description: "知识库文件夹。只要投资笔记时填「投资笔记」。留空则全库检索（路演、月报、尽调、笔记都会进入报告）",
+        description: "可选。填「投资笔记」时只在该文件夹查找。只保留正文点名该基金的段落，不会用无关笔记填业绩。",
       },
     }, ["subjects"]),
   },
@@ -174,15 +174,57 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     }, ["path"]),
   },
   {
+    name: "kb_search",
+    area: "knowledge",
+    description:
+      "检索 AI 知识库，只返回命中片段、相关度、文件路径和页码，不生成回答。人名或路演问题会按路径把对应笔记排到前面。片段里没有答案、且 suggest_full_read 为 true 时，再用 kb_read 读该文件。",
+    inputSchema: obj({
+      question: { type: "string", description: "检索问题。例：左广东看多的品种都有哪些？" },
+      folder_path: { type: "string", description: "限定文件夹。空为全库" },
+      file_path: { type: "string", description: "只在一个文件里检索" },
+      limit: { type: "integer", description: "最多返回条数，默认 8，最大 20" },
+    }, ["question"]),
+  },
+  {
     name: "kb_ask",
     area: "knowledge",
     description:
-      "基于 AI 知识库回答问题，返回回答与引用文件。只根据投资笔记回答时，folder_path 填「投资笔记」，question 里写上基金名称或备案号。",
+      "基于 AI 知识库回答问题。人名、路演、观点类问题会优先读路径命中的短文件全文。填表时 question 写成「列：「量道」，行：「代表产品」」，不要传 folder_path，否则只搜一个文件夹。没有段落出现列名时 value 为「暂无数据」，sources 为空。列名出现时返回 value，以及 sources（path、quote，quote 含列名）。文件名含列名且文件较短时会整篇读入。默认模型 qwen-plus。只要片段不要回答时用 kb_search。",
     inputSchema: obj({
-      question: { type: "string", description: "问题。例：对比两只基金的策略、团队和风险，只引用投资笔记" },
+      question: { type: "string", description: "问题。例：左广东看多的品种都有哪些？只根据路演笔记原文回答" },
       folder_path: { type: "string", description: "限定文件夹。投资笔记填「投资笔记」。空为全库" },
       file_path: { type: "string", description: "只针对一个文件提问，如 投资笔记/某产品投资笔记.html" },
+      model: { type: "string", description: "plus（默认）、turbo 或 max。抽取事实用 plus，不要用 turbo" },
+      debug: { type: "boolean", description: "为 true 时额外返回 passages：检索片段、分数、路径和页码" },
     }, ["question"]),
+  },
+  {
+    name: "external_rank_compare",
+    area: "tracking",
+    description:
+      "把知识库里的外部业绩榜（点睛等 xlsx，按管理人或产品）和跟踪池同一策略的产品对比。收益按榜单自己的截止日期，用净值库重算今年以来或近一年，不读取周度回顾 Excel。返回 both（两边都有）、external_only（榜上有、池子没有，可当候选）、pool_only（池子有、榜单前 N 没有）、needs_review（名称接近但未自动匹配，不要当成已匹配）。收益是百分数，159.12 表示 159.12%。需要投资页权限；调用时还会检查 AI 知识库权限。",
+    inputSchema: obj({
+      class: {
+        type: "string",
+        description: "策略。主观多头、量化股票、量化CTA、主观CTA，或具体分组如 500指增。一份文件里只有一种策略时可以不填",
+      },
+      file_path: {
+        type: "string",
+        description: "知识库相对路径。不填则在全库选择该策略最新的点睛/业绩榜 xlsx。文件名请保留「点睛」或「业绩榜」",
+      },
+      pools: {
+        type: "string",
+        description: "jy（默认，JY跟踪池）、selected（JY精选池），或 jy,selected",
+      },
+      week_end: {
+        type: "string",
+        description: "可选，YYYY-MM-DD。只用来提示和榜单截止日差多少天，收益仍按榜单截止日计算",
+      },
+      top_n: {
+        type: "integer",
+        description: "只筛榜单前 N 名。默认 30，最大 100",
+      },
+    }),
   },
 ]
 

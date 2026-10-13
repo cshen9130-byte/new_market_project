@@ -14,7 +14,7 @@ import {
 import { startContractExtractJob } from "@/lib/server/fund-contract-extract-job"
 import {
   createElementExtractJobFromBuffer,
-  findElementExtractJobsForMaterials,
+  findLiveElementExtractDuplicate,
 } from "@/lib/server/fund-element-extract-jobs"
 import { isManagerProductPackZip } from "@/lib/server/email-manager-pack"
 import type { ZipSpreadsheetEntry } from "@/lib/server/email-valuation-zip"
@@ -71,14 +71,17 @@ async function enqueueElementBuffer(input: {
   uploadedBy: string
 }): Promise<"queued" | "skipped"> {
   const hash = createHash("sha256").update(input.buffer).digest("hex").slice(0, 16)
-  const existing = await findElementExtractJobsForMaterials({
-    contentHashes: [hash],
+  const existing = await findLiveElementExtractDuplicate({
+    contentHash: hash,
+    originalFilename: input.originalFilename,
+    fileSize: input.buffer.length,
   })
-  if (existing.some((job) => job.status !== "failed")) return "skipped"
+  if (existing) return "skipped"
   await createElementExtractJobFromBuffer({
     buffer: input.buffer,
     originalFilename: input.originalFilename,
     uploaded_by: input.uploadedBy,
+    contentHash: hash,
   })
   return "queued"
 }

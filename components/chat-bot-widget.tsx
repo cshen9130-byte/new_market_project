@@ -32,8 +32,10 @@ function getPageContext(path: string, search = ""): string {
     return "当前页面：【估值分析】小工具。功能：上传持仓估值表，自动解析持仓结构，输出多空分布、行业集中度、策略标签等分析结果。"
   if (path.includes("/tools/settlement-analysis"))
     return "当前页面：【结算单分析】小工具。功能：上传交易结算单(盯市)，自动分析持仓敞口、板块分布、多空结构，并推断可能的交易风格。"
+  if (path.includes("/tools/pdf-to-excel"))
+    return "当前页面：【PDF 转 Excel】小工具。功能：上传基金估值表 PDF 或业绩 PDF（含业绩排名长图截图），提取表格并下载 Excel。估值表识别科目代码、科目名称等明细；业绩表识别基金简称、管理人、策略与收益列。纯图片截图会用 OCR，耗时更长。"
   if (path.includes("/tools"))
-    return "当前页面：【小工具集合】。包含：①自动发邮件（定时将投顾逐日核算单 xlsx 发送给指定收件人）；②NAV 净值清洗（上传并标准化基金净值数据）；③估值分析（上传估值表并输出持仓结构分析）；④结算单分析（上传结算单并输出持仓与策略分析）；⑤估值表分析（搜索产品后上传估值表解析入库）。"
+    return "当前页面：【小工具集合】。包含：①自动发邮件（定时将投顾逐日核算单 xlsx 发送给指定收件人）；②NAV 净值清洗（上传并标准化基金净值数据）；③估值分析（上传估值表并输出持仓结构分析）；④结算单分析（上传结算单并输出持仓与策略分析）；⑤估值表分析（搜索产品后上传估值表解析入库）；⑥PDF 转 Excel（估值表或业绩 PDF 提取为 Excel）。"
   if (path.includes("/mom-analysis/carry-calc"))
     return "当前页面：【业绩报酬测算】。根据最新交易日累计盈亏，计算母层与子层业绩报酬及私募基金净业绩报酬。"
   if (path.includes("/mom-analysis/trader-analysis")) {

@@ -53,6 +53,11 @@ export const dynamic = "force-dynamic"
 /** 估值表 股票成本_* / 基金成本 parent buckets must never appear as 跟踪产品. */
 const SQL_EXCLUDE_STOCK_COST_BUCKET = `NOT ${sqlSubjectNameIsStockCostBucket("COALESCE(i.product_name, '')")}`
 
+/** Test rows such as SD8500_test_* / "Test Fund …" stay out of the tracking book. */
+const SQL_EXCLUDE_TEST_PRODUCT = `COALESCE(i.beian_hao, '') !~* '_test_'
+  AND COALESCE(i.product_name, '') !~* '^test fund\\b'
+  AND COALESCE(i.product_name, '') !~ '测试基金|测试产品'`
+
 declare global {
   // One-shot: drop stale list JSON that still contains 股票成本_* rows.
   var _trackingListStockCostCacheBustV3: boolean | undefined
@@ -73,6 +78,7 @@ declare global {
   var _trackingListParentShareClassDedupeV1: boolean | undefined
   // One-shot: drop the AAEO3A duplicate of 诚奇睿盈对冲2号A类 (QH717A).
   var _trackingListCustodianAliasCollapseV1: boolean | undefined
+  var _trackingListTestProductExcludeV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -1028,7 +1034,7 @@ async function handleCachedTrackingList(opts: {
 
       const filterParams: unknown[] =
         isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
-      const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
+      const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET, SQL_EXCLUDE_TEST_PRODUCT]
 
       appendStrategyLevelFilter(strategyL1, strategyL1Expr, where, filterParams)
       appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
@@ -1216,7 +1222,7 @@ async function handleBflOpsList(opts: {
   const strategyL3Expr = `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_three, '')), '')`
 
   const filterParams: (string | number)[] = []
-  const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
+  const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET, SQL_EXCLUDE_TEST_PRODUCT]
 
   appendStrategyLevelFilter(strategyL1, strategyL1Expr, where, filterParams)
   appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
@@ -1392,6 +1398,10 @@ export async function GET(req: Request) {
     global._trackingListCustodianAliasCollapseV1 = true
     invalidateListResponseCache()
     await collapseAliasedTrackingIdentities()
+  }
+  if (!global._trackingListTestProductExcludeV1) {
+    global._trackingListTestProductExcludeV1 = true
+    invalidateListResponseCache()
   }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
     "@/lib/server/account-risk-direct-nav-sync"
@@ -1714,7 +1724,7 @@ export async function GET(req: Request) {
   // For custom pools, pool_key is always the first param ($1) unless listing all mine pools
       const filterParams: (string | number | string[])[] =
         isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
-      const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET]
+      const where: string[] = [SQL_EXCLUDE_STOCK_COST_BUCKET, SQL_EXCLUDE_TEST_PRODUCT]
 
   appendStrategyLevelFilter(strategyL1, strategyL1Expr, where, filterParams)
   appendStrategyLevelFilter(strategyL2, strategyL2Expr, where, filterParams)
