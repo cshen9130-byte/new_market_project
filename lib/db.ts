@@ -1,4 +1,5 @@
 import { Pool, types, type PoolClient } from "pg"
+import { ensureDevPostgresTunnel } from "@/lib/server/dev-prod-db-tunnel"
 import { getRiskSource, type RiskDataSource } from "@/lib/server/risk-data-source"
 
 // DATE columns (OID 1082) come back from pg as JavaScript Date objects set to local
@@ -35,6 +36,11 @@ function makePool(): Pool {
 
 const pool: Pool = global._pgPool ?? (global._pgPool = makePool())
 
+async function db(): Promise<Pool> {
+  await ensureDevPostgresTunnel()
+  return pool
+}
+
 async function resolveSource(): Promise<RiskDataSource> {
   if (getRiskSource() === "account") return "account"
   try {
@@ -56,14 +62,14 @@ let accountRiskSchemaReady = false
 /** Clone empty `mom_*` tables into `account_risk` so search_path does not fall through to MOM data. */
 export async function ensureAccountRiskSchema(): Promise<void> {
   if (accountRiskSchemaReady) return
-  await pool.query("CREATE SCHEMA IF NOT EXISTS account_risk")
-  const tables = await pool.query<{ tablename: string }>(
+  await (await db()).query("CREATE SCHEMA IF NOT EXISTS account_risk")
+  const tables = await (await db()).query<{ tablename: string }>(
     `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'mom_%'`,
   )
   for (const { tablename } of tables.rows) {
     const ident = quoteIdent(tablename)
     try {
-      await pool.query(
+      await (await db()).query(
         `CREATE TABLE IF NOT EXISTS account_risk.${ident} (LIKE public.${ident} INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES)`,
       )
     } catch {
@@ -75,7 +81,7 @@ export async function ensureAccountRiskSchema(): Promise<void> {
 
 async function withSearchPathClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   if ((await resolveSource()) !== "account") {
-    const client = await pool.connect()
+    const client = await (await db()).connect()
     try {
       return await fn(client)
     } finally {
@@ -83,7 +89,7 @@ async function withSearchPathClient<T>(fn: (client: PoolClient) => Promise<T>): 
     }
   }
   await ensureAccountRiskSchema()
-  const client = await pool.connect()
+  const client = await (await db()).connect()
   try {
     await client.query("SET search_path TO account_risk, public")
     return await fn(client)
@@ -102,7 +108,7 @@ export async function query<T = Record<string, unknown>>(
   params?: unknown[],
 ): Promise<T[]> {
   if ((await resolveSource()) !== "account") {
-    const res = await pool.query(sql, params)
+    const res = await (await db()).query(sql, params)
     return res.rows as T[]
   }
   return withSearchPathClient(async (client) => {
@@ -117,7 +123,7 @@ export async function rawQuery(
   params?: unknown[],
 ) {
   if ((await resolveSource()) !== "account") {
-    return pool.query(sql, params)
+    return (await db()).query(sql, params)
   }
   return withSearchPathClient((client) => client.query(sql, params))
 }
@@ -131,7 +137,7 @@ export async function publicQuery(
   sql: string,
   params?: unknown[],
 ) {
-  return pool.query(sql, params)
+  return (await db()).query(sql, params)
 }
 
 /**
@@ -142,7 +148,7 @@ export async function queryUnbounded<T = Record<string, unknown>>(
   sql: string,
   params?: unknown[],
 ): Promise<T[]> {
-  const client = await pool.connect()
+  const client = await (await db()).connect()
   try {
     if ((await resolveSource()) === "account") {
       await ensureAccountRiskSchema()
@@ -166,7 +172,7 @@ export async function queryUnbounded<T = Record<string, unknown>>(
 export async function withTransaction<T>(
   fn: (txQuery: typeof query) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect()
+  const client = await (await db()).connect()
   const txQuery = (async <R = Record<string, unknown>>(
     sql: string,
     params?: unknown[],

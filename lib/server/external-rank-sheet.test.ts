@@ -10,6 +10,7 @@ import {
   buildExternalRankComparison,
   managerMatchKey,
   parseExternalRankWorkbook,
+  parseIsoDate,
   resolveRankClass,
   selectParsedClass,
   type PoolRankProduct,
@@ -65,6 +66,25 @@ describe("dianjing workbook", () => {
     const picked = selectParsedClass(parsed, "量化CTA")
     assert.equal(picked.rows.length, 1)
     assert.equal(picked.rows[0].manager, "甲资产")
+  })
+
+  it("reads a product board whose return columns are 近1周 and a calendar year", () => {
+    const parsed = parseExternalRankWorkbook(workbook([
+      ["产品名称", "管理人", "规模", "策略", "近1周", "2026年", "周超额", "2026超额"],
+      ["玉数一号", "玉数", "50~100亿", "300指增", "0.65%", "20.70%", "1.19%", "26.58%"],
+    ], "周超额降序"), "2026.9.28~9.30 网红量化.xlsx")
+    assert.equal(parsed.as_of, "2026-09-28")
+    assert.equal(parsed.rows[0].manager, "玉数")
+    assert.equal(parsed.rows[0].product, "玉数一号")
+    assert.ok(Math.abs((parsed.rows[0].ret_1w ?? 0) - 0.0065) < 1e-9)
+    assert.ok(Math.abs((parsed.rows[0].ytd ?? 0) - 0.207) < 1e-9)
+  })
+})
+
+describe("dates", () => {
+  it("reads a single-digit month and a compact cutoff", () => {
+    assert.equal(parseIsoDate("2026.9.28~9.30"), "2026-09-28")
+    assert.equal(parseIsoDate("截止20250930"), "2025-09-30")
   })
 })
 

@@ -5,6 +5,8 @@
  */
 
 import { query, queryUnbounded } from "@/lib/db"
+import { fundNameKey } from "@/lib/server/fund-name-match"
+import { stripValuationSubjectPathPrefix } from "@/lib/valuation-holding-display-name"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   buildFofUnderlyingSummaryFrom,
@@ -144,6 +146,22 @@ export async function ensureFofOverviewListCacheTable(): Promise<void> {
   await ensureListCachePrimaryKey(LIVE_CACHE_TABLE, "fof_underlying_id")
   await backfillFofStrategyL2L3()
   tableEnsured = true
+}
+
+/** Exact name first, then the collapsed 全称 key. `投资基金B` and `投资基金B类` share the key. */
+function underlyingCodeLookupKeys(name: string): string[] {
+  const raw = name.trim()
+  const stripped = (stripValuationSubjectPathPrefix(raw) || raw).trim()
+  const keys: string[] = []
+  const push = (key: string) => {
+    const k = key.trim()
+    if (k && !keys.includes(k)) keys.push(k)
+  }
+  push(raw)
+  push(stripped)
+  const collapsed = fundNameKey(stripped)
+  if (collapsed) push(collapsed)
+  return keys
 }
 
 function logProgress(msg: string, startedAt?: number): void {
@@ -291,14 +309,17 @@ export async function refreshFofOverviewListCache(
          AND NULLIF(BTRIM(underlying_product_code), '') IS NOT NULL`,
     )
     const codeByName = new Map<string, string>()
+    const rememberCode = (key: string, code: string) => {
+      const k = key.trim()
+      if (k && !codeByName.has(k)) codeByName.set(k, code)
+    }
     for (const row of codeRows) {
-      if (!codeByName.has(row.name)) codeByName.set(row.name, row.code)
-      const short = row.name.replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "").trim()
-      if (short && !codeByName.has(short)) codeByName.set(short, row.code)
+      for (const key of underlyingCodeLookupKeys(row.name)) rememberCode(key, row.code)
     }
     for (const p of missingBeian) {
-      const code = codeByName.get(p.product_name)
-        ?? codeByName.get(p.product_name.replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "").trim())
+      const code = underlyingCodeLookupKeys(p.product_name)
+        .map((key) => codeByName.get(key))
+        .find((value): value is string => Boolean(value))
       if (code) p.beian_hao = code
     }
   }

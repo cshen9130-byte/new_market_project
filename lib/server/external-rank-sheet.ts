@@ -188,14 +188,14 @@ function headerKind(cell: string): HeaderKind | null {
   const s = cell.replace(/\s+/g, "")
   if (!s) return null
   if (s === "序号" || s === "排名") return "rank"
-  if (/策略类型|策略分类|策略名称/.test(s)) return "strategy"
+  if (/策略类型|策略分类|策略名称|^策略$/.test(s)) return "strategy"
   if (/基金管理人|管理人名称|^管理人$/.test(s)) return "manager"
   if (/产品名称|产品简称|基金名称|基金简称/.test(s)) return "product"
   if (/管理规模|^规模$/.test(s)) return "aum"
   if (/净值日期|截止日期|统计截止/.test(s)) return "nav_date"
-  if (/今年以来收益率|今年来收益率|今年以来收益|今年来收益|近一年收益率|过去一年收益率/.test(s)) return "ytd"
+  if (/今年以来收益率|今年来收益率|今年以来收益|今年来收益|近一年收益率|过去一年收益率|^今年$|^20\d{2}年$/.test(s)) return "ytd"
   if (/今年以来最大回撤|今年来最大回撤|今年最大回撤/.test(s)) return "ytd_dd"
-  if (/近一周收益率|近1周收益率|一周收益率|近一周收益/.test(s)) return "ret_1w"
+  if (/近一周收益率|近1周收益率|一周收益率|近一周收益|^近1周$|^近一周$/.test(s)) return "ret_1w"
   return null
 }
 
@@ -215,9 +215,15 @@ function formatIsoDate(value: Date): string {
 export function parseIsoDate(value: unknown): string | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return formatIsoDate(value)
   const text = cellText(value).replace(/\//g, "-")
-  const full = text.match(/(20\d{2})[-年/.]?(\d{2})[-月/.]?(\d{2})/)
-  if (full) return `${full[1]}-${full[2]}-${full[3]}`
-  return null
+  const full = text.match(/(20\d{2})(?:[-年/.](\d{1,2})[-月/.](\d{1,2})|(\d{2})(\d{2}))/)
+  if (!full) return null
+  const year = Number(full[1])
+  const month = Number(full[2] || full[4])
+  const day = Number(full[3] || full[5])
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  const dt = new Date(Date.UTC(year, month - 1, day))
+  if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) return null
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
 }
 
 function parseNumber(value: unknown): number | null {
@@ -253,13 +259,16 @@ function inferWindow(title: string, headers: string[]): ExternalRankWindow {
 }
 
 function classKeyForStrategy(strategy: string): string {
-  return resolveRankClass(strategy) ?? (strategy.replace(/\s+/g, "") || "未分类")
+  const compact = strategy.replace(/\s+/g, "")
+  if (!compact || /^-?\d+(?:\.\d+)?%$/.test(compact) || /降序|升序/.test(compact)) return "未分类"
+  return resolveRankClass(strategy) ?? compact
 }
 
 export function parseExternalRankWorkbook(data: Buffer | Uint8Array, fileName = ""): ParsedExternalRank {
   const workbook = XLSX.read(data, { type: "buffer", cellDates: true })
   const baseName = fileName.split(/[/\\]/).pop() ?? fileName
   const rows: ExternalRankRow[] = []
+  const seenRows = new Set<string>()
   let title = ""
   const asOfCandidates: string[] = []
   let window: ExternalRankWindow = "ytd"
@@ -343,12 +352,16 @@ export function parseExternalRankWorkbook(data: Buffer | Uint8Array, fileName = 
     const ddScale = returnScale(pending.map((row) => row.ytd_drawdown))
     const weekScale = returnScale(pending.map((row) => row.ret_1w))
     for (const row of pending) {
-      rows.push({
+      const scaled = {
         ...row,
         ytd: row.ytd == null ? null : row.ytd * ytdScale,
         ytd_drawdown: row.ytd_drawdown == null ? null : Math.abs(row.ytd_drawdown * ddScale),
         ret_1w: row.ret_1w == null ? null : row.ret_1w * weekScale,
-      })
+      }
+      const key = `${scaled.manager}\0${scaled.product || ""}\0${scaled.class_key}`
+      if (seenRows.has(key)) continue
+      seenRows.add(key)
+      rows.push(scaled)
     }
   }
 

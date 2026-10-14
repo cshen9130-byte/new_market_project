@@ -522,8 +522,12 @@ export type ManagedFofUnderlyingRow = {
 }
 
 function normalizeUnderlyingName(name: string): string {
-  return name
+  const stripped = stripValuationSubjectPathPrefix(name) || name
+  return stripped
+    .replace(/基金([ABC])$/u, "基金")
+    .replace(/[ABC]类$/u, "")
     .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .replace(/\s+/g, "")
     .trim()
 }
 

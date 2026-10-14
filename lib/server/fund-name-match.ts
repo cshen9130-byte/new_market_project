@@ -75,11 +75,36 @@ export function preferAmacOfficialName(
   return official
 }
 
+/**
+ * Share class from a display name.
+ * `B类` / `B类份额`, or a bare letter glued on 基金 (`…私募证券投资基金B`).
+ */
+export function shareClassLetterFromName(name: string | null | undefined): "" | "A" | "B" | "C" {
+  const n = stripValuationSubjectPathPrefix(String(name ?? "").trim()) || String(name ?? "").trim()
+  if (n.includes("A类")) return "A"
+  if (n.includes("B类")) return "B"
+  if (n.includes("C类")) return "C"
+  const bare = n.match(/基金([ABC])$/u)
+  return bare ? (bare[1] as "A" | "B" | "C") : ""
+}
+
+/** SQL: same letter as {@link shareClassLetterFromName}. A类 wins over a later B类. */
+export function sqlShareClassLetter(nameExpr: string): string {
+  const name = `BTRIM(${sqlStripValuationSubjectPathPrefix(nameExpr)})`
+  return `CASE
+    WHEN ${name} ~ 'A类' THEN 'A'
+    WHEN ${name} ~ 'B类' THEN 'B'
+    WHEN ${name} ~ 'C类' THEN 'C'
+    ELSE COALESCE(NULLIF(substring(${name} from '基金([ABC])$'), ''), '')
+  END`
+}
+
 /** Collapse 全称 / A类 / A类份额 to the same product key used by list 要素 overlay. */
 export function fundNameKey(name: string | null | undefined): string | null {
   const s = String(name ?? "").trim()
   if (!s) return null
   const key = s
+    .replace(/基金([ABC])$/u, "基金")
     .replace(/[ABC]类(?:份额)?$/u, "")
     .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
     .replace(/\s+/g, "")
@@ -91,7 +116,11 @@ export function fundNameKey(name: string | null | undefined): string | null {
 export function sqlFundNameKey(nameExpr: string): string {
   return `NULLIF(regexp_replace(
     regexp_replace(
-      regexp_replace(BTRIM(${nameExpr}), '[ABC]类(份额)?$', ''),
+      regexp_replace(
+        regexp_replace(BTRIM(${nameExpr}), '基金[ABC]$', '基金'),
+        '[ABC]类(份额)?$',
+        ''
+      ),
       '(私募证券投资基金|私募基金|证券投资基金|投资基金)$',
       ''
     ),
@@ -116,7 +145,11 @@ export function sqlNameOrCodeShareClass(nameExpr: string, codeExpr: string): str
 export function sqlFundNameBase(nameExpr: string): string {
   return `NULLIF(regexp_replace(
     regexp_replace(
-      regexp_replace(BTRIM(${nameExpr}), '[ABC]类$', ''),
+      regexp_replace(
+        regexp_replace(BTRIM(${nameExpr}), '基金[ABC]$', '基金'),
+        '[ABC]类$',
+        ''
+      ),
       '(私募证券投资基金|私募基金|证券投资基金|投资基金)$', ''
     ),
     '\\s+', '',
@@ -173,28 +206,19 @@ export function sqlFundNameMatchPriority(columnExpr: string, targetExpr: string)
 
 /** When target has no share class, reject A/B/C share-class product names. */
 export function sqlShareClassProductNameGuard(columnExpr: string, targetExpr: string): string {
-  return `(
-    CASE
-      WHEN ${targetExpr} ILIKE '%A类%' THEN ${columnExpr} ILIKE '%A类%'
-      WHEN ${targetExpr} ILIKE '%B类%' THEN ${columnExpr} ILIKE '%B类%'
-      WHEN ${targetExpr} ILIKE '%C类%' THEN ${columnExpr} ILIKE '%C类%'
-      ELSE (
-        ${columnExpr} NOT ILIKE '%A类%'
-        AND ${columnExpr} NOT ILIKE '%B类%'
-        AND ${columnExpr} NOT ILIKE '%C类%'
-      )
-    END
-  )`
+  return `(${sqlShareClassLetter(columnExpr)} = ${sqlShareClassLetter(targetExpr)})`
 }
 
 /** Require product code suffix to match share class in the target fund name (A/B/C). */
 export function sqlShareClassCodeGuard(codeCol: string, productNameExpr: string): string {
+  const letter = sqlShareClassLetter(productNameExpr)
+  const code = `TRIM(UPPER(${codeCol}))`
   return `(
-    CASE
-      WHEN ${productNameExpr} ILIKE '%A类%' THEN TRIM(UPPER(${codeCol})) ~ 'A$'
-      WHEN ${productNameExpr} ILIKE '%B类%' THEN TRIM(UPPER(${codeCol})) ~ 'B$'
-      WHEN ${productNameExpr} ILIKE '%C类%' THEN TRIM(UPPER(${codeCol})) ~ 'C$'
-      ELSE NOT (TRIM(UPPER(${codeCol})) ~ '[ABC]$')
+    CASE ${letter}
+      WHEN 'A' THEN ${code} ~ 'A$'
+      WHEN 'B' THEN ${code} ~ 'B$'
+      WHEN 'C' THEN ${code} ~ 'C$'
+      ELSE NOT (${code} ~ '[ABC]$')
     END
   )`
 }
@@ -272,31 +296,21 @@ export function sqlShareClassCodesMatch(codeA: string, codeB: string): string {
 function sqlEmailNavUnclassifiedShareClassGuard(fundNameCol: string, productCodeCol: string): string {
   return `(
     COALESCE(${productCodeCol}, '') !~ '[ABC]$'
-    AND COALESCE(${fundNameCol}, '') NOT ILIKE '%A类%'
-    AND COALESCE(${fundNameCol}, '') NOT ILIKE '%B类%'
-    AND COALESCE(${fundNameCol}, '') NOT ILIKE '%C类%'
+    AND ${sqlShareClassLetter(fundNameCol)} = ''
   )`
 }
 
 /** JS: share class in display names must agree (A/B/C class is a distinct product). */
 export function shareClassProductNamesMatch(columnName: string, targetName: string): boolean {
-  const col = String(columnName ?? "").trim()
-  const tgt = String(targetName ?? "").trim()
-  const hasClass = (s: string, letter: string) => s.includes(`${letter}类`)
-  if (hasClass(tgt, "A")) return hasClass(col, "A")
-  if (hasClass(tgt, "B")) return hasClass(col, "B")
-  if (hasClass(tgt, "C")) return hasClass(col, "C")
-  return !hasClass(col, "A") && !hasClass(col, "B") && !hasClass(col, "C")
+  return shareClassLetterFromName(columnName) === shareClassLetterFromName(targetName)
 }
 
 /** JS equivalent of sqlShareClassCodeGuard. Empty code is treated as neutral. */
 export function shareClassCodeMatchesProduct(code: string, productName: string): boolean {
   const c = String(code ?? "").trim().toUpperCase()
-  const name = String(productName ?? "").trim()
   if (!c) return true
-  if (name.includes("A类")) return /A$/.test(c)
-  if (name.includes("B类")) return /B$/.test(c)
-  if (name.includes("C类")) return /C$/.test(c)
+  const letter = shareClassLetterFromName(productName)
+  if (letter) return c.endsWith(letter)
   return !/[ABC]$/.test(c)
 }
 
@@ -376,8 +390,9 @@ export function sqlShareClassHoldingCodeGuard(
 
 function jsFundNameBase(name: string): string {
   return name
-    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .replace(/基金([ABC])$/u, "基金")
     .replace(/[ABC]类$/u, "")
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
     .replace(/\s+/g, "")
     .trim()
 }
@@ -405,8 +420,9 @@ export function fundNicknameMatchesFullName(nickname: string, fullName: string):
 
   const strip = (name: string) =>
     name
-      .replace(/(私募证券投资基金|证券投资私募基金|私募基金|证券投资基金|投资基金)$/u, "")
+      .replace(/基金([ABC])$/u, "基金")
       .replace(/[ABC]类$/u, "")
+      .replace(/(私募证券投资基金|证券投资私募基金|私募基金|证券投资基金|投资基金)$/u, "")
       .replace(/证券投资$/u, "")
       .replace(/\s+/g, "")
       .trim()
@@ -460,26 +476,15 @@ export function expandFundSearchKeywords(keyword: string): string[] {
 /** Share-class guard for email NAV rows when resolving beian from fund_name. */
 export function sqlEmailNavShareClassGuard(fundNameCol: string, productNameExpr: string, productCodeCol: string): string {
   const unclassified = sqlEmailNavUnclassifiedShareClassGuard(fundNameCol, productCodeCol)
+  const nameLetter = sqlShareClassLetter(fundNameCol)
+  const targetLetter = sqlShareClassLetter(productNameExpr)
+  const code = `COALESCE(${productCodeCol}, '')`
   return `(
-    CASE
-      WHEN ${productNameExpr} ILIKE '%A类%'
-        THEN COALESCE(${fundNameCol}, '') ILIKE '%A类%'
-          OR COALESCE(${productCodeCol}, '') ~ 'A$'
-          OR ${unclassified}
-      WHEN ${productNameExpr} ILIKE '%B类%'
-        THEN COALESCE(${fundNameCol}, '') ILIKE '%B类%'
-          OR COALESCE(${productCodeCol}, '') ~ 'B$'
-          OR ${unclassified}
-      WHEN ${productNameExpr} ILIKE '%C类%'
-        THEN COALESCE(${fundNameCol}, '') ILIKE '%C类%'
-          OR COALESCE(${productCodeCol}, '') ~ 'C$'
-          OR ${unclassified}
-      ELSE (
-        COALESCE(${fundNameCol}, '') NOT ILIKE '%A类%'
-        AND COALESCE(${fundNameCol}, '') NOT ILIKE '%B类%'
-        AND COALESCE(${fundNameCol}, '') NOT ILIKE '%C类%'
-        AND NOT (COALESCE(${productCodeCol}, '') ~ '[ABC]$')
-      )
+    CASE ${targetLetter}
+      WHEN 'A' THEN ${nameLetter} = 'A' OR ${code} ~ 'A$' OR ${unclassified}
+      WHEN 'B' THEN ${nameLetter} = 'B' OR ${code} ~ 'B$' OR ${unclassified}
+      WHEN 'C' THEN ${nameLetter} = 'C' OR ${code} ~ 'C$' OR ${unclassified}
+      ELSE ${nameLetter} = '' AND NOT (${code} ~ '[ABC]$')
     END
   )`
 }

@@ -135,6 +135,9 @@ const InstructionsSection = dynamic(() =>
 const WeeklyReviewView = dynamic(() =>
   import("./components/WeeklyReviewView").then((m) => ({ default: m.WeeklyReviewView })),
 )
+const ExternalRankWeekView = dynamic(() =>
+  import("./components/ExternalRankWeekView").then((m) => ({ default: m.ExternalRankWeekView })),
+)
 const LookthroughComplianceView = dynamic(() =>
   import("./components/LookthroughComplianceView").then((m) => ({ default: m.LookthroughComplianceView })),
 )
@@ -2358,7 +2361,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     router.push(`/ma/dashboard/private-funds?${params.toString()}`)
   }
 
-  const [trackTab, setTrackTab] = useState<"team" | "mine" | "weekly" | "weekly-futures">("team")
+  const [trackTab, setTrackTab] = useState<"team" | "mine" | "weekly" | "weekly-futures" | "external-rank">("team")
   const [activePool, setActivePool] = useState("all")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
   const [strategySource, setStrategySource] = useState<TrackStrategySource>("company")
@@ -2528,7 +2531,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const isSupportedPool = pools.some((p) => p.key === activePool)
   const sourcePool = isSupportedPool ? activePool : "all"
   const isMineTab = !isOps && trackTab === "mine"
-  const isWeeklyTab = !isOps && (trackTab === "weekly" || trackTab === "weekly-futures")
+  const isWeeklyTab = !isOps && (trackTab === "weekly" || trackTab === "weekly-futures" || trackTab === "external-rank")
   const isMyPoolSupported = myActivePool === "mine_all" || myActivePool === "mine_default" || myActivePool.startsWith("mine_custom_")
   const listPool = isMineTab ? myActivePool : sourcePool
   const listPoolSupported = isMineTab ? isMyPoolSupported : isSupportedPool
@@ -3354,6 +3357,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             { key: "mine", label: "我的跟踪" },
             { key: "weekly", label: "周度回顾(股票)" },
             { key: "weekly-futures", label: "周度回顾(期货)" },
+            { key: "external-rank", label: "外部私募业绩排行" },
           ] as const).map((t) => (
             <button
               key={t.key}
@@ -4560,6 +4564,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
       {!isOps && trackTab === "weekly" && <WeeklyReviewView variant="equity" />}
       {!isOps && trackTab === "weekly-futures" && <WeeklyReviewView variant="futures" />}
+      {!isOps && trackTab === "external-rank" && <ExternalRankWeekView />}
 
       {/* Add metric dialog */}
       {showAddMetricDialog && (

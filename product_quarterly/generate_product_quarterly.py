@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.font_manager import FontProperties, fontManager
 from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.transforms import blended_transform_factory
 
 C_NAVY = "#1A365D"
 C_NAVY_MID = "#2C5282"
@@ -210,34 +211,92 @@ def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
     return sampled
 
 
-def _holding_metrics(series: pd.Series, start: pd.Timestamp, end: pd.Timestamp) -> dict[str, float | None]:
+
+def _ann_vol(path: pd.Series) -> float | None:
+    vals = path.dropna().astype(float)
+    if len(vals) < 3:
+        return None
+    rets = vals.pct_change().dropna()
+    if len(rets) < 2:
+        return None
+    gaps = vals.index.to_series().diff().dt.days.dropna()
+    med = float(gaps.median()) if len(gaps) else 7.0
+    if med <= 2:
+        ppy = 252
+    elif med <= 10:
+        ppy = 52
+    elif med <= 20:
+        ppy = 26
+    elif med <= 45:
+        ppy = 12
+    else:
+        ppy = 4
+    return float(rets.std(ddof=1) * np.sqrt(ppy))
+
+
+def _holding_metrics(
+    series: pd.Series,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    anchor: str = "prior",
+) -> dict[str, float | None]:
     full = series.dropna()
     if len(full) < 2:
-        return {"ret": None, "ann": None, "mdd": None, "days": None, "n": None}
+        return {"ret": None, "ann": None, "ann_vol": None, "mdd": None, "days": None, "n": None}
     before = full[full.index < start]
     window = full[(full.index >= start) & (full.index <= end)]
     if len(window) < 1:
-        return {"ret": None, "ann": None, "mdd": None, "days": None, "n": None}
-    base = before.iloc[-1] if len(before) else window.iloc[0]
+        return {"ret": None, "ann": None, "ann_vol": None, "mdd": None, "days": None, "n": None}
+    # Product-page 开始分析 slices the dates first, then samples. The return
+    # starts at the first point inside the window, not the previous week.
+    use_prior = anchor != "window" and len(before) > 0
+    if use_prior:
+        base = float(before.iloc[-1])
+        start_dt = before.index[-1]
+        year_basis = 365.0
+    else:
+        if len(window) < 2:
+            return {"ret": None, "ann": None, "ann_vol": None, "mdd": None, "days": None, "n": None}
+        base = float(window.iloc[0])
+        start_dt = window.index[0]
+        year_basis = 365.25
     last = float(window.iloc[-1])
-    ret = _total_return(float(base), last)
-    start_dt = before.index[-1] if len(before) else window.index[0]
+    ret = _total_return(base, last)
     days = max((window.index[-1] - start_dt).days, 1)
-    ann = (1 + ret) ** (365.0 / days) - 1 if days > 0 else 0.0
-    path = pd.concat([pd.Series({start_dt: float(base)}), window]) if start_dt not in window.index else window
+    ann = (1 + ret) ** (year_basis / days) - 1 if days > 0 else 0.0
+    path = pd.concat([pd.Series({start_dt: base}), window]) if start_dt not in window.index else window
     mdd = _max_drawdown(path)
-    return {"ret": ret, "ann": ann, "mdd": mdd, "days": float(days), "n": float(len(window))}
+    ann_vol = _ann_vol(path)
+    return {"ret": ret, "ann": ann, "ann_vol": ann_vol, "mdd": mdd, "days": float(days), "n": float(len(window))}
 
 
-def calc_metrics(df: pd.DataFrame, period_begin: pd.Timestamp, period_end: pd.Timestamp) -> dict[str, Any]:
+def _relative_return(fund_ret: float | None, bench_ret: float | None, method: str) -> float | None:
+    """产品页「超额（除法）」为 (1+基金)/(1+基准)-1，未勾选时为基金减基准。"""
+    if fund_ret is None or bench_ret is None:
+        return None
+    if method == "division":
+        denom = 1.0 + float(bench_ret)
+        if denom == 0:
+            return None
+        return (1.0 + float(fund_ret)) / denom - 1.0
+    return float(fund_ret) - float(bench_ret)
+
+
+def calc_metrics(
+    df: pd.DataFrame,
+    period_begin: pd.Timestamp,
+    period_end: pd.Timestamp,
+    anchor: str = "prior",
+    excess: str = "subtract",
+) -> dict[str, Any]:
     nav = df.set_index("date")["nav"]
     b1 = df.set_index("date")["bench1"]
     b2 = df.set_index("date")["bench2"]
-    fund = _holding_metrics(nav, period_begin, period_end)
-    bench1 = _holding_metrics(b1, period_begin, period_end)
-    bench2 = _holding_metrics(b2, period_begin, period_end)
-    excess1 = None if fund["ret"] is None or bench1["ret"] is None else fund["ret"] - bench1["ret"]
-    excess2 = None if fund["ret"] is None or bench2["ret"] is None else fund["ret"] - bench2["ret"]
+    fund = _holding_metrics(nav, period_begin, period_end, anchor)
+    bench1 = _holding_metrics(b1, period_begin, period_end, anchor)
+    bench2 = _holding_metrics(b2, period_begin, period_end, anchor)
+    excess1 = _relative_return(fund["ret"], bench1["ret"], excess)
+    excess2 = _relative_return(fund["ret"], bench2["ret"], excess)
     unit_end = df.loc[df["date"] <= period_end].iloc[-1]
     return {
         "fund": fund,
@@ -257,12 +316,16 @@ def auto_commentary(
     metrics: dict[str, Any],
     bench1_label: str,
     bench2_label: str,
+    use_vol: bool = False,
+    nav_unit: str = "净值日",
+    show_bench1: bool = True,
 ) -> str:
     fund = metrics["fund"]
     days = int(fund["days"] or 0)
     n = int(fund["n"] or 0)
     ret = _fmt_pct(fund["ret"])
-    ann = _fmt_pct(fund["ann"])
+    ann = _fmt_pct(fund["ann_vol"], signed=False) if use_vol else _fmt_pct(fund["ann"])
+    ann_label = "年化波动" if use_vol else "年化收益"
     mdd = _fmt_pct(fund["mdd"], signed=False)
     b1 = _fmt_pct(metrics["bench1"]["ret"])
     b2 = _fmt_pct(metrics["bench2"]["ret"])
@@ -273,11 +336,19 @@ def auto_commentary(
             (
                 f"本报告覆盖 {period_begin.year}年{period_begin.month}月{period_begin.day}日至"
                 f"{period_end.year}年{period_end.month}月{period_end.day}日持有期"
-                f"（约{days}个自然日、{n}个净值日）。"
+                f"（约{days}个自然日、{n}个{nav_unit}）。"
             ),
-            f"期内「{product_label}」区间收益 {ret}，年化收益 {ann}，期间最大回撤 {mdd}。",
-            f"同期{bench1_label}区间收益 {b1}，{bench2_label}区间收益 {b2}。",
-            f"产品相对{bench1_label}超额 {x1}，相对{bench2_label}超额 {x2}。",
+            f"期内「{product_label}」区间收益 {ret}，{ann_label} {ann}，期间最大回撤 {mdd}。",
+            (
+                f"同期{bench1_label}区间收益 {b1}，{bench2_label}区间收益 {b2}。"
+                if show_bench1
+                else f"同期{bench2_label}区间收益 {b2}。"
+            ),
+            (
+                f"产品相对{bench1_label}超额 {x1}，相对{bench2_label}超额 {x2}。"
+                if show_bench1
+                else f"产品相对{bench2_label}超额 {x2}。"
+            ),
             "以上数据仅反映本持有期已实现净值表现，不构成对未来收益的承诺或投资建议。",
         ]
     )
@@ -337,8 +408,15 @@ def draw_overview_table(ax, y: float, overview: dict[str, str], fp: FontProperti
     return y - len(rows) * row_h - 0.016
 
 
-def draw_kpi_row(ax, y: float, items: list[tuple[str, str, str]], fp: FontProperties | None, fp_bold: FontProperties | None) -> float:
-    box_h = 0.072
+def draw_kpi_row(
+    ax,
+    y: float,
+    items: list[tuple[str, str, str]],
+    fp: FontProperties | None,
+    fp_bold: FontProperties | None,
+    box_h: float = 0.072,
+    gap_after: float = 0.016,
+) -> float:
     gap = 0.012
     x0 = 0.04
     width = (0.92 - gap * 3) / 4
@@ -360,7 +438,7 @@ def draw_kpi_row(ax, y: float, items: list[tuple[str, str, str]], fp: FontProper
         ax.text(x + width / 2, y - 0.016, label, transform=ax.transAxes, ha="center", va="top", fontsize=7.4, color=C_MUTED, fontproperties=fp, zorder=3)
         ax.text(x + width / 2, y - 0.038, value, transform=ax.transAxes, ha="center", va="center", fontsize=13, color=C_NAVY, fontproperties=fp_bold, zorder=3)
         ax.text(x + width / 2, y - 0.058, hint, transform=ax.transAxes, ha="center", va="top", fontsize=6.6, color=C_GOLD if hint.startswith("+") else C_MUTED, fontproperties=fp, zorder=3)
-    return y - box_h - 0.016
+    return y - box_h - gap_after
 
 
 def draw_compare_table(
@@ -372,36 +450,30 @@ def draw_compare_table(
     metrics: dict[str, Any],
     fp: FontProperties | None,
     fp_bold: FontProperties | None,
+    use_vol: bool = False,
+    show_bench1: bool = True,
 ) -> float:
-    headers = ["指标", product_label, bench1_label, bench2_label, f"相对{bench1_label}", f"相对{bench2_label}"]
-    rows = [
-        [
-            "区间收益",
-            _fmt_pct(metrics["fund"]["ret"]),
-            _fmt_pct(metrics["bench1"]["ret"]),
-            _fmt_pct(metrics["bench2"]["ret"]),
-            _fmt_pct(metrics["excess1"]),
-            _fmt_pct(metrics["excess2"]),
-        ],
-        [
-            "年化收益",
-            _fmt_pct(metrics["fund"]["ann"]),
-            _fmt_pct(metrics["bench1"]["ann"]),
-            _fmt_pct(metrics["bench2"]["ann"]),
-            "--",
-            "--",
-        ],
-        [
-            "最大回撤",
-            _fmt_pct(metrics["fund"]["mdd"], signed=False),
-            _fmt_pct(metrics["bench1"]["mdd"], signed=False),
-            _fmt_pct(metrics["bench2"]["mdd"], signed=False),
-            "--",
-            "--",
-        ],
-    ]
+    vol_name = "年化波动" if use_vol else "年化收益"
+    fund_vol = _fmt_pct(metrics["fund"]["ann_vol"], signed=False) if use_vol else _fmt_pct(metrics["fund"]["ann"])
+    bench2_vol = _fmt_pct(metrics["bench2"]["ann_vol"], signed=False) if use_vol else _fmt_pct(metrics["bench2"]["ann"])
+    if show_bench1:
+        bench1_vol = _fmt_pct(metrics["bench1"]["ann_vol"], signed=False) if use_vol else _fmt_pct(metrics["bench1"]["ann"])
+        headers = ["指标", product_label, bench1_label, bench2_label, f"相对{bench1_label}", f"相对{bench2_label}"]
+        rows = [
+            ["区间收益", _fmt_pct(metrics["fund"]["ret"]), _fmt_pct(metrics["bench1"]["ret"]), _fmt_pct(metrics["bench2"]["ret"]), _fmt_pct(metrics["excess1"]), _fmt_pct(metrics["excess2"])],
+            [vol_name, fund_vol, bench1_vol, bench2_vol, "--", "--"],
+            ["最大回撤", _fmt_pct(metrics["fund"]["mdd"], signed=False), _fmt_pct(metrics["bench1"]["mdd"], signed=False), _fmt_pct(metrics["bench2"]["mdd"], signed=False), "--", "--"],
+        ]
+        widths = [0.12, 0.16, 0.16, 0.16, 0.16, 0.16]
+    else:
+        headers = ["指标", product_label, bench2_label, f"相对{bench2_label}"]
+        rows = [
+            ["区间收益", _fmt_pct(metrics["fund"]["ret"]), _fmt_pct(metrics["bench2"]["ret"]), _fmt_pct(metrics["excess2"])],
+            [vol_name, fund_vol, bench2_vol, "--"],
+            ["最大回撤", _fmt_pct(metrics["fund"]["mdd"], signed=False), _fmt_pct(metrics["bench2"]["mdd"], signed=False), "--"],
+        ]
+        widths = [0.18, 0.26, 0.24, 0.24]
     row_h = 0.022
-    widths = [0.12, 0.16, 0.16, 0.16, 0.16, 0.16]
     x0 = 0.04
     for r_i, row in enumerate([headers, *rows]):
         yy = y - (r_i + 1) * row_h
@@ -426,6 +498,215 @@ def draw_compare_table(
             )
             xs += w
     return y - (len(rows) + 1) * row_h - 0.014
+
+
+def _period_kpis(metrics: dict[str, Any], bench_label: str, use_vol: bool, hint: str) -> list[tuple[str, str, str]]:
+    vol_name = "年化波动" if use_vol else "年化收益"
+    vol_value = _fmt_pct(metrics["fund"]["ann_vol"], signed=False) if use_vol else _fmt_pct(metrics["fund"]["ann"])
+    vol_hint = "按周净值" if use_vol else f"{int(metrics['fund']['days'] or 0)}个自然日"
+    return [
+        ("区间收益", _fmt_pct(metrics["fund"]["ret"]), hint),
+        (vol_name, vol_value, vol_hint),
+        ("最大回撤", _fmt_pct(metrics["fund"]["mdd"], signed=False), hint),
+        ("相对超额", _fmt_pct(metrics["excess2"]), f"相对{bench_label} {_fmt_pct(metrics['excess2'])}"),
+    ]
+
+
+def draw_dual_period_table(
+    ax,
+    y: float,
+    product_label: str,
+    bench_label: str,
+    quarter: dict[str, Any],
+    life: dict[str, Any],
+    quarter_name: str,
+    life_name: str,
+    fp: FontProperties | None,
+    fp_bold: FontProperties | None,
+    use_vol: bool = False,
+) -> float:
+    vol_name = "年化波动" if use_vol else "年化收益"
+
+    def block(name: str, metrics: dict[str, Any]) -> list[list[str]]:
+        fund_vol = _fmt_pct(metrics["fund"]["ann_vol"], signed=False) if use_vol else _fmt_pct(metrics["fund"]["ann"])
+        bench_vol = _fmt_pct(metrics["bench2"]["ann_vol"], signed=False) if use_vol else _fmt_pct(metrics["bench2"]["ann"])
+        return [
+            [name, "区间收益", _fmt_pct(metrics["fund"]["ret"]), _fmt_pct(metrics["bench2"]["ret"]), _fmt_pct(metrics["excess2"])],
+            ["", vol_name, fund_vol, bench_vol, "--"],
+            ["", "最大回撤", _fmt_pct(metrics["fund"]["mdd"], signed=False), _fmt_pct(metrics["bench2"]["mdd"], signed=False), "--"],
+        ]
+
+    headers = ["区间", "指标", product_label, bench_label, f"相对{bench_label}"]
+    rows = block(quarter_name, quarter) + block(life_name, life)
+    row_h = 0.0192
+    widths = [0.13, 0.14, 0.22, 0.215, 0.215]
+    x0 = 0.04
+    for r_i, row in enumerate([headers, *rows]):
+        yy = y - (r_i + 1) * row_h
+        xs = x0
+        for j, (cell, w) in enumerate(zip(row, widths)):
+            bg = C_NAVY if r_i == 0 else (C_ROW if r_i % 2 == 1 else C_BG)
+            fg = "white" if r_i == 0 else C_TEXT
+            ax.add_patch(Rectangle((xs, yy), w, row_h, facecolor=bg, edgecolor=C_BORDER, lw=0.45, transform=ax.transAxes, zorder=2))
+            ax.text(
+                xs + w / 2,
+                yy + row_h / 2,
+                cell,
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=7.0,
+                color=fg,
+                fontproperties=fp_bold if (r_i == 0 or j <= 1) else fp,
+                zorder=3,
+                clip_on=True,
+            )
+            xs += w
+    return y - (len(rows) + 1) * row_h - 0.010
+
+
+def draw_period_columns_table(
+    ax,
+    y: float,
+    bench_label: str,
+    quarter: dict[str, Any],
+    life: dict[str, Any],
+    quarter_title: str,
+    life_title: str,
+    fp: FontProperties | None,
+    fp_bold: FontProperties | None,
+    use_vol: bool = False,
+) -> float:
+    """One table, periods in columns, so the chart keeps the vertical space."""
+    vol_name = "年化波动" if use_vol else "年化收益"
+
+    def vol(metrics: dict[str, Any], side: str) -> str:
+        block = metrics[side]
+        return _fmt_pct(block["ann_vol"], signed=False) if use_vol else _fmt_pct(block["ann"])
+
+    rows = [
+        ["区间收益", _fmt_pct(quarter["fund"]["ret"]), _fmt_pct(life["fund"]["ret"])],
+        [vol_name, vol(quarter, "fund"), vol(life, "fund")],
+        ["最大回撤", _fmt_pct(quarter["fund"]["mdd"], signed=False), _fmt_pct(life["fund"]["mdd"], signed=False)],
+        [f"{bench_label}区间收益", _fmt_pct(quarter["bench2"]["ret"]), _fmt_pct(life["bench2"]["ret"])],
+        [f"相对{bench_label}", _fmt_pct(quarter["excess2"]), _fmt_pct(life["excess2"])],
+        [f"{bench_label}{vol_name}", vol(quarter, "bench2"), vol(life, "bench2")],
+        [f"{bench_label}最大回撤", _fmt_pct(quarter["bench2"]["mdd"], signed=False), _fmt_pct(life["bench2"]["mdd"], signed=False)],
+    ]
+    headers = ["指标", quarter_title, life_title]
+    header_h = 0.034
+    row_h = 0.0205
+    widths = [0.28, 0.32, 0.32]
+    x0 = 0.04
+    table = [headers, *rows]
+    for r_i, row in enumerate(table):
+        h = header_h if r_i == 0 else row_h
+        yy = y - h
+        xs = x0
+        for j, (cell, w) in enumerate(zip(row, widths)):
+            bg = C_NAVY if r_i == 0 else (C_ROW if r_i % 2 == 1 else C_BG)
+            fg = "white" if r_i == 0 else C_TEXT
+            ax.add_patch(Rectangle((xs, yy), w, h, facecolor=bg, edgecolor=C_BORDER, lw=0.45, transform=ax.transAxes, zorder=2))
+            ax.text(
+                xs + w / 2,
+                yy + h / 2,
+                cell,
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=7.3 if r_i else 7.6,
+                color=fg,
+                fontproperties=fp_bold if (r_i == 0 or j == 0) else fp,
+                zorder=3,
+                linespacing=1.15,
+            )
+            xs += w
+        y = yy
+    return y - 0.012
+
+
+def draw_life_column_table(
+    ax,
+    y: float,
+    product_label: str,
+    bench_label: str,
+    quarter: dict[str, Any],
+    life: dict[str, Any],
+    fp: FontProperties | None,
+    fp_bold: FontProperties | None,
+    use_vol: bool = False,
+) -> float:
+    """Same three rows as the quarter table, with a 成立以来 column beside each group."""
+    vol_name = "年化波动" if use_vol else "年化收益"
+
+    def vol(metrics: dict[str, Any], side: str) -> str:
+        block = metrics[side]
+        return _fmt_pct(block["ann_vol"], signed=False) if use_vol else _fmt_pct(block["ann"])
+
+    groups = [product_label, bench_label, f"相对{bench_label}"]
+    sub = ["本季度", "成立以来"]
+    rows = [
+        [
+            "区间收益",
+            _fmt_pct(quarter["fund"]["ret"]),
+            _fmt_pct(life["fund"]["ret"]),
+            _fmt_pct(quarter["bench2"]["ret"]),
+            _fmt_pct(life["bench2"]["ret"]),
+            _fmt_pct(quarter["excess2"]),
+            _fmt_pct(life["excess2"]),
+        ],
+        [vol_name, vol(quarter, "fund"), vol(life, "fund"), vol(quarter, "bench2"), vol(life, "bench2"), "--", "--"],
+        [
+            "最大回撤",
+            _fmt_pct(quarter["fund"]["mdd"], signed=False),
+            _fmt_pct(life["fund"]["mdd"], signed=False),
+            _fmt_pct(quarter["bench2"]["mdd"], signed=False),
+            _fmt_pct(life["bench2"]["mdd"], signed=False),
+            "--",
+            "--",
+        ],
+    ]
+    label_w = 0.13
+    col_w = (0.92 - label_w) / 6
+    widths = [label_w, *([col_w] * 6)]
+    x0 = 0.04
+    group_h = 0.018
+    sub_h = 0.016
+    row_h = 0.022
+    header_bottom = y - group_h - sub_h
+    ax.add_patch(Rectangle((x0, header_bottom), label_w, group_h + sub_h, facecolor=C_NAVY, edgecolor=C_BORDER, lw=0.45, transform=ax.transAxes, zorder=2))
+    ax.text(x0 + label_w / 2, header_bottom + (group_h + sub_h) / 2, "指标", transform=ax.transAxes, ha="center", va="center", fontsize=7.0, color="white", fontproperties=fp_bold, zorder=3)
+    yy = y - group_h
+    xs = x0 + label_w
+    for name in groups:
+        ax.add_patch(Rectangle((xs, yy), col_w * 2, group_h, facecolor=C_NAVY, edgecolor=C_BORDER, lw=0.45, transform=ax.transAxes, zorder=2))
+        ax.text(xs + col_w, yy + group_h / 2, name, transform=ax.transAxes, ha="center", va="center", fontsize=6.7, color="white", fontproperties=fp_bold, zorder=3)
+        for j, label in enumerate(sub):
+            ax.add_patch(Rectangle((xs + j * col_w, yy - sub_h), col_w, sub_h, facecolor=C_NAVY, edgecolor=C_BORDER, lw=0.45, transform=ax.transAxes, zorder=2))
+            ax.text(xs + j * col_w + col_w / 2, yy - sub_h / 2, label, transform=ax.transAxes, ha="center", va="center", fontsize=6.3, color="white", fontproperties=fp, zorder=3)
+        xs += col_w * 2
+    y = yy - sub_h
+    for r_i, row in enumerate(rows):
+        yy = y - row_h
+        xs = x0
+        for j, (cell, w) in enumerate(zip(row, widths)):
+            bg = C_ROW if r_i % 2 == 0 else C_BG
+            ax.add_patch(Rectangle((xs, yy), w, row_h, facecolor=bg, edgecolor=C_BORDER, lw=0.45, transform=ax.transAxes, zorder=2))
+            ax.text(
+                xs + w / 2,
+                yy + row_h / 2,
+                cell,
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=6.7,
+                color=C_TEXT,
+                fontproperties=fp_bold if j == 0 else fp,
+                zorder=3,
+            )
+            xs += w
+        y = yy
+    return y - 0.012
 
 
 _WRAP_BREAK_AFTER = set("。！？；，、： ")
@@ -487,7 +768,7 @@ def quarter_title(period_begin: pd.Timestamp, period_end: pd.Timestamp, label: s
     return f"{period_begin.year}年{period_begin.month}月–{period_end.year}年{period_end.month}月 持有期投资报告"
 
 
-def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
+def build_report_figure(nav_df: pd.DataFrame, config: dict[str, Any]):
     fp, fp_bold = configure_cn_font()
     product_name = str(config.get("product_name") or "私募基金")
     short_name = _display_short_name(str(config.get("short_name") or ""), product_name)
@@ -506,7 +787,9 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
         raise ValueError("报告截止日期之前净值数据不足")
     nav_df = apply_nav_frequency(nav_df, str(config.get("nav_frequency") or "weekly"))
 
-    metrics = calc_metrics(nav_df, period_begin, period_end)
+    anchor = "window" if config.get("metrics_match_product_page") else "prior"
+    excess = "division" if config.get("metrics_match_product_page") else "subtract"
+    metrics = calc_metrics(nav_df, period_begin, period_end, anchor, excess)
     overview.setdefault("unit_nav", _fmt_num(metrics["unit_nav"], 4))
     overview.setdefault("cum_nav", _fmt_num(metrics["cum_nav"], 4))
     overview["inception_date"] = overview.get("inception_date") or _fmt_date_cn(str(config.get("inception_date") or ""))
@@ -544,67 +827,118 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
     y = draw_section_bar(ax, y, "一、产品概览", fp_bold)
     y = draw_overview_table(ax, y, overview, fp, fp_bold)
 
+    use_vol = bool(config.get("ann_vol_instead_of_return"))
+    show_bench1 = bool(config.get("show_bench1", True))
+    life_metrics = None
+    chart_start_preview = pd.Timestamp(config["chart_start"]) if config.get("chart_start") else period_begin
+    if chart_start_preview > period_begin:
+        chart_start_preview = period_begin
+    if chart_start_preview < period_begin - pd.Timedelta(days=7):
+        life_anchor = "window" if config.get("metrics_match_product_page") else "prior"
+        life_excess = "division" if config.get("metrics_match_product_page") else "subtract"
+        life_metrics = calc_metrics(nav_df, chart_start_preview, period_end, life_anchor, life_excess)
     y = draw_section_bar(ax, y, "二、本持有期核心指标", fp_bold)
-    excess_hint = f"相对{bench2_label} {_fmt_pct(metrics['excess2'])}"
     y = draw_kpi_row(
-        ax,
-        y,
-        [
-            ("区间收益", _fmt_pct(metrics["fund"]["ret"]), "本持有期"),
-            ("年化收益", _fmt_pct(metrics["fund"]["ann"]), f"{int(metrics['fund']['days'] or 0)}个自然日"),
-            ("最大回撤", _fmt_pct(metrics["fund"]["mdd"], signed=False), "持有期内"),
-            ("相对超额", _fmt_pct(metrics["excess2"]), excess_hint),
-        ],
-        fp,
-        fp_bold,
-    )
+            ax,
+            y,
+            [
+                ("区间收益", _fmt_pct(metrics["fund"]["ret"]), "本持有期"),
+                ("年化波动" if use_vol else "年化收益", _fmt_pct(metrics["fund"]["ann_vol"], signed=False) if use_vol else _fmt_pct(metrics["fund"]["ann"]), "按周净值" if use_vol else f"{int(metrics['fund']['days'] or 0)}个自然日"),
+                ("最大回撤", _fmt_pct(metrics["fund"]["mdd"], signed=False), "持有期内"),
+                ("相对超额", _fmt_pct(metrics["excess2"]), f"相对{bench2_label} {_fmt_pct(metrics['excess2'])}"),
+            ],
+            fp,
+            fp_bold,
+        )
 
-    y = draw_section_bar(ax, y, "三、净值走势（期初=1）", fp_bold)
-    chart_h = 0.24
+    chart_start = pd.Timestamp(config["chart_start"]) if config.get("chart_start") else period_begin
+    if chart_start > period_begin:
+        chart_start = period_begin
+    show_full_life = chart_start < period_begin - pd.Timedelta(days=7)
+    y = draw_section_bar(ax, y, "三、成立以来净值走势（期初=1）" if show_full_life else "三、净值走势（期初=1）", fp_bold)
+    chart_h = 0.226 if life_metrics is not None and not show_bench1 else 0.24
     label_pad = 0.028
     chart_bottom = y - chart_h
     ax_nav = fig.add_axes([0.11, chart_bottom + label_pad, 0.78, chart_h - label_pad - 0.01])
 
-    mask = (nav_df["date"] >= period_begin - pd.Timedelta(days=5)) & (nav_df["date"] <= period_end)
+    mask = (nav_df["date"] >= chart_start - pd.Timedelta(days=5)) & (nav_df["date"] <= period_end)
     plot_df = nav_df.loc[mask].copy()
     if len(plot_df) < 2:
         plot_df = nav_df.copy()
-    base_row = plot_df[plot_df["date"] <= period_begin]
+    base_row = plot_df[plot_df["date"] <= chart_start]
     base_nav = float(base_row["nav"].iloc[-1]) if len(base_row) else float(plot_df["nav"].iloc[0])
+    if show_full_life:
+        ax_nav.axvspan(period_begin, period_end, color=C_NAVY, alpha=0.10, zorder=0, lw=0)
+        ax_nav.axvline(period_begin, color=C_NAVY, lw=0.7, alpha=0.45, zorder=1)
+        ax_nav.text(
+            period_begin + (period_end - period_begin) / 2,
+            0.03,
+            "本季度",
+            transform=blended_transform_factory(ax_nav.transData, ax_nav.transAxes),
+            ha="center",
+            va="bottom",
+            fontsize=7,
+            color=C_NAVY,
+            fontproperties=fp,
+            zorder=4,
+        )
     ax_nav.plot(plot_df["date"], plot_df["nav"] / base_nav, color=C_RED, lw=1.8, label=short_name, zorder=4)
 
-    if plot_df["bench1"].notna().sum() >= 2:
+    if show_bench1 and plot_df["bench1"].notna().sum() >= 2:
         b1 = plot_df.dropna(subset=["bench1"])
-        b1_base_rows = b1[b1["date"] <= period_begin]
+        b1_base_rows = b1[b1["date"] <= chart_start]
         b1_base = float(b1_base_rows["bench1"].iloc[-1]) if len(b1_base_rows) else float(b1["bench1"].iloc[0])
         if b1_base > 0:
             ax_nav.plot(b1["date"], b1["bench1"] / b1_base, color=C_GRAY, lw=1.15, label=bench1_label, zorder=2)
     if plot_df["bench2"].notna().sum() >= 2:
         b2 = plot_df.dropna(subset=["bench2"])
-        b2_base_rows = b2[b2["date"] <= period_begin]
+        b2_base_rows = b2[b2["date"] <= chart_start]
         b2_base = float(b2_base_rows["bench2"].iloc[-1]) if len(b2_base_rows) else float(b2["bench2"].iloc[0])
         if b2_base > 0:
             ax_nav.plot(b2["date"], b2["bench2"] / b2_base, color=C_BLUE, lw=1.25, label=bench2_label, zorder=3)
 
     ax_nav.axhline(1.0, color="#E2E8F0", lw=0.8, zorder=1)
-    ax_nav.legend(loc="upper left", fontsize=7, frameon=False, prop=fp)
+    ax_nav.legend(loc="upper left", fontsize=7, frameon=True, framealpha=0.94, edgecolor="none", prop=fp)
     ax_nav.grid(True, color="#EDF2F7", lw=0.7)
     ax_nav.spines["top"].set_visible(False)
     ax_nav.spines["right"].set_visible(False)
     ax_nav.tick_params(axis="both", labelsize=6.5, colors=C_MUTED)
-    ax_nav.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-    ax_nav.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=7))
+    ax_nav.set_xlim(plot_df["date"].iloc[0], plot_df["date"].iloc[-1])
+    if (plot_df["date"].iloc[-1] - plot_df["date"].iloc[0]).days > 120:
+        ax_nav.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax_nav.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    else:
+        ax_nav.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+        ax_nav.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=7))
     for label in ax_nav.get_xticklabels() + ax_nav.get_yticklabels():
         if fp:
             label.set_fontproperties(fp)
     y = chart_bottom - 0.008
 
     y = draw_section_bar(ax, y, "四、与基准比较", fp_bold)
-    y = draw_compare_table(ax, y, short_name, bench1_label, bench2_label, metrics, fp, fp_bold)
+    if life_metrics is not None and not show_bench1:
+        y = draw_life_column_table(
+            ax, y, short_name, bench2_label, metrics, life_metrics, fp, fp_bold, use_vol=use_vol,
+        )
+    else:
+        y = draw_compare_table(
+            ax, y, short_name, bench1_label, bench2_label, metrics, fp, fp_bold, use_vol=use_vol, show_bench1=show_bench1,
+        )
 
     y = draw_section_bar(ax, y, "五、简要说明", fp_bold)
-    note = user_note or auto_commentary(short_name, period_begin, period_end, metrics, bench1_label, bench2_label)
-    y = draw_wrapped_text(ax, note, 0.05, y, fp, fontsize=8.0, max_chars=56, max_lines=6)
+    nav_unit = "周净值日" if str(config.get("nav_frequency") or "weekly") == "weekly" else "净值日"
+    note = user_note or auto_commentary(
+        short_name,
+        period_begin,
+        period_end,
+        metrics,
+        bench1_label,
+        bench2_label,
+        use_vol=use_vol,
+        nav_unit=nav_unit,
+        show_bench1=show_bench1,
+    )
+    y = draw_wrapped_text(ax, note, 0.05, y, fp, fontsize=8.0, max_chars=56, max_lines=5)
 
     ax.add_patch(Rectangle((0.04, 0.038), 0.92, 0.0008, facecolor=C_BORDER, edgecolor="none", transform=ax.transAxes, zorder=2))
     ax.text(
@@ -622,7 +956,7 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
     ax.text(
         0.5,
         0.014,
-        f"数据截止日 {_fmt_date_cn(str(period_end.date()))}  ·  净值已复权  ·  基准为同期价格指数",
+        f"数据截止日 {_fmt_date_cn(str(period_end.date()))}  ·  净值已复权  ·  基准为{bench2_label if not show_bench1 else '同期价格指数'}",
         transform=ax.transAxes,
         ha="center",
         va="top",
@@ -632,6 +966,15 @@ def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path
         zorder=2,
     )
 
+    return fig
+
+
+def render_report(nav_df: pd.DataFrame, config: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
+    fig = build_report_figure(nav_df, config)
+    product_name = str(config.get("product_name") or "私募基金")
+    short_name = _display_short_name(str(config.get("short_name") or ""), product_name)
+    period_end = pd.Timestamp(config["end_date"])
+    period_begin = pd.Timestamp(config.get("period_begin") or config.get("month_begin") or period_end)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = _safe_report_stem(
         f"{short_name}_{period_begin.year}年{period_begin.month}月{period_begin.day}日"
