@@ -1,5 +1,6 @@
 import { query } from "@/lib/db"
 import { expandFundSearchKeywords } from "@/lib/server/fund-name-match"
+import { collapseTrackingIdentities } from "@/lib/server/tracking-list-identity"
 import {
   REGISTER_POOL_TABLE,
   teamVisibleTrackingFundsUnionSql,
@@ -90,7 +91,9 @@ async function loadTrackedNameCatalog(opts: {
   const promise = (async () => {
     const { sql, params } = catalogSql(opts)
     const rows = await query<CatalogRow>(sql, params)
-    const cleaned = rows.filter((row) => row.beian_hao && row.product_name)
+    const cleaned = collapseTrackingIdentities(
+      rows.filter((row) => row.beian_hao && row.product_name),
+    )
     catalogs.set(key, { ts: Date.now(), rows: cleaned })
     return cleaned
   })()

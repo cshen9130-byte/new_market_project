@@ -22,9 +22,9 @@ import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import { collapseAliasedTrackingIdentities, purgeValuationFilenameIdentities, REGISTER_POOL_TABLE, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
-import { expandFundSearchKeywords, sqlFundNameKey, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
+import { expandFundSearchKeywords, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { resolveTrackingKeywordBeianCodes } from "@/lib/server/tracking-keyword-search"
-import { sqlBeianFamilyKey } from "@/lib/server/share-class-product"
+import { sqlTrackingIdentityKeyColumns, sqlVisibleTrackingIdentity } from "@/lib/server/tracking-list-identity"
 import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import { cleanValuationDerivedFundName, isValuationReportTitle } from "@/lib/server/valuation-filename"
 
@@ -79,6 +79,8 @@ declare global {
   // One-shot: drop the AAEO3A duplicate of 诚奇睿盈对冲2号A类 (QH717A).
   var _trackingListCustodianAliasCollapseV1: boolean | undefined
   var _trackingListTestProductExcludeV1: boolean | undefined
+  // One-shot: drop 诚奇浦江CTA1号A类 shown twice (SSB595A +0.34% beside SB595A).
+  var _trackingListShareAliasDedupeV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -540,30 +542,16 @@ function sourceIndependentStrategyExprs(
 }
 
 /**
- * Parent filing (SBUK40 / 贞元虎踞一号) is the same product as its A/B/C row.
- * Keep the share class; hide the parent when both are in this list.
- *
  * Callers must read from a MATERIALIZED `keyed` CTE that already has
- * family_key / name_key / is_share_code. Computing those regexes inside the
- * EXISTS made 「全部」 a ~6s nested loop (one scan per fund) before LIMIT.
+ * family_key / name_key / canon_share / canon_code. Computing those regexes
+ * inside the EXISTS made 「全部」 a ~6s nested loop (one scan per fund) before LIMIT.
  */
 function sqlShareClassKeyColumns(alias: string): string {
-  return `${sqlBeianFamilyKey(`${alias}.beian_hao`)} AS family_key,
-    ${sqlFundNameKey(`${alias}.product_name`)} AS name_key,
-    (UPPER(BTRIM(${alias}.beian_hao)) ~ '[ABC]$') AS is_share_code`
+  return sqlTrackingIdentityKeyColumns(alias)
 }
 
 function sqlHideParentBesideShareClass(rowAlias: string, siblingFrom = "keyed"): string {
-  return `NOT (
-    NOT ${rowAlias}.is_share_code
-    AND EXISTS (
-      SELECT 1 FROM ${siblingFrom} sib
-      WHERE sib.is_share_code
-        AND sib.beian_hao <> ${rowAlias}.beian_hao
-        AND sib.family_key = ${rowAlias}.family_key
-        AND sib.name_key IS NOT DISTINCT FROM ${rowAlias}.name_key
-    )
-  )`
+  return sqlVisibleTrackingIdentity(rowAlias, siblingFrom)
 }
 
 function buildCachedFromClause(
@@ -1401,6 +1389,10 @@ export async function GET(req: Request) {
   }
   if (!global._trackingListTestProductExcludeV1) {
     global._trackingListTestProductExcludeV1 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListShareAliasDedupeV1) {
+    global._trackingListShareAliasDedupeV1 = true
     invalidateListResponseCache()
   }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
