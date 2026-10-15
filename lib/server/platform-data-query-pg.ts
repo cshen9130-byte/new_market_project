@@ -99,6 +99,16 @@ const PRODUCT_CLASS_SQL: Record<Exclude<PlatformProductClassFilter, "all">, stri
   equity: EQUITY_CLASS_SQL,
 }
 
+/** Exclusive class label. Equity wins if a name matches more than one fallback. */
+export const PLATFORM_PRODUCT_CLASS_CASE_SQL = `CASE
+  WHEN ${EQUITY_CLASS_SQL} THEN 'equity'
+  WHEN ${TRUST_CLASS_SQL} THEN 'trust'
+  WHEN ${ASSET_CLASS_SQL} THEN 'asset'
+  ELSE 'private'
+END`
+
+export const PLATFORM_PRIVATE_CLASS_SQL = PRODUCT_CLASS_SQL.private
+
 const NAV_DATE_SQL: Record<Exclude<PlatformNavDateFilter, "all">, string> = {
   m1: "i.latest_nav_date >= CURRENT_DATE - INTERVAL '1 month'",
   m1_3: "i.latest_nav_date >= CURRENT_DATE - INTERVAL '3 months' AND i.latest_nav_date < CURRENT_DATE - INTERVAL '1 month'",
@@ -110,7 +120,7 @@ const NAV_DATE_SQL: Record<Exclude<PlatformNavDateFilter, "all">, string> = {
 /** Same 14-day lag window as team data. */
 const NAV_LAG_DAYS = 14
 
-const ELEMENTS_PRESENT_SQL = `EXISTS (
+export const ELEMENTS_PRESENT_SQL = `EXISTS (
   SELECT 1 FROM basicinfo_bfl_track b
   WHERE (b.register_number = i.beian_hao OR b.record_key = i.beian_hao)
     AND (

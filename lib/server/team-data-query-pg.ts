@@ -56,6 +56,10 @@ import {
   type NavSourceSeries,
 } from "@/lib/server/nav-anomaly-cause"
 import { ensureOpsFundOperationDates, loadOperationDatesByCodes } from "@/lib/server/ops-fund-operation-dates"
+import {
+  emptyInceptionGapCounts,
+  type InceptionGapBucket,
+} from "@/lib/ops-data-overview"
 
 export { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
 
@@ -113,6 +117,14 @@ export type TeamDataNavAnomalyCauseFilter = "all" | "source" | "rules"
 export type TeamDataProductSourceFilter = "all" | "manual" | "email" | "fof99"
 /** Filter by whether a manual or 产品要素 运作日期 is set. */
 export type TeamDataOperationDateFilter = "all" | "present" | "absent"
+/**
+ * Compare 产品成立日 with the first date of the product NAV series.
+ * match / mismatch / missing narrow the list. all leaves every row.
+ */
+export type TeamDataInceptionNavFilter = "all" | "match" | "mismatch" | "missing"
+/** Among 不一致 rows, which exclusive gap the two dates fall in. */
+export type TeamDataInceptionNavGapFilter = "all" | "w2" | "w2_m1" | "m1_3" | "m3_6" | "m6_12" | "over_y1"
+export type InceptionNavMatchStatus = "match" | "mismatch" | "missing"
 
 const TEAM_NAV_LAG_DAYS = 14
 /** How the newest data point (团队净值 / 估值表 / fof99) was written. */
@@ -149,6 +161,10 @@ export type TeamDataListParams = {
   productSourceFilter?: TeamDataProductSourceFilter
   /** Filter by whether 运作日期 is set (ops_fund_operation_dates or basicinfo_bfl_track). */
   operationDateFilter?: TeamDataOperationDateFilter
+  /** Filter by whether 净值起始日 equals 产品成立日. */
+  inceptionNavFilter?: TeamDataInceptionNavFilter
+  /** Only with 不一致: keep rows whose date gap falls in this window. */
+  inceptionNavGapFilter?: TeamDataInceptionNavGapFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
@@ -178,6 +194,14 @@ export type TeamDataListRow = {
   nav_anomaly?: NavAnomalyHit | null
   /** Set when the list is filtered to 运作日期 / 有. */
   operation_date?: string | null
+  /** Set when 成立对齐 is not 不限. Same priority as the product page. */
+  inception_date?: string | null
+  /** Earliest date on the product NAV series (detail cache, else raw NAV tables). */
+  nav_start_date?: string | null
+  /** Whether 净值起始日 and 产品成立日 are the same day. */
+  inception_nav_match?: InceptionNavMatchStatus | null
+  /** Absolute calendar days between 产品成立日 and 净值起始日, when both exist. */
+  inception_nav_gap_days?: number | null
 }
 
 type RawEmailFund = {
@@ -2277,14 +2301,20 @@ function asDateList(value: unknown): string[] {
   return value.map((d) => String(d ?? ""))
 }
 
-function detailCacheFitsRowByCode(cache: DetailNavCacheIdentity, row: ResolvedFund): boolean {
+function detailCacheFitsRowByCode(
+  cache: DetailNavCacheIdentity,
+  row: { beian_hao: string | null },
+): boolean {
   const aliases = new Set(beianCodeAliases(row.beian_hao ?? "").map((c) => c.toUpperCase()))
   const code = cache.code.trim().toUpperCase()
   const key = cache.cache_key.trim().toUpperCase()
   return (!!code && aliases.has(code)) || (!!key && aliases.has(key))
 }
 
-function detailCacheFitsRow(cache: DetailNavCacheIdentity, row: ResolvedFund): boolean {
+function detailCacheFitsRow(
+  cache: DetailNavCacheIdentity,
+  row: { beian_hao: string | null; product_name: string },
+): boolean {
   if (detailCacheFitsRowByCode(cache, row)) return true
   const name = cache.product_name.trim()
   if (!name || !fundNamesMatch(name, row.product_name)) return false
@@ -2324,7 +2354,7 @@ async function queryDetailNavCache<T extends { cache_key: string }>(
   const seen = new Set<string>()
   const out: T[] = []
   for (const row of [...byCode, ...byName]) {
-    const key = row.cache_key.trim()
+    const key = String(row.cache_key ?? "").trim()
     if (!key || seen.has(key)) continue
     seen.add(key)
     out.push(row)
@@ -2830,7 +2860,7 @@ function scoredNavAnomaly(
 }
 
 async function loadProductNavAnomalies(rows: ResolvedFund[]): Promise<Map<string, NavAnomalyHit>> {
-  const cacheKey = `jump30_spike15_snip|${rows.map((r) => r.id).join("|")}`
+  const cacheKey = `jump30_spike15_quiet5x8_snip|${rows.map((r) => r.id).join("|")}`
   if (
     navAnomalyIdsCache
     && navAnomalyIdsCache.key === cacheKey
@@ -3549,6 +3579,292 @@ export async function enrichPlatformFundPage(seeds: PlatformFundSeed[]): Promise
   return enrichPageRows(resolved)
 }
 
+export type InceptionNavAlignment = {
+  inception_date: string | null
+  nav_start_date: string | null
+  status: InceptionNavMatchStatus
+}
+
+/** Same day, both present. A missing date is not a match. */
+export function inceptionNavAlignmentStatus(
+  inception: string | null,
+  navStart: string | null,
+): InceptionNavMatchStatus {
+  if (!inception || !navStart) return "missing"
+  return inception === navStart ? "match" : "mismatch"
+}
+
+/** Absolute days between the two dates. Null when either date is missing or invalid. */
+export function inceptionNavGapDays(inception: string | null, navStart: string | null): number | null {
+  const left = isoDay(inception)
+  const right = isoDay(navStart)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(left) || !/^\d{4}-\d{2}-\d{2}$/.test(right)) return null
+  return Math.abs(platformNavDaysBetween(left, right))
+}
+
+function addCalendarMonths(iso: string, months: number): string {
+  const [year, month, day] = iso.split("-").map(Number)
+  const cursor = new Date(Date.UTC(year, month - 1, 1))
+  cursor.setUTCMonth(cursor.getUTCMonth() + months)
+  const lastDay = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0)).getUTCDate()
+  const clamped = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), Math.min(day, lastDay)))
+  return clamped.toISOString().slice(0, 10)
+}
+
+/** Exclusive ranges. 两周内 is 14 days; later ranges use calendar months and do not overlap. */
+export function matchesInceptionNavGap(
+  inception: string | null,
+  navStart: string | null,
+  filter: TeamDataInceptionNavGapFilter,
+): boolean {
+  if (filter === "all") return true
+  const days = inceptionNavGapDays(inception, navStart)
+  if (days == null || days <= 0 || !inception || !navStart) return false
+  const earlier = inception <= navStart ? inception : navStart
+  const later = inception <= navStart ? navStart : inception
+  const past = (months: number) => later > addCalendarMonths(earlier, months)
+  const by = (months: number) => later <= addCalendarMonths(earlier, months)
+  if (filter === "w2") return days <= 14
+  if (filter === "w2_m1") return days > 14 && by(1)
+  if (filter === "m1_3") return past(1) && by(3)
+  if (filter === "m3_6") return past(3) && by(6)
+  if (filter === "m6_12") return past(6) && by(12)
+  return past(12)
+}
+
+function rememberDateByCode(
+  out: Map<string, string>,
+  rawCode: string | null | undefined,
+  rawDay: string | null | undefined,
+) {
+  const day = isoDay(rawDay)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return
+  for (const alias of beianCodeAliases(rawCode ?? "")) {
+    const key = alias.toUpperCase()
+    if (!out.has(key)) out.set(key, day)
+  }
+}
+
+/**
+ * 产品成立日, same order as the product page: 产品要素, then BFL, then private_fund_info.
+ */
+async function loadInceptionDateByCode(codes: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (codes.length === 0) return out
+  const [track, bfl, pfi] = await Promise.all([
+    query<{ register_number: string | null; record_key: string | null; inception_date: string | null }>(
+      `SELECT register_number, record_key, inception_date::text AS inception_date
+       FROM basicinfo_bfl_track
+       WHERE inception_date IS NOT NULL
+         AND (register_number = ANY($1::text[]) OR record_key = ANY($1::text[]))`,
+      [codes],
+    ).catch(() => [] as Array<{ register_number: string | null; record_key: string | null; inception_date: string | null }>),
+    query<{ beian_hao: string | null; inception_date: string | null }>(
+      `SELECT beian_hao, inception_date::text AS inception_date
+       FROM private_fund_info_bfl
+       WHERE inception_date IS NOT NULL
+         AND beian_hao = ANY($1::text[])`,
+      [codes],
+    ).catch(() => [] as Array<{ beian_hao: string | null; inception_date: string | null }>),
+    query<{ beian_hao: string | null; inception_date: string | null }>(
+      `SELECT beian_hao, inception_date::text AS inception_date
+       FROM private_fund_info
+       WHERE inception_date IS NOT NULL
+         AND beian_hao = ANY($1::text[])`,
+      [codes],
+    ).catch(() => [] as Array<{ beian_hao: string | null; inception_date: string | null }>),
+  ])
+  for (const row of track) {
+    rememberDateByCode(out, row.register_number, row.inception_date)
+    rememberDateByCode(out, row.record_key, row.inception_date)
+  }
+  for (const row of bfl) rememberDateByCode(out, row.beian_hao, row.inception_date)
+  for (const row of pfi) rememberDateByCode(out, row.beian_hao, row.inception_date)
+  return out
+}
+
+type DetailNavStartRow = DetailNavCacheIdentity & { nav_start_date: string }
+
+/** Earliest price_date on the fund-page NAV cache. Series is stored oldest-first, so the first point is the start. */
+async function loadDetailNavStartRows(codes: string[], names: string[]): Promise<DetailNavStartRow[]> {
+  const rows = await queryDetailNavCache<{
+    code: string
+    cache_key: string
+    product_name: string
+    nav_start_date: string | null
+  }>(
+    codes,
+    names,
+    `${DETAIL_NAV_CACHE_SELECT_HEAD},
+     LEFT(c.nav_series->0->>'price_date', 10) AS nav_start_date`,
+  )
+  const out: DetailNavStartRow[] = []
+  for (const row of rows) {
+    const nav_start_date = isoDay(row.nav_start_date)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nav_start_date)) continue
+    out.push({
+      code: row.code ?? "",
+      cache_key: row.cache_key ?? "",
+      product_name: row.product_name ?? "",
+      nav_start_date,
+    })
+  }
+  return out
+}
+
+function navStartFromCache(
+  row: { beian_hao: string | null; product_name: string },
+  cacheRows: DetailNavStartRow[],
+): string | null {
+  const codeMatches = cacheRows.filter((cache) => detailCacheFitsRowByCode(cache, row))
+  const matches = codeMatches.length > 0
+    ? codeMatches
+    : cacheRows.filter((cache) => detailCacheFitsRow(cache, row))
+  if (matches.length === 0) return null
+  const exact = (row.beian_hao ?? "").trim().toUpperCase()
+  const exactHit = exact
+    ? matches.find((cache) => (
+      cache.cache_key.trim().toUpperCase() === exact || cache.code.trim().toUpperCase() === exact
+    ))
+    : undefined
+  if (exactHit) return exactHit.nav_start_date
+  return matches.reduce(
+    (best, cache) => (cache.nav_start_date < best ? cache.nav_start_date : best),
+    matches[0].nav_start_date,
+  )
+}
+
+/** Earliest raw NAV date when the fund page has not cached a series yet. */
+async function loadFallbackNavStartByCode(codes: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (codes.length === 0) return out
+  const absorb = (rows: Array<{ code: string | null; nav_start_date: string | null }>) => {
+    for (const row of rows) {
+      const code = row.code?.trim().toUpperCase()
+      const day = isoDay(row.nav_start_date)
+      if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+      const prev = out.get(code)
+      if (!prev || day < prev) out.set(code, day)
+    }
+  }
+  const minByCode = (sql: string) =>
+    query<{ code: string; nav_start_date: string | null }>(sql, [codes])
+      .catch(() => [] as Array<{ code: string; nav_start_date: string | null }>)
+  const [type6, group, hy, email, manual] = await Promise.all([
+    minByCode(
+      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(price_date)::text AS nav_start_date
+       FROM private_fund_nav_group_type6
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       GROUP BY 1`,
+    ),
+    minByCode(
+      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(price_date)::text AS nav_start_date
+       FROM private_fund_nav_group
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       GROUP BY 1`,
+    ),
+    minByCode(
+      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(price_date)::text AS nav_start_date
+       FROM private_fund_nav_group_hy
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       GROUP BY 1`,
+    ),
+    minByCode(
+      `SELECT UPPER(BTRIM(product_code)) AS code, MIN(nav_date)::text AS nav_start_date
+       FROM ops_email_nav_records
+       WHERE product_code = ANY($1::text[]) AND nav_date IS NOT NULL AND nav IS NOT NULL
+       GROUP BY 1`,
+    ),
+    minByCode(
+      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(nav_date)::text AS nav_start_date
+       FROM ops_team_nav_manual
+       WHERE beian_hao = ANY($1::text[]) AND unit_nav IS NOT NULL AND nav_date IS NOT NULL
+       GROUP BY 1`,
+    ),
+  ])
+  absorb(type6)
+  absorb(group)
+  absorb(hy)
+  absorb(email)
+  absorb(manual)
+  return out
+}
+
+function earliestAliasDate(
+  row: { beian_hao: string | null },
+  byCode: Map<string, string>,
+): string | null {
+  let best = ""
+  for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+    const day = byCode.get(alias.toUpperCase())
+    if (day && (!best || day < best)) best = day
+  }
+  return best || null
+}
+
+/** 产品成立日 and 净值起始日 for each fund id. */
+export async function loadInceptionNavAlignment(
+  rows: Array<{ id: string; beian_hao: string | null; product_name: string }>,
+): Promise<Map<string, InceptionNavAlignment>> {
+  const out = new Map<string, InceptionNavAlignment>()
+  if (rows.length === 0) return out
+  const codes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(rows.map((row) => row.product_name.trim()).filter(Boolean))]
+  const [inceptionByCode, cacheRows] = await Promise.all([
+    loadInceptionDateByCode(codes),
+    loadDetailNavStartRows(codes, names),
+  ])
+  const cachedStart = new Map<string, string | null>()
+  const missingCodes = new Set<string>()
+  for (const row of rows) {
+    const start = navStartFromCache(row, cacheRows)
+    cachedStart.set(row.id, start)
+    if (!start) {
+      for (const alias of beianCodeAliases(row.beian_hao ?? "")) missingCodes.add(alias)
+    }
+  }
+  const fallback = missingCodes.size > 0
+    ? await loadFallbackNavStartByCode([...missingCodes])
+    : new Map<string, string>()
+  for (const row of rows) {
+    const inception_date = operationDateForRow(row, inceptionByCode)
+    const nav_start_date = cachedStart.get(row.id) || earliestAliasDate(row, fallback)
+    out.set(row.id, {
+      inception_date,
+      nav_start_date,
+      status: inceptionNavAlignmentStatus(inception_date, nav_start_date),
+    })
+  }
+  return out
+}
+
+async function loadResolvedTeamFunds(strategySource: "company" | "platform"): Promise<ResolvedFund[]> {
+  if (
+    resolvedListCache
+    && resolvedListCache.strategySource === strategySource
+    && Date.now() - resolvedListCache.at < RESOLVED_LIST_CACHE_TTL_MS
+  ) {
+    return resolvedListCache.rows
+  }
+  const [rawRows, manualProducts, { indexes }] = await Promise.all([
+    Promise.all([loadRawEmailFunds(), loadRawEmailFundsFromFofUnderlying()]).then(
+      ([navRows, fofRows]) => dedupeRawFunds([...navRows, ...fofRows]),
+    ),
+    loadManualTeamDataProducts(),
+    loadIdentityTables(),
+  ])
+  let resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
+  resolved = await fillBeianFromPrivateFundInfo(resolved)
+  resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
+  resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
+  resolved = await overlayEmailNavByProductCode(resolved)
+  resolved = await overlayManualTeamNav(resolved)
+  resolved = await overlayFirstEntryDate(resolved)
+  resolved = await overlayLatestUpdateMethod(resolved)
+  resolvedListCache = { strategySource, rows: resolved, at: Date.now() }
+  return resolved
+}
+
 export async function listTeamData(params: TeamDataListParams): Promise<{
   data: TeamDataListRow[]
   total: number
@@ -3568,35 +3884,13 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     navAnomalyCauseFilter = "all",
     productSourceFilter = "all",
     operationDateFilter = "all",
+    inceptionNavFilter = "all",
+    inceptionNavGapFilter = "all",
     sort,
     sortDir,
   } = params
 
-  let resolved: ResolvedFund[]
-  if (
-    resolvedListCache
-    && resolvedListCache.strategySource === strategySource
-    && Date.now() - resolvedListCache.at < RESOLVED_LIST_CACHE_TTL_MS
-  ) {
-    resolved = resolvedListCache.rows
-  } else {
-    const [rawRows, manualProducts, { indexes }] = await Promise.all([
-      Promise.all([loadRawEmailFunds(), loadRawEmailFundsFromFofUnderlying()]).then(
-        ([navRows, fofRows]) => dedupeRawFunds([...navRows, ...fofRows]),
-      ),
-      loadManualTeamDataProducts(),
-      loadIdentityTables(),
-    ])
-    resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
-    resolved = await fillBeianFromPrivateFundInfo(resolved)
-    resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
-    resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
-    resolved = await overlayEmailNavByProductCode(resolved)
-    resolved = await overlayManualTeamNav(resolved)
-    resolved = await overlayFirstEntryDate(resolved)
-    resolved = await overlayLatestUpdateMethod(resolved)
-    resolvedListCache = { strategySource, rows: resolved, at: Date.now() }
-  }
+  let resolved = await loadResolvedTeamFunds(strategySource)
 
   if (keyword) {
     resolved = resolved.filter((r) => matchesTeamDataKeyword(r, keyword))
@@ -3661,6 +3955,23 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     ))
   }
 
+  let inceptionNavById = new Map<string, InceptionNavAlignment>()
+  if (inceptionNavFilter !== "all") {
+    inceptionNavById = await loadInceptionNavAlignment(resolved)
+    if (inceptionNavFilter === "match") {
+      resolved = resolved.filter((r) => inceptionNavById.get(r.id)?.status === "match")
+    } else if (inceptionNavFilter === "missing") {
+      resolved = resolved.filter((r) => inceptionNavById.get(r.id)?.status === "missing")
+    } else if (inceptionNavFilter === "mismatch") {
+      resolved = resolved.filter((r) => {
+        const hit = inceptionNavById.get(r.id)
+        if (hit?.status !== "mismatch") return false
+        if (inceptionNavGapFilter === "all") return true
+        return matchesInceptionNavGap(hit.inception_date, hit.nav_start_date, inceptionNavGapFilter)
+      })
+    }
+  }
+
   const effectiveSort = sort || "first_entry_date"
   const effectiveDir = sort ? sortDir : "DESC"
   const sorted = [...resolved].sort((a, b) =>
@@ -3690,10 +4001,122 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
       operation_date: operationDateById.get(row.id) ?? null,
     }))
   }
+  if (inceptionNavFilter !== "all") {
+    data = data.map((row) => {
+      const hit = inceptionNavById.get(row.id)
+      return {
+        ...row,
+        inception_date: hit?.inception_date ?? null,
+        nav_start_date: hit?.nav_start_date ?? null,
+        inception_nav_match: hit?.status ?? "missing",
+        inception_nav_gap_days: inceptionNavGapDays(hit?.inception_date ?? null, hit?.nav_start_date ?? null),
+      }
+    })
+  }
 
   if (sort === "platform_nav" || sort === "platform_nav_date" || sort === "valuation_date") {
     data = [...data].sort((a, b) => compareRows(a, b, sort, sortDir))
   }
 
   return { data, total }
+}
+
+export type TeamDataStatusSnapshot = {
+  total: number
+  beians: string[]
+  /** Product-page team NAV date, aligned with `beians`. Empty when that side has no date. */
+  navDates: string[]
+  updateMethod: { email: number; manual: number; fof99: number; other: number }
+  elements: { present: number; missing: number }
+  operationDate: { present: number; absent: number }
+  inception: { match: number; mismatch: number; missing: number }
+  inceptionGap: Record<InceptionGapBucket, number>
+  navGap: { interior: number; clear: number }
+  anomaly: { jump: number; clear: number; source: number; rules: number; unknown: number }
+}
+
+/**
+ * Counts for 团队数据 with every list filter left at 不限.
+ * Gap, anomaly, elements, 运作日期 and 成立对齐 use the same helpers as the list.
+ */
+export async function summarizeTeamDataStatus(): Promise<TeamDataStatusSnapshot> {
+  const resolved = await loadResolvedTeamFunds("company")
+  const rows = await overlayFundPageLatestNavDate(resolved)
+  const beians = rows.map((row) => row.beian_hao?.trim() || "")
+  const navDates = rows.map((row) => isoDay(row.team_nav_date))
+  const lookupBeians = beians.filter(Boolean)
+  const [withElements, operationDates, inception, gapped, anomalies] = await Promise.all([
+    loadBeiansWithFundElements(lookupBeians),
+    operationDateByFundId(rows),
+    loadInceptionNavAlignment(rows),
+    loadProductIdsWithInteriorNavGap(rows),
+    loadProductNavAnomalies(rows),
+  ])
+
+  const updateMethod = { email: 0, manual: 0, fof99: 0, other: 0 }
+  const elements = { present: 0, missing: 0 }
+  const operationDate = { present: 0, absent: 0 }
+  const inceptionCounts = { match: 0, mismatch: 0, missing: 0 }
+  const inceptionGap = emptyInceptionGapCounts()
+  let interior = 0
+  let jump = 0
+
+  for (const row of rows) {
+    if (row.product_source === TEAM_DATA_UPDATE_METHOD.email) updateMethod.email += 1
+    else if (row.product_source === TEAM_DATA_UPDATE_METHOD.manual) updateMethod.manual += 1
+    else if (row.product_source === TEAM_DATA_UPDATE_METHOD.fof99) updateMethod.fof99 += 1
+    else updateMethod.other += 1
+
+    const beian = row.beian_hao?.trim() || ""
+    if (beian && withElements.has(beian)) elements.present += 1
+    else elements.missing += 1
+
+    if (operationDates.has(row.id)) operationDate.present += 1
+    else operationDate.absent += 1
+
+    const aligned = inception.get(row.id)
+    const status = aligned?.status ?? "missing"
+    inceptionCounts[status] += 1
+    if (status === "mismatch" && aligned) {
+      const gaps: InceptionGapBucket[] = ["w2", "w2_m1", "m1_3", "m3_6", "m6_12", "over_y1"]
+      for (const gap of gaps) {
+        if (matchesInceptionNavGap(aligned.inception_date, aligned.nav_start_date, gap)) {
+          inceptionGap[gap] += 1
+          break
+        }
+      }
+    }
+
+    if (gapped.has(row.id)) interior += 1
+    if (anomalies.has(row.id)) jump += 1
+  }
+
+  const anomaly = { jump, clear: rows.length - jump, source: 0, rules: 0, unknown: 0 }
+  if (jump > 0) {
+    const diagnosed = await attachNavAnomalyDiagnosis(rows.filter((row) => anomalies.has(row.id)).map((row) => ({
+      id: row.id,
+      beian_hao: row.beian_hao,
+      product_name: row.product_name,
+      nav_anomaly: anomalies.get(row.id) ?? null,
+    })))
+    for (const row of diagnosed) {
+      const cause = row.nav_anomaly?.cause
+      if (cause === "source") anomaly.source += 1
+      else if (cause === "rules") anomaly.rules += 1
+      else anomaly.unknown += 1
+    }
+  }
+
+  return {
+    total: rows.length,
+    beians,
+    navDates,
+    updateMethod,
+    elements,
+    operationDate,
+    inception: inceptionCounts,
+    inceptionGap,
+    navGap: { interior, clear: rows.length - interior },
+    anomaly,
+  }
 }

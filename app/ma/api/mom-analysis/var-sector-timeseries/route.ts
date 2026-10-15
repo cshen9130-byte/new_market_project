@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { momAccountEqualsSql, parseMomSubAccountParam } from "@/lib/server/mom-sub-account"
 import { getPrefix } from "@/lib/server/prod-utils"
 
 export const runtime = "nodejs"
@@ -149,10 +150,7 @@ function floorIndex(arr: string[], target: string): number {
 }
 
 function accountParam(req: Request): string | null | false {
-  const raw = new URL(req.url).searchParams.get("account")?.trim() ?? ""
-  if (!raw) return null
-  if (!/^\d{1,8}$/.test(raw)) return false
-  return raw.replace(/^0+/, "") || "0"
+  return parseMomSubAccountParam(new URL(req.url).searchParams.get("account"))
 }
 
 async function _GET(req: Request) {
@@ -164,7 +162,7 @@ async function _GET(req: Request) {
     return NextResponse.json({ ok: false, error: "无效账户" }, { status: 400 })
   }
   const accountSql = account
-    ? ` AND REGEXP_REPLACE(REGEXP_REPLACE(TRIM("账户"::text), '[^0-9]', '', 'g'), '^0+', '') = $1`
+    ? ` AND ${momAccountEqualsSql(`"账户"`, 1)}`
     : ""
   const params = account ? [account] : []
 

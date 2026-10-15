@@ -39,6 +39,17 @@ export async function GET(req: Request) {
     const operationDateRaw = (searchParams.get("operation_date") || "").trim().toLowerCase()
     const operationDateFilter =
       operationDateRaw === "present" || operationDateRaw === "absent" ? operationDateRaw : "all"
+    const inceptionNavRaw = (searchParams.get("inception_nav") || "").trim().toLowerCase()
+    const inceptionNavFilter =
+      inceptionNavRaw === "match" || inceptionNavRaw === "mismatch" || inceptionNavRaw === "missing"
+        ? inceptionNavRaw
+        : "all"
+    const inceptionNavGapRaw = (searchParams.get("inception_nav_gap") || "").trim().toLowerCase()
+    const inceptionNavGapFilter =
+      inceptionNavFilter === "mismatch"
+      && (inceptionNavGapRaw === "w2" || inceptionNavGapRaw === "w2_m1" || inceptionNavGapRaw === "m1_3" || inceptionNavGapRaw === "m3_6" || inceptionNavGapRaw === "m6_12" || inceptionNavGapRaw === "over_y1")
+        ? inceptionNavGapRaw
+        : "all"
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
@@ -51,7 +62,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-team-data",
-      v: "update_method_partition",
+      v: "inception_nav_mismatch_only",
       page,
       pageSize,
       keyword,
@@ -66,6 +77,8 @@ export async function GET(req: Request) {
       navAnomalyCauseFilter,
       productSourceFilter,
       operationDateFilter,
+      inceptionNavFilter,
+      inceptionNavGapFilter,
       sort,
       sortDir,
     })
@@ -86,6 +99,8 @@ export async function GET(req: Request) {
         navAnomalyCauseFilter,
         productSourceFilter,
         operationDateFilter,
+        inceptionNavFilter,
+        inceptionNavGapFilter,
         sort,
         sortDir,
       })

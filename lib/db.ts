@@ -1,5 +1,6 @@
 import { Pool, types, type PoolClient } from "pg"
 import { ensureDevPostgresTunnel } from "@/lib/server/dev-prod-db-tunnel"
+import { scopeMomAccountQuery } from "@/lib/server/mom-sub-account"
 import { getRiskSource, type RiskDataSource } from "@/lib/server/risk-data-source"
 
 // DATE columns (OID 1082) come back from pg as JavaScript Date objects set to local
@@ -107,12 +108,13 @@ export async function query<T = Record<string, unknown>>(
   sql: string,
   params?: unknown[],
 ): Promise<T[]> {
+  const scoped = scopeMomAccountQuery(sql, params)
   if ((await resolveSource()) !== "account") {
-    const res = await (await db()).query(sql, params)
+    const res = await (await db()).query(scoped.sql, scoped.params)
     return res.rows as T[]
   }
   return withSearchPathClient(async (client) => {
-    const res = await client.query(sql, params)
+    const res = await client.query(scoped.sql, scoped.params)
     return res.rows as T[]
   })
 }
@@ -122,10 +124,11 @@ export async function rawQuery(
   sql: string,
   params?: unknown[],
 ) {
+  const scoped = scopeMomAccountQuery(sql, params)
   if ((await resolveSource()) !== "account") {
-    return (await db()).query(sql, params)
+    return (await db()).query(scoped.sql, scoped.params)
   }
-  return withSearchPathClient((client) => client.query(sql, params))
+  return withSearchPathClient((client) => client.query(scoped.sql, scoped.params))
 }
 
 /**
@@ -155,7 +158,8 @@ export async function queryUnbounded<T = Record<string, unknown>>(
       await client.query("SET search_path TO account_risk, public")
     }
     await client.query("SET statement_timeout = 0")
-    const res = await client.query(sql, params)
+    const scoped = scopeMomAccountQuery(sql, params)
+    const res = await client.query(scoped.sql, scoped.params)
     return res.rows as T[]
   } finally {
     try {
@@ -177,7 +181,8 @@ export async function withTransaction<T>(
     sql: string,
     params?: unknown[],
   ): Promise<R[]> => {
-    const res = await client.query(sql, params)
+    const scoped = scopeMomAccountQuery(sql, params)
+    const res = await client.query(scoped.sql, scoped.params)
     return res.rows as R[]
   }) as typeof query
   try {

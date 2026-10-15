@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { momAccountEqualsSql, parseMomSubAccountParam } from "@/lib/server/mom-sub-account"
 import { getPrefix } from "@/lib/server/prod-utils"
 
 export const runtime = "nodejs"
@@ -129,13 +130,10 @@ const ALL_PRODS = [
 ]
 
 function accountParam(req: Request): string | null | false {
-  const raw = new URL(req.url).searchParams.get("account")?.trim() ?? ""
-  if (!raw) return null
-  if (!/^\d{1,8}$/.test(raw)) return false
-  return raw.replace(/^0+/, "") || "0"
+  return parseMomSubAccountParam(new URL(req.url).searchParams.get("account"))
 }
 
-const ACCOUNT_SQL = ` AND REGEXP_REPLACE(REGEXP_REPLACE(TRIM("账户"::text), '[^0-9]', '', 'g'), '^0+', '') = $1`
+const ACCOUNT_SQL = ` AND ${momAccountEqualsSql(`"账户"`, 1)}`
 
 async function _GET(req: Request) {
   const account = accountParam(req)

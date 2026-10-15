@@ -79,7 +79,7 @@ The product page already treats a newer `private_fund_info.latest_nav_date` as t
 - Hide the parent when its family key matches, or when its 备案号 is the share's base or `S` plus that base.
 - Drop a known 估值表 / custodian alias when `canonicalProductCode` points at another row in the same list. The name key strips the `场外_…` subject prefix before comparing names.
 - `visibleTrackingBeianCodes` is the same rule for tests (`lib/server/tracking-list-identity.test.ts`).
-- The browser list cache key is `tracking_list_cache_v10`. v9 kept the four-row page. The server one-shot `_trackingListShareAliasDedupeV1` drops the in-memory list JSON once per process.
+- The browser list cache key for this fix was `tracking_list_cache_v10`. v9 kept the four-row page. It moved to `tracking_list_cache_v11` on 2026-10-15. The server one-shot `_trackingListShareAliasDedupeV1` drops the in-memory list JSON once per process.
 - Keyword search does not use that list SQL. `resolveTrackingKeywordBeianCodes` loads the tracked-name catalog and `buildFastKeywordCachedBody` selects `ops_tracking_funds_list_cache` by those 备案号. The catalog must be passed through `collapseTrackingIdentities` first. Skipping that is how a search for 诚奇浦江CTA1号 still returned all four rows after the list SQL filter existed.
 - The extra memberships (`SSB595A`, `SSB595`, and the 估值表 subject path) were removed from the pool tables and `ops_tracking_funds_list_cache` on 2026-10-14 so the running server, which only knows the old keyword query, stops listing them. `SB595A` stays. A later sync may insert an alias again; the catalog collapse above is what keeps it off the search results.
 
@@ -94,3 +94,11 @@ After the filter, this search returns only `SB595A` (2026-10-13 / 1.4610 / about
 - Putting the regexes back inside the EXISTS. That nested loop made 全部 take about 6 seconds.
 - Bumping only the server cache. The browser key has to move too, or the old duplicate page stays for days.
 - Filtering only the unscoped list SQL. A keyword search (the 诚奇浦江CTA1号 box) uses the name catalog and the list cache, and must collapse identities there too.
+
+### What must not come back (2026-10-15)
+
+**Symptom.** 跟踪产品 showed 卓尚天道1号 (`SGT288`) 最新涨跌幅 **+35.01%** next to unit NAV 1.0498 on 2026-10-13. The product page for that date is **−0.25%** (1.0498 / 1.0524 − 1).
+
+**Why.** `private_fund_info` already had 2026-10-13 / 1.0498, and `private_fund_nav` stopped at 2026-09-22 (unit 1.0524, 累计 0.777548). The list overlay appended the new unit NAV as if it were 复权, so the day return was 1.0498 / 0.777548 − 1.
+
+**Fix.** `extendNavHistoryWithUnitTip` carries the previous 复权 forward by the unit change. Do not push `{ return_nav: tip.nav }` for a date missing from `private_fund_nav`. The browser list cache key is `tracking_list_cache_v11`; v10 kept the +35.01% row for up to 3 days.

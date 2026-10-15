@@ -7,6 +7,7 @@ export type RiskReportVariant = "mom" | "account"
 let patched = false
 let originalFetch: typeof window.fetch | null = null
 let activeCfmmcAccount = ""
+let activeMomSubAccount = ""
 
 /** 资金账号 to append on 单账户 API calls. Empty = 全部账户. */
 export function setActiveCfmmcAccount(account: string) {
@@ -15,6 +16,15 @@ export function setActiveCfmmcAccount(account: string) {
 
 export function getActiveCfmmcAccount(): string {
   return activeCfmmcAccount
+}
+
+/** MOM sub-account such as rx000. Empty = keep the 监控中心 account selection. */
+export function setActiveMomSubAccount(account: string) {
+  activeMomSubAccount = account.trim()
+}
+
+export function getActiveMomSubAccount(): string {
+  return activeMomSubAccount
 }
 
 /**
@@ -44,22 +54,48 @@ const ACCOUNT_RISK_OVERRIDES: Record<string, string> = {
   "liquidity-scan": "/ma/api/account-risk/liquidity-scan",
 }
 
-function applyAccountParam(dest: URL) {
+function relativize(dest: URL, original: string): string {
+  if (original.startsWith("http://") || original.startsWith("https://")) return dest.toString()
+  return dest.pathname + dest.search + dest.hash
+}
+
+function applyCfmmcAccount(dest: URL, cfmmcAccount: string) {
   if (!dest.pathname.includes("/ma/api/account-risk")) return
   if (dest.pathname.includes("/account-risk/accounts")) return
   dest.searchParams.delete("account")
   dest.searchParams.delete("book")
-  if (activeCfmmcAccount.startsWith("book:")) dest.searchParams.set("book", activeCfmmcAccount.slice(5))
-  else if (activeCfmmcAccount) dest.searchParams.set("account", activeCfmmcAccount)
+  if (cfmmcAccount.startsWith("book:")) dest.searchParams.set("book", cfmmcAccount.slice(5))
+  else if (cfmmcAccount) dest.searchParams.set("account", cfmmcAccount)
 }
 
-function rewriteUrl(url: string): string {
+/**
+ * While the 单账户 page is mounted:
+ * - a selected MOM sub-account keeps /ma/api/mom-analysis/* and adds ?account=
+ * - otherwise those calls are rewritten to /ma/api/account-risk/*
+ * The sub-account list itself is never rewritten and never filtered.
+ */
+export function rewriteRiskFetchUrl(
+  url: string,
+  momAccount: string,
+  cfmmcAccount: string,
+): { url: string; accountSource: boolean } {
   try {
-    const base = typeof window !== "undefined" ? window.location.origin : "http://local"
+    const base = "http://local"
     const parsed = new URL(url, base)
+    const path = parsed.pathname
+
+    if (path.includes("/mom-analysis/sub-accounts")) {
+      return { url: relativize(parsed, url), accountSource: false }
+    }
+
+    if (momAccount && path.includes("/ma/api/mom-analysis") && !path.includes("/account-risk-import")) {
+      parsed.searchParams.set("account", momAccount)
+      return { url: relativize(parsed, url), accountSource: false }
+    }
+
     let dest = parsed
-    if (parsed.pathname.includes("/ma/api/mom-analysis") && !parsed.pathname.includes("/account-risk-import")) {
-      const routeSegment = parsed.pathname.split("/ma/api/mom-analysis/")[1]?.split("?")[0]
+    if (path.includes("/ma/api/mom-analysis") && !path.includes("/account-risk-import")) {
+      const routeSegment = path.split("/ma/api/mom-analysis/")[1]?.split("?")[0]
       if (routeSegment) {
         dest = new URL(ACCOUNT_RISK_OVERRIDES[routeSegment] ?? `/ma/api/account-risk/${routeSegment}`, base)
         parsed.searchParams.forEach((v, k) => {
@@ -67,11 +103,10 @@ function rewriteUrl(url: string): string {
         })
       }
     }
-    applyAccountParam(dest)
-    if (url.startsWith("http://") || url.startsWith("https://")) return dest.toString()
-    return dest.pathname + dest.search + dest.hash
+    applyCfmmcAccount(dest, cfmmcAccount)
+    return { url: relativize(dest, url), accountSource: true }
   } catch {
-    return url
+    return { url, accountSource: true }
   }
 }
 
@@ -85,21 +120,37 @@ function withSourceHeader(init?: RequestInit): RequestInit {
   return { ...init, headers }
 }
 
+function withoutAccountSource(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers)
+  headers.delete("x-risk-source")
+  headers.delete("x-cfmmc-account")
+  headers.delete("x-cfmmc-book")
+  return { ...init, headers }
+}
+
 function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const fetchImpl = originalFetch ?? window.fetch.bind(window)
-  if (typeof input === "string") {
-    return fetchImpl(rewriteUrl(input), withSourceHeader(init))
+  const rawUrl = typeof input === "string"
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input instanceof Request
+        ? input.url
+        : null
+  if (rawUrl == null) return fetchImpl(input as RequestInfo, withSourceHeader(init))
+
+  const rewritten = rewriteRiskFetchUrl(rawUrl, activeMomSubAccount, activeCfmmcAccount)
+  const nextInit = rewritten.accountSource ? withSourceHeader(init) : withoutAccountSource(init)
+  if (typeof input === "string" || input instanceof URL) {
+    return fetchImpl(rewritten.url, nextInit)
   }
-  if (input instanceof URL) {
-    return fetchImpl(rewriteUrl(input.toString()), withSourceHeader(init))
-  }
-  if (input instanceof Request) {
-    const url = rewriteUrl(input.url)
-    const headers = new Headers(input.headers)
-    headers.set("x-risk-source", "account")
-    return fetchImpl(new Request(url, input), withSourceHeader({ ...init, headers }))
-  }
-  return fetchImpl(input, withSourceHeader(init))
+  const headers = new Headers(input.headers)
+  if (rewritten.accountSource) headers.set("x-risk-source", "account")
+  else headers.delete("x-risk-source")
+  const reqInit = rewritten.accountSource
+    ? withSourceHeader({ ...init, headers })
+    : withoutAccountSource({ ...init, headers })
+  return fetchImpl(new Request(rewritten.url, input), reqInit)
 }
 
 function installFetchPatch() {

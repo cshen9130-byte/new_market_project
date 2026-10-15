@@ -14,7 +14,7 @@ import {
   type PlatformFundSeed,
 } from "@/lib/server/team-data-query-pg"
 
-export const NAV_SERIES_FLAG_RULE = "jump30_spike15_gap10_v1"
+export const NAV_SERIES_FLAG_RULE = "jump30_spike15_quiet5x8_gap10_v1"
 const FLAG_TTL_MS = 10 * 60 * 1000
 const OP_TTL_MS = 60 * 1000
 const ASSESS_BATCH = 400

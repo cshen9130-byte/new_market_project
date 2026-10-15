@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { setActiveCfmmcAccount } from "@/lib/ma/risk-report-source"
+import { setActiveCfmmcAccount, setActiveMomSubAccount } from "@/lib/ma/risk-report-source"
 
 const STORAGE_KEY = "account-risk-cfmmc-account"
 
@@ -121,6 +121,92 @@ export function AccountRiskAccountSwitcher({
             </optgroup>
           )
         })}
+      </select>
+    </label>
+  )
+}
+
+const MOM_SUB_STORAGE_KEY = "account-risk-mom-sub"
+
+export type MomSubAccountOption = {
+  account: string
+  toDate: string | null
+}
+
+export type MomSubAccountScope = {
+  accounts: MomSubAccountOption[]
+  selected: string
+  onChange: (value: string) => void
+  clear: () => void
+}
+
+export const IDLE_MOM_SUB_SCOPE: MomSubAccountScope = {
+  accounts: [],
+  selected: "",
+  onChange: () => {},
+  clear: () => {},
+}
+
+export function useMomSubAccountScope(): MomSubAccountScope {
+  const [accounts, setAccounts] = useState<MomSubAccountOption[]>([])
+  const [selected, setSelected] = useState("")
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem(MOM_SUB_STORAGE_KEY) ?? ""
+    const ac = new AbortController()
+    fetch("/ma/api/mom-analysis/sub-accounts", { signal: ac.signal })
+      .then((r) => r.json())
+      .then((j) => {
+        const rows = (j.accounts ?? []) as MomSubAccountOption[]
+        setAccounts(rows)
+        const next = rows.some((a) => a.account === saved) ? saved : ""
+        setSelected(next)
+        setActiveMomSubAccount(next)
+      })
+      .catch(() => {})
+    return () => {
+      ac.abort()
+      setActiveMomSubAccount("")
+    }
+  }, [])
+
+  const onChange = (value: string) => {
+    setSelected(value)
+    setActiveMomSubAccount(value)
+    try { sessionStorage.setItem(MOM_SUB_STORAGE_KEY, value) } catch { /* ignore */ }
+  }
+
+  return { accounts, selected, onChange, clear: () => onChange("") }
+}
+
+export function MomSubAccountSwitcher({
+  accounts,
+  selected,
+  onChange,
+  compact = false,
+}: {
+  accounts: MomSubAccountOption[]
+  selected: string
+  onChange: (value: string) => void
+  compact?: boolean
+}) {
+  if (accounts.length === 0) return null
+  const current = accounts.find((a) => a.account === selected)
+  return (
+    <label className={compact ? "flex items-center gap-2 min-w-0" : "flex flex-col gap-1 min-w-0"}>
+      <span className="text-[10px] text-muted-foreground shrink-0">MOM 子账户</span>
+      <select
+        value={selected}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full min-w-0 rounded-md border border-input bg-background px-2 py-1 text-xs font-medium truncate focus:outline-none focus:ring-1 focus:ring-ring"
+        title={current ? `MOM 子账户 ${current.account}` : "不选则查看上方监控中心账户"}
+      >
+        <option value="">不选</option>
+        {accounts.map((a) => (
+          <option key={a.account} value={a.account}>
+            {a.account}
+          </option>
+        ))}
       </select>
     </label>
   )

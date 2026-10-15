@@ -7,8 +7,8 @@ import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, Alert
 import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { getActiveCfmmcAccount, useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
-import { AccountRiskAccountSwitcher, IDLE_CFMMC_SCOPE, useCfmmcAccountScope, type CfmmcAccountScope } from "@/components/ma/account-risk-account-switcher"
+import { getActiveCfmmcAccount, getActiveMomSubAccount, setActiveMomSubAccount, useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
+import { AccountRiskAccountSwitcher, IDLE_CFMMC_SCOPE, IDLE_MOM_SUB_SCOPE, MomSubAccountSwitcher, useCfmmcAccountScope, useMomSubAccountScope, type CfmmcAccountScope, type MomSubAccountScope } from "@/components/ma/account-risk-account-switcher"
 import { HelpBriefingMomSignals } from "@/components/ma/quant-vs-subjective-help"
 
 const ProductNavChart           = dynamic(() => import("@/components/ma/product-nav-chart"),            { ssr: false })
@@ -49,7 +49,7 @@ const jsonResponseCache = new Map<string, unknown>()
 const inflightJsonRequests = new Map<string, Promise<unknown>>()
 
 function fetchJsonCached(url: string): Promise<any> {
-  const cacheKey = `${url}#${getActiveCfmmcAccount()}`
+  const cacheKey = `${url}#${getActiveCfmmcAccount()}#${getActiveMomSubAccount()}`
   if (jsonResponseCache.has(cacheKey)) {
     return Promise.resolve(jsonResponseCache.get(cacheKey))
   }
@@ -7317,24 +7317,30 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
 
 export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
   if (variant === "account") return <RiskReportAppAccount />
-  return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} />
+  return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} />
 }
 
 function RiskReportAppAccount() {
   const cfmmcScope = useCfmmcAccountScope()
-  return <RiskReportAppCore variant="account" cfmmcScope={cfmmcScope} />
+  const momScope = useMomSubAccountScope()
+  return <RiskReportAppCore variant="account" cfmmcScope={cfmmcScope} momScope={momScope} />
 }
 
 function RiskReportAppCore({
   variant,
   cfmmcScope,
+  momScope,
 }: {
   variant: RiskReportVariant
   cfmmcScope: CfmmcAccountScope
+  momScope: MomSubAccountScope
 }) {
   useRiskSourceFetch(variant)
   const isAccount = variant === "account"
-  const isAllAccountsOverview = isAccount && cfmmcScope.selected === "all"
+  if (typeof window !== "undefined" && isAccount) {
+    setActiveMomSubAccount(momScope.selected)
+  }
+  const isAllAccountsOverview = isAccount && !momScope.selected && cfmmcScope.selected === "all"
   const briefingName = isAccount ? "单账户简报" : "MOM 简报"
   const reportTitle = isAccount ? "单账户每日风控" : "MOM 风控报告"
   const subNavItems = [
@@ -7362,7 +7368,13 @@ function RiskReportAppCore({
   }
 
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
-  const accountScopeKey = isAccount ? (cfmmcScope.selected || "all") : "mom"
+  const accountScopeKey = isAccount
+    ? (momScope.selected ? `mom:${momScope.selected}` : (cfmmcScope.selected || "all"))
+    : "mom"
+  const onCfmmcChange = (value: string) => {
+    if (momScope.selected) momScope.clear()
+    cfmmcScope.onChange(value)
+  }
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
 
   // Briefing: latest daily return + YTD return from product-nav API
@@ -7389,6 +7401,11 @@ function RiskReportAppCore({
       setBriefingAccountNo("")
       return
     }
+    if (momScope.selected) {
+      setBriefingProductName(momScope.selected)
+      setBriefingAccountNo(momScope.selected)
+      return
+    }
     let stop = false
     setBriefingProductName("")
     setBriefingAccountNo("")
@@ -7405,10 +7422,11 @@ function RiskReportAppCore({
         setBriefingAccountNo("")
       })
     return () => { stop = true }
-  }, [isAccount, accountScopeKey])
+  }, [isAccount, accountScopeKey, momScope.selected])
 
   const briefingAccountTitle = (() => {
     if (!isAccount) return "MOM"
+    if (momScope.selected) return momScope.selected
     if (briefingProductName) return briefingProductName
     if (!cfmmcScope.selected || cfmmcScope.selected === "all") return "全部账户"
     const selected = cfmmcScope.accounts.find((a) => a.accountNo === cfmmcScope.selected)
@@ -7417,6 +7435,7 @@ function RiskReportAppCore({
   })()
   const briefingDisplayAccountNo = (() => {
     if (!isAccount) return ""
+    if (momScope.selected) return momScope.selected
     if (briefingAccountNo) return briefingAccountNo
     if (!cfmmcScope.selected || cfmmcScope.selected === "all") return ""
     const selected = cfmmcScope.accounts.find((a) => a.accountNo === cfmmcScope.selected)
@@ -7455,18 +7474,19 @@ function RiskReportAppCore({
 
   useEffect(() => {
     if (activeTab !== "briefing") return
-    if (briefingNav.length > 0) return
+    let stop = false
     setBriefingLoading(true)
+    setBriefingNav([])
     fetch("/ma/api/mom-analysis/product-nav")
       .then((r) => r.json())
-      .then((j) => { if (j.ok && j.data) setBriefingNav(j.data) })
+      .then((j) => { if (!stop && j.ok && j.data) setBriefingNav(j.data) })
       .catch(() => {})
-      .finally(() => setBriefingLoading(false))
-  }, [activeTab])
+      .finally(() => { if (!stop) setBriefingLoading(false) })
+    return () => { stop = true }
+  }, [activeTab, accountScopeKey])
 
   useEffect(() => {
     if (activeTab !== "briefing") return
-    if (briefingSubAccountCount !== null) return
 
     const applyCounts = (j: { subAccountCount?: number; emptyAccountCount?: number; accountData?: Record<string, unknown> }) => {
       if (typeof j.subAccountCount === "number") {
@@ -7493,7 +7513,7 @@ function RiskReportAppCore({
         setBriefingSubAccountCount(0)
         setBriefingEmptyAccountCount(0)
       })
-  }, [activeTab, briefingSubAccountCount])
+  }, [activeTab, accountScopeKey])
 
   const briefingSummary = useMemo(() => {
     if (briefingNav.length === 0) return null
@@ -8979,11 +8999,21 @@ function RiskReportAppCore({
         <div className="p-4 border-b space-y-2">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{reportTitle}</p>
           {isAccount && (
-            <AccountRiskAccountSwitcher
-              accounts={cfmmcScope.accounts}
-              selected={cfmmcScope.selected}
-              onChange={cfmmcScope.onChange}
-            />
+            <>
+              <AccountRiskAccountSwitcher
+                accounts={cfmmcScope.accounts}
+                selected={cfmmcScope.selected}
+                onChange={onCfmmcChange}
+              />
+              <MomSubAccountSwitcher
+                accounts={momScope.accounts}
+                selected={momScope.selected}
+                onChange={momScope.onChange}
+              />
+              {momScope.selected && (
+                <p className="text-[10px] leading-snug text-muted-foreground">正在查看 {momScope.selected}</p>
+              )}
+            </>
           )}
         </div>
         <nav className="flex-1 p-2 space-y-0.5">
@@ -9127,13 +9157,23 @@ function RiskReportAppCore({
 
         <div id="section-top" className="flex items-end justify-between gap-4 pt-6 mb-4">
           <h1 className="text-2xl font-semibold tracking-tight">{activeItem.name}</h1>
-          {isAccount && cfmmcScope.accounts.length > 0 && (
-            <AccountRiskAccountSwitcher
-              accounts={cfmmcScope.accounts}
-              selected={cfmmcScope.selected}
-              onChange={cfmmcScope.onChange}
-              compact
-            />
+          {isAccount && (cfmmcScope.accounts.length > 0 || momScope.accounts.length > 0) && (
+            <div className="flex items-center gap-2 min-w-0">
+              {cfmmcScope.accounts.length > 0 && (
+                <AccountRiskAccountSwitcher
+                  accounts={cfmmcScope.accounts}
+                  selected={cfmmcScope.selected}
+                  onChange={onCfmmcChange}
+                  compact
+                />
+              )}
+              <MomSubAccountSwitcher
+                accounts={momScope.accounts}
+                selected={momScope.selected}
+                onChange={momScope.onChange}
+                compact
+              />
+            </div>
           )}
         </div>
         <div key={accountScopeKey}>

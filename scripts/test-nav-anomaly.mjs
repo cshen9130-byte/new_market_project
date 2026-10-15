@@ -59,6 +59,30 @@ const smallSpike = [
 ]
 assert(!hasNavAnomaly(smallSpike), "10% V shape should not flag")
 
+const quietDates = [
+  "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06",
+  "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13",
+]
+const quietSpike = quietDates.map((date, i) => ({
+  date,
+  value: i === 4 ? 1.1913 : 1.2948 + (i % 3) * 0.0001,
+}))
+const quietHit = analyzeNavAnomaly(quietSpike)
+assert(quietHit.reason === "spike", "8% round trip on a quiet series should flag")
+assert(quietHit.date === "2026-03-06", "quiet spike date is the dipped print")
+
+const quietBlip = quietDates.map((date, i) => ({
+  date,
+  value: i === 4 ? 1.245 : 1.2948,
+}))
+assert(!hasNavAnomaly(quietBlip), "4% round trip stays under the 5% floor")
+
+const volatile = quietDates.map((date, i) => ({
+  date,
+  value: i % 2 === 0 ? 1 : 1.08,
+}))
+assert(!hasNavAnomaly(volatile), "8% round trips are ordinary when every step is that large")
+
 const weekly = [
   { date: "2026-03-06", value: 1 },
   { date: "2026-03-13", value: 1.02 },

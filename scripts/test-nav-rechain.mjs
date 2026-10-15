@@ -1,8 +1,9 @@
-import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeManagedTeamPointsWithLegacy, mergeNavSeriesWithEmail, preferCustodianEmailOverUnitOnlyManual, dropManualSeriesDisjointFromCustodian, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases } from "../lib/server/email-nav-query.ts"
+import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeManagedTeamPointsWithLegacy, mergeNavSeriesWithEmail, preferCustodianEmailOverUnitOnlyManual, dropManualSeriesDisjointFromCustodian, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases, isPostInvestmentVirtualNavEmail, preferEmailNavRow } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
   calcPeriodReturnsFromHistory,
+  extendNavHistoryWithUnitTip,
   attachAlignedReturnNav,
   MAX_DAILY_RETURN_LOOKBACK_DAYS,
   capPeriodReturnByDrawdown,
@@ -2726,6 +2727,57 @@ assert(
   slq415Filled.length === 2 && !slq415Filled.some((row) => row.price_date === "2024-01-05"),
 )
 
+// SBAK10 2026-09-29: parent 估值表 unit-only rechain dips 复权 to 1.1913.
+// A类 on that date already sits on the smooth 1.2949 path. Units still overlap.
+const sbak10Parent = [
+  { price_date: "2026-09-28", nav: "1.1003", cum_nav_withdrawal: "1.2771", cumulative_nav: "1.294827" },
+  { price_date: "2026-09-29", nav: "1.0002", cum_nav_withdrawal: "1.177", cumulative_nav: "1.19131" },
+  { price_date: "2026-09-30", nav: "1.0002", cum_nav_withdrawal: "1.2773", cumulative_nav: "1.295086" },
+]
+const sbak10Donor = [
+  { price_date: "2026-09-28", nav: "1.1003", cum_nav_withdrawal: "1.2771", cumulative_nav: "1.294827" },
+  { price_date: "2026-09-29", nav: "1.0000", cum_nav_withdrawal: "1.2771", cumulative_nav: "1.294900" },
+  { price_date: "2026-09-30", nav: "1.0002", cum_nav_withdrawal: "1.2773", cumulative_nav: "1.295086" },
+]
+const sbak10Filled = fillMissingNavFromShareClassDonor("SBAK10", "BAK10A", sbak10Parent, sbak10Donor)
+const sbak10Sep29 = sbak10Filled.find((row) => row.price_date === "2026-09-29")
+assert(
+  "SBAK10 takes the A类 2026-09-29 row instead of the 估值表 dip",
+  sbak10Sep29 != null
+    && Math.abs(parseFloat(sbak10Sep29.cumulative_nav) - 1.2949) < 0.0001
+    && Math.abs(parseFloat(sbak10Sep29.cum_nav_withdrawal) - 1.2771) < 0.0001,
+)
+
+const bak10UpdateSubject = "【基金虚拟净值表现估算（有更新）】BAK10A_俊丹鹰击一号私募证券投资基金A类_2026-09-28_周钢"
+const bak10FirstSubject = "【基金虚拟净值表现估算】BAK10A_俊丹鹰击一号私募证券投资基金A类_2026-09-28_周钢"
+assert(
+  "（有更新） is still a virtual-NAV mail",
+  isPostInvestmentVirtualNavEmail(bak10UpdateSubject) && isPostInvestmentVirtualNavEmail(bak10FirstSubject),
+)
+const bak10First = {
+  nav: "1.100300",
+  cumulative_nav: "1.277100",
+  source: "body_table",
+  subject: bak10FirstSubject,
+  product_code: "BAK10A",
+  fund_name: "俊丹鹰击一号A类",
+  attachment_filename: "",
+}
+const bak10Update = {
+  nav: "1.000000",
+  cumulative_nav: "1.277100",
+  source: "body_table",
+  subject: bak10UpdateSubject,
+  product_code: "BAK10A",
+  fund_name: "俊丹鹰击一号A类",
+  attachment_filename: "",
+}
+assert(
+  "（有更新） replaces the same-day virtual NAV print",
+  preferEmailNavRow(bak10First, bak10Update, "BAK10A").nav === "1.000000"
+    && preferEmailNavRow(bak10Update, bak10First, "BAK10A").nav === "1.000000",
+)
+
 // Multi-investor 【基金虚拟净值表现估算】 under one product_code: continuity must
 // win over max(id). Otherwise list return mixes 金舆/抱朴 → bogus +3.40%.
 const bhk26aMultiInvestor = [
@@ -2908,6 +2960,29 @@ const vn917bDaily = calcDailyReturnPctFromHistory(vn917bValuation, 1.635, "2026-
 assert(
   "VN917B valuation-adjacent series matches detail +1.07%",
   vn917bDaily != null && Math.abs(vn917bDaily - 0.010694) < 0.0001,
+)
+
+// SGT288 / 卓尚天道1号: 火富牛 tip 2026-10-13 unit 1.0498 is not in private_fund_nav.
+// Prior row is 2026-09-22 unit 1.0524, 累计 0.777548. Using the unit as 复权 is
+// 1.0498 / 0.777548 − 1 = +35.01%. The product page is 1.0498 / 1.0524 − 1.
+const sgt288Prior = [
+  { nav_date: "2026-09-18", nav: 1.0498, return_nav: 0.775627 },
+  { nav_date: "2026-09-22", nav: 1.0524, return_nav: 0.777548 },
+]
+const sgt288Spliced = [
+  ...sgt288Prior,
+  { nav_date: "2026-10-13", nav: 1.0498, return_nav: 1.0498 },
+]
+const sgt288Bogus = calcDailyReturnPctFromHistory(sgt288Spliced, 1.0498, "2026-10-13", null)
+assert(
+  "SGT288 unit-on-累计 splice is the list +35.01%",
+  sgt288Bogus != null && Math.abs(sgt288Bogus - (1.0498 / 0.777548 - 1)) < 0.00001,
+)
+const sgt288Extended = extendNavHistoryWithUnitTip(sgt288Prior, 1.0498, "2026-10-13")
+const sgt288Daily = calcDailyReturnPctFromHistory(sgt288Extended, 1.0498, "2026-10-13", null)
+assert(
+  "SGT288 platform tip matches product-page unit day return",
+  sgt288Daily != null && Math.abs(sgt288Daily - (1.0498 / 1.0524 - 1)) < 0.00001,
 )
 
 {

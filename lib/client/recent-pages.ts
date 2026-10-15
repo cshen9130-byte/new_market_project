@@ -87,6 +87,7 @@ const PF_SIDE_LABELS: Record<string, string> = {
   "ops-fof": "FOF底层",
   "ops-direct": "直投产品",
   "ops-tracking": "跟踪产品",
+  "ops-data-overview": "数据概览",
   "ops-email-sync": "邮箱同步",
   "ops-ledger": "台账管理",
   "ops-team-data": "团队数据",

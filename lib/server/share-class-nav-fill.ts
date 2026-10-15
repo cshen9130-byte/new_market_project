@@ -101,7 +101,79 @@ export function fillMissingNavFromShareClassDonor<T extends {
   price_date?: string
   nav_date?: string
   nav: string | number
+  cumulative_nav?: string | number | null
+  cum_nav_withdrawal?: string | number | null
 }>(targetCode: string, donorCode: string, target: T[], donor: T[]): T[] {
   if (!mayUseShareClassNavDonor(targetCode, donorCode)) return target
-  return fillMissingNavIfOverlapConsistent(target, donor)
+  if (!navSeriesOverlapConsistent(target, donor)) return target
+  return replaceSameDayChartSpike(fillMissingNavIfOverlapConsistent(target, donor), donor)
+}
+
+const SAME_DAY_SPIKE_DEVIATION = 0.05
+const SAME_DAY_SPIKE_NEIGHBOR = 0.02
+
+function rowDay(row: { price_date?: string; nav_date?: string }): string {
+  return String(row.price_date ?? row.nav_date ?? "").slice(0, 10)
+}
+
+function positiveNav(raw: string | number | null | undefined): number | null {
+  if (raw == null || raw === "") return null
+  const n = typeof raw === "number" ? raw : parseFloat(String(raw))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** Chart level: 复权, then 累计, then 单位. Matches the detail NAV chart. */
+function chartLevel(row: {
+  nav: string | number
+  cumulative_nav?: string | number | null
+  cum_nav_withdrawal?: string | number | null
+}): number | null {
+  return positiveNav(row.cumulative_nav) ?? positiveNav(row.cum_nav_withdrawal) ?? positiveNav(row.nav)
+}
+
+/**
+ * A unit-only 估值表 on the parent can invent a one-day 复权 dip (SBAK10
+ * 2026-09-29: 1.2948 → 1.1913 → 1.2951) while the A-class mail on that date
+ * already has 累计 1.2771. Overlap still matches on 单位, so the bad date is
+ * kept. When the donor's chart level sits with the neighbors, use that row.
+ */
+function replaceSameDayChartSpike<T extends {
+  price_date?: string
+  nav_date?: string
+  nav: string | number
+  cumulative_nav?: string | number | null
+  cum_nav_withdrawal?: string | number | null
+}>(target: T[], donor: T[]): T[] {
+  if (target.length < 3 || donor.length === 0) return target
+  const donorByDate = new Map<string, T>()
+  for (const row of donor) {
+    const date = rowDay(row)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) donorByDate.set(date, row)
+  }
+  const sorted = [...target].sort((a, b) => rowDay(a).localeCompare(rowDay(b)))
+  let changed = false
+  const out = sorted.map((row, index) => {
+    if (index === 0 || index === sorted.length - 1) return row
+    const donorRow = donorByDate.get(rowDay(row))
+    if (!donorRow) return row
+    const unit = positiveNav(row.nav)
+    const donorUnit = positiveNav(donorRow.nav)
+    if (unit == null || donorUnit == null) return row
+    if (Math.abs(unit / donorUnit - 1) > SHARE_CLASS_NAV_OVERLAP_TOL) return row
+    const prev = chartLevel(sorted[index - 1])
+    const curr = chartLevel(row)
+    const next = chartLevel(sorted[index + 1])
+    const donorLevel = chartLevel(donorRow)
+    if (prev == null || curr == null || next == null || donorLevel == null) return row
+    const devPrev = Math.abs(curr / prev - 1)
+    const devNext = Math.abs(curr / next - 1)
+    const bridge = Math.abs(next / prev - 1)
+    if (devPrev < SAME_DAY_SPIKE_DEVIATION || devNext < SAME_DAY_SPIKE_DEVIATION) return row
+    if (bridge > SAME_DAY_SPIKE_NEIGHBOR) return row
+    if (Math.abs(donorLevel / prev - 1) > SAME_DAY_SPIKE_NEIGHBOR) return row
+    if (Math.abs(donorLevel / next - 1) > SAME_DAY_SPIKE_NEIGHBOR) return row
+    changed = true
+    return { ...donorRow }
+  })
+  return changed ? out : target
 }

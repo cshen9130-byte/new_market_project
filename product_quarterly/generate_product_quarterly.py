@@ -956,7 +956,10 @@ def build_report_figure(nav_df: pd.DataFrame, config: dict[str, Any]):
     ax.text(
         0.5,
         0.014,
-        f"数据截止日 {_fmt_date_cn(str(period_end.date()))}  ·  净值已复权  ·  基准为{bench2_label if not show_bench1 else '同期价格指数'}",
+        (
+            f"数据截止日 {_fmt_date_cn(str(period_end.date()))}  ·  净值已复权  ·  基准为{bench2_label if not show_bench1 else '同期价格指数'}"
+            + (f"  ·  {config.get('page_label')}" if config.get("page_label") else "")
+        ),
         transform=ax.transAxes,
         ha="center",
         va="top",

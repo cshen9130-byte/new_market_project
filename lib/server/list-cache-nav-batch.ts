@@ -2264,6 +2264,35 @@ function restoreNonTradingPlatformTip<T extends TrackFundMetricsFields>(row: T):
   }
 }
 
+/**
+ * A 火富牛 tip can be newer than the last `private_fund_nav` row. Continue the
+ * previous 复权 scale instead of storing the raw unit as return_nav.
+ * SGT288 2026-10-13 unit 1.0498 against 2026-09-22 累计 0.777548 is +35.01%;
+ * the product page is unit/unit, 1.0498 / 1.0524 − 1 = −0.25%.
+ */
+export function extendNavHistoryWithUnitTip(
+  historyAsc: NavPoint[],
+  unitNav: number,
+  navDate: string,
+): NavPoint[] {
+  const history = historyAsc
+    .filter((point) => point.nav_date <= navDate)
+    .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+  if (history.some((point) => point.nav_date === navDate)) return history
+  let prev: NavPoint | null = null
+  for (const point of history) {
+    if (point.nav_date < navDate) prev = point
+  }
+  const prevUnit = prev && prev.nav > 0 ? prev.nav : null
+  const prevReturn = navForReturn(prev)
+  const returnNav =
+    prevReturn != null && prevUnit != null && unitNav > 0
+      ? prevReturn * (unitNav / prevUnit)
+      : unitNav
+  history.push({ nav: unitNav, nav_date: navDate, return_nav: returnNav })
+  return history
+}
+
 /** Original code plus its uppercase form, so `beian_hao = ANY(...)` can use a btree index.
  *  UPPER(BTRIM(beian_hao)) = ANY(...) seq-scans private_fund_nav (millions of rows). */
 function indexableBeianCodes(codes: Iterable<string>): string[] {
@@ -2384,13 +2413,11 @@ export async function overlayPlatformInfoNavOnTrackRows<T extends TrackFundMetri
     if ((shownDate && shownDate > tip.navDate) || (sourceDate && tip.navDate <= sourceDate)) {
       return stripSourceNavDate(restoreNonTradingPlatformTip(row))
     }
-    const history = [...(historyByCode.get(code)?.values() ?? [])]
-      .filter((point) => point.nav_date <= tip.navDate)
-      .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
-    const onTip = history.some((point) => point.nav_date === tip.navDate)
-    if (!onTip) {
-      history.push({ nav: tip.nav, nav_date: tip.navDate, return_nav: tip.nav })
-    }
+    const history = extendNavHistoryWithUnitTip(
+      [...(historyByCode.get(code)?.values() ?? [])],
+      tip.nav,
+      tip.navDate,
+    )
     const returnPct = calcDailyReturnPctFromHistory(history, tip.nav, tip.navDate, null)
     const returns = calcPeriodReturnsFromHistory(history, tip.nav, tip.navDate)
     return stripSourceNavDate({

@@ -60,7 +60,9 @@ export function isPostInvestmentVirtualNavEmail(
   if (!subj) return false
   if (/TA虚拟净值/u.test(subj)) return true
   // Citics Auto-Disclosure uses both 估算 and 估值 in the bracket tag.
-  if (/【基金虚拟净值表现估[算值]】/u.test(subj)) return true
+  // （有更新） is the same Citics virtual-NAV mail after a same-day revision.
+  // 俊丹鹰击一号 2026-09-28 resets 单位 to 1.0000 and leaves 累计 at 1.2771.
+  if (/【基金虚拟净值表现估[算值](?:（[^】]{0,40}）)?】/u.test(subj)) return true
   if (/^虚拟业绩报酬_/u.test(subj)) return true
   if (/虚拟净值/u.test(subj) && !/虚拟净值表现/u.test(subj)) return true
   return false
@@ -70,7 +72,7 @@ export function isPostInvestmentVirtualNavEmail(
 export function sqlPostInvestmentVirtualNavExpr(subjectExpr: string): string {
   return `(
     COALESCE(${subjectExpr}, '') ILIKE '%TA虚拟净值%'
-    OR COALESCE(${subjectExpr}, '') ~ '【基金虚拟净值表现估[算值]】'
+    OR COALESCE(${subjectExpr}, '') ~ '【基金虚拟净值表现估[算值](（[^】]{0,40}）)?】'
     OR COALESCE(${subjectExpr}, '') ILIKE '虚拟业绩报酬\_%'
     OR (
       COALESCE(${subjectExpr}, '') ILIKE '%虚拟净值%'
@@ -367,7 +369,15 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   const rowHasBeian = beian && `${candidate.attachment_filename ?? ""}${candidate.subject ?? ""}`.toUpperCase().includes(beian)
   const prevHasBeian = beian && `${current.attachment_filename ?? ""}${current.subject ?? ""}`.toUpperCase().includes(beian)
   if (rowHasBeian && !prevHasBeian) return candidate
+
+  // Same-day 【基金虚拟净值表现估算（有更新）】 replaces the first print.
+  if (isVirtualNavRevision(candidate.subject) && !isVirtualNavRevision(current.subject)) return candidate
+  if (isVirtualNavRevision(current.subject) && !isVirtualNavRevision(candidate.subject)) return current
   return current
+}
+
+function isVirtualNavRevision(subject: string | null | undefined): boolean {
+  return /【基金虚拟净值表现估[算值]（[^】]*有更新[^】]*）】/u.test((subject ?? "").trim())
 }
 
 function metaDeclaresShareClass(meta: string): "A" | "B" | "C" | null {
@@ -1211,7 +1221,7 @@ function isVirtualNavRow(row: EmailNavRawRow): boolean {
   // manual upload that ends mid-month (STX591 through 2026-09-10) hides every later
   // trading day until the next non-virtual point.
   const meta = `${subject}\n${row.attachment_filename ?? ""}`
-  if (/【基金虚拟净值表现估[算值]】/u.test(meta)) return false
+  if (/【基金虚拟净值表现估[算值](?:（[^】]{0,40}）)?】/u.test(meta)) return false
   return /虚拟/u.test(`${meta}${row.fund_name ?? ""}`)
 }
 

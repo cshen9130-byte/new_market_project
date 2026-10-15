@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { join } from "path"
 import { NextResponse } from "next/server"
 import { ensureAccountRiskSchema } from "@/lib/db"
+import { momSubAccountAlsRun, parseMomSubAccountParam } from "@/lib/server/mom-sub-account"
 import { parseSourceFromRequest, riskSourceAls } from "@/lib/server/risk-data-source"
 
 const CACHE_DIR = join(process.cwd(), "data", "mom-cache")
@@ -91,12 +92,16 @@ export function withMomCache(
 
   return async (req: Request) => {
     const source = parseSourceFromRequest(req)
-    return riskSourceAls.run(source, async () => {
+    const url = new URL(req.url)
+    const accountParsed = parseMomSubAccountParam(url.searchParams.get("account"))
+    if (accountParsed === false) {
+      return NextResponse.json({ ok: false, error: "无效账户" }, { status: 400 })
+    }
+    return riskSourceAls.run(source, () => momSubAccountAlsRun(accountParsed, async () => {
       if (source === "account") {
         await ensureAccountRiskSchema()
       }
 
-      const url = new URL(req.url)
       const noCache = url.searchParams.get("nocache") === "1"
       const key = `${source}__${routeKey}${paramKey(url.searchParams)}`
 
@@ -121,6 +126,6 @@ export function withMomCache(
         }
       }
       return resp
-    })
+    }))
   }
 }

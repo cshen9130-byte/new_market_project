@@ -20,6 +20,7 @@ import { CopyableManagerName, CopyableProductName, CopyableProductText, FundProd
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { DEFAULT_INSTRUCTION_SIDE, INSTRUCTION_SIDE_ITEMS } from "./components/instructions-nav"
 import { InvestmentNotesView } from "./components/InvestmentNotesView"
+import { OperationsDataOverviewView } from "./components/OperationsDataOverviewView"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -240,6 +241,7 @@ const operationsSidebarGroups: SidebarGroup[] = [
   {
     label: "数据维护",
     items: [
+      { key: "ops-data-overview", label: "数据概览" },
       { key: "ops-email-sync", label: "邮箱同步" },
       { key: "ops-ledger", label: "台账管理" },
       { key: "ops-team-data", label: "团队数据" },
@@ -390,7 +392,7 @@ function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
 // flash very stale data.
 type ListCacheEntry = { data: TrackFundRow[]; total: number; ts?: number }
 const listMemCache = new Map<string, ListCacheEntry>()
-const LIST_CACHE_PREFIX = "tracking_list_cache_v10:"
+const LIST_CACHE_PREFIX = "tracking_list_cache_v11:"
 const LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function readListCache(key: string): ListCacheEntry | null {
@@ -14808,6 +14810,10 @@ interface TeamDataRow {
   redeemed?: boolean
   nav_anomaly?: TeamDataNavAnomaly | null
   operation_date?: string | null
+  inception_date?: string | null
+  nav_start_date?: string | null
+  inception_nav_match?: "match" | "mismatch" | "missing" | null
+  inception_nav_gap_days?: number | null
 }
 
 function teamDataLinkedInvestmentNote(
@@ -14825,7 +14831,7 @@ function teamDataLinkedInvestmentNote(
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v10:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v11:"
 const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v1:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
@@ -14883,6 +14889,16 @@ function writeTeamDataListCache(key: string, entry: TeamDataListCacheEntry, pref
   }
 }
 
+function opsListFilter<T extends string>(
+  params: { get(name: string): string | null },
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const value = params.get(name)
+  return value && (allowed as readonly string[]).includes(value) ? value as T : fallback
+}
+
 function OperationsTeamDataView({
   currentUser,
   mode = "team",
@@ -14932,16 +14948,46 @@ function OperationsTeamDataView({
   const [strategyL1, setStrategyL1] = useState("")
   const [strategyL2, setStrategyL2] = useState("")
   const [strategyL3, setStrategyL3] = useState("")
-  const [elementsFilter, setElementsFilter] = useState<"all" | "missing" | "present">("all")
-  const [navLagFilter, setNavLagFilter] = useState<"all" | "behind_2w" | "within_2w">("all")
-  const [navGapFilter, setNavGapFilter] = useState<"all" | "interior_2w" | "no_interior_2w">("all")
-  const [navAnomalyFilter, setNavAnomalyFilter] = useState<"all" | "jump" | "no_jump">("all")
-  const [navAnomalyCauseFilter, setNavAnomalyCauseFilter] = useState<"all" | "source" | "rules">("all")
-  const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email" | "fof99">("all")
-  const [operationDateFilter, setOperationDateFilter] = useState<"all" | "present" | "absent">("all")
-  const [productClassFilter, setProductClassFilter] = useState<"all" | "private">(isPlatform ? "private" : "all")
-  const [navPresenceFilter, setNavPresenceFilter] = useState<"all" | "present" | "absent">(isPlatform ? "present" : "all")
-  const [navDateFilter, setNavDateFilter] = useState<"all" | "m1" | "m1_3" | "m3_6" | "within_m6" | "over_m6">("all")
+  const [elementsFilter, setElementsFilter] = useState<"all" | "missing" | "present">(() =>
+    opsListFilter(searchParams, "elements", ["all", "missing", "present"], "all"),
+  )
+  const [navLagFilter, setNavLagFilter] = useState<"all" | "behind_2w" | "within_2w">(() =>
+    opsListFilter(searchParams, "nav_lag", ["all", "behind_2w", "within_2w"], "all"),
+  )
+  const [navGapFilter, setNavGapFilter] = useState<"all" | "interior_2w" | "no_interior_2w">(() =>
+    opsListFilter(searchParams, "nav_gap", ["all", "interior_2w", "no_interior_2w"], "all"),
+  )
+  const [navAnomalyFilter, setNavAnomalyFilter] = useState<"all" | "jump" | "no_jump">(() =>
+    opsListFilter(searchParams, "nav_anomaly", ["all", "jump", "no_jump"], "all"),
+  )
+  const [navAnomalyCauseFilter, setNavAnomalyCauseFilter] = useState<"all" | "source" | "rules">(() =>
+    opsListFilter(searchParams, "nav_anomaly", ["jump"], "all") === "jump"
+      ? opsListFilter(searchParams, "nav_anomaly_cause", ["all", "source", "rules"], "all")
+      : "all",
+  )
+  const [productSourceFilter, setProductSourceFilter] = useState<"all" | "manual" | "email" | "fof99">(() =>
+    opsListFilter(searchParams, "product_source", ["all", "manual", "email", "fof99"], "all"),
+  )
+  const [operationDateFilter, setOperationDateFilter] = useState<"all" | "present" | "absent">(() =>
+    opsListFilter(searchParams, "operation_date", ["all", "present", "absent"], "all"),
+  )
+  const [inceptionNavFilter, setInceptionNavFilter] = useState<"all" | "match" | "mismatch" | "missing">(() =>
+    opsListFilter(searchParams, "inception_nav", ["all", "match", "mismatch", "missing"], "all"),
+  )
+  const [inceptionNavGapFilter, setInceptionNavGapFilter] = useState<"all" | "w2" | "w2_m1" | "m1_3" | "m3_6" | "m6_12" | "over_y1">(() =>
+    opsListFilter(searchParams, "inception_nav", ["mismatch"], "all") === "mismatch"
+      ? opsListFilter(searchParams, "inception_nav_gap", ["all", "w2", "w2_m1", "m1_3", "m3_6", "m6_12", "over_y1"], "all")
+      : "all",
+  )
+  const [productClassFilter, setProductClassFilter] = useState<"all" | "private">(() =>
+    opsListFilter(searchParams, "product_class", ["all", "private"], isPlatform ? "private" : "all"),
+  )
+  const [navPresenceFilter, setNavPresenceFilter] = useState<"all" | "present" | "absent">(() =>
+    opsListFilter(searchParams, "nav_presence", ["all", "present", "absent"], isPlatform ? "present" : "all"),
+  )
+  const [navDateFilter, setNavDateFilter] = useState<"all" | "m1" | "m1_3" | "m3_6" | "within_m6" | "over_m6">(() =>
+    opsListFilter(searchParams, "nav_date", ["all", "m1", "m1_3", "m3_6", "within_m6", "over_m6"], "all"),
+  )
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<TeamDataSortKey>("first_entry_date")
@@ -15014,7 +15060,8 @@ function OperationsTeamDataView({
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const showNavAnomalyCol = navAnomalyFilter === "jump"
   const showOperationDateCol = operationDateFilter === "present"
-  const teamDataColCount = 14 + (showNavAnomalyCol ? 2 : 0) + (showOperationDateCol ? 1 : 0)
+  const showInceptionNavCols = !isPlatform && inceptionNavFilter !== "all"
+  const teamDataColCount = 14 + (showNavAnomalyCol ? 2 : 0) + (showOperationDateCol ? 1 : 0) + (showInceptionNavCols ? 3 : 0)
 
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "bfl_ops" })
@@ -15026,7 +15073,7 @@ function OperationsTeamDataView({
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, pageSize])
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -15050,6 +15097,10 @@ function OperationsTeamDataView({
     }
     if (productSourceFilter !== "all") params.set("product_source", productSourceFilter)
     if (operationDateFilter !== "all") params.set("operation_date", operationDateFilter)
+    if (!isPlatform && inceptionNavFilter !== "all") params.set("inception_nav", inceptionNavFilter)
+    if (!isPlatform && inceptionNavFilter === "mismatch" && inceptionNavGapFilter !== "all") {
+      params.set("inception_nav_gap", inceptionNavGapFilter)
+    }
     if (productClassFilter !== "all") params.set("product_class", productClassFilter)
     if (navPresenceFilter !== "all") params.set("nav_presence", navPresenceFilter)
     if (navDateFilter !== "all") params.set("nav_date", navDateFilter)
@@ -15072,7 +15123,11 @@ function OperationsTeamDataView({
       .then((json) => {
         if (cancelled) return
         if (json?.error || !Array.isArray(json.data)) {
-          const message = typeof json?.message === "string" ? json.message : ""
+          const message = typeof json?.message === "string" && json.message
+            ? json.message
+            : typeof json?.error === "string"
+              ? "列表加载失败，请稍后重试"
+              : ""
           if (message) {
             setData([])
             setTotal(0)
@@ -15108,7 +15163,7 @@ function OperationsTeamDataView({
       cancelled = true
       ac.abort()
     }
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix, isPlatform])
 
   useEffect(() => {
     let cancelled = false
@@ -15339,6 +15394,8 @@ function OperationsTeamDataView({
           setNavGapFilter("all")
           setProductSourceFilter("all")
           setOperationDateFilter("all")
+          setInceptionNavFilter("all")
+          setInceptionNavGapFilter("all")
           setKwInput(locate)
           setKeyword(locate)
           setPage(1)
@@ -15381,7 +15438,7 @@ function OperationsTeamDataView({
   }
 
   function handleExport() {
-    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "有无估值表", "更新方式", "关联笔记", ...(showOperationDateCol ? ["运作日期"] : []), "首次入表日期", "已赎回"]
+    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", ...(showInceptionNavCols ? ["产品成立日", "净值起始日", "是否一致"] : []), "估值表日期", "有无估值表", "更新方式", "关联笔记", ...(showOperationDateCol ? ["运作日期"] : []), "首次入表日期", "已赎回"]
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
     const lines = [headers.join(",")]
     for (const row of data) {
@@ -15392,6 +15449,11 @@ function OperationsTeamDataView({
         escape(row.platform_nav_date ?? ""),
         escape(row.team_nav ?? ""),
         escape(row.team_nav_date ?? ""),
+        ...(showInceptionNavCols ? [
+          escape(row.inception_date ?? ""),
+          escape(row.nav_start_date ?? ""),
+          escape(row.inception_nav_match === "match" ? "一致" : row.inception_nav_match === "mismatch" ? `不一致${row.inception_nav_gap_days != null ? ` ${row.inception_nav_gap_days}天` : ""}` : "缺失"),
+        ] : []),
         escape(row.valuation_date ?? ""),
         escape(row.has_valuation ? "有" : "无"),
         escape(row.product_source),
@@ -15597,6 +15659,67 @@ function OperationsTeamDataView({
               ))}
             </div>
           </div>
+          {!isPlatform && (
+            <div className="flex items-center">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">成立对齐：</span>
+              <div className="flex items-center gap-1">
+                {([
+                  ["all", "不限", ""],
+                  ["match", "一致", "只看净值起始日与产品成立日为同一天的产品"],
+                  ["mismatch", "不一致", "两个日期都有，但不是同一天"],
+                  ["missing", "缺失", "缺少产品成立日或净值起始日"],
+                ] as const).map(([key, label, title]) => (
+                  <span
+                    key={key}
+                    title={title || undefined}
+                    onClick={() => {
+                      setInceptionNavFilter(key)
+                      if (key !== "mismatch") setInceptionNavGapFilter("all")
+                      setPage(1)
+                    }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                      inceptionNavFilter === key
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {!isPlatform && inceptionNavFilter === "mismatch" && (
+            <div className="flex items-center">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3" title="产品成立日与净值起始日相差多久">相差：</span>
+              <div className="flex items-center gap-1">
+                {([
+                  ["all", "不限", "两个日期不同"],
+                  ["w2", "两周内", "相差 1 到 14 天"],
+                  ["w2_m1", "两周至一个月", "超过 14 天，且不超过一个自然月"],
+                  ["m1_3", "1-3个月", "超过一个自然月，且不超过三个月"],
+                  ["m3_6", "3-6个月", "超过三个月，且不超过六个月"],
+                  ["m6_12", "6-12个月", "超过六个月，且不超过一年"],
+                  ["over_y1", "1年以上", "相差超过一年"],
+                ] as const).map(([key, label, title]) => (
+                  <span
+                    key={key}
+                    title={title}
+                    onClick={() => { setInceptionNavGapFilter(key); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                      inceptionNavGapFilter === key
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex items-center flex-wrap gap-x-10 gap-y-2 px-4 py-2">
           {isPlatform && (
@@ -15727,7 +15850,7 @@ function OperationsTeamDataView({
             <div className="flex items-center gap-1">
               {([
                 ["all", "不限", ""],
-                ["jump", "有异常", "净值图默认看复权净值（没有复权则用累计净值，再没有则用单位净值）。常见披露间隔内，相邻两点涨跌达到 30% 算跳变；中间明显缺了一大段的，不把这段涨跌算跳变。约一个月内翻倍或腰斩也算。某一点相对前后都偏了 15% 以上、前后却很接近的尖刺也算。只因分红让单位净值下跌、复权仍然平滑的，不会标出"],
+                ["jump", "有异常", "净值图默认看复权净值（没有复权则用累计净值，再没有则用单位净值）。常见披露间隔内，相邻两点涨跌达到 30% 算跳变；中间明显缺了一大段的，不把这段涨跌算跳变。约一个月内翻倍或腰斩也算。某一点相对前后都偏了 15% 以上、前后却很接近的尖刺也算。净值平时一步很小、前后又回到同一水平时，这一点偏离达到 5%，并且大约是平时单步的 8 倍，也算尖刺。只因分红让单位净值下跌、复权仍然平滑的，不会标出"],
                 ["no_jump", "无异常", "常见披露间隔内没有 30% 跳变，近一个月没有翻倍或腰斩，也没有这种尖刺"],
               ] as const).map(([key, label, title]) => (
                 <span
@@ -15917,7 +16040,7 @@ function OperationsTeamDataView({
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 + (showNavAnomalyCol ? 390 : 0) + (showOperationDateCol ? 120 : 0) }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 + (showNavAnomalyCol ? 390 : 0) + (showOperationDateCol ? 120 : 0) + (showInceptionNavCols ? 360 : 0) }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -15930,6 +16053,11 @@ function OperationsTeamDataView({
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav_date")}>平台净值日期<TeamSortIcon col="platform_nav_date" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav")}>团队单位净值<TeamSortIcon col="team_nav" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav_date")}>团队净值日期<TeamSortIcon col="team_nav_date" /></th>
+              {showInceptionNavCols && <th className={`${thBase} min-w-[110px]`}>产品成立日</th>}
+              {showInceptionNavCols && (
+                <th className={`${thBase} min-w-[110px]`} title="产品净值序列的最早日期。优先用产品页净值缓存，没有缓存时用各净值表的最早日期。">净值起始日</th>
+              )}
+              {showInceptionNavCols && <th className={`${thBase} min-w-[120px]`}>是否一致</th>}
               {showNavAnomalyCol && <th className={`${thBase} min-w-[210px]`}>异常</th>}
               {showNavAnomalyCol && (
                 <th
@@ -15959,7 +16087,7 @@ function OperationsTeamDataView({
                     <span>
                       {listNotice
                         ? listNotice
-                        : keyword || strategyL1 || elementsFilter !== "all" || navLagFilter !== "all" || navGapFilter !== "all" || navAnomalyFilter !== "all" || productSourceFilter !== "all" || operationDateFilter !== "all" || productClassFilter !== "all" || navPresenceFilter !== "all" || navDateFilter !== "all"
+                        : keyword || strategyL1 || elementsFilter !== "all" || navLagFilter !== "all" || navGapFilter !== "all" || navAnomalyFilter !== "all" || productSourceFilter !== "all" || operationDateFilter !== "all" || inceptionNavFilter !== "all" || productClassFilter !== "all" || navPresenceFilter !== "all" || navDateFilter !== "all"
                         ? "未找到匹配产品，可改用备案号或产品简称搜索"
                         : isPlatform ? "暂无私募基金" : "暂无团队数据产品"}
                     </span>
@@ -16010,6 +16138,28 @@ function OperationsTeamDataView({
                     </div>
                   </td>
                   <td className={`${cell} tabular-nums`}>{row.team_nav_date ?? "—"}</td>
+                  {showInceptionNavCols && (
+                    <td className={`${cell} tabular-nums`}>{row.inception_date ?? "—"}</td>
+                  )}
+                  {showInceptionNavCols && (
+                    <td className={`${cell} tabular-nums`}>{row.nav_start_date ?? "—"}</td>
+                  )}
+                  {showInceptionNavCols && (
+                    <td className={cell}>
+                      {row.inception_nav_match === "match" ? (
+                        <span className="text-emerald-600">一致</span>
+                      ) : row.inception_nav_match === "mismatch" ? (
+                        <span className="text-red-500">
+                          不一致
+                          {row.inception_nav_gap_days != null && (
+                            <span className="ml-1 tabular-nums text-zinc-500">{row.inception_nav_gap_days}天</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-zinc-400">缺失</span>
+                      )}
+                    </td>
+                  )}
                   {showNavAnomalyCol && (
                     <td className={cell}>
                       {row.nav_anomaly ? (
@@ -24333,6 +24483,20 @@ function PrivateFundsPageContent() {
     params.set("side", side)
     params.delete("noteId")
     params.delete("notesScope")
+    for (const key of [
+      "product_source",
+      "nav_lag",
+      "nav_gap",
+      "nav_anomaly",
+      "nav_anomaly_cause",
+      "elements",
+      "operation_date",
+      "inception_nav",
+      "inception_nav_gap",
+      "product_class",
+      "nav_presence",
+      "nav_date",
+    ]) params.delete(key)
     const next = `/ma/dashboard/private-funds?${params.toString()}`
     const current = `/ma/dashboard/private-funds?${searchParams.toString()}`
     if (next !== current) {
@@ -24743,12 +24907,13 @@ function PrivateFundsPageContent() {
           {activeTab === "operations" && activeSideItem === "ops-direct" && <OperationsDirectView />}
           {activeTab === "operations" && activeSideItem === "ops-fof" && <OperationsFofUnderlyingView />}
           {activeTab === "operations" && activeSideItem === "ops-active-funds" && <OperationsManagedProductsView />}
+          {activeTab === "operations" && activeSideItem === "ops-data-overview" && <OperationsDataOverviewView />}
           {activeTab === "operations" && activeSideItem === "ops-email-sync" && <OperationsEmailSyncView />}
           {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView currentUser={currentUser} />}
           {activeTab === "operations" && activeSideItem === "ops-platform-data" && <OperationsTeamDataView currentUser={currentUser} mode="platform" />}
           {activeTab === "operations" && activeSideItem === "ops-ledger" && <OperationsLedgerView />}
           {activeTab === "operations" && activeSideItem === "ops-element-extract" && <OperationsElementExtractView />}
-          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-platform-data" && activeSideItem !== "ops-ledger" && activeSideItem !== "ops-element-extract" && (
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-data-overview" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-platform-data" && activeSideItem !== "ops-ledger" && activeSideItem !== "ops-element-extract" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

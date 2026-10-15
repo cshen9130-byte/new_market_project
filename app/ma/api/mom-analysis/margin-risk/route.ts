@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { getMomSubAccountId } from "@/lib/server/mom-sub-account"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -217,10 +218,13 @@ async function _GET() {
 
     // Build portfolio timeseries with riskRatio = margin / fund_nav * 100
     const lsMap = new Map(lsRows.map(r => [r.date, r]))
+    const scopedAccount = getMomSubAccountId()
     const timeseries = tsRows.map(r => {
       const margin = parseNum(r.margin) ?? 0
       const equity = parseNum(r.equity) ?? 0
-      const fundNav = parseNum(r.fund_nav) ?? (equity > 0 ? equity : null)
+      const fundNav = scopedAccount
+        ? (equity > 0 ? equity : null)
+        : (parseNum(r.fund_nav) ?? (equity > 0 ? equity : null))
       return {
         date: r.date,
         margin,

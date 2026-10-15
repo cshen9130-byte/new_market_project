@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { getMomSubAccountId } from "@/lib/server/mom-sub-account"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -32,7 +33,136 @@ interface HoldingPoint {
   closeCount: number
 }
 
+const numCol = (col: string) =>
+  `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}", ''), ',', ''), ' ', ''), '')::numeric, 0)`
+
+/** One MOM sub-account. Capital is that account's 上日结存 / 当日存取合计, not the mother-fund subscriptions. */
+async function scopedSubAccountNav(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url)
+    const productCode = searchParams.get("product_code")?.trim().toUpperCase() || null
+
+    const rows = await query<{
+      date: string
+      daily_pnl: string
+      daily_equity: string
+      net_flow: string
+      opening: string
+    }>(
+      `SELECT
+         "交易日期"::text AS date,
+         SUM(
+           ${numCol("当日盈亏")}
+           - ${numCol("当日手续费")}
+           + ${numCol("权利金收入")}
+           - ${numCol("权利金支出")}
+         )::text AS daily_pnl,
+         SUM(${numCol("客户权益")})::text AS daily_equity,
+         SUM(${numCol("当日存取合计")})::text AS net_flow,
+         SUM(${numCol("上日结存")})::text AS opening
+       FROM mom_daily_reports
+       GROUP BY "交易日期"
+       ORDER BY "交易日期"`,
+    )
+
+    let turnoverRows: Array<{ date: string; turnover_amount: string }> = []
+    try {
+      const turnoverParams: unknown[] = []
+      const turnoverFilter = productCode ? `WHERE UPPER(TRIM("品种"::text)) = $1` : ""
+      if (productCode) turnoverParams.push(productCode)
+      turnoverRows = await query<{ date: string; turnover_amount: string }>(
+        `SELECT "交易日期"::text AS date, SUM(${numCol("成交额")})::text AS turnover_amount
+         FROM mom_summary_details
+         ${turnoverFilter}
+         GROUP BY "交易日期"
+         ORDER BY "交易日期"`,
+        turnoverParams.length > 0 ? turnoverParams : undefined,
+      )
+    } catch {
+      turnoverRows = []
+    }
+
+    let holdingRows: Array<{ date: string; avg_holding_days: string; close_count: string }> = []
+    try {
+      const holdingParams: unknown[] = []
+      const holdingFilter = productCode ? `AND UPPER(TRIM("合约"::text)) ~ ('^' || $1 || '[0-9]')` : ""
+      if (productCode) holdingParams.push(productCode)
+      holdingRows = await query<{ date: string; avg_holding_days: string; close_count: string }>(
+        `SELECT
+           "交易日期"::text AS date,
+           AVG(GREATEST(("交易日期"::date - "开仓日期"::date), 0))::text AS avg_holding_days,
+           COUNT(*)::text AS close_count
+         FROM mom_close_details
+         WHERE "交易日期" IS NOT NULL
+           AND "开仓日期" IS NOT NULL
+           ${holdingFilter}
+         GROUP BY "交易日期"
+         ORDER BY "交易日期"`,
+        holdingParams.length > 0 ? holdingParams : undefined,
+      )
+    } catch {
+      holdingRows = []
+    }
+
+    const turnoverMap = new Map<string, number>()
+    for (const row of turnoverRows) turnoverMap.set(row.date, parseNum(row.turnover_amount))
+
+    let cumulativeCapital = 0
+    let nav = 1
+    let seeded = false
+    const data: NavPoint[] = []
+    const turnoverSeries: TurnoverPoint[] = []
+
+    for (const row of rows) {
+      const pnl = parseNum(row.daily_pnl)
+      const netFlow = parseNum(row.net_flow)
+      const equity = parseNum(row.daily_equity)
+      const opening = parseNum(row.opening)
+      if (!seeded) {
+        const implied = equity - pnl - netFlow
+        cumulativeCapital = opening > 0 ? opening : implied > 0 ? implied : Math.max(equity, 0)
+        seeded = true
+      }
+      const dailyReturn = cumulativeCapital > 0 ? pnl / cumulativeCapital : 0
+      nav = nav * (1 + dailyReturn)
+      cumulativeCapital = cumulativeCapital + netFlow + pnl
+      data.push({
+        date: row.date,
+        nav: Math.round(nav * 1e6) / 1e6,
+        cumCapital: Math.round(cumulativeCapital),
+        dailyReturn: Math.round(dailyReturn * 1e6) / 1e6,
+        netFlow: Math.round(netFlow),
+        pnl: Math.round(pnl),
+      })
+      const turnoverAmount = turnoverMap.get(row.date) ?? 0
+      if (equity > 0 && turnoverAmount > 0) {
+        turnoverSeries.push({
+          date: row.date,
+          turnoverPct: Math.round((turnoverAmount / equity) * 1e6) / 1e6,
+        })
+      }
+    }
+
+    const holdingSeries: HoldingPoint[] = holdingRows
+      .map((row) => ({
+        date: row.date,
+        avgHoldingDays: parseNum(row.avg_holding_days),
+        closeCount: Math.round(parseNum(row.close_count)),
+      }))
+      .filter((row) => row.avgHoldingDays > 0 && row.closeCount > 0)
+
+    return NextResponse.json({ ok: true, data, turnoverSeries, holdingSeries })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("does not exist") || msg.includes("mom_daily_reports")) {
+      return NextResponse.json({ ok: true, data: [], notYetRun: true })
+    }
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 })
+  }
+}
+
 async function _GET(req: Request) {
+  if (getMomSubAccountId()) return scopedSubAccountNav(req)
   try {
     const { searchParams } = new URL(req.url)
     const productCode = searchParams.get("product_code") || null
