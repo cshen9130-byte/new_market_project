@@ -18,6 +18,7 @@ import {
   parsePrivateFundTypesParam,
   parsePrivateFundWorkingStateParam,
 } from "@/lib/ma/private-fund-type-filter"
+import { sqlIsPrivateFund } from "@/lib/ma/private-fund-class"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -469,6 +470,10 @@ export async function GET(req: Request) {
   if (fundTypes.length > 0) {
     const typeClauses: string[] = []
     for (const label of fundTypes) {
+      if (label === "私募基金") {
+        typeClauses.push(sqlIsPrivateFund("i.beian_hao", "i.stored_product_name"))
+        continue
+      }
       const parts: string[] = []
       const amacValues = PRIVATE_FUND_TYPE_AMAC_VALUES[label]
       if (amacValues.length > 0) {

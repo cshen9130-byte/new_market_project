@@ -52,12 +52,14 @@ export async function GET(req: Request) {
       navDateRaw === "m1" || navDateRaw === "m1_3" || navDateRaw === "m3_6" || navDateRaw === "within_m6" || navDateRaw === "over_m6"
         ? navDateRaw
         : "all"
+    const inPoolRaw = (searchParams.get("in_pool") || "").trim().toLowerCase()
+    const inPoolFilter = inPoolRaw === "in" || inPoolRaw === "out" ? inPoolRaw : "all"
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
     const cacheKey = JSON.stringify({
       pool: "ops-platform-data",
-      v: "nav_date_buckets",
+      v: "product_page_nav_v3",
       page,
       pageSize,
       keyword,
@@ -75,6 +77,7 @@ export async function GET(req: Request) {
       productClassFilter,
       navPresenceFilter,
       navDateFilter,
+      inPoolFilter,
       sort,
       sortDir,
     })
@@ -98,6 +101,7 @@ export async function GET(req: Request) {
         productClassFilter,
         navPresenceFilter,
         navDateFilter,
+        inPoolFilter,
         sort,
         sortDir,
       })

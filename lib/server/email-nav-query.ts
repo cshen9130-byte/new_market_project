@@ -1896,6 +1896,27 @@ function rechainDerivedFromPrev(
   }
 
   if (!prevPostDiv) {
+    // Unit-only email on a different scale from the legacy row still on this date
+    // (凡二量化中证500增强4号1期 SQX646). After 2021-10-15 the custodian file
+    // stores 单位=累计=复权 about 6% below Type6, so the usable-cum check leaves
+    // the Type6 累计 in place. Copying that lower unit into 复权 is a one-day
+    // spike (2022-01-07 −7.9%) that the next Type6 day reverses. Keep the legacy
+    // 累计 when it still continues the previous day and the new unit is off that
+    // 累计. A frozen 累计 (unit moved, 累计 did not) is still replaced.
+    const cumStep = currCum != null && prevCumW > 0 ? Math.abs(currCum / prevCumW - 1) : null
+    if (
+      currCum != null
+      && cumStep != null
+      && isReasonableNav(currCum)
+      && cumStep <= 0.08
+      && cumStep > 0.0001
+      && Math.abs(unit / currCum - 1) >= 0.03
+    ) {
+      const adj = prevAdj * currCum / prevCumW
+      if (isReasonableNav(adj) && adj >= currCum - 0.001) {
+        return { cum: String(+currCum.toFixed(6)), adj: String(+adj.toFixed(6)) }
+      }
+    }
     const v = String(+unit.toFixed(6))
     return { cum: v, adj: v }
   }
@@ -2827,6 +2848,69 @@ export function sanitizeReturnIndexNavSeries(
   return out
 }
 
+/**
+ * 火富牛 复权 on its own scale must not be spliced onto a series that already
+ * has a different 复权 premium.
+ *
+ * 青蚨万德3号 (SJA874) 2026-09-04: email 复权 is only a copy of 累计, so the
+ * chart chain sits near 5.54. The first 火富牛 row that day is 6.445257.
+ * `propagateMissingAdjRows` has not been restored yet, so the spike repair
+ * sees 6.445 against a temporary ~3.95 and writes 3.992501 (−27.9%). Email
+ * rebuild then puts 2026-09-03 back to 5.540714 and leaves that cliff.
+ *
+ * After the email rebuild, an ordinary day (dividend gap unchanged) whose
+ * 火富牛 复权 misses the unit return by 10% or more is rechained from the
+ * restored previous 复权. The following days that were chained off the bad
+ * value follow. A day that already continues the chain, an ex-dividend day,
+ * and a 火富牛 复权 that sits above a previous row with no premium are left
+ * alone (SND951, R0423B, a series whose only 复权 is 火富牛).
+ */
+function repairFof99AdjScaleBreak(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
+  const BREAK = 0.10
+  let repairing = false
+  for (let i = 1; i < sorted.length; i += 1) {
+    const curr = sorted[i]
+    const prev = sorted[i - 1]
+    const unit = parseOptionalNav(curr.nav)
+    const cum = parseOptionalNav(curr.cum_nav_withdrawal)
+    const adj = parseOptionalNav(curr.cumulative_nav)
+    const prevUnit = parseOptionalNav(prev.nav)
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+    const prevAdj = parseOptionalNav(prev.cumulative_nav)
+    if (
+      unit == null || cum == null || adj == null
+      || prevUnit == null || prevUnit <= 0 || prevCum == null || prevAdj == null
+    ) {
+      repairing = false
+      continue
+    }
+
+    const gapSteady = Math.abs((cum - unit) - (prevCum - prevUnit)) <= 0.02
+    const ordinary = gapSteady && !isLikelyDividendExDate(prevUnit, unit, prevCum, cum)
+    const prevPremium = prevAdj > prevCum * 1.02
+    const canStart = curr.legacy_origin === "fof99" && prevPremium && ordinary
+    if (!ordinary || (!repairing && !canStart)) {
+      repairing = false
+      continue
+    }
+
+    const rechained = rechainDerivedFromPrev(prev, unit, cum)
+    const expected = rechained ? Number(rechained.adj) : NaN
+    if (!rechained || !(expected > 0) || expected + 0.001 < cum) {
+      repairing = false
+      continue
+    }
+    if (Math.abs(adj / expected - 1) < BREAK) {
+      repairing = false
+      continue
+    }
+    curr.cumulative_nav = rechained.adj
+    repairing = true
+  }
+  return sorted
+}
+
 function finalizeNavSeries(
   rows: LegacyNavRow[],
   unitOnlyEmailDates: Set<string> = new Set(),
@@ -2846,6 +2930,7 @@ function finalizeNavSeries(
   out = propagateMissingAdjRows(out)
   out = refreshStaleDerivedFields(out)
   out = refreshDerivedForEmailRows(out, unitOnlyEmailDates, adjOnlyEmailDates)
+  out = repairFof99AdjScaleBreak(out)
   out = clampSanityNavRows(out)
   out = repairAdjCollapsedToUnitRows(out)
   out = repairAdjBelowCumRows(out)

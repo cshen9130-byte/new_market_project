@@ -3,7 +3,7 @@
  * Date windows match the 团队数据 / 平台数据 list filters.
  */
 
-export type DataOverviewScope = "all" | "team" | "platform" | "tracking"
+export type DataOverviewScope = "all" | "nav" | "team" | "platform" | "tracking"
 
 export type DataOverviewRow = {
   key: string
@@ -22,20 +22,177 @@ export type DataOverviewSection = {
   rows: DataOverviewRow[]
 }
 
+export type NavClassCounts = {
+  private_present: number
+  private_absent: number
+  other_present: number
+  other_absent: number
+  /** 私募基金 · 有净值 · 备案号在 JY跟踪池. */
+  private_present_in: number
+  private_present_out: number
+  private_absent_in: number
+  private_absent_out: number
+  other_present_in: number
+  other_present_out: number
+  other_absent_in: number
+  other_absent_out: number
+}
+
+export function emptyNavClass(): NavClassCounts {
+  return {
+    private_present: 0,
+    private_absent: 0,
+    other_present: 0,
+    other_absent: 0,
+    private_present_in: 0,
+    private_present_out: 0,
+    private_absent_in: 0,
+    private_absent_out: 0,
+    other_present_in: 0,
+    other_present_out: 0,
+    other_absent_in: 0,
+    other_absent_out: 0,
+  }
+}
+
+export type DataOverviewTreeNode = {
+  key: string
+  label: string
+  count: number
+  children?: DataOverviewTreeNode[]
+}
+
+/** 净值日期档 × 是否在 JY跟踪池. */
+export type PoolSplit = { in: number; out: number }
+
+export type NavAgePoolCounts = {
+  m1: PoolSplit
+  m1_3: PoolSplit
+  m3_6: PoolSplit
+  over_m6: PoolSplit
+  none: PoolSplit
+}
+
+export function emptyNavAge(): NavAgePoolCounts {
+  return {
+    m1: { in: 0, out: 0 },
+    m1_3: { in: 0, out: 0 },
+    m3_6: { in: 0, out: 0 },
+    over_m6: { in: 0, out: 0 },
+    none: { in: 0, out: 0 },
+  }
+}
+
 export type DataOverviewResponse = {
   scope: DataOverviewScope
   scope_label: string
   description: string
   total: number
   generated_at: string
+  /** 产品总数 → 私募基金|其他 → 有净值|无净值 → 在跟踪池|不在跟踪池. */
+  nav_class: NavClassCounts
+  /** 有净值页：较新净值日期档 × 在跟踪池|不在跟踪池. */
+  nav_age: NavAgePoolCounts
   sections: DataOverviewSection[]
+}
+
+function poolLeaves(inPool: number, outPool: number): DataOverviewTreeNode[] {
+  return [
+    { key: "in", label: "在跟踪池", count: inPool },
+    { key: "out", label: "不在跟踪池", count: outPool },
+  ]
+}
+
+const NAV_AGE_BUCKETS: Array<{ key: keyof NavAgePoolCounts; label: string }> = [
+  { key: "m1", label: "1个月以内" },
+  { key: "m1_3", label: "1-3个月" },
+  { key: "m3_6", label: "3-6个月" },
+  { key: "over_m6", label: "6个月以上" },
+]
+
+/** 有净值 → 1个月以内|1-3个月|3-6个月|6个月以上 → 在跟踪池|不在跟踪池. Each count is the sum of its children. */
+export function navAgeTree(ages: NavAgePoolCounts): DataOverviewTreeNode {
+  const buckets = [...NAV_AGE_BUCKETS]
+  const undated = (ages.none?.in ?? 0) + (ages.none?.out ?? 0)
+  if (undated > 0) buckets.push({ key: "none", label: "无净值日期" })
+  const children = buckets.map((bucket) => {
+    const split = ages[bucket.key] ?? { in: 0, out: 0 }
+    const inside = split.in ?? 0
+    const outside = split.out ?? 0
+    return {
+      key: bucket.key,
+      label: bucket.label,
+      count: inside + outside,
+      children: poolLeaves(inside, outside),
+    }
+  })
+  return {
+    key: "present",
+    label: "有净值",
+    count: children.reduce((sum, node) => sum + node.count, 0),
+    children,
+  }
+}
+
+/** 产品总数 → 私募基金|其他 → 有净值|无净值 → 在跟踪池|不在跟踪池. Each count is the sum of its children. */
+export function productTotalTree(total: number, navClass: NavClassCounts): DataOverviewTreeNode {
+  const privatePresent = navClass.private_present
+  const privateAbsent = navClass.private_absent
+  const otherPresent = navClass.other_present
+  const otherAbsent = navClass.other_absent
+  return {
+    key: "total",
+    label: "产品总数",
+    count: total,
+    children: [
+      {
+        key: "private",
+        label: "私募基金",
+        count: privatePresent + privateAbsent,
+        children: [
+          {
+            key: "present",
+            label: "有净值",
+            count: privatePresent,
+            children: poolLeaves(navClass.private_present_in ?? 0, navClass.private_present_out ?? 0),
+          },
+          {
+            key: "absent",
+            label: "无净值",
+            count: privateAbsent,
+            children: poolLeaves(navClass.private_absent_in ?? 0, navClass.private_absent_out ?? 0),
+          },
+        ],
+      },
+      {
+        key: "other",
+        label: "其他",
+        count: otherPresent + otherAbsent,
+        children: [
+          {
+            key: "present",
+            label: "有净值",
+            count: otherPresent,
+            children: poolLeaves(navClass.other_present_in ?? 0, navClass.other_present_out ?? 0),
+          },
+          {
+            key: "absent",
+            label: "无净值",
+            count: otherAbsent,
+            children: poolLeaves(navClass.other_absent_in ?? 0, navClass.other_absent_out ?? 0),
+          },
+        ],
+      },
+    ],
+  }
 }
 
 export const DATA_OVERVIEW_SCOPES: Array<{ key: DataOverviewScope; label: string }> = [
   { key: "all", label: "全库" },
+  { key: "nav", label: "有净值" },
+  { key: "tracking", label: "跟踪池" },
   { key: "team", label: "团队数据" },
   { key: "platform", label: "平台数据" },
-  { key: "tracking", label: "跟踪池" },
 ]
 
 export type WeekBucket = "w0" | "w1" | "w2" | "w3" | "m1_3" | "m3_6" | "over_m6" | "none"

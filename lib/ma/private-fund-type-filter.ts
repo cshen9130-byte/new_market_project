@@ -1,9 +1,11 @@
 /**
  * 私募基金 list 「基金类型」filter.
- * UI labels match 火富牛 / FOF99 advancedlist; AMAC stores longer official names.
+ * 私募基金 is the residual: total minus confirmed 股权 / 信托 / 资管.
+ * The other labels match 火富牛 / FOF99; AMAC stores longer official names.
+ * 私募证券基金 stays for the 火富牛 type code, not as a page checkbox.
  */
 export const PRIVATE_FUND_TYPE_OPTIONS = [
-  "私募证券基金",
+  "私募基金",
   "券商资管",
   "期货资管",
   "信托产品",
@@ -12,7 +14,9 @@ export const PRIVATE_FUND_TYPE_OPTIONS = [
   "私募资产配置基金",
 ] as const
 
-export type PrivateFundTypeLabel = (typeof PRIVATE_FUND_TYPE_OPTIONS)[number]
+export type PrivateFundPageType = (typeof PRIVATE_FUND_TYPE_OPTIONS)[number]
+
+export type PrivateFundTypeLabel = Exclude<PrivateFundPageType, "私募基金"> | "私募证券基金"
 
 export const PRIVATE_FUND_TYPE_AMAC_VALUES: Record<PrivateFundTypeLabel, string[]> = {
   私募证券基金: ["私募证券投资基金"],
@@ -34,15 +38,21 @@ export const PRIVATE_FUND_TYPES_USING_FUTURES_TABLE = new Set<PrivateFundTypeLab
 
 const ALLOWED = new Set<string>(PRIVATE_FUND_TYPE_OPTIONS)
 
-export function parsePrivateFundTypesParam(raw: string): PrivateFundTypeLabel[] {
+/** Older saved screens used 私募证券基金 for this residual. */
+function pageTypeLabel(raw: string): PrivateFundPageType | "" {
+  if (raw === "私募证券基金") return "私募基金"
+  return ALLOWED.has(raw) ? (raw as PrivateFundPageType) : ""
+}
+
+export function parsePrivateFundTypesParam(raw: string): PrivateFundPageType[] {
   if (!raw.trim()) return []
-  const out: PrivateFundTypeLabel[] = []
+  const out: PrivateFundPageType[] = []
   const seen = new Set<string>()
   for (const part of raw.split(",")) {
-    const label = part.trim()
-    if (!ALLOWED.has(label) || seen.has(label)) continue
+    const label = pageTypeLabel(part.trim())
+    if (!label || seen.has(label)) continue
     seen.add(label)
-    out.push(label as PrivateFundTypeLabel)
+    out.push(label)
   }
   return out
 }

@@ -50,6 +50,12 @@ export async function GET(req: Request) {
       && (inceptionNavGapRaw === "w2" || inceptionNavGapRaw === "w2_m1" || inceptionNavGapRaw === "m1_3" || inceptionNavGapRaw === "m3_6" || inceptionNavGapRaw === "m6_12" || inceptionNavGapRaw === "over_y1")
         ? inceptionNavGapRaw
         : "all"
+    const navStartValueRaw = (searchParams.get("nav_start_value") || "").trim().toLowerCase()
+    const navStartValueFilter =
+      inceptionNavFilter !== "all"
+      && (navStartValueRaw === "near_1" || navStartValueRaw === "away_1" || navStartValueRaw === "missing")
+        ? navStartValueRaw
+        : "all"
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
@@ -62,7 +68,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-team-data",
-      v: "inception_nav_mismatch_only",
+      v: "product_page_nav_v9",
       page,
       pageSize,
       keyword,
@@ -79,6 +85,7 @@ export async function GET(req: Request) {
       operationDateFilter,
       inceptionNavFilter,
       inceptionNavGapFilter,
+      navStartValueFilter,
       sort,
       sortDir,
     })
@@ -101,6 +108,7 @@ export async function GET(req: Request) {
         operationDateFilter,
         inceptionNavFilter,
         inceptionNavGapFilter,
+        navStartValueFilter,
         sort,
         sortDir,
       })

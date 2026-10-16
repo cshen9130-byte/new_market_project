@@ -2991,3 +2991,137 @@ npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SND951 --name=草本致�
 ```
 
 Then delete the stored anomaly flag for `SND951` in `ops_nav_series_flags`. The flag is reused while the tip date is unchanged, so the ops list keeps the old −29.5% until that row is cleared.
+
+---
+
+## What Was Fixed (青蚨万德3号 — SJA874, 2026-09-04 复权 −27.9%, 2026-10-16)
+
+### The Problem
+
+青蚨万德3号 (SJA874) was flagged as a 跳变 on **2026-09-04**: chart 复权 **5.540714 → 3.992501**, **−27.9%**. 单位净值 and 累计净值 both rose that day, and the dividend gap did not change.
+
+| | 单位净值 | 累计净值 | 复权净值 |
+|---|---:|---:|---:|
+| 2026-09-03 | 2.0549 | 3.9352 | 5.540714 |
+| 2026-09-04 | 2.0765 | 3.9568 | **3.992501** (shown) |
+
+单位净值 **+1.05%**. Continuing the existing 复权 at that return is **5.5990**.
+
+### Root Cause
+
+Two sources, and neither one contains this drop.
+
+The custodian 净值表 copies 累计 into the 复权 column, so the email has no 复权 of its own. The chart's 5.54 is the running chain. 火富牛 has four points for this product, and the first is 2026-09-04, with 复权 **6.445257** (about **+16%** versus 5.540714, not −28%).
+
+`finalizeNavSeries` filled the blank email 复权 before restoring it. On 2026-09-03 that temporary value was **3.950971**, almost the 累计. The spike repair then compared 火富牛's 6.445257 with 3.950971 (ratio 1.63), treated it as a spike, and wrote **3.992501**. The email rebuild put 2026-09-03 back to 5.540714 and did not touch 2026-09-04, because that date had kept a legacy 复权. Later days chained off 3.992501.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Scale splice | `repairFof99AdjScaleBreak` in `email-nav-query.ts` | After the email 复权 rebuild, an ordinary day whose 火富牛 复权 misses the previous 复权's unit return by 10% or more is rechained. Days that were chained off that bad value follow |
+
+2026-09-04 复权 becomes **5.540714 × (2.0765 / 2.0549) = 5.5990**. 单位 and 累计 stay on the custodian print. 火富牛 rows stay in the database.
+
+### What This Fix Does NOT Change
+
+- A 火富牛 复权 that already matches the unit return
+- An ex-dividend day. SND951 2025-12-22 and R0423B 2026-02-25 still use the dividend formula
+- A 火富牛 复权 above a previous row that has no premium. That premium is the series' only 复权
+- The 30% spike threshold, and the email-rebuild order
+
+### Verified
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **SJA874 2026-09-04 复权 follows the unit return**, plus the three leave-alone cases above.
+
+Refresh the product page after deploy so the detail cache is rewritten:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SJA874 --name=青蚨万德3号
+```
+
+Then delete the stored anomaly flag for `SJA874` in `ops_nav_series_flags`. The flag is reused while the tip date is unchanged, so the ops list keeps the old −27.9% until that row is cleared.
+
+---
+
+## What Was Fixed (凡二量化中证500增强4号1期 — SQX646, 2022-01-07 复权 −7.9%, 2026-10-16)
+
+### The Problem
+
+凡二量化中证500增强4号1期 (SQX646) was flagged as a 尖刺 on **2022-01-07**: chart 复权 **1.179170 → 1.085919 → 1.166135**, **−7.9%**. The cause is **计算或修正导致**, 「Type6」接到「邮件净值」. Neither source has that step.
+
+| | 单位净值 | 当日变动 |
+|---|---:|---|
+| 邮件净值, week of 2021-12-31 → 2022-01-07 | 1.118 → **1.083** | **−3.1%** |
+| Type6, 2022-01-06 → 2022-01-07 → 2022-01-10 | 1.176 → **1.155** → 1.163 | **−1.8%**, then back |
+
+The chart number is the email unit divided by the previous Type6 level: `1.083 / 1.176 − 1 = −7.9%`.
+
+### Root Cause
+
+The two series match through **2021-10-08**. On **2021-10-15** the custodian 资产净值公告 steps to **1.047** while Type6 stays on a smooth path at **1.113**. After that week the weekly returns match; the custodian file just sits about **5–7%** lower, and it stores 单位 = 累计 = 复权 at that lower level. Type6 ends **2024-07-25**. The custodian file continues and is the latest unit NAV.
+
+Email wins the unit on a shared date. Because 单位 equals 累计 in the file, that 累计 is not usable, so the Type6 累计 stays on the row. `rechainDerivedFromPrev` then ran this branch whenever the previous row still had 单位 ≈ 累计:
+
+```
+if (!prevPostDiv) {
+  cum = unit
+  adj = unit
+}
+```
+
+On **2022-01-07** the previous row is Type6 **1.176** with no dividend gap, and Type6's own 累计 that day (**1.155**) had fallen enough to miss `isLikelyDividendExDate`. The branch copied **1.083** into 累计 and 复权. `repairAdjBelowCumRows` then stamped the small premium seeded on **2021-10-15** (about **1.0027**), which is why the chart shows **1.085919** rather than **1.083**. Monday is Type6 again, so the point sticks out and comes back. The V-shape repair never sees it: that pass runs before this collapse, and the rebound is under **7%**.
+
+The same hole is on other Fridays (**2021-12-24**, **2022-01-21**). **2022-01-07** is the one both legs clear the **5%** quiet-spike floor. Fridays where Type6 累计 stayed near the previous day were already classified as dividends, so their 复权 stayed on the Type6 scale.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| No-dividend rechain | `rechainDerivedFromPrev` in `email-nav-query.ts` | When the previous row has no dividend gap, keep a legacy 累计 that still continues the previous 累计 and set 复权 to `prevAdj × cum / prevCum` |
+
+The legacy 累计 is kept only when all of these hold:
+
+1. It is within **8%** of the previous 累计 (a normal step, not a second series).
+2. It actually moved versus the previous 累计 (more than **0.01%**). A frozen 累计, where the unit changed and the 累计 did not, is still replaced by the unit.
+3. The email unit is at least **3%** away from that 累计. A same-scale unit correction still overwrites 复权.
+
+For **2022-01-07**: previous 累计 **1.176**, same-day Type6 累计 **1.155** (ratio **0.982**), email unit **1.083** (about **6.2%** off that 累计). 累计 stays **1.155**. 复权 becomes **1.179170 × 1.155 / 1.176 = 1.158113**. The Friday is a normal Type6 step, about **−1.8%**. Monday **2022-01-10** stays **1.166135**. The same Fridays that used to collapse (**2021-12-24**, **2022-01-21**) keep the Type6 累计 as well.
+
+### What This Fix Does NOT Change
+
+- An ex-dividend day. The dividend check still runs first (SBAH99, SBPC20, SND951, R0423B, SLV324)
+- A post-dividend row. SQX078 unit-rate 复权 and the SBGS17 level break stay on that path
+- A unit within **3%** of the same-day 累计. That correction still replaces 复权
+- A frozen 累计. The stale-field repair still follows the corrected unit
+- The **2021-10-15** level shift. That day still takes the dividend path, because Type6 累计 stayed near the previous day. This fix does not decide which scale is the true 复权 after Type6 ends
+
+### Verified
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **SQX646 2022-01-07 复权 follows the Type6 step**, **a unit within 3% of the same-day 累计 still replaces 复权**, and **a frozen 累计 still yields to the corrected unit**.
+
+Rebuilt detail cache for SQX646:
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---:|---:|---:|
+| 2022-01-06 | 1.176 | 1.176 | 1.179170 |
+| 2022-01-07 | 1.083 | **1.155** | **1.158113** |
+| 2022-01-10 | 1.163 | 1.163 | 1.166135 |
+
+`analyzeNavAnomaly` on that series, from the 2021-07-01 operation date, reports no jump and no spike. The old chart step was **1.179170 → 1.085919 → 1.166135**.
+
+The local detail cache for SQX646 was rewritten with this merge, and the stored row in `ops_nav_series_flags` was deleted. The team-data list with 有异常 no longer returns SQX646. On another machine, rewrite the cache the same way:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SQX646 --name=凡二量化中证500增强4号1期
+```
+
+Then delete the `SQX646` row in `ops_nav_series_flags` if that list still shows the old spike. The flag is reused while the tip date is unchanged.

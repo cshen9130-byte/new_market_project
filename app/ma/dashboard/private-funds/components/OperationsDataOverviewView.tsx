@@ -8,6 +8,9 @@ import {
   type DataOverviewResponse,
   type DataOverviewScope,
 } from "@/lib/ops-data-overview"
+import { UPDATE_CHANNELS, type UpdateChannel } from "@/lib/ops-update-channel"
+import { OperationsUpdateChannelView } from "./OperationsUpdateChannelView"
+import { NavAgeTree, ProductTotalTree } from "./ProductTotalTree"
 
 function formatCount(count: number): string {
   return count.toLocaleString("zh-CN")
@@ -40,6 +43,9 @@ function sectionCount(body: DataOverviewResponse, sectionKey: string, rowKey: st
 
 export function OperationsDataOverviewView() {
   const [scope, setScope] = useState<DataOverviewScope>("all")
+  const [channel, setChannel] = useState<UpdateChannel | "all">("all")
+  const [refreshTick, setRefreshTick] = useState(0)
+  const [channelLoading, setChannelLoading] = useState(false)
   const [body, setBody] = useState<DataOverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
@@ -70,10 +76,17 @@ export function OperationsDataOverviewView() {
   }, [])
 
   useEffect(() => {
+    if (channel !== "all") return
     load(scope, false)
-  }, [scope, load])
+  }, [scope, channel, load])
 
   const visible = body?.scope === scope ? body : null
+  const busy = channel === "all" ? loading : channelLoading
+  const intro = channel === "fof99"
+    ? "看火富牛名单里有多少产品、近一月有净值的有多少、我们跟上了多少，以及每周维护新纳入和改成更新偏慢的只数。下面再看有净值的产品和跟踪池里各跟踪方式的分布，以及上周和各周接口抓得怎么样。这个视图不跟范围走。"
+    : channel === "email"
+      ? "看有净值的产品和跟踪池里，有多少已经收到带备案号的邮箱净值，以及上周和各周邮件写了多少。这个视图不跟范围走。"
+      : (visible?.description ?? "按全库、有净值、跟踪池、团队数据或平台数据查看产品状态，不展开到单只产品。")
   const cards = visible
     ? [
         { label: "产品总数", value: visible.total },
@@ -81,20 +94,6 @@ export function OperationsDataOverviewView() {
         { label: "邮箱抓取", value: sectionCount(visible, "update_method", "email") },
         { label: "手动更新", value: sectionCount(visible, "update_method", "manual") },
         { label: "fof99", value: sectionCount(visible, "update_method", "fof99") },
-        { label: "最新一周", value: sectionCount(visible, "nav_freshness", "w0") },
-        {
-          label: "滞后超2周",
-          value: ["w2", "w3", "m1_3", "m3_6", "over_m6", "none"].reduce(
-            (sum, key) => sum + sectionCount(visible, "nav_freshness", key),
-            0,
-          ),
-        },
-        { label: "缺失要素", value: sectionCount(visible, "elements", "missing") },
-        { label: "无净值", value: sectionCount(visible, "nav", "absent") },
-        { label: "有异常", value: sectionCount(visible, "anomaly", "jump") },
-        ...(sectionCount(visible, "anomaly", "unchecked") > 0
-          ? [{ label: "异常未检测", value: sectionCount(visible, "anomaly", "unchecked") }]
-          : []),
       ]
     : []
 
@@ -105,17 +104,20 @@ export function OperationsDataOverviewView() {
           <div>
             <h2 className="text-sm font-semibold text-foreground">数据概览</h2>
             <p className="mt-1 text-xs text-zinc-500 leading-5 max-w-3xl">
-              {visible?.description ?? "按全库、团队数据、平台数据或跟踪池查看产品状态，不展开到单只产品。"}
-              {" "}红色数字打开对应列表，并带上这个状态。
+              {intro}
+              {channel === "all" ? " 红色数字打开对应列表，并带上这个状态。" : ""}
             </p>
           </div>
           <button
             type="button"
-            onClick={() => load(scope, true)}
-            disabled={loading}
+            onClick={() => {
+              if (channel === "all") load(scope, true)
+              else setRefreshTick((tick) => tick + 1)
+            }}
+            disabled={busy}
             className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-foreground disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
             刷新
           </button>
         </div>
@@ -125,10 +127,38 @@ export function OperationsDataOverviewView() {
             <button
               key={item.key}
               type="button"
+              disabled={channel !== "all"}
               onClick={() => setScope(item.key)}
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium transition-colors",
-                scope === item.key
+                channel !== "all" ? "border-border text-zinc-300 cursor-default" : "",
+                channel === "all" && scope === item.key
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : channel === "all"
+                    ? "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
+                    : "",
+              ].join(" ")}
+            >
+              {item.label}
+            </button>
+          ))}
+          {channel === "all" && visible?.generated_at && (
+            <span className="ml-auto text-[11px] text-zinc-400">
+              统计时间 {formatGeneratedAt(visible.generated_at)}
+              {loading ? " · 更新中" : ""}
+            </span>
+          )}
+        </div>
+        <div className="mt-2 flex items-center flex-wrap gap-1">
+          <span className="text-zinc-400 text-xs w-12 shrink-0">更新</span>
+          {UPDATE_CHANNELS.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setChannel(item.key)}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium transition-colors",
+                channel === item.key
                   ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
                   : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
               ].join(" ")}
@@ -136,28 +166,30 @@ export function OperationsDataOverviewView() {
               {item.label}
             </button>
           ))}
-          {visible?.generated_at && (
-            <span className="ml-auto text-[11px] text-zinc-400">
-              统计时间 {formatGeneratedAt(visible.generated_at)}
-              {loading ? " · 更新中" : ""}
-            </span>
-          )}
         </div>
       </div>
 
-      {error && (
+      {channel !== "all" && (
+        <OperationsUpdateChannelView
+          channel={channel}
+          refreshTick={refreshTick}
+          onLoading={setChannelLoading}
+        />
+      )}
+
+      {channel === "all" && error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-600">
           {error}
         </div>
       )}
 
-      {loading && !visible && (
+      {channel === "all" && loading && !visible && (
         <div className="flex items-center justify-center h-40 text-sm text-muted-foreground">
           正在统计产品状态…
         </div>
       )}
 
-      {visible && (
+      {channel === "all" && visible && (
         <>
           <div className={`grid grid-cols-2 md:grid-cols-5 gap-2 ${loading ? "opacity-60" : ""}`}>
             {cards.map((card) => (
@@ -167,6 +199,22 @@ export function OperationsDataOverviewView() {
               </div>
             ))}
           </div>
+
+          <section className={`rounded-xl border bg-background shadow-sm overflow-hidden ${loading ? "opacity-60" : ""}`}>
+            <div className="px-4 py-2.5 border-b">
+              <h3 className="text-xs font-semibold text-foreground">{visible.scope === "nav" ? "有净值" : "产品总数"}</h3>
+              <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">
+                {visible.scope === "nav"
+                  ? "有净值的产品按产品页上较新的净值日期划分：1个月以内、1-3个月、3-6个月、6个月以上。没有日期的计入无净值日期。每一档再按备案号是否在 JY跟踪池划分。"
+                  : "私募基金是产品总数减去股权、信托和资管。名称里有股权、信托、资管、有限合伙、创业投资或资产管理的也不计入私募基金，再按净值有无划分。有净值和无净值再按备案号是否在 JY跟踪池划分。"}
+              </p>
+            </div>
+            {visible.scope === "nav" ? (
+              <NavAgeTree ages={visible.nav_age} />
+            ) : (
+              <ProductTotalTree total={visible.total} navClass={visible.nav_class} />
+            )}
+          </section>
 
           <div className={`grid grid-cols-1 xl:grid-cols-2 gap-3 ${loading ? "opacity-60" : ""}`}>
             {visible.sections.map((section) => (

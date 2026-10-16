@@ -2675,6 +2675,8 @@ testMidSeriesUnitResetKeepsCumulative()
 testCnHolidayClosureSkipsAdjVShape()
 testSbgs17LevelBreakDoesNotCarryDividendGap()
 testSbgs17ManualDisjointFromCustodianIsDropped()
+testSja874Fof99AdjStaysOnEmailChain()
+testSqx646EmailScaleDoesNotSpikeAdj()
 
 const sbhk26Selected = selectEmailNavSeriesRows(sbhk26History, "SBHK26", ["六妙星豪鑫6号"])
 const sbhk26Jun29 = sbhk26Selected.find((r) => r.nav_date === "2026-06-29")
@@ -4696,4 +4698,308 @@ function testSbgs17ManualDisjointFromCustodianIsDropped() {
 
   const sparse = dropManualSeriesDisjointFromCustodian(manual.slice(0, 4), email)
   assert("fewer than 8 shared dates does not drop the manual upload", sparse.length === 4)
+}
+
+// 青蚨万德3号 SJA874. Email copies 累计 into 复权. The chart chain carries a
+// premium (~5.54 on 2026-09-03). The first 火富牛 row, 2026-09-04, is 6.445257.
+// Spike repair used to crush that against a temporary fill and leave 3.992501
+// (−27.9%) after 2026-09-03 was restored. The day must follow the unit return.
+function testSja874Fof99AdjStaysOnEmailChain() {
+  const email = [
+    ["2026-09-01", "2.0885", "3.9688"],
+    ["2026-09-02", "2.0381", "3.9184"],
+    ["2026-09-03", "2.0549", "3.9352"],
+    ["2026-09-04", "2.0765", "3.9568"],
+    ["2026-09-07", "2.0505", "3.9308"],
+  ].map(([price_date, nav, cumulative_nav]) => ({
+    price_date,
+    nav,
+    cumulative_nav,
+    adjusted_nav: cumulative_nav,
+    source: "attachment_nav_table",
+    subject: "【净值表】青蚨万德3号私募证券投资基金-SJA874",
+    attachment_filename: "集合计划每日净值表.xls",
+  }))
+  const legacy = [
+    {
+      price_date: "2026-09-01",
+      nav: "2.0885",
+      cumulative_nav: "5.631311",
+      cum_nav_withdrawal: "3.9688",
+      price_change: "",
+    },
+    {
+      price_date: "2026-09-04",
+      nav: "2.0765",
+      cumulative_nav: "6.445257",
+      cum_nav_withdrawal: "3.9568",
+      price_change: "",
+      legacy_origin: "fof99",
+    },
+    {
+      price_date: "2026-09-11",
+      nav: "2.0098",
+      cumulative_nav: "6.238226",
+      cum_nav_withdrawal: "3.8901",
+      price_change: "",
+      legacy_origin: "fof99",
+    },
+  ]
+  const out = mergeNavSeriesWithEmail(legacy, [
+    ...email,
+    {
+      price_date: "2026-09-11",
+      nav: "2.0098",
+      cumulative_nav: "3.8901",
+      adjusted_nav: "3.8901",
+      source: "attachment_nav_table",
+      subject: "【净值表】青蚨万德3号私募证券投资基金-SJA874",
+      attachment_filename: "集合计划每日净值表.xls",
+    },
+  ])
+  const at = (d) => out.find((row) => row.price_date === d)
+  const sep3 = at("2026-09-03")
+  const sep4 = at("2026-09-04")
+  const sep7 = at("2026-09-07")
+  const sep11 = at("2026-09-11")
+  const sep3Adj = sep3 ? parseFloat(sep3.cumulative_nav) : NaN
+  const sep4Adj = sep4 ? parseFloat(sep4.cumulative_nav) : NaN
+  assert(
+    "SJA874 2026-09-03 keeps the email-chain 复权",
+    Math.abs(sep3Adj - 5.540714) < 0.001,
+  )
+  assert(
+    "SJA874 2026-09-04 复权 follows the unit return",
+    sep4 && Math.abs(sep4Adj - sep3Adj * (2.0765 / 2.0549)) < 0.001,
+  )
+  assert(
+    "SJA874 2026-09-04 is not the crushed 3.992501",
+    Math.abs(sep4Adj - 3.992501) > 0.1,
+  )
+  assert(
+    "SJA874 2026-09-04 is not the raw 火富牛 6.445257",
+    Math.abs(sep4Adj - 6.445257) > 0.1,
+  )
+  assert(
+    "SJA874 2026-09-04 单位 and 累计 stay on the custodian print",
+    sep4
+      && Math.abs(parseFloat(sep4.nav) - 2.0765) < 0.0001
+      && Math.abs(parseFloat(sep4.cum_nav_withdrawal) - 3.9568) < 0.0001,
+  )
+  assert(
+    "SJA874 2026-09-07 stays on the repaired chain",
+    sep7 && Math.abs(parseFloat(sep7.cumulative_nav) - sep4Adj * (2.0505 / 2.0765)) < 0.001,
+  )
+  assert(
+    "SJA874 2026-09-11 stays on the repaired chain",
+    sep11 && sep7 && Math.abs(parseFloat(sep11.cumulative_nav) - parseFloat(sep7.cumulative_nav) * (2.0098 / 2.0505)) < 0.002,
+  )
+
+  const continuous = mergeNavSeriesWithEmail(
+    [
+      {
+        price_date: "2026-09-03",
+        nav: "2.0549",
+        cumulative_nav: "5.540714",
+        cum_nav_withdrawal: "3.9352",
+        price_change: "",
+      },
+      {
+        price_date: "2026-09-04",
+        nav: "2.0765",
+        cumulative_nav: "5.598955",
+        cum_nav_withdrawal: "3.9568",
+        price_change: "",
+        legacy_origin: "fof99",
+      },
+    ],
+    [],
+  )
+  const kept = continuous.find((row) => row.price_date === "2026-09-04")
+  assert(
+    "火富牛 复权 that already matches the unit return is kept",
+    kept && Math.abs(parseFloat(kept.cumulative_nav) - 5.598955) < 0.0001,
+  )
+
+  const noPremium = mergeNavSeriesWithEmail(
+    [
+      {
+        price_date: "2026-08-03",
+        nav: "1.5000",
+        cumulative_nav: "2.0000",
+        cum_nav_withdrawal: "2.0000",
+        price_change: "",
+      },
+      {
+        price_date: "2026-08-04",
+        nav: "1.5200",
+        cumulative_nav: "2.5000",
+        cum_nav_withdrawal: "2.0200",
+        price_change: "",
+        legacy_origin: "fof99",
+      },
+    ],
+    [],
+  )
+  const premium = noPremium.find((row) => row.price_date === "2026-08-04")
+  assert(
+    "火富牛 复权 is kept when the previous row has no premium",
+    premium && Math.abs(parseFloat(premium.cumulative_nav) - 2.5) < 0.0001,
+  )
+
+  const exDiv = mergeNavSeriesWithEmail(
+    [
+      {
+        price_date: "2025-12-19",
+        nav: "1.461000",
+        cumulative_nav: "5.995943",
+        cum_nav_withdrawal: "3.434000",
+        price_change: "",
+        legacy_origin: "fof99",
+      },
+      {
+        price_date: "2025-12-22",
+        nav: "1.030000",
+        cumulative_nav: "6.102647",
+        cum_nav_withdrawal: "3.460000",
+        price_change: "",
+        legacy_origin: "fof99",
+      },
+    ],
+    [],
+  )
+  const divDay = exDiv.find((row) => row.price_date === "2025-12-22")
+  assert(
+    "ex-div 火富牛 复权 is not rewritten onto the unit drop",
+    divDay && Math.abs(parseFloat(divDay.cumulative_nav) - 6.102647) < 0.0001,
+  )
+}
+
+// 凡二量化中证500增强4号1期 SQX646. Type6 is daily and smooth. The custodian
+// 资产净值公告 is weekly and, after 2021-10-15, prints 单位=累计=复权 about 6%
+// lower. Email wins the unit. The leftover Type6 累计 on 2022-01-07 is 1.155
+// (from 1.176 the day before). Writing the email unit 1.083 into 复权 was the
+// −7.9% quiet spike. 复权 must stay on the Type6 step.
+function testSqx646EmailScaleDoesNotSpikeAdj() {
+  const legacy = [
+    ["2022-01-05", "1.180"],
+    ["2022-01-06", "1.176"],
+    ["2022-01-07", "1.155"],
+    ["2022-01-10", "1.163"],
+  ].map(([price_date, nav]) => ({
+    price_date,
+    nav,
+    cumulative_nav: nav,
+    cum_nav_withdrawal: nav,
+    price_change: "",
+  }))
+  legacy[1].cumulative_nav = "1.179170"
+  const email = [{
+    price_date: "2022-01-07",
+    nav: "1.083",
+    cumulative_nav: "1.083",
+    adjusted_nav: "1.083",
+    source: "attachment_nav_table",
+    subject: "资产净值公告_SQX646_凡二量化中证500增强4号1期",
+    attachment_filename: "资产净值公告_SQX646.xlsx",
+  }]
+  const out = mergeNavSeriesWithEmail(legacy, email)
+  const at = (d) => out.find((row) => row.price_date === d)
+  const jan6 = at("2022-01-06")
+  const jan7 = at("2022-01-07")
+  const jan10 = at("2022-01-10")
+  const jan6Adj = jan6 ? parseFloat(jan6.cumulative_nav) : NaN
+  const jan7Adj = jan7 ? parseFloat(jan7.cumulative_nav) : NaN
+  const expectedAdj = 1.179170 * (1.155 / 1.176)
+  assert(
+    "SQX646 2022-01-07 单位 is the custodian print",
+    jan7 && Math.abs(parseFloat(jan7.nav) - 1.083) < 0.0001,
+  )
+  assert(
+    "SQX646 2022-01-07 累计 stays on Type6",
+    jan7 && Math.abs(parseFloat(jan7.cum_nav_withdrawal) - 1.155) < 0.0001,
+  )
+  assert(
+    "SQX646 2022-01-07 复权 follows the Type6 step",
+    jan7 && Math.abs(jan7Adj - expectedAdj) < 0.0001,
+  )
+  assert(
+    "SQX646 2022-01-07 is not the −7.9% email splice",
+    jan6 && jan7Adj / jan6Adj - 1 > -0.03,
+  )
+  const jan10Adj = jan10 ? parseFloat(jan10.cumulative_nav) : NaN
+  assert(
+    "SQX646 2022-01-10 复权 stays on the Type6 step",
+    jan10 && Math.abs(jan10Adj / 1.163 - jan7Adj / 1.155) < 0.0001,
+  )
+  assert(
+    "SQX646 2022-01-10 does not bounce off the Friday",
+    jan7 && Math.abs(jan10Adj / jan7Adj - 1) < 0.02,
+  )
+
+  const corrected = mergeNavSeriesWithEmail(
+    [
+      {
+        price_date: "2022-01-06",
+        nav: "1.176",
+        cumulative_nav: "1.176",
+        cum_nav_withdrawal: "1.176",
+        price_change: "",
+      },
+      {
+        price_date: "2022-01-07",
+        nav: "1.176",
+        cumulative_nav: "1.160",
+        cum_nav_withdrawal: "1.160",
+        price_change: "",
+      },
+    ],
+    [{
+      price_date: "2022-01-07",
+      nav: "1.170",
+      cumulative_nav: "1.170",
+      adjusted_nav: "1.170",
+      source: "attachment_nav_table",
+      subject: "资产净值公告",
+      attachment_filename: "资产净值公告.xlsx",
+    }],
+  )
+  const small = corrected.find((row) => row.price_date === "2022-01-07")
+  assert(
+    "a unit within 3% of the same-day 累计 still replaces 复权",
+    small && Math.abs(parseFloat(small.cumulative_nav) - 1.170) < 0.0001,
+  )
+
+  const frozen = mergeNavSeriesWithEmail(
+    [
+      {
+        price_date: "2022-01-06",
+        nav: "1.176",
+        cumulative_nav: "1.176",
+        cum_nav_withdrawal: "1.176",
+        price_change: "",
+      },
+      {
+        price_date: "2022-01-07",
+        nav: "1.176",
+        cumulative_nav: "1.176",
+        cum_nav_withdrawal: "1.176",
+        price_change: "",
+      },
+    ],
+    [{
+      price_date: "2022-01-07",
+      nav: "1.230",
+      cumulative_nav: "1.230",
+      adjusted_nav: "1.230",
+      source: "attachment_nav_table",
+      subject: "资产净值公告",
+      attachment_filename: "资产净值公告.xlsx",
+    }],
+  )
+  const stuck = frozen.find((row) => row.price_date === "2022-01-07")
+  assert(
+    "a frozen 累计 still yields to the corrected unit",
+    stuck && Math.abs(parseFloat(stuck.cumulative_nav) - 1.230) < 0.0001,
+  )
 }

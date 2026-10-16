@@ -11,7 +11,9 @@ import {
   sqlType6LatestStrategyJoin,
 } from "@/lib/server/fund-strategy-resolve"
 import {
+  attachInceptionDates,
   attachNavAnomalyDiagnosis,
+  attachProductPageNav,
   enrichPlatformFundPage,
   filterByNavAnomalyCause,
   loadBeianCodesWithOperationDate,
@@ -28,11 +30,20 @@ import {
 } from "@/lib/server/team-data-query-pg"
 import type { NavAnomalyHit } from "@/lib/server/nav-anomaly"
 import { loadFreshNavSeriesFlags, NAV_SERIES_FLAG_RULE } from "@/lib/server/nav-series-flags-pg"
+import {
+  sqlAssetClass,
+  sqlEquityClass,
+  sqlIsPrivateFund,
+  sqlProductClassCase,
+  sqlTrustClass,
+} from "@/lib/ma/private-fund-class"
 
 export type PlatformProductClassFilter = "all" | "private" | "asset" | "trust" | "equity"
 export type PlatformNavPresenceFilter = "all" | "present" | "absent"
 /** Same buckets as the 私募基金 list 净值日期 filter. */
 export type PlatformNavDateFilter = "all" | "m1" | "m1_3" | "m3_6" | "within_m6" | "over_m6"
+/** 备案号是否在 JY跟踪池（tracking_pool），与数据总览「跟踪池」同一口径。 */
+export type PlatformInPoolFilter = "all" | "in" | "out"
 
 export type PlatformDataListParams = {
   page: number
@@ -49,65 +60,41 @@ export type PlatformDataListParams = {
   navAnomalyCauseFilter?: TeamDataNavAnomalyCauseFilter
   productSourceFilter: TeamDataProductSourceFilter
   operationDateFilter?: TeamDataOperationDateFilter
-  /** 私募基金 excludes 股权 / 信托 / 资管. Default on the 平台数据 page. */
+  /** 私募基金 is everything not confirmed as 股权 / 信托 / 资管. Default on the 平台数据 page. */
   productClassFilter?: PlatformProductClassFilter
   /** present = 平台单位净值 is filled (latest_nav is not null). */
   navPresenceFilter?: PlatformNavPresenceFilter
   /** Age of latest_nav_date. */
   navDateFilter?: PlatformNavDateFilter
+  /** in = 备案号在 JY跟踪池；out = 不在。 */
+  inPoolFilter?: PlatformInPoolFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
 
-/** Equity / venture names are only a fallback while AMAC fund_type is empty. */
-const EQUITY_CLASS_SQL = `(
-  COALESCE(BTRIM(a.fund_type), '') IN ('股权投资基金', '创业投资基金')
-  OR (
-    COALESCE(BTRIM(a.fund_type), '') = ''
-    AND (
-      i.product_name LIKE '%股权投资%'
-      OR i.product_name LIKE '%创业投资%'
-      OR i.product_name LIKE '%有限合伙%'
-    )
-  )
-)`
-
-const TRUST_CLASS_SQL = `(
-  COALESCE(BTRIM(a.fund_type), '') = '信托计划'
-  OR (COALESCE(BTRIM(a.fund_type), '') = '' AND i.product_name LIKE '%信托%')
-)`
-
-const ASSET_CLASS_SQL = `(
-  COALESCE(BTRIM(a.fund_type), '') IN (
-    '证券公司及其子公司的资产管理计划',
-    '期货公司及其子公司的资产管理计划',
-    '期货公司集合资管产品',
-    '保险公司及其子公司的资产管理计划',
-    '基金专户',
-    '银行理财产品'
-  )
-  OR (
-    COALESCE(BTRIM(a.fund_type), '') = ''
-    AND (i.product_name LIKE '%资产管理%' OR i.product_name LIKE '%资管计划%')
-  )
-)`
+/** 协会类型, the futures table, or a name containing 股权 / 信托 / 资管. */
+const EQUITY_CLASS_SQL = sqlEquityClass("i.beian_hao", "i.product_name")
+const TRUST_CLASS_SQL = sqlTrustClass("i.beian_hao", "i.product_name")
+const ASSET_CLASS_SQL = sqlAssetClass("i.beian_hao", "i.product_name")
 
 const PRODUCT_CLASS_SQL: Record<Exclude<PlatformProductClassFilter, "all">, string> = {
-  private: `NOT (${EQUITY_CLASS_SQL} OR ${TRUST_CLASS_SQL} OR ${ASSET_CLASS_SQL})`,
+  private: sqlIsPrivateFund("i.beian_hao", "i.product_name"),
   asset: ASSET_CLASS_SQL,
   trust: TRUST_CLASS_SQL,
   equity: EQUITY_CLASS_SQL,
 }
 
-/** Exclusive class label. Equity wins if a name matches more than one fallback. */
-export const PLATFORM_PRODUCT_CLASS_CASE_SQL = `CASE
-  WHEN ${EQUITY_CLASS_SQL} THEN 'equity'
-  WHEN ${TRUST_CLASS_SQL} THEN 'trust'
-  WHEN ${ASSET_CLASS_SQL} THEN 'asset'
-  ELSE 'private'
-END`
+/** Exclusive class label. Equity wins, then trust, then asset. */
+export const PLATFORM_PRODUCT_CLASS_CASE_SQL = sqlProductClassCase("i.beian_hao", "i.product_name")
 
 export const PLATFORM_PRIVATE_CLASS_SQL = PRODUCT_CLASS_SQL.private
+
+/** Same membership as the data-overview pool CTE: non-empty register_number in tracking_pool. */
+const IN_TRACKING_POOL_SQL = `EXISTS (
+  SELECT 1 FROM tracking_pool p
+  WHERE NULLIF(BTRIM(p.register_number), '') IS NOT NULL
+    AND UPPER(BTRIM(p.register_number)) = UPPER(BTRIM(i.beian_hao))
+)`
 
 const NAV_DATE_SQL: Record<Exclude<PlatformNavDateFilter, "all">, string> = {
   m1: "i.latest_nav_date >= CURRENT_DATE - INTERVAL '1 month'",
@@ -179,6 +166,9 @@ const VALUATION_JOIN = `LEFT JOIN LATERAL (
   WHERE v.product_code = i.beian_hao
 ) val ON true`
 
+const PRODUCT_PAGE_NAV_JOIN = `LEFT JOIN ops_private_fund_detail_nav_cache dnav
+  ON dnav.cache_key = UPPER(BTRIM(i.beian_hao))`
+
 type SeedRow = {
   beian_hao: string
   product_name: string
@@ -240,8 +230,8 @@ function withStoredPlatformNav(rows: TeamDataListRow[], seeds: SeedRow[]): TeamD
 }
 
 function resortPage(rows: TeamDataListRow[], sort: string, dir: "ASC" | "DESC"): TeamDataListRow[] {
-  const numeric = sort === "platform_nav" || sort === "team_nav"
-  const keys = new Set(["platform_nav", "platform_nav_date", "team_nav", "team_nav_date", "valuation_date"])
+  const numeric = sort === "platform_nav" || sort === "team_nav" || sort === "unit_nav"
+  const keys = new Set(["platform_nav", "platform_nav_date", "team_nav", "team_nav_date", "unit_nav", "nav_date", "valuation_date", "inception_date"])
   if (!keys.has(sort)) return rows
   const mul = dir === "ASC" ? 1 : -1
   return [...rows].sort((a, b) => {
@@ -371,6 +361,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     productClassFilter = "all",
     navPresenceFilter = "all",
     navDateFilter = "all",
+    inPoolFilter = "all",
     sort,
     sortDir,
   } = params
@@ -408,12 +399,16 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
   if (navPresenceFilter === "present") where.push("i.latest_nav IS NOT NULL")
   else if (navPresenceFilter === "absent") where.push("i.latest_nav IS NULL")
   if (navDateFilter !== "all") where.push(NAV_DATE_SQL[navDateFilter])
+  if (inPoolFilter === "in") where.push(IN_TRACKING_POOL_SQL)
+  else if (inPoolFilter === "out") where.push(`NOT ${IN_TRACKING_POOL_SQL}`)
 
-  const sortNeedsTeam = sort === "team_nav" || sort === "team_nav_date"
+  const sortNeedsTeam = sort === "team_nav" || sort === "team_nav_date" || sort === "unit_nav" || sort === "nav_date"
+  const sortNeedsProductPage = sort === "unit_nav" || sort === "nav_date"
   if (navLagFilter === "behind_2w" || navLagFilter === "within_2w" || sortNeedsTeam) {
     if (navLagFilter === "behind_2w" || navLagFilter === "within_2w") sharedJoins.push(TEAM_NAV_JOIN)
     else rowOnlyJoins.push(TEAM_NAV_JOIN)
   }
+  if (sortNeedsProductPage) rowOnlyJoins.push(PRODUCT_PAGE_NAV_JOIN)
   if (sort === "valuation_date") rowOnlyJoins.push(VALUATION_JOIN)
 
   if (navLagFilter === "behind_2w" || navLagFilter === "within_2w") {
@@ -466,7 +461,32 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     platform_nav_date: "i.latest_nav_date",
     team_nav: "team.team_nav",
     team_nav_date: "team.team_nav_date",
+    unit_nav: `CASE
+      WHEN dnav.tip_nav_date IS NOT NULL
+        AND dnav.tip_unit_nav IS NOT NULL
+        AND dnav.tip_nav_date >= GREATEST(team.team_nav_date, i.latest_nav_date)
+        THEN dnav.tip_unit_nav
+      WHEN team.team_nav_date IS NOT NULL
+        AND (i.latest_nav_date IS NULL OR team.team_nav_date >= i.latest_nav_date)
+        THEN team.team_nav
+      ELSE i.latest_nav
+    END`,
+    nav_date: `CASE
+      WHEN dnav.tip_nav_date IS NOT NULL
+        AND dnav.tip_nav_date >= GREATEST(team.team_nav_date, i.latest_nav_date)
+        THEN dnav.tip_nav_date
+      ELSE GREATEST(team.team_nav_date, i.latest_nav_date)
+    END`,
     valuation_date: "val.valuation_date",
+    inception_date: `COALESCE(
+      (
+        SELECT MIN(b.inception_date)
+        FROM basicinfo_bfl_track b
+        WHERE b.inception_date IS NOT NULL
+          AND (b.register_number = i.beian_hao OR b.record_key = i.beian_hao)
+      ),
+      i.inception_date
+    )`,
     first_entry_date: "COALESCE(a.put_on_record_date, i.inception_date)",
   }
   const orderSql = `${orderExpr[sort] ?? orderExpr.first_entry_date} ${sortDir === "ASC" ? "ASC" : "DESC"} NULLS LAST`
@@ -493,8 +513,11 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
   if (needsSeries) {
     const seriesJoins = [...sharedJoins]
     if (sort === "valuation_date" && !seriesJoins.includes(VALUATION_JOIN)) seriesJoins.push(VALUATION_JOIN)
-    if ((sort === "team_nav" || sort === "team_nav_date") && !seriesJoins.includes(TEAM_NAV_JOIN)) {
+    if ((sort === "team_nav" || sort === "team_nav_date" || sort === "unit_nav" || sort === "nav_date") && !seriesJoins.includes(TEAM_NAV_JOIN)) {
       seriesJoins.push(TEAM_NAV_JOIN)
+    }
+    if ((sort === "unit_nav" || sort === "nav_date") && !seriesJoins.includes(PRODUCT_PAGE_NAV_JOIN)) {
+      seriesJoins.push(PRODUCT_PAGE_NAV_JOIN)
     }
     await refreshStaleSeriesFlags(amacJoin, sharedJoins, whereSql, filterParams)
 
@@ -583,7 +606,8 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
       const byId = new Map(loaded.map((row) => [row.beian_hao.trim().toUpperCase(), row]))
       hydrated = seriesRows.map((row) => byId.get(row.beian_hao.trim().toUpperCase()) ?? row)
     }
-    let data = resortPage(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(hydrated)), hydrated), sort, sortDir)
+    let data = await attachInceptionDates(await attachProductPageNav(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(hydrated)), hydrated)))
+    data = resortPage(data, sort, sortDir)
     if (navAnomalyFilter === "jump") {
       data = data.map((row) => ({
         ...row,
@@ -614,7 +638,8 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     ),
   ])
   const total = parseInt(countRows[0]?.total ?? "0", 10) || 0
-  let data = resortPage(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(pageRows)), pageRows), sort, sortDir)
+  let data = await attachInceptionDates(await attachProductPageNav(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(pageRows)), pageRows)))
+  data = resortPage(data, sort, sortDir)
   if (operationDateFilter === "present") data = await withOperationDates(data)
   return { data, total }
 }

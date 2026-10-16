@@ -55,7 +55,7 @@ import {
   STRATEGY_UNCONFIGURED_LABEL,
   isStrategyUnconfigured,
 } from "@/lib/ma/strategy-unconfigured"
-import { PRIVATE_FUND_TYPE_OPTIONS } from "@/lib/ma/private-fund-type-filter"
+import { PRIVATE_FUND_TYPE_OPTIONS, parsePrivateFundTypesParam } from "@/lib/ma/private-fund-type-filter"
 import { ProductElementsDialogContent } from "./components/ProductElementsDialogContent"
 import { OpsTraderManageDialog } from "./components/OpsTraderManageDialog"
 import { BatchAddStrategyDialog, TEAM_BENCHMARK_OPTIONS } from "./components/BatchAddStrategyDialog"
@@ -679,7 +679,7 @@ function FundFilterPanel({
 }) {
   const [moreInfoTab, setMoreInfoTab] = useState("基金类型")
   const [orgSizes, setOrgSizes] = useState<string[]>([])
-  const fundTypes = filters.fundTypes ?? []
+  const fundTypes = parsePrivateFundTypesParam((filters.fundTypes ?? []).join(","))
   const [moreInfoValues, setMoreInfoValues] = useState<Record<string, string>>({})
   const [showSaveModal, setShowSaveModal] = useState(false)
   const [strategyHierarchy, setStrategyHierarchy] = useState<FilterHierarchyNode[]>([])
@@ -1590,7 +1590,7 @@ function PrivateFundTable({
   const tableContainerRef = useRef<HTMLDivElement>(null)
 
   const sfKey = JSON.stringify(strategyFilters)
-  const fundTypeKey = (fundTypes ?? []).join(",")
+  const fundTypeKey = parsePrivateFundTypesParam((fundTypes ?? []).join(",")).join(",")
   const filterKey = `${strategySource}|${sfKey}|${keyword}|${manager}|${metricTab}|${period}|${range}|${inceptionPeriod}|${navDatePeriod}|${navFrequency}|${fundTypeKey}|${workingState}|${cutoffDate}`
   const fetchGenRef = useRef(0)
   const prevFilterKeyRef = useRef(filterKey)
@@ -14728,9 +14728,44 @@ function OperationsTeamValuationManageView({
 
 type TeamDataSortKey =
   | "product_name" | "beian_hao"
+  | "unit_nav" | "nav_date"
   | "platform_nav" | "platform_nav_date"
   | "team_nav" | "team_nav_date" | "valuation_date"
-  | "first_entry_date"
+  | "inception_date" | "nav_start_date" | "nav_start_value" | "inception_nav_gap_days" | "first_entry_date"
+
+const OPS_NAV_COLUMNS = [
+  { key: "unit_nav", label: "单位净值" },
+  { key: "nav_date", label: "净值日期" },
+  { key: "platform_nav", label: "平台单位净值" },
+  { key: "platform_nav_date", label: "平台净值日期" },
+  { key: "team_nav", label: "团队单位净值" },
+  { key: "team_nav_date", label: "团队净值日期" },
+] as const
+type OpsNavColKey = (typeof OPS_NAV_COLUMNS)[number]["key"]
+const OPS_NAV_COL_DEFAULT: OpsNavColKey[] = ["unit_nav", "nav_date"]
+
+function opsNavColStorageKey(mode: "team" | "platform"): string {
+  return mode === "platform" ? "ops_platform_data_nav_cols" : "ops_team_data_nav_cols"
+}
+
+function readOpsNavCols(mode: "team" | "platform"): OpsNavColKey[] {
+  try {
+    const raw = localStorage.getItem(opsNavColStorageKey(mode))
+    if (!raw) return [...OPS_NAV_COL_DEFAULT]
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return [...OPS_NAV_COL_DEFAULT]
+    const allowed = new Set<string>(OPS_NAV_COLUMNS.map((col) => col.key))
+    return parsed.filter((key): key is OpsNavColKey => typeof key === "string" && allowed.has(key))
+  } catch {
+    return [...OPS_NAV_COL_DEFAULT]
+  }
+}
+
+function writeOpsNavCols(mode: "team" | "platform", cols: OpsNavColKey[]): void {
+  try {
+    localStorage.setItem(opsNavColStorageKey(mode), JSON.stringify(cols))
+  } catch { /* ignore quota */ }
+}
 
 type TeamDataNavAnomaly = {
   reason: "jump" | "spike"
@@ -14802,6 +14837,8 @@ interface TeamDataRow {
   platform_nav_date: string | null
   team_nav: string | null
   team_nav_date: string | null
+  unit_nav?: string | null
+  nav_date?: string | null
   valuation_date: string | null
   has_valuation?: boolean
   product_source: string
@@ -14812,6 +14849,7 @@ interface TeamDataRow {
   operation_date?: string | null
   inception_date?: string | null
   nav_start_date?: string | null
+  nav_start_value?: string | null
   inception_nav_match?: "match" | "mismatch" | "missing" | null
   inception_nav_gap_days?: number | null
 }
@@ -14831,8 +14869,8 @@ function teamDataLinkedInvestmentNote(
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v11:"
-const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v1:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v16:"
+const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v4:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -14979,6 +15017,11 @@ function OperationsTeamDataView({
       ? opsListFilter(searchParams, "inception_nav_gap", ["all", "w2", "w2_m1", "m1_3", "m3_6", "m6_12", "over_y1"], "all")
       : "all",
   )
+  const [navStartValueFilter, setNavStartValueFilter] = useState<"all" | "near_1" | "away_1" | "missing">(() =>
+    opsListFilter(searchParams, "inception_nav", ["match", "mismatch", "missing"], "all") === "all"
+      ? "all"
+      : opsListFilter(searchParams, "nav_start_value", ["all", "near_1", "away_1", "missing"], "all"),
+  )
   const [productClassFilter, setProductClassFilter] = useState<"all" | "private">(() =>
     opsListFilter(searchParams, "product_class", ["all", "private"], isPlatform ? "private" : "all"),
   )
@@ -14987,6 +15030,9 @@ function OperationsTeamDataView({
   )
   const [navDateFilter, setNavDateFilter] = useState<"all" | "m1" | "m1_3" | "m3_6" | "within_m6" | "over_m6">(() =>
     opsListFilter(searchParams, "nav_date", ["all", "m1", "m1_3", "m3_6", "within_m6", "over_m6"], "all"),
+  )
+  const [inPoolFilter, setInPoolFilter] = useState<"all" | "in" | "out">(() =>
+    opsListFilter(searchParams, "in_pool", ["all", "in", "out"], "all"),
   )
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
@@ -15058,10 +15104,28 @@ function OperationsTeamDataView({
   ]
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const [navCols, setNavCols] = useState<OpsNavColKey[]>(OPS_NAV_COL_DEFAULT)
+  const [showNavColMenu, setShowNavColMenu] = useState(false)
+  useEffect(() => {
+    setNavCols(readOpsNavCols(mode))
+    setShowNavColMenu(false)
+  }, [mode])
+
+  function toggleNavCol(key: OpsNavColKey) {
+    setNavCols((prev) => {
+      const next = prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
+      const ordered = OPS_NAV_COLUMNS.map((col) => col.key).filter((item) => next.includes(item))
+      writeOpsNavCols(mode, ordered)
+      return ordered
+    })
+  }
+
+  const showNavCol = (key: OpsNavColKey) => navCols.includes(key)
+  const navColCount = OPS_NAV_COLUMNS.filter((col) => navCols.includes(col.key)).length
   const showNavAnomalyCol = navAnomalyFilter === "jump"
   const showOperationDateCol = operationDateFilter === "present"
   const showInceptionNavCols = !isPlatform && inceptionNavFilter !== "all"
-  const teamDataColCount = 14 + (showNavAnomalyCol ? 2 : 0) + (showOperationDateCol ? 1 : 0) + (showInceptionNavCols ? 3 : 0)
+  const teamDataColCount = 11 + navColCount + (showNavAnomalyCol ? 2 : 0) + (showOperationDateCol ? 1 : 0) + (showInceptionNavCols ? 3 : 0)
 
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "bfl_ops" })
@@ -15073,7 +15137,7 @@ function OperationsTeamDataView({
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, keyword, pageSize])
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -15101,9 +15165,13 @@ function OperationsTeamDataView({
     if (!isPlatform && inceptionNavFilter === "mismatch" && inceptionNavGapFilter !== "all") {
       params.set("inception_nav_gap", inceptionNavGapFilter)
     }
+    if (!isPlatform && inceptionNavFilter !== "all" && navStartValueFilter !== "all") {
+      params.set("nav_start_value", navStartValueFilter)
+    }
     if (productClassFilter !== "all") params.set("product_class", productClassFilter)
     if (navPresenceFilter !== "all") params.set("nav_presence", navPresenceFilter)
     if (navDateFilter !== "all") params.set("nav_date", navDateFilter)
+    if (isPlatform && inPoolFilter !== "all") params.set("in_pool", inPoolFilter)
 
     const cacheKey = params.toString()
     const cached = readTeamDataListCache(cacheKey, cachePrefix)
@@ -15163,7 +15231,7 @@ function OperationsTeamDataView({
       cancelled = true
       ac.abort()
     }
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, productClassFilter, navPresenceFilter, navDateFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix, isPlatform])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix, isPlatform])
 
   useEffect(() => {
     let cancelled = false
@@ -15396,6 +15464,7 @@ function OperationsTeamDataView({
           setOperationDateFilter("all")
           setInceptionNavFilter("all")
           setInceptionNavGapFilter("all")
+          setNavStartValueFilter("all")
           setKwInput(locate)
           setKeyword(locate)
           setPage(1)
@@ -15437,21 +15506,34 @@ function OperationsTeamDataView({
     return Number.isFinite(n) ? n.toFixed(4) : "—"
   }
 
+  function navStartAwayFromOne(v: string | null | undefined): boolean {
+    const n = parseFloat(v ?? "")
+    if (!Number.isFinite(n)) return false
+    return Math.round(Math.abs(n - 1) * 1e6) / 1e6 > 0.05
+  }
+
   function handleExport() {
-    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", ...(showInceptionNavCols ? ["产品成立日", "净值起始日", "是否一致"] : []), "估值表日期", "有无估值表", "更新方式", "关联笔记", ...(showOperationDateCol ? ["运作日期"] : []), "首次入表日期", "已赎回"]
+    const navExport = OPS_NAV_COLUMNS.filter((col) => navCols.includes(col.key))
+    const headers = ["产品名称", "备案号", ...navExport.map((col) => col.label), "产品成立日", ...(showInceptionNavCols ? ["净值起始日", "起始净值", "是否一致"] : []), "估值表日期", "有无估值表", "更新方式", "关联笔记", ...(showOperationDateCol ? ["运作日期"] : []), "首次入表日期", "已赎回"]
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
+    const navValue = (row: TeamDataRow, key: OpsNavColKey) => {
+      if (key === "unit_nav") return row.unit_nav ?? ""
+      if (key === "nav_date") return row.nav_date ?? ""
+      if (key === "platform_nav") return row.platform_nav ?? ""
+      if (key === "platform_nav_date") return row.platform_nav_date ?? ""
+      if (key === "team_nav") return row.team_nav ?? ""
+      return row.team_nav_date ?? ""
+    }
     const lines = [headers.join(",")]
     for (const row of data) {
       lines.push([
         escape(row.product_name),
         escape(row.beian_hao ?? ""),
-        escape(row.platform_nav ?? ""),
-        escape(row.platform_nav_date ?? ""),
-        escape(row.team_nav ?? ""),
-        escape(row.team_nav_date ?? ""),
+        ...navExport.map((col) => escape(navValue(row, col.key))),
+        escape(row.inception_date ?? ""),
         ...(showInceptionNavCols ? [
-          escape(row.inception_date ?? ""),
           escape(row.nav_start_date ?? ""),
+          escape(row.nav_start_value ?? ""),
           escape(row.inception_nav_match === "match" ? "一致" : row.inception_nav_match === "mismatch" ? `不一致${row.inception_nav_gap_days != null ? ` ${row.inception_nav_gap_days}天` : ""}` : "缺失"),
         ] : []),
         escape(row.valuation_date ?? ""),
@@ -15675,11 +15757,39 @@ function OperationsTeamDataView({
                     onClick={() => {
                       setInceptionNavFilter(key)
                       if (key !== "mismatch") setInceptionNavGapFilter("all")
+                      if (key === "all") setNavStartValueFilter("all")
                       setPage(1)
                     }}
                     className={[
                       "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                       inceptionNavFilter === key
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {!isPlatform && inceptionNavFilter !== "all" && (
+            <div className="flex items-center">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3" title="净值起始日的单位净值是否接近 1">起始净值：</span>
+              <div className="flex items-center gap-1">
+                {([
+                  ["all", "不限", "不按起始净值筛选"],
+                  ["near_1", "接近1", "起始单位净值在 0.95 到 1.05 之间，含两端"],
+                  ["away_1", "偏离1", "有起始净值，且不在 0.95 到 1.05 之间"],
+                  ["missing", "缺失", "没有起始净值"],
+                ] as const).map(([key, label, title]) => (
+                  <span
+                    key={key}
+                    title={title}
+                    onClick={() => { setNavStartValueFilter(key); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                      navStartValueFilter === key
                         ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
                         : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
                     ].join(" ")}
@@ -15724,6 +15834,30 @@ function OperationsTeamDataView({
         <div className="flex items-center flex-wrap gap-x-10 gap-y-2 px-4 py-2">
           {isPlatform && (
             <>
+              <div className="flex items-center">
+                <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">跟踪池：</span>
+                <div className="flex items-center gap-1">
+                  {([
+                    ["all", "不限", ""],
+                    ["in", "在跟踪池", "备案号在 JY跟踪池中"],
+                    ["out", "不在跟踪池", "备案号不在 JY跟踪池中"],
+                  ] as const).map(([key, label, title]) => (
+                    <span
+                      key={key}
+                      title={title || undefined}
+                      onClick={() => { setInPoolFilter(key); setPage(1) }}
+                      className={[
+                        "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                        inPoolFilter === key
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                          : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
               <div className="flex items-center">
                 <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">产品分类：</span>
                 <div className="flex items-center gap-1">
@@ -15935,6 +16069,33 @@ function OperationsTeamDataView({
             <PlusCircle className="h-3.5 w-3.5" /> 新增分级
           </button>
         )}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setShowNavColMenu((v) => !v)}
+            className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+          >
+            <Settings2 className="h-3.5 w-3.5" /> 字段设置
+          </button>
+          {showNavColMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setShowNavColMenu(false)} />
+              <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-2 min-w-[180px]" onClick={(e) => e.stopPropagation()}>
+                {OPS_NAV_COLUMNS.map((col) => (
+                  <label key={col.key} className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-muted">
+                    <input
+                      type="checkbox"
+                      className="rounded h-3.5 w-3.5 accent-red-500"
+                      checked={navCols.includes(col.key)}
+                      onChange={() => toggleNavCol(col.key)}
+                    />
+                    {col.label}
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
           <Download className="h-3.5 w-3.5" /> 导出
         </button>
@@ -16040,7 +16201,7 @@ function OperationsTeamDataView({
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1520 + (showNavAnomalyCol ? 390 : 0) + (showOperationDateCol ? 120 : 0) + (showInceptionNavCols ? 360 : 0) }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1230 + navColCount * 110 + (showNavAnomalyCol ? 390 : 0) + (showOperationDateCol ? 120 : 0) + (showInceptionNavCols ? 360 : 0) }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -16049,15 +16210,34 @@ function OperationsTeamDataView({
               <th className={`${thBase} w-10`}>序号</th>
               <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("product_name")}>产品名称<TeamSortIcon col="product_name" /></th>
               <th className={`${thSort} min-w-[90px]`} onClick={() => handleSort("beian_hao")}>备案号<TeamSortIcon col="beian_hao" /></th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav")}>平台单位净值<TeamSortIcon col="platform_nav" /></th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav_date")}>平台净值日期<TeamSortIcon col="platform_nav_date" /></th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav")}>团队单位净值<TeamSortIcon col="team_nav" /></th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav_date")}>团队净值日期<TeamSortIcon col="team_nav_date" /></th>
-              {showInceptionNavCols && <th className={`${thBase} min-w-[110px]`}>产品成立日</th>}
-              {showInceptionNavCols && (
-                <th className={`${thBase} min-w-[110px]`} title="产品净值序列的最早日期。优先用产品页净值缓存，没有缓存时用各净值表的最早日期。">净值起始日</th>
+              {showNavCol("unit_nav") && (
+                <th className={`${thSort} min-w-[100px]`} title="产品页上的单位净值" onClick={() => handleSort("unit_nav")}>单位净值<TeamSortIcon col="unit_nav" /></th>
               )}
-              {showInceptionNavCols && <th className={`${thBase} min-w-[120px]`}>是否一致</th>}
+              {showNavCol("nav_date") && (
+                <th className={`${thSort} min-w-[100px]`} title="产品页上的单位净值日期" onClick={() => handleSort("nav_date")}>净值日期<TeamSortIcon col="nav_date" /></th>
+              )}
+              {showNavCol("platform_nav") && (
+                <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav")}>平台单位净值<TeamSortIcon col="platform_nav" /></th>
+              )}
+              {showNavCol("platform_nav_date") && (
+                <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav_date")}>平台净值日期<TeamSortIcon col="platform_nav_date" /></th>
+              )}
+              {showNavCol("team_nav") && (
+                <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav")}>团队单位净值<TeamSortIcon col="team_nav" /></th>
+              )}
+              {showNavCol("team_nav_date") && (
+                <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav_date")}>团队净值日期<TeamSortIcon col="team_nav_date" /></th>
+              )}
+              <th className={`${thSort} min-w-[110px]`} title="与产品页成立日相同：产品要素，其次私募基金库，再次协会成立日期。A/B/C份额没有自己的日期时用母基金。" onClick={() => handleSort("inception_date")}>产品成立日<TeamSortIcon col="inception_date" /></th>
+              {showInceptionNavCols && (
+                <th className={`${thSort} min-w-[110px]`} title="产品净值序列的最早日期。优先用产品页净值缓存，没有缓存时用各净值表的最早日期。" onClick={() => handleSort("nav_start_date")}>净值起始日<TeamSortIcon col="nav_start_date" /></th>
+              )}
+              {showInceptionNavCols && (
+                <th className={`${thSort} min-w-[100px]`} title="净值起始日当天的单位净值。接近1指 0.95 到 1.05。" onClick={() => handleSort("nav_start_value")}>起始净值<TeamSortIcon col="nav_start_value" /></th>
+              )}
+              {showInceptionNavCols && (
+                <th className={`${thSort} min-w-[120px]`} title="按相差天数排序。缺失的排在最后。" onClick={() => handleSort("inception_nav_gap_days")}>是否一致<TeamSortIcon col="inception_nav_gap_days" /></th>
+              )}
               {showNavAnomalyCol && <th className={`${thBase} min-w-[210px]`}>异常</th>}
               {showNavAnomalyCol && (
                 <th
@@ -16087,7 +16267,7 @@ function OperationsTeamDataView({
                     <span>
                       {listNotice
                         ? listNotice
-                        : keyword || strategyL1 || elementsFilter !== "all" || navLagFilter !== "all" || navGapFilter !== "all" || navAnomalyFilter !== "all" || productSourceFilter !== "all" || operationDateFilter !== "all" || inceptionNavFilter !== "all" || productClassFilter !== "all" || navPresenceFilter !== "all" || navDateFilter !== "all"
+                        : keyword || strategyL1 || elementsFilter !== "all" || navLagFilter !== "all" || navGapFilter !== "all" || navAnomalyFilter !== "all" || productSourceFilter !== "all" || operationDateFilter !== "all" || inceptionNavFilter !== "all" || navStartValueFilter !== "all" || productClassFilter !== "all" || navPresenceFilter !== "all" || navDateFilter !== "all" || inPoolFilter !== "all"
                         ? "未找到匹配产品，可改用备案号或产品简称搜索"
                         : isPlatform ? "暂无私募基金" : "暂无团队数据产品"}
                     </span>
@@ -16127,22 +16307,37 @@ function OperationsTeamDataView({
                     )}
                   </td>
                   <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
-                  <td className={`${cell} tabular-nums`}>{fmtNav(row.platform_nav)}</td>
-                  <td className={`${cell} tabular-nums`}>{row.platform_nav_date ?? "—"}</td>
-                  <td className={`${cell} tabular-nums`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-medium">{fmtNav(row.team_nav)}</span>
-                      {row.team_nav && (
-                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800">团队</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className={`${cell} tabular-nums`}>{row.team_nav_date ?? "—"}</td>
-                  {showInceptionNavCols && (
-                    <td className={`${cell} tabular-nums`}>{row.inception_date ?? "—"}</td>
+                  {showNavCol("unit_nav") && (
+                    <td className={`${cell} tabular-nums font-medium`}>{fmtNav(row.unit_nav)}</td>
                   )}
+                  {showNavCol("nav_date") && (
+                    <td className={`${cell} tabular-nums`}>{row.nav_date ?? "—"}</td>
+                  )}
+                  {showNavCol("platform_nav") && (
+                    <td className={`${cell} tabular-nums`}>{fmtNav(row.platform_nav)}</td>
+                  )}
+                  {showNavCol("platform_nav_date") && (
+                    <td className={`${cell} tabular-nums`}>{row.platform_nav_date ?? "—"}</td>
+                  )}
+                  {showNavCol("team_nav") && (
+                    <td className={`${cell} tabular-nums`}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium">{fmtNav(row.team_nav)}</span>
+                        {row.team_nav && (
+                          <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800">团队</span>
+                        )}
+                      </div>
+                    </td>
+                  )}
+                  {showNavCol("team_nav_date") && (
+                    <td className={`${cell} tabular-nums`}>{row.team_nav_date ?? "—"}</td>
+                  )}
+                  <td className={`${cell} tabular-nums`}>{row.inception_date ?? "—"}</td>
                   {showInceptionNavCols && (
                     <td className={`${cell} tabular-nums`}>{row.nav_start_date ?? "—"}</td>
+                  )}
+                  {showInceptionNavCols && (
+                    <td className={`${cell} tabular-nums ${navStartAwayFromOne(row.nav_start_value) ? "text-red-500" : ""}`}>{fmtNav(row.nav_start_value)}</td>
                   )}
                   {showInceptionNavCols && (
                     <td className={cell}>
@@ -24026,7 +24221,7 @@ function PrivateFundView() {
       ...defaultPrivateFundFilters(),
       ...t.filters,
       strategySource: t.filters.strategySource === "platform" ? "platform" : "company",
-      fundTypes: Array.isArray(t.filters.fundTypes) ? t.filters.fundTypes : [],
+      fundTypes: parsePrivateFundTypesParam((Array.isArray(t.filters.fundTypes) ? t.filters.fundTypes : []).join(",")),
       workingState: typeof t.filters.workingState === "string" ? t.filters.workingState : "",
     })
     setActiveTemplateName(t.name)
@@ -24496,6 +24691,7 @@ function PrivateFundsPageContent() {
       "product_class",
       "nav_presence",
       "nav_date",
+      "in_pool",
     ]) params.delete(key)
     const next = `/ma/dashboard/private-funds?${params.toString()}`
     const current = `/ma/dashboard/private-funds?${searchParams.toString()}`

@@ -2,7 +2,8 @@
  * Aggregate status for 运维 → 数据维护 → 数据概览.
  *
  * 净值 is the later of the product-page team date and the platform date.
- * 全库 / 平台数据 / 跟踪池 take that date in SQL. 团队数据 takes the fund-page
+ * 全库 / 有净值 / 平台数据 / 跟踪池 take that date in SQL. 有净值 is 全库
+ * restricted to products that already have a nav. 团队数据 takes the fund-page
  * date and the platform `latest_nav_date`, then keeps the later one.
  * 跟踪池 gap, anomaly and 成立对齐 use the list rules when the pool is small enough to scan.
  */
@@ -13,11 +14,15 @@ import {
   WEEK_BUCKETS,
   WEEK_BUCKET_LABEL,
   emptyInceptionGapCounts,
+  emptyNavAge,
+  emptyNavClass,
   emptyWeekCounts,
   laterNavDate,
   navDateBucket,
   overviewRows,
   shanghaiToday,
+  type NavAgePoolCounts,
+  type NavClassCounts,
   weekBucket,
   type DataOverviewResponse,
   type DataOverviewScope,
@@ -46,6 +51,10 @@ const SCOPE_META: Record<DataOverviewScope, { label: string; description: string
   all: {
     label: "全库",
     description: "私募基金库中的全部产品。更新方式、要素和运作日期与列表筛选使用同一规则。净值取产品页上团队净值与平台净值中较新的一天。",
+  },
+  nav: {
+    label: "有净值",
+    description: "全库中已经有净值的产品。团队净值或平台净值任一有日期，或平台单位净值有值，即算有净值。更新方式、要素和运作日期与列表筛选使用同一规则。净值取产品页上团队净值与平台净值中较新的一天。",
   },
   platform: {
     label: "平台数据",
@@ -80,6 +89,8 @@ type OverviewCounts = {
   navGap: { interior: number; clear: number; unchecked: number }
   anomaly: { jump: number; clear: number; unchecked: number; source: number; rules: number; unknown: number }
   productClass: { private: number; equity: number; trust: number; asset: number; unknown: number }
+  navClass: NavClassCounts
+  navAge: NavAgePoolCounts
   seriesLive: boolean
 }
 
@@ -105,6 +116,11 @@ type SqlCountRow = {
   date_m3_6: number
   date_over_m6: number
   date_none: number
+  date_m1_in: number
+  date_m1_3_in: number
+  date_m3_6_in: number
+  date_over_m6_in: number
+  date_none_in: number
   elements_present: number
   elements_missing: number
   operation_present: number
@@ -116,6 +132,14 @@ type SqlCountRow = {
   class_trust: number
   class_asset: number
   class_unknown: number
+  private_nav: number
+  private_none: number
+  other_nav: number
+  other_none: number
+  private_nav_in: number
+  private_none_in: number
+  other_nav_in: number
+  other_none_in: number
   gap_yes: number
   gap_no: number
   gap_unchecked: number
@@ -129,6 +153,52 @@ type SqlCountRow = {
 function n(value: unknown): number {
   const parsed = Number(value ?? 0)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+function poolSplit(total: number, inPool: number): { in: number; out: number } {
+  const inside = Math.min(Math.max(0, inPool), Math.max(0, total))
+  return { in: inside, out: Math.max(0, total - inside) }
+}
+
+function navAgeFromRow(row: SqlCountRow): NavAgePoolCounts {
+  return {
+    m1: poolSplit(n(row.date_m1), n(row.date_m1_in)),
+    m1_3: poolSplit(n(row.date_m1_3), n(row.date_m1_3_in)),
+    m3_6: poolSplit(n(row.date_m3_6), n(row.date_m3_6_in)),
+    over_m6: poolSplit(n(row.date_over_m6), n(row.date_over_m6_in)),
+    none: poolSplit(n(row.date_none), n(row.date_none_in)),
+  }
+}
+
+function navClassFromRow(row: SqlCountRow): NavClassCounts {
+  const navClass = emptyNavClass()
+  const privatePresent = poolSplit(n(row.private_nav), n(row.private_nav_in))
+  const privateAbsent = poolSplit(n(row.private_none), n(row.private_none_in))
+  const otherPresent = poolSplit(n(row.other_nav), n(row.other_nav_in))
+  const otherAbsent = poolSplit(n(row.other_none), n(row.other_none_in))
+  navClass.private_present = privatePresent.in + privatePresent.out
+  navClass.private_present_in = privatePresent.in
+  navClass.private_present_out = privatePresent.out
+  navClass.private_absent = privateAbsent.in + privateAbsent.out
+  navClass.private_absent_in = privateAbsent.in
+  navClass.private_absent_out = privateAbsent.out
+  navClass.other_present = otherPresent.in + otherPresent.out
+  navClass.other_present_in = otherPresent.in
+  navClass.other_present_out = otherPresent.out
+  navClass.other_absent = otherAbsent.in + otherAbsent.out
+  navClass.other_absent_in = otherAbsent.in
+  navClass.other_absent_out = otherAbsent.out
+  return navClass
+}
+
+function addNavClass(navClass: NavClassCounts, privateFund: boolean, hasNav: boolean, inPool: boolean) {
+  const bucket = (privateFund ? "private" : "other") + (hasNav ? "_present" : "_absent") as
+    | "private_present"
+    | "private_absent"
+    | "other_present"
+    | "other_absent"
+  navClass[bucket] += 1
+  navClass[`${bucket}_${inPool ? "in" : "out"}`] += 1
 }
 
 function dataListHref(
@@ -147,14 +217,19 @@ function dataListHref(
     tab: "operations",
     side: "ops-platform-data",
     product_class: scope === "platform" ? "private" : "all",
-    nav_presence: "all",
+    nav_presence: scope === "nav" ? "present" : "all",
     ...params,
   })
   return `/ma/dashboard/private-funds?${query}`
 }
 
-function weekRows(counts: WeekCounts, total: number, noneLabel: string) {
-  return overviewRows(total, WEEK_BUCKETS.map((key) => ({
+function weekRows(
+  counts: WeekCounts,
+  total: number,
+  noneLabel: string,
+  keys: readonly WeekBucket[] = WEEK_BUCKETS,
+) {
+  return overviewRows(total, keys.map((key) => ({
     key,
     label: key === "none" ? noneLabel : WEEK_BUCKET_LABEL[key],
     count: counts[key],
@@ -178,8 +253,8 @@ function sectionsFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
       title: "跟踪池",
       hint: "备案号在 JY跟踪池中的产品。",
       rows: overviewRows(total, [
-        { key: "in", label: "在跟踪池", count: counts.inPool },
-        ...(scope === "tracking" ? [] : [{ key: "out", label: "不在跟踪池", count: Math.max(0, total - counts.inPool) }]),
+        { key: "in", label: "在跟踪池", count: counts.inPool, href: dataListHref(scope, { in_pool: "in" }, "platform") },
+        ...(scope === "tracking" ? [] : [{ key: "out", label: "不在跟踪池", count: Math.max(0, total - counts.inPool), href: dataListHref(scope, { in_pool: "out" }, "platform") }]),
       ]),
     },
     {
@@ -207,10 +282,13 @@ function sectionsFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
       ]),
     },
     {
-      key: "nav_freshness",
-      title: "净值新鲜度",
-      hint: "取产品页上团队净值日期与平台净值日期中较新的一天。最新一周为 7 天内，滞后 1 周为 8 到 14 天，其后按周再按自然月。两边都没有日期时计入无净值日期。",
-      rows: weekRows(counts.navFreshness, total, "无净值日期"),
+      key: "elements",
+      title: "产品要素",
+      hint: "申赎、费用、开放日等要素是否已填写，与「产品要素」筛选一致。",
+      rows: overviewRows(total, [
+        { key: "present", label: "有要素", count: counts.elements.present, href: dataListHref(scope, { elements: "present" }, "both") },
+        { key: "missing", label: "缺失要素", count: counts.elements.missing, href: dataListHref(scope, { elements: "missing" }, "both") },
+      ]),
     },
     {
       key: "nav_date",
@@ -225,13 +303,10 @@ function sectionsFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
       ]),
     },
     {
-      key: "elements",
-      title: "产品要素",
-      hint: "申赎、费用、开放日等要素是否已填写，与「产品要素」筛选一致。",
-      rows: overviewRows(total, [
-        { key: "present", label: "有要素", count: counts.elements.present, href: dataListHref(scope, { elements: "present" }, "both") },
-        { key: "missing", label: "缺失要素", count: counts.elements.missing, href: dataListHref(scope, { elements: "missing" }, "both") },
-      ]),
+      key: "nav_freshness",
+      title: "净值月内新鲜度",
+      hint: "取产品页上团队净值日期与平台净值日期中较新的一天。最新一周为 7 天内，滞后 1 周为 8 到 14 天，滞后 2 周为 15 到 21 天，滞后 3 周为 22 到 28 天。更早或没有日期的产品不在此列出。占比相对当前范围内的全部产品。",
+      rows: weekRows(counts.navFreshness, total, "无净值日期", ["w0", "w1", "w2", "w3"]),
     },
     {
       key: "operation_date",
@@ -319,7 +394,7 @@ function sectionsFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
 
   if (scope !== "platform") {
     const classRows = [
-      { key: "private", label: "私募基金", count: counts.productClass.private, href: scope === "all" ? dataListHref("all", { product_class: "private", nav_presence: "all" }, "platform") : undefined },
+      { key: "private", label: "私募基金", count: counts.productClass.private, href: scope === "all" || scope === "nav" ? dataListHref(scope, { product_class: "private", nav_presence: scope === "nav" ? "present" : "all" }, "platform") : undefined },
       { key: "equity", label: "股权", count: counts.productClass.equity },
       { key: "trust", label: "信托", count: counts.productClass.trust },
       { key: "asset", label: "资管", count: counts.productClass.asset },
@@ -328,7 +403,7 @@ function sectionsFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
     sections.push({
       key: "product_class",
       title: "产品分类",
-      hint: "与平台数据「产品分类」使用同一划分。股权、信托、资管之外计入私募基金。",
+      hint: "私募基金是产品总数减去股权、信托和资管。协会类型对上的算。名称里有股权、信托、资管、有限合伙、创业投资或资产管理的也算。其余计入私募基金。",
       rows: overviewRows(total, classRows),
     })
   }
@@ -344,6 +419,8 @@ function responseFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
     description: meta.description,
     total: counts.total,
     generated_at: new Date().toISOString(),
+    nav_class: counts.navClass,
+    nav_age: counts.navAge,
     sections: sectionsFor(scope, counts),
   }
 }
@@ -488,6 +565,11 @@ SELECT
   COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NOT NULL AND GREATEST(tn.d, u.nav_date) >= t.d - INTERVAL '6 months' AND GREATEST(tn.d, u.nav_date) < t.d - INTERVAL '3 months')::int AS date_m3_6,
   COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NOT NULL AND GREATEST(tn.d, u.nav_date) < t.d - INTERVAL '6 months')::int AS date_over_m6,
   COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NULL)::int AS date_none,
+  COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NOT NULL AND GREATEST(tn.d, u.nav_date) >= t.d - INTERVAL '1 month' AND p.code IS NOT NULL)::int AS date_m1_in,
+  COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NOT NULL AND GREATEST(tn.d, u.nav_date) >= t.d - INTERVAL '3 months' AND GREATEST(tn.d, u.nav_date) < t.d - INTERVAL '1 month' AND p.code IS NOT NULL)::int AS date_m1_3_in,
+  COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NOT NULL AND GREATEST(tn.d, u.nav_date) >= t.d - INTERVAL '6 months' AND GREATEST(tn.d, u.nav_date) < t.d - INTERVAL '3 months' AND p.code IS NOT NULL)::int AS date_m3_6_in,
+  COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NOT NULL AND GREATEST(tn.d, u.nav_date) < t.d - INTERVAL '6 months' AND p.code IS NOT NULL)::int AS date_over_m6_in,
+  COUNT(*) FILTER (WHERE GREATEST(tn.d, u.nav_date) IS NULL AND p.code IS NOT NULL)::int AS date_none_in,
   COUNT(*) FILTER (WHERE u.has_elements)::int AS elements_present,
   COUNT(*) FILTER (WHERE NOT u.has_elements)::int AS elements_missing,
   COUNT(*) FILTER (WHERE u.has_operation)::int AS operation_present,
@@ -499,6 +581,14 @@ SELECT
   COUNT(*) FILTER (WHERE u.product_class = 'trust')::int AS class_trust,
   COUNT(*) FILTER (WHERE u.product_class = 'asset')::int AS class_asset,
   COUNT(*) FILTER (WHERE u.product_class = 'unknown')::int AS class_unknown,
+  COUNT(*) FILTER (WHERE u.product_class = 'private' AND (tn.d IS NOT NULL OR u.has_nav OR u.nav_date IS NOT NULL))::int AS private_nav,
+  COUNT(*) FILTER (WHERE u.product_class = 'private' AND tn.d IS NULL AND NOT u.has_nav AND u.nav_date IS NULL)::int AS private_none,
+  COUNT(*) FILTER (WHERE u.product_class <> 'private' AND (tn.d IS NOT NULL OR u.has_nav OR u.nav_date IS NOT NULL))::int AS other_nav,
+  COUNT(*) FILTER (WHERE u.product_class <> 'private' AND tn.d IS NULL AND NOT u.has_nav AND u.nav_date IS NULL)::int AS other_none,
+  COUNT(*) FILTER (WHERE u.product_class = 'private' AND (tn.d IS NOT NULL OR u.has_nav OR u.nav_date IS NOT NULL) AND p.code IS NOT NULL)::int AS private_nav_in,
+  COUNT(*) FILTER (WHERE u.product_class = 'private' AND tn.d IS NULL AND NOT u.has_nav AND u.nav_date IS NULL AND p.code IS NOT NULL)::int AS private_none_in,
+  COUNT(*) FILTER (WHERE u.product_class <> 'private' AND (tn.d IS NOT NULL OR u.has_nav OR u.nav_date IS NOT NULL) AND p.code IS NOT NULL)::int AS other_nav_in,
+  COUNT(*) FILTER (WHERE u.product_class <> 'private' AND tn.d IS NULL AND NOT u.has_nav AND u.nav_date IS NULL AND p.code IS NOT NULL)::int AS other_none_in,
   COUNT(*) FILTER (WHERE f.code IS NOT NULL AND f.has_interior_gap)::int AS gap_yes,
   COUNT(*) FILTER (WHERE f.code IS NOT NULL AND NOT f.has_interior_gap)::int AS gap_no,
   COUNT(*) FILTER (WHERE f.code IS NULL)::int AS gap_unchecked,
@@ -568,9 +658,10 @@ universe AS (
   LEFT JOIN op o ON o.code = p.code
 )`
 
-function statusSql(scope: "all" | "platform" | "tracking"): string {
-  const universe = scope === "tracking" ? TRACKING_UNIVERSE : libraryUniverse(scope)
-  return `WITH ${SHARED_CTES}, ${universe} ${COUNTS_SELECT}`
+function statusSql(scope: "all" | "platform" | "tracking" | "nav"): string {
+  const universe = scope === "tracking" ? TRACKING_UNIVERSE : libraryUniverse(scope === "platform" ? "platform" : "all")
+  const where = scope === "nav" ? "\nWHERE tn.d IS NOT NULL OR u.has_nav OR u.nav_date IS NOT NULL" : ""
+  return `WITH ${SHARED_CTES}, ${universe} ${COUNTS_SELECT}${where}`
 }
 
 function countsFromSql(row: SqlCountRow | undefined): OverviewCounts {
@@ -591,6 +682,8 @@ function countsFromSql(row: SqlCountRow | undefined): OverviewCounts {
       navGap: { interior: 0, clear: 0, unchecked: 0 },
       anomaly: { jump: 0, clear: 0, unchecked: 0, source: 0, rules: 0, unknown: 0 },
       productClass: { private: 0, equity: 0, trust: 0, asset: 0, unknown: 0 },
+      navClass: emptyNavClass(),
+      navAge: emptyNavAge(),
       seriesLive: false,
     }
   }
@@ -637,11 +730,13 @@ function countsFromSql(row: SqlCountRow | undefined): OverviewCounts {
       asset: n(row.class_asset),
       unknown: n(row.class_unknown),
     },
+    navClass: navClassFromRow(row),
+    navAge: navAgeFromRow(row),
     seriesLive: false,
   }
 }
 
-async function queryScopeCounts(scope: "all" | "platform" | "tracking", opCodes: string[]): Promise<OverviewCounts> {
+async function queryScopeCounts(scope: "all" | "platform" | "tracking" | "nav", opCodes: string[]): Promise<OverviewCounts> {
   const rows = await query<SqlCountRow>(statusSql(scope), [opCodes])
   return countsFromSql(rows[0])
 }
@@ -718,14 +813,20 @@ async function buildTeamOverview(): Promise<DataOverviewResponse> {
   const navDate = { m1: 0, m1_3: 0, m3_6: 0, over_m6: 0, none: 0 }
   const valuation = { present: 0, absent: 0 }
   const productClass = { private: 0, equity: 0, trust: 0, asset: 0, unknown: 0 }
+  const navClass = emptyNavClass()
+  const navAge = emptyNavAge()
   let inPool = 0
   snapshot.beians.forEach((raw, index) => {
     const hit = attrs.get(raw.trim().toUpperCase())
     const union = laterNavDate(snapshot.navDates[index], hit?.nav_date)
     const hasNav = Boolean(union) || Boolean(hit?.has_nav)
+    const privateFund = hit?.product_class === "private"
+    addNavClass(navClass, privateFund, hasNav, Boolean(hit?.in_pool))
     if (hasNav) navPresence.present += 1
     else navPresence.absent += 1
-    navDate[navDateBucket(union, today)] += 1
+    const ageBucket = navDateBucket(union, today)
+    navDate[ageBucket] += 1
+    navAge[ageBucket][hit?.in_pool ? "in" : "out"] += 1
     navFreshness[weekBucket(union, today)] += 1
     if (!hit) {
       valuation.absent += 1
@@ -763,6 +864,8 @@ async function buildTeamOverview(): Promise<DataOverviewResponse> {
       unknown: snapshot.anomaly.unknown,
     },
     productClass,
+    navClass,
+    navAge,
     seriesLive: true,
   })
 }
@@ -844,7 +947,7 @@ async function applyLiveSeries(counts: OverviewCounts, seeds: PlatformFundSeed[]
   counts.seriesLive = true
 }
 
-async function buildCatalogOverview(scope: "all" | "platform" | "tracking"): Promise<DataOverviewResponse> {
+async function buildCatalogOverview(scope: "all" | "platform" | "tracking" | "nav"): Promise<DataOverviewResponse> {
   await loadFreshNavSeriesFlags([])
   const opCodes = await loadBeianCodesWithOperationDate()
   const [counts, seeds] = await Promise.all([
@@ -868,12 +971,12 @@ export async function buildDataOverview(scope: DataOverviewScope): Promise<DataO
 
 export function parseDataOverviewScope(raw: string | null): DataOverviewScope {
   const value = (raw ?? "").trim().toLowerCase()
-  if (value === "team" || value === "platform" || value === "tracking" || value === "all") return value
+  if (value === "team" || value === "platform" || value === "tracking" || value === "all" || value === "nav") return value
   return "all"
 }
 
 export async function getDataOverview(scope: DataOverviewScope, refresh: boolean): Promise<DataOverviewResponse> {
-  const key = `ops-data-overview:v2:${scope}`
+  const key = `ops-data-overview:v10:${scope}`
   if (refresh) {
     const body = await buildDataOverview(scope)
     setListResponseCache(key, body)

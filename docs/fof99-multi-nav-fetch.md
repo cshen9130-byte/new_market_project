@@ -23,14 +23,14 @@ The 2026-09-04 净值日期 **1–3个月** job froze **927** products (`scripts
 | before 2026-08-01 | `update_slow` |
 | 2026-08-01 and later (August onward) | `weekly` |
 
-`skip` is never overwritten. Re-apply with `python scripts/ma/fof99_label_3_6m_have_data.py`.
+`skip` stays put until a Friday list page shows that fund has a NAV again. Re-apply the old labels with `python scripts/ma/fof99_label_3_6m_have_data.py` only when you mean to reset them.
 
 | Policy | Meaning | 火富牛 weekly ETL |
 |---|---|---|
 | `weekly` | 火富牛 still publishing a current (Aug 2026+) NAV, plus the original 1–3m funds already within 1 month. New products (inception ≤ 2 months, 火富牛 list NAV, not previously in the universe) are added here by weekly maintain. | **Yes** — Friday `FundMultiPrice` only |
 | `weekly_plus` | Current-1m funds that 火富牛 has (Aug 2026+ on advancedlist) but email usually already wrote `private_fund_info.latest_nav_date`. | **Yes, only if list tip is behind that Friday.** Example: updating 2026-08-28, only funds with `list_nav_date` **before** 2026-08-28 are paid (~20 of 150). |
-| `skip` | Empty-date probe `no_data` (1–3m job, 3–6m list-blank **287** + missing-from-list **10**, plus current-1m missing-from-list **171**). 火富牛 has no series. | **Never** |
-| `update_slow` | 火富牛 latest is old (before Aug 2026, or older than the AMAC list tip on the 1–3m job). Includes current-1m blank-policy funds whose 火富牛 latest is before 2026-08 (**36**). Weekly maintain also moves `weekly` here after **3 consecutive empty trading Fridays**. | **No**, unless we change the row’s policy later |
+| `skip` | Empty-date probe `no_data` (1–3m job, 3–6m list-blank **287** + missing-from-list **10**, plus current-1m missing-from-list **171**). Treated as no series until the Friday list says otherwise. | **No**, until a list page in that Friday’s crawl shows a positive NAV within the last month. Then the same run sets `weekly`, `FundPrice` fills the missing history (1 credit per fund, cap 40), and Friday `FundMultiPrice` tracks it again. |
+| `update_slow` | 火富牛 latest is old (before Aug 2026, or older than the AMAC list tip on the 1–3m job). Includes current-1m blank-policy funds whose 火富牛 latest is before 2026-08 (**36**). Weekly maintain also moves `weekly` here after **3 consecutive empty trading Fridays**. | **No**, until a Friday list page shows a positive NAV within the last month. Then the same run sets `weekly`, `FundPrice` fills the missing history (shared cap of 40 with `skip`), and Friday `FundMultiPrice` tracks it again. That run does not immediately downgrade the fund again. |
 
 Flip a fund later with:
 
@@ -83,7 +83,7 @@ Goal: each Friday after the last stored NAV, so the list and product page stay o
    - `fof99_nav_fetch_log.status` is `ok` or `no_data`.
    The late-Friday retry below is the only exception, and each of its batches is keyed so a rerun does not pay it again.
 
-4. **Do not retry logged empties**, except the one-week late retry. Friday `no_data` and empty-date `no_data` stay put for that pair. `skip` funds are never requested again. After the Friday-afternoon job has fetched target Friday F, it retries the previous trading Friday P **only** for codes that are `no_data` on P and `ok` on F (they reported this Friday, so last Friday may have landed late). Example: the 2026-09-18 pull logged 927 empties for 2026-09-11; the 2026-09-25 pull then found 301 of those with 2026-09-18, and only those 301 are retried for 2026-09-11. One attempt. Still empty stays `no_data` and is not tried on a later Friday. Each retry batch is 40 codes / 1 credit and is recorded in `fof99_mall_other_credit` (`api=/fund/price`) because the fetch-log row already exists.
+4. **Do not retry logged empties**, except the one-week late retry and the skip / update_slow revival below. Friday `no_data` and empty-date `no_data` stay put for that pair. A `skip` or `update_slow` fund is not requested again while the list still has no NAV for it in the last month. If a page the Friday job already paid for shows that fund with a positive NAV dated within one month, the label is stale: set `weekly` and fill history with one `FundPrice` (`GET /price`). `skip` and `update_slow` share the 40-history cap; the newest list dates go first. After the Friday-afternoon job has fetched target Friday F, it retries the previous trading Friday P **only** for codes that are `no_data` on P and `ok` on F (they reported this Friday, so last Friday may have landed late). Example: the 2026-09-18 pull logged 927 empties for 2026-09-11; the 2026-09-25 pull then found 301 of those with 2026-09-18, and only those 301 are retried for 2026-09-11. One attempt. Still empty stays `no_data` and is not tried on a later Friday. Each retry batch is 40 codes / 1 credit and is recorded in `fof99_mall_other_credit` (`api=/fund/price`) because the fetch-log row already exists.
 
 5. **Stop immediately on real failure.** HTTP ≠ 200, `error_code != 0`, timeout, quota, or unexpected exception → print the batch, date, and debug info, then **exit**. Do not continue through the remaining products.
 
@@ -106,7 +106,7 @@ python scripts/ma/fof99_friday_afternoon_fetch.py --dry-run
 python scripts/ma/fof99_friday_afternoon_fetch.py
 ```
 
-1. `/fund/advancedlist` newest-first (`order=0`), 1,000/page, **stop when a page has no `price_date` ≥ the week’s Monday on a holiday week, otherwise ≥ that Friday** (~11 credits). Persist `weekly` / `weekly_plus` rows whose date **equals** the request date. On a holiday week, any open day that week is kept and counts as the week’s point. Other mid-week dates on those pages are stored as extra points only — they do not replace an open Friday. The same pages also stamp NAV for products **established within 2 months** that are not yet in the universe (no extra list credits).
+1. `/fund/advancedlist` newest-first (`order=0`), 1,000/page, **stop when a page has no `price_date` ≥ the week’s Monday on a holiday week, otherwise ≥ that Friday** (~11 credits). Persist `weekly` / `weekly_plus` rows whose date **equals** the request date. On a holiday week, any open day that week is kept and counts as the week’s point. Other mid-week dates on those pages are stored as extra points only — they do not replace an open Friday. The same pages also stamp NAV for products **established within 2 months** that are not yet in the universe (no extra list credits). The same pages also recheck `skip` and `update_slow`: a positive list NAV within one month of today means that label is stale. Stamp that point, `FundPrice` the missing history (cap 40 credits, shared), and set `weekly` before the FundMultiPrice step so this week is fetched if the history did not already include it. Maintain does not downgrade those funds again in the same run.
 2. `FundMultiPrice` **that request date** for every `weekly` fund still missing the week, and `weekly_plus` only if the list tip is still behind. On a holiday week, funds whose stored latest is still before that week are not paid (they did not publish it). Expected leftover after list stamps is the mid-week + older set (~3,923 → ~99 credits on the 2026-09-04 mix), not the full 9,733.
 3. **Late retry** of the previous trading Friday, only for funds that were `no_data` that day and `ok` on this Friday. See rule 4.
 4. This week’s Friday is left to a later `fof99_weekly_nav_fetch.py` run (weekend / Monday).
@@ -126,7 +126,7 @@ python scripts/ma/fof99_weekly_universe_maintain.py
 1. **Downgrade.** A `weekly` fund whose last **3 trading Fridays** (holiday weeks skipped) all have fetch-log `no_data` and no `private_fund_nav` row → `update_slow`. Dates we never requested do **not** count as empty, so a fund added last week is not dropped. Does not touch `skip` or `weekly_plus`.
 2. **Admit.** Product is **not** in `fof99_nav_universe`, lives in `private_fund_info`, **inception within 2 months**, and 火富牛 already returned NAV (list stamp / fetch-log `ok`) → insert `weekly`. Then FundMultiPrice **only** the new names still missing that Friday, capped at **3 credits**.
 
-`skip` / `update_slow` / `weekly_plus` rows are never auto-promoted. Extra spend is only the new names (usually 0–1 credit).
+`weekly_plus` rows are never auto-promoted. `skip` and `update_slow` are promoted only by the Friday list recheck above, before this maintain step. Extra spend here is only the new names (usually 0–1 credit).
 
 ## Resume
 

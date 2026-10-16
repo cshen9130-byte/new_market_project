@@ -132,9 +132,11 @@ export async function registerBackgroundJobs(): Promise<void> {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
-  // Friday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then FundMultiPrice,
-  // then late retry of last week's no_data only for funds that arrived this Friday,
-  // then universe maintain: 3-week empty → update_slow, new ≤2-month funds → weekly).
+  // Friday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then
+  // skip/update_slow with a list NAV in the last month → weekly + FundPrice history,
+  // then FundMultiPrice, then late retry of last week's no_data only for funds
+  // that arrived this Friday, then universe maintain: 3-week empty → update_slow,
+  // new ≤2-month funds → weekly). Just-revived funds are not downgraded the same run.
   // Still runs if *this* Friday is a CN holiday (fetch last week). A holiday
   // Friday uses the last open day of that week (2026-10-02 → 2026-09-30).
   // Skips only when that whole Mon–Fri has no trading day.

@@ -8,7 +8,8 @@
    returned NAV (cheaper `/fund/advancedlist` stamp). FundMultiPrice the previous
    Friday only if that point is still missing — typically 0–1 extra credit.
 
-Does not overwrite `skip` or `weekly_plus`. Does not recrawl advancedlist.
+Does not overwrite `weekly_plus`. Does not recrawl advancedlist.
+`skip` and `update_slow` are rechecked earlier, on the Friday list pages, not here.
 
   python scripts/ma/fof99_weekly_universe_maintain.py --dry-run
   python scripts/ma/fof99_weekly_universe_maintain.py
@@ -135,8 +136,14 @@ def downgrade_empty_weeklies(
     *,
     fridays: list[date],
     dry_run: bool,
+    protect: set[str] | None = None,
 ) -> list[tuple[str, str]]:
-    """weekly → update_slow when every one of `fridays` is empty."""
+    """weekly → update_slow when every one of `fridays` is empty.
+
+    `protect` codes were just returned to weekly because the list shows a
+    recent NAV. This run does not send them back to update_slow.
+    """
+    kept = {c.strip().upper() for c in (protect or set()) if c}
     weekly = load_weekly_codes(cur)
     if not weekly or len(fridays) < EMPTY_WEEKS:
         return []
@@ -171,6 +178,8 @@ def downgrade_empty_weeklies(
 
     stale: list[tuple[str, str]] = []
     for code, name in weekly:
+        if code in kept:
+            continue
         statuses: list[str] = []
         for dt in fridays:
             if (code, dt) in has_nav or log_status.get((code, dt)) == "ok":
@@ -403,6 +412,7 @@ def run_maintain(
     skip_fetch: bool = False,
     max_new_credits: int = MAX_NEW_CREDITS,
     empty_weeks: int = EMPTY_WEEKS,
+    protect_codes: set[str] | None = None,
 ) -> int:
     today = today or date.today()
     cutoff = inception_cutoff(today)
@@ -418,7 +428,9 @@ def run_maintain(
     )
     log(f"  before {policy_counts(cur)}")
 
-    stale = downgrade_empty_weeklies(cur, fridays=fridays, dry_run=dry_run)
+    stale = downgrade_empty_weeklies(
+        cur, fridays=fridays, dry_run=dry_run, protect=protect_codes
+    )
     if not dry_run:
         conn.commit()
     admitted = admit_new_weeklies(cur, friday=friday, cutoff=cutoff, dry_run=dry_run)

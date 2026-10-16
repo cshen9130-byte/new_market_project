@@ -8,7 +8,10 @@ and keeps any earlier open day in the same week (2026-10-02 → 2026-09-30;
 1. FundAdvancedList newest-first, stop when a page has no date >= that week.
    Persist weekly / weekly_plus points on the request date (and other days in
    a holiday week). Also stamp NAV for products established within 2 months
-   that are not yet in the universe (no extra list credits).
+   that are not yet in the universe (no extra list credits). A `skip` or
+   `update_slow` product on those same pages with a list NAV in the last month
+   is publishing again: stamp that point, set it back to weekly, and FundPrice
+   its missing history.
 2. FundMultiPrice that request date for every weekly fund still missing the week.
    weekly_plus only if list tip is still before that date.
 3. Late retry: previous trading Friday, only for funds that were no_data then
@@ -26,6 +29,7 @@ Does not request this week's Friday (usually unpublished Friday afternoon).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -62,6 +66,7 @@ from fof99_weekly_nav_fetch import (  # noqa: E402
     save_batch,
 )
 from fof99_weekly_universe_maintain import (  # noqa: E402
+    add_months,
     inception_cutoff,
     run_maintain,
     write_new_fund_snapshot,
@@ -69,6 +74,45 @@ from fof99_weekly_universe_maintain import (  # noqa: E402
 
 PAGE_SIZE = 1000
 MAX_LIST_PAGES = 20
+MAX_REVIVE_HISTORY = 40
+SKIP_REVIVALS_JSON = ROOT / "data" / "runtime" / "fof99_friday_skip_revivals.json"
+
+
+def is_skip_revival(
+    code: str,
+    price_date: date | None,
+    nav: object,
+    skip_codes: set[str],
+    cutoff: date,
+) -> bool:
+    """A skip or update_slow label is stale once the list shows a positive NAV in the window."""
+    if not code or code not in skip_codes or price_date is None or price_date < cutoff:
+        return False
+    try:
+        return float(nav) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def write_skip_revival_snapshot(friday: date, rows: list[dict]) -> None:
+    SKIP_REVIVALS_JSON.parent.mkdir(parents=True, exist_ok=True)
+    SKIP_REVIVALS_JSON.write_text(
+        json.dumps({"friday": friday.isoformat(), "revivals": rows}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_skip_revival_snapshot(friday: date) -> list[dict]:
+    if not SKIP_REVIVALS_JSON.is_file():
+        return []
+    try:
+        raw = json.loads(SKIP_REVIVALS_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if str(raw.get("friday") or "")[:10] != friday.isoformat():
+        return []
+    rows = raw.get("revivals")
+    return rows if isinstance(rows, list) else []
 
 
 def parse_iso(raw: object) -> date | None:
@@ -375,15 +419,20 @@ def persist_list_page(
     cutoff: date,
     batch_id: str,
     not_before: date | None = None,
-) -> tuple[int, int, int, bool, list[dict]]:
-    """Returns friday_hits, extra_hits, ignored, page_has_hot_date, new_fund_rows."""
+    skip_codes: set[str] | None = None,
+    revive_cutoff: date | None = None,
+) -> tuple[int, int, int, bool, list[dict], list[dict]]:
+    """Returns friday_hits, extra_hits, ignored, page_has_hot_date, new_fund_rows, skip_revivals."""
     floor = not_before or friday
+    skipped = skip_codes or set()
+    revive_from = revive_cutoff or floor
     friday_hits = 0
     extra_hits = 0
     ignored = 0
     hot = False
     ok_codes: list[str] = []
     new_rows: list[dict] = []
+    revived: list[dict] = []
     for raw in chunk:
         code = str(raw.get("register_number") or "").strip().upper()
         dt = parse_iso(raw.get("price_date"))
@@ -396,10 +445,11 @@ def persist_list_page(
             and inception is not None
             and inception >= cutoff
         )
-        if not code or dt is None or dt < floor:
+        revivable = is_skip_revival(code, dt, raw.get("price_nav"), skipped, revive_from)
+        if not code or dt is None or (dt < floor and not revivable):
             ignored += 1
             continue
-        if code not in allow and not young_new:
+        if code not in allow and not young_new and not revivable:
             ignored += 1
             continue
         try:
@@ -438,8 +488,17 @@ def persist_list_page(
                     "nav": nav,
                 }
             )
+        if revivable:
+            revived.append(
+                {
+                    "reg_code": code,
+                    "product_name": str(raw.get("fund_name") or names.get(code) or ""),
+                    "price_date": dt.isoformat(),
+                    "nav": nav,
+                }
+            )
     invalidate_detail_nav_cache(cur, ok_codes)
-    return friday_hits, extra_hits, ignored, hot, new_rows
+    return friday_hits, extra_hits, ignored, hot, new_rows, revived
 
 
 def run_list(
@@ -454,7 +513,9 @@ def run_list(
     cutoff: date,
     max_pages: int,
     not_before: date | None = None,
-) -> tuple[int, int, int, list[dict]]:
+    skip_codes: set[str] | None = None,
+    revive_cutoff: date | None = None,
+) -> tuple[int, int, int, list[dict], list[dict]]:
     from fof99 import FundAdvancedList
 
     cur = conn.cursor()
@@ -462,6 +523,11 @@ def run_list(
     friday_total = 0
     extra_total = 0
     new_by_code: dict[str, dict] = {}
+    revived_by_code = {
+        str(row.get("reg_code") or "").strip().upper(): row
+        for row in load_skip_revival_snapshot(friday)
+        if str(row.get("reg_code") or "").strip()
+    }
     for page in range(1, max_pages + 1):
         batch_id = f"fri-pm-{friday.isoformat()}-p{page:04d}"
         existing = credit_note(cur, batch_id)
@@ -495,7 +561,7 @@ def run_list(
             log(f"STOP: list API error page={page} error_code={err} msg={debug.get('msg')}")
             raise SystemExit(1)
         chunk = parse_list_page(data, debug)
-        fri_n, extra_n, _ign, hot, new_rows = persist_list_page(
+        fri_n, extra_n, _ign, hot, new_rows, revived_rows = persist_list_page(
             cur,
             chunk,
             friday=friday,
@@ -505,9 +571,13 @@ def run_list(
             cutoff=cutoff,
             batch_id=batch_id,
             not_before=not_before,
+            skip_codes=skip_codes,
+            revive_cutoff=revive_cutoff,
         )
         for row in new_rows:
             new_by_code[row["reg_code"]] = row
+        for row in revived_rows:
+            revived_by_code[row["reg_code"]] = row
         stop = 0 if hot else 1
         log_other_mall_credit(
             cur,
@@ -517,12 +587,14 @@ def run_list(
             batch_id=batch_id,
         )
         conn.commit()
+        write_skip_revival_snapshot(friday, list(revived_by_code.values()))
         pages_paid += 1
         friday_total += fri_n
         extra_total += extra_n
         log(
             f"list page {page}: n={len(chunk)}  friday_hits={fri_n}  "
             f"midweek_extra={extra_n}  new_young={len(new_rows)}  "
+            f"skip_revived={len(revived_rows)}  "
             f"credits_used={pages_paid}  "
             f"{'STOP (page older than Friday)' if stop else 'continue'}"
         )
@@ -530,7 +602,8 @@ def run_list(
             break
     else:
         log(f"list hit max pages {max_pages}; not all hot rows may be stamped")
-    return pages_paid, friday_total, extra_total, list(new_by_code.values())
+    revived = list(revived_by_code.values())
+    return pages_paid, friday_total, extra_total, list(new_by_code.values()), revived
 
 
 def missing_week_pairs(
@@ -782,10 +855,126 @@ def fill_price_dates(
     return used, ok_total, no_data_total, None
 
 
-def finish_with_maintain(args, conn, friday: date, today: date) -> int:
+def revive_skip_histories(
+    conn,
+    *,
+    appid: str,
+    appkey: str,
+    friday: date,
+    today: date,
+) -> list[str]:
+    """FundPrice full history for skip / update_slow funds the list shows are publishing.
+
+    Promotion happens only after that history is saved, so a crashed run leaves
+    the old label and the next pass retries. Same-day batch_id is not charged twice.
+    Returns codes now on weekly.
+    """
+    from fof99_admit_weekly import _as_rows, fetch_fund_history, save_fund_history
+
+    cur = conn.cursor()
+    pending = load_skip_revival_snapshot(friday)
+    if not pending:
+        return []
+    codes = []
+    seen: set[str] = set()
+    for row in pending:
+        code = str(row.get("reg_code") or "").strip().upper()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        codes.append((code, str(row.get("product_name") or ""), str(row.get("price_date") or "")[:10]))
+    if not codes:
+        return []
+    cur.execute(
+        """
+        SELECT UPPER(BTRIM(reg_code)), policy
+        FROM fof99_nav_universe
+        WHERE policy IN ('skip', 'update_slow')
+          AND UPPER(BTRIM(reg_code)) = ANY(%s)
+        """,
+        ([code for code, _name, _dt in codes],),
+    )
+    still_stale = {r[0]: r[1] for r in cur.fetchall()}
+    todo = [item for item in codes if item[0] in still_stale]
+    todo.sort(key=lambda item: item[2], reverse=True)
+    if len(todo) > MAX_REVIVE_HISTORY:
+        log(
+            f"label revive: {len(todo)} skip/update_slow funds have a list NAV; "
+            f"history fill capped at {MAX_REVIVE_HISTORY}, the rest keep their label until next Friday"
+        )
+        todo = todo[:MAX_REVIVE_HISTORY]
+    else:
+        log(f"label revive: {len(todo)} skip/update_slow funds have a list NAV within a month of {today}")
+    promoted: list[str] = []
+    for code, name, price_date in todo:
+        batch_id = f"fundprice-history-{today.isoformat()}-{code}"
+        cur.execute(
+            "SELECT 1 FROM fof99_mall_other_credit WHERE batch_id = %s",
+            (batch_id,),
+        )
+        already = cur.fetchone() is not None
+        if not already:
+            log(f"API FundPrice /price  revive {code}  list_date={price_date}  batch={batch_id}")
+            try:
+                data, debug = fetch_fund_history(appid, appkey, code)
+            except Exception as exc:
+                log(f"STOP: revive request exception on {code}: {exc}")
+                raise SystemExit(1)
+            err = debug.get("error_code")
+            if err not in (0, "0", None, 0.0) or data is None:
+                log(f"STOP: revive API error on {code} error_code={err} msg={debug.get('msg')}")
+                raise SystemExit(1)
+            n, first_date, last_date = save_fund_history(conn, code, name, _as_rows(data))
+            cur = conn.cursor()
+            log_other_mall_credit(
+                cur,
+                api="/price",
+                credits=1,
+                note=f"FundPrice revive {code} list={price_date} n={n} {first_date}..{last_date}",
+                batch_id=batch_id,
+            )
+            log(f"    saved {n} NAV rows  {first_date} → {last_date}")
+        else:
+            log(f"SKIP revive history already charged {batch_id}")
+        previous = still_stale.get(code) or "skip"
+        reason = (
+            f"list NAV {price_date} within a month; "
+            f"{previous} was stale; weekly Friday FundMultiPrice"
+        )
+        cur.execute(
+            """
+            UPDATE fof99_nav_universe
+            SET policy = 'weekly',
+                product_name = COALESCE(NULLIF(%s, ''), product_name),
+                reason = %s,
+                updated_at = NOW()
+            WHERE UPPER(BTRIM(reg_code)) = %s
+              AND policy IN ('skip', 'update_slow')
+            """,
+            (name, reason, code),
+        )
+        conn.commit()
+        promoted.append(code)
+        log(f"    {code} {previous} → weekly")
+    return promoted
+
+
+def finish_with_maintain(
+    args,
+    conn,
+    friday: date,
+    today: date,
+    protect_codes: set[str] | None = None,
+) -> int:
     if args.skip_maintain:
         return 0
-    return run_maintain(conn, friday=friday, today=today, dry_run=args.dry_run)
+    return run_maintain(
+        conn,
+        friday=friday,
+        today=today,
+        dry_run=args.dry_run,
+        protect_codes=protect_codes,
+    )
 
 
 def main() -> int:
@@ -851,7 +1040,17 @@ def main() -> int:
         """
     )
     in_universe = {r[0] for r in cur.fetchall()}
+    cur.execute(
+        """
+        SELECT UPPER(BTRIM(reg_code))
+        FROM fof99_nav_universe
+        WHERE policy IN ('skip', 'update_slow')
+          AND reg_code IS NOT NULL AND BTRIM(reg_code) <> ''
+        """
+    )
+    skip_codes = {r[0] for r in cur.fetchall()}
     cutoff = inception_cutoff(today)
+    revive_cutoff = add_months(today, -1)
     weekly_need, plus_need = missing_week_pairs(cur, weekly, plus, cover_days, friday)
     need = weekly_need + plus_need
     price_credits = (len(need) + BATCH_SIZE - 1) // BATCH_SIZE if need else 0
@@ -864,7 +1063,7 @@ def main() -> int:
     log(
         f"plan: list ≤{0 if args.skip_list else args.max_list_pages} pages "
         f"(stop when page has no date ≥ {list_floor}; also stamp inception≥{cutoff} "
-        f"not in universe), then "
+        f"not in universe; recheck {len(skip_codes)} skip/update_slow funds with list NAV ≥ {revive_cutoff}), then "
         f"FundMultiPrice {len(need)} products → {price_credits} credits  "
         f"(before list stamps)"
     )
@@ -879,9 +1078,10 @@ def main() -> int:
 
     appid, appkey = load_fof99_keys()
     list_paid = 0
+    promoted: list[str] = []
     if not args.skip_list:
         try:
-            list_paid, fri_hits, extra_hits, new_rows = run_list(
+            list_paid, fri_hits, extra_hits, new_rows, _revived = run_list(
                 conn,
                 appid=appid,
                 appkey=appkey,
@@ -892,6 +1092,8 @@ def main() -> int:
                 cutoff=cutoff,
                 max_pages=args.max_list_pages,
                 not_before=list_floor,
+                skip_codes=skip_codes,
+                revive_cutoff=revive_cutoff,
             )
         except SystemExit:
             return 1
@@ -903,6 +1105,15 @@ def main() -> int:
             f"list done. pages={list_paid}  friday_stamps={fri_hits}  "
             f"midweek_extra={extra_hits}  new_young={len(new_rows)}"
         )
+        try:
+            promoted = revive_skip_histories(
+                conn, appid=appid, appkey=appkey, friday=friday, today=today
+            )
+        except SystemExit:
+            return 1
+        if promoted:
+            weekly = load_universe(cur, ("weekly",))
+            log(f"label revive done. weekly now={len(weekly)}  promoted={len(promoted)}")
         plus = load_universe(cur, ("weekly_plus",))
         weekly_need, plus_need = missing_week_pairs(cur, weekly, plus, cover_days, friday)
         need = weekly_need + plus_need
@@ -921,7 +1132,7 @@ def main() -> int:
         )
         if rc != 0:
             return rc
-        return finish_with_maintain(args, conn, friday, today)
+        return finish_with_maintain(args, conn, friday, today, set(promoted))
 
     candidates = list(reversed(cover_days)) if holiday_week else [friday]
     try:
@@ -952,7 +1163,7 @@ def main() -> int:
     )
     if rc != 0:
         return rc
-    return finish_with_maintain(args, conn, friday, today)
+    return finish_with_maintain(args, conn, friday, today, set(promoted))
 
 
 if __name__ == "__main__":

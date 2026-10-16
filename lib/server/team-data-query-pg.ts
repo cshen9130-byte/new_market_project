@@ -124,6 +124,11 @@ export type TeamDataOperationDateFilter = "all" | "present" | "absent"
 export type TeamDataInceptionNavFilter = "all" | "match" | "mismatch" | "missing"
 /** Among 不一致 rows, which exclusive gap the two dates fall in. */
 export type TeamDataInceptionNavGapFilter = "all" | "w2" | "w2_m1" | "m1_3" | "m3_6" | "m6_12" | "over_y1"
+/** First unit NAV on 净值起始日. near_1 is within 5% of 1. */
+export type TeamDataNavStartValueFilter = "all" | "near_1" | "away_1" | "missing"
+export type NavStartValueBand = Exclude<TeamDataNavStartValueFilter, "all">
+/** Inclusive band around 1.0000. 0.95 and 1.05 count as near. */
+export const NAV_START_NEAR_ONE = 0.05
 export type InceptionNavMatchStatus = "match" | "mismatch" | "missing"
 
 const TEAM_NAV_LAG_DAYS = 14
@@ -165,6 +170,8 @@ export type TeamDataListParams = {
   inceptionNavFilter?: TeamDataInceptionNavFilter
   /** Only with 不一致: keep rows whose date gap falls in this window. */
   inceptionNavGapFilter?: TeamDataInceptionNavGapFilter
+  /** Only with 成立对齐 narrowed: first unit NAV near 1, away from 1, or missing. */
+  navStartValueFilter?: TeamDataNavStartValueFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
@@ -178,6 +185,10 @@ export type TeamDataListRow = {
   team_nav: string | null
   /** Latest trading day on the fund page (单位净值 date), not the raw email tip. */
   team_nav_date: string | null
+  /** Unit NAV shown on the product page header. Detail-cache tip, else the later of team and platform. */
+  unit_nav?: string | null
+  /** NAV date shown on the product page header (单位净值（date）). */
+  nav_date?: string | null
   valuation_date: string | null
   /** True when a 估值表 was fetched for this product (email/upload), not merely FOF-underlying NAV. */
   has_valuation: boolean
@@ -198,6 +209,8 @@ export type TeamDataListRow = {
   inception_date?: string | null
   /** Earliest date on the product NAV series (detail cache, else raw NAV tables). */
   nav_start_date?: string | null
+  /** Unit NAV on 净值起始日. */
+  nav_start_value?: string | null
   /** Whether 净值起始日 and 产品成立日 are the same day. */
   inception_nav_match?: InceptionNavMatchStatus | null
   /** Absolute calendar days between 产品成立日 and 净值起始日, when both exist. */
@@ -624,6 +637,12 @@ const EMAIL_FUNDS_SORT: Record<string, string> = {
   team_nav_date: "team_nav_date",
   platform_nav: "platform_nav",
   platform_nav_date: "platform_nav_date",
+  unit_nav: "unit_nav",
+  nav_date: "nav_date",
+  inception_date: "inception_date",
+  nav_start_date: "nav_start_date",
+  nav_start_value: "nav_start_value",
+  inception_nav_gap_days: "inception_nav_gap_days",
   valuation_date: "valuation_date",
   updated_at: "updated_at",
   first_entry_date: "first_entry_date",
@@ -1191,6 +1210,23 @@ function isEmailPoolCompanyOrAnnouncementName(name: string): boolean {
   if (/管理有限公司|基金管理有限公司/u.test(name)) return true
   if (/^有限公司/u.test(name)) return true
   if (/有限公司/u.test(name) && !/号/u.test(name)) return true
+  return false
+}
+
+/**
+ * Valuation mail sometimes stores the 管理人 legal name as fund_name.
+ * Those are not products. Kept off the junk-repair path so a subject parse
+ * cannot turn the manager row back into a second copy of a fund already listed.
+ * 申银万国期货8005166176 is a single-account book, not a manager company.
+ */
+const TEAM_DATA_MANAGER_NAME_ALLOWLIST = new Set(["申银万国期货8005166176"])
+
+export function isBareManagerCompanyName(name: string | null | undefined): boolean {
+  const n = (name ?? "").replace(/\s+/gu, "")
+  if (!n || TEAM_DATA_MANAGER_NAME_ALLOWLIST.has(n)) return false
+  if (/管理有限公司|基金管理有限公司/u.test(n)) return true
+  if (/^有限公司/u.test(n)) return true
+  if (/有限公司/u.test(n) && !/号/u.test(n)) return true
   return false
 }
 
@@ -1825,6 +1861,16 @@ function shareClassFromCode(code: string): string {
   return m ? m[0] : ""
 }
 
+/**
+ * A classed tip (A/B/C) belongs only to that class. An unclassed parent tip can
+ * still back a classed row whose filing code was not tiered. The reverse is not
+ * safe: 自然红启程2号 must not inherit 2号B类's newer 1.0000.
+ */
+export function shareClassNavTipFits(rowCls: string, tipCls: string): boolean {
+  if (!tipCls) return true
+  return tipCls === rowCls
+}
+
 type UnderlyingRef = { name: string; code: string | null }
 
 function teamRowAliases(beian: string): Set<string> {
@@ -1909,8 +1955,7 @@ function emailTipFitsRow(
   }
   const rowCls = shareClassFromFundName(row.product_name) || shareClassFromCode(beian)
   const tipCls = shareClassFromFundName(tip.fund_name || "") || shareClassFromCode(tip.code)
-  if (rowCls && tipCls && rowCls !== tipCls) return false
-  return true
+  return shareClassNavTipFits(rowCls, tipCls)
 }
 
 function pickLatestFittingTip<T extends { code: string; fund_name: string | null; team_nav_date: string }>(
@@ -2019,8 +2064,7 @@ async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[
       const code = tip.beian_hao.trim().toUpperCase()
       if (!family.has(code) && !shareClassProductCodesMatch(code, row.beian_hao!)) return false
       const codeCls = shareClassFromCode(code)
-      if (rowCls && codeCls && rowCls !== codeCls) return false
-      return true
+      return shareClassNavTipFits(rowCls, codeCls)
     })
     const manualEdit = manualEditRows
       .filter((tip) => {
@@ -2062,7 +2106,7 @@ function latestDatedTipForRow(row: ResolvedFund, tips: DatedCodeTip[]): DatedCod
     const code = tip.code.trim().toUpperCase()
     if (!family.has(code) && !shareClassProductCodesMatch(code, beian)) continue
     const codeCls = shareClassFromCode(code)
-    if (rowCls && codeCls && rowCls !== codeCls) continue
+    if (!shareClassNavTipFits(rowCls, codeCls)) continue
     const date = isoDay(tip.date)
     if (!date || date <= "1970-01-01") continue
     if (!best || date > isoDay(best.date)) best = { ...tip, date }
@@ -2166,7 +2210,7 @@ async function overlayLatestUpdateMethod(rows: ResolvedFund[]): Promise<Resolved
     }
     const beian = row.beian_hao?.trim() || ""
     const official = officialTipForRow(beian, officialByCode)
-    const valuationNav = valuationTipForRow(beian, valuationNavByCode)
+    const valuationNav = valuationTipForRow(beian, row.product_name, valuationNavByCode)
     const plat = mergeOfficialWithValuationNav(official, valuationNav)
     const platformDate = isoDay(plat?.price_date)
     const fromValuation = Boolean(
@@ -2245,7 +2289,7 @@ async function overlayFirstEntryDate(rows: ResolvedFund[]): Promise<ResolvedFund
       const rowCls = shareClassFromFundName(row.product_name) || shareClassFromCode(beian)
       for (const code of teamNavFamilyLookupCodes(beian)) {
         const codeCls = shareClassFromCode(code)
-        if (rowCls && codeCls && rowCls !== codeCls) continue
+        if (!shareClassNavTipFits(rowCls, codeCls)) continue
         first = minIsoDay(first, byCode.get(code))
       }
     }
@@ -2479,6 +2523,183 @@ async function loadFundPageNavTips(codes: string[], names: string[]): Promise<Fu
     })
   }
   return out
+}
+
+type ProductPageNavTip = DetailNavCacheIdentity & {
+  nav_date: string
+  unit_nav: string
+}
+
+function positiveNavText(raw: string | null | undefined): string | null {
+  const text = (raw ?? "").trim()
+  if (!text) return null
+  const n = parseFloat(text)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return text
+}
+
+function parseSeriesTail(value: unknown): Array<{ d: string; n: string }> {
+  if (!Array.isArray(value)) return []
+  const out: Array<{ d: string; n: string }> = []
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue
+    const rec = item as { d?: unknown; n?: unknown }
+    const d = isoDay(String(rec.d ?? ""))
+    const n = String(rec.n ?? "").trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !n) continue
+    out.push({ d, n })
+  }
+  return out
+}
+
+function tradingTipFromTail(points: Array<{ d: string; n: string }>): { nav_date: string; unit_nav: string } | null {
+  let bestDate = ""
+  let bestNav = ""
+  for (const point of points) {
+    if (!isChinaTradingDay(point.d)) continue
+    const unit = positiveNavText(point.n)
+    if (!unit) continue
+    if (point.d > bestDate) {
+      bestDate = point.d
+      bestNav = unit
+    }
+  }
+  if (!bestDate) return null
+  return { nav_date: bestDate, unit_nav: bestNav }
+}
+
+/**
+ * Product-page header NAV: last trading-day point of the detail series
+ * (单位净值 / 单位净值（date）). Same cache the product page opens from.
+ */
+async function loadProductPageNavTips(codes: string[], names: string[]): Promise<ProductPageNavTip[]> {
+  if (codes.length === 0 && names.length === 0) return []
+  const rows = await queryDetailNavCache<{
+    code: string
+    cache_key: string
+    product_name: string
+    tip_nav_date: string | null
+    tip_unit_nav: string | null
+  }>(
+    codes,
+    names,
+    `${DETAIL_NAV_CACHE_SELECT_HEAD},
+     tip_nav_date::text AS tip_nav_date,
+     tip_unit_nav::text AS tip_unit_nav`,
+  )
+  const pending: typeof rows = []
+  const out: ProductPageNavTip[] = []
+  for (const row of rows) {
+    const nav_date = latestTradingNavDate([row.tip_nav_date])
+    const unit_nav = positiveNavText(row.tip_unit_nav)
+    if (nav_date && unit_nav) {
+      out.push({
+        code: row.code,
+        cache_key: row.cache_key,
+        product_name: row.product_name,
+        nav_date,
+        unit_nav,
+      })
+    } else {
+      pending.push(row)
+    }
+  }
+  if (pending.length === 0) return out
+
+  const tails = await query<{ cache_key: string; tail: unknown }>(
+    `SELECT
+       c.cache_key,
+       (
+         SELECT COALESCE(jsonb_agg(jsonb_build_object('d', d, 'n', n) ORDER BY d DESC), '[]'::jsonb)
+         FROM (
+           SELECT LEFT(elem->>'price_date', 10) AS d, elem->>'nav' AS n
+           FROM jsonb_array_elements(
+             CASE WHEN jsonb_typeof(c.nav_series) = 'array' THEN c.nav_series ELSE '[]'::jsonb END
+           ) AS elem
+           WHERE (elem->>'price_date') ~ '^\\d{4}-\\d{2}-\\d{2}'
+           ORDER BY 1 DESC
+           LIMIT 20
+         ) tail
+       ) AS tail
+     FROM ops_private_fund_detail_nav_cache c
+     WHERE c.cache_key = ANY($1::text[])`,
+    [pending.map((row) => row.cache_key)],
+  ).catch(() => [] as Array<{ cache_key: string; tail: unknown }>)
+  const tailByKey = new Map(tails.map((row) => [row.cache_key, parseSeriesTail(row.tail)]))
+  for (const row of pending) {
+    const hit = tradingTipFromTail(tailByKey.get(row.cache_key) ?? [])
+    if (!hit) continue
+    out.push({
+      code: row.code,
+      cache_key: row.cache_key,
+      product_name: row.product_name,
+      nav_date: hit.nav_date,
+      unit_nav: hit.unit_nav,
+    })
+  }
+  return out
+}
+
+function productPageNavForRow(
+  row: { beian_hao: string | null; product_name: string },
+  tips: ProductPageNavTip[],
+): ProductPageNavTip | null {
+  const codeMatches = tips.filter((tip) => detailCacheFitsRowByCode(tip, row))
+  const matches = codeMatches.length > 0
+    ? codeMatches
+    : tips.filter((tip) => detailCacheFitsRow(tip, row))
+  if (matches.length === 0) return null
+  const exact = (row.beian_hao ?? "").trim().toUpperCase()
+  const exactHit = exact
+    ? matches.find((tip) => tip.cache_key.trim().toUpperCase() === exact)
+    : undefined
+  if (exactHit) return exactHit
+  return matches.reduce((best, tip) => (tip.nav_date > best.nav_date ? tip : best))
+}
+
+/** Later of team and platform. Used when the product page has not cached a series yet. */
+function productPageNavFromSources(
+  row: Pick<TeamDataListRow, "team_nav" | "team_nav_date" | "platform_nav" | "platform_nav_date">,
+): { unit_nav: string | null; nav_date: string | null } {
+  const teamDay = isoDay(row.team_nav_date)
+  const platDay = isoDay(row.platform_nav_date)
+  const teamDate = /^\d{4}-\d{2}-\d{2}$/.test(teamDay) ? teamDay : ""
+  const platDate = /^\d{4}-\d{2}-\d{2}$/.test(platDay) ? platDay : ""
+  const teamNav = positiveNavText(row.team_nav)
+  const platNav = positiveNavText(row.platform_nav)
+
+  if (teamDate && teamNav && (!platDate || teamDate > platDate)) {
+    return { unit_nav: teamNav, nav_date: teamDate }
+  }
+  if (platDate && platNav && (!teamDate || platDate > teamDate)) {
+    return { unit_nav: platNav, nav_date: platDate }
+  }
+  if (teamDate && platDate && teamDate === platDate) {
+    return { unit_nav: teamNav ?? platNav, nav_date: teamDate }
+  }
+  if (platNav) return { unit_nav: platNav, nav_date: platDate || null }
+  if (teamNav) return { unit_nav: teamNav, nav_date: teamDate || null }
+  const nav_date = teamDate >= platDate ? teamDate : platDate
+  return { unit_nav: null, nav_date: nav_date || null }
+}
+
+/** Fill 单位净值 / 净值日期 with the number the product page header shows. */
+export async function attachProductPageNav(rows: TeamDataListRow[]): Promise<TeamDataListRow[]> {
+  if (rows.length === 0) return rows
+  const codes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(rows.map((row) => row.product_name.trim()).filter(Boolean))]
+  const tips = await loadProductPageNavTips(codes, names)
+  return rows.map((row) => {
+    const cached = productPageNavForRow(row, tips)
+    const fallback = productPageNavFromSources(row)
+    // A stale detail cache is rebuilt on the product page when platform or team
+    // NAV is newer. Keep the cache only when its tip is at least that new —
+    // on the same day the cache unit is the header number.
+    if (cached && (!fallback.nav_date || cached.nav_date >= fallback.nav_date)) {
+      return { ...row, unit_nav: cached.unit_nav, nav_date: cached.nav_date }
+    }
+    return { ...row, unit_nav: fallback.unit_nav, nav_date: fallback.nav_date }
+  })
 }
 
 function fundPageNavDateForRow(row: ResolvedFund, tips: FundPageNavTip[]): string {
@@ -3249,21 +3470,17 @@ function officialTipForRow(
 
 function valuationTipForRow(
   beian: string,
+  productName: string,
   valuationByCode: Map<string, PlatformNavTip>,
 ): PlatformNavTip | undefined {
   const u = beian.trim().toUpperCase()
   if (!u) return undefined
   const aliases = new Set(beianCodeAliases(u))
-  const rowCls = u.match(/[ABC]$/u)?.[0] ?? ""
+  const rowCls = shareClassFromFundName(productName) || shareClassFromCode(u)
   const tips: PlatformNavTip[] = []
   for (const [code, tip] of valuationByCode) {
-    if (aliases.has(code)) {
-      tips.push(tip)
-      continue
-    }
-    if (!shareClassProductCodesMatch(code, u)) continue
-    const tipCls = code.match(/[ABC]$/u)?.[0] ?? ""
-    if (rowCls && tipCls && rowCls !== tipCls) continue
+    if (!aliases.has(code) && !shareClassProductCodesMatch(code, u)) continue
+    if (!shareClassNavTipFits(rowCls, shareClassFromCode(code))) continue
     tips.push(tip)
   }
   return pickLatestPlatformTip(tips)
@@ -3369,7 +3586,7 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
   return rows.map((row) => {
     const beian = row.beian_hao?.trim() || ""
     const official = officialTipForRow(beian, officialByCode)
-    const valuation = valuationTipForRow(beian, valuationByCode)
+    const valuation = valuationTipForRow(beian, row.product_name, valuationByCode)
     const plat = mergeOfficialWithValuationNav(official, valuation)
     const ownValuationDate = pickLatestPlatformTip(
       beianCodeAliases(beian).map((code) => {
@@ -3415,7 +3632,7 @@ function compareRows(a: TeamDataListRow, b: TeamDataListRow, sort: string, dir: 
   const bv = b[col as keyof TeamDataListRow]
   const mul = dir === "ASC" ? 1 : -1
 
-  if (col === "team_nav" || col === "platform_nav") {
+  if (col === "team_nav" || col === "platform_nav" || col === "unit_nav" || col === "inception_nav_gap_days" || col === "nav_start_value") {
     const an = av == null ? null : parseFloat(String(av))
     const bn = bv == null ? null : parseFloat(String(bv))
     if (an == null && bn == null) return a.product_name.localeCompare(b.product_name, "zh")
@@ -3582,7 +3799,24 @@ export async function enrichPlatformFundPage(seeds: PlatformFundSeed[]): Promise
 export type InceptionNavAlignment = {
   inception_date: string | null
   nav_start_date: string | null
+  nav_start_value: string | null
   status: InceptionNavMatchStatus
+}
+
+type NavStartPoint = { date: string; nav: string | null }
+
+function navText(raw: string | null | undefined): string | null {
+  const text = String(raw ?? "").trim()
+  if (!text || !Number.isFinite(Number(text))) return null
+  return text
+}
+
+/** 接近1 when the first unit NAV is within 5% of 1. Empty or non-numeric is 缺失. */
+export function navStartValueBand(raw: string | null | undefined): NavStartValueBand {
+  const text = navText(raw)
+  if (!text) return "missing"
+  const delta = Math.round(Math.abs(Number(text) - 1) * 1e6) / 1e6
+  return delta <= NAV_START_NEAR_ONE ? "near_1" : "away_1"
 }
 
 /** Same day, both present. A missing date is not a match. */
@@ -3645,13 +3879,62 @@ function rememberDateByCode(
   }
 }
 
+type InceptionDateSources = {
+  /** basicinfo_bfl_track.inception_date */
+  track: Map<string, string>
+  /** private_fund_info_bfl, then private_fund_info */
+  info: Map<string, string>
+  /** amac_private_funds / amac_futures_products establish_date */
+  amac: Map<string, string>
+}
+
+/** Share-class code plus the parent filing (AZV51A → SAZV51). */
+function inceptionLookupCodes(code: string): string[] {
+  const out = new Set<string>()
+  const add = (raw: string) => {
+    for (const alias of beianCodeAliases(raw)) out.add(alias)
+  }
+  add(code)
+  for (const parent of parentFilingCodes(code)) add(parent)
+  return [...out]
+}
+
+function firstMappedDate(map: Map<string, string>, codes: string[]): string | null {
+  for (const code of codes) {
+    const day = map.get(code.toUpperCase())
+    if (day) return day
+  }
+  return null
+}
+
 /**
- * 产品成立日, same order as the product page: 产品要素, then BFL, then private_fund_info.
+ * Same order as the product page: 产品要素, then 私募基金库, then 协会成立日期.
+ * An A/B/C code with no date of its own uses the parent filing.
  */
-async function loadInceptionDateByCode(codes: string[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
-  if (codes.length === 0) return out
-  const [track, bfl, pfi] = await Promise.all([
+export function listedInceptionDate(
+  beian: string | null | undefined,
+  sources: InceptionDateSources,
+): string | null {
+  const own = beianCodeAliases(beian ?? "")
+  const parents = parentFilingCodes(beian ?? "").flatMap((code) => beianCodeAliases(code))
+  return firstMappedDate(sources.track, own)
+    ?? firstMappedDate(sources.track, parents)
+    ?? firstMappedDate(sources.info, own)
+    ?? firstMappedDate(sources.info, parents)
+    ?? firstMappedDate(sources.amac, own)
+    ?? firstMappedDate(sources.amac, parents)
+}
+
+/**
+ * 产品成立日, same order as the product page: 产品要素, then BFL / 私募基金库, then 协会成立日期.
+ * Codes include the parent filing so AZV51A can read SAZV51.
+ */
+async function loadInceptionDateSources(codes: string[]): Promise<InceptionDateSources> {
+  const track = new Map<string, string>()
+  const info = new Map<string, string>()
+  const amac = new Map<string, string>()
+  if (codes.length === 0) return { track, info, amac }
+  const [trackRows, bflRows, pfiRows, amacRows, futuresRows] = await Promise.all([
     query<{ register_number: string | null; record_key: string | null; inception_date: string | null }>(
       `SELECT register_number, record_key, inception_date::text AS inception_date
        FROM basicinfo_bfl_track
@@ -3673,17 +3956,44 @@ async function loadInceptionDateByCode(codes: string[]): Promise<Map<string, str
          AND beian_hao = ANY($1::text[])`,
       [codes],
     ).catch(() => [] as Array<{ beian_hao: string | null; inception_date: string | null }>),
+    query<{ fund_no: string | null; establish_date: string | null }>(
+      `SELECT fund_no, establish_date::text AS establish_date
+       FROM amac_private_funds
+       WHERE establish_date IS NOT NULL
+         AND UPPER(BTRIM(fund_no)) = ANY($1::text[])`,
+      [codes],
+    ).catch(() => [] as Array<{ fund_no: string | null; establish_date: string | null }>),
+    query<{ fund_no: string | null; establish_date: string | null }>(
+      `SELECT fund_no, establish_date::text AS establish_date
+       FROM amac_futures_products
+       WHERE establish_date IS NOT NULL
+         AND UPPER(BTRIM(fund_no)) = ANY($1::text[])`,
+      [codes],
+    ).catch(() => [] as Array<{ fund_no: string | null; establish_date: string | null }>),
   ])
-  for (const row of track) {
-    rememberDateByCode(out, row.register_number, row.inception_date)
-    rememberDateByCode(out, row.record_key, row.inception_date)
+  for (const row of trackRows) {
+    rememberDateByCode(track, row.register_number, row.inception_date)
+    rememberDateByCode(track, row.record_key, row.inception_date)
   }
-  for (const row of bfl) rememberDateByCode(out, row.beian_hao, row.inception_date)
-  for (const row of pfi) rememberDateByCode(out, row.beian_hao, row.inception_date)
-  return out
+  for (const row of bflRows) rememberDateByCode(info, row.beian_hao, row.inception_date)
+  for (const row of pfiRows) rememberDateByCode(info, row.beian_hao, row.inception_date)
+  for (const row of amacRows) rememberDateByCode(amac, row.fund_no, row.establish_date)
+  for (const row of futuresRows) rememberDateByCode(amac, row.fund_no, row.establish_date)
+  return { track, info, amac }
 }
 
-type DetailNavStartRow = DetailNavCacheIdentity & { nav_start_date: string }
+/** 产品成立日 for the current page. Same source order as the product page. */
+export async function attachInceptionDates(rows: TeamDataListRow[]): Promise<TeamDataListRow[]> {
+  if (rows.length === 0) return rows
+  const codes = [...new Set(rows.flatMap((row) => inceptionLookupCodes(row.beian_hao ?? "")).filter(Boolean))]
+  const sources = await loadInceptionDateSources(codes)
+  return rows.map((row) => ({
+    ...row,
+    inception_date: row.inception_date || listedInceptionDate(row.beian_hao, sources),
+  }))
+}
+
+type DetailNavStartRow = DetailNavCacheIdentity & NavStartPoint
 
 /** Earliest price_date on the fund-page NAV cache. Series is stored oldest-first, so the first point is the start. */
 async function loadDetailNavStartRows(codes: string[], names: string[]): Promise<DetailNavStartRow[]> {
@@ -3692,21 +4002,24 @@ async function loadDetailNavStartRows(codes: string[], names: string[]): Promise
     cache_key: string
     product_name: string
     nav_start_date: string | null
+    nav_start_value: string | null
   }>(
     codes,
     names,
     `${DETAIL_NAV_CACHE_SELECT_HEAD},
-     LEFT(c.nav_series->0->>'price_date', 10) AS nav_start_date`,
+     LEFT(c.nav_series->0->>'price_date', 10) AS nav_start_date,
+     c.nav_series->0->>'nav' AS nav_start_value`,
   )
   const out: DetailNavStartRow[] = []
   for (const row of rows) {
-    const nav_start_date = isoDay(row.nav_start_date)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(nav_start_date)) continue
+    const date = isoDay(row.nav_start_date)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
     out.push({
       code: row.code ?? "",
       cache_key: row.cache_key ?? "",
       product_name: row.product_name ?? "",
-      nav_start_date,
+      date,
+      nav: navText(row.nav_start_value),
     })
   }
   return out
@@ -3715,7 +4028,7 @@ async function loadDetailNavStartRows(codes: string[], names: string[]): Promise
 function navStartFromCache(
   row: { beian_hao: string | null; product_name: string },
   cacheRows: DetailNavStartRow[],
-): string | null {
+): NavStartPoint | null {
   const codeMatches = cacheRows.filter((cache) => detailCacheFitsRowByCode(cache, row))
   const matches = codeMatches.length > 0
     ? codeMatches
@@ -3727,60 +4040,51 @@ function navStartFromCache(
       cache.cache_key.trim().toUpperCase() === exact || cache.code.trim().toUpperCase() === exact
     ))
     : undefined
-  if (exactHit) return exactHit.nav_start_date
-  return matches.reduce(
-    (best, cache) => (cache.nav_start_date < best ? cache.nav_start_date : best),
-    matches[0].nav_start_date,
+  if (exactHit) return { date: exactHit.date, nav: exactHit.nav }
+  const best = matches.reduce(
+    (picked, cache) => (cache.date < picked.date ? cache : picked),
+    matches[0],
   )
+  return { date: best.date, nav: best.nav }
 }
 
-/** Earliest raw NAV date when the fund page has not cached a series yet. */
-async function loadFallbackNavStartByCode(codes: string[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
+/** Earliest raw NAV point when the fund page has not cached a series yet. */
+async function loadFallbackNavStartByCode(codes: string[]): Promise<Map<string, NavStartPoint>> {
+  const out = new Map<string, NavStartPoint>()
   if (codes.length === 0) return out
-  const absorb = (rows: Array<{ code: string | null; nav_start_date: string | null }>) => {
+  const absorb = (rows: Array<{ code: string | null; nav_start_date: string | null; nav: string | null }>) => {
     for (const row of rows) {
       const code = row.code?.trim().toUpperCase()
-      const day = isoDay(row.nav_start_date)
-      if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+      const date = isoDay(row.nav_start_date)
+      if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
       const prev = out.get(code)
-      if (!prev || day < prev) out.set(code, day)
+      if (prev && prev.date <= date) continue
+      out.set(code, { date, nav: navText(row.nav) })
     }
   }
-  const minByCode = (sql: string) =>
-    query<{ code: string; nav_start_date: string | null }>(sql, [codes])
-      .catch(() => [] as Array<{ code: string; nav_start_date: string | null }>)
+  const pointByCode = (sql: string) =>
+    query<{ code: string; nav_start_date: string | null; nav: string | null }>(sql, [codes])
+      .catch(() => [] as Array<{ code: string; nav_start_date: string | null; nav: string | null }>)
+  const earliestNav = (table: string, codeCol: string, dateCol: string, navCol: string, extraWhere = "") =>
+    pointByCode(
+      `SELECT DISTINCT ON (UPPER(BTRIM(${codeCol})))
+         UPPER(BTRIM(${codeCol})) AS code,
+         ${dateCol}::text AS nav_start_date,
+         ${navCol}::text AS nav
+       FROM ${table}
+       WHERE ${codeCol} = ANY($1::text[])
+         AND ${dateCol} IS NOT NULL
+         AND ${navCol} IS NOT NULL
+         ${extraWhere}
+       ORDER BY UPPER(BTRIM(${codeCol})), ${dateCol} ASC`,
+    )
+  const notAfterToday = "AND price_date <= CURRENT_DATE"
   const [type6, group, hy, email, manual] = await Promise.all([
-    minByCode(
-      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(price_date)::text AS nav_start_date
-       FROM private_fund_nav_group_type6
-       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
-       GROUP BY 1`,
-    ),
-    minByCode(
-      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(price_date)::text AS nav_start_date
-       FROM private_fund_nav_group
-       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
-       GROUP BY 1`,
-    ),
-    minByCode(
-      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(price_date)::text AS nav_start_date
-       FROM private_fund_nav_group_hy
-       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
-       GROUP BY 1`,
-    ),
-    minByCode(
-      `SELECT UPPER(BTRIM(product_code)) AS code, MIN(nav_date)::text AS nav_start_date
-       FROM ops_email_nav_records
-       WHERE product_code = ANY($1::text[]) AND nav_date IS NOT NULL AND nav IS NOT NULL
-       GROUP BY 1`,
-    ),
-    minByCode(
-      `SELECT UPPER(BTRIM(beian_hao)) AS code, MIN(nav_date)::text AS nav_start_date
-       FROM ops_team_nav_manual
-       WHERE beian_hao = ANY($1::text[]) AND unit_nav IS NOT NULL AND nav_date IS NOT NULL
-       GROUP BY 1`,
-    ),
+    earliestNav("private_fund_nav_group_type6", "beian_hao", "price_date", "nav", notAfterToday),
+    earliestNav("private_fund_nav_group", "beian_hao", "price_date", "nav", notAfterToday),
+    earliestNav("private_fund_nav_group_hy", "beian_hao", "price_date", "nav", notAfterToday),
+    earliestNav("ops_email_nav_records", "product_code", "nav_date", "nav"),
+    earliestNav("ops_team_nav_manual", "beian_hao", "nav_date", "unit_nav"),
   ])
   absorb(type6)
   absorb(group)
@@ -3790,16 +4094,16 @@ async function loadFallbackNavStartByCode(codes: string[]): Promise<Map<string, 
   return out
 }
 
-function earliestAliasDate(
+function earliestAliasPoint(
   row: { beian_hao: string | null },
-  byCode: Map<string, string>,
-): string | null {
-  let best = ""
+  byCode: Map<string, NavStartPoint>,
+): NavStartPoint | null {
+  let best: NavStartPoint | null = null
   for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
-    const day = byCode.get(alias.toUpperCase())
-    if (day && (!best || day < best)) best = day
+    const point = byCode.get(alias.toUpperCase())
+    if (point && (!best || point.date < best.date)) best = point
   }
-  return best || null
+  return best
 }
 
 /** 产品成立日 and 净值起始日 for each fund id. */
@@ -3808,13 +4112,14 @@ export async function loadInceptionNavAlignment(
 ): Promise<Map<string, InceptionNavAlignment>> {
   const out = new Map<string, InceptionNavAlignment>()
   if (rows.length === 0) return out
-  const codes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const navCodes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const inceptionCodes = [...new Set(rows.flatMap((row) => inceptionLookupCodes(row.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(rows.map((row) => row.product_name.trim()).filter(Boolean))]
-  const [inceptionByCode, cacheRows] = await Promise.all([
-    loadInceptionDateByCode(codes),
-    loadDetailNavStartRows(codes, names),
+  const [inceptionSources, cacheRows] = await Promise.all([
+    loadInceptionDateSources(inceptionCodes),
+    loadDetailNavStartRows(navCodes, names),
   ])
-  const cachedStart = new Map<string, string | null>()
+  const cachedStart = new Map<string, NavStartPoint | null>()
   const missingCodes = new Set<string>()
   for (const row of rows) {
     const start = navStartFromCache(row, cacheRows)
@@ -3825,13 +4130,15 @@ export async function loadInceptionNavAlignment(
   }
   const fallback = missingCodes.size > 0
     ? await loadFallbackNavStartByCode([...missingCodes])
-    : new Map<string, string>()
+    : new Map<string, NavStartPoint>()
   for (const row of rows) {
-    const inception_date = operationDateForRow(row, inceptionByCode)
-    const nav_start_date = cachedStart.get(row.id) || earliestAliasDate(row, fallback)
+    const inception_date = listedInceptionDate(row.beian_hao, inceptionSources)
+    const point = cachedStart.get(row.id) || earliestAliasPoint(row, fallback)
+    const nav_start_date = point?.date ?? null
     out.set(row.id, {
       inception_date,
       nav_start_date,
+      nav_start_value: point?.nav ?? null,
       status: inceptionNavAlignmentStatus(inception_date, nav_start_date),
     })
   }
@@ -3855,7 +4162,9 @@ async function loadResolvedTeamFunds(strategySource: "company" | "platform"): Pr
   ])
   let resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
   resolved = await fillBeianFromPrivateFundInfo(resolved)
-  resolved = resolved.filter((r) => !isJunkTeamDataProductName(r.product_name))
+  resolved = resolved.filter(
+    (r) => !isJunkTeamDataProductName(r.product_name) && !isBareManagerCompanyName(r.product_name),
+  )
   resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
   resolved = await overlayEmailNavByProductCode(resolved)
   resolved = await overlayManualTeamNav(resolved)
@@ -3886,6 +4195,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     operationDateFilter = "all",
     inceptionNavFilter = "all",
     inceptionNavGapFilter = "all",
+    navStartValueFilter = "all",
     sort,
     sortDir,
   } = params
@@ -3956,7 +4266,8 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   }
 
   let inceptionNavById = new Map<string, InceptionNavAlignment>()
-  if (inceptionNavFilter !== "all") {
+  const sortByAlignment = sort === "nav_start_date" || sort === "nav_start_value" || sort === "inception_nav_gap_days"
+  if (inceptionNavFilter !== "all" || sortByAlignment) {
     inceptionNavById = await loadInceptionNavAlignment(resolved)
     if (inceptionNavFilter === "match") {
       resolved = resolved.filter((r) => inceptionNavById.get(r.id)?.status === "match")
@@ -3970,14 +4281,92 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
         return matchesInceptionNavGap(hit.inception_date, hit.nav_start_date, inceptionNavGapFilter)
       })
     }
+    if (navStartValueFilter !== "all") {
+      resolved = resolved.filter((row) => (
+        navStartValueBand(inceptionNavById.get(row.id)?.nav_start_value) === navStartValueFilter
+      ))
+    }
   }
 
   const effectiveSort = sort || "first_entry_date"
   const effectiveDir = sort ? sortDir : "DESC"
+  const sortByProductPageNav = sort === "unit_nav" || sort === "nav_date"
+  const inceptionById = sort === "inception_date"
+    ? new Map(
+        (await attachInceptionDates(resolved.map((row) => ({
+          id: row.id,
+          beian_hao: row.beian_hao,
+          product_name: row.product_name,
+          platform_nav: null,
+          platform_nav_date: null,
+          team_nav: null,
+          team_nav_date: null,
+          valuation_date: null,
+          has_valuation: false,
+          product_source: row.product_source,
+          strategy_l1: row.strategy_l1,
+          updated_at: null,
+          first_entry_date: null,
+          redeemed: false,
+        })))).map((row) => [row.id, row.inception_date ?? null]),
+      )
+    : null
+  const productPageNavById = sortByProductPageNav
+    ? new Map(
+        (await attachProductPageNav(resolved.map((row) => ({
+          id: row.id,
+          beian_hao: row.beian_hao,
+          product_name: row.product_name,
+          platform_nav: null,
+          platform_nav_date: null,
+          team_nav: row.team_nav || null,
+          team_nav_date: row.team_nav_date || null,
+          valuation_date: null,
+          has_valuation: false,
+          product_source: row.product_source,
+          strategy_l1: row.strategy_l1,
+          updated_at: row.updated_at || null,
+          first_entry_date: row.first_entry_date || null,
+          redeemed: false,
+        })))).map((row) => [row.id, { unit_nav: row.unit_nav ?? null, nav_date: row.nav_date ?? null }]),
+      )
+    : null
+  const alignmentSortFields = (id: string) => {
+    const hit = inceptionNavById.get(id)
+    return {
+      nav_start_date: hit?.nav_start_date ?? null,
+      nav_start_value: hit?.nav_start_value ?? null,
+      inception_nav_gap_days: inceptionNavGapDays(hit?.inception_date ?? null, hit?.nav_start_date ?? null),
+    }
+  }
   const sorted = [...resolved].sort((a, b) =>
     compareRows(
-      { ...a, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: a.first_entry_date || null, redeemed: false },
-      { ...b, platform_nav: null, platform_nav_date: null, valuation_date: null, has_valuation: false, first_entry_date: b.first_entry_date || null, redeemed: false },
+      {
+        ...a,
+        platform_nav: null,
+        platform_nav_date: null,
+        valuation_date: null,
+        has_valuation: false,
+        first_entry_date: a.first_entry_date || null,
+        redeemed: false,
+        unit_nav: productPageNavById?.get(a.id)?.unit_nav ?? null,
+        nav_date: productPageNavById?.get(a.id)?.nav_date ?? null,
+        inception_date: inceptionById?.get(a.id) ?? null,
+        ...alignmentSortFields(a.id),
+      },
+      {
+        ...b,
+        platform_nav: null,
+        platform_nav_date: null,
+        valuation_date: null,
+        has_valuation: false,
+        first_entry_date: b.first_entry_date || null,
+        redeemed: false,
+        unit_nav: productPageNavById?.get(b.id)?.unit_nav ?? null,
+        nav_date: productPageNavById?.get(b.id)?.nav_date ?? null,
+        inception_date: inceptionById?.get(b.id) ?? null,
+        ...alignmentSortFields(b.id),
+      },
       effectiveSort,
       effectiveDir,
     ),
@@ -4008,13 +4397,19 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
         ...row,
         inception_date: hit?.inception_date ?? null,
         nav_start_date: hit?.nav_start_date ?? null,
+        nav_start_value: hit?.nav_start_value ?? null,
         inception_nav_match: hit?.status ?? "missing",
         inception_nav_gap_days: inceptionNavGapDays(hit?.inception_date ?? null, hit?.nav_start_date ?? null),
       }
     })
   }
 
-  if (sort === "platform_nav" || sort === "platform_nav_date" || sort === "valuation_date") {
+  data = await attachProductPageNav(data)
+  data = await attachInceptionDates(data)
+  if (
+    sort === "platform_nav" || sort === "platform_nav_date" || sort === "valuation_date"
+    || sort === "unit_nav" || sort === "nav_date" || sort === "inception_date"
+  ) {
     data = [...data].sort((a, b) => compareRows(a, b, sort, sortDir))
   }
 
