@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ChevronLeft, ChevronRight, Download, ExternalLink, Loader2 } from "lucide-react"
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Download, ExternalLink, Loader2 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import { EXTERNAL_RANK_FOLDER, type ExternalRankWeekFile, type ExternalRankWeekPreview, type ExternalRankWeekRow } from "@/lib/ma/external-rank-week"
 
@@ -79,11 +79,19 @@ function downloadOriginal(path: string, name: string) {
   a.click()
 }
 
-type SortKey = "rank" | "ytd" | "ret_1w" | "ytd_drawdown"
+type SortKey = "rank" | "nav_date" | "ytd" | "ret_1w" | "ytd_drawdown"
 
 function compareRows(a: ExternalRankWeekRow, b: ExternalRankWeekRow, key: SortKey, dir: "asc" | "desc"): number {
   const sign = dir === "asc" ? 1 : -1
   if (key === "rank") return (a.rank - b.rank) * sign
+  if (key === "nav_date") {
+    const av = a.nav_date
+    const bv = b.nav_date
+    if (!av && !bv) return a.rank - b.rank
+    if (!av) return 1
+    if (!bv) return -1
+    return av.localeCompare(bv) * sign || a.rank - b.rank
+  }
   const av = a[key]
   const bv = b[key]
   if (av == null && bv == null) return a.rank - b.rank
@@ -419,7 +427,7 @@ export function ExternalRankWeekView() {
                   <th className="px-4 py-2 text-left font-medium">管理人</th>
                   <th className="px-4 py-2 text-left font-medium">产品</th>
                   <th className="px-4 py-2 text-left font-medium">规模</th>
-                  <th className="px-4 py-2 text-left font-medium">净值日期</th>
+                  <SortHeader label="净值日期" active={sortKey === "nav_date"} dir={sortDir} onClick={() => toggleSort("nav_date")} align="left" />
                   <SortHeader label={selected.window_label || "收益"} active={sortKey === "ytd"} dir={sortDir} onClick={() => toggleSort("ytd")} />
                   <SortHeader label="最大回撤" active={sortKey === "ytd_drawdown"} dir={sortDir} onClick={() => toggleSort("ytd_drawdown")} />
                   <SortHeader label="近一周" active={sortKey === "ret_1w"} dir={sortDir} onClick={() => toggleSort("ret_1w")} />
@@ -509,11 +517,22 @@ function SortHeader({
   onClick: () => void
   align?: "left" | "right"
 }) {
+  const icon = !active ? (
+    <ChevronsUpDown className="h-3 w-3 opacity-40" />
+  ) : dir === "asc" ? (
+    <ChevronUp className="h-3 w-3" />
+  ) : (
+    <ChevronDown className="h-3 w-3" />
+  )
   return (
     <th className={`px-4 py-2 font-medium ${align === "right" ? "text-right" : "text-left"}`}>
-      <button type="button" onClick={onClick} className={active ? "text-foreground" : "hover:text-foreground"}>
+      <button
+        type="button"
+        onClick={onClick}
+        className={`inline-flex items-center gap-0.5 cursor-pointer select-none ${active ? "text-foreground" : "hover:text-foreground"}`}
+      >
         {label}
-        {active ? (dir === "asc" ? " ↑" : " ↓") : ""}
+        {icon}
       </button>
     </th>
   )
