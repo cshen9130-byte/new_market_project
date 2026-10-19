@@ -30,12 +30,13 @@ export function rememberChartPreviewMemoryCache(key: string, body: unknown): voi
   if (oldest != null) previewMem.delete(oldest)
 }
 
+/** Chart level: 复权净值, then 累计净值, then 单位净值. Matches the product page. */
 function pickLevel(row: {
   nav?: string | number | null
   cumulative_nav?: string | number | null
   cum_nav_withdrawal?: string | number | null
 }): number | null {
-  for (const field of [row.cum_nav_withdrawal, row.cumulative_nav, row.nav]) {
+  for (const field of [row.cumulative_nav, row.cum_nav_withdrawal, row.nav]) {
     const value = parseFloat(String(field ?? ""))
     if (Number.isFinite(value) && value > 0) return value
   }

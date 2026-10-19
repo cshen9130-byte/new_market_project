@@ -13,6 +13,7 @@ import {
 import {
   attachInceptionDates,
   attachNavAnomalyDiagnosis,
+  attachNavGapDiagnosis,
   attachProductPageNav,
   enrichPlatformFundPage,
   filterByNavAnomalyCause,
@@ -107,6 +108,117 @@ const NAV_DATE_SQL: Record<Exclude<PlatformNavDateFilter, "all">, string> = {
 /** Same 14-day lag window as team data. */
 const NAV_LAG_DAYS = 14
 
+/**
+ * 更新方式 of the newest write. Same day: 手动更新, then 邮箱抓取, then fof99.
+ * Donors match the list column: the filing itself, one leading S either way,
+ * and the unclassed parent of an A/B/C row.
+ */
+const WINNING_UPDATE_CHANNEL_JOIN = `JOIN (
+  WITH channel_dates AS (
+    SELECT code, channel, MAX(d) AS d
+    FROM (
+      SELECT UPPER(BTRIM(product_code)) AS code, 'email'::text AS channel, nav_date::date AS d
+      FROM ops_email_nav_records
+      WHERE nav IS NOT NULL
+        AND nav_date IS NOT NULL
+        AND nav_date > DATE '1970-01-01'
+        AND NULLIF(BTRIM(product_code), '') IS NOT NULL
+      UNION ALL
+      SELECT UPPER(BTRIM(product_code)),
+        CASE
+          WHEN COALESCE(source, '') = 'manual_upload'
+            OR COALESCE(crawl_email_account, '') = 'team_manual_upload'
+          THEN 'manual' ELSE 'email'
+        END,
+        valuation_date::date
+      FROM ops_email_valuation_records
+      WHERE valuation_date IS NOT NULL
+        AND valuation_date > DATE '1970-01-01'
+        AND NULLIF(BTRIM(product_code), '') IS NOT NULL
+      UNION ALL
+      SELECT UPPER(BTRIM(beian_hao)), 'manual', nav_date::date
+      FROM ops_team_nav_manual
+      WHERE unit_nav IS NOT NULL
+        AND nav_date IS NOT NULL
+        AND nav_type = 'pre_fee'
+        AND nav_date > DATE '1970-01-01'
+        AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+      UNION ALL
+      SELECT UPPER(BTRIM(reg_code)), 'fof99', price_date::date
+      FROM fof99_nav_fetch_log
+      WHERE status = 'ok'
+        AND price_date > DATE '1970-01-01'
+        AND NULLIF(BTRIM(reg_code), '') IS NOT NULL
+    ) src
+    WHERE code <> '' AND d IS NOT NULL
+    GROUP BY code, channel
+  ),
+  best_exact AS (
+    SELECT DISTINCT ON (code) code, channel, d
+    FROM channel_dates
+    ORDER BY code, d DESC,
+      CASE channel WHEN 'manual' THEN 3 WHEN 'email' THEN 2 ELSE 1 END DESC
+  ),
+  donors AS (
+    SELECT f.code AS fund_code, donor.code AS donor
+    FROM (
+      SELECT DISTINCT UPPER(BTRIM(beian_hao)) AS code
+      FROM private_fund_info
+      WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+    ) f
+    CROSS JOIN LATERAL unnest(ARRAY[
+      f.code,
+      CASE WHEN f.code LIKE 'S%' AND length(f.code) > 5 THEN substring(f.code from 2) END,
+      CASE WHEN f.code NOT LIKE 'SS%' THEN 'S' || f.code END,
+      CASE WHEN f.code ~ '[ABC]$' THEN NULLIF(regexp_replace(f.code, '[ABC]$', ''), '') END,
+      CASE
+        WHEN f.code ~ '[ABC]$'
+          AND regexp_replace(f.code, '[ABC]$', '') LIKE 'S%'
+          AND length(regexp_replace(f.code, '[ABC]$', '')) > 5
+        THEN substring(regexp_replace(f.code, '[ABC]$', '') from 2)
+      END,
+      CASE
+        WHEN f.code ~ '[ABC]$'
+          AND regexp_replace(f.code, '[ABC]$', '') NOT LIKE 'SS%'
+        THEN NULLIF('S' || regexp_replace(f.code, '[ABC]$', ''), 'S')
+      END
+    ]) AS donor(code)
+    WHERE donor.code IS NOT NULL AND donor.code <> ''
+  )
+  SELECT DISTINCT ON (donors.fund_code)
+    donors.fund_code,
+    best_exact.channel
+  FROM donors
+  JOIN best_exact ON best_exact.code = donors.donor
+  ORDER BY donors.fund_code, best_exact.d DESC,
+    CASE best_exact.channel WHEN 'manual' THEN 3 WHEN 'email' THEN 2 ELSE 1 END DESC
+) update_channel ON update_channel.fund_code = UPPER(BTRIM(i.beian_hao))`
+
+const WINNING_UPDATE_CHANNEL: Record<Exclude<TeamDataProductSourceFilter, "all">, "email" | "manual" | "fof99"> = {
+  email: "email",
+  manual: "manual",
+  fof99: "fof99",
+}
+
+/** Labels written on the 更新方式 column by overlayLatestUpdateMethod. */
+const UPDATE_METHOD_LABEL: Record<Exclude<TeamDataProductSourceFilter, "all">, string> = {
+  email: "邮箱抓取",
+  manual: "手动更新",
+  fof99: "fof99",
+}
+
+/** Hide a page row when the column label disagrees with the selected 更新方式. */
+function alignUpdateChannelPage(
+  rows: TeamDataListRow[],
+  filter: TeamDataProductSourceFilter,
+  total: number,
+): { data: TeamDataListRow[]; total: number } {
+  if (filter === "all") return { data: rows, total }
+  const label = UPDATE_METHOD_LABEL[filter]
+  const data = rows.filter((row) => row.product_source === label)
+  return { data, total: Math.max(0, total - (rows.length - data.length)) }
+}
+
 export const ELEMENTS_PRESENT_SQL = `EXISTS (
   SELECT 1 FROM basicinfo_bfl_track b
   WHERE (b.register_number = i.beian_hao OR b.record_key = i.beian_hao)
@@ -165,6 +277,48 @@ const VALUATION_JOIN = `LEFT JOIN LATERAL (
   FROM ops_email_valuation_records v
   WHERE v.product_code = i.beian_hao
 ) val ON true`
+
+/**
+ * 首次入表 is the first day this product was written into our tables.
+ * A hand-uploaded NAV / 估值表 uses the upload timestamp, not the 净值日期
+ * inside the file and not the fund's 备案日 / 成立日.
+ */
+const FIRST_ENTRY_JOIN = `LEFT JOIN (
+  SELECT code, MIN(day) AS first_entry_date
+  FROM (
+    SELECT UPPER(BTRIM(beian_hao)) AS code,
+           MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date) AS day
+    FROM ops_team_nav_manual
+    GROUP BY 1
+    UNION ALL
+    SELECT UPPER(BTRIM(product_code)),
+           MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)
+    FROM ops_email_nav_records
+    WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+    GROUP BY 1
+    UNION ALL
+    SELECT UPPER(BTRIM(product_code)),
+           MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)
+    FROM ops_email_valuation_records
+    WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+    GROUP BY 1
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)),
+           MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)
+    FROM ops_team_data_products
+    GROUP BY 1
+    UNION ALL
+    SELECT UPPER(BTRIM(reg_code)),
+           MIN((fetched_at AT TIME ZONE 'Asia/Shanghai')::date)
+    FROM fof99_nav_fetch_log
+    WHERE status = 'ok'
+      AND price_date > DATE '1970-01-01'
+      AND NULLIF(BTRIM(reg_code), '') IS NOT NULL
+    GROUP BY 1
+  ) ingested
+  WHERE code <> ''
+  GROUP BY code
+) first_entry ON first_entry.code = UPPER(BTRIM(i.beian_hao))`
 
 const PRODUCT_PAGE_NAV_JOIN = `LEFT JOIN ops_private_fund_detail_nav_cache dnav
   ON dnav.cache_key = UPPER(BTRIM(i.beian_hao))`
@@ -231,7 +385,7 @@ function withStoredPlatformNav(rows: TeamDataListRow[], seeds: SeedRow[]): TeamD
 
 function resortPage(rows: TeamDataListRow[], sort: string, dir: "ASC" | "DESC"): TeamDataListRow[] {
   const numeric = sort === "platform_nav" || sort === "team_nav" || sort === "unit_nav"
-  const keys = new Set(["platform_nav", "platform_nav_date", "team_nav", "team_nav_date", "unit_nav", "nav_date", "valuation_date", "inception_date"])
+  const keys = new Set(["platform_nav", "platform_nav_date", "team_nav", "team_nav_date", "unit_nav", "nav_date", "valuation_date", "inception_date", "first_entry_date"])
   if (!keys.has(sort)) return rows
   const mul = dir === "ASC" ? 1 : -1
   return [...rows].sort((a, b) => {
@@ -421,21 +575,9 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     }
   }
 
-  if (productSourceFilter === "manual") {
-    where.push(`EXISTS (
-      SELECT 1 FROM ops_team_data_products m
-      WHERE UPPER(BTRIM(m.beian_hao)) = UPPER(BTRIM(i.beian_hao))
-    )`)
-  } else if (productSourceFilter === "email") {
-    where.push(`EXISTS (
-      SELECT 1 FROM ops_email_nav_records e
-      WHERE e.product_code = i.beian_hao
-        AND e.nav IS NOT NULL
-        AND e.nav_date IS NOT NULL
-    ) AND NOT EXISTS (
-      SELECT 1 FROM ops_team_data_products m
-      WHERE UPPER(BTRIM(m.beian_hao)) = UPPER(BTRIM(i.beian_hao))
-    )`)
+  if (productSourceFilter !== "all") {
+    sharedJoins.push(WINNING_UPDATE_CHANNEL_JOIN)
+    where.push(`update_channel.channel = '${WINNING_UPDATE_CHANNEL[productSourceFilter]}'`)
   }
 
   if (operationDateFilter === "present" || operationDateFilter === "absent") {
@@ -487,7 +629,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
       ),
       i.inception_date
     )`,
-    first_entry_date: "COALESCE(a.put_on_record_date, i.inception_date)",
+    first_entry_date: "first_entry.first_entry_date",
   }
   const orderSql = `${orderExpr[sort] ?? orderExpr.first_entry_date} ${sortDir === "ASC" ? "ASC" : "DESC"} NULLS LAST`
   const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""
@@ -499,11 +641,12 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
       ${strategy.l1} AS strategy_l1,
       ${strategy.l2} AS strategy_l2,
       ${strategy.l3} AS strategy_l3,
-      COALESCE(a.put_on_record_date, i.inception_date)::text AS first_entry_date,
+      first_entry.first_entry_date::text AS first_entry_date,
       i.latest_nav::text AS latest_nav,
       i.latest_nav_date::text AS latest_nav_date
     FROM private_fund_info i
     ${amacJoin}
+    ${FIRST_ENTRY_JOIN}
     ${sharedJoins.join("\n")}
     ${rowOnlyJoins.join("\n")}
     ${whereSql}
@@ -531,6 +674,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     const fromSql = `
       FROM private_fund_info i
       ${amacJoin}
+      ${FIRST_ENTRY_JOIN}
       ${seriesJoins.join("\n")}
       JOIN ops_nav_series_flags f ON f.beian_hao = BTRIM(i.beian_hao)
       ${flagWhereSql}`
@@ -541,7 +685,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
         NULL::text AS strategy_l1,
         NULL::text AS strategy_l2,
         NULL::text AS strategy_l3,
-        COALESCE(a.put_on_record_date, i.inception_date)::text AS first_entry_date,
+        first_entry.first_entry_date::text AS first_entry_date,
         i.latest_nav::text AS latest_nav,
         i.latest_nav_date::text AS latest_nav_date,
         f.anomaly AS anomaly
@@ -617,8 +761,11 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
         data = await attachNavAnomalyDiagnosis(data)
       }
     }
+    if (navGapFilter === "interior_2w") {
+      data = await attachNavGapDiagnosis(data)
+    }
     if (operationDateFilter === "present") data = await withOperationDates(data)
-    return { data, total }
+    return alignUpdateChannelPage(data, productSourceFilter, total)
   }
 
   const limitIdx = filterParams.length + 1
@@ -641,7 +788,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
   let data = await attachInceptionDates(await attachProductPageNav(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(pageRows)), pageRows)))
   data = resortPage(data, sort, sortDir)
   if (operationDateFilter === "present") data = await withOperationDates(data)
-  return { data, total }
+  return alignUpdateChannelPage(data, productSourceFilter, total)
 }
 
 async function withOperationDates(rows: TeamDataListRow[]): Promise<TeamDataListRow[]> {

@@ -1,0 +1,102 @@
+[
+  {
+    "bucket": "1m",
+    "label": "约1个月",
+    "beian_hao": "SBBB12",
+    "product_name": "SBBB12",
+    "span_days": 0,
+    "uploaded_points": 4,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SBBB12",
+      "product_name": "凯丰凌风5号量化CTA臻享1期私募证券投资基金",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 1,
+      "navPoints": 4,
+      "sameProduct": true
+    },
+    "pass": true
+  },
+  {
+    "bucket": "3m",
+    "label": "约3个月",
+    "beian_hao": "NB353A",
+    "product_name": "NB353A",
+    "span_days": 0,
+    "uploaded_points": 12,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "NB353A",
+      "product_name": "盈利多有迹稳健8号A类",
+      "correlation": 1,
+      "score": 0.9982146657757154,
+      "overlapMonths": 5,
+      "navPoints": 12,
+      "sameProduct": true
+    },
+    "pass": true
+  },
+  {
+    "bucket": "6m",
+    "label": "约6个月",
+    "beian_hao": "SBPR99",
+    "product_name": "SBPR99",
+    "span_days": 0,
+    "uploaded_points": 36,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SBPR99",
+      "product_name": "洛书管理期货拾号3期",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 7,
+      "navPoints": 36,
+      "sameProduct": true
+    },
+    "pass": true
+  },
+  {
+    "bucket": "1y",
+    "label": "约1年",
+    "beian_hao": "BGZ81C",
+    "product_name": "BGZ81C",
+    "span_days": 0,
+    "uploaded_points": 48,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "BGZ81C",
+      "product_name": "榕树海中证1000指数增强进取2号C类",
+      "correlation": 1,
+      "score": 0.9940397609884022,
+      "overlapMonths": 12,
+      "navPoints": 39,
+      "sameProduct": true
+    },
+    "pass": true
+  },
+  {
+    "bucket": "2y",
+    "label": "约2年",
+    "beian_hao": "SALL46",
+    "product_name": "SALL46",
+    "span_days": 0,
+    "uploaded_points": 123,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SALL46",
+      "product_name": "国合转债优选",
+      "correlation": 1,
+      "score": 0.9988042748078143,
+      "overlapMonths": 25,
+      "navPoints": 106,
+      "sameProduct": false
+    },
+    "pass": true
+  }
+]

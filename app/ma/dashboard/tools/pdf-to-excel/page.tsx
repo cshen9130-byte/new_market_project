@@ -54,6 +54,9 @@ async function readConvertStream(
   response: Response,
   onProgress: (percent: number, message: string) => void,
 ): Promise<PdfExcelSummary> {
+  if (response.status === 413) {
+    throw new Error("文件超过服务器上传限制。请把 PDF 压到 40MB 以内后重试。")
+  }
   const contentType = response.headers.get("content-type") || ""
   if (contentType.includes("application/json")) {
     const payload = (await response.json()) as PdfExcelSummary | { error?: string }
@@ -61,7 +64,7 @@ async function readConvertStream(
     return payload as PdfExcelSummary
   }
   if (!response.ok || !response.body) {
-    throw new Error("PDF 提取失败。")
+    throw new Error(response.status ? `PDF 提取失败（HTTP ${response.status}）。` : "PDF 提取失败。")
   }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()

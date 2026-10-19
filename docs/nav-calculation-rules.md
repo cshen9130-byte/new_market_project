@@ -2797,9 +2797,9 @@ On the current mailbox that one-cell shape does not recur. SBFM35’s **2026-05-
 | Same-date tie | `preferEmailNavRow` | On one date, a normal 累计 beats a rival cell above 2×. A series with no rival is kept |
 | Do not learn a unit ratio from it | `applyEmailUnitNavCorrection` | `latestRatio` is still learned only when `cum/unit ≤ 2`. A kept high series cannot scale a later row where 单位 equals 累计 |
 | Rebase | `rebaseAdditiveEmailCumulative` | Unchanged. A constant gap versus 火富牛 (R0423B **+2.5943**, at least three overlaps, spread at most **0.005**) is subtracted |
-| No 火富牛 | `mergeNavSeriesWithEmail` when the legacy series is empty | After the stray and frozen checks, a 累计 that is still above 2× is dropped. The list sparkline merges email alone and must not plot the raw **5.3** base. Detail merge passes 火富牛, so a real ratio above 2 that already matches 火富牛 (SQX078 about **2.06×**) is kept, and a constant offset is rebased first. A later 单位净值 of exactly **1.0000** that passes the dividend check is kept; see **鲲腾进取2号 — SLV324** below |
+| No confirming 累计 | `mergeNavSeriesWithEmail` when the legacy series is empty, or every legacy 累计 is only a copy of 单位 | After the stray and frozen checks, a 累计 that is still above 2× is dropped. The list sparkline merges email alone and must not plot the raw **5.3** base. A unit-only manual upload is the same case: 臻选之常A类, see **What Was Fixed (臻选之常A类 — TV890A, 2026-08-06 +313%)** below. Detail merge passes 火富牛, so a real ratio above 2 that already matches 火富牛 (SQX078 about **2.06×**) is kept, and a constant offset is rebased first. A later 单位净值 of exactly **1.0000** that passes the dividend check is kept; see **鲲腾进取2号 — SLV324** below |
 
-Left in place: the **0.1–100** bound (荣熙恒盈2号’s 累计 in the millions), `preserve_high_nav_scale`, and a quiet series near **4×** where both columns barely move (臻选之常A类, STV890). A column that grows, such as 成立以来倍数, still does not form a constant inside **0.005**, so the rebase does not subtract it.
+Left in place at selection time: the **0.1–100** bound (荣熙恒盈2号’s 累计 in the millions), `preserve_high_nav_scale`, and a quiet series near **4×** where both columns barely move (臻选之常A类, STV890). `clearCorruptEmailCumulative` still keeps that column. The merge drops it when the earlier series has no dividend gap. A column that grows, such as 成立以来倍数, still does not form a constant inside **0.005**, so the rebase does not subtract it.
 
 This change does not decide the 春节 gap. That is **Rule — Chinese market holidays**: the 复权 V-shape stands down when the two rows have a 放假 day between them.
 
@@ -3125,3 +3125,133 @@ npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SQX646 --name=凡二量�
 ```
 
 Then delete the `SQX646` row in `ops_nav_series_flags` if that list still shows the old spike. The flag is reused while the tip date is unchanged.
+
+---
+
+## What Was Fixed (九木套利1号 — SAXN78 batch mail took 九木CTA净值, 2026-10-19)
+
+### The Problem
+
+团队数据 flagged **九木套利1号** (备案号 **SAXN78**) with a one-day spike on **2025-12-11**: chart level **1.0563 → 1.1101 → 1.0536** (**+5.1%**). The same shape repeated on **2025-12-18**, **2026-01-08**, **2026-05-28**, **2026-06-11**, and **2026-07-16**. The list only shows the first one.
+
+SAXN78’s own email and the platform row do not have those prints. **2025-12-11** platform NAV is **1.0570**. **1.1101** is **九木CTA进取1号A类** (`BHW97A(A级)`).
+
+### Root Cause
+
+Both funds sit in one Citics workbook. Every stored row keeps the shared subject:
+
+`【基金净值】SAXN78等_九木套利1号私募证券投资基金等_产品成立日-20260930`
+
+`emailRowMatchesFund` treated any `【基金净值】` mail as a single product. A name found in that subject waived a different `product_code`. The subject contains both `SAXN78` and `九木套利1号`, so the CTA row was accepted. `BHW97A(A级)` is not a usable 备案号, so the code-mismatch check never saw it. The merge then wrote the CTA unit onto SAXN78 dates that had a platform row and no 火富牛 row, and inserted CTA-only dates where SAXN78 had no print. 火富牛 dates were left alone, so each bad print lasted one day.
+
+**2025-11-27** was the same overwrite on the unit column only (**1.0203**). That fake gap then lifted **2025-11-28** 累计 from **1.0512** to **1.0818**.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Batch subject | `isCiticsBatchNavMail` in `email-nav-query.ts` | `【基金净值】CODE等_…` and `等N个产品` are a batch, not one fund |
+| Row identity | `emailRowMatchesFund` | On a batch mail, only the row’s own `fund_name` counts. The shared subject does not. A sibling row is not a single-product Citics exception |
+
+A real one-fund Citics mail is unchanged. **SAFFP4** still matches 睿松量化选股进取1号 when the dashboard 备案号 differs, because that subject is `【基金净值】SAFFP4_…` and the row’s own name matches.
+
+### What This Fix Does NOT Change
+
+- Single-product `【基金净值】` / `【净值公告】` name matching (SAFFP4, SAFF24)
+- Dividend / 复权 rechain
+- The CTA rows themselves. They stay on `BHW97A`
+
+### Verified
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **SAXN78 batch mail keeps its own 九木套利1号 row** and **SAXN78 batch mail does not take 九木CTA进取1号A类 (BHW97A)**.
+
+Rebuilt the detail cache and deleted the stale `ops_nav_series_flags` row:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=SAXN78 --name=九木套利1号
+```
+
+| Date | Before | After |
+|---|---:|---:|
+| 2025-11-27 | unit 1.0203 | **1.0509** |
+| 2025-11-28 | 累计 1.0818 | **1.0512** |
+| 2025-12-11 | 1.1101 | **1.0570** |
+| 2025-12-18 | 1.0740 | **1.0510** |
+| 2026-01-08, 2026-05-28, 2026-06-11, 2026-07-16 | CTA prints | removed (no SAXN78 print that day) |
+
+`analyzeNavAnomaly` on the rebuilt series reports no jump and no spike. Deploy this matcher before the next detail-cache rebuild, or a worker still running the old match will write the CTA rows back.
+
+---
+
+## What Was Fixed (臻选之常A类 — TV890A, 2026-08-06 +313%)
+
+### The Problem
+
+团队数据 flagged 臻选之常A类 (备案号 **TV890A**) as a 跳变 on **2026-08-06**, chart 复权 **1.0116 → 4.1733**, ratio **4.125**. Moves of 100% or more print with no decimal, so the list showed **+313%**. The cause was **计算或修正导致**. The product page 单位净值 stayed near **1.01**.
+
+The manual upload runs **2026-02-02** through **2026-08-04** (121 rows). On every day, 累计净值 equals 单位净值, and 复权 is empty. The last point is **2026-08-04** at **1.0116**.
+
+The custodian 净值表 starts the next session, **2026-08-06**, under product code **STV890** and fund name 臻选之常A类. 单位净值 is **1.0121**. 累计 and 复权 are both **4.1733**. On every later email day the gap is exactly **3.1612**:
+
+| Date | 单位净值 | 累计 / 复权 | Gap |
+|---|---:|---:|---:|
+| 2026-08-06 | 1.0121 | 4.1733 | 3.1612 |
+| 2026-08-10 | 1.0114 | 4.1726 | 3.1612 |
+| 2026-10-15 | 1.0159 | 4.1771 | 3.1612 |
+
+单位净值 that day moved **1.0116 → 1.0121**, about **+0.05%**. The **4.17** column is 单位 plus a fixed pad. Six months of manual 累计, all equal to 单位, already show this fund has no **3.16** dividend gap.
+
+The parent code **STV890** has no manual history. Email alone already dropped 累计 above **2×** 单位, so that chart stayed near **1.01**. Only the A-class row jumped.
+
+### Root Cause
+
+`appendEmailAfterSeriesTip` merges the raw email onto the manual series, which ends **2026-08-04**. `rebaseAdditiveEmailCumulative` never learns **3.1612**, because it needs a same-day overlap and there is none.
+
+`mergeNavSeriesWithEmail` then dropped 累计 above **2×** only when the legacy list was empty. The unit-only manual series is not empty, so the pad was kept as 累计. `repairAdjBelowCumRows` scaled 复权 by the 累计 ratio:
+
+`1.0116 × 4.1733 / 1.0116 = 4.1733`
+
+`clearCorruptEmailCumulative` still leaves this column in place. Both columns move together by a few basis points, the ratio is about **4.1** rather than above **8**, and the 单位 range is about **0.006**, under the **0.05** frozen-column bar. Selection keeps it so a real high 累计 can still be rebased. The hole was treating a unit-only manual upload as confirmation of that scale.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Confirm a high 累计 | `legacyConfirmsHighCumulative` in `email-nav-query.ts` | True when any legacy row has 累计 − 单位 above the dividend gap (**0.03**) |
+| Drop the pad | `dropUnconfirmedHighEmailCumulative`, called from `mergeNavSeriesWithEmail` after the rebase | If the legacy series does not confirm a gap, drop email 累计 above **2×** 单位, and clear 复权 when it is a copy of that 累计. A confirmed mid-series unit reset to **1.0000** is still kept (SLV324) |
+
+An empty legacy list is the same rule as before. A unit-only manual history now follows it too.
+
+### What This Fix Does NOT Change
+
+- A legacy series that already has a dividend gap. An email 累计 above **2×** on the next date is still kept
+- SQX078, where 火富牛 is already on the same scale above **2×**
+- R0423B. The constant offset versus 火富牛 is still learned from same-day overlap and subtracted before this drop
+- SLV324. A later 单位净值 of **1.0000** with 累计 unchanged is still a unit reset
+- Selection of the quiet **4×** column. `clearCorruptEmailCumulative` still keeps 臻选之常’s raw 累计 so the merge can judge it
+
+### Verified
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+Includes **臻选之常A类 keeps the manual unit scale into the email** and **a legacy dividend gap still keeps an email 累计 above 2×**.
+
+Rebuilt `ops_private_fund_detail_nav_cache` for TV890A (166 points). The largest remaining day-to-day move is about **0.45%** on **2026-07-21**.
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---:|---:|---:|
+| 2026-08-04 | 1.0116 | 1.0116 | 1.0116 |
+| 2026-08-06 | 1.0121 | **1.0121** | **1.0121** |
+| 2026-08-10 | 1.0114 | 1.0114 | 1.0114 |
+
+`listTeamData` with the 有异常 filter and keyword 臻选之常 returns no row. The operations list also keeps a copy of that table: three days in the browser (`team_data_list_cache_v18`, platform `platform_data_list_cache_v6`) and five minutes on the server (`nav_gap_cause_v2` in the team-data and platform-data list routes). Those keys were bumped so a reload does not keep painting the old **+313%** row. On another machine, rebuild the detail cache after this merge is deployed:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=TV890A --name=臻选之常私募证券投资基金A类
+```

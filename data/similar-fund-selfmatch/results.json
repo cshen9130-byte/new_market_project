@@ -1,0 +1,97 @@
+[
+  {
+    "bucket": "1m",
+    "label": "约1个月",
+    "beian_hao": "STX591",
+    "product_name": "STX591",
+    "span_days": 0,
+    "uploaded_points": 293,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "STX591",
+      "product_name": "正源信毅月月开贰号私募证券投资基金",
+      "correlation": 0.999189004655685,
+      "score": 0.9844632295778674,
+      "overlapMonths": 49,
+      "navPoints": 246
+    },
+    "pass": true
+  },
+  {
+    "bucket": "3m",
+    "label": "约3个月",
+    "beian_hao": "SBDS49",
+    "product_name": "SBDS49",
+    "span_days": 0,
+    "uploaded_points": 25,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SBDS49",
+      "product_name": "衍合微盘股指数增强1号私募证券投资基金",
+      "correlation": 1,
+      "score": 0.9907977298900363,
+      "overlapMonths": 7,
+      "navPoints": 25
+    },
+    "pass": true
+  },
+  {
+    "bucket": "6m",
+    "label": "约6个月",
+    "beian_hao": "SBPX74",
+    "product_name": "SBPX74",
+    "span_days": 0,
+    "uploaded_points": 24,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SBPX74",
+      "product_name": "奶酪平价套利稳健九号",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 6,
+      "navPoints": 24
+    },
+    "pass": true
+  },
+  {
+    "bucket": "1y",
+    "label": "约1年",
+    "beian_hao": "SBDR72",
+    "product_name": "SBDR72",
+    "span_days": 0,
+    "uploaded_points": 182,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SBDR72",
+      "product_name": "泰玥智投",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 13,
+      "navPoints": 182
+    },
+    "pass": true
+  },
+  {
+    "bucket": "2y",
+    "label": "约2年",
+    "beian_hao": "ZU231C",
+    "product_name": "ZU231C",
+    "span_days": 0,
+    "uploaded_points": 109,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "ZU231C",
+      "product_name": "晨鸣12号C类",
+      "correlation": 0.9987989953063039,
+      "score": 0.9948823863124707,
+      "overlapMonths": 25,
+      "navPoints": 109
+    },
+    "pass": true
+  }
+]

@@ -10,6 +10,7 @@ import {
   weeklyReviewPoolScopePhrase,
   type WeeklyReviewPoolKey,
 } from "@/lib/ma/weekly-review-pools"
+import { WeeklyReviewDataStatus } from "./WeeklyReviewDataStatus"
 
 type GroupPreview = {
   bucket: string
@@ -62,8 +63,6 @@ const POOL_CHOICES: Array<{ key: "all" | WeeklyReviewPoolKey; label: string }> =
 const VARIANT_COPY: Record<WeeklyReviewVariant, {
   title: (label: string) => string
   description: (scope: string) => string
-  empty: (scope: string) => string
-  loading: (scope: string) => string
   excelName: (weekEnd: string, label: string) => string
   previewUrl: (date: string, pools: WeeklyReviewPoolKey[]) => string
   generateUrl: string
@@ -72,8 +71,6 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
   equity: {
     title: (label) => `${label} · 周度回顾(股票)`,
     description: (scope) => `按${scope}中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表。同一产品的 A/B/C 份额在同一策略里合并为一行。「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。`,
-    empty: (scope) => `${scope}中暂无股票策略产品`,
-    loading: (scope) => `正在统计${scope}产品…`,
     excelName: (weekEnd, label) => `${label}周度回顾（股票） - ${weekEnd}.xlsx`,
     previewUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/preview?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/generate",
@@ -82,8 +79,6 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
   futures: {
     title: (label) => `${label} · 周度回顾(期货)`,
     description: (scope) => `按${scope}中的期货策略产品生成周报 Excel，覆盖量化 CTA、主观 CTA、期权、期货套利和期权套利：期货市场回顾 + 按策略分组的绝对收益 / 夏普 / 卡玛。同一产品的 A/B/C 份额在同一策略里合并为一行。`,
-    empty: (scope) => `${scope}中暂无期货、CTA 或期权策略产品`,
-    loading: (scope) => `正在统计${scope}期货与期权产品…`,
     excelName: (weekEnd, label) => `${label}周度回顾（期货） - ${weekEnd}.xlsx`,
     previewUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/futures/preview?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/futures/generate",
@@ -311,40 +306,12 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
         )}
       </div>
 
-      <div className="rounded-xl border bg-background shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b text-sm font-medium">策略分组预览</div>
-        {previewLoading ? (
-          <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {copy.loading(poolScope)}
-          </div>
-        ) : !preview || preview.groups.length === 0 ? (
-          <div className="py-16 text-center text-sm text-muted-foreground">
-            {copy.empty(poolScope)}
-          </div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-zinc-50/80 text-xs text-zinc-500 dark:bg-zinc-900/40">
-                <th className="px-5 py-2 text-left font-medium">策略分组</th>
-                <th className="px-5 py-2 text-left font-medium">指标口径</th>
-                <th className="px-5 py-2 text-right font-medium">产品数</th>
-              </tr>
-            </thead>
-            <tbody>
-              {preview.groups.map((g) => (
-                <tr key={g.bucket} className="border-b last:border-0">
-                  <td className="px-5 py-2">{g.bucket}</td>
-                  <td className="px-5 py-2 text-muted-foreground">
-                    {g.mode === "excess" ? "超额收益 / 超额最大回撤" : "收益 / 夏普 / 卡玛"}
-                  </td>
-                  <td className="px-5 py-2 text-right tabular-nums">{g.count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <WeeklyReviewDataStatus
+        embedded
+        variant={variant}
+        pools={pools}
+        weekEnd={weekEnd}
+      />
     </div>
   )
 }

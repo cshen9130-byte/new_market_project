@@ -1,0 +1,21 @@
+[
+  {
+    "bucket": "15m",
+    "label": "约15个月",
+    "beian_hao": "TW065C",
+    "product_name": "TW065C",
+    "span_days": 0,
+    "uploaded_points": 65,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "TW065C",
+      "product_name": "稳博全A增强1号C类",
+      "correlation": 1,
+      "score": 0.9510176258121242,
+      "overlapMonths": 9,
+      "navPoints": 30
+    },
+    "pass": true
+  }
+]

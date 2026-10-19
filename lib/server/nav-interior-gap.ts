@@ -13,6 +13,16 @@ function lowerMedian(values: number[]): number {
   return sorted[Math.floor((sorted.length - 1) / 2)] ?? 0
 }
 
+/** One stretch between two kept NAV dates that is wider than the product's usual step. */
+export type InteriorNavHole = {
+  from: string
+  to: string
+  /** China market-open days in (from, to]. */
+  openDays: number
+  /** Expected NAV points absent in this stretch. */
+  missing: number
+}
+
 export type InteriorNavGapStats = {
   gapped: boolean
   first: string
@@ -22,6 +32,7 @@ export type InteriorNavGapStats = {
   missing: number
   expected: number
   ratio: number
+  holes: InteriorNavHole[]
 }
 
 function datesOnOrAfter(dates: string[], fromDate?: string | null): string[] {
@@ -50,27 +61,37 @@ export function analyzeInteriorNavGap(dates: string[], fromDate?: string | null)
     missing: 0,
     expected: 0,
     ratio: 0,
+    holes: [],
   }
   if (sorted.length < 2) return empty
 
-  const gaps: number[] = []
+  const steps: Array<{ openDays: number; from: string; to: string }> = []
   for (let i = 1; i < sorted.length; i++) {
     const openDays = chinaMarketOpenDaysBetween(sorted[i], sorted[i - 1])
     // A stretch with no market-open days (weekend / 节假日 only) is not a hole.
     if (openDays <= 0) continue
-    gaps.push(openDays)
+    steps.push({ openDays, from: sorted[i - 1], to: sorted[i] })
   }
-  if (gaps.length === 0) return empty
-  const typical = lowerMedian(gaps)
+  if (steps.length === 0) return empty
+  const typical = lowerMedian(steps.map((step) => step.openDays))
   if (typical <= 0) return empty
   const span = chinaMarketOpenDaysBetween(sorted[sorted.length - 1], sorted[0])
   if (span <= 0) return empty
   // 7 is trading days, not calendar days. Weekends / 节假日 are already
   // removed from `gap`, so a 春节 week does not reach this floor.
   const holeFloor = Math.max(typical * 2, 7)
+  const holes: InteriorNavHole[] = []
   let missing = 0
-  for (const gap of gaps) {
-    if (gap > holeFloor) missing += gap / typical - 1
+  for (const step of steps) {
+    if (step.openDays <= holeFloor) continue
+    const holeMissing = step.openDays / typical - 1
+    missing += holeMissing
+    holes.push({
+      from: step.from,
+      to: step.to,
+      openDays: step.openDays,
+      missing: holeMissing,
+    })
   }
   const expected = 1 + span / typical
   const ratio = missing / expected
@@ -83,6 +104,7 @@ export function analyzeInteriorNavGap(dates: string[], fromDate?: string | null)
     missing,
     expected,
     ratio,
+    holes,
   }
 }
 

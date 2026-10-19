@@ -1,0 +1,32 @@
+reset team adjusted_nav to NULL
+merged n=405
+2026-03-20 u=1.7625 c=2.4885 a=3.24855 a/c=1.305425 ok=true
+2026-05-29 u=1.7908 c=2.5168 a=3.300711 a/c=1.311471 ok=true
+2026-06-05 u=1.7917 c=2.5177 a=3.301891 a/c=1.311471 ok=true
+2026-06-18 u=1.7944 c=2.5204 a=3.305432 a/c=1.311471 ok=true
+2026-06-26 u=1.8531 c=2.5791 a=3.382415 a/c=1.311471 ok=true
+2026-09-24 u=1.8601 c=2.5861 a=3.391599 a/c=1.311472 ok=true
+ratios may29=1.311471 jun05=1.311471 jun26=1.311471 tip=1.311472
+OK ratio preserved through tip
+invariant violations: 0
+updated adjusted_nav on 19 team rows
+sample team after:
+{"nav_date":"2026-06-05","unit_nav":"1.791700","cumulative_nav":"2.517700","adjusted_nav":"3.301891"}
+{"nav_date":"2026-06-26","unit_nav":"1.853100","cumulative_nav":"2.579100","adjusted_nav":"3.382415"}
+{"nav_date":"2026-09-24","unit_nav":"1.860100","cumulative_nav":"2.586100","adjusted_nav":"3.391599"}
+invalidated cache: 1
+refresh cache: true
+cache tip=2026-09-24 unit=1.860100 n=405 refreshed=2026-09-30 11:13:08.92733+08
+cache 2026-03-20 u=1.7625 c=2.4885 a=3.24855 a/c=1.305425
+cache 2026-05-29 u=1.7908 c=2.5168 a=3.300711 a/c=1.311471
+cache 2026-06-05 u=1.7917 c=2.5177 a=3.301891 a/c=1.311471
+cache 2026-06-26 u=1.8531 c=2.5791 a=3.382415 a/c=1.311471
+cache 2026-09-24 u=1.8601 c=2.5861 a=3.391599 a/c=1.311472
+
+=== BEFORE (broken tip) ===
+2026-09-24 unit=1.8601 cum=2.5861 adj=2.6155 (a/c~1.011)
+2026-05-29→06-05 adj cliff 3.3007→~2.52
+
+=== AFTER ===
+2026-09-24 unit=1.8601 cum=2.5861 adj=3.391599 (a/c=1.311472)
+2026-05-29 adj=3.300711 → 2026-06-05 adj=3.301891

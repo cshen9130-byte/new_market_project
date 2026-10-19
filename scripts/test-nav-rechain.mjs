@@ -1849,6 +1849,43 @@ assert(
       collectFundNameAliases("磐松量化选股进取1号", null),
     ),
   )
+  const saxn78BatchSubject =
+    "【基金净值】SAXN78等_九木套利1号私募证券投资基金等_产品成立日-20260930"
+  const saxn78Aliases = collectFundNameAliases("九木套利1号", null)
+  assert(
+    "SAXN78 batch mail keeps its own 九木套利1号 row",
+    emailRowMatchesFund(
+      {
+        nav: "1.056300",
+        nav_date: "2025-12-10",
+        cumulative_nav: "1.056300",
+        product_code: "SAXN78",
+        fund_name: "九木套利1号",
+        subject: saxn78BatchSubject,
+        attachment_filename: saxn78BatchSubject + ".xlsx",
+        source: "attachment_nav_table",
+      },
+      "SAXN78",
+      saxn78Aliases,
+    ),
+  )
+  assert(
+    "SAXN78 batch mail does not take 九木CTA进取1号A类 (BHW97A)",
+    emailRowMatchesFund(
+      {
+        nav: "1.110100",
+        nav_date: "2025-12-11",
+        cumulative_nav: "1.110100",
+        product_code: "BHW97A(A级)",
+        fund_name: "九木CTA进取1号A类",
+        subject: saxn78BatchSubject,
+        attachment_filename: saxn78BatchSubject + ".xlsx",
+        source: "attachment_nav_table",
+      },
+      "SAXN78",
+      saxn78Aliases,
+    ) === false,
+  )
   assert(
     "磐松量化进取1号 aliases to 量化选股进取1号",
     collectFundNameAliases("磐松量化进取1号", null).includes("磐松量化选股进取1号"),
@@ -2671,6 +2708,7 @@ const sbhk26History = [
 testSnd951HighRatioDividendKeptWhenFof99Present()
 testR0423bDividendOffsetRebase()
 testEmailCumRatioGuards()
+testUnitOnlyManualDropsPaddedEmailCumulative()
 testMidSeriesUnitResetKeepsCumulative()
 testCnHolidayClosureSkipsAdjVShape()
 testSbgs17LevelBreakDoesNotCarryDividendGap()
@@ -4560,6 +4598,43 @@ function testEmailCumRatioGuards() {
   assert(
     "email-only merge does not keep an unconfirmed cum/unit above 2",
     may8Alone != null && Math.abs(parseFloat(may8Alone.cum_nav_withdrawal) - 1.24 * 2.15) > 0.05,
+  )
+}
+
+function testUnitOnlyManualDropsPaddedEmailCumulative() {
+  const legacy = [
+    { price_date: "2026-08-03", nav: "1.0127", cumulative_nav: "1.0127", cum_nav_withdrawal: "1.0127", price_change: "" },
+    { price_date: "2026-08-04", nav: "1.0116", cumulative_nav: "1.0116", cum_nav_withdrawal: "1.0116", price_change: "" },
+  ]
+  const email = [
+    { price_date: "2026-08-06", nav: "1.0121", cumulative_nav: "4.1733", adjusted_nav: "4.1733", source: "attachment_nav_table" },
+    { price_date: "2026-08-07", nav: "1.0121", cumulative_nav: "4.1733", adjusted_nav: "4.1733", source: "attachment_nav_table" },
+    { price_date: "2026-08-10", nav: "1.0114", cumulative_nav: "4.1726", adjusted_nav: "4.1726", source: "attachment_nav_table" },
+  ]
+  const merged = appendEmailAfterSeriesTip(legacy, email, { beian_hao: "TV890A", product_name: "臻选之常A类" })
+  const aug4 = merged.find((row) => row.price_date === "2026-08-04")
+  const aug6 = merged.find((row) => row.price_date === "2026-08-06")
+  const aug10 = merged.find((row) => row.price_date === "2026-08-10")
+  assert(
+    "臻选之常A类 keeps the manual unit scale into the email",
+    aug4 != null && aug6 != null && aug10 != null
+      && Math.abs(parseFloat(aug6.cumulative_nav) - 1.0121) < 0.001
+      && Math.abs(parseFloat(aug6.cum_nav_withdrawal) - 1.0121) < 0.001
+      && Math.abs(parseFloat(aug6.cumulative_nav) / parseFloat(aug4.cumulative_nav) - 1.0121 / 1.0116) < 0.002
+      && Math.abs(parseFloat(aug10.cumulative_nav) - 1.0114) < 0.001,
+  )
+
+  const dividendLegacy = [
+    { price_date: "2026-08-04", nav: "1.1000", cumulative_nav: "2.5000", cum_nav_withdrawal: "2.4000", price_change: "" },
+  ]
+  const dividendEmail = [
+    { price_date: "2026-08-06", nav: "1.1100", cumulative_nav: "2.4100", adjusted_nav: "2.4100", source: "attachment_nav_table" },
+  ]
+  const kept = appendEmailAfterSeriesTip(dividendLegacy, dividendEmail)
+  const aug6Kept = kept.find((row) => row.price_date === "2026-08-06")
+  assert(
+    "a legacy dividend gap still keeps an email 累计 above 2×",
+    aug6Kept != null && Math.abs(parseFloat(aug6Kept.cum_nav_withdrawal) - 2.41) < 0.001,
   )
 }
 

@@ -11,6 +11,8 @@ import {
 import { UPDATE_CHANNELS, type UpdateChannel } from "@/lib/ops-update-channel"
 import { OperationsUpdateChannelView } from "./OperationsUpdateChannelView"
 import { NavAgeTree, ProductTotalTree } from "./ProductTotalTree"
+import { NavRulesCatalogButton } from "./NavRulesCatalogButton"
+import { WeeklyReviewDataStatus } from "./WeeklyReviewDataStatus"
 
 function formatCount(count: number): string {
   return count.toLocaleString("zh-CN")
@@ -45,6 +47,7 @@ export function OperationsDataOverviewView() {
   const [scope, setScope] = useState<DataOverviewScope>("all")
   const [channel, setChannel] = useState<UpdateChannel | "all">("all")
   const [refreshTick, setRefreshTick] = useState(0)
+  const [statusRefresh, setStatusRefresh] = useState(0)
   const [channelLoading, setChannelLoading] = useState(false)
   const [body, setBody] = useState<DataOverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -85,7 +88,7 @@ export function OperationsDataOverviewView() {
   const intro = channel === "fof99"
     ? "看火富牛名单里有多少产品、近一月有净值的有多少、我们跟上了多少，以及每周维护新纳入和改成更新偏慢的只数。下面再看有净值的产品和跟踪池里各跟踪方式的分布，以及上周和各周接口抓得怎么样。这个视图不跟范围走。"
     : channel === "email"
-      ? "看有净值的产品和跟踪池里，有多少已经收到带备案号的邮箱净值，以及上周和各周邮件写了多少。这个视图不跟范围走。"
+      ? "看有净值的产品和跟踪池里，有多少已经收到带备案号的邮箱净值，以及上周和各周邮件写了多少。下面再看这些邮箱产品现在靠哪些来源更新，净值日期有多新。这个视图不跟范围走。"
       : (visible?.description ?? "按全库、有净值、跟踪池、团队数据或平台数据查看产品状态，不展开到单只产品。")
   const cards = visible
     ? [
@@ -108,18 +111,23 @@ export function OperationsDataOverviewView() {
               {channel === "all" ? " 红色数字打开对应列表，并带上这个状态。" : ""}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              if (channel === "all") load(scope, true)
-              else setRefreshTick((tick) => tick + 1)
-            }}
-            disabled={busy}
-            className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-foreground disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            <NavRulesCatalogButton />
+            <button
+              type="button"
+              onClick={() => {
+                if (channel === "all") {
+                  load(scope, true)
+                  setStatusRefresh((tick) => tick + 1)
+                } else setRefreshTick((tick) => tick + 1)
+              }}
+              disabled={busy}
+              className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
+              刷新
+            </button>
+          </div>
         </div>
         <div className="mt-3 flex items-center flex-wrap gap-1">
           <span className="text-zinc-400 text-xs w-12 shrink-0">范围</span>
@@ -215,8 +223,15 @@ export function OperationsDataOverviewView() {
               <ProductTotalTree total={visible.total} navClass={visible.nav_class} />
             )}
           </section>
+        </>
+      )}
 
-          <div className={`grid grid-cols-1 xl:grid-cols-2 gap-3 ${loading ? "opacity-60" : ""}`}>
+      {channel === "all" && scope === "tracking" && (
+        <WeeklyReviewDataStatus refreshTick={statusRefresh} />
+      )}
+
+      {channel === "all" && visible && (
+        <div className={`grid grid-cols-1 xl:grid-cols-2 gap-3 ${loading ? "opacity-60" : ""}`}>
             {visible.sections.map((section) => (
               <section key={section.key} className="rounded-xl border bg-background shadow-sm overflow-hidden">
                 <div className="px-4 py-2.5 border-b">
@@ -262,7 +277,6 @@ export function OperationsDataOverviewView() {
               </section>
             ))}
           </div>
-        </>
       )}
     </div>
   )

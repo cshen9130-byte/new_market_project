@@ -1,0 +1,271 @@
+==== private_fund_info ====
+{"beian_hao":"SAFN76","product_name":"集微投资5期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2024-03-01"}
+{"beian_hao":"SAGG46","product_name":"厦门集微壹号创业投资基金合伙企业（有限合伙）","latest_nav":null,"latest_nav_date":null,"manager":"广东合陆半导体私募基金管理有限公司","inception_date":"2024-01-24"}
+{"beian_hao":"SARA27","product_name":"集微投资6期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2024-12-06"}
+{"beian_hao":"SBHG02","product_name":"集微西格玛九期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2025-10-22"}
+{"beian_hao":"SCU465","product_name":"集微西格玛十期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2026-07-31"}
+{"beian_hao":"SEY485","product_name":"南通光朴集微股权投资合伙企业（有限合伙）","latest_nav":null,"latest_nav_date":null,"manager":"上海光朴创业投资管理有限公司","inception_date":"2018-12-19"}
+{"beian_hao":"SGA681","product_name":"集微投资2期私募证券投资基金","latest_nav":"1.517300","latest_nav_date":"2024-10-11","manager":"上海集微","inception_date":"2019-03-21"}
+{"beian_hao":"SGF156","product_name":"集微西格玛套利二期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2019-03-22"}
+{"beian_hao":"SGG016","product_name":"集微投资3期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2019-04-30"}
+{"beian_hao":"SGS445","product_name":"集微西格玛套利三期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2019-07-09"}
+{"beian_hao":"SGS640","product_name":"集微投资4期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2019-06-26"}
+{"beian_hao":"SQU436","product_name":"厦门鑫瑞集微创业投资合伙企业（有限合伙）","latest_nav":null,"latest_nav_date":null,"manager":"厦门市鑫鼎国瑞资产管理有限公司","inception_date":"2021-06-04"}
+{"beian_hao":"SSU135","product_name":"集微西格玛套利七期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2021-09-16"}
+{"beian_hao":"SSZ651","product_name":"集微西格玛套利八期私募证券投资基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2021-10-20"}
+{"beian_hao":"SVZ002","product_name":"杭州芯集微股权投资合伙企业（有限合伙）","latest_nav":null,"latest_nav_date":null,"manager":"杭州矽芯股权投资有限公司","inception_date":"2022-07-25"}
+{"beian_hao":"SW7374","product_name":"集微投资1期私募基金","latest_nav":null,"latest_nav_date":null,"manager":"上海集微私募基金管理有限公司","inception_date":"2017-10-20"}
+
+==== email codes by name ====
+
+======== CODE GA681A ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+{"price_date":"2026-05-29","nav":"1.790800","cumulative_nav":"3.300711","cum_nav_withdrawal":"2.516800"}
+{"price_date":"2026-05-22","nav":"1.807200","cumulative_nav":"3.330939","cum_nav_withdrawal":"2.533200"}
+{"price_date":"2026-05-15","nav":"1.794800","cumulative_nav":"3.308084","cum_nav_withdrawal":"2.520800"}
+{"price_date":"2026-05-08","nav":"1.803900","cumulative_nav":"3.324857","cum_nav_withdrawal":"2.529900"}
+{"price_date":"2026-04-30","nav":"1.789700","cumulative_nav":"3.298684","cum_nav_withdrawal":"2.515700"}
+{"price_date":"2026-04-24","nav":"1.789200","cumulative_nav":"3.297762","cum_nav_withdrawal":"2.515200"}
+{"price_date":"2026-04-17","nav":"1.798100","cumulative_nav":"3.314166","cum_nav_withdrawal":"2.524100"}
+{"price_date":"2026-04-10","nav":"1.795300","cumulative_nav":"3.309006","cum_nav_withdrawal":"2.521300"}
+{"price_date":"2026-04-03","nav":"1.793600","cumulative_nav":"3.305872","cum_nav_withdrawal":"2.519600"}
+{"price_date":"2026-03-31","nav":"1.795500","cumulative_nav":"3.309374","cum_nav_withdrawal":"2.521500"}
+ops_team_nav_manual:
+{"nav_date":"2026-09-24","unit_nav":"1.860100","cumulative_nav":"2.586100","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.805441+08"}
+{"nav_date":"2026-09-18","unit_nav":"1.856000","cumulative_nav":"2.582000","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.814498+08"}
+{"nav_date":"2026-09-11","unit_nav":"1.836900","cumulative_nav":"2.562900","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.815669+08"}
+{"nav_date":"2026-09-04","unit_nav":"1.839100","cumulative_nav":"2.565100","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.81668+08"}
+{"nav_date":"2026-08-31","unit_nav":"1.825500","cumulative_nav":"2.551500","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.817985+08"}
+{"nav_date":"2026-08-28","unit_nav":"1.825000","cumulative_nav":"2.551000","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.819032+08"}
+{"nav_date":"2026-08-21","unit_nav":"1.834800","cumulative_nav":"2.560800","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.820037+08"}
+{"nav_date":"2026-08-14","unit_nav":"1.835800","cumulative_nav":"2.561800","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.82102+08"}
+{"nav_date":"2026-08-07","unit_nav":"1.840800","cumulative_nav":"2.566800","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.821996+08"}
+{"nav_date":"2026-07-31","unit_nav":"1.847900","cumulative_nav":"2.573900","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.823006+08"}
+{"nav_date":"2026-07-24","unit_nav":"1.861700","cumulative_nav":"2.587700","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.823968+08"}
+{"nav_date":"2026-07-17","unit_nav":"1.855900","cumulative_nav":"2.581900","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.824937+08"}
+{"nav_date":"2026-07-10","unit_nav":"1.831600","cumulative_nav":"2.557600","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.825976+08"}
+{"nav_date":"2026-07-03","unit_nav":"1.835700","cumulative_nav":"2.561700","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.826981+08"}
+{"nav_date":"2026-06-30","unit_nav":"1.844700","cumulative_nav":"2.570700","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.827966+08"}
+{"nav_date":"2026-06-26","unit_nav":"1.853100","cumulative_nav":"2.579100","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.829091+08"}
+{"nav_date":"2026-06-18","unit_nav":"1.794400","cumulative_nav":"2.520400","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.830086+08"}
+{"nav_date":"2026-06-12","unit_nav":"1.787800","cumulative_nav":"2.513800","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.831106+08"}
+{"nav_date":"2026-06-05","unit_nav":"1.791700","cumulative_nav":"2.517700","adjusted_nav":null,"nav_type":"pre_fee","created_at":"2026-09-29 12:20:35.83212+08"}
+ops_email_nav_records by product_code:
+detail cache:
+{"cache_key":"GA681A","beian_hao":"GA681A","product_name":"集微投资2期私募证券投资基金A类份额","short_name":"集微投资2期A类","nav_data_source":"team","tip_nav_date":"2026-09-24","tip_unit_nav":"1.860100","refreshed_at":"2026-09-29 12:20:39.421244+08","n":405,"head":"[{\"nav\": \"1.000000\", \"price_date\": \"2019-03-22\", \"price_change\": \"\", \"cumulative_nav\": \"1\", \"cum_nav_withdrawal\": \"1\"}, {\"nav\": \"0.999900\", \"price_date\": \"2019-03-29\", \"price_change\": \"-0.009999999999998899\", \"cumulative_nav\": \"0.9999\", \"cum_nav_withdrawal\": \"0.9999\"}, {\"nav\": \"0.999700\", \"price_date\": \"2019-04-04\", \"price_change\": \"-0.020002000200014525\", \"cumulative_nav\": \"0.9997\", \"cum_nav_with"}
+
+======== CODE SAFN76 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SAGG46 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SARA27 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SBHG02 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SCU465 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SEY485 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SGA681 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+{"price_date":"2024-10-11","nav":"1.517300","cumulative_nav":"2.796610","cum_nav_withdrawal":"2.243300"}
+{"price_date":"2024-09-30","nav":"1.502300","cumulative_nav":"2.768963","cum_nav_withdrawal":"2.228300"}
+{"price_date":"2024-09-27","nav":"1.534300","cumulative_nav":"2.827944","cum_nav_withdrawal":"2.260300"}
+{"price_date":"2024-09-20","nav":"1.562700","cumulative_nav":"2.880289","cum_nav_withdrawal":"2.288700"}
+{"price_date":"2024-09-13","nav":"1.568600","cumulative_nav":"2.891164","cum_nav_withdrawal":"2.294600"}
+{"price_date":"2024-09-06","nav":"1.563800","cumulative_nav":"2.882317","cum_nav_withdrawal":"2.289800"}
+{"price_date":"2024-08-30","nav":"1.531500","cumulative_nav":"2.822783","cum_nav_withdrawal":"2.257500"}
+{"price_date":"2024-08-23","nav":"1.555300","cumulative_nav":"2.866650","cum_nav_withdrawal":"2.281300"}
+{"price_date":"2024-08-16","nav":"1.560200","cumulative_nav":"2.875681","cum_nav_withdrawal":"2.286200"}
+{"price_date":"2024-08-09","nav":"1.535500","cumulative_nav":"2.830156","cum_nav_withdrawal":"2.261500"}
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+{"cache_key":"SGA681","beian_hao":"SGA681","product_name":"集微投资2期私募证券投资基金","short_name":"集微投资2期","nav_data_source":null,"tip_nav_date":"2024-10-11","tip_unit_nav":"1.517300","refreshed_at":"2026-09-10 20:14:58.441199+08","n":296,"head":"[{\"nav\": \"1.000000\", \"price_date\": \"2019-03-22\", \"price_change\": \"\", \"cumulative_nav\": \"1\", \"cum_nav_withdrawal\": \"1\"}, {\"nav\": \"0.999900\", \"price_date\": \"2019-03-29\", \"price_change\": \"-0.009999999999998899\", \"cumulative_nav\": \"0.9999\", \"cum_nav_withdrawal\": \"0.9999\"}, {\"nav\": \"0.999700\", \"price_date\": \"2019-04-04\", \"price_change\": \"-0.020002000200014525\", \"cumulative_nav\": \"0.9997\", \"cum_nav_with"}
+
+======== CODE SGF156 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SGG016 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SGS445 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SGS640 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SQU436 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SSU135 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SSZ651 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SVZ002 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+======== CODE SW7374 ========
+pfn summary: {"c":"0","mn":null,"mx":null}
+private_fund_nav latest:
+private_fund_nav around 2026-03:
+private_fund_nav_group:
+ops_team_nav_manual:
+ops_email_nav_records by product_code:
+detail cache:
+
+==== search unit~1.8601 recent ====
+{"src":"pfn","beian_hao":"SAQR85","d":"2026-09-02","nav":"1.860500","cumulative_nav":"1.860500","cum_nav_withdrawal":"1.860500"}
+{"src":"pfn","beian_hao":"SLT645","d":"2026-09-04","nav":"1.859100","cumulative_nav":"1.950700","cum_nav_withdrawal":"2.030515"}
+{"src":"pfn","beian_hao":"SNA054","d":"2026-09-04","nav":"1.860000","cumulative_nav":"1.860000","cum_nav_withdrawal":"1.860000"}
+{"src":"pfn","beian_hao":"XD380A","d":"2026-09-04","nav":"1.860000","cumulative_nav":"1.860000","cum_nav_withdrawal":"1.860099"}
+{"src":"pfn","beian_hao":"SZF577","d":"2026-09-04","nav":"1.859600","cumulative_nav":"1.859600","cum_nav_withdrawal":"1.859600"}
+{"src":"pfn","beian_hao":"SCL097","d":"2026-09-17","nav":"1.859000","cumulative_nav":"2.059000","cum_nav_withdrawal":"2.203898"}
+{"src":"pfn","beian_hao":"VV957A","d":"2026-09-14","nav":"1.859300","cumulative_nav":"2.284300","cum_nav_withdrawal":"2.372010"}
+{"src":"pfn","beian_hao":"STC841","d":"2026-09-11","nav":"1.860500","cumulative_nav":"1.860500","cum_nav_withdrawal":"1.860500"}
+{"src":"pfn","beian_hao":"SXW616","d":"2026-09-11","nav":"1.861000","cumulative_nav":"1.861000","cum_nav_withdrawal":"1.861000"}
+{"src":"pfn","beian_hao":"SZY911","d":"2026-09-11","nav":"1.859200","cumulative_nav":"1.859200","cum_nav_withdrawal":"1.859200"}
+{"src":"pfn","beian_hao":"GZ132A","d":"2026-09-11","nav":"1.861000","cumulative_nav":"2.051000","cum_nav_withdrawal":"2.212481"}
+{"src":"pfn","beian_hao":"28099A","d":"2026-09-11","nav":"1.861000","cumulative_nav":"1.861000","cum_nav_withdrawal":"1.861000"}
+{"src":"pfn","beian_hao":"XW616A","d":"2026-09-11","nav":"1.860000","cumulative_nav":"1.860000","cum_nav_withdrawal":"1.860000"}
+{"src":"pfn","beian_hao":"SACX81","d":"2026-09-11","nav":"1.859800","cumulative_nav":"1.901088","cum_nav_withdrawal":"1.882000"}
+{"src":"pfn","beian_hao":"SXL370","d":"2026-09-23","nav":"1.860300","cumulative_nav":"2.088200","cum_nav_withdrawal":"2.221396"}
+{"src":"pfn","beian_hao":"SK9300","d":"2026-09-18","nav":"1.861000","cumulative_nav":"1.861000","cum_nav_withdrawal":"1.861000"}
+{"src":"pfn","beian_hao":"SGG094","d":"2026-09-18","nav":"1.861000","cumulative_nav":"1.861000","cum_nav_withdrawal":"1.861000"}
+{"src":"pfn","beian_hao":"SQM149","d":"2026-09-18","nav":"1.859300","cumulative_nav":"1.859300","cum_nav_withdrawal":"1.859300"}
+{"src":"pfn","beian_hao":"SCL097","d":"2026-09-18","nav":"1.860000","cumulative_nav":"2.205083","cum_nav_withdrawal":"2.060000"}
+{"src":"email","beian_hao":"SSA194","d":"2026-09-11","nav":"1.860600","cumulative_nav":"1.960600","cum_nav_withdrawal":null}
+
+==== search tip unit 1.7625 ====
+{"src":"team","beian_hao":"NY759B","d":"2024-10-29","u":"1.762800","c":"1.762800"}
+{"src":"team","beian_hao":"NY759B","d":"2025-02-07","u":"1.761600","c":"2.107000"}
+{"src":"team","beian_hao":"SABU65","d":"2026-04-17","u":"1.762300","c":"1.762300"}
+{"src":"team","beian_hao":"SND951","d":"2024-05-31","u":"1.761000","c":"3.079000"}
+{"src":"team","beian_hao":"SND951","d":"2024-10-09","u":"1.761000","c":"3.079000"}
+{"src":"team","beian_hao":"SADG72","d":"2026-07-06","u":"1.761500","c":"4.319100"}
+{"src":"pfn","beian_hao":"SQT582","d":"2026-03-13","u":"1.762500","c":"2.718600"}
+{"src":"pfn","beian_hao":"SNG851","d":"2026-03-20","u":"1.763000","c":"1.763000"}
+{"src":"pfn","beian_hao":"STV342","d":"2026-03-20","u":"1.761200","c":"1.761200"}
+{"src":"pfn","beian_hao":"ZA051C","d":"2026-03-20","u":"1.764000","c":"1.764000"}
+{"src":"pfn","beian_hao":"SZA051","d":"2026-03-20","u":"1.763000","c":"1.967000"}
+{"src":"pfn","beian_hao":"NB988B","d":"2026-03-20","u":"1.764000","c":"2.414000"}
+{"src":"pfn","beian_hao":"SXA386","d":"2026-03-20","u":"1.764000","c":"1.764000"}
+{"src":"pfn","beian_hao":"SQQ924","d":"2026-03-27","u":"1.762000","c":"1.762000"}
+{"src":"pfn","beian_hao":"SLM742","d":"2026-03-13","u":"1.763000","c":"1.763000"}
+{"src":"pfn","beian_hao":"SNU706","d":"2026-03-17","u":"1.761300","c":"2.055400"}
+{"src":"pfn","beian_hao":"SVA803","d":"2026-03-13","u":"1.761000","c":"1.761000"}
+{"src":"pfn","beian_hao":"SVG400","d":"2026-03-23","u":"1.762300","c":"1.762300"}
+{"src":"pfn","beian_hao":"SJP155","d":"2026-03-20","u":"1.762000","c":"1.762000"}
+{"src":"pfn","beian_hao":"SGT771","d":"2026-03-20","u":"1.761000","c":"2.625000"}
+{"src":"pfn","beian_hao":"SAGY78","d":"2026-03-13","u":"1.764000","c":"1.764000"}
+{"src":"pfn","beian_hao":"SNE440","d":"2026-03-13","u":"1.761100","c":"1.761100"}
+{"src":"pfn","beian_hao":"SEE237","d":"2026-03-20","u":"1.763000","c":"1.763000"}
+{"src":"pfn","beian_hao":"SEU753","d":"2026-03-26","u":"1.763900","c":"1.763900"}
+{"src":"pfn","beian_hao":"SEU753","d":"2026-03-30","u":"1.763600","c":"1.763600"}
+{"src":"pfn","beian_hao":"SACX81","d":"2026-03-16","u":"1.762900","c":"1.785100"}
+{"src":"pfn","beian_hao":"SSB668","d":"2026-03-25","u":"1.762000","c":"1.885000"}
+{"src":"pfn","beian_hao":"STE760","d":"2026-03-27","u":"1.763000","c":"1.763000"}
+{"src":"pfn","beian_hao":"SLY430","d":"2026-03-10","u":"1.763000","c":"1.763000"}
+{"src":"pfn","beian_hao":"GV041A","d":"2026-03-13","u":"1.763300","c":"1.763300"}
+
+==== cache tip 集微 / GA681 ====
+{"cache_key":"GA681A","beian_hao":"GA681A","product_name":"集微投资2期私募证券投资基金A类份额","tip_nav_date":"2026-09-24","tip_unit_nav":"1.860100","nav_data_source":"team","refreshed_at":"2026-09-29 12:20:39.421244+08","n":405}
+{"cache_key":"SGA681","beian_hao":"SGA681","product_name":"集微投资2期私募证券投资基金","tip_nav_date":"2024-10-11","tip_unit_nav":"1.517300","nav_data_source":null,"refreshed_at":"2026-09-10 20:14:58.441199+08","n":296}

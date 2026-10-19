@@ -1,0 +1,97 @@
+[
+  {
+    "bucket": "1m",
+    "label": "约1个月",
+    "beian_hao": "SCY504",
+    "product_name": "SCY504",
+    "span_days": 0,
+    "uploaded_points": 5,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SCY504",
+      "product_name": "和途科技成长精选私募证券投资基金",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 2,
+      "navPoints": 5
+    },
+    "pass": true
+  },
+  {
+    "bucket": "3m",
+    "label": "约3个月",
+    "beian_hao": "SBUB04",
+    "product_name": "SBUB04",
+    "span_days": 0,
+    "uploaded_points": 19,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SBUB04",
+      "product_name": "涌涵优优CTA致远1号",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 5,
+      "navPoints": 19
+    },
+    "pass": true
+  },
+  {
+    "bucket": "6m",
+    "label": "约6个月",
+    "beian_hao": "VX843A",
+    "product_name": "VX843A",
+    "span_days": 0,
+    "uploaded_points": 62,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "VX843A",
+      "product_name": "竹润乐享量化对冲2号A类",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 7,
+      "navPoints": 62
+    },
+    "pass": true
+  },
+  {
+    "bucket": "1y",
+    "label": "约1年",
+    "beian_hao": "SBKJ11",
+    "product_name": "SBKJ11",
+    "span_days": 0,
+    "uploaded_points": 44,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SBKJ11",
+      "product_name": "正合中证2000指增",
+      "correlation": 1,
+      "score": 0.9918862472409964,
+      "overlapMonths": 11,
+      "navPoints": 48
+    },
+    "pass": true
+  },
+  {
+    "bucket": "2y",
+    "label": "约2年",
+    "beian_hao": "S6631D",
+    "product_name": "S6631D",
+    "span_days": 0,
+    "uploaded_points": 105,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "S6631D",
+      "product_name": "银万价值对冲一号D类",
+      "correlation": 1,
+      "score": 0.9230233885947474,
+      "overlapMonths": 14,
+      "navPoints": 54
+    },
+    "pass": true
+  }
+]

@@ -9,16 +9,30 @@
  */
 
 import { query } from "@/lib/db"
+import { listTeamUpdateCodes, type TeamUpdateCode } from "@/lib/server/team-data-query-pg"
 import { setListResponseCache, withListResponseCache } from "@/lib/server/list-response-cache"
 import { shanghaiToday } from "@/lib/ops-data-overview"
 import {
   FOF99_LIST_COVERAGE,
   FOF99_POLICY_ROWS,
   addIsoDays,
+  EMAIL_STALE_LIST_LABEL,
+  buildEmailCohort,
+  buildEmailCountBridge,
   buildUniverseMoves,
+  emptyEmailCohortCounts,
   formatCnMonthDay,
   formatWeekLabel,
   mondayOf,
+  type EmailBridgeRecord,
+  type EmailBridgeTeam,
+  type EmailCohortCounts,
+  type EmailCohortKey,
+  type EmailCountBridge,
+  type EmailProductStatus,
+  type EmailStaleListKey,
+  type EmailStaleListResponse,
+  type EmailStaleProduct,
   type UpdateChannel,
   type UpdateChannelResponse,
   type UpdateCoverageBlock,
@@ -519,6 +533,8 @@ async function buildFof99(thisWeek: string, lastWeek: string): Promise<UpdateCha
     current_week: current && (current.products > 0 || current.backfill_products > 0) ? current : null,
     history,
     list_coverage: FOF99_LIST_COVERAGE,
+    email_products: null,
+    email_count_bridge: null,
     universe_moves: buildUniverseMoves(
       totalsRows[0] ?? { added: 0, added_still_weekly: 0, moved_slow: 0, moved_still_slow: 0 },
       admitRows,
@@ -527,11 +543,584 @@ async function buildFof99(thisWeek: string, lastWeek: string): Promise<UpdateCha
   }
 }
 
+type EmailCohortRow = EmailCohortCounts & { cohort: string }
+
+function sqlDate(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) throw new Error("bad week")
+  return iso
+}
+
+/**
+ * Ever-emailed products, and the subset written last week.
+ * Freshness windows match `emailFreshnessBucket`.
+ * Latest date is the later of email, manual, fof99, and the product-page date.
+ * The product-page date is the later of `private_fund_info.latest_nav_date`,
+ * the detail NAV cache tip (the chart the product page serves), and the
+ * tracking / FOF / managed list dates the page header uses.
+ * The winning channel compares only email, manual, and fof99. Same day: manual, then email.
+ */
+function emailTaggedCte(lastWeek: string): string {
+  const week = sqlDate(lastWeek)
+  return `
+WITH today AS (
+  SELECT (timezone('Asia/Shanghai', now()))::date AS d
+),
+email_base AS (
+  SELECT
+    UPPER(BTRIM(product_code)) AS code,
+    BOOL_OR(date_trunc('week', created_at AT TIME ZONE 'Asia/Shanghai')::date = DATE '${week}') AS in_last_week,
+    (MAX(nav_date) FILTER (
+      WHERE nav IS NOT NULL AND nav_date IS NOT NULL AND nav_date > DATE '1970-01-01'
+    ))::date AS nav_d
+  FROM ops_email_nav_records
+  WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+  GROUP BY 1
+),
+manual_nav AS (
+  SELECT UPPER(BTRIM(beian_hao)) AS code, MAX(nav_date)::date AS d
+  FROM ops_team_nav_manual
+  WHERE unit_nav IS NOT NULL
+    AND nav_date IS NOT NULL
+    AND nav_type = 'pre_fee'
+    AND nav_date > DATE '1970-01-01'
+    AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+  GROUP BY 1
+),
+val AS (
+  SELECT
+    UPPER(BTRIM(product_code)) AS code,
+    (MAX(valuation_date) FILTER (
+      WHERE COALESCE(source, '') = 'manual_upload'
+         OR COALESCE(crawl_email_account, '') = 'team_manual_upload'
+    ))::date AS manual_d,
+    (MAX(valuation_date) FILTER (
+      WHERE NOT (
+        COALESCE(source, '') = 'manual_upload'
+        OR COALESCE(crawl_email_account, '') = 'team_manual_upload'
+      )
+    ))::date AS email_d
+  FROM ops_email_valuation_records
+  WHERE valuation_date IS NOT NULL
+    AND valuation_date > DATE '1970-01-01'
+    AND NULLIF(BTRIM(product_code), '') IS NOT NULL
+  GROUP BY 1
+),
+fof AS (
+  SELECT UPPER(BTRIM(reg_code)) AS code, MAX(price_date)::date AS d
+  FROM fof99_nav_fetch_log
+  WHERE status = 'ok'
+    AND price_date > DATE '1970-01-01'
+    AND NULLIF(BTRIM(reg_code), '') IS NOT NULL
+  GROUP BY 1
+),
+uni AS (
+  SELECT DISTINCT ON (code) code, policy
+  FROM (
+    SELECT UPPER(BTRIM(reg_code)) AS code, policy
+    FROM fof99_nav_universe
+    WHERE NULLIF(BTRIM(reg_code), '') IS NOT NULL
+  ) s
+  ORDER BY code
+),
+page AS (
+  SELECT code, MAX(d) AS d
+  FROM (
+    SELECT UPPER(BTRIM(beian_hao)) AS code, latest_nav_date::date AS d
+    FROM private_fund_info
+    WHERE latest_nav_date IS NOT NULL
+      AND latest_nav_date > DATE '1970-01-01'
+      AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)), tip_nav_date::date
+    FROM ops_private_fund_detail_nav_cache
+    WHERE tip_nav_date IS NOT NULL
+      AND tip_nav_date > DATE '1970-01-01'
+      AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)), nav_date::date
+    FROM ops_tracking_funds_list_cache
+    WHERE nav_date IS NOT NULL
+      AND nav_date > DATE '1970-01-01'
+      AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)), nav_date::date
+    FROM ops_managed_products_list_cache
+    WHERE nav_date IS NOT NULL
+      AND nav_date > DATE '1970-01-01'
+      AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)), nav_date::date
+    FROM ops_fof_overview_list_cache
+    WHERE nav_date IS NOT NULL
+      AND nav_date > DATE '1970-01-01'
+      AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+  ) s
+  WHERE code <> ''
+  GROUP BY code
+),
+pool AS (
+  SELECT DISTINCT UPPER(BTRIM(register_number)) AS code
+  FROM tracking_pool
+  WHERE NULLIF(BTRIM(register_number), '') IS NOT NULL
+),
+flags AS (
+  SELECT
+    e.code,
+    e.in_last_week,
+    (e.nav_d IS NOT NULL OR v.email_d IS NOT NULL) AS has_email,
+    (m.d IS NOT NULL OR v.manual_d IS NOT NULL) AS has_manual,
+    (f.d IS NOT NULL) AS has_fof99,
+    GREATEST(e.nav_d, v.email_d) AS email_d,
+    GREATEST(m.d, v.manual_d) AS manual_d,
+    f.d AS fof_d,
+    GREATEST(e.nav_d, v.email_d, m.d, v.manual_d, f.d, p.d) AS latest,
+    COALESCE(u.policy, 'none') AS policy,
+    (pool.code IS NOT NULL) AS in_pool
+  FROM email_base e
+  LEFT JOIN manual_nav m ON m.code = e.code
+  LEFT JOIN val v ON v.code = e.code
+  LEFT JOIN fof f ON f.code = e.code
+  LEFT JOIN uni u ON u.code = e.code
+  LEFT JOIN page p ON p.code = e.code
+  LEFT JOIN pool ON pool.code = e.code
+),
+tagged AS (
+  SELECT
+    f.*,
+    CASE
+      WHEN f.manual_d IS NOT NULL
+        AND f.manual_d >= COALESCE(f.email_d, f.manual_d)
+        AND f.manual_d >= COALESCE(f.fof_d, f.manual_d)
+        THEN 'manual'
+      WHEN f.email_d IS NOT NULL
+        AND f.email_d >= COALESCE(f.fof_d, f.email_d)
+        THEN 'email'
+      WHEN f.fof_d IS NOT NULL THEN 'fof99'
+      ELSE 'none'
+    END AS winner
+  FROM flags f
+)`
+}
+
+function emailProductStatusSql(lastWeek: string): string {
+  return `${emailTaggedCte(lastWeek)}
+SELECT
+  c.cohort,
+  COUNT(*)::int AS total,
+  COUNT(*) FILTER (WHERE in_pool)::int AS in_pool,
+  COUNT(*) FILTER (WHERE has_fof99)::int AS with_fof99,
+  COUNT(*) FILTER (WHERE has_manual)::int AS with_manual,
+  COUNT(*) FILTER (WHERE has_email AND (has_fof99 OR has_manual))::int AS multi_source,
+  COUNT(*) FILTER (WHERE has_email AND NOT has_fof99 AND NOT has_manual)::int AS src_email_only,
+  COUNT(*) FILTER (WHERE has_email AND has_fof99 AND NOT has_manual)::int AS src_email_fof99,
+  COUNT(*) FILTER (WHERE has_email AND has_manual AND NOT has_fof99)::int AS src_email_manual,
+  COUNT(*) FILTER (WHERE has_email AND has_fof99 AND has_manual)::int AS src_all_three,
+  COUNT(*) FILTER (WHERE NOT has_email AND (has_fof99 OR has_manual))::int AS src_other,
+  COUNT(*) FILTER (WHERE NOT has_email AND NOT has_fof99 AND NOT has_manual)::int AS src_none,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest >= t.d - 7)::int AS fresh_w1,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest < t.d - 7 AND latest >= t.d - 14)::int AS fresh_w1_2,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest < t.d - 14 AND latest >= t.d - 21)::int AS fresh_w2_3,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest < t.d - 21 AND latest >= t.d - 28)::int AS fresh_w3_4,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest < t.d - 28 AND latest >= (t.d - INTERVAL '2 months')::date)::int AS fresh_m1_2,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest < (t.d - INTERVAL '2 months')::date AND latest >= (t.d - INTERVAL '3 months')::date)::int AS fresh_m2_3,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest < (t.d - INTERVAL '3 months')::date AND latest >= (t.d - INTERVAL '6 months')::date)::int AS fresh_m3_6,
+  COUNT(*) FILTER (WHERE latest IS NOT NULL AND latest < (t.d - INTERVAL '6 months')::date)::int AS fresh_over_m6,
+  COUNT(*) FILTER (WHERE latest IS NULL)::int AS fresh_none,
+  COUNT(*) FILTER (WHERE winner = 'email')::int AS ch_email,
+  COUNT(*) FILTER (WHERE winner = 'manual')::int AS ch_manual,
+  COUNT(*) FILTER (WHERE winner = 'fof99')::int AS ch_fof99,
+  COUNT(*) FILTER (WHERE winner = 'none')::int AS ch_none,
+  COUNT(*) FILTER (WHERE policy = 'weekly')::int AS pol_weekly,
+  COUNT(*) FILTER (WHERE policy = 'weekly_plus')::int AS pol_weekly_plus,
+  COUNT(*) FILTER (WHERE policy = 'update_slow')::int AS pol_update_slow,
+  COUNT(*) FILTER (WHERE policy = 'skip')::int AS pol_skip,
+  COUNT(*) FILTER (WHERE policy IS NULL OR policy NOT IN ('weekly', 'weekly_plus', 'update_slow', 'skip'))::int AS pol_none
+FROM tagged
+CROSS JOIN today t
+CROSS JOIN (VALUES ('ever'::text), ('last_week')) AS c(cohort)
+WHERE c.cohort = 'ever' OR in_last_week
+GROUP BY c.cohort
+`
+}
+
+function cohortCounts(row: EmailCohortRow | undefined): EmailCohortCounts {
+  const blank = emptyEmailCohortCounts()
+  if (!row) return blank
+  const counts = { ...blank }
+  for (const key of Object.keys(blank) as Array<keyof EmailCohortCounts>) {
+    counts[key] = num(row[key])
+  }
+  return counts
+}
+
+function emailProductStatus(rows: EmailCohortRow[]): EmailProductStatus {
+  const byCohort = new Map(rows.map((row) => [row.cohort, row]))
+  const cohort = (key: EmailCohortKey) => buildEmailCohort(cohortCounts(byCohort.get(key)))
+  return { ever: cohort("ever"), last_week: cohort("last_week") }
+}
+
+function staleFreshnessWhere(key: EmailStaleListKey): string {
+  const latest = "t.latest"
+  const today = "d.d"
+  const twoMonths = `(${today} - INTERVAL '2 months')::date`
+  const threeMonths = `(${today} - INTERVAL '3 months')::date`
+  const sixMonths = `(${today} - INTERVAL '6 months')::date`
+  switch (key) {
+    case "w2_3":
+      return `${latest} IS NOT NULL AND ${latest} < ${today} - 14 AND ${latest} >= ${today} - 21`
+    case "w3_4":
+      return `${latest} IS NOT NULL AND ${latest} < ${today} - 21 AND ${latest} >= ${today} - 28`
+    case "m1_2":
+      return `${latest} IS NOT NULL AND ${latest} < ${today} - 28 AND ${latest} >= ${twoMonths}`
+    case "m2_3":
+      return `${latest} IS NOT NULL AND ${latest} < ${twoMonths} AND ${latest} >= ${threeMonths}`
+    case "m3_6":
+      return `${latest} IS NOT NULL AND ${latest} < ${threeMonths} AND ${latest} >= ${sixMonths}`
+    case "over_m6":
+      return `${latest} IS NOT NULL AND ${latest} < ${sixMonths}`
+    case "behind_2w":
+      return `${latest} IS NOT NULL AND ${latest} < ${today} - 14`
+  }
+}
+
+type StaleProductRow = {
+  code: string
+  name: string | null
+  latest: string | null
+  lag_days: number | null
+  email_date: string | null
+  manual_date: string | null
+  fof99_date: string | null
+  has_email: boolean
+  has_manual: boolean
+  has_fof99: boolean
+  winner: string
+  policy: string | null
+  in_pool: boolean
+}
+
+function emailStaleListSql(lastWeek: string, cohort: EmailCohortKey, freshness: EmailStaleListKey): string {
+  const cohortSql = cohort === "last_week" ? "t.in_last_week" : "TRUE"
+  return `${emailTaggedCte(lastWeek)}
+, names AS (
+  SELECT DISTINCT ON (code)
+    UPPER(BTRIM(beian_hao)) AS code,
+    BTRIM(product_name) AS name
+  FROM private_fund_info
+  WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+    AND NULLIF(BTRIM(product_name), '') IS NOT NULL
+  ORDER BY code, latest_nav_date DESC NULLS LAST
+),
+email_names AS (
+  SELECT DISTINCT ON (code)
+    UPPER(BTRIM(product_code)) AS code,
+    BTRIM(fund_name) AS name
+  FROM ops_email_nav_records
+  WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+    AND NULLIF(BTRIM(fund_name), '') IS NOT NULL
+  ORDER BY code, created_at DESC
+)
+SELECT
+  t.code,
+  COALESCE(NULLIF(n.name, ''), NULLIF(en.name, ''), '') AS name,
+  t.latest::text AS latest,
+  (d.d - t.latest)::int AS lag_days,
+  t.email_d::text AS email_date,
+  t.manual_d::text AS manual_date,
+  t.fof_d::text AS fof99_date,
+  t.has_email,
+  t.has_manual,
+  t.has_fof99,
+  t.winner,
+  t.policy,
+  t.in_pool
+FROM tagged t
+CROSS JOIN today d
+LEFT JOIN names n ON n.code = t.code
+LEFT JOIN email_names en ON en.code = t.code
+WHERE ${cohortSql}
+  AND ${staleFreshnessWhere(freshness)}
+ORDER BY t.latest ASC NULLS LAST, t.code
+LIMIT 500
+`
+}
+
+function flag(value: unknown): boolean {
+  return value === true || value === "t" || value === "true" || value === 1
+}
+
+function staleProduct(row: StaleProductRow): EmailStaleProduct {
+  const winner = row.winner === "email" || row.winner === "manual" || row.winner === "fof99" ? row.winner : "none"
+  return {
+    code: String(row.code ?? "").trim(),
+    name: String(row.name ?? "").trim(),
+    latest: day(row.latest),
+    lag_days: row.lag_days == null ? null : num(row.lag_days),
+    email_date: day(row.email_date),
+    manual_date: day(row.manual_date),
+    fof99_date: day(row.fof99_date),
+    has_email: flag(row.has_email),
+    has_manual: flag(row.has_manual),
+    has_fof99: flag(row.has_fof99),
+    channel: winner,
+    policy: String(row.policy ?? "none"),
+    in_pool: flag(row.in_pool),
+  }
+}
+
+export async function listEmailStaleProducts(
+  cohort: EmailCohortKey,
+  freshness: EmailStaleListKey,
+): Promise<EmailStaleListResponse> {
+  const today = shanghaiToday()
+  const lastWeek = addIsoDays(mondayOf(today), -7)
+  const key = `ops-email-stale:v3:${lastWeek}:${cohort}:${freshness}`
+  return await withListResponseCache(key, async () => {
+    const rows = await query<StaleProductRow>(emailStaleListSql(lastWeek, cohort, freshness))
+    const products = rows.map(staleProduct).filter((row) => row.code)
+    return {
+      cohort,
+      freshness,
+      label: EMAIL_STALE_LIST_LABEL[freshness],
+      as_of: today,
+      total: products.length,
+      products,
+    }
+  }) as EmailStaleListResponse
+}
+
+type BridgeFactRow = {
+  code: string
+  in_ever: boolean
+  in_last_week: boolean
+  in_library: boolean
+  channel: string | null
+}
+
+function bridgeChannel(value: string | null): EmailBridgeRecord["channel"] {
+  if (value === "email" || value === "manual" || value === "fof99") return value
+  return "none"
+}
+
+/**
+ * Ever-emailed codes, plus library products whose latest channel is email
+ * even when that code never appears in the email NAV table.
+ * Channel rule matches 数据概览 全库.
+ */
+function emailBridgeSql(lastWeek: string): string {
+  const week = sqlDate(lastWeek)
+  return `
+WITH email_ever AS (
+  SELECT
+    UPPER(BTRIM(product_code)) AS code,
+    BOOL_OR(date_trunc('week', created_at AT TIME ZONE 'Asia/Shanghai')::date = DATE '${week}') AS in_last_week
+  FROM ops_email_nav_records
+  WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
+  GROUP BY 1
+),
+channels AS (
+  SELECT code, channel, MAX(d) AS d
+  FROM (
+    SELECT UPPER(BTRIM(product_code)) AS code, 'email'::text AS channel, nav_date::date AS d
+    FROM ops_email_nav_records
+    WHERE nav IS NOT NULL AND nav_date IS NOT NULL AND nav_date > DATE '1970-01-01'
+    UNION ALL
+    SELECT UPPER(BTRIM(product_code)),
+      CASE
+        WHEN COALESCE(source, '') = 'manual_upload' OR COALESCE(crawl_email_account, '') = 'team_manual_upload'
+        THEN 'manual' ELSE 'email'
+      END,
+      valuation_date::date
+    FROM ops_email_valuation_records
+    WHERE valuation_date IS NOT NULL AND valuation_date > DATE '1970-01-01'
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)), 'manual', nav_date::date
+    FROM ops_team_nav_manual
+    WHERE unit_nav IS NOT NULL
+      AND nav_date IS NOT NULL
+      AND nav_type = 'pre_fee'
+      AND nav_date > DATE '1970-01-01'
+    UNION ALL
+    SELECT UPPER(BTRIM(reg_code)), 'fof99', price_date::date
+    FROM fof99_nav_fetch_log
+    WHERE status = 'ok' AND price_date > DATE '1970-01-01'
+  ) s
+  WHERE code <> '' AND d IS NOT NULL
+  GROUP BY code, channel
+),
+best_channel AS (
+  SELECT DISTINCT ON (code) code, channel
+  FROM channels
+  ORDER BY code, d DESC, CASE channel WHEN 'manual' THEN 3 WHEN 'email' THEN 2 ELSE 1 END DESC
+),
+library AS (
+  SELECT DISTINCT UPPER(BTRIM(beian_hao)) AS code
+  FROM private_fund_info
+  WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+)
+SELECT
+  e.code,
+  TRUE AS in_ever,
+  e.in_last_week,
+  (l.code IS NOT NULL) AS in_library,
+  COALESCE(b.channel, '') AS channel
+FROM email_ever e
+LEFT JOIN library l ON l.code = e.code
+LEFT JOIN best_channel b ON b.code = e.code
+UNION ALL
+SELECT
+  b.code,
+  FALSE AS in_ever,
+  FALSE AS in_last_week,
+  TRUE AS in_library,
+  b.channel
+FROM best_channel b
+JOIN library l ON l.code = b.code
+LEFT JOIN email_ever e ON e.code = b.code
+WHERE b.channel = 'email' AND e.code IS NULL
+`
+}
+
+function teamOnlyFactSql(): string {
+  return `
+WITH input AS (
+  SELECT DISTINCT code FROM unnest($1::text[]) AS t(code)
+),
+channels AS (
+  SELECT code, channel, MAX(d) AS d
+  FROM (
+    SELECT UPPER(BTRIM(product_code)) AS code, 'email'::text AS channel, nav_date::date AS d
+    FROM ops_email_nav_records
+    WHERE nav IS NOT NULL AND nav_date IS NOT NULL AND nav_date > DATE '1970-01-01'
+    UNION ALL
+    SELECT UPPER(BTRIM(product_code)),
+      CASE
+        WHEN COALESCE(source, '') = 'manual_upload' OR COALESCE(crawl_email_account, '') = 'team_manual_upload'
+        THEN 'manual' ELSE 'email'
+      END,
+      valuation_date::date
+    FROM ops_email_valuation_records
+    WHERE valuation_date IS NOT NULL AND valuation_date > DATE '1970-01-01'
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)), 'manual', nav_date::date
+    FROM ops_team_nav_manual
+    WHERE unit_nav IS NOT NULL
+      AND nav_date IS NOT NULL
+      AND nav_type = 'pre_fee'
+      AND nav_date > DATE '1970-01-01'
+    UNION ALL
+    SELECT UPPER(BTRIM(reg_code)), 'fof99', price_date::date
+    FROM fof99_nav_fetch_log
+    WHERE status = 'ok' AND price_date > DATE '1970-01-01'
+  ) s
+  WHERE code <> '' AND d IS NOT NULL
+  GROUP BY code, channel
+),
+best_channel AS (
+  SELECT DISTINCT ON (code) code, channel
+  FROM channels
+  ORDER BY code, d DESC, CASE channel WHEN 'manual' THEN 3 WHEN 'email' THEN 2 ELSE 1 END DESC
+),
+library AS (
+  SELECT DISTINCT UPPER(BTRIM(beian_hao)) AS code
+  FROM private_fund_info
+  WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+)
+SELECT
+  i.code,
+  (l.code IS NOT NULL) AS in_library,
+  COALESCE(b.channel, '') AS channel
+FROM input i
+LEFT JOIN library l ON l.code = i.code
+LEFT JOIN best_channel b ON b.code = i.code
+`
+}
+
+function bridgeRecords(
+  everRows: BridgeFactRow[],
+  teamRows: TeamUpdateCode[],
+  teamOnly: Map<string, { inLibrary: boolean; channel: EmailBridgeRecord["channel"] }>,
+): { records: EmailBridgeRecord[]; blankTeamEmailRows: number; duplicateTeamEmailRows: number } {
+  const byCode = new Map<string, EmailBridgeRecord>()
+  for (const row of everRows) {
+    const code = String(row.code || "").trim().toUpperCase()
+    if (!code || byCode.has(code)) continue
+    byCode.set(code, {
+      inEver: flag(row.in_ever),
+      inLastWeek: flag(row.in_last_week),
+      inLibrary: flag(row.in_library),
+      channel: bridgeChannel(row.channel),
+      team: "absent",
+    })
+  }
+  const methodByCode = new Map<string, EmailBridgeTeam>()
+  let blankTeamEmailRows = 0
+  let duplicateTeamEmailRows = 0
+  for (const row of teamRows) {
+    const code = row.code.trim().toUpperCase()
+    if (!code) {
+      if (row.method === "email") blankTeamEmailRows += 1
+      continue
+    }
+    const prev = methodByCode.get(code)
+    if (prev === "email" && row.method === "email") duplicateTeamEmailRows += 1
+    if (!prev || row.method === "email") methodByCode.set(code, row.method)
+  }
+  for (const [code, method] of methodByCode) {
+    const existing = byCode.get(code)
+    if (existing) {
+      existing.team = method
+      continue
+    }
+    if (method !== "email") continue
+    const fact = teamOnly.get(code)
+    byCode.set(code, {
+      inEver: false,
+      inLastWeek: false,
+      inLibrary: fact?.inLibrary ?? false,
+      channel: fact?.channel ?? "none",
+      team: "email",
+    })
+  }
+  return { records: [...byCode.values()], blankTeamEmailRows, duplicateTeamEmailRows }
+}
+
+async function loadEmailCountBridge(lastWeek: string, teamRows: TeamUpdateCode[]): Promise<EmailCountBridge> {
+  const everRows = await query<BridgeFactRow>(emailBridgeSql(lastWeek))
+  const known = new Set(everRows.map((row) => String(row.code || "").trim().toUpperCase()).filter(Boolean))
+  const missing = [...new Set(
+    teamRows
+      .filter((row) => row.method === "email")
+      .map((row) => row.code.trim().toUpperCase())
+      .filter((code) => code && !known.has(code)),
+  )]
+  const teamOnly = new Map<string, { inLibrary: boolean; channel: EmailBridgeRecord["channel"] }>()
+  if (missing.length > 0) {
+    const facts = await query<{ code: string; in_library: boolean; channel: string | null }>(teamOnlyFactSql(), [missing])
+    for (const row of facts) {
+      teamOnly.set(String(row.code || "").trim().toUpperCase(), {
+        inLibrary: flag(row.in_library),
+        channel: bridgeChannel(row.channel),
+      })
+    }
+  }
+  return buildEmailCountBridge(bridgeRecords(everRows, teamRows, teamOnly))
+}
+
 async function buildEmail(thisWeek: string, lastWeek: string): Promise<UpdateChannelResponse> {
-  const [coverageRows, weekRows] = await Promise.all([
+  try {
+    const { ensureFofUnderlyingInEmailPool } = await import("@/lib/server/fof-email-product-sync")
+    await ensureFofUnderlyingInEmailPool()
+  } catch (err) {
+    console.warn("[update-channel] FOF→邮箱池 sync skipped:", err)
+  }
+  const [coverageRows, weekRows, cohortRows, teamRows] = await Promise.all([
     query<PolicyCount>(EMAIL_COVERAGE_SQL),
     query<EmailWeekRow>(EMAIL_WEEKS_SQL),
+    query<EmailCohortRow>(emailProductStatusSql(lastWeek)),
+    listTeamUpdateCodes(),
   ])
+  const emailCountBridge = await loadEmailCountBridge(lastWeek, teamRows)
   const history = fillWeekGaps(weekRows.map((row) => emailWeek(row, thisWeek)), thisWeek)
   const last = history.find((row) => row.week_start === lastWeek) ?? emptyWeek(lastWeek, false)
   const current = history.find((row) => row.week_start === thisWeek) ?? null
@@ -550,6 +1139,8 @@ async function buildEmail(thisWeek: string, lastWeek: string): Promise<UpdateCha
     history,
     list_coverage: null,
     universe_moves: null,
+    email_products: emailProductStatus(cohortRows),
+    email_count_bridge: emailCountBridge,
   }
 }
 
@@ -568,7 +1159,7 @@ export function parseUpdateChannel(raw: string | null): UpdateChannel | null {
 }
 
 export async function getUpdateChannel(channel: UpdateChannel, refresh: boolean): Promise<UpdateChannelResponse> {
-  const key = `ops-update-channel:v4:${channel}`
+  const key = `ops-update-channel:v6:${channel}`
   if (refresh) {
     const body = await buildUpdateChannel(channel)
     setListResponseCache(key, body)

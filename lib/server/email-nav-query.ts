@@ -589,6 +589,20 @@ export function buildEmailNavFofUnderlyingRejectFilter(
   )`
 }
 
+/**
+ * One Citics workbook covering several funds.
+ * `【基金净值】SAXN78等_九木套利1号…等_` and CMS `等N个产品` put the first
+ * fund in the subject that every row shares. That subject is not the row's name.
+ */
+export function isCiticsBatchNavMail(
+  subject: string | null | undefined,
+  filename?: string | null,
+): boolean {
+  const text = `${subject ?? ""}\n${filename ?? ""}`
+  if (/等\s*\d+\s*个产品/u.test(text)) return true
+  return /【(?:基金净值|净值公告)】[A-Z0-9]+\s*等_/u.test(text)
+}
+
 /** Reject email rows that belong to a different share class / product code. */
 export function emailRowMatchesFund(
   row: EmailNavRawRow,
@@ -600,13 +614,19 @@ export function emailRowMatchesFund(
 
   const productCode = usableEmailProductCode(row.product_code)
   const beianIsCode = isPlausibleEmailProductCode(beian)
-  const metaForName = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""} ${row.subject ?? ""}`
+  const batchMail = isCiticsBatchNavMail(row.subject, row.attachment_filename)
+  // A batch workbook repeats the first fund in the subject and filename.
+  // Only the row's own fund_name identifies it (SAXN78 must not take BHW97A).
+  const metaForName = batchMail
+    ? `${row.fund_name ?? ""}`
+    : `${row.fund_name ?? ""} ${row.attachment_filename ?? ""} ${row.subject ?? ""}`
   const nameHit =
     nameMatchesAlias(row.fund_name, aliases)
     || aliases.some((alias) => alias.length >= 4 && metaForName.includes(alias))
   // Citics Auto-Disclosure is one product per mail; product_code (SAFFP4) can
-  // differ from AMAC 备案号. CMS 等N个产品 mails must still reject code mismatch.
-  const citicsSingleProduct = /【(?:基金净值|净值公告)】/u.test(`${row.subject ?? ""}\n${row.attachment_filename ?? ""}`)
+  // differ from AMAC 备案号. A 等 batch is not that mail: a sibling row shares
+  // the subject, and a code mismatch (or a code like BHW97A(A级)) stays a mismatch.
+  const citicsSingleProduct = !batchMail && /【(?:基金净值|净值公告)】/u.test(`${row.subject ?? ""}\n${row.attachment_filename ?? ""}`)
   if (
     beianIsCode
     && productCode
@@ -640,7 +660,10 @@ export function emailRowMatchesFund(
     return false
   }
 
-  if (beianIsCode && meta.toUpperCase().includes(beian) && (nameHit || !row.fund_name)) return true
+  // Batch subjects name the first fund only. An empty fund_name must not
+  // inherit that 备案号 (BHW97A(A级) is not a usable code, so the check above
+  // never sees the mismatch).
+  if (beianIsCode && meta.toUpperCase().includes(beian) && (nameHit || (!batchMail && !row.fund_name))) return true
 
   if (nameMatchesAlias(row.fund_name, aliases)) {
     if (
@@ -3062,6 +3085,34 @@ function rebaseAdditiveEmailCumulative(
   return shifted
 }
 
+/** A legacy 累计 above 单位 means this fund already publishes a dividend gap. */
+function legacyConfirmsHighCumulative(rows: LegacyNavRow[]): boolean {
+  for (const row of rows) {
+    const unit = parseOptionalNav(row.nav)
+    const cum = parseOptionalNav(row.cum_nav_withdrawal) ?? parseOptionalNav(row.cumulative_nav)
+    if (unit != null && cum != null && hasDividendOffset(unit, cum)) return true
+  }
+  return false
+}
+
+/**
+ * Drop an email 累计 above 2× 单位 when nothing has confirmed that scale.
+ * A copied 复权 (equal to that 累计) is cleared with it.
+ */
+function dropUnconfirmedHighEmailCumulative(emailRows: EmailNavPoint[]): EmailNavPoint[] {
+  return emailRows.map((row, index) => {
+    const unit = parseOptionalNav(row.nav)
+    const cum = parseOptionalNav(row.cumulative_nav)
+    if (unit == null || cum == null || !emailCumUnitRatioExceedsCap(unit, cum)) return row
+    // A later 单位净值 of 1.0000, with 累计 unchanged, is a reset. Keep that 累计
+    // so 复权 follows the 累计 change. The opening 1.0000 is not this case.
+    if (isConfirmedMidSeriesUnitReset(emailRows, index)) return row
+    const adj = parseOptionalNav(row.adjusted_nav)
+    const adjustedNav = adj != null && Math.abs(adj - cum) < 0.001 ? null : row.adjusted_nav
+    return { ...row, cumulative_nav: null, adjusted_nav: adjustedNav }
+  })
+}
+
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(
   legacyRows: LegacyNavRow[],
@@ -3074,23 +3125,13 @@ export function mergeNavSeriesWithEmail(
   const legacyPrepared = repairSwappedCumAdjRows(legacyRows)
   emailRows = clearCorruptEmailCumulative(emailRows)
   emailRows = rebaseAdditiveEmailCumulative(legacyPrepared, emailRows)
-  // No 火富牛 overlap: a series still above 2× may be an unshifted custodian
-  // base (R0423B +2.5943). The list sparkline merges email alone and cannot
-  // learn that constant, so it keeps the unit and drops the raw 累计. Detail
-  // merge passes 火富牛, rebases a constant offset, and keeps a real high ratio
-  // (SQX078) when the two sources already share a scale.
-  if (legacyPrepared.length === 0) {
-    emailRows = emailRows.map((row, index) => {
-      const unit = parseOptionalNav(row.nav)
-      const cum = parseOptionalNav(row.cumulative_nav)
-      if (unit == null || cum == null || !emailCumUnitRatioExceedsCap(unit, cum)) return row
-      // A later 单位净值 of 1.0000, with 累计 unchanged, is a reset. Keep that 累计
-      // so 复权 follows the 累计 change. The opening 1.0000 is not this case.
-      if (isConfirmedMidSeriesUnitReset(emailRows, index)) return row
-      const adj = parseOptionalNav(row.adjusted_nav)
-      const adjustedNav = adj != null && Math.abs(adj - cum) < 0.001 ? null : row.adjusted_nav
-      return { ...row, cumulative_nav: null, adjusted_nav: adjustedNav }
-    })
+  // A 累计 above 2× 单位 stays only when the legacy series already has a dividend
+  // gap: 火富牛 on the same scale (SQX078), or a constant custodian offset that
+  // rebase just removed (R0423B). An empty legacy list and a unit-only manual
+  // history do not confirm it. 臻选之常A类 stores 累计 = 单位 + 3.1612 and copies
+  // that into 复权; appending it after the manual series cliffs 复权 by about +313%.
+  if (!legacyConfirmsHighCumulative(legacyPrepared)) {
+    emailRows = dropUnconfirmedHighEmailCumulative(emailRows)
   }
   if (emailRows.length === 0) return finalizeNavSeries(legacyPrepared, new Set(), new Set(), fundContext)
 

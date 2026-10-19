@@ -1,0 +1,59 @@
+[
+  {
+    "bucket": "1m",
+    "label": "约1个月",
+    "beian_hao": "SEM403",
+    "product_name": "SEM403",
+    "span_days": 0,
+    "uploaded_points": 13,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SEM403",
+      "product_name": "问境天启3号私募证券投资基金",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 1,
+      "navPoints": 13
+    },
+    "pass": true
+  },
+  {
+    "bucket": "15m",
+    "label": "约15个月",
+    "beian_hao": "TW065C",
+    "product_name": "TW065C",
+    "span_days": 0,
+    "uploaded_points": 65,
+    "rank": null,
+    "top": {
+      "rank": 1,
+      "beian_hao": "STW065",
+      "product_name": "稳博全A增强1号",
+      "correlation": 0.9999936153161738,
+      "score": 0.9517601380288813,
+      "overlapMonths": 9,
+      "navPoints": 30
+    },
+    "pass": false
+  },
+  {
+    "bucket": "1y",
+    "label": "约1年",
+    "beian_hao": "AMQ76B",
+    "product_name": "AMQ76B",
+    "span_days": 0,
+    "uploaded_points": 57,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "AMQ76B",
+      "product_name": "千象商品期货指数增强1号B类",
+      "correlation": 1,
+      "score": 0.9988687787924078,
+      "overlapMonths": 14,
+      "navPoints": 55
+    },
+    "pass": true
+  }
+]

@@ -40,7 +40,8 @@ import {
   isValuationReportTitle,
   parseValuationWorkbookFilename,
 } from "@/lib/server/valuation-filename"
-import { hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
+import { analyzeInteriorNavGap, hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
+import { diagnoseInteriorNavGap, type NavGapDiagnosis } from "@/lib/server/nav-gap-cause"
 import {
   chartNavLevel,
   navAnomalyHit,
@@ -203,6 +204,8 @@ export type TeamDataListRow = {
   redeemed: boolean
   /** Set when the list is filtered to 净值异常 / 有异常. */
   nav_anomaly?: NavAnomalyHit | null
+  /** Set when the list is filtered to 净值断档 / 中间缺失超1/10. */
+  nav_gap?: NavGapDiagnosis | null
   /** Set when the list is filtered to 运作日期 / 有. */
   operation_date?: string | null
   /** Set when 成立对齐 is not 不限. Same priority as the product page. */
@@ -2239,8 +2242,8 @@ async function overlayLatestUpdateMethod(rows: ResolvedFund[]): Promise<Resolved
 }
 
 /**
- * Attach the earliest ingest date (email / valuation / 手动添加). NAV updates never
- * move this date — it is MIN(created_at), not latest nav_date.
+ * Attach the earliest ingest date (email / valuation / manual NAV upload / fof99 / 手动添加).
+ * NAV dates inside a file never move this — a 手动上传 uses MIN(created_at), the day the file was stored.
  */
 async function overlayFirstEntryDate(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
   const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
@@ -2248,27 +2251,48 @@ async function overlayFirstEntryDate(rows: ResolvedFund[]): Promise<ResolvedFund
     return rows.map((row) => ({ ...row, first_entry_date: isoDay(row.first_entry_date) }))
   }
   const lookupCodes = expandBeiansWithShareClassFamily(beians)
-  const [emailFirst, valFirst, manualFirst] = await Promise.all([
+  const [emailFirst, valFirst, manualNavFirst, manualFirst, fofFirst] = await Promise.all([
     query<{ code: string; first_seen_at: string }>(
-      `SELECT UPPER(BTRIM(product_code)) AS code, MIN(created_at)::text AS first_seen_at
+      `SELECT UPPER(BTRIM(product_code)) AS code,
+              MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)::text AS first_seen_at
        FROM ops_email_nav_records
        WHERE product_code = ANY($1::text[])
        GROUP BY UPPER(BTRIM(product_code))`,
       [lookupCodes],
     ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
     query<{ code: string; first_seen_at: string }>(
-      `SELECT UPPER(BTRIM(product_code)) AS code, MIN(created_at)::text AS first_seen_at
+      `SELECT UPPER(BTRIM(product_code)) AS code,
+              MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)::text AS first_seen_at
        FROM ops_email_valuation_records
        WHERE product_code = ANY($1::text[])
        GROUP BY UPPER(BTRIM(product_code))`,
       [lookupCodes],
     ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
+    query<{ code: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS code,
+              MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)::text AS first_seen_at
+       FROM ops_team_nav_manual
+       WHERE beian_hao = ANY($1::text[])
+       GROUP BY UPPER(BTRIM(beian_hao))`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
     query<{ beian_hao: string; first_seen_at: string }>(
-      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao, created_at::text AS first_seen_at
+      `SELECT UPPER(BTRIM(beian_hao)) AS beian_hao,
+              (created_at AT TIME ZONE 'Asia/Shanghai')::date::text AS first_seen_at
        FROM ops_team_data_products
        WHERE beian_hao = ANY($1::text[])`,
       [lookupCodes],
     ).catch(() => [] as Array<{ beian_hao: string; first_seen_at: string }>),
+    query<{ code: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(reg_code)) AS code,
+              MIN((fetched_at AT TIME ZONE 'Asia/Shanghai')::date)::text AS first_seen_at
+       FROM fof99_nav_fetch_log
+       WHERE status = 'ok'
+         AND price_date > DATE '1970-01-01'
+         AND reg_code = ANY($1::text[])
+       GROUP BY UPPER(BTRIM(reg_code))`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
   ])
 
   const byCode = new Map<string, string>()
@@ -2280,7 +2304,9 @@ async function overlayFirstEntryDate(rows: ResolvedFund[]): Promise<ResolvedFund
   }
   for (const row of emailFirst) take(row.code, row.first_seen_at)
   for (const row of valFirst) take(row.code, row.first_seen_at)
+  for (const row of manualNavFirst) take(row.code, row.first_seen_at)
   for (const row of manualFirst) take(row.beian_hao, row.first_seen_at)
+  for (const row of fofFirst) take(row.code, row.first_seen_at)
 
   return rows.map((row) => {
     let first = isoDay(row.first_entry_date)
@@ -2294,6 +2320,67 @@ async function overlayFirstEntryDate(rows: ResolvedFund[]): Promise<ResolvedFund
       }
     }
     return first === row.first_entry_date ? row : { ...row, first_entry_date: first }
+  })
+}
+
+/**
+ * 更新方式 手动更新: 首次入表 is the day the file was uploaded
+ * (manual NAV, manual 估值表, or the hand-added product row).
+ * An older email / fof99 write, and the fund's 备案日, do not count.
+ */
+async function preferManualUploadEntryDate(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
+  const manualRows = rows.filter((row) => row.product_source === TEAM_DATA_UPDATE_METHOD.manual && row.beian_hao?.trim())
+  if (manualRows.length === 0) return rows
+  const lookupCodes = expandBeiansWithShareClassFamily(manualRows.map((row) => row.beian_hao!.trim()))
+  const [navRows, valuationRows, addedRows] = await Promise.all([
+    query<{ code: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS code,
+              MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)::text AS first_seen_at
+       FROM ops_team_nav_manual
+       WHERE beian_hao = ANY($1::text[])
+       GROUP BY UPPER(BTRIM(beian_hao))`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
+    query<{ code: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(product_code)) AS code,
+              MIN((created_at AT TIME ZONE 'Asia/Shanghai')::date)::text AS first_seen_at
+       FROM ops_email_valuation_records
+       WHERE product_code = ANY($1::text[])
+         AND (COALESCE(source, '') = 'manual_upload' OR COALESCE(crawl_email_account, '') = 'team_manual_upload')
+       GROUP BY UPPER(BTRIM(product_code))`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
+    query<{ code: string; first_seen_at: string }>(
+      `SELECT UPPER(BTRIM(beian_hao)) AS code,
+              (created_at AT TIME ZONE 'Asia/Shanghai')::date::text AS first_seen_at
+       FROM ops_team_data_products
+       WHERE beian_hao = ANY($1::text[])`,
+      [lookupCodes],
+    ).catch(() => [] as Array<{ code: string; first_seen_at: string }>),
+  ])
+  const byCode = new Map<string, string>()
+  const take = (code: string, date: string) => {
+    const key = code.trim().toUpperCase()
+    const day = isoDay(date)
+    if (!key || !day) return
+    byCode.set(key, minIsoDay(byCode.get(key), day))
+  }
+  for (const row of navRows) take(row.code, row.first_seen_at)
+  for (const row of valuationRows) take(row.code, row.first_seen_at)
+  for (const row of addedRows) take(row.code, row.first_seen_at)
+
+  return rows.map((row) => {
+    if (row.product_source !== TEAM_DATA_UPDATE_METHOD.manual) return row
+    const beian = row.beian_hao?.trim()
+    if (!beian) return row
+    let uploaded = ""
+    const rowCls = shareClassFromFundName(row.product_name) || shareClassFromCode(beian)
+    for (const code of teamNavFamilyLookupCodes(beian)) {
+      const codeCls = shareClassFromCode(code)
+      if (!shareClassNavTipFits(rowCls, codeCls)) continue
+      uploaded = minIsoDay(uploaded, byCode.get(code))
+    }
+    return uploaded ? { ...row, first_entry_date: uploaded } : row
   })
 }
 
@@ -3423,6 +3510,110 @@ async function attachNavAnomalyDiagnosisInner<T extends NavAnomalyDiagnosisRow>(
   })
 }
 
+type NavGapDiagnosisRow = {
+  id: string
+  beian_hao: string | null
+  product_name: string
+}
+
+function gapSourceDatesForAliases(
+  index: Map<string, RawNavSourceRow[]>,
+  aliases: string[],
+): Array<{ key: string; label: string; dates: string[] }> {
+  return sourceSeriesForAliases(index, aliases).map((source) => ({
+    key: source.key,
+    label: source.label,
+    dates: [...new Set(source.points.map((point) => point.date))],
+  }))
+}
+
+function chartDatesForGapRow(
+  row: { beian_hao: string | null; product_name: string },
+  cacheRows: DetailNavGapCacheRow[],
+  datesByCode: Map<string, string[]>,
+  fromDate: string | null,
+): string[] {
+  const codeMatches = cacheRows.filter((cache) => detailCacheFitsRowByCode(cache, row))
+  const matches = codeMatches.length > 0
+    ? codeMatches
+    : cacheRows.filter((cache) => detailCacheFitsRow(cache, row))
+  let bestDates: string[] | null = null
+  let bestRatio = -1
+  let bestGapped = false
+  for (const match of matches) {
+    const stats = analyzeInteriorNavGap(match.dates, fromDate)
+    const prefer = (stats.gapped && !bestGapped) || (stats.gapped === bestGapped && stats.ratio > bestRatio)
+    if (!prefer) continue
+    bestGapped = stats.gapped
+    bestRatio = stats.ratio
+    bestDates = match.dates
+  }
+  if (bestDates) return bestDates
+  const dates = new Set<string>()
+  for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+    for (const date of datesByCode.get(alias.toUpperCase()) ?? []) dates.add(date)
+  }
+  return [...dates]
+}
+
+/**
+ * For the current 中间缺失超1/10 page, name the hole and say whether a raw
+ * feed already lacks those dates or the chart dropped dates a feed has.
+ */
+export async function attachNavGapDiagnosis<T extends NavGapDiagnosisRow>(rows: T[]): Promise<T[]> {
+  const targets = rows.filter((row) => row.beian_hao || row.product_name)
+  if (targets.length === 0) return rows
+  try {
+    return await attachNavGapDiagnosisInner(rows, targets)
+  } catch (err) {
+    console.error("[nav-gap-cause] diagnosis failed:", err)
+    return rows.map((row) => ({
+      ...row,
+      nav_gap: {
+        first: "",
+        last: "",
+        ratio: 0,
+        missing: 0,
+        expected: 0,
+        holes: [],
+        source_count: 0,
+        sources: [],
+        cause: "unknown" as const,
+        cause_label: "未能判断",
+        cause_detail: "没有读到原始净值",
+      },
+    }))
+  }
+}
+
+async function attachNavGapDiagnosisInner<T extends NavGapDiagnosisRow>(
+  rows: T[],
+  targets: T[],
+): Promise<T[]> {
+  const codes = [...new Set(targets.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const rawCodes = [...new Set(targets.flatMap((row) => anomalyRawCodes(row.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(targets.map((row) => row.product_name.trim()).filter(Boolean))]
+  const [cacheRows, rawRows, operationDateByCode, datesByCode] = await Promise.all([
+    loadDetailNavGapCacheRows(codes, names),
+    loadRawNavSourceLevels(rawCodes),
+    loadOperationDateByCode(codes),
+    loadFallbackNavDatesByCode(codes),
+  ])
+  const rawIndex = indexRawNavSources(rawRows)
+  const diagnosisById = new Map<string, NavGapDiagnosis>()
+  for (const row of targets) {
+    const fromDate = operationDateForRow(row, operationDateByCode)
+    const chart = chartDatesForGapRow(row, cacheRows, datesByCode, fromDate)
+    const sources = gapSourceDatesForAliases(rawIndex, anomalyRawCodes(row.beian_hao ?? ""))
+    diagnosisById.set(row.id, diagnoseInteriorNavGap(chart, sources, fromDate))
+  }
+  return rows.map((row) => {
+    const diagnosis = diagnosisById.get(row.id)
+    if (!diagnosis) return row
+    return { ...row, nav_gap: diagnosis }
+  })
+}
+
 function pickLatestPlatformTip(tips: Array<PlatformNavTip | undefined>): PlatformNavTip | undefined {
   let best: PlatformNavTip | undefined
   for (const tip of tips) {
@@ -3792,7 +3983,9 @@ export async function enrichPlatformFundPage(seeds: PlatformFundSeed[]): Promise
   let resolved = seeds.map(platformSeedToResolved)
   resolved = await overlayEmailNavByProductCode(resolved)
   resolved = await overlayManualTeamNav(resolved)
+  resolved = await overlayFirstEntryDate(resolved)
   resolved = await overlayLatestUpdateMethod(resolved)
+  resolved = await preferManualUploadEntryDate(resolved)
   return enrichPageRows(resolved)
 }
 
@@ -4170,8 +4363,30 @@ async function loadResolvedTeamFunds(strategySource: "company" | "platform"): Pr
   resolved = await overlayManualTeamNav(resolved)
   resolved = await overlayFirstEntryDate(resolved)
   resolved = await overlayLatestUpdateMethod(resolved)
+  resolved = await preferManualUploadEntryDate(resolved)
   resolvedListCache = { strategySource, rows: resolved, at: Date.now() }
   return resolved
+}
+
+export type TeamUpdateCode = {
+  code: string
+  method: "email" | "manual" | "fof99" | "other"
+}
+
+/** 更新方式 for every 团队数据 row, using the same list as 筛选全部为不限. */
+export async function listTeamUpdateCodes(): Promise<TeamUpdateCode[]> {
+  const rows = await loadResolvedTeamFunds("company")
+  return rows.map((row) => {
+    const source = row.product_source
+    const method = source === TEAM_DATA_UPDATE_METHOD.email
+      ? "email"
+      : source === TEAM_DATA_UPDATE_METHOD.manual
+        ? "manual"
+        : source === TEAM_DATA_UPDATE_METHOD.fof99
+          ? "fof99"
+          : "other"
+    return { code: row.beian_hao?.trim().toUpperCase() || "", method }
+  })
 }
 
 export async function listTeamData(params: TeamDataListParams): Promise<{
@@ -4383,6 +4598,9 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     if (data.some((row) => row.nav_anomaly && !row.nav_anomaly.cause)) {
       data = await attachNavAnomalyDiagnosis(data)
     }
+  }
+  if (navGapFilter === "interior_2w") {
+    data = await attachNavGapDiagnosis(data)
   }
   if (operationDateFilter === "present") {
     data = data.map((row) => ({

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { formatCnMonthDay, type Fof99ListCoverage, type UniverseMoves, type UpdateChannel, type UpdateChannelResponse, type UpdateCoverageBlock, type UpdateWeekStat } from "@/lib/ops-update-channel"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { EMAIL_COHORTS, EMAIL_STALE_LIST_LABEL, emailFreshnessBucket, emailFreshnessListKey, formatCnMonthDay, type EmailCohortKey, type EmailCohortStatus, type EmailCountBridge, type EmailProductStatus, type EmailStaleListKey, type EmailStaleListResponse, type EmailStaleProduct, type Fof99ListCoverage, type UniverseMoves, type UpdateChannel, type UpdateChannelResponse, type UpdateCoverageBlock, type UpdateCoverageRow, type UpdateWeekStat } from "@/lib/ops-update-channel"
 
 const POLICY_COLOR: Record<string, string> = {
   weekly: "#D93025",
@@ -299,6 +300,459 @@ function UniverseMovesSection({ moves }: { moves: UniverseMoves }) {
   )
 }
 
+const SOURCE_COLOR: Record<string, string> = {
+  src_email_only: "#1A73E8",
+  src_email_fof99: "#D93025",
+  src_email_manual: "#FBBC04",
+  src_all_three: "#16a34a",
+  src_other: "#a1a1aa",
+  src_none: "#d4d4d8",
+}
+
+const FRESH_COLOR: Record<string, string> = {
+  fresh_w1: "#16a34a",
+  fresh_w1_2: "#65a30d",
+  fresh_w2_3: "#ca8a04",
+  fresh_w3_4: "#d97706",
+  fresh_m1_2: "#ea580c",
+  fresh_m2_3: "#dc2626",
+  fresh_m3_6: "#b91c1c",
+  fresh_over_m6: "#7f1d1d",
+  fresh_none: "#a1a1aa",
+}
+
+function countOption(rows: UpdateCoverageRow[], colors: Record<string, string>): Record<string, unknown> {
+  return {
+    backgroundColor: "transparent",
+    animation: false,
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (items: Array<{ dataIndex: number }>) => {
+        const row = rows[items[0]?.dataIndex ?? 0]
+        if (!row) return ""
+        return `${row.label}<br/>${formatCount(row.count)} 只 · ${formatShare(row.share)}`
+      },
+    },
+    grid: { left: 148, right: 28, top: 8, bottom: 28 },
+    xAxis: {
+      type: "value",
+      axisLabel: { fontSize: 11, color: "#a1a1aa" },
+      splitLine: { lineStyle: { color: "#f4f4f5", type: "dashed" } },
+    },
+    yAxis: {
+      type: "category",
+      inverse: true,
+      data: rows.map((row) => row.label),
+      axisLabel: { fontSize: 11, color: "#52525b" },
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: "#e4e4e7" } },
+    },
+    series: [
+      {
+        type: "bar",
+        barMaxWidth: 16,
+        data: rows.map((row) => ({
+          value: row.count,
+          itemStyle: { color: colors[row.key] ?? "#D93025" },
+        })),
+      },
+    ],
+  }
+}
+
+const STALE_CHANNEL_LABEL: Record<EmailStaleProduct["channel"], string> = {
+  email: "邮箱",
+  manual: "手动",
+  fof99: "fof99",
+  none: "无",
+}
+
+const STALE_POLICY_LABEL: Record<string, string> = {
+  weekly: "每周拉取",
+  weekly_plus: "邮件优先",
+  update_slow: "更新偏慢",
+  skip: "确认无序列",
+  none: "未纳入",
+}
+
+function staleSources(row: EmailStaleProduct): string {
+  const parts = [
+    row.has_email ? "邮箱" : "",
+    row.has_fof99 ? "fof99" : "",
+    row.has_manual ? "手动" : "",
+  ].filter(Boolean)
+  return parts.join(" + ") || "—"
+}
+
+function staleBucketLabel(latest: string | null, asOf: string): string {
+  const key = emailFreshnessBucket(latest, asOf)
+  if (key in EMAIL_STALE_LIST_LABEL) return EMAIL_STALE_LIST_LABEL[key as EmailStaleListKey]
+  return "—"
+}
+
+function EmailStaleProductsDialog({
+  cohort,
+  freshness,
+  onClose,
+}: {
+  cohort: EmailCohortKey
+  freshness: EmailStaleListKey
+  onClose: () => void
+}) {
+  const [body, setBody] = useState<EmailStaleListResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const requestSeq = useRef(0)
+
+  useEffect(() => {
+    const seq = ++requestSeq.current
+    setLoading(true)
+    setError("")
+    setBody(null)
+    const params = new URLSearchParams({ cohort, freshness })
+    fetch(`/ma/api/ops/data-overview/update/email-products?${params}`)
+      .then(async (res) => {
+        const json = await res.json()
+        if (seq !== requestSeq.current) return
+        if (!res.ok || !json || !Array.isArray(json.products)) {
+          throw new Error(typeof json?.message === "string" ? json.message : "产品列表加载失败")
+        }
+        setBody(json as EmailStaleListResponse)
+      })
+      .catch((err: unknown) => {
+        if (seq !== requestSeq.current) return
+        setError(err instanceof Error ? err.message : "产品列表加载失败")
+      })
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false)
+      })
+  }, [cohort, freshness])
+
+  const title = `${EMAIL_COHORTS.find((item) => item.key === cohort)?.label ?? ""} · ${EMAIL_STALE_LIST_LABEL[freshness]}`
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-5xl max-h-[85vh] flex flex-col gap-3">
+        <DialogHeader>
+          <DialogTitle className="text-sm">{title}</DialogTitle>
+          <DialogDescription className="text-xs leading-5">
+            {freshness === "behind_2w"
+              ? "最新净值日距今超过 14 天的邮箱产品。"
+              : `最新净值日落在${EMAIL_STALE_LIST_LABEL[freshness]}的邮箱产品。`}
+            点备案号打开产品页。
+            {body ? ` 共 ${formatCount(body.total)} 只，统计日 ${body.as_of}。` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>
+        )}
+        {loading && (
+          <div className="py-8 text-center text-sm text-muted-foreground">正在列出产品…</div>
+        )}
+        {body && !loading && (
+          <div className="overflow-auto min-h-0">
+            <table className="w-full text-xs min-w-[760px]">
+              <thead className="sticky top-0 bg-background">
+                <tr className="text-zinc-400">
+                  <th className="px-2 py-1.5 text-left font-medium">产品</th>
+                  <th className="px-2 py-1.5 text-left font-medium">备案号</th>
+                  <th className="px-2 py-1.5 text-left font-medium">最新净值日</th>
+                  <th className="px-2 py-1.5 text-right font-medium">落后</th>
+                  <th className="px-2 py-1.5 text-left font-medium">来源</th>
+                  <th className="px-2 py-1.5 text-left font-medium">当前渠道</th>
+                  <th className="px-2 py-1.5 text-left font-medium">火富牛</th>
+                  <th className="px-2 py-1.5 text-left font-medium">跟踪池</th>
+                </tr>
+              </thead>
+              <tbody>
+                {body.products.length === 0 ? (
+                  <tr className="border-t border-zinc-100 dark:border-zinc-800">
+                    <td className="px-2 py-3 text-zinc-400" colSpan={8}>这一档没有产品。</td>
+                  </tr>
+                ) : body.products.map((row) => (
+                  <tr key={row.code} className="border-t border-zinc-100 dark:border-zinc-800">
+                    <td className="px-2 py-1.5 text-zinc-700 dark:text-zinc-200 max-w-[220px] truncate" title={row.name || row.code}>
+                      {row.name || "—"}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <a
+                        href={`/ma/dashboard/private-funds/${encodeURIComponent(row.code)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-red-600 hover:underline tabular-nums"
+                      >
+                        {row.code}
+                      </a>
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-300">{row.latest || "—"}</td>
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-300">
+                      {row.lag_days == null ? "—" : `${formatCount(row.lag_days)}天`}
+                      <span className="ml-1 text-zinc-400">{staleBucketLabel(row.latest, body.as_of)}</span>
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-zinc-600 dark:text-zinc-300">{staleSources(row)}</td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-zinc-600 dark:text-zinc-300">{STALE_CHANNEL_LABEL[row.channel]}</td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-zinc-600 dark:text-zinc-300">{STALE_POLICY_LABEL[row.policy] ?? row.policy}</td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-zinc-600 dark:text-zinc-300">{row.in_pool ? "在" : "不在"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function CountTable({
+  rows,
+  statusLabel,
+  onCount,
+}: {
+  rows: UpdateCoverageRow[]
+  statusLabel: string
+  onCount?: (row: UpdateCoverageRow) => void
+}) {
+  return (
+    <table className="w-full text-xs">
+      <thead>
+        <tr className="text-zinc-400">
+          <th className="px-4 py-1.5 text-left font-medium">{statusLabel}</th>
+          <th className="px-3 py-1.5 text-right font-medium w-24">产品数</th>
+          <th className="px-4 py-1.5 text-right font-medium w-16">占比</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => {
+          const width = Math.max(0, Math.min(100, row.share * 100))
+          return (
+            <tr key={row.key} className="border-t border-zinc-100 dark:border-zinc-800" title={row.hint}>
+              <td className="px-4 py-1.5 text-zinc-700 dark:text-zinc-200">{row.label}</td>
+              <td className="px-3 py-1.5 text-right">
+                <div className="relative ml-auto inline-flex min-w-[4.5rem] justify-end">
+                  <span
+                    className="absolute inset-y-0 right-0 rounded-sm bg-red-100/80 dark:bg-red-950/40"
+                    style={{ width: `${width}%` }}
+                  />
+                  {onCount && row.count > 0 && emailFreshnessListKey(row.key) ? (
+                    <button
+                      type="button"
+                      onClick={() => onCount(row)}
+                      className="relative z-[1] tabular-nums text-red-600 hover:underline"
+                    >
+                      {formatCount(row.count)}
+                    </button>
+                  ) : (
+                    <span className="relative z-[1] tabular-nums">{formatCount(row.count)}</span>
+                  )}
+                </div>
+              </td>
+              <td className="px-4 py-1.5 text-right tabular-nums text-zinc-500">{formatShare(row.share)}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+function BridgeMark({ on }: { on: boolean }) {
+  if (!on) return <span className="text-zinc-300">—</span>
+  return <span className="text-red-600">计入</span>
+}
+
+function EmailCountBridgeSection({ bridge }: { bridge: EmailCountBridge }) {
+  const cards = [
+    { label: "曾经写入", value: bridge.ever, note: "邮件净值里出现过的备案号" },
+    { label: "上周写入", value: bridge.lastWeek, note: "其中上周有新行的" },
+    { label: "全库·邮箱抓取", value: bridge.libraryEmail, note: "基金库里最新渠道是邮箱" },
+    { label: "团队数据·邮箱抓取", value: bridge.teamEmail, note: "团队列表的更新方式" },
+  ]
+  return (
+    <section className="mt-3 rounded-xl border bg-background shadow-sm overflow-hidden">
+      <div className="px-4 py-2.5 border-b">
+        <h3 className="text-xs font-semibold text-foreground">这几个邮箱数字为什么不一样</h3>
+        <p className="mt-1 text-[11px] leading-4 text-zinc-500">
+          曾经写入是邮件净值表里出现过的备案号。上周写入是其中上周有新行的，所以更少。全库只统计私募基金库里、最新一条来自邮箱的产品。团队数据按列表的更新方式计，没有更新的手动或 fof99 时也会标成邮箱抓取。下面每一行不重复，四列加总分别等于这四个数。
+        </p>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 px-4 py-3">
+        {cards.map((card) => (
+          <div key={card.label} className="rounded-lg border px-3 py-2">
+            <div className="text-[11px] text-zinc-400">{card.label}</div>
+            <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{formatCount(card.value)}</div>
+            <div className="mt-0.5 text-[11px] text-zinc-400">{card.note}</div>
+          </div>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-zinc-400">
+              <th className="px-4 py-1.5 text-left font-medium">这批产品</th>
+              <th className="px-3 py-1.5 text-right font-medium w-16">只数</th>
+              <th className="px-3 py-1.5 text-center font-medium w-20">曾经写入</th>
+              <th className="px-3 py-1.5 text-center font-medium w-20">上周写入</th>
+              <th className="px-3 py-1.5 text-center font-medium w-24">全库邮箱</th>
+              <th className="px-3 py-1.5 text-center font-medium w-24">团队邮箱</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bridge.rows.map((row) => (
+              <tr key={row.key} className="border-t border-zinc-100 dark:border-zinc-800" title={row.hint}>
+                <td className="px-4 py-1.5 text-zinc-700 dark:text-zinc-200">{row.label}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.count)}</td>
+                <td className="px-3 py-1.5 text-center"><BridgeMark on={row.ever} /></td>
+                <td className="px-3 py-1.5 text-center"><BridgeMark on={row.lastWeek} /></td>
+                <td className="px-3 py-1.5 text-center"><BridgeMark on={row.libraryEmail} /></td>
+                <td className="px-3 py-1.5 text-center"><BridgeMark on={row.teamEmail} /></td>
+              </tr>
+            ))}
+            <tr className="border-t border-zinc-200 dark:border-zinc-700 font-medium">
+              <td className="px-4 py-1.5 text-foreground">合计</td>
+              <td className="px-3 py-1.5" />
+              <td className="px-3 py-1.5 text-center tabular-nums">{formatCount(bridge.ever)}</td>
+              <td className="px-3 py-1.5 text-center tabular-nums">{formatCount(bridge.lastWeek)}</td>
+              <td className="px-3 py-1.5 text-center tabular-nums">{formatCount(bridge.libraryEmail)}</td>
+              <td className="px-3 py-1.5 text-center tabular-nums">{formatCount(bridge.teamEmail)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function EmailProductStatusSection({ status }: { status: EmailProductStatus }) {
+  const [cohort, setCohort] = useState<EmailCohortKey>("ever")
+  const [staleList, setStaleList] = useState<EmailStaleListKey | null>(null)
+  const body: EmailCohortStatus = status[cohort]
+  const withinWeek = body.freshness.find((row) => row.key === "fresh_w1")?.count ?? 0
+  const behindTwoWeeks = body.freshness.reduce((sum, row) => (
+    emailFreshnessListKey(row.key) ? sum + row.count : sum
+  ), 0)
+  const cards = [
+    { label: "产品数", value: body.total },
+    { label: "在跟踪池", value: body.in_pool },
+    { label: "也有 fof99", value: body.with_fof99 },
+    { label: "也有手动", value: body.with_manual },
+    { label: "多个来源", value: body.multi_source },
+  ]
+  return (
+    <section className="mt-3 rounded-xl border bg-background shadow-sm overflow-hidden">
+      <div className="px-4 py-2.5 border-b">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <h3 className="text-xs font-semibold text-foreground">邮箱产品现在怎么更新</h3>
+          <div className="flex items-center gap-1">
+            {EMAIL_COHORTS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setCohort(item.key)}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium transition-colors",
+                  cohort === item.key
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {item.label}
+                <span className="ml-1 tabular-nums">{formatCount(status[item.key].total)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="mt-1 text-[11px] leading-4 text-zinc-500">
+          曾经写入是历史上邮件里出现过备案号的产品。上周写入就是上面那 {formatCount(status.last_week.total)} 只。看它们现在还有没有火富牛或手动净值，以及最新净值日落在哪一档。最新净值日取邮箱、手动、火富牛成功抓取和产品页日期里最晚的一天。当前渠道只比较前三个来源，同一天优先手动，其次邮箱。
+          这 {formatCount(body.total)} 只里，同时还有其他来源的 {formatCount(body.multi_source)} 只，最新净值在 1 周以内的 {formatCount(withinWeek)} 只。
+          {behindTwoWeeks > 0 && (
+            <>
+              {" "}
+              <button
+                type="button"
+                onClick={() => setStaleList("behind_2w")}
+                className="text-red-600 hover:underline"
+              >
+                滞后超过2周 {formatCount(behindTwoWeeks)} 只
+              </button>
+              ，点开可看是哪些产品。2–3周及更早的数字同样可以点开。
+            </>
+          )}
+        </p>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 px-4 py-3">
+        {cards.map((card) => (
+          <div key={card.label} className="rounded-lg border px-3 py-2">
+            <div className="text-[11px] text-zinc-400">{card.label}</div>
+            <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{formatCount(card.value)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 px-4 pb-4">
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">数据来源</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">一只产品可以同时有邮箱、火富牛接口和手动净值。这里按组合分开，加总等于产品数。</p>
+          </div>
+          <ReactECharts key={`${cohort}-sources`} option={countOption(body.sources, SOURCE_COLOR)} style={{ height: Math.max(180, body.sources.length * 32 + 36) }} notMerge lazyUpdate />
+          <CountTable rows={body.sources} statusLabel="来源" />
+        </div>
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">最新净值日期</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">1周以内是 7 天内，其后每 7 天一档，满 4 周后按 1–2 个月、2–3 个月、3–6 个月、6 个月以上。红色数字是滞后超过2周的产品，点开查看名单。</p>
+          </div>
+          <ReactECharts
+            key={`${cohort}-fresh`}
+            option={countOption(body.freshness, FRESH_COLOR)}
+            style={{ height: Math.max(220, body.freshness.length * 28 + 36) }}
+            notMerge
+            lazyUpdate
+            onEvents={{
+              click: (params: { dataIndex?: number }) => {
+                const row = body.freshness[params.dataIndex ?? -1]
+                const key = row ? emailFreshnessListKey(row.key) : null
+                if (key && row.count > 0) setStaleList(key)
+              },
+            }}
+          />
+          <CountTable
+            rows={body.freshness}
+            statusLabel="距今"
+            onCount={(row) => {
+              const key = emailFreshnessListKey(row.key)
+              if (key) setStaleList(key)
+            }}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 px-4 pb-4">
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">当前最新渠道</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">三个来源里谁的净值日最晚。产品页更晚的日期不改变这一列。</p>
+          </div>
+          <CountTable rows={body.channel} statusLabel="渠道" />
+        </div>
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">火富牛跟踪方式</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">这些产品现在在火富牛跟踪里的方式。未纳入表示还没有放进火富牛。</p>
+          </div>
+          <CountTable rows={body.policy} statusLabel="跟踪方式" />
+        </div>
+      </div>
+      {staleList && (
+        <EmailStaleProductsDialog
+          cohort={cohort}
+          freshness={staleList}
+          onClose={() => setStaleList(null)}
+        />
+      )}
+    </section>
+  )
+}
+
 function CoverageTable({ block, statusLabel }: { block: UpdateCoverageBlock; statusLabel: string }) {
   return (
     <table className="w-full text-xs">
@@ -449,6 +903,8 @@ export function OperationsUpdateChannelView({
             </div>
           </section>
 
+          {!isFof && visible.email_count_bridge && <EmailCountBridgeSection bridge={visible.email_count_bridge} />}
+          {!isFof && visible.email_products && <EmailProductStatusSection status={visible.email_products} />}
           {isFof && visible.list_coverage && <ListCoverageSection coverage={visible.list_coverage} />}
           {isFof && visible.universe_moves && <UniverseMovesSection moves={visible.universe_moves} />}
 

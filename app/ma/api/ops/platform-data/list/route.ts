@@ -35,7 +35,7 @@ export async function GET(req: Request) {
         : "all"
     const sourceRaw = (searchParams.get("product_source") || "").trim().toLowerCase()
     const productSourceFilter =
-      sourceRaw === "manual" || sourceRaw === "email" ? sourceRaw : "all"
+      sourceRaw === "manual" || sourceRaw === "email" || sourceRaw === "fof99" ? sourceRaw : "all"
     const operationDateRaw = (searchParams.get("operation_date") || "").trim().toLowerCase()
     const operationDateFilter =
       operationDateRaw === "present" || operationDateRaw === "absent" ? operationDateRaw : "all"
@@ -59,7 +59,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-platform-data",
-      v: "product_page_nav_v3",
+      v: "nav_gap_cause_v2",
       page,
       pageSize,
       keyword,

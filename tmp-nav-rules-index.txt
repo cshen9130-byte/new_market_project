@@ -1,0 +1,285 @@
+1:# NAV Calculation Rules & Dividend Handling
+3:## The Invariant That Must Always Hold
+13:## Field Mapping
+25:## What Was Fixed (荣熙恒盈2号 — SBAH99)
+27:### The 4.30 Dividend Issue
+39:### The Correct Fixes Applied
+48:## What Was Fixed (钜融添宝20号 — SNF018)
+50:### The Problem
+66:### Root Causes
+72:### The Correct Fixes Applied
+82:### Verified Correct Values (after fix)
+90:### Regression Checks
+106:## What Was Fixed (抱朴聚融祥和一号 — SSG947)
+108:### The Problem
+122:### Root Causes
+132:### The Correct Fixes Applied
+143:### Verified Correct Values (after fix)
+163:### Regression Checks
+182:## What Was Fixed (荣熙恒盈2号A类 — BAH99A)
+188:### Fix 1 — FOF list showed share count as unit NAV
+190:#### The Problem
+206:#### Root Causes
+212:#### The Correct Fixes Applied
+222:#### Verified Correct Values (after fix)
+230:#### Regression Checks
+239:### Fix 2 — Clicking the name opened 荣熙恒盈2号 (SBAH99) instead of A类
+241:#### The Problem
+247:#### Root Causes
+255:#### The Correct Fixes Applied
+265:#### Verified Routing (after fix)
+274:#### Regression Checks
+282:### What This Fix Does NOT Change
+298:## Dividend Rechaining (SBAH99 reference)
+300:### Step 1 — Detect the ex-dividend date (`isLikelyDividendExDate`)
+308:### Step 2 — Compute adj on the ex-dividend date (`syncExDivAdjustedNav`)
+323:### Step 3 — Forward-chain adj for subsequent dates (`propagateMissingAdjRows` + `rechainDerivedFromPrev`)
+340:## Rules for Future Code Changes
+342:### DO NOT touch these without re-verifying the invariant
+368:### After any change to the NAV pipeline
+380:### Safe pattern for adding a new NAV source
+389:## Data Priority for FOF Underlying / List Views
+414:## Data Priority for 在管产品 (Managed Products)
+438:## Known Limitations
+445:## Operator rule — manual team NAV uploads
+449:### What the pipeline does now (required)
+455:### Optional
+459:### What NOT to do
+465:### Quick check after upload
+471:## What Was Fixed (百奕小天鹅2号B类 — 2026-06-22 Dividend)
+473:### Context
+485:### Fix 1 — `email-nav-extract.ts` section 2b (`perfRowM` index)
+492:### Fix 2 — `email-nav-query.ts` `rechainDerivedFromPrev` / `refreshDerivedForUnitOnlyEmailRows`
+498:### Fix 3 — `email-nav-query.ts` `recomputeNavPriceChanges`
+502:### Fix 4 — `nav-cleaner.ts` `detectColumns` adjustedScore threshold
+508:## What Was Fixed (2026-06-30 — site-wide loading hang, stale FOF cache, copy button, stale test)
+512:### Fix 1 — Site-wide loading hang from a PostgreSQL lock cascade
+533:### Fix 2 — 荣熙恒盈2号A类 (BAH99A) wrong NAV was a stale cache, not the email logic
+541:### Fix 3 — Copy button next to product names did nothing over plain HTTP
+547:### Fix 4 — Stale assertion in `scripts/test-nav-rechain.mjs`
+553:### What this session did NOT change
+560:## What Was Fixed (六妙星九紫一号 — SBPC20, 2026-07-02 — historical cum/adj losing dividend offset)
+562:### The Problem
+575:### Root Causes (Two Interacting Bugs in `preferEmailNavRow`)
+597:### The Correct Fixes Applied
+606:### What This Fix Does NOT Change
+615:### Verified Correct Values (after fix)
+624:### Regression Checks
+635:## What Was Fixed (2026-07-09 — SBPC20 Jul 8 unit=cum=adj regression)
+659:## What Was Fixed (2026-07-09 — SBPC20 legacy tail overwriting email 累计)
+671:## What Was Fixed (衡颐海泰1号 — SBPU97, 2026-07-06 — wrong seed scale caused NAV cliff)
+673:### The Problem
+685:### Root Cause
+695:### The Correct Fix Applied
+715:### What This Fix Does NOT Change
+721:### Regression Checks
+735:### Problem 1 — Fund detail page returned HTTP 404
+745:### Problem 2 — 最新涨跌幅 and period returns empty (root cause)
+763:### What This Fix Does NOT Change
+772:### After deployment
+795:## What Was Fixed (杉阳云杉混合1号 — SLA063, 2026-07-03)
+797:### The Problem
+810:### Root Cause
+821:### The Correct Fix Applied
+830:### What This Fix Does NOT Change
+836:### After deployment
+853:## What Was Fixed (奇盾抱朴专享1号 — SSGD35, custody-only 估值表)
+855:### The Problem
+859:### Root Causes
+865:### The Correct Fixes Applied
+873:### What This Fix Does NOT Change
+880:### After deployment
+904:## What Was Fixed (特夫郁金香全量化 — SQX078, 2026-07-03)
+906:### The Problem
+923:### Root Cause
+927:### The Correct Fix Applied
+934:### What This Fix Does NOT Change
+944:### Regression Checks
+953:## What Was Fixed (特夫郁金香全量化 — SQX078, 2026-07-16 — 复权净值 understated on email tail)
+955:### The Problem
+964:### Root Causes
+969:### The Correct Fixes Applied
+976:### Verified Correct Values (after fix)
+983:### What This Fix Does NOT Change
+989:### Regression Checks
+999:## Fund-specific NAV correction rules (per-fund overrides)
+1023:# or full refresh:
+1029:## What Was Fixed (锐耐稳健对冲11号 — SBDF95, 2026-07-03)
+1031:### The Problem
+1044:### Root Causes
+1052:### The Correct Fixes Applied
+1062:### What This Fix Does NOT Change
+1068:### After deployment
+1086:## What Was Fixed (2026-07-08 — custody 估值表 date shift + nightly ETL + FOF底层)
+1090:### 1. Custody 估值表 NAV date shifted back one trading day
+1108:### 2. List cache stuck (investment_pool_metrics timeout)
+1121:### 3. Email parse timeout (400-day lookback every night)
+1135:### 4. FOF底层 table stale dates
+1182:### Manual recovery commands
+1185:# Fix already-parsed custody rows in DB (no IMAP; safe via SSH tunnel)
+1188:# Rebuild 在管产品 list cache only (fast; no valuation backfill)
+1191:# Rebuild FOF底层 list cache only (~15 min via tunnel; uses corrected 估值表 dates + email NAV)
+1194:# Rebuild all three list caches (在管产品 + FOF底层 + 跟踪产品; nightly default after deploy)
+1197:# Optional — full FOF underlying snapshot + cache (symbol backfill can hang; prefer --fof-only above)
+1198:# npx tsx scripts/ma/_refresh_fof_cache.ts
+1200:# Full re-parse after code deploy (needs IMAP credentials on server)
+1203:# Incremental nightly parse (default after deploy)
+1211:## What Was Fixed (2026-07-09 — Jul 7 custody emails stored as Jul 6)
+1232:## What Was Fixed (2026-07-09 — SNF018 复权净值 flat after attachment emails)
+1252:## What Was Fixed (2026-07-09 — 笃熙泰渊流1号A类 — AVM354, 复权 collapsed to unit)
+1254:### The Problem
+1270:### Root Cause
+1284:### The Correct Fix Applied
+1291:### What This Fix Does NOT Change
+1297:### Regression Checks
+1306:## What Was Fixed (六妙星豪鑫主观2号 — SQU767, 2026-07-10)
+1308:### The Problem
+1320:### Root Causes
+1328:### The Correct Fixes Applied
+1337:### DB repair (one-time via tunnel)
+1346:### What This Fix Does NOT Change
+1352:### Regression Checks
+1361:## What Was Fixed (六妙星豪鑫3号A类 — ASX73A, period returns vs max drawdown, 2026-07-10)
+1363:### The Problem
+1369:### Root Causes
+1377:### The Correct Fixes Applied
+1386:### What This Fix Does NOT Change
+1392:### After deployment
+1407:## What Was Fixed (邮箱运维池 — email fund coverage, 2026-07-10)
+1409:### The Problem
+1413:### Root Causes
+1419:### The Correct Fixes Applied
+1428:### Production backfill (2026-07-10)
+1432:### After deployment
+1443:## What Was Fixed (国信托管 净值邮件 — SAUV26 邦客鼎成精选, 2026-07-10)
+1445:### The Problem
+1449:### Root Cause
+1453:### Fix
+1465:## What Was Fixed (青钱基石1号 — SBDW42, manage stream remap, 2026-07-10)
+1467:### The Problem
+1471:### Root Cause
+1477:### Fix
+1483:### What This Fix Does NOT Change
+1488:### Regression
+1497:## What Was Fixed (长江证券 虚拟净值 — SB969A 铸锋太阿3号A类, 2026-07-10)
+1499:### The Problem
+1503:### Root Cause
+1509:### Fix
+1521:### Regression
+1530:## What Was Fixed (六妙星豪鑫6号 — SBHK26, custody unit inference, 2026-07-10)
+1532:### The Problem
+1536:### Root Cause
+1542:### Fix
+1548:### What This Fix Does NOT Change
+1554:### Regression
+1565:## What Was Fixed (笃熙景泰泰渊流1号 — SAVM35, halved legacy unit + email rechain, 2026-07-10)
+1567:### The Problem
+1571:### Root Cause
+1577:### Fix
+1584:### What This Fix Does NOT Change
+1589:### Regression
+1598:### Follow-up (2026-07-10 — list cache stuck on last 净值公告)
+1608:## What Was Fixed (荣熙恒盈2号 — SBAH99 / BAH99A / BAH99C, 邮箱运维池 share classes, 2026-07-10)
+1610:### The Problem
+1614:### Root Cause
+1620:### Fix
+1629:### What This Fix Does NOT Change
+1635:### Regression
+1646:## What Was Fixed (金友至远1号 — SBFM35, corrupt valuation cum + unit inference bleed, 2026-07-11)
+1648:### The Problem
+1658:### Root Causes
+1668:### The Correct Fixes Applied
+1679:### Verified Correct Values (after fix)
+1699:### What This Fix Does NOT Change
+1704:### Regression Checks
+1719:## What Was Fixed (六妙星九紫一号 — SBPC20, 2026-07-12 — Jul 2 unit=cum collapse + Jul 3 +15% cliff regression)
+1721:### The Problem
+1732:### Root Cause
+1743:### The Correct Fixes Applied
+1752:### Verified Correct Values (after fix)
+1759:### Follow-up (2026-07-12 live DB — AUM-as-nav attachments)
+1783:### Follow-up (2026-07-12 — chart 复权 cliff / missing adj premium)
+1811:### What This Fix Does NOT Change
+1819:### Regression Checks
+1824:# with tunnel: npx tsx scripts/ma/_diag_sbpc20_chart.ts
+1829:## What Was Fixed (笃熙禀泰多资产轮动策略2号 — SNG210, wrong pool name, 2026-07-10)
+1831:### The Problem
+1835:### Fix
+1848:## What Was Fixed (九鞅禾禧五号B类 — exact 0.05 dividend gap, 2026-08-04)
+1850:### The Problem
+1863:### Root Cause
+1874:### The Correct Fix Applied
+1880:### What This Fix Does NOT Change
+1887:### Verified Correct Values (after fix)
+1895:### Regression Checks
+1905:## What Was Fixed (九鞅禾瑞十号C类 — 0.03 then 0.05 dividends, 2026-08-04)
+1907:### The Problem
+1925:### Root Cause
+1929:### The Correct Fix Applied
+1935:### What This Fix Does NOT Change
+1942:### Verified Correct Values (after fix)
+1958:## What Was Fixed (CMS/招商 估值表 NAV day-shift — SCJ536 / SCU622 / SBNX55 / SSG947, 2026-08-06)
+1960:### The Problem
+1973:### Root Cause (parse)
+1979:### Why It Happened Again After SCJ536 Was Fixed
+1985:### The Correct Fix Applied
+1996:### What This Fix Does NOT Change
+2002:### Scan + Repair (all CMS products)
+2005:# Report only
+2008:# Repair every mismatched CMS code, then refresh caches
+2020:### Prevention Going Forward
+2026:### Regression Checks
+2036:## What Was Fixed (CSC 虚拟净值提取 FOF-investor fund_name bleed — SCU622, 2026-08-13)
+2038:### The Problem
+2042:### Root Cause
+2052:### The Correct Fix Applied
+2061:### What This Fix Does NOT Change
+2068:### Repair + refresh (SCU622)
+2075:### Regression Checks
+2085:## What Was Fixed (草本致远1号 — year `2026` used as 备案号, 2026-09-17)
+2087:### The Problem
+2091:### Root Cause
+2101:### The Correct Fix Applied
+2111:### What This Fix Does NOT Change
+2118:### Repair stored year codes (one-time)
+2137:### Regression Checks
+2147:## What Was Fixed (鸣石广胜中证A500指数增强1号量化 — SBNJ90 / `/2026` mix, 2026-09-18)
+2149:### The Problem
+2155:### Root Cause
+2159:### The Correct Fix Applied
+2169:### What This Fix Does NOT Change
+2178:### Repair stored 鸣石 year codes (one-time)
+2189:### Regression Checks
+2200:## What Was Fixed (华年量化选股择时1号 — SASK40, 2026-09-21)
+2202:### The Problem
+2216:### Root Cause
+2228:### The Correct Fixes Applied (2026-09-21)
+2240:### Verified Correct Values (after fix)
+2252:### What This Fix Does NOT Change
+2260:### Regression Checks
+2270:## What Was Fixed (merge skip by 估值表 source, not 累计字段 — 2026-09-22)
+2272:### The Problem
+2283:### Root Cause
+2292:### The Correct Fixes Applied
+2309:### What this means
+2318:### What This Fix Does NOT Change
+2325:### Regression Checks
+2335:## What Was Fixed (星阔江月2号B类 — NW169B, TA虚拟净值 cum copied from unit, 2026-09-24)
+2337:### The Problem
+2343:### Root Cause
+2347:### The Correct Fix Applied
+2353:### What This Fix Does NOT Change
+2359:### Verified Correct Values (after fix)
+2376:## What Was Fixed (贞元虎踞一号A类 — BUK40A, manual team tip blocks the dividend, 2026-09-24)
+2378:### The Problem
+2390:### Root Cause
+2394:### The Correct Fix Applied
+2403:### What This Fix Does NOT Change
+2410:### Verified Correct Values (after fix)
+2425:## What Was Fixed (集微投资2期A类 — GA681A, 2026-09-30)
+2429:### Symptom
+2438:### Root Cause
+2446:### The Correct Fixes Applied
+2454:### Verified Correct Values (after fix)
+2465:### What This Fix Does NOT Change
+2472:### Regression

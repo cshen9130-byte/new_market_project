@@ -1,0 +1,97 @@
+[
+  {
+    "bucket": "1m",
+    "label": "约1个月",
+    "beian_hao": "SCV735",
+    "product_name": "SCV735",
+    "span_days": 0,
+    "uploaded_points": 6,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "SCV735",
+      "product_name": "昭明润和500指数增强私募证券投资基金",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 2,
+      "navPoints": 6
+    },
+    "pass": true
+  },
+  {
+    "bucket": "3m",
+    "label": "约3个月",
+    "beian_hao": "APB36B",
+    "product_name": "APB36B",
+    "span_days": 0,
+    "uploaded_points": 18,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "APB36B",
+      "product_name": "洪运瑞恒金享1号B类",
+      "correlation": 1,
+      "score": 0.994056674993618,
+      "overlapMonths": 5,
+      "navPoints": 18
+    },
+    "pass": true
+  },
+  {
+    "bucket": "6m",
+    "label": "约6个月",
+    "beian_hao": "ZX697A",
+    "product_name": "ZX697A",
+    "span_days": 0,
+    "uploaded_points": 54,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "ZX697A",
+      "product_name": "鸿竹互强芯富3号A类",
+      "correlation": 0.9893228556775613,
+      "score": 0.9888754323686331,
+      "overlapMonths": 6,
+      "navPoints": 54
+    },
+    "pass": true
+  },
+  {
+    "bucket": "1y",
+    "label": "约1年",
+    "beian_hao": "VQ366B",
+    "product_name": "VQ366B",
+    "span_days": 0,
+    "uploaded_points": 44,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "VQ366B",
+      "product_name": "岚湖丰泽3号B类",
+      "correlation": 1,
+      "score": 0.993938846281529,
+      "overlapMonths": 12,
+      "navPoints": 44
+    },
+    "pass": true
+  },
+  {
+    "bucket": "2y",
+    "label": "约2年",
+    "beian_hao": "NP688C",
+    "product_name": "NP688C",
+    "span_days": 0,
+    "uploaded_points": 110,
+    "rank": 1,
+    "top": {
+      "rank": 1,
+      "beian_hao": "NP688C",
+      "product_name": "明世伙伴胜杯11号1期C类",
+      "correlation": 1,
+      "score": 1,
+      "overlapMonths": 25,
+      "navPoints": 110
+    },
+    "pass": true
+  }
+]

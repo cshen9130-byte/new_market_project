@@ -25,8 +25,9 @@ import {
   manualNavPointsForBeian,
 } from "@/lib/server/team-nav-manage-pg"
 
+/** Chart level: 复权净值, then 累计净值, then 单位净值. Matches the product page. */
 function pickNavLevel(row: LegacyNavRow): number | null {
-  for (const field of [row.cum_nav_withdrawal, row.cumulative_nav, row.nav]) {
+  for (const field of [row.cumulative_nav, row.cum_nav_withdrawal, row.nav]) {
     const value = parseFloat(field)
     if (Number.isFinite(value) && value > 0) return value
   }

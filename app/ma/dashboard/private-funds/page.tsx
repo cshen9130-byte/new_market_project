@@ -14786,6 +14786,61 @@ function formatAnomalyMove(ratio: number): string {
   return `${pct > 0 ? "+" : ""}${pct.toFixed(digits)}%`
 }
 
+type TeamDataNavGap = {
+  first: string
+  last: string
+  ratio: number
+  holes: { from: string; to: string; openDays: number; missing: number }[]
+  source_count?: number
+  sources?: string[]
+  cause?: "source" | "rules" | "unknown"
+  cause_label?: string
+  cause_detail?: string
+}
+
+function formatGapShare(ratio: number): string {
+  if (!Number.isFinite(ratio) || ratio <= 0) return "缺失"
+  const pct = ratio * 100
+  return `缺失 ${pct >= 10 ? Math.round(pct) : pct.toFixed(1)}%`
+}
+
+function NavGapSpan({
+  first,
+  last,
+  holes,
+}: {
+  first: string
+  last: string
+  holes: { from: string; to: string }[]
+}) {
+  const start = Date.parse(`${first}T00:00:00Z`)
+  const end = Date.parse(`${last}T00:00:00Z`)
+  const span = end - start
+  if (!Number.isFinite(span) || span <= 0) return null
+  const title = holes.map((hole) => `${hole.from} 至 ${hole.to}`).join("\n")
+  return (
+    <svg width={120} height={36} viewBox="0 0 120 36" className="shrink-0" role="img" aria-label="净值缺失区间">
+      <title>{title}</title>
+      <rect x="4" y="16" width="112" height="4" rx="2" fill="#d4d4d8" />
+      {holes.map((hole) => {
+        const left = 4 + ((Date.parse(`${hole.from}T00:00:00Z`) - start) / span) * 112
+        const right = 4 + ((Date.parse(`${hole.to}T00:00:00Z`) - start) / span) * 112
+        return (
+          <rect
+            key={`${hole.from}-${hole.to}`}
+            x={left}
+            y="14"
+            width={Math.max(right - left, 3)}
+            height="8"
+            rx="2"
+            fill="#dc2626"
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
 function NavAnomalySpark({
   points,
   markDate,
@@ -14846,6 +14901,7 @@ interface TeamDataRow {
   first_entry_date?: string | null
   redeemed?: boolean
   nav_anomaly?: TeamDataNavAnomaly | null
+  nav_gap?: TeamDataNavGap | null
   operation_date?: string | null
   inception_date?: string | null
   nav_start_date?: string | null
@@ -14869,8 +14925,8 @@ function teamDataLinkedInvestmentNote(
 
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
-const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v16:"
-const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v4:"
+const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v18:"
+const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v6:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -15123,9 +15179,10 @@ function OperationsTeamDataView({
   const showNavCol = (key: OpsNavColKey) => navCols.includes(key)
   const navColCount = OPS_NAV_COLUMNS.filter((col) => navCols.includes(col.key)).length
   const showNavAnomalyCol = navAnomalyFilter === "jump"
+  const showNavGapCol = navGapFilter === "interior_2w"
   const showOperationDateCol = operationDateFilter === "present"
   const showInceptionNavCols = !isPlatform && inceptionNavFilter !== "all"
-  const teamDataColCount = 11 + navColCount + (showNavAnomalyCol ? 2 : 0) + (showOperationDateCol ? 1 : 0) + (showInceptionNavCols ? 3 : 0)
+  const teamDataColCount = 11 + navColCount + (showNavAnomalyCol ? 2 : 0) + (showNavGapCol ? 2 : 0) + (showOperationDateCol ? 1 : 0) + (showInceptionNavCols ? 3 : 0)
 
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "bfl_ops" })
@@ -15514,7 +15571,7 @@ function OperationsTeamDataView({
 
   function handleExport() {
     const navExport = OPS_NAV_COLUMNS.filter((col) => navCols.includes(col.key))
-    const headers = ["产品名称", "备案号", ...navExport.map((col) => col.label), "产品成立日", ...(showInceptionNavCols ? ["净值起始日", "起始净值", "是否一致"] : []), "估值表日期", "有无估值表", "更新方式", "关联笔记", ...(showOperationDateCol ? ["运作日期"] : []), "首次入表日期", "已赎回"]
+    const headers = ["产品名称", "备案号", ...navExport.map((col) => col.label), "产品成立日", ...(showInceptionNavCols ? ["净值起始日", "起始净值", "是否一致"] : []), ...(showNavGapCol ? ["缺失位置", "断档成因"] : []), "估值表日期", "有无估值表", "更新方式", "关联笔记", ...(showOperationDateCol ? ["运作日期"] : []), "首次入表日期", "已赎回"]
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
     const navValue = (row: TeamDataRow, key: OpsNavColKey) => {
       if (key === "unit_nav") return row.unit_nav ?? ""
@@ -15535,6 +15592,12 @@ function OperationsTeamDataView({
           escape(row.nav_start_date ?? ""),
           escape(row.nav_start_value ?? ""),
           escape(row.inception_nav_match === "match" ? "一致" : row.inception_nav_match === "mismatch" ? `不一致${row.inception_nav_gap_days != null ? ` ${row.inception_nav_gap_days}天` : ""}` : "缺失"),
+        ] : []),
+        ...(showNavGapCol ? [
+          escape(row.nav_gap?.holes[0]
+            ? `${formatGapShare(row.nav_gap.ratio)}；${row.nav_gap.holes[0].from} 至 ${row.nav_gap.holes[0].to}${row.nav_gap.holes.length > 1 ? `；另有 ${row.nav_gap.holes.length - 1} 段` : ""}`
+            : ""),
+          escape(row.nav_gap ? `${row.nav_gap.cause_label ?? ""}；${row.nav_gap.cause_detail ?? ""}` : ""),
         ] : []),
         escape(row.valuation_date ?? ""),
         escape(row.has_valuation ? "有" : "无"),
@@ -16201,7 +16264,7 @@ function OperationsTeamDataView({
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1230 + navColCount * 110 + (showNavAnomalyCol ? 390 : 0) + (showOperationDateCol ? 120 : 0) + (showInceptionNavCols ? 360 : 0) }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1230 + navColCount * 110 + (showNavAnomalyCol ? 390 : 0) + (showNavGapCol ? 460 : 0) + (showOperationDateCol ? 120 : 0) + (showInceptionNavCols ? 360 : 0) }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -16237,6 +16300,19 @@ function OperationsTeamDataView({
               )}
               {showInceptionNavCols && (
                 <th className={`${thSort} min-w-[120px]`} title="按相差天数排序。缺失的排在最后。" onClick={() => handleSort("inception_nav_gap_days")}>是否一致<TeamSortIcon col="inception_nav_gap_days" /></th>
+              )}
+              {showNavGapCol && (
+                <th className={`${thBase} min-w-[240px]`} title="红段是图表净值中间缺数据的区间。百分比是缺失净值占应有净值的比例。">
+                  缺失位置
+                </th>
+              )}
+              {showNavGapCol && (
+                <th
+                  className={`${thBase} min-w-[200px]`}
+                  title="这条净值用了几个数据源。源数据缺失：这段日期在原始净值里也没有。计算或修正导致：某个原始源这段有净值，是合并、复权计算或修正规则没有采用。"
+                >
+                  断档成因
+                </th>
               )}
               {showNavAnomalyCol && <th className={`${thBase} min-w-[210px]`}>异常</th>}
               {showNavAnomalyCol && (
@@ -16352,6 +16428,69 @@ function OperationsTeamDataView({
                         </span>
                       ) : (
                         <span className="text-zinc-400">缺失</span>
+                      )}
+                    </td>
+                  )}
+                  {showNavGapCol && (
+                    <td className={cell}>
+                      {row.nav_gap && (row.nav_gap.holes.length > 0 || row.nav_gap.ratio > 0) ? (
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-[8.5rem]">
+                            <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-red-50 text-red-600 border border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-800">
+                              {formatGapShare(row.nav_gap.ratio)}
+                            </span>
+                            {row.nav_gap.holes[0] && (
+                              <>
+                                <div className="mt-0.5 text-[10px] tabular-nums text-zinc-500">
+                                  {row.nav_gap.holes[0].from} 至 {row.nav_gap.holes[0].to}
+                                </div>
+                                <div className="text-[10px] tabular-nums text-zinc-500">
+                                  约缺 {Math.max(1, Math.round(row.nav_gap.holes[0].missing))} 个净值
+                                </div>
+                              </>
+                            )}
+                            {row.nav_gap.holes.length > 1 && (
+                              <div className="text-[10px] text-zinc-400">另有 {row.nav_gap.holes.length - 1} 段</div>
+                            )}
+                          </div>
+                          <NavGapSpan first={row.nav_gap.first} last={row.nav_gap.last} holes={row.nav_gap.holes} />
+                        </div>
+                      ) : (
+                        <span className="text-zinc-400">—</span>
+                      )}
+                    </td>
+                  )}
+                  {showNavGapCol && (
+                    <td className={cell}>
+                      {row.nav_gap ? (
+                        <div className="leading-tight" title={row.nav_gap.cause_detail}>
+                          <div className="tabular-nums">
+                            {row.nav_gap.source_count ?? 0} 个数据源
+                          </div>
+                          {!!row.nav_gap.sources?.length && (
+                            <div className="mt-0.5 text-[10px] text-zinc-500">
+                              {row.nav_gap.sources.join("、")}
+                            </div>
+                          )}
+                          <span
+                            className={`mt-1 inline-block px-1 py-0.5 rounded text-[10px] border ${
+                              row.nav_gap.cause === "source"
+                                ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800"
+                                : row.nav_gap.cause === "rules"
+                                  ? "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800"
+                                  : "bg-zinc-50 text-zinc-500 border-zinc-200 dark:bg-zinc-800/50 dark:text-zinc-400 dark:border-zinc-700"
+                            }`}
+                          >
+                            {row.nav_gap.cause_label ?? "未能判断"}
+                          </span>
+                          {row.nav_gap.cause_detail && (
+                            <div className="mt-0.5 max-w-[16rem] text-[10px] text-zinc-500">
+                              {row.nav_gap.cause_detail}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-zinc-400">—</span>
                       )}
                     </td>
                   )}
