@@ -4,12 +4,16 @@ import { addCalendarMonths } from "./ops-data-overview"
 import {
   FOF99_LIST_COVERAGE,
   buildEmailCohort,
+  buildFof99Cohort,
   buildUniverseMoves,
   emailFreshnessBucket,
   emailFreshnessListKey,
   emptyEmailCohortCounts,
+  emptyFof99CohortCounts,
+  parseFof99Cohort,
   formatEmptyFridays,
   parseEmailStaleListKey,
+  parseFof99RecentListPolicy,
   buildEmailCountBridge,
   winningUpdateChannel,
 } from "./ops-update-channel"
@@ -120,6 +124,38 @@ test("email cohort rows share the product total", () => {
   assert.equal(cohort.multi_source, 7)
 })
 
+test("fof99 tracked cohort rows share the product total", () => {
+  const counts = emptyFof99CohortCounts()
+  counts.total = 10
+  counts.in_pool = 4
+  counts.with_email = 3
+  counts.with_manual = 2
+  counts.multi_source = 4
+  counts.src_fof99_only = 5
+  counts.src_fof99_email = 2
+  counts.src_fof99_manual = 1
+  counts.src_all_three = 1
+  counts.src_other = 1
+  counts.src_none = 0
+  counts.fresh_w1 = 6
+  counts.fresh_w2_3 = 4
+  counts.ch_fof99 = 7
+  counts.ch_email = 2
+  counts.ch_none = 1
+  counts.pol_weekly = 8
+  counts.pol_weekly_plus = 2
+  const cohort = buildFof99Cohort(counts)
+  const sum = (rows: Array<{ count: number }>) => rows.reduce((total, row) => total + row.count, 0)
+  assert.equal(sum(cohort.sources), 10)
+  assert.equal(sum(cohort.freshness), 10)
+  assert.equal(sum(cohort.channel), 10)
+  assert.equal(sum(cohort.policy), 10)
+  assert.equal(cohort.sources.find((row) => row.key === "src_none"), undefined)
+  assert.equal(cohort.sources.find((row) => row.key === "src_fof99_only")?.label, "仅 fof99")
+  assert.equal(parseFof99Cohort("fetching"), "fetching")
+  assert.equal(parseFof99Cohort("ever"), null)
+})
+
 test("recorded list coverage adds up", () => {
   const coverage = FOF99_LIST_COVERAGE
   assert.equal(coverage.with_nav + coverage.no_nav, coverage.operating_total)
@@ -128,6 +164,10 @@ test("recorded list coverage adds up", () => {
   assert.equal(recentSum, coverage.recent)
   const olderSum = coverage.older_rows.reduce((sum, row) => sum + row.count, 0)
   assert.equal(olderSum, coverage.older_nav)
+  assert.equal(coverage.recent_measured_on, "2026-10-19")
+  assert.equal(parseFof99RecentListPolicy("weekly"), "weekly")
+  assert.equal(parseFof99RecentListPolicy("none"), "none")
+  assert.equal(parseFof99RecentListPolicy("email"), null)
 })
 
 test("email count bridge columns add up to the four headlines", () => {

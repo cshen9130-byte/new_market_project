@@ -16293,7 +16293,7 @@ function OperationsTeamDataView({
               )}
               <th className={`${thSort} min-w-[110px]`} title="与产品页成立日相同：产品要素，其次私募基金库，再次协会成立日期。A/B/C份额没有自己的日期时用母基金。" onClick={() => handleSort("inception_date")}>产品成立日<TeamSortIcon col="inception_date" /></th>
               {showInceptionNavCols && (
-                <th className={`${thSort} min-w-[110px]`} title="产品净值序列的最早日期。优先用产品页净值缓存，没有缓存时用各净值表的最早日期。" onClick={() => handleSort("nav_start_date")}>净值起始日<TeamSortIcon col="nav_start_date" /></th>
+                <th className={`${thSort} min-w-[110px]`} title="产品净值序列的最早日期。优先用产品页净值缓存，没有缓存时用各净值表的最早日期。份额没有自己的净值时，用母基金序列，与产品页一致。" onClick={() => handleSort("nav_start_date")}>净值起始日<TeamSortIcon col="nav_start_date" /></th>
               )}
               {showInceptionNavCols && (
                 <th className={`${thSort} min-w-[100px]`} title="净值起始日当天的单位净值。接近1指 0.95 到 1.05。" onClick={() => handleSort("nav_start_value")}>起始净值<TeamSortIcon col="nav_start_value" /></th>

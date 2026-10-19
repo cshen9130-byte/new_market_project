@@ -40,10 +40,13 @@ export function asFiniteNumber(value: unknown): number {
  * Cash that changed 当日结存 but was not booked in 当日存取合计.
  *
  * Identity on these statements:
- *   当日结存 = 上日结存 + 当日存取合计 + 平仓盈亏 − 当日手续费
- * A large, round residual is an external transfer (银期转出/入金 on another line).
- * Compounding it into unit NAV draws a fake performance drop. Small residuals
- * (option premium, delivery, fees) stay inside the return.
+ *   当日结存 = 上日结存 + 当日存取合计 + 平仓盈亏 + 当日总权利金 − 当日手续费
+ * 当日总权利金 is not stored, so premium and interest sit in the same residual
+ * as an unbooked 银期 transfer. Market PnL does not: it is already in 平仓盈亏
+ * or in the equity-versus-balance floating change. A residual that is both
+ * large and a round 万元 / 十万元 / 百万元 figure is that transfer. The few
+ * thousand yuan of premium beside it stays in the return. Smaller residuals
+ * stay in the return entirely.
  */
 export function unbookedCashTransfer(row: {
   balance_bf?: unknown
@@ -62,9 +65,19 @@ export function unbookedCashTransfer(row: {
   const base = Math.abs(broughtForward)
   const abs = Math.abs(residual)
   if (base < 1 || abs < 100_000 || abs / base < 0.08) return 0
-  const round = Math.round(residual / 10_000) * 10_000
-  if (Math.abs(residual - round) > 1_000) return 0
-  return residual
+
+  const nearestWan = Math.round(residual / 10_000) * 10_000
+  if (nearestWan !== 0 && Math.abs(residual - nearestWan) <= 1_000) return nearestWan
+
+  // 2026-10-16 荣熙如川: 600万入金, residual 5,997,203.69 (2,796 off the million).
+  // ±1,000 on the 万元 grid left the whole deposit inside 复权净值 (+57%).
+  for (const unit of [1_000_000, 100_000]) {
+    const round = Math.round(residual / unit) * unit
+    if (round === 0) continue
+    const gap = Math.abs(residual - round)
+    if (gap <= 5_000 && gap / Math.abs(round) <= 0.005) return round
+  }
+  return 0
 }
 
 export function aggregateEquityByDate(rows: EquitySourceRow[]): AccountRiskEquityDay[] {

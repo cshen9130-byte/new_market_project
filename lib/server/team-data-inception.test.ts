@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { listedInceptionDate, navStartValueBand, shareClassNavTipFits } from "./team-data-query-pg"
+import { listedInceptionDate, navStartValueBand, parentFilingCodes, parentNavStart, shareClassNavTipFits } from "./team-data-query-pg"
 
 function sources(partial: {
   track?: Array<[string, string]>
@@ -66,6 +66,40 @@ describe("listed inception date", () => {
     assert.equal(shareClassNavTipFits("B", "B"), true)
     assert.equal(shareClassNavTipFits("B", ""), true)
     assert.equal(shareClassNavTipFits("", ""), true)
+  })
+
+  it("maps 金舆中国互联网B类 back to the parent filing the product page charts", () => {
+    const parents = parentFilingCodes("J5938B")
+    assert.ok(parents.includes("SJ5938"))
+    assert.ok(parents.includes("J5938"))
+    assert.deepEqual(
+      parentNavStart(
+        { beian_hao: "J5938B" },
+        [{
+          code: "SJ5938",
+          cache_key: "SJ5938",
+          product_name: "金舆中国互联网",
+          date: "2016-05-13",
+          nav: "1",
+        }],
+        new Map(),
+      ),
+      { date: "2016-05-13", nav: "1" },
+    )
+    assert.equal(
+      parentNavStart(
+        { beian_hao: "J5938B" },
+        [{
+          code: "J5938A",
+          cache_key: "J5938A",
+          product_name: "金舆中国互联网A类",
+          date: "2016-01-01",
+          nav: "1",
+        }],
+        new Map(),
+      ),
+      null,
+    )
   })
 
   it("does not borrow an unrelated code", () => {

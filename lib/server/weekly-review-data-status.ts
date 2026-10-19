@@ -6,7 +6,7 @@
 import { query } from "@/lib/db"
 import { shareClassFamilyBeianCodes } from "@/lib/server/share-class-product"
 import { shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
-import { setListResponseCache, withListResponseCache } from "@/lib/server/list-response-cache"
+import { serveOpsSnapshot } from "@/lib/server/ops-overview-snapshot"
 import { addDays } from "@/lib/server/list-cache-nav-batch"
 import {
   bucketForFund,
@@ -197,13 +197,9 @@ export async function getWeeklyReviewDataStatus(
   const pools = normalizeWeeklyReviewPools(query.pools ?? ["jy"])
   const asOf = anchorWeekEnd(today, query.weekEnd)
   const key = `ops-weekly-review-status:v3:${variant}:${asOf}:${pools.join(",")}`
-  if (refresh) {
-    const body = await buildWeeklyReviewDataStatusReport(variant, today, { pools, weekEnd: asOf })
-    setListResponseCache(key, body)
-    return body
-  }
-  return await withListResponseCache(
+  return serveOpsSnapshot(
     key,
+    refresh,
     () => buildWeeklyReviewDataStatusReport(variant, today, { pools, weekEnd: asOf }),
-  ) as WeeklyReviewDataStatus
+  )
 }

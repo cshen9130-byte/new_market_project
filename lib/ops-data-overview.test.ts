@@ -9,10 +9,19 @@ import {
   overviewRows,
   productTotalTree,
   teamLagBucket,
+  parseFreshnessListBucket,
   weekBucket,
 } from "./ops-data-overview"
 
 const today = "2026-10-15"
+
+test("freshness product list only opens the two-week and three-week buckets", () => {
+  assert.equal(parseFreshnessListBucket("w2"), "w2")
+  assert.equal(parseFreshnessListBucket("w3"), "w3")
+  assert.equal(parseFreshnessListBucket("w1"), null)
+  assert.equal(parseFreshnessListBucket("w0"), null)
+  assert.equal(parseFreshnessListBucket(null), null)
+})
 
 test("week buckets split the latest week from one week behind", () => {
   assert.equal(weekBucket("2026-10-15", today), "w0")

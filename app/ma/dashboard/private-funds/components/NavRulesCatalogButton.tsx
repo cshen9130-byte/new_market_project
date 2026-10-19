@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { BookOpen } from "lucide-react"
 import {
   Dialog,
@@ -42,9 +42,10 @@ export function NavRulesCatalogButton() {
   const [query, setQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState("all")
   const [checkedAt, setCheckedAt] = useState("")
+  const catalogRef = useRef(catalog)
+  catalogRef.current = catalog
 
   useEffect(() => {
-    if (!open) return
     let cancelled = false
 
     const load = async () => {
@@ -74,8 +75,9 @@ export function NavRulesCatalogButton() {
       }
     }
 
-    setLoading(true)
+    if (!catalogRef.current) setLoading(true)
     void load()
+    if (!open) return () => { cancelled = true }
     const timer = window.setInterval(() => { void load() }, POLL_MS)
     return () => {
       cancelled = true

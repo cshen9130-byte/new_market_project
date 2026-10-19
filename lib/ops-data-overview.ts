@@ -210,6 +210,40 @@ export const WEEK_BUCKET_LABEL: Record<WeekBucket, string> = {
   none: "无日期",
 }
 
+/** 净值月内新鲜度 rows that open a product list. */
+export const FRESHNESS_LIST_BUCKETS = ["w2", "w3"] as const
+
+export type FreshnessListBucket = (typeof FRESHNESS_LIST_BUCKETS)[number]
+
+export function parseFreshnessListBucket(raw: string | null): FreshnessListBucket | null {
+  if (raw === "w2" || raw === "w3") return raw
+  return null
+}
+
+export const FRESHNESS_LIST_HINT: Record<FreshnessListBucket, string> = {
+  w2: "较新的净值日距今 15 到 21 天。",
+  w3: "较新的净值日距今 22 到 28 天。",
+}
+
+export type FreshnessProduct = {
+  code: string
+  name: string
+  nav_date: string
+  lag_days: number
+  in_pool: boolean
+}
+
+export type FreshnessProductList = {
+  scope: DataOverviewScope
+  scope_label: string
+  bucket: FreshnessListBucket
+  label: string
+  hint: string
+  as_of: string
+  total: number
+  products: FreshnessProduct[]
+}
+
 export type NavDateBucket = "m1" | "m1_3" | "m3_6" | "over_m6" | "none"
 
 export type InceptionGapBucket = "w2" | "w2_m1" | "m1_3" | "m3_6" | "m6_12" | "over_y1"

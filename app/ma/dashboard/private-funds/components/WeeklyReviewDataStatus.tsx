@@ -12,6 +12,7 @@ import {
   type WeeklyReviewSource,
   type WeeklyReviewStatusVariant,
 } from "@/lib/weekly-review-data-status"
+import { isWeeklyBody, loadOpsCache, peekOpsCache, weeklyCacheKey } from "./ops-overview-cache"
 
 function formatCount(count: number): string {
   return count.toLocaleString("zh-CN")
@@ -80,20 +81,23 @@ export function WeeklyReviewDataStatus({
 
   const load = useCallback((next: WeeklyReviewStatusVariant, refresh: boolean, poolKeys: string, anchor: string) => {
     const seq = ++requestSeq.current
-    setLoading(true)
+    const key = weeklyCacheKey(next, poolKeys, anchor)
+    const cached = refresh ? null : peekOpsCache<WeeklyReviewDataStatus>(key)
+    if (cached?.variant === next) {
+      setBody(cached)
+      setLoading(false)
+    } else {
+      setLoading(true)
+    }
     setError("")
     const params = new URLSearchParams({ variant: next })
     if (refresh) params.set("refresh", "1")
     if (poolKeys) params.set("pools", poolKeys)
     if (anchor) params.set("week_end", anchor)
-    fetch(`/ma/api/ops/data-overview/weekly-review?${params}`)
-      .then(async (res) => {
-        const json = await res.json()
+    loadOpsCache(key, `/ma/api/ops/data-overview/weekly-review?${params}`, refresh, isWeeklyBody, "周度回顾数据状态加载失败")
+      .then((json) => {
         if (seq !== requestSeq.current) return
-        if (!res.ok || !json || !Array.isArray(json.categories)) {
-          throw new Error(typeof json?.message === "string" ? json.message : "周度回顾数据状态加载失败")
-        }
-        setBody(json as WeeklyReviewDataStatus)
+        setBody(json)
       })
       .catch((err: unknown) => {
         if (seq !== requestSeq.current) return
@@ -114,7 +118,8 @@ export function WeeklyReviewDataStatus({
     load(lockedVariant ?? variant, refreshTick > 0, poolKey, weekEnd ?? "")
   }, [lockedVariant, variant, refreshTick, poolKey, weekEnd, load])
 
-  const visible = body?.variant === variant ? body : null
+  const cachedWeekly = peekOpsCache<WeeklyReviewDataStatus>(weeklyCacheKey(variant, poolKey, weekEnd ?? ""))
+  const visible = body?.variant === variant ? body : cachedWeekly?.variant === variant ? cachedWeekly : null
 
   return (
     <section className={`rounded-xl border bg-background shadow-sm overflow-hidden ${loading && visible ? "opacity-60" : ""}`}>

@@ -1,9 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { EMAIL_COHORTS, EMAIL_STALE_LIST_LABEL, emailFreshnessBucket, emailFreshnessListKey, formatCnMonthDay, type EmailCohortKey, type EmailCohortStatus, type EmailCountBridge, type EmailProductStatus, type EmailStaleListKey, type EmailStaleListResponse, type EmailStaleProduct, type Fof99ListCoverage, type UniverseMoves, type UpdateChannel, type UpdateChannelResponse, type UpdateCoverageBlock, type UpdateCoverageRow, type UpdateWeekStat } from "@/lib/ops-update-channel"
+import { channelCacheKey, isChannelBody, loadOpsCache, peekOpsCache } from "./ops-overview-cache"
+import { EMAIL_COHORTS, EMAIL_STALE_LIST_LABEL, FOF99_COHORTS, emailFreshnessBucket, emailFreshnessListKey, formatCnMonthDay, parseFof99RecentListPolicy, type EmailCohortKey, type EmailCohortStatus, type EmailCountBridge, type EmailProductStatus, type EmailStaleListKey, type EmailStaleListResponse, type EmailStaleProduct, type Fof99CohortKey, type Fof99CohortStatus, type Fof99ListCoverage, type Fof99ProductStatus, type Fof99RecentListPolicy, type Fof99RecentListResponse, type UniverseMoves, type UpdateChannel, type UpdateChannelResponse, type UpdateCoverageBlock, type UpdateCoverageRow, type UpdateWeekStat } from "@/lib/ops-update-channel"
 
 const POLICY_COLOR: Record<string, string> = {
   weekly: "#D93025",
@@ -177,7 +178,204 @@ function countShare(count: number, total: number): number {
   return count / total
 }
 
+const RECENT_LIST_PAGE_SIZE = 100
+
+function csvCell(value: string): string {
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, "\"\"")}"`
+  return value
+}
+
+function downloadRecentList(body: Fof99RecentListResponse, rows: Fof99RecentListResponse["products"]) {
+  const headers = ["产品", "备案号", "名单净值日", "名单净值", "跟踪池"]
+  const lines = rows.map((row) => [
+    row.name,
+    row.code,
+    row.price_date,
+    row.price_nav ?? "",
+    row.in_pool ? "在" : "不在",
+  ].map(csvCell).join(","))
+  const blob = new Blob(
+    ["\uFEFF" + [headers.join(","), ...lines].join("\n")],
+    { type: "text/csv;charset=utf-8;" },
+  )
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = `近一月名单_${body.label}_${body.measured_on}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function RecentListProductsDialog({
+  policy,
+  onClose,
+}: {
+  policy: Fof99RecentListPolicy
+  onClose: () => void
+}) {
+  const [body, setBody] = useState<Fof99RecentListResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [page, setPage] = useState(0)
+  const requestSeq = useRef(0)
+
+  useEffect(() => {
+    const seq = ++requestSeq.current
+    setLoading(true)
+    setError("")
+    setBody(null)
+    setKeyword("")
+    setPage(0)
+    const params = new URLSearchParams({ policy })
+    fetch(`/ma/api/ops/data-overview/update/recent-list-products?${params}`)
+      .then(async (res) => {
+        const json = await res.json()
+        if (seq !== requestSeq.current) return
+        if (!res.ok || !json || !Array.isArray(json.products)) {
+          throw new Error(typeof json?.message === "string" ? json.message : "产品列表加载失败")
+        }
+        setBody(json as Fof99RecentListResponse)
+      })
+      .catch((err: unknown) => {
+        if (seq !== requestSeq.current) return
+        setError(err instanceof Error ? err.message : "产品列表加载失败")
+      })
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false)
+      })
+  }, [policy])
+
+  const filtered = useMemo(() => {
+    const rows = body?.products ?? []
+    const q = keyword.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter((row) => row.name.toLowerCase().includes(q) || row.code.toLowerCase().includes(q))
+  }, [body, keyword])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / RECENT_LIST_PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const visibleRows = filtered.slice(safePage * RECENT_LIST_PAGE_SIZE, (safePage + 1) * RECENT_LIST_PAGE_SIZE)
+  const title = body ? `近一月名单 · ${body.label}` : "近一月名单"
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] flex flex-col gap-3">
+        <DialogHeader>
+          <DialogTitle className="text-sm">{title}</DialogTitle>
+          <DialogDescription className="text-xs leading-5">
+            {body
+              ? `${formatCnMonthDay(body.measured_on)}火富牛名单里，净值日在 ${formatCnMonthDay(body.cutoff)} 及以后、跟踪方式为${body.label}的产品。`
+              : "正在列出这一档的产品。"}
+            点备案号打开产品页。
+            {body ? ` 共 ${formatCount(body.total)} 只。` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex items-center gap-2">
+          <input
+            value={keyword}
+            onChange={(event) => {
+              setKeyword(event.target.value)
+              setPage(0)
+            }}
+            placeholder="搜索产品或备案号"
+            className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:border-red-300"
+          />
+          <button
+            type="button"
+            disabled={!body || loading || filtered.length === 0}
+            onClick={() => { if (body) downloadRecentList(body, filtered) }}
+            className="h-8 shrink-0 rounded-md border px-2.5 text-xs text-zinc-600 hover:border-red-300 hover:text-red-600 disabled:opacity-40"
+          >
+            下载
+          </button>
+        </div>
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>
+        )}
+        {loading && (
+          <div className="py-8 text-center text-sm text-muted-foreground">正在列出产品…</div>
+        )}
+        {body && !loading && (
+          <>
+            <div className="overflow-auto min-h-0">
+              <table className="w-full text-xs min-w-[640px]">
+                <thead className="sticky top-0 bg-background">
+                  <tr className="text-zinc-400">
+                    <th className="px-2 py-1.5 text-left font-medium">产品</th>
+                    <th className="px-2 py-1.5 text-left font-medium">备案号</th>
+                    <th className="px-2 py-1.5 text-left font-medium">名单净值日</th>
+                    <th className="px-2 py-1.5 text-right font-medium">名单净值</th>
+                    <th className="px-2 py-1.5 text-left font-medium">跟踪池</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.length === 0 ? (
+                    <tr className="border-t border-zinc-100 dark:border-zinc-800">
+                      <td className="px-2 py-3 text-zinc-400" colSpan={5}>
+                        {keyword.trim() ? "没有匹配的产品。" : "这一档没有产品。"}
+                      </td>
+                    </tr>
+                  ) : visibleRows.map((row) => (
+                    <tr key={row.code} className="border-t border-zinc-100 dark:border-zinc-800">
+                      <td className="px-2 py-1.5 text-zinc-700 dark:text-zinc-200 max-w-[280px] truncate" title={row.name}>
+                        {row.name || "—"}
+                      </td>
+                      <td className="px-2 py-1.5 whitespace-nowrap">
+                        <a
+                          href={`/ma/dashboard/private-funds/${encodeURIComponent(row.code)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-red-600 hover:underline tabular-nums"
+                        >
+                          {row.code}
+                        </a>
+                      </td>
+                      <td className="px-2 py-1.5 whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-300">{row.price_date}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-300">{row.price_nav || "—"}</td>
+                      <td className="px-2 py-1.5 whitespace-nowrap text-zinc-600 dark:text-zinc-300">{row.in_pool ? "在" : "不在"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+              <span>
+                {filtered.length === 0
+                  ? "0 只"
+                  : `${formatCount(safePage * RECENT_LIST_PAGE_SIZE + 1)}–${formatCount(Math.min(filtered.length, (safePage + 1) * RECENT_LIST_PAGE_SIZE))} / ${formatCount(filtered.length)} 只`}
+              </span>
+              {pageCount > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={safePage === 0}
+                    onClick={() => setPage(safePage - 1)}
+                    className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-red-300 hover:text-red-500"
+                  >
+                    上一页
+                  </button>
+                  <span className="tabular-nums px-1">{safePage + 1} / {pageCount}</span>
+                  <button
+                    type="button"
+                    disabled={safePage >= pageCount - 1}
+                    onClick={() => setPage(safePage + 1)}
+                    className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-red-300 hover:text-red-500"
+                  >
+                    下一页
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function ListCoverageSection({ coverage }: { coverage: Fof99ListCoverage }) {
+  const [policy, setPolicy] = useState<Fof99RecentListPolicy | null>(null)
   const active = coverage.recent_rows
     .filter((row) => row.key === "weekly" || row.key === "weekly_plus")
     .reduce((sum, row) => sum + row.count, 0)
@@ -191,6 +389,10 @@ function ListCoverageSection({ coverage }: { coverage: Fof99ListCoverage }) {
     { label: "净值更早", value: coverage.older_nav, share: countShare(coverage.older_nav, coverage.operating_total) },
     { label: "名单无净值", value: coverage.no_nav, share: countShare(coverage.no_nav, coverage.operating_total) },
   ]
+  const openPolicy = (key: string, count: number) => {
+    const parsed = parseFof99RecentListPolicy(key)
+    if (parsed && count > 0) setPolicy(parsed)
+  }
   return (
     <section className="mt-3 rounded-xl border bg-background shadow-sm overflow-hidden">
       <div className="px-4 py-2.5 border-b">
@@ -201,7 +403,7 @@ function ListCoverageSection({ coverage }: { coverage: Fof99ListCoverage }) {
           </span>
         </h3>
         <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">
-          {formatCnMonthDay(coverage.measured_on)}读取火富牛名单，平台策略、私募证券、正常运作。近一月指名单净值日在 {formatCnMonthDay(coverage.cutoff)} 及以后。这 {formatCount(coverage.recent)} 只里，跟踪里有 {formatCount(inUniverse)} 只，其中每周拉取和邮件优先合计 {formatCount(active)} 只。全部运作状态的私募证券 {formatCount(coverage.private_securities_all_states)} 只，全部产品类型 {formatCount(coverage.all_products)} 只。刷新这一页不会再调用接口。
+          {formatCnMonthDay(coverage.measured_on)}读取火富牛名单，平台策略、私募证券、正常运作。近一月指名单净值日在 {formatCnMonthDay(coverage.cutoff)} 及以后，这一档和跟踪方式是 {formatCnMonthDay(coverage.recent_measured_on)}按同一条件读的。这 {formatCount(coverage.recent)} 只里，跟踪里有 {formatCount(inUniverse)} 只，其中每周拉取和邮件优先合计 {formatCount(active)} 只。点跟踪方式查看产品。全部运作状态的私募证券 {formatCount(coverage.private_securities_all_states)} 只，全部产品类型 {formatCount(coverage.all_products)} 只。刷新这一页不会再调用接口。
         </p>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 px-4 py-3">
@@ -232,7 +434,7 @@ function ListCoverageSection({ coverage }: { coverage: Fof99ListCoverage }) {
         </tbody>
       </table>
       <p className="px-4 py-1.5 text-[11px] leading-4 text-zinc-400">
-        1–2 个月是 8月16日至 9月15日，2–3 个月是 7月16日至 8月15日，3–6 个月是 4月16日至 7月15日，6 个月以上是 4月16日之前。
+        1–2 个月是 8月16日至 9月15日，2–3 个月是 7月16日至 8月15日，3–6 个月是 4月16日至 7月15日，6 个月以上是 4月16日之前。1–2 个月比 10月16日少 14 只，近一月在 10月19日多了这 14 只。
       </p>
       <table className="w-full text-xs">
         <thead>
@@ -243,15 +445,43 @@ function ListCoverageSection({ coverage }: { coverage: Fof99ListCoverage }) {
           </tr>
         </thead>
         <tbody>
-          {coverage.recent_rows.map((row) => (
-            <tr key={row.key} className="border-t border-zinc-100 dark:border-zinc-800">
-              <td className="px-4 py-1.5 text-zinc-700 dark:text-zinc-200">{row.label}</td>
-              <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.count)}</td>
-              <td className="px-4 py-1.5 text-right tabular-nums text-zinc-500">{formatShare(countShare(row.count, coverage.recent))}</td>
-            </tr>
-          ))}
+          {coverage.recent_rows.map((row) => {
+            const canOpen = parseFof99RecentListPolicy(row.key) != null && row.count > 0
+            return (
+              <tr key={row.key} className="border-t border-zinc-100 dark:border-zinc-800">
+                <td className="px-4 py-1.5 text-zinc-700 dark:text-zinc-200">
+                  {canOpen ? (
+                    <button
+                      type="button"
+                      onClick={() => openPolicy(row.key, row.count)}
+                      className="hover:text-red-600 hover:underline"
+                    >
+                      {row.label}
+                    </button>
+                  ) : row.label}
+                </td>
+                <td className="px-3 py-1.5 text-right">
+                  {canOpen ? (
+                    <button
+                      type="button"
+                      onClick={() => openPolicy(row.key, row.count)}
+                      className="tabular-nums text-red-600 hover:underline"
+                    >
+                      {formatCount(row.count)}
+                    </button>
+                  ) : (
+                    <span className="tabular-nums">{formatCount(row.count)}</span>
+                  )}
+                </td>
+                <td className="px-4 py-1.5 text-right tabular-nums text-zinc-500">{formatShare(countShare(row.count, coverage.recent))}</td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
+      {policy && (
+        <RecentListProductsDialog policy={policy} onClose={() => setPolicy(null)} />
+      )}
     </section>
   )
 }
@@ -304,6 +534,9 @@ const SOURCE_COLOR: Record<string, string> = {
   src_email_only: "#1A73E8",
   src_email_fof99: "#D93025",
   src_email_manual: "#FBBC04",
+  src_fof99_only: "#D93025",
+  src_fof99_email: "#1A73E8",
+  src_fof99_manual: "#FBBC04",
   src_all_three: "#16a34a",
   src_other: "#a1a1aa",
   src_none: "#d4d4d8",
@@ -391,13 +624,15 @@ function staleBucketLabel(latest: string | null, asOf: string): string {
   return "—"
 }
 
-function EmailStaleProductsDialog({
-  cohort,
-  freshness,
+function StaleProductsDialog({
+  url,
+  title,
+  lead,
   onClose,
 }: {
-  cohort: EmailCohortKey
-  freshness: EmailStaleListKey
+  url: string
+  title: string
+  lead: string
   onClose: () => void
 }) {
   const [body, setBody] = useState<EmailStaleListResponse | null>(null)
@@ -410,8 +645,7 @@ function EmailStaleProductsDialog({
     setLoading(true)
     setError("")
     setBody(null)
-    const params = new URLSearchParams({ cohort, freshness })
-    fetch(`/ma/api/ops/data-overview/update/email-products?${params}`)
+    fetch(url)
       .then(async (res) => {
         const json = await res.json()
         if (seq !== requestSeq.current) return
@@ -427,20 +661,19 @@ function EmailStaleProductsDialog({
       .finally(() => {
         if (seq === requestSeq.current) setLoading(false)
       })
-  }, [cohort, freshness])
+  }, [url])
 
-  const title = `${EMAIL_COHORTS.find((item) => item.key === cohort)?.label ?? ""} · ${EMAIL_STALE_LIST_LABEL[freshness]}`
+  const truncated = body != null && body.products.length < body.total
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent className="sm:max-w-5xl max-h-[85vh] flex flex-col gap-3">
         <DialogHeader>
           <DialogTitle className="text-sm">{title}</DialogTitle>
           <DialogDescription className="text-xs leading-5">
-            {freshness === "behind_2w"
-              ? "最新净值日距今超过 14 天的邮箱产品。"
-              : `最新净值日落在${EMAIL_STALE_LIST_LABEL[freshness]}的邮箱产品。`}
+            {lead}
             点备案号打开产品页。
             {body ? ` 共 ${formatCount(body.total)} 只，统计日 ${body.as_of}。` : ""}
+            {truncated && body ? ` 这里列出最旧的 ${formatCount(body.products.length)} 只。` : ""}
           </DialogDescription>
         </DialogHeader>
         {error && (
@@ -663,7 +896,7 @@ function EmailProductStatusSection({ status }: { status: EmailProductStatus }) {
           </div>
         </div>
         <p className="mt-1 text-[11px] leading-4 text-zinc-500">
-          曾经写入是历史上邮件里出现过备案号的产品。上周写入就是上面那 {formatCount(status.last_week.total)} 只。看它们现在还有没有火富牛或手动净值，以及最新净值日落在哪一档。最新净值日取邮箱、手动、火富牛成功抓取和产品页日期里最晚的一天。当前渠道只比较前三个来源，同一天优先手动，其次邮箱。
+          曾经写入是历史上邮件里出现过备案号的产品。上周写入就是上面那 {formatCount(status.last_week.total)} 只。看它们现在还有没有火富牛或手动净值，以及最新净值日落在哪一档。最新净值日取邮箱、手动、火富牛成功抓取和产品页日期里最晚的一天。主基金、A/B/C 份额，以及名称相同的其他备案号，算同一只产品，用其中最晚的一天判断是否滞后；任一备案号已更新，整只产品就不进滞后档。当前渠道只比较这一行备案号自己的前三个来源，同一天优先手动，其次邮箱。
           这 {formatCount(body.total)} 只里，同时还有其他来源的 {formatCount(body.multi_source)} 只，最新净值在 1 周以内的 {formatCount(withinWeek)} 只。
           {behindTwoWeeks > 0 && (
             <>
@@ -743,9 +976,145 @@ function EmailProductStatusSection({ status }: { status: EmailProductStatus }) {
         </div>
       </div>
       {staleList && (
-        <EmailStaleProductsDialog
-          cohort={cohort}
-          freshness={staleList}
+        <StaleProductsDialog
+          url={`/ma/api/ops/data-overview/update/email-products?${new URLSearchParams({ cohort, freshness: staleList })}`}
+          title={`${EMAIL_COHORTS.find((item) => item.key === cohort)?.label ?? ""} · ${EMAIL_STALE_LIST_LABEL[staleList]}`}
+          lead={staleList === "behind_2w"
+            ? "最新净值日距今超过 14 天的邮箱产品。"
+            : `最新净值日落在${EMAIL_STALE_LIST_LABEL[staleList]}的邮箱产品。`}
+          onClose={() => setStaleList(null)}
+        />
+      )}
+    </section>
+  )
+}
+
+function Fof99ProductStatusSection({ status }: { status: Fof99ProductStatus }) {
+  const [cohort, setCohort] = useState<Fof99CohortKey>("fetching")
+  const [staleList, setStaleList] = useState<EmailStaleListKey | null>(null)
+  const body: Fof99CohortStatus = status[cohort]
+  const withinWeek = body.freshness.find((row) => row.key === "fresh_w1")?.count ?? 0
+  const behindTwoWeeks = body.freshness.reduce((sum, row) => (
+    emailFreshnessListKey(row.key) ? sum + row.count : sum
+  ), 0)
+  const cards = [
+    { label: "产品数", value: body.total },
+    { label: "在跟踪池", value: body.in_pool },
+    { label: "也有邮箱", value: body.with_email },
+    { label: "也有手动", value: body.with_manual },
+    { label: "多个来源", value: body.multi_source },
+  ]
+  return (
+    <section className="mt-3 rounded-xl border bg-background shadow-sm overflow-hidden">
+      <div className="px-4 py-2.5 border-b">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <h3 className="text-xs font-semibold text-foreground">火富牛跟踪产品现在怎么更新</h3>
+          <div className="flex items-center gap-1">
+            {FOF99_COHORTS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setCohort(item.key)}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium transition-colors",
+                  cohort === item.key
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {item.label}
+                <span className="ml-1 tabular-nums">{formatCount(status[item.key].total)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="mt-1 text-[11px] leading-4 text-zinc-500">
+          接口在拉是每周拉取和邮件优先，周五会调火富牛接口；邮件优先只在列表落后时才拉。全部跟踪再算上更新偏慢和确认无序列。上周拿到是其中上周有成功抓取的。看它们现在还有没有邮箱或手动净值，以及最新净值日落在哪一档。最新净值日取火富牛成功抓取、邮箱、手动和产品页日期里最晚的一天。主基金、A/B/C 份额，以及名称相同的其他备案号，算同一只产品，用其中最晚的一天判断是否滞后；任一备案号已更新，整只产品就不进滞后档。当前渠道只比较这一行备案号自己的前三个来源，同一天优先手动，其次邮箱。
+          这 {formatCount(body.total)} 只里，同时还有其他来源的 {formatCount(body.multi_source)} 只，最新净值在 1 周以内的 {formatCount(withinWeek)} 只。
+          {behindTwoWeeks > 0 && (
+            <>
+              {" "}
+              <button
+                type="button"
+                onClick={() => setStaleList("behind_2w")}
+                className="text-red-600 hover:underline"
+              >
+                滞后超过2周 {formatCount(behindTwoWeeks)} 只
+              </button>
+              ，点开可看是哪些产品。2–3周及更早的数字同样可以点开。
+            </>
+          )}
+        </p>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 px-4 py-3">
+        {cards.map((card) => (
+          <div key={card.label} className="rounded-lg border px-3 py-2">
+            <div className="text-[11px] text-zinc-400">{card.label}</div>
+            <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{formatCount(card.value)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 px-4 pb-4">
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">数据来源</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">一只产品可以同时有火富牛接口、邮箱和手动净值。这里按组合分开，加总等于产品数。</p>
+          </div>
+          <ReactECharts key={`${cohort}-sources`} option={countOption(body.sources, SOURCE_COLOR)} style={{ height: Math.max(180, body.sources.length * 32 + 36) }} notMerge lazyUpdate />
+          <CountTable rows={body.sources} statusLabel="来源" />
+        </div>
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">最新净值日期</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">1周以内是 7 天内，其后每 7 天一档，满 4 周后按 1–2 个月、2–3 个月、3–6 个月、6 个月以上。红色数字是滞后超过2周的产品，点开查看名单。</p>
+          </div>
+          <ReactECharts
+            key={`${cohort}-fresh`}
+            option={countOption(body.freshness, FRESH_COLOR)}
+            style={{ height: Math.max(220, body.freshness.length * 28 + 36) }}
+            notMerge
+            lazyUpdate
+            onEvents={{
+              click: (params: { dataIndex?: number }) => {
+                const row = body.freshness[params.dataIndex ?? -1]
+                const key = row ? emailFreshnessListKey(row.key) : null
+                if (key && row.count > 0) setStaleList(key)
+              },
+            }}
+          />
+          <CountTable
+            rows={body.freshness}
+            statusLabel="距今"
+            onCount={(row) => {
+              const key = emailFreshnessListKey(row.key)
+              if (key) setStaleList(key)
+            }}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 px-4 pb-4">
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">当前最新渠道</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">三个来源里谁的净值日最晚。产品页更晚的日期不改变这一列。</p>
+          </div>
+          <CountTable rows={body.channel} statusLabel="渠道" />
+        </div>
+        <div className="rounded-lg border overflow-hidden">
+          <div className="px-4 py-2 border-b">
+            <h4 className="text-xs font-semibold text-foreground">跟踪方式</h4>
+            <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">这些产品在火富牛跟踪里的方式。接口在拉只含每周拉取和邮件优先。</p>
+          </div>
+          <CountTable rows={body.policy} statusLabel="跟踪方式" />
+        </div>
+      </div>
+      {staleList && (
+        <StaleProductsDialog
+          url={`/ma/api/ops/data-overview/update/fof99-products?${new URLSearchParams({ cohort, freshness: staleList })}`}
+          title={`${FOF99_COHORTS.find((item) => item.key === cohort)?.label ?? ""} · ${EMAIL_STALE_LIST_LABEL[staleList]}`}
+          lead={staleList === "behind_2w"
+            ? "最新净值日距今超过 14 天的火富牛跟踪产品。"
+            : `最新净值日落在${EMAIL_STALE_LIST_LABEL[staleList]}的火富牛跟踪产品。`}
           onClose={() => setStaleList(null)}
         />
       )}
@@ -803,18 +1172,26 @@ export function OperationsUpdateChannelView({
 
   const load = useCallback((refresh: boolean) => {
     const seq = ++requestSeq.current
-    setLoading(true)
+    const cached = refresh ? null : peekOpsCache<UpdateChannelResponse>(channelCacheKey(channel))
+    if (cached?.channel === channel) {
+      setBody(cached)
+      setLoading(false)
+    } else {
+      setLoading(true)
+    }
     setError("")
     const params = new URLSearchParams({ channel })
     if (refresh) params.set("refresh", "1")
-    fetch(`/ma/api/ops/data-overview/update?${params}`)
-      .then(async (res) => {
-        const json = await res.json()
+    loadOpsCache(
+      channelCacheKey(channel),
+      `/ma/api/ops/data-overview/update?${params}`,
+      refresh,
+      isChannelBody,
+      "更新渠道加载失败",
+    )
+      .then((json) => {
         if (seq !== requestSeq.current) return
-        if (!res.ok || !json || !Array.isArray(json.coverage)) {
-          throw new Error(typeof json?.message === "string" ? json.message : "更新渠道加载失败")
-        }
-        setBody(json as UpdateChannelResponse)
+        setBody(json)
       })
       .catch((err: unknown) => {
         if (seq !== requestSeq.current) return
@@ -838,7 +1215,8 @@ export function OperationsUpdateChannelView({
     onLoading?.(loading)
   }, [loading, onLoading])
 
-  const visible = body?.channel === channel ? body : null
+  const cachedChannel = peekOpsCache<UpdateChannelResponse>(channelCacheKey(channel))
+  const visible = body?.channel === channel ? body : cachedChannel?.channel === channel ? cachedChannel : null
   const isFof = channel === "fof99"
   const last = visible?.last_week
   const historyDesc = visible ? [...visible.history].reverse() : []
@@ -905,6 +1283,7 @@ export function OperationsUpdateChannelView({
 
           {!isFof && visible.email_count_bridge && <EmailCountBridgeSection bridge={visible.email_count_bridge} />}
           {!isFof && visible.email_products && <EmailProductStatusSection status={visible.email_products} />}
+          {isFof && visible.fof99_products && <Fof99ProductStatusSection status={visible.fof99_products} />}
           {isFof && visible.list_coverage && <ListCoverageSection coverage={visible.list_coverage} />}
           {isFof && visible.universe_moves && <UniverseMovesSection moves={visible.universe_moves} />}
 

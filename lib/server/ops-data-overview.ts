@@ -11,8 +11,10 @@
 import { query } from "@/lib/db"
 import {
   DATA_OVERVIEW_SCOPES,
+  FRESHNESS_LIST_HINT,
   WEEK_BUCKETS,
   WEEK_BUCKET_LABEL,
+  daysBetween,
   emptyInceptionGapCounts,
   emptyNavAge,
   emptyNavClass,
@@ -21,6 +23,9 @@ import {
   navDateBucket,
   overviewRows,
   shanghaiToday,
+  type FreshnessListBucket,
+  type FreshnessProduct,
+  type FreshnessProductList,
   type NavAgePoolCounts,
   type NavClassCounts,
   weekBucket,
@@ -30,17 +35,16 @@ import {
   type InceptionGapBucket,
   type WeekBucket,
 } from "@/lib/ops-data-overview"
-import {
-  PLATFORM_PRIVATE_CLASS_SQL,
-  PLATFORM_PRODUCT_CLASS_CASE_SQL,
-} from "@/lib/server/platform-data-query-pg"
+import { PLATFORM_PRODUCT_CLASS_CASE_SQL } from "@/lib/server/platform-data-query-pg"
 import { NAV_SERIES_FLAG_RULE, loadFreshNavSeriesFlags } from "@/lib/server/nav-series-flags-pg"
-import { setListResponseCache, withListResponseCache } from "@/lib/server/list-response-cache"
+import { withListResponseCache } from "@/lib/server/list-response-cache"
+import { serveOpsSnapshot } from "@/lib/server/ops-overview-snapshot"
 import type { NavAnomalyHit } from "@/lib/server/nav-anomaly"
 import {
   assessPlatformNavSeries,
   attachNavAnomalyDiagnosis,
   loadBeianCodesWithOperationDate,
+  listTeamPageNavRows,
   loadInceptionNavAlignment,
   matchesInceptionNavGap,
   summarizeTeamDataStatus,
@@ -305,7 +309,7 @@ function sectionsFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
     {
       key: "nav_freshness",
       title: "净值月内新鲜度",
-      hint: "取产品页上团队净值日期与平台净值日期中较新的一天。最新一周为 7 天内，滞后 1 周为 8 到 14 天，滞后 2 周为 15 到 21 天，滞后 3 周为 22 到 28 天。更早或没有日期的产品不在此列出。占比相对当前范围内的全部产品。",
+      hint: "取产品页上团队净值日期与平台净值日期中较新的一天。最新一周为 7 天内，滞后 1 周为 8 到 14 天，滞后 2 周为 15 到 21 天，滞后 3 周为 22 到 28 天。更早或没有日期的产品不在此列出。占比相对当前范围内的全部产品。滞后2周和滞后3周可以点开，查看是哪些产品。",
       rows: weekRows(counts.navFreshness, total, "无净值日期", ["w0", "w1", "w2", "w3"]),
     },
     {
@@ -425,11 +429,47 @@ function responseFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
   }
 }
 
+const JOINED_PRODUCT_CLASS_SQL = `CASE
+  WHEN COALESCE(ac.is_equity, false)
+    OR COALESCE(i.product_name, '') LIKE '%股权%'
+    OR COALESCE(i.product_name, '') LIKE '%有限合伙%'
+    OR COALESCE(i.product_name, '') LIKE '%创业投资%'
+  THEN 'equity'
+  WHEN COALESCE(ac.is_trust, false)
+    OR COALESCE(i.product_name, '') LIKE '%信托%'
+  THEN 'trust'
+  WHEN COALESCE(ac.is_asset, false)
+    OR fc.fund_no IS NOT NULL
+    OR COALESCE(i.product_name, '') LIKE '%资管%'
+    OR COALESCE(i.product_name, '') LIKE '%资产管理%'
+  THEN 'asset'
+  ELSE 'private'
+END`
+
 const SHARED_CTES = `
+amac_class AS MATERIALIZED (
+  SELECT
+    fund_no,
+    BOOL_OR(BTRIM(fund_type) IN ('股权投资基金', '创业投资基金')) AS is_equity,
+    BOOL_OR(BTRIM(fund_type) = '信托计划') AS is_trust,
+    BOOL_OR(BTRIM(fund_type) IN (
+      '证券公司及其子公司的资产管理计划',
+      '期货公司及其子公司的资产管理计划',
+      '期货公司集合资管产品',
+      '保险公司及其子公司的资产管理计划',
+      '基金专户',
+      '银行理财产品'
+    )) AS is_asset
+  FROM amac_private_funds
+  GROUP BY fund_no
+),
+futures_class AS MATERIALIZED (
+  SELECT DISTINCT fund_no FROM amac_futures_products
+),
 today AS (
   SELECT (timezone('Asia/Shanghai', now()))::date AS d
 ),
-team_nav AS (
+team_nav AS MATERIALIZED (
   SELECT code, MAX(d) AS d
   FROM (
     SELECT UPPER(BTRIM(product_code)) AS code, nav_date::date AS d
@@ -446,7 +486,7 @@ team_nav AS (
   WHERE code <> ''
   GROUP BY code
 ),
-channels AS (
+channels AS MATERIALIZED (
   SELECT code, channel, MAX(d) AS d
   FROM (
     SELECT UPPER(BTRIM(product_code)) AS code, 'email'::text AS channel, nav_date::date AS d
@@ -476,7 +516,7 @@ channels AS (
   WHERE code <> '' AND d IS NOT NULL
   GROUP BY code, channel
 ),
-best_channel AS (
+best_channel AS MATERIALIZED (
   SELECT DISTINCT ON (code) code, channel, d
   FROM channels
   ORDER BY code, d DESC, CASE channel WHEN 'manual' THEN 3 WHEN 'email' THEN 2 ELSE 1 END DESC
@@ -491,7 +531,7 @@ val AS (
   FROM ops_email_valuation_records
   WHERE NULLIF(BTRIM(product_code), '') IS NOT NULL
 ),
-elem AS (
+elem AS MATERIALIZED (
   SELECT DISTINCT UPPER(BTRIM(code)) AS code
   FROM (
     SELECT register_number AS code
@@ -531,7 +571,7 @@ op AS (
   FROM unnest($1::text[]) AS t(code)
   WHERE NULLIF(BTRIM(code), '') IS NOT NULL
 ),
-flags AS (
+flags AS MATERIALIZED (
   SELECT DISTINCT ON (code)
     UPPER(BTRIM(beian_hao)) AS code,
     has_interior_gap,
@@ -606,26 +646,29 @@ LEFT JOIN val v ON v.code = u.code
 LEFT JOIN flags f ON f.code = u.code`
 
 function libraryUniverse(scope: "all" | "platform"): string {
-  const where = scope === "platform" ? `WHERE ${PLATFORM_PRIVATE_CLASS_SQL}` : ""
+  const where = scope === "platform" ? "WHERE product_class = 'private'" : ""
   return `
-universe AS (
-  SELECT
-    UPPER(BTRIM(i.beian_hao)) AS code,
-    (i.latest_nav IS NOT NULL) AS has_nav,
-    i.latest_nav_date::date AS nav_date,
-    ${PLATFORM_PRODUCT_CLASS_CASE_SQL} AS product_class,
-    (e.code IS NOT NULL) AS has_elements,
-    (o.code IS NOT NULL) AS has_operation
-  FROM private_fund_info i
-  LEFT JOIN amac_private_funds a ON a.fund_no = i.beian_hao
-  LEFT JOIN elem e ON e.code = UPPER(BTRIM(i.beian_hao))
-  LEFT JOIN op o ON o.code = UPPER(BTRIM(i.beian_hao))
+universe AS MATERIALIZED (
+  SELECT * FROM (
+    SELECT
+      UPPER(BTRIM(i.beian_hao)) AS code,
+      (i.latest_nav IS NOT NULL) AS has_nav,
+      i.latest_nav_date::date AS nav_date,
+      ${JOINED_PRODUCT_CLASS_SQL} AS product_class,
+      (e.code IS NOT NULL) AS has_elements,
+      (o.code IS NOT NULL) AS has_operation
+    FROM private_fund_info i
+    LEFT JOIN amac_class ac ON ac.fund_no = i.beian_hao
+    LEFT JOIN futures_class fc ON fc.fund_no = i.beian_hao
+    LEFT JOIN elem e ON e.code = UPPER(BTRIM(i.beian_hao))
+    LEFT JOIN op o ON o.code = UPPER(BTRIM(i.beian_hao))
+  ) classified
   ${where}
 )`
 }
 
 const TRACKING_UNIVERSE = `
-library AS (
+library AS MATERIALIZED (
   SELECT DISTINCT ON (code)
     code,
     has_nav,
@@ -636,15 +679,16 @@ library AS (
       UPPER(BTRIM(i.beian_hao)) AS code,
       (i.latest_nav IS NOT NULL) AS has_nav,
       i.latest_nav_date::date AS nav_date,
-      ${PLATFORM_PRODUCT_CLASS_CASE_SQL} AS product_class,
+      ${JOINED_PRODUCT_CLASS_SQL} AS product_class,
       i.latest_nav_date AS sort_date
     FROM private_fund_info i
     JOIN pool p ON p.code = UPPER(BTRIM(i.beian_hao))
-    LEFT JOIN amac_private_funds a ON a.fund_no = i.beian_hao
+    LEFT JOIN amac_class ac ON ac.fund_no = i.beian_hao
+    LEFT JOIN futures_class fc ON fc.fund_no = i.beian_hao
   ) s
   ORDER BY code, has_nav DESC, sort_date DESC NULLS LAST
 ),
-universe AS (
+universe AS MATERIALIZED (
   SELECT
     p.code,
     COALESCE(lib.has_nav, false) AS has_nav,
@@ -799,12 +843,9 @@ async function loadBeianAttrs(codes: string[]): Promise<Map<string, BeianAttr>> 
 }
 
 async function buildTeamOverview(): Promise<DataOverviewResponse> {
-  try {
-    const { ensureFofUnderlyingInEmailPool } = await import("@/lib/server/fof-email-product-sync")
-    await ensureFofUnderlyingInEmailPool()
-  } catch (err) {
-    console.warn("[data-overview] FOF→邮箱池 sync skipped:", err)
-  }
+  void import("@/lib/server/fof-email-product-sync")
+    .then((mod) => mod.ensureFofUnderlyingInEmailPool())
+    .catch((err) => console.warn("[data-overview] FOF→邮箱池 sync skipped:", err))
   const snapshot = await summarizeTeamDataStatus()
   const attrs = await loadBeianAttrs(snapshot.beians)
   const today = shanghaiToday()
@@ -969,6 +1010,227 @@ export async function buildDataOverview(scope: DataOverviewScope): Promise<DataO
   return buildCatalogOverview(scope)
 }
 
+function flag(value: unknown): boolean {
+  return value === true || value === "t" || value === "true" || value === 1
+}
+
+function freshnessWindowSql(bucket: FreshnessListBucket): string {
+  if (bucket === "w2") return "s.latest IS NOT NULL AND s.latest < t.d - 14 AND s.latest >= t.d - 21"
+  return "s.latest IS NOT NULL AND s.latest < t.d - 21 AND s.latest >= t.d - 28"
+}
+
+function freshnessListSql(scope: "all" | "nav" | "platform" | "tracking", bucket: FreshnessListBucket): string {
+  const platformWhere = scope === "platform" ? "WHERE product_class = 'private'" : ""
+  const universe = scope === "tracking"
+    ? `
+library AS MATERIALIZED (
+  SELECT DISTINCT ON (code)
+    code,
+    name,
+    has_nav,
+    nav_date
+  FROM (
+    SELECT
+      UPPER(BTRIM(i.beian_hao)) AS code,
+      COALESCE(NULLIF(BTRIM(i.product_name), ''), '') AS name,
+      (i.latest_nav IS NOT NULL) AS has_nav,
+      i.latest_nav_date::date AS nav_date,
+      i.latest_nav_date AS sort_date
+    FROM private_fund_info i
+    JOIN pool p ON p.code = UPPER(BTRIM(i.beian_hao))
+  ) s
+  WHERE code <> ''
+  ORDER BY code, has_nav DESC, sort_date DESC NULLS LAST
+),
+named_pool AS (
+  SELECT DISTINCT ON (code)
+    UPPER(BTRIM(register_number)) AS code,
+    COALESCE(NULLIF(BTRIM(product_name), ''), '') AS product_name
+  FROM tracking_pool
+  WHERE NULLIF(BTRIM(register_number), '') IS NOT NULL
+  ORDER BY code, product_name
+),
+universe AS MATERIALIZED (
+  SELECT
+    p.code,
+    COALESCE(NULLIF(lib.name, ''), NULLIF(np.product_name, ''), '') AS name,
+    COALESCE(lib.has_nav, false) AS has_nav,
+    lib.nav_date
+  FROM pool p
+  LEFT JOIN library lib ON lib.code = p.code
+  LEFT JOIN named_pool np ON np.code = p.code
+)`
+    : `
+universe AS MATERIALIZED (
+  SELECT * FROM (
+    SELECT
+      UPPER(BTRIM(i.beian_hao)) AS code,
+      COALESCE(NULLIF(BTRIM(i.product_name), ''), '') AS name,
+      (i.latest_nav IS NOT NULL) AS has_nav,
+      i.latest_nav_date::date AS nav_date,
+      ${JOINED_PRODUCT_CLASS_SQL} AS product_class
+    FROM private_fund_info i
+    LEFT JOIN amac_class ac ON ac.fund_no = i.beian_hao
+    LEFT JOIN futures_class fc ON fc.fund_no = i.beian_hao
+  ) classified
+  WHERE code <> ''
+  ${platformWhere ? `AND ${platformWhere.replace(/^WHERE /, "")}` : ""}
+)`
+  const classCtes = scope === "tracking"
+    ? ""
+    : `
+amac_class AS MATERIALIZED (
+  SELECT
+    fund_no,
+    BOOL_OR(BTRIM(fund_type) IN ('股权投资基金', '创业投资基金')) AS is_equity,
+    BOOL_OR(BTRIM(fund_type) = '信托计划') AS is_trust,
+    BOOL_OR(BTRIM(fund_type) IN (
+      '证券公司及其子公司的资产管理计划',
+      '期货公司及其子公司的资产管理计划',
+      '期货公司集合资管产品',
+      '保险公司及其子公司的资产管理计划',
+      '基金专户',
+      '银行理财产品'
+    )) AS is_asset
+  FROM amac_private_funds
+  GROUP BY fund_no
+),
+futures_class AS MATERIALIZED (
+  SELECT DISTINCT fund_no FROM amac_futures_products
+),`
+  return `WITH ${classCtes}
+today AS (
+  SELECT (timezone('Asia/Shanghai', now()))::date AS d
+),
+team_nav AS MATERIALIZED (
+  SELECT code, MAX(d) AS d
+  FROM (
+    SELECT UPPER(BTRIM(product_code)) AS code, nav_date::date AS d
+    FROM ops_email_nav_records
+    WHERE nav IS NOT NULL AND nav_date IS NOT NULL AND nav_date > DATE '1970-01-01'
+    UNION ALL
+    SELECT UPPER(BTRIM(beian_hao)), nav_date::date
+    FROM ops_team_nav_manual
+    WHERE unit_nav IS NOT NULL
+      AND nav_date IS NOT NULL
+      AND nav_type = 'pre_fee'
+      AND nav_date > DATE '1970-01-01'
+  ) src
+  WHERE code <> ''
+  GROUP BY code
+),
+pool AS (
+  SELECT DISTINCT UPPER(BTRIM(register_number)) AS code
+  FROM tracking_pool
+  WHERE NULLIF(BTRIM(register_number), '') IS NOT NULL
+),
+${universe}
+SELECT
+  s.code,
+  s.name,
+  s.latest::text AS nav_date,
+  (t.d - s.latest)::int AS lag_days,
+  s.in_pool
+FROM (
+  SELECT
+    u.code,
+    u.name,
+    GREATEST(tn.d, u.nav_date) AS latest,
+    (p.code IS NOT NULL) AS in_pool
+  FROM universe u
+  LEFT JOIN team_nav tn ON tn.code = u.code
+  LEFT JOIN pool p ON p.code = u.code
+) s
+CROSS JOIN today t
+WHERE ${freshnessWindowSql(bucket)}
+ORDER BY s.latest ASC, s.code`
+}
+
+type FreshnessSqlRow = {
+  code: string
+  name: string | null
+  nav_date: string | null
+  lag_days: number | null
+  in_pool: boolean
+}
+
+function freshnessProduct(row: FreshnessSqlRow): FreshnessProduct | null {
+  const code = String(row.code ?? "").trim()
+  const navDate = String(row.nav_date ?? "").slice(0, 10)
+  const lag = Number(row.lag_days)
+  if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(navDate) || !Number.isFinite(lag)) return null
+  const name = String(row.name ?? "").trim()
+  return {
+    code,
+    name: name || code,
+    nav_date: navDate,
+    lag_days: lag,
+    in_pool: flag(row.in_pool),
+  }
+}
+
+async function queryCatalogFreshness(
+  scope: "all" | "nav" | "platform" | "tracking",
+  bucket: FreshnessListBucket,
+): Promise<FreshnessProduct[]> {
+  const rows = await query<FreshnessSqlRow>(freshnessListSql(scope, bucket))
+  const byCode = new Map<string, FreshnessProduct>()
+  for (const row of rows) {
+    const product = freshnessProduct(row)
+    if (!product) continue
+    const prev = byCode.get(product.code)
+    if (!prev || product.nav_date < prev.nav_date) byCode.set(product.code, product)
+  }
+  return [...byCode.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date) || a.code.localeCompare(b.code))
+}
+
+async function listTeamFreshnessProducts(bucket: FreshnessListBucket): Promise<FreshnessProduct[]> {
+  const rows = await listTeamPageNavRows()
+  const attrs = await loadBeianAttrs(rows.map((row) => row.code).filter(Boolean))
+  const today = shanghaiToday()
+  const products: FreshnessProduct[] = []
+  for (const row of rows) {
+    const hit = row.code ? attrs.get(row.code) : undefined
+    const navDate = laterNavDate(row.team_nav_date, hit?.nav_date)
+    if (weekBucket(navDate, today) !== bucket) continue
+    const lag = daysBetween(today, navDate)
+    if (lag == null) continue
+    products.push({
+      code: row.code,
+      name: row.name || row.code,
+      nav_date: navDate,
+      lag_days: lag,
+      in_pool: flag(hit?.in_pool),
+    })
+  }
+  products.sort((a, b) => a.nav_date.localeCompare(b.nav_date) || a.code.localeCompare(b.code) || a.name.localeCompare(b.name, "zh"))
+  return products
+}
+
+export async function listFreshnessProducts(
+  scope: DataOverviewScope,
+  bucket: FreshnessListBucket,
+): Promise<FreshnessProductList> {
+  const today = shanghaiToday()
+  const key = `ops-freshness-products:v1:${today}:${scope}:${bucket}`
+  return await withListResponseCache(key, async () => {
+    const products = scope === "team"
+      ? await listTeamFreshnessProducts(bucket)
+      : await queryCatalogFreshness(scope, bucket)
+    const meta = SCOPE_META[scope]
+    return {
+      scope,
+      scope_label: meta.label,
+      bucket,
+      label: WEEK_BUCKET_LABEL[bucket],
+      hint: FRESHNESS_LIST_HINT[bucket],
+      as_of: today,
+      total: products.length,
+      products,
+    }
+  }) as FreshnessProductList
+}
+
 export function parseDataOverviewScope(raw: string | null): DataOverviewScope {
   const value = (raw ?? "").trim().toLowerCase()
   if (value === "team" || value === "platform" || value === "tracking" || value === "all" || value === "nav") return value
@@ -976,13 +1238,8 @@ export function parseDataOverviewScope(raw: string | null): DataOverviewScope {
 }
 
 export async function getDataOverview(scope: DataOverviewScope, refresh: boolean): Promise<DataOverviewResponse> {
-  const key = `ops-data-overview:v10:${scope}`
-  if (refresh) {
-    const body = await buildDataOverview(scope)
-    setListResponseCache(key, body)
-    return body
-  }
-  return await withListResponseCache(key, () => buildDataOverview(scope)) as DataOverviewResponse
+  const key = `ops-data-overview:v11:${scope}`
+  return serveOpsSnapshot(key, refresh, () => buildDataOverview(scope))
 }
 
 export const dataOverviewScopeOptions = DATA_OVERVIEW_SCOPES

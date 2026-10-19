@@ -1,18 +1,32 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { RefreshCw } from "lucide-react"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
   DATA_OVERVIEW_SCOPES,
   type DataOverviewResponse,
   type DataOverviewScope,
+  type FreshnessListBucket,
+  type FreshnessProductList,
 } from "@/lib/ops-data-overview"
 import { UPDATE_CHANNELS, type UpdateChannel } from "@/lib/ops-update-channel"
 import { OperationsUpdateChannelView } from "./OperationsUpdateChannelView"
 import { NavAgeTree, ProductTotalTree } from "./ProductTotalTree"
 import { NavRulesCatalogButton } from "./NavRulesCatalogButton"
 import { WeeklyReviewDataStatus } from "./WeeklyReviewDataStatus"
+import {
+  channelCacheKey,
+  isChannelBody,
+  isOverviewBody,
+  isWeeklyBody,
+  loadOpsCache,
+  overviewCacheKey,
+  peekOpsCache,
+  prefetchOpsCache,
+  weeklyCacheKey,
+} from "./ops-overview-cache"
 
 function formatCount(count: number): string {
   return count.toLocaleString("zh-CN")
@@ -43,6 +57,176 @@ function sectionCount(body: DataOverviewResponse, sectionKey: string, rowKey: st
   return section?.rows.find((row) => row.key === rowKey)?.count ?? 0
 }
 
+const FRESHNESS_PAGE_SIZE = 100
+
+function freshnessListBucket(sectionKey: string, rowKey: string, count: number): FreshnessListBucket | null {
+  if (sectionKey !== "nav_freshness" || count <= 0) return null
+  if (rowKey === "w2" || rowKey === "w3") return rowKey
+  return null
+}
+
+function FreshnessProductsDialog({
+  scope,
+  bucket,
+  onClose,
+}: {
+  scope: DataOverviewScope
+  bucket: FreshnessListBucket
+  onClose: () => void
+}) {
+  const [body, setBody] = useState<FreshnessProductList | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [page, setPage] = useState(0)
+  const requestSeq = useRef(0)
+
+  useEffect(() => {
+    const seq = ++requestSeq.current
+    setLoading(true)
+    setError("")
+    setBody(null)
+    setKeyword("")
+    setPage(0)
+    const params = new URLSearchParams({ scope, bucket })
+    fetch(`/ma/api/ops/data-overview/freshness-products?${params}`)
+      .then(async (res) => {
+        const json = await res.json()
+        if (seq !== requestSeq.current) return
+        if (!res.ok || !json || !Array.isArray(json.products)) {
+          throw new Error(typeof json?.message === "string" ? json.message : "产品列表加载失败")
+        }
+        setBody(json as FreshnessProductList)
+      })
+      .catch((err: unknown) => {
+        if (seq !== requestSeq.current) return
+        setError(err instanceof Error ? err.message : "产品列表加载失败")
+      })
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false)
+      })
+  }, [scope, bucket])
+
+  const filtered = useMemo(() => {
+    const rows = body?.products ?? []
+    const q = keyword.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter((row) => row.name.toLowerCase().includes(q) || row.code.toLowerCase().includes(q))
+  }, [body, keyword])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / FRESHNESS_PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const visibleRows = filtered.slice(safePage * FRESHNESS_PAGE_SIZE, (safePage + 1) * FRESHNESS_PAGE_SIZE)
+  const title = body ? `${body.scope_label} · ${body.label}` : "净值月内新鲜度"
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] flex flex-col gap-3">
+        <DialogHeader>
+          <DialogTitle className="text-sm">{title}</DialogTitle>
+          <DialogDescription className="text-xs leading-5">
+            {body?.hint ?? "正在列出这一档的产品。"}
+            点备案号打开产品页。
+            {body ? ` 共 ${formatCount(body.total)} 只，统计日 ${body.as_of}。` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <input
+          value={keyword}
+          onChange={(event) => {
+            setKeyword(event.target.value)
+            setPage(0)
+          }}
+          placeholder="搜索产品或备案号"
+          className="h-8 w-full rounded-md border bg-background px-2 text-xs outline-none focus:border-red-300"
+        />
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>
+        )}
+        {loading && (
+          <div className="py-8 text-center text-sm text-muted-foreground">正在列出产品…</div>
+        )}
+        {body && !loading && (
+          <>
+            <div className="overflow-auto min-h-0">
+              <table className="w-full text-xs min-w-[640px]">
+                <thead className="sticky top-0 bg-background">
+                  <tr className="text-zinc-400">
+                    <th className="px-2 py-1.5 text-left font-medium">产品</th>
+                    <th className="px-2 py-1.5 text-left font-medium">备案号</th>
+                    <th className="px-2 py-1.5 text-left font-medium">净值日期</th>
+                    <th className="px-2 py-1.5 text-right font-medium">落后</th>
+                    <th className="px-2 py-1.5 text-left font-medium">跟踪池</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.length === 0 ? (
+                    <tr className="border-t border-zinc-100 dark:border-zinc-800">
+                      <td className="px-2 py-3 text-zinc-400" colSpan={5}>
+                        {keyword.trim() ? "没有匹配的产品。" : "这一档没有产品。"}
+                      </td>
+                    </tr>
+                  ) : visibleRows.map((row, index) => (
+                    <tr key={`${row.code}-${row.nav_date}-${row.name}-${index}`} className="border-t border-zinc-100 dark:border-zinc-800">
+                      <td className="px-2 py-1.5 text-zinc-700 dark:text-zinc-200 max-w-[280px] truncate" title={row.name}>
+                        {row.name || "—"}
+                      </td>
+                      <td className="px-2 py-1.5 whitespace-nowrap">
+                        {row.code ? (
+                          <a
+                            href={`/ma/dashboard/private-funds/${encodeURIComponent(row.code)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-red-600 hover:underline tabular-nums"
+                          >
+                            {row.code}
+                          </a>
+                        ) : "—"}
+                      </td>
+                      <td className="px-2 py-1.5 whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-300">{row.nav_date}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-300">
+                        {formatCount(row.lag_days)}天
+                      </td>
+                      <td className="px-2 py-1.5 whitespace-nowrap text-zinc-600 dark:text-zinc-300">{row.in_pool ? "在" : "不在"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+              <span>
+                {filtered.length === 0
+                  ? "0 只"
+                  : `${formatCount(safePage * FRESHNESS_PAGE_SIZE + 1)}–${formatCount(Math.min(filtered.length, (safePage + 1) * FRESHNESS_PAGE_SIZE))} / ${formatCount(filtered.length)} 只`}
+              </span>
+              {pageCount > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={safePage === 0}
+                    onClick={() => setPage(safePage - 1)}
+                    className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-red-300 hover:text-red-500"
+                  >
+                    上一页
+                  </button>
+                  <span className="tabular-nums px-1">{safePage + 1} / {pageCount}</span>
+                  <button
+                    type="button"
+                    disabled={safePage >= pageCount - 1}
+                    onClick={() => setPage(safePage + 1)}
+                    className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-red-300 hover:text-red-500"
+                  >
+                    下一页
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function OperationsDataOverviewView() {
   const [scope, setScope] = useState<DataOverviewScope>("all")
   const [channel, setChannel] = useState<UpdateChannel | "all">("all")
@@ -52,22 +236,31 @@ export function OperationsDataOverviewView() {
   const [body, setBody] = useState<DataOverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [freshList, setFreshList] = useState<FreshnessListBucket | null>(null)
   const requestSeq = useRef(0)
 
   const load = useCallback((next: DataOverviewScope, refresh: boolean) => {
     const seq = ++requestSeq.current
-    setLoading(true)
+    const cached = refresh ? null : peekOpsCache<DataOverviewResponse>(overviewCacheKey(next))
+    if (cached?.scope === next) {
+      setBody(cached)
+      setLoading(false)
+    } else {
+      setLoading(true)
+    }
     setError("")
     const params = new URLSearchParams({ scope: next })
     if (refresh) params.set("refresh", "1")
-    fetch(`/ma/api/ops/data-overview?${params}`)
-      .then(async (res) => {
-        const json = await res.json()
+    loadOpsCache(
+      overviewCacheKey(next),
+      `/ma/api/ops/data-overview?${params}`,
+      refresh,
+      isOverviewBody,
+      "数据概览加载失败",
+    )
+      .then((json) => {
         if (seq !== requestSeq.current) return
-        if (!res.ok || !json || !Array.isArray(json.sections)) {
-          throw new Error(typeof json?.message === "string" ? json.message : "数据概览加载失败")
-        }
-        setBody(json as DataOverviewResponse)
+        setBody(json)
       })
       .catch((err: unknown) => {
         if (seq !== requestSeq.current) return
@@ -79,14 +272,33 @@ export function OperationsDataOverviewView() {
   }, [])
 
   useEffect(() => {
+    for (const item of DATA_OVERVIEW_SCOPES) {
+      const params = new URLSearchParams({ scope: item.key })
+      prefetchOpsCache(overviewCacheKey(item.key), `/ma/api/ops/data-overview?${params}`, isOverviewBody, "数据概览加载失败")
+    }
+    for (const item of ["fof99", "email"] as const) {
+      prefetchOpsCache(channelCacheKey(item), `/ma/api/ops/data-overview/update?channel=${item}`, isChannelBody, "更新渠道加载失败")
+    }
+    for (const item of ["equity", "futures"] as const) {
+      prefetchOpsCache(
+        weeklyCacheKey(item, "", ""),
+        `/ma/api/ops/data-overview/weekly-review?variant=${item}`,
+        isWeeklyBody,
+        "周度回顾数据状态加载失败",
+      )
+    }
+  }, [])
+
+  useEffect(() => {
     if (channel !== "all") return
     load(scope, false)
   }, [scope, channel, load])
 
-  const visible = body?.scope === scope ? body : null
+  const cachedOverview = peekOpsCache<DataOverviewResponse>(overviewCacheKey(scope))
+  const visible = body?.scope === scope ? body : cachedOverview?.scope === scope ? cachedOverview : null
   const busy = channel === "all" ? loading : channelLoading
   const intro = channel === "fof99"
-    ? "看火富牛名单里有多少产品、近一月有净值的有多少、我们跟上了多少，以及每周维护新纳入和改成更新偏慢的只数。下面再看有净值的产品和跟踪池里各跟踪方式的分布，以及上周和各周接口抓得怎么样。这个视图不跟范围走。"
+    ? "看火富牛接口正在跟踪的产品现在靠哪些来源更新、净值日期有多新。下面再看名单里有多少产品、近一月有净值的有多少、我们跟上了多少，以及每周维护新纳入和改成更新偏慢的只数，还有有净值产品和跟踪池里各跟踪方式的分布，以及上周和各周接口抓得怎么样。这个视图不跟范围走。"
     : channel === "email"
       ? "看有净值的产品和跟踪池里，有多少已经收到带备案号的邮箱净值，以及上周和各周邮件写了多少。下面再看这些邮箱产品现在靠哪些来源更新，净值日期有多新。这个视图不跟范围走。"
       : (visible?.description ?? "按全库、有净值、跟踪池、团队数据或平台数据查看产品状态，不展开到单只产品。")
@@ -249,19 +461,38 @@ export function OperationsDataOverviewView() {
                   <tbody>
                     {section.rows.map((row) => {
                       const width = Math.max(0, Math.min(100, row.share * 100))
+                      const openFreshness = freshnessListBucket(section.key, row.key, row.count)
                       const count = (
                         <span className="relative z-[1] tabular-nums">{formatCount(row.count)}</span>
                       )
                       return (
                         <tr key={row.key} className="border-t border-zinc-100 dark:border-zinc-800">
-                          <td className="px-4 py-1.5 text-zinc-700 dark:text-zinc-200">{row.label}</td>
+                          <td className="px-4 py-1.5 text-zinc-700 dark:text-zinc-200">
+                            {openFreshness ? (
+                              <button
+                                type="button"
+                                onClick={() => setFreshList(openFreshness)}
+                                className="hover:text-red-600 hover:underline"
+                              >
+                                {row.label}
+                              </button>
+                            ) : row.label}
+                          </td>
                           <td className="px-3 py-1.5 text-right">
                             <div className="relative ml-auto inline-flex min-w-[4.5rem] justify-end">
                               <span
                                 className="absolute inset-y-0 right-0 rounded-sm bg-red-100/80 dark:bg-red-950/40"
                                 style={{ width: `${width}%` }}
                               />
-                              {row.href ? (
+                              {openFreshness ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setFreshList(openFreshness)}
+                                  className="relative z-[1] tabular-nums text-red-600 hover:underline"
+                                >
+                                  {formatCount(row.count)}
+                                </button>
+                              ) : row.href ? (
                                 <Link href={row.href} className="relative z-[1] tabular-nums text-red-600 hover:underline">
                                   {formatCount(row.count)}
                                 </Link>
@@ -277,6 +508,13 @@ export function OperationsDataOverviewView() {
               </section>
             ))}
           </div>
+      )}
+      {channel === "all" && freshList && (
+        <FreshnessProductsDialog
+          scope={scope}
+          bucket={freshList}
+          onClose={() => setFreshList(null)}
+        />
       )}
     </div>
   )

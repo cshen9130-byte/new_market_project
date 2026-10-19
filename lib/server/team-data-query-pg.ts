@@ -210,7 +210,7 @@ export type TeamDataListRow = {
   operation_date?: string | null
   /** Set when 成立对齐 is not 不限. Same priority as the product page. */
   inception_date?: string | null
-  /** Earliest date on the product NAV series (detail cache, else raw NAV tables). */
+  /** Earliest date on the product NAV series (detail cache, else raw NAV tables). A share class with no series of its own uses the parent filing, same as the product page. */
   nav_start_date?: string | null
   /** Unit NAV on 净值起始日. */
   nav_start_value?: string | null
@@ -1840,7 +1840,7 @@ function beianCodeAliases(code: string): string[] {
  * the A类 chart can carry the parent 单位净值. The anomaly check has to see that
  * parent feed or it treats the parent's own step as a local 复权 calculation.
  */
-function parentFilingCodes(code: string): string[] {
+export function parentFilingCodes(code: string): string[] {
   const u = code.trim().toUpperCase()
   const match = u.match(/^(.+?)([ABC])$/u)
   if (!match) return []
@@ -4299,13 +4299,42 @@ function earliestAliasPoint(
   return best
 }
 
+/**
+ * Product page copies the parent series when a share class has no points of its
+ * own (金舆中国互联网B类 charts SJ5938 from 2016-05-13). Do not borrow a sibling class.
+ */
+export function parentNavStart(
+  row: { beian_hao: string | null },
+  cacheRows: DetailNavStartRow[],
+  byCode: Map<string, NavStartPoint>,
+): NavStartPoint | null {
+  let best: NavStartPoint | null = null
+  const consider = (point: NavStartPoint | null) => {
+    if (point && (!best || point.date < best.date)) best = point
+  }
+  for (const parent of parentFilingCodes(row.beian_hao ?? "")) {
+    const aliases = new Set(beianCodeAliases(parent).map((code) => code.toUpperCase()))
+    for (const cache of cacheRows) {
+      const code = cache.code.trim().toUpperCase()
+      const key = cache.cache_key.trim().toUpperCase()
+      if (!aliases.has(code) && !aliases.has(key)) continue
+      consider({ date: cache.date, nav: cache.nav })
+    }
+    consider(earliestAliasPoint({ beian_hao: parent }, byCode))
+  }
+  return best
+}
+
 /** 产品成立日 and 净值起始日 for each fund id. */
 export async function loadInceptionNavAlignment(
   rows: Array<{ id: string; beian_hao: string | null; product_name: string }>,
 ): Promise<Map<string, InceptionNavAlignment>> {
   const out = new Map<string, InceptionNavAlignment>()
   if (rows.length === 0) return out
-  const navCodes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const navCodes = [...new Set(rows.flatMap((row) => [
+    ...beianCodeAliases(row.beian_hao ?? ""),
+    ...parentFilingCodes(row.beian_hao ?? "").flatMap((code) => beianCodeAliases(code)),
+  ]).filter(Boolean))]
   const inceptionCodes = [...new Set(rows.flatMap((row) => inceptionLookupCodes(row.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(rows.map((row) => row.product_name.trim()).filter(Boolean))]
   const [inceptionSources, cacheRows] = await Promise.all([
@@ -4319,6 +4348,9 @@ export async function loadInceptionNavAlignment(
     cachedStart.set(row.id, start)
     if (!start) {
       for (const alias of beianCodeAliases(row.beian_hao ?? "")) missingCodes.add(alias)
+      for (const parent of parentFilingCodes(row.beian_hao ?? "")) {
+        for (const alias of beianCodeAliases(parent)) missingCodes.add(alias)
+      }
     }
   }
   const fallback = missingCodes.size > 0
@@ -4326,7 +4358,8 @@ export async function loadInceptionNavAlignment(
     : new Map<string, NavStartPoint>()
   for (const row of rows) {
     const inception_date = listedInceptionDate(row.beian_hao, inceptionSources)
-    const point = cachedStart.get(row.id) || earliestAliasPoint(row, fallback)
+    const own = cachedStart.get(row.id) || earliestAliasPoint(row, fallback)
+    const point = own || parentNavStart(row, cacheRows, fallback)
     const nav_start_date = point?.date ?? null
     out.set(row.id, {
       inception_date,
@@ -4346,6 +4379,7 @@ async function loadResolvedTeamFunds(strategySource: "company" | "platform"): Pr
   ) {
     return resolvedListCache.rows
   }
+  const t0 = Date.now()
   const [rawRows, manualProducts, { indexes }] = await Promise.all([
     Promise.all([loadRawEmailFunds(), loadRawEmailFundsFromFofUnderlying()]).then(
       ([navRows, fofRows]) => dedupeRawFunds([...navRows, ...fofRows]),
@@ -4387,6 +4421,24 @@ export async function listTeamUpdateCodes(): Promise<TeamUpdateCode[]> {
           : "other"
     return { code: row.beian_hao?.trim().toUpperCase() || "", method }
   })
+}
+
+export type TeamPageNavRow = {
+  code: string
+  name: string
+  /** Product-page team NAV date. Empty when that side has no date. */
+  team_nav_date: string
+}
+
+/** Team-data rows with the same page date the 数据概览 freshness buckets use. */
+export async function listTeamPageNavRows(): Promise<TeamPageNavRow[]> {
+  const resolved = await loadResolvedTeamFunds("company")
+  const rows = await overlayFundPageLatestNavDate(resolved)
+  return rows.map((row) => ({
+    code: row.beian_hao?.trim().toUpperCase() || "",
+    name: row.product_name.trim(),
+    team_nav_date: isoDay(row.team_nav_date),
+  }))
 }
 
 export async function listTeamData(params: TeamDataListParams): Promise<{

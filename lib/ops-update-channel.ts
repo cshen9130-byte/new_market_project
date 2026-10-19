@@ -64,6 +64,8 @@ export type Fof99ListCoverage = {
   no_nav: number
   private_securities_all_states: number
   all_products: number
+  /** When the recent-month rows below were saved. Catalog cards stay on measured_on. */
+  recent_measured_on: string
   recent_rows: Array<{ key: string; label: string; count: number }>
   /** Age of list NAV inside older_nav. Same read as the cards above. */
   older_rows: Array<{ key: string; label: string; count: number }>
@@ -146,6 +148,56 @@ export type EmailCohortStatus = {
 
 export type EmailProductStatus = Record<EmailCohortKey, EmailCohortStatus>
 
+/** Products in fof99_nav_universe, the set the 火富牛 API tracks. */
+export type Fof99CohortKey = "fetching" | "tracked" | "last_ok"
+
+export type Fof99CohortCounts = {
+  total: number
+  in_pool: number
+  with_email: number
+  with_manual: number
+  /** Successful fof99 NAV plus at least one of email or manual. */
+  multi_source: number
+  src_fof99_only: number
+  src_fof99_email: number
+  src_fof99_manual: number
+  src_all_three: number
+  src_other: number
+  src_none: number
+  fresh_w1: number
+  fresh_w1_2: number
+  fresh_w2_3: number
+  fresh_w3_4: number
+  fresh_m1_2: number
+  fresh_m2_3: number
+  fresh_m3_6: number
+  fresh_over_m6: number
+  fresh_none: number
+  ch_email: number
+  ch_manual: number
+  ch_fof99: number
+  ch_none: number
+  pol_weekly: number
+  pol_weekly_plus: number
+  pol_update_slow: number
+  pol_skip: number
+  pol_none: number
+}
+
+export type Fof99CohortStatus = {
+  total: number
+  in_pool: number
+  with_email: number
+  with_manual: number
+  multi_source: number
+  sources: UpdateCoverageRow[]
+  freshness: UpdateCoverageRow[]
+  channel: UpdateCoverageRow[]
+  policy: UpdateCoverageRow[]
+}
+
+export type Fof99ProductStatus = Record<Fof99CohortKey, Fof99CohortStatus>
+
 export type UpdateChannelResponse = {
   channel: UpdateChannel
   generated_at: string
@@ -161,6 +213,8 @@ export type UpdateChannelResponse = {
   universe_moves: UniverseMoves | null
   /** Present for email. Null on the fof99 channel. */
   email_products: EmailProductStatus | null
+  /** Present for fof99. How tracked products are updated now. Null on email. */
+  fof99_products: Fof99ProductStatus | null
   /** How 曾经写入, 上周写入, 全库邮箱抓取 and 团队数据邮箱抓取 overlap. Null on fof99. */
   email_count_bridge: EmailCountBridge | null
 }
@@ -168,6 +222,12 @@ export type UpdateChannelResponse = {
 export const EMAIL_COHORTS: Array<{ key: EmailCohortKey; label: string }> = [
   { key: "ever", label: "曾经写入" },
   { key: "last_week", label: "上周写入" },
+]
+
+export const FOF99_COHORTS: Array<{ key: Fof99CohortKey; label: string }> = [
+  { key: "fetching", label: "接口在拉" },
+  { key: "tracked", label: "全部跟踪" },
+  { key: "last_ok", label: "上周拿到" },
 ]
 
 /** Latest NAV is at least 15 days old. `behind_2w` is every such bucket together. */
@@ -201,6 +261,11 @@ export function parseEmailCohort(raw: string | null): EmailCohortKey | null {
   return null
 }
 
+export function parseFof99Cohort(raw: string | null): Fof99CohortKey | null {
+  if (raw === "fetching" || raw === "tracked" || raw === "last_ok") return raw
+  return null
+}
+
 export function parseEmailStaleListKey(raw: string | null): EmailStaleListKey | null {
   if (!raw) return null
   if (raw in EMAIL_STALE_LIST_LABEL) return raw as EmailStaleListKey
@@ -230,6 +295,41 @@ export type EmailStaleListResponse = {
   as_of: string
   total: number
   products: EmailStaleProduct[]
+}
+
+export type Fof99StaleListResponse = {
+  cohort: Fof99CohortKey
+  freshness: EmailStaleListKey
+  label: string
+  as_of: string
+  total: number
+  products: EmailStaleProduct[]
+}
+
+export const FOF99_RECENT_LIST_POLICIES = ["weekly", "weekly_plus", "update_slow", "skip", "none"] as const
+
+export type Fof99RecentListPolicy = (typeof FOF99_RECENT_LIST_POLICIES)[number]
+
+export function parseFof99RecentListPolicy(raw: string | null): Fof99RecentListPolicy | null {
+  if (!raw) return null
+  return (FOF99_RECENT_LIST_POLICIES as readonly string[]).includes(raw) ? raw as Fof99RecentListPolicy : null
+}
+
+export type Fof99RecentListProduct = {
+  code: string
+  name: string
+  price_date: string
+  price_nav: string | null
+  in_pool: boolean
+}
+
+export type Fof99RecentListResponse = {
+  policy: Fof99RecentListPolicy
+  label: string
+  measured_on: string
+  cutoff: string
+  total: number
+  products: Fof99RecentListProduct[]
 }
 
 const EMAIL_SOURCE_ROWS: Array<{ key: keyof EmailCohortCounts; label: string; hint: string; optional?: boolean }> = [
@@ -270,11 +370,12 @@ const EMAIL_POLICY_ROWS: Array<{ key: keyof EmailCohortCounts; label: string; hi
 
 function coverageRows(
   total: number,
-  spec: Array<{ key: keyof EmailCohortCounts; label: string; hint: string; optional?: boolean }>,
-  counts: EmailCohortCounts,
+  spec: ReadonlyArray<{ key: string; label: string; hint: string; optional?: boolean }>,
+  counts: object,
 ): UpdateCoverageRow[] {
+  const bag = counts as Record<string, number>
   return spec.flatMap((item) => {
-    const count = counts[item.key]
+    const count = bag[item.key] ?? 0
     if (item.optional && count <= 0) return []
     return [{
       key: item.key,
@@ -487,6 +588,91 @@ export function buildEmailCohort(counts: EmailCohortCounts): EmailCohortStatus {
   }
 }
 
+const FOF99_SOURCE_ROWS: Array<{ key: keyof Fof99CohortCounts; label: string; hint: string; optional?: boolean }> = [
+  { key: "src_fof99_only", label: "仅 fof99", hint: "火富牛接口成功写入过净值，没有邮箱净值，也没有手动净值" },
+  { key: "src_fof99_email", label: "fof99 + 邮箱", hint: "还有邮箱净值或估值表日期，没有手动净值" },
+  { key: "src_fof99_manual", label: "fof99 + 手动", hint: "还有手动净值，没有邮箱净值" },
+  { key: "src_all_three", label: "fof99 + 邮箱 + 手动", hint: "火富牛、邮箱、手动都有净值日" },
+  { key: "src_other", label: "火富牛无净值日，另有其他来源", hint: "在跟踪里，但火富牛没有成功抓取；邮箱或手动有净值日", optional: true },
+  { key: "src_none", label: "没有有效净值日", hint: "火富牛、邮箱、手动都没有净值日", optional: true },
+]
+
+const FOF99_FRESHNESS_ROWS: Array<{ key: keyof Fof99CohortCounts; label: string; hint: string }> = [
+  { key: "fresh_w1", label: "1周以内", hint: "最新净值日距今 0–7 天，含未来日期" },
+  { key: "fresh_w1_2", label: "1–2周", hint: "距今 8–14 天" },
+  { key: "fresh_w2_3", label: "2–3周", hint: "距今 15–21 天" },
+  { key: "fresh_w3_4", label: "3–4周", hint: "距今 22–28 天" },
+  { key: "fresh_m1_2", label: "1–2个月", hint: "超过 28 天，且在两个月以内" },
+  { key: "fresh_m2_3", label: "2–3个月", hint: "两个月以前，三个月以内" },
+  { key: "fresh_m3_6", label: "3–6个月", hint: "三个月以前，六个月以内" },
+  { key: "fresh_over_m6", label: "6个月以上", hint: "六个月以前" },
+  { key: "fresh_none", label: "无日期", hint: "火富牛、邮箱、手动和产品页都没有净值日" },
+]
+
+const FOF99_CHANNEL_ROWS: Array<{ key: keyof Fof99CohortCounts; label: string; hint: string }> = [
+  { key: "ch_fof99", label: "fof99 仍是最新", hint: "火富牛净值日比邮箱和手动都晚" },
+  { key: "ch_email", label: "邮箱更新更近", hint: "邮箱净值日不早于火富牛。同一天不算火富牛" },
+  { key: "ch_manual", label: "手动更新更近", hint: "手动净值日最晚。同一天优先算手动" },
+  { key: "ch_none", label: "三个来源都没有日期", hint: "火富牛、邮箱、手动都没有净值日。产品页可能仍有日期" },
+]
+
+const FOF99_TRACKED_POLICY_ROWS: Array<{ key: keyof Fof99CohortCounts; label: string; hint: string; optional?: boolean }> = [
+  { key: "pol_weekly", label: "每周拉取 weekly", hint: "每周五用火富牛接口拉净值" },
+  { key: "pol_weekly_plus", label: "邮件优先 weekly_plus", hint: "邮箱通常已有，列表落后才拉" },
+  { key: "pol_update_slow", label: "更新偏慢 update_slow", hint: "名单近一月没有净值时不参与周更" },
+  { key: "pol_skip", label: "确认无序列 skip", hint: "名单近一月没有净值，不重复调用接口" },
+  { key: "pol_none", label: "跟踪方式不明", hint: "跟踪表里的方式不是这四类", optional: true },
+]
+
+export function emptyFof99CohortCounts(): Fof99CohortCounts {
+  return {
+    total: 0,
+    in_pool: 0,
+    with_email: 0,
+    with_manual: 0,
+    multi_source: 0,
+    src_fof99_only: 0,
+    src_fof99_email: 0,
+    src_fof99_manual: 0,
+    src_all_three: 0,
+    src_other: 0,
+    src_none: 0,
+    fresh_w1: 0,
+    fresh_w1_2: 0,
+    fresh_w2_3: 0,
+    fresh_w3_4: 0,
+    fresh_m1_2: 0,
+    fresh_m2_3: 0,
+    fresh_m3_6: 0,
+    fresh_over_m6: 0,
+    fresh_none: 0,
+    ch_email: 0,
+    ch_manual: 0,
+    ch_fof99: 0,
+    ch_none: 0,
+    pol_weekly: 0,
+    pol_weekly_plus: 0,
+    pol_update_slow: 0,
+    pol_skip: 0,
+    pol_none: 0,
+  }
+}
+
+export function buildFof99Cohort(counts: Fof99CohortCounts): Fof99CohortStatus {
+  const total = counts.total
+  return {
+    total,
+    in_pool: counts.in_pool,
+    with_email: counts.with_email,
+    with_manual: counts.with_manual,
+    multi_source: counts.multi_source,
+    sources: coverageRows(total, FOF99_SOURCE_ROWS, counts),
+    freshness: coverageRows(total, FOF99_FRESHNESS_ROWS, counts),
+    channel: coverageRows(total, FOF99_CHANNEL_ROWS, counts),
+    policy: coverageRows(total, FOF99_TRACKED_POLICY_ROWS, counts),
+  }
+}
+
 /**
  * Age of the latest NAV date.
  * 1周以内 is 0–7 days, then 8–14, 15–21, 22–28, then calendar months.
@@ -526,27 +712,30 @@ export function winningUpdateChannel(dates: {
 
 /**
  * 2026-10-16 read of type=1 平台策略, fund_type=2 私募证券, fund_state=1 正常运作.
- * Recent = list price_date >= 2026-09-16. Do not refresh this from the page.
+ * Recent = list price_date >= 2026-09-16. The page does not call the API.
+ * recent_* is the 2026-10-19 read of that same filter, stored in fof99_list_recent_products.
+ * That read has 14 more recent products than 2026-10-16, so older_nav and 1–2 个月 are 14 lower.
  */
 export const FOF99_LIST_COVERAGE: Fof99ListCoverage = {
   measured_on: "2026-10-16",
+  recent_measured_on: "2026-10-19",
   cutoff: "2026-09-16",
   operating_total: 108481,
   with_nav: 51908,
-  recent: 11128,
-  older_nav: 40780,
+  recent: 11142,
+  older_nav: 40766,
   no_nav: 56573,
   private_securities_all_states: 207717,
   all_products: 464635,
   recent_rows: [
-    { key: "weekly", label: "每周拉取 weekly", count: 9043 },
+    { key: "weekly", label: "每周拉取 weekly", count: 9040 },
     { key: "weekly_plus", label: "邮件优先 weekly_plus", count: 145 },
-    { key: "update_slow", label: "更新偏慢 update_slow", count: 151 },
-    { key: "skip", label: "确认无序列 skip", count: 10 },
-    { key: "none", label: "未纳入", count: 1779 },
+    { key: "update_slow", label: "更新偏慢 update_slow", count: 155 },
+    { key: "skip", label: "确认无序列 skip", count: 11 },
+    { key: "none", label: "未纳入", count: 1791 },
   ],
   older_rows: [
-    { key: "m1_2", label: "1–2 个月", count: 278 },
+    { key: "m1_2", label: "1–2 个月", count: 264 },
     { key: "m2_3", label: "2–3 个月", count: 593 },
     { key: "m3_6", label: "3–6 个月", count: 835 },
     { key: "over_6m", label: "6 个月以上", count: 39074 },
