@@ -65,8 +65,6 @@ type ExtractJob = {
   error_message: string | null
   processed_at: string | null
   contract_material_id: number | null
-  duplicate_of_id?: number | null
-  duplicate_count?: number
 }
 
 type CoverageFilter = "all" | "missing_contract" | "has_contract" | "missing_beian" | "missing_elements"
@@ -195,49 +193,28 @@ function uploadDuplicateKey(name: string, size: number) {
 function mergeIncomingExtractFiles(
   current: File[],
   incoming: File[],
-  jobs: ExtractJob[],
 ): { next: File[]; notice: string | null } {
-  const seenNames = new Set(current.map((file) => file.name.trim().toLowerCase()).filter(Boolean))
   const seenKeys = new Set(current.map((file) => uploadDuplicateKey(file.name, file.size)).filter(Boolean))
-  const existingNames = new Set(
-    jobs
-      .filter((job) => job.status !== "failed")
-      .map((job) => job.original_filename.trim().toLowerCase())
-      .filter(Boolean),
-  )
   const next = [...current]
   const skipped: string[] = []
-  let skippedExisting = 0
-  let skippedBatch = 0
+  let skippedCount = 0
   for (const file of incoming) {
-    const name = file.name.trim().toLowerCase()
     const key = uploadDuplicateKey(file.name, file.size)
-    const sameName = Boolean(name) && (seenNames.has(name) || existingNames.has(name))
-    const sameBytes = Boolean(key) && seenKeys.has(key)
-    if (sameName || sameBytes) {
-      if (existingNames.has(name) && !seenNames.has(name)) skippedExisting += 1
-      else skippedBatch += 1
+    if (key && seenKeys.has(key)) {
+      skippedCount += 1
       if (skipped.length < 4) skipped.push(file.name)
       continue
     }
     if (next.length >= MAX_FILES) break
-    if (name) seenNames.add(name)
     if (key) seenKeys.add(key)
     next.push(file)
   }
-  const skippedCount = skippedExisting + skippedBatch
   if (!skippedCount) return { next, notice: null }
   const preview = skipped.join("、")
   const tail = skippedCount > skipped.length ? ` 等 ${skippedCount} 个` : ""
-  const why =
-    skippedExisting > 0 && skippedBatch === 0
-      ? "与已有提取任务同名"
-      : skippedBatch > 0 && skippedExisting === 0
-        ? "本次选择了同名文件"
-        : "与已有任务或本次选择同名"
   return {
     next,
-    notice: `已自动忽略 ${skippedCount} 个重复文件（${why}）：${preview}${tail}`,
+    notice: `已自动忽略 ${skippedCount} 个内容相同的文件：${preview}${tail}`,
   }
 }
 
@@ -410,15 +387,6 @@ function jobRemark(job: ExtractJob) {
   else if ((job.error_message ?? "").startsWith("已并入正式产品")) base = job.error_message ?? "—"
   else if (job.status === "applied") base = `已写入 ${job.applied_fields?.length ?? 0} 个空缺字段`
   else base = job.error_message || "—"
-
-  if (job.duplicate_of_id) {
-    const note = `重复文件，与任务 #${job.duplicate_of_id} 相同`
-    return base !== "—" ? `${note} · ${base}` : note
-  }
-  if ((job.duplicate_count ?? 0) > 0) {
-    const note = `另有 ${job.duplicate_count} 份重复文件，已保留本条`
-    return base !== "—" ? `${note} · ${base}` : note
-  }
   return base
 }
 
@@ -682,7 +650,7 @@ export function OperationsElementExtractBatchPanel() {
       setUploadNotice(null)
       return
     }
-    const merged = mergeIncomingExtractFiles(files, accepted, jobs)
+    const merged = mergeIncomingExtractFiles(files, accepted)
     setFiles(merged.next)
     setUploadNotice(merged.notice)
   }
@@ -718,7 +686,7 @@ export function OperationsElementExtractBatchPanel() {
           .map((row) => row.fileName || "未命名文件")
           .join("、")
         const tail = dupes.length > 4 ? ` 等 ${dupes.length} 个` : ""
-        setUploadNotice(`已跳过 ${dupes.length} 个重复文件（同名或内容相同）：${preview}${tail}`)
+        setUploadNotice(`已跳过 ${dupes.length} 个内容相同的文件：${preview}${tail}`)
       }
       setFiles([])
       if (fileInputRef.current) fileInputRef.current.value = ""
@@ -1097,7 +1065,7 @@ export function OperationsElementExtractBatchPanel() {
             <PlusCircle className="h-10 w-10 text-muted-foreground/40 mb-2" strokeWidth={1} />
             <span className="text-sm text-foreground mb-1">将文件拖到此处，或点击上传（可多选）</span>
             <span className="text-xs text-muted-foreground">
-              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 20MB，最多 {MAX_FILES} 份。同名或内容相同的文件会自动识别为重复并跳过。上传后后台提取并写入空缺要素。
+              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 20MB，最多 {MAX_FILES} 份。内容相同的文件会直接跳过，不另建任务。上传后后台提取并写入空缺要素。
             </span>
             <input
               ref={fileInputRef}
@@ -1235,21 +1203,6 @@ export function OperationsElementExtractBatchPanel() {
                       >
                         {job.original_filename}
                       </a>
-                      {job.duplicate_of_id ? (
-                        <span
-                          className="shrink-0 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800"
-                          title={`与任务 #${job.duplicate_of_id} 重复`}
-                        >
-                          重复
-                        </span>
-                      ) : (job.duplicate_count ?? 0) > 0 ? (
-                        <span
-                          className="shrink-0 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800"
-                          title={`另有 ${job.duplicate_count} 份相同文件`}
-                        >
-                          有重复
-                        </span>
-                      ) : null}
                     </div>
                   </td>
                   <td className="px-3 py-2">

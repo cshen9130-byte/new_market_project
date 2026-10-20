@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Bot, LayoutGrid, LineChart, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
+import { Bot, LayoutGrid, LineChart, Lock, Maximize2, Minimize2, RotateCcw, Unlock, ZoomIn, ZoomOut } from "lucide-react"
 
 import { IndexBasisRateChart } from "@/components/ma/index-basis-rate-chart"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
@@ -78,6 +78,9 @@ export function ProTradingWorkspace({
   const [query, setQuery] = useState(initialSymbol || "")
   const [tool, setTool] = useState("cross")
   const [interval, setInterval] = useState<TimeframeId>("1m")
+  const [basisInterval, setBasisInterval] = useState<TimeframeId>("1m")
+  const [ivInterval, setIvInterval] = useState<TimeframeId>("1m")
+  const [tfLocked, setTfLocked] = useState(true)
   const [layout, setLayout] = useState<ProTradingLayout>(initialLayout)
   const [chartMode, setChartMode] = useState<"sleeves" | "single">("sleeves")
   const [showNavChart, setShowNavChart] = useState(false)
@@ -217,12 +220,44 @@ export function ProTradingWorkspace({
     return matched.slice(0, 16)
   }, [query, listedSymbols])
 
+  function selectTimeframe(id: TimeframeId, target: "kline" | "basis" | "iv" = "kline") {
+    const next = isNhciSymbol(symbol) && isIntradayTimeframe(id) ? "1d" : id
+    if (tfLocked || target === "kline") {
+      if (tfLocked) {
+        setInterval(next)
+        setBasisInterval(next)
+        setIvInterval(next)
+        return
+      }
+      setInterval(next)
+      return
+    }
+    if (target === "basis") setBasisInterval(id)
+    else setIvInterval(id)
+  }
+
+  function toggleTfLock() {
+    setTfLocked((locked) => {
+      if (!locked) {
+        setBasisInterval(interval)
+        setIvInterval(interval)
+      }
+      return !locked
+    })
+  }
+
   function commit(raw: string) {
     const resolved = resolveSymbolInput(raw, listedSymbols, quotes)
     if (!resolved) return
     setSymbol(resolved)
     setQuery(resolved)
-    if (isNhciSymbol(resolved) && isIntradayTimeframe(interval)) setInterval("1d")
+    if (isNhciSymbol(resolved) && isIntradayTimeframe(interval)) {
+      setInterval("1d")
+      if (tfLocked) {
+        setBasisInterval("1d")
+        setIvInterval("1d")
+      }
+    }
   }
 
   function focusChart(raw: string) {
@@ -290,13 +325,26 @@ export function ProTradingWorkspace({
         </div>
         <TimeframeSelect
           value={interval}
-          onChange={(id) => {
-            if (isNhciSymbol(symbol) && isIntradayTimeframe(id)) setInterval("1d")
-            else setInterval(id)
-          }}
+          onChange={(id) => selectTimeframe(id, "kline")}
           dark
           className="max-w-[420px]"
         />
+        {layout === "market" ? (
+          <button
+            type="button"
+            title={tfLocked ? "三个图周期联动。点击解锁后可各自选择周期。" : "三个图周期已独立。点击恢复联动。"}
+            onClick={toggleTfLock}
+            className={cn(
+              "inline-flex h-7 shrink-0 items-center gap-1 rounded border px-2 text-[11px]",
+              tfLocked
+                ? "border-[#4c84ff] bg-[#4c84ff] text-white"
+                : "border-[#2a2e39] bg-[#1e222d] text-[#adb3bd] hover:text-white",
+            )}
+          >
+            {tfLocked ? <Lock className="size-3.5" /> : <Unlock className="size-3.5" />}
+            {tfLocked ? "联动" : "已解锁"}
+          </button>
+        ) : null}
         <div className="flex shrink-0 items-center overflow-hidden rounded border border-[#2a2e39]">
           <button
             type="button"
@@ -423,9 +471,12 @@ export function ProTradingWorkspace({
                       title={meta?.name || product}
                       product={product}
                       symbol={symbol}
-                      candles={interval === "1m" ? tfCandles : live1m}
+                      candles={basisInterval === "1m" && interval === "1m" ? tfCandles : live1m}
                       quote={quote}
                       spot={spots[product]}
+                      interval={tfLocked ? interval : basisInterval}
+                      onIntervalChange={(id) => selectTimeframe(id, "basis")}
+                      linked={tfLocked}
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#787b86]">
@@ -436,7 +487,15 @@ export function ProTradingWorkspace({
                 <ResizableHandle className="h-1 bg-[#2a2e39]" />
                 <ResizablePanel defaultSize={50} minSize={22}>
                   {product ? (
-                    <IndexIvChart variant="pro" title={meta?.name || product} product={product} iv={iv[product]} />
+                    <IndexIvChart
+                      variant="pro"
+                      title={meta?.name || product}
+                      product={product}
+                      iv={iv[product]}
+                      interval={tfLocked ? interval : ivInterval}
+                      onIntervalChange={(id) => selectTimeframe(id, "iv")}
+                      linked={tfLocked}
+                    />
                   ) : (
                     <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#787b86]">
                       {isNhciSymbol(symbol) ? "南华商品指数无股指隐含波动率" : "隐含波动率"}

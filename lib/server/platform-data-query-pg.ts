@@ -18,12 +18,14 @@ import {
   enrichPlatformFundPage,
   filterByNavAnomalyCause,
   loadBeianCodesWithOperationDate,
+  loadNavFrequencyByFundId,
   operationDateByFundId,
   type PlatformFundSeed,
   type TeamDataElementsFilter,
   type TeamDataListRow,
   type TeamDataNavAnomalyCauseFilter,
   type TeamDataNavAnomalyFilter,
+  type TeamDataNavFrequencyFilter,
   type TeamDataNavGapFilter,
   type TeamDataNavLagFilter,
   type TeamDataOperationDateFilter,
@@ -69,6 +71,8 @@ export type PlatformDataListParams = {
   navDateFilter?: PlatformNavDateFilter
   /** in = 备案号在 JY跟踪池；out = 不在。 */
   inPoolFilter?: PlatformInPoolFilter
+  /** Recent NAV cadence. Same labels as 团队数据. */
+  navFrequencyFilter?: TeamDataNavFrequencyFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
@@ -416,6 +420,102 @@ function readStoredAnomaly(value: unknown): NavAnomalyHit | null {
   return rec
 }
 
+/** Bump when the cadence rule changes so saved labels are recomputed once. */
+const NAV_FREQUENCY_RULE = "chart_or_platform_v2"
+
+const NAV_FREQUENCY_SQL = `
+  CREATE TABLE IF NOT EXISTS ops_nav_frequency (
+    beian_hao TEXT PRIMARY KEY,
+    frequency TEXT NOT NULL,
+    tip_date TEXT NOT NULL DEFAULT '',
+    rule_version TEXT NOT NULL DEFAULT '',
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`
+const NAV_FREQUENCY_RULE_SQL = `
+  ALTER TABLE ops_nav_frequency
+    ADD COLUMN IF NOT EXISTS rule_version TEXT NOT NULL DEFAULT ''
+`
+
+let navFrequencyTableReady: Promise<void> | null = null
+
+function ensureNavFrequencyTable(): Promise<void> {
+  if (!navFrequencyTableReady) {
+    navFrequencyTableReady = query(NAV_FREQUENCY_SQL)
+      .then(() => query(NAV_FREQUENCY_RULE_SQL))
+      .then(() => undefined)
+      .catch((err) => {
+      navFrequencyTableReady = null
+      throw err
+    })
+  }
+  return navFrequencyTableReady
+}
+
+type FrequencyCandidate = { beian_hao: string; product_name: string; tip: string | null }
+
+/**
+ * Fill ops_nav_frequency for rows that match the current list filters and whose
+ * saved label is missing or older than 平台最新净值日. The list then filters in SQL.
+ */
+async function ensurePlatformNavFrequencies(
+  amacJoin: string,
+  joins: string[],
+  whereSql: string,
+  filterParams: unknown[],
+): Promise<void> {
+  await ensureNavFrequencyTable()
+  const staleSql = `
+    SELECT BTRIM(i.beian_hao) AS beian_hao,
+           i.product_name,
+           LEFT(COALESCE(i.latest_nav_date::text, ''), 10) AS tip
+    FROM private_fund_info i
+    ${amacJoin}
+    ${joins.join("\n")}
+    LEFT JOIN ops_nav_frequency nf ON nf.beian_hao = BTRIM(i.beian_hao)
+    ${whereSql ? `${whereSql} AND` : "WHERE"} (
+      nf.beian_hao IS NULL
+      OR nf.rule_version IS DISTINCT FROM '${NAV_FREQUENCY_RULE}'
+      OR nf.tip_date IS DISTINCT FROM LEFT(COALESCE(i.latest_nav_date::text, ''), 10)
+    )`
+  const stale = await query<FrequencyCandidate>(staleSql, filterParams)
+  if (stale.length === 0) return
+  const seen = new Set<string>()
+  const seeds: Array<{ id: string; beian_hao: string; product_name: string; tip: string }> = []
+  for (const row of stale) {
+    const beian = row.beian_hao?.trim()
+    if (!beian || seen.has(beian)) continue
+    seen.add(beian)
+    seeds.push({
+      id: beian,
+      beian_hao: beian,
+      product_name: row.product_name?.trim() || beian,
+      tip: (row.tip ?? "").slice(0, 10),
+    })
+  }
+  const frequencyById = await loadNavFrequencyByFundId(seeds)
+  const chunk = 300
+  for (let i = 0; i < seeds.length; i += chunk) {
+    const slice = seeds.slice(i, i + chunk)
+    await query(
+      `INSERT INTO ops_nav_frequency (beian_hao, frequency, tip_date, rule_version, computed_at)
+       SELECT u.beian_hao, u.frequency, u.tip_date, u.rule_version, NOW()
+       FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS u(beian_hao, frequency, tip_date, rule_version)
+       ON CONFLICT (beian_hao) DO UPDATE SET
+         frequency = EXCLUDED.frequency,
+         tip_date = EXCLUDED.tip_date,
+         rule_version = EXCLUDED.rule_version,
+         computed_at = NOW()`,
+      [
+        slice.map((row) => row.id),
+        slice.map((row) => frequencyById.get(row.id) ?? "无净值"),
+        slice.map((row) => row.tip),
+        slice.map(() => NAV_FREQUENCY_RULE),
+      ],
+    )
+  }
+}
+
 type StaleFlagRow = { beian_hao: string; product_name: string; tip: string | null }
 
 /** Recompute flags whose latest NAV date or rule no longer matches. */
@@ -516,6 +616,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     navPresenceFilter = "all",
     navDateFilter = "all",
     inPoolFilter = "all",
+    navFrequencyFilter = "all",
     sort,
     sortDir,
   } = params
@@ -596,6 +697,17 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     }
   }
 
+  const amacJoin = "LEFT JOIN amac_private_funds a ON a.fund_no = i.beian_hao"
+  if (navFrequencyFilter !== "all") {
+    await ensurePlatformNavFrequencies(amacJoin, sharedJoins, where.length > 0 ? `WHERE ${where.join(" AND ")}` : "", filterParams)
+    filterParams.push(navFrequencyFilter)
+    where.push(`EXISTS (
+      SELECT 1 FROM ops_nav_frequency nf
+      WHERE nf.beian_hao = BTRIM(i.beian_hao)
+        AND nf.frequency = $${filterParams.length}
+    )`)
+  }
+
   const orderExpr: Record<string, string> = {
     product_name: nameExpr,
     beian_hao: "i.beian_hao",
@@ -633,7 +745,6 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
   }
   const orderSql = `${orderExpr[sort] ?? orderExpr.first_entry_date} ${sortDir === "ASC" ? "ASC" : "DESC"} NULLS LAST`
   const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""
-  const amacJoin = "LEFT JOIN amac_private_funds a ON a.fund_no = i.beian_hao"
   const selectSql = `
     SELECT
       i.beian_hao,

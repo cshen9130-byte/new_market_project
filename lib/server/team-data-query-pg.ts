@@ -42,6 +42,7 @@ import {
 } from "@/lib/server/valuation-filename"
 import { analyzeInteriorNavGap, hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
 import { diagnoseInteriorNavGap, type NavGapDiagnosis } from "@/lib/server/nav-gap-cause"
+import { classifyNavFrequency, type NavFrequencyFilter, type NavFrequencyLabel } from "@/lib/server/nav-frequency"
 import {
   chartNavLevel,
   navAnomalyHit,
@@ -78,7 +79,8 @@ const TEAM_DATA_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   // Occasional OCR / reading mix-up with 准星
   淮星量化对冲三号A类: "AJU79A",
   众量资产万里阳光1号: "SLP301",
-  铸锋太阿3号A类: "SB969A",
+  // Email files use SB969A. The filing is B9695A (parent SB9695); SB969A opens a different page.
+  铸锋太阿3号A类: "B9695A",
   // C2026 was a false extract (letter + year); canonical AMAC code is SBDU00.
   桫罗稳鸿: "SBDU00",
   桫罗稳鸿C类: "SBDU00",
@@ -127,6 +129,8 @@ export type TeamDataInceptionNavFilter = "all" | "match" | "mismatch" | "missing
 export type TeamDataInceptionNavGapFilter = "all" | "w2" | "w2_m1" | "m1_3" | "m3_6" | "m6_12" | "over_y1"
 /** First unit NAV on 净值起始日. near_1 is within 5% of 1. */
 export type TeamDataNavStartValueFilter = "all" | "near_1" | "away_1" | "missing"
+/** Recent disclosure cadence of the charted NAV series. */
+export type TeamDataNavFrequencyFilter = NavFrequencyFilter
 export type NavStartValueBand = Exclude<TeamDataNavStartValueFilter, "all">
 /** Inclusive band around 1.0000. 0.95 and 1.05 count as near. */
 export const NAV_START_NEAR_ONE = 0.05
@@ -173,6 +177,8 @@ export type TeamDataListParams = {
   inceptionNavGapFilter?: TeamDataInceptionNavGapFilter
   /** Only with 成立对齐 narrowed: first unit NAV near 1, away from 1, or missing. */
   navStartValueFilter?: TeamDataNavStartValueFilter
+  /** Filter by recent NAV cadence (日频 / 周频 / 月频 / 混合 / …). */
+  navFrequencyFilter?: TeamDataNavFrequencyFilter
   sort: string
   sortDir: "ASC" | "DESC"
 }
@@ -3001,6 +3007,145 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
   return gapped
 }
 
+const NAV_FREQUENCY_BATCH = 400
+
+function longestCachedDates(rows: DetailNavGapCacheRow[]): string[] {
+  let best: string[] = []
+  for (const row of rows) {
+    if (row.dates.length > best.length) best = row.dates
+  }
+  return best
+}
+
+function cacheRowsForFund(
+  row: { beian_hao: string | null; product_name: string },
+  byCode: Map<string, DetailNavGapCacheRow[]>,
+  cacheRows: DetailNavGapCacheRow[],
+): DetailNavGapCacheRow[] {
+  const seen = new Set<string>()
+  const codeMatches: DetailNavGapCacheRow[] = []
+  for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+    for (const cache of byCode.get(alias.toUpperCase()) ?? []) {
+      if (seen.has(cache.cache_key)) continue
+      seen.add(cache.cache_key)
+      codeMatches.push(cache)
+    }
+  }
+  if (codeMatches.length > 0) return codeMatches
+  return cacheRows.filter((cache) => detailCacheFitsRow(cache, row))
+}
+
+function indexNavGapCacheByCode(rows: DetailNavGapCacheRow[]): Map<string, DetailNavGapCacheRow[]> {
+  const out = new Map<string, DetailNavGapCacheRow[]>()
+  for (const row of rows) {
+    for (const raw of [row.code, row.cache_key]) {
+      const key = raw.trim().toUpperCase()
+      if (!key) continue
+      const list = out.get(key)
+      if (list) {
+        if (!list.includes(row)) list.push(row)
+      } else {
+        out.set(key, [row])
+      }
+    }
+  }
+  return out
+}
+
+async function loadNavFrequencyBatch(
+  rows: Array<{ id: string; beian_hao: string | null; product_name: string }>,
+): Promise<Map<string, NavFrequencyLabel>> {
+  const out = new Map<string, NavFrequencyLabel>()
+  if (rows.length === 0) return out
+  const codes = [...new Set(rows.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const names = [...new Set(rows.map((row) => row.product_name.trim()).filter(Boolean))]
+  const cacheRows = await loadDetailNavGapCacheRows(codes, names)
+  const byCode = indexNavGapCacheByCode(cacheRows)
+  const uncached: typeof rows = []
+  for (const row of rows) {
+    const best = longestCachedDates(cacheRowsForFund(row, byCode, cacheRows))
+    if (best.length >= 2) out.set(row.id, classifyNavFrequency(best))
+    else uncached.push(row)
+  }
+  if (uncached.length === 0) return out
+  const fallbackCodes = [...new Set(uncached.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
+  const [datesByCode, listedByCode] = await Promise.all([
+    loadFallbackNavDatesByCode(fallbackCodes),
+    loadListedNavDatesByCode(fallbackCodes),
+  ])
+  for (const row of uncached) {
+    const fallback = new Set<string>()
+    let listed: string[] = []
+    for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+      for (const day of datesByCode.get(alias.toUpperCase()) ?? []) fallback.add(day)
+      const series = listedByCode.get(alias.toUpperCase()) ?? []
+      if (series.length > listed.length) listed = series
+    }
+    const dates = listed.length > fallback.size ? listed : [...fallback]
+    out.set(row.id, classifyNavFrequency(dates))
+  }
+  return out
+}
+
+/** Longest single series per code from 平台净值 or a manual upload. Not merged together. */
+async function loadListedNavDatesByCode(codes: string[]): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>()
+  if (codes.length === 0) return out
+  const rows = await query<{ src: string; code: string; price_date: string }>(
+    `SELECT src, UPPER(BTRIM(code)) AS code, price_date::text AS price_date
+     FROM (
+       SELECT 'platform' AS src, beian_hao AS code, price_date
+       FROM private_fund_nav
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION ALL
+       SELECT 'manual' AS src, beian_hao AS code, nav_date AS price_date
+       FROM ops_team_nav_manual
+       WHERE beian_hao = ANY($1::text[])
+         AND nav_type = 'pre_fee'
+         AND nav_date IS NOT NULL
+         AND unit_nav IS NOT NULL
+     ) t`,
+    [codes],
+  ).catch(() => [] as Array<{ src: string; code: string; price_date: string }>)
+  const bySource = new Map<string, string[]>()
+  for (const row of rows) {
+    const code = row.code?.trim().toUpperCase()
+    const day = isoDay(row.price_date)
+    if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+    const key = `${row.src}|${code}`
+    const list = bySource.get(key)
+    if (list) list.push(day)
+    else bySource.set(key, [day])
+  }
+  for (const [key, dates] of bySource) {
+    const code = key.slice(key.indexOf("|") + 1)
+    const prev = out.get(code)
+    if (!prev || dates.length > prev.length) out.set(code, dates)
+  }
+  return out
+}
+
+/** Recent 净值频率 for each fund, from the charted series (detail cache, else raw NAV). */
+export async function loadNavFrequencyByFundId(
+  rows: Array<{ id: string; beian_hao: string | null; product_name: string }>,
+): Promise<Map<string, NavFrequencyLabel>> {
+  const out = new Map<string, NavFrequencyLabel>()
+  const batches: Array<typeof rows> = []
+  for (let i = 0; i < rows.length; i += NAV_FREQUENCY_BATCH) batches.push(rows.slice(i, i + NAV_FREQUENCY_BATCH))
+  let cursor = 0
+  async function worker() {
+    while (cursor < batches.length) {
+      const index = cursor
+      cursor += 1
+      const part = await loadNavFrequencyBatch(batches[index])
+      for (const [id, label] of part) out.set(id, label)
+    }
+  }
+  const workers = Math.min(3, batches.length)
+  await Promise.all(Array.from({ length: workers }, () => worker()))
+  return out
+}
+
 type DetailNavAnomalyCacheRow = DetailNavCacheIdentity & {
   points: NavAnomalyPoint[]
 }
@@ -4463,6 +4608,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     inceptionNavFilter = "all",
     inceptionNavGapFilter = "all",
     navStartValueFilter = "all",
+    navFrequencyFilter = "all",
     sort,
     sortDir,
   } = params
@@ -4506,6 +4652,11 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   if (navGapFilter === "interior_2w" || navGapFilter === "no_interior_2w") {
     const gapped = await loadProductIdsWithInteriorNavGap(resolved)
     resolved = resolved.filter((r) => navGapFilter === "interior_2w" ? gapped.has(r.id) : !gapped.has(r.id))
+  }
+
+  if (navFrequencyFilter !== "all") {
+    const frequencyById = await loadNavFrequencyByFundId(resolved)
+    resolved = resolved.filter((row) => (frequencyById.get(row.id) ?? "无净值") === navFrequencyFilter)
   }
 
   let anomalyHits = new Map<string, NavAnomalyHit>()

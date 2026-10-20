@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { withListResponseCache } from "@/lib/server/list-response-cache"
+import { parseNavFrequencyFilter } from "@/lib/server/nav-frequency"
 import { listTeamData } from "@/lib/server/team-data-query-pg"
 
 export const runtime = "nodejs"
@@ -56,6 +57,7 @@ export async function GET(req: Request) {
       && (navStartValueRaw === "near_1" || navStartValueRaw === "away_1" || navStartValueRaw === "missing")
         ? navStartValueRaw
         : "all"
+    const navFrequencyFilter = parseNavFrequencyFilter(searchParams.get("nav_frequency") || "")
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
 
@@ -68,7 +70,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-team-data",
-      v: "nav_start_parent_v1",
+      v: "nav_frequency_v2",
       page,
       pageSize,
       keyword,
@@ -86,6 +88,7 @@ export async function GET(req: Request) {
       inceptionNavFilter,
       inceptionNavGapFilter,
       navStartValueFilter,
+      navFrequencyFilter,
       sort,
       sortDir,
     })
@@ -109,6 +112,7 @@ export async function GET(req: Request) {
         inceptionNavFilter,
         inceptionNavGapFilter,
         navStartValueFilter,
+        navFrequencyFilter,
         sort,
         sortDir,
       })

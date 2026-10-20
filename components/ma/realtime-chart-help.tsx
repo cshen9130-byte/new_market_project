@@ -171,18 +171,22 @@ export function HelpIndexIv({ product }: { product: string }) {
   return (
     <RealtimeChartHelp title="隐含波动率怎么算">
       <p>
-        图上不是本系统自行倒推期权隐含波动率，而是期权论坛{" "}
+        优先用期权论坛{" "}
         <strong className="text-foreground">QVIX</strong>
-        （近月 ATM 方差互换波动率指数），单位为年化百分比。
+        （近月 ATM 方差互换波动率指数），单位为年化百分比。QVIX 分钟列为空时，50 / 300 / 500
+        ETF 改为新浪近月平值期权反推的隐含波动率。
       </p>
       <p>
         品种对应：上证50 → 50ETF QVIX（HO）；沪深300 → 300ETF QVIX（IO）；中证500 → 500ETF QVIX；中证1000 →
         1000股指 QVIX（MO）。当前图为 <strong className="text-foreground">{product}</strong>。
       </p>
-      <Formula>图中数值 = 当日 QVIX 分钟收盘（已年化，%）</Formula>
-      <Formula>涨跌 = 最新 QVIX − 当日序列首根</Formula>
+      <Formula>图中数值 = 所选周期收盘（已年化，%）</Formula>
+      <Formula>1 分钟涨跌 = 最新值 − 当日序列首根；其余周期 = 最新一根 − 上一根</Formula>
       <p>
-        优先用 optbbs 分钟 CSV。分钟源中断时改用库内 QVIX 日线，或用分钟文件里的昨收填一条参考线，标题会标明「日线」或「昨收」。
+        1 分到 4 时用当日分钟线按周期取收盘。日线、周线、月线用库内 QVIX 日线，并把最新分钟值写进当日。optbbs
+        的 QVIX 列为空、且新浪 QVIX 分钟接口不可用时，50 / 300 / 500 ETF 改用新浪近月平值认购和认沽的 1
+        分钟成交价，按 Black-Scholes 反推后取平均，标题标明「近月平值」。中证1000没有这条 ETF
+        行情时，日内周期留空，日线及以上仍用历史。
       </p>
     </RealtimeChartHelp>
   )

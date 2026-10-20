@@ -13,6 +13,30 @@ import { formatCandleTime, type TimeframeId } from "@/lib/client/timeframes"
 
 export type ChartZoomRange = { start: number; end: number }
 
+/** Bars kept on screen so each candle stays wider than ECharts' 1.3px wick-only mode. */
+export const DEFAULT_VISIBLE_BARS: Record<TimeframeId, number> = {
+  "1m": 80,
+  "5m": 90,
+  "15m": 80,
+  "30m": 70,
+  "1h": 60,
+  "4h": 48,
+  "1d": 140,
+  "1w": 100,
+  "1M": 60,
+}
+
+const LINE_WHEN_BARS_ABOVE = 150
+
+export function defaultVisibleBars(interval: TimeframeId) {
+  return DEFAULT_VISIBLE_BARS[interval]
+}
+
+export function candleWindow(count: number, visible: number): ChartZoomRange {
+  if (count < 2 || count <= visible) return { start: 0, end: 100 }
+  return { start: ((count - visible) / count) * 100, end: 100 }
+}
+
 type Props = {
   title: string
   product: string
@@ -25,8 +49,34 @@ type Props = {
   onIntervalChange?: (id: TimeframeId) => void
   hideTimeframe?: boolean
   hideSymbolSelect?: boolean
-  zoom?: ChartZoomRange
+  zoom?: ChartZoomRange | null
+  /** Latest bars to show when `zoom` is unset. Defaults to a readable window for the timeframe. */
+  maxBars?: number | null
   onZoomChange?: (zoom: ChartZoomRange) => void
+}
+
+function zoomSlice<T>(items: T[], zoom: ChartZoomRange) {
+  const n = items.length
+  if (!n) return items
+  const start = Math.min(n - 1, Math.max(0, Math.floor((zoom.start / 100) * n)))
+  const end = Math.min(n, Math.max(start + 1, Math.ceil((zoom.end / 100) * n)))
+  return items.slice(start, end)
+}
+
+function priceExtent(rows: CtpCandle[]) {
+  let lo = Infinity
+  let hi = -Infinity
+  for (const c of rows) {
+    const low = Math.min(c.open, c.close, c.low, c.high)
+    const high = Math.max(c.open, c.close, c.low, c.high)
+    if (low > 0) lo = Math.min(lo, low)
+    if (high > 0) hi = Math.max(hi, high)
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { min: 0, max: 1 }
+  const pad = Math.max((hi - lo) * 0.08, hi * 0.001, 1)
+  const min = Math.floor(lo - pad)
+  const max = Math.max(min + 1, Math.ceil(hi + pad))
+  return { min, max }
 }
 
 function fmt(n: number | null | undefined, digits = 1) {
@@ -50,6 +100,7 @@ export function IndexFuturesCandleChart({
   hideTimeframe = false,
   hideSymbolSelect = false,
   zoom,
+  maxBars,
   onZoomChange,
 }: Props) {
   const [localInterval, setLocalInterval] = useState<TimeframeId>("1m")
@@ -65,20 +116,54 @@ export function IndexFuturesCandleChart({
   const changeClass =
     up == null ? "text-muted-foreground" : up ? "text-red-500" : "text-emerald-600"
 
+  const effectiveZoom =
+    zoom ?? candleWindow(tfCandles.length, maxBars ?? defaultVisibleBars(interval))
+
   const option = useMemo(() => {
     const times = tfCandles.map((c) => formatCandleTime(c.time, interval))
-    const ohlcv = tfCandles.map((c) => [c.open, c.close, c.low, c.high])
+    const ohlcv = tfCandles.map((c) => {
+      const low = Math.min(c.open, c.close, c.low, c.high)
+      const high = Math.max(c.open, c.close, c.low, c.high)
+      return [c.open, c.close, low, high]
+    })
     const volumes = tfCandles.map((c) => ({
       value: c.volume,
       itemStyle: { color: c.close >= c.open ? "#ef4444" : "#22c55e" },
     }))
-    const lows = tfCandles.map((c) => Math.min(c.open, c.close, c.low)).filter((n) => n > 0)
-    const highs = tfCandles.map((c) => Math.max(c.open, c.close, c.high)).filter((n) => n > 0)
-    const lo = lows.length ? Math.min(...lows) : 0
-    const hi = highs.length ? Math.max(...highs) : 1
-    const pad = Math.max((hi - lo) * 0.08, hi * 0.002)
-    const priceMin = Math.floor(lo - pad)
-    const priceMax = Math.max(priceMin + 1, Math.ceil(hi + pad))
+    const shown = zoomSlice(tfCandles, effectiveZoom)
+    // Packed thinner than ~1.3px, ECharts drops the candle body and draws only
+    // the high-low wick, so a multi-day 1m history becomes a sawtooth.
+    const dense = shown.length > LINE_WHEN_BARS_ABOVE
+    const { min: priceMin, max: priceMax } = priceExtent(shown)
+    const firstClose = shown[0]?.close ?? 0
+    const lastClose = shown[shown.length - 1]?.close ?? firstClose
+    const priceSeries = dense
+      ? {
+          name: symbol || product,
+          type: "line" as const,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: tfCandles.map((c) => c.close),
+          showSymbol: false,
+          smooth: false,
+          lineStyle: { width: 1.25, color: lastClose >= firstClose ? "#ef4444" : "#22c55e" },
+          emphasis: { disabled: true },
+        }
+      : {
+          name: symbol || product,
+          type: "candlestick" as const,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: ohlcv,
+          barMaxWidth: 10,
+          large: false,
+          itemStyle: {
+            color: "#ef4444",
+            color0: "#22c55e",
+            borderColor: "#ef4444",
+            borderColor0: "#22c55e",
+          },
+        }
     return {
       animation: false,
       backgroundColor: "transparent",
@@ -138,36 +223,24 @@ export function IndexFuturesCandleChart({
         {
           type: "inside",
           xAxisIndex: [0, 1],
-          start: zoom?.start ?? 0,
-          end: zoom?.end ?? 100,
+          start: effectiveZoom.start,
+          end: effectiveZoom.end,
+          filterMode: "filter",
         },
       ],
       series: [
-        {
-          name: symbol || product,
-          type: "candlestick",
-          xAxisIndex: 0,
-          yAxisIndex: 0,
-          data: ohlcv,
-          barMaxWidth: 12,
-          itemStyle: {
-            color: "#ef4444",
-            color0: "#22c55e",
-            borderColor: "#ef4444",
-            borderColor0: "#22c55e",
-          },
-        },
+        priceSeries,
         {
           name: "成交量",
           type: "bar",
           xAxisIndex: 1,
           yAxisIndex: 1,
           data: volumes,
-          barMaxWidth: 12,
+          barMaxWidth: 10,
         },
       ],
     }
-  }, [tfCandles, product, symbol, interval, zoom?.start, zoom?.end])
+  }, [tfCandles, product, symbol, interval, effectiveZoom.start, effectiveZoom.end])
 
   return (
     <div className="flex min-h-[360px] flex-col rounded-xl border bg-card">
@@ -234,9 +307,11 @@ export function IndexFuturesCandleChart({
                 ? {
                     dataZoom: (params: { start?: number; end?: number; batch?: Array<{ start?: number; end?: number }> }) => {
                       const batch = params.batch?.[0] ?? params
-                      if (typeof batch.start === "number" && typeof batch.end === "number") {
-                        onZoomChange({ start: batch.start, end: batch.end })
-                      }
+                      if (typeof batch.start !== "number" || typeof batch.end !== "number") return
+                      const same =
+                        Math.abs(batch.start - effectiveZoom.start) < 0.25 &&
+                        Math.abs(batch.end - effectiveZoom.end) < 0.25
+                      if (!same) onZoomChange({ start: batch.start, end: batch.end })
                     },
                   }
                 : undefined

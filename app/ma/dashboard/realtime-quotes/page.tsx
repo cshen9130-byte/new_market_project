@@ -9,7 +9,11 @@ import { AshareTurnoverConcentrationChart } from "@/components/ma/ashare-turnove
 import { ScaleIndexBeatRatioChart } from "@/components/ma/scale-index-beat-ratio-chart"
 import { ScaleIndexCrossVolChart } from "@/components/ma/scale-index-cross-vol-chart"
 import { ScaleIndexVolChart } from "@/components/ma/scale-index-vol-chart"
-import { IndexFuturesCandleChart, type ChartZoomRange } from "@/components/ma/index-futures-candle-chart"
+import {
+  IndexFuturesCandleChart,
+  defaultVisibleBars,
+  type ChartZoomRange,
+} from "@/components/ma/index-futures-candle-chart"
 import { ZoomIn, ZoomOut, RotateCcw } from "lucide-react"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
 import { TimeframeSelect } from "@/components/ma/timeframe-select"
@@ -55,30 +59,41 @@ export default function RealtimeQuotesPage() {
   const [proLayout, setProLayout] = useState<ProTradingLayout>("market")
   const [klineInterval, setKlineInterval] = useState<TimeframeId>("1m")
   const [klineRole, setKlineRole] = useState<CffexContractRole>("near")
-  const [klineZoom, setKlineZoom] = useState<ChartZoomRange>({ start: 0, end: 100 })
+  const [klineZoom, setKlineZoom] = useState<ChartZoomRange | null>(null)
+  const [klineMaxBars, setKlineMaxBars] = useState<number | null>(null)
+
+  function resetKlineZoom() {
+    setKlineZoom(null)
+    setKlineMaxBars(null)
+  }
 
   function setKlineIntervalAndReset(id: TimeframeId) {
     setKlineInterval(id)
-    setKlineZoom({ start: 0, end: 100 })
+    resetKlineZoom()
   }
 
   function setKlineRoleAndReset(role: CffexContractRole) {
     setKlineRole(role)
-    setKlineZoom({ start: 0, end: 100 })
+    resetKlineZoom()
   }
 
   function zoomKline(direction: "in" | "out") {
-    setKlineZoom((prev) => {
-      const span = Math.max(1, prev.end - prev.start)
+    if (klineZoom) {
+      const span = Math.max(1, klineZoom.end - klineZoom.start)
       const nextSpan = direction === "in" ? Math.max(8, span * 0.7) : Math.min(100, span / 0.7)
-      let end = prev.end
+      let end = klineZoom.end
       let start = end - nextSpan
       if (start < 0) {
         start = 0
         end = Math.min(100, nextSpan)
       }
-      return { start, end }
-    })
+      setKlineZoom({ start, end })
+      return
+    }
+    const base = klineMaxBars ?? defaultVisibleBars(klineInterval)
+    setKlineMaxBars(
+      direction === "in" ? Math.max(24, Math.round(base * 0.7)) : Math.min(5000, Math.round(base / 0.7)),
+    )
   }
   const [basisInterval, setBasisInterval] = useState<TimeframeId>("1d")
   const [basisRole, setBasisRole] = useState<CffexContractRole>("near")
@@ -226,7 +241,7 @@ export default function RealtimeQuotesPage() {
       <div>
         <h2 className="text-lg font-semibold tracking-tight">K 线</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          四张 K 线共用下方周期、合约月份与缩放，与年化基差率筛选独立。
+          四张 K 线共用下方周期、合约月份与缩放，与年化基差率筛选独立。默认只画出最近一段，缩小或滚轮可看更早。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -279,7 +294,7 @@ export default function RealtimeQuotesPage() {
             <button
               type="button"
               title="复位"
-              onClick={() => setKlineZoom({ start: 0, end: 100 })}
+              onClick={resetKlineZoom}
               className="inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <RotateCcw className="h-3.5 w-3.5" />
@@ -304,6 +319,7 @@ export default function RealtimeQuotesPage() {
               hideTimeframe
               hideSymbolSelect
               zoom={klineZoom}
+              maxBars={klineMaxBars}
               onZoomChange={setKlineZoom}
               onSymbolChange={(value) => {
                 setManual((prev) => ({ ...prev, [item.product]: true }))
@@ -422,7 +438,7 @@ export default function RealtimeQuotesPage() {
       <div>
         <h2 className="text-lg font-semibold tracking-tight">隐含波动率</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          HO / IO / 500ETF / MO 对应 QVIX（近月 ATM 隐含波动率指数）1 分钟走势。
+          HO / IO / 500ETF / MO 对应 QVIX（近月 ATM 隐含波动率指数）。日内周期由当日分钟线合成，日线及以上用历史日线。
         </p>
       </div>
       <div className="grid gap-4 xl:grid-cols-2">

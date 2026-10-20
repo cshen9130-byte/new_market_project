@@ -105,7 +105,7 @@ export type ElementExtractDuplicateMark = {
   duplicateCount: number
 }
 
-/** Group jobs that share content hash or the same filename. */
+/** Group jobs that are the same file bytes. Same filename alone is not a duplicate. */
 export function assignElementExtractDuplicateMarks(
   rows: ElementExtractDuplicateSource[],
 ): Map<number, ElementExtractDuplicateMark> {
@@ -127,20 +127,13 @@ export function assignElementExtractDuplicateMarks(
   for (const row of rows) parent.set(row.id, row.id)
 
   const byHash = new Map<string, number>()
-  const byName = new Map<string, number>()
   for (const row of rows) {
     const hash = (row.contentHash || "").trim().toLowerCase()
-    if (/^[0-9a-f]{16}$/.test(hash)) {
-      const prev = byHash.get(hash)
-      if (prev != null) union(prev, row.id)
-      else byHash.set(hash, row.id)
-    }
-    const name = row.originalFilename.trim().toLowerCase()
-    if (name) {
-      const prev = byName.get(name)
-      if (prev != null) union(prev, row.id)
-      else byName.set(name, row.id)
-    }
+    if (!/^[0-9a-f]{16}$/.test(hash) || row.fileSize <= 0) continue
+    const key = `${hash}:${row.fileSize}`
+    const prev = byHash.get(key)
+    if (prev != null) union(prev, row.id)
+    else byHash.set(key, row.id)
   }
 
   const groups = new Map<number, ElementExtractDuplicateSource[]>()
@@ -361,31 +354,27 @@ export type ElementExtractUploadDuplicate = {
   existingFileName: string
 }
 
-/** Non-failed job with the same bytes or the same filename. */
+/** Non-failed job with the same file bytes. Same filename is not enough. */
 export async function findLiveElementExtractDuplicate(input: {
   contentHash: string
-  originalFilename: string
+  originalFilename?: string
   fileSize: number
   excludeId?: number
 }): Promise<ElementExtractJobRow | null> {
   await ensureElementExtractJobsTable()
   const hash = input.contentHash.trim().toLowerCase()
-  const name = sanitizeFilename(input.originalFilename || "")
   const size = Number(input.fileSize) || 0
   const excludeId = input.excludeId && input.excludeId > 0 ? input.excludeId : 0
-  if (!/^[0-9a-f]{16}$/.test(hash) && !name) return null
+  if (!/^[0-9a-f]{16}$/.test(hash) || size <= 0) return null
   const rows = await query<ElementExtractJobRow>(
     `SELECT ${JOB_SELECT_COLS}
      FROM ops_element_extract_jobs
      WHERE status <> 'failed'
-       AND id <> $4
+       AND id <> $3
+       AND file_size = $2
        AND (
-         ($1 <> '' AND (
-           content_hash = $1
-           OR lower(right(split_part(storage_filename, '.', 1), 16)) = $1
-         ))
-         OR ($2 <> '' AND lower(original_filename) = lower($2))
-         OR ($3 > 0 AND lower(original_filename) = lower($2) AND file_size = $3)
+         content_hash = $1
+         OR lower(right(split_part(storage_filename, '.', 1), 16)) = $1
        )
      ORDER BY
        CASE status
@@ -395,85 +384,56 @@ export async function findLiveElementExtractDuplicate(input: {
          WHEN 'queued' THEN 3
          ELSE 4
        END,
+       CASE WHEN NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NULL THEN 1 ELSE 0 END,
        uploaded_at ASC,
        id ASC
      LIMIT 1`,
-    [/^[0-9a-f]{16}$/.test(hash) ? hash : "", name, size, excludeId],
+    [hash, size, excludeId],
   )
   return rows[0] ? mapJobRow(rows[0]) : null
 }
 
-export async function annotateElementExtractJobDuplicates<T extends ElementExtractJobRow>(
-  rows: T[],
-): Promise<Array<T & { duplicate_of_id: number | null; duplicate_count: number }>> {
-  const blank = rows.map((row) => ({
-    ...row,
-    duplicate_of_id: null as number | null,
-    duplicate_count: 0,
-  }))
-  if (!rows.length) return blank
-
-  const hashes = [
-    ...new Set(
-      rows
-        .map((row) => (row.content_hash || contentHashFromExtractStorageFilename(row.storage_filename) || "").toLowerCase())
-        .filter((hash) => /^[0-9a-f]{16}$/.test(hash)),
-    ),
-  ]
-  const names = [...new Set(rows.map((row) => row.original_filename).filter(Boolean))]
-
-  const siblings = await query<{
-    id: number
-    content_hash: string | null
-    storage_filename: string
-    original_filename: string
-    file_size: string | number
-    status: ExtractJobStatus
-    uploaded_at: string
-  }>(
-    `SELECT id, content_hash, storage_filename, original_filename, file_size::text AS file_size,
-            status, uploaded_at::text AS uploaded_at
-     FROM ops_element_extract_jobs
-     WHERE content_hash = ANY($1::text[])
-        OR lower(right(split_part(storage_filename, '.', 1), 16)) = ANY($1::text[])
-        OR original_filename = ANY($2::text[])`,
-    [hashes.length ? hashes : ["__no_content_hash__"], names.length ? names : ["__no_filename__"]],
+/** Drop extra copies of the same file. Keeps the best existing task and deletes the rest. */
+export async function removeDuplicateElementExtractJobs(): Promise<number> {
+  await ensureElementExtractJobsTable()
+  const doomed = await query<{ id: string; storage_filename: string }>(
+    `WITH ranked AS (
+       SELECT id,
+              storage_filename,
+              ROW_NUMBER() OVER (
+                PARTITION BY lower(content_hash), file_size
+                ORDER BY
+                  CASE status
+                    WHEN 'applied' THEN 0
+                    WHEN 'needs_review' THEN 1
+                    WHEN 'extracting' THEN 2
+                    WHEN 'queued' THEN 3
+                    ELSE 4
+                  END,
+                  CASE WHEN NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NULL THEN 1 ELSE 0 END,
+                  CASE WHEN contract_material_id IS NULL THEN 1 ELSE 0 END,
+                  uploaded_at ASC,
+                  id ASC
+              ) AS rn
+       FROM ops_element_extract_jobs
+       WHERE content_hash ~ '^[0-9a-fA-F]{16}$'
+         AND file_size > 0
+     )
+     DELETE FROM ops_element_extract_jobs AS j
+     USING ranked
+     WHERE j.id = ranked.id
+       AND ranked.rn > 1
+     RETURNING j.id::text AS id, j.storage_filename`,
   )
-
-  const sources = new Map<number, ElementExtractDuplicateSource>()
-  const addSource = (source: ElementExtractDuplicateSource) => {
-    if (!sources.has(source.id)) sources.set(source.id, source)
-  }
-  for (const row of siblings) {
-    addSource({
-      id: Number(row.id),
-      contentHash: (row.content_hash || contentHashFromExtractStorageFilename(row.storage_filename) || "").toLowerCase() || null,
-      originalFilename: row.original_filename,
-      fileSize: Number(row.file_size) || 0,
-      status: row.status,
-      uploadedAt: row.uploaded_at || "",
-    })
-  }
-  for (const row of rows) {
-    addSource({
-      id: row.id,
-      contentHash: row.content_hash,
-      originalFilename: row.original_filename,
-      fileSize: Number(row.file_size) || 0,
-      status: row.status,
-      uploadedAt: row.uploaded_at || "",
-    })
-  }
-
-  const marks = assignElementExtractDuplicateMarks([...sources.values()])
-  return rows.map((row) => {
-    const mark = marks.get(row.id) ?? { duplicateOfId: null, duplicateCount: 0 }
-    return {
-      ...row,
-      duplicate_of_id: mark.duplicateOfId,
-      duplicate_count: mark.duplicateCount,
-    }
-  })
+  if (!doomed.length) return 0
+  await Promise.all(
+    doomed.map(async (row) => {
+      const safeName = path.basename(row.storage_filename || "")
+      if (!safeName || safeName !== row.storage_filename) return
+      await fs.unlink(extractJobFilePath(safeName)).catch(() => undefined)
+    }),
+  )
+  return doomed.length
 }
 
 export async function findElementExtractJobsForMaterials(input: {
@@ -538,6 +498,7 @@ export async function listElementExtractJobs(input?: {
   offset?: number
 }): Promise<{ rows: ElementExtractJobRow[]; total: number }> {
   await ensureElementExtractJobsTable()
+  await removeDuplicateElementExtractJobs()
   const conditions: string[] = []
   const params: unknown[] = []
   let i = 1
@@ -830,6 +791,7 @@ export async function requeueElementExtractJob(id: number): Promise<ElementExtra
 
 export async function listExtractJobsForRerun(): Promise<ElementExtractJobRow[]> {
   await ensureElementExtractJobsTable()
+  await removeDuplicateElementExtractJobs()
   const rows = await query<ElementExtractJobRow>(
     `SELECT ${JOB_SELECT_COLS}
      FROM ops_element_extract_jobs

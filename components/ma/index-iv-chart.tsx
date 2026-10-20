@@ -1,17 +1,25 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
+import { Lock } from "lucide-react"
 
-import { formatBarTime, type IndexProduct } from "@/lib/client/ctp-market"
-import { INDEX_CHART_COLOR, type IvSnapshot } from "@/lib/client/realtime-overlay"
 import { HelpIndexIv } from "@/components/ma/realtime-chart-help"
+import { TimeframeSelect } from "@/components/ma/timeframe-select"
+import { useQvixSeries } from "@/hooks/use-qvix-series"
+import { type IndexProduct } from "@/lib/client/ctp-market"
+import { INDEX_CHART_COLOR, type IvSnapshot } from "@/lib/client/realtime-overlay"
+import { formatCandleTime, getTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 
 type Props = {
   title: string
   product: IndexProduct
   iv?: IvSnapshot
   variant?: "default" | "pro"
+  interval?: TimeframeId
+  onIntervalChange?: (id: TimeframeId) => void
+  hideTimeframe?: boolean
+  linked?: boolean
 }
 
 function fmt(n: number | null | undefined, digits = 2) {
@@ -20,18 +28,6 @@ function fmt(n: number | null | undefined, digits = 2) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   })
-}
-
-function isDailyIv(bars: { time: number }[]) {
-  if (bars.length < 2) return false
-  return bars[bars.length - 1].time - bars[0].time > 36 * 3600
-}
-
-function formatIvAxisTime(unix: number, daily: boolean) {
-  const d = new Date(unix * 1000)
-  const pad = (n: number) => String(n).padStart(2, "0")
-  if (daily) return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
-  return formatBarTime(unix)
 }
 
 function niceRange(lo: number, hi: number) {
@@ -46,22 +42,44 @@ function niceRange(lo: number, hi: number) {
   return { min, max, interval }
 }
 
-export function IndexIvChart({ title, product, iv, variant = "default" }: Props) {
-  const last = iv?.value ?? iv?.bars.at(-1)?.close ?? null
-  const change = iv?.change ?? null
+function sourceNote(interval: TimeframeId, mode: "intraday" | "history" | "unavailable", source?: string | null) {
+  if (mode === "history") return `${getTimeframe(interval).label} · 历史日线`
+  if (source?.startsWith("db:")) return "日线（分钟源中断）"
+  if (source?.startsWith("optbbs-pre:")) return "昨收（分钟源中断）"
+  if (mode === "unavailable") return "分钟源中断"
+  if (source?.startsWith("sina-atm:")) return `当日${getTimeframe(interval).label} · 近月平值`
+  return `当日${getTimeframe(interval).label}`
+}
+
+export function IndexIvChart({
+  title,
+  product,
+  iv,
+  variant = "default",
+  interval: controlledInterval,
+  onIntervalChange,
+  hideTimeframe = false,
+  linked = false,
+}: Props) {
+  const [localInterval, setLocalInterval] = useState<TimeframeId>("1m")
+  const interval = controlledInterval ?? localInterval
+  const setInterval = onIntervalChange ?? setLocalInterval
+  const { bars, mode, loading, error } = useQvixSeries(product, interval, iv)
+  const last = iv?.value ?? bars.at(-1)?.close ?? null
+  const seriesChange = bars.length >= 2 ? bars[bars.length - 1].close - bars[bars.length - 2].close : null
+  const change = interval === "1m" && mode === "intraday" ? (iv?.change ?? seriesChange) : seriesChange
   const up = change == null && last == null ? null : (change ?? 0) >= 0
   const color = INDEX_CHART_COLOR[product]
+  const pro = variant === "pro"
 
   const option = useMemo(() => {
-    const bars = iv?.bars || []
-    const daily = isDailyIv(bars) || !!iv?.source?.startsWith("db:")
-    const times = bars.map((p) => formatIvAxisTime(p.time, daily))
+    const times = bars.map((p) => formatCandleTime(p.time, interval))
     const values = bars.map((p) => Number(p.close.toFixed(2)))
     const dark = variant === "pro"
     const sparse = bars.length < 8
     const lo = values.length ? Math.min(...values) : 0
     const hi = values.length ? Math.max(...values) : 1
-    const { min, max, interval } = niceRange(lo, hi)
+    const { min, max, interval: yInterval } = niceRange(lo, hi)
     return {
       animation: false,
       backgroundColor: "transparent",
@@ -85,7 +103,7 @@ export function IndexIvChart({ title, product, iv, variant = "default" }: Props)
         type: "value",
         min,
         max,
-        interval,
+        interval: yInterval,
         scale: true,
         axisLabel: { color: "#94a3b8", fontSize: 10, formatter: (v: number) => Number(v).toFixed(1) },
         splitLine: { lineStyle: { color: variant === "pro" ? "#1e222d" : "#f1f5f9" } },
@@ -97,20 +115,29 @@ export function IndexIvChart({ title, product, iv, variant = "default" }: Props)
           showSymbol: sparse,
           symbolSize: sparse ? 8 : 4,
           connectNulls: true,
-          smooth: daily || sparse ? 0 : 0.15,
+          smooth: interval === "1m" && !sparse ? 0.15 : 0,
           lineStyle: { width: 1.8, color },
           itemStyle: { color },
           areaStyle: { color: `${color}22` },
         },
       ],
     }
-  }, [color, iv?.bars, iv?.source, variant])
+  }, [bars, color, interval, variant])
 
-  const pro = variant === "pro"
+  const emptyText = loading
+    ? "加载 QVIX 日线…"
+    : error
+      ? error
+      : mode === "unavailable"
+        ? "分钟线中断，日内周期暂不可用"
+        : last != null
+          ? "暂无该周期数据"
+          : "等待 QVIX…"
+
   return (
     <div className={pro ? "flex h-full min-h-0 flex-col bg-[#131722] text-[#d1d4dc]" : "flex min-h-[320px] flex-col rounded-xl border bg-card"}>
       <div className={pro ? "flex items-start justify-between gap-3 px-3 py-2" : "flex items-start justify-between gap-3 px-4 py-3"}>
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <div className="text-sm font-semibold">
               {title} 隐含波动率
@@ -118,13 +145,14 @@ export function IndexIvChart({ title, product, iv, variant = "default" }: Props)
             </div>
             <HelpIndexIv product={title} />
           </div>
+          {hideTimeframe ? null : (
+            <div className="mt-1.5 flex items-center gap-1">
+              {linked ? <Lock className="size-3 shrink-0 text-[#4c84ff]" aria-hidden /> : null}
+              <TimeframeSelect value={interval} onChange={setInterval} dark={pro} />
+            </div>
+          )}
           <div className={pro ? "mt-0.5 text-[11px] text-[#787b86]" : "mt-1 text-[11px] text-muted-foreground"}>
-            {iv?.name || "QVIX"} ·{" "}
-            {iv?.source?.startsWith("db:")
-              ? "日线（分钟源中断）"
-              : iv?.source?.startsWith("optbbs-pre:")
-                ? "昨收（分钟源中断）"
-                : "1 分钟"}
+            {iv?.name || "QVIX"} · {sourceNote(interval, mode, iv?.source)}
           </div>
         </div>
         <div className="text-right">
@@ -137,11 +165,11 @@ export function IndexIvChart({ title, product, iv, variant = "default" }: Props)
         </div>
       </div>
       <div className="min-h-0 flex-1 px-1 pb-1">
-        {iv?.bars && iv.bars.length > 0 ? (
+        {bars.length > 0 ? (
           <ReactECharts option={option} style={{ height: pro ? "100%" : 240 }} notMerge lazyUpdate />
         ) : (
-          <div className={pro ? "flex h-full items-center justify-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center text-sm text-muted-foreground"}>
-            {last != null ? "暂无分钟线，仅有最新值" : "等待 QVIX 分钟线…"}
+          <div className={pro ? "flex h-full items-center justify-center px-3 text-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center px-3 text-center text-sm text-muted-foreground"}>
+            {emptyText}
           </div>
         )}
       </div>

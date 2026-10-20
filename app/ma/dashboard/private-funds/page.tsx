@@ -14983,6 +14983,20 @@ function writeTeamDataListCache(key: string, entry: TeamDataListCacheEntry, pref
   }
 }
 
+const NAV_FREQUENCY_FILTERS = ["all", "日频", "周频", "双周", "月频", "季频", "混合", "其他", "无净值"] as const
+
+const NAV_FREQUENCY_FILTER_OPTIONS: ReadonlyArray<readonly [typeof NAV_FREQUENCY_FILTERS[number], string, string]> = [
+  ["all", "不限", ""],
+  ["日频", "日频", "最近这段净值大多每个交易日都有"],
+  ["周频", "周频", "最近这段净值大约每周一个"],
+  ["双周", "双周", "最近这段净值大约两周一个"],
+  ["月频", "月频", "最近这段净值大约每月一个"],
+  ["季频", "季频", "最近这段净值大约每季一个"],
+  ["混合", "混合", "最近这段里两种间隔都不少，例如又有日频又有周频"],
+  ["其他", "其他", "比季频更疏"],
+  ["无净值", "无净值", "净值日期不够，判断不了频率"],
+]
+
 function opsListFilter<T extends string>(
   params: { get(name: string): string | null },
   name: string,
@@ -15090,6 +15104,9 @@ function OperationsTeamDataView({
   const [inPoolFilter, setInPoolFilter] = useState<"all" | "in" | "out">(() =>
     opsListFilter(searchParams, "in_pool", ["all", "in", "out"], "all"),
   )
+  const [navFrequencyFilter, setNavFrequencyFilter] = useState<(typeof NAV_FREQUENCY_FILTERS)[number]>(() =>
+    opsListFilter(searchParams, "nav_frequency", NAV_FREQUENCY_FILTERS, "all"),
+  )
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<TeamDataSortKey>("first_entry_date")
@@ -15194,7 +15211,7 @@ function OperationsTeamDataView({
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, navFrequencyFilter, keyword, pageSize])
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -15229,6 +15246,7 @@ function OperationsTeamDataView({
     if (navPresenceFilter !== "all") params.set("nav_presence", navPresenceFilter)
     if (navDateFilter !== "all") params.set("nav_date", navDateFilter)
     if (isPlatform && inPoolFilter !== "all") params.set("in_pool", inPoolFilter)
+    if (navFrequencyFilter !== "all") params.set("nav_frequency", navFrequencyFilter)
 
     const cacheKey = params.toString()
     const cached = readTeamDataListCache(cacheKey, cachePrefix)
@@ -15288,7 +15306,7 @@ function OperationsTeamDataView({
       cancelled = true
       ac.abort()
     }
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix, isPlatform])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, navFrequencyFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix, isPlatform])
 
   useEffect(() => {
     let cancelled = false
@@ -15995,6 +16013,31 @@ function OperationsTeamDataView({
               </div>
             </>
           )}
+          <div className="flex items-center">
+            <span
+              className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3"
+              title="看最近最多 24 段相邻净值相隔几个中国市场交易日。周末和法定节假日不计入。更早的历史不改变这个判断。"
+            >
+              净值频率：
+            </span>
+            <div className="flex items-center gap-1">
+              {NAV_FREQUENCY_FILTER_OPTIONS.map(([key, label, title]) => (
+                <span
+                  key={key}
+                  title={title || undefined}
+                  onClick={() => { setNavFrequencyFilter(key); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    navFrequencyFilter === key
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
           <div className="flex items-center">
             <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队净值：</span>
             <div className="flex items-center gap-1">

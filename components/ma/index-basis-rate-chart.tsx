@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
+import { Lock } from "lucide-react"
 
 import { type ChartZoomRange } from "@/components/ma/index-futures-candle-chart"
 import { TimeframeSelect } from "@/components/ma/timeframe-select"
@@ -33,6 +34,7 @@ type Props = {
   interval?: TimeframeId
   onIntervalChange?: (id: TimeframeId) => void
   hideTimeframe?: boolean
+  linked?: boolean
   zoom?: ChartZoomRange
   onZoomChange?: (zoom: ChartZoomRange) => void
 }
@@ -83,6 +85,7 @@ export function IndexBasisRateChart({
   interval: controlledInterval,
   onIntervalChange,
   hideTimeframe = false,
+  linked = false,
   zoom,
   onZoomChange,
 }: Props) {
@@ -233,7 +236,10 @@ export function IndexBasisRateChart({
             <HelpAnnualizedBasis product={title} />
           </div>
           {hideTimeframe ? null : (
-            <TimeframeSelect value={interval} onChange={setInterval} dark={pro} className="mt-1.5" />
+            <div className="mt-1.5 flex items-center gap-1">
+              {linked ? <Lock className="size-3 shrink-0 text-[#4c84ff]" aria-hidden /> : null}
+              <TimeframeSelect value={interval} onChange={setInterval} dark={pro} />
+            </div>
           )}
           {!pro ? (
             <div className="mt-1 text-[11px] text-muted-foreground">

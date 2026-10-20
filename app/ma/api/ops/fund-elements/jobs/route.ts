@@ -3,7 +3,6 @@ import { NextResponse } from "next/server"
 import {
   EXTRACT_JOB_MAX_FILES,
   EXTRACT_JOB_STATUSES,
-  annotateElementExtractJobDuplicates,
   createElementExtractJobFromBuffer,
   findLiveElementExtractDuplicate,
   listElementExtractJobs,
@@ -44,8 +43,7 @@ export async function GET(req: Request) {
     const limit = parseInt(searchParams.get("limit") || "50", 10)
     const offset = parseInt(searchParams.get("offset") || "0", 10)
     const result = await listElementExtractJobs({ status, q, ids, limit, offset })
-    const annotated = await annotateElementExtractJobDuplicates(result.rows)
-    const rows = await retargetPromotedExtractJobs(annotated)
+    const rows = await retargetPromotedExtractJobs(result.rows)
     return NextResponse.json({ ok: true, ...result, rows })
   } catch (err) {
     console.error("[ops/fund-elements/jobs GET]", err)
@@ -75,14 +73,13 @@ export async function POST(req: Request) {
     const duplicates: ElementExtractUploadDuplicate[] = []
     const errors: { fileName: string; error: string }[] = []
     const seenHashes = new Map<string, ElementExtractJobRow>()
-    const seenNames = new Map<string, ElementExtractJobRow>()
     for (const file of files) {
       const fileName = file.name || "contract.pdf"
       try {
         const buffer = Buffer.from(await file.arrayBuffer())
         const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 16)
-        const nameKey = fileName.trim().toLowerCase()
-        const inBatch = seenHashes.get(hash) || (nameKey ? seenNames.get(nameKey) : undefined)
+        const hashKey = `${hash}:${buffer.byteLength}`
+        const inBatch = seenHashes.get(hashKey)
         if (inBatch) {
           duplicates.push({
             fileName,
@@ -97,8 +94,7 @@ export async function POST(req: Request) {
           fileSize: buffer.byteLength,
         })
         if (existing) {
-          seenHashes.set(hash, existing)
-          if (nameKey) seenNames.set(nameKey, existing)
+          seenHashes.set(hashKey, existing)
           duplicates.push({
             fileName,
             existingId: existing.id,
@@ -112,8 +108,7 @@ export async function POST(req: Request) {
           uploaded_by,
           contentHash: hash,
         })
-        seenHashes.set(hash, job)
-        if (nameKey) seenNames.set(nameKey, job)
+        seenHashes.set(hashKey, job)
         created.push(job)
       } catch (err) {
         errors.push({

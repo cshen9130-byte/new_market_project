@@ -1,6 +1,7 @@
 import { INDEX_FUTURES, type IndexProduct } from "@/lib/client/ctp-market"
 import { INDEX_IV, type IvSnapshot, type OverlayPoint } from "@/lib/client/realtime-overlay"
 import { query } from "@/lib/db"
+import { fetchEtfAtmIvMinutes } from "@/lib/server/atm-iv-minute"
 import { chinaWallToUnix, SINA_UA, sinaGet } from "@/lib/server/sina-fetch"
 
 function num(value: unknown) {
@@ -58,6 +59,7 @@ const OPTBBS_MIN_FILE: Record<string, string> = {
 async function fetchText(url: string, referer: string) {
   const res = await fetch(url, {
     cache: "no-store",
+    signal: AbortSignal.timeout(4000),
     headers: {
       "User-Agent": SINA_UA,
       Referer: referer,
@@ -77,8 +79,10 @@ async function fetchOptbbsMin(code: string) {
   let lastErr: Error | null = null
   for (const url of paths) {
     try {
-      const bars = barsFromMinCsv(await fetchText(url, "http://1.optbbs.com/s/vix.shtml"))
+      const text = await fetchText(url, "http://1.optbbs.com/s/vix.shtml")
+      const bars = barsFromMinCsv(text)
       if (bars.length >= 8) return bars
+      if (/time|qvix/i.test(text.slice(0, 80))) return []
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err))
     }
@@ -143,6 +147,14 @@ const SINA_QVIX_SYMBOL: Record<string, string> = {
 
 let dailyCache: { at: number; byKey: Record<string, OverlayPoint[]> } | null = null
 const DAILY_TTL_MS = 5 * 60_000
+
+export async function getQvixDailyBars(product: IndexProduct): Promise<OverlayPoint[]> {
+  const meta = INDEX_IV[product]
+  const primary = await fetchQvixDailyFromDb(meta.key)
+  if (primary.length >= 2 || meta.fallback === meta.key) return primary
+  const fallback = await fetchQvixDailyFromDb(meta.fallback)
+  return fallback.length >= 2 ? fallback : primary
+}
 
 async function fetchQvixDailyFromDb(key: string): Promise<OverlayPoint[]> {
   if (dailyCache && Date.now() - dailyCache.at < DAILY_TTL_MS) {
@@ -212,6 +224,13 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
     }
   }
   if (bars.length < 8) {
+    const live = await fetchEtfAtmIvMinutes(meta.key)
+    if (live && live.length >= 8) {
+      bars = live
+      source = `sina-atm:${meta.key}`
+    }
+  }
+  if (bars.length < 8) {
     for (const code of codes) {
       const daily = await fetchQvixDailyFromDb(code)
       if (daily.length >= 2) {
@@ -264,7 +283,7 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
     product,
     key: meta.key,
     option: meta.option,
-    name: meta.name,
+    name: source?.startsWith("sina-atm:") ? meta.name.replace(/ QVIX$/, "近月平值") : meta.name,
     value,
     change,
     pct,
@@ -280,7 +299,11 @@ const TTL_MS = 3000
 const KEEP_MINUTE_MS = 120_000
 
 function isMinuteIv(snap: IvSnapshot) {
-  return !!snap.source && (snap.source.startsWith("optbbs:") || snap.source === "sina") && snap.bars.length >= 8
+  return (
+    !!snap.source &&
+    (snap.source.startsWith("optbbs:") || snap.source === "sina" || snap.source.startsWith("sina-atm:")) &&
+    snap.bars.length >= 8
+  )
 }
 
 export async function getQvixRealtime() {
