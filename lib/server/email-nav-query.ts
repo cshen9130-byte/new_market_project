@@ -20,6 +20,7 @@ import {
   lookupFundNavCorrectionRule,
   shouldSkipReturnIndexSanitize,
 } from "@/lib/server/fund-nav-correction-rules"
+import { fundNameOverrideConflictsBeian } from "@/lib/server/fund-holding-code"
 import {
   alternateBeianCodesFor,
   remapManagedProductBeianCode,
@@ -644,6 +645,8 @@ export function emailRowMatchesFund(
     if (citicsSingleProduct && row.fund_name && aliases.length > 0 && !nameHit) {
       return false
     }
+    // SJX860 交睿宏观配置1号 估值表 unit is the B-class holding, not JX860A.
+    if (fundNameOverrideConflictsBeian(row.fund_name ?? "", beian)) return false
     return true
   }
 

@@ -42,7 +42,7 @@ import {
 } from "@/lib/server/valuation-filename"
 import { analyzeInteriorNavGap, hasInteriorNavGap } from "@/lib/server/nav-interior-gap"
 import { diagnoseInteriorNavGap, type NavGapDiagnosis } from "@/lib/server/nav-gap-cause"
-import { classifyNavFrequency, type NavFrequencyFilter, type NavFrequencyLabel } from "@/lib/server/nav-frequency"
+import { NAV_FREQUENCY_OPTIONS, classifyNavFrequency, type NavFrequencyFilter, type NavFrequencyLabel } from "@/lib/server/nav-frequency"
 import {
   chartNavLevel,
   navAnomalyHit,
@@ -4849,6 +4849,8 @@ export type TeamDataStatusSnapshot = {
   inceptionGap: Record<InceptionGapBucket, number>
   navGap: { interior: number; clear: number }
   anomaly: { jump: number; clear: number; source: number; rules: number; unknown: number }
+  /** Recent cadence, same labels as the 净值频率 list filter. */
+  navFrequency: Record<NavFrequencyLabel, number>
 }
 
 /**
@@ -4861,15 +4863,17 @@ export async function summarizeTeamDataStatus(): Promise<TeamDataStatusSnapshot>
   const beians = rows.map((row) => row.beian_hao?.trim() || "")
   const navDates = rows.map((row) => isoDay(row.team_nav_date))
   const lookupBeians = beians.filter(Boolean)
-  const [withElements, operationDates, inception, gapped, anomalies] = await Promise.all([
+  const [withElements, operationDates, inception, gapped, anomalies, frequencyById] = await Promise.all([
     loadBeiansWithFundElements(lookupBeians),
     operationDateByFundId(rows),
     loadInceptionNavAlignment(rows),
     loadProductIdsWithInteriorNavGap(rows),
     loadProductNavAnomalies(rows),
+    loadNavFrequencyByFundId(rows),
   ])
 
   const updateMethod = { email: 0, manual: 0, fof99: 0, other: 0 }
+  const navFrequency = Object.fromEntries(NAV_FREQUENCY_OPTIONS.map((label) => [label, 0])) as Record<NavFrequencyLabel, number>
   const elements = { present: 0, missing: 0 }
   const operationDate = { present: 0, absent: 0 }
   const inceptionCounts = { match: 0, mismatch: 0, missing: 0 }
@@ -4905,6 +4909,7 @@ export async function summarizeTeamDataStatus(): Promise<TeamDataStatusSnapshot>
 
     if (gapped.has(row.id)) interior += 1
     if (anomalies.has(row.id)) jump += 1
+    navFrequency[frequencyById.get(row.id) ?? "无净值"] += 1
   }
 
   const anomaly = { jump, clear: rows.length - jump, source: 0, rules: 0, unknown: 0 }
@@ -4934,5 +4939,6 @@ export async function summarizeTeamDataStatus(): Promise<TeamDataStatusSnapshot>
     inceptionGap,
     navGap: { interior, clear: rows.length - interior },
     anomaly,
+    navFrequency,
   }
 }

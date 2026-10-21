@@ -121,18 +121,42 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
     }, ["account"]),
   },
   {
-    name: "cfmmc_rows",
-    description: "读取单账户监控中心导入写入的 public.cfmmc_*，和 MOM 母基金表分开。dataset 取 accounts、daily、products、positions、trades、closes、cashflows、option-trades、securities。除 accounts 外都要 account。",
+    name: "cfmmc_accounts",
+    description: "搜索单账户监控中心已导入的资金账号，不包含 MOM 母基金账户。q 可填期货公司、产品名或账号，例如 q=国泰君安期货。拿到 account 后再调用 cfmmc_account_nav。",
     inputSchema: obj({
-      dataset: { type: "string", description: "accounts、daily、products、positions、trades、closes、cashflows、option-trades、securities" },
-      account: { type: "string", description: "资金账号。accounts 可不传" },
+      q: { type: "string", description: "期货公司、产品名或资金账号，例如 国泰君安期货 或 85121150" },
+      company: { type: "string", description: "期货公司，与 q 二选一，例如 国泰君安期货" },
+      limit: { type: "integer", description: "默认 500，最大 2000" },
+      offset: { type: "integer" },
+    }),
+  },
+  {
+    name: "cfmmc_account_nav",
+    description: "单账户监控中心结算单的复权净值，和页面「单账户总览」净值曲线同一口径，从 1 复利。用期货公司加资金账号查询，例如 company=国泰君安期货、account=85121150。company 用来核对期货公司或产品名，对不上就报错。不读 MOM 母基金表。",
+    inputSchema: obj({
+      account: { type: "string", description: "资金账号，例如 85121150" },
+      company: { type: "string", description: "期货公司或产品名，例如 国泰君安期货。用来核对账号" },
+      start_date: DATE,
+      end_date: DATE,
+      order: { type: "string", description: "1=日期升序（默认），0=降序" },
+      limit: { type: "integer", description: "默认 2000，最大 2000" },
+      offset: { type: "integer" },
+    }, ["account"]),
+  },
+  {
+    name: "cfmmc_rows",
+    description: "读取单账户监控中心导入写入的 public.cfmmc_*，和 MOM 母基金表分开。dataset 取 accounts、nav、daily、products、positions、trades、closes、cashflows、option-trades、securities。净值优先用 cfmmc_account_nav。除 accounts 外都要 account。",
+    inputSchema: obj({
+      dataset: { type: "string", description: "accounts、nav、daily、products、positions、trades、closes、cashflows、option-trades、securities" },
+      account: { type: "string", description: "资金账号。accounts 可不传。nav 例如 85121150" },
+      company: { type: "string", description: "仅 nav：期货公司，例如 国泰君安期货，用来核对账号" },
       start_date: DATE,
       end_date: DATE,
       date: { type: "string", description: "持仓快照日 YYYY-MM-DD。positions 不传则取最近交易日" },
       order: { type: "string", description: "1=升序，0=降序。成交和平仓默认降序" },
       limit: { type: "integer", description: "最大 2000" },
       offset: { type: "integer" },
-      q: { type: "string", description: "仅 accounts：账号或客户名模糊匹配" },
+      q: { type: "string", description: "accounts：期货公司、产品名或账号。nav：可代替 company" },
     }, ["dataset"]),
   },
   {
@@ -175,6 +199,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Mo
       return handleMomDataRequest("account/orders", record)
     case "mom_account_metrics":
       return handleMomDataRequest("account/metrics", record)
+    case "cfmmc_accounts":
+      return handleAccountRiskDataRequest("accounts", record)
+    case "cfmmc_account_nav":
+      return handleAccountRiskDataRequest("account/nav", record)
     case "cfmmc_rows": {
       const dataset = (record.dataset ?? "").trim()
       delete record.dataset

@@ -522,6 +522,23 @@ function normalizeFundNameForLookup(name: string): string {
     .trim()
 }
 
+function shareClassLetterOfCode(code: string): string {
+  return /[ABC]$/i.test(code) ? code.slice(-1).toUpperCase() : ""
+}
+
+/**
+ * 交睿宏观配置1号 (no class) is the B-class holding in 金舆估值表 (JX860B).
+ * That override must not be used when the page being filled is A类 (JX860A).
+ */
+export function fundNameOverrideConflictsBeian(fundName: string, beian: string): boolean {
+  const norm = normalizeFundNameForLookup(fundName)
+  const override = norm ? FUND_NAME_CODE_OVERRIDES[norm] : undefined
+  if (!override) return false
+  const queryClass = (shareClassLetterOfCode(beian) || shareClassFromFundName(fundName)).toUpperCase()
+  const overrideClass = shareClassLetterOfCode(override)
+  return Boolean(queryClass && overrideClass && queryClass !== overrideClass)
+}
+
 /** Keys for matching FOF underlying funds to 估值表 NAV history maps. */
 export function fofUnderlyingNavLookupKeys(
   productName: string,
@@ -543,7 +560,9 @@ export function fofUnderlyingNavLookupKeys(
     const norm = normalizeFundNameForLookup(trimmed)
     if (norm) keys.add(norm)
     const override = FUND_NAME_CODE_OVERRIDES[norm]
-    if (override) keys.add(override.toUpperCase())
+    if (override && !fundNameOverrideConflictsBeian(trimmed, beian)) {
+      keys.add(override.toUpperCase())
+    }
   }
 
   const short = (shortName ?? "").trim()

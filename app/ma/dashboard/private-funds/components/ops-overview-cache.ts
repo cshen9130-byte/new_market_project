@@ -65,7 +65,7 @@ export function isWeeklyBody(json: unknown): json is WeeklyReviewDataStatus {
 }
 
 export function overviewCacheKey(scope: DataOverviewScope): string {
-  return `overview:${scope}`
+  return `overview:v12:${scope}`
 }
 
 export function channelCacheKey(channel: UpdateChannel): string {

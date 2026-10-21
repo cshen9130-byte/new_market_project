@@ -129,6 +129,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("pf-inv-overview", "投资概览", "/ma/dashboard/private-funds?tab=investment&side=inv-overview", "私募基金 → 投资 → 投资概览", "pfInvestmentPool", ["投资池"]),
   p("pf-inv-active", "在管产品", "/ma/dashboard/private-funds?tab=investment&side=inv-active", "私募基金 → 投资 → 在管产品", "pfInvestmentPool", []),
   p("pf-inv-fof", "FOF底层", "/ma/dashboard/private-funds?tab=investment&side=inv-fof", "私募基金 → 投资 → FOF底层", "pfInvestmentPool", ["FOF"]),
+  p("pf-inv-mom", "MOM底层", "/ma/dashboard/private-funds?tab=investment&side=inv-mom", "私募基金 → 投资 → MOM底层", "pfInvestmentPool", ["MOM", "对比账户", "单账户"]),
   p("pf-inv-docs", "资料列表", "/ma/dashboard/private-funds?tab=investment&side=inv-docs", "私募基金 → 投资 → 资料列表", "pfInvestmentPool", []),
   p("pf-inv-lookthrough", "穿透合规", "/ma/dashboard/private-funds?tab=investment&side=inv-lookthrough", "私募基金 → 投资 → 穿透合规", "pfInvestmentPool", ["穿透", "合规"]),
   p("pf-inv-direct", "直投产品", "/ma/dashboard/private-funds?tab=investment&side=inv-direct", "私募基金 → 投资 → 直投产品", "pfInvestment", ["直投"]),

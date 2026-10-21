@@ -44,6 +44,7 @@ const investmentSidebarGroups = [
       { key: "inv-overview", label: "投资概览", href: "/ma/dashboard/private-funds?tab=investment&side=inv-overview" },
       { key: "inv-active", label: "在管产品", href: "/ma/dashboard/private-funds?tab=investment&side=inv-active" },
       { key: "inv-fof", label: "FOF底层", href: "/ma/dashboard/private-funds?tab=investment&side=inv-fof" },
+      { key: "inv-mom", label: "MOM底层", href: "/ma/dashboard/private-funds?tab=investment&side=inv-mom" },
       { key: "inv-docs", label: "资料列表", href: "/ma/dashboard/private-funds?tab=investment&side=inv-docs" },
     ],
   },

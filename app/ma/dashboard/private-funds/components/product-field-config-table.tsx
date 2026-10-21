@@ -52,6 +52,7 @@ export function ProductFieldConfigHeader({
   const widthPx = productFieldColWidthPx(label)
   const sizeCls = summarized
     ? " !px-1.5 !whitespace-normal leading-tight"
+    : label === "最新变动日期" ? " min-w-[110px]"
     : label === "最新单位净值" ? " min-w-[90px]"
     : label === "最新涨跌幅" ? " min-w-[88px]"
     : isProductFieldLongText(label) ? " min-w-[140px]"
@@ -59,14 +60,15 @@ export function ProductFieldConfigHeader({
   const sizeStyle = summarized
     ? { width: widthPx, minWidth: widthPx, maxWidth: widthPx }
     : undefined
+  const title = label === "最新变动日期" ? "净值、要素表、策略等最近一次更新的日期" : undefined
   if (sortKey) {
     return (
-      <th key={label} style={sizeStyle} className={`${thSort}${align}${sizeCls} box-border`} onClick={() => onSort(sortKey)}>
+      <th key={label} title={title} style={sizeStyle} className={`${thSort}${align}${sizeCls} box-border`} onClick={() => onSort(sortKey)}>
         {label}<SortIcon col={sortKey} />
       </th>
     )
   }
-  return <th key={label} style={sizeStyle} className={`${thBase}${sizeCls} box-border`}>{label}</th>
+  return <th key={label} title={title} style={sizeStyle} className={`${thBase}${sizeCls} box-border`}>{label}</th>
 }
 
 export function ProductFieldConfigCell({
@@ -82,6 +84,27 @@ export function ProductFieldConfigCell({
   valuationDate?: string | null
   showTeamNavBadge?: boolean
 }) {
+  if (label === "最新变动日期") {
+    const shown = getProductFieldTextValue(row, label)
+    const tipRaw = row.latest_change_label
+    const tip = (typeof tipRaw === "string" ? tipRaw.trim() : "") || "净值、要素表、策略等最近一次更新"
+    return (
+      <td key={label} className={`${cell} tabular-nums`}>
+        {shown ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-help border-b border-dotted border-zinc-400/80">{shown}</span>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={6} className="max-w-[320px] text-left leading-5">
+              {tip}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+    )
+  }
   if (isProductFieldPct(label)) {
     return (
       <td key={label} className={`${cell} text-right tabular-nums`}>

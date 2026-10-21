@@ -431,7 +431,7 @@ function readStoredAnomaly(value: unknown): NavAnomalyHit | null {
 }
 
 /** Bump when the cadence rule changes so saved labels are recomputed once. */
-const NAV_FREQUENCY_RULE = "chart_or_platform_v2"
+export const NAV_FREQUENCY_RULE = "chart_or_platform_v2"
 
 const NAV_FREQUENCY_SQL = `
   CREATE TABLE IF NOT EXISTS ops_nav_frequency (
@@ -449,7 +449,7 @@ const NAV_FREQUENCY_RULE_SQL = `
 
 let navFrequencyTableReady: Promise<void> | null = null
 
-function ensureNavFrequencyTable(): Promise<void> {
+export function ensureNavFrequencyTable(): Promise<void> {
   if (!navFrequencyTableReady) {
     navFrequencyTableReady = query(NAV_FREQUENCY_SQL)
       .then(() => query(NAV_FREQUENCY_RULE_SQL))

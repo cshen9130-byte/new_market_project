@@ -91,6 +91,9 @@ const InvestmentFundCompareView = dynamic(() =>
 const InvestmentDirectProductsView = dynamic(() =>
   import("./components/InvestmentDirectProductsView").then((m) => ({ default: m.InvestmentDirectProductsView })),
 )
+const InvestmentMomUnderlyingView = dynamic(() =>
+  import("./components/InvestmentMomUnderlyingView").then((m) => ({ default: m.InvestmentMomUnderlyingView })),
+)
 const InvestmentDirectPortfoliosView = dynamic(() =>
   import("./components/InvestmentDirectPortfoliosView").then((m) => ({ default: m.InvestmentDirectPortfoliosView })),
 )
@@ -210,6 +213,7 @@ const investmentSidebarGroups: SidebarGroup[] = [
       { key: "inv-overview", label: "投资概览" },
       { key: "inv-active", label: "在管产品" },
       { key: "inv-fof", label: "FOF底层" },
+      { key: "inv-mom", label: "MOM底层" },
       { key: "inv-docs", label: "资料列表" },
     ],
   },
@@ -392,7 +396,7 @@ function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
 // flash very stale data.
 type ListCacheEntry = { data: TrackFundRow[]; total: number; ts?: number }
 const listMemCache = new Map<string, ListCacheEntry>()
-const LIST_CACHE_PREFIX = "tracking_list_cache_v11:"
+const LIST_CACHE_PREFIX = "tracking_list_cache_v12:"
 const LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function readListCache(key: string): ListCacheEntry | null {
@@ -2863,8 +2867,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
 
-  const teamConfigColSpan = 5 + fieldConfigSelected.length + 7 + 3
-  const mineConfigColSpan = 5 + fieldConfigSelected.length + 4 + 3
+  const teamConfigColSpan = 4 + fieldConfigSelected.length + 7 + 3
+  const mineConfigColSpan = 4 + fieldConfigSelected.length + 4 + 3
   const trackStickyHeadBg = "bg-muted dark:bg-zinc-900"
   const trackStickyHeadZ = "z-40"
   const trackStickyBodyZ = "z-20"
@@ -3895,7 +3899,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-10 sticky top-0 left-8 ${trackStickyHeadZ} ${trackStickyHeadBg} box-border`}>序号</th>
                   <th className={`${thSort} min-w-[200px] sticky top-0 left-[72px] ${trackStickyHeadZ} ${trackStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${trackStickyLeftShadow}`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
                   <th className={`${thSort} min-w-[110px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
-                  <th className={`${thSort} min-w-[110px] relative z-0 ${trackStickyHeadBg}`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
                   {fieldConfigSelected.map(renderFieldConfigHeader)}
                   <th className={`${thSort} text-right min-w-[88px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("ret_1w")}>
                     <div>近一周收益<SortIco col="ret_1w" /></div>
@@ -3968,9 +3971,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
-                      <td className={`${cell} tabular-nums`}>
-                        <LatestChangeDateCell date={row.latest_change_date} label={row.latest_change_label} />
-                      </td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -4388,9 +4388,15 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-10`}>序号</th>
                   <th className={`${thBase} min-w-[200px]`}>产品名称</th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
-                  <th className={`${thSort} min-w-[110px]`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
                   {fieldConfigSelected.map((label) => (
-                    <th key={label} className={`${thBase} min-w-[100px]`}>{label}</th>
+                    <th
+                      key={label}
+                      title={label === "最新变动日期" ? "净值、要素表、策略等最近一次更新的日期" : undefined}
+                      className={`${label === "最新变动日期" ? thSort : thBase} ${label === "最新变动日期" ? "min-w-[110px]" : "min-w-[100px]"}`}
+                      onClick={label === "最新变动日期" ? () => handleSort("latest_change_date") : undefined}
+                    >
+                      {label}{label === "最新变动日期" ? <SortIco col="latest_change_date" /> : null}
+                    </th>
                   ))}
                   <th className={`${thBase} text-right min-w-[88px]`}>
                     <div>近一周收益</div>
@@ -4462,9 +4468,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
-                      <td className={`${cell} tabular-nums`}>
-                        <LatestChangeDateCell date={row.latest_change_date} label={row.latest_change_label} />
-                      </td>
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
@@ -24822,7 +24825,7 @@ function PrivateFundsPageContent() {
   // Keep heavy investment sections mounted after first visit so sidebar clicks are instant
   // (no remount / refetch). First visit still loads once.
   const KEEP_ALIVE_INVESTMENT = useMemo(
-    () => new Set(["inv-tracking", "inv-overview", "inv-active", "inv-fof"]),
+    () => new Set(["inv-tracking", "inv-overview", "inv-active", "inv-fof", "inv-mom"]),
     [],
   )
   const [keptInvestmentSides, setKeptInvestmentSides] = useState<string[]>(() =>
@@ -25262,6 +25265,11 @@ function PrivateFundsPageContent() {
               <InvestmentFofOverviewView />
             </div>
           )}
+          {isAllowedInvestmentSideItem(currentUser, "inv-mom") && keptInvestmentSides.includes("inv-mom") && (
+            <div className={activeTab === "investment" && activeSideItem === "inv-mom" ? "contents" : "hidden"}>
+              <InvestmentMomUnderlyingView />
+            </div>
+          )}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-compare") && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct") && activeSideItem === "inv-direct" && <InvestmentDirectProductsView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct-portfolio") && activeSideItem === "inv-direct-portfolio" && <InvestmentDirectPortfoliosView />}
@@ -25275,7 +25283,7 @@ function PrivateFundsPageContent() {
               无权限访问该页面
             </div>
           )}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && activeSideItem !== "inv-dd-table" && activeSideItem !== "inv-dd-calendar" && activeSideItem !== "inv-dd-report" && activeSideItem !== "inv-dd-notes" && activeSideItem !== "inv-lookthrough" && (
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-mom" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && activeSideItem !== "inv-dd-table" && activeSideItem !== "inv-dd-calendar" && activeSideItem !== "inv-dd-report" && activeSideItem !== "inv-dd-notes" && activeSideItem !== "inv-lookthrough" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

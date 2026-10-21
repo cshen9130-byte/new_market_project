@@ -4,7 +4,7 @@ export const PRODUCT_FIELD_OPTIONS: Record<string, string[]> = {
   "基本信息": ["备案编码", "成立日期", "基金全称", "备案日期", "基准指数", "基金管理人", "管理人规模", "投资顾问", "托管券商", "平台一级策略", "平台二级策略", "平台三级策略"],
   "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "赎回费", "最低申购金额", "封闭期", "开放日", "管理费", "业绩报酬"],
   "团队策略/标签/池": ["团队一级策略", "团队二级策略", "团队三级策略", "团队标签", "所在跟踪池"],
-  "净值信息": ["最新净值日期", "最新单位净值", "最新累计净值", "最新涨跌幅", "托管账户余额", "资产净值", "市值", "持仓市值(元)", "成立以来收益", "近两年收益", "近三年收益", "最大回撤", "年化收益", "年化波动率", "信息比率", "卡玛比率"],
+  "净值信息": ["最新变动日期", "最新净值日期", "最新单位净值", "最新累计净值", "最新涨跌幅", "托管账户余额", "资产净值", "市值", "持仓市值(元)", "成立以来收益", "近两年收益", "近三年收益", "最大回撤", "年化收益", "年化波动率", "信息比率", "卡玛比率"],
   "团队字段": ["团队评级", "团队备注", "关注度"],
   "其他": ["产品规模", "基金托管人", "外部评级"],
 }
@@ -40,6 +40,7 @@ const ALL_LABELS = new Set<string>([
 ])
 
 export const PRODUCT_FIELD_SORT_KEYS: Record<string, string> = {
+  "最新变动日期": "latest_change_date",
   "最新净值日期": "latest_nav_date",
   "最新单位净值": "latest_nav",
   "最新累计净值": "cumulative_nav",
@@ -134,6 +135,7 @@ export function getProductFieldTextValue(row: Record<string, unknown>, label: st
     return String(val)
   }
   const values: Record<string, string | null> = {
+    "最新变动日期": pick("latest_change_date")?.slice(0, 10) ?? null,
     "最新净值日期": pick("latest_nav_date"),
     "最新单位净值": pick("latest_nav"),
     "最新累计净值": pick("cumulative_nav"),
@@ -199,6 +201,7 @@ export function productFieldColWidthPx(label: string): number {
   if (label === "管理费" || label === "管理费说明" || label === "赎回费") return 64
   if (label === "开放日") return 120
   if (isPerfFeeField(label)) return 76
+  if (label === "最新变动日期") return 110
   if (label === "最新单位净值") return 90
   if (label === "最新涨跌幅") return 88
   return 100

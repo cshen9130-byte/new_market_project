@@ -159,6 +159,9 @@ export async function loadFofUnderlyingJySyncFunds(options?: {
 
 /**
  * Insert missing FOF底层 私募持仓 into JY跟踪池. Does not delete existing rows.
+ * The new row's imported_at is the insert time. That is not 首次入表 when the
+ * fund was already in another pool or already fetched from email.
+ * See docs/tracking-pool-rules.md.
  */
 export async function syncFofUnderlyingToJyTrackingPool(options?: {
   includeHoldings?: boolean

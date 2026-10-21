@@ -21,6 +21,7 @@ import { sqlSubjectNameIsStockCostBucket } from "@/lib/server/fund-holding-code"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
+import { sqlTrackingFirstEntryByCode } from "@/lib/server/tracking-first-entry"
 import { collapseAliasedTrackingIdentities, purgeValuationFilenameIdentities, REGISTER_POOL_TABLE, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
 import { expandFundSearchKeywords, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { resolveTrackingKeywordBeianCodes } from "@/lib/server/tracking-keyword-search"
@@ -81,6 +82,8 @@ declare global {
   var _trackingListTestProductExcludeV1: boolean | undefined
   // One-shot: drop 诚奇浦江CTA1号A类 shown twice (SSB595A +0.34% beside SB595A).
   var _trackingListShareAliasDedupeV1: boolean | undefined
+  // One-shot: drop list JSON that used a pool-sync / cache refresh as 首次入表.
+  var _trackingListFirstEntryDateV1: boolean | undefined
 }
 
 interface NavJoinConfig {
@@ -242,7 +245,7 @@ function buildNavJoinConfig(pool: string, cutoffExpr: string): NavJoinConfig {
     fallbackPctExpr,
     allowedSort: {
       product_name: "i.product_name",
-      first_added_at: "i.first_added_at",
+      first_added_at: "fe.first_entry_date",
       latest_change_date: sqlLatestChangeAt("i.beian_hao"),
       latest_nav: `COALESCE(en.nav, ${fallbackNavExpr})::numeric`,
       latest_nav_date: `COALESCE(en.nav_date, ${fallbackDateExpr})`,
@@ -396,6 +399,14 @@ function bflOpsNavPctExpr(): string {
   return "COALESCE(lbc.price_change, lbn.price_change, lbs.price_change)"
 }
 
+/**
+ * 首次入表. Join this on the page query (sort + selected rows).
+ * Do not sort or display i.first_added_at: that is one pool row's imported_at
+ * and moves forward when email / FOF sync inserts the row during a cache build.
+ * See docs/tracking-pool-rules.md.
+ */
+const FIRST_ENTRY_JOIN = `LEFT JOIN (${sqlTrackingFirstEntryByCode()}) fe ON fe.code = UPPER(BTRIM(i.beian_hao))`
+
 const LIST_CACHE_JOINS = `
     LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao
     LEFT JOIN LATERAL (
@@ -442,7 +453,7 @@ function resolvedCachedProductNameExpr(): string {
 
 const CACHE_ALLOWED_SORT: Record<string, string> = {
   product_name: resolvedCachedProductNameExpr(),
-  first_added_at: "i.first_added_at",
+  first_added_at: "fe.first_entry_date",
   latest_change_date: sqlLatestChangeAt("i.beian_hao"),
   latest_nav: PLATFORM_TIP_NAV_SQL,
   latest_nav_date: PLATFORM_TIP_DATE_SQL,
@@ -876,8 +887,8 @@ async function buildFastKeywordCachedBody(opts: CachedListOpts): Promise<{
   if (pageCodes.length > 0) {
     try {
       const addedRows = await query<{ register_number: string; first_added_at: string | null }>(
-        firstAddedSql(opts),
-        firstAddedParams(opts, pageCodes),
+        firstAddedSql(),
+        [pageCodes],
       )
       for (const row of addedRows) {
         if (row.register_number && row.first_added_at) {
@@ -926,44 +937,10 @@ async function buildFastKeywordCachedBody(opts: CachedListOpts): Promise<{
   }
 }
 
-function firstAddedSql(opts: CachedListOpts): string {
-  const added = SHANGHAI_DATE_EXPR("imported_at")
-  if (opts.isCustomPool) {
-    const poolSql = opts.isMineAllPool
-      ? "(pool_key = 'mine_default' OR pool_key LIKE 'mine_custom_%')"
-      : "pool_key = $2"
-    return `SELECT register_number, MIN(${added})::text AS first_added_at
-      FROM user_custom_pool
-      WHERE register_number = ANY($1::text[]) AND ${poolSql}
-      GROUP BY register_number`
-  }
-  if (opts.pool === "bfl_ops") {
-    return `SELECT register_number, MIN(${SHANGHAI_DATE_EXPR("imported_at")})::text AS first_added_at
-      FROM type6_ops_team_full
-      WHERE register_number = ANY($1::text[])
-      GROUP BY register_number`
-  }
-  if (opts.pool === "all") {
-    return `SELECT register_number, MIN(first_added_at)::text AS first_added_at FROM (
-      SELECT register_number, ${added} AS first_added_at FROM tracking_pool WHERE register_number = ANY($1::text[])
-      UNION ALL SELECT register_number, ${added} FROM selected_pool WHERE register_number = ANY($1::text[])
-      UNION ALL SELECT register_number, ${added} FROM core_pool WHERE register_number = ANY($1::text[])
-      UNION ALL SELECT register_number, ${added} FROM hy_tracking_pool WHERE register_number = ANY($1::text[])
-      UNION ALL SELECT register_number, ${added} FROM fof_mom_tracking WHERE register_number = ANY($1::text[])
-      UNION ALL SELECT register_number, ${added} FROM user_custom_pool WHERE register_number = ANY($1::text[])
-    ) s
-    GROUP BY register_number`
-  }
-  const table = REGISTER_POOL_TABLE[opts.pool] ?? "tracking_pool"
-  return `SELECT register_number, MIN(${added})::text AS first_added_at
-    FROM ${table}
-    WHERE register_number = ANY($1::text[])
-    GROUP BY register_number`
-}
-
-function firstAddedParams(opts: CachedListOpts, pageCodes: string[]): unknown[] {
-  if (opts.isCustomPool && !opts.isMineAllPool && opts.requestedPool) return [pageCodes, opts.requestedPool]
-  return [pageCodes]
+function firstAddedSql(): string {
+  return `SELECT code AS register_number, first_entry_date::text AS first_added_at
+    FROM (${sqlTrackingFirstEntryByCode()}) fe
+    WHERE code = ANY($1::text[])`
 }
 
 async function handleCachedTrackingList(opts: {
@@ -1082,7 +1059,7 @@ async function handleCachedTrackingList(opts: {
       const pLimit = filterParams.length + 1
       const pOffset = filterParams.length + 2
       const elementSort = applyFundElementListSort(sortKey, sortDir, "i.beian_hao")
-      const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.first_added_at"
+      const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "fe.first_entry_date"
       const orderSql = elementSort.active
         ? `${elementSort.orderSql}, ${resolvedCachedProductNameExpr()} ASC`
         : sortKey === "first_added_at" || !CACHE_ALLOWED_SORT[sortKey]
@@ -1119,7 +1096,7 @@ async function handleCachedTrackingList(opts: {
              ${indepStrategy.company_l3} AS company_strategy_l3,
              NULL::text AS manager,
              NULL::text AS inception_date,
-             i.first_added_at::text AS first_added_at,
+             fe.first_entry_date::text AS first_added_at,
              cache.nav_date::text AS source_nav_date,
              cache.unit_nav::text AS source_unit_nav,
              cache.return_pct::text AS source_return_pct,
@@ -1134,6 +1111,7 @@ async function handleCachedTrackingList(opts: {
              cache.sharpe_1y::text,
              cache.calmar_1y::text
            ${baseFrom}
+           ${FIRST_ENTRY_JOIN}
            ${elementSort.joinSql}
            ${whereClause}
            ORDER BY ${orderSql}
@@ -1241,7 +1219,7 @@ async function handleBflOpsList(opts: {
 
   const allowedSort: Record<string, string> = {
     product_name: "i.product_name",
-    first_added_at: "i.first_added_at",
+    first_added_at: "fe.first_entry_date",
     latest_change_date: sqlLatestChangeAt("i.beian_hao"),
     latest_nav: `${bflOpsNavExpr()}::numeric`,
     latest_nav_date: bflOpsNavDateExpr(),
@@ -1253,7 +1231,7 @@ async function handleBflOpsList(opts: {
     ret_1y: "ret_1y",
   }
   const elementSort = applyFundElementListSort(sortKey, sortDir, "i.beian_hao")
-  const orderCol = allowedSort[sortKey] ?? "i.first_added_at"
+  const orderCol = allowedSort[sortKey] ?? "fe.first_entry_date"
   const orderSql = elementSort.active
     ? `${elementSort.orderSql}, i.product_name ASC`
     : sortKey === "first_added_at" || !allowedSort[sortKey]
@@ -1279,7 +1257,7 @@ async function handleBflOpsList(opts: {
            NULLIF(BTRIM(i.company_strategy_three), '') AS company_strategy_l3,
            NULL::text AS manager,
            NULL::text AS inception_date,
-           i.first_added_at::text AS first_added_at,
+           fe.first_entry_date::text AS first_added_at,
            ${bflOpsNavExpr()}::text AS latest_nav,
            ${bflOpsNavDateExpr()}::text AS latest_nav_date,
            ${bflOpsNavPctExpr()}::text AS latest_price_change,
@@ -1291,6 +1269,7 @@ async function handleBflOpsList(opts: {
            NULL::text AS sharpe_1y,
            NULL::text AS calmar_1y
          FROM source i
+         ${FIRST_ENTRY_JOIN}
          LEFT JOIN latest_by_code lbc ON lbc.beian_hao = i.beian_hao
          LEFT JOIN latest_by_name lbn ON lbn.product_name = i.product_name AND lbc.nav IS NULL
          LEFT JOIN latest_by_name lbs ON lbs.product_name = i.short_name AND lbc.nav IS NULL AND lbn.nav IS NULL
@@ -1393,6 +1372,10 @@ export async function GET(req: Request) {
   }
   if (!global._trackingListShareAliasDedupeV1) {
     global._trackingListShareAliasDedupeV1 = true
+    invalidateListResponseCache()
+  }
+  if (!global._trackingListFirstEntryDateV1) {
+    global._trackingListFirstEntryDateV1 = true
     invalidateListResponseCache()
   }
   const { reconcileAccountRiskDirectNavDisplayNamesSafe } = await import(
@@ -1523,7 +1506,7 @@ export async function GET(req: Request) {
 
   const navConfig = buildNavJoinConfig(pool, cutoffExpr)
   const elementSort = applyFundElementListSort(sortKey, sortDir, "i.beian_hao")
-  const orderCol = navConfig.allowedSort[sortKey] ?? "i.first_added_at"
+  const orderCol = navConfig.allowedSort[sortKey] ?? "fe.first_entry_date"
 
   const sourceJsonExpr = rawStrategyJsonExpr("i")
   const isExternalPool = pool === "jy" || pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || isCustomPool
@@ -1808,7 +1791,7 @@ export async function GET(req: Request) {
            ${indepStrategy.company_l3}                    AS company_strategy_l3,
            NULL::text                                    AS manager,
            NULL::text                                    AS inception_date,
-           i.first_added_at::text                          AS first_added_at,
+           fe.first_entry_date::text                       AS first_added_at,
            ${currentNavExpr}::text                         AS latest_nav,
            ${currentDateExpr}::text                        AS latest_nav_date,
            ${currentPctExpr}::text                         AS latest_price_change,
@@ -1825,6 +1808,7 @@ export async function GET(req: Request) {
            pinfo.sharpe_1y::text AS sharpe_1y,
            pinfo.calmar_1y::text AS calmar_1y
          FROM source i
+         ${FIRST_ENTRY_JOIN}
          LEFT JOIN private_fund_info pinfo ON pinfo.beian_hao = i.beian_hao
          ${emailNavJoins}
          ${latestNavJoin}

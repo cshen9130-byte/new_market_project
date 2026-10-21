@@ -1,0 +1,16 @@
+---
+description: 跟踪产品 首次入表日期 is the real add or first email fetch, never the list-cache refresh. Read docs/tracking-pool-rules.md before changing it.
+globs: "**/*tracking*"
+alwaysApply: false
+---
+
+# 跟踪产品 首次入表日期
+
+Before changing 跟踪产品 list SQL, `first_added_at`, pool `imported_at`, or `ops_tracking_funds_list_cache`:
+
+1. **Read** the 首次入表日期 section in [`docs/tracking-pool-rules.md`](../../docs/tracking-pool-rules.md).
+2. Display and sort `fe.first_entry_date` from `sqlTrackingFirstEntryByCode()` (`lib/server/tracking-first-entry.ts`). That is the earliest Shanghai day the 备案号 was added to a tracking table or first fetched from email.
+3. Do not use `i.first_added_at`, a single pool's `imported_at`, `ops_tracking_funds_list_cache.refreshed_at`, or `as_of_date`. A sync insert and the cache upsert share the same second. That is why 九木宏观对冲1号 and 倍致灵泰省心享1号 showed 2026-10-20.
+4. Do not move `ops_email_nav_records.created_at` or `ops_email_valuation_records.created_at` forward on conflict. Do not add `ops_team_nav_manual.created_at` to this MIN.
+5. `type6_ops_team_full` stays off the 全部 membership list. Its `imported_at` still counts as the original add day.
+6. If the dates shown on an already-open page must change, bump `tracking_list_cache_v*` in `app/ma/dashboard/private-funds/page.tsx` and add a new `_trackingListFirstEntryDateV*` server bust. Bumping only one of them leaves the old page up.

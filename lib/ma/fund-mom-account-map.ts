@@ -32,3 +32,20 @@ export function defaultMomAccount(
 ): string | null {
   return resolveLinkedMomAccounts(beianHao, productName)[0]?.account ?? null
 }
+
+/** Every built-in product ↔ MOM account pair, including the name fallback. */
+export function listStaticFundMomLinks(): Array<{
+  beianHao: string
+  productMatch: string | null
+  account: string
+  note?: string
+}> {
+  const out: Array<{ beianHao: string; productMatch: string | null; account: string; note?: string }> = []
+  for (const [beianHao, links] of Object.entries(LINKS_BY_BEIAN)) {
+    const productMatch = LINKS_BY_PRODUCT_NAME.find((row) => row.links === links)?.match ?? null
+    for (const link of links) {
+      out.push({ beianHao, productMatch, account: link.account, note: link.note })
+    }
+  }
+  return out
+}

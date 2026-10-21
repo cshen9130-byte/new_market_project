@@ -75,7 +75,7 @@ export function canAccessPfInvestmentTracking(user: User | null | undefined): bo
   return canAccessInvestmentTab(user)
 }
 
-/** 投资页内：投资池（投资概览、在管产品、FOF底层、资料列表、穿透合规） */
+/** 投资页内：投资池（投资概览、在管产品、FOF底层、MOM底层、资料列表、穿透合规） */
 export function canAccessPfInvestmentPool(user: User | null | undefined): boolean {
   if (!user) return false
   if (isAdmin(user)) return true
@@ -100,7 +100,7 @@ export function isAllowedInvestmentSideItem(
   user: User | null | undefined,
   sideKey: string,
 ): boolean {
-  const poolKeys = new Set(["inv-overview", "inv-active", "inv-fof", "inv-docs", "inv-lookthrough"])
+  const poolKeys = new Set(["inv-overview", "inv-active", "inv-fof", "inv-mom", "inv-docs", "inv-lookthrough"])
   if (poolKeys.has(sideKey)) return canAccessPfInvestmentPool(user)
   return canAccessPfInvestmentTracking(user)
 }

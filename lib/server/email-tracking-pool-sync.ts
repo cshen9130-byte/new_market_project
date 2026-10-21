@@ -89,6 +89,8 @@ export async function syncEmailTrackingPool(): Promise<EmailTrackingPoolSyncResu
       const hash = rowHash(EMAIL_OPS_POOL_KEY, fund.beian_hao, productName)
       const sourceFile = emailSyncSource(fund.beian_hao)
       const rows = await query<{ inserted: boolean }>(
+        // imported_at = NOW() is when this pool row was inserted, not 首次入表.
+        // The list reads sqlTrackingFirstEntryByCode. See docs/tracking-pool-rules.md.
         `INSERT INTO user_custom_pool
            (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
          SELECT $1,

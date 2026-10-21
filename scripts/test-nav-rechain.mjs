@@ -68,6 +68,7 @@ import {
   isDetailNavCacheFresh,
 } from "../lib/server/fund-detail-nav-cache-pg.ts"
 import { teamNavBeianLookupCodes } from "../lib/server/team-nav-manage-pg.ts"
+import { fofUnderlyingNavLookupKeys } from "../lib/server/fund-holding-code.ts"
 import * as XLSX from "xlsx"
 import fs from "fs"
 
@@ -143,6 +144,26 @@ assert(
     "SND951",
     ["草本致远1号"],
   ) === true,
+)
+assert(
+  "JX860A does not take the B-class holding code or the parent 估值表",
+  !fofUnderlyingNavLookupKeys("交睿宏观配置1号A类", "JX860A").includes("JX860B")
+    && fofUnderlyingNavLookupKeys("交睿宏观配置1号B类", "JX860B").includes("JX860B")
+    && emailRowMatchesFund(
+      {
+        product_code: "SJX860",
+        fund_name: "交睿宏观配置1号私募证券投资基金",
+        nav_date: "2026-09-30",
+        nav: "1.164600",
+        cumulative_nav: null,
+        adjusted_nav: null,
+        source: "attachment_valuation_table",
+        subject: "华泰证券_估值表报表_20260930-20260930_四级科目",
+        attachment_filename: "华泰证券_估值表_SJX860_交睿宏观配置1号私募证券投资基金_20260930_四级科目.xls",
+      },
+      "JX860A",
+      ["交睿宏观配置1号A类"],
+    ) === false,
 )
 assert(
   "year product_code still does not attach 鸣石 NAV to 草本致远 /2026",

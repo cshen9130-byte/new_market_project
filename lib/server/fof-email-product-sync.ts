@@ -160,6 +160,7 @@ async function insertMissingPoolFunds(
        WHERE pool_key = $1
      ),
      added AS (
+       -- imported_at = NOW() is this insert, not 首次入表. See docs/tracking-pool-rules.md.
        INSERT INTO user_custom_pool
          (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
        SELECT

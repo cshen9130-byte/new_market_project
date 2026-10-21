@@ -101,4 +101,33 @@ After the filter, this search returns only `SB595A` (2026-10-13 / 1.4610 / about
 
 **Why.** `private_fund_info` already had 2026-10-13 / 1.0498, and `private_fund_nav` stopped at 2026-09-22 (unit 1.0524, 累计 0.777548). The list overlay appended the new unit NAV as if it were 复权, so the day return was 1.0498 / 0.777548 − 1.
 
-**Fix.** `extendNavHistoryWithUnitTip` carries the previous 复权 forward by the unit change. Do not push `{ return_nav: tip.nav }` for a date missing from `private_fund_nav`. The browser list cache key is `tracking_list_cache_v11`; v10 kept the +35.01% row for up to 3 days.
+**Fix.** `extendNavHistoryWithUnitTip` carries the previous 复权 forward by the unit change. Do not push `{ return_nav: tip.nav }` for a date missing from `private_fund_nav`. The browser list cache key moved from `tracking_list_cache_v11` to `tracking_list_cache_v12` on 2026-10-21 (v11 kept the +35.01% row for up to 3 days, and also kept the wrong 首次入表 dates below).
+
+## 首次入表日期
+
+The column is `first_added_at` on `/ma/api/tracking-funds/list`. It is the earliest Shanghai day this 备案号 was really written into a tracking table, or first fetched from email. The implementation is `sqlTrackingFirstEntryByCode()` in `lib/server/tracking-first-entry.ts`. The page query joins it as `fe.first_entry_date`. Sort and the selected page both use that expression.
+
+Sources, earliest day wins:
+
+1. `imported_at` on `tracking_pool`, `selected_pool`, `core_pool`, `hy_tracking_pool`, `fof_mom_tracking`, `user_custom_pool`, and `type6_ops_team_full`. `type6_ops_team_full` is a date source only. It still must not appear as rows on 全部.
+2. `created_at` on `ops_email_nav_records` and `ops_email_valuation_records`. That is the first email fetch. Conflict updates do not change `created_at`.
+
+A hand add uses the pool row's `imported_at` (`source_file = manual_add`). A later email or FOF sync that inserts the same 备案号 into another pool does not move the date forward, because the older row is still in the MIN.
+
+### What must not come back (2026-10-21)
+
+**Symptom.** 跟踪产品 sorted by 首次入表日期 put a large block of old products on 2026-10-20 / 2026-10-21. 九木宏观对冲1号 (`SBAE63`) showed 2026-10-20. It was already in `type6_ops_team_full` on 2026-09-08 (`platform_to_team_import`), and the first email NAV row is 2026-10-08. 倍致灵泰省心享1号 (`SAVH67`) showed 2026-10-20 even though it was already redeemed. Its ops workbook row is 2026-06-04. The same night, `email_nav_etl` inserted 106 `user_custom_pool` rows and `email_fof_nav` inserted 50, each with `imported_at = NOW()`, and the list-cache upsert ran in the same second (`ops_tracking_funds_list_cache.refreshed_at`).
+
+**Why it returned.** The list used `MIN(imported_at)` of the visible pool row only. 全部 does not read `type6_ops_team_full`, so an older workbook add was invisible once the email sync created a newer `custom_email_nav` row. JY跟踪池's own `imported_at` was the 2026-10-20 insert (`source_file = 跟踪池.xlsx`), one second before `refreshed_at`. Rebuilding `ops_tracking_funds_list_cache` does not store 首次入表. Treating "first time this code was written into the cache" or "first time this sync inserted the pool row" as 首次入表 is the bug. It has come back whenever a cache or pool rebuild was wired straight to the column.
+
+**Fix.** `fe.first_entry_date` is the earliest day above. For the two examples that is 2026-09-08 (`SBAE63`) and 2026-06-04 (`SAVH67`). Keyword search uses the same SQL. The browser list cache key is `tracking_list_cache_v12`. The server one-shot `_trackingListFirstEntryDateV1` drops the in-memory list JSON once per process.
+
+**Do not regress this by**
+
+- Sorting or displaying `i.first_added_at`. That expression is one pool row's `imported_at`. Email sync, FOF→邮箱运维池, and FOF→JY跟踪池 set it to `NOW()` on insert, then upsert the list cache. The two timestamps match, which is why the column looked like the cache time.
+- Reading `ops_tracking_funds_list_cache.refreshed_at` or `as_of_date`. A nightly rebuild sets `refreshed_at = NOW()` on every row. There is no "first inserted into the cache" column, and adding one would reintroduce this bug.
+- Using `updated_at`, a NAV `price_date` / 净值日期, or the fund's 备案日 / 成立日.
+- Dropping `type6_ops_team_full.imported_at` or the email `created_at` out of the MIN because 全部 does not list the BFL catalog. The catalog is hidden as membership. Its original import day is still the real add.
+- Updating `ops_email_nav_records.created_at` or `ops_email_valuation_records.created_at` on conflict. That timestamp is the first fetch. `ops_team_nav_manual` does set `created_at = NOW()` on re-upload; do not add that column to this MIN.
+- Backdating `imported_at` on an existing pool row during a name repair or cache refresh. Leave the original add time. A new insert may use `NOW()`. The MIN keeps the earlier day.
+- Bumping only the server cache. The browser key has to move too, or the old 2026-10-20 page stays for days.

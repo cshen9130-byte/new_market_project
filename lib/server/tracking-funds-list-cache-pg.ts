@@ -53,6 +53,7 @@ const CREATE_TABLE_SQL = `
     raw_strategy_json     JSONB,
     team_tags             JSONB,
     as_of_date            DATE        NOT NULL,
+    -- Nightly rebuild sets this to NOW(). It is not 首次入表. See docs/tracking-pool-rules.md.
     refreshed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 

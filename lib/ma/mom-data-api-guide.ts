@@ -9,7 +9,7 @@ export function buildMomDataApiGuide(apiKey?: string): string {
 
 生产环境只读接口，读的是已经入库的 MOM 核算与成交。这把 Key 只在「设置 → MOM数据API」里生成，和基金数据 API 的 Key 不是同一把。基金数据 Key 调这个接口会返回 401。管理员取消「MOM数据API」后，这把 Key 立即失效。管理员账号默认可用。
 
-内部账户（国信 / GUOXIN / GUOSEN / 665300200077）不会出现。MOM 母基金结算在本基址。单账户监控中心导入在另一基址，见文末，使用同一把 Key。
+内部账户（国信 / GUOXIN / GUOSEN / 665300200077）不会出现。MOM 母基金结算在本基址的 \`/accounts\`、\`/account/*\`。单账户监控中心导入在同一基址的 \`/cfmmc/*\`，使用同一把 Key。例如国泰君安期货账号 85121150 的复权净值：\`GET /cfmmc/account/nav?account=85121150&company=国泰君安期货\`。
 
 | 项 | 值 |
 | --- | --- |
@@ -221,35 +221,66 @@ ${FENCE}json
 }
 ${FENCE}
 
-工具：\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表。返回仍是 \`{ error_code, msg, data }\`。
+工具：\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
 
-先 \`mom_accounts\` 拿到账号，再查 daily 或 metrics。不要编造账号。
+先 \`mom_accounts\` 拿到 MOM 母基金账号，再查 daily 或 metrics。单账户用 \`cfmmc_accounts\` 和 \`cfmmc_account_nav\`。不要编造账号。
+
+查「国泰君安期货 85121150」的净值时，调用 \`cfmmc_account_nav\`，\`account\` 填 \`85121150\`，\`company\` 填 \`国泰君安期货\`。不要用 \`mom_account_daily\`，那是另一批母基金账户。
 
 ## 7. 单账户监控中心导入
 
-这是另一套入库，表在 \`public.cfmmc_*\`，对应页面「单账户每日风控 → 数据导入」。和 MOM 母基金的 \`public.mom_*\` 不是同一批账户，所以基址分开，但仍用本页生成的 MOM Key。
-
-基址：\`${ACCOUNT_RISK_DATA_API_BASE}\`
+这是另一套入库，表在 \`public.cfmmc_*\`，对应页面「单账户每日风控」。和 MOM 母基金的 \`public.mom_*\` 不是同一批账户。同一把 MOM Key，挂在本基址的 \`/cfmmc\` 下。\`/ma/api/account-risk/data\` 是同一批数据的另一条路径，没有 \`cfmmc\` 前缀。
 
 | 路径 | 入库表 | 内容 |
 | --- | --- | --- |
-| GET /accounts | cfmmc_daily_summary | 已导入账号，带最新权益、保证金、风险度 |
-| GET /account/daily | cfmmc_daily_summary | 每日结算摘要的全部数值列 |
-| GET /account/products | cfmmc_product_pnl | 品种盈亏 |
-| GET /account/positions | cfmmc_positions | 持仓。不传 date 时为最近一个交易日 |
-| GET /account/trades | cfmmc_trades | 成交明细 |
-| GET /account/closes | cfmmc_closes | 平仓明细 |
-| GET /account/cashflows | cfmmc_cash_flows | 出入金 |
-| GET /account/option-trades | cfmmc_option_trades | 期权成交 |
-| GET /account/securities | cfmmc_securities | 证券成交 |
+| GET /cfmmc/accounts | cfmmc_daily_summary | 已导入账号。q 或 company 按期货公司、产品名、账号模糊匹配 |
+| GET /cfmmc/account/nav | cfmmc_daily_summary | 复权净值，与单账户总览净值曲线相同 |
+| GET /cfmmc/account/daily | cfmmc_daily_summary | 每日结算摘要的全部数值列 |
+| GET /cfmmc/account/products | cfmmc_product_pnl | 品种盈亏 |
+| GET /cfmmc/account/positions | cfmmc_positions | 持仓。不传 date 时为最近一个交易日 |
+| GET /cfmmc/account/trades | cfmmc_trades | 成交明细 |
+| GET /cfmmc/account/closes | cfmmc_closes | 平仓明细 |
+| GET /cfmmc/account/cashflows | cfmmc_cash_flows | 出入金 |
+| GET /cfmmc/account/option-trades | cfmmc_option_trades | 期权成交 |
+| GET /cfmmc/account/securities | cfmmc_securities | 证券成交 |
 
-MOM 母基金每日核算另外还返回入库原文里的非货币充抵、货币充抵、冻结资金、追加保证金、市值权益、当日总权利金、行权手续费、行权盈亏、申报费。
+\`/accounts\` 每条有 \`account\`、\`fund_name\`、\`company\`（期货公司简称，例如国泰君安期货）、\`company_name\`（结算单原文）、\`first_date\`、\`last_date\`、\`trading_days\`，以及最新一天的权益、保证金、当日盈亏和风险度。
+
+### 复权净值
+
+\`GET /cfmmc/account/nav?account=资金账号&company=期货公司\`
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| account | 是 | 资金账号，例如 85121150 |
+| company | 否 | 期货公司或产品名，例如 国泰君安期货。用来核对账号，对不上返回 404 |
+| start_date / end_date | 否 | YYYY-MM-DD。净值仍从该账户入库首日复利，再按日期截取 |
+| order | 否 | 1 升序（默认），0 降序 |
+| limit / offset | 否 | 默认 2000，最大 2000 |
+
+每行：\`date\`、\`nav\`（从 1 复利）、\`daily_return\`、\`pnl\`（当日盈亏，权益口径）、\`cum_pnl\`、\`equity\`（客户权益）、\`net_flow\`（出入金）。\`latest\` 是请求区间的最后一天，不受分页影响。
+
+日收益率 = (当日客户权益 − 上日客户权益 − 出入金) / 上日客户权益。出入金含当日存取合计，以及结算单未记入存取、但改变了结存的大额整数划转。这和页面上的净值曲线是同一个函数。不要用平仓盈亏加浮动盈亏去重算。
 
 ${FENCE}bash
-curl -H "x-api-key: ${key}" "${ACCOUNT_RISK_DATA_API_BASE}/accounts?limit=20"
-curl -H "x-api-key: ${key}" "${ACCOUNT_RISK_DATA_API_BASE}/account/daily?account=02188010101763&order=0&limit=5"
-curl -H "x-api-key: ${key}" "${ACCOUNT_RISK_DATA_API_BASE}/account/positions?account=02188010101763"
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/accounts?q=国泰君安期货"
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/account/nav?account=85121150&company=国泰君安期货"
+curl -H "x-api-key: ${key}" "${ACCOUNT_RISK_DATA_API_BASE}/account/nav?account=85121150&company=国泰君安期货"
 ${FENCE}
+
+字段形状如下，数字只说明类型，不是该账户的实时净值。
+
+${FENCE}json
+{
+  "account": "85121150",
+  "fund_name": "常熟国投1号私募证券投资基金",
+  "company_name": "国泰君安期货",
+  "latest": { "date": "2026-10-20", "nav": 1.02, "daily_return": 0.001, "equity": 15000000 },
+  "rows": [{ "date": "2026-01-02", "nav": 1, "daily_return": 0, "pnl": 0, "equity": 14000000 }]
+}
+${FENCE}
+
+MOM 母基金每日核算另外还返回入库原文里的非货币充抵、货币充抵、冻结资金、追加保证金、市值权益、当日总权利金、行权手续费、行权盈亏、申报费。
 
 ## 8. 错误码
 
@@ -259,7 +290,7 @@ ${FENCE}
 | 401 | 401 | 没带 Key，或 Key 无效 |
 | 403 | 403 | Key 有效，但该账户没有 MOM数据API 权限 |
 | 1 | 400 | 参数错误，或路径不存在 |
-| 2 | 404 | 账号不存在，或 MOM 数据还没入库 |
+| 2 | 404 | 账号不存在，或数据还没入库。单账户净值的 company 与期货公司对不上时也是 2 |
 | 3 | 500 | 服务器错误 |
 `
 }

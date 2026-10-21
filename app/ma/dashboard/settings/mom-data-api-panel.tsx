@@ -101,6 +101,7 @@ export function MomDataApiPanel() {
   const [keyBusy, setKeyBusy] = useState(false)
   const [keyMsg, setKeyMsg] = useState("")
   const [account, setAccount] = useState("")
+  const [company, setCompany] = useState("")
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
   const [loading, setLoading] = useState(false)
@@ -231,13 +232,15 @@ export function MomDataApiPanel() {
           全部是 GET。Key 任选一种：请求头 <code className="font-mono text-xs">x-api-key</code>、
           <code className="font-mono text-xs">Authorization: Bearer</code>，或 query <code className="font-mono text-xs">api_key</code>。
           成功时 <code className="font-mono text-xs">error_code</code> 为 0，正文在 <code className="font-mono text-xs">data</code>。
-          国信、GUOXIN、GUOSEN 和账号 665300200077 不会返回。这里只有 MOM 母基金账户，没有单账户监控中心的结算单。
+          国信、GUOXIN、GUOSEN 和账号 665300200077 不会返回。下面的 <code className="font-mono text-xs">/account/*</code> 是 MOM 母基金。
+          单账户监控中心的结算单在同一基址的 <code className="font-mono text-xs">/cfmmc/*</code>，例如国泰君安期货 85121150 的净值。
         </p>
         <p className="text-xs text-zinc-400 mb-2">curl</p>
         <CodeBlock
           text={`curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/accounts?limit=20"
 curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/account/daily?account=12345678&start_date=2026-01-01&order=1"
-curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/account/metrics?account=12345678"`}
+curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/account/metrics?account=12345678"
+curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/cfmmc/account/nav?account=85121150&company=国泰君安期货"`}
         />
         <p className="text-xs text-zinc-400 mt-3 mb-2">Python</p>
         <CodeBlock
@@ -270,6 +273,7 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
         />
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
           工具与下面的 GET 一一对应：mom_accounts、mom_account_daily、mom_account_trades、mom_account_positions、mom_account_closes、mom_account_products、mom_account_cashflows、mom_account_metrics。
+          单账户另有 cfmmc_accounts、cfmmc_account_nav、cfmmc_rows。查国泰君安期货 85121150 的净值用 cfmmc_account_nav，account 填 85121150，company 填国泰君安期货。
           先列账户，再用返回的 account 查流水和指标。不要编造账号。
         </p>
       </section>
@@ -444,9 +448,13 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
           委托在 <code className="font-mono text-xs">GET /account/orders</code>。
         </p>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed">
-          单账户监控中心导入写的是另一套表 <code className="font-mono text-xs">public.cfmmc_*</code>，基址
-          <code className="font-mono text-xs"> {ACCOUNT_RISK_DATA_API_BASE}</code>
-          。同一把 MOM Key。路径有 accounts、account/daily、products、positions、trades、closes、cashflows、option-trades、securities。
+          单账户监控中心导入写的是另一套表 <code className="font-mono text-xs">public.cfmmc_*</code>，挂在本基址
+          <code className="font-mono text-xs"> {MOM_DATA_API_BASE}/cfmmc</code>
+          。同一把 MOM Key。净值与单账户总览曲线相同：
+          <code className="font-mono text-xs">GET /cfmmc/account/nav?account=85121150&company=国泰君安期货</code>
+          。<code className="font-mono text-xs">company</code> 用来核对期货公司，对不上就 404。
+          其余路径有 accounts、daily、products、positions、trades、closes、cashflows、option-trades、securities。
+          <code className="font-mono text-xs">{ACCOUNT_RISK_DATA_API_BASE}</code> 是同一批数据，没有 cfmmc 前缀。
         </p>
       </section>
 
@@ -470,10 +478,14 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
             账户列表
           </button>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3 mb-3">
+        <div className="grid gap-3 sm:grid-cols-4 mb-3">
           <label className="text-xs text-zinc-500">
             账号
-            <input className="mt-1 w-full border rounded px-2 py-1.5 text-sm bg-background" value={account} onChange={(e) => setAccount(e.target.value)} placeholder="12345678" />
+            <input className="mt-1 w-full border rounded px-2 py-1.5 text-sm bg-background" value={account} onChange={(e) => setAccount(e.target.value)} placeholder="85121150" />
+          </label>
+          <label className="text-xs text-zinc-500">
+            期货公司
+            <input className="mt-1 w-full border rounded px-2 py-1.5 text-sm bg-background" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="国泰君安期货" />
           </label>
           <label className="text-xs text-zinc-500">
             开始日期
@@ -493,6 +505,12 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
           </button>
           <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading || !account} onClick={() => run("/ma/api/mom-data/account/metrics", { account, start_date: startDate, end_date: endDate })}>
             风险指标
+          </button>
+          <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading} onClick={() => run("/ma/api/mom-data/cfmmc/accounts", { limit: "20", q: company })}>
+            单账户列表
+          </button>
+          <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading || !account} onClick={() => run("/ma/api/mom-data/cfmmc/account/nav", { account, company, start_date: startDate, end_date: endDate, limit: "5", order: "0" })}>
+            单账户净值
           </button>
         </div>
         {error && <p className="text-sm text-red-500 mb-2">{error}</p>}

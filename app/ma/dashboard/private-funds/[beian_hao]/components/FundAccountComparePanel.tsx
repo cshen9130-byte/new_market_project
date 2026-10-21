@@ -60,16 +60,34 @@ function writeSavedCompareAccount(beianHao: string, account: string) {
 const ACCOUNT_BLUE = "#2563eb"
 const EXCESS_PURPLE = "#7c3aed"
 
+type CompareAccountOption = {
+  id: string
+  source: "mom" | "cfmmc"
+  label: string
+}
+
 type AccountCompareResponse = {
   ok: boolean
   account: string | null
+  source?: "mom" | "cfmmc" | null
+  fundName?: string | null
+  company?: string | null
   defaultAccount: string | null
   linkedAccounts: Array<{ account: string; note?: string }>
   availableAccounts: string[]
+  accountOptions?: CompareAccountOption[]
   advisor: { advisor_name: string | null; company: string | null; sector: string | null } | null
   series: Array<{ date: string; nav: number; dailyReturn: number; pnl: number; equity: number }>
   message?: string | null
   error?: string
+}
+
+function optionSource(id: string): CompareAccountOption["source"] {
+  return id.toLowerCase().startsWith("cfmmc:") ? "cfmmc" : "mom"
+}
+
+function optionLabel(id: string): string {
+  return id.replace(/^cfmmc:/i, "")
 }
 
 function fmtPct(v: number | null | undefined, digits = 2): string {
@@ -416,13 +434,26 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
     [fundPoints, accountPoints],
   )
 
-  const accountLabel = `MOM ${payload?.account ?? account ?? ""}`.trim()
+  const accountSource = payload?.source ?? (account ? optionSource(account) : null)
+  const accountLabel = accountSource === "cfmmc"
+    ? `单账户 ${payload?.fundName || optionLabel(payload?.account || account)}`.trim()
+    : `MOM ${optionLabel(payload?.account || account)}`.trim()
   const prefsReady = restoredBeian === beian_hao
-  const availableAccounts = payload?.availableAccounts?.length
-    ? (account && !payload.availableAccounts.includes(account)
-      ? [account, ...payload.availableAccounts]
-      : payload.availableAccounts)
-    : (account ? [account] : [])
+  const accountOptions = useMemo(() => {
+    const fromApi = payload?.accountOptions?.length
+      ? payload.accountOptions
+      : (payload?.availableAccounts ?? []).map((id) => ({
+          id,
+          source: optionSource(id),
+          label: optionLabel(id),
+        }))
+    if (account && !fromApi.some((option) => option.id === account)) {
+      return [{ id: account, source: optionSource(account), label: optionLabel(account) }, ...fromApi]
+    }
+    return fromApi
+  }, [payload, account])
+  const momOptions = accountOptions.filter((option) => option.source === "mom")
+  const singleOptions = accountOptions.filter((option) => option.source === "cfmmc")
 
   const overlapMetrics = analysis?.difference
   const nativeFundMetrics = fundPoints.length >= 2
@@ -444,13 +475,24 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
               setAccount(next)
               writeSavedCompareAccount(beian_hao, next)
             }}
-            title={canPickAccount ? undefined : "无权限修改对比账户"}
-            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[120px] disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed"
+            title={canPickAccount ? (account ? accountLabel : undefined) : "无权限修改对比账户"}
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[160px] max-w-[28rem] disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed"
           >
             {!account && <option value="">请选择账户</option>}
-            {availableAccounts.map((acc) => (
-              <option key={acc} value={acc}>{acc}</option>
-            ))}
+            {momOptions.length > 0 && (
+              <optgroup label="MOM">
+                {momOptions.map((option) => (
+                  <option key={option.id} value={option.id}>{option.label}</option>
+                ))}
+              </optgroup>
+            )}
+            {singleOptions.length > 0 && (
+              <optgroup label="单账户">
+                {singleOptions.map((option) => (
+                  <option key={option.id} value={option.id}>{option.label}</option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </div>
         <div className="flex items-center gap-1.5">
@@ -465,10 +507,16 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
             ))}
           </select>
         </div>
-        {payload?.advisor?.advisor_name && (
+        {accountSource === "cfmmc" && payload?.fundName && (
+          <span>产品：<span className="font-medium text-zinc-800">{payload.fundName}</span></span>
+        )}
+        {accountSource === "cfmmc" && payload?.company && (
+          <span>期货公司：<span className="font-medium text-zinc-800">{payload.company}</span></span>
+        )}
+        {accountSource !== "cfmmc" && payload?.advisor?.advisor_name && (
           <span>投顾：<span className="font-medium text-zinc-800">{payload.advisor.advisor_name}</span></span>
         )}
-        {payload?.advisor?.company && (
+        {accountSource !== "cfmmc" && payload?.advisor?.company && (
           <span>公司：<span className="font-medium text-zinc-800">{payload.advisor.company}</span></span>
         )}
         {dateFrom && dateTo && (
@@ -478,14 +526,19 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
         )}
       </div>
       <p className="text-[11px] text-zinc-400 leading-relaxed">
-        产品线用{navType}；账户线用 MOM 结算日报按日复利（当日盈亏−手续费+权利金净额）/ 上日结存，再按账户频率取样，起点归一后对比。
-        账户频率默认与产品净值频率相同。相关性和跟踪误差只在产品净值披露日上配对。
+        产品线用{navType}。
+        {accountSource === "cfmmc"
+          ? "单账户线用客户权益路径复权净值（与单账户总览净值曲线相同，出入金不计入收益）。"
+          : accountSource === "mom"
+            ? "MOM 账户线用结算日报按日复利（当日盈亏−手续费+权利金净额）/ 上日结存。"
+            : "MOM 账户线用结算日报按日复利；单账户线用客户权益路径复权净值（与单账户总览相同）。"}
+        再按账户频率取样，起点归一后对比。账户频率默认与产品净值频率相同。相关性和跟踪误差只在产品净值披露日上配对。
       </p>
 
       {(loading || !prefsReady) && <div className="min-h-[240px] text-sm text-zinc-400 py-16 text-center">加载账户净值…</div>}
       {prefsReady && error && <div className="min-h-[160px] text-sm text-red-500 py-10 text-center">{error}</div>}
       {prefsReady && !loading && !error && !account && (
-        <div className="min-h-[160px] text-sm text-zinc-400 py-10 text-center">请选择要对比的 MOM 账户</div>
+        <div className="min-h-[160px] text-sm text-zinc-400 py-10 text-center">请选择要对比的账户</div>
       )}
       {prefsReady && !loading && !error && account && payload?.message && !payload.series.length && (
         <div className="min-h-[160px] text-sm text-zinc-400 py-10 text-center">{payload.message}</div>

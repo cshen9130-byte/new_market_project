@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { handleAccountRiskDataRequest } from "@/lib/server/account-risk-data-api"
 import { requireMomDataApiUser } from "@/lib/server/mom-data-auth"
 import {
   handleMomDataRequest,
@@ -48,7 +49,10 @@ export async function GET(
       return json(momDataErr(1, "MCP is POST /ma/api/mom-data/mcp"))
     }
     const record = searchParamsToRecord(new URL(req.url).searchParams)
-    const result = await handleMomDataRequest(key, record)
+    // Read-only mount of 单账户 public.cfmmc_*. Does not change MOM /account/* behaviour.
+    const result = key === "cfmmc" || key.startsWith("cfmmc/")
+      ? await handleAccountRiskDataRequest(key === "cfmmc" ? "" : key.slice("cfmmc/".length), record)
+      : await handleMomDataRequest(key, record)
     return json(result)
   } catch (err) {
     console.error("[mom-data]", err)

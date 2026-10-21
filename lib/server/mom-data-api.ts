@@ -938,10 +938,15 @@ function catalog() {
       { method: "GET", path: "/account/products", description: "品种汇总" },
       { method: "GET", path: "/account/cashflows", description: "核算日报出入金明细" },
       { method: "GET", path: "/account/metrics", description: "区间胜率、夏普、最大回撤、保证金使用率分布、历史 VaR / CVaR" },
+      { method: "GET", path: "/cfmmc/accounts", description: "单账户监控中心已导入账号。q 或 company 可填期货公司、产品名或资金账号，例如 国泰君安期货" },
+      { method: "GET", path: "/cfmmc/account/nav", description: "单账户复权净值，与单账户总览净值曲线相同。例如 account=85121150&company=国泰君安期货" },
     ],
     single_account: {
-      base: "/ma/api/account-risk/data",
+      prefix: "/cfmmc",
+      base: "/ma/api/mom-data/cfmmc",
+      also: "/ma/api/account-risk/data",
       auth: "Same MOM API key. Reads public.cfmmc_* written by the 单账户监控中心 import. Does not read public.mom_*.",
+      nav_example: "/cfmmc/account/nav?account=85121150&company=国泰君安期货",
     },
   })
 }

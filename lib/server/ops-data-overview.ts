@@ -35,7 +35,8 @@ import {
   type InceptionGapBucket,
   type WeekBucket,
 } from "@/lib/ops-data-overview"
-import { PLATFORM_PRODUCT_CLASS_CASE_SQL } from "@/lib/server/platform-data-query-pg"
+import { NAV_FREQUENCY_OPTIONS, type NavFrequencyLabel } from "@/lib/server/nav-frequency"
+import { ensureNavFrequencyTable, NAV_FREQUENCY_RULE, PLATFORM_PRODUCT_CLASS_CASE_SQL } from "@/lib/server/platform-data-query-pg"
 import { NAV_SERIES_FLAG_RULE, loadFreshNavSeriesFlags } from "@/lib/server/nav-series-flags-pg"
 import { withListResponseCache } from "@/lib/server/list-response-cache"
 import { serveOpsSnapshot } from "@/lib/server/ops-overview-snapshot"
@@ -66,7 +67,7 @@ const SCOPE_META: Record<DataOverviewScope, { label: string; description: string
   },
   team: {
     label: "团队数据",
-    description: "团队数据在筛选全部为「不限」时的产品。更新方式、要素、运作日期、成立对齐、净值断档和净值异常与列表筛选使用同一规则。净值取产品页上团队净值与平台净值中较新的一天。",
+    description: "团队数据在筛选全部为「不限」时的产品。更新方式、要素、运作日期、成立对齐、净值频率、净值断档和净值异常与列表筛选使用同一规则。净值取产品页上团队净值与平台净值中较新的一天。",
   },
   tracking: {
     label: "跟踪池",
@@ -91,6 +92,7 @@ type OverviewCounts = {
   inception: { match: number; mismatch: number; missing: number } | null
   inceptionGap: Record<InceptionGapBucket, number> | null
   navGap: { interior: number; clear: number; unchecked: number }
+  navFrequency: Record<NavFrequencyLabel, number> & { unchecked: number }
   anomaly: { jump: number; clear: number; unchecked: number; source: number; rules: number; unknown: number }
   productClass: { private: number; equity: number; trust: number; asset: number; unknown: number }
   navClass: NavClassCounts
@@ -147,6 +149,15 @@ type SqlCountRow = {
   gap_yes: number
   gap_no: number
   gap_unchecked: number
+  freq_daily: number
+  freq_weekly: number
+  freq_biweekly: number
+  freq_monthly: number
+  freq_quarterly: number
+  freq_mixed: number
+  freq_other: number
+  freq_none: number
+  freq_unchecked: number
   anomaly_yes: number
   anomaly_no: number
   anomaly_unchecked: number
@@ -225,6 +236,31 @@ function dataListHref(
     ...params,
   })
   return `/ma/dashboard/private-funds?${query}`
+}
+
+const NAV_FREQUENCY_SQL_FIELDS: Array<[NavFrequencyLabel, keyof SqlCountRow]> = [
+  ["日频", "freq_daily"],
+  ["周频", "freq_weekly"],
+  ["双周", "freq_biweekly"],
+  ["月频", "freq_monthly"],
+  ["季频", "freq_quarterly"],
+  ["混合", "freq_mixed"],
+  ["其他", "freq_other"],
+  ["无净值", "freq_none"],
+]
+
+function emptyNavFrequency(): OverviewCounts["navFrequency"] {
+  const counts = { unchecked: 0 } as OverviewCounts["navFrequency"]
+  for (const label of NAV_FREQUENCY_OPTIONS) counts[label] = 0
+  return counts
+}
+
+function navFrequencyFromRow(row: SqlCountRow | undefined): OverviewCounts["navFrequency"] {
+  const counts = emptyNavFrequency()
+  if (!row) return counts
+  for (const [label, field] of NAV_FREQUENCY_SQL_FIELDS) counts[label] = n(row[field])
+  counts.unchecked = n(row.freq_unchecked)
+  return counts
 }
 
 function weekRows(
@@ -311,6 +347,26 @@ function sectionsFor(scope: DataOverviewScope, counts: OverviewCounts): DataOver
       title: "净值月内新鲜度",
       hint: "取产品页上团队净值日期与平台净值日期中较新的一天。最新一周为 7 天内，滞后 1 周为 8 到 14 天，滞后 2 周为 15 到 21 天，滞后 3 周为 22 到 28 天。更早或没有日期的产品不在此列出。占比相对当前范围内的全部产品。滞后2周和滞后3周可以点开，查看是哪些产品。",
       rows: weekRows(counts.navFreshness, total, "无净值日期", ["w0", "w1", "w2", "w3"]),
+    },
+    {
+      key: "nav_frequency",
+      title: "净值频率",
+      hint: counts.navFrequency.unchecked === 0
+        ? "与列表「净值频率」使用同一规则。看最近最多 24 段相邻净值相隔几个中国市场交易日。周末和法定节假日不计入。日频大约每个交易日，周频大约每周，月频大约每月。两种间隔都不少的算混合。"
+        : "与列表「净值频率」使用同一规则。看最近最多 24 段相邻净值相隔几个中国市场交易日。周末和法定节假日不计入。尚未写入的产品计入未检测。",
+      rows: overviewRows(total, [
+        ...NAV_FREQUENCY_OPTIONS.map((label) => ({
+          key: label,
+          label,
+          count: counts.navFrequency[label],
+          href: counts.navFrequency.unchecked === 0
+            ? dataListHref(scope, { nav_frequency: label }, "both")
+            : undefined,
+        })),
+        ...(counts.navFrequency.unchecked > 0
+          ? [{ key: "unchecked", label: "未检测", count: counts.navFrequency.unchecked }]
+          : []),
+      ]),
     },
     {
       key: "operation_date",
@@ -580,6 +636,15 @@ flags AS MATERIALIZED (
   WHERE rule_version = '${NAV_SERIES_FLAG_RULE}'
     AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
   ORDER BY code, computed_at DESC
+),
+freq AS MATERIALIZED (
+  SELECT DISTINCT ON (code)
+    UPPER(BTRIM(beian_hao)) AS code,
+    frequency
+  FROM ops_nav_frequency
+  WHERE rule_version = '${NAV_FREQUENCY_RULE}'
+    AND NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+  ORDER BY code, computed_at DESC
 )`
 
 const COUNTS_SELECT = `
@@ -632,6 +697,15 @@ SELECT
   COUNT(*) FILTER (WHERE f.code IS NOT NULL AND f.has_interior_gap)::int AS gap_yes,
   COUNT(*) FILTER (WHERE f.code IS NOT NULL AND NOT f.has_interior_gap)::int AS gap_no,
   COUNT(*) FILTER (WHERE f.code IS NULL)::int AS gap_unchecked,
+  COUNT(*) FILTER (WHERE fq.frequency = '日频')::int AS freq_daily,
+  COUNT(*) FILTER (WHERE fq.frequency = '周频')::int AS freq_weekly,
+  COUNT(*) FILTER (WHERE fq.frequency = '双周')::int AS freq_biweekly,
+  COUNT(*) FILTER (WHERE fq.frequency = '月频')::int AS freq_monthly,
+  COUNT(*) FILTER (WHERE fq.frequency = '季频')::int AS freq_quarterly,
+  COUNT(*) FILTER (WHERE fq.frequency = '混合')::int AS freq_mixed,
+  COUNT(*) FILTER (WHERE fq.frequency = '其他')::int AS freq_other,
+  COUNT(*) FILTER (WHERE fq.frequency = '无净值')::int AS freq_none,
+  COUNT(*) FILTER (WHERE fq.code IS NULL)::int AS freq_unchecked,
   COUNT(*) FILTER (WHERE f.code IS NOT NULL AND f.anomaly IS NOT NULL)::int AS anomaly_yes,
   COUNT(*) FILTER (WHERE f.code IS NOT NULL AND f.anomaly IS NULL)::int AS anomaly_no,
   COUNT(*) FILTER (WHERE f.code IS NULL)::int AS anomaly_unchecked,
@@ -643,7 +717,8 @@ LEFT JOIN team_nav tn ON tn.code = u.code
 LEFT JOIN best_channel bc ON bc.code = u.code
 LEFT JOIN pool p ON p.code = u.code
 LEFT JOIN val v ON v.code = u.code
-LEFT JOIN flags f ON f.code = u.code`
+LEFT JOIN flags f ON f.code = u.code
+LEFT JOIN freq fq ON fq.code = u.code`
 
 function libraryUniverse(scope: "all" | "platform"): string {
   const where = scope === "platform" ? "WHERE product_class = 'private'" : ""
@@ -724,6 +799,7 @@ function countsFromSql(row: SqlCountRow | undefined): OverviewCounts {
       inception: null,
       inceptionGap: null,
       navGap: { interior: 0, clear: 0, unchecked: 0 },
+      navFrequency: emptyNavFrequency(),
       anomaly: { jump: 0, clear: 0, unchecked: 0, source: 0, rules: 0, unknown: 0 },
       productClass: { private: 0, equity: 0, trust: 0, asset: 0, unknown: 0 },
       navClass: emptyNavClass(),
@@ -759,6 +835,7 @@ function countsFromSql(row: SqlCountRow | undefined): OverviewCounts {
     inception: null,
     inceptionGap: null,
     navGap: { interior: n(row.gap_yes), clear: n(row.gap_no), unchecked: n(row.gap_unchecked) },
+    navFrequency: navFrequencyFromRow(row),
     anomaly: {
       jump: n(row.anomaly_yes),
       clear: n(row.anomaly_no),
@@ -896,6 +973,7 @@ async function buildTeamOverview(): Promise<DataOverviewResponse> {
     inception: snapshot.inception,
     inceptionGap: snapshot.inceptionGap,
     navGap: { interior: snapshot.navGap.interior, clear: snapshot.navGap.clear, unchecked: 0 },
+    navFrequency: { ...snapshot.navFrequency, unchecked: 0 },
     anomaly: {
       jump: snapshot.anomaly.jump,
       clear: snapshot.anomaly.clear,
@@ -989,6 +1067,7 @@ async function applyLiveSeries(counts: OverviewCounts, seeds: PlatformFundSeed[]
 }
 
 async function buildCatalogOverview(scope: "all" | "platform" | "tracking" | "nav"): Promise<DataOverviewResponse> {
+  await ensureNavFrequencyTable()
   await loadFreshNavSeriesFlags([])
   const opCodes = await loadBeianCodesWithOperationDate()
   const [counts, seeds] = await Promise.all([
@@ -1238,7 +1317,7 @@ export function parseDataOverviewScope(raw: string | null): DataOverviewScope {
 }
 
 export async function getDataOverview(scope: DataOverviewScope, refresh: boolean): Promise<DataOverviewResponse> {
-  const key = `ops-data-overview:v11:${scope}`
+  const key = `ops-data-overview:v12:${scope}`
   return serveOpsSnapshot(key, refresh, () => buildDataOverview(scope))
 }
 

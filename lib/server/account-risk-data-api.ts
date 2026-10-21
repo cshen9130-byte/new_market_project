@@ -1,4 +1,10 @@
 import { publicQuery } from "@/lib/db"
+import { productNameFromClientLabel } from "@/lib/server/account-risk-product-elements"
+import {
+  aggregateEquityByDate,
+  compoundAccountRiskNav,
+  type AccountRiskNavPoint,
+} from "@/lib/server/account-risk-nav"
 import { momDataErr, momDataOk, type MomDataEnvelope } from "@/lib/server/mom-data-api"
 
 /**
@@ -102,13 +108,57 @@ function selectCols(cols: string[]): string {
   return ["trade_date::text AS trade_date", ...cols].join(", ")
 }
 
+/** Same shortening as 单账户总览的「期货公司」列. */
+function shortCompanyName(raw: string): string {
+  return raw
+    .replace(/股份有限公司$/, "")
+    .replace(/有限责任公司$/, "")
+    .replace(/有限公司$/, "")
+    .trim()
+}
+
+function labelMatches(query: string, labels: Array<string | null | undefined>): boolean {
+  const q = query.trim().toLowerCase().replace(/\s+/g, "")
+  if (!q) return true
+  return labels.some((label) => {
+    const text = String(label ?? "").trim().toLowerCase().replace(/\s+/g, "")
+    return text.length >= 2 && (text.includes(q) || q.includes(text))
+  })
+}
+
+/** Broker or product name used to confirm a 资金账号. Digits-only q is not a company. */
+function companyQuery(record: Record<string, string | undefined>): string {
+  const company = (record.company ?? "").trim()
+  if (company) return company
+  const q = (record.q ?? "").trim()
+  if (!q || q === (record.account ?? "").trim()) return ""
+  if (/^[A-Za-z0-9_-]+$/.test(q)) return ""
+  return q
+}
+
+const NAV_FORMULA =
+  "复权净值从 1 起复利，与单账户总览净值曲线相同。日收益率 = (当日客户权益 - 上日客户权益 - 出入金) / 上日客户权益。出入金含当日存取合计，以及结算单未记入存取、但改变了结存的大额整数划转。不使用平仓盈亏加浮动盈亏。"
+
+function navRow(point: AccountRiskNavPoint) {
+  return {
+    date: point.date,
+    nav: point.nav,
+    daily_return: point.dailyReturn,
+    pnl: point.pnl,
+    cum_pnl: point.cumPnl,
+    equity: point.cumCapital,
+    net_flow: point.netFlow,
+  }
+}
+
 function catalog() {
   return momDataOk({
     name: "account-risk-data",
     source: "public.cfmmc_* written by the 单账户监控中心 / 国投结算导入",
     auth: "Same MOM API key (prefix mk_). The fund-data key is rejected.",
     endpoints: [
-      { method: "GET", path: "/accounts", description: "已导入的单账户列表，含最新权益、保证金和风险度" },
+      { method: "GET", path: "/accounts", description: "已导入的单账户列表。q 可填期货公司、产品名或资金账号，例如 国泰君安期货" },
+      { method: "GET", path: "/account/nav", description: "复权净值，与单账户总览净值曲线相同。例如 account=85121150&company=国泰君安期货" },
       { method: "GET", path: "/account/daily", description: "cfmmc_daily_summary 每日结算摘要" },
       { method: "GET", path: "/account/products", description: "cfmmc_product_pnl 品种盈亏" },
       { method: "GET", path: "/account/positions", description: "cfmmc_positions 持仓，默认最近一个交易日" },
@@ -122,16 +172,29 @@ function catalog() {
 }
 
 async function listAccounts(record: Record<string, string | undefined>): Promise<MomDataEnvelope<unknown>> {
-  const keyword = (record.q ?? "").trim()
+  const keyword = (record.q ?? record.company ?? "").trim()
   const { limit, offset } = pageArgs(record, 500, false)
   const params: unknown[] = []
   let keywordSql = ""
   if (keyword) {
     params.push(`%${keyword}%`)
-    keywordSql = `AND (s.account_no ILIKE $1 OR COALESCE(s.client_name, '') ILIKE $1 OR COALESCE(s.company_name, '') ILIKE $1)`
+    keywordSql = `AND (
+      l.account_no ILIKE $1
+      OR COALESCE(l.client_name, '') ILIKE $1
+      OR COALESCE(l.company_name, '') ILIKE $1
+    )`
   }
   const sql = `
-    WITH latest AS (
+    WITH span AS (
+      SELECT account_no,
+             MIN(trade_date)::text AS first_date,
+             MAX(trade_date)::text AS last_date,
+             COUNT(*)::int AS trading_days
+        FROM public.cfmmc_daily_summary
+       WHERE ${ACCOUNT_OK}
+       GROUP BY account_no
+    ),
+    latest AS (
       SELECT DISTINCT ON (account_no)
              account_no,
              trade_date::text AS trade_date,
@@ -147,18 +210,54 @@ async function listAccounts(record: Record<string, string | undefined>): Promise
        WHERE ${ACCOUNT_OK}
        ORDER BY account_no, trade_date DESC
     )
-    SELECT * FROM latest s
+    SELECT l.account_no,
+           l.trade_date,
+           l.client_name,
+           l.company_name,
+           l.client_equity,
+           l.margin_occupied,
+           l.available,
+           l.daily_pnl,
+           l.risk_ratio,
+           l.deposit_wd,
+           s.first_date,
+           s.last_date,
+           s.trading_days
+      FROM latest l
+      JOIN span s ON s.account_no = l.account_no
      WHERE TRUE ${keywordSql}
-     ORDER BY s.account_no
+     ORDER BY l.account_no
   `
   const rows = await q<Record<string, unknown>>(sql, params)
-  const slice = rows.slice(offset, offset + limit)
+  const accounts = rows.map((row) => {
+    const clientName = String(row.client_name ?? "").trim()
+    const companyRaw = String(row.company_name ?? "").trim()
+    return {
+      account: String(row.account_no ?? "").trim(),
+      account_no: String(row.account_no ?? "").trim(),
+      fund_name: productNameFromClientLabel(clientName) || null,
+      client_name: clientName || null,
+      company: shortCompanyName(companyRaw) || null,
+      company_name: companyRaw || null,
+      first_date: row.first_date ?? null,
+      last_date: row.last_date ?? null,
+      trading_days: row.trading_days ?? null,
+      trade_date: row.trade_date ?? null,
+      client_equity: row.client_equity ?? null,
+      margin_occupied: row.margin_occupied ?? null,
+      available: row.available ?? null,
+      daily_pnl: row.daily_pnl ?? null,
+      risk_ratio: row.risk_ratio ?? null,
+      deposit_wd: row.deposit_wd ?? null,
+    }
+  })
+  const slice = accounts.slice(offset, offset + limit)
   return momDataOk({
     accounts: slice,
-    total: rows.length,
+    total: accounts.length,
     limit,
     offset,
-    next_offset: offset + slice.length < rows.length ? offset + slice.length : null,
+    next_offset: offset + slice.length < accounts.length ? offset + slice.length : null,
   })
 }
 
@@ -238,6 +337,82 @@ async function readSheet(
   })
 }
 
+async function readNav(record: Record<string, string | undefined>): Promise<MomDataEnvelope<unknown>> {
+  const account = accountCode(record.account)
+  if (!account) return momDataErr(1, "account is required")
+  const companyQ = companyQuery(record)
+  const start = record.start_date ? isoDate(record.start_date) : null
+  const end = record.end_date ? isoDate(record.end_date) : null
+  if (record.start_date && !start) return momDataErr(1, "start_date must be YYYY-MM-DD")
+  if (record.end_date && !end) return momDataErr(1, "end_date must be YYYY-MM-DD")
+  if (start && end && start > end) return momDataErr(1, "start_date must be on or before end_date")
+  if (!(await accountExists(account))) return momDataErr(2, "account not found")
+
+  const identity = await q<{ client_name: string | null; company_name: string | null }>(
+    `SELECT client_name, company_name
+       FROM public.cfmmc_daily_summary
+      WHERE account_no = $1 AND ${ACCOUNT_OK}
+      ORDER BY trade_date DESC
+      LIMIT 1`,
+    [account],
+  )
+  const clientName = String(identity[0]?.client_name ?? "").trim()
+  const companyRaw = String(identity[0]?.company_name ?? "").trim()
+  const company = shortCompanyName(companyRaw)
+  const fundName = productNameFromClientLabel(clientName)
+  if (companyQ && !labelMatches(companyQ, [company, companyRaw, clientName, fundName])) {
+    return momDataErr(2, "account does not match company")
+  }
+
+  const params: unknown[] = [account]
+  let endSql = ""
+  if (end) {
+    params.push(end)
+    endSql = ` AND trade_date <= $${params.length}::date`
+  }
+  const rows = await q<{
+    date: string
+    client_equity: unknown
+    daily_pnl: unknown
+    deposit_wd: unknown
+    balance_bf: unknown
+    balance_cf: unknown
+    realized_pl: unknown
+    commission: unknown
+  }>(
+    `SELECT trade_date::text AS date,
+            client_equity, daily_pnl, deposit_wd,
+            balance_bf, balance_cf, realized_pl, commission
+       FROM public.cfmmc_daily_summary
+      WHERE account_no = $1 AND ${ACCOUNT_OK}${endSql}
+      ORDER BY trade_date ASC`,
+    params,
+  )
+  const series = compoundAccountRiskNav(aggregateEquityByDate(rows))
+  const visible = start ? series.filter((point) => point.date >= start) : series
+  const { limit, offset, order } = pageArgs(record, 2000, false)
+  const ordered = order === "DESC" ? [...visible].reverse() : visible
+  const page = ordered.slice(offset, offset + limit)
+  const latest = visible.length > 0 ? visible[visible.length - 1] : null
+  return momDataOk({
+    account,
+    fund_name: fundName || null,
+    company_name: company || null,
+    company_name_raw: companyRaw || null,
+    client_name: clientName || null,
+    inception_date: series[0]?.date ?? null,
+    last_date: series.length > 0 ? series[series.length - 1].date : null,
+    trading_days: visible.length,
+    formula: NAV_FORMULA,
+    latest: latest ? navRow(latest) : null,
+    rows: page.map(navRow),
+    total: visible.length,
+    limit,
+    offset,
+    next_offset: offset + page.length < ordered.length ? offset + page.length : null,
+  })
+}
+
 export async function handleAccountRiskDataRequest(
   path: string,
   record: Record<string, string | undefined>,
@@ -246,6 +421,7 @@ export async function handleAccountRiskDataRequest(
   try {
     if (key === "" || key === "meta") return catalog()
     if (key === "accounts") return await listAccounts(record)
+    if (key === "account/nav") return await readNav(record)
     if (key.startsWith("account/")) {
       const sheet = SHEETS[key.slice("account/".length)]
       if (!sheet) return momDataErr(1, `unknown path: /${key}`)
