@@ -8,8 +8,10 @@ import {
   normalizeRegisterCode,
   searchFundsByRegister,
   searchTrackingFunds,
+  withCurrentProductNames,
 } from "@/lib/server/fund-picker-search"
 import {
+  fundNameKey,
   shareClassProductNamesMatch,
 } from "@/lib/server/fund-name-match"
 import {
@@ -95,6 +97,8 @@ export type FundMatchCandidate = {
   beian_hao: string
   product_name: string
   short_name: string | null
+  /** Older stored names for the same 备案号. Matching only; pickers show product_name. */
+  former_names?: string[]
 }
 
 const EMPTY_ELEMENTS: ExtractedFundElements = {
@@ -782,10 +786,14 @@ function shareClassFromFileName(fileName: string): ShareClassLetter | null {
   return m ? (m[1] as ShareClassLetter) : null
 }
 
+function candidateNames(fund: FundMatchCandidate): string[] {
+  return [fund.product_name, fund.short_name ?? "", ...(fund.former_names ?? [])]
+    .map((name) => name.trim())
+    .filter(Boolean)
+}
+
 function fundNameAgrees(fund: FundMatchCandidate, extractedName: string): boolean {
-  if (namesLooselyMatch(fund.product_name, extractedName)) return true
-  if (fund.short_name && namesLooselyMatch(fund.short_name, extractedName)) return true
-  return false
+  return candidateNames(fund).some((name) => namesLooselyMatch(name, extractedName))
 }
 
 function uniqueByBeian(funds: FundMatchCandidate[]): FundMatchCandidate[] {
@@ -987,8 +995,21 @@ function addMatches(target: Map<string, ScoredFundMatch>, rows: FundMatchCandida
     const name = (row.product_name ?? "").trim()
     if (!beian || !name) continue
     const existing = target.get(beian)
+    const aliases = new Set<string>([...(existing?.former_names ?? []), ...(row.former_names ?? [])])
+    if (existing && fundNameKey(existing.product_name) !== fundNameKey(name)) {
+      aliases.add(score < existing.score ? existing.product_name : name)
+    }
+    const former_names = [...aliases]
     if (!existing || score < existing.score) {
-      target.set(beian, { beian_hao: beian, product_name: name, short_name: row.short_name ?? null, score })
+      target.set(beian, {
+        beian_hao: beian,
+        product_name: name,
+        short_name: row.short_name ?? null,
+        former_names: former_names.length ? former_names : undefined,
+        score,
+      })
+    } else if (former_names.length) {
+      existing.former_names = former_names
     }
   }
 }
@@ -1025,6 +1046,14 @@ function rankMatchedFunds(
           } else {
             score += 10
           }
+        } else if ((row.former_names ?? []).some((alias) => namesLooselyMatch(alias, trimmedCandidate))) {
+          const alias = (row.former_names ?? []).find((item) => namesLooselyMatch(item, trimmedCandidate)) ?? ""
+          if (shareClassProductNamesMatch(alias, trimmedCandidate)) {
+            score -= 8
+            nameHit = true
+          } else {
+            score += 10
+          }
         }
       }
 
@@ -1041,7 +1070,12 @@ function rankMatchedFunds(
     })
     .sort((a, b) => a.score - b.score || a.product_name.localeCompare(b.product_name, "zh-CN"))
     .slice(0, 10)
-    .map(({ beian_hao, product_name, short_name }) => ({ beian_hao, product_name, short_name }))
+    .map(({ beian_hao, product_name, short_name, former_names }) => ({
+      beian_hao,
+      product_name,
+      short_name,
+      former_names,
+    }))
 }
 
 export function pickHighConfidenceFundMatch(
@@ -1111,7 +1145,9 @@ export async function matchFundsFromExtracted(
     }
   }
 
-  return rankMatchedFunds(Array.from(scored.values()), nameCandidates, registerCandidates)
+  return withCurrentProductNames(
+    rankMatchedFunds(Array.from(scored.values()), nameCandidates, registerCandidates),
+  )
 }
 
 export async function extractFundContractElements(input: {

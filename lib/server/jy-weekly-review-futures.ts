@@ -1,7 +1,7 @@
 /**
  * JY 跟踪池周度回顾（期货）Excel.
- * Universe: CTA / 量化期货 / 主观期货 / 期权 / 期货套利 / 期权套利 / 股票期货复合.
- * Sheets: 目录 + 口径说明 + 期货市场回顾 + one absolute-return sheet per strategy bucket.
+ * 量化期货 6 sheets + 主观期货 6 sheets.
+ * 目录 + 口径说明 + 期货市场回顾 stay in front.
  */
 
 import { randomUUID } from "crypto"
@@ -83,46 +83,45 @@ const ARB_TAG_LABEL: Record<string, string> = {
   月差: "跨期套利",
 }
 
-/** Sheet order. Unlisted buckets follow, sorted by Chinese name. */
-const FUTURES_BUCKET_ORDER = [
-  "量化时序",
-  "量化截面",
-  "量化混合",
-  "量化股指",
-  "量化中高频",
-  "量化高频",
-  "量化基本面",
-  "量化量价",
-  "量化商品",
-  "量化机器学习",
-  "量化期货",
-  "主观多板块",
-  "主观交易",
-  "主观宏观",
-  "主观黑色",
-  "主观能化",
-  "主观农产",
-  "主观有色",
-  "主观股指",
-  "主观产业",
-  "主观期货",
-  "商品波动率",
-  "金融卖波",
-  "期权套利",
-  "雪球",
-  "场外期权",
-  "场内期权",
-  "期权策略",
-  "股指套利",
-  "商品套利",
-  "跨期套利",
-  "跨品种套利",
-  "跨市场套利",
-  "高频套利",
-  "期现套利",
-  "期货套利",
-  "股票期货复合",
-]
+/** 期货策略 / 量化期货. 混合、量价、商品不进入周度回顾. */
+export const QUANT_WEEKLY_CATEGORIES = [
+  "时序（时序占比超过50%）",
+  "截面（截面占比超过50%）",
+  "大厂（按规模）",
+  "股指（按品种）",
+  "基本面（按因子类型）",
+  "机器学习（按方法论）",
+] as const
+
+/** 期货策略 / 主观期货. MOM 单独成表，并计入多板块. */
+export const SUBJECTIVE_WEEKLY_CATEGORIES = [
+  "黑色",
+  "有色",
+  "能化",
+  "农产",
+  "多板块（包含MOM）",
+  "MOM",
+] as const
+
+/** Excel sheet names and the 近三周数据状态 rows, in this order. */
+export const FUTURES_WEEKLY_CATEGORIES = [
+  ...QUANT_WEEKLY_CATEGORIES,
+  ...SUBJECTIVE_WEEKLY_CATEGORIES,
+] as const
+
+export type FuturesWeeklyCategory = (typeof FUTURES_WEEKLY_CATEGORIES)[number]
+
+const QUANT_CATEGORY_BY_TAG = {
+  大厂: QUANT_WEEKLY_CATEGORIES[2],
+  股指: QUANT_WEEKLY_CATEGORIES[3],
+  基本面: QUANT_WEEKLY_CATEGORIES[4],
+  机器学习: QUANT_WEEKLY_CATEGORIES[5],
+} as const
+
+/** These 量化三级标签不进入周度回顾，带上它们的产品整只不进表. */
+const QUANT_EXCLUDED_TAGS = new Set(["混合", "量价", "商品"])
+
+const SUBJECTIVE_SECTOR_TAGS = ["黑色", "有色", "能化", "农产"] as const
 
 const COMMODITY_INDICES: Array<{ name: string; code: string }> = [
   { name: "南华商品", code: "NHCI.NH" },
@@ -176,7 +175,65 @@ export function isFuturesWeeklyFund(fund: WeeklyReviewFund): boolean {
   return false
 }
 
+/**
+ * Share of 时序 or 截面 inside the style tags.
+ * Both 时序 and 截面 together keep either side at 50%, so neither clears the bar.
+ * 中高频、大厂、股指、基本面、机器学习 do not dilute this share.
+ */
+export function futuresStyleShare(tags: readonly string[], kind: "时序" | "截面"): number {
+  const set = new Set(tags)
+  const ts = set.has("时序")
+  const cs = set.has("截面")
+  const split = ts && cs
+  if (kind === "时序") {
+    if (!ts) return 0
+    return split ? 0.5 : 1
+  }
+  if (!cs) return 0
+  return split ? 0.5 : 1
+}
+
+function quantWeeklyCategories(tags: readonly string[]): FuturesWeeklyCategory[] {
+  if (tags.some((tag) => QUANT_EXCLUDED_TAGS.has(tag))) return []
+  const out: FuturesWeeklyCategory[] = []
+  if (futuresStyleShare(tags, "时序") > 0.5) out.push(QUANT_WEEKLY_CATEGORIES[0])
+  if (futuresStyleShare(tags, "截面") > 0.5) out.push(QUANT_WEEKLY_CATEGORIES[1])
+  for (const tag of tags) {
+    const category = QUANT_CATEGORY_BY_TAG[tag as keyof typeof QUANT_CATEGORY_BY_TAG]
+    if (category && !out.includes(category)) out.push(category)
+  }
+  return QUANT_WEEKLY_CATEGORIES.filter((category) => out.includes(category))
+}
+
+function subjectiveWeeklyCategories(tags: readonly string[]): FuturesWeeklyCategory[] {
+  const out: FuturesWeeklyCategory[] = []
+  for (const tag of SUBJECTIVE_SECTOR_TAGS) {
+    if (tags.includes(tag)) out.push(tag)
+  }
+  const mom = tags.includes("MOM")
+  if (tags.includes("多板块") || mom) out.push(SUBJECTIVE_WEEKLY_CATEGORIES[4])
+  if (mom) out.push(SUBJECTIVE_WEEKLY_CATEGORIES[5])
+  return SUBJECTIVE_WEEKLY_CATEGORIES.filter((category) => out.includes(category))
+}
+
+/** Categories this product belongs to. A product can hit more than one sheet. */
+export function futuresWeeklyCategories(
+  fund: Pick<WeeklyReviewFund, "l2" | "l3">,
+): FuturesWeeklyCategory[] {
+  const l2 = (fund.l2 || "").trim()
+  const tags = parseStrategyLevel3(fund.l3 || "")
+  if (l2 === "量化期货") return quantWeeklyCategories(tags)
+  if (l2 === "主观期货") return subjectiveWeeklyCategories(tags)
+  return []
+}
+
 export function bucketForFuturesFund(
+  fund: Pick<WeeklyReviewFund, "l1" | "l2" | "l3" | "product_name">,
+): string {
+  return futuresWeeklyCategories(fund)[0] ?? legacyBucketForFuturesFund(fund)
+}
+
+function legacyBucketForFuturesFund(
   fund: Pick<WeeklyReviewFund, "l1" | "l2" | "l3" | "product_name">,
 ): string {
   const l1 = (fund.l1 || "").trim()
@@ -202,24 +259,22 @@ export function bucketForFuturesFund(
   return firstMapped(tags, QUANT_TAG_LABEL) ?? "量化期货"
 }
 
-function futuresGroupSortKey(bucket: string): string {
-  const idx = FUTURES_BUCKET_ORDER.indexOf(bucket)
-  return idx >= 0 ? `${String(idx).padStart(3, "0")}_${bucket}` : `999_${bucket}`
-}
-
 export function previewFuturesWeeklyReview(funds: WeeklyReviewFund[]) {
   const counts = new Map<string, number>()
   for (const fund of funds) {
-    const bucket = bucketForFuturesFund(fund)
-    counts.set(bucket, (counts.get(bucket) ?? 0) + 1)
+    for (const bucket of futuresWeeklyCategories(fund)) {
+      counts.set(bucket, (counts.get(bucket) ?? 0) + 1)
+    }
   }
-  return [...counts.keys()]
-    .sort((a, b) => futuresGroupSortKey(a).localeCompare(futuresGroupSortKey(b), "zh"))
-    .map((bucket) => ({
-      bucket,
-      mode: "absolute" as const,
-      count: counts.get(bucket) ?? 0,
-    }))
+  return FUTURES_WEEKLY_CATEGORIES.map((bucket) => ({
+    bucket,
+    mode: "absolute" as const,
+    count: counts.get(bucket) ?? 0,
+  }))
+}
+
+export function countClassifiedFuturesFunds(funds: readonly Pick<WeeklyReviewFund, "l2" | "l3">[]): number {
+  return funds.filter((fund) => futuresWeeklyCategories(fund).length > 0).length
 }
 
 async function loadFuturesWeeklyFunds(asOf: string, poolsInput?: unknown): Promise<WeeklyReviewFund[]> {
@@ -235,7 +290,7 @@ export async function buildFuturesWeeklyReviewPreview(weekEnd: string, poolsInpu
     week_start: weekStart,
     week_end: end,
     as_of: asOf,
-    fund_count: funds.length,
+    fund_count: countClassifiedFuturesFunds(funds),
     groups: previewFuturesWeeklyReview(funds),
   }
 }
@@ -323,12 +378,12 @@ function buildFuturesMethodologyRows(weekStart: string, weekEnd: string, poolsIn
     {
       kind: "pair",
       label: "样本范围",
-      text: `只含 ${scope}里的期货与期权相关产品：一级策略为期货策略、管理期货或期权策略；套利策略里的期货套利、期权套利；多资产策略里的股票期货复合。股票多头、股票对冲、债券、可转债套利、ETF 套利不进入本表。同一备案号只保留最新一条跟踪记录。产品同时在多个所选池中时只保留一行。`,
+      text: `业绩表只收 ${scope}里的量化期货和主观期货。量化期货三级里写了混合、量价或商品的产品不进入周度回顾。主观期货只收黑色、有色、能化、农产、多板块和 MOM。期权、期货套利、交易型、宏观多策略、股指期货、产业对冲不进入这些表。同一备案号只保留最新一条跟踪记录。产品同时在多个所选池中时只保留一行。`,
     },
     {
       kind: "pair",
       label: "策略分组",
-      text: "量化期货按三级标签拆成时序、截面、混合、股指、中高频、高频等；主观期货按多板块、交易型、宏观和产业板块拆分；期权按商品波动率、金融卖波、期权套利、场外期权拆分；期货套利按股指、商品、跨期、跨品种等拆分。一只产品有多个三级标签时，采用标签顺序里第一个能对应到上述分组的标签。没有三级标签时归入量化期货、主观期货、场内期权或期货套利。",
+      text: "量化期货 6 张：时序要求时序占比超过 50%，截面要求截面占比超过 50%。同时写了时序和截面时，两侧都不超过 50%。中高频、大厂、股指、基本面、机器学习不摊薄这一占比。大厂按规模、股指按品种、基本面按因子类型、机器学习按方法论，标签命中即进入对应表。三级里有混合、量价或商品的量化期货不进任何表。主观期货 6 张：黑色、有色、能化、农产按三级标签。多板块表包含三级为多板块或 MOM 的产品。MOM 再用同一条规则单独成表，所以 MOM 同时出现在多板块和 MOM 两张表。一只产品可以同时出现在多张表；时序和截面不会同时出现。",
     },
     {
       kind: "pair",
@@ -348,7 +403,7 @@ function buildFuturesMethodologyRows(weekStart: string, weekEnd: string, poolsIn
     {
       kind: "pair",
       label: "指标选择",
-      text: "期货、CTA 和期权产品按绝对收益展示，不减股票指数或南华商品指数。每一组列出近一周、近一月、近三月、近六月、近一年收益，以及近一年夏普比率和近一年卡玛比率。",
+      text: "量化期货和主观期货这两套表都按绝对收益展示，不减股票指数或南华商品指数。每一张表列出近一周、近一月、近三月、近六月、近一年收益，以及近一年夏普比率和近一年卡玛比率。",
     },
     {
       kind: "pair",
@@ -449,13 +504,15 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
   const pools = normalizeWeeklyReviewPools(poolsInput)
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
   const funds = await loadFuturesWeeklyFunds(asOf, pools)
-  if (funds.length === 0) {
-    throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可导出的期货、CTA 或期权策略产品`)
+  const classified = funds.filter((fund) => futuresWeeklyCategories(fund).length > 0)
+  if (classified.length === 0) {
+    throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可归入量化期货 6 类或主观期货 6 类的产品`)
   }
+  const categoriesByCode = new Map(classified.map((fund) => [fund.beian_hao, futuresWeeklyCategories(fund)]))
 
   const [metrics, market] = await Promise.all([
-    computeFundMetrics(funds, asOf, undefined, {
-      bucketFor: bucketForFuturesFund,
+    computeFundMetrics(classified, asOf, undefined, {
+      bucketFor: () => FUTURES_WEEKLY_CATEGORIES[0],
       modeFor: () => "absolute",
     }),
     buildFuturesMarketRows(weekStart, weekEnd),
@@ -471,13 +528,13 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
   }
 
   const wb = XLSX.utils.book_new()
-  const groups = new Map<string, FundMetrics[]>()
+  const groups = new Map<FuturesWeeklyCategory, FundMetrics[]>()
+  for (const category of FUTURES_WEEKLY_CATEGORIES) groups.set(category, [])
   for (const row of metrics) {
-    const list = groups.get(row.bucket) ?? []
-    list.push(row)
-    groups.set(row.bucket, list)
+    for (const category of categoriesByCode.get(row.beian_hao) ?? []) {
+      groups.get(category)!.push(row)
+    }
   }
-  const orderedBuckets = [...groups.keys()].sort((a, b) => futuresGroupSortKey(a).localeCompare(futuresGroupSortKey(b), "zh"))
 
   const tocRows: unknown[][] = [["页码", "工作表", "标题", "行数", "列数"]]
   const sheets: Array<{
@@ -547,9 +604,8 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
   }
 
   let seq = 4
-  for (const bucket of orderedBuckets) {
+  for (const bucket of FUTURES_WEEKLY_CATEGORIES) {
     const rows = groups.get(bucket) ?? []
-    if (rows.length === 0) continue
     const headers = ["产品名称", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
     const sorted = [...rows].sort((a, b) => (b.ret.ret_1w ?? -Infinity) - (a.ret.ret_1w ?? -Infinity))
     const aoa: unknown[][] = []
@@ -568,7 +624,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
       set(i + 1, 6, row.sharpe_1y, bodyStyle(alt, undefined, "0.0000"))
       set(i + 1, 7, row.calmar_1y, bodyStyle(alt, undefined, "0.0000"))
     })
-    const name = sheetName(seq, bucket)
+    const name = bucket.slice(0, 31)
     sheets.push({ name, title: bucket, rows: sorted.length, cols: 8, aoa, styles })
     tocRows.push([seq, name, bucket, sorted.length, 8])
     seq += 1
@@ -576,7 +632,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
 
   const tocWs = XLSX.utils.aoa_to_sheet(tocRows)
   styleAoaSheet(tocWs, tocRows.length, 5, (r) => (r === 0 ? headerStyle() : undefined), XLSX)
-  tocWs["!cols"] = [{ wch: 10 }, { wch: 28 }, { wch: 22 }, { wch: 10 }, { wch: 10 }]
+  tocWs["!cols"] = [{ wch: 10 }, { wch: 28 }, { wch: 36 }, { wch: 10 }, { wch: 10 }]
   XLSX.utils.book_append_sheet(wb, tocWs, "目录")
 
   for (const sheet of sheets) {
@@ -594,7 +650,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
       ]
       ws["!rows"] = Array.from({ length: sheet.aoa.length }, (_, i) => ({ hpt: i === 0 ? 20 : 22 }))
     } else {
-      ws["!cols"] = [{ wch: 22 }, ...Array.from({ length: Math.max(0, maxCol - 1) }, () => ({ wch: 14 }))]
+      ws["!cols"] = [{ wch: 36 }, ...Array.from({ length: Math.max(0, maxCol - 1) }, () => ({ wch: 14 }))]
       ws["!rows"] = Array.from({ length: sheet.aoa.length }, () => ({ hpt: 27 }))
     }
     XLSX.utils.book_append_sheet(wb, ws, sheet.name)
@@ -605,7 +661,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
   const mm = weekEnd.slice(5, 7)
   const dd = weekEnd.slice(8, 10)
   const fileName = `${weeklyReviewPoolFileLabel(pools)}周度回顾（期货） - ${yy}.${mm}.${dd}.xlsx`
-  return { buffer, fileName, fundCount: funds.length, groupCount: orderedBuckets.length }
+  return { buffer, fileName, fundCount: classified.length, groupCount: FUTURES_WEEKLY_CATEGORIES.length }
 }
 
 function styleAoaSheet(

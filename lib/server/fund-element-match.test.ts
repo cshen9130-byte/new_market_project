@@ -8,6 +8,7 @@ import {
   type FundMatchCandidate,
 } from "./fund-contract-element-extract"
 import { fundNameCore } from "./fund-picker-search"
+import { mergeOfficialProductRow } from "./fund-name-match"
 
 function elements(patch: Partial<ExtractedFundElements>): ExtractedFundElements {
   return {
@@ -57,6 +58,50 @@ describe("fund name core", () => {
     assert.equal(fundNameCore("知行稳健1号私募投资基金"), "知行稳健1号")
     assert.equal(fundNameCore("知行投资基金"), "知行")
     assert.equal(fundNameCore("知行稳健1号私募证券投资基金"), "知行稳健1号")
+  })
+})
+
+describe("renamed product keeps the current name", () => {
+  const current = "图斯和贞二号私募证券投资基金"
+  const former = "图斯鑫源森私募证券投资基金"
+  const sw2824: FundMatchCandidate[] = [
+    {
+      beian_hao: "SW2824",
+      product_name: current,
+      short_name: null,
+      former_names: [former],
+    },
+  ]
+
+  it("treats a real AMAC rename as the current name and remembers the 曾用名", () => {
+    const merged = mergeOfficialProductRow(
+      { beian_hao: "SW2824", product_name: former, short_name: null },
+      current,
+    )
+    assert.equal(merged.product_name, current)
+    assert.equal(merged.short_name, null)
+    assert.deepEqual(merged.former_names, [former])
+  })
+
+  it("does not treat a suffix-only difference as a rename", () => {
+    const merged = mergeOfficialProductRow(
+      { beian_hao: "SW2824", product_name: "图斯和贞二号", short_name: null },
+      current,
+    )
+    assert.equal(merged.product_name, "图斯和贞二号")
+    assert.equal(merged.former_names, undefined)
+  })
+
+  it("recognizes SW2824 when the contract uses the current name", () => {
+    const extracted = elements({ fund_name: current, register_number: "SW2824" })
+    assert.equal(discardDisagreedRegister(extracted, sw2824).register_number, "SW2824")
+    assert.equal(pickHighConfidenceFundMatch(extracted, sw2824)?.product_name, current)
+  })
+
+  it("still matches SW2824 when the contract uses the former name", () => {
+    const extracted = elements({ fund_name: former, register_number: "SW2824" })
+    assert.equal(discardDisagreedRegister(extracted, sw2824).register_number, "SW2824")
+    assert.equal(pickHighConfidenceFundMatch(extracted, sw2824)?.product_name, current)
   })
 })
 

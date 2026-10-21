@@ -135,6 +135,24 @@ export function shareClassFamilyBeianCodes(code: string | null | undefined): str
   return [...out]
 }
 
+/**
+ * Parent filing codes for an A/B/C share class (EC272A → EC272, SEC272).
+ * The custody 估值表 is filed on the parent, so share pages reuse these codes.
+ */
+export function shareClassParentBeianCodes(code: string | null | undefined): string[] {
+  const self = String(code ?? "").trim().toUpperCase()
+  if (!self || !/[ABC]$/u.test(self)) return []
+  const out: string[] = []
+  const seen = new Set<string>([self])
+  for (const candidate of shareClassFamilyBeianCodes(self)) {
+    const upper = candidate.trim().toUpperCase()
+    if (!upper || seen.has(upper) || /[ABC]$/u.test(upper)) continue
+    seen.add(upper)
+    out.push(upper)
+  }
+  return out
+}
+
 /** SQL: same normalization as beianFamilyKey. */
 export function sqlBeianFamilyKey(codeExpr: string): string {
   const base = `regexp_replace(UPPER(BTRIM(${codeExpr})), '[ABC]$', '')`

@@ -7,6 +7,7 @@
  */
 
 import { query } from "@/lib/db"
+import { shareClassParentBeianCodes } from "@/lib/server/share-class-product"
 import { readValuationCache, writeValuationCache } from "@/lib/server/valuation-precomputed-cache"
 
 export type TouchedValuationFund = {
@@ -64,12 +65,16 @@ function dropValuationMemoryCache(beianHaos: string[]): void {
 export async function lookupLatestValuationDateForBeian(beianHao: string): Promise<string | null> {
   const code = beianHao.trim().toUpperCase()
   if (!code) return null
+  // Share classes borrow the parent 估值表, so freshness follows that table too.
+  const codes = [code, ...shareClassParentBeianCodes(code)]
   const rows = await query<{ latest_date: string | null }>(
     `SELECT GREATEST(
-       (SELECT MAX(valuation_date) FROM ops_email_valuation_records WHERE product_code = $1),
-       (SELECT MAX(valuation_date) FROM ops_email_valuation_fund_metrics_latest WHERE product_code = $1)
+       (SELECT MAX(valuation_date) FROM ops_email_valuation_records
+        WHERE UPPER(BTRIM(product_code)) = ANY($1::text[])),
+       (SELECT MAX(valuation_date) FROM ops_email_valuation_fund_metrics_latest
+        WHERE UPPER(BTRIM(product_code)) = ANY($1::text[]))
      )::text AS latest_date`,
-    [code],
+    [codes],
   )
   return rows[0]?.latest_date?.slice(0, 10) ?? null
 }

@@ -56,6 +56,43 @@ export function applyOfficialProductFields(
   return { product_name, short_name: short }
 }
 
+/**
+ * Display the current official name, and keep a real former name (曾用名) only as
+ * an alias so a renamed product still matches older contracts.
+ */
+export function mergeOfficialProductRow<T extends {
+  product_name: string
+  short_name: string | null
+  former_names?: string[]
+}>(stored: T, officialName: string | null | undefined): T {
+  const names = applyOfficialProductFields(stored.product_name, officialName, stored.short_name)
+  const former = new Set(stored.former_names ?? [])
+  const currentKey = fundNameKey(names.product_name)
+  const addFormer = (value: string | null | undefined) => {
+    const name = (value ?? "").trim()
+    if (!name || (currentKey && fundNameKey(name) === currentKey)) return
+    former.add(name)
+  }
+  addFormer(stored.product_name)
+  if (stored.short_name && stored.short_name.trim() !== stored.product_name.trim()) {
+    addFormer(stored.short_name)
+  }
+  if (currentKey) {
+    for (const alias of [...former]) {
+      if (fundNameKey(alias) === currentKey) former.delete(alias)
+    }
+  }
+  const former_names = [...former]
+  const next: T = {
+    ...stored,
+    product_name: names.product_name,
+    short_name: names.short_name,
+  }
+  if (former_names.length) next.former_names = former_names
+  else delete next.former_names
+  return next
+}
+
 /** Prefer the AMAC official name when it is a real rename, not just a suffix difference. */
 export function preferAmacOfficialName(
   stored: string | null | undefined,

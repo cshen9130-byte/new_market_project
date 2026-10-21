@@ -42,8 +42,9 @@ import {
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { resolveRouteFundIdFast } from "@/lib/server/fund-detail-fast-path"
 import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
-import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
-import { lookupManagedProductOverride, lookupManagedProductCustodian, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
+import { shareClassLetterFromName, sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import { lookupManagedProductOverride, lookupManagedProductCustodian, remapManagedProductBeianCode, resolveManagedProductBeianIgnoringShareClass } from "@/lib/server/managed-product-beian"
+import { shareClassParentBeianCodes } from "@/lib/server/share-class-product"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import {
   cacheFreshValuationCurves,
@@ -2388,15 +2389,16 @@ export async function getFundValuationAllocation(
   }
 
   const beian_hao = await resolveRouteFundIdFast(rawBeianHao)
+  const product_name = await resolveFundName(beian_hao)
 
   const candidateCodes = new Set<string>([beian_hao])
   const remapped = remapManagedProductBeianCode(beian_hao)
   if (remapped) candidateCodes.add(remapped)
   const override = lookupManagedProductOverride(beian_hao)
   if (override?.beian_hao) candidateCodes.add(override.beian_hao)
+  await includeShareClassParentValuation(candidateCodes, beian_hao, product_name)
 
-  const [product_name, candidateHits, fundMetaEarly] = await Promise.all([
-    resolveFundName(beian_hao),
+  const [candidateHits, fundMetaEarly] = await Promise.all([
     Promise.all(
       [...candidateCodes].map(async (code) => {
         const [mRows, hResult] = await Promise.all([
@@ -3666,6 +3668,44 @@ export async function getFundAllocationTrend(
   return buildAllocationTrendFromSnapshots(snapshots, mode)
 }
 
+function shareClassLetterFromCode(code: string): "" | "A" | "B" | "C" {
+  const match = code.trim().toUpperCase().match(/([ABC])$/u)
+  return match ? (match[1] as "A" | "B" | "C") : ""
+}
+
+/** Parent / same-class codes only. A B-class 估值表 must not fill an A-class page. */
+function isCompatibleValuationCode(code: string, targetLetter: "A" | "B" | "C"): boolean {
+  const letter = shareClassLetterFromCode(code)
+  if (!letter) return true
+  return letter === targetLetter
+}
+
+/**
+ * A share class usually has no custody 估值表 of its own. Reuse the parent
+ * product's table (same holdings and asset snapshot) on every share page.
+ */
+async function includeShareClassParentValuation(
+  candidateCodes: Set<string>,
+  beian: string,
+  productName: string | null,
+): Promise<void> {
+  const targetLetter = shareClassLetterFromCode(beian) || shareClassLetterFromName(productName)
+  if (!targetLetter) return
+
+  for (const code of shareClassParentBeianCodes(beian)) candidateCodes.add(code)
+  if (productName) {
+    const parent = resolveManagedProductBeianIgnoringShareClass(productName)
+    if (parent) candidateCodes.add(parent)
+  }
+  await enrichCandidateCodesFromValuationHistory(candidateCodes, productName)
+
+  const self = beian.trim().toUpperCase()
+  for (const code of [...candidateCodes]) {
+    if (code.trim().toUpperCase() === self) continue
+    if (!isCompatibleValuationCode(code, targetLetter)) candidateCodes.delete(code)
+  }
+}
+
 async function enrichCandidateCodesFromValuationHistory(
   candidateCodes: Set<string>,
   productName: string | null,
@@ -3710,7 +3750,16 @@ async function resolveFundValuationCandidateCodes(rawBeianHao: string): Promise<
   if (remapped) candidateCodes.add(remapped)
   const override = lookupManagedProductOverride(beian_hao)
   if (override?.beian_hao) candidateCodes.add(override.beian_hao)
+  await includeShareClassParentValuation(candidateCodes, beian_hao, product_name)
   await enrichCandidateCodesFromValuationHistory(candidateCodes, product_name)
+  const targetLetter = shareClassLetterFromCode(beian_hao) || shareClassLetterFromName(product_name)
+  if (targetLetter) {
+    const self = beian_hao.trim().toUpperCase()
+    for (const code of [...candidateCodes]) {
+      if (code.trim().toUpperCase() === self) continue
+      if (!isCompatibleValuationCode(code, targetLetter)) candidateCodes.delete(code)
+    }
+  }
   return { beian_hao, product_name, candidateCodes: [...candidateCodes] }
 }
 

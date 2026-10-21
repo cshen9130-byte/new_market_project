@@ -129,7 +129,7 @@ export function WeeklyReviewDataStatus({
             <h3 className="text-xs font-semibold text-foreground">{embedded ? "近三周数据状态" : "JY跟踪池 · 周度回顾"}</h3>
             <p className="mt-0.5 text-[11px] leading-4 text-zinc-400 max-w-3xl">
               {variant === "futures"
-                ? "期货、CTA 和期权策略与周度回顾（期货）同一批产品、同一份额合并。"
+                ? "量化期货和主观期货与周度回顾（期货）同一批产品、同一份额合并。量化 6 类里，混合、量价、商品不进入；主观 6 类为黑色、有色、能化、农产、多板块（包含 MOM）和 MOM。一只产品可以出现在多类里，合计产品数按备案号去重。"
                 : "股票策略与周度回顾（股票）同一批产品、同一份额合并。"}
               {" "}某一周算有数据，是指周一到周五里有一条周报会用来写近一周的净值。缺失按更新方式拆开：同一天优先手动更新，其次邮箱抓取，再次 fof99。份额家族里较新的一条算这个产品的来源。没有这些记录的算无团队更新。来源日期落在缺失的那一周里，表示通道已经有数，周报序列没有采用。
             </p>
@@ -222,12 +222,8 @@ export function WeeklyReviewDataStatus({
                 <td className="px-4 py-1.5 text-zinc-700 dark:text-zinc-200">合计</td>
                 <td className="px-3 py-1.5" />
                 <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(visible.fund_count)}</td>
-                {visible.weeks.map((week, index) => {
-                  const missing = visible.categories.reduce((sum, category) => sum + (category.weeks[index]?.missing ?? 0), 0)
-                  const bySource = WEEKLY_REVIEW_SOURCE_ORDER.reduce((acc, key) => {
-                    acc[key] = visible.categories.reduce((sum, category) => sum + (category.weeks[index]?.by_source[key] ?? 0), 0)
-                    return acc
-                  }, { email: 0, manual: 0, fof99: 0, none: 0 } as Record<WeeklyReviewSource, number>)
+                {visible.weeks.map((week) => {
+                  const { missing, bySource } = uniqueWeekMissing(visible.categories, week.week_end)
                   return (
                     <WeekCells key={week.week_end} missing={missing} summary={missing === 0 ? "" : sourceSummary(bySource)} />
                   )
@@ -244,7 +240,31 @@ export function WeeklyReviewDataStatus({
   )
 }
 
-function WeekCells({ missing, summary }: { missing: number; summary: string }) {
+function uniqueWeekMissing(
+  categories: WeeklyReviewCategoryStatus[],
+  weekEnd: string,
+): { missing: number; bySource: Record<WeeklyReviewSource, number> } {
+  const byCode = new Map<string, WeeklyReviewSource>()
+  for (const category of categories) {
+    for (const fund of category.missing_funds) {
+      if (fund.weeks[weekEnd] !== false) continue
+      if (!byCode.has(fund.beian_hao)) byCode.set(fund.beian_hao, fund.source)
+    }
+  }
+  const bySource: Record<WeeklyReviewSource, number> = { email: 0, manual: 0, fof99: 0, none: 0 }
+  for (const source of byCode.values()) bySource[source] += 1
+  return { missing: byCode.size, bySource }
+}
+
+function WeekCells({ missing, summary, blank = false }: { missing: number; summary: string; blank?: boolean }) {
+  if (blank) {
+    return (
+      <>
+        <td className="px-3 py-1.5 text-right text-zinc-400">—</td>
+        <td className="px-3 py-1.5 text-zinc-400">—</td>
+      </>
+    )
+  }
   return (
     <>
       <td className={`px-3 py-1.5 text-right tabular-nums ${missing > 0 ? "text-red-600" : "text-zinc-400"}`}>
@@ -279,7 +299,7 @@ function CategoryRows({
           <button
             type="button"
             onClick={onToggle}
-            className="inline-flex items-center gap-1 text-left text-zinc-700 dark:text-zinc-200 hover:text-red-600"
+            className="flex items-start gap-1 text-left whitespace-normal text-zinc-700 dark:text-zinc-200 hover:text-red-600"
           >
             {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
             {category.bucket}
@@ -290,6 +310,7 @@ function CategoryRows({
         {category.weeks.map((week) => (
           <WeekCells
             key={week.week_end}
+            blank={category.total === 0}
             missing={week.missing}
             summary={week.missing === 0 ? "" : sourceSummary(week.by_source)}
           />
@@ -298,7 +319,9 @@ function CategoryRows({
       {open && (
         <tr className="border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/30">
           <td colSpan={3 + weekCount * 2} className="px-4 py-2">
-            {category.missing_funds.length === 0 ? (
+            {category.total === 0 ? (
+              <p className="text-[11px] text-zinc-400">这一类没有产品。</p>
+            ) : category.missing_funds.length === 0 ? (
               <p className="text-[11px] text-zinc-400">近三周都有净值。</p>
             ) : (
               <div>

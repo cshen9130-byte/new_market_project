@@ -1,5 +1,7 @@
 import { query } from "@/lib/db"
+import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import {
+  mergeOfficialProductRow,
   sqlFundNameMatch,
   sqlFundNameMatchPriority,
   sqlShareClassProductNameGuard,
@@ -20,6 +22,8 @@ export type FundPickerSearchRow = {
   product_name: string
   short_name: string | null
   strategy_one?: string | null
+  /** Stored names that differ from the current official name. Not shown in pickers. */
+  former_names?: string[]
 }
 
 const INVALID_REGISTER_VALUES = new Set(["-", "—", "无", "null", "none", "n/a", "NA"])
@@ -302,6 +306,41 @@ async function searchFundsBroad(name: string, limit = 10): Promise<FundPickerSea
   })
 }
 
+/** Current AMAC name for a 备案号. Missing table or no rename leaves the stored name. */
+export async function withCurrentProductNames<T extends {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  former_names?: string[]
+}>(rows: T[]): Promise<T[]> {
+  if (!rows.length) return rows
+  const overlaid = await overlayAmacOfficialProductNames(rows)
+  return rows.map((row, index) => mergeOfficialProductRow(row, overlaid[index]?.product_name))
+}
+
+async function searchAmacFundsByName(name: string, limit = 10): Promise<FundPickerSearchRow[]> {
+  const trimmed = name.trim()
+  if (!trimmed || normalizeRegisterCode(trimmed)) return []
+  const core = fundNameCore(trimmed)
+  const ilike = `%${trimmed.slice(0, Math.min(trimmed.length, 16))}%`
+  const coreIlike = core ? `%${core.slice(0, Math.min(core.length, 12))}%` : ilike
+  return query<FundPickerSearchRow>(
+    `SELECT BTRIM(fund_no) AS beian_hao,
+            BTRIM(fund_name) AS product_name,
+            NULL::text AS short_name
+     FROM amac_private_funds
+     WHERE ${sqlFundNameMatch("fund_name", "$1")}
+        OR fund_name ILIKE $2
+        OR fund_name ILIKE $3
+     ORDER BY ${sqlFundNameMatchPriority("fund_name", "$1")}, fund_name ASC
+     LIMIT $4`,
+    [trimmed, ilike, coreIlike, limit],
+  ).catch((err) => {
+    console.error("[fund-picker-search] searchAmacFundsByName", err)
+    return []
+  })
+}
+
 async function enrichStrategyOne(rows: FundPickerSearchRow[]): Promise<FundPickerSearchRow[]> {
   const codes = Array.from(new Set(rows.map((r) => r.beian_hao).filter(Boolean)))
   if (!codes.length) return rows
@@ -333,7 +372,16 @@ function addScoredRow(
   if (!passesShareClassFilters(beian, name, queryShareClass, originalQuery)) return
   const existing = target.get(beian)
   if (!existing || score < existing.score) {
-    target.set(beian, { row: { beian_hao: beian, product_name: name, short_name: row.short_name ?? null }, score })
+    target.set(beian, {
+      row: {
+        beian_hao: beian,
+        product_name: name,
+        short_name: row.short_name ?? null,
+        former_names: row.former_names,
+        strategy_one: row.strategy_one,
+      },
+      score,
+    })
   }
 }
 
@@ -362,7 +410,10 @@ export async function searchTrackingFunds(q: string, limit = 20): Promise<FundPi
   const scored = new Map<string, { row: FundPickerSearchRow; score: number }>()
 
   if (registerCodes.size > 0) {
-    for (const row of await searchFundsByRegister(Array.from(registerCodes), limit)) {
+    const registerRows = await withCurrentProductNames(
+      await searchFundsByRegister(Array.from(registerCodes), limit),
+    )
+    for (const row of registerRows) {
       addScoredRow(scored, row, 0, queryShareClass, trimmed)
       const rowShareClass = shareClassFromProductName(row.product_name) ?? shareClassFromRegisterCode(row.beian_hao)
       const wantedShareClass = queryShareClass ?? directShareClass
@@ -375,18 +426,21 @@ export async function searchTrackingFunds(q: string, limit = 20): Promise<FundPi
   for (let i = 0; i < nameCandidates.length; i++) {
     const candidate = nameCandidates[i]
     if (normalizeRegisterCode(candidate)) continue
-    for (const row of await searchFundsByName(candidate, limit)) {
+    for (const row of await withCurrentProductNames(await searchFundsByName(candidate, limit))) {
+      addScoredRow(scored, row, 5 + i, queryShareClass, trimmed)
+    }
+    for (const row of await searchAmacFundsByName(candidate, limit)) {
       addScoredRow(scored, row, 5 + i, queryShareClass, trimmed)
     }
   }
 
   if (scored.size === 0) {
-    for (const row of await searchFundsBroad(trimmed, limit)) {
+    for (const row of await withCurrentProductNames(await searchFundsBroad(trimmed, limit))) {
       addScoredRow(scored, row, 20, queryShareClass, trimmed)
     }
     for (const candidate of [fundNameCore(trimmed), baseGuardQuery].filter(Boolean)) {
       if (candidate === trimmed) continue
-      for (const row of await searchFundsBroad(candidate, limit)) {
+      for (const row of await withCurrentProductNames(await searchFundsBroad(candidate, limit))) {
         addScoredRow(scored, row, 25, queryShareClass, trimmed)
       }
     }
@@ -450,5 +504,5 @@ export async function searchTrackingFunds(q: string, limit = 20): Promise<FundPi
     .slice(0, limit)
     .map((entry) => entry.row)
 
-  return enrichStrategyOne(rows)
+  return withCurrentProductNames(await enrichStrategyOne(rows))
 }

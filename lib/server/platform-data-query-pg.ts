@@ -287,7 +287,7 @@ const VALUATION_JOIN = `LEFT JOIN LATERAL (
  * A hand-uploaded NAV / 估值表 uses the upload timestamp, not the 净值日期
  * inside the file and not the fund's 备案日 / 成立日.
  */
-const FIRST_ENTRY_JOIN = `LEFT JOIN (
+const FIRST_ENTRY_SQL = `
   SELECT code, MIN(day) AS first_entry_date
   FROM (
     SELECT UPPER(BTRIM(beian_hao)) AS code,
@@ -321,8 +321,9 @@ const FIRST_ENTRY_JOIN = `LEFT JOIN (
     GROUP BY 1
   ) ingested
   WHERE code <> ''
-  GROUP BY code
-) first_entry ON first_entry.code = UPPER(BTRIM(i.beian_hao))`
+  GROUP BY code`
+
+const FIRST_ENTRY_JOIN = `LEFT JOIN (${FIRST_ENTRY_SQL}) first_entry ON first_entry.code = UPPER(BTRIM(i.beian_hao))`
 
 const PRODUCT_PAGE_NAV_JOIN = `LEFT JOIN ops_private_fund_detail_nav_cache dnav
   ON dnav.cache_key = UPPER(BTRIM(i.beian_hao))`
@@ -350,6 +351,15 @@ function shanghaiToday(): string {
 function isoDay(raw: string | null | undefined): string | null {
   const day = (raw ?? "").trim().slice(0, 10)
   return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null
+}
+
+/** NULLS LAST. Missing 首次入表 stays at the bottom in both directions. */
+function compareFirstEntry(a: string | null, b: string | null, dir: "ASC" | "DESC"): number {
+  if (a === b) return 0
+  if (!a) return 1
+  if (!b) return -1
+  const cmp = a < b ? -1 : 1
+  return dir === "ASC" ? cmp : -cmp
 }
 
 function toSeeds(rows: SeedRow[]): PlatformFundSeed[] {
@@ -881,21 +891,88 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
 
   const limitIdx = filterParams.length + 1
   const offsetIdx = filterParams.length + 2
-  const [countRows, pageRows] = await Promise.all([
-    query<{ total: string }>(
-      `SELECT COUNT(*)::text AS total
+  // Joining 首次入表 or the strategy lateral before LIMIT makes Postgres walk
+  // every matching fund and hits statement_timeout on the default 平台数据 page.
+  // Load the matching codes, sort 首次入表 in memory, then hydrate that page.
+  const orderKey = orderExpr[sort] ? sort : "first_entry_date"
+  const needsAmacForFilter = Boolean(keyword) || orderKey === "product_name"
+  const filterJoins = [
+    needsAmacForFilter ? amacJoin : "",
+    ...sharedJoins,
+    ...rowOnlyJoins.filter((join) => join !== strategyJoin),
+  ].filter(Boolean)
+  const filterFrom = `
+    FROM private_fund_info i
+    ${filterJoins.join("\n")}
+    ${whereSql}`
+
+  let total = 0
+  let pageIds: string[] = []
+  if (orderKey === "first_entry_date") {
+    const [matched, entries] = await Promise.all([
+      query<{ beian_hao: string }>(
+        `SELECT UPPER(BTRIM(i.beian_hao)) AS beian_hao ${filterFrom}`,
+        filterParams,
+      ),
+      query<{ code: string; first_entry_date: string | null }>(
+        `SELECT code, first_entry_date::text AS first_entry_date FROM (${FIRST_ENTRY_SQL}) first_entry`,
+      ),
+    ])
+    const entryByCode = new Map(entries.map((row) => [row.code, isoDay(row.first_entry_date)]))
+    const seen = new Set<string>()
+    const ranked: string[] = []
+    for (const row of matched) {
+      const id = row.beian_hao?.trim().toUpperCase()
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      ranked.push(id)
+    }
+    ranked.sort((a, b) => compareFirstEntry(entryByCode.get(a) ?? null, entryByCode.get(b) ?? null, sortDir))
+    total = ranked.length
+    const start = (page - 1) * pageSize
+    pageIds = ranked.slice(start, start + pageSize)
+  } else {
+    const idSql = `
+      SELECT BTRIM(i.beian_hao) AS beian_hao
+      ${filterFrom}
+      ORDER BY ${orderSql}`
+    const [countRows, idRows] = await Promise.all([
+      query<{ total: string }>(
+        `SELECT COUNT(*)::text AS total ${filterFrom}`,
+        filterParams,
+      ),
+      query<{ beian_hao: string }>(
+        `${idSql} LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+        [...filterParams, pageSize, (page - 1) * pageSize],
+      ),
+    ])
+    total = parseInt(countRows[0]?.total ?? "0", 10) || 0
+    pageIds = idRows.map((row) => row.beian_hao?.trim().toUpperCase()).filter(Boolean)
+  }
+  let pageRows: SeedRow[] = []
+  if (pageIds.length > 0) {
+    const loaded = await query<SeedRow>(
+      `SELECT
+         i.beian_hao,
+         ${nameExpr} AS product_name,
+         ${strategy.l1} AS strategy_l1,
+         ${strategy.l2} AS strategy_l2,
+         ${strategy.l3} AS strategy_l3,
+         NULL::text AS first_entry_date,
+         i.latest_nav::text AS latest_nav,
+         i.latest_nav_date::text AS latest_nav_date
        FROM private_fund_info i
        ${amacJoin}
-       ${sharedJoins.join("\n")}
-       ${whereSql}`,
-      filterParams,
-    ),
-    query<SeedRow>(
-      `${selectSql} LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-      [...filterParams, pageSize, (page - 1) * pageSize],
-    ),
-  ])
-  const total = parseInt(countRows[0]?.total ?? "0", 10) || 0
+       ${strategyJoin}
+       WHERE UPPER(BTRIM(i.beian_hao)) = ANY($1::text[])`,
+      [pageIds],
+    )
+    const byId = new Map(loaded.map((row) => [row.beian_hao.trim().toUpperCase(), row]))
+    pageRows = pageIds.flatMap((id) => {
+      const row = byId.get(id)
+      return row ? [row] : []
+    })
+  }
   let data = await attachInceptionDates(await attachProductPageNav(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(pageRows)), pageRows)))
   data = resortPage(data, sort, sortDir)
   if (operationDateFilter === "present") data = await withOperationDates(data)

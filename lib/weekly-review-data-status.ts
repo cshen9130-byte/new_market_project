@@ -145,7 +145,7 @@ export function buildWeeklyReviewDataStatus(args: {
     list.push(fund)
     byBucket.set(fund.bucket, list)
   }
-  const names = args.bucketOrder.filter((name) => byBucket.has(name))
+  const names = [...args.bucketOrder]
   for (const name of [...byBucket.keys()].sort((a, b) => a.localeCompare(b, "zh"))) {
     if (!names.includes(name)) names.push(name)
   }
@@ -195,7 +195,7 @@ export function buildWeeklyReviewDataStatus(args: {
   return {
     variant: args.variant,
     weeks: args.weeks.map((week) => ({ week_start: week.week_start, week_end: week.week_end })),
-    fund_count: args.funds.length,
+    fund_count: new Set(args.funds.map((fund) => fund.beian_hao)).size,
     categories,
     generated_at: args.generatedAt,
   }

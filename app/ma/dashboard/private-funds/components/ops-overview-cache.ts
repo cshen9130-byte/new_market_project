@@ -73,7 +73,7 @@ export function channelCacheKey(channel: UpdateChannel): string {
 }
 
 export function weeklyCacheKey(variant: WeeklyReviewStatusVariant, pools: string, weekEnd: string): string {
-  return `weekly:${variant}:${pools}:${weekEnd}`
+  return `weekly:v5:${variant}:${pools}:${weekEnd}`
 }
 
 export function prefetchOpsCache(

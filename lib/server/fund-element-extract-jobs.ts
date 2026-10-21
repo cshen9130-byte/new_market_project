@@ -2,6 +2,7 @@ import { createHash } from "crypto"
 import { promises as fs } from "fs"
 import path from "path"
 import { query, withTransaction } from "@/lib/db"
+import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import {
   FUND_ELEMENT_BASIC_KEYS,
   FUND_ELEMENT_SUBSCRIPTION_KEYS,
@@ -518,6 +519,11 @@ export async function listElementExtractJobs(input?: {
       original_filename ILIKE $${i}
       OR COALESCE(product_name, '') ILIKE $${i}
       OR COALESCE(beian_hao, '') ILIKE $${i}
+      OR EXISTS (
+        SELECT 1 FROM amac_private_funds amac
+        WHERE UPPER(BTRIM(amac.fund_no)) = UPPER(BTRIM(beian_hao))
+          AND COALESCE(amac.fund_name, '') ILIKE $${i}
+      )
     )`)
     params.push(`%${q}%`)
     i++
@@ -539,7 +545,57 @@ export async function listElementExtractJobs(input?: {
      LIMIT $${i} OFFSET $${i + 1}`,
     [...params, limit, offset],
   )
-  return { rows: rows.map(mapJobRow), total }
+  return { rows: await overlayExtractJobProductNames(rows.map(mapJobRow)), total }
+}
+
+/** Show the current product name for a 备案号, not a stored 曾用名. */
+async function overlayExtractJobProductNames(rows: ElementExtractJobRow[]): Promise<ElementExtractJobRow[]> {
+  const targets: Array<{
+    index: number
+    kind: "job" | "match"
+    matchIndex: number
+    beian_hao: string
+    product_name: string
+    short_name: string | null
+  }> = []
+  rows.forEach((row, index) => {
+    const beian = (row.beian_hao ?? "").trim()
+    const name = (row.product_name ?? "").trim()
+    if (beian && name) {
+      targets.push({ index, kind: "job", matchIndex: -1, beian_hao: beian, product_name: name, short_name: null })
+    }
+    for (const [matchIndex, fund] of (row.matched_funds ?? []).entries()) {
+      const fundBeian = fund.beian_hao.trim()
+      const fundName = fund.product_name.trim()
+      if (!fundBeian || !fundName) continue
+      targets.push({
+        index,
+        kind: "match",
+        matchIndex,
+        beian_hao: fundBeian,
+        product_name: fundName,
+        short_name: fund.short_name,
+      })
+    }
+  })
+  if (!targets.length) return rows
+  const overlaid = await overlayAmacOfficialProductNames(targets)
+  const next = rows.map((row) => ({
+    ...row,
+    matched_funds: row.matched_funds?.map((fund) => ({ ...fund })) ?? row.matched_funds,
+  }))
+  overlaid.forEach((item, i) => {
+    const src = targets[i]
+    if (!src || item.product_name === src.product_name) return
+    if (src.kind === "job") {
+      next[src.index] = { ...next[src.index], product_name: item.product_name }
+      return
+    }
+    const funds = next[src.index].matched_funds
+    if (!funds?.[src.matchIndex]) return
+    funds[src.matchIndex] = { ...funds[src.matchIndex], product_name: item.product_name, short_name: item.short_name }
+  })
+  return next
 }
 
 export async function listNeedsReviewExtractJobs(): Promise<ElementExtractJobRow[]> {

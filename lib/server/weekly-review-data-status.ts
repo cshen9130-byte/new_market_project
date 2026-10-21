@@ -23,9 +23,9 @@ import {
   type WeeklyReviewFund,
 } from "@/lib/server/jy-weekly-review"
 import {
-  bucketForFuturesFund,
+  FUTURES_WEEKLY_CATEGORIES,
+  futuresWeeklyCategories,
   isFuturesWeeklyFund,
-  previewFuturesWeeklyReview,
 } from "@/lib/server/jy-weekly-review-futures"
 import {
   normalizeWeeklyReviewPools,
@@ -155,28 +155,35 @@ export async function buildWeeklyReviewDataStatusReport(
   const pools = normalizeWeeklyReviewPools(query.pools ?? ["jy"])
   const weeks = lastThreeWeeks(anchorWeekEnd(today, query.weekEnd))
   const asOf = weeks[0]?.week_end ?? defaultWeeklyReviewWeekEnd(today)
-  const funds = await loadCollapsedFunds(variant, asOf, pools)
+  const collapsed = await loadCollapsedFunds(variant, asOf, pools)
+  const funds = variant === "futures"
+    ? collapsed.filter((fund) => futuresWeeklyCategories(fund).length > 0)
+    : collapsed
   const codes = [...new Set(funds.flatMap((fund) => shareClassFamilyBeianCodes(fund.beian_hao)))]
   const [histories, channels] = await Promise.all([
     loadWeeklyReviewNavHistories(funds, asOf),
     loadUpdateChannels(codes),
   ])
-  const bucketOf = variant === "futures" ? bucketForFuturesFund : bucketForFund
-  const bucketOrder = (variant === "futures" ? previewFuturesWeeklyReview(funds) : previewWeeklyReview(funds))
-    .map((group) => group.bucket)
+  const bucketOrder = variant === "futures"
+    ? [...FUTURES_WEEKLY_CATEGORIES]
+    : previewWeeklyReview(funds).map((group) => group.bucket)
 
-  const inputs: StatusFundInput[] = funds.map((fund) => {
+  const inputs: StatusFundInput[] = []
+  for (const fund of funds) {
     const channel = channelForFund(fund, channels)
     const history = histories.get(fund.beian_hao) ?? []
-    return {
-      beian_hao: fund.beian_hao,
-      name: displayName(fund.product_name, fund.short_name, fund.beian_hao),
-      bucket: bucketOf(fund),
-      nav_dates: history.map((point) => point.nav_date),
-      source: channel.source,
-      source_date: channel.date,
+    const buckets = variant === "futures" ? futuresWeeklyCategories(fund) : [bucketForFund(fund)]
+    for (const bucket of buckets) {
+      inputs.push({
+        beian_hao: fund.beian_hao,
+        name: displayName(fund.product_name, fund.short_name, fund.beian_hao),
+        bucket,
+        nav_dates: history.map((point) => point.nav_date),
+        source: channel.source,
+        source_date: channel.date,
+      })
     }
-  })
+  }
 
   return buildWeeklyReviewDataStatus({
     variant,
@@ -196,7 +203,7 @@ export async function getWeeklyReviewDataStatus(
   const today = shanghaiTodayIsoDate()
   const pools = normalizeWeeklyReviewPools(query.pools ?? ["jy"])
   const asOf = anchorWeekEnd(today, query.weekEnd)
-  const key = `ops-weekly-review-status:v3:${variant}:${asOf}:${pools.join(",")}`
+  const key = `ops-weekly-review-status:v5:${variant}:${asOf}:${pools.join(",")}`
   return serveOpsSnapshot(
     key,
     refresh,
