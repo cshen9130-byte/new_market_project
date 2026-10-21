@@ -405,11 +405,11 @@ def ocr_image(engine, img: np.ndarray, on_strip=None, gap: float = ROW_GAP) -> l
     while y < height:
         y1 = min(height, y + STRIP_H)
         strip = Image.fromarray(img[y:y1])
-        result = engine(strip)
         strip_index += 1
         if on_strip:
             on_strip(strip_index, strips)
         log(f"  strip {strip_index}/{strips} y={y}")
+        result = engine(strip)
         txts = getattr(result, "txts", None) or [] if result is not None else []
         boxes_attr = getattr(result, "boxes", None) if result is not None else None
         scores = getattr(result, "scores", None) if result is not None else None
@@ -731,8 +731,11 @@ def header_quality(frame: pd.DataFrame) -> int:
 
 def needs_ocr_retry(frame: pd.DataFrame) -> bool:
     labels = sum(1 for name in frame.columns if is_header_label(str(name)))
-    junk = len(frame.columns) - labels
-    return len(frame.index) < 3 or labels < 8 or junk > 0
+    # Extra columns such as 夏普 or 回撤 are normal on a performance sheet.
+    # A second full-page OCR only pays for itself when the header or the
+    # body failed. Retrying every extra column freezes the progress bar
+    # near the end of a long screenshot for several minutes.
+    return len(frame.index) < 3 or labels < 6
 
 
 def largest_embedded_image(doc: fitz.Document, page: fitz.Page) -> np.ndarray | None:
@@ -809,24 +812,43 @@ def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path) -> dict[str, ob
         if shrunk:
             warnings.append(f"第 {page_index + 1} 页图片过高，已缩小后再识别。")
         log(f"  size={image.shape[1]}x{image.shape[0]}")
-        def on_strip(index: int, total: int, page_index: int = page_index, page_limit: int = page_limit) -> None:
+
+        def on_strip(
+            index: int,
+            total: int,
+            *,
+            phase: str = "first",
+            page_index: int = page_index,
+            page_limit: int = page_limit,
+        ) -> None:
             span = 80 / max(page_limit, 1)
-            percent = 12 + span * page_index + span * (index / max(total, 1))
-            report(percent, f"第 {page_index + 1}/{page_limit} 页，识别 {index}/{total} 段")
+            # First pass uses the first 70% of this page. A retry continues
+            # upward from there, so the bar does not sit still and then jump backward.
+            if phase == "retry":
+                base = 12 + span * page_index + span * 0.7
+                width = span * 0.3
+                verb = "再识别"
+            else:
+                base = 12 + span * page_index
+                width = span * 0.7
+                verb = "识别"
+            percent = base + width * (index / max(total, 1))
+            report(percent, f"第 {page_index + 1}/{page_limit} 页，{verb} {index}/{total} 段")
 
         frame = None
         notes: list[str] = []
         try:
             boxes = ocr_image(engine, image, on_strip, gap)
+            report(12 + (80 / max(page_limit, 1)) * (page_index + 0.7), f"第 {page_index + 1}/{page_limit} 页，正在整理表格")
             frame, notes = page_to_frame(image, boxes, gap)
         except RuntimeError:
             frame = None
         if frame is None or needs_ocr_retry(frame):
-            report(min(99, 12 + 80 * (page_index + 0.5) / max(page_limit, 1)), "表头不完整，正在再识别一次")
+            report(12 + (80 / max(page_limit, 1)) * (page_index + 0.7), "表头不完整，正在再识别一次")
             if fallback is None:
                 fallback = rapid_ocr(params={"Global.log_level": "error", "Det.unclip_ratio": 1.05})
             try:
-                boxes = ocr_image(fallback, image, on_strip, gap)
+                boxes = ocr_image(fallback, image, lambda index, total: on_strip(index, total, phase="retry"), gap)
                 second, second_notes = page_to_frame(image, boxes, gap)
                 if frame is None or header_quality(second) > header_quality(frame):
                     frame, notes = second, second_notes

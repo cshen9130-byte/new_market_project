@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Search } from "lucide-react"
 import { NavPresenceBadge } from "@/components/ma/nav-presence-badge"
+import { openFundCompareWithProducts } from "@/lib/ma-product-selection-actions"
 import { cn } from "@/lib/utils"
 
 type ProductHit = {
@@ -52,6 +53,10 @@ function openInNewTab(href: string) {
   window.open(href, "_blank", "noopener,noreferrer")
 }
 
+function pickKey(beian: string) {
+  return beian.trim().toUpperCase()
+}
+
 export function HeaderGlobalSearch({ className }: { className?: string }) {
   const [query, setQuery] = useState("")
   const [products, setProducts] = useState<ProductHit[]>([])
@@ -62,6 +67,7 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
   const [hoverIdx, setHoverIdx] = useState(0)
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null)
   const [mounted, setMounted] = useState(false)
+  const [picked, setPicked] = useState<ProductHit[]>([])
   const wrapRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -85,9 +91,9 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
   useEffect(() => {
     const q = query.trim()
     if (!q) {
+      seqRef.current += 1
       setProducts([])
       setManagers([])
-      setOpen(false)
       setLoading(false)
       return
     }
@@ -129,6 +135,11 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
   }, [query, focused])
+
+  useEffect(() => {
+    if (query.trim()) return
+    setOpen(focused && picked.length > 0)
+  }, [query, focused, picked.length])
 
   useEffect(() => {
     if (!open) {
@@ -186,10 +197,40 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
   function onFocus() {
     setFocused(true)
     updateDropdownPos()
-    if (query.trim()) setOpen(true)
+    if (query.trim() || picked.length > 0) setOpen(true)
+  }
+
+  function isPicked(beian: string) {
+    const key = pickKey(beian)
+    return picked.some((hit) => pickKey(hit.beian_hao) === key)
+  }
+
+  function togglePick(hit: ProductHit) {
+    const key = pickKey(hit.beian_hao)
+    setPicked((prev) => (
+      prev.some((item) => pickKey(item.beian_hao) === key)
+        ? prev.filter((item) => pickKey(item.beian_hao) !== key)
+        : [...prev, hit]
+    ))
+  }
+
+  function startCompare() {
+    if (picked.length < 2) return
+    const opened = openFundCompareWithProducts(
+      picked.map((hit) => ({
+        id: hit.beian_hao,
+        product_name: hit.product_name,
+        beian_hao: hit.beian_hao,
+      })),
+    )
+    if (!opened) return
+    setPicked([])
+    setOpen(false)
+    setFocused(false)
   }
 
   const showEmpty = open && focused && query.trim() && !loading && hits.length === 0
+  const showDropdown = hits.length > 0 || showEmpty || (open && picked.length > 0)
 
   return (
     <>
@@ -258,7 +299,7 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
           )}
         </div>
       </div>
-      {mounted && open && dropdownPos && (hits.length > 0 || showEmpty)
+      {mounted && open && dropdownPos && showDropdown
         ? createPortal(
             <div
               ref={listRef}
@@ -267,54 +308,80 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
             >
               {showEmpty ? (
                 <div className="px-3 py-6 text-center text-xs text-muted-foreground">未找到匹配的产品或管理人</div>
-              ) : (
+              ) : hits.length > 0 ? (
                 <div className="max-h-80 overflow-y-auto py-1">
                   {products.length > 0 && (
                     <div>
-                      <div className="px-3 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-zinc-400">产品</div>
-                      {products.map((hit, idx) => (
-                        <button
-                          key={`p-${hit.beian_hao}`}
-                          type="button"
-                          data-hit-index={idx}
-                          onMouseDown={(e) => e.preventDefault()}
-                          onMouseEnter={() => setHoverIdx(idx)}
-                          onClick={() => goTo(hit)}
-                          className={cn(
-                            "flex w-full items-center gap-2 border-l-2 px-3 py-1.5 text-left transition-colors",
-                            hit.has_nav === true
-                              ? "border-emerald-500"
-                              : hit.has_nav === false
-                                ? "border-zinc-200"
-                                : "border-transparent",
-                            idx === hoverIdx ? "bg-muted/70" : "hover:bg-muted/50",
-                          )}
-                        >
-                          <span className={cn(
-                            "min-w-0 flex-1 text-xs truncate",
-                            hit.has_nav === false ? "text-zinc-400" : "text-foreground",
-                          )}>
-                            <HighlightMatch
-                              text={hit.short_name || hit.product_name}
-                              query={query.trim()}
-                              matchClassName={hit.has_nav === false ? "text-zinc-400" : "text-red-500"}
-                            />
-                          </span>
-                          {hit.has_nav === true || hit.has_nav === false ? (
-                            <NavPresenceBadge hasNav={hit.has_nav} />
-                          ) : null}
-                          <span className={cn(
-                            "shrink-0 text-[11px] tabular-nums",
-                            hit.has_nav === false ? "text-zinc-400" : "text-muted-foreground",
-                          )}>
-                            <HighlightMatch
-                              text={hit.beian_hao}
-                              query={query.trim()}
-                              matchClassName={hit.has_nav === false ? "text-zinc-400" : "text-red-500"}
-                            />
-                          </span>
-                        </button>
-                      ))}
+                      <div className="flex items-center justify-between px-3 pt-2 pb-1">
+                        <span className="text-[11px] font-semibold tracking-wide text-zinc-400">产品</span>
+                        <span className="text-[11px] text-zinc-400">勾选可对比</span>
+                      </div>
+                      {products.map((hit, idx) => {
+                        const checked = isPicked(hit.beian_hao)
+                        return (
+                          <div
+                            key={`p-${hit.beian_hao}`}
+                            data-hit-index={idx}
+                            onMouseEnter={() => setHoverIdx(idx)}
+                            className={cn(
+                              "flex w-full items-center gap-2 border-l-2 pr-3 transition-colors",
+                              hit.has_nav === true
+                                ? "border-emerald-500"
+                                : hit.has_nav === false
+                                  ? "border-zinc-200"
+                                  : "border-transparent",
+                              checked ? "bg-red-50" : idx === hoverIdx ? "bg-muted/70" : "hover:bg-muted/50",
+                            )}
+                          >
+                            <label
+                              className="flex shrink-0 cursor-pointer items-center self-stretch pl-2.5"
+                              onMouseDown={(e) => {
+                                e.preventDefault()
+                                togglePick(hit)
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                className="pointer-events-none h-3.5 w-3.5 rounded accent-red-500"
+                                checked={checked}
+                                tabIndex={-1}
+                                aria-label={`选择${hit.short_name || hit.product_name}进行对比`}
+                                onChange={() => {}}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => goTo(hit)}
+                              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+                            >
+                              <span className={cn(
+                                "min-w-0 flex-1 text-xs truncate",
+                                hit.has_nav === false ? "text-zinc-400" : "text-foreground",
+                              )}>
+                                <HighlightMatch
+                                  text={hit.short_name || hit.product_name}
+                                  query={query.trim()}
+                                  matchClassName={hit.has_nav === false ? "text-zinc-400" : "text-red-500"}
+                                />
+                              </span>
+                              {hit.has_nav === true || hit.has_nav === false ? (
+                                <NavPresenceBadge hasNav={hit.has_nav} />
+                              ) : null}
+                              <span className={cn(
+                                "shrink-0 text-[11px] tabular-nums",
+                                hit.has_nav === false ? "text-zinc-400" : "text-muted-foreground",
+                              )}>
+                                <HighlightMatch
+                                  text={hit.beian_hao}
+                                  query={query.trim()}
+                                  matchClassName={hit.has_nav === false ? "text-zinc-400" : "text-red-500"}
+                                />
+                              </span>
+                            </button>
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
                   {managers.length > 0 && (
@@ -346,6 +413,54 @@ export function HeaderGlobalSearch({ className }: { className?: string }) {
                       })}
                     </div>
                   )}
+                </div>
+              ) : null}
+              {picked.length > 0 && (
+                <div className="border-t bg-background px-3 py-2">
+                  <div className="mb-2 flex max-h-16 flex-wrap gap-1 overflow-y-auto">
+                    {picked.map((hit) => (
+                      <span
+                        key={pickKey(hit.beian_hao)}
+                        className="inline-flex max-w-full items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-700"
+                      >
+                        <span className="max-w-[200px] truncate">{hit.short_name || hit.product_name}</span>
+                        <button
+                          type="button"
+                          className="text-zinc-400 hover:text-zinc-700"
+                          aria-label={`移除${hit.short_name || hit.product_name}`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => togglePick(hit)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground hover:text-foreground"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => setPicked([])}
+                      >
+                        清空
+                      </button>
+                      {picked.length < 2 ? (
+                        <span className="truncate text-[11px] text-muted-foreground">至少再选 1 只</span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={picked.length < 2}
+                      title={picked.length < 2 ? "至少选择 2 只基金" : "打开基金对比"}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={startCompare}
+                      className="rounded bg-red-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      对比{picked.length >= 2 ? ` (${picked.length})` : ""}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>,

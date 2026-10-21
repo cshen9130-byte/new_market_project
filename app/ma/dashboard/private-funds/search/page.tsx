@@ -7,6 +7,8 @@ import { Suspense } from "react"
 import { ArrowLeft } from "lucide-react"
 import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
 import { NavPresenceBadge } from "@/components/ma/nav-presence-badge"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { pageSelectionChecked, toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
 
 type ProductRow = {
   beian_hao: string
@@ -29,6 +31,7 @@ function SearchResultsContent() {
   const [managers, setManagers] = useState<ManagerRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (!q) {
@@ -121,6 +124,17 @@ function SearchResultsContent() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs text-zinc-400">
+                      <th className="px-3 py-2 font-medium w-10">
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 rounded accent-red-500"
+                          checked={pageSelectionChecked(selected, products.map((row) => row.beian_hao))}
+                          aria-label="选择全部产品进行对比"
+                          onChange={() => {
+                            setSelected((prev) => toggleIdsInSelection(prev, products.map((row) => row.beian_hao)))
+                          }}
+                        />
+                      </th>
                       <th className="px-5 py-2 font-medium">产品名称</th>
                       <th className="px-5 py-2 font-medium w-36">备案号</th>
                       <th className="px-5 py-2 font-medium w-40">策略</th>
@@ -129,6 +143,22 @@ function SearchResultsContent() {
                   <tbody>
                     {products.map((row) => (
                       <tr key={row.beian_hao} className="border-t border-zinc-50 hover:bg-zinc-50/80">
+                        <td className="px-3 py-2.5 text-center">
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 rounded accent-red-500"
+                            checked={selected.has(row.beian_hao)}
+                            aria-label={`选择${row.short_name || row.product_name}进行对比`}
+                            onChange={() => {
+                              setSelected((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(row.beian_hao)) next.delete(row.beian_hao)
+                                else next.add(row.beian_hao)
+                                return next
+                              })
+                            }}
+                          />
+                        </td>
                         <td className="px-5 py-2.5">
                           <div className="flex min-w-0 items-center gap-2">
                             <Link
@@ -183,6 +213,14 @@ function SearchResultsContent() {
             )}
           </div>
         )}
+        <ProductSelectionPanelBound
+          data={products}
+          selected={selected}
+          setSelected={setSelected}
+          getId={(row) => row.beian_hao}
+          getName={(row) => row.product_name}
+          getBeianHao={(row) => row.beian_hao}
+        />
       </div>
     </FundDatabaseShell>
   )

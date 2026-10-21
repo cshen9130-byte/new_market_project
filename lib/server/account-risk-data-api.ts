@@ -159,11 +159,11 @@ function catalog() {
     endpoints: [
       { method: "GET", path: "/accounts", description: "已导入的单账户列表。q 可填期货公司、产品名或资金账号，例如 国泰君安期货" },
       { method: "GET", path: "/account/nav", description: "复权净值，与单账户总览净值曲线相同。例如 account=85121150&company=国泰君安期货" },
-      { method: "GET", path: "/account/daily", description: "cfmmc_daily_summary 每日结算摘要" },
-      { method: "GET", path: "/account/products", description: "cfmmc_product_pnl 品种盈亏" },
-      { method: "GET", path: "/account/positions", description: "cfmmc_positions 持仓，默认最近一个交易日" },
-      { method: "GET", path: "/account/trades", description: "cfmmc_trades 成交明细" },
-      { method: "GET", path: "/account/closes", description: "cfmmc_closes 平仓明细" },
+      { method: "GET", path: "/account/daily", description: "cfmmc_daily_summary 每日结算摘要。传 start_date 与 end_date 取历史区间" },
+      { method: "GET", path: "/account/products", description: "cfmmc_product_pnl 品种盈亏。传 start_date 与 end_date 取每个交易日" },
+      { method: "GET", path: "/account/positions", description: "历史逐日持仓。传 start_date 与 end_date 返回区间内每个交易日的持仓明细，用来还原建仓、加仓、减仓、换月。不传日期时只返回最近一个交易日，响应 history 给出库内首尾日期" },
+      { method: "GET", path: "/account/trades", description: "历史成交明细，含开/平、成交时间、实际成交日期。传 start_date 与 end_date，默认最近的在前" },
+      { method: "GET", path: "/account/closes", description: "历史平仓明细，含开仓价、平仓价、原成交序号。传 start_date 与 end_date" },
       { method: "GET", path: "/account/cashflows", description: "cfmmc_cash_flows 出入金" },
       { method: "GET", path: "/account/option-trades", description: "cfmmc_option_trades 期权成交" },
       { method: "GET", path: "/account/securities", description: "cfmmc_securities 证券成交" },
@@ -261,6 +261,31 @@ async function listAccounts(record: Record<string, string | undefined>): Promise
   })
 }
 
+const POSITION_HISTORY_NOTE =
+  "默认只返回最近一个交易日。已导入的每个交易日持仓都在库里。逐日持仓请在本接口传 start_date 和 end_date；单日用 date。成交明细是 /account/trades，平仓明细是 /account/closes，同样支持起止日期，用来还原建仓、加仓、减仓、换月。翻页看 total 和 next_offset。"
+
+async function positionHistorySpan(account: string): Promise<{
+  first_date: string | null
+  last_date: string | null
+  trading_days: number
+}> {
+  const rows = await q<{ first_date: string | null; last_date: string | null; trading_days: number | string }>(
+    `SELECT MIN(trade_date)::text AS first_date,
+            MAX(trade_date)::text AS last_date,
+            COUNT(DISTINCT trade_date)::int AS trading_days
+       FROM public.cfmmc_positions
+      WHERE account_no = $1 AND ${ACCOUNT_OK}`,
+    [account],
+  )
+  const row = rows[0]
+  const days = Number(row?.trading_days ?? 0)
+  return {
+    first_date: row?.first_date ? String(row.first_date).slice(0, 10) : null,
+    last_date: row?.last_date ? String(row.last_date).slice(0, 10) : null,
+    trading_days: Number.isFinite(days) ? days : 0,
+  }
+}
+
 async function accountExists(account: string): Promise<boolean> {
   const rows = await q<{ ok: number }>(
     `SELECT 1 AS ok FROM public.cfmmc_daily_summary WHERE account_no = $1 AND ${ACCOUNT_OK} LIMIT 1`,
@@ -326,7 +351,7 @@ async function readSheet(
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   )
-  return momDataOk({
+  const page = {
     account,
     date: snapshotDate,
     rows,
@@ -334,7 +359,19 @@ async function readSheet(
     limit,
     offset,
     next_offset: offset + rows.length < total ? offset + rows.length : null,
-  })
+  }
+  if (sheet.snapshot && !start && !end) {
+    const span = await positionHistorySpan(account)
+    return momDataOk({
+      ...page,
+      snapshot: true,
+      history: {
+        ...span,
+        note: POSITION_HISTORY_NOTE,
+      },
+    })
+  }
+  return momDataOk(page)
 }
 
 async function readNav(record: Record<string, string | undefined>): Promise<MomDataEnvelope<unknown>> {

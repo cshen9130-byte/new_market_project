@@ -144,15 +144,64 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
     }, ["account"]),
   },
   {
+    name: "cfmmc_account_daily",
+    description: "单账户监控中心的历史每日结算摘要，读 public.cfmmc_daily_summary。含客户权益、当日存取、平仓盈亏、浮动盈亏、手续费、保证金占用、风险度。传 start_date 和 end_date 取区间。",
+    inputSchema: obj({
+      account: { type: "string", description: "资金账号，例如 85121150" },
+      start_date: DATE,
+      end_date: DATE,
+      order: { type: "string", description: "1=日期升序（默认），0=降序" },
+      limit: { type: "integer", description: "默认 500，最大 2000" },
+      offset: { type: "integer" },
+    }, ["account"]),
+  },
+  {
+    name: "cfmmc_account_positions",
+    description: "单账户历史逐日持仓。传 start_date 和 end_date 返回该区间每个交易日的持仓明细：合约、买/卖持仓、开仓价、今结算价、浮动盈亏、实际成交日期。用来还原建仓、加仓、减仓、换月。不传日期时响应只含最近一个交易日，history 给出库内 first_date、last_date、trading_days。单日用 date。翻页看 next_offset。",
+    inputSchema: obj({
+      account: { type: "string", description: "资金账号" },
+      start_date: DATE,
+      end_date: DATE,
+      date: { type: "string", description: "只要某一个交易日时填 YYYY-MM-DD。查一段历史用 start_date 和 end_date" },
+      order: { type: "string", description: "1=日期升序（默认），0=降序" },
+      limit: { type: "integer", description: "默认 500，最大 2000" },
+      offset: { type: "integer" },
+    }, ["account"]),
+  },
+  {
+    name: "cfmmc_account_trades",
+    description: "单账户历史成交明细已开放。每笔含合约、成交时间、买/卖、开/平、价格、手数、成交额、手续费、平仓盈亏、实际成交日期。传 start_date 和 end_date 取区间，默认最近的在前。和持仓快照一起用来还原开平仓时点。翻页看 next_offset。",
+    inputSchema: obj({
+      account: { type: "string", description: "资金账号" },
+      start_date: DATE,
+      end_date: DATE,
+      order: { type: "string", description: "0=降序（默认），1=升序" },
+      limit: { type: "integer", description: "默认 200，最大 2000" },
+      offset: { type: "integer" },
+    }, ["account"]),
+  },
+  {
+    name: "cfmmc_account_closes",
+    description: "单账户历史平仓明细已开放。含合约、买/卖、开仓价、平仓价、手数、昨结算、平仓盈亏、原成交序号、实际成交日期。传 start_date 和 end_date 取区间，默认最近的在前。",
+    inputSchema: obj({
+      account: { type: "string", description: "资金账号" },
+      start_date: DATE,
+      end_date: DATE,
+      order: { type: "string", description: "0=降序（默认），1=升序" },
+      limit: { type: "integer", description: "默认 200，最大 2000" },
+      offset: { type: "integer" },
+    }, ["account"]),
+  },
+  {
     name: "cfmmc_rows",
-    description: "读取单账户监控中心导入写入的 public.cfmmc_*，和 MOM 母基金表分开。dataset 取 accounts、nav、daily、products、positions、trades、closes、cashflows、option-trades、securities。净值优先用 cfmmc_account_nav。除 accounts 外都要 account。",
+    description: "读取单账户监控中心导入写入的 public.cfmmc_*，和 MOM 母基金表分开。dataset 取 accounts、nav、daily、products、positions、trades、closes、cashflows、option-trades、securities。历史逐日持仓、成交、平仓已开放：positions、trades、closes 传 start_date 和 end_date。净值优先用 cfmmc_account_nav，持仓优先用 cfmmc_account_positions，成交优先用 cfmmc_account_trades。除 accounts 外都要 account。",
     inputSchema: obj({
       dataset: { type: "string", description: "accounts、nav、daily、products、positions、trades、closes、cashflows、option-trades、securities" },
       account: { type: "string", description: "资金账号。accounts 可不传。nav 例如 85121150" },
       company: { type: "string", description: "仅 nav：期货公司，例如 国泰君安期货，用来核对账号" },
       start_date: DATE,
       end_date: DATE,
-      date: { type: "string", description: "持仓快照日 YYYY-MM-DD。positions 不传则取最近交易日" },
+      date: { type: "string", description: "只要某一个交易日时填 YYYY-MM-DD。历史区间用 start_date 和 end_date。positions 三个都不传时才返回最近一个交易日，响应 history 里有库内首尾日期" },
       order: { type: "string", description: "1=升序，0=降序。成交和平仓默认降序" },
       limit: { type: "integer", description: "最大 2000" },
       offset: { type: "integer" },
@@ -203,6 +252,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Mo
       return handleAccountRiskDataRequest("accounts", record)
     case "cfmmc_account_nav":
       return handleAccountRiskDataRequest("account/nav", record)
+    case "cfmmc_account_daily":
+      return handleAccountRiskDataRequest("account/daily", record)
+    case "cfmmc_account_positions":
+      return handleAccountRiskDataRequest("account/positions", record)
+    case "cfmmc_account_trades":
+      return handleAccountRiskDataRequest("account/trades", record)
+    case "cfmmc_account_closes":
+      return handleAccountRiskDataRequest("account/closes", record)
     case "cfmmc_rows": {
       const dataset = (record.dataset ?? "").trim()
       delete record.dataset

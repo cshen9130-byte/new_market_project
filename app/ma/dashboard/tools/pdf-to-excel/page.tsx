@@ -172,6 +172,8 @@ export default function PdfToExcelToolPage() {
         description: summary.method === "ocr" ? "业绩截图已识别，下载前请核对百分比。" : "表格已提取，可以下载 Excel。",
       })
     } catch (error) {
+      setProgressValue(0)
+      setProgressMessage("")
       toast({
         title: "提取失败",
         description: error instanceof Error ? error.message : "PDF 提取失败。",

@@ -9,7 +9,7 @@ export function buildMomDataApiGuide(apiKey?: string): string {
 
 生产环境只读接口，读的是已经入库的 MOM 核算与成交。这把 Key 只在「设置 → MOM数据API」里生成，和基金数据 API 的 Key 不是同一把。基金数据 Key 调这个接口会返回 401。管理员取消「MOM数据API」后，这把 Key 立即失效。管理员账号默认可用。
 
-内部账户（国信 / GUOXIN / GUOSEN / 665300200077）不会出现。MOM 母基金结算在本基址的 \`/accounts\`、\`/account/*\`。单账户监控中心导入在同一基址的 \`/cfmmc/*\`，使用同一把 Key。例如国泰君安期货账号 85121150 的复权净值：\`GET /cfmmc/account/nav?account=85121150&company=国泰君安期货\`。
+内部账户（国信 / GUOXIN / GUOSEN / 665300200077）不会出现。MOM 母基金结算在本基址的 \`/accounts\`、\`/account/*\`。单账户监控中心导入在同一基址的 \`/cfmmc/*\`，使用同一把 Key。例如国泰君安期货账号 85121150 的复权净值：\`GET /cfmmc/account/nav?account=85121150&company=国泰君安期货\`。同一账号的历史逐日持仓、成交、平仓：\`GET /cfmmc/account/positions\`、\`/cfmmc/account/trades\`、\`/cfmmc/account/closes\`，传 \`start_date\` 和 \`end_date\`。
 
 | 项 | 值 |
 | --- | --- |
@@ -221,11 +221,13 @@ ${FENCE}json
 }
 ${FENCE}
 
-工具：\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
+工具：\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_account_daily\`、\`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
 
-先 \`mom_accounts\` 拿到 MOM 母基金账号，再查 daily 或 metrics。单账户用 \`cfmmc_accounts\` 和 \`cfmmc_account_nav\`。不要编造账号。
+先 \`mom_accounts\` 拿到 MOM 母基金账号，再查 daily 或 metrics。单账户用 \`cfmmc_accounts\` 和 \`cfmmc_account_nav\`。账号以接口返回为准。
 
-查「国泰君安期货 85121150」的净值时，调用 \`cfmmc_account_nav\`，\`account\` 填 \`85121150\`，\`company\` 填 \`国泰君安期货\`。不要用 \`mom_account_daily\`，那是另一批母基金账户。
+查「国泰君安期货 85121150」的净值时，调用 \`cfmmc_account_nav\`，\`account\` 填 \`85121150\`，\`company\` 填 \`国泰君安期货\`。母基金每日核算用 \`mom_account_daily\`。
+
+还原单账户开平仓节奏时，调用 \`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`，并传入 \`start_date\` 和 \`end_date\`。持仓不传日期时响应只含最近一个交易日，\`history\` 里有库内首尾日期。
 
 ## 7. 单账户监控中心导入
 
@@ -237,9 +239,9 @@ ${FENCE}
 | GET /cfmmc/account/nav | cfmmc_daily_summary | 复权净值，与单账户总览净值曲线相同 |
 | GET /cfmmc/account/daily | cfmmc_daily_summary | 每日结算摘要的全部数值列 |
 | GET /cfmmc/account/products | cfmmc_product_pnl | 品种盈亏 |
-| GET /cfmmc/account/positions | cfmmc_positions | 持仓。不传 date 时为最近一个交易日 |
-| GET /cfmmc/account/trades | cfmmc_trades | 成交明细 |
-| GET /cfmmc/account/closes | cfmmc_closes | 平仓明细 |
+| GET /cfmmc/account/positions | cfmmc_positions | 历史逐日持仓。传 start_date 与 end_date 返回区间内每个交易日；不传日期时只返回最近一个交易日，并在 history 里给出库内首尾日期 |
+| GET /cfmmc/account/trades | cfmmc_trades | 历史成交明细，含开/平、成交时间、实际成交日期。传 start_date 与 end_date |
+| GET /cfmmc/account/closes | cfmmc_closes | 历史平仓明细，含开仓价、平仓价、原成交序号。传 start_date 与 end_date |
 | GET /cfmmc/account/cashflows | cfmmc_cash_flows | 出入金 |
 | GET /cfmmc/account/option-trades | cfmmc_option_trades | 期权成交 |
 | GET /cfmmc/account/securities | cfmmc_securities | 证券成交 |
@@ -262,9 +264,30 @@ ${FENCE}
 
 日收益率 = (当日客户权益 − 上日客户权益 − 出入金) / 上日客户权益。出入金含当日存取合计，以及结算单未记入存取、但改变了结存的大额整数划转。这和页面上的净值曲线是同一个函数。不要用平仓盈亏加浮动盈亏去重算。
 
+### 历史逐日持仓、成交、平仓
+
+每个已导入交易日的持仓和成交都在库里，用来还原建仓、加仓、减仓、换月。传 \`start_date\` 和 \`end_date\`。持仓三个日期都不传时，响应只含最近一个交易日，并带 \`history.first_date\`、\`history.last_date\`、\`history.trading_days\` 和 \`history.note\`。单日持仓用 \`date\`。翻页看 \`total\` 和 \`next_offset\`，\`next_offset\` 为 null 才是最后一页。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| account | 是 | 资金账号，先从 /cfmmc/accounts 取 |
+| start_date / end_date | 查历史时填 | YYYY-MM-DD，含当天 |
+| date | 否 | 只要某一个交易日的持仓 |
+| order | 否 | 持仓默认升序；成交和平仓默认降序 |
+| limit / offset | 否 | 持仓默认 500，成交和平仓默认 200，最大 2000 |
+
+持仓字段：\`instrument\` 合约、\`trade_no\` 成交序号、\`bs\` 买/卖、\`buy_lots\` / \`buy_price\`、\`sell_lots\` / \`sell_price\`、\`prev_settle\`、\`settl_price\`、\`floating_pl\`、\`actual_date\` 实际成交日期。
+
+成交字段：\`instrument\`、\`trade_time\`、\`bs\`、\`oc\` 开/平、\`price\`、\`lots\`、\`turnover\`、\`commission\`、\`realized_pl\`、\`actual_date\`。开仓行的平仓盈亏可能是 \`--\`。
+
+平仓字段：\`instrument\`、\`bs\`、\`price\` 平仓价、\`open_price\`、\`lots\`、\`prev_settle\`、\`realized_pl\`、\`orig_trade_no\`、\`actual_date\`。
+
 ${FENCE}bash
 curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/accounts?q=国泰君安期货"
 curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/account/nav?account=85121150&company=国泰君安期货"
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/account/positions?account=85121150&start_date=2026-01-01&end_date=2026-10-20"
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/account/trades?account=85121150&start_date=2026-01-01&end_date=2026-10-20"
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/account/closes?account=85121150&start_date=2026-01-01&end_date=2026-10-20"
 curl -H "x-api-key: ${key}" "${ACCOUNT_RISK_DATA_API_BASE}/account/nav?account=85121150&company=国泰君安期货"
 ${FENCE}
 

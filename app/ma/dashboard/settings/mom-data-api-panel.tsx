@@ -233,14 +233,18 @@ export function MomDataApiPanel() {
           <code className="font-mono text-xs">Authorization: Bearer</code>，或 query <code className="font-mono text-xs">api_key</code>。
           成功时 <code className="font-mono text-xs">error_code</code> 为 0，正文在 <code className="font-mono text-xs">data</code>。
           国信、GUOXIN、GUOSEN 和账号 665300200077 不会返回。下面的 <code className="font-mono text-xs">/account/*</code> 是 MOM 母基金。
-          单账户监控中心的结算单在同一基址的 <code className="font-mono text-xs">/cfmmc/*</code>，例如国泰君安期货 85121150 的净值。
+          单账户监控中心的结算单在同一基址的 <code className="font-mono text-xs">/cfmmc/*</code>。
+          历史逐日持仓、成交、平仓已可按起止日期查询，例如国泰君安期货 85121150 的净值和持仓区间。
         </p>
         <p className="text-xs text-zinc-400 mb-2">curl</p>
         <CodeBlock
           text={`curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/accounts?limit=20"
 curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/account/daily?account=12345678&start_date=2026-01-01&order=1"
 curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/account/metrics?account=12345678"
-curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/cfmmc/account/nav?account=85121150&company=国泰君安期货"`}
+curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/cfmmc/account/nav?account=85121150&company=国泰君安期货"
+curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/cfmmc/account/positions?account=85121150&start_date=2026-01-01&end_date=2026-10-20"
+curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/cfmmc/account/trades?account=85121150&start_date=2026-01-01&end_date=2026-10-20"
+curl -H "x-api-key: ${keyForDocs}" "${MOM_DATA_API_BASE}/cfmmc/account/closes?account=85121150&start_date=2026-01-01&end_date=2026-10-20"`}
         />
         <p className="text-xs text-zinc-400 mt-3 mb-2">Python</p>
         <CodeBlock
@@ -273,7 +277,10 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
         />
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
           工具与下面的 GET 一一对应：mom_accounts、mom_account_daily、mom_account_trades、mom_account_positions、mom_account_closes、mom_account_products、mom_account_cashflows、mom_account_metrics。
-          单账户另有 cfmmc_accounts、cfmmc_account_nav、cfmmc_rows。查国泰君安期货 85121150 的净值用 cfmmc_account_nav，account 填 85121150，company 填国泰君安期货。
+          单账户另有 cfmmc_accounts、cfmmc_account_nav、cfmmc_account_daily、cfmmc_account_positions、cfmmc_account_trades、cfmmc_account_closes、cfmmc_rows。
+          查国泰君安期货 85121150 的净值用 cfmmc_account_nav，account 填 85121150，company 填国泰君安期货。
+          还原开平仓节奏用 cfmmc_account_positions、cfmmc_account_trades、cfmmc_account_closes，并传入 start_date 和 end_date。
+          持仓不传日期时只回最近一个交易日，响应里的 history 给出库内首尾日期。
           先列账户，再用返回的 account 查流水和指标。不要编造账号。
         </p>
       </section>
@@ -456,6 +463,30 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
           其余路径有 accounts、daily、products、positions、trades、closes、cashflows、option-trades、securities。
           <code className="font-mono text-xs">{ACCOUNT_RISK_DATA_API_BASE}</code> 是同一批数据，没有 cfmmc 前缀。
         </p>
+        <div>
+          <h4 className="text-sm font-medium mb-2">单账户历史持仓、成交、平仓</h4>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3 leading-relaxed">
+            每个已导入交易日的持仓和成交都在库里。传 <code className="font-mono text-xs">start_date</code> 和 <code className="font-mono text-xs">end_date</code> 读取区间，用来还原建仓、加仓、减仓、换月。
+            持仓三个日期都不传时，响应只含最近一个交易日，并带 <code className="font-mono text-xs">history.first_date</code>、<code className="font-mono text-xs">history.last_date</code>、<code className="font-mono text-xs">history.trading_days</code>。
+            单日持仓用 <code className="font-mono text-xs">date</code>。翻页看 <code className="font-mono text-xs">total</code> 和 <code className="font-mono text-xs">next_offset</code>。
+          </p>
+          <ParamTable rows={[
+            ["account", "是", "资金账号，先从 /cfmmc/accounts 取"],
+            ["start_date / end_date", "查历史时填", "YYYY-MM-DD，含当天。持仓、成交、平仓、每日摘要、品种都支持"],
+            ["date", "否", "只要某一个交易日的持仓时使用"],
+            ["order", "否", "持仓默认 1 升序；成交和平仓默认 0 降序"],
+            ["limit / offset", "否", "持仓默认 500，成交和平仓默认 200，最大 2000"],
+          ]} />
+          <FieldTable rows={[
+            ["instrument / trade_no / trade_time", "合约、成交序号、成交时间"],
+            ["bs / oc", "买/卖、开/平。开仓行的平仓盈亏可能是 --"],
+            ["buy_lots / buy_price / sell_lots / sell_price", "买持仓、买入价、卖持仓、卖出价"],
+            ["open_price / price / lots", "持仓或平仓里的开仓价、成交价、手数"],
+            ["floating_pl / realized_pl", "浮动盈亏、平仓盈亏"],
+            ["actual_date", "实际成交日期，换月和开仓时点看这个字段"],
+            ["orig_trade_no", "平仓明细里的原成交序号"],
+          ]} />
+        </div>
       </section>
 
       <section>
@@ -511,6 +542,15 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
           </button>
           <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading || !account} onClick={() => run("/ma/api/mom-data/cfmmc/account/nav", { account, company, start_date: startDate, end_date: endDate, limit: "5", order: "0" })}>
             单账户净值
+          </button>
+          <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading || !account} onClick={() => run("/ma/api/mom-data/cfmmc/account/positions", { account, start_date: startDate, end_date: endDate, limit: "20", order: "0" })}>
+            单账户持仓
+          </button>
+          <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading || !account} onClick={() => run("/ma/api/mom-data/cfmmc/account/trades", { account, start_date: startDate, end_date: endDate, limit: "20" })}>
+            单账户成交
+          </button>
+          <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading || !account} onClick={() => run("/ma/api/mom-data/cfmmc/account/closes", { account, start_date: startDate, end_date: endDate, limit: "20" })}>
+            单账户平仓
           </button>
         </div>
         {error && <p className="text-sm text-red-500 mb-2">{error}</p>}
