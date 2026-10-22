@@ -25,6 +25,8 @@ type Seed = {
   note: string | null
   equity: string | null
   equityDate: string | null
+  updatedBy: string | null
+  updatedAt: string | null
 }
 
 function clean(value: unknown): string {
@@ -57,8 +59,10 @@ async function loadCompareSeeds(): Promise<Seed[]> {
     product_name: string
     account_code: string
     note: string
+    updated_by: string
+    updated_at: string
   }>(
-    `SELECT beian_hao, product_name, account_code, note
+    `SELECT beian_hao, product_name, account_code, note, updated_by, updated_at::text
      FROM ops_fund_mom_accounts
      WHERE NULLIF(TRIM(account_code), '') IS NOT NULL`,
   ).catch(() => [])
@@ -78,14 +82,19 @@ async function loadCompareSeeds(): Promise<Seed[]> {
       note: clean(row.note) || null,
       equity: null,
       equityDate: null,
+      updatedBy: clean(row.updated_by) || null,
+      updatedAt: clean(row.updated_at) || null,
     })
   }
 
+  const savedBeians = new Set(
+    [...byKey.values()].filter((row) => row.linkSource === "saved").map((row) => row.beian),
+  )
   for (const link of listStaticFundMomLinks()) {
     const beian = link.beianHao.trim().toUpperCase()
     const account = link.account.trim().toLowerCase()
     const key = `${beian}|${account}`
-    if (!beian || !account || byKey.has(key)) continue
+    if (!beian || !account || byKey.has(key) || savedBeians.has(beian)) continue
     byKey.set(key, {
       kind: "compare",
       linkSource: "static",
@@ -96,6 +105,8 @@ async function loadCompareSeeds(): Promise<Seed[]> {
       note: link.note ?? null,
       equity: null,
       equityDate: null,
+      updatedBy: null,
+      updatedAt: null,
     })
   }
   return [...byKey.values()]
@@ -171,6 +182,8 @@ async function loadMatchedAccountSeeds(): Promise<Seed[]> {
     note: null,
     equity: numText(row.equity),
     equityDate: clean(row.trade_date).slice(0, 10) || null,
+    updatedBy: null,
+    updatedAt: null,
   })).filter((row) => row.beian && row.account)
 }
 
@@ -197,6 +210,8 @@ async function loadAccountSeeds(): Promise<Seed[]> {
       note,
       equity: book?.equity ?? null,
       equityDate: book?.date ?? null,
+      updatedBy: clean(row.updated_by) || null,
+      updatedAt: clean(row.updated_at) || null,
     })
   }
   for (const row of matched) {
@@ -325,10 +340,9 @@ async function loadAdvisorNotes(accounts: string[]): Promise<Map<string, string>
   const keys = [...new Set(accounts.map((a) => a.trim().toLowerCase()).filter(Boolean))]
   const map = new Map<string, string>()
   if (keys.length === 0) return map
-  const rows = await query<{ account: string; advisor_name: string | null; company: string | null; sector: string | null }>(
+  const rows = await query<{ account: string; company: string | null; sector: string | null }>(
     `SELECT DISTINCT ON (lower(trim(account_code)))
        lower(trim(account_code)) AS account,
-       NULLIF(trim(advisor_name), '') AS advisor_name,
        NULLIF(trim(company), '') AS company,
        NULLIF(trim(sector), '') AS sector
      FROM mom_advisor_info
@@ -337,7 +351,7 @@ async function loadAdvisorNotes(accounts: string[]): Promise<Map<string, string>
     [keys],
   ).catch(() => [])
   for (const row of rows) {
-    const note = [row.advisor_name, row.company, row.sector].map((v) => clean(v)).filter(Boolean).join(" · ")
+    const note = [row.company, row.sector].map((v) => clean(v)).filter(Boolean).join(" · ")
     if (row.account && note) map.set(row.account, note)
   }
   return map
@@ -378,6 +392,8 @@ export async function listMomUnderlyingProducts(): Promise<MomUnderlyingRow[]> {
       latest_price_change: changes.get(seed.beian) ?? null,
       equity: mom?.equity ?? seed.equity,
       equity_date: mom?.date ?? seed.equityDate,
+      updated_by: seed.updatedBy,
+      updated_at: seed.updatedAt,
     }
   }).sort((a, b) => a.product_name.localeCompare(b.product_name, "zh") || a.account.localeCompare(b.account))
 }

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 import { DashboardHeader } from "@/components/dashboard-header"
 import { ChatBotWidget } from "@/components/chat-bot-widget"
 import { PageVisitTracker } from "@/components/ma/page-visit-tracker"
+import { CompareAccountLinkSync } from "./private-funds/components/CompareAccountLinkSync"
 import { authService, type User } from "@/lib/auth"
 import { MA_CHAT_VISIBLE_EVENT } from "@/lib/ma/chat-documents"
 import { canAccessAiKnowledge, canAccessAiResearcher } from "@/lib/permissions"
@@ -75,6 +76,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const visitTracker = (
     <Suspense fallback={null}>
       <PageVisitTracker userId={user.id} />
+      <CompareAccountLinkSync user={user} />
     </Suspense>
   )
 

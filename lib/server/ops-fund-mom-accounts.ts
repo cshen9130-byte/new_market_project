@@ -66,6 +66,63 @@ export async function upsertFundMomAccount(input: {
   return rows[0]
 }
 
+function momCompareLinkKey(beianHao: string, accountCode: string): { beian: string; account: string } | null {
+  const beian = beianHao.trim().toUpperCase()
+  const account = accountCode.trim().toLowerCase()
+  if (!/^[A-Z0-9]{4,32}$/.test(beian)) return null
+  if (!account || account.startsWith("cfmmc:")) return null
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(account)) return null
+  return { beian, account }
+}
+
+/** Insert product ↔ MOM links that are not already saved. Does not replace an existing account. */
+export async function importMissingFundMomAccounts(
+  links: Array<{ beianHao: string; accountCode: string; productName?: string }>,
+  updatedBy: string,
+): Promise<string[]> {
+  const byBeian = new Map<string, { beian: string; account: string; productName: string }>()
+  for (const link of links) {
+    const key = momCompareLinkKey(link.beianHao, link.accountCode)
+    if (!key) continue
+    byBeian.set(key.beian, {
+      ...key,
+      productName: (link.productName ?? "").trim().slice(0, 255),
+    })
+  }
+  const rows = [...byBeian.values()]
+  if (rows.length === 0) return []
+  await ensureFundMomAccountTable()
+  const inserted = await query<{ beian_hao: string }>(
+    `INSERT INTO ops_fund_mom_accounts (beian_hao, product_name, account_code, note, updated_by, updated_at)
+     SELECT s.beian,
+            COALESCE(NULLIF(s.product_name, ''), NULLIF(trim(p.product_name), ''), ''),
+            s.account,
+            '',
+            $4,
+            NOW()
+     FROM unnest($1::text[], $2::text[], $3::text[]) AS s(beian, account, product_name)
+     LEFT JOIN LATERAL (
+       SELECT product_name
+       FROM private_fund_info
+       WHERE upper(trim(beian_hao)) = s.beian
+       LIMIT 1
+     ) p ON true
+     WHERE NOT EXISTS (
+       SELECT 1 FROM ops_fund_mom_accounts e
+       WHERE upper(trim(e.beian_hao)) = s.beian
+         AND NULLIF(trim(e.account_code), '') IS NOT NULL
+     )
+     RETURNING beian_hao`,
+    [
+      rows.map((row) => row.beian),
+      rows.map((row) => row.account),
+      rows.map((row) => row.productName),
+      updatedBy.trim().slice(0, 255),
+    ],
+  )
+  return inserted.map((row) => row.beian_hao)
+}
+
 export async function deleteFundMomAccount(beianHao: string): Promise<boolean> {
   const code = beianHao.trim()
   if (!code) return false

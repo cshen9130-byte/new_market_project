@@ -21,10 +21,9 @@ export async function GET(req: Request) {
 
   const [momAccounts, advisorRows, singleRes] = await Promise.all([
     listMomSettlementAccounts(),
-    query<{ account: string; advisor_name: string | null; company: string | null; sector: string | null }>(
+    query<{ account: string; company: string | null; sector: string | null }>(
       `SELECT DISTINCT ON (lower(trim(account_code)))
          lower(trim(account_code)) AS account,
-         NULLIF(trim(advisor_name), '') AS advisor_name,
          NULLIF(trim(company), '') AS company,
          NULLIF(trim(sector), '') AS sector
        FROM mom_advisor_info
@@ -44,7 +43,7 @@ export async function GET(req: Request) {
   const advisors = new Map(advisorRows.map((row) => [row.account, row]))
   const compare: MomUnderlyingAccountOption[] = momAccounts.map((account) => {
     const info = advisors.get(account)
-    const extra = [info?.advisor_name, info?.company, info?.sector].filter(Boolean).join(" · ")
+    const extra = [info?.company, info?.sector].filter(Boolean).join(" · ")
     return { account, label: extra ? `${account} · ${extra}` : account }
   })
 

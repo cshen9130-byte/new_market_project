@@ -72,7 +72,7 @@ export async function GET(
   const productName = searchParams.get("product_name")
   const linked = await resolveFundMomAccountLinks(beian_hao, productName)
   const momFallback = linked[0]?.account ?? null
-  const singleIds = await resolveLinkedCfmmcCompareIds(beian_hao, productName).catch(() => [] as string[])
+  const singleIds = await resolveLinkedCfmmcCompareIds(beian_hao).catch(() => [] as string[])
   const fallbackAccount = momFallback || singleIds[0] || null
   const requestUser = await getRequestUser(req)
   const canPickAccount = canModifyCompareAccount(requestUser)

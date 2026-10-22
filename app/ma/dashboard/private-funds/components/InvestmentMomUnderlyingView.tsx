@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronUp, ChevronsUpDown, Download, Plus, Search } from "lucide-react"
 import { FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import type { MomUnderlyingKind, MomUnderlyingRow } from "@/lib/ma/mom-underlying"
@@ -65,31 +65,56 @@ export function InvestmentMomUnderlyingView() {
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkRow, setLinkRow] = useState<MomUnderlyingRow | null>(null)
   const pageSize = 50
+  const rootRef = useRef<HTMLDivElement>(null)
+  const reqSeq = useRef(0)
 
-  const loadRows = useCallback((signal?: AbortSignal) => {
-    setLoading(true)
-    setError(null)
-    fetch("/ma/api/investment/mom-underlying/list", { signal })
+  const loadRows = useCallback((opts?: { silent?: boolean }) => {
+    const silent = opts?.silent ?? false
+    const seq = ++reqSeq.current
+    if (!silent) {
+      setLoading(true)
+      setError(null)
+    }
+    fetch("/ma/api/investment/mom-underlying/list", { cache: "no-store" })
       .then((r) => r.json())
       .then((json) => {
+        if (seq !== reqSeq.current) return
         if (!json.ok) throw new Error(json.error || "加载失败")
-        setRows(Array.isArray(json.data) ? json.data : [])
+        const next = Array.isArray(json.data) ? json.data as MomUnderlyingRow[] : []
+        setRows((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
+        if (!silent) setError(null)
       })
       .catch((err: Error) => {
-        if (err.name === "AbortError") return
+        if (seq !== reqSeq.current) return
+        if (silent) return
         setError(err.message || "加载失败")
         setRows([])
       })
       .finally(() => {
-        if (!signal?.aborted) setLoading(false)
+        if (seq === reqSeq.current && !silent) setLoading(false)
       })
   }, [])
 
   useEffect(() => {
-    const ac = new AbortController()
-    loadRows(ac.signal)
-    return () => ac.abort()
+    loadRows()
   }, [loadRows, reloadKey])
+
+  useEffect(() => {
+    const tick = () => {
+      const el = rootRef.current
+      if (document.visibilityState !== "visible") return
+      if (!el || el.getClientRects().length === 0) return
+      loadRows({ silent: true })
+    }
+    const id = window.setInterval(tick, 8000)
+    window.addEventListener("focus", tick)
+    document.addEventListener("visibilitychange", tick)
+    return () => {
+      window.clearInterval(id)
+      window.removeEventListener("focus", tick)
+      document.removeEventListener("visibilitychange", tick)
+    }
+  }, [loadRows])
 
   const counts = useMemo(() => ({
     all: rows.length,
@@ -110,7 +135,8 @@ export function InvestmentMomUnderlyingView() {
   }, [rows, kind, keyword, sortKey, sortDir])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
-  const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize)
+  const safePage = Math.min(page, totalPages)
+  const pageRows = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
@@ -165,7 +191,7 @@ export function InvestmentMomUnderlyingView() {
   }
 
   return (
-    <div className="flex flex-col h-full min-w-0">
+    <div ref={rootRef} className="flex flex-col h-full min-w-0">
       <div className="flex items-center gap-0 mb-3 border-b flex-shrink-0">
         <div className="px-4 py-2 text-sm font-medium text-red-500 relative after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500">
           MOM底层
@@ -221,7 +247,7 @@ export function InvestmentMomUnderlyingView() {
             </div>
           </div>
           <span className="text-zinc-400">
-            在本页把产品关联到对比账户或单账户。对比账户会作为产品页账户对比的默认账户。
+            在本页把产品关联到对比账户或单账户。对比账户会作为产品页账户对比的默认账户。产品页里选过的 MOM 账户也会记到这张表。修改写在服务器上，任何电脑打开本页都会看到同一张表。
           </span>
         </div>
       </div>
@@ -276,7 +302,7 @@ export function InvestmentMomUnderlyingView() {
               const pct = fmtPct(row.latest_price_change)
               return (
                 <tr key={row.id} className="border-t hover:bg-muted/40">
-                  <td className="px-3 py-2 text-zinc-400">{(page - 1) * pageSize + i + 1}</td>
+                  <td className="px-3 py-2 text-zinc-400">{(safePage - 1) * pageSize + i + 1}</td>
                   <td className="px-3 py-2">
                     <FundProductNameLink beian_hao={row.beian_hao} product_name={row.product_name} />
                   </td>
@@ -302,6 +328,7 @@ export function InvestmentMomUnderlyingView() {
                     <button
                       type="button"
                       onClick={() => { setLinkRow(row); setLinkOpen(true) }}
+                      title={row.updated_by ? `最近由 ${row.updated_by} 修改，所有人可见` : "保存后所有电脑都会看到"}
                       className="text-blue-600 hover:underline"
                     >
                       {row.link_source === "saved" ? "编辑" : "关联"}
@@ -323,9 +350,9 @@ export function InvestmentMomUnderlyingView() {
 
       {totalPages > 1 && (
         <div className="flex items-center justify-end gap-2 mt-2 text-xs text-zinc-500">
-          <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="h-7 px-2 rounded border disabled:opacity-40">上一页</button>
-          <span>{page} / {totalPages}</span>
-          <button disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} className="h-7 px-2 rounded border disabled:opacity-40">下一页</button>
+          <button disabled={safePage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="h-7 px-2 rounded border disabled:opacity-40">上一页</button>
+          <span>{safePage} / {totalPages}</span>
+          <button disabled={safePage >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} className="h-7 px-2 rounded border disabled:opacity-40">下一页</button>
         </div>
       )}
     </div>

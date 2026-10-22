@@ -1,5 +1,5 @@
 export type MomUnderlyingKind = "compare" | "account"
-export type MomUnderlyingLinkSource = "saved" | "static" | "matched"
+export type MomUnderlyingLinkSource = "saved" | "static"
 
 export type MomUnderlyingRow = {
   id: string
@@ -16,6 +16,8 @@ export type MomUnderlyingRow = {
   latest_price_change: string | null
   equity: string | null
   equity_date: string | null
+  updated_by: string | null
+  updated_at: string | null
 }
 
 export type MomUnderlyingAccountOption = {

@@ -474,6 +474,18 @@ export const FundAccountComparePanel = memo(function FundAccountComparePanel({
               setUserPicked(true)
               setAccount(next)
               writeSavedCompareAccount(beian_hao, next)
+              if (next && !next.toLowerCase().startsWith("cfmmc:")) {
+                fetch("/ma/api/ops/fund-mom-accounts/import", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+                  body: JSON.stringify({
+                    mode: "set",
+                    beian_hao,
+                    account: next,
+                    product_name: productName,
+                  }),
+                }).catch(() => {})
+              }
             }}
             title={canPickAccount ? (account ? accountLabel : undefined) : "无权限修改对比账户"}
             className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[160px] max-w-[28rem] disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed"

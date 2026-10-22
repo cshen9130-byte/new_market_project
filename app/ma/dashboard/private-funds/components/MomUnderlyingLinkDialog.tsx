@@ -168,7 +168,7 @@ export function MomUnderlyingLinkDialog({
         </div>
         <div className="px-6 py-5 flex flex-col gap-4 text-sm">
           <p className="text-xs text-zinc-400 leading-relaxed">
-            对比账户保存后，产品页「账户对比」默认使用该 MOM 账户。单账户把监控中心资金账号挂到这只产品上。
+            对比账户保存后，产品页「账户对比」默认使用该 MOM 账户。单账户把监控中心资金账号挂到这只产品上。保存后写在服务器上，其他电脑打开 MOM底层 会看到同一条关联。
           </p>
           <div className="flex items-start gap-3">
             <span className="w-20 text-right shrink-0 pt-1.5">产品：</span>
@@ -260,9 +260,6 @@ export function MomUnderlyingLinkDialog({
               className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
-          {initial?.link_source === "matched" && (
-            <div className="text-xs text-zinc-400 pl-[5.75rem]">当前按结算单客户名称自动对应。保存后改为手工关联。</div>
-          )}
           {initial?.link_source === "static" && (
             <div className="text-xs text-zinc-400 pl-[5.75rem]">当前是内置关联。保存后以这里的账户为准。</div>
           )}

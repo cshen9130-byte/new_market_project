@@ -53,61 +53,21 @@ function accountLabel(fundName: string, accountNo: string, company: string): str
 }
 
 /**
- * 单账户 ids linked to one private fund, explicit mapping first, then
- * settlement client-name matches. Ids use the `cfmmc:` prefix.
+ * 单账户 ids linked by hand to one private fund. Ids use the `cfmmc:` prefix.
  */
-export async function resolveLinkedCfmmcCompareIds(
-  beianHao: string,
-  productName?: string | null,
-): Promise<string[]> {
+export async function resolveLinkedCfmmcCompareIds(beianHao: string): Promise<string[]> {
   const beian = beianHao.trim().toUpperCase()
-  const name = (productName ?? "").trim()
-  if (!beian && name.length < 8) return []
+  if (!beian) return []
 
-  const explicit = beian
-    ? (await listFundSingleAccounts().catch(() => []))
-        .filter((row) => row.beian_hao.trim().toUpperCase() === beian)
-        .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
-        .map((row) => row.account_no.trim())
-        .filter(Boolean)
-    : []
-
-  const params: unknown[] = []
-  const match: string[] = []
-  if (beian) {
-    params.push(beian)
-    match.push(`upper(trim(p.beian_hao)) = $${params.length}`)
-  }
-  if (name.length >= 8) {
-    params.push(name)
-    match.push(`strpos(l.client_name, $${params.length}) > 0`)
-  }
-  const matched = await publicQuery(
-    `WITH latest AS (
-       SELECT DISTINCT ON (trim(account_no::text))
-         trim(account_no::text) AS account_no,
-         NULLIF(trim(client_name), '') AS client_name,
-         client_equity
-       FROM public.cfmmc_daily_summary
-       WHERE account_no IS NOT NULL AND trim(account_no::text) <> ''
-       ORDER BY trim(account_no::text), trade_date DESC
-     )
-     SELECT l.account_no, max(l.client_equity) AS equity
-     FROM latest l
-     JOIN private_fund_info p
-       ON l.client_name IS NOT NULL
-      AND char_length(p.product_name) >= 8
-      AND strpos(l.client_name, p.product_name) > 0
-      AND (${match.join(" OR ")})
-     GROUP BY l.account_no
-     ORDER BY max(l.client_equity) DESC NULLS LAST, l.account_no`,
-    params,
-  ).then((res) => (res.rows as Array<{ account_no: string }>).map((row) => String(row.account_no || "").trim()).filter(Boolean))
-    .catch(() => [] as string[])
+  const explicit = (await listFundSingleAccounts().catch(() => []))
+    .filter((row) => row.beian_hao.trim().toUpperCase() === beian)
+    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
+    .map((row) => row.account_no.trim())
+    .filter(Boolean)
 
   const seen = new Set<string>()
   const ids: string[] = []
-  for (const accountNo of [...explicit, ...matched]) {
+  for (const accountNo of explicit) {
     if (seen.has(accountNo)) continue
     seen.add(accountNo)
     ids.push(cfmmcCompareId(accountNo))
