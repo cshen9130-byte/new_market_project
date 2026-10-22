@@ -37,12 +37,12 @@ const nextConfig = {
   outputFileTracingRoot: process.cwd(),
   webpack: (config) => {
     if (isLowMemBuild) {
-      // Cap concurrent module builds so peak RSS fits a ~3.4 GiB host.
+      // Cap concurrent module builds so peak RSS fits a small deploy host.
       config.parallelism = 1
-      // Keep disk cache for speed, but do not retain cache generations in RAM.
-      if (config.cache && typeof config.cache === "object") {
-        config.cache.maxMemoryGenerations = 0
-      }
+      // Filesystem cache serializes the whole module graph into one string
+      // (V8 String::SlowFlatten / Utf8Length) and has OOM'd a 3 GB heap on a
+      // 7 GiB server while RAM was still free. Disk cache is not worth that.
+      config.cache = false
     }
     return config
   },

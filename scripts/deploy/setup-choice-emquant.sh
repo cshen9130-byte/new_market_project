@@ -287,14 +287,19 @@ auto_tune_build_settings() {
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # On ~3.4 GiB hosts the build's V8 heap genuinely needs >1280 MB (1024/1280 both
-  # hit "heap out of memory" while RAM+swap were still free). 1536 avoided the V8
-  # OOM but let RSS fill physical RAM with swap idle, so it looked stuck. Use 2048
-  # here and rely on swap (see run_next_build: swappiness bumped) to absorb the RSS
-  # overflow — slower than the old 3 min, but it completes instead of crashing.
+  # Heap caps are V8 limits, not RAM limits. On 2026-10-22 a 7.1 GiB host
+  # aborted at --max-old-space-size=3072 ("Reached heap limit") while `free`
+  # still showed ~2 GiB available and swap was idle. GC reclaimed almost
+  # nothing (live set ~3000 MB), then String::SlowFlatten / Utf8Length failed
+  # — webpack packing the module graph. 5120 leaves ~1.5 GiB for RSS overhead
+  # and the OS on a 7 GiB box.
+  # ~3.4 GiB hosts: 1024/1280 OOM with RAM free; 1536 filled physical RAM and
+  # looked stuck. 2048 completes, with swap absorbing the RSS overflow.
   if [[ "$BUILD_MEMORY_USER_SET" == "0" && -n "$mem_total_kb" ]]; then
-    if   [[ "$mem_total_kb" -ge 6000000 ]]; then
-      BUILD_MEMORY_MB="3072"
+    if   [[ "$mem_total_kb" -ge 12000000 ]]; then
+      BUILD_MEMORY_MB="8192"
+    elif [[ "$mem_total_kb" -ge 6000000 ]]; then
+      BUILD_MEMORY_MB="5120"
     elif [[ "$mem_total_kb" -ge 3000000 ]]; then
       BUILD_MEMORY_MB="2048"
     fi
@@ -344,6 +349,11 @@ if ! CI=1 MALLOC_ARENA_MAX=1 pnpm install --frozen-lockfile </dev/null; then
   CI=1 MALLOC_ARENA_MAX=1 pnpm install --no-frozen-lockfile </dev/null
 fi
 echo "pnpm install finished; starting Next.js build next."
+
+# Drop the webpack pack cache before a low-memory production build. A stale
+# .next/cache is multiple GB and gets flattened into one V8 string at the end
+# of compilation (Utf8Length), which is what aborted the 3072 MB heap.
+rm -rf "$PROJECT_ROOT/.next/cache"
 
 run_next_build() {
   echo "Starting Next.js build (parent heap=${BUILD_MEMORY_MB}MB via node argv; workers do not inherit)..."
