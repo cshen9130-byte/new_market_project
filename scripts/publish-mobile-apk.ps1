@@ -8,6 +8,7 @@ $key = Join-Path $env:USERPROFILE ".ssh\id_ed25519_server"
 if (-not (Test-Path $Apk)) { throw "Missing APK: $Apk" }
 if (-not (Test-Path $Version)) { throw "Missing version file: $Version" }
 
-ssh -i $key -o BatchMode=yes root@8.154.33.143 "mkdir -p /root/new_market_project/public/app"
+ssh -i $key -o BatchMode=yes root@8.154.33.143 "mkdir -p /root/new_market_project/public/app /var/www/market_dashboard_website/app"
 scp -i $key -o BatchMode=yes $Apk "${Version}" root@8.154.33.143:/root/new_market_project/public/app/
+ssh -i $key -o BatchMode=yes root@8.154.33.143 "cp -f /root/new_market_project/public/app/fof-research.apk /root/new_market_project/public/app/version.json /var/www/market_dashboard_website/app/ && chmod a+r /var/www/market_dashboard_website/app/fof-research.apk /var/www/market_dashboard_website/app/version.json"
 Write-Output "Published $(Split-Path $Apk -Leaf) and version.json"

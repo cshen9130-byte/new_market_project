@@ -45,6 +45,14 @@ if [[ ! -d "$MOM_PATH" ]]; then
 fi
 
 # For nginx to serve files reliably, avoid aliasing into /root; sync to web root
+WEB_APP_PATH="/var/www/market_dashboard_website/app"
+mkdir -p "$WEB_APP_PATH"
+if [[ -d "$PROJECT_ROOT/public/app" ]]; then
+  rsync -a "$PROJECT_ROOT/public/app"/ "$WEB_APP_PATH"/
+fi
+chown -R www-data:www-data "$WEB_APP_PATH" || true
+chmod -R a+rX "$WEB_APP_PATH" || true
+
 WEB_MOM_PATH="/var/www/market_dashboard_website/mom_report"
 echo "Syncing MOM report to: $WEB_MOM_PATH"
 mkdir -p "$WEB_MOM_PATH"
@@ -67,6 +75,7 @@ sed \
   -e "s#__DOMAIN__#${DOMAIN}#g" \
   -e "s#__APP_PORT__#${APP_PORT}#g" \
   -e "s#__ABS_MOM_PATH__#${WEB_MOM_PATH}#g" \
+  -e "s#__ABS_APP_PATH__#${WEB_APP_PATH}#g" \
   "$TEMPLATE" > "$TMP_CONF"
 
 install -Dm644 "$TMP_CONF" "$CONF_OUT"

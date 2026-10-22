@@ -94,6 +94,18 @@ server {
         proxy_connect_timeout 10s;
     }
 
+    # Phone install package. Next does not serve public/app, so Nginx serves it directly.
+    location /app/ {
+        alias __ABS_APP_PATH__/;
+        autoindex off;
+        add_header Cache-Control "no-store";
+        types {
+            application/vnd.android.package-archive apk;
+            application/json json;
+        }
+        default_type application/octet-stream;
+    }
+
     # Static alias for MOM report (served directly by Nginx)
     location /mom_report/ {
         alias __ABS_MOM_PATH__/;
