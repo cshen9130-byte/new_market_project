@@ -5,6 +5,7 @@ import { StatusBar } from "expo-status-bar"
 import { GestureHandlerRootView } from "react-native-gesture-handler"
 import { SafeAreaProvider } from "react-native-safe-area-context"
 import { AuthProvider, useAuth } from "@/auth"
+import { promptAppUpdate } from "@/app-update"
 import { colors } from "@/theme"
 
 export default function RootLayout() {
@@ -31,6 +32,11 @@ function AuthGate() {
     if (!user && !onLogin) router.replace("/login")
     if (user && onLogin) router.replace("/(tabs)/home")
   }, [ready, user, segments, router])
+
+  useEffect(() => {
+    if (!ready) return
+    void promptAppUpdate(false)
+  }, [ready])
 
   if (!ready) {
     return (

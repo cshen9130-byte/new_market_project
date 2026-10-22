@@ -399,6 +399,176 @@ export async function fetchKline(symbol: string, interval: KlineInterval): Promi
   return { candles: data.candles, quote: data.quote ?? null }
 }
 
+type MomDay = { date: string; pnl: number }
+
+type MomNavPoint = {
+  date: string
+  nav: number
+  cumCapital: number
+  dailyReturn: number
+  pnl: number
+}
+
+export type MomRow = { name: string; pnl: number }
+
+export type MomOverview = {
+  date: string | null
+  pnl: number | null
+  nav: number | null
+  dailyReturn: number | null
+  ytdReturn: number | null
+  cumCapital: number | null
+  subAccountCount: number | null
+  emptyAccountCount: number | null
+  curve: { date: string; value: number }[]
+  days: MomDay[]
+  sectors: MomRow[]
+  products: MomRow[]
+  accounts: MomRow[]
+  sectorDate: string | null
+  accountDate: string | null
+}
+
+function latestActiveDate(groups: MomDay[][], minActive: number): string | null {
+  const counts = new Map<string, number>()
+  for (const rows of groups) {
+    for (const row of rows) {
+      if (row.pnl !== 0) counts.set(row.date, (counts.get(row.date) ?? 0) + 1)
+    }
+  }
+  let best: string | null = null
+  for (const [date, count] of counts) {
+    if (count < minActive) continue
+    if (best == null || date > best) best = date
+  }
+  return best
+}
+
+function pnlOn(rows: MomDay[], date: string | null): number {
+  if (rows.length === 0) return 0
+  if (!date) return rows[rows.length - 1]?.pnl ?? 0
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (rows[i].date <= date) return rows[i].pnl
+  }
+  return 0
+}
+
+function ranked(entries: Array<[string, MomDay[]]>, date: string | null): MomRow[] {
+  return entries
+    .map(([name, rows]) => ({ name, pnl: pnlOn(rows, date) }))
+    .filter((row) => row.pnl !== 0)
+    .sort((a, b) => b.pnl - a.pnl)
+}
+
+function downsampleCurve(rows: { date: string; value: number }[], max: number) {
+  if (rows.length <= max) return rows
+  const step = (rows.length - 1) / (max - 1)
+  const out: { date: string; value: number }[] = []
+  for (let i = 0; i < max; i += 1) out.push(rows[Math.round(i * step)])
+  return out
+}
+
+export async function fetchSiteProfile(): Promise<{
+  id: string
+  name: string
+  email: string
+  role?: string
+  permissions?: Record<string, unknown>
+}> {
+  const data = await authed<{
+    user?: { id?: string; name?: string; email?: string; role?: string; permissions?: Record<string, unknown> }
+    error?: string
+  }>("/api/auth/me")
+  const id = String(data.user?.id || "").trim()
+  if (!id) throw new Error(data.error || "请用电脑版账号登录后再打开简报")
+  return {
+    id,
+    name: String(data.user?.name || ""),
+    email: String(data.user?.email || ""),
+    role: data.user?.role,
+    permissions: data.user?.permissions,
+  }
+}
+
+export type MomSource = "mom" | "account"
+
+const MOM_ENDPOINTS: Record<MomSource, { nav: string; category: string; accounts: string; minActive: number }> = {
+  mom: {
+    nav: "/ma/api/mom-analysis/product-nav",
+    category: "/ma/api/mom-analysis/category-pnl",
+    accounts: "/ma/api/mom-analysis/account-daily-pnl",
+    minActive: 2,
+  },
+  account: {
+    nav: "/ma/api/account-risk/product-nav",
+    category: "/ma/api/account-risk/category-pnl",
+    accounts: "/ma/api/account-risk/account-daily-pnl",
+    minActive: 1,
+  },
+}
+
+export async function fetchMomOverview(source: MomSource = "mom"): Promise<MomOverview> {
+  const timeout = 60000
+  const endpoints = MOM_ENDPOINTS[source]
+  const [navResult, categoryResult, accountResult] = await Promise.all([
+    authed<{ ok?: boolean; data?: MomNavPoint[]; error?: string; notYetRun?: boolean }>(
+      endpoints.nav,
+      undefined,
+      timeout,
+    ),
+    authed<{ sectorData?: Record<string, MomDay[]>; productData?: Record<string, MomDay[]>; error?: string }>(
+      endpoints.category,
+      undefined,
+      timeout,
+    ),
+    authed<{
+      ok?: boolean
+      accountData?: Record<string, MomDay[]>
+      subAccountCount?: number
+      emptyAccountCount?: number
+      error?: string
+      notYetRun?: boolean
+    }>(endpoints.accounts, undefined, timeout),
+  ])
+
+  if (navResult.ok === false) throw new Error(navResult.error || "组合盈亏加载失败")
+  if (categoryResult.error) throw new Error(categoryResult.error)
+  if (accountResult.ok === false) throw new Error(accountResult.error || "账户盈亏加载失败")
+
+  const series = Array.isArray(navResult.data) ? navResult.data : []
+  const latest = series.length > 0 ? series[series.length - 1] : null
+  const yearStart = `${new Date().getFullYear()}-01-01`
+  const firstOfYear = series.find((row) => row.date >= yearStart) ?? series[0]
+  const ytdReturn = latest && firstOfYear && firstOfYear.nav > 0 ? latest.nav / firstOfYear.nav - 1 : null
+  const sectorGroups = Object.values(categoryResult.sectorData ?? {})
+  const productGroups = Object.entries(categoryResult.productData ?? {})
+  const accountGroups = Object.entries(accountResult.accountData ?? {})
+  const sectorDate = latestActiveDate(sectorGroups, endpoints.minActive)
+  const accountDate = latestActiveDate(accountGroups.map(([, rows]) => rows), endpoints.minActive)
+  const curve = downsampleCurve(
+    series.map((row) => ({ date: row.date.slice(0, 10), value: (row.nav - 1) * 100 })),
+    160,
+  )
+
+  return {
+    date: latest?.date?.slice(0, 10) ?? null,
+    pnl: latest?.pnl ?? null,
+    nav: latest?.nav ?? null,
+    dailyReturn: latest?.dailyReturn ?? null,
+    ytdReturn,
+    cumCapital: latest?.cumCapital ?? null,
+    subAccountCount: accountResult.subAccountCount ?? null,
+    emptyAccountCount: accountResult.emptyAccountCount ?? null,
+    curve,
+    days: series.slice(-12).reverse().map((row) => ({ date: row.date.slice(0, 10), pnl: row.pnl })),
+    sectors: ranked(Object.entries(categoryResult.sectorData ?? {}), sectorDate),
+    products: ranked(productGroups, sectorDate),
+    accounts: ranked(accountGroups, accountDate),
+    sectorDate,
+    accountDate,
+  }
+}
+
 export function streamKnowledge(
   body: unknown,
   onEvent: (event: Record<string, unknown>) => void,

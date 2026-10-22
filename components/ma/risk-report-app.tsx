@@ -7367,7 +7367,12 @@ function RiskReportAppCore({
     cacheResetRef.current = true
   }
 
-  const [activeTab, setActiveTab] = useState<TabKey>("overview")
+  const [activeTab, setActiveTab] = useState<TabKey>(() => {
+    if (typeof window === "undefined") return "overview"
+    const tab = new URLSearchParams(window.location.search).get("tab")
+    if (tab && baseSubNavItems.some((item) => item.key === tab)) return tab as TabKey
+    return "overview"
+  })
   const accountScopeKey = isAccount
     ? (momScope.selected ? `mom:${momScope.selected}` : (cfmmcScope.selected || "all"))
     : "mom"

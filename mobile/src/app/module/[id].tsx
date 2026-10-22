@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter } from "expo-router"
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router"
 import { Pressable, StyleSheet, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
 import { colors } from "@/theme"
@@ -11,6 +11,7 @@ export default function EmptyModuleScreen() {
   const router = useRouter()
   const params = useLocalSearchParams<{ id?: string | string[] }>()
   const id = Array.isArray(params.id) ? params.id[0] : params.id || ""
+  if (id === "mom") return <Redirect href="/mom" />
   const title = TITLES[id] || "模块"
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>

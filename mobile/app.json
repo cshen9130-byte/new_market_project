@@ -19,7 +19,13 @@
     },
     "android": {
       "package": "com.marketwebsite.fofresearch",
+      "versionCode": 1,
       "usesCleartextTraffic": true,
+      "permissions": [
+        "INTERNET",
+        "VIBRATE",
+        "REQUEST_INSTALL_PACKAGES"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -33,7 +39,8 @@
     },
     "plugins": [
       "expo-router",
-      "expo-status-bar"
+      "expo-status-bar",
+      "./plugins/withAndroidReleaseSigning"
     ],
     "experiments": {
       "typedRoutes": false

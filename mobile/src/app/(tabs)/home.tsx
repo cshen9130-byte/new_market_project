@@ -6,7 +6,7 @@ import { FundObject, KnowledgeObject, MomObject, QuoteObject, ResearcherObject, 
 
 const MODULES = [
   { title: "私募基金", href: "/private-funds", figure: FundObject },
-  { title: "MOM分析", href: "/module/mom", figure: MomObject },
+  { title: "MOM分析", href: "/mom", figure: MomObject },
   { title: "实时行情", href: "/quotes", figure: QuoteObject },
   { title: "AI知识库", href: "/knowledge", figure: KnowledgeObject },
   { title: "AI研究员", href: "/researcher", figure: ResearcherObject },

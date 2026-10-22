@@ -1,10 +1,14 @@
+import { useState } from "react"
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
 import { useAuth } from "@/auth"
+import { currentVersionLabel, promptAppUpdate } from "@/app-update"
 import { colors } from "@/theme"
 
 export default function MeScreen() {
   const { user, logout } = useAuth()
+  const [checking, setChecking] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState("")
 
   function onLogout() {
     Alert.alert("退出登录", "退出后需要重新登录才能查看跟踪产品。", [
@@ -27,7 +31,19 @@ export default function MeScreen() {
           {user?.role ? <Text style={styles.role}>{user.role === "admin" ? "管理员" : "用户"}</Text> : null}
         </View>
       </View>
-      <Text style={styles.note}>跟踪、搜索和净值在手机上查看。风控报表、估值表和导入仍在电脑上使用。</Text>
+      <Text style={styles.note}>跟踪、搜索、净值和每日风控可在手机上查看。估值表和数据导入仍在电脑上使用。</Text>
+      <Pressable
+        style={styles.update}
+        disabled={checking}
+        onPress={() => {
+          setChecking(true)
+          setUpdateStatus("")
+          void promptAppUpdate(true, setUpdateStatus).finally(() => setChecking(false))
+        }}
+      >
+        <Text style={styles.updateTitle}>{checking ? "正在检查…" : "检查更新"}</Text>
+        <Text style={styles.updateMeta}>{updateStatus || `当前版本 ${currentVersionLabel()}`}</Text>
+      </Pressable>
       <Pressable style={styles.logout} onPress={onLogout}>
         <Text style={styles.logoutText}>退出登录</Text>
       </Pressable>
@@ -46,6 +62,9 @@ const styles = StyleSheet.create({
   meta: { color: colors.muted, fontSize: 13, marginTop: 2 },
   role: { color: colors.gold, fontSize: 12, marginTop: 4, letterSpacing: 1 },
   note: { color: colors.muted, fontSize: 13, lineHeight: 20, marginTop: 28 },
-  logout: { marginTop: 28, paddingVertical: 14, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.line },
+  update: { marginTop: 22, paddingVertical: 16, borderTopWidth: 1, borderTopColor: colors.line },
+  updateTitle: { color: colors.text, fontWeight: "700", fontSize: 16 },
+  updateMeta: { color: colors.muted, fontSize: 13, marginTop: 4 },
+  logout: { marginTop: 8, paddingVertical: 14, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.line },
   logoutText: { color: colors.danger, fontWeight: "700", letterSpacing: 1 },
 })
