@@ -334,6 +334,13 @@ const ORG_SIZE_OPTS = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20
 // other pool definition (label, order, existence) lives in the DB and is loaded
 // from /ma/api/tracking-funds/pools.
 const TEAM_ALL_POOL = { key: "all", label: "全部" }
+const EMAIL_OPS_POOL_KEY = "custom_email_nav"
+const JY_POOL_PRESENCE_OPTS = [
+  ["all", "不限"],
+  ["in", "在"],
+  ["out", "不在"],
+] as const
+type JyPoolPresence = (typeof JY_POOL_PRESENCE_OPTS)[number][0]
 
 function trackingUntrackMessage(pool: string, opts: { productName?: string; count?: number }): string {
   const scope =
@@ -2136,6 +2143,8 @@ interface TrackFundRow {
   ret_1y: string | null
   sharpe_1y: string | null
   calmar_1y: string | null
+  in_jy_pool?: boolean
+  in_selected_pool?: boolean
 }
 
 /** Prefer 团队策略 tags whenever present; fall back to platform / active-source fields. */
@@ -2341,6 +2350,60 @@ interface TrackStrategyNode {
 type TrackStrategySource = "company" | "platform"
 type TrackTeamTagMode = "and" | "or"
 
+function JyPresenceChips({
+  value,
+  onChange,
+}: {
+  value: JyPoolPresence
+  onChange: (next: JyPoolPresence) => void
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      {JY_POOL_PRESENCE_OPTS.map(([key, label]) => (
+        <span
+          key={key}
+          onClick={() => onChange(key)}
+          className={[
+            "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+            value === key
+              ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+              : key === "all"
+                ? "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
+                : "border-border text-zinc-500 hover:bg-muted/60",
+          ].join(" ")}
+        >
+          {label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function JyPoolMembershipCell({
+  inJy,
+  inSelected,
+}: {
+  inJy: boolean | undefined
+  inSelected: boolean | undefined
+}) {
+  if (inJy == null && inSelected == null) {
+    return <span className="text-muted-foreground">—</span>
+  }
+  if (!inJy && !inSelected) {
+    return <span className="text-zinc-400">不在</span>
+  }
+  return (
+    <div className="flex flex-col items-start gap-0.5">
+      {inJy ? (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-sky-300/80 text-[10px] leading-4 text-sky-700 bg-sky-50 dark:bg-sky-950/30 dark:text-sky-300 dark:border-sky-700/50">JY跟踪</span>
+      ) : null}
+      {inSelected ? (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-amber-300/80 text-[10px] leading-4 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-700/50">JY精选</span>
+      ) : null}
+    </div>
+  )
+}
+
 function InvestmentTrackingView({ variant = "investment" }: { variant?: "investment" | "operations" } = {}) {
   const isOps = variant === "operations"
   const searchParams = useSearchParams()
@@ -2379,6 +2442,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
   const [teamTags, setTeamTags] = useState<string[]>([])
   const [orgSizeFilter, setOrgSizeFilter] = useState("不限")
+  const [inJyFilter, setInJyFilter] = useState<JyPoolPresence>("all")
+  const [inSelectedFilter, setInSelectedFilter] = useState<JyPoolPresence>("all")
   const [keyword, setKeyword] = useState("")
   const [sortCol, setSortCol] = useState("")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
@@ -2851,7 +2916,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }, [])
 
   const totalPages = Math.max(1, Math.ceil(total / 50))
-  const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}\u0000${teamCutoffDate}\u0000${dataReloadKey}\u0000${isOps ? "team" : "platform"}`
+  const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${inJyFilter}\u0000${inSelectedFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}\u0000${teamCutoffDate}\u0000${dataReloadKey}\u0000${isOps ? "team" : "platform"}`
   const mineFilterKey = `${myActivePool}\u0000${myOrgSize}\u0000${myKeyword}\u0000${mineCutoffDate}\u0000${myPersonalTagMode}\u0000${myPersonalTags.join("\u0001")}\u0000${dataReloadKey}`
 
   function handleSort(col: string) {
@@ -2867,7 +2932,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
 
-  const teamConfigColSpan = 4 + fieldConfigSelected.length + 7 + 3
+  const emailOpsJyPool = !isMineTab && sourcePool === EMAIL_OPS_POOL_KEY
+  const teamConfigColSpan = 4 + fieldConfigSelected.length + 7 + 3 + (emailOpsJyPool ? 1 : 0)
+  const opsConfigColSpan = 10 + (emailOpsJyPool ? 1 : 0)
   const mineConfigColSpan = 4 + fieldConfigSelected.length + 4 + 3
   const trackStickyHeadBg = "bg-muted dark:bg-zinc-900"
   const trackStickyHeadZ = "z-40"
@@ -3020,11 +3087,17 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       cutoff: exportCutoff,
     })
     teamTags.forEach((tag) => params.append("team_tag", tag))
+    const emailOpsExport = exportPool === EMAIL_OPS_POOL_KEY
+    if (emailOpsExport) {
+      if (inJyFilter !== "all") params.set("in_jy", inJyFilter)
+      if (inSelectedFilter !== "all") params.set("in_selected", inSelectedFilter)
+    }
     const json = await fetch(`/ma/api/tracking-funds/list?${params}`, {
       headers: userFetchHeaders(),
     }).then((r) => r.json())
     const rows: TrackFundRow[] = json.data ?? []
-    const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "首次入表日期", "最新变动日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)"]
+    const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "首次入表日期", "最新变动日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)", ...(emailOpsExport ? ["JY跟踪池", "JY精选池"] : [])]
+    const poolFlag = (value: boolean | undefined) => value == null ? "" : value ? "在" : "不在"
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => [
@@ -3035,6 +3108,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         escape(r.latest_nav), escape(r.latest_nav_date), escape(r.latest_price_change),
         escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
         escape(r.sharpe_1y), escape(r.calmar_1y),
+        ...(emailOpsExport ? [poolFlag(r.in_jy_pool), poolFlag(r.in_selected_pool)] : []),
       ].join(",")),
     ]
     const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
@@ -3131,6 +3205,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       params.set("strategy_l2", strategyL2)
       params.set("strategy_l3", strategyL3)
       teamTags.forEach((tag) => params.append("team_tag", tag))
+      if (listPool === EMAIL_OPS_POOL_KEY) {
+        if (inJyFilter !== "all") params.set("in_jy", inJyFilter)
+        if (inSelectedFilter !== "all") params.set("in_selected", inSelectedFilter)
+      }
     } else {
       params.set("personal_tag_mode", myPersonalTagMode)
       myPersonalTags.forEach((tag) => params.append("personal_tag", tag))
@@ -3516,6 +3594,18 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 ))}
               </div>
             </div>
+            {emailOpsJyPool && (
+              <div className="flex items-center px-4 py-2 gap-8 flex-wrap">
+                <div className="flex items-center">
+                  <span className="text-zinc-400 shrink-0 whitespace-nowrap text-right pr-3">JY跟踪池：</span>
+                  <JyPresenceChips value={inJyFilter} onChange={(next) => { setInJyFilter(next); setPage(1) }} />
+                </div>
+                <div className="flex items-center">
+                  <span className="text-zinc-400 shrink-0 whitespace-nowrap text-right pr-3">JY精选池：</span>
+                  <JyPresenceChips value={inSelectedFilter} onChange={(next) => { setInSelectedFilter(next); setPage(1) }} />
+                </div>
+              </div>
+            )}
             {!isOps && (
             <>
             {/* 管理人规模 */}
@@ -3807,6 +3897,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-10`}>序号</th>
                   <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
+                  {emailOpsJyPool && (
+                    <th className={`${thBase} min-w-[88px]`} title="该产品是否在 JY跟踪池、JY精选池">JY池</th>
+                  )}
                   <th className={`${thSort} min-w-[110px]`} title="净值、要素表、策略等最近一次更新的日期" onClick={() => handleSort("latest_change_date")}>最新变动日期<SortIco col="latest_change_date" /></th>
                   <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("beian_hao")}>备案编码<SortIco col="beian_hao" /></th>
                   <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("latest_nav")}>团队单位净值<SortIco col="latest_nav" /></th>
@@ -3817,11 +3910,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               </thead>
               <tbody>
                 {loading && data.length === 0 ? (
-                  <tr><td colSpan={10} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={opsConfigColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isSupportedPool ? (
-                  <tr><td colSpan={10} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
+                  <tr><td colSpan={opsConfigColSpan} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
                 ) : data.length === 0 ? (
-                  <tr><td colSpan={10} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
+                  <tr><td colSpan={opsConfigColSpan} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
                   const isSelected = selected.has(row.beian_hao)
                   const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
@@ -3857,6 +3950,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
+                      {emailOpsJyPool && (
+                        <td className={cell}>
+                          <JyPoolMembershipCell inJy={row.in_jy_pool} inSelected={row.in_selected_pool} />
+                        </td>
+                      )}
                       <td className={`${cell} tabular-nums`}>
                         <LatestChangeDateCell date={row.latest_change_date} label={row.latest_change_label} />
                       </td>
@@ -3899,6 +3997,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-10 sticky top-0 left-8 ${trackStickyHeadZ} ${trackStickyHeadBg} box-border`}>序号</th>
                   <th className={`${thSort} min-w-[200px] sticky top-0 left-[72px] ${trackStickyHeadZ} ${trackStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${trackStickyLeftShadow}`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
                   <th className={`${thSort} min-w-[110px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("first_added_at")}>首次入表日期<SortIco col="first_added_at" /></th>
+                  {emailOpsJyPool && (
+                    <th className={`${thBase} min-w-[88px] relative z-0 ${trackStickyHeadBg}`} title="该产品是否在 JY跟踪池、JY精选池">JY池</th>
+                  )}
                   {fieldConfigSelected.map(renderFieldConfigHeader)}
                   <th className={`${thSort} text-right min-w-[88px] relative z-0 ${trackStickyHeadBg}`} onClick={() => handleSort("ret_1w")}>
                     <div>近一周收益<SortIco col="ret_1w" /></div>
@@ -3971,6 +4072,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         })()}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.first_added_at?.slice(0, 10) ?? "—"}</td>
+                      {emailOpsJyPool && (
+                        <td className={cell}>
+                          <JyPoolMembershipCell inJy={row.in_jy_pool} inSelected={row.in_selected_pool} />
+                        </td>
+                      )}
                       {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />

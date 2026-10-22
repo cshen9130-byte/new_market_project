@@ -1,6 +1,8 @@
 "use client"
 
+import Link from "next/link"
 import { LogoutButton } from "@/components/logout-button"
+import { UserAvatar } from "@/components/ma/user-avatar"
 import { Bot, Moon, Sun, Menu } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
@@ -9,6 +11,7 @@ interface DashboardHeaderProps {
   user: {
     email: string | null
     full_name: string | null
+    avatar_url?: string | null
   }
   onChatToggle?: () => void
   onMenuToggle?: () => void
@@ -33,10 +36,24 @@ export function DashboardHeader({ user, onChatToggle, onMenuToggle }: DashboardH
               <span className="sr-only">菜单</span>
             </Button>
           )}
-          <div className="flex flex-col">
-            <span className="text-sm font-medium">{user.full_name || "分析师"}</span>
-            <span className="hidden sm:block text-xs text-muted-foreground">{user.email}</span>
-          </div>
+          <Link
+            href="/ma/dashboard/account"
+            title="我的看板"
+            className={`${user.avatar_url ? "flex items-center gap-3" : "flex flex-col"} rounded-md px-2 py-1 -mx-2 hover:bg-muted transition-colors`}
+          >
+            {user.avatar_url ? <UserAvatar avatarUrl={user.avatar_url} className="size-9" /> : null}
+            {user.avatar_url ? (
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate text-sm font-medium">{user.full_name || "分析师"}</span>
+                <span className="hidden truncate sm:block text-xs text-muted-foreground">{user.email}</span>
+              </span>
+            ) : (
+              <>
+                <span className="text-sm font-medium">{user.full_name || "分析师"}</span>
+                <span className="hidden sm:block text-xs text-muted-foreground">{user.email}</span>
+              </>
+            )}
+          </Link>
         </div>
         <div className="flex items-center gap-2">
           {onChatToggle && (

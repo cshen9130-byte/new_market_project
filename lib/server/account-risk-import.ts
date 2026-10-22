@@ -28,6 +28,11 @@ import {
   type ImportBookSource,
 } from "@/lib/server/account-risk-books"
 import { appendJobLog } from "@/lib/server/account-risk-job-log"
+import {
+  isCfmmcWrongPasswordError,
+  resolveCfmmcAccountStatus,
+  type CfmmcAccountStatus,
+} from "@/lib/server/cfmmc-account-status"
 
 function runPythonLogged(
   python: string,
@@ -84,7 +89,10 @@ export type CfmmcAccount = {
   label: string
   userId: string
   password: string
+  /** 参与每日获取. A 暂停 account is always false. */
   enabled: boolean
+  /** 暂停 skips the daily login so a wrong password is not retried every day. */
+  status: CfmmcAccountStatus
   lastFetchDate: string | null
   lastFetchAt: string | null
   lastError: string | null
@@ -351,19 +359,25 @@ export function readCfmmcConfig(): CfmmcConfig {
   if (!existsSync(CFMMC_CONFIG_FILE)) return { ...DEFAULT_CFMMC, accounts: [] }
   try {
     const raw = JSON.parse(readFileSync(CFMMC_CONFIG_FILE, "utf-8")) as Partial<CfmmcConfig>
-    const accounts = Array.isArray(raw.accounts)
-      ? raw.accounts.map((a) => ({
-          id: String(a.id || randomUUID()),
-          label: String(a.label || a.userId || ""),
-          userId: String(a.userId || ""),
-          password: String(a.password || ""),
-          enabled: a.enabled !== false,
-          lastFetchDate: a.lastFetchDate ?? null,
-          lastFetchAt: a.lastFetchAt ?? null,
-          lastError: a.lastError ?? null,
-          lastFile: a.lastFile ?? null,
-        }))
-      : []
+    const stored = Array.isArray(raw.accounts) ? raw.accounts : []
+    const justPaused: string[] = []
+    const accounts = stored.map((a) => {
+      const account = normalizeStoredCfmmcAccount(a)
+      if (account.status === "paused" && a.status !== "paused") {
+        a.status = "paused"
+        a.enabled = false
+        justPaused.push(account.label || account.userId)
+      }
+      return account
+    })
+    if (justPaused.length > 0) {
+      try {
+        writeCfmmcConfig({ ...DEFAULT_CFMMC, ...raw, accounts: stored })
+        appendJobLog("fetch", `密码错误，已将账户设为暂停，每日任务不再登录：${justPaused.join("、")}`)
+      } catch (e) {
+        console.warn("[account-risk-cfmmc] failed to persist 暂停", e)
+      }
+    }
     return {
       ...DEFAULT_CFMMC,
       ...raw,
@@ -390,14 +404,37 @@ export function publicCfmmcConfig(): CfmmcConfig {
   }
 }
 
+function normalizeStoredCfmmcAccount(a: Partial<CfmmcAccount>): CfmmcAccount {
+  const lastError = a.lastError ?? null
+  const status = resolveCfmmcAccountStatus(a.status, lastError)
+  return {
+    id: String(a.id || randomUUID()),
+    label: String(a.label || a.userId || ""),
+    userId: String(a.userId || ""),
+    password: String(a.password || ""),
+    status,
+    enabled: status === "paused" ? false : a.enabled !== false,
+    lastFetchDate: a.lastFetchDate ?? null,
+    lastFetchAt: a.lastFetchAt ?? null,
+    lastError,
+    lastFile: a.lastFile ?? null,
+  }
+}
+
+function dailyCfmmcAccounts(accounts: CfmmcAccount[]): CfmmcAccount[] {
+  return accounts.filter((a) => a.userId && a.password && a.enabled && a.status !== "paused")
+}
+
 export function saveCfmmcSettings(body: { enabled?: boolean; scheduleTime?: string }): CfmmcConfig {
   const current = readCfmmcConfig()
   if (typeof body.enabled === "boolean") {
     current.enabled = body.enabled
     // Global 每日自动获取 is what operators actually toggle. If it is on and
     // every account was left 停用, the 17:00 job would silently no-op.
+    // 暂停 stays off so a wrong password is not logged in again.
     if (body.enabled) {
       for (const account of current.accounts) {
+        if (account.status === "paused") continue
         if (account.userId && account.password) account.enabled = true
       }
     }
@@ -420,6 +457,7 @@ export function addCfmmcAccount(input: { label?: string; userId: string; passwor
     userId,
     password: input.password,
     enabled: input.enabled !== false,
+    status: "active",
     lastFetchDate: null,
     lastFetchAt: null,
     lastError: null,
@@ -432,7 +470,7 @@ export function addCfmmcAccount(input: { label?: string; userId: string; passwor
 
 export function updateCfmmcAccount(
   id: string,
-  patch: Partial<Pick<CfmmcAccount, "label" | "userId" | "password" | "enabled">>,
+  patch: Partial<Pick<CfmmcAccount, "label" | "userId" | "password" | "enabled" | "status">>,
 ): CfmmcAccount & { previousLabel?: string } {
   const cfg = readCfmmcConfig()
   const idx = cfg.accounts.findIndex((a) => a.id === id)
@@ -448,8 +486,24 @@ export function updateCfmmcAccount(
     }
   }
   if (typeof patch.userId === "string" && patch.userId.trim()) current.userId = patch.userId.trim()
-  if (typeof patch.password === "string" && !isMaskedSecret(patch.password)) current.password = patch.password
-  if (typeof patch.enabled === "boolean") current.enabled = patch.enabled
+  if (typeof patch.password === "string" && !isMaskedSecret(patch.password) && patch.password !== current.password) {
+    current.password = patch.password
+    current.lastError = null
+    if (current.status === "paused") {
+      current.status = "active"
+      current.enabled = true
+    }
+  }
+  if (patch.status === "paused") {
+    current.status = "paused"
+    current.enabled = false
+  } else if (patch.status === "active") {
+    current.status = "active"
+    current.enabled = typeof patch.enabled === "boolean" ? patch.enabled : true
+  } else if (typeof patch.enabled === "boolean") {
+    current.enabled = patch.enabled
+    if (patch.enabled) current.status = "active"
+  }
   cfg.accounts[idx] = current
   writeCfmmcConfig(cfg)
   return previousLabel ? { ...current, previousLabel } : current
@@ -962,14 +1016,23 @@ export async function fetchCfmmcAccount(
       })()
       const haveToday = result.haveToday === true || todayIso === shanghaiToday
       const expectToday = shanghaiWeekday(now) >= 1 && shanghaiWeekday(now) <= 5
+      const prev = next.accounts[idx]
+      const errorText = result.ok ? null : (result.error || "获取失败")
+      const wrongPassword = isCfmmcWrongPasswordError(errorText)
+      const recovered = result.ok && prev.status === "paused" && isCfmmcWrongPasswordError(prev.lastError)
+      if (wrongPassword) {
+        appendJobLog("fetch", `账户「${account.label || account.userId}」密码错误，已设为暂停，不再参与每日自动获取`)
+      }
       next.accounts[idx] = {
-        ...next.accounts[idx],
+        ...prev,
+        status: wrongPassword ? "paused" : recovered ? "active" : prev.status,
+        enabled: wrongPassword ? false : recovered ? true : prev.enabled,
         lastFetchAt: now.toISOString(),
-        lastFetchDate: result.ok && (haveToday || !expectToday) ? formatLocalDate(now) : next.accounts[idx].lastFetchDate,
+        lastFetchDate: result.ok && (haveToday || !expectToday) ? formatLocalDate(now) : prev.lastFetchDate,
         lastError: result.ok
           ? (expectToday && !haveToday ? `未拿到 ${shanghaiToday} 结算日报` : null)
-          : (result.error || "获取失败"),
-        lastFile: result.ok ? (result.filename || next.accounts[idx].lastFile) : next.accounts[idx].lastFile,
+          : errorText,
+        lastFile: result.ok ? (result.filename || prev.lastFile) : prev.lastFile,
       }
       next.lastRunAt = now.toISOString()
       writeCfmmcConfig(next)
@@ -1054,7 +1117,7 @@ export async function fetchCfmmcAccounts(accountId?: string): Promise<{
     const cfg = readCfmmcConfig()
     const targets = accountId
       ? cfg.accounts.filter((a) => a.id === accountId)
-      : cfg.accounts.filter((a) => a.enabled)
+      : dailyCfmmcAccounts(cfg.accounts)
     if (targets.length === 0) throw new Error(accountId ? "账户不存在" : "没有已启用的账户")
     const results = []
     for (const account of targets) {
@@ -1084,9 +1147,10 @@ export async function runDueCfmmcFetch(): Promise<void> {
   const cfg = readCfmmcConfig()
   if (!cfg.enabled || cfmmcFetchRunning) return
   const now = new Date()
-  const withCreds = cfg.accounts.filter((a) => a.userId && a.password)
+  const withCreds = cfg.accounts.filter((a) => a.userId && a.password && a.status !== "paused")
   const enabledAccounts = withCreds.filter((a) => a.enabled)
   // Daily switch on + every account 停用 is a UI footgun (clicking 启用 toggles it off).
+  // 暂停 accounts stay out of this fallback so a wrong password is not retried.
   const pool = enabledAccounts.length > 0 ? enabledAccounts : withCreds
   if (enabledAccounts.length === 0 && withCreds.length > 0 && now.getTime() - lastCfmmcSkipLogAt > 30 * 60 * 1000) {
     lastCfmmcSkipLogAt = now.getTime()

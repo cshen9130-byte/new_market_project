@@ -16,6 +16,11 @@ import {
   resolveFofWeeklyBenchmark,
   type FofWeeklyBenchmarkKey,
 } from "@/lib/server/fof-weekly-benchmark"
+import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
+import {
+  loadBasicinfoTrackByBeianKeys,
+  resolveFundElementsBeianKeys,
+} from "@/lib/server/fund-elements-lookup"
 import { loadFundNavRange, loadMergedFundNavRows, resolveFundNames } from "@/lib/server/fund-nav-series"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
@@ -102,6 +107,62 @@ export function reportStrategyPhrase(
   const specific = [...values].reverse().find(Boolean)
   if (!specific) return "策略"
   return specific.endsWith("策略") ? specific : `${specific}策略`
+}
+
+function isoInceptionDay(value: string | null | undefined): string | null {
+  const day = value?.slice(0, 10) ?? ""
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null
+}
+
+/**
+ * Same date the product page shows as 产品成立时间:
+ * private_fund_info, then 产品要素, then the AMAC establish date.
+ */
+export async function resolveProductPageInceptionDate(
+  beianHao: string,
+  productName?: string | null,
+): Promise<string | null> {
+  const code = beianHao.trim()
+  if (!code) return null
+
+  try {
+    const infoRows = await query<{ inception_date: string | null }>(
+      `SELECT inception_date::text AS inception_date
+       FROM private_fund_info
+       WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
+         AND inception_date IS NOT NULL
+       LIMIT 1`,
+      [code],
+    )
+    const infoDate = isoInceptionDay(infoRows[0]?.inception_date)
+    if (infoDate) return infoDate
+  } catch (err) {
+    console.warn("[fof-weekly-report] private_fund_info inception lookup failed:", err)
+  }
+
+  try {
+    const keys = await resolveFundElementsBeianKeys(code, productName)
+    const trackRows = await loadBasicinfoTrackByBeianKeys<{ inception_date: string | null }>(
+      keys,
+      `SELECT inception_date::text AS inception_date FROM basicinfo_bfl_track`,
+    )
+    for (const row of trackRows) {
+      const day = isoInceptionDay(row.inception_date)
+      if (day) return day
+    }
+  } catch (err) {
+    console.warn("[fof-weekly-report] product-element inception lookup failed:", err)
+  }
+
+  try {
+    const amac = await lookupAmacFundMetadata(code)
+    const amacDate = isoInceptionDay(amac?.establish_date)
+    if (amacDate) return amacDate
+  } catch (err) {
+    console.warn("[fof-weekly-report] AMAC inception lookup failed:", err)
+  }
+
+  return null
 }
 
 export function reportProductTagline(strategyPhrase: string, override?: string | null): string {
@@ -890,6 +951,7 @@ export async function generateFofWeeklyReport(
   await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
 
   const reportTitle = (input.report_title || names.product_name).trim()
+  const productInception = await resolveProductPageInceptionDate(beian_hao, names.product_name)
   const strategyPhrase = await resolveReportStrategyPhrase(
     beian_hao,
     [names.product_name, names.short_name, product_name, reportTitle],
@@ -924,6 +986,7 @@ export async function generateFofWeeklyReport(
     benchLabel,
     "--nav-frequency",
     navFrequency,
+    ...(productInception ? ["--inception-date", productInception] : []),
   ]
 
   const renderStartedAt = Date.now()

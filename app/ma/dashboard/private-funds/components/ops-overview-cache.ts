@@ -69,7 +69,7 @@ export function overviewCacheKey(scope: DataOverviewScope): string {
 }
 
 export function channelCacheKey(channel: UpdateChannel): string {
-  return `channel:v8:${channel}`
+  return `channel:v9:${channel}`
 }
 
 export function weeklyCacheKey(variant: WeeklyReviewStatusVariant, pools: string, weekEnd: string): string {

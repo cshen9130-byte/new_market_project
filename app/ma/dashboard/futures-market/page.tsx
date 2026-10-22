@@ -234,7 +234,28 @@ function buildVolDistOption(
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function FuturesMarketPage() {
+export type FuturesChartPart =
+  | "nhci"
+  | "sector"
+  | "sector-vol"
+  | "sector-cs"
+  | "corr-matrix"
+  | "corr-trend"
+  | "scatter"
+  | "dist"
+  | "amount"
+  | "basis-cont"
+  | "index-quote"
+  | "basis-rate"
+  | "basis-ts"
+  | "basis-ann"
+  | "contract-ann"
+
+const INDEX_RANGE_PARTS = new Set<FuturesChartPart>(["nhci", "sector", "sector-vol", "sector-cs", "corr-matrix", "corr-trend"])
+const EQUITY_PARTS = new Set<FuturesChartPart>(["basis-cont", "index-quote", "basis-rate", "basis-ts", "basis-ann", "contract-ann"])
+const FAR_PARTS = new Set<FuturesChartPart>(["index-quote", "basis-rate", "basis-ts", "basis-ann", "contract-ann"])
+
+export default function FuturesMarketPage({ part }: { part?: FuturesChartPart } = {}) {
   const [nhci, setNhci] = useState<Array<{ date: string; close: number }>>([])
   const [loadingNhci, setLoadingNhci] = useState(true)
   const [errorNhci, setErrorNhci] = useState<string | null>(null)
@@ -734,24 +755,30 @@ export default function FuturesMarketPage() {
   useEffect(() => { reloadChoiceHeatmap(true) }, [])
 
   useEffect(() => { reloadFutLatest(true) }, [])
+  const show = (id: FuturesChartPart) => !part || part === id
+  const forcedTab = part ? (EQUITY_PARTS.has(part) ? "equity" : "commodity") : null
   return (
-    <div className="space-y-6 pt-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">期货市场分析</h1>
-        <p className="text-muted-foreground mt-2">大宗商品期货与合约分析</p>
-      </div>
+    <div className={part ? "space-y-6" : "space-y-6 pt-6"}>
+      {!part && (
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">期货市场分析</h1>
+          <p className="text-muted-foreground mt-2">大宗商品期货与合约分析</p>
+        </div>
+      )}
 
-      <Tabs defaultValue="commodity" className="w-full">
-        <TabsList className="mb-2">
-          <TabsTrigger value="commodity">商品期货</TabsTrigger>
-          <TabsTrigger value="equity">股指期货</TabsTrigger>
-          <TabsTrigger value="bond">国债期货</TabsTrigger>
-        </TabsList>
+      <Tabs {...(forcedTab ? { value: forcedTab } : { defaultValue: "commodity" })} className="w-full">
+        {!part && (
+          <TabsList className="mb-2">
+            <TabsTrigger value="commodity">商品期货</TabsTrigger>
+            <TabsTrigger value="equity">股指期货</TabsTrigger>
+            <TabsTrigger value="bond">国债期货</TabsTrigger>
+          </TabsList>
+        )}
 
         <TabsContent value="commodity" className="space-y-6 mt-0">
 
 
-      <div className="flex items-center gap-1.5">
+      {(!part || INDEX_RANGE_PARTS.has(part)) && <div className="flex items-center gap-1.5">
         {(["1m", "3m", "6m", "1y"] as const).map((r) => (
           <Button
             key={r}
@@ -763,10 +790,10 @@ export default function FuturesMarketPage() {
             {r === "1m" ? "近一个月" : r === "3m" ? "近三个月" : r === "6m" ? "近六个月" : "近一年"}
           </Button>
         ))}
-      </div>
+      </div>}
 
-      <div className="flex gap-4">
-      <div className="flex-1 min-w-0">
+      {(show("nhci") || show("sector")) && <div className={part ? "contents" : "flex gap-4"}>
+      {show("nhci") && <div className="min-w-0 flex-1">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -874,9 +901,9 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
-      <div className="flex-1 min-w-0">
+      {show("sector") && <div className="min-w-0 flex-1">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -1014,11 +1041,11 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
-      </div>
+      </div>}
+      </div>}
 
-      <div className="flex gap-4">
-      <div className="flex-1 min-w-0">
+      {(show("sector-vol") || show("sector-cs")) && <div className={part ? "contents" : "flex gap-4"}>
+      {show("sector-vol") && <div className="min-w-0 flex-1">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -1144,9 +1171,9 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
-      <div className="flex-1 min-w-0">
+      {show("sector-cs") && <div className="min-w-0 flex-1">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -1277,11 +1304,11 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
-      </div>
+      </div>}
+      </div>}
 
-      <div className="flex gap-4 items-start">
-      <div className="flex-1 min-w-0">
+      {(show("corr-matrix") || show("corr-trend")) && <div className={part ? "contents" : "flex items-start gap-4"}>
+      {show("corr-matrix") && <div className="min-w-0 flex-1">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -1434,9 +1461,9 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
-      <div className="flex-1 min-w-0">
+      {show("corr-trend") && <div className="min-w-0 flex-1">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -1645,11 +1672,11 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
-      </div>
+      </div>}
+      </div>}
 
-      <div className="flex gap-4 items-stretch">
-      <div className={scatterFullscreen ? "fixed inset-0 z-50 bg-background p-4 overflow-auto" : "flex-1 min-w-0"}>
+      {(show("scatter") || show("dist")) && <div className={part ? "contents" : "flex items-stretch gap-4"}>
+      {show("scatter") && <div className={scatterFullscreen ? "fixed inset-0 z-50 overflow-auto bg-background p-4" : "min-w-0 flex-1"}>
         <Card className={scatterFullscreen ? "h-full flex flex-col" : "h-full flex flex-col"}>
           <CardHeader>
             <div className="flex items-center justify-between gap-4">
@@ -1760,10 +1787,10 @@ export default function FuturesMarketPage() {
             ) : null}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
-      <div className="flex-1 min-w-0">
-        <Card className="h-full flex flex-col">
+      {show("dist") && <div className="min-w-0 flex-1">
+        <Card className="flex h-full flex-col">
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -1813,10 +1840,10 @@ export default function FuturesMarketPage() {
             ) : null}
           </CardContent>
         </Card>
-      </div>
-      </div>
+      </div>}
+      </div>}
 
-      <div className="w-full">
+      {show("amount") && <div className="w-full">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -1926,13 +1953,13 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
         </TabsContent>
 
         <TabsContent value="equity" className="space-y-6 mt-0">
 
-      <div className="w-full">
+      {show("basis-cont") && <div className="w-full">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -2134,10 +2161,9 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
-      {/* Far / Near global toggle */}
-      <div className="flex items-center gap-3">
+      {(!part || FAR_PARTS.has(part)) && <div className="flex items-center gap-3">
         <span className="text-sm text-muted-foreground">合约月份</span>
         <div className="inline-flex rounded-md border border-input overflow-hidden text-sm font-medium">
           <button
@@ -2153,10 +2179,10 @@ export default function FuturesMarketPage() {
             onClick={() => setShowFar(false)}
           >近月</button>
         </div>
-      </div>
+      </div>}
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card>
+      {(show("index-quote") || show("basis-rate")) && <div className={part ? "contents" : "grid gap-6 md:grid-cols-2"}>
+        {show("index-quote") && <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -2225,8 +2251,8 @@ export default function FuturesMarketPage() {
               })()
             )}
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("basis-rate") && <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -2276,10 +2302,10 @@ export default function FuturesMarketPage() {
               })()
             )}
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <div className="w-full">
+      {show("basis-ts") && <div className="w-full">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -2405,9 +2431,9 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
-      <div className="w-full">
+      {show("basis-ann") && <div className="w-full">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -2547,9 +2573,9 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
-      <div className="w-full">
+      {show("contract-ann") && <div className="w-full">
         {loadingContractDiscountTs ? (
           <Card>
             <CardContent className="pt-6">
@@ -2795,7 +2821,7 @@ export default function FuturesMarketPage() {
             </CardContent>
           </Card>
         )}
-      </div>
+      </div>}
 
         </TabsContent>
 

@@ -406,6 +406,83 @@ export async function collapseAliasedTrackingIdentities(): Promise<number> {
   return changed
 }
 
+/** 邮箱运维池 filter: is this 备案号 in JY跟踪池 / JY精选池, or not. */
+export type PoolPresence = "all" | "in" | "out"
+
+const JY_PRESENCE_TABLE = {
+  jy: "tracking_pool",
+  selected: "selected_pool",
+} as const
+
+export type JyPresencePool = keyof typeof JY_PRESENCE_TABLE
+
+export function parsePoolPresence(raw: string | null | undefined): PoolPresence {
+  return raw === "in" || raw === "out" ? raw : "all"
+}
+
+/**
+ * Membership is the 备案号 stored on the pool row. `codeExpr` is a SQL column
+ * we control (`i.beian_hao`, `cache.beian_hao`), never request text.
+ */
+export function sqlPoolPresenceClause(
+  codeExpr: string,
+  pool: JyPresencePool,
+  mode: PoolPresence,
+): string | null {
+  if (mode === "all") return null
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(codeExpr)) {
+    throw new Error(`refusing pool-presence expression: ${codeExpr}`)
+  }
+  const table = JY_PRESENCE_TABLE[pool]
+  const exists = `EXISTS (
+    SELECT 1 FROM ${table} jy_presence
+    WHERE jy_presence.register_number IS NOT NULL
+      AND UPPER(BTRIM(jy_presence.register_number)) = UPPER(BTRIM(${codeExpr}))
+  )`
+  return mode === "in" ? exists : `NOT (${exists})`
+}
+
+export type JyPoolFlags = {
+  in_jy_pool: boolean
+  in_selected_pool: boolean
+}
+
+/** Look up JY跟踪池 / JY精选池 membership for the 备案号 values on this page. */
+export async function attachJyPoolFlags<T extends { beian_hao: string }>(
+  rows: T[],
+): Promise<(T & JyPoolFlags)[]> {
+  const codes = [...new Set(rows.map((row) => row.beian_hao.trim().toUpperCase()).filter(Boolean))]
+  const flags = new Map<string, JyPoolFlags>()
+  if (codes.length > 0) {
+    const found = await query<{ code: string; pool: string }>(
+      `SELECT UPPER(BTRIM(register_number)) AS code, 'jy' AS pool
+       FROM tracking_pool
+       WHERE register_number IS NOT NULL
+         AND UPPER(BTRIM(register_number)) = ANY($1::text[])
+       UNION ALL
+       SELECT UPPER(BTRIM(register_number)), 'selected'
+       FROM selected_pool
+       WHERE register_number IS NOT NULL
+         AND UPPER(BTRIM(register_number)) = ANY($1::text[])`,
+      [codes],
+    )
+    for (const row of found) {
+      const cur = flags.get(row.code) ?? { in_jy_pool: false, in_selected_pool: false }
+      if (row.pool === "jy") cur.in_jy_pool = true
+      if (row.pool === "selected") cur.in_selected_pool = true
+      flags.set(row.code, cur)
+    }
+  }
+  return rows.map((row) => {
+    const hit = flags.get(row.beian_hao.trim().toUpperCase())
+    return {
+      ...row,
+      in_jy_pool: hit?.in_jy_pool ?? false,
+      in_selected_pool: hit?.in_selected_pool ?? false,
+    }
+  })
+}
+
 export function isKnownCustomPoolKey(poolKey: string, definedPoolKeys: ReadonlySet<string>): boolean {
   if (poolKey === "mine_default" || poolKey === "jy_ops") return true
   if (poolKey.startsWith("custom_") || poolKey.startsWith("mine_custom_")) {

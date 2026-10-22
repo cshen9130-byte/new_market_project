@@ -72,6 +72,7 @@ type CfmmcAccount = {
   userId: string
   password: string
   enabled: boolean
+  status?: "active" | "paused"
   lastFetchDate: string | null
   lastFetchAt: string | null
   lastError: string | null
@@ -510,16 +511,61 @@ export default function AccountRiskDataImport() {
     }
   }
 
+  function confirmResumeAfterBadPassword(account: CfmmcAccount): boolean {
+    const err = account.lastError || ""
+    const bad = !err.includes("验证码") && (
+      err.includes("密码错误")
+      || err.includes("次数过多")
+      || err.toLowerCase().includes("wrong password")
+    )
+    if (!bad) return true
+    const name = account.label || account.userId
+    return confirm(`「${name}」上次登录是密码错误。恢复后每日任务会再次用该密码登录，仍错误会被监控中心锁定。仍要恢复吗？`)
+  }
+
   async function toggleAccount(account: CfmmcAccount) {
+    const paused = account.status === "paused"
+    if (paused && !confirmResumeAfterBadPassword(account)) return
+    const enabled = paused ? true : !account.enabled
     try {
       const res = await fetch(`${API}/cfmmc-accounts`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: account.id, enabled: !account.enabled }),
+        body: JSON.stringify({
+          id: account.id,
+          enabled,
+          status: enabled ? "active" : account.status === "paused" ? "paused" : "active",
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(readError(data, "更新失败"))
       if (data.config) setCfmmc(data.config)
+    } catch (e) {
+      toast({ title: "更新失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
+    }
+  }
+
+  async function setAccountPaused(account: CfmmcAccount, paused: boolean) {
+    if (!paused && !confirmResumeAfterBadPassword(account)) return
+    try {
+      const res = await fetch(`${API}/cfmmc-accounts`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: account.id,
+          status: paused ? "paused" : "active",
+          enabled: !paused,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(readError(data, "更新失败"))
+      if (data.config) setCfmmc(data.config)
+      toast({
+        title: paused ? "已暂停" : "已恢复每日获取",
+        description: paused
+          ? "状态为暂停，每日任务不再登录该账户。"
+          : "已重新参与每日自动获取。",
+      })
     } catch (e) {
       toast({ title: "更新失败", description: e instanceof Error ? e.message : "未知错误", variant: "destructive" })
     }
@@ -960,6 +1006,7 @@ export default function AccountRiskDataImport() {
               </a>
               ，自动识别验证码并下载「客户交易结算日报」xls。
               点击「立即获取」会从该账户第一份结算日报开始按日下载到今天（已有文件会跳过），每个账户用自己的起始日，不从固定日期起算。只保留文件内「交易日期」与文件名一致的日报；没有结算单的日期不会保存。每天定时任务按<strong>北京时间</strong>增量补齐本地尚未入库的结算日（含当天盘后已公布的当日日报），不会重拉全部历史。当天触发时间前的手动获取不会取消定时任务。
+              「暂停」把账户状态设为暂停，定时任务不再登录。密码错误的账户会自动暂停，避免每天用错误密码重试并被监控中心锁定。
               需在<strong>运行网站的那台机器</strong>安装 Playwright（Linux 服务器执行
               <span className="font-mono"> bash scripts/deploy/setup-cfmmc-fetch.sh</span>，
               然后 <span className="font-mono">pm2 restart new_market_project new_market_project_worker</span>）。
@@ -999,7 +1046,7 @@ export default function AccountRiskDataImport() {
               <Button
                 size="sm"
                 variant="outline"
-                disabled={isFetchingAllCfmmc || fetchingAccountId !== null || cfmmc.accounts.filter((a) => a.enabled).length === 0}
+                disabled={isFetchingAllCfmmc || fetchingAccountId !== null || cfmmc.accounts.filter((a) => a.enabled && a.status !== "paused").length === 0}
                 onClick={() => void fetchCfmmc()}
               >
                 {isFetchingAllCfmmc
@@ -1095,6 +1142,11 @@ export default function AccountRiskDataImport() {
                       ) : (
                         <div className="flex items-center gap-1.5 min-w-0">
                           <p className="font-medium truncate">{account.label || account.userId}</p>
+                          {account.status === "paused" && (
+                            <span className="shrink-0 rounded bg-amber-600 px-1.5 py-0.5 text-[11px] font-medium text-white">
+                              状态：暂停
+                            </span>
+                          )}
                           <button
                             type="button"
                             className="shrink-0 text-muted-foreground hover:text-foreground"
@@ -1119,21 +1171,53 @@ export default function AccountRiskDataImport() {
                     <button
                       type="button"
                       onClick={() => void toggleAccount(account)}
-                      title={account.enabled ? "点击后不再参与每日自动获取" : "点击后参与每日自动获取"}
+                      title={
+                        account.status === "paused"
+                          ? "当前为暂停。点击后恢复每日自动获取"
+                          : account.enabled
+                            ? "点击后不再参与每日自动获取"
+                            : "点击后参与每日自动获取"
+                      }
                       className={`h-7 px-2 rounded text-[11px] font-medium border ${
-                        account.enabled
+                        account.enabled && account.status !== "paused"
                           ? "bg-emerald-600 text-white border-emerald-600"
                           : "border-border text-muted-foreground"
                       }`}
                     >
-                      {account.enabled ? "参与每日获取" : "未参与每日获取"}
+                      {account.status === "paused"
+                        ? "恢复每日获取"
+                        : account.enabled
+                          ? "参与每日获取"
+                          : "未参与每日获取"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void setAccountPaused(account, account.status !== "paused")}
+                      title={
+                        account.status === "paused"
+                          ? "状态为暂停，每日任务不会再用该密码登录。点击恢复。"
+                          : "设为暂停。暂停后不再每日登录，密码错误也不会每天重试。"
+                      }
+                      className={`h-7 px-2 rounded text-[11px] font-medium border ${
+                        account.status === "paused"
+                          ? "bg-amber-600 text-white border-amber-600"
+                          : "border-border text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {account.status === "paused" ? "已暂停" : "暂停"}
                     </button>
                     <Button
                       size="sm"
                       variant="outline"
                       className="h-7 text-xs"
                       disabled={isFetchingAllCfmmc || fetchingAccountId !== null}
-                      onClick={() => void fetchCfmmc(account.id)}
+                      onClick={() => {
+                        if (account.status === "paused") {
+                          const name = account.label || account.userId
+                          if (!confirm(`「${name}」已暂停。仍要现在登录获取吗？密码错误会再次被监控中心锁定。`)) return
+                        }
+                        void fetchCfmmc(account.id)
+                      }}
                     >
                       {fetchingAccountId === account.id
                         ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />

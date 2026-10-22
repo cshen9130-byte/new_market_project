@@ -81,10 +81,13 @@ export function buildListResponseCacheKey(opts: {
   personalTagMode: string; personalTags: string[];   personalUserKey: string
   asOfDate: string
   navSource?: string
+  inJy?: string
+  inSelected?: string
 }): string {
   // "不限" means "no filter" — normalise to "" so it shares a cache entry with
   // requests that omit the param entirely (both produce identical SQL).
   const normOrgSize = opts.orgSize === "不限" ? "" : opts.orgSize
+  const normPresence = (raw: string | undefined) => (raw === "in" || raw === "out" ? raw : "")
   return JSON.stringify({
     v: 4,
     pool: opts.pool, pg: opts.page, ps: opts.pageSize,
@@ -94,6 +97,7 @@ export function buildListResponseCacheKey(opts: {
     tt: [...opts.teamTags].sort(), ptm: opts.personalTagMode,
     pt: [...opts.personalTags].sort(), uk: opts.personalUserKey, aod: opts.asOfDate,
     ns: opts.navSource ?? "",
+    ij: normPresence(opts.inJy), isel: normPresence(opts.inSelected),
   })
 }
 

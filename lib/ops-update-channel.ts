@@ -715,6 +715,8 @@ export function winningUpdateChannel(dates: {
  * Recent = list price_date >= 2026-09-16. The page does not call the API.
  * recent_* is the 2026-10-19 read of that same filter, stored in fof99_list_recent_products.
  * That read has 14 more recent products than 2026-10-16, so older_nav and 1–2 个月 are 14 lower.
+ * On 2026-10-22, 1,186 of those 未纳入 products were enrolled in weekly after their history was stored.
+ * 605 share-class rows from that read stay 未纳入.
  */
 export const FOF99_LIST_COVERAGE: Fof99ListCoverage = {
   measured_on: "2026-10-16",
@@ -728,11 +730,11 @@ export const FOF99_LIST_COVERAGE: Fof99ListCoverage = {
   private_securities_all_states: 207717,
   all_products: 464635,
   recent_rows: [
-    { key: "weekly", label: "每周拉取 weekly", count: 9040 },
+    { key: "weekly", label: "每周拉取 weekly", count: 10226 },
     { key: "weekly_plus", label: "邮件优先 weekly_plus", count: 145 },
     { key: "update_slow", label: "更新偏慢 update_slow", count: 155 },
     { key: "skip", label: "确认无序列 skip", count: 11 },
-    { key: "none", label: "未纳入", count: 1791 },
+    { key: "none", label: "未纳入", count: 605 },
   ],
   older_rows: [
     { key: "m1_2", label: "1–2 个月", count: 264 },

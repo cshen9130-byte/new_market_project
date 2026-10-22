@@ -843,18 +843,47 @@ function regimeLabel(regime: string | null | undefined) {
   return "—"
 }
 
+export type DeeperChartPart =
+  | "iv-rv"
+  | "peer-iv"
+  | "skew-snapshot"
+  | "skew-history"
+  | "pcr-oi"
+  | "pcr-history"
+  | "term-slope"
+  | "vol-cone"
+  | "iv-heat"
+
+const DEEPER_PARTS = new Set<string>([
+  "iv-rv",
+  "peer-iv",
+  "skew-snapshot",
+  "skew-history",
+  "pcr-oi",
+  "pcr-history",
+  "term-slope",
+  "vol-cone",
+  "iv-heat",
+])
+
+export function isDeeperChartPart(id: string): id is DeeperChartPart {
+  return DEEPER_PARTS.has(id)
+}
+
 export function DeeperAnalysisPanels({
   selectedKey,
   productLabel,
   charts,
   underlyings,
   peerGroup = DEFAULT_PEER_GROUP,
+  panel,
 }: {
   selectedKey: string
   productLabel: string | null
   charts: DeeperCharts | undefined
   underlyings: Record<string, UnderlyingLite>
   peerGroup?: PeerGroupConfig
+  panel?: DeeperChartPart
 }) {
   const title = productLabel ?? "当前品种"
   const bucket = peerGroup.keyToGroup[selectedKey] ?? peerGroup.groupOrder[0] ?? ""
@@ -906,18 +935,21 @@ export function DeeperAnalysisPanels({
   const skew = charts?.skew
   const pcr = charts?.pcr
   const term = charts?.term_slope
+  const show = (id: DeeperChartPart) => !panel || panel === id
+  const solo = Boolean(panel)
 
   return (
-    <div className="space-y-8">
-      {/* 1. Relative value */}
-      <section className="space-y-4">
+    <div className={solo ? "space-y-4" : "space-y-8"}>
+      {(show("iv-rv") || show("peer-iv")) && <section className="space-y-4">
+        {!solo && (
         <div>
           <h2 className="text-lg font-semibold">相对价值分析</h2>
           <p className="text-sm text-muted-foreground mt-1">
             IV 相对实现波动是否偏贵，以及同组品种谁更贵
           </p>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        )}
+        {!solo && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <MetricTile label="当前 IV" value={`${fmt(ivRv?.latest_iv)}%`} />
           <MetricTile label="RV 20D" value={`${fmt(ivRv?.latest_rv_20)}%`} />
           <MetricTile
@@ -943,9 +975,9 @@ export function DeeperAnalysisPanels({
                   : "neg"
             }
           />
-        </div>
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
+        </div>}
+        <div className={solo ? "contents" : "grid gap-6 lg:grid-cols-2"}>
+          {show("iv-rv") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -960,8 +992,8 @@ export function DeeperAnalysisPanels({
                 <Empty height={320} />
               )}
             </CardContent>
-          </Card>
-          <Card>
+          </Card>}
+          {show("peer-iv") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -976,19 +1008,20 @@ export function DeeperAnalysisPanels({
                 <Empty height={320} />
               )}
             </CardContent>
-          </Card>
+          </Card>}
         </div>
-      </section>
+      </section>}
 
-      {/* 2. Skew & positioning */}
-      <section className="space-y-4">
+      {(show("skew-snapshot") || show("skew-history") || show("pcr-oi") || show("pcr-history")) && <section className="space-y-4">
+        {!solo && (
         <div>
           <h2 className="text-lg font-semibold">偏度与仓位</h2>
           <p className="text-sm text-muted-foreground mt-1">
             微笑翼部定价（Risk Reversal）与 Put/Call 持仓结构
           </p>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        )}
+        {!solo && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <MetricTile
             label="Risk Reversal"
             value={`${fmt(skew?.risk_reversal)}%`}
@@ -1006,9 +1039,9 @@ export function DeeperAnalysisPanels({
             value={skew?.expiry_code ? String(skew.expiry_code) : "—"}
             hint={skew?.days_to_expiry != null ? `${skew.days_to_expiry}D` : undefined}
           />
-        </div>
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
+        </div>}
+        <div className={solo ? "contents" : "grid gap-6 lg:grid-cols-2"}>
+          {show("skew-snapshot") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -1023,8 +1056,8 @@ export function DeeperAnalysisPanels({
                 <Empty />
               )}
             </CardContent>
-          </Card>
-          <Card>
+          </Card>}
+          {show("skew-history") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -1047,8 +1080,8 @@ export function DeeperAnalysisPanels({
                 <Empty />
               )}
             </CardContent>
-          </Card>
-          <Card>
+          </Card>}
+          {show("pcr-oi") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -1067,8 +1100,8 @@ export function DeeperAnalysisPanels({
                 <Empty />
               )}
             </CardContent>
-          </Card>
-          <Card>
+          </Card>}
+          {show("pcr-history") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -1091,19 +1124,20 @@ export function DeeperAnalysisPanels({
                 <Empty />
               )}
             </CardContent>
-          </Card>
+          </Card>}
         </div>
-      </section>
+      </section>}
 
-      {/* 3. Term & vol cone */}
-      <section className="space-y-4">
+      {(show("term-slope") || show("vol-cone")) && <section className="space-y-4">
+        {!solo && (
         <div>
           <h2 className="text-lg font-semibold">期限结构与波动率锥</h2>
           <p className="text-sm text-muted-foreground mt-1">
             近远月斜率形态，以及实现波动在历史分布中的位置
           </p>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        )}
+        {!solo && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <MetricTile
             label="近月 IV"
             value={`${fmt(term?.near_iv)}%`}
@@ -1125,9 +1159,9 @@ export function DeeperAnalysisPanels({
             value={`${fmt(term?.slope_per_30d)}%`}
             hint="标准化斜率"
           />
-        </div>
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
+        </div>}
+        <div className={solo ? "contents" : "grid gap-6 lg:grid-cols-2"}>
+          {show("term-slope") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -1150,8 +1184,8 @@ export function DeeperAnalysisPanels({
                 <Empty height={300} />
               )}
             </CardContent>
-          </Card>
-          <Card>
+          </Card>}
+          {show("vol-cone") && <Card>
             <ChartCardHeader
               className="pb-2"
               titleClassName="text-base"
@@ -1166,18 +1200,19 @@ export function DeeperAnalysisPanels({
                 <Empty height={300} />
               )}
             </CardContent>
-          </Card>
+          </Card>}
         </div>
-      </section>
+      </section>}
 
-      {/* 4. Cross-section heatmap */}
-      <section className="space-y-4">
+      {show("iv-heat") && <section className="space-y-4">
+        {!solo && (
         <div>
           <h2 className="text-lg font-semibold">全市场分位热力</h2>
           <p className="text-sm text-muted-foreground mt-1">
             {peerGroup.heatDescription ?? "各品种全历史 / 1Y 滚动分位一览（偏红越贵）"}
           </p>
         </div>
+        )}
         <Card>
           <ChartCardHeader
             className="pb-2"
@@ -1198,7 +1233,7 @@ export function DeeperAnalysisPanels({
             )}
           </CardContent>
         </Card>
-      </section>
+      </section>}
     </div>
   )
 }

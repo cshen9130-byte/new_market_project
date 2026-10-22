@@ -40,6 +40,7 @@ export async function PUT(req: NextRequest) {
       userId?: string
       password?: string
       enabled?: boolean
+      status?: string
     }
     if (!body.id) {
       return NextResponse.json({ error: "缺少账户 id" }, { status: 400 })
@@ -49,6 +50,7 @@ export async function PUT(req: NextRequest) {
       userId: body.userId,
       password: body.password,
       enabled: body.enabled,
+      status: body.status === "paused" || body.status === "active" ? body.status : undefined,
     })
     if (account.previousLabel && account.previousLabel !== account.label) {
       const { syncAccountRiskDirectNavDisplayNamesForAccount } = await import(

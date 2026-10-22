@@ -127,10 +127,12 @@ export function QuantTraderExposureCharts({
   accountId,
   from,
   to,
+  part,
 }: {
   accountId: string
   from: string
   to: string
+  part?: "asset-mv" | "var-share"
 }) {
   const [series, setSeries] = useState<ExposureRow[]>([])
   const [varPayload, setVarPayload] = useState<VarPayload | null>(null)
@@ -346,14 +348,19 @@ export function QuantTraderExposureCharts({
 
   const selectCls = "text-xs border border-border rounded px-2 py-0.5 bg-background"
 
+  const showMv = !part || part === "asset-mv"
+  const showVar = !part || part === "var-share"
+
   return (
     <div className="space-y-3">
+      {!part && (
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <h2 className="text-sm font-medium">持仓结构</h2>
         <span className="text-[11px] text-muted-foreground">{from} 至 {to}</span>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <Card className="min-w-0">
+      )}
+      <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+      {showMv && <Card className="min-w-0">
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-center gap-2">
             <CardTitle className="text-sm">大类资产多空持仓市值</CardTitle>
@@ -382,8 +389,8 @@ export function QuantTraderExposureCharts({
             : !exposureOption ? <p className="text-sm text-muted-foreground px-4 py-6">这段没有持仓市值。</p>
             : <ReactECharts option={exposureOption} style={{ height: 340, width: "100%" }} notMerge />}
         </CardContent>
-      </Card>
-      <Card className="min-w-0">
+      </Card>}
+      {showVar && <Card className="min-w-0">
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-center gap-2">
             <CardTitle className="text-sm">持仓VaR走势（各板块VaR占比）</CardTitle>
@@ -408,7 +415,7 @@ export function QuantTraderExposureCharts({
             : !varOption ? <p className="text-sm text-muted-foreground px-4 py-6">这段没有 VaR。</p>
             : <ReactECharts key={varMode} option={varOption} style={{ height: 340, width: "100%" }} notMerge />}
         </CardContent>
-      </Card>
+      </Card>}
       </div>
     </div>
   )

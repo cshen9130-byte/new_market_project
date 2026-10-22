@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 
+import { useChartStill } from "@/hooks/chart-still"
 import type { IndexProduct } from "@/lib/client/ctp-market"
 import { qvixBarsForTimeframe } from "@/lib/client/qvix-series"
 import { type IvSnapshot, type OverlayPoint } from "@/lib/client/realtime-overlay"
@@ -11,6 +12,7 @@ const dailyCache = new Map<IndexProduct, OverlayPoint[]>()
 
 export function useQvixSeries(product: IndexProduct, interval: TimeframeId, iv?: IvSnapshot) {
   const history = !isIntradayTimeframe(interval)
+  const still = useChartStill()
   const [daily, setDaily] = useState<OverlayPoint[]>(() => dailyCache.get(product) || [])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -37,12 +39,17 @@ export function useQvixSeries(product: IndexProduct, interval: TimeframeId, iv?:
       }
     }
     void load()
+    if (still) {
+      return () => {
+        cancelled = true
+      }
+    }
     const timer = window.setInterval(() => void load(), 60_000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [history, product])
+  }, [history, product, still])
 
   return useMemo(() => {
     const series = qvixBarsForTimeframe(interval, iv, daily)

@@ -15,7 +15,7 @@ import {
 } from "@/lib/commodity-option-meta"
 import { cn } from "@/lib/utils"
 import { ChartCardHeader } from "./chart-help"
-import { DeeperAnalysisPanels, type PeerGroupConfig } from "./deeper-analysis-panels"
+import { DeeperAnalysisPanels, isDeeperChartPart, type DeeperChartPart, type PeerGroupConfig } from "./deeper-analysis-panels"
 
 const CHART_FONT = "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
 
@@ -557,7 +557,29 @@ function shortName(u: UnderlyingPayload | undefined, key: string) {
   return u?.short_label || commodityShortName(key, u?.label)
 }
 
-export default function CommodityOptionsSection() {
+export type CommodityChartPart =
+  | "summary"
+  | "summary-pct"
+  | "history"
+  | "percentile"
+  | "term"
+  | DeeperChartPart
+
+const COMMODITY_PRODUCT_PARTS = new Set<CommodityChartPart>([
+  "history",
+  "percentile",
+  "term",
+  "iv-rv",
+  "peer-iv",
+  "skew-snapshot",
+  "skew-history",
+  "pcr-oi",
+  "pcr-history",
+  "term-slope",
+  "vol-cone",
+])
+
+export default function CommodityOptionsSection({ part }: { part?: CommodityChartPart } = {}) {
   const [payload, setPayload] = useState<CommodityPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -647,6 +669,10 @@ export default function CommodityOptionsSection() {
     return () => ro.disconnect()
   }, [summaryTableEntries])
 
+  const show = (id: CommodityChartPart) => !part || part === id
+  const deeper = part && isDeeperChartPart(part) ? part : undefined
+  const needsProduct = !part || COMMODITY_PRODUCT_PARTS.has(part)
+
   if (loading && !payload) {
     return (
       <div className="flex items-center justify-center py-24 text-muted-foreground">
@@ -687,8 +713,8 @@ export default function CommodityOptionsSection() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
-        <Card>
+      {(show("summary") || show("summary-pct")) && <div className={part ? "contents" : "grid gap-4 lg:grid-cols-2 lg:items-start"}>
+        {show("summary") && <Card>
           <ChartCardHeader
             className="pb-3"
             chartId="iv-summary"
@@ -753,9 +779,9 @@ export default function CommodityOptionsSection() {
               </table>
             </div>
           </CardContent>
-        </Card>
+        </Card>}
 
-        <Card>
+        {show("summary-pct") && <Card>
           <ChartCardHeader
             className="pb-3"
             chartId="iv-percentile-compare"
@@ -779,10 +805,10 @@ export default function CommodityOptionsSection() {
               </div>
             )}
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <div className="space-y-3">
+      {needsProduct && <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold text-muted-foreground w-10 shrink-0">板块</span>
           {coveredSectors.map((sector) => (
@@ -822,11 +848,11 @@ export default function CommodityOptionsSection() {
             )
           })}
         </div>
-      </div>
+      </div>}
 
-      {selected && (
+      {selected && needsProduct && (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {!part && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card>
               <CardContent className="pt-6">
                 <div className="text-sm text-muted-foreground">当前 IV</div>
@@ -868,12 +894,12 @@ export default function CommodityOptionsSection() {
                 </div>
               </CardContent>
             </Card>
-          </div>
+          </div>}
 
-          <div>
-            <h2 className="text-lg font-semibold mb-4">历史波动率分析</h2>
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card>
+          {(show("history") || show("percentile")) && <div>
+            {!part && <h2 className="text-lg font-semibold mb-4">历史波动率分析</h2>}
+            <div className={part ? "contents" : "grid gap-6 lg:grid-cols-2"}>
+              {show("history") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -888,8 +914,8 @@ export default function CommodityOptionsSection() {
                     <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
                 </CardContent>
-              </Card>
-              <Card>
+              </Card>}
+              {show("percentile") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -906,12 +932,12 @@ export default function CommodityOptionsSection() {
                     </div>
                   )}
                 </CardContent>
-              </Card>
+              </Card>}
             </div>
-          </div>
+          </div>}
 
-          <div>
-            <h2 className="text-lg font-semibold mb-4">期限结构</h2>
+          {show("term") && <div>
+            {!part && <h2 className="text-lg font-semibold mb-4">期限结构</h2>}
             <Card>
               <ChartCardHeader
                 className="pb-2"
@@ -928,15 +954,18 @@ export default function CommodityOptionsSection() {
                 )}
               </CardContent>
             </Card>
-          </div>
+          </div>}
 
+          {(!part || deeper) && (
           <DeeperAnalysisPanels
-            selectedKey={selectedKey}
+            selectedKey={selectedKey!}
             productLabel={productLabel}
             charts={charts as never}
             underlyings={payload?.underlyings ?? {}}
             peerGroup={COMMODITY_PEER_GROUP}
+            panel={deeper}
           />
+          )}
         </>
       )}
     </div>

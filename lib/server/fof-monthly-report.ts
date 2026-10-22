@@ -11,6 +11,7 @@ import {
   reportProductTagline,
   resolveFofWeeklyProductNavRange,
   resolveProductBeianHao,
+  resolveProductPageInceptionDate,
   resolveReportStrategyPhrase,
   type FofWeeklyNavFrequency,
 } from "@/lib/server/fof-weekly-report"
@@ -227,6 +228,7 @@ export async function generateFofMonthlyReport(
   }
 
   const reportTitle = (input.report_title || names.product_name).trim()
+  const productInception = await resolveProductPageInceptionDate(beian_hao, names.product_name)
   const strategyPhrase = await resolveReportStrategyPhrase(
     beian_hao,
     [names.product_name, names.short_name, product_name, reportTitle],
@@ -263,6 +265,7 @@ export async function generateFofMonthlyReport(
     "monthly",
     "--report-layout",
     reportLayout,
+    ...(productInception ? ["--inception-date", productInception] : []),
   ]
 
   try {

@@ -23,7 +23,7 @@ import {
   type MarginTag,
 } from "@/lib/ma/quant-vs-subjective-signals"
 import { ACTION_ORDER, MomSignalTable, compareByAction } from "@/components/ma/mom-signal-table"
-import QuantVsSubjectiveHoldingTs, { type HoldingFocus, type HoldingTs } from "@/components/ma/quant-vs-subjective-holding-ts"
+import QuantVsSubjectiveHoldingTs, { type HoldingChartPart, type HoldingFocus, type HoldingTs } from "@/components/ma/quant-vs-subjective-holding-ts"
 import { QUANT_ACCOUNT_IDS, accountNumericId } from "@/lib/ma/quant-accounts"
 import {
   HelpConsensusKpi,
@@ -384,7 +384,39 @@ function buildExposureTsOption(rows: TsPoint[], metric: Metric, axisName: string
   }
 }
 
-export default function QuantVsSubjectiveCharts() {
+export type QuantVsSubjectivePart =
+  | "signals"
+  | "allocation"
+  | "q-holding"
+  | "s-holding"
+  | "q-candle"
+  | "s-candle"
+  | "waterfall"
+  | "sector-bar"
+  | "sector-scatter"
+  | "sector-flow"
+  | "product-flow"
+  | "product-bar"
+  | "product-scatter"
+  | "sector-ts"
+  | "product-ts"
+  | "signal-hist"
+  | "sector-table"
+  | "product-table"
+
+const QVS_HOLDING_PARTS = new Set<HoldingChartPart>([
+  "q-holding",
+  "s-holding",
+  "q-candle",
+  "s-candle",
+  "waterfall",
+])
+
+function isHoldingPart(id: QuantVsSubjectivePart): id is HoldingChartPart {
+  return QVS_HOLDING_PARTS.has(id as HoldingChartPart)
+}
+
+export default function QuantVsSubjectiveCharts({ part }: { part?: QuantVsSubjectivePart } = {}) {
   const [data, setData] = useState<ApiData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -864,6 +896,9 @@ export default function QuantVsSubjectiveCharts() {
     }
   }, [signalHistory])
 
+  const show = (id: QuantVsSubjectivePart) => !part || part === id
+  const holdingPart = part && isHoldingPart(part) ? part : undefined
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -943,17 +978,17 @@ export default function QuantVsSubjectiveCharts() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+      {!part && <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
         <Kpi title="量化保证金" value={data ? fmtYi(data.groups?.quant.margin ?? 0) : "—"} hint={data ? `${data.groups?.quant.nAccounts ?? 0} 户 · 占比 ${fmtPct(data.quantShare, false)}` : ""} accent={QUANT_COLOR} help={<HelpQuantMargin />} />
         <Kpi title="主观保证金" value={data ? fmtYi(data.groups?.subjective.margin ?? 0) : "—"} hint={data ? `${data.groups?.subjective.nAccounts ?? 0} 户 · 占比 ${fmtPct(100 - (data.quantShare ?? 0), false)}` : ""} accent={SUBJ_COLOR} help={<HelpSubjMargin />} />
         <Kpi title="共识加码" value={loading ? "…" : String(nConsensus)} hint="存量同向且边际同向加仓" help={<HelpConsensusKpi />} />
         <Kpi title="暂缓加码" value={loading ? "…" : String(nPause)} hint="存量同向、边际反向" help={<HelpMarginKpi />} />
         <Kpi title="减码准备" value={loading ? "…" : String(nTrim)} hint="存量同向、两侧都在减" help={<HelpMarginKpi />} />
         <Kpi title="方向分歧" value={loading ? "…" : String(nDiv)} hint="暂不加该方向 beta" help={<HelpDivKpi />} />
-      </div>
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="relative min-h-[280px] lg:col-span-2 lg:min-h-0">
+      {(show("signals") || show("allocation")) && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-3 gap-4"}>
+        {show("signals") && <div className={part ? "min-h-[280px]" : "relative min-h-[280px] lg:col-span-2 lg:min-h-0"}>
           <Card className="flex h-full max-h-[70vh] flex-col overflow-hidden lg:absolute lg:inset-0 lg:max-h-none">
             <CardHeader className="pb-2 shrink-0">
             <div className="flex items-center justify-between gap-2">
@@ -1005,9 +1040,9 @@ export default function QuantVsSubjectiveCharts() {
             )}
           </CardContent>
           </Card>
-        </div>
+        </div>}
 
-        <div className="flex h-full flex-col gap-3">
+        {show("allocation") && <div className="flex h-full flex-col gap-3">
           <Card>
             <CardHeader className="pb-1 flex flex-row items-start justify-between gap-2">
               <div>
@@ -1033,7 +1068,7 @@ export default function QuantVsSubjectiveCharts() {
               )}
             </CardContent>
           </Card>
-          <div className="grid grid-cols-2 gap-3 shrink-0">
+          {!part && <div className="grid grid-cols-2 gap-3 shrink-0">
             <AccountLane
               title="量化账户"
               hint="拖入设为量化"
@@ -1048,10 +1083,11 @@ export default function QuantVsSubjectiveCharts() {
               tone="subjective"
               onDropAccount={(a) => moveAccount(a, "subjective")}
             />
-          </div>
-        </div>
-      </div>
+          </div>}
+        </div>}
+      </div>}
 
+      {(!part || holdingPart) && (
       <QuantVsSubjectiveHoldingTs
         holdingTs={data?.holdingTs}
         metric={metric}
@@ -1061,10 +1097,12 @@ export default function QuantVsSubjectiveCharts() {
         flows={data?.flows}
         asOf={data?.date}
         quantIds={quantIds}
+        part={holdingPart}
       />
+      )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+      {(show("sector-bar") || show("sector-scatter")) && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+        {show("sector-bar") && <Card>
           <CardHeader className="pb-1">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -1081,8 +1119,8 @@ export default function QuantVsSubjectiveCharts() {
               <ReactECharts key={`sector-${metric}`} option={sectorBarOption} style={{ height: 360, width: "100%" }} notMerge />
             )}
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("sector-scatter") && <Card>
           <CardHeader className="pb-1">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -1095,11 +1133,11 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-1">
             <ReactECharts key={`sector-scatter-${metric}`} option={sectorScatterOption} style={{ height: 360, width: "100%" }} notMerge />
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+      {(show("sector-flow") || show("product-flow")) && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+        {show("sector-flow") && <Card>
           <CardHeader className="pb-1">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -1112,8 +1150,8 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-1">
             <ReactECharts option={sectorFlowScatter} style={{ height: 360, width: "100%" }} notMerge />
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("product-flow") && <Card>
           <CardHeader className="pb-1">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -1126,11 +1164,11 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-1">
             <ReactECharts option={productFlowScatter} style={{ height: 360, width: "100%" }} notMerge />
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+      {(show("product-bar") || show("product-scatter")) && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+        {show("product-bar") && <Card>
           <CardHeader className="pb-1 flex flex-row items-center justify-between gap-2">
             <div>
               <div className="flex items-center gap-1.5">
@@ -1158,8 +1196,8 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-1">
             <ReactECharts key={`prod-${metric}-${prodLimit}`} option={productBarOption} style={{ height: Math.max(280, prodLimit * 22), width: "100%" }} notMerge />
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("product-scatter") && <Card>
           <CardHeader className="pb-1">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -1172,11 +1210,11 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-1">
             <ReactECharts key={`prod-scatter-${metric}`} option={productScatterOption} style={{ height: 360, width: "100%" }} notMerge />
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+      {(show("sector-ts") || show("product-ts")) && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+        {show("sector-ts") && <Card>
           <CardHeader className="pb-1 flex flex-row items-center justify-between gap-2">
             <div>
               <CardTitle className="text-sm font-medium">板块风险敞口时序</CardTitle>
@@ -1196,8 +1234,8 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-1">
             <ReactECharts key={`ts-${metric}-${tsSector}`} option={tsOption} style={{ height: 280, width: "100%" }} notMerge />
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("product-ts") && <Card>
           <CardHeader className="pb-1 flex flex-row items-center justify-between gap-2">
             <div>
               <CardTitle className="text-sm font-medium">品种风险敞口时序</CardTitle>
@@ -1217,10 +1255,10 @@ export default function QuantVsSubjectiveCharts() {
           <CardContent className="pt-1">
             <ReactECharts key={`prod-ts-${metric}-${tsProd}`} option={prodTsOption} style={{ height: 280, width: "100%" }} notMerge />
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      {signalHistory.length > 0 && (
+      {show("signal-hist") && signalHistory.length > 0 && (
         <Card>
           <CardHeader className="pb-1">
             <div className="flex items-start justify-between gap-2">
@@ -1262,7 +1300,7 @@ export default function QuantVsSubjectiveCharts() {
         </Card>
       )}
 
-      {sectors.length > 0 && (
+      {show("sector-table") && sectors.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-start justify-between gap-2">
@@ -1302,7 +1340,7 @@ export default function QuantVsSubjectiveCharts() {
         </Card>
       )}
 
-      {products.length > 0 && (
+      {show("product-table") && products.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-start justify-between gap-2">

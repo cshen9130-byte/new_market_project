@@ -22,12 +22,36 @@ import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import { sqlTrackingFirstEntryByCode } from "@/lib/server/tracking-first-entry"
-import { collapseAliasedTrackingIdentities, purgeValuationFilenameIdentities, REGISTER_POOL_TABLE, teamVisibleTrackingFundsUnionSql } from "@/lib/server/tracking-pool-membership"
+import { attachJyPoolFlags, collapseAliasedTrackingIdentities, parsePoolPresence, purgeValuationFilenameIdentities, REGISTER_POOL_TABLE, sqlPoolPresenceClause, teamVisibleTrackingFundsUnionSql, type PoolPresence } from "@/lib/server/tracking-pool-membership"
 import { expandFundSearchKeywords, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { resolveTrackingKeywordBeianCodes } from "@/lib/server/tracking-keyword-search"
 import { sqlTrackingIdentityKeyColumns, sqlVisibleTrackingIdentity } from "@/lib/server/tracking-list-identity"
 import { overlayAmacOfficialProductNames } from "@/lib/server/amac-fund-metadata"
 import { cleanValuationDerivedFundName, isValuationReportTitle } from "@/lib/server/valuation-filename"
+
+function appendEmailOpsJyPoolFilters(
+  where: string[],
+  pool: string,
+  codeExpr: string,
+  inJy: PoolPresence,
+  inSelected: PoolPresence,
+) {
+  if (pool !== EMAIL_OPS_POOL_KEY) return
+  const jy = sqlPoolPresenceClause(codeExpr, "jy", inJy)
+  const selected = sqlPoolPresenceClause(codeExpr, "selected", inSelected)
+  if (jy) where.push(jy)
+  if (selected) where.push(selected)
+}
+
+async function withEmailOpsJyFlags<T extends { beian_hao: string }>(pool: string, rows: T[]): Promise<T[]> {
+  if (pool !== EMAIL_OPS_POOL_KEY || rows.length === 0) return rows
+  try {
+    return await attachJyPoolFlags(rows)
+  } catch (err) {
+    console.warn("[tracking-funds/list] JY pool flags skipped:", err)
+    return rows
+  }
+}
 
 function appendProductKeywordFilter(
   keyword: string,
@@ -708,6 +732,8 @@ type CachedListOpts = {
   personalUserKey: string
   asOfDate: string
   navSource?: string
+  inJy?: PoolPresence
+  inSelected?: PoolPresence
 }
 
 /**
@@ -792,6 +818,7 @@ async function buildFastKeywordCachedBody(opts: CachedListOpts): Promise<{
         AND (b.record_key = cache.beian_hao OR b.register_number = cache.beian_hao)
     )`)
   }
+  appendEmailOpsJyPoolFilters(where, opts.pool, "cache.beian_hao", opts.inJy ?? "all", opts.inSelected ?? "all")
 
   const whereClause = `WHERE ${where.join(" AND ")}`
   const sortMap: Record<string, string> = {
@@ -966,12 +993,15 @@ async function handleCachedTrackingList(opts: {
   personalUserKey: string
   asOfDate: string
   navSource?: string
+  inJy?: PoolPresence
+  inSelected?: PoolPresence
 }): Promise<NextResponse> {
   const {
     page, pageSize, offset, sortKey, sortDir, pool, requestedPool,
     isCustomPool, isMineAllPool, keyword, strategyL1, strategyL2, strategyL3,
     strategySource, orgSize, teamTagMode, teamTags,
     personalTagMode, personalTags, personalUserKey, asOfDate, navSource,
+    inJy, inSelected,
   } = opts
   // Check server-side response cache first, with concurrent request deduplication
   // so that multiple simultaneous requests for the same pool never race to run
@@ -1054,6 +1084,7 @@ async function handleCachedTrackingList(opts: {
             AND (b.record_key = i.beian_hao OR b.register_number = i.beian_hao)
         )`)
       }
+      appendEmailOpsJyPoolFilters(where, pool, "i.beian_hao", inJy ?? "all", inSelected ?? "all")
 
       const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
       const pLimit = filterParams.length + 1
@@ -1142,12 +1173,15 @@ async function handleCachedTrackingList(opts: {
       totalPages: number
       data: TrackRow[]
     }
-    const data = await overlayLatestChangeDate(
-      await overlayFundElementListFields(
-        sanitizeTrackRows(
-          await overlayPlatformInfoNavOnTrackRows(
-            await overlayTeamNavOnTrackRows(responseBody.data ?? [], asOfDate),
-            asOfDate,
+    const data = await withEmailOpsJyFlags(
+      pool,
+      await overlayLatestChangeDate(
+        await overlayFundElementListFields(
+          sanitizeTrackRows(
+            await overlayPlatformInfoNavOnTrackRows(
+              await overlayTeamNavOnTrackRows(responseBody.data ?? [], asOfDate),
+              asOfDate,
+            ),
           ),
         ),
       ),
@@ -1418,6 +1452,8 @@ export async function GET(req: Request) {
   const strategyL2 = (searchParams.get("strategy_l2") || "").trim()
   const strategyL3 = (searchParams.get("strategy_l3") || "").trim()
   const orgSize = (searchParams.get("org_size") || "").trim()
+  const inJy = parsePoolPresence(searchParams.get("in_jy"))
+  const inSelected = parsePoolPresence(searchParams.get("in_selected"))
   const teamTagMode = searchParams.get("team_tag_mode") === "or" ? "or" : "and"
   const teamTags = searchParams.getAll("team_tag").map((s) => s.trim()).filter(Boolean)
   const personalTagMode = searchParams.get("personal_tag_mode") === "or" ? "or" : "and"
@@ -1480,6 +1516,8 @@ export async function GET(req: Request) {
       personalUserKey,
       asOfDate: asOfDateForNav,
       navSource,
+      inJy,
+      inSelected,
     })
   }
 
@@ -1737,6 +1775,7 @@ export async function GET(req: Request) {
         AND (b.record_key = i.beian_hao OR b.register_number = i.beian_hao)
     )`)
   }
+  appendEmailOpsJyPoolFilters(where, pool, "i.beian_hao", inJy, inSelected)
 
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
   const pLimit  = filterParams.length + 1
@@ -1839,8 +1878,11 @@ export async function GET(req: Request) {
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: await overlayLatestChangeDate(
-        await overlayFundElementListFields(sanitizeTrackRows(await overlayAmacOfficialProductNames(data))),
+      data: await withEmailOpsJyFlags(
+        pool,
+        await overlayLatestChangeDate(
+          await overlayFundElementListFields(sanitizeTrackRows(await overlayAmacOfficialProductNames(data))),
+        ),
       ),
     })
   } catch (e: any) {

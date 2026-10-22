@@ -1222,7 +1222,7 @@ export async function listFof99RecentProducts(
   policy: Fof99RecentListPolicy,
 ): Promise<Fof99RecentListResponse> {
   const label = FOF99_POLICY_ROWS.find((row) => row.key === policy)?.label ?? policy
-  const key = `ops-fof99-recent-list:v1:${policy}`
+  const key = `ops-fof99-recent-list:v2:${policy}`
   return await withListResponseCache(key, async () => {
     const rows = await query<RecentListRow>(
       `SELECT
@@ -1537,6 +1537,6 @@ export function parseUpdateChannel(raw: string | null): UpdateChannel | null {
 }
 
 export async function getUpdateChannel(channel: UpdateChannel, refresh: boolean): Promise<UpdateChannelResponse> {
-  const key = `ops-update-channel:v8:${channel}`
+  const key = `ops-update-channel:v9:${channel}`
   return serveOpsSnapshot(key, refresh, () => buildUpdateChannel(channel))
 }

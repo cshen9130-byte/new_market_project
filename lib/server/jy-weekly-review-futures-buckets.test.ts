@@ -24,32 +24,41 @@ function fund(l3: string, extra: Partial<WeeklyReviewFund> = {}): WeeklyReviewFu
 
 const subjective = { l2: "主观期货" }
 
-test("quant weekly categories skip 混合、量价、商品 and keep the six sheets", () => {
+test("quant weekly categories are eight sheets, and 量价、商品 stay out", () => {
+  assert.equal(QUANT_WEEKLY_CATEGORIES.length, 8)
   assert.deepEqual(futuresWeeklyCategories(fund("时序")), [QUANT_WEEKLY_CATEGORIES[0]])
   assert.deepEqual(futuresWeeklyCategories(fund("时序,量价")), [])
   assert.deepEqual(futuresWeeklyCategories(fund("时序,截面")), [])
-  assert.deepEqual(futuresWeeklyCategories(fund("时序,混合")), [])
-  assert.deepEqual(futuresWeeklyCategories(fund("混合")), [])
+  assert.deepEqual(futuresWeeklyCategories(fund("时序,混合")), [QUANT_WEEKLY_CATEGORIES[2]])
+  assert.deepEqual(futuresWeeklyCategories(fund("混合")), [QUANT_WEEKLY_CATEGORIES[2]])
   assert.deepEqual(futuresWeeklyCategories(fund("商品")), [])
   assert.deepEqual(futuresWeeklyCategories(fund("大厂,商品")), [])
-  assert.deepEqual(futuresWeeklyCategories(fund("中高频")), [])
+  assert.deepEqual(futuresWeeklyCategories(fund("中高频")), [QUANT_WEEKLY_CATEGORIES[3]])
   assert.deepEqual(
     futuresWeeklyCategories(fund("截面,机器学习")),
-    [QUANT_WEEKLY_CATEGORIES[1], QUANT_WEEKLY_CATEGORIES[5]],
+    [QUANT_WEEKLY_CATEGORIES[1], QUANT_WEEKLY_CATEGORIES[7]],
   )
   assert.deepEqual(
     futuresWeeklyCategories(fund("大厂,时序")),
-    [QUANT_WEEKLY_CATEGORIES[0], QUANT_WEEKLY_CATEGORIES[2]],
+    [QUANT_WEEKLY_CATEGORIES[0], QUANT_WEEKLY_CATEGORIES[4]],
   )
   assert.deepEqual(
     futuresWeeklyCategories(fund("大厂,股指,截面")),
-    [QUANT_WEEKLY_CATEGORIES[1], QUANT_WEEKLY_CATEGORIES[2], QUANT_WEEKLY_CATEGORIES[3]],
+    [QUANT_WEEKLY_CATEGORIES[1], QUANT_WEEKLY_CATEGORIES[4], QUANT_WEEKLY_CATEGORIES[5]],
   )
   assert.deepEqual(futuresWeeklyCategories(fund("基本面,机器学习")), [
-    QUANT_WEEKLY_CATEGORIES[4],
-    QUANT_WEEKLY_CATEGORIES[5],
+    QUANT_WEEKLY_CATEGORIES[6],
+    QUANT_WEEKLY_CATEGORIES[7],
   ])
-  assert.deepEqual(futuresWeeklyCategories(fund("机器学习,中高频")), [QUANT_WEEKLY_CATEGORIES[5]])
+  assert.deepEqual(futuresWeeklyCategories(fund("机器学习,中高频")), [
+    QUANT_WEEKLY_CATEGORIES[3],
+    QUANT_WEEKLY_CATEGORIES[7],
+  ])
+  assert.deepEqual(futuresWeeklyCategories(fund("混合,大厂,中高频")), [
+    QUANT_WEEKLY_CATEGORIES[2],
+    QUANT_WEEKLY_CATEGORIES[3],
+    QUANT_WEEKLY_CATEGORIES[4],
+  ])
   for (const name of FUTURES_WEEKLY_CATEGORIES) {
     assert.ok(name.length <= 31, name)
   }
@@ -76,6 +85,7 @@ test("subjective weekly categories are the six sector sheets, and MOM also sits 
 
 test("single bucket prefers the first matching category", () => {
   assert.equal(bucketForFuturesFund(fund("大厂,时序")), QUANT_WEEKLY_CATEGORIES[0])
+  assert.equal(bucketForFuturesFund(fund("混合,中高频")), QUANT_WEEKLY_CATEGORIES[2])
   assert.equal(bucketForFuturesFund(fund("多板块", subjective)), SUBJECTIVE_WEEKLY_CATEGORIES[4])
   assert.equal(bucketForFuturesFund(fund("MOM", subjective)), SUBJECTIVE_WEEKLY_CATEGORIES[4])
   assert.equal(bucketForFuturesFund(fund("交易型", subjective)), "主观交易")
@@ -86,6 +96,7 @@ test("preview always lists quant and subjective sheets", () => {
     fund("时序"),
     fund("大厂,时序"),
     fund("混合"),
+    fund("中高频"),
     fund("股指"),
     fund("黑色", subjective),
     fund("MOM", subjective),
@@ -93,6 +104,6 @@ test("preview always lists quant and subjective sheets", () => {
   assert.deepEqual(groups.map((group) => group.bucket), [...FUTURES_WEEKLY_CATEGORIES])
   assert.deepEqual(
     groups.map((group) => group.count),
-    [2, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1],
+    [2, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1],
   )
 })

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
 import bcrypt from "bcryptjs"
 import { query } from "@/lib/db"
+import { publicAvatarUrl, removeAvatarFiles, writeAvatarFile } from "@/lib/server/user-avatar"
 
 export type PagePermissions = {
   ma?: boolean
@@ -33,6 +34,7 @@ export type StoredUser = {
   api_key?: string | null
   /** Separate from the fund-data key. Only issued from the MOM数据API page. */
   mom_api_key?: string | null
+  avatar_url: string | null
 }
 
 type DbRow = {
@@ -44,6 +46,7 @@ type DbRow = {
   password_hash: string
   api_key?: string | null
   mom_api_key?: string | null
+  avatar_updated_at?: string | Date | null
 }
 
 const API_KEY_PREFIX = "mf_"
@@ -75,6 +78,7 @@ function rowToUser(row: DbRow): StoredUser {
     passwordHash: row.password_hash,
     api_key: row.api_key ?? null,
     mom_api_key: row.mom_api_key ?? null,
+    avatar_url: publicAvatarUrl(row.id, row.avatar_updated_at),
   }
 }
 
@@ -130,6 +134,16 @@ async function _initTable() {
     await query(`ALTER TABLE auth_users ADD COLUMN mom_api_key TEXT`)
   }
   await query(`CREATE UNIQUE INDEX IF NOT EXISTS auth_users_mom_api_key_uq ON auth_users (mom_api_key) WHERE mom_api_key IS NOT NULL`)
+  const avatarCols = await query<{ column_name: string }>(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'auth_users'
+        AND column_name = 'avatar_updated_at'`,
+  )
+  if (avatarCols.length === 0) {
+    await query(`ALTER TABLE auth_users ADD COLUMN avatar_updated_at TIMESTAMPTZ`)
+  }
   await _seedIfEmpty()
 }
 
@@ -194,15 +208,9 @@ async function _seedIfEmpty() {
 }
 
 function toPublicUser(row: DbRow): Omit<StoredUser, "passwordHash"> {
-  return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    role: row.role,
-    permissions: parsePermissions(row.permissions),
-    api_key: row.api_key ?? null,
-    mom_api_key: row.mom_api_key ?? null,
-  }
+  const user = rowToUser({ ...row, password_hash: row.password_hash || "" })
+  const { passwordHash: _passwordHash, ...rest } = user
+  return rest
 }
 
 async function ensureUserApiKey(row: DbRow): Promise<DbRow> {
@@ -212,7 +220,7 @@ async function ensureUserApiKey(row: DbRow): Promise<DbRow> {
     try {
       await query(`UPDATE auth_users SET api_key = $1 WHERE id = $2 AND api_key IS NULL`, [key, row.id])
       const again = await query<DbRow>(
-        `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`,
+        `SELECT id, email, name, role, permissions, api_key, mom_api_key, avatar_updated_at FROM auth_users WHERE id = $1`,
         [row.id],
       )
       if (again[0]?.api_key) return again[0]
@@ -221,7 +229,7 @@ async function ensureUserApiKey(row: DbRow): Promise<DbRow> {
     }
   }
   const again = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`,
+    `SELECT id, email, name, role, permissions, api_key, mom_api_key, avatar_updated_at FROM auth_users WHERE id = $1`,
     [row.id],
   )
   return again[0] ?? row
@@ -229,13 +237,14 @@ async function ensureUserApiKey(row: DbRow): Promise<DbRow> {
 
 export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
   await ensureTable()
-  const rows = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users ORDER BY created_at`)
+  const rows = await query<DbRow>(`SELECT id, email, name, role, permissions, avatar_updated_at FROM auth_users ORDER BY created_at`)
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
     name: r.name,
     role: r.role,
     permissions: parsePermissions(r.permissions),
+    avatar_url: publicAvatarUrl(r.id, r.avatar_updated_at),
   }))
 }
 
@@ -248,7 +257,7 @@ export async function getUserById(id: string): Promise<Omit<StoredUser, "passwor
   if (!id) return null
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`,
+    `SELECT id, email, name, role, permissions, api_key, mom_api_key, avatar_updated_at FROM auth_users WHERE id = $1`,
     [id],
   )
   if (rows.length === 0) return null
@@ -260,7 +269,7 @@ export async function getUserByApiKey(apiKey: string): Promise<Omit<StoredUser, 
   if (!key) return null
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, api_key FROM auth_users WHERE api_key = $1`,
+    `SELECT id, email, name, role, permissions, api_key, avatar_updated_at FROM auth_users WHERE api_key = $1`,
     [key],
   )
   if (rows.length === 0) return null
@@ -288,7 +297,7 @@ export async function getUserByMomApiKey(apiKey: string): Promise<Omit<StoredUse
   if (!key) return null
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE mom_api_key = $1`,
+    `SELECT id, email, name, role, permissions, api_key, mom_api_key, avatar_updated_at FROM auth_users WHERE mom_api_key = $1`,
     [key],
   )
   if (rows.length === 0) return null
@@ -372,20 +381,53 @@ export async function updateUser(
     await query(`UPDATE auth_users SET mom_api_key = NULL WHERE id = $1`, [id])
   }
 
-  const updated = await query<DbRow>(`SELECT id, email, name, role, permissions, api_key, mom_api_key FROM auth_users WHERE id = $1`, [id])
+  const updated = await query<DbRow>(`SELECT id, email, name, role, permissions, api_key, mom_api_key, avatar_updated_at FROM auth_users WHERE id = $1`, [id])
   const r = updated[0]
   return toPublicUser(r)
 }
 
+export async function userHasAvatar(id: string): Promise<boolean> {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return false
+  await ensureTable()
+  const rows = await query<{ avatar_updated_at: string | Date | null }>(
+    `SELECT avatar_updated_at FROM auth_users WHERE id = $1`,
+    [id],
+  )
+  return rows.length > 0 && rows[0].avatar_updated_at != null
+}
+
+export async function setUserAvatar(id: string, bytes: Buffer) {
+  await ensureTable()
+  const existing = await query<{ id: string }>(`SELECT id FROM auth_users WHERE id = $1`, [id])
+  if (existing.length === 0) throw new Error("用户不存在")
+  await writeAvatarFile(id, bytes)
+  await query(`UPDATE auth_users SET avatar_updated_at = NOW() WHERE id = $1`, [id])
+  const user = await getUserById(id)
+  if (!user) throw new Error("用户不存在")
+  return user
+}
+
+export async function clearUserAvatar(id: string) {
+  await ensureTable()
+  const existing = await query<{ id: string }>(`SELECT id FROM auth_users WHERE id = $1`, [id])
+  if (existing.length === 0) throw new Error("用户不存在")
+  await removeAvatarFiles(id)
+  await query(`UPDATE auth_users SET avatar_updated_at = NULL WHERE id = $1`, [id])
+  const user = await getUserById(id)
+  if (!user) throw new Error("用户不存在")
+  return user
+}
+
 export async function deleteUser(id: string) {
   await ensureTable()
+  await removeAvatarFiles(id)
   await query(`DELETE FROM auth_users WHERE id = $1`, [id])
 }
 
 export async function verifyLogin(identifier: string, password: string) {
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, permissions, password_hash, api_key, mom_api_key FROM auth_users WHERE email = $1 OR name = $1`,
+    `SELECT id, email, name, role, permissions, password_hash, api_key, mom_api_key, avatar_updated_at FROM auth_users WHERE email = $1 OR name = $1`,
     [identifier],
   )
   if (rows.length === 0) return null

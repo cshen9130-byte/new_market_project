@@ -248,6 +248,7 @@ const TONE: Record<Tone, string> = {
 }
 
 const PeriodCtx = createContext("")
+const StrategyPartCtx = createContext<string | null>(null)
 
 type VolClass = "高波" | "中波" | "低波"
 
@@ -1523,7 +1524,41 @@ function sectorVolOption(series: SectorVolSeries, window: number) {
   }
 }
 
-export default function QuantStrategyCharts() {
+export type QuantStrategyPart =
+  | "edge-sector"
+  | "edge-product"
+  | "alpha-nav"
+  | "alpha-cum"
+  | "alpha-sector"
+  | "book-sector"
+  | "book-product"
+  | "freq"
+  | "sector-vol"
+  | "roll-edge"
+  | "mkt-edge"
+  | "hedge-corr"
+  | "hold-freq"
+  | "linear"
+  | "mkt-book"
+  | "mkt-cross"
+  | "equity"
+  | "pnl-hist"
+  | "trade-hist"
+  | "factors"
+  | "sector-pnl"
+  | "carry"
+  | "risk"
+  | "after"
+  | "payoff"
+  | "hold"
+  | "session"
+  | "ls"
+  | "hedge"
+  | "products"
+  | "asset-mv"
+  | "var-share"
+
+export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart } = {}) {
   const [accountId, setAccountId] = useState("319")
   const [range, setRange] = useState<RangeLabel>("全部")
   const [{ from, to }, setBounds] = useState(() => boundsFor("全部"))
@@ -2282,6 +2317,7 @@ export default function QuantStrategyCharts() {
   }, [eq])
 
   return (
+    <StrategyPartCtx.Provider value={part ?? null}>
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -2425,11 +2461,11 @@ export default function QuantStrategyCharts() {
               ? `正在选右侧。左侧是 rx${pairIds[0]}，点一个账户。`
               : "先点「左」，再点一个账户。"}
         </p>
-      ) : compareMode ? (
+      ) : compareMode && !part ? (
         <CompareView rows={compareRows} loading={compareLoading} onOpenAccount={selectAccount} />
       ) : (
       <div key={viewKey} className={`space-y-5 ${loading ? "opacity-60 pointer-events-none" : ""}`}>
-      <div className="rounded-lg border border-border p-4 space-y-3">
+      {!part && <div className="rounded-lg border border-border p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-lg font-semibold tracking-tight">{data?.portrait.strategyLabel ? labelWithoutVol(data.portrait.strategyLabel) : (loading ? "分析中…" : "—")}</h2>
           <HoldBadge label={data?.portrait.strategyLabel} />
@@ -2457,12 +2493,13 @@ export default function QuantStrategyCharts() {
             </p>
           )}
         </div>
-      </div>
+      </div>}
 
-      {(sectorEdgeChart || productEdgeChart) && (
+      {(!part || part === "edge-sector" || part === "edge-product") && (sectorEdgeChart || productEdgeChart) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {sectorEdgeChart && (
             <ChartCard
+              partId="edge-sector"
               title="板块：胜率 × 盈亏比"
               caption="每个点是一个板块。盈亏比是平均盈利 / |平均亏损|。虚线是期望为 0：胜率越高，打平所需的盈亏比越低。点在线上方，这段合计为正。"
               help={CHART_HELP.edgeScatter}
@@ -2472,6 +2509,7 @@ export default function QuantStrategyCharts() {
           )}
           {productEdgeChart && (
             <ChartCard
+              partId="edge-product"
               title="品种：胜率 × 盈亏比"
               caption="每个点是一个品种。盈亏比是平均盈利 / |平均亏损|。90% 胜率、盈亏比 0.8 仍在期望 0 线上方。没有亏损的品种点放在顶部。"
               help={CHART_HELP.edgeScatter}
@@ -2482,8 +2520,9 @@ export default function QuantStrategyCharts() {
         </div>
       )}
 
-      {alphaBeta && alphaBetaChart && (
+      {(!part || part === "alpha-nav" || part === "alpha-cum" || part === "alpha-sector") && alphaBeta && alphaBetaChart && (
         <div className="space-y-3">
+          {!part && <>
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5">
               <h2 className="text-sm font-medium">盈亏来自 alpha 还是 beta</h2>
@@ -2511,9 +2550,11 @@ export default function QuantStrategyCharts() {
             />
             <Kpi title="稳定性" value={alphaBeta.alphaStance || "—"} hint="前后半段 alpha 是否同号" />
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          </>}
+          <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
             {alphaNavChart && (
               <ChartCard
+                partId="alpha-nav"
                 title="账户净值与南华商品指数"
                 caption="两条线都从 100 起算，只用同一批有南华行情的交易日。账户净值按当日盈亏 / 上日权益连乘，不含出入金。"
                 help={CHART_HELP.alphaBeta}
@@ -2522,6 +2563,7 @@ export default function QuantStrategyCharts() {
               </ChartCard>
             )}
             <ChartCard
+              partId="alpha-cum"
               title="累计 alpha 与累计 beta"
               caption="日盈亏（元）对南华日涨跌（%）回归。beta 盈亏 = 斜率 × 当天涨跌；alpha = 当天盈亏 − beta。只含有南华行情的交易日。"
               help={CHART_HELP.alphaBeta}
@@ -2531,6 +2573,7 @@ export default function QuantStrategyCharts() {
           </div>
           {sectorAlphaChart && (
             <ChartCard
+              partId="alpha-sector"
               title="各板块的 alpha"
               caption="每个板块用自己的日盈亏对南华回归。红柱是这段多出来的盈利，绿柱是多出来的亏损。悬停看 t 和稳定性。各板块 alpha 加总不必等于账户 alpha。"
               help={CHART_HELP.alphaBeta}
@@ -2546,9 +2589,11 @@ export default function QuantStrategyCharts() {
         </div>
       )}
 
-      <QuantTraderExposureCharts accountId={accountId} from={from} to={to} />
+      {(!part || part === "asset-mv" || part === "var-share") && (
+      <QuantTraderExposureCharts accountId={accountId} from={from} to={to} part={part === "asset-mv" || part === "var-share" ? part : undefined} />
+      )}
 
-      {bookRisk && bookRisk.sectors.length > 0 && bookSectorChart && bookTreeChart && (
+      {(!part || part === "book-sector" || part === "book-product") && bookRisk && bookRisk.sectors.length > 0 && bookSectorChart && bookTreeChart && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5">
@@ -2574,6 +2619,7 @@ export default function QuantStrategyCharts() {
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <ChartCard
+              partId="book-sector"
               title="板块风险贡献"
               caption={`柱子是该板块占组合方差的比例。虚线是 ${bookRisk.sectorCount} 个板块等权（${bookRisk.equalShare.toFixed(0)}%）。明显高于虚线就是偏好该板块。`}
               help={CHART_HELP.bookRisk}
@@ -2581,6 +2627,7 @@ export default function QuantStrategyCharts() {
               <ReactECharts key={`${viewKey}-book-sec`} option={bookSectorChart} style={{ height: Math.max(220, bookRisk.sectors.length * 32 + 40), width: "100%" }} notMerge />
             </ChartCard>
             <ChartCard
+              partId="book-product"
               title="品种占组合风险"
               caption="面积是品种风险贡献，不是持仓市值。同一颜色是一个板块。块越大，风险越集中在这个名字上。"
               help={CHART_HELP.bookRisk}
@@ -2611,7 +2658,7 @@ export default function QuantStrategyCharts() {
         </div>
       )}
 
-      {tradeFrequency && tradeFrequency.sectors.length > 0 && freqSectorChart && (
+      {(!part || part === "freq") && tradeFrequency && tradeFrequency.sectors.length > 0 && freqSectorChart && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5">
@@ -2628,6 +2675,7 @@ export default function QuantStrategyCharts() {
             <Kpi title="品种数" value={String(tradeFrequency.productCount)} hint="按有成交的品种" />
           </div>
           <ChartCard
+            partId="freq"
             title="板块成交天数"
             caption={`柱子是有成交的天数。虚线是 ${tradeFrequency.sectorCount} 个板块天数相同。同一天做了两个板块，两边都计一天。卡方 p ${fmtFreqP(tradeFrequency.p)}。`}
             help={CHART_HELP.tradeFreq}
@@ -2657,7 +2705,7 @@ export default function QuantStrategyCharts() {
         </div>
       )}
 
-      {sectorVolCharts.length > 0 && (
+      {(!part || part === "sector-vol") && sectorVolCharts.length > 0 && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5">
@@ -2673,6 +2721,7 @@ export default function QuantStrategyCharts() {
             {sectorVolCharts.map((chart) => (
               <ChartCard
                 key={chart.sector}
+                partId="sector-vol"
                 title={`${chart.sector} · 市场波动与风险贡献`}
                 caption="左轴是市场波动，右轴是风险贡献。市场波动用全市场主力合约，不是这个账户的持仓波动。"
                 help={CHART_HELP.sectorVol}
@@ -2684,7 +2733,7 @@ export default function QuantStrategyCharts() {
         </div>
       )}
 
-      {stability && stability.track.length > 0 && (
+      {(!part || part === "roll-edge" || part === "mkt-edge" || part === "hedge-corr" || part === "hold-freq") && stability && stability.track.length > 0 && (
         <div className="space-y-4">
           {(stability.conditions?.length ?? 0) > 0 && (
           <div className="rounded-lg border border-border p-4 space-y-2">
@@ -2740,23 +2789,23 @@ export default function QuantStrategyCharts() {
             ))}
           </div>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <ChartCard title="胜率与盈亏比" caption={`每 ${stability.window} 个交易日滚一次。胜率和盈亏比含平仓和持仓，盈亏比是平均盈利 / |平均亏损|。窗口盈亏等于这些日子的日报净盈亏。`}>
+            <ChartCard partId="roll-edge" title="胜率与盈亏比" caption={`每 ${stability.window} 个交易日滚一次。胜率和盈亏比含平仓和持仓，盈亏比是平均盈利 / |平均亏损|。窗口盈亏等于这些日子的日报净盈亏。`}>
               <ReactECharts key={`${viewKey}-stab-wp`} option={stabilityOption} style={{ height: 280, width: "100%" }} notMerge />
             </ChartCard>
-            <ChartCard title="不同市况下的胜率与盈亏比" caption="趋势/震荡按南华 5、20、60 日是否同向。胜率和盈亏比含平仓和持仓。盈亏比可以低于 1 而期望仍为正。悬停里的这段盈亏等于这些日子的日报净盈亏。">
+            <ChartCard partId="mkt-edge" title="不同市况下的胜率与盈亏比" caption="趋势/震荡按南华 5、20、60 日是否同向。胜率和盈亏比含平仓和持仓。盈亏比可以低于 1 而期望仍为正。悬停里的这段盈亏等于这些日子的日报净盈亏。">
               <ReactECharts key={`${viewKey}-stab-rg`} option={regimeFeatureOption} style={{ height: 280, width: "100%" }} notMerge />
             </ChartCard>
-            <ChartCard title="对冲、风险贡献和南华相关" caption="板块线是风险贡献最大的板块占组合方差的比例，不是持仓市值。国债市值可以很大，波动低，贡献就小。南华相关是这 20 天里日盈亏和南华日收益的相关。">
+            <ChartCard partId="hedge-corr" title="对冲、风险贡献和南华相关" caption="板块线是风险贡献最大的板块占组合方差的比例，不是持仓市值。国债市值可以很大，波动低，贡献就小。南华相关是这 20 天里日盈亏和南华日收益的相关。">
               <ReactECharts key={`${viewKey}-stab-hd`} option={postureOption} style={{ height: 280, width: "100%" }} notMerge />
             </ChartCard>
-            <ChartCard title="持有天数和交易频率" caption="持有天数按平仓手数加权。频率是这段窗口里每天的开仓手数加平仓手数。">
+            <ChartCard partId="hold-freq" title="持有天数和交易频率" caption="持有天数按平仓手数加权。频率是这段窗口里每天的开仓手数加平仓手数。">
               <ReactECharts key={`${viewKey}-stab-ac`} option={activityOption} style={{ height: 280, width: "100%" }} notMerge />
             </ChartCard>
           </div>
         </div>
       )}
 
-      {data?.inference && (
+      {!part && data?.inference && (
         <InferPanel
           inference={data.inference}
           period={periodText}
@@ -2766,7 +2815,7 @@ export default function QuantStrategyCharts() {
         />
       )}
 
-      {data?.linearScatters && (
+      {(!part || part === "linear") && data?.linearScatters && (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5">
@@ -2782,7 +2831,7 @@ export default function QuantStrategyCharts() {
           {linearOptions.length > 0 && (
             <div className={`grid grid-cols-1 gap-4 ${linearOptions.length > 1 ? "lg:grid-cols-2" : ""}`}>
               {linearOptions.map(({ ch, option }) => (
-                <ChartCard key={`${viewKey}-lin-${ch.id}`} title={ch.title} caption={ch.detail}>
+                <ChartCard key={`${viewKey}-lin-${ch.id}`} partId="linear" title={ch.title} caption={ch.detail}>
                   <ReactECharts key={`${viewKey}-lin-${ch.id}`} option={option} style={{ height: 280, width: "100%" }} notMerge />
                 </ChartCard>
               ))}
@@ -2791,9 +2840,10 @@ export default function QuantStrategyCharts() {
         </div>
       )}
 
-      {(data?.inference?.charts?.bookVol || data?.inference?.charts?.crossVol) && (
+      {(!part || part === "mkt-book" || part === "mkt-cross") && (data?.inference?.charts?.bookVol || data?.inference?.charts?.crossVol) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <ChartCard
+            partId="mkt-book"
             title="组合层：市场波动 vs 总敞口"
             caption={`${data.inference.charts.bookVol?.mktName ?? "市场波动"}。ρ=${data.inference.charts.bookVol?.rho == null ? "—" : data.inference.charts.bookVol.rho.toFixed(2)}（n=${data.inference.charts.bookVol?.n ?? 0}）。点往右下=市场更吵时减仓；往右上=扛仓/加仓。`}
             help={CHART_HELP.bookVol}
@@ -2803,6 +2853,7 @@ export default function QuantStrategyCharts() {
             )}
           </ChartCard>
           <ChartCard
+            partId="mkt-cross"
             title="截面：品种波动 vs 市值权重"
             caption={`同一天里高波动品种是否少配。ρ(权重, 1/σ)=${data.inference.charts.crossVol?.rho == null ? "—" : data.inference.charts.crossVol.rho.toFixed(2)}（n=${data.inference.charts.crossVol?.n ?? 0} 个品种日）。折线往右下=品种层风险平价。`}
             help={CHART_HELP.crossVol}
@@ -2814,7 +2865,7 @@ export default function QuantStrategyCharts() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+      {!part && <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <Kpi title="区间净盈亏" value={fmtWan(k?.totalPnl)} hint={`${k?.tradingDays ?? 0} 个交易日`} accent={k ? pnlColor(k.totalPnl) : undefined} />
         <Kpi title="日胜率 / 胜率（含持仓）" value={`${fmtPct(k?.dayWinRate, 0)} / ${fmtPct(k?.tradeWinRate, 0)}`} hint={`盈亏比 ${k?.payoff?.toFixed(2) ?? "—"} · 期望合计 ${fmtWan(k?.expectancy)}`} />
         <Kpi title="夏普 / 最大回撤" value={`${k?.sharpe?.toFixed(2) ?? "—"} / ${fmtPct(k?.maxDdPct)}`} hint="回撤相对权益峰值" />
@@ -2836,18 +2887,19 @@ export default function QuantStrategyCharts() {
           hint="账户日收益 / 南华日收益，涨日与跌日分开"
           help={CHART_HELP.capture}
         />
-      </div>
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="累计盈亏与回撤" caption="权益曲线形态：趋势跟踪通常回撤深、恢复慢；短线更碎。" help={CHART_HELP.equity}>
+      {(!part || part === "equity" || part === "pnl-hist") && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+        <ChartCard partId="equity" title="累计盈亏与回撤" caption="权益曲线形态：趋势跟踪通常回撤深、恢复慢；短线更碎。" help={CHART_HELP.equity}>
           {eq.length > 0 && <ReactECharts key={`${viewKey}-eq`} option={equityOption} style={{ height: 280, width: "100%" }} notMerge />}
         </ChartCard>
-        <ChartCard title="日盈亏分布" caption="柱子偏左=经常小亏；右尾长=偶尔大赢。和胜率/盈亏比对照看。" help={CHART_HELP.hist}>
+        <ChartCard partId="pnl-hist" title="日盈亏分布" caption="柱子偏左=经常小亏；右尾长=偶尔大赢。和胜率/盈亏比对照看。" help={CHART_HELP.hist}>
           {eq.length > 0 && <ReactECharts key={`${viewKey}-hist`} option={histOption} style={{ height: 280, width: "100%" }} notMerge />}
         </ChartCard>
-      </div>
+      </div>}
 
-      <ChartCard
+      {(!part || part === "trade-hist") && <ChartCard
+        partId="trade-hist"
         title="单笔盈亏分布：胜率与盈亏比的微观形状"
         caption="高峰贴着零、左右大致对称，是广度策略；右尾极长、左尾被砍，才是趋势跟踪。横轴截到 ±2 万元。"
         help={CHART_HELP.rrShape}
@@ -2888,9 +2940,10 @@ export default function QuantStrategyCharts() {
             </tbody>
           </table>
         </div>
-      </ChartCard>
+      </ChartCard>}
 
-      <div className="space-y-3">
+      {(!part || part === "factors" || part === "sector-pnl" || part === "carry") && <div className="space-y-3">
+        {!part && <>
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <div className="flex items-center gap-1.5">
             <h2 className="text-sm font-medium">哪种市场赚得多</h2>
@@ -2901,38 +2954,41 @@ export default function QuantStrategyCharts() {
         <p className="text-xs text-muted-foreground">
           柱高是日均盈亏，不是区间合计。Tooltip 里有天数、合计、日胜率和 t 统计。旧的「趋势 / 波动」两刀切已换成 carry、多周期趋势、价仓和宏观簇。
         </p>
+        </>}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {factorFamilies.map((fam) => (
-            <ChartCard key={`${viewKey}-${fam.key}`} title={fam.title} caption={fam.caption} help={helpForFactor(fam.key, fam.title)}>
+            <ChartCard key={`${viewKey}-${fam.key}`} partId="factors" title={fam.title} caption={fam.caption} help={helpForFactor(fam.key, fam.title)}>
               <ReactECharts key={`${viewKey}-${fam.key}`} option={familyBarOption(fam)} style={{ height: 260, width: "100%" }} notMerge />
             </ChartCard>
           ))}
-          <ChartCard title="板块盈亏" caption="盈亏 = 平仓盈亏 + 持仓盯市（未扣手续费）。只看平仓会把「拿着赚、换仓亏」画成全板块亏损；区间净盈亏来自日报，会再扣手续费。" help={CHART_HELP.sector}>
+          <ChartCard partId="sector-pnl" title="板块盈亏" caption="盈亏 = 平仓盈亏 + 持仓盯市（未扣手续费）。只看平仓会把「拿着赚、换仓亏」画成全板块亏损；区间净盈亏来自日报，会再扣手续费。" help={CHART_HELP.sector}>
             {(data?.sectors?.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-sector`} option={sectorOption} style={{ height: 260, width: "100%" }} notMerge />}
           </ChartCard>
         </div>
         {heatmapCells.some((c) => c.days > 0) && (
-          <ChartCard title="Carry × 趋势一致性" caption="贴水/升水与 5/20/60 日趋势是否同向。只在「贴水 × 同向多」赚钱是展期+多头；两边趋势都赚才是双边跟踪。" help={CHART_HELP.heatmap}>
+          <ChartCard partId="carry" title="Carry × 趋势一致性" caption="贴水/升水与 5/20/60 日趋势是否同向。只在「贴水 × 同向多」赚钱是展期+多头；两边趋势都赚才是双边跟踪。" help={CHART_HELP.heatmap}>
             <ReactECharts key={`${viewKey}-heat`} option={heatmapOption} style={{ height: 320, width: "100%" }} notMerge />
           </ChartCard>
         )}
-      </div>
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="风险度" caption="杠杆用到什么水平、是否突然抬升。" help={CHART_HELP.risk}>
+      {(!part || part === "risk" || part === "after") && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+        <ChartCard partId="risk" title="风险度" caption="杠杆用到什么水平、是否突然抬升。" help={CHART_HELP.risk}>
           {eq.length > 0 && <ReactECharts key={`${viewKey}-risk`} option={riskOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
         <ChartCard
+          partId="after"
           title="赚了 / 亏了之后第二天"
           caption={`盈利日 n=${data?.afterMove?.afterWin.n ?? 0}，亏损日 n=${data?.afterMove?.afterLoss.n ?? 0}。风险度下降=收手；开仓占比高=还在加。`}
           help={CHART_HELP.after}
         >
           {data?.afterMove && <ReactECharts key={`${viewKey}-after`} option={afterOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
-      </div>
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {(!part || part === "payoff" || part === "hold") && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
         <ChartCard
+          partId="payoff"
           title="盈亏偏好"
           caption={`平仓胜率 ${fmtPct(p?.winRate, 0)}，盈亏比 ${p?.profitFactor?.toFixed(2) ?? "—"}。高胜率低柱差=刮头皮；低胜率但盈利柱远高于亏损柱=趋势。`}
           help={CHART_HELP.payoff}
@@ -2940,33 +2996,34 @@ export default function QuantStrategyCharts() {
           {p && <ReactECharts key={`${viewKey}-payoff`} option={payoffOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
         <ChartCard
+          partId="hold"
           title="持仓多久才走"
           caption={`盈利单 ${data?.hold?.avgWin?.toFixed(1) ?? "—"} 天，亏损单 ${data?.hold?.avgLoss?.toFixed(1) ?? "—"} 天。亏的比赚的拿得久 = 扛单。`}
           help={CHART_HELP.hold}
         >
           {(data?.hold?.buckets.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-hold`} option={holdOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
-      </div>
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="日盘 vs 夜盘" caption="按成交时间：21:00–08:00 计夜盘。看平仓盈亏发生在哪一盘。" help={CHART_HELP.session}>
+      {(!part || part === "session" || part === "ls") && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+        <ChartCard partId="session" title="日盘 vs 夜盘" caption="按成交时间：21:00–08:00 计夜盘。看平仓盈亏发生在哪一盘。" help={CHART_HELP.session}>
           {data?.session && <ReactECharts key={`${viewKey}-session`} option={sessionOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
-        <ChartCard title="多头 vs 空头" caption="卖平=平多头，买平=平空头；再加持仓盯市。钱经常是拿着赚的，平仓只是换仓成本。" help={CHART_HELP.ls}>
+        <ChartCard partId="ls" title="多头 vs 空头" caption="卖平=平多头，买平=平空头；再加持仓盯市。钱经常是拿着赚的，平仓只是换仓成本。" help={CHART_HELP.ls}>
           {data?.longShort && <ReactECharts key={`${viewKey}-ls`} option={lsOption} style={{ height: 260, width: "100%" }} notMerge />}
         </ChartCard>
-      </div>
+      </div>}
 
-      <ChartCard title="持仓是否对冲" caption="对冲度 = 2×min(多市值,空市值)/(多+空)。接近 100% 几乎锁住；双开是同一合约既买又卖。" help={CHART_HELP.hedge}>
+      {(!part || part === "hedge") && <ChartCard partId="hedge" title="持仓是否对冲" caption="对冲度 = 2×min(多市值,空市值)/(多+空)。接近 100% 几乎锁住；双开是同一合约既买又卖。" help={CHART_HELP.hedge}>
         {(data?.hedge?.length ?? 0) > 0 && <ReactECharts key={`${viewKey}-hedge`} option={hedgeOption} style={{ height: 260, width: "100%" }} notMerge />}
-      </ChartCard>
+      </ChartCard>}
 
-      {factorPending && !data?.factorDml && (
+      {!part && factorPending && !data?.factorDml && (
         <p className="text-sm text-muted-foreground">因子推断计算中，上面的结论先出来。</p>
       )}
-      {data?.factorDml && <FactorDmlPanel report={data.factorDml} period={periodText} />}
+      {!part && data?.factorDml && <FactorDmlPanel report={data.factorDml} period={periodText} />}
 
-      <Card>
+      {(!part || part === "products") && <Card>
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5">
@@ -3014,11 +3071,12 @@ export default function QuantStrategyCharts() {
             <p className="text-sm text-muted-foreground py-6 text-center">该区间没有平仓记录。</p>
           )}
         </CardContent>
-      </Card>
+      </Card>}
       </div>
       )}
       </PeriodCtx.Provider>
     </div>
+    </StrategyPartCtx.Provider>
   )
 }
 
@@ -3052,16 +3110,20 @@ function Kpi({
 }
 
 function ChartCard({
+  partId,
   title,
   caption,
   help,
   children,
 }: {
+  partId?: string
   title: string
   caption: string
   help?: ChartHelpSpec
   children: ReactNode
 }) {
+  const active = useContext(StrategyPartCtx)
+  if (active && partId !== active) return null
   return (
     <Card>
       <CardHeader className="pb-1">

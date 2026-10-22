@@ -12,6 +12,7 @@ import { CompareAccountLinkSync } from "./private-funds/components/CompareAccoun
 import { authService, type User } from "@/lib/auth"
 import { MA_CHAT_VISIBLE_EVENT } from "@/lib/ma/chat-documents"
 import { canAccessAiKnowledge, canAccessAiResearcher } from "@/lib/permissions"
+import { ACCOUNT_PROFILE_EVENT } from "@/lib/ma/account-dashboard"
 import { usePresenceHeartbeat } from "@/hooks/use-presence-heartbeat"
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -71,6 +72,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [router, pathname])
 
+  useEffect(() => {
+    function onProfile() {
+      const current = authService.getCurrentUser()
+      if (current) setUser(current)
+    }
+    window.addEventListener(ACCOUNT_PROFILE_EVENT, onProfile)
+    return () => window.removeEventListener(ACCOUNT_PROFILE_EVENT, onProfile)
+  }, [])
+
   if (!user) return null
 
   const visitTracker = (
@@ -89,7 +99,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     )
   }
 
-  const headerUser = { email: user.email, full_name: user.name }
+  const headerUser = { email: user.email, full_name: user.name, avatar_url: user.avatar_url }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">

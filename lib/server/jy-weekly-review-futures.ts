@@ -1,6 +1,6 @@
 /**
  * JY 跟踪池周度回顾（期货）Excel.
- * 量化期货 6 sheets + 主观期货 6 sheets.
+ * 量化期货 8 sheets + 主观期货 6 sheets.
  * 目录 + 口径说明 + 期货市场回顾 stay in front.
  */
 
@@ -83,10 +83,12 @@ const ARB_TAG_LABEL: Record<string, string> = {
   月差: "跨期套利",
 }
 
-/** 期货策略 / 量化期货. 混合、量价、商品不进入周度回顾. */
+/** 期货策略 / 量化期货. 量价、商品不进入周度回顾. */
 export const QUANT_WEEKLY_CATEGORIES = [
   "时序（时序占比超过50%）",
   "截面（截面占比超过50%）",
+  "混合",
+  "中高频（按交易频率）",
   "大厂（按规模）",
   "股指（按品种）",
   "基本面（按因子类型）",
@@ -112,14 +114,16 @@ export const FUTURES_WEEKLY_CATEGORIES = [
 export type FuturesWeeklyCategory = (typeof FUTURES_WEEKLY_CATEGORIES)[number]
 
 const QUANT_CATEGORY_BY_TAG = {
-  大厂: QUANT_WEEKLY_CATEGORIES[2],
-  股指: QUANT_WEEKLY_CATEGORIES[3],
-  基本面: QUANT_WEEKLY_CATEGORIES[4],
-  机器学习: QUANT_WEEKLY_CATEGORIES[5],
+  混合: QUANT_WEEKLY_CATEGORIES[2],
+  中高频: QUANT_WEEKLY_CATEGORIES[3],
+  大厂: QUANT_WEEKLY_CATEGORIES[4],
+  股指: QUANT_WEEKLY_CATEGORIES[5],
+  基本面: QUANT_WEEKLY_CATEGORIES[6],
+  机器学习: QUANT_WEEKLY_CATEGORIES[7],
 } as const
 
 /** These 量化三级标签不进入周度回顾，带上它们的产品整只不进表. */
-const QUANT_EXCLUDED_TAGS = new Set(["混合", "量价", "商品"])
+const QUANT_EXCLUDED_TAGS = new Set(["量价", "商品"])
 
 const SUBJECTIVE_SECTOR_TAGS = ["黑色", "有色", "能化", "农产"] as const
 
@@ -177,20 +181,20 @@ export function isFuturesWeeklyFund(fund: WeeklyReviewFund): boolean {
 
 /**
  * Share of 时序 or 截面 inside the style tags.
- * Both 时序 and 截面 together keep either side at 50%, so neither clears the bar.
+ * 混合, or both 时序 and 截面 together, keeps either side at 50%, so neither clears the bar.
  * 中高频、大厂、股指、基本面、机器学习 do not dilute this share.
  */
 export function futuresStyleShare(tags: readonly string[], kind: "时序" | "截面"): number {
   const set = new Set(tags)
   const ts = set.has("时序")
   const cs = set.has("截面")
-  const split = ts && cs
+  const blocked = set.has("混合") || (ts && cs)
   if (kind === "时序") {
     if (!ts) return 0
-    return split ? 0.5 : 1
+    return blocked ? 0.5 : 1
   }
   if (!cs) return 0
-  return split ? 0.5 : 1
+  return blocked ? 0.5 : 1
 }
 
 function quantWeeklyCategories(tags: readonly string[]): FuturesWeeklyCategory[] {
@@ -378,12 +382,12 @@ function buildFuturesMethodologyRows(weekStart: string, weekEnd: string, poolsIn
     {
       kind: "pair",
       label: "样本范围",
-      text: `业绩表只收 ${scope}里的量化期货和主观期货。量化期货三级里写了混合、量价或商品的产品不进入周度回顾。主观期货只收黑色、有色、能化、农产、多板块和 MOM。期权、期货套利、交易型、宏观多策略、股指期货、产业对冲不进入这些表。同一备案号只保留最新一条跟踪记录。产品同时在多个所选池中时只保留一行。`,
+      text: `业绩表只收 ${scope}里的量化期货和主观期货。量化期货三级里写了量价或商品的产品不进入周度回顾。主观期货只收黑色、有色、能化、农产、多板块和 MOM。期权、期货套利、交易型、宏观多策略、股指期货、产业对冲不进入这些表。同一备案号只保留最新一条跟踪记录。产品同时在多个所选池中时只保留一行。`,
     },
     {
       kind: "pair",
       label: "策略分组",
-      text: "量化期货 6 张：时序要求时序占比超过 50%，截面要求截面占比超过 50%。同时写了时序和截面时，两侧都不超过 50%。中高频、大厂、股指、基本面、机器学习不摊薄这一占比。大厂按规模、股指按品种、基本面按因子类型、机器学习按方法论，标签命中即进入对应表。三级里有混合、量价或商品的量化期货不进任何表。主观期货 6 张：黑色、有色、能化、农产按三级标签。多板块表包含三级为多板块或 MOM 的产品。MOM 再用同一条规则单独成表，所以 MOM 同时出现在多板块和 MOM 两张表。一只产品可以同时出现在多张表；时序和截面不会同时出现。",
+      text: "量化期货 8 张：时序要求时序占比超过 50%，截面要求截面占比超过 50%。同时写了时序和截面，或写了混合时，时序和截面两侧都不超过 50%。混合标签进入混合表。中高频按交易频率，标签命中即进入。中高频、大厂、股指、基本面、机器学习不摊薄时序和截面占比。大厂按规模、股指按品种、基本面按因子类型、机器学习按方法论，标签命中即进入对应表。三级里有量价或商品的量化期货不进任何表。主观期货 6 张：黑色、有色、能化、农产按三级标签。多板块表包含三级为多板块或 MOM 的产品。MOM 再用同一条规则单独成表，所以 MOM 同时出现在多板块和 MOM 两张表。一只产品可以同时出现在多张表；时序和截面不会同时出现。",
     },
     {
       kind: "pair",
@@ -506,7 +510,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
   const funds = await loadFuturesWeeklyFunds(asOf, pools)
   const classified = funds.filter((fund) => futuresWeeklyCategories(fund).length > 0)
   if (classified.length === 0) {
-    throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可归入量化期货 6 类或主观期货 6 类的产品`)
+    throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可归入量化期货 8 类或主观期货 6 类的产品`)
   }
   const categoriesByCode = new Map(classified.map((fund) => [fund.beian_hao, futuresWeeklyCategories(fund)]))
 

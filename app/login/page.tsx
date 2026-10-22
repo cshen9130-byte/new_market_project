@@ -48,8 +48,18 @@ export default function LoginPage() {
       if (styleChoice === "cyber") {
         router.push("/dashboard")
       } else if (canMa || canClassic) {
-        // 传统风格 → /ma/dashboard（需 ma 或 classic 权限）
-        router.push("/ma/dashboard")
+        let next = "/ma/dashboard"
+        try {
+          const res = await fetch("/ma/api/account-dashboard", {
+            headers: { "x-market-user-id": user.id },
+            cache: "no-store",
+          })
+          const data = await res.json().catch(() => ({}))
+          if (data?.prefs?.landing === "account") next = "/ma/dashboard/account"
+        } catch {
+          next = "/ma/dashboard"
+        }
+        router.push(next)
       } else {
         toast({
           title: "无传统风格权限",

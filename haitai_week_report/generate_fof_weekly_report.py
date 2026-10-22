@@ -615,6 +615,8 @@ def compute_metrics(
     week_begin: pd.Timestamp | None = None,
     report_kind: str | None = "weekly",
     period_benchmark: pd.Series | None = None,
+    inception_date: pd.Timestamp | None = None,
+    operating_end: pd.Timestamp | None = None,
 ) -> dict:
     work = df.copy()
     if as_of_date is not None:
@@ -731,8 +733,26 @@ def compute_metrics(
     prior_max_nav = float(prior_df["adj_nav"].max()) if not prior_df.empty else float("-inf")
     is_week_all_time_high = week_high_nav > prior_max_nav + 1e-9
 
+    # 成立日期 is the product establishment date when the caller has one.
+    # It can be earlier than the first NAV point. Otherwise use the first
+    # trading-day NAV, not the first weekly or monthly sample.
+    if inception_date is not None:
+        inception = pd.Timestamp(inception_date).normalize()
+    else:
+        inception = work["date"].iloc[0]
+    # 运作天数 counts exchange sessions from 成立日期 through the report
+    # cutoff. Weekly/monthly sampling must not shrink this to the kept points.
+    if operating_end is not None:
+        span_end = pd.Timestamp(operating_end).normalize()
+    elif as_of_date is not None:
+        span_end = pd.Timestamp(as_of_date).normalize()
+    else:
+        span_end = work["date"].iloc[-1]
+    if span_end < inception:
+        span_end = inception
+
     return {
-        "start_date": work["date"].iloc[0],
+        "start_date": inception,
         # Report as-of date (selected week/month end), not last NAV observation.
         # Sparse/weekly series can end earlier than the chosen period end; the
         # header "数据截至" should still reflect the user-selected cutoff.
@@ -754,7 +774,7 @@ def compute_metrics(
         "ytd_bench": ytd_bench,
         "bench_total": bench_total,
         "excess_total": excess_total,
-        "trading_days": count_cn_trading_days(work["date"].iloc[0], work["date"].iloc[-1]),
+        "trading_days": count_cn_trading_days(inception, span_end),
         "win_rate": win_rate,
         "max_daily_gain": max_daily_gain,
         "max_daily_loss": max_daily_loss,
@@ -1206,6 +1226,15 @@ def _draw_review_history_table(
             )
 
 
+def _coerce_inception_date(value: str | pd.Timestamp | None) -> pd.Timestamp | None:
+    if value is None or str(value).strip() == "":
+        return None
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return pd.Timestamp(parsed).normalize()
+
+
 def _prepare_report_context(
     nav_file: str,
     *,
@@ -1214,6 +1243,7 @@ def _prepare_report_context(
     product_name: str,
     nav_frequency: str | None,
     report_kind: str,
+    inception_date: str | pd.Timestamp | None = None,
 ) -> dict:
     kind = normalize_report_kind(report_kind)
     raw_df = load_nav_data(nav_file)
@@ -1237,6 +1267,16 @@ def _prepare_report_context(
         raise ValueError(
             f"报告开始日期 {report_week_begin.date()} 不能晚于结束日期 {as_of.date()}"
         )
+    # Product establishment date wins. Otherwise the first trading-day NAV,
+    # before weekly/monthly folding. Weekend forward-fills are not a start date.
+    official_inception = _coerce_inception_date(inception_date)
+    trading_raw = _trading_day_nav(raw_df)
+    inception_date = official_inception if official_inception is not None else pd.Timestamp(
+        trading_raw["date"].iloc[0]
+    ).normalize()
+    operating_end = pd.Timestamp(trading_raw["date"].iloc[-1]).normalize()
+    if as_of is not None and as_of < operating_end:
+        operating_end = as_of
     df = apply_nav_frequency(raw_df, nav_frequency)
 
     plot_df = df[df["date"] <= as_of].copy() if as_of is not None else df
@@ -1253,6 +1293,8 @@ def _prepare_report_context(
     metrics = compute_metrics(
         df, as_of, nav_frequency, report_week_begin, report_kind=kind,
         period_benchmark=period_benchmark,
+        inception_date=inception_date,
+        operating_end=operating_end,
     )
 
     cur_year = int(as_of.year) if as_of is not None else int(daily_plot_df["date"].dt.year.max())
@@ -1896,6 +1938,7 @@ def make_report(
     nav_frequency: str | None = "weekly",
     report_kind: str | None = "weekly",
     report_layout: str | None = None,
+    inception_date: str | None = None,
 ) -> tuple[str, str]:
     kind = normalize_report_kind(report_kind)
     layout = normalize_report_layout(report_layout, kind)
@@ -1912,6 +1955,7 @@ def make_report(
         product_name=product_name,
         nav_frequency=nav_frequency,
         report_kind=kind,
+        inception_date=inception_date,
     )
     metrics = ctx["metrics"]
     strategy_phrase = resolve_strategy_phrase(strategy_label, product_name, report_title)
@@ -2008,6 +2052,10 @@ def main(argv: list[str] | None = None) -> int:
         choices=["curve", "review"],
         help="月报版式：curve=竖版曲线, review=横版回顾",
     )
+    parser.add_argument(
+        "--inception-date",
+        help="产品成立日期 (YYYY-MM-DD)，与产品页「产品成立时间」相同",
+    )
     args = parser.parse_args(argv)
 
     nav_file = args.nav_file
@@ -2033,6 +2081,7 @@ def main(argv: list[str] | None = None) -> int:
             nav_frequency=args.nav_frequency,
             report_kind=args.report_kind,
             report_layout=args.report_layout,
+            inception_date=args.inception_date,
         )
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)

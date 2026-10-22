@@ -9,7 +9,7 @@ import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import { underlyingChartLabel, underlyingCnLabel } from "@/lib/option-iv-labels"
 import { cn } from "@/lib/utils"
 import { ChartCardHeader } from "./chart-help"
-import { DeeperAnalysisPanels } from "./deeper-analysis-panels"
+import { DeeperAnalysisPanels, isDeeperChartPart, type DeeperChartPart } from "./deeper-analysis-panels"
 
 const CHART_FONT = "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
 
@@ -961,7 +961,35 @@ function buildChainSmileOption(data: SmileData, axisRef?: SmileData | null) {
   }
 }
 
-export default function FinancialOptionsSection() {
+export type FinancialChartPart =
+  | "summary"
+  | "summary-pct"
+  | "qvix"
+  | "percentile"
+  | "term"
+  | "smile"
+  | "chain"
+  | "surface"
+  | DeeperChartPart
+
+const FINANCIAL_PRODUCT_PARTS = new Set<FinancialChartPart>([
+  "qvix",
+  "percentile",
+  "term",
+  "smile",
+  "chain",
+  "surface",
+  "iv-rv",
+  "peer-iv",
+  "skew-snapshot",
+  "skew-history",
+  "pcr-oi",
+  "pcr-history",
+  "term-slope",
+  "vol-cone",
+])
+
+export default function FinancialOptionsSection({ part }: { part?: FinancialChartPart } = {}) {
   const [payload, setPayload] = useState<FinancialPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1057,6 +1085,10 @@ export default function FinancialOptionsSection() {
     return () => ro.disconnect()
   }, [summaryTableEntries])
 
+  const show = (id: FinancialChartPart) => !part || part === id
+  const deeper = part && isDeeperChartPart(part) ? part : undefined
+  const needsProduct = !part || FINANCIAL_PRODUCT_PARTS.has(part)
+
   if (loading && !payload) {
     return (
       <div className="flex items-center justify-center py-24 text-muted-foreground">
@@ -1083,9 +1115,8 @@ export default function FinancialOptionsSection() {
         <p className="text-sm text-muted-foreground">数据日期：{dataTradeDate}</p>
       )}
 
-      {/* IV Summary Table + cross-product percentile chart */}
-      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
-        <Card>
+      {(show("summary") || show("summary-pct")) && <div className={part ? "contents" : "grid gap-4 lg:grid-cols-2 lg:items-start"}>
+        {show("summary") && <Card>
           <ChartCardHeader
             className="pb-3"
             chartId="iv-summary"
@@ -1142,9 +1173,9 @@ export default function FinancialOptionsSection() {
               </table>
             </div>
           </CardContent>
-        </Card>
+        </Card>}
 
-        <Card>
+        {show("summary-pct") && <Card>
           <ChartCardHeader
             className="pb-3"
             chartId="iv-percentile-compare"
@@ -1168,11 +1199,10 @@ export default function FinancialOptionsSection() {
               </div>
             )}
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      {/* Product Selector */}
-      <div className="space-y-3">
+      {needsProduct && <div className="space-y-3">
         {SIZE_BUCKET_ORDER.map((bucket) => {
           const groups = visibleGroups.filter((g) => g.bucket === bucket)
           if (!groups.length) return null
@@ -1214,12 +1244,11 @@ export default function FinancialOptionsSection() {
             })}
           </div>
         )}
-      </div>
+      </div>}
 
-      {selected && (
+      {selected && needsProduct && (
         <>
-          {/* Key Metrics */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {!part && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card>
               <CardContent className="pt-6">
                 <div className="text-sm text-muted-foreground">当前 IV</div>
@@ -1258,13 +1287,12 @@ export default function FinancialOptionsSection() {
                 </div>
               </CardContent>
             </Card>
-          </div>
+          </div>}
 
-          {/* Section: Historical Analysis */}
-          <div>
-            <h2 className="text-lg font-semibold mb-4">历史波动率分析</h2>
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card>
+          {(show("qvix") || show("percentile")) && <div>
+            {!part && <h2 className="text-lg font-semibold mb-4">历史波动率分析</h2>}
+            <div className={part ? "contents" : "grid gap-6 lg:grid-cols-2"}>
+              {show("qvix") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -1284,8 +1312,8 @@ export default function FinancialOptionsSection() {
                     <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
                 </CardContent>
-              </Card>
-              <Card>
+              </Card>}
+              {show("percentile") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -1308,15 +1336,14 @@ export default function FinancialOptionsSection() {
                     <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
                 </CardContent>
-              </Card>
+              </Card>}
             </div>
-          </div>
+          </div>}
 
-          {/* Section: Term Structure & Smile */}
-          <div>
-            <h2 className="text-lg font-semibold mb-4">截面波动率结构</h2>
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card>
+          {(show("term") || show("smile")) && <div>
+            {!part && <h2 className="text-lg font-semibold mb-4">截面波动率结构</h2>}
+            <div className={part ? "contents" : "grid gap-6 lg:grid-cols-2"}>
+              {show("term") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -1331,8 +1358,8 @@ export default function FinancialOptionsSection() {
                     <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
                 </CardContent>
-              </Card>
-              <Card>
+              </Card>}
+              {show("smile") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -1352,15 +1379,14 @@ export default function FinancialOptionsSection() {
                     <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
                 </CardContent>
-              </Card>
+              </Card>}
             </div>
-          </div>
+          </div>}
 
-          {/* Section: Chain & Surface */}
-          <div>
-            <h2 className="text-lg font-semibold mb-4">期权链与波动率曲面</h2>
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card>
+          {(show("chain") || show("surface")) && <div>
+            {!part && <h2 className="text-lg font-semibold mb-4">期权链与波动率曲面</h2>}
+            <div className={part ? "contents" : "grid gap-6 lg:grid-cols-2"}>
+              {show("chain") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -1380,9 +1406,9 @@ export default function FinancialOptionsSection() {
                     <div className="h-[320px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
                 </CardContent>
-              </Card>
+              </Card>}
 
-              <Card>
+              {show("surface") && <Card>
                 <ChartCardHeader
                   className="pb-2"
                   titleClassName="text-base"
@@ -1397,16 +1423,19 @@ export default function FinancialOptionsSection() {
                     <div className="h-[380px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
                 </CardContent>
-              </Card>
+              </Card>}
             </div>
-          </div>
+          </div>}
 
+          {(!part || deeper) && (
           <DeeperAnalysisPanels
-            selectedKey={selectedKey}
+            selectedKey={selectedKey!}
             productLabel={chartProductLabel}
             charts={charts as never}
             underlyings={payload?.underlyings ?? {}}
+            panel={deeper}
           />
+          )}
         </>
       )}
     </div>

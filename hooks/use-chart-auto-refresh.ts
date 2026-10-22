@@ -1,5 +1,7 @@
 import { useCallback, useEffect } from "react"
 
+import { useChartStill } from "@/hooks/chart-still"
+
 /**
  * Fetch chart data on mount/deps change, then silently refresh every minute
  * while the tab is visible (also on window focus / tab visibility).
@@ -11,12 +13,14 @@ export function useChartAutoRefresh(
 ) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const load = useCallback(loadFn, deps)
+  const still = useChartStill()
 
   useEffect(() => {
     void load(true)
   }, [load])
 
   useEffect(() => {
+    if (still) return
     const handleFocus = () => {
       void load(false)
     }
@@ -40,5 +44,5 @@ export function useChartAutoRefresh(
       document.removeEventListener("visibilitychange", handleVisibility)
       window.clearInterval(timer)
     }
-  }, [load, intervalMs])
+  }, [load, intervalMs, still])
 }

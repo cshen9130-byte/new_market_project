@@ -136,61 +136,9 @@ async function loadCfmmcBooks(): Promise<Map<string, { company: string | null; e
   return map
 }
 
-async function loadMatchedAccountSeeds(): Promise<Seed[]> {
-  const res = await publicQuery(
-    `WITH latest AS (
-       SELECT DISTINCT ON (trim(account_no))
-         trim(account_no) AS account_no,
-         NULLIF(trim(client_name), '') AS client_name,
-         NULLIF(trim(company_name), '') AS company_name,
-         client_equity::text AS equity,
-         trade_date::text AS trade_date
-       FROM public.cfmmc_daily_summary
-       WHERE account_no IS NOT NULL AND trim(account_no) <> ''
-       ORDER BY trim(account_no), trade_date DESC
-     )
-     SELECT DISTINCT ON (l.account_no)
-       l.account_no,
-       l.client_name,
-       l.company_name,
-       l.equity,
-       l.trade_date,
-       p.beian_hao,
-       p.product_name
-     FROM latest l
-     JOIN private_fund_info p
-       ON l.client_name IS NOT NULL
-      AND char_length(p.product_name) >= 8
-      AND strpos(l.client_name, p.product_name) > 0
-     ORDER BY l.account_no, char_length(p.product_name) DESC`,
-  ).catch(() => ({ rows: [] as Record<string, unknown>[] }))
-
-  return (res.rows as Array<{
-    account_no: string
-    company_name: string | null
-    equity: string | null
-    trade_date: string | null
-    beian_hao: string
-    product_name: string
-  }>).map((row) => ({
-    kind: "account" as const,
-    linkSource: "matched" as const,
-    beian: clean(row.beian_hao).toUpperCase(),
-    productName: clean(row.product_name),
-    account: clean(row.account_no),
-    accountNote: shortCompany(row.company_name),
-    note: null,
-    equity: numText(row.equity),
-    equityDate: clean(row.trade_date).slice(0, 10) || null,
-    updatedBy: null,
-    updatedAt: null,
-  })).filter((row) => row.beian && row.account)
-}
-
 async function loadAccountSeeds(): Promise<Seed[]> {
-  const [explicit, matched, books] = await Promise.all([
+  const [explicit, books] = await Promise.all([
     listFundSingleAccounts().catch(() => []),
-    loadMatchedAccountSeeds().catch(() => [] as Seed[]),
     loadCfmmcBooks().catch(() => new Map()),
   ])
   const byAccount = new Map<string, Seed>()
@@ -213,10 +161,6 @@ async function loadAccountSeeds(): Promise<Seed[]> {
       updatedBy: clean(row.updated_by) || null,
       updatedAt: clean(row.updated_at) || null,
     })
-  }
-  for (const row of matched) {
-    if (byAccount.has(row.account)) continue
-    byAccount.set(row.account, row)
   }
   return [...byAccount.values()]
 }

@@ -80,7 +80,27 @@ function toneClass(tone: "hot" | "cold" | "inline" | "pending" | "neutral") {
   return ""
 }
 
-export default function GlobalFomcSection() {
+export type FomcChartPart =
+  | "fedwatch"
+  | "core-mom"
+  | "aug-parts"
+  | "nfp"
+  | "unrate-2026"
+  | "nfp-unrate"
+  | "unrate"
+  | "u6"
+  | "sahm"
+  | "participation"
+  | "cpi-yoy"
+  | "core-cpi"
+  | "core-pce"
+  | "cpi-mom"
+  | "meeting-cpi"
+  | "surprise"
+  | "funds"
+  | "cross"
+
+export default function GlobalFomcSection({ part }: { part?: FomcChartPart } = {}) {
   const [era, setEra] = useState<Era>("all")
   const [chartRange, setChartRange] = useState<ChartRange>("since22")
   const [fedwatchRange, setFedwatchRange] = useState<FedwatchRange>("meeting")
@@ -429,15 +449,45 @@ export default function GlobalFomcSection() {
     [cross],
   )
 
+  const show = (id: FomcChartPart) => !part || part === id
+  const rangePart =
+    part === "unrate" ||
+    part === "u6" ||
+    part === "sahm" ||
+    part === "participation" ||
+    part === "cpi-yoy" ||
+    part === "core-cpi" ||
+    part === "core-pce" ||
+    part === "cpi-mom"
+  const eraPart = part === "meeting-cpi" || part === "surprise" || part === "funds" || part === "cross"
+
   return (
     <div className="flex flex-col gap-6">
-      <SectionTitle id="fomc-cpi-section">FOMC / CPI 每日跟踪</SectionTitle>
-      <p className="text-sm text-muted-foreground -mt-3">
+      {rangePart && (
+        <div className="flex flex-wrap gap-2">
+          {(Object.keys(RANGE_LABEL) as ChartRange[]).map((id) => (
+            <Pill key={id} active={chartRange === id} onClick={() => setChartRange(id)}>
+              {RANGE_LABEL[id]}
+            </Pill>
+          ))}
+        </div>
+      )}
+      {eraPart && (
+        <div className="flex flex-wrap gap-2">
+          {(Object.keys(ERA_LABEL) as Era[]).map((id) => (
+            <Pill key={id} active={era === id} onClick={() => setEra(id)}>
+              {ERA_LABEL[id]}
+            </Pill>
+          ))}
+        </div>
+      )}
+      {!part && <SectionTitle id="fomc-cpi-section">FOMC / CPI 每日跟踪</SectionTitle>}
+      {!part && <p className="text-sm text-muted-foreground -mt-3">
         按日跟踪下次 FOMC 定价与委员会手里已有的通胀、就业读数。每次决议配对当日最新 CPI（实际 vs
         一致预期），并对照 CME FedWatch。数据截至 2026-09-14。
-      </p>
+      </p>}
 
-      <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+      {!part && <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <div className="font-medium">盯盘要点</div>
           <div className="text-xs text-muted-foreground">截至 2026-09-14 · 下次决议 9/16</div>
@@ -446,16 +496,16 @@ export default function GlobalFomcSection() {
           最新 CPI（8 月，9.11 公布）头条符合预期；核心同比 2.4%，为 2021 年 3 月以来最低。7 月核心 PCE 仍是 3.3%。CME
           FedWatch 将 9 月 16 日加息 25bp 的概率从 69% 抬到 87%。当前定价看分项构成与当周数据，而不是同比水平。
         </p>
-      </div>
+      </div>}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {!part && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard value="69% → 87%" label="FedWatch 加息概率（最新）" tone="hot" />
         <StatCard value="+0.3% vs 0.2%" label="核心环比 vs 预期" tone="hot" />
         <StatCard value="162k vs ~55k" label="最新非农 vs 预期" tone="pending" />
         <StatCard value="+0.5%" label="超级核心环比（服务除住房）" tone="hot" />
-      </div>
+      </div>}
 
-      <Card id="fedwatch-section" className="scroll-mt-4">
+      {show("fedwatch") && <Card id="fedwatch-section" className="scroll-mt-4">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-1.5">
@@ -479,10 +529,10 @@ export default function GlobalFomcSection() {
             来源：CME FedWatch 快照（Gate / StockCram / Haver / InvestLin / CNBC / Forbes / HousingWire）。每次 FOMC 之后序列切换到下一场会议。2022–25 年为会前快照，按兵不动 ≈ 100 − 加息。
           </p>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card>
+      {(show("core-mom") || show("aug-parts")) && <div className={part ? "contents" : "grid gap-6 md:grid-cols-2"}>
+        {show("core-mom") && <Card>
           <CardHeader>
             <CardTitle className="text-base">2026 核心 CPI 环比 — 委员会实际看的序列</CardTitle>
             <CardDescription>
@@ -494,8 +544,8 @@ export default function GlobalFomcSection() {
             <ReactECharts option={coreMomOption} style={{ height: 240 }} notMerge />
             <p className="mt-2 text-xs text-muted-foreground">来源：BLS Table A · 8 月一致预期 0.2%（DJ/WSJ）</p>
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("aug-parts") && <Card>
           <CardHeader>
             <CardTitle className="text-base">8 月分项 — 头条掩盖了热度</CardTitle>
             <CardDescription>
@@ -506,10 +556,10 @@ export default function GlobalFomcSection() {
             <ReactECharts option={augPartsOption} style={{ height: 260 }} notMerge />
             <p className="mt-2 text-xs text-muted-foreground">来源：BLS / Haver 2026-09-11</p>
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <Card>
+      {!part && <Card>
         <CardHeader>
           <CardTitle className="text-base">同一美联储，三次会议 — 为何 6 月按兵不动、9 月定价加息</CardTitle>
           <CardDescription>头条和核心同比都更低了，委员会真正争论的列翻转了。</CardDescription>
@@ -546,10 +596,10 @@ export default function GlobalFomcSection() {
             </tbody>
           </table>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card>
+      {(show("nfp") || show("unrate-2026")) && <div className={part ? "contents" : "grid gap-6 md:grid-cols-2"}>
+        {show("nfp") && <Card>
           <CardHeader>
             <CardTitle className="text-base">非农 — 9.4 已先把概率抬上去</CardTitle>
             <CardDescription>
@@ -560,8 +610,8 @@ export default function GlobalFomcSection() {
             <ReactECharts option={nfpOption} style={{ height: 240 }} notMerge />
             <p className="mt-2 text-xs text-muted-foreground">来源：BLS CES，2026-09-04 就业形势报告</p>
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("unrate-2026") && <Card>
           <CardHeader>
             <CardTitle className="text-base">2026 失业率 — 新增波动、失业率仍缓降</CardTitle>
             <CardDescription>
@@ -572,10 +622,10 @@ export default function GlobalFomcSection() {
             <ReactECharts option={unrate2026Option} style={{ height: 240 }} notMerge />
             <p className="mt-2 text-xs text-muted-foreground">来源：FRED UNRATE（BLS CPS）</p>
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <Card>
+      {show("nfp-unrate") && <Card>
         <CardHeader>
           <CardTitle className="text-base">非农 vs 失业率 — 2026 同一份就业报告的两面</CardTitle>
           <CardDescription>
@@ -585,28 +635,28 @@ export default function GlobalFomcSection() {
         <CardContent>
           <ReactECharts option={nfpUnrateOption} style={{ height: 260 }} notMerge />
         </CardContent>
-      </Card>
+      </Card>}
 
-      <SectionTitle id="unrate-section">失业率分析</SectionTitle>
-      <div className="flex flex-wrap gap-2">
+      {!part && <SectionTitle id="unrate-section">失业率分析</SectionTitle>}
+      {!part && <div className="flex flex-wrap gap-2">
         {(Object.keys(RANGE_LABEL) as ChartRange[]).map((id) => (
           <Pill key={id} active={chartRange === id} onClick={() => setChartRange(id)}>
             {RANGE_LABEL[id]}
           </Pill>
         ))}
-      </div>
-      <p className="text-xs text-muted-foreground -mt-3">
+      </div>}
+      {!part && <p className="text-xs text-muted-foreground -mt-3">
         与下方通胀图共用时间窗口。三角向上 = 加息，方块 = 按兵不动，三角向下 = 降息。长区间隐藏按兵不动标记以免过密。
-      </p>
+      </p>}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {!part && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard value="4.1%" label="8 月失业率 U-3" />
         <StatCard value="7.7%" label="8 月 U-6 广义失业" tone="pending" />
         <StatCard value="61.6%" label="劳动参与率（7 月 61.4%）" />
         <StatCard value="−0.07" label="Sahm 规则（阈值 0.50）" tone="cold" />
-      </div>
+      </div>}
 
-      <Card>
+      {show("unrate") && <Card>
         <CardHeader>
           <CardTitle className="text-base">美国失业率 U-3 — 叠加 FOMC</CardTitle>
           <CardDescription>
@@ -629,9 +679,9 @@ export default function GlobalFomcSection() {
             来源：FRED UNRATE · 2000-01 至 2026-08 · 2025-10 缺失 · 横轴用对应 CPI 公布日，便于与 FOMC 标记对齐
           </p>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      {show("u6") && <Card>
         <CardHeader>
           <CardTitle className="text-base">U-3 vs U-6 — 广义失业有没有一起下来</CardTitle>
           <CardDescription>
@@ -652,10 +702,10 @@ export default function GlobalFomcSection() {
           />
           <p className="mt-2 text-xs text-muted-foreground">来源：FRED UNRATE / U6RATE</p>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card>
+      {(show("sahm") || show("participation")) && <div className={part ? "contents" : "grid gap-6 md:grid-cols-2"}>
+        {show("sahm") && <Card>
           <CardHeader>
             <CardTitle className="text-base">Sahm 规则 — 是否逼近衰退阈值</CardTitle>
             <CardDescription>
@@ -677,8 +727,8 @@ export default function GlobalFomcSection() {
             />
             <p className="mt-2 text-xs text-muted-foreground">来源：FRED SAHMREALTIME</p>
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("participation") && <Card>
           <CardHeader>
             <CardTitle className="text-base">劳动参与率 — 就业改善是否靠人退出</CardTitle>
             <CardDescription>
@@ -699,22 +749,22 @@ export default function GlobalFomcSection() {
             />
             <p className="mt-2 text-xs text-muted-foreground">来源：FRED CIVPART</p>
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <SectionTitle id="cpi-yoy-section">通胀同比与 FOMC 标记</SectionTitle>
-      <div className="flex flex-wrap gap-2">
+      {!part && <SectionTitle id="cpi-yoy-section">通胀同比与 FOMC 标记</SectionTitle>}
+      {!part && <div className="flex flex-wrap gap-2">
         {(Object.keys(RANGE_LABEL) as ChartRange[]).map((id) => (
           <Pill key={id} active={chartRange === id} onClick={() => setChartRange(id)}>
             {RANGE_LABEL[id]}
           </Pill>
         ))}
-      </div>
-      <p className="text-xs text-muted-foreground -mt-3">
+      </div>}
+      {!part && <p className="text-xs text-muted-foreground -mt-3">
         实线 = CPI 实际；虚线 = 一致预期。三角向上 = 加息，方块 = 按兵不动，三角向下 = 降息。长区间隐藏按兵不动标记以免过密。
-      </p>
+      </p>}
 
-      <Card>
+      {show("cpi-yoy") && <Card>
         <CardHeader>
           <CardTitle className="text-base">美国 CPI 同比 — 实际 vs 预测，叠加 FOMC</CardTitle>
           <CardDescription>最新点 2026.9.11（3.4% vs 3.4%）。下次决议 2026.9.16（待定）。</CardDescription>
@@ -732,9 +782,9 @@ export default function GlobalFomcSection() {
             来源：FRED CPIAUCNS（BLS）· 2000-01 至 2026-08 · FOMC 变息日 DFEDTAR / DFEDTARU
           </p>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      {show("core-cpi") && <Card>
         <CardHeader>
           <CardTitle className="text-base">美国核心 CPI 同比 — 剔除食品能源，叠加 FOMC</CardTitle>
           <CardDescription>
@@ -755,9 +805,9 @@ export default function GlobalFomcSection() {
           />
           <p className="mt-2 text-xs text-muted-foreground">来源：FRED CPILFENS · 2025-10 缺失</p>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      {show("core-pce") && <Card>
         <CardHeader>
           <CardTitle className="text-base">美国核心 PCE 同比 — 美联储目标指标，叠加 FOMC</CardTitle>
           <CardDescription>
@@ -780,9 +830,9 @@ export default function GlobalFomcSection() {
             来源：FRED PCEPILFE（BEA）· 横轴用对应 CPI 公布日，便于与上图 FOMC 标记对齐
           </p>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      {show("cpi-mom") && <Card>
         <CardHeader>
           <CardTitle className="text-base">美国 CPI 环比 — 季调月率，叠加 FOMC</CardTitle>
           <CardDescription>
@@ -793,9 +843,9 @@ export default function GlobalFomcSection() {
           <FomcCpiMomChart monthly={monthly} meetings={chartMeetings} />
           <p className="mt-2 text-xs text-muted-foreground">来源：FRED CPIAUCSL / CPILFESL 环比 · 2025-10 缺失</p>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      {!part && <Card>
         <CardHeader>
           <CardTitle className="text-base">2026 年 CPI 公布一览</CardTitle>
           <CardDescription>截至 2026.9.11。意外 = 实际 − 预期。</CardDescription>
@@ -831,10 +881,10 @@ export default function GlobalFomcSection() {
             </tbody>
           </table>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <SectionTitle id="fomc-meetings-section">每次会议手里的 CPI</SectionTitle>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {!part && <SectionTitle id="fomc-meetings-section">每次会议手里的 CPI</SectionTitle>}
+      {!part && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard value="3.4% / 2.4%" label="9.11 头条 / 核心同比" />
         <StatCard value="3.50–3.75%" label="会前联邦基金区间" />
         <StatCard
@@ -843,17 +893,17 @@ export default function GlobalFomcSection() {
           tone={avgSurprise > 0.05 ? "hot" : avgSurprise < -0.05 ? "cold" : "inline"}
         />
         <StatCard value={`${hot} / ${inline} / ${cold}`} label="偏热 / 符合 / 偏冷" />
-      </div>
+      </div>}
 
-      <div className="flex flex-wrap gap-2">
+      {!part && <div className="flex flex-wrap gap-2">
         {(Object.keys(ERA_LABEL) as Era[]).map((id) => (
           <Pill key={id} active={era === id} onClick={() => setEra(id)}>
             {ERA_LABEL[id]}
           </Pill>
         ))}
-      </div>
+      </div>}
 
-      <Card>
+      {show("meeting-cpi") && <Card>
         <CardHeader>
           <CardTitle className="text-base">每次 FOMC 手里的 CPI 同比</CardTitle>
           <CardDescription>实际 vs 经济学家一致预期。Fed 2% 目标已标出。</CardDescription>
@@ -861,10 +911,10 @@ export default function GlobalFomcSection() {
         <CardContent>
           <ReactECharts option={meetingCpiOption} style={{ height: 260 }} notMerge />
         </CardContent>
-      </Card>
+      </Card>}
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card>
+      {(show("surprise") || show("funds")) && <div className={part ? "contents" : "grid gap-6 md:grid-cols-2"}>
+        {show("surprise") && <Card>
           <CardHeader>
             <CardTitle className="text-base">会议时的 CPI 意外</CardTitle>
             <CardDescription>百分点。正值 = 高于预期（偏鹰），负值 = 低于预期。</CardDescription>
@@ -872,8 +922,8 @@ export default function GlobalFomcSection() {
           <CardContent>
             <ReactECharts option={surpriseOption} style={{ height: 240 }} notMerge />
           </CardContent>
-        </Card>
-        <Card>
+        </Card>}
+        {show("funds") && <Card>
           <CardHeader>
             <CardTitle className="text-base">决议后政策利率</CardTitle>
             <CardDescription>联邦基金目标区间上限（%）。待决议的 9 月会议未计入。</CardDescription>
@@ -881,10 +931,10 @@ export default function GlobalFomcSection() {
           <CardContent>
             <ReactECharts option={fundsOption} style={{ height: 240 }} notMerge />
           </CardContent>
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <Card>
+      {!part && <Card>
         <CardHeader>
           <CardTitle className="text-base">每场 FOMC 与当时看到的 CPI</CardTitle>
           <CardDescription>
@@ -925,9 +975,9 @@ export default function GlobalFomcSection() {
             </tbody>
           </table>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      {show("cross") && <Card>
         <CardHeader>
           <CardTitle className="text-base">CPI 意外能否预测决议？</CardTitle>
           <CardDescription>
@@ -959,12 +1009,12 @@ export default function GlobalFomcSection() {
             </tbody>
           </table>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <p className="text-xs text-muted-foreground">
+      {!part && <p className="text-xs text-muted-foreground">
         实际值：BLS CPI-U 12 个月未季调同比。预期：Investing.com / Trading Economics / Forex Fundamentals
         经济学家中位数（个别月份可能差 0.1–0.2pp）。配对规则：声明日当日或之前的最后一次 CPI。利率区间来自美联储 FOMC 声明。
-      </p>
+      </p>}
     </div>
   )
 }

@@ -34,6 +34,8 @@ export interface User {
   api_key?: string | null
   /** MOM数据API key. Separate from api_key. Shown only on the MOM数据API page. */
   mom_api_key?: string | null
+  /** Cropped profile image. Null when the account has no avatar. */
+  avatar_url?: string | null
 }
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -213,6 +215,45 @@ export const authService = {
       return { success: true, user: data.user }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "更新失败"
+      return { success: false, error: message }
+    }
+  },
+
+  uploadAvatar: async (file: Blob): Promise<{ success: boolean; user?: User; error?: string }> => {
+    try {
+      const uid = currentUserId()
+      if (!uid) return { success: false, error: "未登录" }
+      const body = new FormData()
+      body.append("file", file, "avatar.jpg")
+      const res = await fetch("/api/auth/avatar", {
+        method: "POST",
+        headers: { "x-market-user-id": uid },
+        body,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.user) return { success: false, error: data?.error || "上传失败" }
+      localStorage.setItem("currentUser", JSON.stringify(data.user))
+      return { success: true, user: data.user as User }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "上传失败"
+      return { success: false, error: message }
+    }
+  },
+
+  removeAvatar: async (): Promise<{ success: boolean; user?: User; error?: string }> => {
+    try {
+      const uid = currentUserId()
+      if (!uid) return { success: false, error: "未登录" }
+      const res = await fetch("/api/auth/avatar", {
+        method: "DELETE",
+        headers: { "x-market-user-id": uid },
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.user) return { success: false, error: data?.error || "移除失败" }
+      localStorage.setItem("currentUser", JSON.stringify(data.user))
+      return { success: true, user: data.user as User }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "移除失败"
       return { success: false, error: message }
     }
   },

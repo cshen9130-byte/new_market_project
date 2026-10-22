@@ -647,6 +647,8 @@ function buildOption(
 
 export type HoldingFocus = { level: "sector" | "product"; key: string }
 
+export type HoldingChartPart = "q-holding" | "s-holding" | "q-candle" | "s-candle" | "waterfall"
+
 export default function QuantVsSubjectiveHoldingTs({
   holdingTs,
   metric,
@@ -656,6 +658,7 @@ export default function QuantVsSubjectiveHoldingTs({
   flows,
   asOf,
   quantIds,
+  part,
 }: {
   holdingTs: HoldingTs | null | undefined
   metric: ExposureMetric
@@ -665,6 +668,7 @@ export default function QuantVsSubjectiveHoldingTs({
   flows?: FlowMap
   asOf?: string | null
   quantIds?: number[] | null
+  part?: HoldingChartPart
 }) {
   const [cat, setCat] = useState("全部")
   const [sector, setSector] = useState("全部")
@@ -1016,6 +1020,8 @@ export default function QuantVsSubjectiveHoldingTs({
     </Card>
   )
 
+  const show = (id: HoldingChartPart) => !part || part === id
+
   return (
     <div id="section-holding-ts" className="space-y-2 scroll-mt-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -1073,14 +1079,23 @@ export default function QuantVsSubjectiveHoldingTs({
           </button>
         </div>
       </div>
+      {part ? (
+        <div className="space-y-4">
+          {show("q-holding") && quantHoldingCard}
+          {show("s-holding") && subjHoldingCard}
+          {show("q-candle") && quantCandleCard}
+          {show("s-candle") && subjCandleCard}
+        </div>
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         {quantHoldingCard}
         {swapped ? quantCandleCard : subjHoldingCard}
         {swapped ? subjHoldingCard : quantCandleCard}
         {subjCandleCard}
       </div>
-      <JiaamaOnlyTracker date={asOf} quantIds={quantIds} />
-      {qDecomp && sDecomp && (
+      )}
+      {!part && <JiaamaOnlyTracker date={asOf} quantIds={quantIds} />}
+      {show("waterfall") && qDecomp && sDecomp && (
         <Card>
           <CardHeader className="pb-1">
             <div className="flex items-start justify-between gap-2">

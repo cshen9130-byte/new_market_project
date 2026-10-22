@@ -78,7 +78,7 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
   },
   futures: {
     title: (label) => `${label} · 周度回顾(期货)`,
-    description: (scope) => `按${scope}中的期货策略生成周报 Excel。量化期货 6 张：时序（时序占比超过50%）、截面（截面占比超过50%）、大厂（按规模）、股指（按品种）、基本面（按因子类型）、机器学习（按方法论）；混合、量价、商品不进入。主观期货 6 张：黑色、有色、能化、农产、多板块（包含 MOM）、MOM。MOM 同时计入多板块。同一产品的 A/B/C 份额在同一张表里合并为一行。`,
+    description: (scope) => `按${scope}中的期货策略生成周报 Excel。量化期货 8 张：时序（时序占比超过50%）、截面（截面占比超过50%）、混合、中高频（按交易频率）、大厂（按规模）、股指（按品种）、基本面（按因子类型）、机器学习（按方法论）；量价、商品不进入。主观期货 6 张：黑色、有色、能化、农产、多板块（包含 MOM）、MOM。MOM 同时计入多板块。同一产品的 A/B/C 份额在同一张表里合并为一行。`,
     excelName: (weekEnd, label) => `${label}周度回顾（期货） - ${weekEnd}.xlsx`,
     previewUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/futures/preview?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/futures/generate",

@@ -1170,9 +1170,10 @@ export function OperationsUpdateChannelView({
   const [error, setError] = useState("")
   const requestSeq = useRef(0)
 
+  const cacheKey = channelCacheKey(channel)
   const load = useCallback((refresh: boolean) => {
     const seq = ++requestSeq.current
-    const cached = refresh ? null : peekOpsCache<UpdateChannelResponse>(channelCacheKey(channel))
+    const cached = refresh ? null : peekOpsCache<UpdateChannelResponse>(cacheKey)
     if (cached?.channel === channel) {
       setBody(cached)
       setLoading(false)
@@ -1183,7 +1184,7 @@ export function OperationsUpdateChannelView({
     const params = new URLSearchParams({ channel })
     if (refresh) params.set("refresh", "1")
     loadOpsCache(
-      channelCacheKey(channel),
+      cacheKey,
       `/ma/api/ops/data-overview/update?${params}`,
       refresh,
       isChannelBody,
@@ -1200,7 +1201,7 @@ export function OperationsUpdateChannelView({
       .finally(() => {
         if (seq === requestSeq.current) setLoading(false)
       })
-  }, [channel])
+  }, [cacheKey, channel])
 
   useEffect(() => {
     load(false)
@@ -1215,7 +1216,7 @@ export function OperationsUpdateChannelView({
     onLoading?.(loading)
   }, [loading, onLoading])
 
-  const cachedChannel = peekOpsCache<UpdateChannelResponse>(channelCacheKey(channel))
+  const cachedChannel = peekOpsCache<UpdateChannelResponse>(cacheKey)
   const visible = body?.channel === channel ? body : cachedChannel?.channel === channel ? cachedChannel : null
   const isFof = channel === "fof99"
   const last = visible?.last_week
