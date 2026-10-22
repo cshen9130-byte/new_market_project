@@ -35,7 +35,7 @@ const nextConfig = {
   },
   // Constrain output tracing to the workspace root
   outputFileTracingRoot: process.cwd(),
-  webpack: (config) => {
+  webpack: (config, { nextRuntime, webpack }) => {
     if (isLowMemBuild) {
       // Cap concurrent module builds so peak RSS fits a small deploy host.
       config.parallelism = 1
@@ -43,6 +43,22 @@ const nextConfig = {
       // (V8 String::SlowFlatten / Utf8Length) and has OOM'd a 3 GB heap on a
       // 7 GiB server while RAM was still free. Disk cache is not worth that.
       config.cache = false
+    }
+    // middleware.ts keeps an edge compilation of instrumentation.ts.
+    // `if (NEXT_RUNTIME !== "nodejs") return` does not stop webpack from
+    // following the dynamic import(), so the edge bundle pulls in fs/crypto
+    // and @napi-rs/canvas. The node server build still bundles these.
+    if (nextRuntime === "edge") {
+      config.plugins.push(
+        new webpack.IgnorePlugin({
+          checkResource(resource) {
+            const request = String(resource).split("?")[0]
+            return /(?:^|[\\/])(?:background-jobs-scheduler|dev-prod-db-tunnel)(?:\.[cm]?[jt]s)?$/.test(
+              request,
+            )
+          },
+        }),
+      )
     }
     return config
   },
