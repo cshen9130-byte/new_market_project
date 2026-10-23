@@ -120,7 +120,15 @@ A hand add uses the pool row's `imported_at` (`source_file = manual_add`). A lat
 
 **Why it returned.** The list used `MIN(imported_at)` of the visible pool row only. 全部 does not read `type6_ops_team_full`, so an older workbook add was invisible once the email sync created a newer `custom_email_nav` row. JY跟踪池's own `imported_at` was the 2026-10-20 insert (`source_file = 跟踪池.xlsx`), one second before `refreshed_at`. Rebuilding `ops_tracking_funds_list_cache` does not store 首次入表. Treating "first time this code was written into the cache" or "first time this sync inserted the pool row" as 首次入表 is the bug. It has come back whenever a cache or pool rebuild was wired straight to the column.
 
-**Fix.** `fe.first_entry_date` is the earliest day above. For the two examples that is 2026-09-08 (`SBAE63`) and 2026-06-04 (`SAVH67`). Keyword search uses the same SQL. The browser list cache key is `tracking_list_cache_v12`. The server one-shot `_trackingListFirstEntryDateV1` drops the in-memory list JSON once per process.
+**Fix.** `fe.first_entry_date` is the earliest day above. For the two examples that is 2026-09-08 (`SBAE63`) and 2026-06-04 (`SAVH67`). Keyword search uses the same SQL. The browser list cache key moved to `tracking_list_cache_v13` on 2026-10-23 (v12 kept the 藤创藤达 duplicate below). The server one-shot `_trackingListFirstEntryDateV1` drops the in-memory list JSON once per process.
+
+### What must not come back (2026-10-23)
+
+**Symptom.** 跟踪产品 showed 藤创藤达CTA1号A类 twice, both at 2026-10-22 / 1.0277 / +0.20%.
+
+**Why.** 金舆基石一号’s 估值表 subject `110906011ABFJ9` parses as custodian ticker `ABFJ9A`. The A-share 备案号 is `BJN16A` (parent `SBJN16`). Both codes were in JY跟踪池, so the list drew two rows with the same NAV.
+
+**Fix.** `ABFJ9A` maps to `BJN16A` in `FOF_VALUATION_CODE_ALIASES`. The list hides the ticker when `BJN16A` is already there. `collapseAliasedTrackingIdentities` drops the ticker membership. The browser list cache key is `tracking_list_cache_v13`. The server one-shot `_trackingListCustodianAliasCollapseV2` drops the in-memory list JSON once per process.
 
 **Do not regress this by**
 

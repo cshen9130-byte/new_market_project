@@ -145,6 +145,9 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   // 诚奇睿盈对冲2号A类: 估值表科目 110906011AAEO3 parses as AAEO3A.
   // That custodian ticker is the same fund as 备案号 QH717A.
   AAEO3A: "QH717A",
+  // 藤创藤达CTA1号A类: 金舆基石一号 估值表科目 110906011ABFJ9 parses as ABFJ9A.
+  // That custodian ticker is the same A share as 备案号 BJN16A (parent SBJN16).
+  ABFJ9A: "BJN16A",
 }
 
 /** Canonical 备案号 plus every custodian/估值表 code that points at the same product. */
@@ -667,6 +670,18 @@ export function normalizeFundHoldingCode(
 
 /** Best-effort code: override map → subject code parse → normalize symbol → null. Never returns Chinese text. */
 export function resolveFundHoldingCode(
+  subjectCode: string,
+  subjectName: string,
+  existingSymbol?: string | null,
+  originalSubjectCode?: string | null,
+): string | null {
+  const raw = resolveFundHoldingCodeRaw(subjectCode, subjectName, existingSymbol, originalSubjectCode)
+  if (!raw) return null
+  // Custodian tickers (ABFJ9A, AAEO3A) are the same product as the 备案号.
+  return canonicalProductCode(raw) || raw
+}
+
+function resolveFundHoldingCodeRaw(
   subjectCode: string,
   subjectName: string,
   existingSymbol?: string | null,

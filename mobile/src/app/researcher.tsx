@@ -1,5 +1,6 @@
 import { useRouter } from "expo-router"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { useStepBack } from "@/use-step-back"
 import {
   ActivityIndicator,
   Pressable,
@@ -127,6 +128,15 @@ export default function ResearcherScreen() {
     return text.trim().length > 0
   }, [skill, running, picked.length, text])
 
+  function leaveSkill() {
+    abortRef.current?.abort()
+    setSkill(null)
+    setStarted(false)
+    setRunning(false)
+  }
+
+  useStepBack(skill != null, leaveSkill)
+
   function openSkill(next: Skill) {
     abortRef.current?.abort()
     setSkill(next)
@@ -215,7 +225,7 @@ export default function ResearcherScreen() {
       <View style={styles.top}>
         <Pressable
           onPress={() => {
-            if (skill) openSkillReset()
+            if (skill) leaveSkill()
             else router.back()
           }}
           hitSlop={12}
@@ -326,13 +336,6 @@ export default function ResearcherScreen() {
       )}
     </SafeAreaView>
   )
-
-  function openSkillReset() {
-    abortRef.current?.abort()
-    setSkill(null)
-    setStarted(false)
-    setRunning(false)
-  }
 }
 
 const styles = StyleSheet.create({

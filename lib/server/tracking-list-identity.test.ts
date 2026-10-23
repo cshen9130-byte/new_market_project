@@ -48,6 +48,17 @@ test("a mapped custodian code collapses even when the stored names differ", () =
   )
 })
 
+test("藤创藤达CTA1号A类 drops the custodian ticker beside the 备案号", () => {
+  assert.deepEqual(
+    visibleTrackingBeianCodes([
+      { beian_hao: "BJN16A", product_name: "藤创藤达CTA1号私募证券投资基金A类份额" },
+      { beian_hao: "ABFJ9A", product_name: "藤创藤达CTA1号A类" },
+      { beian_hao: "SBJN16", product_name: "藤创藤达CTA1号" },
+    ]),
+    ["BJN16A"],
+  )
+})
+
 test("an S-prefix share is kept when the canonical code is a different fund name", () => {
   assert.deepEqual(
     visibleTrackingBeianCodes([

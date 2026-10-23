@@ -103,6 +103,8 @@ declare global {
   var _trackingListParentShareClassDedupeV1: boolean | undefined
   // One-shot: drop the AAEO3A duplicate of 诚奇睿盈对冲2号A类 (QH717A).
   var _trackingListCustodianAliasCollapseV1: boolean | undefined
+  // One-shot: drop the ABFJ9A duplicate of 藤创藤达CTA1号A类 (BJN16A).
+  var _trackingListCustodianAliasCollapseV2: boolean | undefined
   var _trackingListTestProductExcludeV1: boolean | undefined
   // One-shot: drop 诚奇浦江CTA1号A类 shown twice (SSB595A +0.34% beside SB595A).
   var _trackingListShareAliasDedupeV1: boolean | undefined
@@ -1397,6 +1399,11 @@ export async function GET(req: Request) {
   }
   if (!global._trackingListCustodianAliasCollapseV1) {
     global._trackingListCustodianAliasCollapseV1 = true
+    invalidateListResponseCache()
+    await collapseAliasedTrackingIdentities()
+  }
+  if (!global._trackingListCustodianAliasCollapseV2) {
+    global._trackingListCustodianAliasCollapseV2 = true
     invalidateListResponseCache()
     await collapseAliasedTrackingIdentities()
   }

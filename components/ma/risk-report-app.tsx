@@ -7315,9 +7315,9 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
   .no-print { display: none !important; }
 `
 
-export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
+export function RiskReportApp({ variant, embedBriefing = false }: { variant: RiskReportVariant; embedBriefing?: boolean }) {
   if (variant === "account") return <RiskReportAppAccount />
-  return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} />
+  return <RiskReportAppCore variant="mom" embedBriefing={embedBriefing} cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} />
 }
 
 function RiskReportAppAccount() {
@@ -7328,10 +7328,12 @@ function RiskReportAppAccount() {
 
 function RiskReportAppCore({
   variant,
+  embedBriefing = false,
   cfmmcScope,
   momScope,
 }: {
   variant: RiskReportVariant
+  embedBriefing?: boolean
   cfmmcScope: CfmmcAccountScope
   momScope: MomSubAccountScope
 }) {
@@ -7368,6 +7370,7 @@ function RiskReportAppCore({
   }
 
   const [activeTab, setActiveTab] = useState<TabKey>(() => {
+    if (embedBriefing) return "briefing"
     if (typeof window === "undefined") return "overview"
     const tab = new URLSearchParams(window.location.search).get("tab")
     if (tab && baseSubNavItems.some((item) => item.key === tab)) return tab as TabKey
@@ -8998,7 +9001,7 @@ function RiskReportAppCore({
   }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, buildStandaloneBriefingHtml, briefingFileName])
 
   return (
-    <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
+    <div className={embedBriefing ? "flex h-dvh overflow-hidden" : "flex -mx-6 -mb-6"} style={embedBriefing ? undefined : { height: "calc(100% + 1.5rem)" }}>
       {/* Secondary sidebar — hidden on briefing tab to maximise screen width */}
       <aside className={cn("w-44 shrink-0 border-r bg-card flex flex-col", activeTab === "briefing" && "hidden")}>
         <div className="p-4 border-b space-y-2">
@@ -9044,7 +9047,7 @@ function RiskReportAppCore({
       </aside>
 
       {/* Content area */}
-      <div id={activeTab === "position" ? "pos-main-scroll" : undefined} className="flex-1 overflow-y-auto px-6 pb-6">
+      <div id={activeTab === "position" ? "pos-main-scroll" : undefined} className={embedBriefing ? "min-w-0 flex-1 overflow-y-auto" : "flex-1 overflow-y-auto px-6 pb-6"}>
         {activeTab === "position" && (
           <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
             <span className="text-xs text-muted-foreground">快捷导航：</span>
@@ -9193,10 +9196,10 @@ function RiskReportAppCore({
           <div className="flex flex-col min-h-full"
                style={{ background: "linear-gradient(135deg,#1a1f2e 0%,#0f1520 60%,#1a1228 100%)" }}>
             {/* Top bar: tab nav + download buttons */}
-            <div className="sticky top-0 z-20 flex items-center justify-between gap-2 px-3 py-2 no-print"
+            <div className={cn("sticky top-0 z-20 flex items-center gap-2 px-3 py-2 no-print", embedBriefing ? "justify-end" : "justify-between")}
                  style={{ background: "rgba(10,15,30,0.92)", backdropFilter: "blur(6px)", borderBottom: "1px solid rgba(200,168,75,0.25)" }}>
-              {/* Tab switcher */}
-              <div className="flex items-center gap-1 overflow-x-auto">
+              {/* Tab switcher. Hidden in the phone embed so this screen stays on the briefing. */}
+              <div className={cn("flex items-center gap-1 overflow-x-auto", embedBriefing && "hidden")}>
                 {subNavItems.map((item) => {
                   const Icon = item.icon
                   return (

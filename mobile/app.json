@@ -3,7 +3,7 @@
     "name": "母基金投研",
     "slug": "fof-research",
     "scheme": "fofresearch",
-    "version": "1.0.0",
+    "version": "1.6.15",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -14,17 +14,21 @@
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
           "NSAllowsLocalNetworking": true
-        }
+        },
+        "NSMicrophoneUsageDescription": "Used for AI assistant voice input.",
+        "NSSpeechRecognitionUsageDescription": "Used for AI assistant voice input."
       }
     },
     "android": {
       "package": "com.marketwebsite.fofresearch",
-      "versionCode": 1,
+      "versionCode": 22,
       "usesCleartextTraffic": true,
       "permissions": [
         "INTERNET",
         "VIBRATE",
-        "REQUEST_INSTALL_PACKAGES"
+        "REQUEST_INSTALL_PACKAGES",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -32,7 +36,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -40,7 +45,18 @@
     "plugins": [
       "expo-router",
       "expo-status-bar",
-      "./plugins/withAndroidReleaseSigning"
+      "./plugins/withAndroidReleaseSigning",
+      "./plugins/withAndroidCleartext",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone for AI voice input.",
+          "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to use speech recognition for AI voice input.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false

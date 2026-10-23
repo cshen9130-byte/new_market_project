@@ -1,13 +1,18 @@
-import { Alert, Platform } from "react-native"
+import { Alert, NativeModules, Platform } from "react-native"
+import AsyncStorage from "@react-native-async-storage/async-storage"
 import Constants from "expo-constants"
 import * as Application from "expo-application"
 import { File, Paths } from "expo-file-system"
-import { startActivityAsync, ActivityAction } from "expo-intent-launcher"
 import { resolveServerUrl } from "@/format"
 
+const AUTO_UPDATE_KEY = "fof.autoUpdate"
+
+const installer = NativeModules.ApkInstaller as {
+  prepare: () => Promise<boolean>
+  install: (uri: string) => Promise<void>
+}
+
 const ANDROID_PACKAGE = "com.marketwebsite.fofresearch"
-const FLAG_GRANT_READ_URI_PERMISSION = 1
-const FLAG_ACTIVITY_NEW_TASK = 0x10000000
 
 type AppRelease = {
   versionCode: number
@@ -43,6 +48,14 @@ let downloading = false
 
 export function isAndroidInstall(): boolean {
   return Platform.OS === "android" && Application.applicationId === ANDROID_PACKAGE
+}
+
+export async function readAutoUpdate(): Promise<boolean> {
+  return (await AsyncStorage.getItem(AUTO_UPDATE_KEY)) === "1"
+}
+
+export async function writeAutoUpdate(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(AUTO_UPDATE_KEY, enabled ? "1" : "0")
 }
 
 export function currentVersionLabel(): string {
@@ -81,22 +94,12 @@ async function fetchRelease(): Promise<AppRelease> {
   }
 }
 
-async function openInstaller(file: File): Promise<void> {
-  await startActivityAsync("android.intent.action.VIEW", {
-    data: file.contentUri,
-    type: "application/vnd.android.package-archive",
-    flags: FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK,
-  })
-}
-
-async function openInstallPermissionSettings(): Promise<void> {
-  const packageId = Application.applicationId || ANDROID_PACKAGE
-  await startActivityAsync(ActivityAction.MANAGE_UNKNOWN_APP_SOURCES, {
-    data: `package:${packageId}`,
-  })
-}
-
 async function downloadAndInstall(release: AppRelease, onProgress?: (label: string) => void): Promise<void> {
+  const allowed = await installer.prepare()
+  if (!allowed) {
+    onProgress?.("请允许安装未知应用，然后再次点击检查更新")
+    return
+  }
   onProgress?.("正在下载 0%")
   const destination = new File(Paths.cache, "fof-research.apk")
   const file = await File.downloadFileAsync(release.url, destination, {
@@ -106,15 +109,9 @@ async function downloadAndInstall(release: AppRelease, onProgress?: (label: stri
       else onProgress?.("正在下载")
     },
   })
-  onProgress?.("正在打开安装程序")
-  try {
-    await openInstaller(file)
-  } catch {
-    notice("无法打开安装", "请允许本应用安装未知应用，然后回到这里再检查一次更新。", [
-      { text: "取消", style: "cancel" },
-      { text: "去设置", onPress: () => void openInstallPermissionSettings() },
-    ])
-  }
+  onProgress?.("正在安装")
+  await installer.install(file.uri)
+  onProgress?.("请在系统安装确认中点安装")
 }
 
 export async function promptAppUpdate(interactive: boolean, onProgress?: (label: string) => void): Promise<void> {
@@ -125,7 +122,10 @@ export async function promptAppUpdate(interactive: boolean, onProgress?: (label:
     return
   }
   if (!interactive && prompted) return
-  if (!interactive) prompted = true
+  if (!interactive) {
+    prompted = true
+    if (!(await readAutoUpdate())) return
+  }
   if (busy || downloading) return
   busy = true
   try {
@@ -134,28 +134,16 @@ export async function promptAppUpdate(interactive: boolean, onProgress?: (label:
       if (interactive) notice("已是最新版本", `当前版本 ${currentVersionLabel()}`)
       return
     }
-    const message = [`${release.versionName}（${release.versionCode}）`, release.notes || "服务器上有更新的安装包。"]
-      .filter(Boolean)
-      .join("\n")
-    notice("发现新版本", message, [
-      { text: "稍后", style: "cancel" },
-      {
-        text: "下载并安装",
-        onPress: () => {
-          if (downloading) return
-          downloading = true
-          void downloadAndInstall(release, onProgress)
-            .catch((error: unknown) => {
-              const detail = error instanceof Error ? error.message : "下载失败"
-              onProgress?.("")
-              notice("更新失败", detail)
-            })
-            .finally(() => {
-              downloading = false
-            })
-        },
-      },
-    ])
+    downloading = true
+    try {
+      await downloadAndInstall(release, onProgress)
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : "下载失败"
+      onProgress?.("")
+      notice("更新失败", detail)
+    } finally {
+      downloading = false
+    }
   } catch (error: unknown) {
     if (interactive) {
       const detail = error instanceof Error ? error.message : "检查更新失败"

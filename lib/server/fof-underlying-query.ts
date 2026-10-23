@@ -575,21 +575,24 @@ export async function resolveFundBeianHao(identifier: string): Promise<string | 
   const id = canonicalizeFundRouteId(raw)
   if (!id) return null
 
-  const aliased = resolveFofValuationCodeAlias(id)
-  if (aliased) return aliased
-
   const directRows = await query<{ code: string }>(
     `SELECT beian_hao AS code FROM private_fund_info WHERE beian_hao = $1
      UNION ALL
      SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = $1
      UNION ALL
      SELECT register_number FROM type6_ops_team_full WHERE register_number = $1
+     UNION ALL
+     SELECT fund_no FROM amac_private_funds WHERE UPPER(BTRIM(fund_no)) = UPPER($1)
      LIMIT 1`,
     [id],
   )
   if (directRows[0]?.code) {
     return directRows[0].code
   }
+
+  // 估值表 / custodian ticker → canonical 备案号, after a real product code misses.
+  const aliased = resolveFofValuationCodeAlias(id)
+  if (aliased && aliased.toUpperCase() !== id.toUpperCase()) return aliased
 
   const managedOverride = resolveManagedProductBeian(id)
   if (managedOverride) return managedOverride
@@ -658,8 +661,13 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
   const id = canonicalizeFundRouteId(decoded)
   if (!id) return null
 
+  // A registered code (SATL22 木莲安澜1号) is that product. Alias only when
+  // the code itself has no info/bfl row (custodian ticker → canonical 备案号).
+  const own = await lookupFundInfoByBeianCode(id)
+  if (own) return own
+
   const aliased = resolveFofValuationCodeAlias(id)
-  if (aliased && aliased !== id) {
+  if (aliased && aliased.toUpperCase() !== id.toUpperCase()) {
     const fromAlias = await lookupFundInfoFallback(aliased)
     if (fromAlias) return fromAlias
   }

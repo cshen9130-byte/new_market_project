@@ -5,6 +5,8 @@ import { getCustomFundByCode, tryGetCustomFundPrivateDetail } from "@/lib/server
 import { ensureCustomFundNavFresh } from "@/lib/server/custom-fund-nav-daily-refresh"
 import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-nav-query"
+import { clipRowsOnOrAfterInception } from "@/lib/server/nav-anomaly"
+import { lookupProductInceptionDate } from "@/lib/server/team-data-query-pg"
 import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { canonicalizeFundRouteId, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
@@ -45,6 +47,73 @@ export const dynamic = "force-dynamic"
 
 // Minimum elapsed days of NAV history before annualizing "since inception" return/Sharpe.
 const MIN_DAYS_FOR_ANNUALIZATION = 30
+
+function performanceFromSeries(nav_series: LegacyNavRow[]) {
+  const first = nav_series[0]
+  const latest = nav_series[nav_series.length - 1]
+  const latestReinvestedNav = latest ? parseFloat(latest.cumulative_nav) : null
+  const firstReinvestedNav = first ? parseFloat(first.cumulative_nav) : null
+  const ret_since_inception =
+    latestReinvestedNav !== null && firstReinvestedNav !== null && firstReinvestedNav > 0
+      ? latestReinvestedNav / firstReinvestedNav - 1
+      : null
+  const inceptionDate = first ? new Date(first.price_date) : null
+  const latestDate = latest ? new Date(latest.price_date) : null
+  const days =
+    inceptionDate && latestDate
+      ? (latestDate.getTime() - inceptionDate.getTime()) / 86_400_000
+      : null
+  const ann_ret =
+    ret_since_inception !== null && days && days >= MIN_DAYS_FOR_ANNUALIZATION
+      ? Math.pow(1 + ret_since_inception, 365 / days) - 1
+      : null
+  const yearPrefix = latest ? latest.price_date.slice(0, 4) + "-01-01" : null
+  const ytdBase = yearPrefix
+    ? [...nav_series].reverse().find((r) => r.price_date < yearPrefix)
+      ?? nav_series.find((r) => r.price_date >= yearPrefix)
+      ?? null
+    : null
+  const ytd_ret =
+    ytdBase && latest
+      ? parseFloat(latest.cumulative_nav) / parseFloat(ytdBase.cumulative_nav) - 1
+      : null
+
+  let peak = -Infinity
+  let maxDrawdown = 0
+  const dailyReturns: number[] = []
+  for (let i = 0; i < nav_series.length; i++) {
+    const v = parseFloat(nav_series[i].cumulative_nav)
+    if (v > peak) peak = v
+    const dd = peak > 0 ? (peak - v) / peak : 0
+    if (dd > maxDrawdown) maxDrawdown = dd
+    if (i > 0) {
+      const prev = parseFloat(nav_series[i - 1].cumulative_nav)
+      if (prev > 0) dailyReturns.push(v / prev - 1)
+    }
+  }
+
+  let sharpe_since_inception: string | null = null
+  if (ann_ret !== null && dailyReturns.length > 1 && days && days >= MIN_DAYS_FOR_ANNUALIZATION) {
+    const totalYears = days / 365
+    const recordsPerYear = dailyReturns.length / totalYears
+    const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
+    const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length
+    const annVol = Math.sqrt(variance) * Math.sqrt(recordsPerYear)
+    if (annVol > 0) sharpe_since_inception = (ann_ret / annVol).toFixed(2)
+  }
+
+  return {
+    latest_nav: latest?.nav ?? null,
+    latest_nav_date: latest?.price_date ?? null,
+    latest_cum_nav: latest?.cum_nav_withdrawal ?? null,
+    latest_cum_nav_reinvested: latest?.cumulative_nav ?? null,
+    ret_since_inception: ret_since_inception !== null ? (ret_since_inception * 100).toFixed(2) : null,
+    ann_ret: ann_ret !== null ? (ann_ret * 100).toFixed(2) : null,
+    ytd_ret: ytd_ret !== null ? (ytd_ret * 100).toFixed(2) : null,
+    max_drawdown: maxDrawdown > 0 ? (maxDrawdown * 100).toFixed(2) : null,
+    sharpe_since_inception,
+  }
+}
 
 type InfoRow = {
   beian_hao: string
@@ -136,6 +205,23 @@ function sanitizeDetailBody<T extends {
       }
     : body.metrics
   return { ...body, nav_series: series, metrics }
+}
+
+function alignDetailSeriesToInception<T extends {
+  nav_series?: LegacyNavRow[]
+  info?: { inception_date?: string | null } | null
+  metrics?: Partial<ReturnType<typeof performanceFromSeries>>
+}>(body: T): T {
+  const series = Array.isArray(body.nav_series) ? body.nav_series : []
+  const clipped = sanitizeDetailNavSeries(
+    clipRowsOnOrAfterInception(series, body.info?.inception_date),
+  )
+  if (clipped.length === series.length) return { ...body, nav_series: clipped }
+  return {
+    ...body,
+    nav_series: clipped,
+    metrics: { ...body.metrics, ...performanceFromSeries(clipped) },
+  }
 }
 
 /** 团队策略 is highest priority; fall back to 平台策略 only when team data is empty. */
@@ -313,7 +399,7 @@ export async function GET(
       const cached = await lookupListCacheFundHeader(rawId)
       if (cached) {
         const payload = buildDetailHeaderFromListCache(rawId, cached)
-        const [teamBenchmark, navCache, manualOperationDate] = await Promise.all([
+        const [teamBenchmark, navCache, manualOperationDate, inceptionDate] = await Promise.all([
           loadTeamBenchmark(
             [payload.info.beian_hao, rawId].filter(Boolean),
           ).catch(() => null),
@@ -322,11 +408,15 @@ export async function GET(
             payload.info.product_name,
           ).catch(() => null),
           loadManualOperationDate([payload.info.beian_hao, rawId]),
+          lookupProductInceptionDate(payload.info.beian_hao || rawId).catch(() => null),
         ])
-        const headerSeries =
+        const headerSeries = sanitizeDetailNavSeries(clipRowsOnOrAfterInception(
           navCache && isDetailNavCacheFresh(navCache, cached)
             ? navCache.nav_series
-            : payload.nav_series
+            : payload.nav_series,
+          inceptionDate,
+        ))
+        const headerPerf = headerSeries.length >= 2 ? performanceFromSeries(headerSeries) : null
         return NextResponse.json({
           ...payload,
           nav_series: headerSeries,
@@ -334,7 +424,9 @@ export async function GET(
             ...payload.info,
             team_benchmark: teamBenchmark,
             operation_date: manualOperationDate,
+            inception_date: inceptionDate,
           },
+          metrics: headerPerf ? { ...payload.metrics, ...headerPerf } : payload.metrics,
         })
       }
       return NextResponse.json({ error: "Header cache miss", partial: true }, { status: 404 })
@@ -394,7 +486,7 @@ export async function GET(
         const cachedAmacName = await lookupAmacFundName(rawId).catch(() => null)
         const officialName = preferAmacOfficialName(cachedInfo.product_name, cachedAmacName)
         const storedName = (cachedInfo.former_product_name ?? cachedInfo.product_name ?? "").trim()
-        return NextResponse.json({
+        const response = {
           ...body,
           info: {
             ...cachedInfo,
@@ -404,9 +496,10 @@ export async function GET(
             team_benchmark: teamBenchmark ?? cachedInfo.team_benchmark ?? null,
             operation_date: manualOperationDate,
           },
-        })
+        }
+        return NextResponse.json(alignDetailSeriesToInception(response))
       }
-      return NextResponse.json(body)
+      return NextResponse.json(alignDetailSeriesToInception(body))
     }
 
     const infoRows = await query<InfoRow>(
@@ -672,7 +765,14 @@ export async function GET(
       loadTeamBenchmark([routeBeianHao, beian_hao, rawId].filter(Boolean)).catch(() => null),
       loadManualOperationDate([routeBeianHao, beian_hao, rawId, ...trackKeys]),
     ])
-    const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
+    const inceptionForSeries =
+      info.inception_date?.slice(0, 10)
+      ?? bflTrack?.inception_date?.slice(0, 10)
+      ?? amacResolved?.establish_date?.slice(0, 10)
+      ?? null
+    const nav_series = sanitizeDetailNavSeries(
+      clipRowsOnOrAfterInception(navSeriesRaw, inceptionForSeries),
+    )
     // Parent history shown on an empty A/B/C page must not be written back as
     // that share's own cache or list tip (TE102B has no series of its own).
     const borrowedFamilyNav = seriesBorrowedFromShareClassFamily(navSeriesRaw)
@@ -685,7 +785,7 @@ export async function GET(
           beian_hao: routeBeianHao,
           product_name: productName,
           short_name: shortName || null,
-          nav_series: navSeriesRaw,
+          nav_series,
         })
       } else {
         // Detail cache hit — still write-through list tips. FOF/managed
@@ -693,7 +793,7 @@ export async function GET(
         void syncListTipsFromDetailSeries({
           beian_hao: routeBeianHao,
           product_name: productName,
-          nav_series: navSeriesRaw,
+          nav_series,
         })
       }
     }
@@ -726,70 +826,11 @@ export async function GET(
 
     const scale = bflTrack?.scale?.trim() || amacResolved?.mgmt_scale || null
     const manager_names = bflTrack?.manager_names?.trim() || null
-    const trackInception =
-      bflTrack?.inception_date?.slice(0, 10) ??
-      amacResolved?.establish_date ??
-      null
     const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
     const nav_data_source: "team" | "platform" =
       managedOverride || hasSeed || teamManualPoints.length > 0 ? "team" : "platform"
 
-    const first = nav_series[0]
-    const latest = nav_series[nav_series.length - 1]
-
-    const latestReinvestedNav = latest ? parseFloat(latest.cumulative_nav) : null
-    const firstReinvestedNav = first ? parseFloat(first.cumulative_nav) : null
-    const ret_since_inception =
-      latestReinvestedNav !== null && firstReinvestedNav !== null && firstReinvestedNav > 0
-        ? latestReinvestedNav / firstReinvestedNav - 1
-        : null
-
-    const inceptionDate = first ? new Date(first.price_date) : null
-    const latestDate = latest ? new Date(latest.price_date) : null
-    const days =
-      inceptionDate && latestDate
-        ? (latestDate.getTime() - inceptionDate.getTime()) / 86_400_000
-        : null
-
-    const ann_ret =
-      ret_since_inception !== null && days && days >= MIN_DAYS_FOR_ANNUALIZATION
-        ? Math.pow(1 + ret_since_inception, 365 / days) - 1
-        : null
-
-    const yearPrefix = latest ? latest.price_date.slice(0, 4) + "-01-01" : null
-    const ytdBase = yearPrefix
-      ? [...nav_series].reverse().find((r) => r.price_date < yearPrefix)
-        ?? nav_series.find((r) => r.price_date >= yearPrefix)
-        ?? null
-      : null
-    const ytd_ret =
-      ytdBase && latest
-        ? parseFloat(latest.cumulative_nav) / parseFloat(ytdBase.cumulative_nav) - 1
-        : null
-
-    let peak = -Infinity
-    let maxDrawdown = 0
-    const dailyReturns: number[] = []
-    for (let i = 0; i < nav_series.length; i++) {
-      const v = parseFloat(nav_series[i].cumulative_nav)
-      if (v > peak) peak = v
-      const dd = peak > 0 ? (peak - v) / peak : 0
-      if (dd > maxDrawdown) maxDrawdown = dd
-      if (i > 0) {
-        const prev = parseFloat(nav_series[i - 1].cumulative_nav)
-        if (prev > 0) dailyReturns.push(v / prev - 1)
-      }
-    }
-
-    let sharpe_since_inception: string | null = null
-    if (ann_ret !== null && dailyReturns.length > 1 && days && days >= MIN_DAYS_FOR_ANNUALIZATION) {
-      const totalYears = days / 365
-      const recordsPerYear = dailyReturns.length / totalYears
-      const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
-      const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length
-      const annVol = Math.sqrt(variance) * Math.sqrt(recordsPerYear)
-      if (annVol > 0) sharpe_since_inception = (ann_ret / annVol).toFixed(2)
-    }
+    const perf = performanceFromSeries(nav_series)
 
     const body = {
       partial: false,
@@ -804,11 +845,7 @@ export async function GET(
         strategy_l3,
         scale,
         manager_names,
-        inception_date:
-          info.inception_date?.slice(0, 10) ??
-          trackInception ??
-          amacResolved?.establish_date ??
-          null,
+        inception_date: inceptionForSeries,
         operation_date: manualOperationDate,
         team_benchmark: teamBenchmark,
         manager:
@@ -827,17 +864,7 @@ export async function GET(
       },
       nav_series,
       nav_data_source,
-      metrics: {
-        latest_nav: latest?.nav ?? null,
-        latest_nav_date: latest?.price_date ?? null,
-        latest_cum_nav: latest?.cum_nav_withdrawal ?? null,
-        latest_cum_nav_reinvested: latest?.cumulative_nav ?? null,
-        ret_since_inception: ret_since_inception !== null ? (ret_since_inception * 100).toFixed(2) : null,
-        ann_ret: ann_ret !== null ? (ann_ret * 100).toFixed(2) : null,
-        ytd_ret: ytd_ret !== null ? (ytd_ret * 100).toFixed(2) : null,
-        max_drawdown: maxDrawdown > 0 ? (maxDrawdown * 100).toFixed(2) : null,
-        sharpe_since_inception,
-      },
+      metrics: perf,
     }
 
     const safeBody = sanitizeDetailBody(body)

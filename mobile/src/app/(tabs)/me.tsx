@@ -1,14 +1,29 @@
-import { useState } from "react"
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native"
+import { useEffect, useState } from "react"
+import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
 import { useAuth } from "@/auth"
-import { currentVersionLabel, promptAppUpdate } from "@/app-update"
+import { currentVersionLabel, promptAppUpdate, readAutoUpdate, writeAutoUpdate } from "@/app-update"
 import { colors } from "@/theme"
 
 export default function MeScreen() {
   const { user, logout } = useAuth()
-  const [checking, setChecking] = useState(false)
+  const [working, setWorking] = useState(false)
   const [updateStatus, setUpdateStatus] = useState("")
+  const [autoUpdate, setAutoUpdate] = useState(false)
+
+  useEffect(() => {
+    void readAutoUpdate().then(setAutoUpdate)
+  }, [])
+
+  function onAutoUpdate(enabled: boolean) {
+    setAutoUpdate(enabled)
+    void writeAutoUpdate(enabled).then(() => {
+      if (!enabled) return
+      setWorking(true)
+      setUpdateStatus("")
+      void promptAppUpdate(true, setUpdateStatus).finally(() => setWorking(false))
+    })
+  }
 
   function onLogout() {
     Alert.alert("退出登录", "退出后需要重新登录才能查看跟踪产品。", [
@@ -34,16 +49,28 @@ export default function MeScreen() {
       <Text style={styles.note}>跟踪、搜索、净值和每日风控可在手机上查看。估值表和数据导入仍在电脑上使用。</Text>
       <Pressable
         style={styles.update}
-        disabled={checking}
+        disabled={working}
         onPress={() => {
-          setChecking(true)
+          setWorking(true)
           setUpdateStatus("")
-          void promptAppUpdate(true, setUpdateStatus).finally(() => setChecking(false))
+          void promptAppUpdate(true, setUpdateStatus).finally(() => setWorking(false))
         }}
       >
-        <Text style={styles.updateTitle}>{checking ? "正在检查…" : "检查更新"}</Text>
+        <Text style={styles.updateTitle}>{working && !updateStatus ? "正在检查…" : "检查更新"}</Text>
         <Text style={styles.updateMeta}>{updateStatus || `当前版本 ${currentVersionLabel()}`}</Text>
       </Pressable>
+      <View style={styles.auto}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.updateTitle}>自动检查更新</Text>
+          <Text style={styles.updateMeta}>打开应用后，有新版本就自动下载并打开安装</Text>
+        </View>
+        <Switch
+          value={autoUpdate}
+          onValueChange={onAutoUpdate}
+          trackColor={{ false: colors.line, true: colors.gold }}
+          thumbColor={colors.card}
+        />
+      </View>
       <Pressable style={styles.logout} onPress={onLogout}>
         <Text style={styles.logoutText}>退出登录</Text>
       </Pressable>
@@ -65,6 +92,14 @@ const styles = StyleSheet.create({
   update: { marginTop: 22, paddingVertical: 16, borderTopWidth: 1, borderTopColor: colors.line },
   updateTitle: { color: colors.text, fontWeight: "700", fontSize: 16 },
   updateMeta: { color: colors.muted, fontSize: 13, marginTop: 4 },
+  auto: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+    paddingVertical: 16,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+  },
   logout: { marginTop: 8, paddingVertical: 14, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.line },
   logoutText: { color: colors.danger, fontWeight: "700", letterSpacing: 1 },
 })

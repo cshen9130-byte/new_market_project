@@ -51,10 +51,11 @@ function AuthGate() {
     <>
       <StatusBar style={onHome ? "light" : "dark"} />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
-      <Stack.Screen name="index" />
-      <Stack.Screen name="login" />
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="fund/[code]" />
+        <Stack.Screen name="index" />
+        <Stack.Screen name="login" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="fund/[code]" />
+        <Stack.Screen name="ai-chat" options={{ animation: "slide_from_bottom" }} />
       </Stack>
     </>
   )

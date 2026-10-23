@@ -323,12 +323,23 @@ export async function purgeValuationFilenameIdentities(): Promise<number> {
 }
 
 /**
- * 诚奇睿盈对冲2号A类 was tracked twice: 备案号 QH717A and custodian ticker AAEO3A.
- * Drop the ticker when QH717A is already present; otherwise rewrite it in place.
+ * Custodian tickers that were tracked beside the real 备案号.
+ * Drop the ticker when the 备案号 is already present; otherwise rewrite it in place.
+ * AAEO3A is 诚奇睿盈对冲2号A类 (QH717A). ABFJ9A is 藤创藤达CTA1号A类 (BJN16A).
  */
+const CUSTODIAN_TRACKING_ALIASES = ["AAEO3A", "ABFJ9A"] as const
+
 export async function collapseAliasedTrackingIdentities(): Promise<number> {
   let changed = 0
-  const alias = "AAEO3A"
+  for (const alias of CUSTODIAN_TRACKING_ALIASES) {
+    changed += await collapseOneCustodianTrackingAlias(alias)
+  }
+  return changed
+}
+
+async function collapseOneCustodianTrackingAlias(alias: string): Promise<number> {
+  if (!/^[A-Z0-9]+$/.test(alias)) return 0
+  let changed = 0
   const memberships: { table: string; col: string; scope?: string }[] = [
     { table: "tracking_pool", col: "register_number" },
     { table: "selected_pool", col: "register_number" },
@@ -374,6 +385,9 @@ export async function collapseAliasedTrackingIdentities(): Promise<number> {
     }
 
     const canonCode = sqlCanonicalProductCode("a.underlying_product_code")
+    const symbolCanon = sqlCanonicalProductCode("a.symbol")
+    const detailCanon = sqlCanonicalProductCode("a.beian_hao")
+    const latestCanon = sqlCanonicalProductCode("a.underlying_product_code")
     const cacheDeletes = [
       `DELETE FROM ops_private_fund_detail_nav_cache a
         WHERE UPPER(BTRIM(COALESCE(a.beian_hao, ''))) = '${alias}'
@@ -389,6 +403,32 @@ export async function collapseAliasedTrackingIdentities(): Promise<number> {
               AND b.underlying_name = a.underlying_name
               AND b.subject_code IS NOT DISTINCT FROM a.subject_code
               AND UPPER(BTRIM(b.underlying_product_code)) = ${canonCode}
+              AND b.ctid <> a.ctid
+          )`,
+      `UPDATE fof_underlying_detail a
+        SET beian_hao = ${detailCanon}
+        WHERE UPPER(BTRIM(a.beian_hao)) = '${alias}'
+          AND ${detailCanon} <> UPPER(BTRIM(a.beian_hao))`,
+      `UPDATE ops_email_valuation_holdings a
+        SET symbol = ${symbolCanon}
+        WHERE UPPER(BTRIM(a.symbol)) = '${alias}'
+          AND ${symbolCanon} <> UPPER(BTRIM(a.symbol))`,
+      `UPDATE ops_email_valuation_fund_holdings_latest a
+        SET symbol = ${symbolCanon}
+        WHERE UPPER(BTRIM(a.symbol)) = '${alias}'
+          AND ${symbolCanon} <> UPPER(BTRIM(a.symbol))`,
+      `UPDATE ops_email_valuation_fof_underlying_latest a
+        SET underlying_product_code = ${latestCanon}
+        WHERE UPPER(BTRIM(a.underlying_product_code)) = '${alias}'
+          AND ${latestCanon} <> UPPER(BTRIM(a.underlying_product_code))
+          AND NOT EXISTS (
+            SELECT 1 FROM ops_email_valuation_fof_underlying_latest b
+            WHERE b.fof_product_code IS NOT DISTINCT FROM a.fof_product_code
+              AND b.fof_fund_name IS NOT DISTINCT FROM a.fof_fund_name
+              AND b.valuation_date IS NOT DISTINCT FROM a.valuation_date
+              AND b.underlying_name IS NOT DISTINCT FROM a.underlying_name
+              AND b.subject_code IS NOT DISTINCT FROM a.subject_code
+              AND UPPER(BTRIM(b.underlying_product_code)) = ${latestCanon}
               AND b.ctid <> a.ctid
           )`,
     ]

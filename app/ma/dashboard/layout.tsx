@@ -22,6 +22,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const isAllWeatherPage = pathname.startsWith("/ma/dashboard/all-weather")
   const isNhciIndexPage = pathname.startsWith("/ma/dashboard/nhci-index")
   const isPrivateFundsSection = pathname.startsWith("/ma/dashboard/private-funds")
+  const isBriefingEmbed = pathname.startsWith("/ma/dashboard/mom-analysis/briefing-embed")
   const [user, setUser] = useState<User | null>(null)
   const [chatVisible, setChatVisible] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -89,6 +90,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <CompareAccountLinkSync user={user} />
     </Suspense>
   )
+
+  if (isBriefingEmbed) {
+    return (
+      <div className="h-dvh overflow-hidden bg-[#0f1520]">
+        {visitTracker}
+        {children}
+      </div>
+    )
+  }
 
   if (isSettingsPage || isAllWeatherPage || isNhciIndexPage) {
     return (

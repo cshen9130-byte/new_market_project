@@ -1,10 +1,18 @@
+import { useState } from "react"
 import { useRouter } from "expo-router"
 import { Pressable, StyleSheet, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
+import SearchScreen from "@/app/(tabs)/search"
+import TrackingScreen from "@/app/(tabs)/tracking"
 import { colors } from "@/theme"
+import { useStepBack } from "@/use-step-back"
 
 export default function PrivateFundsScreen() {
   const router = useRouter()
+  const [page, setPage] = useState<"menu" | "tracking" | "search">("menu")
+  useStepBack(page !== "menu", () => setPage("menu"))
+  if (page === "tracking") return <TrackingScreen onBack={() => setPage("menu")} />
+  if (page === "search") return <SearchScreen onBack={() => setPage("menu")} />
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.top}>
@@ -16,14 +24,14 @@ export default function PrivateFundsScreen() {
         <Text style={styles.eyebrow}>模块</Text>
         <Text style={styles.title}>私募基金</Text>
         <Text style={styles.lead}>跟踪池里的产品和全库搜索都在这里。</Text>
-        <Pressable style={styles.row} onPress={() => router.push("/(tabs)/tracking")}>
+        <Pressable style={styles.row} onPress={() => setPage("tracking")}>
           <View style={styles.rowMain}>
             <Text style={styles.name}>跟踪产品</Text>
             <Text style={styles.detail}>按池查看净值、近一月和当日涨跌</Text>
           </View>
           <Text style={styles.go}>进入</Text>
         </Pressable>
-        <Pressable style={styles.row} onPress={() => router.push("/(tabs)/search")}>
+        <Pressable style={styles.row} onPress={() => setPage("search")}>
           <View style={styles.rowMain}>
             <Text style={styles.name}>搜索基金</Text>
             <Text style={styles.detail}>按名称、备案号或管理人打开净值</Text>

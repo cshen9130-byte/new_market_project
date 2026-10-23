@@ -1,0 +1,15 @@
+{"event": "saved", "n": 1, "code": "SGU760", "file": "天鹭量化一号净值20261022.xlsx"}
+{"event": "saved", "n": 2, "code": "SB933C", "file": "九鞅禾瑞十号C类净值20261022.xlsx"}
+{"event": "saved", "n": 3, "code": "SATL22", "file": "木莲安澜1号净值20261022.xlsx"}
+{"event": "saved", "n": 4, "code": "L1596C", "file": "九鞅禾禧五号C类净值20261022.xlsx"}
+{"event": "saved", "n": 5, "code": "SXF368", "file": "博孚利锡泰稳强FOF1号净值20261022.xlsx"}
+{"event": "saved", "n": 6, "code": "SCR903", "file": "华澄二号净值20261022.xlsx"}
+{"event": "saved", "n": 7, "code": "SLL138", "file": "魔寓雁塔2号净值20261022.xlsx"}
+{"event": "saved", "n": 8, "code": "ABG50B", "file": "金麦穗金秋稳健一号B类净值20261022.xlsx"}
+{"event": "saved", "n": 9, "code": "SXN204", "file": "兰盈量化CTA1号净值20261022.xlsx"}
+{"event": "fail", "code": "ZG868A", "error": "TimeoutError: Locator.wait_for: Timeout 45000ms exceeded.\nCall log:\n  - waiting for get_by_text(\"平台净值\", exact=True).first to be visible\n"}
+{"event": "saved", "n": 11, "code": "SADG72", "file": "凯瑞稳健二号净值20261022.xlsx"}
+{"event": "saved", "n": 12, "code": "SAYP39", "file": "量智数益CTA一号净值20261022.xlsx"}
+{"event": "saved", "n": 13, "code": "AUG23A", "file": "钇远永意1号A类净值20261022.xlsx"}
+{"event": "saved", "n": 14, "code": "SAKD71", "file": "宽价种子1号净值20261022.xlsx"}
+{"event": "finished", "saved": 13, "failed": ["ZG868A"], "reason": "complete"}

@@ -88,15 +88,32 @@ function fmtDate(d: string | Date | null | undefined): string | null {
 /**
  * Look up a fund in the nightly/intraday list caches (FOF底层 → 在管产品 → 跟踪产品).
  * Identity match is by 备案号 first, then exact product / short name.
+ *
+ * A 估值表 alias (SATL22 → ATL22A) is used only when the routed code is not
+ * itself a cached product. 木莲安澜1号 (SATL22) and 木莲安澜1号A类 (ATL22A)
+ * are different funds; a custodian ticker with no row of its own (AAEO3A → QH717A)
+ * still paints the canonical 备案号.
  */
 export async function lookupListCacheFundHeader(
   rawId: string,
 ): Promise<ListCacheFundHeader | null> {
   const routed = canonicalizeFundRouteId(rawId.trim())
   if (!routed) return null
-  // Custodian tickers (AAEO3A → QH717A) must paint the 备案号 header, not a second product.
-  const id = resolveFofValuationCodeAlias(routed) ?? routed
 
+  const exact = await lookupListCacheFundHeaderById(routed)
+  if ((exact?.beian_hao ?? "").trim().toUpperCase() === routed.toUpperCase()) return exact
+
+  const aliased = resolveFofValuationCodeAlias(routed)
+  if (aliased && aliased.toUpperCase() !== routed.toUpperCase()) {
+    const viaAlias = await lookupListCacheFundHeaderById(aliased)
+    if (viaAlias) return viaAlias
+  }
+  return exact
+}
+
+async function lookupListCacheFundHeaderById(
+  id: string,
+): Promise<ListCacheFundHeader | null> {
   // Tracking cache stores full L1–L3 for both sources; FOF/managed only keep L1.
   const selectCols = (source: ListCacheFundHeader["source"]) => `
     beian_hao,
@@ -213,7 +230,22 @@ export async function resolveRouteFundIdFast(rawId: string): Promise<string> {
   if (!id) return trimmed
 
   const aliased = resolveFofValuationCodeAlias(id)
-  if (aliased) return aliased
+  if (aliased && aliased.toUpperCase() !== id.toUpperCase()) {
+    // Keep a registered parent (SATL22 木莲安澜1号). Alias only custodian /
+    // 估值表 codes that are not a product in their own right (AAEO3A → QH717A).
+    const own = await query<{ code: string }>(
+      `SELECT beian_hao AS code FROM private_fund_info WHERE beian_hao = $1
+       UNION ALL
+       SELECT beian_hao FROM private_fund_info_bfl WHERE beian_hao = $1
+       UNION ALL
+       SELECT register_number FROM type6_ops_team_full WHERE register_number = $1
+       UNION ALL
+       SELECT fund_no FROM amac_private_funds WHERE UPPER(BTRIM(fund_no)) = UPPER($1)
+       LIMIT 1`,
+      [id],
+    ).catch(() => [] as { code: string }[])
+    if (!own[0]?.code) return aliased
+  }
 
   const override =
     lookupManagedProductOverride(id)

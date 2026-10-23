@@ -578,3 +578,159 @@ export function streamKnowledge(
   if (!baseUrl) return Promise.reject(new Error("暂时连不上服务器"))
   return streamPost(`${baseUrl}/api/knowledge-base/chat`, body, onEvent, signal)
 }
+
+export type AssistantChatMessage = { role: "user" | "assistant"; content: string }
+
+export type AssistantChatNavigate = {
+  href: string
+  title?: string
+  trail?: string
+}
+
+export type AssistantChatHandlers = {
+  onDelta?: (delta: string) => void
+  onNavigate?: (nav: AssistantChatNavigate) => void
+}
+
+/** Stream the web MA assistant (POST /ma/api/chat). Parses OpenAI-style SSE + navigate events. */
+export function streamAssistantChat(
+  body: {
+    messages: AssistantChatMessage[]
+    pageContext?: string
+  },
+  handlers: AssistantChatHandlers,
+  signal: AbortSignal,
+): Promise<void> {
+  const { baseUrl, user } = getSession()
+  if (!baseUrl) return Promise.reject(new Error("\u6682\u65f6\u8fde\u4e0d\u4e0a\u670d\u52a1\u5668"))
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", `${baseUrl}/ma/api/chat`)
+    xhr.setRequestHeader("Accept", "text/event-stream, application/json")
+    xhr.setRequestHeader("Content-Type", "application/json")
+    if (user?.id) xhr.setRequestHeader("x-market-user-id", user.id)
+    xhr.timeout = 0
+    let buffer = ""
+    let offset = 0
+    const pump = () => {
+      const next = xhr.responseText.slice(offset)
+      offset = xhr.responseText.length
+      if (!next) return
+      buffer += next
+      const lines = buffer.split("\n")
+      buffer = lines.pop() ?? ""
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith("data:")) continue
+        const payload = trimmed.slice(5).trim()
+        if (!payload || payload === "[DONE]") continue
+        try {
+          const parsed = JSON.parse(payload) as {
+            choices?: Array<{ delta?: { content?: string } }>
+            navigate?: AssistantChatNavigate
+            error?: string
+          }
+          if (parsed.navigate?.href) handlers.onNavigate?.(parsed.navigate)
+          const delta = parsed.choices?.[0]?.delta?.content
+          if (delta) handlers.onDelta?.(delta)
+          if (typeof parsed.error === "string" && parsed.error) {
+            reject(new Error(parsed.error))
+          }
+        } catch {
+          // ignore partial JSON
+        }
+      }
+    }
+    const fail = (status: number) => {
+      let message = status ? `\u8bf7\u6c42\u5931\u8d25\uff08${status}\uff09` : "\u65e0\u6cd5\u8fde\u63a5\u670d\u52a1\u5668\uff0c\u8bf7\u786e\u8ba4\u5730\u5740\u548c\u7f51\u7edc"
+      try {
+        const parsed = JSON.parse(xhr.responseText) as { error?: unknown }
+        if (typeof parsed.error === "string" && parsed.error && !parsed.error.startsWith("<")) message = parsed.error
+      } catch {
+        // body was not JSON
+      }
+      reject(new Error(message))
+    }
+    xhr.onprogress = pump
+    xhr.onload = () => {
+      pump()
+      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      else fail(xhr.status)
+    }
+    xhr.onerror = () => fail(0)
+    xhr.ontimeout = () => reject(new Error("\u8fde\u63a5\u8d85\u65f6\uff0c\u8bf7\u518d\u8bd5\u4e00\u6b21"))
+    xhr.onabort = () => {
+      const error = new Error("Aborted")
+      error.name = "AbortError"
+      reject(error)
+    }
+    signal.addEventListener("abort", () => xhr.abort(), { once: true })
+    xhr.send(JSON.stringify(body))
+  })
+}
+﻿
+export type ResearchExportFormat = "doc" | "pdf"
+
+export async function exportResearchReport(input: {
+  markdown: string
+  title?: string
+  subjectLine?: string
+  managerName?: string
+  format: ResearchExportFormat
+}): Promise<{ filename: string; mime: string; bytes: Uint8Array }> {
+  const { baseUrl, user } = getSession()
+  if (!baseUrl) throw new Error("暂时连不上服务器")
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 120000)
+  try {
+    const headers = new Headers({
+      Accept: "application/msword, application/pdf, application/json",
+      "Content-Type": "application/json",
+    })
+    if (user?.id) headers.set("x-market-user-id", user.id)
+    const response = await fetch(`${baseUrl}/ma/api/ai-researcher/export-report`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(input),
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      let message = `导出失败（${response.status}）`
+      try {
+        const parsed = (await response.json()) as { error?: string }
+        if (parsed.error) message = parsed.error
+      } catch {
+        // ignore
+      }
+      throw new Error(message)
+    }
+    const mime = response.headers.get("Content-Type") || (input.format === "pdf" ? "application/pdf" : "application/msword")
+    let filename =
+      input.format === "pdf"
+        ? `${(input.managerName || "管理人").trim() || "管理人"}-管理人画像.pdf`
+        : `${(input.managerName || "管理人").trim() || "管理人"}-管理人画像.doc`
+    const disposition = response.headers.get("Content-Disposition") || ""
+    const star = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+    const plain = disposition.match(/filename="?([^";]+)"?/i)
+    if (star?.[1]) {
+      try {
+        filename = decodeURIComponent(star[1])
+      } catch {
+        // keep default
+      }
+    } else if (plain?.[1]) {
+      filename = plain[1]
+    }
+    const buffer = await response.arrayBuffer()
+    return { filename, mime: mime.split(";")[0].trim(), bytes: new Uint8Array(buffer) }
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("导出超时，请再试一次")
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+

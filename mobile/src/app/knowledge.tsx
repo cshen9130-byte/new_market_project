@@ -1,5 +1,6 @@
 import { useRouter } from "expo-router"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { useStepBack } from "@/use-step-back"
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -91,6 +92,9 @@ export default function KnowledgeScreen() {
     }
     router.back()
   }
+
+  const nested = asking || reading != null || trail.length > 0
+  useStepBack(nested, goBack)
 
   function openFolder(next: KbFolder) {
     setTrail((current) => [...current, next])

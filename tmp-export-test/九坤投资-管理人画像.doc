@@ -1,0 +1,99 @@
+﻿<html xmlns:o='urn:schemas-microsoft-com:office:office'
+      xmlns:w='urn:schemas-microsoft-com:office:word'
+      xmlns='http://www.w3.org/TR/REC-html40'>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <meta charset="utf-8">
+        <title>九坤投资管理人画像</title>
+        <!--[if gte mso 9]><xml>
+          <w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument>
+        </xml><![endif]-->
+        <style>
+      @page { size: A4; margin: 2.5cm 2.8cm 2.5cm 2.8cm; }
+      body {
+        font-family: "微软雅黑", "Microsoft YaHei", "宋体", SimSun, sans-serif;
+        font-size: 11pt; color: #1a1a2e; margin: 0; line-height: 1.75;
+      }
+      .cover-title {
+        text-align: center; font-size: 22pt; font-weight: bold;
+        color: #1F3864; margin: 30pt 0 6pt; letter-spacing: 1pt;
+      }
+      .cover-sub {
+        text-align: center; font-size: 12pt; color: #2E74B5;
+        margin-bottom: 4pt; font-weight: normal;
+      }
+      .cover-meta {
+        text-align: center; font-size: 10pt; color: #888;
+        margin-bottom: 30pt; border-bottom: 2pt solid #2E74B5; padding-bottom: 12pt;
+      }
+      h1 {
+        font-size: 16pt; font-weight: bold; color: #1F3864;
+        margin: 20pt 0 6pt; text-align: center;
+        border-bottom: 2pt solid #2E74B5; padding-bottom: 6pt; display: none;
+      }
+      h2 {
+        font-size: 13pt; font-weight: bold; color: #ffffff;
+        background-color: #2E74B5; padding: 5pt 10pt;
+        margin: 18pt 0 8pt; border-left: 5pt solid #1F3864;
+      }
+      h3 {
+        font-size: 11.5pt; font-weight: bold; color: #2E74B5;
+        margin: 12pt 0 5pt; border-left: 3pt solid #BDD7EE; padding-left: 7pt;
+      }
+      h4 { font-size: 11pt; font-weight: bold; color: #1F3864; margin: 8pt 0 4pt; }
+      p { margin: 5pt 0; text-align: justify; }
+      table { border-collapse: collapse; width: 100%; margin: 10pt 0; font-size: 10pt; }
+      thead tr { background-color: #2E74B5; color: #ffffff; }
+      th {
+        padding: 6pt 8pt; font-weight: bold; text-align: left; color: #ffffff;
+        border: 1pt solid #1F3864; font-size: 10pt;
+      }
+      td { padding: 5pt 8pt; border: 1pt solid #BDD7EE; vertical-align: top; }
+      tr.even-row td { background-color: #EBF3FB; }
+      blockquote {
+        border-left: 4pt solid #2E74B5; background: #F4F9FD;
+        padding: 8pt 12pt; margin: 8pt 0; color: #333;
+        font-size: 10.5pt; font-style: normal;
+      }
+      hr { border: none; border-top: 1pt solid #BDD7EE; margin: 14pt 0; }
+      ul { margin: 4pt 0 6pt 0; padding-left: 18pt; }
+      ol { margin: 4pt 0 6pt 0; padding-left: 18pt; }
+      li { margin-bottom: 4pt; }
+      strong { font-weight: bold; color: #1F3864; }
+      code {
+        font-family: Consolas, monospace; background: #f0f0f0;
+        padding: 1pt 4pt; font-size: 9.5pt; border-radius: 2pt;
+      }
+      .footer {
+        margin-top: 30pt; border-top: 1pt solid #BDD7EE;
+        padding-top: 8pt; text-align: center; color: #999; font-size: 9pt;
+      }
+      .disclaimer {
+        background: #FFF8E1; border-left: 4pt solid #FFC107;
+        padding: 8pt 12pt; margin: 12pt 0; font-size: 10pt; color: #555;
+      }
+    </style>
+      </head>
+      <body>
+        <p class="cover-title">九坤投资管理人画像</p>
+        <p class="cover-sub">九坤投资</p>
+        <p class="cover-meta">编制日期：2026年10月23日 &nbsp;|&nbsp; AI 研究员自动生成 &nbsp;|&nbsp; 仅供内部参考</p>
+        <h1>九坤投资管理人画像</h1>
+<h2>一、公司概况</h2>
+<p>九坤投资是国内头部量化私募管理人，成立于2012年。</p>
+<h2>二、核心团队</h2>
+<ul>
+<li>王琛：创始人、投资总监</li>
+<li>袁宇：联合创始人</li>
+</ul>
+<table><thead><tr><th>指标</th><th>数值</th></tr></thead><tbody>
+<tr><td>管理规模</td><td>约380亿</td></tr>
+<tr class="even-row"><td>备案号</td><td>P1003313</td></tr>
+</tbody></table>
+<blockquote>本段为测试摘要。</blockquote>
+        <div class="disclaimer">
+          <strong>免责声明：</strong>本报告由 AI 研究员系统依据结构化数据库与知识库文档自动生成，未经人工审核。所有存疑数据均已标注，投资决策请以经审计的净值报告、托管行确认函及管理人正式披露文件为最终依据，本报告不构成投资建议。
+        </div>
+        <div class="footer">编制机构：私募基金策略研究部 &nbsp;·&nbsp; AI 研究员系统 &nbsp;·&nbsp; 2026年10月23日</div>
+      </body>
+    </html>

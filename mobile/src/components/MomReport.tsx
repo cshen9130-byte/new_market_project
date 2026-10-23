@@ -110,9 +110,9 @@ export function MomReport({ source, title }: { source: MomSource; title: string 
             <Pressable style={styles.briefing} onPress={() => router.push("/mom/briefing")}>
               <View style={{ flex: 1, gap: 4 }}>
                 <Text style={styles.briefingName}>MOM 简报</Text>
-                <Text style={styles.meta}>打开和电脑版相同的简报，可下载 PDF、图片或 HTML。</Text>
+                <Text style={styles.meta}>在手机里查看和电脑版相同的简报。</Text>
               </View>
-              <Text style={styles.briefingGo}>打开</Text>
+              <Text style={styles.briefingGo}>查看</Text>
             </Pressable>
           ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
