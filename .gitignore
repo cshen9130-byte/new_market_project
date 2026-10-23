@@ -144,3 +144,8 @@ scripts/ma/fof99_advancedlist_latest_nav.csv
 data/hw_monitor_*
 data/list_perf_*
 yinhe_strategy/report_output/
+
+# Large CJK font for PDF export (downloaded at runtime if missing)
+assets/fonts/*.ttf
+assets/fonts/*.otf
+
