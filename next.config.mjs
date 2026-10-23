@@ -28,7 +28,9 @@ const nextConfig = {
     "pino",
     "thread-stream",
     "node-unrar-js",
-    "adm-zip",`n    "subset-font",`n    "harfbuzzjs",
+    "adm-zip",
+    "subset-font",
+    "harfbuzzjs",
   ],
   images: {
     unoptimized: true,
@@ -65,3 +67,4 @@ const nextConfig = {
 }
 
 export default nextConfig
+
