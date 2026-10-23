@@ -1,4 +1,4 @@
-import { analyzeNavAnomaly, chartNavLevel, hasNavAnomaly, navAnomalyHit } from "../lib/server/nav-anomaly.ts"
+import { analyzeNavAnomaly, anomalyScanStart, chartNavLevel, clipRowsOnOrAfterInception, hasNavAnomaly, navAnomalyHit } from "../lib/server/nav-anomaly.ts"
 import { diagnoseNavAnomaly } from "../lib/server/nav-anomaly-cause.ts"
 
 function assert(cond, message) {
@@ -248,5 +248,36 @@ assert(cumulativeOnly.cause === "rules", "累计 return that differs from the ch
 
 const emptyDiag = diagnoseNavAnomaly(charted, [], rewriteHit)
 assert(emptyDiag.cause === "unknown", "no raw feeds stays unknown")
+
+const snd172Prefix = [
+  { date: "2020-11-06", value: 2.170941 },
+  { date: "2020-11-13", value: 2.16499 },
+  { date: "2020-11-20", value: 1 },
+  { date: "2020-11-27", value: 0.9998 },
+]
+assert(analyzeNavAnomaly(snd172Prefix).reason === "jump", "SND172 splice is a jump before the inception window")
+assert(anomalyScanStart(snd172Prefix, null, "2020-11-17") === "2020-11-17", "scan starts at 成立日")
+assert(navAnomalyHit(snd172Prefix, anomalyScanStart(snd172Prefix, null, "2020-11-17")) == null, "成立日 window drops the pre-inception splice")
+assert(anomalyScanStart(snd172Prefix, "2020-12-01", "2020-11-17") === "2020-12-01", "运作日 after 成立日 still wins")
+const laterJump = [
+  ...snd172Prefix,
+  { date: "2020-12-04", value: 1.5 },
+  { date: "2020-12-11", value: 1.51 },
+]
+assert(
+  navAnomalyHit(laterJump, anomalyScanStart(laterJump, null, "2020-11-17"))?.date === "2020-12-04",
+  "a jump after 成立日 is still flagged",
+)
+const clipped = clipRowsOnOrAfterInception([
+  { price_date: "2018-08-24" },
+  { price_date: "2020-11-13" },
+  { price_date: "2020-11-20" },
+  { price_date: "2020-11-27" },
+], "2020-11-17")
+assert(clipped.length === 2 && clipped[0].price_date === "2020-11-20", "chart drops the prefix and keeps the fund's own prints")
+assert(
+  clipRowsOnOrAfterInception([{ price_date: "2020-01-01" }], "2030-01-01")[0].price_date === "2020-01-01",
+  "a 成立日 that would blank the series is ignored",
+)
 
 console.log("nav-anomaly ok")

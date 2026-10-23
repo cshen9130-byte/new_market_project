@@ -17,7 +17,8 @@ import {
   sqlPostInvestmentVirtualNavExpr,
 } from "@/lib/server/email-nav-query"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
-import { buildTieredBeianCode, type ShareClassLetter } from "@/lib/server/share-class-product"
+import { buildTieredBeianCode, shareClassFamilyBeianCodes, type ShareClassLetter } from "@/lib/server/share-class-product"
+import { gapDatesFilledFromShareClassFamily, shareClassDonorExplainsGap } from "@/lib/server/share-class-nav-fill"
 import { expandBeiansWithShareClassFamily } from "@/lib/server/list-cache-nav-batch"
 import {
   canonicalizeEmailProductCode,
@@ -44,6 +45,7 @@ import { analyzeInteriorNavGap, hasInteriorNavGap } from "@/lib/server/nav-inter
 import { diagnoseInteriorNavGap, type NavGapDiagnosis } from "@/lib/server/nav-gap-cause"
 import { NAV_FREQUENCY_OPTIONS, classifyNavFrequency, type NavFrequencyFilter, type NavFrequencyLabel } from "@/lib/server/nav-frequency"
 import {
+  anomalyScanStart,
   chartNavLevel,
   navAnomalyHit,
   type NavAnomalyHit,
@@ -117,6 +119,8 @@ export type TeamDataNavGapFilter = "all" | "interior_2w" | "no_interior_2w"
 export type TeamDataNavAnomalyFilter = "all" | "jump" | "no_jump"
 /** Why a flagged step exists. Only applied together with 有异常. */
 export type TeamDataNavAnomalyCauseFilter = "all" | "source" | "rules"
+/** Why an interior hole exists. Only applied together with 中间缺失超1/10. */
+export type TeamDataNavGapCauseFilter = "all" | "source" | "rules"
 export type TeamDataProductSourceFilter = "all" | "manual" | "email" | "fof99"
 /** Filter by whether a manual or 产品要素 运作日期 is set. */
 export type TeamDataOperationDateFilter = "all" | "present" | "absent"
@@ -163,6 +167,8 @@ export type TeamDataListParams = {
   navLagFilter?: TeamDataNavLagFilter
   /** Filter by missing-NAV share inside the series (平台数据 / detail cache). */
   navGapFilter?: TeamDataNavGapFilter
+  /** Among 中间缺失超1/10 rows, keep 源数据缺失 or 计算或修正导致. */
+  navGapCauseFilter?: TeamDataNavGapCauseFilter
   /** Filter by a large jump or reverting spike on the charted NAV series. */
   navAnomalyFilter?: TeamDataNavAnomalyFilter
   /** Among 有异常 rows, keep 源数据异常 or 计算或修正导致. */
@@ -2826,12 +2832,116 @@ async function overlayFundPageLatestNavDate(rows: ResolvedFund[]): Promise<Resol
   })
 }
 
+type ShareClassUnitPoint = { price_date: string; nav: number }
+
+/** Family codes for A/B/C rows whose 缺失 chart can inherit a parent or sibling. */
+function shareClassGapFamilyCodes(beians: Array<string | null | undefined>): string[] {
+  const out = new Set<string>()
+  for (const raw of beians) {
+    const code = (raw ?? "").trim().toUpperCase()
+    if (!/[ABC]$/u.test(code)) continue
+    for (const family of shareClassFamilyBeianCodes(code)) out.add(family)
+  }
+  return [...out]
+}
+
+/**
+ * Unit NAV for a share-class family. 火富牛 wins on the same day; Type6 / 分组净值
+ * next; email last. Parent email fills A/B/C May–Sep holes (BCA56A←SBCA56);
+ * Type6 fills VM590A←SVM590. Equality on beian_hao keeps the index.
+ */
+async function loadShareClassFamilyUnitPoints(codes: string[]): Promise<Map<string, ShareClassUnitPoint[]>> {
+  const out = new Map<string, ShareClassUnitPoint[]>()
+  if (codes.length === 0) return out
+  const rows = await query<{ code: string; price_date: string; nav: string; rank: number }>(
+    `SELECT UPPER(BTRIM(code)) AS code, price_date::text AS price_date, nav, rank
+     FROM (
+       SELECT beian_hao AS code, price_date, nav::text AS nav, 0 AS rank
+       FROM private_fund_nav
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION ALL
+       SELECT beian_hao, price_date, nav::text, 1
+       FROM private_fund_nav_group_type6
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION ALL
+       SELECT beian_hao, price_date, nav::text, 1
+       FROM private_fund_nav_group
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION ALL
+       SELECT product_code, nav_date, nav::text, 2
+       FROM ops_email_nav_records
+       WHERE product_code = ANY($1::text[]) AND nav_date <= CURRENT_DATE AND nav IS NOT NULL
+     ) t`,
+    [codes],
+  ).catch(() => [] as Array<{ code: string; price_date: string; nav: string; rank: number }>)
+  const byCode = new Map<string, Map<string, { nav: number; rank: number }>>()
+  for (const row of rows) {
+    const code = row.code?.trim().toUpperCase()
+    const date = isoDay(row.price_date)
+    const nav = Number(row.nav)
+    if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !(nav > 0)) continue
+    let byDate = byCode.get(code)
+    if (!byDate) {
+      byDate = new Map()
+      byCode.set(code, byDate)
+    }
+    const prev = byDate.get(date)
+    if (!prev || row.rank < prev.rank) byDate.set(date, { nav, rank: row.rank })
+  }
+  for (const [code, byDate] of byCode) {
+    out.set(code, [...byDate.entries()].map(([price_date, item]) => ({ price_date, nav: item.nav })))
+  }
+  return out
+}
+
+function unitPointsForCodes(
+  pointsByCode: Map<string, ShareClassUnitPoint[]>,
+  codes: string[],
+): ShareClassUnitPoint[] {
+  const byDate = new Map<string, number>()
+  for (const code of codes) {
+    for (const point of pointsByCode.get(code.trim().toUpperCase()) ?? []) {
+      if (!byDate.has(point.price_date)) byDate.set(point.price_date, point.nav)
+    }
+  }
+  return [...byDate.entries()].map(([price_date, nav]) => ({ price_date, nav }))
+}
+
+/**
+ * Add parent / A·B dates to a share-class 缺失 chart when overlapping 单位净值
+ * agrees. Same rule as the product page, so a class file that only has the
+ * inception stub does not stay 缺失 while the parent is daily.
+ */
+function gapDatesWithShareClassFamily(
+  beian: string | null | undefined,
+  dates: Iterable<string>,
+  pointsByCode: Map<string, ShareClassUnitPoint[]>,
+): string[] {
+  const self = (beian ?? "").trim().toUpperCase()
+  if (!/[ABC]$/u.test(self) || pointsByCode.size === 0) return [...dates]
+  const ownCodes = new Set(beianCodeAliases(self).map((code) => code.toUpperCase()))
+  const ownPoints = unitPointsForCodes(pointsByCode, [...ownCodes])
+  const donors = shareClassFamilyBeianCodes(self)
+    .filter((code) => !ownCodes.has(code))
+    .map((code) => ({ code, points: pointsByCode.get(code) ?? [] }))
+    .filter((donor) => donor.points.length > 0)
+  return gapDatesFilledFromShareClassFamily(self, dates, ownPoints, donors)
+}
+
 async function loadFallbackNavDatesByCode(codes: string[]): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>()
   if (codes.length === 0) return out
   const rows = await query<{ code: string; price_date: string }>(
     `SELECT DISTINCT UPPER(BTRIM(code)) AS code, price_date::text AS price_date
      FROM (
+       -- 火富牛. Equality on beian_hao keeps the index (this table is large).
+       -- The product page unions this with 分组净值, one date each. Without it,
+       -- a month-end 分组净值 tail is scored as 缺失 while weekly 火富牛 dates
+       -- already cover those stretches.
+       SELECT beian_hao AS code, price_date
+       FROM private_fund_nav
+       WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
+       UNION
        SELECT beian_hao AS code, price_date
        FROM private_fund_nav_group_type6
        WHERE beian_hao = ANY($1::text[]) AND price_date <= CURRENT_DATE AND nav IS NOT NULL
@@ -2970,9 +3080,10 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
 
   const codes = [...new Set(rows.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
-  const [cacheRows, operationDateByCode] = await Promise.all([
+  const [cacheRows, operationDateByCode, familyPoints] = await Promise.all([
     loadDetailNavGapCacheRows(codes, names),
     loadOperationDateByCode(codes),
+    loadShareClassFamilyUnitPoints(shareClassGapFamilyCodes(rows.map((r) => r.beian_hao))),
   ])
 
   const cachedIds = new Set<string>()
@@ -2986,20 +3097,23 @@ async function loadProductIdsWithInteriorNavGap(rows: ResolvedFund[]): Promise<S
       : cacheRows.filter((c) => detailCacheFitsRow(c, row))
     if (matches.length === 0) continue
     cachedIds.add(row.id)
-    if (matches.some((c) => hasInteriorNavGap(c.dates, fromDate))) gapped.add(row.id)
+    const preferred = preferredGapChartDates(row.beian_hao, matches, familyPoints, fromDate)
+    if (preferred && hasInteriorNavGap(preferred, fromDate)) gapped.add(row.id)
   }
 
   const uncached = rows.filter((r) => !cachedIds.has(r.id))
   if (uncached.length > 0) {
-    const fallbackCodes = [...new Set(uncached.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
+    const fallbackCodes = [...new Set(uncached.flatMap((r) => anomalyRawCodes(r.beian_hao ?? "")).filter(Boolean))]
     const datesByCode = await loadFallbackNavDatesByCode(fallbackCodes)
     for (const row of uncached) {
       const fromDate = operationDateForRow(row, operationDateByCode)
       const dates = new Set<string>()
-      for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+      for (const alias of anomalyRawCodes(row.beian_hao ?? "")) {
         for (const d of datesByCode.get(alias.toUpperCase()) ?? []) dates.add(d)
       }
-      if (hasInteriorNavGap([...dates], fromDate)) gapped.add(row.id)
+      if (hasInteriorNavGap(gapDatesWithShareClassFamily(row.beian_hao, dates, familyPoints), fromDate)) {
+        gapped.add(row.id)
+      }
     }
   }
 
@@ -3330,14 +3444,20 @@ async function loadProductNavAnomalies(rows: ResolvedFund[]): Promise<Map<string
 
   const codes = [...new Set(rows.flatMap((r) => beianCodeAliases(r.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(rows.map((r) => r.product_name.trim()).filter(Boolean))]
-  const [cacheRows, operationDateByCode] = await Promise.all([
+  const inceptionCodes = [...new Set(rows.flatMap((r) => inceptionLookupCodes(r.beian_hao ?? "")).filter(Boolean))]
+  const [cacheRows, operationDateByCode, inceptionSources] = await Promise.all([
     loadDetailNavAnomalyCacheRows(codes, names),
     loadOperationDateByCode(codes),
+    loadInceptionDateSources(inceptionCodes),
   ])
+  const scanStart = (row: { beian_hao: string | null }, points: NavAnomalyPoint[]) => anomalyScanStart(
+    points,
+    operationDateForRow(row, operationDateByCode),
+    productInceptionDate(row.beian_hao, inceptionSources),
+  )
 
   const cachedIds = new Set<string>()
   for (const row of rows) {
-    const fromDate = operationDateForRow(row, operationDateByCode)
     const codeMatches = cacheRows.filter((c) => detailCacheFitsRowByCode(c, row))
     const matches = codeMatches.length > 0
       ? codeMatches
@@ -3346,7 +3466,7 @@ async function loadProductNavAnomalies(rows: ResolvedFund[]): Promise<Map<string
     cachedIds.add(row.id)
     let best: { hit: NavAnomalyHit; count: number } | null = null
     for (const match of matches) {
-      best = preferNavAnomalyHit(best, scoredNavAnomaly(match.points, fromDate))
+      best = preferNavAnomalyHit(best, scoredNavAnomaly(match.points, scanStart(row, match.points)))
     }
     if (best) hits.set(row.id, best.hit)
   }
@@ -3357,9 +3477,8 @@ async function loadProductNavAnomalies(rows: ResolvedFund[]): Promise<Map<string
     const levelRows = await loadFallbackNavLevels(fallbackCodes)
     const levelIndex = indexFallbackNavLevels(levelRows)
     for (const row of uncached) {
-      const fromDate = operationDateForRow(row, operationDateByCode)
       const series = longestFallbackChartSeries(levelIndex, beianCodeAliases(row.beian_hao ?? ""))
-      const scored = scoredNavAnomaly(series, fromDate)
+      const scored = scoredNavAnomaly(series, scanStart(row, series))
       if (scored) hits.set(row.id, scored.hit)
     }
   }
@@ -3499,7 +3618,8 @@ function chartSeriesForAnomalyRow(
   row: { beian_hao: string | null; product_name: string },
   cacheRows: DetailNavAnomalyCacheRow[],
   levelIndex: Map<string, FallbackNavLevelRow[]>,
-  fromDate: string | null,
+  operationDate: string | null,
+  inceptionDate: string | null,
   hit: NavAnomalyHit,
 ): NavAnomalyPoint[] {
   const identity = row as ResolvedFund
@@ -3510,7 +3630,10 @@ function chartSeriesForAnomalyRow(
   let best: NavAnomalyPoint[] | null = null
   let bestCount = -1
   for (const match of matches) {
-    const scored = scoredNavAnomaly(match.points, fromDate)
+    const scored = scoredNavAnomaly(
+      match.points,
+      anomalyScanStart(match.points, operationDate, inceptionDate),
+    )
     if (!scored || scored.hit.date !== hit.date || scored.hit.reason !== hit.reason) continue
     if (scored.count > bestCount) {
       bestCount = scored.count
@@ -3605,10 +3728,12 @@ async function attachNavAnomalyDiagnosisInner<T extends NavAnomalyDiagnosisRow>(
   const codes = [...new Set(targets.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
   const rawCodes = [...new Set(targets.flatMap((row) => anomalyRawCodes(row.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(targets.map((row) => row.product_name.trim()).filter(Boolean))]
-  const [cacheRows, rawRows, operationDateByCode] = await Promise.all([
+  const inceptionCodes = [...new Set(targets.flatMap((row) => inceptionLookupCodes(row.beian_hao ?? "")).filter(Boolean))]
+  const [cacheRows, rawRows, operationDateByCode, inceptionSources] = await Promise.all([
     loadDetailNavAnomalyCacheRows(codes, names),
     loadRawNavSourceLevels(rawCodes),
     loadOperationDateByCode(codes),
+    loadInceptionDateSources(inceptionCodes),
   ])
   const rawIndex = indexRawNavSources(rawRows)
   const fallbackRows: FallbackNavLevelRow[] = rawRows
@@ -3639,13 +3764,13 @@ async function attachNavAnomalyDiagnosisInner<T extends NavAnomalyDiagnosisRow>(
   for (const row of targets) {
     const hit = row.nav_anomaly
     if (!hit) continue
-    const fromDate = operationDateForRow(row, operationDateByCode)
+    const operationDate = operationDateForRow(row, operationDateByCode)
+    const inceptionDate = productInceptionDate(row.beian_hao, inceptionSources)
     const aliases = anomalyRawCodes(row.beian_hao ?? "")
-    const chart = windowChartPoints(
-      chartSeriesForAnomalyRow(row, cacheRows, levelIndex, fromDate, hit),
-      fromDate,
-    )
-    diagnosisById.set(row.id, diagnoseNavAnomaly(chart, sourceSeriesForAliases(rawIndex, aliases), hit))
+    const chart = chartSeriesForAnomalyRow(row, cacheRows, levelIndex, operationDate, inceptionDate, hit)
+    const fromDate = anomalyScanStart(chart, operationDate, inceptionDate)
+    const windowed = windowChartPoints(chart, fromDate)
+    diagnosisById.set(row.id, diagnoseNavAnomaly(windowed, sourceSeriesForAliases(rawIndex, aliases), hit))
   }
 
   return rows.map((row) => {
@@ -3672,33 +3797,96 @@ function gapSourceDatesForAliases(
   }))
 }
 
+/**
+ * Feeds that can explain a hole. A parent or sibling whose 单位净值 failed the
+ * overlap test is a different series, so its dates are not "未采用".
+ */
+function gapCauseSourceCodes(
+  beian: string | null,
+  familyPoints: Map<string, ShareClassUnitPoint[]>,
+): string[] {
+  const aliases = anomalyRawCodes(beian ?? "")
+  const self = (beian ?? "").trim().toUpperCase()
+  if (!/[ABC]$/u.test(self)) return aliases
+  const ownCodes = new Set(beianCodeAliases(self).map((code) => code.toUpperCase()))
+  const ownPoints = unitPointsForCodes(familyPoints, [...ownCodes])
+  const kept = new Set<string>()
+  for (const code of aliases) {
+    const upper = code.toUpperCase()
+    if (ownCodes.has(upper)) {
+      kept.add(upper)
+      continue
+    }
+    const donor = familyPoints.get(upper) ?? []
+    if (!shareClassDonorExplainsGap(self, upper, ownPoints, donor)) continue
+    kept.add(upper)
+  }
+  return [...kept]
+}
+
+/**
+ * Pick the chart the product page would keep among alias-matched caches.
+ * C2026 is an alias of SBDU00; preferring the *most* gapped cache painted a
+ * stale March hole after SBDU00 itself was already daily. Prefer the primary
+ * 备案号, then an ungapped / lower-ratio / longer series.
+ */
+function preferredGapChartDates(
+  beian: string | null | undefined,
+  matches: DetailNavGapCacheRow[],
+  familyPoints: Map<string, ShareClassUnitPoint[]>,
+  fromDate: string | null,
+): string[] | null {
+  if (matches.length === 0) return null
+  const primary = (beian ?? "").trim().toUpperCase()
+  const remapped = primary
+    ? (remapManagedProductBeianCode(primary) ?? primary).trim().toUpperCase()
+    : ""
+  let bestDates: string[] | null = null
+  let best: { gapped: boolean; ratio: number; primary: boolean; n: number } | null = null
+  for (const match of matches) {
+    const dates = gapDatesWithShareClassFamily(beian, match.dates, familyPoints)
+    const stats = analyzeInteriorNavGap(dates, fromDate)
+    const code = match.code.trim().toUpperCase()
+    const key = match.cache_key.trim().toUpperCase()
+    const isPrimary = !!primary && (
+      code === primary || key === primary || (!!remapped && (code === remapped || key === remapped))
+    )
+    const prefer = !best
+      || (isPrimary && !best.primary)
+      || (isPrimary === best.primary && !stats.gapped && best.gapped)
+      || (isPrimary === best.primary && stats.gapped === best.gapped && stats.ratio < best.ratio - 1e-12)
+      || (
+        isPrimary === best.primary
+        && stats.gapped === best.gapped
+        && Math.abs(stats.ratio - best.ratio) <= 1e-12
+        && dates.length > best.n
+      )
+    if (!prefer) continue
+    best = { gapped: stats.gapped, ratio: stats.ratio, primary: isPrimary, n: dates.length }
+    bestDates = dates
+  }
+  return bestDates
+}
+
 function chartDatesForGapRow(
   row: { beian_hao: string | null; product_name: string },
   cacheRows: DetailNavGapCacheRow[],
   datesByCode: Map<string, string[]>,
   fromDate: string | null,
+  familyPoints: Map<string, ShareClassUnitPoint[]>,
 ): string[] {
   const codeMatches = cacheRows.filter((cache) => detailCacheFitsRowByCode(cache, row))
   const matches = codeMatches.length > 0
     ? codeMatches
     : cacheRows.filter((cache) => detailCacheFitsRow(cache, row))
-  let bestDates: string[] | null = null
-  let bestRatio = -1
-  let bestGapped = false
-  for (const match of matches) {
-    const stats = analyzeInteriorNavGap(match.dates, fromDate)
-    const prefer = (stats.gapped && !bestGapped) || (stats.gapped === bestGapped && stats.ratio > bestRatio)
-    if (!prefer) continue
-    bestGapped = stats.gapped
-    bestRatio = stats.ratio
-    bestDates = match.dates
-  }
+  const bestDates = preferredGapChartDates(row.beian_hao, matches, familyPoints, fromDate)
   if (bestDates) return bestDates
   const dates = new Set<string>()
-  for (const alias of beianCodeAliases(row.beian_hao ?? "")) {
+  // Include parent filings so A类/B类/C类 fallback sees parent email / Type6 dates.
+  for (const alias of anomalyRawCodes(row.beian_hao ?? "")) {
     for (const date of datesByCode.get(alias.toUpperCase()) ?? []) dates.add(date)
   }
-  return [...dates]
+  return gapDatesWithShareClassFamily(row.beian_hao, dates, familyPoints)
 }
 
 /**
@@ -3738,18 +3926,20 @@ async function attachNavGapDiagnosisInner<T extends NavGapDiagnosisRow>(
   const codes = [...new Set(targets.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
   const rawCodes = [...new Set(targets.flatMap((row) => anomalyRawCodes(row.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(targets.map((row) => row.product_name.trim()).filter(Boolean))]
-  const [cacheRows, rawRows, operationDateByCode, datesByCode] = await Promise.all([
+  const [cacheRows, rawRows, operationDateByCode, datesByCode, familyPoints] = await Promise.all([
     loadDetailNavGapCacheRows(codes, names),
     loadRawNavSourceLevels(rawCodes),
     loadOperationDateByCode(codes),
-    loadFallbackNavDatesByCode(codes),
+    // Parents too: A类 fallback must see SBCA56 email / SVM590 Type6 dates.
+    loadFallbackNavDatesByCode(rawCodes),
+    loadShareClassFamilyUnitPoints(shareClassGapFamilyCodes(targets.map((row) => row.beian_hao))),
   ])
   const rawIndex = indexRawNavSources(rawRows)
   const diagnosisById = new Map<string, NavGapDiagnosis>()
   for (const row of targets) {
     const fromDate = operationDateForRow(row, operationDateByCode)
-    const chart = chartDatesForGapRow(row, cacheRows, datesByCode, fromDate)
-    const sources = gapSourceDatesForAliases(rawIndex, anomalyRawCodes(row.beian_hao ?? ""))
+    const chart = chartDatesForGapRow(row, cacheRows, datesByCode, fromDate, familyPoints)
+    const sources = gapSourceDatesForAliases(rawIndex, gapCauseSourceCodes(row.beian_hao, familyPoints))
     diagnosisById.set(row.id, diagnoseInteriorNavGap(chart, sources, fromDate))
   }
   return rows.map((row) => {
@@ -3757,6 +3947,23 @@ async function attachNavGapDiagnosisInner<T extends NavGapDiagnosisRow>(
     if (!diagnosis) return row
     return { ...row, nav_gap: diagnosis }
   })
+}
+
+/** Keep 中间缺失超1/10 rows whose diagnosed cause matches the 断档成因 filter. */
+export async function filterByNavGapCause<T extends NavGapDiagnosisRow>(
+  rows: T[],
+  cause: TeamDataNavGapCauseFilter,
+): Promise<{ rows: T[]; diagnosis: Map<string, NavGapDiagnosis> }> {
+  if (cause === "all" || rows.length === 0) return { rows, diagnosis: new Map() }
+  const diagnosed = await attachNavGapDiagnosis(rows) as Array<T & { nav_gap?: NavGapDiagnosis | null }>
+  const diagnosis = new Map<string, NavGapDiagnosis>()
+  for (const row of diagnosed) {
+    if (row.nav_gap) diagnosis.set(row.id, row.nav_gap)
+  }
+  return {
+    rows: rows.filter((row) => diagnosis.get(row.id)?.cause === cause),
+    diagnosis,
+  }
 }
 
 function pickLatestPlatformTip(tips: Array<PlatformNavTip | undefined>): PlatformNavTip | undefined {
@@ -4264,6 +4471,36 @@ export function listedInceptionDate(
 }
 
 /**
+ * 成立日 used by the product page: 私募基金库, then 产品要素, then 协会.
+ * The chart and the anomaly scan both start here, so a prefix dated before
+ * 成立日 cannot flash on the first paint or become a 跳变.
+ */
+export function productInceptionDate(
+  beian: string | null | undefined,
+  sources: InceptionDateSources,
+): string | null {
+  const own = beianCodeAliases(beian ?? "")
+  const parents = parentFilingCodes(beian ?? "").flatMap((code) => beianCodeAliases(code))
+  return firstMappedDate(sources.info, own)
+    ?? firstMappedDate(sources.info, parents)
+    ?? firstMappedDate(sources.track, own)
+    ?? firstMappedDate(sources.track, parents)
+    ?? firstMappedDate(sources.amac, own)
+    ?? firstMappedDate(sources.amac, parents)
+}
+
+export async function lookupProductInceptionDate(
+  beian: string | null | undefined,
+): Promise<string | null> {
+  const code = (beian ?? "").trim()
+  if (!code) return null
+  const codes = inceptionLookupCodes(code)
+  if (codes.length === 0) return null
+  const sources = await loadInceptionDateSources(codes)
+  return productInceptionDate(code, sources)
+}
+
+/**
  * 产品成立日, same order as the product page: 产品要素, then BFL / 私募基金库, then 协会成立日期.
  * Codes include the parent filing so AZV51A can read SAZV51.
  */
@@ -4601,6 +4838,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     elementsFilter = "all",
     navLagFilter = "all",
     navGapFilter = "all",
+    navGapCauseFilter = "all",
     navAnomalyFilter = "all",
     navAnomalyCauseFilter = "all",
     productSourceFilter = "all",
@@ -4649,9 +4887,15 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     resolved = resolved.filter((r) => matchesNavLagFilter(r.team_nav_date, navLagFilter, today))
   }
 
+  let gapDiagnosis = new Map<string, NavGapDiagnosis>()
   if (navGapFilter === "interior_2w" || navGapFilter === "no_interior_2w") {
     const gapped = await loadProductIdsWithInteriorNavGap(resolved)
     resolved = resolved.filter((r) => navGapFilter === "interior_2w" ? gapped.has(r.id) : !gapped.has(r.id))
+  }
+  if (navGapFilter === "interior_2w" && navGapCauseFilter !== "all") {
+    const filtered = await filterByNavGapCause(resolved, navGapCauseFilter)
+    resolved = filtered.rows
+    gapDiagnosis = filtered.diagnosis
   }
 
   if (navFrequencyFilter !== "all") {
@@ -4803,7 +5047,12 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     }
   }
   if (navGapFilter === "interior_2w") {
-    data = await attachNavGapDiagnosis(data)
+    data = navGapCauseFilter === "all"
+      ? await attachNavGapDiagnosis(data)
+      : data.map((row) => ({
+        ...row,
+        nav_gap: gapDiagnosis.get(row.id) ?? null,
+      }))
   }
   if (operationDateFilter === "present") {
     data = data.map((row) => ({

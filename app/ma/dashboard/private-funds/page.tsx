@@ -403,7 +403,7 @@ function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
 // flash very stale data.
 type ListCacheEntry = { data: TrackFundRow[]; total: number; ts?: number }
 const listMemCache = new Map<string, ListCacheEntry>()
-const LIST_CACHE_PREFIX = "tracking_list_cache_v12:"
+const LIST_CACHE_PREFIX = "tracking_list_cache_v13:"
 const LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function readListCache(key: string): ListCacheEntry | null {
@@ -15035,7 +15035,7 @@ function teamDataLinkedInvestmentNote(
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
 const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v18:"
-const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v6:"
+const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v8:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -15173,6 +15173,11 @@ function OperationsTeamDataView({
   )
   const [navGapFilter, setNavGapFilter] = useState<"all" | "interior_2w" | "no_interior_2w">(() =>
     opsListFilter(searchParams, "nav_gap", ["all", "interior_2w", "no_interior_2w"], "all"),
+  )
+  const [navGapCauseFilter, setNavGapCauseFilter] = useState<"all" | "source" | "rules">(() =>
+    opsListFilter(searchParams, "nav_gap", ["interior_2w"], "all") === "interior_2w"
+      ? opsListFilter(searchParams, "nav_gap_cause", ["all", "source", "rules"], "all")
+      : "all",
   )
   const [navAnomalyFilter, setNavAnomalyFilter] = useState<"all" | "jump" | "no_jump">(() =>
     opsListFilter(searchParams, "nav_anomaly", ["all", "jump", "no_jump"], "all"),
@@ -15320,7 +15325,7 @@ function OperationsTeamDataView({
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, navFrequencyFilter, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navGapCauseFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, navFrequencyFilter, keyword, pageSize])
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -15338,6 +15343,9 @@ function OperationsTeamDataView({
     if (elementsFilter !== "all") params.set("elements", elementsFilter)
     if (navLagFilter !== "all") params.set("nav_lag", navLagFilter)
     if (navGapFilter !== "all") params.set("nav_gap", navGapFilter)
+    if (navGapFilter === "interior_2w" && navGapCauseFilter !== "all") {
+      params.set("nav_gap_cause", navGapCauseFilter)
+    }
     if (navAnomalyFilter !== "all") params.set("nav_anomaly", navAnomalyFilter)
     if (navAnomalyFilter === "jump" && navAnomalyCauseFilter !== "all") {
       params.set("nav_anomaly_cause", navAnomalyCauseFilter)
@@ -15415,7 +15423,7 @@ function OperationsTeamDataView({
       cancelled = true
       ac.abort()
     }
-  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, navFrequencyFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix, isPlatform])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, elementsFilter, navLagFilter, navGapFilter, navGapCauseFilter, navAnomalyFilter, navAnomalyCauseFilter, productSourceFilter, operationDateFilter, inceptionNavFilter, inceptionNavGapFilter, navStartValueFilter, productClassFilter, navPresenceFilter, navDateFilter, inPoolFilter, navFrequencyFilter, keyword, sortKey, sortDir, teamDataReloadKey, listApi, cachePrefix, isPlatform])
 
   useEffect(() => {
     let cancelled = false
@@ -16181,7 +16189,11 @@ function OperationsTeamDataView({
                 <span
                   key={key}
                   title={title || undefined}
-                  onClick={() => { setNavGapFilter(key); setPage(1) }}
+                  onClick={() => {
+                    setNavGapFilter(key)
+                    if (key !== "interior_2w") setNavGapCauseFilter("all")
+                    setPage(1)
+                  }}
                   className={[
                     "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                     navGapFilter === key
@@ -16194,6 +16206,32 @@ function OperationsTeamDataView({
               ))}
             </div>
           </div>
+          {navGapFilter === "interior_2w" && (
+            <div className="flex items-center">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">断档成因：</span>
+              <div className="flex items-center gap-1">
+                {([
+                  ["all", "不限", ""],
+                  ["rules", "计算或修正导致", "某个原始源这段有净值，是合并、复权计算或修正规则没有采用"],
+                  ["source", "源数据缺失", "这段日期在原始净值里也没有"],
+                ] as const).map(([key, label, title]) => (
+                  <span
+                    key={key}
+                    title={title || undefined}
+                    onClick={() => { setNavGapCauseFilter(key); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                      navGapCauseFilter === key
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex items-center">
             <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">净值异常：</span>
             <div className="flex items-center gap-1">
@@ -24973,6 +25011,7 @@ function PrivateFundsPageContent() {
       "product_source",
       "nav_lag",
       "nav_gap",
+      "nav_gap_cause",
       "nav_anomaly",
       "nav_anomaly_cause",
       "elements",

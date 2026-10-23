@@ -875,6 +875,10 @@ export function selectEmailNavSeriesRows(
   const sortedDates = [...byDateGroups.keys()].sort()
   const selected: EmailNavRawRow[] = []
   let prevNav: number | null = null
+  // Learned unit/cum from accepted rows. Attachment rows often store 累计 in both
+  // columns (SGM870 2026-08-21); infer unit before the 15% jump skip so the date
+  // is kept and applyEmailUnitNavCorrection is not starved of the row.
+  let latestUnitCumRatio: number | null = null
 
   for (const date of sortedDates) {
     const dayFiltered = filteredByDate.get(date) ?? []
@@ -898,7 +902,7 @@ export function selectEmailNavSeriesRows(
     }
     best = pickEmailNavRowWithContinuity(dayRows, best, beian, prevNav, aClass)
     best = borrowSameUnitParentCumulative(best, dayFiltered, beian, aliases)
-    const recovered = recoverPlausibleEmailUnitNav(
+    let recovered = recoverPlausibleEmailUnitNav(
       parseOptionalNav(best.nav),
       parseOptionalNav(best.cumulative_nav),
       best.subject,
@@ -907,7 +911,7 @@ export function selectEmailNavSeriesRows(
     if (Math.abs(recovered - (parseOptionalNav(best.nav) ?? recovered)) >= 0.000001) {
       best = { ...best, nav: String(+recovered.toFixed(6)) }
     }
-    const bestNav = recovered
+    let bestNav = recovered
     const looksLikeLargeJump =
       !allowLargeNavJumps
       && prevNav != null
@@ -916,31 +920,65 @@ export function selectEmailNavSeriesRows(
       && Math.abs(bestNav / prevNav - 1) > 0.15
       && collectMultiShareClassNavRows(dayRows, beian).length <= 1
     if (looksLikeLargeJump) {
-      // Share-class / wrong-column spikes usually revert toward prevNav on later days.
-      // Real volatile moves (墨雪鑫瑞 2023-11-08 +18%) stay near the new level — accept those,
-      // otherwise skipping forever leaves prevNav stuck and drops the rest of the series.
-      const dateIdx = sortedDates.indexOf(date)
-      const aheadNavs: number[] = []
-      for (let j = dateIdx + 1; j < sortedDates.length && aheadNavs.length < 5; j++) {
-        const aheadRows = byDateGroups.get(sortedDates[j]) ?? []
-        if (aheadRows.length === 0) continue
-        let aheadBest = aheadRows[0]
-        for (let k = 1; k < aheadRows.length; k++) {
-          aheadBest = preferEmailNavRow(aheadBest, aheadRows[k], beian)
+      // Attachment rows often store 累计 in both columns (SGM870 2026-08-21).
+      // Infer unit from the learned ratio before dropping the date as a spike.
+      const unit0 = parseOptionalNav(best.nav)
+      const cum0 = parseOptionalNav(best.cumulative_nav)
+      const skipInfer =
+        isCustodyValuationEmailRow(best, beian)
+        || isPostInvestmentVirtualNavEmail(best.subject)
+        || isParentCodeEmailRow(best, beian)
+      let rescued = false
+      if (
+        !skipInfer
+        && latestUnitCumRatio != null
+        && unit0 != null
+        && cum0 != null
+        && Math.abs(unit0 - cum0) < 0.001
+      ) {
+        const inferred = inferEmailUnitNav(unit0, cum0, best.subject, latestUnitCumRatio)
+        if (
+          inferred < unit0 - 0.000001
+          && prevNav != null
+          && prevNav > 0
+          && Math.abs(inferred / prevNav - 1) <= 0.15
+        ) {
+          bestNav = inferred
+          best = {
+            ...best,
+            nav: String(+inferred.toFixed(6)),
+            cumulative_nav: best.cumulative_nav ?? String(unit0),
+          }
+          rescued = true
         }
-        const aheadNav = recoverPlausibleEmailUnitNav(
-          parseOptionalNav(aheadBest.nav),
-          parseOptionalNav(aheadBest.cumulative_nav),
-          aheadBest.subject,
-        )
-        if (aheadNav != null && aheadNav > 0) aheadNavs.push(aheadNav)
       }
-      const nearNew = aheadNavs.filter((n) => Math.abs(n / bestNav - 1) <= 0.15).length
-      const nearOld = aheadNavs.filter((n) => Math.abs(n / prevNav - 1) <= 0.15).length
-      const sustainedNewScale = aheadNavs.length >= 2 && nearNew >= 2 && nearNew > nearOld
-      if (!sustainedNewScale) {
-        // One-off spike (or empty look-ahead) — keep prior date.
-        continue
+      if (!rescued) {
+        // Share-class / wrong-column spikes usually revert toward prevNav on later days.
+        // Real volatile moves (墨雪鑫瑞 2023-11-08 +18%) stay near the new level — accept those,
+        // otherwise skipping forever leaves prevNav stuck and drops the rest of the series.
+        const dateIdx = sortedDates.indexOf(date)
+        const aheadNavs: number[] = []
+        for (let j = dateIdx + 1; j < sortedDates.length && aheadNavs.length < 5; j++) {
+          const aheadRows = byDateGroups.get(sortedDates[j]) ?? []
+          if (aheadRows.length === 0) continue
+          let aheadBest = aheadRows[0]
+          for (let k = 1; k < aheadRows.length; k++) {
+            aheadBest = preferEmailNavRow(aheadBest, aheadRows[k], beian)
+          }
+          const aheadNav = recoverPlausibleEmailUnitNav(
+            parseOptionalNav(aheadBest.nav),
+            parseOptionalNav(aheadBest.cumulative_nav),
+            aheadBest.subject,
+          )
+          if (aheadNav != null && aheadNav > 0) aheadNavs.push(aheadNav)
+        }
+        const nearNew = aheadNavs.filter((n) => Math.abs(n / bestNav - 1) <= 0.15).length
+        const nearOld = aheadNavs.filter((n) => Math.abs(n / prevNav - 1) <= 0.15).length
+        const sustainedNewScale = aheadNavs.length >= 2 && nearNew >= 2 && nearNew > nearOld
+        if (!sustainedNewScale) {
+          // One-off spike (or empty look-ahead) — keep prior date.
+          continue
+        }
       }
     }
     if (
@@ -956,8 +994,26 @@ export function selectEmailNavSeriesRows(
       prevNav = null
     }
     selected.push(best)
-    if (!usingShareClassFallback) {
+    // Parent selecting an A/B/C sibling day must not move prevNav (SBHK26←BHK26A),
+    // or the next custody print looks like a >15% spike and is dropped.
+    const bestMeta = [best.fund_name, best.attachment_filename, best.subject].map((x) => x ?? "").join(" ")
+    const offClassSibling =
+      targetShareClassLetter(beianHao, aliases) == null
+      && /[ABC]类/u.test(bestMeta)
+    if (!usingShareClassFallback && !offClassSibling) {
       prevNav = bestNav
+      const unit = bestNav
+      const cum = parseOptionalNav(best.cumulative_nav)
+      if (
+        unit != null
+        && cum != null
+        && cum - unit > 0.05
+        && isPlausibleEmailCumulativeNav(unit, cum)
+        && !emailCumUnitRatioExceedsCap(unit, cum)
+        && !isParentCodeEmailRow(best, beian)
+      ) {
+        latestUnitCumRatio = unit / cum
+      }
     }
   }
 
@@ -1856,6 +1912,23 @@ function isReasonableNav(n: number): boolean {
 }
 
 /**
+ * The stored 累计 already sits on the new 单位, so the dividend gap is closed.
+ * `unit + old gap` would open it again and spike 复权 for one day.
+ */
+function sourceAlreadyClosedDividendGap(
+  unit: number,
+  currCum: number | null | undefined,
+  cumUnitGap: number,
+  currAdj: number | null | undefined,
+): boolean {
+  if (currAdj == null || currCum == null || !(cumUnitGap > 0.05)) return false
+  if (Math.abs(currCum - unit) > Math.max(0.01, unit * 0.005)) return false
+  // 复权 copied from 单位 is not a published level (SBPC20 2026-07-02). Rechain that.
+  if (Math.abs(currAdj - unit) <= Math.max(0.01, unit * 0.005)) return false
+  return Math.abs(currCum - (unit + cumUnitGap)) >= 0.05
+}
+
+/**
  * Rechain 累计 / 复权 from the prior row when email refreshed unit NAV only.
  *
  * @param currCum - Current row's cum_nav_withdrawal if already set (e.g. email provided it).
@@ -1867,6 +1940,7 @@ function rechainDerivedFromPrev(
   prev: LegacyNavRow,
   unit: number,
   currCum?: number | null,
+  currAdj?: number | null,
 ): { cum: string; adj: string } | null {
   const prevUnit = parseOptionalNav(prev.nav)
   const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
@@ -1884,8 +1958,13 @@ function rechainDerivedFromPrev(
   const prevPostDiv = hasDividendOffset(prevUnit, prevCumW)
 
   // Email corrected a legacy halved unit (large jump) — preserve cum-unit gap from prior post-div row.
+  // A unit that merely returns to the stored 累计 (SEM163 2020-05-11, SVC066 2024-02-23)
+  // has already closed that gap. Adding it again writes a one-day 复权 jump.
   if ((unitRatio <= 0.5 || unitRatio >= 1.5) && prevPostDiv) {
     const cumUnitGap = prevCumW - prevUnit
+    // Unit rebound (>=1.5) or rebase/halving (<=0.5) that already sits on 单位
+    // for 累计 must not reopen the old gap (SEM163 rebound; SCB622 2020-04-10).
+    if (sourceAlreadyClosedDividendGap(unit, currCum, cumUnitGap, currAdj)) return null
     if (cumUnitGap > 0.05) {
       const cum = unit + cumUnitGap
       const adj = prevCumW > 0 ? prevAdj * cum / prevCumW : cum
@@ -1948,6 +2027,9 @@ function rechainDerivedFromPrev(
   }
 
   const cumUnitGap = prevCum - prevUnit
+  // Unit caught up to a flat 累计 (SST556 2024-09-02, ratio just under 1/0.7).
+  // The stored 复权 did not move. Carrying the old gap makes a one-day spike.
+  if (unit > prevUnit && sourceAlreadyClosedDividendGap(unit, currCum, prevCumW - prevUnit, currAdj)) return null
   const cum = cumUnitGap > 0.01 ? unit + cumUnitGap : prevCum * unitRatio
   // Email-confirmed 累计 on a normal post-div day (constant cum-unit gap): grow 复权 at
   // the unit return. Cum-ratio adj understates returns when the dividend gap is large
@@ -1978,7 +2060,9 @@ function rechainDerivedFromPrev(
     }
   }
   // Grow adj at the cumulative rate to maintain adj/cum ratio constant (≥ 1 after ex-div).
-  const adj = prevCum > 0 ? prevAdj * cum / prevCum : prevAdj * unitRatio
+  let adj = prevCum > 0 ? prevAdj * cum / prevCum : prevAdj * unitRatio
+  // Prior row may already have adj slightly below cum (SVL369). Do not emit adj < cum.
+  if (adj < cum) adj = cum
   if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null
 
   return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
@@ -2008,7 +2092,12 @@ function refreshDerivedForEmailRows(
     const unit = parseOptionalNav(sorted[i].nav)
     if (unit == null) continue
     const currCum = parseOptionalNav(sorted[i].cum_nav_withdrawal)
-    const rechained = rechainDerivedFromPrev(sorted[i - 1], unit, currCum)
+    const rechained = rechainDerivedFromPrev(
+      sorted[i - 1],
+      unit,
+      currCum,
+      parseOptionalNav(sorted[i].cumulative_nav),
+    )
     if (rechained) {
       if (!adjOnly) {
         sorted[i].cum_nav_withdrawal = rechained.cum
@@ -2448,6 +2537,16 @@ function sanitizeReturnIndexTail(rows: LegacyNavRow[]): LegacyNavRow[] {
   return rows.slice(0, cutFrom)
 }
 
+/** True when an adjacent unit step inside [from, toExclusive) at least doubles. */
+function runHasDoublingStep(rows: LegacyNavRow[], from: number, toExclusive: number): boolean {
+  for (let k = Math.max(1, from); k < toExclusive; k += 1) {
+    const prev = parseOptionalNav(rows[k - 1]?.nav)
+    const cur = parseOptionalNav(rows[k]?.nav)
+    if (prev != null && prev > 0 && cur != null && cur / prev >= ISOLATED_SPIKE_RATIO) return true
+  }
+  return false
+}
+
 /**
  * Drop a mid-series return-index burst (vendor stored 累计收益指数 as 单位净值)
  * and strip the leftover fake ex-div 累计/复权 once unit NAV resumes the old scale.
@@ -2455,6 +2554,7 @@ function sanitizeReturnIndexTail(rows: LegacyNavRow[]): LegacyNavRow[] {
  * SXK911 擎丰1号3期 2023-04/05: 1.006 → 1.62 → 12.19 (all-equal) → unit reset
  * to 1.00 while 累计 stayed ~12.2, so 复权 locked in a 12× factor (+1328%).
  * Tail-only sanitizers miss this because the corrupt run is not at the end.
+ * A grind with no 2× week is kept even when unit later rebases (SAAL90).
  */
 function sanitizeReturnIndexBurst(rows: LegacyNavRow[]): LegacyNavRow[] {
   if (rows.length < 3) return rows
@@ -2520,6 +2620,15 @@ function sanitizeReturnIndexBurst(rows: LegacyNavRow[]): LegacyNavRow[] {
     const afterUnit = parseOptionalNav(rows[j].nav)
     if (afterUnit == null || afterUnit / typical >= START_RATIO) {
       i += 1
+      continue
+    }
+
+    // The unit came back down. Drop the run only when some week at least
+    // doubles (SXK911 1.62 → 12.19). A grind that later rebases is the fund's
+    // own NAV (SAAL90 1.32 → 3.85 over 39 weeks, then unit 1.00 while 累计
+    // continues); deleting it leaves a 中间缺失 hole.
+    if (!runHasDoublingStep(rows, i, j)) {
+      i = j
       continue
     }
 
@@ -2633,6 +2742,49 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
       continue
     }
 
+    // 复权 crashed while 累计 also stepped to a new reasonable level
+    // (SGK119 2021-03-19). That is a restatement, not a one-field spike to rechain.
+    if (
+      spikeAdj
+      && !spikeCum
+      && adj != null
+      && cum != null
+      && prevCum != null
+      && isReasonableNav(adj)
+      && isReasonableNav(cum)
+      && Math.abs(cum / prevCum - 1) > 0.05
+    ) {
+      continue
+    }
+
+    // A sub-2% 单位 wiggle with flat 累计/复权 is noise on series that do not
+    // track 单位 day-to-day (SJE164 2020-07-21). Collapsing them to 单位 for one
+    // day creates a spike the next print reverses.
+    if (
+      (staleAdj || staleCum)
+      && !spikeAdj
+      && !spikeCum
+      && unitRet < 0.02
+    ) {
+      continue
+    }
+
+    // Unit recovering toward 累计 after an ex-div while 累计/复权 stay put
+    // is not a stale freeze (SEM163 2019-01-14: unit 1.075 → 1.175, adj flat).
+    // Rechain would reopen the dividend gap for one day and spike 复权.
+    if (
+      staleAdj
+      && staleCum
+      && cum != null
+      && prevCum != null
+      && prevUnit != null
+      && hasDividendOffset(prevUnit, prevCum)
+      && Math.abs(cum - unit) <= Math.max(0.01, unit * 0.005)
+      && Math.abs(cum - prevCum) / prevCum < 0.001
+    ) {
+      continue
+    }
+
     // Ex-div with adj already carrying a reinvestment premium — do not treat flat adj as stale.
     if (
       prevCum != null && cum != null &&
@@ -2645,7 +2797,12 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
     // Pass cum_nav_withdrawal as currCum so that on ex-dividend dates (unit dropped while
     // cumulative correctly stayed flat) isLikelyDividendExDate detects the event and preserves
     // the cumulative NAV instead of overwriting it with the dropped unit NAV.
-    const rechained = rechainDerivedFromPrev(prev, unit, cum ?? undefined)
+    const rechained = rechainDerivedFromPrev(
+      prev,
+      unit,
+      cum ?? undefined,
+      parseOptionalNav(curr.cumulative_nav),
+    )
     if (rechained) {
       curr.cum_nav_withdrawal = rechained.cum
       curr.cumulative_nav = rechained.adj
@@ -2668,28 +2825,60 @@ function repairAdjCollapsedToUnitRows(rows: LegacyNavRow[]): LegacyNavRow[] {
     const cum = parseOptionalNav(sorted[i].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i].cumulative_nav)
     const adj = parseOptionalNav(sorted[i].cumulative_nav)
     if (unit == null || cum == null || adj == null) continue
-    if (!hasDividendOffset(unit, cum)) continue
-    if (Math.abs(adj - cum) <= flatEps) continue
-    if (Math.abs(adj - unit) > flatEps) continue
 
-    if (i > 0) {
-      const prev = sorted[i - 1]
-      const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
-      const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
-      if (
-        prevAdj != null && prevCum != null && prevCum > 0 &&
-        isReasonableNav(prevAdj) && prevAdj >= prevCum - flatEps
-      ) {
-        const rechained = +(prevAdj * cum / prevCum).toFixed(6)
-        if (isReasonableNav(rechained) && rechained >= cum - flatEps) {
-          sorted[i].cumulative_nav = String(rechained)
-          continue
+    // Classic: 累计 still has the dividend gap but 复权 fell back to 单位 (AVM354).
+    if (hasDividendOffset(unit, cum) && Math.abs(adj - cum) > flatEps && Math.abs(adj - unit) <= flatEps) {
+      if (i > 0) {
+        const prev = sorted[i - 1]
+        const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+        const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+        if (
+          prevAdj != null && prevCum != null && prevCum > 0 &&
+          isReasonableNav(prevAdj) && prevAdj >= prevCum - flatEps
+        ) {
+          const rechained = +(prevAdj * cum / prevCum).toFixed(6)
+          if (isReasonableNav(rechained) && rechained >= cum - flatEps) {
+            sorted[i].cumulative_nav = String(rechained)
+            continue
+          }
         }
       }
+      if (isReasonableNav(cum)) {
+        sorted[i].cumulative_nav = String(+cum.toFixed(6))
+      }
+      continue
     }
 
-    if (isReasonableNav(cum)) {
-      sorted[i].cumulative_nav = String(+cum.toFixed(6))
+    // Full collapse (单位 ≈ 累计 ≈ 复权) right after a row that still carries the
+    // dividend gap. Share-class fills and unit-only Type6 tails do this
+    // (LC571B after parent history, SVL369 after the 2023-07 unit rebase).
+    if (
+      i > 0
+      && Math.abs(cum - unit) <= Math.max(0.01, unit * 0.005)
+      && Math.abs(adj - unit) <= Math.max(0.01, unit * 0.005)
+    ) {
+      const prev = sorted[i - 1]
+      const prevUnit = parseOptionalNav(prev.nav)
+      const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+      const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? prevCum
+      if (
+        prevUnit == null || prevUnit <= 0 || prevCum == null || prevAdj == null
+        || !hasDividendOffset(prevUnit, prevCum)
+        || !isReasonableNav(prevAdj)
+      ) continue
+      // Unit recovered to the prior 累计 after an ex-div (SEM163 2019-01-14).
+      // Reopening that gap would spike 复权 for one day.
+      if (Math.abs(unit - prevCum) <= Math.max(0.01, prevCum * 0.005)) continue
+      const unitRatio = unit / prevUnit
+      if (unitRatio <= 0.7 || unitRatio >= 1 / 0.7) continue
+      const nextCum = unit + (prevCum - prevUnit)
+      // Prefer cum-ratio so a prior adj slightly below cum (SVL369) does not
+      // write adj < cum. Floor at nextCum to keep adj >= cum.
+      const ratioAdj = prevCum > 0 ? prevAdj * nextCum / prevCum : nextCum
+      const nextAdj = Math.max(ratioAdj, nextCum)
+      if (!isReasonableNav(nextCum) || !isReasonableNav(nextAdj)) continue
+      sorted[i].cum_nav_withdrawal = String(+nextCum.toFixed(6))
+      sorted[i].cumulative_nav = String(+nextAdj.toFixed(6))
     }
   }
 
@@ -2698,12 +2887,15 @@ function repairAdjCollapsedToUnitRows(rows: LegacyNavRow[]): LegacyNavRow[] {
 
 /** When 复权 drifted below 累计 (stale legacy adj), rechain from neighbors. */
 function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const original = rows.map((row) => ({ ...row }))
   const sorted = rows.map((row) => ({ ...row }))
 
   for (let i = 1; i < sorted.length; i += 1) {
     const cum = parseOptionalNav(sorted[i].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i].cumulative_nav)
     const adj = parseOptionalNav(sorted[i].cumulative_nav)
     if (cum == null || adj == null || adj >= cum) continue
+    if (storedCumAndAdjContinue(original[i - 1], original[i])) continue
+    if (adjContinuesAtUnitReturn(original[i - 1], original[i])) continue
 
     const prev = sorted[i - 1]
     const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
@@ -2726,6 +2918,21 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
     if (adj > cum + flatAdjEps) {
       lastGoodRatio = adj / cum
       continue
+    }
+    if (i > 0 && (
+      storedCumAndAdjContinue(original[i - 1], original[i])
+      || adjContinuesAtCumReturn(original[i - 1], original[i])
+      || adjContinuesAtUnitReturn(original[i - 1], original[i])
+    )) continue
+    // Stored 复权 already took a real step. Being below 累计 is a scale choice
+    // (SGK119 / SXV381 / SEM163), not a frozen field to paint over.
+    if (i > 0) {
+      const prevAdj0 = parseOptionalNav(original[i - 1].cumulative_nav)
+      if (
+        prevAdj0 != null
+        && adj != null
+        && Math.abs(adj / prevAdj0 - 1) > 0.001
+      ) continue
     }
     const unit = parseOptionalNav(sorted[i].nav)
     const prevUnit = i > 0 ? parseOptionalNav(sorted[i - 1].nav) : null
@@ -2759,6 +2966,21 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
       trailingRatio = adj / cum
       continue
     }
+    if (i > 0 && (
+      storedCumAndAdjContinue(original[i - 1], original[i])
+      || adjContinuesAtCumReturn(original[i - 1], original[i])
+      || adjContinuesAtUnitReturn(original[i - 1], original[i])
+    )) continue
+    // Stored 复权 already took a real step. Being below 累计 is a scale choice
+    // (SGK119 / SXV381 / SEM163), not a frozen field to paint over.
+    if (i > 0) {
+      const prevAdj0 = parseOptionalNav(original[i - 1].cumulative_nav)
+      if (
+        prevAdj0 != null
+        && adj != null
+        && Math.abs(adj / prevAdj0 - 1) > 0.001
+      ) continue
+    }
     if (trailingRatio == null || trailingRatio < minAdjCumRatio) continue
     const filled = +(cum * trailingRatio).toFixed(6)
     if (isReasonableNav(filled) && filled >= cum + flatAdjEps) {
@@ -2767,6 +2989,78 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   }
 
   return sorted
+}
+
+/**
+ * A row already stores 累计 in cum_nav_withdrawal and 复权 in cumulative_nav
+ * when 累计 continues unit + prior gap and 复权 continues prior 复权 × unit ratio.
+ * 博孚利颂恩一号 (SSL258) keeps that shape with 累计 above 复权: cash dividends
+ * were large and unit NAV later fell, so the additive 累计 is the higher column.
+ * That is not an import swap. SQX078's swapped days fail this test.
+ */
+const STORED_ORIENTATION_ABS = 0.002
+
+/**
+ * 复权 already moved with 累计 from the previous day.
+ * A later adj/cum premium must not be painted onto that day.
+ * 鼎锋海川新三板山海关1号 (S29263) 2019-02-01: 火富牛 复权 is
+ * 1.000163 × 0.6976 = 0.697714, the same −30.24% as 累计. The next
+ * premium is 2019-04-04 (0.741060 / 0.724600). Borrowing it wrote 0.713447.
+ */
+function adjContinuesAtCumReturn(prev: LegacyNavRow, curr: LegacyNavRow): boolean {
+  const prevAdj = parseOptionalNav(prev.cumulative_nav)
+  const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+  const cum = parseOptionalNav(curr.cum_nav_withdrawal) ?? parseOptionalNav(curr.cumulative_nav)
+  const adj = parseOptionalNav(curr.cumulative_nav)
+  if (
+    prevAdj == null || prevCum == null || prevCum <= 0 || cum == null || cum <= 0 || adj == null
+  ) return false
+  if (!isReasonableNav(prevAdj) || !isReasonableNav(cum) || !isReasonableNav(adj)) return false
+  return Math.abs(adj - prevAdj * cum / prevCum) <= STORED_ORIENTATION_ABS
+}
+
+
+/**
+ * 复权 already moved with 单位 from the previous day.
+ * A later adj/cum premium must not overwrite that chain (S39917 / SD9197):
+ * those feeds keep 复权 on the unit return while 累计 sits above on a
+ * dividend gap, so adj < cum is intentional.
+ */
+function adjContinuesAtUnitReturn(prev: LegacyNavRow, curr: LegacyNavRow): boolean {
+  const prevAdj = parseOptionalNav(prev.cumulative_nav)
+  const prevUnit = parseOptionalNav(prev.nav)
+  const unit = parseOptionalNav(curr.nav)
+  const adj = parseOptionalNav(curr.cumulative_nav)
+  if (
+    prevAdj == null || prevUnit == null || prevUnit <= 0 || unit == null || unit <= 0 || adj == null
+  ) return false
+  if (!isReasonableNav(prevAdj) || !isReasonableNav(unit) || !isReasonableNav(adj)) return false
+  const expected = prevAdj * unit / prevUnit
+  return Math.abs(adj - expected) <= STORED_ORIENTATION_ABS
+    || Math.abs(adj - expected) / Math.max(adj, expected) <= 0.002
+}
+
+function storedCumAndAdjContinue(prev: LegacyNavRow, curr: LegacyNavRow): boolean {
+  const unit = parseOptionalNav(curr.nav)
+  const cum = parseOptionalNav(curr.cum_nav_withdrawal)
+  const adj = parseOptionalNav(curr.cumulative_nav)
+  const prevUnit = parseOptionalNav(prev.nav)
+  const prevCum = parseOptionalNav(prev.cum_nav_withdrawal)
+  const prevAdj = parseOptionalNav(prev.cumulative_nav)
+  if (
+    unit == null || cum == null || adj == null
+    || prevUnit == null || prevCum == null || prevAdj == null
+    || prevUnit <= 0 || unit <= 0
+  ) return false
+  const unitRatio = unit / prevUnit
+  if (unitRatio <= 0.5 || unitRatio >= 2) return false
+  const gap = prevCum - prevUnit
+  const expectedCum = gap > 0.01 ? unit + gap : prevCum * unitRatio
+  const expectedAdj = prevAdj * unitRatio
+  const correct = Math.abs(cum - expectedCum) + Math.abs(adj - expectedAdj)
+  const swapped = Math.abs(adj - (unit + (prevAdj - prevUnit))) + Math.abs(cum - prevCum * unitRatio)
+  // A flat day fits both readings. Keep the stored columns instead of rewriting 复权.
+  return correct <= STORED_ORIENTATION_ABS && correct * 5 <= swapped + 1e-12
 }
 
 function swapCumAdjFields(row: LegacyNavRow): LegacyNavRow {
@@ -2821,24 +3115,32 @@ function isContinuationColumnSwap(prev: LegacyNavRow, curr: LegacyNavRow): boole
  * (cum_nav_withdrawal > cumulative_nav while both sit above unit). Restores adj >= cum >= unit.
  */
 function repairSwappedCumAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
-  const sorted = rows.map((row) => {
+  const sorted = rows.map((row) => ({ ...row }))
+  for (let i = 0; i < sorted.length; i += 1) {
+    const row = sorted[i]
     const unit = parseOptionalNav(row.nav)
     const cum = parseOptionalNav(row.cum_nav_withdrawal)
     const adj = parseOptionalNav(row.cumulative_nav)
-    if (unit == null || cum == null || adj == null) return row
-    if (!isReasonableNav(unit) || !isReasonableNav(cum) || !isReasonableNav(adj)) return row
-    if (cum <= adj) return row
-    if (!hasDistinctCumulative(unit, cum) || !hasDistinctCumulative(unit, adj)) return row
+    if (unit == null || cum == null || adj == null) continue
+    if (!isReasonableNav(unit) || !isReasonableNav(cum) || !isReasonableNav(adj)) continue
+    if (cum <= adj) continue
+    if (!hasDistinctCumulative(unit, cum) || !hasDistinctCumulative(unit, adj)) continue
 
     // Small cum > adj gaps are stale-ratio drift — repairAdjBelowCumRows handles those.
-    // Large gaps mean the two column values were stored in swapped fields (SQX078 pattern).
-    if ((cum - adj) / unit < 0.15) return row
+    // Large gaps are the SQX078 column swap, unless 累计 and 复权 already continue
+    // (SSL258: 累计 above 复权 is the real series, not a swapped import).
+    if ((cum - adj) / unit < 0.15) continue
+    const prev = i > 0 ? sorted[i - 1] : null
+    const next = i + 1 < sorted.length ? sorted[i + 1] : null
+    if (
+      (prev && (storedCumAndAdjContinue(prev, row) || adjContinuesAtUnitReturn(prev, row)))
+      || (next && (storedCumAndAdjContinue(row, next) || adjContinuesAtUnitReturn(row, next)))
+    ) continue
 
     const swappedCum = adj
     const swappedAdj = cum
-    if (swappedAdj >= swappedCum && swappedCum >= unit) return swapCumAdjFields(row)
-    return row
-  })
+    if (swappedAdj >= swappedCum && swappedCum >= unit) sorted[i] = swapCumAdjFields(row)
+  }
 
   let i = 1
   while (i < sorted.length) {

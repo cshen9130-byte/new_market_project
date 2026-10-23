@@ -72,6 +72,50 @@ function isoDay(raw: string | null | undefined): string {
   return (raw ?? "").trim().slice(0, 10)
 }
 
+function isoDateOrNull(raw: string | null | undefined): string | null {
+  const day = isoDay(raw)
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null
+}
+
+/**
+ * Drop points before 成立日. A bad 成立日 that would leave fewer than two
+ * points keeps the original series so the chart does not go blank.
+ * 量派300增强2号 stores a 2018 path on SND172; the fund starts 2020-11-17 at 1.0.
+ */
+export function clipRowsOnOrAfterInception<T extends { price_date: string }>(
+  rows: T[],
+  inception: string | null | undefined,
+): T[] {
+  const day = isoDateOrNull(inception)
+  if (!day || rows.length === 0) return rows
+  const kept = rows.filter((row) => isoDay(row.price_date) >= day)
+  return kept.length >= 2 ? kept : rows
+}
+
+/**
+ * Anomaly scan start: the later of 运作日 and 成立日.
+ * Points before 成立日 are a different history (SND172's 2018 prefix) and must
+ * not form a jump against the fund's own first print. If 成立日 would erase
+ * the series, keep the 运作日 window only.
+ */
+export function anomalyScanStart(
+  points: NavAnomalyPoint[],
+  operationDate: string | null | undefined,
+  inceptionDate: string | null | undefined,
+): string | null {
+  const operation = isoDateOrNull(operationDate)
+  const inception = isoDateOrNull(inceptionDate)
+  if (!inception) return operation
+  let after = 0
+  for (const point of points) {
+    if (point.value > 0 && isoDay(point.date) >= inception) after += 1
+    if (after >= 2) break
+  }
+  if (after < 2) return operation
+  if (!operation) return inception
+  return operation > inception ? operation : inception
+}
+
 function lowerMedian(values: number[]): number {
   if (values.length === 0) return 0
   const sorted = [...values].sort((a, b) => a - b)

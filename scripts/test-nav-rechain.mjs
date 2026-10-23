@@ -2737,6 +2737,99 @@ testSbgs17ManualDisjointFromCustodianIsDropped()
 testSja874Fof99AdjStaysOnEmailChain()
 testSqx646EmailScaleDoesNotSpikeAdj()
 
+// S29263 鼎锋海川新三板山海关1号: 2019-02-01 复权 already equals
+// prevAdj × cum / prevCum (0.697714). The 2019-04-04 premium must not
+// be walked backward onto that week.
+function testS29263CumReturnAdjIsNotBackfilled() {
+  const out = mergeNavSeriesWithEmail(
+    [
+      { price_date: "2019-01-25", nav: "1.000000", cumulative_nav: "1.000163", cum_nav_withdrawal: "1.000000", price_change: "0", legacy_origin: "fof99" },
+      { price_date: "2019-02-01", nav: "0.434600", cumulative_nav: "0.697714", cum_nav_withdrawal: "0.697600", price_change: "-0.302400", legacy_origin: "fof99" },
+      { price_date: "2019-02-15", nav: "0.434600", cumulative_nav: "0.697714", cum_nav_withdrawal: "0.697600", price_change: "0", legacy_origin: "fof99" },
+      { price_date: "2019-04-04", nav: "0.461600", cumulative_nav: "0.741060", cum_nav_withdrawal: "0.724600", price_change: "0.062126", legacy_origin: "fof99" },
+    ],
+    [],
+  )
+  const feb1 = out.find((row) => row.price_date === "2019-02-01")
+  const feb15 = out.find((row) => row.price_date === "2019-02-15")
+  const apr4 = out.find((row) => row.price_date === "2019-04-04")
+  assert("S29263 2019-02-01 keeps 火富牛 复权 0.697714", feb1 && Math.abs(parseFloat(feb1.cumulative_nav) - 0.697714) < 0.000001)
+  assert("S29263 2019-02-01 累计 stays 0.697600", feb1 && Math.abs(parseFloat(feb1.cum_nav_withdrawal) - 0.6976) < 0.000001)
+  assert("S29263 2019-02-15 keeps 火富牛 复权", feb15 && Math.abs(parseFloat(feb15.cumulative_nav) - 0.697714) < 0.000001)
+  assert("S29263 2019-04-04 keeps its own premium", apr4 && Math.abs(parseFloat(apr4.cumulative_nav) - 0.74106) < 0.000001)
+
+  const filled = mergeNavSeriesWithEmail(
+    [
+      { price_date: "2024-06-03", nav: "1.000000", cumulative_nav: "1.600000", cum_nav_withdrawal: "1.500000", price_change: "" },
+      { price_date: "2024-06-04", nav: "1.010000", cumulative_nav: "1.515000", cum_nav_withdrawal: "1.515000", price_change: "" },
+    ],
+    [],
+  )
+  const jun4 = filled.find((row) => row.price_date === "2024-06-04")
+  assert(
+    "a collapsed 复权 still takes the prior adj/cum ratio",
+    jun4 && Math.abs(parseFloat(jun4.cumulative_nav) - 1.616) < 0.000001,
+  )
+
+  const trailed = mergeNavSeriesWithEmail(
+    [
+      { price_date: "2024-06-03", nav: "1.000000", cumulative_nav: "1.000000", cum_nav_withdrawal: "1.000000", price_change: "" },
+      { price_date: "2024-06-04", nav: "1.000000", cumulative_nav: "1.050000", cum_nav_withdrawal: "1.200000", price_change: "" },
+      { price_date: "2024-06-05", nav: "1.000000", cumulative_nav: "1.260000", cum_nav_withdrawal: "1.200000", price_change: "" },
+    ],
+    [],
+  )
+  const trail = trailed.find((row) => row.price_date === "2024-06-04")
+  assert(
+    "a 复权 below the cum return still takes the later premium",
+    trail && Math.abs(parseFloat(trail.cumulative_nav) - 1.26) < 0.000001,
+  )
+}
+
+testS29263CumReturnAdjIsNotBackfilled()
+
+function testClosedDividendGapIsNotReopened() {
+  const sem = mergeNavSeriesWithEmail([
+    { price_date: "2020-05-08", nav: "1.037000", cumulative_nav: "1.620389", cum_nav_withdrawal: "1.581000", price_change: "" },
+    { price_date: "2020-05-11", nav: "1.581000", cumulative_nav: "1.620389", cum_nav_withdrawal: "1.581000", price_change: "" },
+    { price_date: "2020-05-12", nav: "1.580000", cumulative_nav: "1.619364", cum_nav_withdrawal: "1.580000", price_change: "" },
+  ], [])
+  const sem11 = sem.find((row) => row.price_date === "2020-05-11")
+  assert("SEM163 05-11 keeps 复权 1.620389", sem11 && Math.abs(parseFloat(sem11.cumulative_nav) - 1.620389) < 0.000001)
+  assert("SEM163 05-11 keeps 累计 1.581", sem11 && Math.abs(parseFloat(sem11.cum_nav_withdrawal) - 1.581) < 0.000001)
+
+  const sst = mergeNavSeriesWithEmail([
+    { price_date: "2024-08-30", nav: "1.042000", cumulative_nav: "1.569963", cum_nav_withdrawal: "1.486000", price_change: "" },
+    { price_date: "2024-09-02", nav: "1.486000", cumulative_nav: "1.569963", cum_nav_withdrawal: "1.486000", price_change: "" },
+    { price_date: "2024-09-03", nav: "1.486000", cumulative_nav: "1.569963", cum_nav_withdrawal: "1.486000", price_change: "" },
+  ], [])
+  const sst02 = sst.find((row) => row.price_date === "2024-09-02")
+  assert("SST556 09-02 keeps 复权 1.569963", sst02 && Math.abs(parseFloat(sst02.cumulative_nav) - 1.569963) < 0.000001)
+
+  const svc = mergeNavSeriesWithEmail([
+    { price_date: "2024-02-22", nav: "0.643000", cumulative_nav: "0.736427", cum_nav_withdrawal: "0.796000", price_change: "" },
+    { price_date: "2024-02-23", nav: "1.000000", cumulative_nav: "0.970068", cum_nav_withdrawal: "1.000000", price_change: "" },
+  ], [])
+  const svc23 = svc.find((row) => row.price_date === "2024-02-23")
+  assert("SVC066 02-23 keeps 火富牛 复权 0.970068", svc23 && Math.abs(parseFloat(svc23.cumulative_nav) - 0.970068) < 0.000001)
+
+  const savm = mergeNavSeriesWithEmail(
+    [
+      { price_date: "2026-07-01", nav: "0.7658", cum_nav_withdrawal: "1.5158", cumulative_nav: "1.5158", price_change: "" },
+      { price_date: "2026-07-08", nav: "0.7279", cum_nav_withdrawal: "1.4769", cumulative_nav: "1.4769", price_change: "" },
+      { price_date: "2026-07-09", nav: "0.7400", cum_nav_withdrawal: "1.4890", cumulative_nav: "1.4890", price_change: "" },
+    ],
+    [
+      { price_date: "2026-07-08", nav: "1.1950", cumulative_nav: null, adjusted_nav: null },
+      { price_date: "2026-07-09", nav: "1.2150", cumulative_nav: null, adjusted_nav: null },
+    ],
+  )
+  const savm09 = savm.find((row) => row.price_date === "2026-07-09")
+  assert("SAVM35 still carries the dividend gap onto the corrected unit", savm09 && Math.abs(parseFloat(savm09.cum_nav_withdrawal) - 1.964) < 0.01)
+}
+
+testClosedDividendGapIsNotReopened()
+
 const sbhk26Selected = selectEmailNavSeriesRows(sbhk26History, "SBHK26", ["六妙星豪鑫6号"])
 const sbhk26Jun29 = sbhk26Selected.find((r) => r.nav_date === "2026-06-29")
 assert(
@@ -4288,6 +4381,38 @@ function testSte102StaleAdjIsNotColumnSwap() {
 
 testSte102StaleAdjIsNotColumnSwap()
 
+// SSL258 博孚利颂恩一号: Type6 columns are already 累计 / 复权.
+// 累计 = unit + 0.6486, 复权 = unit × 1.6486, and 累计 is higher because unit fell
+// after the dividends. The 15% swap must not exchange them, and the adj<cum rechain
+// must not turn 2024-12-30 into 1.602254.
+function testSsl258CumulativeAboveAdjustedIsNotColumnSwap() {
+  const rows = [
+    { price_date: "2024-12-23", nav: "0.823900", cumulative_nav: "1.358282", cum_nav_withdrawal: "1.472500", price_change: "" },
+    { price_date: "2024-12-24", nav: "0.829000", cumulative_nav: "1.366689", cum_nav_withdrawal: "1.477600", price_change: "" },
+    { price_date: "2024-12-25", nav: "0.800900", cumulative_nav: "1.320364", cum_nav_withdrawal: "1.449500", price_change: "" },
+    { price_date: "2024-12-26", nav: "0.787000", cumulative_nav: "1.297448", cum_nav_withdrawal: "1.435600", price_change: "" },
+    { price_date: "2024-12-27", nav: "0.809400", cumulative_nav: "1.334377", cum_nav_withdrawal: "1.458000", price_change: "" },
+    { price_date: "2024-12-30", nav: "0.817800", cumulative_nav: "1.348225", cum_nav_withdrawal: "1.466400", price_change: "" },
+    { price_date: "2024-12-31", nav: "0.792700", cumulative_nav: "1.306845", cum_nav_withdrawal: "1.441300", price_change: "" },
+  ]
+  const out = mergeNavSeriesWithEmail(rows, [])
+  for (const src of rows) {
+    const row = out.find((r) => r.price_date === src.price_date)
+    assert(
+      `SSL258 ${src.price_date} keeps Type6 累计`,
+      row && Math.abs(parseFloat(row.cum_nav_withdrawal) - parseFloat(src.cum_nav_withdrawal)) < 0.0001,
+    )
+    assert(
+      `SSL258 ${src.price_date} keeps Type6 复权`,
+      row && Math.abs(parseFloat(row.cumulative_nav) - parseFloat(src.cumulative_nav)) < 0.0001,
+    )
+  }
+  const d30 = out.find((r) => r.price_date === "2024-12-30")
+  assert("SSL258 12-30 复权 is not the rechained spike", d30 && Math.abs(parseFloat(d30.cumulative_nav) - 1.602254) > 0.05)
+}
+
+testSsl258CumulativeAboveAdjustedIsNotColumnSwap()
+
 // SCX154 格量多策略2号: from 2026-09-04 火富牛 stored 累计 in cumulative_nav and
 // 复权 in cum_nav_withdrawal. The gap is ~11% of unit, under the SQX078 15% swap.
 // The mislabeling runs for several weeks, unlike STE102's one-day stale 复权.
@@ -5099,3 +5224,60 @@ function testSqx646EmailScaleDoesNotSpikeAdj() {
     stuck && Math.abs(parseFloat(stuck.cumulative_nav) - 1.230) < 0.0001,
   )
 }
+
+// SEM163 君信荣耀一号: after ex-div unit 1.075 with cum 1.175, the next day's
+// unit recovers to 1.175 while 累计/复权 stay flat. That is not a stale freeze.
+function testSem163UnitRecoveryDoesNotReopenGap() {
+  const out = mergeNavSeriesWithEmail(
+    [
+      { price_date: "2019-01-10", nav: "1.172000", cumulative_nav: "1.172579", cum_nav_withdrawal: "1.172000", price_change: "", legacy_origin: "platform" },
+      { price_date: "2019-01-11", nav: "1.075000", cumulative_nav: "1.175580", cum_nav_withdrawal: "1.175000", price_change: "", legacy_origin: "platform" },
+      { price_date: "2019-01-14", nav: "1.175000", cumulative_nav: "1.175580", cum_nav_withdrawal: "1.175000", price_change: "", legacy_origin: "platform" },
+      { price_date: "2019-01-15", nav: "1.175000", cumulative_nav: "1.175580", cum_nav_withdrawal: "1.175000", price_change: "", legacy_origin: "platform" },
+    ],
+    [],
+  )
+  const d14 = out.find((row) => row.price_date === "2019-01-14")
+  assert("SEM163 01-14 keeps 复权 1.175580", d14 && Math.abs(parseFloat(d14.cumulative_nav) - 1.175580) < 0.0001)
+  assert("SEM163 01-14 keeps 累计 1.175", d14 && Math.abs(parseFloat(d14.cum_nav_withdrawal) - 1.175) < 0.0001)
+}
+testSem163UnitRecoveryDoesNotReopenGap()
+
+// S39917: 复权 tracks 单位 return while 累计 sits above on a dividend gap.
+// adj < cum is intentional — do not paint a later adj/cum premium onto it.
+function testS39917UnitReturnAdjIsNotPremiumFilled() {
+  const out = mergeNavSeriesWithEmail(
+    [
+      { price_date: "2024-02-23", nav: "0.596500", cumulative_nav: "2.453558", cum_nav_withdrawal: "3.264500", price_change: "", legacy_origin: "fof99" },
+      { price_date: "2024-03-01", nav: "0.627200", cumulative_nav: "2.581480", cum_nav_withdrawal: "3.295600", price_change: "", legacy_origin: "fof99" },
+      { price_date: "2024-03-08", nav: "0.658100", cumulative_nav: "2.708661", cum_nav_withdrawal: "3.326500", price_change: "", legacy_origin: "fof99" },
+      { price_date: "2024-04-03", nav: "0.655300", cumulative_nav: "2.697108", cum_nav_withdrawal: "3.323700", price_change: "", legacy_origin: "fof99" },
+    ],
+    [],
+  )
+  const d01 = out.find((row) => row.price_date === "2024-03-01")
+  const d03 = out.find((row) => row.price_date === "2024-04-03")
+  assert("S39917 03-01 keeps 复权 2.581480", d01 && Math.abs(parseFloat(d01.cumulative_nav) - 2.581480) < 0.0001)
+  assert("S39917 04-03 keeps 复权 2.697108", d03 && Math.abs(parseFloat(d03.cumulative_nav) - 2.697108) < 0.0001)
+  assert("S39917 04-03 keeps 累计 3.323700", d03 && Math.abs(parseFloat(d03.cum_nav_withdrawal) - 3.323700) < 0.0001)
+}
+testS39917UnitReturnAdjIsNotPremiumFilled()
+
+// SVL369: after a unit rebase that kept 累计, a later unit-only Type6 row must
+// inherit the gap instead of collapsing the chart back to ~1.0.
+function testSvl369CollapsedTailKeepsRebaseGap() {
+  const out = mergeNavSeriesWithEmail(
+    [
+      { price_date: "2023-07-13", nav: "1.000000", cumulative_nav: "2.523000", cum_nav_withdrawal: "2.523000", price_change: "", legacy_origin: "fof99" },
+      { price_date: "2023-07-14", nav: "0.999000", cumulative_nav: "2.520477", cum_nav_withdrawal: "2.522000", price_change: "", legacy_origin: "fof99" },
+      { price_date: "2023-07-17", nav: "0.996000", cumulative_nav: "0.996000", cum_nav_withdrawal: "0.996000", price_change: "", legacy_origin: "platform" },
+      { price_date: "2023-07-18", nav: "0.996000", cumulative_nav: "0.996000", cum_nav_withdrawal: "0.996000", price_change: "", legacy_origin: "platform" },
+    ],
+    [],
+  )
+  const d17 = out.find((row) => row.price_date === "2023-07-17")
+  assert("SVL369 07-17 keeps 累计 gap", d17 && parseFloat(d17.cum_nav_withdrawal) - parseFloat(d17.nav) > 1.4)
+  assert("SVL369 07-17 复权 above 累计", d17 && parseFloat(d17.cumulative_nav) >= parseFloat(d17.cum_nav_withdrawal) - 0.001)
+}
+testSvl369CollapsedTailKeepsRebaseGap()
+

@@ -3255,3 +3255,233 @@ Rebuilt `ops_private_fund_detail_nav_cache` for TV890A (166 points). The largest
 ```bash
 npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=TV890A --name=臻选之常私募证券投资基金A类
 ```
+
+---
+
+## What Was Fixed (嘉合杉升量化CTA进取一号 — SAAL90, 2026-10-23)
+
+### The Problem
+
+平台数据 flagged **嘉合杉升量化CTA进取一号** (备案号 **SAAL90**) as **缺失 22%**. The chart hole was **2024-05-24 至 2025-02-07**, about **33** missing weekly points out of an expected **149.4**. The only feed is 火富牛, and the cause was **计算或修正导致**: those weeks were in 火富牛 and the chart had dropped them.
+
+火富牛 is weekly from **2023-09-07** through **2026-10-09** (169 points). Through **2024-05-24** the kept unit is **1.1768**. From **2024-05-31** the unit, 累计, and 复权 are the same number and rise from **1.3246** to **3.8480** on **2025-01-27**. The largest week in that run is about **+31%** (**1.3246 → 1.7416**). Nothing doubles. **2024-04-03** had already printed **1.3292** and was kept. On **2025-02-07** the unit is rebased to **1.0000** while 累计 continues **3.8480 → 3.9286**.
+
+### Root Cause
+
+`sanitizeReturnIndexBurst` treats a run that climbs past **2×** the trailing typical and later falls back under **1.5×** as a 累计收益指数 stored in 单位净值 (SXK911 **1.62 → 12.19**, then unit back to **1.00**). It deleted the whole run. The April dip to **0.7607** pulled that typical down, so the return to **1.32** looked like a new scale, and the later rebase made the grind look like the corrupt pattern. A run that never comes back down was already kept unless some week doubled (SQU767). A run that later rebases did not have that test.
+
+The one-day **2024-05-10** print of **1.7952**, between **1.0336** and **1.0377**, is a separate outlier. `sanitizeVShapeNavOutliers` still replaces it with the prior unit.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Rebased grind | `runHasDoublingStep`, `sanitizeReturnIndexBurst` in `email-nav-query.ts` | When the unit later falls back, drop the run only if an adjacent step at least doubles. A weekly grind is kept, including the later 份额折算 |
+| Saved 缺失 flag | `NAV_SERIES_FLAG_RULE` | `jump30_spike15_quiet5x8_gap10_v4`, so the next 净值断档 load recomputes flags |
+| List response | platform-data and team-data list routes | Cache key `nav_gap_rebase_v6` |
+
+### What This Fix Does NOT Change
+
+- A burst that contains a **2×** week is still removed, and the leftover 累计 on the reset row is still cleared (SXK911, SBDF95 **1.02 → 4.66**)
+- A grind that stays high is still kept (SQU767)
+- The one-point V-shape check. **2024-05-10** stays at the prior unit **1.0336**
+- The **2025-02-07** rebase itself. The chart still steps from **3.8480** to **1.0000**. That is a level change, not a missing date
+
+### Verified
+
+```bash
+npx tsx --test lib/server/return-index-burst.test.ts
+```
+
+Rebuilt `ops_private_fund_detail_nav_cache` for SAAL90 (**172** dates, **2023-09-07** through **2026-10-09**). The interior-gap ratio is **0**.
+
+| Date | 单位净值 |
+|---|---:|
+| 2024-05-24 | 1.1768 |
+| 2024-05-31 | 1.3246 |
+| 2025-01-27 | 3.8480 |
+| 2025-02-07 | 1.0000 |
+| 2026-10-09 | 1.4442 |
+
+The first 净值断档 load after this rule change recomputes every saved flag. On another machine, rebuild this fund’s detail cache after the merge is deployed so the list is not still scoring the stripped series.
+
+### The Follow-up Bug (收益曲线 −75% / +290%)
+
+Keeping the grind made the parent’s 复权 real again (tip **5.673684**, 成立以来收益 **+467.37%**). A类 **AAL90A** still stores 复权 = 单位. Overlapping 单位净值 agrees, so `fillMissingNavFromShareClassDonor` pasted three A类 dates onto the parent:
+
+| Date | A类 单位 = 累计 = 复权 | Parent 复权 on either side |
+|---|---:|---|
+| 2025-02-13 | 1.008 | 3.9286 → 3.9864 |
+| 2026-08-26 | 1.3492 | 5.3488 → 5.2989 |
+| 2026-09-16 | 1.4183 | 5.5142 → 5.5480 |
+
+Each pasted date dropped the 收益曲线 by about **75%**. The next parent date jumped it back by about **290%**. 单位净值 on those days was already the right level. Only 累计 and 复权 were the A类 copies.
+
+### The Follow-up Fix
+
+`carryDividendGapOntoFilledRows`, called from `fillMissingNavFromShareClassDonor`, runs on dates that were not already on the target. When that row’s 累计 and 复权 both sit on 单位, and the previous target row has 累计 − 单位 above **0.03**, and the 单位 step is inside **30%**:
+
+- 累计 = 单位 + (previous 累计 − previous 单位)
+- 复权 = previous 复权 × (单位 / previous 单位)
+
+**2026-08-26** becomes 累计 **4.2778**, 复权 **5.3005**, next to **2026-08-28** at **5.2989**. A unit step of **30%** or more is a different series and stays as published. The same rule is what already blocks a C类 donor (LQ415C onto SLQ415). A类 was the hole: unit overlap passed, so the collapsed 复权 was copied.
+
+### Do This on the Next Similar 缺失
+
+A missing-date fix is not done when the interior-gap ratio goes to **0**. Before rebuilding another fund the same way:
+
+1. Keep a rebased grind only when no week doubles. A **2×** step is still a return index (SXK911, SBDF95).
+2. Do not paste a share-class row onto a series that already has a dividend gap unless 累计 and 复权 are carried from the previous target row. Unit overlap is not enough. A类, B类, and C类 can all store 复权 = 单位.
+3. Rebuild `ops_private_fund_detail_nav_cache` and read the 复权 steps, not only the gap ratio. SAAL90’s ratio was already **0** while three dates still moved 复权 by **−75%** and **+290%**. After this carry, the largest remaining 复权 step is the real **2024-06-07** week, about **+31%**.
+
+```bash
+npx tsx --test lib/server/share-class-nav-fill.test.ts
+```
+
+---
+
+## What Was Fixed (鼎锋海川新三板山海关1号 — S29263, 2019-02-01 复权)
+
+**Symptom:** 平台数据 flagged a 跳变 on **2019-02-01**, chart 复权 **1 → 0.713447** (−28.7%), cause 计算或修正导致.
+
+**Root cause:** 火富牛 that week is 单位 **0.4346**, 累计 **0.6976**, 复权 **0.697714**, 涨跌幅 **−30.24%**. 复权 is the previous 复权 times that return (`1.000163 × 0.6976`). `repairAdjBelowCumRows` walked the next 复权/累计 premium backward from **2019-04-04** (`0.741060 / 0.724600 = 1.022716`) and wrote `0.697600 × 1.022716 = 0.713447` on 2019-02-01 only. The unit halved, so the continuation guard did not apply, even though 复权 already followed 累计.
+
+**Fix:** `adjContinuesAtCumReturn` skips both premium fills when stored 复权 is already `prevAdj × cum / prevCum` within **0.002**. A collapsed 复权 that missed that return is still filled from the prior or later premium.
+
+The vendor week itself is still a 跳变 (复权 **0.697714 / 1.000163**, about **−30.2%**), now labeled 源数据异常. Do not raise the 1.3 jump threshold to hide it.
+
+The platform list keeps a browser copy (`platform_data_list_cache_v7`) and a five-minute server copy (`nav_gap_rebase_v7`). Those keys were bumped so a reload does not keep painting **0.713447**. Rebuild this fund’s detail cache after the merge is deployed:
+
+```bash
+npx tsx scripts/ma/_refresh_cms_detail_cache.ts --code=S29263 --name=鼎锋海川新三板山海关1号基金
+```
+﻿
+---
+
+## What Was Fixed (平台数据 中间缺失超1/10 + 计算或修正导致 — 8 products, 2026-10-23)
+
+### The Problem
+
+平台数据 with filters `nav_gap=interior_2w&nav_gap_cause=rules` listed **8** products. Raw feeds had dates inside the chart holes (`nav_gap_cause=rules`), but the list still scored them as 中间缺失超1/10.
+
+| Code | Product | Hole / unused feed |
+|---|---|---|
+| BCA56A | 宏锡量化期权1号A类 | 2026-05-22→09-04；邮件净值表 on parent **SBCA56** |
+| AGF75B | 草本慧诚一号B类 | 2026-05-22→09-07；parent **SAGF75** email |
+| AZK00C | 汉鸿青云2号C类 | 2026-05-27→09-04；parent **SAZK00** email |
+| AHF86C | 磐岩金选中证1000指数增强1号C类 | 2026-05-22→09-04；parent email / Type6 |
+| BJV88A | 君信专享3号A类 | 2026-05-22→09-04；stale own cache (29 pts) vs parent **SBJV88** |
+| VM590A | 金和启明心宏观对冲6号A类 | 2024-08-30→2025-02-24；Type6 on parent **SVM590** |
+| SGM870 | 众量资产添运9号 | 2026-08-13→09-04；邮件净值表 Aug 21/28 dropped |
+| SBDU00 | 桫罗稳鸿 | March 2026 holes from stale alias cache **C2026** |
+
+### Root Causes (grouped)
+
+1. **Share-class gap scoring missed parent email / Type6** — `loadShareClassFamilyUnitPoints` only read 火富牛 + 分组净值. Diagnosis used `parentFilingCodes` so parent 邮件净值表 / Type6 looked "未采用". Fallback dates also omitted parents.
+2. **Worst-cache preference among aliases** — `chartDatesForGapRow` preferred the *most* gapped alias cache. `SBDU00` aliases include **C2026**; the stale C2026 series (March holes) beat the daily SBDU00 cache. `loadProductIdsWithInteriorNavGap` used `.some(gapped)` over every alias match.
+3. **SGM870 attachment 累计-as-unit** — `【基金净值】` rows on 2026-08-21 / 08-28 stored `nav == cumulative_nav` at the 累计 scale (~1.41). The 15% jump skip dropped them before `applyEmailUnitNavCorrection` could infer unit from the prior unit/cum ratio.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Family gap dates | `loadShareClassFamilyUnitPoints` | Also load Type6 + `ops_email_nav_records` (rank after 火富牛 / 分组) |
+| Preferred cache | `preferredGapChartDates` | Prefer primary 备案号, then ungapped / lower ratio / longer series — not the worst hole |
+| Gap id filter | `loadProductIdsWithInteriorNavGap` | Score the preferred chart only; fallback codes use `anomalyRawCodes` (parents) |
+| Diagnosis fallback | `attachNavGapDiagnosisInner` / `chartDatesForGapRow` | Load fallback dates for parent filings too |
+| Collapsed-cum rescue | `selectEmailNavSeriesRows` | When a >15% jump would drop a `nav≈cum` attachment row, infer unit from the learned ratio and keep the date if the inferred unit is continuous (SGM870). Skip custody 估值表 / virtual / parent-code rows. Do not let an A/B/C sibling day set `prevNav` for the parent (SBHK26) |
+| Flags / list cache | `NAV_SERIES_FLAG_RULE` v5, `FLAG_MEMORY_REV` 6, `nav_gap_rebase_v8`, `platform_data_list_cache_v8` | Force recompute and drop stale browser/server list copies |
+
+### What This Fix Does NOT Change
+
+- SAAL90 rebased grind (`sanitizeReturnIndexBurst`) and `carryDividendGapOntoFilledRows` for A类 paste
+- SLQ415 / C类 donor block (`mayUseShareClassNavDonor`)
+- S29263 `adjContinuesAtCumReturn` / TV890A `dropUnconfirmedHighEmailCumulative` / GT288A / SQX646 paths
+- `syncExDivAdjustedNav` / `rechainDerivedFromPrev` / `propagateMissingAdjRows` formulas
+- Product-page merge already filled most share-class holes via `shareClassParentLookupCodes`; this aligns **list gap scoring** with that chart
+
+### Verified
+
+```bash
+npx tsx --test lib/server/return-index-burst.test.ts
+npx tsx --test lib/server/share-class-nav-fill.test.ts
+npx tsx scripts/test-nav-anomaly.mjs
+npx tsx scripts/test-nav-gap-cause.mjs
+```
+
+Rebuilt `ops_private_fund_detail_nav_cache` for all 8 codes. Interior-gap ratio ≤10% (AZK00C ~4.8%, VM590A ~0.7%, others 0). Deleted stale `C2026` / name-only 桫罗稳鸿 caches. Cleared `ops_nav_series_flags` for the 8 so v5 recomputes.
+
+SAAL90 tip still carries dividend gap on 2026-08-26 (累计 ~4.28, 复权 ~5.30). SLQ415 series length unchanged with no C→parent fill.
+
+`test-nav-rechain.mjs` still hits a pre-existing WIP assert later in the file (`BFM35A skips parent valuation on 0630` also fails on git HEAD selection); S29263 / SAAL90 / SGM870 paths above are checked separately.
+
+---
+
+## What Was Fixed (计算或修正导致 cohort — share-class carry + adj guards, 2026-10-23)
+
+### The Problem
+
+平台数据 with 异常成因 = **计算或修正导致** listed about **28** products. Notes often said 前一点在[Source]，现突点由计算或修正生成. Many were not bad vendor prints: the merge/finalize path invented a one-day 复权 spike or dropped a dividend gap onto 单位=累计=复权.
+
+### Root-cause groups
+
+1. **Share-class multi-day / tail collapse** — `carryDividendGapOntoFilledRows` only fixed the first filled day after an original row (it read `sorted[i-1]`, not the already-carried output). Later filled days kept 复权=单位. The B类 unit-only tail after a parent history had the same cliff (finalize already ran before the fill).
+   - Covers: **SLC571** (2025-06-23..26), **LC571B** (after parent history)
+
+2. **Unit-only tail after a rebase / gap-bearing predecessor** — `repairAdjCollapsedToUnitRows` only fixed 复权≈单位 while 累计 still had a gap. Full 单位=累计=复权 after a gap-bearing row stayed collapsed. `rechainDerivedFromPrev` could also emit adj slightly below cum.
+   - Covers: **SVL369** (2023-07-17 after unit rebase)
+
+3. **Post-ex-div unit recovery treated as stale** — after an ex-div, 单位 recovers to 累计 while 累计/复权 stay flat. `refreshStaleDerivedFields` rechained and reopened the dividend gap for one day.
+   - Covers: **SEM163** (2019-01-14)
+
+4. **Premium paint over intentional adj < cum** — some feeds keep 复权 on the 单位 return while 累计 sits above on a dividend gap. `repairAdjBelowCumRows` / column-swap treated that as broken and painted a later adj/cum premium (or swapped columns).
+   - Covers: **S39917**, **SD9197**
+
+5. **Small unit wiggle / restatement false stale** — sub-2% 单位 noise with flat derived fields, or a joint 复权+累计 restatement, was rechained into a one-day spike.
+   - Covers: **SJE164** (2020-07-21), **SGK119** (now labels as 源数据异常)
+
+6. **Unit halving that already closed the gap** — `sourceAlreadyClosedDividendGap` only short-circuited rebound (≥1.5×), not rebase/halving (≤0.5×).
+   - Helps: **SCB622** (2020-04-10 path); a residual jump on 2020-04-14 may remain
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Multi-day carry | `carryDividendGapOntoFilledRows` in `share-class-nav-fill.ts` | Walk `out[i-1]`; also carry onto later collapsed own rows after a gap-bearing prefix |
+| Full collapse | `repairAdjCollapsedToUnitRows` in `email-nav-query.ts` | Carry 累计 gap + 复权 when 单位≈累计≈复权 after a gap-bearing prev; skip when unit recovered to prior 累计 (SEM163) |
+| Rechain floor | `rechainDerivedFromPrev` | Floor emitted 复权 at 累计 |
+| Stale refresh | `refreshStaleDerivedFields` | Skip unit-recovery, sub-2% wiggles, and adj+cum restatements |
+| Unit-return guard | `adjContinuesAtUnitReturn` + `repairAdjBelowCumRows` / `repairSwappedCumAdjRows` | Do not premium-fill or column-swap when 复权 already follows 单位 (abs or 0.2% rel) |
+| Moved-adj skip | premium loops in `repairAdjBelowCumRows` | If stored 复权 already stepped vs prev, do not paint |
+| Halving close | large-jump branch in `rechainDerivedFromPrev` | `sourceAlreadyClosedDividendGap` for both ≤0.5 and ≥1.5 |
+
+### What This Fix Does NOT Change
+
+- Every **What Was Fixed** case above this section (SBAH99, SBPC20, S29263, SAAL90, TV890A, SQX646, …)
+- Invariant `adj >= cum >= unit` on rechained rows
+- Existing dividend / rechain paths for real ex-div days
+- Vendor jumps that already sit in one feed (now correctly labeled 源数据异常): **SN3648**, **SGH173**, **SSH449**, **SVC066**, **SNN006**, **SQD690**, **SLC571** 2026-01-30, **SGK119** 2021-03-19, **SXV381** 2025-04-07
+
+### Remaining 计算或修正导致 (not fixed here)
+
+| Code | Why left |
+|---|---|
+| **SVP162** | Email 单位 itself has a ~5.8% V on 2026-02-06; `sanitizeVShapeNavOutliers` threshold is 7%. Lowering it risks R0423B-style false flats |
+| **SLN974** | type6 vs 火富牛 复权 scale handoff mid-series; needs a dedicated source-preference rule |
+| **SCB622** | Residual 2020-04-14 step after the rebase week |
+| **SEM163** | Separate 2019-06-28 neighborhood still inflated vs type6 |
+| **SCY439** | 2024-06-26 unit/adj rewrite vs type6 |
+| **SVL369** | 2023-07-17 rebase tail is fixed; a later 2023-08-15 collapse (累计 already flat while 复权 still elevated on 08-14) still cliffs |
+
+Stale list flags for funds that are now clean still need a 净值断档 reload (or flag rule bump) and detail-cache rebuild on each machine.
+
+### Verified
+
+```bash
+npx tsx --test lib/server/share-class-nav-fill.test.ts
+npx tsx scripts/test-nav-anomaly.mjs
+npx tsx scripts/ma/_test_new_rules.mjs
+```
+
+`scripts/test-nav-rechain.mjs` still stops early on a pre-existing SSG947 `selectEmailNavSeriesRows` assertion (06-23 row filtered); that failure is unrelated to this cohort.
+

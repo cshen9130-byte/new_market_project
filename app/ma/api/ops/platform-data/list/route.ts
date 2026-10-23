@@ -26,6 +26,11 @@ export async function GET(req: Request) {
     const navGapRaw = (searchParams.get("nav_gap") || "").trim().toLowerCase()
     const navGapFilter =
       navGapRaw === "interior_2w" || navGapRaw === "no_interior_2w" ? navGapRaw : "all"
+    const navGapCauseRaw = (searchParams.get("nav_gap_cause") || "").trim().toLowerCase()
+    const navGapCauseFilter =
+      navGapFilter === "interior_2w" && (navGapCauseRaw === "source" || navGapCauseRaw === "rules")
+        ? navGapCauseRaw
+        : "all"
     const navAnomalyRaw = (searchParams.get("nav_anomaly") || "").trim().toLowerCase()
     const navAnomalyFilter =
       navAnomalyRaw === "jump" || navAnomalyRaw === "no_jump" ? navAnomalyRaw : "all"
@@ -61,7 +66,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-platform-data",
-      v: "nav_frequency_v2",
+      v: "nav_gap_rebase_v8",
       page,
       pageSize,
       keyword,
@@ -72,6 +77,7 @@ export async function GET(req: Request) {
       elementsFilter,
       navLagFilter,
       navGapFilter,
+      navGapCauseFilter,
       navAnomalyFilter,
       navAnomalyCauseFilter,
       productSourceFilter,
@@ -97,6 +103,7 @@ export async function GET(req: Request) {
         elementsFilter,
         navLagFilter,
         navGapFilter,
+        navGapCauseFilter,
         navAnomalyFilter,
         navAnomalyCauseFilter,
         productSourceFilter,

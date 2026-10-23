@@ -14,8 +14,11 @@ import {
   type PlatformFundSeed,
 } from "@/lib/server/team-data-query-pg"
 
-export const NAV_SERIES_FLAG_RULE = "jump30_spike15_quiet5x8_gap10_v1"
+// v5: prefer primary/least-gapped detail cache (SBDU00 over C2026); family gap dates include email+Type6.
+export const NAV_SERIES_FLAG_RULE = "jump30_spike15_quiet5x8_gap10_v5"
 const FLAG_TTL_MS = 10 * 60 * 1000
+// Bump when the scorer changes so a running server drops flags cached under the old rule.
+const FLAG_MEMORY_REV = 6
 const OP_TTL_MS = 60 * 1000
 const ASSESS_BATCH = 400
 const ASSESS_CONCURRENCY = 4
@@ -40,6 +43,7 @@ type StoredFlag = {
   gap: boolean
   anomaly: NavAnomalyHit | null
   rule: string
+  rev: number
   at: number
 }
 
@@ -102,7 +106,7 @@ async function readStoredFlags(ids: string[]): Promise<Map<string, StoredFlag>> 
   const missing: string[] = []
   for (const id of ids) {
     const hit = memory.get(id)
-    if (hit && now - hit.at < FLAG_TTL_MS) out.set(id, hit)
+    if (hit && hit.rev === FLAG_MEMORY_REV && now - hit.at < FLAG_TTL_MS) out.set(id, hit)
     else missing.push(id)
   }
   if (missing.length === 0) return out
@@ -126,6 +130,7 @@ async function readStoredFlags(ids: string[]): Promise<Map<string, StoredFlag>> 
       gap: row.has_interior_gap === true,
       anomaly: asAnomaly(row.anomaly),
       rule: row.rule_version ?? "",
+      rev: FLAG_MEMORY_REV,
       at: now,
     }
     memory.set(row.beian_hao, stored)
@@ -211,7 +216,7 @@ async function upsertFlags(
       gaps.push(gap)
       anomalies.push(anomaly ? JSON.stringify(anomaly) : null)
       rules.push(NAV_SERIES_FLAG_RULE)
-      memory.set(row.id, { tip, op, gap, anomaly, rule: NAV_SERIES_FLAG_RULE, at: now })
+      memory.set(row.id, { tip, op, gap, anomaly, rule: NAV_SERIES_FLAG_RULE, rev: FLAG_MEMORY_REV, at: now })
     }
     await query(
       `INSERT INTO ops_nav_series_flags (

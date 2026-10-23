@@ -17,6 +17,7 @@ import {
   attachProductPageNav,
   enrichPlatformFundPage,
   filterByNavAnomalyCause,
+  filterByNavGapCause,
   loadBeianCodesWithOperationDate,
   loadNavFrequencyByFundId,
   operationDateByFundId,
@@ -26,12 +27,14 @@ import {
   type TeamDataNavAnomalyCauseFilter,
   type TeamDataNavAnomalyFilter,
   type TeamDataNavFrequencyFilter,
+  type TeamDataNavGapCauseFilter,
   type TeamDataNavGapFilter,
   type TeamDataNavLagFilter,
   type TeamDataOperationDateFilter,
   type TeamDataProductSourceFilter,
 } from "@/lib/server/team-data-query-pg"
 import type { NavAnomalyHit } from "@/lib/server/nav-anomaly"
+import type { NavGapDiagnosis } from "@/lib/server/nav-gap-cause"
 import { loadFreshNavSeriesFlags, NAV_SERIES_FLAG_RULE } from "@/lib/server/nav-series-flags-pg"
 import {
   sqlAssetClass,
@@ -59,6 +62,7 @@ export type PlatformDataListParams = {
   elementsFilter: TeamDataElementsFilter
   navLagFilter: TeamDataNavLagFilter
   navGapFilter: TeamDataNavGapFilter
+  navGapCauseFilter?: TeamDataNavGapCauseFilter
   navAnomalyFilter: TeamDataNavAnomalyFilter
   navAnomalyCauseFilter?: TeamDataNavAnomalyCauseFilter
   productSourceFilter: TeamDataProductSourceFilter
@@ -430,8 +434,8 @@ function readStoredAnomaly(value: unknown): NavAnomalyHit | null {
   return rec
 }
 
-/** Bump when the cadence rule changes so saved labels are recomputed once. */
-export const NAV_FREQUENCY_RULE = "chart_or_platform_v2"
+/** Bump when the cadence rule or the chart's source tables change so saved labels recompute. */
+export const NAV_FREQUENCY_RULE = "chart_or_platform_v3"
 
 const NAV_FREQUENCY_SQL = `
   CREATE TABLE IF NOT EXISTS ops_nav_frequency (
@@ -618,6 +622,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     elementsFilter,
     navLagFilter,
     navGapFilter,
+    navGapCauseFilter = "all",
     navAnomalyFilter,
     navAnomalyCauseFilter = "all",
     productSourceFilter,
@@ -816,7 +821,9 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     type FlaggedSeed = SeedRow & { anomaly: unknown }
     let seriesRows: FlaggedSeed[]
     let total: number
-    const diagnoseAll = navAnomalyFilter === "jump" && navAnomalyCauseFilter !== "all"
+    const diagnoseAnomaly = navAnomalyFilter === "jump" && navAnomalyCauseFilter !== "all"
+    const diagnoseGap = navGapFilter === "interior_2w" && navGapCauseFilter !== "all"
+    const diagnoseAll = diagnoseAnomaly || diagnoseGap
     if (diagnoseAll) {
       seriesRows = await query<FlaggedSeed>(flaggedSql, filterParams)
       total = seriesRows.length
@@ -840,7 +847,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
       const hit = readStoredAnomaly(row.anomaly)
       if (id && hit) anomalyById.set(id, hit)
     }
-    if (diagnoseAll) {
+    if (diagnoseAnomaly) {
       const filtered = await filterByNavAnomalyCause(
         seriesRows
           .filter((row) => row.beian_hao?.trim() && row.product_name?.trim())
@@ -855,6 +862,24 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
       const keep = new Set(filtered.rows.map((row) => row.id))
       seriesRows = seriesRows.filter((row) => keep.has(row.beian_hao.trim()))
       anomalyById = filtered.hits
+    }
+    let gapById = new Map<string, NavGapDiagnosis>()
+    if (diagnoseGap) {
+      const filtered = await filterByNavGapCause(
+        seriesRows
+          .filter((row) => row.beian_hao?.trim() && row.product_name?.trim())
+          .map((row) => ({
+            id: row.beian_hao.trim(),
+            beian_hao: row.beian_hao.trim(),
+            product_name: row.product_name.trim(),
+          })),
+        navGapCauseFilter,
+      )
+      const keep = new Set(filtered.rows.map((row) => row.id))
+      seriesRows = seriesRows.filter((row) => keep.has(row.beian_hao.trim()))
+      gapById = filtered.diagnosis
+    }
+    if (diagnoseAll) {
       total = seriesRows.length
       seriesRows = seriesRows.slice((page - 1) * pageSize, page * pageSize)
     }
@@ -883,7 +908,12 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
       }
     }
     if (navGapFilter === "interior_2w") {
-      data = await attachNavGapDiagnosis(data)
+      data = diagnoseGap
+        ? data.map((row) => ({
+          ...row,
+          nav_gap: gapById.get(row.id) ?? null,
+        }))
+        : await attachNavGapDiagnosis(data)
     }
     if (operationDateFilter === "present") data = await withOperationDates(data)
     return alignUpdateChannelPage(data, productSourceFilter, total)
