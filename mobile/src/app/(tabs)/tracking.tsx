@@ -13,12 +13,13 @@ import {
 } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
 import { fetchPools, fetchTracking } from "@/api"
+import { KeyboardSafe } from "@/components/KeyboardSafe"
 import { ReturnText } from "@/components/ReturnText"
 import { displayFundName, fmtDate, fmtNav, fmtRatioPct, strategyLine } from "@/format"
 import type { Pool, TrackFund } from "@/types"
 import { colors, returnBg } from "@/theme"
 
-export default function TrackingScreen({ onBack }: { onBack?: () => void }) {
+export default function TrackingScreen() {
   const router = useRouter()
   const [pools, setPools] = useState<Pool[]>([{ pool_key: "all", label: "全部" }])
   const [pool, setPool] = useState("all")
@@ -99,12 +100,8 @@ export default function TrackingScreen({ onBack }: { onBack?: () => void }) {
   }
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
-      {onBack ? (
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backHit}>
-          <Text style={styles.back}>返回</Text>
-        </Pressable>
-      ) : null}
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <KeyboardSafe>
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>跟踪</Text>
@@ -153,6 +150,7 @@ export default function TrackingScreen({ onBack }: { onBack?: () => void }) {
         ListFooterComponent={loadingMore ? <ActivityIndicator color={colors.up} style={{ marginVertical: 16 }} /> : <View style={{ height: 12 }} />}
         renderItem={({ item }) => <FundRow item={item} onPress={() => item.beian_hao && router.push(`/fund/${encodeURIComponent(item.beian_hao)}`)} />}
       />
+      </KeyboardSafe>
     </SafeAreaView>
   )
 }
@@ -189,8 +187,6 @@ function dedupe(rows: TrackFund[]): TrackFund[] {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  backHit: { paddingHorizontal: 22, paddingTop: 4 },
-  back: { color: colors.gold, fontSize: 14, fontWeight: "700", letterSpacing: 1 },
   header: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", paddingHorizontal: 22, paddingTop: 8 },
   eyebrow: { color: colors.gold, fontSize: 12, letterSpacing: 2, fontWeight: "700" },
   title: { fontSize: 32, fontWeight: "700", color: colors.text, letterSpacing: -0.4 },

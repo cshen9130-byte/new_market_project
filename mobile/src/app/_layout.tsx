@@ -50,12 +50,26 @@ function AuthGate() {
   return (
     <>
       <StatusBar style={onHome ? "light" : "dark"} />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: colors.bg },
+          animation: "slide_from_right",
+          gestureEnabled: true,
+                  }}
+      >
         <Stack.Screen name="index" />
-        <Stack.Screen name="login" />
+        <Stack.Screen name="login" options={{ gestureEnabled: false }} />
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="mom" />
         <Stack.Screen name="fund/[code]" />
-        <Stack.Screen name="ai-chat" options={{ animation: "slide_from_bottom" }} />
+        <Stack.Screen name="module/[id]" />
+        <Stack.Screen name="knowledge" />
+        <Stack.Screen name="researcher" />
+        <Stack.Screen name="private-funds" />
+        <Stack.Screen name="quotes" />
+        <Stack.Screen name="quotes-pro" />
+        <Stack.Screen name="all-weather" />
       </Stack>
     </>
   )

@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context"
 import { searchResearchFunds, streamResearch, type ResearchFundHit } from "@/api"
 import { displayFundName, strategyLine } from "@/format"
+import { KeyboardSafe } from "@/components/KeyboardSafe"
 import { colors } from "@/theme"
 
 type SkillKind = "funds" | "one-fund" | "keyword" | "manager"
@@ -221,7 +222,8 @@ export default function ResearcherScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <KeyboardSafe>
       <View style={styles.top}>
         <Pressable
           onPress={() => {
@@ -334,6 +336,7 @@ export default function ResearcherScreen() {
           ) : null}
         </ScrollView>
       )}
+      </KeyboardSafe>
     </SafeAreaView>
   )
 }

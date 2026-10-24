@@ -3,7 +3,7 @@
     "name": "母基金投研",
     "slug": "fof-research",
     "scheme": "fofresearch",
-    "version": "1.6.15",
+    "version": "1.6.23",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,20 +15,19 @@
           "NSAllowsArbitraryLoads": true,
           "NSAllowsLocalNetworking": true
         },
-        "NSMicrophoneUsageDescription": "Used for AI assistant voice input.",
-        "NSSpeechRecognitionUsageDescription": "Used for AI assistant voice input."
+        "NSMicrophoneUsageDescription": "用于按住 AI 球说话，把语音转成文字向知识库提问。",
+        "NSSpeechRecognitionUsageDescription": "用于识别你的语音内容，以便向知识库提问。"
       }
     },
     "android": {
       "package": "com.marketwebsite.fofresearch",
-      "versionCode": 22,
+      "versionCode": 30,
       "usesCleartextTraffic": true,
       "permissions": [
         "INTERNET",
         "VIBRATE",
         "REQUEST_INSTALL_PACKAGES",
-        "RECORD_AUDIO",
-        "MODIFY_AUDIO_SETTINGS"
+        "RECORD_AUDIO"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -46,17 +45,37 @@
       "expo-router",
       "expo-status-bar",
       "./plugins/withAndroidReleaseSigning",
-      "./plugins/withAndroidCleartext",
       [
         "expo-speech-recognition",
         {
-          "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone for AI voice input.",
-          "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to use speech recognition for AI voice input.",
+          "microphonePermission": "允许 $(PRODUCT_NAME) 使用麦克风，以便按住说话提问。",
+          "speechRecognitionPermission": "允许 $(PRODUCT_NAME) 使用语音识别，以便把说话内容转成文字。",
           "androidSpeechServicePackages": [
-            "com.google.android.googlequicksearchbox"
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.tts",
+            "com.google.android.as",
+            "com.huawei.vassistant",
+            "com.huawei.hiassistantoversea",
+            "com.huawei.msdp.speech",
+            "com.xiaomi.mibrain.speech",
+            "com.miui.voiceassist",
+            "com.xiaomi.aiasst.vision",
+            "com.vivo.agent",
+            "com.vivo.speechsdk.addon",
+            "com.coloros.speechassist",
+            "com.heytap.speechassist",
+            "com.oplus.speechassist",
+            "com.samsung.android.bixby.agent",
+            "com.iflytek.speechsuite",
+            "com.iflytek.inputmethod",
+            "com.baidu.input",
+            "com.tencent.qqpinyin",
+            "com.tencent.wetype",
+            "com.meizu.voiceassistant"
           ]
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": false

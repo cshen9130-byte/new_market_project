@@ -38,7 +38,10 @@ export default function OpenMomBriefingPage() {
       role: user.role,
       permissions: user.permissions,
     }))
-    window.location.replace("/ma/dashboard/mom-analysis/briefing-embed")
+    try {
+      window.sessionStorage.setItem("momEmbedBriefing", "1")
+    } catch {}
+    window.location.replace("/ma/dashboard/mom-analysis/risk-report?tab=briefing&embed=1")
   }, [])
 
   return (

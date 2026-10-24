@@ -1,4 +1,4 @@
-import { useRouter } from "expo-router"
+﻿import { useRouter } from "expo-router"
 import { useCallback, useEffect, useState } from "react"
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
@@ -85,7 +85,7 @@ export function MomReport({ source, title }: { source: MomSource; title: string 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.top}>
-        <Pressable onPress={() => router.replace("/mom")} hitSlop={12}>
+        <Pressable onPress={() => { if (router.canGoBack()) router.back(); else router.replace("/mom") }} hitSlop={12}>
           <Text style={styles.back}>返回</Text>
         </Pressable>
       </View>

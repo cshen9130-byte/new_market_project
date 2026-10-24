@@ -1,10 +1,8 @@
-import { useRouter } from "expo-router"
+import { useLocalSearchParams, useRouter } from "expo-router"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useStepBack } from "@/use-step-back"
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,6 +18,7 @@ import {
   type KbDocument,
   type KbFolder,
 } from "@/api"
+import { KeyboardSafe } from "@/components/KeyboardSafe"
 import { colors } from "@/theme"
 
 type Turn = { role: "user" | "assistant"; content: string }
@@ -29,6 +28,8 @@ const TEXT_EXT = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", "
 
 export default function KnowledgeScreen() {
   const router = useRouter()
+  const params = useLocalSearchParams<{ q?: string; ask?: string }>()
+  const bootstrapped = useRef(false)
   const [tree, setTree] = useState<KbFolder | null>(null)
   const [trail, setTrail] = useState<KbFolder[]>([])
   const [filter, setFilter] = useState("")
@@ -41,6 +42,7 @@ export default function KnowledgeScreen() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const busyRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -59,6 +61,25 @@ export default function KnowledgeScreen() {
       abortRef.current?.abort()
     }
   }, [])
+
+  useEffect(() => {
+    if (bootstrapped.current) return
+    const raw = params.q
+    const incoming = Array.isArray(raw) ? raw[0] : raw
+    const trimmed = (incoming ?? "").trim()
+    if (!trimmed) return
+    bootstrapped.current = true
+    setAsking(true)
+    setQuestion(trimmed)
+    const shouldAsk = (Array.isArray(params.ask) ? params.ask[0] : params.ask) !== "0"
+    if (shouldAsk) {
+      // Defer so state above is committed before ask() reads question via closure-safe path.
+      const timer = setTimeout(() => {
+        void askWithText(trimmed)
+      }, 0)
+      return () => clearTimeout(timer)
+    }
+  }, [params.q, params.ask])
 
   const folder = trail[trail.length - 1] ?? tree
   const visible = useMemo(() => {
@@ -124,8 +145,13 @@ export default function KnowledgeScreen() {
   }
 
   async function ask() {
-    const trimmed = question.trim()
-    if (!trimmed || busy) return
+    await askWithText(question)
+  }
+
+  async function askWithText(raw: string) {
+    const trimmed = raw.trim()
+    if (!trimmed || busyRef.current) return
+    busyRef.current = true
     const history = turns.filter((turn) => turn.content.trim()).map((turn) => ({ role: turn.role, content: turn.content }))
     setTurns((current) => [...current, { role: "user", content: trimmed }, { role: "assistant", content: "" }])
     setQuestion("")
@@ -164,6 +190,7 @@ export default function KnowledgeScreen() {
         setError(err instanceof Error ? err.message : "提问失败")
       }
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }
@@ -172,8 +199,8 @@ export default function KnowledgeScreen() {
   const title = reading ? reading.name : folder?.name || "AI知识库"
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <KeyboardSafe style={styles.flex}>
         <View style={styles.top}>
           <Pressable onPress={goBack} hitSlop={12}>
             <Text style={styles.back}>{trail.length || reading || asking ? "返回" : "首页"}</Text>
@@ -246,7 +273,7 @@ export default function KnowledgeScreen() {
             <Text style={styles.send}>{busy ? "停止" : "发送"}</Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
+      </KeyboardSafe>
     </SafeAreaView>
   )
 }

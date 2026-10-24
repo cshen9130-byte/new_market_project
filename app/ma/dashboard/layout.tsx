@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { Suspense, useEffect, useState } from "react"
+import { Suspense, useEffect, useLayoutEffect, useState } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { DashboardSidebar } from "@/components/ma/dashboard-sidebar"
 import { cn } from "@/lib/utils"
@@ -22,11 +22,46 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const isAllWeatherPage = pathname.startsWith("/ma/dashboard/all-weather")
   const isNhciIndexPage = pathname.startsWith("/ma/dashboard/nhci-index")
   const isPrivateFundsSection = pathname.startsWith("/ma/dashboard/private-funds")
-  const isBriefingEmbed = pathname.startsWith("/ma/dashboard/mom-analysis/briefing-embed")
   const [user, setUser] = useState<User | null>(null)
   const [chatVisible, setChatVisible] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  // Sync from URL on first client render so embed never flashes dashboard chrome.
+  const [isEmbedBriefing, setIsEmbedBriefing] = useState(() => {
+    if (typeof window === "undefined") return false
+    try {
+      const fromQuery = new URLSearchParams(window.location.search).get("embed") === "1"
+      const fromSession = window.sessionStorage.getItem("momEmbedBriefing") === "1"
+      const embed = fromQuery || fromSession
+      if (embed) document.documentElement.dataset.momEmbed = "1"
+      return embed
+    } catch {
+      return false
+    }
+  })
   usePresenceHeartbeat(user?.id, pathname)
+
+  useEffect(() => {
+    try {
+      const fromQuery = new URLSearchParams(window.location.search).get("embed") === "1"
+      if (fromQuery) {
+        window.sessionStorage.setItem("momEmbedBriefing", "1")
+        setIsEmbedBriefing(true)
+        document.documentElement.dataset.momEmbed = "1"
+        return
+      }
+      // Keep embed shell if we arrived via open-mom-briefing bridge this session.
+      const fromSession = window.sessionStorage.getItem("momEmbedBriefing") === "1"
+      const onRiskBriefing =
+        pathname.includes("/mom-analysis/risk-report") ||
+        pathname.includes("/mom-analysis/account-risk-report")
+      const embed = fromSession && onRiskBriefing
+      setIsEmbedBriefing(embed)
+      if (embed) document.documentElement.dataset.momEmbed = "1"
+      else delete document.documentElement.dataset.momEmbed
+    } catch {
+      setIsEmbedBriefing(false)
+    }
+  }, [pathname])
 
   useEffect(() => {
     function onChatVisible(event: Event) {
@@ -82,6 +117,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => window.removeEventListener(ACCOUNT_PROFILE_EVENT, onProfile)
   }, [])
 
+  useLayoutEffect(() => {
+    if (!isEmbedBriefing) return
+    document.documentElement.dataset.momEmbed = "1"
+  }, [isEmbedBriefing])
+
   if (!user) return null
 
   const visitTracker = (
@@ -91,12 +131,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     </Suspense>
   )
 
-  if (isBriefingEmbed) {
+  if (isEmbedBriefing) {
     return (
-      <div className="h-dvh overflow-hidden bg-[#0f1520]">
+      <>
         {visitTracker}
-        {children}
-      </div>
+        <div className="h-screen overflow-auto bg-background" data-mom-embed-shell="1">{children}</div>
+      </>
     )
   }
 

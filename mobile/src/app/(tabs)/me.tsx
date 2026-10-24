@@ -2,34 +2,42 @@ import { useEffect, useState } from "react"
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
 import { useAuth } from "@/auth"
-import { currentVersionLabel, promptAppUpdate, readAutoUpdate, writeAutoUpdate } from "@/app-update"
+import {
+  currentVersionLabel,
+  getAutoCheckUpdate,
+  promptAppUpdate,
+  setAutoCheckUpdate,
+} from "@/app-update"
 import { colors } from "@/theme"
 
 export default function MeScreen() {
   const { user, logout } = useAuth()
-  const [working, setWorking] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [updateStatus, setUpdateStatus] = useState("")
-  const [autoUpdate, setAutoUpdate] = useState(false)
+  const [autoCheck, setAutoCheck] = useState(true)
 
   useEffect(() => {
-    void readAutoUpdate().then(setAutoUpdate)
+    void getAutoCheckUpdate().then(setAutoCheck)
   }, [])
-
-  function onAutoUpdate(enabled: boolean) {
-    setAutoUpdate(enabled)
-    void writeAutoUpdate(enabled).then(() => {
-      if (!enabled) return
-      setWorking(true)
-      setUpdateStatus("")
-      void promptAppUpdate(true, setUpdateStatus).finally(() => setWorking(false))
-    })
-  }
 
   function onLogout() {
     Alert.alert("退出登录", "退出后需要重新登录才能查看跟踪产品。", [
       { text: "取消", style: "cancel" },
       { text: "退出", style: "destructive", onPress: () => void logout() },
     ])
+  }
+
+  function onCheckUpdate() {
+    if (checking) return
+    setChecking(true)
+    setUpdateStatus("正在检查更新…")
+    void promptAppUpdate(true, setUpdateStatus)
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : "检查更新失败"
+        setUpdateStatus(detail)
+        Alert.alert("检查更新失败", detail)
+      })
+      .finally(() => setChecking(false))
   }
 
   return (
@@ -47,28 +55,23 @@ export default function MeScreen() {
         </View>
       </View>
       <Text style={styles.note}>跟踪、搜索、净值和每日风控可在手机上查看。估值表和数据导入仍在电脑上使用。</Text>
-      <Pressable
-        style={styles.update}
-        disabled={working}
-        onPress={() => {
-          setWorking(true)
-          setUpdateStatus("")
-          void promptAppUpdate(true, setUpdateStatus).finally(() => setWorking(false))
-        }}
-      >
-        <Text style={styles.updateTitle}>{working && !updateStatus ? "正在检查…" : "检查更新"}</Text>
+      <Pressable style={styles.update} disabled={checking} onPress={onCheckUpdate}>
+        <Text style={styles.updateTitle}>{checking ? "正在检查…" : "检查更新"}</Text>
         <Text style={styles.updateMeta}>{updateStatus || `当前版本 ${currentVersionLabel()}`}</Text>
       </Pressable>
-      <View style={styles.auto}>
-        <View style={{ flex: 1 }}>
+      <View style={styles.autoRow}>
+        <View style={{ flex: 1, paddingRight: 12 }}>
           <Text style={styles.updateTitle}>自动检查更新</Text>
-          <Text style={styles.updateMeta}>打开应用后，有新版本就自动下载并打开安装</Text>
+          <Text style={styles.updateMeta}>打开应用后，有新版本就提示下载安装</Text>
         </View>
         <Switch
-          value={autoUpdate}
-          onValueChange={onAutoUpdate}
+          value={autoCheck}
+          onValueChange={(value) => {
+            setAutoCheck(value)
+            void setAutoCheckUpdate(value)
+          }}
           trackColor={{ false: colors.line, true: colors.gold }}
-          thumbColor={colors.card}
+          thumbColor="#fff"
         />
       </View>
       <Pressable style={styles.logout} onPress={onLogout}>
@@ -90,16 +93,9 @@ const styles = StyleSheet.create({
   role: { color: colors.gold, fontSize: 12, marginTop: 4, letterSpacing: 1 },
   note: { color: colors.muted, fontSize: 13, lineHeight: 20, marginTop: 28 },
   update: { marginTop: 22, paddingVertical: 16, borderTopWidth: 1, borderTopColor: colors.line },
+  autoRow: { flexDirection: "row", alignItems: "center", paddingVertical: 14, borderTopWidth: 1, borderTopColor: colors.line },
   updateTitle: { color: colors.text, fontWeight: "700", fontSize: 16 },
   updateMeta: { color: colors.muted, fontSize: 13, marginTop: 4 },
-  auto: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 16,
-    paddingVertical: 16,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-  },
   logout: { marginTop: 8, paddingVertical: 14, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.line },
   logoutText: { color: colors.danger, fontWeight: "700", letterSpacing: 1 },
 })

@@ -1,8 +1,6 @@
 import { useState, type ComponentProps } from "react"
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,6 +10,7 @@ import {
 } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
 import { useAuth } from "@/auth"
+import { KeyboardSafe } from "@/components/KeyboardSafe"
 import { colors } from "@/theme"
 
 export default function LoginScreen() {
@@ -38,14 +37,11 @@ export default function LoginScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.flex}
-        keyboardVerticalOffset={0}
-      >
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <KeyboardSafe>
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          style={styles.flex}
+          contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
@@ -58,32 +54,16 @@ export default function LoginScreen() {
             <Text style={styles.subtitle}>跟踪产品、搜索基金、查看净值。</Text>
           </View>
           <View style={styles.form}>
-            <Field
-              label="账号"
-              value={identifier}
-              onChangeText={setIdentifier}
-              placeholder="用户名或邮箱"
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="next"
-            />
-            <Field
-              label="密码"
-              value={password}
-              onChangeText={setPassword}
-              placeholder="密码"
-              secureTextEntry
-              returnKeyType="done"
-              onSubmitEditing={() => void onSubmit()}
-            />
-            {error ? <Text style={styles.error} numberOfLines={3}>{error}</Text> : null}
+            <Field label="账号" value={identifier} onChangeText={setIdentifier} placeholder="用户名或邮箱" autoCapitalize="none" autoCorrect={false} />
+            <Field label="密码" value={password} onChangeText={setPassword} placeholder="密码" secureTextEntry />
+            {error ? <Text style={styles.error} numberOfLines={6}>{error}</Text> : null}
             <Pressable style={[styles.button, busy && styles.buttonDisabled]} onPress={onSubmit} disabled={busy}>
               {busy ? <ActivityIndicator color={colors.bg} /> : <Text style={styles.buttonText}>登录</Text>}
             </Pressable>
             <Text style={styles.hint}>账号与电脑版相同。</Text>
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardSafe>
     </SafeAreaView>
   )
 }
@@ -103,12 +83,7 @@ function Field({
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   flex: { flex: 1 },
-  scroll: {
-    flexGrow: 1,
-    justifyContent: "flex-end",
-    paddingHorizontal: 28,
-    paddingBottom: 28,
-  },
+  scrollContent: { flexGrow: 1, justifyContent: "flex-end", paddingHorizontal: 28, paddingBottom: 28 },
   hero: { marginBottom: 36 },
   mark: { color: colors.gold, fontSize: 13, fontWeight: "700", letterSpacing: 4 },
   rule: { width: 36, height: 2, backgroundColor: colors.gold, marginTop: 14, marginBottom: 18 },

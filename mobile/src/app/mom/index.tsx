@@ -1,4 +1,4 @@
-import { useRouter } from "expo-router"
+﻿import { useRouter } from "expo-router"
 import { Pressable, StyleSheet, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
 import { colors } from "@/theme"
@@ -21,7 +21,7 @@ export default function MomHome() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.top}>
-        <Pressable onPress={() => router.replace("/(tabs)/home")} hitSlop={12}>
+        <Pressable onPress={() => { if (router.canGoBack()) router.back(); else router.replace("/(tabs)/home") }} hitSlop={12}>
           <Text style={styles.back}>返回</Text>
         </Pressable>
       </View>

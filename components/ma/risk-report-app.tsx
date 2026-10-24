@@ -7315,9 +7315,9 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
   .no-print { display: none !important; }
 `
 
-export function RiskReportApp({ variant, embedBriefing = false }: { variant: RiskReportVariant; embedBriefing?: boolean }) {
+export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
   if (variant === "account") return <RiskReportAppAccount />
-  return <RiskReportAppCore variant="mom" embedBriefing={embedBriefing} cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} />
+  return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} />
 }
 
 function RiskReportAppAccount() {
@@ -7328,12 +7328,10 @@ function RiskReportAppAccount() {
 
 function RiskReportAppCore({
   variant,
-  embedBriefing = false,
   cfmmcScope,
   momScope,
 }: {
   variant: RiskReportVariant
-  embedBriefing?: boolean
   cfmmcScope: CfmmcAccountScope
   momScope: MomSubAccountScope
 }) {
@@ -7370,12 +7368,20 @@ function RiskReportAppCore({
   }
 
   const [activeTab, setActiveTab] = useState<TabKey>(() => {
-    if (embedBriefing) return "briefing"
     if (typeof window === "undefined") return "overview"
     const tab = new URLSearchParams(window.location.search).get("tab")
     if (tab && baseSubNavItems.some((item) => item.key === tab)) return tab as TabKey
     return "overview"
   })
+  const isEmbed = (() => {
+    if (typeof window === "undefined") return false
+    try {
+      if (new URLSearchParams(window.location.search).get("embed") === "1") return true
+      return window.sessionStorage.getItem("momEmbedBriefing") === "1"
+    } catch {
+      return false
+    }
+  })()
   const accountScopeKey = isAccount
     ? (momScope.selected ? `mom:${momScope.selected}` : (cfmmcScope.selected || "all"))
     : "mom"
@@ -7575,6 +7581,56 @@ function RiskReportAppCore({
       cleanup()
     }
   }, [])
+
+  useEffect(() => {
+    if (!isEmbed) return
+    const w = window as Window & { __momBriefingCapturePng?: () => Promise<string | null> }
+    w.__momBriefingCapturePng = async () => {
+      const canvas = await captureBriefingCanvas()
+      if (!canvas) return null
+      return canvas.toDataURL("image/png")
+    }
+    return () => {
+      delete w.__momBriefingCapturePng
+    }
+  }, [isEmbed, captureBriefingCanvas])
+
+  // Belt-and-suspenders: mark document + inject CSS so dashboard chrome / page title /
+  // download bar cannot appear above the MOM 风控简报 card in mobile embed.
+  useEffect(() => {
+    if (!isEmbed) return
+    try {
+      document.documentElement.dataset.momEmbed = "1"
+      window.sessionStorage.setItem("momEmbedBriefing", "1")
+    } catch {}
+    const STYLE_ID = "__mom_embed_chrome_css"
+    if (!document.getElementById(STYLE_ID)) {
+      const style = document.createElement("style")
+      style.id = STYLE_ID
+      style.textContent = `
+html[data-mom-embed="1"] header,
+html[data-mom-embed="1"] aside,
+html[data-mom-embed="1"] [data-sidebar],
+html[data-mom-embed="1"] #section-top,
+html[data-mom-embed="1"] .sticky.top-0.z-20.no-print,
+html[data-mom-embed="1"] .mom-briefing-chrome {
+  display: none !important;
+}
+html[data-mom-embed="1"] body { background: #f3efe3 !important; }
+html[data-mom-embed="1"] #mom-briefing-printable {
+  box-shadow: none !important;
+  margin: 0 auto !important;
+}
+`
+      document.documentElement.appendChild(style)
+    }
+    return () => {
+      try {
+        delete document.documentElement.dataset.momEmbed
+        document.getElementById(STYLE_ID)?.remove()
+      } catch {}
+    }
+  }, [isEmbed])
 
   const buildStandaloneBriefingHtml = useCallback(async (dateStr: string) => {
     const sourceRoot = document.getElementById("mom-briefing-printable")
@@ -9001,9 +9057,9 @@ function RiskReportAppCore({
   }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, buildStandaloneBriefingHtml, briefingFileName])
 
   return (
-    <div className={embedBriefing ? "flex h-dvh overflow-hidden" : "flex -mx-6 -mb-6"} style={embedBriefing ? undefined : { height: "calc(100% + 1.5rem)" }}>
-      {/* Secondary sidebar — hidden on briefing tab to maximise screen width */}
-      <aside className={cn("w-44 shrink-0 border-r bg-card flex flex-col", activeTab === "briefing" && "hidden")}>
+    <div className={cn("flex", isEmbed ? "m-0 h-screen" : "-mx-6 -mb-6")} style={isEmbed ? undefined : { height: "calc(100% + 1.5rem)" }}>
+      {/* Secondary sidebar — hidden on briefing tab / mobile embed */}
+      <aside className={cn("w-44 shrink-0 border-r bg-card flex flex-col", (activeTab === "briefing" || isEmbed) && "hidden")}>
         <div className="p-4 border-b space-y-2">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{reportTitle}</p>
           {isAccount && (
@@ -9047,7 +9103,7 @@ function RiskReportAppCore({
       </aside>
 
       {/* Content area */}
-      <div id={activeTab === "position" ? "pos-main-scroll" : undefined} className={embedBriefing ? "min-w-0 flex-1 overflow-y-auto" : "flex-1 overflow-y-auto px-6 pb-6"}>
+      <div id={activeTab === "position" ? "pos-main-scroll" : undefined} className={cn("flex-1 overflow-y-auto", isEmbed ? "px-0 pb-0" : "px-6 pb-6")}>
         {activeTab === "position" && (
           <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
             <span className="text-xs text-muted-foreground">快捷导航：</span>
@@ -9163,6 +9219,8 @@ function RiskReportAppCore({
           </div>
         )}
 
+        {/* Page title / account switcher — never show above the printable card in embed */}
+        {!isEmbed && (
         <div id="section-top" className="flex items-end justify-between gap-4 pt-6 mb-4">
           <h1 className="text-2xl font-semibold tracking-tight">{activeItem.name}</h1>
           {isAccount && (cfmmcScope.accounts.length > 0 || momScope.accounts.length > 0) && (
@@ -9184,6 +9242,7 @@ function RiskReportAppCore({
             </div>
           )}
         </div>
+        )}
         <div key={accountScopeKey}>
         {activeTab === "overview" && <OverviewContent variant={variant} accountKey={accountScopeKey} allAccounts={isAllAccountsOverview} onSelectAccount={isAccount ? cfmmcScope.onChange : undefined} />}
         {activeTab === "intraday" && <IntradayContent singleAccount={isAccount} />}
@@ -9195,11 +9254,12 @@ function RiskReportAppCore({
           /* ── A4 newspaper wrapper ── */
           <div className="flex flex-col min-h-full"
                style={{ background: "linear-gradient(135deg,#1a1f2e 0%,#0f1520 60%,#1a1228 100%)" }}>
-            {/* Top bar: tab nav + download buttons */}
-            <div className={cn("sticky top-0 z-20 flex items-center gap-2 px-3 py-2 no-print", embedBriefing ? "justify-end" : "justify-between")}
+            {/* Top bar: tab nav + download buttons — hidden in mobile embed */}
+            {!isEmbed && (
+            <div className="mom-briefing-chrome sticky top-0 z-20 flex items-center justify-between gap-2 px-3 py-2 no-print"
                  style={{ background: "rgba(10,15,30,0.92)", backdropFilter: "blur(6px)", borderBottom: "1px solid rgba(200,168,75,0.25)" }}>
-              {/* Tab switcher. Hidden in the phone embed so this screen stays on the briefing. */}
-              <div className={cn("flex items-center gap-1 overflow-x-auto", embedBriefing && "hidden")}>
+              {/* Tab switcher */}
+              <div className="flex items-center gap-1 overflow-x-auto">
                 {subNavItems.map((item) => {
                   const Icon = item.icon
                   return (
@@ -9247,8 +9307,9 @@ function RiskReportAppCore({
               </button>
               </div>
             </div>
+            )}
             {/* A4 paper — scaled to fit screen width; transform (not zoom) keeps ECharts touch coords accurate */}
-            <div ref={briefingScrollRef} className="flex justify-center py-6 px-2">
+            <div ref={briefingScrollRef} className={cn("flex justify-center px-2", isEmbed ? "py-0" : "py-6")}>
             {/* Size wrapper: occupies exactly the scaled visual dimensions in layout flow */}
             <div style={{ width: 794 * briefingZoom, height: briefingPrintableHeight * briefingZoom, flexShrink: 0 }}>
             {/* Transform wrapper: CSS scale — getBoundingClientRect() reflects this correctly on all browsers */}

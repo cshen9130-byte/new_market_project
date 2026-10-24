@@ -5,9 +5,10 @@ import { SafeAreaView } from "react-native-safe-area-context"
 import { searchFunds } from "@/api"
 import { displayFundName } from "@/format"
 import type { SearchManager, SearchProduct } from "@/types"
+import { KeyboardSafe } from "@/components/KeyboardSafe"
 import { colors } from "@/theme"
 
-export default function SearchScreen({ onBack }: { onBack?: () => void }) {
+export default function SearchScreen() {
   const router = useRouter()
   const [keyword, setKeyword] = useState("")
   const [products, setProducts] = useState<SearchProduct[]>([])
@@ -53,12 +54,8 @@ export default function SearchScreen({ onBack }: { onBack?: () => void }) {
   }, [keyword])
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
-      {onBack ? (
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backHit}>
-          <Text style={styles.back}>返回</Text>
-        </Pressable>
-      ) : null}
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <KeyboardSafe>
       <View style={styles.header}>
         <Text style={styles.eyebrow}>检索</Text>
         <Text style={styles.title}>搜索</Text>
@@ -114,14 +111,13 @@ export default function SearchScreen({ onBack }: { onBack?: () => void }) {
           <Text style={styles.hint}>没有找到匹配的产品或管理人</Text>
         ) : null}
       </ScrollView>
+      </KeyboardSafe>
     </SafeAreaView>
   )
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  backHit: { paddingHorizontal: 22, paddingTop: 4 },
-  back: { color: colors.gold, fontSize: 14, fontWeight: "700", letterSpacing: 1 },
   header: { paddingHorizontal: 22, paddingTop: 8 },
   eyebrow: { color: colors.gold, fontSize: 12, letterSpacing: 2, fontWeight: "700" },
   title: { fontSize: 32, fontWeight: "700", color: colors.text, letterSpacing: -0.4 },

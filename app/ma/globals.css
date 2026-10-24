@@ -234,3 +234,16 @@
     background-color: color-mix(in oklch, var(--muted-foreground) 38%, transparent);
   }
 }
+
+/* mom-embed-briefing-chrome */
+html[data-mom-embed="1"] header,
+html[data-mom-embed="1"] aside,
+html[data-mom-embed="1"] [data-sidebar],
+html[data-mom-embed="1"] #section-top,
+html[data-mom-embed="1"] .mom-briefing-chrome,
+html[data-mom-embed="1"] .sticky.top-0.z-20.no-print {
+  display: none !important;
+}
+html[data-mom-embed="1"] body {
+  background: #f3efe3 !important;
+}
