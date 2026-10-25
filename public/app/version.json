@@ -1,1 +1,15 @@
-{"url":"http://8.154.33.143/app/fof-research.apk?v=65","versionCode":65,"versionName":"1.6.58","notes":"STT: Vosk -> FunASR Paraformer streaming (sherpa-onnx bilingual zh-en int8); hold-to-talk live partials; keep overlay tables/docx/PDF/fund-open/fuzzy aliases.","expectedBytes":253683836,"size":253683836,"sha256":"e07352ebde38be5b067cf8deba1eaeaf42184a32bf9696f1deaa0f3933fc454d","stt":{"runtime":"sherpa-onnx 1.12.23","model":"sherpa-onnx-streaming-paraformer-bilingual-zh-en (FunASR Paraformer int8)","previous":"vosk-model-small-cn-0.22"}}
+{
+    "size":  84633082,
+    "stt":  {
+                "runtime":  "sherpa-onnx 1.12.23",
+                "removed":  "vosk-android AAR + libvosk.so",
+                "model":  "sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans int8 (local QInt8 from official fp32; ~70MB)",
+                "previous":  "sherpa-onnx-streaming-paraformer-bilingual-zh-en (FunASR Paraformer int8)"
+            },
+    "url":  "http://8.154.33.143/app/fof-research.apk?v=66",
+    "versionCode":  66,
+    "expectedBytes":  84633082,
+    "notes":  "STT shrink: Paraformer bilingual ~237MB -\u003e Zipformer2-CTC multi-zh int8 ~70MB (14k-hr CN); drop unused Vosk AAR/JNI; keep hold-to-talk + fuzzy aliases. Product page: fund fetch retry/90s timeout + normalizeFundCode; server skip futile ALTER on basicinfo_bfl_track.",
+    "versionName":  "1.6.59",
+    "sha256":  "f942d62b99cf9e131ccb4a8a0183b17c0f50d749f8842241a2fba0de56695a42"
+}

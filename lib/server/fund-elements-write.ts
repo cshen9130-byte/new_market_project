@@ -55,24 +55,11 @@ let extraElementColumnsEnsured = false
 
 /** Create 运作日 / extra 申赎 columns if migrations 013/018 were not applied yet. */
 export async function ensureFundElementTrackColumns(): Promise<void> {
+  // market_user cannot ALTER basicinfo_bfl_track (PG 42501). 运作日 lives in
+  // ops_fund_operation_dates; skip the DDL attempt entirely to avoid noisy
+  // errors / any chance of an uncaught failure on cold start.
   if (extraElementColumnsEnsured) return
   extraElementColumnsEnsured = true
-  try {
-    await query(`
-      ALTER TABLE basicinfo_bfl_track
-        ADD COLUMN IF NOT EXISTS operation_date date,
-        ADD COLUMN IF NOT EXISTS risk_level text,
-        ADD COLUMN IF NOT EXISTS lock_period_desc text,
-        ADD COLUMN IF NOT EXISTS fee_pay_formula text,
-        ADD COLUMN IF NOT EXISTS fee_pay_formula_json jsonb
-    `)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    // market_user cannot ALTER this table; 运作日 is stored in ops_fund_operation_dates.
-    extraElementColumnsEnsured = /must be owner|permission denied|42501/i.test(msg)
-    if (!extraElementColumnsEnsured) extraElementColumnsEnsured = false
-    console.error("[fund-elements-write] failed to ensure 要素 columns on basicinfo_bfl_track", err)
-  }
 }
 
 type BasicinfoTrackRow = {

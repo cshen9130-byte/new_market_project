@@ -1,12 +1,30 @@
 import { getSession } from "@/session"
 import type { FundDetail, Pool, SearchManager, SearchProduct, TrackingPage, User } from "@/types"
 
-function readableError(raw: string, status: number): string {
+function isAbortLike(error: unknown): boolean {
+  if (!error) return false
+  if (typeof error === "object" && error !== null) {
+    const name = String((error as { name?: unknown }).name || "")
+    if (name === "AbortError") return true
+  }
+  const msg = error instanceof Error ? error.message : String(error)
+  return /abort|aborted|cancel+ed|Fetch request has been canceled/i.test(msg)
+}
+
+function readableError(raw: string, status: number, context: "login" | "api" = "api"): string {
   const text = raw.replace(/\s+/g, " ").trim()
   if (!text || text.startsWith("<") || text.includes("<!DOCTYPE") || text.includes("<html")) {
-    if (status === 401 || status === 403) return "账号或密码错误"
-    if (status >= 500) return "服务器暂时出错，请再登录一次"
-    return "服务器没有返回登录结果，请检查地址后再试"
+    if (status === 401 || status === 403) {
+      return context === "login" ? "账号或密码错误" : "没有访问权限，请重新登录后再试"
+    }
+    if (status >= 500) return "服务器暂时出错，请稍后再试"
+    if (status === 404) return "没有找到对应数据，请换一个名称或备案号"
+    if (status === 308 || status === 301 || status === 302) {
+      return "服务器地址跳转异常，请检查网络后重试"
+    }
+    return context === "login"
+      ? "服务器没有返回登录结果，请检查地址后再试"
+      : `服务器返回了异常页面（${status || "?"}），请检查网络后重试`
   }
   return text.length > 80 ? `${text.slice(0, 80)}…` : text
 }
@@ -19,7 +37,7 @@ const FALLBACK_POOLS: Pool[] = [
   { pool_key: "jy_ops", label: "JY运维池" },
 ]
 
-async function request<T>(baseUrl: string, path: string, init: RequestInit = {}, userId?: string, timeoutMs = 25000): Promise<T> {
+async function request<T>(baseUrl: string, path: string, init: RequestInit = {}, userId?: string, timeoutMs = 25000, context: "login" | "api" = "api"): Promise<T> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -40,12 +58,12 @@ async function request<T>(baseUrl: string, path: string, init: RequestInit = {},
     if (!response.ok) {
       const record = data && typeof data === "object" ? (data as { error?: unknown; detail?: unknown }) : {}
       const raw = typeof record.error === "string" ? record.error : typeof record.detail === "string" ? record.detail : ""
-      throw new Error(readableError(raw, response.status))
+      throw new Error(readableError(raw, response.status, context))
     }
     return data as T
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("连接超时，请检查手机网络")
+    if (isAbortLike(error)) {
+      throw new Error("连接超时或请求已取消，请再试一次")
     }
     if (error instanceof TypeError) {
       throw new Error("无法连接服务器，请确认地址、端口和同一网络")
@@ -78,6 +96,9 @@ export async function loginRequest(baseUrl: string, identifier: string, password
     baseUrl,
     "/api/auth/login",
     { method: "POST", body: JSON.stringify({ identifier, password }) },
+    undefined,
+    25000,
+    "login",
   )
   if (!data.user) throw new Error("登录失败")
   return toPublicUser(data.user)
@@ -124,8 +145,48 @@ export async function searchFunds(query: string): Promise<{ products: SearchProd
   }
 }
 
+function normalizeFundCode(raw: string): string {
+  let code = String(raw || "").trim()
+  if (!code) throw new Error("缺少备案号")
+  // Expo Router may leave a once-encoded segment; avoid double-encoding.
+  try {
+    if (/%[0-9A-Fa-f]{2}/.test(code)) code = decodeURIComponent(code)
+  } catch {
+    // keep raw
+  }
+  code = code.trim().replace(/^\/+|\/+$/g, "")
+  if (!code) throw new Error("缺少备案号")
+  return code
+}
+
 export async function fetchFund(code: string): Promise<FundDetail> {
-  return authed<FundDetail>(`/ma/api/private-funds/${encodeURIComponent(code)}`)
+  const beian = normalizeFundCode(code)
+  const path = `/ma/api/private-funds/${encodeURIComponent(beian)}`
+  const { baseUrl, user } = getSession()
+  if (!baseUrl) throw new Error("暂时连不上服务器")
+  if (!user?.id) throw new Error("登录已失效，请返回后重新登录")
+
+  let lastError: unknown
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const detail = await request<FundDetail>(baseUrl, path, {}, user.id, 90000, "api")
+      const infoCode = String(detail?.info?.beian_hao || "").trim()
+      if (!infoCode && !Array.isArray(detail?.nav_series)) {
+        throw new Error("产品详情返回为空，请稍后重试")
+      }
+      return detail
+    } catch (error) {
+      lastError = error
+      const msg = error instanceof Error ? error.message : String(error)
+      // Retry once on transient cancel/timeout/network blips (common when leaving AI overlay).
+      if (attempt === 0 && /超时|取消|canceled|无法连接|异常页面|跳转异常/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 350))
+        continue
+      }
+      throw error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("加载产品失败")
 }
 
 export type ResearchFundHit = {
@@ -669,7 +730,7 @@ export function streamAssistantChat(
   })
 }
 ﻿
-export type ResearchExportFormat = "doc" | "pdf"
+export type ResearchExportFormat = "docx" | "pdf"
 
 export async function exportResearchReport(input: {
   markdown: string
@@ -684,7 +745,7 @@ export async function exportResearchReport(input: {
   const timer = setTimeout(() => controller.abort(), 120000)
   try {
     const headers = new Headers({
-      Accept: "application/msword, application/pdf, application/json",
+      Accept: "application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/msword, application/pdf, application/json",
       "Content-Type": "application/json",
     })
     if (user?.id) headers.set("x-market-user-id", user.id)
@@ -704,11 +765,15 @@ export async function exportResearchReport(input: {
       }
       throw new Error(message)
     }
-    const mime = response.headers.get("Content-Type") || (input.format === "pdf" ? "application/pdf" : "application/msword")
+    const mime =
+      response.headers.get("Content-Type") ||
+      (input.format === "pdf"
+        ? "application/pdf"
+        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     let filename =
       input.format === "pdf"
         ? `${(input.managerName || "管理人").trim() || "管理人"}-管理人画像.pdf`
-        : `${(input.managerName || "管理人").trim() || "管理人"}-管理人画像.doc`
+        : `${(input.managerName || "管理人").trim() || "管理人"}-管理人画像.docx`
     const disposition = response.headers.get("Content-Disposition") || ""
     const star = disposition.match(/filename\*=UTF-8''([^;]+)/i)
     const plain = disposition.match(/filename="?([^";]+)"?/i)

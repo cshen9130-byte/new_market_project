@@ -3,7 +3,7 @@
     "name": "母基金投研",
     "slug": "fof-research",
     "scheme": "fofresearch",
-    "version": "1.6.58",
+    "version": "1.6.59",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -21,7 +21,7 @@
     },
     "android": {
       "package": "com.marketwebsite.fofresearch",
-      "versionCode": 65,
+      "versionCode": 66,
       "usesCleartextTraffic": true,
       "permissions": [
         "INTERNET",

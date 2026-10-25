@@ -12,7 +12,17 @@ import { colors, returnColor } from "@/theme"
 export default function FundScreen() {
   const router = useRouter()
   const params = useLocalSearchParams<{ code?: string | string[] }>()
-  const code = Array.isArray(params.code) ? params.code[0] : params.code || ""
+  const rawCode = Array.isArray(params.code) ? params.code[0] : params.code || ""
+  const code = (() => {
+    let value = String(rawCode || "").trim()
+    if (!value) return ""
+    try {
+      if (/%[0-9A-Fa-f]{2}/.test(value)) value = decodeURIComponent(value)
+    } catch {
+      // keep
+    }
+    return value.trim()
+  })()
   const [data, setData] = useState<FundDetail | null>(null)
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(true)
