@@ -28,8 +28,8 @@ export async function POST(req: Request) {
     })
   }
 
-  const formatRaw = String(body.format ?? "doc").toLowerCase()
-  const format: ReportExportFormat = formatRaw === "pdf" ? "pdf" : "doc"
+  const formatRaw = String(body.format ?? "docx").toLowerCase()
+  const format: ReportExportFormat = formatRaw === "pdf" ? "pdf" : "docx"
   const managerName = String(body.managerName ?? "").trim()
   const title =
     String(body.title ?? "").trim() ||

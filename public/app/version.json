@@ -1,6 +1,1 @@
-{
-  "url": "http://8.154.33.143/app/fof-research.apk?v=30",
-  "versionCode": 30,
-  "versionName": "1.6.23",
-  "notes": "小艺 continuous=false；MOM简报隐藏网页顶栏；侧滑返回上一页；全局键盘/明文HTTP/底栏AI球；arm64约15MB"
-}
+{"url":"http://8.154.33.143/app/fof-research.apk?v=64","versionCode":64,"versionName":"1.6.57","notes":"AI overlay tables: fixed per-column widths + true grid borders + horizontal scroll; PDF export: real bordered tables (not pipe-joined raw MD); keep docx/STT/overlay/fund open.","expectedBytes":69217345,"size":69217345,"sha256":"1dd33fe6f6fdf73275dcadc6dfbcc41368c91c79e39bb3faa850e4dd06cf52a0"}

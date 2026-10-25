@@ -29,14 +29,20 @@ import {
 } from "@/api"
 import { exportAndShareManagerReport } from "@/share-report"
 import { classifyAiIntent, intentAck, fundSearchVariants } from "@/ai-intent"
+import { fuzzyMatchManagers, prepareVoiceQuery } from "@/voice-normalize"
 import { mapChatHrefToMobile } from "@/ai-navigate"
 import { displayFundName } from "@/format"
+import { MarkdownAnswer } from "./MarkdownAnswer"
 
 export type AiVoiceOverlayHandle = {
   beginHold: () => void
   endHold: () => Promise<"sent" | "cancelled" | "empty">
   cancelHold: () => void
   showHint: () => void
+  /** Feed text from external STT (e.g. Vosk VoiceBall) into the overlay router. */
+  ask: (text: string) => Promise<void>
+  /** Open the sheet with type-in when STT returned empty. */
+  openTypeHint: () => void
 }
 
 type Turn = {
@@ -44,9 +50,13 @@ type Turn = {
   content: string
   linkPath?: string
   linkLabel?: string
+  /** Bare beian_hao for reliable product navigation */
+  fundCode?: string
   /** Completed manager-profile markdown for Word/PDF export */
   exportManagerName?: string
   exportMarkdown?: string
+  /** Ambiguous STT entity picks shown as chips */
+  pickCandidates?: string[]
 }
 
 type VoiceApi = {
@@ -158,7 +168,7 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
     const [draft, setDraft] = useState("")
     const [turns, setTurns] = useState<Turn[]>([])
     const [busy, setBusy] = useState(false)
-    const [exportingFormat, setExportingFormat] = useState<null | "doc" | "pdf">(null)
+    const [exportingFormat, setExportingFormat] = useState<null | "docx" | "pdf">(null)
     const [showType, setShowType] = useState(false)
     const abortRef = useRef<AbortController | null>(null)
     const scrollRef = useRef<{ scrollToEnd: (opts?: { animated?: boolean }) => void } | null>(null)
@@ -237,9 +247,10 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
         return
       }
       const name = displayFundName(hit.product_name, hit.short_name)
-      const path = `/fund/${encodeURIComponent(hit.beian_hao)}`
+      const fundCode = String(hit.beian_hao || "").trim()
+      const path = `/fund/${encodeURIComponent(fundCode)}`
       updateLastAssistant(
-        () => `已找到「${name}」（${hit.beian_hao}）。可点下方打开净值图，或继续长按 AI 球说话。`,
+        () => `已找到「${name}」（${fundCode}），正在打开产品页…`,
       )
       setTurns((current) => {
         const next = current.slice()
@@ -249,10 +260,18 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
             ...last,
             linkPath: path,
             linkLabel: `查看 ${name}`,
+            fundCode,
           }
         }
         return next
       })
+      // Close sheet first, then open fund with explicit params (avoids empty/[code] races on Huawei).
+      setTimeout(() => {
+        setVisible(false)
+        setShowType(false)
+        setHint(false)
+        router.push({ pathname: "/fund/[code]", params: { code: fundCode } } as never)
+      }, 280)
     }
 
     async function handleTeamBackground(keyword: string, signal: AbortSignal) {
@@ -287,11 +306,52 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
     }
 
     async function handleManagerProfile(managerName: string, signal: AbortSignal) {
+      let resolved = prepareVoiceQuery(managerName).text.trim() || managerName.trim()
+      // API fuzzy: searchFunds managers, then pick best near-miss.
+      try {
+        const found = await searchFunds(resolved)
+        const apiNames = (found.managers || [])
+          .map((m) => String(m.manager_name || "").trim())
+          .filter((n) => n.length >= 2)
+        const hits = fuzzyMatchManagers(resolved, apiNames)
+        if (hits[0] && hits[0].score >= 0.72) {
+          if (hits[1] && hits[0].score - hits[1].score < 0.08 && hits[0].score < 0.95) {
+            updateLastAssistant(
+              () => `语音可能听成了「${managerName}」。请选择要分析的管理人：`,
+            )
+            setTurns((current) => {
+              const next = current.slice()
+              for (let i = next.length - 1; i >= 0; i -= 1) {
+                if (next[i].role === "assistant") {
+                  next[i] = {
+                    ...next[i],
+                    pickCandidates: hits.slice(0, 4).map((h) => h.name),
+                  }
+                  break
+                }
+              }
+              return next
+            })
+            return
+          }
+          resolved = hits[0].name
+        } else if (apiNames[0] && resolved.length >= 2) {
+          // Prefer API hit that contains corrected token (e.g. 幻方 → 宁波幻方量化投资...).
+          const token = resolved.length <= 4 ? resolved : resolved.slice(0, 4)
+          const prefer = apiNames.find((n) => n.includes(token)) || apiNames[0]
+          if (prefer) resolved = prefer
+        }
+      } catch {
+        // keep resolved
+      }
+      if (resolved !== managerName) {
+        updateLastAssistant(() => `已将「${managerName}」匹配为「${resolved}」，正在生成管理人画像…`)
+      }
       let report = ""
       let hadError = false
       await streamResearch(
         "manager-profile",
-        { managerName, kbPath: "" },
+        { managerName: resolved, kbPath: "" },
         (event) => {
           if (event.type === "report_text") {
             const delta = String(event.delta ?? "")
@@ -320,7 +380,7 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
               next[i] = {
                 ...next[i],
                 content: report,
-                exportManagerName: managerName,
+                exportManagerName: resolved,
                 exportMarkdown: report,
               }
               break
@@ -332,12 +392,14 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
     }
 
     async function handleKnowledge(question: string, history: Turn[], signal: AbortSignal) {
+      const preparedQ = prepareVoiceQuery(question)
+      const q = preparedQ.text.trim() || question
       const hist = history
         .filter((t) => t.content.trim())
         .map((t) => ({ role: t.role, content: t.content }))
       await streamKnowledge(
         {
-          question,
+          question: q,
           history: hist,
           stream: true,
           modelMode: "plus",
@@ -396,16 +458,38 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
     }
 
     async function send(text?: string) {
-      const trimmed = (text ?? draft).trim()
-      if (!trimmed || busy) return
+      const rawIn = (text ?? draft).trim()
+      if (!rawIn || busy) return
+      const prepared = prepareVoiceQuery(rawIn)
+      const trimmed = prepared.text.trim() || rawIn
+      if (prepared.ambiguous && prepared.candidates.length >= 2) {
+        setDraft("")
+        setVisible(true)
+        setTurns((current) => [
+          ...current,
+          { role: "user", content: trimmed },
+          {
+            role: "assistant",
+            content: `语音可能听成了「${prepared.normalized || rawIn}」。请选择最接近的名称：`,
+            pickCandidates: prepared.candidates.map((c) => c.name),
+          },
+        ])
+        return
+      }
       const intent = classifyAiIntent(trimmed)
-      const userTurn: Turn = { role: "user", content: trimmed }
+      const userTurn: Turn = {
+        role: "user",
+        content: prepared.replacements.length
+          ? `${trimmed}`
+          : trimmed,
+      }
       const ack = intentAck(intent)
       setDraft("")
       setVisible(true)
       const prior = turnsRef.current
       setTurns((current) => [...current, userTurn, { role: "assistant", content: ack }])
       setBusy(true)
+      abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
       try {
@@ -427,6 +511,8 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
           await handleFundPerformance(intent.query)
         } else if (intent.kind === "manager-profile") {
           await handleManagerProfile(intent.managerName, controller.signal)
+        } else if (intent.kind === "team-background") {
+          await handleTeamBackground(intent.keyword, controller.signal)
         } else if (intent.kind === "knowledge") {
           const history = [...prior, userTurn]
           await handleKnowledge(intent.question, history, controller.signal)
@@ -435,8 +521,18 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
           await handleAssistant(history, controller.signal)
         }
       } catch (err) {
-        if (!(err instanceof Error && err.name === "AbortError")) {
-          updateLastAssistant(() => (err instanceof Error ? err.message : "请求失败"))
+        const msg = err instanceof Error ? err.message : String(err)
+        const aborted =
+          (err instanceof Error && err.name === "AbortError") ||
+          /abort|aborted|cancel+ed|Fetch request has been canceled/i.test(msg)
+        if (!aborted) {
+          updateLastAssistant(() => msg || "请求失败")
+        } else {
+          updateLastAssistant((c) =>
+            c.startsWith("正在") || c.includes("…") || c.includes("...")
+              ? "已取消"
+              : c,
+          )
         }
       } finally {
         setBusy(false)
@@ -444,7 +540,7 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
     }
 
 
-    async function handleExportReport(turn: Turn, format: "doc" | "pdf") {
+    async function handleExportReport(turn: Turn, format: "docx" | "pdf") {
       if (!turn.exportMarkdown || !turn.exportManagerName || exportingFormat) return
       setExportingFormat(format)
       try {
@@ -484,6 +580,20 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
         setHint(true)
         if (hintTimer.current) clearTimeout(hintTimer.current)
         hintTimer.current = setTimeout(() => setHint(false), 1600)
+      },
+      async ask(text: string) {
+        const trimmed = text.trim()
+        if (!trimmed) {
+          setShowType(true)
+          setVisible(true)
+          return
+        }
+        setVisible(true)
+        await send(trimmed)
+      },
+      openTypeHint() {
+        setShowType(true)
+        setVisible(true)
       },
     }))
 
@@ -559,29 +669,59 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
                       key={`${turn.role}-${index}`}
                       style={turn.role === "user" ? styles.userBubble : styles.answer}
                     >
-                      <Text style={turn.role === "user" ? styles.userText : styles.answerText}>
-                        {turn.content || (busy ? "…" : "")}
-                      </Text>
-                      {turn.linkPath ? (
+                                            {turn.role === "user" ? (
+                        <Text style={styles.userText}>{turn.content}</Text>
+                      ) : (
+                        <MarkdownAnswer content={turn.content} placeholder={busy ? "…" : ""} />
+                      )}
+                      {turn.linkPath || turn.fundCode ? (
                         <Pressable
                           style={styles.linkBtn}
                           onPress={() => {
-                            router.push(turn.linkPath as never)
-                            close()
+                            const code = (turn.fundCode || "").trim()
+                            // Abort in-flight AI streams only; do not cancel the upcoming fund fetch.
+                            abortRef.current?.abort()
+                            setVisible(false)
+                            setShowType(false)
+                            setHint(false)
+                            requestAnimationFrame(() => {
+                              if (code) {
+                                router.push({ pathname: "/fund/[code]", params: { code } } as never)
+                              } else if (turn.linkPath) {
+                                router.push(turn.linkPath as never)
+                              }
+                            })
                           }}
                         >
                           <Text style={styles.linkText}>{turn.linkLabel || "打开"}</Text>
                         </Pressable>
                       ) : null}
+                      
+                      {turn.pickCandidates && turn.pickCandidates.length > 0 && !busy ? (
+                        <View style={styles.pickRow}>
+                          {turn.pickCandidates.map((name) => (
+                            <Pressable
+                              key={name}
+                              style={styles.pickChip}
+                              onPress={() => {
+                                void send(name.includes("管理人") ? name : `帮我分析一下${name}这家管理人`)
+                              }}
+                            >
+                              <Text style={styles.pickChipText}>{name}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      ) : null}
+
                       {turn.exportMarkdown && turn.exportManagerName && !busy ? (
                         <View style={styles.exportRow}>
                           <Pressable
-                            style={[styles.exportBtn, exportingFormat === "doc" && styles.exportBtnBusy]}
+                            style={[styles.exportBtn, exportingFormat === "docx" && styles.exportBtnBusy]}
                             disabled={!!exportingFormat}
-                            onPress={() => void handleExportReport(turn, "doc")}
+                            onPress={() => void handleExportReport(turn, "docx")}
                           >
                             <Text style={styles.exportText}>
-                              {exportingFormat === "doc" ? "生成中…" : "导出 Word"}
+                              {exportingFormat === "docx" ? "生成中…" : "导出 Word"}
                             </Text>
                           </Pressable>
                           <Pressable
@@ -787,4 +927,24 @@ const styles = StyleSheet.create({
   },
   exportBtnBusy: { opacity: 0.6 },
   exportText: { color: "#E7C98A", fontWeight: "700", letterSpacing: 0.6, fontSize: 14 },
+
+  pickRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  pickChip: {
+    backgroundColor: "#1F1A16",
+    borderColor: "#C7A56A",
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  pickChipText: {
+    color: "#F5E6C8",
+    fontSize: 13,
+    fontWeight: "600",
+  },
 })

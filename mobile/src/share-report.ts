@@ -1,10 +1,20 @@
 import { NativeModules, Platform } from "react-native"
 import { File, Paths } from "expo-file-system"
+import * as Sharing from "expo-sharing"
 import { exportResearchReport, type ResearchExportFormat } from "@/api"
 
-const shareNative = NativeModules.ApkInstaller as {
+type ApkInstallerNative = {
   shareImage?: (uri: string) => Promise<void>
   shareFile?: (uri: string, mime: string, title?: string) => Promise<void>
+}
+
+function getApkInstaller(): ApkInstallerNative | null {
+  try {
+    const mod = NativeModules.ApkInstaller as ApkInstallerNative | null | undefined
+    return mod && typeof mod === "object" ? mod : null
+  } catch {
+    return null
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -23,20 +33,55 @@ function bytesToBase64(bytes: Uint8Array): string {
   return out
 }
 
-async function shareLocalFile(uri: string, mime: string, title: string): Promise<void> {
+function pickShareUri(file: File): string {
+  const anyFile = file as File & { contentUri?: string; uri: string }
+  const content = typeof anyFile.contentUri === "string" ? anyFile.contentUri.trim() : ""
+  if (content) return content
+  return anyFile.uri
+}
+
+async function shareLocalFile(file: File, mime: string, title: string): Promise<void> {
   if (Platform.OS !== "android") {
-    throw new Error("请在 Android 手机 App 里分享到微信")
+    throw new Error("请在 Android 手机 App 内导出并分享到微信")
   }
-  if (typeof shareNative.shareFile === "function") {
-    await shareNative.shareFile(uri, mime, title)
+  const uri = pickShareUri(file)
+  if (!uri) throw new Error("导出文件路径无效，请重试")
+
+  const shareNative = getApkInstaller()
+  if (shareNative && typeof shareNative.shareFile === "function") {
+    try {
+      await shareNative.shareFile(uri, mime, title)
+      return
+    } catch (err) {
+      // Fall through to expo-sharing / image path.
+      console.warn("[share-report] native shareFile failed", err)
+    }
+  }
+  if (mime.startsWith("image/") && shareNative && typeof shareNative.shareImage === "function") {
+    try {
+      await shareNative.shareImage(uri)
+      return
+    } catch (err) {
+      console.warn("[share-report] native shareImage failed", err)
+    }
+  }
+
+  try {
+    const available = await Sharing.isAvailableAsync()
+    if (!available) {
+      throw new Error("unavailable")
+    }
+    await Sharing.shareAsync(uri, {
+      mimeType: mime,
+      dialogTitle: title,
+    })
     return
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `无法调起系统分享（${detail}）。文件已生成：${title}。请用浏览器更新到最新版，或从文件管理器打开 App 缓存目录分享。`,
+    )
   }
-  // Older APK without shareFile: images only
-  if (mime.startsWith("image/") && typeof shareNative.shareImage === "function") {
-    await shareNative.shareImage(uri)
-    return
-  }
-  throw new Error("当前 App 版本不支持文件分享，请检查更新后再试")
 }
 
 export async function exportAndShareManagerReport(input: {
@@ -56,6 +101,6 @@ export async function exportAndShareManagerReport(input: {
   if (file.exists) file.delete()
   file.create()
   await file.write(bytesToBase64(bytes), { encoding: "base64" })
-  await shareLocalFile(file.uri, mime, safeName)
+  await shareLocalFile(file, mime, safeName)
   return safeName
 }
