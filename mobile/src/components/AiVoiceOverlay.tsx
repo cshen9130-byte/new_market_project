@@ -9,6 +9,7 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Animated,
   Keyboard,
   KeyboardAvoidingView,
@@ -22,13 +23,20 @@ import {
 } from "react-native"
 import { useRouter } from "expo-router"
 import {
+  downloadReportArtifact,
+  fetchReportNavRange,
+  generateFofMonthlyReport,
+  generateFofWeeklyReport,
+  generateProductQuarterlyReport,
   searchFunds,
+  searchReportProducts,
   streamAssistantChat,
   streamKnowledge,
   streamResearch,
 } from "@/api"
-import { exportAndShareManagerReport } from "@/share-report"
-import { classifyAiIntent, intentAck, fundSearchVariants } from "@/ai-intent"
+import { exportAndShareManagerReport, shareReportBytes } from "@/share-report"
+import { classifyAiIntent, intentAck, fundSearchVariants, reportProductSearchVariants, scoreReportProductMatch } from "@/ai-intent"
+import { clampLatestReportPeriodToNav, defaultReportPeriod } from "@/report-period"
 import { fuzzyMatchManagers, prepareVoiceQuery } from "@/voice-normalize"
 import { mapChatHrefToMobile } from "@/ai-navigate"
 import { displayFundName } from "@/format"
@@ -57,6 +65,13 @@ type Turn = {
   exportMarkdown?: string
   /** Ambiguous STT entity picks shown as chips */
   pickCandidates?: string[]
+  /** When set, chips resend via template with {name} replaced */
+  pickResendTemplate?: string
+  /** Website fund report (周报/月报/季报) share payloads */
+  reportTitle?: string
+  reportPreviewUri?: string
+  reportPngPath?: string
+  reportPdfPath?: string
 }
 
 type VoiceApi = {
@@ -168,7 +183,7 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
     const [draft, setDraft] = useState("")
     const [turns, setTurns] = useState<Turn[]>([])
     const [busy, setBusy] = useState(false)
-    const [exportingFormat, setExportingFormat] = useState<null | "docx" | "pdf">(null)
+    const [exportingFormat, setExportingFormat] = useState<null | "docx" | "pdf" | "png" | "report-pdf">(null)
     const [showType, setShowType] = useState(false)
     const abortRef = useRef<AbortController | null>(null)
     const scrollRef = useRef<{ scrollToEnd: (opts?: { animated?: boolean }) => void } | null>(null)
@@ -457,6 +472,217 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
       )
     }
 
+    async function handleFundReport(intent: {
+      reportKind: "weekly" | "monthly" | "quarterly"
+      productQuery: string
+      begin?: string
+      end?: string
+      latest: boolean
+    }) {
+      const kindLabel =
+        intent.reportKind === "weekly" ? "周报" : intent.reportKind === "monthly" ? "月报" : "季报"
+      const variants = reportProductSearchVariants(intent.productQuery)
+      type Cand = { product_name: string; beian_hao: string | null; score: number }
+      const scored: Cand[] = []
+      const seen = new Set<string>()
+      const pushCand = (product_name: string, beian_hao: string | null) => {
+        const name = product_name.trim()
+        if (!name) return
+        const key = `${beian_hao || ""}::${name}`
+        if (seen.has(key)) return
+        seen.add(key)
+        const score = Math.max(
+          scoreReportProductMatch(name, intent.productQuery),
+          ...variants.map((v) => scoreReportProductMatch(name, v)),
+        )
+        if (score <= 0) return
+        scored.push({ product_name: name, beian_hao, score })
+      }
+      for (const q of variants) {
+        try {
+          const rows = await searchReportProducts(q)
+          for (const row of rows) {
+            pushCand(row.product_name, row.beian_hao)
+          }
+        } catch {
+          // try next variant
+        }
+        if (scored.some((c) => c.score >= 80)) break
+      }
+      if (!scored.length) {
+        for (const q of variants) {
+          try {
+            const found = await searchFunds(q)
+            for (const p of found.products) {
+              pushCand(p.product_name || p.short_name || q, p.beian_hao || null)
+            }
+          } catch {
+            // try next
+          }
+          if (scored.some((c) => c.score >= 80)) break
+        }
+      }
+      scored.sort((a, b) => b.score - a.score || a.product_name.length - b.product_name.length)
+      if (!scored.length) {
+        updateLastAssistant(
+          () => `没有找到与「${intent.productQuery}」匹配的产品，请换更准确的名称或备案号。`,
+        )
+        return
+      }
+      if (
+        scored.length >= 2 &&
+        scored[0].score < 95 &&
+        scored[0].score - scored[1].score < 8
+      ) {
+        const picks = scored.slice(0, 4).map((c) => c.product_name)
+        updateLastAssistant(
+          () => `找到多个与「${intent.productQuery}」相近的产品，请选择要生成${kindLabel}的产品：`,
+        )
+        setTurns((current) => {
+          const next = current.slice()
+          for (let i = next.length - 1; i >= 0; i -= 1) {
+            if (next[i].role === "assistant") {
+              next[i] = {
+                ...next[i],
+                pickCandidates: picks,
+                pickResendTemplate: `给我做一份最新的{name}${kindLabel}`,
+              }
+              break
+            }
+          }
+          return next
+        })
+        return
+      }
+      let productName = scored[0].product_name
+      let beianHao = scored[0].beian_hao
+
+      let begin = intent.begin || ""
+      let end = intent.end || ""
+      if (!begin || !end || intent.latest) {
+        let period = defaultReportPeriod(intent.reportKind)
+        try {
+          const range = await fetchReportNavRange({
+            kind: intent.reportKind,
+            product_name: productName,
+            beian_hao: beianHao,
+          })
+          if (range.beian_hao && range.beian_hao !== beianHao) beianHao = range.beian_hao
+          period = clampLatestReportPeriodToNav(intent.reportKind, period, {
+            start: range.start,
+            end: range.end,
+          })
+        } catch {
+          // Keep calendar latest week/month/quarter if nav-range lookup fails.
+        }
+        begin = period.begin
+        end = period.end
+      }
+      updateLastAssistant(
+        () => `正在生成「${productName}」${kindLabel}（${begin} ~ ${end}，净值频率默认周频）…`,
+      )
+
+      let result
+      if (intent.reportKind === "weekly") {
+        result = await generateFofWeeklyReport({
+          product_name: productName,
+          beian_hao: beianHao,
+          week_begin: begin,
+          week_end: end,
+          report_title: productName,
+          nav_frequency: "weekly",
+        })
+      } else if (intent.reportKind === "monthly") {
+        result = await generateFofMonthlyReport({
+          product_name: productName,
+          beian_hao: beianHao,
+          month_begin: begin,
+          month_end: end,
+          report_title: productName,
+          nav_frequency: "weekly",
+          report_layout: "review",
+        })
+      } else {
+        result = await generateProductQuarterlyReport({
+          product_name: productName,
+          beian_hao: beianHao,
+          period_begin: begin,
+          period_end: end,
+          report_title: productName,
+          nav_frequency: "weekly",
+        })
+      }
+
+      let previewUri = result.previewDataUrl || ""
+      if (!previewUri && result.download?.png) {
+        try {
+          const file = await downloadReportArtifact(result.download.png)
+          const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+          let b64 = ""
+          const bytes = file.bytes
+          for (let i = 0; i < bytes.length; i += 3) {
+            const a = bytes[i]
+            const b = i + 1 < bytes.length ? bytes[i + 1] : 0
+            const c = i + 2 < bytes.length ? bytes[i + 2] : 0
+            const triplet = (a << 16) | (b << 8) | c
+            b64 += chars[(triplet >> 18) & 63]
+            b64 += chars[(triplet >> 12) & 63]
+            b64 += i + 1 < bytes.length ? chars[(triplet >> 6) & 63] : "="
+            b64 += i + 2 < bytes.length ? chars[triplet & 63] : "="
+          }
+          previewUri = `data:${file.mime || "image/png"};base64,${b64}`
+        } catch {
+          // preview optional
+        }
+      }
+
+      const title = result.reportTitle || productName
+      updateLastAssistant(
+        () => `已生成「${title}」${kindLabel}（${begin} ~ ${end}）。可分享图片或 PDF 到微信。`,
+      )
+      setTurns((current) => {
+        const next = current.slice()
+        const last = next[next.length - 1]
+        if (last?.role === "assistant") {
+          next[next.length - 1] = {
+            ...last,
+            reportTitle: title,
+            reportPreviewUri: previewUri || undefined,
+            reportPngPath: result.download?.png,
+            reportPdfPath: result.download?.pdf,
+            linkPath: "/fund-reports",
+            linkLabel: "打开报告页",
+          }
+        }
+        return next
+      })
+    }
+
+    async function handleShareFundReport(turn: Turn, format: "png" | "pdf") {
+      const path = format === "png" ? turn.reportPngPath : turn.reportPdfPath
+      if (!path || exportingFormat) return
+      const key = format === "png" ? "png" : "report-pdf"
+      setExportingFormat(key)
+      try {
+        const file = await downloadReportArtifact(path)
+        const mime = file.mime || (format === "png" ? "image/png" : "application/pdf")
+        const name =
+          file.filename ||
+          `${turn.reportTitle || "报告"}.${format}`
+        await shareReportBytes({ bytes: file.bytes, filename: name, mime })
+        Alert.alert(
+          Platform.OS === "web" ? "已下载" : "已打开分享",
+          Platform.OS === "web"
+            ? `${name}\n请从下载目录转发到微信`
+            : `${name}\n请在分享面板选择微信发送`,
+        )
+      } catch (err) {
+        Alert.alert("分享失败", err instanceof Error ? err.message : "请稍后再试")
+      } finally {
+        setExportingFormat(null)
+      }
+    }
+
     async function send(text?: string) {
       const rawIn = (text ?? draft).trim()
       if (!rawIn || busy) return
@@ -507,6 +733,8 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
             }
             return next
           })
+        } else if (intent.kind === "fund-report") {
+          await handleFundReport(intent)
         } else if (intent.kind === "fund-performance") {
           await handleFundPerformance(intent.query)
         } else if (intent.kind === "manager-profile") {
@@ -538,6 +766,7 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
         setBusy(false)
       }
     }
+
 
 
     async function handleExportReport(turn: Turn, format: "docx" | "pdf") {
@@ -704,7 +933,9 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
                               key={name}
                               style={styles.pickChip}
                               onPress={() => {
-                                void send(name.includes("管理人") ? name : `帮我分析一下${name}这家管理人`)
+                                (turn.pickResendTemplate
+                                  ? void send(turn.pickResendTemplate.replace(/\{name\}/g, name))
+                                  : void send(name.includes("管理人") ? name : `帮我分析一下${name}这家管理人`))
                               }}
                             >
                               <Text style={styles.pickChipText}>{name}</Text>
@@ -733,6 +964,43 @@ export const AiVoiceOverlay = forwardRef<AiVoiceOverlayHandle, { holding: boolea
                               {exportingFormat === "pdf" ? "生成中…" : "导出 PDF"}
                             </Text>
                           </Pressable>
+                        </View>
+                      ) : null}
+
+                      {turn.reportPreviewUri && !busy ? (
+                        <Image
+                          source={{ uri: turn.reportPreviewUri }}
+                          style={styles.reportPreview}
+                          resizeMode="contain"
+                        />
+                      ) : null}
+                      {(turn.reportPngPath || turn.reportPdfPath) && !busy ? (
+                        <View style={styles.exportRow}>
+                          {turn.reportPngPath ? (
+                            <Pressable
+                              style={[styles.exportBtn, exportingFormat === "png" && styles.exportBtnBusy]}
+                              disabled={!!exportingFormat}
+                              onPress={() => void handleShareFundReport(turn, "png")}
+                            >
+                              <Text style={styles.exportText}>
+                                {exportingFormat === "png" ? "准备中…" : "分享图片"}
+                              </Text>
+                            </Pressable>
+                          ) : null}
+                          {turn.reportPdfPath ? (
+                            <Pressable
+                              style={[
+                                styles.exportBtn,
+                                exportingFormat === "report-pdf" && styles.exportBtnBusy,
+                              ]}
+                              disabled={!!exportingFormat}
+                              onPress={() => void handleShareFundReport(turn, "pdf")}
+                            >
+                              <Text style={styles.exportText}>
+                                {exportingFormat === "report-pdf" ? "准备中…" : "分享 PDF"}
+                              </Text>
+                            </Pressable>
+                          ) : null}
                         </View>
                       ) : null}
                     </View>
@@ -927,6 +1195,13 @@ const styles = StyleSheet.create({
   },
   exportBtnBusy: { opacity: 0.6 },
   exportText: { color: "#E7C98A", fontWeight: "700", letterSpacing: 0.6, fontSize: 14 },
+  reportPreview: {
+    width: "100%",
+    height: 220,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    marginTop: 4,
+  },
 
   pickRow: {
     flexDirection: "row",

@@ -1,8 +1,13 @@
 import { NativeModules, Platform } from "react-native"
 import { File, Paths } from "expo-file-system"
 
-const shareImageNative = NativeModules.ApkInstaller as {
-  shareImage?: (uri: string) => Promise<void>
+function getShareImageNative(): { shareImage?: (uri: string) => Promise<void> } | null {
+  try {
+    const mod = NativeModules.ApkInstaller as { shareImage?: (uri: string) => Promise<void> } | null | undefined
+    return mod && typeof mod === "object" ? mod : null
+  } catch {
+    return null
+  }
 }
 
 type ShareStart = { type: "briefing-share-start"; parts: number; mime: string }
@@ -84,7 +89,8 @@ export function createBriefingShareCollector(onImage: (base64: string, mime: str
 }
 
 export async function shareBriefingImage(base64: string, mime: string): Promise<void> {
-  if (Platform.OS !== "android" || !shareImageNative.shareImage) {
+  const shareImageNative = getShareImageNative()
+  if (Platform.OS !== "android" || !shareImageNative?.shareImage) {
     throw new Error("请在手机 App 里分享到微信")
   }
   const extension = mime === "image/jpeg" ? "jpg" : "png"

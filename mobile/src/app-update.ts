@@ -11,7 +11,7 @@ const FLAG_GRANT_READ_URI_PERMISSION = 1
 const FLAG_ACTIVITY_NEW_TASK = 0x10000000
 const AUTO_UPDATE_KEY = "fof.autoCheckUpdate"
 /** Bump with each release so old size-only APK cache reuse cannot match. */
-const UPDATE_CACHE_BUST = "fof-apk-cache-bust-1.6.60-67"
+const UPDATE_CACHE_BUST = "fof-apk-cache-bust-1.6.63-70"
 void UPDATE_CACHE_BUST
 
 const WAITING_INSTALL_LABEL = "请在系统安装确认中点安装"
@@ -75,6 +75,17 @@ function installedVersionCode(): number {
 
 function setProgress(label: string): void {
   progressSink?.(label)
+}
+
+async function sleepMs(ms: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms))
+}
+
+/** Let React paint status before long sync work (SHA / copy) freezes the JS thread. */
+async function paintProgress(label: string, onProgress?: (label: string) => void): Promise<void> {
+  onProgress?.(label)
+  progressSink?.(label)
+  await sleepMs(48)
 }
 
 function apkCacheFile(versionCode: number): File {
@@ -178,12 +189,12 @@ function sha256HexBytes(bytes: Uint8Array): string {
 }
 
 /** Always returns hex digest; throws if the file cannot be hashed. */
-async function sha256HexOfFile(file: File): Promise<string> {
+async function sha256HexOfFile(file: File, onProgress?: (label: string) => void): Promise<string> {
   // Prefer chunked read so we never hold a second full APK copy for padding.
   const size = typeof file.size === "number" ? file.size : 0
   if (size > 0) {
     try {
-      return await sha256HexOfFileChunked(file, size)
+      return await sha256HexOfFileChunked(file, size, onProgress)
     } catch (error) {
       console.warn("[app-update] chunked SHA-256 failed; trying whole-file", error)
     }
@@ -203,7 +214,7 @@ async function sha256HexOfFile(file: File): Promise<string> {
 
 const SHA_READ_CHUNK = 256 * 1024
 
-async function sha256HexOfFileChunked(file: File, size: number): Promise<string> {
+async function sha256HexOfFileChunked(file: File, size: number, onProgress?: (label: string) => void): Promise<string> {
   // Same incremental SHA-256 as sha256HexBytes, fed from expo File handle.
   const K = new Uint32Array([
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -263,6 +274,8 @@ async function sha256HexOfFileChunked(file: File, size: number): Promise<string>
   try {
     handle.offset = 0
     let read = 0
+    let lastPaint = 0
+    const PAINT_EVERY = 4 * 1024 * 1024
     while (read < size) {
       const want = Math.min(SHA_READ_CHUNK, size - read)
       const chunk = handle.readBytesSync(want)
@@ -273,6 +286,14 @@ async function sha256HexOfFileChunked(file: File, size: number): Promise<string>
       const safe = chunk.byteLength > want ? chunk.subarray(0, want) : chunk
       feed(safe)
       read += safe.byteLength
+      if (onProgress && (read - lastPaint >= PAINT_EVERY || read >= size)) {
+        const pct = Math.min(99, Math.round((read / size) * 100))
+        onProgress(`正在校验 ${pct}%`)
+        progressSink?.(`正在校验 ${pct}%`)
+        // Yield so Profile status can re-render; pure JS SHA otherwise freezes UI at download 100%.
+        await sleepMs(0)
+        lastPaint = read
+      }
       if (safe.byteLength < want) {
         // unexpected EOF
         if (read < size) throw new Error(`short read ${read}/${size}`)
@@ -302,7 +323,11 @@ async function sha256HexOfFileChunked(file: File, size: number): Promise<string>
   return [h0, h1, h2, h3, h4, h5, h6, h7].map((x) => x.toString(16).padStart(8, "0")).join("")
 }
 
-async function assertApkIntegrity(file: File, release: AppRelease): Promise<void> {
+async function assertApkIntegrity(
+  file: File,
+  release: AppRelease,
+  onProgress?: (label: string) => void,
+): Promise<void> {
   assertDownloadComplete(file, release.expectedBytes)
   assertApkZipMagic(file)
   // EOCD helper must exist — restored in 1.6.42 (was dropped during SHA rewrite).
@@ -315,11 +340,13 @@ async function assertApkIntegrity(file: File, release: AppRelease): Promise<void
     deleteQuietly(file)
     throw new Error(`服务器未提供安装包校验摘要，已中止安装`)
   }
-  const actual = await sha256HexOfFile(file)
+  await paintProgress("正在校验安装包…", onProgress)
+  const actual = await sha256HexOfFile(file, onProgress)
   if (actual !== release.sha256) {
     deleteQuietly(file)
     throw new Error(`安装包校验失败（摘要不匹配）。已清除缓存，请重试`)
   }
+  await paintProgress("校验完成", onProgress)
 }
 
 
@@ -406,34 +433,65 @@ async function fetchRelease(): Promise<AppRelease> {
 }
 
 /** Copy verified APK to a fresh document-dir path so PackageInstaller gets a stable contentUri (Huawei). */
-async function stageApkForInstall(source: File, versionCode: number): Promise<File> {
+async function stageApkForInstall(
+  source: File,
+  versionCode: number,
+  onProgress?: (label: string) => void,
+): Promise<File> {
+  const size = typeof source.size === "number" ? source.size : 0
   const tryCopy = async (dest: File): Promise<File> => {
     deleteQuietly(dest)
-    // Prefer sync copy when available (large APK, avoid unhandled promise).
-    const anySrc = source as File & { copySync?: (d: File) => void; copy?: (d: File) => Promise<void> }
-    if (typeof anySrc.copySync === "function") {
-      anySrc.copySync(dest)
-    } else if (typeof anySrc.copy === "function") {
-      await anySrc.copy(dest)
-    } else {
-      // Byte-copy fallback via handles
+    // Large APK: always chunk-copy with UI progress. copySync freezes Hermes for minutes on ~200MB+.
+    if (size >= 8_000_000) {
       dest.create()
-      const size = typeof source.size === "number" ? source.size : 0
       const rh = source.open()
       const wh = dest.open(FileMode.ReadWrite)
       try {
         const chunk = 1024 * 1024
         let offset = 0
+        let lastPaint = 0
         while (offset < size) {
           rh.offset = offset
           const buf = rh.readBytesSync(Math.min(chunk, size - offset))
           wh.offset = offset
           await wh.writeBytes(buf)
           offset += buf.length
+          if (offset - lastPaint >= 8 * 1024 * 1024 || offset >= size) {
+            const pct = Math.min(99, Math.round((offset / size) * 100))
+            onProgress?.(`正在准备安装包 ${pct}%`)
+            progressSink?.(`正在准备安装包 ${pct}%`)
+            await sleepMs(0)
+            lastPaint = offset
+          }
         }
       } finally {
         try { rh.close() } catch { /* ignore */ }
         try { wh.close() } catch { /* ignore */ }
+      }
+    } else {
+      const anySrc = source as File & { copySync?: (d: File) => void; copy?: (d: File) => Promise<void> }
+      if (typeof anySrc.copySync === "function") {
+        anySrc.copySync(dest)
+      } else if (typeof anySrc.copy === "function") {
+        await anySrc.copy(dest)
+      } else {
+        dest.create()
+        const rh = source.open()
+        const wh = dest.open(FileMode.ReadWrite)
+        try {
+          const chunk = 1024 * 1024
+          let offset = 0
+          while (offset < size) {
+            rh.offset = offset
+            const buf = rh.readBytesSync(Math.min(chunk, size - offset))
+            wh.offset = offset
+            await wh.writeBytes(buf)
+            offset += buf.length
+          }
+        } finally {
+          try { rh.close() } catch { /* ignore */ }
+          try { wh.close() } catch { /* ignore */ }
+        }
       }
     }
     if (!dest.exists || typeof dest.size !== "number" || Math.abs(dest.size - (source.size || 0)) > 64) {
@@ -442,6 +500,7 @@ async function stageApkForInstall(source: File, versionCode: number): Promise<Fi
     }
     return dest
   }
+  await paintProgress("正在准备安装包…", onProgress)
   try {
     return await tryCopy(new File(Paths.document, `fof-install-v${versionCode}.apk`))
   } catch {
@@ -458,13 +517,14 @@ async function openInstallerView(file: File): Promise<void> {
 }
 
 async function openInstallerPackage(file: File): Promise<void> {
+  // Do NOT set RETURN_RESULT: on Huawei/EMUI startActivityAsync can stay pending until the
+  // user finishes installing, which looks like "stuck at 100%" for several minutes.
   await startActivityAsync("android.intent.action.INSTALL_PACKAGE", {
     data: file.contentUri,
     type: "application/vnd.android.package-archive",
     flags: FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK,
     extra: {
       "android.intent.extra.NOT_UNKNOWN_SOURCE": true,
-      "android.intent.extra.RETURN_RESULT": true,
     },
   })
 }
@@ -626,9 +686,6 @@ function assertApkZipEocd(file: File): void {
 const APK_CHUNK = 1024 * 1024
 const APK_CHUNK_RETRIES = 4
 
-async function sleepMs(ms: number): Promise<void> {
-  await new Promise((r) => setTimeout(r, ms))
-}
 
 /** Huawei/OEM often abort a single long GET ~half way. Pull with Range chunks + retries. */
 async function downloadApkResumable(
@@ -662,7 +719,7 @@ async function downloadApkResumable(
             handle.offset = 0
             await handle.writeBytes(buf)
             offset = buf.length
-            onProgress?.("下载中 100%")
+            onProgress?.("下载完成，准备校验…")
             return destination
           }
           if (response.status === 200 && offset > 0) {
@@ -690,7 +747,7 @@ async function downloadApkResumable(
       await handle.writeBytes(chunk)
       offset += chunk.length
       if (totalHint > 0) {
-        onProgress?.(`下载中 ${Math.min(100, Math.round((offset / totalHint) * 100))}%`)
+        onProgress?.(`下载中 ${Math.min(99, Math.round((offset / totalHint) * 100))}%`)
         if (offset >= totalHint) break
       } else if (chunk.length < APK_CHUNK) {
         break
@@ -740,7 +797,7 @@ async function downloadApkFull(
       }
     },
   })
-  onProgress?.("下载中 100%")
+  onProgress?.("下载完成，准备校验…")
   return file
 }
 
@@ -748,40 +805,38 @@ async function downloadAndInstall(release: AppRelease, onProgress?: (label: stri
   if (onProgress) progressSink = onProgress
   clearLegacyApkCache()
   const sizeHint = release.expectedBytes ? `约 ${Math.round(release.expectedBytes / 1024 / 1024)}MB` : "约 100MB"
-  onProgress?.(`正在下载 0%（${sizeHint}，请保持网络）`)
+  await paintProgress(`正在下载 0%（${sizeHint}，请保持网络）`, onProgress)
   const destination = apkCacheFile(release.versionCode)
   deleteQuietly(destination)
   let file: File = destination
   let lastDetail = ""
   let ok = false
-  // Huawei/OEM: File.downloadFileAsync often "succeeds" with an empty/tiny file on ~66MB Vosk APKs.
+  // Huawei/OEM: File.downloadFileAsync often "succeeds" with an empty/tiny file on large APKs.
   // Prefer Range resumable whenever we know the package is large; always validate size before accept.
   const preferResume = (release.expectedBytes ?? 0) >= 8_000_000
   for (let pass = 1; pass <= 3; pass++) {
     try {
       deleteQuietly(destination)
       if (preferResume || pass > 1) {
-        onProgress?.(`分段下载 ${pass}/3…`)
+        await paintProgress(`分段下载 ${pass}/3…`, onProgress)
         file = await downloadApkResumable(release.url, destination, release.expectedBytes, onProgress)
       } else {
         try {
           file = await downloadApkFull(release.url, destination, release.expectedBytes, onProgress)
-          // Treat undersized "success" as failure so we fall back to Range chunks.
           assertDownloadComplete(file, release.expectedBytes)
         } catch (fullErr: unknown) {
           lastDetail = fullErr instanceof Error ? fullErr.message : String(fullErr)
           deleteQuietly(destination)
-          onProgress?.(`改用分段下载…`)
+          await paintProgress(`改用分段下载…`, onProgress)
           file = await downloadApkResumable(release.url, destination, release.expectedBytes, onProgress)
         }
       }
-      onProgress?.("正在校验安装包…")
       // Re-open path to avoid stale File.size metadata on some OEMs.
       file = new File(Paths.cache, `fof-research-v${release.versionCode}.apk`)
       if (!file.exists) {
         file = destination
       }
-      await assertApkIntegrity(file, release)
+      await assertApkIntegrity(file, release, onProgress)
       ok = true
       break
     } catch (error: unknown) {
@@ -791,11 +846,9 @@ async function downloadAndInstall(release: AppRelease, onProgress?: (label: stri
     }
   }
   if (!ok) throw new Error(lastDetail || "下载失败，请保持网络稳定后重试，或用浏览器打开链接下载")
-  onProgress?.("正在准备安装包…")
   let installFile = file
   try {
-    installFile = await stageApkForInstall(file, release.versionCode)
-    // Re-check staged copy: size + ZIP magic + EOCD (sha already matched source).
+    installFile = await stageApkForInstall(file, release.versionCode, onProgress)
     assertDownloadComplete(installFile, release.expectedBytes)
     assertApkZipMagic(installFile)
     if (typeof assertApkZipEocd === "function") assertApkZipEocd(installFile)
@@ -805,7 +858,7 @@ async function downloadAndInstall(release: AppRelease, onProgress?: (label: stri
 
 也可浏览器打开：${release.url}`)
   }
-  onProgress?.("正在打开安装程序")
+  await paintProgress("正在打开安装程序", onProgress)
   waitingInstall = true
   ensureInstallWatcher()
   try {
@@ -904,7 +957,7 @@ export async function promptAppUpdate(interactive: boolean, onProgress?: (label:
       Math.abs(cached.size - release.expectedBytes) <= 64
     ) {
       try {
-        await assertApkIntegrity(cached, release)
+        await assertApkIntegrity(cached, release, onProgress)
         canReuse = true
       } catch {
         deleteQuietly(cached)
@@ -923,10 +976,12 @@ export async function promptAppUpdate(interactive: boolean, onProgress?: (label:
       downloading = true
       try {
         if (canReuse) {
+          await paintProgress("正在准备已缓存的安装包…", onProgress)
+          const staged = await stageApkForInstall(cached, release.versionCode, onProgress)
+          await paintProgress("正在打开安装程序", onProgress)
           waitingInstall = true
           ensureInstallWatcher()
-          onProgress?.("正在打开安装程序")
-          await openInstaller(await stageApkForInstall(cached, release.versionCode))
+          await openInstaller(staged)
           onProgress?.(WAITING_INSTALL_LABEL)
         } else {
           await downloadAndInstall(release, onProgress)

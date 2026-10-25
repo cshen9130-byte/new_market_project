@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { handleAccountRiskDataRequest } from "@/lib/server/account-risk-data-api"
+import { handleAccountRiskDataRequest, isAccountRiskBinary } from "@/lib/server/account-risk-data-api"
 import { requireMomDataApiUser } from "@/lib/server/mom-data-auth"
 import {
   handleMomDataRequest,
@@ -53,6 +53,17 @@ export async function GET(
     const result = key === "cfmmc" || key.startsWith("cfmmc/")
       ? await handleAccountRiskDataRequest(key === "cfmmc" ? "" : key.slice("cfmmc/".length), record)
       : await handleMomDataRequest(key, record)
+    if (isAccountRiskBinary(result)) {
+      return new NextResponse(new Uint8Array(result.body), {
+        status: 200,
+        headers: {
+          ...CORS,
+          "Content-Type": result.contentType,
+          "Content-Disposition": `attachment; filename="${result.filename}"`,
+          "Cache-Control": "no-store",
+        },
+      })
+    }
     return json(result)
   } catch (err) {
     console.error("[mom-data]", err)

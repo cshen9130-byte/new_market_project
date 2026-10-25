@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import { Platform } from "react-native"
-import { loginRequest } from "@/api"
+import { fetchSiteProfile, loginRequest } from "@/api"
 import { resolveServerUrl } from "@/format"
 import { setSession } from "@/session"
 import type { User } from "@/types"
@@ -35,7 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (storedUser) {
         try {
           const raw = JSON.parse(storedUser) as User
-          if (raw?.id) parsed = { id: raw.id, name: raw.name, email: raw.email, role: raw.role }
+          if (raw?.id) parsed = { id: raw.id, name: raw.name, email: raw.email, role: raw.role, permissions: raw.permissions }
         } catch {
           parsed = null
         }
@@ -45,6 +45,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(parsed)
       setSession({ baseUrl: nextUrl, user: parsed })
       setReady(true)
+      if (parsed?.id) {
+        try {
+          const profile = await fetchSiteProfile()
+          if (cancelled) return
+          setUser(profile)
+          setSession({ baseUrl: nextUrl, user: profile })
+          await AsyncStorage.setItem(USER_KEY, JSON.stringify(profile))
+        } catch {
+          // keep cached user if profile refresh fails
+        }
+      }
     })()
     return () => {
       cancelled = true
@@ -58,14 +69,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       login: async (identifier, password) => {
         const nextUrl = resolveServerUrl(Platform.OS, __DEV__)
-        const nextUser = await loginRequest(nextUrl, identifier.trim(), password)
+        let nextUser = await loginRequest(nextUrl, identifier.trim(), password)
+        setBaseUrl(nextUrl)
+        setUser(nextUser)
+        setSession({ baseUrl: nextUrl, user: nextUser })
+        try {
+          const profile = await fetchSiteProfile()
+          nextUser = profile
+          setUser(profile)
+          setSession({ baseUrl: nextUrl, user: profile })
+        } catch {
+          // login succeeded; permissions may stay empty until next open
+        }
         await AsyncStorage.multiSet([
           [URL_KEY, nextUrl],
           [USER_KEY, JSON.stringify(nextUser)],
         ])
-        setBaseUrl(nextUrl)
-        setUser(nextUser)
-        setSession({ baseUrl: nextUrl, user: nextUser })
       },
       logout: async () => {
         await AsyncStorage.removeItem(USER_KEY)

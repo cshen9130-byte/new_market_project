@@ -6,6 +6,14 @@ import {
   type AccountRiskNavPoint,
 } from "@/lib/server/account-risk-nav"
 import { momDataErr, momDataOk, type MomDataEnvelope } from "@/lib/server/mom-data-api"
+import {
+  handleAccountRiskExport,
+  streamAccountRiskSheetCsv,
+  isAccountRiskBinary,
+  type AccountRiskBinaryResult,
+} from "@/lib/server/account-risk-data-export"
+
+export { isAccountRiskBinary }
 
 /**
  * Read-only view of the 单账户监控中心 import.
@@ -88,7 +96,7 @@ function pageArgs(record: Record<string, string | undefined>, fallbackLimit: num
   const limitRaw = Number.parseInt(record.limit ?? "", 10)
   const offsetRaw = Number.parseInt(record.offset ?? "", 10)
   const limit = Number.isFinite(limitRaw) ? Math.min(2000, Math.max(1, limitRaw)) : fallbackLimit
-  const offset = Number.isFinite(offsetRaw) ? Math.min(200_000, Math.max(0, offsetRaw)) : 0
+  const offset = Number.isFinite(offsetRaw) ? Math.min(10_000_000, Math.max(0, offsetRaw)) : 0
   const order = record.order === "0" || (record.order == null && defaultDesc) ? "DESC" : "ASC"
   return { limit, offset, order }
 }
@@ -167,6 +175,7 @@ function catalog() {
       { method: "GET", path: "/account/cashflows", description: "cfmmc_cash_flows 出入金" },
       { method: "GET", path: "/account/option-trades", description: "cfmmc_option_trades 期权成交" },
       { method: "GET", path: "/account/securities", description: "cfmmc_securities 证券成交" },
+      { method: "GET", path: "/account/export", description: "一次性导出该资金账号全部入库数据（含历史逐日持仓）为 CSV；默认 zip。参数 account、可选 company、datasets、start_date、end_date、format=zip|dir|csv" },
     ],
   })
 }
@@ -453,15 +462,19 @@ async function readNav(record: Record<string, string | undefined>): Promise<MomD
 export async function handleAccountRiskDataRequest(
   path: string,
   record: Record<string, string | undefined>,
-): Promise<MomDataEnvelope<unknown>> {
+): Promise<MomDataEnvelope<unknown> | AccountRiskBinaryResult> {
   const key = path.replace(/^\/+|\/+$/g, "")
   try {
     if (key === "" || key === "meta") return catalog()
     if (key === "accounts") return await listAccounts(record)
     if (key === "account/nav") return await readNav(record)
+    if (key === "account/export") return await handleAccountRiskExport(record)
     if (key.startsWith("account/")) {
-      const sheet = SHEETS[key.slice("account/".length)]
+      const sheetKey = key.slice("account/".length)
+      const sheet = SHEETS[sheetKey]
       if (!sheet) return momDataErr(1, `unknown path: /${key}`)
+      const format = (record.format ?? "").trim().toLowerCase()
+      if (format === "csv") return await streamAccountRiskSheetCsv(sheetKey, record)
       return await readSheet(sheet, record)
     }
     return momDataErr(1, `unknown path: /${key}`)

@@ -31,13 +31,16 @@ export default function OpenMomBriefingPage() {
       setMessage("登录信息无法识别，请从手机版重新打开。")
       return
     }
-    localStorage.setItem("currentUser", JSON.stringify({
-      id,
-      name: String(user.name || ""),
-      email: String(user.email || ""),
-      role: user.role,
-      permissions: user.permissions,
-    }))
+    localStorage.setItem(
+      "currentUser",
+      JSON.stringify({
+        id,
+        name: String(user.name || ""),
+        email: String(user.email || ""),
+        role: user.role,
+        permissions: user.permissions,
+      }),
+    )
     try {
       window.sessionStorage.setItem("momEmbedBriefing", "1")
     } catch {}

@@ -1,15 +1,1 @@
-{
-  "url": "http://8.154.33.143/app/fof-research.apk?v=67",
-  "versionCode": 67,
-  "versionName": "1.6.60",
-  "notes": "CRITICAL fix: restore FunASR Paraformer after 1.6.59 Zipformer local-int8 Huawei native flash at prepare. Keep product-page hardenings.",
-  "expectedBytes": 250407454,
-  "size": 250407454,
-  "sha256": "a3200ad783a4955ed65bac8086cd067ff40da256e94fe9fffa77aaa0731d8d4c",
-  "stt": {
-    "runtime": "sherpa-onnx 1.12.23",
-    "model": "sherpa-onnx-streaming-paraformer-bilingual-zh-en int8",
-    "previous": "zipformer2-ctc multi-zh local QInt8 (1.6.59 crash)",
-    "removed": "vosk-android AAR"
-  }
-}
+{"url":"http://8.154.33.143/app/fof-research.apk?v=70","versionCode":70,"versionName":"1.6.63","notes":"1.6.63: AI ball weekly report STT aliases 蓉西/容西/荣西/荣希->荣熙; 最新 week clamped to last full Mon-Fri inside product nav range (avoids 2026-10-19..23 when nav ends 2026-10-21); monthly/quarterly same; keeps 1.6.62 note layout/update progress/menu scroll.","expectedBytes":250523146,"size":250523146,"sha256":"1dc41b8dc118727f62fdb46b9c84eb19f457fba45463742d1653d85aee631697"}

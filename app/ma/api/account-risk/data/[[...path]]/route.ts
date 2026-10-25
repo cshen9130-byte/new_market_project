@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { handleAccountRiskDataRequest } from "@/lib/server/account-risk-data-api"
+import { handleAccountRiskDataRequest, isAccountRiskBinary } from "@/lib/server/account-risk-data-api"
 import { momDataErr, type MomDataEnvelope } from "@/lib/server/mom-data-api"
 import { requireMomDataApiUser } from "@/lib/server/mom-data-auth"
 
@@ -44,7 +44,19 @@ export async function GET(
     new URL(req.url).searchParams.forEach((value, name) => {
       record[name] = value
     })
-    return json(await handleAccountRiskDataRequest(key, record))
+    const result = await handleAccountRiskDataRequest(key, record)
+    if (isAccountRiskBinary(result)) {
+      return new NextResponse(new Uint8Array(result.body), {
+        status: 200,
+        headers: {
+          ...CORS,
+          "Content-Type": result.contentType,
+          "Content-Disposition": `attachment; filename="${result.filename}"`,
+          "Cache-Control": "no-store",
+        },
+      })
+    }
+    return json(result)
   } catch (err) {
     console.error("[account-risk-data]", err)
     return json(momDataErr(3, "internal error"))

@@ -7315,25 +7315,27 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
   .no-print { display: none !important; }
 `
 
-export function RiskReportApp({ variant }: { variant: RiskReportVariant }) {
-  if (variant === "account") return <RiskReportAppAccount />
-  return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} />
+export function RiskReportApp({ variant, embedBriefing = false }: { variant: RiskReportVariant; embedBriefing?: boolean }) {
+  if (variant === "account") return <RiskReportAppAccount embedBriefing={embedBriefing} />
+  return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} forceEmbed={embedBriefing} />
 }
 
-function RiskReportAppAccount() {
+function RiskReportAppAccount({ embedBriefing = false }: { embedBriefing?: boolean }) {
   const cfmmcScope = useCfmmcAccountScope()
   const momScope = useMomSubAccountScope()
-  return <RiskReportAppCore variant="account" cfmmcScope={cfmmcScope} momScope={momScope} />
+  return <RiskReportAppCore variant="account" cfmmcScope={cfmmcScope} momScope={momScope} forceEmbed={embedBriefing} />
 }
 
 function RiskReportAppCore({
   variant,
   cfmmcScope,
   momScope,
+  forceEmbed = false,
 }: {
   variant: RiskReportVariant
   cfmmcScope: CfmmcAccountScope
   momScope: MomSubAccountScope
+  forceEmbed?: boolean
 }) {
   useRiskSourceFetch(variant)
   const isAccount = variant === "account"
@@ -7368,14 +7370,20 @@ function RiskReportAppCore({
   }
 
   const [activeTab, setActiveTab] = useState<TabKey>(() => {
+    if (forceEmbed) return "briefing"
     if (typeof window === "undefined") return "overview"
+    try {
+      if (window.location.pathname.includes("/briefing-embed")) return "briefing"
+    } catch {}
     const tab = new URLSearchParams(window.location.search).get("tab")
     if (tab && baseSubNavItems.some((item) => item.key === tab)) return tab as TabKey
     return "overview"
   })
   const isEmbed = (() => {
+    if (forceEmbed) return true
     if (typeof window === "undefined") return false
     try {
+      if (window.location.pathname.includes("/briefing-embed")) return true
       if (new URLSearchParams(window.location.search).get("embed") === "1") return true
       return window.sessionStorage.getItem("momEmbedBriefing") === "1"
     } catch {

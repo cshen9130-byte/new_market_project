@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from "react"
 import dynamic from "next/dynamic"
 import { ChevronDown, Clock, Download, Info, Search, SquarePen } from "lucide-react"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import { openFundCompareWithProducts } from "@/lib/ma-product-selection-actions"
 import { toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
 import { normalizeFofDisplayName } from "@/lib/fof-portfolio-var"
 import {
@@ -487,6 +488,30 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
     URL.revokeObjectURL(a.href)
   }
 
+  const selectedComparable = filtered.filter((r) => selected.has(holdingSelectionId(r)))
+  const selectedWithBeian = selectedComparable.filter((r) => !!(r.beianHao || r.valuationCode))
+
+  function handleFundCompare() {
+    if (selectedComparable.length === 0) {
+      window.alert("请先勾选要对比的基金")
+      return
+    }
+    if (selectedWithBeian.length < 2) {
+      window.alert("请至少选择 2 只可对比的基金（需有备案号或估值表代码）")
+      return
+    }
+    const products = selectedWithBeian.map((r) => ({
+      id: holdingSelectionId(r),
+      product_name: r.fundName,
+      beian_hao: (r.beianHao || r.valuationCode || "").trim() || null,
+      latest_nav_date: r.navDate,
+    }))
+    if (!openFundCompareWithProducts(products, "team")) {
+      window.alert("无法发起基金对比，请确认所选基金有备案号或估值表代码")
+      return
+    }
+  }
+
   return (
   <>
     <FofStrategyPiesPanel
@@ -539,14 +564,26 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
             <span>{dateLabel}</span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={handleExport}
-          disabled={!filtered.length}
-          className="inline-flex items-center px-3 py-1 text-xs font-medium bg-red-500 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-40"
-        >
-          导出
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleFundCompare}
+            disabled={selectedWithBeian.length < 2}
+            title={selectedWithBeian.length < 2 ? "请至少勾选 2 只可对比基金" : `对比已选 ${selectedWithBeian.length} 只基金`}
+            className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium bg-red-500 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            基金对比{selectedWithBeian.length > 0 ? `(${selectedWithBeian.length})` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={!filtered.length}
+            className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium bg-red-500 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-40"
+          >
+            <Download className="h-3.5 w-3.5" />
+            导出
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 px-4 pb-2 border-b border-zinc-100">
@@ -638,8 +675,8 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
                     <input
                       type="checkbox"
                       className="rounded h-3 w-3"
-                      checked={selected.has(row.index)}
-                      onChange={() => toggleRow(row.index)}
+                      checked={selected.has(holdingSelectionId(row))}
+                      onChange={() => toggleRow(holdingSelectionId(row))}
                     />
                   </td>
                   <td className="px-2 py-2 text-zinc-500 tabular-nums">{row.index}</td>

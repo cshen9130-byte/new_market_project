@@ -1,4 +1,4 @@
-﻿import { Stack } from "expo-router"
+import { Stack } from "expo-router"
 import { colors } from "@/theme"
 
 export default function MomLayout() {
@@ -9,13 +9,20 @@ export default function MomLayout() {
         contentStyle: { backgroundColor: colors.bg },
         animation: "slide_from_right",
         gestureEnabled: true,
-        fullScreenGestureEnabled: true,
+        fullScreenGestureEnabled: false,
       }}
     >
       <Stack.Screen name="index" />
       <Stack.Screen name="daily" />
       <Stack.Screen name="account" />
-      <Stack.Screen name="briefing" />
+      <Stack.Screen
+        name="briefing"
+        options={{
+          gestureEnabled: true,
+          fullScreenGestureEnabled: false,
+          animationTypeForReplace: "push",
+        }}
+      />
     </Stack>
   )
 }

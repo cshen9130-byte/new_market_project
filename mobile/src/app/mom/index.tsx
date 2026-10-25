@@ -1,6 +1,8 @@
-﻿import { useRouter } from "expo-router"
+﻿import { Redirect, useRouter } from "expo-router"
 import { Pressable, StyleSheet, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
+import { useAuth } from "@/auth"
+import { canAccessMom } from "@/permissions"
 import { colors } from "@/theme"
 
 const ITEMS = [
@@ -17,6 +19,9 @@ const ITEMS = [
 ] as const
 
 export default function MomHome() {
+  const { user } = useAuth()
+  if (!canAccessMom(user)) return <Redirect href="/(tabs)/home" />
+
   const router = useRouter()
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>

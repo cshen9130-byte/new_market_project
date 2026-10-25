@@ -136,6 +136,33 @@ export async function rawQuery(
  * Use this for DDL and DML that must never be affected by search_path overrides
  * (e.g. the CFMMC ETL which should always read/write public.cfmmc_* tables).
  */
+
+/**
+ * Borrow a pool client always targeting the public schema (no search_path override).
+ * Optional statementTimeoutMs: 0 disables the pool-level timeout for long exports.
+ */
+export async function publicWithClient<T>(
+  fn: (client: import("pg").PoolClient) => Promise<T>,
+  opts?: { statementTimeoutMs?: number },
+): Promise<T> {
+  const client = await (await db()).connect()
+  try {
+    if (opts?.statementTimeoutMs === 0) {
+      await client.query("SET statement_timeout = 0")
+    } else if (opts?.statementTimeoutMs != null && Number.isFinite(opts.statementTimeoutMs)) {
+      await client.query("SET statement_timeout = " + Math.max(0, Math.floor(opts.statementTimeoutMs)))
+    }
+    return await fn(client)
+  } finally {
+    try {
+      await client.query("RESET statement_timeout")
+    } catch {
+      // ignore
+    }
+    client.release()
+  }
+}
+
 export async function publicQuery(
   sql: string,
   params?: unknown[],

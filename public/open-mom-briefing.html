@@ -5,29 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MOM 简报</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #0f1520; }
+    html, body { margin: 0; height: 100%; background: #f3efe3; }
     #msg {
-      position: fixed;
-      inset: 0;
-      z-index: 2;
+      min-height: 100vh;
       display: grid;
       place-items: center;
       margin: 0;
       font-family: sans-serif;
-      background: #f3f0ea;
       color: #1a1a1a;
     }
-    iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
   </style>
 </head>
 <body>
   <p id="msg">正在打开 MOM 简报…</p>
   <script>
-    var msg = document.getElementById("msg")
-    var raw = location.hash.replace(/^#/, "")
-    if (!raw) {
-      msg.textContent = "缺少登录信息，请从手机版 MOM 每日风控重新打开。"
-    } else {
+    (function () {
+      var msg = document.getElementById("msg")
+      var raw = location.hash.replace(/^#/, "")
+      if (!raw) {
+        msg.textContent = "缺少登录信息，请从手机版 MOM 每日风控重新打开。"
+        return
+      }
       try {
         var user = JSON.parse(decodeURIComponent(raw))
         var id = String((user && user.id) || "").trim()
@@ -39,128 +37,13 @@
           role: user.role,
           permissions: user.permissions
         }))
-        var frame = document.createElement("iframe")
-        frame.src = "/ma/dashboard/mom-analysis/risk-report"
-        document.body.appendChild(frame)
-        openBriefing(frame, 0)
+        try { sessionStorage.setItem("momEmbedBriefing", "1") } catch (e) {}
+        // Top-level (no iframe). embed=1 is understood by the currently deployed Next bundle.
+        location.replace("/ma/dashboard/mom-analysis/risk-report?tab=briefing&embed=1")
       } catch (e) {
         msg.textContent = "登录信息无法识别，请从手机版重新打开。"
       }
-    }
-
-    function openBriefing(frame, tries) {
-      var doc = null
-      try { doc = frame.contentDocument } catch (e) { doc = null }
-      if (doc && doc.getElementById("mom-briefing-printable")) {
-        msg.remove()
-        return
-      }
-      if (doc) {
-        var buttons = doc.querySelectorAll("button")
-        for (var i = 0; i < buttons.length; i++) {
-          var label = (buttons[i].textContent || "").replace(/\s+/g, "")
-          if (label.indexOf("MOM") !== -1 && label.indexOf("简报") !== -1) {
-            buttons[i].click()
-            break
-          }
-        }
-      }
-      if (tries > 80) {
-        msg.remove()
-        return
-      }
-      setTimeout(function () { openBriefing(frame, tries + 1) }, 400)
-    }
-
-    function post(payload) {
-      if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(payload))
-    }
-
-    var shareTimer = 0
-    window.shareMomBriefing = function () {
-      var frame = document.querySelector("iframe")
-      var doc = null
-      var win = null
-      try {
-        doc = frame && frame.contentDocument
-        win = frame && frame.contentWindow
-      } catch (e) {
-        doc = null
-      }
-      if (!doc || !win || !doc.getElementById("mom-briefing-printable")) {
-        post({ type: "briefing-share-error", message: "简报还在打开，请稍后再分享" })
-        return
-      }
-      var imageBtn = null
-      var buttons = doc.querySelectorAll("button")
-      for (var i = 0; i < buttons.length; i++) {
-        var label = (buttons[i].textContent || "").replace(/\s+/g, "")
-        if (label.indexOf("下载图片") !== -1 || label.indexOf("生成图片") !== -1) {
-          imageBtn = buttons[i]
-          break
-        }
-      }
-      if (!imageBtn) {
-        post({ type: "briefing-share-error", message: "没有找到简报图片" })
-        return
-      }
-
-      var origClick = win.HTMLAnchorElement.prototype.click
-      var restored = false
-      function restore() {
-        if (restored) return
-        restored = true
-        win.HTMLAnchorElement.prototype.click = origClick
-        if (shareTimer) clearTimeout(shareTimer)
-      }
-      win.HTMLAnchorElement.prototype.click = function () {
-        var href = String(this.href || "")
-        if (this.download && href.indexOf("blob:") === 0) {
-          restore()
-          win.fetch(href).then(function (res) { return res.blob() }).then(function (blob) {
-            var reader = new win.FileReader()
-            reader.onload = function () { sendImage(String(reader.result || "")) }
-            reader.onerror = function () { post({ type: "briefing-share-error", message: "图片读取失败" }) }
-            reader.readAsDataURL(blob)
-          }).catch(function () {
-            post({ type: "briefing-share-error", message: "图片读取失败" })
-          })
-          return
-        }
-        return origClick.apply(this, arguments)
-      }
-      shareTimer = setTimeout(function () {
-        if (!restored) {
-          restore()
-          post({ type: "briefing-share-error", message: "生成图片超时，请再点一次分享" })
-        }
-      }, 60000)
-      imageBtn.click()
-    }
-
-    function sendImage(dataUrl) {
-      var comma = dataUrl.indexOf(",")
-      var b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
-      if (b64.length < 100) {
-        post({ type: "briefing-share-error", message: "图片是空的，请再试一次" })
-        return
-      }
-      var size = 200000
-      var parts = Math.ceil(b64.length / size)
-      var mime = dataUrl.indexOf("image/jpeg") !== -1 ? "image/jpeg" : "image/png"
-      post({ type: "briefing-share-start", parts: parts, mime: mime })
-      var index = 0
-      function next() {
-        if (index >= parts) {
-          post({ type: "briefing-share-end" })
-          return
-        }
-        post({ type: "briefing-share-part", index: index, data: b64.slice(index * size, (index + 1) * size) })
-        index += 1
-        setTimeout(next, 0)
-      }
-      next()
-    }
+    })()
   </script>
 </body>
 </html>

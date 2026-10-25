@@ -1,19 +1,29 @@
 import { useRouter } from "expo-router"
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react"
-import { Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native"
-import { SafeAreaView } from "react-native-safe-area-context"
+import { Animated, Easing, Platform, Pressable, StatusBar as RNStatusBar, StyleSheet, Text, View } from "react-native"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { StatusBar } from "expo-status-bar"
+import { ENABLE_HOME_DARK_STATUS } from "@/feature-flags"
 import { FundObject, KnowledgeObject, MomObject, QuoteObject, ResearcherObject, WeatherObject } from "@/components/home-objects"
+import { useAuth } from "@/auth"
+import { canAccessMom } from "@/permissions"
 
-const MODULES = [
+const ALL_MODULES = [
   { title: "私募基金", href: "/private-funds", figure: FundObject },
   { title: "MOM分析", href: "/mom", figure: MomObject },
   { title: "实时行情", href: "/quotes", figure: QuoteObject },
   { title: "AI知识库", href: "/knowledge", figure: KnowledgeObject },
   { title: "AI研究员", href: "/researcher", figure: ResearcherObject },
   { title: "全天候跟踪", href: "/all-weather", figure: WeatherObject },
-] as const
+]
 
 export default function HomeScreen() {
+  const { user } = useAuth()
+  const MODULES = useMemo(
+    () => ALL_MODULES.filter((item) => (item.href === "/mom" ? canAccessMom(user) : true)),
+    [user],
+  )
+  const insets = useSafeAreaInsets()
   const travel = useRef(new Animated.Value(0)).current
   const [spots, setSpots] = useState<{ x: number; y: number }[] | null>(null)
   const measured = useRef<{ x: number; y: number; w: number; h: number }[]>([])
@@ -57,7 +67,13 @@ export default function HomeScreen() {
   }, [spots, travel])
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
+    <>
+      {ENABLE_HOME_DARK_STATUS && Platform.OS === "android" ? (
+        <RNStatusBar animated barStyle="light-content" backgroundColor="#12100E" translucent={false} />
+      ) : (
+        <StatusBar style="light" />
+      )}
+      <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Text style={styles.mark}>FOF</Text>
         <View style={styles.rule} />
@@ -93,7 +109,8 @@ export default function HomeScreen() {
         ))}
         {bead ? <Animated.View pointerEvents="none" style={[styles.bead, { transform: [{ translateX: bead.x }, { translateY: bead.y }] }]} /> : null}
       </View>
-    </SafeAreaView>
+    </View>
+    </>
   )
 }
 

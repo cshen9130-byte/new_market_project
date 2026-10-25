@@ -104,3 +104,57 @@ export async function exportAndShareManagerReport(input: {
   await shareLocalFile(file, mime, safeName)
   return safeName
 }
+
+
+function triggerWebDownload(bytes: Uint8Array, filename: string, mime: string): void {
+  const g = globalThis as Record<string, unknown>
+  const doc = g.document as
+    | {
+        createElement: (tag: string) => {
+          href: string
+          download: string
+          style: { display: string }
+          click: () => void
+        }
+        body?: { appendChild: (n: unknown) => void; removeChild: (n: unknown) => void }
+      }
+    | undefined
+  const URLApi = g.URL as
+    | { createObjectURL: (b: unknown) => string; revokeObjectURL: (u: string) => void }
+    | undefined
+  const BlobCtor = g.Blob as (new (parts: ArrayBuffer[], opts?: { type?: string }) => unknown) | undefined
+  if (!doc || !URLApi || !BlobCtor) {
+    throw new Error("当前环境无法下载文件，请在手机 App 中分享到微信")
+  }
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  const blob = new BlobCtor([copy.buffer], { type: mime })
+  const url = URLApi.createObjectURL(blob)
+  const a = doc.createElement("a")
+  a.href = url
+  a.download = filename
+  a.style.display = "none"
+  doc.body?.appendChild(a)
+  a.click()
+  doc.body?.removeChild(a)
+  setTimeout(() => URLApi.revokeObjectURL(url), 1500)
+}
+
+/** Share website-generated PNG/PDF (or any bytes) to WeChat / system share sheet. On web: download. */
+export async function shareReportBytes(input: {
+  bytes: Uint8Array
+  filename: string
+  mime: string
+}): Promise<string> {
+  const safeName = input.filename.replace(/[\\/:*?"<>|]+/g, "_") || "report.bin"
+  if (Platform.OS === "web") {
+    triggerWebDownload(input.bytes, safeName, input.mime)
+    return safeName
+  }
+  const file = new File(Paths.cache, safeName)
+  if (file.exists) file.delete()
+  file.create()
+  await file.write(bytesToBase64(input.bytes), { encoding: "base64" })
+  await shareLocalFile(file, input.mime, safeName)
+  return safeName
+}

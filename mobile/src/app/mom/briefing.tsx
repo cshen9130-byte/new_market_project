@@ -217,7 +217,7 @@ export default function MomBriefingScreen() {
       router.back()
       return
     }
-    router.replace("/mom/daily")
+    router.push("/mom/daily")
   }, [router])
 
   useEffect(() => {
@@ -231,7 +231,7 @@ export default function MomBriefingScreen() {
         router.back()
         return true
       }
-      router.replace("/mom/daily")
+      router.push("/mom/daily")
       return true
     })
     return () => sub.remove()

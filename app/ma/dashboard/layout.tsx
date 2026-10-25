@@ -29,9 +29,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [isEmbedBriefing, setIsEmbedBriefing] = useState(() => {
     if (typeof window === "undefined") return false
     try {
+      const fromPath = window.location.pathname.includes("/briefing-embed")
       const fromQuery = new URLSearchParams(window.location.search).get("embed") === "1"
       const fromSession = window.sessionStorage.getItem("momEmbedBriefing") === "1"
-      const embed = fromQuery || fromSession
+      const embed = fromPath || fromQuery || fromSession
       if (embed) document.documentElement.dataset.momEmbed = "1"
       return embed
     } catch {
@@ -49,11 +50,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         document.documentElement.dataset.momEmbed = "1"
         return
       }
+      // Dedicated mobile embed route never shows dashboard chrome.
+      if (pathname.includes("/mom-analysis/briefing-embed")) {
+        window.sessionStorage.setItem("momEmbedBriefing", "1")
+        setIsEmbedBriefing(true)
+        document.documentElement.dataset.momEmbed = "1"
+        return
+      }
       // Keep embed shell if we arrived via open-mom-briefing bridge this session.
       const fromSession = window.sessionStorage.getItem("momEmbedBriefing") === "1"
       const onRiskBriefing =
         pathname.includes("/mom-analysis/risk-report") ||
-        pathname.includes("/mom-analysis/account-risk-report")
+        pathname.includes("/mom-analysis/account-risk-report") ||
+        pathname.includes("/mom-analysis/briefing-embed")
       const embed = fromSession && onRiskBriefing
       setIsEmbedBriefing(embed)
       if (embed) document.documentElement.dataset.momEmbed = "1"

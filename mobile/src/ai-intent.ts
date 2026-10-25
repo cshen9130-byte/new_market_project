@@ -1,7 +1,17 @@
+import { prepareVoiceQuery } from "@/voice-normalize"
 export type AiIntent =
   | { kind: "team-background"; keyword: string }
   | { kind: "manager-profile"; managerName: string }
   | { kind: "fund-performance"; query: string }
+  | {
+      kind: "fund-report"
+      reportKind: "weekly" | "monthly" | "quarterly"
+      productQuery: string
+      /** When set, use these dates; otherwise compute 「最新」 completed period. */
+      begin?: string
+      end?: string
+      latest: boolean
+    }
   | { kind: "knowledge"; question: string }
   | { kind: "navigate"; path: string; label: string }
   | { kind: "assistant" }
@@ -15,6 +25,7 @@ const NAV_HINTS: Array<{ re: RegExp; path: string; label: string }> = [
   { re: /\u5b9e\u65f6\u884c\u60c5|\u6253\u5f00\u884c\u60c5|\u80a1\u6307\u884c\u60c5/, path: "/quotes", label: "\u5b9e\u65f6\u884c\u60c5" },
   { re: /\u5168\u5929\u5019/, path: "/all-weather", label: "\u5168\u5929\u5019\u8ddf\u8e2a" },
   { re: /\u641c\u7d22\u57fa\u91d1|\u53bb\u641c\u7d22/, path: "/(tabs)/search", label: "\u641c\u7d22" },
+  { re: /\u6253\u5f00\u62a5\u544a|\u62a5\u544a\u751f\u6210|\u57fa\u91d1\u62a5\u544a/, path: "/fund-reports", label: "\u62a5\u544a" },
 ]
 
 const TEAM_BG_HINT = /\u56e2\u961f\u80cc\u666f|\u80cc\u666f\u7684\u7ba1\u7406\u4eba|\u6709.{1,12}\u80cc\u666f|\u56e2\u961f(?:\u91cc|\u4e2d|\u5185)\u6709|\u54ea\u4e9b.*\u80cc\u666f|\u80cc\u666f.*\u7ba1\u7406\u4eba|\u51fa\u8eab|\u524d\u4efb.*\u80cc\u666f/
@@ -136,13 +147,158 @@ export function fundSearchVariants(query: string): string[] {
   // Drop ordinal suffix for broader match (金舆稳健增长一号 → 金舆稳健增长)
   push(base.replace(/(?:\u4e00\u53f7|\u4e8c\u53f7|\u4e09\u53f7|[0-9]+\u53f7|FOF)$/i, ""))
   push(arabic.replace(/(?:[0-9]+\u53f7|FOF)$/i, ""))
+  // Drop spoken filler 产品/基金 so 金舆追风产品 still hits 金舆追风
+  push(base.replace(/(?:\u79c1\u52df\u57fa\u91d1|\u79c1\u52df|\u57fa\u91d1|\u4ea7\u54c1)+$/g, ""))
+  push(arabic.replace(/(?:\u79c1\u52df\u57fa\u91d1|\u79c1\u52df|\u57fa\u91d1|\u4ea7\u54c1)+$/g, ""))
+  return out
+}
+
+
+const REPORT_KIND_RE = /\u5468\u62a5|\u6708\u62a5|\u5b63\u62a5|\u6708\u5ea6\u62a5\u544a|\u5b63\u5ea6\u62a5\u544a/
+const REPORT_ACTION_RE = /(?:\u5e2e\u6211)?(?:\u505a|\u751f\u6210|\u51fa|\u5bfc\u51fa|\u505a\u4e00\u4efd|\u751f\u6210\u4e00\u4efd)|\u62a5\u544a/
+
+function detectReportKind(text: string): "weekly" | "monthly" | "quarterly" | null {
+  if (/\u5b63\u62a5|\u5b63\u5ea6\u62a5\u544a/.test(text)) return "quarterly"
+  if (/\u6708\u62a5|\u6708\u5ea6\u62a5\u544a/.test(text)) return "monthly"
+  if (/\u5468\u62a5|\u5468\u5ea6\u62a5\u544a/.test(text)) return "weekly"
+  // 「报告」with generate verbs → default weekly
+  if (/\u62a5\u544a/.test(text) && REPORT_ACTION_RE.test(text)) return "weekly"
+  return null
+}
+
+function scrubReportProductQuery(raw: string): string {
+  let q = raw.trim()
+  q = q.replace(/^(?:\u5e2e\u6211)?(?:\u505a|\u751f\u6210|\u51fa|\u5bfc\u51fa)(?:\u4e00\u4efd|\u4e00\u4e2a|\u4e2a)?/, "")
+  q = q.replace(/^(?:\u6700\u65b0\u7684?|\u6700\u8fd1\u7684?|\u8fd1\u671f\u7684?)/, "")
+  for (let i = 0; i < 4; i += 1) {
+    const next = q
+      .replace(/(?:\u7684)?(?:\u6700\u65b0|\u6700\u8fd1|\u8fd1\u671f)?(?:\u7684)?(?:\u5468\u62a5|\u6708\u62a5|\u5b63\u62a5|\u62a5\u544a)$/g, "")
+      // Users often say …产品周报; strip trailing 产品/基金 filler.
+      .replace(/(?:\u79c1\u52df\u57fa\u91d1|\u79c1\u52df|\u57fa\u91d1|\u4ea7\u54c1)+$/g, "")
+      .replace(/^(?:\u6700\u65b0\u7684?|\u6700\u8fd1\u7684?)/, "")
+      .replace(/^[\s\u7684,\uff0c]+|[\s\u7684,\uff0c]+$/g, "")
+      .trim()
+    if (next === q) break
+    q = next
+  }
+  q = scrubFundQuery(q)
+  q = q.replace(/(?:\u79c1\u52df\u57fa\u91d1|\u79c1\u52df|\u57fa\u91d1|\u4ea7\u54c1)+$/g, "").trim()
+  // Drop leftover date fragments from the product capture
+  q = q.replace(/(?:20\d{2}[.\-/\u5e74]\d{1,2}[.\-/\u6708]\d{1,2}\u65e5?.*)$/g, "").trim()
+  return q
+}
+
+function extractReportProductQuery(text: string): string | null {
+  const cleaned = text.trim()
+  const patterns = [
+    /(?:\u5e2e\u6211)?(?:\u505a|\u751f\u6210|\u51fa|\u5bfc\u51fa)(?:\u4e00\u4efd|\u4e00\u4e2a|\u4e2a)?(?:\u6700\u65b0\u7684?|\u6700\u8fd1\u7684?|\u8fd1\u671f\u7684?)?([\u4e00-\u9fa5A-Za-z0-9\uff08\uff09()]{2,40}?)(?:\u7684)?(?:\u5468\u62a5|\u6708\u62a5|\u5b63\u62a5|\u62a5\u544a)/,
+    /([\u4e00-\u9fa5A-Za-z0-9\uff08\uff09()]{2,40}?)(?:\u7684)?(?:\u6700\u65b0|\u6700\u8fd1|\u8fd1\u671f)(?:\u7684)?(?:\u5468\u62a5|\u6708\u62a5|\u5b63\u62a5)/,
+    /([\u4e00-\u9fa5A-Za-z0-9\uff08\uff09()]{2,40}?)(?:\u7684)?(?:\u5468\u62a5|\u6708\u62a5|\u5b63\u62a5)/,
+    /(?:\u5468\u62a5|\u6708\u62a5|\u5b63\u62a5|\u62a5\u544a)\s*([\u4e00-\u9fa5A-Za-z0-9\uff08\uff09()]{2,40})/,
+  ]
+  for (const re of patterns) {
+    const m = cleaned.match(re)
+    if (m?.[1]) {
+      const q = scrubReportProductQuery(m[1])
+      if (q.length >= 2) return q
+    }
+  }
+  // Fallback: strip action + report words from whole sentence
+  if (REPORT_KIND_RE.test(cleaned) || (/\u62a5\u544a/.test(cleaned) && REPORT_ACTION_RE.test(cleaned))) {
+    const q = scrubReportProductQuery(cleaned)
+    if (q.length >= 2 && q.length <= 40) return q
+  }
+  return null
+}
+
+function extractReportDates(text: string): { begin: string; end: string } | null {
+  const rangeFull = text.match(
+    /(20\d{2})[.\-/\u5e74](\d{1,2})[.\-/\u6708](\d{1,2})\u65e5?\s*(?:[~\uFF5E\-\u2014\u81f3\u5230]|\u5230)\s*(20\d{2})?[.\-/\u5e74]?(\d{1,2})[.\-/\u6708]?(\d{1,2})\u65e5?/,
+  )
+  if (rangeFull) {
+    const y1 = rangeFull[1]
+    const m1 = rangeFull[2].padStart(2, "0")
+    const d1 = rangeFull[3].padStart(2, "0")
+    const y2 = rangeFull[4] || y1
+    const m2 = rangeFull[5].padStart(2, "0")
+    const d2 = rangeFull[6].padStart(2, "0")
+    const begin = `${y1}-${m1}-${d1}`
+    const end = `${y2}-${m2}-${d2}`
+    if (begin <= end) return { begin, end }
+  }
+  return null
+}
+
+
+/** Rank a report-product candidate against the spoken query (higher is better). */
+export function scoreReportProductMatch(productName: string, query: string): number {
+  const name = productName.trim()
+  const q = scrubReportProductQuery(query)
+  if (!name || !q) return 0
+  if (name === q) return 100
+  if (name.startsWith(q) || q.startsWith(name)) return 90
+  if (name.includes(q)) return 80 + Math.min(9, q.length)
+  if (q.includes(name) && name.length >= 2) return 70 + Math.min(9, name.length)
+  let pref = 0
+  const lim = Math.min(name.length, q.length)
+  while (pref < lim && name[pref] === q[pref]) pref += 1
+  if (pref >= 2) return 40 + pref
+  return 0
+}
+
+/** STT near-miss stems for 荣熙 (also applied in voice-normalize aliases). */
+const RONGXI_STT_MISHEARS = ["蓉西", "容西", "荣西", "荣希", "绒熙", "荣喜"]
+
+/** Extra query variants for AI-ball report product resolve. */
+export function reportProductSearchVariants(query: string): string[] {
+  const base = scrubReportProductQuery(query)
+  const out = fundSearchVariants(base)
+  const push = (value: string) => {
+    const t = scrubReportProductQuery(value)
+    if (t.length >= 2 && !out.includes(t)) out.push(t)
+  }
+  push(base)
+  for (const bad of RONGXI_STT_MISHEARS) {
+    if (base.includes(bad)) push(base.split(bad).join("荣熙"))
+  }
+  if (base.includes("荣熙")) {
+    // Also try shorter 荣熙共赢 when user said 荣熙共赢同策略
+    push(base.replace(/同策略$/, ""))
+  }
+  if (base.length >= 4) {
+    for (const n of [base.length - 1, base.length - 2, 4, 3]) {
+      if (n >= 2 && n < base.length) push(base.slice(0, n))
+    }
+  }
   return out
 }
 
 /** Lightweight Chinese intent classifier for the mobile AI ball. */
 export function classifyAiIntent(raw: string): AiIntent {
-  const text = raw.trim()
+  const prepared = prepareVoiceQuery(raw)
+  const text = prepared.text.trim() || raw.trim()
   if (!text) return { kind: "assistant" }
+
+  // Fund report generation (周报/月报/季报) — before performance / knowledge.
+  {
+    const reportKind = detectReportKind(text)
+    if (reportKind) {
+      const productQuery = extractReportProductQuery(text)
+      if (productQuery) {
+        const hits = prepareVoiceQuery(productQuery)
+        const corrected = hits.text.trim() || productQuery
+        const dates = extractReportDates(text)
+        return {
+          kind: "fund-report",
+          reportKind,
+          productQuery: corrected,
+          begin: dates?.begin,
+          end: dates?.end,
+          latest: !dates,
+        }
+      }
+    }
+  }
 
   for (const hint of NAV_HINTS) {
     if (hint.re.test(text) && /\u6253\u5f00|\u8fdb\u5165|\u53bb|\u8df3\u8f6c|\u770b\u770b/.test(text)) {
@@ -163,12 +319,19 @@ export function classifyAiIntent(raw: string): AiIntent {
 
   if (MANAGER_KW.test(text)) {
     const managerName = extractManagerName(text)
-    if (managerName) return { kind: "manager-profile", managerName }
+    if (managerName) {
+      const hits = prepareVoiceQuery(managerName)
+      const corrected = hits.text.trim() || managerName
+      return { kind: "manager-profile", managerName: corrected }
+    }
   }
 
   if (FUND_PERF_KW.test(text)) {
     const query = extractFundQuery(text)
-    if (query) return { kind: "fund-performance", query }
+    if (query) {
+      const hits = prepareVoiceQuery(query)
+      return { kind: "fund-performance", query: hits.text.trim() || query }
+    }
   }
 
   const beian = text.match(/\b([SP][A-Z0-9]{5,})\b/i)
@@ -192,6 +355,15 @@ export function intentAck(intent: AiIntent): string {
       return `\u6b63\u5728\u751f\u6210\u300c${intent.managerName}\u300d\u7ba1\u7406\u4eba\u753b\u50cf\u2026`
     case "fund-performance":
       return `\u6b63\u5728\u67e5\u627e\u300c${intent.query}\u300d\u5e76\u6253\u5f00\u51c0\u503c\u2026`
+    case "fund-report": {
+      const kindLabel =
+        intent.reportKind === "weekly"
+          ? "\u5468\u62a5"
+          : intent.reportKind === "monthly"
+            ? "\u6708\u62a5"
+            : "\u5b63\u62a5"
+      return `\u6b63\u5728\u751f\u6210\u300c${intent.productQuery}\u300d${kindLabel}\u2026`
+    }
     case "knowledge":
       return "\u6b63\u5728\u68c0\u7d22\u77e5\u8bc6\u5e93\u2026"
     case "navigate":

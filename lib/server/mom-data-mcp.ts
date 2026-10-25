@@ -192,6 +192,23 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
       offset: { type: "integer" },
     }, ["account"]),
   },
+  
+  {
+    name: "cfmmc_account_export",
+    description: "导出单账户监控中心某资金账号的全部入库数据为 CSV 清单（含历史逐日持仓）。HTTP 等价 GET /cfmmc/account/export。默认 format=dir 返回文件清单与行数；需要 zip 字节时请直接调 HTTP 并设 format=zip。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "资金账号，例如 10800677" },
+        company: { type: "string", description: "期货公司简称，例如 正信期货，用于核对" },
+        datasets: { type: "string", description: "逗号分隔：meta,nav,ops,daily,products,positions,trades,closes,cashflows,option-trades,securities；默认 all" },
+        start_date: { type: "string" },
+        end_date: { type: "string" },
+        format: { type: "string", description: "dir（默认，JSON 清单）或 zip（请走 HTTP 下载）" },
+      },
+      required: ["account"],
+    },
+  },
   {
     name: "cfmmc_rows",
     description: "读取单账户监控中心导入写入的 public.cfmmc_*，和 MOM 母基金表分开。dataset 取 accounts、nav、daily、products、positions、trades、closes、cashflows、option-trades、securities。历史逐日持仓、成交、平仓已开放：positions、trades、closes 传 start_date 和 end_date。净值优先用 cfmmc_account_nav，持仓优先用 cfmmc_account_positions，成交优先用 cfmmc_account_trades。除 accounts 外都要 account。",
@@ -260,6 +277,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Mo
       return handleAccountRiskDataRequest("account/trades", record)
     case "cfmmc_account_closes":
       return handleAccountRiskDataRequest("account/closes", record)
+    case "cfmmc_account_export":
+      return handleAccountRiskDataRequest("account/export", {
+        ...record,
+        format: String(record.format ?? "dir"),
+      })
     case "cfmmc_rows": {
       const dataset = (record.dataset ?? "").trim()
       delete record.dataset

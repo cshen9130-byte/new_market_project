@@ -1,5 +1,5 @@
 import { getSession } from "@/session"
-import type { FundDetail, Pool, SearchManager, SearchProduct, TrackingPage, User } from "@/types"
+import type { DueDiligenceSchedule, FofUnderlyingPage, FofUnderlyingProduct, FundDetail, InvestmentNoteDetail, InvestmentNoteListItem, ManagedProduct, ManagedProductsPage, MomUnderlyingRow, Pool, PrivateFundProfile, ReportGenerateResult, ReportNavFrequency, ReportNavRange, ReportProductOption, SearchManager, SearchProduct, TrackingPage, User } from "@/types"
 
 function isAbortLike(error: unknown): boolean {
   if (!error) return false
@@ -80,19 +80,36 @@ function authed<T>(path: string, init?: RequestInit, timeoutMs?: number): Promis
   return request<T>(baseUrl, path, init, user?.id, timeoutMs)
 }
 
-export function toPublicUser(raw: { id?: string; name?: string; email?: string; role?: string }): User {
+export function toPublicUser(raw: {
+  id?: string
+  name?: string
+  email?: string
+  role?: string
+  permissions?: Record<string, unknown>
+}): User {
   const id = String(raw.id || "").trim()
-  if (!id) throw new Error("登录返回缺少用户")
+  if (!id) throw new Error("登录响应缺少用户")
+  const permissions = normalizePermissions(raw.permissions)
   return {
     id,
     name: String(raw.name || raw.email || "用户"),
     email: String(raw.email || ""),
     role: raw.role,
+    permissions,
   }
 }
 
+function normalizePermissions(raw: Record<string, unknown> | undefined): User["permissions"] {
+  if (!raw || typeof raw !== "object") return undefined
+  const out: NonNullable<User["permissions"]> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "boolean") out[key] = value
+  }
+  return out
+}
+
 export async function loginRequest(baseUrl: string, identifier: string, password: string): Promise<User> {
-  const data = await request<{ ok?: boolean; user?: { id?: string; name?: string; email?: string; role?: string } }>(
+  const data = await request<{ ok?: boolean; user?: { id?: string; name?: string; email?: string; role?: string; permissions?: Record<string, unknown> } }>(
     baseUrl,
     "/api/auth/login",
     { method: "POST", body: JSON.stringify({ identifier, password }) },
@@ -134,6 +151,90 @@ export async function fetchTracking(input: { pool: string; page: number; keyword
   }
 }
 
+export async function fetchManagedProducts(input: { page: number; keyword: string }): Promise<ManagedProductsPage> {
+  const params = new URLSearchParams({
+    page: String(input.page),
+    pageSize: "20",
+    sort: "latest_nav_date",
+    dir: "desc",
+    keyword: input.keyword,
+    run_status: "running",
+  })
+  const data = await authed<Partial<ManagedProductsPage> & { data?: ManagedProduct[] }>(
+    `/ma/api/ops/managed-products/list?${params}`,
+  )
+  return {
+    page: data.page ?? input.page,
+    pageSize: data.pageSize ?? 20,
+    total: data.total ?? 0,
+    totalPages: data.totalPages ?? 0,
+    data: Array.isArray(data.data) ? data.data : [],
+  }
+}
+
+
+export async function fetchFofUnderlying(input: { page: number; keyword: string }): Promise<FofUnderlyingPage> {
+  const params = new URLSearchParams({
+    page: String(input.page),
+    pageSize: "20",
+    sort: "latest_nav_date",
+    dir: "desc",
+    keyword: input.keyword,
+    holding_status: "holding",
+    fund_class: "private",
+  })
+  const data = await authed<Partial<FofUnderlyingPage> & { data?: FofUnderlyingProduct[] }>(
+    `/ma/api/ops/fof-underlying/list?${params}`,
+  )
+  return {
+    page: data.page ?? input.page,
+    pageSize: data.pageSize ?? 20,
+    total: data.total ?? 0,
+    totalPages: data.totalPages ?? 0,
+    data: Array.isArray(data.data) ? data.data : [],
+  }
+}
+
+
+export async function fetchMomUnderlying(): Promise<{ total: number; data: MomUnderlyingRow[] }> {
+  const data = await authed<{ ok?: boolean; total?: number; data?: MomUnderlyingRow[]; error?: string }>(
+    "/ma/api/investment/mom-underlying/list",
+  )
+  if (data.ok === false) throw new Error(data.error || "加载失败")
+  return {
+    total: data.total ?? (Array.isArray(data.data) ? data.data.length : 0),
+    data: Array.isArray(data.data) ? data.data : [],
+  }
+}
+
+
+export async function fetchDueDiligenceSchedules(): Promise<DueDiligenceSchedule[]> {
+  const data = await authed<{ ok?: boolean; schedules?: DueDiligenceSchedule[]; error?: string }>(
+    "/ma/api/due-diligence-schedules",
+  )
+  if (data.ok === false) throw new Error(data.error || "加载失败")
+  return Array.isArray(data.schedules) ? data.schedules : []
+}
+
+export async function fetchInvestmentNotes(scope: "team" | "mine" = "team"): Promise<InvestmentNoteListItem[]> {
+  const params = new URLSearchParams({ scope })
+  const data = await authed<{ ok?: boolean; notes?: InvestmentNoteListItem[]; error?: string }>(
+    `/ma/api/investment-notes?${params}`,
+  )
+  if (data.ok === false) throw new Error(data.error || "加载失败")
+  return Array.isArray(data.notes) ? data.notes : []
+}
+
+export async function fetchInvestmentNote(id: string): Promise<InvestmentNoteDetail> {
+  const params = new URLSearchParams({ id })
+  const data = await authed<{ ok?: boolean; note?: InvestmentNoteDetail; error?: string }>(
+    `/ma/api/investment-notes?${params}`,
+  )
+  if (data.ok === false || !data.note) throw new Error(data.error || "笔记不存在")
+  return data.note
+}
+
+
 export async function searchFunds(query: string): Promise<{ products: SearchProduct[]; managers: SearchManager[] }> {
   const params = new URLSearchParams({ q: query, limit: "20" })
   const data = await authed<{ products?: SearchProduct[]; managers?: SearchManager[] }>(
@@ -158,6 +259,13 @@ function normalizeFundCode(raw: string): string {
   if (!code) throw new Error("缺少备案号")
   return code
 }
+
+
+export async function fetchPrivateFundProfile(beian_hao: string): Promise<PrivateFundProfile> {
+  const beian = normalizeFundCode(beian_hao)
+  return authed<PrivateFundProfile>(`/ma/api/private-funds/${encodeURIComponent(beian)}/profile`)
+}
+
 
 export async function fetchFund(code: string): Promise<FundDetail> {
   const beian = normalizeFundCode(code)
@@ -529,26 +637,13 @@ function downsampleCurve(rows: { date: string; value: number }[], max: number) {
   return out
 }
 
-export async function fetchSiteProfile(): Promise<{
-  id: string
-  name: string
-  email: string
-  role?: string
-  permissions?: Record<string, unknown>
-}> {
+export async function fetchSiteProfile(): Promise<User> {
   const data = await authed<{
     user?: { id?: string; name?: string; email?: string; role?: string; permissions?: Record<string, unknown> }
     error?: string
   }>("/api/auth/me")
-  const id = String(data.user?.id || "").trim()
-  if (!id) throw new Error(data.error || "请用电脑版账号登录后再打开简报")
-  return {
-    id,
-    name: String(data.user?.name || ""),
-    email: String(data.user?.email || ""),
-    role: data.user?.role,
-    permissions: data.user?.permissions,
-  }
+  if (!data.user?.id) throw new Error(data.error || "请用电脑版账号登录后再打开简报")
+  return toPublicUser(data.user)
 }
 
 export type MomSource = "mom" | "account"
@@ -798,4 +893,263 @@ export async function exportResearchReport(input: {
   }
 }
 
+async function downloadBinary(path: string, timeoutMs = 120000): Promise<{ filename: string; mime: string; bytes: Uint8Array }> {
+  const { baseUrl, user } = getSession()
+  if (!baseUrl) throw new Error("暂时无法连接服务器")
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const headers = new Headers({ Accept: "*/*" })
+    if (user?.id) headers.set("x-market-user-id", user.id)
+    const url = path.startsWith("http") ? path : `${baseUrl}${path}`
+    const response = await fetch(url, { headers, signal: controller.signal })
+    if (!response.ok) {
+      const text = await response.text().catch(() => "")
+      let message = readableError(text, response.status)
+      try {
+        const parsed = JSON.parse(text) as { error?: string }
+        if (parsed.error) message = parsed.error
+      } catch {
+        // keep
+      }
+      throw new Error(message)
+    }
+    let filename = "report.bin"
+    const disposition = response.headers.get("Content-Disposition") || ""
+    const star = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+    const plain = disposition.match(/filename="?([^";]+)"?/i)
+    if (star?.[1]) {
+      try {
+        filename = decodeURIComponent(star[1])
+      } catch {
+        // keep
+      }
+    } else if (plain?.[1]) {
+      filename = plain[1]
+    }
+    const mime = (response.headers.get("Content-Type") || "application/octet-stream").split(";")[0].trim()
+    const buffer = await response.arrayBuffer()
+    return { filename, mime, bytes: new Uint8Array(buffer) }
+  } catch (error) {
+    if (isAbortLike(error)) throw new Error("下载超时，请再试一次")
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
+export async function searchReportProducts(query: string): Promise<ReportProductOption[]> {
+  const q = query.trim()
+  if (q.length < 1) return []
+  const headers = (() => {
+    const { user } = getSession()
+    const h: Record<string, string> = { Accept: "application/json" }
+    if (user?.id) h["x-market-user-id"] = user.id
+    return h
+  })()
+  const { baseUrl } = getSession()
+  if (!baseUrl) throw new Error("暂时无法连接服务器")
+
+  const [managed, priv, custom] = await Promise.all([
+    fetch(`${baseUrl}/ma/api/ops/managed-products/list?keyword=${encodeURIComponent(q)}&pageSize=20`, { headers })
+      .then((r) => r.json())
+      .catch(() => null),
+    fetch(`${baseUrl}/ma/api/private-funds/products/search?q=${encodeURIComponent(q)}&format=picker`, { headers })
+      .then((r) => r.json())
+      .catch(() => null),
+    fetch(`${baseUrl}/ma/api/custom-funds/list?scope=team&keyword=${encodeURIComponent(q)}&pageSize=20`, { headers })
+      .then((r) => r.json())
+      .catch(() => null),
+  ])
+
+  const out: ReportProductOption[] = []
+  const seen = new Set<string>()
+  const push = (product_name: string, beian_hao: string | null, source: ReportProductOption["source"]) => {
+    const name = product_name.trim()
+    if (!name) return
+    const key = `${source}:${beian_hao || ""}:${name}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ product_name: name, beian_hao, source })
+  }
+
+  const managedRows = (managed as { data?: { product_name?: string; beian_hao?: string | null }[] } | null)?.data
+  if (Array.isArray(managedRows)) {
+    for (const row of managedRows) {
+      if (row?.product_name) push(row.product_name, row.beian_hao ?? null, "managed")
+    }
+  }
+  if (Array.isArray(priv)) {
+    for (const row of priv as Array<string | { product_name?: string; beian_hao?: string | null }>) {
+      if (typeof row === "string") push(row, null, "private")
+      else if (row?.product_name) push(row.product_name, row.beian_hao ?? null, "private")
+    }
+  }
+  const customRows = (custom as { data?: { product_name?: string; name?: string; beian_hao?: string | null }[] } | null)?.data
+  if (Array.isArray(customRows)) {
+    for (const row of customRows) {
+      const name = row.product_name || row.name
+      if (name) push(name, row.beian_hao ?? null, "custom_fund")
+    }
+  }
+  return out.slice(0, 40)
+}
+
+export async function fetchReportNavRange(input: {
+  kind: "weekly" | "monthly" | "quarterly"
+  product_name: string
+  beian_hao?: string | null
+}): Promise<ReportNavRange> {
+  const params = new URLSearchParams({ product_name: input.product_name.trim() })
+  if (input.beian_hao) params.set("beian_hao", input.beian_hao)
+  const path =
+    input.kind === "weekly"
+      ? `/ma/api/reports/fof-weekly/nav-range?${params}`
+      : input.kind === "monthly"
+        ? `/ma/api/reports/fof-monthly/nav-range?${params}`
+        : `/ma/api/reports/product-quarterly/nav-range?${params}`
+  const data = await authed<{
+    error?: string
+    nav_start_date?: string | null
+    latest_nav_date?: string | null
+    beian_hao?: string | null
+  }>(path)
+  if (data.error) throw new Error(data.error)
+  return {
+    start: data.nav_start_date ?? null,
+    end: data.latest_nav_date ?? null,
+    beian_hao: data.beian_hao ?? input.beian_hao ?? null,
+  }
+}
+
+async function pollFofWeeklyResult(reportId: string): Promise<ReportGenerateResult> {
+  const started = Date.now()
+  const timeoutMs = 180_000
+  let delayMs = 0
+  while (Date.now() - started < timeoutMs) {
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+    const status = await authed<{
+      status?: string
+      error?: string
+      result?: ReportGenerateResult
+    }>(`/ma/api/reports/fof-weekly/status?id=${encodeURIComponent(reportId)}`, undefined, 30000)
+    if (status.status === "done" && status.result) return status.result
+    if (status.status === "error") throw new Error(status.error || "生成周报失败")
+    delayMs = delayMs === 0 ? 400 : Math.min(1500, delayMs + 200)
+  }
+  throw new Error("周报生成超时，请稍后再试")
+}
+
+export async function generateFofWeeklyReport(input: {
+  product_name: string
+  beian_hao?: string | null
+  week_begin: string
+  week_end: string
+  report_title?: string
+  benchmark_key?: string
+  nav_frequency?: ReportNavFrequency
+}): Promise<ReportGenerateResult> {
+  const json = await authed<{
+    async?: boolean
+    reportId?: string
+    error?: string
+  } & Partial<ReportGenerateResult>>(
+    "/ma/api/reports/fof-weekly/generate",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        product_name: input.product_name.trim(),
+        beian_hao: input.beian_hao || undefined,
+        week_begin: input.week_begin,
+        week_end: input.week_end,
+        report_title: input.report_title?.trim() || input.product_name.trim(),
+        benchmark_key: input.benchmark_key || "IF",
+        nav_frequency: input.nav_frequency || "weekly",
+      }),
+    },
+    60000,
+  )
+  if (json.async && typeof json.reportId === "string") {
+    return pollFofWeeklyResult(json.reportId)
+  }
+  if (!json.download?.png || !json.download?.pdf) {
+    throw new Error(json.error || "生成周报失败")
+  }
+  return json as ReportGenerateResult
+}
+
+export async function generateFofMonthlyReport(input: {
+  product_name: string
+  beian_hao?: string | null
+  month_begin: string
+  month_end: string
+  report_title?: string
+  benchmark_key?: string
+  nav_frequency?: ReportNavFrequency
+  report_layout?: "curve" | "review"
+}): Promise<ReportGenerateResult> {
+  const json = await authed<ReportGenerateResult & { error?: string }>(
+    "/ma/api/reports/fof-monthly/generate",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        product_name: input.product_name.trim(),
+        beian_hao: input.beian_hao || undefined,
+        month_begin: input.month_begin,
+        month_end: input.month_end,
+        report_title: input.report_title?.trim() || input.product_name.trim(),
+        benchmark_key: input.benchmark_key || "IF",
+        nav_frequency: input.nav_frequency || "weekly",
+        report_layout: input.report_layout || "review",
+      }),
+    },
+    180000,
+  )
+  if (!json.download?.png || !json.download?.pdf) {
+    throw new Error(json.error || "生成月报失败")
+  }
+  return json
+}
+
+export async function generateProductQuarterlyReport(input: {
+  product_name: string
+  beian_hao?: string | null
+  period_begin: string
+  period_end: string
+  report_title?: string
+  bench1_key?: string
+  bench2_key?: string
+  nav_frequency?: ReportNavFrequency
+  commentary?: string
+  brand_name?: string
+  investment_manager?: string
+}): Promise<ReportGenerateResult> {
+  const json = await authed<ReportGenerateResult & { error?: string }>(
+    "/ma/api/reports/product-quarterly/generate",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        product_name: input.product_name.trim(),
+        beian_hao: input.beian_hao || undefined,
+        period_begin: input.period_begin,
+        period_end: input.period_end,
+        report_title: input.report_title?.trim() || input.product_name.trim(),
+        bench1_key: input.bench1_key || "000001.SH",
+        bench2_key: input.bench2_key || "IF",
+        nav_frequency: input.nav_frequency || "weekly",
+        commentary: input.commentary || undefined,
+        brand_name: input.brand_name || undefined,
+        investment_manager: input.investment_manager || undefined,
+      }),
+    },
+    180000,
+  )
+  if (!json.download?.png || !json.download?.pdf) {
+    throw new Error(json.error || "生成季报失败")
+  }
+  return json
+}
+
+export async function downloadReportArtifact(downloadPath: string): Promise<{ filename: string; mime: string; bytes: Uint8Array }> {
+  return downloadBinary(downloadPath, 120000)
+}
