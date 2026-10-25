@@ -1,15 +1,15 @@
 {
-    "size":  84633082,
-    "stt":  {
-                "runtime":  "sherpa-onnx 1.12.23",
-                "removed":  "vosk-android AAR + libvosk.so",
-                "model":  "sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans int8 (local QInt8 from official fp32; ~70MB)",
-                "previous":  "sherpa-onnx-streaming-paraformer-bilingual-zh-en (FunASR Paraformer int8)"
-            },
-    "url":  "http://8.154.33.143/app/fof-research.apk?v=66",
-    "versionCode":  66,
-    "expectedBytes":  84633082,
-    "notes":  "STT shrink: Paraformer bilingual ~237MB -\u003e Zipformer2-CTC multi-zh int8 ~70MB (14k-hr CN); drop unused Vosk AAR/JNI; keep hold-to-talk + fuzzy aliases. Product page: fund fetch retry/90s timeout + normalizeFundCode; server skip futile ALTER on basicinfo_bfl_track.",
-    "versionName":  "1.6.59",
-    "sha256":  "f942d62b99cf9e131ccb4a8a0183b17c0f50d749f8842241a2fba0de56695a42"
+  "url": "http://8.154.33.143/app/fof-research.apk?v=67",
+  "versionCode": 67,
+  "versionName": "1.6.60",
+  "notes": "CRITICAL fix: restore FunASR Paraformer after 1.6.59 Zipformer local-int8 Huawei native flash at prepare. Keep product-page hardenings.",
+  "expectedBytes": 250407454,
+  "size": 250407454,
+  "sha256": "a3200ad783a4955ed65bac8086cd067ff40da256e94fe9fffa77aaa0731d8d4c",
+  "stt": {
+    "runtime": "sherpa-onnx 1.12.23",
+    "model": "sherpa-onnx-streaming-paraformer-bilingual-zh-en int8",
+    "previous": "zipformer2-ctc multi-zh local QInt8 (1.6.59 crash)",
+    "removed": "vosk-android AAR"
+  }
 }

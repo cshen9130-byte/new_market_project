@@ -11,7 +11,7 @@ const FLAG_GRANT_READ_URI_PERMISSION = 1
 const FLAG_ACTIVITY_NEW_TASK = 0x10000000
 const AUTO_UPDATE_KEY = "fof.autoCheckUpdate"
 /** Bump with each release so old size-only APK cache reuse cannot match. */
-const UPDATE_CACHE_BUST = "fof-apk-cache-bust-1.6.59-66"
+const UPDATE_CACHE_BUST = "fof-apk-cache-bust-1.6.60-67"
 void UPDATE_CACHE_BUST
 
 const WAITING_INSTALL_LABEL = "请在系统安装确认中点安装"
