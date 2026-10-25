@@ -245,7 +245,7 @@ ${FENCE}
 | GET /cfmmc/account/cashflows | cfmmc_cash_flows | 出入金 |
 | GET /cfmmc/account/option-trades | cfmmc_option_trades | 期权成交 |
 | GET /cfmmc/account/securities | cfmmc_securities | 证券成交 |
-| GET /cfmmc/account/export | cfmmc_* + ops | 一次性导出该账号全部入库 CSV（含历史逐日持仓）。默认 `format=zip`；`format=dir` 只写目录并返回 JSON 清单；单表可 `format=csv&dataset=positions`。可选 `company`、`datasets`、`start_date`、`end_date` |
+| GET /cfmmc/account/export | cfmmc_* + ops | 一次性导出该账号全部入库 CSV（含历史逐日持仓）。默认 \`format=zip\`；\`format=dir\` 只写目录并返回 JSON 清单；单表可 \`format=csv&dataset=positions\`。可选 \`company\`、\`datasets\`、\`start_date\`、\`end_date\` |
 
 \`/accounts\` 每条有 \`account\`、\`fund_name\`、\`company\`（期货公司简称，例如国泰君安期货）、\`company_name\`（结算单原文）、\`first_date\`、\`last_date\`、\`trading_days\`，以及最新一天的权益、保证金、当日盈亏和风险度。
 
