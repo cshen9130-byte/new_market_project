@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Incremental MOM trade-detail ETL
 ================================
@@ -33,6 +33,7 @@ import sys
 import threading
 import zipfile
 from datetime import date, datetime, timedelta, timezone
+from cn_market_holidays import last_trading_day_on_or_before  # noqa: E402
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 from xml.etree import ElementTree as ET
@@ -447,11 +448,12 @@ def _step_nanhua_indices(conn) -> int:
     conn.commit()
 
     today = date.today()
+    target = last_trading_day_on_or_before(today)
     # Check NHCI.NH specifically — other codes may have valid close>0 for today
     # while NHCI.NH still has close=0 (pre-close placeholder from nightly ETL)
     cur_max = _max_valid_date(conn, "raw_nanhua_indices_daily", code="NHCI.NH")
-    if cur_max and cur_max >= today:
-        log.info("NH indices up-to-date (NHCI.NH %s), skipping.", cur_max)
+    if cur_max and cur_max >= target:
+        log.info("NH indices up-to-date (NHCI.NH %s >= %s), skipping.", cur_max, target)
         return 0
 
     start = _MARKET_BACKFILL_START if cur_max is None else cur_max + timedelta(days=1)
@@ -536,14 +538,15 @@ def _step_nanhua_commodity_indices(conn) -> int:
     conn.commit()
 
     today = date.today()
+    target = last_trading_day_on_or_before(today)
     # Check NHAU.NH (gold) as representative — all commodity indices are fetched
     # together, and if one has close=0 they all do
     cur_max = _max_valid_date(conn, "raw_nanhua_commodity_indices_daily", code="NHAU.NH")
     if cur_max is None:
         # NHAU.NH may not exist yet — fall back to table-wide check
         cur_max = _max_valid_date(conn, "raw_nanhua_commodity_indices_daily")
-    if cur_max and cur_max >= today:
-        log.info("NH commodity indices up-to-date (%s), skipping.", cur_max)
+    if cur_max and cur_max >= target:
+        log.info("NH commodity indices up-to-date (%s >= %s), skipping.", cur_max, target)
         return 0
 
     start = _MARKET_BACKFILL_START if cur_max is None else cur_max + timedelta(days=1)
@@ -796,6 +799,30 @@ def _step_akshare_futures_daily(conn) -> int:
     conn.commit()
     log.info("AkShare futures daily: upserted %d rows.", len(records))
     return len(records)
+
+
+def clear_mom_file_cache(*substrings: str) -> int:
+    """Drop today Beijing MOM file-cache entries after position / NHCI catch-up."""
+    from datetime import datetime, timezone, timedelta
+    root = Path(__file__).resolve().parents[2] / "data" / "mom-cache"
+    if not root.is_dir():
+        return 0
+    beijing = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    prefix = beijing + "_"
+    removed = 0
+    for p in root.iterdir():
+        if not p.is_file() or not p.name.startswith(prefix):
+            continue
+        if substrings and not any(s in p.name for s in substrings):
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info("Cleared %d MOM cache file(s)", removed)
+    return removed
 
 
 def run_market_data_steps(conn) -> None:
@@ -2022,8 +2049,12 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
 
         # ── Market data for 品种交易回顾 charts ──────────────────────────────
         if not skip_market_data:
-            log.info("Running market data steps for 品种交易回顾 charts …")
+            log.info("Running market data steps for charts")
             run_market_data_steps(conn)
+
+        # Positions and/or NHCI may have advanced — drop stale MOM 简报 cache.
+        if ok_count > 0 or not skip_market_data:
+            clear_mom_file_cache("quant-vs-subjective", "warm-cache")
 
         return 0 if err_count == 0 else 2
 

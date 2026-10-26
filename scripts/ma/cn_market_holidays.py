@@ -26,6 +26,22 @@ def is_cn_market_closed(day: date) -> bool:
     return day.weekday() >= 5 or day in cn_statutory_holidays()
 
 
+def last_trading_day_on_or_before(day: date) -> date:
+    """Most recent China market open day on or before `day`."""
+    d = day
+    # Bound the walk so a corrupt holiday list cannot loop forever.
+    for _ in range(370):
+        if not is_cn_market_closed(d):
+            return d
+        d -= timedelta(days=1)
+    raise RuntimeError(f"no trading day on or before {day}")
+
+
+def previous_trading_day(day: date) -> date:
+    """Most recent China market open day strictly before `day`."""
+    return last_trading_day_on_or_before(day - timedelta(days=1))
+
+
 def last_friday_on_or_before(day: date) -> date:
     return day - timedelta(days=(day.weekday() - 4) % 7)
 
