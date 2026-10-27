@@ -55,17 +55,18 @@ HISTORY_DAYS = 504
 PERCENTILE_DAYS = 1260
 
 
+import sys
+from pathlib import Path as _Path
+_MA_DIR = _Path(__file__).resolve().parents[1]
+if str(_MA_DIR) not in sys.path:
+    sys.path.insert(0, str(_MA_DIR))
+from cn_market_holidays import previous_trading_day  # noqa: E402
+
+
 def latest_trade_date() -> date:
-    """Previous trading day (matches nightly_etl.latest_trade_date)."""
-    today = date.today()
-    wd = today.weekday()
-    if wd == 0:
-        return today - timedelta(days=3)
-    if wd == 5:
-        return today - timedelta(days=1)
-    if wd == 6:
-        return today - timedelta(days=2)
-    return today - timedelta(days=1)
+    """Previous China trading day (matches nightly_etl.latest_trade_date)."""
+    return previous_trading_day(date.today())
+
 
 
 def extend_qvix_with_snapshot(

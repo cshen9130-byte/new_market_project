@@ -73,6 +73,21 @@ export function clearAccountSourceCache(): void {
   }
 }
 
+/** Drop all of today's MOM file-cache entries (e.g. after NHCI / position ETL advances). */
+export function clearTodayMomCache(routeKeySubstring?: string): void {
+  try {
+    ensureDir()
+    const prefix = `${todayStr()}_`
+    for (const f of readdirSync(CACHE_DIR)) {
+      if (!f.startsWith(prefix)) continue
+      if (routeKeySubstring && !f.includes(routeKeySubstring)) continue
+      try { unlinkSync(join(CACHE_DIR, f)) } catch { /* ignore */ }
+    }
+  } catch {
+    // non-fatal
+  }
+}
+
 /**
  * Wrap a GET handler with date-keyed file caching.
  * Usage:
@@ -80,9 +95,19 @@ export function clearAccountSourceCache(): void {
  *
  * If req has ?nocache=1, skips the cache read (but still writes).
  */
+export type MomCacheOptions = {
+  /**
+   * Extra freshness token folded into the cache key. When position / NHCI max
+   * dates advance mid-day, return a new token so withMomCache misses instead of
+   * serving a stale 持仓截面 from an earlier warm.
+   */
+  freshness?: (req: Request) => Promise<string | null | undefined>
+}
+
 export function withMomCache(
   routeKey: string,
   handler: (req: Request) => Promise<NextResponse>,
+  options?: MomCacheOptions,
 ): (req: Request) => Promise<NextResponse> {
   const cacheHeaders = {
     // no-cache: browser always revalidates; server-side file cache still
@@ -103,7 +128,16 @@ export function withMomCache(
       }
 
       const noCache = url.searchParams.get("nocache") === "1"
-      const key = `${source}__${routeKey}${paramKey(url.searchParams)}`
+      let fresh = ""
+      if (options?.freshness) {
+        try {
+          fresh = String((await options.freshness(req)) || "").trim()
+        } catch {
+          fresh = ""
+        }
+      }
+      const freshSuffix = fresh ? `__fresh=${fresh}` : ""
+      const key = `${source}__${routeKey}${paramKey(url.searchParams)}${freshSuffix}`
 
       if (!noCache) {
         const cached = readCache(key)

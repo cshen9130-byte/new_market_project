@@ -50,6 +50,11 @@ import subprocess
 import sys
 import threading
 from datetime import date, datetime, timedelta
+
+from cn_market_holidays import (  # noqa: E402
+    last_trading_day_on_or_before,
+    previous_trading_day,
+)
 from pathlib import Path
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -489,8 +494,9 @@ def row_count(conn, table: str, where_sql: str = "", params=()) -> int:
 def step_nhci(conn, *, force: bool = False, start: date | None = None) -> int:
     cur_max = max_date(conn, "raw_nhci_daily")
     today = date.today()
-    if not force and start is None and cur_max and cur_max >= today - timedelta(days=1):
-        log.info("NHCI up-to-date (%s), skipping.", cur_max)
+    target = market_data_target_date(today)
+    if not force and start is None and is_market_data_current(cur_max, as_of=today):
+        log.info("NHCI up-to-date (%s >= %s), skipping.", cur_max, target)
         return 0
 
     log.info("Fetching NHCI …")
@@ -528,6 +534,7 @@ def step_nhci(conn, *, force: bool = False, start: date | None = None) -> int:
         )
     conn.commit()
     log.info("NHCI: upserted %d rows (max date now %s).", len(records), max(r[0] for r in records))
+    clear_mom_file_cache("quant-vs-subjective", "warm-cache")
     return len(records)
 
 
@@ -538,8 +545,9 @@ def step_nhci(conn, *, force: bool = False, start: date | None = None) -> int:
 def step_nheci(conn, *, force: bool = False, start: date | None = None) -> int:
     cur_max = max_date(conn, "raw_nheci_daily")
     today = date.today()
-    if not force and start is None and cur_max and cur_max >= today - timedelta(days=1):
-        log.info("NHECI up-to-date (%s), skipping.", cur_max)
+    target = market_data_target_date(today)
+    if not force and start is None and is_market_data_current(cur_max, as_of=today):
+        log.info("NHECI up-to-date (%s >= %s), skipping.", cur_max, target)
         return 0
 
     log.info("Fetching NHECI …")
@@ -622,10 +630,17 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = max_valid_close_date(conn, "raw_nanhua_indices_daily")
+    # Require NHCI.NH specifically — table-wide MAX can be current while NHCI.NH
+    # is still stuck on the prior session (asymmetric EmQuant lag vs commodity indices).
+    cur_max = max_valid_close_date(
+        conn, "raw_nanhua_indices_daily", extra_where="code = 'NHCI.NH'"
+    )
+    if cur_max is None:
+        cur_max = max_valid_close_date(conn, "raw_nanhua_indices_daily")
 
-    if not force and cur_max and cur_max >= today - timedelta(days=1):
-        log.info("NH indices up-to-date (%s), skipping.", cur_max)
+    target = market_data_target_date(today)
+    if not force and is_market_data_current(cur_max, as_of=today):
+        log.info("NH indices up-to-date (NHCI.NH %s >= %s), skipping.", cur_max, target)
         return 0
 
     if cur_max is None or force:
@@ -699,6 +714,7 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
         )
     conn.commit()
     log.info("NH indices: upserted %d rows (max date %s).", len(records), max(r[0] for r in records))
+    clear_mom_file_cache("quant-vs-subjective", "warm-cache")
     return len(records)
 
 
@@ -742,10 +758,11 @@ def step_nanhua_commodity_indices(conn, *, force: bool = False) -> int:
     conn.commit()
 
     today   = date.today()
-    cur_max = max_date(conn, "raw_nanhua_commodity_indices_daily")
+    cur_max = max_valid_close_date(conn, "raw_nanhua_commodity_indices_daily")
 
-    if not force and cur_max and cur_max >= today - timedelta(days=1):
-        log.info("NH commodity indices up-to-date (%s), skipping.", cur_max)
+    target = market_data_target_date(today)
+    if not force and is_market_data_current(cur_max, as_of=today):
+        log.info("NH commodity indices up-to-date (%s >= %s), skipping.", cur_max, target)
         return 0
 
     if cur_max is None or force:
@@ -4598,16 +4615,55 @@ def step_predict_market_cluster(
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+def clear_mom_file_cache(*substrings: str) -> int:
+    """Drop today Beijing file-cache entries so MOM 简报 does not keep a stale 持仓截面."""
+    from datetime import datetime, timezone, timedelta
+    root = Path(__file__).resolve().parents[2] / "data" / "mom-cache"
+    if not root.is_dir():
+        return 0
+    beijing = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    prefix = beijing + "_"
+    removed = 0
+    for p in root.iterdir():
+        if not p.is_file() or not p.name.startswith(prefix):
+            continue
+        if substrings and not any(s in p.name for s in substrings):
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info("Cleared %d MOM cache file(s) under %s", removed, root)
+    return removed
+
 def latest_trade_date() -> date:
-    """Target previous trading day for scheduled night runs (e.g. 01:00 local)."""
-    today = date.today()
-    wd    = today.weekday()  # 0=Mon … 6=Sun
-    # Nightly run should settle on yesterday's market data, not "today".
-    # Mon -> Fri, Tue..Fri -> previous day, Sat/Sun -> previous Friday.
-    if wd == 0:
-        return today - timedelta(days=3)
-    if wd == 5:
-        return today - timedelta(days=1)
+    """Previous China trading day for overnight jobs (01:00) that want settled bars.
+
+    Walks weekends and State Council holidays via cn_market_holidays, so a Monday
+    after a holiday Friday lands on the real prior session (not a closed Friday).
+    """
+    return previous_trading_day(date.today())
+
+
+def market_data_target_date(as_of: date | None = None) -> date:
+    """Latest session whose NHCI / Nanhua daily bars should exist after close.
+
+    Same-day settle: on a trading day this is as_of; on weekends/holidays the
+    prior open day. Skip guards use this so Friday data is not treated as current
+    on Monday afternoon (calendar today-1 would mask that lag).
+    """
+    return last_trading_day_on_or_before(as_of or date.today())
+
+
+def is_market_data_current(cur_max: date | None, *, as_of: date | None = None) -> bool:
+    """True when DB already has usable bars through market_data_target_date()."""
+    if cur_max is None:
+        return False
+    return cur_max >= market_data_target_date(as_of)
+
     if wd == 6:
         return today - timedelta(days=2)
     return today - timedelta(days=1)
@@ -5492,6 +5548,15 @@ AMAC_STEPS = [
 
 # Chart-critical 期货/期权 steps. Scheduled separately so a broken 01:00 full
 # nightly (venv missing, later AMAC timeouts, etc.) cannot freeze those pages.
+# Post-close catch-up for NHCI / Nanhua composite indices. Overnight 01:00
+# often runs before EmQuant publishes the same-day settle; without this group
+# Monday UI stays on Friday until a manual --force.
+NANHUA_STEPS = [
+    "nhci",
+    "nheci",
+    "nanhua_indices",
+]
+
 FUTURES_STEPS = [
     "nhci",
     "nanhua_indices",
@@ -5638,8 +5703,8 @@ def main():
     parser.add_argument("--step", choices=ORDERED_STEPS, help="Run a single step only")
     parser.add_argument(
         "--group",
-        choices=["macro", "stock", "futures", "amac"],
-        help="Run a predefined step group (macro / stock / futures+options / AMAC funds)",
+        choices=["macro", "stock", "futures", "amac", "nanhua"],
+        help="Run a predefined step group (macro / stock / futures+options / AMAC / nanhua post-close)",
     )
     parser.add_argument("--backfill", action="store_true", help="Force full history reload")
     parser.add_argument("--force", action="store_true", help="Re-fetch even if data already in DB")
@@ -5750,6 +5815,9 @@ def main():
     elif args.group == "futures":
         steps_to_run = FUTURES_STEPS
         log.info("Running futures/options step group (%d steps)", len(steps_to_run))
+    elif args.group == "nanhua":
+        steps_to_run = NANHUA_STEPS
+        log.info("Running post-close Nanhua/NHCI step group (%d steps)", len(steps_to_run))
     elif args.group == "amac":
         steps_to_run = AMAC_STEPS
         log.info("Running AMAC fund-list step group (%d steps)", len(steps_to_run))
