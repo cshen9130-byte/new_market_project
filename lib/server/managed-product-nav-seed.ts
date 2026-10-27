@@ -31,6 +31,7 @@ export type TeamNavListPoint = {
   unit_nav: string
   cumulative_nav?: string | null
   adjusted_nav?: string | null
+  is_protected?: boolean
 }
 
 const seedCache = new Map<string, LegacyNavRow[]>()

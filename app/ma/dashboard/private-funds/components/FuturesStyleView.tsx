@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Menu } from "lucide-react"
 import { FuturesStyleCalcHelp } from "./FuturesStyleCalcHelp"
@@ -16,83 +16,32 @@ const SECTOR_TABS = [
 
 type SectorKey = (typeof SECTOR_TABS)[number]["key"]
 
-const FUTURES_STYLE_FACTORS: {
-  name: string
-  value: number
-  sector: SectorKey | "all"
-}[] = [
-  { name: "时间序列动量(短)", value: -0.8, sector: "all" },
-  { name: "时间序列动量(中)", value: -0.79, sector: "all" },
-  { name: "时间序列动量(长)", value: -0.32, sector: "all" },
-  { name: "截面动量(短)", value: -0.06, sector: "all" },
-  { name: "截面动量", value: 0.2, sector: "all" },
-  { name: "期限结构动量", value: -0.35, sector: "all" },
-  { name: "基差动量", value: -0.36, sector: "black" },
-  { name: "库存因子", value: -0.51, sector: "black" },
-  { name: "波动因子(短)", value: 0.46, sector: "all" },
-  { name: "波动因子", value: 0.72, sector: "all" },
-  { name: "流动性因子", value: -0.2, sector: "all" },
-  { name: "均价偏离因子", value: -0.58, sector: "all" },
-  { name: "偏度因子", value: 0.43, sector: "all" },
-  { name: "基差因子", value: 0.82, sector: "energy" },
-  { name: "博弈意愿因子", value: 0.15, sector: "all" },
-  { name: "持仓变化因子", value: 0.12, sector: "all" },
-]
+const INTERVAL_PERIOD_COLUMNS = [
+  "近一周收益",
+  "近一月收益",
+  "近三月收益",
+  "近六月收益",
+  "近一年收益",
+  "今年以来收益",
+] as const
 
-const SERIES_COLORS = [
-  "#D93025",
-  "#1A73E8",
-  "#FBBC04",
-  "#9333ea",
-  "#22c55e",
-  "#14b8a6",
-  "#EC4899",
-  "#78716C",
-  "#2563eb",
-  "#f97316",
-  "#84cc16",
-  "#06b6d4",
-  "#a855f7",
-  "#ef4444",
-  "#64748b",
-  "#0ea5e9",
-]
-
-function hashSeed(input: string): number {
-  let h = 0
-  for (let i = 0; i < input.length; i += 1) {
-    h = (h * 31 + input.charCodeAt(i)) >>> 0
-  }
-  return h
+type ApiPayload = {
+  ok: true
+  from: string
+  to: string
+  sector: SectorKey
+  auto?: boolean
+  minDate?: string | null
+  maxDate?: string | null
+  dates: string[]
+  source: { prices: string; oiCarry: string; note: string }
+  cards: Array<{ key: string; name: string; value: number; sector: string }>
+  daily: Array<{ key: string; name: string; color: string; data: number[] }>
+  cumulative: Array<{ key: string; name: string; color: string; data: number[] }>
+  interval: Array<{ key: string; name: string; sector: string; returns: number[] }>
 }
 
-function pseudoReturn(factorName: string, date: string, sector: SectorKey): number {
-  const seed = hashSeed(`${factorName}:${date}:${sector}`)
-  const base = ((seed % 200) - 100) / 100
-  const wave = Math.sin(seed % 17) * 0.35
-  return Math.round((base + wave) * 100) / 100
-}
-
-function datesBetween(from: string, to: string): string[] {
-  const dates: string[] = []
-  const cursor = new Date(`${from}T12:00:00`)
-  const end = new Date(`${to}T12:00:00`)
-  if (Number.isNaN(cursor.getTime()) || Number.isNaN(end.getTime()) || cursor > end) {
-    return []
-  }
-  while (cursor <= end) {
-    dates.push(cursor.toISOString().slice(0, 10))
-    cursor.setDate(cursor.getDate() + 1)
-  }
-  return dates
-}
-
-function tradingDatesBetween(from: string, to: string): string[] {
-  return datesBetween(from, to).filter((d) => {
-    const day = new Date(`${d}T12:00:00`).getDay()
-    return day !== 0 && day !== 6
-  })
-}
+type ApiError = { ok: false; error?: string }
 
 function returnColorClass(value: number): string {
   if (value > 0) return "text-red-500"
@@ -109,84 +58,6 @@ function cardBgClass(value: number): string {
 function formatReturnPct(value: number): string {
   const sign = value > 0 ? "+" : ""
   return `${sign}${value.toFixed(2)}%`
-}
-
-function sectorOffset(sector: SectorKey): number {
-  const offsets: Record<SectorKey, number> = {
-    all: 0,
-    commodity: 0.03,
-    black: 0.08,
-    nonferrous: -0.05,
-    energy: 0.12,
-    agri: -0.1,
-  }
-  return offsets[sector]
-}
-
-const INTERVAL_PERIOD_COLUMNS = [
-  "近一周收益",
-  "近一月收益",
-  "近三月收益",
-  "近六月收益",
-  "近一年收益",
-  "今年以来收益",
-] as const
-
-const INTERVAL_TABLE_FACTORS: {
-  name: string
-  sector: SectorKey | "all"
-  returns: number[]
-}[] = [
-  { name: "短周期时间序列动量", sector: "all", returns: [-4.44, -6.28, -5.54, -1.8, 5.96, 5.78] },
-  { name: "时间序列动量", sector: "all", returns: [-5.9, -10.03, -3.18, -16.14, 22.74, 26.72] },
-  { name: "长周期时间序列动量", sector: "all", returns: [-3.99, -7.54, 1.22, -22.46, 26.1, 26.27] },
-  { name: "期限幅度动量", sector: "all", returns: [-2.15, -4.82, 0.65, -8.33, 12.45, 9.18] },
-  { name: "截面动量", sector: "all", returns: [-1.76, -3.41, 2.08, -5.67, 8.92, 7.35] },
-  { name: "期限基差动量", sector: "energy", returns: [-3.28, -5.15, -1.42, -9.86, 15.23, 11.64] },
-  { name: "基差动量", sector: "black", returns: [-4.05, -6.72, -2.88, -12.4, 18.56, 14.82] },
-  { name: "期限结构因子", sector: "all", returns: [-2.64, -4.19, 0.93, -7.21, 10.38, 8.47] },
-  { name: "短期波动因子", sector: "all", returns: [1.85, 3.42, 4.16, 2.73, -3.28, -1.95] },
-  { name: "波动因子", sector: "all", returns: [2.34, 4.08, 5.22, 3.15, -4.62, -2.48] },
-  { name: "流动性因子", sector: "all", returns: [-1.42, -2.86, -0.75, -4.53, 6.18, 4.92] },
-  { name: "均价突破因子", sector: "all", returns: [-3.56, -5.94, -1.68, -11.25, 16.84, 13.26] },
-  { name: "偏度因子", sector: "all", returns: [0.92, 1.65, 2.38, 1.12, -2.15, -0.86] },
-  { name: "基差因子", sector: "energy", returns: [3.18, 5.42, 6.75, 4.28, -5.93, -3.64] },
-  { name: "持仓变化因子", sector: "all", returns: [-2.27, -1.04, -3.62, -5.24, 0.49, -6.03] },
-]
-
-const CUMULATIVE_LINE_FACTORS: {
-  name: string
-  color: string
-  sector: SectorKey | "all"
-}[] = [
-  { name: "短期时间序列动量", color: "#D93025", sector: "all" },
-  { name: "时间序列动量", color: "#1A73E8", sector: "all" },
-  { name: "长期时间序列动量", color: "#FBBC04", sector: "all" },
-  { name: "短期截面动量", color: "#22c55e", sector: "all" },
-  { name: "截面动量", color: "#eab308", sector: "all" },
-  { name: "短期基差动量", color: "#9333ea", sector: "energy" },
-  { name: "基差动量", color: "#06b6d4", sector: "black" },
-  { name: "期限结构因子", color: "#84cc16", sector: "all" },
-  { name: "低波动因子", color: "#78716C", sector: "all" },
-  { name: "波动因子", color: "#14b8a6", sector: "all" },
-  { name: "流动性因子", color: "#64748b", sector: "all" },
-  { name: "价值收益因子", color: "#b91c1c", sector: "all" },
-  { name: "偏度因子", color: "#EC4899", sector: "all" },
-  { name: "峰度因子", color: "#2563eb", sector: "all" },
-  { name: "持仓变化因子", color: "#0ea5e9", sector: "all" },
-]
-
-function buildCumulativeReturns(factorName: string, dates: string[], sector: SectorKey): number[] {
-  const drift = ((hashSeed(factorName) % 200) - 100) / 400
-  let cum = 0
-  return dates.map((date, index) => {
-    if (index === 0) return 0
-    const daily =
-      pseudoReturn(factorName, date, sector) * 0.32 + drift + sectorOffset(sector) * 0.15
-    cum += daily
-    cum = Math.round(cum * 100) / 100
-    return Math.max(-20, Math.min(15, cum))
-  })
 }
 
 function formatCumulativeAxisLabel(value: string, index: number, allDates: string[]): string {
@@ -229,57 +100,210 @@ function SortableHeader({ label }: { label: string }) {
   )
 }
 
+function yAxisRange(series: Array<{ data: number[] }>, fallbackMin: number, fallbackMax: number) {
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  for (const s of series) {
+    for (const v of s.data) {
+      if (!Number.isFinite(v)) continue
+      if (v < min) min = v
+      if (v > max) max = v
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: fallbackMin, max: fallbackMax }
+  if (min === max) {
+    return { min: min - 1, max: max + 1 }
+  }
+  const pad = Math.max(0.5, (max - min) * 0.08)
+  return { min: Math.floor((min - pad) * 2) / 2, max: Math.ceil((max + pad) * 2) / 2 }
+}
+
+function buildSingleFactorCumulativeOption(
+  factorName: string,
+  color: string,
+  dates: string[],
+  data: number[],
+) {
+  const y = yAxisRange([{ data }], -5, 5)
+  return {
+    backgroundColor: "transparent",
+    animation: false,
+    grid: { left: 44, right: 12, top: 28, bottom: 28 },
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: Array<{ seriesName: string; value: number; marker: string; axisValue: string }>) => {
+        if (!params?.length) return ""
+        const p = params[0]
+        const sign = p.value > 0 ? "+" : ""
+        return `<div style="font-weight:600;margin-bottom:2px">${p.axisValue}</div>${p.marker}${factorName}: ${sign}${Number(p.value).toFixed(2)}%`
+      },
+    },
+    xAxis: {
+      type: "category" as const,
+      data: dates,
+      boundaryGap: false,
+      axisLabel: {
+        fontSize: 10,
+        color: "#999999",
+        formatter: (value: string, index: number) =>
+          formatCumulativeAxisLabel(value, index, dates),
+      },
+      axisLine: { lineStyle: { color: "#e4e4e7" } },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value" as const,
+      min: y.min,
+      max: y.max,
+      axisLabel: {
+        fontSize: 10,
+        color: "#999999",
+        formatter: (v: number) => `${v}%`,
+      },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { lineStyle: { color: "#eeeeee", type: "solid" as const } },
+    },
+    series: [
+      {
+        name: factorName,
+        type: "line" as const,
+        symbol: "none" as const,
+        smooth: false,
+        lineStyle: { color, width: 1.5 },
+        itemStyle: { color },
+        data,
+        markLine: {
+          silent: true,
+          symbol: "none" as const,
+          lineStyle: { color: "#cccccc", width: 1 },
+          label: { show: false },
+          data: [{ yAxis: 0 }],
+        },
+      },
+    ],
+  }
+}
+
+
+
 export function FuturesStyleView() {
-  const [draftFrom, setDraftFrom] = useState("2026-03-27")
-  const [draftTo, setDraftTo] = useState("2026-06-29")
-  const [appliedFrom, setAppliedFrom] = useState("2026-03-27")
-  const [appliedTo, setAppliedTo] = useState("2026-06-29")
+  const [draftFrom, setDraftFrom] = useState("")
+  const [draftTo, setDraftTo] = useState("")
+  /** Empty applied range => request auto (latest data window). */
+  const [appliedFrom, setAppliedFrom] = useState("")
+  const [appliedTo, setAppliedTo] = useState("")
+  const [rangeAuto, setRangeAuto] = useState(true)
+  const [dataMaxDate, setDataMaxDate] = useState<string | null>(null)
   const [activeSector, setActiveSector] = useState<SectorKey>("all")
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set())
   const [selectAllSeries, setSelectAllSeries] = useState(true)
   const [hiddenCumulativeSeries, setHiddenCumulativeSeries] = useState<Set<string>>(new Set())
   const [selectAllCumulativeSeries, setSelectAllCumulativeSeries] = useState(true)
 
+  const [payload, setPayload] = useState<ApiPayload | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
   const handleQuery = useCallback(() => {
-    setAppliedFrom(draftFrom)
-    setAppliedTo(draftTo)
+    if (draftFrom && draftTo) {
+      setAppliedFrom(draftFrom)
+      setAppliedTo(draftTo)
+      setRangeAuto(false)
+    } else {
+      setAppliedFrom("")
+      setAppliedTo("")
+      setRangeAuto(true)
+    }
     setHiddenSeries(new Set())
     setSelectAllSeries(true)
     setHiddenCumulativeSeries(new Set())
     setSelectAllCumulativeSeries(true)
   }, [draftFrom, draftTo])
 
-  const visibleFactors = useMemo(() => {
-    if (activeSector === "all" || activeSector === "commodity") return FUTURES_STYLE_FACTORS
-    return FUTURES_STYLE_FACTORS.filter(
-      (f) => f.sector === "all" || f.sector === activeSector,
-    )
-  }, [activeSector])
+  const handleUseLatest = useCallback(() => {
+    setDraftFrom("")
+    setDraftTo("")
+    setAppliedFrom("")
+    setAppliedTo("")
+    setRangeAuto(true)
+    setHiddenSeries(new Set())
+    setSelectAllSeries(true)
+    setHiddenCumulativeSeries(new Set())
+    setSelectAllCumulativeSeries(true)
+  }, [])
 
-  const chartDates = useMemo(
-    () => tradingDatesBetween(appliedFrom, appliedTo),
-    [appliedFrom, appliedTo],
-  )
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
 
+    async function load() {
+      setLoading(true)
+      setError(null)
+      try {
+        const qs = new URLSearchParams({ sector: activeSector })
+        if (rangeAuto || !appliedFrom || !appliedTo) {
+          qs.set("auto", "1")
+        } else {
+          qs.set("from", appliedFrom)
+          qs.set("to", appliedTo)
+        }
+        const res = await fetch(`/ma/api/style-factors/returns?${qs}`, {
+          signal: controller.signal,
+          cache: "no-store",
+        })
+        const json = (await res.json()) as ApiPayload | ApiError
+        if (cancelled) return
+        if (!res.ok || !json || (json as ApiError).ok === false) {
+          setPayload(null)
+          setError((json as ApiError)?.error || `加载失败 (${res.status})`)
+          return
+        }
+        const data = json as ApiPayload
+        setPayload(data)
+        if (data.maxDate) setDataMaxDate(data.maxDate)
+        // Sync date inputs with resolved range. Keep applied* empty while auto
+        // so the effect does not re-fire with concrete dates.
+        setDraftFrom(data.from)
+        setDraftTo(data.to)
+        if (!(data.auto || rangeAuto)) {
+          setAppliedFrom(data.from)
+          setAppliedTo(data.to)
+        }
+      } catch (e) {
+        if (cancelled) return
+        if ((e as Error)?.name === "AbortError") return
+        setPayload(null)
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void load()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [activeSector, rangeAuto, appliedFrom, appliedTo])
+
+  const chartDates = payload?.dates ?? []
   const latestDate = chartDates[chartDates.length - 1] ?? appliedTo
 
   const chartSeries = useMemo(
     () =>
-      FUTURES_STYLE_FACTORS.map((factor, index) => ({
-        name: factor.name,
-        color: SERIES_COLORS[index % SERIES_COLORS.length],
-        data: chartDates.map((date) => {
-          const raw = pseudoReturn(factor.name, date, activeSector)
-          const adjusted = Math.round((raw + sectorOffset(activeSector)) * 100) / 100
-          return Math.max(-3.8, Math.min(3.8, adjusted))
-        }),
+      (payload?.daily ?? []).map((s) => ({
+        name: s.name,
+        color: s.color,
+        data: s.data,
       })),
-    [activeSector, chartDates],
+    [payload],
   )
 
   const chartOption = useMemo(() => {
     const zoomWindow = chartDates.length > 8 ? Math.round((8 / chartDates.length) * 100) : 100
     const zoomStart = 100 - zoomWindow
+    const y = yAxisRange(chartSeries, -4, 4)
 
     return {
       backgroundColor: "transparent",
@@ -308,9 +332,7 @@ export function FuturesStyleView() {
         itemHeight: 10,
         itemGap: 12,
         textStyle: { fontSize: 11, color: "#666666" },
-        selected: Object.fromEntries(
-          chartSeries.map((s) => [s.name, !hiddenSeries.has(s.name)]),
-        ),
+        selected: Object.fromEntries(chartSeries.map((s) => [s.name, !hiddenSeries.has(s.name)])),
       },
       grid: { left: 52, right: 16, top: 92, bottom: 48 },
       dataZoom: [
@@ -349,9 +371,8 @@ export function FuturesStyleView() {
         nameLocation: "end" as const,
         nameGap: 8,
         nameTextStyle: { fontSize: 11, color: "#999999", align: "left" as const },
-        min: -4,
-        max: 4,
-        interval: 1,
+        min: y.min,
+        max: y.max,
         axisLabel: {
           fontSize: 11,
           color: "#999999",
@@ -384,56 +405,33 @@ export function FuturesStyleView() {
     }
   }, [chartDates, chartSeries, hiddenSeries])
 
-  const cardValues = useMemo(() => {
-    const offset = sectorOffset(activeSector)
-    return visibleFactors.map((factor) => {
-      const latest = chartDates.length
-        ? pseudoReturn(factor.name, latestDate, activeSector) + offset
-        : factor.value + offset
-      return {
-        ...factor,
-        value: Math.round(latest * 100) / 100,
-      }
-    })
-  }, [activeSector, chartDates, latestDate, visibleFactors])
+  const cardValues = payload?.cards ?? []
 
-  const intervalTableRows = useMemo(() => {
-    const offset = sectorOffset(activeSector)
-    const factors =
-      activeSector === "all" || activeSector === "commodity"
-        ? INTERVAL_TABLE_FACTORS
-        : INTERVAL_TABLE_FACTORS.filter(
-            (f) => f.sector === "all" || f.sector === activeSector,
-          )
-
-    return factors.map((factor, index) => ({
-      index: index + 1,
-      name: factor.name,
-      returns: factor.returns.map((v) => Math.round((v + offset * 10) * 100) / 100),
-    }))
-  }, [activeSector])
+  const intervalTableRows = useMemo(
+    () =>
+      (payload?.interval ?? []).map((factor, index) => ({
+        index: index + 1,
+        name: factor.name,
+        returns: factor.returns,
+      })),
+    [payload],
+  )
 
   const statsCutoff = latestDate
 
-  const visibleCumulativeFactors = useMemo(() => {
-    if (activeSector === "all" || activeSector === "commodity") return CUMULATIVE_LINE_FACTORS
-    return CUMULATIVE_LINE_FACTORS.filter(
-      (f) => f.sector === "all" || f.sector === activeSector,
-    )
-  }, [activeSector])
-
   const cumulativeSeries = useMemo(
     () =>
-      visibleCumulativeFactors.map((factor) => ({
-        name: factor.name,
-        color: factor.color,
-        data: buildCumulativeReturns(factor.name, chartDates, activeSector),
+      (payload?.cumulative ?? []).map((s) => ({
+        name: s.name,
+        color: s.color,
+        data: s.data,
       })),
-    [activeSector, chartDates, visibleCumulativeFactors],
+    [payload],
   )
 
-  const cumulativeChartOption = useMemo(
-    () => ({
+  const cumulativeChartOption = useMemo(() => {
+    const y = yAxisRange(cumulativeSeries, -20, 15)
+    return {
       backgroundColor: "transparent",
       animation: false,
       tooltip: {
@@ -484,9 +482,8 @@ export function FuturesStyleView() {
         nameLocation: "end" as const,
         nameGap: 8,
         nameTextStyle: { fontSize: 11, color: "#999999", align: "left" as const },
-        min: -20,
-        max: 15,
-        interval: 5,
+        min: y.min,
+        max: y.max,
         axisLabel: {
           fontSize: 11,
           color: "#999999",
@@ -516,17 +513,16 @@ export function FuturesStyleView() {
             }
           : {}),
       })),
-    }),
-    [chartDates, cumulativeSeries, hiddenCumulativeSeries],
-  )
+    }
+  }, [chartDates, cumulativeSeries, hiddenCumulativeSeries])
 
   const handleToggleAllSeries = useCallback(() => {
     setSelectAllSeries((prev) => {
       const next = !prev
-      setHiddenSeries(next ? new Set() : new Set(FUTURES_STYLE_FACTORS.map((f) => f.name)))
+      setHiddenSeries(next ? new Set() : new Set(chartSeries.map((f) => f.name)))
       return next
     })
-  }, [])
+  }, [chartSeries])
 
   const handleLegendSelectChanged = useCallback((params: { selected?: Record<string, boolean> }) => {
     const selected = params.selected ?? {}
@@ -541,12 +537,10 @@ export function FuturesStyleView() {
   const handleToggleAllCumulativeSeries = useCallback(() => {
     setSelectAllCumulativeSeries((prev) => {
       const next = !prev
-      setHiddenCumulativeSeries(
-        next ? new Set() : new Set(visibleCumulativeFactors.map((f) => f.name)),
-      )
+      setHiddenCumulativeSeries(next ? new Set() : new Set(cumulativeSeries.map((f) => f.name)))
       return next
     })
-  }, [visibleCumulativeFactors])
+  }, [cumulativeSeries])
 
   const handleCumulativeLegendSelectChanged = useCallback(
     (params: { selected?: Record<string, boolean> }) => {
@@ -586,6 +580,25 @@ export function FuturesStyleView() {
           >
             查询
           </button>
+          <button
+            type="button"
+            onClick={handleUseLatest}
+            className="h-8 min-w-[4rem] px-4 rounded-sm border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100 transition-colors"
+            title={dataMaxDate ? `用数据库最新交易日 ${dataMaxDate} 作为结束日，向前约 3 个月` : "用数据库最新交易日自动取近约 3 个月"}
+          >
+            最新
+          </button>
+          {rangeAuto && (
+            <span className="text-xs text-emerald-600 shrink-0">自动跟踪最新数据</span>
+          )}
+          {loading && <span className="text-xs text-zinc-400">加载真实因子收益中…</span>}
+          {error && <span className="text-xs text-red-500">加载失败：{error}</span>}
+          {!loading && !error && payload?.source && (
+            <span className="text-xs text-zinc-400 truncate max-w-[28rem]" title={payload.source.note}>
+              数据：AkShare/EMQuant 本地代理（非 GTJAQH*.WI 周报净值）
+              {dataMaxDate ? ` · 最新交易日 ${dataMaxDate}` : ""}
+            </span>
+          )}
         </div>
       </div>
 
@@ -617,10 +630,7 @@ export function FuturesStyleView() {
           {cardValues.map((card) => (
             <div
               key={card.name}
-              className={[
-                "rounded border px-3 py-3 text-center",
-                cardBgClass(card.value),
-              ].join(" ")}
+              className={["rounded border px-3 py-3 text-center", cardBgClass(card.value)].join(" ")}
             >
               <div className="text-xs text-zinc-500 mb-2 leading-snug min-h-[2rem] flex items-center justify-center">
                 {card.name}
@@ -630,6 +640,9 @@ export function FuturesStyleView() {
               </div>
             </div>
           ))}
+          {!loading && cardValues.length === 0 && (
+            <div className="col-span-full text-sm text-zinc-400 py-6 text-center">暂无因子收益数据</div>
+          )}
         </div>
       </div>
 
@@ -672,7 +685,7 @@ export function FuturesStyleView() {
 
         {chartDates.length === 0 ? (
           <div className="flex items-center justify-center h-80 text-sm text-zinc-400">
-            请选择有效的时间范围后点击查询
+            {loading ? "加载中…" : "请选择有效的时间范围后点击查询"}
           </div>
         ) : (
           <ReactECharts
@@ -752,7 +765,8 @@ export function FuturesStyleView() {
               <FuturesStyleCalcHelp section="cumulative" />
             </div>
             <div className="text-xs text-zinc-400 mt-1 ml-3">
-              统计区间: {appliedFrom} ~ {statsCutoff}
+              统计区间: {payload?.from ?? draftFrom ?? "—"} ~ {statsCutoff}
+              {rangeAuto ? "（自动最新）" : ""}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -787,16 +801,69 @@ export function FuturesStyleView() {
 
         {chartDates.length === 0 ? (
           <div className="flex items-center justify-center h-80 text-sm text-zinc-400">
-            请选择有效的时间范围后点击查询
+            {loading ? "加载中…" : "请选择有效的时间范围后点击查询"}
           </div>
         ) : (
-          <ReactECharts
-            option={cumulativeChartOption}
-            style={{ height: 420, width: "100%" }}
-            notMerge
-            lazyUpdate
-            onEvents={{ legendselectchanged: handleCumulativeLegendSelectChanged }}
-          />
+          <>
+            <ReactECharts
+              option={cumulativeChartOption}
+              style={{ height: 420, width: "100%" }}
+              notMerge
+              lazyUpdate
+              onEvents={{ legendselectchanged: handleCumulativeLegendSelectChanged }}
+            />
+
+            <div className="mt-4 border-t border-zinc-100 pt-4">
+              <div className="flex items-center gap-2 mb-3 text-sm font-semibold text-zinc-800">
+                <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
+                分因子累计收益
+                <span className="text-xs font-normal text-zinc-400">
+                  每个因子单独展示累计路径（与上方同一区间）
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {cumulativeSeries.map((series) => (
+                  <div
+                    key={series.name}
+                    className="rounded-lg border border-zinc-100 bg-zinc-50/40 px-3 pt-3 pb-1"
+                  >
+                    <div className="flex items-center gap-2 mb-1 min-h-[1.25rem]">
+                      <span
+                        className="inline-block h-0.5 w-3 rounded-sm shrink-0"
+                        style={{ backgroundColor: series.color }}
+                      />
+                      <span className="text-xs font-medium text-zinc-700 truncate" title={series.name}>
+                        {series.name}
+                      </span>
+                      <span
+                        className={[
+                          "ml-auto text-xs tabular-nums font-semibold shrink-0",
+                          (series.data.at(-1) ?? 0) > 0
+                            ? "text-red-500"
+                            : (series.data.at(-1) ?? 0) < 0
+                              ? "text-green-600"
+                              : "text-zinc-500",
+                        ].join(" ")}
+                      >
+                        {formatReturnPct(series.data.at(-1) ?? 0)}
+                      </span>
+                    </div>
+                    <ReactECharts
+                      option={buildSingleFactorCumulativeOption(
+                        series.name,
+                        series.color,
+                        chartDates,
+                        series.data,
+                      )}
+                      style={{ height: 200, width: "100%" }}
+                      notMerge
+                      lazyUpdate
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

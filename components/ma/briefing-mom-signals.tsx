@@ -17,14 +17,20 @@ import {
   type TsSectorPoint,
 } from "@/lib/ma/quant-vs-subjective-signals"
 
+interface GroupSleeve {
+  nAccounts: number
+  margin: number
+}
+
 interface ApiData {
   ok: boolean
   date?: string | null
   quantShare?: number
+  bookMargin?: number
   sectors?: { key: string; name: string }[]
   products?: { key: string; name: string; sector?: string }[]
   signals?: MomSignal[]
-  groups?: { quant: { nAccounts: number }; subjective: { nAccounts: number } } | null
+  groups?: { quant: GroupSleeve; subjective: GroupSleeve } | null
   volDays?: number
   flows?: FlowMap
   sectorTs?: TsSectorPoint[]
@@ -43,6 +49,37 @@ function countLine(signals: MomSignal[]): string {
   return parts.join("、") || "无板块"
 }
 
+function formatMarginWan(n: number): string {
+  if (!Number.isFinite(n) || n === 0) return "0"
+  if (Math.abs(n) >= 1e8) {
+    const yi = n / 1e8
+    return `${yi.toFixed(yi >= 10 ? 0 : 2)}亿`
+  }
+  return `${(n / 1e4).toFixed(0)}万`
+}
+
+function formatSharePct(n: number): string {
+  if (!Number.isFinite(n)) return "0"
+  const rounded = Math.round(n * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
+function accountMarginLine(
+  label: string,
+  sleeve: GroupSleeve | undefined,
+  bookMargin: number,
+  shareOverride?: number,
+): string | null {
+  if (!sleeve || sleeve.nAccounts <= 0) return null
+  const share =
+    shareOverride != null && Number.isFinite(shareOverride)
+      ? shareOverride
+      : bookMargin > 0
+        ? (sleeve.margin / bookMargin) * 100
+        : 0
+  return `${label}共${sleeve.nAccounts}个子账户，合计使用保证金${formatMarginWan(sleeve.margin)}，占比总保证金的${formatSharePct(share)}%`
+}
+
 export default function BriefingMomSignals() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -52,6 +89,9 @@ export default function BriefingMomSignals() {
   const [productTs, setProductTs] = useState<TsProductPoint[]>([])
   const [productNames, setProductNames] = useState<Record<string, string>>({})
   const [volDays, setVolDays] = useState(20)
+  const [groups, setGroups] = useState<ApiData["groups"]>(null)
+  const [bookMargin, setBookMargin] = useState(0)
+  const [quantShare, setQuantShare] = useState(0)
 
   useEffect(() => {
     let stop = false
@@ -67,6 +107,9 @@ export default function BriefingMomSignals() {
           setSignals([])
           setSectorTs([])
           setProductTs([])
+          setGroups(null)
+          setBookMargin(0)
+          setQuantShare(0)
           return
         }
         setDate(j.date ?? null)
@@ -74,6 +117,9 @@ export default function BriefingMomSignals() {
         setProductTs(j.productTs ?? [])
         setProductNames(Object.fromEntries((j.products ?? []).map((p) => [p.key, p.name])))
         setVolDays(j.volDays ?? 20)
+        setGroups(j.groups ?? null)
+        setBookMargin(j.bookMargin ?? 0)
+        setQuantShare(j.quantShare ?? 0)
         const built = buildMomSignals(
           completeSectorRows(j.sectors ?? []),
           (j.products ?? []).slice(0, 40),
@@ -92,6 +138,9 @@ export default function BriefingMomSignals() {
         setSignals([])
         setSectorTs([])
         setProductTs([])
+        setGroups(null)
+        setBookMargin(0)
+        setQuantShare(0)
       })
       .finally(() => {
         if (!stop) setLoading(false)
@@ -134,6 +183,16 @@ export default function BriefingMomSignals() {
     [alignedSignals],
   )
 
+  const sleeveMarginSummary = useMemo(() => {
+    const qShare = quantShare
+    const sShare = bookMargin > 0 ? 100 - qShare : 0
+    const parts = [
+      accountMarginLine("量化", groups?.quant, bookMargin, qShare),
+      accountMarginLine("主观", groups?.subjective, bookMargin, sShare),
+    ].filter(Boolean) as string[]
+    return parts.length ? parts.join("；") + "。" : null
+  }, [groups, bookMargin, quantShare])
+
   const { tagged: taggedSignals, gone: goneSignals } = useMemo(
     () => tagSignalsVsPrev(alignedSignals, prevDay?.items),
     [alignedSignals, prevDay],
@@ -166,6 +225,9 @@ export default function BriefingMomSignals() {
   return (
     <>
       <p className="text-sm leading-7 text-[#2a3a4a] mb-4 pl-1 border-l-4 border-[#c8a84b] bg-[#faf7ef] py-2 px-3 rounded-r">
+        {sleeveMarginSummary ? <>
+          {sleeveMarginSummary}<br />
+        </> : null}
         当前按风险口径生成
         {date ? <>，持仓截面 <span className="font-semibold">{date}</span></> : null}
         。板块 {summary}。

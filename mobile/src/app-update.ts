@@ -3,8 +3,21 @@ import Constants from "expo-constants"
 import * as Application from "expo-application"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { File, FileMode, Paths } from "expo-file-system"
-import { startActivityAsync, ActivityAction } from "expo-intent-launcher"
 import { resolveServerUrl } from "@/format"
+
+// expo-intent-launcher is Android-only; lazy-load so iOS/EAS Mac bundles do not touch it at import time.
+type IntentLauncherModule = {
+  startActivityAsync: (activityAction: string, params?: Record<string, unknown>) => Promise<unknown>
+  ActivityAction: { MANAGE_UNKNOWN_APP_SOURCES: string }
+}
+
+function getIntentLauncher(): IntentLauncherModule {
+  if (Platform.OS !== "android") {
+    throw new Error("IntentLauncher is only available on Android")
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require("expo-intent-launcher") as IntentLauncherModule
+}
 
 const ANDROID_PACKAGE = "com.marketwebsite.fofresearch"
 const FLAG_GRANT_READ_URI_PERMISSION = 1
@@ -509,6 +522,7 @@ async function stageApkForInstall(
 }
 
 async function openInstallerView(file: File): Promise<void> {
+  const { startActivityAsync } = getIntentLauncher()
   await startActivityAsync("android.intent.action.VIEW", {
     data: file.contentUri,
     type: "application/vnd.android.package-archive",
@@ -517,6 +531,7 @@ async function openInstallerView(file: File): Promise<void> {
 }
 
 async function openInstallerPackage(file: File): Promise<void> {
+  const { startActivityAsync } = getIntentLauncher()
   // Do NOT set RETURN_RESULT: on Huawei/EMUI startActivityAsync can stay pending until the
   // user finishes installing, which looks like "stuck at 100%" for several minutes.
   await startActivityAsync("android.intent.action.INSTALL_PACKAGE", {
@@ -542,6 +557,7 @@ async function openInstaller(file: File): Promise<void> {
 }
 
 async function openInstallPermissionSettings(): Promise<void> {
+  const { startActivityAsync, ActivityAction } = getIntentLauncher()
   const packageId = Application.applicationId || ANDROID_PACKAGE
   await startActivityAsync(ActivityAction.MANAGE_UNKNOWN_APP_SOURCES, {
     data: `package:${packageId}`,

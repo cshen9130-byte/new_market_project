@@ -4,6 +4,7 @@ import { query } from "@/lib/db"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { canonicalProductCode, sqlCanonicalProductCode } from "@/lib/server/fund-holding-code"
 import { resolveTrackingProductName } from "@/lib/server/tracking-product-name"
+import { sanitizeBeianCode } from "@/lib/server/sanitize-beian-code"
 
 /** Standard register-number pool tables keyed by pool id. */
 export const REGISTER_POOL_TABLE: Record<string, string> = {
@@ -87,7 +88,10 @@ export async function addFundToTrackingPool(
   beian_hao: string,
   product_name: string,
 ): Promise<{ created: boolean }> {
-  beian_hao = canonicalProductCode(beian_hao) || beian_hao.trim()
+  beian_hao = sanitizeBeianCode(beian_hao, product_name)
+    || canonicalProductCode(beian_hao)
+    || ""
+  if (!beian_hao) throw new Error("无效备案编码：不能使用产品名称或公告文件名作为备案号")
   product_name = await resolveTrackingProductName(beian_hao, product_name)
   if (isCustomTrackingPool(pool)) {
     const hash = rowHash(pool, beian_hao, product_name)
@@ -328,6 +332,140 @@ export async function purgeValuationFilenameIdentities(): Promise<number> {
  * AAEO3A is 诚奇睿盈对冲2号A类 (QH717A). ABFJ9A is 藤创藤达CTA1号A类 (BJN16A).
  */
 const CUSTODIAN_TRACKING_ALIASES = ["AAEO3A", "ABFJ9A"] as const
+
+
+/**
+ * Rewrite pool/cache rows whose register_number / beian_hao is a product name
+ * or announcement filename. Prefer an embedded code (SNW169) or a sibling row
+ * / private_fund_info hit with a real registration code.
+ */
+export async function repairBogusBeianIdentities(): Promise<number> {
+  let changed = 0
+  type Row = { src: string; id: string; code: string; name: string; scope?: string | null }
+  const rows = await query<Row>(
+    `SELECT 'tracking_pool' AS src, id::text AS id, register_number AS code, product_name AS name, NULL::text AS scope
+       FROM tracking_pool WHERE register_number IS NOT NULL
+     UNION ALL
+     SELECT 'selected_pool', id::text, register_number, product_name, NULL
+       FROM selected_pool WHERE register_number IS NOT NULL
+     UNION ALL
+     SELECT 'core_pool', id::text, register_number, product_name, NULL
+       FROM core_pool WHERE register_number IS NOT NULL
+     UNION ALL
+     SELECT 'hy_tracking_pool', id::text, register_number, product_name, NULL
+       FROM hy_tracking_pool WHERE register_number IS NOT NULL
+     UNION ALL
+     SELECT 'fof_mom_tracking', id::text, register_number, product_name, NULL
+       FROM fof_mom_tracking WHERE register_number IS NOT NULL
+     UNION ALL
+     SELECT 'user_custom_pool', id::text, register_number, product_name, pool_key
+       FROM user_custom_pool WHERE register_number IS NOT NULL
+     UNION ALL
+     SELECT 'ops_tracking_funds_list_cache', beian_hao, beian_hao, product_name, NULL
+       FROM ops_tracking_funds_list_cache WHERE beian_hao IS NOT NULL`,
+  ).catch(() => [] as Row[])
+
+  const bogus = rows.filter((r) => {
+    const clean = sanitizeBeianCode(r.code, r.name)
+    return !clean || clean.toUpperCase() !== String(r.code).trim().toUpperCase()
+  })
+  if (bogus.length === 0) return 0
+
+  async function lookupCode(productName: string, hint: string): Promise<string | null> {
+    const fromHint = sanitizeBeianCode(hint, productName)
+    if (fromHint) return fromHint
+    const name = productName.trim()
+    if (!name) return null
+    const parent = name.replace(/[ABC]类$/u, "").trim()
+    const hits = await query<{ beian_hao: string }>(
+      `SELECT beian_hao FROM (
+          SELECT beian_hao, product_name, 1 AS pri FROM private_fund_info
+          UNION ALL
+          SELECT beian_hao, product_name, 2 FROM ops_tracking_funds_list_cache
+          UNION ALL
+          SELECT register_number, product_name, 3 FROM tracking_pool
+        ) s
+        WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+          AND (
+            product_name = $1
+            OR product_name = $2
+            OR product_name ILIKE '%' || $2 || '%'
+            OR product_name ILIKE '%' || $1 || '%'
+          )
+        ORDER BY pri ASC, length(product_name) ASC
+        LIMIT 20`,
+      [name, parent || name],
+    ).catch(() => [] as { beian_hao: string }[])
+    for (const h of hits) {
+      const code = sanitizeBeianCode(h.beian_hao, name)
+      if (code) return code
+    }
+    return null
+  }
+
+  for (const row of bogus) {
+    const next = await lookupCode(row.name, row.code)
+    if (!next) {
+      // Drop junk identities that cannot be repaired (filename / name as PK).
+      if (row.src === "ops_tracking_funds_list_cache") {
+        await query(`DELETE FROM ops_tracking_funds_list_cache WHERE beian_hao = $1`, [row.code]).catch(() => {})
+        changed += 1
+      }
+      continue
+    }
+    if (next.toUpperCase() === String(row.code).trim().toUpperCase()) continue
+
+    try {
+      if (row.src === "ops_tracking_funds_list_cache") {
+        // Prefer keeping an existing good row for the real code.
+        const existing = await query<{ n: string }>(
+          `SELECT COUNT(*)::text AS n FROM ops_tracking_funds_list_cache WHERE UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($1))`,
+          [next],
+        )
+        if (Number(existing[0]?.n ?? 0) > 0) {
+          await query(`DELETE FROM ops_tracking_funds_list_cache WHERE beian_hao = $1`, [row.code])
+        } else {
+          await query(
+            `UPDATE ops_tracking_funds_list_cache SET beian_hao = $2, refreshed_at = NOW() WHERE beian_hao = $1`,
+            [row.code, next],
+          ).catch(async () => {
+            await query(`DELETE FROM ops_tracking_funds_list_cache WHERE beian_hao = $1`, [row.code])
+          })
+        }
+        changed += 1
+        continue
+      }
+
+      const col = "register_number"
+      const scopeSql = row.scope != null ? "AND pool_key = $3" : ""
+      const params = row.scope != null ? [row.id, next, row.scope] : [row.id, next]
+      // If the real code already exists in the same table, drop the bogus row.
+      const dup = await query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM ${row.src}
+          WHERE UPPER(BTRIM(${col})) = UPPER(BTRIM($1))
+          ${row.scope != null ? "AND pool_key = $2" : ""}`,
+        row.scope != null ? [next, row.scope] : [next],
+      )
+      if (Number(dup[0]?.n ?? 0) > 0) {
+        await query(
+          `DELETE FROM ${row.src} WHERE id = $1::bigint ${row.scope != null ? "AND pool_key = $2" : ""}`,
+          row.scope != null ? [row.id, row.scope] : [row.id],
+        )
+      } else {
+        await query(
+          `UPDATE ${row.src} SET ${col} = $2 WHERE id = $1::bigint ${scopeSql}`,
+          params,
+        )
+      }
+      changed += 1
+    } catch (err) {
+      console.warn("[tracking-pool] repair bogus beian failed", row.src, row.code, err)
+    }
+  }
+
+  if (changed > 0) invalidateTrackingPoolListCaches([])
+  return changed
+}
 
 export async function collapseAliasedTrackingIdentities(): Promise<number> {
   let changed = 0

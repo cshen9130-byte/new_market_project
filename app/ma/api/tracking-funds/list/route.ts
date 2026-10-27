@@ -22,7 +22,8 @@ import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { applyFundElementListSort, overlayFundElementListFields } from "@/lib/server/fund-elements-lookup"
 import { overlayLatestChangeDate, sqlLatestChangeAt } from "@/lib/server/product-latest-change"
 import { sqlTrackingFirstEntryByCode } from "@/lib/server/tracking-first-entry"
-import { attachJyPoolFlags, collapseAliasedTrackingIdentities, parsePoolPresence, purgeValuationFilenameIdentities, REGISTER_POOL_TABLE, sqlPoolPresenceClause, teamVisibleTrackingFundsUnionSql, type PoolPresence } from "@/lib/server/tracking-pool-membership"
+import { attachJyPoolFlags, collapseAliasedTrackingIdentities, parsePoolPresence, purgeValuationFilenameIdentities,
+  repairBogusBeianIdentities, REGISTER_POOL_TABLE, sqlPoolPresenceClause, teamVisibleTrackingFundsUnionSql, type PoolPresence } from "@/lib/server/tracking-pool-membership"
 import { expandFundSearchKeywords, sqlNameOrCodeShareClass, sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { resolveTrackingKeywordBeianCodes } from "@/lib/server/tracking-keyword-search"
 import { sqlTrackingIdentityKeyColumns, sqlVisibleTrackingIdentity } from "@/lib/server/tracking-list-identity"
@@ -1396,6 +1397,7 @@ export async function GET(req: Request) {
     global._trackingListValuationFilenameCacheBustV2 = true
     invalidateListResponseCache()
     await purgeValuationFilenameIdentities()
+    await repairBogusBeianIdentities()
   }
   if (!global._trackingListCustodianAliasCollapseV1) {
     global._trackingListCustodianAliasCollapseV1 = true

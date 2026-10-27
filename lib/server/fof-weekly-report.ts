@@ -5,7 +5,10 @@ import { mkdir, readFile, readdir, writeFile } from "fs/promises"
 import path from "path"
 import { promisify } from "util"
 import { query } from "@/lib/db"
-import { findCustomFundByName, getCustomFundByCode, type CustomFundRecord } from "@/lib/server/custom-funds"
+import {
+  findCustomFundByName, getCustomFundByCode, type CustomFundRecord,
+  listAllCustomFundRecords,
+} from "@/lib/server/custom-funds"
 import { loadResolvedFundStrategies } from "@/lib/server/fund-strategy-resolve"
 import { listCustomFundNavRows } from "@/lib/server/custom-fund-nav"
 import { generateCustomFundNavFromRule } from "@/lib/server/custom-fund-nav-generate"
@@ -22,7 +25,8 @@ import {
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
 import { loadFundNavRange, loadMergedFundNavRows, resolveFundNames } from "@/lib/server/fund-nav-series"
-import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { lookupManagedProductOverride, resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import { sanitizeBeianCode } from "@/lib/server/sanitize-beian-code"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
 
 const execFileAsync = promisify(execFile)
@@ -383,14 +387,31 @@ async function findPython(scriptDir: string): Promise<PythonInvocation> {
 }
 
 export async function resolveProductBeianHao(product_name: string, beian_hao?: string): Promise<string> {
-  const code = beian_hao?.trim()
-  if (code) {
-    if (getCustomFundByCode(code)) return code
-    return code
+  const name = product_name.trim()
+  const hintRaw = (beian_hao || "").trim()
+
+  // Custom-fund serials (380001…) must win before managed name overrides, otherwise
+  // extras like 荣熙共赢同策略 get collapsed into 荣熙共赢 → SBNX55.
+  if (hintRaw) {
+    const byHintCode = getCustomFundByCode(hintRaw)
+    if (byHintCode?.product_code) return byHintCode.product_code
   }
 
-  const customFund = findCustomFundByName(product_name.trim())
-  if (customFund) return customFund.product_code
+  // Exact managed override only (no soft includes).
+  const exactManaged = lookupManagedProductOverride(name)
+  if (exactManaged && exactManaged.product_name.replace(/\s+/g, "") === name.replace(/\s+/g, "")) {
+    return exactManaged.beian_hao
+  }
+
+  const sanitizedHint = sanitizeBeianCode(beian_hao, name)
+  if (sanitizedHint) {
+    if (getCustomFundByCode(sanitizedHint)) return sanitizedHint
+    return sanitizedHint
+  }
+
+  // Exact custom-fund name (avoid soft includes stealing managed short names).
+  const exactCustom = listAllCustomFundRecords().find((f) => f.product_name.trim() === name)
+  if (exactCustom?.product_code?.trim()) return exactCustom.product_code.trim()
 
   const managed = await query<{ beian_hao: string | null }>(
     `SELECT cache.beian_hao
@@ -398,20 +419,21 @@ export async function resolveProductBeianHao(product_name: string, beian_hao?: s
      LEFT JOIN ops_managed_products_list_cache cache ON cache.managed_product_id = m.id
      WHERE m.product_name = $1
      LIMIT 1`,
-    [product_name.trim()],
+    [name],
   ).catch(() => [] as { beian_hao: string | null }[])
 
-  if (managed[0]?.beian_hao) return managed[0].beian_hao
+  const managedCode = sanitizeBeianCode(managed[0]?.beian_hao, name)
+  if (managedCode) return managedCode
 
   const info = await query<{ beian_hao: string }>(
-    `SELECT beian_hao
-     FROM private_fund_info
-     WHERE product_name = $1
-     LIMIT 1`,
-    [product_name.trim()],
+    `SELECT beian_hao FROM private_fund_info WHERE product_name = $1 LIMIT 1`,
+    [name],
   ).catch(() => [] as { beian_hao: string }[])
 
-  if (info[0]?.beian_hao) return info[0].beian_hao
+  const infoCode = sanitizeBeianCode(info[0]?.beian_hao, name)
+  if (infoCode) return infoCode
+
+  if (hintRaw) return hintRaw
 
   throw new Error(`未找到产品「${product_name}」的备案号`)
 }
@@ -748,7 +770,11 @@ export async function resolveFofWeeklyProductNavRange(
   latest_nav_date: string | null
 }> {
   const resolvedBeian = await resolveProductBeianHao(product_name, beian_hao)
-  const customFund = getCustomFundByCode(resolvedBeian) ?? findCustomFundByName(product_name.trim())
+  // Exact custom-fund match only — soft includes would map 荣熙共赢 → 荣熙共赢同策略 (380004).
+  const customFund =
+    getCustomFundByCode(resolvedBeian)
+    ?? listAllCustomFundRecords().find((f) => f.product_name.trim() === product_name.trim())
+    ?? null
   if (customFund) {
     const rule = getCustomFundNavGenerationRule(customFund.product_code)
     if (rule && rule.rule_type === "splice") {
@@ -892,6 +918,18 @@ export async function runFofWeeklyReportJob(
   }
 }
 
+
+/** Drop duplicated 「周报（week range）」 suffixes from the canvas title. */
+function stripWeeklyTitleRangeSuffix(title: string, productName: string): string {
+  const raw = (title || "").trim()
+  if (!raw) return (productName || "").trim()
+  const stripped = raw
+    .replace(/\s*周报[（(][^）)]*[）)]\s*$/u, "")
+    .replace(/\s*[（(]\d{4}-\d{2}-\d{2}\s*[~～\-—]+\s*\d{4}-\d{2}-\d{2}[）)]\s*$/u, "")
+    .trim()
+  return stripped || (productName || "").trim() || raw
+}
+
 export async function generateFofWeeklyReport(
   input: FofWeeklyReportRequest,
 ): Promise<FofWeeklyReportResult> {
@@ -950,7 +988,10 @@ export async function generateFofWeeklyReport(
   const navFile = path.join(outDir, "nav.csv")
   await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
 
-  const reportTitle = (input.report_title || names.product_name).trim()
+  const reportTitle = stripWeeklyTitleRangeSuffix(
+    (input.report_title || names.product_name).trim(),
+    names.product_name,
+  )
   const productInception = await resolveProductPageInceptionDate(beian_hao, names.product_name)
   const strategyPhrase = await resolveReportStrategyPhrase(
     beian_hao,

@@ -16,10 +16,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request" }, { status: 400 })
     }
 
-    const { beian_hao, nav_type, rows, product_name: bodyProductName } = body as {
+    const { beian_hao, nav_type, rows, product_name: bodyProductName, non_trading_policy } = body as {
       beian_hao?: string
       nav_type?: string
       product_name?: string
+      non_trading_policy?: "drop" | "keep"
       rows?: Array<{
         nav_date?: string
         unit_nav?: string
@@ -31,6 +32,10 @@ export async function POST(req: Request) {
     const result = await uploadTeamNavRows({
       beian_hao: beian_hao ?? "",
       nav_type: nav_type === "virtual" ? "virtual" : "pre_fee",
+      nonTradingPolicy:
+        non_trading_policy === "drop" || non_trading_policy === "keep"
+          ? non_trading_policy
+          : undefined,
       rows: Array.isArray(rows)
         ? rows.map((row) => ({
             nav_date: row.nav_date ?? "",
@@ -40,6 +45,10 @@ export async function POST(req: Request) {
           }))
         : [],
     })
+
+    if ("needs_non_trading_choice" in result && result.needs_non_trading_choice) {
+      return NextResponse.json(result, { status: 409 })
+    }
 
     if ("error" in result) {
       if (result.error === "missing_fields") {
@@ -153,7 +162,11 @@ export async function POST(req: Request) {
         invalidateListResponseCache()
       })
 
-    return NextResponse.json({ ok: true, count: result.count })
+    return NextResponse.json({
+      ok: true,
+      count: result.count,
+      dropped_non_trading: "dropped_non_trading" in result ? result.dropped_non_trading : 0,
+    })
   } catch (err) {
     console.error("[team-data/nav/upload]", err)
     return NextResponse.json({ error: "Failed to upload team nav rows" }, { status: 500 })

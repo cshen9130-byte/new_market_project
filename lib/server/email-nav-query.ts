@@ -36,6 +36,11 @@ export type EmailNavPoint = {
   source?: string | null
   subject?: string | null
   attachment_filename?: string | null
+  /**
+   * Manual Excel / protected upload supplied cumulative and/or adjusted NAV.
+   * Merge must keep those numbers (no high-cum drop, additive rebase, or finalize rewrite).
+   */
+  trust_file_nav?: boolean
 }
 
 type EmailNavRawRow = {
@@ -3418,6 +3423,44 @@ function dropUnconfirmedHighEmailCumulative(emailRows: EmailNavPoint[]): EmailNa
   })
 }
 
+/**
+ * Re-apply file-trusted cumulative/adjusted NAV after finalizeNavSeries so sanitizers cannot rewrite them.
+ * LegacyNavRow: cumulative_nav = adjusted, cum_nav_withdrawal = cumulative.
+ */
+function restoreTrustedFileNavColumns(
+  rows: LegacyNavRow[],
+  trusted: EmailNavPoint[],
+): LegacyNavRow[] {
+  if (trusted.length === 0) return rows
+  const byDate = new Map<string, EmailNavPoint>()
+  for (const point of trusted) byDate.set(point.price_date.slice(0, 10), point)
+  return rows.map((row) => {
+    const point = byDate.get(row.price_date.slice(0, 10))
+    if (!point) return row
+    const next = { ...row }
+    const fileCum = parseOptionalNav(point.cumulative_nav)
+    const fileAdj = parseOptionalNav(point.adjusted_nav ?? null)
+    const unit = parseOptionalNav(point.nav) ?? parseOptionalNav(row.nav)
+    // Always re-apply file 累计/复权 for trusted uploads, including when equal to 单位.
+    if (fileCum != null && isReasonableNav(fileCum)) {
+      next.cum_nav_withdrawal = String(fileCum)
+    }
+    if (fileAdj != null && isReasonableNav(fileAdj)) {
+      next.cumulative_nav = String(fileAdj)
+    } else if (
+      fileCum != null
+      && isReasonableNav(fileCum)
+      && (point.adjusted_nav == null || point.adjusted_nav === "")
+      && unit != null
+      && Math.abs(fileCum - unit) / Math.max(Math.abs(unit), 1e-9) <= 0.001
+    ) {
+      // File had 累计=单位 and no separate 复权: keep adj collapsed to the same level.
+      next.cumulative_nav = String(fileCum)
+    }
+    return next
+  })
+}
+
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(
   legacyRows: LegacyNavRow[],
@@ -3428,16 +3471,19 @@ export function mergeNavSeriesWithEmail(
   // it into 复权; if the columns are still swapped, that overlay replaces the real
   // 复权 (sitting in cum_nav_withdrawal) and finalize can no longer recover it.
   const legacyPrepared = repairSwappedCumAdjRows(legacyRows)
-  emailRows = clearCorruptEmailCumulative(emailRows)
-  emailRows = rebaseAdditiveEmailCumulative(legacyPrepared, emailRows)
-  // A 累计 above 2× 单位 stays only when the legacy series already has a dividend
-  // gap: 火富牛 on the same scale (SQX078), or a constant custodian offset that
-  // rebase just removed (R0423B). An empty legacy list and a unit-only manual
-  // history do not confirm it. 臻选之常A类 stores 累计 = 单位 + 3.1612 and copies
-  // that into 复权; appending it after the manual series cliffs 复权 by about +313%.
+  // Manual Excel uploads that supplied cumulative/adjusted NAV must keep those numbers.
+  // clearCorrupt / additive rebase / dropUnconfirmedHigh would otherwise rewrite
+  // a real high cumulative (e.g. 2.7260) down to unit+legacy-gap (~2.0698).
+  const trustedFileRows = emailRows.filter((row) => row.trust_file_nav)
+  const untrustedEmailRows = emailRows.filter((row) => !row.trust_file_nav)
+  let sanitizedUntrusted = clearCorruptEmailCumulative(untrustedEmailRows)
+  sanitizedUntrusted = rebaseAdditiveEmailCumulative(legacyPrepared, sanitizedUntrusted)
   if (!legacyConfirmsHighCumulative(legacyPrepared)) {
-    emailRows = dropUnconfirmedHighEmailCumulative(emailRows)
+    sanitizedUntrusted = dropUnconfirmedHighEmailCumulative(sanitizedUntrusted)
   }
+  emailRows = [...trustedFileRows, ...sanitizedUntrusted].sort((a, b) =>
+    a.price_date.localeCompare(b.price_date),
+  )
   if (emailRows.length === 0) return finalizeNavSeries(legacyPrepared, new Set(), new Set(), fundContext)
 
   const byDate = new Map<string, LegacyNavRow>()
@@ -3457,7 +3503,9 @@ export function mergeNavSeriesWithEmail(
 
     const emailCum = parseOptionalNav(row.cumulative_nav)
     const emailAdjRaw = parseOptionalNav(row.adjusted_nav)
-    const hasEmailCum = isUsableEmailCumulativeNav(unitNav, emailCum, fundContext)
+    const hasEmailCum = row.trust_file_nav
+      ? emailCum != null && isReasonableNav(emailCum)
+      : isUsableEmailCumulativeNav(unitNav, emailCum, fundContext)
     const existing = byDate.get(row.price_date)
     const prevDate = sortedLegacyDates.filter((d) => d < row.price_date).at(-1)
       ?? Array.from(byDate.keys()).filter((d) => d < row.price_date).sort().at(-1)
@@ -3469,8 +3517,9 @@ export function mergeNavSeriesWithEmail(
       : cumOnlyEmail
         ? unitNav
         : null
-    const emailAdj =
-      isPlausibleEmailAdjustedNav(resolvedCum, emailAdjRaw) ? emailAdjRaw : null
+    const emailAdj = row.trust_file_nav
+      ? (emailAdjRaw != null && isReasonableNav(emailAdjRaw) ? emailAdjRaw : null)
+      : (isPlausibleEmailAdjustedNav(resolvedCum, emailAdjRaw) ? emailAdjRaw : null)
 
     // FOF parent 估值表 holdings (守安/锡泰 listing 贞元 as underlying) only have 市价.
     // Across a sparse hole they collapse cum→unit (SBBC18: June 1.1459 → Aug 0.9832 / −14%).
@@ -3600,7 +3649,10 @@ export function mergeNavSeriesWithEmail(
   }
 
   const merged = Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
-  return finalizeNavSeries(merged, unitOnlyEmailDates, adjOnlyEmailDates, fundContext)
+  const finalized = finalizeNavSeries(merged, unitOnlyEmailDates, adjOnlyEmailDates, fundContext)
+  const restored = restoreTrustedFileNavColumns(finalized, trustedFileRows)
+  // Price change may depend on restored adjusted NAV; recompute once after restore.
+  return trustedFileRows.length > 0 ? recomputeNavPriceChanges(restored) : restored
 }
 
 /**
@@ -3711,6 +3763,8 @@ export function preferCustodianEmailOverUnitOnlyManual<T extends {
   unit_nav: string
   cumulative_nav: string | null
   adjusted_nav: string | null
+  /** Manual/import fills must not be dropped or overwritten by custodian email merge. */
+  is_protected?: boolean
 }>(manual: T[], emailPoints: EmailNavPoint[]): T[] {
   if (manual.length < 5) return manual
   const unitOnly = (row: T) => {
@@ -3746,6 +3800,7 @@ export function preferCustodianEmailOverUnitOnlyManual<T extends {
   if (hits < 20 || hits < manual.length * 0.5) return manual
 
   const replaced = manual.map((row) => {
+    if (row.is_protected) return row
     const email = emailByDate.get(row.nav_date.slice(0, 10))
     if (
       !email ||
@@ -3801,6 +3856,7 @@ export function preferCustodianEmailOverUnitOnlyManual<T extends {
   // (GT288A 2026-06-01, unit 1.116 between custodian units 1.0445 and 1.0499)
   // spikes the chart. Drop every uncovered date except the one carried lead-in.
   return replaced.filter((row, index) => {
+    if (row.is_protected) return true
     if (emailByDate.has(row.nav_date.slice(0, 10))) return true
     return carriedLeadIn && index === order[0].index
   })
@@ -3829,11 +3885,14 @@ function positiveUnitNav(raw: string | null | undefined): number | null {
 export function dropManualSeriesDisjointFromCustodian<T extends {
   nav_date: string
   unit_nav: string
+  is_protected?: boolean
 }>(
   manual: T[],
   emailPoints: Array<{ price_date: string; nav: string | null }>,
 ): T[] {
   if (manual.length === 0 || emailPoints.length === 0) return manual
+  // Protected manual/import rows must survive custodian-disjoint wipe.
+  if (manual.some((row) => row.is_protected)) return manual
   const emailUnit = new Map<string, number>()
   for (const point of emailPoints) {
     const unit = positiveUnitNav(point.nav)

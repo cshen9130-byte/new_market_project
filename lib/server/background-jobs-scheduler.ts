@@ -295,5 +295,19 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   })
 
+  // Nightly 22:30 Beijing: system weekly reports for managed products + strategy extras.
+  // Idempotent: skips products that already have the latest available-data week.
+  // Skipped on Windows->:5433 tunnel unless forced (same as other heavy ETLs).
+  cron.schedule("30 22 * * *", () => {
+    void (async () => {
+      try {
+        const { runScheduledAutoWeeklyReportsEtl } = await import("./auto-weekly-reports-etl-job")
+        runScheduledAutoWeeklyReportsEtl()
+      } catch (e) {
+        console.error("[auto-weekly-etl] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   console.log("[background-jobs] cron schedules registered")
 }

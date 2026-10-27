@@ -3,6 +3,7 @@
  * the business defines a fixed product ↔ code mapping.
  */
 import { isBogusYearProductCode } from "@/lib/server/fund-name-match"
+import { sanitizeBeianCode } from "@/lib/server/sanitize-beian-code"
 import { shareClassFromProductName, stripShareClassSuffix } from "@/lib/server/share-class-product"
 
 export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
@@ -90,7 +91,9 @@ export function resolveManagedProductBeian(
   const auto = autoResolved?.trim() || null
   if (!name) {
     if (!auto) return null
-    return MANAGED_PRODUCT_BEIAN_ALIASES[auto.toUpperCase()] ?? auto
+    const sanitizedOnly = sanitizeBeianCode(auto)
+    if (!sanitizedOnly) return null
+    return MANAGED_PRODUCT_BEIAN_ALIASES[sanitizedOnly.toUpperCase()] ?? sanitizedOnly
   }
   const exact = MANAGED_PRODUCT_BEIAN_OVERRIDES[name]
   if (exact) return exact
@@ -98,7 +101,9 @@ export function resolveManagedProductBeian(
     if (managedProductOverrideNameMatches(product_name, name)) return beian_hao
   }
   if (!auto) return null
-  return MANAGED_PRODUCT_BEIAN_ALIASES[auto.toUpperCase()] ?? auto
+  const sanitized = sanitizeBeianCode(auto, name)
+  if (!sanitized) return null
+  return MANAGED_PRODUCT_BEIAN_ALIASES[sanitized.toUpperCase()] ?? sanitized
 }
 
 /** SQL expression applying {@link MANAGED_PRODUCT_BEIAN_OVERRIDES} on top of auto-resolved beian. */

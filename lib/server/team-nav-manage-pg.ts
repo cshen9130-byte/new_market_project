@@ -40,6 +40,7 @@ type ManualNavRow = {
   unit_nav: string
   cumulative_nav: string | null
   adjusted_nav: string | null
+  is_protected?: boolean
 }
 
 let teamNavManualTableReady = false
@@ -55,6 +56,7 @@ async function ensureTeamNavManualTable(): Promise<void> {
       cumulative_nav NUMERIC(16,6),
       adjusted_nav   NUMERIC(16,6),
       nav_type       VARCHAR(16) NOT NULL DEFAULT 'pre_fee',
+      is_protected   BOOLEAN NOT NULL DEFAULT FALSE,
       created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (beian_hao, nav_date, nav_type)
     )
@@ -65,8 +67,15 @@ async function ensureTeamNavManualTable(): Promise<void> {
         ADD COLUMN IF NOT EXISTS adjusted_nav NUMERIC(16,6)
     `)
   } catch (err) {
-    // Older DBs created the table without adjusted_nav; uploads/detail merge need it.
     console.error("[team-nav-manual] failed to add adjusted_nav column:", err)
+  }
+  try {
+    await query(`
+      ALTER TABLE ops_team_nav_manual
+        ADD COLUMN IF NOT EXISTS is_protected BOOLEAN NOT NULL DEFAULT FALSE
+    `)
+  } catch (err) {
+    console.error("[team-nav-manual] failed to add is_protected column:", err)
   }
   await query(`
     CREATE INDEX IF NOT EXISTS idx_ops_team_nav_manual_beian_date
@@ -180,12 +189,14 @@ export async function loadManualTeamNavBatch(
     unit_nav: string
     cumulative_nav: string | null
     adjusted_nav: string | null
+    is_protected: boolean
   }>(
     `SELECT beian_hao,
             nav_date::text AS nav_date,
             unit_nav::text AS unit_nav,
             cumulative_nav::text AS cumulative_nav,
-            adjusted_nav::text AS adjusted_nav
+            adjusted_nav::text AS adjusted_nav,
+            COALESCE(is_protected, FALSE) AS is_protected
      FROM ops_team_nav_manual
      WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND nav_type = $2
      ORDER BY beian_hao, nav_date ASC`,
@@ -201,6 +212,7 @@ export async function loadManualTeamNavBatch(
       unit_nav: row.unit_nav,
       cumulative_nav: row.cumulative_nav,
       adjusted_nav: row.adjusted_nav,
+      is_protected: Boolean(row.is_protected),
     })
     byStored.set(stored, list)
   }
@@ -414,7 +426,8 @@ async function loadManualTeamNavRows(
             nav_date::text AS nav_date,
             unit_nav::text AS unit_nav,
             cumulative_nav::text AS cumulative_nav,
-            adjusted_nav::text AS adjusted_nav
+            adjusted_nav::text AS adjusted_nav,
+            COALESCE(is_protected, FALSE) AS is_protected
      FROM ops_team_nav_manual
      WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[]) AND nav_type = $2
      ORDER BY nav_date ASC, id ASC`,
@@ -425,6 +438,7 @@ async function loadManualTeamNavRows(
     byDate.set(row.nav_date.slice(0, 10), {
       ...row,
       nav_date: row.nav_date.slice(0, 10),
+      is_protected: Boolean((row as ManualNavRow & { is_protected?: boolean | string }).is_protected),
     })
   }
   return [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
@@ -460,11 +474,25 @@ function isValidNavNumber(value: string): boolean {
   return Number.isFinite(n) && n > 0
 }
 
+export type TeamNavNonTradingPolicy = "drop" | "keep"
+
+export type UploadTeamNavRowsResult =
+  | { ok: true; count: number; dropped_non_trading: number }
+  | {
+      needs_non_trading_choice: true
+      trading_count: number
+      non_trading_count: number
+      sample_dates: string[]
+    }
+  | { error: "missing_fields" | "invalid_rows" }
+
 export async function uploadTeamNavRows(params: {
   beian_hao: string
   nav_type: "pre_fee" | "virtual"
   rows: TeamNavUploadRow[]
-}): Promise<{ ok: true; count: number } | { error: "missing_fields" | "invalid_rows" }> {
+  /** When upload contains weekends/holidays: drop them, keep them, or ask (omit). */
+  nonTradingPolicy?: TeamNavNonTradingPolicy
+}): Promise<UploadTeamNavRowsResult> {
   const beian_hao = params.beian_hao.trim()
   if (!beian_hao || params.rows.length === 0) return { error: "missing_fields" }
 
@@ -481,15 +509,31 @@ export async function uploadTeamNavRows(params: {
     cleaned.push({ nav_date, unit_nav, cumulative_nav, adjusted_nav })
   }
 
+  const tradingRows = cleaned.filter((row) => isChinaTradingDay(row.nav_date))
+  const nonTradingRows = cleaned.filter((row) => !isChinaTradingDay(row.nav_date))
+  if (nonTradingRows.length > 0 && !params.nonTradingPolicy) {
+    return {
+      needs_non_trading_choice: true,
+      trading_count: tradingRows.length,
+      non_trading_count: nonTradingRows.length,
+      sample_dates: nonTradingRows.slice(0, 8).map((row) => row.nav_date),
+    }
+  }
+  const toWrite = params.nonTradingPolicy === "drop" ? tradingRows : cleaned
+  if (toWrite.length === 0) return { error: "invalid_rows" }
+  const dropped_non_trading =
+    params.nonTradingPolicy === "drop" ? nonTradingRows.length : 0
+
   await ensureTeamNavManualTable()
-  for (const row of cleaned) {
+  for (const row of toWrite) {
     await query(
-      `INSERT INTO ops_team_nav_manual (beian_hao, nav_date, unit_nav, cumulative_nav, adjusted_nav, nav_type)
-       VALUES ($1, $2::date, $3::numeric, $4::numeric, $5::numeric, $6)
+      `INSERT INTO ops_team_nav_manual (beian_hao, nav_date, unit_nav, cumulative_nav, adjusted_nav, nav_type, is_protected)
+       VALUES ($1, $2::date, $3::numeric, $4::numeric, $5::numeric, $6, TRUE)
        ON CONFLICT (beian_hao, nav_date, nav_type) DO UPDATE SET
          unit_nav = EXCLUDED.unit_nav,
          cumulative_nav = EXCLUDED.cumulative_nav,
          adjusted_nav = EXCLUDED.adjusted_nav,
+         is_protected = TRUE,
          created_at = NOW()`,
       [
         beian_hao,
@@ -502,7 +546,7 @@ export async function uploadTeamNavRows(params: {
     )
   }
 
-  return { ok: true, count: cleaned.length }
+  return { ok: true, count: toWrite.length, dropped_non_trading }
 }
 
 export async function deleteTeamNavRow(params: {
@@ -731,12 +775,24 @@ export async function loadManagedProductEmailPoints(params: {
     }
     return true
   })
-  const manualPoints: EmailNavPoint[] = manualForChart.map((row) => ({
-    price_date: row.nav_date,
-    nav: row.unit_nav,
-    cumulative_nav: row.cumulative_nav ?? row.unit_nav,
-    adjusted_nav: row.adjusted_nav,
-  }))
+  const manualPoints: EmailNavPoint[] = manualForChart.map((row) => {
+    const cumRaw = row.cumulative_nav
+    const cum = cumRaw == null || cumRaw === "" ? null : Number(cumRaw)
+    const adjRaw = row.adjusted_nav
+    const adj = adjRaw == null || adjRaw === "" ? null : Number(adjRaw)
+    // Trust whenever the manual row carries file 累计 and/or 复权, including when
+    // they equal 单位 (e.g. 前海安银8号 / SBPC39). Do not require cum != unit.
+    const hasFileCum = cum != null && Number.isFinite(cum) && cum > 0
+    const hasFileAdj = adj != null && Number.isFinite(adj) && adj > 0
+    const trust_file_nav = hasFileCum || hasFileAdj
+    return {
+      price_date: row.nav_date,
+      nav: row.unit_nav,
+      cumulative_nav: row.cumulative_nav ?? row.unit_nav,
+      adjusted_nav: row.adjusted_nav,
+      trust_file_nav,
+    }
+  })
 
   return [...filteredEmail, ...manualPoints].sort((a, b) =>
     a.price_date.localeCompare(b.price_date),

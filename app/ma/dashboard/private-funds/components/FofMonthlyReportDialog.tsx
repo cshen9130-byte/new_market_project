@@ -14,6 +14,7 @@ import {
   upsertFofMonthlyReportPreset,
   type FofMonthlyReportPreset,
 } from "@/lib/client/fof-monthly-report-presets"
+import { recordGeneratedOfficialReport } from "@/lib/ma/custom-report-storage"
 
 type ProductSource = "managed" | "private" | "custom_fund"
 
@@ -671,6 +672,22 @@ export function FofMonthlyReportDialog({
         }
       }
       setResult(next)
+      recordGeneratedOfficialReport({
+        title: next.reportTitle || productName.trim(),
+        templateId: layout === "curve" ? "monthly-track-curve" : "monthly-review",
+        templateName: layout === "curve" ? "跟踪产品（通用曲线版）月报" : "跟踪产品（月度回顾版）",
+        source: "fof_monthly_generate",
+        typeLabel: "月报",
+        download: next.download,
+        reportJobId: next.reportId,
+        inputValues: {
+          product_name: productName.trim(),
+          beian_hao: beianHao || "",
+          month_begin: monthBeginDate,
+          month_end: monthEndDate,
+          report_layout: layout,
+        },
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {

@@ -249,6 +249,9 @@ export function CustomReportGenerateDialog({
         createdAt: now,
         updatedAt: now,
         creator,
+        source: "custom_template_generate",
+        typeLabel: "自定义",
+        importKey: `gen-custom:${template.id}:${Date.now()}`,
       }
       upsertCustomReport(report)
       onSaved?.(report)

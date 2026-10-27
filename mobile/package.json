@@ -34,7 +34,10 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "postinstall": "powershell -NoProfile -ExecutionPolicy Bypass -File ./patches/restore-speech-service.ps1"
+    "postinstall": "node ./patches/postinstall.js",
+    "build:ios:simulator": "eas build --platform ios --profile ios-simulator",
+    "build:ios:preview": "eas build --platform ios --profile preview",
+    "build:ios:production": "eas build --platform ios --profile production"
   },
   "private": true
 }

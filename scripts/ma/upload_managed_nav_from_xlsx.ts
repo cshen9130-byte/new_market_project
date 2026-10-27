@@ -84,6 +84,7 @@ async function main() {
       unit_nav       NUMERIC(16,6) NOT NULL,
       cumulative_nav NUMERIC(16,6),
       nav_type       VARCHAR(16) NOT NULL DEFAULT 'pre_fee',
+      is_protected   BOOLEAN NOT NULL DEFAULT FALSE,
       created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (beian_hao, nav_date, nav_type)
     )
@@ -92,11 +93,12 @@ async function main() {
   let upserted = 0
   for (const row of rows) {
     await query(
-      `INSERT INTO ops_team_nav_manual (beian_hao, nav_date, unit_nav, cumulative_nav, nav_type)
-       VALUES ($1, $2::date, $3::numeric, $4::numeric, 'pre_fee')
+      `INSERT INTO ops_team_nav_manual (beian_hao, nav_date, unit_nav, cumulative_nav, nav_type, is_protected)
+       VALUES ($1, $2::date, $3::numeric, $4::numeric, 'pre_fee', TRUE)
        ON CONFLICT (beian_hao, nav_date, nav_type) DO UPDATE SET
          unit_nav       = EXCLUDED.unit_nav,
          cumulative_nav = EXCLUDED.cumulative_nav,
+         is_protected   = TRUE,
          created_at     = NOW()`,
       [beianHao, row.nav_date, row.unit_nav, row.cumulative_nav],
     )

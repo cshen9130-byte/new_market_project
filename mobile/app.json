@@ -16,8 +16,10 @@
           "NSAllowsLocalNetworking": true
         },
         "NSMicrophoneUsageDescription": "用于按住 AI 球说话，把语音转成文字向知识库提问。",
-        "NSSpeechRecognitionUsageDescription": "用于识别你的语音内容，以便向知识库提问。"
-      }
+        "NSSpeechRecognitionUsageDescription": "用于识别你的语音内容，以便向知识库提问。",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "buildNumber": "70"
     },
     "android": {
       "package": "com.marketwebsite.fofresearch",

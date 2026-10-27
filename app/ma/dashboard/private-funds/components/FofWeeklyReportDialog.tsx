@@ -14,6 +14,7 @@ import {
   upsertFofWeeklyReportPreset,
   type FofWeeklyReportPreset,
 } from "@/lib/client/fof-weekly-report-presets"
+import { recordGeneratedOfficialReport } from "@/lib/ma/custom-report-storage"
 
 type ProductSource = "managed" | "private" | "custom_fund"
 
@@ -684,10 +685,41 @@ export function FofWeeklyReportDialog({
       if (json.async && typeof json.reportId === "string") {
         const result = await pollGenerateResult(json.reportId)
         setResult(result)
+        recordGeneratedOfficialReport({
+          title: result.reportTitle || productName.trim(),
+          templateId: "weekly-track-curve",
+          templateName: "跟踪产品（通用曲线版）",
+          source: "fof_weekly_generate",
+          typeLabel: "周报",
+          download: result.download,
+          reportJobId: result.reportId,
+          inputValues: {
+            product_name: productName.trim(),
+            beian_hao: beianHao || "",
+            week_begin: weekBegin,
+            week_end: weekEnd,
+          },
+        })
         return
       }
 
-      setResult(json as unknown as GenerateResult)
+      const syncResult = json as unknown as GenerateResult
+      setResult(syncResult)
+      recordGeneratedOfficialReport({
+        title: syncResult.reportTitle || productName.trim(),
+        templateId: "weekly-track-curve",
+        templateName: "跟踪产品（通用曲线版）",
+        source: "fof_weekly_generate",
+        typeLabel: "周报",
+        download: syncResult.download,
+        reportJobId: syncResult.reportId,
+        inputValues: {
+          product_name: productName.trim(),
+          beian_hao: beianHao || "",
+          week_begin: weekBegin,
+          week_end: weekEnd,
+        },
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {

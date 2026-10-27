@@ -6312,12 +6312,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           open={!!trackingNavUploadTarget}
           product_name={trackingNavUploadTarget?.product_name ?? ""}
           onClose={() => setTrackingNavUploadTarget(null)}
-          onUpload={async (uploadRows) => {
+          onUpload={async (uploadRows, opts) => {
             if (!trackingNavUploadTarget?.beian_hao) return
             const res = await fetch("/ma/api/ops/team-data/nav/upload", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+              non_trading_policy: opts?.non_trading_policy,
                 beian_hao: trackingNavUploadTarget.beian_hao,
                 product_name: trackingNavUploadTarget.product_name,
                 nav_type: "pre_fee",
@@ -6329,10 +6330,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 })),
               }),
             })
-            if (!res.ok) {
-              const json = await res.json().catch(() => ({}))
-              throw new Error(teamNavUploadErrorMessage(json.error))
-            }
+            const json = await res.json().catch(() => ({}))
+          if (res.status === 409 && json?.needs_non_trading_choice) {
+            return json as OpsTeamNavNonTradingChoice
+          }
+          if (!res.ok) {
+            throw new Error(teamNavUploadErrorMessage(json.error))
+          }
             setTrackingNavUploadTarget(null)
             setDataReloadKey((k) => k + 1)
             try {
@@ -10709,6 +10713,8 @@ function OpsAddScaleDialog({
   const [batchPreview, setBatchPreview] = useState<OpsScaleBatchPreviewRow[]>([])
   const [batchError, setBatchError] = useState("")
   const [isDragOver, setIsDragOver] = useState(false)
+  const [nonTradingChoice, setNonTradingChoice] = useState<OpsTeamNavNonTradingChoice | null>(null)
+  const [pendingRows, setPendingRows] = useState<OpsTeamNavUploadPreviewRow[] | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -10721,6 +10727,8 @@ function OpsAddScaleDialog({
     setBatchPreview([])
     setBatchError("")
     setIsDragOver(false)
+    setNonTradingChoice(null)
+    setPendingRows(null)
   }, [open])
 
   async function handleBatchFile(file: File) {
@@ -10747,28 +10755,43 @@ function OpsAddScaleDialog({
     }
   }
 
-  async function handleConfirm() {
+  async function handleConfirm(policy?: "drop" | "keep") {
     if (saving) return
-    if (tab === "single") {
-      if (!date || !amount.trim()) return
-      setSaving(true)
-      try {
-        onConfirmSingle(date, amount.trim())
-        onClose()
-      } finally {
-        setSaving(false)
+    let rows: OpsTeamNavUploadPreviewRow[] = pendingRows ?? []
+    if (!pendingRows) {
+      if (tab === "single") {
+        if (!date || !unitNav.trim()) return
+        rows = [{
+          seq: 1,
+          date,
+          unit_nav: unitNav.trim(),
+          cumulative_nav: cumulativeNav.trim() || unitNav.trim(),
+        }]
+      } else if (tab === "paste") {
+        if (pasteResult.length === 0) return
+        rows = pasteResult
+      } else {
+        if (!batchFile || batchPreview.length === 0) return
+        rows = batchPreview
       }
-      return
     }
-    if (!batchFile) return
     setSaving(true)
+    setBatchError("")
     try {
-      onConfirmBatch(batchPreview)
+      const result = await onUpload(rows, policy ? { non_trading_policy: policy } : undefined)
+      if (result && typeof result === "object" && "needs_non_trading_choice" in result && result.needs_non_trading_choice) {
+        setPendingRows(rows)
+        setNonTradingChoice(result)
+        return
+      }
       onClose()
+    } catch (err) {
+      setBatchError(err instanceof Error ? err.message : "上传失败，请稍后重试")
     } finally {
       setSaving(false)
     }
   }
+
 
   if (!open) return null
 
@@ -13116,12 +13139,13 @@ function OperationsFofUnderlyingView() {
         open={!!fofNavUploadTarget}
         product_name={fofNavUploadTarget?.product_name ?? ""}
         onClose={() => setFofNavUploadTarget(null)}
-        onUpload={async (uploadRows) => {
+        onUpload={async (uploadRows, opts) => {
           if (!fofNavUploadTarget?.beian_hao) return
           const res = await fetch("/ma/api/ops/team-data/nav/upload", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              non_trading_policy: opts?.non_trading_policy,
               beian_hao: fofNavUploadTarget.beian_hao,
               product_name: fofNavUploadTarget.product_name,
               nav_type: "pre_fee",
@@ -13133,8 +13157,11 @@ function OperationsFofUnderlyingView() {
               })),
             }),
           })
+          const json = await res.json().catch(() => ({}))
+          if (res.status === 409 && json?.needs_non_trading_choice) {
+            return json as OpsTeamNavNonTradingChoice
+          }
           if (!res.ok) {
-            const json = await res.json().catch(() => ({}))
             throw new Error(teamNavUploadErrorMessage(json.error))
           }
           setFofNavUploadTarget(null)
@@ -13155,6 +13182,13 @@ function OperationsFofUnderlyingView() {
 }
 
 // ─── OperationsTeamNavManageView ─────────────────────────────────────────────
+
+type OpsTeamNavNonTradingChoice = {
+  needs_non_trading_choice: true
+  trading_count: number
+  non_trading_count: number
+  sample_dates: string[]
+}
 
 interface OpsTeamNavUploadPreviewRow {
   seq: number
@@ -13278,7 +13312,10 @@ function OpsTeamNavUploadDialog({
   open: boolean
   product_name: string
   onClose: () => void
-  onUpload: (rows: OpsTeamNavUploadPreviewRow[]) => void | Promise<void>
+  onUpload: (
+    rows: OpsTeamNavUploadPreviewRow[],
+    opts?: { non_trading_policy?: "drop" | "keep" },
+  ) => void | Promise<void | OpsTeamNavNonTradingChoice>
 }) {
   const [tab, setTab] = useState<"single" | "batch" | "paste">("batch")
   const [date, setDate] = useState("")
@@ -13610,19 +13647,53 @@ function OpsTeamNavUploadDialog({
           {batchError && tab === "single" && <p className="text-xs text-red-500">{batchError}</p>}
         </div>
 
+                {nonTradingChoice && (
+          <div className="mx-6 mb-2 rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
+            <div className="font-medium mb-1">检测到非交易日净值</div>
+            <p className="text-xs leading-relaxed mb-2">
+              共 {nonTradingChoice.non_trading_count} 条落在周末/节假日
+              （交易日 {nonTradingChoice.trading_count} 条）。
+              列表与图表默认只展示交易日；请选择如何处理这些日期
+              {nonTradingChoice.sample_dates?.length
+                ? `，例如 ${nonTradingChoice.sample_dates.slice(0, 5).join("、")}`
+                : ""}。
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void handleConfirm("drop")}
+                className="px-3 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-xs font-medium disabled:opacity-50"
+              >
+                丢弃非交易日，仅保留交易日
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void handleConfirm("keep")}
+                className="px-3 py-1.5 rounded border border-amber-400 bg-white dark:bg-background text-xs font-medium hover:bg-amber-100/60 disabled:opacity-50"
+              >
+                保留全部（含非交易日）
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0">
           <button type="button" onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
-          <button
-            type="button"
-            disabled={
-              saving
-              || (tab === "single" ? !date || !unitNav.trim() : tab === "paste" ? pasteResult.length === 0 : !batchFile || batchPreview.length === 0)
-            }
-            onClick={() => void handleConfirm()}
-            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {saving ? "处理中…" : "上传"}
-          </button>
+          {!nonTradingChoice && (
+            <button
+              type="button"
+              disabled={
+                saving
+                || (tab === "single" ? !date || !unitNav.trim() : tab === "paste" ? pasteResult.length === 0 : !batchFile || batchPreview.length === 0)
+              }
+              onClick={() => void handleConfirm()}
+              className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? "处理中…" : "上传"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -14368,6 +14439,7 @@ function OperationsTeamNavManageView({
       </div>
 
       <h1 className="text-xl font-semibold text-foreground mb-2 flex-shrink-0">{product_name}</h1>
+      <p className="text-xs text-muted-foreground mb-1 flex-shrink-0">共 {rows.length} 条净值{loading ? "（加载中…）" : ""}</p>
       <p className="text-xs text-muted-foreground mb-4 flex-shrink-0 leading-relaxed">
         说明：团队净值仅本团队可访问查看，净值如更新，会重新计算复权净值，可5分钟后刷新查看。
       </p>
@@ -14488,11 +14560,12 @@ function OperationsTeamNavManageView({
         open={showUploadDialog}
         product_name={product_name}
         onClose={() => setShowUploadDialog(false)}
-        onUpload={async (uploadRows) => {
+        onUpload={async (uploadRows, opts) => {
           const res = await fetch("/ma/api/ops/team-data/nav/upload", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              non_trading_policy: opts?.non_trading_policy,
               beian_hao,
               product_name,
               nav_type: navType,
@@ -14504,8 +14577,11 @@ function OperationsTeamNavManageView({
               })),
             }),
           })
+          const json = await res.json().catch(() => ({}))
+          if (res.status === 409 && json?.needs_non_trading_choice) {
+            return json as OpsTeamNavNonTradingChoice
+          }
           if (!res.ok) {
-            const json = await res.json().catch(() => ({}))
             throw new Error(teamNavUploadErrorMessage(json.error))
           }
           setReloadKey((k) => k + 1)
@@ -14527,6 +14603,7 @@ function OperationsTeamNavManageView({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              non_trading_policy: "keep",
               beian_hao,
               product_name,
               nav_type: navType,
