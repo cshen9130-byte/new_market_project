@@ -1925,13 +1925,17 @@ async function buildFundHoldings(
   ])
 
   // Cap fuzzy name joins — large FOF books time out on ILIKE/regexp joins.
-  const NAME_JOIN_CAP = 12
+  // Only for holdings that still lack a product code. Coded rows already went through
+  // the code-keyed batch above; falling back to name joins when the code simply has no
+  // type6/email-nav row burns 60s+ and trips statement_timeout (SSG947 cold path).
+  const NAME_JOIN_CAP = 8
   const namesNeedingStrategy = [
     ...new Set(
       fundRows
         .filter((row) => {
           const key = row.valuationCode ?? row.beianHao
-          return !(key && strategyMap.has(key))
+          if (key) return false
+          return Boolean(row.fundName)
         })
         .map((row) => row.fundName),
     ),
@@ -1941,7 +1945,8 @@ async function buildFundHoldings(
       fundRows
         .filter((row) => {
           const key = row.valuationCode ?? row.beianHao
-          return !(key && emailNavMap.has(key))
+          if (key) return false
+          return Boolean(row.fundName)
         })
         .map((row) => row.fundName),
     ),
@@ -3224,14 +3229,35 @@ async function enrichCachedFundStrategies(
   const rows = result.fund_holdings ?? []
   if (rows.length === 0) return result
 
-  // Always re-read type6 company strategy. Cached snapshots embed strategyL1/L2/L3 +
-  // fundStrategy at compute time; skipping when those keys exist left FOF底层 stuck on
-  // the old label after writeCompanyStrategyAcrossShareClasses (detail page was already live).
+  // Always re-read type6 by product code so company-strategy edits show on FOF底层
+  // without waiting for snapshot rebuild. Never pass fund names here: sqlFundNameMatch
+  // joins over type6_ops_team_full time out under the 60s web statement_timeout
+  // (regression from always-enrich-with-names; prod avoided it via the old early return).
+  // Name-only rows without a code still get a capped fuzzy fallback below.
+  // Cache rows are also patched on write via patchValuationSnapshotStrategies.
   const beianCodes = rows
     .map((row) => row.beianHao ?? row.valuationCode)
     .filter((v): v is string => Boolean(v))
-  const names = rows.map((row) => row.fundName).filter(Boolean).slice(0, 12)
-  const strategyMap = await loadCompanyStrategyBatch(beianCodes, names)
+  const strategyMap = await loadCompanyStrategyBatch(beianCodes, [])
+
+  const NAME_JOIN_CAP = 8
+  const namesNeedingStrategy = [
+    ...new Set(
+      rows
+        .filter((row) => {
+          const key = row.valuationCode ?? row.beianHao
+          if (key) return false
+          return Boolean(row.fundName)
+        })
+        .map((row) => row.fundName),
+    ),
+  ].slice(0, NAME_JOIN_CAP)
+  if (namesNeedingStrategy.length > 0) {
+    const byName = await loadCompanyStrategyBatch([], namesNeedingStrategy)
+    for (const [key, value] of byName) {
+      if (!strategyMap.has(key)) strategyMap.set(key, value)
+    }
+  }
 
   const fund_holdings = rows.map((row) => {
     const navKey = row.valuationCode ?? row.beianHao
